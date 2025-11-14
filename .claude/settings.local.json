@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/timothyogilvie/.claude/tools/**)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
