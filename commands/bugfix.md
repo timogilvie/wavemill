@@ -1,8 +1,38 @@
-Execute the bug investigation workflow by:
-1. First, run `node ~/.claude/tools/bug-workflow.js` to display the workflow steps
-2. Then follow the bug investigation workflow exactly as described in ~/.claude/tools/prompts/bug-workflow-prompt.md
-3. Use `osascript -e 'beep'` to alert the user when you need input (like selecting a bug from the list)
-4. Create the bugs/<bug-name>/ directory structure for all investigation documents
-5. Use the investigation, hypothesis, and task templates from ~/.claude/tools/prompts/ as specified in the workflow
-6. Systematically work through each hypothesis until the root cause is found
-7. Guide the user through the entire 11-step process until the bug is fixed and PR is ready
+Execute the bug investigation workflow using agent skills:
+
+## Phase 1: Bug Selection
+Use the **linear-task-selector** skill to:
+- Fetch bugs from Linear backlog (check CLAUDE.md for project name)
+- Display numbered bug list to user
+- Save selected bug context to `/tmp/selected-linear-task.json`
+
+## Phase 2: Investigation Documentation
+Use the **document-orchestrator** skill to:
+- Create `bugs/<bug-name>/` directory
+- Generate `investigation.md` with systematic investigation plan
+- Generate `hypotheses.md` with 3-5 initial root cause hypotheses
+- Generate `fix-tasks.md` template
+
+## Phase 3: Systematic Testing
+- Test each hypothesis in priority order (high likelihood first)
+- Document test methods and results in `bugs/<bug-name>/test-results.md`
+- Mark hypotheses as confirmed/rejected
+- Generate additional hypotheses if all rejected
+- Stop when root cause is confirmed
+
+## Phase 4: Root Cause & Fix
+- Document confirmed root cause in `bugs/<bug-name>/root-cause.md`
+- Update fix-tasks.md with specific fix implementation
+- Write failing tests that demonstrate the bug
+- Implement fix to make tests pass
+- Validate fix against original bug report
+
+## Phase 5: Git & PR
+Use the **git-workflow-manager** skill to:
+- Create bugfix branch: `bugfix/<sanitized-title>`
+- Commit with structured message (fix: prefix, root cause, solution)
+- Push branch to remote
+- Create PR with root cause, solution, and validation steps
+- Provide ready-for-review checklist
+
+Guide the user through the entire systematic process until the bug is fixed and PR is ready.
