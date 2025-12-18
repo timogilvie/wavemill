@@ -1,11 +1,12 @@
 #!/bin/bash
-# sync-claude.sh - Bidirectional sync between repo and ~/.claude
-# Usage: ./sync-claude.sh [to-claude|from-claude|status]
+# sync-claude.sh - Bidirectional sync between repo and ~/.claude / ~/.codex
+# Usage: ./sync-claude.sh [to-claude|from-claude|to-codex|from-codex|status|links]
 
 set -e
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLAUDE_DIR="$HOME/.claude"
+CODEX_DIR="$HOME/.codex"
 
 # Colors for output
 RED='\033[0;31m'
@@ -13,10 +14,20 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+ensure_symlink() {
+    local target="$1"
+    local link_path="$2"
+    local name="$3"
+
+    mkdir -p "$(dirname "$link_path")"
+    ln -snf "$target" "$link_path"
+    echo -e "${GREEN}✓${NC} linked $name → $link_path"
+}
+
 show_status() {
     echo -e "${YELLOW}=== Sync Status ===${NC}\n"
 
-    echo "Checking files that might differ..."
+    echo "Checking files that might differ for Claude..."
 
     # Check shared lib (canonical in repo, optionally synced to ~/.claude)
     if [ -d "$CLAUDE_DIR/shared/lib" ]; then
@@ -74,6 +85,30 @@ show_status() {
         if ! diff -q "$CLAUDE_DIR/tools/get-backlog.ts" "$REPO_DIR/get-backlog.ts" > /dev/null 2>&1; then
             echo -e "${YELLOW}⚠${NC}  get-backlog.ts exists in both tools/ and repo root (differs)"
         fi
+    fi
+
+    # Symlink status for commands
+    if [ -L "$CLAUDE_DIR/commands" ]; then
+        echo -e "${GREEN}✓${NC} ~/.claude/commands is a symlink -> $(readlink "$CLAUDE_DIR/commands")"
+    else
+        echo -e "${YELLOW}⚠${NC} ~/.claude/commands is not a symlink"
+    fi
+
+    echo -e "\nChecking Codex commands..."
+    if [ -f "$CODEX_DIR/commands.json" ] && [ -f "$REPO_DIR/codex/commands.json" ]; then
+        if ! diff -q "$CODEX_DIR/commands.json" "$REPO_DIR/codex/commands.json" > /dev/null 2>&1; then
+            echo -e "${RED}✗${NC} ~/.codex/commands.json - DIFFERS"
+        else
+            echo -e "${GREEN}✓${NC} ~/.codex/commands.json - in sync"
+        fi
+    else
+        echo -e "${YELLOW}⚠${NC} ~/.codex/commands.json missing (or repo file missing)"
+    fi
+
+    if [ -L "$CODEX_DIR/commands.json" ]; then
+        echo -e "${GREEN}✓${NC} ~/.codex/commands.json is a symlink -> $(readlink "$CODEX_DIR/commands.json")"
+    else
+        echo -e "${YELLOW}⚠${NC} ~/.codex/commands.json is not a symlink"
     fi
 }
 
@@ -149,6 +184,31 @@ sync_from_claude() {
     echo -e "\n${GREEN}✓ Sync from ~/.claude complete${NC}"
 }
 
+sync_to_codex() {
+    echo -e "${GREEN}=== Syncing TO ~/.codex ===${NC}\n"
+    mkdir -p "$CODEX_DIR"
+    cp -v "$REPO_DIR/codex/commands.json" "$CODEX_DIR/commands.json"
+    echo -e "\n${GREEN}✓ Sync to ~/.codex complete${NC}"
+}
+
+sync_from_codex() {
+    echo -e "${GREEN}=== Syncing FROM ~/.codex ===${NC}\n"
+    if [ -f "$CODEX_DIR/commands.json" ] && [ "$CODEX_DIR/commands.json" -nt "$REPO_DIR/codex/commands.json" ]; then
+        echo "  Copying newer commands.json from ~/.codex"
+        cp -v "$CODEX_DIR/commands.json" "$REPO_DIR/codex/commands.json"
+    else
+        echo "  No newer commands.json found in ~/.codex"
+    fi
+    echo -e "\n${GREEN}✓ Sync from ~/.codex complete${NC}"
+}
+
+create_links() {
+    echo -e "${GREEN}=== Creating symlinks for Claude and Codex ===${NC}\n"
+    ensure_symlink "$REPO_DIR/commands" "$CLAUDE_DIR/commands" "~/.claude/commands"
+    ensure_symlink "$REPO_DIR/codex/commands.json" "$CODEX_DIR/commands.json" "~/.codex/commands.json"
+    echo -e "\n${GREEN}✓ Symlinks created${NC}"
+}
+
 case "${1:-status}" in
     to-claude)
         sync_to_claude
@@ -156,15 +216,27 @@ case "${1:-status}" in
     from-claude)
         sync_from_claude
         ;;
+    to-codex)
+        sync_to_codex
+        ;;
+    from-codex)
+        sync_from_codex
+        ;;
     status)
         show_status
         ;;
+    links)
+        create_links
+        ;;
     *)
-        echo "Usage: $0 [to-claude|from-claude|status]"
+        echo "Usage: $0 [to-claude|from-claude|to-codex|from-codex|status|links]"
         echo ""
         echo "  status       - Show sync status (default)"
         echo "  to-claude    - Copy repo files to ~/.claude"
         echo "  from-claude  - Copy newer ~/.claude files to repo"
+        echo "  to-codex     - Copy repo commands.json to ~/.codex"
+        echo "  from-codex   - Copy newer ~/.codex commands.json to repo"
+        echo "  links        - Create/refresh symlinks for ~/.claude/commands and ~/.codex/commands.json"
         exit 1
         ;;
 esac
