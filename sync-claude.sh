@@ -110,6 +110,33 @@ show_status() {
     else
         echo -e "${YELLOW}⚠${NC} ~/.codex/commands.json is not a symlink"
     fi
+
+    echo -e "\nChecking Codex prompts..."
+    if [ -d "$REPO_DIR/codex/prompts" ]; then
+        if [ -d "$CODEX_DIR/prompts" ]; then
+            for file in "$REPO_DIR/codex/prompts/"*.md; do
+                [ -e "$file" ] || break
+                filename=$(basename "$file")
+                if [ -f "$CODEX_DIR/prompts/$filename" ]; then
+                    if ! diff -q "$CODEX_DIR/prompts/$filename" "$file" > /dev/null 2>&1; then
+                        echo -e "${RED}✗${NC} prompts/$filename - DIFFERS"
+                    else
+                        echo -e "${GREEN}✓${NC} prompts/$filename - in sync"
+                    fi
+                else
+                    echo -e "${YELLOW}⚠${NC} prompts/$filename missing in ~/.codex"
+                fi
+            done
+        else
+            echo -e "${YELLOW}⚠${NC} ~/.codex/prompts missing"
+        fi
+    fi
+
+    if [ -L "$CODEX_DIR/prompts" ]; then
+        echo -e "${GREEN}✓${NC} ~/.codex/prompts is a symlink -> $(readlink "$CODEX_DIR/prompts")"
+    elif [ -d "$CODEX_DIR/prompts" ]; then
+        echo -e "${YELLOW}⚠${NC} ~/.codex/prompts exists but is not a symlink"
+    fi
 }
 
 sync_to_claude() {
@@ -188,6 +215,11 @@ sync_to_codex() {
     echo -e "${GREEN}=== Syncing TO ~/.codex ===${NC}\n"
     mkdir -p "$CODEX_DIR"
     cp -v "$REPO_DIR/codex/commands.json" "$CODEX_DIR/commands.json"
+    if [ -d "$REPO_DIR/codex/prompts" ]; then
+        echo -e "\nCopying prompts..."
+        mkdir -p "$CODEX_DIR/prompts"
+        rsync -av "$REPO_DIR/codex/prompts/" "$CODEX_DIR/prompts/"
+    fi
     echo -e "\n${GREEN}✓ Sync to ~/.codex complete${NC}"
 }
 
@@ -199,6 +231,18 @@ sync_from_codex() {
     else
         echo "  No newer commands.json found in ~/.codex"
     fi
+    if [ -d "$CODEX_DIR/prompts" ]; then
+        mkdir -p "$REPO_DIR/codex/prompts"
+        echo -e "\nChecking prompts for newer versions in ~/.codex..."
+        for file in "$CODEX_DIR/prompts/"*.md; do
+            [ -e "$file" ] || continue
+            filename=$(basename "$file")
+            if [ "$file" -nt "$REPO_DIR/codex/prompts/$filename" ]; then
+                echo "  Copying newer $filename from ~/.codex/prompts"
+                cp -v "$file" "$REPO_DIR/codex/prompts/"
+            fi
+        done
+    fi
     echo -e "\n${GREEN}✓ Sync from ~/.codex complete${NC}"
 }
 
@@ -206,6 +250,9 @@ create_links() {
     echo -e "${GREEN}=== Creating symlinks for Claude and Codex ===${NC}\n"
     ensure_symlink "$REPO_DIR/commands" "$CLAUDE_DIR/commands" "~/.claude/commands"
     ensure_symlink "$REPO_DIR/codex/commands.json" "$CODEX_DIR/commands.json" "~/.codex/commands.json"
+    if [ -d "$REPO_DIR/codex/prompts" ]; then
+        ensure_symlink "$REPO_DIR/codex/prompts" "$CODEX_DIR/prompts" "~/.codex/prompts"
+    fi
     echo -e "\n${GREEN}✓ Symlinks created${NC}"
 }
 
