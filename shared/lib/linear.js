@@ -334,3 +334,84 @@ export async function createIssueRelation(issueId, relatedIssueId, type) {
 
   return Boolean(data.issueRelationCreate?.success);
 }
+
+// ========== Label Management ==========
+
+export async function getLabels(teamId) {
+  const filter = teamId ? `filter: { team: { id: { eq: "${teamId}" } } }` : '';
+
+  const data = await request(`
+    query {
+      issueLabels(${filter}) {
+        nodes {
+          id
+          name
+          color
+          description
+          team { id name }
+        }
+      }
+    }
+  `);
+
+  return data.issueLabels?.nodes || [];
+}
+
+export async function createLabel(name, teamId, options = {}) {
+  const input = {
+    name,
+    teamId,
+  };
+
+  if (options.color) input.color = options.color;
+  if (options.description) input.description = options.description;
+
+  const data = await request(
+    `
+      mutation($input: IssueLabelCreateInput!) {
+        issueLabelCreate(input: $input) {
+          success
+          issueLabel {
+            id
+            name
+            color
+          }
+        }
+      }
+    `,
+    { input },
+  );
+
+  return data.issueLabelCreate?.issueLabel;
+}
+
+export async function addLabelsToIssue(issueId, labelIds) {
+  const data = await request(
+    `
+      mutation($issueId: String!, $labelIds: [String!]!) {
+        issueUpdate(id: $issueId, input: { labelIds: $labelIds }) {
+          success
+          issue {
+            id
+            identifier
+            labels { nodes { name } }
+          }
+        }
+      }
+    `,
+    { issueId, labelIds },
+  );
+
+  return data.issueUpdate;
+}
+
+export async function getOrCreateLabel(name, teamId, options = {}) {
+  const labels = await getLabels(teamId);
+  const existing = labels.find(l => l.name === name);
+
+  if (existing) {
+    return existing;
+  }
+
+  return await createLabel(name, teamId, options);
+}

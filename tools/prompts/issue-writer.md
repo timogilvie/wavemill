@@ -114,3 +114,107 @@ pnpm build
 - Revert commit: `git revert <sha>`
 - Feature flag: (if applicable)
 - Data migration rollback: (if applicable)
+
+---
+
+## 9. Proposed Labels
+
+*Based on the analysis above, suggest labels to help the autonomous workflow identify task conflicts and parallelization opportunities:*
+
+**Risk Level** (Required):
+- `Risk: Low` — Simple, isolated changes (CSS tweaks, text updates, documentation)
+- `Risk: Medium` — New features, refactoring, non-breaking changes (default for most tasks)
+- `Risk: High` — Breaking changes, database migrations, authentication, infrastructure changes
+
+**Selected**: `Risk: [Low/Medium/High]`
+
+**Justification**: *Brief explanation of why this risk level was chosen (e.g., "Medium - New feature with state management but no breaking changes")*
+
+---
+
+**Files to Modify** (Auto-detected):
+*List the key files from section 2 (limit to top 5):*
+- `path/to/file1.ts`
+- `path/to/file2.tsx`
+- `path/to/file3.css`
+
+**Label**: `Files: file1.ts, file2.tsx, file3.css`
+
+**Purpose**: Prevents parallel tasks from modifying the same files
+
+---
+
+**Architectural Layer** (Recommended):
+*Based on the files and implementation approach, which layers are affected:*
+- `Layer: UI` — Frontend components (`.tsx`, `.jsx`, `components/`)
+- `Layer: API` — API routes and endpoints (`/api/`, `routes/`)
+- `Layer: Service` — Business logic, utilities (`services/`, `lib/`)
+- `Layer: Database` — Schema, migrations (`schema.prisma`, `migrations/`)
+- `Layer: Infra` — Configuration, deployment (`Dockerfile`, `.github/`)
+
+**Selected**: `Layer: [UI/API/Service/Database/Infra]`
+
+**Purpose**: Tasks from different layers can run in parallel safely
+
+---
+
+**Area** (Recommended):
+*High-level feature area affected (helps avoid conflicts):*
+- `Area: Landing` — Landing page and homepage
+- `Area: Navigation` — Navigation and routing
+- `Area: Auth` — Authentication and authorization
+- `Area: API` — API infrastructure
+- `Area: Database` — Database schema and queries
+- `Area: Docs` — Documentation
+- `Area: Infrastructure` — Infrastructure and deployment
+- `Area: Testing` — Test infrastructure
+
+**Selected**: `Area: [...]`
+
+**Purpose**: Avoid running 2+ tasks affecting the same area
+
+---
+
+**Test Coverage** (Auto-detected):
+*From section 6 (Validation Steps):*
+- `Tests: E2E` — End-to-end tests (Playwright, Cypress)
+- `Tests: Integration` — Integration tests
+- `Tests: Unit` — Unit tests (Jest, Vitest)
+- `Tests: None` — No tests required
+
+**Selected**: `Tests: [E2E/Integration/Unit/None]`
+
+**Purpose**: Avoid running multiple E2E tasks (slow and flaky)
+
+---
+
+**Component** (Optional):
+*If modifying a specific component, auto-detect from file paths:*
+- `Component: Hero` (from `components/Hero.tsx`)
+- `Component: UserMenu` (from `components/UserMenu.tsx`)
+
+**Selected**: `Component: [...]` (if applicable)
+
+**Purpose**: Avoid running 2+ tasks modifying the same component
+
+---
+
+### Label Summary
+
+```
+Suggested labels for this task:
+- Risk: Medium
+- Files: src/components/Hero.tsx, src/hooks/useTheme.ts
+- Layer: UI
+- Area: Landing
+- Tests: Unit
+- Component: Hero
+```
+
+**How these labels help the autonomous workflow:**
+- **Risk: Medium** — Max 2 Medium risk tasks can run in parallel
+- **Files: ...** — Prevents file conflicts with other tasks
+- **Layer: UI** — Can run in parallel with Service/API/Database tasks
+- **Area: Landing** — Prevents conflicts with other Landing tasks
+- **Tests: Unit** — Can run in parallel with other Unit test tasks
+- **Component: Hero** — Prevents conflicts with other Hero component tasks

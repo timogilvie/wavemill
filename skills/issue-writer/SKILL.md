@@ -55,6 +55,62 @@ Key principles:
 - **Validation-first** — agent should know how to verify success before starting
 - **Reference existing code** — point to similar implementations as patterns to follow
 
+### Step 3.5: Auto-Generate Labels
+
+After generating the task packet, analyze the content and prepare labels for the issue:
+
+1. **Extract Files to Modify**
+   - Parse file paths from the Technical Context and Implementation Approach sections
+   - Add as metadata: `Files: <path1>, <path2>, ...` (limit to first 3 files)
+
+2. **Assess Risk Level**
+   - Check for: breaking changes, migrations, schema changes, infrastructure changes
+   - **Risk: High** — Breaking changes, migrations, infrastructure, major refactors
+   - **Risk: Medium** — New features, non-trivial refactoring, API changes (default)
+   - **Risk: Low** — CSS/styling, text updates, documentation, typo fixes
+
+3. **Identify Architectural Layer**
+   - Parse file paths and implementation approach
+   - **Layer: UI** — Components, frontend code (`.tsx`, `.jsx`, `components/`)
+   - **Layer: API** — API routes, endpoints (`/api/`, `routes/`)
+   - **Layer: Service** — Business logic, services (`services/`, `lib/`)
+   - **Layer: Database** — Schema, migrations, queries (`schema.prisma`, `migrations/`)
+   - **Layer: Infra** — Config, deployment, CI/CD (`Dockerfile`, `.github/`, `deploy/`)
+
+4. **Identify Area**
+   - Based on feature/component affected:
+   - **Area: Landing** — Landing page, homepage, hero
+   - **Area: Navigation** — Nav, menus, routing
+   - **Area: Auth** — Authentication, authorization, login
+   - **Area: API** — API endpoints, GraphQL, REST
+   - **Area: Database** — Database schema, queries
+   - **Area: Docs** — Documentation, README
+   - **Area: Infrastructure** — Deployment, config, CI/CD
+   - **Area: Testing** — Test infrastructure, test utilities
+
+5. **Check Test Requirements**
+   - Parse Validation Steps section
+   - **Tests: E2E** — End-to-end tests (Playwright, Cypress)
+   - **Tests: Integration** — Integration tests
+   - **Tests: Unit** — Unit tests (Jest, Vitest)
+   - **Tests: None** — No tests required
+
+6. **Extract Dependencies** (if mentioned)
+   - Look for references to other issues (HOK-XXX)
+   - Add: `Blocked-By: HOK-XXX` or `Related-To: HOK-XXX`
+
+Add these labels as a section at the bottom of your task packet:
+
+```markdown
+---
+## Proposed Labels
+- Risk: Medium
+- Layer: UI
+- Area: Landing
+- Tests: Unit
+- Files: src/components/Hero.tsx, src/hooks/useTheme.ts
+```
+
 ### Step 4: Write to Temp File and Update Linear
 
 Save the expanded description to a temp file, then push it to Linear:
@@ -65,11 +121,32 @@ Save the expanded description to a temp file, then push it to Linear:
 npx tsx ~/.claude/tools/update-issue.ts HOK-XXX --file /tmp/hok-xxx-expanded.md
 ```
 
-### Step 5: Report Back
+### Step 5: Apply Auto-Labels
+
+After updating the issue description, automatically apply the proposed labels:
+
+```bash
+npx tsx ~/.claude/tools/auto-label-issue.ts HOK-XXX
+```
+
+This will:
+- Parse the issue description and title
+- Detect risk level, layers, areas, files, and test requirements
+- Apply matching labels to the issue in Linear
+- Report which labels were applied
+
+If labels don't exist yet, create them first:
+
+```bash
+npx tsx ~/.claude/tools/init-labels.ts
+```
+
+### Step 6: Report Back
 
 Tell the user:
 - The Linear issue URL
 - A brief summary of what was expanded
+- Which labels were applied
 - Any concerns or ambiguities found during exploration
 
 ## Task Packet Quality Checklist

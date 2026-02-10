@@ -207,7 +207,12 @@ write_task_packet() {
   # Check if expand-issue.ts exists
   if [[ -f "$TOOLS_DIR/expand-issue.ts" ]]; then
     log "  → Expanding with expand-issue.ts..."
-    npx tsx "$TOOLS_DIR/expand-issue.ts" "$issue_id" > "$out_file" 2>&1
+    # Use --update to save to Linear and --output to save locally
+    # This will also auto-label the issue
+    npx tsx "$TOOLS_DIR/expand-issue.ts" "$issue_id" --update --output "$out_file" 2>&1 || {
+      log_warn "Expansion failed, falling back to raw description"
+      echo "$current_desc" > "$out_file"
+    }
   else
     # Fallback: just use the raw issue description
     echo "$current_desc" > "$out_file"
