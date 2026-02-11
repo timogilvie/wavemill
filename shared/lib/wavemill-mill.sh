@@ -1,7 +1,7 @@
 #!/opt/homebrew/bin/bash
 set -euo pipefail
 
-# Hokusai Loop - Continuous Task Execution System
+# Wavemill Mill - Continuous Task Execution System
 #
 # This script implements a continuous loop that:
 # 1. Fetches prioritized tasks from Linear backlog
@@ -17,10 +17,10 @@ set -euo pipefail
 #
 # Manual controls:
 #   - Ctrl+B D: Detach from tmux (loop continues in background)
-#   - touch ~/.hokusai/.stop-loop: Stop loop after current cycle
+#   - touch ~/.wavemill/.stop-loop: Stop loop after current cycle
 #   - Ctrl+C: Interrupt and reset in-progress tasks to Backlog
 
-SESSION="${SESSION:-hokusai-web}"
+SESSION="${SESSION:-wavemill}"
 REPO_DIR="${REPO_DIR:-$PWD}"
 WORKTREE_ROOT="${WORKTREE_ROOT:-$REPO_DIR/../worktrees}"
 TOOLS_DIR="${TOOLS_DIR:-$HOME/.claude/tools}"
@@ -28,11 +28,12 @@ AGENT_CMD="${AGENT_CMD:-claude}"
 MAX_PARALLEL="${MAX_PARALLEL:-3}"
 POLL_SECONDS="${POLL_SECONDS:-10}"
 
-# Auto-detect project name from repo-specific config or fallback
-if [[ -f "$REPO_DIR/.hokusai-config.json" ]]; then
-  PROJECT_NAME="${PROJECT_NAME:-$(jq -r '.linear.project // empty' "$REPO_DIR/.hokusai-config.json")}"
-fi
-PROJECT_NAME="${PROJECT_NAME:-Hokusai public website}"
+# Source common library for shared functions
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/wavemill-common.sh"
+
+# Auto-detect project name using shared function
+PROJECT_NAME=$(detect_project_name "$REPO_DIR")
 
 BASE_BRANCH="${BASE_BRANCH:-main}"
 
@@ -40,7 +41,7 @@ BASE_BRANCH="${BASE_BRANCH:-main}"
 # Safety and robustness flags
 DRY_RUN="${DRY_RUN:-false}"
 REQUIRE_CONFIRM="${REQUIRE_CONFIRM:-true}"
-STATE_DIR="${STATE_DIR:-$REPO_DIR/.hokusai}"
+STATE_DIR="${STATE_DIR:-$REPO_DIR/.wavemill}"
 STATE_FILE="$STATE_DIR/workflow-state.json"
 MAX_RETRIES="${MAX_RETRIES:-3}"
 RETRY_DELAY="${RETRY_DELAY:-2}"
@@ -200,137 +201,18 @@ linear_set_description() {
 }
 
 
-# Check if issue description is already a detailed task packet
-is_task_packet() {
-  local description="$1"
-  # Check for common task packet markers (h2 or h3 level)
-  echo "$description" | grep -qE "(##+ (1\\.|Objective)|##+ What|##+ Technical Context|##+ Success Criteria|## Task Packet)"
-}
-
-
-# For v1: Use expand-issue.ts if available, otherwise skip expansion
-# In future: integrate /issue-writer skill via dedicated expansion step
-write_task_packet() {
-  local issue_id="$1"
-  local out_file="$2"
-
-
-  # Fetch current description
-  local issue_json=$(linear_get_issue "$issue_id" 2>/dev/null || echo "{}")
-  local current_desc=$(echo "$issue_json" | jq -r '.description // ""')
-
-
-  # Check if already a task packet
-  if is_task_packet "$current_desc"; then
-    log "  → Already detailed, skipping expansion"
-    echo "$current_desc" > "$out_file"
-    return 0
-  fi
-
-
-  # Check if expand-issue.ts exists
-  if [[ -f "$TOOLS_DIR/expand-issue.ts" ]]; then
-    log "  → Expanding with expand-issue.ts..."
-    # Use --update to save to Linear and --output to save locally
-    # This will also auto-label the issue
-    npx tsx "$TOOLS_DIR/expand-issue.ts" "$issue_id" --update --output "$out_file" 2>&1 || {
-      log_warn "Expansion failed, falling back to raw description"
-      echo "$current_desc" > "$out_file"
-    }
-  else
-    # Fallback: just use the raw issue description
-    echo "$current_desc" > "$out_file"
-  fi
-}
+# Note: is_task_packet() and write_task_packet() now provided by wavemill-common.sh
 
 
 # Conflict-aware task selection with multi-factor priority scoring
 # Shows up to 9 candidates, selects up to MAX_PARALLEL avoiding conflicts
+# Note: Uses score_and_rank_issues() from wavemill-common.sh, then strips the has_detailed_plan field
 pick_candidates() {
   local backlog_json="$1"
   local show_limit=9
 
-
-  # Score and rank tasks with multi-factor prioritization
-  echo "$backlog_json" | jq -r --argjson show_limit "$show_limit" '
-    # Filter to backlog/todo only
-    map(select((.state.name|ascii_downcase) == "todo" or (.state.name|ascii_downcase) == "backlog"))
-
-    # Enrich each task with scoring factors
-    | map(. + {
-        # Extract area for conflict detection
-        area: (
-          (.labels.nodes // [])
-          | map(.name)
-          | map(select(test("^(Area|Component|Page|Route):")))
-          | .[0] // ""
-        ),
-
-        # Check if task has detailed description (task packet)
-        has_detailed_plan: (
-          .description // ""
-          | test("##+ (1\\\\.|Objective|What|Technical Context|Success Criteria|Implementation)")
-        ),
-
-        # Check for foundational labels
-        is_foundational: (
-          (.labels.nodes // [])
-          | map(.name | ascii_downcase)
-          | any(test("foundational|architecture|epic|infrastructure"))
-        ),
-
-        # Count how many issues this blocks (foundational work)
-        blocks_count: (
-          (.relations.nodes // [])
-          | map(select(.type == "blocks"))
-          | length
-        ),
-
-        # Count how many issues block this (dependency risk)
-        blocked_by_count: (
-          (.relations.nodes // [])
-          | map(select(.type == "blocked"))
-          | length
-        )
-      })
-
-    # Calculate composite priority score (higher = higher priority)
-    | map(. + {
-        score: (
-          # Base: Baseline for all items (prevents negative scores)
-          20
-
-          # Linear priority (1=urgent, 0=none, 4=low)
-          + (if .priority > 0 then (5 - .priority) * 20 else 0 end)
-
-          # Boost: Has detailed task packet (+30 points)
-          + (if .has_detailed_plan then 30 else 0 end)
-
-          # Boost: Foundational/architecture work (+25 points)
-          + (if .is_foundational then 25 else 0 end)
-
-          # Boost: Blocks other work (+10 per blocked issue)
-          + (.blocks_count * 10)
-
-          # Boost: Unblocked work is ready to go (+15 points)
-          + (if .blocked_by_count == 0 then 15 else 0 end)
-
-          # Penalty: Blocked by other work (-20 per blocker, harder penalty)
-          - (.blocked_by_count * 20)
-
-          # Penalty: Large estimates (prefer smaller, deliverable work)
-          - ((.estimate // 3) * 2)
-        )
-      })
-
-    # Sort by score descending (higher score = higher priority)
-    | sort_by(-.score)
-
-    # Take top candidates for display
-    | .[0:$show_limit]
-    | .[]
-    | "\(.identifier)|\(.title|ascii_downcase|gsub("[^a-z0-9]+";"-"))|\(.title)|\(.area)|\(.score)"
-  '
+  # Use shared scoring function, then strip last field (has_detailed_plan)
+  score_and_rank_issues "$backlog_json" "$show_limit" | cut -d'|' -f1-5
 }
 
 
@@ -557,11 +439,10 @@ for t in "${TASKS[@]}"; do
     log "  ✓ Has detailed task packet (skipping expansion)"
     echo "$current_desc" > "$PACKET_FILE"
   else
-    log "  ⚠ Simple description detected"
+    log "  ⚠ Simple description detected - expanding..."
     EXPANSION_NEEDED=true
-    # For now, just use the raw description
-    # In future: integrate /issue-writer skill
-    echo "$current_desc" > "$PACKET_FILE"
+    # Call write_task_packet to expand and auto-label
+    write_task_packet "$ISSUE" "$PACKET_FILE"
   fi
 
 
@@ -633,11 +514,11 @@ done
 
 # Find orchestrator script (should be in same directory as this script)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ORCHESTRATOR="$SCRIPT_DIR/hokusai-orchestrator.sh"
+ORCHESTRATOR="$SCRIPT_DIR/wavemill-orchestrator.sh"
 
 
 if [[ ! -f "$ORCHESTRATOR" ]]; then
-  echo "Error: hokusai-orchestrator.sh not found at $ORCHESTRATOR"
+  echo "Error: wavemill-orchestrator.sh not found at $ORCHESTRATOR"
   exit 1
 fi
 
@@ -665,6 +546,7 @@ REQUIRE_CONFIRM="$8"
 DRY_RUN="$9"
 BASE_BRANCH="${10}"
 TASKS_FILE="${11}"
+PROJECT_NAME="${12}"
 
 
 # Logging
@@ -949,7 +831,7 @@ printf '%s\n' "${TASKS[@]}" > "$TASKS_FILE"
 
 
 tmux send-keys -t "$SESSION:control.0" "clear" C-m
-tmux send-keys -t "$SESSION:control.0" "$MONITOR_SCRIPT '$SESSION' '$REPO_DIR' '$WORKTREE_ROOT' '$TOOLS_DIR' '$STATE_DIR' '$STATE_FILE' '$POLL_SECONDS' '$REQUIRE_CONFIRM' '$DRY_RUN' '$BASE_BRANCH' '$TASKS_FILE'" C-m
+tmux send-keys -t "$SESSION:control.0" "$MONITOR_SCRIPT '$SESSION' '$REPO_DIR' '$WORKTREE_ROOT' '$TOOLS_DIR' '$STATE_DIR' '$STATE_FILE' '$POLL_SECONDS' '$REQUIRE_CONFIRM' '$DRY_RUN' '$BASE_BRANCH' '$TASKS_FILE' '$PROJECT_NAME'" C-m
 
 
 # Now attach to the session

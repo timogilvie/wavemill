@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Wavemill - Autonomous AI Workflow CLI
+# Entry point for mill and expand workflows
+
+VERSION="1.0.0"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="$SCRIPT_DIR/shared/lib"
+
+# Colors for output
+CYAN=$'\033[0;36m'
+GREEN=$'\033[0;32m'
+YELLOW=$'\033[1;33m'
+RED=$'\033[0;31m'
+NC=$'\033[0m' # No Color
+
+show_help() {
+  cat <<EOF
+${CYAN}Wavemill${NC} v${VERSION} - Autonomous AI Workflow CLI
+
+${GREEN}Usage:${NC}
+  wavemill <command> [options]
+
+${GREEN}Commands:${NC}
+  ${CYAN}mill${NC}      Start continuous task execution loop
+             - Fetches prioritized Linear backlog
+             - Auto-expands issues without task packets
+             - Launches parallel agents in tmux
+             - Monitors PRs and auto-cleans completed work
+             - Continuously prompts for next batch
+
+  ${CYAN}expand${NC}    Batch expand Linear issues
+             - Shows ranked backlog candidates
+             - Select up to 3 issues interactively
+             - Expands with Claude + auto-labels
+             - Updates Linear with detailed task packets
+
+  ${CYAN}version${NC}   Show version information
+  ${CYAN}help${NC}      Show this help message
+
+${GREEN}Examples:${NC}
+  # Start continuous loop (default: 3 parallel tasks)
+  wavemill mill
+
+  # Start loop with custom parallelism
+  MAX_PARALLEL=5 wavemill mill
+
+  # Expand issues interactively
+  wavemill expand
+
+  # Expand issues for specific project
+  PROJECT_NAME="My Project" wavemill expand
+
+${GREEN}Environment Variables:${NC}
+  ${YELLOW}Mill command:${NC}
+    MAX_PARALLEL      Number of parallel tasks (default: 3)
+    SESSION           Tmux session name (default: wavemill)
+    AGENT_CMD         Agent to use (default: claude, can be: codex)
+    WORKTREE_ROOT     Worktree location (default: ../worktrees)
+    BASE_BRANCH       Base branch (default: main)
+    POLL_SECONDS      PR polling interval (default: 10)
+    DRY_RUN           Dry run mode (default: false)
+    REQUIRE_CONFIRM   Require confirmations (default: true)
+
+  ${YELLOW}Expand command:${NC}
+    PROJECT_NAME      Linear project name (auto-detected from .wavemill-config.json)
+    MAX_SELECT        Max issues to select (default: 3)
+    MAX_DISPLAY       Max issues to display (default: 9)
+
+  ${YELLOW}Both commands:${NC}
+    LINEAR_API_KEY    Required: Linear API token
+    TOOLS_DIR         Tools directory (default: ~/.claude/tools)
+    REPO_DIR          Repository directory (default: \$PWD)
+
+${GREEN}Configuration:${NC}
+  Create ${CYAN}.wavemill-config.json${NC} in your repo root:
+  {
+    "linear": {
+      "project": "Your Project Name"
+    }
+  }
+
+${GREEN}Learn more:${NC}
+  README: $SCRIPT_DIR/README.md
+  Docs:   https://github.com/your-org/claude-tools
+
+EOF
+}
+
+show_version() {
+  echo "Wavemill v${VERSION}"
+  echo "Location: $SCRIPT_DIR"
+}
+
+run_mill() {
+  local mill_script="$LIB_DIR/wavemill-mill.sh"
+
+  if [[ ! -f "$mill_script" ]]; then
+    echo -e "${RED}Error:${NC} Mill script not found at: $mill_script" >&2
+    exit 1
+  fi
+
+  if [[ ! -x "$mill_script" ]]; then
+    chmod +x "$mill_script"
+  fi
+
+  echo -e "${CYAN}Starting Wavemill Mill...${NC}"
+  exec "$mill_script" "$@"
+}
+
+run_expand() {
+  local expand_script="$LIB_DIR/wavemill-expand.sh"
+
+  if [[ ! -f "$expand_script" ]]; then
+    echo -e "${RED}Error:${NC} Expand script not found at: $expand_script" >&2
+    exit 1
+  fi
+
+  if [[ ! -x "$expand_script" ]]; then
+    chmod +x "$expand_script"
+  fi
+
+  echo -e "${CYAN}Starting Wavemill Expand...${NC}"
+  exec "$expand_script" "$@"
+}
+
+# Main command dispatcher
+case "${1:-}" in
+  mill)
+    shift
+    run_mill "$@"
+    ;;
+  expand)
+    shift
+    run_expand "$@"
+    ;;
+  version|--version|-v)
+    show_version
+    ;;
+  help|--help|-h|"")
+    show_help
+    ;;
+  *)
+    echo -e "${RED}Error:${NC} Unknown command: $1" >&2
+    echo ""
+    show_help
+    exit 1
+    ;;
+esac

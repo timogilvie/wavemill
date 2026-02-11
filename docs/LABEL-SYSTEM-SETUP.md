@@ -54,8 +54,8 @@ npx tsx ~/.claude/tools/auto-label-issue.ts HOK-123
 - Applies labels based on the expanded content
 - Reports which labels were applied
 
-### 4. Integration with hokusai-loop.sh
-**File**: `shared/lib/hokusai-loop.sh`
+### 4. Integration with wavemill-mill.sh
+**File**: `shared/lib/wavemill-mill.sh`
 
 **Changed**: Line 210-215 now uses `--update` flag
 ```bash
@@ -96,10 +96,10 @@ npx tsx "$TOOLS_DIR/expand-issue.ts" "$issue_id" --update --output "$out_file"
 
 ## How It Works Now
 
-### Automatic Flow (hokusai-loop.sh)
+### Automatic Flow (wavemill-mill.sh)
 
 ```
-1. User runs hokusai-loop.sh
+1. User runs wavemill-mill.sh
    ↓
 2. Script detects simple issue descriptions
    ↓
@@ -116,7 +116,7 @@ npx tsx "$TOOLS_DIR/expand-issue.ts" "$issue_id" --update --output "$out_file"
    - Detects Risk, Layer, Area, Tests
    - Applies matching labels to Linear
    ↓
-6. hokusai-orchestrator.sh launches tasks
+6. wavemill-orchestrator.sh launches tasks
    ↓
 7. Conflict detection uses labels to avoid conflicts
 ```
@@ -143,7 +143,7 @@ npx tsx ~/.claude/tools/auto-label-issue.ts HOK-123
      npx tsx ~/.claude/tools/auto-label-issue.ts $issue 2>/dev/null || true
    done
    ```
-3. **Update conflict detection** in hokusai-loop.sh to use the new labels (Risk, Layer, Files)
+3. **Update conflict detection** in wavemill-mill.sh to use the new labels (Risk, Layer, Files)
 4. **Monitor and refine** label detection logic based on real-world usage
 
 ## Label Categories Reference
@@ -177,7 +177,7 @@ shared/lib/linear.js              ← Label management functions
 tools/init-labels.ts              ← New (initialize labels)
 tools/auto-label-issue.ts         ← New (auto-label issues)
 ~/.claude/tools/expand-issue.ts   ← Modified (auto-label after update)
-shared/lib/hokusai-loop.sh        ← Modified (use --update flag)
+shared/lib/wavemill-mill.sh        ← Modified (use --update flag)
 skills/issue-writer/SKILL.md      ← Updated (auto-label instructions)
 docs/LABEL-SYSTEM.md              ← New (complete reference)
 docs/LABEL-SYSTEM-SETUP.md        ← New (this file)
@@ -195,6 +195,6 @@ cp -v shared/lib/*.sh ~/.claude/lib/
 ---
 
 **Status**: ✅ Complete and tested
-**Integration**: ✅ Automatic in hokusai-loop.sh
+**Integration**: ✅ Automatic in wavemill-mill.sh
 **Documentation**: ✅ Complete
 **Next**: Use in production workflow

@@ -38,4 +38,4 @@ epics/*/
 !features/.gitkeep
 !bugs/.gitkeep
 !epics/.gitkeep
-.hokusai/
+.wavemill/

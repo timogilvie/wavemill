@@ -10,7 +10,7 @@ command -v jq >/dev/null || { echo "Error: jq is required but not installed"; ex
 command -v watch >/dev/null || { echo "Error: watch is required (install: brew install watch)"; exit 1; }
 
 
-SESSION="${1:-hokusai-web}"
+SESSION="${1:-wavemill}"
 REPO_DIR="${REPO_DIR:-$PWD}"
 AGENT_CMD="${AGENT_CMD:-claude}"   # or "codex"
 WORKTREE_ROOT="${WORKTREE_ROOT:-$REPO_DIR/../worktrees}"
@@ -31,7 +31,7 @@ trap 'echo "Session ended. Run: git -C \"$REPO_DIR\" worktree prune" >&2' EXIT
 
 # tasks are passed as: "ISSUEID|slug|title" ...
 # example:
-# ./hokusai-orchestrator.sh hokusai-web \
+# ./wavemill-orchestrator.sh wavemill \
 #   "LIN-123|hero-cta|Improve hero CTA copy" \
 #   "LIN-456|nav-a11y|Fix navbar accessibility"
 

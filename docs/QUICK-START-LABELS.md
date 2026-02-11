@@ -66,10 +66,10 @@ done
 
 ## Integration with Workflow
 
-### Automatic Flow (hokusai-loop.sh)
+### Automatic Flow (wavemill-mill.sh)
 
 ```
-1. hokusai-loop detects simple issue
+1. wavemill-mill detects simple issue
 2. Calls: expand-issue.ts --update
 3. expand-issue.ts:
    - Expands with Claude CLI
@@ -79,7 +79,7 @@ done
    - Detects labels from content
    - Creates component labels if needed
    - Applies to Linear
-5. hokusai-orchestrator uses labels for conflict detection
+5. wavemill-orchestrator uses labels for conflict detection
 ```
 
 ### Manual Flow (/issue-writer skill)

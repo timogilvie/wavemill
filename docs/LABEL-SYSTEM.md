@@ -117,9 +117,9 @@ The tool will:
 4. **Automatically call `auto-label-issue.ts` to apply labels**
 5. Report which labels were applied
 
-### Integration with hokusai-loop.sh
+### Integration with wavemill-mill.sh
 
-The autonomous workflow (`hokusai-loop.sh`) now automatically:
+The autonomous workflow (`wavemill-mill.sh`) now automatically:
 - Detects simple issue descriptions
 - Expands them using `expand-issue.ts --update`
 - Auto-labels based on the expanded content
