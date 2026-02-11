@@ -1,5 +1,5 @@
 {
-  "name": "claude-tools",
+  "name": "wavemill",
   "version": "1.0.0",
   "type": "module",
   "description": "Claude workflow tools",

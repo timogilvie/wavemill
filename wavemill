@@ -89,7 +89,7 @@ ${GREEN}Configuration:${NC}
 
 ${GREEN}Learn more:${NC}
   README: $SCRIPT_DIR/README.md
-  Docs:   https://github.com/your-org/claude-tools
+  Docs:   https://github.com/your-org/wavemill
 
 EOF
 }

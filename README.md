@@ -19,7 +19,7 @@ This repo also includes traditional LLM workflow helpers for Claude and Codex: b
 ### Install Wavemill CLI
 
 ```bash
-git clone <this repo> && cd claude-tools
+git clone <this repo> && cd wavemill
 ./install.sh
 ```
 
@@ -36,7 +36,7 @@ export LINEAR_API_KEY="your-key-here"
 # Add to ~/.zshrc or ~/.bashrc for persistence
 ```
 
-2. **Create `.hokusai-config.json` in your repo:**
+2. **Create `.wavemill-config.json` in your repo:**
 ```json
 {
   "linear": {
@@ -108,7 +108,7 @@ Canonical sources live in this repo (`commands/`, `codex/prompts/`, legacy `code
 Fully autonomous task execution system that continuously processes your Linear backlog.
 
 **What it does:**
-1. Fetches prioritized tasks from Linear backlog (auto-detects project from `.hokusai-config.json`)
+1. Fetches prioritized tasks from Linear backlog (auto-detects project from `.wavemill-config.json`)
 2. Ranks tasks using intelligent priority scoring (considers: Linear priority, task packet completeness, foundational work, dependencies, estimates)
 3. Auto-expands issues without detailed descriptions (using Claude + issue-writer prompt)
 4. Launches parallel agent workers in tmux windows (default: 3 concurrent tasks)
@@ -170,7 +170,7 @@ PROJECT_NAME="My Project" wavemill expand
 ```
 
 **Environment variables:**
-- `PROJECT_NAME` - Linear project name (auto-detected from `.hokusai-config.json`)
+- `PROJECT_NAME` - Linear project name (auto-detected from `.wavemill-config.json`)
 - `MAX_SELECT` - Max issues to select (default: 3)
 - `MAX_DISPLAY` - Max issues to display (default: 9)
 
@@ -205,7 +205,7 @@ The `wavemill` CLI is a thin wrapper around these core scripts:
 - **`wavemill-common.sh`** - Shared utilities (DRY)
 
 **Shared functions in wavemill-common.sh:**
-- `detect_project_name()` - Auto-detect Linear project from `.hokusai-config.json`
+- `detect_project_name()` - Auto-detect Linear project from `.wavemill-config.json`
 - `is_task_packet()` - Check if issue has detailed description
 - `score_and_rank_issues()` - Priority scoring algorithm
 - `expand_issue_with_tool()` - Expand issues using expand-issue.ts
@@ -215,7 +215,7 @@ The `wavemill` CLI is a thin wrapper around these core scripts:
 ## Repo Layout
 
 ```
-claude-tools/
+wavemill/
 ├── wavemill                    # Main CLI entry point
 ├── install.sh                  # Installation script
 ├── shared/lib/                 # Core autonomous workflow scripts

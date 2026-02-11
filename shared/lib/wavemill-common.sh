@@ -21,10 +21,7 @@ detect_project_name() {
     project_name="${PROJECT_NAME:-}"
   fi
 
-  # Final fallback
-  if [[ -z "$project_name" ]]; then
-    project_name="Hokusai public website"
-  fi
+  # No fallback — empty means "all projects"
 
   echo "$project_name"
 }

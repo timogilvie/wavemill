@@ -6,12 +6,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 async function main() {
-  const projectName = process.argv[2];
-
-  if (!projectName) {
-    console.error('Usage: npx tsx list-backlog-json.ts "Project Name"');
-    process.exit(1);
-  }
+  const projectName = process.argv[2] || null;
 
   try {
     const backlog = await getBacklog(projectName);

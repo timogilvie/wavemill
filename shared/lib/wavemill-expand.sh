@@ -68,7 +68,11 @@ main() {
   # Detect project name
   PROJECT_NAME=$(detect_project_name "$REPO_DIR")
   log "Repository: $REPO_DIR"
-  log "Project: $PROJECT_NAME"
+  if [[ -n "$PROJECT_NAME" ]]; then
+    log "Project: $PROJECT_NAME"
+  else
+    log "Project: (all projects)"
+  fi
   echo ""
 
   # Fetch backlog
