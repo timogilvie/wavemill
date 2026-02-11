@@ -1,6 +1,24 @@
 #!/opt/homebrew/bin/bash
 set -euo pipefail
 
+# Hokusai Loop - Continuous Task Execution System
+#
+# This script implements a continuous loop that:
+# 1. Fetches prioritized tasks from Linear backlog
+# 2. Launches parallel agent workers in tmux windows
+# 3. Monitors PR creation and merge status
+# 4. Auto-cleans completed tasks
+# 5. Prompts user to select next batch (with 10s auto-continue)
+#
+# Exit conditions:
+#   - Empty backlog (no tasks available)
+#   - User declines to continue at prompt
+#   - Stop signal file exists: touch $STATE_DIR/.stop-loop
+#
+# Manual controls:
+#   - Ctrl+B D: Detach from tmux (loop continues in background)
+#   - touch ~/.hokusai/.stop-loop: Stop loop after current cycle
+#   - Ctrl+C: Interrupt and reset in-progress tasks to Backlog
 
 SESSION="${SESSION:-hokusai-web}"
 REPO_DIR="${REPO_DIR:-$PWD}"
@@ -279,8 +297,11 @@ pick_candidates() {
     # Calculate composite priority score (higher = higher priority)
     | map(. + {
         score: (
-          # Base: Linear priority (1=urgent, 0=none, 4=low)
-          (if .priority > 0 then (5 - .priority) * 20 else 0 end)
+          # Base: Baseline for all items (prevents negative scores)
+          20
+
+          # Linear priority (1=urgent, 0=none, 4=low)
+          + (if .priority > 0 then (5 - .priority) * 20 else 0 end)
 
           # Boost: Has detailed task packet (+30 points)
           + (if .has_detailed_plan then 30 else 0 end)
@@ -291,8 +312,11 @@ pick_candidates() {
           # Boost: Blocks other work (+10 per blocked issue)
           + (.blocks_count * 10)
 
-          # Penalty: Blocked by other work (-15 per blocker)
-          - (.blocked_by_count * 15)
+          # Boost: Unblocked work is ready to go (+15 points)
+          + (if .blocked_by_count == 0 then 15 else 0 end)
+
+          # Penalty: Blocked by other work (-20 per blocker, harder penalty)
+          - (.blocked_by_count * 20)
 
           # Penalty: Large estimates (prefer smaller, deliverable work)
           - ((.estimate // 3) * 2)
@@ -806,9 +830,74 @@ while :; do
   if $all_done; then
     echo ""
     log "🎉 All tasks complete!"
-    log "Run: git -C \"$REPO_DIR\" worktree prune"
+
+    # Prune old worktrees
+    execute git -C "$REPO_DIR" worktree prune
+    log "  ✓ Pruned worktrees"
+
+    # Check for exit signal file
+    if [[ -f "$STATE_DIR/.stop-loop" ]]; then
+      log "Stop signal detected. Exiting loop..."
+      rm -f "$STATE_DIR/.stop-loop"
+      exit 0
+    fi
+
+    # Re-fetch backlog to get latest tasks
     echo ""
-    log "Monitoring stopped. Exiting..."
+    log "Checking for more work..."
+    BACKLOG_JSON=$(npx tsx "$TOOLS_DIR/list-backlog-json.ts" "$PROJECT_NAME" 2>&1 | sed '/^\[dotenv/d' | sed '/^[[:space:]]*$/d')
+
+    if [[ -z "$BACKLOG_JSON" ]] || [[ "$BACKLOG_JSON" == "[]" ]]; then
+      log "Backlog empty. Exiting loop."
+      exit 0
+    fi
+
+    # Get new candidates
+    NEW_CANDIDATES=$(echo "$BACKLOG_JSON" | jq -r --argjson show_limit 9 '
+      map(select((.state.name|ascii_downcase) == "todo" or (.state.name|ascii_downcase) == "backlog"))
+      | map(. + {
+          area: ((.labels.nodes // []) | map(.name) | map(select(test("^(Area|Component|Page|Route):"))) | .[0] // ""),
+          has_detailed_plan: (.description // "" | test("##+ (1\\\\\\\\.|Objective|What|Technical Context|Success Criteria|Implementation)")),
+          is_foundational: ((.labels.nodes // []) | map(.name | ascii_downcase) | any(test("foundational|architecture|epic|infrastructure"))),
+          blocks_count: ((.relations.nodes // []) | map(select(.type == "blocks")) | length),
+          blocked_by_count: ((.relations.nodes // []) | map(select(.type == "blocked")) | length)
+        })
+      | map(. + {
+          score: (20 + (if .priority > 0 then (5 - .priority) * 20 else 0 end) + (if .has_detailed_plan then 30 else 0 end) + (if .is_foundational then 25 else 0 end) + (.blocks_count * 10) + (if .blocked_by_count == 0 then 15 else 0 end) - (.blocked_by_count * 20) - ((.estimate // 3) * 2))
+        })
+      | sort_by(-.score)
+      | .[0:$show_limit]
+      | .[]
+      | "\(.identifier)|\(.title|ascii_downcase|gsub("[^a-z0-9]+";"-"))|\(.title)|\(.area)|\(.score)"
+    ')
+
+    if [[ -z "$NEW_CANDIDATES" ]]; then
+      log "No backlog candidates found. Exiting loop."
+      exit 0
+    fi
+
+    # Show available tasks
+    echo ""
+    log "Available tasks for next cycle:"
+    echo "$NEW_CANDIDATES" | awk -F'|' '{printf "%s. %s - %s (score: %.0f)\n", NR, $1, $3, $5}' | head -9
+    echo ""
+
+    # Prompt with timeout for auto-continue
+    log "Continue to next cycle? [Y/n] (auto-continue in 10s, or 'touch $STATE_DIR/.stop-loop' to stop)"
+    read -t 10 -r REPLY || REPLY="y"
+    echo ""
+
+    if [[ ! $REPLY =~ ^[Yy]?$ ]]; then
+      log "User declined. Exiting loop."
+      exit 0
+    fi
+
+    log "🔄 Starting next cycle..."
+    echo ""
+
+    # Signal the outer script to restart by creating a restart file
+    touch "$STATE_DIR/.restart-loop"
+    log "Restart signal sent. Exiting monitoring..."
     exit 0
   fi
 
@@ -838,6 +927,19 @@ tmux send-keys -t "$SESSION:control.0" "$MONITOR_SCRIPT '$SESSION' '$REPO_DIR' '
 log "Attaching to session: $SESSION"
 log "  Ctrl+B then W to switch windows"
 log "  Ctrl+B then D to detach"
+log "  To stop continuous loop: touch $STATE_DIR/.stop-loop"
 echo ""
 sleep 1
 tmux attach -t "$SESSION"
+
+# After detaching, check if monitoring script signaled a restart
+if [[ -f "$STATE_DIR/.restart-loop" ]]; then
+  rm -f "$STATE_DIR/.restart-loop"
+  log "Restart signal detected - preparing next cycle..."
+  echo ""
+  sleep 2
+  # Re-execute this script to start next cycle
+  exec "$0"
+fi
+
+log "Session ended. Run 'git -C $REPO_DIR worktree prune' if needed."
