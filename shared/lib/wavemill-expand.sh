@@ -13,7 +13,6 @@ set -euo pipefail
 # 7. Auto-labels and updates them in Linear
 
 REPO_DIR="${REPO_DIR:-$PWD}"
-TOOLS_DIR="${TOOLS_DIR:-$HOME/.claude/tools}"
 MAX_SELECT="${MAX_SELECT:-3}"
 MAX_DISPLAY="${MAX_DISPLAY:-9}"
 

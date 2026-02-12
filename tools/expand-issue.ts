@@ -33,12 +33,23 @@ if (!process.env.LINEAR_API_KEY) {
   process.exit(1);
 }
 
+// Validate that output looks like a structured task packet, not conversational text
+function isValidTaskPacket(text: string): boolean {
+  // Must contain at least one of the expected section headers
+  return /##\s*(1\.|Objective|What|Technical Context|Success Criteria|Implementation)/i.test(text);
+}
+
 // Claude CLI helper - uses your local Claude subscription
 async function expandWithClaude(prompt: string, issueContext: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const fullPrompt = `${prompt}\n\n---\n\n${issueContext}`;
 
-    const claude = spawn(CLAUDE_CMD, ['--print'], {
+    const claude = spawn(CLAUDE_CMD, [
+      '--print',
+      '--tools', '',
+      '--append-system-prompt',
+      'Your ENTIRE response must be the task packet markdown. Do not include conversational text, preamble, apologies, or questions. Output ONLY the markdown document.',
+    ], {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
@@ -214,6 +225,14 @@ Environment Variables:
       console.log('Expanded Description:\n');
       console.log(expandedDescription);
       console.log('\n');
+    }
+
+    // Validate output before updating Linear
+    if (!isValidTaskPacket(expandedDescription)) {
+      console.error('✗ Claude output is not a valid task packet (missing expected section headers).');
+      console.error('  First 200 chars:', expandedDescription.substring(0, 200));
+      console.error('  Skipping Linear update to avoid overwriting with bad content.');
+      process.exit(1);
     }
 
     // Update Linear if requested

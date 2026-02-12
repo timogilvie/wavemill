@@ -23,7 +23,6 @@ set -euo pipefail
 SESSION="${SESSION:-wavemill}"
 REPO_DIR="${REPO_DIR:-$PWD}"
 WORKTREE_ROOT="${WORKTREE_ROOT:-$REPO_DIR/../worktrees}"
-TOOLS_DIR="${TOOLS_DIR:-$HOME/.claude/tools}"
 AGENT_CMD="${AGENT_CMD:-claude}"
 MAX_PARALLEL="${MAX_PARALLEL:-3}"
 POLL_SECONDS="${POLL_SECONDS:-10}"

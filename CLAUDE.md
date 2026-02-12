@@ -13,7 +13,7 @@ This repository provides shared tooling for both Claude and Codex AI workflows:
 - **`tools/prompts/`** - Shared prompt templates for PRDs, tasks, bug investigations, and issue expansion
 
 ### Key Principles
-1. **Single Source of Truth**: `shared/lib/` contains all API logic to prevent drift
+1. **Single Source of Truth**: This repo is canonical. `shared/lib/` contains all API logic; `tools/` contains all CLI tools. `wavemill` runs tools directly from the repo — never from `~/.claude/tools/`.
 2. **Config Schema**: Both `claude/config.json` and `codex/config.json` follow `config.schema.json`
 3. **Shared Templates**: `tools/prompts/` templates are consumed by both toolchains
 4. **State Separation**: Claude uses `features/`, `bugs/`, `epics/`; Codex uses `.codex/state/`
@@ -23,7 +23,7 @@ This repository provides shared tooling for both Claude and Codex AI workflows:
 ### Linear Backlog Tool
 To fetch the Linear backlog:
 ```bash
-npx tsx ~/.claude/tools/get-backlog.ts "Project Name"
+npx tsx tools/get-backlog.ts "Project Name"
 ```
 
 ### Workflow Commands
@@ -37,15 +37,20 @@ Available in `~/.claude/commands/`:
 
 ## Syncing with ~/.claude
 
-The `~/.claude/` directory is your personal workspace. To keep this repo in sync:
+This repo is the source of truth. `~/.claude/` is a consumer that can optionally sync from the repo for use by Claude commands outside of wavemill.
 
 ```bash
-# Copy updated shared helpers to repo
-cp -v ~/.claude/tools/*.ts tools/
+# Sync repo → ~/.claude (after making changes in the repo)
+./sync-claude.sh to-claude
 
-# Commands are symlinked (see below)
-ln -s ~/.claude/commands commands/
+# Sync ~/.claude → repo (if you edited tools directly in ~/.claude)
+./sync-claude.sh from-claude
 
-# Templates should be canonical in tools/prompts/
-rsync -av tools/prompts/ ~/.claude/tools/prompts/
+# Check sync status
+./sync-claude.sh status
+
+# Set up symlinks for commands
+./sync-claude.sh links
 ```
+
+`wavemill` will warn on startup if `~/.claude/tools/` has drifted from the repo.

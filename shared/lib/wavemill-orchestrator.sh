@@ -15,7 +15,7 @@ REPO_DIR="${REPO_DIR:-$PWD}"
 AGENT_CMD="${AGENT_CMD:-claude}"   # or "codex"
 WORKTREE_ROOT="${WORKTREE_ROOT:-$REPO_DIR/../worktrees}"
 BASE_BRANCH="${BASE_BRANCH:-$(cd "$REPO_DIR" && git symbolic-ref --short HEAD)}"
-LINEAR_TOOL="${LINEAR_TOOL:-$HOME/.claude/tools/linear-api.ts}"
+LINEAR_TOOL="${LINEAR_TOOL:-${TOOLS_DIR:?TOOLS_DIR must be set}/linear-api.ts}"
 
 
 # Validate agent command exists

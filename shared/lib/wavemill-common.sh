@@ -138,7 +138,7 @@ expand_issue_with_tool() {
   local issue_id="$1"
   local out_file="$2"
   local update_flag="${3:-}"
-  local tools_dir="${TOOLS_DIR:-$HOME/.claude/tools}"
+  local tools_dir="${TOOLS_DIR:?TOOLS_DIR must be set}"
 
   if [[ ! -f "$tools_dir/expand-issue.ts" ]]; then
     return 1
@@ -174,7 +174,7 @@ expand_issue_with_tool() {
 write_task_packet() {
   local issue_id="$1"
   local out_file="$2"
-  local tools_dir="${TOOLS_DIR:-$HOME/.claude/tools}"
+  local tools_dir="${TOOLS_DIR:?TOOLS_DIR must be set}"
 
   # Fetch current description
   local issue_json=$(npx tsx "$tools_dir/get-issue-json.ts" "$issue_id" 2>/dev/null || echo "{}")
