@@ -13,12 +13,11 @@ set -euo pipefail
 # 7. Auto-labels and updates them in Linear
 
 REPO_DIR="${REPO_DIR:-$PWD}"
-MAX_SELECT="${MAX_SELECT:-3}"
-MAX_DISPLAY="${MAX_DISPLAY:-9}"
 
-# Source common library
+# Source common library and load layered config
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/wavemill-common.sh"
+load_config "$REPO_DIR"
 
 # Validate dependencies
 command -v jq >/dev/null || { echo "Error: jq required (install: brew install jq)"; exit 1; }
@@ -53,8 +52,6 @@ main() {
   log "Issue Expander - Batch expand Linear issues"
   echo ""
 
-  # Detect project name
-  PROJECT_NAME=$(detect_project_name "$REPO_DIR")
   log "Repository: $REPO_DIR"
   if [[ -n "$PROJECT_NAME" ]]; then
     log "Project: $PROJECT_NAME"

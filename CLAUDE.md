@@ -14,7 +14,7 @@ This repository provides shared tooling for both Claude and Codex AI workflows:
 
 ### Key Principles
 1. **Single Source of Truth**: This repo is canonical. `shared/lib/` contains all API logic; `tools/` contains all CLI tools. `wavemill` runs tools directly from the repo — never from `~/.claude/tools/`.
-2. **Config Schema**: Both `claude/config.json` and `codex/config.json` follow `config.schema.json`
+2. **Config Schema**: Both `claude/config.json` and `codex/config.json` follow `claude/config.schema.json`; wavemill runtime config follows `wavemill-config.schema.json`
 3. **Shared Templates**: `tools/prompts/` templates are consumed by both toolchains
 4. **State Separation**: Claude uses `features/`, `bugs/`, `epics/`; Codex uses `.codex/state/`
 

@@ -36,32 +36,39 @@ export LINEAR_API_KEY="your-key-here"
 # Add to ~/.zshrc or ~/.bashrc for persistence
 ```
 
-2. **Create `.wavemill-config.json` in your repo:**
-```json
-{
-  "linear": {
-    "project": "Your Project Name"
-  }
-}
+2. **Initialize config in your repo:**
+```bash
+cd ~/your-repo
+wavemill init
+# Edit .wavemill-config.json — set linear.project and adjust any defaults
 ```
 
 ### Run Wavemill
 
 ```bash
 # Start continuous autonomous loop
-cd ~/your-repo
 wavemill mill
 
 # Or expand issues interactively
 wavemill expand
 ```
 
+### Configuration
+
+Settings are loaded in layers (later wins):
+1. Hardcoded defaults
+2. `~/.wavemill/config.json` (user-level, shared across repos)
+3. `.wavemill-config.json` (per-repo, in project root)
+4. Environment variables (always override)
+
+See `wavemill-config.schema.json` for the full schema.
+
 ## Claude/Codex Commands Setup (Optional)
 
 For traditional slash commands in Claude/Codex:
 
 1) Configure:
-- Edit `claude/config.json` and `codex/config.json` to match your team/project (both follow `config.schema.json`).
+- Edit `claude/config.json` and `codex/config.json` to match your team/project (both follow `claude/config.schema.json`).
 - Export `LINEAR_API_KEY` and optionally `GITHUB_TOKEN`/`gh auth login`.
 
 2) Sync commands into the assistants:

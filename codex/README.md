@@ -18,7 +18,7 @@ State is stored in `.codex/state/<feature>.json` to allow context handoff across
 
 ## Config
 
-`codex/config.json` follows `config.schema.json` in the repo root. Override with `CODEX_CONFIG_PATH` if needed. The config keeps Linear project names, git prefixes, and test commands in sync with the Claude stack while allowing separate runtime files.
+`codex/config.json` follows `claude/config.schema.json`. Override with `CODEX_CONFIG_PATH` if needed. The config keeps Linear project names, git prefixes, and test commands in sync with the Claude stack while allowing separate runtime files.
 
 ## Syncing prompts into Codex
 

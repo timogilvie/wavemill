@@ -10,10 +10,17 @@ command -v jq >/dev/null || { echo "Error: jq is required but not installed"; ex
 command -v watch >/dev/null || { echo "Error: watch is required (install: brew install watch)"; exit 1; }
 
 
-SESSION="${1:-wavemill}"
 REPO_DIR="${REPO_DIR:-$PWD}"
-AGENT_CMD="${AGENT_CMD:-claude}"   # or "codex"
-WORKTREE_ROOT="${WORKTREE_ROOT:-$REPO_DIR/../worktrees}"
+
+# Load config if not already loaded by parent (wavemill-mill.sh)
+if [[ -z "${_WAVEMILL_CONFIG_LOADED:-}" ]]; then
+  _ORCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  source "$_ORCH_DIR/wavemill-common.sh"
+  load_config "$REPO_DIR"
+fi
+
+# Positional arg overrides config for session name
+SESSION="${1:-$SESSION}"
 BASE_BRANCH="${BASE_BRANCH:-$(cd "$REPO_DIR" && git symbolic-ref --short HEAD)}"
 LINEAR_TOOL="${LINEAR_TOOL:-${TOOLS_DIR:?TOOLS_DIR must be set}/linear-api.ts}"
 

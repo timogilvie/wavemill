@@ -1,0 +1,91 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Wavemill configuration",
+  "description": "Per-repo (.wavemill-config.json) or user-level (~/.wavemill/config.json) config. All fields are optional; env vars override everything.",
+  "type": "object",
+  "properties": {
+    "linear": {
+      "type": "object",
+      "properties": {
+        "project": {
+          "type": "string",
+          "description": "Linear project name for backlog queries. Empty string means all projects."
+        }
+      }
+    },
+    "mill": {
+      "type": "object",
+      "description": "Settings for the 'wavemill mill' command.",
+      "properties": {
+        "session": {
+          "type": "string",
+          "default": "wavemill",
+          "description": "Tmux session name."
+        },
+        "maxParallel": {
+          "type": "integer",
+          "default": 3,
+          "minimum": 1,
+          "description": "Number of parallel agent workers."
+        },
+        "pollSeconds": {
+          "type": "integer",
+          "default": 10,
+          "minimum": 1,
+          "description": "Seconds between PR status checks."
+        },
+        "baseBranch": {
+          "type": "string",
+          "default": "main",
+          "description": "Base branch for worktrees and PR targets."
+        },
+        "worktreeRoot": {
+          "type": "string",
+          "default": "../worktrees",
+          "description": "Directory for git worktrees. Relative paths resolve against the repo root."
+        },
+        "agentCmd": {
+          "type": "string",
+          "default": "claude",
+          "description": "Agent CLI to use (e.g. 'claude', 'codex')."
+        },
+        "requireConfirm": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to prompt for confirmation before launching tasks."
+        },
+        "maxRetries": {
+          "type": "integer",
+          "default": 3,
+          "minimum": 1,
+          "description": "Max retry attempts for failed API calls."
+        },
+        "retryDelay": {
+          "type": "integer",
+          "default": 2,
+          "minimum": 1,
+          "description": "Initial retry delay in seconds (doubles on each retry)."
+        }
+      }
+    },
+    "expand": {
+      "type": "object",
+      "description": "Settings for the 'wavemill expand' command.",
+      "properties": {
+        "maxSelect": {
+          "type": "integer",
+          "default": 3,
+          "minimum": 1,
+          "description": "Maximum issues that can be selected for expansion."
+        },
+        "maxDisplay": {
+          "type": "integer",
+          "default": 9,
+          "minimum": 1,
+          "description": "Maximum candidate issues shown in the selection list."
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

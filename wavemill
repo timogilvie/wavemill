@@ -64,54 +64,50 @@ ${GREEN}Commands:${NC}
              - Expands with Claude + auto-labels
              - Updates Linear with detailed task packets
 
+  ${CYAN}init${NC}      Generate a template .wavemill-config.json in the current directory
+
   ${CYAN}version${NC}   Show version information
   ${CYAN}help${NC}      Show this help message
 
 ${GREEN}Examples:${NC}
+  # Initialize config in your repo
+  wavemill init
+
   # Start continuous loop (default: 3 parallel tasks)
   wavemill mill
 
-  # Start loop with custom parallelism
+  # Override a config value with an env var
   MAX_PARALLEL=5 wavemill mill
 
   # Expand issues interactively
   wavemill expand
 
-  # Expand issues for specific project
-  PROJECT_NAME="My Project" wavemill expand
-
-${GREEN}Environment Variables:${NC}
-  ${YELLOW}Mill command:${NC}
-    MAX_PARALLEL      Number of parallel tasks (default: 3)
-    SESSION           Tmux session name (default: wavemill)
-    AGENT_CMD         Agent to use (default: claude, can be: codex)
-    WORKTREE_ROOT     Worktree location (default: ../worktrees)
-    BASE_BRANCH       Base branch (default: main)
-    POLL_SECONDS      PR polling interval (default: 10)
-    DRY_RUN           Dry run mode (default: false)
-    REQUIRE_CONFIRM   Require confirmations (default: true)
-
-  ${YELLOW}Expand command:${NC}
-    PROJECT_NAME      Linear project name (auto-detected from .wavemill-config.json)
-    MAX_SELECT        Max issues to select (default: 3)
-    MAX_DISPLAY       Max issues to display (default: 9)
-
-  ${YELLOW}Both commands:${NC}
-    LINEAR_API_KEY    Required: Linear API token
-    TOOLS_DIR         Tools directory (default: <repo>/tools)
-    REPO_DIR          Repository directory (default: \$PWD)
-
 ${GREEN}Configuration:${NC}
-  Create ${CYAN}.wavemill-config.json${NC} in your repo root:
-  {
-    "linear": {
-      "project": "Your Project Name"
-    }
-  }
+  Settings are loaded in this order (later wins):
+    1. Hardcoded defaults
+    2. ${CYAN}~/.wavemill/config.json${NC}    (user-level, shared across repos)
+    3. ${CYAN}.wavemill-config.json${NC}      (per-repo, in project root)
+    4. Environment variables          (always override)
+
+  Run ${CYAN}wavemill init${NC} to generate a template config file.
+  See ${CYAN}wavemill-config.schema.json${NC} for full schema documentation.
+
+${GREEN}Environment Variable Overrides:${NC}
+  All config file settings can be overridden with env vars:
+    LINEAR_API_KEY    Required: Linear API token (not in config - use .env)
+    DRY_RUN           Dry run mode (env-only, default: false)
+    MAX_PARALLEL      Number of parallel tasks
+    SESSION           Tmux session name
+    AGENT_CMD         Agent to use (claude, codex)
+    WORKTREE_ROOT     Worktree location
+    BASE_BRANCH       Base branch
+    POLL_SECONDS      PR polling interval
+    REQUIRE_CONFIRM   Require confirmations
+    MAX_SELECT        Max issues to select for expansion
+    MAX_DISPLAY       Max issues to display
 
 ${GREEN}Learn more:${NC}
   README: $SCRIPT_DIR/README.md
-  Docs:   https://github.com/your-org/wavemill
 
 EOF
 }
@@ -135,6 +131,44 @@ run_mill() {
 
   echo -e "${CYAN}Starting Wavemill Mill...${NC}"
   exec "$mill_script" "$@"
+}
+
+run_init() {
+  local target=".wavemill-config.json"
+
+  if [[ -f "$target" ]]; then
+    echo -e "${YELLOW}Warning:${NC} $target already exists"
+    read -p "Overwrite? [y/N] " -n 1 -r
+    echo
+    [[ $REPLY =~ ^[Yy]$ ]] || exit 0
+  fi
+
+  cat > "$target" <<'INIT_EOF'
+{
+  "linear": {
+    "project": ""
+  },
+  "mill": {
+    "session": "wavemill",
+    "maxParallel": 3,
+    "pollSeconds": 10,
+    "baseBranch": "main",
+    "worktreeRoot": "../worktrees",
+    "agentCmd": "claude",
+    "requireConfirm": true,
+    "maxRetries": 3,
+    "retryDelay": 2
+  },
+  "expand": {
+    "maxSelect": 3,
+    "maxDisplay": 9
+  }
+}
+INIT_EOF
+
+  echo -e "${GREEN}Created${NC} $target"
+  echo -e "Edit ${CYAN}linear.project${NC} to set your Linear project name."
+  echo -e "All values shown are defaults - remove any you don't need to override."
 }
 
 run_expand() {
@@ -164,6 +198,10 @@ case "${1:-}" in
     check_claude_sync
     shift
     run_expand "$@"
+    ;;
+  init)
+    shift
+    run_init "$@"
     ;;
   version|--version|-v)
     show_version

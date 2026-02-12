@@ -20,30 +20,18 @@ set -euo pipefail
 #   - touch ~/.wavemill/.stop-loop: Stop loop after current cycle
 #   - Ctrl+C: Interrupt and reset in-progress tasks to Backlog
 
-SESSION="${SESSION:-wavemill}"
 REPO_DIR="${REPO_DIR:-$PWD}"
-WORKTREE_ROOT="${WORKTREE_ROOT:-$REPO_DIR/../worktrees}"
-AGENT_CMD="${AGENT_CMD:-claude}"
-MAX_PARALLEL="${MAX_PARALLEL:-3}"
-POLL_SECONDS="${POLL_SECONDS:-10}"
 
-# Source common library for shared functions
+# Source common library and load layered config
+# Resolution: env vars > .wavemill-config.json > ~/.wavemill/config.json > defaults
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/wavemill-common.sh"
+load_config "$REPO_DIR"
 
-# Auto-detect project name using shared function
-PROJECT_NAME=$(detect_project_name "$REPO_DIR")
-
-BASE_BRANCH="${BASE_BRANCH:-main}"
-
-
-# Safety and robustness flags
+# Derived variables (not in config files)
 DRY_RUN="${DRY_RUN:-false}"
-REQUIRE_CONFIRM="${REQUIRE_CONFIRM:-true}"
 STATE_DIR="${STATE_DIR:-$REPO_DIR/.wavemill}"
 STATE_FILE="$STATE_DIR/workflow-state.json"
-MAX_RETRIES="${MAX_RETRIES:-3}"
-RETRY_DELAY="${RETRY_DELAY:-2}"
 
 
 command -v jq >/dev/null || { echo "Error: jq required (install: brew install jq)"; exit 1; }

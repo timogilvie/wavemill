@@ -1,28 +1,144 @@
 #!/opt/homebrew/bin/bash
 # Wavemill Common Library
-# Shared functions used across wavemill-mill.sh and issue-expander.sh
+# Shared functions used across wavemill-mill.sh and wavemill-expand.sh
 
 # ============================================================================
-# PROJECT NAME DETECTION
+# LAYERED CONFIGURATION LOADING
 # ============================================================================
 
-# Auto-detect project name from repo-specific config or environment
+# Hardcoded defaults (ultimate fallbacks)
+_WAVEMILL_DEFAULTS='{
+  "linear": { "project": "" },
+  "mill": {
+    "session": "wavemill",
+    "maxParallel": 3,
+    "pollSeconds": 10,
+    "baseBranch": "main",
+    "worktreeRoot": "../worktrees",
+    "agentCmd": "claude",
+    "requireConfirm": true,
+    "maxRetries": 3,
+    "retryDelay": 2
+  },
+  "expand": {
+    "maxSelect": 3,
+    "maxDisplay": 9
+  }
+}'
+
+# Load layered config: defaults < ~/.wavemill/config.json < .wavemill-config.json < env vars
+#
+# Resolution order (later wins):
+#   1. Hardcoded defaults (_WAVEMILL_DEFAULTS)
+#   2. User-level config (~/.wavemill/config.json)
+#   3. Per-repo config (.wavemill-config.json)
+#   4. Environment variables (always win)
+#
+# Sets: SESSION, MAX_PARALLEL, POLL_SECONDS, BASE_BRANCH, WORKTREE_ROOT,
+#        AGENT_CMD, REQUIRE_CONFIRM, MAX_RETRIES, RETRY_DELAY,
+#        PROJECT_NAME, MAX_SELECT, MAX_DISPLAY
+#
+# Args: $1 = repo directory (default: $PWD)
+load_config() {
+  local repo_dir="${1:-$PWD}"
+  local user_config="$HOME/.wavemill/config.json"
+  local repo_config="$repo_dir/.wavemill-config.json"
+
+  # Read config files (empty object if missing)
+  local user_json='{}'
+  local repo_json='{}'
+  if [[ -f "$user_config" ]]; then
+    user_json=$(cat "$user_config") || user_json='{}'
+  fi
+  if [[ -f "$repo_config" ]]; then
+    repo_json=$(cat "$repo_config") || repo_json='{}'
+  fi
+
+  # Single jq call: deep-merge all layers, emit shell-safe variable assignments
+  local shell_vars
+  shell_vars=$(jq -n -r \
+    --argjson defaults "$_WAVEMILL_DEFAULTS" \
+    --argjson user "$user_json" \
+    --argjson repo "$repo_json" \
+    '
+    ($defaults * $user * $repo) as $c |
+    [
+      "_CFG_PROJECT=\($c.linear.project // "" | @sh)",
+      "_CFG_SESSION=\($c.mill.session | @sh)",
+      "_CFG_MAX_PARALLEL=\($c.mill.maxParallel)",
+      "_CFG_POLL_SECONDS=\($c.mill.pollSeconds)",
+      "_CFG_BASE_BRANCH=\($c.mill.baseBranch | @sh)",
+      "_CFG_WORKTREE_ROOT=\($c.mill.worktreeRoot | @sh)",
+      "_CFG_AGENT_CMD=\($c.mill.agentCmd | @sh)",
+      "_CFG_REQUIRE_CONFIRM=\($c.mill.requireConfirm)",
+      "_CFG_MAX_RETRIES=\($c.mill.maxRetries)",
+      "_CFG_RETRY_DELAY=\($c.mill.retryDelay)",
+      "_CFG_MAX_SELECT=\($c.expand.maxSelect)",
+      "_CFG_MAX_DISPLAY=\($c.expand.maxDisplay)"
+    ] | .[]
+    '
+  ) || {
+    echo "Error: Failed to parse config files. Check JSON syntax in:" >&2
+    [[ -f "$user_config" ]] && echo "  $user_config" >&2
+    [[ -f "$repo_config" ]] && echo "  $repo_config" >&2
+    exit 1
+  }
+
+  eval "$shell_vars"
+
+  # Apply env var overrides (env > repo config > user config > defaults)
+  PROJECT_NAME="${PROJECT_NAME:-$_CFG_PROJECT}"
+  SESSION="${SESSION:-$_CFG_SESSION}"
+  MAX_PARALLEL="${MAX_PARALLEL:-$_CFG_MAX_PARALLEL}"
+  POLL_SECONDS="${POLL_SECONDS:-$_CFG_POLL_SECONDS}"
+  BASE_BRANCH="${BASE_BRANCH:-$_CFG_BASE_BRANCH}"
+  AGENT_CMD="${AGENT_CMD:-$_CFG_AGENT_CMD}"
+  REQUIRE_CONFIRM="${REQUIRE_CONFIRM:-$_CFG_REQUIRE_CONFIRM}"
+  MAX_RETRIES="${MAX_RETRIES:-$_CFG_MAX_RETRIES}"
+  RETRY_DELAY="${RETRY_DELAY:-$_CFG_RETRY_DELAY}"
+  MAX_SELECT="${MAX_SELECT:-$_CFG_MAX_SELECT}"
+  MAX_DISPLAY="${MAX_DISPLAY:-$_CFG_MAX_DISPLAY}"
+
+  # WORKTREE_ROOT: resolve relative paths against repo_dir
+  local wt_raw="${WORKTREE_ROOT:-$_CFG_WORKTREE_ROOT}"
+  if [[ "$wt_raw" != /* ]]; then
+    WORKTREE_ROOT="$repo_dir/$wt_raw"
+  else
+    WORKTREE_ROOT="$wt_raw"
+  fi
+
+  # Export for child processes (orchestrator, monitor, agents)
+  export SESSION MAX_PARALLEL POLL_SECONDS BASE_BRANCH WORKTREE_ROOT
+  export AGENT_CMD REQUIRE_CONFIRM MAX_RETRIES RETRY_DELAY
+  export PROJECT_NAME MAX_SELECT MAX_DISPLAY
+
+  # Clean up temp variables
+  unset _CFG_PROJECT _CFG_SESSION _CFG_MAX_PARALLEL _CFG_POLL_SECONDS
+  unset _CFG_BASE_BRANCH _CFG_WORKTREE_ROOT _CFG_AGENT_CMD _CFG_REQUIRE_CONFIRM
+  unset _CFG_MAX_RETRIES _CFG_RETRY_DELAY _CFG_MAX_SELECT _CFG_MAX_DISPLAY
+
+  # Sentinel so downstream scripts can skip re-loading
+  _WAVEMILL_CONFIG_LOADED=1
+}
+
+# Backwards-compatible wrapper for callers that haven't migrated to load_config()
 detect_project_name() {
   local repo_dir="${1:-$PWD}"
-  local project_name=""
 
-  # Try repo-specific config first
+  # If load_config() already ran, PROJECT_NAME is set
+  if [[ -n "${PROJECT_NAME:-}" ]]; then
+    echo "$PROJECT_NAME"
+    return
+  fi
+
+  # Legacy fallback
+  local project_name=""
   if [[ -f "$repo_dir/.wavemill-config.json" ]]; then
     project_name=$(jq -r '.linear.project // empty' "$repo_dir/.wavemill-config.json" 2>/dev/null)
   fi
-
-  # Fallback to environment variable
   if [[ -z "$project_name" ]]; then
     project_name="${PROJECT_NAME:-}"
   fi
-
-  # No fallback — empty means "all projects"
-
   echo "$project_name"
 }
 
@@ -176,8 +292,8 @@ write_task_packet() {
   local out_file="$2"
   local tools_dir="${TOOLS_DIR:?TOOLS_DIR must be set}"
 
-  # Fetch current description
-  local issue_json=$(npx tsx "$tools_dir/get-issue-json.ts" "$issue_id" 2>/dev/null || echo "{}")
+  # Fetch current description (strip dotenv stdout noise before parsing JSON)
+  local issue_json=$(npx tsx "$tools_dir/get-issue-json.ts" "$issue_id" 2>/dev/null | sed '/^\[dotenv/d' || echo "{}")
   local current_desc=$(echo "$issue_json" | jq -r '.description // ""')
 
   # Check if already a task packet
