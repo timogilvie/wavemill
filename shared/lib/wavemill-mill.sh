@@ -551,6 +551,23 @@ git -C "$REPO_DIR" fetch origin "$BASE_BRANCH"
 WAVEMILL_STATE_FILE="$STATE_FILE" ORCHESTRATOR_NO_ATTACH=1 "$ORCHESTRATOR" "$SESSION" "${LAUNCH_ARGS[@]}"
 
 
+# Write monitor env file (avoids long command lines in tmux pane)
+MONITOR_ENV="/tmp/${SESSION}-monitor.env"
+cat > "$MONITOR_ENV" <<ENVEOF
+SESSION='$SESSION'
+REPO_DIR='$REPO_DIR'
+WORKTREE_ROOT='$WORKTREE_ROOT'
+TOOLS_DIR='$TOOLS_DIR'
+STATE_DIR='$STATE_DIR'
+STATE_FILE='$STATE_FILE'
+POLL_SECONDS='$POLL_SECONDS'
+REQUIRE_CONFIRM='$REQUIRE_CONFIRM'
+DRY_RUN='$DRY_RUN'
+BASE_BRANCH='$BASE_BRANCH'
+PROJECT_NAME='$PROJECT_NAME'
+ENVEOF
+
+
 # Create monitoring script that will run in tmux
 MONITOR_SCRIPT="/tmp/${SESSION}-monitor.sh"
 cat > "$MONITOR_SCRIPT" <<'MONITOR_EOF'
@@ -558,19 +575,8 @@ cat > "$MONITOR_SCRIPT" <<'MONITOR_EOF'
 set -euo pipefail
 
 
-# Import environment from parent
-SESSION="$1"
-REPO_DIR="$2"
-WORKTREE_ROOT="$3"
-TOOLS_DIR="$4"
-STATE_DIR="$5"
-STATE_FILE="$6"
-POLL_SECONDS="$7"
-REQUIRE_CONFIRM="$8"
-DRY_RUN="$9"
-BASE_BRANCH="${10}"
-TASKS_FILE="${11}"
-PROJECT_NAME="${12}"
+# Import environment from env file
+source "$1"
 
 
 # Logging
@@ -849,13 +855,13 @@ chmod +x "$MONITOR_SCRIPT"
 log "Starting monitoring in tmux control window..."
 
 
-# Write tasks to temp file to avoid quoting issues with tmux send-keys
+# Write tasks to temp file and add to env
 TASKS_FILE="/tmp/${SESSION}-tasks.txt"
 printf '%s\n' "${TASKS[@]}" > "$TASKS_FILE"
+echo "TASKS_FILE='$TASKS_FILE'" >> "$MONITOR_ENV"
 
 
-tmux send-keys -t "$SESSION:control.0" "clear" C-m
-tmux send-keys -t "$SESSION:control.0" "$MONITOR_SCRIPT '$SESSION' '$REPO_DIR' '$WORKTREE_ROOT' '$TOOLS_DIR' '$STATE_DIR' '$STATE_FILE' '$POLL_SECONDS' '$REQUIRE_CONFIRM' '$DRY_RUN' '$BASE_BRANCH' '$TASKS_FILE' '$PROJECT_NAME'" C-m
+tmux send-keys -t "$SESSION:control.0" "clear && '$MONITOR_SCRIPT' '$MONITOR_ENV'" C-m
 
 
 # Now attach to the session
