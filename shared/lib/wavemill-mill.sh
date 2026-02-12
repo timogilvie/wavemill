@@ -411,27 +411,61 @@ fi
 log "Next available migration number: $NEXT_MIGRATION_NUM"
 
 
+# ── Phase 1: Fetch issue details in parallel ──────────────────────────────
+log "Fetching issue details..."
 for t in "${TASKS[@]}"; do
   IFS='|' read -r ISSUE SLUG TITLE <<<"$t"
-  log "  Checking $ISSUE..."
+  (
+    json=$(linear_get_issue "$ISSUE" 2>/dev/null || echo "{}")
+    echo "$json" > "/tmp/${SESSION}-${ISSUE}-issue.json"
+  ) &
+done
+wait
+log "  ✓ All issues fetched"
+
+
+# ── Phase 2: Expand task packets in parallel ──────────────────────────────
+EXPAND_PIDS=()
+EXPAND_ISSUES=()
+
+for t in "${TASKS[@]}"; do
+  IFS='|' read -r ISSUE SLUG TITLE <<<"$t"
   PACKET_FILE="/tmp/${SESSION}-${ISSUE}-taskpacket.md"
-
-
-  # Fetch current description and check if expansion is needed
-  issue_json=$(linear_get_issue "$ISSUE" 2>/dev/null || echo "{}")
+  issue_json=$(cat "/tmp/${SESSION}-${ISSUE}-issue.json" 2>/dev/null || echo "{}")
   current_desc=$(echo "$issue_json" | jq -r '.description // ""')
 
-
   if is_task_packet "$current_desc"; then
-    log "  ✓ Has detailed task packet (skipping expansion)"
+    log "  ✓ $ISSUE has task packet"
     echo "$current_desc" > "$PACKET_FILE"
   else
-    log "  ⚠ Simple description detected - expanding..."
+    log "  ⚠ $ISSUE needs expansion - launching..."
     EXPANSION_NEEDED=true
-    # Call write_task_packet to expand and auto-label
-    write_task_packet "$ISSUE" "$PACKET_FILE"
+    (
+      write_task_packet "$ISSUE" "$PACKET_FILE"
+    ) > "/tmp/${SESSION}-${ISSUE}-expand.log" 2>&1 &
+    EXPAND_PIDS+=("$!")
+    EXPAND_ISSUES+=("$ISSUE")
   fi
+done
 
+if (( ${#EXPAND_PIDS[@]} > 0 )); then
+  log "Expanding ${#EXPAND_PIDS[@]} issue(s) in parallel..."
+  for i in "${!EXPAND_PIDS[@]}"; do
+    if wait "${EXPAND_PIDS[$i]}"; then
+      log "  ✓ ${EXPAND_ISSUES[$i]} expanded"
+    else
+      log_warn "  ✗ ${EXPAND_ISSUES[$i]} expansion failed (see /tmp/${SESSION}-${EXPAND_ISSUES[$i]}-expand.log)"
+    fi
+  done
+fi
+
+
+# ── Phase 3: Migration detection + state saving ──────────────────────────
+for t in "${TASKS[@]}"; do
+  IFS='|' read -r ISSUE SLUG TITLE <<<"$t"
+  PACKET_FILE="/tmp/${SESSION}-${ISSUE}-taskpacket.md"
+  issue_json=$(cat "/tmp/${SESSION}-${ISSUE}-issue.json" 2>/dev/null || echo "{}")
+  current_desc=$(echo "$issue_json" | jq -r '.description // ""')
 
   # Check if task involves database migration (label-based detection preferred, keyword fallback)
   has_migration_label=$(echo "$issue_json" | jq -r '.labels.nodes[]? | select(.name | ascii_downcase | test("migration|database|schema|alembic")) | .name' | head -1)
@@ -457,13 +491,11 @@ for t in "${TASKS[@]}"; do
     NEXT_MIGRATION_NUM=$((NEXT_MIGRATION_NUM + 1))
   fi
 
-
   # Don't set state yet - wait until user confirms
   # Save to state ledger (for tracking)
   BRANCH="task/${SLUG}"
   WT_DIR="${WORKTREE_ROOT}/${SLUG}"
   save_task_state "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR"
-
 
   log "  ✓ $ISSUE ready"
   LAUNCH_ARGS+=("$t")
@@ -515,7 +547,8 @@ log "Fetching latest $BASE_BRANCH from remote..."
 git -C "$REPO_DIR" fetch origin "$BASE_BRANCH"
 
 # Call the launcher script (don't attach yet)
-ORCHESTRATOR_NO_ATTACH=1 "$ORCHESTRATOR" "$SESSION" "${LAUNCH_ARGS[@]}"
+# Pass state file so the dashboard can show richer info
+WAVEMILL_STATE_FILE="$STATE_FILE" ORCHESTRATOR_NO_ATTACH=1 "$ORCHESTRATOR" "$SESSION" "${LAUNCH_ARGS[@]}"
 
 
 # Create monitoring script that will run in tmux
