@@ -99,7 +99,7 @@ Using a pre-0.73 Codex build? Keep syncing `commands.json` and call `/commands:<
 - `./sync-claude.sh to-codex | from-codex` – copy repo ⇄ `~/.codex` (commands.json + prompts)
 - `./sync-claude.sh links` – refresh the Claude commands symlink and Codex prompts/commands symlink
 
-Canonical sources live in this repo (`commands/`, `codex/prompts/`, legacy `codex/commands.json`, `shared/lib/`, `tools/`, `templates/`). Avoid committing `.claude/state/` or `.codex/state/`.
+Canonical sources live in this repo (`commands/`, `codex/prompts/`, legacy `codex/commands.json`, `shared/lib/`, `tools/`). Avoid committing `.claude/state/` or `.codex/state/`.
 
 ## Wavemill Commands
 
@@ -231,8 +231,6 @@ wavemill/
 │   └── get-issue-json.ts      # Fetch single issue as JSON
 ├── commands/                   # Claude slash commands (symlinked)
 ├── codex/                      # Codex commands and prompts
-├── templates/                  # Shared prompt templates
-├── prompts/                    # Issue writer and expansion prompts
 └── sync-claude.sh             # Sync helper for Claude/Codex
 ```
 

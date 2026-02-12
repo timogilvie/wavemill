@@ -10,7 +10,7 @@ This repository provides shared tooling for both Claude and Codex AI workflows:
 - **`commands/`** - Workflow command definitions (symlinked from `~/.claude/commands/`)
 - **`claude/config.json`** - Claude-specific configuration (Linear projects, git prefixes, check commands)
 - **`codex/`** - Codex-specific commands and state management
-- **`templates/`** - Shared prompt templates for PRDs, tasks, and bug investigations
+- **`tools/prompts/`** - Shared prompt templates for PRDs, tasks, bug investigations, and issue expansion
 
 ### Key Principles
 1. **Single Source of Truth**: `shared/lib/` contains all API logic to prevent drift
@@ -21,9 +21,9 @@ This repository provides shared tooling for both Claude and Codex AI workflows:
 ## Commands
 
 ### Linear Backlog Tool
-To fetch the Linear backlog for Hokusai infrastructure:
+To fetch the Linear backlog:
 ```bash
-npx tsx ~/.claude/tools/get-backlog.ts "Hokusai infrastructure"
+npx tsx ~/.claude/tools/get-backlog.ts "Project Name"
 ```
 
 ### Workflow Commands

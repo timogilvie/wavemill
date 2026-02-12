@@ -189,7 +189,7 @@ Environment Variables:
 
     // Load issue-writer prompt
     console.log('Loading issue-writer prompt...');
-    const promptPath = path.join(__dirname, '../prompts/issue-writer.md');
+    const promptPath = path.join(__dirname, 'prompts/issue-writer.md');
     const promptTemplate = await fs.readFile(promptPath, 'utf-8');
 
     // Format issue context

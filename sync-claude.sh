@@ -80,12 +80,6 @@ show_status() {
         fi
     done
 
-    # Check if get-backlog.ts exists at repo root
-    if [ -f "$REPO_DIR/get-backlog.ts" ]; then
-        if ! diff -q "$CLAUDE_DIR/tools/get-backlog.ts" "$REPO_DIR/get-backlog.ts" > /dev/null 2>&1; then
-            echo -e "${YELLOW}⚠${NC}  get-backlog.ts exists in both tools/ and repo root (differs)"
-        fi
-    fi
 
     # Symlink status for commands
     if [ -L "$CLAUDE_DIR/commands" ]; then
@@ -149,7 +143,7 @@ sync_to_claude() {
 
     # Sync tools (repo → ~/.claude)
     echo -e "\nCopying tools..."
-    cp -v "$REPO_DIR/get-backlog.ts" "$CLAUDE_DIR/tools/"
+    cp -v "$REPO_DIR/tools/get-backlog.ts" "$CLAUDE_DIR/tools/"
     cp -v "$REPO_DIR/tools/linear-tasks.ts" "$CLAUDE_DIR/tools/"
     cp -v "$REPO_DIR/tools/git.ts" "$CLAUDE_DIR/tools/"
     cp -v "$REPO_DIR/tools/github.ts" "$CLAUDE_DIR/tools/"
@@ -164,13 +158,6 @@ sync_to_claude() {
         echo -e "\nCopying templates..."
         mkdir -p "$CLAUDE_DIR/tools/prompts"
         rsync -av "$REPO_DIR/tools/prompts/" "$CLAUDE_DIR/tools/prompts/"
-    fi
-
-    # Sync prompts (repo → ~/.claude)
-    if [ -d "$REPO_DIR/prompts" ]; then
-        echo -e "\nCopying prompts..."
-        mkdir -p "$CLAUDE_DIR/prompts"
-        rsync -av "$REPO_DIR/prompts/" "$CLAUDE_DIR/prompts/"
     fi
 
     echo -e "\n${GREEN}✓ Sync to ~/.claude complete${NC}"
@@ -192,14 +179,7 @@ sync_from_claude() {
 
     # Sync tools (only if ~/.claude version is newer)
     echo -e "\nChecking tools for newer versions in ~/.claude..."
-    for file in get-backlog.ts; do
-        if [ "$CLAUDE_DIR/tools/$file" -nt "$REPO_DIR/$file" ]; then
-            echo "  Copying newer $file from ~/.claude"
-            cp -v "$CLAUDE_DIR/tools/$file" "$REPO_DIR/"
-        fi
-    done
-
-    for file in linear-tasks.ts git.ts github.ts; do
+    for file in get-backlog.ts linear-tasks.ts git.ts github.ts; do
         if [ "$CLAUDE_DIR/tools/$file" -nt "$REPO_DIR/tools/$file" ]; then
             echo "  Copying newer tools/$file from ~/.claude"
             cp -v "$CLAUDE_DIR/tools/$file" "$REPO_DIR/tools/"

@@ -1,11 +1,16 @@
-ROLE: 
-You are a senior product manager for Hokusai and your task is to generate a PRD for a new Hokusai project. Start with the draft in the Project Summary and edit it so a relatively junior team member could identify all of the tasks and complete them. 
- 
-PROJECT SUMMARY: 
+# PRD Prompt Template
+
+ROLE:
+You are a senior product manager. Generate a PRD for a new project that a junior team member could use to identify and complete all tasks.
+
+PROJECT SUMMARY:
 {{PROJECT_SUMMARY}}
 
-OUTPUT FORMAT: 
-Place the output in prd.md. Include objectives, personas, success criteria, and clearly delineated tasks. Use straightforward language. Don't include superfluous details designed for human readers like the date, the version, icons or emojis, 
+OUTPUT FORMAT:
+- Save to `features/<feature-name>/prd.md`
+- Include: objectives, personas, success criteria, clearly delineated tasks
+- Use straightforward language
+- No superfluous details (dates, versions, icons, emojis)
 
-PROJECT INFORMATION: 
-Review the project documentation in README.md. If you have questions ask for clarification or use https://docs.hokus.ai/ for additional documentation. 
+PROJECT INFORMATION:
+Review the project documentation in README.md. Ask for clarification if needed.
