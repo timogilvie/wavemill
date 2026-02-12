@@ -159,19 +159,15 @@ pnpm build
 ---
 
 **Area** (Recommended):
-*High-level feature area affected (helps avoid conflicts):*
+*Product area affected (helps avoid conflicts). Use Layer labels for architectural layers like API, Database, Infra:*
 - `Area: Landing` — Landing page and homepage
 - `Area: Navigation` — Navigation and routing
 - `Area: Auth` — Authentication and authorization
-- `Area: API` — API infrastructure
-- `Area: Database` — Database schema and queries
 - `Area: Docs` — Documentation
-- `Area: Infrastructure` — Infrastructure and deployment
-- `Area: Testing` — Test infrastructure
 
 **Selected**: `Area: [...]`
 
-**Purpose**: Avoid running 2+ tasks affecting the same area
+**Purpose**: Avoid running 2+ tasks affecting the same product area
 
 ---
 

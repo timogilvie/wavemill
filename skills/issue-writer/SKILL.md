@@ -77,16 +77,12 @@ After generating the task packet, analyze the content and prepare labels for the
    - **Layer: Database** — Schema, migrations, queries (`schema.prisma`, `migrations/`)
    - **Layer: Infra** — Config, deployment, CI/CD (`Dockerfile`, `.github/`, `deploy/`)
 
-4. **Identify Area**
+4. **Identify Area** (product areas only — use Layer labels for architectural layers)
    - Based on feature/component affected:
    - **Area: Landing** — Landing page, homepage, hero
    - **Area: Navigation** — Nav, menus, routing
    - **Area: Auth** — Authentication, authorization, login
-   - **Area: API** — API endpoints, GraphQL, REST
-   - **Area: Database** — Database schema, queries
    - **Area: Docs** — Documentation, README
-   - **Area: Infrastructure** — Deployment, config, CI/CD
-   - **Area: Testing** — Test infrastructure, test utilities
 
 5. **Check Test Requirements**
    - Parse Validation Steps section

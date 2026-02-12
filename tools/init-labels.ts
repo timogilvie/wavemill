@@ -2,16 +2,12 @@
 import { getTeams, getLabels, createLabel } from './linear-tasks.ts';
 
 const LABEL_DEFINITIONS = {
-  // Area Labels
+  // Area Labels (product areas only — architectural layers use Layer: labels)
   area: [
     { name: 'Area: Landing', color: '#4A90E2', description: 'Landing page and homepage' },
     { name: 'Area: Navigation', color: '#50E3C2', description: 'Navigation and routing' },
     { name: 'Area: Auth', color: '#F5A623', description: 'Authentication and authorization' },
-    { name: 'Area: API', color: '#BD10E0', description: 'API routes and endpoints' },
-    { name: 'Area: Database', color: '#D0021B', description: 'Database schema and queries' },
     { name: 'Area: Docs', color: '#7ED321', description: 'Documentation' },
-    { name: 'Area: Infrastructure', color: '#9013FE', description: 'Infrastructure and deployment' },
-    { name: 'Area: Testing', color: '#B8E986', description: 'Test infrastructure and test code' },
   ],
 
   // Risk Level Labels

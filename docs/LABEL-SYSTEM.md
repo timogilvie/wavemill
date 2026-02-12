@@ -12,15 +12,11 @@ Comprehensive label system for identifying which tasks can safely run in paralle
 **Conflict Rule**: Max 1 High, max 2 Medium tasks at a time
 
 ### 2. Area (Recommended)
-Indicates high-level codebase area:
+Product area affected (use Layer labels for architectural layers like API, Database, Infra):
 - `Area: Landing` — Landing page and homepage
 - `Area: Navigation` — Navigation and routing
 - `Area: Auth` — Authentication and authorization
-- `Area: API` — API routes and endpoints
-- `Area: Database` — Database schema and queries
 - `Area: Docs` — Documentation
-- `Area: Infrastructure` — Infrastructure and deployment
-- `Area: Testing` — Test infrastructure
 
 **Conflict Rule**: Avoid 2+ tasks with same Area
 

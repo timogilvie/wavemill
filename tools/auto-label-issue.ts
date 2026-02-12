@@ -50,7 +50,7 @@ function analyzeIssue(description: string, title: string): LabelAnalysis {
     tests.push('Tests: None');
   }
 
-  // Identify areas - prioritize file-based detection over text
+  // Identify areas — product areas only (architectural layers use Layer: labels)
   const areas: string[] = [];
 
   // File-based area detection (more specific and reliable)
@@ -58,11 +58,7 @@ function analyzeIssue(description: string, title: string): LabelAnalysis {
     'Area: Landing': /landing|hero|homepage|index\.(tsx|jsx)|home\.(tsx|jsx)/i,
     'Area: Navigation': /nav|menu|header|sidebar|footer|routing|router/i,
     'Area: Auth': /auth|login|signup|session|token|credential|password/i,
-    'Area: API': /api\/|endpoints\/|routes\/.*\.(ts|js)|graphql/i,
-    'Area: Database': /models\/|migrations\/|schema|database|prisma|sequelize/i,
     'Area: Docs': /docs\/|readme|documentation|\.md$/i,
-    'Area: Infrastructure': /docker|terraform|\.github\/|deploy|config\.(ts|js|json)|infrastructure/i,
-    'Area: Testing': /__tests__|\.test\.|\.spec\.|test\/|tests\/|e2e\/|cypress/i,
   };
 
   // Check files first (higher confidence)
@@ -79,11 +75,7 @@ function analyzeIssue(description: string, title: string): LabelAnalysis {
     if (/landing|homepage|hero/i.test(text)) areas.push('Area: Landing');
     if (/navigation|nav|menu|routing|route/i.test(text)) areas.push('Area: Navigation');
     if (/auth|login|signup|authentication|authorization/i.test(text)) areas.push('Area: Auth');
-    if (/api|endpoint|graphql|rest/i.test(text)) areas.push('Area: API');
-    if (/database|db|schema|migration/i.test(text)) areas.push('Area: Database');
     if (/doc|documentation|readme/i.test(text)) areas.push('Area: Docs');
-    if (/infra|deploy|ci|cd|docker/i.test(text)) areas.push('Area: Infrastructure');
-    if (/test|testing|spec/i.test(text)) areas.push('Area: Testing');
   }
 
   // Identify components - extract from file paths and text
@@ -195,8 +187,10 @@ async function autoLabelIssue(identifier: string, options: { dryRun?: boolean; i
     }
   }
 
-  // Get current labels
-  const currentLabels = issue.labels?.nodes.map((l) => l.name) || [];
+  // Get current labels (with IDs for merging)
+  const currentLabelNodes = issue.labels?.nodes || [];
+  const currentLabels = currentLabelNodes.map((l) => l.name);
+  const currentLabelIds = new Set(currentLabelNodes.map((l) => l.id));
 
   console.log('🏷️  Current labels:');
   if (currentLabels.length > 0) {
@@ -205,10 +199,27 @@ async function autoLabelIssue(identifier: string, options: { dryRun?: boolean; i
     console.log('   (none)');
   }
 
+  // Filter out labels already on the issue
+  const newLabelNames: string[] = [];
+  const newLabelIds: string[] = [];
+  for (const labelName of proposedLabels) {
+    const id = labelMap.get(labelName);
+    if (id && !currentLabelIds.has(id)) {
+      newLabelNames.push(labelName);
+      newLabelIds.push(id);
+    }
+  }
+
   console.log('\n🎯 Proposed labels:');
   proposedLabels.forEach((l) => {
+    const id = labelMap.get(l);
+    const alreadyApplied = id && currentLabelIds.has(id);
     const exists = labelMap.has(l);
-    console.log(`   ${exists ? '✅' : '❌'} ${l}`);
+    if (alreadyApplied) {
+      console.log(`   ⏭️  ${l} (already applied)`);
+    } else {
+      console.log(`   ${exists ? '✅' : '❌'} ${l}`);
+    }
   });
 
   if (missing.length > 0) {
@@ -222,7 +233,7 @@ async function autoLabelIssue(identifier: string, options: { dryRun?: boolean; i
   }
 
   // Interactive confirmation
-  if (interactive && labelIds.length > 0) {
+  if (interactive && newLabelIds.length > 0) {
     const rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout
@@ -238,13 +249,14 @@ async function autoLabelIssue(identifier: string, options: { dryRun?: boolean; i
     }
   }
 
-  // Apply labels
-  if (labelIds.length > 0) {
-    console.log('\n📝 Applying labels...');
-    await addLabelsToIssue(issue.id, labelIds);
+  // Merge new labels with existing ones
+  if (newLabelIds.length > 0) {
+    const mergedLabelIds = [...currentLabelIds, ...newLabelIds];
+    console.log(`\n📝 Applying ${newLabelIds.length} new label(s) (keeping ${currentLabelIds.size} existing)...`);
+    await addLabelsToIssue(issue.id, mergedLabelIds);
     console.log(`✅ Successfully labeled ${identifier}`);
   } else {
-    console.log('\n⚠️  No valid labels to apply');
+    console.log('\n✅ All proposed labels already applied — no changes needed');
   }
 }
 

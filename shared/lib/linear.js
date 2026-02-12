@@ -254,7 +254,7 @@ export async function getIssue(identifier) {
           title
           description
           state { name }
-          labels { nodes { name } }
+          labels { nodes { id name } }
           project { id name }
           priority
           estimate
@@ -273,7 +273,7 @@ export async function getIssue(identifier) {
               title
               description
               state { name }
-              labels { nodes { name } }
+              labels { nodes { id name } }
             }
           }
           comments {
