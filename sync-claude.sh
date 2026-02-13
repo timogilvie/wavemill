@@ -151,6 +151,7 @@ sync_to_claude() {
 
     # Sync commands (repo → ~/.claude)
     echo -e "\nCopying commands..."
+    mkdir -p "$CLAUDE_DIR/commands"
     cp -v "$REPO_DIR/commands/"*.md "$CLAUDE_DIR/commands/"
 
     # Sync templates (repo → ~/.claude)
