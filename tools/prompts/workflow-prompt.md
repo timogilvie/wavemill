@@ -52,7 +52,7 @@ mkdir -p features/<feature-name>
   - Create a PR using the GitHub CLI. Check for merge conflicts and resolve them. 
 - Run:
   ```bash
-  node packages/tools/github.ts
+  gh pr create --fill
   ```
 
 ### Step 7: Ready for Review

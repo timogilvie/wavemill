@@ -19,7 +19,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
-import { getIssue, updateIssue } from './linear-tasks.ts';
+import { getIssue, updateIssue } from '../shared/lib/linear.js';
 
 dotenv.config();
 

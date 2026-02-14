@@ -28,7 +28,7 @@ import {
   createIssue,
   createIssueRelation,
   getOrCreateProjectMilestone,
-} from './linear-tasks.ts';
+} from '../shared/lib/linear.js';
 
 dotenv.config();
 

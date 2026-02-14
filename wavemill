@@ -28,7 +28,7 @@ check_claude_sync() {
   [[ -d "$claude_tools" ]] || return 0
 
   local drifted=()
-  for file in expand-issue.ts linear-tasks.ts auto-label-issue.ts plan-initiative.ts; do
+  for file in expand-issue.ts auto-label-issue.ts plan-initiative.ts; do
     if [[ -f "$claude_tools/$file" ]] && [[ -f "$TOOLS_DIR/$file" ]]; then
       if ! diff -q "$TOOLS_DIR/$file" "$claude_tools/$file" >/dev/null 2>&1; then
         drifted+=("$file")

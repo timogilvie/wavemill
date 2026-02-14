@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // @ts-nocheck
-import { setIssueState } from './linear-tasks.ts';
+import { setIssueState } from '../shared/lib/linear.js';
 import dotenv from 'dotenv';
 
 dotenv.config();

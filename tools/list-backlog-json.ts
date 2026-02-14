@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // @ts-nocheck
-import { getBacklog } from './linear-tasks.ts';
+import { getBacklog } from '../shared/lib/linear.js';
 import dotenv from 'dotenv';
 
 dotenv.config();

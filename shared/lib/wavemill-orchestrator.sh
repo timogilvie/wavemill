@@ -23,7 +23,7 @@ fi
 # Positional arg overrides config for session name
 SESSION="${1:-$SESSION}"
 BASE_BRANCH="${BASE_BRANCH:-$(cd "$REPO_DIR" && git symbolic-ref --short HEAD)}"
-LINEAR_TOOL="${LINEAR_TOOL:-${TOOLS_DIR:?TOOLS_DIR must be set}/linear-api.ts}"
+LINEAR_TOOL="${LINEAR_TOOL:-${TOOLS_DIR:?TOOLS_DIR must be set}/get-issue-json.ts}"
 
 
 # Validate agent command exists
@@ -96,7 +96,7 @@ for t in "${TASKS[@]}"; do
     else
       # Fetch full issue details from Linear
       echo "Fetching issue details from Linear..."
-      ISSUE_DATA=$(npx tsx "$LINEAR_TOOL" get-issue "$ISSUE" 2>/dev/null || echo "")
+      ISSUE_DATA=$(npx tsx "$LINEAR_TOOL" "$ISSUE" 2>/dev/null || echo "")
       if [[ -n "$ISSUE_DATA" ]]; then
         ISSUE_DESCRIPTION=$(echo "$ISSUE_DATA" | jq -r '.description // ""' 2>/dev/null || echo "")
       fi

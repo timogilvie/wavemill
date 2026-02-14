@@ -273,7 +273,7 @@ Create `tools/suggest-labels.ts`:
 
 ```typescript
 #!/usr/bin/env node
-import { getIssue } from './linear-tasks.ts';
+import { getIssue } from '../shared/lib/linear.js';
 import dotenv from 'dotenv';
 
 dotenv.config({ silent: true });

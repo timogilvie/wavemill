@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { getTeams, getLabels, createLabel } from './linear-tasks.ts';
+import { getTeams, getLabels, createLabel } from '../shared/lib/linear.js';
 
 const LABEL_DEFINITIONS = {
   // Area Labels (product areas only — architectural layers use Layer: labels)

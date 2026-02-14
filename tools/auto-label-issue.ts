@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { getIssue, getLabels, addLabelsToIssue, getOrCreateLabel } from './linear-tasks.ts';
+import { getIssue, getLabels, addLabelsToIssue, getOrCreateLabel } from '../shared/lib/linear.js';
 import * as readline from 'readline/promises';
 
 interface LabelAnalysis {

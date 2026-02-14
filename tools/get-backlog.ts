@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { getBacklog, getProjects } from './linear-tasks.ts';
+import { getBacklog, getProjects } from '../shared/lib/linear.js';
 import dotenv from 'dotenv';
 import readline from 'readline';
 

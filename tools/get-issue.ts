@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { getIssue } from './linear-tasks.ts';
+import { getIssue } from '../shared/lib/linear.js';
 import dotenv from 'dotenv';
 
 // Load environment variables

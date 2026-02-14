@@ -13,6 +13,7 @@
 import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import { sanitizeBranchName } from '../shared/lib/git.js';
 
 const WORKTREE_BASE = process.env.WORKTREE_BASE || path.join(process.env.HOME!, 'worktrees');
 
@@ -32,14 +33,6 @@ function run(cmd: string, options: { cwd?: string; silent?: boolean } = {}): str
   }
 }
 
-function sanitizeBranchName(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-    .substring(0, 50);
-}
-
 function getMainBranch(): string {
   const branches = run('git branch -l main master', { silent: true });
   if (branches.includes('main')) return 'main';
@@ -50,9 +43,9 @@ function getMainBranch(): string {
 function createWorktree(branchName: string, baseBranch?: string): void {
   const mainBranch = baseBranch || getMainBranch();
   const remoteRef = `origin/${mainBranch}`;
-  const sanitized = sanitizeBranchName(branchName);
+  const fullBranchName = sanitizeBranchName(branchName);
+  const sanitized = fullBranchName.split('/')[1];
   const worktreePath = path.join(WORKTREE_BASE, sanitized);
-  const fullBranchName = `feature/${sanitized}`;
 
   // Ensure base directory exists
   if (!fs.existsSync(WORKTREE_BASE)) {
@@ -134,9 +127,9 @@ function getWorktreeStatus(): void {
 }
 
 function removeWorktree(branchName: string, deleteBranch = false): void {
-  const sanitized = sanitizeBranchName(branchName);
+  const fullBranchName = sanitizeBranchName(branchName);
+  const sanitized = fullBranchName.split('/')[1];
   const worktreePath = path.join(WORKTREE_BASE, sanitized);
-  const fullBranchName = `feature/${sanitized}`;
 
   if (!fs.existsSync(worktreePath)) {
     console.log(`Worktree not found: ${worktreePath}`);

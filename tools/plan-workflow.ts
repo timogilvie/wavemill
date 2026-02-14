@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // @ts-nocheck
-import { getBacklog, getTeams, createIssue, createIssueRelation, getOrCreateProjectMilestone } from './linear-tasks.ts';
+import { getBacklog, getTeams, createIssue, createIssueRelation, getOrCreateProjectMilestone } from '../shared/lib/linear.js';
 import dotenv from 'dotenv';
 import readline from 'readline';
 import { writeFileSync, readFileSync, existsSync } from 'fs';

@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { getIssue, updateIssue } from './linear-tasks.ts';
+import { getIssue, updateIssue } from '../shared/lib/linear.js';
 import dotenv from 'dotenv';
 import fs from 'fs/promises';
 
