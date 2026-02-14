@@ -28,7 +28,7 @@ check_claude_sync() {
   [[ -d "$claude_tools" ]] || return 0
 
   local drifted=()
-  for file in expand-issue.ts linear-tasks.ts auto-label-issue.ts; do
+  for file in expand-issue.ts linear-tasks.ts auto-label-issue.ts plan-initiative.ts; do
     if [[ -f "$claude_tools/$file" ]] && [[ -f "$TOOLS_DIR/$file" ]]; then
       if ! diff -q "$TOOLS_DIR/$file" "$claude_tools/$file" >/dev/null 2>&1; then
         drifted+=("$file")
@@ -63,6 +63,12 @@ ${GREEN}Commands:${NC}
              - Select up to 3 issues interactively
              - Expands with Claude + auto-labels
              - Updates Linear with detailed task packets
+
+  ${CYAN}plan${NC}      Decompose a Linear initiative into issues
+             - Fetches initiatives from configured project
+             - Prioritizes those without existing issues
+             - Select one to decompose with Claude
+             - Creates phased milestones and issues in Linear
 
   ${CYAN}init${NC}      Generate a template .wavemill-config.json in the current directory
 
@@ -187,6 +193,22 @@ run_expand() {
   exec "$expand_script" "$@"
 }
 
+run_plan() {
+  local plan_script="$LIB_DIR/wavemill-plan.sh"
+
+  if [[ ! -f "$plan_script" ]]; then
+    echo -e "${RED}Error:${NC} Plan script not found at: $plan_script" >&2
+    exit 1
+  fi
+
+  if [[ ! -x "$plan_script" ]]; then
+    chmod +x "$plan_script"
+  fi
+
+  echo -e "${CYAN}Starting Wavemill Plan...${NC}"
+  exec "$plan_script" "$@"
+}
+
 # Main command dispatcher
 case "${1:-}" in
   mill)
@@ -198,6 +220,11 @@ case "${1:-}" in
     check_claude_sync
     shift
     run_expand "$@"
+    ;;
+  plan)
+    check_claude_sync
+    shift
+    run_plan "$@"
     ;;
   init)
     shift

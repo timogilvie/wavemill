@@ -23,6 +23,9 @@ _WAVEMILL_DEFAULTS='{
   "expand": {
     "maxSelect": 3,
     "maxDisplay": 9
+  },
+  "plan": {
+    "maxDisplay": 9
   }
 }'
 
@@ -74,7 +77,8 @@ load_config() {
       "_CFG_MAX_RETRIES=\($c.mill.maxRetries)",
       "_CFG_RETRY_DELAY=\($c.mill.retryDelay)",
       "_CFG_MAX_SELECT=\($c.expand.maxSelect)",
-      "_CFG_MAX_DISPLAY=\($c.expand.maxDisplay)"
+      "_CFG_MAX_DISPLAY=\($c.expand.maxDisplay)",
+      "_CFG_PLAN_MAX_DISPLAY=\($c.plan.maxDisplay)"
     ] | .[]
     '
   ) || {
@@ -98,6 +102,7 @@ load_config() {
   RETRY_DELAY="${RETRY_DELAY:-$_CFG_RETRY_DELAY}"
   MAX_SELECT="${MAX_SELECT:-$_CFG_MAX_SELECT}"
   MAX_DISPLAY="${MAX_DISPLAY:-$_CFG_MAX_DISPLAY}"
+  PLAN_MAX_DISPLAY="${PLAN_MAX_DISPLAY:-$_CFG_PLAN_MAX_DISPLAY}"
 
   # WORKTREE_ROOT: resolve relative paths against repo_dir
   local wt_raw="${WORKTREE_ROOT:-$_CFG_WORKTREE_ROOT}"
@@ -110,12 +115,13 @@ load_config() {
   # Export for child processes (orchestrator, monitor, agents)
   export SESSION MAX_PARALLEL POLL_SECONDS BASE_BRANCH WORKTREE_ROOT
   export AGENT_CMD REQUIRE_CONFIRM MAX_RETRIES RETRY_DELAY
-  export PROJECT_NAME MAX_SELECT MAX_DISPLAY
+  export PROJECT_NAME MAX_SELECT MAX_DISPLAY PLAN_MAX_DISPLAY
 
   # Clean up temp variables
   unset _CFG_PROJECT _CFG_SESSION _CFG_MAX_PARALLEL _CFG_POLL_SECONDS
   unset _CFG_BASE_BRANCH _CFG_WORKTREE_ROOT _CFG_AGENT_CMD _CFG_REQUIRE_CONFIRM
   unset _CFG_MAX_RETRIES _CFG_RETRY_DELAY _CFG_MAX_SELECT _CFG_MAX_DISPLAY
+  unset _CFG_PLAN_MAX_DISPLAY
 
   # Sentinel so downstream scripts can skip re-loading
   _WAVEMILL_CONFIG_LOADED=1

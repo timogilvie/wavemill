@@ -85,6 +85,18 @@
           "description": "Maximum candidate issues shown in the selection list."
         }
       }
+    },
+    "plan": {
+      "type": "object",
+      "description": "Settings for the 'wavemill plan' command.",
+      "properties": {
+        "maxDisplay": {
+          "type": "integer",
+          "default": 9,
+          "minimum": 1,
+          "description": "Maximum initiatives shown in the selection list."
+        }
+      }
     }
   },
   "additionalProperties": false

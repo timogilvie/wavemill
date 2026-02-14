@@ -415,3 +415,72 @@ export async function getOrCreateLabel(name, teamId, options = {}) {
 
   return await createLabel(name, teamId, options);
 }
+
+// ========== Initiative Management ==========
+
+export async function getInitiatives(statusFilter) {
+  const filters = [];
+  if (statusFilter && statusFilter.length > 0) {
+    filters.push(`status: { in: [${statusFilter.map(s => `"${s}"`).join(', ')}] }`);
+  } else {
+    filters.push('status: { nin: ["Completed"] }');
+  }
+
+  const filterClause = `filter: { ${filters.join(', ')} }`;
+
+  const data = await request(`
+    query {
+      initiatives(${filterClause}, first: 50) {
+        nodes {
+          id
+          name
+          description
+          content
+          status
+          slugId
+          targetDate
+          owner { name }
+          projects {
+            nodes {
+              id
+              name
+              issues(first: 1) {
+                nodes { id }
+              }
+            }
+          }
+        }
+      }
+    }
+  `);
+
+  return data.initiatives?.nodes || [];
+}
+
+export async function getInitiative(initiativeId) {
+  const data = await request(
+    `
+      query($id: String!) {
+        initiative(id: $id) {
+          id
+          name
+          description
+          content
+          status
+          slugId
+          targetDate
+          owner { name }
+          projects {
+            nodes {
+              id
+              name
+            }
+          }
+        }
+      }
+    `,
+    { id: initiativeId },
+  );
+
+  return data.initiative;
+}
