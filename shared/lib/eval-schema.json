@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "eval-record.schema.json",
+  "title": "EvalRecord",
+  "description": "A single eval result record capturing the outcome of an autonomous task execution, including the prompt, model, score, timing, and any human interventions.",
+  "type": "object",
+  "required": [
+    "id",
+    "schemaVersion",
+    "originalPrompt",
+    "modelId",
+    "modelVersion",
+    "score",
+    "scoreBand",
+    "timeSeconds",
+    "timestamp",
+    "interventionRequired",
+    "interventionCount",
+    "interventionDetails",
+    "rationale"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique identifier for this eval record (UUID v4 recommended)."
+    },
+    "schemaVersion": {
+      "type": "string",
+      "description": "Schema version for forward compatibility (semver, e.g. \"1.0.0\").",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "originalPrompt": {
+      "type": "string",
+      "description": "The task prompt that was given to the agent."
+    },
+    "modelId": {
+      "type": "string",
+      "description": "Model identifier (e.g. \"claude-opus-4-6\")."
+    },
+    "modelVersion": {
+      "type": "string",
+      "description": "Specific model version string for reproducibility."
+    },
+    "score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Numeric score between 0 and 1 (inclusive). Preserves full granularity; use scoreBand for human-readable interpretation."
+    },
+    "scoreBand": {
+      "type": "string",
+      "enum": [
+        "Failure",
+        "Partial",
+        "Assisted Success",
+        "Minor Feedback",
+        "Full Success"
+      ],
+      "description": "The rubric band label derived from the score."
+    },
+    "timeSeconds": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Wall-clock time in seconds for task completion."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 datetime string when the eval was recorded."
+    },
+    "interventionRequired": {
+      "type": "boolean",
+      "description": "Whether any human intervention was required during the task."
+    },
+    "interventionCount": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of distinct human interventions during the task."
+    },
+    "interventionDetails": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Brief description of each human intervention."
+    },
+    "rationale": {
+      "type": "string",
+      "description": "Free-text rationale from the LLM judge explaining the score."
+    },
+    "issueId": {
+      "type": "string",
+      "description": "Linear issue identifier (e.g. \"HOK-697\"), if the task was issue-based."
+    },
+    "prUrl": {
+      "type": "string",
+      "format": "uri",
+      "description": "Pull request URL, if the task produced a PR."
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Optional extensibility bag for additional metadata."
+    }
+  }
+}
