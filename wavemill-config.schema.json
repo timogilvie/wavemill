@@ -108,6 +108,11 @@
           "description": "Directory for persisting eval result JSONL files. Relative paths resolve against the repo root."
         }
       }
+    },
+    "autoEval": {
+      "type": "boolean",
+      "default": false,
+      "description": "When true, automatically run eval after workflow/bugfix command completion (PR creation). Eval failures are logged as warnings and never fail the workflow."
     }
   },
   "additionalProperties": false

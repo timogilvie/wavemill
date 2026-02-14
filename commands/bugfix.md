@@ -36,4 +36,13 @@ Use the **git-workflow-manager** skill to:
 - Create PR with root cause, solution, and validation steps
 - Provide ready-for-review checklist
 
+## Phase 6: Post-Completion Eval
+After PR creation, run the post-completion eval hook. This is automatic and non-blocking — if eval fails, the workflow is still complete.
+
+```bash
+npx tsx tools/run-eval-hook.ts --issue <ISSUE_ID> --pr <PR_NUMBER> --pr-url <PR_URL> --workflow-type bugfix
+```
+
+Replace `<ISSUE_ID>`, `<PR_NUMBER>`, and `<PR_URL>` with the actual values from the bugfix workflow. If eval succeeds, report the score briefly. If it fails or is skipped, note it and continue.
+
 Guide the user through the entire systematic process until the bug is fixed and PR is ready.

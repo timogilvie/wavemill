@@ -179,6 +179,28 @@ Next Steps:
 
 ---
 
+## Phase 6: Post-Completion Eval
+**Goal**: Automatically evaluate workflow quality using the LLM judge
+
+### 6A. Trigger Eval Hook
+After PR creation, run the post-completion eval hook. This is automatic and non-blocking — if eval fails, the workflow is still complete.
+
+```bash
+npx tsx tools/run-eval-hook.ts --issue <ISSUE_ID> --pr <PR_NUMBER> --pr-url <PR_URL> --workflow-type workflow
+```
+
+Replace `<ISSUE_ID>`, `<PR_NUMBER>`, and `<PR_URL>` with the actual values from the workflow.
+
+### 6B. Report Eval Result
+If eval succeeds, report the score:
+```
+📊 Workflow Eval: <score_band> (<score>) — saved to eval store
+```
+
+If eval fails or is skipped (autoEval disabled), note it briefly and continue — the workflow is complete either way.
+
+---
+
 ## Context Management Strategy
 
 ### Between Phases:
