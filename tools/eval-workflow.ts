@@ -19,6 +19,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { evaluateTask } from '../shared/lib/eval.js';
 import { getScoreBand } from '../shared/lib/eval-schema.ts';
+import { appendEvalRecord } from '../shared/lib/eval-persistence.ts';
 
 dotenv.config();
 
@@ -310,10 +311,17 @@ async function main() {
       prUrl: ctx.prUrl || undefined,
     });
 
-    // 5. Format and print
+    // 5. Persist eval record to disk
+    try {
+      appendEvalRecord(record);
+    } catch (err) {
+      console.error(`Warning: failed to persist eval record: ${err.message}`);
+    }
+
+    // 6. Format and print
     console.log(formatEvalRecord(record));
 
-    // 6. Print raw JSON for piping
+    // 7. Print raw JSON for piping
     if (process.stdout.isTTY === false) {
       console.log(JSON.stringify(record, null, 2));
     }

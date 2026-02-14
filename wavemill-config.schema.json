@@ -97,6 +97,17 @@
           "description": "Maximum initiatives shown in the selection list."
         }
       }
+    },
+    "eval": {
+      "type": "object",
+      "description": "Settings for the 'wavemill eval' command.",
+      "properties": {
+        "evalsDir": {
+          "type": "string",
+          "default": ".wavemill/evals",
+          "description": "Directory for persisting eval result JSONL files. Relative paths resolve against the repo root."
+        }
+      }
     }
   },
   "additionalProperties": false
