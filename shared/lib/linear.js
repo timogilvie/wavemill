@@ -319,7 +319,7 @@ export async function updateIssue(issueId, input) {
 export async function createIssueRelation(issueId, relatedIssueId, type) {
   const data = await request(
     `
-      mutation($issueId: String!, $relatedIssueId: String!, $type: String!) {
+      mutation($issueId: String!, $relatedIssueId: String!, $type: IssueRelationType!) {
         issueRelationCreate(input: {
           issueId: $issueId
           relatedIssueId: $relatedIssueId
