@@ -106,6 +106,41 @@
           "type": "string",
           "default": ".wavemill/evals",
           "description": "Directory for persisting eval result JSONL files. Relative paths resolve against the repo root."
+        },
+        "interventionPenalties": {
+          "type": "object",
+          "description": "Penalty weights per intervention type. Each value is the score penalty (0-1) applied per occurrence of that intervention type.",
+          "properties": {
+            "reviewComment": {
+              "type": "number",
+              "default": 0.05,
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Penalty per PR review comment requesting changes."
+            },
+            "postPrCommit": {
+              "type": "number",
+              "default": 0.08,
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Penalty per commit made after the initial PR creation."
+            },
+            "manualEdit": {
+              "type": "number",
+              "default": 0.10,
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Penalty per manual file edit (commit not attributed to the agent)."
+            },
+            "testFix": {
+              "type": "number",
+              "default": 0.06,
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Penalty per interactive test fix detected in commit messages."
+            }
+          },
+          "additionalProperties": false
         }
       }
     },

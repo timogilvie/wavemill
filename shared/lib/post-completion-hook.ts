@@ -12,6 +12,12 @@ import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { evaluateTask } from './eval.js';
 import { appendEvalRecord } from './eval-persistence.ts';
+import {
+  detectAllInterventions,
+  toInterventionMeta,
+  formatForJudge,
+  loadPenalties,
+} from './intervention-detector.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -137,22 +143,45 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
       if (!prUrl) prUrl = prCtx.url;
     }
 
-    // 3. Run eval
+    // 3. Detect intervention events
+    console.log('Post-completion eval: detecting interventions...');
+    let branchName = '';
+    try {
+      branchName = execSync('git branch --show-current', {
+        encoding: 'utf-8', cwd: repoDir,
+      }).trim();
+    } catch { /* best-effort */ }
+
+    const interventionSummary = detectAllInterventions({
+      prNumber: ctx.prNumber,
+      branchName,
+      baseBranch: 'main',
+      repoDir,
+    });
+    const interventionMeta = toInterventionMeta(interventionSummary);
+    const penalties = loadPenalties(repoDir);
+    const interventionText = formatForJudge(interventionSummary, penalties);
+
+    const totalInterventions = interventionSummary.interventions.reduce((sum, e) => sum + e.count, 0);
+    console.log(`Post-completion eval: ${totalInterventions} intervention(s) detected`);
+
+    // 4. Run eval
     console.log('Post-completion eval: invoking LLM judge...');
     const record = await evaluateTask({
       taskPrompt,
       prReviewOutput,
-      interventions: [],
+      interventions: interventionMeta,
+      interventionText,
       issueId: ctx.issueId || undefined,
       prUrl: prUrl || undefined,
-      metadata: { workflowType: ctx.workflowType, hookTriggered: true },
+      metadata: { workflowType: ctx.workflowType, hookTriggered: true, interventionSummary },
     });
 
-    // 4. Persist via eval-persistence
+    // 5. Persist via eval-persistence
     const evalsDir = resolveEvalsDir(repoDir);
     appendEvalRecord(record, evalsDir ? { dir: evalsDir } : undefined);
 
-    // 5. Print summary
+    // 6. Print summary
     const scoreDisplay = (record.score as number).toFixed(2);
     console.log(`Post-completion eval: ${record.scoreBand} (${scoreDisplay}) — saved to eval store`);
   } catch (error: unknown) {

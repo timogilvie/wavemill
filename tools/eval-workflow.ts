@@ -20,6 +20,12 @@ import { fileURLToPath } from 'url';
 import { evaluateTask } from '../shared/lib/eval.js';
 import { getScoreBand } from '../shared/lib/eval-schema.ts';
 import { appendEvalRecord } from '../shared/lib/eval-persistence.ts';
+import {
+  detectAllInterventions,
+  toInterventionMeta,
+  formatForJudge,
+  loadPenalties,
+} from '../shared/lib/intervention-detector.ts';
 
 dotenv.config();
 
@@ -187,7 +193,16 @@ function gatherContext(args) {
     } catch { /* best-effort */ }
   }
 
-  return { issueId, prNumber, prUrl, branch, taskPrompt, prReviewOutput };
+  // Ensure we have the branch name for intervention detection
+  if (!branch) {
+    try {
+      branch = execSync('git branch --show-current', {
+        encoding: 'utf-8', cwd: repoDir,
+      }).trim();
+    } catch { /* best-effort */ }
+  }
+
+  return { issueId, prNumber, prUrl, branch, taskPrompt, prReviewOutput, repoDir };
 }
 
 // ── Output Formatting ────────────────────────────────────────────────────────
@@ -301,27 +316,44 @@ async function main() {
       process.env.EVAL_MODEL = args.model;
     }
 
-    // 4. Invoke judge via shared evaluateTask()
+    // 4. Detect intervention events
+    console.log('\nDetecting intervention events...');
+    const interventionSummary = detectAllInterventions({
+      prNumber: ctx.prNumber,
+      branchName: ctx.branch,
+      baseBranch: 'main',
+      repoDir: ctx.repoDir,
+    });
+    const interventionMeta = toInterventionMeta(interventionSummary);
+    const penalties = loadPenalties(ctx.repoDir);
+    const interventionText = formatForJudge(interventionSummary, penalties);
+
+    const totalInterventions = interventionSummary.interventions.reduce((sum, e) => sum + e.count, 0);
+    console.log(`  Detected ${totalInterventions} intervention event(s) (weighted penalty: ${interventionSummary.totalInterventionScore})`);
+
+    // 5. Invoke judge via shared evaluateTask()
     console.log('\nInvoking LLM judge...');
     const record = await evaluateTask({
       taskPrompt: ctx.taskPrompt,
       prReviewOutput: ctx.prReviewOutput,
-      interventions: [],
+      interventions: interventionMeta,
+      interventionText,
       issueId: ctx.issueId || undefined,
       prUrl: ctx.prUrl || undefined,
+      metadata: { interventionSummary },
     });
 
-    // 5. Persist eval record to disk
+    // 6. Persist eval record to disk
     try {
       appendEvalRecord(record);
     } catch (err) {
       console.error(`Warning: failed to persist eval record: ${err.message}`);
     }
 
-    // 6. Format and print
+    // 7. Format and print
     console.log(formatEvalRecord(record));
 
-    // 7. Print raw JSON for piping
+    // 8. Print raw JSON for piping
     if (process.stdout.isTTY === false) {
       console.log(JSON.stringify(record, null, 2));
     }
