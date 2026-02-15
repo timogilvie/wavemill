@@ -1,5 +1,50 @@
 Execute an implementation plan with phase gates and validation checkpoints.
 
+---
+
+## Session Tracking
+
+This workflow automatically captures execution metadata for eval. Session management is **non-intrusive** — if any session command fails, continue the workflow normally.
+
+### At Workflow Start
+When starting plan execution, create a session:
+```bash
+SESSION_ID=$(npx tsx tools/session.ts start \
+  --workflow implement-plan \
+  --prompt "<plan title or feature description>" \
+  --model "<current model, e.g. claude-opus-4-6>" \
+  --issue "<Linear issue ID if available>")
+SESSION_START_MS=$(date +%s%3N)
+```
+
+### Before/After User Prompts (Phase Gates)
+Track user wait time at each phase gate checkpoint:
+- Before prompt: `PAUSE_START=$(date +%s%3N)`
+- After response: `USER_WAIT_MS=$((${USER_WAIT_MS:-0} + $(date +%s%3N) - PAUSE_START))`
+
+### On PR Creation
+```bash
+npx tsx tools/session.ts update "$SESSION_ID" --pr "<PR URL>"
+```
+
+### On Workflow Completion
+```bash
+SESSION_END_MS=$(date +%s%3N)
+EXEC_TIME_MS=$((SESSION_END_MS - SESSION_START_MS - ${USER_WAIT_MS:-0}))
+npx tsx tools/session.ts complete "$SESSION_ID" \
+  --status completed \
+  --execution-time "$EXEC_TIME_MS" \
+  --user-wait-time "${USER_WAIT_MS:-0}" \
+  --pr "<PR URL>"
+```
+
+### On Workflow Failure
+```bash
+npx tsx tools/session.ts complete "$SESSION_ID" --status failed --error "<error description>"
+```
+
+---
+
 ## Prerequisites
 - Implementation plan exists at `features/<feature-name>/plan.md`
 - Plan has been reviewed and approved by user
@@ -68,6 +113,8 @@ Use the **git-workflow-manager** skill to:
 - Push branch to remote
 - Create PR with plan summary
 - Include completion status of all phases
+
+After PR is created, finalize the session using the Session Tracking instructions above.
 
 ## Key Principles
 - **One phase at a time** - Don't rush ahead

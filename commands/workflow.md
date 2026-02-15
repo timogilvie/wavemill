@@ -4,6 +4,64 @@ This command provides a continuous flow while clearing context between major pha
 
 ---
 
+## Session Tracking
+
+This workflow automatically captures execution metadata for eval. Session management is **non-intrusive** — if any session command fails, continue the workflow normally.
+
+### At Workflow Start (after task selection)
+After the task is selected and context is saved, start a session:
+```bash
+SESSION_ID=$(npx tsx tools/session.ts start \
+  --workflow feature \
+  --prompt "<task title and description from selected-task.json>" \
+  --model "<current model, e.g. claude-opus-4-6>" \
+  --issue "<Linear issue ID, e.g. HOK-701>")
+```
+Save the printed `SESSION_ID` value — you'll need it for updates.
+
+Record the current time as `SESSION_START_TIME` using:
+```bash
+SESSION_START_MS=$(date +%s%3N)
+```
+
+### Before Each User Prompt
+Record the pause start time:
+```bash
+PAUSE_START=$(date +%s%3N)
+```
+
+### After Each User Response
+Calculate and accumulate user wait time:
+```bash
+PAUSE_END=$(date +%s%3N)
+USER_WAIT_MS=$((${USER_WAIT_MS:-0} + PAUSE_END - PAUSE_START))
+```
+
+### On PR Creation
+Update the session with the PR URL:
+```bash
+npx tsx tools/session.ts update "$SESSION_ID" --pr "<PR URL>"
+```
+
+### On Workflow Completion
+Finalize the session:
+```bash
+SESSION_END_MS=$(date +%s%3N)
+EXEC_TIME_MS=$((SESSION_END_MS - SESSION_START_MS - ${USER_WAIT_MS:-0}))
+npx tsx tools/session.ts complete "$SESSION_ID" \
+  --status completed \
+  --execution-time "$EXEC_TIME_MS" \
+  --user-wait-time "${USER_WAIT_MS:-0}" \
+  --pr "<PR URL>"
+```
+
+### On Workflow Failure
+```bash
+npx tsx tools/session.ts complete "$SESSION_ID" --status failed --error "<error description>"
+```
+
+---
+
 ## Phase 1: Task Selection & Context Setup
 
 ### 1A. Select Task from Linear
@@ -16,6 +74,9 @@ Use the **linear-task-selector** skill to:
 The skill handles directory creation and context saving together, preventing conflicts when multiple Claude sessions run concurrently.
 
 **Context Handoff**: Task details saved to `features/<feature-name>/selected-task.json`
+
+### 1B. Start Session Tracking
+After task selection is complete, start a session using the instructions in the **Session Tracking** section above. Use the task title, description, and issue ID from `selected-task.json`.
 
 ---
 
@@ -158,7 +219,10 @@ Use the **git-workflow-manager** skill to:
    - Validation results
    - Testing checklist
 
-### 5C. Present PR
+### 5C. Finalize Session
+After PR is created, finalize the session using the instructions in the **Session Tracking** section. Use the PR URL and compute execution/wait times.
+
+### 5D. Present PR
 ```
 ✅ Pull Request Created!
 
