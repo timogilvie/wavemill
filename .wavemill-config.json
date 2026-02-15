@@ -12,10 +12,10 @@
     "requireConfirm": true,
     "maxRetries": 3,
     "retryDelay": 2
-    
   },
   "expand": {
     "maxSelect": 3,
     "maxDisplay": 9
-  }
+  },
+  "autoEval": true
 }
