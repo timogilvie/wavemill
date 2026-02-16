@@ -79,6 +79,8 @@ ${GREEN}Commands:${NC}
              Subcommands:
                ${CYAN}eval report${NC}  Aggregate eval statistics and trends
                             --from, --to, --model, --limit, --json
+               ${CYAN}eval export${NC}  Export records for ML training
+                            --format csv|jsonl, --redact, --output FILE
 
   ${CYAN}init${NC}      Generate a template .wavemill-config.json in the current directory
 
@@ -112,6 +114,9 @@ ${GREEN}Examples:${NC}
 
   # Filter report by model and date range
   wavemill eval report --model claude-opus-4-6 --from 2026-01-01
+
+  # Export eval records for ML training
+  wavemill eval export --format csv --redact -o dataset.csv
 
 ${GREEN}Configuration:${NC}
   Settings are loaded in this order (later wins):
@@ -226,6 +231,11 @@ run_eval() {
       run_eval_report "$@"
       return
       ;;
+    export)
+      shift
+      run_eval_export "$@"
+      return
+      ;;
   esac
 
   local eval_tool="$TOOLS_DIR/eval-workflow.ts"
@@ -252,6 +262,17 @@ run_eval_report() {
   fi
 
   exec "$report_script" "$@"
+}
+
+run_eval_export() {
+  local export_tool="$TOOLS_DIR/eval-export.ts"
+
+  if [[ ! -f "$export_tool" ]]; then
+    echo -e "${RED}Error:${NC} Eval export tool not found at: $export_tool" >&2
+    exit 1
+  fi
+
+  exec npx tsx "$export_tool" "$@"
 }
 
 run_plan() {
