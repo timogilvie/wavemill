@@ -105,13 +105,21 @@ main() {
     [[ $REPLY =~ ^[Yy]$ ]] || exit 0
   fi
 
-  # Check for --dry-run flag passed to this script
+  # Check for flags passed to this script
   local extra_args=()
   for arg in "$@"; do
     if [[ "$arg" == "--dry-run" ]]; then
       extra_args+=("--dry-run")
     fi
+    if [[ "$arg" == "--research" ]]; then
+      extra_args+=("--research")
+    fi
   done
+
+  # Config-level research default (CLI flag overrides)
+  if [[ "${PLAN_RESEARCH:-false}" == "true" ]] && ! printf '%s\n' "${extra_args[@]}" | grep -q '^--research$'; then
+    extra_args+=("--research")
+  fi
 
   # Run decomposition via TypeScript tool
   log "Decomposing initiative with Claude..."

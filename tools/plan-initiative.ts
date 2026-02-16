@@ -11,7 +11,7 @@
  *   list [--project "Name"] [--max-display 9]
  *     Fetch and rank initiatives, output JSON to stdout
  *
- *   decompose --initiative <id> [--project "Name"] [--dry-run]
+ *   decompose --initiative <id> [--project "Name"] [--dry-run] [--research]
  *     Decompose an initiative into issues using Claude and create in Linear
  */
 
@@ -148,6 +148,73 @@ async function decomposeWithClaude(systemPrompt: string, initiativeContext: stri
   });
 }
 
+function cleanMarkdownOutput(text: string): string {
+  // Remove <tool_call>...</tool_call> blocks
+  let cleaned = text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '');
+
+  // Remove XML-style tags
+  cleaned = cleaned.replace(/<\/?(?:tool_name|parameters|prompt|command|subagent_type|pattern|file_path|include|path|output_mode|context)[^>]*>[\s\S]*?(?:<\/(?:tool_name|parameters|prompt|command|subagent_type|pattern|file_path|include|path|output_mode|context)>)?/g, '');
+
+  // Strip conversational preamble before the first markdown heading
+  const firstHeading = cleaned.search(/^##\s/m);
+  if (firstHeading > 0) {
+    cleaned = cleaned.substring(firstHeading);
+  }
+
+  // Collapse runs of 3+ blank lines into 2
+  cleaned = cleaned.replace(/\n{4,}/g, '\n\n\n');
+
+  return cleaned.trim();
+}
+
+async function runResearch(researchPrompt: string, initiativeContext: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const fullPrompt = `${researchPrompt}\n\n---\n\n${initiativeContext}`;
+
+    const claude = spawn(CLAUDE_CMD, [
+      '--print',
+      '--tools', '',
+      '--append-system-prompt',
+      'You have NO tools available. Do NOT output <tool_call> tags, XML markup, or attempt to call any tools. Your ENTIRE response must be the structured markdown research summary and nothing else. No conversational text, no preamble. Start directly with the first markdown heading.',
+    ], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    claude.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+
+    claude.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    claude.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`Claude CLI (research) exited with code ${code}: ${stderr}`));
+      } else {
+        resolve(cleanMarkdownOutput(stdout));
+      }
+    });
+
+    claude.on('error', (error) => {
+      reject(new Error(`Failed to spawn Claude CLI for research: ${error.message}`));
+    });
+
+    claude.stdin.write(fullPrompt);
+    claude.stdin.end();
+  });
+}
+
+function slugify(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
 // ============================================================================
 // VALIDATION
 // ============================================================================
@@ -259,6 +326,7 @@ async function decompose(args: string[]) {
   const projectName = projectIdx >= 0 ? args[projectIdx + 1] : '';
 
   const dryRun = args.includes('--dry-run');
+  const research = args.includes('--research');
 
   // 1. Fetch initiative details
   console.log('Fetching initiative details...');
@@ -323,6 +391,33 @@ async function decompose(args: string[]) {
   if (initiative.content && initiative.content !== initiative.description) {
     context += `\n\n## Content\n\n`;
     context += initiative.content;
+  }
+
+  // 5b. Research phase (optional)
+  if (research) {
+    console.log('Running research phase...');
+    console.log('─'.repeat(80));
+
+    const researchPromptPath = path.join(__dirname, 'prompts/research-phase.md');
+    const researchPrompt = await fs.readFile(researchPromptPath, 'utf-8');
+    const researchOutput = await runResearch(researchPrompt, context);
+
+    console.log(researchOutput);
+    console.log('─'.repeat(80));
+    console.log('');
+
+    // Persist research summary
+    const repoRoot = path.resolve(__dirname, '..');
+    const slug = slugify(initiative.name);
+    const epicsDir = path.join(repoRoot, 'epics', slug);
+    await fs.mkdir(epicsDir, { recursive: true });
+    const researchPath = path.join(epicsDir, 'research-summary.md');
+    await fs.writeFile(researchPath, researchOutput, 'utf-8');
+    console.log(`Research summary saved to: epics/${slug}/research-summary.md`);
+    console.log('');
+
+    // Inject research into initiative context
+    context += `\n\n## Research Summary\n\n${researchOutput}`;
   }
 
   // 6. Call Claude
@@ -471,11 +566,13 @@ Options (decompose):
   --initiative <id>  Linear initiative ID (required)
   --project "Name"   Target project for created issues
   --dry-run          Show plan without creating issues
+  --research         Run research phase before decomposition
 
 Examples:
   npx tsx tools/plan-initiative.ts list
   npx tsx tools/plan-initiative.ts list --project "My Project"
   npx tsx tools/plan-initiative.ts decompose --initiative abc-123 --dry-run
+  npx tsx tools/plan-initiative.ts decompose --initiative abc-123 --research
   npx tsx tools/plan-initiative.ts decompose --initiative abc-123 --project "My Project"
 
 Environment Variables:

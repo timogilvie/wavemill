@@ -27,6 +27,8 @@ Identify:
 Avoid speculative over-engineering.
 Prefer incremental capability over grand architecture.
 
+If a **Research Summary** section is included in the initiative context below, use it to inform your scoping decisions. Prioritize patterns that align with the research findings and avoid the identified anti-patterns.
+
 ## STEP 2 -- Organize Into Milestones
 
 Structure output into milestone phases where appropriate:

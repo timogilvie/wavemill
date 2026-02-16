@@ -95,6 +95,11 @@
           "default": 9,
           "minimum": 1,
           "description": "Maximum initiatives shown in the selection list."
+        },
+        "research": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, always run the research phase before plan decomposition. Can be overridden by the --research CLI flag."
         }
       }
     },
