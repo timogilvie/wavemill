@@ -351,6 +351,90 @@ trap cleanup_on_exit INT TERM
 init_state_ledger
 
 
+# Prune stale tasks from previous runs
+# Check each task: if PR merged or branch deleted, clean up worktree + state
+cleanup_stale_tasks() {
+  local stale_issues
+  stale_issues=$(jq -r '.tasks | to_entries[] | .key' "$STATE_FILE" 2>/dev/null)
+  [[ -z "$stale_issues" ]] && return 0
+
+  # Check if the tmux session from a previous run is still alive
+  local session_alive=false
+  tmux has-session -t "$SESSION" 2>/dev/null && session_alive=true
+
+  local cleaned=0
+  while IFS= read -r issue; do
+    [[ -z "$issue" ]] && continue
+    local task_json
+    task_json=$(jq -r --arg i "$issue" '.tasks[$i]' "$STATE_FILE")
+    local slug branch worktree pr
+    slug=$(echo "$task_json" | jq -r '.slug')
+    branch=$(echo "$task_json" | jq -r '.branch')
+    worktree=$(echo "$task_json" | jq -r '.worktree')
+    pr=$(echo "$task_json" | jq -r '.pr // empty')
+
+    local should_clean=false
+    local full_clean=false  # true = also remove worktree+branch
+    local reason=""
+
+    # Check if branch still exists
+    if ! git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/$branch" 2>/dev/null; then
+      should_clean=true
+      full_clean=true
+      reason="branch deleted"
+    # Check if PR was merged or closed
+    elif [[ -n "$pr" ]]; then
+      local pr_st
+      pr_st=$(gh pr view "$pr" --json state --jq .state 2>/dev/null || echo "")
+      if [[ "$pr_st" == "MERGED" ]]; then
+        should_clean=true
+        full_clean=true
+        reason="PR #$pr merged"
+      elif [[ "$pr_st" == "CLOSED" ]]; then
+        should_clean=true
+        full_clean=true
+        reason="PR #$pr closed"
+      fi
+    fi
+
+    # If no tmux session exists, orphaned tasks should be removed from state
+    # (worktree+branch preserved so user can resume manually if needed)
+    if [[ "$should_clean" == "false" ]] && [[ "$session_alive" == "false" ]]; then
+      should_clean=true
+      full_clean=false
+      reason="orphaned (no active session)"
+    fi
+
+    if [[ "$should_clean" == "true" ]]; then
+      log "  Pruning $issue ($reason)"
+      if [[ "$full_clean" == "true" ]]; then
+        # Clean up worktree + branch for completed tasks
+        if [[ -d "$worktree" ]]; then
+          execute git -C "$REPO_DIR" worktree remove "$worktree" --force 2>/dev/null || true
+        fi
+        if [[ "$reason" != "branch deleted" ]]; then
+          git -C "$REPO_DIR" branch -D "$branch" 2>/dev/null || true
+        fi
+      fi
+      # Remove from state file (dashboard will stop showing it)
+      remove_task_state "$issue"
+      cleaned=$((cleaned + 1))
+    fi
+  done <<<"$stale_issues"
+
+  if (( cleaned > 0 )); then
+    execute git -C "$REPO_DIR" worktree prune 2>/dev/null || true
+    log "  Cleaned $cleaned stale task(s)"
+  fi
+}
+
+stale_count=$(jq '.tasks | length' "$STATE_FILE" 2>/dev/null || echo 0)
+if (( stale_count > 0 )); then
+  log "Found $stale_count task(s) in state file from previous run. Checking..."
+  cleanup_stale_tasks
+fi
+
+
 # Display configuration
 if [[ "$DRY_RUN" == "true" ]]; then
   echo "============================================"
@@ -631,6 +715,9 @@ DRY_RUN='$DRY_RUN'
 BASE_BRANCH='$BASE_BRANCH'
 PROJECT_NAME='$PROJECT_NAME'
 PLANNING_MODE='$PLANNING_MODE'
+AGENT_CMD='$AGENT_CMD'
+MAX_PARALLEL='$MAX_PARALLEL'
+AUTO_EVAL='$AUTO_EVAL'
 ENVEOF
 
 
@@ -651,7 +738,10 @@ log_error() { echo "$(date '+%H:%M:%S') ERROR: $*" >&2; }
 log_warn() { echo "$(date '+%H:%M:%S') WARN: $*" >&2; }
 
 
-# Import functions
+# ============================================================================
+# STATE & LINEAR HELPERS
+# ============================================================================
+
 save_task_state() {
   local issue="$1" slug="$2" branch="$3" worktree="$4" pr="${5:-}" status="${6:-}"
   local tmp=$(mktemp)
@@ -708,26 +798,17 @@ validate_pr_merge() {
   local has_checks=$(echo "$details" | jq '.statusCheckRollup | length > 0')
   local checks=$(echo "$details" | jq -r '.statusCheckRollup[]?.conclusion // "PENDING"')
 
-  # Check 1: Must be MERGED (not CLOSED)
-  if [[ "$state" != "MERGED" ]]; then
-    return 1
-  fi
-
-  # Check 2: Must be merged to correct base branch
+  if [[ "$state" != "MERGED" ]]; then return 1; fi
   if [[ "$base_branch" != "$BASE_BRANCH" ]]; then
     log_error "PR #$pr merged to wrong base: $base_branch (expected: $BASE_BRANCH)"
     return 1
   fi
 
-  # Only validate CI checks if checks exist (repos without CI skip this)
   if [[ "$has_checks" == "true" ]]; then
-    # Check 3: All CI checks must pass
     if echo "$checks" | grep -qE "FAILURE|CANCELLED"; then
       log_warn "PR #$pr has failing CI checks - waiting for resolution"
       return 1
     fi
-
-    # Check 4: CI checks must be complete (not pending)
     if echo "$checks" | grep -q "PENDING"; then
       log "PR #$pr CI checks still pending - waiting..."
       return 1
@@ -759,12 +840,10 @@ get_task_phase() {
 }
 
 
-# Check if a planning task has completed its plan (plan.md exists + .plan-approved)
 check_plan_approved() {
   local slug="$1"
   local wt="${WORKTREE_ROOT}/${slug}"
-  local feature_dir="$wt/features/$slug"
-  [[ -f "$feature_dir/.plan-approved" ]] && return 0
+  [[ -f "$wt/features/$slug/.plan-approved" ]] && return 0
   return 1
 }
 
@@ -772,15 +851,280 @@ check_plan_approved() {
 check_plan_exists() {
   local slug="$1"
   local wt="${WORKTREE_ROOT}/${slug}"
-  local feature_dir="$wt/features/$slug"
-  [[ -f "$feature_dir/plan.md" ]] && return 0
+  [[ -f "$wt/features/$slug/plan.md" ]] && return 0
   return 1
 }
 
 
-# Parse tasks from file
-declare -A PR_BY_ISSUE BRANCH_BY_ISSUE SLUG_BY_ISSUE CLEANED
+# ============================================================================
+# BACKLOG FETCHING & CANDIDATE SCORING
+# ============================================================================
 
+BACKLOG_CACHE=""
+LAST_BACKLOG_FETCH=0
+BACKLOG_CACHE_TTL=60  # seconds between backlog refreshes
+
+fetch_candidates() {
+  local now
+  now=$(date +%s)
+
+  # Use cache if fresh enough
+  if (( now - LAST_BACKLOG_FETCH < BACKLOG_CACHE_TTL )) && [[ -n "$BACKLOG_CACHE" ]]; then
+    echo "$BACKLOG_CACHE"
+    return
+  fi
+
+  local backlog_json
+  backlog_json=$(npx tsx "$TOOLS_DIR/list-backlog-json.ts" "$PROJECT_NAME" 2>&1 | sed '/^\[dotenv/d' | sed '/^[[:space:]]*$/d')
+
+  if [[ -z "$backlog_json" ]] || [[ "$backlog_json" == "[]" ]]; then
+    BACKLOG_CACHE=""
+    LAST_BACKLOG_FETCH=$now
+    return
+  fi
+
+  BACKLOG_CACHE=$(echo "$backlog_json" | jq -r --argjson show_limit 9 '
+    map(select((.state.name|ascii_downcase) == "todo" or (.state.name|ascii_downcase) == "backlog"))
+    | map(. + {
+        area: ((.labels.nodes // []) | map(.name) | map(select(test("^(Area|Component|Page|Route):"))) | .[0] // ""),
+        has_detailed_plan: (.description // "" | test("##+ (1\\.|Objective|What|Technical Context|Success Criteria|Implementation)")),
+        is_foundational: ((.labels.nodes // []) | map(.name | ascii_downcase) | any(test("foundational|architecture|epic|infrastructure"))),
+        blocks_count: ((.relations.nodes // []) | map(select(.type == "blocks")) | length),
+        blocked_by_count: ((.relations.nodes // []) | map(select(.type == "blocked")) | length)
+      })
+    | map(. + {
+        score: (20 + (if .priority > 0 then (5 - .priority) * 20 else 0 end) + (if .has_detailed_plan then 30 else 0 end) + (if .is_foundational then 25 else 0 end) + (.blocks_count * 10) + (if .blocked_by_count == 0 then 15 else 0 end) - (.blocked_by_count * 20) - ((.estimate // 3) * 2))
+      })
+    | sort_by(-.score)
+    | .[0:$show_limit]
+    | .[]
+    | "\(.identifier)|\(.title|ascii_downcase|gsub("[^a-z0-9]+";"-"))|\(.title)|\(.area)|\(.score)"
+  ')
+  LAST_BACKLOG_FETCH=$now
+  echo "$BACKLOG_CACHE"
+}
+
+
+# Filter out issues that are already tracked (active or cleaned)
+filter_active_issues() {
+  local candidates="$1"
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    local cand_issue
+    cand_issue=$(echo "$line" | cut -d'|' -f1)
+    # Skip if already tracked
+    if [[ -n "${BRANCH_BY_ISSUE[$cand_issue]:-}" ]] || [[ -n "${CLEANED[$cand_issue]:-}" ]]; then
+      continue
+    fi
+    echo "$line"
+  done <<<"$candidates"
+}
+
+
+# ============================================================================
+# TASK LAUNCH (worktree + agent + state)
+# ============================================================================
+
+is_task_packet() {
+  local description="$1"
+  echo "$description" | grep -qE "(##+ (1\.|Objective)|##+ What|##+ Technical Context|##+ Success Criteria|## Task Packet)"
+}
+
+
+launch_task() {
+  local issue="$1" slug="$2" title="$3"
+  local branch="task/${slug}"
+  local wt_dir="${WORKTREE_ROOT}/${slug}"
+
+  log "Launching $issue: $title"
+
+  # Fetch issue details
+  local issue_json
+  issue_json=$(npx tsx "$TOOLS_DIR/get-issue-json.ts" "$issue" 2>&1 | sed '/^\[dotenv/d' | sed '/^$/d' || echo "{}")
+  local issue_desc
+  issue_desc=$(echo "$issue_json" | jq -r '.description // ""' 2>/dev/null || echo "")
+
+  # Task packet handling
+  local packet_file="/tmp/${SESSION}-${issue}-taskpacket.md"
+  if [[ "$PLANNING_MODE" == "interactive" ]]; then
+    echo "$issue_desc" > "$packet_file"
+  elif is_task_packet "$issue_desc"; then
+    echo "$issue_desc" > "$packet_file"
+  else
+    log "  Expanding task packet for $issue..."
+    if [[ -f "$TOOLS_DIR/expand-issue.ts" ]]; then
+      npx tsx "$TOOLS_DIR/expand-issue.ts" "$issue" --output "$packet_file" --update >/dev/null 2>&1 || echo "$issue_desc" > "$packet_file"
+    else
+      echo "$issue_desc" > "$packet_file"
+    fi
+  fi
+  local packet_content
+  packet_content=$(cat "$packet_file" 2>/dev/null || echo "")
+
+  # Fetch latest base branch
+  git -C "$REPO_DIR" fetch origin "$BASE_BRANCH" 2>/dev/null || true
+
+  # Create worktree + branch
+  if [[ -d "$wt_dir" ]]; then
+    log "  Worktree exists: $wt_dir (resuming)"
+  elif git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/$branch" 2>/dev/null; then
+    log "  Branch $branch exists, resuming"
+    git -C "$REPO_DIR" worktree add "$wt_dir" "$branch"
+  else
+    log "  Creating branch $branch from origin/$BASE_BRANCH"
+    git -C "$REPO_DIR" worktree add "$wt_dir" -b "$branch" "origin/$BASE_BRANCH"
+  fi
+
+  # Set Linear state
+  linear_set_state "$issue" "In Progress"
+
+  # Save to state ledger
+  local initial_phase="executing"
+  [[ "$PLANNING_MODE" == "interactive" ]] && initial_phase="planning"
+  save_task_state "$issue" "$slug" "$branch" "$wt_dir"
+  set_task_phase "$issue" "$initial_phase"
+
+  # Track in monitor arrays
+  BRANCH_BY_ISSUE["$issue"]="$branch"
+  SLUG_BY_ISSUE["$issue"]="$slug"
+
+  # Create tmux window
+  local win="$issue-$slug"
+  tmux new-window -t "$SESSION" -n "$win" -c "$wt_dir"
+
+  # Launch agent
+  if [[ "$PLANNING_MODE" == "interactive" ]]; then
+    # Pre-seed selected-task.json
+    local feature_dir="$wt_dir/features/$slug"
+    mkdir -p "$feature_dir"
+    local labels_json="[]"
+    labels_json=$(echo "$issue_json" | jq '[.labels.nodes[]?.name // empty]' 2>/dev/null || echo "[]")
+
+    jq -n \
+      --arg taskId "$issue" \
+      --arg title "$title" \
+      --arg description "$packet_content" \
+      --argjson labels "$labels_json" \
+      --arg featureName "$slug" \
+      --arg contextPath "features/$slug/selected-task.json" \
+      '{
+        taskId: $taskId,
+        title: $title,
+        description: $description,
+        labels: $labels,
+        workflowType: "feature",
+        featureName: $featureName,
+        contextPath: $contextPath,
+        selectedAt: (now | todate)
+      }' > "$feature_dir/selected-task.json"
+
+    local prompt_file="/tmp/${SESSION}-${issue}-plan-prompt.txt"
+    cat > "$prompt_file" <<PLAN_PROMPT_EOF
+You are working on: $title ($issue)
+
+Repo worktree: $wt_dir
+Branch: $branch
+Base branch: $BASE_BRANCH
+
+${packet_content:+Issue Description:
+$packet_content
+}
+---
+
+## Your Workflow
+
+You have TWO phases. Do them in order.
+
+### Phase 1: Planning (interactive)
+Task context is pre-seeded at: features/$slug/selected-task.json
+
+1. Read the task context
+2. Research the codebase to understand relevant code and patterns
+3. Create a detailed implementation plan with phases
+4. Save the plan to: features/$slug/plan.md
+5. Present the plan summary to the user and wait for approval
+6. After approval, create a file: features/$slug/.plan-approved
+
+Do NOT proceed to Phase 2 until the user has approved the plan.
+
+### Phase 2: Implementation
+After plan approval:
+1. Execute the plan phase by phase
+2. Run tests/lint between phases — pause if anything fails
+3. Create a PR using GitHub CLI: gh pr create --fill
+4. Link the PR to $issue
+
+Success criteria:
+- [ ] Implementation matches plan and issue requirements
+- [ ] Lint/tests pass
+- [ ] No regressions
+- [ ] PR created with clear description linked to $issue
+
+Start with Phase 1 now. Read the task context and begin researching.
+PLAN_PROMPT_EOF
+
+    local launcher="/tmp/${SESSION}-${issue}-launcher.sh"
+    cat > "$launcher" <<LAUNCH_EOF
+#!/bin/bash
+exec claude "\$(cat '$prompt_file')"
+LAUNCH_EOF
+    chmod +x "$launcher"
+    tmux send-keys -t "$SESSION:$win" "'$launcher'" C-m
+  else
+    # Skip mode — pipe instructions to agent
+    local instr_file="/tmp/${SESSION}-${issue}-instructions.txt"
+    cat > "$instr_file" <<INSTR_EOF
+You are working on: $title ($issue)
+
+Repo worktree: $wt_dir
+Branch: $branch
+Base branch: $BASE_BRANCH
+
+${packet_content:+Issue Description:
+$packet_content
+}
+
+Goal:
+- Implement the feature/fix described by the issue and title.
+
+Success criteria:
+- [ ] Implementation matches issue requirements
+- [ ] UI is responsive and accessible (if applicable)
+- [ ] Lint/tests pass
+- [ ] No regressions in existing functionality
+- [ ] PR created with clear description and linked to $issue
+
+Process:
+1. Inspect repo and find relevant code
+2. Make minimal, high-quality changes
+3. Run tests/lint
+4. Create a PR using GitHub CLI: gh pr create --fill
+5. Post back with summary of changes, commands run + results, and PR link
+INSTR_EOF
+
+    if [[ "$AGENT_CMD" == "claude" ]]; then
+      tmux send-keys -t "$SESSION:$win" "cat '$instr_file' | $AGENT_CMD" C-m
+    elif [[ "$AGENT_CMD" == "codex" ]]; then
+      tmux send-keys -t "$SESSION:$win" "$AGENT_CMD /task \"\$(cat '$instr_file')\"" C-m
+    else
+      tmux send-keys -t "$SESSION:$win" "$AGENT_CMD" C-m
+      sleep 0.3
+      tmux set-buffer "$(cat "$instr_file")"
+      tmux paste-buffer -t "$SESSION:$win"
+      tmux send-keys -t "$SESSION:$win" C-m
+    fi
+  fi
+
+  log "  ✓ $issue launched (phase: ${initial_phase})"
+}
+
+
+# ============================================================================
+# MAIN MONITORING LOOP
+# ============================================================================
+
+# Parse initial tasks from file
+declare -A PR_BY_ISSUE BRANCH_BY_ISSUE SLUG_BY_ISSUE CLEANED
 
 while IFS= read -r line; do
   [[ -z "$line" ]] && continue
@@ -790,36 +1134,37 @@ while IFS= read -r line; do
 done < "$TASKS_FILE"
 
 
-log "Monitoring PRs and cleaning up merged tasks..."
+log "Monitoring tasks and managing work queue..."
 [[ "$PLANNING_MODE" == "interactive" ]] && log "  Planning mode: interactive (watching for plan approval)"
+log "  Max parallel: $MAX_PARALLEL"
 log "  Checking every ${POLL_SECONDS}s"
+log "  Type 'q' to quit, or 'touch $STATE_DIR/.stop-loop' to stop"
 echo ""
 
+QUIT_REQUESTED=false
+LAST_DISPLAY=""       # fingerprint of what was last printed
+LAST_ACTIVE_COUNT=-1  # force first render
 
 while :; do
-  all_done=true
-
+  # ── Phase A: Monitor existing tasks ──────────────────────────────────
+  active_count=0
 
   for ISSUE in "${!BRANCH_BY_ISSUE[@]}"; do
     [[ -n "${CLEANED[$ISSUE]:-}" ]] && continue
 
-
     BRANCH="${BRANCH_BY_ISSUE[$ISSUE]}"
     SLUG="${SLUG_BY_ISSUE[$ISSUE]}"
     PR="${PR_BY_ISSUE[$ISSUE]:-}"
-
 
     # If already merged (requireConfirm), wait for window close then cleanup
     task_status=$(jq -r --arg issue "$ISSUE" '.tasks[$issue].status // empty' "$STATE_FILE" 2>/dev/null)
     if [[ "$task_status" == "merged" ]]; then
       WIN="$ISSUE-$SLUG"
       if tmux list-panes -t "$SESSION:$WIN" -F '#{pane_dead}' 2>/dev/null | grep -q '^0$'; then
-        # Window still open — user is reviewing
-        all_done=false
+        active_count=$((active_count + 1))
         continue
       fi
 
-      # Window closed or pane dead — finish cleanup
       execute tmux kill-window -t "$SESSION:$WIN" 2>/dev/null || true
 
       WT_DIR="${WORKTREE_ROOT}/${SLUG}"
@@ -837,30 +1182,24 @@ while :; do
       remove_task_state "$ISSUE"
       CLEANED["$ISSUE"]=1
       log "  ✓ Complete: $ISSUE (post-review cleanup)"
+
+      # Prune worktrees after cleanup
+      execute git -C "$REPO_DIR" worktree prune 2>/dev/null || true
       continue
     fi
 
-
-    # ── Planning phase tracking ─────────────────────────────────────────
-    # When planningMode=interactive, tasks start in "planning" phase.
-    # Monitor watches for plan.md and .plan-approved to track progress.
+    # ── Planning phase tracking ───────────────────────────────────────
     current_phase=$(get_task_phase "$ISSUE")
 
     if [[ "$current_phase" == "planning" ]]; then
       if check_plan_approved "$SLUG"; then
         set_task_phase "$ISSUE" "executing"
         log "✓ $ISSUE → Plan approved, now executing"
-      elif check_plan_exists "$SLUG"; then
-        # Plan exists but not yet approved — user needs to review
-        all_done=false
-        continue
       else
-        # Still planning — agent is researching/drafting
-        all_done=false
+        active_count=$((active_count + 1))
         continue
       fi
     fi
-
 
     # Check if PR exists
     if [[ -z "$PR" ]]; then
@@ -871,31 +1210,33 @@ while :; do
         linear_set_state "$ISSUE" "In Review"
         log "✓ $ISSUE → PR #$PR (In Review)"
       else
-        all_done=false
+        active_count=$((active_count + 1))
         continue
       fi
     fi
-
 
     # Check if merged
     if validate_pr_merge "$PR"; then
       log "✓ $ISSUE → PR #$PR MERGED"
 
+      # Post-merge eval (non-blocking: always exits 0)
+      if [[ "$AUTO_EVAL" == "true" ]]; then
+        log "  📊 Running post-merge eval..."
+        npx tsx "$TOOLS_DIR/run-eval-hook.ts" \
+          --issue "$ISSUE" --pr "$PR" --branch "$BRANCH" \
+          --workflow-type mill --repo-dir "$REPO_DIR" \
+          2>&1 | while IFS= read -r line; do log "  [eval] $line"; done || true
+      fi
 
-      # When requireConfirm is on, mark as merged but keep polling
-      # so the user can inspect the window before cleanup
       if [[ "$REQUIRE_CONFIRM" == "true" ]]; then
         log "  → Window stays open for review — close it when ready"
         linear_set_state "$ISSUE" "Done"
         save_task_state "$ISSUE" "$SLUG" "$BRANCH" "${WORKTREE_ROOT}/${SLUG}" "$PR" "merged"
-        all_done=false
+        active_count=$((active_count + 1))
         continue
       fi
 
-
-      # Auto cleanup
       linear_set_state "$ISSUE" "Done"
-
 
       WIN="$ISSUE-$SLUG"
       if tmux has-session -t "$SESSION:$WIN" 2>/dev/null; then
@@ -903,14 +1244,12 @@ while :; do
         log "  ✓ Closed window: $WIN"
       fi
 
-
       WT_DIR="${WORKTREE_ROOT}/${SLUG}"
       if [[ -d "$WT_DIR" ]]; then
         execute git -C "$REPO_DIR" worktree remove "$WT_DIR" --force 2>/dev/null || true
         log "  ✓ Removed worktree: $WT_DIR"
       fi
 
-      # Clean up the merged branch to avoid stale reuse
       task_branch="task/${SLUG}"
       if git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/$task_branch" 2>/dev/null; then
         execute git -C "$REPO_DIR" branch -D "$task_branch" 2>/dev/null || true
@@ -921,93 +1260,122 @@ while :; do
       CLEANED["$ISSUE"]=1
       log "  ✓ Complete: $ISSUE"
 
+      execute git -C "$REPO_DIR" worktree prune 2>/dev/null || true
 
     elif [[ "$(pr_state "$PR")" == "CLOSED" ]]; then
       log_warn "$ISSUE → PR #$PR CLOSED without merge"
       linear_set_state "$ISSUE" "Backlog"
       CLEANED["$ISSUE"]=1
     else
-      all_done=false
+      active_count=$((active_count + 1))
     fi
   done
 
-
-  if $all_done; then
-    echo ""
-    log "🎉 All tasks complete!"
-
-    # Prune old worktrees
-    execute git -C "$REPO_DIR" worktree prune
-    log "  ✓ Pruned worktrees"
-
-    # Check for exit signal file
-    if [[ -f "$STATE_DIR/.stop-loop" ]]; then
-      log "Stop signal detected. Exiting loop..."
+  # ── Phase B: Check for stop signal ──────────────────────────────────
+  if [[ -f "$STATE_DIR/.stop-loop" ]]; then
+    if (( active_count == 0 )); then
+      log "Stop signal detected and all tasks complete. Exiting."
       rm -f "$STATE_DIR/.stop-loop"
       exit 0
     fi
-
-    # Re-fetch backlog to get latest tasks
-    echo ""
-    log "Checking for more work..."
-    BACKLOG_JSON=$(npx tsx "$TOOLS_DIR/list-backlog-json.ts" "$PROJECT_NAME" 2>&1 | sed '/^\[dotenv/d' | sed '/^[[:space:]]*$/d')
-
-    if [[ -z "$BACKLOG_JSON" ]] || [[ "$BACKLOG_JSON" == "[]" ]]; then
-      log "Backlog empty. Exiting loop."
-      exit 0
-    fi
-
-    # Get new candidates
-    NEW_CANDIDATES=$(echo "$BACKLOG_JSON" | jq -r --argjson show_limit 9 '
-      map(select((.state.name|ascii_downcase) == "todo" or (.state.name|ascii_downcase) == "backlog"))
-      | map(. + {
-          area: ((.labels.nodes // []) | map(.name) | map(select(test("^(Area|Component|Page|Route):"))) | .[0] // ""),
-          has_detailed_plan: (.description // "" | test("##+ (1\\\\\\\\.|Objective|What|Technical Context|Success Criteria|Implementation)")),
-          is_foundational: ((.labels.nodes // []) | map(.name | ascii_downcase) | any(test("foundational|architecture|epic|infrastructure"))),
-          blocks_count: ((.relations.nodes // []) | map(select(.type == "blocks")) | length),
-          blocked_by_count: ((.relations.nodes // []) | map(select(.type == "blocked")) | length)
-        })
-      | map(. + {
-          score: (20 + (if .priority > 0 then (5 - .priority) * 20 else 0 end) + (if .has_detailed_plan then 30 else 0 end) + (if .is_foundational then 25 else 0 end) + (.blocks_count * 10) + (if .blocked_by_count == 0 then 15 else 0 end) - (.blocked_by_count * 20) - ((.estimate // 3) * 2))
-        })
-      | sort_by(-.score)
-      | .[0:$show_limit]
-      | .[]
-      | "\(.identifier)|\(.title|ascii_downcase|gsub("[^a-z0-9]+";"-"))|\(.title)|\(.area)|\(.score)"
-    ')
-
-    if [[ -z "$NEW_CANDIDATES" ]]; then
-      log "No backlog candidates found. Exiting loop."
-      exit 0
-    fi
-
-    # Show available tasks
-    echo ""
-    log "Available tasks for next cycle:"
-    echo "$NEW_CANDIDATES" | awk -F'|' '{printf "%s. %s - %s (score: %.0f)\n", NR, $1, $3, $5}' | head -9
-    echo ""
-
-    # Prompt with timeout for auto-continue
-    log "Continue to next cycle? [Y/n] (auto-continue in 10s, or 'touch $STATE_DIR/.stop-loop' to stop)"
-    read -t 10 -r REPLY || REPLY="y"
-    echo ""
-
-    if [[ ! $REPLY =~ ^[Yy]?$ ]]; then
-      log "User declined. Exiting loop."
-      exit 0
-    fi
-
-    log "🔄 Starting next cycle..."
-    echo ""
-
-    # Signal the outer script to restart by creating a restart file
-    touch "$STATE_DIR/.restart-loop"
-    log "Restart signal sent. Exiting monitoring..."
-    exit 0
+    log "Stop signal detected. Finishing $active_count active task(s)..."
+    sleep "$POLL_SECONDS"
+    continue
   fi
 
+  if [[ "$QUIT_REQUESTED" == "true" ]]; then
+    if (( active_count == 0 )); then
+      log "All tasks complete. Exiting."
+      exit 0
+    fi
+    # Still have active tasks — keep monitoring but don't offer new ones
+    sleep "$POLL_SECONDS"
+    continue
+  fi
 
-  sleep "$POLL_SECONDS"
+  # ── Phase C: Offer new tasks if slots available ─────────────────────
+  free_slots=$((MAX_PARALLEL - active_count))
+
+  if (( free_slots > 0 )); then
+    candidates=$(fetch_candidates)
+
+    if [[ -n "$candidates" ]]; then
+      available=$(filter_active_issues "$candidates")
+
+      if [[ -n "$available" ]]; then
+        # Only re-render the prompt when the display would actually change
+        display_fingerprint="${free_slots}|${available}"
+        if [[ "$display_fingerprint" != "$LAST_DISPLAY" ]] || (( active_count != LAST_ACTIVE_COUNT )); then
+          echo ""
+          log "$free_slots slot(s) available. Next tasks:"
+          echo "$available" | awk -F'|' '{printf "  %s. %s - %s (score: %.0f)\n", NR, $1, $3, $5}' | head -9
+          echo ""
+          echo "Enter number(s) to start (e.g. 1 3), 'q' to quit, or wait ${POLL_SECONDS}s to refresh:"
+          LAST_DISPLAY="$display_fingerprint"
+          LAST_ACTIVE_COUNT=$active_count
+        fi
+
+        if read -t "$POLL_SECONDS" -r REPLY; then
+          if [[ "$REPLY" =~ ^[Qq] ]]; then
+            if (( active_count == 0 )); then
+              log "Quitting."
+              exit 0
+            else
+              log "Will quit after $active_count active task(s) finish."
+              QUIT_REQUESTED=true
+            fi
+          elif [[ -n "$REPLY" ]]; then
+            # Parse user selection and launch tasks (up to free_slots)
+            launched=0
+            for n in $REPLY; do
+              if (( launched >= free_slots )); then
+                log_warn "No more free slots — skipping remaining selections"
+                break
+              fi
+              local_line=$(echo "$available" | sed -n "${n}p")
+              if [[ -z "$local_line" ]]; then
+                log_warn "Invalid selection: $n"
+                continue
+              fi
+              IFS='|' read -r sel_issue sel_slug sel_title _sel_area _sel_score <<<"$local_line"
+              launch_task "$sel_issue" "$sel_slug" "$sel_title"
+              launched=$((launched + 1))
+            done
+            # Invalidate caches after launching so next cycle re-renders
+            LAST_BACKLOG_FETCH=0
+            LAST_DISPLAY=""
+          fi
+          # User pressed Enter with no input — just continue monitoring
+        fi
+        # read timed out — continue monitoring
+      else
+        # All candidates are already active
+        if (( active_count == 0 )); then
+          log "No new tasks available. Waiting... (type 'q' to quit)"
+          if read -t "$POLL_SECONDS" -r REPLY; then
+            [[ "$REPLY" =~ ^[Qq] ]] && exit 0
+          fi
+        else
+          sleep "$POLL_SECONDS"
+        fi
+      fi
+    else
+      # Backlog empty
+      if (( active_count == 0 )); then
+        log "Backlog empty. Waiting for new tasks... (type 'q' to quit)"
+        # Invalidate cache so we re-fetch next cycle
+        LAST_BACKLOG_FETCH=0
+        if read -t "$POLL_SECONDS" -r REPLY; then
+          [[ "$REPLY" =~ ^[Qq] ]] && exit 0
+        fi
+      else
+        sleep "$POLL_SECONDS"
+      fi
+    fi
+  else
+    # All slots full — just monitor
+    sleep "$POLL_SECONDS"
+  fi
 done
 MONITOR_EOF
 
@@ -1032,19 +1400,10 @@ tmux send-keys -t "$SESSION:control.0" "clear && '$MONITOR_SCRIPT' '$MONITOR_ENV
 log "Attaching to session: $SESSION"
 log "  Ctrl+B then W to switch windows"
 log "  Ctrl+B then D to detach"
-log "  To stop continuous loop: touch $STATE_DIR/.stop-loop"
+log "  Type 'q' in control window to quit"
+log "  Or: touch $STATE_DIR/.stop-loop"
 echo ""
 sleep 1
 tmux attach -t "$SESSION"
-
-# After detaching, check if monitoring script signaled a restart
-if [[ -f "$STATE_DIR/.restart-loop" ]]; then
-  rm -f "$STATE_DIR/.restart-loop"
-  log "Restart signal detected - preparing next cycle..."
-  echo ""
-  sleep 2
-  # Re-execute this script to start next cycle
-  exec "$0"
-fi
 
 log "Session ended. Run 'git -C $REPO_DIR worktree prune' if needed."

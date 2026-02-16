@@ -1,46 +1,27 @@
-import { describe, it, beforeEach, afterEach, mock } from 'node:test';
+import { describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { evaluateTask } from './eval.js';
 
-let originalFetch;
-
-function mockFetch(responseText, status = 200, usage = { input_tokens: 100, output_tokens: 50 }) {
-  const responseBody = { content: [{ type: 'text', text: responseText }] };
-  if (usage !== null) responseBody.usage = usage;
-  globalThis.fetch = mock.fn(() =>
-    Promise.resolve({
-      ok: status >= 200 && status < 300,
-      status,
-      json: () => Promise.resolve(responseBody),
-      text: () => Promise.resolve(responseText),
-    })
-  );
+function mockCallFn(responseText, usage = null, costUsd = undefined) {
+  return mock.fn(() => Promise.resolve({ text: responseText, usage, costUsd }));
 }
 
 describe('evaluateTask', () => {
-  beforeEach(() => {
-    originalFetch = globalThis.fetch;
-    process.env.ANTHROPIC_API_KEY = 'test-key-123';
-  });
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-    delete process.env.ANTHROPIC_API_KEY;
-  });
-
   it('returns a valid EvalRecord conforming to eval-schema', async () => {
     const validResponse = JSON.stringify({
       score: 0.85,
       rationale: 'Task was completed successfully with clean implementation.',
       interventionFlags: [],
     });
-    mockFetch(validResponse);
 
-    const result = await evaluateTask({
-      taskPrompt: 'Add a loading spinner',
-      prReviewOutput: 'Clean diff, all tests pass',
-      issueId: 'HOK-100',
-    });
+    const result = await evaluateTask(
+      {
+        taskPrompt: 'Add a loading spinner',
+        prReviewOutput: 'Clean diff, all tests pass',
+        issueId: 'HOK-100',
+      },
+      { _callFn: mockCallFn(validResponse) }
+    );
 
     // Core EvalRecord fields from eval-schema.ts
     assert.ok(result.id, 'should have a UUID id');
@@ -65,12 +46,14 @@ describe('evaluateTask', () => {
       rationale: 'Perfect autonomous execution.',
       interventionFlags: [],
     });
-    mockFetch(validResponse);
 
-    const result = await evaluateTask({
-      taskPrompt: 'Simple task',
-      prReviewOutput: 'Flawless',
-    });
+    const result = await evaluateTask(
+      {
+        taskPrompt: 'Simple task',
+        prReviewOutput: 'Flawless',
+      },
+      { _callFn: mockCallFn(validResponse) }
+    );
 
     assert.equal(result.scoreBand, 'Full Success');
   });
@@ -81,17 +64,19 @@ describe('evaluateTask', () => {
       rationale: 'Task completed but required guidance.',
       interventionFlags: ['needed-design-guidance'],
     });
-    mockFetch(validResponse);
 
-    const result = await evaluateTask({
-      taskPrompt: 'Build a dashboard',
-      prReviewOutput: 'Implementation works but needed corrections',
-      interventions: [
-        { description: 'Corrected component structure', severity: 'major' },
-        { description: 'Fixed import path', severity: 'minor' },
-      ],
-      issueId: 'HOK-200',
-    });
+    const result = await evaluateTask(
+      {
+        taskPrompt: 'Build a dashboard',
+        prReviewOutput: 'Implementation works but needed corrections',
+        interventions: [
+          { description: 'Corrected component structure', severity: 'major' },
+          { description: 'Fixed import path', severity: 'minor' },
+        ],
+        issueId: 'HOK-200',
+      },
+      { _callFn: mockCallFn(validResponse) }
+    );
 
     assert.equal(result.interventionRequired, true);
     assert.equal(result.interventionCount, 2);
@@ -105,7 +90,7 @@ describe('evaluateTask', () => {
 
   it('retries on malformed JSON and succeeds on second attempt', async () => {
     let callCount = 0;
-    globalThis.fetch = mock.fn(() => {
+    const callFn = mock.fn(() => {
       callCount++;
       const text =
         callCount === 1
@@ -115,21 +100,16 @@ describe('evaluateTask', () => {
               rationale: 'Good work on second parse.',
               interventionFlags: [],
             });
-      return Promise.resolve({
-        ok: true,
-        status: 200,
-        json: () =>
-          Promise.resolve({
-            content: [{ type: 'text', text }],
-            usage: { input_tokens: 100, output_tokens: 50 },
-          }),
-      });
+      return Promise.resolve({ text, usage: null });
     });
 
-    const result = await evaluateTask({
-      taskPrompt: 'Fix a bug',
-      prReviewOutput: 'Bug fixed correctly',
-    });
+    const result = await evaluateTask(
+      {
+        taskPrompt: 'Fix a bug',
+        prReviewOutput: 'Bug fixed correctly',
+      },
+      { _callFn: callFn }
+    );
 
     assert.equal(result.score, 0.75);
     assert.equal(callCount, 2);
@@ -137,41 +117,39 @@ describe('evaluateTask', () => {
 
   it('rejects scores outside 0-1 range and retries', async () => {
     let callCount = 0;
-    globalThis.fetch = mock.fn(() => {
+    const callFn = mock.fn(() => {
       callCount++;
       const text =
         callCount === 1
           ? JSON.stringify({ score: 1.5, rationale: 'Too high', interventionFlags: [] })
           : JSON.stringify({ score: 0.9, rationale: 'Valid score now.', interventionFlags: [] });
-      return Promise.resolve({
-        ok: true,
-        status: 200,
-        json: () =>
-          Promise.resolve({
-            content: [{ type: 'text', text }],
-            usage: { input_tokens: 100, output_tokens: 50 },
-          }),
-      });
+      return Promise.resolve({ text, usage: null });
     });
 
-    const result = await evaluateTask({
-      taskPrompt: 'Add feature',
-      prReviewOutput: 'Feature added',
-    });
+    const result = await evaluateTask(
+      {
+        taskPrompt: 'Add feature',
+        prReviewOutput: 'Feature added',
+      },
+      { _callFn: callFn }
+    );
 
     assert.equal(result.score, 0.9);
     assert.equal(callCount, 2);
   });
 
   it('throws after max retries exhausted', async () => {
-    mockFetch('not json at all');
+    const callFn = mockCallFn('not json at all');
 
     await assert.rejects(
       () =>
-        evaluateTask({
-          taskPrompt: 'Do something',
-          prReviewOutput: 'Did something',
-        }),
+        evaluateTask(
+          {
+            taskPrompt: 'Do something',
+            prReviewOutput: 'Did something',
+          },
+          { _callFn: callFn }
+        ),
       (err) => {
         assert.ok(err.message.includes('Failed to parse LLM judge response after 3 attempts'));
         return true;
@@ -179,63 +157,46 @@ describe('evaluateTask', () => {
     );
 
     // Should have been called 3 times (1 initial + 2 retries)
-    assert.equal(globalThis.fetch.mock.callCount(), 3);
+    assert.equal(callFn.mock.callCount(), 3);
   });
 
-  it('throws immediately on API error (no retry)', async () => {
-    globalThis.fetch = mock.fn(() =>
-      Promise.resolve({
-        ok: false,
-        status: 500,
-        text: () => Promise.resolve('Internal Server Error'),
-      })
-    );
+  it('throws immediately on CLI error (no retry)', async () => {
+    const callFn = mock.fn(() => Promise.reject(new Error('claude CLI exited with code 1')));
 
     await assert.rejects(
       () =>
-        evaluateTask({
-          taskPrompt: 'Do something',
-          prReviewOutput: 'Did something',
-        }),
+        evaluateTask(
+          {
+            taskPrompt: 'Do something',
+            prReviewOutput: 'Did something',
+          },
+          { _callFn: callFn }
+        ),
       (err) => {
-        assert.ok(err.message.includes('Anthropic API error (500)'));
+        assert.ok(err.message.includes('claude CLI exited with code 1'));
         return true;
       }
     );
 
-    // Should only have been called once — no retry on API errors
-    assert.equal(globalThis.fetch.mock.callCount(), 1);
+    // Should only have been called once — no retry on CLI errors
+    assert.equal(callFn.mock.callCount(), 1);
   });
 
-  it('throws when ANTHROPIC_API_KEY is not set', async () => {
-    delete process.env.ANTHROPIC_API_KEY;
-    mockFetch('irrelevant');
-
-    await assert.rejects(
-      () =>
-        evaluateTask({
-          taskPrompt: 'Do something',
-          prReviewOutput: 'Did something',
-        }),
-      (err) => {
-        assert.ok(err.message.includes('ANTHROPIC_API_KEY'));
-        return true;
-      }
-    );
-  });
-
-  it('includes tokenUsage from API response', async () => {
+  it('includes tokenUsage from CLI JSON response', async () => {
     const validResponse = JSON.stringify({
       score: 0.85,
       rationale: 'Good work.',
       interventionFlags: [],
     });
-    mockFetch(validResponse, 200, { input_tokens: 2000, output_tokens: 500 });
+    const usage = { inputTokens: 2000, outputTokens: 500, totalTokens: 2500 };
 
-    const result = await evaluateTask({
-      taskPrompt: 'Add a feature',
-      prReviewOutput: 'Clean diff',
-    });
+    const result = await evaluateTask(
+      {
+        taskPrompt: 'Add a feature',
+        prReviewOutput: 'Clean diff',
+      },
+      { _callFn: mockCallFn(validResponse, usage) }
+    );
 
     assert.ok(result.tokenUsage, 'should have tokenUsage');
     assert.equal(result.tokenUsage.inputTokens, 2000);
@@ -249,36 +210,56 @@ describe('evaluateTask', () => {
       rationale: 'Well done.',
       interventionFlags: [],
     });
-    // Default mock provides input_tokens: 100, output_tokens: 50
-    mockFetch(validResponse);
+    const usage = { inputTokens: 100, outputTokens: 50, totalTokens: 150 };
 
-    const result = await evaluateTask({
-      taskPrompt: 'Quick task',
-      prReviewOutput: 'Good',
-    });
+    const result = await evaluateTask(
+      {
+        taskPrompt: 'Quick task',
+        prReviewOutput: 'Good',
+      },
+      { _callFn: mockCallFn(validResponse, usage) }
+    );
 
-    // The judge model is claude-sonnet-4-5-20250929 by default
-    // Pricing: inputCostPerMTok=3, outputCostPerMTok=15
-    // Cost = (100 * 3 + 50 * 15) / 1_000_000 = (300 + 750) / 1_000_000 = 0.00105
+    // estimatedCost may be undefined if pricing table not loaded (test cwd may not have config)
     if (result.estimatedCost !== undefined) {
       assert.equal(typeof result.estimatedCost, 'number');
       assert.ok(result.estimatedCost >= 0);
     }
-    // estimatedCost may be undefined if pricing table not loaded (test cwd may not have config)
   });
 
-  it('omits tokenUsage when API response has no usage field', async () => {
+  it('prefers CLI costUsd over pricing table estimate', async () => {
+    const validResponse = JSON.stringify({
+      score: 0.9,
+      rationale: 'Well done.',
+      interventionFlags: [],
+    });
+    const usage = { inputTokens: 100, outputTokens: 50, totalTokens: 150 };
+
+    const result = await evaluateTask(
+      {
+        taskPrompt: 'Quick task',
+        prReviewOutput: 'Good',
+      },
+      { _callFn: mockCallFn(validResponse, usage, 0.03078) }
+    );
+
+    assert.equal(result.estimatedCost, 0.03078);
+  });
+
+  it('omits tokenUsage when CLI response has no usage', async () => {
     const validResponse = JSON.stringify({
       score: 0.8,
       rationale: 'Done.',
       interventionFlags: [],
     });
-    mockFetch(validResponse, 200, null);
 
-    const result = await evaluateTask({
-      taskPrompt: 'Do something',
-      prReviewOutput: 'Something done',
-    });
+    const result = await evaluateTask(
+      {
+        taskPrompt: 'Do something',
+        prReviewOutput: 'Something done',
+      },
+      { _callFn: mockCallFn(validResponse, null) }
+    );
 
     assert.equal(result.tokenUsage, undefined);
   });
@@ -292,16 +273,17 @@ describe('evaluateTask', () => {
         interventionFlags: ['minor-style-issue'],
       }) +
       '\n```';
-    mockFetch(wrappedResponse);
 
-    const result = await evaluateTask({
-      taskPrompt: 'Refactor module',
-      prReviewOutput: 'Refactoring looks good',
-    });
+    const result = await evaluateTask(
+      {
+        taskPrompt: 'Refactor module',
+        prReviewOutput: 'Refactoring looks good',
+      },
+      { _callFn: mockCallFn(wrappedResponse) }
+    );
 
     assert.equal(result.score, 0.7);
     assert.equal(result.rationale, 'Decent execution with fenced response.');
     assert.equal(result.scoreBand, 'Assisted Success');
-    assert.ok(result.tokenUsage, 'should have tokenUsage from mock');
   });
 });

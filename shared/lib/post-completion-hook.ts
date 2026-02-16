@@ -28,6 +28,7 @@ export interface PostCompletionContext {
   prUrl?: string;
   workflowType: string;
   repoDir?: string;
+  branchName?: string;
 }
 
 /**
@@ -122,11 +123,6 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
     return;
   }
 
-  if (!process.env.ANTHROPIC_API_KEY) {
-    console.warn('Post-completion eval: skipped (ANTHROPIC_API_KEY not set)');
-    return;
-  }
-
   try {
     console.log('Post-completion eval: gathering context...');
 
@@ -145,12 +141,14 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
 
     // 3. Detect intervention events
     console.log('Post-completion eval: detecting interventions...');
-    let branchName = '';
-    try {
-      branchName = execSync('git branch --show-current', {
-        encoding: 'utf-8', cwd: repoDir,
-      }).trim();
-    } catch { /* best-effort */ }
+    let branchName = ctx.branchName || '';
+    if (!branchName) {
+      try {
+        branchName = execSync('git branch --show-current', {
+          encoding: 'utf-8', cwd: repoDir,
+        }).trim();
+      } catch { /* best-effort */ }
+    }
 
     const interventionSummary = detectAllInterventions({
       prNumber: ctx.prNumber,

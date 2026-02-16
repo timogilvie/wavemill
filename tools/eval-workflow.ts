@@ -79,9 +79,11 @@ Context Resolution:
   3. Falls back to current branch's open PR
 
 Environment Variables:
-  ANTHROPIC_API_KEY  Required: Anthropic API key for the LLM judge
   EVAL_MODEL         Override judge model (default: claude-sonnet-4-5-20250929)
   LINEAR_API_KEY     Required for fetching issue details from Linear
+
+Requires:
+  claude CLI installed and authenticated (uses your subscription)
 `);
 }
 
@@ -96,8 +98,8 @@ function gatherContext(args) {
   let branch = '';
   let prUrl = '';
 
-  // Try auto-detect from wavemill state file
-  if ((!issueId || !prNumber) && existsSync(stateFile)) {
+  // Try auto-detect from wavemill state file (only when neither was explicitly provided)
+  if (!issueId && !prNumber && existsSync(stateFile)) {
     const state = JSON.parse(readFileSync(stateFile, 'utf-8'));
     const tasks = state.tasks || {};
 
@@ -306,18 +308,12 @@ async function main() {
       console.log(`  Diff: ${lines} lines`);
     }
 
-    // 2. Check API key (after context gathering so missing-context errors show first)
-    if (!process.env.ANTHROPIC_API_KEY) {
-      console.error('Error: ANTHROPIC_API_KEY environment variable is required');
-      process.exit(1);
-    }
-
-    // 3. Apply model override if specified
+    // 2. Apply model override if specified
     if (args.model) {
       process.env.EVAL_MODEL = args.model;
     }
 
-    // 4. Detect intervention events
+    // 3. Detect intervention events
     console.log('\nDetecting intervention events...');
     const interventionSummary = detectAllInterventions({
       prNumber: ctx.prNumber,
@@ -332,7 +328,7 @@ async function main() {
     const totalInterventions = interventionSummary.interventions.reduce((sum, e) => sum + e.count, 0);
     console.log(`  Detected ${totalInterventions} intervention event(s) (weighted penalty: ${interventionSummary.totalInterventionScore})`);
 
-    // 5. Invoke judge via shared evaluateTask()
+    // 4. Invoke judge via shared evaluateTask()
     console.log('\nInvoking LLM judge...');
     const record = await evaluateTask({
       taskPrompt: ctx.taskPrompt,
@@ -344,17 +340,17 @@ async function main() {
       metadata: { interventionSummary },
     });
 
-    // 6. Persist eval record to disk
+    // 5. Persist eval record to disk
     try {
       appendEvalRecord(record);
     } catch (err) {
       console.error(`Warning: failed to persist eval record: ${err.message}`);
     }
 
-    // 7. Format and print
+    // 6. Format and print
     console.log(formatEvalRecord(record));
 
-    // 8. Print raw JSON for piping
+    // 7. Print raw JSON for piping
     if (process.stdout.isTTY === false) {
       console.log(JSON.stringify(record, null, 2));
     }

@@ -2,22 +2,23 @@
 // Builds on the eval-schema (HOK-697) types and rubric.
 
 import { readFile } from 'fs/promises';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, writeFileSync, unlinkSync } from 'fs';
+import { execSync } from 'child_process';
 import { randomUUID } from 'crypto';
 import { fileURLToPath } from 'url';
 import { dirname, join, resolve } from 'path';
+import { tmpdir } from 'os';
 import { getScoreBand } from './eval-schema.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const DEFAULT_MODEL = 'claude-sonnet-4-5-20250929';
-const DEFAULT_PROVIDER = 'anthropic';
-const SUPPORTED_PROVIDERS = ['anthropic'];
+const DEFAULT_PROVIDER = 'claude-cli';
+const SUPPORTED_PROVIDERS = ['claude-cli', 'anthropic'];
 const SCHEMA_VERSION = '1.0.0';
 const MAX_RETRIES = 2;
-const TIMEOUT_MS = 30_000;
+const TIMEOUT_MS = 120_000;
 
 /**
  * Load judge config from .wavemill-config.json.
@@ -106,53 +107,50 @@ function buildJudgePrompt(template, taskPrompt, prReviewOutput, interventions, i
 }
 
 async function callClaude(prompt, model) {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    throw new Error('ANTHROPIC_API_KEY environment variable is required');
-  }
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
-
+  // Use the claude CLI (and the user's subscription) instead of a raw API key.
+  // Write prompt to a temp file to avoid shell argument-length limits.
+  const tmpFile = join(tmpdir(), `wavemill-eval-${Date.now()}.txt`);
   try {
-    const res = await fetch(ANTHROPIC_API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: 1024,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-      signal: controller.signal,
-    });
+    writeFileSync(tmpFile, prompt, 'utf-8');
+    const raw = execSync(
+      `claude -p --output-format json --model "${model}" < "${tmpFile}"`,
+      { encoding: 'utf-8', timeout: TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024, shell: '/bin/bash', env: { ...process.env, CLAUDECODE: '' } }
+    );
 
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`Anthropic API error (${res.status}): ${body}`);
+    let text = '';
+    let usage = null;
+    let costUsd = undefined;
+    try {
+      const data = JSON.parse(raw);
+      text = (data.result || '').trim();
+      if (data.usage) {
+        const u = data.usage;
+        const inputTokens = (u.input_tokens || 0)
+          + (u.cache_creation_input_tokens || 0)
+          + (u.cache_read_input_tokens || 0);
+        const outputTokens = u.output_tokens || 0;
+        usage = {
+          inputTokens,
+          outputTokens,
+          totalTokens: inputTokens + outputTokens,
+        };
+      }
+      // Use the CLI's authoritative cost (accounts for cache pricing tiers)
+      if (typeof data.total_cost_usd === 'number') {
+        costUsd = data.total_cost_usd;
+      }
+    } catch {
+      // If JSON parse fails, treat the entire output as text (fallback)
+      text = raw.trim();
     }
 
-    const data = await res.json();
-    const text = data.content?.[0]?.text;
     if (!text) {
-      throw new Error('Empty response from Anthropic API');
+      throw new Error('Empty response from claude CLI');
     }
 
-    // Extract token usage from the API response
-    const usage = data.usage
-      ? {
-          inputTokens: data.usage.input_tokens || 0,
-          outputTokens: data.usage.output_tokens || 0,
-          totalTokens: (data.usage.input_tokens || 0) + (data.usage.output_tokens || 0),
-        }
-      : null;
-
-    return { text, usage };
+    return { text, usage, costUsd };
   } finally {
-    clearTimeout(timeoutId);
+    try { unlinkSync(tmpFile); } catch {}
   }
 }
 
@@ -197,7 +195,13 @@ function computeCost(modelId, usage, pricingTable) {
 
 function parseJudgeResponse(raw) {
   // Strip markdown code fences if present
-  const cleaned = raw.replace(/^```(?:json)?\s*/m, '').replace(/\s*```\s*$/m, '').trim();
+  let cleaned = raw.replace(/^```(?:json)?\s*/m, '').replace(/\s*```\s*$/m, '').trim();
+
+  // If the response has preamble before the JSON, extract the first { ... } block
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    cleaned = jsonMatch[0];
+  }
 
   const parsed = JSON.parse(cleaned);
 
@@ -229,7 +233,7 @@ function parseJudgeResponse(raw) {
  * @param {EvalInput} input
  * @returns {Promise<import('./eval-schema.ts').EvalRecord>}
  */
-export async function evaluateTask(input) {
+export async function evaluateTask(input, { _callFn } = {}) {
   const {
     taskPrompt,
     prReviewOutput,
@@ -250,12 +254,13 @@ export async function evaluateTask(input) {
   const template = await loadPromptTemplate();
   const prompt = buildJudgePrompt(template, taskPrompt, prReviewOutput, interventions, interventionText);
 
+  const callFn = _callFn || callClaude;
   let lastError;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     let response;
     try {
-      response = await callClaude(prompt, model);
+      response = await callFn(prompt, model);
     } catch (err) {
       // Do not retry on timeout or network errors — only on parse failures
       throw err;
@@ -266,7 +271,10 @@ export async function evaluateTask(input) {
       const band = getScoreBand(score);
 
       const tokenUsage = response.usage || undefined;
-      const estimatedCost = computeCost(model, tokenUsage, pricingTable);
+      // Prefer the CLI's authoritative cost; fall back to pricing table estimate
+      const estimatedCost = response.costUsd !== undefined
+        ? response.costUsd
+        : computeCost(model, tokenUsage, pricingTable);
 
       return {
         id: randomUUID(),

@@ -25,6 +25,8 @@ function parseArgs(argv: string[]) {
       args.prUrl = argv[++i];
     } else if (argv[i] === '--workflow-type' && argv[i + 1]) {
       args.workflowType = argv[++i];
+    } else if (argv[i] === '--branch' && argv[i + 1]) {
+      args.branch = argv[++i];
     } else if (argv[i] === '--repo-dir' && argv[i + 1]) {
       args.repoDir = argv[++i];
     } else if (argv[i] === '--help' || argv[i] === '-h') {
@@ -45,7 +47,8 @@ Options:
   --issue ID             Linear issue identifier (e.g., HOK-123)
   --pr NUMBER            GitHub PR number
   --pr-url URL           GitHub PR URL (auto-detected if not provided)
-  --workflow-type TYPE   Workflow type: workflow, bugfix, or plan
+  --workflow-type TYPE   Workflow type: workflow, bugfix, mill, or plan
+  --branch NAME          Git branch name (for intervention detection from non-worktree context)
   --repo-dir DIR         Repository directory (default: current directory)
   --help, -h             Show this help message
 
@@ -70,6 +73,7 @@ async function main() {
     prUrl: args.prUrl,
     workflowType: args.workflowType || 'unknown',
     repoDir: args.repoDir,
+    branchName: args.branch,
   });
 }
 
