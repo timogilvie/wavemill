@@ -121,8 +121,109 @@ for t in "${TASKS[@]}"; do
     tmux new-window -t "$SESSION" -n "$WIN" -c "$WT_DIR"
 
 
-    # Build an instruction packet for the agent
-    INSTR=$(cat <<'EOF_INSTR'
+    # ── Agent launch (planning vs skip mode) ──────────────────────────────
+
+    if [[ "${PLANNING_MODE:-skip}" == "interactive" ]]; then
+      # ── Interactive planning mode ─────────────────────────────────────
+      # Launch Claude interactively so the user can guide the planning
+      # phase from the tmux window before implementation begins.
+
+      # Pre-seed selected-task.json for the /create-plan workflow
+      FEATURE_DIR="$WT_DIR/features/$SLUG"
+      mkdir -p "$FEATURE_DIR"
+      TASK_JSON="$FEATURE_DIR/selected-task.json"
+
+      # Build issue labels array from issue JSON (if available)
+      ISSUE_JSON_FILE="/tmp/${SESSION}-${ISSUE}-issue.json"
+      LABELS_JSON="[]"
+      if [[ -f "$ISSUE_JSON_FILE" ]]; then
+        LABELS_JSON=$(jq '[.labels.nodes[]?.name // empty]' "$ISSUE_JSON_FILE" 2>/dev/null || echo "[]")
+      fi
+
+      # Write selected-task.json
+      jq -n \
+        --arg taskId "$ISSUE" \
+        --arg title "$TITLE" \
+        --arg description "$ISSUE_DESCRIPTION" \
+        --argjson labels "$LABELS_JSON" \
+        --arg featureName "$SLUG" \
+        --arg contextPath "features/$SLUG/selected-task.json" \
+        '{
+          taskId: $taskId,
+          title: $title,
+          description: $description,
+          labels: $labels,
+          workflowType: "feature",
+          featureName: $featureName,
+          contextPath: $contextPath,
+          selectedAt: (now | todate)
+        }' > "$TASK_JSON"
+
+      # Build the planning prompt
+      PLAN_PROMPT=$(cat <<EOF_PLAN
+You are working on: $TITLE ($ISSUE)
+
+Repo worktree: $WT_DIR
+Branch: $BRANCH
+Base branch: $BASE_BRANCH
+
+${ISSUE_DESCRIPTION:+Issue Description:
+$ISSUE_DESCRIPTION
+}
+---
+
+## Your Workflow
+
+You have TWO phases. Do them in order.
+
+### Phase 1: Planning (interactive)
+Task context is pre-seeded at: features/$SLUG/selected-task.json
+
+1. Read the task context
+2. Research the codebase to understand relevant code and patterns
+3. Create a detailed implementation plan with phases
+4. Save the plan to: features/$SLUG/plan.md
+5. Present the plan summary to the user and wait for approval
+6. After approval, create a file: features/$SLUG/.plan-approved
+
+Do NOT proceed to Phase 2 until the user has approved the plan.
+
+### Phase 2: Implementation
+After plan approval:
+1. Execute the plan phase by phase
+2. Run tests/lint between phases — pause if anything fails
+3. Create a PR using GitHub CLI: gh pr create --fill
+4. Link the PR to $ISSUE
+
+Success criteria:
+- [ ] Implementation matches plan and issue requirements
+- [ ] Lint/tests pass
+- [ ] No regressions
+- [ ] PR created with clear description linked to $ISSUE
+
+Start with Phase 1 now. Read the task context and begin researching.
+EOF_PLAN
+)
+
+      # Write prompt to file and create a launcher script
+      PROMPT_FILE="/tmp/${SESSION}-${ISSUE}-plan-prompt.txt"
+      echo "$PLAN_PROMPT" > "$PROMPT_FILE"
+
+      LAUNCHER="/tmp/${SESSION}-${ISSUE}-launcher.sh"
+      cat > "$LAUNCHER" <<LAUNCHEOF
+#!/bin/bash
+exec claude "\$(cat '$PROMPT_FILE')"
+LAUNCHEOF
+      chmod +x "$LAUNCHER"
+
+      # Launch Claude interactively via the launcher
+      tmux send-keys -t "$SESSION:$WIN" "'$LAUNCHER'" C-m
+
+    else
+      # ── Skip mode (current autonomous behavior) ───────────────────────
+      # Pipe instructions to agent — no interactive planning phase.
+
+      INSTR=$(cat <<'EOF_INSTR'
 You are working on: TITLE_PLACEHOLDER (ISSUE_PLACEHOLDER)
 
 
@@ -154,38 +255,37 @@ Process:
 5. Post back with summary of changes, commands run + results, and PR link
 EOF_INSTR
 )
-    # Replace placeholders
-    INSTR="${INSTR//TITLE_PLACEHOLDER/$TITLE}"
-    INSTR="${INSTR//ISSUE_PLACEHOLDER/$ISSUE}"
-    INSTR="${INSTR//WTDIR_PLACEHOLDER/$WT_DIR}"
-    INSTR="${INSTR//BRANCH_PLACEHOLDER/$BRANCH}"
-    INSTR="${INSTR//BASE_BRANCH_PLACEHOLDER/$BASE_BRANCH}"
-    if [[ -n "$ISSUE_DESCRIPTION" ]]; then
-      INSTR="${INSTR//DESCRIPTION_PLACEHOLDER/Issue Description:
+      # Replace placeholders
+      INSTR="${INSTR//TITLE_PLACEHOLDER/$TITLE}"
+      INSTR="${INSTR//ISSUE_PLACEHOLDER/$ISSUE}"
+      INSTR="${INSTR//WTDIR_PLACEHOLDER/$WT_DIR}"
+      INSTR="${INSTR//BRANCH_PLACEHOLDER/$BRANCH}"
+      INSTR="${INSTR//BASE_BRANCH_PLACEHOLDER/$BASE_BRANCH}"
+      if [[ -n "$ISSUE_DESCRIPTION" ]]; then
+        INSTR="${INSTR//DESCRIPTION_PLACEHOLDER/Issue Description:
 $ISSUE_DESCRIPTION
 }"
-    else
-      INSTR="${INSTR//DESCRIPTION_PLACEHOLDER/}"
-    fi
+      else
+        INSTR="${INSTR//DESCRIPTION_PLACEHOLDER/}"
+      fi
 
+      # Write instructions to temp file and use it to start agent
+      INSTR_FILE="/tmp/${SESSION}-${ISSUE}-instructions.txt"
+      echo "$INSTR" > "$INSTR_FILE"
 
-    # Write instructions to temp file and use it to start agent
-    INSTR_FILE="/tmp/${SESSION}-${ISSUE}-instructions.txt"
-    echo "$INSTR" > "$INSTR_FILE"
-
-
-    # Start agent in that window with instructions file
-    if [[ "$AGENT_CMD" == "claude" ]]; then
-      tmux send-keys -t "$SESSION:$WIN" "cat '$INSTR_FILE' | $AGENT_CMD" C-m
-    elif [[ "$AGENT_CMD" == "codex" ]]; then
-      tmux send-keys -t "$SESSION:$WIN" "$AGENT_CMD /task \"\$(cat '$INSTR_FILE')\"" C-m
-    else
-      # Generic approach: just start agent and paste instructions
-      tmux send-keys -t "$SESSION:$WIN" "$AGENT_CMD" C-m
-      sleep 0.3
-      tmux set-buffer "$INSTR"
-      tmux paste-buffer -t "$SESSION:$WIN"
-      tmux send-keys -t "$SESSION:$WIN" C-m
+      # Start agent in that window with instructions file
+      if [[ "$AGENT_CMD" == "claude" ]]; then
+        tmux send-keys -t "$SESSION:$WIN" "cat '$INSTR_FILE' | $AGENT_CMD" C-m
+      elif [[ "$AGENT_CMD" == "codex" ]]; then
+        tmux send-keys -t "$SESSION:$WIN" "$AGENT_CMD /task \"\$(cat '$INSTR_FILE')\"" C-m
+      else
+        # Generic approach: just start agent and paste instructions
+        tmux send-keys -t "$SESSION:$WIN" "$AGENT_CMD" C-m
+        sleep 0.3
+        tmux set-buffer "$INSTR"
+        tmux paste-buffer -t "$SESSION:$WIN"
+        tmux send-keys -t "$SESSION:$WIN" C-m
+      fi
     fi
 
 

@@ -364,6 +364,7 @@ log "  Base branch: $BASE_BRANCH"
 log "  Worktree root: $WORKTREE_ROOT"
 log "  Project: ${PROJECT_NAME:-(all projects)}"
 log "  Max parallel: $MAX_PARALLEL"
+log "  Planning mode: $PLANNING_MODE"
 log "  State file: $STATE_FILE"
 echo ""
 
@@ -432,28 +433,44 @@ log "  ✓ All issues fetched"
 
 
 # ── Phase 2: Expand task packets in parallel ──────────────────────────────
+# When planningMode=interactive, skip expansion — the agent will research
+# the codebase itself during the interactive planning session.
 EXPAND_PIDS=()
 EXPAND_ISSUES=()
 
-for t in "${TASKS[@]}"; do
-  IFS='|' read -r ISSUE SLUG TITLE <<<"$t"
-  PACKET_FILE="/tmp/${SESSION}-${ISSUE}-taskpacket.md"
-  issue_json=$(cat "/tmp/${SESSION}-${ISSUE}-issue.json" 2>/dev/null || echo "{}")
-  current_desc=$(echo "$issue_json" | jq -r '.description // ""')
-
-  if is_task_packet "$current_desc"; then
-    log "  ✓ $ISSUE has task packet"
+if [[ "$PLANNING_MODE" == "interactive" ]]; then
+  log "  Skipping task packet expansion (planningMode=interactive)"
+  # Still write raw descriptions to packet files so the orchestrator
+  # can use them for the selected-task.json context
+  for t in "${TASKS[@]}"; do
+    IFS='|' read -r ISSUE SLUG TITLE <<<"$t"
+    PACKET_FILE="/tmp/${SESSION}-${ISSUE}-taskpacket.md"
+    issue_json=$(cat "/tmp/${SESSION}-${ISSUE}-issue.json" 2>/dev/null || echo "{}")
+    current_desc=$(echo "$issue_json" | jq -r '.description // ""')
     echo "$current_desc" > "$PACKET_FILE"
-  else
-    log "  ⚠ $ISSUE needs expansion - launching..."
-    EXPANSION_NEEDED=true
-    (
-      write_task_packet "$ISSUE" "$PACKET_FILE"
-    ) > "/tmp/${SESSION}-${ISSUE}-expand.log" 2>&1 &
-    EXPAND_PIDS+=("$!")
-    EXPAND_ISSUES+=("$ISSUE")
-  fi
-done
+    log "  ✓ $ISSUE raw description saved"
+  done
+else
+  for t in "${TASKS[@]}"; do
+    IFS='|' read -r ISSUE SLUG TITLE <<<"$t"
+    PACKET_FILE="/tmp/${SESSION}-${ISSUE}-taskpacket.md"
+    issue_json=$(cat "/tmp/${SESSION}-${ISSUE}-issue.json" 2>/dev/null || echo "{}")
+    current_desc=$(echo "$issue_json" | jq -r '.description // ""')
+
+    if is_task_packet "$current_desc"; then
+      log "  ✓ $ISSUE has task packet"
+      echo "$current_desc" > "$PACKET_FILE"
+    else
+      log "  ⚠ $ISSUE needs expansion - launching..."
+      EXPANSION_NEEDED=true
+      (
+        write_task_packet "$ISSUE" "$PACKET_FILE"
+      ) > "/tmp/${SESSION}-${ISSUE}-expand.log" 2>&1 &
+      EXPAND_PIDS+=("$!")
+      EXPAND_ISSUES+=("$ISSUE")
+    fi
+  done
+fi
 
 EXPANSION_FAILED=false
 if (( ${#EXPAND_PIDS[@]} > 0 )); then
@@ -532,11 +549,15 @@ fi
 
 
 # User confirmed (or no confirmation needed) - now set issues to In Progress
+INITIAL_PHASE="executing"
+[[ "$PLANNING_MODE" == "interactive" ]] && INITIAL_PHASE="planning"
+
 for t in "${TASKS[@]}"; do
   IFS='|' read -r ISSUE SLUG TITLE <<<"$t"
   ISSUES_IN_PROGRESS+=("$ISSUE")
   linear_set_state "$ISSUE" "In Progress"
-  log "Set $ISSUE → In Progress"
+  set_task_phase "$STATE_FILE" "$ISSUE" "$INITIAL_PHASE"
+  log "Set $ISSUE → In Progress (phase: $INITIAL_PHASE)"
 done
 
 
@@ -574,6 +595,7 @@ REQUIRE_CONFIRM='$REQUIRE_CONFIRM'
 DRY_RUN='$DRY_RUN'
 BASE_BRANCH='$BASE_BRANCH'
 PROJECT_NAME='$PROJECT_NAME'
+PLANNING_MODE='$PLANNING_MODE'
 ENVEOF
 
 
@@ -687,6 +709,40 @@ execute() {
 }
 
 
+set_task_phase() {
+  local issue="$1" phase="$2"
+  local tmp=$(mktemp)
+  jq --arg issue "$issue" --arg phase "$phase" \
+     '.tasks[$issue].phase = $phase | .tasks[$issue].updated = (now | todate)' \
+     "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+}
+
+
+get_task_phase() {
+  local issue="$1"
+  jq -r --arg issue "$issue" '.tasks[$issue].phase // "executing"' "$STATE_FILE" 2>/dev/null
+}
+
+
+# Check if a planning task has completed its plan (plan.md exists + .plan-approved)
+check_plan_approved() {
+  local slug="$1"
+  local wt="${WORKTREE_ROOT}/${slug}"
+  local feature_dir="$wt/features/$slug"
+  [[ -f "$feature_dir/.plan-approved" ]] && return 0
+  return 1
+}
+
+
+check_plan_exists() {
+  local slug="$1"
+  local wt="${WORKTREE_ROOT}/${slug}"
+  local feature_dir="$wt/features/$slug"
+  [[ -f "$feature_dir/plan.md" ]] && return 0
+  return 1
+}
+
+
 # Parse tasks from file
 declare -A PR_BY_ISSUE BRANCH_BY_ISSUE SLUG_BY_ISSUE CLEANED
 
@@ -700,6 +756,7 @@ done < "$TASKS_FILE"
 
 
 log "Monitoring PRs and cleaning up merged tasks..."
+[[ "$PLANNING_MODE" == "interactive" ]] && log "  Planning mode: interactive (watching for plan approval)"
 log "  Checking every ${POLL_SECONDS}s"
 echo ""
 
@@ -746,6 +803,27 @@ while :; do
       CLEANED["$ISSUE"]=1
       log "  ✓ Complete: $ISSUE (post-review cleanup)"
       continue
+    fi
+
+
+    # ── Planning phase tracking ─────────────────────────────────────────
+    # When planningMode=interactive, tasks start in "planning" phase.
+    # Monitor watches for plan.md and .plan-approved to track progress.
+    current_phase=$(get_task_phase "$ISSUE")
+
+    if [[ "$current_phase" == "planning" ]]; then
+      if check_plan_approved "$SLUG"; then
+        set_task_phase "$ISSUE" "executing"
+        log "✓ $ISSUE → Plan approved, now executing"
+      elif check_plan_exists "$SLUG"; then
+        # Plan exists but not yet approved — user needs to review
+        all_done=false
+        continue
+      else
+        # Still planning — agent is researching/drafting
+        all_done=false
+        continue
+      fi
     fi
 
 
