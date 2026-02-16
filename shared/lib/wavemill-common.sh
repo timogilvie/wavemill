@@ -17,6 +17,7 @@ _WAVEMILL_DEFAULTS='{
     "worktreeRoot": "../worktrees",
     "agentCmd": "claude",
     "requireConfirm": true,
+    "planningMode": "skip",
     "maxRetries": 3,
     "retryDelay": 2
   },
@@ -38,7 +39,7 @@ _WAVEMILL_DEFAULTS='{
 #   4. Environment variables (always win)
 #
 # Sets: SESSION, MAX_PARALLEL, POLL_SECONDS, BASE_BRANCH, WORKTREE_ROOT,
-#        AGENT_CMD, REQUIRE_CONFIRM, MAX_RETRIES, RETRY_DELAY,
+#        AGENT_CMD, REQUIRE_CONFIRM, PLANNING_MODE, MAX_RETRIES, RETRY_DELAY,
 #        PROJECT_NAME, MAX_SELECT, MAX_DISPLAY
 #
 # Args: $1 = repo directory (default: $PWD)
@@ -74,6 +75,7 @@ load_config() {
       "_CFG_WORKTREE_ROOT=\($c.mill.worktreeRoot | @sh)",
       "_CFG_AGENT_CMD=\($c.mill.agentCmd | @sh)",
       "_CFG_REQUIRE_CONFIRM=\($c.mill.requireConfirm)",
+      "_CFG_PLANNING_MODE=\($c.mill.planningMode | @sh)",
       "_CFG_MAX_RETRIES=\($c.mill.maxRetries)",
       "_CFG_RETRY_DELAY=\($c.mill.retryDelay)",
       "_CFG_MAX_SELECT=\($c.expand.maxSelect)",
@@ -99,6 +101,7 @@ load_config() {
   BASE_BRANCH="${BASE_BRANCH:-$_CFG_BASE_BRANCH}"
   AGENT_CMD="${AGENT_CMD:-$_CFG_AGENT_CMD}"
   REQUIRE_CONFIRM="${REQUIRE_CONFIRM:-$_CFG_REQUIRE_CONFIRM}"
+  PLANNING_MODE="${PLANNING_MODE:-$_CFG_PLANNING_MODE}"
   MAX_RETRIES="${MAX_RETRIES:-$_CFG_MAX_RETRIES}"
   RETRY_DELAY="${RETRY_DELAY:-$_CFG_RETRY_DELAY}"
   MAX_SELECT="${MAX_SELECT:-$_CFG_MAX_SELECT}"
@@ -116,13 +119,13 @@ load_config() {
 
   # Export for child processes (orchestrator, monitor, agents)
   export SESSION MAX_PARALLEL POLL_SECONDS BASE_BRANCH WORKTREE_ROOT
-  export AGENT_CMD REQUIRE_CONFIRM MAX_RETRIES RETRY_DELAY
+  export AGENT_CMD REQUIRE_CONFIRM PLANNING_MODE MAX_RETRIES RETRY_DELAY
   export PROJECT_NAME MAX_SELECT MAX_DISPLAY PLAN_MAX_DISPLAY PLAN_RESEARCH
 
   # Clean up temp variables
   unset _CFG_PROJECT _CFG_SESSION _CFG_MAX_PARALLEL _CFG_POLL_SECONDS
   unset _CFG_BASE_BRANCH _CFG_WORKTREE_ROOT _CFG_AGENT_CMD _CFG_REQUIRE_CONFIRM
-  unset _CFG_MAX_RETRIES _CFG_RETRY_DELAY _CFG_MAX_SELECT _CFG_MAX_DISPLAY
+  unset _CFG_PLANNING_MODE _CFG_MAX_RETRIES _CFG_RETRY_DELAY _CFG_MAX_SELECT _CFG_MAX_DISPLAY
   unset _CFG_PLAN_MAX_DISPLAY _CFG_PLAN_RESEARCH
 
   # Sentinel so downstream scripts can skip re-loading
@@ -318,4 +321,19 @@ write_task_packet() {
     echo "$current_desc" > "$out_file"
     return 1
   fi
+}
+
+# ============================================================================
+# TASK PHASE MANAGEMENT
+# ============================================================================
+
+# Update the phase field on a task in the state file.
+# Args: $1 = state_file, $2 = issue_id, $3 = phase (planning|executing|pr-review|merged)
+set_task_phase() {
+  local state_file="$1" issue="$2" phase="$3"
+  local tmp
+  tmp=$(mktemp)
+  jq --arg issue "$issue" --arg phase "$phase" \
+     '.tasks[$issue].phase = $phase | .tasks[$issue].updated = (now | todate)' \
+     "$state_file" > "$tmp" && mv "$tmp" "$state_file"
 }

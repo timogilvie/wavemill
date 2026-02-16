@@ -4,9 +4,9 @@
 # Usage: wavemill-status.sh <session> <worktree_root> [state_file]
 #
 # Displays a compact per-task summary refreshing every 3 seconds:
-#   ISSUE   TASK           TIME   AGENT      PR
-#   WAV-42  hero-cta        12m   ● running  —
-#   WAV-55  nav-a11y         8m   ● running  #147 ✓
+#   ISSUE   TASK           TIME   PHASE         AGENT      PR
+#   WAV-42  hero-cta        12m   📋 planning   ● running  —
+#   WAV-55  nav-a11y         8m   🔨 executing  ● running  #147 ✓
 
 set -euo pipefail
 
@@ -88,11 +88,11 @@ agent_status() {
 
 # ── Task discovery ────────────────────────────────────────────────────────
 # Prefer state file (from mill), fall back to worktree directories.
-# Output: issue|slug|branch|worktree|status  per line
+# Output: issue|slug|branch|worktree|status|phase  per line
 
 gather_tasks() {
   if [[ -n "$STATE_FILE" && -f "$STATE_FILE" ]]; then
-    jq -r '.tasks | to_entries[] | "\(.key)|\(.value.slug)|\(.value.branch)|\(.value.worktree)|\(.value.status // "")"' \
+    jq -r '.tasks | to_entries[] | "\(.key)|\(.value.slug)|\(.value.branch)|\(.value.worktree)|\(.value.status // "")|\(.value.phase // "executing")"' \
       "$STATE_FILE" 2>/dev/null
   else
     for dir in "$WORKTREE_ROOT"/*/; do
@@ -101,7 +101,7 @@ gather_tasks() {
       slug=$(basename "$dir")
       local branch
       branch=$(git -C "$dir" branch --show-current 2>/dev/null || echo "?")
-      echo "—|$slug|$branch|$dir|"
+      echo "—|$slug|$branch|$dir||executing"
     done
   fi
 }
@@ -137,13 +137,14 @@ while true; do
     printf "${D}No active tasks${N}\n" >> "$FRAME"
   else
     # Header
-    printf "${D}%-10s  %-22s  %6s  %-11s  %s${N}\n" "ISSUE" "TASK" "TIME" "AGENT" "PR" >> "$FRAME"
-    printf "${D}%s${N}\n" "─────────────────────────────────────────────────────────────" >> "$FRAME"
+    printf "${D}%-10s  %-22s  %6s  %-12s  %-11s  %s${N}\n" "ISSUE" "TASK" "TIME" "PHASE" "AGENT" "PR" >> "$FRAME"
+    printf "${D}%s${N}\n" "──────────────────────────────────────────────────────────────────────────" >> "$FRAME"
 
     count=0
     while IFS= read -r line; do
       [[ -z "$line" ]] && continue
-      IFS='|' read -r issue slug branch worktree task_status <<<"$line"
+      IFS='|' read -r issue slug branch worktree task_status task_phase <<<"$line"
+      task_phase="${task_phase:-executing}"
 
       # Window name
       win="${issue}-${slug}"
@@ -188,11 +189,18 @@ while true; do
         esac
       fi
 
+      # Phase display
+      case "$task_phase" in
+        planning)  phase_str="${Y}📋 planning${N}" ;;
+        executing) phase_str="${G}🔨 executing${N}" ;;
+        *)         phase_str="${D}$task_phase${N}" ;;
+      esac
+
       # Truncate slug
       ds="$slug"
       (( ${#ds} > 22 )) && ds="${ds:0:19}..."
 
-      printf "%-10s  %-22s  %6s  %-11b  %b\n" "$issue" "$ds" "$t" "$st_str" "$pr_str" >> "$FRAME"
+      printf "%-10s  %-22s  %6s  %-12b  %-11b  %b\n" "$issue" "$ds" "$t" "$phase_str" "$st_str" "$pr_str" >> "$FRAME"
     done <<<"$tasks"
 
     if (( count == 0 )); then

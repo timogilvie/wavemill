@@ -10,6 +10,7 @@
     "worktreeRoot": "../worktrees",
     "agentCmd": "claude",
     "requireConfirm": false,
+    "planningMode": "interactive",
     "maxRetries": 3,
     "retryDelay": 2
   },
