@@ -221,8 +221,8 @@ test('toCsv column count matches header count', () => {
   const headerCols = lines[0].split(',').length;
 
   // Each data line should have same number of fields (accounting for quoted commas)
-  // Simpler check: header has 22 columns
-  assert.equal(headerCols, 22);
+  // Simpler check: header has 23 columns (22 original + workflow_cost)
+  assert.equal(headerCols, 23);
 });
 
 // ────────────────────────────────────────────────────────────────

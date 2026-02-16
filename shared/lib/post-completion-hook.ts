@@ -18,6 +18,7 @@ import {
   formatForJudge,
   loadPenalties,
 } from './intervention-detector.ts';
+import { computeWorkflowCost } from './workflow-cost.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -29,6 +30,7 @@ export interface PostCompletionContext {
   workflowType: string;
   repoDir?: string;
   branchName?: string;
+  worktreePath?: string;
 }
 
 /**
@@ -175,13 +177,41 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
       metadata: { workflowType: ctx.workflowType, hookTriggered: true, interventionSummary },
     });
 
-    // 5. Persist via eval-persistence
+    // 5. Compute workflow cost from Claude session data
+    if (ctx.worktreePath && branchName) {
+      console.log('Post-completion eval: computing workflow cost...');
+      try {
+        const costResult = computeWorkflowCost({
+          worktreePath: ctx.worktreePath,
+          branchName,
+          repoDir,
+        });
+        if (costResult) {
+          record.workflowCost = costResult.totalCostUsd;
+          record.workflowTokenUsage = costResult.models;
+          console.log(
+            `Post-completion eval: workflow cost $${costResult.totalCostUsd.toFixed(4)} ` +
+            `(${costResult.turnCount} turns across ${costResult.sessionCount} session(s))`
+          );
+        } else {
+          console.log('Post-completion eval: no session data found for workflow cost');
+        }
+      } catch (costErr: unknown) {
+        const costMsg = costErr instanceof Error ? costErr.message : String(costErr);
+        console.warn(`Post-completion eval: workflow cost computation failed — ${costMsg}`);
+      }
+    }
+
+    // 6. Persist via eval-persistence
     const evalsDir = resolveEvalsDir(repoDir);
     appendEvalRecord(record, evalsDir ? { dir: evalsDir } : undefined);
 
-    // 6. Print summary
+    // 7. Print summary
     const scoreDisplay = (record.score as number).toFixed(2);
-    console.log(`Post-completion eval: ${record.scoreBand} (${scoreDisplay}) — saved to eval store`);
+    const costSuffix = record.workflowCost !== undefined
+      ? `, workflow cost: $${record.workflowCost.toFixed(4)}`
+      : '';
+    console.log(`Post-completion eval: ${record.scoreBand} (${scoreDisplay}${costSuffix}) — saved to eval store`);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.warn(`Post-completion eval: failed (workflow unaffected) — ${message}`);

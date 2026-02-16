@@ -49,6 +49,9 @@ export interface ExportRow {
   issue_id: string;
   pr_url: string;
 
+  // Cost
+  workflow_cost: number | null;
+
   // Complexity signals (from metadata when available)
   files_changed: number | null;
   lines_added: number | null;
@@ -76,6 +79,7 @@ const COLUMNS: (keyof ExportRow)[] = [
   'rationale',
   'issue_id',
   'pr_url',
+  'workflow_cost',
   'files_changed',
   'lines_added',
   'lines_removed',
@@ -166,6 +170,8 @@ export function flattenRecord(
 
     issue_id: record.issueId ?? '',
     pr_url: record.prUrl ?? '',
+
+    workflow_cost: record.workflowCost ?? null,
 
     files_changed: filesChanged,
     lines_added: linesAdded,

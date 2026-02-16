@@ -406,6 +406,42 @@ test('TokenUsage fields are correct types in scenario 1', () => {
   assert.equal(tu.totalTokens, tu.inputTokens + tu.outputTokens);
 });
 
+console.log('\n--- Workflow Cost Field Tests ---\n');
+
+test('Record with workflowCost validates', () => {
+  const record = {
+    ...scenarios[0].record,
+    workflowCost: 2.5432,
+  } as unknown as Record<string, unknown>;
+  const result = validateAgainstSchema(record);
+  assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
+});
+
+test('Record with workflowTokenUsage validates', () => {
+  const record = {
+    ...scenarios[0].record,
+    workflowCost: 3.14,
+    workflowTokenUsage: {
+      'claude-opus-4-6': {
+        inputTokens: 1000,
+        cacheCreationTokens: 500,
+        cacheReadTokens: 2000,
+        outputTokens: 300,
+        costUsd: 3.14,
+      },
+    },
+  } as unknown as Record<string, unknown>;
+  const result = validateAgainstSchema(record);
+  assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
+});
+
+test('Record without workflowCost validates (backward compat)', () => {
+  const record = scenarios[1].record as unknown as Record<string, unknown>;
+  assert.ok(!('workflowCost' in record), 'Scenario 2 should not have workflowCost');
+  const result = validateAgainstSchema(record);
+  assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
+});
+
 // ────────────────────────────────────────────────────────────────
 // Summary
 // ────────────────────────────────────────────────────────────────

@@ -153,6 +153,16 @@
                 "type": "number",
                 "minimum": 0,
                 "description": "Cost in USD per million output tokens."
+              },
+              "cacheWriteCostPerMTok": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Cost in USD per million cache creation (write) input tokens. Defaults to 1.25x inputCostPerMTok."
+              },
+              "cacheReadCostPerMTok": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Cost in USD per million cache read input tokens. Defaults to 0.1x inputCostPerMTok."
               }
             },
             "required": ["inputCostPerMTok", "outputCostPerMTok"],

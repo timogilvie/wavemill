@@ -29,6 +29,8 @@ function parseArgs(argv: string[]) {
       args.branch = argv[++i];
     } else if (argv[i] === '--repo-dir' && argv[i + 1]) {
       args.repoDir = argv[++i];
+    } else if (argv[i] === '--worktree' && argv[i + 1]) {
+      args.worktree = argv[++i];
     } else if (argv[i] === '--help' || argv[i] === '-h') {
       args.help = 'true';
     }
@@ -49,6 +51,7 @@ Options:
   --pr-url URL           GitHub PR URL (auto-detected if not provided)
   --workflow-type TYPE   Workflow type: workflow, bugfix, mill, or plan
   --branch NAME          Git branch name (for intervention detection from non-worktree context)
+  --worktree DIR         Worktree directory (for workflow cost computation from session data)
   --repo-dir DIR         Repository directory (default: current directory)
   --help, -h             Show this help message
 
@@ -74,6 +77,7 @@ async function main() {
     workflowType: args.workflowType || 'unknown',
     repoDir: args.repoDir,
     branchName: args.branch,
+    worktreePath: args.worktree,
   });
 }
 

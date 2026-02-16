@@ -213,6 +213,21 @@ export interface EvalRecord {
   /** Estimated cost in USD based on the pricing table */
   estimatedCost?: number;
 
+  /** Total estimated cost in USD to build the feature (all Claude sessions on this branch) */
+  workflowCost?: number;
+
+  /** Per-model token usage breakdown from the workflow sessions */
+  workflowTokenUsage?: Record<
+    string,
+    {
+      inputTokens: number;
+      cacheCreationTokens: number;
+      cacheReadTokens: number;
+      outputTokens: number;
+      costUsd: number;
+    }
+  >;
+
   /** Optional extensibility bag for additional metadata */
   metadata?: Record<string, unknown>;
 }

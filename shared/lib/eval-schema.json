@@ -134,6 +134,47 @@
       "minimum": 0,
       "description": "Estimated cost in USD based on the pricing table."
     },
+    "workflowCost": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Total estimated cost in USD to build the feature (all Claude sessions on this branch)."
+    },
+    "workflowTokenUsage": {
+      "type": "object",
+      "description": "Per-model token usage breakdown from the workflow sessions.",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "inputTokens": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Base input (prompt) tokens."
+          },
+          "cacheCreationTokens": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Tokens used to create prompt cache."
+          },
+          "cacheReadTokens": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Tokens read from prompt cache."
+          },
+          "outputTokens": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Output (completion) tokens."
+          },
+          "costUsd": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Estimated cost in USD for this model."
+          }
+        },
+        "required": ["inputTokens", "cacheCreationTokens", "cacheReadTokens", "outputTokens", "costUsd"],
+        "additionalProperties": false
+      }
+    },
     "metadata": {
       "type": "object",
       "additionalProperties": true,

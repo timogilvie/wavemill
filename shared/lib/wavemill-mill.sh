@@ -1224,6 +1224,7 @@ while :; do
         log "  📊 Running post-merge eval..."
         npx tsx "$TOOLS_DIR/run-eval-hook.ts" \
           --issue "$ISSUE" --pr "$PR" --branch "$BRANCH" \
+          --worktree "${WORKTREE_ROOT}/${SLUG}" \
           --workflow-type mill --repo-dir "$REPO_DIR" \
           2>&1 | while IFS= read -r line; do log "  [eval] $line"; done || true
       fi

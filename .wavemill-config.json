@@ -24,9 +24,9 @@
       "provider": "anthropic"
     },
     "pricing": {
-      "claude-opus-4-6": { "inputCostPerMTok": 15, "outputCostPerMTok": 75 },
-      "claude-sonnet-4-5-20250929": { "inputCostPerMTok": 3, "outputCostPerMTok": 15 },
-      "claude-haiku-4-5-20251001": { "inputCostPerMTok": 0.80, "outputCostPerMTok": 4 }
+      "claude-opus-4-6": { "inputCostPerMTok": 15, "outputCostPerMTok": 75, "cacheWriteCostPerMTok": 18.75, "cacheReadCostPerMTok": 1.50 },
+      "claude-sonnet-4-5-20250929": { "inputCostPerMTok": 3, "outputCostPerMTok": 15, "cacheWriteCostPerMTok": 3.75, "cacheReadCostPerMTok": 0.30 },
+      "claude-haiku-4-5-20251001": { "inputCostPerMTok": 0.80, "outputCostPerMTok": 4, "cacheWriteCostPerMTok": 1.00, "cacheReadCostPerMTok": 0.08 }
     }
   },
   "autoEval": true
