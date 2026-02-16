@@ -1141,6 +1141,8 @@ log "  Type 'q' to quit, or 'touch $STATE_DIR/.stop-loop' to stop"
 echo ""
 
 QUIT_REQUESTED=false
+LAST_DISPLAY=""       # fingerprint of what was last printed
+LAST_ACTIVE_COUNT=-1  # force first render
 
 while :; do
   # ── Phase A: Monitor existing tasks ──────────────────────────────────
@@ -1291,11 +1293,17 @@ while :; do
       available=$(filter_active_issues "$candidates")
 
       if [[ -n "$available" ]]; then
-        echo ""
-        log "$free_slots slot(s) available. Next tasks:"
-        echo "$available" | awk -F'|' '{printf "  %s. %s - %s (score: %.0f)\n", NR, $1, $3, $5}' | head -9
-        echo ""
-        echo "Enter number(s) to start (e.g. 1 3), 'q' to quit, or wait ${POLL_SECONDS}s to refresh:"
+        # Only re-render the prompt when the display would actually change
+        display_fingerprint="${free_slots}|${available}"
+        if [[ "$display_fingerprint" != "$LAST_DISPLAY" ]] || (( active_count != LAST_ACTIVE_COUNT )); then
+          echo ""
+          log "$free_slots slot(s) available. Next tasks:"
+          echo "$available" | awk -F'|' '{printf "  %s. %s - %s (score: %.0f)\n", NR, $1, $3, $5}' | head -9
+          echo ""
+          echo "Enter number(s) to start (e.g. 1 3), 'q' to quit, or wait ${POLL_SECONDS}s to refresh:"
+          LAST_DISPLAY="$display_fingerprint"
+          LAST_ACTIVE_COUNT=$active_count
+        fi
 
         if read -t "$POLL_SECONDS" -r REPLY; then
           if [[ "$REPLY" =~ ^[Qq] ]]; then
@@ -1323,8 +1331,9 @@ while :; do
               launch_task "$sel_issue" "$sel_slug" "$sel_title"
               launched=$((launched + 1))
             done
-            # Invalidate backlog cache after launching
+            # Invalidate caches after launching so next cycle re-renders
             LAST_BACKLOG_FETCH=0
+            LAST_DISPLAY=""
           fi
           # User pressed Enter with no input — just continue monitoring
         fi
