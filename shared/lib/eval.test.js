@@ -2,8 +2,8 @@ import { describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { evaluateTask } from './eval.js';
 
-function mockCallFn(responseText, usage = null) {
-  return mock.fn(() => Promise.resolve({ text: responseText, usage }));
+function mockCallFn(responseText, usage = null, costUsd = undefined) {
+  return mock.fn(() => Promise.resolve({ text: responseText, usage, costUsd }));
 }
 
 describe('evaluateTask', () => {
@@ -225,6 +225,25 @@ describe('evaluateTask', () => {
       assert.equal(typeof result.estimatedCost, 'number');
       assert.ok(result.estimatedCost >= 0);
     }
+  });
+
+  it('prefers CLI costUsd over pricing table estimate', async () => {
+    const validResponse = JSON.stringify({
+      score: 0.9,
+      rationale: 'Well done.',
+      interventionFlags: [],
+    });
+    const usage = { inputTokens: 100, outputTokens: 50, totalTokens: 150 };
+
+    const result = await evaluateTask(
+      {
+        taskPrompt: 'Quick task',
+        prReviewOutput: 'Good',
+      },
+      { _callFn: mockCallFn(validResponse, usage, 0.03078) }
+    );
+
+    assert.equal(result.estimatedCost, 0.03078);
   });
 
   it('omits tokenUsage when CLI response has no usage', async () => {

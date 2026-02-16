@@ -119,15 +119,25 @@ async function callClaude(prompt, model) {
 
     let text = '';
     let usage = null;
+    let costUsd = undefined;
     try {
       const data = JSON.parse(raw);
       text = (data.result || '').trim();
       if (data.usage) {
+        const u = data.usage;
+        const inputTokens = (u.input_tokens || 0)
+          + (u.cache_creation_input_tokens || 0)
+          + (u.cache_read_input_tokens || 0);
+        const outputTokens = u.output_tokens || 0;
         usage = {
-          inputTokens: data.usage.input_tokens || 0,
-          outputTokens: data.usage.output_tokens || 0,
-          totalTokens: (data.usage.input_tokens || 0) + (data.usage.output_tokens || 0),
+          inputTokens,
+          outputTokens,
+          totalTokens: inputTokens + outputTokens,
         };
+      }
+      // Use the CLI's authoritative cost (accounts for cache pricing tiers)
+      if (typeof data.total_cost_usd === 'number') {
+        costUsd = data.total_cost_usd;
       }
     } catch {
       // If JSON parse fails, treat the entire output as text (fallback)
@@ -138,7 +148,7 @@ async function callClaude(prompt, model) {
       throw new Error('Empty response from claude CLI');
     }
 
-    return { text, usage };
+    return { text, usage, costUsd };
   } finally {
     try { unlinkSync(tmpFile); } catch {}
   }
@@ -261,7 +271,10 @@ export async function evaluateTask(input, { _callFn } = {}) {
       const band = getScoreBand(score);
 
       const tokenUsage = response.usage || undefined;
-      const estimatedCost = computeCost(model, tokenUsage, pricingTable);
+      // Prefer the CLI's authoritative cost; fall back to pricing table estimate
+      const estimatedCost = response.costUsd !== undefined
+        ? response.costUsd
+        : computeCost(model, tokenUsage, pricingTable);
 
       return {
         id: randomUUID(),
