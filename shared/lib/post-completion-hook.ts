@@ -18,7 +18,7 @@ import {
   formatForJudge,
   loadPenalties,
 } from './intervention-detector.ts';
-import { computeWorkflowCost } from './workflow-cost.ts';
+import { computeWorkflowCost, loadPricingTable } from './workflow-cost.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -159,13 +159,18 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
     });
 
     // 5. Compute workflow cost from Claude session data
+    //    Pricing lives in the wavemill repo config, not the target repo,
+    //    so resolve it from this script's location.
     if (ctx.worktreePath && branchName) {
       console.log('Post-completion eval: computing workflow cost...');
       try {
+        const wavemillConfigDir = resolve(__dirname, '../..');
+        const pricingTable = loadPricingTable(wavemillConfigDir);
         const costResult = computeWorkflowCost({
           worktreePath: ctx.worktreePath,
           branchName,
           repoDir,
+          pricingTable,
         });
         if (costResult) {
           record.workflowCost = costResult.totalCostUsd;

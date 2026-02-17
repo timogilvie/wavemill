@@ -146,8 +146,9 @@ export function computeWorkflowCost(opts: {
   worktreePath: string;
   branchName: string;
   repoDir?: string;
+  pricingTable?: PricingTable;
 }): WorkflowCostResult | null {
-  const { worktreePath, branchName, repoDir } = opts;
+  const { worktreePath, branchName, repoDir, pricingTable: externalPricing } = opts;
   const projectsDir = resolveProjectsDir(worktreePath);
 
   if (!existsSync(projectsDir)) {
@@ -237,8 +238,10 @@ export function computeWorkflowCost(opts: {
     return null;
   }
 
-  // Load pricing and compute costs
-  const pricingTable = loadPricingTable(repoDir);
+  // Load pricing and compute costs (prefer caller-supplied table)
+  const pricingTable = externalPricing && Object.keys(externalPricing).length > 0
+    ? externalPricing
+    : loadPricingTable(repoDir);
   let totalCostUsd = 0;
   const modelsWithCost: Record<string, ModelTokenUsage> = {};
 
