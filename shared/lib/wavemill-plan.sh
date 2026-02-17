@@ -52,7 +52,7 @@ main() {
     list_args+=("--project" "$PROJECT_NAME")
   fi
 
-  INITIATIVES_JSON=$(npx tsx "${list_args[@]}" 2>&1 | sed '/^\[dotenv/d' | sed '/^[[:space:]]*$/d')
+  INITIATIVES_JSON=$(npx tsx "${list_args[@]}" 2>/dev/null)
 
   if [[ -z "$INITIATIVES_JSON" ]] || [[ "$INITIATIVES_JSON" == "[]" ]]; then
     log "No initiatives found."

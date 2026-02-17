@@ -152,12 +152,12 @@ remove_task_state() {
 
 
 linear_list_backlog() {
-  # Filter out dotenv and other informational messages, keep only JSON
-  retry npx tsx "$TOOLS_DIR/list-backlog-json.ts" "$PROJECT_NAME" 2>&1 | sed '/^\[dotenv/d' | sed '/^[[:space:]]*$/d'
+  # Capture only stdout (JSON); suppress stderr (dotenv, node warnings, etc.)
+  retry npx tsx "$TOOLS_DIR/list-backlog-json.ts" "$PROJECT_NAME" 2>/dev/null
 }
 linear_get_issue() {
-  # Use JSON output version, filter dotenv messages
-  retry npx tsx "$TOOLS_DIR/get-issue-json.ts" "$1" 2>&1 | sed '/^\[dotenv/d' | sed '/^$/d'
+  # Capture only stdout (JSON); suppress stderr (dotenv, node warnings, etc.)
+  retry npx tsx "$TOOLS_DIR/get-issue-json.ts" "$1" 2>/dev/null
 }
 
 
@@ -286,10 +286,11 @@ validate_pr_merge() {
   fi
 
 
-  local state=$(echo "$details" | jq -r '.state')
-  local base_branch=$(echo "$details" | jq -r '.baseRefName')
-  local has_checks=$(echo "$details" | jq '.statusCheckRollup | length > 0')
-  local checks=$(echo "$details" | jq -r '.statusCheckRollup[]?.conclusion // "PENDING"')
+  local state base_branch has_checks checks
+  state=$(echo "$details" | jq -r '.state' 2>/dev/null) || return 1
+  base_branch=$(echo "$details" | jq -r '.baseRefName' 2>/dev/null) || return 1
+  has_checks=$(echo "$details" | jq '.statusCheckRollup | length > 0' 2>/dev/null)
+  checks=$(echo "$details" | jq -r '.statusCheckRollup[]?.conclusion // "PENDING"' 2>/dev/null)
 
 
   # Check 1: Must be MERGED (not CLOSED)
@@ -532,7 +533,7 @@ if [[ "$PLANNING_MODE" == "interactive" ]]; then
     IFS='|' read -r ISSUE SLUG TITLE <<<"$t"
     PACKET_FILE="/tmp/${SESSION}-${ISSUE}-taskpacket.md"
     issue_json=$(cat "/tmp/${SESSION}-${ISSUE}-issue.json" 2>/dev/null || echo "{}")
-    current_desc=$(echo "$issue_json" | jq -r '.description // ""')
+    current_desc=$(echo "$issue_json" | jq -r '.description // ""' 2>/dev/null || echo "")
     echo "$current_desc" > "$PACKET_FILE"
     log "  ✓ $ISSUE raw description saved"
   done
@@ -541,7 +542,7 @@ else
     IFS='|' read -r ISSUE SLUG TITLE <<<"$t"
     PACKET_FILE="/tmp/${SESSION}-${ISSUE}-taskpacket.md"
     issue_json=$(cat "/tmp/${SESSION}-${ISSUE}-issue.json" 2>/dev/null || echo "{}")
-    current_desc=$(echo "$issue_json" | jq -r '.description // ""')
+    current_desc=$(echo "$issue_json" | jq -r '.description // ""' 2>/dev/null || echo "")
 
     if is_task_packet "$current_desc"; then
       log "  ✓ $ISSUE has task packet"
@@ -577,10 +578,10 @@ for t in "${TASKS[@]}"; do
   IFS='|' read -r ISSUE SLUG TITLE <<<"$t"
   PACKET_FILE="/tmp/${SESSION}-${ISSUE}-taskpacket.md"
   issue_json=$(cat "/tmp/${SESSION}-${ISSUE}-issue.json" 2>/dev/null || echo "{}")
-  current_desc=$(echo "$issue_json" | jq -r '.description // ""')
+  current_desc=$(echo "$issue_json" | jq -r '.description // ""' 2>/dev/null || echo "")
 
   # Check if task involves database migration (label-based detection preferred, keyword fallback)
-  has_migration_label=$(echo "$issue_json" | jq -r '.labels.nodes[]? | select(.name | ascii_downcase | test("migration|database|schema|alembic")) | .name' | head -1)
+  has_migration_label=$(echo "$issue_json" | jq -r '.labels.nodes[]? | select(.name | ascii_downcase | test("migration|database|schema|alembic")) | .name' 2>/dev/null | head -1)
   is_migration=false
 
   if [[ -n "$has_migration_label" ]]; then
@@ -793,10 +794,11 @@ validate_pr_merge() {
     return 1
   fi
 
-  local state=$(echo "$details" | jq -r '.state')
-  local base_branch=$(echo "$details" | jq -r '.baseRefName')
-  local has_checks=$(echo "$details" | jq '.statusCheckRollup | length > 0')
-  local checks=$(echo "$details" | jq -r '.statusCheckRollup[]?.conclusion // "PENDING"')
+  local state base_branch has_checks checks
+  state=$(echo "$details" | jq -r '.state' 2>/dev/null) || return 1
+  base_branch=$(echo "$details" | jq -r '.baseRefName' 2>/dev/null) || return 1
+  has_checks=$(echo "$details" | jq '.statusCheckRollup | length > 0' 2>/dev/null)
+  checks=$(echo "$details" | jq -r '.statusCheckRollup[]?.conclusion // "PENDING"' 2>/dev/null)
 
   if [[ "$state" != "MERGED" ]]; then return 1; fi
   if [[ "$base_branch" != "$BASE_BRANCH" ]]; then
@@ -875,7 +877,7 @@ fetch_candidates() {
   fi
 
   local backlog_json
-  backlog_json=$(npx tsx "$TOOLS_DIR/list-backlog-json.ts" "$PROJECT_NAME" 2>&1 | sed '/^\[dotenv/d' | sed '/^[[:space:]]*$/d')
+  backlog_json=$(npx tsx "$TOOLS_DIR/list-backlog-json.ts" "$PROJECT_NAME" 2>/dev/null)
 
   if [[ -z "$backlog_json" ]] || [[ "$backlog_json" == "[]" ]]; then
     BACKLOG_CACHE=""
@@ -899,7 +901,7 @@ fetch_candidates() {
     | .[0:$show_limit]
     | .[]
     | "\(.identifier)|\(.title|ascii_downcase|gsub("[^a-z0-9]+";"-"))|\(.title)|\(.area)|\(.score)"
-  ')
+  ' 2>/dev/null)
   LAST_BACKLOG_FETCH=$now
   echo "$BACKLOG_CACHE"
 }
@@ -940,7 +942,7 @@ launch_task() {
 
   # Fetch issue details
   local issue_json
-  issue_json=$(npx tsx "$TOOLS_DIR/get-issue-json.ts" "$issue" 2>&1 | sed '/^\[dotenv/d' | sed '/^$/d' || echo "{}")
+  issue_json=$(npx tsx "$TOOLS_DIR/get-issue-json.ts" "$issue" 2>/dev/null || echo "{}")
   local issue_desc
   issue_desc=$(echo "$issue_json" | jq -r '.description // ""' 2>/dev/null || echo "")
 

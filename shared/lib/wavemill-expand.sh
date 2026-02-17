@@ -34,13 +34,14 @@ log_warn() { echo "$(date '+%H:%M:%S') WARN: $*" >&2; }
 
 linear_list_backlog() {
   local project_name="$1"
-  # Filter out dotenv and other informational messages, keep only JSON
-  npx tsx "$TOOLS_DIR/list-backlog-json.ts" "$project_name" 2>&1 | sed '/^\[dotenv/d' | sed '/^[[:space:]]*$/d'
+  # Capture only stdout (JSON); suppress stderr (dotenv, node warnings, etc.)
+  npx tsx "$TOOLS_DIR/list-backlog-json.ts" "$project_name" 2>/dev/null
 }
 
 linear_get_issue() {
   local issue_id="$1"
-  npx tsx "$TOOLS_DIR/get-issue-json.ts" "$issue_id" 2>&1 | sed '/^\[dotenv/d' | sed '/^$/d'
+  # Capture only stdout (JSON); suppress stderr (dotenv, node warnings, etc.)
+  npx tsx "$TOOLS_DIR/get-issue-json.ts" "$issue_id" 2>/dev/null
 }
 
 
