@@ -5,7 +5,7 @@ import dotenv from 'dotenv';
 import readline from 'readline';
 import { writeFileSync, readFileSync, existsSync } from 'fs';
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const rl = readline.createInterface({
   input: process.stdin,

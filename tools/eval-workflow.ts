@@ -27,7 +27,7 @@ import {
   loadPenalties,
 } from '../shared/lib/intervention-detector.ts';
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -153,7 +153,7 @@ function gatherContext(args) {
     try {
       const toolPath = path.resolve(__dirname, 'get-issue-json.ts');
       const raw = execSync(
-        `npx tsx "${toolPath}" "${issueId}" 2>/dev/null | sed '/^\\[dotenv/d'`,
+        `npx tsx "${toolPath}" "${issueId}" 2>/dev/null`,
         { encoding: 'utf-8', cwd: repoDir, shell: '/bin/bash' }
       ).trim();
       const issue = JSON.parse(raw);

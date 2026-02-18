@@ -3,7 +3,7 @@ import { getIssue, updateIssue } from '../shared/lib/linear.js';
 import dotenv from 'dotenv';
 import fs from 'fs/promises';
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 async function main() {
   const args = process.argv.slice(2);

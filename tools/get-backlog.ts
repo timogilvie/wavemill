@@ -4,7 +4,7 @@ import dotenv from 'dotenv';
 import readline from 'readline';
 
 // Load environment variables
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const rl = readline.createInterface({
   input: process.stdin,

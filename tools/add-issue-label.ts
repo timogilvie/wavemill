@@ -3,7 +3,7 @@
 import { getIssue, getOrCreateLabel, addLabelsToIssue } from '../shared/lib/linear.js';
 import dotenv from 'dotenv';
 
-dotenv.config({ silent: true });
+dotenv.config({ quiet: true });
 
 async function main() {
   const identifier = process.argv[2];

@@ -30,7 +30,7 @@ import {
   getOrCreateProjectMilestone,
 } from '../shared/lib/linear.js';
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

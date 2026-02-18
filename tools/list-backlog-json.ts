@@ -3,7 +3,7 @@
 import { getBacklog } from '../shared/lib/linear.js';
 import dotenv from 'dotenv';
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 async function main() {
   const projectName = process.argv[2] || null;

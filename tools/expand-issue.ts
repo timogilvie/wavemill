@@ -21,7 +21,7 @@ import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
 import { getIssue, updateIssue } from '../shared/lib/linear.js';
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
