@@ -139,6 +139,39 @@ get_task_state() {
 }
 
 
+# Migration state helpers — persist reservations in the state ledger
+# so both the initial mill and the monitoring loop stay coordinated.
+scan_highest_migration() {
+  # Scan the git tree (not filesystem) for the highest migration number.
+  # Requires a prior `git fetch` so origin/$BASE_BRANCH is up-to-date.
+  local highest
+  highest=$(git -C "$REPO_DIR" ls-tree --name-only "origin/$BASE_BRANCH" alembic/versions/ 2>/dev/null \
+    | grep -oE '^[0-9]+' | sort -n | tail -1)
+  echo "${highest:-0}"
+}
+
+get_next_migration_num() {
+  # Read from state file; returns empty if not yet set.
+  jq -r '.nextMigrationNum // empty' "$STATE_FILE" 2>/dev/null
+}
+
+save_migration_reservation() {
+  local issue="$1"
+  local num="$2"
+  local tmp=$(mktemp)
+  jq --arg issue "$issue" --argjson num "$num" \
+     '.migrationReservations[$issue] = $num | .nextMigrationNum = ($num + 1)' \
+     "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+}
+
+save_next_migration_num() {
+  local num="$1"
+  local tmp=$(mktemp)
+  jq --argjson num "$num" '.nextMigrationNum = $num' \
+     "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+}
+
+
 remove_task_state() {
   local issue="$1"
   local tmp=$(mktemp)
@@ -497,13 +530,15 @@ EXPANSION_NEEDED=false
 
 
 # Pre-allocate migration numbers for parallel work
-# Find highest existing migration number in the repo
-NEXT_MIGRATION_NUM=1
-if [[ -d "$REPO_DIR/alembic/versions" ]]; then
-  HIGHEST=$(find "$REPO_DIR/alembic/versions" -name "*.py" -exec basename {} \; | grep -oE '^[0-9]+' | sort -n | tail -1 || echo "0")
-  NEXT_MIGRATION_NUM=$((HIGHEST + 1))
-fi
-log "Next available migration number: $NEXT_MIGRATION_NUM"
+# Fetch first so we scan the latest state of the base branch (not stale local files)
+log "Fetching latest $BASE_BRANCH for migration scan..."
+git -C "$REPO_DIR" fetch origin "$BASE_BRANCH" 2>/dev/null || true
+
+# Scan the git tree (not local filesystem) for the highest existing migration number
+HIGHEST=$(scan_highest_migration)
+NEXT_MIGRATION_NUM=$((HIGHEST + 1))
+save_next_migration_num "$NEXT_MIGRATION_NUM"
+log "Next available migration number: $NEXT_MIGRATION_NUM (highest in origin/$BASE_BRANCH: $HIGHEST)"
 
 
 # ── Phase 1: Fetch issue details in parallel ──────────────────────────────
@@ -580,15 +615,21 @@ for t in "${TASKS[@]}"; do
   issue_json=$(cat "/tmp/${SESSION}-${ISSUE}-issue.json" 2>/dev/null || echo "{}")
   current_desc=$(echo "$issue_json" | jq -r '.description // ""' 2>/dev/null || echo "")
 
-  # Check if task involves database migration (label-based detection preferred, keyword fallback)
+  # Check if task involves database migration
+  # Detection order: 1) label match  2) keyword in expanded task packet  3) keyword in raw description
   has_migration_label=$(echo "$issue_json" | jq -r '.labels.nodes[]? | select(.name | ascii_downcase | test("migration|database|schema|alembic")) | .name' 2>/dev/null | head -1)
+  packet_text=$(cat "$PACKET_FILE" 2>/dev/null || echo "")
   is_migration=false
 
   if [[ -n "$has_migration_label" ]]; then
     log "  → Migration detected (label: $has_migration_label), assigning number: $NEXT_MIGRATION_NUM"
     is_migration=true
+  elif echo "$packet_text" | grep -qi "alembic\|migration.*file\|database.*migration\|schema.*migration\|add.*column.*table\|create.*table\|alter.*table"; then
+    log "  → Migration detected (task packet keyword match), assigning number: $NEXT_MIGRATION_NUM"
+    log "    Tip: Add 'migration' label to $ISSUE for more reliable detection"
+    is_migration=true
   elif echo "$current_desc" | grep -qi "alembic\|migration.*file\|database.*migration\|schema.*migration"; then
-    log "  → Migration detected (keyword match), assigning number: $NEXT_MIGRATION_NUM"
+    log "  → Migration detected (raw description keyword match), assigning number: $NEXT_MIGRATION_NUM"
     log "    Tip: Add 'migration' label to $ISSUE for more reliable detection"
     is_migration=true
   fi
@@ -601,6 +642,8 @@ for t in "${TASKS[@]}"; do
     echo "" >> "$PACKET_FILE"
     echo "Use revision='$(printf '%03d' $NEXT_MIGRATION_NUM)' in your Alembic migration file." >> "$PACKET_FILE"
     echo "CRITICAL: This number has been reserved to avoid conflicts with parallel tasks." >> "$PACKET_FILE"
+    # Persist reservation so the monitoring loop can continue the sequence
+    save_migration_reservation "$ISSUE" "$NEXT_MIGRATION_NUM"
     NEXT_MIGRATION_NUM=$((NEXT_MIGRATION_NUM + 1))
   fi
 
@@ -965,6 +1008,51 @@ launch_task() {
 
   # Fetch latest base branch
   git -C "$REPO_DIR" fetch origin "$BASE_BRANCH" 2>/dev/null || true
+
+  # ── Migration detection for dynamically launched tasks ──────────────
+  local is_migration=false
+  local has_migration_label
+  has_migration_label=$(echo "$issue_json" | jq -r '.labels.nodes[]? | select(.name | ascii_downcase | test("migration|database|schema|alembic")) | .name' 2>/dev/null | head -1)
+
+  if [[ -n "$has_migration_label" ]]; then
+    is_migration=true
+  elif echo "$packet_content" | grep -qi "alembic\|migration.*file\|database.*migration\|schema.*migration\|add.*column.*table\|create.*table\|alter.*table"; then
+    is_migration=true
+  elif echo "$issue_desc" | grep -qi "alembic\|migration.*file\|database.*migration\|schema.*migration"; then
+    is_migration=true
+  fi
+
+  if [[ "$is_migration" == "true" ]]; then
+    # Read next migration number from state file (persisted by initial mill or prior launches)
+    local next_num
+    next_num=$(jq -r '.nextMigrationNum // empty' "$STATE_FILE" 2>/dev/null)
+    if [[ -z "$next_num" ]]; then
+      # Fallback: compute from git tree
+      local highest
+      highest=$(git -C "$REPO_DIR" ls-tree --name-only "origin/$BASE_BRANCH" alembic/versions/ 2>/dev/null \
+        | grep -oE '^[0-9]+' | sort -n | tail -1)
+      next_num=$(( ${highest:-0} + 1 ))
+    fi
+
+    # Append migration hint to task packet
+    echo "" >> "$packet_file"
+    echo "---" >> "$packet_file"
+    echo "**ASSIGNED MIGRATION NUMBER**: $next_num" >> "$packet_file"
+    echo "" >> "$packet_file"
+    echo "Use revision='$(printf '%03d' $next_num)' in your Alembic migration file." >> "$packet_file"
+    echo "CRITICAL: This number has been reserved to avoid conflicts with parallel tasks." >> "$packet_file"
+
+    # Persist reservation so subsequent launches continue the sequence
+    local _mig_tmp
+    _mig_tmp=$(mktemp)
+    jq --arg issue "$issue" --argjson num "$next_num" \
+       '.migrationReservations[$issue] = $num | .nextMigrationNum = ($num + 1)' \
+       "$STATE_FILE" > "$_mig_tmp" && mv "$_mig_tmp" "$STATE_FILE"
+
+    # Re-read packet content with migration hint included
+    packet_content=$(cat "$packet_file" 2>/dev/null || echo "")
+    log "  → Migration detected, assigned number: $next_num"
+  fi
 
   # Create worktree + branch
   if [[ -d "$wt_dir" ]]; then
