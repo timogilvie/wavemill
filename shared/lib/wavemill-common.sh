@@ -332,6 +332,43 @@ write_task_packet() {
 }
 
 # ============================================================================
+# CLAUDE TRUST PRE-SEEDING
+# ============================================================================
+
+# Pre-trust a directory in Claude Code's config so it doesn't prompt on launch.
+# Each worktree path is treated as a separate "project" by Claude, triggering a
+# trust dialog on first use. This function sets hasTrustDialogAccepted=true
+# and hasCompletedProjectOnboarding=true before the agent starts.
+#
+# Args: $1 = directory path to trust
+pretrust_directory() {
+  local dir_path="$1"
+  local claude_json="$HOME/.claude.json"
+
+  # Only relevant for claude agent
+  [[ "${AGENT_CMD:-claude}" != "claude" ]] && return 0
+  [[ ! -f "$claude_json" ]] && return 0
+
+  # Check if already trusted
+  local already_trusted
+  already_trusted=$(jq -r --arg p "$dir_path" '.projects[$p].hasTrustDialogAccepted // false' "$claude_json" 2>/dev/null)
+  [[ "$already_trusted" == "true" ]] && return 0
+
+  # Set trust fields
+  local tmp
+  tmp=$(mktemp)
+  if jq --arg p "$dir_path" '
+    .projects[$p] = (.projects[$p] // {}) |
+    .projects[$p].hasTrustDialogAccepted = true |
+    .projects[$p].hasCompletedProjectOnboarding = true
+  ' "$claude_json" > "$tmp" 2>/dev/null; then
+    mv "$tmp" "$claude_json"
+  else
+    rm -f "$tmp"
+  fi
+}
+
+# ============================================================================
 # TASK PHASE MANAGEMENT
 # ============================================================================
 

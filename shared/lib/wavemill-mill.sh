@@ -990,6 +990,25 @@ launch_task() {
   BRANCH_BY_ISSUE["$issue"]="$branch"
   SLUG_BY_ISSUE["$issue"]="$slug"
 
+  # Pre-trust worktree directory so Claude doesn't prompt
+  if [[ "$AGENT_CMD" == "claude" ]] && [[ -f "$HOME/.claude.json" ]]; then
+    local already_trusted
+    already_trusted=$(jq -r --arg p "$wt_dir" '.projects[$p].hasTrustDialogAccepted // false' "$HOME/.claude.json" 2>/dev/null)
+    if [[ "$already_trusted" != "true" ]]; then
+      local _tmp
+      _tmp=$(mktemp)
+      if jq --arg p "$wt_dir" '
+        .projects[$p] = (.projects[$p] // {}) |
+        .projects[$p].hasTrustDialogAccepted = true |
+        .projects[$p].hasCompletedProjectOnboarding = true
+      ' "$HOME/.claude.json" > "$_tmp" 2>/dev/null; then
+        mv "$_tmp" "$HOME/.claude.json"
+      else
+        rm -f "$_tmp"
+      fi
+    fi
+  fi
+
   # Create tmux window
   local win="$issue-$slug"
   tmux new-window -t "$SESSION" -n "$win" -c "$wt_dir"

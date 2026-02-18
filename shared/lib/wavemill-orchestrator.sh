@@ -138,6 +138,9 @@ for t in "${TASKS[@]}"; do
     fi
 
 
+    # Pre-trust worktree directory so Claude doesn't prompt
+    pretrust_directory "$WT_DIR"
+
     WIN="$ISSUE-$SLUG"
     tmux new-window -t "$SESSION" -n "$WIN" -c "$WT_DIR"
 
