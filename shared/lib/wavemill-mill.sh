@@ -286,7 +286,7 @@ smart_select_from_candidates() {
 
 find_pr_for_branch() {
   local branch="$1"
-  retry gh pr list --head "$branch" --json number --jq '.[0].number // empty'
+  retry gh pr list --head "$branch" --state all --json number --jq '.[0].number // empty'
 }
 
 
@@ -775,6 +775,8 @@ set -euo pipefail
 # Import environment from env file
 source "$1"
 
+# Ensure gh commands target the correct GitHub repo (not inherited CWD)
+cd "$REPO_DIR"
 
 # Logging
 log() { echo "$(date '+%H:%M:%S') $*"; }
@@ -812,7 +814,7 @@ linear_set_state() {
 
 find_pr_for_branch() {
   local branch="$1"
-  gh pr list --head "$branch" --json number --jq '.[0].number // empty' 2>/dev/null || true
+  gh pr list --head "$branch" --state all --json number --jq '.[0].number // empty' 2>/dev/null || true
 }
 
 
