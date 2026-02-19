@@ -512,9 +512,13 @@ echo ""
 log "Available tasks (ranked by priority, up to 9 shown):"
 echo "$CANDIDATES" | awk -F'|' '{printf "%s. %s - %s (score: %.0f)\n", NR, $1, $3, $5}' | head -9
 echo ""
-echo "Enter numbers to run (e.g. 1 3 5) or press Enter to auto-select first $MAX_PARALLEL:"
+echo "Enter numbers to run (e.g. 1 3 5), q to quit, or press Enter to auto-select first $MAX_PARALLEL:"
 read -r SELECTED
 
+if [[ "$SELECTED" =~ ^[qQ](uit)?$ ]]; then
+  log "Cancelled by user."
+  exit 0
+fi
 
 # Use smart selection
 TASKS=()
