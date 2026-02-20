@@ -35,9 +35,21 @@ The intervention metadata below contains structured data about human interventio
 - **manual_edit**: Commits not attributed to the AI agent indicate a human had to directly modify the code. This is the strongest signal of intervention.
 - **test_fix**: Commits that fix failing tests indicate the agent's initial implementation had test failures that required correction.
 
-The `penaltyWeights` in the intervention data are **guidance**, not rigid arithmetic. Use them to calibrate the relative severity of different intervention types, but apply your judgment to the overall score. A task with zero interventions should score near 1.0 (assuming completeness and correctness). A task with moderate interventions (2-3 review comments, 1 post-PR commit) should score in the 0.6-0.8 range. Heavy intervention (multiple manual edits, many review rounds) should score 0.5 or below.
+Use the `penaltyWeights` as a **floor** for score reduction — the actual penalty should be at least as large as the weighted sum. Apply your judgment to increase penalties further when warranted, but never reduce them below the weighted sum.
 
-**Important**: Always reference specific interventions in your rationale. If interventions are present, explain which ones most impacted the score and why.
+### Scoring boundaries (strict)
+
+- **No interventions**: Score 0.9–1.0 (assuming completeness and correctness).
+- **Cosmetic-only interventions** (style nits, typo fixes, minor review comments with no functional impact): Score 0.8–0.9.
+- **Any functional bug** that a human had to identify or fix (wrong behavior, runtime errors, broken queries, missing edge cases): Score **0.7 maximum**. A bug the agent introduced that required human correction is a significant failure of autonomous execution, regardless of how much else was done correctly.
+- **Multiple functional bugs** or a bug requiring substantial rework: Score 0.5–0.6.
+- **Heavy intervention** (multiple manual edits, many review rounds, human had to redesign approach): Score 0.5 or below.
+
+### Key principle
+
+The purpose of this eval is to measure **autonomous reliability**. An agent that completes 90% of the work but introduces a bug that breaks production is not "nearly autonomous" — the human still had to catch and fix the problem. Score accordingly. Err on the side of penalizing too harshly rather than too leniently; generous scores erode the signal quality of the eval system.
+
+**Important**: Always reference specific interventions in your rationale. If interventions are present, explain which ones most impacted the score and why. When a `manual_edit` or `post_pr_commit` fixes a functional issue, explicitly note that it caps the score at 0.7 or below.
 
 ## Input
 
