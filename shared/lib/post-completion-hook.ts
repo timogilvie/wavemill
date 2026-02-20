@@ -161,6 +161,9 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
       metadata: { workflowType: ctx.workflowType, hookTriggered: true, interventionSummary },
     });
 
+    // Set agentType unconditionally so eval records always reflect which agent ran
+    record.agentType = ctx.agentType || 'claude';
+
     // 5. Compute workflow cost from agent session data
     //    Pricing lives in the wavemill repo config, not the target repo,
     //    so resolve it from this script's location.
@@ -179,7 +182,6 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
         if (costResult) {
           record.workflowCost = costResult.totalCostUsd;
           record.workflowTokenUsage = costResult.models;
-          record.agentType = ctx.agentType || 'claude';
           console.log(
             `Post-completion eval: workflow cost $${costResult.totalCostUsd.toFixed(4)} ` +
             `(${costResult.turnCount} turns across ${costResult.sessionCount} session(s))`

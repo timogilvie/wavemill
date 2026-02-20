@@ -152,7 +152,7 @@ load_filtered_records() {
   local jq_filter='.'
 
   if [[ -n "$MODEL_FILTER" ]]; then
-    jq_filter="${jq_filter} | select(.modelId == \$model_f)"
+    jq_filter="${jq_filter} | select((.agentType // .modelId) == \$model_f)"
   fi
 
   if [[ -n "$FROM_DATE" ]]; then
@@ -234,10 +234,10 @@ REPORT_JSON=$(echo "$RECORDS_JSON" | jq \
   (if ($costs | length) > 0 then ($costs | add) else null end) as $total_cost |
   (if ($costs | length) > 0 then ($costs | add / length) else null end) as $avg_cost |
 
-  # Per-model averages
-  (group_by(.modelId)
+  # Per-agent averages (use agentType when set, fall back to modelId)
+  (group_by(.agentType // .modelId)
    | map({
-       model: .[0].modelId,
+       model: .[0].agentType // .[0].modelId,
        count: length,
        avg: (map(.score) | add / length),
        min: (map(.score) | min),
@@ -274,7 +274,7 @@ REPORT_JSON=$(echo "$RECORDS_JSON" | jq \
    | .[0:$limit]
    | map({
        issueId: (.issueId // "n/a"),
-       model: .modelId,
+       model: (.agentType // .modelId),
        score: .score,
        scoreBand: .scoreBand,
        date: (.timestamp | split("T")[0]),
@@ -389,7 +389,7 @@ echo ""
 
 # ── Per-Model Averages ─────────────────────────────────────────────────────
 
-echo "  ${BOLD}Per-Model Averages${NC}"
+echo "  ${BOLD}Per-Agent Averages${NC}"
 echo "  ${DIM}${LINE}${NC}"
 
 echo "$REPORT_JSON" | jq -r '
