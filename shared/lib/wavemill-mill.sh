@@ -1178,13 +1178,7 @@ Success criteria:
 Start with Phase 1 now. Read the task context and begin researching.
 PLAN_PROMPT_EOF
 
-    local launcher="/tmp/${SESSION}-${issue}-launcher.sh"
-    cat > "$launcher" <<LAUNCH_EOF
-#!/bin/bash
-exec claude "\$(cat '$prompt_file')"
-LAUNCH_EOF
-    chmod +x "$launcher"
-    tmux send-keys -t "$SESSION:$win" "'$launcher'" C-m
+    agent_launch_interactive "$SESSION" "$win" "$prompt_file" "$AGENT_CMD"
   else
     # Skip mode — pipe instructions to agent
     local instr_file="/tmp/${SESSION}-${issue}-instructions.txt"
@@ -1217,17 +1211,7 @@ Process:
 5. Post back with summary of changes, commands run + results, and PR link
 INSTR_EOF
 
-    if [[ "$AGENT_CMD" == "claude" ]]; then
-      tmux send-keys -t "$SESSION:$win" "cat '$instr_file' | $AGENT_CMD" C-m
-    elif [[ "$AGENT_CMD" == "codex" ]]; then
-      tmux send-keys -t "$SESSION:$win" "$AGENT_CMD /task \"\$(cat '$instr_file')\"" C-m
-    else
-      tmux send-keys -t "$SESSION:$win" "$AGENT_CMD" C-m
-      sleep 0.3
-      tmux set-buffer "$(cat "$instr_file")"
-      tmux paste-buffer -t "$SESSION:$win"
-      tmux send-keys -t "$SESSION:$win" C-m
-    fi
+    agent_launch_autonomous "$SESSION" "$win" "$instr_file" "$AGENT_CMD"
   fi
 
   log "  ✓ $issue launched (phase: ${initial_phase})"
