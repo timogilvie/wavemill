@@ -237,7 +237,7 @@ REPORT_JSON=$(echo "$RECORDS_JSON" | jq \
   # Per-agent averages (use agentType when set, fall back to modelId)
   (group_by(.agentType // .modelId)
    | map({
-       model: .[0].agentType // .[0].modelId,
+       model: (.[0].agentType // .[0].modelId),
        count: length,
        avg: (map(.score) | add / length),
        min: (map(.score) | min),
