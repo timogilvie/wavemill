@@ -41,7 +41,7 @@ agent_launch_autonomous() {
       tmux send-keys -t "$session:$window" "cat '$instr_file' | claude" C-m
       ;;
     codex)
-      tmux send-keys -t "$session:$window" "codex /task \"\$(cat '$instr_file')\"" C-m
+      tmux send-keys -t "$session:$window" "codex exec --full-auto - < '$instr_file'" C-m
       ;;
     *)
       # Generic fallback: start the agent, then paste instructions via tmux buffer.

@@ -8,7 +8,7 @@
     "pollSeconds": 10,
     "baseBranch": "main",
     "worktreeRoot": "worktrees",
-    "agentCmd": "claude",
+    "agentCmd": "codex",
     "requireConfirm": false,
     "planningMode": "interactive",
     "maxRetries": 3,
