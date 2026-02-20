@@ -10,9 +10,12 @@ import {
   formatForJudge,
   detectSessionRedirects,
   deduplicatePostPrAndManualEdits,
+  detectManualEdits,
+  detectTestFixes,
   type InterventionSummary,
   type InterventionEvent,
   type InterventionPenalties,
+  type PrCommit,
 } from './intervention-detector.ts';
 import { encodeProjectDir } from './workflow-cost.ts';
 
@@ -546,6 +549,104 @@ describe('intervention-detector', () => {
         Math.abs(heavyParsed.totalInterventionScore - 0.31) < 0.001,
         `Expected ~0.31 in JSON, got ${heavyParsed.totalInterventionScore}`
       );
+    });
+  });
+
+  describe('detectManualEdits with PR commits', () => {
+    it('detects non-agent commits from PR commit data', () => {
+      const prCommits: PrCommit[] = [
+        {
+          sha: 'aaa1111222233334444',
+          message: 'feat: add component\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>',
+          author: 'timogilvie',
+          date: '2026-02-20T10:00:00Z',
+        },
+        {
+          sha: 'bbb2222333344445555',
+          message: 'manual fix for styling',
+          author: 'timogilvie',
+          date: '2026-02-20T11:00:00Z',
+        },
+      ];
+
+      const event = detectManualEdits('task/test', 'main', undefined, '42', prCommits);
+      assert.equal(event.count, 1);
+      assert.ok(event.details[0].includes('bbb2222'));
+      assert.ok(event.details[0].includes('manual fix for styling'));
+    });
+
+    it('returns zero when all PR commits are agent commits', () => {
+      const prCommits: PrCommit[] = [
+        {
+          sha: 'aaa1111222233334444',
+          message: 'feat: add feature\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>',
+          author: 'timogilvie',
+          date: '2026-02-20T10:00:00Z',
+        },
+        {
+          sha: 'bbb2222333344445555',
+          message: 'fix: address review\n\nCo-authored-by: Claude Opus 4.6 <noreply@anthropic.com>',
+          author: 'timogilvie',
+          date: '2026-02-20T11:00:00Z',
+        },
+      ];
+
+      const event = detectManualEdits('task/test', 'main', undefined, '42', prCommits);
+      assert.equal(event.count, 0);
+    });
+
+    it('does not pick up commits from other PRs (the HOK-740 bug)', () => {
+      // Only the actual PR commits are checked — no git log leakage
+      const prCommits: PrCommit[] = [
+        {
+          sha: '6c68bc1000000000000',
+          message: 'feat(web): add ProposalCard\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>',
+          author: 'timogilvie',
+          date: '2026-02-20T12:00:00Z',
+        },
+      ];
+      // Commits from PR #135 and #136 would NOT be in prCommits — that's the fix
+
+      const event = detectManualEdits('task/test', 'main', undefined, '137', prCommits);
+      assert.equal(event.count, 0, 'Should not detect agent commit as manual edit');
+    });
+  });
+
+  describe('detectTestFixes with PR commits', () => {
+    it('detects test fix commits from PR commit data', () => {
+      const prCommits: PrCommit[] = [
+        {
+          sha: 'aaa1111222233334444',
+          message: 'feat: add component',
+          author: 'timogilvie',
+          date: '2026-02-20T10:00:00Z',
+        },
+        {
+          sha: 'bbb2222333344445555',
+          message: 'fix failing test for component',
+          author: 'timogilvie',
+          date: '2026-02-20T11:00:00Z',
+        },
+      ];
+
+      const event = detectTestFixes('task/test', 'main', undefined, '42', prCommits);
+      assert.equal(event.count, 1);
+      assert.ok(event.details[0].includes('bbb2222'));
+      assert.ok(event.details[0].includes('fix failing test'));
+    });
+
+    it('returns zero when no test fix patterns match', () => {
+      const prCommits: PrCommit[] = [
+        {
+          sha: 'aaa1111222233334444',
+          message: 'feat: add new feature',
+          author: 'timogilvie',
+          date: '2026-02-20T10:00:00Z',
+        },
+      ];
+
+      const event = detectTestFixes('task/test', 'main', undefined, '42', prCommits);
+      assert.equal(event.count, 0);
     });
   });
 });
