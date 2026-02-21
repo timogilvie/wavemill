@@ -47,6 +47,8 @@ function parseArgs(argv) {
       args.repoDir = argv[++i];
     } else if (argv[i] === '--agent' && argv[i + 1]) {
       args.agent = argv[++i];
+    } else if (argv[i] === '--solution-model' && argv[i + 1]) {
+      args.solutionModel = argv[++i];
     } else if (argv[i] === '--help' || argv[i] === '-h') {
       args.help = true;
     }
@@ -67,6 +69,7 @@ Options:
   --model ID      Override the eval model (default: EVAL_MODEL env or claude-sonnet-4-5-20250929)
   --repo-dir DIR  Repository directory (default: current directory)
   --agent TYPE    Agent type: claude or codex (default: claude)
+  --solution-model ID  Model that produced the solution (e.g., codex-1, claude-opus-4-6)
   --help, -h      Show this help message
 
 Examples:
@@ -246,8 +249,11 @@ function formatEvalRecord(record) {
   if (record.issueId) lines.push(`  ${DIM}Issue:${NC}  ${record.issueId}`);
   if (record.prUrl) lines.push(`  ${DIM}PR:${NC}     ${record.prUrl}`);
   if (record.agentType) lines.push(`  ${DIM}Agent:${NC}  ${record.agentType}`);
-  lines.push(`  ${DIM}Judge:${NC}  ${record.judgeModel || record.modelId}`);
-  if (record.judgeProvider) lines.push(`  ${DIM}Provider:${NC} ${record.judgeProvider}`);
+  // Show solution model if it differs from the judge model (i.e. was explicitly set)
+  if (record.modelId && record.modelId !== record.judgeModel) {
+    lines.push(`  ${DIM}Model:${NC}  ${record.modelId}`);
+  }
+  lines.push(`  ${DIM}Judge:${NC}  ${DIM}${record.judgeModel || record.modelId}${NC}`);
   if (record.timeSeconds > 0) lines.push(`  ${DIM}Time:${NC}   ${record.timeSeconds}s`);
   lines.push('');
 
@@ -345,8 +351,12 @@ async function main() {
       metadata: { interventionSummary },
     });
 
-    // 4b. Set agentType so eval records reflect which agent ran
+    // 4b. Set agentType and solution model so eval records reflect which agent/model ran
     record.agentType = args.agent || 'claude';
+    if (args.solutionModel) {
+      record.modelId = args.solutionModel;
+      record.modelVersion = args.solutionModel;
+    }
 
     // 5. Persist eval record to disk
     try {
