@@ -245,7 +245,8 @@ function formatEvalRecord(record) {
   // Metadata
   if (record.issueId) lines.push(`  ${DIM}Issue:${NC}  ${record.issueId}`);
   if (record.prUrl) lines.push(`  ${DIM}PR:${NC}     ${record.prUrl}`);
-  lines.push(`  ${DIM}Model:${NC}  ${record.judgeModel || record.modelId}`);
+  if (record.agentType) lines.push(`  ${DIM}Agent:${NC}  ${record.agentType}`);
+  lines.push(`  ${DIM}Judge:${NC}  ${record.judgeModel || record.modelId}`);
   if (record.judgeProvider) lines.push(`  ${DIM}Provider:${NC} ${record.judgeProvider}`);
   if (record.timeSeconds > 0) lines.push(`  ${DIM}Time:${NC}   ${record.timeSeconds}s`);
   lines.push('');
@@ -343,6 +344,9 @@ async function main() {
       prUrl: ctx.prUrl || undefined,
       metadata: { interventionSummary },
     });
+
+    // 4b. Set agentType so eval records reflect which agent ran
+    record.agentType = args.agent || 'claude';
 
     // 5. Persist eval record to disk
     try {
