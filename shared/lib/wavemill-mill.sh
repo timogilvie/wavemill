@@ -799,6 +799,17 @@ log() { echo "$(date '+%H:%M:%S') $*"; }
 log_error() { echo "$(date '+%H:%M:%S') ERROR: $*" >&2; }
 log_warn() { echo "$(date '+%H:%M:%S') WARN: $*" >&2; }
 
+# Close dashboard pane when monitor exits so quitting control is a single action.
+_DASHBOARD_CLEANED=0
+cleanup_dashboard_pane() {
+  [[ "$_DASHBOARD_CLEANED" -eq 1 ]] && return 0
+  _DASHBOARD_CLEANED=1
+
+  tmux list-panes -t "$SESSION:control.1" >/dev/null 2>&1 || return 0
+  tmux kill-pane -t "$SESSION:control.1" >/dev/null 2>&1 || true
+}
+trap cleanup_dashboard_pane EXIT INT TERM
+
 
 # ============================================================================
 # STATE & LINEAR HELPERS
