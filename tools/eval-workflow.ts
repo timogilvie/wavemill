@@ -45,6 +45,8 @@ function parseArgs(argv) {
       args.model = argv[++i];
     } else if (argv[i] === '--repo-dir' && argv[i + 1]) {
       args.repoDir = argv[++i];
+    } else if (argv[i] === '--agent' && argv[i + 1]) {
+      args.agent = argv[++i];
     } else if (argv[i] === '--help' || argv[i] === '-h') {
       args.help = true;
     }
@@ -64,6 +66,7 @@ Options:
   --pr NUMBER     GitHub PR number
   --model ID      Override the eval model (default: EVAL_MODEL env or claude-sonnet-4-5-20250929)
   --repo-dir DIR  Repository directory (default: current directory)
+  --agent TYPE    Agent type: claude or codex (default: claude)
   --help, -h      Show this help message
 
 Examples:
@@ -320,6 +323,7 @@ async function main() {
       branchName: ctx.branch,
       baseBranch: 'main',
       repoDir: ctx.repoDir,
+      agentType: args.agent,
     });
     const interventionMeta = toInterventionMeta(interventionSummary);
     const penalties = loadPenalties(ctx.repoDir);
