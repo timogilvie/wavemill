@@ -334,6 +334,7 @@ if [[ "${ORCHESTRATOR_NO_ATTACH:-}" != "1" ]]; then
   echo "Attaching to session: $SESSION"
   echo ""
   tmux select-window -t "$SESSION:control"
+  tmux select-pane -t "$SESSION:control.0"
   tmux attach -t "$SESSION"
 else
   echo "Session ready: $SESSION"
