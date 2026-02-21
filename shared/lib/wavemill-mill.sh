@@ -755,6 +755,7 @@ SESSION='$SESSION'
 REPO_DIR='$REPO_DIR'
 WORKTREE_ROOT='$WORKTREE_ROOT'
 TOOLS_DIR='$TOOLS_DIR'
+LIB_DIR='$SCRIPT_DIR'
 STATE_DIR='$STATE_DIR'
 STATE_FILE='$STATE_FILE'
 POLL_SECONDS='$POLL_SECONDS'
@@ -778,6 +779,17 @@ set -euo pipefail
 
 # Import environment from env file
 source "$1"
+
+# Load shared agent launch adapters used by launch_task()
+if [[ ! -f "$LIB_DIR/agent-adapters.sh" ]]; then
+  log_error "Missing adapter library: $LIB_DIR/agent-adapters.sh"
+  exit 1
+fi
+source "$LIB_DIR/agent-adapters.sh"
+
+# Fail fast if required adapter functions are unavailable.
+command -v agent_launch_autonomous >/dev/null 2>&1 || { log_error "agent_launch_autonomous is not defined"; exit 1; }
+command -v agent_launch_interactive >/dev/null 2>&1 || { log_error "agent_launch_interactive is not defined"; exit 1; }
 
 # Ensure gh commands target the correct GitHub repo (not inherited CWD)
 cd "$REPO_DIR"
