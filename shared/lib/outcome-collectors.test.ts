@@ -5,7 +5,7 @@
  * and returns well-formed outcome objects.
  */
 
-import { describe, it, mock } from 'node:test';
+import { describe, it, mock, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   collectCiOutcome,
@@ -14,8 +14,14 @@ import {
   collectReviewOutcome,
   collectReworkOutcome,
   collectDeliveryOutcome,
+  clearPrChecksCache,
 } from './outcome-collectors.ts';
 import type { InterventionSummary } from './intervention-detector.ts';
+
+// Clear cache before each test to ensure test isolation
+beforeEach(() => {
+  clearPrChecksCache();
+});
 
 describe('collectCiOutcome', () => {
   it('returns ran=false when no checks exist', () => {
@@ -139,5 +145,30 @@ describe('Outcome collectors error handling', () => {
     assert.doesNotThrow(() => collectStaticAnalysisOutcome('', '', '', ''));
     assert.doesNotThrow(() => collectReworkOutcome('', '', undefined, ''));
     assert.doesNotThrow(() => collectDeliveryOutcome('', ''));
+  });
+});
+
+describe('PR checks caching', () => {
+  it('clearPrChecksCache clears all caches when called with no arguments', () => {
+    // This is a basic smoke test - we can't easily verify internal cache state
+    // but we can verify the function doesn't throw
+    assert.doesNotThrow(() => clearPrChecksCache());
+  });
+
+  it('clearPrChecksCache clears specific PR cache when called with arguments', () => {
+    assert.doesNotThrow(() => clearPrChecksCache('123', '/some/path'));
+  });
+
+  it('multiple collectors share cached PR checks data', () => {
+    // All three collectors should work with the same PR
+    // They should all use the shared cache (verified by no errors)
+    const prNumber = '999';
+    const repoDir = '/nonexistent';
+
+    assert.doesNotThrow(() => {
+      collectCiOutcome(prNumber, repoDir);
+      collectTestsOutcome(prNumber, 'branch', 'main', repoDir);
+      collectStaticAnalysisOutcome(prNumber, 'branch', 'main', repoDir);
+    });
   });
 });

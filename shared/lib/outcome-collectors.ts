@@ -30,6 +30,80 @@ import { resolveOwnerRepo } from './intervention-detector.ts';
 import { resolveProjectsDir } from './workflow-cost.ts';
 
 // ────────────────────────────────────────────────────────────────
+// PR Checks Cache
+// ────────────────────────────────────────────────────────────────
+
+/**
+ * In-memory cache of PR checks, keyed by "${prNumber}:${repoDir}".
+ * Lifetime: process-level singleton (cleared manually or on process exit).
+ */
+const prChecksCache = new Map<string, any[]>();
+
+/**
+ * Clear the PR checks cache for a specific PR or all PRs.
+ *
+ * @param prNumber - PR number (omit to clear all cached checks)
+ * @param repoDir - Repository directory
+ */
+export function clearPrChecksCache(prNumber?: string, repoDir?: string): void {
+  if (prNumber !== undefined && repoDir !== undefined) {
+    const key = `${prNumber}:${repoDir}`;
+    prChecksCache.delete(key);
+  } else {
+    prChecksCache.clear();
+  }
+}
+
+/**
+ * Fetch PR checks from GitHub, with in-process caching.
+ *
+ * Makes a single `gh pr checks` call per PR and caches the result.
+ * Subsequent calls for the same PR return cached data.
+ *
+ * @param prNumber - GitHub PR number
+ * @param repoDir - Repository directory (defaults to cwd)
+ * @returns Array of check objects, or empty array on error
+ */
+function fetchPrChecks(prNumber: string, repoDir?: string): any[] {
+  const cwd = repoDir || process.cwd();
+  const cacheKey = `${prNumber}:${cwd}`;
+
+  // Check cache first
+  const cached = prChecksCache.get(cacheKey);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  try {
+    // Fetch all fields needed by any collector
+    const checksRaw = execShellCommand(
+      `gh pr checks ${escapeShellArg(prNumber)} --json name,state,conclusion,startedAt,completedAt 2>/dev/null || echo '[]'`,
+      { encoding: 'utf-8', cwd, timeout: 15_000 }
+    ).trim();
+
+    if (!checksRaw || checksRaw === '[]') {
+      prChecksCache.set(cacheKey, []);
+      return [];
+    }
+
+    const checks = JSON.parse(checksRaw);
+    if (!Array.isArray(checks)) {
+      prChecksCache.set(cacheKey, []);
+      return [];
+    }
+
+    // Cache and return
+    prChecksCache.set(cacheKey, checks);
+    return checks;
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[outcome-collectors] Failed to fetch PR checks: ${message}`);
+    prChecksCache.set(cacheKey, []);
+    return [];
+  }
+}
+
+// ────────────────────────────────────────────────────────────────
 // CI Outcome Collector
 // ────────────────────────────────────────────────────────────────
 
@@ -54,19 +128,11 @@ export function collectCiOutcome(
   };
 
   try {
-    // Fetch PR checks via gh CLI
-    const checksRaw = execShellCommand(
-      `gh pr checks ${escapeShellArg(prNumber)} --json name,state,conclusion,startedAt,completedAt 2>/dev/null || echo '[]'`,
-      { encoding: 'utf-8', cwd, timeout: 15_000 }
-    ).trim();
+    // Fetch PR checks via shared cache
+    const checks = fetchPrChecks(prNumber, cwd);
 
-    if (!checksRaw || checksRaw === '[]') {
+    if (checks.length === 0) {
       return outcome; // No checks ran
-    }
-
-    const checks = JSON.parse(checksRaw);
-    if (!Array.isArray(checks) || checks.length === 0) {
-      return outcome;
     }
 
     outcome.ran = true;
@@ -163,25 +229,18 @@ export function collectTestsOutcome(
 
     // Try to extract test pass rate from CI checks
     // Look for a check with "test" in the name
-    const checksRaw = execShellCommand(
-      `gh pr checks ${escapeShellArg(prNumber)} --json name,conclusion 2>/dev/null || echo '[]'`,
-      { encoding: 'utf-8', cwd, timeout: 15_000 }
-    ).trim();
+    const checks = fetchPrChecks(prNumber, cwd);
+    const testCheck = checks.find((c: { name: string }) =>
+      c.name.toLowerCase().includes('test')
+    );
 
-    if (checksRaw && checksRaw !== '[]') {
-      const checks = JSON.parse(checksRaw);
-      const testCheck = checks.find((c: { name: string }) =>
-        c.name.toLowerCase().includes('test')
-      );
-
-      if (testCheck) {
-        // If we found a test check, infer pass rate from conclusion
-        // This is a simple heuristic; actual pass rate would require parsing check output
-        if (testCheck.conclusion === 'success') {
-          outcome.passRate = 1.0;
-        } else if (testCheck.conclusion === 'failure') {
-          outcome.passRate = 0.0; // Could be partial, but we don't have granular data
-        }
+    if (testCheck) {
+      // If we found a test check, infer pass rate from conclusion
+      // This is a simple heuristic; actual pass rate would require parsing check output
+      if (testCheck.conclusion === 'success') {
+        outcome.passRate = 1.0;
+      } else if (testCheck.conclusion === 'failure') {
+        outcome.passRate = 0.0; // Could be partial, but we don't have granular data
       }
     }
   } catch (err: unknown) {
@@ -219,16 +278,12 @@ export function collectStaticAnalysisOutcome(
   const outcome: StaticAnalysisOutcome = {};
 
   try {
-    const checksRaw = execShellCommand(
-      `gh pr checks ${escapeShellArg(prNumber)} --json name,conclusion 2>/dev/null || echo '[]'`,
-      { encoding: 'utf-8', cwd, timeout: 15_000 }
-    ).trim();
+    // Fetch PR checks via shared cache
+    const checks = fetchPrChecks(prNumber, cwd);
 
-    if (!checksRaw || checksRaw === '[]') {
+    if (checks.length === 0) {
       return outcome;
     }
-
-    const checks = JSON.parse(checksRaw);
 
     // Look for typecheck-related checks
     const typecheckCheck = checks.find((c: { name: string }) =>
