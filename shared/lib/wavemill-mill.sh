@@ -1035,8 +1035,9 @@ save_task_state() {
         worktree: $worktree,
         pr: $pr,
         status: $status,
-        agent: $agent,
+        agent: (if $agent != "" then $agent else (.tasks[$issue].agent // "") end),
         phase: (.tasks[$issue].phase // "executing"),
+        evalCompleted: (.tasks[$issue].evalCompleted // false),
         updated: (now | todate)
       }' "$STATE_FILE" > "$tmp" 2>/dev/null; then
     mv "$tmp" "$STATE_FILE"
@@ -1076,6 +1077,20 @@ set_task_phase() {
 get_task_phase() {
   local issue="$1"
   jq -r --arg issue "$issue" '.tasks[$issue].phase // "executing"' "$STATE_FILE" 2>/dev/null
+}
+
+mark_eval_completed() {
+  local issue="$1"
+  local tmp
+  tmp=$(mktemp) || { log_warn "mark_eval_completed: mktemp failed"; return 0; }
+  if jq --arg issue "$issue" \
+     '.tasks[$issue].evalCompleted = true | .tasks[$issue].updated = (now | todate)' \
+     "$STATE_FILE" > "$tmp" 2>/dev/null; then
+    mv "$tmp" "$STATE_FILE"
+  else
+    rm -f "$tmp"
+    log_warn "mark_eval_completed: failed to update $issue"
+  fi
 }
 
 check_plan_approved() {
@@ -1757,18 +1772,24 @@ monitor_issue_state() {
 
         # Post-completion eval (non-blocking: always exits 0)
         if [[ "$AUTO_EVAL" == "true" ]]; then
-          log "  📊 Running post-completion eval..."
-          eval_agent=$(jq -r --arg i "$ISSUE" '.tasks[$i].agent // ""' "$STATE_FILE" 2>/dev/null)
-          [[ -z "$eval_agent" ]] && eval_agent="$AGENT_CMD"
-          # Always enable debug mode for cost diagnostics (HOK-879)
-          debug_flag="--debug"
-          npx tsx "$TOOLS_DIR/run-eval-hook.ts" \
-            --issue "$ISSUE" --branch "$BRANCH" \
-            --worktree "${WORKTREE_ROOT}/${SLUG}" \
-            --workflow-type mill --repo-dir "$REPO_DIR" \
-            --agent "$eval_agent" \
-            $debug_flag \
-            2>&1 | while IFS= read -r line; do log "  [eval] $line"; done || true
+          eval_completed=$(jq -r --arg i "$ISSUE" '.tasks[$i].evalCompleted // false' "$STATE_FILE" 2>/dev/null)
+          if [[ "$eval_completed" == "false" ]]; then
+            log "  📊 Running post-completion eval..."
+            eval_agent=$(jq -r --arg i "$ISSUE" '.tasks[$i].agent // ""' "$STATE_FILE" 2>/dev/null)
+            [[ -z "$eval_agent" ]] && eval_agent="$AGENT_CMD"
+            # Always enable debug mode for cost diagnostics (HOK-879)
+            debug_flag="--debug"
+            npx tsx "$TOOLS_DIR/run-eval-hook.ts" \
+              --issue "$ISSUE" --branch "$BRANCH" \
+              --worktree "${WORKTREE_ROOT}/${SLUG}" \
+              --workflow-type mill --repo-dir "$REPO_DIR" \
+              --agent "$eval_agent" \
+              $debug_flag \
+              2>&1 | while IFS= read -r line; do log "  [eval] $line"; done || true
+            mark_eval_completed "$ISSUE"
+          else
+            log "  ✓ Eval already completed for $ISSUE"
+          fi
         fi
 
         if [[ "$REQUIRE_CONFIRM" == "true" ]]; then
@@ -1823,18 +1844,24 @@ monitor_issue_state() {
 
     # Post-merge eval (non-blocking: always exits 0)
     if [[ "$AUTO_EVAL" == "true" ]]; then
-      log "  📊 Running post-merge eval..."
-      eval_agent=$(jq -r --arg i "$ISSUE" '.tasks[$i].agent // ""' "$STATE_FILE" 2>/dev/null)
-      [[ -z "$eval_agent" ]] && eval_agent="$AGENT_CMD"
-      # Always enable debug mode for cost diagnostics (HOK-879)
-      debug_flag="--debug"
-      npx tsx "$TOOLS_DIR/run-eval-hook.ts" \
-        --issue "$ISSUE" --pr "$PR" --branch "$BRANCH" \
-        --worktree "${WORKTREE_ROOT}/${SLUG}" \
-        --workflow-type mill --repo-dir "$REPO_DIR" \
-        --agent "$eval_agent" \
-        $debug_flag \
-        2>&1 | while IFS= read -r line; do log "  [eval] $line"; done || true
+      eval_completed=$(jq -r --arg i "$ISSUE" '.tasks[$i].evalCompleted // false' "$STATE_FILE" 2>/dev/null)
+      if [[ "$eval_completed" == "false" ]]; then
+        log "  📊 Running post-merge eval..."
+        eval_agent=$(jq -r --arg i "$ISSUE" '.tasks[$i].agent // ""' "$STATE_FILE" 2>/dev/null)
+        [[ -z "$eval_agent" ]] && eval_agent="$AGENT_CMD"
+        # Always enable debug mode for cost diagnostics (HOK-879)
+        debug_flag="--debug"
+        npx tsx "$TOOLS_DIR/run-eval-hook.ts" \
+          --issue "$ISSUE" --pr "$PR" --branch "$BRANCH" \
+          --worktree "${WORKTREE_ROOT}/${SLUG}" \
+          --workflow-type mill --repo-dir "$REPO_DIR" \
+          --agent "$eval_agent" \
+          $debug_flag \
+          2>&1 | while IFS= read -r line; do log "  [eval] $line"; done || true
+        mark_eval_completed "$ISSUE"
+      else
+        log "  ✓ Eval already completed for $ISSUE"
+      fi
     fi
 
     if [[ "$REQUIRE_CONFIRM" == "true" ]]; then
