@@ -1,10 +1,7 @@
 // @ts-nocheck
+import '../shared/lib/env.js';
 import { getBacklog, getProjects } from '../shared/lib/linear.js';
-import dotenv from 'dotenv';
-import readline from 'readline';
-
-// Load environment variables
-dotenv.config({ quiet: true });
+import readline from "node:readline";
 
 const rl = readline.createInterface({
   input: process.stdin,

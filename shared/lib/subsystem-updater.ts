@@ -10,7 +10,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { callClaude } from './llm-cli.js';
+import { callClaude } from './llm-cli.ts';
 import type { Subsystem } from './subsystem-detector.ts';
 import { detectAffectedSubsystems } from './subsystem-mapper.ts';
 

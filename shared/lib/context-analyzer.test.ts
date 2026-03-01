@@ -4,8 +4,8 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, rmSync, existsSync } from 'fs';
-import { join } from 'path';
+import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { join } from "node:path";
 import { tmpdir } from 'os';
 import {
   detectStateManagement,

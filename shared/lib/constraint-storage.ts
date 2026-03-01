@@ -8,8 +8,8 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { Constraint } from './constraint-parser.js';
-import type { GeneratedRule, RuleGenerationResult } from './rule-generator.js';
+import type { Constraint } from './constraint-parser.ts';
+import type { GeneratedRule, RuleGenerationResult } from './rule-generator.ts';
 
 export interface StoredConstraintMetadata {
   issueId: string;

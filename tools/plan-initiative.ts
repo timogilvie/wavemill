@@ -15,10 +15,10 @@
  *     Decompose an initiative into issues using Claude and create in Linear
  */
 
-import dotenv from 'dotenv';
-import fs from 'fs/promises';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import '../shared/lib/env.js';
+import fs from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   getInitiatives,
   getInitiative,
@@ -28,10 +28,8 @@ import {
   createIssueRelation,
   getOrCreateProjectMilestone,
 } from '../shared/lib/linear.js';
-import { callClaude, parseJsonFromLLM } from '../shared/lib/llm-cli.js';
+import { callClaude, parseJsonFromLLM } from '../shared/lib/llm-cli.ts';
 import { toKebabCase } from '../shared/lib/string-utils.js';
-
-dotenv.config({ quiet: true });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

@@ -9,9 +9,9 @@
  * @module intervention-detector
  */
 
-import { execSync } from 'child_process';
-import { readFileSync, readdirSync, existsSync } from 'fs';
-import { join, resolve } from 'path';
+import { execSync } from "node:child_process";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { resolveProjectsDir } from './workflow-cost.ts';
 import { loadWavemillConfig } from './config.ts';
 import { escapeShellArg, execShellCommand } from './shell-utils.ts';

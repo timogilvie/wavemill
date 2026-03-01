@@ -10,7 +10,7 @@
 import { resolve } from 'node:path';
 import {
   gatherReviewContext,
-} from './review-context-gatherer.js';
+} from './review-context-gatherer.ts';
 import { runReview, type ReviewResult, type ReviewFinding } from './review-engine.ts';
 
 // ────────────────────────────────────────────────────────────────

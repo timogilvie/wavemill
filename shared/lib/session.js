@@ -1,10 +1,10 @@
 // Session metadata capture and persistence for wavemill workflows.
 // All operations are non-intrusive: wrapped in try/catch, never throw, never block.
 
-import { mkdir, writeFile, readFile } from 'fs/promises';
-import { existsSync } from 'fs';
+import { mkdir, writeFile, readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { randomUUID } from 'crypto';
-import { join } from 'path';
+import { join } from "node:path";
 
 /**
  * @typedef {'feature' | 'bugfix' | 'plan' | 'validate-plan' | 'implement-plan'} WorkflowType

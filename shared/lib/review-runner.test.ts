@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import type { ReviewResult, ReviewOptions } from './review-runner.js';
+import type { ReviewResult, ReviewOptions } from './review-runner.ts';
 
 // Test constants
 const TEST_DIR = join(tmpdir(), `review-runner-test-${Date.now()}`);

@@ -1,11 +1,11 @@
 // Shared eval module — LLM judge for scoring autonomous task execution.
 // Builds on the eval-schema (HOK-697) types and rubric.
 
-import { readFile } from 'fs/promises';
-import { readFileSync, existsSync } from 'fs';
+import { readFile } from "node:fs/promises";
+import { readFileSync, existsSync } from "node:fs";
 import { randomUUID } from 'crypto';
-import { fileURLToPath } from 'url';
-import { dirname, join, resolve } from 'path';
+import { fileURLToPath } from "node:url";
+import { dirname, join, resolve } from "node:path";
 import { getScoreBand } from './eval-schema.ts';
 import { callClaude, parseJsonFromLLM } from './llm-cli.ts';
 import { getEvalConfig } from './config.ts';
