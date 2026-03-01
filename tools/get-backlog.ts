@@ -1,4 +1,6 @@
+#!/usr/bin/env -S npx tsx
 import '../shared/lib/env.js';
+import { runTool } from '../shared/lib/tool-runner.ts';
 import { getBacklog, getProjects } from '../shared/lib/linear.js';
 import readline from "node:readline";
 
@@ -53,7 +55,6 @@ async function displayBacklog(projectName: string | null): Promise<void> {
       return;
     }
 
-    // Filter to show only parent issues (issues without a parent)
     const parentIssues = backlog.filter(issue => !issue.parent);
 
     console.log(`\nBacklog State Items${projectName ? ` for "${projectName}"` : ''} (only showing items in "Backlog" state):`);
@@ -65,14 +66,12 @@ async function displayBacklog(projectName: string | null): Promise<void> {
       console.log(`Description: ${issue.description || 'No description'}`);
       console.log('Labels:', issue.labels.nodes.map((label) => label.name).join(', ') || 'None');
 
-      // Display child issues if they exist
       if (issue.children?.nodes && issue.children.nodes.length > 0) {
         console.log(`\n   Sub-tasks (${issue.children.nodes.length}):`);
         issue.children.nodes.forEach((child, childIndex) => {
           console.log(`\n   ${index + 1}.${childIndex + 1}. ${child.identifier}: ${child.title}`);
           console.log(`   State: ${child.state?.name || 'Unknown'}`);
           if (child.description) {
-            // Show first 100 chars of description
             const desc = child.description.length > 100
               ? child.description.substring(0, 100) + '...'
               : child.description;
@@ -87,31 +86,40 @@ async function displayBacklog(projectName: string | null): Promise<void> {
   }
 }
 
-async function main(): Promise<void> {
-  // Get project name from command line argument
-  const projectName: string | undefined = process.argv[2];
+runTool({
+  name: 'get-backlog',
+  description: 'Fetch and display Linear backlog (interactive or by project name)',
+  options: {
+    help: { type: 'boolean', short: 'h', description: 'Show help' },
+  },
+  positional: {
+    name: 'project',
+    description: 'Project name (optional, interactive if not provided)',
+  },
+  examples: [
+    'npx tsx tools/get-backlog.ts',
+    'npx tsx tools/get-backlog.ts "My Project"',
+  ],
+  async run({ positional }) {
+    const projectName = positional[0];
 
-  try {
-    if (projectName) {
-      // Use the provided project name - no need for readline
-      console.log(`Fetching backlog for project: ${projectName}`);
-      await displayBacklog(projectName);
-      process.exit(0);
-    } else {
-      // No argument provided, show project selection
-      const selectedProject = await selectProject();
-      if (selectedProject) {
-        await displayBacklog(selectedProject);
+    try {
+      if (projectName) {
+        console.log(`Fetching backlog for project: ${projectName}`);
+        await displayBacklog(projectName);
+      } else {
+        const selectedProject = await selectProject();
+        if (selectedProject) {
+          await displayBacklog(selectedProject);
+        }
+        rl.close();
       }
-      rl.close();
+    } catch (error) {
+      console.error('Error:', error);
+      if (!projectName) {
+        rl.close();
+      }
+      process.exit(1);
     }
-  } catch (error) {
-    console.error('Error:', error);
-    if (!projectName) {
-      rl.close();
-    }
-    process.exit(1);
-  }
-}
-
-main();
+  },
+});

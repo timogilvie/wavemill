@@ -1,66 +1,7 @@
 #!/usr/bin/env -S npx tsx
-/**
- * Context Search - Keyword search across subsystem specs
- *
- * Performs case-insensitive substring matching across all subsystem specs.
- * Returns ranked results with relevant snippets.
- *
- * Usage:
- *   npx tsx tools/context-search.ts <query> [repo-path] [options]
- */
-
+import { runTool } from '../shared/lib/tool-runner.ts';
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-
-// ────────────────────────────────────────────────────────────────
-// CLI Argument Parsing
-// ────────────────────────────────────────────────────────────────
-
-const args = process.argv.slice(2);
-const isHelp = args.includes('--help') || args.includes('-h');
-
-// Parse options
-let limitIndex = args.indexOf('--limit');
-let limit = limitIndex !== -1 && args[limitIndex + 1] ? parseInt(args[limitIndex + 1], 10) : 10;
-
-let sectionIndex = args.indexOf('--section');
-let sectionFilter = sectionIndex !== -1 && args[sectionIndex + 1] ? args[sectionIndex + 1] : null;
-
-// First non-flag arg is query
-const query = args.find((arg) => !arg.startsWith('-'));
-const repoPath = args.find((arg, i) => i > 0 && !arg.startsWith('-') && arg !== query && arg !== args[limitIndex + 1] && arg !== args[sectionIndex + 1]) || process.cwd();
-const repoDir = resolve(repoPath);
-
-if (isHelp || !query) {
-  console.log(`
-Context Search - Keyword search across subsystem specs
-
-Performs case-insensitive substring matching and returns ranked results.
-
-Usage:
-  npx tsx tools/context-search.ts <query> [repo-path] [options]
-
-Arguments:
-  <query>        Search term (case-insensitive)
-  [repo-path]    Path to repository (default: current directory)
-
-Options:
-  --limit N         Max results to show (default: 10)
-  --section NAME    Search only in specific section (e.g., "Purpose", "Architectural Constraints")
-  --help, -h        Show this help message
-
-Examples:
-  # Search for "linear api"
-  npx tsx tools/context-search.ts "linear api"
-
-  # Limit to 5 results
-  npx tsx tools/context-search.ts "error handling" --limit 5
-
-  # Search only in Architectural Constraints
-  npx tsx tools/context-search.ts "validation" --section "Architectural Constraints"
-  `);
-  process.exit(query ? 0 : 1);
-}
 
 // ────────────────────────────────────────────────────────────────
 // Types
@@ -299,11 +240,12 @@ function displayResults(results: SearchResult[], query: string): void {
   });
 }
 
-// ────────────────────────────────────────────────────────────────
-// Main Logic
-// ────────────────────────────────────────────────────────────────
-
-async function main() {
+async function main(
+  query: string,
+  repoDir: string,
+  limit: number,
+  sectionFilter: string | undefined
+) {
   const contextDir = join(repoDir, '.wavemill', 'context');
 
   // Check if context directory exists
@@ -349,7 +291,35 @@ async function main() {
   displayResults(limitedResults, query);
 }
 
-main().catch((error) => {
-  console.error('Error:', error.message);
-  process.exit(1);
+runTool({
+  name: 'context-search',
+  description: 'Keyword search across subsystem specs',
+  options: {
+    limit: { type: 'string', description: 'Max results to show (default: 10)' },
+    section: { type: 'string', description: 'Search only in specific section' },
+    help: { type: 'boolean', short: 'h', description: 'Show help' },
+  },
+  positional: {
+    name: 'query repoPath',
+    description: 'Search query and optional repository path',
+    multiple: true,
+  },
+  examples: [
+    'npx tsx tools/context-search.ts "linear api"',
+    'npx tsx tools/context-search.ts "error handling" --limit 5',
+    'npx tsx tools/context-search.ts "validation" --section "Architectural Constraints"',
+  ],
+  additionalHelp: `Performs case-insensitive substring matching across all subsystem specs.
+Returns ranked results with relevant snippets.`,
+  async run({ args, positional }) {
+    const query = positional[0];
+    if (!query) {
+      console.error('Error: Search query is required');
+      process.exit(1);
+    }
+    const repoPath = positional[1] || process.cwd();
+    const repoDir = resolve(repoPath);
+    const limit = args.limit ? parseInt(args.limit, 10) : 10;
+    await main(query, repoDir, limit, args.section);
+  },
 });

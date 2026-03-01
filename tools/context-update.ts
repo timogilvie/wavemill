@@ -1,14 +1,5 @@
 #!/usr/bin/env -S npx tsx
-/**
- * Context Update - Refresh a specific subsystem spec
- *
- * Reads current source files for a subsystem and uses LLM to generate
- * an updated specification, preserving structure and manual edits where possible.
- *
- * Usage:
- *   npx tsx tools/context-update.ts <subsystem-id> [repo-path] [options]
- */
-
+import { runTool } from '../shared/lib/tool-runner.ts';
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,46 +9,6 @@ import type { Subsystem } from '../shared/lib/subsystem-detector.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-
-// ────────────────────────────────────────────────────────────────
-// CLI Argument Parsing
-// ────────────────────────────────────────────────────────────────
-
-const args = process.argv.slice(2);
-const isNoConfirm = args.includes('--no-confirm');
-const isHelp = args.includes('--help') || args.includes('-h');
-
-// First non-flag arg is subsystem ID
-const subsystemId = args.find((arg) => !arg.startsWith('-'));
-const repoPath = args.find((arg, i) => i > 0 && !arg.startsWith('-') && args[i - 1] !== subsystemId) || process.cwd();
-const repoDir = resolve(repoPath);
-
-if (isHelp || !subsystemId) {
-  console.log(`
-Context Update - Refresh a specific subsystem spec
-
-Reads source files and uses LLM to generate an updated specification.
-
-Usage:
-  npx tsx tools/context-update.ts <subsystem-id> [repo-path] [options]
-
-Arguments:
-  <subsystem-id>  Subsystem ID (e.g., 'linear-api', 'shared-lib-linear')
-  [repo-path]     Path to repository (default: current directory)
-
-Options:
-  --no-confirm    Skip diff confirmation (apply changes automatically)
-  --help, -h      Show this help message
-
-Examples:
-  # Update a subsystem (shows diff first)
-  npx tsx tools/context-update.ts linear-api
-
-  # Update without confirmation
-  npx tsx tools/context-update.ts linear-api --no-confirm
-  `);
-  process.exit(subsystemId ? 0 : 1);
-}
 
 // ────────────────────────────────────────────────────────────────
 // Helper Functions
@@ -241,11 +192,7 @@ async function confirm(message: string): Promise<boolean> {
   });
 }
 
-// ────────────────────────────────────────────────────────────────
-// Main Logic
-// ────────────────────────────────────────────────────────────────
-
-async function main() {
+async function main(subsystemId: string, repoDir: string, isNoConfirm: boolean) {
   console.log(`Updating subsystem: ${subsystemId}`);
   console.log(`Repository: ${repoDir}`);
 
@@ -321,7 +268,32 @@ async function main() {
   console.log(`  ${specPath}`);
 }
 
-main().catch((error) => {
-  console.error('Error:', error.message);
-  process.exit(1);
+runTool({
+  name: 'context-update',
+  description: 'Refresh a specific subsystem spec',
+  options: {
+    'no-confirm': { type: 'boolean', description: 'Skip diff confirmation (apply changes automatically)' },
+    help: { type: 'boolean', short: 'h', description: 'Show help' },
+  },
+  positional: {
+    name: 'subsystemId repoPath',
+    description: 'Subsystem ID and optional repository path',
+    multiple: true,
+  },
+  examples: [
+    'npx tsx tools/context-update.ts linear-api',
+    'npx tsx tools/context-update.ts linear-api --no-confirm',
+  ],
+  additionalHelp: `Reads source files and uses LLM to generate an updated specification.
+Preserves structure and manual edits where possible.`,
+  async run({ args, positional }) {
+    const subsystemId = positional[0];
+    if (!subsystemId) {
+      console.error('Error: Subsystem ID is required');
+      process.exit(1);
+    }
+    const repoPath = positional[1] || process.cwd();
+    const repoDir = resolve(repoPath);
+    await main(subsystemId, repoDir, !!args['no-confirm']);
+  },
 });

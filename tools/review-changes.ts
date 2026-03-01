@@ -1,130 +1,9 @@
 #!/usr/bin/env -S npx tsx
-
-/**
- * Self-Review Tool — Review code changes against plan and task packet
- *
- * Usage:
- *   npx tsx tools/review-changes.ts [targetBranch] [repoDir] [options]
- *   npx tsx tools/review-changes.ts main
- *   npx tsx tools/review-changes.ts main /path/to/repo --verbose
- *   npx tsx tools/review-changes.ts main --skip-ui
- *
- * Options:
- *   --verbose       Print full review output and debug info
- *   --skip-ui       Skip UI verification even if design context exists
- *   --ui-only       Run only UI verification (skip code review)
- *   --help, -h      Show this help message
- *
- * Exit Codes:
- *   0 - Review passed (verdict: ready)
- *   1 - Review failed (verdict: not_ready)
- *   2 - Error occurred
- */
-
+import { runTool } from '../shared/lib/tool-runner.ts';
 import { resolve } from 'node:path';
 import { reviewChanges, type ReviewResult } from '../shared/lib/review-runner.ts';
 import { CYAN, GREEN, YELLOW, RED, BOLD, DIM, NC } from '../shared/lib/colors.ts';
 
-// ────────────────────────────────────────────────────────────────
-// Argument Parsing
-// ────────────────────────────────────────────────────────────────
-
-interface CliArgs {
-  targetBranch: string;
-  repoDir: string;
-  verbose: boolean;
-  skipUi: boolean;
-  uiOnly: boolean;
-  help: boolean;
-}
-
-function parseArgs(argv: string[]): CliArgs {
-  const args: CliArgs = {
-    targetBranch: 'main',
-    repoDir: process.cwd(),
-    verbose: false,
-    skipUi: false,
-    uiOnly: false,
-    help: false,
-  };
-
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-
-    if (arg === '--help' || arg === '-h') {
-      args.help = true;
-    } else if (arg === '--verbose') {
-      args.verbose = true;
-    } else if (arg === '--skip-ui') {
-      args.skipUi = true;
-    } else if (arg === '--ui-only') {
-      args.uiOnly = true;
-    } else if (!arg.startsWith('--')) {
-      // Positional arguments
-      if (i === 0) {
-        args.targetBranch = arg;
-      } else if (i === 1) {
-        args.repoDir = resolve(arg);
-      }
-    }
-  }
-
-  return args;
-}
-
-function showHelp(): void {
-  console.log(`
-Self-Review Tool — Review code changes against plan and task packet
-
-Usage:
-  review-changes.ts [targetBranch] [repoDir] [options]
-
-Arguments:
-  targetBranch   Branch to diff against (default: "main")
-  repoDir        Repository directory (default: current directory)
-
-Options:
-  --verbose      Print full review output and debug information
-  --skip-ui      Skip UI verification even if design context exists
-  --ui-only      Run only UI verification (skip code review)
-  --help, -h     Show this help message
-
-Examples:
-  # Review current branch against main
-  npx tsx tools/review-changes.ts
-
-  # Review against develop branch
-  npx tsx tools/review-changes.ts develop
-
-  # Verbose output
-  npx tsx tools/review-changes.ts main --verbose
-
-  # Skip UI verification
-  npx tsx tools/review-changes.ts main --skip-ui
-
-  # UI verification only (when design context available)
-  npx tsx tools/review-changes.ts main --ui-only
-
-Exit Codes:
-  0 - Review passed (verdict: ready)
-  1 - Review failed (verdict: not_ready)
-  2 - Error occurred
-
-Environment:
-  The review uses the LLM judge configured in .wavemill-config.json
-  (eval.judge.model and eval.judge.provider). Defaults to:
-    - Model: claude-sonnet-4-5-20250929
-    - Provider: claude-cli
-`);
-}
-
-// ────────────────────────────────────────────────────────────────
-// Output Formatting
-// ────────────────────────────────────────────────────────────────
-
-/**
- * Format findings for terminal output with color.
- */
 function formatFindings(findings: ReviewResult['codeReviewFindings'], title: string): string {
   if (!findings || findings.length === 0) {
     return `${title}: None`;
@@ -211,54 +90,65 @@ function formatReviewResult(result: ReviewResult, verbose: boolean): string {
   return lines.join('\n');
 }
 
-// ────────────────────────────────────────────────────────────────
-// Main
-// ────────────────────────────────────────────────────────────────
+runTool({
+  name: 'review-changes',
+  description: 'Review code changes against plan and task packet',
+  options: {
+    verbose: { type: 'boolean', description: 'Print full review output and debug info' },
+    'skip-ui': { type: 'boolean', description: 'Skip UI verification even if design context exists' },
+    'ui-only': { type: 'boolean', description: 'Run only UI verification (skip code review)' },
+    help: { type: 'boolean', short: 'h', description: 'Show help' },
+  },
+  positional: {
+    name: 'targetBranch repoDir',
+    description: 'Target branch and optional repository directory',
+    multiple: true,
+  },
+  examples: [
+    'npx tsx tools/review-changes.ts',
+    'npx tsx tools/review-changes.ts develop',
+    'npx tsx tools/review-changes.ts main --verbose',
+    'npx tsx tools/review-changes.ts main /path/to/repo --skip-ui',
+  ],
+  additionalHelp: `Exit Codes:
+  0 - Review passed (verdict: ready)
+  1 - Review failed (verdict: not_ready)
+  2 - Error occurred`,
+  async run({ args, positional }) {
+    const targetBranch = positional[0] || 'main';
+    const repoDir = positional[1] ? resolve(positional[1]) : process.cwd();
+    const verbose = !!args.verbose;
 
-async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
+    try {
+      console.error('Running code review...');
+      if (verbose) {
+        console.error(`  Target branch: ${targetBranch}`);
+        console.error(`  Repository: ${repoDir}`);
+        console.error(`  Skip UI: ${!!args['skip-ui']}`);
+        console.error(`  UI only: ${!!args['ui-only']}`);
+        console.error('');
+      }
 
-  if (args.help) {
-    showHelp();
-    return;
-  }
+      const result = await reviewChanges({
+        targetBranch,
+        repoDir,
+        skipUi: !!args['skip-ui'],
+        uiOnly: !!args['ui-only'],
+        verbose,
+      });
 
-  try {
-    console.error('Running code review...');
-    if (args.verbose) {
-      console.error(`  Target branch: ${args.targetBranch}`);
-      console.error(`  Repository: ${args.repoDir}`);
-      console.error(`  Skip UI: ${args.skipUi}`);
-      console.error(`  UI only: ${args.uiOnly}`);
-      console.error('');
+      const output = formatReviewResult(result, verbose);
+      await new Promise<void>((resolve, reject) => {
+        process.stdout.write(output + '\n', (err: Error | null | undefined) => (err ? reject(err) : resolve()));
+      });
+
+      process.exitCode = result.verdict === 'ready' ? 0 : 1;
+    } catch (error) {
+      console.error(`Error: ${(error as Error).message}`);
+      if (verbose && error instanceof Error && error.stack) {
+        console.error(error.stack);
+      }
+      process.exitCode = 2;
     }
-
-    // Run review
-    const result = await reviewChanges({
-      targetBranch: args.targetBranch,
-      repoDir: args.repoDir,
-      skipUi: args.skipUi,
-      uiOnly: args.uiOnly,
-      verbose: args.verbose,
-    });
-
-    // Format and print result, then flush stdout before setting exit code.
-    // Using process.exitCode instead of process.exit() prevents killing the
-    // process before stdout/stderr buffers are flushed (a known Node.js issue
-    // when these streams are pipes rather than TTYs on POSIX systems).
-    const output = formatReviewResult(result, args.verbose);
-    await new Promise<void>((resolve, reject) => {
-      process.stdout.write(output + '\n', (err: Error | null | undefined) => (err ? reject(err) : resolve()));
-    });
-
-    process.exitCode = result.verdict === 'ready' ? 0 : 1;
-  } catch (error) {
-    console.error(`Error: ${(error as Error).message}`);
-    if (args.verbose && error instanceof Error && error.stack) {
-      console.error(error.stack);
-    }
-    process.exitCode = 2;
-  }
-}
-
-main();
+  },
+});

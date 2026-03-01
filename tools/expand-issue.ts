@@ -1,18 +1,5 @@
 #!/usr/bin/env -S npx tsx
-
-/**
- * Expand Linear Issue Tool
- *
- * Takes a Linear issue ID or URL, fetches the current issue details,
- * uses your local Claude CLI with the issue-writer.md prompt to expand it
- * into a comprehensive task packet, and optionally updates the Linear issue.
- *
- * Usage:
- *   npx tsx tools/expand-issue.ts LIN-123
- *   npx tsx tools/expand-issue.ts LIN-123 --update
- *   npx tsx tools/expand-issue.ts https://linear.app/team/issue/LIN-123
- */
-
+import { runTool } from '../shared/lib/tool-runner.ts';
 import '../shared/lib/env.js';
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -485,56 +472,41 @@ async function checkSubsystemDrift(repoPath: string, issueDescription: string): 
   }
 }
 
-async function main() {
-  const args = process.argv.slice(2);
-
-  if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
-    console.log(`
-Expand Linear Issue Tool
-
-Usage:
-  npx tsx tools/expand-issue.ts <issue-id> [options]
-
-Arguments:
-  <issue-id>     Linear issue identifier (e.g., LIN-123) or full Linear URL
-
-Options:
-  --update            Update the Linear issue with the expanded description
-  --repo-path         Path to target repository (default: current directory)
-  --dry-run           Show what would be updated without making changes (default)
-  --output FILE       Save expanded description to file instead of stdout
-  --skip-validation   Skip quality gate validation (not recommended)
-  --help, -h          Show this help message
-
-Examples:
-  # Preview expanded issue (dry-run)
-  npx tsx tools/expand-issue.ts LIN-123
-
-  # Update Linear issue with expanded description
-  npx tsx tools/expand-issue.ts LIN-123 --update
-
-  # Save to file without updating Linear
-  npx tsx tools/expand-issue.ts LIN-123 --output expanded-issue.md
-
-  # Use Linear URL
-  npx tsx tools/expand-issue.ts https://linear.app/myteam/issue/LIN-123 --update
-
-Environment Variables:
+runTool({
+  name: 'expand-issue',
+  description: 'Expand Linear issue into comprehensive task packet',
+  options: {
+    update: { type: 'boolean', description: 'Update the Linear issue with expanded content' },
+    'skip-validation': { type: 'boolean', description: 'Skip quality gate validation' },
+    output: { type: 'string', description: 'Save expanded description to file' },
+    'repo-path': { type: 'string', description: 'Path to target repository' },
+    help: { type: 'boolean', short: 'h', description: 'Show help' },
+  },
+  positional: {
+    name: 'issueId',
+    description: 'Linear issue ID (e.g., LIN-123) or URL',
+  },
+  examples: [
+    'npx tsx tools/expand-issue.ts LIN-123',
+    'npx tsx tools/expand-issue.ts LIN-123 --update',
+    'npx tsx tools/expand-issue.ts LIN-123 --output expanded-issue.md',
+  ],
+  additionalHelp: `Environment Variables:
   LINEAR_API_KEY   Required: Linear API key
-  CLAUDE_CMD       Optional: Claude CLI command (default: 'claude')
-    `);
-    process.exit(0);
-  }
+  CLAUDE_CMD       Optional: Claude CLI command (default: 'claude')`,
+  async run({ args, positional }) {
+    const issueInput = positional[0];
+    if (!issueInput) {
+      console.error('Error: Issue ID is required');
+      process.exit(1);
+    }
 
-  const issueInput = args[0];
-  const shouldUpdate = args.includes('--update');
-  const skipValidation = args.includes('--skip-validation');
-  const outputFileIndex = args.indexOf('--output');
-  const outputFile = outputFileIndex >= 0 ? args[outputFileIndex + 1] : null;
-  const repoPathIndex = args.indexOf('--repo-path');
-  const repoPath = repoPathIndex >= 0 ? args[repoPathIndex + 1] : process.cwd();
+    const shouldUpdate = !!args.update;
+    const skipValidation = !!args['skip-validation'];
+    const outputFile = args.output as string | null;
+    const repoPath = (args['repo-path'] as string) || process.cwd();
 
-  try {
+    try {
     // Parse and fetch issue
     console.log('Fetching issue details...');
     const identifier = parseIssueInput(issueInput);
@@ -692,10 +664,9 @@ Environment Variables:
       console.log('ℹ Dry-run mode (use --update to save to Linear)');
     }
 
-  } catch (error) {
-    console.error('Error:', error.message);
-    process.exit(1);
-  }
-}
-
-main();
+    } catch (error) {
+      console.error('Error:', (error as Error).message);
+      process.exit(1);
+    }
+  },
+});

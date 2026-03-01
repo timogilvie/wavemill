@@ -1,4 +1,5 @@
 #!/usr/bin/env -S npx tsx
+import { runTool } from '../shared/lib/tool-runner.ts';
 import { getIssue, getLabels, addLabelsToIssue, getOrCreateLabel } from '../shared/lib/linear.js';
 import * as readline from 'readline/promises';
 
@@ -265,37 +266,38 @@ async function autoLabelIssue(identifier: string, options: { dryRun?: boolean; i
   }
 }
 
-// Parse CLI args
-const identifier = process.argv[2];
-const dryRun = process.argv.includes('--dry-run');
-const interactive = process.argv.includes('--interactive') || process.argv.includes('-i');
+runTool({
+  name: 'auto-label-issue',
+  description: 'Automatically label Linear issues based on content',
+  options: {
+    'dry-run': { type: 'boolean', description: 'Show proposed labels without applying them' },
+    interactive: { type: 'boolean', short: 'i', description: 'Ask for confirmation before applying labels' },
+    help: { type: 'boolean', short: 'h', description: 'Show help' },
+  },
+  positional: {
+    name: 'issueId',
+    description: 'Linear issue identifier (e.g., HOK-123)',
+  },
+  examples: [
+    'npx tsx tools/auto-label-issue.ts HOK-123',
+    'npx tsx tools/auto-label-issue.ts HOK-123 --dry-run',
+    'npx tsx tools/auto-label-issue.ts HOK-123 --interactive',
+  ],
+  async run({ args, positional }) {
+    const identifier = positional[0];
+    if (!identifier) {
+      console.error('Error: Issue ID is required');
+      process.exit(1);
+    }
 
-if (!identifier || process.argv.includes('--help') || process.argv.includes('-h')) {
-  console.log(`
-Usage: npx tsx auto-label-issue.ts <issue-id> [options]
-
-Arguments:
-  <issue-id>        Linear issue identifier (e.g., HOK-123)
-
-Options:
-  --dry-run         Show proposed labels without applying them
-  --interactive, -i Ask for confirmation before applying labels
-  --help, -h        Show this help message
-
-Examples:
-  # Preview labels (dry-run)
-  npx tsx auto-label-issue.ts HOK-123 --dry-run
-
-  # Apply with confirmation
-  npx tsx auto-label-issue.ts HOK-123 --interactive
-
-  # Apply automatically
-  npx tsx auto-label-issue.ts HOK-123
-  `);
-  process.exit(identifier ? 0 : 1);
-}
-
-autoLabelIssue(identifier, { dryRun, interactive }).catch((error) => {
-  console.error('❌ Error:', error.message);
-  process.exit(1);
+    try {
+      await autoLabelIssue(identifier, {
+        dryRun: !!args['dry-run'],
+        interactive: !!args.interactive,
+      });
+    } catch (error) {
+      console.error('❌ Error:', (error as Error).message);
+      process.exit(1);
+    }
+  },
 });

@@ -1,17 +1,5 @@
 #!/usr/bin/env -S npx tsx
-
-/**
- * Backfill workflow cost data into existing eval records.
- *
- * Scans all Claude Code session directories under ~/.claude/projects/
- * for sessions matching each eval's PR branch, aggregates token usage,
- * computes cache-aware cost, and rewrites the evals JSONL file with
- * workflowCost and workflowTokenUsage populated.
- *
- * Usage:
- *   npx tsx tools/backfill-workflow-cost.ts [--dry-run]
- */
-
+import { runTool } from '../shared/lib/tool-runner.ts';
 import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -20,32 +8,23 @@ import { computeModelCost, loadPricingTable } from '../shared/lib/workflow-cost.
 import type { ModelPricing, ModelTokenUsage } from '../shared/lib/workflow-cost.ts';
 import { getEvalConfig } from '../shared/lib/config.ts';
 
-const DRY_RUN = process.argv.includes('--dry-run');
+function main(DRY_RUN: boolean) {
+  const repoDir = resolve('.');
+  const evalConfig = getEvalConfig(repoDir);
+  let evalsDir = join(repoDir, '.wavemill', 'evals');
+  if (evalConfig.evalsDir) {
+    evalsDir = resolve(repoDir, evalConfig.evalsDir);
+  }
 
-// ────────────────────────────────────────────────────────────────
-// Locate eval records
-// ────────────────────────────────────────────────────────────────
+  const evalsFile = join(evalsDir, 'evals.jsonl');
+  if (!existsSync(evalsFile)) {
+    console.error(`Evals file not found: ${evalsFile}`);
+    process.exit(1);
+  }
 
-const repoDir = resolve('.');
-const evalConfig = getEvalConfig(repoDir);
-let evalsDir = join(repoDir, '.wavemill', 'evals');
-if (evalConfig.evalsDir) {
-  evalsDir = resolve(repoDir, evalConfig.evalsDir);
-}
-
-const evalsFile = join(evalsDir, 'evals.jsonl');
-if (!existsSync(evalsFile)) {
-  console.error(`Evals file not found: ${evalsFile}`);
-  process.exit(1);
-}
-
-// ────────────────────────────────────────────────────────────────
-// Build branch → PR mapping from eval records
-// ────────────────────────────────────────────────────────────────
-
-const content = readFileSync(evalsFile, 'utf-8');
-const records = content.split('\n').filter(l => l.trim()).map(l => JSON.parse(l));
-console.log(`Found ${records.length} eval records in ${evalsFile}`);
+  const content = readFileSync(evalsFile, 'utf-8');
+  const records = content.split('\n').filter(l => l.trim()).map(l => JSON.parse(l));
+  console.log(`Found ${records.length} eval records in ${evalsFile}`);
 
 // Get PR branches from GitHub
 interface PrBranchInfo {
@@ -216,13 +195,33 @@ for (let i = 0; i < records.length; i++) {
   updated++;
 }
 
-console.log(`\nSummary: ${updated} updated, ${skipped} already had data, ${noData} no session data`);
+  console.log(`\nSummary: ${updated} updated, ${skipped} already had data, ${noData} no session data`);
 
-// Write back
-if (!DRY_RUN && updated > 0) {
-  const output = records.map(r => JSON.stringify(r)).join('\n') + '\n';
-  writeFileSync(evalsFile, output, 'utf-8');
-  console.log(`\nWritten ${records.length} records to ${evalsFile}`);
-} else if (DRY_RUN) {
-  console.log('\n[DRY RUN] No changes written.');
+  if (!DRY_RUN && updated > 0) {
+    const output = records.map(r => JSON.stringify(r)).join('\n') + '\n';
+    writeFileSync(evalsFile, output, 'utf-8');
+    console.log(`\nWritten ${records.length} records to ${evalsFile}`);
+  } else if (DRY_RUN) {
+    console.log('\n[DRY RUN] No changes written.');
+  }
 }
+
+runTool({
+  name: 'backfill-workflow-cost',
+  description: 'Backfill workflow cost data into existing eval records',
+  options: {
+    'dry-run': { type: 'boolean', description: 'Show what would be done without making changes' },
+    help: { type: 'boolean', short: 'h', description: 'Show help' },
+  },
+  examples: [
+    'npx tsx tools/backfill-workflow-cost.ts',
+    'npx tsx tools/backfill-workflow-cost.ts --dry-run',
+  ],
+  additionalHelp: `Scans all Claude Code session directories under ~/.claude/projects/
+for sessions matching each eval's PR branch, aggregates token usage,
+computes cache-aware cost, and rewrites the evals JSONL file with
+workflowCost and workflowTokenUsage populated.`,
+  run({ args }) {
+    main(!!args['dry-run']);
+  },
+});

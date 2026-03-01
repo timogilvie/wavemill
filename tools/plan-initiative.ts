@@ -1,19 +1,5 @@
 #!/usr/bin/env -S npx tsx
-
-/**
- * Plan Initiative Tool
- *
- * Fetches Linear initiatives, lets the user select one, decomposes it into
- * well-scoped issues using Claude, and creates them in Linear.
- *
- * Sub-commands:
- *   list [--project "Name"] [--max-display 9]
- *     Fetch and rank initiatives, output JSON to stdout
- *
- *   decompose --initiative <id> [--project "Name"] [--dry-run] [--research]
- *     Decompose an initiative into issues using Claude and create in Linear
- */
-
+import { runTool } from '../shared/lib/tool-runner.ts';
 import '../shared/lib/env.js';
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -437,61 +423,65 @@ async function decompose(args: string[]) {
 // MAIN
 // ============================================================================
 
-async function main() {
-  const args = process.argv.slice(2);
-  const subCommand = args[0];
-
-  if (!subCommand || subCommand === '--help' || subCommand === '-h') {
-    console.log(`
-Plan Initiative Tool
-
-Usage:
-  npx tsx tools/plan-initiative.ts <sub-command> [options]
-
-Sub-commands:
+runTool({
+  name: 'plan-initiative',
+  description: 'Decompose Linear initiatives into well-scoped issues',
+  options: {
+    project: { type: 'string', description: 'Linear project name' },
+    'max-display': { type: 'string', description: 'Maximum initiatives to return (default: 9)' },
+    initiative: { type: 'string', description: 'Linear initiative ID (for decompose)' },
+    'dry-run': { type: 'boolean', description: 'Show plan without creating issues' },
+    research: { type: 'boolean', description: 'Run research phase before decomposition' },
+    help: { type: 'boolean', short: 'h', description: 'Show help' },
+  },
+  positional: {
+    name: 'subcommand',
+    description: 'Subcommand: list or decompose',
+  },
+  examples: [
+    'npx tsx tools/plan-initiative.ts list',
+    'npx tsx tools/plan-initiative.ts list --project "My Project"',
+    'npx tsx tools/plan-initiative.ts decompose --initiative abc-123 --dry-run',
+    'npx tsx tools/plan-initiative.ts decompose --initiative abc-123 --research',
+  ],
+  additionalHelp: `Sub-commands:
   list       Fetch and rank initiatives, output JSON to stdout
   decompose  Decompose an initiative into issues using Claude
 
-Options (list):
-  --project "Name"   Filter by Linear project name
-  --max-display N    Maximum initiatives to return (default: 9)
-
-Options (decompose):
-  --initiative <id>  Linear initiative ID (required)
-  --project "Name"   Target project for created issues
-  --dry-run          Show plan without creating issues
-  --research         Run research phase before decomposition
-
-Examples:
-  npx tsx tools/plan-initiative.ts list
-  npx tsx tools/plan-initiative.ts list --project "My Project"
-  npx tsx tools/plan-initiative.ts decompose --initiative abc-123 --dry-run
-  npx tsx tools/plan-initiative.ts decompose --initiative abc-123 --research
-  npx tsx tools/plan-initiative.ts decompose --initiative abc-123 --project "My Project"
-
 Environment Variables:
   LINEAR_API_KEY   Required: Linear API key
-  CLAUDE_CMD       Optional: Claude CLI command (default: 'claude')
-    `);
-    process.exit(0);
-  }
+  CLAUDE_CMD       Optional: Claude CLI command (default: 'claude')`,
+  async run({ args, positional }) {
+    const subCommand = positional[0];
 
-  try {
-    switch (subCommand) {
-      case 'list':
-        await listInitiatives(args.slice(1));
-        break;
-      case 'decompose':
-        await decompose(args.slice(1));
-        break;
-      default:
-        console.error(`Unknown sub-command: ${subCommand}`);
-        process.exit(1);
+    if (!subCommand) {
+      console.error('Error: Subcommand required (list or decompose)');
+      process.exit(1);
     }
-  } catch (error) {
-    console.error('Error:', error.message);
-    process.exit(1);
-  }
-}
 
-main();
+    try {
+      // Convert args back to argv format for existing functions
+      const argv: string[] = [];
+      if (args.project) argv.push('--project', args.project as string);
+      if (args['max-display']) argv.push('--max-display', args['max-display'] as string);
+      if (args.initiative) argv.push('--initiative', args.initiative as string);
+      if (args['dry-run']) argv.push('--dry-run');
+      if (args.research) argv.push('--research');
+
+      switch (subCommand) {
+        case 'list':
+          await listInitiatives(argv);
+          break;
+        case 'decompose':
+          await decompose(argv);
+          break;
+        default:
+          console.error(`Unknown sub-command: ${subCommand}`);
+          process.exit(1);
+      }
+    } catch (error) {
+      console.error('Error:', (error as Error).message);
+      process.exit(1);
+    }
+  },
+});

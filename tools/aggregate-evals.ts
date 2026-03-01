@@ -1,79 +1,8 @@
 #!/usr/bin/env -S npx tsx
-
-/**
- * Aggregate Evals Tool
- *
- * Collects eval records from multiple repositories into a single
- * aggregated JSONL file for cross-repo analysis and DSPy training.
- *
- * Usage:
- *   npx tsx tools/aggregate-evals.ts
- *   npx tsx tools/aggregate-evals.ts --repos ~/proj1 ~/proj2
- *   npx tsx tools/aggregate-evals.ts --output .wavemill/evals/aggregated-evals.jsonl
- */
-
+import { runTool } from '../shared/lib/tool-runner.ts';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { resolve, basename, dirname, join } from 'node:path';
 import { getEvalConfig } from '../shared/lib/config.ts';
-
-// ── Argument Parsing ─────────────────────────────────────────────────────────
-
-interface Args {
-  repos: string[];
-  output: string;
-  help: boolean;
-}
-
-function parseArgs(argv: string[]): Args {
-  const args: Args = {
-    repos: [],
-    output: '',
-    help: false,
-  };
-
-  for (let i = 0; i < argv.length; i++) {
-    switch (argv[i]) {
-      case '--repos':
-        while (argv[i + 1] && !argv[i + 1].startsWith('--')) {
-          args.repos.push(argv[++i]);
-        }
-        break;
-      case '--output':
-      case '-o':
-        args.output = argv[++i];
-        break;
-      case '--help':
-      case '-h':
-        args.help = true;
-        break;
-    }
-  }
-
-  return args;
-}
-
-function showHelp(): void {
-  console.log(`
-Aggregate Evals Tool — Collect eval records from multiple repositories
-
-Usage:
-  npx tsx tools/aggregate-evals.ts [options]
-
-Options:
-  --repos PATH [PATH...]   Repository directories to aggregate from.
-                            If omitted, reads eval.aggregation.repos from
-                            .wavemill-config.json.
-  --output FILE, -o        Output path (default: .wavemill/evals/aggregated-evals.jsonl)
-  --help, -h               Show this help message
-
-Examples:
-  # Aggregate using repos from config
-  npx tsx tools/aggregate-evals.ts
-
-  # Aggregate specific repos
-  npx tsx tools/aggregate-evals.ts --repos ~/Dropbox/Hokusai/hokusai-site ~/Dropbox/Hokusai/hokusai-data-pipeline
-`);
-}
 
 // ── Config Loading ───────────────────────────────────────────────────────────
 
@@ -128,75 +57,76 @@ function readEvalsFromRepo(repoDir: string): EvalRecord[] {
   return records;
 }
 
-// ── Main ─────────────────────────────────────────────────────────────────────
+runTool({
+  name: 'aggregate-evals',
+  description: 'Aggregate eval records from multiple repositories',
+  options: {
+    repos: { type: 'string', multiple: true, description: 'Repository directories to aggregate from' },
+    output: { type: 'string', short: 'o', description: 'Output path (default: .wavemill/evals/aggregated-evals.jsonl)' },
+    help: { type: 'boolean', short: 'h', description: 'Show help' },
+  },
+  examples: [
+    'npx tsx tools/aggregate-evals.ts',
+    'npx tsx tools/aggregate-evals.ts --repos ~/proj1 ~/proj2',
+    'npx tsx tools/aggregate-evals.ts --output custom-path.jsonl',
+  ],
+  additionalHelp: `Collects eval records from multiple repositories into a single
+aggregated JSONL file for cross-repo analysis and DSPy training.
 
-function main(): void {
-  const args = parseArgs(process.argv.slice(2));
+If --repos is omitted, reads eval.aggregation.repos from .wavemill-config.json.`,
+  run({ args }) {
+    const config = loadAggregationConfig();
 
-  if (args.help) {
-    showHelp();
-    process.exit(0);
-  }
+    const repos = Array.isArray(args.repos) ? args.repos : (args.repos ? [args.repos] : config.repos);
 
-  const config = loadAggregationConfig();
+    const currentRepo = resolve('.');
+    const repoSet = new Set([currentRepo, ...repos.map((r) => resolve(r))]);
 
-  // Determine repos list
-  let repos = args.repos.length > 0 ? args.repos : config.repos;
-
-  // Always include the current repo
-  const currentRepo = resolve('.');
-  const repoSet = new Set([currentRepo, ...repos.map((r) => resolve(r))]);
-
-  if (repoSet.size === 1 && repos.length === 0) {
-    console.error(
-      'No external repos configured. Add repos via --repos flag or set eval.aggregation.repos in .wavemill-config.json.',
-    );
-    console.error('Aggregating current repo only.');
-  }
-
-  // Collect records
-  const allRecords: EvalRecord[] = [];
-  const seenIds = new Set<string>();
-  const repoStats: Record<string, number> = {};
-
-  for (const repoDir of repoSet) {
-    const repoName = basename(repoDir);
-    const records = readEvalsFromRepo(repoDir);
-    let added = 0;
-
-    for (const record of records) {
-      if (!seenIds.has(record.id)) {
-        seenIds.add(record.id);
-        allRecords.push(record);
-        added++;
-      }
+    if (repoSet.size === 1 && repos.length === 0) {
+      console.error(
+        'No external repos configured. Add repos via --repos flag or set eval.aggregation.repos in .wavemill-config.json.',
+      );
+      console.error('Aggregating current repo only.');
     }
 
-    repoStats[repoName] = added;
-  }
+    const allRecords: EvalRecord[] = [];
+    const seenIds = new Set<string>();
+    const repoStats: Record<string, number> = {};
 
-  // Sort by timestamp
-  allRecords.sort((a, b) => {
-    const ta = String(a.timestamp || '');
-    const tb = String(b.timestamp || '');
-    return ta.localeCompare(tb);
-  });
+    for (const repoDir of repoSet) {
+      const repoName = basename(repoDir);
+      const records = readEvalsFromRepo(repoDir);
+      let added = 0;
 
-  // Write output
-  const outputPath = resolve(args.output || config.outputPath);
-  mkdirSync(dirname(outputPath), { recursive: true });
-  writeFileSync(
-    outputPath,
-    allRecords.map((r) => JSON.stringify(r)).join('\n') + '\n',
-    'utf-8',
-  );
+      for (const record of records) {
+        if (!seenIds.has(record.id)) {
+          seenIds.add(record.id);
+          allRecords.push(record);
+          added++;
+        }
+      }
 
-  // Report
-  console.log(`Aggregated ${allRecords.length} records from ${Object.keys(repoStats).length} repos:`);
-  for (const [repo, count] of Object.entries(repoStats).sort((a, b) => b[1] - a[1])) {
-    console.log(`  ${repo}: ${count} records`);
-  }
-  console.log(`\nOutput: ${outputPath}`);
-}
+      repoStats[repoName] = added;
+    }
 
-main();
+    allRecords.sort((a, b) => {
+      const ta = String(a.timestamp || '');
+      const tb = String(b.timestamp || '');
+      return ta.localeCompare(tb);
+    });
+
+    const outputPath = resolve(args.output || config.outputPath);
+    mkdirSync(dirname(outputPath), { recursive: true });
+    writeFileSync(
+      outputPath,
+      allRecords.map((r) => JSON.stringify(r)).join('\n') + '\n',
+      'utf-8',
+    );
+
+    console.log(`Aggregated ${allRecords.length} records from ${Object.keys(repoStats).length} repos:`);
+    for (const [repo, count] of Object.entries(repoStats).sort((a, b) => b[1] - a[1])) {
+      console.log(`  ${repo}: ${count} records`);
+    }
+    console.log(`\nOutput: ${outputPath}`);
+  },
+});

@@ -1,23 +1,5 @@
 #!/usr/bin/env -S npx tsx
-/**
- * Generate Constraint Rules CLI Tool
- *
- * Parses constraints from task packets or plans and generates executable
- * validation rules. Rules are saved to constraints/<issue-id>/ directory.
- *
- * Usage:
- *   npx tsx tools/generate-constraint-rules.ts <issue-id>
- *   npx tsx tools/generate-constraint-rules.ts HOK-123
- *   npx tsx tools/generate-constraint-rules.ts --issue-id HOK-123 --file path/to/task-packet.md
- *   npx tsx tools/generate-constraint-rules.ts --task-packet path/to/file.md
- *
- * Options:
- *   --issue-id <id>          Issue ID for the constraints
- *   --file, --task-packet    Path to task packet or plan markdown file
- *   --force                  Overwrite existing constraint rules
- *   --help                   Show help message
- */
-
+import { runTool } from '../shared/lib/tool-runner.ts';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parseConstraints } from '../shared/lib/constraint-parser.ts';
@@ -25,39 +7,11 @@ import { generateRules } from '../shared/lib/rule-generator.ts';
 import { saveConstraintRules, constraintRulesExist } from '../shared/lib/constraint-storage.ts';
 import { toKebabCase } from '../shared/lib/string-utils.js';
 
-async function main() {
-  const args = process.argv.slice(2);
-
-  // Show help
-  if (args.includes('--help') || args.includes('-h')) {
-    showHelp();
-    process.exit(0);
-  }
-
-  // Parse arguments
-  let issueId: string | null = null;
-  let taskPacketPath: string | null = null;
-  let force = false;
-
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-
-    if (arg === '--issue-id') {
-      issueId = args[++i];
-    } else if (arg === '--file' || arg === '--task-packet') {
-      taskPacketPath = args[++i];
-    } else if (arg === '--force') {
-      force = true;
-    } else if (!arg.startsWith('--')) {
-      // Assume it's the issue ID
-      issueId = arg;
-    }
-  }
-
-  // Validate inputs
+async function generateConstraintRules(issueId: string, taskPacketPath: string | null, force: boolean) {
   if (!issueId) {
-    console.error('❌ Error: Issue ID is required\n');
-    showHelp();
+    console.error('❌ Error: Issue ID is required');
+    process.exit(1);
+  }
     process.exit(1);
   }
 
@@ -170,45 +124,39 @@ async function main() {
 
   console.log(`\n🔍 To validate constraints, run:`);
   console.log(`   npx tsx tools/validate-constraints.ts ${issueId}\n`);
-
-  process.exit(0);
 }
 
-function showHelp() {
-  console.log(`
-Generate Constraint Rules CLI Tool
+runTool({
+  name: 'generate-constraint-rules',
+  description: 'Generate executable constraint validation rules',
+  options: {
+    'issue-id': { type: 'string', description: 'Issue ID for the constraints' },
+    file: { type: 'string', description: 'Path to task packet or plan markdown file' },
+    'task-packet': { type: 'string', description: 'Alias for --file' },
+    force: { type: 'boolean', description: 'Overwrite existing constraint rules' },
+    help: { type: 'boolean', short: 'h', description: 'Show help' },
+  },
+  positional: {
+    name: 'issueId',
+    description: 'Issue ID (e.g., HOK-123)',
+  },
+  examples: [
+    'npx tsx tools/generate-constraint-rules.ts HOK-123',
+    'npx tsx tools/generate-constraint-rules.ts HOK-123 --file features/my-feature/plan.md',
+    'npx tsx tools/generate-constraint-rules.ts HOK-123 --force',
+  ],
+  additionalHelp: `Parses "Implementation Constraints" section from task packets or plans
+and generates executable validation rules. Rules are saved to version
+control in constraints/<issue-id>/ directory.
 
-Usage:
-  npx tsx tools/generate-constraint-rules.ts <issue-id>
-  npx tsx tools/generate-constraint-rules.ts HOK-123
-  npx tsx tools/generate-constraint-rules.ts --issue-id HOK-123 --file path/to/task-packet.md
+Auto-validatable constraints become Node.js scripts that check the code.
+Manual-review constraints are documented in manual-review.md.
 
-Options:
-  --issue-id <id>           Issue ID for the constraints
-  --file, --task-packet     Path to task packet or plan markdown file
-  --force                   Overwrite existing constraint rules
-  --help, -h                Show this help message
-
-Examples:
-  # Generate rules for HOK-123 (auto-detect task packet)
-  npx tsx tools/generate-constraint-rules.ts HOK-123
-
-  # Generate rules with explicit file path
-  npx tsx tools/generate-constraint-rules.ts HOK-123 --file features/my-feature/plan.md
-
-  # Overwrite existing rules
-  npx tsx tools/generate-constraint-rules.ts HOK-123 --force
-
-Description:
-  Parses "Implementation Constraints" section from task packets or plans
-  and generates executable validation rules. Rules are saved to version
-  control in constraints/<issue-id>/ directory.
-
-  Auto-validatable constraints become Node.js scripts that check the code.
-  Manual-review constraints are documented in manual-review.md.
-
-  Rules are generated at plan creation time and validated before PR creation.
-`);
-}
-
-main();
+Rules are generated at plan creation time and validated before PR creation.`,
+  async run({ args, positional }) {
+    const issueId = positional[0] || (args['issue-id'] as string);
+    const taskPacketPath = (args.file as string) || (args['task-packet'] as string) || null;
+    const force = !!args.force;
+    await generateConstraintRules(issueId, taskPacketPath, force);
+  },
+});
