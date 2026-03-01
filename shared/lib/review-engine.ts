@@ -23,6 +23,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // ────────────────────────────────────────────────────────────────
+// Module-level cache
+// ────────────────────────────────────────────────────────────────
+
+let _promptTemplate: string | null = null;
+
+// ────────────────────────────────────────────────────────────────
 // Types
 // ────────────────────────────────────────────────────────────────
 
@@ -110,13 +116,21 @@ function loadConfig(repoDir: string): Config {
 
 /**
  * Load the review prompt template from tools/prompts/review.md
+ * Caches the template after first load to avoid redundant disk reads.
  */
 function loadPromptTemplate(): string {
+  // Return cached template if available
+  if (_promptTemplate) {
+    return _promptTemplate;
+  }
+
+  // Load and cache template
   const promptPath = join(__dirname, '../../tools/prompts/review.md');
   if (!existsSync(promptPath)) {
     throw new Error(`Review prompt template not found at: ${promptPath}`);
   }
-  return readFileSync(promptPath, 'utf-8');
+  _promptTemplate = readFileSync(promptPath, 'utf-8');
+  return _promptTemplate;
 }
 
 /**
