@@ -23,6 +23,7 @@
 
 import { resolve } from 'node:path';
 import { reviewChanges, type ReviewResult } from '../shared/lib/review-runner.js';
+import { CYAN, GREEN, YELLOW, RED, BOLD, DIM, NC } from '../shared/lib/colors.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Argument Parsing
@@ -129,12 +130,6 @@ function formatFindings(findings: ReviewResult['codeReviewFindings'], title: str
     return `${title}: None`;
   }
 
-  const RED = '\x1b[31m';
-  const YELLOW = '\x1b[33m';
-  const BOLD = '\x1b[1m';
-  const DIM = '\x1b[2m';
-  const NC = '\x1b[0m';
-
   const blockers = findings.filter((f) => f.severity === 'blocker');
   const warnings = findings.filter((f) => f.severity === 'warning');
 
@@ -164,13 +159,6 @@ function formatFindings(findings: ReviewResult['codeReviewFindings'], title: str
  * Format review result for terminal output.
  */
 function formatReviewResult(result: ReviewResult, verbose: boolean): string {
-  const GREEN = '\x1b[32m';
-  const RED = '\x1b[31m';
-  const CYAN = '\x1b[36m';
-  const BOLD = '\x1b[1m';
-  const DIM = '\x1b[2m';
-  const NC = '\x1b[0m';
-
   const lines: string[] = [];
 
   // Header
