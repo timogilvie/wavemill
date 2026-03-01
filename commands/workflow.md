@@ -211,13 +211,14 @@ REVIEW_PASSED=false
 **For each iteration (up to MAX_ITERATIONS):**
 
 #### 1. Run Self-Review Tool
-```bash
-echo "🔍 Self-review iteration $ITERATION of $MAX_ITERATIONS..."
 
-# Run review with optional timeout protection (300 seconds = 5 minutes)
-# Remove 'timeout' command if not available on your system
-timeout 300 npx tsx tools/review-changes.ts main --verbose > features/<feature-name>/review-iteration-$ITERATION.log 2>&1
-REVIEW_EXIT_CODE=$?
+**IMPORTANT**: Run this command in the **foreground** (do NOT use `run_in_background`).
+The Bash tool must capture stdout directly so you can read the review results.
+Use a timeout of 300000ms on the Bash tool call.
+
+```bash
+npx tsx tools/review-changes.ts main --verbose 2>&1 | tee features/<feature-name>/review-iteration-$ITERATION.log
+REVIEW_EXIT_CODE=${PIPESTATUS[0]}
 
 # Handle timeout (exit code 124)
 if [ $REVIEW_EXIT_CODE -eq 124 ]; then
@@ -225,6 +226,11 @@ if [ $REVIEW_EXIT_CODE -eq 124 ]; then
   echo "Treating as error - proceeding to validation"
   REVIEW_EXIT_CODE=2
 fi
+```
+
+If the Bash tool output is empty or truncated, read the log file as a fallback:
+```bash
+cat features/<feature-name>/review-iteration-$ITERATION.log
 ```
 
 #### 2. Check Review Result
@@ -253,9 +259,9 @@ break
 Parse and present findings to the agent.
 
 #### 3. Parse Findings (when not_ready)
-Extract findings from the review log:
+The review output is already visible from the foreground Bash result above.
+If it was truncated, read the full log:
 ```bash
-# Review log contains formatted findings - parse blockers and warnings
 cat features/<feature-name>/review-iteration-$ITERATION.log
 ```
 
@@ -263,7 +269,7 @@ Present findings to agent:
 ```
 📋 Self-review iteration $ITERATION found issues:
 
-[Show formatted findings from log]
+[Show formatted findings from Bash output or log file]
 
 I'll fix these issues now...
 ```
