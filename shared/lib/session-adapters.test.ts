@@ -14,6 +14,7 @@ import {
   ClaudeSessionAdapter,
   CodexSessionAdapter,
   getSessionAdapter,
+  detectAgentType,
 } from './session-adapters.ts';
 import { encodeProjectDir } from './workflow-cost.ts';
 
@@ -460,6 +461,102 @@ describe('CodexSessionAdapter', () => {
       assert.equal(model.outputTokens, 370); // (100+20) + (200+50)
     } finally {
       cleanup();
+    }
+  });
+});
+
+// ── Auto-Detection Tests ───────────────────────────────────────
+
+describe('detectAgentType', () => {
+  it('detects claude when only Claude sessions exist', () => {
+    const { worktreePath, projectsDir, cleanup } = setupClaudeSessionDir();
+    try {
+      const branch = 'task/test';
+      const lines = [
+        claudeAssistantTurn({ branch, inputTokens: 100, outputTokens: 50 }),
+      ].join('\n');
+      writeFileSync(join(projectsDir, 'session1.jsonl'), lines);
+
+      const detected = detectAgentType({ worktreePath, branchName: branch });
+      assert.equal(detected, 'claude');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('detects codex when only Codex sessions exist', () => {
+    const { sessionsDir, cleanup } = setupCodexSessionDir();
+    try {
+      const worktreePath = '/test/worktree';
+      const branch = 'task/test';
+
+      const lines = [
+        codexSessionMeta({ cwd: worktreePath, branch }),
+        codexTurnContext('gpt-5.3-codex'),
+        codexTokenCount({ inputTokens: 1000, cachedInputTokens: 500, outputTokens: 100, reasoningOutputTokens: 20 }),
+      ].join('\n');
+
+      writeFileSync(join(sessionsDir, 'rollout-test.jsonl'), lines);
+
+      const detected = detectAgentType({ worktreePath, branchName: branch });
+      assert.equal(detected, 'codex');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('picks agent with more turns when both exist', () => {
+    // Set up both Claude and Codex sessions
+    const tmpHome = mkdtempSync(join(tmpdir(), 'adapter-both-'));
+    const origHome = process.env.HOME;
+    process.env.HOME = tmpHome;
+
+    try {
+      const worktreePath = join(tmpHome, 'test-worktree');
+      const branch = 'task/test';
+
+      // Set up Claude session with 1 turn
+      const encoded = encodeProjectDir(worktreePath);
+      const claudeDir = join(tmpHome, '.claude', 'projects', encoded);
+      mkdirSync(claudeDir, { recursive: true });
+      const claudeLines = [
+        claudeAssistantTurn({ branch, inputTokens: 100, outputTokens: 50 }),
+      ].join('\n');
+      writeFileSync(join(claudeDir, 'session1.jsonl'), claudeLines);
+
+      // Set up Codex session with 2 files (2 turns)
+      const codexDir = join(tmpHome, '.codex', 'sessions', '2026', '02', '20');
+      mkdirSync(codexDir, { recursive: true });
+      const codexLines = [
+        codexSessionMeta({ cwd: worktreePath, branch }),
+        codexTurnContext('gpt-5.3-codex'),
+        codexTokenCount({ inputTokens: 1000, cachedInputTokens: 500, outputTokens: 100, reasoningOutputTokens: 20 }),
+      ].join('\n');
+      writeFileSync(join(codexDir, 'session1.jsonl'), codexLines);
+      writeFileSync(join(codexDir, 'session2.jsonl'), codexLines);
+
+      const detected = detectAgentType({ worktreePath, branchName: branch });
+      assert.equal(detected, 'codex'); // Codex has 2 sessions vs Claude's 1
+    } finally {
+      process.env.HOME = origHome;
+      rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null when no sessions exist', () => {
+    const tmpHome = mkdtempSync(join(tmpdir(), 'adapter-none-'));
+    const origHome = process.env.HOME;
+    process.env.HOME = tmpHome;
+
+    try {
+      const detected = detectAgentType({
+        worktreePath: '/nonexistent/path',
+        branchName: 'task/test',
+      });
+      assert.equal(detected, null);
+    } finally {
+      process.env.HOME = origHome;
+      rmSync(tmpHome, { recursive: true, force: true });
     }
   });
 });

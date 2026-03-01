@@ -12,7 +12,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { getSessionAdapter, type AgentType } from './session-adapters.ts';
+import { getSessionAdapter, detectAgentType, type AgentType } from './session-adapters.ts';
 import { loadWavemillConfig } from './config.ts';
 
 // ────────────────────────────────────────────────────────────────
@@ -158,13 +158,39 @@ export function computeWorkflowCost(opts: {
   }
 
   // Delegate session scanning to the appropriate adapter
-  const adapter = getSessionAdapter(agentType);
+  let adapter = getSessionAdapter(agentType);
 
   if (debug) {
     console.log(`[DEBUG_COST]   Selected adapter: ${adapter.constructor.name}`);
   }
 
-  const scanResult = adapter.scan({ worktreePath, branchName });
+  let scanResult = adapter.scan({ worktreePath, branchName });
+
+  // If no sessions found, try auto-detection as a fallback
+  if (!scanResult || scanResult.turnCount === 0) {
+    if (debug) {
+      console.log(`[DEBUG_COST]   No sessions found for agentType '${agentType || 'claude'}', attempting auto-detection`);
+    }
+
+    const detectedAgent = detectAgentType({ worktreePath, branchName });
+
+    if (detectedAgent && detectedAgent !== agentType) {
+      // WARNING: Auto-detection was needed - this indicates a bug in agent assignment
+      console.warn(
+        `[COST] WARNING: Agent type mismatch detected! ` +
+        `Expected '${agentType || 'claude'}' but found '${detectedAgent}' sessions. ` +
+        `This indicates a bug in agent assignment logic. ` +
+        `Using auto-detected agent for cost computation.`
+      );
+
+      if (debug) {
+        console.log(`[DEBUG_COST]   Retrying with detected agent: ${detectedAgent}`);
+      }
+
+      adapter = getSessionAdapter(detectedAgent);
+      scanResult = adapter.scan({ worktreePath, branchName });
+    }
+  }
 
   if (!scanResult || scanResult.turnCount === 0) {
     if (debug) {
