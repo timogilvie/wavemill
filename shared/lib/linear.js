@@ -103,7 +103,7 @@ export async function getBacklog(projectName) {
 
   const data = await request(`
     query {
-      issues(${filterClause}) {
+      issues(${filterClause}, first: 50) {
         nodes {
           id
           identifier
