@@ -259,6 +259,46 @@ check_plan_exists() {
 }
 
 
+# Clean up completed task: close window, remove worktree/branch, update state
+# Args: issue_id, slug, completion_reason (optional, for logging)
+cleanup_completed_task() {
+  local issue="$1"
+  local slug="$2"
+  local completion_reason="${3:-}"
+
+  # Kill tmux window (unconditional - no race condition)
+  local win="$issue-$slug"
+  execute tmux kill-window -t "$SESSION:$win" 2>/dev/null || true
+  log "  ✓ Closed window: $win"
+
+  # Remove worktree
+  local wt_dir="${WORKTREE_ROOT}/${slug}"
+  if [[ -d "$wt_dir" ]]; then
+    execute git -C "$REPO_DIR" worktree remove "$wt_dir" --force 2>/dev/null || true
+    log "  ✓ Removed worktree: $wt_dir"
+  fi
+
+  # Delete branch
+  local task_branch="task/${slug}"
+  if git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/$task_branch" 2>/dev/null; then
+    execute git -C "$REPO_DIR" branch -D "$task_branch" 2>/dev/null || true
+    log "  ✓ Deleted branch: $task_branch"
+  fi
+
+  # Clean up state
+  execute git -C "$REPO_DIR" worktree prune 2>/dev/null || true
+  remove_task_state "$issue"
+  CLEANED["$issue"]=1
+
+  # Log completion with optional reason
+  if [[ -n "$completion_reason" ]]; then
+    log "  ✓ Complete: $issue ($completion_reason)"
+  else
+    log "  ✓ Complete: $issue"
+  fi
+}
+
+
 # ============================================================================
 # LINEAR API WITH RETRY
 # ============================================================================
@@ -1655,23 +1695,7 @@ monitor_issue_state() {
       return 0
     fi
 
-    execute tmux kill-window -t "$SESSION:$WIN" 2>/dev/null || true
-
-    WT_DIR="${WORKTREE_ROOT}/${SLUG}"
-    if [[ -d "$WT_DIR" ]]; then
-      execute git -C "$REPO_DIR" worktree remove "$WT_DIR" --force 2>/dev/null || true
-      log "  ✓ Removed worktree: $WT_DIR"
-    fi
-
-    task_branch="task/${SLUG}"
-    if git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/$task_branch" 2>/dev/null; then
-      execute git -C "$REPO_DIR" branch -D "$task_branch" 2>/dev/null || true
-      log "  ✓ Deleted branch: $task_branch"
-    fi
-
-    remove_task_state "$ISSUE"
-    CLEANED["$ISSUE"]=1
-    log "  ✓ Complete: $ISSUE (post-review cleanup)"
+    cleanup_completed_task "$ISSUE" "$SLUG" "post-review cleanup"
 
     # Prune worktrees after cleanup
     execute git -C "$REPO_DIR" worktree prune 2>/dev/null || true
@@ -1717,29 +1741,7 @@ monitor_issue_state() {
 
         # Clean up worktree and state
         linear_set_state "$ISSUE" "Done"
-
-        WIN="$ISSUE-$SLUG"
-        if tmux has-session -t "$SESSION:$WIN" 2>/dev/null; then
-          execute tmux kill-window -t "$SESSION:$WIN" 2>/dev/null || true
-          log "  ✓ Closed window: $WIN"
-        fi
-
-        WT_DIR="${WORKTREE_ROOT}/${SLUG}"
-        if [[ -d "$WT_DIR" ]]; then
-          execute git -C "$REPO_DIR" worktree remove "$WT_DIR" --force 2>/dev/null || true
-          log "  ✓ Removed worktree: $WT_DIR"
-        fi
-
-        task_branch="task/${SLUG}"
-        if git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/$task_branch" 2>/dev/null; then
-          execute git -C "$REPO_DIR" branch -D "$task_branch" 2>/dev/null || true
-          log "  ✓ Deleted branch: $task_branch"
-        fi
-
-        execute git -C "$REPO_DIR" worktree prune 2>/dev/null || true
-        remove_task_state "$ISSUE"
-        CLEANED["$ISSUE"]=1
-        log "  ✓ Complete: $ISSUE (external completion)"
+        cleanup_completed_task "$ISSUE" "$SLUG" "external completion"
         return 0
       fi
 
@@ -1770,25 +1772,7 @@ monitor_issue_state() {
 
       # Agent exited without creating a PR - clean up the slot
       log "⚠ $ISSUE → Agent exited without PR - releasing slot"
-      execute tmux kill-window -t "$SESSION:$WIN" 2>/dev/null || true
-
-      WT_DIR="${WORKTREE_ROOT}/${SLUG}"
-      if [[ -d "$WT_DIR" ]]; then
-        execute git -C "$REPO_DIR" worktree remove "$WT_DIR" --force 2>/dev/null || true
-        log "  ✓ Removed worktree: $WT_DIR"
-      fi
-
-      task_branch="task/${SLUG}"
-      if git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/$task_branch" 2>/dev/null; then
-        execute git -C "$REPO_DIR" branch -D "$task_branch" 2>/dev/null || true
-        log "  ✓ Deleted branch: $task_branch"
-      fi
-
-      remove_task_state "$ISSUE"
-      CLEANED["$ISSUE"]=1
-      log "  ✓ Released: $ISSUE (no PR created)"
-
-      execute git -C "$REPO_DIR" worktree prune 2>/dev/null || true
+      cleanup_completed_task "$ISSUE" "$SLUG" "no PR created"
       return 0
     fi
   fi
@@ -1822,30 +1806,7 @@ monitor_issue_state() {
     fi
 
     linear_set_state "$ISSUE" "Done"
-
-    WIN="$ISSUE-$SLUG"
-    if tmux has-session -t "$SESSION:$WIN" 2>/dev/null; then
-      execute tmux kill-window -t "$SESSION:$WIN" 2>/dev/null || true
-      log "  ✓ Closed window: $WIN"
-    fi
-
-    WT_DIR="${WORKTREE_ROOT}/${SLUG}"
-    if [[ -d "$WT_DIR" ]]; then
-      execute git -C "$REPO_DIR" worktree remove "$WT_DIR" --force 2>/dev/null || true
-      log "  ✓ Removed worktree: $WT_DIR"
-    fi
-
-    task_branch="task/${SLUG}"
-    if git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/$task_branch" 2>/dev/null; then
-      execute git -C "$REPO_DIR" branch -D "$task_branch" 2>/dev/null || true
-      log "  ✓ Deleted branch: $task_branch"
-    fi
-
-    remove_task_state "$ISSUE"
-    CLEANED["$ISSUE"]=1
-    log "  ✓ Complete: $ISSUE"
-
-    execute git -C "$REPO_DIR" worktree prune 2>/dev/null || true
+    cleanup_completed_task "$ISSUE" "$SLUG"
   elif [[ "$(pr_state "$PR")" == "CLOSED" ]]; then
     log_warn "$ISSUE → PR #$PR CLOSED without merge"
     linear_set_state "$ISSUE" "Backlog"
