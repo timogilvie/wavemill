@@ -5,11 +5,11 @@
  * Non-blocking: eval failures log a warning but never fail the workflow.
  */
 
-import { readFileSync, existsSync, appendFileSync } from 'fs';
-import { execSync } from 'child_process';
-import { join, resolve } from 'path';
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
+import { readFileSync, existsSync, appendFileSync } from "node:fs";
+import { execSync } from "node:child_process";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { dirname } from "node:path";
 import { evaluateTask } from './eval.js';
 import { appendEvalRecord } from './eval-persistence.ts';
 import { escapeShellArg, execShellCommand } from './shell-utils.ts';
@@ -24,7 +24,7 @@ import { computeWorkflowCost, loadPricingTable } from './workflow-cost.ts';
 import { analyzePrDifficulty } from './difficulty-analyzer.ts';
 import { analyzeTaskContext } from './task-context-analyzer.ts';
 import { analyzeRepoContext } from './repo-context-analyzer.ts';
-import { callClaude } from './llm-cli.js';
+import { callClaude } from './llm-cli.ts';
 import { loadWavemillConfig } from './config.ts';
 import { detectSubsystems } from './subsystem-detector.ts';
 import { updateAffectedSubsystems } from './subsystem-updater.ts';

@@ -13,8 +13,8 @@
  *   --help            Show help message
  */
 
-import { validateConstraints, formatValidationResult } from '../shared/lib/constraint-validator.js';
-import { constraintRulesExist } from '../shared/lib/constraint-storage.js';
+import { validateConstraints, formatValidationResult } from '../shared/lib/constraint-validator.ts';
+import { constraintRulesExist } from '../shared/lib/constraint-storage.ts';
 
 async function main() {
   const args = process.argv.slice(2);

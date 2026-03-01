@@ -1,8 +1,5 @@
+import '../shared/lib/env.js';
 import { getIssue } from '../shared/lib/linear.js';
-import dotenv from 'dotenv';
-
-// Load environment variables
-dotenv.config({ quiet: true });
 
 async function main(): Promise<void> {
   const identifier: string | undefined = process.argv[2];

@@ -6,12 +6,12 @@
  * - Layer 2: LLM critic (vague specs, contradictions)
  */
 
-import { existsSync } from 'fs';
-import { readFile } from 'fs/promises';
-import { resolve } from 'path';
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
-import { callClaude, parseJsonFromLLM } from './llm-cli.js';
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { dirname } from "node:path";
+import { callClaude, parseJsonFromLLM } from './llm-cli.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);

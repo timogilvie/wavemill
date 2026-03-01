@@ -20,9 +20,9 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { parseConstraints } from '../shared/lib/constraint-parser.js';
-import { generateRules } from '../shared/lib/rule-generator.js';
-import { saveConstraintRules, constraintRulesExist } from '../shared/lib/constraint-storage.js';
+import { parseConstraints } from '../shared/lib/constraint-parser.ts';
+import { generateRules } from '../shared/lib/rule-generator.ts';
+import { saveConstraintRules, constraintRulesExist } from '../shared/lib/constraint-storage.ts';
 import { toKebabCase } from '../shared/lib/string-utils.js';
 
 async function main() {

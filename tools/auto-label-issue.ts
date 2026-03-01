@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S npx tsx
 import { getIssue, getLabels, addLabelsToIssue, getOrCreateLabel } from '../shared/lib/linear.js';
 import * as readline from 'readline/promises';
 

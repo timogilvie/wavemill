@@ -22,14 +22,14 @@ Use this skill when:
 - If unclear, ask the user which project to use
 
 ### Step 2: Fetch Linear Backlog
-Run the Linear backlog tool with the appropriate project name:
+Run the lean backlog tool (faster query, limited to 50 items) with the appropriate project name:
 ```bash
-npx tsx ~/.claude/tools/get-backlog.ts "PROJECT_NAME"
+npx tsx ~/.claude/tools/list-backlog-json.ts "PROJECT_NAME"
 ```
 
 For bug-specific tasks, add "bug" filter:
 ```bash
-npx tsx ~/.claude/tools/get-backlog.ts "PROJECT_NAME" "bug"
+npx tsx ~/.claude/tools/list-backlog-json.ts "PROJECT_NAME" "bug"
 ```
 
 ### Step 3: Present Tasks to User
@@ -111,7 +111,7 @@ Return a concise summary to the user:
 User: /workflow
 Assistant uses linear-task-selector:
 1. Checks CLAUDE.md → finds "SalesBot MVP" project
-2. Runs: npx tsx ~/.claude/tools/get-backlog.ts "SalesBot MVP"
+2. Runs: npx tsx ~/.claude/tools/list-backlog-json.ts "SalesBot MVP"
 3. Displays 5 tasks with numbers
 4. User selects: 3
 5. Creates: features/implement-email-generation/
@@ -124,7 +124,7 @@ Assistant uses linear-task-selector:
 User: /bugfix
 Assistant uses linear-task-selector:
 1. Checks CLAUDE.md → finds "SalesBot MVP" project
-2. Runs: npx tsx ~/.claude/tools/get-backlog.ts "SalesBot MVP" "bug"
+2. Runs: npx tsx ~/.claude/tools/list-backlog-json.ts "SalesBot MVP" "bug"
 3. Displays 3 bugs with numbers
 4. User selects: 1
 5. Creates: features/fix-contact-discovery-timeout/

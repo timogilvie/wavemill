@@ -11,9 +11,9 @@
  *   npx tsx tools/init-project-context.ts --force [repo-path]
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
-import { join, resolve, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { analyzeRepoContext } from '../shared/lib/repo-context-analyzer.ts';
 import { analyzeCodeConventions } from '../shared/lib/context-analyzer.ts';
 import { detectSubsystems } from '../shared/lib/subsystem-detector.ts';

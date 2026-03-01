@@ -13,8 +13,8 @@ import {
   constraintRulesExist,
   deleteConstraintRules,
   listConstraintIssues,
-} from './constraint-storage.js';
-import type { RuleGenerationResult } from './rule-generator.js';
+} from './constraint-storage.ts';
+import type { RuleGenerationResult } from './rule-generator.ts';
 
 function assert(condition: boolean, message: string) {
   if (!condition) {

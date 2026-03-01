@@ -1,9 +1,7 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S npx tsx
 // Check if a Linear issue is in a completed state
+import '../shared/lib/env.js';
 import { getIssueCompletionState } from '../shared/lib/linear.js';
-import dotenv from 'dotenv';
-
-dotenv.config({ quiet: true });
 
 async function main(): Promise<void> {
   const identifier: string | undefined = process.argv[2];

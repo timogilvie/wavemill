@@ -12,7 +12,7 @@
  */
 
 import { resolve } from 'node:path';
-import { gatherReviewContext } from '../shared/lib/review-context-gatherer.js';
+import { gatherReviewContext } from '../shared/lib/review-context-gatherer.ts';
 
 function main() {
   const args = process.argv.slice(2);

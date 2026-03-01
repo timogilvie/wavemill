@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S npx tsx
 import { getTeams, getLabels, createLabel } from '../shared/lib/linear.js';
 
 const LABEL_DEFINITIONS = {

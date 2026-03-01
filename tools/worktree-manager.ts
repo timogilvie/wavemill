@@ -1,4 +1,4 @@
-#!/usr/bin/env npx tsx
+#!/usr/bin/env -S npx tsx
 /**
  * Git Worktree Manager for Parallel Workflows
  *
@@ -10,9 +10,9 @@
  *   prune                                - Clean up stale worktrees
  */
 
-import { execSync } from 'child_process';
-import * as fs from 'fs';
-import * as path from 'path';
+import { execSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { sanitizeBranchName } from '../shared/lib/git.js';
 
 const WORKTREE_BASE = process.env.WORKTREE_BASE || path.join(process.env.HOME!, 'worktrees');

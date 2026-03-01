@@ -13,11 +13,11 @@
  *   npx tsx tools/expand-issue.ts https://linear.app/team/issue/LIN-123
  */
 
-import dotenv from 'dotenv';
-import fs from 'fs/promises';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { execSync, spawn } from 'child_process';
+import '../shared/lib/env.js';
+import fs from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { execSync, spawn } from "node:child_process";
 import { getIssue, updateIssue } from '../shared/lib/linear.js';
 import {
   validateTaskPacket,
@@ -25,16 +25,14 @@ import {
   type ValidationConfig,
   type ValidationResult,
   type ValidationIssue,
-} from '../shared/lib/task-packet-validator.js';
-import { existsSync, readFileSync } from 'fs';
+} from '../shared/lib/task-packet-validator.ts';
+import { existsSync, readFileSync } from "node:fs";
 import { getValidationConfig } from '../shared/lib/config.ts';
-import { createInterface } from 'readline';
-import { callClaude } from '../shared/lib/llm-cli.js';
+import { createInterface } from "node:readline";
+import { callClaude } from '../shared/lib/llm-cli.ts';
 import { detectSubsystems } from '../shared/lib/subsystem-detector.ts';
 import { detectDriftForIssue, formatDriftWarning } from '../shared/lib/drift-detector.ts';
 import { findRelevantSubsystems, type SubsystemSearchResult } from '../shared/lib/subsystem-search.ts';
-
-dotenv.config({ quiet: true });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

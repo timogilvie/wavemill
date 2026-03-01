@@ -4,8 +4,8 @@
  * Run with: npx tsx shared/lib/rule-generator.test.ts
  */
 
-import { generateRules } from './rule-generator.js';
-import type { Constraint } from './constraint-parser.js';
+import { generateRules } from './rule-generator.ts';
+import type { Constraint } from './constraint-parser.ts';
 
 function assert(condition: boolean, message: string) {
   if (!condition) {
