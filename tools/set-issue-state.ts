@@ -1,17 +1,31 @@
 #!/usr/bin/env -S npx tsx
 import '../shared/lib/env.js';
+import { runTool } from '../shared/lib/tool-runner.ts';
 import { setIssueState } from '../shared/lib/linear.js';
 
-async function main(): Promise<void> {
-  const identifier: string | undefined = process.argv[2];
-  const stateName: string | undefined = process.argv[3];
+runTool({
+  name: 'set-issue-state',
+  description: 'Set the state of a Linear issue',
+  options: {
+    help: { type: 'boolean', short: 'h', description: 'Show help' },
+  },
+  positional: {
+    name: 'identifier stateName',
+    description: 'Issue identifier and state name',
+    required: true,
+  },
+  examples: [
+    'npx tsx tools/set-issue-state.ts HOK-123 "In Progress"',
+    'npx tsx tools/set-issue-state.ts HOK-123 "Done"',
+  ],
+  async run({ positional }) {
+    const [identifier, stateName] = positional;
 
-  if (!identifier || !stateName) {
-    console.error('Usage: npx tsx set-issue-state.ts HOK-123 "In Progress"');
-    process.exit(1);
-  }
+    if (!identifier || !stateName) {
+      console.error('Error: Both identifier and state name are required');
+      process.exit(1);
+    }
 
-  try {
     const result = await setIssueState(identifier, stateName);
 
     if (result.success) {
@@ -21,11 +35,5 @@ async function main(): Promise<void> {
       console.error('Failed to update issue state');
       process.exit(1);
     }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error('Error:', message);
-    process.exit(1);
-  }
-}
-
-main();
+  },
+});
