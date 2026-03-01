@@ -158,10 +158,15 @@ async function autoLabelIssue(identifier: string, options: { dryRun?: boolean; i
     if (!labelMap.has(componentLabel)) {
       try {
         console.log(`   🔨 Creating new component label: ${componentLabel}`);
-        const newLabel = await getOrCreateLabel(componentLabel, issue.team.id, {
-          color: '#4A90E2',
-          description: 'Auto-detected component from file paths'
-        });
+        const newLabel = await getOrCreateLabel(
+          componentLabel,
+          issue.team.id,
+          {
+            color: '#4A90E2',
+            description: 'Auto-detected component from file paths'
+          },
+          availableLabels  // Pass labels cache (will be mutated to include new labels)
+        );
         labelMap.set(componentLabel, newLabel.id);
         createdLabels.push(componentLabel);
       } catch (error) {

@@ -461,15 +461,33 @@ export async function addLabelsToIssue(issueId, labelIds) {
   return data.issueUpdate;
 }
 
-export async function getOrCreateLabel(name, teamId, options = {}) {
-  const labels = await getLabels(teamId);
+/**
+ * Get existing label or create a new one
+ * @param {string} name - Label name
+ * @param {string} teamId - Team ID
+ * @param {Object} options - Label options (color, description)
+ * @param {Array|null} labelsCache - Optional pre-fetched labels array.
+ *                                    SIDE EFFECT: Newly created labels will be pushed to this array.
+ * @returns {Promise<Object>} The label object
+ */
+export async function getOrCreateLabel(name, teamId, options = {}, labelsCache = null) {
+  // Use pre-fetched labels if provided, otherwise fetch
+  const labels = labelsCache || await getLabels(teamId);
   const existing = labels.find(l => l.name === name);
 
   if (existing) {
     return existing;
   }
 
-  return await createLabel(name, teamId, options);
+  // Create new label
+  const newLabel = await createLabel(name, teamId, options);
+
+  // Maintain cache coherence: add newly created label to the cache
+  if (labelsCache && newLabel) {
+    labelsCache.push(newLabel);
+  }
+
+  return newLabel;
 }
 
 // ========== Initiative Management ==========
