@@ -54,20 +54,28 @@ function resolveEvalsDir(repoDir: string): string | undefined {
 }
 
 /**
- * Fetch issue description from Linear via the get-issue-json tool.
+ * Fetch issue data from Linear via the get-issue-json tool.
+ * Returns the parsed issue object or null on failure.
  */
-function fetchIssuePrompt(issueId: string, repoDir: string): string {
+function fetchIssueData(issueId: string, repoDir: string): any | null {
   const toolPath = resolve(__dirname, '../../tools/get-issue-json.ts');
   try {
     const raw = execShellCommand(
       `npx tsx ${escapeShellArg(toolPath)} ${escapeShellArg(issueId)} 2>/dev/null | sed '/^\\[dotenv/d'`,
       { encoding: 'utf-8', cwd: repoDir }
     ).trim();
-    const issue = JSON.parse(raw);
-    return `# ${issue.identifier}: ${issue.title}\n\n${issue.description || ''}`;
+    return JSON.parse(raw);
   } catch {
-    return `Issue: ${issueId} (details unavailable)`;
+    return null;
   }
+}
+
+/**
+ * Format issue data as a markdown prompt.
+ */
+function formatIssueAsPrompt(issue: any | null, issueId: string): string {
+  if (!issue) return `Issue: ${issueId} (details unavailable)`;
+  return `# ${issue.identifier}: ${issue.title}\n\n${issue.description || ''}`;
 }
 
 /**
@@ -135,10 +143,12 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
   try {
     console.log('Post-completion eval: gathering context...');
 
-    // 2. Gather context
-    const taskPrompt = ctx.issueId
-      ? fetchIssuePrompt(ctx.issueId, repoDir)
-      : '(No issue context available)';
+    // 2. Gather context - fetch issue data once for reuse
+    let issueData: any | null = null;
+    if (ctx.issueId) {
+      issueData = fetchIssueData(ctx.issueId, repoDir);
+    }
+    const taskPrompt = formatIssueAsPrompt(issueData, ctx.issueId || '');
 
     let prReviewOutput = '';
     let prUrl = ctx.prUrl || '';
@@ -205,24 +215,10 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
 
     // 4a. Analyze task context (HOK-774)
     let taskContextData: ReturnType<typeof analyzeTaskContext> | null = null;
-    if (ctx.issueId || prReviewOutput) {
+    if (issueData || prReviewOutput) {
       try {
         console.log('Post-completion eval: analyzing task context...');
-        // Fetch issue data for task context
-        let issueData;
-        if (ctx.issueId) {
-          try {
-            const toolPath = resolve(__dirname, '../../tools/get-issue-json.ts');
-            const raw = execShellCommand(
-              `npx tsx ${escapeShellArg(toolPath)} ${escapeShellArg(ctx.issueId)} 2>/dev/null | sed '/^\\[dotenv/d'`,
-              { encoding: 'utf-8', cwd: repoDir }
-            ).trim();
-            issueData = JSON.parse(raw);
-          } catch {
-            // Issue fetch failed - continue with partial data
-          }
-        }
-
+        // Reuse issue data fetched earlier (no duplicate fetch)
         taskContextData = analyzeTaskContext({
           issue: issueData,
           prDiff: prReviewOutput,
