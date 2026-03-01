@@ -28,6 +28,7 @@ import {
   type ValidationIssue,
 } from '../shared/lib/task-packet-validator.js';
 import { existsSync, readFileSync } from 'fs';
+import { getValidationConfig } from '../shared/lib/config.ts';
 import { createInterface } from 'readline';
 import { callClaude } from '../shared/lib/llm-cli.js';
 import { detectSubsystems } from '../shared/lib/subsystem-detector.ts';
@@ -399,26 +400,6 @@ ${relevantFiles}
 `.trim();
 }
 
-// Load validation configuration
-function loadValidationConfig(): ValidationConfig {
-  const configPath = path.resolve('.wavemill-config.json');
-  if (existsSync(configPath)) {
-    try {
-      const config = JSON.parse(readFileSync(configPath, 'utf-8'));
-      if (config.validation) {
-        return {
-          ...DEFAULT_VALIDATION_CONFIG,
-          ...config.validation,
-          layer1: { ...DEFAULT_VALIDATION_CONFIG.layer1, ...config.validation.layer1 },
-          layer2: { ...DEFAULT_VALIDATION_CONFIG.layer2, ...config.validation.layer2 },
-        };
-      }
-    } catch {
-      // Malformed config — use defaults
-    }
-  }
-  return DEFAULT_VALIDATION_CONFIG;
-}
 
 // Format validation issues for display
 function formatValidationIssues(issues: ValidationIssue[]): string {
@@ -635,7 +616,13 @@ Environment Variables:
     if (!skipValidation) {
       console.log('\nRunning quality gate validation...');
 
-      const validationConfig = loadValidationConfig();
+      const configValidation = getValidationConfig();
+      const validationConfig: ValidationConfig = {
+        ...DEFAULT_VALIDATION_CONFIG,
+        ...configValidation,
+        layer1: { ...DEFAULT_VALIDATION_CONFIG.layer1, ...configValidation.layer1 },
+        layer2: { ...DEFAULT_VALIDATION_CONFIG.layer2, ...configValidation.layer2 },
+      };
 
       try {
         validationResult = await validateTaskPacket(fullContent, repoPath, validationConfig);

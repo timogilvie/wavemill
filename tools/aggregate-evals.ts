@@ -15,6 +15,7 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { resolve, basename, dirname, join } from 'node:path';
+import { getEvalConfig } from '../shared/lib/config.ts';
 
 // ── Argument Parsing ─────────────────────────────────────────────────────────
 
@@ -83,25 +84,20 @@ interface AggregationConfig {
 }
 
 function loadAggregationConfig(): AggregationConfig {
-  const configPath = resolve('.wavemill-config.json');
   const defaults: AggregationConfig = {
     repos: [],
     outputPath: '.wavemill/evals/aggregated-evals.jsonl',
   };
 
-  if (!existsSync(configPath)) return defaults;
+  const evalConfig = getEvalConfig();
+  const agg = evalConfig.aggregation;
 
-  try {
-    const config = JSON.parse(readFileSync(configPath, 'utf-8'));
-    const agg = config.eval?.aggregation;
-    if (agg) {
-      if (Array.isArray(agg.repos)) defaults.repos = agg.repos;
-      if (agg.outputPath) defaults.outputPath = agg.outputPath;
-    }
-    return defaults;
-  } catch {
-    return defaults;
+  if (agg) {
+    if (Array.isArray(agg.repos)) defaults.repos = agg.repos;
+    if (agg.outputPath) defaults.outputPath = agg.outputPath;
   }
+
+  return defaults;
 }
 
 // ── Core Logic ───────────────────────────────────────────────────────────────

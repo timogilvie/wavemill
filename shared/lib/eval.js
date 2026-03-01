@@ -8,6 +8,8 @@ import { fileURLToPath } from 'url';
 import { dirname, join, resolve } from 'path';
 import { getScoreBand } from './eval-schema.ts';
 import { callClaude, parseJsonFromLLM } from './llm-cli.ts';
+import { getEvalConfig } from './config.ts';
+import { loadPricingTable } from './workflow-cost.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -25,23 +27,9 @@ const TIMEOUT_MS = 120_000;
  * Validates provider against supported list.
  */
 function loadJudgeConfig() {
-  let configModel = DEFAULT_MODEL;
-  let configProvider = DEFAULT_PROVIDER;
-
-  const configPath = resolve('.wavemill-config.json');
-  if (existsSync(configPath)) {
-    try {
-      const config = JSON.parse(readFileSync(configPath, 'utf-8'));
-      if (config.eval?.judge?.model) {
-        configModel = config.eval.judge.model;
-      }
-      if (config.eval?.judge?.provider) {
-        configProvider = config.eval.judge.provider;
-      }
-    } catch {
-      // Malformed config — use defaults
-    }
-  }
+  const evalConfig = getEvalConfig();
+  const configModel = evalConfig.judge?.model || DEFAULT_MODEL;
+  const configProvider = evalConfig.judge?.provider || DEFAULT_PROVIDER;
 
   // Validate provider
   if (!SUPPORTED_PROVIDERS.includes(configProvider)) {
@@ -124,24 +112,6 @@ async function callClaudeWithRetry(prompt, model) {
   };
 }
 
-/**
- * Load the pricing table from .wavemill-config.json.
- * Returns a map of model ID to { inputCostPerMTok, outputCostPerMTok }.
- */
-function loadPricingTable() {
-  const configPath = resolve('.wavemill-config.json');
-  if (existsSync(configPath)) {
-    try {
-      const config = JSON.parse(readFileSync(configPath, 'utf-8'));
-      if (config.eval?.pricing && typeof config.eval.pricing === 'object') {
-        return config.eval.pricing;
-      }
-    } catch {
-      // Malformed config — return empty
-    }
-  }
-  return {};
-}
 
 /**
  * Compute estimated cost in USD from token usage and a pricing table.

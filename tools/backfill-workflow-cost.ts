@@ -19,6 +19,7 @@ import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { computeModelCost, loadPricingTable } from '../shared/lib/workflow-cost.ts';
 import type { ModelPricing, ModelTokenUsage } from '../shared/lib/workflow-cost.ts';
+import { getEvalConfig } from '../shared/lib/config.ts';
 
 const DRY_RUN = process.argv.includes('--dry-run');
 
@@ -27,13 +28,10 @@ const DRY_RUN = process.argv.includes('--dry-run');
 // ────────────────────────────────────────────────────────────────
 
 const repoDir = resolve('.');
-const configPath = join(repoDir, '.wavemill-config.json');
+const evalConfig = getEvalConfig(repoDir);
 let evalsDir = join(repoDir, '.wavemill', 'evals');
-if (existsSync(configPath)) {
-  try {
-    const config = JSON.parse(readFileSync(configPath, 'utf-8'));
-    if (config.eval?.evalsDir) evalsDir = resolve(repoDir, config.eval.evalsDir);
-  } catch {}
+if (evalConfig.evalsDir) {
+  evalsDir = resolve(repoDir, evalConfig.evalsDir);
 }
 
 const evalsFile = join(evalsDir, 'evals.jsonl');
