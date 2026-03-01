@@ -1,13 +1,12 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import { setIssueState } from '../shared/lib/linear.js';
 import dotenv from 'dotenv';
 
 dotenv.config({ quiet: true });
 
-async function main() {
-  const identifier = process.argv[2];
-  const stateName = process.argv[3];
+async function main(): Promise<void> {
+  const identifier: string | undefined = process.argv[2];
+  const stateName: string | undefined = process.argv[3];
 
   if (!identifier || !stateName) {
     console.error('Usage: npx tsx set-issue-state.ts HOK-123 "In Progress"');
@@ -25,7 +24,8 @@ async function main() {
       process.exit(1);
     }
   } catch (error) {
-    console.error('Error:', error.message);
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('Error:', message);
     process.exit(1);
   }
 }

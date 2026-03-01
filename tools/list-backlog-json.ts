@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import { getBacklogForScoring } from '../shared/lib/linear.js';
 import dotenv from 'dotenv';
 
@@ -13,14 +12,15 @@ setTimeout(() => {
 
 dotenv.config({ quiet: true });
 
-async function main() {
-  const projectName = process.argv[2] || null;
+async function main(): Promise<void> {
+  const projectName: string | null = process.argv[2] || null;
 
   try {
     const backlog = await getBacklogForScoring(projectName);
     console.log(JSON.stringify(backlog, null, 2));
   } catch (error) {
-    console.error('Error:', error.message);
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('Error:', message);
     process.exit(1);
   }
 }

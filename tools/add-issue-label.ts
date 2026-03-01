@@ -1,13 +1,12 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import { getIssueForLabeling, getOrCreateLabel, addLabelsToIssue } from '../shared/lib/linear.js';
 import dotenv from 'dotenv';
 
 dotenv.config({ quiet: true });
 
-async function main() {
-  const identifier = process.argv[2];
-  const labelName = process.argv[3];
+async function main(): Promise<void> {
+  const identifier: string | undefined = process.argv[2];
+  const labelName: string | undefined = process.argv[3];
 
   if (!identifier || !labelName) {
     console.error('Usage: npx tsx add-issue-label.ts HOK-671 "Bug"');
@@ -51,7 +50,8 @@ async function main() {
       process.exit(1);
     }
   } catch (error) {
-    console.error('Error:', error.message);
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('Error:', message);
     process.exit(1);
   }
 }

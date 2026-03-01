@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import { getIssue } from '../shared/lib/linear.js';
 import dotenv from 'dotenv';
 
@@ -13,8 +12,8 @@ setTimeout(() => {
 
 dotenv.config({ quiet: true });
 
-async function main() {
-  const identifier = process.argv[2];
+async function main(): Promise<void> {
+  const identifier: string | undefined = process.argv[2];
 
   if (!identifier) {
     console.error('Usage: npx tsx get-issue-json.ts HOK-671');
@@ -25,7 +24,8 @@ async function main() {
     const issue = await getIssue(identifier);
     console.log(JSON.stringify(issue, null, 2));
   } catch (error) {
-    console.error('Error:', error.message);
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('Error:', message);
     process.exit(1);
   }
 }

@@ -1,13 +1,12 @@
 #!/usr/bin/env node
-// @ts-nocheck
 // Check if a Linear issue is in a completed state
 import { getIssueCompletionState } from '../shared/lib/linear.js';
 import dotenv from 'dotenv';
 
 dotenv.config({ quiet: true });
 
-async function main() {
-  const identifier = process.argv[2];
+async function main(): Promise<void> {
+  const identifier: string | undefined = process.argv[2];
 
   if (!identifier) {
     console.error('Usage: npx tsx get-issue-state.ts HOK-123');
@@ -23,7 +22,8 @@ async function main() {
     // Output simple boolean for shell scripts
     console.log(isCompleted ? 'completed' : 'active');
   } catch (error) {
-    console.error('Error:', error.message);
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('Error:', message);
     process.exit(1);
   }
 }
