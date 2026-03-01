@@ -95,7 +95,10 @@ _with_timeout() {
   # Fallback: background process + watchdog (stdout/stderr flow through)
   "$@" &
   local pid=$!
-  ( sleep "$secs" && kill "$pid" 2>/dev/null && log_warn "Command killed after ${secs}s timeout" ) &
+  # Redirect watchdog stdout/stderr to /dev/null so it doesn't hold the
+  # file descriptor open inside $() command substitutions.  Without this,
+  # $() blocks until sleep completes even after the real command exits.
+  ( sleep "$secs" && kill "$pid" 2>/dev/null && log_warn "Command killed after ${secs}s timeout" ) >/dev/null 2>&1 &
   local wd=$!
   wait "$pid" 2>/dev/null
   local rc=$?
