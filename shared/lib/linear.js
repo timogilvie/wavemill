@@ -461,15 +461,24 @@ export async function addLabelsToIssue(issueId, labelIds) {
   return data.issueUpdate;
 }
 
-export async function getOrCreateLabel(name, teamId, options = {}) {
-  const labels = await getLabels(teamId);
+export async function getOrCreateLabel(name, teamId, options = {}, existingLabels = null) {
+  // Use pre-fetched labels if provided, otherwise fetch
+  const labels = existingLabels || await getLabels(teamId);
   const existing = labels.find(l => l.name === name);
 
   if (existing) {
     return existing;
   }
 
-  return await createLabel(name, teamId, options);
+  // Create new label
+  const newLabel = await createLabel(name, teamId, options);
+
+  // Add to cache if labels were pre-fetched (maintain cache coherence)
+  if (existingLabels && newLabel) {
+    existingLabels.push(newLabel);
+  }
+
+  return newLabel;
 }
 
 // ========== Initiative Management ==========
