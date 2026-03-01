@@ -1,15 +1,5 @@
 #!/usr/bin/env -S npx tsx
-/**
- * Git Worktree Manager for Parallel Workflows
- *
- * Commands:
- *   create <branch-name> [base-branch]  - Create worktree for feature
- *   list                                 - List all worktrees
- *   status                               - Show status of all worktrees
- *   remove <branch-name>                 - Remove worktree and optionally branch
- *   prune                                - Clean up stale worktrees
- */
-
+import { runTool } from '../shared/lib/tool-runner.ts';
 import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -162,43 +152,27 @@ function pruneWorktrees(): void {
   console.log('✅ Stale worktrees pruned');
 }
 
-// CLI
-const [,, command, ...args] = process.argv;
-
-switch (command) {
-  case 'create':
-    if (!args[0]) {
-      console.log('Usage: worktree-manager.ts create <branch-name> [base-branch]');
-      process.exit(1);
-    }
-    createWorktree(args[0], args[1]);
-    break;
-
-  case 'list':
-    listWorktrees();
-    break;
-
-  case 'status':
-    getWorktreeStatus();
-    break;
-
-  case 'remove':
-    if (!args[0]) {
-      console.log('Usage: worktree-manager.ts remove <branch-name> [--delete-branch]');
-      process.exit(1);
-    }
-    removeWorktree(args[0], args.includes('--delete-branch'));
-    break;
-
-  case 'prune':
-    pruneWorktrees();
-    break;
-
-  default:
-    console.log(`
-Git Worktree Manager for Parallel Workflows
-
-Commands:
+runTool({
+  name: 'worktree-manager',
+  description: 'Git Worktree Manager for Parallel Workflows',
+  options: {
+    'delete-branch': { type: 'boolean', description: 'Delete branch when removing worktree' },
+    help: { type: 'boolean', short: 'h', description: 'Show help' },
+  },
+  positional: {
+    name: 'command args',
+    description: 'Command (create|list|status|remove|prune) and arguments',
+    multiple: true,
+  },
+  examples: [
+    'npx tsx tools/worktree-manager.ts create "Add caching layer"',
+    'npx tsx tools/worktree-manager.ts create "Add feature" main',
+    'npx tsx tools/worktree-manager.ts list',
+    'npx tsx tools/worktree-manager.ts status',
+    'npx tsx tools/worktree-manager.ts remove add-caching-layer --delete-branch',
+    'npx tsx tools/worktree-manager.ts prune',
+  ],
+  additionalHelp: `Commands:
   create <branch-name> [base]  Create worktree for feature
   list                         List all worktrees
   status                       Show detailed status of all worktrees
@@ -206,11 +180,44 @@ Commands:
   prune                        Clean up stale worktrees
 
 Environment:
-  WORKTREE_BASE                Base directory for worktrees (default: ~/worktrees)
+  WORKTREE_BASE                Base directory for worktrees (default: ~/worktrees)`,
+  run({ args, positional }) {
+    const command = positional[0];
+    const commandArgs = positional.slice(1);
 
-Examples:
-  npx tsx worktree-manager.ts create "Add caching layer"
-  npx tsx worktree-manager.ts status
-  npx tsx worktree-manager.ts remove add-caching-layer --delete-branch
-`);
-}
+    switch (command) {
+      case 'create':
+        if (!commandArgs[0]) {
+          console.error('Error: branch-name is required for create command');
+          process.exit(1);
+        }
+        createWorktree(commandArgs[0], commandArgs[1]);
+        break;
+
+      case 'list':
+        listWorktrees();
+        break;
+
+      case 'status':
+        getWorktreeStatus();
+        break;
+
+      case 'remove':
+        if (!commandArgs[0]) {
+          console.error('Error: branch-name is required for remove command');
+          process.exit(1);
+        }
+        removeWorktree(commandArgs[0], !!args['delete-branch']);
+        break;
+
+      case 'prune':
+        pruneWorktrees();
+        break;
+
+      default:
+        console.error(`Error: Unknown command "${command}"`);
+        console.error('Valid commands: create, list, status, remove, prune');
+        process.exit(1);
+    }
+  },
+});

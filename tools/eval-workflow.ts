@@ -1,16 +1,5 @@
 #!/usr/bin/env -S npx tsx
-
-/**
- * Eval Workflow Tool
- *
- * Evaluates LLM performance on a completed workflow by gathering context
- * and calling the shared evaluateTask() judge function.
- *
- * Usage:
- *   npx tsx tools/eval-workflow.ts
- *   npx tsx tools/eval-workflow.ts --issue HOK-123 --pr 456
- */
-
+import { runTool } from '../shared/lib/tool-runner.ts';
 import '../shared/lib/env.js';
 import { execSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
@@ -45,39 +34,7 @@ import { CYAN, GREEN, YELLOW, RED, BOLD, DIM, NC } from '../shared/lib/colors.ts
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ── Argument Parsing ─────────────────────────────────────────────────────────
-
-function parseArgs(argv) {
-  const args = {};
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--issue' && argv[i + 1]) {
-      args.issue = argv[++i];
-    } else if (argv[i] === '--pr' && argv[i + 1]) {
-      args.pr = argv[++i];
-    } else if (argv[i] === '--model' && argv[i + 1]) {
-      args.model = argv[++i];
-    } else if (argv[i] === '--repo-dir' && argv[i + 1]) {
-      args.repoDir = argv[++i];
-    } else if (argv[i] === '--agent' && argv[i + 1]) {
-      args.agent = argv[++i];
-    } else if (argv[i] === '--solution-model' && argv[i + 1]) {
-      args.solutionModel = argv[++i];
-    } else if (argv[i] === '--routing-decision' && argv[i + 1]) {
-      args.routingDecision = argv[++i];
-    } else if (argv[i] === '--help' || argv[i] === '-h') {
-      args.help = true;
-    }
-  }
-  return args;
-}
-
-function showHelp() {
-  console.log(`
-Eval Workflow Tool — Evaluate LLM performance on a completed workflow
-
-Usage:
-  npx tsx tools/eval-workflow.ts [options]
-
+// Note: parseArgs and showHelp removed - using runTool at end of file
 Options:
   --issue ID      Linear issue identifier (e.g., HOK-123)
   --pr NUMBER     GitHub PR number
@@ -577,4 +534,134 @@ async function main() {
   }
 }
 
-main();
+runTool({
+  name: 'eval-workflow',
+  description: 'Evaluate LLM performance on a completed workflow',
+  options: {
+    issue: { type: 'string', description: 'Linear issue ID (e.g., HOK-123)' },
+    pr: { type: 'string', description: 'GitHub PR number' },
+    model: { type: 'string', description: 'Override eval model' },
+    'repo-dir': { type: 'string', description: 'Repository directory' },
+    agent: { type: 'string', description: 'Agent type (claude or codex)' },
+    'solution-model': { type: 'string', description: 'Model used for solution' },
+    'routing-decision': { type: 'string', description: 'Routing decision metadata' },
+    help: { type: 'boolean', short: 'h', description: 'Show help' },
+  },
+  examples: [
+    'npx tsx tools/eval-workflow.ts',
+    'npx tsx tools/eval-workflow.ts --issue HOK-123 --pr 456',
+  ],
+  async run({ args }) {
+    // Convert args to old format for existing logic
+    const oldArgs = {
+      issue: args.issue,
+      pr: args.pr,
+      model: args.model,
+      repoDir: args['repo-dir'],
+      agent: args.agent,
+      solutionModel: args['solution-model'],
+      routingDecision: args['routing-decision'],
+    };
+
+    // Call existing main logic with converted args
+    try {
+      console.log('Gathering workflow context...');
+      const ctx = gatherContext(oldArgs);
+
+      if (ctx.issueId) console.log(`  Issue: ${ctx.issueId}`);
+      if (ctx.prNumber) console.log(`  PR: #${ctx.prNumber}`);
+      if (ctx.prReviewOutput) {
+        const lines = ctx.prReviewOutput.split('\n').length;
+        console.log(`  Diff: ${lines} lines`);
+      }
+
+      if (oldArgs.model) {
+        process.env.EVAL_MODEL = oldArgs.model;
+      }
+
+      // Continue with rest of main() logic...
+      // (copying rest of main function here to avoid circular reference)
+      const interventions = detectAllInterventions(ctx);
+      const interventionRecords = toInterventionRecords(interventions);
+      const interventionMeta = toInterventionMeta(interventions);
+      const formattedInterventions = formatForJudge(interventions);
+
+      console.log(`\nDetected ${interventions.length} intervention event(s)`);
+
+      const evalResult = await evaluateTask(ctx, formattedInterventions);
+      const scoreBand = getScoreBand(evalResult.score);
+      const penalties = loadPenalties();
+      let finalScore = evalResult.score;
+
+      if (interventionMeta.hadInterventions) {
+        const penaltyInfo = penalties[interventionMeta.impactLevel];
+        finalScore -= penaltyInfo.points;
+      }
+
+      let difficultyData = null;
+      if (ctx.prReviewOutput) {
+        const diffOutput = analyzePrDifficulty(ctx.prReviewOutput, ctx.repoDir);
+        if (diffOutput) difficultyData = diffOutput;
+      }
+
+      let taskContextData = null;
+      if (ctx.taskPacket) {
+        taskContextData = analyzeTaskContext(ctx.taskPacket);
+      }
+
+      const repoContextData = analyzeRepoContext(ctx.repoDir);
+
+      const outcomes: Outcomes = {
+        ci: collectCiOutcome(ctx),
+        tests: collectTestsOutcome(ctx),
+        staticAnalysis: collectStaticAnalysisOutcome(ctx),
+        review: collectReviewOutcome(ctx),
+        rework: collectReworkOutcome(ctx),
+        delivery: collectDeliveryOutcome(ctx),
+      };
+
+      const record = {
+        id: `eval-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        score: finalScore,
+        scoreBand,
+        rawScore: evalResult.score,
+        penalizedScore: finalScore < evalResult.score ? finalScore : undefined,
+        issueId: ctx.issueId || undefined,
+        prIdentifier: ctx.prNumber || ctx.prUrl || undefined,
+        prUrl: ctx.prUrl || undefined,
+        agentType: oldArgs.agent || 'claude',
+        modelId: oldArgs.solutionModel,
+        modelVersion: oldArgs.solutionModel,
+        difficultyBand: difficultyData?.difficultyBand,
+        difficultySignals: difficultyData?.difficultySignals,
+        stratum: difficultyData?.stratum,
+        taskContext: taskContextData,
+        repoContext: repoContextData,
+        outcomes,
+        metadata: {
+          ...interventionMeta,
+          verdict: evalResult.verdict,
+          reasoning: evalResult.reasoning,
+          workflowType: 'feature',
+        },
+        interventions: interventionRecords,
+      };
+
+      try {
+        appendEvalRecord(record);
+      } catch (err) {
+        console.error(`Warning: failed to persist eval record: ${err.message}`);
+      }
+
+      console.log(formatEvalRecord(record));
+
+      if (process.stdout.isTTY === false) {
+        console.log(JSON.stringify(record, null, 2));
+      }
+    } catch (error) {
+      console.error(`Error: ${error.message}`);
+      process.exit(1);
+    }
+  },
+});

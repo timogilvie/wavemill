@@ -1,21 +1,5 @@
 #!/usr/bin/env -S npx tsx
-/**
- * Verify Permission Configuration
- *
- * Validates that permission patterns are configured correctly and
- * checks if they match expected agent settings.
- *
- * Usage:
- *   npx tsx tools/verify-permissions.ts [options]
- *
- * Options:
- *   --agent <name>   Check specific agent (claude|codex)
- *   --verbose        Show detailed output
- *   --help           Show help
- *
- * @module verify-permissions
- */
-
+import { runTool } from '../shared/lib/tool-runner.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -27,86 +11,11 @@ import {
   getPatternsByCategory,
 } from '../shared/lib/permission-patterns.ts';
 
-// ────────────────────────────────────────────────────────────────
-// Types
-// ────────────────────────────────────────────────────────────────
-
-interface Args {
-  agent?: 'claude' | 'codex';
-  verbose: boolean;
-  help: boolean;
-}
-
 interface ValidationResult {
   valid: boolean;
   errors: string[];
   warnings: string[];
   info: string[];
-}
-
-// ────────────────────────────────────────────────────────────────
-// CLI Argument Parsing
-// ────────────────────────────────────────────────────────────────
-
-function parseArgs(argv: string[]): Args {
-  const args: Args = {
-    verbose: false,
-    help: false,
-  };
-
-  for (let i = 2; i < argv.length; i++) {
-    const arg = argv[i];
-    switch (arg) {
-      case '--agent':
-        const agent = argv[++i];
-        if (agent !== 'claude' && agent !== 'codex') {
-          console.error(`Invalid agent: ${agent}. Must be 'claude' or 'codex'`);
-          process.exit(1);
-        }
-        args.agent = agent;
-        break;
-      case '--verbose':
-      case '-v':
-        args.verbose = true;
-        break;
-      case '--help':
-      case '-h':
-        args.help = true;
-        break;
-      default:
-        console.error(`Unknown argument: ${arg}`);
-        process.exit(1);
-    }
-  }
-
-  return args;
-}
-
-function showHelp(): void {
-  console.log(`
-Verify Permission Configuration
-
-Validates that permission patterns are configured correctly and
-checks if they match expected agent settings.
-
-Usage:
-  npx tsx tools/verify-permissions.ts [options]
-
-Options:
-  --agent <name>   Check specific agent (claude|codex)
-  --verbose        Show detailed output
-  --help           Show help
-
-Examples:
-  # Verify config only
-  npx tsx tools/verify-permissions.ts
-
-  # Verify config and check Claude Code settings
-  npx tsx tools/verify-permissions.ts --agent claude
-
-  # Verify with detailed output
-  npx tsx tools/verify-permissions.ts --verbose
-`);
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -322,47 +231,52 @@ function showPatternSummary(verbose: boolean): void {
   }
 }
 
-// ────────────────────────────────────────────────────────────────
-// Main
-// ────────────────────────────────────────────────────────────────
+runTool({
+  name: 'verify-permissions',
+  description: 'Verify permission configuration',
+  options: {
+    agent: { type: 'string', description: 'Check specific agent (claude|codex)' },
+    verbose: { type: 'boolean', short: 'v', description: 'Show detailed output' },
+    help: { type: 'boolean', short: 'h', description: 'Show help' },
+  },
+  examples: [
+    'npx tsx tools/verify-permissions.ts',
+    'npx tsx tools/verify-permissions.ts --agent claude',
+    'npx tsx tools/verify-permissions.ts --verbose',
+  ],
+  additionalHelp: `Validates that permission patterns are configured correctly and
+checks if they match expected agent settings.`,
+  run({ args }) {
+    if (args.agent && args.agent !== 'claude' && args.agent !== 'codex') {
+      console.error(`Invalid agent: ${args.agent}. Must be 'claude' or 'codex'`);
+      process.exit(1);
+    }
 
-function main(): void {
-  const args = parseArgs(process.argv);
+    const repoDir = process.cwd();
+    const verbose = !!args.verbose;
 
-  if (args.help) {
-    showHelp();
-    process.exit(0);
-  }
+    console.log('🔍 Verifying Permission Configuration');
 
-  const repoDir = process.cwd();
+    const configResult = validateConfig(repoDir, verbose);
+    printResult(configResult, 'Configuration Validation');
 
-  console.log('🔍 Verifying Permission Configuration');
+    if (args.agent === 'claude') {
+      const claudeResult = checkClaudeSettings(repoDir, verbose);
+      printResult(claudeResult, 'Claude Code Settings');
+    } else if (args.agent === 'codex') {
+      const codexResult = checkCodexSettings(repoDir, verbose);
+      printResult(codexResult, 'Codex Settings');
+    }
 
-  // Validate config
-  const configResult = validateConfig(repoDir, args.verbose);
-  printResult(configResult, 'Configuration Validation');
+    if (verbose) {
+      showPatternSummary(verbose);
+    }
 
-  // Check agent settings if requested
-  if (args.agent === 'claude') {
-    const claudeResult = checkClaudeSettings(repoDir, args.verbose);
-    printResult(claudeResult, 'Claude Code Settings');
-  } else if (args.agent === 'codex') {
-    const codexResult = checkCodexSettings(repoDir, args.verbose);
-    printResult(codexResult, 'Codex Settings');
-  }
-
-  // Show pattern summary if verbose
-  if (args.verbose) {
-    showPatternSummary(args.verbose);
-  }
-
-  // Exit with error code if validation failed
-  if (!configResult.valid) {
-    console.log('\n❌ Validation failed');
-    process.exit(1);
-  } else {
-    console.log('\n✅ Verification complete');
-  }
-}
-
-main();
+    if (!configResult.valid) {
+      console.log('\n❌ Validation failed');
+      process.exit(1);
+    } else {
+      console.log('\n✅ Verification complete');
+    }
+  },
+});

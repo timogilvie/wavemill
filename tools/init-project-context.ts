@@ -1,16 +1,5 @@
 #!/usr/bin/env -S npx tsx
-/**
- * Initialize Project Context
- *
- * Analyzes a codebase and generates the initial .wavemill/project-context.md file.
- * This file maintains living documentation of architectural decisions, patterns,
- * conventions, and recent work.
- *
- * Usage:
- *   npx tsx tools/init-project-context.ts [repo-path]
- *   npx tsx tools/init-project-context.ts --force [repo-path]
- */
-
+import { runTool } from '../shared/lib/tool-runner.ts';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,52 +11,7 @@ import { writeSubsystemSpecs } from '../shared/lib/subsystem-spec-generator.ts';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// ────────────────────────────────────────────────────────────────
-// CLI Argument Parsing
-// ────────────────────────────────────────────────────────────────
-
-const args = process.argv.slice(2);
-const isForce = args.includes('--force') || args.includes('-f');
-const isHelp = args.includes('--help') || args.includes('-h');
-
-const repoPath = args.find((arg) => !arg.startsWith('-')) || process.cwd();
-const repoDir = resolve(repoPath);
-
-if (isHelp) {
-  console.log(`
-Initialize Project Context
-
-Analyzes a codebase and generates the initial .wavemill/project-context.md file.
-
-Usage:
-  npx tsx tools/init-project-context.ts [repo-path]
-  npx tsx tools/init-project-context.ts --force [repo-path]
-
-Arguments:
-  [repo-path]    Path to repository (default: current directory)
-
-Options:
-  --force, -f    Overwrite existing project-context.md
-  --help, -h     Show this help message
-
-Examples:
-  # Initialize in current directory
-  npx tsx tools/init-project-context.ts
-
-  # Initialize in specific repo
-  npx tsx tools/init-project-context.ts /path/to/repo
-
-  # Overwrite existing context
-  npx tsx tools/init-project-context.ts --force
-  `);
-  process.exit(0);
-}
-
-// ────────────────────────────────────────────────────────────────
-// Main Logic
-// ────────────────────────────────────────────────────────────────
-
-async function main() {
+async function main(repoDir: string, isForce: boolean) {
   console.log(`Analyzing repository: ${repoDir}`);
 
   // Check if .wavemill directory exists, create if not
@@ -344,7 +288,27 @@ async function main() {
   console.log('  npx tsx tools/expand-issue.ts <issue-id>');
 }
 
-main().catch((error) => {
-  console.error('Error:', error.message);
-  process.exit(1);
+runTool({
+  name: 'init-project-context',
+  description: 'Initialize project context documentation',
+  options: {
+    force: { type: 'boolean', short: 'f', description: 'Overwrite existing project-context.md' },
+    help: { type: 'boolean', short: 'h', description: 'Show help' },
+  },
+  positional: {
+    name: 'repoPath',
+    description: 'Repository path (default: current directory)',
+  },
+  examples: [
+    'npx tsx tools/init-project-context.ts',
+    'npx tsx tools/init-project-context.ts /path/to/repo',
+    'npx tsx tools/init-project-context.ts --force',
+  ],
+  additionalHelp: `Analyzes a codebase and generates the initial .wavemill/project-context.md file.
+This file maintains living documentation of architectural decisions, patterns, conventions, and recent work.`,
+  async run({ args, positional }) {
+    const repoPath = positional[0] || process.cwd();
+    const repoDir = resolve(repoPath);
+    await main(repoDir, !!args.force);
+  },
 });
