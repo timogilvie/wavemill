@@ -54,6 +54,39 @@ You have been provided with lightweight codebase context to ground your task pac
 
 ---
 
+## Subsystem Context
+
+You may also be provided with relevant subsystem specifications from `.wavemill/context/`.
+These specs document established patterns, constraints, and failure modes for specific
+subsystems in the codebase.
+
+**CRITICAL**: If subsystem specs are provided in the codebase context below, you MUST:
+
+1. **Reference them in Technical Context** (Section 2)
+   - List applicable subsystem specs with paths
+   - Extract key architectural constraints
+   - Note known failure modes to avoid
+
+2. **Incorporate constraints into Implementation Constraints** (Section 5)
+   - Copy hard rules from "Architectural Constraints" sections
+   - Add constraints to appropriate categories (code style, testing, security, etc.)
+
+3. **Include failure modes in Validation Steps** (Section 6)
+   - Add test scenarios for known failure modes
+   - Reference specific error conditions documented in specs
+
+4. **Follow established patterns**
+   - Use approaches documented in subsystem specs
+   - Maintain consistency with existing implementations
+
+**If NO subsystem specs are provided**, this indicates a knowledge gap:
+- This may be a new subsystem or area without documentation
+- After implementation, recommend running `wavemill context init --force`
+- Document new patterns you establish for future reference
+- This creates "persistent downstream acceleration" (per Codified Context paper, Case Study 3)
+
+---
+
 ## 1. Objective
 
 ### What
@@ -78,11 +111,24 @@ You have been provided with lightweight codebase context to ground your task pac
 ### Key Files
 *Exact file paths that will be created or modified. Use paths from the codebase context wherever possible. Use glob patterns if multiple files follow a pattern.*
 
+### Relevant Subsystem Specs
+
+*If subsystem specs were provided in the codebase context above, list them here with key constraints:*
+
+**Format** (use if subsystem specs exist):
+- **{Subsystem Name}** (`.wavemill/context/{id}.md`)
+  - **Key Constraints**: {1-2 critical architectural rules from spec's "Architectural Constraints"}
+  - **Known Failure Modes**: {1-2 gotchas from spec's "Known Failure Modes"}
+  - **Testing Patterns**: {Relevant test approach from spec, if applicable}
+
+**If no subsystem specs were provided**, state:
+> ⚠️ **Knowledge Gap**: No subsystem specs found for this area. After implementation, consider running `wavemill context init --force` to create subsystem documentation and enable persistent downstream acceleration for future tasks.
+
 ### Dependencies
 *Services, APIs, packages, or other issues this depends on. Check recent git activity for clues.*
 
 ### Architecture Notes
-*Relevant patterns, conventions, or architectural decisions the agent should follow. Reference existing implementations from the codebase context as examples.*
+*Relevant patterns, conventions, or architectural decisions the agent should follow. Reference existing implementations from the codebase context as examples. If subsystem specs are available, reference their architectural patterns.*
 
 ---
 

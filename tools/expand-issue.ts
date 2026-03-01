@@ -32,6 +32,7 @@ import { createInterface } from 'readline';
 import { callClaude } from '../shared/lib/llm-cli.js';
 import { detectSubsystems } from '../shared/lib/subsystem-detector.ts';
 import { detectDriftForIssue, formatDriftWarning } from '../shared/lib/drift-detector.ts';
+import { findRelevantSubsystems, type SubsystemSearchResult } from '../shared/lib/subsystem-search.ts';
 
 dotenv.config({ quiet: true });
 
@@ -277,15 +278,102 @@ async function findRelevantFiles(repoPath: string, issueTitle: string): Promise<
   return results.length > 0 ? results.join('\n\n') : '(No matching files found)';
 }
 
+// Gather subsystem context for an issue
+async function gatherSubsystemContext(
+  repoPath: string,
+  issueDescription: string,
+  issueTitle: string
+): Promise<string> {
+  const contextDir = path.join(repoPath, '.wavemill', 'context');
+
+  // Skip if no subsystem specs exist
+  if (!existsSync(contextDir)) {
+    return '';
+  }
+
+  try {
+    console.log('Searching for relevant subsystem specs...');
+
+    const subsystems = findRelevantSubsystems(
+      issueDescription,
+      issueTitle,
+      repoPath,
+      { limit: 10, includeFullSpecs: false }
+    );
+
+    if (subsystems.length === 0) {
+      console.log('⚠️  No relevant subsystem specs found (potential knowledge gap)\n');
+      return formatKnowledgeGapWarning();
+    }
+
+    console.log(`✓ Found ${subsystems.length} relevant subsystem spec(s)\n`);
+    return formatSubsystemContext(subsystems);
+
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`⚠️  Subsystem search failed: ${message}`);
+    return '';
+  }
+}
+
+// Format subsystem context for inclusion in codebase context
+function formatSubsystemContext(subsystems: SubsystemSearchResult[]): string {
+  let context = '\n## Subsystem Specifications\n\n';
+  context += 'The following subsystem specs are relevant to this issue:\n\n';
+
+  for (const subsystem of subsystems.slice(0, 10)) { // Limit to 10 for token budget
+    context += `### ${subsystem.subsystemName}\n\n`;
+    context += `**Spec Path**: \`.wavemill/context/${subsystem.subsystemId}.md\`\n\n`;
+
+    for (const section of subsystem.relevantSections) {
+      context += `**${section.section}**:\n`;
+      // Truncate long sections to stay within token budget
+      const truncated = section.content.substring(0, 500);
+      context += truncated;
+      if (section.content.length > 500) context += '...';
+      context += '\n\n';
+    }
+
+    context += '---\n\n';
+  }
+
+  return context;
+}
+
+// Format knowledge gap warning when no subsystem specs match
+function formatKnowledgeGapWarning(): string {
+  return `
+## Subsystem Specifications
+
+⚠️ **Knowledge Gap Detected**: No subsystem specs found for this issue.
+
+This may indicate:
+- A new subsystem is being introduced
+- Existing subsystem specs are incomplete
+- The issue description lacks file/pattern references
+
+**Recommendation**: After implementing this issue, run:
+\`\`\`bash
+wavemill context init --force
+\`\`\`
+
+This will create or update subsystem specs, enabling "persistent downstream
+acceleration" for future tasks (per Codified Context paper, Case Study 3).
+
+---
+`;
+}
+
 // Gather all codebase context
-async function gatherCodebaseContext(repoPath: string, issueTitle: string): Promise<string> {
+async function gatherCodebaseContext(repoPath: string, issueTitle: string, issueDescription: string = ''): Promise<string> {
   console.log('Gathering codebase context...');
 
-  const [dirTree, keyFiles, gitActivity, relevantFiles] = await Promise.all([
+  const [dirTree, keyFiles, gitActivity, relevantFiles, subsystemContext] = await Promise.all([
     getDirectoryTree(repoPath),
     getKeyFilesReference(repoPath),
     Promise.resolve(getRecentGitActivity(repoPath)),
     findRelevantFiles(repoPath, issueTitle),
+    gatherSubsystemContext(repoPath, issueDescription, issueTitle),
   ]);
 
   return `
@@ -298,6 +386,8 @@ ${dirTree}
 
 ## Key Files & Conventions
 ${keyFiles}
+
+${subsystemContext}
 
 ## Recent Git Activity
 \`\`\`
@@ -490,7 +580,7 @@ Environment Variables:
     const issueContext = formatIssueContext(issue);
 
     // Gather codebase context
-    const codebaseContext = await gatherCodebaseContext(repoPath, issue.title);
+    const codebaseContext = await gatherCodebaseContext(repoPath, issue.title, issue.description || '');
 
     // Check for subsystem drift before expansion
     await checkSubsystemDrift(repoPath, issue.description || '');
