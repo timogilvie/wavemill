@@ -53,5 +53,35 @@
     },
     "llmProvider": "openai",
     "llmModel": "gpt-4o-mini"
+  },
+  "permissions": {
+    "autoApprovePatterns": [
+      "find *",
+      "ls *",
+      "cat *",
+      "head *",
+      "tail *",
+      "wc *",
+      "git status*",
+      "git log*",
+      "git show*",
+      "git diff*",
+      "git branch --list*",
+      "git branch -l*",
+      "git worktree list*",
+      "gh pr view*",
+      "gh pr list*",
+      "gh pr status*",
+      "gh issue view*",
+      "gh issue list*",
+      "grep *",
+      "rg *",
+      "npm list*",
+      "npm ls*"
+    ],
+    "worktreeMode": {
+      "enabled": true,
+      "autoApproveReadOnly": true
+    }
   }
 }

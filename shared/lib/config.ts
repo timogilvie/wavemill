@@ -126,6 +126,16 @@ export interface LinearConfig {
   project?: string;
 }
 
+export interface WorktreeModeConfig {
+  enabled?: boolean;
+  autoApproveReadOnly?: boolean;
+}
+
+export interface PermissionsConfig {
+  autoApprovePatterns?: string[];
+  worktreeMode?: WorktreeModeConfig;
+}
+
 export interface WavemillConfig {
   linear?: LinearConfig;
   mill?: MillConfig;
@@ -138,6 +148,7 @@ export interface WavemillConfig {
   constraints?: ConstraintsConfig;
   ui?: UiConfig;
   review?: ReviewConfig;
+  permissions?: PermissionsConfig;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -431,4 +442,12 @@ export function getValidationConfig(repoDir?: string): ValidationConfig {
  */
 export function getPlanConfig(repoDir?: string): PlanConfig {
   return loadWavemillConfig(repoDir).plan || {};
+}
+
+/**
+ * Get the permissions config section.
+ * Returns empty object if not configured.
+ */
+export function getPermissionsConfig(repoDir?: string): PermissionsConfig {
+  return loadWavemillConfig(repoDir).permissions || {};
 }

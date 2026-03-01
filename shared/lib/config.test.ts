@@ -21,6 +21,7 @@ import {
   getEvalConfig,
   getMillConfig,
   getUiConfig,
+  getPermissionsConfig,
 } from './config.ts';
 
 // ────────────────────────────────────────────────────────────────
@@ -470,7 +471,8 @@ test('all top-level sections can coexist', () => {
       validation: { enabled: true },
       constraints: { enabled: false },
       ui: { visualVerification: true },
-      review: { maxIterations: 3 }
+      review: { maxIterations: 3 },
+      permissions: { autoApprovePatterns: ['git status*'], worktreeMode: { enabled: true } }
     }));
 
     const config = loadWavemillConfig(tmp);
@@ -485,6 +487,30 @@ test('all top-level sections can coexist', () => {
     assert.equal(config.constraints?.enabled, false);
     assert.equal(config.ui?.visualVerification, true);
     assert.equal(config.review?.maxIterations, 3);
+    assert.equal(config.permissions?.autoApprovePatterns?.[0], 'git status*');
+    assert.equal(config.permissions?.worktreeMode?.enabled, true);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('getPermissionsConfig returns permissions section', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      permissions: {
+        autoApprovePatterns: ['git status*', 'gh pr view*', 'ls *'],
+        worktreeMode: { enabled: true, autoApproveReadOnly: true }
+      }
+    }));
+
+    const permissionsConfig = getPermissionsConfig(tmp);
+    assert.equal(permissionsConfig.autoApprovePatterns?.length, 3);
+    assert.equal(permissionsConfig.autoApprovePatterns?.[0], 'git status*');
+    assert.equal(permissionsConfig.autoApprovePatterns?.[1], 'gh pr view*');
+    assert.equal(permissionsConfig.worktreeMode?.enabled, true);
+    assert.equal(permissionsConfig.worktreeMode?.autoApproveReadOnly, true);
   } finally {
     cleanUp(tmp);
   }

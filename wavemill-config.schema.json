@@ -426,6 +426,36 @@
         }
       },
       "additionalProperties": false
+    },
+    "permissions": {
+      "type": "object",
+      "description": "Permission settings for agent tool usage. Configures which commands can be auto-approved without user confirmation.",
+      "properties": {
+        "autoApprovePatterns": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Command patterns that are auto-approved without user confirmation. Supports glob patterns (e.g., 'git status*', 'gh pr view*'). Patterns are matched against the full command string."
+        },
+        "worktreeMode": {
+          "type": "object",
+          "description": "Special permission settings when working in isolated git worktrees.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Enable relaxed permissions when running in a git worktree. When true, read-only commands are more likely to be auto-approved."
+            },
+            "autoApproveReadOnly": {
+              "type": "boolean",
+              "default": true,
+              "description": "Auto-approve read-only commands in worktrees without user confirmation. Only applies when worktreeMode.enabled is true."
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false
