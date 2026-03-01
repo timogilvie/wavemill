@@ -73,6 +73,50 @@ Settings are loaded in layers (later wins):
 
 See `wavemill-config.schema.json` for the full schema.
 
+### Permission Configuration (Reduce Confirmation Prompts)
+
+When working in worktrees, you can configure auto-approval for read-only commands to reduce friction:
+
+**Quick setup:**
+
+1. Add to `.wavemill-config.json`:
+```json
+{
+  "permissions": {
+    "autoApprovePatterns": [
+      "git status*",
+      "gh pr view*",
+      "find *",
+      "ls *",
+      "cat *"
+    ],
+    "worktreeMode": {
+      "enabled": true,
+      "autoApproveReadOnly": true
+    }
+  }
+}
+```
+
+2. Generate agent-specific settings:
+```bash
+# For Claude Code
+npx tsx tools/generate-claude-permissions.ts
+
+# For Codex
+npx tsx tools/generate-codex-permissions.ts
+```
+
+3. Apply settings to your agent (see [Worktree Auto-Approve Guide](docs/worktree-auto-approve.md))
+
+**Benefits:**
+- Read-only commands (`git status`, `gh pr view`, `find`, etc.) auto-approve
+- Speeds up autonomous workflows
+- Maintains safety - destructive commands still require confirmation
+- Works with both Claude Code and Codex
+
+**Full documentation:** [docs/permissions.md](docs/permissions.md)
+
 ## Claude/Codex Commands Setup (Optional)
 
 For traditional slash commands in Claude/Codex:
