@@ -20,6 +20,7 @@ import {
   isRouterEnabled,
 } from '../shared/lib/model-router.ts';
 import type { ModelRecommendation } from '../shared/lib/model-router.ts';
+import { CYAN, GREEN, YELLOW, RED, BOLD, DIM, NC } from '../shared/lib/colors.ts';
 
 // ── Argument Parsing ─────────────────────────────────────────────────────────
 
@@ -78,14 +79,6 @@ Examples:
 // ── Output Formatting ────────────────────────────────────────────────────────
 
 function formatRecommendation(rec: ModelRecommendation): string {
-  const CYAN = '\x1b[36m';
-  const GREEN = '\x1b[32m';
-  const YELLOW = '\x1b[33m';
-  const RED = '\x1b[31m';
-  const BOLD = '\x1b[1m';
-  const DIM = '\x1b[2m';
-  const NC = '\x1b[0m';
-
   const SEP = '\u2550'.repeat(50);
   const lines: string[] = [];
 

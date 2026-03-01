@@ -15,6 +15,7 @@
 import { getPullRequest, getPullRequestDiff } from '../shared/lib/github.js';
 import { findTaskPacket, findPlan, gatherDesignContext, analyzeDiffMetadata, type ReviewContext } from '../shared/lib/review-context-gatherer.ts';
 import { runReview, type ReviewResult, type ReviewFinding } from '../shared/lib/review-engine.ts';
+import { CYAN, GREEN, YELLOW, RED, BOLD, DIM, NC } from '../shared/lib/colors.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Constants
@@ -113,9 +114,9 @@ function displayResults(result: ReviewResult, prNumber: number, prTitle: string)
 
   // Display verdict
   if (result.verdict === 'ready') {
-    console.log('✅ \x1b[32mREADY TO MERGE\x1b[0m - No blocking issues found\n');
+    console.log(`✅ ${GREEN}READY TO MERGE${NC} - No blocking issues found\n`);
   } else {
-    console.log('❌ \x1b[31mNOT READY\x1b[0m - Blocking issues must be addressed\n');
+    console.log(`❌ ${RED}NOT READY${NC} - Blocking issues must be addressed\n`);
   }
 
   // Separate plan compliance findings from other code findings
@@ -134,51 +135,51 @@ function displayResults(result: ReviewResult, prNumber: number, prTitle: string)
   const totalWarnings = codeWarnings.length + planWarnings.length + uiWarnings.length;
 
   // Display summary
-  console.log('📊 \x1b[1mSummary\x1b[0m');
+  console.log(`📊 ${BOLD}Summary${NC}`);
   console.log(`   Blockers: ${totalBlockers}`);
   console.log(`   Warnings: ${totalWarnings}`);
   console.log('');
 
   // Display code review findings (excluding plan compliance)
   if (otherCodeFindings.length > 0) {
-    console.log('💻 \x1b[1mCode Review Findings\x1b[0m\n');
+    console.log(`💻 ${BOLD}Code Review Findings${NC}\n`);
 
     if (codeBlockers.length > 0) {
-      console.log('  \x1b[31m🚫 BLOCKERS\x1b[0m\n');
+      console.log(`  ${RED}🚫 BLOCKERS${NC}\n`);
       codeBlockers.forEach((finding, idx) => {
-        console.log(`  ${idx + 1}. \x1b[31m${finding.location}\x1b[0m [${finding.category}]`);
+        console.log(`  ${idx + 1}. ${RED}${finding.location}${NC} [${finding.category}]`);
         console.log(`     ${finding.description}\n`);
       });
     }
 
     if (codeWarnings.length > 0) {
-      console.log('  \x1b[33m⚠️  WARNINGS\x1b[0m\n');
+      console.log(`  ${YELLOW}⚠️  WARNINGS${NC}\n`);
       codeWarnings.forEach((finding, idx) => {
-        console.log(`  ${idx + 1}. \x1b[33m${finding.location}\x1b[0m [${finding.category}]`);
+        console.log(`  ${idx + 1}. ${YELLOW}${finding.location}${NC} [${finding.category}]`);
         console.log(`     ${finding.description}\n`);
       });
     }
   } else {
-    console.log('💻 \x1b[1mCode Review\x1b[0m');
-    console.log('   \x1b[32m✓\x1b[0m No issues found\n');
+    console.log(`💻 ${BOLD}Code Review${NC}`);
+    console.log(`   ${GREEN}✓${NC} No issues found\n`);
   }
 
   // Display plan compliance findings (if present)
   if (planComplianceFindings.length > 0) {
-    console.log('📋 \x1b[1mPlan Compliance\x1b[0m\n');
+    console.log(`📋 ${BOLD}Plan Compliance${NC}\n`);
 
     if (planBlockers.length > 0) {
-      console.log('  \x1b[31m🚫 BLOCKERS\x1b[0m\n');
+      console.log(`  ${RED}🚫 BLOCKERS${NC}\n`);
       planBlockers.forEach((finding, idx) => {
-        console.log(`  ${idx + 1}. \x1b[31m${finding.location}\x1b[0m`);
+        console.log(`  ${idx + 1}. ${RED}${finding.location}${NC}`);
         console.log(`     ${finding.description}\n`);
       });
     }
 
     if (planWarnings.length > 0) {
-      console.log('  \x1b[33m⚠️  WARNINGS\x1b[0m\n');
+      console.log(`  ${YELLOW}⚠️  WARNINGS${NC}\n`);
       planWarnings.forEach((finding, idx) => {
-        console.log(`  ${idx + 1}. \x1b[33m${finding.location}\x1b[0m`);
+        console.log(`  ${idx + 1}. ${YELLOW}${finding.location}${NC}`);
         console.log(`     ${finding.description}\n`);
       });
     }
@@ -186,20 +187,20 @@ function displayResults(result: ReviewResult, prNumber: number, prTitle: string)
 
   // Display UI findings (if present)
   if (result.uiFindings && result.uiFindings.length > 0) {
-    console.log('🎨 \x1b[1mUI Review Findings\x1b[0m\n');
+    console.log(`🎨 ${BOLD}UI Review Findings${NC}\n`);
 
     if (uiBlockers.length > 0) {
-      console.log('  \x1b[31m🚫 BLOCKERS\x1b[0m\n');
+      console.log(`  ${RED}🚫 BLOCKERS${NC}\n`);
       uiBlockers.forEach((finding, idx) => {
-        console.log(`  ${idx + 1}. \x1b[31m${finding.location}\x1b[0m [${finding.category}]`);
+        console.log(`  ${idx + 1}. ${RED}${finding.location}${NC} [${finding.category}]`);
         console.log(`     ${finding.description}\n`);
       });
     }
 
     if (uiWarnings.length > 0) {
-      console.log('  \x1b[33m⚠️  WARNINGS\x1b[0m\n');
+      console.log(`  ${YELLOW}⚠️  WARNINGS${NC}\n`);
       uiWarnings.forEach((finding, idx) => {
-        console.log(`  ${idx + 1}. \x1b[33m${finding.location}\x1b[0m [${finding.category}]`);
+        console.log(`  ${idx + 1}. ${YELLOW}${finding.location}${NC} [${finding.category}]`);
         console.log(`     ${finding.description}\n`);
       });
     }

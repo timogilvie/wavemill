@@ -41,6 +41,7 @@ import {
   collectDeliveryOutcome,
 } from '../shared/lib/outcome-collectors.ts';
 import type { Outcomes } from '../shared/lib/eval-schema.ts';
+import { CYAN, GREEN, YELLOW, RED, BOLD, DIM, NC } from '../shared/lib/colors.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -233,14 +234,6 @@ function gatherContext(args) {
 // ── Output Formatting ────────────────────────────────────────────────────────
 
 function formatEvalRecord(record) {
-  const CYAN = '\x1b[36m';
-  const GREEN = '\x1b[32m';
-  const YELLOW = '\x1b[33m';
-  const RED = '\x1b[31m';
-  const BOLD = '\x1b[1m';
-  const DIM = '\x1b[2m';
-  const NC = '\x1b[0m';
-
   const scoreColor = (score) => {
     if (score >= 0.8) return GREEN;
     if (score >= 0.5) return YELLOW;
