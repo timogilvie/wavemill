@@ -1,17 +1,31 @@
 #!/usr/bin/env -S npx tsx
 import '../shared/lib/env.js';
+import { runTool } from '../shared/lib/tool-runner.ts';
 import { getIssueForLabeling, getOrCreateLabel, addLabelsToIssue } from '../shared/lib/linear.js';
 
-async function main(): Promise<void> {
-  const identifier: string | undefined = process.argv[2];
-  const labelName: string | undefined = process.argv[3];
+runTool({
+  name: 'add-issue-label',
+  description: 'Add a label to a Linear issue',
+  options: {
+    help: { type: 'boolean', short: 'h', description: 'Show help' },
+  },
+  positional: {
+    name: 'identifier labelName',
+    description: 'Issue identifier (e.g., HOK-123) and label name',
+    required: true,
+  },
+  examples: [
+    'npx tsx tools/add-issue-label.ts HOK-671 "Bug"',
+    'npx tsx tools/add-issue-label.ts HOK-123 "Feature"',
+  ],
+  async run({ positional }) {
+    const [identifier, labelName] = positional;
 
-  if (!identifier || !labelName) {
-    console.error('Usage: npx tsx add-issue-label.ts HOK-671 "Bug"');
-    process.exit(1);
-  }
+    if (!identifier || !labelName) {
+      console.error('Error: Both issue identifier and label name are required');
+      process.exit(1);
+    }
 
-  try {
     // Get the issue to find its team ID
     const issue = await getIssueForLabeling(identifier);
     if (!issue) {
@@ -47,11 +61,5 @@ async function main(): Promise<void> {
       console.error(`Failed to add label to ${identifier}`);
       process.exit(1);
     }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error('Error:', message);
-    process.exit(1);
-  }
-}
-
-main();
+  },
+});
