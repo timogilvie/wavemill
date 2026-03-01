@@ -1085,6 +1085,43 @@ check_plan_approved() {
   return 1
 }
 
+cleanup_completed_task() {
+  local issue="$1"
+  local slug="$2"
+  local completion_reason="${3:-}"
+
+  # Kill tmux window (unconditional - no race condition)
+  local win="$issue-$slug"
+  tmux kill-window -t "$SESSION:$win" 2>/dev/null || true
+  log "  ✓ Closed window: $win"
+
+  # Remove worktree
+  local wt_dir="${WORKTREE_ROOT}/${slug}"
+  if [[ -d "$wt_dir" ]]; then
+    git -C "$REPO_DIR" worktree remove "$wt_dir" --force 2>/dev/null || true
+    log "  ✓ Removed worktree: $wt_dir"
+  fi
+
+  # Delete branch
+  local task_branch="task/${slug}"
+  if git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/$task_branch" 2>/dev/null; then
+    git -C "$REPO_DIR" branch -D "$task_branch" 2>/dev/null || true
+    log "  ✓ Deleted branch: $task_branch"
+  fi
+
+  # Clean up state
+  git -C "$REPO_DIR" worktree prune 2>/dev/null || true
+  remove_task_state "$issue"
+  CLEANED["$issue"]=1
+
+  # Log completion with optional reason
+  if [[ -n "$completion_reason" ]]; then
+    log "  ✓ Complete: $issue ($completion_reason)"
+  else
+    log "  ✓ Complete: $issue"
+  fi
+}
+
 
 # ============================================================================
 # GIT/GITHUB FUNCTIONS
