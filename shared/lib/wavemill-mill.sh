@@ -1278,10 +1278,19 @@ launch_task() {
         rec_insufficient=$(echo "$suggestion" | jq -r '.insufficientData // false' 2>/dev/null)
         rec_confidence=$(echo "$suggestion" | jq -r '.confidence // empty' 2>/dev/null)
 
+        # Always use recommended agent if provided (even when data is insufficient)
+        # The router correctly maps default models to their agents
+        if [[ -n "$rec_agent" ]]; then
+          task_agent_cmd="$rec_agent"
+        fi
+
+        # Only gate model selection on data sufficiency
         if [[ "$rec_insufficient" != "true" ]] && [[ -n "$rec_model" ]]; then
           task_model="$rec_model"
-          [[ -n "$rec_agent" ]] && task_agent_cmd="$rec_agent"
           log "  Router: $task_agent_cmd --model $task_model (confidence: $rec_confidence)"
+        elif [[ -n "$rec_model" ]]; then
+          # Insufficient data - using default model but still log it
+          log "  Router: $task_agent_cmd --model $rec_model (insufficient data, using default)"
         fi
       fi
     fi

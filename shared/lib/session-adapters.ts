@@ -407,6 +407,52 @@ export class CodexSessionAdapter implements SessionAdapter {
 }
 
 // ────────────────────────────────────────────────────────────────
+// Auto-detection
+// ────────────────────────────────────────────────────────────────
+
+/**
+ * Detect which agent was actually used by checking for session files.
+ *
+ * This is a fallback mechanism for when the recorded agent type might be
+ * incorrect (e.g., due to bugs in agent assignment logic).
+ *
+ * @returns 'claude' | 'codex' | null
+ */
+export function detectAgentType(opts: SessionScanOptions): AgentType | null {
+  const debug = process.env.DEBUG_COST === '1' || process.env.DEBUG_COST === 'true';
+
+  const claudeAdapter = new ClaudeSessionAdapter();
+  const codexAdapter = new CodexSessionAdapter();
+
+  const claudeResult = claudeAdapter.scan(opts);
+  const codexResult = codexAdapter.scan(opts);
+
+  if (claudeResult && !codexResult) {
+    if (debug) console.log('[DEBUG_COST] Auto-detected agent: claude');
+    return 'claude';
+  }
+  if (codexResult && !claudeResult) {
+    if (debug) console.log('[DEBUG_COST] Auto-detected agent: codex');
+    return 'codex';
+  }
+  if (claudeResult && codexResult) {
+    // Both exist - pick the one with more turns
+    const detected = claudeResult.turnCount >= codexResult.turnCount ? 'claude' : 'codex';
+    if (debug) {
+      console.log(
+        `[DEBUG_COST] Both agents have sessions - choosing ${detected} ` +
+        `(${detected === 'claude' ? claudeResult.turnCount : codexResult.turnCount} turns ` +
+        `vs ${detected === 'claude' ? codexResult.turnCount : claudeResult.turnCount})`
+      );
+    }
+    return detected;
+  }
+
+  if (debug) console.log('[DEBUG_COST] No sessions found for either agent');
+  return null;
+}
+
+// ────────────────────────────────────────────────────────────────
 // Factory
 // ────────────────────────────────────────────────────────────────
 
