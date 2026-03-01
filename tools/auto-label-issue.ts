@@ -165,7 +165,7 @@ async function autoLabelIssue(identifier: string, options: { dryRun?: boolean; i
             color: '#4A90E2',
             description: 'Auto-detected component from file paths'
           },
-          availableLabels  // Pass pre-fetched labels to eliminate N+1 calls
+          availableLabels  // Pass labels cache (will be mutated to include new labels)
         );
         labelMap.set(componentLabel, newLabel.id);
         createdLabels.push(componentLabel);

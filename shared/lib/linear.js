@@ -461,9 +461,18 @@ export async function addLabelsToIssue(issueId, labelIds) {
   return data.issueUpdate;
 }
 
-export async function getOrCreateLabel(name, teamId, options = {}, existingLabels = null) {
+/**
+ * Get existing label or create a new one
+ * @param {string} name - Label name
+ * @param {string} teamId - Team ID
+ * @param {Object} options - Label options (color, description)
+ * @param {Array|null} labelsCache - Optional pre-fetched labels array.
+ *                                    SIDE EFFECT: Newly created labels will be pushed to this array.
+ * @returns {Promise<Object>} The label object
+ */
+export async function getOrCreateLabel(name, teamId, options = {}, labelsCache = null) {
   // Use pre-fetched labels if provided, otherwise fetch
-  const labels = existingLabels || await getLabels(teamId);
+  const labels = labelsCache || await getLabels(teamId);
   const existing = labels.find(l => l.name === name);
 
   if (existing) {
@@ -473,9 +482,9 @@ export async function getOrCreateLabel(name, teamId, options = {}, existingLabel
   // Create new label
   const newLabel = await createLabel(name, teamId, options);
 
-  // Add to cache if labels were pre-fetched (maintain cache coherence)
-  if (existingLabels && newLabel) {
-    existingLabels.push(newLabel);
+  // Maintain cache coherence: add newly created label to the cache
+  if (labelsCache && newLabel) {
+    labelsCache.push(newLabel);
   }
 
   return newLabel;
