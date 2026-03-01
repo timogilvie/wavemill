@@ -15,8 +15,8 @@ import { dirname } from 'node:path';
 import {
   type ReviewContext,
   type DesignContext,
-} from './review-context-gatherer.js';
-import { callClaude, parseJsonFromLLM } from './llm-cli.js';
+} from './review-context-gatherer.ts';
+import { callClaude, parseJsonFromLLM } from './llm-cli.ts';
 import { loadWavemillConfig } from './config.ts';
 
 const __filename = fileURLToPath(import.meta.url);

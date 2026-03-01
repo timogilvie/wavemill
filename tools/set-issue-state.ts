@@ -1,9 +1,7 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S npx tsx
 // @ts-nocheck
 import { setIssueState } from '../shared/lib/linear.js';
-import dotenv from 'dotenv';
-
-dotenv.config({ quiet: true });
+import '../shared/lib/env.js';
 
 async function main() {
   const identifier = process.argv[2];

@@ -11,9 +11,9 @@
  *   npx tsx tools/context-check.ts [repo-path] [options]
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
-import { join, resolve } from 'path';
-import { execSync } from 'child_process';
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { execSync } from "node:child_process";
 import { detectSubsystems } from '../shared/lib/subsystem-detector.ts';
 import type { Subsystem } from '../shared/lib/subsystem-detector.ts';
 

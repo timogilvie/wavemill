@@ -4,7 +4,7 @@
  * Run with: npx tsx shared/lib/constraint-parser.test.ts
  */
 
-import { parseConstraints } from './constraint-parser.js';
+import { parseConstraints } from './constraint-parser.ts';
 
 function assert(condition: boolean, message: string) {
   if (!condition) {

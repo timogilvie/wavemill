@@ -12,11 +12,11 @@
  *   npx tsx tools/eval-workflow.ts --issue HOK-123 --pr 456
  */
 
-import dotenv from 'dotenv';
-import { execSync } from 'child_process';
-import { readFileSync, existsSync } from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import '../shared/lib/env.js';
+import { execSync } from "node:child_process";
+import { readFileSync, existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { evaluateTask } from '../shared/lib/eval.js';
 import { escapeShellArg, execShellCommand } from '../shared/lib/shell-utils.ts';
 import { getScoreBand } from '../shared/lib/eval-schema.ts';
@@ -42,8 +42,6 @@ import {
 } from '../shared/lib/outcome-collectors.ts';
 import type { Outcomes } from '../shared/lib/eval-schema.ts';
 import { CYAN, GREEN, YELLOW, RED, BOLD, DIM, NC } from '../shared/lib/colors.ts';
-
-dotenv.config({ quiet: true });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

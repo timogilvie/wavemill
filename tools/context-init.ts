@@ -13,8 +13,8 @@
  *   npx tsx tools/context-init.ts --force [repo-path]
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
-import { join, resolve } from 'path';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { detectSubsystems } from '../shared/lib/subsystem-detector.ts';
 import { writeSubsystemSpecs } from '../shared/lib/subsystem-spec-generator.ts';
 

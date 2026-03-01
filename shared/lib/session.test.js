@@ -1,8 +1,8 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile } from 'fs/promises';
-import { existsSync } from 'fs';
-import { join } from 'path';
+import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { tmpdir } from 'os';
 import {
   createSession,

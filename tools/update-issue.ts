@@ -1,9 +1,7 @@
 // @ts-nocheck
+import '../shared/lib/env.js';
 import { getIssueBasic, updateIssue } from '../shared/lib/linear.js';
-import dotenv from 'dotenv';
-import fs from 'fs/promises';
-
-dotenv.config({ quiet: true });
+import fs from "node:fs/promises";
 
 async function main() {
   const args = process.argv.slice(2);

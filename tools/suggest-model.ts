@@ -13,7 +13,7 @@
  *   npx tsx tools/suggest-model.ts --json "prompt text"
  */
 
-import { readFileSync } from 'fs';
+import { readFileSync } from "node:fs";
 import {
   recommendModel,
   loadRouterConfig,

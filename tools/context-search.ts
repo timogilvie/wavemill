@@ -9,8 +9,8 @@
  *   npx tsx tools/context-search.ts <query> [repo-path] [options]
  */
 
-import { existsSync, readdirSync, readFileSync } from 'fs';
-import { join, resolve } from 'path';
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 
 // ────────────────────────────────────────────────────────────────
 // CLI Argument Parsing

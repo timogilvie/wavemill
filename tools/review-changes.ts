@@ -22,7 +22,7 @@
  */
 
 import { resolve } from 'node:path';
-import { reviewChanges, type ReviewResult } from '../shared/lib/review-runner.js';
+import { reviewChanges, type ReviewResult } from '../shared/lib/review-runner.ts';
 import { CYAN, GREEN, YELLOW, RED, BOLD, DIM, NC } from '../shared/lib/colors.ts';
 
 // ────────────────────────────────────────────────────────────────

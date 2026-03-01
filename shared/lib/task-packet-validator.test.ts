@@ -9,7 +9,7 @@ import {
   validateValidationSteps,
   validateScopeBoundaries,
   validateAcceptanceCriteria,
-} from './task-packet-validator.js';
+} from './task-packet-validator.ts';
 
 function assert(condition: boolean, message: string) {
   if (!condition) {

@@ -9,7 +9,7 @@
 import { execSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { loadConstraintRules, type LoadedConstraintRules } from './constraint-storage.js';
+import { loadConstraintRules, type LoadedConstraintRules } from './constraint-storage.ts';
 
 export interface ValidationResult {
   issueId: string;

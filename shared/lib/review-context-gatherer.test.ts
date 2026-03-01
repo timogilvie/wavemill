@@ -4,7 +4,7 @@
  * Run with: npx tsx shared/lib/review-context-gatherer.test.ts
  */
 
-import { analyzeDiffMetadata } from './review-context-gatherer.js';
+import { analyzeDiffMetadata } from './review-context-gatherer.ts';
 
 function assert(condition: boolean, message: string) {
   if (!condition) {

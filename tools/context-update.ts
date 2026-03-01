@@ -9,11 +9,11 @@
  *   npx tsx tools/context-update.ts <subsystem-id> [repo-path] [options]
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { join, resolve, dirname } from 'path';
-import { fileURLToPath } from 'url';
-import { execSync } from 'child_process';
-import { callClaude } from '../shared/lib/llm-cli.js';
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { execSync } from "node:child_process";
+import { callClaude } from '../shared/lib/llm-cli.ts';
 import type { Subsystem } from '../shared/lib/subsystem-detector.ts';
 
 const __filename = fileURLToPath(import.meta.url);
