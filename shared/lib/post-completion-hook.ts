@@ -28,6 +28,7 @@ import { callClaude } from './llm-cli.js';
 import { loadWavemillConfig } from './config.ts';
 import { detectSubsystems } from './subsystem-detector.ts';
 import { updateAffectedSubsystems } from './subsystem-updater.ts';
+import { detectAffectedSubsystems } from './subsystem-mapper.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -466,7 +467,6 @@ async function updateSubsystemSpecs(
     const issueTitle = titleMatch ? titleMatch[1] : 'Unknown';
 
     // Detect affected subsystems before updating
-    const { detectAffectedSubsystems } = await import('./subsystem-mapper.ts');
     const affectedSubsystems = detectAffectedSubsystems(prDiff, subsystems, repoDir);
 
     // Knowledge gap detection: warn if PR has significant changes but no subsystems matched
