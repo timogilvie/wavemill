@@ -1,5 +1,4 @@
 #!/usr/bin/env -S npx tsx
-// @ts-nocheck
 
 /**
  * Backfill workflow cost data into existing eval records.

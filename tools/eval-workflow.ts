@@ -1,5 +1,4 @@
 #!/usr/bin/env -S npx tsx
-// @ts-nocheck
 
 /**
  * Eval Workflow Tool
