@@ -1,5 +1,4 @@
 #!/usr/bin/env -S npx tsx
-// @ts-nocheck
 import '../shared/lib/env.js';
 import { getBacklogForScoring } from '../shared/lib/linear.js';
 
@@ -11,14 +10,15 @@ setTimeout(() => {
   process.exit(1);
 }, PROCESS_TIMEOUT_MS).unref();
 
-async function main() {
-  const projectName = process.argv[2] || null;
+async function main(): Promise<void> {
+  const projectName: string | null = process.argv[2] || null;
 
   try {
     const backlog = await getBacklogForScoring(projectName);
     console.log(JSON.stringify(backlog, null, 2));
   } catch (error) {
-    console.error('Error:', error.message);
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('Error:', message);
     process.exit(1);
   }
 }

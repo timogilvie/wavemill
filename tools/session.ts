@@ -1,5 +1,4 @@
 #!/usr/bin/env -S npx tsx
-// @ts-nocheck
 
 /**
  * Session Management CLI Tool
@@ -22,8 +21,13 @@ import {
   getSession,
 } from '../shared/lib/session.js';
 
-function parseArgs(argv) {
-  const args = { _: [] };
+interface ParsedArgs {
+  _: string[];
+  [key: string]: string | boolean | string[];
+}
+
+function parseArgs(argv: string[]): ParsedArgs {
+  const args: ParsedArgs = { _: [] };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i].startsWith('--') && argv[i + 1] && !argv[i + 1].startsWith('--')) {
       const key = argv[i].slice(2);
@@ -38,7 +42,7 @@ function parseArgs(argv) {
   return args;
 }
 
-function showHelp() {
+function showHelp(): void {
   console.log(`
 Session Management Tool — Track workflow execution metadata
 
@@ -81,9 +85,9 @@ Examples:
 `);
 }
 
-async function main() {
+async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
-  const subcommand = rawArgs[0];
+  const subcommand: string | undefined = rawArgs[0];
   const args = parseArgs(rawArgs.slice(1));
 
   if (!subcommand || subcommand === '--help' || subcommand === '-h') {
@@ -95,12 +99,12 @@ async function main() {
     switch (subcommand) {
       case 'start': {
         const sessionId = await createSession({
-          workflowType: args.workflow || 'feature',
-          prompt: args.prompt || '',
-          model: args.model || process.env.CLAUDE_MODEL || 'unknown',
-          modelVersion: args['model-version'] || undefined,
-          issueId: args.issue || undefined,
-          repoDir: args['repo-dir'] || undefined,
+          workflowType: (args.workflow as string) || 'feature',
+          prompt: (args.prompt as string) || '',
+          model: (args.model as string) || process.env.CLAUDE_MODEL || 'unknown',
+          modelVersion: args['model-version'] as string | undefined,
+          issueId: args.issue as string | undefined,
+          repoDir: args['repo-dir'] as string | undefined,
         });
         if (sessionId) {
           // Print only the sessionId to stdout for capture by workflows
@@ -117,10 +121,10 @@ async function main() {
           console.warn('[session] Usage: session.ts update <sessionId> [--pr URL] [--issue ID]');
           return;
         }
-        const updates = {};
-        if (args.pr) updates.prIdentifier = args.pr;
-        if (args.issue) updates.issueId = args.issue;
-        await updateSession(sessionId, updates, args['repo-dir']);
+        const updates: Record<string, string> = {};
+        if (args.pr) updates.prIdentifier = args.pr as string;
+        if (args.issue) updates.issueId = args.issue as string;
+        await updateSession(sessionId, updates, args['repo-dir'] as string | undefined);
         break;
       }
 
@@ -131,12 +135,12 @@ async function main() {
           return;
         }
         await completeSession(sessionId, {
-          status: args.status || 'completed',
+          status: (args.status as string) || 'completed',
           executionTimeMs: args['execution-time'] ? Number(args['execution-time']) : undefined,
           userWaitTimeMs: args['user-wait-time'] ? Number(args['user-wait-time']) : undefined,
-          prIdentifier: args.pr || undefined,
-          error: args.error || undefined,
-          repoDir: args['repo-dir'] || undefined,
+          prIdentifier: args.pr as string | undefined,
+          error: args.error as string | undefined,
+          repoDir: args['repo-dir'] as string | undefined,
         });
         break;
       }
@@ -144,8 +148,8 @@ async function main() {
       case 'get': {
         const sessionId = args._[0];
         const session = sessionId
-          ? await getSession(sessionId, args['repo-dir'])
-          : await getLatestSession(args['repo-dir']);
+          ? await getSession(sessionId, args['repo-dir'] as string | undefined)
+          : await getLatestSession(args['repo-dir'] as string | undefined);
         if (session) {
           console.log(JSON.stringify(session, null, 2));
         } else {
@@ -160,7 +164,8 @@ async function main() {
     }
   } catch (err) {
     // Non-intrusive: warn but don't fail
-    console.warn(`[session] Error: ${err.message}`);
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[session] Error: ${message}`);
   }
 }
 

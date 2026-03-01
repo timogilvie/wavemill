@@ -1,5 +1,4 @@
 #!/usr/bin/env -S npx tsx
-// @ts-nocheck
 
 /**
  * Post-Completion Eval Hook — CLI wrapper
@@ -19,7 +18,7 @@ if (process.env.DEBUG_COST === '1' || process.argv.includes('--debug')) {
   process.stderr.write('[DEBUG_COST] run-eval-hook.ts loaded\n');
 }
 
-function parseArgs(argv: string[]) {
+function parseArgs(argv: string[]): Record<string, string> {
   const args: Record<string, string> = {};
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--issue' && argv[i + 1]) {
@@ -47,7 +46,7 @@ function parseArgs(argv: string[]) {
   return args;
 }
 
-function showHelp() {
+function showHelp(): void {
   console.log(`
 Post-Completion Eval Hook — Automatically evaluate a completed workflow
 
@@ -74,7 +73,7 @@ Notes:
 `);
 }
 
-async function main() {
+async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
 
   if (args.help) {
@@ -135,5 +134,6 @@ async function main() {
 
 main().catch((err) => {
   // Final safety net — never exit non-zero
-  console.warn(`Post-completion eval hook: unexpected error — ${err.message}`);
+  const message = err instanceof Error ? err.message : String(err);
+  console.warn(`Post-completion eval hook: unexpected error — ${message}`);
 });

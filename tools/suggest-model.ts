@@ -1,5 +1,4 @@
 #!/usr/bin/env -S npx tsx
-// @ts-nocheck
 
 /**
  * Suggest Model Tool
@@ -24,7 +23,7 @@ import { CYAN, GREEN, YELLOW, RED, BOLD, DIM, NC } from '../shared/lib/colors.ts
 
 // ── Argument Parsing ─────────────────────────────────────────────────────────
 
-function parseArgs(argv: string[]) {
+function parseArgs(argv: string[]): Record<string, string | boolean> {
   const args: Record<string, string | boolean> = {};
   const positional: string[] = [];
 
@@ -49,7 +48,7 @@ function parseArgs(argv: string[]) {
   return args;
 }
 
-function showHelp() {
+function showHelp(): void {
   console.log(`
 Suggest Model Tool — Recommend the best LLM based on historical eval data
 
@@ -141,7 +140,7 @@ function formatRecommendation(rec: ModelRecommendation): string {
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
-function main() {
+function main(): void {
   const args = parseArgs(process.argv.slice(2));
 
   if (args.help) {

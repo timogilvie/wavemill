@@ -1,4 +1,3 @@
-// @ts-nocheck
 import '../shared/lib/env.js';
 import { getBacklog, getProjects } from '../shared/lib/linear.js';
 import readline from "node:readline";
@@ -8,30 +7,30 @@ const rl = readline.createInterface({
   output: process.stdout
 });
 
-const question = (prompt) => {
+const question = (prompt: string): Promise<string> => {
   return new Promise((resolve) => {
     rl.question(prompt, resolve);
   });
 };
 
-async function selectProject() {
+async function selectProject(): Promise<string | null> {
   try {
     console.log('Fetching available projects...\n');
     const projects = await getProjects();
-    
+
     if (projects.length === 0) {
       console.log('No projects found.');
       return null;
     }
-    
+
     console.log('Available projects:');
     projects.forEach((project, index) => {
       console.log(`${index + 1}. ${project.name}${project.description ? ` - ${project.description}` : ''}`);
     });
-    
+
     const selection = await question('\nSelect a project by number: ');
     const index = parseInt(selection) - 1;
-    
+
     if (index >= 0 && index < projects.length) {
       return projects[index].name;
     } else {
@@ -39,12 +38,13 @@ async function selectProject() {
       return null;
     }
   } catch (error) {
-    console.error('Error in selectProject:', error.message);
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('Error in selectProject:', message);
     return null;
   }
 }
 
-async function displayBacklog(projectName) {
+async function displayBacklog(projectName: string | null): Promise<void> {
   try {
     const backlog = await getBacklog(projectName);
 
@@ -87,10 +87,10 @@ async function displayBacklog(projectName) {
   }
 }
 
-async function main() {
+async function main(): Promise<void> {
   // Get project name from command line argument
-  const projectName = process.argv[2];
-  
+  const projectName: string | undefined = process.argv[2];
+
   try {
     if (projectName) {
       // Use the provided project name - no need for readline

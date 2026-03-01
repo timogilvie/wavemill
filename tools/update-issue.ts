@@ -1,13 +1,12 @@
-// @ts-nocheck
 import '../shared/lib/env.js';
 import { getIssueBasic, updateIssue } from '../shared/lib/linear.js';
 import fs from "node:fs/promises";
 
-async function main() {
-  const args = process.argv.slice(2);
-  const identifier = args[0];
-  const fileIndex = args.indexOf('--file');
-  const filePath = fileIndex >= 0 ? args[fileIndex + 1] : null;
+async function main(): Promise<void> {
+  const args: string[] = process.argv.slice(2);
+  const identifier: string | undefined = args[0];
+  const fileIndex: number = args.indexOf('--file');
+  const filePath: string | undefined = fileIndex >= 0 ? args[fileIndex + 1] : undefined;
 
   if (!identifier || !filePath) {
     console.error('Usage: npx tsx update-issue.ts HOK-356 --file /tmp/expanded.md');
@@ -39,7 +38,8 @@ async function main() {
       process.exit(1);
     }
   } catch (error) {
-    console.error('Error:', error.message);
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('Error:', message);
     process.exit(1);
   }
 }
