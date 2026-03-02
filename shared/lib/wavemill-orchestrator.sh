@@ -116,7 +116,12 @@ for t in "${TASKS[@]}"; do
     MODEL_SUGGESTION_FILE="/tmp/${SESSION}-${ISSUE}-model-suggestion.json"
     TASK_AGENT_CMD="$AGENT_CMD"
     TASK_MODEL=""
-    if [[ "${AGENT_CMD_EXPLICIT:-}" != "true" ]] && [[ -f "$MODEL_SUGGESTION_FILE" ]]; then
+    if [[ -n "${FORCE_MODEL:-}" ]]; then
+      # FORCE_MODEL env var overrides the router entirely
+      TASK_MODEL="$FORCE_MODEL"
+      TASK_AGENT_CMD="$(agent_resolve_from_model "$FORCE_MODEL")"
+      echo "FORCE_MODEL: $ISSUE -> $TASK_AGENT_CMD --model $TASK_MODEL"
+    elif [[ "${AGENT_CMD_EXPLICIT:-}" != "true" ]] && [[ -f "$MODEL_SUGGESTION_FILE" ]]; then
       RECOMMENDED_MODEL=$(jq -r '.recommendedModel // empty' "$MODEL_SUGGESTION_FILE" 2>/dev/null)
       RECOMMENDED_AGENT=$(jq -r '.recommendedAgent // empty' "$MODEL_SUGGESTION_FILE" 2>/dev/null)
       MODEL_INSUFFICIENT=$(jq -r '.insufficientData // false' "$MODEL_SUGGESTION_FILE" 2>/dev/null)

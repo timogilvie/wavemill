@@ -6,6 +6,23 @@
 # Adding a new agent: add a case block in each function below.
 
 # ============================================================================
+# AGENT RESOLUTION
+# ============================================================================
+
+# Resolve the agent CLI command for a given model ID using prefix heuristics.
+# Mirrors the logic in shared/lib/model-router.ts resolveAgent().
+# Args: $1 = model ID (e.g. "claude-opus-4-6", "gpt-5.3-codex")
+# Prints: agent command name (e.g. "claude", "codex")
+agent_resolve_from_model() {
+  local model="$1"
+  case "$model" in
+    claude-*) echo "claude" ;;
+    gpt-*|o[0-9]*) echo "codex" ;;
+    *) echo "${AGENT_CMD:-claude}" ;;
+  esac
+}
+
+# ============================================================================
 # AGENT VALIDATION
 # ============================================================================
 

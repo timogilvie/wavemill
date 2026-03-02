@@ -872,7 +872,9 @@ fi
 
 
 # ── Phase 4: Model routing suggestions ─────────────────────────────────
-if [[ "${ROUTER_ENABLED:-true}" == "true" ]]; then
+if [[ -n "${FORCE_MODEL:-}" ]]; then
+  log "FORCE_MODEL=$FORCE_MODEL — skipping router"
+elif [[ "${ROUTER_ENABLED:-true}" == "true" ]]; then
   SUGGEST_TOOL="$TOOLS_DIR/suggest-model.ts"
   if [[ -f "$SUGGEST_TOOL" ]]; then
     log "Running model router..."
@@ -1387,7 +1389,11 @@ launch_task() {
   # ── Per-task model routing ──────────────────────────────────────────
   local task_agent_cmd="$AGENT_CMD"
   local task_model=""
-  if [[ "${AGENT_CMD_EXPLICIT:-}" != "true" ]]; then
+  if [[ -n "${FORCE_MODEL:-}" ]]; then
+    task_model="$FORCE_MODEL"
+    task_agent_cmd="$(agent_resolve_from_model "$FORCE_MODEL")"
+    log "  FORCE_MODEL: $task_agent_cmd --model $task_model"
+  elif [[ "${AGENT_CMD_EXPLICIT:-}" != "true" ]]; then
     local suggest_tool="$TOOLS_DIR/suggest-model.ts"
     if [[ "${ROUTER_ENABLED:-true}" == "true" ]] && [[ -f "$suggest_tool" ]] && [[ -f "$packet_file" ]]; then
       local suggestion
