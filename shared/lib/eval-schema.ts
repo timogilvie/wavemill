@@ -467,6 +467,12 @@ export interface ReviewOutcome {
   approvals: number;
   /** Number of change request reviews */
   changeRequests: number;
+  /** Number of self-review iterations (from review-changes tool) */
+  selfReviewIterations?: number;
+  /** Number of blocker findings in self-review */
+  selfReviewBlockers?: number;
+  /** Number of warning findings in self-review */
+  selfReviewWarnings?: number;
 }
 
 /**

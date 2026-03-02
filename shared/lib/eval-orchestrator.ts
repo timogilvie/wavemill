@@ -169,6 +169,7 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
     baseBranch: 'main',
     repoDir,
     agentType,
+    issueId,
   });
 
   const interventionMeta = toInterventionMeta(interventionSummary);
@@ -267,7 +268,7 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
         ? collectStaticAnalysisOutcome(prNumber, branch, 'main', repoDir)
         : undefined,
     review: prNumber
-      ? collectReviewOutcome(prNumber, interventionSummary, repoDir)
+      ? collectReviewOutcome(prNumber, interventionSummary, repoDir, undefined, issueId, branch)
       : {
           humanReviewRequired: interventionSummary.interventions.some(
             (e) => e.type === 'review_comment' && e.count > 0
