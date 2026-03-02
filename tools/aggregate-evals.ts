@@ -128,33 +128,40 @@ If --repos is omitted, reads eval.aggregation.repos from .wavemill-config.json.`
       console.log(`  ${repo}: ${count} records`);
     }
 
-    // Data quality report (HOK-883)
-    const withCost = allRecords.filter(r => r.workflowCost !== undefined && r.workflowCost !== null);
-    const withoutCost = allRecords.filter(r => r.workflowCost === undefined || r.workflowCost === null);
-    const costsArray = withCost.map(r => r.workflowCost!).sort((a, b) => a - b);
-
-    const avgCost = costsArray.length > 0
-      ? costsArray.reduce((sum, c) => sum + c, 0) / costsArray.length
-      : 0;
-    const medianCost = costsArray.length > 0
-      ? costsArray[Math.floor(costsArray.length / 2)]
-      : 0;
-
-    // Count by status
+    // Data quality report (HOK-883) - Single-pass aggregation
+    let withCostCount = 0;
+    let costSum = 0;
+    const costs: number[] = [];
     const statusCounts: Record<string, number> = {};
+
     for (const record of allRecords) {
-      const status = (record as any).workflowCostStatus || 'unknown';
-      statusCounts[status] = (statusCounts[status] || 0) + 1;
+      // Collect cost data
+      const cost = record.workflowCost;
+      if (cost !== undefined && cost !== null) {
+        withCostCount++;
+        costSum += cost;
+        costs.push(cost);
+      }
+
+      // Count status distribution
+      const status = record.workflowCostStatus ?? 'unknown';
+      statusCounts[status] = (statusCounts[status] ?? 0) + 1;
     }
 
+    const withoutCostCount = allRecords.length - withCostCount;
+    const avgCost = withCostCount > 0 ? costSum / withCostCount : 0;
+
+    costs.sort((a, b) => a - b);
+    const medianCost = costs.length > 0 ? costs[Math.floor(costs.length / 2)] : 0;
+
     console.log('\n=== Cost Data Quality ===');
-    console.log(`Records with cost:      ${withCost.length} (${(withCost.length/allRecords.length*100).toFixed(1)}%)`);
-    console.log(`Records without cost:   ${withoutCost.length} (${(withoutCost.length/allRecords.length*100).toFixed(1)}%)`);
-    if (costsArray.length > 0) {
+    console.log(`Records with cost:      ${withCostCount} (${(withCostCount/allRecords.length*100).toFixed(1)}%)`);
+    console.log(`Records without cost:   ${withoutCostCount} (${(withoutCostCount/allRecords.length*100).toFixed(1)}%)`);
+    if (costs.length > 0) {
       console.log(`\nCost statistics (excluding nulls):`);
       console.log(`  Average:              $${avgCost.toFixed(2)}`);
       console.log(`  Median:               $${medianCost.toFixed(2)}`);
-      console.log(`  Range:                $${costsArray[0].toFixed(2)} - $${costsArray[costsArray.length-1].toFixed(2)}`);
+      console.log(`  Range:                $${costs[0].toFixed(2)} - $${costs[costs.length-1].toFixed(2)}`);
     }
     if (Object.keys(statusCounts).length > 0 && Object.keys(statusCounts)[0] !== 'unknown') {
       console.log(`\nStatus distribution:`);

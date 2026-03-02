@@ -293,8 +293,6 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
     // 7. Compute workflow cost from agent session data
     //    Pricing lives in the wavemill repo config, not the target repo,
     //    so resolve it from this script's location.
-    const debug = process.env.DEBUG_COST === '1' || process.env.DEBUG_COST === 'true';
-
     if (debug) {
       console.log('[DEBUG_COST] Pre-cost-computation check:');
       console.log(`[DEBUG_COST]   ctx.worktreePath: ${ctx.worktreePath || '(undefined)'}`);
