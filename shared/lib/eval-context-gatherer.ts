@@ -1,196 +1,145 @@
 /**
- * Eval Context Gatherer
+ * Eval context gathering — fetch and format all context needed for evaluation.
  *
- * Gathers workflow context for evaluation from multiple sources:
- * - Wavemill workflow state (.wavemill/workflow-state.json)
- * - Current branch PR (via gh CLI)
- * - Linear issue details
- * - PR diff and review comments
+ * Centralizes data fetching for:
+ * - Linear issue data (via get-issue-json tool)
+ * - GitHub PR data (diff and URL via gh CLI)
+ *
+ * All functions are non-throwing: errors are caught and return null/empty
+ * values so eval can proceed with degraded data.
  *
  * @module eval-context-gatherer
  */
 
-import { existsSync, readFileSync } from 'node:fs';
-import path from 'node:path';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { dirname } from 'node:path';
 import { escapeShellArg, execShellCommand } from './shell-utils.ts';
-import { resolveOwnerRepo } from './intervention-detector.ts';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 // ────────────────────────────────────────────────────────────────
 // Types
 // ────────────────────────────────────────────────────────────────
 
+/** Complete context needed for running eval. */
 export interface EvalContext {
-  issueId: string;
-  prNumber: string;
-  prUrl: string;
-  branch: string;
+  /** Formatted task prompt (issue title + description) */
   taskPrompt: string;
-  prReviewOutput: string;
+  /** PR diff content */
+  prDiff: string;
+  /** PR URL */
+  prUrl: string;
+  /** Raw issue data from Linear (null if fetch failed) */
+  issueData: any | null;
+}
+
+/** Input parameters for gathering context. */
+export interface GatherContextParams {
+  /** Linear issue ID (e.g. "HOK-870") */
+  issueId?: string;
+  /** GitHub PR number */
+  prNumber?: string;
+  /** PR URL (if already known) */
+  prUrl?: string;
+  /** Repository directory */
   repoDir: string;
 }
 
-export interface GatherContextArgs {
-  issue?: string;
-  pr?: string;
-  repoDir?: string;
-  agent?: string;
-}
-
 // ────────────────────────────────────────────────────────────────
-// Public API
+// Issue Data Fetching
 // ────────────────────────────────────────────────────────────────
 
 /**
- * Gather eval context from multiple sources.
- *
- * Resolution order:
- * 1. Explicit args (--issue, --pr) take priority
- * 2. Falls back to .wavemill/workflow-state.json (most recent task with PR)
- * 3. Falls back to current branch's open PR
- *
- * @param args - Arguments with optional issue/PR/repoDir
- * @returns Complete eval context
- * @throws Error if no context found
+ * Fetch issue data from Linear via the get-issue-json tool.
+ * Returns the parsed issue object or null on failure.
  */
-export function gatherContext(args: GatherContextArgs): EvalContext {
-  const repoDir = args.repoDir || process.cwd();
-  const stateFile = path.join(repoDir, '.wavemill', 'workflow-state.json');
+export function fetchIssueData(issueId: string, repoDir: string): any | null {
+  const toolPath = resolve(__dirname, '../../tools/get-issue-json.ts');
+  try {
+    const raw = execShellCommand(
+      `npx tsx ${escapeShellArg(toolPath)} ${escapeShellArg(issueId)} 2>/dev/null | sed '/^\\[dotenv/d'`,
+      { encoding: 'utf-8', cwd: repoDir }
+    ).trim();
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
 
-  let issueId = args.issue || '';
-  let prNumber = args.pr || '';
-  let branch = '';
-  let prUrl = '';
+/**
+ * Format issue data as a markdown prompt.
+ */
+export function formatIssueAsPrompt(issue: any | null, issueId: string): string {
+  if (!issue) return `Issue: ${issueId} (details unavailable)`;
+  return `# ${issue.identifier}: ${issue.title}\n\n${issue.description || ''}`;
+}
 
-  // Try auto-detect from wavemill state file (only when neither was explicitly provided)
-  if (!issueId && !prNumber && existsSync(stateFile)) {
-    const state = JSON.parse(readFileSync(stateFile, 'utf-8'));
-    const tasks = state.tasks || {};
+// ────────────────────────────────────────────────────────────────
+// PR Data Fetching
+// ────────────────────────────────────────────────────────────────
 
-    // Find most recently updated task that has a PR
-    let mostRecent: any = null;
-    let mostRecentTime = '';
-    for (const [id, task] of Object.entries(tasks)) {
-      const taskData = task as any;
-      if (taskData.pr && (!mostRecentTime || taskData.updated > mostRecentTime)) {
-        mostRecent = { id, ...taskData };
-        mostRecentTime = taskData.updated;
-      }
-    }
+/**
+ * Fetch PR diff and URL from GitHub.
+ */
+export function fetchPrContext(prNumber: string, repoDir: string): { diff: string; url: string } {
+  let url = '';
+  let diff = '';
 
-    if (mostRecent) {
-      if (!issueId) issueId = mostRecent.id;
-      if (!prNumber) prNumber = String(mostRecent.pr);
-      branch = mostRecent.branch || '';
-    }
+  try {
+    url = execShellCommand(`gh pr view ${escapeShellArg(prNumber)} --json url --jq .url 2>/dev/null`, {
+      encoding: 'utf-8', cwd: repoDir,
+    }).trim();
+  } catch { /* best-effort */ }
+
+  try {
+    diff = execShellCommand(`gh pr diff ${escapeShellArg(prNumber)}`, {
+      encoding: 'utf-8', cwd: repoDir, maxBuffer: 10 * 1024 * 1024,
+    });
+  } catch {
+    diff = '(PR diff unavailable)';
   }
 
-  // Try auto-detect from current branch PR
-  if (!prNumber) {
-    try {
-      branch = execShellCommand('git branch --show-current', {
-        encoding: 'utf-8',
-        cwd: repoDir,
-      }).trim();
-      const prJson = execShellCommand(
-        'gh pr view --json number,url 2>/dev/null || echo "{}"',
-        {
-          encoding: 'utf-8',
-          cwd: repoDir,
-        }
-      ).trim();
-      const prData = JSON.parse(prJson);
-      if (prData.number) {
-        prNumber = String(prData.number);
-        prUrl = prData.url || '';
-      }
-    } catch {
-      // Best-effort
-    }
-  }
+  return { diff, url };
+}
 
-  if (!issueId && !prNumber) {
-    throw new Error(
-      'No workflow context found. Provide explicit arguments:\n' +
-        '  npx tsx tools/eval-workflow.ts --issue HOK-123 --pr 456\n\n' +
-        'Or run after a completed wavemill workflow (requires .wavemill/workflow-state.json)'
-    );
-  }
+// ────────────────────────────────────────────────────────────────
+// Orchestrator
+// ────────────────────────────────────────────────────────────────
 
-  // Fetch issue details from Linear
-  let taskPrompt = '';
+/**
+ * Gather all context needed for evaluation in a single call.
+ *
+ * Fetches issue data from Linear and PR data from GitHub.
+ * Non-blocking: failures result in degraded data (empty strings, null values).
+ *
+ * @param params - Context gathering parameters
+ * @returns Complete eval context
+ */
+export function gatherEvalContext(params: GatherContextParams): EvalContext {
+  const { issueId, prNumber, prUrl, repoDir } = params;
+
+  // Fetch issue data
+  let issueData: any | null = null;
   if (issueId) {
-    try {
-      const toolPath = path.resolve(
-        path.dirname(require.resolve('../package.json')),
-        'tools/get-issue-json.ts'
-      );
-      const raw = execShellCommand(
-        `npx tsx ${escapeShellArg(toolPath)} ${escapeShellArg(issueId)} 2>/dev/null`,
-        { encoding: 'utf-8', cwd: repoDir }
-      ).trim();
-      const issue = JSON.parse(raw);
-      taskPrompt = `# ${issue.identifier}: ${issue.title}\n\n${issue.description || ''}`;
-    } catch {
-      taskPrompt = `Issue: ${issueId} (details unavailable)`;
-    }
+    issueData = fetchIssueData(issueId, repoDir);
   }
+  const taskPrompt = formatIssueAsPrompt(issueData, issueId || '');
 
-  // Fetch PR diff as review output
-  let prReviewOutput = '';
+  // Fetch PR data
+  let prDiff = '';
+  let finalPrUrl = prUrl || '';
   if (prNumber) {
-    if (!prUrl) {
-      try {
-        prUrl = execShellCommand(
-          `gh pr view ${escapeShellArg(prNumber)} --json url --jq .url 2>/dev/null`,
-          {
-            encoding: 'utf-8',
-            cwd: repoDir,
-          }
-        ).trim();
-      } catch {
-        /* best-effort */
-      }
-    }
-
-    try {
-      const diff = execShellCommand(`gh pr diff ${escapeShellArg(prNumber)}`, {
-        encoding: 'utf-8',
-        cwd: repoDir,
-        maxBuffer: 10 * 1024 * 1024,
-      });
-      prReviewOutput = diff;
-    } catch {
-      prReviewOutput = '(PR diff unavailable)';
-    }
-
-    // Append review comments if any
-    try {
-      const nwo = resolveOwnerRepo(repoDir);
-      const comments = nwo
-        ? execShellCommand(
-            `gh api repos/${escapeShellArg(nwo)}/pulls/${escapeShellArg(prNumber)}/comments --jq '.[].body' 2>/dev/null || echo ''`,
-            { encoding: 'utf-8', cwd: repoDir }
-          ).trim()
-        : '';
-      if (comments) {
-        prReviewOutput += `\n\n## Review Comments\n\n${comments}`;
-      }
-    } catch {
-      /* best-effort */
-    }
+    const prCtx = fetchPrContext(prNumber, repoDir);
+    prDiff = prCtx.diff;
+    if (!finalPrUrl) finalPrUrl = prCtx.url;
   }
 
-  // Ensure we have the branch name for intervention detection
-  if (!branch) {
-    try {
-      branch = execShellCommand('git branch --show-current', {
-        encoding: 'utf-8',
-        cwd: repoDir,
-      }).trim();
-    } catch {
-      /* best-effort */
-    }
-  }
-
-  return { issueId, prNumber, prUrl, branch, taskPrompt, prReviewOutput, repoDir };
+  return {
+    taskPrompt,
+    prDiff,
+    prUrl: finalPrUrl,
+    issueData,
+  };
 }

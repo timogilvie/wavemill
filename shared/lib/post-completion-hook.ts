@@ -12,14 +12,8 @@ import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { evaluateTask } from './eval.js';
 import { appendEvalRecord } from './eval-persistence.ts';
-import { escapeShellArg, execShellCommand } from './shell-utils.ts';
-import {
-  detectAllInterventions,
-  toInterventionMeta,
-  toInterventionRecords,
-  formatForJudge,
-  loadPenalties,
-} from './intervention-detector.ts';
+import { execShellCommand } from './shell-utils.ts';
+import { detectAndFormatInterventions } from './intervention-detector.ts';
 import { computeWorkflowCost, loadPricingTable } from './workflow-cost.ts';
 import { analyzePrDifficulty } from './difficulty-analyzer.ts';
 import { analyzeTaskContext } from './task-context-analyzer.ts';
@@ -29,6 +23,9 @@ import { loadWavemillConfig } from './config.ts';
 import { detectSubsystems } from './subsystem-detector.ts';
 import { updateAffectedSubsystems } from './subsystem-updater.ts';
 import { detectAffectedSubsystems } from './subsystem-mapper.ts';
+import { gatherEvalContext } from './eval-context-gatherer.ts';
+import { enrichEvalRecord } from './eval-record-builder.ts';
+import { printEvalSummary, formatDifficultyDisplay, formatTaskContextDisplay, formatRepoContextDisplay, formatInterventionDisplay } from './eval-summary-printer.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -51,55 +48,6 @@ function resolveEvalsDir(repoDir: string): string | undefined {
   const config = loadWavemillConfig(repoDir);
   if (config.eval?.evalsDir) return resolve(repoDir, config.eval.evalsDir);
   return undefined;
-}
-
-/**
- * Fetch issue data from Linear via the get-issue-json tool.
- * Returns the parsed issue object or null on failure.
- */
-function fetchIssueData(issueId: string, repoDir: string): any | null {
-  const toolPath = resolve(__dirname, '../../tools/get-issue-json.ts');
-  try {
-    const raw = execShellCommand(
-      `npx tsx ${escapeShellArg(toolPath)} ${escapeShellArg(issueId)} 2>/dev/null | sed '/^\\[dotenv/d'`,
-      { encoding: 'utf-8', cwd: repoDir }
-    ).trim();
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Format issue data as a markdown prompt.
- */
-function formatIssueAsPrompt(issue: any | null, issueId: string): string {
-  if (!issue) return `Issue: ${issueId} (details unavailable)`;
-  return `# ${issue.identifier}: ${issue.title}\n\n${issue.description || ''}`;
-}
-
-/**
- * Fetch PR diff and URL from GitHub.
- */
-function fetchPrContext(prNumber: string, repoDir: string): { diff: string; url: string } {
-  let url = '';
-  let diff = '';
-
-  try {
-    url = execShellCommand(`gh pr view ${escapeShellArg(prNumber)} --json url --jq .url 2>/dev/null`, {
-      encoding: 'utf-8', cwd: repoDir,
-    }).trim();
-  } catch { /* best-effort */ }
-
-  try {
-    diff = execShellCommand(`gh pr diff ${escapeShellArg(prNumber)}`, {
-      encoding: 'utf-8', cwd: repoDir, maxBuffer: 10 * 1024 * 1024,
-    });
-  } catch {
-    diff = '(PR diff unavailable)';
-  }
-
-  return { diff, url };
 }
 
 /**
@@ -143,22 +91,15 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
   try {
     console.log('Post-completion eval: gathering context...');
 
-    // 2. Gather context - fetch issue data once for reuse
-    let issueData: any | null = null;
-    if (ctx.issueId) {
-      issueData = fetchIssueData(ctx.issueId, repoDir);
-    }
-    const taskPrompt = formatIssueAsPrompt(issueData, ctx.issueId || '');
+    // 1. Gather eval context (issue + PR data)
+    const evalContext = gatherEvalContext({
+      issueId: ctx.issueId,
+      prNumber: ctx.prNumber,
+      prUrl: ctx.prUrl,
+      repoDir,
+    });
 
-    let prReviewOutput = '';
-    let prUrl = ctx.prUrl || '';
-    if (ctx.prNumber) {
-      const prCtx = fetchPrContext(ctx.prNumber, repoDir);
-      prReviewOutput = prCtx.diff;
-      if (!prUrl) prUrl = prCtx.url;
-    }
-
-    // 3. Detect intervention events
+    // 2. Detect all interventions
     console.log('Post-completion eval: detecting interventions...');
     let branchName = ctx.branchName || '';
     if (!branchName) {
@@ -169,7 +110,7 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
       } catch { /* best-effort */ }
     }
 
-    const interventionSummary = detectAllInterventions({
+    const interventionData = detectAndFormatInterventions({
       prNumber: ctx.prNumber,
       branchName,
       baseBranch: 'main',
@@ -177,129 +118,95 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
       worktreePath: ctx.worktreePath,
       agentType: ctx.agentType,
     });
-    const interventionMeta = toInterventionMeta(interventionSummary);
-    const interventionRecords = toInterventionRecords(interventionSummary);
-    const penalties = loadPenalties(repoDir);
-    const interventionText = formatForJudge(interventionSummary, penalties);
 
-    const totalInterventions = interventionSummary.interventions.reduce((sum, e) => sum + e.count, 0);
-    console.log(`Post-completion eval: ${totalInterventions} intervention(s) detected`);
+    console.log(`Post-completion eval: ${formatInterventionDisplay(interventionData.totalCount)}`);
 
-    // 4. Compute difficulty metrics from PR diff (HOK-777)
+    // 3. Run all analyses (non-blocking, failures logged as warnings)
     let difficultyData: ReturnType<typeof analyzePrDifficulty> = null;
-    if (ctx.prNumber && prReviewOutput) {
+    if (ctx.prNumber && evalContext.prDiff) {
       try {
         console.log('Post-completion eval: analyzing PR difficulty...');
         difficultyData = analyzePrDifficulty({
-          prDiff: prReviewOutput,
+          prDiff: evalContext.prDiff,
           prNumber: ctx.prNumber,
           repoDir,
         });
         if (difficultyData) {
-          const uncertainSuffix = difficultyData.difficultySignals.diffUncertain
-            ? ' ⚠ UNCERTAIN — diff may be incomplete'
-            : '';
           console.log(
-            `Post-completion eval: difficulty ${difficultyData.difficultyBand} ` +
-            `(${difficultyData.difficultySignals.locTouched} LOC, ` +
-            `${difficultyData.difficultySignals.filesTouched} files, ` +
-            `stratum: ${difficultyData.stratum})${uncertainSuffix}`
+            `Post-completion eval: ${formatDifficultyDisplay(
+              difficultyData.difficultyBand,
+              difficultyData.difficultySignals.locTouched,
+              difficultyData.difficultySignals.filesTouched,
+              difficultyData.stratum,
+              difficultyData.difficultySignals.diffUncertain
+            )}`
           );
         }
       } catch (diffErr: unknown) {
         const diffMsg = diffErr instanceof Error ? diffErr.message : String(diffErr);
         console.warn(`Post-completion eval: difficulty analysis failed — ${diffMsg}`);
-        // Non-blocking: continue without difficulty data
       }
     }
 
-    // 4a. Analyze task context (HOK-774)
     let taskContextData: ReturnType<typeof analyzeTaskContext> | null = null;
-    if (issueData || prReviewOutput) {
+    if (evalContext.issueData || evalContext.prDiff) {
       try {
         console.log('Post-completion eval: analyzing task context...');
-        // Reuse issue data fetched earlier (no duplicate fetch)
         taskContextData = analyzeTaskContext({
-          issue: issueData,
-          prDiff: prReviewOutput,
+          issue: evalContext.issueData,
+          prDiff: evalContext.prDiff,
           locTouched: difficultyData?.difficultySignals.locTouched,
           filesTouched: difficultyData?.difficultySignals.filesTouched,
         });
 
         if (taskContextData) {
           console.log(
-            `Post-completion eval: task context ${taskContextData.taskType} / ` +
-            `${taskContextData.changeKind} / complexity ${taskContextData.complexity}`
+            `Post-completion eval: ${formatTaskContextDisplay(
+              taskContextData.taskType,
+              taskContextData.changeKind,
+              taskContextData.complexity
+            )}`
           );
         }
       } catch (taskErr: unknown) {
         const taskMsg = taskErr instanceof Error ? taskErr.message : String(taskErr);
         console.warn(`Post-completion eval: task context analysis failed — ${taskMsg}`);
-        // Non-blocking: continue without task context
       }
     }
 
-    // 4b. Analyze repo context (HOK-774)
     let repoContextData: ReturnType<typeof analyzeRepoContext> | null = null;
     try {
       console.log('Post-completion eval: analyzing repo context...');
       repoContextData = analyzeRepoContext(repoDir);
       if (repoContextData) {
         console.log(
-          `Post-completion eval: repo context ${repoContextData.primaryLanguage} / ` +
-          `${repoContextData.repoVisibility} / ` +
-          `${repoContextData.repoSize?.fileCount || 0} files`
+          `Post-completion eval: ${formatRepoContextDisplay(
+            repoContextData.primaryLanguage,
+            repoContextData.repoVisibility,
+            repoContextData.repoSize?.fileCount || 0
+          )}`
         );
       }
     } catch (repoErr: unknown) {
       const repoMsg = repoErr instanceof Error ? repoErr.message : String(repoErr);
       console.warn(`Post-completion eval: repo context analysis failed — ${repoMsg}`);
-      // Non-blocking: continue without repo context
     }
 
-    // 5. Run eval
+    // 4. Run eval judge
     console.log('Post-completion eval: invoking LLM judge...');
     const record = await evaluateTask({
-      taskPrompt,
-      prReviewOutput,
-      interventions: interventionMeta,
-      interventionRecords,
-      interventionText,
+      taskPrompt: evalContext.taskPrompt,
+      prReviewOutput: evalContext.prDiff,
+      interventions: interventionData.meta,
+      interventionRecords: interventionData.records,
+      interventionText: interventionData.text,
       issueId: ctx.issueId || undefined,
-      prUrl: prUrl || undefined,
-      metadata: { workflowType: ctx.workflowType, hookTriggered: true, interventionSummary },
+      prUrl: evalContext.prUrl || undefined,
+      metadata: { workflowType: ctx.workflowType, hookTriggered: true, interventionSummary: interventionData.summary },
     });
 
-    // Set agentType unconditionally so eval records always reflect which agent ran
-    record.agentType = ctx.agentType || 'claude';
-
-    // 6. Attach difficulty data to record (HOK-777)
-    if (difficultyData) {
-      record.difficultyBand = difficultyData.difficultyBand;
-      record.difficultySignals = difficultyData.difficultySignals;
-      record.stratum = difficultyData.stratum;
-    }
-
-    // 6a. Attach task context to record (HOK-774)
-    if (taskContextData) {
-      record.taskContext = taskContextData;
-    }
-
-    // 6b. Attach repo context to record (HOK-774)
-    if (repoContextData) {
-      record.repoContext = repoContextData;
-    }
-
-    // 7. Compute workflow cost from agent session data
-    //    Pricing lives in the wavemill repo config, not the target repo,
-    //    so resolve it from this script's location.
-    if (debug) {
-      console.log('[DEBUG_COST] Pre-cost-computation check:');
-      console.log(`[DEBUG_COST]   ctx.worktreePath: ${ctx.worktreePath || '(undefined)'}`);
-      console.log(`[DEBUG_COST]   branchName: ${branchName || '(undefined)'}`);
-      console.log(`[DEBUG_COST]   Condition met: ${!!(ctx.worktreePath && branchName)}`);
-    }
-
+    // 5. Compute workflow cost
+    let costOutcome: ReturnType<typeof computeWorkflowCost> | null = null;
     if (ctx.worktreePath && branchName) {
       console.log('Post-completion eval: computing workflow cost...');
 
@@ -307,7 +214,6 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
         console.log('[DEBUG_COST] Cost computation parameters:');
         console.log(`[DEBUG_COST]   worktreePath: ${ctx.worktreePath}`);
         console.log(`[DEBUG_COST]   branchName: ${branchName}`);
-        console.log(`[DEBUG_COST]   repoDir: ${repoDir}`);
         console.log(`[DEBUG_COST]   agentType: ${ctx.agentType || 'claude'}`);
       }
 
@@ -316,11 +222,10 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
         const pricingTable = loadPricingTable(wavemillConfigDir);
 
         if (debug) {
-          const modelCount = Object.keys(pricingTable).length;
-          console.log(`[DEBUG_COST]   Loaded pricing for ${modelCount} model(s)`);
+          console.log(`[DEBUG_COST]   Loaded pricing for ${Object.keys(pricingTable).length} model(s)`);
         }
 
-        const costOutcome = computeWorkflowCost({
+        costOutcome = computeWorkflowCost({
           worktreePath: ctx.worktreePath,
           branchName,
           repoDir,
@@ -329,20 +234,11 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
         });
 
         if (costOutcome.status === 'success') {
-          record.workflowCost = costOutcome.totalCostUsd;
-          record.workflowTokenUsage = costOutcome.models;
-          record.workflowCostStatus = 'success';
           console.log(
             `Post-completion eval: workflow cost $${costOutcome.totalCostUsd.toFixed(4)} ` +
             `(${costOutcome.turnCount} turns across ${costOutcome.sessionCount} session(s))`
           );
         } else {
-          // Capture diagnostic information (HOK-883)
-          record.workflowCostStatus = costOutcome.status;
-          record.workflowCostDiagnostics = {
-            reason: costOutcome.reason,
-            ...costOutcome.diagnostics,
-          };
           console.warn(
             `Post-completion eval: workflow cost computation failed (${costOutcome.status}) — ${costOutcome.reason}`
           );
@@ -355,44 +251,45 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
         console.warn(`Post-completion eval: workflow cost computation failed — ${costMsg}`);
       }
     } else {
-      // Capture missing parameters as diagnostic (HOK-883)
+      // Create skipped outcome with diagnostics
       const missingParams = [];
       if (!ctx.worktreePath) missingParams.push('worktreePath');
       if (!branchName) missingParams.push('branchName');
 
-      record.workflowCostStatus = 'skipped';
-      record.workflowCostDiagnostics = {
+      costOutcome = {
+        status: 'skipped',
         reason: `Required parameters missing: ${missingParams.join(', ')}`,
-        worktreePath: ctx.worktreePath,
-        branchName,
-        agentType: ctx.agentType || 'claude',
+        diagnostics: {
+          worktreePath: ctx.worktreePath,
+          branchName,
+          agentType: ctx.agentType || 'claude',
+        },
       };
 
       if (debug) {
-        console.log('[DEBUG_COST] Skipping cost computation - required parameters missing:');
-        if (!ctx.worktreePath) {
-          console.log('[DEBUG_COST]   Missing: worktreePath');
-        }
-        if (!branchName) {
-          console.log('[DEBUG_COST]   Missing: branchName');
-        }
+        console.log('[DEBUG_COST] Skipping cost computation - missing: ' + missingParams.join(', '));
       }
       console.log('Post-completion eval: skipping workflow cost (missing worktreePath or branchName)');
     }
 
-    // 8. Persist via eval-persistence
+    // 6. Enrich record with all metadata
+    enrichEvalRecord(record, {
+      agentType: ctx.agentType,
+      difficulty: difficultyData,
+      taskContext: taskContextData,
+      repoContext: repoContextData,
+      workflowCost: costOutcome,
+    });
+
+    // 7. Persist
     const evalsDir = resolveEvalsDir(repoDir);
     appendEvalRecord(record, evalsDir ? { dir: evalsDir } : undefined);
 
-    // 9. Update project context
-    await updateProjectContext(ctx, prReviewOutput, taskPrompt);
+    // 8. Update project context
+    await updateProjectContext(ctx, evalContext.prDiff, evalContext.taskPrompt);
 
-    // 10. Print summary
-    const scoreDisplay = (record.score as number).toFixed(2);
-    const costSuffix = record.workflowCost !== undefined
-      ? `, workflow cost: $${record.workflowCost.toFixed(4)}`
-      : '';
-    console.log(`Post-completion eval: ${record.scoreBand} (${scoreDisplay}${costSuffix}) — saved to eval store`);
+    // 9. Print summary
+    printEvalSummary(record);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.warn(`Post-completion eval: failed (workflow unaffected) — ${message}`);

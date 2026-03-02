@@ -843,7 +843,8 @@ for t in "${TASKS[@]}"; do
   # Save to state ledger (for tracking)
   BRANCH="task/${SLUG}"
   WT_DIR="${WORKTREE_ROOT}/${SLUG}"
-  save_task_state "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR"
+  # Initialize with default agent (will be overridden by router if different agent selected)
+  save_task_state "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR" "" "" "$AGENT_CMD"
 
   log "  ✓ $ISSUE ready"
   LAUNCH_ARGS+=("$t")
@@ -1034,15 +1035,18 @@ save_task_state() {
   if jq --arg issue "$issue" --arg slug "$slug" --arg branch "$branch" \
      --arg worktree "$worktree" --arg pr "$pr" --arg status "$status" \
      --arg agent "$agent" \
-     '.tasks[$issue] = {
+     '(.tasks[$issue].agent // "") as $old_agent |
+      (.tasks[$issue].phase // "executing") as $old_phase |
+      (.tasks[$issue].evalCompleted // false) as $old_eval |
+      .tasks[$issue] = {
         slug: $slug,
         branch: $branch,
         worktree: $worktree,
         pr: $pr,
         status: $status,
-        agent: (if $agent != "" then $agent else (.tasks[$issue].agent // "") end),
-        phase: (.tasks[$issue].phase // "executing"),
-        evalCompleted: (.tasks[$issue].evalCompleted // false),
+        agent: (if $agent != "" then $agent else $old_agent end),
+        phase: $old_phase,
+        evalCompleted: $old_eval,
         updated: (now | todate)
       }' "$STATE_FILE" > "$tmp" 2>/dev/null; then
     mv "$tmp" "$STATE_FILE"
@@ -1095,6 +1099,23 @@ mark_eval_completed() {
   else
     rm -f "$tmp"
     log_warn "mark_eval_completed: failed to update $issue"
+  fi
+}
+
+validate_agent_set() {
+  local issue="$1"
+  local agent
+  agent=$(jq -r --arg i "$issue" '.tasks[$i].agent // ""' "$STATE_FILE" 2>/dev/null)
+  if [[ -z "$agent" ]]; then
+    log_warn "  ⚠ BUG: Agent not set for $issue (should have been set at launch), auto-fixing to: $AGENT_CMD"
+    # Auto-fix: update the task state with the default agent
+    local slug branch worktree pr status
+    slug=$(jq -r --arg i "$issue" '.tasks[$i].slug // ""' "$STATE_FILE" 2>/dev/null)
+    branch=$(jq -r --arg i "$issue" '.tasks[$i].branch // ""' "$STATE_FILE" 2>/dev/null)
+    worktree=$(jq -r --arg i "$issue" '.tasks[$i].worktree // ""' "$STATE_FILE" 2>/dev/null)
+    pr=$(jq -r --arg i "$issue" '.tasks[$i].pr // ""' "$STATE_FILE" 2>/dev/null)
+    status=$(jq -r --arg i "$issue" '.tasks[$i].status // ""' "$STATE_FILE" 2>/dev/null)
+    save_task_state "$issue" "$slug" "$branch" "$worktree" "$pr" "$status" "$AGENT_CMD"
   fi
 }
 
@@ -1408,6 +1429,17 @@ launch_task() {
   [[ "$PLANNING_MODE" == "interactive" ]] && initial_phase="planning"
   save_task_state "$issue" "$slug" "$branch" "$wt_dir" "" "" "$task_agent_cmd"
   set_task_phase "$issue" "$initial_phase"
+
+  # Verify agent was saved correctly (helps debug future issues)
+  if [[ "${DEBUG_AGENT:-}" == "1" ]]; then
+    local saved_agent
+    saved_agent=$(jq -r --arg i "$issue" '.tasks[$i].agent // ""' "$STATE_FILE" 2>/dev/null)
+    if [[ "$saved_agent" != "$task_agent_cmd" ]]; then
+      log_warn "  ⚠ Agent save mismatch: expected='$task_agent_cmd' but got='$saved_agent'"
+    else
+      log "  ✓ Agent set to: $task_agent_cmd"
+    fi
+  fi
 
   # Pre-trust worktree directory so Claude doesn't prompt
   if [[ "$task_agent_cmd" == "claude" ]] && [[ -f "$HOME/.claude.json" ]]; then
@@ -1767,7 +1799,9 @@ monitor_issue_state() {
     PR="$(find_pr_for_branch "$BRANCH")"
     if [[ -n "$PR" ]]; then
       PR_BY_ISSUE["$ISSUE"]="$PR"
-      save_task_state "$ISSUE" "$SLUG" "$BRANCH" "${WORKTREE_ROOT}/${SLUG}" "$PR"
+      # Preserve agent when updating with PR number
+      current_agent=$(jq -r --arg i "$ISSUE" '.tasks[$i].agent // ""' "$STATE_FILE" 2>/dev/null)
+      save_task_state "$ISSUE" "$SLUG" "$BRANCH" "${WORKTREE_ROOT}/${SLUG}" "$PR" "" "$current_agent"
       linear_set_state "$ISSUE" "In Review"
       log "✓ $ISSUE → PR #$PR (In Review)"
     else
@@ -1780,6 +1814,8 @@ monitor_issue_state() {
           eval_completed=$(jq -r --arg i "$ISSUE" '.tasks[$i].evalCompleted // false' "$STATE_FILE" 2>/dev/null)
           if [[ "$eval_completed" == "false" ]]; then
             log "  📊 Running post-completion eval..."
+            # Validate and auto-fix agent if not set
+            validate_agent_set "$ISSUE"
             eval_agent=$(jq -r --arg i "$ISSUE" '.tasks[$i].agent // ""' "$STATE_FILE" 2>/dev/null)
             [[ -z "$eval_agent" ]] && eval_agent="$AGENT_CMD"
             # Always enable debug mode for cost diagnostics (HOK-879)
@@ -1800,7 +1836,9 @@ monitor_issue_state() {
         if [[ "$REQUIRE_CONFIRM" == "true" ]]; then
           log "  → Window stays open for review - close it when ready"
           linear_set_state "$ISSUE" "Done"
-          save_task_state "$ISSUE" "$SLUG" "$BRANCH" "${WORKTREE_ROOT}/${SLUG}" "" "completed-external"
+          # Preserve agent when marking as completed-external
+          current_agent=$(jq -r --arg i "$ISSUE" '.tasks[$i].agent // ""' "$STATE_FILE" 2>/dev/null)
+          save_task_state "$ISSUE" "$SLUG" "$BRANCH" "${WORKTREE_ROOT}/${SLUG}" "" "completed-external" "$current_agent"
           active_count=$((active_count + 1))
           return 0
         fi
@@ -1852,6 +1890,8 @@ monitor_issue_state() {
       eval_completed=$(jq -r --arg i "$ISSUE" '.tasks[$i].evalCompleted // false' "$STATE_FILE" 2>/dev/null)
       if [[ "$eval_completed" == "false" ]]; then
         log "  📊 Running post-merge eval..."
+        # Validate and auto-fix agent if not set
+        validate_agent_set "$ISSUE"
         eval_agent=$(jq -r --arg i "$ISSUE" '.tasks[$i].agent // ""' "$STATE_FILE" 2>/dev/null)
         [[ -z "$eval_agent" ]] && eval_agent="$AGENT_CMD"
         # Always enable debug mode for cost diagnostics (HOK-879)
@@ -1872,7 +1912,9 @@ monitor_issue_state() {
     if [[ "$REQUIRE_CONFIRM" == "true" ]]; then
       log "  → Window stays open for review - close it when ready"
       linear_set_state "$ISSUE" "Done"
-      save_task_state "$ISSUE" "$SLUG" "$BRANCH" "${WORKTREE_ROOT}/${SLUG}" "$PR" "merged"
+      # Preserve agent when marking as merged
+      current_agent=$(jq -r --arg i "$ISSUE" '.tasks[$i].agent // ""' "$STATE_FILE" 2>/dev/null)
+      save_task_state "$ISSUE" "$SLUG" "$BRANCH" "${WORKTREE_ROOT}/${SLUG}" "$PR" "merged" "$current_agent"
       active_count=$((active_count + 1))
       return 0
     fi
