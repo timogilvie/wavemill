@@ -13,7 +13,7 @@
  * @module eval-record-builder
  */
 
-import type { EvalRecord } from './eval-schema.ts';
+import type { EvalRecord, TaskContext, RepoContext } from './eval-schema.ts';
 import type { DifficultyAnalysis } from './difficulty-analyzer.ts';
 import type { WorkflowCostOutcome, WorkflowCostResult, WorkflowCostFailure } from './workflow-cost.ts';
 
@@ -21,25 +21,8 @@ import type { WorkflowCostOutcome, WorkflowCostResult, WorkflowCostFailure } fro
 // Types
 // ────────────────────────────────────────────────────────────────
 
-/** Task context analysis result (from task-context-analyzer.ts). */
-export interface TaskContextAnalysis {
-  taskType: string;
-  changeKind: string;
-  complexity: string;
-  primaryFiles?: string[];
-  testCoverage?: string;
-}
-
-/** Repo context analysis result (from repo-context-analyzer.ts). */
-export interface RepoContextAnalysis {
-  primaryLanguage: string;
-  repoVisibility: string;
-  repoSize?: {
-    fileCount: number;
-    locCount: number;
-  };
-  testingFrameworks?: string[];
-}
+// Note: Using TaskContext and RepoContext from eval-schema.ts
+// instead of defining duplicate types
 
 /** All metadata to attach to an eval record. */
 export interface EvalRecordMetadata {
@@ -48,9 +31,9 @@ export interface EvalRecordMetadata {
   /** Difficulty analysis results */
   difficulty?: DifficultyAnalysis | null;
   /** Task context analysis results */
-  taskContext?: TaskContextAnalysis | null;
+  taskContext?: TaskContext | null;
   /** Repo context analysis results */
-  repoContext?: RepoContextAnalysis | null;
+  repoContext?: RepoContext | null;
   /** Workflow cost computation results */
   workflowCost?: WorkflowCostOutcome | null;
 }
@@ -88,7 +71,7 @@ export function attachDifficultyMetadata(
  */
 export function attachTaskContextMetadata(
   record: EvalRecord,
-  taskContextData: TaskContextAnalysis | null
+  taskContextData: TaskContext | null
 ): void {
   if (taskContextData) {
     record.taskContext = taskContextData;
@@ -101,7 +84,7 @@ export function attachTaskContextMetadata(
  */
 export function attachRepoContextMetadata(
   record: EvalRecord,
-  repoContextData: RepoContextAnalysis | null
+  repoContextData: RepoContext | null
 ): void {
   if (repoContextData) {
     record.repoContext = repoContextData;

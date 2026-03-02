@@ -552,9 +552,15 @@ export interface DetectOptions {
 
 /**
  * Run all intervention detectors and produce a summary with weighted score.
+ *
+ * @param opts - Detection options
+ * @param penalties - Optional pre-loaded penalties (avoids redundant config loading)
  */
-export function detectAllInterventions(opts: DetectOptions): InterventionSummary {
-  const penalties = loadPenalties(opts.repoDir);
+export function detectAllInterventions(
+  opts: DetectOptions,
+  penalties?: InterventionPenalties
+): InterventionSummary {
+  const penaltyWeights = penalties || loadPenalties(opts.repoDir);
   const interventions: InterventionEvent[] = [];
 
   // Resolve GitHub owner/repo once for all API calls
@@ -602,7 +608,7 @@ export function detectAllInterventions(opts: DetectOptions): InterventionSummary
   // Calculate weighted score
   let totalScore = 0;
   for (const event of interventions) {
-    const weight = penalties[event.type] || 0;
+    const weight = penaltyWeights[event.type] || 0;
     totalScore += event.count * weight;
   }
 
@@ -759,11 +765,11 @@ export interface InterventionData {
  * @returns Complete intervention data
  */
 export function detectAndFormatInterventions(opts: DetectOptions): InterventionData {
-  // Load penalties
+  // Load penalties once
   const penalties = loadPenalties(opts.repoDir);
 
-  // Detect all interventions
-  const summary = detectAllInterventions(opts);
+  // Detect all interventions (pass penalties to avoid redundant loading)
+  const summary = detectAllInterventions(opts, penalties);
 
   // Convert to all needed formats
   const meta = toInterventionMeta(summary);

@@ -76,11 +76,9 @@ describe('eval-record-builder', () => {
   describe('attachTaskContextMetadata', () => {
     it('should attach task context when provided', () => {
       const taskContext = {
-        taskType: 'feature',
-        changeKind: 'new-feature',
-        complexity: 'medium',
-        primaryFiles: ['src/file1.ts', 'src/file2.ts'],
-        testCoverage: 'partial',
+        taskType: 'feature' as const,
+        changeKind: 'create_new' as const,
+        complexity: 'm' as const,
       };
 
       attachTaskContextMetadata(baseRecord, taskContext);
@@ -98,13 +96,13 @@ describe('eval-record-builder', () => {
   describe('attachRepoContextMetadata', () => {
     it('should attach repo context when provided', () => {
       const repoContext = {
+        repoId: 'test-repo',
         primaryLanguage: 'TypeScript',
-        repoVisibility: 'private',
+        repoVisibility: 'private' as const,
         repoSize: {
           fileCount: 100,
           locCount: 10000,
         },
-        testingFrameworks: ['vitest'],
       };
 
       attachRepoContextMetadata(baseRecord, repoContext);
@@ -190,13 +188,14 @@ describe('eval-record-builder', () => {
           stratum: 'stratum-2' as const,
         },
         taskContext: {
-          taskType: 'feature',
-          changeKind: 'new-feature',
-          complexity: 'medium',
+          taskType: 'feature' as const,
+          changeKind: 'create_new' as const,
+          complexity: 'm' as const,
         },
         repoContext: {
+          repoId: 'test-repo',
           primaryLanguage: 'TypeScript',
-          repoVisibility: 'private',
+          repoVisibility: 'private' as const,
         },
         workflowCost: {
           status: 'success' as const,
