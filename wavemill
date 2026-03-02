@@ -87,16 +87,24 @@ ${GREEN}Commands:${NC}
              - Supports filtering by state, author, and branch pattern
              - Analyzes code for major issues (security, logic, requirements)
              - Provides structured findings with verdict
+             - View review metrics and iteration statistics
              Usage:
                ${CYAN}wavemill review${NC}                    Interactive PR selection (open PRs)
                ${CYAN}wavemill review <number>${NC}          Review specific PR
                ${CYAN}wavemill review --state closed${NC}    List closed PRs
                ${CYAN}wavemill review --author octocat${NC}  Filter by author
                ${CYAN}wavemill review --branch feature/*${NC} Filter by branch pattern
+               ${CYAN}wavemill review --stats${NC}           Show review metrics summary
              Options:
                ${CYAN}--state${NC} open|closed|all    Filter by PR state (default: open)
                ${CYAN}--author${NC} <username>        Filter by PR author
                ${CYAN}--branch${NC} <pattern>         Filter by branch name pattern
+             Stats options:
+               ${CYAN}--from${NC} YYYY-MM-DD          Filter reviews from date
+               ${CYAN}--to${NC} YYYY-MM-DD            Filter reviews to date
+               ${CYAN}--outcome${NC} TYPE             Filter by outcome (resolved/escalated/error)
+               ${CYAN}--json${NC}                     Output stats as JSON
+               ${CYAN}--limit${NC} N                  Number of recent reviews to show (default: 5)
 
   ${CYAN}init${NC}      Initialize wavemill in current directory
              - Creates .wavemill-config.json

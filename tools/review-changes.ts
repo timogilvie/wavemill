@@ -3,6 +3,18 @@ import { runTool } from '../shared/lib/tool-runner.ts';
 import { resolve } from 'node:path';
 import { reviewChanges, type ReviewResult } from '../shared/lib/review-runner.ts';
 import { CYAN, GREEN, YELLOW, RED, BOLD, DIM, NC } from '../shared/lib/colors.ts';
+import {
+  initReviewMetric,
+  addIteration,
+  finalizeMetric,
+  saveMetric,
+  findIssueIdFromContext,
+  loadReviewRunState,
+  saveReviewRunState,
+  clearReviewRunState,
+  type ReviewMetric,
+} from '../shared/lib/review-metrics.ts';
+import { execSync } from 'node:child_process';
 
 function formatFindings(findings: ReviewResult['codeReviewFindings'], title: string): string {
   if (!findings || findings.length === 0) {
@@ -119,7 +131,36 @@ runTool({
     const repoDir = positional[1] ? resolve(positional[1]) : process.cwd();
     const verbose = !!args.verbose;
 
+    // Initialize metrics tracking
+    let metric: ReviewMetric | undefined;
+    let currentBranch = '';
+
     try {
+      // Get current branch name
+      try {
+        currentBranch = execSync('git rev-parse --abbrev-ref HEAD', {
+          cwd: repoDir,
+          encoding: 'utf-8',
+        }).trim();
+      } catch {
+        currentBranch = 'unknown';
+      }
+
+      // Load or create metric
+      const existingState = loadReviewRunState(repoDir);
+      if (existingState) {
+        metric = existingState.metric;
+        if (verbose) {
+          console.error(`Continuing review run ${metric.id} (iteration ${metric.iterations.length + 1})`);
+        }
+      } else {
+        const issueId = findIssueIdFromContext(repoDir);
+        metric = initReviewMetric(currentBranch, targetBranch, issueId);
+        if (verbose) {
+          console.error(`Starting new review run ${metric.id}`);
+        }
+      }
+
       console.error('Running code review...');
       if (verbose) {
         console.error(`  Target branch: ${targetBranch}`);
@@ -137,13 +178,50 @@ runTool({
         verbose,
       });
 
+      // Add iteration to metric
+      const iterationNumber = metric.iterations.length + 1;
+      addIteration(metric, iterationNumber, result);
+
       const output = formatReviewResult(result, verbose);
       await new Promise<void>((resolve, reject) => {
         process.stdout.write(output + '\n', (err: Error | null | undefined) => (err ? reject(err) : resolve()));
       });
 
+      // Determine outcome and finalize
+      if (result.verdict === 'ready') {
+        // Review passed - finalize and clear state
+        finalizeMetric(metric, 'resolved');
+        saveMetric(metric, repoDir);
+        clearReviewRunState(repoDir);
+        if (verbose) {
+          console.error(`Review run ${metric.id} completed: resolved after ${metric.totalIterations} iteration(s)`);
+        }
+      } else {
+        // Review failed - save state for next iteration
+        saveReviewRunState(metric, repoDir);
+        if (verbose) {
+          console.error(`Review run ${metric.id} iteration ${iterationNumber} failed - state saved for retry`);
+        }
+      }
+
       process.exitCode = result.verdict === 'ready' ? 0 : 1;
     } catch (error) {
+      // On error, finalize metric and save
+      if (metric) {
+        try {
+          finalizeMetric(metric, 'error', {
+            error: (error as Error).message,
+          });
+          saveMetric(metric, repoDir);
+          clearReviewRunState(repoDir);
+        } catch (metricsError) {
+          // Metrics error should not prevent error reporting
+          if (verbose) {
+            console.error(`Warning: Failed to save review metrics: ${(metricsError as Error).message}`);
+          }
+        }
+      }
+
       console.error(`Error: ${(error as Error).message}`);
       if (verbose && error instanceof Error && error.stack) {
         console.error(error.stack);

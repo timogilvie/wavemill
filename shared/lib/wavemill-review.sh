@@ -67,6 +67,16 @@ fetch_prs() {
 # ============================================================================
 
 main() {
+  # Check for --stats subcommand first
+  if [[ "$1" == "--stats" ]]; then
+    shift
+    local stats_tool="$TOOLS_DIR/review-stats.ts"
+    if [[ -f "$REPO_DIR/tools/review-stats.ts" ]]; then
+      stats_tool="$REPO_DIR/tools/review-stats.ts"
+    fi
+    exec npx tsx "$stats_tool" "$@"
+  fi
+
   # Default filter values
   local state="open"
   local author=""
