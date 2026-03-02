@@ -17,6 +17,50 @@ agent_validate() {
   command -v "$cmd" >/dev/null 2>&1
 }
 
+# Check if agent is authenticated and ready to use.
+# Args: $1 = agent command name (e.g. "claude", "codex")
+# Returns: 0 if authenticated, 1 if not authenticated
+# Output: Error message to stderr if not authenticated
+# Note: Results are cached per-process to avoid redundant checks
+declare -A _AGENT_AUTH_CACHE
+
+agent_check_auth() {
+  local cmd="$1"
+
+  # Return cached result if available (valid for this process lifetime)
+  if [[ -n "${_AGENT_AUTH_CACHE[$cmd]:-}" ]]; then
+    return "${_AGENT_AUTH_CACHE[$cmd]}"
+  fi
+
+  case "$cmd" in
+    claude)
+      # Use 'claude auth status' which exits 0 when logged in
+      if ! claude auth status >/dev/null 2>&1; then
+        echo "Error: Claude authentication required. Run: claude auth login" >&2
+        _AGENT_AUTH_CACHE[$cmd]=1
+        return 1
+      fi
+      ;;
+    codex)
+      # Check for auth file existence and non-empty (fast path)
+      local auth_file="$HOME/.codex/auth.json"
+      if [[ ! -s "$auth_file" ]]; then
+        echo "Error: Codex authentication required. Run: codex login" >&2
+        _AGENT_AUTH_CACHE[$cmd]=1
+        return 1
+      fi
+      ;;
+    *)
+      # Unknown agent - assume authenticated (don't block unknown agents)
+      _AGENT_AUTH_CACHE[$cmd]=0
+      return 0
+      ;;
+  esac
+
+  _AGENT_AUTH_CACHE[$cmd]=0
+  return 0
+}
+
 # ============================================================================
 # AGENT LAUNCH — AUTONOMOUS (SKIP) MODE
 # ============================================================================

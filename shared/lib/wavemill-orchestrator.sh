@@ -140,6 +140,12 @@ for t in "${TASKS[@]}"; do
       TASK_MODEL=""
     fi
 
+    # Check authentication only if router selected a different agent
+    if [[ "$TASK_AGENT_CMD" != "$AGENT_CMD" ]] && ! agent_check_auth "$TASK_AGENT_CMD"; then
+      echo "Error: Agent '$TASK_AGENT_CMD' not authenticated for task $ISSUE" >&2
+      exit 1
+    fi
+
     # Override AGENT_CMD for pretrust_directory and other functions in this subshell
     AGENT_CMD="$TASK_AGENT_CMD"
 
