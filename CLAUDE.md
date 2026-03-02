@@ -17,6 +17,77 @@ This repository provides shared tooling for both Claude and Codex AI workflows:
 2. **Config Schema**: Both `claude/config.json` and `codex/config.json` follow `claude/config.schema.json`; wavemill runtime config follows `wavemill-config.schema.json`
 3. **Shared Templates**: `tools/prompts/` templates are consumed by both toolchains
 4. **State Separation**: Claude uses `features/`, `bugs/`, `epics/`; Codex uses `.codex/state/`
+5. **Thin Tools Pattern**: Tools in `tools/` are thin wrappers (typically <150 lines) that call shared business logic modules in `shared/lib/`. Business logic is reusable, testable, and documented with comprehensive JSDoc.
+
+### Shared Business Logic Modules
+
+All business logic lives in `shared/lib/` for reusability across CLI tools, commands, and workflows:
+
+#### Issue Expansion
+- `issue-expander.ts` - Issue parsing, context formatting, LLM expansion, drift checking
+- `codebase-context-gatherer.ts` - Directory tree, git activity, subsystem search, file discovery
+- `task-packet-utils.ts` - Task packet splitting, validation, format detection
+- `validation-formatter.ts` - Format validation issues for display
+
+#### Plan Decomposition
+- `plan-decomposer.ts` - LLM-powered initiative decomposition, research phase
+- `plan-validator.ts` - Validate plan structure and schema
+- `initiative-lister.ts` - List and rank Linear initiatives
+- `initiative-decomposer.ts` - Full decomposition workflow with Linear integration
+
+#### Evaluation
+- `eval-orchestrator.ts` - Complete evaluation workflow orchestration
+- `eval-context-gatherer.ts` - Context gathering with auto-detection
+- `eval-formatter.ts` - Detailed eval record formatting
+- `eval-summary-printer.ts` - One-line eval summaries
+- `eval-record-builder.ts` - Enrich records with metadata
+- `intervention-detector.ts` - Detect human interventions
+- `difficulty-analyzer.ts` - Analyze PR difficulty
+- `task-context-analyzer.ts` - Analyze task characteristics
+- `repo-context-analyzer.ts` - Analyze repository context
+- `outcome-collectors.ts` - Collect CI, test, review outcomes
+
+#### Utilities
+- `prompt-utils.ts` - Prompt template filling
+- `llm-cli.ts` - Claude CLI integration
+- `string-utils.ts` - String manipulation (kebab-case, etc.)
+- `shell-utils.ts` - Safe shell command execution
+- `linear.js` - Linear API client
+- `config.ts` - Centralized config loading
+
+### Refactoring Pattern
+
+When creating or refactoring tools:
+
+1. **Extract business logic** to focused modules in `shared/lib/`:
+   ```typescript
+   // shared/lib/my-feature.ts
+   export async function doSomething(options: Options): Promise<Result> {
+     // Business logic here
+   }
+   ```
+
+2. **Keep tools thin** - just CLI argument parsing and orchestration:
+   ```typescript
+   // tools/my-tool.ts
+   import { runTool } from '../shared/lib/tool-runner.ts';
+   import { doSomething } from '../shared/lib/my-feature.ts';
+
+   runTool({
+     name: 'my-tool',
+     description: 'Does something useful',
+     async run({ args, positional }) {
+       const result = await doSomething({ ...args });
+       console.log(result);
+     },
+   });
+   ```
+
+3. **Benefits**:
+   - Business logic is reusable across tools, commands, and workflows
+   - Easier to test (test modules, not CLI wrappers)
+   - Better separation of concerns
+   - Self-documenting with JSDoc
 
 ## Commands
 

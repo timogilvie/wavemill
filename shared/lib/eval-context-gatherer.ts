@@ -14,6 +14,8 @@
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
+import path from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
 import { escapeShellArg, execShellCommand } from './shell-utils.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -142,4 +144,95 @@ export function gatherEvalContext(params: GatherContextParams): EvalContext {
     prUrl: finalPrUrl,
     issueData,
   };
+}
+
+// ────────────────────────────────────────────────────────────────
+// Auto-Detection
+// ────────────────────────────────────────────────────────────────
+
+/**
+ * Auto-detect context from workflow state or current branch.
+ *
+ * Falls back in this order:
+ * 1. .wavemill/workflow-state.json (most recent task with PR)
+ * 2. Current branch's open PR (via gh CLI)
+ *
+ * @param repoDir - Repository directory
+ * @returns Detected context (issueId, prNumber, branch, prUrl)
+ */
+export function autoDetectContext(repoDir: string): {
+  issueId: string;
+  prNumber: string;
+  branch: string;
+  prUrl: string;
+} {
+  let issueId = '';
+  let prNumber = '';
+  let branch = '';
+  let prUrl = '';
+
+  // Try workflow state file
+  const stateFile = path.join(repoDir, '.wavemill', 'workflow-state.json');
+  if (existsSync(stateFile)) {
+    try {
+      const state = JSON.parse(readFileSync(stateFile, 'utf-8'));
+      const tasks = state.tasks || {};
+
+      // Find most recently updated task that has a PR
+      let mostRecent: any = null;
+      let mostRecentTime = '';
+      for (const [id, task] of Object.entries(tasks)) {
+        const t = task as any;
+        if (t.pr && (!mostRecentTime || t.updated > mostRecentTime)) {
+          mostRecent = { id, ...t };
+          mostRecentTime = t.updated;
+        }
+      }
+
+      if (mostRecent) {
+        issueId = mostRecent.id;
+        prNumber = String(mostRecent.pr);
+        branch = mostRecent.branch || '';
+      }
+    } catch {
+      // Best-effort
+    }
+  }
+
+  // Try current branch PR
+  if (!prNumber) {
+    try {
+      branch = execShellCommand('git branch --show-current', {
+        encoding: 'utf-8',
+        cwd: repoDir,
+      }).trim();
+
+      const prJson = execShellCommand(
+        'gh pr view --json number,url 2>/dev/null || echo "{}"',
+        {
+          encoding: 'utf-8',
+          cwd: repoDir,
+        }
+      ).trim();
+
+      const prData = JSON.parse(prJson);
+      if (prData.number) {
+        prNumber = String(prData.number);
+        prUrl = prData.url || '';
+      }
+    } catch {
+      // Best-effort
+    }
+  }
+
+  if (!issueId && !prNumber) {
+    throw new Error(
+      'No workflow context found. Auto-detection requires either:\n' +
+        '  1. .wavemill/workflow-state.json with a completed task\n' +
+        '  2. An open PR on the current branch\n\n' +
+        'Or provide explicit arguments: --issue HOK-123 --pr 456'
+    );
+  }
+
+  return { issueId, prNumber, branch, prUrl };
 }
