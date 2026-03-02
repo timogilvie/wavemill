@@ -14,8 +14,83 @@ import { callClaude } from './llm-cli.ts';
 import { fillPromptTemplate } from './prompt-utils.ts';
 
 // ────────────────────────────────────────────────────────────────
+// Types
+// ────────────────────────────────────────────────────────────────
+
+/**
+ * Individual issue in a decomposed plan.
+ */
+export interface PlanIssue {
+  /** Issue title */
+  title: string;
+  /** User story (brief narrative) */
+  user_story: string;
+  /** Detailed description */
+  description: string;
+  /** Array of dependency indices (refers to position in allIssues array) */
+  dependencies: number[];
+  /** Priority level (P0-P3) */
+  priority: string;
+}
+
+/**
+ * Milestone grouping issues together.
+ */
+export interface PlanMilestone {
+  /** Milestone name */
+  name: string;
+  /** Issues in this milestone */
+  issues: PlanIssue[];
+}
+
+/**
+ * Complete decomposed plan output from LLM.
+ */
+export interface PlanOutput {
+  /** High-level summary of the epic */
+  epic_summary: string;
+  /** Ordered list of milestones */
+  milestones: PlanMilestone[];
+}
+
+// ────────────────────────────────────────────────────────────────
 // Public API
 // ────────────────────────────────────────────────────────────────
+
+/**
+ * Convert priority string to Linear priority number.
+ *
+ * Maps:
+ * - P0 → 1 (Urgent)
+ * - P1 → 2 (High)
+ * - P2 → 3 (Normal)
+ * - P3 → 4 (Low)
+ * - Other → 3 (Normal)
+ *
+ * @param priority - Priority string (P0-P3)
+ * @returns Linear priority number (1-4)
+ *
+ * @example
+ * ```typescript
+ * priorityToNumber('P0'); // 1
+ * priorityToNumber('P2'); // 3
+ * priorityToNumber('unknown'); // 3
+ * ```
+ */
+export function priorityToNumber(priority: string): number {
+  switch (priority) {
+    case 'P0':
+      return 1; // Urgent
+    case 'P1':
+      return 2; // High
+    case 'P2':
+      return 3; // Normal
+    case 'P3':
+      return 4; // Low
+    default:
+      return 3; // Normal
+  }
+}
 
 /**
  * Decompose an initiative using Claude LLM.
