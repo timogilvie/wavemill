@@ -208,66 +208,152 @@ function getReviewLogPath(repoDir: string): string {
 }
 
 /**
+ * Ensure the metrics directory exists and is writable.
+ *
+ * This is a defensive check that prevents metrics failures from crashing the review tool.
+ * Returns false if directory cannot be created or is not writable.
+ *
+ * @param repoDir - Repository directory
+ * @param verbose - Log diagnostic information
+ * @returns true if directory is ready, false if setup failed
+ */
+function ensureMetricsDirectory(repoDir: string, verbose: boolean = false): boolean {
+  try {
+    const logPath = getReviewLogPath(repoDir);
+    const logDir = dirname(logPath);
+
+    // Try to create directory if it doesn't exist
+    if (!existsSync(logDir)) {
+      mkdirSync(logDir, { recursive: true });
+    }
+
+    // Verify directory is writable by attempting to write a test file
+    const testFile = join(logDir, '.write-test');
+    try {
+      writeFileSync(testFile, '', 'utf-8');
+      const { unlinkSync } = require('node:fs');
+      unlinkSync(testFile);
+    } catch (writeError) {
+      if (verbose) {
+        console.error(`Warning: Metrics directory is not writable: ${logDir}`);
+        console.error(`  Error: ${(writeError as Error).message}`);
+      }
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    if (verbose) {
+      console.error(`Warning: Failed to set up metrics directory`);
+      console.error(`  Error: ${(error as Error).message}`);
+    }
+    return false;
+  }
+}
+
+/**
  * Save a metric record to the review log file.
  *
  * Appends the metric as a single JSON line to the JSONL file.
+ * This function is designed to be non-intrusive - failures are logged but don't throw.
  *
  * @param metric - Metric to save
  * @param repoDir - Repository directory (default: cwd)
+ * @param verbose - Log diagnostic information
+ * @returns true if save succeeded, false if it failed
  */
-export function saveMetric(metric: ReviewMetric, repoDir: string = process.cwd()): void {
-  const logPath = getReviewLogPath(repoDir);
-  const logDir = dirname(logPath);
+export function saveMetric(
+  metric: ReviewMetric,
+  repoDir: string = process.cwd(),
+  verbose: boolean = false
+): boolean {
+  try {
+    // Early check: ensure directory is ready
+    if (!ensureMetricsDirectory(repoDir, verbose)) {
+      if (verbose) {
+        console.error('Warning: Skipping metrics save - directory not available');
+      }
+      return false;
+    }
 
-  // Ensure directory exists
-  if (!existsSync(logDir)) {
-    mkdirSync(logDir, { recursive: true });
+    const logPath = getReviewLogPath(repoDir);
+
+    // Append as single JSON line
+    const line = JSON.stringify(metric) + '\n';
+    appendFileSync(logPath, line, 'utf-8');
+
+    return true;
+  } catch (error) {
+    // Metrics failures should not crash the review tool
+    if (verbose) {
+      console.error(`Warning: Failed to save review metric`);
+      console.error(`  Error: ${(error as Error).message}`);
+    }
+    return false;
   }
-
-  // Append as single JSON line
-  const line = JSON.stringify(metric) + '\n';
-  appendFileSync(logPath, line, 'utf-8');
 }
 
 /**
  * Load all metrics from the review log file.
  *
+ * This function is defensive - it returns an empty array if the file cannot be read.
+ *
  * @param repoDir - Repository directory (default: cwd)
- * @returns Array of review metrics
+ * @param verbose - Log diagnostic information
+ * @returns Array of review metrics, or empty array if loading failed
  */
-export function loadMetrics(repoDir: string = process.cwd()): ReviewMetric[] {
-  const logPath = getReviewLogPath(repoDir);
+export function loadMetrics(
+  repoDir: string = process.cwd(),
+  verbose: boolean = false
+): ReviewMetric[] {
+  try {
+    const logPath = getReviewLogPath(repoDir);
 
-  if (!existsSync(logPath)) {
+    if (!existsSync(logPath)) {
+      return [];
+    }
+
+    const content = readFileSync(logPath, 'utf-8');
+    const lines = content.split('\n').filter((line) => line.trim().length > 0);
+
+    const metrics: ReviewMetric[] = [];
+    for (const line of lines) {
+      try {
+        const metric = JSON.parse(line) as ReviewMetric;
+        metrics.push(metric);
+      } catch (err) {
+        // Skip malformed lines
+        if (verbose) {
+          console.warn(`Warning: Skipping malformed review metric line: ${line.slice(0, 50)}...`);
+        }
+      }
+    }
+
+    return metrics;
+  } catch (error) {
+    // Return empty array on any error - metrics loading should not crash the tool
+    if (verbose) {
+      console.error(`Warning: Failed to load review metrics`);
+      console.error(`  Error: ${(error as Error).message}`);
+    }
     return [];
   }
-
-  const content = readFileSync(logPath, 'utf-8');
-  const lines = content.split('\n').filter((line) => line.trim().length > 0);
-
-  const metrics: ReviewMetric[] = [];
-  for (const line of lines) {
-    try {
-      const metric = JSON.parse(line) as ReviewMetric;
-      metrics.push(metric);
-    } catch (err) {
-      // Skip malformed lines
-      console.warn(`Warning: Skipping malformed review metric line: ${line.slice(0, 50)}...`);
-    }
-  }
-
-  return metrics;
 }
 
 /**
  * Find issue ID from feature directory context.
  *
  * Looks for selected-task.json in feature directories.
+ * This function is defensive - it returns undefined on any error.
  *
  * @param repoDir - Repository directory
+ * @param verbose - Log diagnostic information
  * @returns Issue ID or undefined
  */
-export function findIssueIdFromContext(repoDir: string): string | undefined {
+export function findIssueIdFromContext(
+  repoDir: string,
+  verbose: boolean = false
+): string | undefined {
   try {
     // Check common feature directory patterns
     const patterns = [
@@ -276,13 +362,11 @@ export function findIssueIdFromContext(repoDir: string): string | undefined {
     ];
 
     for (const pattern of patterns) {
-      const glob = pattern.replace('*', '**');
-      const { execSync } = require('node:child_process');
-
       try {
+        const { execSync } = require('node:child_process');
         const files = execSync(
           `find "${repoDir}" -path "*/${pattern}" -type f 2>/dev/null | head -1`,
-          { encoding: 'utf-8' }
+          { encoding: 'utf-8', maxBuffer: 1024 * 1024 } // 1MB buffer
         ).trim();
 
         if (files) {
@@ -291,12 +375,18 @@ export function findIssueIdFromContext(repoDir: string): string | undefined {
           const context = JSON.parse(content);
           return context.taskId;
         }
-      } catch {
+      } catch (patternError) {
         // Continue to next pattern
+        if (verbose) {
+          console.error(`Info: Could not find issue context with pattern ${pattern}`);
+        }
       }
     }
-  } catch {
-    // No issue context available
+  } catch (error) {
+    // No issue context available - this is not an error condition
+    if (verbose) {
+      console.error(`Info: No issue context found in repository`);
+    }
   }
 
   return undefined;
@@ -329,18 +419,23 @@ function getStateFilePath(repoDir: string): string {
  * Load ongoing review run state if it exists and is recent.
  *
  * State is considered stale after 1 hour.
+ * This function is defensive - it returns undefined on any error.
  *
  * @param repoDir - Repository directory
+ * @param verbose - Log diagnostic information
  * @returns State or undefined
  */
-export function loadReviewRunState(repoDir: string): ReviewRunState | undefined {
-  const statePath = getStateFilePath(repoDir);
-
-  if (!existsSync(statePath)) {
-    return undefined;
-  }
-
+export function loadReviewRunState(
+  repoDir: string,
+  verbose: boolean = false
+): ReviewRunState | undefined {
   try {
+    const statePath = getStateFilePath(repoDir);
+
+    if (!existsSync(statePath)) {
+      return undefined;
+    }
+
     const content = readFileSync(statePath, 'utf-8');
     const state = JSON.parse(content) as ReviewRunState;
 
@@ -351,12 +446,19 @@ export function loadReviewRunState(repoDir: string): ReviewRunState | undefined 
 
     if (hoursSinceCreated > 1) {
       // Stale state, discard it
+      if (verbose) {
+        console.error(`Info: Discarding stale review run state (${hoursSinceCreated.toFixed(1)} hours old)`);
+      }
       return undefined;
     }
 
     return state;
-  } catch {
-    // Malformed state file
+  } catch (error) {
+    // Return undefined on any error - state loading should not crash the tool
+    if (verbose) {
+      console.error(`Warning: Failed to load review run state`);
+      console.error(`  Error: ${(error as Error).message}`);
+    }
     return undefined;
   }
 }
@@ -364,41 +466,74 @@ export function loadReviewRunState(repoDir: string): ReviewRunState | undefined 
 /**
  * Save review run state to disk.
  *
+ * This function is designed to be non-intrusive - failures are logged but don't throw.
+ *
  * @param metric - Current metric being built
  * @param repoDir - Repository directory
+ * @param verbose - Log diagnostic information
+ * @returns true if save succeeded, false if it failed
  */
-export function saveReviewRunState(metric: ReviewMetric, repoDir: string): void {
-  const statePath = getStateFilePath(repoDir);
-  const stateDir = dirname(statePath);
+export function saveReviewRunState(
+  metric: ReviewMetric,
+  repoDir: string,
+  verbose: boolean = false
+): boolean {
+  try {
+    // Early check: ensure directory is ready
+    if (!ensureMetricsDirectory(repoDir, verbose)) {
+      if (verbose) {
+        console.error('Warning: Skipping review run state save - directory not available');
+      }
+      return false;
+    }
 
-  if (!existsSync(stateDir)) {
-    mkdirSync(stateDir, { recursive: true });
+    const statePath = getStateFilePath(repoDir);
+
+    const state: ReviewRunState = {
+      metricId: metric.id,
+      metric,
+      createdAt: new Date().toISOString(),
+    };
+
+    writeFileSync(statePath, JSON.stringify(state, null, 2), 'utf-8');
+    return true;
+  } catch (error) {
+    // State save failures should not crash the review tool
+    if (verbose) {
+      console.error(`Warning: Failed to save review run state`);
+      console.error(`  Error: ${(error as Error).message}`);
+    }
+    return false;
   }
-
-  const state: ReviewRunState = {
-    metricId: metric.id,
-    metric,
-    createdAt: new Date().toISOString(),
-  };
-
-  writeFileSync(statePath, JSON.stringify(state, null, 2), 'utf-8');
 }
 
 /**
  * Clear review run state.
  *
+ * This function is defensive - it never throws errors.
+ *
  * @param repoDir - Repository directory
+ * @param verbose - Log diagnostic information
+ * @returns true if cleared, false if it failed (but file may not have existed)
  */
-export function clearReviewRunState(repoDir: string): void {
-  const statePath = getStateFilePath(repoDir);
+export function clearReviewRunState(repoDir: string, verbose: boolean = false): boolean {
+  try {
+    const statePath = getStateFilePath(repoDir);
 
-  if (existsSync(statePath)) {
-    try {
-      const { unlinkSync } = require('node:fs');
-      unlinkSync(statePath);
-    } catch {
-      // Ignore errors
+    if (!existsSync(statePath)) {
+      return true; // Nothing to clear
     }
+
+    const { unlinkSync } = require('node:fs');
+    unlinkSync(statePath);
+    return true;
+  } catch (error) {
+    // Clearing state is not critical - log but don't throw
+    if (verbose) {
+      console.error(`Warning: Failed to clear review run state`);
+      console.error(`  Error: ${(error as Error).message}`);
+    }
+    return false;
   }
 }
 
