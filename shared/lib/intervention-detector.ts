@@ -722,3 +722,62 @@ export function formatForJudge(summary: InterventionSummary, penalties: Interven
 
   return JSON.stringify(data, null, 2);
 }
+
+// ────────────────────────────────────────────────────────────────
+// High-Level Orchestrator
+// ────────────────────────────────────────────────────────────────
+
+/**
+ * All intervention data needed for eval in a single structure.
+ */
+export interface InterventionData {
+  /** Raw intervention summary with all events */
+  summary: InterventionSummary;
+  /** Legacy format for evaluateTask() */
+  meta: InterventionMeta[];
+  /** Structured records for eval persistence */
+  records: InterventionRecord[];
+  /** Formatted text for judge prompt */
+  text: string;
+  /** Total count of interventions */
+  totalCount: number;
+}
+
+/**
+ * Detect and format all interventions in a single call.
+ *
+ * This orchestrator consolidates:
+ * - detectAllInterventions()
+ * - toInterventionMeta()
+ * - toInterventionRecords()
+ * - formatForJudge()
+ * - loadPenalties()
+ *
+ * Returns all intervention data needed for eval persistence and judging.
+ *
+ * @param opts - Detection options (PR number, branch, worktree path, etc.)
+ * @returns Complete intervention data
+ */
+export function detectAndFormatInterventions(opts: DetectOptions): InterventionData {
+  // Load penalties
+  const penalties = loadPenalties(opts.repoDir);
+
+  // Detect all interventions
+  const summary = detectAllInterventions(opts);
+
+  // Convert to all needed formats
+  const meta = toInterventionMeta(summary);
+  const records = toInterventionRecords(summary);
+  const text = formatForJudge(summary, penalties);
+
+  // Calculate total count
+  const totalCount = summary.interventions.reduce((sum, e) => sum + e.count, 0);
+
+  return {
+    summary,
+    meta,
+    records,
+    text,
+    totalCount,
+  };
+}
