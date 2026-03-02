@@ -40,6 +40,8 @@ export interface WorkflowCostResult {
   turnCount: number;
   /** Status indicator for successful computation */
   status: 'success';
+  /** Snapshot of pricing table used for cost calculation (HOK-858) */
+  pricingUsed: Record<string, ModelPricing>;
 }
 
 /** Failure result with diagnostic information (HOK-883). */
@@ -244,6 +246,7 @@ export function computeWorkflowCost(opts: {
     : loadPricingTable(repoDir);
   let totalCostUsd = 0;
   const modelsWithCost: Record<string, ModelTokenUsage> = {};
+  const pricingUsed: Record<string, ModelPricing> = {};
 
   for (const [modelId, usage] of Object.entries(scanResult.models)) {
     const pricing = pricingTable[modelId];
@@ -251,6 +254,8 @@ export function computeWorkflowCost(opts: {
 
     if (pricing) {
       costUsd = computeModelCost(usage, pricing);
+      // Capture pricing snapshot for models that were actually used
+      pricingUsed[modelId] = pricing;
     }
     // If model not in pricing table, cost stays 0 (best-effort)
 
@@ -264,5 +269,71 @@ export function computeWorkflowCost(opts: {
     sessionCount: scanResult.sessionCount,
     turnCount: scanResult.turnCount,
     status: 'success',
+    pricingUsed,
+  };
+}
+
+// ────────────────────────────────────────────────────────────────
+// Cost Recalculation (HOK-858)
+// ────────────────────────────────────────────────────────────────
+
+/**
+ * Recalculate workflow cost using a different pricing table.
+ *
+ * Takes an existing WorkflowCostResult and recalculates the costs
+ * using the provided pricing table, preserving the original token usage.
+ * This enables cost normalization when pricing changes over time.
+ *
+ * @param originalResult - Original cost computation result
+ * @param newPricing - New pricing table to use for recalculation
+ * @returns New result with recalculated costs and updated pricing snapshot
+ *
+ * @example
+ * ```typescript
+ * // Recalculate an old eval with current pricing
+ * const currentPricing = loadPricingTable();
+ * const recalculated = recalculateWorkflowCost(oldResult, currentPricing);
+ * console.log(`Original: $${oldResult.totalCostUsd}`);
+ * console.log(`Current pricing: $${recalculated.totalCostUsd}`);
+ * ```
+ */
+export function recalculateWorkflowCost(
+  originalResult: WorkflowCostResult,
+  newPricing: PricingTable
+): WorkflowCostResult {
+  // Recalculate costs for each model using new pricing
+  let totalCostUsd = 0;
+  const modelsWithCost: Record<string, ModelTokenUsage> = {};
+  const pricingUsed: Record<string, ModelPricing> = {};
+
+  for (const [modelId, usage] of Object.entries(originalResult.models)) {
+    const pricing = newPricing[modelId];
+    let costUsd = 0;
+
+    if (pricing) {
+      // Extract usage without costUsd for recalculation
+      const usageOnly: Omit<ModelTokenUsage, 'costUsd'> = {
+        inputTokens: usage.inputTokens,
+        cacheCreationTokens: usage.cacheCreationTokens,
+        cacheReadTokens: usage.cacheReadTokens,
+        outputTokens: usage.outputTokens,
+      };
+      costUsd = computeModelCost(usageOnly, pricing);
+      // Capture the pricing that was used
+      pricingUsed[modelId] = pricing;
+    }
+    // If model not in new pricing table, cost stays 0 (best-effort)
+
+    modelsWithCost[modelId] = { ...usage, costUsd };
+    totalCostUsd += costUsd;
+  }
+
+  return {
+    totalCostUsd,
+    models: modelsWithCost,
+    sessionCount: originalResult.sessionCount,
+    turnCount: originalResult.turnCount,
+    status: 'success',
+    pricingUsed,
   };
 }

@@ -95,7 +95,7 @@ export function attachRepoContextMetadata(
  * Attach workflow cost computation metadata to eval record.
  *
  * Handles both success and failure cases:
- * - Success: sets workflowCost, workflowTokenUsage, workflowCostStatus
+ * - Success: sets workflowCost, workflowTokenUsage, workflowCostStatus, pricingSnapshot
  * - Failure: sets workflowCostStatus, workflowCostDiagnostics
  */
 export function attachWorkflowCostMetadata(
@@ -111,6 +111,7 @@ export function attachWorkflowCostMetadata(
     record.workflowCost = success.totalCostUsd;
     record.workflowTokenUsage = success.models;
     record.workflowCostStatus = 'success';
+    record.pricingSnapshot = success.pricingUsed;
   } else {
     const failure = costOutcome as WorkflowCostFailure;
     record.workflowCostStatus = failure.status;

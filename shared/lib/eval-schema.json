@@ -222,6 +222,37 @@
         "additionalProperties": false
       }
     },
+    "pricingSnapshot": {
+      "type": "object",
+      "description": "Snapshot of the pricing table used for workflowCost calculation (HOK-858). Maps model IDs to their pricing at the time of evaluation.",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "inputCostPerMTok": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cost in USD per million input tokens."
+          },
+          "outputCostPerMTok": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cost in USD per million output tokens."
+          },
+          "cacheWriteCostPerMTok": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cost in USD per million cache creation (write) input tokens."
+          },
+          "cacheReadCostPerMTok": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Cost in USD per million cache read input tokens."
+          }
+        },
+        "required": ["inputCostPerMTok", "outputCostPerMTok"],
+        "additionalProperties": false
+      }
+    },
     "difficultyBand": {
       "type": "string",
       "enum": ["trivial", "easy", "medium", "hard", "very_hard"],

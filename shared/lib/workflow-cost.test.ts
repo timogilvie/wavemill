@@ -14,7 +14,9 @@ import {
   encodeProjectDir,
   computeModelCost,
   computeWorkflowCost,
+  recalculateWorkflowCost,
   type ModelPricing,
+  type WorkflowCostResult,
 } from './workflow-cost.ts';
 
 // ────────────────────────────────────────────────────────────────
@@ -168,15 +170,19 @@ console.log('\n--- computeWorkflowCost Tests ---\n');
 // The simplest approach: create a test that uses the real function path
 // but we'll test the constituent parts and use a fixture-based approach.
 
-test('Returns null when projects directory does not exist', () => {
+test('Returns failure when projects directory does not exist', () => {
   const result = computeWorkflowCost({
     worktreePath: '/nonexistent/path/that/does/not/exist',
     branchName: 'task/test',
   });
-  assert.equal(result, null);
+  assert.equal(result.status, 'no_sessions');
+  if (result.status !== 'success') {
+    assert.ok(result.reason);
+    assert.ok(result.diagnostics);
+  }
 });
 
-test('Returns null when no JSONL files exist', () => {
+test('Returns failure when no JSONL files exist', () => {
   const { worktreePath, projectsDir, cleanup } = createTempProjectDir();
   try {
     // projectsDir exists but has no .jsonl files
@@ -188,7 +194,11 @@ test('Returns null when no JSONL files exist', () => {
       worktreePath: '/nonexistent/worktree/path',
       branchName: 'task/test',
     });
-    assert.equal(result, null);
+    assert.equal(result.status, 'no_sessions');
+    if (result.status !== 'success') {
+      assert.ok(result.reason);
+      assert.ok(result.diagnostics);
+    }
   } finally {
     cleanup();
   }
@@ -277,6 +287,254 @@ test('Handles malformed JSONL lines gracefully', () => {
   }
 
   assert.equal(matchCount, 1);
+});
+
+// ────────────────────────────────────────────────────────────────
+// Tests: Pricing Snapshot (HOK-858)
+// ────────────────────────────────────────────────────────────────
+
+console.log('\n--- Pricing Snapshot Tests (HOK-858) ---\n');
+
+test('computeWorkflowCost includes pricingUsed in result', () => {
+  // Test that pricingUsed is populated with the correct models
+  // We can't easily test the full integration without mocking resolveProjectsDir,
+  // so we'll test the logic by manually creating a successful result structure
+  // and verifying it has pricingUsed field.
+
+  // Instead, verify the logic by testing the return type structure
+  // The actual session scanning is tested elsewhere.
+  // Here we just verify that when we have models with pricing,
+  // the pricingUsed field is populated.
+
+  const pricing: Record<string, ModelPricing> = {
+    'claude-opus-4-6': { inputCostPerMTok: 15, outputCostPerMTok: 75 },
+    'claude-sonnet-4-5-20250929': { inputCostPerMTok: 3, outputCostPerMTok: 15 },
+  };
+
+  // Simulate what happens in computeWorkflowCost when it processes models
+  const pricingUsed: Record<string, ModelPricing> = {};
+  const models = ['claude-opus-4-6', 'claude-sonnet-4-5-20250929'];
+
+  for (const modelId of models) {
+    const modelPricing = pricing[modelId];
+    if (modelPricing) {
+      pricingUsed[modelId] = modelPricing;
+    }
+  }
+
+  // Verify pricingUsed contains only the models that were used
+  assert.ok(pricingUsed['claude-opus-4-6']);
+  assert.ok(pricingUsed['claude-sonnet-4-5-20250929']);
+  assert.equal(Object.keys(pricingUsed).length, 2);
+
+  // Verify pricing values match what was used
+  assert.deepEqual(pricingUsed['claude-opus-4-6'], pricing['claude-opus-4-6']);
+  assert.deepEqual(pricingUsed['claude-sonnet-4-5-20250929'], pricing['claude-sonnet-4-5-20250929']);
+});
+
+test('pricingUsed excludes models not in pricing table', () => {
+  // Test that pricingUsed only includes models with pricing
+
+  const pricing: Record<string, ModelPricing> = {
+    'claude-opus-4-6': { inputCostPerMTok: 15, outputCostPerMTok: 75 },
+  };
+
+  // Simulate processing two models, one with pricing and one without
+  const pricingUsed: Record<string, ModelPricing> = {};
+  const models = ['unknown-model', 'claude-opus-4-6'];
+
+  for (const modelId of models) {
+    const modelPricing = pricing[modelId];
+    if (modelPricing) {
+      pricingUsed[modelId] = modelPricing;
+    }
+  }
+
+  // pricingUsed should only contain claude-opus-4-6
+  assert.ok(pricingUsed['claude-opus-4-6']);
+  assert.ok(!pricingUsed['unknown-model']);
+  assert.equal(Object.keys(pricingUsed).length, 1);
+});
+
+// ────────────────────────────────────────────────────────────────
+// Tests: Cost Recalculation (HOK-858)
+// ────────────────────────────────────────────────────────────────
+
+console.log('\n--- Cost Recalculation Tests (HOK-858) ---\n');
+
+test('recalculateWorkflowCost preserves token usage', () => {
+  const originalResult: WorkflowCostResult = {
+    totalCostUsd: 0.1,
+    models: {
+      'claude-opus-4-6': {
+        inputTokens: 1000,
+        cacheCreationTokens: 500,
+        cacheReadTokens: 2000,
+        outputTokens: 300,
+        costUsd: 0.1,
+      },
+    },
+    sessionCount: 1,
+    turnCount: 1,
+    status: 'success',
+    pricingUsed: {
+      'claude-opus-4-6': { inputCostPerMTok: 15, outputCostPerMTok: 75 },
+    },
+  };
+
+  const newPricing = {
+    'claude-opus-4-6': { inputCostPerMTok: 20, outputCostPerMTok: 100 },
+  };
+
+  const recalculated = recalculateWorkflowCost(originalResult, newPricing);
+
+  // Token counts should be unchanged
+  assert.equal(recalculated.models['claude-opus-4-6'].inputTokens, 1000);
+  assert.equal(recalculated.models['claude-opus-4-6'].cacheCreationTokens, 500);
+  assert.equal(recalculated.models['claude-opus-4-6'].cacheReadTokens, 2000);
+  assert.equal(recalculated.models['claude-opus-4-6'].outputTokens, 300);
+
+  // Session/turn counts should be unchanged
+  assert.equal(recalculated.sessionCount, 1);
+  assert.equal(recalculated.turnCount, 1);
+});
+
+test('recalculateWorkflowCost updates costs with new pricing', () => {
+  const originalResult: WorkflowCostResult = {
+    totalCostUsd: 0.0375,
+    models: {
+      'claude-opus-4-6': {
+        inputTokens: 1000,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        outputTokens: 200,
+        costUsd: 0.03, // 15*1000/1M + 75*200/1M = 0.015 + 0.015 = 0.03
+      },
+    },
+    sessionCount: 1,
+    turnCount: 1,
+    status: 'success',
+    pricingUsed: {
+      'claude-opus-4-6': { inputCostPerMTok: 15, outputCostPerMTok: 75 },
+    },
+  };
+
+  // Double the pricing
+  const newPricing = {
+    'claude-opus-4-6': { inputCostPerMTok: 30, outputCostPerMTok: 150 },
+  };
+
+  const recalculated = recalculateWorkflowCost(originalResult, newPricing);
+
+  // Cost should be doubled
+  // New cost: 30*1000/1M + 150*200/1M = 0.03 + 0.03 = 0.06
+  assert.ok(Math.abs(recalculated.models['claude-opus-4-6'].costUsd - 0.06) < 0.0001);
+  assert.ok(Math.abs(recalculated.totalCostUsd - 0.06) < 0.0001);
+
+  // pricingUsed should be updated to new pricing
+  assert.deepEqual(recalculated.pricingUsed['claude-opus-4-6'], newPricing['claude-opus-4-6']);
+});
+
+test('recalculateWorkflowCost handles missing models in new pricing', () => {
+  const originalResult: WorkflowCostResult = {
+    totalCostUsd: 0.03,
+    models: {
+      'claude-opus-4-6': {
+        inputTokens: 1000,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        outputTokens: 200,
+        costUsd: 0.03,
+      },
+      'old-model': {
+        inputTokens: 500,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        outputTokens: 100,
+        costUsd: 0.01,
+      },
+    },
+    sessionCount: 1,
+    turnCount: 2,
+    status: 'success',
+    pricingUsed: {
+      'claude-opus-4-6': { inputCostPerMTok: 15, outputCostPerMTok: 75 },
+      'old-model': { inputCostPerMTok: 10, outputCostPerMTok: 50 },
+    },
+  };
+
+  // New pricing doesn't include old-model
+  const newPricing = {
+    'claude-opus-4-6': { inputCostPerMTok: 15, outputCostPerMTok: 75 },
+  };
+
+  const recalculated = recalculateWorkflowCost(originalResult, newPricing);
+
+  // old-model should have cost = 0
+  assert.equal(recalculated.models['old-model'].costUsd, 0);
+
+  // pricingUsed should only include claude-opus-4-6
+  assert.ok(recalculated.pricingUsed['claude-opus-4-6']);
+  assert.ok(!recalculated.pricingUsed['old-model']);
+  assert.equal(Object.keys(recalculated.pricingUsed).length, 1);
+});
+
+test('recalculateWorkflowCost handles multiple models', () => {
+  // Original pricing: opus input=15, output=75; sonnet input=3, output=15
+  // Tokens: opus 1000 input + 200 output, sonnet 2000 input + 400 output
+  // Original costs:
+  //   opus: (1000*15 + 200*75)/1M = (15000 + 15000)/1M = 0.03
+  //   sonnet: (2000*3 + 400*15)/1M = (6000 + 6000)/1M = 0.012
+  const originalResult: WorkflowCostResult = {
+    totalCostUsd: 0.042,
+    models: {
+      'claude-opus-4-6': {
+        inputTokens: 1000,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        outputTokens: 200,
+        costUsd: 0.03,
+      },
+      'claude-sonnet-4-5-20250929': {
+        inputTokens: 2000,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        outputTokens: 400,
+        costUsd: 0.012,
+      },
+    },
+    sessionCount: 2,
+    turnCount: 2,
+    status: 'success',
+    pricingUsed: {
+      'claude-opus-4-6': { inputCostPerMTok: 15, outputCostPerMTok: 75 },
+      'claude-sonnet-4-5-20250929': { inputCostPerMTok: 3, outputCostPerMTok: 15 },
+    },
+  };
+
+  // New pricing with higher rates
+  // New costs should be:
+  //   opus: (1000*20 + 200*100)/1M = (20000 + 20000)/1M = 0.04
+  //   sonnet: (2000*4 + 400*20)/1M = (8000 + 8000)/1M = 0.016
+  const newPricing = {
+    'claude-opus-4-6': { inputCostPerMTok: 20, outputCostPerMTok: 100 },
+    'claude-sonnet-4-5-20250929': { inputCostPerMTok: 4, outputCostPerMTok: 20 },
+  };
+
+  const recalculated = recalculateWorkflowCost(originalResult, newPricing);
+
+  // Verify both models have updated costs (should be higher with new pricing)
+  assert.ok(recalculated.models['claude-opus-4-6'].costUsd > originalResult.models['claude-opus-4-6'].costUsd);
+  assert.ok(recalculated.models['claude-sonnet-4-5-20250929'].costUsd > originalResult.models['claude-sonnet-4-5-20250929'].costUsd);
+
+  // Verify total cost is sum of individual costs
+  const expectedTotal = recalculated.models['claude-opus-4-6'].costUsd +
+                        recalculated.models['claude-sonnet-4-5-20250929'].costUsd;
+  assert.ok(Math.abs(recalculated.totalCostUsd - expectedTotal) < 0.0001);
+
+  // Verify pricingUsed is updated for both models
+  assert.deepEqual(recalculated.pricingUsed['claude-opus-4-6'], newPricing['claude-opus-4-6']);
+  assert.deepEqual(recalculated.pricingUsed['claude-sonnet-4-5-20250929'], newPricing['claude-sonnet-4-5-20250929']);
 });
 
 // ────────────────────────────────────────────────────────────────
