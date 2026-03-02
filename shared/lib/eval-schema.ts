@@ -5,8 +5,17 @@
  * human-readable bands, plus the {@link EvalRecord} type that captures
  * a complete eval result.
  *
+ * ## Schema Changelog
+ *
+ * - **1.0.0**: Initial schema with core eval fields
+ * - **1.1.0**: Added `pricingSnapshot` field (HOK-858) to capture pricing
+ *   table snapshot at time of evaluation, enabling cost normalization when
+ *   pricing changes over time
+ *
  * @module eval-schema
  */
+
+import type { ModelPricing } from './workflow-cost.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Scoring Rubric
@@ -656,6 +665,9 @@ export interface EvalRecord {
     totalAssistantTurns?: number;
     branchMismatches?: number;
   };
+
+  /** Snapshot of the pricing table used for workflowCost calculation (HOK-858) */
+  pricingSnapshot?: Record<string, ModelPricing>;
 
   /** Difficulty band classification (e.g. "easy", "medium", "hard") */
   difficultyBand?: DifficultyBand;
