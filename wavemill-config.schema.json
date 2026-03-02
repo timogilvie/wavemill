@@ -428,6 +428,15 @@
           "type": "string",
           "default": ".wavemill/review-log.json",
           "description": "Path to review metrics log file (JSONL format). Relative paths resolve against repo root. Tracks iteration count, findings, and outcomes for each review run."
+        },
+        "personas": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["general", "security", "performance", "correctness", "design"]
+          },
+          "default": ["general"],
+          "description": "Active reviewer personas for code review. Each persona focuses on specific concerns. The 'design' persona requires ui.creativeDirection: true to be enabled."
         }
       },
       "additionalProperties": false

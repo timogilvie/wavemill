@@ -11,7 +11,7 @@ import { resolve } from 'node:path';
 import {
   gatherReviewContext,
 } from './review-context-gatherer.ts';
-import { runReview, type ReviewResult, type ReviewFinding } from './review-engine.ts';
+import { runReview, type ReviewResult, type ReviewFinding, type ReviewerPersona } from './review-engine.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Types
@@ -28,10 +28,12 @@ export interface ReviewOptions {
   uiOnly?: boolean;
   /** Print verbose output */
   verbose?: boolean;
+  /** List of reviewer personas to run */
+  reviewers?: ReviewerPersona[];
 }
 
 // Re-export types from review-engine for backward compatibility
-export type { ReviewFinding, ReviewResult } from './review-engine.ts';
+export type { ReviewFinding, ReviewResult, ReviewerPersona } from './review-engine.ts';
 
 
 // ────────────────────────────────────────────────────────────────
@@ -62,5 +64,6 @@ export async function reviewChanges(
   return runReview(context, repoDir, {
     skipUi: options.skipUi,
     verbose: options.verbose,
+    reviewers: options.reviewers,
   });
 }

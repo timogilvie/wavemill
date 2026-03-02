@@ -26,17 +26,21 @@ const __dirname = dirname(__filename);
 // Module-level cache
 // ────────────────────────────────────────────────────────────────
 
-let _promptTemplate: string | null = null;
+const _promptTemplateCache = new Map<string, string>();
 
 // ────────────────────────────────────────────────────────────────
 // Types
 // ────────────────────────────────────────────────────────────────
+
+export type ReviewerPersona = 'general' | 'security' | 'performance' | 'correctness' | 'design';
 
 export interface ReviewFinding {
   severity: 'blocker' | 'warning';
   location: string;
   category: string;
   description: string;
+  /** Personas that flagged this finding */
+  reviewers?: ReviewerPersona[];
 }
 
 export interface ReviewResult {
@@ -63,6 +67,8 @@ export interface ReviewEngineOptions {
   skipUi?: boolean;
   /** Verbose logging */
   verbose?: boolean;
+  /** List of reviewer personas to run (default: ['general']) */
+  reviewers?: ReviewerPersona[];
 }
 
 interface JudgeConfig {
@@ -111,34 +117,38 @@ function loadConfig(repoDir: string): Config {
 }
 
 // ────────────────────────────────────────────────────────────────
-// Prompt Template
+// Prompt Template Loading
 // ────────────────────────────────────────────────────────────────
 
 /**
- * Load the review prompt template from tools/prompts/review.md
- * Caches the template after first load to avoid redundant disk reads.
+ * Load persona-specific review prompt template from tools/prompts/review-{persona}.md
+ * Caches templates after first load to avoid redundant disk reads.
+ *
+ * @param persona - Reviewer persona (general, security, performance, correctness, design)
+ * @returns Prompt template string
  */
-function loadPromptTemplate(): string {
+function loadPersonaPromptTemplate(persona: ReviewerPersona): string {
   // Return cached template if available
-  if (_promptTemplate) {
-    return _promptTemplate;
+  if (_promptTemplateCache.has(persona)) {
+    return _promptTemplateCache.get(persona)!;
   }
 
   // Load and cache template
-  const promptPath = join(__dirname, '../../tools/prompts/review.md');
+  const promptPath = join(__dirname, `../../tools/prompts/review-${persona}.md`);
   if (!existsSync(promptPath)) {
     throw new Error(
-      `Review prompt template not found at: ${promptPath}\n` +
+      `Review prompt template not found for persona "${persona}" at: ${promptPath}\n` +
       `  This is likely a repository installation issue.\n` +
       `  Troubleshooting:\n` +
       `    - Verify the tools/prompts/ directory exists\n` +
-      `    - Check that review.md is present in that directory\n` +
+      `    - Check that review-${persona}.md is present in that directory\n` +
       `    - If running from a symlinked install, verify symlinks are correct`
     );
   }
 
+  let template: string;
   try {
-    _promptTemplate = readFileSync(promptPath, 'utf-8');
+    template = readFileSync(promptPath, 'utf-8');
   } catch (error) {
     throw new Error(
       `Failed to read review prompt template at: ${promptPath}\n` +
@@ -150,7 +160,41 @@ function loadPromptTemplate(): string {
     );
   }
 
-  return _promptTemplate;
+  _promptTemplateCache.set(persona, template);
+  return template;
+}
+
+/**
+ * Filter reviewer personas based on config and context.
+ *
+ * - Design persona requires ui.creativeDirection: true in config
+ * - Design persona requires UI changes in diff
+ *
+ * @param requested - Personas requested by caller
+ * @param repoDir - Repository directory for config loading
+ * @param hasUiChanges - Whether diff includes UI file changes
+ * @returns Filtered list of enabled personas
+ */
+function filterEnabledPersonas(
+  requested: ReviewerPersona[],
+  repoDir: string,
+  hasUiChanges: boolean
+): ReviewerPersona[] {
+  const config = loadWavemillConfig(repoDir);
+
+  return requested.filter(persona => {
+    if (persona === 'design') {
+      // Design persona requires ui.creativeDirection: true
+      if (!config.ui?.creativeDirection) {
+        return false;
+      }
+      // Design persona requires UI changes
+      if (!hasUiChanges) {
+        return false;
+      }
+    }
+    return true;
+  });
 }
 
 /**
@@ -475,64 +519,101 @@ async function runReviewWithRetry(
 }
 
 // ────────────────────────────────────────────────────────────────
-// Main Entry Point
+// Finding Deduplication
 // ────────────────────────────────────────────────────────────────
 
 /**
- * Run review on provided context.
- *
- * Core engine that handles:
- * 1. Configuration loading
- * 2. Template loading and filling
- * 3. LLM invocation with retry
- * 4. Response parsing
- *
- * @param context - Review context (diff, task packet, plan, design context)
- * @param repoDir - Repository directory for config loading
- * @param options - Optional overrides for model, timeout, retry behavior
- * @returns ReviewResult with verdict and findings
+ * Calculate text similarity score using word overlap.
+ * Returns value between 0 (no overlap) and 1 (identical).
  */
-export async function runReview(
+function similarityScore(a: string, b: string): number {
+  const wordsA = new Set(a.toLowerCase().split(/\s+/).filter(w => w.length > 3));
+  const wordsB = new Set(b.toLowerCase().split(/\s+/).filter(w => w.length > 3));
+
+  if (wordsA.size === 0 && wordsB.size === 0) return 1;
+  if (wordsA.size === 0 || wordsB.size === 0) return 0;
+
+  const intersection = new Set([...wordsA].filter(w => wordsB.has(w)));
+  return (2 * intersection.size) / (wordsA.size + wordsB.size);
+}
+
+/**
+ * Deduplicate findings across multiple reviewers.
+ *
+ * Findings are considered duplicates if:
+ * - Same location (file:line)
+ * - Same category
+ * - Similar description (>70% word overlap)
+ *
+ * When merging duplicates:
+ * - Keep first description encountered
+ * - Combine reviewers from all duplicates
+ * - Upgrade severity to 'blocker' if any duplicate is a blocker
+ *
+ * @param findings - Array of findings from multiple reviewers
+ * @returns Deduplicated findings with reviewer attribution
+ */
+function deduplicateFindings(findings: ReviewFinding[]): ReviewFinding[] {
+  const merged: ReviewFinding[] = [];
+
+  for (const finding of findings) {
+    // Look for existing finding with same location and similar description
+    const existing = merged.find(f =>
+      f.location === finding.location &&
+      f.category === finding.category &&
+      similarityScore(f.description, finding.description) > 0.7
+    );
+
+    if (existing) {
+      // Merge: combine reviewers, upgrade severity if needed
+      const existingReviewers = existing.reviewers || [];
+      const newReviewers = finding.reviewers || [];
+      existing.reviewers = [...existingReviewers, ...newReviewers];
+
+      // Upgrade to blocker if any reviewer flagged as blocker
+      if (finding.severity === 'blocker') {
+        existing.severity = 'blocker';
+      }
+    } else {
+      // New finding
+      merged.push({ ...finding });
+    }
+  }
+
+  return merged;
+}
+
+// ────────────────────────────────────────────────────────────────
+// Single Persona Review
+// ────────────────────────────────────────────────────────────────
+
+/**
+ * Run review for a single persona.
+ *
+ * @param persona - Reviewer persona to run
+ * @param context - Review context
+ * @param repoDir - Repository directory
+ * @param model - Model to use
+ * @param timeout - Timeout in milliseconds
+ * @param maxRetries - Max retries for LLM calls
+ * @param options - Review options
+ * @returns ReviewResult with findings tagged with this persona
+ */
+async function runPersonaReview(
+  persona: ReviewerPersona,
   context: ReviewContext,
   repoDir: string,
-  options: ReviewEngineOptions = {}
+  model: string,
+  timeout: number,
+  maxRetries: number,
+  options: ReviewEngineOptions
 ): Promise<ReviewResult> {
-  // Load configuration
-  const config = loadConfig(repoDir);
+  // Load persona-specific template
+  const template = loadPersonaPromptTemplate(persona);
 
-  // Determine effective settings (options override config)
-  const model = options.model || config.judge.model;
-  const timeout = options.timeout || DEFAULT_TIMEOUT_MS;
-  const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
-  const skipDesignContext = options.skipUi === true;
-
-  if (options.verbose) {
-    console.error('=== Review Engine Configuration ===');
-    console.error(`Model: ${model}`);
-    console.error(`Timeout: ${timeout}ms`);
-    console.error(`Max retries: ${maxRetries}`);
-    console.error(`Skip UI: ${skipDesignContext}`);
-    console.error(`Design context available: ${context.designContext !== null}`);
-    console.error(`UI changes detected: ${context.metadata.hasUiChanges}`);
-    console.error('');
-  }
-
-  // Load prompt template
-  const template = loadPromptTemplate();
-
-  // Fill prompt
+  // Design persona needs design context, others skip it
+  const skipDesignContext = persona !== 'design';
   const prompt = fillPromptTemplate(template, context, skipDesignContext);
-
-  if (options.verbose) {
-    console.error('=== Review Prompt ===');
-    console.error(prompt.substring(0, 500) + '...');
-    console.error('');
-  }
-
-  // Invoke LLM
-  if (options.verbose) {
-    console.error(`Invoking ${model}...`);
-  }
 
   // Run review with retry logic
   const result = await runReviewWithRetry(
@@ -546,5 +627,150 @@ export async function runReview(
     1
   );
 
+  // Tag all findings with this persona
+  result.codeReviewFindings.forEach(f => {
+    f.reviewers = [persona];
+  });
+
+  if (result.uiFindings) {
+    result.uiFindings.forEach(f => {
+      f.reviewers = [persona];
+    });
+  }
+
   return result;
+}
+
+// ────────────────────────────────────────────────────────────────
+// Main Entry Point
+// ────────────────────────────────────────────────────────────────
+
+/**
+ * Run review on provided context with support for multiple reviewer personas.
+ *
+ * Core engine that handles:
+ * 1. Configuration loading
+ * 2. Filtering enabled personas (respects ui.creativeDirection for design persona)
+ * 3. Running review for each persona
+ * 4. Deduplicating findings across personas
+ * 5. Aggregating results
+ *
+ * @param context - Review context (diff, task packet, plan, design context)
+ * @param repoDir - Repository directory for config loading
+ * @param options - Optional overrides for model, timeout, reviewers, etc.
+ * @returns ReviewResult with deduplicated findings and persona attribution
+ */
+export async function runReview(
+  context: ReviewContext,
+  repoDir: string,
+  options: ReviewEngineOptions = {}
+): Promise<ReviewResult> {
+  // Load configuration
+  const config = loadConfig(repoDir);
+
+  // Determine effective settings (options override config)
+  const model = options.model || config.judge.model;
+  const timeout = options.timeout || DEFAULT_TIMEOUT_MS;
+  const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
+
+  // Determine reviewers to run (default: ['general'])
+  const requestedReviewers = options.reviewers || ['general'];
+  const enabledReviewers = filterEnabledPersonas(
+    requestedReviewers,
+    repoDir,
+    context.metadata.hasUiChanges
+  );
+
+  if (enabledReviewers.length === 0) {
+    throw new Error(
+      'No reviewers enabled. Check configuration and UI changes. ' +
+      'Design persona requires ui.creativeDirection: true and UI file changes.'
+    );
+  }
+
+  if (options.verbose) {
+    console.error('=== Review Engine Configuration ===');
+    console.error(`Model: ${model}`);
+    console.error(`Timeout: ${timeout}ms`);
+    console.error(`Max retries: ${maxRetries}`);
+    console.error(`Requested reviewers: ${requestedReviewers.join(', ')}`);
+    console.error(`Enabled reviewers: ${enabledReviewers.join(', ')}`);
+    console.error(`Design context available: ${context.designContext !== null}`);
+    console.error(`UI changes detected: ${context.metadata.hasUiChanges}`);
+    console.error('');
+  }
+
+  // Run each persona review in sequence
+  const results: ReviewResult[] = [];
+
+  for (const persona of enabledReviewers) {
+    if (options.verbose) {
+      console.error(`\n=== Running ${persona} reviewer ===`);
+    }
+
+    const result = await runPersonaReview(
+      persona,
+      context,
+      repoDir,
+      model,
+      timeout,
+      maxRetries,
+      options
+    );
+
+    results.push(result);
+
+    if (options.verbose) {
+      console.error(`${persona} reviewer complete: ${result.codeReviewFindings.length} code findings, ${result.uiFindings?.length || 0} UI findings`);
+    }
+  }
+
+  // Aggregate findings from all reviewers
+  const allCodeFindings = results.flatMap(r => r.codeReviewFindings);
+  const allUiFindings = results.flatMap(r => r.uiFindings || []);
+
+  // Deduplicate findings
+  const deduplicatedCodeFindings = deduplicateFindings(allCodeFindings);
+  const deduplicatedUiFindings = deduplicateFindings(allUiFindings);
+
+  // Sort findings: blockers first, then by location
+  const sortFindings = (findings: ReviewFinding[]) => {
+    findings.sort((a, b) => {
+      // Blockers before warnings
+      if (a.severity !== b.severity) {
+        return a.severity === 'blocker' ? -1 : 1;
+      }
+      // Then alphabetically by location
+      return a.location.localeCompare(b.location);
+    });
+  };
+
+  sortFindings(deduplicatedCodeFindings);
+  sortFindings(deduplicatedUiFindings);
+
+  // Determine overall verdict
+  const hasBlockers =
+    deduplicatedCodeFindings.some(f => f.severity === 'blocker') ||
+    deduplicatedUiFindings.some(f => f.severity === 'blocker');
+
+  if (options.verbose) {
+    console.error(`\n=== Review Complete ===`);
+    console.error(`Total code findings: ${deduplicatedCodeFindings.length} (${deduplicatedCodeFindings.filter(f => f.severity === 'blocker').length} blockers)`);
+    console.error(`Total UI findings: ${deduplicatedUiFindings.length} (${deduplicatedUiFindings.filter(f => f.severity === 'blocker').length} blockers)`);
+    console.error(`Verdict: ${hasBlockers ? 'NOT READY' : 'READY'}`);
+    console.error('');
+  }
+
+  return {
+    verdict: hasBlockers ? 'not_ready' : 'ready',
+    codeReviewFindings: deduplicatedCodeFindings,
+    uiFindings: deduplicatedUiFindings.length > 0 ? deduplicatedUiFindings : undefined,
+    metadata: {
+      branch: context.metadata.branch,
+      files: context.metadata.files,
+      hasUiChanges: context.metadata.hasUiChanges,
+      designContextAvailable: context.designContext !== null,
+      uiVerificationRun: deduplicatedUiFindings.length > 0,
+    },
+  };
 }
