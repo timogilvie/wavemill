@@ -127,9 +127,29 @@ function loadPromptTemplate(): string {
   // Load and cache template
   const promptPath = join(__dirname, '../../tools/prompts/review.md');
   if (!existsSync(promptPath)) {
-    throw new Error(`Review prompt template not found at: ${promptPath}`);
+    throw new Error(
+      `Review prompt template not found at: ${promptPath}\n` +
+      `  This is likely a repository installation issue.\n` +
+      `  Troubleshooting:\n` +
+      `    - Verify the tools/prompts/ directory exists\n` +
+      `    - Check that review.md is present in that directory\n` +
+      `    - If running from a symlinked install, verify symlinks are correct`
+    );
   }
-  _promptTemplate = readFileSync(promptPath, 'utf-8');
+
+  try {
+    _promptTemplate = readFileSync(promptPath, 'utf-8');
+  } catch (error) {
+    throw new Error(
+      `Failed to read review prompt template at: ${promptPath}\n` +
+      `  Error: ${(error as Error).message}\n` +
+      `  Possible causes:\n` +
+      `    - File permissions issue\n` +
+      `    - File is corrupted\n` +
+      `  Troubleshooting: Run 'cat ${promptPath}' to verify file is readable`
+    );
+  }
+
   return _promptTemplate;
 }
 
@@ -408,7 +428,16 @@ async function runReviewWithRetry(
     } else {
       throw new Error(
         'LLM returned conversational text instead of JSON after 2 attempts.\n' +
-        `Response preview: ${responseText.substring(0, 300)}`
+        `Response preview: ${responseText.substring(0, 300)}\n\n` +
+        `Possible causes:\n` +
+        `  - Model is not following JSON format instructions\n` +
+        `  - Network issues caused incomplete response\n` +
+        `  - Context is too large for the model\n\n` +
+        `Troubleshooting:\n` +
+        `  - Run with --verbose to see full LLM response\n` +
+        `  - Try a different model: REVIEW_MODEL=claude-opus-4-6 npx tsx tools/review-changes.ts\n` +
+        `  - Break changes into smaller PRs if diff is very large\n` +
+        `  - Check your network connection and retry`
       );
     }
   }

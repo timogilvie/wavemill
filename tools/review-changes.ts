@@ -147,14 +147,14 @@ runTool({
       }
 
       // Load or create metric
-      const existingState = loadReviewRunState(repoDir);
+      const existingState = loadReviewRunState(repoDir, verbose);
       if (existingState) {
         metric = existingState.metric;
         if (verbose) {
           console.error(`Continuing review run ${metric.id} (iteration ${metric.iterations.length + 1})`);
         }
       } else {
-        const issueId = findIssueIdFromContext(repoDir);
+        const issueId = findIssueIdFromContext(repoDir, verbose);
         metric = initReviewMetric(currentBranch, targetBranch, issueId);
         if (verbose) {
           console.error(`Starting new review run ${metric.id}`);
@@ -191,16 +191,22 @@ runTool({
       if (result.verdict === 'ready') {
         // Review passed - finalize and clear state
         finalizeMetric(metric, 'resolved');
-        saveMetric(metric, repoDir);
-        clearReviewRunState(repoDir);
+        const saved = saveMetric(metric, repoDir, verbose);
+        clearReviewRunState(repoDir, verbose);
         if (verbose) {
           console.error(`Review run ${metric.id} completed: resolved after ${metric.totalIterations} iteration(s)`);
+          if (!saved) {
+            console.error('  (Note: Metrics could not be saved, but review succeeded)');
+          }
         }
       } else {
         // Review failed - save state for next iteration
-        saveReviewRunState(metric, repoDir);
+        const saved = saveReviewRunState(metric, repoDir, verbose);
         if (verbose) {
           console.error(`Review run ${metric.id} iteration ${iterationNumber} failed - state saved for retry`);
+          if (!saved) {
+            console.error('  (Note: State could not be saved, next run will start fresh)');
+          }
         }
       }
 
@@ -208,17 +214,15 @@ runTool({
     } catch (error) {
       // On error, finalize metric and save
       if (metric) {
-        try {
-          finalizeMetric(metric, 'error', {
-            error: (error as Error).message,
-          });
-          saveMetric(metric, repoDir);
-          clearReviewRunState(repoDir);
-        } catch (metricsError) {
-          // Metrics error should not prevent error reporting
-          if (verbose) {
-            console.error(`Warning: Failed to save review metrics: ${(metricsError as Error).message}`);
-          }
+        // Try to save error metric (defensive - won't throw)
+        finalizeMetric(metric, 'error', {
+          error: (error as Error).message,
+        });
+        const saved = saveMetric(metric, repoDir, verbose);
+        clearReviewRunState(repoDir, verbose);
+
+        if (verbose && !saved) {
+          console.error('Note: Error metric could not be saved, but error is being reported below.');
         }
       }
 

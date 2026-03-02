@@ -74,7 +74,15 @@ function getCurrentBranch(repoDir: string): string {
       cwd: repoDir,
     }).trim();
   } catch (error) {
-    throw new Error(`Failed to get current branch: ${(error as Error).message}`);
+    throw new Error(
+      `Failed to get current branch in ${repoDir}\n` +
+      `  Error: ${(error as Error).message}\n` +
+      `  Possible causes:\n` +
+      `    - Not in a git repository\n` +
+      `    - Git is not installed or not in PATH\n` +
+      `    - Repository is corrupted\n` +
+      `  Troubleshooting: Run 'git status' in the directory to verify git is working`
+    );
   }
 }
 
@@ -93,7 +101,19 @@ export function getGitDiff(targetBranch: string, repoDir?: string): string {
       maxBuffer: 50 * 1024 * 1024, // 50MB max
     });
   } catch (error) {
-    throw new Error(`Failed to get git diff: ${(error as Error).message}`);
+    throw new Error(
+      `Failed to get git diff against '${targetBranch}' in ${cwd}\n` +
+      `  Error: ${(error as Error).message}\n` +
+      `  Possible causes:\n` +
+      `    - Branch '${targetBranch}' does not exist\n` +
+      `    - Diff is larger than 50MB (exceeds buffer limit)\n` +
+      `    - Git is not installed or not in PATH\n` +
+      `    - Repository is corrupted\n` +
+      `  Troubleshooting:\n` +
+      `    - Run 'git diff ${targetBranch}' manually to verify\n` +
+      `    - Check that target branch exists: git branch -a | grep ${targetBranch}\n` +
+      `    - If diff is very large, try reviewing smaller changesets`
+    );
   }
 }
 
