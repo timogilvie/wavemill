@@ -552,9 +552,15 @@ export interface DetectOptions {
 
 /**
  * Run all intervention detectors and produce a summary with weighted score.
+ *
+ * @param opts - Detection options
+ * @param penalties - Optional pre-loaded penalties (avoids redundant config loading)
  */
-export function detectAllInterventions(opts: DetectOptions): InterventionSummary {
-  const penalties = loadPenalties(opts.repoDir);
+export function detectAllInterventions(
+  opts: DetectOptions,
+  penalties?: InterventionPenalties
+): InterventionSummary {
+  const penaltyWeights = penalties || loadPenalties(opts.repoDir);
   const interventions: InterventionEvent[] = [];
 
   // Resolve GitHub owner/repo once for all API calls
@@ -602,7 +608,7 @@ export function detectAllInterventions(opts: DetectOptions): InterventionSummary
   // Calculate weighted score
   let totalScore = 0;
   for (const event of interventions) {
-    const weight = penalties[event.type] || 0;
+    const weight = penaltyWeights[event.type] || 0;
     totalScore += event.count * weight;
   }
 
@@ -721,4 +727,63 @@ export function formatForJudge(summary: InterventionSummary, penalties: Interven
   };
 
   return JSON.stringify(data, null, 2);
+}
+
+// ────────────────────────────────────────────────────────────────
+// High-Level Orchestrator
+// ────────────────────────────────────────────────────────────────
+
+/**
+ * All intervention data needed for eval in a single structure.
+ */
+export interface InterventionData {
+  /** Raw intervention summary with all events */
+  summary: InterventionSummary;
+  /** Legacy format for evaluateTask() */
+  meta: InterventionMeta[];
+  /** Structured records for eval persistence */
+  records: InterventionRecord[];
+  /** Formatted text for judge prompt */
+  text: string;
+  /** Total count of interventions */
+  totalCount: number;
+}
+
+/**
+ * Detect and format all interventions in a single call.
+ *
+ * This orchestrator consolidates:
+ * - detectAllInterventions()
+ * - toInterventionMeta()
+ * - toInterventionRecords()
+ * - formatForJudge()
+ * - loadPenalties()
+ *
+ * Returns all intervention data needed for eval persistence and judging.
+ *
+ * @param opts - Detection options (PR number, branch, worktree path, etc.)
+ * @returns Complete intervention data
+ */
+export function detectAndFormatInterventions(opts: DetectOptions): InterventionData {
+  // Load penalties once
+  const penalties = loadPenalties(opts.repoDir);
+
+  // Detect all interventions (pass penalties to avoid redundant loading)
+  const summary = detectAllInterventions(opts, penalties);
+
+  // Convert to all needed formats
+  const meta = toInterventionMeta(summary);
+  const records = toInterventionRecords(summary);
+  const text = formatForJudge(summary, penalties);
+
+  // Calculate total count
+  const totalCount = summary.interventions.reduce((sum, e) => sum + e.count, 0);
+
+  return {
+    summary,
+    meta,
+    records,
+    text,
+    totalCount,
+  };
 }
