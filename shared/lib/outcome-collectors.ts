@@ -17,6 +17,7 @@ import { execSync } from "node:child_process";
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { escapeShellArg, execShellCommand } from './shell-utils.ts';
+import { loadReviewInterventions } from './review-intervention-mapper.ts';
 import type {
   CiOutcome,
   TestsOutcome,
@@ -326,11 +327,15 @@ export function collectStaticAnalysisOutcome(
  * Collect review outcome from PR review data and intervention summary.
  *
  * Combines intervention detector data with GitHub PR review API to get
- * complete review activity picture.
+ * complete review activity picture. Optionally includes self-review metrics
+ * if issueId or branchName are provided.
  *
  * @param prNumber - GitHub PR number
  * @param interventionSummary - Intervention summary from intervention-detector
  * @param repoDir - Repository directory (defaults to cwd)
+ * @param nwo - GitHub owner/repo string (optional, will be resolved if needed)
+ * @param issueId - Linear issue ID (optional, for self-review lookup)
+ * @param branchName - Git branch name (optional, for self-review lookup)
  * @returns Review outcome
  */
 export function collectReviewOutcome(
@@ -338,6 +343,8 @@ export function collectReviewOutcome(
   interventionSummary: InterventionSummary,
   repoDir?: string,
   nwo?: string,
+  issueId?: string,
+  branchName?: string,
 ): ReviewOutcome {
   const cwd = repoDir || process.cwd();
   const repo = nwo || resolveOwnerRepo(cwd);
@@ -405,6 +412,27 @@ export function collectReviewOutcome(
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     console.warn(`[outcome-collectors] Failed to collect review outcome: ${message}`);
+  }
+
+  // Load self-review metrics if issueId or branchName provided
+  if ((issueId || branchName) && cwd) {
+    try {
+      const reviewData = loadReviewInterventions({
+        issueId,
+        branchName,
+        repoDir: cwd,
+      });
+
+      if (reviewData.totalIterations > 0) {
+        outcome.selfReviewIterations = reviewData.totalIterations;
+        outcome.selfReviewBlockers = reviewData.blockerCount;
+        outcome.selfReviewWarnings = reviewData.warningCount;
+      }
+    } catch (err: unknown) {
+      // Non-throwing - continue without self-review data
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[outcome-collectors] Failed to load self-review metrics: ${message}`);
+    }
   }
 
   return outcome;

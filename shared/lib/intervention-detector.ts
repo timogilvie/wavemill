@@ -15,6 +15,7 @@ import { join, resolve } from "node:path";
 import { resolveProjectsDir } from './workflow-cost.ts';
 import { loadWavemillConfig } from './config.ts';
 import { escapeShellArg, execShellCommand } from './shell-utils.ts';
+import { loadReviewInterventions } from './review-intervention-mapper.ts';
 import type {
   InterventionRecord,
   InterventionType,
@@ -40,7 +41,7 @@ export interface PrCommit {
 }
 
 export interface InterventionEvent {
-  type: 'review_comment' | 'post_pr_commit' | 'manual_edit' | 'test_fix' | 'session_redirect';
+  type: 'review_comment' | 'post_pr_commit' | 'manual_edit' | 'test_fix' | 'session_redirect' | 'self_review_blocker' | 'self_review_warning';
   count: number;
   details: string[];
   timestamps?: string[]; // ISO 8601 timestamps parallel to details array
@@ -57,6 +58,8 @@ export interface InterventionPenalties {
   manual_edit: number;
   test_fix: number;
   session_redirect: number;
+  self_review_blocker: number;
+  self_review_warning: number;
 }
 
 /** Format expected by evaluateTask() in eval.js */
@@ -71,10 +74,12 @@ export interface InterventionMeta {
 
 export const DEFAULT_PENALTIES: InterventionPenalties = {
   review_comment: 0.05,
+  test_fix: 0.06,
   post_pr_commit: 0.08,
   manual_edit: 0.10,
-  test_fix: 0.06,
   session_redirect: 0.12,
+  self_review_warning: 0.05,   // Minor issue caught in review
+  self_review_blocker: 0.20,   // Critical issue that blocks PR
 };
 
 // ────────────────────────────────────────────────────────────────
@@ -133,6 +138,8 @@ export function loadPenalties(repoDir?: string): InterventionPenalties {
     manual_edit: configured.manualEdit ?? DEFAULT_PENALTIES.manual_edit,
     test_fix: configured.testFix ?? DEFAULT_PENALTIES.test_fix,
     session_redirect: configured.sessionRedirect ?? DEFAULT_PENALTIES.session_redirect,
+    self_review_blocker: configured.selfReviewBlocker ?? DEFAULT_PENALTIES.self_review_blocker,
+    self_review_warning: configured.selfReviewWarning ?? DEFAULT_PENALTIES.self_review_warning,
   };
 }
 
@@ -548,6 +555,7 @@ export interface DetectOptions {
   repoDir?: string;
   worktreePath?: string;
   agentType?: string;
+  issueId?: string;
 }
 
 /**
@@ -603,6 +611,41 @@ export function detectAllInterventions(
   // Only applies to Claude — Codex autonomous mode has no user messages.
   if (opts.worktreePath && branch && (!opts.agentType || opts.agentType === 'claude')) {
     interventions.push(detectSessionRedirects(opts.worktreePath, branch));
+  }
+
+  // Self-review findings detection (requires issueId or branchName + repoDir)
+  if ((opts.issueId || branch) && opts.repoDir) {
+    try {
+      const reviewData = loadReviewInterventions({
+        issueId: opts.issueId,
+        branchName: branch,
+        repoDir: opts.repoDir,
+      });
+
+      // Add blocker findings as separate intervention event
+      if (reviewData.blockerCount > 0) {
+        interventions.push({
+          type: 'self_review_blocker',
+          count: reviewData.blockerCount,
+          details: reviewData.blockers.map((r) => r.note),
+          timestamps: reviewData.blockers.map((r) => r.timestamp),
+        });
+      }
+
+      // Add warning findings as separate intervention event
+      if (reviewData.warningCount > 0) {
+        interventions.push({
+          type: 'self_review_warning',
+          count: reviewData.warningCount,
+          details: reviewData.warnings.map((r) => r.note),
+          timestamps: reviewData.warnings.map((r) => r.timestamp),
+        });
+      }
+    } catch (err) {
+      // Non-throwing - continue without review interventions
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[intervention-detector] Failed to load review interventions: ${message}`);
+    }
   }
 
   // Calculate weighted score

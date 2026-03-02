@@ -236,6 +236,20 @@
               "minimum": 0,
               "maximum": 1,
               "description": "Penalty per user redirection detected in the Claude session transcript (user sent a message correcting the agent mid-session)."
+            },
+            "selfReviewWarning": {
+              "type": "number",
+              "default": 0.05,
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Penalty per warning-severity finding in self-review (minor issue caught by review-changes tool)."
+            },
+            "selfReviewBlocker": {
+              "type": "number",
+              "default": 0.20,
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Penalty per blocker-severity finding in self-review (critical issue that blocks PR, such as security vulnerabilities or correctness bugs)."
             }
           },
           "additionalProperties": false
