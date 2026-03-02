@@ -127,6 +127,43 @@ If --repos is omitted, reads eval.aggregation.repos from .wavemill-config.json.`
     for (const [repo, count] of Object.entries(repoStats).sort((a, b) => b[1] - a[1])) {
       console.log(`  ${repo}: ${count} records`);
     }
+
+    // Data quality report (HOK-883)
+    const withCost = allRecords.filter(r => r.workflowCost !== undefined && r.workflowCost !== null);
+    const withoutCost = allRecords.filter(r => r.workflowCost === undefined || r.workflowCost === null);
+    const costsArray = withCost.map(r => r.workflowCost!).sort((a, b) => a - b);
+
+    const avgCost = costsArray.length > 0
+      ? costsArray.reduce((sum, c) => sum + c, 0) / costsArray.length
+      : 0;
+    const medianCost = costsArray.length > 0
+      ? costsArray[Math.floor(costsArray.length / 2)]
+      : 0;
+
+    // Count by status
+    const statusCounts: Record<string, number> = {};
+    for (const record of allRecords) {
+      const status = (record as any).workflowCostStatus || 'unknown';
+      statusCounts[status] = (statusCounts[status] || 0) + 1;
+    }
+
+    console.log('\n=== Cost Data Quality ===');
+    console.log(`Records with cost:      ${withCost.length} (${(withCost.length/allRecords.length*100).toFixed(1)}%)`);
+    console.log(`Records without cost:   ${withoutCost.length} (${(withoutCost.length/allRecords.length*100).toFixed(1)}%)`);
+    if (costsArray.length > 0) {
+      console.log(`\nCost statistics (excluding nulls):`);
+      console.log(`  Average:              $${avgCost.toFixed(2)}`);
+      console.log(`  Median:               $${medianCost.toFixed(2)}`);
+      console.log(`  Range:                $${costsArray[0].toFixed(2)} - $${costsArray[costsArray.length-1].toFixed(2)}`);
+    }
+    if (Object.keys(statusCounts).length > 0 && Object.keys(statusCounts)[0] !== 'unknown') {
+      console.log(`\nStatus distribution:`);
+      for (const [status, count] of Object.entries(statusCounts).sort((a, b) => b[1] - a[1])) {
+        const pct = (count/allRecords.length*100).toFixed(1);
+        console.log(`  ${status.padEnd(15)} ${count} (${pct}%)`);
+      }
+    }
+
     console.log(`\nOutput: ${outputPath}`);
   },
 });

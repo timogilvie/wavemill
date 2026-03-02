@@ -221,8 +221,8 @@ test('toCsv column count matches header count', () => {
   const headerCols = lines[0].split(',').length;
 
   // Each data line should have same number of fields (accounting for quoted commas)
-  // Simpler check: header has 25 columns (22 original + workflow_cost + interventions + routing_decision)
-  assert.equal(headerCols, 25);
+  // Simpler check: header has 26 columns (22 original + workflow_cost + workflow_cost_status + interventions + routing_decision)
+  assert.equal(headerCols, 26);
 });
 
 // ────────────────────────────────────────────────────────────────
@@ -258,6 +258,23 @@ test('toJsonl includes all fields', () => {
   assert.ok('score_band' in parsed);
   assert.ok('files_changed' in parsed);
   assert.ok('lines_added' in parsed);
+});
+
+test('flattenRecord includes workflow_cost_status (HOK-883)', () => {
+  const recordWithStatus = makeRecord({
+    workflowCost: 5.1234,
+    workflowCostStatus: 'success' as any,
+  });
+  const row = flattenRecord(recordWithStatus);
+  assert.equal(row.workflow_cost, 5.1234);
+  assert.equal(row.workflow_cost_status, 'success');
+});
+
+test('flattenRecord handles missing workflow_cost_status', () => {
+  const recordWithoutStatus = makeRecord({ workflowCost: 3.14 });
+  const row = flattenRecord(recordWithoutStatus);
+  assert.equal(row.workflow_cost, 3.14);
+  assert.equal(row.workflow_cost_status, '');
 });
 
 // ────────────────────────────────────────────────────────────────

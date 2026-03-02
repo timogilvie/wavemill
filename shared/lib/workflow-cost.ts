@@ -38,7 +38,30 @@ export interface WorkflowCostResult {
   sessionCount: number;
   /** Number of assistant turns counted. */
   turnCount: number;
+  /** Status indicator for successful computation */
+  status: 'success';
 }
+
+/** Failure result with diagnostic information (HOK-883). */
+export interface WorkflowCostFailure {
+  /** Status code indicating why cost computation failed */
+  status: 'no_sessions' | 'no_branch' | 'adapter_error' | 'missing_worktree' | 'skipped';
+  /** Human-readable reason for failure */
+  reason: string;
+  /** Diagnostic details to help debug the issue */
+  diagnostics: {
+    worktreePath?: string;
+    branchName?: string;
+    agentType?: string;
+    sessionFilesFound?: number;
+    totalAssistantTurns?: number;
+    branchMismatches?: number;
+    matchingTurns?: number;
+  };
+}
+
+/** Result of workflow cost computation - either success or failure with diagnostics */
+export type WorkflowCostOutcome = WorkflowCostResult | WorkflowCostFailure;
 
 /** Per-model pricing entry (from .wavemill-config.json). */
 export interface ModelPricing {
@@ -137,7 +160,7 @@ export function computeModelCost(
  * @param opts.branchName - Git branch name to filter by (e.g. "task/add-cost-data")
  * @param opts.repoDir - Repository root for loading pricing config
  * @param opts.agentType - Agent type for session adapter selection (default: 'claude')
- * @returns Aggregated cost result, or null if no sessions found
+ * @returns Aggregated cost result with diagnostics (success or failure)
  */
 export function computeWorkflowCost(opts: {
   worktreePath: string;
@@ -145,7 +168,7 @@ export function computeWorkflowCost(opts: {
   repoDir?: string;
   pricingTable?: PricingTable;
   agentType?: AgentType | string;
-}): WorkflowCostResult | null {
+}): WorkflowCostOutcome {
   const { worktreePath, branchName, repoDir, pricingTable: externalPricing, agentType } = opts;
   const debug = process.env.DEBUG_COST === '1' || process.env.DEBUG_COST === 'true';
 
@@ -196,7 +219,23 @@ export function computeWorkflowCost(opts: {
     if (debug) {
       console.log('[DEBUG_COST]   Adapter scan returned null or zero turns');
     }
-    return null;
+
+    // Return failure with diagnostics (HOK-883)
+    const reason = !scanResult
+      ? 'No session files found in expected location'
+      : 'No assistant turns matched the specified branch';
+
+    return {
+      status: scanResult ? 'no_branch' : 'no_sessions',
+      reason,
+      diagnostics: {
+        worktreePath,
+        branchName,
+        agentType: agentType || 'claude',
+        sessionFilesFound: scanResult?.sessionCount ?? 0,
+        matchingTurns: scanResult?.turnCount ?? 0,
+      },
+    };
   }
 
   // Load pricing and compute costs (prefer caller-supplied table)
@@ -224,5 +263,6 @@ export function computeWorkflowCost(opts: {
     models: modelsWithCost,
     sessionCount: scanResult.sessionCount,
     turnCount: scanResult.turnCount,
+    status: 'success',
   };
 }

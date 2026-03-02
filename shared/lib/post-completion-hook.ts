@@ -322,7 +322,7 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
           console.log(`[DEBUG_COST]   Loaded pricing for ${modelCount} model(s)`);
         }
 
-        const costResult = computeWorkflowCost({
+        const costOutcome = computeWorkflowCost({
           worktreePath: ctx.worktreePath,
           branchName,
           repoDir,
@@ -330,15 +330,24 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
           agentType: ctx.agentType,
         });
 
-        if (costResult) {
-          record.workflowCost = costResult.totalCostUsd;
-          record.workflowTokenUsage = costResult.models;
+        if (costOutcome.status === 'success') {
+          record.workflowCost = costOutcome.totalCostUsd;
+          record.workflowTokenUsage = costOutcome.models;
+          record.workflowCostStatus = 'success';
           console.log(
-            `Post-completion eval: workflow cost $${costResult.totalCostUsd.toFixed(4)} ` +
-            `(${costResult.turnCount} turns across ${costResult.sessionCount} session(s))`
+            `Post-completion eval: workflow cost $${costOutcome.totalCostUsd.toFixed(4)} ` +
+            `(${costOutcome.turnCount} turns across ${costOutcome.sessionCount} session(s))`
           );
         } else {
-          console.log('Post-completion eval: no session data found for workflow cost');
+          // Capture diagnostic information (HOK-883)
+          record.workflowCostStatus = costOutcome.status;
+          record.workflowCostDiagnostics = {
+            reason: costOutcome.reason,
+            ...costOutcome.diagnostics,
+          };
+          console.warn(
+            `Post-completion eval: workflow cost computation failed (${costOutcome.status}) — ${costOutcome.reason}`
+          );
           if (!debug) {
             console.log('Post-completion eval: run with DEBUG_COST=1 for detailed diagnostics');
           }
@@ -348,6 +357,19 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
         console.warn(`Post-completion eval: workflow cost computation failed — ${costMsg}`);
       }
     } else {
+      // Capture missing parameters as diagnostic (HOK-883)
+      const missingParams = [];
+      if (!ctx.worktreePath) missingParams.push('worktreePath');
+      if (!branchName) missingParams.push('branchName');
+
+      record.workflowCostStatus = 'skipped';
+      record.workflowCostDiagnostics = {
+        reason: `Required parameters missing: ${missingParams.join(', ')}`,
+        worktreePath: ctx.worktreePath,
+        branchName,
+        agentType: ctx.agentType || 'claude',
+      };
+
       if (debug) {
         console.log('[DEBUG_COST] Skipping cost computation - required parameters missing:');
         if (!ctx.worktreePath) {
