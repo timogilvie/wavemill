@@ -58,9 +58,14 @@ if [[ ${#TASKS[@]} -eq 0 ]]; then
 fi
 
 
-# Start session if not exists
+# Start session with a clean control window.
+# Kill any stale session from a previous crashed run so we get a fresh control window.
 TMUX_CONF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd ../.. && pwd)/.tmux.conf"
-tmux has-session -t "$SESSION" 2>/dev/null || tmux -f "$TMUX_CONF" new-session -d -s "$SESSION" -c "$REPO_DIR" -n control
+if tmux has-session -t "$SESSION" 2>/dev/null; then
+  # Session exists but may be stale (missing control window). Kill and recreate.
+  tmux kill-session -t "$SESSION" 2>/dev/null || true
+fi
+tmux -f "$TMUX_CONF" new-session -d -s "$SESSION" -c "$REPO_DIR" -n control
 
 
 # Control window message
