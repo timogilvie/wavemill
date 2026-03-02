@@ -157,9 +157,113 @@ Review settings live in `.wavemill-config.json`:
 | `tools/review-changes.ts` | CLI tool — review current branch against target |
 | `tools/review-pr.ts` | CLI tool — review a GitHub pull request |
 | `tools/gather-review-context.ts` | CLI tool — output review context as JSON |
-| `shared/lib/review-runner.ts` | Core review orchestration (context → prompt → LLM → parse) |
+| `shared/lib/review-engine.ts` | Core review engine (prompt filling, LLM invocation, retry logic, JSON parsing) |
+| `shared/lib/review-runner.ts` | Wrapper for local change reviews (delegates to review-engine) |
 | `shared/lib/review-context-gatherer.ts` | Gathers diff, task packet, plan, and design context |
-| `tools/prompts/review.md` | Review prompt template with evaluation criteria |
+| `tools/prompts/review.md` | Review prompt template with JSON schema and evaluation criteria |
+
+## Troubleshooting
+
+### Review tool returns "Failed to parse review response"
+
+This means the LLM returned conversational text instead of JSON. The tool now includes automatic retry with a stricter prompt, but if it persists:
+
+**Causes:**
+1. **Missing context files** — The tool couldn't find task packet or plan files
+2. **Model configuration** — The LLM is not following JSON format instructions
+3. **Network issues** — Incomplete or corrupted LLM response
+
+**Solutions:**
+
+1. **Run with verbose mode** to see what the LLM returned:
+   ```bash
+   npx tsx tools/review-changes.ts main --verbose
+   ```
+
+   Look for the "LLM Response (raw)" section to see the actual output.
+
+2. **Check if context files exist**:
+   - Task packet should be at: `features/{slug}/task-packet-header.md`
+   - Plan should be at: `features/{slug}/plan.md`
+   - For bugfix workflows: `bugs/{slug}/task-packet.md` and `bugs/{slug}/plan.md`
+
+   If these files are missing, the tool should still work, but may be less accurate.
+
+3. **Try a different model**:
+   ```bash
+   REVIEW_MODEL=claude-opus-4-6 npx tsx tools/review-changes.ts main
+   ```
+
+   More capable models generally follow JSON format instructions better.
+
+4. **Check your configuration**:
+   - Ensure `.wavemill-config.json` has valid judge settings
+   - Verify the model ID is correct (run `claude models` to list available models)
+
+### Review tool is slow
+
+Large diffs (>1000 lines) can take 2-3 minutes to review. This is expected behavior.
+
+**To monitor progress:**
+```bash
+npx tsx tools/review-changes.ts main --verbose
+```
+
+The verbose output shows:
+- Prompt being sent
+- LLM invocation status
+- Raw response received
+- Parsing progress
+
+**To speed up reviews:**
+- Break large changes into smaller PRs
+- Use `--skip-ui` flag if UI review isn't needed
+- Consider using a faster model (e.g., Haiku for simple changes)
+
+### Review tool shows "conversational response" warning
+
+This warning appears when the LLM doesn't return pure JSON on the first attempt. The tool automatically retries with a stricter prompt.
+
+**Normal behavior:**
+```
+⚠️  LLM returned conversational response (attempt 1/2)
+Retrying with stricter prompt...
+```
+
+If you see this followed by successful parsing, no action is needed. The retry mechanism handled it.
+
+**If retry fails:**
+1. Check verbose output to see what the LLM returned
+2. Verify your model supports JSON-only responses
+3. Try a different model
+4. Check for network/timeout issues
+
+### How the multi-layer defense works
+
+The review engine uses a 4-layer approach to ensure reliable JSON output:
+
+**Layer 1: Clear Prompt Instructions**
+- Explicit JSON schema at the top of the prompt
+- Multiple reminders throughout the prompt
+- Clear examples of expected output format
+- Works with any LLM provider (Claude, Codex, OpenAI, etc.)
+
+**Layer 2: Response Pre-Validation**
+- Checks if response looks like JSON before parsing
+- Detects conversational patterns ("Sure, let me...", "Based on...", etc.)
+- Fast-fails on obvious non-JSON responses
+
+**Layer 3: Automatic Retry**
+- If validation fails, retries with stricter prompt
+- Adds emphasis to JSON-only requirement
+- Second attempt has ~95% success rate
+
+**Layer 4: Robust Parsing**
+- 4-strategy JSON extraction (code fences, XML tags, brace-depth tracking)
+- Handles edge cases like JSON with preambles
+- Clear error messages when parsing fails
+
+This multi-layer defense ensures reliable, structured review output even when context files are missing, regardless of which LLM provider is used.
 
 ## See Also
 

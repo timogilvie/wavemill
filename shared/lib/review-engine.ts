@@ -227,6 +227,41 @@ async function invokeLLMWithRetry(
 }
 
 // ────────────────────────────────────────────────────────────────
+// Response Validation
+// ────────────────────────────────────────────────────────────────
+
+/**
+ * Check if response looks like JSON before attempting to parse.
+ * Returns true if response appears to be valid JSON format.
+ *
+ * This is a quick heuristic check to detect conversational responses
+ * before expensive parsing attempts.
+ */
+function looksLikeJson(text: string): boolean {
+  const trimmed = text.trim();
+
+  // Check if it starts with { and ends with }
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+    return false;
+  }
+
+  // Quick heuristic: conversational responses usually have these patterns
+  const conversationalPatterns = [
+    /^(Sure|Ok|Okay|Let me|I'll|I will|Here's|Here is)/i,
+    /I (will|would|can|cannot|should|have)/i,
+    /(Based on|Looking at|After reviewing)/i,
+  ];
+
+  for (const pattern of conversationalPatterns) {
+    if (pattern.test(trimmed)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+// ────────────────────────────────────────────────────────────────
 // Response Parsing
 // ────────────────────────────────────────────────────────────────
 
@@ -244,15 +279,36 @@ function parseReviewResponse(
   responseText: string,
   context: ReviewContext
 ): ReviewResult {
-  const parsed = parseJsonFromLLM<any>(responseText);
+  let parsed: any;
+
+  try {
+    parsed = parseJsonFromLLM<any>(responseText);
+  } catch (error) {
+    // Enhanced error message with response preview
+    const preview = responseText.substring(0, 500);
+    throw new Error(
+      `Failed to parse review response: ${(error as Error).message}\n\n` +
+      `First 500 chars of LLM response:\n${preview}\n\n` +
+      `This usually means the LLM returned conversational text instead of JSON. ` +
+      `Try running with --verbose to see the full response.`
+    );
+  }
 
   // Validate structure
   if (!parsed.verdict || !['ready', 'not_ready'].includes(parsed.verdict)) {
-    throw new Error(`Invalid verdict in response: ${parsed.verdict}`);
+    const preview = responseText.substring(0, 500);
+    throw new Error(
+      `Invalid verdict in response: ${parsed.verdict}\n\n` +
+      `First 500 chars of LLM response:\n${preview}`
+    );
   }
 
   if (!Array.isArray(parsed.codeReviewFindings)) {
-    throw new Error('Missing or invalid codeReviewFindings array');
+    const preview = responseText.substring(0, 500);
+    throw new Error(
+      `Missing or invalid codeReviewFindings array\n\n` +
+      `First 500 chars of LLM response:\n${preview}`
+    );
   }
 
   const result: ReviewResult = {
@@ -276,6 +332,117 @@ function parseReviewResponse(
   }
 
   return result;
+}
+
+// ────────────────────────────────────────────────────────────────
+// Retry Logic
+// ────────────────────────────────────────────────────────────────
+
+/**
+ * Run review with automatic retry for malformed responses.
+ *
+ * This wrapper implements a two-attempt strategy:
+ * 1. First attempt with normal prompt
+ * 2. If response is conversational or unparseable, retry with stricter prompt
+ *
+ * @param prompt - Filled review prompt
+ * @param context - Review context
+ * @param repoDir - Repository directory
+ * @param model - Model to use
+ * @param timeout - Timeout in milliseconds
+ * @param maxRetries - Max retries for LLM calls
+ * @param options - Review options
+ * @param attempt - Current attempt number (internal)
+ * @returns ReviewResult
+ */
+async function runReviewWithRetry(
+  prompt: string,
+  context: ReviewContext,
+  repoDir: string,
+  model: string,
+  timeout: number,
+  maxRetries: number,
+  options: ReviewEngineOptions,
+  attempt: number = 1
+): Promise<ReviewResult> {
+  const maxAttempts = 2;
+
+  // Invoke LLM
+  const responseText = await invokeLLMWithRetry(prompt, model, timeout, maxRetries);
+
+  // Show raw response in verbose mode
+  if (options.verbose) {
+    console.error(`=== LLM Response (raw, attempt ${attempt}) ===`);
+    console.error(responseText.substring(0, 2000));
+    if (responseText.length > 2000) {
+      console.error(`\n... (${responseText.length - 2000} more characters)`);
+    }
+    console.error('');
+  }
+
+  // Pre-validate response format
+  if (!looksLikeJson(responseText)) {
+    if (attempt < maxAttempts) {
+      console.error(`⚠️  LLM returned conversational response (attempt ${attempt}/${maxAttempts})`);
+      if (options.verbose) {
+        console.error('Response preview:', responseText.substring(0, 200));
+      }
+      console.error('Retrying with stricter prompt...\n');
+
+      // Retry with stricter prompt
+      const strictPrompt =
+        'CRITICAL: Respond with ONLY valid JSON. No text before or after. Start with { and end with }.\n\n' +
+        prompt +
+        '\n\nREMINDER: Return ONLY the JSON object. No explanations.';
+
+      return runReviewWithRetry(
+        strictPrompt,
+        context,
+        repoDir,
+        model,
+        timeout,
+        maxRetries,
+        options,
+        attempt + 1
+      );
+    } else {
+      throw new Error(
+        'LLM returned conversational text instead of JSON after 2 attempts.\n' +
+        `Response preview: ${responseText.substring(0, 300)}`
+      );
+    }
+  }
+
+  // Parse response
+  try {
+    return parseReviewResponse(responseText, context);
+  } catch (error) {
+    if (attempt < maxAttempts) {
+      console.error(`⚠️  Failed to parse JSON (attempt ${attempt}/${maxAttempts})`);
+      if (options.verbose) {
+        console.error('Error:', (error as Error).message);
+      }
+      console.error('Retrying with stricter prompt...\n');
+
+      // Retry with stricter prompt
+      const strictPrompt =
+        'CRITICAL: Respond with ONLY valid JSON. No text before or after. Start with { and end with }.\n\n' +
+        prompt +
+        '\n\nREMINDER: Return ONLY the JSON object. No explanations.';
+
+      return runReviewWithRetry(
+        strictPrompt,
+        context,
+        repoDir,
+        model,
+        timeout,
+        maxRetries,
+        options,
+        attempt + 1
+      );
+    }
+    throw error;
+  }
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -338,16 +505,17 @@ export async function runReview(
     console.error(`Invoking ${model}...`);
   }
 
-  const responseText = await invokeLLMWithRetry(prompt, model, timeout, maxRetries);
-
-  if (options.verbose) {
-    console.error('=== LLM Response ===');
-    console.error(responseText);
-    console.error('');
-  }
-
-  // Parse response
-  const result = parseReviewResponse(responseText, context);
+  // Run review with retry logic
+  const result = await runReviewWithRetry(
+    prompt,
+    context,
+    repoDir,
+    model,
+    timeout,
+    maxRetries,
+    options,
+    1
+  );
 
   return result;
 }
