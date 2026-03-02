@@ -642,6 +642,21 @@ export interface EvalRecord {
     }
   >;
 
+  /** Status of workflow cost computation (HOK-883) */
+  workflowCostStatus?: 'success' | 'no_sessions' | 'no_branch' | 'adapter_error' | 'missing_worktree' | 'skipped';
+
+  /** Diagnostic details when workflowCost is missing (HOK-883) */
+  workflowCostDiagnostics?: {
+    reason: string;
+    worktreePath?: string;
+    branchName?: string;
+    agentType?: string;
+    sessionFilesFound?: number;
+    matchingTurns?: number;
+    totalAssistantTurns?: number;
+    branchMismatches?: number;
+  };
+
   /** Difficulty band classification (e.g. "easy", "medium", "hard") */
   difficultyBand?: DifficultyBand;
 

@@ -127,6 +127,50 @@ If --repos is omitted, reads eval.aggregation.repos from .wavemill-config.json.`
     for (const [repo, count] of Object.entries(repoStats).sort((a, b) => b[1] - a[1])) {
       console.log(`  ${repo}: ${count} records`);
     }
+
+    // Data quality report (HOK-883) - Single-pass aggregation
+    let withCostCount = 0;
+    let costSum = 0;
+    const costs: number[] = [];
+    const statusCounts: Record<string, number> = {};
+
+    for (const record of allRecords) {
+      // Collect cost data
+      const cost = record.workflowCost;
+      if (cost !== undefined && cost !== null) {
+        withCostCount++;
+        costSum += cost;
+        costs.push(cost);
+      }
+
+      // Count status distribution
+      const status = record.workflowCostStatus ?? 'unknown';
+      statusCounts[status] = (statusCounts[status] ?? 0) + 1;
+    }
+
+    const withoutCostCount = allRecords.length - withCostCount;
+    const avgCost = withCostCount > 0 ? costSum / withCostCount : 0;
+
+    costs.sort((a, b) => a - b);
+    const medianCost = costs.length > 0 ? costs[Math.floor(costs.length / 2)] : 0;
+
+    console.log('\n=== Cost Data Quality ===');
+    console.log(`Records with cost:      ${withCostCount} (${(withCostCount/allRecords.length*100).toFixed(1)}%)`);
+    console.log(`Records without cost:   ${withoutCostCount} (${(withoutCostCount/allRecords.length*100).toFixed(1)}%)`);
+    if (costs.length > 0) {
+      console.log(`\nCost statistics (excluding nulls):`);
+      console.log(`  Average:              $${avgCost.toFixed(2)}`);
+      console.log(`  Median:               $${medianCost.toFixed(2)}`);
+      console.log(`  Range:                $${costs[0].toFixed(2)} - $${costs[costs.length-1].toFixed(2)}`);
+    }
+    if (Object.keys(statusCounts).length > 0 && Object.keys(statusCounts)[0] !== 'unknown') {
+      console.log(`\nStatus distribution:`);
+      for (const [status, count] of Object.entries(statusCounts).sort((a, b) => b[1] - a[1])) {
+        const pct = (count/allRecords.length*100).toFixed(1);
+        console.log(`  ${status.padEnd(15)} ${count} (${pct}%)`);
+      }
+    }
+
     console.log(`\nOutput: ${outputPath}`);
   },
 });

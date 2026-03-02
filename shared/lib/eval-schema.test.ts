@@ -730,6 +730,56 @@ test('Record without workflowCost validates (backward compat)', () => {
   assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
 });
 
+console.log('\n--- Workflow Cost Diagnostic Tests (HOK-883) ---\n');
+
+test('Record with workflowCostStatus=success validates', () => {
+  const record = {
+    ...scenarios[0].record,
+    workflowCost: 2.5432,
+    workflowCostStatus: 'success',
+  } as unknown as Record<string, unknown>;
+  const result = validateAgainstSchema(record);
+  assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
+});
+
+test('Record with workflowCostStatus=no_sessions and diagnostics validates', () => {
+  const record = {
+    ...scenarios[0].record,
+    workflowCostStatus: 'no_sessions',
+    workflowCostDiagnostics: {
+      reason: 'No session files found in expected location',
+      worktreePath: '/Users/test/worktree',
+      branchName: 'task/test',
+      agentType: 'claude',
+      sessionFilesFound: 0,
+      matchingTurns: 0,
+    },
+  } as unknown as Record<string, unknown>;
+  const result = validateAgainstSchema(record);
+  assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
+});
+
+test('Record with workflowCostStatus=skipped validates', () => {
+  const record = {
+    ...scenarios[0].record,
+    workflowCostStatus: 'skipped',
+    workflowCostDiagnostics: {
+      reason: 'Required parameters missing: worktreePath',
+      agentType: 'claude',
+    },
+  } as unknown as Record<string, unknown>;
+  const result = validateAgainstSchema(record);
+  assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
+});
+
+test('Record without diagnostic fields validates (backward compat)', () => {
+  const record = scenarios[0].record as unknown as Record<string, unknown>;
+  assert.ok(!('workflowCostStatus' in record), 'Should not have workflowCostStatus');
+  assert.ok(!('workflowCostDiagnostics' in record), 'Should not have workflowCostDiagnostics');
+  const result = validateAgainstSchema(record);
+  assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
+});
+
 console.log('\n--- Difficulty Field Tests (HOK-777) ---\n');
 
 test('Record with all difficulty fields validates', () => {
