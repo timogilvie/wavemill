@@ -423,6 +423,11 @@
           "type": "boolean",
           "default": true,
           "description": "Enable the self-review loop in workflow commands. When false, workflow proceeds directly from implementation to validation."
+        },
+        "metricsLog": {
+          "type": "string",
+          "default": ".wavemill/review-log.json",
+          "description": "Path to review metrics log file (JSONL format). Relative paths resolve against repo root. Tracks iteration count, findings, and outcomes for each review run."
         }
       },
       "additionalProperties": false

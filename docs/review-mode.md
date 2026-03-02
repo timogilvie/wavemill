@@ -147,8 +147,97 @@ Review settings live in `.wavemill-config.json`:
 |---------|---------|-------------|
 | `review.enabled` | `true` | Enable/disable self-review in the workflow |
 | `review.maxIterations` | `3` | Max review-fix cycles before proceeding |
+| `review.metricsLog` | `.wavemill/review-log.json` | Path to review metrics log (JSONL format) |
 | `eval.judge.model` | `claude-sonnet-4-5-20250929` | LLM model used for review |
 | `eval.judge.provider` | `claude-cli` | Provider (`claude-cli` or `anthropic`) |
+
+## Review Metrics
+
+The review system tracks metrics for each review run to help you understand:
+- How many iterations are typically needed
+- What kinds of issues are caught
+- Resolution vs. escalation rates over time
+
+### What's Tracked
+
+Each review run records:
+- **Number of iterations** — How many review-fix cycles were needed
+- **Findings per iteration** — Count and severity (blockers vs warnings)
+- **Finding categories** — Types of issues caught (logic errors, security, requirements, etc.)
+- **Outcome** — Whether the review resolved all issues, escalated to human, or encountered an error
+- **Context** — Branch name, target branch, Linear issue ID (if available)
+
+### View Statistics
+
+```bash
+# Show all review metrics
+wavemill review --stats
+
+# Filter by date range
+wavemill review --stats --from 2026-01-01 --to 2026-03-01
+
+# Filter by outcome
+wavemill review --stats --outcome resolved
+
+# JSON output (for custom analysis)
+wavemill review --stats --json
+
+# Show more recent reviews
+wavemill review --stats --limit 10
+```
+
+### Output Example
+
+```
+═══════════════════════════════════════════════════════════
+  REVIEW METRICS SUMMARY
+═══════════════════════════════════════════════════════════
+
+Overall Statistics:
+  Total reviews:        42
+  Average iterations:   1.8
+  Resolution rate:      85.7% (36/42)
+  Escalation rate:      9.5% (4/42)
+  Error rate:           4.8% (2/42)
+
+Iteration Distribution:
+  1 iteration      60.0% (25) ██████████████████████████████
+  2 iterations     28.6% (12) ██████████████
+  3 iterations      7.1% (3)  ███
+  4+ iterations     4.8% (2)  ██
+
+Findings Summary:
+  Total findings:       156
+  Avg per review:       3.7
+  Blockers:             42 (26.9%)
+  Warnings:             114 (73.1%)
+
+Top Finding Categories:
+   1. Requirements deviation     28 (17.9%)
+   2. Error handling              22 (14.1%)
+   3. Logical errors              18 (11.5%)
+   4. Security                    12 (7.7%)
+   5. Architectural consistency   11 (7.1%)
+
+Recent Reviews (last 5):
+  HOK-814    task/track-metrics   2 iterations  resolved  2026-03-02
+  HOK-813    task/fix-bug         1 iteration   resolved  2026-03-01
+  HOK-810    task/new-feature     3 iterations  escalated 2026-02-28
+```
+
+### Storage
+
+Review metrics are stored in `.wavemill/review-log.json` as JSONL (newline-delimited JSON). Each line represents one review run with its iterations and findings. The file is append-only and can be safely checked into version control or excluded via `.gitignore` depending on your preferences.
+
+To customize the storage location, set `review.metricsLog` in `.wavemill-config.json`:
+
+```json
+{
+  "review": {
+    "metricsLog": ".wavemill/review-metrics.jsonl"
+  }
+}
+```
 
 ## Key Files
 
@@ -156,9 +245,11 @@ Review settings live in `.wavemill-config.json`:
 |------|---------|
 | `tools/review-changes.ts` | CLI tool — review current branch against target |
 | `tools/review-pr.ts` | CLI tool — review a GitHub pull request |
+| `tools/review-stats.ts` | CLI tool — show review metrics summary |
 | `tools/gather-review-context.ts` | CLI tool — output review context as JSON |
 | `shared/lib/review-engine.ts` | Core review engine (prompt filling, LLM invocation, retry logic, JSON parsing) |
 | `shared/lib/review-runner.ts` | Wrapper for local change reviews (delegates to review-engine) |
+| `shared/lib/review-metrics.ts` | Metrics tracking (log iterations, findings, outcomes) |
 | `shared/lib/review-context-gatherer.ts` | Gathers diff, task packet, plan, and design context |
 | `tools/prompts/review.md` | Review prompt template with JSON schema and evaluation criteria |
 
