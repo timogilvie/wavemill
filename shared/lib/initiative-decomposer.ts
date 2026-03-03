@@ -231,23 +231,42 @@ export async function decomposeInitiative(
   console.log('');
 
   // 7. Parse and validate JSON
+  const suggestions = [
+    'Add more detail to the initiative description in Linear',
+    'If it references external content (PRs, docs), paste the key findings inline',
+    'Ensure the initiative describes concrete goals, not just links',
+  ];
+
   let plan: PlanOutput;
   try {
     plan = parseJsonFromLLM<PlanOutput>(rawOutput);
   } catch (e) {
-    const errorMsg = e instanceof Error ? e.message : String(e);
-    console.error('\n❌ Failed to parse JSON from Claude output');
-    console.error('\nExpected format:');
-    console.error('```json');
-    console.error('{\n  "epic_summary": "...",\n  "milestones": [...]');
-    console.error('\n}');
-    console.error('```');
-    console.error('\nRaw output preview (first 500 chars):');
-    console.error(rawOutput.substring(0, 500));
-    throw new Error(`Failed to parse Claude output as JSON: ${errorMsg}`);
+    // Claude returned non-JSON — likely a plain-text explanation
+    const trimmed = rawOutput.trim().substring(0, 1000);
+    console.error('\n❌ Claude was unable to decompose this initiative.');
+    console.error(`\nResponse:\n  ${trimmed.split('\n').join('\n  ')}`);
+    console.error(`\nSuggestions:\n${suggestions.map((s) => `  - ${s}`).join('\n')}`);
+    throw new Error('Claude did not return a valid plan. See details above.');
   }
 
   if (!validatePlanOutput(plan)) {
+    // Claude returned valid JSON but not a plan — check if it's a refusal/explanation
+    const summary = typeof (plan as any).epic_summary === 'string' ? (plan as any).epic_summary : '';
+    const looksLikeRefusal =
+      !(plan as any).milestones &&
+      (summary.toLowerCase().includes('unable to') ||
+        summary.toLowerCase().includes('cannot') ||
+        summary.toLowerCase().includes('need') ||
+        summary.toLowerCase().includes('missing') ||
+        summary.length > 200);
+
+    if (looksLikeRefusal) {
+      console.error('\n❌ Claude was unable to decompose this initiative:');
+      console.error(`\n  ${summary}`);
+      console.error(`\nSuggestions:\n${suggestions.map((s) => `  - ${s}`).join('\n')}`);
+      throw new Error('Initiative lacks sufficient detail for decomposition. See details above.');
+    }
+
     console.error('\n❌ Claude output does not match expected schema');
     console.error('\nRequired fields:');
     console.error('  - epic_summary (string)');
