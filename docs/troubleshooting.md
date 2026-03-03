@@ -14,12 +14,6 @@ title: Troubleshooting
 - Verify configured project exists in `.wavemill-config.json`
 - Retry with explicit environment export
 
-## Missing Claude/Codex Commands
-
-- Run `./sync-claude.sh links`
-- Restart client apps
-- For older Codex versions, verify `commands.json` sync and use `/commands:<name>`
-
 ## `tmux` Session Problems in Mill Mode
 
 - Confirm `tmux` is installed and available in shell

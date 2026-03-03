@@ -42,19 +42,6 @@ Edit `.wavemill-config.json` and set:
 - Base branch (usually `main`)
 - Parallelism and agent defaults as needed
 
-## 4) Optional: Enable Claude/Codex Command Sync
-
-```bash
-./sync-claude.sh links
-```
-
-This links:
-
-- `~/.claude/commands` -> repo `commands/`
-- `~/.codex/prompts` -> repo `codex/prompts/`
-
-Then restart Claude/Codex clients.
-
 ## Next Steps
 
 - For guided feature execution: [Feature Workflow](feature-workflow.md)

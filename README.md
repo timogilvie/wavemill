@@ -117,51 +117,6 @@ npx tsx tools/generate-codex-permissions.ts
 
 **Full documentation:** [docs/permissions.md](docs/permissions.md)
 
-## Claude/Codex Commands Setup (Optional)
-
-For traditional slash commands in Claude/Codex:
-
-1) Configure:
-- Edit `claude/config.json` and `codex/config.json` to match your team/project (both follow `claude/config.schema.json`).
-- Export `LINEAR_API_KEY` and optionally `GITHUB_TOKEN`/`gh auth login`.
-
-2) Sync commands into the assistants:
-```bash
-./sync-claude.sh links
-# creates ~/.claude/commands -> repo/commands (Claude)
-# creates ~/.codex/prompts -> repo/codex/prompts (Codex custom prompts)
-```
-
-3) Restart Claude or Codex so the new commands load.
-
-## Using the Commands
-
-Claude (after sync) recognizes:
-- `/workflow` – start feature workflow (select backlog issue, set up feature context/state)
-- `/plan` – start an epic plan
-- `/bugfix` – start a bug investigation/fix
-- `/backlog [project]` – list backlog issues (defaults to config project)
-- `/generate-doc <type> <name> [--summary "..."] [--output path]` – docs/tasks/PRDs
-
-Codex (after syncing prompts) recognizes:
-- `/prompts:workflow` – runs `node codex/src/commands/start-workflow.js`
-- `/prompts:plan` – runs `node codex/src/commands/start-plan.js`
-- `/prompts:bugfix` – runs `node codex/src/commands/start-bugfix.js`
-- `/prompts:backlog [project]` – runs `node codex/src/commands/backlog.js [project]`
-- `/prompts:generate-doc <type> <name> [...]` – runs `node codex/src/commands/generate-doc.js ...`
-
-Codex state is kept in `.codex/state/<name>.json`; Claude keeps feature/bug/epic context under the repo (not in `.codex/state/`).
-Using a pre-0.73 Codex build? Keep syncing `commands.json` and call `/commands:<name>` instead of `/prompts:<name>`.
-
-## Keeping Things in Sync
-
-- `./sync-claude.sh status` – show drift between repo, `~/.claude`, and `~/.codex`
-- `./sync-claude.sh to-claude | from-claude` – copy repo ⇄ `~/.claude`
-- `./sync-claude.sh to-codex | from-codex` – copy repo ⇄ `~/.codex` (commands.json + prompts)
-- `./sync-claude.sh links` – refresh the Claude commands symlink and Codex prompts/commands symlink
-
-Canonical sources live in this repo (`commands/`, `codex/prompts/`, legacy `codex/commands.json`, `shared/lib/`, `tools/`). Avoid committing `.claude/state/` or `.codex/state/`.
-
 ## Wavemill Commands
 
 ### `wavemill mill` - Continuous Task Execution
@@ -337,12 +292,9 @@ wavemill/
 │   ├── list-backlog-json.ts   # Fetch backlog as JSON
 │   └── get-issue-json.ts      # Fetch single issue as JSON
 ├── commands/                   # Claude slash commands (symlinked)
-├── codex/                      # Codex commands and prompts
-└── sync-claude.sh             # Sync helper for Claude/Codex
+└── codex/                      # Codex commands and prompts
 ```
 
 ## Troubleshooting
 
-- Slash command missing: ensure `~/.claude/commands` or `~/.codex/prompts` points at this repo (`./sync-claude.sh links`), then restart the client. On older Codex builds also confirm `~/.codex/commands.json` is linked.
 - Linear errors: confirm `LINEAR_API_KEY` is exported and the project name in config exists.
-- Permissions errors writing to `~/.claude`/`~/.codex`: rerun sync with a user that owns those dirs or fix directory permissions.
