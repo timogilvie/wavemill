@@ -302,7 +302,15 @@ async function invokeLLMWithRetry(
  * before expensive parsing attempts.
  */
 function looksLikeJson(text: string): boolean {
-  const trimmed = text.trim();
+  let trimmed = text.trim();
+
+  // Strip markdown code fences if present
+  // Handles: ```json { ... } ```, ``` { ... } ```, and { ... } ``` (trailing fence only)
+  if (trimmed.startsWith('```')) {
+    trimmed = trimmed.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+  } else if (trimmed.endsWith('```')) {
+    trimmed = trimmed.replace(/\s*```\s*$/, '').trim();
+  }
 
   // Check if it starts with { and ends with }
   if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
