@@ -217,7 +217,7 @@ The Bash tool must capture stdout directly so you can read the review results.
 Use a timeout of 300000ms on the Bash tool call.
 
 ```bash
-npx tsx tools/review-changes.ts main --verbose 2>&1 | tee features/<feature-name>/review-iteration-$ITERATION.log
+npx tsx tools/review-changes.ts main --json | tee features/<feature-name>/review-iteration-$ITERATION.json
 REVIEW_EXIT_CODE=${PIPESTATUS[0]}
 
 # Handle timeout (exit code 124)
@@ -228,9 +228,9 @@ if [ $REVIEW_EXIT_CODE -eq 124 ]; then
 fi
 ```
 
-If the Bash tool output is empty or truncated, read the log file as a fallback:
+If the Bash tool output is empty or truncated, read the JSON file as a fallback:
 ```bash
-cat features/<feature-name>/review-iteration-$ITERATION.log
+cat features/<feature-name>/review-iteration-$ITERATION.json
 ```
 
 #### 2. Check Review Result
@@ -249,7 +249,7 @@ break  # Exit loop
 **If exit code = 2 (error)**:
 ```bash
 echo "⚠️ Self-review tool encountered an error (iteration $ITERATION)"
-echo "Review log saved to: features/<feature-name>/review-iteration-$ITERATION.log"
+echo "Review log saved to: features/<feature-name>/review-iteration-$ITERATION.json"
 # Continue to validation phase (treat as passed to avoid blocking)
 REVIEW_PASSED=true
 break
@@ -259,20 +259,19 @@ break
 Parse and present findings to the agent.
 
 #### 3. Parse Findings (when not_ready)
-The review output is already visible from the foreground Bash result above.
-If it was truncated, read the full log:
+The review JSON is already visible from the foreground Bash result above.
+If it was truncated, read the full file:
 ```bash
-cat features/<feature-name>/review-iteration-$ITERATION.log
+cat features/<feature-name>/review-iteration-$ITERATION.json
 ```
 
-Present findings to agent:
-```
-📋 Self-review iteration $ITERATION found issues:
+The JSON contains:
+- `verdict`: `"ready"` or `"not_ready"`
+- `codeReviewFindings`: array of findings, each with `severity`, `location`, `category`, `description`
+- `uiFindings`: optional array with same structure
+- `metadata`: branch info, files changed
 
-[Show formatted findings from Bash output or log file]
-
-I'll fix these issues now...
-```
+Focus on findings where `severity` is `"blocker"` — these must be fixed. Address `"warning"` items if straightforward.
 
 #### 4. Fix Issues
 **Agent instructions**:

@@ -106,7 +106,8 @@ runTool({
   name: 'review-changes',
   description: 'Review code changes against plan and task packet',
   options: {
-    verbose: { type: 'boolean', description: 'Print full review output and debug info' },
+    json: { type: 'boolean', description: 'Output as clean JSON (for agent/script consumption)' },
+    verbose: { type: 'boolean', description: 'Print full review output and debug info (stderr)' },
     'skip-ui': { type: 'boolean', description: 'Skip UI verification even if design context exists' },
     'ui-only': { type: 'boolean', description: 'Run only UI verification (skip code review)' },
     help: { type: 'boolean', short: 'h', description: 'Show help' },
@@ -119,17 +120,24 @@ runTool({
   examples: [
     'npx tsx tools/review-changes.ts',
     'npx tsx tools/review-changes.ts develop',
+    'npx tsx tools/review-changes.ts main --json',
     'npx tsx tools/review-changes.ts main --verbose',
     'npx tsx tools/review-changes.ts main /path/to/repo --skip-ui',
   ],
   additionalHelp: `Exit Codes:
   0 - Review passed (verdict: ready)
   1 - Review failed (verdict: not_ready)
-  2 - Error occurred`,
+  2 - Error occurred
+
+Output Modes:
+  Default   Human-readable formatted output with colors
+  --json    Clean JSON on stdout (for agents and scripts)
+  --verbose Debug info on stderr (composable with --json)`,
   async run({ args, positional }) {
     const targetBranch = positional[0] || 'main';
     const repoDir = positional[1] ? resolve(positional[1]) : process.cwd();
     const verbose = !!args.verbose;
+    const jsonOutput = !!args.json;
 
     // Initialize metrics tracking
     let metric: ReviewMetric | undefined;
@@ -182,7 +190,9 @@ runTool({
       const iterationNumber = metric.iterations.length + 1;
       addIteration(metric, iterationNumber, result);
 
-      const output = formatReviewResult(result, verbose);
+      const output = jsonOutput
+        ? JSON.stringify(result, null, 2)
+        : formatReviewResult(result, verbose);
       await new Promise<void>((resolve, reject) => {
         process.stdout.write(output + '\n', (err: Error | null | undefined) => (err ? reject(err) : resolve()));
       });
@@ -226,6 +236,17 @@ runTool({
         }
       }
 
+      if (jsonOutput) {
+        const errorJson = {
+          error: true,
+          message: (error as Error).message,
+          verdict: null,
+          codeReviewFindings: [],
+          uiFindings: [],
+          metadata: null,
+        };
+        console.log(JSON.stringify(errorJson, null, 2));
+      }
       console.error(`Error: ${(error as Error).message}`);
       if (verbose && error instanceof Error && error.stack) {
         console.error(error.stack);
