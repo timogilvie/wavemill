@@ -14,6 +14,57 @@ import { callClaude } from './llm-cli.ts';
 import { fillPromptTemplate } from './prompt-utils.ts';
 
 // ────────────────────────────────────────────────────────────────
+// Constants
+// ────────────────────────────────────────────────────────────────
+
+const INTERACTIVE_DECOMPOSE_PROMPT = `You are an interactive planning assistant. You have FULL tool access:
+
+- **WebFetch**: Fetch external URLs (GitHub PRs, docs, RFCs)
+- **AskUserQuestion**: Ask clarifying questions when requirements are unclear
+- **Read**: Read files from the codebase
+- **Grep/Glob**: Search the codebase for patterns
+
+## Workflow
+
+1. **RESEARCH PHASE**: Gather context first
+   - If external URLs are referenced, use WebFetch to retrieve them
+   - If requirements are unclear, use AskUserQuestion to clarify
+   - If files are mentioned, use Read to examine them
+   - Take your time to gather all necessary context
+
+2. **OUTPUT PHASE**: After research, output your decomposition as a JSON code block
+   - Wrap in markdown code fence: \`\`\`json ... \`\`\`
+   - Must match the schema in the prompt template
+   - Include epic_summary and milestones
+
+Do NOT rush to output. Research thoroughly first, THEN output JSON.`;
+
+const NON_INTERACTIVE_DECOMPOSE_PROMPT = `You have NO tools available. Do NOT output <tool_call> tags, XML markup, or attempt to call any tools. Your ENTIRE response must be valid JSON matching the specified schema. No conversational text, no preamble, no markdown code fences. Start directly with the opening { brace.`;
+
+const INTERACTIVE_RESEARCH_PROMPT = `You are an interactive research assistant. You have FULL tool access:
+
+- **WebFetch**: Research comparable products, docs, articles
+- **AskUserQuestion**: Ask clarifying questions about the domain
+- **Read**: Read relevant codebase files
+- **Grep/Glob**: Search for patterns and examples
+
+## Workflow
+
+1. **RESEARCH PHASE**: Investigate thoroughly
+   - If you need information about comparable products, use WebFetch
+   - If the domain is unclear, use AskUserQuestion
+   - Use Read to examine relevant files if needed
+
+2. **OUTPUT PHASE**: After research, output structured markdown
+   - Follow the template: Comparable Products, Key Patterns, Anti-Patterns, Scope Adjustments
+   - Be concise (max 300 words)
+   - Start directly with the first markdown heading
+
+Take your time to research. Do NOT rush to output.`;
+
+const NON_INTERACTIVE_RESEARCH_PROMPT = `You have NO tools available. Do NOT output <tool_call> tags, XML markup, or attempt to call any tools. Your ENTIRE response must be the structured markdown research summary and nothing else. No conversational text, no preamble. Start directly with the first markdown heading.`;
+
+// ────────────────────────────────────────────────────────────────
 // Types
 // ────────────────────────────────────────────────────────────────
 
@@ -169,33 +220,10 @@ export async function decomposeWithClaude(
 
   if (isInteractive) {
     // Interactive mode: Enable all tools, guide Claude to research then output JSON
-    cliFlags.push(
-      '--append-system-prompt',
-      'You are an interactive planning assistant. You have FULL tool access:\n\n' +
-      '- **WebFetch**: Fetch external URLs (GitHub PRs, docs, RFCs)\n' +
-      '- **AskUserQuestion**: Ask clarifying questions when requirements are unclear\n' +
-      '- **Read**: Read files from the codebase\n' +
-      '- **Grep/Glob**: Search the codebase for patterns\n\n' +
-      '## Workflow\n\n' +
-      '1. **RESEARCH PHASE**: Gather context first\n' +
-      '   - If external URLs are referenced, use WebFetch to retrieve them\n' +
-      '   - If requirements are unclear, use AskUserQuestion to clarify\n' +
-      '   - If files are mentioned, use Read to examine them\n' +
-      '   - Take your time to gather all necessary context\n\n' +
-      '2. **OUTPUT PHASE**: After research, output your decomposition as a JSON code block\n' +
-      '   - Wrap in markdown code fence: ```json ... ```\n' +
-      '   - Must match the schema in the prompt template\n' +
-      '   - Include epic_summary and milestones\n\n' +
-      'Do NOT rush to output. Research thoroughly first, THEN output JSON.'
-    );
+    cliFlags.push('--append-system-prompt', INTERACTIVE_DECOMPOSE_PROMPT);
   } else {
     // Non-interactive mode: Disable tools, force pure JSON
-    cliFlags.push(
-      '--tools',
-      '',
-      '--append-system-prompt',
-      'You have NO tools available. Do NOT output <tool_call> tags, XML markup, or attempt to call any tools. Your ENTIRE response must be valid JSON matching the specified schema. No conversational text, no preamble, no markdown code fences. Start directly with the opening { brace.'
-    );
+    cliFlags.push('--tools', '', '--append-system-prompt', NON_INTERACTIVE_DECOMPOSE_PROMPT);
   }
 
   const result = await callClaude(fullPrompt, {
@@ -288,32 +316,10 @@ export async function runResearch(
 
   if (isInteractive) {
     // Interactive mode: Enable all tools, guide Claude to research then output markdown
-    cliFlags.push(
-      '--append-system-prompt',
-      'You are an interactive research assistant. You have FULL tool access:\n\n' +
-      '- **WebFetch**: Research comparable products, docs, articles\n' +
-      '- **AskUserQuestion**: Ask clarifying questions about the domain\n' +
-      '- **Read**: Read relevant codebase files\n' +
-      '- **Grep/Glob**: Search for patterns and examples\n\n' +
-      '## Workflow\n\n' +
-      '1. **RESEARCH PHASE**: Investigate thoroughly\n' +
-      '   - If you need information about comparable products, use WebFetch\n' +
-      '   - If the domain is unclear, use AskUserQuestion\n' +
-      '   - Use Read to examine relevant files if needed\n\n' +
-      '2. **OUTPUT PHASE**: After research, output structured markdown\n' +
-      '   - Follow the template: Comparable Products, Key Patterns, Anti-Patterns, Scope Adjustments\n' +
-      '   - Be concise (max 300 words)\n' +
-      '   - Start directly with the first markdown heading\n\n' +
-      'Take your time to research. Do NOT rush to output.'
-    );
+    cliFlags.push('--append-system-prompt', INTERACTIVE_RESEARCH_PROMPT);
   } else {
     // Non-interactive mode: Disable tools, force pure markdown
-    cliFlags.push(
-      '--tools',
-      '',
-      '--append-system-prompt',
-      'You have NO tools available. Do NOT output <tool_call> tags, XML markup, or attempt to call any tools. Your ENTIRE response must be the structured markdown research summary and nothing else. No conversational text, no preamble. Start directly with the first markdown heading.'
-    );
+    cliFlags.push('--tools', '', '--append-system-prompt', NON_INTERACTIVE_RESEARCH_PROMPT);
   }
 
   const result = await callClaude(fullPrompt, {

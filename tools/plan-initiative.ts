@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { listInitiatives } from '../shared/lib/initiative-lister.ts';
 import { decomposeInitiative } from '../shared/lib/initiative-decomposer.ts';
-import { loadWavemillConfig } from '../shared/lib/config.ts';
+import { getPlanConfig } from '../shared/lib/config.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,18 +26,9 @@ function getInteractiveSetting(args: any, repoRoot: string): boolean {
     return false;
   }
 
-  // Check config file
-  try {
-    const config = loadWavemillConfig(repoRoot);
-    if (config.plan?.interactive !== undefined) {
-      return config.plan.interactive;
-    }
-  } catch {
-    // Config loading failed, use default
-  }
-
-  // Default: interactive mode enabled
-  return true;
+  // Check config file (getPlanConfig handles errors gracefully)
+  const planConfig = getPlanConfig(repoRoot);
+  return planConfig.interactive ?? true; // Default: true
 }
 
 if (!process.env.LINEAR_API_KEY) {

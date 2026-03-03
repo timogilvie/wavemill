@@ -41,6 +41,7 @@ export interface PlanConfig {
   maxDisplay?: number;
   research?: boolean;
   model?: string;
+  interactive?: boolean;
 }
 
 export interface JudgeConfig {
