@@ -118,6 +118,11 @@
           "type": "string",
           "default": "claude-opus-4-6",
           "description": "Claude model to use for plan decomposition and research. Can be overridden with PLAN_MODEL env var."
+        },
+        "interactive": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable interactive mode for plan decomposition. When true, Claude has access to all tools (WebFetch, AskUserQuestion, Read, etc.) and can fetch URLs, ask questions, and research. When false, Claude runs in non-interactive mode (no tools, pure JSON output). Can be overridden by --interactive or --no-interactive CLI flags."
         }
       }
     },
