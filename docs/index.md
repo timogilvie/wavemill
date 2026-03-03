@@ -2,7 +2,7 @@
 title: Wavemill
 ---
 
-Wavemill helps developers build software more effectively with LLMs. It connects a backlog in Linear with tools to plan and build faster. Wavemill supports using Linear as backlog planner and Claude/Codex as implementation agents but makes it easy to extend to other tools. 
+Wavemill helps developers build software more effectively with LLMs. It connects a backlog in Linear with tools to plan and build faster. Wavemill supports using Linear as backlog planner and Claude/Codex as implementation agents but makes it easy to extend to other tools.
 
 ## What Wavemill Handles
 

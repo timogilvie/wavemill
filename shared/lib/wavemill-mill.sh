@@ -1600,13 +1600,14 @@ After implementation is complete and tests/lint pass, you MUST run the self-revi
 This is a REQUIRED step — do not skip it or substitute your own review.
 
 1. Run the self-review tool (up to 3 iterations):
-   npx tsx $TOOLS_DIR/review-changes.ts $BASE_BRANCH --verbose
+   npx tsx $TOOLS_DIR/review-changes.ts $BASE_BRANCH --json
    - Exit code 0 = review passed → proceed to step 3
    - Exit code 1 = issues found → fix blockers and re-run (step 2)
    - Exit code 2 = error → log warning and proceed to step 3
+   The output is structured JSON with verdict, codeReviewFindings, and uiFindings.
 
 2. For each iteration where issues are found:
-   - Read the review output carefully
+   - Read the review JSON output carefully
    - Fix all blockers (severity: blocker) and straightforward warnings
    - Make targeted fixes only — do not refactor unrelated code
    - Commit fixes: git commit -m "fix: Address self-review findings (iteration N)"
@@ -1701,11 +1702,12 @@ Process:
 2. Make minimal, high-quality changes
 3. Run tests/lint
 4. REQUIRED: Run the self-review tool before creating a PR (do not skip or substitute your own review):
-   npx tsx $TOOLS_DIR/review-changes.ts $BASE_BRANCH --verbose
+   npx tsx $TOOLS_DIR/review-changes.ts $BASE_BRANCH --json
    - Exit code 0 = passed → proceed to step 5
    - Exit code 1 = issues found → fix blockers, commit fixes, re-run (up to 3 iterations)
    - Exit code 2 = error → log warning and proceed to step 5
-   For each iteration with issues: fix all blockers and straightforward warnings,
+   The output is structured JSON with verdict, codeReviewFindings (each with severity/location/category/description), and optional uiFindings.
+   For each iteration with issues: fix all findings where severity is "blocker" and straightforward "warning" items,
    commit with "fix: Address self-review findings (iteration N)", then re-run the tool.
 5. Create a PR using GitHub CLI with a descriptive title and body:
    gh pr create --title "$issue: <concise summary of changes>" --body "<PR body>"

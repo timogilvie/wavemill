@@ -39,7 +39,10 @@ npx tsx tools/review-changes.ts
 # Review against a different branch
 npx tsx tools/review-changes.ts develop
 
-# Verbose output with full debug info
+# JSON output (for agents and scripts)
+npx tsx tools/review-changes.ts main --json
+
+# Verbose output with full debug info (for human debugging)
 npx tsx tools/review-changes.ts main --verbose
 
 # Skip UI review
@@ -66,6 +69,56 @@ npx tsx tools/gather-review-context.ts main
 ```
 
 Outputs JSON with diff, task packet, plan, design context, and metadata.
+
+### JSON output mode
+
+Use `--json` for programmatic consumption (agents, scripts, CI). This outputs clean JSON to stdout with no ANSI color codes or formatting.
+
+```bash
+npx tsx tools/review-changes.ts main --json
+```
+
+Success output (exit code 0 or 1):
+
+```json
+{
+  "verdict": "not_ready",
+  "codeReviewFindings": [
+    {
+      "severity": "blocker",
+      "location": "src/api/users.ts:45",
+      "category": "security",
+      "description": "SQL injection vulnerability"
+    }
+  ],
+  "uiFindings": [],
+  "metadata": {
+    "branch": "task/my-feature",
+    "files": ["src/api/users.ts"],
+    "hasUiChanges": false,
+    "designContextAvailable": false,
+    "uiVerificationRun": false
+  }
+}
+```
+
+Error output (exit code 2):
+
+```json
+{
+  "error": true,
+  "message": "Error description",
+  "verdict": null,
+  "codeReviewFindings": [],
+  "uiFindings": [],
+  "metadata": null
+}
+```
+
+Notes:
+- `--json` and `--verbose` compose: use both for JSON on stdout + debug info on stderr
+- Progress and status messages always go to stderr, keeping stdout clean
+- Exit codes are unchanged (0=ready, 1=not_ready, 2=error)
 
 ## Exit Codes
 
