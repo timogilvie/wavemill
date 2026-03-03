@@ -20,8 +20,3 @@ State is stored in `.codex/state/<feature>.json` to allow context handoff across
 
 `codex/config.json` follows `claude/config.schema.json`. Override with `CODEX_CONFIG_PATH` if needed. The config keeps Linear project names, git prefixes, and test commands in sync with the Claude stack while allowing separate runtime files.
 
-## Syncing prompts into Codex
-
-- `./sync-claude.sh links` – symlink `codex/prompts` → `~/.codex/prompts`
-- `./sync-claude.sh to-codex` – copy prompts into `~/.codex/prompts`
-- Restart Codex after syncing so it reloads the prompt list.
