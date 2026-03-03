@@ -97,17 +97,24 @@ _with_timeout() {
     return $?
   fi
 
-  # Fallback: background process + watchdog (stdout/stderr flow through)
+  # Fallback: background process + fire-and-forget watchdog.
+  # Redirect watchdog output to /dev/null so it doesn't hold file
+  # descriptors open inside $() command substitutions.
   "$@" &
   local pid=$!
-  # Redirect watchdog stdout/stderr to /dev/null so it doesn't hold the
-  # file descriptor open inside $() command substitutions.  Without this,
-  # $() blocks until sleep completes even after the real command exits.
-  ( sleep "$secs" && kill "$pid" 2>/dev/null && log_warn "Command killed after ${secs}s timeout" ) >/dev/null 2>&1 &
+  ( sleep "$secs" && kill "$pid" 2>/dev/null ) >/dev/null 2>&1 &
   local wd=$!
+
+  # Wait ONLY for the actual command — returns as soon as it exits.
+  # Do NOT wait for the watchdog: on macOS, killing the watchdog subshell
+  # does not kill its child `sleep`, so `wait $wd` blocks for the full
+  # timeout duration even when the command finished quickly.
   wait "$pid" 2>/dev/null
   local rc=$?
-  kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null
+
+  # Best-effort cleanup of the watchdog (fire-and-forget).
+  kill "$wd" 2>/dev/null || true
+
   return "$rc"
 }
 
@@ -979,6 +986,48 @@ log() { echo "$(date '+%H:%M:%S') $*"; }
 log_error() { echo "$(date '+%H:%M:%S') ERROR: $*" >&2; }
 log_warn() { echo "$(date '+%H:%M:%S') WARN: $*" >&2; }
 
+# Timeout for external API calls (Linear, GitHub) to prevent monitor freeze.
+# If an API call hangs, the entire monitoring loop blocks and the user cannot
+# type 'q' or select tasks.  This value caps individual calls.
+API_TIMEOUT="${API_TIMEOUT:-30}"
+
+# Run a command with a hard wall-clock timeout (works on macOS without coreutils).
+# Returns at the earlier of: command completion or timeout expiry.
+# Usage: _with_timeout <seconds> <command> [args...]
+_with_timeout() {
+  local secs=$1
+  shift
+
+  if command -v timeout &>/dev/null; then
+    timeout "$secs" "$@"
+    return $?
+  fi
+  if command -v gtimeout &>/dev/null; then
+    gtimeout "$secs" "$@"
+    return $?
+  fi
+
+  # Fallback: background process + fire-and-forget watchdog.
+  # Redirect watchdog output to /dev/null so it doesn't hold file
+  # descriptors open inside $() command substitutions.
+  "$@" &
+  local cmd_pid=$!
+  ( sleep "$secs" && kill "$cmd_pid" 2>/dev/null ) >/dev/null 2>&1 &
+  local wd_pid=$!
+
+  # Wait ONLY for the actual command — returns as soon as it exits.
+  # Do NOT wait for the watchdog: on macOS, killing the watchdog subshell
+  # does not kill its child `sleep`, so `wait $wd_pid` blocks for the full
+  # timeout duration even when the command finished quickly.
+  wait "$cmd_pid" 2>/dev/null
+  local rc=$?
+
+  # Best-effort cleanup of the watchdog (fire-and-forget).
+  kill "$wd_pid" 2>/dev/null || true
+
+  return "$rc"
+}
+
 # Load shared agent launch adapters used by launch_task()
 if [[ ! -f "$LIB_DIR/agent-adapters.sh" ]]; then
   log_error "Missing adapter library: $LIB_DIR/agent-adapters.sh"
@@ -1173,19 +1222,19 @@ cleanup_completed_task() {
 
 find_pr_for_branch() {
   local branch="$1"
-  gh pr list --head "$branch" --state all --json number --jq '.[0].number // empty' 2>/dev/null || echo ""
+  _with_timeout "$API_TIMEOUT" gh pr list --head "$branch" --state all --json number --jq '.[0].number // empty' 2>/dev/null || echo ""
 }
 
 pr_state() {
   local pr="$1"
-  gh pr view "$pr" --json state --jq '.state' 2>/dev/null || echo ""
+  _with_timeout "$API_TIMEOUT" gh pr view "$pr" --json state --jq '.state' 2>/dev/null || echo ""
 }
 
 validate_pr_merge() {
   local pr="$1"
   [[ -z "$pr" ]] && return 1
   local state
-  state=$(gh pr view "$pr" --json state --jq '.state' 2>/dev/null || echo "")
+  state=$(_with_timeout "$API_TIMEOUT" gh pr view "$pr" --json state --jq '.state' 2>/dev/null || echo "")
   [[ "$state" == "MERGED" ]] && return 0
   return 1
 }
@@ -1201,7 +1250,7 @@ linear_set_state() {
   local stderr_file rc
   stderr_file=$(mktemp) || { log_warn "Failed to update Linear state for $issue to $state (mktemp failed)"; return 0; }
 
-  if npx tsx "$TOOLS_DIR/set-issue-state.ts" "$issue" "$state" >/dev/null 2>"$stderr_file"; then
+  if _with_timeout "$API_TIMEOUT" npx tsx "$TOOLS_DIR/set-issue-state.ts" "$issue" "$state" >/dev/null 2>"$stderr_file"; then
     rm -f "$stderr_file"
     return 0
   fi
@@ -1220,9 +1269,9 @@ linear_set_state() {
 
 linear_is_completed() {
   local issue="$1"
-  local issue_state
-  issue_state=$(npx tsx "$TOOLS_DIR/get-issue-json.ts" "$issue" 2>/dev/null | \
-    jq -r '.state.name // ""' 2>/dev/null)
+  local raw_json issue_state
+  raw_json=$(_with_timeout "$API_TIMEOUT" npx tsx "$TOOLS_DIR/get-issue-json.ts" "$issue" 2>/dev/null || echo "{}")
+  issue_state=$(echo "$raw_json" | jq -r '.state.name // ""' 2>/dev/null)
   [[ "$issue_state" == "Done" || "$issue_state" == "Completed" || "$issue_state" == "Canceled" ]]
 }
 
@@ -1246,7 +1295,7 @@ fetch_candidates() {
   fi
 
   local backlog_json
-  backlog_json=$(npx tsx "$TOOLS_DIR/list-backlog-json.ts" "$PROJECT_NAME" 2>/dev/null)
+  backlog_json=$(_with_timeout 60 npx tsx "$TOOLS_DIR/list-backlog-json.ts" "$PROJECT_NAME" 2>/dev/null)
 
   if [[ -z "$backlog_json" ]] || [[ "$backlog_json" == "[]" ]]; then
     BACKLOG_CACHE=""
@@ -1291,7 +1340,7 @@ launch_task() {
 
   # Fetch issue details
   local issue_json
-  issue_json=$(npx tsx "$TOOLS_DIR/get-issue-json.ts" "$issue" 2>/dev/null || echo "{}")
+  issue_json=$(_with_timeout "$API_TIMEOUT" npx tsx "$TOOLS_DIR/get-issue-json.ts" "$issue" 2>/dev/null || echo "{}")
   local issue_desc
   issue_desc=$(echo "$issue_json" | jq -r '.description // ""' 2>/dev/null || echo "")
 
@@ -1304,7 +1353,7 @@ launch_task() {
   else
     log "  Expanding task packet for $issue..."
     if [[ -f "$TOOLS_DIR/expand-issue.ts" ]]; then
-      npx tsx "$TOOLS_DIR/expand-issue.ts" "$issue" --output "$packet_file" --update >/dev/null 2>&1 || echo "$issue_desc" > "$packet_file"
+      _with_timeout 120 npx tsx "$TOOLS_DIR/expand-issue.ts" "$issue" --output "$packet_file" --update >/dev/null 2>&1 || echo "$issue_desc" > "$packet_file"
     else
       echo "$issue_desc" > "$packet_file"
     fi
@@ -1397,7 +1446,7 @@ launch_task() {
     local suggest_tool="$TOOLS_DIR/suggest-model.ts"
     if [[ "${ROUTER_ENABLED:-true}" == "true" ]] && [[ -f "$suggest_tool" ]] && [[ -f "$packet_file" ]]; then
       local suggestion
-      suggestion=$(npx tsx "$suggest_tool" --json --file "$packet_file" --repo-dir "$REPO_DIR" 2>/dev/null || echo "")
+      suggestion=$(_with_timeout "$API_TIMEOUT" npx tsx "$suggest_tool" --json --file "$packet_file" --repo-dir "$REPO_DIR" 2>/dev/null || echo "")
       if [[ -n "$suggestion" ]]; then
         local rec_model rec_agent rec_insufficient rec_confidence
         rec_model=$(echo "$suggestion" | jq -r '.recommendedModel // empty' 2>/dev/null)
@@ -1828,7 +1877,7 @@ monitor_issue_state() {
             [[ -z "$eval_agent" ]] && eval_agent="$AGENT_CMD"
             # Always enable debug mode for cost diagnostics (HOK-879)
             debug_flag="--debug"
-            npx tsx "$TOOLS_DIR/run-eval-hook.ts" \
+            _with_timeout 120 npx tsx "$TOOLS_DIR/run-eval-hook.ts" \
               --issue "$ISSUE" --branch "$BRANCH" \
               --worktree "${WORKTREE_ROOT}/${SLUG}" \
               --workflow-type mill --repo-dir "$REPO_DIR" \
@@ -1904,7 +1953,7 @@ monitor_issue_state() {
         [[ -z "$eval_agent" ]] && eval_agent="$AGENT_CMD"
         # Always enable debug mode for cost diagnostics (HOK-879)
         debug_flag="--debug"
-        npx tsx "$TOOLS_DIR/run-eval-hook.ts" \
+        _with_timeout 120 npx tsx "$TOOLS_DIR/run-eval-hook.ts" \
           --issue "$ISSUE" --pr "$PR" --branch "$BRANCH" \
           --worktree "${WORKTREE_ROOT}/${SLUG}" \
           --workflow-type mill --repo-dir "$REPO_DIR" \
