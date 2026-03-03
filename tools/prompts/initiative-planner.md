@@ -12,6 +12,36 @@ Each issue must:
 
 ---
 
+## TOOL ACCESS (Interactive Mode)
+
+**When running in interactive mode**, you have FULL tool access to gather context before decomposing:
+
+### Available Tools
+- **WebFetch**: Fetch external URLs (GitHub PRs, docs, RFCs, articles)
+- **AskUserQuestion**: Ask clarifying questions when requirements are ambiguous
+- **Read**: Read files from the codebase to understand current implementation
+- **Grep/Glob**: Search the codebase for patterns, examples, and relevant code
+
+### Recommended Workflow
+1. **Review the initiative context** below carefully
+2. **Identify missing information**:
+   - Are there external URLs referenced? Use WebFetch to retrieve them
+   - Are requirements vague? Use AskUserQuestion to clarify
+   - Are specific files or modules mentioned? Use Read to examine them
+   - Need to understand existing patterns? Use Grep/Glob to search
+3. **Gather context thoroughly** before proceeding to decomposition
+4. **Only after research**, proceed to generate the structured JSON output
+
+### Example Actions
+- Initiative mentions "Review gap analysis in PR #172" → Use WebFetch to fetch the PR
+- Initiative says "Improve data pipeline" → Use AskUserQuestion to ask which aspects need improvement
+- Initiative references "auth module patterns" → Use Read to examine auth.ts
+- Initiative involves "webhook handling" → Use Grep to find existing webhook implementations
+
+**Take your time.** Interactive mode is designed to ensure high-quality decompositions by gathering complete context first.
+
+---
+
 ## STEP 1 -- Understand and Scope
 
 Before generating issues:
@@ -88,8 +118,21 @@ If none, use an empty array `[]`.
 
 ## Output Format
 
-Return ONLY valid JSON (no markdown fences, no conversational text, no preamble) structured exactly as:
+After completing your research (if in interactive mode), return your decomposition as valid JSON.
 
+**In interactive mode**: Wrap your JSON in a markdown code fence:
+````markdown
+```json
+{
+  "epic_summary": "Brief summary of the initiative and its goals",
+  "milestones": [...]
+}
+```
+````
+
+**In non-interactive mode**: Return ONLY raw JSON (no markdown fences, no preamble).
+
+### JSON Structure
 ```
 {
   "epic_summary": "Brief summary of the initiative and its goals",

@@ -51,6 +51,13 @@ export interface DecomposeOptions {
   model?: string;
   /** Repository root path for persisting research */
   repoRoot?: string;
+  /**
+   * Enable interactive mode (allows Claude to use tools).
+   * When true: Claude can use WebFetch, AskUserQuestion, Read, etc.
+   * When false: Claude has no tools, must output pure JSON/markdown.
+   * Default: false (backward compatible)
+   */
+  interactive?: boolean;
 }
 
 /**
@@ -187,7 +194,12 @@ export async function decomposeInitiative(
     console.log('Running research phase...');
     console.log('─'.repeat(80));
 
-    researchSummary = await runResearch(researchPrompt, context, model);
+    researchSummary = await runResearch({
+      researchPrompt,
+      initiativeContext: context,
+      model,
+      interactive: options.interactive,
+    });
 
     console.log(researchSummary);
     console.log('─'.repeat(80));
@@ -209,7 +221,12 @@ export async function decomposeInitiative(
   // 6. Call Claude to decompose
   console.log('Decomposing initiative with Claude...');
   console.log('─'.repeat(80));
-  const rawOutput = await decomposeWithClaude(systemPrompt, context, model);
+  const rawOutput = await decomposeWithClaude({
+    systemPrompt,
+    initiativeContext: context,
+    model,
+    interactive: options.interactive,
+  });
   console.log('─'.repeat(80));
   console.log('');
 
@@ -219,12 +236,28 @@ export async function decomposeInitiative(
     plan = parseJsonFromLLM<PlanOutput>(rawOutput);
   } catch (e) {
     const errorMsg = e instanceof Error ? e.message : String(e);
+    console.error('\n❌ Failed to parse JSON from Claude output');
+    console.error('\nExpected format:');
+    console.error('```json');
+    console.error('{\n  "epic_summary": "...",\n  "milestones": [...]');
+    console.error('\n}');
+    console.error('```');
+    console.error('\nRaw output preview (first 500 chars):');
+    console.error(rawOutput.substring(0, 500));
     throw new Error(`Failed to parse Claude output as JSON: ${errorMsg}`);
   }
 
   if (!validatePlanOutput(plan)) {
+    console.error('\n❌ Claude output does not match expected schema');
+    console.error('\nRequired fields:');
+    console.error('  - epic_summary (string)');
+    console.error('  - milestones (array)');
+    console.error('    - Each milestone: name (string), issues (array)');
+    console.error('    - Each issue: title, description, dependencies (array), priority');
+    console.error('\nParsed output:');
+    console.error(JSON.stringify(plan, null, 2).substring(0, 500));
     throw new Error(
-      `Claude output does not match expected schema:\n${JSON.stringify(plan, null, 2).substring(0, 500)}`
+      `Claude output does not match expected schema. See details above.`
     );
   }
 
