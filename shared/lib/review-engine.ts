@@ -16,7 +16,7 @@ import {
   type ReviewContext,
   type DesignContext,
 } from './review-context-gatherer.ts';
-import { callClaude, parseJsonFromLLM } from './llm-cli.ts';
+import { callClaude, parseJsonFromLLM, checkClaudeAvailability } from './llm-cli.ts';
 import { loadWavemillConfig } from './config.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -706,6 +706,51 @@ export async function runReview(
     console.error(`Design context available: ${context.designContext !== null}`);
     console.error(`UI changes detected: ${context.metadata.hasUiChanges}`);
     console.error('');
+  }
+
+  // Pre-flight check: Verify Claude CLI is available
+  // Skip if SKIP_PREFLIGHT_CHECK=1 is set (for testing)
+  if (!process.env.SKIP_PREFLIGHT_CHECK) {
+    if (options.verbose) {
+      console.error('=== Pre-Flight Check ===');
+    }
+
+    const healthCheck = await checkClaudeAvailability({ verbose: options.verbose });
+
+    if (!healthCheck.available) {
+      const errorLines = [
+        'Claude CLI is not available or not working properly.',
+        '',
+        `Error: ${healthCheck.error}`,
+        '',
+        'Diagnostics:',
+        `  - Command: ${healthCheck.command}`,
+        `  - In PATH: ${healthCheck.diagnostics?.inPath ? 'Yes' : 'No'}`,
+        `  - Executable: ${healthCheck.diagnostics?.executable ? 'Yes' : 'No'}`,
+        `  - Auth working: ${healthCheck.diagnostics?.authWorking ? 'Yes' : 'No'}`,
+      ];
+
+      if (healthCheck.version) {
+        errorLines.push(`  - Version: ${healthCheck.version}`);
+      }
+
+      errorLines.push(
+        '',
+        'Troubleshooting:',
+        '  1. Install Claude CLI: npm install -g @anthropic-ai/claude-cli',
+        '  2. Authenticate: claude login',
+        '  3. Test: echo "hello" | claude -p --model claude-haiku-4-5-20251001',
+        '  4. Check PATH: which claude',
+        '',
+        'To skip this check (not recommended): SKIP_PREFLIGHT_CHECK=1'
+      );
+
+      throw new Error(errorLines.join('\n'));
+    }
+
+    if (options.verbose) {
+      console.error('✓ Claude CLI is available and working\n');
+    }
   }
 
   // Run each persona review in sequence

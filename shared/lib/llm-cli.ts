@@ -71,6 +71,23 @@ export interface LLMCallResult {
   provider: LLMProvider;
 }
 
+export interface CliHealthCheck {
+  /** Whether CLI is available and working */
+  available: boolean;
+  /** CLI command that was checked */
+  command: string;
+  /** Version string if available */
+  version?: string;
+  /** Error message if check failed */
+  error?: string;
+  /** Detailed diagnostics */
+  diagnostics?: {
+    inPath: boolean;
+    executable: boolean;
+    authWorking?: boolean;
+  };
+}
+
 // ────────────────────────────────────────────────────────────────
 // Constants
 // ────────────────────────────────────────────────────────────────
@@ -266,15 +283,106 @@ function executeSync(
     [config.envVarName]: config.envVarValue,
   };
 
-  const raw = execShellCommand(command, {
-    encoding: 'utf-8',
-    timeout,
-    maxBuffer,
-    cwd,
-    env,
-  });
+  try {
+    const raw = execShellCommand(command, {
+      encoding: 'utf-8',
+      timeout,
+      maxBuffer,
+      cwd,
+      env,
+    });
 
-  return raw;
+    return raw;
+  } catch (error) {
+    // Enhanced error handling with specific diagnostics
+    const errorMsg = (error as Error).message;
+    const promptSize = existsSync(tmpFile) ? readFileSync(tmpFile, 'utf-8').length : 0;
+
+    // ENOENT - command not found
+    if (errorMsg.includes('ENOENT') || errorMsg.includes('not found')) {
+      throw new Error(
+        `${provider} CLI command not found: ${cliCmd}\n\n` +
+        `Command attempted: ${command}\n` +
+        `Working directory: ${cwd}\n` +
+        `PATH: ${process.env.PATH}\n\n` +
+        `Troubleshooting:\n` +
+        `  - Install Claude CLI: npm install -g @anthropic-ai/claude-cli\n` +
+        `  - Verify installation: which ${cliCmd}\n` +
+        `  - Check PATH includes: $(npm bin -g)\n` +
+        `  - Run health check: npm run check:review\n`
+      );
+    }
+
+    // ETIMEDOUT or timeout in message - timeout error
+    if (errorMsg.includes('ETIMEDOUT') || errorMsg.includes('timed out') || errorMsg.includes('timeout')) {
+      throw new Error(
+        `${provider} CLI timed out after ${timeout}ms\n\n` +
+        `Command: ${command}\n` +
+        `Prompt size: ${promptSize} chars\n\n` +
+        `Possible causes:\n` +
+        `  - Network connectivity issues\n` +
+        `  - Prompt too large for processing\n` +
+        `  - Model overloaded or rate limited\n\n` +
+        `Troubleshooting:\n` +
+        `  - Increase timeout: REVIEW_TIMEOUT=300000 (5 min)\n` +
+        `  - Check network: curl -I https://api.anthropic.com\n` +
+        `  - Reduce diff size: review in smaller PRs\n` +
+        `  - Try again in a few minutes\n`
+      );
+    }
+
+    // 401 or authentication - auth failure
+    if (errorMsg.includes('401') || errorMsg.includes('authentication') || errorMsg.includes('unauthorized')) {
+      throw new Error(
+        `${provider} CLI authentication failed\n\n` +
+        `Troubleshooting:\n` +
+        `  - Run: ${cliCmd} login\n` +
+        `  - Verify auth: echo "test" | ${cliCmd} -p --model claude-haiku-4-5-20251001\n` +
+        `  - Check API key: echo $ANTHROPIC_API_KEY\n` +
+        `  - Run health check: npm run check:review\n`
+      );
+    }
+
+    // Rate limit or quota exceeded
+    if (errorMsg.includes('429') || errorMsg.includes('rate limit') || errorMsg.includes('quota')) {
+      throw new Error(
+        `${provider} CLI rate limit or quota exceeded\n\n` +
+        `Troubleshooting:\n` +
+        `  - Wait a few minutes and try again\n` +
+        `  - Check usage at: https://console.anthropic.com/settings/usage\n` +
+        `  - Contact support if issue persists\n`
+      );
+    }
+
+    // Buffer exceeded
+    if (errorMsg.includes('maxBuffer') || errorMsg.includes('stdout maxBuffer')) {
+      throw new Error(
+        `${provider} CLI output exceeded buffer limit (${maxBuffer} bytes)\n\n` +
+        `Possible causes:\n` +
+        `  - Diff is very large\n` +
+        `  - LLM returned excessive output\n\n` +
+        `Troubleshooting:\n` +
+        `  - Review diff in smaller PRs\n` +
+        `  - Increase buffer: REVIEW_MAX_BUFFER=${maxBuffer * 2}\n`
+      );
+    }
+
+    // Generic error with full context
+    throw new Error(
+      `${provider} CLI command failed\n\n` +
+      `Command: ${command}\n` +
+      `Working directory: ${cwd}\n` +
+      `Timeout: ${timeout}ms\n` +
+      `Max buffer: ${maxBuffer} bytes\n` +
+      `Model: ${options.model || '(default)'}\n` +
+      `Prompt size: ${promptSize} chars\n\n` +
+      `Error: ${errorMsg}\n\n` +
+      `Troubleshooting:\n` +
+      `  - Run health check: npm run check:review\n` +
+      `  - Enable verbose mode: npx tsx tools/review-changes.ts main --verbose\n` +
+      `  - Check system logs for more details\n`
+    );
+  }
 }
 
 /**
@@ -336,6 +444,182 @@ async function executeStream(
       reject(new Error(`Failed to read temp file: ${(error as Error).message}`));
     }
   });
+}
+
+// ────────────────────────────────────────────────────────────────
+// Health Check
+// ────────────────────────────────────────────────────────────────
+
+/**
+ * Check if Claude CLI is available and working.
+ *
+ * Performs three checks:
+ * 1. Is 'claude' command in PATH?
+ * 2. Can we get version info?
+ * 3. Can we make a simple test call?
+ *
+ * @param options - Check options
+ * @returns Health check result with diagnostics
+ *
+ * @example
+ * ```typescript
+ * const health = await checkClaudeAvailability({ verbose: true });
+ * if (!health.available) {
+ *   console.error('Claude CLI not available:', health.error);
+ *   console.error('Diagnostics:', health.diagnostics);
+ * }
+ * ```
+ */
+export async function checkClaudeAvailability(
+  options: { verbose?: boolean } = {}
+): Promise<CliHealthCheck> {
+  const verbose = options.verbose ?? false;
+  const cliCmd = getCliCommand('claude', {});
+
+  if (verbose) {
+    console.error(`Checking Claude CLI availability (command: ${cliCmd})...`);
+  }
+
+  // Check 1: Is command in PATH?
+  let inPath = false;
+  try {
+    const whichResult = execShellCommand(`which ${escapeShellArg(cliCmd)}`, {
+      encoding: 'utf-8',
+      timeout: 5000,
+    });
+    inPath = whichResult.toString().trim().length > 0;
+    if (verbose) {
+      console.error(`  ✓ Command found in PATH: ${whichResult.toString().trim()}`);
+    }
+  } catch (error) {
+    if (verbose) {
+      console.error(`  ✗ Command not found in PATH`);
+    }
+    return {
+      available: false,
+      command: cliCmd,
+      error: `Claude CLI command '${cliCmd}' not found in PATH`,
+      diagnostics: {
+        inPath: false,
+        executable: false,
+      },
+    };
+  }
+
+  // Check 2: Can we get version?
+  let version: string | undefined;
+  let executable = false;
+  try {
+    const versionResult = execShellCommand(`${escapeShellArg(cliCmd)} --version`, {
+      encoding: 'utf-8',
+      timeout: 5000,
+    });
+    version = versionResult.toString().trim();
+    executable = true;
+    if (verbose) {
+      console.error(`  ✓ Version: ${version}`);
+    }
+  } catch (error) {
+    if (verbose) {
+      console.error(`  ✗ Could not get version: ${(error as Error).message}`);
+    }
+    return {
+      available: false,
+      command: cliCmd,
+      error: `Claude CLI found but not executable: ${(error as Error).message}`,
+      diagnostics: {
+        inPath,
+        executable: false,
+      },
+    };
+  }
+
+  // Check 3: Can we make a simple test call?
+  let authWorking = false;
+  try {
+    const testPrompt = 'test';
+    const tmpFile = join(tmpdir(), `wavemill-health-${Date.now()}.txt`);
+
+    try {
+      writeFileSync(tmpFile, testPrompt, 'utf-8');
+
+      const testResult = execShellCommand(
+        `${escapeShellArg(cliCmd)} -p --output-format json --model claude-haiku-4-5-20251001 < ${escapeShellArg(tmpFile)}`,
+        {
+          encoding: 'utf-8',
+          timeout: 30000,
+          maxBuffer: 1024 * 1024,
+          env: {
+            ...process.env,
+            CLAUDECODE: '',
+          },
+        }
+      );
+
+      // If we got here, the test call succeeded
+      authWorking = true;
+      if (verbose) {
+        console.error(`  ✓ Test call succeeded (auth working)`);
+      }
+    } finally {
+      if (existsSync(tmpFile)) {
+        try {
+          unlinkSync(tmpFile);
+        } catch {
+          // Best effort cleanup
+        }
+      }
+    }
+  } catch (error) {
+    const errorMsg = (error as Error).message;
+    if (verbose) {
+      console.error(`  ✗ Test call failed: ${errorMsg}`);
+    }
+
+    // Check if it's an auth error
+    if (errorMsg.includes('401') || errorMsg.includes('authentication') || errorMsg.includes('unauthorized')) {
+      return {
+        available: false,
+        command: cliCmd,
+        version,
+        error: `Claude CLI authentication failed. Run 'claude login' to authenticate.`,
+        diagnostics: {
+          inPath,
+          executable,
+          authWorking: false,
+        },
+      };
+    }
+
+    // Other error
+    return {
+      available: false,
+      command: cliCmd,
+      version,
+      error: `Claude CLI test call failed: ${errorMsg}`,
+      diagnostics: {
+        inPath,
+        executable,
+        authWorking: false,
+      },
+    };
+  }
+
+  // All checks passed
+  if (verbose) {
+    console.error(`\n✓ Claude CLI is available and working`);
+  }
+
+  return {
+    available: true,
+    command: cliCmd,
+    version,
+    diagnostics: {
+      inPath,
+      executable,
+      authWorking,
+    },
+  };
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -492,9 +776,23 @@ async function callLLMWithRetry(
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
+      if (attempt > 0) {
+        // Log retry attempt
+        const errorPreview = lastError?.message.split('\n')[0] || 'Unknown error';
+        const delay = Math.pow(2, attempt) * 1000;
+        console.error(`\n⚠️  Retry attempt ${attempt}/${maxRetries}`);
+        console.error(`   Previous error: ${errorPreview}`);
+        console.error(`   Waiting ${delay}ms before retry...\n`);
+      }
+
       return await callLLMOnce(prompt, options, provider);
     } catch (error) {
       lastError = error as Error;
+
+      // Log error details
+      const errorPreview = lastError.message.split('\n')[0];
+      console.error(`\n❌ Attempt ${attempt + 1}/${maxRetries + 1} failed:`);
+      console.error(`   ${errorPreview}`);
 
       if (attempt < maxRetries) {
         // Exponential backoff: 2s, 4s, 8s, ...
@@ -505,7 +803,12 @@ async function callLLMWithRetry(
   }
 
   throw new Error(
-    `${provider} CLI call failed after ${maxRetries + 1} attempts: ${lastError?.message}`
+    `${provider} CLI call failed after ${maxRetries + 1} attempts\n\n` +
+    `Last error: ${lastError?.message}\n\n` +
+    `Troubleshooting:\n` +
+    `  - Run health check: npm run check:review\n` +
+    `  - Enable verbose mode: npx tsx tools/review-changes.ts main --verbose\n` +
+    `  - Check if service is experiencing issues: https://status.anthropic.com\n`
   );
 }
 
