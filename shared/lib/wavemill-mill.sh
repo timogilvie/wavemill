@@ -1295,7 +1295,7 @@ fetch_candidates() {
   fi
 
   local backlog_json
-  backlog_json=$(_with_timeout 60 npx tsx "$TOOLS_DIR/list-backlog-json.ts" "$PROJECT_NAME" 2>/dev/null)
+  backlog_json=$(_with_timeout 60 npx tsx "$TOOLS_DIR/list-backlog-json.ts" "$PROJECT_NAME" 2>/dev/null) || true
 
   if [[ -z "$backlog_json" ]] || [[ "$backlog_json" == "[]" ]]; then
     BACKLOG_CACHE=""
@@ -1877,13 +1877,16 @@ monitor_issue_state() {
             [[ -z "$eval_agent" ]] && eval_agent="$AGENT_CMD"
             # Always enable debug mode for cost diagnostics (HOK-879)
             debug_flag="--debug"
+            local eval_log="/tmp/${SESSION}-eval-${ISSUE}.log"
             _with_timeout 120 npx tsx "$TOOLS_DIR/run-eval-hook.ts" \
               --issue "$ISSUE" --branch "$BRANCH" \
               --worktree "${WORKTREE_ROOT}/${SLUG}" \
               --workflow-type mill --repo-dir "$REPO_DIR" \
               --agent "$eval_agent" \
               $debug_flag \
-              2>&1 | while IFS= read -r line; do log "  [eval] $line"; done || true
+              >"$eval_log" 2>&1 || true
+            while IFS= read -r line; do log "  [eval] $line"; done < "$eval_log"
+            rm -f "$eval_log"
             mark_eval_completed "$ISSUE"
           else
             log "  ✓ Eval already completed for $ISSUE"
@@ -1953,13 +1956,16 @@ monitor_issue_state() {
         [[ -z "$eval_agent" ]] && eval_agent="$AGENT_CMD"
         # Always enable debug mode for cost diagnostics (HOK-879)
         debug_flag="--debug"
+        local eval_log="/tmp/${SESSION}-eval-${ISSUE}.log"
         _with_timeout 120 npx tsx "$TOOLS_DIR/run-eval-hook.ts" \
           --issue "$ISSUE" --pr "$PR" --branch "$BRANCH" \
           --worktree "${WORKTREE_ROOT}/${SLUG}" \
           --workflow-type mill --repo-dir "$REPO_DIR" \
           --agent "$eval_agent" \
           $debug_flag \
-          2>&1 | while IFS= read -r line; do log "  [eval] $line"; done || true
+          >"$eval_log" 2>&1 || true
+        while IFS= read -r line; do log "  [eval] $line"; done < "$eval_log"
+        rm -f "$eval_log"
         mark_eval_completed "$ISSUE"
       else
         log "  ✓ Eval already completed for $ISSUE"
