@@ -8,6 +8,7 @@
     "codex"
   ],
   "scripts": {
+    "check:review": "npx tsx tools/check-review-setup.ts",
     "test": "npm run test:shell && npm run test:unit && npm run test:smoke && npm run test:config",
     "test:shell": "bash tests/check-shell.sh",
     "test:unit": "npm run test:node-test && npm run test:custom",
