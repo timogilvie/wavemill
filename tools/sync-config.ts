@@ -76,7 +76,7 @@ const CANONICAL_TEMPLATE = {
       selfReviewBlocker: 0.20,
     },
   },
-  autoEval: false,
+  autoEval: true,
   review: {
     maxIterations: 3,
     enabled: true,

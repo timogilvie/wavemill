@@ -267,7 +267,7 @@
     },
     "autoEval": {
       "type": "boolean",
-      "default": false,
+      "default": true,
       "description": "When true, automatically run eval after workflow/bugfix command completion (PR creation). Eval failures are logged as warnings and never fail the workflow."
     },
     "router": {

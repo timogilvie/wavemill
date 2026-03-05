@@ -86,7 +86,7 @@ load_config() {
       "_CFG_PLAN_MODEL=\($c.plan.model // "claude-opus-4-6" | @sh)",
       "_CFG_ROUTER_ENABLED=\($c.router.enabled // true)",
       "_CFG_ROUTER_DEFAULT_MODEL=\($c.router.defaultModel // "claude-sonnet-4-5-20250929" | @sh)",
-      "_CFG_AUTO_EVAL=\($c.autoEval // false)",
+      "_CFG_AUTO_EVAL=\($c.autoEval // true)",
       "_CFG_SETUP_CMD=\($c.mill.setupCommand // "" | @sh)"
     ] | .[]
     '
