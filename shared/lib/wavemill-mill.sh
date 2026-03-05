@@ -1825,6 +1825,7 @@ echo ""
 QUIT_REQUESTED=false
 LAST_DISPLAY=""       # fingerprint of what was last printed
 LAST_ACTIVE_COUNT=-1  # force first render
+LAST_WAITING_MSG=""   # track last waiting message to avoid repetition
 
 monitor_issue_state() {
   local ISSUE="$1"
@@ -2072,6 +2073,7 @@ while :; do
           fi
           LAST_DISPLAY="$display_fingerprint"
           LAST_ACTIVE_COUNT=$active_count
+          LAST_WAITING_MSG=""  # Clear waiting state when tasks are available
         fi
 
         # Default: selection against unblocked list only
@@ -2140,6 +2142,7 @@ while :; do
             # Invalidate caches after launching so next cycle re-renders
             LAST_BACKLOG_FETCH=0
             LAST_DISPLAY=""
+            LAST_WAITING_MSG=""  # Clear waiting state
           fi
           # User pressed Enter with no input — just continue monitoring
         fi
@@ -2147,7 +2150,11 @@ while :; do
       else
         # All candidates are already active
         if (( active_count == 0 )); then
-          log "No new tasks available. Waiting... (type 'q' to quit)"
+          waiting_msg="No new tasks available. Waiting... (type 'q' to quit)"
+          if [[ "$waiting_msg" != "$LAST_WAITING_MSG" ]]; then
+            log "$waiting_msg"
+            LAST_WAITING_MSG="$waiting_msg"
+          fi
           if read -t "$POLL_SECONDS" -r REPLY; then
             [[ "$REPLY" =~ ^[Qq] ]] && exit 0
           fi
@@ -2158,7 +2165,11 @@ while :; do
     else
       # Backlog empty
       if (( active_count == 0 )); then
-        log "Backlog empty. Waiting for new tasks... (type 'q' to quit)"
+        waiting_msg="Backlog empty. Waiting for new tasks... (type 'q' to quit)"
+        if [[ "$waiting_msg" != "$LAST_WAITING_MSG" ]]; then
+          log "$waiting_msg"
+          LAST_WAITING_MSG="$waiting_msg"
+        fi
         # Invalidate cache so we re-fetch next cycle
         LAST_BACKLOG_FETCH=0
         if read -t "$POLL_SECONDS" -r REPLY; then
