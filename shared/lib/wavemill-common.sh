@@ -10,7 +10,7 @@
 _WAVEMILL_DEFAULTS='{
   "linear": { "project": "" },
   "mill": {
-    "session": "wavemill",
+    "session": "",
     "maxParallel": 3,
     "pollSeconds": 10,
     "baseBranch": "main",
@@ -101,7 +101,19 @@ load_config() {
 
   # Apply env var overrides (env > repo config > user config > defaults)
   PROJECT_NAME="${PROJECT_NAME:-$_CFG_PROJECT}"
-  SESSION="${SESSION:-$_CFG_SESSION}"
+
+  # Session name: env var > config > repo-specific default
+  # Repo-specific default prevents cross-repo session collisions
+  local _repo_basename
+  _repo_basename="$(basename "$repo_dir" | tr '.:-' '___')"
+  local _default_session="wavemill-${_repo_basename}"
+  if [[ -n "${SESSION:-}" ]]; then
+    : # Explicit env var — keep it
+  elif [[ -n "$_CFG_SESSION" ]]; then
+    SESSION="$_CFG_SESSION"
+  else
+    SESSION="$_default_session"
+  fi
   MAX_PARALLEL="${MAX_PARALLEL:-$_CFG_MAX_PARALLEL}"
   POLL_SECONDS="${POLL_SECONDS:-$_CFG_POLL_SECONDS}"
   BASE_BRANCH="${BASE_BRANCH:-$_CFG_BASE_BRANCH}"

@@ -62,10 +62,23 @@ fi
 # Kill any stale session from a previous crashed run so we get a fresh control window.
 TMUX_CONF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd ../.. && pwd)/.tmux.conf"
 if tmux has-session -t "$SESSION" 2>/dev/null; then
-  # Session exists but may be stale (missing control window). Kill and recreate.
+  # Safety check: don't kill a session running in a different repo
+  _existing_dir=$(tmux show-environment -t "$SESSION" REPO_DIR 2>/dev/null | sed 's/^REPO_DIR=//') || true
+  if [[ -n "$_existing_dir" && "$_existing_dir" != "$REPO_DIR" ]]; then
+    echo "ERROR: tmux session '$SESSION' is already active in: $_existing_dir" >&2
+    echo "Cannot start a new session for: $REPO_DIR" >&2
+    echo "" >&2
+    echo "Options:" >&2
+    echo "  - Stop the existing session first (tmux kill-session -t '$SESSION')" >&2
+    echo "  - Use a different session name: SESSION=my-session wavemill mill" >&2
+    exit 1
+  fi
+  # Same repo or unknown — stale session, safe to kill and recreate
   tmux kill-session -t "$SESSION" 2>/dev/null || true
 fi
 tmux -f "$TMUX_CONF" new-session -d -s "$SESSION" -c "$REPO_DIR" -n control
+# Store REPO_DIR in tmux environment so other instances can detect cross-repo conflicts
+tmux set-environment -t "$SESSION" REPO_DIR "$REPO_DIR"
 
 
 # Control window message
