@@ -850,8 +850,12 @@ for t in "${TASKS[@]}"; do
   # Save to state ledger (for tracking)
   BRANCH="task/${SLUG}"
   WT_DIR="${WORKTREE_ROOT}/${SLUG}"
-  # Initialize with default agent (will be overridden by router if different agent selected)
-  save_task_state "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR" "" "" "$AGENT_CMD"
+  # Initialize with correct agent (resolve from FORCE_MODEL if set)
+  local initial_agent="$AGENT_CMD"
+  if [[ -n "${FORCE_MODEL:-}" ]]; then
+    initial_agent="$(agent_resolve_from_model "$FORCE_MODEL")"
+  fi
+  save_task_state "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR" "" "" "$initial_agent"
 
   log "  ✓ $ISSUE ready"
   LAUNCH_ARGS+=("$t")
@@ -1650,6 +1654,7 @@ This is a REQUIRED step — do not skip it or substitute your own review.
 
 1. Run the self-review tool (up to 3 iterations):
    IMPORTANT: Run from your current directory (the worktree). Do NOT change directories.
+   IMPORTANT: This tool calls the Claude API and takes 2-5 minutes. You MUST set a 600s timeout on your Bash tool call.
    npx tsx $TOOLS_DIR/review-changes.ts $BASE_BRANCH --json
    - Exit code 0 = review passed → proceed to step 3
    - Exit code 1 = issues found → fix blockers and re-run (step 2)
@@ -1753,6 +1758,7 @@ Process:
 3. Run tests/lint
 4. REQUIRED: Run the self-review tool before creating a PR (do not skip or substitute your own review):
    IMPORTANT: Run from your current directory (the worktree). Do NOT change directories.
+   IMPORTANT: This tool calls the Claude API and takes 2-5 minutes. You MUST set a 600s timeout on your Bash tool call.
    npx tsx $TOOLS_DIR/review-changes.ts $BASE_BRANCH --json
    - Exit code 0 = passed → proceed to step 5
    - Exit code 1 = issues found → fix blockers, commit fixes, re-run (up to 3 iterations)

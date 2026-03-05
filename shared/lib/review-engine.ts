@@ -86,8 +86,8 @@ interface Config {
 
 const DEFAULT_MODEL = 'claude-sonnet-4-5-20250929';
 const DEFAULT_PROVIDER = 'claude-cli';
-const DEFAULT_TIMEOUT_MS = 120_000; // 2 minutes
-const DEFAULT_MAX_RETRIES = 2;
+const DEFAULT_TIMEOUT_MS = 300_000; // 5 minutes (claude -p with JSON output is slow)
+const DEFAULT_MAX_RETRIES = 1;
 const SUPPORTED_PROVIDERS = ['claude-cli', 'anthropic'];
 
 // ────────────────────────────────────────────────────────────────
