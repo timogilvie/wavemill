@@ -167,6 +167,19 @@ for t in "${TASKS[@]}"; do
     # Override AGENT_CMD for pretrust_directory and other functions in this subshell
     AGENT_CMD="$TASK_AGENT_CMD"
 
+    # Persist resolved agent to state file so monitor/eval uses the correct agent
+    if [[ -n "${WAVEMILL_STATE_FILE:-}" ]] && [[ -f "$WAVEMILL_STATE_FILE" ]]; then
+      local _tmp
+      _tmp=$(mktemp) || true
+      if [[ -n "${_tmp:-}" ]] && jq --arg issue "$ISSUE" --arg agent "$TASK_AGENT_CMD" \
+         'if .tasks[$issue] then .tasks[$issue].agent = $agent else . end' \
+         "$WAVEMILL_STATE_FILE" > "$_tmp" 2>/dev/null; then
+        mv "$_tmp" "$WAVEMILL_STATE_FILE"
+      else
+        rm -f "${_tmp:-}"
+      fi
+    fi
+
 
     # Create worktree + branch (check for existing branch first)
     if [[ -d "$WT_DIR" ]]; then
