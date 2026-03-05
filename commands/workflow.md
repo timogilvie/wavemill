@@ -216,6 +216,9 @@ REVIEW_PASSED=false
 The Bash tool must capture stdout directly so you can read the review results.
 Use a timeout of 300000ms on the Bash tool call.
 
+**CRITICAL**: Run from your **current directory** (the worktree). Do NOT change directories or cd to the main repo.
+The tool will analyze your current working directory, which should be your feature branch worktree.
+
 ```bash
 npx tsx tools/review-changes.ts main --json | tee features/<feature-name>/review-iteration-$ITERATION.json
 REVIEW_EXIT_CODE=${PIPESTATUS[0]}

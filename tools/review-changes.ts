@@ -154,6 +154,51 @@ Output Modes:
         currentBranch = 'unknown';
       }
 
+      // Detect if running from wrong directory (worktree but on main branch)
+      if (currentBranch === targetBranch && targetBranch === 'main') {
+        try {
+          const gitDir = execSync('git rev-parse --git-dir', {
+            cwd: repoDir,
+            encoding: 'utf-8',
+          }).trim();
+
+          // Check if we're in a worktree directory structure
+          if (gitDir.includes('/worktrees/') && currentBranch === 'main') {
+            const errorMsg = `
+Error: Potential working directory mismatch detected.
+
+You appear to be running from a worktree but on branch '${currentBranch}'.
+This usually means the review tool was run from the wrong directory.
+
+Expected: Run from the worktree directory where your feature branch is checked out
+Current directory: ${repoDir}
+Current branch: ${currentBranch}
+Git directory: ${gitDir}
+
+Fix: Ensure you run this command from your worktree directory, not the main repo.
+Use the relative path: npx tsx tools/review-changes.ts ${targetBranch} --json
+            `.trim();
+
+            if (jsonOutput) {
+              const errorJson = {
+                error: true,
+                message: errorMsg,
+                verdict: null,
+                codeReviewFindings: [],
+                uiFindings: [],
+                metadata: null,
+              };
+              console.log(JSON.stringify(errorJson, null, 2));
+            }
+            console.error(errorMsg);
+            process.exitCode = 2;
+            return;
+          }
+        } catch {
+          // If git commands fail, continue anyway
+        }
+      }
+
       // Load or create metric
       const existingState = loadReviewRunState(repoDir, verbose);
       if (existingState) {
