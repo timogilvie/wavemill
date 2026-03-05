@@ -1650,7 +1650,7 @@ This is a REQUIRED step — do not skip it or substitute your own review.
 
 1. Run the self-review tool (up to 3 iterations):
    IMPORTANT: Run from your current directory (the worktree). Do NOT change directories.
-   npx tsx tools/review-changes.ts $BASE_BRANCH --json
+   npx tsx $TOOLS_DIR/review-changes.ts $BASE_BRANCH --json
    - Exit code 0 = review passed → proceed to step 3
    - Exit code 1 = issues found → fix blockers and re-run (step 2)
    - Exit code 2 = error → log warning and proceed to step 3
@@ -1676,7 +1676,7 @@ This is a REQUIRED step — do not skip it or substitute your own review.
 Success criteria:
 - [ ] Implementation matches plan and issue requirements
 - [ ] Lint/tests pass
-- [ ] Self-review tool executed (npx tsx tools/review-changes.ts)
+- [ ] Self-review tool executed (npx tsx $TOOLS_DIR/review-changes.ts)
 - [ ] No regressions
 - [ ] PR created with descriptive summary linked to $issue
 
@@ -1743,7 +1743,7 @@ Success criteria:
 - [ ] Implementation matches issue requirements
 - [ ] UI is responsive and accessible (if applicable)
 - [ ] Lint/tests pass
-- [ ] Self-review tool executed (npx tsx tools/review-changes.ts)
+- [ ] Self-review tool executed (npx tsx $TOOLS_DIR/review-changes.ts)
 - [ ] No regressions in existing functionality
 - [ ] PR created with clear description and linked to $issue
 
@@ -1753,7 +1753,7 @@ Process:
 3. Run tests/lint
 4. REQUIRED: Run the self-review tool before creating a PR (do not skip or substitute your own review):
    IMPORTANT: Run from your current directory (the worktree). Do NOT change directories.
-   npx tsx tools/review-changes.ts $BASE_BRANCH --json
+   npx tsx $TOOLS_DIR/review-changes.ts $BASE_BRANCH --json
    - Exit code 0 = passed → proceed to step 5
    - Exit code 1 = issues found → fix blockers, commit fixes, re-run (up to 3 iterations)
    - Exit code 2 = error → log warning and proceed to step 5
