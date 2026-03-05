@@ -176,6 +176,58 @@ show_version() {
   echo "Location: $SCRIPT_DIR"
 }
 
+# Check if config version is up to date, offer to sync if outdated
+check_config_version() {
+  # Skip if explicitly disabled
+  [[ "${SKIP_CONFIG_CHECK:-false}" == "true" ]] && return 0
+
+  # Run check-config-version.ts
+  local check_tool="$TOOLS_DIR/check-config-version.ts"
+  if [[ ! -f "$check_tool" ]]; then
+    return 0
+  fi
+
+  # Check version (exit code 1 = needs upgrade)
+  local check_output
+  check_output=$(npx tsx "$check_tool" 2>&1)
+  local check_status=$?
+
+  # 0 = current, 1 = needs upgrade, 2 = error
+  if [[ $check_status -eq 0 ]]; then
+    return 0
+  fi
+
+  if [[ $check_status -eq 2 ]]; then
+    echo -e "${YELLOW}Warning:${NC} Config version check failed: $check_output"
+    return 0
+  fi
+
+  # Needs upgrade
+  echo -e "${YELLOW}Notice:${NC} $check_output"
+  echo -e "  The latest config includes features like eval, review, router, and permissions."
+  echo ""
+  echo -e "Upgrade config to version 1.0.0? This will preserve your existing settings."
+  read -p "[Y/n] " -n 1 -r
+  echo
+
+  if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+    # Run sync-config.ts
+    local sync_tool="$TOOLS_DIR/sync-config.ts"
+    if [[ -f "$sync_tool" ]]; then
+      echo ""
+      npx tsx "$sync_tool" --yes
+      echo ""
+    else
+      echo -e "${YELLOW}Warning:${NC} Could not find sync-config.ts"
+      return 1
+    fi
+  else
+    echo -e "${CYAN}Skipped.${NC} Upgrade later with: ${CYAN}npx tsx tools/sync-config.ts${NC}"
+    echo -e "  Or run with: ${CYAN}SKIP_CONFIG_CHECK=true wavemill mill${NC} to skip this prompt"
+    echo ""
+  fi
+}
+
 # Check if project context is initialized, offer to create if missing
 check_project_context() {
   # Skip if project context already exists
@@ -214,6 +266,7 @@ check_project_context() {
 
 # Run standard pre-flight checks before command execution
 run_preflight_checks() {
+  check_config_version
   check_project_context
 }
 
@@ -248,6 +301,7 @@ run_init() {
   # Create config file
   cat > "$target" <<'INIT_EOF'
 {
+  "configVersion": "1.0.0",
   "linear": {
     "project": ""
   },
@@ -259,12 +313,120 @@ run_init() {
     "worktreeRoot": "../worktrees",
     "agentCmd": "claude",
     "requireConfirm": true,
+    "planningMode": "skip",
     "maxRetries": 3,
     "retryDelay": 2
   },
   "expand": {
     "maxSelect": 3,
     "maxDisplay": 9
+  },
+  "plan": {
+    "maxDisplay": 9,
+    "research": false,
+    "model": "claude-opus-4-6",
+    "interactive": true
+  },
+  "eval": {
+    "aggregation": {
+      "repos": [],
+      "outputPath": ".wavemill/evals/aggregated-evals.jsonl"
+    },
+    "evalsDir": ".wavemill/evals",
+    "judge": {
+      "model": "claude-sonnet-4-5-20250929",
+      "provider": "anthropic"
+    },
+    "pricing": {
+      "claude-opus-4-6": { "inputCostPerMTok": 15, "outputCostPerMTok": 75, "cacheWriteCostPerMTok": 18.75, "cacheReadCostPerMTok": 1.50 },
+      "claude-sonnet-4-5-20250929": { "inputCostPerMTok": 3, "outputCostPerMTok": 15, "cacheWriteCostPerMTok": 3.75, "cacheReadCostPerMTok": 0.30 },
+      "claude-haiku-4-5-20251001": { "inputCostPerMTok": 0.80, "outputCostPerMTok": 4, "cacheWriteCostPerMTok": 1.00, "cacheReadCostPerMTok": 0.08 },
+      "gpt-5.3-codex": { "inputCostPerMTok": 1.75, "outputCostPerMTok": 14, "cacheReadCostPerMTok": 0.44 }
+    },
+    "interventionPenalties": {
+      "reviewComment": 0.05,
+      "postPrCommit": 0.08,
+      "manualEdit": 0.10,
+      "testFix": 0.06,
+      "sessionRedirect": 0.12,
+      "selfReviewWarning": 0.05,
+      "selfReviewBlocker": 0.20
+    }
+  },
+  "autoEval": false,
+  "review": {
+    "maxIterations": 3,
+    "enabled": true,
+    "metricsLog": ".wavemill/review-log.json",
+    "personas": ["general"]
+  },
+  "router": {
+    "enabled": true,
+    "defaultModel": "claude-sonnet-4-5-20250929",
+    "minRecords": 20,
+    "minModels": 2,
+    "models": [],
+    "defaultAgent": "claude",
+    "agentMap": {
+      "claude-opus-4-6": "claude",
+      "claude-sonnet-4-5-20250929": "claude",
+      "claude-haiku-4-5-20251001": "claude",
+      "gpt-5.3-codex": "codex"
+    },
+    "mode": "auto",
+    "llmModel": "gpt-4o-mini",
+    "llmProvider": "openai"
+  },
+  "validation": {
+    "enabled": true,
+    "layer1": {
+      "enabled": true
+    },
+    "layer2": {
+      "enabled": true,
+      "model": "claude-haiku-4-5-20251001",
+      "provider": "claude-cli"
+    },
+    "onFailure": "conservative"
+  },
+  "constraints": {
+    "enabled": true,
+    "cleanupAfterMerge": false
+  },
+  "ui": {
+    "visualVerification": true,
+    "designStandards": true,
+    "creativeDirection": false
+  },
+  "permissions": {
+    "autoApprovePatterns": [
+      "find *",
+      "ls *",
+      "cat *",
+      "head *",
+      "tail *",
+      "wc *",
+      "git status*",
+      "git log*",
+      "git show*",
+      "git diff*",
+      "git branch --list*",
+      "git branch -l*",
+      "git worktree list*",
+      "gh pr view*",
+      "gh pr list*",
+      "gh pr status*",
+      "gh issue view*",
+      "gh issue list*",
+      "grep *",
+      "rg *",
+      "npm list*",
+      "npm ls*"
+    ],
+    "worktreeMode": {
+      "enabled": true,
+      "autoApproveReadOnly": true
+    }
   }
 }
 INIT_EOF

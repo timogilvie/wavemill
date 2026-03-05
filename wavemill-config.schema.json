@@ -4,6 +4,10 @@
   "description": "Per-repo (.wavemill-config.json) or user-level (~/.wavemill/config.json) config. All fields are optional; env vars override everything.",
   "type": "object",
   "properties": {
+    "configVersion": {
+      "type": "string",
+      "description": "Config format version (e.g., '1.0.0'). Used for upgrade detection and compatibility checks."
+    },
     "linear": {
       "type": "object",
       "properties": {

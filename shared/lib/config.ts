@@ -18,6 +18,12 @@ import { createRequire } from 'node:module';
 // TypeScript Types (matching wavemill-config.schema.json)
 // ────────────────────────────────────────────────────────────────
 
+/**
+ * Current config format version.
+ * Increment when making breaking changes to config structure.
+ */
+export const CURRENT_CONFIG_VERSION = '1.0.0';
+
 export interface MillConfig {
   session?: string;
   maxParallel?: number;
@@ -138,6 +144,7 @@ export interface PermissionsConfig {
 }
 
 export interface WavemillConfig {
+  configVersion?: string;
   linear?: LinearConfig;
   mill?: MillConfig;
   expand?: ExpandConfig;

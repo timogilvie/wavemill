@@ -50,8 +50,13 @@ export LINEAR_API_KEY="your-key-here"
 ```bash
 cd ~/your-repo
 wavemill init
-# Edit .wavemill-config.json — set linear.project and adjust any defaults
+# Edit .wavemill-config.json:
+#   - Set linear.project (required)
+#   - Configure features: eval, review, router, permissions, etc.
+#   - Adjust defaults as needed
 ```
+
+The comprehensive config includes all features with sensible defaults. The config version is automatically checked when running workflows.
 
 ### Run Wavemill
 

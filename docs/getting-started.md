@@ -36,11 +36,43 @@ In the target project repo:
 wavemill init
 ```
 
+This creates a comprehensive `.wavemill-config.json` with all available sections:
+
+- **linear**: Project name for backlog queries
+- **mill**: Continuous execution settings (parallelism, agent, worktree root)
+- **expand**: Batch expansion settings
+- **plan**: Epic decomposition settings
+- **eval**: LLM evaluation with judge model, pricing, and intervention penalties
+- **autoEval**: Auto-run eval after workflow completion
+- **review**: Self-review loop configuration
+- **router**: Model routing based on historical eval data
+- **validation**: Task packet validation layers
+- **constraints**: Constraint rule validation
+- **ui**: UI review and design verification settings
+- **permissions**: Auto-approve patterns for agent tools
+
 Edit `.wavemill-config.json` and set:
 
-- Linear project name
+- Linear project name (required)
 - Base branch (usually `main`)
 - Parallelism and agent defaults as needed
+- Enable/disable features like autoEval, router, review, etc.
+
+### Config Versioning
+
+The config includes a `configVersion` field to track format compatibility. When running `wavemill mill`, `expand`, or `plan`, you'll be prompted to upgrade if your config is outdated.
+
+To manually upgrade:
+
+```bash
+npx tsx tools/sync-config.ts
+```
+
+To skip version checks:
+
+```bash
+SKIP_CONFIG_CHECK=true wavemill mill
+```
 
 ## Next Steps
 
