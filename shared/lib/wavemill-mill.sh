@@ -1654,6 +1654,7 @@ This is a REQUIRED step — do not skip it or substitute your own review.
 
 1. Run the self-review tool (up to 3 iterations):
    IMPORTANT: Run from your current directory (the worktree). Do NOT change directories.
+   IMPORTANT: This tool calls the Claude API and takes 2-5 minutes. You MUST set a 600s timeout on your Bash tool call.
    npx tsx $TOOLS_DIR/review-changes.ts $BASE_BRANCH --json
    - Exit code 0 = review passed → proceed to step 3
    - Exit code 1 = issues found → fix blockers and re-run (step 2)
@@ -1757,6 +1758,7 @@ Process:
 3. Run tests/lint
 4. REQUIRED: Run the self-review tool before creating a PR (do not skip or substitute your own review):
    IMPORTANT: Run from your current directory (the worktree). Do NOT change directories.
+   IMPORTANT: This tool calls the Claude API and takes 2-5 minutes. You MUST set a 600s timeout on your Bash tool call.
    npx tsx $TOOLS_DIR/review-changes.ts $BASE_BRANCH --json
    - Exit code 0 = passed → proceed to step 5
    - Exit code 1 = issues found → fix blockers, commit fixes, re-run (up to 3 iterations)
