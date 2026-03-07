@@ -23,6 +23,34 @@ agent_resolve_from_model() {
 }
 
 # ============================================================================
+# MODEL VALIDATION
+# ============================================================================
+
+# Validate a model ID exists in config (pricing or agentMap).
+# Args: $1 = model ID, $2 = repo directory (optional)
+# Returns: 0 if valid, 1 if invalid (prints error to stderr)
+# Note: Requires TOOLS_DIR environment variable to be set (from wavemill script)
+agent_validate_model() {
+  local model="$1"
+  local repo_dir="${2:-$(pwd)}"
+
+  # Convert to absolute path
+  repo_dir="$(cd "$repo_dir" 2>/dev/null && pwd || echo "$repo_dir")"
+
+  # Derive lib directory from TOOLS_DIR (TOOLS_DIR = repo/tools, LIB_DIR = repo/shared/lib)
+  local lib_dir="${TOOLS_DIR%/tools}/shared/lib"
+  local validator="model-validator.ts"
+
+  # Call TypeScript validator (cd to lib_dir first for imports to work)
+  # Exits 0 if valid, 1 if invalid with error message
+  if (cd "$lib_dir" && npx tsx "$validator" "$model" "$repo_dir" 2>&1); then
+    return 0
+  else
+    return 1
+  fi
+}
+
+# ============================================================================
 # AGENT VALIDATION
 # ============================================================================
 

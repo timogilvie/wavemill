@@ -853,6 +853,12 @@ for t in "${TASKS[@]}"; do
   # Initialize with correct agent (resolve from FORCE_MODEL if set)
   initial_agent="$AGENT_CMD"
   if [[ -n "${FORCE_MODEL:-}" ]]; then
+    # Validate model before proceeding
+    if ! agent_validate_model "$FORCE_MODEL" "$REPO_DIR"; then
+      log_error "Invalid FORCE_MODEL: $FORCE_MODEL"
+      log_error "Run 'wavemill mill' without FORCE_MODEL to use the router, or fix the model name."
+      exit 1
+    fi
     initial_agent="$(agent_resolve_from_model "$FORCE_MODEL")"
   fi
   save_task_state "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR" "" "" "$initial_agent"
@@ -1443,6 +1449,12 @@ launch_task() {
   local task_agent_cmd="$AGENT_CMD"
   local task_model=""
   if [[ -n "${FORCE_MODEL:-}" ]]; then
+    # Validate model (should have been validated earlier, but double-check)
+    if ! agent_validate_model "$FORCE_MODEL" "$REPO_DIR"; then
+      log_error "  Invalid FORCE_MODEL for $issue: $FORCE_MODEL"
+      log_error "  Skipping this task."
+      continue
+    fi
     task_model="$FORCE_MODEL"
     task_agent_cmd="$(agent_resolve_from_model "$FORCE_MODEL")"
     log "  FORCE_MODEL: $task_agent_cmd --model $task_model"

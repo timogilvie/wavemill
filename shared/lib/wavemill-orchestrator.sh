@@ -130,6 +130,11 @@ for t in "${TASKS[@]}"; do
     TASK_AGENT_CMD="$AGENT_CMD"
     TASK_MODEL=""
     if [[ -n "${FORCE_MODEL:-}" ]]; then
+      # Validate model before using it
+      if ! agent_validate_model "$FORCE_MODEL" "$REPO_DIR"; then
+        echo "ERROR: Invalid FORCE_MODEL: $FORCE_MODEL" >&2
+        exit 1
+      fi
       # FORCE_MODEL env var overrides the router entirely
       TASK_MODEL="$FORCE_MODEL"
       TASK_AGENT_CMD="$(agent_resolve_from_model "$FORCE_MODEL")"
