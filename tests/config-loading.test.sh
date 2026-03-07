@@ -24,6 +24,15 @@ check() {
   fi
 }
 
+check_matches() {
+  local name="$1" pattern="$2" actual="$3"
+  if [[ "$actual" =~ $pattern ]]; then
+    pass "$name"
+  else
+    fail "$name" "$pattern" "$actual"
+  fi
+}
+
 # Create isolated temp directories
 TMP=$(mktemp -d)
 FAKE_HOME=$(mktemp -d)
@@ -32,7 +41,7 @@ trap 'rm -rf "$TMP" "$FAKE_HOME"' EXIT
 # All config vars to unset for clean tests
 UNSET_VARS="SESSION MAX_PARALLEL POLL_SECONDS BASE_BRANCH AGENT_CMD WORKTREE_ROOT
   REQUIRE_CONFIRM PLANNING_MODE MAX_RETRIES RETRY_DELAY MAX_SELECT MAX_DISPLAY
-  PROJECT_NAME PLAN_MAX_DISPLAY PLAN_RESEARCH PLAN_MODEL ROUTER_ENABLED
+  PROJECT_NAME LINEAR_PROJECT PLAN_MAX_DISPLAY PLAN_RESEARCH PLAN_MODEL ROUTER_ENABLED
   ROUTER_DEFAULT_MODEL AUTO_EVAL SETUP_CMD _WAVEMILL_CONFIG_LOADED"
 
 # ============================================================================
@@ -55,7 +64,7 @@ eval "$(
   echo "D_MAX_DISPLAY='$MAX_DISPLAY'"
 )"
 
-check "default SESSION" "wavemill" "$D_SESSION"
+check_matches "default SESSION" '^wavemill-' "$D_SESSION"
 check "default MAX_PARALLEL" "3" "$D_MAX_PARALLEL"
 check "default BASE_BRANCH" "main" "$D_BASE_BRANCH"
 check "default AGENT_CMD" "claude" "$D_AGENT_CMD"
@@ -72,6 +81,9 @@ echo "=== Repo Config Overrides ==="
 
 cat > "$TMP/.wavemill-config.json" << 'EOF'
 {
+  "linear": {
+    "project": "Repo Project"
+  },
   "mill": {
     "session": "custom-session",
     "maxParallel": 5,
@@ -96,6 +108,7 @@ eval "$(
   echo "R_AGENT_CMD='$AGENT_CMD'"
   echo "R_MAX_SELECT='$MAX_SELECT'"
   echo "R_MAX_DISPLAY='$MAX_DISPLAY'"
+  echo "R_PROJECT_NAME='$PROJECT_NAME'"
 )"
 
 check "repo SESSION override" "custom-session" "$R_SESSION"
@@ -104,6 +117,7 @@ check "repo BASE_BRANCH override" "develop" "$R_BASE_BRANCH"
 check "repo AGENT_CMD override" "codex" "$R_AGENT_CMD"
 check "repo MAX_SELECT override" "2" "$R_MAX_SELECT"
 check "repo MAX_DISPLAY override" "6" "$R_MAX_DISPLAY"
+check "repo PROJECT_NAME override" "Repo Project" "$R_PROJECT_NAME"
 
 # ============================================================================
 # Test 3: Env vars override repo config
@@ -129,7 +143,36 @@ check "env MAX_PARALLEL override" "7" "$E_MAX_PARALLEL"
 check "repo AGENT_CMD preserved" "codex" "$E_AGENT_CMD"
 
 # ============================================================================
-# Test 4: Missing config files don't cause errors
+# Test 4: Repo project beats ambient PROJECT_NAME; LINEAR_PROJECT is explicit
+# ============================================================================
+echo ""
+echo "=== Project Override Precedence ==="
+
+eval "$(
+  export HOME="$FAKE_HOME"
+  export PROJECT_NAME="Leaked Project"
+  unset LINEAR_PROJECT _WAVEMILL_CONFIG_LOADED 2>/dev/null || true
+  source "$COMMON"
+  load_config "$TMP"
+  echo "P_LEGACY_PROJECT_NAME='$PROJECT_NAME'"
+)"
+
+check "repo project beats ambient PROJECT_NAME" "Repo Project" "$P_LEGACY_PROJECT_NAME"
+
+eval "$(
+  export HOME="$FAKE_HOME"
+  export PROJECT_NAME="Leaked Project"
+  export LINEAR_PROJECT="Explicit Project"
+  unset _WAVEMILL_CONFIG_LOADED 2>/dev/null || true
+  source "$COMMON"
+  load_config "$TMP"
+  echo "P_LINEAR_PROJECT_NAME='$PROJECT_NAME'"
+)"
+
+check "LINEAR_PROJECT explicitly overrides repo project" "Explicit Project" "$P_LINEAR_PROJECT_NAME"
+
+# ============================================================================
+# Test 5: Missing config files don't cause errors
 # ============================================================================
 echo ""
 echo "=== Missing Config Files ==="
@@ -145,7 +188,7 @@ eval "$(
 )"
 rm -rf "$EMPTY_TMP"
 
-check "defaults with no config files" "wavemill" "$M_SESSION"
+check_matches "defaults with no config files" '^wavemill-' "$M_SESSION"
 check "defaults with no config files (parallel)" "3" "$M_MAX_PARALLEL"
 
 # ============================================================================

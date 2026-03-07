@@ -188,11 +188,12 @@ cd ~/my-repo
 wavemill expand
 
 # With custom project:
-PROJECT_NAME="My Project" wavemill expand
+LINEAR_PROJECT="My Project" wavemill expand
 ```
 
 **Environment variables:**
-- `PROJECT_NAME` - Linear project name (auto-detected from `.wavemill-config.json`)
+- `LINEAR_PROJECT` - Explicit Linear project override
+- `PROJECT_NAME` - Legacy project override, only used when no repo project is configured
 - `MAX_SELECT` - Max issues to select (default: 3)
 - `MAX_DISPLAY` - Max issues to display (default: 9)
 

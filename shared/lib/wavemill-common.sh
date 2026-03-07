@@ -100,7 +100,19 @@ load_config() {
   eval "$shell_vars"
 
   # Apply env var overrides (env > repo config > user config > defaults)
-  PROJECT_NAME="${PROJECT_NAME:-$_CFG_PROJECT}"
+  #
+  # Project selection is special:
+  # - LINEAR_PROJECT is the explicit override
+  # - repo config should beat an ambient/exported PROJECT_NAME to avoid
+  #   cross-repo leakage from prior shells or sessions
+  # - legacy PROJECT_NAME is only used when no repo/user project is configured
+  if [[ -n "${LINEAR_PROJECT:-}" ]]; then
+    PROJECT_NAME="$LINEAR_PROJECT"
+  elif [[ -n "$_CFG_PROJECT" ]]; then
+    PROJECT_NAME="$_CFG_PROJECT"
+  else
+    PROJECT_NAME="${PROJECT_NAME:-}"
+  fi
 
   # Session name: env var > config > repo-specific default
   # Repo-specific default prevents cross-repo session collisions

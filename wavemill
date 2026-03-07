@@ -154,6 +154,7 @@ ${GREEN}Configuration:${NC}
 ${GREEN}Environment Variable Overrides:${NC}
   All config file settings can be overridden with env vars:
     LINEAR_API_KEY    Required: Linear API token (not in config - use .env)
+    LINEAR_PROJECT    Explicit Linear project override
     DRY_RUN           Dry run mode (env-only, default: false)
     MAX_PARALLEL      Number of parallel tasks
     SESSION           Tmux session name

@@ -28,7 +28,7 @@ Common overrides:
 
 ```bash
 # Specify project explicitly
-PROJECT_NAME="My Project" wavemill expand
+LINEAR_PROJECT="My Project" wavemill expand
 
 # Adjust selection limits
 MAX_SELECT=5 MAX_DISPLAY=15 wavemill expand
@@ -145,7 +145,8 @@ Configuration lives in `.wavemill-config.json`:
 
 ## Environment Variables
 
-- `PROJECT_NAME` — Linear project name (auto-detected from `.wavemill-config.json`)
+- `LINEAR_PROJECT` — Explicit Linear project override
+- `PROJECT_NAME` — Legacy project override, only used when no repo project is configured
 - `MAX_SELECT` — Maximum issues to select (default: 3)
 - `MAX_DISPLAY` — Maximum issues to display (default: 9)
 - `CLAUDE_CMD` — Claude CLI command (default: `claude`)
