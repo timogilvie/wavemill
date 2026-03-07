@@ -1658,8 +1658,26 @@ This is a REQUIRED step — do not skip it or substitute your own review.
    npx tsx $TOOLS_DIR/review-changes.ts $BASE_BRANCH --json
    - Exit code 0 = review passed → proceed to step 3
    - Exit code 1 = issues found → fix blockers and re-run (step 2)
-   - Exit code 2 = error → log warning and proceed to step 3
+   - Exit code 2 = error → log comprehensive diagnostics and proceed to step 3
    The output is structured JSON with verdict, codeReviewFindings, and uiFindings.
+
+   When exit code 2 occurs, you MUST log the following diagnostics to help debug the failure:
+   ```
+   ⚠️  Review tool failed with exit code 2
+
+   Diagnostics:
+   - Command: npx tsx $TOOLS_DIR/review-changes.ts $BASE_BRANCH --json
+   - Working directory: $(pwd)
+   - Tool path: $TOOLS_DIR/review-changes.ts
+   - Tool exists: $(ls -lh $TOOLS_DIR/review-changes.ts 2>&1 || echo "NOT FOUND")
+   - Git root: $(git rev-parse --show-toplevel 2>&1)
+   - Current branch: $(git rev-parse --abbrev-ref HEAD 2>&1)
+   - Base branch exists: $(git rev-parse --verify $BASE_BRANCH 2>&1 || echo "NOT FOUND")
+   - STDERR output: [paste the actual stderr from the failed command]
+
+   Proceeding to PR creation per instructions.
+   ```
+   This diagnostic information is CRITICAL for debugging recurring tool failures.
 
 2. For each iteration where issues are found:
    - Read the review JSON output carefully
@@ -1762,10 +1780,28 @@ Process:
    npx tsx $TOOLS_DIR/review-changes.ts $BASE_BRANCH --json
    - Exit code 0 = passed → proceed to step 5
    - Exit code 1 = issues found → fix blockers, commit fixes, re-run (up to 3 iterations)
-   - Exit code 2 = error → log warning and proceed to step 5
+   - Exit code 2 = error → log comprehensive diagnostics and proceed to step 5
    The output is structured JSON with verdict, codeReviewFindings (each with severity/location/category/description), and optional uiFindings.
    For each iteration with issues: fix all findings where severity is "blocker" and straightforward "warning" items,
    commit with "fix: Address self-review findings (iteration N)", then re-run the tool.
+
+   When exit code 2 occurs, you MUST log the following diagnostics to help debug the failure:
+   ```
+   ⚠️  Review tool failed with exit code 2
+
+   Diagnostics:
+   - Command: npx tsx $TOOLS_DIR/review-changes.ts $BASE_BRANCH --json
+   - Working directory: $(pwd)
+   - Tool path: $TOOLS_DIR/review-changes.ts
+   - Tool exists: $(ls -lh $TOOLS_DIR/review-changes.ts 2>&1 || echo "NOT FOUND")
+   - Git root: $(git rev-parse --show-toplevel 2>&1)
+   - Current branch: $(git rev-parse --abbrev-ref HEAD 2>&1)
+   - Base branch exists: $(git rev-parse --verify $BASE_BRANCH 2>&1 || echo "NOT FOUND")
+   - STDERR output: [paste the actual stderr from the failed command]
+
+   Proceeding to PR creation per instructions.
+   ```
+   This diagnostic information is CRITICAL for debugging recurring tool failures.
 5. Create a PR using GitHub CLI with a descriptive title and body:
    gh pr create --title "$issue: <concise summary of changes>" --body "<PR body>"
    The PR body MUST include:

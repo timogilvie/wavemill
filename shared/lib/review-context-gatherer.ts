@@ -87,31 +87,48 @@ function getCurrentBranch(repoDir: string): string {
 }
 
 /**
- * Get git diff against target branch.
+ * Get git diff for changes unique to current branch.
  *
- * Captures both staged and unstaged changes.
+ * Uses three-dot syntax (targetBranch...HEAD) to compare the merge-base
+ * of targetBranch and HEAD with HEAD. This ensures only changes introduced
+ * by the current branch are included, excluding:
+ * - Changes already merged to targetBranch
+ * - Merge commits from targetBranch into current branch
+ * - Pre-existing code in ancestor commits
+ *
+ * This prevents false positives in code review where unrelated files
+ * from previous PRs are flagged.
+ *
+ * @see https://git-scm.com/docs/git-diff (three-dot syntax)
+ * @see shared/lib/rule-generator.ts for similar usage
  */
 export function getGitDiff(targetBranch: string, repoDir?: string): string {
   const cwd = repoDir ? resolve(repoDir) : process.cwd();
 
   try {
-    return execSync(`git diff ${targetBranch}`, {
+    // CRITICAL: Use three-dot syntax to diff only branch-specific changes.
+    // Two-dot syntax (git diff main) includes full branch history which
+    // can flag pre-existing code from merged PRs. Three-dot syntax
+    // (git diff main...HEAD) compares merge-base to HEAD.
+    return execSync(`git diff ${targetBranch}...HEAD`, {
       encoding: 'utf-8',
       cwd,
       maxBuffer: 50 * 1024 * 1024, // 50MB max
     });
   } catch (error) {
     throw new Error(
-      `Failed to get git diff against '${targetBranch}' in ${cwd}\n` +
+      `Failed to get git diff against '${targetBranch}...HEAD' in ${cwd}\n` +
       `  Error: ${(error as Error).message}\n` +
       `  Possible causes:\n` +
       `    - Branch '${targetBranch}' does not exist\n` +
+      `    - No common ancestor between current branch and '${targetBranch}'\n` +
       `    - Diff is larger than 50MB (exceeds buffer limit)\n` +
       `    - Git is not installed or not in PATH\n` +
       `    - Repository is corrupted\n` +
       `  Troubleshooting:\n` +
-      `    - Run 'git diff ${targetBranch}' manually to verify\n` +
+      `    - Run 'git diff ${targetBranch}...HEAD' manually to verify\n` +
       `    - Check that target branch exists: git branch -a | grep ${targetBranch}\n` +
+      `    - Verify branches have common ancestor: git merge-base ${targetBranch} HEAD\n` +
       `    - If diff is very large, try reviewing smaller changesets`
     );
   }
