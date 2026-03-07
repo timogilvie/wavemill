@@ -258,6 +258,11 @@ $ISSUE_DESCRIPTION
 }
 ---
 
+## Status Reporting
+Throughout your work, periodically update your status by running:
+  echo '<short description of what you are doing right now>' > /tmp/${SESSION}-${ISSUE}-status.txt
+Keep it under 50 chars. Update it at each major step (e.g. "reading codebase", "implementing auth handler", "running tests", "creating PR"). This feeds the Wavemill dashboard so the user can see your progress.
+
 ## Your Workflow
 
 You have THREE phases. Do them in order.
@@ -334,6 +339,11 @@ IMPORTANT: You are running autonomously with NO user interaction.
 - If a decision is ambiguous, choose the most reasonable default and document your choice in the PR description.
 - If you truly cannot proceed without clarification, note the blocker in the PR description and implement what you can.
 
+Status Reporting:
+Throughout your work, periodically update your status by running:
+  echo '<short description of what you are doing right now>' > STATUS_FILE_PLACEHOLDER
+Keep it under 50 chars. Update it at each major step (e.g. "reading codebase", "implementing auth handler", "running tests", "creating PR"). This feeds the Wavemill dashboard so the user can see your progress.
+
 
 Success criteria:
 - [ ] Implementation matches issue requirements
@@ -363,6 +373,7 @@ EOF_INSTR
       INSTR="${INSTR//WTDIR_PLACEHOLDER/$WT_DIR}"
       INSTR="${INSTR//BRANCH_PLACEHOLDER/$BRANCH}"
       INSTR="${INSTR//BASE_BRANCH_PLACEHOLDER/$BASE_BRANCH}"
+      INSTR="${INSTR//STATUS_FILE_PLACEHOLDER//tmp/${SESSION}-${ISSUE}-status.txt}"
       if [[ -n "$ISSUE_DESCRIPTION" ]]; then
         INSTR="${INSTR//DESCRIPTION_PLACEHOLDER/Issue Description:
 $ISSUE_DESCRIPTION

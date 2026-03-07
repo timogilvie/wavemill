@@ -59,6 +59,16 @@ pr_checks() {
   ' "$PR_CACHE" 2>/dev/null | head -1
 }
 
+# ── Agent-reported status (from status file) ──────────────────────────────
+
+agent_reported_status() {
+  local issue="$1"
+  local status_file="/tmp/${SESSION}-${issue}-status.txt"
+  if [[ -f "$status_file" ]]; then
+    head -1 "$status_file" 2>/dev/null | cut -c1-40
+  fi
+}
+
 # ── Elapsed time from directory birth ─────────────────────────────────────
 
 elapsed() {
@@ -205,6 +215,12 @@ while true; do
       (( ${#ds} > 22 )) && ds="${ds:0:19}..."
 
       printf "%-10s  %-22s  %6s  %-12b  %-11b  %b\n" "$issue" "$ds" "$t" "$phase_str" "$st_str" "$pr_str" >> "$FRAME"
+
+      # Show agent-reported status on a second line (if available)
+      reported=$(agent_reported_status "$issue")
+      if [[ -n "$reported" ]]; then
+        printf "${D}%10s  └─ %s${N}\n" "" "$reported" >> "$FRAME"
+      fi
     done <<<"$tasks"
 
     if (( count == 0 )); then
