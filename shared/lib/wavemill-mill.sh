@@ -851,7 +851,7 @@ for t in "${TASKS[@]}"; do
   BRANCH="task/${SLUG}"
   WT_DIR="${WORKTREE_ROOT}/${SLUG}"
   # Initialize with correct agent (resolve from FORCE_MODEL if set)
-  local initial_agent="$AGENT_CMD"
+  initial_agent="$AGENT_CMD"
   if [[ -n "${FORCE_MODEL:-}" ]]; then
     initial_agent="$(agent_resolve_from_model "$FORCE_MODEL")"
   fi

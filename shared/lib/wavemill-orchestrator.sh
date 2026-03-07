@@ -169,7 +169,6 @@ for t in "${TASKS[@]}"; do
 
     # Persist resolved agent to state file so monitor/eval uses the correct agent
     if [[ -n "${WAVEMILL_STATE_FILE:-}" ]] && [[ -f "$WAVEMILL_STATE_FILE" ]]; then
-      local _tmp
       _tmp=$(mktemp) || true
       if [[ -n "${_tmp:-}" ]] && jq --arg issue "$ISSUE" --arg agent "$TASK_AGENT_CMD" \
          'if .tasks[$issue] then .tasks[$issue].agent = $agent else . end' \
