@@ -31,6 +31,7 @@ import {
   type ChallengeLoserCleanupCandidate,
 } from './tend-challenge-gate.ts';
 import { isTransientErrorText, retryTransient, TransientError } from './transient-retry.ts';
+import { normalizeTaskLifecycle } from './task-lifecycle.ts';
 
 export interface TendCandidate {
   number: number;
@@ -695,7 +696,7 @@ export async function executeMerge(
           console.warn(`tend: failed to clear strict-base retry budget for PR #${candidate.number}: ${errorMessage(error)}`);
         }
 
-        if (integrationConfig.deleteBranchAfterMerge) {
+        if (integrationConfig.deleteBranchAfterMerge && taskStateAuthorizesRemoteBranchDeletion(options.repoDir, candidate.headBranch)) {
           try {
             deps.shellRunner(
               `git push origin --delete ${escapeShellArg(candidate.headBranch)}`,
@@ -2685,6 +2686,13 @@ function readWorkflowTaskEntries(repoDir: string): Array<[string, Record<string,
   } catch {
     return [];
   }
+}
+
+function taskStateAuthorizesRemoteBranchDeletion(repoDir: string, branch: string): boolean {
+  const matchingTask = readWorkflowTaskEntries(repoDir).find(([, task]) => task.branch === branch);
+  if (!matchingTask) return true;
+  const normalized = normalizeTaskLifecycle(matchingTask[1]);
+  return normalized.branchDeletionAuthorized;
 }
 
 function normalizeTaskSlug(task: string): string {

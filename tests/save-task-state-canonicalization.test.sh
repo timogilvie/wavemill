@@ -86,7 +86,7 @@ check_contains "canonical writer performs the write via state_mutate" \
 check_contains "canonical writer merges over the stored task object" \
   "$CANONICAL_BODY" '.tasks[$issue] = ($existing + {'
 check_contains "canonical status default is active" \
-  "$CANONICAL_BODY" 'status="${6:-active}"'
+  "$CANONICAL_BODY" 'status="${status_arg:-active}"'
 check_contains "canonical tail fixes challengeStage at argument 19" \
   "$CANONICAL_BODY" 'challenge_stage="${19:-}"'
 check_contains "canonical tail fixes phase at argument 20" \
@@ -199,6 +199,14 @@ check_state "unknown execution metadata is retained" "2" "$STATE_FILE" '.tasks["
 check_state "unknown future field is retained" "true" "$STATE_FILE" '.tasks["HOK-2900"].unknownFutureField.nested.deep'
 check_state "comparisonTimedOutSides stays an array" "array" "$STATE_FILE" '.tasks["HOK-2900"].comparisonTimedOutSides | type'
 check_state "stored traceId is retained without trace context" "trc_stored" "$STATE_FILE" '.tasks["HOK-2900"].traceId'
+check_state "lifecycle schema is backfilled" "1" "$STATE_FILE" '.tasks["HOK-2900"].lifecycle.schemaVersion'
+check_state "active workflow outcome is backfilled" "active" "$STATE_FILE" '.tasks["HOK-2900"].lifecycle.workflowOutcome'
+check_state "active task consumes allocated resources" "allocated" "$STATE_FILE" '.tasks["HOK-2900"].lifecycle.resourceDisposition'
+check_state "launch contract records explicit remote deletion policy" "true" \
+  "$STATE_FILE" '.tasks["HOK-2900"].lifecycle.launchContract.remoteBranchDeletionPolicy.allowed'
+check_state "launch contract records cleanup deletion mode" "merged-pr-task-branch" \
+  "$STATE_FILE" '.tasks["HOK-2900"].lifecycle.launchContract.remoteBranchDeletionPolicy.mode'
+check_state "delivery evidence records PR number" "77" "$STATE_FILE" '.tasks["HOK-2900"].lifecycle.deliveryEvidence.prNumber'
 
 # Trace contract: features/<slug>/.trace-context.json wins, a malformed context
 # never fails the write nor erases the resolved traceId, and bugs/<slug> is the
@@ -235,8 +243,22 @@ check_eq "feature trace context resolves into the state write" "trc-feature-1" "
 check_eq "malformed trace context neither fails the write nor erases the traceId" "trc-feature-1" "${TRACE_RESULTS[1]:-}"
 check_eq "bugs trace context is used when no feature context exists" "trc-bug-1" "${TRACE_RESULTS[2]:-}"
 check_state "explicit non-empty status wins over the active default" "merged" "$STATE_FILE" '.tasks["HOK-2900"].status'
+check_state "merged status separates workflow outcome" "merged" "$STATE_FILE" '.tasks["HOK-2900"].lifecycle.workflowOutcome'
+check_state "merged retained state requires verification after save" "verification-required" \
+  "$STATE_FILE" '.tasks["HOK-2900"].lifecycle.resourceDisposition'
 check_state "merge write still preserves challengeIntent" "qwen-3-coder" \
   "$STATE_FILE" '.tasks["HOK-2900"].challengeIntent.challenger.expectedRoute.reviewer'
+
+bash -c '
+  set -euo pipefail
+  STATE_FILE="$1"; WORKTREE="$2"; REPO_DIR="$3"
+  source "$REPO_DIR/shared/lib/wavemill-common.sh"
+  log_warn() { :; }
+  save_task_state "HOK-2900" "hok-2900" "task/hok-2900" "$WORKTREE" "77" "" "codex" "HOK-2900" \
+    "" "" "" "" "" "" "" "" "" "" "" "" ""
+' bash "$STATE_FILE" "$WORKTREE" "$REPO_DIR"
+check_state "blank metadata save does not reactivate terminal status" "merged" "$STATE_FILE" '.tasks["HOK-2900"].status'
+check_state "blank metadata save keeps terminal outcome" "merged" "$STATE_FILE" '.tasks["HOK-2900"].lifecycle.workflowOutcome'
 
 # Startup-shaped call: 21 positional arguments with the canonical tail
 # challengeStage(19), phase(20), windowId(21). This is the layout that used to

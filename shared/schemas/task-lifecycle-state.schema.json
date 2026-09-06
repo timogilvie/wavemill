@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wavemill.dev/schemas/task-lifecycle-state.schema.json",
+  "title": "Wavemill Task Lifecycle State",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schemaVersion", "workflowOutcome", "resourceDisposition"],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "workflowOutcome": {
+      "enum": ["active", "merged", "closed", "aborted", "error"]
+    },
+    "resourceDisposition": {
+      "enum": ["allocated", "released", "retained", "reaping", "reaped", "verification-required"]
+    },
+    "retention": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["reason"],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "policy": {
+          "type": "string"
+        },
+        "actor": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string"
+        },
+        "evidence": {}
+      }
+    },
+    "launchContract": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["remoteBranchDeletionPolicy"],
+      "properties": {
+        "baseBranch": {
+          "type": "string"
+        },
+        "baseSha": {
+          "type": "string"
+        },
+        "integrationMode": {
+          "type": "string"
+        },
+        "mergeMethod": {
+          "type": "string"
+        },
+        "remoteBranchDeletionPolicy": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["allowed"],
+          "properties": {
+            "allowed": {
+              "type": "boolean"
+            },
+            "mode": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            }
+          }
+        },
+        "challengeRole": {
+          "type": "string"
+        },
+        "challengePairId": {
+          "type": "string"
+        },
+        "session": {
+          "type": "string"
+        },
+        "runEpoch": {
+          "type": "string"
+        },
+        "windowId": {
+          "type": "string"
+        }
+      }
+    },
+    "deliveryEvidence": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "reviewedHeadSha": {
+          "type": "string"
+        },
+        "publishedHeadSha": {
+          "type": "string"
+        },
+        "prHeadSha": {
+          "type": "string"
+        },
+        "prNumber": {
+          "type": "string"
+        },
+        "prState": {
+          "type": "string"
+        },
+        "prBaseBranch": {
+          "type": "string"
+        },
+        "mergeSha": {
+          "type": "string"
+        }
+      }
+    },
+    "normalizedFromLegacy": {
+      "type": "boolean"
+    },
+    "verificationRequiredReason": {
+      "type": "string"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "workflowOutcome": {
+            "enum": ["merged", "closed", "aborted", "error"]
+          },
+          "resourceDisposition": {
+            "enum": ["allocated", "retained", "verification-required"]
+          }
+        },
+        "required": ["workflowOutcome", "resourceDisposition"]
+      },
+      "then": {
+        "required": ["retention"]
+      }
+    },
+    {
+      "not": {
+        "properties": {
+          "workflowOutcome": {
+            "const": "active"
+          },
+          "resourceDisposition": {
+            "const": "reaped"
+          }
+        },
+        "required": ["workflowOutcome", "resourceDisposition"]
+      }
+    }
+  ]
+}

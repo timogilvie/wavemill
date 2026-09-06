@@ -175,7 +175,7 @@ run_cleanup_case() {
       state_pr_json=""
     fi
     cat > "$STATE_FILE" <<EOF
-{"tasks":{"$ISSUE":{"windowId":"@31"$state_pr_json}}}
+{"tasks":{"$ISSUE":{"windowId":"@31"$state_pr_json,"lifecycle":{"schemaVersion":1,"workflowOutcome":"merged","resourceDisposition":"reaping","launchContract":{"remoteBranchDeletionPolicy":{"allowed":true,"mode":"merged-pr-task-branch","source":"test"}}}}}}
 EOF
     : > "$MILL_LOG_FILE"
 
@@ -368,6 +368,33 @@ run_protected_helper_case() {
   ' 2>&1
 }
 
+run_legacy_remote_policy_case() {
+  local case_dir="$TEST_TMP/legacy-remote-policy"
+  mkdir -p "$case_dir/repo"
+
+  CASE_DIR="$case_dir" REMOTE_CLEANUP_FILE="$REMOTE_CLEANUP_FILE" bash -lc '
+    set -euo pipefail
+    source "$REMOTE_CLEANUP_FILE"
+    REPO_DIR="$CASE_DIR/repo"
+    STATE_FILE="$CASE_DIR/state.json"
+    API_TIMEOUT=5
+    LOG_OUTPUT=""
+    GIT_CALLS=""
+    cat > "$STATE_FILE" <<EOF
+{"tasks":{"HOK-2348":{"branch":"task/task-slug","status":"merged","phase":"done","pr":"4242"}}}
+EOF
+    log() { LOG_OUTPUT+="$*\n"; }
+    log_warn() { :; }
+    pr_state() { printf "%s\n" "MERGED"; }
+    _with_timeout() { shift; "$@"; }
+    git() { GIT_CALLS+="$*;"; return 0; }
+
+    cleanup_remote_task_branch "HOK-2348" "task/task-slug" "4242" || true
+    printf "logs=%s\n" "$(printf "%s" "$LOG_OUTPUT" | tr "\n" ";")"
+    printf "git_calls=%s\n" "$GIT_CALLS"
+  ' 2>&1
+}
+
 run_common_dry_run_case() {
   local case_dir="$TEST_TMP/common-dry-run"
   mkdir -p "$case_dir/repo" "$case_dir/worktrees/task-slug"
@@ -391,7 +418,7 @@ run_common_dry_run_case() {
     DRY_RUN=true
 
     cat > "$STATE_FILE" <<EOF
-{"tasks":{"$ISSUE":{"windowId":"@31","pr":4242}}}
+{"tasks":{"$ISSUE":{"windowId":"@31","pr":4242,"lifecycle":{"schemaVersion":1,"workflowOutcome":"merged","resourceDisposition":"reaping","launchContract":{"remoteBranchDeletionPolicy":{"allowed":true,"mode":"merged-pr-task-branch","source":"test"}}}}}}
 EOF
     : > "$MILL_LOG_FILE"
 
@@ -466,6 +493,10 @@ output="$(run_cleanup_case no-pr)"
 check_not_contains "missing PR avoids remote delete" "$output" "push origin --delete task/task-slug"
 check_contains "missing PR logs retention" "$output" "retaining remote branch task/task-slug (no PR recorded)"
 check_contains "missing PR completes" "$output" "rc=0"
+
+output="$(run_legacy_remote_policy_case)"
+check_not_contains "legacy state lacks branch deletion authority" "$output" "push origin --delete task/task-slug"
+check_contains "legacy state logs lifecycle deletion-policy retention" "$output" "no authoritative lifecycle deletion policy"
 
 output="$(run_cleanup_case preserved-local-work)"
 check_contains "preserved local work returns non-zero" "$output" "rc=1"
