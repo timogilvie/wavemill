@@ -1290,11 +1290,14 @@ task_window_target() {
 
 window_index() {
   local issue="$1" slug="$2" worktree="$3"
-  local pane_state=""
+  local pane_state="" resource_disposition=""
   if [[ -n "$STATE_FILE" && -f "$STATE_FILE" ]]; then
     pane_state="$(jq -r --arg issue "$issue" '.tasks[$issue].paneState // empty' "$STATE_FILE" 2>/dev/null || true)"
+    if declare -F get_task_resource_disposition >/dev/null 2>&1; then
+      resource_disposition="$(get_task_resource_disposition "$issue" 2>/dev/null || true)"
+    fi
   fi
-  if [[ "$pane_state" == "released" ]]; then
+  if [[ "$pane_state" == "released" || "$resource_disposition" == "released" || "$resource_disposition" == "reaped" ]]; then
     echo "—"
     return
   fi
@@ -1328,15 +1331,25 @@ render_task_row() {
   local issue="$1" slug="$2" branch="$3" worktree="$4" win="$5"
   local task_status="$6" task_phase="$7" state_pr="$8" agent_state="$9"
   local t st_str pr_str pr_info checks phase_str plan_status ready_status ready_queue_state attention_detail planning_detail launch_failure_detail reported ds pane watchdog_classification watchdog_detail running_detail coding_blocked_detail coding_auto_detail
-  local execution_owner pane_state queue_handoff_at queue_wait_age queue_gate queue_head
+  local execution_owner pane_state resource_disposition workflow_outcome lifecycle_retention_reason queue_handoff_at queue_wait_age queue_gate queue_head
 
   t=$(elapsed "$worktree")
   reported=""
   execution_owner="task"
   pane_state="active"
+  resource_disposition=""
+  workflow_outcome=""
+  lifecycle_retention_reason=""
   if [[ -n "$STATE_FILE" && -f "$STATE_FILE" ]]; then
     execution_owner="$(jq -r --arg issue "$issue" '.tasks[$issue].executionOwner // "task"' "$STATE_FILE" 2>/dev/null || echo "task")"
     pane_state="$(jq -r --arg issue "$issue" '.tasks[$issue].paneState // "active"' "$STATE_FILE" 2>/dev/null || echo "active")"
+    workflow_outcome="$(jq -r --arg issue "$issue" '.tasks[$issue].lifecycle.workflowOutcome // empty' "$STATE_FILE" 2>/dev/null || true)"
+    lifecycle_retention_reason="$(jq -r --arg issue "$issue" '.tasks[$issue].lifecycle.retention.reason // empty' "$STATE_FILE" 2>/dev/null || true)"
+    if declare -F get_task_resource_disposition >/dev/null 2>&1; then
+      resource_disposition="$(get_task_resource_disposition "$issue" 2>/dev/null || true)"
+    else
+      resource_disposition="$(jq -r --arg issue "$issue" '.tasks[$issue].lifecycle.resourceDisposition // empty' "$STATE_FILE" 2>/dev/null || true)"
+    fi
   fi
   watchdog_classification=""
   watchdog_detail=""
@@ -1347,7 +1360,13 @@ render_task_row() {
 
   if [[ "$task_status" == "merged" ]]; then
     st_str="${G}✓ merged${N}"
-  elif [[ "$execution_owner" == "queue" && "$pane_state" == "released" ]]; then
+  elif [[ "$resource_disposition" == "verification-required" ]]; then
+    st_str="${R}verify${N}"
+  elif [[ "$resource_disposition" == "retained" ]]; then
+    st_str="${Y}retained${N}"
+  elif [[ "$resource_disposition" == "reaping" ]]; then
+    st_str="${Y}reaping${N}"
+  elif [[ "$execution_owner" == "queue" && ( "$pane_state" == "released" || "$resource_disposition" == "released" ) ]]; then
     st_str="${G}queue-owned${N}"
   else
     # Prefer rich hook detail (tool names, errors) over legacy text files.
@@ -1455,7 +1474,7 @@ render_task_row() {
       watchdog_classification=$(ready_watchdog_field "$issue" "classification")
       watchdog_detail=$(ready_watchdog_field "$issue" "detail")
       ready_queue_state=$(get_ready_queue_state "$worktree" "$slug")
-      if [[ "$execution_owner" == "queue" && "$pane_state" == "released" ]]; then
+      if [[ "$execution_owner" == "queue" && ( "$pane_state" == "released" || "$resource_disposition" == "released" ) ]]; then
         phase_str="${G}queue-owned${N}"
       elif is_ready_conflicted "$worktree" "$slug"; then
         phase_str="${Y}⚠ ready${N}"
@@ -1530,7 +1549,11 @@ render_task_row() {
     render_task_detail_lines "$reported"
   fi
 
-  if [[ "$execution_owner" == "queue" && "$pane_state" == "released" ]]; then
+  if [[ "$resource_disposition" == "verification-required" || "$resource_disposition" == "retained" ]]; then
+    render_task_detail_lines "lifecycle: outcome=${workflow_outcome:-unknown} disposition=${resource_disposition}${lifecycle_retention_reason:+ reason=$lifecycle_retention_reason}"
+  fi
+
+  if [[ "$execution_owner" == "queue" && ( "$pane_state" == "released" || "$resource_disposition" == "released" ) ]]; then
     queue_handoff_at="$(jq -r --arg issue "$issue" '.tasks[$issue].queueHandoffAt // empty' "$STATE_FILE" 2>/dev/null || true)"
     queue_head="$(git -C "$worktree" rev-parse --short=7 HEAD 2>/dev/null || true)"
     queue_gate="$(get_ready_queue_state "$worktree" "$slug")"
@@ -2019,7 +2042,7 @@ backstage_health_dashboard_line() {
 
 render_dashboard() {
   local tasks line issue slug branch worktree task_status task_phase state_pr
-  local win agent_state classification task_data free_slots queue_owned_tasks usage_tip openrouter_warning backstage_health_line malformed_challenge_warning
+  local win agent_state classification task_data free_slots queue_owned_tasks usage_tip openrouter_warning backstage_health_line malformed_challenge_warning resource_disposition
   declare -ga inbox_tasks=()
   declare -ga active_tasks=()
 
@@ -2068,10 +2091,14 @@ render_dashboard() {
       is_active "$worktree" "$win" || continue
 
       agent_state=""
+      resource_disposition=""
+      if declare -F get_task_resource_disposition >/dev/null 2>&1; then
+        resource_disposition="$(get_task_resource_disposition "$issue" 2>/dev/null || true)"
+      fi
       if [[ "$task_status" == "merged" ]]; then
         agent_state="exited"
       elif [[ "$(jq -r --arg issue "$issue" '.tasks[$issue].executionOwner // "task"' "$STATE_FILE" 2>/dev/null || echo "task")" == "queue" \
-        && "$(jq -r --arg issue "$issue" '.tasks[$issue].paneState // "active"' "$STATE_FILE" 2>/dev/null || echo "active")" == "released" ]]; then
+        && ( "$(jq -r --arg issue "$issue" '.tasks[$issue].paneState // "active"' "$STATE_FILE" 2>/dev/null || echo "active")" == "released" || "$resource_disposition" == "released" ) ]]; then
         agent_state="queue-owned"
       else
         agent_state=$(agent_status "$issue" "$(task_window_target "$issue" "$slug" "$worktree")")

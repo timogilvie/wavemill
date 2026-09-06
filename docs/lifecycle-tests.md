@@ -2,6 +2,8 @@
 
 Lifecycle tests are the focused integration gate for wavemill controller behavior. They cover planning validation, startup handoff, stage result state, monitor transitions, recovery paths, control pane layout, and dashboard status rendering without running a real mill session.
 
+The terminal lifecycle/resource model used by these tests is documented in [Wavemill Terminal Lifecycle And Resources](wavemill-terminal-lifecycle.md).
+
 ## Running Locally
 
 Run the whole lifecycle suite:

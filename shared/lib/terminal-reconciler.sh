@@ -95,6 +95,16 @@ wavemill_terminal_status_for_reason() {
   esac
 }
 
+wavemill_terminal_workflow_outcome_for_reason() {
+  case "$1" in
+    pr_merged) printf 'merged\n' ;;
+    pr_closed_unmerged|challenge_resolved_winner|challenge_invalid|challenge_no_comparison) printf 'closed\n' ;;
+    operator_abort) printf 'aborted\n' ;;
+    recovery_failure) printf 'error\n' ;;
+    *) printf 'active\n' ;;
+  esac
+}
+
 wavemill_terminal_stage_for_reason() {
   case "$1" in
     review_complete|pr_opened) printf 'review\n' ;;
@@ -115,7 +125,7 @@ wavemill_terminal_marker_value() {
   local issue="$1" reason="$2" pr_number="${3:-}" pr_json="${4:-null}" now
   now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   jq -cn --arg issue "$issue" --arg reason "$reason" --arg pr "$pr_number" --arg appliedAt "$now" --argjson prJson "$pr_json" \
-    '{issue:$issue, reason:$reason, prNumber:(if $pr == "" then null else $pr end), appliedAt:$appliedAt, stateApplied:true, stageApplied:false, hookApplied:false, paneApplied:false, linearApplied:false, pr:$prJson}'
+    '{issue:$issue, reason:$reason, prNumber:(if $pr == "" then null else $pr end), appliedAt:$appliedAt, stateApplied:true, stageApplied:false, hookApplied:false, paneMetadataApplied:false, paneApplied:false, linearApplied:false, pr:$prJson}'
 }
 
 wavemill_terminal_marker_field() {
@@ -136,10 +146,12 @@ wavemill_terminal_mark_field() {
 }
 
 wavemill_terminal_apply_state() {
-  local issue="$1" reason="$2" pr_number="${3:-}" marker_json="$4" key phase status
+  local issue="$1" reason="$2" pr_number="${3:-}" marker_json="$4" key phase status workflow_outcome pr_payload
   key="$(wavemill_terminal_marker_key "$reason" "$pr_number")"
   phase="$(wavemill_terminal_phase_for_reason "$reason")"
   status="$(wavemill_terminal_status_for_reason "$reason")"
+  workflow_outcome="$(wavemill_terminal_workflow_outcome_for_reason "$reason")"
+  pr_payload="$(jq -c '.pr // null' <<<"$marker_json" 2>/dev/null || printf 'null')"
   [[ -n "${STATE_FILE:-}" && -f "${STATE_FILE:-}" ]] || return 0
   state_mutate "$STATE_FILE" '
     (.tasks[$issue].terminalReconciliations[$key] // null) as $existing
@@ -147,8 +159,42 @@ wavemill_terminal_apply_state() {
     | if $phase != "" then .tasks[$issue].phase = $phase else . end
     | if $status != "" then .tasks[$issue].status = $status else . end
     | if $pr != "" then .tasks[$issue].pr = $pr else . end
+    | (.tasks[$issue].lifecycle // {}) as $l
+    | ($l.resourceDisposition // "") as $existingDisposition
+    | .tasks[$issue].lifecycle = ($l + {
+        schemaVersion: 1,
+        workflowOutcome: $workflowOutcome,
+        resourceDisposition: (
+          if $workflowOutcome == "active" then
+            (if ($existingDisposition | IN("allocated","released","retained","reaping","reaped","verification-required")) then $existingDisposition
+             elif (.tasks[$issue].paneState // "") == "released" then "released"
+             else "allocated"
+             end)
+          elif ($existingDisposition | IN("released","retained","reaping","reaped","verification-required")) then $existingDisposition
+          else "verification-required"
+          end
+        )
+      })
+    | if $workflowOutcome != "active" and ((.tasks[$issue].lifecycle.retention.reason // "") == "") then
+        .tasks[$issue].lifecycle.retention = {
+          reason: "terminal-reconciliation-resource-verification-required",
+          policy: "manual-verification-required",
+          actor: "terminal-reconciler",
+          timestamp: (now | todateiso8601),
+          evidence: {terminalReason: $reason, prNumber: (if $pr == "" then null else $pr end)}
+        }
+      else .
+      end
+    | if $pr != "" then .tasks[$issue].lifecycle.deliveryEvidence.prNumber = $pr else . end
+    | if ($prJson | type) == "object" then
+        .tasks[$issue].lifecycle.deliveryEvidence.prState = ($prJson.terminalState // $prJson.state // .tasks[$issue].lifecycle.deliveryEvidence.prState // "")
+        | .tasks[$issue].lifecycle.deliveryEvidence.prBaseBranch = ($prJson.baseRefName // .tasks[$issue].lifecycle.deliveryEvidence.prBaseBranch // "")
+        | .tasks[$issue].lifecycle.deliveryEvidence.mergeSha = ($prJson.mergeCommit.oid // $prJson.mergeCommitOid // .tasks[$issue].lifecycle.deliveryEvidence.mergeSha // "")
+      else .
+      end
     | .tasks[$issue].updated = (now | todateiso8601)
-  ' --arg issue "$issue" --arg key "$key" --arg phase "$phase" --arg status "$status" --arg pr "$pr_number" --argjson marker "$marker_json"
+  ' --arg issue "$issue" --arg key "$key" --arg phase "$phase" --arg status "$status" --arg pr "$pr_number" \
+    --arg reason "$reason" --arg workflowOutcome "$workflow_outcome" --argjson marker "$marker_json" --argjson prJson "$pr_payload"
 }
 
 wavemill_terminalize_hook_for_issue() {
@@ -255,8 +301,10 @@ wavemill_reconcile_terminal() {
     wavemill_terminalize_hook_for_issue "$session" "$issue" "$effective_reason" "$pr_number"
     wavemill_terminal_mark_field "$issue" "$key" "hookApplied" true
   fi
-  if [[ "$(wavemill_terminal_marker_field "$issue" "$key" "paneApplied")" != "true" ]]; then
+  if [[ "$(wavemill_terminal_marker_field "$issue" "$key" "paneMetadataApplied")" != "true" ]] \
+    && [[ "$(wavemill_terminal_marker_field "$issue" "$key" "paneApplied")" != "true" ]]; then
     wavemill_reconcile_pane_terminal "$session" "$issue" "$effective_reason"
+    wavemill_terminal_mark_field "$issue" "$key" "paneMetadataApplied" true
     wavemill_terminal_mark_field "$issue" "$key" "paneApplied" true
   fi
   if [[ "$(wavemill_terminal_marker_field "$issue" "$key" "linearApplied")" != "true" ]]; then

@@ -19,6 +19,7 @@ import {
   detectRepoConfigIntegrity,
   type ConfigIntegrityIssue,
 } from '../shared/lib/config-integrity.ts';
+import { normalizeTaskLifecycle, type TaskLifecycleState } from '../shared/lib/task-lifecycle.ts';
 
 type Severity = 'urgent' | 'high' | 'medium' | 'low';
 type Category = 'stuck' | 'crash' | 'warning' | 'ux' | 'operational';
@@ -93,6 +94,10 @@ interface TaskState {
   updated?: string;
   agent?: string;
   challengeRole?: string;
+  challengePairId?: string;
+  executionOwner?: string;
+  paneState?: string;
+  lifecycle?: TaskLifecycleState | Record<string, unknown>;
 }
 
 interface Finding {
@@ -523,6 +528,12 @@ function readWorkflowTasks(stateFile: string): TaskState[] {
         updated: stringValue(task.updated),
         agent: stringValue(task.agent),
         challengeRole: stringValue(task.challengeRole),
+        challengePairId: stringValue(task.challengePairId),
+        executionOwner: stringValue(task.executionOwner),
+        paneState: stringValue(task.paneState),
+        lifecycle: task.lifecycle && typeof task.lifecycle === 'object' && !Array.isArray(task.lifecycle)
+          ? task.lifecycle as TaskLifecycleState | Record<string, unknown>
+          : undefined,
       };
     });
   } catch {
@@ -780,7 +791,7 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
       row.command.includes('wavemill-monitor.sh')
       || (row.command.includes('/tmp/wavemill-monitor.sh') && row.command.includes(repo.repoDir) === false)
     );
-    const activeTasks = repo.tasks.filter((task) => !terminalStatus(task.status));
+    const activeTasks = repo.tasks.filter((task) => !taskWorkflowIsTerminal(task));
     const logAgeMinutes = repo.logMtime ? (now - Date.parse(repo.logMtime)) / 60000 : undefined;
     const stateAgeMinutes = repo.stateMtime ? (now - Date.parse(repo.stateMtime)) / 60000 : undefined;
 
@@ -822,7 +833,7 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
     }
 
     for (const task of repo.tasks) {
-      if (terminalStatus(task.status)) continue;
+      if (taskWorkflowIsTerminal(task)) continue;
 
       const ageMinutes = task.updated ? (now - Date.parse(task.updated)) / 60000 : stateAgeMinutes;
       const watchedPhase = task.phase === 'planning' || task.phase === 'coding' || task.phase === 'review' || task.phase === 'ready';
@@ -891,7 +902,7 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
         }
       }
 
-      if (!task.worktree || !task.slug || terminalStatus(task.status)) continue;
+      if (!task.worktree || !task.slug || taskWorkflowIsTerminal(task)) continue;
       const featureDir = join(task.worktree, 'features', task.slug);
       const markerFindings = [
         buildMarkerIgnoredFinding(repo, task, featureDir, now, options, {
@@ -928,6 +939,7 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
       // task.updated fresh.
       if (ageMinutes === undefined || !Number.isFinite(ageMinutes) || ageMinutes <= options.staleMinutes) continue;
 
+      const normalized = normalizedLifecycle(task);
       const isTerminal = taskHasTerminalResidueStatus(task);
       const liveEvidence = taskHasLiveExecutionEvidence(repo, task, snapshot.panes, snapshot.processes);
       // Active tasks with a live agent are healthy; terminal tasks are inspected
@@ -951,6 +963,9 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
       const stateEvidence = [
         `status=${task.status ?? 'unknown'}`,
         `phase=${task.phase ?? 'unknown'}`,
+        `workflowOutcome=${normalized.lifecycle.workflowOutcome}`,
+        `resourceDisposition=${normalized.lifecycle.resourceDisposition}`,
+        `branchDeletionAuthorized=${normalized.branchDeletionAuthorized}`,
       ];
 
       if (firesUnpushed && residue) {
@@ -1466,6 +1481,14 @@ function terminalStatus(status?: string): boolean {
     || status === 'aborted';
 }
 
+function normalizedLifecycle(task: TaskState) {
+  return normalizeTaskLifecycle(task);
+}
+
+function taskWorkflowIsTerminal(task: TaskState): boolean {
+  return normalizedLifecycle(task).lifecycle.workflowOutcome !== 'active';
+}
+
 interface PaneResidue {
   present: boolean;
   live: boolean;
@@ -1515,7 +1538,7 @@ function taskHasLiveExecutionEvidence(repo: RepoSnapshot, task: TaskState, panes
  * worktrees and unpushed commits; they must not be exempt from residue checks.
  */
 function taskHasTerminalResidueStatus(task: TaskState): boolean {
-  return terminalStatus(task.status) || task.status === 'error' || task.phase === 'error';
+  return taskWorkflowIsTerminal(task) || terminalStatus(task.status) || task.status === 'error' || task.phase === 'error';
 }
 
 function taskBranch(task: TaskState): string | undefined {
@@ -1909,7 +1932,7 @@ async function reconcileIncidents(snapshot: ObserverSnapshot, options: ObserverO
     const candidates: IncidentRecord[] = [];
     try {
       for (const task of repo.tasks) {
-        if (!task.issue || terminalStatus(task.status)) continue;
+        if (!task.issue || taskWorkflowIsTerminal(task)) continue;
         const taskPath = resolveTaskArtifactDir(repo.repoDir, task);
         if (!taskPath) continue;
         const detected = detectIncidentsForTask(
@@ -2330,7 +2353,7 @@ export function compactSnapshotForRender(snapshot: ObserverSnapshot): ObserverSn
 }
 
 function renderSummary(snapshot: ObserverSnapshot): string {
-  const activeTasks = snapshot.repos.flatMap((repo) => repo.tasks.filter((task) => !terminalStatus(task.status)));
+  const activeTasks = snapshot.repos.flatMap((repo) => repo.tasks.filter((task) => !taskWorkflowIsTerminal(task)));
   const counts: Record<Severity, number> = { urgent: 0, high: 0, medium: 0, low: 0 };
   for (const finding of snapshot.findings) {
     counts[finding.severity] += 1;

@@ -15844,6 +15844,10 @@ while :; do
       active_challenger_count=$((active_challenger_count + 1))
     fi
   done
+  if declare -F slot_consuming_task_count >/dev/null 2>&1; then
+    active_count="$(slot_consuming_task_count)"
+    active_challenger_count="$(slot_consuming_challenger_task_count)"
+  fi
   _active_count_prev=$active_count
 
   # ── Phase B: Check for stop signal ──────────────────────────────────

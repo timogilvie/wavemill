@@ -333,6 +333,7 @@ archive_stage_artifacts() {
 
 cleanup_remote_task_branch() {
   local issue="$1" task_branch="$2" pr="${3:-}"
+  local deletion_allowed="false"
   if [[ "$task_branch" == "main" || "$task_branch" == "master" ]]; then
     log_warn "  Refusing to delete protected branch: $task_branch"
     return 0
@@ -341,6 +342,17 @@ cleanup_remote_task_branch() {
     task/*) ;;
     *) log "debug" "$issue: retaining non-task remote branch $task_branch"; return 0 ;;
   esac
+
+  if [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]]; then
+    deletion_allowed="$(jq -r --arg issue "$issue" '
+      .tasks[$issue].lifecycle.launchContract.remoteBranchDeletionPolicy as $policy
+      | if ($policy.allowed == true and (($policy.mode // "") | length > 0)) then "true" else "false" end
+    ' "$STATE_FILE" 2>/dev/null || echo "false")"
+  fi
+  if [[ "$deletion_allowed" != "true" ]]; then
+    log "debug" "$issue: retaining remote branch $task_branch (no authoritative lifecycle deletion policy)"
+    return 0
+  fi
 
   if [[ -z "$pr" ]]; then
     log "debug" "$issue: retaining remote branch $task_branch (no PR recorded)"
@@ -637,7 +649,10 @@ cleanup_completed_task() {
     pr="${PR_BY_ISSUE[$issue]:-}"
   fi
 
+  set_task_lifecycle_disposition "$issue" "" "reaping" "" "cleanup_completed_task" 2>/dev/null || true
+
   if ! archive_stage_artifacts "$issue" "$slug"; then
+    set_task_lifecycle_disposition "$issue" "" "verification-required" "archive-stage-artifacts-failed" "cleanup_completed_task" 2>/dev/null || true
     log_warn "  $issue cleanup could not archive stage artifacts; keeping task state"
     return 1
   fi
@@ -653,6 +668,7 @@ cleanup_completed_task() {
   fi
 
   if [[ "$target_gone" != "true" ]]; then
+    set_task_lifecycle_disposition "$issue" "" "retained" "tmux-window-close-failed" "cleanup_completed_task" 2>/dev/null || true
     set_window_attention_state "$win" "needs-user"
     log_warn "  $issue cleanup could not close tmux window; keeping task state"
     return 1
@@ -665,21 +681,27 @@ cleanup_completed_task() {
   local cleanup_rc=0
   safe_remove_task_worktree_and_branch "$wt_dir" "$task_branch" "${BASE_BRANCH:-main}" "cleanup_completed_task" || cleanup_rc=$?
   if [[ "$cleanup_rc" -eq 20 ]]; then
+    set_task_lifecycle_disposition "$issue" "" "retained" "worktree-or-local-branch-cleanup-failed" "cleanup_completed_task" 2>/dev/null || true
     return 1
   fi
   if [[ "$cleanup_rc" -eq 10 ]]; then
+    set_task_lifecycle_disposition "$issue" "" "verification-required" "local-work-preserved" "cleanup_completed_task" 2>/dev/null || true
     set_window_attention_state "$win" "needs-user"
     log_warn "  $issue cleanup preserved local work; keeping task state"
     return 1
   fi
 
-  cleanup_remote_task_branch "$issue" "$task_branch" "$pr" || return 1
+  if ! cleanup_remote_task_branch "$issue" "$task_branch" "$pr"; then
+    set_task_lifecycle_disposition "$issue" "" "verification-required" "remote-branch-cleanup-unverified" "cleanup_completed_task" 2>/dev/null || true
+    return 1
+  fi
 
   wavemill_cleanup_run git -C "$REPO_DIR" worktree prune >>"${MILL_LOG_FILE:-/dev/null}" 2>/dev/null || true
   reconciliation_lease_release "${WORKTREE_ROOT}/${slug}/features/${slug}" 2>/dev/null || true
   rm -f "${WORKTREE_ROOT}/${slug}/features/${slug}/.pane-release-blocked.json" 2>/dev/null || true
   rm -f "/tmp/wavemill-${SESSION}-${issue}.hook" 2>/dev/null || true
   reset_retry_count "$SESSION" "$issue" 2>/dev/null || true
+  set_task_lifecycle_disposition "$issue" "" "reaped" "" "cleanup_completed_task" 2>/dev/null || true
   remove_task_state "$issue"
   CLEANED["$issue"]=1
 
@@ -1239,6 +1261,8 @@ load_config() {
       "_CFG_CHALLENGE_ENABLED=\($c.challenge.enabled // false)",
       "_CFG_CHALLENGE_RATE=\($c.challenge.rate // 0.10)",
       "_CFG_CHALLENGE_AUTO_MERGE=\($c.challenge.autoMergeWinner // false)",
+      "_CFG_INTEGRATION_MERGE_METHOD=\($c.integration.mergeMethod // "squash" | @sh)",
+      "_CFG_INTEGRATION_DELETE_BRANCH_AFTER_MERGE=\($c.integration.deleteBranchAfterMerge // true)",
       "_CFG_MERGE_QUEUE_ENABLED=\($c.mergeQueue.enabled // true)",
       "_CFG_MERGE_QUEUE_MAX_CONCURRENT=\($c.mergeQueue.maxConcurrentCandidates // 2)",
       "_CFG_MERGE_QUEUE_STUCK_TIMEOUT_SECONDS=\($c.mergeQueue.stuckTimeoutSeconds // 900)",
@@ -1309,6 +1333,8 @@ load_config() {
   CHALLENGE_MODELS_JSON="${CHALLENGE_MODELS_JSON:-null}"
   CHALLENGE_COMPARISON_MODEL="${CHALLENGE_COMPARISON_MODEL:-claude-opus-4-8}"
   CHALLENGE_AUTO_MERGE="${CHALLENGE_AUTO_MERGE:-$_CFG_CHALLENGE_AUTO_MERGE}"
+  INTEGRATION_MERGE_METHOD="${INTEGRATION_MERGE_METHOD:-$_CFG_INTEGRATION_MERGE_METHOD}"
+  INTEGRATION_DELETE_BRANCH_AFTER_MERGE="${INTEGRATION_DELETE_BRANCH_AFTER_MERGE:-$_CFG_INTEGRATION_DELETE_BRANCH_AFTER_MERGE}"
   MERGE_QUEUE_ENABLED="${MERGE_QUEUE_ENABLED:-$_CFG_MERGE_QUEUE_ENABLED}"
   MERGE_QUEUE_MAX_CONCURRENT="${MERGE_QUEUE_MAX_CONCURRENT:-$_CFG_MERGE_QUEUE_MAX_CONCURRENT}"
   MERGE_QUEUE_STUCK_TIMEOUT_SECONDS="${MERGE_QUEUE_STUCK_TIMEOUT_SECONDS:-$_CFG_MERGE_QUEUE_STUCK_TIMEOUT_SECONDS}"
@@ -1343,6 +1369,7 @@ load_config() {
   export ENTER_LAUNCHES_WAVE
   export CHALLENGE_ENABLED CHALLENGE_RATE CHALLENGE_MODELS_JSON
   export CHALLENGE_COMPARISON_MODEL CHALLENGE_AUTO_MERGE
+  export INTEGRATION_MERGE_METHOD INTEGRATION_DELETE_BRANCH_AFTER_MERGE
   export MERGE_QUEUE_ENABLED MERGE_QUEUE_MAX_CONCURRENT
   export MERGE_QUEUE_STUCK_TIMEOUT_SECONDS MERGE_QUEUE_CONFLICT_GROUPING_ENABLED
   export MERGE_QUEUE_SKIP_COOLDOWN_SECONDS
@@ -1356,6 +1383,7 @@ load_config() {
   unset _CFG_PROJECT_CONTEXT_COMPACTION_THRESHOLD_KB _CFG_PROJECT_CONTEXT_RECENT_WORK_KEEP
   unset _CFG_DASHBOARD_VERBOSITY _CFG_DASHBOARD_LOG_TO_FILE _CFG_ENTER_LAUNCHES_WAVE
   unset _CFG_CHALLENGE_ENABLED _CFG_CHALLENGE_RATE _CFG_CHALLENGE_AUTO_MERGE
+  unset _CFG_INTEGRATION_MERGE_METHOD _CFG_INTEGRATION_DELETE_BRANCH_AFTER_MERGE
   unset _CFG_MERGE_QUEUE_ENABLED _CFG_MERGE_QUEUE_MAX_CONCURRENT
   unset _CFG_MERGE_QUEUE_STUCK_TIMEOUT_SECONDS _CFG_MERGE_QUEUE_CONFLICT_GROUPING_ENABLED
   unset _CFG_MERGE_QUEUE_SKIP_COOLDOWN_SECONDS
@@ -3914,6 +3942,158 @@ state_mutate() {
 # TASK STATE LEDGER
 # ============================================================================
 
+task_lifecycle_jq_defs() {
+  cat <<'JQ'
+def wm_terminal_status:
+  (.status // "") as $status
+  | (.phase // "") as $phase
+  | (["merged","complete","completed","completed-external","closed","done","aborted"] | index($status)) != null
+    or $status == "error"
+    or ($phase | IN("done","closed","aborted","error"));
+
+def wm_workflow_outcome:
+  (.status // "") as $status
+  | (.phase // "") as $phase
+  | if $status == "merged" or $phase == "done" then "merged"
+    elif ($status | IN("closed","complete","completed","completed-external","done")) or $phase == "closed" then "closed"
+    elif $status == "aborted" or $phase == "aborted" then "aborted"
+    elif $status == "error" or $phase == "error" then "error"
+    else "active"
+    end;
+
+def wm_resource_disposition:
+  (.lifecycle.resourceDisposition // "") as $disposition
+  | if $disposition | IN("allocated","released","retained","reaping","reaped","verification-required") then $disposition
+    elif ((.executionOwner // "task") == "queue" and (.paneState // "active") == "released") or (.paneState // "") == "released" then "released"
+    elif wm_terminal_status then "verification-required"
+    else "allocated"
+    end;
+
+def wm_retention_required:
+  (wm_workflow_outcome != "active") and (wm_resource_disposition | IN("allocated","retained","verification-required"));
+
+def wm_has_retention:
+  ((.lifecycle.retention.reason // "") | type == "string" and length > 0);
+
+def wm_normalized_lifecycle($baseBranch; $baseSha; $integrationMode; $mergeMethod; $remoteDeletionAllowed; $challengeRole; $challengePair; $session; $runEpoch; $windowId; $actor):
+  . as $task
+  | ($task.lifecycle // {}) as $l
+  | ($task | wm_workflow_outcome) as $outcome
+  | ($task | wm_resource_disposition) as $disposition
+  | ($l.launchContract // {
+      baseBranch: $baseBranch,
+      baseSha: $baseSha,
+      integrationMode: $integrationMode,
+      mergeMethod: $mergeMethod,
+      remoteBranchDeletionPolicy: {
+        allowed: ($remoteDeletionAllowed == "true"),
+        mode: (if $remoteDeletionAllowed == "true" then "merged-pr-task-branch" else "manual-verification" end),
+        source: "cleanup_remote_task_branch"
+      },
+      challengeRole: $challengeRole,
+      challengePairId: $challengePair,
+      session: $session,
+      runEpoch: $runEpoch,
+      windowId: $windowId
+    }) as $contract
+  | ($l.deliveryEvidence // {}) as $delivery
+  | ($l + {
+      schemaVersion: 1,
+      workflowOutcome: $outcome,
+      resourceDisposition: $disposition,
+      launchContract: $contract,
+      deliveryEvidence: $delivery
+    })
+  | if $task | wm_retention_required and ($task | wm_has_retention | not) then
+      .resourceDisposition = "verification-required"
+      | .retention = {
+          reason: "verification-required",
+          policy: "manual-verification-required",
+          actor: $actor,
+          timestamp: (now | todateiso8601),
+          evidence: {
+            status: ($task.status // null),
+            phase: ($task.phase // null),
+            paneState: ($task.paneState // null),
+            executionOwner: ($task.executionOwner // null)
+          }
+        }
+      | .verificationRequiredReason = "terminal-resource-retention-unexplained"
+    else .
+    end;
+
+def wm_slot_consumes:
+  (wm_resource_disposition | IN("allocated","reaping"));
+JQ
+}
+
+task_lifecycle_jq_filter() {
+  local body="$1"
+  printf '%s\n%s\n' "$(task_lifecycle_jq_defs)" "$body"
+}
+
+task_lifecycle_effective_base_sha() {
+  local base_branch="${1:-${BASE_BRANCH:-}}"
+  local ref=""
+  [[ -n "${RESOLVED_BASE_SHA:-}" ]] && { printf '%s\n' "$RESOLVED_BASE_SHA"; return 0; }
+  [[ -n "${WAVEMILL_RESOLVED_BASE_SHA:-}" ]] && { printf '%s\n' "$WAVEMILL_RESOLVED_BASE_SHA"; return 0; }
+  [[ -n "${RESOLVED_BASE_REF:-}" ]] && ref="$RESOLVED_BASE_REF"
+  [[ -z "$ref" && -n "$base_branch" ]] && ref="origin/$base_branch"
+  [[ -n "$ref" && -n "${REPO_DIR:-}" ]] || return 0
+  git -C "$REPO_DIR" rev-parse --verify "${ref}^{commit}" 2>/dev/null || true
+}
+
+set_task_lifecycle_disposition() {
+  local issue="$1" workflow_outcome="${2:-}" resource_disposition="${3:-}" reason="${4:-}" actor="${5:-wavemill}"
+  [[ -n "$issue" && -n "$resource_disposition" ]] || return 1
+  [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
+  state_mutate "$STATE_FILE" '
+    (.tasks[$issue] // {}) as $existing
+    | ($existing.lifecycle // {}) as $l
+    | .tasks[$issue].lifecycle = ($l + {
+        schemaVersion: 1,
+        workflowOutcome: (if $workflowOutcome != "" then $workflowOutcome else ($l.workflowOutcome // "active") end),
+        resourceDisposition: $resourceDisposition
+      })
+    | if $reason != "" then
+        .tasks[$issue].lifecycle.retention = {
+          reason: $reason,
+          policy: "manual-verification-required",
+          actor: $actor,
+          timestamp: (now | todateiso8601)
+        }
+      else .
+      end
+    | .tasks[$issue].updated = (now | todateiso8601)' \
+    --arg issue "$issue" \
+    --arg workflowOutcome "$workflow_outcome" \
+    --arg resourceDisposition "$resource_disposition" \
+    --arg reason "$reason" \
+    --arg actor "$actor"
+}
+
+get_task_resource_disposition() {
+  local issue="$1"
+  [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || { printf 'allocated\n'; return 0; }
+  jq -r --arg issue "$issue" "$(task_lifecycle_jq_filter '(.tasks[$issue] // {}) | wm_resource_disposition')" "$STATE_FILE" 2>/dev/null || printf 'allocated\n'
+}
+
+task_consumes_mill_slot() {
+  local issue="$1"
+  [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
+  jq -e --arg issue "$issue" "$(task_lifecycle_jq_filter '(.tasks[$issue] // {}) | wm_slot_consumes')" "$STATE_FILE" >/dev/null 2>&1
+}
+
+slot_consuming_task_count() {
+  [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || { printf '0\n'; return 0; }
+  jq -r "$(task_lifecycle_jq_filter '(.tasks // {}) | to_entries | map(select(.value | wm_slot_consumes)) | length')" "$STATE_FILE" 2>/dev/null || printf '0\n'
+}
+
+slot_consuming_challenger_task_count() {
+  [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || { printf '0\n'; return 0; }
+  jq -r "$(task_lifecycle_jq_filter '(.tasks // {}) | to_entries | map(select((.value.challengeRole // "") == "challenger") | select(.value | wm_slot_consumes)) | length')" "$STATE_FILE" 2>/dev/null || printf '0\n'
+}
+
 get_task_execution_owner() {
   local issue="$1" owner=""
   if [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]]; then
@@ -3948,6 +4128,11 @@ set_task_queue_owned() {
          queueHandoffAt: ($handoffAt | tonumber),
          capsuleDigest: $capsuleDigest,
          updated: (now | todate)
+       })
+     | .tasks[$issue].lifecycle = ((.tasks[$issue].lifecycle // {}) + {
+         schemaVersion: 1,
+         workflowOutcome: (.tasks[$issue].lifecycle.workflowOutcome // "active"),
+         resourceDisposition: "released"
        })' \
     --arg issue "$issue" \
     --arg capsuleDigest "$capsule_digest" \
@@ -3963,6 +4148,11 @@ set_task_reconciliation_owned() {
          executionOwner: "reconciliation",
          paneState: "rehydrating",
          updated: (now | todate)
+       })
+     | .tasks[$issue].lifecycle = ((.tasks[$issue].lifecycle // {}) + {
+         schemaVersion: 1,
+         workflowOutcome: (.tasks[$issue].lifecycle.workflowOutcome // "active"),
+         resourceDisposition: "allocated"
        })' \
     --arg issue "$issue"
 }
@@ -3977,6 +4167,11 @@ set_task_task_owned() {
          executionOwner: "task",
          paneState: $paneState,
          updated: (now | todate)
+       })
+     | .tasks[$issue].lifecycle = ((.tasks[$issue].lifecycle // {}) + {
+         schemaVersion: 1,
+         workflowOutcome: (.tasks[$issue].lifecycle.workflowOutcome // "active"),
+         resourceDisposition: (if $paneState == "released" then "released" else "allocated" end)
        })' \
     --arg issue "$issue" \
     --arg paneState "$pane_state"
@@ -4140,10 +4335,11 @@ reconciliation_lease_acquire() {
 # (HOK-2259); an absent or malformed context never fails the write and never
 # erases a traceId already stored in the ledger.
 save_task_state() {
-  local issue="$1" slug="$2" branch="$3" worktree="$4" pr="${5:-}" status="${6:-active}" agent="${7:-}"
+  local issue="$1" slug="$2" branch="$3" worktree="$4" pr="${5:-}" status_arg="${6:-}" agent="${7:-}"
   local linear_issue="${8:-$issue}" challenge="${9:-}" challenge_pair="${10:-}" challenge_role="${11:-}" challenge_model="${12:-}"
   local planner_model="${13:-}" coder_model="${14:-}" reviewer_model="${15:-}" plan_depth="${16:-}" code_depth="${17:-}" review_mode="${18:-}"
   local challenge_stage="${19:-}" phase="${20:-}" window_id="${21:-}"
+  local status="${status_arg:-active}" effective_base_branch effective_base_sha integration_mode merge_method remote_deletion_allowed run_epoch
   if [[ "$challenge" == "true" && -z "$challenge_role" && -n "$challenge_pair" && "$challenge_pair" == "$issue" ]]; then
     challenge_role="primary"
   fi
@@ -4163,14 +4359,28 @@ save_task_state() {
     fi
   done
 
+  effective_base_branch="${BASE_BRANCH:-}"
+  effective_base_sha="$(task_lifecycle_effective_base_sha "$effective_base_branch" 2>/dev/null || true)"
+  integration_mode="direct-monitor"
+  [[ "${MERGE_QUEUE_ENABLED:-true}" == "1" || "${MERGE_QUEUE_ENABLED:-true}" == "true" ]] && integration_mode="merge-queue"
+  merge_method="${INTEGRATION_MERGE_METHOD:-squash}"
+  remote_deletion_allowed="${INTEGRATION_DELETE_BRANCH_AFTER_MERGE:-true}"
+  [[ "$remote_deletion_allowed" == "1" ]] && remote_deletion_allowed="true"
+  [[ "$remote_deletion_allowed" == "0" ]] && remote_deletion_allowed="false"
+  [[ "$remote_deletion_allowed" == "true" ]] || remote_deletion_allowed="false"
+  run_epoch="${WAVEMILL_RUN_EPOCH:-${RUN_EPOCH:-}}"
+
   if ! state_mutate "$STATE_FILE" \
-     '(.tasks[$issue] // {}) as $existing |
+     "$(task_lifecycle_jq_filter '(.tasks[$issue] // {}) as $existing |
+      ((($existing.status // "") | IN("merged","complete","completed","completed-external","closed","done","aborted","error"))
+       or (($existing.phase // "") | IN("done","closed","aborted","error"))) as $existingTerminal |
+      (if $statusArg != "" then $statusArg elif $existingTerminal then ($existing.status // "active") else "active" end) as $effectiveStatus |
       .tasks[$issue] = ($existing + {
         slug: $slug,
         branch: $branch,
         worktree: $worktree,
         pr: $pr,
-        status: $status,
+        status: $effectiveStatus,
         linearIssueId: (if $linearIssue != "" then $linearIssue else ($existing.linearIssueId // $issue) end),
         updated: (now | todate)
       })
@@ -4188,16 +4398,22 @@ save_task_state() {
       | if $reviewMode != "" then .tasks[$issue].reviewMode = $reviewMode else . end
       | if $phase != "" then .tasks[$issue].phase = $phase else . end
       | if $windowId != "" then .tasks[$issue].windowId = $windowId else . end
-      | if $traceId != "" then .tasks[$issue].traceId = $traceId else . end' \
+      | if $traceId != "" then .tasks[$issue].traceId = $traceId else . end
+      | .tasks[$issue].lifecycle = (.tasks[$issue] | wm_normalized_lifecycle($baseBranch; $baseSha; $integrationMode; $mergeMethod; $remoteDeletionAllowed; $challengeRole; $challengePair; $session; $runEpoch; (.windowId // ""); "save_task_state"))
+      | if $pr != "" then .tasks[$issue].lifecycle.deliveryEvidence.prNumber = $pr else . end')" \
      --arg issue "$issue" --arg slug "$slug" --arg branch "$branch" \
-     --arg worktree "$worktree" --arg pr "$pr" --arg status "$status" --arg agent "$agent" \
+     --arg worktree "$worktree" --arg pr "$pr" --arg statusArg "$status_arg" --arg agent "$agent" \
      --arg linearIssue "$linear_issue" --arg challenge "$challenge" --arg challengePair "$challenge_pair" \
      --arg challengeRole "$challenge_role" --arg challengeModel "$challenge_model" \
      --arg challengeStage "$challenge_stage" \
      --arg plannerModel "$planner_model" --arg coderModel "$coder_model" --arg reviewerModel "$reviewer_model" \
      --arg planDepth "$plan_depth" --arg codeDepth "$code_depth" --arg reviewMode "$review_mode" \
      --arg phase "$phase" --arg windowId "$window_id" \
-     --arg traceId "$_trace_id_for_state"; then
+     --arg traceId "$_trace_id_for_state" \
+     --arg baseBranch "$effective_base_branch" --arg baseSha "$effective_base_sha" \
+     --arg integrationMode "$integration_mode" --arg mergeMethod "$merge_method" \
+     --arg remoteDeletionAllowed "$remote_deletion_allowed" --arg session "${SESSION:-}" \
+     --arg runEpoch "$run_epoch"; then
     # log_warn is caller-provided (the mill and monitor define it; the startup
     # runner intentionally surfaces the failure through wavemill_lock_run).
     if declare -F log_warn >/dev/null 2>&1; then

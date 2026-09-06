@@ -1337,6 +1337,46 @@ test('aged terminal task with clean branch fires medium terminal-task-parked wit
   }
 });
 
+test('legacy HOK-2595/HOK-2913 terminal residue reports verification-required lifecycle', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-terminal-legacy-lifecycle-'));
+  try {
+    writePermissiveSchema(repoDir);
+    const findings = buildFindings(residueSnapshot(repoDir, [
+      {
+        issue: 'HOK-2595',
+        slug: 'detect-and-correlate',
+        phase: 'closed',
+        status: 'closed',
+        paneState: 'active',
+        executionOwner: 'task',
+        worktree: repoDir,
+        updated: agoIso(60),
+      },
+      {
+        issue: 'HOK-2913_c',
+        slug: 'review-scope-guards-challenger',
+        phase: 'closed',
+        status: 'closed',
+        challengeRole: 'challenger',
+        challengePairId: 'HOK-2913',
+        paneState: 'active',
+        executionOwner: 'task',
+        worktree: repoDir,
+        updated: agoIso(60),
+      },
+    ]), defaultObserverOptions());
+
+    for (const issue of ['HOK-2595', 'HOK-2913_c']) {
+      const parked = findings.find((finding) => finding.id === `terminal-task-parked-wavemill-${issue}`);
+      assert.ok(parked, `expected terminal parked finding for ${issue}`);
+      assert.ok(parked.evidence.includes('resourceDisposition=verification-required'));
+      assert.ok(parked.evidence.includes('branchDeletionAuthorized=false'));
+    }
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
 test('aged terminal task with unpushed commits escalates to urgent work loss and fires arm-died-with-unpushed-work', () => {
   const fixture = createResidueGitFixture({ commits: 2, slug: 'lossy-terminal' });
   try {
