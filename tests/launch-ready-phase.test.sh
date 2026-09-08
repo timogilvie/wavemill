@@ -96,6 +96,7 @@ extract_function "$MONITOR_SCRIPT_FILE" "review_result_failure_category" >> "$LA
 extract_function "$MONITOR_SCRIPT_FILE" "review_result_review_head_sha" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_infra_recovery_category_label" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_infra_recovery_next_action" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "select_context_window_recovery_reviewer" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "relaunch_review_after_infra_recovery" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_result_summary" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_artifacts_with_pr_number" >> "$LAUNCH_FUNC_FILE"
@@ -220,6 +221,14 @@ EOF
         printf "%s\n" "stalehead:native-context-window-exceeded" > "$STATE_DIR/.retry-review-infra-recovery-head"
         cat > "$STATE_DIR/.review-result.json" <<EOF
 {"stage":"review","status":"completed","agent":"native-openrouter","model":"qwen-3-coder","artifacts":{"type":"review","prNumber":304,"exitCode":0,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":0,"failureCategory":"native-context-window-exceeded","reviewHeadSha":"stalehead"}}
+EOF
+        ;;
+      # HOK-2964 REQ-F3: a genuine current-head context-window overflow
+      # reroutes to a certified larger-context reviewer instead of relaunching
+      # the unchanged model/input pair.
+      infra_retry_context_window_reroute)
+        cat > "$STATE_DIR/.review-result.json" <<EOF
+{"stage":"review","status":"completed","agent":"native-openrouter","model":"qwen-3-coder","artifacts":{"type":"review","prNumber":304,"exitCode":0,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":0,"failureCategory":"native-context-window-exceeded","reviewHeadSha":"abc123"}}
 EOF
         ;;
       # HOK-2964: an unchanged context-window overflow at the same head
@@ -406,7 +415,11 @@ EOF
     }
     launch_review_phase() {
       REVIEW_LAUNCH_CALLS=$((REVIEW_LAUNCH_CALLS + 1))
+      REVIEW_LAUNCH_MODEL="${7:-}"
       return 0
+    }
+    agent_resolve_from_model() {
+      printf "%s\n" "native-openrouter"
     }
     agent_validate_phase_launch() {
       AGENT_VALIDATE_CALLS=$((AGENT_VALIDATE_CALLS + 1))
@@ -490,6 +503,19 @@ EOF
         case "$TEST_CASE" in
           ready_label_failure) return 1 ;;
           *) printf "Canonicalized ready labels for PR #%s\n" "${3:-304}"; return 0 ;;
+        esac
+      fi
+
+      if [[ "${2:-}" == "-e" && "${3:-}" == *"getConfiguredModelsForDescriptorStage"* ]]; then
+        case "$TEST_CASE" in
+          infra_retry_context_window_reroute)
+            printf "%s\n" "{\"selectedModel\":\"glm-5.2\",\"previousModel\":\"qwen-3-coder\",\"previousContextWindowTokens\":262144,\"selectedContextWindowTokens\":1048576,\"reason\":\"native-context-window-exceeded\",\"rejected\":[]}"
+            return 0
+            ;;
+          *)
+            printf "%s\n" "No certified reviewer with a larger context window" >&2
+            return 1
+            ;;
         esac
       fi
 
@@ -590,8 +616,8 @@ EOF
     debug_payload=""
     [[ -f "$DEBUG_FILE" ]] && debug_payload=$(cat "$DEBUG_FILE")
 
-    printf "rc=%s\nstage_calls=%s\nattention_calls=%s\nattention_count=%s\nlaunch_calls=%s\nreview_launch_calls=%s\nprepare_recovery_calls=%s\nagent_validate_calls=%s\nprompt_calls=%s\nerror_count=%s\nlogs=%s\nwarn_logs=%s\nerror_payload=%s\ndebug_file=%s\ndebug_lines=%s\ndebug_payload=%s\nconflict_attention_head=%s\nconflict_attention_reported=%s\nconflict_detected=%s\nneeds_attention=%s\ntransient_attention=%s\ntransient_count=%s\ninfra_retry_count=%s\nready_result_payload=%s\n" \
-      "$rc" "$stage_summary" "$attention_summary" "$attention_count" "$LAUNCH_AGENT_CALLS" "$REVIEW_LAUNCH_CALLS" "$PREPARE_RECOVERY_CALLS" "$AGENT_VALIDATE_CALLS" "$READY_PROMPT_CALLS" "$error_count" "$LOG_OUTPUT" "$LOG_WARN_OUTPUT" "$LOG_ERROR_OUTPUT" "$DEBUG_FILE" "$debug_line_count" "$debug_payload" "$conflict_attention_head" "$conflict_attention_reported" "$conflict_detected" "$needs_attention" "$transient_attention" "$transient_count" "$infra_retry_count" "$ready_result_payload"
+    printf "rc=%s\nstage_calls=%s\nattention_calls=%s\nattention_count=%s\nlaunch_calls=%s\nreview_launch_calls=%s\nreview_launch_model=%s\nprepare_recovery_calls=%s\nagent_validate_calls=%s\nprompt_calls=%s\nerror_count=%s\nlogs=%s\nwarn_logs=%s\nerror_payload=%s\ndebug_file=%s\ndebug_lines=%s\ndebug_payload=%s\nconflict_attention_head=%s\nconflict_attention_reported=%s\nconflict_detected=%s\nneeds_attention=%s\ntransient_attention=%s\ntransient_count=%s\ninfra_retry_count=%s\nready_result_payload=%s\n" \
+      "$rc" "$stage_summary" "$attention_summary" "$attention_count" "$LAUNCH_AGENT_CALLS" "$REVIEW_LAUNCH_CALLS" "${REVIEW_LAUNCH_MODEL:-}" "$PREPARE_RECOVERY_CALLS" "$AGENT_VALIDATE_CALLS" "$READY_PROMPT_CALLS" "$error_count" "$LOG_OUTPUT" "$LOG_WARN_OUTPUT" "$LOG_ERROR_OUTPUT" "$DEBUG_FILE" "$debug_line_count" "$debug_payload" "$conflict_attention_head" "$conflict_attention_reported" "$conflict_detected" "$needs_attention" "$transient_attention" "$transient_count" "$infra_retry_count" "$ready_result_payload"
     printf "ready_label_calls=%s\n" "$ready_label_calls"
     printf "prompt_summary=%s\n" "$READY_PROMPT_SUMMARY"
     printf "phase_used=%s\n" "$LAUNCH_AGENT_PHASE"
@@ -1177,8 +1203,14 @@ check_contains "context window scope refresh retries review" "$output" "rc=6"
 check_contains "context window scope refresh resets counter" "$output" "infra_retry_count=1"
 
 # HOK-2964 REQ-F3: unchanged context-window overflow at the same head
-# eventually exhausts with an actionable capacity diagnostic, never a
-# synthesized pass.
+# reroutes once, then eventually exhausts with an actionable capacity
+# diagnostic, never a synthesized pass.
+output="$(run_launch_case infra_retry_context_window_reroute)"
+check_contains "context window reroute retries review" "$output" "rc=6"
+check_contains "context window reroute launches review" "$output" "review_launch_calls=1"
+check_contains "context window reroute uses larger reviewer" "$output" "review_launch_model=glm-5.2"
+check_contains "context window reroute increments infra retry" "$output" "infra_retry_count=1"
+
 output="$(run_launch_case infra_retry_context_window_exhausted)"
 check_contains "context window exhausted refuses ready" "$output" "rc=1"
 check_contains "context window exhausted does not launch review" "$output" "review_launch_calls=0"

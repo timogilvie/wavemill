@@ -8005,13 +8005,67 @@ review_infra_recovery_next_action() {
   esac
 }
 
+select_context_window_recovery_reviewer() {
+  local reviewer_model="$1" wt_dir="$2"
+  local selector_script selection stderr_file rc=0 selected_model
+  stderr_file="$(mktemp "${TMPDIR:-/tmp}/wavemill-review-reroute-stderr.XXXXXX" 2>/dev/null)" || return 1
+
+  selector_script='
+    import { getConfiguredModelsForDescriptorStage, getEffectiveRegistry } from "./shared/lib/model-registry.ts";
+    import { filterNativeModels } from "./shared/lib/native-agent/certification/router-filter.ts";
+    const failedModel = process.argv[1];
+    const repoDir = process.argv[2] || process.cwd();
+    const registry = getEffectiveRegistry(repoDir);
+    const failed = registry.models[failedModel];
+    if (!failed) throw new Error(`Unknown failed review model: ${failedModel}`);
+    const candidates = getConfiguredModelsForDescriptorStage(repoDir, "reviewer").filter((modelId) => {
+      const capabilities = registry.models[modelId];
+      return modelId !== failedModel
+        && capabilities !== undefined
+        && (capabilities.qualityScores.review ?? 0) > 0
+        && capabilities.contextWindowTokens > failed.contextWindowTokens;
+    });
+    const filtered = filterNativeModels(candidates, "reviewer", registry, repoDir);
+    const selectedModel = filtered.eligible[0];
+    if (!selectedModel) {
+      throw new Error(`No certified reviewer with context window larger than ${failedModel} (${failed.contextWindowTokens} tokens)`);
+    }
+    const selected = registry.models[selectedModel];
+    console.log(JSON.stringify({
+      selectedModel,
+      previousModel: failedModel,
+      previousContextWindowTokens: failed.contextWindowTokens,
+      selectedContextWindowTokens: selected?.contextWindowTokens,
+      reason: "native-context-window-exceeded",
+      rejected: filtered.rejected,
+    }));
+  '
+
+  selection="$(cd "$REPO_DIR" 2>/dev/null && npx tsx -e "$selector_script" "$reviewer_model" "$wt_dir" 2>"$stderr_file")" || rc=$?
+  if (( rc != 0 )); then
+    REVIEW_CONTEXT_REROUTE_LAST_ERROR="$(cat "$stderr_file" 2>/dev/null || true)"
+    rm -f "$stderr_file"
+    return 1
+  fi
+  rm -f "$stderr_file"
+
+  selected_model="$(printf '%s\n' "$selection" | jq -r '.selectedModel // empty' 2>/dev/null || echo "")"
+  [[ -n "$selected_model" ]] || {
+    REVIEW_CONTEXT_REROUTE_LAST_ERROR="reroute selector returned no selectedModel"
+    return 1
+  }
+  REVIEW_CONTEXT_REROUTE_LAST_JSON="$selection"
+  printf '%s\n' "$selected_model"
+}
+
 relaunch_review_after_infra_recovery() {
   local issue="$1" slug="$2" title="$3" wt_dir="$4" branch="$5" base_branch="$6" pr_number="$7" state_dir="$8"
   local review_file="$state_dir/.review-result.json"
   local bucket="review-infra-recovery"
   local category recorded_head current_head identity
-  local retry_limit disposition retry_number reviewer_agent reviewer_model review_mode contract_payload rc=0
+  local retry_limit effective_retry_limit disposition retry_number reviewer_agent reviewer_model review_mode contract_payload rc=0
   local scope_note="" next_action reason
+  local context_overflow_current_scope="false" rerouted_model="" reroute_json="" reroute_note=""
 
   # Bounded-retry identity (HOK-2964 REQ-F2/F4): keyed to the current head and
   # the failure category, not a path-specific counter. A new commit or a
@@ -8024,8 +8078,13 @@ relaunch_review_after_infra_recovery() {
 
   retry_limit="${WAVEMILL_REVIEW_INFRA_RETRY_MAX:-2}"
   [[ "$retry_limit" =~ ^[0-9]+$ ]] || retry_limit=2
+  effective_retry_limit="$retry_limit"
+  if [[ "$category" == "native-context-window-exceeded" && ( -z "$recorded_head" || "$recorded_head" == "$current_head" ) ]]; then
+    context_overflow_current_scope="true"
+    effective_retry_limit=1
+  fi
 
-  disposition=$(bounded_retry_gate "$state_dir" "$bucket" "$identity" "$retry_limit")
+  disposition=$(bounded_retry_gate "$state_dir" "$bucket" "$identity" "$effective_retry_limit")
   case "$disposition" in
     backoff)
       log "debug" "  $issue: holding review infra recovery for PR #$pr_number (backoff, category=${category})"
@@ -8050,6 +8109,25 @@ relaunch_review_after_infra_recovery() {
   [[ -n "$reviewer_agent" ]] || reviewer_agent="$AGENT_CMD"
   [[ -n "$reviewer_model" ]] || reviewer_model="$(read_state_value "" --arg i "$issue" '.tasks[$i].model // ""')"
 
+  if [[ "$context_overflow_current_scope" == "true" ]]; then
+    if ! rerouted_model="$(select_context_window_recovery_reviewer "$reviewer_model" "$wt_dir")"; then
+      next_action="$(review_infra_recovery_next_action "$category")"
+      reason="Review context-window recovery cannot find a certified larger-context reviewer for PR #$pr_number (category=${category}); ${next_action}"
+      bounded_retry_mark_exhausted "$state_dir" "$bucket" "$reason" || true
+      write_ready_attention_file "$state_dir" "Review failed on infrastructure (${category}) for PR #$pr_number, ${next_action}. ${REVIEW_CONTEXT_REROUTE_LAST_ERROR:-No larger-context reviewer available.}"
+      log_error "  $issue: review context-window recovery blocked for PR #$pr_number (${REVIEW_CONTEXT_REROUTE_LAST_ERROR:-no larger-context reviewer available})"
+      return 1
+    fi
+    reroute_json="${REVIEW_CONTEXT_REROUTE_LAST_JSON:-}"
+    reviewer_model="$rerouted_model"
+    if ! reviewer_agent="$(agent_resolve_from_model "$reviewer_model" "review")"; then
+      write_ready_attention_file "$state_dir" "Review context-window recovery selected $reviewer_model for PR #$pr_number, but its review agent could not be resolved."
+      log_error "  $issue: context-window recovery selected unresolved reviewer model $reviewer_model"
+      return 1
+    fi
+    reroute_note=" (rerouted to larger-context reviewer: ${reviewer_model})"
+  fi
+
   if ! agent_validate_phase_launch "$reviewer_agent" "review" "$reviewer_model" "$REPO_DIR"; then
     write_ready_attention_file "$state_dir" "Review infrastructure is still unavailable for PR #$pr_number; waiting for reviewer runtime recovery."
     log_error "  $issue: waiting for reviewer runtime recovery before re-reviewing PR #$pr_number"
@@ -8062,7 +8140,8 @@ relaunch_review_after_infra_recovery() {
     review_mode=$(read_phase_config "$state_dir" "review" "mode")
     [[ -n "$review_mode" ]] || review_mode="static"
   fi
-  contract_payload="$(jq -cn --arg agent "$reviewer_agent" --arg model "$reviewer_model" '{stageRole:"review",agent:$agent,model:$model}')"
+  contract_payload="$(jq -cn --arg agent "$reviewer_agent" --arg model "$reviewer_model" --argjson reroute "${reroute_json:-null}" \
+    '{stageRole:"review",agent:$agent,model:$model} + (if $reroute == null then {} else {contextWindowReroute:$reroute} end)')"
 
   if ! _prepare_recovery_phase_launch "$issue" "$slug" "review" "$state_dir" "$wt_dir" "$reviewer_agent" "$reviewer_model" "$contract_payload" "review"; then
     write_ready_attention_file "$state_dir" "Could not prepare infrastructure re-review for PR #$pr_number."
@@ -8077,7 +8156,7 @@ relaunch_review_after_infra_recovery() {
     "$reviewer_model" "$reviewer_agent" "$review_mode" || rc=$?
   if [[ "$rc" -eq 0 ]]; then
     marker_clear "$state_dir/.needs-attention"
-    log "status" "♻ $issue → review relaunched after infrastructure recovery (attempt ${retry_number}/${retry_limit}, category=${category})${scope_note}"
+    log "status" "♻ $issue → review relaunched after infrastructure recovery (attempt ${retry_number}/${effective_retry_limit}, category=${category})${scope_note}${reroute_note}"
     return 6
   fi
   if [[ "$rc" -eq 2 ]] && check_stage_aborted "$state_dir"; then
