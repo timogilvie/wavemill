@@ -92,9 +92,10 @@ extract_function "$MONITOR_SCRIPT_FILE" "review_result_passes_ready_gate" >> "$L
 extract_function "$MONITOR_SCRIPT_FILE" "review_result_has_final_evidence" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_result_missing_final_evidence" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_result_infra_failure" >> "$LAUNCH_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "review_infra_retry_count" >> "$LAUNCH_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "increment_review_infra_retry_count" >> "$LAUNCH_FUNC_FILE"
-extract_function "$MONITOR_SCRIPT_FILE" "clear_review_infra_retry_state" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "review_result_failure_category" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "review_result_review_head_sha" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "review_infra_recovery_category_label" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "review_infra_recovery_next_action" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "relaunch_review_after_infra_recovery" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_result_summary" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_artifacts_with_pr_number" >> "$LAUNCH_FUNC_FILE"
@@ -199,9 +200,51 @@ EOF
 EOF
         ;;
       infra_retry_capped)
-        printf "%s\n" "2" > "$STATE_DIR/.review-infra-retries"
+        printf "%s\n" "2" > "$STATE_DIR/.retry-review-infra-recovery-count"
+        printf "%s\n" "abc123:native-runtime-unavailable" > "$STATE_DIR/.retry-review-infra-recovery-head"
         cat > "$STATE_DIR/.review-result.json" <<EOF
 {"stage":"review","status":"completed","agent":"native-openrouter","model":"qwen-3-coder","artifacts":{"type":"review","prNumber":304,"exitCode":0,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":0,"failureCategory":"native-runtime-unavailable"}}
+EOF
+        ;;
+      # HOK-2964: native-context-window-exceeded enters bounded infra
+      # recovery instead of terminal code-defect handling (REQ-F1).
+      infra_retry_context_window)
+        cat > "$STATE_DIR/.review-result.json" <<EOF
+{"stage":"review","status":"completed","agent":"native-openrouter","model":"qwen-3-coder","artifacts":{"type":"review","prNumber":304,"exitCode":0,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":0,"failureCategory":"native-context-window-exceeded","reviewHeadSha":"stalehead"}}
+EOF
+        ;;
+      # HOK-2964: a new head at the same failure category resets the bounded
+      # budget instead of inheriting the exhausted attempt count (REQ-F2/F4).
+      infra_retry_context_window_scope_refreshed)
+        printf "%s\n" "2" > "$STATE_DIR/.retry-review-infra-recovery-count"
+        printf "%s\n" "stalehead:native-context-window-exceeded" > "$STATE_DIR/.retry-review-infra-recovery-head"
+        cat > "$STATE_DIR/.review-result.json" <<EOF
+{"stage":"review","status":"completed","agent":"native-openrouter","model":"qwen-3-coder","artifacts":{"type":"review","prNumber":304,"exitCode":0,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":0,"failureCategory":"native-context-window-exceeded","reviewHeadSha":"stalehead"}}
+EOF
+        ;;
+      # HOK-2964: an unchanged context-window overflow at the same head
+      # eventually exhausts with an actionable capacity diagnostic (REQ-F3).
+      infra_retry_context_window_exhausted)
+        printf "%s\n" "2" > "$STATE_DIR/.retry-review-infra-recovery-count"
+        printf "%s\n" "abc123:native-context-window-exceeded" > "$STATE_DIR/.retry-review-infra-recovery-head"
+        cat > "$STATE_DIR/.review-result.json" <<EOF
+{"stage":"review","status":"completed","agent":"native-openrouter","model":"qwen-3-coder","artifacts":{"type":"review","prNumber":304,"exitCode":0,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":0,"failureCategory":"native-context-window-exceeded","reviewHeadSha":"abc123"}}
+EOF
+        ;;
+      # HOK-2964 REQ-F5: a typed provider credit failure recovers within the
+      # bounded budget once relaunched (retryable, not a blind loop).
+      infra_retry_provider_credit_exhausted)
+        cat > "$STATE_DIR/.review-result.json" <<EOF
+{"stage":"review","status":"completed","agent":"native-openrouter","model":"qwen-3-coder","artifacts":{"type":"review","prNumber":304,"exitCode":0,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":0,"failureCategory":"provider-credit-exhausted"}}
+EOF
+        ;;
+      # HOK-2964 REQ-F6: exhaustion of a provider-capacity recovery keeps
+      # Ready blocked and leaves an actionable terminal diagnostic.
+      infra_retry_provider_credit_exhausted_capped)
+        printf "%s\n" "2" > "$STATE_DIR/.retry-review-infra-recovery-count"
+        printf "%s\n" "abc123:provider-credit-exhausted" > "$STATE_DIR/.retry-review-infra-recovery-head"
+        cat > "$STATE_DIR/.review-result.json" <<EOF
+{"stage":"review","status":"completed","agent":"native-openrouter","model":"qwen-3-coder","artifacts":{"type":"review","prNumber":304,"exitCode":0,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":0,"failureCategory":"provider-credit-exhausted"}}
 EOF
         ;;
       infra_retry_error_tool)
@@ -537,7 +580,7 @@ EOF
     transient_attention="absent"
     [[ -f "$STATE_DIR/.needs-attention-transient" ]] && transient_attention="present"
     transient_count="$(cat "$STATE_DIR/.transient-mergeability-count" 2>/dev/null || echo "")"
-    infra_retry_count="$(cat "$STATE_DIR/.review-infra-retries" 2>/dev/null || echo "")"
+    infra_retry_count="$(cat "$STATE_DIR/.retry-review-infra-recovery-count" 2>/dev/null || echo "")"
     ready_label_calls="$(cat "$READY_LABEL_COUNT_FILE" 2>/dev/null || echo "0")"
     ready_result_payload=""
     [[ -f "$STATE_DIR/.ready-result.json" ]] && ready_result_payload=$(cat "$STATE_DIR/.ready-result.json")
@@ -1119,6 +1162,43 @@ check_contains "infra retry capped refuses ready" "$output" "rc=1"
 check_contains "infra retry capped does not probe" "$output" "agent_validate_calls=0"
 check_contains "infra retry capped keeps counter" "$output" "infra_retry_count=2"
 check_contains "infra retry capped writes manual attention" "$output" "manual re-review required"
+
+# HOK-2964 REQ-F1: native-context-window-exceeded enters bounded infra
+# recovery instead of terminal code-defect handling.
+output="$(run_launch_case infra_retry_context_window)"
+check_contains "context window retries review" "$output" "rc=6"
+check_contains "context window launches review" "$output" "review_launch_calls=1"
+check_contains "context window increments infra retry" "$output" "infra_retry_count=1"
+
+# HOK-2964 REQ-F2/F4: a new head at the same failure category resets the
+# bounded budget instead of inheriting the exhausted attempt count.
+output="$(run_launch_case infra_retry_context_window_scope_refreshed)"
+check_contains "context window scope refresh retries review" "$output" "rc=6"
+check_contains "context window scope refresh resets counter" "$output" "infra_retry_count=1"
+
+# HOK-2964 REQ-F3: unchanged context-window overflow at the same head
+# eventually exhausts with an actionable capacity diagnostic, never a
+# synthesized pass.
+output="$(run_launch_case infra_retry_context_window_exhausted)"
+check_contains "context window exhausted refuses ready" "$output" "rc=1"
+check_contains "context window exhausted does not launch review" "$output" "review_launch_calls=0"
+check_contains "context window exhausted names the category" "$output" "native-context-window-exceeded"
+check_contains "context window exhausted gives actionable diagnostic" "$output" "larger-context reviewer or manual scope reduction"
+
+# HOK-2964 REQ-F5: typed OpenRouter 402/credit failures recover within the
+# bounded budget, keeping the same intended reviewer identity.
+output="$(run_launch_case infra_retry_provider_credit_exhausted)"
+check_contains "provider credit retries review" "$output" "rc=6"
+check_contains "provider credit launches review" "$output" "review_launch_calls=1"
+check_contains "provider credit increments infra retry" "$output" "infra_retry_count=1"
+
+# HOK-2964 REQ-F6: exhausted provider-capacity recovery keeps Ready blocked
+# and leaves actionable terminal evidence for challenge forfeit resolution.
+output="$(run_launch_case infra_retry_provider_credit_exhausted_capped)"
+check_contains "provider credit exhausted refuses ready" "$output" "rc=1"
+check_contains "provider credit exhausted does not launch review" "$output" "review_launch_calls=0"
+check_contains "provider credit exhausted names the category" "$output" "provider-credit-exhausted"
+check_contains "provider credit exhausted gives actionable diagnostic" "$output" "Top up credits"
 
 output="$(run_launch_case infra_retry_error_tool)"
 check_contains "infra retry tool timeout retries review" "$output" "rc=6"

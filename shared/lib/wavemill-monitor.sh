@@ -7931,49 +7931,118 @@ review_result_infra_failure() {
       (($review.failureCategory // "") == "native-runtime-unavailable") or
       (($review.failureCategory // "") == "native-review-prompt-missing") or
       (($review.failureCategory // "") == "review-scope-unverifiable") or
+      (($review.failureCategory // "") == "native-context-window-exceeded") or
+      (($review.failureCategory // "") == "provider-credit-exhausted") or
       ((($review.verdict // "") == "error") and ((($review.reviewToolError // "") | tostring | length) > 0))
     )
   ' "$review_file" >/dev/null 2>&1
 }
 
-review_infra_retry_count() {
+# Typed failure category recorded on the review artifact (HOK-2964), shared
+# taxonomy with shared/lib/stage-result.ts's INFRA_REVIEW_FAILURE_CATEGORIES.
+# Empty when the artifact carries no failureCategory (e.g. a tool-error or
+# missing-evidence recovery path).
+review_result_failure_category() {
+  local feature_dir="$1"
+  local review_file="$feature_dir/.review-result.json"
+  [[ -f "$review_file" ]] || { printf '\n'; return 0; }
+  jq -r '
+    (.artifacts // {}) as $artifacts
+    | (if ($artifacts.type // "") == "review" then $artifacts else ($artifacts.review // {}) end)
+    | (.failureCategory // "")
+  ' "$review_file" 2>/dev/null || printf '\n'
+}
+
+# Head SHA the failed review artifact was reviewed at (HOK-2964), when
+# recorded. Empty for older artifacts that predate reviewHeadSha.
+review_result_review_head_sha() {
+  local feature_dir="$1"
+  local review_file="$feature_dir/.review-result.json"
+  [[ -f "$review_file" ]] || { printf '\n'; return 0; }
+  jq -r '
+    (.artifacts // {}) as $artifacts
+    | (if ($artifacts.type // "") == "review" then $artifacts else ($artifacts.review // {}) end)
+    | (.reviewHeadSha // "")
+  ' "$review_file" 2>/dev/null || printf '\n'
+}
+
+# A stable label for the bounded-retry identity and operator messaging when
+# no typed failureCategory was recorded (tool-error / missing-evidence
+# recovery paths still go through relaunch_review_after_infra_recovery).
+review_infra_recovery_category_label() {
   local state_dir="$1"
-  local count_file="$state_dir/.review-infra-retries"
-  if [[ -f "$count_file" ]] && [[ "$(cat "$count_file" 2>/dev/null || echo "")" =~ ^[0-9]+$ ]]; then
-    cat "$count_file"
+  local review_file="$state_dir/.review-result.json"
+  local category
+  category="$(review_result_failure_category "$state_dir")"
+  if [[ -n "$category" ]]; then
+    printf '%s\n' "$category"
     return 0
   fi
-  echo "0"
+  if [[ -f "$review_file" ]] && jq -e '
+      (.artifacts // {}) as $artifacts
+      | (if ($artifacts.type // "") == "review" then $artifacts else ($artifacts.review // {}) end)
+      | (.verdict // "") == "error"
+    ' "$review_file" >/dev/null 2>&1; then
+    printf 'review-tool-error\n'
+  else
+    printf 'review-infra-unknown\n'
+  fi
 }
 
-increment_review_infra_retry_count() {
-  local state_dir="$1"
-  local count
-  count=$(review_infra_retry_count "$state_dir")
-  count=$((count + 1))
-  mkdir -p "$state_dir"
-  printf '%s\n' "$count" > "$state_dir/.review-infra-retries"
-  echo "$count"
-}
-
-clear_review_infra_retry_state() {
-  local state_dir="$1"
-  rm -f "$state_dir/.review-infra-retries"
+# Operator-facing next action for an exhausted review-infra-recovery bucket,
+# distinguishing genuinely bounded conditions (HOK-2964) from the generic case.
+review_infra_recovery_next_action() {
+  case "${1:-}" in
+    native-context-window-exceeded)
+      printf 'the reviewed diff still exceeds the reviewer context window at the current head; a larger-context reviewer or manual scope reduction is required, manual re-review required'
+      ;;
+    provider-credit-exhausted)
+      printf 'provider credits were exhausted and did not recover within the retry budget. Top up credits, then manual re-review required'
+      ;;
+    *)
+      printf 'manual re-review required'
+      ;;
+  esac
 }
 
 relaunch_review_after_infra_recovery() {
   local issue="$1" slug="$2" title="$3" wt_dir="$4" branch="$5" base_branch="$6" pr_number="$7" state_dir="$8"
   local review_file="$state_dir/.review-result.json"
-  local retry_count retry_max reviewer_agent reviewer_model review_mode contract_payload retry_number rc=0
+  local bucket="review-infra-recovery"
+  local category recorded_head current_head identity
+  local retry_limit disposition retry_number reviewer_agent reviewer_model review_mode contract_payload rc=0
+  local scope_note="" next_action reason
 
-  retry_count=$(review_infra_retry_count "$state_dir")
-  retry_max="${WAVEMILL_REVIEW_INFRA_RETRY_MAX:-2}"
-  [[ "$retry_max" =~ ^[0-9]+$ ]] || retry_max=2
-  if (( retry_count >= retry_max )); then
-    write_ready_attention_file "$state_dir" "Review failed on infrastructure ${retry_count}/${retry_max} times for PR #$pr_number, manual re-review required."
-    log_error "  $issue: review infrastructure retry cap reached for PR #$pr_number (${retry_count}/${retry_max})"
-    return 1
-  fi
+  # Bounded-retry identity (HOK-2964 REQ-F2/F4): keyed to the current head and
+  # the failure category, not a path-specific counter. A new commit or a
+  # different failure category resets the budget; an unchanged condition at
+  # an unchanged head is bounded and eventually terminalizes.
+  category="$(review_infra_recovery_category_label "$state_dir")"
+  recorded_head="$(review_result_review_head_sha "$state_dir")"
+  current_head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || echo "")"
+  identity="${current_head}:${category}"
+
+  retry_limit="${WAVEMILL_REVIEW_INFRA_RETRY_MAX:-2}"
+  [[ "$retry_limit" =~ ^[0-9]+$ ]] || retry_limit=2
+
+  disposition=$(bounded_retry_gate "$state_dir" "$bucket" "$identity" "$retry_limit")
+  case "$disposition" in
+    backoff)
+      log "debug" "  $issue: holding review infra recovery for PR #$pr_number (backoff, category=${category})"
+      return 1
+      ;;
+    exhausted)
+      next_action="$(review_infra_recovery_next_action "$category")"
+      reason="Review infrastructure recovery exhausted after $(bounded_retry_count "$state_dir" "$bucket") attempt(s) for PR #$pr_number (category=${category}); ${next_action}"
+      bounded_retry_mark_exhausted "$state_dir" "$bucket" "$reason" || true
+      write_ready_attention_file "$state_dir" "Review failed on infrastructure (${category}) for PR #$pr_number, ${next_action}."
+      log_error "  $issue: review infrastructure recovery exhausted for PR #$pr_number ($reason)"
+      return 1
+      ;;
+    exhausted-quiet)
+      return 1
+      ;;
+  esac
 
   reviewer_agent="$(jq -r '.agent // empty' "$review_file" 2>/dev/null || echo "")"
   reviewer_model="$(jq -r '.model // empty' "$review_file" 2>/dev/null || echo "")"
@@ -7987,7 +8056,7 @@ relaunch_review_after_infra_recovery() {
     return 1
   fi
 
-  retry_number=$(increment_review_infra_retry_count "$state_dir")
+  retry_number=$(bounded_retry_increment "$state_dir" "$bucket" "$identity")
   review_mode="static"
   if declare -F read_phase_config >/dev/null 2>&1; then
     review_mode=$(read_phase_config "$state_dir" "review" "mode")
@@ -8000,11 +8069,15 @@ relaunch_review_after_infra_recovery() {
     return 1
   fi
 
+  if [[ -n "$recorded_head" && -n "$current_head" && "$recorded_head" != "$current_head" ]]; then
+    scope_note=" (scope refreshed: head ${recorded_head:0:7}→${current_head:0:7})"
+  fi
+
   launch_review_phase "$issue" "$slug" "$title" "$wt_dir" "$branch" "$base_branch" \
     "$reviewer_model" "$reviewer_agent" "$review_mode" || rc=$?
   if [[ "$rc" -eq 0 ]]; then
     marker_clear "$state_dir/.needs-attention"
-    log "status" "♻ $issue → review relaunched after infrastructure recovery (attempt ${retry_number}/${retry_max})"
+    log "status" "♻ $issue → review relaunched after infrastructure recovery (attempt ${retry_number}/${retry_limit}, category=${category})${scope_note}"
     return 6
   fi
   if [[ "$rc" -eq 2 ]] && check_stage_aborted "$state_dir"; then
@@ -8500,7 +8573,7 @@ launch_ready_phase() {
     reconciliation_capsule_refresh "$state_dir" "$wt_dir" "$pr_number" "$branch" "$base_branch" "$issue" "$slug" "$title" || true
   fi
 
-  clear_review_infra_retry_state "$state_dir"
+  bounded_retry_clear "$state_dir" "review-infra-recovery"
   clear_challenger_transient_retry_state "$state_dir"
   marker_clear "$state_dir/.needs-attention"
   log "$pending_log_level" "  $issue: Launching ready phase (PR #$pr_number)"
