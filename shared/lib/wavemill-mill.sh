@@ -2339,6 +2339,7 @@ for t in "${TASKS[@]}"; do
     challenger_entry_planner=$(echo "$challenge_plan" | jq -r '.entries[1].planner // empty' 2>/dev/null)
     challenger_entry_reviewer=$(echo "$challenge_plan" | jq -r '.entries[1].reviewer // empty' 2>/dev/null)
     challenger_entry_planner_agent=$(echo "$challenge_plan" | jq -r '.entries[1].plannerAgent // empty' 2>/dev/null)
+    challenger_entry_reviewer_agent=$(echo "$challenge_plan" | jq -r '.entries[1].reviewerAgent // empty' 2>/dev/null)
     challenger_entry_plan_depth=$(echo "$challenge_plan" | jq -r '.entries[1].planDepth // empty' 2>/dev/null)
     challenger_entry_code_depth=$(echo "$challenge_plan" | jq -r '.entries[1].codeDepth // empty' 2>/dev/null)
     challenger_entry_review_mode=$(echo "$challenge_plan" | jq -r '.entries[1].reviewMode // empty' 2>/dev/null)
@@ -2410,7 +2411,7 @@ for t in "${TASKS[@]}"; do
         "${challenger_entry_reviewer:-$route_reviewer}" \
         "${challenger_agent:-$AGENT_CMD}" \
         "${challenger_entry_planner_agent:-${challenger_agent:-$AGENT_CMD}}" \
-        "${challenger_entry_planner_agent:-${challenger_agent:-$AGENT_CMD}}" \
+        "${challenger_entry_reviewer_agent:-${challenger_agent:-$AGENT_CMD}}" \
         "${challenger_entry_plan_depth:-$route_plan_depth}" \
         "${challenger_entry_code_depth:-$route_code_depth}" \
         "${challenger_entry_review_mode:-$route_review_mode}")"

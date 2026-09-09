@@ -172,6 +172,15 @@ check_contains "mill sets defer_challenger for review stage" "$MILL_BLOCK" 'if [
 check_contains "mill skips FINAL_LAUNCH_ARGS challenger entry when deferring" "$MILL_BLOCK" 'if [[ "$defer_challenger" != "true" ]]; then'
 check_contains "mill records pending arm on defer" "$MILL_BLOCK" 'challenge_arms_record_pending "$ISSUE"'
 
+# The pending arm build must pass the challenger's *reviewer* agent for the
+# reviewer slot — not the planner-agent fallback (which would defeat the whole
+# point of a reviewer-varied challenge).
+MILL_EXTRACT_BLOCK=$(awk '
+  /challenger_entry_planner_agent=\$\(echo "\$challenge_plan"/,/challenge_intent=/
+' "$MILL_SCRIPT")
+check_contains "mill extracts challenger reviewer agent from plan" "$MILL_EXTRACT_BLOCK" 'challenger_entry_reviewer_agent=$(echo "$challenge_plan"'
+check_contains "mill passes challenger reviewer agent to arm builder" "$MILL_BLOCK" '"${challenger_entry_reviewer_agent:-${challenger_agent:-$AGENT_CMD}}"'
+
 # ────────────────────────────────────────────────────────────────
 # Test 3: materialisation happy path (scratch git repo)
 # ────────────────────────────────────────────────────────────────
