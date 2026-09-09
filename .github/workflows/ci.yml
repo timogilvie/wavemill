@@ -204,17 +204,32 @@ jobs:
     name: OpenRouter Alias Audit
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: preflight
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: check-paths
+    if: always()
+    env:
+      RUN_OPENROUTER_ALIAS_AUDIT: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || needs.check-paths.outputs.openrouter_alias_audit == 'true' }}
 
     steps:
+      - name: Fail if change detection did not succeed
+        if: (github.event_name == 'pull_request' || github.event_name == 'push') && needs.check-paths.result != 'success'
+        run: |
+          echo "::error::check-paths did not succeed (${{ needs.check-paths.result }}); cannot determine OpenRouter alias audit relevance."
+          exit 1
+
+      - name: Report skip
+        if: env.RUN_OPENROUTER_ALIAS_AUDIT != 'true'
+        run: echo "No OpenRouter alias audit-relevant changes detected; audit not required for this run."
+
       - name: Checkout
+        if: env.RUN_OPENROUTER_ALIAS_AUDIT == 'true'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Setup
+        if: env.RUN_OPENROUTER_ALIAS_AUDIT == 'true'
         uses: ./.github/actions/setup
 
       - name: Audit OpenRouter aliases
+        if: env.RUN_OPENROUTER_ALIAS_AUDIT == 'true'
         run: npx tsx tools/audit-openrouter-aliases.ts --json --no-write
 
   # Aggregates every test job above into one status check.
@@ -253,6 +268,7 @@ jobs:
     timeout-minutes: 20
     outputs:
       lifecycle: ${{ steps.filter.outputs.lifecycle == 'true' }}
+      openrouter_alias_audit: ${{ steps.filter.outputs.openrouter_alias_audit == 'true' }}
 
     steps:
       - name: Checkout
@@ -302,6 +318,13 @@ jobs:
               - 'tests/fixtures/startup/launch-plan-no-queue.json'
               # Stage result CLI tool
               - 'tools/stage-result-cli.ts'
+            openrouter_alias_audit:
+              - 'shared/fixtures/model-registry.v1.json'
+              - 'shared/lib/disabled-models.ts'
+              - 'tools/audit-openrouter-aliases.ts'
+              - 'tools/check-openrouter-alias-audit-ci.ts'
+              - 'tools/check-openrouter-alias-audit-ci.test.ts'
+              - '.github/workflows/ci.yml'
 
   lifecycle-integration:
     name: Lifecycle Integration Tests
