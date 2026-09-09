@@ -114,6 +114,7 @@ TESTS=(
   shared/lib/arbiter-probes/survival-labels.test.ts
   shared/lib/arbiter-probes/pair-context.test.ts
   shared/lib/arbiter-probes/survival-agreement.test.ts
+  shared/lib/arbiter-probes/eval-disagreement.test.ts
   shared/lib/pr-diff-provider.test.ts
   shared/lib/pr-metadata.test.ts
   shared/lib/pr-attribution.test.ts
