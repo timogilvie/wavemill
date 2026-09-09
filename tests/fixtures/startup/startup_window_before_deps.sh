@@ -86,6 +86,16 @@ exit 0
 EOF
   chmod +x "$mock_dir/git"
 
+  cat > "$mock_dir/gh" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then
+  printf '[]\n'
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$mock_dir/gh"
+
   # tmux mock: records new-window to event log; executes send-keys commands in a
   # subshell so install scripts run and write their sentinel files.
   cat > "$mock_dir/tmux" <<EOF

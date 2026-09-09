@@ -3081,6 +3081,279 @@ wavemill_pr_lookup_by_branch() {
     "${cache_file}" 2>/dev/null | head -1
 }
 
+wavemill_default_attempt_id() {
+  local issue="${1:-}" branch="${2:-}"
+  if [[ -n "$issue" ]]; then
+    printf '%s-a1\n' "$issue"
+  else
+    printf 'attempt-%s\n' "$(printf '%s' "$branch" | tr '/[:space:]' '--' | tr -cd '[:alnum:]._-' | sed 's/--*/-/g')"
+  fi
+}
+
+wavemill_attempt_context_json() {
+  local issue="${1:-}" attempt_id="${2:-}" original_branch="${3:-}" effective_branch="${4:-}" base_branch="${5:-}" source="${6:-fresh-launch}"
+  [[ -n "$attempt_id" ]] || attempt_id="$(wavemill_default_attempt_id "$issue" "$effective_branch")"
+  jq -cn \
+    --arg issue "$issue" \
+    --arg attemptId "$attempt_id" \
+    --arg originalBranch "$original_branch" \
+    --arg effectiveBranch "$effective_branch" \
+    --arg baseBranch "$base_branch" \
+    --arg source "$source" \
+    --arg runEpoch "${WAVEMILL_RUN_EPOCH:-${RUN_EPOCH:-}}" \
+    '{
+      schemaVersion: 1,
+      issue: $issue,
+      attemptId: $attemptId,
+      originalBranch: $originalBranch,
+      effectiveBranch: $effectiveBranch,
+      baseBranch: $baseBranch,
+      source: $source,
+      runEpoch: (if $runEpoch == "" then null else $runEpoch end)
+    }'
+}
+
+wavemill_branch_ref_exists() {
+  local branch="${1:-}"
+  [[ -n "$branch" && -n "${REPO_DIR:-}" ]] || return 1
+  git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/$branch" 2>/dev/null && return 0
+  git -C "$REPO_DIR" show-ref --verify --quiet "refs/remotes/origin/$branch" 2>/dev/null && return 0
+  return 1
+}
+
+wavemill_allocate_retry_attempt_identity() {
+  local issue="${1:-}" slug="${2:-}" branch="${3:-}" worktree_root="${4:-${WORKTREE_ROOT:-}}" base_branch="${5:-${BASE_BRANCH:-}}"
+  local n candidate_branch candidate_slug candidate_worktree
+  [[ -n "$slug" && -n "$branch" ]] || return 1
+
+  n=2
+  while :; do
+    candidate_branch="${branch}-r${n}"
+    candidate_slug="${slug}-r${n}"
+    candidate_worktree="${worktree_root%/}/${candidate_slug}"
+    if ! wavemill_branch_ref_exists "$candidate_branch" && [[ ! -e "$candidate_worktree" ]]; then
+      WAVEMILL_ATTEMPT_ID="${issue}-r${n}"
+      WAVEMILL_ATTEMPT_BRANCH="$candidate_branch"
+      WAVEMILL_ATTEMPT_SLUG="$candidate_slug"
+      WAVEMILL_ATTEMPT_WORKTREE="$candidate_worktree"
+      wavemill_attempt_context_json "$issue" "$WAVEMILL_ATTEMPT_ID" "$branch" "$candidate_branch" "$base_branch" "fresh-launch-retry"
+      return 0
+    fi
+    n=$((n + 1))
+  done
+}
+
+wavemill_pr_candidates_for_branch() {
+  local branch="${1:-}"
+  [[ -n "$branch" ]] || { printf '[]\n'; return 0; }
+  _with_timeout "${API_TIMEOUT:-30}" gh pr list --head "$branch" --state all --limit "${WAVEMILL_PR_ATTEMPT_LIMIT:-20}" \
+    --json number,state,mergedAt,headRefName,headRefOid,baseRefName,title,body,createdAt,updatedAt,url 2>/dev/null
+}
+
+wavemill_resolve_pr_attempt() {
+  local issue="${1:-}" branch="${2:-}" base_branch="${3:-}" head_sha="${4:-}" attempt_id="${5:-}" linear_state="${6:-}" challenge_pair="${7:-}" challenge_role="${8:-}"
+  local candidates rc=0
+  candidates="$(wavemill_pr_candidates_for_branch "$branch")" || rc=$?
+  if [[ "$rc" -ne 0 || -z "$candidates" ]] || ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$candidates"; then
+    jq -cn \
+      --arg issue "$issue" \
+      --arg branch "$branch" \
+      --arg baseBranch "$base_branch" \
+      --arg reason "github_unverifiable" \
+      '{
+        schemaVersion: 1,
+        classification: "unverifiable",
+        issue: $issue,
+        branch: $branch,
+        baseBranch: $baseBranch,
+        reason: $reason,
+        checkedAt: (now | todateiso8601),
+        candidates: []
+      }'
+    return 0
+  fi
+
+  jq -cn \
+    --argjson candidates "$candidates" \
+    --arg issue "$issue" \
+    --arg branch "$branch" \
+    --arg baseBranch "$base_branch" \
+    --arg headSha "$head_sha" \
+    --arg attemptId "$attempt_id" \
+    --arg linearState "$linear_state" \
+    --arg challengePair "$challenge_pair" \
+    --arg challengeRole "$challenge_role" \
+    '
+    def down: ascii_downcase;
+    def contains_ci($needle):
+      (($needle // "") != "") and ((. // "" | down) | contains($needle | down));
+    def normalized_state:
+      if (.mergedAt // null) != null then "MERGED" else (.state // "") end;
+    ($issue | sub("_c$"; "")) as $rootIssue
+    | ($linearState | down) as $linearStateNorm
+    | ($candidates
+      | map(. + {
+          normalizedState: normalized_state,
+          branchMatches: ((.headRefName // "") == $branch),
+          baseMatches: (($baseBranch == "") or ((.baseRefName // "") == $baseBranch)),
+          headMatches: (($headSha != "") and ((.headRefOid // "") == $headSha)),
+          issueMatches: (((.title // "") | contains_ci($issue)) or ((.body // "") | contains_ci($issue)) or (($rootIssue != $issue) and (((.title // "") | contains_ci($rootIssue)) or ((.body // "") | contains_ci($rootIssue))))),
+          attemptMatches: (($attemptId != "") and (((.title // "") | contains_ci($attemptId)) or ((.body // "") | contains_ci($attemptId)))),
+          challengeMatches: (($challengePair != "") and (((.title // "") | contains_ci($challengePair)) or ((.body // "") | contains_ci($challengePair))))
+        })
+      | map(. + {
+          currentEvidence: (.headMatches or .issueMatches or .attemptMatches or .challengeMatches),
+          mismatchReason:
+            (if (.branchMatches | not) then "head_branch_mismatch"
+             elif (.baseMatches | not) then "base_mismatch"
+             elif ((.headMatches or .issueMatches or .attemptMatches or .challengeMatches) | not) then "branch_only_match"
+             else "" end)
+        })) as $scored
+    | ($scored | map(select(.branchMatches and .baseMatches and .currentEvidence)) | sort_by(.updatedAt // .createdAt // "") | reverse | .[0] // null) as $current
+    | ($scored | map(select(.branchMatches and ((.mismatchReason // "") != ""))) | .[0] // null) as $mismatch
+    | if $current != null then
+        ($current.normalizedState) as $state
+        | {
+            schemaVersion: 1,
+            classification:
+              (if $state == "OPEN" then "current-open"
+               elif $state == "MERGED" then "current-merged"
+               elif $state == "CLOSED" then "historical-closed"
+               else "unverifiable" end),
+            issue: $issue,
+            branch: $branch,
+            baseBranch: $baseBranch,
+            attemptId: (if $attemptId == "" then null else $attemptId end),
+            linearState: (if $linearState == "" then null else $linearState end),
+            reason:
+              (if $state == "OPEN" then "open_current_pr"
+               elif $state == "MERGED" then "merged_current_pr"
+               elif $state == "CLOSED" and ($linearStateNorm | IN("backlog","todo","to do","open","reopened")) then "reopened_issue_closed_historical_pr"
+               elif $state == "CLOSED" then "closed_unmerged_pr_not_launch_terminal"
+               else "unknown_pr_state" end),
+            checkedAt: (now | todateiso8601),
+            selectedCandidate: $current,
+            candidates: $scored
+          }
+      elif ($scored | length) == 0 then
+        {
+          schemaVersion: 1,
+          classification: "none",
+          issue: $issue,
+          branch: $branch,
+          baseBranch: $baseBranch,
+          attemptId: (if $attemptId == "" then null else $attemptId end),
+          reason: "no_pr_candidates",
+          checkedAt: (now | todateiso8601),
+          candidates: []
+        }
+      else
+        {
+          schemaVersion: 1,
+          classification:
+            (if (($scored | any(.normalizedState == "MERGED")) and (($mismatch.mismatchReason // "") != "")) then "historical-merged"
+             elif ($scored | any(.normalizedState == "CLOSED")) then "historical-closed"
+             else "unverifiable" end),
+          issue: $issue,
+          branch: $branch,
+          baseBranch: $baseBranch,
+          attemptId: (if $attemptId == "" then null else $attemptId end),
+          reason: ($mismatch.mismatchReason // "no_current_candidate"),
+          checkedAt: (now | todateiso8601),
+          selectedCandidate: $mismatch,
+          candidates: $scored
+        }
+      end'
+}
+
+wavemill_persist_attempt_reconciliation() {
+  local issue="${1:-}" attempt_json="${2:-}" reconciliation_json="${3:-}" actor="${4:-pr-attempt-resolver}"
+  [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "${STATE_FILE:-}" ]] || return 0
+  jq -e . >/dev/null 2>&1 <<<"${attempt_json:-null}" || attempt_json='null'
+  jq -e . >/dev/null 2>&1 <<<"${reconciliation_json:-null}" || reconciliation_json='null'
+  state_mutate "$STATE_FILE" '
+    if .tasks[$issue] == null then . else
+      .tasks[$issue].attempt = (if $attempt == null then (.tasks[$issue].attempt // null) else $attempt end)
+      | .tasks[$issue].prReconciliation = (if $reconciliation == null then (.tasks[$issue].prReconciliation // null) else $reconciliation end)
+      | .tasks[$issue].lifecycle.attempt = (if $attempt == null then (.tasks[$issue].lifecycle.attempt // null) else $attempt end)
+      | .tasks[$issue].lifecycle.prReconciliation = (if $reconciliation == null then (.tasks[$issue].lifecycle.prReconciliation // null) else $reconciliation end)
+      | .tasks[$issue].lifecycle.lastAttemptReconciledBy = $actor
+      | .tasks[$issue].updated = (now | todateiso8601)
+      | .updated = (now | todateiso8601)
+    end' \
+    --arg issue "$issue" \
+    --argjson attempt "$attempt_json" \
+    --argjson reconciliation "$reconciliation_json" \
+    --arg actor "$actor" >/dev/null 2>&1 || true
+}
+
+wavemill_record_fresh_launch_reconciliation() {
+  local issue="${1:-}" slug="${2:-}" branch="${3:-}" worktree="${4:-}" linear_issue="${5:-}" status="${6:-}" phase="${7:-}" attempt_json="${8:-null}" reconciliation_json="${9:-null}" actor="${10:-fresh-launch-preflight}"
+  local workflow_outcome="active" resource_disposition="verification-required"
+  [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "${STATE_FILE:-}" ]] || return 0
+  jq -e . >/dev/null 2>&1 <<<"$attempt_json" || attempt_json='null'
+  jq -e . >/dev/null 2>&1 <<<"$reconciliation_json" || reconciliation_json='null'
+  case "$status" in
+    merged) workflow_outcome="merged"; resource_disposition="released" ;;
+    active) workflow_outcome="active"; resource_disposition="allocated" ;;
+  esac
+  state_mutate "$STATE_FILE" '
+    (.tasks[$issue] // {}) as $existing
+    | ($reconciliation.selectedCandidate // null) as $candidate
+    | .tasks[$issue] = ($existing + {
+        slug: $slug,
+        branch: $branch,
+        worktree: $worktree,
+        status: $status,
+        phase: $phase,
+        linearIssueId: (if $linearIssue == "" then $issue else $linearIssue end),
+        attempt: (if $attempt == null then ($existing.attempt // null) else $attempt end),
+        prReconciliation: (if $reconciliation == null then ($existing.prReconciliation // null) else $reconciliation end),
+        updated: (now | todateiso8601)
+      })
+    | .tasks[$issue].lifecycle = (($existing.lifecycle // {}) + {
+        schemaVersion: 1,
+        workflowOutcome: $workflowOutcome,
+        resourceDisposition: $resourceDisposition,
+        launchContract: (($existing.lifecycle.launchContract // {}) + {
+          baseBranch: $baseBranch,
+          session: $session,
+          runEpoch: $runEpoch,
+          remoteBranchDeletionPolicy: (($existing.lifecycle.launchContract.remoteBranchDeletionPolicy // {}) + {
+            allowed: false,
+            mode: "fresh-launch-preflight",
+            reason: "no resources allocated by fresh-launch reconciliation",
+            source: $actor
+          })
+        }),
+        attempt: (if $attempt == null then ($existing.lifecycle.attempt // null) else $attempt end),
+        prReconciliation: (if $reconciliation == null then ($existing.lifecycle.prReconciliation // null) else $reconciliation end)
+      })
+    | if $candidate != null then
+        .tasks[$issue].pr = (($candidate.number // "") | tostring)
+        | .tasks[$issue].lifecycle.deliveryEvidence = (($existing.lifecycle.deliveryEvidence // {}) + {
+            prNumber: (($candidate.number // "") | tostring),
+            prState: ($candidate.normalizedState // $candidate.state // ""),
+            prBaseBranch: ($candidate.baseRefName // ""),
+            prHeadSha: ($candidate.headRefOid // ""),
+            prMergedAt: ($candidate.mergedAt // "")
+          } | with_entries(select(.value != "")))
+      else . end
+    | .tasks[$issue].rehydration = {
+        eligibility: (if $workflowOutcome == "merged" then "terminal" else "verification-required" end),
+        reason: ($reconciliation.reason // $status),
+        checkedAt: (now | todateiso8601),
+        runEpoch: $runEpoch,
+        actor: $actor
+      }
+    | .updated = (now | todateiso8601)' \
+    --arg issue "$issue" --arg slug "$slug" --arg branch "$branch" --arg worktree "$worktree" \
+    --arg linearIssue "$linear_issue" --arg status "$status" --arg phase "$phase" \
+    --arg workflowOutcome "$workflow_outcome" --arg resourceDisposition "$resource_disposition" \
+    --arg baseBranch "${BASE_BRANCH:-}" --arg session "${SESSION:-}" --arg runEpoch "${WAVEMILL_RUN_EPOCH:-${RUN_EPOCH:-}}" \
+    --arg actor "$actor" --argjson attempt "$attempt_json" --argjson reconciliation "$reconciliation_json" >/dev/null 2>&1 || true
+}
+
 wavemill_pr_live_state() {
   local pr_number="${1:-}"
   [[ -n "$pr_number" ]] || return 1
@@ -5262,6 +5535,8 @@ save_task_state() {
       | if $windowId != "" then .tasks[$issue].windowId = $windowId else . end
       | if $traceId != "" then .tasks[$issue].traceId = $traceId else . end
       | .tasks[$issue].lifecycle = (.tasks[$issue] | wm_normalized_lifecycle($baseBranch; $baseSha; $integrationMode; $mergeMethod; $remoteDeletionAllowed; $challengeRole; $challengePair; $session; $runEpoch; (.windowId // ""); $requireConfirm; $baseBranchSource; $requireConfirmSource; $mergeMethodSource; "save_task_state"))
+      | if ($existing.attempt // null) != null then .tasks[$issue].lifecycle.attempt = $existing.attempt else . end
+      | if ($existing.prReconciliation // null) != null then .tasks[$issue].lifecycle.prReconciliation = $existing.prReconciliation else . end
       | if $pr != "" then .tasks[$issue].lifecycle.deliveryEvidence.prNumber = $pr else . end')" \
      --arg issue "$issue" --arg slug "$slug" --arg branch "$branch" \
      --arg worktree "$worktree" --arg pr "$pr" --arg statusArg "$status_arg" --arg agent "$agent" \

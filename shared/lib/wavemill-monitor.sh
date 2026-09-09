@@ -10295,13 +10295,37 @@ wavemill_record_monitor_iteration_timing() {
 
 find_pr_for_branch() {
   local branch="$1"
-  local cached
-  cached=$(wavemill_pr_lookup_by_branch "$branch")
-  if [[ -n "$cached" ]]; then
-    echo "$cached"
-    return
+  local issue="" worktree="" base_branch="${BASE_BRANCH:-}" head_sha="" attempt_json="" attempt_id="" linear_state="" challenge_pair="" challenge_role=""
+  local resolution classification pr_number reason
+  [[ -n "$branch" ]] || return 0
+
+  if [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]]; then
+    issue="$(jq -r --arg branch "$branch" '(.tasks // {}) | to_entries[] | select((.value.branch // "") == $branch) | .key' "$STATE_FILE" 2>/dev/null | head -n 1)"
   fi
-  _with_timeout "$API_TIMEOUT" gh pr list --head "$branch" --state all --json number --jq '.[0].number // empty' 2>/dev/null || echo ""
+  [[ -n "$issue" ]] || return 0
+
+  worktree="$(read_state_value "" --arg i "$issue" '.tasks[$i].worktree // empty' 2>/dev/null || true)"
+  [[ -n "$worktree" && -d "$worktree" ]] && head_sha="$(git -C "$worktree" rev-parse HEAD 2>/dev/null || true)"
+  base_branch="$(read_state_value "${BASE_BRANCH:-}" --arg i "$issue" '.tasks[$i].lifecycle.launchContract.baseBranch // .tasks[$i].baseBranch // empty' 2>/dev/null || true)"
+  [[ -n "$base_branch" ]] || base_branch="${BASE_BRANCH:-}"
+  attempt_json="$(read_state_value "" --arg i "$issue" '.tasks[$i].attempt // .tasks[$i].lifecycle.attempt // empty' 2>/dev/null || true)"
+  attempt_id="$(jq -r '.attemptId // empty' <<<"${attempt_json:-{}}" 2>/dev/null || true)"
+  linear_state="$(read_state_value "" --arg i "$issue" '.tasks[$i].linearState // .tasks[$i].linear.state.name // empty' 2>/dev/null || true)"
+  challenge_pair="$(read_state_value "" --arg i "$issue" '.tasks[$i].challengePairId // empty' 2>/dev/null || true)"
+  challenge_role="$(read_state_value "" --arg i "$issue" '.tasks[$i].challengeRole // empty' 2>/dev/null || true)"
+
+  resolution="$(wavemill_resolve_pr_attempt "$issue" "$branch" "$base_branch" "$head_sha" "$attempt_id" "$linear_state" "$challenge_pair" "$challenge_role")"
+  classification="$(jq -r '.classification // "unverifiable"' <<<"$resolution" 2>/dev/null || echo "unverifiable")"
+  wavemill_persist_attempt_reconciliation "$issue" "$attempt_json" "$resolution" "monitor-pr-discovery" >/dev/null 2>&1 || true
+  if [[ "$classification" == "current-open" ]]; then
+    pr_number="$(jq -r '.selectedCandidate.number // empty' <<<"$resolution" 2>/dev/null || true)"
+    [[ -n "$pr_number" ]] && printf '%s\n' "$pr_number"
+    return 0
+  fi
+
+  reason="$(jq -r '.reason // empty' <<<"$resolution" 2>/dev/null || true)"
+  [[ -n "$reason" ]] && log "debug" "$issue: PR discovery ignored $classification candidate for $branch ($reason)"
+  return 0
 }
 
 inject_depends_on_pr_block() {

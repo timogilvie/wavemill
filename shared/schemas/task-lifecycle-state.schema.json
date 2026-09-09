@@ -137,6 +137,42 @@
         }
       }
     },
+    "attempt": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "attemptId": {
+          "type": "string"
+        },
+        "originalBranch": {
+          "type": "string"
+        },
+        "effectiveBranch": {
+          "type": "string"
+        },
+        "baseBranch": {
+          "type": "string"
+        }
+      }
+    },
+    "prReconciliation": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "classification": {
+          "enum": ["current-open", "current-merged", "historical-closed", "historical-merged", "none", "unverifiable"]
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
     "cleanupEpisode": {
       "type": "object",
       "additionalProperties": true,
