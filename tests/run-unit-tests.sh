@@ -147,6 +147,7 @@ TESTS=(
   shared/lib/challenge-pair-recovery.test.ts
   shared/lib/current-challenge-eval-selector.test.ts
   shared/lib/challenge-comparison-eval-evidence.test.ts
+  shared/lib/challenge-ready-evidence.test.ts
   shared/lib/harness-replay.test.ts
   shared/lib/cross-repo-parity.valid.test.ts
   shared/lib/cross-repo-parity.missing.test.ts

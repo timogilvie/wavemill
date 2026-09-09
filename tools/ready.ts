@@ -7,9 +7,58 @@ import { evaluateReady, type CheckReadResult, type ReadyVerdict } from '../share
 import { runTool } from '../shared/lib/tool-runner.ts';
 import { checkMergeConflicts, ciStatusToReadyCheck, runReadyStage, type ReadyCheck, type ReadyResult } from '../shared/lib/ready-stage.ts';
 import { readChallengeComparisons } from '../shared/lib/challenge-comparison.ts';
+import {
+  evaluateChallengeReadyEvidence,
+  resolveChallengePairFromState,
+  type ChallengeReadyEvidence,
+} from '../shared/lib/challenge-ready-evidence.ts';
+import { readEvalRecords } from '../shared/lib/eval-persistence.ts';
+import { resolveEvalsDir } from '../shared/lib/evals-paths.ts';
+import { resolvePrIdentityMetadata } from '../shared/lib/pr-comparison.ts';
 import { writePreflightDiagnostic } from '../shared/lib/ready-diagnostics.ts';
 import { fetchPrCiStatus, type PrCiStatus } from '../shared/lib/pr-ci-status.ts';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
+
+/**
+ * Build the lazy current-head challenge evidence resolver (HOK-2963). It is
+ * invoked by the ready engine only for challenge PRs. Every failure mode
+ * returns null so the engine falls back to the legacy fail-closed gate.
+ */
+function buildChallengeEvidenceResolver(input: {
+  prNumber: number;
+  prUrl: string;
+  headSha?: string;
+  repoDir: string;
+  stateFile?: string;
+}): () => Promise<ChallengeReadyEvidence | null> {
+  return async () => {
+    try {
+      const headSha = input.headSha?.trim();
+      if (!headSha || !input.stateFile) return null;
+      const state = JSON.parse(readFileSync(input.stateFile, 'utf8')) as unknown;
+      const pairing = resolveChallengePairFromState(state, input.prNumber);
+      if (!pairing) return null;
+      const sibling = resolvePrIdentityMetadata(String(pairing.siblingPr), input.repoDir);
+      const self = { prUrl: input.prUrl, prNumber: String(input.prNumber), headSha };
+      const siblingArm = {
+        prUrl: sibling.url,
+        prNumber: String(pairing.siblingPr),
+        headSha: sibling.head_sha,
+      };
+      return evaluateChallengeReadyEvidence({
+        pairId: pairing.pairId,
+        side: pairing.side,
+        primary: pairing.side === 'primary' ? self : siblingArm,
+        challenger: pairing.side === 'primary' ? siblingArm : self,
+        evalRecords: readEvalRecords({ dir: resolveEvalsDir(undefined, input.repoDir).dir }),
+        comparisons: readChallengeComparisons(),
+      });
+    } catch {
+      return null;
+    }
+  };
+}
 
 async function maybeWriteReadyDiagnostic(repoDir: string, diagnostic: {
   stateDir?: string;
@@ -49,6 +98,10 @@ runTool({
       type: 'string',
       description: 'Ready state directory for structured diagnostics',
     },
+    'state-file': {
+      type: 'string',
+      description: 'Monitor workflow-state.json for challenge pair identity (HOK-2963)',
+    },
     json: {
       type: 'boolean',
       description: 'Emit machine-readable JSON output',
@@ -72,6 +125,7 @@ runTool({
 
     const repoDir = args['repo-dir'] || process.cwd();
     const stateDir = args['state-dir'] ? String(args['state-dir']) : undefined;
+    const stateFile = args['state-file'] ? String(args['state-file']) : undefined;
     const readyPolicy = getIntegrationReadyPolicy(repoDir);
     let verdict: ReadyVerdict;
     let output: ReadyResult;
@@ -133,6 +187,13 @@ runTool({
           },
           readChallengeComparisons,
           requiredCheckRead,
+          resolveChallengeEvidence: buildChallengeEvidenceResolver({
+            prNumber: pr.number,
+            prUrl: pr.url,
+            headSha: ciStatus.headSha,
+            repoDir,
+            stateFile,
+          }),
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -157,6 +218,17 @@ runTool({
         headSha: ciStatus.headSha,
         ciConclusion: ciStatus.conclusion,
         mergeStateStatus: ciStatus.mergeStateStatus,
+        // Additive typed challenge-wait fields (HOK-2963).
+        ...(verdict.implementationReady !== undefined
+          ? { implementationReady: verdict.implementationReady }
+          : {}),
+        ...(verdict.pendingReason ? { pendingReason: verdict.pendingReason } : {}),
+        ...(verdict.pendingReasons && verdict.pendingReasons.length > 0
+          ? { pendingReasons: verdict.pendingReasons }
+          : {}),
+        ...(verdict.challenge
+          ? { challenge: verdict.challenge as unknown as Record<string, unknown> }
+          : {}),
       };
     } else {
       try {
@@ -207,12 +279,25 @@ function extractPrNumber(input: string): number {
 }
 
 function buildPolicyChecks(verdict: ReadyVerdict): ReadyCheck[] {
+  // Structured typed-wait details keep shell parsing and tests stable
+  // without depending on human-readable reason text (HOK-2963).
+  const details: Record<string, unknown> = {
+    ...(verdict.pendingReason ? { pendingReason: verdict.pendingReason } : {}),
+    ...(verdict.pendingReasons && verdict.pendingReasons.length > 0
+      ? { pendingReasons: verdict.pendingReasons }
+      : {}),
+    ...(verdict.implementationReady !== undefined
+      ? { implementationReady: verdict.implementationReady }
+      : {}),
+    ...(verdict.challenge ? { challenge: verdict.challenge } : {}),
+  };
+
   if (verdict.reasons.length === 0) {
     return [{
       name: 'ready-policy',
       status: verdict.status,
       message: summarizeVerdict(verdict.status),
-      details: {},
+      details,
     }];
   }
 
@@ -220,7 +305,7 @@ function buildPolicyChecks(verdict: ReadyVerdict): ReadyCheck[] {
     name: 'ready-policy',
     status: verdict.status,
     message: reason,
-    details: {},
+    details,
   }));
 }
 
