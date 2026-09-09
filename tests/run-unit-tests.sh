@@ -202,6 +202,7 @@ TESTS=(
   shared/lib/transient-marker.test.ts
   shared/lib/wavemill-incident-artifact-diagnostics.test.ts
   shared/lib/wavemill-incident-detector.test.ts
+  shared/lib/wavemill-incident-model.test.ts
   shared/lib/wavemill-incident-store.test.ts
   shared/lib/state-mutex.test.ts
   shared/lib/job-tracker.test.ts

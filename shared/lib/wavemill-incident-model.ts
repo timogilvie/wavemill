@@ -53,6 +53,12 @@ export const INCIDENT_ROOT_CAUSE_CLASSES = [
   'cleanup_dirty_worktree',
   'config_drift_base_branch',
   'config_drift_confirm',
+  // Parked/terminal-arm delivery gaps (HOK-2927; stale_orphaned_state)
+  'arm_parked_awaiting_operator_commit',
+  'stage_marker_not_advanced',
+  'terminal_arm_parked_with_residue',
+  'arm_died_with_unpushed_work',
+  'pr_create_failed',
   'unclassified_local_failure',
 ] as const;
 
@@ -75,6 +81,23 @@ export function canonicalizeRootCauseClass(raw: string): IncidentRootCauseClass 
   }
   if (/blocked[-_ ]completion|live blocking command|auto[-_ ]advance[-_ ]refused/.test(lower)) {
     return 'harness_liveness_deadlock';
+  }
+  // Parked/terminal-arm legacy slugs (HOK-2927); before the generic local/remote
+  // signatures so branch/commit vocabulary is not mislabelled.
+  if (/parked[-_ ]awaiting[-_ ]operator[-_ ]commit/.test(lower)) {
+    return 'arm_parked_awaiting_operator_commit';
+  }
+  if (/(?:stage[-_ ])?marker[-_ ]not[-_ ]advanced/.test(lower)) {
+    return 'stage_marker_not_advanced';
+  }
+  if (/terminal[-_ ](?:arm|task)[-_ ]parked/.test(lower)) {
+    return 'terminal_arm_parked_with_residue';
+  }
+  if (/(?:arm[-_ ]died[-_ ]with[-_ ])?unpushed[-_ ]work/.test(lower)) {
+    return 'arm_died_with_unpushed_work';
+  }
+  if (/pr[-_ ]create[-_ ]failed|pull[-_ ]request[-_ ]create[-_ ]failed/.test(lower)) {
+    return 'pr_create_failed';
   }
   if (/failed[-_ ]to[-_ ]parse|unexpected[-_ ]token|parse[-_ ]error|syntax[-_ ]error|malformed[-_ ]json/.test(lower)) {
     return 'local_parse_failure';
