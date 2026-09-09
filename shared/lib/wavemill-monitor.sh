@@ -3002,7 +3002,10 @@ coding_stage_owner_lost() {
 
   hook_state="$(fresh_hook_state_for_issue "$issue" 2>/dev/null || true)"
   case "$hook_state" in
-    working|waiting|approval-needed|blocked) return 1 ;;
+    working) return 1 ;;
+    waiting) return 1 ;;
+    approval-needed) return 1 ;;
+    blocked) return 1 ;;
   esac
 
   command -v tmux >/dev/null 2>&1 || return 1
@@ -13203,8 +13206,8 @@ if [[ -f "$STATE_FILE" ]]; then
   # windows/worktrees for arms that no longer exist (HOK-2972). Terminal rows
   # with retained/unverified resources still rehydrate so cleanup can retry.
   done < <(jq -r '.tasks | to_entries[]
-    | select(((.value.lifecycle.workflowOutcome // "active") == "active")
-        or ((.value.lifecycle.resourceDisposition // "") != "reaped"))
+    | select(((.value.lifecycle.workflowOutcome // "active") == "active") or
+        ((.value.lifecycle.resourceDisposition // "") != "reaped"))
     | "\(.key)|\(.value.slug // "")|\(.value.branch // "")|\(.value.pr // "")"' "$STATE_FILE" 2>/dev/null)
 fi
 
@@ -14991,15 +14994,15 @@ monitor_issue_state() {
             interrupted_artifacts="$(jq -cn --arg head "$interrupted_head" \
               '{type: "coding",
                 terminationClass: "interrupted",
-                exitEvidence: "agent process exited without a terminal stage result; pane at shell prompt",
+                exitEvidence: "agent process exited without a terminal stage result (pane at shell prompt)",
                 lastDurableCommit: (if $head == "" then null else $head end),
                 validationState: "unknown",
                 recoveryAction: "Relaunch the coding phase to resume from the last durable commit, or push the branch and open a PR manually if the work is already complete."}')"
             write_stage_result "$FEATURE_DIR" "coding" "failed" "$current_agent" \
               "$(resolve_stage_result_model "$FEATURE_DIR" "coding" "claude-opus-4-7")" \
-              "Interrupted: coding agent exited without recording a result; durable commits preserved${interrupted_head:+ at ${interrupted_head:0:7}}" \
+              "Interrupted: coding agent exited without recording a result - durable commits preserved${interrupted_head:+ at ${interrupted_head:0:7}}" \
               "$interrupted_artifacts"
-            log_warn "$ISSUE → Coding agent exited without a terminal result; marked interrupted (work preserved${interrupted_head:+ at ${interrupted_head:0:7}})"
+            log_warn "$ISSUE → Coding agent exited without a terminal result - marked interrupted (work preserved${interrupted_head:+ at ${interrupted_head:0:7}})"
             set_window_attention_state "$WIN" "needs-user"
             active_count=$((active_count + 1))
             return 0
