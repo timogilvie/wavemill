@@ -9445,7 +9445,9 @@ handle_comparison_job_success() {
             --comment "Closing: lost challenge comparison to ${winner} side." 2>/dev/null || true
           log "status" "Closed losing PR #$loser_pr"
         fi
-        cleanup_completed_task "$loser_key" "$loser_slug" "challenge loser"
+        if ! cleanup_completed_task "$loser_key" "$loser_slug" "challenge loser"; then
+          log_warn "Challenge comparison recorded; losing-side cleanup deferred for $loser_key"
+        fi
       else
         log "status" "  ⚖ Both PRs remain open for manual review (autoMergeWinner=false)"
       fi
