@@ -656,7 +656,7 @@ function parseStageArtifact(
   repoDir?: string,
 ): ChallengeExecutedStageProvenance {
   const consultedArtifactPaths = [artifactPath];
-  const source = stageResultFileName(stage);
+  const defaultSource = stageResultFileName(stage);
   if (!existsSync(artifactPath)) {
     return emptyStageProvenance(stage, 'missing', consultedArtifactPaths);
   }
@@ -679,6 +679,14 @@ function parseStageArtifact(
   }
 
   const rawModel = normalizeUnknown(parsed.model);
+  // A stage result stamped `source: "inherited"` was carried across a
+  // challenge fork (HOK-2811). The file lives on the challenger's disk but
+  // does not describe a run performed there — preserve model/agent/status
+  // for provenance, but surface the inherited source rather than the
+  // filename so readers can attribute the run to the shared prefix.
+  const source: ChallengeProvenanceSource = parsed.source === 'inherited'
+    ? 'inherited'
+    : defaultSource;
   return {
     stage,
     role: STAGE_ROLES[stage] as ChallengeStageRole,

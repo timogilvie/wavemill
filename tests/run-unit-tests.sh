@@ -210,6 +210,7 @@ TESTS=(
   shared/lib/transient-marker.test.ts
   shared/lib/wavemill-incident-artifact-diagnostics.test.ts
   shared/lib/wavemill-incident-detector.test.ts
+  shared/lib/wavemill-incident-model.test.ts
   shared/lib/wavemill-incident-store.test.ts
   shared/lib/state-mutex.test.ts
   shared/lib/job-tracker.test.ts
@@ -272,6 +273,7 @@ TESTS=(
   tools/check-pi-version.test.ts
   tools/check-ci-command-map-drift.test.ts
   tools/check-ci-concurrency.test.ts
+  tools/check-openrouter-alias-audit-ci.test.ts
   tools/check-cross-pr-reverts.test.ts
   tools/hok2423-verify-native-provider-gate.test.ts
   tools/hok2424-verify-native-expansion.test.ts

@@ -238,6 +238,14 @@ fi
 if [[ -f "$LIB_DIR/queue-health.sh" ]]; then
 source "$LIB_DIR/queue-health.sh"
 fi
+# Worktree-deps reuse helper (HOK-2811): challenge_materialize_challenger_arm
+# forks a fresh challenger worktree at the primary's coding HEAD, so node_modules
+# is missing until we prime it. worktree_deps_ensure prefers CoW/symlink reuse
+# from the primary's node_modules and falls back to running the install command.
+if [[ -f "$LIB_DIR/wavemill-worktree-deps.sh" ]]; then
+# shellcheck source=wavemill-worktree-deps.sh
+source "$LIB_DIR/wavemill-worktree-deps.sh"
+fi
 _update_effective_max_parallel
 
 # Ensure gh commands target the correct GitHub repo (not inherited CWD)
@@ -762,6 +770,14 @@ dispatch_task_and_persist() {
 # A challenge intent is sealed once any stage it describes has produced a
 # result. After that point it is evidence about a run that already happened,
 # not a routing decision that can still be revised.
+#
+# Exempt writers: challenge_intent_stamp_fork_descriptor (HOK-2811) is the
+# only writer that may touch a sealed intent. It touches only the
+# fork-descriptor fields (forkStage, forkCommit, sharedPrefix, per-side
+# inheritedStages), never the selection fields the seal protects, so it is
+# safe by construction — new callers of that kind must add themselves to
+# this list.
+#
 # Usage: challenge_intent_is_sealed <feature_dir>
 challenge_intent_is_sealed() {
   local feature_dir="$1" stage status
@@ -1520,6 +1536,11 @@ finalize_challenge_execution_intent_before_coding() {
 }
 
 challenge_cancel_challenger_arm() {
+  # Teardown for a challenger arm that already exists on disk. HOK-2811
+  # introduced a mirror for the deferred-arm variant: see
+  # challenge_materialize_challenger_arm() (creation) and
+  # challenge_arms_cancel_pending() (cancellation of an arm that never
+  # materialised).
   local issue="$1" primary_slug="$2" challenger_key="${3:-}" feature_dir="${4:-}" stage="${5:-}" varied_model="${6:-}" reason="${7:-}" detail="${8:-}"
   [[ -n "$issue" && -n "$reason" ]] || return 1
 
@@ -1610,6 +1631,426 @@ challenge_assert_arms_diverge() {
     "issue=$issue" \
     "stage=$stage" \
     "model=\"$primary_varied\""
+  return 0
+}
+
+# HOK-2811 (Arbiter P2.4a) — the narrow writer for fork-descriptor fields.
+#
+# `persist_challenge_execution_intent` refuses to touch an intent once any
+# stage it describes has produced a result (`challenge_intent_is_sealed`), and
+# by fork time the primary's coding stage is completed so the intent is
+# sealed. This writer sets only the fork-descriptor fields (`forkStage`,
+# `forkCommit`, `sharedPrefix`, and per-side `inheritedStages`), never the
+# selection fields the seal check protects, so exempting it from the seal
+# check is safe by construction.
+#
+# Usage: challenge_intent_stamp_fork_descriptor <primary_issue> <challenger_key> \
+#   <primary_feature_dir> <challenger_feature_dir> \
+#   <fork_stage> <fork_commit> <inherited_stages_json>
+#
+# `inherited_stages_json` is the JSON array of ChallengeStage values that
+# the challenger inherits from the primary (e.g. `["plan","implementation"]`
+# for a review-stage fork).
+challenge_intent_stamp_fork_descriptor() {
+  local primary_issue="$1" challenger_key="$2"
+  local primary_feature_dir="$3" challenger_feature_dir="$4"
+  local fork_stage="$5" fork_commit="$6"
+  local inherited_stages_json="${7:-[]}"
+  [[ -n "$primary_issue" && -n "$fork_stage" && -n "$fork_commit" ]] || return 1
+
+  local dir file tmp
+  for dir in "$primary_feature_dir" "$challenger_feature_dir"; do
+    [[ -n "$dir" && -d "$dir" ]] || continue
+    for file in "$dir/.challenge-intent.json" "$dir/challenge-intent.json"; do
+      [[ -f "$file" ]] || continue
+      tmp="$(mktemp)" || continue
+      if jq \
+        --arg fs "$fork_stage" \
+        --arg fc "$fork_commit" \
+        --argjson primaryInherited '[]' \
+        --argjson challengerInherited "$inherited_stages_json" \
+        '.forkStage = $fs
+         | .forkCommit = $fc
+         | .sharedPrefix = true
+         | .primary = ((.primary // {}) + {inheritedStages: $primaryInherited})
+         | .challenger = ((.challenger // {}) + {inheritedStages: $challengerInherited})' \
+        "$file" > "$tmp" 2>/dev/null; then
+        mv "$tmp" "$file"
+      else
+        rm -f "$tmp"
+      fi
+    done
+  done
+
+  # Mirror the fields into state so callers reading state (rather than files)
+  # observe the same descriptor. This does NOT trigger the seal check because
+  # persist_challenge_execution_intent isn't in the path.
+  [[ -n "${STATE_FILE:-}" && -f "${STATE_FILE}" ]] || return 0
+  state_mutate "$STATE_FILE" \
+    '(.tasks[$issue].challengeExecutionIntent // {}) as $existing
+     | .tasks[$issue].challengeExecutionIntent = ($existing + {
+         forkStage: $fs, forkCommit: $fc, sharedPrefix: true,
+         primary: (($existing.primary // {}) + {inheritedStages: []}),
+         challenger: (($existing.challenger // {}) + {inheritedStages: $challengerInherited})
+       })
+     | if $challenger != "" and (.tasks[$challenger] != null) then
+         (.tasks[$challenger].challengeExecutionIntent // {}) as $cexist
+         | .tasks[$challenger].challengeExecutionIntent = ($cexist + {
+             forkStage: $fs, forkCommit: $fc, sharedPrefix: true,
+             primary: (($cexist.primary // {}) + {inheritedStages: []}),
+             challenger: (($cexist.challenger // {}) + {inheritedStages: $challengerInherited})
+           })
+       else . end
+     | .tasks[$issue].updated = (now | todate)' \
+    --arg issue "$primary_issue" \
+    --arg challenger "$challenger_key" \
+    --arg fs "$fork_stage" \
+    --arg fc "$fork_commit" \
+    --argjson challengerInherited "$inherited_stages_json" >/dev/null 2>&1 || true
+  return 0
+}
+
+# HOK-2811 (Arbiter P2.4a) — mirror of challenge_cancel_challenger_arm.
+#
+# Materialise a deferred (awaiting_fork) challenger arm at the primary's
+# current head commit. Called by the fork trigger after the primary's coding
+# stage has completed. Returns 0 only on full success; on failure the caller
+# is expected to leave the arm in `materializing` for the bounded_retry gate
+# to retry (or terminalise) on the next monitor tick.
+#
+# Steps (mirroring the cancel inventory):
+#   1. Read the primary's HEAD as the fork commit.
+#   2. Create branch task/<slug>-challenger + worktree at that commit.
+#   3. Copy the primary's feature dir into the challenger's, excluding review
+#      artifacts and transient markers.
+#   4. Stamp .planning-result.json and .coding-result.json with source=inherited.
+#   5. Stamp the fork descriptor onto both arms' intent files + state.
+#   6. Save the challenger's task-state entry at phase=review.
+#   7. Launch the review phase directly (same sequence as the coding→review
+#      transition in monitor_issue_state), so the arm is indistinguishable
+#      from a normally-transitioned task from that point on.
+#
+# Usage: challenge_materialize_challenger_arm <primary_issue> <primary_slug> \
+#   <arm_json> <primary_wt_dir> <primary_feature_dir> [base_branch]
+challenge_materialize_challenger_arm() {
+  local primary_issue="$1" primary_slug="$2" arm_json="$3"
+  local primary_wt_dir="$4" primary_feature_dir="$5"
+  local base_branch="${6:-${BASE_BRANCH:-main}}"
+
+  local arm_key arm_slug arm_branch varied_stage
+  local coder_model planner_model reviewer_model
+  local coder_agent planner_agent reviewer_agent
+  local plan_depth code_depth review_mode
+  arm_key=$(challenge_arm_read_field "$arm_json" '.key')
+  arm_slug=$(challenge_arm_read_field "$arm_json" '.slug')
+  arm_branch=$(challenge_arm_read_field "$arm_json" '.branch')
+  varied_stage=$(challenge_arm_read_field "$arm_json" '.variedStage')
+  coder_model=$(challenge_arm_read_field "$arm_json" '.models.coder')
+  planner_model=$(challenge_arm_read_field "$arm_json" '.models.planner')
+  reviewer_model=$(challenge_arm_read_field "$arm_json" '.models.reviewer')
+  coder_agent=$(challenge_arm_read_field "$arm_json" '.agents.coder')
+  planner_agent=$(challenge_arm_read_field "$arm_json" '.agents.planner')
+  reviewer_agent=$(challenge_arm_read_field "$arm_json" '.agents.reviewer')
+  plan_depth=$(challenge_arm_read_field "$arm_json" '.planDepth')
+  code_depth=$(challenge_arm_read_field "$arm_json" '.codeDepth')
+  review_mode=$(challenge_arm_read_field "$arm_json" '.reviewMode')
+  [[ -z "$review_mode" ]] && review_mode="static"
+
+  if [[ -z "$arm_key" || -z "$arm_slug" || -z "$arm_branch" ]]; then
+    log_error "  $primary_issue: materialise called with malformed arm record"
+    return 1
+  fi
+
+  local challenger_wt_dir="${WORKTREE_ROOT}/${arm_slug}"
+  local challenger_feature_dir="${challenger_wt_dir}/features/${arm_slug}"
+
+  # Step 1: fork commit — primary's HEAD after coding completed.
+  local fork_commit=""
+  fork_commit="$(git -C "$primary_wt_dir" rev-parse HEAD 2>/dev/null || echo "")"
+  if [[ -z "$fork_commit" ]]; then
+    log_error "  $primary_issue: cannot resolve fork commit from primary worktree $primary_wt_dir"
+    return 1
+  fi
+
+  # Guard: challenger's review must not already have run in this or a prior
+  # attempt (would indicate materialisation somehow already produced a review).
+  if [[ -f "$challenger_feature_dir/.review-result.json" ]]; then
+    log_warn "  $arm_key: refusing to materialise — .review-result.json already exists"
+    return 1
+  fi
+
+  # Step 2: branch + worktree. Tolerate a partial prior attempt where the
+  # branch exists at the fork commit — attach in that case.
+  local worktree_created="false"
+  if git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/$arm_branch" 2>/dev/null; then
+    local existing_sha
+    existing_sha="$(git -C "$REPO_DIR" rev-parse "$arm_branch" 2>/dev/null || echo "")"
+    if [[ "$existing_sha" != "$fork_commit" ]]; then
+      log_error "  $arm_key: branch $arm_branch already exists at $existing_sha, not at fork commit $fork_commit"
+      return 1
+    fi
+    if [[ ! -d "$challenger_wt_dir" ]]; then
+      if ! ensure_worktree "$arm_branch" "$challenger_wt_dir" "$REPO_DIR" >/dev/null 2>>"${MILL_LOG_FILE:-/dev/null}"; then
+        log_error "  $arm_key: ensure_worktree failed for $arm_branch"
+        return 1
+      fi
+    fi
+  else
+    if [[ -d "$challenger_wt_dir" ]]; then
+      log_error "  $arm_key: worktree $challenger_wt_dir exists without branch $arm_branch"
+      return 1
+    fi
+    if ! git -C "$REPO_DIR" worktree add -b "$arm_branch" "$challenger_wt_dir" "$fork_commit" >>"${MILL_LOG_FILE:-/dev/null}" 2>&1; then
+      log_error "  $arm_key: git worktree add failed at fork commit $fork_commit"
+      return 1
+    fi
+    worktree_created="true"
+  fi
+
+  # Step 2b: post-worktree seeding — mirror what launch_task's post-`worktree
+  # add` block does so the fresh challenger looks the same as any other task
+  # worktree. The .wavemill-config.local.json overlay is gitignored (won't come
+  # via `git worktree add`) and the reviewer's tooling won't see the operator's
+  # overrides without it; worktree_deps_ensure prefers CoW/symlink reuse of the
+  # primary's node_modules (fork commit ⇒ identical package.json + lockfile,
+  # so reuse is safe) and falls back to running the install command.
+  if [[ -f "$REPO_DIR/.wavemill-config.local.json" ]]; then
+    cp "$REPO_DIR/.wavemill-config.local.json" "$challenger_wt_dir/.wavemill-config.local.json" 2>/dev/null || \
+      log_warn "  $arm_key: copy .wavemill-config.local.json failed"
+  fi
+  if declare -F worktree_deps_ensure >/dev/null 2>&1; then
+    worktree_deps_ensure "$challenger_wt_dir" "$primary_wt_dir" "$arm_key" || \
+      log_warn "  $arm_key: dependency setup returned non-zero — review may fail when node_modules is required"
+  fi
+
+  # Step 3: feature-dir copy. Explicit exclusions keep the challenger from
+  # inheriting review artifacts, transient markers, or window state.
+  mkdir -p "$challenger_feature_dir" || {
+    log_error "  $arm_key: mkdir $challenger_feature_dir failed"
+    return 1
+  }
+  local artifact
+  for artifact in \
+    plan.md .plan-approved .phase-config.json \
+    .routing-complete .initial-route.json .post-expansion-route.json \
+    selected-task.json \
+    task-packet.md task-packet-header.md task-packet-details.md \
+    challenge-intent.json .challenge-intent.json \
+    .trace-context.json trace.jsonl routing.jsonl \
+    .planning-result.json .coding-result.json .coding-complete; do
+    if [[ -e "$primary_feature_dir/$artifact" ]]; then
+      cp -R "$primary_feature_dir/$artifact" "$challenger_feature_dir/$artifact" 2>/dev/null || \
+        log_warn "  $arm_key: copy $artifact failed"
+    fi
+  done
+
+  # Step 4: stamp inherited stage results. The files are jq-additive rewrites
+  # so schema validation (source: inherited allowed by
+  # shared/schemas/stage-result.schema.json) still passes.
+  local stage_file tmp
+  for stage_file in .planning-result.json .coding-result.json; do
+    local target="$challenger_feature_dir/$stage_file"
+    [[ -f "$target" ]] || continue
+    tmp="$(mktemp)" || continue
+    if jq '.source = "inherited"' "$target" > "$tmp" 2>/dev/null; then
+      mv "$tmp" "$target"
+    else
+      rm -f "$tmp"
+      log_warn "  $arm_key: failed to stamp source=inherited on $stage_file"
+    fi
+  done
+
+  # Step 5: fork descriptor onto both arms' intent files + state.
+  challenge_intent_stamp_fork_descriptor \
+    "$primary_issue" "$arm_key" \
+    "$primary_feature_dir" "$challenger_feature_dir" \
+    "$varied_stage" "$fork_commit" \
+    '["plan","implementation"]' || \
+    log_warn "  $arm_key: fork-descriptor stamp reported failure"
+
+  # Step 6: save the challenger's task-state entry at phase=review.
+  local linear_issue
+  linear_issue="$(get_linear_issue_id "$primary_issue" 2>/dev/null || echo "$primary_issue")"
+  save_task_state "$arm_key" "$arm_slug" "$arm_branch" "$challenger_wt_dir" \
+    "" "" "${planner_agent:-$coder_agent}" "$linear_issue" \
+    "true" "$primary_issue" "challenger" "$coder_model" \
+    "$planner_model" "$coder_model" "$reviewer_model" \
+    "$plan_depth" "$code_depth" "$review_mode" \
+    "$varied_stage" "review"
+
+  # Register in monitor arrays so subsequent monitor_issue_state ticks find
+  # the arm through the same lookup as any other task.
+  BRANCH_BY_ISSUE["$arm_key"]="$arm_branch"
+  SLUG_BY_ISSUE["$arm_key"]="$arm_slug"
+
+  # Mark that the challenger was successfully launched (mirrors the write
+  # done alongside save_task_state at the non-deferred site).
+  state_mutate "$STATE_FILE" \
+    '.tasks[$issue].challengerLaunched = true
+     | .tasks[$issue].updated = (now | todate)' \
+    --arg issue "$primary_issue" >/dev/null 2>&1 || true
+
+  # Step 7: launch the review phase directly. Same sequence as the
+  # coding→review transition in monitor_issue_state, so any downstream
+  # phase-machinery guards (bounded_retry, handle_phase_launch_result, etc.)
+  # see identical inputs.
+  local reviewer_launch_model="$reviewer_model" resolved_reviewer_agent=""
+  if declare -F agent_resolve_model >/dev/null 2>&1; then
+    reviewer_launch_model="$(agent_resolve_model "reviewer" "$reviewer_model" "$REPO_DIR" 2>/dev/null || echo "$reviewer_model")"
+  fi
+  if declare -F agent_resolve_from_model >/dev/null 2>&1; then
+    resolved_reviewer_agent="$(agent_resolve_from_model "$reviewer_launch_model" "review" 2>/dev/null || echo "")"
+  fi
+  [[ -n "$resolved_reviewer_agent" ]] || resolved_reviewer_agent="${reviewer_agent:-$coder_agent}"
+
+  set_task_phase "$arm_key" "review"
+  write_stage_result_with_history "$challenger_feature_dir" "review" "running" \
+    "$resolved_reviewer_agent" "$reviewer_launch_model"
+
+  local arm_title
+  arm_title=$(read_state_value "" --arg i "$primary_issue" '.tasks[$i].title // ""')
+  [[ -n "$arm_title" ]] || arm_title="$arm_slug"
+
+  local launch_rc=0
+  _run_phase_launch review launch_review_phase "$arm_key" "$arm_slug" "$arm_title" \
+    "$challenger_wt_dir" "$arm_branch" "$base_branch" \
+    "$reviewer_launch_model" "$resolved_reviewer_agent" "$review_mode" || launch_rc=$?
+  if (( launch_rc != 0 )); then
+    log_error "  $arm_key: review launch failed rc=$launch_rc — arm left for retry"
+    if [[ "$worktree_created" == "true" ]]; then
+      # A partial materialisation is retryable next tick — leave the worktree
+      # in place so step-2 tolerance attaches on the next attempt.
+      :
+    fi
+    return 1
+  fi
+
+  log "status" "  $primary_issue → challenger arm $arm_key materialised at $fork_commit"
+  log_route_lifecycle "challenge_arm_materialized" \
+    "issue=$primary_issue" \
+    "arm=$arm_key" \
+    "stage=$varied_stage" \
+    "fork_commit=$fork_commit"
+  return 0
+}
+
+# HOK-2811 (Arbiter P2.4a) — fork trigger; re-entrant and guarded.
+#
+# Called from monitor_issue_state on every tick where the primary is at
+# review-or-later. Idempotent by construction:
+#   - No pending arms → fast no-op.
+#   - Bounded-retry gate on bucket challenger-materialize, keyed to the
+#     primary's HEAD SHA (HOK-2924 invariant).
+#   - Checked-and-set awaiting_fork → materializing gives exactly-once
+#     semantics under race.
+#   - Materialisation failure resets to awaiting_fork so the next tick
+#     retries; ceiling terminalises to `exhausted` with a greppable sentinel
+#     and the primary continues solo.
+#
+# Usage: challenge_maybe_materialize_deferred_arms <primary_issue> \
+#   <primary_slug> <primary_feature_dir> <primary_wt_dir>
+challenge_maybe_materialize_deferred_arms() {
+  local primary_issue="$1" primary_slug="$2"
+  local primary_feature_dir="$3" primary_wt_dir="$4"
+  [[ -n "$primary_issue" ]] || return 0
+
+  # Fast no-op: only the primary drives materialisation.
+  local role
+  role="$(get_task_meta "$primary_issue" "challengeRole" 2>/dev/null || true)"
+  if [[ "$role" == "challenger" ]]; then
+    return 0
+  fi
+
+  local pending_json
+  pending_json="$(challenge_arms_list_pending "$primary_issue")"
+  local pending_count
+  pending_count=$(echo "$pending_json" | jq -r 'length' 2>/dev/null || echo "0")
+  [[ "$pending_count" =~ ^[0-9]+$ ]] || pending_count=0
+  (( pending_count > 0 )) || return 0
+
+  # Coding must be complete before we fork. The coding result file is the
+  # canonical marker; without a `completed` stage there is nothing worth
+  # inheriting.
+  local coding_status
+  coding_status="$(read_stage_status "$primary_feature_dir" "coding" 2>/dev/null || echo "")"
+  if [[ "$coding_status" != "completed" ]]; then
+    return 0
+  fi
+
+  local head
+  head="$(git -C "$primary_wt_dir" rev-parse HEAD 2>/dev/null || echo "")"
+
+  local limit="${WAVEMILL_CHALLENGE_MATERIALIZE_MAX_ATTEMPTS:-4}"
+  [[ "$limit" =~ ^[0-9]+$ ]] || limit=4
+
+  local arm_key arm_json
+  # Iterate pending arms — under happy-path scope there is exactly one.
+  local i=0
+  while (( i < pending_count )); do
+    arm_json=$(echo "$pending_json" | jq -c ".[$i]")
+    arm_key=$(echo "$arm_json" | jq -r '.key // ""')
+    i=$((i + 1))
+    [[ -n "$arm_key" ]] || continue
+
+    local bucket="challenger-materialize-$arm_key"
+    local disposition
+    disposition="$(bounded_retry_gate "$primary_feature_dir" "$bucket" "$head" "$limit")"
+    case "$disposition" in
+      backoff)
+        continue
+        ;;
+      exhausted)
+        local attempts reason
+        attempts=$(bounded_retry_count "$primary_feature_dir" "$bucket")
+        reason="Challenger arm materialisation exhausted after ${attempts} attempt(s) at head ${head:-unknown}"
+        if bounded_retry_mark_exhausted "$primary_feature_dir" "$bucket" "$reason"; then
+          log "status" "⛔ $primary_issue → challenger arm $arm_key materialisation exhausted after ${attempts} attempts"
+        fi
+        challenge_arms_set_state "$primary_issue" "$arm_key" "awaiting_fork" "exhausted" \
+          "$(jq -cn --arg r "$reason" '{exhaustReason: $r, exhaustedAt: (now | todate)}')" 2>/dev/null || true
+        log_route_lifecycle "challenge_arm_exhausted" \
+          "issue=$primary_issue" \
+          "arm=$arm_key" \
+          "reason=materialisation_ceiling"
+        continue
+        ;;
+      exhausted-quiet)
+        continue
+        ;;
+      proceed)
+        : # fall through
+        ;;
+      *)
+        continue
+        ;;
+    esac
+
+    # Exactly-once transition. If another writer beat us to `materializing`
+    # this call is a no-op for that arm.
+    if ! challenge_arms_set_state "$primary_issue" "$arm_key" "awaiting_fork" "materializing"; then
+      continue
+    fi
+    bounded_retry_increment "$primary_feature_dir" "$bucket" "$head" >/dev/null 2>&1 || true
+
+    local materialise_rc=0
+    challenge_materialize_challenger_arm \
+      "$primary_issue" "$primary_slug" "$arm_json" \
+      "$primary_wt_dir" "$primary_feature_dir" || materialise_rc=$?
+
+    if (( materialise_rc == 0 )); then
+      # Stamp materialisation success + the fork commit.
+      local fork_commit
+      fork_commit="$(git -C "$primary_wt_dir" rev-parse HEAD 2>/dev/null || echo "")"
+      challenge_arms_set_state "$primary_issue" "$arm_key" "materializing" "materialized" \
+        "$(jq -cn --arg fc "$fork_commit" '{materializedAt: (now | todate), forkCommit: $fc}')" 2>/dev/null || true
+      bounded_retry_clear "$primary_feature_dir" "$bucket"
+    else
+      # Retryable failure — reset the arm to awaiting_fork so the next tick
+      # re-enters through the gate.
+      challenge_arms_set_state "$primary_issue" "$arm_key" "materializing" "awaiting_fork" 2>/dev/null || true
+      log_warn "  $primary_issue: arm $arm_key materialisation failed rc=$materialise_rc — retrying next tick"
+    fi
+  done
   return 0
 }
 
@@ -10100,6 +10541,17 @@ cleanup_aborted_challenge_arm() {
     return 1
   }
 
+  # HOK-2811 (Arbiter P2.4a): if this primary has any pending (awaiting_fork)
+  # challenger arms, cancel them so pair accounting sees a deliberate
+  # no-comparison rather than a phantom one-armed pair. No worktree/branch
+  # exists for a pending arm, so there is nothing else to tear down.
+  local pending_arms_pre_cancel
+  pending_arms_pre_cancel=$(read_state_value "" --arg i "$issue" \
+    '((.tasks[$i].challengeArms // []) | map(select(.challengeArmState == "awaiting_fork")) | length)')
+  if [[ "$pending_arms_pre_cancel" =~ ^[0-9]+$ ]] && (( pending_arms_pre_cancel > 0 )); then
+    challenge_arms_cancel_pending "$issue" "$reason" || true
+  fi
+
   win="$issue-$slug"
   wt_dir=$(read_state_value "" --arg i "$issue" '.tasks[$i].worktree // empty')
   [[ -z "$wt_dir" ]] && wt_dir="${WORKTREE_ROOT}/${slug}"
@@ -12083,15 +12535,31 @@ EOF
       challenger_review_mode=$(echo "$challenge_plan" | jq -r '.entries[1].reviewMode // "static"' 2>/dev/null)
       challenge_intent=$(echo "$challenge_plan" | jq -c '.challengeIntent // null' 2>/dev/null || echo "null")
 
-      cp "$packet_file" "/tmp/${SESSION}-${challenger_key}-taskpacket.md" 2>/dev/null || true
-      cp "/tmp/${SESSION}-${issue}-issue.json" "/tmp/${SESSION}-${challenger_key}-issue.json" 2>/dev/null || true
-      cp "/tmp/${SESSION}-${issue}-taskpacket-details.md" "/tmp/${SESSION}-${challenger_key}-taskpacket-details.md" 2>/dev/null || true
-
-      should_launch_challenger="true"
+      # HOK-2811: Review-stage challenges defer the challenger to a fork trigger
+      # that fires after the primary's coding completes. Pre-fork the packet
+      # fan-out is skipped — the challenger's feature dir is copied wholesale
+      # from the primary at materialisation time, so /tmp packet mirrors would
+      # be stale by then anyway.
+      local defer_challenger="false"
+      if [[ "$challenge_stage" == "review" ]]; then
+        defer_challenger="true"
+      fi
+      if [[ "$defer_challenger" != "true" ]]; then
+        cp "$packet_file" "/tmp/${SESSION}-${challenger_key}-taskpacket.md" 2>/dev/null || true
+        cp "/tmp/${SESSION}-${issue}-issue.json" "/tmp/${SESSION}-${challenger_key}-issue.json" 2>/dev/null || true
+        cp "/tmp/${SESSION}-${issue}-taskpacket-details.md" "/tmp/${SESSION}-${challenger_key}-taskpacket-details.md" 2>/dev/null || true
+        should_launch_challenger="true"
+      else
+        should_launch_challenger="false"
+      fi
       LAST_LAUNCHED_SLOTS=1  # Challenger is free overhead, doesn't consume a slot
       primary_varied=$(echo "$challenge_plan" | jq -r '.entries[0].variedModel // .entries[0].model // empty' 2>/dev/null)
       challenger_varied=$(echo "$challenge_plan" | jq -r '.entries[1].variedModel // .entries[1].model // empty' 2>/dev/null)
-      log "status" "  Challenge selected (stage=${challenge_stage}: ${primary_varied} vs ${challenger_varied}) [challenger is extra pane]"
+      if [[ "$defer_challenger" == "true" ]]; then
+        log "status" "  Challenge selected (stage=${challenge_stage}: ${primary_varied} vs ${challenger_varied}) [challenger deferred until fork]"
+      else
+        log "status" "  Challenge selected (stage=${challenge_stage}: ${primary_varied} vs ${challenger_varied}) [challenger is extra pane]"
+      fi
       challenge_assert_arms_diverge "$issue" "$challenge_stage" "$primary_varied" "$challenger_varied" "$challenge_execution_intent"
     elif [[ -n "$challenge_reason" ]] && [[ "$challenge_reason" != "challenge_disabled" ]] && [[ "$challenge_reason" != "roll_not_selected" ]]; then
       log "debug" "  Challenge skipped ($challenge_reason), launching single-model run"
@@ -12296,20 +12764,45 @@ EOF
   fi
   save_task_state "$issue" "$slug" "$branch" "$wt_dir" "" "" "${planner_agent:-$task_agent_cmd}" "$linear_issue" "$effective_challenge" "$challenge_pair" "${challenge_role:-}" "$task_model" "$planner_model" "$task_model" "$reviewer_model" "$plan_depth" "$code_depth" "$review_mode" "${challenge_stage:-}"
   if [[ "$challenge_enabled_for_launch" == "true" ]]; then
-    save_task_state "$challenger_key" "$challenger_slug" "task/${challenger_slug}" "${WORKTREE_ROOT}/${challenger_slug}" "" "" "${challenger_planner_agent:-$challenger_agent}" "$linear_issue" "true" "$challenge_pair" "challenger" "$challenger_model" "$challenger_planner" "$challenger_model" "$challenger_reviewer" "$challenger_plan_depth" "$challenger_code_depth" "$challenger_review_mode" "$challenge_stage"
-    state_mutate "$STATE_FILE" '.tasks[$issue].challengeStage = $stage' --arg issue "$challenger_key" --arg stage "$challenge_stage" || true
-    state_mutate "$STATE_FILE" \
-      '.tasks[$issue].challengerLaunched = true
-       | .tasks[$issue].updated = (now | todate)' \
-      --arg issue "$issue" >/dev/null 2>&1 || true
-    # One writer, both arms, both surfaces.  The separate challengeIntent write
-    # that used to live here persisted a second, independently-built schema
-    # under a different key; resolve-challenge-task.ts now emits the canonical
-    # intent alone and persist_challenge_execution_intent is its only writer.
-    persist_challenge_execution_intent "$issue" "$challenger_key" \
-      "${WORKTREE_ROOT}/${slug}/features/${slug}" \
-      "$challenge_execution_intent" \
-      "${WORKTREE_ROOT}/${challenger_slug}/features/${challenger_slug}"
+    if [[ "${defer_challenger:-false}" == "true" ]]; then
+      # HOK-2811: Review-stage — record the challenger as a pending arm on the
+      # primary rather than creating a second live task. No worktree, window,
+      # or state-ledger entry exists for the challenger yet; the fork trigger
+      # (challenge_maybe_materialize_deferred_arms) will materialise it after
+      # the primary's coding completes. Skip challengerLaunched too so the
+      # existing "lone primary + challengerLaunched=true → orphan" accounting
+      # keeps counting pre-fork pairs correctly.
+      local pending_arm_json
+      pending_arm_json="$(challenge_arm_json_build \
+        "$challenger_key" "$challenger_slug" "task/${challenger_slug}" \
+        "challenger" "$challenge_stage" \
+        "$challenger_model" "$challenger_planner" "$challenger_reviewer" \
+        "$challenger_agent" "${challenger_planner_agent:-$challenger_agent}" "${challenger_reviewer_agent:-$challenger_agent}" \
+        "$challenger_plan_depth" "$challenger_code_depth" "$challenger_review_mode")"
+      challenge_arms_record_pending "$issue" "$pending_arm_json" || \
+        log_warn "  $issue: failed to record pending challenger arm $challenger_key"
+      # Persist the intent into the primary's feature dir only — the challenger
+      # dir doesn't exist yet. Materialisation copies the intent alongside the
+      # other feature-dir artifacts.
+      persist_challenge_execution_intent "$issue" "$challenger_key" \
+        "${WORKTREE_ROOT}/${slug}/features/${slug}" \
+        "$challenge_execution_intent"
+    else
+      save_task_state "$challenger_key" "$challenger_slug" "task/${challenger_slug}" "${WORKTREE_ROOT}/${challenger_slug}" "" "" "${challenger_planner_agent:-$challenger_agent}" "$linear_issue" "true" "$challenge_pair" "challenger" "$challenger_model" "$challenger_planner" "$challenger_model" "$challenger_reviewer" "$challenger_plan_depth" "$challenger_code_depth" "$challenger_review_mode" "$challenge_stage"
+      state_mutate "$STATE_FILE" '.tasks[$issue].challengeStage = $stage' --arg issue "$challenger_key" --arg stage "$challenge_stage" || true
+      state_mutate "$STATE_FILE" \
+        '.tasks[$issue].challengerLaunched = true
+         | .tasks[$issue].updated = (now | todate)' \
+        --arg issue "$issue" >/dev/null 2>&1 || true
+      # One writer, both arms, both surfaces.  The separate challengeIntent write
+      # that used to live here persisted a second, independently-built schema
+      # under a different key; resolve-challenge-task.ts now emits the canonical
+      # intent alone and persist_challenge_execution_intent is its only writer.
+      persist_challenge_execution_intent "$issue" "$challenger_key" \
+        "${WORKTREE_ROOT}/${slug}/features/${slug}" \
+        "$challenge_execution_intent" \
+        "${WORKTREE_ROOT}/${challenger_slug}/features/${challenger_slug}"
+    fi
   fi
   if [[ -n "${challenge_stage:-}" ]]; then
     state_mutate "$STATE_FILE" '.tasks[$issue].challengeStage = $stage' --arg issue "$issue" --arg stage "$challenge_stage" || true
@@ -14349,6 +14842,15 @@ monitor_issue_state() {
             fi
             set_window_attention_state "$WIN" "clear"
             log "status" "$ISSUE → Coding complete, launching review phase"
+
+            # HOK-2811 (Arbiter P2.4a): fork trigger. If this task has any
+            # deferred (awaiting_fork) challenge arms, materialise them now
+            # that coding has committed and the primary's review has
+            # dispatched. Guarded internally so a materialisation failure
+            # cannot block the primary — the primary's review has already
+            # been dispatched at this point.
+            challenge_maybe_materialize_deferred_arms "$ISSUE" "$SLUG" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" || true
+
             active_count=$((active_count + 1))
             return 0
           fi
@@ -14457,6 +14959,13 @@ monitor_issue_state() {
             set_window_attention_state "$WIN" "needs-user"
             return 0
           fi
+
+          # HOK-2811 (Arbiter P2.4a): re-entrant fork trigger site. The
+          # coding→review transition (above) is a one-shot; if materialisation
+          # failed transiently there, the bounded-retry gate needs another
+          # tick to retry. Guarded internally so cheap when there are no
+          # pending arms.
+          challenge_maybe_materialize_deferred_arms "$ISSUE" "$SLUG" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" || true
 
           local review_status
           local pr_number

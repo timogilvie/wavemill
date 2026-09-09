@@ -1,0 +1,349 @@
+import { describe, it } from 'node:test';
+import assert from 'node:assert';
+import type { SelectedAdjudicatedPair } from '../swap-test/pair-selection.ts';
+import type { StoredChallengeComparison } from '../challenge-comparison.ts';
+import type { EvalRecord } from '../eval-schema.ts';
+import { computeEvalDisagreement, renderEvalDisagreementReportMarkdown } from './eval-disagreement.ts';
+
+const makePair = (id: string, winner: 'primary' | 'challenger'): SelectedAdjudicatedPair => {
+  const record: StoredChallengeComparison = {
+    challengePairId: id,
+    primaryPrUrl: `https://github.com/owner/repo/pull/${parseInt(id) * 2}`,
+    challengerPrUrl: `https://github.com/owner/repo/pull/${parseInt(id) * 2 + 1}`,
+    winner,
+    timestamp: '2026-01-01T00:00:00Z',
+    dimensions: { planning: { primary: 0.8, challenger: 0.6 } },
+    rationale: 'test',
+    variedDimensions: {},
+    challengeType: undefined,
+  };
+  return { pairId: id, record };
+};
+
+const makeEvalRecord = (
+  prUrl: string,
+  score: number,
+  pairId?: string,
+  stage?: string,
+): EvalRecord => {
+  const record: EvalRecord = {
+    prUrl,
+    score,
+    challengePairId: pairId,
+    timestamp: '2026-01-01T00:00:00Z',
+  };
+
+  // Add stage scores to avoid fallback warnings in tests
+  if (stage) {
+    record.stageOutcomes = {
+      [stage]: { score },
+    };
+  }
+
+  return record;
+};
+
+describe('eval-disagreement', () => {
+  describe('computeEvalDisagreement', () => {
+    it('marks agree when comparison and eval winners match', () => {
+      const pair = makePair('1', 'primary');
+      const evalIndex = new Map([
+        [
+          `${pair.record.challengePairId}\u0000${pair.record.primaryPrUrl}`,
+          { record: makeEvalRecord(pair.record.primaryPrUrl, 0.8, pair.pairId), provenance: 'evals.jsonl' },
+        ],
+        [
+          `${pair.record.challengePairId}\u0000${pair.record.challengerPrUrl}`,
+          { record: makeEvalRecord(pair.record.challengerPrUrl, 0.6, pair.pairId), provenance: 'evals.jsonl' },
+        ],
+      ]);
+
+      const summary = computeEvalDisagreement({ pairs: [pair], evalIndex });
+
+      assert.strictEqual(summary.analyzed, 1);
+      assert.strictEqual(summary.overall.agreements, 1);
+      assert.strictEqual(summary.overall.disagreements, 0);
+      assert.strictEqual(summary.rows[0].agrees, true);
+    });
+
+    it('marks disagree when comparison and eval winners differ', () => {
+      const pair = makePair('2', 'primary');
+      const evalIndex = new Map([
+        [
+          `${pair.record.challengePairId}\u0000${pair.record.primaryPrUrl}`,
+          { record: makeEvalRecord(pair.record.primaryPrUrl, 0.6, pair.pairId), provenance: 'evals.jsonl' },
+        ],
+        [
+          `${pair.record.challengePairId}\u0000${pair.record.challengerPrUrl}`,
+          { record: makeEvalRecord(pair.record.challengerPrUrl, 0.8, pair.pairId), provenance: 'evals.jsonl' },
+        ],
+      ]);
+
+      const summary = computeEvalDisagreement({ pairs: [pair], evalIndex });
+
+      assert.strictEqual(summary.overall.disagreements, 1);
+      assert.strictEqual(summary.overall.agreements, 0);
+      assert.strictEqual(summary.rows[0].agrees, false);
+      assert.deepStrictEqual(summary.disagreementsByMarginCloseness.margin, { '0': 1 });
+    });
+
+    it('classifies ties as separate from disagreements', () => {
+      const pair = makePair('3', 'primary');
+      const evalIndex = new Map([
+        [
+          `${pair.record.challengePairId}\u0000${pair.record.primaryPrUrl}`,
+          { record: makeEvalRecord(pair.record.primaryPrUrl, 0.7, pair.pairId), provenance: 'evals.jsonl' },
+        ],
+        [
+          `${pair.record.challengePairId}\u0000${pair.record.challengerPrUrl}`,
+          { record: makeEvalRecord(pair.record.challengerPrUrl, 0.7, pair.pairId), provenance: 'evals.jsonl' },
+        ],
+      ]);
+
+      const summary = computeEvalDisagreement({ pairs: [pair], evalIndex });
+
+      assert.strictEqual(summary.ties, 1);
+      assert.strictEqual(summary.analyzed, 0);
+      assert.strictEqual(summary.overall.agreements, 0);
+      assert.strictEqual(summary.overall.disagreements, 0);
+      assert.strictEqual(summary.overall.disagreementCell.n, 0);
+      assert.strictEqual(summary.rows[0].classification, 'eval_tie');
+      assert.strictEqual(summary.rows[0].evalImpliedWinner, 'tie');
+      assert.strictEqual(summary.rows[0].agrees, undefined);
+    });
+
+    it('keeps fallback-scored pairs in the analyzed denominator', () => {
+      const pair = makePair('16', 'primary');
+      pair.record.challengeType = 'planner-only';
+      const evalIndex = new Map([
+        [
+          `${pair.record.challengePairId}\u0000${pair.record.primaryPrUrl}`,
+          { record: makeEvalRecord(pair.record.primaryPrUrl, 0.6, pair.pairId), provenance: 'evals.jsonl' },
+        ],
+        [
+          `${pair.record.challengePairId}\u0000${pair.record.challengerPrUrl}`,
+          { record: makeEvalRecord(pair.record.challengerPrUrl, 0.8, pair.pairId), provenance: 'evals.jsonl' },
+        ],
+      ]);
+
+      const summary = computeEvalDisagreement({ pairs: [pair], evalIndex });
+
+      assert.strictEqual(summary.analyzed, 1);
+      assert.strictEqual(summary.excluded.scoreFallback, 1);
+      assert.strictEqual(summary.fallback.scoreFallback, 1);
+      assert.strictEqual(summary.fallback.disagreements, 1);
+      assert.strictEqual(summary.overall.disagreements, 1);
+      assert.strictEqual(summary.rows[0].classification, 'excluded_score_fallback');
+      assert.strictEqual(summary.rows[0].agrees, false);
+    });
+
+    it('excludes pairs missing primary eval', () => {
+      const pair = makePair('4', 'primary');
+      const evalIndex = new Map([
+        [
+          `${pair.record.challengePairId}\u0000${pair.record.challengerPrUrl}`,
+          { record: makeEvalRecord(pair.record.challengerPrUrl, 0.6, pair.pairId), provenance: 'evals.jsonl' },
+        ],
+      ]);
+
+      const summary = computeEvalDisagreement({ pairs: [pair], evalIndex });
+
+      assert.strictEqual(summary.excluded.missingEvalPrimary, 1);
+      assert.strictEqual(summary.rows[0].classification, 'excluded_missing_eval_primary');
+    });
+
+    it('excludes pairs missing challenger eval', () => {
+      const pair = makePair('5', 'primary');
+      const evalIndex = new Map([
+        [
+          `${pair.record.challengePairId}\u0000${pair.record.primaryPrUrl}`,
+          { record: makeEvalRecord(pair.record.primaryPrUrl, 0.8, pair.pairId), provenance: 'evals.jsonl' },
+        ],
+      ]);
+
+      const summary = computeEvalDisagreement({ pairs: [pair], evalIndex });
+
+      assert.strictEqual(summary.excluded.missingEvalChallenger, 1);
+      assert.strictEqual(summary.rows[0].classification, 'excluded_missing_eval_challenger');
+    });
+
+    it('classifies eval closeness correctly', () => {
+      const pairs = [
+        makePair('6', 'primary'),
+        makePair('7', 'primary'),
+        makePair('8', 'primary'),
+        makePair('9', 'primary'),
+      ];
+
+      const evalIndex = new Map([
+        // Pair 6: delta 0.03 (lt_005)
+        [
+          `${pairs[0].record.challengePairId}\u0000${pairs[0].record.primaryPrUrl}`,
+          { record: makeEvalRecord(pairs[0].record.primaryPrUrl, 0.8, pairs[0].pairId), provenance: 'evals.jsonl' },
+        ],
+        [
+          `${pairs[0].record.challengePairId}\u0000${pairs[0].record.challengerPrUrl}`,
+          { record: makeEvalRecord(pairs[0].record.challengerPrUrl, 0.77, pairs[0].pairId), provenance: 'evals.jsonl' },
+        ],
+        // Pair 7: delta 0.10 (lt_015)
+        [
+          `${pairs[1].record.challengePairId}\u0000${pairs[1].record.primaryPrUrl}`,
+          { record: makeEvalRecord(pairs[1].record.primaryPrUrl, 0.8, pairs[1].pairId), provenance: 'evals.jsonl' },
+        ],
+        [
+          `${pairs[1].record.challengePairId}\u0000${pairs[1].record.challengerPrUrl}`,
+          { record: makeEvalRecord(pairs[1].record.challengerPrUrl, 0.70, pairs[1].pairId), provenance: 'evals.jsonl' },
+        ],
+        // Pair 8: delta 0.20 (lt_030)
+        [
+          `${pairs[2].record.challengePairId}\u0000${pairs[2].record.primaryPrUrl}`,
+          { record: makeEvalRecord(pairs[2].record.primaryPrUrl, 0.8, pairs[2].pairId), provenance: 'evals.jsonl' },
+        ],
+        [
+          `${pairs[2].record.challengePairId}\u0000${pairs[2].record.challengerPrUrl}`,
+          { record: makeEvalRecord(pairs[2].record.challengerPrUrl, 0.60, pairs[2].pairId), provenance: 'evals.jsonl' },
+        ],
+        // Pair 9: delta 0.40 (gte_030)
+        [
+          `${pairs[3].record.challengePairId}\u0000${pairs[3].record.primaryPrUrl}`,
+          { record: makeEvalRecord(pairs[3].record.primaryPrUrl, 0.8, pairs[3].pairId), provenance: 'evals.jsonl' },
+        ],
+        [
+          `${pairs[3].record.challengePairId}\u0000${pairs[3].record.challengerPrUrl}`,
+          { record: makeEvalRecord(pairs[3].record.challengerPrUrl, 0.40, pairs[3].pairId), provenance: 'evals.jsonl' },
+        ],
+      ]);
+
+      const summary = computeEvalDisagreement({ pairs, evalIndex });
+
+      assert.strictEqual(summary.rows[0].evalCloseness, 'lt_005');
+      assert.strictEqual(summary.rows[1].evalCloseness, 'lt_015');
+      assert.strictEqual(summary.rows[2].evalCloseness, 'lt_030');
+      assert.strictEqual(summary.rows[3].evalCloseness, 'gte_030');
+    });
+
+    it('stratifies disagreements by challenge type', () => {
+      const pair1 = makePair('10', 'primary');
+      pair1.record.challengeType = 'planner-only';
+
+      const pair2 = makePair('11', 'challenger');
+      pair2.record.challengeType = 'coder-only';
+
+      const evalIndex = new Map([
+        [
+          `${pair1.record.challengePairId}\u0000${pair1.record.primaryPrUrl}`,
+          { record: makeEvalRecord(pair1.record.primaryPrUrl, 0.8, pair1.pairId, 'plan'), provenance: 'evals.jsonl' },
+        ],
+        [
+          `${pair1.record.challengePairId}\u0000${pair1.record.challengerPrUrl}`,
+          { record: makeEvalRecord(pair1.record.challengerPrUrl, 0.6, pair1.pairId, 'plan'), provenance: 'evals.jsonl' },
+        ],
+        [
+          `${pair2.record.challengePairId}\u0000${pair2.record.primaryPrUrl}`,
+          { record: makeEvalRecord(pair2.record.primaryPrUrl, 0.8, pair2.pairId, 'implementation'), provenance: 'evals.jsonl' },
+        ],
+        [
+          `${pair2.record.challengePairId}\u0000${pair2.record.challengerPrUrl}`,
+          { record: makeEvalRecord(pair2.record.challengerPrUrl, 0.6, pair2.pairId, 'implementation'), provenance: 'evals.jsonl' },
+        ],
+      ]);
+
+      const summary = computeEvalDisagreement({ pairs: [pair1, pair2], evalIndex });
+
+      assert(summary.byChallengeType['planner-only']);
+      assert(summary.byChallengeType['coder-only']);
+    });
+
+    it('handles empty pair set', () => {
+      const summary = computeEvalDisagreement({ pairs: [], evalIndex: new Map() });
+
+      assert.strictEqual(summary.population, 0);
+      assert.strictEqual(summary.analyzed, 0);
+    });
+
+    it('marks unrecoverable challenge type as excludedFromStratifiedAnalysis', () => {
+      const pair = makePair('12', 'primary');
+      pair.record.challengeType = 'unrecoverable';
+
+      const evalIndex = new Map([
+        [
+          `${pair.record.challengePairId}\u0000${pair.record.primaryPrUrl}`,
+          { record: makeEvalRecord(pair.record.primaryPrUrl, 0.8, pair.pairId), provenance: 'evals.jsonl' },
+        ],
+        [
+          `${pair.record.challengePairId}\u0000${pair.record.challengerPrUrl}`,
+          { record: makeEvalRecord(pair.record.challengerPrUrl, 0.6, pair.pairId), provenance: 'evals.jsonl' },
+        ],
+      ]);
+
+      const summary = computeEvalDisagreement({ pairs: [pair], evalIndex });
+
+      assert.strictEqual(summary.rows[0].excludedFromStratifiedAnalysis, true);
+    });
+  });
+
+  describe('renderEvalDisagreementReportMarkdown', () => {
+    it('renders basic markdown report', () => {
+      const pair = makePair('13', 'primary');
+      const evalIndex = new Map([
+        [
+          `${pair.record.challengePairId}\u0000${pair.record.primaryPrUrl}`,
+          { record: makeEvalRecord(pair.record.primaryPrUrl, 0.8, pair.pairId), provenance: 'evals.jsonl' },
+        ],
+        [
+          `${pair.record.challengePairId}\u0000${pair.record.challengerPrUrl}`,
+          { record: makeEvalRecord(pair.record.challengerPrUrl, 0.6, pair.pairId), provenance: 'evals.jsonl' },
+        ],
+      ]);
+
+      const summary = computeEvalDisagreement({ pairs: [pair], evalIndex });
+      const markdown = renderEvalDisagreementReportMarkdown(summary);
+
+      assert(markdown.includes('Arbiter Probe C'));
+      assert(markdown.includes('Overall'));
+      assert(markdown.includes('Eval Score Closeness'));
+    });
+
+    it('renders margin distribution and disagreement pair listing', () => {
+      const pair = makePair('17', 'primary');
+      const evalIndex = new Map([
+        [
+          `${pair.record.challengePairId}\u0000${pair.record.primaryPrUrl}`,
+          { record: makeEvalRecord(pair.record.primaryPrUrl, 0.6, pair.pairId), provenance: 'evals.jsonl' },
+        ],
+        [
+          `${pair.record.challengePairId}\u0000${pair.record.challengerPrUrl}`,
+          { record: makeEvalRecord(pair.record.challengerPrUrl, 0.8, pair.pairId), provenance: 'evals.jsonl' },
+        ],
+      ]);
+
+      const summary = computeEvalDisagreement({ pairs: [pair], evalIndex });
+      const markdown = renderEvalDisagreementReportMarkdown(summary);
+
+      assert(markdown.includes('Comparison Judge Margin'));
+      assert(markdown.includes('Disagreement Pairs'));
+      assert(markdown.includes('| 17 |'));
+    });
+
+    it('renders exclusion counts when present', () => {
+      const pairs = [makePair('14', 'primary'), makePair('15', 'primary')];
+      const evalIndex = new Map([
+        [
+          `${pairs[0].record.challengePairId}\u0000${pairs[0].record.primaryPrUrl}`,
+          { record: makeEvalRecord(pairs[0].record.primaryPrUrl, 0.8, pairs[0].pairId), provenance: 'evals.jsonl' },
+        ],
+        [
+          `${pairs[0].record.challengePairId}\u0000${pairs[0].record.challengerPrUrl}`,
+          { record: makeEvalRecord(pairs[0].record.challengerPrUrl, 0.6, pairs[0].pairId), provenance: 'evals.jsonl' },
+        ],
+        // pairs[1] missing evals
+      ]);
+
+      const summary = computeEvalDisagreement({ pairs, evalIndex });
+      const markdown = renderEvalDisagreementReportMarkdown(summary);
+
+      assert(markdown.includes('Exclusions'));
+      assert(markdown.includes('Missing eval'));
+    });
+  });
+});
