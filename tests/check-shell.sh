@@ -522,7 +522,7 @@ else
       | grep -vE '^(try|catch|def|fromjson|add|rollout_path|thread_id|thread_row|updated_at|exits|setting|falling|select|strings|tostring|valid_dismissal_count)$' \
       | grep -vE '^(bad|internal|keeping|marking|monitor|rate|reduce|service|skipping|staying|timed|too|using|wavemill|waiting)$' \
       | grep -vE '^(advance|review)$' \
-      | grep -vE '^(not_eligible|routing_error)$' \
+      | grep -vE '^(not_eligible|routing_error|invalid_challenge)$' \
       | grep -vE '^(a|aborted|already|available|blocked_by_count|break|coding|cp|debug|elapsed|empty_queue|execute|file|fresh|gtimeout|heartbeat_epoch|i|id|launch|length|main|mapfile|missing|next|not|overloaded|plan|ready|required|reservation|slots|staleness|streak|the|they|timeout|todate|todateiso8601|tonumber|tracked|user)$' \
       | grep -vE '^(capabilities|const|import|throw)$')
 
