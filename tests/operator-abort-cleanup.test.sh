@@ -64,6 +64,11 @@ cleanup_file="$tmp/operator-abort-cleanup.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_pr_aware_cleanup_enabled"
   printf '\n'
+  printf '%s\n' 'WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT=".wavemill/observer-findings.jsonl"'
+  extract_function "$COMMON_SCRIPT" "wavemill_worktree_dirty_status"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_migrate_controller_observer_artifact"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_fetch_pr_terminal_evidence"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_record_pr_delivery_evidence"
@@ -71,6 +76,8 @@ cleanup_file="$tmp/operator-abort-cleanup.sh"
   extract_function "$COMMON_SCRIPT" "_wavemill_record_cleanup_decision"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "safe_remove_task_worktree_and_branch"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "monitor_deregister_terminal_task"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "remove_task_state"
   printf '\n'
