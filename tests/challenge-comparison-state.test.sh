@@ -38,6 +38,30 @@ extract_function_occurrence() {
   ' "$source_file"
 }
 
+extract_function_balanced() {
+  local source_file="$1"
+  local function_name="$2"
+  awk -v name="$function_name" '
+    function brace_delta(line, stripped, opens, closes) {
+      stripped = line
+      gsub(/"([^"\\]|\\.)*"/, "\"\"", stripped)
+      gsub(/\047([^\047\\]|\\.)*\047/, "\047\047", stripped)
+      opens = gsub(/\{/, "{", stripped)
+      closes = gsub(/\}/, "}", stripped)
+      return opens - closes
+    }
+    $0 ~ "^" name "\\(\\)[[:space:]]*\\{" {
+      capture = 1
+      depth = 0
+    }
+    capture {
+      print
+      depth += brace_delta($0)
+      if (depth == 0) exit
+    }
+  ' "$source_file"
+}
+
 TEST_TMP="$(mktemp -d)"
 trap 'rm -rf "$TEST_TMP"' EXIT
 
@@ -176,6 +200,55 @@ check_eq "challengeCompared survives canonical save_task_state" "true" "${RESULT
 check_eq "merge update still sets merged status" "merged" "${RESULTS[1]:-}"
 check_eq "comparison does not relaunch when already compared" "0" "${RESULTS[2]:-}"
 check_eq "active comparison job suppresses duplicate launch" "0" "${RESULTS[3]:-}"
+
+HANDLER_FILE="$TEST_TMP/challenge-comparison-handler.sh"
+extract_function_balanced "$MONITOR_SCRIPT_FILE" "handle_comparison_job_success" > "$HANDLER_FILE"
+cat > "$TEST_TMP/comparison-result.json" <<'JSON'
+{
+  "comparison": {
+    "winner": "primary",
+    "comparisonOutcome": "compared"
+  }
+}
+JSON
+
+handler_output="$(
+  HANDLER_FILE="$HANDLER_FILE" RESULT_FILE="$TEST_TMP/comparison-result.json" bash -lc '
+    set -u
+    source "$HANDLER_FILE"
+
+    CHALLENGE_AUTO_MERGE=true
+    WARN_OUTPUT=""
+    render_challenge_comparison_summary() { :; }
+    mark_challenge_invalid() { :; }
+    write_challenge_pair_state() { :; }
+    log() { :; }
+    log_warn() { WARN_OUTPUT="$*"; }
+    pr_state() { printf "CLOSED\n"; }
+    gh() { :; }
+    cleanup_completed_task() { return 1; }
+    get_task_meta() {
+      case "$2" in
+        challengeModel) printf "test-model\n" ;;
+        slug) printf "test-slug\n" ;;
+        pr) printf "123\n" ;;
+      esac
+    }
+
+    set +e
+    handle_comparison_job_success "HOK-TEST" "HOK-TEST" "HOK-TEST_c" "122" "123" "$RESULT_FILE"
+    rc=$?
+    set -e
+    printf "%s\n%s\n" "$rc" "$WARN_OUTPUT"
+  '
+)"
+mapfile -t HANDLER_RESULTS <<< "$handler_output"
+check_eq "losing-side cleanup failure does not fail comparison handler" "0" "${HANDLER_RESULTS[0]:-}"
+if [[ "${HANDLER_RESULTS[1]:-}" == *"losing-side cleanup deferred for HOK-TEST_c"* ]]; then
+  pass "losing-side cleanup failure is logged for later recovery"
+else
+  fail "losing-side cleanup failure is not logged for later recovery"
+fi
 
 echo ""
 echo "Passed: $PASS"
