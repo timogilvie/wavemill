@@ -7244,6 +7244,37 @@ ready_stage_pending_verdict() {
   jq -r '.artifacts.verdict // empty' "$result_file" 2>/dev/null || echo ""
 }
 
+# Typed Ready pending reason recorded by launch_ready_phase (HOK-2963).
+# Empty for CI and other untyped pending verdicts.
+ready_pending_reason() {
+  local state_dir="$1"
+  local result_file="$state_dir/.ready-result.json"
+
+  [[ -f "$result_file" ]] || { echo ""; return 0; }
+  jq -r '.artifacts.pendingReason // empty' "$result_file" 2>/dev/null || echo ""
+}
+
+# Whether the recorded Ready result says the implementation guards (CI, base,
+# metadata, dependencies, migration, risk) are green (HOK-2963).
+ready_implementation_ready() {
+  local state_dir="$1"
+  local result_file="$state_dir/.ready-result.json"
+
+  [[ -f "$result_file" ]] || { echo "false"; return 0; }
+  jq -r 'if (.artifacts.implementationReady // false) == true then "true" else "false" end' \
+    "$result_file" 2>/dev/null || echo "false"
+}
+
+# True when the recorded Ready wait is challenge eval/comparison work the
+# monitor should orchestrate outside the generic pending-ready budget.
+ready_pending_is_challenge_work() {
+  local state_dir="$1"
+  case "$(ready_pending_reason "$state_dir")" in
+    challenge-eval-pending|challenge-comparison-pending) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 READY_TRANSIENT_MAX_ATTEMPTS=6
 
 # Failed-ready re-check budget (HOK-2893). Operator env overrides survive the
@@ -8666,7 +8697,7 @@ launch_ready_phase() {
     ready_stderr_file=""
   }
   if [[ -n "$ready_stderr_file" ]]; then
-    if result=$(cd "$wt_dir" && npx tsx "$TOOLS_DIR/ready.ts" "$pr_number" --state-dir "$state_dir" 2>"$ready_stderr_file"); then
+    if result=$(cd "$wt_dir" && npx tsx "$TOOLS_DIR/ready.ts" "$pr_number" --state-dir "$state_dir" ${STATE_FILE:+--state-file "$STATE_FILE"} 2>"$ready_stderr_file"); then
       ready_rc=0
     else
       ready_rc=$?
@@ -8682,7 +8713,7 @@ launch_ready_phase() {
     fi
     rm -f "$ready_stderr_file"
   else
-    if result=$(cd "$wt_dir" && npx tsx "$TOOLS_DIR/ready.ts" "$pr_number" --state-dir "$state_dir" 2>/dev/null); then
+    if result=$(cd "$wt_dir" && npx tsx "$TOOLS_DIR/ready.ts" "$pr_number" --state-dir "$state_dir" ${STATE_FILE:+--state-file "$STATE_FILE"} 2>/dev/null); then
       ready_rc=0
     else
       ready_rc=$?
@@ -8910,6 +8941,48 @@ launch_ready_phase() {
 
   if [[ "$ready_rc" -eq 2 ]]; then
     local pending_artifacts_json prior_remediation_failures_json
+    local pending_reason implementation_ready challenge_diag_json
+    pending_reason=$(printf '%s' "$result" | jq -r '.pendingReason // empty' 2>/dev/null || echo "")
+
+    # Typed challenge waits (HOK-2963): the arm is implementation-ready and
+    # only eval/comparison orchestration is outstanding. Record the typed
+    # state, never log it as CI pending, and kick orchestration immediately
+    # so one monitor tick can launch the missing eval.
+    if [[ "$pending_reason" == "challenge-eval-pending" || "$pending_reason" == "challenge-comparison-pending" ]]; then
+      implementation_ready=$(printf '%s' "$result" | jq -r 'if (.implementationReady // false) == true then "true" else "false" end' 2>/dev/null || echo "false")
+      challenge_diag_json=$(printf '%s' "$result" | jq -c '.challenge // {}' 2>/dev/null || echo '{}')
+      pending_artifacts_json=$(jq -cn \
+        --arg merge_status "${merge_status:-UNKNOWN}" \
+        --argjson checks_run "${checks_run:-0}" \
+        --argjson checks_passed "${checks_passed:-0}" \
+        --argjson pr_number "${pr_number}" \
+        --arg pending_reason "$pending_reason" \
+        --argjson implementation_ready "$implementation_ready" \
+        --arg ready_head_sha "$ready_head_sha" \
+        --arg ci_conclusion "$ci_conclusion" \
+        --argjson challenge "$challenge_diag_json" \
+        '{
+          type: "ready",
+          verdict: "pending",
+          checksRun: $checks_run,
+          checksPassed: $checks_passed,
+          mergeConflict: $merge_status,
+          prNumber: $pr_number,
+          pendingReason: $pending_reason,
+          implementationReady: $implementation_ready,
+          readyHeadSha: $ready_head_sha,
+          ciConclusion: $ci_conclusion,
+          challenge: $challenge
+        } | with_entries(select(.value != ""))')
+      pending_artifacts_json=$(merge_queue_enrich_ready_artifacts "$state_dir" "$pending_artifacts_json" "candidate-progress")
+      write_stage_result "$state_dir" "ready" "running" "$current_agent" "$current_model" \
+        "Implementation-ready; waiting on ${pending_reason} for PR #$pr_number" \
+        "$pending_artifacts_json"
+      log "$pending_log_level" "  $issue: PR #$pr_number implementation-ready; waiting on ${pending_reason} (CI ${ci_conclusion:-unknown})"
+      handle_challenge_pending_ready "$issue" "$pr_number" "$branch" "$slug" "$state_dir" || true
+      return 4
+    fi
+
     prior_remediation_failures_json=$(jq -c '.artifacts.remediationFailures // []' "$ready_result_file" 2>/dev/null || echo '[]')
     pending_artifacts_json=$(jq -cn \
       --arg merge_status "${merge_status:-UNKNOWN}" \
@@ -9412,6 +9485,17 @@ handle_comparison_job_success() {
   challenger_model=$(get_task_meta "$challenger_key" "challengeModel")
   render_challenge_comparison_summary "$pair_id" "$primary_pr" "$challenger_pr" "$primary_model" "$challenger_model" "$result_path"
 
+  # A settled comparison is structured progress for both arms (HOK-2963):
+  # drop a one-shot marker in each arm's feature dir so a challenge-pending
+  # Ready phase re-runs promptly against the fresh record.
+  local settled_key settled_slug settled_dir
+  for settled_key in "$primary_key" "$challenger_key"; do
+    settled_slug=$(get_task_meta "$settled_key" "slug")
+    [[ -n "$settled_slug" && -n "${WORKTREE_ROOT:-}" ]] || continue
+    settled_dir="${WORKTREE_ROOT}/${settled_slug}/features/${settled_slug}"
+    [[ -d "$settled_dir" ]] && : > "$settled_dir/.challenge-comparison-settled"
+  done
+
   if [[ "$(jq -r '.invalidChallenge // .comparison.invalidChallenge // false' "$result_path" 2>/dev/null || echo "false")" == "true" ]]; then
     local invalid_reason invalid_details
     invalid_reason=$(jq -r '.comparison.invalidChallengeReason // "invalid_challenge"' "$result_path" 2>/dev/null || echo "invalid_challenge")
@@ -9601,6 +9685,115 @@ poll_challenge_jobs() {
   done < <(echo "$poll_json" | jq -c '.unsettled[]?')
 }
 
+# Compact fingerprint of a pair's orchestration state (HOK-2963). A change
+# between two snapshots inside one tick means structured progress happened:
+# an eval/comparison job was launched or settled, an eval flag flipped, or
+# the pair state advanced. Mere polling leaves it unchanged.
+challenge_orchestration_fingerprint() {
+  local pair_id="$1"
+  read_state_value "" --arg pair "$pair_id" '
+    [
+      (.tasks // {} | to_entries[]
+        | select((.value.challengePairId // "") == $pair)
+        | "task:\(.key):\(.value.evalCompleted // false):\(.value.evalFailed // false):\(.value.comparisonState // ""):\(.value.challengeCompared // false):\(.value.evalRunning.startedAt // ""):\(.value.comparisonRunning.startedAt // "")"),
+      (.jobs // {} | to_entries[]
+        | select((.value.pairId // "") == $pair)
+        | "job:\(.key):\(.value.status // "")")
+    ] | sort | join("|")'
+}
+
+# Whether one challenge arm has valid eval evidence at its current PR head
+# (HOK-2963). Prints:
+#   current - a valid current-head eval record exists
+#   stale   - the selector positively refused (missing/old-head/invalid)
+#   unknown - the check itself failed (fail-safe: treat as current)
+challenge_eval_current_head_state() {
+  local issue="$1" pr="$2"
+  local pair_id side out ok
+  pair_id=$(get_task_meta "$issue" "challengePairId")
+  side=$(get_task_meta "$issue" "challengeRole")
+  [[ -z "$side" ]] && side="primary"
+  if [[ -z "$pair_id" || -z "$pr" ]]; then
+    printf 'unknown\n'
+    return 0
+  fi
+  if ! out=$(npx tsx "$TOOLS_DIR/challenge-eval-evidence.ts" \
+      --pair-id "$pair_id" --side "$side" --pr "$pr" --repo-dir "$REPO_DIR" 2>/dev/null); then
+    printf 'unknown\n'
+    return 0
+  fi
+  ok=$(jq -r '.ok // empty' <<<"$out" 2>/dev/null || echo "")
+  case "$ok" in
+    true) printf 'current\n' ;;
+    false) printf 'stale\n' ;;
+    *) printf 'unknown\n' ;;
+  esac
+}
+
+# Orchestrate challenge eval/comparison for an implementation-ready arm whose
+# Ready verdict is a typed challenge wait (HOK-2963). Never consumes the
+# generic pending-ready-recheck budget. Returns:
+#   0 - orchestration active (launchable or running work; keep window active)
+#   1 - terminal manual state (operator attention required)
+#   2 - a comparison settled since Ready last ran; caller should re-run Ready
+#       to canonicalize the final verdict
+#   3 - not orchestration work (no pair id, or the pair is already compared);
+#       caller falls back to the generic pending-ready handling
+handle_challenge_pending_ready() {
+  local issue="$1" pr="$2" branch="$3" slug="$4" state_dir="$5"
+  local pair_id primary_key comparison_state progress_before progress_after
+  pair_id=$(get_task_meta "$issue" "challengePairId")
+  [[ -n "$pair_id" ]] || return 3
+  primary_key="$pair_id"
+
+  # A settled comparison is structured progress: consume the marker, clear
+  # stale same-head pending-ready markers, and ask for a Ready re-run.
+  if [[ -f "$state_dir/.challenge-comparison-settled" ]]; then
+    rm -f "$state_dir/.challenge-comparison-settled"
+    bounded_retry_clear "$state_dir" "pending-ready-recheck"
+    marker_clear "$state_dir/.needs-attention"
+    return 2
+  fi
+
+  comparison_state=$(read_state_value "" --arg i "$primary_key" '.tasks[$i].comparisonState // empty')
+  case "$comparison_state" in
+    manual_comparison_needed|invalid_challenge)
+      return 1
+      ;;
+  esac
+
+  # Already-compared pairs have no launchable eval/comparison work left; a
+  # typed pending here means the recorded comparison is stale for the current
+  # heads. Route back to the bounded generic pending-ready path instead of
+  # looping here forever.
+  if [[ "$(read_state_value "false" --arg i "$primary_key" '.tasks[$i].challengeCompared // false')" == "true" ]]; then
+    return 3
+  fi
+
+  progress_before=$(challenge_orchestration_fingerprint "$pair_id")
+  maybe_run_challenge_eval "$issue" "$pr" "$branch" "$slug"
+  maybe_run_challenge_comparison "$issue"
+  progress_after=$(challenge_orchestration_fingerprint "$pair_id")
+
+  if [[ "$progress_before" != "$progress_after" ]]; then
+    # Structured same-head progress (job launched, eval persisted, pair state
+    # advanced) clears stale attention and pending-ready exhaustion markers;
+    # mere polling never does (HOK-2963).
+    bounded_retry_clear "$state_dir" "pending-ready-recheck"
+    marker_clear "$state_dir/.needs-attention"
+  fi
+
+  # Terminal states can be reached inside this very tick (e.g. hard-failure
+  # retries exhausted); surface them immediately instead of one tick late.
+  comparison_state=$(read_state_value "" --arg i "$primary_key" '.tasks[$i].comparisonState // empty')
+  case "$comparison_state" in
+    manual_comparison_needed|invalid_challenge)
+      return 1
+      ;;
+  esac
+  return 0
+}
+
 maybe_run_challenge_eval() {
   local issue="$1" pr="$2" branch="$3" slug="$4"
   local eval_completed eval_failed eval_hard_retry_count eval_hard_retry_max
@@ -9613,7 +9806,21 @@ maybe_run_challenge_eval() {
     return 0
   fi
   eval_completed=$(read_state_value "false" --arg i "$issue" '.tasks[$i].evalCompleted // false')
-  [[ "$eval_completed" == "true" ]] && return 0
+  # evalCompleted alone is not sufficient: it can be stale relative to a new
+  # PR head (HOK-2963). Only skip when a valid current-head record exists;
+  # 'unknown' (check infrastructure failed) fails safe by trusting the flag.
+  local eval_head_state=""
+  if [[ "$eval_completed" == "true" ]]; then
+    eval_head_state=$(challenge_eval_current_head_state "$issue" "$pr")
+    if [[ "$eval_head_state" != "stale" ]]; then
+      return 0
+    fi
+    log "status" "  📊 challenge eval for $issue is stale for the current PR head - relaunching (HOK-2963)"
+    state_mutate "$STATE_FILE" '
+      .tasks[$issue].evalCompleted = false
+      | .tasks[$issue].updated = (now | todateiso8601)
+    ' --arg issue "$issue" >/dev/null || true
+  fi
 
   pair_id=$(get_task_meta "$issue" "challengePairId")
   if [[ "$(read_state_value "false" --arg i "$issue" '.tasks[$i].challengeCompared // false')" == "true" ]]; then
@@ -9679,8 +9886,18 @@ maybe_run_challenge_eval() {
   challenge_stage=$(get_task_meta "$issue" "challengeStage")
   job_id=$(build_eval_job_id "$issue" "$side" "$pr")
   job_status=$(read_job_state_value "$job_id" "" '.jobs[$id].status // empty')
-  if [[ "$job_status" == "running" || "$job_status" == "succeeded" ]]; then
+  if [[ "$job_status" == "running" ]]; then
     return 0
+  fi
+  if [[ "$job_status" == "succeeded" ]]; then
+    # A succeeded job for this PR can predate the current head (HOK-2963):
+    # only suppress relaunch while valid current-head evidence exists.
+    # launch_tracked_job upserts by job id, replacing the stale entry.
+    [[ -z "$eval_head_state" ]] && eval_head_state=$(challenge_eval_current_head_state "$issue" "$pr")
+    if [[ "$eval_head_state" != "stale" ]]; then
+      return 0
+    fi
+    log "status" "  📊 succeeded eval job for $issue predates the current PR head - relaunching (HOK-2963)"
   fi
 
   job_dir=$(challenge_job_dir)
@@ -9834,6 +10051,24 @@ should_skip_post_completion_eval() {
   return 1
 }
 
+# Print the selected current-head eval evidence identity for a pair as
+# "<primaryEvalId>:<challengerEvalId>" using `compare-prs --check-only`
+# (HOK-2963). Returns non-zero when either arm's selector refuses, i.e. a
+# comparison launch would be built on missing or stale eval evidence.
+challenge_comparison_check_only_evidence() {
+  local linear_issue="$1" pair_id="$2" primary_pr="$3" challenger_pr="$4" primary_model="$5" challenger_model="$6"
+  local out
+  if ! out=$(npx tsx "$TOOLS_DIR/compare-prs.ts" \
+      --issue "$linear_issue" --pair-id "$pair_id" \
+      --primary-pr "$primary_pr" --challenger-pr "$challenger_pr" \
+      --primary-model "$primary_model" --challenger-model "$challenger_model" \
+      --repo-dir "$REPO_DIR" --check-only 2>/dev/null); then
+    return 1
+  fi
+  jq -r '((.primary.evalId // "") + ":" + (.challenger.evalId // ""))' <<<"$out" 2>/dev/null || printf ':\n'
+  return 0
+}
+
 maybe_run_challenge_comparison() {
   local issue="$1"
   local pair_id primary_key challenger_key compared primary_pr challenger_pr primary_eval challenger_eval linear_issue primary_model challenger_model
@@ -9841,6 +10076,7 @@ maybe_run_challenge_comparison() {
   local primary_planner primary_reviewer primary_plan_depth primary_code_depth primary_review_mode
   local challenger_planner challenger_reviewer challenger_plan_depth challenger_code_depth challenger_review_mode
   local job_id job_status job_reason pairing_repaired job_dir log_path result_path pid
+  local current_evidence stored_evidence
   pair_id=$(get_task_meta "$issue" "challengePairId")
   [[ -z "$pair_id" ]] && return 0
   primary_key="$pair_id"
@@ -9859,16 +10095,22 @@ maybe_run_challenge_comparison() {
   primary_eval=$(read_state_value "false" --arg i "$primary_key" '.tasks[$i].evalCompleted // false')
   challenger_eval=$(read_state_value "false" --arg i "$challenger_key" '.tasks[$i].evalCompleted // false')
   [[ -z "$primary_pr" || -z "$challenger_pr" || "$primary_eval" != "true" || "$challenger_eval" != "true" ]] && return 0
+  linear_issue=$(get_linear_issue_id "$primary_key")
+  primary_model=$(get_task_meta "$primary_key" "challengeModel")
+  challenger_model=$(get_task_meta "$challenger_key" "challengeModel")
+  current_evidence=""
   job_id=$(build_comparison_job_id "$pair_id" "$primary_pr" "$challenger_pr")
   job_status=$(read_job_state_value "$job_id" "" '.jobs[$id].status // empty')
   if [[ -n "$job_status" ]]; then
     # A prior comparison already ran. By default that's terminal: succeeded /
     # running need no action, and genuinely failing comparisons (LLM errors,
     # invalid scores) must not relaunch every poll and burn repeated LLM calls.
-    #
-    # The one exception is a failure caused by drifted challenge pairing
-    # metadata ("Missing eval records"): the eval scores exist but the
-    # challenger record is filed under the wrong pair id. We attempt a single
+    if [[ "$job_status" == "running" || "$job_status" == "succeeded" ]]; then
+      return 0
+    fi
+    # Exception 1: a failure caused by drifted challenge pairing metadata
+    # ("Missing eval records"): the eval scores exist but the challenger
+    # record is filed under the wrong pair id. We attempt a single
     # self-healing repair + retry, gated by a one-shot flag so a pair can never
     # loop here. launch_tracked_job upserts by job id, overwriting the failed
     # entry when we proceed below.
@@ -9880,13 +10122,32 @@ maybe_run_challenge_comparison() {
         log_warn "challenge pairing repair failed for $pair_id (continuing to retry comparison)"
       state_mutate "$STATE_FILE" '.tasks[$i].comparisonPairingRepaired = true' --arg i "$primary_key" >/dev/null || true
     else
+      # Exception 2 (HOK-2963): a failed/timed-out job whose selected eval
+      # evidence differs from the current selection belongs to an older head
+      # and must not block the new-head comparison. Identical evidence stays
+      # terminal exactly as before.
+      if ! current_evidence=$(challenge_comparison_check_only_evidence \
+          "$linear_issue" "$pair_id" "$primary_pr" "$challenger_pr" "$primary_model" "$challenger_model"); then
+        return 0
+      fi
+      stored_evidence=$(read_state_value "" --arg i "$primary_key" '.tasks[$i].comparisonLaunchEvidence // empty')
+      if [[ -z "$current_evidence" || "$current_evidence" == "$stored_evidence" ]]; then
+        return 0
+      fi
+      log "status" "  ⚖ $pair_id prior comparison job used superseded eval evidence — relaunching for current heads"
+    fi
+  fi
+
+  # Current-head evidence gate (HOK-2963): never launch a comparison unless
+  # both arms' selectors accept eval evidence at the live PR heads.
+  if [[ -z "$current_evidence" ]]; then
+    if ! current_evidence=$(challenge_comparison_check_only_evidence \
+        "$linear_issue" "$pair_id" "$primary_pr" "$challenger_pr" "$primary_model" "$challenger_model"); then
+      log "debug" "challenge comparison launch deferred for $pair_id: current-head eval evidence not ready"
       return 0
     fi
   fi
 
-  linear_issue=$(get_linear_issue_id "$primary_key")
-  primary_model=$(get_task_meta "$primary_key" "challengeModel")
-  challenger_model=$(get_task_meta "$challenger_key" "challengeModel")
   primary_slug=$(get_task_meta "$primary_key" "slug")
   challenger_slug=$(get_task_meta "$challenger_key" "slug")
   primary_worktree=$(get_task_meta "$primary_key" "worktree")
@@ -9919,6 +10180,13 @@ maybe_run_challenge_comparison() {
     log_warn "challenge comparison launch skipped for $pair_id: failed to persist running state"
     return 1
   fi
+  # Persist the selected eval-evidence identity for this launch (HOK-2963):
+  # duplicate ticks at the same evidence reuse the job, while a failed job at
+  # superseded evidence can be relaunched for the new heads.
+  state_mutate "$STATE_FILE" '
+    .tasks[$i].comparisonLaunchEvidence = $evidence
+    | .tasks[$i].updated = (now | todateiso8601)
+  ' --arg i "$primary_key" --arg evidence "${current_evidence:-}" >/dev/null || true
   npx tsx "$TOOLS_DIR/compare-prs.ts" \
     --issue "$linear_issue" --pair-id "$pair_id" \
     --primary-pr "$primary_pr" --challenger-pr "$challenger_pr" \
@@ -15057,6 +15325,7 @@ monitor_issue_state() {
     local launch_head current_head title launch_rc _conflict_cleared
     local recheck_disposition recheck_attempt recheck_limit
     local pending_recheck_disposition pending_recheck_limit pending_recheck_reason
+    local challenge_pending_rc
     _conflict_cleared=false
     resolved_phase=$(resolve_phase "$FEATURE_DIR")
     if [[ "$resolved_phase" == "aborted" ]]; then
@@ -15341,6 +15610,56 @@ monitor_issue_state() {
       set_window_attention_state "$WIN" "clear"
       active_count=$((active_count + 1))
       return 0
+    fi
+
+    # Implementation-ready challenge arms with a typed eval/comparison wait
+    # (HOK-2963) are orchestrated here and never consume the generic
+    # pending-ready-recheck budget while their work is launchable or running.
+    if [[ "$ready_status" == "running" ]] && is_challenge_task "$ISSUE" && ready_pending_is_challenge_work "$ready_state_dir_path"; then
+      handle_challenge_pending_ready "$ISSUE" "$PR" "$BRANCH" "$SLUG" "$ready_state_dir_path" \
+        && challenge_pending_rc=0 || challenge_pending_rc=$?
+      if [[ "$challenge_pending_rc" -eq 1 ]]; then
+        set_window_attention_state "$WIN" "needs-user"
+        return 0
+      fi
+      if [[ "$challenge_pending_rc" -eq 2 ]]; then
+        # A comparison settled since Ready last ran: re-run Ready now so the
+        # fresh record can canonicalize the final verdict. This bypass is
+        # bounded by the one-shot settled marker the handler just consumed.
+        title=$(read_state_value "" --arg i "$ISSUE" '.tasks[$i].title // ""')
+        if [[ -z "$title" ]]; then
+          issue_json=$(cat "/tmp/${SESSION}-${ISSUE}-issue.json" 2>/dev/null || echo "{}")
+          title=$(echo "$issue_json" | jq -r '.title // "Task"' 2>/dev/null || echo "Task")
+        fi
+        if launch_ready_phase "$ISSUE" "$SLUG" "$title" "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$PR"; then
+          launch_rc=0
+        else
+          launch_rc=$?
+        fi
+        if [[ "$launch_rc" -eq 2 ]] && check_stage_aborted "$FEATURE_DIR"; then
+          log_task "status" "$ISSUE" "⛔ $ISSUE → Workflow aborted during post-comparison ready re-check"
+          set_task_phase "$ISSUE" "aborted"
+          set_window_attention_state "$WIN" "needs-user"
+          return 0
+        fi
+        if [[ "$launch_rc" -eq 0 || "$launch_rc" -eq 3 || "$launch_rc" -eq 4 || "$launch_rc" -eq 5 || "$launch_rc" -eq 6 ]]; then
+          [[ "$launch_rc" -eq 0 ]] && log "status" "$ISSUE → Ready checks completed after challenge comparison (PR #$PR)"
+          set_window_attention_state "$WIN" "clear"
+          active_count=$((active_count + 1))
+          return 0
+        fi
+        log "status" "⚠ $ISSUE → Ready re-check failed after challenge comparison (PR #$PR)"
+        set_window_attention_state "$WIN" "needs-user"
+        return 0
+      fi
+      if [[ "$challenge_pending_rc" -eq 0 ]]; then
+        set_window_attention_state "$WIN" "clear"
+        active_count=$((active_count + 1))
+        return 0
+      fi
+      # rc 3: no launchable orchestration work (e.g. the pair is already
+      # compared but stale at the current heads) — fall through to the
+      # bounded generic pending-ready re-check below.
     fi
 
     # Re-run ready checks when CI is still computing (verdict=pending) OR when

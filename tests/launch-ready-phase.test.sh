@@ -113,6 +113,10 @@ extract_function "$MONITOR_SCRIPT_FILE" "reconciliation_review_invalidated_by_co
 extract_function "$MONITOR_SCRIPT_FILE" "reconciliation_mark_review_stale" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "_launch_ready_remediation_attempt" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "launch_ready_watchdog_remediation" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "ready_pending_reason" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "ready_implementation_ready" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "ready_pending_is_challenge_work" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "handle_challenge_pending_ready" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "launch_ready_phase" >> "$LAUNCH_FUNC_FILE"
 
 if [[ ! -s "$LAUNCH_FUNC_FILE" ]]; then
@@ -312,10 +316,15 @@ EOF
     AGENT_VALIDATE_CALLS=0
     READY_PROMPT_CALLS=0
     READY_PROMPT_SUMMARY=""
+    CHALLENGE_ORCH_CALLS=0
     READY_LABEL_COUNT_FILE="$CASE_DIR/ready-label-calls"
     printf "%s\n" "0" > "$READY_LABEL_COUNT_FILE"
 
     _ensure_window_exists() { :; }
+    handle_challenge_pending_ready() {
+      CHALLENGE_ORCH_CALLS=$((CHALLENGE_ORCH_CALLS + 1))
+      return 0
+    }
     ready_state_dir() { printf "%s\n" "$STATE_DIR"; }
     read_state_value() {
       local filter="${5:-}${4:-}"
@@ -524,6 +533,14 @@ EOF
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"pending\",\"checks\":[{\"name\":\"ci-status\",\"status\":\"pending\",\"message\":\"2 CI check(s) still running\",\"details\":{\"pendingChecks\":[{\"name\":\"Shell and Unit Tests\",\"state\":\"QUEUED\"},{\"name\":\"Check Lifecycle Paths\",\"state\":\"QUEUED\"}],\"totalChecks\":2}}],\"timestamp\":\"2026-04-16T14:12:00.431Z\",\"summary\":\"CI checks still in progress - will retry\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"UNSTABLE\",\"attempts\":1}}"
           return 2
           ;;
+        challenge_eval_pending)
+          printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"pending\",\"pendingReason\":\"challenge-eval-pending\",\"pendingReasons\":[\"challenge-eval-pending\"],\"implementationReady\":true,\"headSha\":\"abc123\",\"ciConclusion\":\"pass\",\"challenge\":{\"pairId\":\"HOK-1300\",\"side\":\"challenger\",\"outcome\":\"eval-pending\",\"primaryEval\":{\"ok\":true,\"evalId\":\"eval-1\"},\"challengerEval\":{\"ok\":false,\"refusalReason\":\"no_pair_records\"},\"staleComparisons\":0},\"checks\":[{\"name\":\"ci-status\",\"status\":\"pass\",\"message\":\"All CI checks passing\",\"details\":{\"totalChecks\":3}},{\"name\":\"ready-policy\",\"status\":\"pending\",\"message\":\"Challenge pair HOK-1300 is waiting on current-head eval evidence.\",\"details\":{\"pendingReason\":\"challenge-eval-pending\",\"implementationReady\":true}}],\"timestamp\":\"2026-04-16T14:12:00.431Z\",\"summary\":\"Challenge pair HOK-1300 is waiting on current-head eval evidence.\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"BLOCKED\",\"attempts\":1}}"
+          return 2
+          ;;
+        challenge_comparison_pending)
+          printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"pending\",\"pendingReason\":\"challenge-comparison-pending\",\"pendingReasons\":[\"challenge-comparison-pending\"],\"implementationReady\":true,\"headSha\":\"abc123\",\"ciConclusion\":\"pass\",\"challenge\":{\"pairId\":\"HOK-1300\",\"side\":\"primary\",\"outcome\":\"comparison-pending\",\"primaryEval\":{\"ok\":true,\"evalId\":\"eval-1\"},\"challengerEval\":{\"ok\":true,\"evalId\":\"eval-2\"},\"staleComparisons\":0},\"checks\":[{\"name\":\"ci-status\",\"status\":\"pass\",\"message\":\"All CI checks passing\",\"details\":{\"totalChecks\":3}},{\"name\":\"ready-policy\",\"status\":\"pending\",\"message\":\"Challenge pair HOK-1300 has current-head evals but no comparison yet.\",\"details\":{\"pendingReason\":\"challenge-comparison-pending\",\"implementationReady\":true}}],\"timestamp\":\"2026-04-16T14:12:00.431Z\",\"summary\":\"Challenge pair HOK-1300 has current-head evals but no comparison yet.\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"BLOCKED\",\"attempts\":1}}"
+          return 2
+          ;;
         pass_after_remediation|pass_clears_recheck|dismissed_blockers_pass)
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"pass\",\"checks\":[{\"name\":\"ci-status\",\"status\":\"pass\",\"message\":\"All CI checks passing\",\"details\":{\"totalChecks\":3}}],\"timestamp\":\"2026-04-16T14:12:00.431Z\",\"summary\":\"All checks passed\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"attempts\":1}}"
           return 0
@@ -619,6 +636,7 @@ EOF
     printf "rc=%s\nstage_calls=%s\nattention_calls=%s\nattention_count=%s\nlaunch_calls=%s\nreview_launch_calls=%s\nreview_launch_model=%s\nprepare_recovery_calls=%s\nagent_validate_calls=%s\nprompt_calls=%s\nerror_count=%s\nlogs=%s\nwarn_logs=%s\nerror_payload=%s\ndebug_file=%s\ndebug_lines=%s\ndebug_payload=%s\nconflict_attention_head=%s\nconflict_attention_reported=%s\nconflict_detected=%s\nneeds_attention=%s\ntransient_attention=%s\ntransient_count=%s\ninfra_retry_count=%s\nready_result_payload=%s\n" \
       "$rc" "$stage_summary" "$attention_summary" "$attention_count" "$LAUNCH_AGENT_CALLS" "$REVIEW_LAUNCH_CALLS" "${REVIEW_LAUNCH_MODEL:-}" "$PREPARE_RECOVERY_CALLS" "$AGENT_VALIDATE_CALLS" "$READY_PROMPT_CALLS" "$error_count" "$LOG_OUTPUT" "$LOG_WARN_OUTPUT" "$LOG_ERROR_OUTPUT" "$DEBUG_FILE" "$debug_line_count" "$debug_payload" "$conflict_attention_head" "$conflict_attention_reported" "$conflict_detected" "$needs_attention" "$transient_attention" "$transient_count" "$infra_retry_count" "$ready_result_payload"
     printf "ready_label_calls=%s\n" "$ready_label_calls"
+    printf "challenge_orch_calls=%s\n" "$CHALLENGE_ORCH_CALLS"
     printf "prompt_summary=%s\n" "$READY_PROMPT_SUMMARY"
     printf "phase_used=%s\n" "$LAUNCH_AGENT_PHASE"
     remediation_retry_count="$(cat "$STATE_DIR/.retry-ready-remediation-count" 2>/dev/null || echo "")"
@@ -1005,6 +1023,39 @@ check_contains "pending re-check logs launch at debug level" "$output" "logs=deb
 check_contains "pending re-check logs retry at debug level" "$output" "debug   CI checks pending for HOK-1300 (PR #304) - will retry"
 check_not_contains "pending re-check does not log launch at info level" "$output" "info   HOK-1300: Launching ready phase (PR #304)"
 check_not_contains "pending re-check does not log retry at info level" "$output" "info   CI checks pending for HOK-1300 (PR #304) - will retry"
+
+echo "=== Challenge Typed Pending (HOK-2963) ==="
+
+# REQ-F1/F2: green, reviewed, mergeable challenge PR with a missing
+# current-head eval writes a typed running result, launches orchestration in
+# the same tick, and never logs the wait as CI pending.
+output="$(run_launch_case challenge_eval_pending)"
+check_contains "challenge eval pending returns retry code" "$output" "rc=4"
+check_contains "challenge eval pending writes running stage result" "$output" "|ready|running|"
+check_contains "challenge eval pending records typed reason" "$output" "\"pendingReason\":\"challenge-eval-pending\""
+check_contains "challenge eval pending records implementation readiness" "$output" "\"implementationReady\":true"
+check_contains "challenge eval pending records CI conclusion" "$output" "\"ciConclusion\":\"pass\""
+check_contains "challenge eval pending records challenge diagnostics" "$output" "\"pairId\":\"HOK-1300\""
+check_contains "challenge eval pending notes the typed wait" "$output" "Implementation-ready; waiting on challenge-eval-pending for PR #304"
+check_contains "challenge eval pending logs the typed wait" "$output" "PR #304 implementation-ready; waiting on challenge-eval-pending (CI pass)"
+check_not_contains "challenge eval pending never logs CI pending" "$output" "CI checks pending"
+check_contains "challenge eval pending kicks orchestration once" "$output" "challenge_orch_calls=1"
+check_contains "challenge eval pending skips attention file" "$output" "attention_count=0"
+check_contains "challenge eval pending emits no errors" "$output" "error_count=0"
+
+output="$(run_launch_case challenge_comparison_pending)"
+check_contains "challenge comparison pending returns retry code" "$output" "rc=4"
+check_contains "challenge comparison pending records typed reason" "$output" "\"pendingReason\":\"challenge-comparison-pending\""
+check_contains "challenge comparison pending logs the typed wait" "$output" "PR #304 implementation-ready; waiting on challenge-comparison-pending (CI pass)"
+check_not_contains "challenge comparison pending never logs CI pending" "$output" "CI checks pending"
+check_contains "challenge comparison pending kicks orchestration once" "$output" "challenge_orch_calls=1"
+
+# Existing untyped CI-pending behavior must keep its logs and never invoke
+# challenge orchestration (REQ-F7).
+output="$(run_launch_case pending)"
+check_contains "untyped pending keeps CI pending log" "$output" "CI checks pending for HOK-1300 (PR #304) - will retry"
+check_contains "untyped pending does not kick challenge orchestration" "$output" "challenge_orch_calls=0"
+check_not_contains "untyped pending records no typed reason" "$output" "\"pendingReason\""
 
 output="$(run_launch_case cross_pr_revert_blocked)"
 check_contains "cross-pr revert block returns failure" "$output" "rc=1"
@@ -1559,6 +1610,382 @@ check_contains "head advance without attempts keeps review valid" "$output" "no_
 check_contains "reconciliation commit invalidates review" "$output" "attempt_new_head_rc=0"
 check_contains "stale review is recorded" "$output" "stale_status=stale"
 check_contains "ready gate refuses stale review" "$output" "gate_after_stale_rc=1"
+
+echo "=== Challenge Pending Orchestration Handler (HOK-2963) ==="
+
+run_challenge_pending_case() {
+  local test_case="$1"
+  local case_dir="$TEST_TMP/challenge-pending-$test_case"
+  rm -rf "$case_dir"
+  mkdir -p "$case_dir"
+
+  CASE_DIR="$case_dir" LAUNCH_FUNC_FILE="$LAUNCH_FUNC_FILE" COMMON_SCRIPT="$COMMON_SCRIPT" TEST_CASE="$test_case" bash -lc '
+    set -euo pipefail
+    source "$COMMON_SCRIPT"
+    source "$LAUNCH_FUNC_FILE"
+
+    STATE_DIR="$CASE_DIR/feature/ready"
+    mkdir -p "$STATE_DIR"
+
+    EVAL_CALLS=0
+    COMPARISON_CALLS=0
+    ATTENTION_CALLS=0
+    FP_FILE="$CASE_DIR/fingerprint"
+    printf "%s\n" "fp-initial" > "$FP_FILE"
+
+    get_task_meta() {
+      local field="$2"
+      if [[ "$field" == "challengePairId" ]]; then
+        case "$TEST_CASE" in
+          no_pair) printf "\n" ;;
+          *) printf "%s\n" "HOK-1300" ;;
+        esac
+        return 0
+      fi
+      printf "\n"
+    }
+    read_state_value() {
+      local filter="${*: -1}"
+      if [[ "$filter" == *"comparisonState"* ]]; then
+        case "$TEST_CASE" in
+          manual_state) printf "%s\n" "manual_comparison_needed" ;;
+          invalid_state) printf "%s\n" "invalid_challenge" ;;
+          terminal_after_tick)
+            if (( EVAL_CALLS > 0 )); then
+              printf "%s\n" "manual_comparison_needed"
+            else
+              printf "\n"
+            fi
+            ;;
+          *) printf "\n" ;;
+        esac
+        return 0
+      fi
+      if [[ "$filter" == *"challengeCompared"* ]]; then
+        case "$TEST_CASE" in
+          already_compared) printf "%s\n" "true" ;;
+          *) printf "%s\n" "false" ;;
+        esac
+        return 0
+      fi
+      printf "\n"
+    }
+    challenge_orchestration_fingerprint() { cat "$FP_FILE"; }
+    maybe_run_challenge_eval() {
+      EVAL_CALLS=$((EVAL_CALLS + 1))
+      case "$TEST_CASE" in
+        progress|terminal_after_tick) printf "%s\n" "fp-progress" > "$FP_FILE" ;;
+      esac
+    }
+    maybe_run_challenge_comparison() { COMPARISON_CALLS=$((COMPARISON_CALLS + 1)); }
+    write_ready_attention_file() {
+      ATTENTION_CALLS=$((ATTENTION_CALLS + 1))
+      printf "%s\n" "$2" > "$1/.needs-attention"
+    }
+    log() { :; }
+    log_warn() { :; }
+
+    case "$TEST_CASE" in
+      settled_marker|no_progress|already_compared)
+        printf "%s\n" "2" > "$STATE_DIR/.retry-pending-ready-recheck-count"
+        : > "$STATE_DIR/.retry-pending-ready-recheck-exhausted"
+        printf "%s\n" "stale attention" > "$STATE_DIR/.needs-attention"
+        ;;
+      progress)
+        printf "%s\n" "3" > "$STATE_DIR/.retry-pending-ready-recheck-count"
+        : > "$STATE_DIR/.retry-pending-ready-recheck-exhausted"
+        printf "%s\n" "stale attention" > "$STATE_DIR/.needs-attention"
+        ;;
+    esac
+    [[ "$TEST_CASE" == "settled_marker" ]] && : > "$STATE_DIR/.challenge-comparison-settled"
+
+    rc=0
+    handle_challenge_pending_ready "HOK-1300" "304" "task/fix-failing-ci-tests" "fix-failing-ci-tests" "$STATE_DIR" || rc=$?
+
+    marker="absent"
+    [[ -f "$STATE_DIR/.challenge-comparison-settled" ]] && marker="present"
+    attention="absent"
+    [[ -f "$STATE_DIR/.needs-attention" ]] && attention="present"
+    exhausted="absent"
+    [[ -f "$STATE_DIR/.retry-pending-ready-recheck-exhausted" ]] && exhausted="present"
+    recheck_count="$(cat "$STATE_DIR/.retry-pending-ready-recheck-count" 2>/dev/null || echo "")"
+    printf "rc=%s eval_calls=%s comparison_calls=%s marker=%s attention=%s exhausted=%s recheck_count=%s attention_writes=%s\n" \
+      "$rc" "$EVAL_CALLS" "$COMPARISON_CALLS" "$marker" "$attention" "$exhausted" "$recheck_count" "$ATTENTION_CALLS"
+  ' 2>&1
+}
+
+# A settled comparison is one-shot structured progress: consume the marker,
+# clear the generic budget markers, and request an immediate Ready re-run.
+output="$(run_challenge_pending_case settled_marker)"
+check_contains "settled marker requests ready re-run" "$output" "rc=2"
+check_contains "settled marker is consumed" "$output" "marker=absent"
+check_contains "settled marker clears stale attention" "$output" "attention=absent"
+check_contains "settled marker clears exhaustion sentinel" "$output" "exhausted=absent"
+check_contains "settled marker clears generic recheck budget" "$output" "recheck_count="
+check_contains "settled marker skips orchestration this tick" "$output" "eval_calls=0"
+
+# Terminal manual states surface operator attention instead of looping.
+output="$(run_challenge_pending_case manual_state)"
+check_contains "manual comparison state reports terminal" "$output" "rc=1"
+check_contains "manual comparison state skips orchestration" "$output" "eval_calls=0 comparison_calls=0"
+
+output="$(run_challenge_pending_case invalid_state)"
+check_contains "invalid challenge state reports terminal" "$output" "rc=1"
+
+# An already-compared pair with a typed pending verdict has no launchable
+# work: route back to the bounded generic pending path (rc=3), untouched.
+output="$(run_challenge_pending_case already_compared)"
+check_contains "already compared falls back to generic path" "$output" "rc=3"
+check_contains "already compared launches nothing" "$output" "eval_calls=0 comparison_calls=0"
+check_contains "already compared keeps generic budget intact" "$output" "recheck_count=2"
+check_contains "already compared keeps attention intact" "$output" "attention=present"
+
+# Structured same-head progress clears stale attention and exhaustion.
+output="$(run_challenge_pending_case progress)"
+check_contains "progress keeps orchestrating" "$output" "rc=0"
+check_contains "progress runs eval orchestration once" "$output" "eval_calls=1 comparison_calls=1"
+check_contains "progress clears stale attention" "$output" "attention=absent"
+check_contains "progress clears exhaustion sentinel" "$output" "exhausted=absent"
+check_contains "progress clears generic recheck budget" "$output" "recheck_count="
+
+# Mere polling (no state change) must not clear operator markers.
+output="$(run_challenge_pending_case no_progress)"
+check_contains "quiet tick stays active" "$output" "rc=0"
+check_contains "quiet tick keeps attention" "$output" "attention=present"
+check_contains "quiet tick keeps exhaustion sentinel" "$output" "exhausted=present"
+check_contains "quiet tick keeps generic budget" "$output" "recheck_count=2"
+
+# A terminal state reached inside the tick surfaces immediately.
+output="$(run_challenge_pending_case terminal_after_tick)"
+check_contains "terminal reached in tick reports terminal" "$output" "rc=1"
+check_contains "terminal reached in tick still orchestrated" "$output" "eval_calls=1"
+
+# Missing pair identity is not orchestration work.
+output="$(run_challenge_pending_case no_pair)"
+check_contains "missing pair id falls back to generic path" "$output" "rc=3"
+
+echo "=== #1328/#1329 Deadlock Fixture (HOK-2963) ==="
+
+# End-to-end regression for the HOK-2934 incident: two reviewed, green,
+# mergeable challenge arms; the primary has a current-head eval, the
+# challenger has none. Driving the REAL orchestration handler with the REAL
+# eval/comparison launchers must launch exactly one challenger eval before
+# Ready ever completes, deduplicate while the job runs, then launch exactly
+# one comparison once both evals exist.
+run_deadlock_fixture() {
+  local case_dir="$TEST_TMP/deadlock-fixture"
+  rm -rf "$case_dir"
+  mkdir -p "$case_dir"
+
+  local func_file="$case_dir/functions.sh"
+  cat "$REPO_DIR/shared/lib/transient-marker.sh" > "$func_file"
+  for fn in \
+    sanitize_job_token \
+    challenge_job_dir \
+    build_eval_job_id \
+    build_comparison_job_id \
+    read_job_state_value \
+    launch_tracked_job \
+    challenge_eval_current_head_state \
+    post_merge_eval_timeout_seconds \
+    maybe_run_challenge_eval \
+    challenge_comparison_check_only_evidence \
+    maybe_run_challenge_comparison \
+    challenge_orchestration_fingerprint \
+    handle_challenge_pending_ready
+  do
+    extract_function "$MONITOR_SCRIPT_FILE" "$fn" >> "$func_file"
+    printf '\n' >> "$func_file"
+  done
+  awk '/^mark_challenge_eval_running\(\) \{/,/^\}/' "$MONITOR_SCRIPT_FILE" >> "$func_file"
+  printf '\n' >> "$func_file"
+  awk '/^mark_challenge_comparison_running\(\) \{/,/^\}/' "$MONITOR_SCRIPT_FILE" >> "$func_file"
+
+  CASE_DIR="$case_dir" FUNC_FILE="$func_file" COMMON_SCRIPT="$COMMON_SCRIPT" bash -lc '
+    set -euo pipefail
+    source "$COMMON_SCRIPT"
+    source "$FUNC_FILE"
+
+    SESSION="deadlock-fixture-test"
+    STATE_FILE="$CASE_DIR/state.json"
+    REPO_DIR="$CASE_DIR/repo"
+    WORKTREE_ROOT="$CASE_DIR/worktrees"
+    TOOLS_DIR="$CASE_DIR/tools"
+    AGENT_CMD="codex"
+    EVAL_LAUNCH_FILE="$CASE_DIR/eval-launches"
+    COMPARISON_LAUNCH_FILE="$CASE_DIR/comparison-launches"
+    : > "$EVAL_LAUNCH_FILE"
+    : > "$COMPARISON_LAUNCH_FILE"
+    mkdir -p "$REPO_DIR" "$WORKTREE_ROOT/hok-1329/features/hok-1329" "$TOOLS_DIR"
+    STATE_DIR="$WORKTREE_ROOT/hok-1329/features/hok-1329"
+
+    log() { :; }
+    log_warn() { :; }
+    get_linear_issue_id() { printf "%s\n" "$1"; }
+    wavemill_load_config() { printf "%s\n" "{}"; }
+    read_state_value() {
+      local default="${1:-}"
+      shift || true
+      local expr="${*: -1}"
+      local jq_args=()
+      if (( $# > 1 )); then
+        jq_args=("${@:1:$#-1}")
+      fi
+      local result=""
+      if result=$(jq -r "${jq_args[@]}" "$expr" "$STATE_FILE" 2>/dev/null); then
+        :
+      else
+        result=""
+      fi
+      if [[ -z "$result" || "$result" == "null" ]]; then
+        printf "%s\n" "$default"
+      else
+        printf "%s\n" "$result"
+      fi
+    }
+    get_task_meta() {
+      jq -r --arg issue "$1" --arg field "$2" ".tasks[\$issue][\$field] // empty" "$STATE_FILE"
+    }
+    npx() {
+      if [[ "$*" == *"challenge-eval-evidence.ts"* ]]; then
+        printf "%s\n" "{\"ok\":true,\"evalId\":\"eval-primary\",\"evaluatedPrHeadSha\":\"headA\"}"
+        return 0
+      fi
+      if [[ "$*" == *"job-tracker.ts"* ]]; then
+        return 0
+      fi
+      if [[ "$*" == *"run-eval-hook.ts"* ]]; then
+        printf "launched\n" >> "$EVAL_LAUNCH_FILE"
+        return 0
+      fi
+      if [[ "$*" == *"compare-prs.ts"* && "$*" == *"--check-only"* ]]; then
+        printf "%s\n" "{\"pairId\":\"HOK-1328\",\"hasRequiredEvalRecords\":true,\"primary\":{\"evalId\":\"eval-primary\"},\"challenger\":{\"evalId\":\"eval-challenger\"}}"
+        return 0
+      fi
+      if [[ "$*" == *"compare-prs.ts"* ]]; then
+        printf "launched\n" >> "$COMPARISON_LAUNCH_FILE"
+        return 0
+      fi
+      return 0
+    }
+
+    cat > "$STATE_FILE" <<JSON
+{
+  "tasks": {
+    "HOK-1328": {
+      "slug": "hok-1328",
+      "branch": "task/hok-1328",
+      "worktree": "$WORKTREE_ROOT/hok-1328",
+      "pr": "1328",
+      "status": "ready",
+      "agent": "codex",
+      "phase": "ready",
+      "evalCompleted": true,
+      "evalFailed": false,
+      "challengeCompared": false,
+      "challenge": true,
+      "challengePairId": "HOK-1328",
+      "challengeRole": "primary",
+      "challengeModel": "model-a"
+    },
+    "HOK-1328_c": {
+      "slug": "hok-1329",
+      "branch": "task/hok-1329",
+      "worktree": "$WORKTREE_ROOT/hok-1329",
+      "pr": "1329",
+      "status": "ready",
+      "agent": "codex",
+      "phase": "ready",
+      "evalCompleted": false,
+      "evalFailed": false,
+      "challengeCompared": false,
+      "challenge": true,
+      "challengePairId": "HOK-1328",
+      "challengeRole": "challenger",
+      "challengeModel": "model-b"
+    }
+  },
+  "jobs": {}
+}
+JSON
+
+    printf "%s\n" "2" > "$STATE_DIR/.retry-pending-ready-recheck-count"
+    : > "$STATE_DIR/.retry-pending-ready-recheck-exhausted"
+    printf "%s\n" "stale attention" > "$STATE_DIR/.needs-attention"
+
+    # Tick 1 (challenger arm, Ready reported challenge-eval-pending): exactly
+    # one challenger eval launches; no comparison is possible yet.
+    rc1=0
+    handle_challenge_pending_ready "HOK-1328_c" "1329" "task/hok-1329" "hok-1329" "$STATE_DIR" || rc1=$?
+    wait || true
+    tick1_evals=$(grep -c launched "$EVAL_LAUNCH_FILE" || true)
+    tick1_comparisons=$(grep -c launched "$COMPARISON_LAUNCH_FILE" || true)
+    tick1_attention="absent"
+    [[ -f "$STATE_DIR/.needs-attention" ]] && tick1_attention="present"
+    tick1_exhausted="absent"
+    [[ -f "$STATE_DIR/.retry-pending-ready-recheck-exhausted" ]] && tick1_exhausted="present"
+
+    # Tick 2: the eval job is now registered as running; no duplicate launch.
+    jq --arg id "eval-HOK-1328_c-challenger-1329" \
+      ".jobs = {(\$id): {id: \$id, status: \"running\", pairId: \"HOK-1328\"}}" \
+      "$STATE_FILE" > "$STATE_FILE.tmp"
+    mv "$STATE_FILE.tmp" "$STATE_FILE"
+    rc2=0
+    handle_challenge_pending_ready "HOK-1328_c" "1329" "task/hok-1329" "hok-1329" "$STATE_DIR" || rc2=$?
+    wait || true
+    tick2_evals=$(grep -c launched "$EVAL_LAUNCH_FILE" || true)
+
+    # Tick 3: challenger eval persisted; exactly one comparison launches.
+    jq ".tasks[\"HOK-1328_c\"].evalCompleted = true
+        | .tasks[\"HOK-1328_c\"] |= del(.evalRunning)
+        | .jobs[\"eval-HOK-1328_c-challenger-1329\"].status = \"succeeded\"" \
+      "$STATE_FILE" > "$STATE_FILE.tmp"
+    mv "$STATE_FILE.tmp" "$STATE_FILE"
+    rc3=0
+    handle_challenge_pending_ready "HOK-1328_c" "1329" "task/hok-1329" "hok-1329" "$STATE_DIR" || rc3=$?
+    wait || true
+    tick3_evals=$(grep -c launched "$EVAL_LAUNCH_FILE" || true)
+    tick3_comparisons=$(grep -c launched "$COMPARISON_LAUNCH_FILE" || true)
+    launch_evidence=$(jq -r ".tasks[\"HOK-1328\"].comparisonLaunchEvidence // empty" "$STATE_FILE")
+
+    # Tick 4: the comparison job is registered; duplicate ticks reuse it.
+    jq --arg id "comparison-HOK-1328-1328-1329" \
+      ".jobs[\$id] = {id: \$id, status: \"running\", pairId: \"HOK-1328\"}" \
+      "$STATE_FILE" > "$STATE_FILE.tmp"
+    mv "$STATE_FILE.tmp" "$STATE_FILE"
+    rc4=0
+    handle_challenge_pending_ready "HOK-1328_c" "1329" "task/hok-1329" "hok-1329" "$STATE_DIR" || rc4=$?
+    wait || true
+    tick4_comparisons=$(grep -c launched "$COMPARISON_LAUNCH_FILE" || true)
+
+    # Tick 5: comparison settled - the settled marker requests a Ready re-run.
+    : > "$STATE_DIR/.challenge-comparison-settled"
+    rc5=0
+    handle_challenge_pending_ready "HOK-1328_c" "1329" "task/hok-1329" "hok-1329" "$STATE_DIR" || rc5=$?
+    marker="absent"
+    [[ -f "$STATE_DIR/.challenge-comparison-settled" ]] && marker="present"
+
+    printf "rc1=%s rc2=%s rc3=%s rc4=%s rc5=%s\n" "$rc1" "$rc2" "$rc3" "$rc4" "$rc5"
+    printf "tick1_evals=%s tick1_comparisons=%s tick1_attention=%s tick1_exhausted=%s\n" \
+      "$tick1_evals" "$tick1_comparisons" "$tick1_attention" "$tick1_exhausted"
+    printf "tick2_evals=%s\n" "$tick2_evals"
+    printf "tick3_evals=%s tick3_comparisons=%s launch_evidence=%s\n" \
+      "$tick3_evals" "$tick3_comparisons" "$launch_evidence"
+    printf "tick4_comparisons=%s marker_after_settle=%s\n" "$tick4_comparisons" "$marker"
+  ' 2>&1
+}
+
+output="$(run_deadlock_fixture)"
+check_contains "deadlock tick1 launches exactly one challenger eval" "$output" "tick1_evals=1"
+check_contains "deadlock tick1 launches no comparison" "$output" "tick1_comparisons=0"
+check_contains "deadlock tick1 stays active" "$output" "rc1=0 rc2=0 rc3=0 rc4=0 rc5=2"
+check_contains "deadlock tick1 clears stale attention on progress" "$output" "tick1_attention=absent"
+check_contains "deadlock tick1 clears pending-ready exhaustion on progress" "$output" "tick1_exhausted=absent"
+check_contains "deadlock tick2 does not duplicate the running eval" "$output" "tick2_evals=1"
+check_contains "deadlock tick3 launches exactly one comparison" "$output" "tick3_evals=1 tick3_comparisons=1"
+check_contains "deadlock tick3 records launch evidence" "$output" "launch_evidence=eval-primary:eval-challenger"
+check_contains "deadlock tick4 reuses the running comparison job" "$output" "tick4_comparisons=1"
+check_contains "deadlock settled marker is consumed" "$output" "marker_after_settle=absent"
 
 echo ""
 echo "--- Results: $PASS passed, $FAIL failed ---"

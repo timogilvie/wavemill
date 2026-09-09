@@ -85,6 +85,7 @@ for fn in \
   read_job_state_value:1:monitor \
   launch_tracked_job:1:monitor \
   post_merge_eval_timeout_seconds:1:monitor \
+  challenge_eval_current_head_state:1:monitor \
   maybe_run_challenge_eval:1:monitor
 do
   IFS=: read -r name occurrence source <<<"$fn"
