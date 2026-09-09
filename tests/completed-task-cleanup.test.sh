@@ -104,6 +104,13 @@ CLEANUP_FILE="$TEST_TMP/cleanup_completed_task.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "_wavemill_record_cleanup_decision"
   printf '\n'
+  printf '%s\n' 'WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT=".wavemill/observer-findings.jsonl"'
+  extract_function "$COMMON_SCRIPT" "wavemill_worktree_dirty_status"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_migrate_controller_observer_artifact"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "monitor_deregister_terminal_task"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "safe_remove_task_worktree_and_branch"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "cleanup_completed_task"
@@ -117,6 +124,10 @@ RECONCILER_SCRIPT="$REPO_DIR/shared/lib/terminal-reconciler.sh"
 RELEASE_FILE="$TEST_TMP/release_terminal_pane.sh"
 {
   extract_function "$RECONCILER_SCRIPT" "wavemill_terminal_fresh_hook_state"
+  printf '\n'
+  extract_function "$RECONCILER_SCRIPT" "wavemill_terminal_feature_dir"
+  printf '\n'
+  extract_function "$RECONCILER_SCRIPT" "wavemill_terminal_agent_idle_evidence"
   printf '\n'
   extract_function "$RECONCILER_SCRIPT" "wavemill_release_terminal_pane"
 } > "$RELEASE_FILE"

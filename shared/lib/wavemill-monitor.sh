@@ -2978,6 +2978,43 @@ fresh_hook_state_for_issue() {
   jq -r '.state // empty' "$hook_file" 2>/dev/null || true
 }
 
+# HOK-2972 / HOK-2963: detect a coding stage result stuck at "running" whose
+# recorded agent process has exited. A pane surviving at a bare shell prompt,
+# its title text, and periodically refreshed reconciliation timestamps are NOT
+# evidence of progress. Protective evidence that keeps the stage alive: a
+# fresh hook heartbeat, any live descendant under the pane shell (agent or a
+# controller-owned validation job), or an indeterminate probe. A minimum
+# stage age guards launch wrappers that briefly show only a shell.
+# Returns 0 only when the owner is affirmatively lost.
+coding_stage_owner_lost() {
+  local issue="$1" feature_dir="$2" win_target="$3"
+  local started_at started_epoch now_epoch hook_state pane_pid live_rc
+  local grace="${WAVEMILL_CODING_OWNER_GRACE_SECONDS:-300}"
+
+  [[ -f "$feature_dir/.coding-result.json" ]] || return 1
+  started_at="$(jq -r '.startedAt // empty' "$feature_dir/.coding-result.json" 2>/dev/null || true)"
+  [[ -n "$started_at" ]] || return 1
+  started_epoch="$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$started_at" +%s 2>/dev/null \
+    || date -u -d "$started_at" +%s 2>/dev/null || true)"
+  [[ "$started_epoch" =~ ^[0-9]+$ ]] || return 1
+  now_epoch="$(date +%s)"
+  (( now_epoch - started_epoch >= grace )) || return 1
+
+  hook_state="$(fresh_hook_state_for_issue "$issue" 2>/dev/null || true)"
+  case "$hook_state" in
+    working|waiting|approval-needed|blocked) return 1 ;;
+  esac
+
+  command -v tmux >/dev/null 2>&1 || return 1
+  pane_pid="$(tmux list-panes -t "$win_target" -F '#{pane_pid}' 2>/dev/null | head -n 1 || true)"
+  [[ -n "$pane_pid" ]] || return 1
+  live_rc=0
+  mill_pane_has_live_blocking_process "$pane_pid" || live_rc=$?
+  # 0 = live descendant (agent or owned validation), 2 = indeterminate: both protect.
+  [[ "$live_rc" -eq 1 ]] || return 1
+  return 0
+}
+
 pane_release_preflight() {
   local issue="$1" slug="$2" state_dir="$3" wt_dir="$4" pr_number="$5"
   local branch="${6:-}" base_branch="${7:-${BASE_BRANCH:-main}}" pr_state_value current_head review_status
@@ -3021,7 +3058,16 @@ pane_release_preflight() {
     mill_pane_has_live_blocking_process "$pane_pid" || live_rc=$?
     live_rc="${live_rc:-0}"
     case "$live_rc" in
-      0) printf '%s\n' "live-agent-child"; return 1 ;;
+      0)
+        # Phase-aware liveness (HOK-2972): the stage evidence gates above have
+        # already passed, so an agent whose own Stop hook recorded idle is an
+        # idle REPL, not active work; anything else keeps blocking.
+        if ! declare -F wavemill_terminal_agent_idle_evidence >/dev/null 2>&1 \
+          || ! wavemill_terminal_agent_idle_evidence "$SESSION" "$issue" 2>/dev/null; then
+          printf '%s\n' "live-agent-child"
+          return 1
+        fi
+        ;;
       2) printf '%s\n' "liveness-indeterminate"; return 1 ;;
     esac
   fi
@@ -10602,7 +10648,7 @@ cleanup_aborted_challenge_arm() {
     rm -f "/tmp/wavemill-${SESSION}-${issue}.hook" 2>/dev/null || true
     reset_retry_count "$SESSION" "$issue" 2>/dev/null || true
     remove_task_state "$issue"
-    CLEANED["$issue"]=1
+    monitor_deregister_terminal_task "$issue"
     log "$issue: Complete (aborted cleanup, worktree preserved due to PR #$pr)"
     return 0
   fi
@@ -10664,7 +10710,7 @@ cleanup_aborted_challenge_arm() {
     cleanup_episode_record_outcome "$issue" "reaped" "none" "cleanup-complete" "$cleanup_candidate_json" "" 2>/dev/null || true
   fi
   remove_task_state "$issue"
-  CLEANED["$issue"]=1
+  monitor_deregister_terminal_task "$issue"
   log "$issue: Complete (aborted challenge cleanup)"
 }
 
@@ -13152,7 +13198,14 @@ if [[ -f "$STATE_FILE" ]]; then
     BRANCH_BY_ISSUE["$ISSUE"]="$BRANCH"
     SLUG_BY_ISSUE["$ISSUE"]="$SLUG"
     [[ -n "$PR" ]] && PR_BY_ISSUE["$ISSUE"]="$PR"
-  done < <(jq -r '.tasks | to_entries[] | "\(.key)|\(.value.slug // "")|\(.value.branch // "")|\(.value.pr // "")"' "$STATE_FILE" 2>/dev/null)
+  # Terminal tombstones whose resources were already reaped are restart
+  # evidence, not work: rehydrating them would let a later tick recreate
+  # windows/worktrees for arms that no longer exist (HOK-2972). Terminal rows
+  # with retained/unverified resources still rehydrate so cleanup can retry.
+  done < <(jq -r '.tasks | to_entries[]
+    | select(((.value.lifecycle.workflowOutcome // "active") == "active")
+        or ((.value.lifecycle.resourceDisposition // "") != "reaped"))
+    | "\(.key)|\(.value.slug // "")|\(.value.branch // "")|\(.value.pr // "")"' "$STATE_FILE" 2>/dev/null)
 fi
 
 # Overlay tasks selected in this launch.
@@ -14926,6 +14979,32 @@ monitor_issue_state() {
             log "debug" "$ISSUE → Coding still running: waiting for .coding-complete"
           fi
 
+          # Reconcile phase state with process ownership (HOK-2963): a
+          # "running" coding result with no live agent descendant, no fresh
+          # hook heartbeat, and no completion marker is interrupted, not
+          # healthy active coding. Persist a typed interrupted outcome that
+          # preserves the durable commits and names the recovery action.
+          if [[ "$coding_status" == "running" ]] \
+            && coding_stage_owner_lost "$ISSUE" "$FEATURE_DIR" "$WIN_TARGET"; then
+            local interrupted_head interrupted_artifacts
+            interrupted_head="$(git -C "${WORKTREE_ROOT}/${SLUG}" rev-parse HEAD 2>/dev/null || true)"
+            interrupted_artifacts="$(jq -cn --arg head "$interrupted_head" \
+              '{type: "coding",
+                terminationClass: "interrupted",
+                exitEvidence: "agent process exited without a terminal stage result; pane at shell prompt",
+                lastDurableCommit: (if $head == "" then null else $head end),
+                validationState: "unknown",
+                recoveryAction: "Relaunch the coding phase to resume from the last durable commit, or push the branch and open a PR manually if the work is already complete."}')"
+            write_stage_result "$FEATURE_DIR" "coding" "failed" "$current_agent" \
+              "$(resolve_stage_result_model "$FEATURE_DIR" "coding" "claude-opus-4-7")" \
+              "Interrupted: coding agent exited without recording a result; durable commits preserved${interrupted_head:+ at ${interrupted_head:0:7}}" \
+              "$interrupted_artifacts"
+            log_warn "$ISSUE → Coding agent exited without a terminal result; marked interrupted (work preserved${interrupted_head:+ at ${interrupted_head:0:7}})"
+            set_window_attention_state "$WIN" "needs-user"
+            active_count=$((active_count + 1))
+            return 0
+          fi
+
           # Stage still running
           if [[ "$coding_status" == "running" ]]; then
             set_window_attention_state "$WIN" "clear"
@@ -15392,10 +15471,24 @@ monitor_issue_state() {
     # Fails open ("true") when state is unreadable so an unknown task still
     # takes the normal closed-PR path.
     if [[ "$(read_state_value "true" --arg i "$ISSUE" '.tasks[$i] != null')" == "false" ]]; then
-      CLEANED["$ISSUE"]=1
+      monitor_deregister_terminal_task "$ISSUE"
       return 0
     fi
-    log_warn "$ISSUE → PR #$PR CLOSED without merge"
+    # Deduplicated transition logging (HOK-2972): the first observation is a
+    # status event; once the durable terminal transition is recorded, repeat
+    # polls (cleanup retries, restarts) log at debug instead of warning.
+    local closed_pr_recorded="false" closed_pr_key=""
+    if declare -F wavemill_terminal_marker_key >/dev/null 2>&1 && declare -F wavemill_terminal_marker_field >/dev/null 2>&1; then
+      closed_pr_key="$(wavemill_terminal_marker_key "pr_closed_unmerged" "$PR" 2>/dev/null || true)"
+      if [[ -n "$closed_pr_key" && "$(wavemill_terminal_marker_field "$ISSUE" "$closed_pr_key" "stateApplied")" == "true" ]]; then
+        closed_pr_recorded="true"
+      fi
+    fi
+    if [[ "$closed_pr_recorded" == "true" ]]; then
+      log "debug" "$ISSUE → PR #$PR closed without merge (terminal transition already recorded)"
+    else
+      log "status" "$ISSUE → PR #$PR closed without merge"
+    fi
     local linear_status="Backlog"
     if is_challenge_task "$ISSUE"; then
       local sibling_pr sibling_state
@@ -15427,12 +15520,16 @@ monitor_issue_state() {
           ;;
       esac
     fi
-    if [[ -n "$linear_status" ]]; then
-      if [[ "${WAVEMILL_TERMINAL_RECONCILER_LOADED:-0}" == "1" ]]; then
-        wavemill_reconcile_terminal "$SESSION" "$ISSUE" "pr_closed_unmerged" "$PR" || true
-      elif should_update_linear_state "$ISSUE"; then
-        linear_set_state "$(get_linear_issue_id "$ISSUE")" "$linear_status"
-      fi
+    if [[ "${WAVEMILL_TERMINAL_RECONCILER_LOADED:-0}" == "1" ]]; then
+      # Symmetric losing-arm handling (HOK-2972): whichever role this arm has
+      # (primary or challenger), a closed PR with a live sibling is a normal
+      # losing/terminal arm. Record the durable transition unconditionally; the
+      # reconciler derives the Linear move itself (Done once the sibling
+      # merges, Backlog only when both arms are closed, deferred while the
+      # sibling is still open) so the shared issue never bounces to Backlog.
+      wavemill_reconcile_terminal "$SESSION" "$ISSUE" "pr_closed_unmerged" "$PR" || true
+    elif [[ -n "$linear_status" ]] && should_update_linear_state "$ISSUE"; then
+      linear_set_state "$(get_linear_issue_id "$ISSUE")" "$linear_status"
     fi
     # HOK-2952: one ownership policy for every closed-PR role. The old
     # in-memory-only `CLEANED=1` branch (which left pane/worktree/state
