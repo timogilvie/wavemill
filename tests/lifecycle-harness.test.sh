@@ -492,6 +492,18 @@ harness_run_tick() {
     declare -Ag BRANCH_BY_ISSUE=()
     declare -Ag SLUG_BY_ISSUE=()
     declare -Ag PR_BY_ISSUE=()
+    declare -Ag CLOSED_PR_LOGGED=()
+    declare -Ag CLEANED=()
+    monitor_deregister_terminal_arm() {
+      local issue="${1:?issue required}"
+      [[ -n "${CLEANED[$issue]:-}" ]] && return 0
+      CLEANED["$issue"]=1
+      unset "BRANCH_BY_ISSUE[$issue]" 2>/dev/null || true
+      unset "SLUG_BY_ISSUE[$issue]" 2>/dev/null || true
+      unset "PR_BY_ISSUE[$issue]" 2>/dev/null || true
+      unset "CLOSED_PR_LOGGED[$issue]" 2>/dev/null || true
+      return 0
+    }
 
     ISSUE="$TEST_ISSUE"
     SLUG="$TEST_SLUG"
