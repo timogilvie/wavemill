@@ -277,6 +277,7 @@ function buildStageArtifacts(input: {
   pullRequest?: GitHubCreatePrResult;
   labels: GitHubAddLabelResult[];
   warnings: string[];
+  headSha?: string;
 }): Record<string, unknown> {
   const pullRequestSummary = summarizeMutation(input.pullRequest);
   const prNumber = input.pullRequest?.ok ? input.pullRequest.idempotency.ref?.number : undefined;
@@ -292,6 +293,9 @@ function buildStageArtifacts(input: {
     ...(dismissedBlockers.length > 0 ? { dismissedBlockers } : {}),
     ...(input.review.reviewToolError ? { reviewToolError: input.review.reviewToolError } : {}),
     ...(input.review.failureCategory ? { failureCategory: input.review.failureCategory } : {}),
+    // Head reviewed for this artifact (HOK-2964): a later head makes this
+    // verdict stale, which recovery/reconciliation consumers rely on.
+    ...(input.headSha ? { reviewHeadSha: input.headSha } : {}),
     review: {
       status: input.review.status,
       verdict: input.review.verdict,
@@ -305,6 +309,7 @@ function buildStageArtifacts(input: {
       reviewToolError: input.review.reviewToolError,
       failureCategory: input.review.failureCategory,
       needsStrongerReviewer: input.review.needsStrongerReviewer,
+      ...(input.headSha ? { reviewHeadSha: input.headSha } : {}),
     },
     fixes: input.fixes,
     linearComment: summarizeMutation(input.linearComment),
@@ -423,7 +428,7 @@ async function writeTerminalStageResult(
     status,
     notes: stageNotes(input.review, input.ok),
     artifacts: {
-      ...buildStageArtifacts(input),
+      ...buildStageArtifacts({ ...input, headSha: options.headSha }),
       ...(input.failureReason ? { failureReason: input.failureReason } : {}),
       // A repository-mutation failure must stay distinguishable from
       // provider/model failures; this category overrides the review's own.

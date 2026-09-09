@@ -140,6 +140,7 @@ TESTS=(
   shared/lib/headless-llm.test.ts
   shared/lib/router-log.test.ts
   shared/lib/arbiter-survival-label.test.ts
+  shared/lib/survival-labeller.test.ts
   shared/lib/challenge-analyzer.test.ts
   shared/lib/challenge-unavailable.test.ts
   shared/lib/challenge-attestation-backfill.test.ts

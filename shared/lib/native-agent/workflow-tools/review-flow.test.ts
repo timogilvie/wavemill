@@ -464,7 +464,10 @@ describe('runReviewFlow', () => {
     assert.equal(existsSync(path.join(worktreeDir, '.review-result.json')), false);
 
     const stored = JSON.parse(readFileSync(path.join(featureDir, '.review-result.json'), 'utf8')) as {
-      artifacts: { review: { verdict: string; findingCount: number; blockingCount: number } };
+      artifacts: {
+        review: { verdict: string; findingCount: number; blockingCount: number; reviewHeadSha?: string };
+        reviewHeadSha?: string;
+      };
     };
     assert.equal(stored.artifacts.review.verdict, 'ready');
     assert.equal(stored.artifacts.review.exitCode, 0);
@@ -475,6 +478,10 @@ describe('runReviewFlow', () => {
     assert.equal(stored.artifacts.verdict, 'ready');
     assert.equal(stored.artifacts.iterations, 1);
     assert.equal(stored.artifacts.blockerCount, 0);
+    // HOK-2964: the reviewed head is recorded so a later commit can be
+    // detected as invalidating this verdict.
+    assert.equal(stored.artifacts.reviewHeadSha, 'review123');
+    assert.equal(stored.artifacts.review.reviewHeadSha, 'review123');
     assertNoMergeOperations(recorder.transcriptEvents, recorder.stageArtifactEntries);
   });
 

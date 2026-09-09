@@ -1,4 +1,4 @@
-export const WAVEMILL_INCIDENT_SCHEMA_VERSION = '1.0';
+export const WAVEMILL_INCIDENT_SCHEMA_VERSION = '1.1';
 
 export type IncidentCategory =
   | 'product_defect'
@@ -42,6 +42,11 @@ export const INCIDENT_ROOT_CAUSE_CLASSES = [
   'native_completion_protocol_failure',
   'harness_liveness_deadlock',
   'queue_planner_degraded',
+  // Ready/Tend stalled lifecycle correlation
+  'review_context_overflow_stale_base',
+  'provider_quota_exhaustion_blocking_review',
+  'challenge_arm_missing_current_head_eval',
+  'inspection_required',
   'cleanup_retained_by_policy',
   'cleanup_unpublished_at_risk',
   'cleanup_verification_unavailable',
@@ -116,7 +121,43 @@ export type IncidentEvidenceType =
   | 'job_state'
   | 'hook_status'
   | 'backstage_health'
+  | 'pr_metadata'
+  | 'review_result'
+  | 'challenge_pair_state'
+  | 'eval_fallback_event'
+  | 'quota_state'
   | 'log_excerpt';
+
+export type RemediationProposalKind =
+  | 'refresh_base_and_rereview'
+  | 'provider_retry_or_forfeit_inspection'
+  | 'inspection_only';
+
+export type RemediationForbiddenAction =
+  | 'add_ready_label'
+  | 'merge'
+  | 'destructive_git'
+  | 'delete_branch';
+
+export interface RemediationProposal {
+  schemaVersion: '1.1';
+  kind: RemediationProposalKind;
+  prerequisites: string[];
+  retryKey: string;
+  safetyLevel: 'inspect' | 'safe_read' | 'operator_only';
+  evidenceRefs: Array<{ index: number; type: IncidentEvidenceType; source: string }>;
+  forbiddenActions: RemediationForbiddenAction[];
+  recoveryPredicate?: {
+    kind: 'head_changed' | 'review_now_ready' | 'current_head_eval_present' | 'comparison_present';
+    details: Record<string, string>;
+  };
+}
+
+export interface CausalChainEntry {
+  cause: string;
+  evidenceIndex: number;
+  detail?: string;
+}
 
 export interface IncidentEvidence {
   type: IncidentEvidenceType;
@@ -157,6 +198,11 @@ export interface IncidentMetadata {
   seenEventKeys?: string[];
   /** Timestamp of the last distinct source event (as opposed to the last poll). */
   lastEventAt?: string;
+  proposal?: RemediationProposal;
+  causalChain?: CausalChainEntry[];
+  authoritativeHead?: string;
+  authoritativeBase?: string;
+  pairId?: string;
   /** Consecutive successful observer cycles without a fresh distinct event. */
   missedCycles?: number;
   /** How and when the record last transitioned to resolved/archived. */
