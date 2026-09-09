@@ -52,6 +52,8 @@ cleanup_file="$tmp/operator-abort-cleanup.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_cleanup_run"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_filter_controller_owned_dirty_status"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "_wavemill_write_preserved_branch_incident"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "cleanup_outcome_is_safe"

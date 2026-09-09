@@ -70,6 +70,9 @@ HELPERS_FILE="$TEST_TMP/tmux_helpers.sh"
   extract_function "$COMMON_SCRIPT" "_tmux_task_window_target"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_cleanup_run"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_filter_controller_owned_dirty_status"
+  printf '\n'
 } > "$HELPERS_FILE"
 
 CLEANUP_FILE="$TEST_TMP/cleanup_completed_task.sh"
