@@ -762,6 +762,14 @@ dispatch_task_and_persist() {
 # A challenge intent is sealed once any stage it describes has produced a
 # result. After that point it is evidence about a run that already happened,
 # not a routing decision that can still be revised.
+#
+# Exempt writers: challenge_intent_stamp_fork_descriptor (HOK-2811) is the
+# only writer that may touch a sealed intent. It touches only the
+# fork-descriptor fields (forkStage, forkCommit, sharedPrefix, per-side
+# inheritedStages), never the selection fields the seal protects, so it is
+# safe by construction — new callers of that kind must add themselves to
+# this list.
+#
 # Usage: challenge_intent_is_sealed <feature_dir>
 challenge_intent_is_sealed() {
   local feature_dir="$1" stage status
