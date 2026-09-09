@@ -1,6 +1,4 @@
 import type { SelectedAdjudicatedPair } from '../swap-test/pair-selection.ts';
-import type { ProportionInterval } from '../stats-utils.ts';
-import { wilsonInterval } from '../stats-utils.ts';
 import type { HorizonDays, ReportOutcome } from '../arbiter-survival-label.ts';
 import type { ArbiterSurvivalLabelV1, MISSING_REASON_CODES } from '../arbiter-survival-label.ts';
 import { deriveChallengeType, deriveDifficultyBucket } from '../swap-test/strata.ts';
@@ -14,8 +12,7 @@ export type SurvivalAgreementClassification =
   | 'analyzed'
   | 'excluded_no_label'
   | 'excluded_missing_horizon'
-  | 'excluded_kept_pr_unmerged'
-  | 'excluded_missing_eval_record';
+  | 'excluded_kept_pr_unmerged';
 
 /**
  * One pair's survival agreement result.
@@ -46,7 +43,6 @@ export interface SurvivalAgreementSummary {
     noLabel: number;
     missingHorizon: number;
     keptPrUnmerged: number;
-    missingEvalRecord: number;
   };
   overall: {
     cell: SuccessCell;
@@ -93,7 +89,6 @@ function keptSideSurvived(outcome: ReportOutcome): boolean {
 export function computeSurvivalAgreement(options: {
   pairs: SelectedAdjudicatedPair[];
   survivalLabels: Map<string, Map<HorizonDays, ArbiterSurvivalLabelV1>>;
-  evalIndex?: Map<string, { record: any; provenance: string }>;
   horizon?: HorizonDays;
 }): SurvivalAgreementSummary {
   const { pairs, survivalLabels, horizon = 30 } = options;
@@ -103,7 +98,6 @@ export function computeSurvivalAgreement(options: {
     noLabel: 0,
     missingHorizon: 0,
     keptPrUnmerged: 0,
-    missingEvalRecord: 0,
   };
 
   for (const pair of pairs) {
@@ -211,8 +205,7 @@ export function renderSurvivalReportMarkdown(summary: SurvivalAgreementSummary):
 
   const totalExcluded = summary.excluded.noLabel
     + summary.excluded.missingHorizon
-    + summary.excluded.keptPrUnmerged
-    + summary.excluded.missingEvalRecord;
+    + summary.excluded.keptPrUnmerged;
 
   const rateStr = summary.overall.cell.rate === null
     ? 'n/a'
@@ -236,9 +229,6 @@ export function renderSurvivalReportMarkdown(summary: SurvivalAgreementSummary):
     }
     if (summary.excluded.keptPrUnmerged > 0) {
       lines.push(`- Kept side (winner) unmerged: ${summary.excluded.keptPrUnmerged}`);
-    }
-    if (summary.excluded.missingEvalRecord > 0) {
-      lines.push(`- Missing eval record: ${summary.excluded.missingEvalRecord}`);
     }
     lines.push('');
   }

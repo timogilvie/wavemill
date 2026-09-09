@@ -1,6 +1,4 @@
 import type { SelectedAdjudicatedPair } from '../swap-test/pair-selection.ts';
-import type { ProportionInterval } from '../stats-utils.ts';
-import { wilsonInterval } from '../stats-utils.ts';
 import { selectChallengeEvalScore } from '../challenge-score-selector.ts';
 import { deriveChallengeType, deriveDifficultyBucket, lookupPairEvals } from '../swap-test/strata.ts';
 import { createCell, groupSuccessCells } from './strata-cells.ts';
@@ -55,6 +53,11 @@ export interface EvalDisagreementSummary {
     scoreFallback: number;
   };
   ties: number;
+  fallback: {
+    scoreFallback: number;
+    disagreements: number;
+    disagreementCell: SuccessCell;
+  };
   overall: {
     disagreementCell: SuccessCell;
     disagreements: number;
@@ -93,6 +96,11 @@ function computeMargin(record: any): number | undefined {
   );
 }
 
+function classifyMargin(margin: number | undefined): string {
+  if (margin === undefined) return 'unknown';
+  return String(Math.round(Math.abs(margin)));
+}
+
 /**
  * Compute eval disagreement: characterise where comparison judge and eval judge differ.
  */
@@ -113,6 +121,7 @@ export function computeEvalDisagreement(options: {
   const disagreeRows: EvalDisagreementRow[] = [];
   const marginClosenessTable: Record<string, Record<string, number>> = {};
   const marginValues: number[] = [];
+  const marginDistribution: Record<string, number> = {};
   const closenessDistribution: Record<EvalCloseness, number> = {
     lt_005: 0,
     lt_015: 0,
@@ -177,13 +186,19 @@ export function computeEvalDisagreement(options: {
     }
 
     // Compute agreement.
-    const agrees = pair.record.winner === evalImpliedWinner;
+    const agrees = evalImpliedWinner === 'tie'
+      ? undefined
+      : pair.record.winner === evalImpliedWinner;
     const comparisonMargin = computeMargin(pair.record);
     const evalCloseness = classifyCloseness(scoreDelta);
 
     const row: EvalDisagreementRow = {
       pairId: pair.pairId,
-      classification: hasFallback ? 'excluded_score_fallback' : 'analyzed',
+      classification: evalImpliedWinner === 'tie'
+        ? 'eval_tie'
+        : hasFallback
+          ? 'excluded_score_fallback'
+          : 'analyzed',
       comparisonWinner: pair.record.winner,
       evalImpliedWinner: evalImpliedWinner === 'tie' ? 'tie' : evalImpliedWinner,
       evalDelta: scoreDelta,
@@ -212,10 +227,11 @@ export function computeEvalDisagreement(options: {
       if (comparisonMargin !== undefined) {
         marginValues.push(Math.abs(comparisonMargin));
       }
+      const marginBucket = classifyMargin(comparisonMargin);
+      marginDistribution[marginBucket] = (marginDistribution[marginBucket] ?? 0) + 1;
       closenessDistribution[evalCloseness]++;
 
       // Build margin × closeness cross-tab.
-      const marginBucket = Math.round(comparisonMargin || 0);
       if (!marginClosenessTable[evalCloseness]) {
         marginClosenessTable[evalCloseness] = {};
       }
@@ -223,13 +239,22 @@ export function computeEvalDisagreement(options: {
     }
   }
 
-  // Filter analyzed pairs (excluding ties and fallback).
-  const analyzedRows = rows.filter((row) => row.classification === 'analyzed');
+  // Filter rows with both eval verdicts available. Fallback scores remain in the
+  // denominator but ties do not produce an eval-judge verdict.
+  const analyzedRows = rows.filter((row) => (
+    row.classification === 'analyzed'
+    || row.classification === 'excluded_score_fallback'
+  ));
+  const fallbackRows = analyzedRows.filter((row) => (
+    row.primaryScoreFallback === true || row.challengerScoreFallback === true
+  ));
 
   // Compute disagreement rate.
   const disagreements = disagreeRows.length;
-  const agreements = analyzedRows.length - disagreements;
+  const agreements = analyzedRows.filter((row) => row.agrees === true).length;
   const disagreementCell = createCell(disagreements, analyzedRows.length);
+  const fallbackDisagreements = fallbackRows.filter((row) => row.agrees === false).length;
+  const fallbackDisagreementCell = createCell(fallbackDisagreements, fallbackRows.length);
 
   // Compute median margin for disagreements.
   marginValues.sort((a, b) => a - b);
@@ -263,6 +288,11 @@ export function computeEvalDisagreement(options: {
     analyzed: analyzedRows.length,
     excluded,
     ties: tieCount,
+    fallback: {
+      scoreFallback: fallbackRows.length,
+      disagreements: fallbackDisagreements,
+      disagreementCell: fallbackDisagreementCell,
+    },
     overall: {
       disagreementCell,
       disagreements,
@@ -273,7 +303,7 @@ export function computeEvalDisagreement(options: {
     byDifficultyBucket: byBucket,
     byDifficultyCollapsed: byCollapsed,
     disagreementsByMarginCloseness: {
-      margin: {},
+      margin: marginDistribution,
       medianMargin,
       closeness: closenessDistribution,
     },
@@ -297,8 +327,7 @@ export function renderEvalDisagreementReportMarkdown(summary: EvalDisagreementSu
   lines.push('|---:|---:|---:|---:|---:|---:|');
 
   const totalExcluded = summary.excluded.missingEvalPrimary
-    + summary.excluded.missingEvalChallenger
-    + summary.excluded.scoreFallback;
+    + summary.excluded.missingEvalChallenger;
 
   const rateStr = summary.overall.disagreementCell.rate === null
     ? 'n/a'
@@ -313,7 +342,7 @@ export function renderEvalDisagreementReportMarkdown(summary: EvalDisagreementSu
   lines.push('');
 
   // Exclusions
-  if (totalExcluded > 0) {
+  if (totalExcluded > 0 || summary.excluded.scoreFallback > 0) {
     lines.push('## Exclusions');
     lines.push('');
     if (summary.excluded.missingEvalPrimary > 0) {
@@ -324,9 +353,21 @@ export function renderEvalDisagreementReportMarkdown(summary: EvalDisagreementSu
     }
     if (summary.excluded.scoreFallback > 0) {
       lines.push(
-        `- Score fallback (stage unavailable, used overall): ${summary.excluded.scoreFallback}`,
+        `- Score fallback (stage unavailable, used overall; included in analyzed denominator): ${summary.excluded.scoreFallback}`,
       );
     }
+    lines.push('');
+  }
+
+  if (summary.fallback.scoreFallback > 0) {
+    const fallbackRate = summary.fallback.disagreementCell.rate === null
+      ? 'n/a'
+      : `${(summary.fallback.disagreementCell.rate * 100).toFixed(1)}%`;
+    lines.push('## Score Fallback Sensitivity');
+    lines.push('');
+    lines.push('| Fallback Rows | Disagreements | Disagreement Rate |');
+    lines.push('|---:|---:|---:|');
+    lines.push(`| ${summary.fallback.scoreFallback} | ${summary.fallback.disagreements} | ${fallbackRate} |`);
     lines.push('');
   }
 
@@ -395,10 +436,44 @@ export function renderEvalDisagreementReportMarkdown(summary: EvalDisagreementSu
     lines.push('');
   }
 
+  const marginEntries = Object.entries(summary.disagreementsByMarginCloseness.margin)
+    .sort(([a], [b]) => {
+      if (a === 'unknown') return 1;
+      if (b === 'unknown') return -1;
+      return Number(a) - Number(b);
+    });
+  if (marginEntries.length > 0) {
+    lines.push('## Comparison Judge Margin (Disagreements Only)');
+    lines.push('');
+    lines.push('| Abs Margin Bucket | Count |');
+    lines.push('|---:|---:|');
+    for (const [bucket, count] of marginEntries) {
+      lines.push(`| ${bucket} | ${count} |`);
+    }
+    lines.push('');
+  }
+
   if (summary.disagreementsByMarginCloseness.medianMargin !== null) {
     lines.push(
       `Median comparison judge margin (disagreements): ${summary.disagreementsByMarginCloseness.medianMargin.toFixed(2)}`,
     );
+    lines.push('');
+  }
+
+  const disagreementRows = summary.rows.filter((row) => row.agrees === false);
+  if (disagreementRows.length > 0) {
+    lines.push('## Disagreement Pairs');
+    lines.push('');
+    lines.push('| Pair | Challenge Type | Difficulty | Judge Winner | Eval Winner | Judge Margin | Eval Delta | Primary Source | Challenger Source | Fallback |');
+    lines.push('|---|---|---|---|---|---:|---:|---|---|---|');
+    for (const row of disagreementRows) {
+      const fallback = row.primaryScoreFallback || row.challengerScoreFallback ? 'yes' : 'no';
+      const margin = row.comparisonMargin === undefined ? 'n/a' : row.comparisonMargin.toFixed(2);
+      const delta = row.evalDelta === undefined ? 'n/a' : row.evalDelta.toFixed(3);
+      lines.push(
+        `| ${row.pairId} | ${row.challengeType} | ${row.difficultyCollapsed} | ${row.comparisonWinner} | ${row.evalImpliedWinner ?? 'n/a'} | ${margin} | ${delta} | ${row.scorePrimarySource ?? 'n/a'} | ${row.scoreChallengerSource ?? 'n/a'} | ${fallback} |`,
+      );
+    }
     lines.push('');
   }
 

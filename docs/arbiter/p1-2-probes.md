@@ -107,10 +107,12 @@ fallback).
 **Excluded**:
 - `excluded_missing_eval_primary` — Primary side has no eval record.
 - `excluded_missing_eval_challenger` — Challenger side has no eval record.
+
+**Flagged but analyzed**:
 - `excluded_score_fallback` — Both sides have evals, but at least one score fell back
-  to overall (stage score unavailable). Included in analyzed set but flagged so
-  fallback breakdown is visible. Write-up can decide weight given to disagreements
-  under fallback.
+  to overall (stage score unavailable). Included in the analyzed denominator and
+  separately counted so the write-up can decide weight given to disagreements under
+  fallback.
 
 ### Disagreement classification
 
@@ -138,7 +140,7 @@ comparison judge.
 **Markdown report**: `docs/arbiter/p1-2-eval-disagreement-report.md`
 - Overall disagreement rate + 95% Wilson CI
 - Ties (excluded from rate calculation)
-- Exclusion counts (missing evals, fallback scorings)
+- Exclusion counts (missing evals) and fallback counts/rate
 - Stratified disagreement rates by challenge type, difficulty bucket, difficulty collapsed
 - Disagreement margin and closeness distributions
 - Full listing of disagreement pairs

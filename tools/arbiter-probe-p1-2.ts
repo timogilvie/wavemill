@@ -75,7 +75,6 @@ async function runProbes(options: {
     const survivalSummary = computeSurvivalAgreement({
       pairs: pairContext.pairs,
       survivalLabels,
-      evalIndex: pairContext.evalIndex,
       horizon: options.horizon,
     });
 
