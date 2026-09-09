@@ -857,6 +857,153 @@ persist_challenge_execution_intent() {
     --argjson intent "$intent_json" || true
 }
 
+challenge_deferred_arm_state_filter() {
+  cat <<'JQ'
+    .tasks[$issue].arms[]?
+    | select((.role == "challenger") and
+      (((.challengeArmState // "") | IN("awaiting_fork", "materializing"))))
+JQ
+}
+
+challenge_mark_materialize_failed() {
+  local issue="$1" reason="$2"
+  [[ -n "$issue" && -n "$reason" ]] || return 0
+  state_mutate "$STATE_FILE" \
+    '(.tasks[$issue].arms // []) as $arms
+     | .tasks[$issue].arms = ($arms | map(
+         if ((.role == "challenger") and
+             (((.challengeArmState // "") | IN("awaiting_fork", "materializing"))))
+         then .challengeArmState = "materialize_failed"
+              | .materializeFailedReason = $reason
+              | .materializeFailedAt = (now | todateiso8601)
+         else .
+         end))
+     | .tasks[$issue].updated = (now | todate)' \
+    --arg issue "$issue" \
+    --arg reason "$reason" >/dev/null 2>&1 || true
+}
+
+challenge_write_review_deferred_arms() {
+  local issue="$1" primary_slug="$2" challenge_stage="$3" primary_varied="$4" challenger_varied="$5"
+  local planner_model="$6" task_model="$7" reviewer_model="$8" planner_agent="$9" task_agent_cmd="${10}" reviewer_agent="${11}"
+  local plan_depth="${12}" code_depth="${13}" review_mode="${14}" challenger_key="${15}" challenger_slug="${16}"
+  local challenger_planner="${17}" challenger_model="${18}" challenger_reviewer="${19}" challenger_planner_agent="${20}"
+  local challenger_agent="${21}" challenger_reviewer_agent="${22}" challenger_plan_depth="${23}" challenger_code_depth="${24}" challenger_review_mode="${25}"
+  [[ "$challenge_stage" == "review" && -n "$issue" && -n "$challenger_key" && -n "$challenger_slug" ]] || return 0
+  state_mutate "$STATE_FILE" \
+    '.tasks[$issue].arms = [
+      {
+        role: "primary",
+        key: $issue,
+        slug: $primarySlug,
+        branch: ("task/" + $primarySlug),
+        challengeArmState: "live",
+        variedStage: $stage,
+        challengeModel: $primaryVaried,
+        models: {
+          planner: $planner,
+          coder: $coder,
+          reviewer: $reviewer,
+          plannerAgent: $plannerAgent,
+          coderAgent: $coderAgent,
+          reviewerAgent: $reviewerAgent,
+          planDepth: $planDepth,
+          codeDepth: $codeDepth,
+          reviewMode: $reviewMode
+        }
+      },
+      {
+        role: "challenger",
+        key: $challengerKey,
+        slug: $challengerSlug,
+        branch: ("task/" + $challengerSlug),
+        challengeArmState: "awaiting_fork",
+        variedStage: $stage,
+        challengeModel: $challengerVaried,
+        models: {
+          planner: $challengerPlanner,
+          coder: $challengerCoder,
+          reviewer: $challengerReviewer,
+          plannerAgent: $challengerPlannerAgent,
+          coderAgent: $challengerCoderAgent,
+          reviewerAgent: $challengerReviewerAgent,
+          planDepth: $challengerPlanDepth,
+          codeDepth: $challengerCodeDepth,
+          reviewMode: $challengerReviewMode
+        }
+      }
+    ] | .tasks[$issue].updated = (now | todate)' \
+    --arg issue "$issue" \
+    --arg primarySlug "$primary_slug" \
+    --arg stage "$challenge_stage" \
+    --arg primaryVaried "$primary_varied" \
+    --arg challengerVaried "$challenger_varied" \
+    --arg planner "$planner_model" \
+    --arg coder "$task_model" \
+    --arg reviewer "$reviewer_model" \
+    --arg plannerAgent "$planner_agent" \
+    --arg coderAgent "$task_agent_cmd" \
+    --arg reviewerAgent "$reviewer_agent" \
+    --arg planDepth "$plan_depth" \
+    --arg codeDepth "$code_depth" \
+    --arg reviewMode "$review_mode" \
+    --arg challengerKey "$challenger_key" \
+    --arg challengerSlug "$challenger_slug" \
+    --arg challengerPlanner "$challenger_planner" \
+    --arg challengerCoder "$challenger_model" \
+    --arg challengerReviewer "$challenger_reviewer" \
+    --arg challengerPlannerAgent "$challenger_planner_agent" \
+    --arg challengerCoderAgent "$challenger_agent" \
+    --arg challengerReviewerAgent "$challenger_reviewer_agent" \
+    --arg challengerPlanDepth "$challenger_plan_depth" \
+    --arg challengerCodeDepth "$challenger_code_depth" \
+    --arg challengerReviewMode "$challenger_review_mode" >/dev/null 2>&1 || true
+}
+
+challenge_stamp_fork_descriptor() {
+  local issue="$1" challenger_key="$2" primary_feature_dir="$3" challenger_feature_dir="$4" fork_commit="$5"
+  local intent_file tmp
+  for intent_file in \
+    "$primary_feature_dir/.challenge-intent.json" \
+    "$primary_feature_dir/challenge-intent.json" \
+    "$challenger_feature_dir/.challenge-intent.json" \
+    "$challenger_feature_dir/challenge-intent.json"; do
+    [[ -f "$intent_file" ]] || continue
+    tmp="$(mktemp)" || continue
+    if jq --arg forkCommit "$fork_commit" \
+      '.forkStage = "review"
+       | .forkCommit = $forkCommit
+       | .sharedPrefix = true
+       | if (.primary // null) != null then .primary.inheritedStages = [] else . end
+       | if (.challenger // null) != null then .challenger.inheritedStages = ["plan", "implementation"] else . end' \
+      "$intent_file" > "$tmp" 2>/dev/null; then
+      mv "$tmp" "$intent_file"
+    else
+      rm -f "$tmp"
+    fi
+  done
+
+  state_mutate "$STATE_FILE" \
+    'def stamp:
+       .forkStage = "review"
+       | .forkCommit = $forkCommit
+       | .sharedPrefix = true
+       | if (.primary // null) != null then .primary.inheritedStages = [] else . end
+       | if (.challenger // null) != null then .challenger.inheritedStages = ["plan", "implementation"] else . end;
+     if (.tasks[$issue].challengeExecutionIntent // null) != null
+     then .tasks[$issue].challengeExecutionIntent |= stamp
+     else .
+     end
+     | if $challenger != "" and (.tasks[$challenger].challengeExecutionIntent // null) != null
+       then .tasks[$challenger].challengeExecutionIntent |= stamp
+       else .
+       end
+     | .tasks[$issue].updated = (now | todate)' \
+    --arg issue "$issue" \
+    --arg challenger "$challenger_key" \
+    --arg forkCommit "$fork_commit" >/dev/null 2>&1 || true
+}
+
 # The model this task's challenge selected for the stage about to launch.
 #
 # Returns empty unless the task is a challenge participant AND the stage being
@@ -1331,6 +1478,14 @@ finalize_challenge_execution_intent_before_coding() {
   local preserved_challenger_key preserved_challenger_model
   preserved_challenger_key="${issue}_c"
   preserved_challenger_model=$(read_state_value "" --arg i "$preserved_challenger_key" '.tasks[$i].challengeVariedModel // ""' 2>/dev/null || true)
+  if [[ -z "$preserved_challenger_model" || "$preserved_challenger_model" == "null" ]]; then
+    preserved_challenger_model=$(read_state_value "" --arg i "$issue" '
+      (.tasks[$i].arms // [])
+      | map(select((.role == "challenger") and
+        (((.challengeArmState // "") | IN("awaiting_fork", "materializing")))))
+      | .[0].challengeModel // ""
+    ' 2>/dev/null || true)
+  fi
   if [[ -z "$preserved_challenger_model" && "$pinned_stage" == "implementation" ]]; then
     preserved_challenger_model=$(read_state_value "" --arg i "$preserved_challenger_key" '.tasks[$i].coderModel // ""' 2>/dev/null || true)
   fi
@@ -1379,6 +1534,7 @@ finalize_challenge_execution_intent_before_coding() {
       state_mutate "$STATE_FILE" \
         '.tasks[$issue].challengeCollapseReason = $reason
          | .tasks[$issue].challengeCollapseDetail = $detail
+         | .tasks[$issue] |= del(.arms)
          | .tasks[$issue].updated = (now | todate)' \
         --arg issue "$issue" \
         --arg reason "$refreshed_reason" \
@@ -1419,15 +1575,25 @@ finalize_challenge_execution_intent_before_coding() {
   # This happens when finalization re-ran resolve-challenge-task after a single-model launch
   # and got mode=challenge, but the ${issue}_c task doesn't exist.
   # Check: (1) challenger already exists in state, OR (2) challenge was already selected at launch.
-  local challenger_exists was_challenge_at_launch
+  local challenger_exists was_challenge_at_launch deferred_challenger_pending
   challenger_exists="false"
   was_challenge_at_launch="false"
+  deferred_challenger_pending="false"
 
   local existing_challenger_slug existing_challenger_branch existing_challenger_worktree
   existing_challenger_slug=$(read_state_value "" --arg i "$new_challenger_key" '.tasks[$i].slug // ""' 2>/dev/null || true)
   existing_challenger_branch=$(read_state_value "" --arg i "$new_challenger_key" '.tasks[$i].branch // ""' 2>/dev/null || true)
   existing_challenger_worktree=$(read_state_value "" --arg i "$new_challenger_key" '.tasks[$i].worktree // ""' 2>/dev/null || true)
   [[ -n "$existing_challenger_slug" && -n "$existing_challenger_branch" && -n "$existing_challenger_worktree" ]] && challenger_exists="true"
+  if read_state_value "false" --arg i "$issue" --arg c "$new_challenger_key" '
+      (.tasks[$i].arms // [])
+      | any((.role == "challenger") and
+        (((.key // "") == $c)) and
+        (((.challengeArmState // "") | IN("awaiting_fork", "materializing"))))
+    ' 2>/dev/null | grep -q '^true$'; then
+    deferred_challenger_pending="true"
+    challenger_exists="true"
+  fi
 
   local existing_challenge_flag existing_pair_id
   existing_challenge_flag=$(get_task_meta "$issue" challenge 2>/dev/null || true)
@@ -1444,7 +1610,7 @@ finalize_challenge_execution_intent_before_coding() {
       '.tasks[$issue].challengeCollapseReason = "challenger_never_launched"
        | .tasks[$issue].challengeCollapseDetail = "Finalization selected a pair but no challenger arm was launched; staying single-model"
        | .tasks[$issue].challenge = false
-       | .tasks[$issue] |= del(.challengePairId, .role)
+       | .tasks[$issue] |= del(.challengePairId, .role, .arms)
        | .tasks[$issue].updated = (now | todate)' \
       --arg issue "$issue" >/dev/null 2>&1 || true
     log_route_lifecycle "challenge_not_formed" "issue=$issue" "stage=$new_challenge_stage" "model=$new_primary" "reason=challenger_never_launched"
@@ -1506,6 +1672,32 @@ finalize_challenge_execution_intent_before_coding() {
       '.tasks[$issue].challengerLaunched = true
        | .tasks[$issue].updated = (now | todate)' \
       --arg issue "$issue" >/dev/null 2>&1 || true
+  elif [[ "$deferred_challenger_pending" == "true" && "$new_challenge_stage" == "review" ]]; then
+    state_mutate "$STATE_FILE" \
+      '(.tasks[$issue].arms // []) as $arms
+       | .tasks[$issue].arms = ($arms | map(
+           if .role == "challenger" and (.key // "") == $challenger
+           then .challengeModel = $challengerVaried
+                | .variedStage = $stage
+                | .models.planner = $challengerPlanner
+                | .models.coder = $challengerCoder
+                | .models.reviewer = $challengerReviewer
+                | .models.planDepth = $challengerPlanDepth
+                | .models.codeDepth = $challengerCodeDepth
+                | .models.reviewMode = $challengerReviewMode
+           else .
+           end))
+       | .tasks[$issue].updated = (now | todate)' \
+      --arg issue "$issue" \
+      --arg challenger "$new_challenger_key" \
+      --arg stage "$new_challenge_stage" \
+      --arg challengerVaried "$new_challenger_varied" \
+      --arg challengerPlanner "$new_challenger_planner" \
+      --arg challengerCoder "$new_challenger_model" \
+      --arg challengerReviewer "$new_challenger_reviewer" \
+      --arg challengerPlanDepth "$new_challenger_plan_depth" \
+      --arg challengerCodeDepth "$new_challenger_code_depth" \
+      --arg challengerReviewMode "$new_challenger_review_mode" >/dev/null 2>&1 || true
   fi
 
   persist_challenge_execution_intent "$issue" "$new_challenger_key" "$feature_dir" "$intent_json"
@@ -1517,6 +1709,280 @@ finalize_challenge_execution_intent_before_coding() {
   fi
   log "status" "  $issue: Challenge intent finalized ($refreshed_source route, stage=$new_challenge_stage): $new_primary_varied vs $new_challenger_varied"
   challenge_assert_arms_diverge "$issue" "$new_challenge_stage" "$new_primary_varied" "$new_challenger_varied" "$intent_json"
+}
+
+challenge_materialize_challenger_arm() {
+  local issue="$1" primary_slug="$2" primary_feature_dir="$3" primary_wt="$4" title="$5"
+  [[ -n "$issue" && -n "$primary_slug" && -n "$primary_feature_dir" && -n "$primary_wt" ]] || return 1
+
+  local arm_json
+  arm_json=$(read_state_value "" --arg issue "$issue" '
+    [(.tasks[$issue].arms[]?
+      | select((.role == "challenger") and
+        (((.challengeArmState // "") | IN("awaiting_fork", "materializing")))))]
+    | .[0] // empty
+    | @json
+  ' 2>/dev/null || true)
+  if [[ -z "$arm_json" ]]; then
+    return 0
+  fi
+
+  local challenger_key challenger_slug challenger_branch wt_dir challenger_feature_dir
+  local planner_model coder_model reviewer_model planner_agent coder_agent reviewer_agent
+  local plan_depth code_depth review_mode linear_issue fork_commit
+  challenger_key=$(printf '%s\n' "$arm_json" | jq -r '.key // empty' 2>/dev/null)
+  challenger_slug=$(printf '%s\n' "$arm_json" | jq -r '.slug // empty' 2>/dev/null)
+  challenger_branch=$(printf '%s\n' "$arm_json" | jq -r '.branch // empty' 2>/dev/null)
+  planner_model=$(printf '%s\n' "$arm_json" | jq -r '.models.planner // empty' 2>/dev/null)
+  coder_model=$(printf '%s\n' "$arm_json" | jq -r '.models.coder // empty' 2>/dev/null)
+  reviewer_model=$(printf '%s\n' "$arm_json" | jq -r '.models.reviewer // .challengeModel // empty' 2>/dev/null)
+  planner_agent=$(printf '%s\n' "$arm_json" | jq -r '.models.plannerAgent // empty' 2>/dev/null)
+  coder_agent=$(printf '%s\n' "$arm_json" | jq -r '.models.coderAgent // empty' 2>/dev/null)
+  reviewer_agent=$(printf '%s\n' "$arm_json" | jq -r '.models.reviewerAgent // empty' 2>/dev/null)
+  plan_depth=$(printf '%s\n' "$arm_json" | jq -r '.models.planDepth // "light"' 2>/dev/null)
+  code_depth=$(printf '%s\n' "$arm_json" | jq -r '.models.codeDepth // "medium"' 2>/dev/null)
+  review_mode=$(printf '%s\n' "$arm_json" | jq -r '.models.reviewMode // "static"' 2>/dev/null)
+
+  [[ -n "$challenger_key" ]] || challenger_key="${issue}_c"
+  [[ -n "$challenger_slug" ]] || challenger_slug="${primary_slug}-challenger"
+  [[ -n "$challenger_branch" ]] || challenger_branch="task/${challenger_slug}"
+  wt_dir="${WORKTREE_ROOT}/${challenger_slug}"
+  challenger_feature_dir="$wt_dir/features/$challenger_slug"
+  linear_issue=$(get_linear_issue_id "$issue")
+
+  fork_commit=$(git -C "$primary_wt" rev-parse HEAD 2>/dev/null) || {
+    challenge_mark_materialize_failed "$issue" "cannot resolve primary head"
+    return 1
+  }
+  state_mutate "$STATE_FILE" \
+    '(.tasks[$issue].arms // []) as $arms
+     | .tasks[$issue].arms = ($arms | map(
+         if .role == "challenger" and (.key // "") == $challenger
+         then .forkCommit = $forkCommit
+         else .
+         end))
+     | .tasks[$issue].updated = (now | todate)' \
+    --arg issue "$issue" \
+    --arg challenger "$challenger_key" \
+    --arg forkCommit "$fork_commit" >/dev/null 2>&1 || true
+
+  if [[ -d "$wt_dir/.git" || -d "$wt_dir" ]]; then
+    :
+  elif git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/$challenger_branch" 2>/dev/null; then
+    local resolved_path
+    resolved_path="$(ensure_worktree "$challenger_branch" "$wt_dir" "$REPO_DIR" 2>>"${MILL_LOG_FILE:-/dev/null}")" || {
+      challenge_mark_materialize_failed "$issue" "cannot attach challenger worktree"
+      return 1
+    }
+    wt_dir="$resolved_path"
+    challenger_feature_dir="$wt_dir/features/$challenger_slug"
+  else
+    if ! git -C "$REPO_DIR" worktree add "$wt_dir" -b "$challenger_branch" "$fork_commit" >>"${MILL_LOG_FILE:-/dev/null}" 2>&1; then
+      challenge_mark_materialize_failed "$issue" "cannot create challenger worktree"
+      return 1
+    fi
+  fi
+  mkdir -p "$challenger_feature_dir"
+
+  if [[ -d "$primary_feature_dir" ]]; then
+    cp -R "$primary_feature_dir"/. "$challenger_feature_dir"/ 2>/dev/null || {
+      challenge_mark_materialize_failed "$issue" "cannot copy primary feature directory"
+      return 1
+    }
+  fi
+  rm -f "$challenger_feature_dir/.review-result.json" \
+        "$challenger_feature_dir/.review-scope-baseline.json" \
+        "$challenger_feature_dir/.ready-result.json" \
+        "$challenger_feature_dir/.resolved-phase" \
+        "$challenger_feature_dir/.trace-context.json" \
+        "$challenger_feature_dir/trace.jsonl" \
+        "$challenger_feature_dir/.needs-attention" \
+        "$challenger_feature_dir/.attention" \
+        "$challenger_feature_dir"/.coding-pane-* 2>/dev/null || true
+  rm -rf "$challenger_feature_dir/ready" 2>/dev/null || true
+
+  if [[ -f "$challenger_feature_dir/selected-task.json" ]]; then
+    local selected_tmp
+    selected_tmp="$(mktemp)" || true
+    if [[ -n "${selected_tmp:-}" ]] && jq \
+      --arg featureName "$challenger_slug" \
+      --arg contextPath "features/$challenger_slug/selected-task.json" \
+      '.featureName = $featureName | .contextPath = $contextPath' \
+      "$challenger_feature_dir/selected-task.json" > "$selected_tmp" 2>/dev/null; then
+      mv "$selected_tmp" "$challenger_feature_dir/selected-task.json"
+    else
+      [[ -n "${selected_tmp:-}" ]] && rm -f "$selected_tmp"
+    fi
+  fi
+
+  local inherited_file inherited_tmp
+  for inherited_file in \
+    "$challenger_feature_dir/.planning-result.json" \
+    "$challenger_feature_dir/.coding-result.json" \
+    "$challenger_feature_dir/.coding-complete"; do
+    [[ -f "$inherited_file" ]] || continue
+    inherited_tmp="$(mktemp)" || continue
+    if jq '. + {source:"inherited"}' "$inherited_file" > "$inherited_tmp" 2>/dev/null; then
+      mv "$inherited_tmp" "$inherited_file"
+    else
+      rm -f "$inherited_tmp"
+    fi
+  done
+
+  challenge_stamp_fork_descriptor "$issue" "$challenger_key" "$primary_feature_dir" "$challenger_feature_dir" "$fork_commit"
+  write_phase_config "$challenger_feature_dir" "$planner_model" "$coder_model" "$reviewer_model" "$plan_depth" "$code_depth" "$review_mode"
+
+  local reviewer_launch_model
+  reviewer_launch_model="$reviewer_model"
+  if declare -F agent_resolve_model >/dev/null 2>&1; then
+    reviewer_launch_model="$(agent_resolve_model "reviewer" "$reviewer_model" "$REPO_DIR")" || {
+      challenge_mark_materialize_failed "$issue" "${AGENT_RESOLVE_LAST_DIAGNOSTIC:-reviewer model resolution failed}"
+      return 1
+    }
+  fi
+  if ! reviewer_agent="$(agent_resolve_from_model "$reviewer_launch_model" "review")"; then
+    challenge_mark_materialize_failed "$issue" "${AGENT_RESOLVE_LAST_DIAGNOSTIC:-reviewer agent resolution failed}"
+    return 1
+  fi
+
+  save_task_state "$challenger_key" "$challenger_slug" "$challenger_branch" "$wt_dir" "" "" "$reviewer_agent" "$linear_issue" \
+    "true" "$issue" "challenger" "$coder_model" "$planner_model" "$coder_model" "$reviewer_model" "$plan_depth" "$code_depth" "$review_mode" "review" "review"
+  state_mutate "$STATE_FILE" \
+    '.tasks[$challenger].challengeVariedModel = $reviewerModel
+     | .tasks[$challenger].challengeVariedAgent = $reviewerAgent
+     | .tasks[$issue].updated = (now | todate)' \
+    --arg issue "$issue" \
+    --arg challenger "$challenger_key" \
+    --arg reviewerModel "$reviewer_model" \
+    --arg reviewerAgent "$reviewer_agent" >/dev/null 2>&1 || true
+  challenge_stamp_fork_descriptor "$issue" "$challenger_key" "$primary_feature_dir" "$challenger_feature_dir" "$fork_commit"
+
+  if [[ "$reviewer_agent" == "claude" && -f "$HOME/.claude.json" ]]; then
+    local already_trusted trust_tmp
+    already_trusted=$(jq -r --arg p "$wt_dir" '.projects[$p].hasTrustDialogAccepted // false' "$HOME/.claude.json" 2>/dev/null)
+    if [[ "$already_trusted" != "true" ]]; then
+      trust_tmp=$(mktemp)
+      if jq --arg p "$wt_dir" '
+        .projects[$p] = (.projects[$p] // {})
+        | .projects[$p].hasTrustDialogAccepted = true
+        | .projects[$p].hasCompletedProjectOnboarding = true
+      ' "$HOME/.claude.json" > "$trust_tmp" 2>/dev/null; then
+        mv "$trust_tmp" "$HOME/.claude.json"
+      else
+        rm -f "$trust_tmp"
+      fi
+    fi
+  fi
+
+  write_stage_result_with_history "$challenger_feature_dir" "review" "running" "$reviewer_agent" "$reviewer_launch_model"
+  launch_review_phase "$challenger_key" "$challenger_slug" "$title" "$wt_dir" "$challenger_branch" "$BASE_BRANCH" "$reviewer_launch_model" "$reviewer_agent" "$review_mode" || {
+    challenge_mark_materialize_failed "$issue" "review launch failed"
+    return 1
+  }
+
+  state_mutate "$STATE_FILE" \
+    '(.tasks[$issue].arms // []) as $arms
+     | .tasks[$issue].arms = ($arms | map(
+         if .role == "challenger" and (.key // "") == $challenger
+         then .challengeArmState = "materialized"
+              | .forkCommit = $forkCommit
+              | .materializedAt = (now | todateiso8601)
+         else .
+         end))
+     | .tasks[$issue].challengerLaunched = true
+     | .tasks[$issue].updated = (now | todate)' \
+    --arg issue "$issue" \
+    --arg challenger "$challenger_key" \
+    --arg forkCommit "$fork_commit" >/dev/null 2>&1 || true
+
+  log_route_lifecycle "challenge_forked" \
+    "issue=$issue" \
+    "slug=$primary_slug" \
+    "stage=review" \
+    "forkCommit=$fork_commit" \
+    "challenger=$challenger_key"
+  return 0
+}
+
+challenge_maybe_materialize_deferred_arm() {
+  local issue="$1" slug="$2" feature_dir="$3" wt_dir="$4" title="$5"
+  [[ -n "$issue" && -n "$slug" && -n "$feature_dir" && -n "$wt_dir" ]] || return 0
+
+  local arm_state challenge_role task_status task_aborted head disposition limit attempts reason win
+  arm_state=$(read_state_value "" --arg issue "$issue" '
+    (.tasks[$issue].arms // [])
+    | map(select((.role == "challenger") and
+      (((.challengeArmState // "") | IN("awaiting_fork", "materializing")))))
+    | .[0].challengeArmState // ""
+  ' 2>/dev/null || true)
+  [[ -n "$arm_state" ]] || return 0
+
+  challenge_role=$(get_task_meta "$issue" "challengeRole" 2>/dev/null || true)
+  [[ "$challenge_role" == "primary" ]] || return 0
+  task_status=$(read_state_value "" --arg issue "$issue" '.tasks[$issue].status // ""' 2>/dev/null || true)
+  task_aborted=$(read_state_value "" --arg issue "$issue" '.tasks[$issue].challengeAborted // ""' 2>/dev/null || true)
+  [[ "$task_status" != "aborted" && "$task_status" != "error" && -z "$task_aborted" ]] || return 0
+
+  head=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)
+  limit="${WAVEMILL_CHALLENGE_MATERIALIZE_MAX_ATTEMPTS:-4}"
+  [[ "$limit" =~ ^[0-9]+$ ]] || limit=4
+  disposition=$(bounded_retry_gate "$STATE_DIR" "challenge-materialize" "$head" "$limit")
+  win="$issue-$slug"
+  case "$disposition" in
+    proceed)
+      ;;
+    backoff)
+      log "debug" "  $issue: holding deferred challenger materialization retry (backoff)"
+      return 0
+      ;;
+    exhausted)
+      attempts=$(bounded_retry_count "$STATE_DIR" "challenge-materialize")
+      reason="Deferred challenger materialization exhausted after ${attempts} attempt(s) at head ${head:-unknown}"
+      bounded_retry_mark_exhausted "$STATE_DIR" "challenge-materialize" "$reason" || true
+      challenge_mark_materialize_failed "$issue" "$reason"
+      set_window_attention_state "$win" "needs-user"
+      log_warn "$issue → deferred challenger materialization failed permanently"
+      return 0
+      ;;
+    *)
+      set_window_attention_state "$win" "needs-user"
+      return 0
+      ;;
+  esac
+
+  state_mutate "$STATE_FILE" \
+    '(.tasks[$issue].arms // []) as $arms
+     | .tasks[$issue].arms = ($arms | map(
+         if .role == "challenger" and (.challengeArmState // "") == "awaiting_fork"
+         then .challengeArmState = "materializing"
+              | .materializingAt = (now | todateiso8601)
+         else .
+         end))
+     | .tasks[$issue].updated = (now | todate)' \
+    --arg issue "$issue" >/dev/null 2>&1 || true
+
+  if challenge_materialize_challenger_arm "$issue" "$slug" "$feature_dir" "$wt_dir" "$title"; then
+    bounded_retry_clear "$STATE_DIR" "challenge-materialize"
+  else
+    attempts=$(bounded_retry_increment "$STATE_DIR" "challenge-materialize" "$head")
+    if (( attempts >= limit )); then
+      reason="Deferred challenger materialization exhausted after ${attempts} attempt(s) at head ${head:-unknown}"
+      bounded_retry_mark_exhausted "$STATE_DIR" "challenge-materialize" "$reason" || true
+      challenge_mark_materialize_failed "$issue" "$reason"
+      set_window_attention_state "$win" "needs-user"
+    else
+      state_mutate "$STATE_FILE" \
+        '(.tasks[$issue].arms // []) as $arms
+         | .tasks[$issue].arms = ($arms | map(
+             if .role == "challenger" and (.challengeArmState // "") == "materialize_failed"
+             then .challengeArmState = "awaiting_fork"
+             else .
+             end))
+         | .tasks[$issue].updated = (now | todate)' \
+        --arg issue "$issue" >/dev/null 2>&1 || true
+    fi
+  fi
+  return 0
 }
 
 challenge_cancel_challenger_arm() {
@@ -1579,7 +2045,8 @@ challenge_cancel_challenger_arm() {
            .tasks[$issue].challengeStage,
            .tasks[$issue].challengeVariedModel,
            .tasks[$issue].challengeVariedAgent,
-           .tasks[$issue].challengeModel)
+           .tasks[$issue].challengeModel,
+           .tasks[$issue].arms)
      | .tasks[$issue].updated = (now | todate)' \
     --arg issue "$issue" \
     --arg reason "$reason" \
@@ -11713,6 +12180,7 @@ launch_task() {
   local challenge_role
   challenge_role=$(get_task_meta "$issue" "challengeRole")
   local should_launch_challenger="false"
+  local deferred_challenger="false"
   local challenger_key="" challenger_slug="" challenger_title="$title"
   if [[ -n "$challenge_model" ]]; then
     task_model="$challenge_model"
@@ -12087,11 +12555,20 @@ EOF
       cp "/tmp/${SESSION}-${issue}-issue.json" "/tmp/${SESSION}-${challenger_key}-issue.json" 2>/dev/null || true
       cp "/tmp/${SESSION}-${issue}-taskpacket-details.md" "/tmp/${SESSION}-${challenger_key}-taskpacket-details.md" 2>/dev/null || true
 
-      should_launch_challenger="true"
+      if [[ "$challenge_stage" == "review" ]]; then
+        should_launch_challenger="false"
+        deferred_challenger="true"
+      else
+        should_launch_challenger="true"
+      fi
       LAST_LAUNCHED_SLOTS=1  # Challenger is free overhead, doesn't consume a slot
       primary_varied=$(echo "$challenge_plan" | jq -r '.entries[0].variedModel // .entries[0].model // empty' 2>/dev/null)
       challenger_varied=$(echo "$challenge_plan" | jq -r '.entries[1].variedModel // .entries[1].model // empty' 2>/dev/null)
-      log "status" "  Challenge selected (stage=${challenge_stage}: ${primary_varied} vs ${challenger_varied}) [challenger is extra pane]"
+      if [[ "$deferred_challenger" == "true" ]]; then
+        log "status" "  Challenge selected (stage=${challenge_stage}: ${primary_varied} vs ${challenger_varied}) [challenger deferred until review]"
+      else
+        log "status" "  Challenge selected (stage=${challenge_stage}: ${primary_varied} vs ${challenger_varied}) [challenger is extra pane]"
+      fi
       challenge_assert_arms_diverge "$issue" "$challenge_stage" "$primary_varied" "$challenger_varied" "$challenge_execution_intent"
     elif [[ -n "$challenge_reason" ]] && [[ "$challenge_reason" != "challenge_disabled" ]] && [[ "$challenge_reason" != "roll_not_selected" ]]; then
       log "debug" "  Challenge skipped ($challenge_reason), launching single-model run"
@@ -12295,7 +12772,16 @@ EOF
     effective_challenge="true"
   fi
   save_task_state "$issue" "$slug" "$branch" "$wt_dir" "" "" "${planner_agent:-$task_agent_cmd}" "$linear_issue" "$effective_challenge" "$challenge_pair" "${challenge_role:-}" "$task_model" "$planner_model" "$task_model" "$reviewer_model" "$plan_depth" "$code_depth" "$review_mode" "${challenge_stage:-}"
-  if [[ "$challenge_enabled_for_launch" == "true" ]]; then
+  if [[ "$challenge_enabled_for_launch" == "true" && "$deferred_challenger" == "true" ]]; then
+    challenge_write_review_deferred_arms "$issue" "$slug" "$challenge_stage" "$primary_varied" "$challenger_varied" \
+      "$planner_model" "$task_model" "$reviewer_model" "${planner_agent:-$task_agent_cmd}" "$task_agent_cmd" "$reviewer_agent" \
+      "$plan_depth" "$code_depth" "$review_mode" "$challenger_key" "$challenger_slug" \
+      "$challenger_planner" "$challenger_model" "$challenger_reviewer" "$challenger_planner_agent" "$challenger_agent" "$challenger_reviewer_agent" \
+      "$challenger_plan_depth" "$challenger_code_depth" "$challenger_review_mode"
+    persist_challenge_execution_intent "$issue" "$challenger_key" \
+      "${WORKTREE_ROOT}/${slug}/features/${slug}" \
+      "$challenge_execution_intent"
+  elif [[ "$challenge_enabled_for_launch" == "true" ]]; then
     save_task_state "$challenger_key" "$challenger_slug" "task/${challenger_slug}" "${WORKTREE_ROOT}/${challenger_slug}" "" "" "${challenger_planner_agent:-$challenger_agent}" "$linear_issue" "true" "$challenge_pair" "challenger" "$challenger_model" "$challenger_planner" "$challenger_model" "$challenger_reviewer" "$challenger_plan_depth" "$challenger_code_depth" "$challenger_review_mode" "$challenge_stage"
     state_mutate "$STATE_FILE" '.tasks[$issue].challengeStage = $stage' --arg issue "$challenger_key" --arg stage "$challenge_stage" || true
     state_mutate "$STATE_FILE" \
@@ -14457,6 +14943,14 @@ monitor_issue_state() {
             set_window_attention_state "$WIN" "needs-user"
             return 0
           fi
+
+          local review_title
+          review_title=$(read_state_value "" --arg i "$ISSUE" '.tasks[$i].title // ""')
+          if [[ -z "$review_title" ]]; then
+            issue_json=$(cat "/tmp/${SESSION}-${ISSUE}-issue.json" 2>/dev/null || echo "{}")
+            review_title=$(echo "$issue_json" | jq -r '.title // "Task"' 2>/dev/null || echo "Task")
+          fi
+          challenge_maybe_materialize_deferred_arm "$ISSUE" "$SLUG" "$FEATURE_DIR" "$WT_DIR" "$review_title"
 
           local review_status
           local pr_number

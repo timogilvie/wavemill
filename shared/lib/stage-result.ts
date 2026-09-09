@@ -249,6 +249,8 @@ export type StageArtifacts = (
 export interface StageResult {
   stage: StageName;
   status: StageStatus;
+  /** Producer/provenance marker for copied pre-fork artifacts. */
+  source?: 'inherited';
   startedAt: string;
   finishedAt: string | null;
   agent: string;

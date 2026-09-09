@@ -499,7 +499,7 @@ write_launch_plan() {
   local tasks_json='[]'
   local t issue slug title branch wt_dir linear_issue task_packet_file details_file issue_json_file route_file
   local route_json route_planner route_coder route_reviewer route_plan_depth route_code_depth route_review_mode route_max_cost_usd
-  local route_payload challenge_flag challenge_pair challenge_role challenge_model migration_number task_agent
+  local route_payload challenge_flag challenge_pair challenge_role challenge_model challenge_stage migration_number task_agent deferred_arms
   local depends_on base_from_task attempt_id attempt_json
 
   for t in "${LAUNCH_ARGS[@]}"; do
@@ -529,6 +529,7 @@ write_launch_plan() {
     challenge_role="${TASK_CHALLENGE_ROLE_BY_ISSUE[$issue]:-}"
     challenge_model="${TASK_CHALLENGE_MODEL_BY_ISSUE[$issue]:-}"
     challenge_stage="${TASK_CHALLENGE_STAGE_BY_ISSUE[$issue]:-}"
+    deferred_arms="${TASK_DEFERRED_ARMS_BY_ISSUE[$issue]:-null}"
     migration_number="$(jq -r --arg issue "$issue" '.migrationReservations[$issue] // empty' "$STATE_FILE" 2>/dev/null || echo "")"
     task_agent="${TASK_AGENT_BY_ISSUE[$issue]:-$AGENT_CMD}"
 
@@ -594,6 +595,7 @@ write_launch_plan() {
       --arg challengeModel "$challenge_model" \
       --arg challengeStage "$challenge_stage" \
       --argjson challengeIntent "${TASK_CHALLENGE_INTENT_BY_ISSUE[$issue]:-null}" \
+      --argjson deferredArms "$deferred_arms" \
       --arg migrationNumber "$migration_number" \
       --arg agent "$task_agent" \
       --argjson dependsOn "$depends_on" \
@@ -618,6 +620,7 @@ write_launch_plan() {
         challengeModel: (if $challengeModel == "" then null else $challengeModel end),
         challengeStage: (if $challengeStage == "" then null else $challengeStage end),
         challengeIntent: $challengeIntent,
+        deferredArms: $deferredArms,
         migrationNumber: (if $migrationNumber == "" then null else ($migrationNumber | tonumber) end),
         agent: $agent
       } + (if ($baseFromTask != "null" or ($dependsOn | length > 0)) then {dependsOn: $dependsOn, baseFromTask: (if $baseFromTask == "null" then null else $baseFromTask end)} else {} end)]')"
@@ -1923,6 +1926,7 @@ declare -A TASK_CHALLENGE_ROLE_BY_ISSUE
 declare -A TASK_CHALLENGE_MODEL_BY_ISSUE
 declare -A TASK_CHALLENGE_STAGE_BY_ISSUE
 declare -A TASK_CHALLENGE_INTENT_BY_ISSUE
+declare -A TASK_DEFERRED_ARMS_BY_ISSUE
 declare -A TASK_AGENT_BY_ISSUE
 declare -A TASK_PLANNER_MODEL_BY_ISSUE
 declare -A TASK_CODER_MODEL_BY_ISSUE
@@ -2333,16 +2337,20 @@ for t in "${TASKS[@]}"; do
     primary_entry_planner=$(echo "$challenge_plan" | jq -r '.entries[0].planner // empty' 2>/dev/null)
     primary_entry_reviewer=$(echo "$challenge_plan" | jq -r '.entries[0].reviewer // empty' 2>/dev/null)
     primary_entry_planner_agent=$(echo "$challenge_plan" | jq -r '.entries[0].plannerAgent // empty' 2>/dev/null)
+    primary_entry_reviewer_agent=$(echo "$challenge_plan" | jq -r '.entries[0].reviewerAgent // empty' 2>/dev/null)
     primary_entry_plan_depth=$(echo "$challenge_plan" | jq -r '.entries[0].planDepth // empty' 2>/dev/null)
     primary_entry_code_depth=$(echo "$challenge_plan" | jq -r '.entries[0].codeDepth // empty' 2>/dev/null)
     primary_entry_review_mode=$(echo "$challenge_plan" | jq -r '.entries[0].reviewMode // empty' 2>/dev/null)
     challenger_entry_planner=$(echo "$challenge_plan" | jq -r '.entries[1].planner // empty' 2>/dev/null)
     challenger_entry_reviewer=$(echo "$challenge_plan" | jq -r '.entries[1].reviewer // empty' 2>/dev/null)
     challenger_entry_planner_agent=$(echo "$challenge_plan" | jq -r '.entries[1].plannerAgent // empty' 2>/dev/null)
+    challenger_entry_reviewer_agent=$(echo "$challenge_plan" | jq -r '.entries[1].reviewerAgent // empty' 2>/dev/null)
     challenger_entry_plan_depth=$(echo "$challenge_plan" | jq -r '.entries[1].planDepth // empty' 2>/dev/null)
     challenger_entry_code_depth=$(echo "$challenge_plan" | jq -r '.entries[1].codeDepth // empty' 2>/dev/null)
     challenger_entry_review_mode=$(echo "$challenge_plan" | jq -r '.entries[1].reviewMode // empty' 2>/dev/null)
-    challenge_intent=$(echo "$challenge_plan" | jq -c '.challengeIntent // null' 2>/dev/null || echo "null")
+    challenge_intent=$(echo "$challenge_plan" | jq -c '.challengeExecutionIntent // .challengeIntent // null' 2>/dev/null || echo "null")
+    primary_varied=$(echo "$challenge_plan" | jq -r '.entries[0].variedModel // .entries[0].model // empty' 2>/dev/null)
+    challenger_varied=$(echo "$challenge_plan" | jq -r '.entries[1].variedModel // .entries[1].model // empty' 2>/dev/null)
 
     cp "/tmp/${SESSION}-${ISSUE}-taskpacket.md" "/tmp/${SESSION}-${challenger_key}-taskpacket.md" 2>/dev/null || true
     cp "/tmp/${SESSION}-${ISSUE}-issue.json" "/tmp/${SESSION}-${challenger_key}-issue.json" 2>/dev/null || true
@@ -2363,28 +2371,65 @@ for t in "${TASKS[@]}"; do
     TASK_CODE_DEPTH_BY_ISSUE["$ISSUE"]="${primary_entry_code_depth:-$route_code_depth}"
     TASK_REVIEW_MODE_BY_ISSUE["$ISSUE"]="${primary_entry_review_mode:-$route_review_mode}"
 
-    TASK_LINEAR_ISSUE_BY_ISSUE["$challenger_key"]="$ISSUE"
-    TASK_CHALLENGE_BY_ISSUE["$challenger_key"]="true"
-    TASK_CHALLENGE_PAIR_BY_ISSUE["$challenger_key"]="$ISSUE"
-    TASK_CHALLENGE_ROLE_BY_ISSUE["$challenger_key"]="challenger"
-    TASK_CHALLENGE_MODEL_BY_ISSUE["$challenger_key"]="$challenger_model"
-    TASK_CHALLENGE_STAGE_BY_ISSUE["$challenger_key"]="$challenge_stage"
-    TASK_CHALLENGE_INTENT_BY_ISSUE["$challenger_key"]="$challenge_intent"
-    TASK_AGENT_BY_ISSUE["$challenger_key"]="${challenger_entry_planner_agent:-${challenger_agent:-$AGENT_CMD}}"
-    # Stage-varied challengers carry their own planner/reviewer in the entry
-    TASK_PLANNER_MODEL_BY_ISSUE["$challenger_key"]="${challenger_entry_planner:-$route_planner}"
-    TASK_CODER_MODEL_BY_ISSUE["$challenger_key"]="$challenger_model"
-    TASK_REVIEWER_MODEL_BY_ISSUE["$challenger_key"]="${challenger_entry_reviewer:-$route_reviewer}"
-    TASK_PLAN_DEPTH_BY_ISSUE["$challenger_key"]="${challenger_entry_plan_depth:-$route_plan_depth}"
-    TASK_CODE_DEPTH_BY_ISSUE["$challenger_key"]="${challenger_entry_code_depth:-$route_code_depth}"
-    TASK_REVIEW_MODE_BY_ISSUE["$challenger_key"]="${challenger_entry_review_mode:-$route_review_mode}"
-
     FINAL_LAUNCH_ARGS+=("$ISSUE|$SLUG|$TITLE")
-    FINAL_LAUNCH_ARGS+=("$challenger_key|$challenger_slug|$TITLE")
+    if [[ "$challenge_stage" == "review" ]]; then
+      TASK_DEFERRED_ARMS_BY_ISSUE["$ISSUE"]="$(jq -cn \
+        --arg issue "$ISSUE" \
+        --arg slug "$SLUG" \
+        --arg primaryVaried "$primary_varied" \
+        --arg challengerKey "$challenger_key" \
+        --arg challengerSlug "$challenger_slug" \
+        --arg challengerVaried "$challenger_varied" \
+        --arg planner "${primary_entry_planner:-$route_planner}" \
+        --arg coder "$primary_model" \
+        --arg reviewer "${primary_entry_reviewer:-$route_reviewer}" \
+        --arg plannerAgent "${primary_entry_planner_agent:-${primary_agent:-$rec_agent}}" \
+        --arg coderAgent "${primary_agent:-$rec_agent}" \
+        --arg reviewerAgent "${primary_entry_reviewer_agent:-${primary_agent:-$rec_agent}}" \
+        --arg planDepth "${primary_entry_plan_depth:-$route_plan_depth}" \
+        --arg codeDepth "${primary_entry_code_depth:-$route_code_depth}" \
+        --arg reviewMode "${primary_entry_review_mode:-$route_review_mode}" \
+        --arg challengerPlanner "${challenger_entry_planner:-$route_planner}" \
+        --arg challengerCoder "$challenger_model" \
+        --arg challengerReviewer "${challenger_entry_reviewer:-$route_reviewer}" \
+        --arg challengerPlannerAgent "${challenger_entry_planner_agent:-${challenger_agent:-$AGENT_CMD}}" \
+        --arg challengerCoderAgent "${challenger_agent:-$AGENT_CMD}" \
+        --arg challengerReviewerAgent "${challenger_entry_reviewer_agent:-${challenger_agent:-$AGENT_CMD}}" \
+        --arg challengerPlanDepth "${challenger_entry_plan_depth:-$route_plan_depth}" \
+        --arg challengerCodeDepth "${challenger_entry_code_depth:-$route_code_depth}" \
+        --arg challengerReviewMode "${challenger_entry_review_mode:-$route_review_mode}" \
+        '[
+          {role:"primary", key:$issue, slug:$slug, branch:("task/" + $slug), challengeArmState:"live", variedStage:"review", challengeModel:$primaryVaried,
+           models:{planner:$planner, coder:$coder, reviewer:$reviewer, plannerAgent:$plannerAgent, coderAgent:$coderAgent, reviewerAgent:$reviewerAgent, planDepth:$planDepth, codeDepth:$codeDepth, reviewMode:$reviewMode}},
+          {role:"challenger", key:$challengerKey, slug:$challengerSlug, branch:("task/" + $challengerSlug), challengeArmState:"awaiting_fork", variedStage:"review", challengeModel:$challengerVaried,
+           models:{planner:$challengerPlanner, coder:$challengerCoder, reviewer:$challengerReviewer, plannerAgent:$challengerPlannerAgent, coderAgent:$challengerCoderAgent, reviewerAgent:$challengerReviewerAgent, planDepth:$challengerPlanDepth, codeDepth:$challengerCodeDepth, reviewMode:$challengerReviewMode}}
+        ]')"
+    else
+      TASK_DEFERRED_ARMS_BY_ISSUE["$ISSUE"]="null"
+      TASK_LINEAR_ISSUE_BY_ISSUE["$challenger_key"]="$ISSUE"
+      TASK_CHALLENGE_BY_ISSUE["$challenger_key"]="true"
+      TASK_CHALLENGE_PAIR_BY_ISSUE["$challenger_key"]="$ISSUE"
+      TASK_CHALLENGE_ROLE_BY_ISSUE["$challenger_key"]="challenger"
+      TASK_CHALLENGE_MODEL_BY_ISSUE["$challenger_key"]="$challenger_model"
+      TASK_CHALLENGE_STAGE_BY_ISSUE["$challenger_key"]="$challenge_stage"
+      TASK_CHALLENGE_INTENT_BY_ISSUE["$challenger_key"]="$challenge_intent"
+      TASK_DEFERRED_ARMS_BY_ISSUE["$challenger_key"]="null"
+      TASK_AGENT_BY_ISSUE["$challenger_key"]="${challenger_entry_planner_agent:-${challenger_agent:-$AGENT_CMD}}"
+      # Stage-varied challengers carry their own planner/reviewer in the entry
+      TASK_PLANNER_MODEL_BY_ISSUE["$challenger_key"]="${challenger_entry_planner:-$route_planner}"
+      TASK_CODER_MODEL_BY_ISSUE["$challenger_key"]="$challenger_model"
+      TASK_REVIEWER_MODEL_BY_ISSUE["$challenger_key"]="${challenger_entry_reviewer:-$route_reviewer}"
+      TASK_PLAN_DEPTH_BY_ISSUE["$challenger_key"]="${challenger_entry_plan_depth:-$route_plan_depth}"
+      TASK_CODE_DEPTH_BY_ISSUE["$challenger_key"]="${challenger_entry_code_depth:-$route_code_depth}"
+      TASK_REVIEW_MODE_BY_ISSUE["$challenger_key"]="${challenger_entry_review_mode:-$route_review_mode}"
+      FINAL_LAUNCH_ARGS+=("$challenger_key|$challenger_slug|$TITLE")
+    fi
     slots_used=$((slots_used + 1))  # Challenger is free overhead
-    primary_varied=$(echo "$challenge_plan" | jq -r '.entries[0].variedModel // .entries[0].model // empty' 2>/dev/null)
-    challenger_varied=$(echo "$challenge_plan" | jq -r '.entries[1].variedModel // .entries[1].model // empty' 2>/dev/null)
-    log "status" "  $ISSUE: Challenge selected (stage=${challenge_stage}: ${primary_varied} vs ${challenger_varied}) [challenger is extra pane]"
+    if [[ "$challenge_stage" == "review" ]]; then
+      log "status" "  $ISSUE: Challenge selected (stage=${challenge_stage}: ${primary_varied} vs ${challenger_varied}) [challenger deferred until review]"
+    else
+      log "status" "  $ISSUE: Challenge selected (stage=${challenge_stage}: ${primary_varied} vs ${challenger_varied}) [challenger is extra pane]"
+    fi
   else
     if [[ -n "$challenge_reason" ]] && [[ "$challenge_reason" != "challenge_disabled" ]] && [[ "$challenge_reason" != "roll_not_selected" ]]; then
       log "debug" "  $ISSUE: Challenge skipped ($challenge_reason), launching single-model run"
@@ -2396,6 +2441,7 @@ for t in "${TASKS[@]}"; do
     TASK_CHALLENGE_MODEL_BY_ISSUE["$ISSUE"]=""
     TASK_CHALLENGE_STAGE_BY_ISSUE["$ISSUE"]=""
     TASK_CHALLENGE_INTENT_BY_ISSUE["$ISSUE"]="null"
+    TASK_DEFERRED_ARMS_BY_ISSUE["$ISSUE"]="null"
     TASK_AGENT_BY_ISSUE["$ISSUE"]="$rec_agent"
     TASK_PLANNER_MODEL_BY_ISSUE["$ISSUE"]="$route_planner"
     TASK_CODER_MODEL_BY_ISSUE["$ISSUE"]="$rec_model"

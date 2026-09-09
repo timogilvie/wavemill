@@ -1012,7 +1012,7 @@ startup_run_task_phases() {
   local task_json="$1" ordinal="${2:-}" total="${3:-}"
   local issue slug title branch wt_dir linear_issue task_packet_file details_file issue_json_file
   local planner_model coder_model reviewer_model plan_depth code_depth review_mode route_max_cost_usd
-  local challenge challenge_pair challenge_role challenge_model challenge_stage task_agent win
+  local challenge challenge_pair challenge_role challenge_model challenge_stage challenge_intent deferred_arms task_agent win
   local depends_on base_from_task
   local packet_content issue_json issue_description issue_context details_context labels_json
   local feature_dir status_file planning_prompt instr_file created_window created_window_id state_written created_new=false planner_launch_model
@@ -1047,6 +1047,8 @@ startup_run_task_phases() {
   challenge_role="$(echo "$task_json" | jq -r '.challengeRole // empty')"
   challenge_model="$(echo "$task_json" | jq -r '.challengeModel // empty')"
   challenge_stage="$(echo "$task_json" | jq -r '.challengeStage // empty')"
+  challenge_intent="$(echo "$task_json" | jq -c '.challengeIntent // null' 2>/dev/null || echo "null")"
+  deferred_arms="$(echo "$task_json" | jq -c '.deferredArms // null' 2>/dev/null || echo "null")"
   task_agent="$(echo "$task_json" | jq -r '.agent // empty')"
   attempt_json="$(echo "$task_json" | jq -c '.attempt // empty' 2>/dev/null || true)"
   pr_reconciliation_json="$(echo "$task_json" | jq -c '.prReconciliation // empty' 2>/dev/null || true)"
@@ -1359,6 +1361,25 @@ $details_context"
   fi
   wavemill_lock_run "state" wavemill_persist_attempt_reconciliation "$issue" "$attempt_json" "$pr_reconciliation_json" "startup-runner" >/dev/null 2>&1 || true
 
+  if [[ "$challenge_intent" != "null" ]]; then
+    printf '%s\n' "$challenge_intent" | jq -S . > "$feature_dir/.challenge-intent.json" 2>/dev/null || true
+    if [[ ! -f "$feature_dir/challenge-intent.json" ]]; then
+      printf '%s\n' "$challenge_intent" | jq -S . > "$feature_dir/challenge-intent.json" 2>/dev/null || true
+    fi
+    wavemill_lock_run "state" state_mutate "$STATE_FILE" \
+      '.tasks[$issue].challengeExecutionIntent = $intent
+       | .tasks[$issue].updated = (now | todate)' \
+      --arg issue "$issue" \
+      --argjson intent "$challenge_intent" >/dev/null 2>&1 || true
+  fi
+  if [[ "$deferred_arms" != "null" ]]; then
+    wavemill_lock_run "state" state_mutate "$STATE_FILE" \
+      '.tasks[$issue].arms = $arms
+       | .tasks[$issue].updated = (now | todate)' \
+      --arg issue "$issue" \
+      --argjson arms "$deferred_arms" >/dev/null 2>&1 || true
+  fi
+
   if [[ -n "$challenge_stage" ]]; then
     wavemill_lock_run "state" state_mutate "$STATE_FILE" '.tasks[$issue].challengeStage = $stage' \
       --arg issue "$issue" --arg stage "$challenge_stage" >/dev/null 2>&1 || true
@@ -1418,6 +1439,20 @@ $details_context"
     return 1
   fi
   wavemill_lock_run "state" wavemill_persist_attempt_reconciliation "$issue" "$attempt_json" "$pr_reconciliation_json" "startup-runner" >/dev/null 2>&1 || true
+  if [[ "$challenge_intent" != "null" ]]; then
+    wavemill_lock_run "state" state_mutate "$STATE_FILE" \
+      '.tasks[$issue].challengeExecutionIntent = $intent
+       | .tasks[$issue].updated = (now | todate)' \
+      --arg issue "$issue" \
+      --argjson intent "$challenge_intent" >/dev/null 2>&1 || true
+  fi
+  if [[ "$deferred_arms" != "null" ]]; then
+    wavemill_lock_run "state" state_mutate "$STATE_FILE" \
+      '.tasks[$issue].arms = $arms
+       | .tasks[$issue].updated = (now | todate)' \
+      --arg issue "$issue" \
+      --argjson arms "$deferred_arms" >/dev/null 2>&1 || true
+  fi
   startup_step "[6/7] Launching agent...        ✓"
   if [[ -n "${created_window_id:-}" ]] && declare -F wavemill_apply_window_metadata >/dev/null 2>&1; then
     wavemill_apply_window_metadata "$SESSION" "$issue" "${created_window_id:-}" "$STATE_FILE" >/dev/null 2>&1 || true

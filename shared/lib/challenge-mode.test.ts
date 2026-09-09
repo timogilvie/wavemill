@@ -3084,6 +3084,27 @@ test('buildChallengeExecutionIntent emits fork descriptor fields and per-side in
   assert.deepEqual(intent.challenger!.inheritedStages, []);
 });
 
+test('buildChallengeExecutionIntent accepts fork descriptor passthrough', () => {
+  const intent = buildChallengeExecutionIntent({
+    pairId: 'HOK-2811',
+    issueId: 'HOK-2811',
+    selectedStage: 'review',
+    primary: intentEntry('primary'),
+    challenger: intentEntry('challenger'),
+    forkStage: 'review',
+    forkCommit: 'abc123',
+    sharedPrefix: true,
+    primaryInheritedStages: [],
+    challengerInheritedStages: ['plan', 'implementation'],
+  });
+
+  assert.equal(intent.forkStage, 'review');
+  assert.equal(intent.forkCommit, 'abc123');
+  assert.equal(intent.sharedPrefix, true);
+  assert.deepEqual(intent.primary!.inheritedStages, []);
+  assert.deepEqual(intent.challenger!.inheritedStages, ['plan', 'implementation']);
+});
+
 process.on('exit', () => {
   console.log(`\nPassed: ${passed}`);
   console.log(`Failed: ${failed}`);

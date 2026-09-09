@@ -126,6 +126,7 @@ for f in \
   "$REPO_DIR"/tests/fresh-launch-terminal-preflight.test.sh \
   "$REPO_DIR"/tests/startup-cleanup-integration.test.sh \
   "$REPO_DIR"/tests/challenge-intent-roundtrip.test.sh \
+  "$REPO_DIR"/tests/deferred-reviewer-challenge.test.sh \
   "$REPO_DIR"/tests/challenge-varied-model-abort.test.sh \
   "$REPO_DIR"/tests/challenge-record-decisive.test.sh \
   "$REPO_DIR"/tests/native-terminal-failure.test.sh \

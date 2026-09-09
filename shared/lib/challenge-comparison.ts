@@ -686,7 +686,7 @@ function parseStageArtifact(
     rawModel,
     agent: normalizeUnknown(parsed.agent),
     status: parsed.status,
-    source,
+    source: parsed.source === 'inherited' ? 'inherited' : source,
     artifactPath,
     consultedArtifactPaths,
   };

@@ -34,6 +34,7 @@ TESTS=(
   routing-complete-writes.test.sh
   apply-expanded-route.test.sh
   challenge-intent-roundtrip.test.sh
+  deferred-reviewer-challenge.test.sh
   challenge-varied-model-abort.test.sh
   challenge-record-decisive.test.sh
   native-terminal-failure.test.sh

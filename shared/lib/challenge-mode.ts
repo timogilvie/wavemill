@@ -244,6 +244,11 @@ export function buildChallengeExecutionIntent(input: {
   modelExclusions?: ModelExclusionDiagnostic[];
   fallbackReason?: string;
   noChallengeReason?: string;
+  forkStage?: ChallengeStage | null;
+  forkCommit?: string | null;
+  sharedPrefix?: boolean;
+  primaryInheritedStages?: ChallengeStage[];
+  challengerInheritedStages?: ChallengeStage[];
 }): ChallengeExecutionIntent {
   // `challengeStage` and `selectedStage` are emitted together and always agree.
   // Consumers historically read one or the other; emitting both means neither
@@ -251,10 +256,13 @@ export function buildChallengeExecutionIntent(input: {
   const stage: ChallengeStage = input.selectedStage || 'implementation';
   const asIntentSide = (
     side: ChallengeTaskEntry | ChallengeExecutionIntentSide | undefined,
+    inheritedStages?: ChallengeStage[],
   ): ChallengeExecutionIntentSide | undefined => {
     if (!side) return undefined;
-    if ('coder' in side) return withSideProjection(side, { pairId: input.pairId, stage });
-    return intentSideFromEntry(side, { pairId: input.pairId, stage });
+    const projected = 'coder' in side
+      ? withSideProjection(side, { pairId: input.pairId, stage })
+      : intentSideFromEntry(side, { pairId: input.pairId, stage });
+    return inheritedStages ? { ...projected, inheritedStages } : projected;
   };
 
   return {
@@ -269,17 +277,17 @@ export function buildChallengeExecutionIntent(input: {
     ...(input.challengerSource ? { challengerSource: input.challengerSource } : {}),
     ...(input.challengeRecommendation ? { challengeRecommendation: input.challengeRecommendation } : {}),
     ...(input.routeContext ? { routeContext: input.routeContext } : {}),
-    ...(asIntentSide(input.primary) ? { primary: asIntentSide(input.primary) } : {}),
-    ...(asIntentSide(input.challenger) ? { challenger: asIntentSide(input.challenger) } : {}),
+    ...(asIntentSide(input.primary, input.primaryInheritedStages) ? { primary: asIntentSide(input.primary, input.primaryInheritedStages) } : {}),
+    ...(asIntentSide(input.challenger, input.challengerInheritedStages) ? { challenger: asIntentSide(input.challenger, input.challengerInheritedStages) } : {}),
     ...(input.nativeCertificationRejections?.length
       ? { nativeCertificationRejections: input.nativeCertificationRejections }
       : {}),
     ...(input.modelExclusions?.length ? { modelExclusions: input.modelExclusions } : {}),
     ...(input.fallbackReason ? { fallbackReason: input.fallbackReason } : {}),
     ...(input.noChallengeReason ? { noChallengeReason: input.noChallengeReason } : {}),
-    forkStage: null,
-    forkCommit: null,
-    sharedPrefix: false,
+    forkStage: input.forkStage ?? null,
+    forkCommit: input.forkCommit ?? null,
+    sharedPrefix: input.sharedPrefix ?? false,
   };
 }
 

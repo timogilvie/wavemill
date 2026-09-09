@@ -665,6 +665,31 @@ test('resolver canonicalizes native OpenRouter Kimi planner provenance and prese
   }
 });
 
+test('resolver maps inherited stage artifacts to inherited provenance source', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'challenge-provenance-test-'));
+  try {
+    const featureDir = join(tmp, 'features', 'inherited');
+    mkdirSync(featureDir, { recursive: true });
+    writeFileSync(join(featureDir, '.coding-result.json'), JSON.stringify({
+      stage: 'coding',
+      status: 'completed',
+      source: 'inherited',
+      startedAt: '2026-01-01T00:00:00.000Z',
+      finishedAt: '2026-01-01T00:01:00.000Z',
+      agent: 'codex',
+      model: 'gpt-5.5',
+      notes: '',
+    }));
+
+    const resolved = resolveChallengeSideExecutionProvenance({ featureDir });
+    assert.equal(resolved.coding.source, 'inherited');
+    assert.equal(resolved.coding.status, 'completed');
+    assert.equal(resolved.coding.model, 'gpt-5.5');
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test('planner intent mismatch with native Kimi execution invalidates challenged stage', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'challenge-provenance-test-'));
   try {
