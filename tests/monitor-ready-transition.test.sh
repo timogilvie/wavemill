@@ -770,12 +770,12 @@ check_contains "settled comparison completes ready" "$challenge_settled_output" 
 check_contains "settled comparison keeps attention clear" "$challenge_settled_output" "attention=clear"
 check_contains "settled comparison does not increment generic budget" "$challenge_settled_output" "pending_count=2"
 
-# A compared-but-stale pair has no launchable work: it falls back to the
-# bounded generic pending path, which consumes its own budget as before.
+# Missing pair identity (rc=3) falls back to the bounded generic pending
+# path, which behaves exactly as before.
 challenge_fallback_output="$(run_monitor_case challenge_pending_compared_falls_back)"
-check_contains "compared fallback invokes handler" "$challenge_fallback_output" "handler_calls=1"
-check_contains "compared fallback relaunches ready via generic path" "$challenge_fallback_output" "ready_launches=1"
-check_contains "compared fallback clears generic budget after relaunch" "$challenge_fallback_output" "pending_count=
+check_contains "handler fallback invokes handler" "$challenge_fallback_output" "handler_calls=1"
+check_contains "handler fallback relaunches ready via generic path" "$challenge_fallback_output" "ready_launches=1"
+check_contains "handler fallback clears generic budget after relaunch" "$challenge_fallback_output" "pending_count=
 "
 
 # An untyped pending on a challenge task keeps the generic CI re-poll path.

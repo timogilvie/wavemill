@@ -9787,8 +9787,8 @@ challenge_eval_stale_relaunch_allowed() {
 #   1 - terminal manual state (operator attention required)
 #   2 - a comparison settled since Ready last ran; caller should re-run Ready
 #       to canonicalize the final verdict
-#   3 - not orchestration work (no pair id, or the pair is already compared);
-#       caller falls back to the generic pending-ready handling
+#   3 - not orchestration work (no challenge pair identity); caller falls
+#       back to the generic pending-ready handling
 handle_challenge_pending_ready() {
   local issue="$1" pr="$2" branch="$3" slug="$4" state_dir="$5"
   local pair_id primary_key comparison_state progress_before progress_after
@@ -9813,11 +9813,15 @@ handle_challenge_pending_ready() {
   esac
 
   # Already-compared pairs have no launchable eval/comparison work left; a
-  # typed pending here means the recorded comparison is stale for the current
-  # heads. Route back to the bounded generic pending-ready path instead of
-  # looping here forever.
+  # typed pending here means the recorded comparison does not satisfy Ready
+  # at the current heads (stale evidence after a head change). Re-running
+  # Ready cannot change that, so surface explicit operator attention instead
+  # of looping (the safe pre-HOK-2963 stall, without accepting stale
+  # evidence).
   if [[ "$(read_state_value "false" --arg i "$primary_key" '.tasks[$i].challengeCompared // false')" == "true" ]]; then
-    return 3
+    write_ready_attention_file "$state_dir" \
+      "Challenge pair $pair_id has a comparison record that does not satisfy Ready at the current heads for PR #$pr (stale evidence after a head change). Manual supersession or re-comparison required."
+    return 1
   fi
 
   progress_before=$(challenge_orchestration_fingerprint "$pair_id")
@@ -15715,8 +15719,7 @@ monitor_issue_state() {
         active_count=$((active_count + 1))
         return 0
       fi
-      # rc 3: no launchable orchestration work (e.g. the pair is already
-      # compared but stale at the current heads) — fall through to the
+      # rc 3: no challenge pair identity in state — fall through to the
       # bounded generic pending-ready re-check below.
     fi
 

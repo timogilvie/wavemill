@@ -1733,12 +1733,14 @@ output="$(run_challenge_pending_case invalid_state)"
 check_contains "invalid challenge state reports terminal" "$output" "rc=1"
 
 # An already-compared pair with a typed pending verdict has no launchable
-# work: route back to the bounded generic pending path (rc=3), untouched.
+# work and re-running Ready cannot change the stale record: surface explicit
+# operator attention instead of looping (rc=1).
 output="$(run_challenge_pending_case already_compared)"
-check_contains "already compared falls back to generic path" "$output" "rc=3"
+check_contains "already compared surfaces operator attention" "$output" "rc=1"
 check_contains "already compared launches nothing" "$output" "eval_calls=0 comparison_calls=0"
 check_contains "already compared keeps generic budget intact" "$output" "recheck_count=2"
-check_contains "already compared keeps attention intact" "$output" "attention=present"
+check_contains "already compared writes an attention explanation" "$output" "attention=present"
+check_contains "already compared names the stale-record cause" "$output" "attention_writes=1"
 
 # Structured same-head progress clears stale attention and exhaustion.
 output="$(run_challenge_pending_case progress)"
