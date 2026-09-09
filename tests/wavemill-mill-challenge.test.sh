@@ -689,6 +689,66 @@ bash -lc '
   || fail "missing entries[1].model incorrectly triggered challenger save"
 
 echo ""
+echo "=== HOK-2811: Review-stage deferral (Arbiter P2.4a) ==="
+
+# The startup Phase 5 block must gate FINAL_LAUNCH_ARGS challenger append on
+# defer_challenger, and record the pending arm when deferring.
+MILL_REVIEW_BLOCK="$(awk '
+  /HOK-2811: Review-stage challenges defer the challenger to a fork trigger/ { capture=1 }
+  capture { print }
+  /challenge_arms_record_pending "\$ISSUE"/ && capture { print; exit }
+' "$MILL_SCRIPT")"
+
+check_contains "startup gates FINAL_LAUNCH_ARGS challenger on defer" "$MILL_REVIEW_BLOCK" 'if [[ "$defer_challenger" != "true" ]]; then
+      FINAL_LAUNCH_ARGS+=("$challenger_key|$challenger_slug|$TITLE")'
+check_contains "startup records pending arm when deferring" "$MILL_REVIEW_BLOCK" 'challenge_arms_record_pending "$ISSUE"'
+check_contains "startup uses challenge_arm_json_build" "$MILL_REVIEW_BLOCK" 'challenge_arm_json_build'
+
+# The monitor's launch_task defers on review-stage as well.
+MONITOR_LAUNCH_BLOCK="$(awk '
+  /HOK-2811: Review-stage challenges defer the challenger to a fork trigger/ { capture=1 }
+  capture { print }
+  /should_launch_challenger="false"/ && capture { exit }
+' "$MONITOR_SCRIPT_FILE")"
+
+check_contains "monitor sets defer_challenger for review stage" "$MONITOR_LAUNCH_BLOCK" 'if [[ "$challenge_stage" == "review" ]]; then'
+
+MONITOR_STATE_BLOCK="$(awk '
+  /HOK-2811: Review-stage — record the challenger as a pending arm/ { capture=1 }
+  capture { print }
+  /persist_challenge_execution_intent "\$issue" "\$challenger_key" \\/ && capture { exit }
+' "$MONITOR_SCRIPT_FILE")"
+
+check_contains "monitor records pending arm on defer" "$MONITOR_STATE_BLOCK" 'challenge_arms_record_pending "$issue"'
+
+# The materialiser and fork-trigger functions exist.
+if grep -q '^challenge_materialize_challenger_arm() {' "$MONITOR_SCRIPT_FILE"; then
+  pass "challenge_materialize_challenger_arm() defined"
+else
+  fail "challenge_materialize_challenger_arm() defined"
+fi
+
+if grep -q '^challenge_maybe_materialize_deferred_arms() {' "$MONITOR_SCRIPT_FILE"; then
+  pass "challenge_maybe_materialize_deferred_arms() defined"
+else
+  fail "challenge_maybe_materialize_deferred_arms() defined"
+fi
+
+# Fork descriptor writer must exist and be documented as seal-exempt.
+if grep -q '^challenge_intent_stamp_fork_descriptor() {' "$MONITOR_SCRIPT_FILE"; then
+  pass "challenge_intent_stamp_fork_descriptor() defined"
+else
+  fail "challenge_intent_stamp_fork_descriptor() defined"
+fi
+
+# Trigger site: the coding→review transition must call the fork trigger.
+if grep -q 'challenge_maybe_materialize_deferred_arms "\$ISSUE" "\$SLUG"' "$MONITOR_SCRIPT_FILE"; then
+  pass "fork trigger called from monitor_issue_state"
+else
+  fail "fork trigger called from monitor_issue_state"
+fi
+
+echo ""
 echo "--- Results: $PASS passed, $FAIL failed ---"
 
 if (( FAIL > 0 )); then

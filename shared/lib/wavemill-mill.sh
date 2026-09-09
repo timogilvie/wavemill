@@ -2339,14 +2339,25 @@ for t in "${TASKS[@]}"; do
     challenger_entry_planner=$(echo "$challenge_plan" | jq -r '.entries[1].planner // empty' 2>/dev/null)
     challenger_entry_reviewer=$(echo "$challenge_plan" | jq -r '.entries[1].reviewer // empty' 2>/dev/null)
     challenger_entry_planner_agent=$(echo "$challenge_plan" | jq -r '.entries[1].plannerAgent // empty' 2>/dev/null)
+    challenger_entry_reviewer_agent=$(echo "$challenge_plan" | jq -r '.entries[1].reviewerAgent // empty' 2>/dev/null)
     challenger_entry_plan_depth=$(echo "$challenge_plan" | jq -r '.entries[1].planDepth // empty' 2>/dev/null)
     challenger_entry_code_depth=$(echo "$challenge_plan" | jq -r '.entries[1].codeDepth // empty' 2>/dev/null)
     challenger_entry_review_mode=$(echo "$challenge_plan" | jq -r '.entries[1].reviewMode // empty' 2>/dev/null)
     challenge_intent=$(echo "$challenge_plan" | jq -c '.challengeIntent // null' 2>/dev/null || echo "null")
 
-    cp "/tmp/${SESSION}-${ISSUE}-taskpacket.md" "/tmp/${SESSION}-${challenger_key}-taskpacket.md" 2>/dev/null || true
-    cp "/tmp/${SESSION}-${ISSUE}-issue.json" "/tmp/${SESSION}-${challenger_key}-issue.json" 2>/dev/null || true
-    cp "/tmp/${SESSION}-${ISSUE}-taskpacket-details.md" "/tmp/${SESSION}-${challenger_key}-taskpacket-details.md" 2>/dev/null || true
+    # HOK-2811: Review-stage challenges defer the challenger to a fork trigger
+    # that fires after the primary's coding phase. Skip the /tmp packet mirror
+    # for the challenger pre-fork — materialisation copies the primary's whole
+    # feature dir into the challenger's, so /tmp mirrors would be stale anyway.
+    defer_challenger="false"
+    if [[ "$challenge_stage" == "review" ]]; then
+      defer_challenger="true"
+    fi
+    if [[ "$defer_challenger" != "true" ]]; then
+      cp "/tmp/${SESSION}-${ISSUE}-taskpacket.md" "/tmp/${SESSION}-${challenger_key}-taskpacket.md" 2>/dev/null || true
+      cp "/tmp/${SESSION}-${ISSUE}-issue.json" "/tmp/${SESSION}-${challenger_key}-issue.json" 2>/dev/null || true
+      cp "/tmp/${SESSION}-${ISSUE}-taskpacket-details.md" "/tmp/${SESSION}-${challenger_key}-taskpacket-details.md" 2>/dev/null || true
+    fi
 
     TASK_LINEAR_ISSUE_BY_ISSUE["$ISSUE"]="$ISSUE"
     TASK_CHALLENGE_BY_ISSUE["$ISSUE"]="true"
@@ -2363,28 +2374,58 @@ for t in "${TASKS[@]}"; do
     TASK_CODE_DEPTH_BY_ISSUE["$ISSUE"]="${primary_entry_code_depth:-$route_code_depth}"
     TASK_REVIEW_MODE_BY_ISSUE["$ISSUE"]="${primary_entry_review_mode:-$route_review_mode}"
 
-    TASK_LINEAR_ISSUE_BY_ISSUE["$challenger_key"]="$ISSUE"
-    TASK_CHALLENGE_BY_ISSUE["$challenger_key"]="true"
-    TASK_CHALLENGE_PAIR_BY_ISSUE["$challenger_key"]="$ISSUE"
-    TASK_CHALLENGE_ROLE_BY_ISSUE["$challenger_key"]="challenger"
-    TASK_CHALLENGE_MODEL_BY_ISSUE["$challenger_key"]="$challenger_model"
-    TASK_CHALLENGE_STAGE_BY_ISSUE["$challenger_key"]="$challenge_stage"
-    TASK_CHALLENGE_INTENT_BY_ISSUE["$challenger_key"]="$challenge_intent"
-    TASK_AGENT_BY_ISSUE["$challenger_key"]="${challenger_entry_planner_agent:-${challenger_agent:-$AGENT_CMD}}"
-    # Stage-varied challengers carry their own planner/reviewer in the entry
-    TASK_PLANNER_MODEL_BY_ISSUE["$challenger_key"]="${challenger_entry_planner:-$route_planner}"
-    TASK_CODER_MODEL_BY_ISSUE["$challenger_key"]="$challenger_model"
-    TASK_REVIEWER_MODEL_BY_ISSUE["$challenger_key"]="${challenger_entry_reviewer:-$route_reviewer}"
-    TASK_PLAN_DEPTH_BY_ISSUE["$challenger_key"]="${challenger_entry_plan_depth:-$route_plan_depth}"
-    TASK_CODE_DEPTH_BY_ISSUE["$challenger_key"]="${challenger_entry_code_depth:-$route_code_depth}"
-    TASK_REVIEW_MODE_BY_ISSUE["$challenger_key"]="${challenger_entry_review_mode:-$route_review_mode}"
+    if [[ "$defer_challenger" != "true" ]]; then
+      TASK_LINEAR_ISSUE_BY_ISSUE["$challenger_key"]="$ISSUE"
+      TASK_CHALLENGE_BY_ISSUE["$challenger_key"]="true"
+      TASK_CHALLENGE_PAIR_BY_ISSUE["$challenger_key"]="$ISSUE"
+      TASK_CHALLENGE_ROLE_BY_ISSUE["$challenger_key"]="challenger"
+      TASK_CHALLENGE_MODEL_BY_ISSUE["$challenger_key"]="$challenger_model"
+      TASK_CHALLENGE_STAGE_BY_ISSUE["$challenger_key"]="$challenge_stage"
+      TASK_CHALLENGE_INTENT_BY_ISSUE["$challenger_key"]="$challenge_intent"
+      TASK_AGENT_BY_ISSUE["$challenger_key"]="${challenger_entry_planner_agent:-${challenger_agent:-$AGENT_CMD}}"
+      # Stage-varied challengers carry their own planner/reviewer in the entry
+      TASK_PLANNER_MODEL_BY_ISSUE["$challenger_key"]="${challenger_entry_planner:-$route_planner}"
+      TASK_CODER_MODEL_BY_ISSUE["$challenger_key"]="$challenger_model"
+      TASK_REVIEWER_MODEL_BY_ISSUE["$challenger_key"]="${challenger_entry_reviewer:-$route_reviewer}"
+      TASK_PLAN_DEPTH_BY_ISSUE["$challenger_key"]="${challenger_entry_plan_depth:-$route_plan_depth}"
+      TASK_CODE_DEPTH_BY_ISSUE["$challenger_key"]="${challenger_entry_code_depth:-$route_code_depth}"
+      TASK_REVIEW_MODE_BY_ISSUE["$challenger_key"]="${challenger_entry_review_mode:-$route_review_mode}"
+    fi
 
     FINAL_LAUNCH_ARGS+=("$ISSUE|$SLUG|$TITLE")
-    FINAL_LAUNCH_ARGS+=("$challenger_key|$challenger_slug|$TITLE")
+    if [[ "$defer_challenger" != "true" ]]; then
+      FINAL_LAUNCH_ARGS+=("$challenger_key|$challenger_slug|$TITLE")
+    else
+      # HOK-2811: Record the pending challenger arm on the primary's state
+      # entry. The fork trigger materialises it after the primary's coding
+      # completes. state_mutate needs the .tasks[$ISSUE] container to exist
+      # (the per-task state save has not run yet at startup), so seed it first.
+      state_mutate "$STATE_FILE" \
+        '.tasks[$issue] = (.tasks[$issue] // {})' \
+        --arg issue "$ISSUE" >/dev/null 2>&1 || true
+      pending_arm_json="$(challenge_arm_json_build \
+        "$challenger_key" "$challenger_slug" "task/${challenger_slug}" \
+        "challenger" "$challenge_stage" \
+        "$challenger_model" \
+        "${challenger_entry_planner:-$route_planner}" \
+        "${challenger_entry_reviewer:-$route_reviewer}" \
+        "${challenger_agent:-$AGENT_CMD}" \
+        "${challenger_entry_planner_agent:-${challenger_agent:-$AGENT_CMD}}" \
+        "${challenger_entry_reviewer_agent:-${challenger_agent:-$AGENT_CMD}}" \
+        "${challenger_entry_plan_depth:-$route_plan_depth}" \
+        "${challenger_entry_code_depth:-$route_code_depth}" \
+        "${challenger_entry_review_mode:-$route_review_mode}")"
+      challenge_arms_record_pending "$ISSUE" "$pending_arm_json" || \
+        log "warn" "  $ISSUE: failed to record pending challenger arm $challenger_key"
+    fi
     slots_used=$((slots_used + 1))  # Challenger is free overhead
     primary_varied=$(echo "$challenge_plan" | jq -r '.entries[0].variedModel // .entries[0].model // empty' 2>/dev/null)
     challenger_varied=$(echo "$challenge_plan" | jq -r '.entries[1].variedModel // .entries[1].model // empty' 2>/dev/null)
-    log "status" "  $ISSUE: Challenge selected (stage=${challenge_stage}: ${primary_varied} vs ${challenger_varied}) [challenger is extra pane]"
+    if [[ "$defer_challenger" == "true" ]]; then
+      log "status" "  $ISSUE: Challenge selected (stage=${challenge_stage}: ${primary_varied} vs ${challenger_varied}) [challenger deferred until fork]"
+    else
+      log "status" "  $ISSUE: Challenge selected (stage=${challenge_stage}: ${primary_varied} vs ${challenger_varied}) [challenger is extra pane]"
+    fi
   else
     if [[ -n "$challenge_reason" ]] && [[ "$challenge_reason" != "challenge_disabled" ]] && [[ "$challenge_reason" != "roll_not_selected" ]]; then
       log "debug" "  $ISSUE: Challenge skipped ($challenge_reason), launching single-model run"

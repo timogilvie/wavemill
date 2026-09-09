@@ -59,6 +59,7 @@ TESTS=(
   launch-pane-liveness.test.sh
   launch-failure-log-capture.test.sh
   challenge-eval-soft-retry.test.sh
+  challenge-deferred-arm.test.sh
   review-scope-baseline-handoff.test.sh
   launch-native-planning-phase.test.sh
   log-hygiene.test.sh
