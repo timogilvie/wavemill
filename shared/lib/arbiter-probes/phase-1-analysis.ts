@@ -365,7 +365,8 @@ function decideGate(metrics: Phase1AnalysisSnapshot['metrics'], mode: GateMode):
 }
 
 function decisionLogEntry(snapshot: Omit<Phase1AnalysisSnapshot, 'decisionLogEntry'>): string {
-  const issueRepo = '**2026-09-09 · HOK-2802 · wavemill**';
+  const date = snapshot.generatedAt.split('T')[0];
+  const issueRepo = `**${date} · HOK-2802 · wavemill**`;
   if (snapshot.gate.call === 'insufficient_data') {
     return `${issueRepo} — Phase 1 gate not called from this source snapshot because required frozen probe artifacts are missing or empty. Why: a public gate call must be backed by P1.1 flip rate, P1.2 survival agreement and P1.2 judge/eval disagreement with denominators and confidence intervals; this snapshot has n=${snapshot.metrics.flipRate.overall.n}/${snapshot.metrics.survivalAgreement.overall.n}/${snapshot.metrics.judgeEvalDisagreement.overall.n}. Affects: HOK-2802 remains open; the P2.4 generator freeze remains in place until a complete frozen snapshot is analyzed.`;
   }
