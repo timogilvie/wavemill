@@ -79,6 +79,18 @@ exit 0
 EOF
   chmod +x "$dir/git"
 
+  cat > "$dir/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'gh %s\n' "$*" >> "${MOCK_GH_LOG:?}"
+if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then
+  printf '[]\n'
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$dir/gh"
+
   cat > "$dir/npx" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -503,9 +515,10 @@ export HOME="$TMP_ROOT/home"
 export PATH="$MOCK_BIN:$PATH"
 export MOCK_TMUX_LOG="$TMP_ROOT/tmux.log"
 export MOCK_GIT_LOG="$TMP_ROOT/git.log"
+export MOCK_GH_LOG="$TMP_ROOT/gh.log"
 export MOCK_NPX_LOG="$TMP_ROOT/npx.log"
 export MOCK_LINEAR_LOG="$TMP_ROOT/linear.log"
-touch "$MOCK_TMUX_LOG" "$MOCK_GIT_LOG" "$MOCK_NPX_LOG" "$MOCK_LINEAR_LOG"
+touch "$MOCK_TMUX_LOG" "$MOCK_GIT_LOG" "$MOCK_GH_LOG" "$MOCK_NPX_LOG" "$MOCK_LINEAR_LOG"
 
 STATE_DIR="$TEST_REPO/.wavemill"
 STATE_FILE="$STATE_DIR/workflow-state.json"
