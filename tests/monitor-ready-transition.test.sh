@@ -109,6 +109,7 @@ run_monitor_case() {
     declare -Ag SLUG_BY_ISSUE=()
     declare -Ag PR_BY_ISSUE=()
     declare -Ag CLEANED=()
+    declare -Ag CLOSED_PR_LOGGED=()
 
     ISSUE="HOK-1249"
     SLUG="monitor-ready"
