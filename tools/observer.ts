@@ -6,9 +6,9 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { mutateJsonState } from '../shared/lib/state-mutex.ts';
 import { getIncidentConfig, getMillConfig, getObserverLinearConfig, type ObserverLinearConfig } from '../shared/lib/config.ts';
-import { detectIncidentsForRepo, detectIncidentsForTask } from '../shared/lib/wavemill-incident-detector.ts';
+import { detectIncidentsForRepo, detectIncidentsForTask, type TendCandidateDiagnostic } from '../shared/lib/wavemill-incident-detector.ts';
 import { IncidentStore } from '../shared/lib/wavemill-incident-store.ts';
-import type { IncidentRecord } from '../shared/lib/wavemill-incident-model.ts';
+import { createIncidentDraft, type IncidentRecord, type IncidentRootCauseClass } from '../shared/lib/wavemill-incident-model.ts';
 import { syncIncident, type SyncResult } from '../shared/lib/incident-to-linear-synchronizer.ts';
 import { drainIncidentQueue, enqueueIncidentSync } from '../shared/lib/incident-linear-retry-queue.ts';
 import { acquireObserverLock } from '../shared/lib/tend-singleton.ts';
@@ -20,6 +20,7 @@ import {
   type ConfigIntegrityIssue,
 } from '../shared/lib/config-integrity.ts';
 import { normalizeTaskLifecycle, type CleanupEpisode, type TaskLifecycleState } from '../shared/lib/task-lifecycle.ts';
+import { resolveEffectiveTaskConfig, type EffectiveTaskConfig } from '../shared/lib/effective-task-config.ts';
 
 type Severity = 'urgent' | 'high' | 'medium' | 'low';
 type Category = 'stuck' | 'crash' | 'warning' | 'ux' | 'operational';
@@ -556,11 +557,6 @@ function taskCleanupEpisode(task: TaskState): CleanupEpisode | undefined {
   return record as CleanupEpisode;
 }
 
-function cleanupEpisodeExplainsResidue(task: TaskState): boolean {
-  const episode = taskCleanupEpisode(task);
-  return episode !== undefined && episode.disposition !== 'reaped';
-}
-
 function cleanupEpisodeFinding(repo: RepoSnapshot, task: TaskState): Finding | undefined {
   const episode = taskCleanupEpisode(task);
   if (!episode || episode.disposition === 'reaped') return undefined;
@@ -596,6 +592,290 @@ function cleanupEpisodeFinding(repo: RepoSnapshot, task: TaskState): Finding | u
     ],
     recommendation: action,
   };
+}
+
+type ResidueDisposition =
+  | 'retained-by-policy'
+  | 'unpublished-at-risk'
+  | 'squash-delivered'
+  | 'dirty-worktree'
+  | 'verification-unavailable'
+  | 'already-reaped'
+  | 'transient'
+  | 'clean'
+  | 'residue-retained';
+
+interface ClassifiedResidue {
+  disposition: ResidueDisposition;
+  severity?: Severity;
+  suppressResidueFinding: boolean;
+  recommendation: string;
+  evidence: string[];
+}
+
+function lifecycleRecord(task: TaskState): Record<string, unknown> {
+  return task.lifecycle && typeof task.lifecycle === 'object' && !Array.isArray(task.lifecycle)
+    ? task.lifecycle as Record<string, unknown>
+    : {};
+}
+
+function taskDeliveryEvidence(task: TaskState): Record<string, unknown> {
+  const delivery = lifecycleRecord(task).deliveryEvidence;
+  return delivery && typeof delivery === 'object' && !Array.isArray(delivery) ? delivery as Record<string, unknown> : {};
+}
+
+function evidenceString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function deliveryEvidenceProvesMerged(task: TaskState): boolean {
+  const evidence = taskDeliveryEvidence(task);
+  const state = evidenceString(evidence.prState)?.toUpperCase();
+  return Boolean(evidenceString(evidence.mergeSha) && (!state || state === 'MERGED'));
+}
+
+function renderCleanupRecommendation(disposition: ResidueDisposition, task: TaskState, config: EffectiveTaskConfig, residue?: BranchResidue): string {
+  const branch = residue?.branch ?? taskBranch(task) ?? task.branch ?? 'the task branch';
+  const base = config.baseBranch.value;
+  const policy = config.remoteBranchDeletionPolicy?.value;
+  switch (disposition) {
+    case 'squash-delivered':
+      return `Delivery evidence proves the PR merged; no branch recreation is needed. Let cleanup finish under the recorded branch deletion policy.`;
+    case 'already-reaped':
+      return `Cleanup evidence says resources were reaped already; no operator action is needed unless fresh task state appears.`;
+    case 'retained-by-policy':
+      return `The recorded cleanup policy does not authorize deleting ${branch}; leave it retained or update the policy through the normal controller path after verification.`;
+    case 'dirty-worktree':
+      return taskCleanupEpisode(task)?.requiredOperatorAction ?? `Inspect ${branch}'s worktree, commit or discard local changes, then acknowledge recovery in workflow state.`;
+    case 'transient':
+      return taskCleanupEpisode(task)?.requiredOperatorAction ?? `Wait for the scheduled cleanup retry, then inspect cleanup evidence if it remains unchanged.`;
+    case 'verification-unavailable':
+      return `Observer could not verify ${branch} against ${base}. Fetch remote evidence and inspect cleanup state before treating commits as lost.`;
+    case 'unpublished-at-risk':
+      return `Recover the work first: push ${branch} to origin and open or update a PR against ${base}, or explicitly abandon the branch, before terminalizing cleanup.`;
+    case 'residue-retained':
+      return taskCleanupEpisode(task)?.requiredOperatorAction ?? `Follow the recorded cleanup disposition for ${branch}; do not recreate a branch unless delivery evidence is absent and recovery requires it.`;
+    case 'clean':
+    default:
+      if (policy?.allowed === false) return `No work is ahead of ${base}; keep retained resources only if the recorded policy requires it.`;
+      return `No branch work is ahead of ${base}; let the mill reap any remaining local resources through the normal cleanup path.`;
+  }
+}
+
+function classifyResidue(task: TaskState, config: EffectiveTaskConfig, residue?: BranchResidue): ClassifiedResidue {
+  const episode = taskCleanupEpisode(task);
+  const delivery = taskDeliveryEvidence(task);
+  const evidence: string[] = [
+    `effectiveBaseBranch=${config.baseBranch.value}`,
+    `baseBranchSource=${config.baseBranch.source}`,
+  ];
+  if (config.baseBranch.driftFromRepoConfig !== undefined) {
+    evidence.push(`repoConfigBaseBranch=${config.baseBranch.driftFromRepoConfig}`);
+  }
+  if (evidenceString(delivery.mergeSha)) evidence.push(`deliveryMergeSha=${delivery.mergeSha}`);
+  if (evidenceString(delivery.prHeadSha)) evidence.push(`deliveryPrHeadSha=${delivery.prHeadSha}`);
+  if (episode?.fingerprint) evidence.push(`cleanupFingerprint=${episode.fingerprint}`);
+  if (episode?.disposition) evidence.push(`cleanupDisposition=${episode.disposition}`);
+  if (residue?.baseRef) evidence.push(`comparedAgainst=${residue.baseRef}`);
+  if (residue?.aheadOfBase !== undefined) evidence.push(`aheadOfEffectiveBase=${residue.aheadOfBase}`);
+
+  let disposition: ResidueDisposition = 'verification-unavailable';
+  if (deliveryEvidenceProvesMerged(task)) {
+    disposition = 'squash-delivered';
+  } else if (episode?.disposition === 'reaped') {
+    disposition = 'already-reaped';
+  } else if (config.remoteBranchDeletionPolicy?.value.allowed === false) {
+    disposition = 'retained-by-policy';
+  } else if (episode?.disposition === 'needs-user' && /dirty/i.test(`${episode.failureClass} ${episode.lastOutcome ?? ''} ${episode.requiredOperatorAction ?? ''} ${JSON.stringify(episode.fingerprintInputs ?? {})}`)) {
+    disposition = 'dirty-worktree';
+  } else if (episode?.disposition === 'transient') {
+    disposition = 'transient';
+  } else if (episode && episode.disposition !== 'pending' && episode.disposition !== 'reaping') {
+    disposition = 'residue-retained';
+  } else if (residue?.aheadOfBase === 0 || residue?.unpushedCommits === 0) {
+    disposition = 'clean';
+  } else if ((residue?.unpushedCommits ?? 0) > 0 && residue?.remoteBranch === 'absent') {
+    disposition = 'unpublished-at-risk';
+  } else if (residue && residue.remoteBranch === 'unknown') {
+    disposition = 'verification-unavailable';
+  }
+
+  const suppressResidueFinding = disposition === 'squash-delivered'
+    || disposition === 'already-reaped'
+    || disposition === 'retained-by-policy'
+    || disposition === 'transient'
+    || disposition === 'residue-retained';
+  const severity: Severity | undefined = disposition === 'unpublished-at-risk'
+    ? 'urgent'
+    : disposition === 'verification-unavailable'
+      ? 'medium'
+      : disposition === 'dirty-worktree'
+        ? 'high'
+        : undefined;
+
+  return {
+    disposition,
+    severity,
+    suppressResidueFinding,
+    evidence: [`residueDisposition=${disposition}`, ...evidence],
+    recommendation: renderCleanupRecommendation(disposition, task, config, residue),
+  };
+}
+
+function resolveObserverTaskConfig(repo: RepoSnapshot, issue: string, task?: TaskState): EffectiveTaskConfig {
+  return resolveEffectiveTaskConfig({
+    repoDir: repo.repoDir,
+    issue,
+    stateFile: repo.workflowStatePath,
+    ...(task ? { taskState: task as unknown as Record<string, unknown> } : {}),
+  });
+}
+
+function observerBaseBranchForIssue(repo: RepoSnapshot, issue?: string): string {
+  if (issue) {
+    const task = repo.tasks.find((candidate) => candidate.issue === issue);
+    return resolveObserverTaskConfig(repo, issue, task).baseBranch.value;
+  }
+  try {
+    return resolveEffectiveTaskConfig({ repoDir: repo.repoDir, issue: '__repo__', stateFile: repo.workflowStatePath }).baseBranch.value;
+  } catch {
+    return 'main';
+  }
+}
+
+function effectiveConfigDriftFinding(repo: RepoSnapshot, task: TaskState, config: EffectiveTaskConfig): Finding | undefined {
+  const evidence: string[] = [];
+  if (config.baseBranch.driftFromRepoConfig !== undefined) {
+    evidence.push(`baseBranch=${config.baseBranch.value}`);
+    evidence.push(`baseBranchSource=${config.baseBranch.source}`);
+    evidence.push(`repoConfigBaseBranch=${config.baseBranch.driftFromRepoConfig}`);
+  }
+  if (config.requireConfirm.driftFromRepoConfig !== undefined) {
+    evidence.push(`requireConfirm=${config.requireConfirm.value}`);
+    evidence.push(`requireConfirmSource=${config.requireConfirm.source}`);
+    evidence.push(`repoConfigRequireConfirm=${config.requireConfirm.driftFromRepoConfig}`);
+  }
+  if (evidence.length === 0) return undefined;
+  return {
+    id: `config-drift-${repo.session}-${task.issue}-${hashText(evidence.join('|'))}`,
+    severity: 'low',
+    category: 'operational',
+    confidence: 'high',
+    session: repo.session,
+    repoDir: repo.repoDir,
+    issue: task.issue,
+    title: `${task.issue} uses task-specific effective configuration`,
+    evidence: ['informational=true', ...evidence],
+    recommendation: 'No recovery is required when this matches the launch contract or runtime snapshot; status shows the effective value and its source.',
+  };
+}
+
+function cleanupRootCause(disposition: ResidueDisposition): IncidentRootCauseClass | undefined {
+  switch (disposition) {
+    case 'retained-by-policy': return 'cleanup_retained_by_policy';
+    case 'unpublished-at-risk': return 'cleanup_unpublished_at_risk';
+    case 'verification-unavailable': return 'cleanup_verification_unavailable';
+    case 'dirty-worktree': return 'cleanup_dirty_worktree';
+    default: return undefined;
+  }
+}
+
+function cleanupIncidentSeverity(disposition: ResidueDisposition): IncidentRecord['severity'] {
+  if (disposition === 'unpublished-at-risk') return 'critical';
+  if (disposition === 'dirty-worktree') return 'high';
+  return 'info';
+}
+
+function cleanupEvidenceKey(task: TaskState, config: EffectiveTaskConfig, residue?: BranchResidue): string {
+  const delivery = taskDeliveryEvidence(task);
+  const episode = taskCleanupEpisode(task);
+  return [
+    config.baseBranch.value,
+    delivery.mergeSha ?? delivery.prHeadSha ?? residue?.aheadOfBase ?? 'no-head-evidence',
+    episode?.fingerprint ?? 'no-cleanup-fingerprint',
+  ].join(':');
+}
+
+function detectCleanupIncidentsForRepo(repo: RepoSnapshot, timestamp: string): IncidentRecord[] {
+  const incidents: IncidentRecord[] = [];
+  for (const task of repo.tasks) {
+    const config = resolveObserverTaskConfig(repo, task.issue, task);
+    const branch = taskBranch(task);
+    const residue = branch ? inspectTaskBranchResidue(repo.repoDir, branch, config.baseBranch.value) : undefined;
+    const classified = classifyResidue(task, config, residue);
+    const rootCauseClass = cleanupRootCause(classified.disposition);
+    if (rootCauseClass && (taskHasTerminalResidueStatus(task) || taskCleanupEpisode(task) || classified.disposition === 'unpublished-at-risk')) {
+      const key = `cleanup:${task.issue}:${classified.disposition}:${cleanupEvidenceKey(task, config, residue)}`;
+      incidents.push(createIncidentDraft({
+        taskId: task.issue,
+        session: repo.session,
+        category: classified.disposition === 'verification-unavailable'
+          ? 'configuration_operator_condition'
+          : 'stale_orphaned_state',
+        severity: cleanupIncidentSeverity(classified.disposition),
+        confidence: 'high',
+        lifecycle: 'observed',
+        rootCauseClass,
+        summary: `${task.issue} cleanup disposition is ${classified.disposition}.`,
+        operatorAction: classified.recommendation,
+        evidence: [{
+          type: 'workflow_state',
+          source: repo.workflowStatePath ?? join(repo.repoDir, '.wavemill', 'workflow-state.json'),
+          timestamp,
+          redactedData: classified.evidence.join(' '),
+          key,
+        }],
+        metadata: {
+          disposition: classified.disposition,
+          effectiveBaseBranch: config.baseBranch.value,
+          cleanupFingerprint: taskCleanupEpisode(task)?.fingerprint,
+        },
+      }));
+    }
+    if (config.baseBranch.driftFromRepoConfig !== undefined) {
+      incidents.push(createIncidentDraft({
+        taskId: task.issue,
+        session: repo.session,
+        category: 'configuration_operator_condition',
+        severity: 'info',
+        confidence: 'high',
+        lifecycle: 'observed',
+        rootCauseClass: 'config_drift_base_branch',
+        summary: `${task.issue} effective base branch differs from repository config.`,
+        operatorAction: 'No recovery is required for intentional launch/runtime overrides; inspect status provenance if the value is unexpected.',
+        evidence: [{
+          type: 'workflow_state',
+          source: repo.workflowStatePath ?? join(repo.repoDir, '.wavemill', 'workflow-state.json'),
+          timestamp,
+          redactedData: `baseBranch=${config.baseBranch.value} source=${config.baseBranch.source} repoConfig=${config.baseBranch.driftFromRepoConfig}`,
+          key: `config-drift-base:${task.issue}:${config.baseBranch.value}:${config.baseBranch.driftFromRepoConfig}`,
+        }],
+        metadata: { effectiveBaseBranch: config.baseBranch.value, repoConfigBaseBranch: config.baseBranch.driftFromRepoConfig },
+      }));
+    }
+    if (config.requireConfirm.driftFromRepoConfig !== undefined) {
+      incidents.push(createIncidentDraft({
+        taskId: task.issue,
+        session: repo.session,
+        category: 'configuration_operator_condition',
+        severity: 'info',
+        confidence: 'high',
+        lifecycle: 'observed',
+        rootCauseClass: 'config_drift_confirm',
+        summary: `${task.issue} effective confirmation policy differs from repository config.`,
+        operatorAction: 'No recovery is required for intentional launch/runtime overrides; inspect status provenance if the value is unexpected.',
+        evidence: [{
+          type: 'workflow_state',
+          source: repo.workflowStatePath ?? join(repo.repoDir, '.wavemill', 'workflow-state.json'),
+          timestamp,
+          redactedData: `requireConfirm=${config.requireConfirm.value} source=${config.requireConfirm.source} repoConfig=${config.requireConfirm.driftFromRepoConfig}`,
+          key: `config-drift-confirm:${task.issue}:${config.requireConfirm.value}:${config.requireConfirm.driftFromRepoConfig}`,
+        }],
+        metadata: { effectiveRequireConfirm: config.requireConfirm.value, repoConfigRequireConfirm: config.requireConfirm.driftFromRepoConfig },
+      }));
+    }
+  }
+  return incidents;
 }
 
 function snapshotRepos(sessions: string[], options: ObserverOptions): RepoSnapshot[] {
@@ -984,8 +1264,11 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
     // exited arms whose commits exist only locally. Both run for terminal-status
     // tasks — the terminalStatus() skips above are exactly where parked work
     // used to die silently (HOK-2911/HOK-2912).
-    const repoBaseBranch = observerBaseBranch(repo.repoDir);
     for (const task of repo.tasks) {
+      const effectiveConfig = resolveObserverTaskConfig(repo, task.issue, task);
+      const driftFinding = effectiveConfigDriftFinding(repo, task, effectiveConfig);
+      if (driftFinding) findings.push(driftFinding);
+
       const cleanupFinding = cleanupEpisodeFinding(repo, task);
       if (cleanupFinding) findings.push(cleanupFinding);
 
@@ -996,7 +1279,6 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
       if (ageMinutes === undefined || !Number.isFinite(ageMinutes) || ageMinutes <= options.staleMinutes) continue;
 
       const normalized = normalizedLifecycle(task);
-      if (cleanupEpisodeExplainsResidue(task)) continue;
       const isTerminal = taskHasTerminalResidueStatus(task);
       const liveEvidence = taskHasLiveExecutionEvidence(repo, task, snapshot.panes, snapshot.processes);
       // Active tasks with a live agent are healthy; terminal tasks are inspected
@@ -1004,16 +1286,18 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
       if (!isTerminal && liveEvidence) continue;
 
       const branch = taskBranch(task);
-      const baseBranch = task.baseBranch || repoBaseBranch;
+      const baseBranch = effectiveConfig.baseBranch.value;
       const paneResidue = taskPaneResidue(repo, task, snapshot.panes);
       const residue = branch ? inspectTaskBranchResidue(repo.repoDir, branch, baseBranch) : undefined;
+      const classified = classifyResidue(task, effectiveConfig, residue);
+      if (classified.suppressResidueFinding && !isTerminal) continue;
       const worktreePresent = task.worktree ? existsSync(task.worktree) : false;
       const unpushedCommits = residue?.unpushedCommits;
-      const confirmedWorkAtRisk = (unpushedCommits ?? 0) > 0 && residue?.remoteBranch === 'absent';
+      const confirmedWorkAtRisk = classified.disposition === 'unpublished-at-risk';
 
-      const firesUnpushed = !liveEvidence && residue !== undefined && confirmedWorkAtRisk;
+      const firesUnpushed = !liveEvidence && residue !== undefined && confirmedWorkAtRisk && !classified.suppressResidueFinding;
       const terminalResiduePresent = worktreePresent || paneResidue.present || (residue?.localBranchExists ?? false);
-      const firesTerminalParked = isTerminal && terminalResiduePresent;
+      const firesTerminalParked = isTerminal && terminalResiduePresent && !classified.suppressResidueFinding;
       if (!firesUnpushed && !firesTerminalParked) continue;
 
       const prEvidence = taskPrEvidence(repo.repoDir, task);
@@ -1037,6 +1321,7 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
           title: `${task.issue} arm exited with ${unpushedCommits} unpushed commit${unpushedCommits === 1 ? '' : 's'} on ${residue.branch}`,
           evidence: [
             ...stateEvidence,
+            ...classified.evidence,
             `branch=${residue.branch}`,
             `baseBranch=${baseBranch} comparedAgainst=${residue.baseRef ?? 'unknown'}`,
             `commitsAheadOfBase=${residue.aheadOfBase ?? 'unknown'}`,
@@ -1067,6 +1352,7 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
             : `${task.issue} terminal task parked for ${ageLabel} with allocated residue`,
           evidence: [
             ...stateEvidence,
+            ...classified.evidence,
             `updated=${task.updated ?? repo.stateMtime ?? 'unknown'}`,
             `ageMinutes=${Math.round(ageMinutes)}`,
             paneResidue.present
@@ -1083,7 +1369,7 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
             prEvidence,
           ],
           recommendation: workLoss
-            ? `Recover the work first: push ${branch} to origin and open or update a PR against ${baseBranch}, or explicitly abandon the branch. Then ${reapAction}.`
+            ? `${classified.recommendation} Then ${reapAction}.`
             : `Nothing on the branch is at risk; ${reapAction}.`,
         });
       }
@@ -1216,7 +1502,7 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
         'mill-log',
         'high',
         group.lines.length,
-        repoBaseBranch,
+        observerBaseBranchForIssue(repo, group.issue),
       ));
     }
     for (const task of repo.tasks) {
@@ -1225,7 +1511,7 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
       const artifactMatch = artifactText?.match(PR_CREATE_FAILED_PATTERN);
       if (artifactMatch) {
         prCreateReportedIssues.add(task.issue);
-        findings.push(prCreateFailedFinding(repo, task.issue, artifactMatch[0], 'review-artifact', 'high', 1, repoBaseBranch));
+        findings.push(prCreateFailedFinding(repo, task.issue, artifactMatch[0], 'review-artifact', 'high', 1, observerBaseBranchForIssue(repo, task.issue)));
         continue;
       }
       for (const pane of taskPaneResidue(repo, task, snapshot.panes).panes) {
@@ -1241,7 +1527,7 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
           `pane:${pane.session}:${pane.windowIndex}.${pane.paneIndex}`,
           'medium',
           1,
-          repoBaseBranch,
+          observerBaseBranchForIssue(repo, task.issue),
         ));
         break;
       }
@@ -1611,14 +1897,6 @@ function taskAgeMinutes(task: TaskState, repo: RepoSnapshot, now: number): numbe
   return undefined;
 }
 
-function observerBaseBranch(repoDir: string): string {
-  try {
-    return getMillConfig(repoDir).baseBranch || 'auto/integration';
-  } catch {
-    return 'auto/integration';
-  }
-}
-
 type RemoteBranchState = 'present' | 'absent' | 'unknown';
 
 interface BranchResidue {
@@ -1958,7 +2236,7 @@ function observe(options: ObserverOptions): ObserverSnapshot {
   };
 }
 
-async function reconcileIncidents(snapshot: ObserverSnapshot, options: ObserverOptions): Promise<ObserverSnapshot> {
+export async function reconcileIncidents(snapshot: ObserverSnapshot, options: ObserverOptions): Promise<ObserverSnapshot> {
   const incidents: IncidentRecord[] = [];
   if (!options.incidentDetector) {
     return { ...snapshot, incidents };
@@ -1987,7 +2265,9 @@ async function reconcileIncidents(snapshot: ObserverSnapshot, options: ObserverO
     // a detector or persistence failure must not resolve incidents by absence.
     let cycleComplete = true;
     const candidates: IncidentRecord[] = [];
+    const tendCandidates = buildTendCandidateDiagnostics(repo, snapshot.findings);
     try {
+      const detectorContext = { repoDir: repo.repoDir, session: repo.session, now: new Date(snapshot.timestamp), tendCandidates };
       for (const task of repo.tasks) {
         if (!task.issue || taskWorkflowIsTerminal(task)) continue;
         const taskPath = resolveTaskArtifactDir(repo.repoDir, task);
@@ -1995,7 +2275,7 @@ async function reconcileIncidents(snapshot: ObserverSnapshot, options: ObserverO
         const detected = detectIncidentsForTask(
           taskPath,
           task.issue,
-          { repoDir: repo.repoDir, session: repo.session, now: new Date(snapshot.timestamp) },
+          detectorContext,
           options.dependencyThreshold ?? incidentConfig.detection?.dependencyThreshold ?? 3,
         );
         candidates.push(...detected);
@@ -2003,9 +2283,11 @@ async function reconcileIncidents(snapshot: ObserverSnapshot, options: ObserverO
 
       candidates.push(...detectIncidentsForRepo(
         repo.repoDir,
-        { repoDir: repo.repoDir, session: repo.session, now: new Date(snapshot.timestamp) },
+        detectorContext,
         options.dependencyThreshold ?? incidentConfig.detection?.dependencyThreshold ?? 3,
       ));
+
+      candidates.push(...detectCleanupIncidentsForRepo(repo, snapshot.timestamp));
     } catch (error) {
       cycleComplete = false;
       addConfigDegradedFindingIfMissing(snapshot.findings, repo, error, 'incident detection');
@@ -2014,8 +2296,8 @@ async function reconcileIncidents(snapshot: ObserverSnapshot, options: ObserverO
     const freshFingerprints: string[] = [];
     for (const incident of dedupeIncidentCandidates(candidates, store)) {
       try {
-        const { record: stored, freshEvent } = await store.upsertDetailed(incident);
-        if (freshEvent) freshFingerprints.push(stored.fingerprint);
+        const { record: stored } = await store.upsertDetailed(incident);
+        freshFingerprints.push(stored.fingerprint);
         incidents.push(stored);
       } catch (error) {
         cycleComplete = false;
@@ -2059,6 +2341,63 @@ async function reconcileIncidents(snapshot: ObserverSnapshot, options: ObserverO
     findings: dedupeFindings([...snapshot.findings, ...uniqueIncidents.map(convertIncidentToFinding)]),
     incidents: uniqueIncidents,
   };
+}
+
+function buildTendCandidateDiagnostics(repo: RepoSnapshot, findings: Finding[]): TendCandidateDiagnostic[] {
+  const candidates: TendCandidateDiagnostic[] = [];
+  for (const finding of findings) {
+    if (finding.repoDir !== repo.repoDir) continue;
+    if (!finding.id.startsWith('marker-')) continue;
+    const fields = evidenceKeyValueMap(finding.evidence);
+    const markerKind = fields.get('markerKind');
+    if (markerKind !== 'merge-lane-idle-stall' && markerKind !== 'merge-lane-idle-stalled') continue;
+    const pr = numberFromString(fields.get('firstBlockedPr'))
+      ?? numberFromString(fields.get('prNumber'))
+      ?? firstNumberFromCsv(fields.get('blockedPrs'));
+    if (!pr) continue;
+    const task = repo.tasks.find((entry) => prNumberFromTask(entry) === pr);
+    candidates.push({
+      taskId: finding.issue ?? task?.issue,
+      pr,
+      headBranch: task?.branch,
+      markerKind,
+      firstBlockedGate: fields.get('firstBlockedGate') ?? fields.get('gate'),
+      pairId: fields.get('pairId') ?? task?.challengePairId,
+      blockedReason: fields.get('blockedReason') ?? fields.get('tendBlockReason'),
+    });
+  }
+  return candidates;
+}
+
+function evidenceKeyValueMap(evidence: string[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const line of evidence) {
+    const index = line.indexOf('=');
+    if (index <= 0) continue;
+    map.set(line.slice(0, index), line.slice(index + 1));
+  }
+  return map;
+}
+
+function numberFromString(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number(value.replace(/^#/, ''));
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function firstNumberFromCsv(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  for (const part of value.split(',')) {
+    const parsed = numberFromString(part.trim());
+    if (parsed) return parsed;
+  }
+  return undefined;
+}
+
+function prNumberFromTask(task: TaskState): number | undefined {
+  if (!task.pr) return undefined;
+  const match = task.pr.match(/\d+/);
+  return match ? numberFromString(match[0]) : undefined;
 }
 
 function resolveTaskArtifactDir(repoDir: string, task: TaskState): string | null {

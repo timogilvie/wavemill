@@ -46,6 +46,44 @@
             "type": "string",
             "description": "Git branch name"
           },
+          "attempt": {
+            "type": "object",
+            "description": "Additive launch attempt identity used for PR lineage reconciliation",
+            "additionalProperties": true,
+            "properties": {
+              "schemaVersion": {
+                "const": 1
+              },
+              "attemptId": {
+                "type": "string"
+              },
+              "originalBranch": {
+                "type": "string"
+              },
+              "effectiveBranch": {
+                "type": "string"
+              },
+              "baseBranch": {
+                "type": "string"
+              }
+            }
+          },
+          "prReconciliation": {
+            "type": "object",
+            "description": "Structured PR lineage classification produced before launch allocation",
+            "additionalProperties": true,
+            "properties": {
+              "schemaVersion": {
+                "const": 1
+              },
+              "classification": {
+                "enum": ["current-open", "current-merged", "historical-closed", "historical-merged", "none", "unverifiable"]
+              },
+              "reason": {
+                "type": "string"
+              }
+            }
+          },
           "model": {
             "type": "string",
             "description": "Workspace-declared model selector for this task. Accepts 'inherit', a family alias (e.g. 'opus'), or a pinned model ID. Validated by the loader; absent means defer to routing defaults."

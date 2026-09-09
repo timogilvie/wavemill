@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildFindings, compactSnapshotForRender, parseArgs, redactObserverText, syncIncidentsToLinear, writeServiceHeartbeat } from './observer.ts';
+import { buildFindings, compactSnapshotForRender, parseArgs, reconcileIncidents, redactObserverText, syncIncidentsToLinear, writeServiceHeartbeat } from './observer.ts';
 import { IncidentStore } from '../shared/lib/wavemill-incident-store.ts';
 import { createIncidentDraft } from '../shared/lib/wavemill-incident-model.ts';
 
@@ -83,6 +83,13 @@ function writePermissiveSchema(repoDir: string): void {
     type: 'object',
     additionalProperties: true,
   }));
+  writeFileSync(join(repoDir, '.wavemill-config.json'), JSON.stringify({
+    configVersion: '1.5.0',
+    mill: {
+      baseBranch: 'auto/integration',
+      requireConfirm: true,
+    },
+  }, null, 2));
 }
 
 function basicSnapshot(repoDir: string, logPath?: string) {
@@ -1261,6 +1268,39 @@ function createResidueGitFixture({
   return { root, repoDir, slug, branch };
 }
 
+function createMainIntegrationDivergenceFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'observer-effective-base-'));
+  const repoDir = join(root, 'repo');
+  const originDir = join(root, 'origin.git');
+  mkdirSync(repoDir, { recursive: true });
+  runGit(root, ['init', '--bare', originDir]);
+  runGit(root, ['init', repoDir]);
+  runGit(repoDir, ['config', 'user.email', 'observer-test@example.com']);
+  runGit(repoDir, ['config', 'user.name', 'Observer Test']);
+  runGit(repoDir, ['config', 'commit.gpgsign', 'false']);
+  runGit(repoDir, ['checkout', '-b', 'main']);
+  writeFileSync(join(repoDir, 'main.txt'), 'main\n');
+  runGit(repoDir, ['add', '.']);
+  runGit(repoDir, ['commit', '-m', 'main base']);
+  runGit(repoDir, ['remote', 'add', 'origin', originDir]);
+  runGit(repoDir, ['push', '-u', 'origin', 'main']);
+  runGit(repoDir, ['checkout', '-b', 'auto/integration']);
+  writeFileSync(join(repoDir, 'integration.txt'), 'integration\n');
+  runGit(repoDir, ['add', '.']);
+  runGit(repoDir, ['commit', '-m', 'integration promotion']);
+  runGit(repoDir, ['push', '-u', 'origin', 'auto/integration']);
+  const slug = 'review-scope-guards-merge-base-fallback-flags-the-branchs-own';
+  const branch = `task/${slug}`;
+  runGit(repoDir, ['checkout', '-b', branch]);
+  writePermissiveSchema(repoDir);
+  writeFileSync(join(repoDir, '.wavemill-config.json'), JSON.stringify({
+    configVersion: '1.5.0',
+    mill: { baseBranch: 'main', requireConfirm: false },
+    integration: { mergeMethod: 'squash' },
+  }, null, 2));
+  return { root, repoDir, slug, branch };
+}
+
 function agoIso(minutes: number): string {
   return new Date(Date.now() - minutes * 60_000).toISOString();
 }
@@ -1332,6 +1372,57 @@ test('aged terminal task with clean branch fires medium terminal-task-parked wit
     assert.match(parked.recommendation, /never remove the worktree manually/);
 
     assert.equal(findings.some((finding) => finding.id.startsWith('arm-died-with-unpushed-work-')), false);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('effective launch-contract base suppresses main/integration work-loss false positive', () => {
+  const fixture = createMainIntegrationDivergenceFixture();
+  try {
+    const findings = buildFindings(residueSnapshot(fixture.repoDir, [{
+      issue: 'HOK-2913_c',
+      slug: fixture.slug,
+      branch: fixture.branch,
+      phase: 'closed',
+      status: 'closed',
+      worktree: fixture.repoDir,
+      updated: agoIso(60),
+      lifecycle: {
+        schemaVersion: 1,
+        workflowOutcome: 'closed',
+        resourceDisposition: 'retained',
+        retention: { reason: 'squash-delivered' },
+        launchContract: {
+          baseBranch: 'auto/integration',
+          requireConfirm: true,
+          mergeMethod: 'squash',
+          remoteBranchDeletionPolicy: { allowed: true, mode: 'merged-pr-task-branch' },
+          provenance: {
+            baseBranch: 'runtime-env',
+            requireConfirm: 'runtime-env',
+            mergeMethod: 'repo-config',
+            remoteBranchDeletionPolicy: 'launch-contract',
+          },
+        },
+        deliveryEvidence: {
+          prNumber: '2913',
+          prState: 'MERGED',
+          prBaseBranch: 'auto/integration',
+          prHeadSha: 'a'.repeat(40),
+          mergeSha: 'b'.repeat(40),
+        },
+      },
+    }]), defaultObserverOptions());
+
+    assert.equal(findings.some((finding) => finding.id.startsWith('arm-died-with-unpushed-work-')), false);
+    assert.equal(findings.some((finding) => finding.id.startsWith('terminal-task-parked-')), false);
+    const drift = findings.find((finding) => finding.id.startsWith('config-drift-wavemill-HOK-2913_c-'));
+    assert.ok(drift);
+    assert.equal(drift.severity, 'low');
+    assert.ok(drift.evidence.includes('baseBranch=auto/integration'));
+    assert.ok(drift.evidence.includes('baseBranchSource=runtime-env'));
+    assert.ok(drift.evidence.includes('repoConfigBaseBranch=main'));
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
@@ -1846,6 +1937,113 @@ test('merge-lane disagreement and stalled-lane JSONL findings survive ingestion 
     assert.ok(disagreementFindings[0].evidence.includes('millQueueState=merge-candidate'));
     assert.ok(stalledFindings[0].evidence.includes('firstBlockedGate=challenge:pair-unresolved:branch-pair'));
     assert.ok(stalledFindings[0].evidence.includes('consecutivePolls=30'));
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('incident reconciliation correlates stalled Tend markers into typed remediation proposals', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-stalled-lifecycle-'));
+  const slug = 'observer-stalled-lifecycle';
+  const featureDir = join(repoDir, 'features', slug);
+  try {
+    mkdirSync(join(repoDir, '.wavemill', 'prs'), { recursive: true });
+    mkdirSync(featureDir, { recursive: true });
+    writePermissiveSchema(repoDir);
+    writeFileSync(join(featureDir, 'selected-task.json'), JSON.stringify({
+      taskId: 'HOK-1324',
+      featureName: slug,
+    }));
+    writeFileSync(join(featureDir, '.review-result.json'), JSON.stringify({
+      status: 'not_ready',
+      failureCategory: 'context-window-exceeded',
+      reviewedHead: 'old-head-1324',
+      reviewedBase: 'old-base-1324',
+      reviewedFileCount: 40,
+      reviewedAt: '2026-08-28T11:30:00.000Z',
+    }));
+    writeFileSync(join(repoDir, '.wavemill', 'workflow-state.json'), JSON.stringify({
+      tasks: {
+        'HOK-1324': {
+          issue: 'HOK-1324',
+          slug,
+          worktree: repoDir,
+          phase: 'ready',
+          status: 'running',
+          pr: '#1324',
+          branch: 'task/HOK-1324',
+        },
+      },
+    }));
+    writeFileSync(join(repoDir, '.wavemill', 'prs', '1324.json'), JSON.stringify({
+      number: 1324,
+      headRefOid: 'current-head-1324',
+      baseRefOid: 'current-base-1324',
+      headRefName: 'task/HOK-1324',
+      baseRefName: 'auto/integration',
+      files: Array.from({ length: 12 }, (_, index) => ({ path: `src/file-${index}.ts`, additions: 1, deletions: 0 })),
+      labels: [{ name: 'wavemill' }],
+    }));
+
+    const markerFinding = {
+      id: 'marker-merge-lane/idle-stall/#1324-merge-lane-idle-stall',
+      severity: 'urgent' as const,
+      category: 'warning' as const,
+      confidence: 'high' as const,
+      session: 'wavemill',
+      repoDir,
+      title: 'Merge lane stalled: 1 blocked PR, 0 eligible for 30 consecutive polls',
+      evidence: [
+        'markerKind=merge-lane-idle-stall',
+        'firstBlockedPr=1324',
+        'firstBlockedGate=review:not-ready',
+        'consecutivePolls=30',
+      ],
+      recommendation: 'Inspect the named gate.',
+    };
+    const snapshot = {
+      timestamp: '2026-08-28T12:00:00.000Z',
+      sessions: ['wavemill'],
+      panes: [],
+      processes: [],
+      repos: [{
+        session: 'wavemill',
+        repoDir,
+        workflowStatePath: join(repoDir, '.wavemill', 'workflow-state.json'),
+        tasks: [{
+          issue: 'HOK-1324',
+          slug,
+          worktree: repoDir,
+          phase: 'ready',
+          status: 'running',
+          pr: '#1324',
+          branch: 'task/HOK-1324',
+        }],
+      }],
+      findings: [markerFinding],
+    };
+
+    const first = await reconcileIncidents(snapshot, defaultObserverOptions());
+    const incident = first.incidents?.find((item) => item.rootCauseClass === 'review_context_overflow_stale_base');
+    assert.ok(incident);
+    assert.equal(incident.taskId, 'HOK-1324');
+    assert.equal(incident.metadata.proposal?.kind, 'refresh_base_and_rereview');
+    assert.deepEqual(incident.metadata.proposal?.forbiddenActions, [
+      'add_ready_label',
+      'merge',
+      'destructive_git',
+      'delete_branch',
+    ]);
+    assert.ok(first.findings.some((finding) => finding.evidence.includes('rootCause=review_context_overflow_stale_base')));
+
+    const second = await reconcileIncidents(snapshot, defaultObserverOptions());
+    const store = new IncidentStore(join(repoDir, '.wavemill', 'incidents'));
+    const stored = await store.getIncidents();
+    const stalled = stored.filter((item) => item.rootCauseClass === 'review_context_overflow_stale_base');
+    assert.equal(stalled.length, 1);
+    assert.equal(stalled[0].occurrenceCount, 1);
+    assert.equal(stalled[0].metadata.missedCycles, 0);
+    assert.equal(second.incidents?.filter((item) => item.rootCauseClass === 'review_context_overflow_stale_base').length, 1);
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
   }

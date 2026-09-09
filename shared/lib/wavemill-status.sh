@@ -1333,6 +1333,7 @@ render_task_row() {
   local t st_str pr_str pr_info checks phase_str plan_status ready_status ready_queue_state attention_detail planning_detail launch_failure_detail reported ds pane watchdog_classification watchdog_detail running_detail coding_blocked_detail coding_auto_detail
   local execution_owner pane_state resource_disposition workflow_outcome lifecycle_retention_reason queue_handoff_at queue_wait_age queue_gate queue_head
   local cleanup_disposition cleanup_attempt_count cleanup_next_retry cleanup_outcome cleanup_fingerprint cleanup_action
+  local effective_config_json effective_base_branch effective_base_source repo_base_drift effective_require_confirm effective_confirm_source repo_confirm_drift
 
   t=$(elapsed "$worktree")
   reported=""
@@ -1347,6 +1348,13 @@ render_task_row() {
   cleanup_outcome=""
   cleanup_fingerprint=""
   cleanup_action=""
+  effective_config_json=""
+  effective_base_branch=""
+  effective_base_source=""
+  repo_base_drift=""
+  effective_require_confirm=""
+  effective_confirm_source=""
+  repo_confirm_drift=""
   if [[ -n "$STATE_FILE" && -f "$STATE_FILE" ]]; then
     execution_owner="$(jq -r --arg issue "$issue" '.tasks[$issue].executionOwner // "task"' "$STATE_FILE" 2>/dev/null || echo "task")"
     pane_state="$(jq -r --arg issue "$issue" '.tasks[$issue].paneState // "active"' "$STATE_FILE" 2>/dev/null || echo "active")"
@@ -1358,6 +1366,17 @@ render_task_row() {
     cleanup_outcome="$(jq -r --arg issue "$issue" '.tasks[$issue].lifecycle.cleanupEpisode.lastOutcome // empty' "$STATE_FILE" 2>/dev/null || true)"
     cleanup_fingerprint="$(jq -r --arg issue "$issue" '.tasks[$issue].lifecycle.cleanupEpisode.fingerprint // empty' "$STATE_FILE" 2>/dev/null || true)"
     cleanup_action="$(jq -r --arg issue "$issue" '.tasks[$issue].lifecycle.cleanupEpisode.requiredOperatorAction // empty' "$STATE_FILE" 2>/dev/null || true)"
+    if declare -F effective_task_config_json >/dev/null 2>&1; then
+      effective_config_json="$(effective_task_config_json "$issue" 2>/dev/null || true)"
+      if [[ -n "$effective_config_json" ]]; then
+        effective_base_branch="$(jq -r '.baseBranch.value // empty' <<<"$effective_config_json" 2>/dev/null || true)"
+        effective_base_source="$(jq -r '.baseBranch.source // empty' <<<"$effective_config_json" 2>/dev/null || true)"
+        repo_base_drift="$(jq -r '.baseBranch.driftFromRepoConfig // empty' <<<"$effective_config_json" 2>/dev/null || true)"
+        effective_require_confirm="$(jq -r 'if (.requireConfirm.value | type) == "boolean" then (.requireConfirm.value | tostring) else empty end' <<<"$effective_config_json" 2>/dev/null || true)"
+        effective_confirm_source="$(jq -r '.requireConfirm.source // empty' <<<"$effective_config_json" 2>/dev/null || true)"
+        repo_confirm_drift="$(jq -r 'if (.requireConfirm.driftFromRepoConfig | type) == "boolean" then (.requireConfirm.driftFromRepoConfig | tostring) else empty end' <<<"$effective_config_json" 2>/dev/null || true)"
+      fi
+    fi
     if declare -F get_task_resource_disposition >/dev/null 2>&1; then
       resource_disposition="$(get_task_resource_disposition "$issue" 2>/dev/null || true)"
     else
@@ -1564,6 +1583,13 @@ render_task_row() {
 
   if [[ "$resource_disposition" == "verification-required" || "$resource_disposition" == "retained" ]]; then
     render_task_detail_lines "lifecycle: outcome=${workflow_outcome:-unknown} disposition=${resource_disposition}${lifecycle_retention_reason:+ reason=$lifecycle_retention_reason}"
+  fi
+  if [[ -n "$effective_base_branch" || -n "$effective_require_confirm" ]]; then
+    local config_detail
+    config_detail="configuration:"
+    [[ -n "$effective_base_branch" ]] && config_detail+=" baseBranch=${effective_base_branch}${effective_base_source:+ source=$effective_base_source}${repo_base_drift:+ repo=$repo_base_drift}"
+    [[ -n "$effective_require_confirm" ]] && config_detail+=" requireConfirm=${effective_require_confirm}${effective_confirm_source:+ source=$effective_confirm_source}${repo_confirm_drift:+ repo=$repo_confirm_drift}"
+    render_task_detail_lines "$config_detail"
   fi
   if [[ -n "$cleanup_disposition" && "$cleanup_disposition" != "reaped" ]]; then
     local cleanup_detail

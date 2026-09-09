@@ -10,7 +10,7 @@ import {
   ContextWindowUnverifiableError,
 } from './context-window-guard.ts';
 import { REVIEW_MAX_OUTPUT_TOKENS } from './output-limits.ts';
-import { classifyProviderError } from './provider-error-classifier.ts';
+import { classifyProviderError, type ProviderErrorKind } from './provider-error-classifier.ts';
 import {
   assertOpenRouterBalanceSufficient,
   capOpenRouterMaxTokensForBalance,
@@ -39,7 +39,11 @@ import {
 } from '../review-engine.ts';
 import { loadPromptResourceSync } from '../resource-retrieval.ts';
 import { createCleanupTracker, runCleanup, type CleanupReason } from './cleanup.ts';
-import { updateStageResult } from '../stage-result.ts';
+import {
+  NATIVE_CONTEXT_WINDOW_EXCEEDED_CATEGORY,
+  PROVIDER_CREDIT_EXHAUSTED_CATEGORY,
+  updateStageResult,
+} from '../stage-result.ts';
 import { getNativeContextManagementConfig } from '../config.ts';
 import type { NormalizedPricing } from '../openrouter-catalog.ts';
 
@@ -267,6 +271,24 @@ function stopReasonDescription(stopReason: LoopStopReason): string {
   }
 }
 
+/**
+ * Map a classified provider error to the canonical review failure taxonomy
+ * (HOK-2964). Only typed context-window and billing/credit conditions get a
+ * dedicated infrastructure category; every other provider error kind keeps
+ * the generic `native-review-failed` category so it is not mistaken for a
+ * bounded-recoverable condition.
+ */
+function reviewFailureCategoryForProviderErrorKind(kind: ProviderErrorKind | undefined): string {
+  switch (kind) {
+    case 'context-window-exceeded':
+      return NATIVE_CONTEXT_WINDOW_EXCEEDED_CATEGORY;
+    case 'provider-credit-exhausted':
+      return PROVIDER_CREDIT_EXHAUSTED_CATEGORY;
+    default:
+      return 'native-review-failed';
+  }
+}
+
 function cleanupReasonForStopReason(stopReason: LoopStopReason): CleanupReason | null {
   if (stopReason === 'aborted') {
     return 'aborted';
@@ -462,15 +484,17 @@ export async function runNativeReview(
 
   const deniedTools = nativeReviewDeps.extractDeniedTools(transcriptEvents);
   if (loopResult.stopReason !== 'stop') {
-    const providerError = loopResult.stopReason === 'error'
+    const providerErrorMessage = loopResult.stopReason === 'error'
       ? extractFinalAssistantErrorMessage(loopResult.messages)
       : '';
-    const providerDescription = providerError
-      ? `${loopResult.providerError?.kind ?? classifyProviderError(providerError).kind}: ${providerError}`
+    const providerErrorKind = loopResult.providerError?.kind
+      ?? (providerErrorMessage ? classifyProviderError(providerErrorMessage).kind : undefined);
+    const providerDescription = providerErrorMessage
+      ? `${providerErrorKind ?? 'provider-unknown-error'}: ${providerErrorMessage}`
       : '';
     return nativeReviewFailure(
       context,
-      'native-review-failed',
+      reviewFailureCategoryForProviderErrorKind(providerErrorKind),
       providerDescription || stopReasonDescription(loopResult.stopReason),
       deniedTools,
     );

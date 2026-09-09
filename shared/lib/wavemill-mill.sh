@@ -33,6 +33,9 @@ fi
 #   - Ctrl+C: Interrupt and reset in-progress tasks to Backlog
 
 REPO_DIR="${REPO_DIR:-$PWD}"
+_WAVEMILL_PRELOAD_BASE_BRANCH_SET="${BASE_BRANCH+x}"
+_WAVEMILL_PRELOAD_REQUIRE_CONFIRM_SET="${REQUIRE_CONFIRM+x}"
+_WAVEMILL_PRELOAD_MERGE_METHOD_SET="${INTEGRATION_MERGE_METHOD+x}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -65,6 +68,10 @@ if [[ -f "$SCRIPT_DIR/startup-terminal-preflight.sh" ]]; then
 source "$SCRIPT_DIR/startup-terminal-preflight.sh"
 fi
 load_config "$REPO_DIR"
+WAVEMILL_BASE_BRANCH_SOURCE="${WAVEMILL_BASE_BRANCH_SOURCE:-$([[ -n "$_WAVEMILL_PRELOAD_BASE_BRANCH_SET" ]] && printf 'runtime-env' || printf 'repo-config')}"
+WAVEMILL_REQUIRE_CONFIRM_SOURCE="${WAVEMILL_REQUIRE_CONFIRM_SOURCE:-$([[ -n "$_WAVEMILL_PRELOAD_REQUIRE_CONFIRM_SET" ]] && printf 'runtime-env' || printf 'repo-config')}"
+WAVEMILL_MERGE_METHOD_SOURCE="${WAVEMILL_MERGE_METHOD_SOURCE:-$([[ -n "$_WAVEMILL_PRELOAD_MERGE_METHOD_SET" ]] && printf 'runtime-env' || printf 'repo-config')}"
+export WAVEMILL_BASE_BRANCH_SOURCE WAVEMILL_REQUIRE_CONFIRM_SOURCE WAVEMILL_MERGE_METHOD_SOURCE
 
 # ── Nested invocation guards (HOK-1214) ──────────────────────────
 
@@ -493,12 +500,14 @@ write_launch_plan() {
   local t issue slug title branch wt_dir linear_issue task_packet_file details_file issue_json_file route_file
   local route_json route_planner route_coder route_reviewer route_plan_depth route_code_depth route_review_mode route_max_cost_usd
   local route_payload challenge_flag challenge_pair challenge_role challenge_model migration_number task_agent
-  local depends_on base_from_task
+  local depends_on base_from_task attempt_id attempt_json
 
   for t in "${LAUNCH_ARGS[@]}"; do
     IFS='|' read -r issue slug title <<<"$t"
     branch="task/${slug}"
     wt_dir="${WORKTREE_ROOT}/${slug}"
+    attempt_id="$(wavemill_default_attempt_id "$issue" "$branch")"
+    attempt_json="$(wavemill_attempt_context_json "$issue" "$attempt_id" "$branch" "$branch" "$BASE_BRANCH" "launch-plan")"
     linear_issue="${TASK_LINEAR_ISSUE_BY_ISSUE[$issue]:-$issue}"
     task_packet_file="/tmp/${SESSION}-${issue}-taskpacket.md"
     details_file="/tmp/${SESSION}-${issue}-taskpacket-details.md"
@@ -589,11 +598,13 @@ write_launch_plan() {
       --arg agent "$task_agent" \
       --argjson dependsOn "$depends_on" \
       --arg baseFromTask "$base_from_task" \
+      --argjson attempt "$attempt_json" \
       '$tasks + [{
         issue: $issue,
         slug: $slug,
         title: $title,
         branch: $branch,
+        attempt: $attempt,
         worktreeDir: $worktreeDir,
         linearIssueId: $linearIssueId,
         taskPacketFile: $taskPacketFile,
@@ -617,6 +628,7 @@ write_launch_plan() {
     --arg runEpoch "$WAVEMILL_RUN_EPOCH" \
     --arg repoDir "$REPO_DIR" \
     --arg baseBranch "$BASE_BRANCH" \
+    --arg baseBranchSource "${WAVEMILL_BASE_BRANCH_SOURCE:-repo-config}" \
     --arg resolvedBaseRef "${WAVEMILL_RESOLVED_BASE_REF:-}" \
     --argjson baseRefPreflight "${WAVEMILL_BASE_REF_PREFLIGHT_JSON:-null}" \
     --arg worktreeRoot "$WORKTREE_ROOT" \
@@ -638,6 +650,9 @@ write_launch_plan() {
     --argjson tasks "$tasks_json" \
     --arg pollSeconds "$POLL_SECONDS" \
     --arg requireConfirm "$REQUIRE_CONFIRM" \
+    --arg requireConfirmSource "${WAVEMILL_REQUIRE_CONFIRM_SOURCE:-repo-config}" \
+    --arg integrationMergeMethod "${INTEGRATION_MERGE_METHOD:-squash}" \
+    --arg mergeMethodSource "${WAVEMILL_MERGE_METHOD_SOURCE:-repo-config}" \
     --arg dryRun "$DRY_RUN" \
     --arg projectName "$PROJECT_NAME" \
     --arg autoEval "$AUTO_EVAL" \
@@ -651,6 +666,7 @@ write_launch_plan() {
       runEpoch: $runEpoch,
       repoDir: $repoDir,
       baseBranch: $baseBranch,
+      baseBranchSource: $baseBranchSource,
       resolvedBaseRef: (if $resolvedBaseRef == "" then null else $resolvedBaseRef end),
       baseRefPreflight: $baseRefPreflight,
       worktreeRoot: $worktreeRoot,
@@ -676,6 +692,9 @@ write_launch_plan() {
       monitorConfig: {
         pollSeconds: ($pollSeconds | tonumber),
         requireConfirm: ($requireConfirm == "true"),
+        requireConfirmSource: $requireConfirmSource,
+        mergeMethod: $integrationMergeMethod,
+        mergeMethodSource: $mergeMethodSource,
         dryRun: ($dryRun == "true"),
         projectName: $projectName,
         autoEval: ($autoEval == "true"),

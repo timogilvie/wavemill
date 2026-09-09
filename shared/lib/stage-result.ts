@@ -92,10 +92,26 @@ export type ReviewOutcomeVerdict = 'ready' | 'not_ready' | 'error';
  * infrastructure condition, never evidence of a scope violation (HOK-2889).
  */
 export const REVIEW_SCOPE_UNVERIFIABLE_FAILURE_CATEGORY = 'review-scope-unverifiable';
+/**
+ * The reviewed diff (at the current head/base) exceeds the reviewer's context
+ * window. Bounded infrastructure recovery (HOK-2964): a stale-base rebuild or
+ * a larger-context reroute may still resolve it, so it must never be treated
+ * as a terminal code-defect solely because verdict=not_ready.
+ */
+export const NATIVE_CONTEXT_WINDOW_EXCEEDED_CATEGORY = 'native-context-window-exceeded';
+/**
+ * Typed provider billing/credit exhaustion (e.g. OpenRouter 402), matching
+ * the `provider-credit-exhausted` kind from provider-error-classifier.ts and
+ * arm-failure-taxonomy.ts. Recoverable once provider health returns
+ * (HOK-2964 REQ-F5) — never collapsed into generic `native-review-failed`.
+ */
+export const PROVIDER_CREDIT_EXHAUSTED_CATEGORY = 'provider-credit-exhausted';
 export const INFRA_REVIEW_FAILURE_CATEGORIES = [
   'native-runtime-unavailable',
   'native-review-prompt-missing',
   REVIEW_SCOPE_UNVERIFIABLE_FAILURE_CATEGORY,
+  NATIVE_CONTEXT_WINDOW_EXCEEDED_CATEGORY,
+  PROVIDER_CREDIT_EXHAUSTED_CATEGORY,
 ] as const;
 export type InfrastructureReviewFailureCategory = typeof INFRA_REVIEW_FAILURE_CATEGORIES[number];
 
@@ -139,6 +155,8 @@ export interface ReviewArtifacts {
   failureCategory?: string;
   /** Structured diagnostics captured for review tool failures. */
   diagnostics?: Record<string, unknown>;
+  /** Head SHA reviewed for this artifact; a later head makes it stale (HOK-2964). */
+  reviewHeadSha?: string;
 }
 
 export interface ReviewOutcome {

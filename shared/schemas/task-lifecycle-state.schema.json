@@ -53,6 +53,9 @@
         "mergeMethod": {
           "type": "string"
         },
+        "requireConfirm": {
+          "type": "boolean"
+        },
         "remoteBranchDeletionPolicy": {
           "type": "object",
           "additionalProperties": true,
@@ -86,6 +89,24 @@
         },
         "windowId": {
           "type": "string"
+        },
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "baseBranch": {
+              "enum": ["launch-contract", "runtime-env", "cli", "user-config", "repo-config", "default"]
+            },
+            "requireConfirm": {
+              "enum": ["launch-contract", "runtime-env", "cli", "user-config", "repo-config", "default"]
+            },
+            "mergeMethod": {
+              "enum": ["launch-contract", "runtime-env", "cli", "user-config", "repo-config", "default"]
+            },
+            "remoteBranchDeletionPolicy": {
+              "enum": ["launch-contract", "runtime-env", "cli", "user-config", "repo-config", "default"]
+            }
+          }
         }
       }
     },
@@ -112,6 +133,42 @@
           "type": "string"
         },
         "mergeSha": {
+          "type": "string"
+        }
+      }
+    },
+    "attempt": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "attemptId": {
+          "type": "string"
+        },
+        "originalBranch": {
+          "type": "string"
+        },
+        "effectiveBranch": {
+          "type": "string"
+        },
+        "baseBranch": {
+          "type": "string"
+        }
+      }
+    },
+    "prReconciliation": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "classification": {
+          "enum": ["current-open", "current-merged", "historical-closed", "historical-merged", "none", "unverifiable"]
+        },
+        "reason": {
           "type": "string"
         }
       }

@@ -174,6 +174,81 @@ describe('native review', () => {
     }
   });
 
+  it('maps a typed provider credit failure to provider-credit-exhausted (HOK-2964 REQ-F5)', async () => {
+    const repoDir = makeTempRepo();
+    setReadyProvider();
+
+    const errorMessage = { role: 'assistant' as const, errorMessage: 'HTTP 402: insufficient credits', timestamp: Date.now() };
+    nativeReviewTestUtils.setRunWavemillLoop(async (config) => {
+      config.onEvent?.({ type: 'agent_start' });
+      config.onEvent?.({ type: 'agent_end', messages: [errorMessage] });
+      return {
+        messages: [errorMessage],
+        stopReason: 'error',
+        turnsCompleted: 1,
+        toolCallsExecuted: 0,
+        totalInputTokens: 10,
+        totalOutputTokens: 10,
+        totalCostUsd: 0,
+        wallClockMs: 5,
+        providerError: {
+          kind: 'provider-credit-exhausted',
+          retryable: false,
+          attempts: 0,
+          errorMessage: 'HTTP 402: insufficient credits',
+          turnsAtFailure: 1,
+        },
+      };
+    });
+
+    try {
+      const result = await runNativeReview(makeReviewContext(), repoDir, {});
+      assert.equal(result.verdict, 'not_ready');
+      assert.equal(result.failureCategory, 'provider-credit-exhausted');
+      assert.equal(result.codeReviewFindings[0].category, 'provider-credit-exhausted');
+      assert.match(result.codeReviewFindings[0].description, /provider-credit-exhausted/);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('maps a provider-reported context overflow to native-context-window-exceeded (HOK-2964)', async () => {
+    const repoDir = makeTempRepo();
+    setReadyProvider();
+
+    const errorMessage = { role: 'assistant' as const, errorMessage: 'maximum context length is 128000 tokens', timestamp: Date.now() };
+    nativeReviewTestUtils.setRunWavemillLoop(async (config) => {
+      config.onEvent?.({ type: 'agent_start' });
+      config.onEvent?.({ type: 'agent_end', messages: [errorMessage] });
+      return {
+        messages: [errorMessage],
+        stopReason: 'error',
+        turnsCompleted: 1,
+        toolCallsExecuted: 0,
+        totalInputTokens: 10,
+        totalOutputTokens: 10,
+        totalCostUsd: 0,
+        wallClockMs: 5,
+        providerError: {
+          kind: 'context-window-exceeded',
+          retryable: false,
+          attempts: 0,
+          errorMessage: 'maximum context length is 128000 tokens',
+          turnsAtFailure: 1,
+        },
+      };
+    });
+
+    try {
+      const result = await runNativeReview(makeReviewContext(), repoDir, {});
+      assert.equal(result.verdict, 'not_ready');
+      assert.equal(result.failureCategory, 'native-context-window-exceeded');
+      assert.equal(result.codeReviewFindings[0].category, 'native-context-window-exceeded');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
   it('records cleanup transcript and stage-result details on timeout', async () => {
     const repoDir = makeTempRepo();
     const featureDir = mkdtempSync(join(tmpdir(), 'native-review-feature-'));

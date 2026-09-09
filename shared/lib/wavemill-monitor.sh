@@ -9,6 +9,16 @@ source "$1"
 WAVEMILL_LIB_DIR="${WAVEMILL_LIB_DIR:-${LIB_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}}"
 source "$WAVEMILL_LIB_DIR/transient-marker.sh"
 
+if ! declare -F effective_task_base_branch >/dev/null 2>&1; then
+effective_task_base_branch() {
+  local issue="$1" value=""
+  if [[ -n "${STATE_FILE:-}" && -f "${STATE_FILE:-}" ]]; then
+    value="$(jq -r --arg issue "$issue" '.tasks[$issue].lifecycle.launchContract.baseBranch // .tasks[$issue].baseBranch // empty' "$STATE_FILE" 2>/dev/null || true)"
+  fi
+  printf '%s\n' "${value:-${BASE_BRANCH:-main}}"
+}
+fi
+
 run_linear_retry_drain_tick() {
   [[ "$DRY_RUN" == "true" ]] && return 0
 
@@ -1539,7 +1549,7 @@ challenge_cancel_challenger_arm() {
       [[ -n "$challenger_worktree" ]] && wt_dir="$challenger_worktree"
       local task_branch="task/${challenger_slug}"
       local cleanup_rc=0
-      safe_remove_task_worktree_and_branch "$wt_dir" "$task_branch" "$BASE_BRANCH" "challenge_cancel_challenger_arm" "$challenger_key" "" || cleanup_rc=$?
+      safe_remove_task_worktree_and_branch "$wt_dir" "$task_branch" "$(effective_task_base_branch "$challenger_key" 2>/dev/null || printf '%s\n' "$BASE_BRANCH")" "challenge_cancel_challenger_arm" "$challenger_key" "" || cleanup_rc=$?
       if [[ "$cleanup_rc" -eq 10 ]] || cleanup_outcome_is_retain; then
         set_window_attention_state "$win" "needs-user"
         log_warn "  $challenger_key cleanup preserved local work during challenge collapse (${WAVEMILL_CLEANUP_OUTCOME:-unclassified}); keeping task state"
@@ -6109,10 +6119,10 @@ _restore_inflight_task_window_if_missing() {
   if [[ "$(get_task_execution_owner "$issue")" == "reconciliation" && "$(get_task_pane_state "$issue")" == "rehydrating" ]]; then
     local pr_number safety_reason release_reason
     pr_number="$(read_state_value "" --arg i "$issue" '.tasks[$i].pr // ""')"
-    safety_reason="$(task_worktree_release_safety "$wt_dir" "$branch" "${BASE_BRANCH:-main}" 2>/dev/null || true)"
+    safety_reason="$(task_worktree_release_safety "$wt_dir" "$branch" "$(effective_task_base_branch "$issue" 2>/dev/null || printf '%s\n' "${BASE_BRANCH:-main}")" 2>/dev/null || true)"
     if [[ "$safety_reason" == "ok" ]]; then
       reconciliation_lease_release "$feature_dir"
-      release_reason="$(pane_release_preflight "$issue" "$slug" "$feature_dir" "$wt_dir" "$pr_number" "$branch" "${BASE_BRANCH:-main}" 2>/dev/null || true)"
+      release_reason="$(pane_release_preflight "$issue" "$slug" "$feature_dir" "$wt_dir" "$pr_number" "$branch" "$(effective_task_base_branch "$issue" 2>/dev/null || printf '%s\n' "${BASE_BRANCH:-main}")" 2>/dev/null || true)"
       if [[ "$release_reason" == "ok" ]]; then
         release_task_pane "$issue" "$slug" "$feature_dir" "$wt_dir" "$pr_number" || true
         return 0
@@ -7921,49 +7931,177 @@ review_result_infra_failure() {
       (($review.failureCategory // "") == "native-runtime-unavailable") or
       (($review.failureCategory // "") == "native-review-prompt-missing") or
       (($review.failureCategory // "") == "review-scope-unverifiable") or
+      (($review.failureCategory // "") == "native-context-window-exceeded") or
+      (($review.failureCategory // "") == "provider-credit-exhausted") or
       ((($review.verdict // "") == "error") and ((($review.reviewToolError // "") | tostring | length) > 0))
     )
   ' "$review_file" >/dev/null 2>&1
 }
 
-review_infra_retry_count() {
+# Typed failure category recorded on the review artifact (HOK-2964), shared
+# taxonomy with shared/lib/stage-result.ts's INFRA_REVIEW_FAILURE_CATEGORIES.
+# Empty when the artifact carries no failureCategory (e.g. a tool-error or
+# missing-evidence recovery path).
+review_result_failure_category() {
+  local feature_dir="$1"
+  local review_file="$feature_dir/.review-result.json"
+  [[ -f "$review_file" ]] || { printf '\n'; return 0; }
+  jq -r '
+    (.artifacts // {}) as $artifacts
+    | (if ($artifacts.type // "") == "review" then $artifacts else ($artifacts.review // {}) end)
+    | (.failureCategory // "")
+  ' "$review_file" 2>/dev/null || printf '\n'
+}
+
+# Head SHA the failed review artifact was reviewed at (HOK-2964), when
+# recorded. Empty for older artifacts that predate reviewHeadSha.
+review_result_review_head_sha() {
+  local feature_dir="$1"
+  local review_file="$feature_dir/.review-result.json"
+  [[ -f "$review_file" ]] || { printf '\n'; return 0; }
+  jq -r '
+    (.artifacts // {}) as $artifacts
+    | (if ($artifacts.type // "") == "review" then $artifacts else ($artifacts.review // {}) end)
+    | (.reviewHeadSha // "")
+  ' "$review_file" 2>/dev/null || printf '\n'
+}
+
+# A stable label for the bounded-retry identity and operator messaging when
+# no typed failureCategory was recorded (tool-error / missing-evidence
+# recovery paths still go through relaunch_review_after_infra_recovery).
+review_infra_recovery_category_label() {
   local state_dir="$1"
-  local count_file="$state_dir/.review-infra-retries"
-  if [[ -f "$count_file" ]] && [[ "$(cat "$count_file" 2>/dev/null || echo "")" =~ ^[0-9]+$ ]]; then
-    cat "$count_file"
+  local review_file="$state_dir/.review-result.json"
+  local category
+  category="$(review_result_failure_category "$state_dir")"
+  if [[ -n "$category" ]]; then
+    printf '%s\n' "$category"
     return 0
   fi
-  echo "0"
+  if [[ -f "$review_file" ]] && jq -e '
+      (.artifacts // {}) as $artifacts
+      | (if ($artifacts.type // "") == "review" then $artifacts else ($artifacts.review // {}) end)
+      | (.verdict // "") == "error"
+    ' "$review_file" >/dev/null 2>&1; then
+    printf 'review-tool-error\n'
+  else
+    printf 'review-infra-unknown\n'
+  fi
 }
 
-increment_review_infra_retry_count() {
-  local state_dir="$1"
-  local count
-  count=$(review_infra_retry_count "$state_dir")
-  count=$((count + 1))
-  mkdir -p "$state_dir"
-  printf '%s\n' "$count" > "$state_dir/.review-infra-retries"
-  echo "$count"
+# Operator-facing next action for an exhausted review-infra-recovery bucket,
+# distinguishing genuinely bounded conditions (HOK-2964) from the generic case.
+review_infra_recovery_next_action() {
+  case "${1:-}" in
+    native-context-window-exceeded)
+      printf 'the reviewed diff still exceeds the reviewer context window at the current head; a larger-context reviewer or manual scope reduction is required, manual re-review required'
+      ;;
+    provider-credit-exhausted)
+      printf 'provider credits were exhausted and did not recover within the retry budget. Top up credits, then manual re-review required'
+      ;;
+    *)
+      printf 'manual re-review required'
+      ;;
+  esac
 }
 
-clear_review_infra_retry_state() {
-  local state_dir="$1"
-  rm -f "$state_dir/.review-infra-retries"
+select_context_window_recovery_reviewer() {
+  local reviewer_model="$1" wt_dir="$2"
+  local selector_script selection stderr_file rc=0 selected_model
+  stderr_file="$(mktemp "${TMPDIR:-/tmp}/wavemill-review-reroute-stderr.XXXXXX" 2>/dev/null)" || return 1
+
+  selector_script='
+    import { getConfiguredModelsForDescriptorStage, getEffectiveRegistry } from "./shared/lib/model-registry.ts";
+    import { filterNativeModels } from "./shared/lib/native-agent/certification/router-filter.ts";
+    const failedModel = process.argv[1];
+    const repoDir = process.argv[2] || process.cwd();
+    const registry = getEffectiveRegistry(repoDir);
+    const failed = registry.models[failedModel];
+    if (!failed) throw new Error(`Unknown failed review model: ${failedModel}`);
+    const candidates = getConfiguredModelsForDescriptorStage(repoDir, "reviewer").filter((modelId) => {
+      const capabilities = registry.models[modelId];
+      return modelId !== failedModel
+        && capabilities !== undefined
+        && (capabilities.qualityScores.review ?? 0) > 0
+        && capabilities.contextWindowTokens > failed.contextWindowTokens;
+    });
+    const filtered = filterNativeModels(candidates, "reviewer", registry, repoDir);
+    const selectedModel = filtered.eligible[0];
+    if (!selectedModel) {
+      throw new Error(`No certified reviewer with context window larger than ${failedModel} (${failed.contextWindowTokens} tokens)`);
+    }
+    const selected = registry.models[selectedModel];
+    console.log(JSON.stringify({
+      selectedModel,
+      previousModel: failedModel,
+      previousContextWindowTokens: failed.contextWindowTokens,
+      selectedContextWindowTokens: selected?.contextWindowTokens,
+      reason: "native-context-window-exceeded",
+      rejected: filtered.rejected,
+    }));
+  '
+
+  selection="$(cd "$REPO_DIR" 2>/dev/null && npx tsx -e "$selector_script" "$reviewer_model" "$wt_dir" 2>"$stderr_file")" || rc=$?
+  if (( rc != 0 )); then
+    REVIEW_CONTEXT_REROUTE_LAST_ERROR="$(cat "$stderr_file" 2>/dev/null || true)"
+    rm -f "$stderr_file"
+    return 1
+  fi
+  rm -f "$stderr_file"
+
+  selected_model="$(printf '%s\n' "$selection" | jq -r '.selectedModel // empty' 2>/dev/null || echo "")"
+  [[ -n "$selected_model" ]] || {
+    REVIEW_CONTEXT_REROUTE_LAST_ERROR="reroute selector returned no selectedModel"
+    return 1
+  }
+  REVIEW_CONTEXT_REROUTE_LAST_JSON="$selection"
+  printf '%s\n' "$selected_model"
 }
 
 relaunch_review_after_infra_recovery() {
   local issue="$1" slug="$2" title="$3" wt_dir="$4" branch="$5" base_branch="$6" pr_number="$7" state_dir="$8"
   local review_file="$state_dir/.review-result.json"
-  local retry_count retry_max reviewer_agent reviewer_model review_mode contract_payload retry_number rc=0
+  local bucket="review-infra-recovery"
+  local category recorded_head current_head identity
+  local retry_limit effective_retry_limit disposition retry_number reviewer_agent reviewer_model review_mode contract_payload rc=0
+  local scope_note="" next_action reason
+  local context_overflow_current_scope="false" rerouted_model="" reroute_json="" reroute_note=""
 
-  retry_count=$(review_infra_retry_count "$state_dir")
-  retry_max="${WAVEMILL_REVIEW_INFRA_RETRY_MAX:-2}"
-  [[ "$retry_max" =~ ^[0-9]+$ ]] || retry_max=2
-  if (( retry_count >= retry_max )); then
-    write_ready_attention_file "$state_dir" "Review failed on infrastructure ${retry_count}/${retry_max} times for PR #$pr_number, manual re-review required."
-    log_error "  $issue: review infrastructure retry cap reached for PR #$pr_number (${retry_count}/${retry_max})"
-    return 1
+  # Bounded-retry identity (HOK-2964 REQ-F2/F4): keyed to the current head and
+  # the failure category, not a path-specific counter. A new commit or a
+  # different failure category resets the budget; an unchanged condition at
+  # an unchanged head is bounded and eventually terminalizes.
+  category="$(review_infra_recovery_category_label "$state_dir")"
+  recorded_head="$(review_result_review_head_sha "$state_dir")"
+  current_head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || echo "")"
+  identity="${current_head}:${category}"
+
+  retry_limit="${WAVEMILL_REVIEW_INFRA_RETRY_MAX:-2}"
+  [[ "$retry_limit" =~ ^[0-9]+$ ]] || retry_limit=2
+  effective_retry_limit="$retry_limit"
+  if [[ "$category" == "native-context-window-exceeded" && ( -z "$recorded_head" || "$recorded_head" == "$current_head" ) ]]; then
+    context_overflow_current_scope="true"
+    effective_retry_limit=1
   fi
+
+  disposition=$(bounded_retry_gate "$state_dir" "$bucket" "$identity" "$effective_retry_limit")
+  case "$disposition" in
+    backoff)
+      log "debug" "  $issue: holding review infra recovery for PR #$pr_number (backoff, category=${category})"
+      return 1
+      ;;
+    exhausted)
+      next_action="$(review_infra_recovery_next_action "$category")"
+      reason="Review infrastructure recovery exhausted after $(bounded_retry_count "$state_dir" "$bucket") attempt(s) for PR #$pr_number (category=${category}); ${next_action}"
+      bounded_retry_mark_exhausted "$state_dir" "$bucket" "$reason" || true
+      write_ready_attention_file "$state_dir" "Review failed on infrastructure (${category}) for PR #$pr_number, ${next_action}."
+      log_error "  $issue: review infrastructure recovery exhausted for PR #$pr_number ($reason)"
+      return 1
+      ;;
+    exhausted-quiet)
+      return 1
+      ;;
+  esac
 
   reviewer_agent="$(jq -r '.agent // empty' "$review_file" 2>/dev/null || echo "")"
   reviewer_model="$(jq -r '.model // empty' "$review_file" 2>/dev/null || echo "")"
@@ -7971,30 +8109,54 @@ relaunch_review_after_infra_recovery() {
   [[ -n "$reviewer_agent" ]] || reviewer_agent="$AGENT_CMD"
   [[ -n "$reviewer_model" ]] || reviewer_model="$(read_state_value "" --arg i "$issue" '.tasks[$i].model // ""')"
 
+  if [[ "$context_overflow_current_scope" == "true" ]]; then
+    if ! rerouted_model="$(select_context_window_recovery_reviewer "$reviewer_model" "$wt_dir")"; then
+      next_action="$(review_infra_recovery_next_action "$category")"
+      reason="Review context-window recovery cannot find a certified larger-context reviewer for PR #$pr_number (category=${category}); ${next_action}"
+      bounded_retry_mark_exhausted "$state_dir" "$bucket" "$reason" || true
+      write_ready_attention_file "$state_dir" "Review failed on infrastructure (${category}) for PR #$pr_number, ${next_action}. ${REVIEW_CONTEXT_REROUTE_LAST_ERROR:-No larger-context reviewer available.}"
+      log_error "  $issue: review context-window recovery blocked for PR #$pr_number (${REVIEW_CONTEXT_REROUTE_LAST_ERROR:-no larger-context reviewer available})"
+      return 1
+    fi
+    reroute_json="${REVIEW_CONTEXT_REROUTE_LAST_JSON:-}"
+    reviewer_model="$rerouted_model"
+    if ! reviewer_agent="$(agent_resolve_from_model "$reviewer_model" "review")"; then
+      write_ready_attention_file "$state_dir" "Review context-window recovery selected $reviewer_model for PR #$pr_number, but its review agent could not be resolved."
+      log_error "  $issue: context-window recovery selected unresolved reviewer model $reviewer_model"
+      return 1
+    fi
+    reroute_note=" (rerouted to larger-context reviewer: ${reviewer_model})"
+  fi
+
   if ! agent_validate_phase_launch "$reviewer_agent" "review" "$reviewer_model" "$REPO_DIR"; then
     write_ready_attention_file "$state_dir" "Review infrastructure is still unavailable for PR #$pr_number; waiting for reviewer runtime recovery."
     log_error "  $issue: waiting for reviewer runtime recovery before re-reviewing PR #$pr_number"
     return 1
   fi
 
-  retry_number=$(increment_review_infra_retry_count "$state_dir")
+  retry_number=$(bounded_retry_increment "$state_dir" "$bucket" "$identity")
   review_mode="static"
   if declare -F read_phase_config >/dev/null 2>&1; then
     review_mode=$(read_phase_config "$state_dir" "review" "mode")
     [[ -n "$review_mode" ]] || review_mode="static"
   fi
-  contract_payload="$(jq -cn --arg agent "$reviewer_agent" --arg model "$reviewer_model" '{stageRole:"review",agent:$agent,model:$model}')"
+  contract_payload="$(jq -cn --arg agent "$reviewer_agent" --arg model "$reviewer_model" --argjson reroute "${reroute_json:-null}" \
+    '{stageRole:"review",agent:$agent,model:$model} + (if $reroute == null then {} else {contextWindowReroute:$reroute} end)')"
 
   if ! _prepare_recovery_phase_launch "$issue" "$slug" "review" "$state_dir" "$wt_dir" "$reviewer_agent" "$reviewer_model" "$contract_payload" "review"; then
     write_ready_attention_file "$state_dir" "Could not prepare infrastructure re-review for PR #$pr_number."
     return 1
   fi
 
+  if [[ -n "$recorded_head" && -n "$current_head" && "$recorded_head" != "$current_head" ]]; then
+    scope_note=" (scope refreshed: head ${recorded_head:0:7}→${current_head:0:7})"
+  fi
+
   launch_review_phase "$issue" "$slug" "$title" "$wt_dir" "$branch" "$base_branch" \
     "$reviewer_model" "$reviewer_agent" "$review_mode" || rc=$?
   if [[ "$rc" -eq 0 ]]; then
     marker_clear "$state_dir/.needs-attention"
-    log "status" "♻ $issue → review relaunched after infrastructure recovery (attempt ${retry_number}/${retry_max})"
+    log "status" "♻ $issue → review relaunched after infrastructure recovery (attempt ${retry_number}/${effective_retry_limit}, category=${category})${scope_note}${reroute_note}"
     return 6
   fi
   if [[ "$rc" -eq 2 ]] && check_stage_aborted "$state_dir"; then
@@ -8490,7 +8652,7 @@ launch_ready_phase() {
     reconciliation_capsule_refresh "$state_dir" "$wt_dir" "$pr_number" "$branch" "$base_branch" "$issue" "$slug" "$title" || true
   fi
 
-  clear_review_infra_retry_state "$state_dir"
+  bounded_retry_clear "$state_dir" "review-infra-recovery"
   clear_challenger_transient_retry_state "$state_dir"
   marker_clear "$state_dir/.needs-attention"
   log "$pending_log_level" "  $issue: Launching ready phase (PR #$pr_number)"
@@ -9283,7 +9445,9 @@ handle_comparison_job_success() {
             --comment "Closing: lost challenge comparison to ${winner} side." 2>/dev/null || true
           log "status" "Closed losing PR #$loser_pr"
         fi
-        cleanup_completed_task "$loser_key" "$loser_slug" "challenge loser"
+        if ! cleanup_completed_task "$loser_key" "$loser_slug" "challenge loser"; then
+          log_warn "Challenge comparison recorded; losing-side cleanup deferred for $loser_key"
+        fi
       else
         log "status" "  ⚖ Both PRs remain open for manual review (autoMergeWinner=false)"
       fi
@@ -9998,7 +10162,7 @@ cleanup_aborted_challenge_arm() {
   else
     CLEANUP_EPISODE_CURRENT_FINGERPRINT=""
   fi
-  safe_remove_task_worktree_and_branch "$wt_dir" "$task_branch" "${BASE_BRANCH:-main}" "cleanup_aborted_challenge_arm" "$issue" "" || cleanup_rc=$?
+  safe_remove_task_worktree_and_branch "$wt_dir" "$task_branch" "$(effective_task_base_branch "$issue" 2>/dev/null || printf '%s\n' "${BASE_BRANCH:-main}")" "cleanup_aborted_challenge_arm" "$issue" "" || cleanup_rc=$?
   cleanup_outcome="${WAVEMILL_CLEANUP_OUTCOME:-}"
   CLEANUP_EPISODE_CURRENT_FINGERPRINT=""
   if [[ "$cleanup_rc" -eq 10 ]] || cleanup_outcome_is_retain "$cleanup_outcome"; then
@@ -10133,13 +10297,37 @@ wavemill_record_monitor_iteration_timing() {
 
 find_pr_for_branch() {
   local branch="$1"
-  local cached
-  cached=$(wavemill_pr_lookup_by_branch "$branch")
-  if [[ -n "$cached" ]]; then
-    echo "$cached"
-    return
+  local issue="" worktree="" base_branch="${BASE_BRANCH:-}" head_sha="" attempt_json="" attempt_id="" linear_state="" challenge_pair="" challenge_role=""
+  local resolution classification pr_number reason
+  [[ -n "$branch" ]] || return 0
+
+  if [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]]; then
+    issue="$(jq -r --arg branch "$branch" '(.tasks // {}) | to_entries[] | select((.value.branch // "") == $branch) | .key' "$STATE_FILE" 2>/dev/null | head -n 1)"
   fi
-  _with_timeout "$API_TIMEOUT" gh pr list --head "$branch" --state all --json number --jq '.[0].number // empty' 2>/dev/null || echo ""
+  [[ -n "$issue" ]] || return 0
+
+  worktree="$(read_state_value "" --arg i "$issue" '.tasks[$i].worktree // empty' 2>/dev/null || true)"
+  [[ -n "$worktree" && -d "$worktree" ]] && head_sha="$(git -C "$worktree" rev-parse HEAD 2>/dev/null || true)"
+  base_branch="$(read_state_value "${BASE_BRANCH:-}" --arg i "$issue" '.tasks[$i].lifecycle.launchContract.baseBranch // .tasks[$i].baseBranch // empty' 2>/dev/null || true)"
+  [[ -n "$base_branch" ]] || base_branch="${BASE_BRANCH:-}"
+  attempt_json="$(read_state_value "" --arg i "$issue" '.tasks[$i].attempt // .tasks[$i].lifecycle.attempt // empty' 2>/dev/null || true)"
+  attempt_id="$(jq -r '.attemptId // empty' <<<"${attempt_json:-{}}" 2>/dev/null || true)"
+  linear_state="$(read_state_value "" --arg i "$issue" '.tasks[$i].linearState // .tasks[$i].linear.state.name // empty' 2>/dev/null || true)"
+  challenge_pair="$(read_state_value "" --arg i "$issue" '.tasks[$i].challengePairId // empty' 2>/dev/null || true)"
+  challenge_role="$(read_state_value "" --arg i "$issue" '.tasks[$i].challengeRole // empty' 2>/dev/null || true)"
+
+  resolution="$(wavemill_resolve_pr_attempt "$issue" "$branch" "$base_branch" "$head_sha" "$attempt_id" "$linear_state" "$challenge_pair" "$challenge_role")"
+  classification="$(jq -r '.classification // "unverifiable"' <<<"$resolution" 2>/dev/null || echo "unverifiable")"
+  wavemill_persist_attempt_reconciliation "$issue" "$attempt_json" "$resolution" "monitor-pr-discovery" >/dev/null 2>&1 || true
+  if [[ "$classification" == "current-open" ]]; then
+    pr_number="$(jq -r '.selectedCandidate.number // empty' <<<"$resolution" 2>/dev/null || true)"
+    [[ -n "$pr_number" ]] && printf '%s\n' "$pr_number"
+    return 0
+  fi
+
+  reason="$(jq -r '.reason // empty' <<<"$resolution" 2>/dev/null || true)"
+  [[ -n "$reason" ]] && log "debug" "$issue: PR discovery ignored $classification candidate for $branch ($reason)"
+  return 0
 }
 
 inject_depends_on_pr_block() {
@@ -13202,7 +13390,7 @@ handle_re_review_command() {
   reviewer_model="$(resolve_phase_model "review" "$reviewer_model" "claude-sonnet-5")"
   review_mode="$(read_phase_config "$feature_dir" "review" "mode" 2>/dev/null || true)"
   [[ -n "$review_mode" ]] || review_mode="static"
-  base_branch="$(read_state_value "" --arg i "$issue" '.tasks[$i].baseBranch // empty')"
+  base_branch="$(effective_task_base_branch "$issue" 2>/dev/null || read_state_value "" --arg i "$issue" '.tasks[$i].baseBranch // empty')"
   [[ -n "$base_branch" ]] || base_branch="${BASE_BRANCH:-main}"
 
   artifacts_json="$(review_artifacts_with_pr_number "$feature_dir" "$pr" | jq -c --arg timestamp "$audit_timestamp" --arg issue "$issue" \
@@ -15063,7 +15251,7 @@ monitor_issue_state() {
         fi
 
         local release_reason
-        release_reason="$(pane_release_preflight "$ISSUE" "$SLUG" "$ready_state_dir_path" "${WORKTREE_ROOT}/${SLUG}" "$PR" "$BRANCH" "$BASE_BRANCH" 2>/dev/null || true)"
+        release_reason="$(pane_release_preflight "$ISSUE" "$SLUG" "$ready_state_dir_path" "${WORKTREE_ROOT}/${SLUG}" "$PR" "$BRANCH" "$(effective_task_base_branch "$ISSUE" 2>/dev/null || printf '%s\n' "$BASE_BRANCH")" 2>/dev/null || true)"
         if [[ "$release_reason" == "ok" ]]; then
           if release_task_pane "$ISSUE" "$SLUG" "$ready_state_dir_path" "${WORKTREE_ROOT}/${SLUG}" "$PR"; then
             queue_owned_count=$((queue_owned_count + 1))
