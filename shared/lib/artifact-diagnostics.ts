@@ -9,6 +9,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { resolveEvalsDir, resolveRouteArtifactArchiveDir } from './evals-paths.ts';
@@ -98,6 +99,62 @@ export interface HookStatusDiagnostic {
   timestamp?: number;
   agent?: string;
   error?: string;
+}
+
+export interface PrIdentityDiagnostic {
+  number: number;
+  headSha?: string;
+  baseSha?: string;
+  headRef?: string;
+  baseRef?: string;
+  changedFileCount?: number;
+  additions?: number;
+  deletions?: number;
+  labels: string[];
+  mergeStateStatus?: string;
+  latestCheckRollup: string[];
+  source: string;
+}
+
+export interface ReviewResultDiagnostic {
+  verdict?: string;
+  failureCategory?: string;
+  reviewedHead?: string;
+  reviewedBase?: string;
+  reviewedFileCount?: number;
+  reviewedAtIso?: string;
+  source: string;
+}
+
+export interface ChallengePairStateDiagnostic {
+  pairId?: string;
+  role?: 'primary' | 'challenger';
+  comparisonState?: string;
+  comparisonBlockedReason?: string;
+  comparisonRetryCount?: number;
+  comparisonRetryMaxAttempts?: number;
+  comparisonRetryTargetIssue?: string;
+  comparisonTimedOutSides: string[];
+  manualComparisonArtifactPath?: string;
+  source: string;
+}
+
+export interface QuotaSnapshotDiagnostic {
+  exhaustedProviders: string[];
+  exhaustedModels: string[];
+  lastLimitErrorAtIso?: string;
+  source: string;
+}
+
+export interface EvalFallbackEventDiagnostic {
+  issueId?: string;
+  challengePairId?: string;
+  taskType?: string;
+  outcome: 'all_exhausted';
+  failedProviders: string[];
+  failedModels: string[];
+  timestamp?: string;
+  source: string;
 }
 
 // ── Internal Read Result Types ────────────────────────────────────────────────
@@ -190,6 +247,172 @@ export function readHookStatus(hookPath: string): HookStatusDiagnostic | null {
   };
 }
 
+export function readPrIdentity(prNumber: number, repoDir: string): PrIdentityDiagnostic | null {
+  const fixture = readPrIdentityFixture(prNumber, repoDir);
+  if (fixture) return fixture;
+
+  let stdout: string;
+  try {
+    stdout = execFileSync('gh', [
+      'pr',
+      'view',
+      String(prNumber),
+      '--json',
+      'number,headRefOid,baseRefOid,headRefName,baseRefName,files,labels,mergeStateStatus,statusCheckRollup',
+    ], {
+      cwd: repoDir,
+      encoding: 'utf-8',
+      timeout: 10_000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    return null;
+  }
+
+  return projectPrIdentity(prNumber, parseJsonObject(stdout), `gh:pr:${prNumber}`);
+}
+
+export function readReviewResultDiagnostic(taskDir: string): ReviewResultDiagnostic | null {
+  const source = join(taskDir, '.review-result.json');
+  const result = readJsonTolerant<Record<string, unknown>>(source);
+  if (result.status !== 'ok') return null;
+  const value = result.value;
+  const artifacts = objectField(value.artifacts);
+  const review = objectField(value.review) ?? objectField(value.result) ?? objectField(value.outcome);
+  const scope = objectField(value.scope)
+    ?? objectField(artifacts?.scope)
+    ?? objectField(review?.scope)
+    ?? objectField(artifacts?.reviewScope);
+  const files = arrayField(scope?.files)
+    ?? arrayField(value.files)
+    ?? arrayField(artifacts?.files)
+    ?? arrayField(review?.files);
+  return {
+    verdict: stringField(value.verdict)
+      ?? stringField(value.status)
+      ?? stringField(review?.verdict)
+      ?? stringField(artifacts?.verdict),
+    failureCategory: stringField(value.failureCategory)
+      ?? stringField(artifacts?.failureCategory)
+      ?? stringField(review?.failureCategory),
+    reviewedHead: stringField(value.reviewedHead)
+      ?? stringField(value.reviewedHeadSha)
+      ?? stringField(value.headSha)
+      ?? stringField(scope?.headSha)
+      ?? stringField(artifacts?.reviewedHead)
+      ?? stringField(artifacts?.headSha),
+    reviewedBase: stringField(value.reviewedBase)
+      ?? stringField(value.reviewedBaseSha)
+      ?? stringField(value.baseSha)
+      ?? stringField(scope?.baseSha)
+      ?? stringField(artifacts?.reviewedBase)
+      ?? stringField(artifacts?.baseSha),
+    reviewedFileCount: numberField(value.reviewedFileCount)
+      ?? numberField(scope?.changedFileCount)
+      ?? numberField(scope?.fileCount)
+      ?? numberField(artifacts?.reviewedFileCount)
+      ?? (files ? files.length : undefined),
+    reviewedAtIso: stringField(value.reviewedAt)
+      ?? stringField(value.completedAt)
+      ?? stringField(value.finishedAt)
+      ?? stringField(artifacts?.reviewedAt),
+    source,
+  };
+}
+
+export function readChallengePairState(taskDir: string): ChallengePairStateDiagnostic | null {
+  const source = firstExistingPath([
+    join(taskDir, 'workflow-state.json'),
+    join(taskDir, '.workflow-state.json'),
+    join(taskDir, 'feature-state.json'),
+  ]);
+  if (!source) return null;
+  const result = readJsonTolerant<Record<string, unknown>>(source);
+  if (result.status !== 'ok') return null;
+  const direct = objectField(result.value);
+  const task = firstObjectEntry(objectField(direct?.tasks)) ?? direct;
+  if (!task) return null;
+  return projectChallengePairState(task, source);
+}
+
+export function readQuotaSnapshotDiagnostic(repoDir: string): QuotaSnapshotDiagnostic | null {
+  const source = join(repoDir, '.wavemill', 'quota-state.json');
+  const result = readJsonTolerant<Record<string, unknown>>(source);
+  if (result.status !== 'ok') return null;
+  const models = objectField(result.value.models);
+  const exhaustedModels: string[] = [];
+  let lastLimitErrorAtIso: string | undefined;
+  if (models) {
+    for (const [model, raw] of Object.entries(models).slice(0, 100)) {
+      const entry = objectField(raw);
+      if (!entry) continue;
+      if (entry.status === 'exhausted') exhaustedModels.push(clampText(model, 120));
+      const at = stringField(entry.lastLimitErrorAt);
+      if (at && (!lastLimitErrorAtIso || at > lastLimitErrorAtIso)) lastLimitErrorAtIso = at;
+    }
+  }
+  const exhaustedProviders = new Set<string>();
+  for (const model of exhaustedModels) {
+    const provider = model.includes('/') ? model.split('/')[0] : model.split(':')[0];
+    if (provider) exhaustedProviders.add(clampText(provider, 80));
+  }
+  const providers = objectField(result.value.providers);
+  const openrouter = objectField(providers?.openrouter);
+  const lastFetchError = objectField(openrouter?.lastFetchError);
+  if (lastFetchError) {
+    const message = stringField(lastFetchError.message) ?? '';
+    if (/402|credit|quota|limit|exhaust/i.test(message)) {
+      exhaustedProviders.add('openrouter');
+      const at = stringField(lastFetchError.at);
+      if (at && (!lastLimitErrorAtIso || at > lastLimitErrorAtIso)) lastLimitErrorAtIso = at;
+    }
+  }
+  return {
+    exhaustedProviders: [...exhaustedProviders].slice(0, 20),
+    exhaustedModels: exhaustedModels.slice(0, 50),
+    lastLimitErrorAtIso,
+    source,
+  };
+}
+
+export function readEvalFallbackEventsDiagnostic(repoDir: string, sinceIso?: string): EvalFallbackEventDiagnostic[] {
+  const source = join(repoDir, '.wavemill', 'evals', 'evals.jsonl');
+  const result = readJsonlTolerant<Record<string, unknown>>(source);
+  const sinceMs = sinceIso ? Date.parse(sinceIso) : Number.NaN;
+  const events: EvalFallbackEventDiagnostic[] = [];
+  for (const record of result.records.slice(-200)) {
+    const fallbackEvent = objectField(record.fallbackEvent);
+    if (!fallbackEvent || fallbackEvent.outcome !== 'all_exhausted') continue;
+    const timestamp = stringField(record.timestamp) ?? stringField(fallbackEvent.timestamp);
+    if (!Number.isNaN(sinceMs) && timestamp && Date.parse(timestamp) < sinceMs) continue;
+    const chain = arrayField(fallbackEvent.fallback_chain) ?? [];
+    const failedModels = chain
+      .map((entry) => stringField(objectField(entry)?.model))
+      .filter((model): model is string => Boolean(model))
+      .slice(0, 50);
+    const failedProviders = new Set<string>();
+    for (const model of failedModels) {
+      const provider = model.includes('/') ? model.split('/')[0] : model.split(':')[0];
+      if (provider) failedProviders.add(clampText(provider, 80));
+    }
+    const reasons = chain
+      .map((entry) => stringField(objectField(entry)?.reason) ?? '')
+      .join(' ');
+    if (!/quota|credit|provider|402|limit|exhaust/i.test(`${reasons} ${failedModels.join(' ')}`)) continue;
+    events.push({
+      issueId: stringField(record.issueId),
+      challengePairId: stringField(record.challengePairId),
+      taskType: stringField(fallbackEvent.task_type),
+      outcome: 'all_exhausted',
+      failedProviders: [...failedProviders].slice(0, 20),
+      failedModels: failedModels.map((model) => clampText(model, 120)),
+      timestamp,
+      source,
+    });
+  }
+  return events.slice(-50);
+}
+
 export function redactIncidentData(text: string): string {
   if (text.length > 2_000 && /\b(prompt|system|user|assistant|transcript)\b/i.test(text)) {
     return `[REDACTED_PROMPT: ${text.length} chars]`;
@@ -217,8 +440,144 @@ function numberField(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
+function objectField(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function arrayField(value: unknown): unknown[] | undefined {
+  return Array.isArray(value) ? value : undefined;
+}
+
 function stringEnum<T extends string>(value: unknown, allowed: readonly T[]): T | undefined {
   return typeof value === 'string' && allowed.includes(value as T) ? value as T : undefined;
+}
+
+function parseJsonObject(text: string): Record<string, unknown> | null {
+  try {
+    return objectField(JSON.parse(text) as unknown) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function firstExistingPath(paths: string[]): string | null {
+  for (const path of paths) {
+    if (existsSync(path)) return path;
+  }
+  return null;
+}
+
+function firstObjectEntry(value: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!value) return undefined;
+  for (const entry of Object.values(value)) {
+    const object = objectField(entry);
+    if (object) return object;
+  }
+  return undefined;
+}
+
+function clampText(value: string, maxLength: number): string {
+  return value.length > maxLength ? value.slice(0, maxLength) : value;
+}
+
+function readPrIdentityFixture(prNumber: number, repoDir: string): PrIdentityDiagnostic | null {
+  const source = firstExistingPath([
+    join(repoDir, '.wavemill', 'prs', `${prNumber}.json`),
+    join(repoDir, '.wavemill', 'prs', `pr-${prNumber}.json`),
+    join(repoDir, '.wavemill', 'pr', `${prNumber}.json`),
+  ]);
+  if (!source) return null;
+  const result = readJsonTolerant<Record<string, unknown>>(source);
+  if (result.status !== 'ok') return null;
+  return projectPrIdentity(prNumber, result.value, source);
+}
+
+function projectPrIdentity(prNumber: number, value: Record<string, unknown> | null, source: string): PrIdentityDiagnostic | null {
+  if (!value) return null;
+  const files = normalizeArrayNodes(value.files);
+  const labels = normalizeArrayNodes(value.labels)
+    .map((label) => stringField(label) ?? stringField(objectField(label)?.name))
+    .filter((label): label is string => Boolean(label))
+    .map((label) => clampText(label, 120))
+    .slice(0, 100);
+  const checks = normalizeArrayNodes(value.statusCheckRollup)
+    .map((check) => stringField(check) ?? stringField(objectField(check)?.name) ?? stringField(objectField(check)?.context))
+    .filter((check): check is string => Boolean(check))
+    .map((check) => clampText(check, 120))
+    .slice(0, 100);
+  const changedFileCount = numberField(value.changedFileCount) ?? files.length;
+  const additions = numberField(value.additions)
+    ?? sumNumberFields(files, 'additions');
+  const deletions = numberField(value.deletions)
+    ?? sumNumberFields(files, 'deletions');
+  return {
+    number: numberField(value.number) ?? prNumber,
+    headSha: stringField(value.headRefOid) ?? stringField(value.headSha),
+    baseSha: stringField(value.baseRefOid) ?? stringField(value.baseSha),
+    headRef: stringField(value.headRefName) ?? stringField(value.headRef),
+    baseRef: stringField(value.baseRefName) ?? stringField(value.baseRef),
+    changedFileCount,
+    additions,
+    deletions,
+    labels,
+    mergeStateStatus: stringField(value.mergeStateStatus),
+    latestCheckRollup: checks,
+    source,
+  };
+}
+
+function normalizeArrayNodes(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  const object = objectField(value);
+  const nodes = object ? arrayField(object.nodes) : undefined;
+  return nodes ?? [];
+}
+
+function sumNumberFields(values: unknown[], key: string): number | undefined {
+  let total = 0;
+  let seen = false;
+  for (const value of values) {
+    const number = numberField(objectField(value)?.[key]);
+    if (number === undefined) continue;
+    seen = true;
+    total += number;
+  }
+  return seen ? total : undefined;
+}
+
+function projectChallengePairState(task: Record<string, unknown>, source: string): ChallengePairStateDiagnostic {
+  const comparison = objectField(task.comparison) ?? task;
+  const timedOut = arrayField(comparison.comparisonTimedOutSides)
+    ?? arrayField(task.comparisonTimedOutSides)
+    ?? [];
+  const role = stringEnum(task.challengeRole, ['primary', 'challenger'])
+    ?? stringEnum(task.role, ['primary', 'challenger']);
+  return {
+    pairId: stringField(task.challengePairId)
+      ?? stringField(task.pairId)
+      ?? stringField(comparison.pairId),
+    role,
+    comparisonState: stringField(comparison.comparisonState)
+      ?? stringField(task.comparisonState),
+    comparisonBlockedReason: stringField(comparison.comparisonBlockedReason)
+      ?? stringField(task.comparisonBlockedReason),
+    comparisonRetryCount: numberField(comparison.comparisonRetryCount)
+      ?? numberField(task.comparisonRetryCount),
+    comparisonRetryMaxAttempts: numberField(comparison.comparisonRetryMaxAttempts)
+      ?? numberField(task.comparisonRetryMaxAttempts),
+    comparisonRetryTargetIssue: stringField(comparison.comparisonRetryTargetIssue)
+      ?? stringField(task.comparisonRetryTargetIssue),
+    comparisonTimedOutSides: timedOut
+      .map((side) => stringField(side))
+      .filter((side): side is string => Boolean(side))
+      .slice(0, 10),
+    manualComparisonArtifactPath: stringField(comparison.manualComparisonArtifact)
+      ?? stringField(comparison.manualComparisonArtifactPath)
+      ?? stringField(task.manualComparisonArtifact),
+    source,
+  };
 }
 
 function readJsonlTolerant<T>(filePath: string): JsonlReadResult<T> {

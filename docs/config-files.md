@@ -26,6 +26,21 @@ Merge behavior for local overrides:
 - Arrays replace the base array.
 - Primitive values in local override win.
 
+## Effective Per-Task Configuration
+
+Already-launched tasks use the persisted `lifecycle.launchContract` in
+`.wavemill/workflow-state.json` before mutable current config. Legacy entries
+fall back through `.wavemill/runtime-env/<issue>.json`, user config, repository
+config, and built-in defaults.
+
+Status and Observer output include the winning value and source for base branch
+and confirmation policy. When repository config disagrees with the effective
+task value, Wavemill reports that as informational drift so intentional
+per-session overrides are visible without being treated as corruption.
+
+`WAVEMILL_EFFECTIVE_CONFIG_LEGACY=1` is a rollback adapter that bypasses launch
+contract reads while preserving the stored contract and provenance.
+
 ### Cross-PR Revert Checker
 
 `tools/check-cross-pr-reverts.ts` resolves the integration branch in this order:

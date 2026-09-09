@@ -140,6 +140,7 @@ TESTS=(
   shared/lib/headless-llm.test.ts
   shared/lib/router-log.test.ts
   shared/lib/arbiter-survival-label.test.ts
+  shared/lib/survival-labeller.test.ts
   shared/lib/challenge-analyzer.test.ts
   shared/lib/challenge-unavailable.test.ts
   shared/lib/challenge-attestation-backfill.test.ts
@@ -169,6 +170,7 @@ TESTS=(
   shared/lib/model-resolution.test.ts
   shared/lib/model-resolution-display.test.ts
   shared/lib/mill-config-preflight.test.ts
+  shared/lib/effective-task-config.test.ts
   shared/lib/routing-policy.test.ts
   shared/lib/hokusai-adapter.test.ts
   shared/lib/hokusai-consent.test.ts

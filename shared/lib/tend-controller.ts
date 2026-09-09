@@ -32,6 +32,7 @@ import {
 } from './tend-challenge-gate.ts';
 import { isTransientErrorText, retryTransient, TransientError } from './transient-retry.ts';
 import { normalizeTaskLifecycle } from './task-lifecycle.ts';
+import { resolveEffectiveTaskConfig } from './effective-task-config.ts';
 
 export interface TendCandidate {
   number: number;
@@ -1319,11 +1320,12 @@ async function defaultRunReadyCheck(
   }
 
   const pr = getPullRequest(prNumber);
+  const effectiveBaseBranch = resolveEffectiveBaseBranchForPr(repoDir, prNumber, pr.headRefName, pr.baseRefName);
   const verdict = await evaluateReady({
     pr: {
       number: pr.number,
       url: pr.url,
-      baseBranch: pr.baseRefName,
+      baseBranch: effectiveBaseBranch,
       body: pr.body || '',
       labels: pr.labels.map((label) => label.name),
       mergedAt: pr.mergedAt,
@@ -2685,6 +2687,24 @@ function readWorkflowTaskEntries(repoDir: string): Array<[string, Record<string,
     return Object.entries(parsed.tasks).filter((entry): entry is [string, Record<string, unknown>] => isRecord(entry[1]));
   } catch {
     return [];
+  }
+}
+
+function resolveEffectiveBaseBranchForPr(repoDir: string, prNumber: number, headBranch: string, fallbackBase: string): string {
+  const stateFile = join(repoDir, '.wavemill', 'workflow-state.json');
+  const matchingTask = readWorkflowTaskEntries(repoDir).find(([, task]) => {
+    const pr = task.pr ?? (isRecord(task.lifecycle) && isRecord(task.lifecycle.deliveryEvidence) ? task.lifecycle.deliveryEvidence.prNumber : undefined);
+    return String(pr ?? '') === String(prNumber) || task.branch === headBranch;
+  });
+  if (!matchingTask) return fallbackBase;
+  try {
+    return resolveEffectiveTaskConfig({
+      repoDir,
+      issue: matchingTask[0],
+      stateFile,
+    }).baseBranch.value;
+  } catch {
+    return fallbackBase;
   }
 }
 

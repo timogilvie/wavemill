@@ -123,6 +123,7 @@ for f in \
   "$REPO_DIR"/tests/agent-tmux-runtime-guard.test.sh \
   "$REPO_DIR"/tests/terminal-reconciler.test.sh \
   "$REPO_DIR"/tests/startup-terminal-preflight.test.sh \
+  "$REPO_DIR"/tests/fresh-launch-terminal-preflight.test.sh \
   "$REPO_DIR"/tests/startup-cleanup-integration.test.sh \
   "$REPO_DIR"/tests/challenge-intent-roundtrip.test.sh \
   "$REPO_DIR"/tests/challenge-varied-model-abort.test.sh \
@@ -521,7 +522,8 @@ else
       | grep -vE '^(bad|internal|keeping|marking|monitor|rate|reduce|service|skipping|staying|timed|too|using|wavemill|waiting)$' \
       | grep -vE '^(advance|review)$' \
       | grep -vE '^(not_eligible|routing_error)$' \
-      | grep -vE '^(a|aborted|already|available|blocked_by_count|break|coding|cp|debug|elapsed|empty_queue|execute|file|fresh|gtimeout|heartbeat_epoch|i|id|launch|length|main|mapfile|missing|next|not|overloaded|plan|ready|required|reservation|slots|staleness|streak|the|they|timeout|todate|todateiso8601|tonumber|tracked|user)$')
+      | grep -vE '^(a|aborted|already|available|blocked_by_count|break|coding|cp|debug|elapsed|empty_queue|execute|file|fresh|gtimeout|heartbeat_epoch|i|id|launch|length|main|mapfile|missing|next|not|overloaded|plan|ready|required|reservation|slots|staleness|streak|the|they|timeout|todate|todateiso8601|tonumber|tracked|user)$' \
+      | grep -vE '^(capabilities|const|import|throw)$')
 
     # Check which called names look like they could be custom functions
     # and verify they're defined
@@ -722,10 +724,11 @@ else
   # closes the pipe while echo is still writing, causing SIGPIPE (exit 141).
   # With `set -euo pipefail`, this makes the pipeline fail even though the pattern matched.
 
-  if grep -qE 'gh pr list --head "\$branch" --state all --json number' <<< "$HEREDOC_CONTENT"; then
-    pass "monitor find_pr_for_branch queries all PR states"
+  if grep -qF 'wavemill_resolve_pr_attempt "$issue" "$branch"' <<< "$HEREDOC_CONTENT" \
+    && grep -qF 'classification" == "current-open"' <<< "$HEREDOC_CONTENT"; then
+    pass "monitor find_pr_for_branch uses attempt resolver"
   else
-    fail "monitor find_pr_for_branch is missing --state all"
+    fail "monitor find_pr_for_branch is not routed through attempt resolver"
   fi
 
   if grep -qF 'check_pr_exists "$BRANCH"' <<< "$HEREDOC_CONTENT" \

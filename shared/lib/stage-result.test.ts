@@ -27,6 +27,8 @@ import {
   reviewEffectiveBlockerCount,
   reviewOutcomePassesReadyGate,
   reviewResultPassed,
+  NATIVE_CONTEXT_WINDOW_EXCEEDED_CATEGORY,
+  PROVIDER_CREDIT_EXHAUSTED_CATEGORY,
 } from './stage-result.ts';
 import type {
   StageResult,
@@ -753,6 +755,71 @@ describe('review outcome helpers', () => {
     });
     assert.equal(extractReviewOutcome(nested)?.failureCategory, 'review-scope-unverifiable');
     assert.equal(isInfrastructureReviewFailure(nested), true);
+  });
+
+  it('classifies native-context-window-exceeded as retryable infrastructure regardless of verdict (HOK-2964 REQ-F1)', () => {
+    const flat = makeResult({
+      stage: 'review',
+      status: 'completed',
+      artifacts: {
+        type: 'review',
+        exitCode: 1,
+        verdict: 'not_ready',
+        iterations: 1,
+        blockerCount: 1,
+        failureCategory: NATIVE_CONTEXT_WINDOW_EXCEEDED_CATEGORY,
+      },
+    });
+    assert.equal(extractReviewOutcome(flat)?.failureCategory, 'native-context-window-exceeded');
+    assert.equal(isInfrastructureReviewFailure(flat), true);
+
+    const nested = makeResult({
+      stage: 'review',
+      status: 'completed',
+      artifacts: {
+        review: {
+          exitCode: 1,
+          verdict: 'not_ready',
+          iterations: 1,
+          blockerCount: 1,
+          failureCategory: NATIVE_CONTEXT_WINDOW_EXCEEDED_CATEGORY,
+        },
+      } as StageResult['artifacts'],
+    });
+    assert.equal(isInfrastructureReviewFailure(nested), true);
+  });
+
+  it('classifies provider-credit-exhausted as retryable infrastructure (HOK-2964 REQ-F5)', () => {
+    const flat = makeResult({
+      stage: 'review',
+      status: 'completed',
+      artifacts: {
+        type: 'review',
+        exitCode: 1,
+        verdict: 'not_ready',
+        iterations: 1,
+        blockerCount: 1,
+        failureCategory: PROVIDER_CREDIT_EXHAUSTED_CATEGORY,
+      },
+    });
+    assert.equal(extractReviewOutcome(flat)?.failureCategory, 'provider-credit-exhausted');
+    assert.equal(isInfrastructureReviewFailure(flat), true);
+  });
+
+  it('never classifies a genuine code-blocker not_ready as infrastructure (HOK-2964 REQ-F7)', () => {
+    const flat = makeResult({
+      stage: 'review',
+      status: 'completed',
+      artifacts: {
+        type: 'review',
+        exitCode: 1,
+        verdict: 'not_ready',
+        iterations: 1,
+        blockerCount: 1,
+      },
+    });
+    assert.equal(extractReviewOutcome(flat)?.failureCategory, undefined);
+    assert.equal(isInfrastructureReviewFailure(flat), false);
   });
 
   it('classifies only retryable infrastructure review failures', () => {

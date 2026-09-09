@@ -15,9 +15,11 @@ export type ResourceDisposition = typeof RESOURCE_DISPOSITIONS[number];
 
 export const CLEANUP_DISPOSITIONS = ['pending', 'reaping', 'reaped', 'retained', 'transient', 'needs-user'] as const;
 export const CLEANUP_FAILURE_CLASSES = ['expected-preservation', 'transient', 'operational', 'none'] as const;
+export const CONFIG_SOURCES = ['launch-contract', 'runtime-env', 'cli', 'user-config', 'repo-config', 'default'] as const;
 
 export type CleanupDisposition = typeof CLEANUP_DISPOSITIONS[number];
 export type CleanupFailureClass = typeof CLEANUP_FAILURE_CLASSES[number];
+export type ConfigSource = typeof CONFIG_SOURCES[number];
 
 export interface CleanupFingerprintInputs {
   issue?: string;
@@ -77,12 +79,14 @@ export interface LaunchContract {
   baseSha?: string;
   integrationMode?: string;
   mergeMethod?: string;
+  requireConfirm?: boolean;
   remoteBranchDeletionPolicy: RemoteBranchDeletionPolicy;
   challengeRole?: string;
   challengePairId?: string;
   session?: string;
   runEpoch?: string;
   windowId?: string;
+  provenance?: Partial<Record<'baseBranch' | 'requireConfirm' | 'mergeMethod' | 'remoteBranchDeletionPolicy', ConfigSource>>;
 }
 
 export interface DeliveryEvidence {
@@ -118,6 +122,7 @@ export interface NormalizedTaskLifecycle {
 
 const WORKFLOW_OUTCOME_SET = new Set<string>(WORKFLOW_OUTCOMES);
 const RESOURCE_DISPOSITION_SET = new Set<string>(RESOURCE_DISPOSITIONS);
+const CONFIG_SOURCE_SET = new Set<string>(CONFIG_SOURCES);
 const TERMINAL_STATUS = new Set(['merged', 'complete', 'completed', 'completed-external', 'closed', 'done', 'aborted', 'superseded']);
 
 function record(value: unknown): Record<string, unknown> {
@@ -130,6 +135,31 @@ function text(value: unknown): string | undefined {
 
 function bool(value: unknown): boolean | undefined {
   return typeof value === 'boolean' ? value : undefined;
+}
+
+function configSource(value: unknown): ConfigSource | undefined {
+  return typeof value === 'string' && CONFIG_SOURCE_SET.has(value) ? value as ConfigSource : undefined;
+}
+
+function normalizeLaunchContractProvenance(contract: Record<string, unknown>): LaunchContract['provenance'] | undefined {
+  const raw = record(contract.provenance);
+  const provenance: NonNullable<LaunchContract['provenance']> = {};
+  const baseSource = configSource(raw.baseBranch);
+  const confirmSource = configSource(raw.requireConfirm);
+  const mergeSource = configSource(raw.mergeMethod);
+  const deletionSource = configSource(raw.remoteBranchDeletionPolicy);
+
+  if (baseSource) provenance.baseBranch = baseSource;
+  if (confirmSource) provenance.requireConfirm = confirmSource;
+  if (mergeSource) provenance.mergeMethod = mergeSource;
+  if (deletionSource) provenance.remoteBranchDeletionPolicy = deletionSource;
+
+  if (!provenance.baseBranch && text(contract.baseBranch)) provenance.baseBranch = 'launch-contract';
+  if (!provenance.requireConfirm && bool(contract.requireConfirm) !== undefined) provenance.requireConfirm = 'launch-contract';
+  if (!provenance.mergeMethod && text(contract.mergeMethod)) provenance.mergeMethod = 'launch-contract';
+  if (!provenance.remoteBranchDeletionPolicy && contract.remoteBranchDeletionPolicy !== undefined) provenance.remoteBranchDeletionPolicy = 'launch-contract';
+
+  return Object.keys(provenance).length > 0 ? provenance : undefined;
 }
 
 export function isWorkflowOutcome(value: unknown): value is WorkflowOutcome {
@@ -180,6 +210,7 @@ function normalizeLaunchContract(value: unknown): LaunchContract | undefined {
     ...(text(contract.baseSha) ? { baseSha: text(contract.baseSha) } : {}),
     ...(text(contract.integrationMode) ? { integrationMode: text(contract.integrationMode) } : {}),
     ...(text(contract.mergeMethod) ? { mergeMethod: text(contract.mergeMethod) } : {}),
+    ...(bool(contract.requireConfirm) !== undefined ? { requireConfirm: bool(contract.requireConfirm) } : {}),
     remoteBranchDeletionPolicy: {
       allowed,
       ...(text(policy.mode) ? { mode: text(policy.mode) } : {}),
@@ -191,6 +222,7 @@ function normalizeLaunchContract(value: unknown): LaunchContract | undefined {
     ...(text(contract.session) ? { session: text(contract.session) } : {}),
     ...(text(contract.runEpoch) ? { runEpoch: text(contract.runEpoch) } : {}),
     ...(text(contract.windowId) ? { windowId: text(contract.windowId) } : {}),
+    ...(normalizeLaunchContractProvenance(contract) ? { provenance: normalizeLaunchContractProvenance(contract) } : {}),
   };
 }
 

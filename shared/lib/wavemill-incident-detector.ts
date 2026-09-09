@@ -1,19 +1,30 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import {
+  readChallengePairState,
+  type ChallengePairStateDiagnostic,
+  readEvalFallbackEventsDiagnostic,
   readHookStatus,
   readJobState,
   type JobStateDiagnostic,
   readPlanningResult,
+  readPrIdentity,
+  type PrIdentityDiagnostic,
+  readQuotaSnapshotDiagnostic,
+  type ReviewResultDiagnostic,
+  readReviewResultDiagnostic,
   redactIncidentData,
 } from './artifact-diagnostics.ts';
 import {
   canonicalizeRootCauseClass,
   createIncidentDraft,
   isRemoteRootCauseClass,
+  type IncidentEvidence,
   type IncidentCategory,
   type IncidentRecord,
   type IncidentRootCauseClass,
+  type RemediationForbiddenAction,
+  type RemediationProposal,
 } from './wavemill-incident-model.ts';
 
 const PLANNING_TERMINAL_REASONS = new Set([
@@ -31,6 +42,17 @@ export interface DetectorContext {
   repoDir: string;
   session?: string;
   now?: Date;
+  tendCandidates?: TendCandidateDiagnostic[];
+}
+
+export interface TendCandidateDiagnostic {
+  taskId?: string;
+  pr?: number;
+  headBranch?: string;
+  markerKind?: string;
+  firstBlockedGate?: string;
+  pairId?: string;
+  blockedReason?: string;
 }
 
 export class PlanningFailureDetector {
@@ -293,6 +315,293 @@ export class DependencyHealthDetector {
   }
 }
 
+const STALLED_MARKER_KINDS = new Set(['merge-lane-idle-stall', 'merge-lane-idle-stalled']);
+const CONTEXT_FAILURE_CATEGORIES = new Set([
+  'context-window-exceeded',
+  'native-context-window-exceeded',
+  'review-scope-unverifiable',
+]);
+const PROVIDER_QUOTA_FAILURE_CATEGORIES = new Set([
+  'provider-quota-exhausted',
+  'provider-credit-exhausted',
+  'quota-exhausted',
+  'credit-exhausted',
+]);
+const FORBIDDEN_REMEDIATION_ACTIONS: RemediationForbiddenAction[] = [
+  'add_ready_label',
+  'merge',
+  'destructive_git',
+  'delete_branch',
+];
+
+export class StalledLifecycleCorrelator {
+  detect(repoDir: string, context: DetectorContext): IncidentRecord[] {
+    const incidents: IncidentRecord[] = [];
+    const candidates = (context.tendCandidates ?? [])
+      .filter((candidate) => candidate.pr && STALLED_MARKER_KINDS.has(candidate.markerKind ?? ''));
+    const timestamp = context.now?.toISOString() ?? new Date().toISOString();
+    const seen = new Set<string>();
+
+    for (const candidate of candidates) {
+      const prNumber = candidate.pr;
+      if (!prNumber) continue;
+      const taskId = candidate.taskId ?? extractIssueId(candidate.headBranch) ?? null;
+      const taskDir = taskId ? resolveTaskArtifactDir(repoDir, taskId) : null;
+      const review = taskDir ? readReviewResultDiagnostic(taskDir) : null;
+      const pr = readPrIdentity(prNumber, repoDir);
+      const pairState = readPairStateForTask(repoDir, taskDir, taskId);
+      const pairId = candidate.pairId ?? pairState?.pairId;
+      const key = `${taskId ?? 'repo'}:${prNumber}:${pairId ?? ''}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const recovered = pairId && comparisonSucceededForPair(repoDir, pairId);
+      if (recovered) continue;
+
+      if (pr && review && qualifiesStaleBaseOverflow(review, pr)) {
+        incidents.push(this.staleBaseOverflowIncident({
+          repoDir,
+          taskId,
+          candidate,
+          pr,
+          review,
+          timestamp,
+        }));
+        continue;
+      }
+
+      const contradiction = pr && review && isContextFailure(review)
+        && !qualifiesStaleBaseOverflow(review, pr);
+      if (contradiction || !pr || !review || (candidate.pairId && !pairState)) {
+        incidents.push(this.inspectionIncident({
+          repoDir,
+          taskId,
+          candidate,
+          pr,
+          review,
+          pairStateSource: pairState?.source,
+          timestamp,
+          reason: contradiction ? 'contradictory_context_scope_evidence' : 'missing_authoritative_evidence',
+        }));
+        continue;
+      }
+
+      const quota = readQuotaSnapshotDiagnostic(repoDir);
+      const fallbackEvents = readEvalFallbackEventsDiagnostic(repoDir, review.reviewedAtIso);
+      if (pairId && qualifiesProviderQuotaChallenge(repoDir, candidate, pr, review, pairId, quota, fallbackEvents)) {
+        incidents.push(this.providerQuotaIncident({
+          repoDir,
+          taskId,
+          candidate,
+          pr,
+          review,
+          pairId,
+          quota,
+          fallbackSource: fallbackEvents[0]?.source,
+          timestamp,
+        }));
+      }
+    }
+    return incidents;
+  }
+
+  private staleBaseOverflowIncident(input: {
+    repoDir: string;
+    taskId: string | null;
+    candidate: TendCandidateDiagnostic;
+    pr: PrIdentityDiagnostic;
+    review: ReviewResultDiagnostic;
+    timestamp: string;
+  }): IncidentRecord {
+    const evidence = [
+      prEvidence(input.pr, input.timestamp),
+      reviewEvidence(input.review, input.timestamp),
+      tendEvidence(input.candidate, input.repoDir, input.timestamp),
+    ];
+    const proposal = remediationProposal({
+      kind: 'refresh_base_and_rereview',
+      retryKey: `refresh-base-rereview:pr:${input.pr.number}:head:${input.pr.headSha ?? 'unknown'}`,
+      safetyLevel: 'operator_only',
+      prerequisites: [
+        'Confirm the PR still targets the expected integration base.',
+        'Refresh the branch base through the normal workflow path.',
+        'Run review again against the current head before any Ready action.',
+      ],
+      evidence,
+      recoveryPredicate: {
+        kind: 'review_now_ready',
+        details: {
+          pr: String(input.pr.number),
+          head: input.pr.headSha ?? 'unknown',
+        },
+      },
+    });
+    return createIncidentDraft({
+      taskId: input.taskId,
+      session: null,
+      category: 'stale_orphaned_state',
+      severity: 'high',
+      confidence: 'high',
+      lifecycle: 'observed',
+      rootCauseClass: 'review_context_overflow_stale_base',
+      summary: `PR #${input.pr.number} review failed from context overflow on a stale base/head scope.`,
+      operatorAction: 'Refresh the PR base and rerun review; do not add Ready, merge, rewrite destructively, or delete the branch from this proposal.',
+      evidence,
+      metadata: {
+        proposal,
+        prNumber: input.pr.number,
+        tendGate: input.candidate.firstBlockedGate ?? input.candidate.blockedReason,
+        failureCategory: input.review.failureCategory,
+        reviewedHead: input.review.reviewedHead,
+        reviewedBase: input.review.reviewedBase,
+        authoritativeHead: input.pr.headSha,
+        authoritativeBase: input.pr.baseSha,
+        reviewedFileCount: input.review.reviewedFileCount,
+        authoritativeFileCount: input.pr.changedFileCount,
+        artifactPaths: [input.review.source, input.pr.source],
+      },
+    });
+  }
+
+  private providerQuotaIncident(input: {
+    repoDir: string;
+    taskId: string | null;
+    candidate: TendCandidateDiagnostic;
+    pr: PrIdentityDiagnostic;
+    review: ReviewResultDiagnostic;
+    pairId: string;
+    quota: ReturnType<typeof readQuotaSnapshotDiagnostic>;
+    fallbackSource?: string;
+    timestamp: string;
+  }): IncidentRecord {
+    const evidence = [
+      prEvidence(input.pr, input.timestamp),
+      reviewEvidence(input.review, input.timestamp),
+      tendEvidence(input.candidate, input.repoDir, input.timestamp),
+      {
+        type: 'challenge_pair_state' as const,
+        source: join(input.repoDir, '.wavemill', 'workflow-state.json'),
+        timestamp: input.timestamp,
+        redactedData: redactIncidentData(`pairId=${input.pairId} comparison=missing currentHeadEval=missing`),
+        key: `pair:${input.pairId}`,
+      },
+      ...(input.quota ? [{
+        type: 'quota_state' as const,
+        source: input.quota.source,
+        timestamp: input.quota.lastLimitErrorAtIso ?? input.timestamp,
+        redactedData: redactIncidentData(`exhaustedProviders=${input.quota.exhaustedProviders.join(',')} exhaustedModels=${input.quota.exhaustedModels.length}`),
+        key: `quota:${input.quota.exhaustedProviders.join(',') || 'exhausted'}`,
+      }] : []),
+      ...(input.fallbackSource ? [{
+        type: 'eval_fallback_event' as const,
+        source: input.fallbackSource,
+        timestamp: input.timestamp,
+        redactedData: redactIncidentData(`pairId=${input.pairId} outcome=all_exhausted`),
+        key: `fallback:${input.pairId}`,
+      }] : []),
+    ];
+    const chain = [
+      { cause: 'provider_quota_failure', evidenceIndex: evidence.findIndex((item) => item.type === 'quota_state' || item.type === 'eval_fallback_event'), detail: 'Provider quota/credit exhaustion blocked the failed arm.' },
+      { cause: 'review_not_ready', evidenceIndex: 1, detail: input.review.failureCategory ?? input.review.verdict },
+      { cause: 'no_ready_label', evidenceIndex: 0, detail: 'Current PR labels do not include wm:ready.' },
+      { cause: 'no_current_head_eval', evidenceIndex: 3, detail: 'No eval record matches the failed arm and current PR head.' },
+      { cause: 'no_comparison', evidenceIndex: 3, detail: 'No successful comparison job exists for the pair.' },
+    ].map((entry) => ({ ...entry, evidenceIndex: entry.evidenceIndex < 0 ? 3 : entry.evidenceIndex }));
+    const proposal = remediationProposal({
+      kind: 'provider_retry_or_forfeit_inspection',
+      retryKey: `provider-retry-or-forfeit:${input.pairId}:pr:${input.pr.number}:head:${input.pr.headSha ?? 'unknown'}`,
+      safetyLevel: 'operator_only',
+      prerequisites: [
+        'Inspect provider quota/credit state for the failed arm.',
+        'Retry review/eval only after provider capacity is restored, or explicitly forfeit the blocked arm.',
+        'Require current-head eval evidence before comparison recovery.',
+      ],
+      evidence,
+      recoveryPredicate: {
+        kind: 'current_head_eval_present',
+        details: {
+          pairId: input.pairId,
+          pr: String(input.pr.number),
+          head: input.pr.headSha ?? 'unknown',
+        },
+      },
+    });
+    return createIncidentDraft({
+      taskId: input.taskId,
+      session: null,
+      category: 'external_transient_dependency',
+      severity: 'high',
+      confidence: 'high',
+      lifecycle: 'observed',
+      rootCauseClass: 'provider_quota_exhaustion_blocking_review',
+      summary: `Challenge pair ${input.pairId} is blocked by provider quota failure on PR #${input.pr.number}.`,
+      operatorAction: 'Inspect provider quota and retry or forfeit through the normal challenge workflow; do not add Ready or force comparison/merge from this proposal.',
+      evidence,
+      metadata: {
+        proposal,
+        causalChain: chain,
+        pairId: input.pairId,
+        failedPr: input.pr.number,
+        failedTaskId: input.taskId,
+        authoritativeHead: input.pr.headSha,
+        authoritativeBase: input.pr.baseSha,
+        failureCategory: input.review.failureCategory,
+      },
+    });
+  }
+
+  private inspectionIncident(input: {
+    repoDir: string;
+    taskId: string | null;
+    candidate: TendCandidateDiagnostic;
+    pr: PrIdentityDiagnostic | null;
+    review: ReviewResultDiagnostic | null;
+    pairStateSource?: string;
+    timestamp: string;
+    reason: string;
+  }): IncidentRecord {
+    const evidence = [
+      ...(input.pr ? [prEvidence(input.pr, input.timestamp)] : []),
+      ...(input.review ? [reviewEvidence(input.review, input.timestamp)] : []),
+      tendEvidence(input.candidate, input.repoDir, input.timestamp),
+      ...(input.pairStateSource ? [{
+        type: 'challenge_pair_state' as const,
+        source: input.pairStateSource,
+        timestamp: input.timestamp,
+        redactedData: redactIncidentData(`pairId=${input.candidate.pairId ?? 'unknown'}`),
+        key: `pair:${input.candidate.pairId ?? 'unknown'}`,
+      }] : []),
+    ];
+    const proposal = remediationProposal({
+      kind: 'inspection_only',
+      retryKey: `inspection:${input.candidate.pr ?? 'unknown'}:${input.reason}`,
+      safetyLevel: 'inspect',
+      prerequisites: [
+        'Inspect PR metadata, review result, pair state, and eval/comparison artifacts before choosing a recovery.',
+      ],
+      evidence,
+    });
+    return createIncidentDraft({
+      taskId: input.taskId,
+      session: null,
+      category: 'configuration_operator_condition',
+      severity: 'medium',
+      confidence: 'low',
+      lifecycle: 'observed',
+      rootCauseClass: 'inspection_required',
+      summary: `PR #${input.candidate.pr ?? 'unknown'} stalled lifecycle evidence is incomplete or contradictory.`,
+      operatorAction: 'Inspect authoritative PR and stage artifacts manually; missing/conflicting evidence is not enough to diagnose stale base or provider failure.',
+      evidence,
+      metadata: {
+        proposal,
+        inspectionReason: input.reason,
+        authoritativeHead: input.pr?.headSha,
+        authoritativeBase: input.pr?.baseSha,
+      },
+    });
+  }
+}
+
 export function detectIncidentsForTask(taskPath: string, taskId: string, context: DetectorContext, dependencyThreshold = 3): IncidentRecord[] {
   return [
     ...new PlanningFailureDetector().detect(taskPath, taskId, context),
@@ -303,6 +612,7 @@ export function detectIncidentsForTask(taskPath: string, taskId: string, context
 
 export function detectIncidentsForRepo(repoDir: string, context: DetectorContext, dependencyThreshold = 3): IncidentRecord[] {
   return [
+    ...new StalledLifecycleCorrelator().detect(repoDir, context),
     ...new JobFailureDetector().detect(repoDir, null, context),
     ...new DependencyHealthDetector({ thresholdConsecutiveFailures: dependencyThreshold }).detectRepo(repoDir, context),
   ];
@@ -312,6 +622,207 @@ function normalizePlanningReason(reason: string): string {
   if (reason === 'invalid_or_empty_final_plan') return 'invalid_plan';
   if (reason === 'empty_plan') return 'empty_final_plan';
   return reason.replace(/[^a-z0-9_]+/gi, '_').toLowerCase();
+}
+
+function qualifiesStaleBaseOverflow(review: ReviewResultDiagnostic, pr: PrIdentityDiagnostic): boolean {
+  if (!isContextFailure(review)) return false;
+  const reviewedFileCount = review.reviewedFileCount;
+  const authoritativeFileCount = pr.changedFileCount;
+  if (reviewedFileCount === undefined || authoritativeFileCount === undefined) return false;
+  if (!scopeDiffers(review, pr)) return false;
+  return authoritativeFileCount < reviewedFileCount * 0.75
+    && authoritativeFileCount < reviewedFileCount - 5;
+}
+
+function isContextFailure(review: ReviewResultDiagnostic): boolean {
+  const category = review.failureCategory ?? '';
+  if (!CONTEXT_FAILURE_CATEGORIES.has(category)) return false;
+  if (category !== 'review-scope-unverifiable') return true;
+  return /context|window|token|length|scope/i.test(`${review.failureCategory ?? ''} ${review.verdict ?? ''}`);
+}
+
+function scopeDiffers(review: ReviewResultDiagnostic, pr: PrIdentityDiagnostic): boolean {
+  if (!review.reviewedBase) return true;
+  if (review.reviewedBase !== pr.baseSha) return true;
+  if (review.reviewedHead && review.reviewedHead !== pr.headSha) return true;
+  return false;
+}
+
+function qualifiesProviderQuotaChallenge(
+  repoDir: string,
+  candidate: TendCandidateDiagnostic,
+  pr: PrIdentityDiagnostic,
+  review: ReviewResultDiagnostic,
+  pairId: string,
+  quota: ReturnType<typeof readQuotaSnapshotDiagnostic>,
+  fallbackEvents: ReturnType<typeof readEvalFallbackEventsDiagnostic>,
+): boolean {
+  if (!bothChallengeArmsVisible(repoDir, pairId)) return false;
+  const reviewFailed = review.verdict === 'not_ready'
+    || review.verdict === 'failed'
+    || PROVIDER_QUOTA_FAILURE_CATEGORIES.has(review.failureCategory ?? '')
+    || /quota|credit|402|provider/i.test(review.failureCategory ?? '');
+  if (!reviewFailed) return false;
+  const providerFailed = Boolean(quota && (quota.exhaustedProviders.length > 0 || quota.exhaustedModels.length > 0))
+    || fallbackEvents.some((event) =>
+      event.challengePairId === pairId
+      || event.issueId === candidate.taskId
+      || event.taskType === 'review'
+    );
+  if (!providerFailed) return false;
+  if (pr.labels.includes('wm:ready')) return false;
+  if (comparisonSucceededForPair(repoDir, pairId)) return false;
+  if (currentHeadEvalPresent(repoDir, candidate.taskId, pairId, pr.headSha)) return false;
+  return true;
+}
+
+function remediationProposal(input: {
+  kind: RemediationProposal['kind'];
+  prerequisites: string[];
+  retryKey: string;
+  safetyLevel: RemediationProposal['safetyLevel'];
+  evidence: IncidentEvidence[];
+  recoveryPredicate?: RemediationProposal['recoveryPredicate'];
+}): RemediationProposal {
+  return {
+    schemaVersion: '1.1',
+    kind: input.kind,
+    prerequisites: input.prerequisites.slice(0, 10),
+    retryKey: input.retryKey,
+    safetyLevel: input.safetyLevel,
+    evidenceRefs: input.evidence.map((evidence, index) => ({
+      index,
+      type: evidence.type,
+      source: evidence.source,
+    })),
+    forbiddenActions: FORBIDDEN_REMEDIATION_ACTIONS,
+    ...(input.recoveryPredicate ? { recoveryPredicate: input.recoveryPredicate } : {}),
+  };
+}
+
+function prEvidence(pr: PrIdentityDiagnostic, timestamp: string): IncidentEvidence {
+  return {
+    type: 'pr_metadata',
+    source: pr.source,
+    timestamp,
+    redactedData: redactIncidentData(`pr=${pr.number} head=${pr.headSha ?? 'unknown'} base=${pr.baseSha ?? 'unknown'} files=${pr.changedFileCount ?? 'unknown'} labels=${pr.labels.join(',')}`),
+    key: `pr:${pr.number}:head:${pr.headSha ?? 'unknown'}:base:${pr.baseSha ?? 'unknown'}:files:${pr.changedFileCount ?? 'unknown'}`,
+  };
+}
+
+function reviewEvidence(review: ReviewResultDiagnostic, timestamp: string): IncidentEvidence {
+  return {
+    type: 'review_result',
+    source: review.source,
+    timestamp: review.reviewedAtIso ?? timestamp,
+    redactedData: redactIncidentData(`verdict=${review.verdict ?? 'unknown'} failureCategory=${review.failureCategory ?? 'unknown'} reviewedHead=${review.reviewedHead ?? 'unknown'} reviewedBase=${review.reviewedBase ?? 'unknown'} reviewedFiles=${review.reviewedFileCount ?? 'unknown'}`),
+    key: `review:${review.failureCategory ?? 'unknown'}:head:${review.reviewedHead ?? 'unknown'}:base:${review.reviewedBase ?? 'unknown'}:files:${review.reviewedFileCount ?? 'unknown'}`,
+  };
+}
+
+function tendEvidence(candidate: TendCandidateDiagnostic, repoDir: string, timestamp: string): IncidentEvidence {
+  return {
+    type: 'log_excerpt',
+    source: join(repoDir, '.wavemill', 'observer-findings.jsonl'),
+    timestamp,
+    redactedData: redactIncidentData(`markerKind=${candidate.markerKind ?? 'unknown'} pr=${candidate.pr ?? 'unknown'} task=${candidate.taskId ?? 'unknown'} gate=${candidate.firstBlockedGate ?? candidate.blockedReason ?? 'unknown'}`),
+    key: `tend:${candidate.markerKind ?? 'unknown'}:pr:${candidate.pr ?? 'unknown'}:gate:${candidate.firstBlockedGate ?? candidate.blockedReason ?? 'unknown'}`,
+  };
+}
+
+function resolveTaskArtifactDir(repoDir: string, taskId: string): string | null {
+  const workflowState = readObjectFile(join(repoDir, '.wavemill', 'workflow-state.json'));
+  const task = workflowState ? taskEntry(workflowState, taskId) : null;
+  const candidates = [
+    task && stringField(task.worktree) && stringField(task.slug) ? join(stringField(task.worktree)!, 'features', stringField(task.slug)!) : null,
+    task && stringField(task.slug) ? join(repoDir, 'features', stringField(task.slug)!) : null,
+    task && stringField(task.worktree) ? stringField(task.worktree)! : null,
+    ...featureDirsForTask(repoDir, taskId),
+  ].filter((candidateDir): candidateDir is string => Boolean(candidateDir));
+  return candidates.find((candidateDir) => existsSync(candidateDir)) ?? null;
+}
+
+function featureDirsForTask(repoDir: string, taskId: string): string[] {
+  const featuresDir = join(repoDir, 'features');
+  const dirs: string[] = [];
+  for (const entry of safeReaddir(featuresDir)) {
+    const dir = join(featuresDir, entry);
+    const selectedTask = readObjectFile(join(dir, 'selected-task.json'));
+    if (selectedTask?.taskId === taskId) dirs.push(dir);
+  }
+  return dirs;
+}
+
+function bothChallengeArmsVisible(repoDir: string, pairId: string): boolean {
+  const arms = new Set<string>();
+  const workflowState = readObjectFile(join(repoDir, '.wavemill', 'workflow-state.json'));
+  const tasks = objectField(workflowState?.tasks);
+  for (const task of Object.values(tasks ?? {})) {
+    const entry = objectField(task);
+    if (!entry) continue;
+    if (stringField(entry.challengePairId) !== pairId && stringField(entry.pairId) !== pairId) continue;
+    const role = stringField(entry.challengeRole) ?? stringField(entry.role);
+    if (role) arms.add(role);
+  }
+  return arms.has('primary') && arms.has('challenger');
+}
+
+function comparisonSucceededForPair(repoDir: string, pairId: string): boolean {
+  return readJobs(repoDir).some((job) => {
+    if (job.kind !== 'comparison' || job.status !== 'succeeded') return false;
+    return [job.pairId, job.id, job.issueId, job.resultPath, job.logPath, job.source]
+      .some((value) => value?.includes(pairId));
+  });
+}
+
+function currentHeadEvalPresent(repoDir: string, taskId: string | undefined, pairId: string, headSha: string | undefined): boolean {
+  if (!headSha) return false;
+  const evalsPath = join(repoDir, '.wavemill', 'evals', 'evals.jsonl');
+  if (!existsSync(evalsPath)) return false;
+  try {
+    const lines = readFileSync(evalsPath, 'utf-8').split('\n');
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const record = objectField(JSON.parse(line) as unknown);
+      if (!record) continue;
+      const issueMatches = !taskId || stringField(record.issueId) === taskId;
+      const pairMatches = stringField(record.challengePairId) === pairId;
+      if (!issueMatches && !pairMatches) continue;
+      const recordHead = stringField(record.headSha)
+        ?? stringField(record.reviewedHead)
+        ?? stringField(record.commitSha)
+        ?? stringField(record.revision);
+      if (recordHead === headSha) return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+function readPairStateForTask(repoDir: string, taskDir: string | null, taskId: string | null): ChallengePairStateDiagnostic | null {
+  const fromTaskDir = taskDir ? readChallengePairState(taskDir) : null;
+  if (fromTaskDir?.pairId) return fromTaskDir;
+  if (!taskId) return fromTaskDir;
+  const source = join(repoDir, '.wavemill', 'workflow-state.json');
+  const workflowState = readObjectFile(source);
+  const task = workflowState ? taskEntry(workflowState, taskId) : null;
+  if (!task) return fromTaskDir;
+  return {
+    pairId: stringField(task.challengePairId) ?? stringField(task.pairId),
+    role: stringEnum(task.challengeRole, ['primary', 'challenger'])
+      ?? stringEnum(task.role, ['primary', 'challenger']),
+    comparisonState: stringField(task.comparisonState),
+    comparisonBlockedReason: stringField(task.comparisonBlockedReason),
+    comparisonRetryCount: numberField(task.comparisonRetryCount),
+    comparisonRetryMaxAttempts: numberField(task.comparisonRetryMaxAttempts),
+    comparisonRetryTargetIssue: stringField(task.comparisonRetryTargetIssue),
+    comparisonTimedOutSides: Array.isArray(task.comparisonTimedOutSides)
+      ? task.comparisonTimedOutSides.filter((side): side is string => typeof side === 'string').slice(0, 10)
+      : [],
+    manualComparisonArtifactPath: stringField(task.manualComparisonArtifact),
+    source,
+  };
 }
 
 /**

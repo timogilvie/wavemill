@@ -31,7 +31,7 @@ interface RecentPrCommit {
   title: string;
 }
 
-interface NameStatusEntry {
+export interface NameStatusEntry {
   status: string;
   path: string;
   previousPath?: string;
@@ -193,7 +193,7 @@ function parseRecentPrCommit(line: string): RecentPrCommit | null {
   };
 }
 
-function extractPrNumber(subject: string): number | null {
+export function extractPrNumber(subject: string): number | null {
   const match = subject.match(/merge pull request #(\d+)\b/i)
     ?? subject.match(/\(#(\d+)\)\s*$/i);
   if (!match) {
@@ -204,7 +204,7 @@ function extractPrNumber(subject: string): number | null {
   return Number.isInteger(prNumber) ? prNumber : null;
 }
 
-function parseNameStatusOutput(output: string): NameStatusEntry[] {
+export function parseNameStatusOutput(output: string): NameStatusEntry[] {
   if (!output.trim()) {
     return [];
   }

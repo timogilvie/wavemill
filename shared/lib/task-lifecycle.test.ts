@@ -148,6 +148,33 @@ test('unknown lifecycle fields survive normalization', () => {
   assert.deepEqual(normalized.lifecycle.futureField, { keep: true });
 });
 
+test('launch contract preserves requireConfirm and backfills provenance', () => {
+  const normalized = normalizeTaskLifecycle({
+    lifecycle: {
+      schemaVersion: 1,
+      workflowOutcome: 'active',
+      resourceDisposition: 'allocated',
+      launchContract: {
+        baseBranch: 'auto/integration',
+        mergeMethod: 'squash',
+        requireConfirm: true,
+        remoteBranchDeletionPolicy: {
+          allowed: true,
+          mode: 'merged-pr-task-branch',
+        },
+      },
+    },
+  });
+
+  assert.equal(normalized.lifecycle.launchContract?.requireConfirm, true);
+  assert.deepEqual(normalized.lifecycle.launchContract?.provenance, {
+    baseBranch: 'launch-contract',
+    requireConfirm: 'launch-contract',
+    mergeMethod: 'launch-contract',
+    remoteBranchDeletionPolicy: 'launch-contract',
+  });
+});
+
 test('cleanup episode survives normalization on retained terminal lifecycle', () => {
   const normalized = normalizeTaskLifecycle({
     lifecycle: {

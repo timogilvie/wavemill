@@ -19,6 +19,7 @@ SESSION="$(jq -r '.session' "$PLAN_FILE")"
 WAVEMILL_RUN_EPOCH="$(jq -r '.runEpoch // empty' "$PLAN_FILE")"
 REPO_DIR="$(jq -r '.repoDir' "$PLAN_FILE")"
 BASE_BRANCH="$(jq -r '.baseBranch' "$PLAN_FILE")"
+WAVEMILL_BASE_BRANCH_SOURCE="$(jq -r '.baseBranchSource // "runtime-env"' "$PLAN_FILE")"
 RESOLVED_BASE_REF="$(jq -r '.resolvedBaseRef // empty' "$PLAN_FILE")"
 BASE_REF_PREFLIGHT_JSON="$(jq -c '.baseRefPreflight // empty' "$PLAN_FILE" 2>/dev/null || true)"
 WORKTREE_ROOT="$(jq -r '.worktreeRoot' "$PLAN_FILE")"
@@ -44,6 +45,9 @@ LAUNCHED_ISSUES_FILE="$(jq -r '.startupConfig.launchedIssuesFile' "$PLAN_FILE")"
 MILL_LOG_FILE="$(jq -r '.startupConfig.millLogFile // empty' "$PLAN_FILE")"
 POLL_SECONDS="$(jq -r '.monitorConfig.pollSeconds // 10' "$PLAN_FILE")"
 REQUIRE_CONFIRM="$(jq -r '.monitorConfig.requireConfirm // true' "$PLAN_FILE")"
+WAVEMILL_REQUIRE_CONFIRM_SOURCE="$(jq -r '.monitorConfig.requireConfirmSource // "runtime-env"' "$PLAN_FILE")"
+INTEGRATION_MERGE_METHOD="$(jq -r '.monitorConfig.mergeMethod // "squash"' "$PLAN_FILE")"
+WAVEMILL_MERGE_METHOD_SOURCE="$(jq -r '.monitorConfig.mergeMethodSource // "repo-config"' "$PLAN_FILE")"
 DRY_RUN="$(jq -r '.monitorConfig.dryRun // false' "$PLAN_FILE")"
 if [[ "${WAVEMILL_DRY_RUN:-}" == "1" || "${WAVEMILL_DRY_RUN:-}" == "true" || "$DRY_RUN" == "true" ]]; then
   export WAVEMILL_DRY_RUN=1
@@ -66,8 +70,9 @@ LAUNCH_QUEUE_PLAN="$(jq -c '.queuePlan // empty' "$PLAN_FILE" 2>/dev/null || tru
 
 export SESSION REPO_DIR BASE_BRANCH RESOLVED_BASE_REF WORKTREE_ROOT PLANNING_MODE AGENT_CMD AGENT_CMD_EXPLICIT
 export WAVEMILL_RUN_EPOCH
+export WAVEMILL_BASE_BRANCH_SOURCE WAVEMILL_REQUIRE_CONFIRM_SOURCE WAVEMILL_MERGE_METHOD_SOURCE
 export FORCE_MODEL ROUTER_ENABLED MAX_PARALLEL STATE_DIR STATE_FILE TOOLS_DIR LIB_DIR
-export POLL_SECONDS REQUIRE_CONFIRM DRY_RUN PROJECT_NAME AUTO_EVAL ENTER_LAUNCHES_WAVE DASHBOARD_VERBOSITY
+export POLL_SECONDS REQUIRE_CONFIRM INTEGRATION_MERGE_METHOD DRY_RUN PROJECT_NAME AUTO_EVAL ENTER_LAUNCHES_WAVE DASHBOARD_VERBOSITY
 export DASHBOARD_LOG_TO_FILE MILL_LOG_FILE
 
 source "$LIB_DIR/wavemill-common.sh"
@@ -75,6 +80,10 @@ source "$LIB_DIR/agent-adapters.sh"
 if [[ -f "$LIB_DIR/terminal-reconciler.sh" ]]; then
 # shellcheck source=terminal-reconciler.sh
 source "$LIB_DIR/terminal-reconciler.sh"
+fi
+if [[ -f "$LIB_DIR/startup-terminal-preflight.sh" ]]; then
+# shellcheck source=startup-terminal-preflight.sh
+source "$LIB_DIR/startup-terminal-preflight.sh"
 fi
 source "$LIB_DIR/startup-progress.sh"
 if [[ -f "$LIB_DIR/wavemill-worktree-deps.sh" ]]; then
@@ -372,6 +381,178 @@ ensure_state_file() {
   fi
 }
 
+startup_issue_state_from_task() {
+  local task_json="$1" issue_json_file issue_json
+  issue_json_file="$(jq -r '.issueJsonFile // empty' <<<"$task_json" 2>/dev/null || true)"
+  if [[ -n "$issue_json_file" && -f "$issue_json_file" ]]; then
+    issue_json="$(cat "$issue_json_file" 2>/dev/null || echo '{}')"
+    jq -r '(.state.name // .state // .workflowState.name // .status // "") | ascii_downcase' <<<"$issue_json" 2>/dev/null || true
+  fi
+}
+
+startup_existing_attempt_for_issue() {
+  local issue="$1"
+  [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
+  jq -c --arg issue "$issue" '.tasks[$issue].attempt // .tasks[$issue].lifecycle.attempt // empty' "$STATE_FILE" 2>/dev/null
+}
+
+startup_stamp_fresh_plan_summary() {
+  local original_count="$1" launchable_count="$2" skipped_count="$3" deferred_count="$4"
+  local tmp
+  tmp="$(mktemp "${PLAN_FILE}.fresh-preflight.XXXXXX" 2>/dev/null || true)"
+  [[ -n "$tmp" ]] || return 0
+  if jq \
+    --argjson original "$original_count" \
+    --argjson launchable "$launchable_count" \
+    --argjson skipped "$skipped_count" \
+    --argjson deferred "$deferred_count" \
+    --arg runEpoch "${WAVEMILL_RUN_EPOCH:-}" \
+    '.freshLaunchPreflight = {
+      schemaVersion: 1,
+      originalTaskCount: $original,
+      launchableTaskCount: $launchable,
+      skippedTaskCount: $skipped,
+      deferredTaskCount: $deferred,
+      runEpoch: (if $runEpoch == "" then null else $runEpoch end),
+      checkedAt: (now | todateiso8601)
+    }' "$PLAN_FILE" > "$tmp" 2>/dev/null; then
+    mv "$tmp" "$PLAN_FILE"
+  else
+    rm -f "$tmp" 2>/dev/null || true
+  fi
+}
+
+startup_preflight_fresh_launch_plan() {
+  declare -F wavemill_resolve_pr_attempt >/dev/null 2>&1 || return 0
+  if declare -F startup_preflight_enabled >/dev/null 2>&1; then
+    [[ "$(startup_preflight_enabled)" == "true" ]] || return 0
+  fi
+
+  local original_count decisions_file task_json decision_json issue slug branch worktree linear_issue linear_state
+  local attempt_json existing_attempt attempt_id resolution classification challenge_pair challenge_role head_sha
+  local tasks_json='[]' launchable_count=0 skipped_count=0 deferred_count=0 retry_task retry_attempt retry_branch retry_slug retry_worktree
+  local tmp_plan selected_pr reason
+  original_count="$(jq '.tasks | length' "$PLAN_FILE" 2>/dev/null || echo 0)"
+  [[ "$original_count" -gt 0 ]] || return 0
+
+  decisions_file="$(mktemp "/tmp/${SESSION}-fresh-launch-preflight.XXXXXX")"
+  declare -A merged_challenge_pairs=()
+  declare -A merged_challenge_prs=()
+
+  while IFS= read -r task_json; do
+    [[ -n "$task_json" ]] || continue
+    issue="$(jq -r '.issue // empty' <<<"$task_json")"
+    slug="$(jq -r '.slug // empty' <<<"$task_json")"
+    branch="$(jq -r '.branch // empty' <<<"$task_json")"
+    worktree="$(jq -r '.worktreeDir // empty' <<<"$task_json")"
+    linear_issue="$(jq -r '.linearIssueId // .issue // empty' <<<"$task_json")"
+    challenge_pair="$(jq -r '.challengePairId // empty' <<<"$task_json")"
+    challenge_role="$(jq -r '.challengeRole // empty' <<<"$task_json")"
+    linear_state="$(startup_issue_state_from_task "$task_json")"
+    existing_attempt="$(startup_existing_attempt_for_issue "$issue" 2>/dev/null || true)"
+    if [[ -n "$existing_attempt" ]]; then
+      attempt_json="$existing_attempt"
+    else
+      attempt_json="$(jq -c '.attempt // empty' <<<"$task_json" 2>/dev/null || true)"
+    fi
+    if [[ -z "$attempt_json" || "$attempt_json" == "null" ]]; then
+      attempt_json="$(wavemill_attempt_context_json "$issue" "$(wavemill_default_attempt_id "$issue" "$branch")" "$branch" "$branch" "$BASE_BRANCH" "fresh-launch")"
+    fi
+    branch="$(jq -r --arg fallback "$branch" '.effectiveBranch // $fallback' <<<"$attempt_json" 2>/dev/null || printf '%s\n' "$branch")"
+    attempt_id="$(jq -r '.attemptId // empty' <<<"$attempt_json" 2>/dev/null || true)"
+    head_sha=""
+    [[ -d "$worktree/.git" || -d "$worktree" ]] && head_sha="$(git -C "$worktree" rev-parse HEAD 2>/dev/null || true)"
+    resolution="$(wavemill_resolve_pr_attempt "$issue" "$branch" "$BASE_BRANCH" "$head_sha" "$attempt_id" "$linear_state" "$challenge_pair" "$challenge_role")"
+    classification="$(jq -r '.classification // "unverifiable"' <<<"$resolution" 2>/dev/null || echo "unverifiable")"
+    if [[ "$classification" == "current-merged" && -n "$challenge_pair" ]]; then
+      selected_pr="$(jq -r '.selectedCandidate.number // empty' <<<"$resolution" 2>/dev/null || true)"
+      merged_challenge_pairs["$challenge_pair"]=1
+      merged_challenge_prs["$challenge_pair"]="$selected_pr"
+    fi
+    jq -cn --argjson task "$task_json" --argjson attempt "$attempt_json" --argjson resolution "$resolution" \
+      '{task: $task, attempt: $attempt, resolution: $resolution}' >> "$decisions_file"
+  done < <(jq -c '.tasks[]' "$PLAN_FILE")
+
+  while IFS= read -r decision_json; do
+    [[ -n "$decision_json" ]] || continue
+    task_json="$(jq -c '.task' <<<"$decision_json")"
+    attempt_json="$(jq -c '.attempt' <<<"$decision_json")"
+    resolution="$(jq -c '.resolution' <<<"$decision_json")"
+    issue="$(jq -r '.issue // empty' <<<"$task_json")"
+    slug="$(jq -r '.slug // empty' <<<"$task_json")"
+    branch="$(jq -r '.branch // empty' <<<"$task_json")"
+    worktree="$(jq -r '.worktreeDir // empty' <<<"$task_json")"
+    linear_issue="$(jq -r '.linearIssueId // .issue // empty' <<<"$task_json")"
+    challenge_pair="$(jq -r '.challengePairId // empty' <<<"$task_json")"
+    classification="$(jq -r '.classification // "unverifiable"' <<<"$resolution" 2>/dev/null || echo "unverifiable")"
+
+    if [[ -n "$challenge_pair" && -n "${merged_challenge_pairs[$challenge_pair]:-}" && "$classification" != "current-merged" ]]; then
+      reason="challenge_sibling_current_pr_merged"
+      selected_pr="${merged_challenge_prs[$challenge_pair]:-}"
+      resolution="$(jq -c --arg reason "$reason" --arg pr "$selected_pr" '.classification = "current-merged" | .reason = $reason | .siblingPr = (if $pr == "" then null else $pr end)' <<<"$resolution")"
+      wavemill_record_fresh_launch_reconciliation "$issue" "$slug" "$branch" "$worktree" "$linear_issue" "merged" "done" "$attempt_json" "$resolution" "fresh-launch-preflight"
+      startup_log "SKIP: $issue suppressed because challenge pair $challenge_pair already has merged PR${selected_pr:+ #$selected_pr}"
+      skipped_count=$((skipped_count + 1))
+      continue
+    fi
+
+    case "$classification" in
+      current-merged)
+        wavemill_record_fresh_launch_reconciliation "$issue" "$slug" "$branch" "$worktree" "$linear_issue" "merged" "done" "$attempt_json" "$resolution" "fresh-launch-preflight"
+        selected_pr="$(jq -r '.selectedCandidate.number // empty' <<<"$resolution" 2>/dev/null || true)"
+        startup_log "SKIP: $issue already merged by PR${selected_pr:+ #$selected_pr}; no launch resources allocated"
+        skipped_count=$((skipped_count + 1))
+        ;;
+      historical-closed)
+        if wavemill_allocate_retry_attempt_identity "$issue" "$slug" "$branch" "$WORKTREE_ROOT" "$BASE_BRANCH" >/dev/null; then
+          retry_branch="$WAVEMILL_ATTEMPT_BRANCH"
+          retry_slug="$WAVEMILL_ATTEMPT_SLUG"
+          retry_worktree="$WAVEMILL_ATTEMPT_WORKTREE"
+          retry_attempt="$(wavemill_attempt_context_json "$issue" "$WAVEMILL_ATTEMPT_ID" "$branch" "$retry_branch" "$BASE_BRANCH" "fresh-launch-retry")"
+          retry_task="$(jq -c \
+            --arg slug "$retry_slug" \
+            --arg branch "$retry_branch" \
+            --arg worktreeDir "$retry_worktree" \
+            --argjson attempt "$retry_attempt" \
+            --argjson reconciliation "$resolution" \
+            '.slug = $slug | .branch = $branch | .worktreeDir = $worktreeDir | .attempt = $attempt | .prReconciliation = $reconciliation' <<<"$task_json")"
+          tasks_json="$(jq -cn --argjson tasks "$tasks_json" --argjson task "$retry_task" '$tasks + [$task]')"
+          launchable_count=$((launchable_count + 1))
+          startup_log "RETRY: $issue historical closed PR detected; launching $retry_branch"
+        else
+          wavemill_record_fresh_launch_reconciliation "$issue" "$slug" "$branch" "$worktree" "$linear_issue" "verification-required" "verification-required" "$attempt_json" "$resolution" "fresh-launch-preflight"
+          startup_log "WARN: $issue fresh launch deferred; retry attempt identity could not be allocated"
+          deferred_count=$((deferred_count + 1))
+        fi
+        ;;
+      historical-merged|unverifiable)
+        wavemill_record_fresh_launch_reconciliation "$issue" "$slug" "$branch" "$worktree" "$linear_issue" "verification-required" "verification-required" "$attempt_json" "$resolution" "fresh-launch-preflight"
+        reason="$(jq -r '.reason // "pr_lineage_unverifiable"' <<<"$resolution" 2>/dev/null || echo "pr_lineage_unverifiable")"
+        startup_log "WARN: $issue fresh launch deferred pending PR verification ($reason)"
+        deferred_count=$((deferred_count + 1))
+        ;;
+      *)
+        task_json="$(jq -c --argjson attempt "$attempt_json" --argjson reconciliation "$resolution" '.attempt = $attempt | .prReconciliation = $reconciliation' <<<"$task_json")"
+        tasks_json="$(jq -cn --argjson tasks "$tasks_json" --argjson task "$task_json" '$tasks + [$task]')"
+        launchable_count=$((launchable_count + 1))
+        ;;
+    esac
+  done < "$decisions_file"
+  rm -f "$decisions_file"
+
+  tmp_plan="$(mktemp "${PLAN_FILE}.fresh.XXXXXX" 2>/dev/null || true)"
+  if [[ -n "$tmp_plan" ]] && jq --argjson tasks "$tasks_json" '.tasks = $tasks' "$PLAN_FILE" > "$tmp_plan" 2>/dev/null; then
+    mv "$tmp_plan" "$PLAN_FILE"
+  else
+    rm -f "$tmp_plan" 2>/dev/null || true
+    return 1
+  fi
+  startup_stamp_fresh_plan_summary "$original_count" "$launchable_count" "$skipped_count" "$deferred_count"
+  if (( skipped_count > 0 || deferred_count > 0 )); then
+    startup_log "Fresh launch preflight: ${launchable_count} launchable, ${skipped_count} skipped, ${deferred_count} deferred"
+  fi
+}
+
 seed_queued_tasks_from_plan() {
   local plan_file="$1"
   local queue_plan
@@ -440,6 +621,9 @@ write_monitor_env() {
     write_shell_assignment "MERGE_QUEUE_SELECTION_FILE" "$STATE_DIR/merge-queue-selection.json"
     write_shell_assignment "POLL_SECONDS" "$POLL_SECONDS"
     write_shell_assignment "REQUIRE_CONFIRM" "$REQUIRE_CONFIRM"
+    write_shell_assignment "WAVEMILL_BASE_BRANCH_SOURCE" "$WAVEMILL_BASE_BRANCH_SOURCE"
+    write_shell_assignment "WAVEMILL_REQUIRE_CONFIRM_SOURCE" "$WAVEMILL_REQUIRE_CONFIRM_SOURCE"
+    write_shell_assignment "WAVEMILL_MERGE_METHOD_SOURCE" "$WAVEMILL_MERGE_METHOD_SOURCE"
     write_shell_assignment "DRY_RUN" "$DRY_RUN"
     write_shell_assignment "BASE_BRANCH" "$BASE_BRANCH"
     write_shell_assignment "PROJECT_NAME" "$PROJECT_NAME"
@@ -470,6 +654,39 @@ write_monitor_env() {
     write_shell_assignment "MONITOR_SCRIPT" "$MONITOR_SCRIPT"
     write_shell_assignment "MONITOR_ENV" "$MONITOR_ENV"
   } > "$MONITOR_ENV"
+}
+
+write_runtime_env_snapshot() {
+  local issue="$1" snapshot_dir snapshot_file tmp_file merge_method
+  [[ -n "$issue" && -n "${REPO_DIR:-}" ]] || return 0
+  snapshot_dir="$REPO_DIR/.wavemill/runtime-env"
+  snapshot_file="$snapshot_dir/$issue.json"
+  mkdir -p "$snapshot_dir" 2>/dev/null || return 0
+  tmp_file="$snapshot_file.tmp.$$"
+  merge_method="${INTEGRATION_MERGE_METHOD:-squash}"
+  jq -n \
+    --arg issue "$issue" \
+    --arg session "$SESSION" \
+    --arg runEpoch "$WAVEMILL_RUN_EPOCH" \
+    --arg baseBranch "$BASE_BRANCH" \
+    --arg baseBranchSource "${WAVEMILL_BASE_BRANCH_SOURCE:-runtime-env}" \
+    --arg requireConfirm "$REQUIRE_CONFIRM" \
+    --arg requireConfirmSource "${WAVEMILL_REQUIRE_CONFIRM_SOURCE:-runtime-env}" \
+    --arg mergeMethod "$merge_method" \
+    --arg mergeMethodSource "${WAVEMILL_MERGE_METHOD_SOURCE:-repo-config}" \
+    --arg capturedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{
+      issue: $issue,
+      session: $session,
+      runEpoch: $runEpoch,
+      baseBranch: $baseBranch,
+      baseBranchSource: $baseBranchSource,
+      requireConfirm: ($requireConfirm == "true"),
+      requireConfirmSource: $requireConfirmSource,
+      mergeMethod: $mergeMethod,
+      mergeMethodSource: $mergeMethodSource,
+      capturedAt: $capturedAt
+    }' > "$tmp_file" 2>/dev/null && mv "$tmp_file" "$snapshot_file" 2>/dev/null || rm -f "$tmp_file"
 }
 
 setup_control_dashboard() {
@@ -799,10 +1016,12 @@ startup_run_task_phases() {
   local depends_on base_from_task
   local packet_content issue_json issue_description issue_context details_context labels_json
   local feature_dir status_file planning_prompt instr_file created_window created_window_id state_written created_new=false planner_launch_model
+  local attempt_json pr_reconciliation_json preflight_pr
 
   local startup_id
   startup_id="$(echo "$task_json" | jq -r '.startupId // empty')"
   issue="$(echo "$task_json" | jq -r '.issue')"
+  write_runtime_env_snapshot "$issue"
   [[ -z "$startup_id" || "$startup_id" == "null" ]] && startup_id="${ordinal:-1}"
   [[ -z "$ordinal" ]] && ordinal="$startup_id"
   if [[ -z "$total" ]]; then
@@ -829,6 +1048,9 @@ startup_run_task_phases() {
   challenge_model="$(echo "$task_json" | jq -r '.challengeModel // empty')"
   challenge_stage="$(echo "$task_json" | jq -r '.challengeStage // empty')"
   task_agent="$(echo "$task_json" | jq -r '.agent // empty')"
+  attempt_json="$(echo "$task_json" | jq -c '.attempt // empty' 2>/dev/null || true)"
+  pr_reconciliation_json="$(echo "$task_json" | jq -c '.prReconciliation // empty' 2>/dev/null || true)"
+  preflight_pr="$(echo "$task_json" | jq -r 'if (.prReconciliation.classification // "") == "current-open" then (.prReconciliation.selectedCandidate.number // empty) else empty end' 2>/dev/null || true)"
   # Parsed but intentionally unused; behavior change ships in follow-up.
   depends_on="$(echo "$task_json" | jq -c '.dependsOn // []')"
   base_from_task="$(echo "$task_json" | jq -r '.baseFromTask // empty')"
@@ -971,7 +1193,7 @@ startup_run_task_phases() {
       # Only remove a freshly created worktree if we can't reuse it later.
       if [[ -n "${created_new:-}" && "$created_new" == "true" ]]; then
         local cleanup_rc=0
-        safe_remove_task_worktree_and_branch "$wt_dir" "$branch" "${BASE_BRANCH:-main}" "startup_dependency_failure" "$issue" "" || cleanup_rc=$?
+        safe_remove_task_worktree_and_branch "$wt_dir" "$branch" "$(effective_task_base_branch "$issue" 2>/dev/null || printf '%s\n' "${BASE_BRANCH:-main}")" "startup_dependency_failure" "$issue" "" || cleanup_rc=$?
         if [[ "$cleanup_rc" -eq 10 ]] || cleanup_outcome_is_retain; then
           startup_log "WARN: $issue dependency-failure cleanup preserved local work (${WAVEMILL_CLEANUP_OUTCOME:-unclassified})"
         elif [[ "$cleanup_rc" -ne 0 ]]; then
@@ -1129,12 +1351,13 @@ $details_context"
   # downstream startup checks do not depend on a second jq update succeeding.
   local persisted_phase="planning"
   # Canonical save_task_state tail: challengeStage(19), phase(20), windowId(21).
-  if ! wavemill_lock_run "state" save_task_state "$issue" "$slug" "$branch" "$wt_dir" "" "" "$task_agent" "$linear_issue" "$challenge" "$challenge_pair" "$challenge_role" "$challenge_model" \
+  if ! wavemill_lock_run "state" save_task_state "$issue" "$slug" "$branch" "$wt_dir" "$preflight_pr" "" "$task_agent" "$linear_issue" "$challenge" "$challenge_pair" "$challenge_role" "$challenge_model" \
     "$planner_model" "$coder_model" "$reviewer_model" "$plan_depth" "$code_depth" "$review_mode" "$challenge_stage" "$persisted_phase" "${created_window_id:-}"; then
     startup_phase_failed "$startup_id" agent "$issue" "saving workflow state"
     [[ -n "${created_window:-}" ]] && tmux kill-window -t "${created_window_id:-$SESSION:$win}" >/dev/null 2>&1 || true
     return 1
   fi
+  wavemill_lock_run "state" wavemill_persist_attempt_reconciliation "$issue" "$attempt_json" "$pr_reconciliation_json" "startup-runner" >/dev/null 2>&1 || true
 
   if [[ -n "$challenge_stage" ]]; then
     wavemill_lock_run "state" state_mutate "$STATE_FILE" '.tasks[$issue].challengeStage = $stage' \
@@ -1187,13 +1410,14 @@ $details_context"
 
   # Re-persist the launched task after the pane handoff succeeds so the final
   # workflow record reflects a fully launched planning session.
-  if ! wavemill_lock_run "state" save_task_state "$issue" "$slug" "$branch" "$wt_dir" "" "" "$task_agent" "$linear_issue" "$challenge" "$challenge_pair" "$challenge_role" "$challenge_model" \
+  if ! wavemill_lock_run "state" save_task_state "$issue" "$slug" "$branch" "$wt_dir" "$preflight_pr" "" "$task_agent" "$linear_issue" "$challenge" "$challenge_pair" "$challenge_role" "$challenge_model" \
     "$planner_model" "$coder_model" "$reviewer_model" "$plan_depth" "$code_depth" "$review_mode" "$challenge_stage" "$persisted_phase" "${created_window_id:-}"; then
     [[ -n "${state_written:-}" ]] && wavemill_lock_run "state" remove_task_state "$issue" >/dev/null 2>&1 || true
     tmux kill-window -t "${created_window_id:-$SESSION:$win}" >/dev/null 2>&1 || true
     startup_phase_failed "$startup_id" agent "$issue" "re-saving workflow state"
     return 1
   fi
+  wavemill_lock_run "state" wavemill_persist_attempt_reconciliation "$issue" "$attempt_json" "$pr_reconciliation_json" "startup-runner" >/dev/null 2>&1 || true
   startup_step "[6/7] Launching agent...        ✓"
   if [[ -n "${created_window_id:-}" ]] && declare -F wavemill_apply_window_metadata >/dev/null 2>&1; then
     wavemill_apply_window_metadata "$SESSION" "$issue" "${created_window_id:-}" "$STATE_FILE" >/dev/null 2>&1 || true
@@ -1324,12 +1548,13 @@ main() {
 
   ensure_state_file
   cleanup_background_jobs_startup
-  seed_queued_tasks_from_plan "$PLAN_FILE"
   : > "$STATUS_LOG_FILE"
   : > "$LAUNCHED_ISSUES_FILE"
 
   startup_log "═══ Wavemill Startup ═══"
   startup_log "Reading launch plan: $PLAN_FILE"
+  startup_preflight_fresh_launch_plan
+  seed_queued_tasks_from_plan "$PLAN_FILE"
   startup_refresh_openrouter_credits || true
   startup_warn_openrouter_status || true
 

@@ -126,8 +126,8 @@ fi
 
 if grep -Fq 'Refusing to delete protected branch: $task_branch' <<< "$safe_cleanup" \
   && grep -Fq 'safe_remove_task_worktree_and_branch "$worktree" "$branch" "$BASE_BRANCH" "stale_task_pruner"' "$MILL_SCRIPT" \
-  && grep -Fq 'safe_remove_task_worktree_and_branch "$wt_dir" "$task_branch" "${BASE_BRANCH:-main}" "cleanup_aborted_challenge_arm"' "$MONITOR_SCRIPT_FILE" \
-  && grep -Fq 'safe_remove_task_worktree_and_branch "$wt_dir" "$branch" "${BASE_BRANCH:-main}" "startup_dependency_failure"' "$REPO_DIR/shared/lib/wavemill-startup-runner.sh"; then
+  && grep -Fq 'safe_remove_task_worktree_and_branch "$wt_dir" "$task_branch" "$(effective_task_base_branch "$issue" 2>/dev/null || printf' "$MONITOR_SCRIPT_FILE" \
+  && grep -Fq 'safe_remove_task_worktree_and_branch "$wt_dir" "$branch" "$(effective_task_base_branch "$issue" 2>/dev/null || printf' "$REPO_DIR/shared/lib/wavemill-startup-runner.sh"; then
   pass "cleanup guards protected branches through shared helper"
 else
   fail "cleanup is missing protected branch guards"
@@ -173,7 +173,8 @@ else
   fail "PR-aware deletion authority rollback gate missing"
 fi
 
-if grep -Fq 'safe_remove_task_worktree_and_branch "$wt_dir" "$task_branch" "${BASE_BRANCH:-main}" "cleanup_completed_task" "$issue" "$pr"' <<< "$common_cleanup" \
+if grep -Fq 'safe_remove_task_worktree_and_branch "$wt_dir" "$task_branch" "$(effective_task_base_branch "$issue" 2>/dev/null || printf' <<< "$common_cleanup" \
+  && grep -Fq '"cleanup_completed_task" "$issue" "$pr"' <<< "$common_cleanup" \
   && grep -Fq 'cleanup_outcome_is_retain "$cleanup_outcome"' <<< "$common_cleanup" \
   && grep -Fq 'cleanup_outcome_is_failed "$cleanup_outcome"' <<< "$common_cleanup"; then
   pass "cleanup_completed_task passes issue/PR and consumes structured outcomes"

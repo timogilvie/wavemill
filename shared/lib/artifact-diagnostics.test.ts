@@ -4,7 +4,13 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, before, after } from 'node:test';
-import { diagnoseArtifacts } from './artifact-diagnostics.ts';
+import {
+  diagnoseArtifacts,
+  readEvalFallbackEventsDiagnostic,
+  readPrIdentity,
+  readQuotaSnapshotDiagnostic,
+  readReviewResultDiagnostic,
+} from './artifact-diagnostics.ts';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -501,5 +507,112 @@ describe('diagnoseArtifacts', () => {
     assert.equal(report.summary.info, expectedInfo);
     assert.equal(report.summary.warn, expectedWarn);
     assert.equal(report.summary.error, expectedError);
+  });
+});
+
+describe('stalled lifecycle artifact readers', () => {
+  const tempDirs: string[] = [];
+
+  after(() => {
+    for (const d of tempDirs) {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  it('reads bounded PR identity from local authoritative fixture cache', () => {
+    const repoDir = makeTempRepo();
+    tempDirs.push(repoDir);
+    mkdirSync(join(repoDir, '.wavemill', 'prs'), { recursive: true });
+    writeFileSync(join(repoDir, '.wavemill', 'prs', '1324.json'), JSON.stringify({
+      number: 1324,
+      headRefOid: 'h'.repeat(40),
+      baseRefOid: 'b'.repeat(40),
+      headRefName: 'task/HOK-1324',
+      baseRefName: 'auto/integration',
+      files: [
+        { path: 'a.ts', additions: 3, deletions: 1 },
+        { path: 'b.ts', additions: 5, deletions: 2 },
+      ],
+      labels: [{ name: 'wavemill' }],
+      mergeStateStatus: 'CLEAN',
+    }));
+
+    const pr = readPrIdentity(1324, repoDir);
+    assert.ok(pr);
+    assert.equal(pr.number, 1324);
+    assert.equal(pr.changedFileCount, 2);
+    assert.equal(pr.additions, 8);
+    assert.equal(pr.deletions, 3);
+    assert.deepEqual(pr.labels, ['wavemill']);
+  });
+
+  it('reads nested review result scope without leaking raw prompt data', () => {
+    const repoDir = makeTempRepo();
+    tempDirs.push(repoDir);
+    const featureDir = makeFeatureDir(repoDir, 'review-scope');
+    writeFileSync(join(featureDir, '.review-result.json'), JSON.stringify({
+      status: 'not_ready',
+      artifacts: {
+        failureCategory: 'context-window-exceeded',
+        scope: {
+          headSha: 'old-head',
+          baseSha: 'old-base',
+          files: Array.from({ length: 20 }, (_, index) => `file-${index}.ts`),
+        },
+      },
+    }));
+
+    const review = readReviewResultDiagnostic(featureDir);
+    assert.ok(review);
+    assert.equal(review.verdict, 'not_ready');
+    assert.equal(review.failureCategory, 'context-window-exceeded');
+    assert.equal(review.reviewedHead, 'old-head');
+    assert.equal(review.reviewedBase, 'old-base');
+    assert.equal(review.reviewedFileCount, 20);
+  });
+
+  it('returns null or empty readers for missing and malformed stalled lifecycle artifacts', () => {
+    const repoDir = makeTempRepo();
+    tempDirs.push(repoDir);
+    const featureDir = makeFeatureDir(repoDir, 'malformed-review');
+    writeFileSync(join(featureDir, '.review-result.json'), '{bad json');
+    writeFileSync(join(repoDir, '.wavemill', 'quota-state.json'), '{bad json');
+
+    assert.equal(readReviewResultDiagnostic(featureDir), null);
+    assert.equal(readPrIdentity(9999, repoDir), null);
+    assert.equal(readQuotaSnapshotDiagnostic(repoDir), null);
+    assert.deepEqual(readEvalFallbackEventsDiagnostic(repoDir), []);
+  });
+
+  it('projects quota and all-exhausted provider fallback events', () => {
+    const repoDir = makeTempRepo();
+    tempDirs.push(repoDir);
+    writeFileSync(join(repoDir, '.wavemill', 'quota-state.json'), JSON.stringify({
+      models: {
+        'openrouter/test-model': {
+          status: 'exhausted',
+          lastLimitErrorAt: '2026-08-28T11:00:00.000Z',
+        },
+      },
+    }));
+    writeEvalRecord(repoDir, {
+      issueId: 'HOK-1328',
+      challengePairId: 'HOK-1328-pair',
+      fallbackEvent: {
+        outcome: 'all_exhausted',
+        task_type: 'review',
+        fallback_chain: [{ model: 'openrouter/test-model', reason: 'quota' }],
+      },
+    });
+
+    const quota = readQuotaSnapshotDiagnostic(repoDir);
+    assert.ok(quota);
+    assert.deepEqual(quota.exhaustedProviders, ['openrouter']);
+    assert.equal(quota.exhaustedModels.length, 1);
+
+    const events = readEvalFallbackEventsDiagnostic(repoDir);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].challengePairId, 'HOK-1328-pair');
+    assert.deepEqual(events[0].failedProviders, ['openrouter']);
   });
 });
