@@ -142,10 +142,12 @@ runTool({
     'evals-dir': { type: 'string', description: 'Evals directory (auto-resolved if not provided)' },
     records: {
       type: 'string',
+      // allow-template-curly: literal placeholder in help text
       description: 'Path to challenge-records.jsonl (default: ${evalsDir}/challenge-records.jsonl)',
     },
     'survival-labels': {
       type: 'string',
+      // allow-template-curly: literal placeholder in help text
       description: 'Path to survival-labels.jsonl (default: ${evalsDir}/survival-labels.jsonl)',
     },
     horizon: {
