@@ -1688,6 +1688,10 @@ mark_eval_completed() {
   if [[ -n "$slug" && -n "${WORKTREE_ROOT:-}" ]]; then
     bounded_retry_clear "${WORKTREE_ROOT}/${slug}/features/${slug}" "challenge-eval-soft"
     bounded_retry_clear "${WORKTREE_ROOT}/${slug}/features/${slug}" "challenge-eval-hard"
+    # challenge-eval-stale is deliberately NOT cleared here: a successful eval
+    # run does not prove the persisted record satisfies the current-head
+    # selector, and clearing on success would let a persistently-refused
+    # record refill its own relaunch budget (HOK-2963). A new head resets it.
   fi
 }
 
@@ -9722,11 +9726,57 @@ challenge_eval_current_head_state() {
     printf 'unknown\n'
     return 0
   fi
-  ok=$(jq -r '.ok // empty' <<<"$out" 2>/dev/null || echo "")
+  # `.ok` directly, not `.ok // empty`: jq's alternative operator swallows
+  # `false`, which is exactly the value that means "stale".
+  ok=$(jq -r '.ok' <<<"$out" 2>/dev/null || echo "")
   case "$ok" in
     true) printf 'current\n' ;;
     false) printf 'stale\n' ;;
     *) printf 'unknown\n' ;;
+  esac
+}
+
+# Bounded budget for stale current-head eval relaunches (HOK-2963), using the
+# shared bounded-retry invariant (HOK-2924): head-keyed, backoff between
+# attempts, terminalized at a ceiling with a greppable sentinel. Exhaustion
+# resolves the pair to manual comparison so it can never loop silently on
+# evidence the selector keeps refusing. Returns 0 when a relaunch may proceed.
+challenge_eval_stale_relaunch_allowed() {
+  local issue="$1" slug="$2"
+  local state_dir head disposition limit pair_id primary_key challenger_key artifact_path
+  state_dir="${WORKTREE_ROOT}/${slug}/features/${slug}"
+  head=$(git -C "${WORKTREE_ROOT}/${slug}" rev-parse HEAD 2>/dev/null || echo "")
+  limit="${WAVEMILL_CHALLENGE_EVAL_STALE_MAX_ATTEMPTS:-3}"
+  [[ "$limit" =~ ^[0-9]+$ ]] || limit=3
+  disposition=$(bounded_retry_gate "$state_dir" "challenge-eval-stale" "$head" "$limit")
+  case "$disposition" in
+    proceed)
+      bounded_retry_increment "$state_dir" "challenge-eval-stale" "$head" >/dev/null
+      return 0
+      ;;
+    backoff)
+      log "debug" "challenge eval stale-evidence relaunch for $issue holding (backoff)"
+      return 1
+      ;;
+    exhausted)
+      pair_id=$(get_task_meta "$issue" "challengePairId")
+      if bounded_retry_mark_exhausted "$state_dir" "challenge-eval-stale" \
+          "Challenge eval stale-evidence relaunches exhausted for $issue (pair ${pair_id:-unknown}) after $(bounded_retry_count "$state_dir" "challenge-eval-stale")/${limit} attempt(s) - manual comparison needed"; then
+        if [[ -n "$pair_id" ]]; then
+          primary_key="$pair_id"
+          challenger_key="${pair_id}_c"
+          artifact_path=$(write_manual_challenge_comparison_artifact "$pair_id" "$primary_key" "$challenger_key" "" \
+            "$(bounded_retry_count "$state_dir" "challenge-eval-stale")" "$limit" || true)
+          write_challenge_pair_state "$pair_id" "manual_comparison_needed" "stale_eval_evidence" \
+            "$(bounded_retry_count "$state_dir" "challenge-eval-stale")" "$limit" "" "" "$artifact_path" >/dev/null || true
+        fi
+        log_warn "challenge eval stale-evidence relaunches exhausted for $issue - manual comparison needed"
+      fi
+      return 1
+      ;;
+    *)
+      return 1
+      ;;
   esac
 }
 
@@ -9815,6 +9865,9 @@ maybe_run_challenge_eval() {
     if [[ "$eval_head_state" != "stale" ]]; then
       return 0
     fi
+    if ! challenge_eval_stale_relaunch_allowed "$issue" "$slug"; then
+      return 0
+    fi
     log "status" "  📊 challenge eval for $issue is stale for the current PR head - relaunching (HOK-2963)"
     state_mutate "$STATE_FILE" '
       .tasks[$issue].evalCompleted = false
@@ -9893,7 +9946,12 @@ maybe_run_challenge_eval() {
     # A succeeded job for this PR can predate the current head (HOK-2963):
     # only suppress relaunch while valid current-head evidence exists.
     # launch_tracked_job upserts by job id, replacing the stale entry.
-    [[ -z "$eval_head_state" ]] && eval_head_state=$(challenge_eval_current_head_state "$issue" "$pr")
+    if [[ -z "$eval_head_state" ]]; then
+      eval_head_state=$(challenge_eval_current_head_state "$issue" "$pr")
+      if [[ "$eval_head_state" == "stale" ]] && ! challenge_eval_stale_relaunch_allowed "$issue" "$slug"; then
+        return 0
+      fi
+    fi
     if [[ "$eval_head_state" != "stale" ]]; then
       return 0
     fi

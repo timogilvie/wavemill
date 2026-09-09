@@ -86,6 +86,10 @@ for fn in \
   launch_tracked_job:1:monitor \
   post_merge_eval_timeout_seconds:1:monitor \
   challenge_eval_current_head_state:1:monitor \
+  challenge_eval_stale_relaunch_allowed:1:monitor \
+  write_challenge_pair_state:1:monitor \
+  challenge_pair_manual_artifact_path:1:monitor \
+  write_manual_challenge_comparison_artifact:1:monitor \
   maybe_run_challenge_eval:1:monitor
 do
   IFS=: read -r name occurrence source <<<"$fn"
@@ -177,6 +181,14 @@ gh() {
 }
 
 npx() {
+  if [[ "$*" == *"challenge-eval-evidence.ts"* ]]; then
+    if [[ -n "${EVIDENCE_JSON:-}" ]]; then
+      printf '%s\n' "$EVIDENCE_JSON"
+    else
+      printf '{"ok":true}\n'
+    fi
+    return 0
+  fi
   if [[ "$*" == *"job-tracker.ts"* ]]; then
     JOB_TRACKER_CALLS=$((JOB_TRACKER_CALLS + 1))
     return 0
@@ -678,6 +690,93 @@ JSON
   printf 'reset_logs_attempt=%s\n' "$(printf '%s' "$LOG_OUTPUT" | grep -c "hard failure (attempt 1/2)" || true)"
 }
 
+# HOK-2963: evalCompleted=true with stale current-head evidence relaunches
+# the eval through the bounded challenge-eval-stale budget; exhaustion
+# resolves to manual comparison, never a silent loop or a synthetic pass.
+run_stale_case() {
+  STALE_HEAD="sha-one"
+  git() {
+    if [[ "${1:-}" == "-C" && "${3:-}" == "rev-parse" ]]; then
+      printf '%s\n' "$STALE_HEAD"
+      return 0
+    fi
+    return 1
+  }
+  local bucket_dir="$WORKTREE_ROOT/hok-2462/features/hok-2462"
+
+  cat > "$STATE_FILE" <<JSON
+{
+  "tasks": {
+    "HOK-2462": {
+      "slug": "hok-2462",
+      "branch": "task/hok-2462",
+      "worktree": "$WORKTREE_ROOT/hok-2462",
+      "pr": "101",
+      "status": "ready",
+      "agent": "codex",
+      "phase": "ready",
+      "evalCompleted": true,
+      "evalFailed": false,
+      "challengeCompared": false,
+      "challenge": true,
+      "challengePairId": "HOK-2462",
+      "challengeRole": "primary",
+      "challengeModel": "model-a"
+    },
+    "HOK-2462_c": {
+      "slug": "hok-2462-c",
+      "branch": "task/hok-2462-c",
+      "worktree": "$WORKTREE_ROOT/hok-2462-c",
+      "pr": "102",
+      "status": "ready",
+      "agent": "codex",
+      "phase": "ready",
+      "evalCompleted": true,
+      "evalFailed": false,
+      "challengeCompared": false,
+      "challenge": true,
+      "challengePairId": "HOK-2462",
+      "challengeRole": "challenger",
+      "challengeModel": "model-b"
+    }
+  },
+  "jobs": {}
+}
+JSON
+
+  # Tick 1: stale evidence relaunches the eval and consumes budget attempt 1.
+  EVIDENCE_JSON="{\"ok\":false,\"reason\":\"old_head_only\"}" \
+    maybe_run_challenge_eval "HOK-2462" "101" "task/hok-2462" "hok-2462"
+  wait || true
+  printf 'stale_launches_1=%s\n' "$JOB_TRACKER_CALLS"
+  printf 'stale_count_1=%s\n' "$(bounded_retry_count "$bucket_dir" challenge-eval-stale)"
+  printf 'stale_completed_cleared=%s\n' "$(jq -r '.tasks["HOK-2462"].evalCompleted' "$STATE_FILE")"
+
+  # Tick 2 (still stale, inside the backoff window): no duplicate relaunch.
+  state_mutate "$STATE_FILE" '.tasks["HOK-2462"].evalCompleted = true' >/dev/null
+  EVIDENCE_JSON="{\"ok\":false,\"reason\":\"old_head_only\"}" \
+    maybe_run_challenge_eval "HOK-2462" "101" "task/hok-2462" "hok-2462"
+  printf 'stale_launches_2=%s\n' "$JOB_TRACKER_CALLS"
+  printf 'stale_count_2=%s\n' "$(bounded_retry_count "$bucket_dir" challenge-eval-stale)"
+
+  # Current evidence never touches the budget and never relaunches.
+  EVIDENCE_JSON="{\"ok\":true,\"evalId\":\"eval-1\"}" \
+    maybe_run_challenge_eval "HOK-2462" "101" "task/hok-2462" "hok-2462"
+  printf 'current_launches=%s\n' "$JOB_TRACKER_CALLS"
+
+  # Exhaustion: at the ceiling the pair resolves to manual comparison with a
+  # greppable sentinel instead of relaunching again.
+  printf '%s\n' "3" > "$bucket_dir/.retry-challenge-eval-stale-count"
+  printf '%s\n' "$STALE_HEAD" > "$bucket_dir/.retry-challenge-eval-stale-head"
+  printf '%s\n' "0" > "$bucket_dir/.retry-challenge-eval-stale-last-at"
+  EVIDENCE_JSON="{\"ok\":false,\"reason\":\"old_head_only\"}" \
+    maybe_run_challenge_eval "HOK-2462" "101" "task/hok-2462" "hok-2462"
+  printf 'stale_launches_3=%s\n' "$JOB_TRACKER_CALLS"
+  printf 'stale_sentinel=%s\n' "$([[ -f "$bucket_dir/.retry-challenge-eval-stale-exhausted" ]] && echo present || echo absent)"
+  printf 'stale_sentinel_reason=%s\n' "$(cat "$bucket_dir/.retry-challenge-eval-stale-exhausted" 2>/dev/null | head -1 || true)"
+  printf 'stale_pair_state=%s\n' "$(jq -r '.tasks["HOK-2462"].comparisonState // empty' "$STATE_FILE")"
+}
+
 "run_${CASE_NAME}_case"
 printf 'eval_launches=%s\n' "$EVAL_LAUNCHES"
 printf 'job_tracker_calls=%s\n' "$JOB_TRACKER_CALLS"
@@ -713,6 +812,7 @@ helper_env_output="$(CONFIG_JSON='{"challenge":{"eval":{"hardFailureRetryMaxAtte
 helper_invalid_env_output="$(CONFIG_JSON='{"challenge":{"eval":{"retryMaxAttempts":9,"hardFailureRetryMaxAttempts":4}}}' WAVEMILL_EVAL_HARD_FAILURE_MAX_RETRIES=bad CASE_NAME=helper CASE_DIR="$TEST_TMP/helper-invalid-env" REPO_DIR="$REPO_DIR" FUNCTION_FILE="$FUNCTION_FILE" "$TEST_TMP/run-case.sh")"
 config_retry_output="$(CONFIG_JSON='{"challenge":{"eval":{"hardFailureRetryMaxAttempts":3}}}' CASE_NAME=config_retry CASE_DIR="$TEST_TMP/config-retry" REPO_DIR="$REPO_DIR" FUNCTION_FILE="$FUNCTION_FILE" "$TEST_TMP/run-case.sh")"
 bucket_output="$(CASE_NAME=bucket CASE_DIR="$TEST_TMP/bucket" REPO_DIR="$REPO_DIR" FUNCTION_FILE="$FUNCTION_FILE" "$TEST_TMP/run-case.sh")"
+stale_output="$(CASE_NAME=stale CASE_DIR="$TEST_TMP/stale" REPO_DIR="$REPO_DIR" FUNCTION_FILE="$FUNCTION_FILE" "$TEST_TMP/run-case.sh")"
 
 check_contains "legacy hard failure defaults retry counter to zero then increments" "$retry_output" "retry_counter=1"
 check_contains "hard failure retry clears evalFailed before relaunch" "$retry_output" "retry_failed=false"
@@ -741,6 +841,17 @@ check_contains "backoff hold preserves evalFailed for the next tick" "$bucket_ou
 check_contains "new head restarts the hard-failure budget" "$bucket_output" "reset_count=1"
 check_contains "new head zeroes then rewrites the state mirror" "$bucket_output" "reset_mirror=1"
 check_contains "new head retry logs attempt 1 twice" "$bucket_output" "reset_logs_attempt=2"
+
+check_contains "stale evidence relaunches the eval once" "$stale_output" "stale_launches_1=1"
+check_contains "stale relaunch consumes the bounded budget" "$stale_output" "stale_count_1=1"
+check_contains "stale relaunch clears evalCompleted" "$stale_output" "stale_completed_cleared=false"
+check_contains "stale relaunch holds inside the backoff window" "$stale_output" "stale_launches_2=1"
+check_contains "backoff hold does not consume the stale budget" "$stale_output" "stale_count_2=1"
+check_contains "current evidence never relaunches" "$stale_output" "current_launches=1"
+check_contains "stale exhaustion stops relaunching" "$stale_output" "stale_launches_3=1"
+check_contains "stale exhaustion writes greppable sentinel" "$stale_output" "stale_sentinel=present"
+check_contains "stale exhaustion names the cause" "$stale_output" "stale-evidence relaunches exhausted for HOK-2462"
+check_contains "stale exhaustion resolves to manual comparison" "$stale_output" "stale_pair_state=manual_comparison_needed"
 
 check_contains "double hard failure writes exactly one terminal record" "$double_output" "double_lines=1"
 check_contains "double hard failure writes double-forfeit outcome" "$double_output" "double_outcome=double-forfeit"
