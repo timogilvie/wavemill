@@ -17,9 +17,28 @@ Each comparison record may include `primaryDiffIdentity` and
 
 The pair structure is represented by the comparison-level fork descriptor:
 `forkStage`, `forkCommit`, `sharedPrefix`, `primaryInheritedStages`, and
-`challengerInheritedStages`. For today's independent pairs `forkCommit` is
-`null` and each side's `merge_sha` is its own merge base. For future forked
-pairs, `forkCommit` plus both side `head_sha` values is the retained shape.
+`challengerInheritedStages`. For independently launched pairs `forkCommit` is
+`null` and each side's `merge_sha` is its own merge base.
+
+Reviewer-stage pairs (HOK-2811, Arbiter P2.4a) populate all five: the pair
+shares one planner and one coder run on the primary's branch, then forks at
+the primary's coding HEAD. On materialisation the challenger's arm is created
+by `challenge_materialize_challenger_arm()` in `shared/lib/wavemill-monitor.sh`:
+- `forkStage` is set to `"review"` on both arms' `.challenge-intent.json`.
+- `forkCommit` is the primary's HEAD after coding completed.
+- `sharedPrefix` is `true`.
+- `challenger.inheritedStages` is `["plan","implementation"]`; the primary
+  side is `[]`.
+- The primary's `.planning-result.json` and `.coding-result.json` are copied
+  into the challenger's feature dir with `source: "inherited"` added, which
+  `challenge-comparison.ts:parseStageArtifact()` surfaces as an `inherited`
+  provenance source instead of the file name.
+
+The fork descriptor is stamped by the narrow writer
+`challenge_intent_stamp_fork_descriptor()` (also in
+`shared/lib/wavemill-monitor.sh`); it is exempt from the seal check that
+guards `persist_challenge_execution_intent`, because it never touches the
+selection fields the seal protects — only the descriptor.
 
 The losing side's full patch is retained locally when there is a winner:
 
