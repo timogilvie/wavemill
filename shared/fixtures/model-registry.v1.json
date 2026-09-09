@@ -1571,8 +1571,8 @@
           "classify": 58
         },
         "pricing": {
-          "inputCostPerMTok": 0.0875,
-          "outputCostPerMTok": 0.35,
+          "inputCostPerMTok": 0.22,
+          "outputCostPerMTok": 0.88,
           "cacheReadCostPerMTok": 0.0175
         },
         "defaultLadderEligible": false,
@@ -1584,8 +1584,8 @@
         },
         "latencyTier": "slow",
         "reasoningTier": "advanced",
-        "costPerMillionInputTokensUsd": 0.0875,
-        "costPerMillionOutputTokensUsd": 0.35,
+        "costPerMillionInputTokensUsd": 0.22,
+        "costPerMillionOutputTokensUsd": 0.88,
         "agent": "native-openrouter",
         "nativeCapability": {
           "nativeProvider": "openrouter",
@@ -1818,10 +1818,10 @@
         "pricing": {
           "inputCostPerMTok": 1.4,
           "outputCostPerMTok": 4.4,
-          "cacheReadCostPerMTok": 0.14
+          "cacheReadCostPerMTok": 0.26
         },
         "defaultLadderEligible": false,
-        "contextWindowTokens": 1310720,
+        "contextWindowTokens": 1048576,
         "toolSupport": "basic",
         "multimodal": {
           "text": true,
@@ -1898,9 +1898,9 @@
           "classify": 58
         },
         "pricing": {
-          "inputCostPerMTok": 0.66,
-          "outputCostPerMTok": 3.4,
-          "cacheReadCostPerMTok": 0.18
+          "inputCostPerMTok": 0.71,
+          "outputCostPerMTok": 3.5,
+          "cacheReadCostPerMTok": 0.15
         },
         "defaultLadderEligible": false,
         "contextWindowTokens": 262144,
@@ -1911,8 +1911,8 @@
         },
         "latencyTier": "standard",
         "reasoningTier": "advanced",
-        "costPerMillionInputTokensUsd": 0.66,
-        "costPerMillionOutputTokensUsd": 3.4,
+        "costPerMillionInputTokensUsd": 0.71,
+        "costPerMillionOutputTokensUsd": 3.5,
         "agent": "native-openrouter",
         "nativeCapability": {
           "nativeProvider": "openrouter",
