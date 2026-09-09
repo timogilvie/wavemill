@@ -2399,7 +2399,7 @@ for t in "${TASKS[@]}"; do
       # HOK-2811: Record the pending challenger arm on the primary's state
       # entry. The fork trigger materialises it after the primary's coding
       # completes. state_mutate needs the .tasks[$ISSUE] container to exist
-      # (save_task_state hasn't run yet at startup), so seed it first.
+      # (the per-task state save has not run yet at startup), so seed it first.
       state_mutate "$STATE_FILE" \
         '.tasks[$issue] = (.tasks[$issue] // {})' \
         --arg issue "$ISSUE" >/dev/null 2>&1 || true

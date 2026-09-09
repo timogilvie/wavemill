@@ -1820,7 +1820,7 @@ challenge_materialize_challenger_arm() {
   fi
   if declare -F worktree_deps_ensure >/dev/null 2>&1; then
     worktree_deps_ensure "$challenger_wt_dir" "$primary_wt_dir" "$arm_key" || \
-      log_warn "  $arm_key: dependency setup returned non-zero — review may fail if node_modules is required"
+      log_warn "  $arm_key: dependency setup returned non-zero — review may fail when node_modules is required"
   fi
 
   # Step 3: feature-dir copy. Explicit exclusions keep the challenger from
