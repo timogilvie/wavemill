@@ -181,6 +181,17 @@ MILL_EXTRACT_BLOCK=$(awk '
 check_contains "mill extracts challenger reviewer agent from plan" "$MILL_EXTRACT_BLOCK" 'challenger_entry_reviewer_agent=$(echo "$challenge_plan"'
 check_contains "mill passes challenger reviewer agent to arm builder" "$MILL_BLOCK" '"${challenger_entry_reviewer_agent:-${challenger_agent:-$AGENT_CMD}}"'
 
+# The materialiser must mirror launch_task's post-worktree seeding: copy the
+# .wavemill-config.local.json overlay if present, and prime node_modules from
+# the primary (plan §Phase C step 3).
+MATERIALIZE_BLOCK=$(awk '
+  /^challenge_materialize_challenger_arm\(\) \{/ { capture=1 }
+  capture { print }
+  /^}/ && capture { exit }
+' "$MONITOR_SCRIPT_FILE")
+check_contains "materialiser copies .wavemill-config.local.json overlay" "$MATERIALIZE_BLOCK" '.wavemill-config.local.json'
+check_contains "materialiser primes deps via worktree_deps_ensure" "$MATERIALIZE_BLOCK" 'worktree_deps_ensure "$challenger_wt_dir" "$primary_wt_dir"'
+
 # ────────────────────────────────────────────────────────────────
 # Test 3: materialisation happy path (scratch git repo)
 # ────────────────────────────────────────────────────────────────

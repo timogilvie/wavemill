@@ -238,6 +238,14 @@ fi
 if [[ -f "$LIB_DIR/queue-health.sh" ]]; then
 source "$LIB_DIR/queue-health.sh"
 fi
+# Worktree-deps reuse helper (HOK-2811): challenge_materialize_challenger_arm
+# forks a fresh challenger worktree at the primary's coding HEAD, so node_modules
+# is missing until we prime it. worktree_deps_ensure prefers CoW/symlink reuse
+# from the primary's node_modules and falls back to running the install command.
+if [[ -f "$LIB_DIR/wavemill-worktree-deps.sh" ]]; then
+# shellcheck source=wavemill-worktree-deps.sh
+source "$LIB_DIR/wavemill-worktree-deps.sh"
+fi
 _update_effective_max_parallel
 
 # Ensure gh commands target the correct GitHub repo (not inherited CWD)
@@ -1797,6 +1805,22 @@ challenge_materialize_challenger_arm() {
       return 1
     fi
     worktree_created="true"
+  fi
+
+  # Step 2b: post-worktree seeding — mirror what launch_task's post-`worktree
+  # add` block does so the fresh challenger looks the same as any other task
+  # worktree. The .wavemill-config.local.json overlay is gitignored (won't come
+  # via `git worktree add`) and the reviewer's tooling won't see the operator's
+  # overrides without it; worktree_deps_ensure prefers CoW/symlink reuse of the
+  # primary's node_modules (fork commit ⇒ identical package.json + lockfile,
+  # so reuse is safe) and falls back to running the install command.
+  if [[ -f "$REPO_DIR/.wavemill-config.local.json" ]]; then
+    cp "$REPO_DIR/.wavemill-config.local.json" "$challenger_wt_dir/.wavemill-config.local.json" 2>/dev/null || \
+      log_warn "  $arm_key: copy .wavemill-config.local.json failed"
+  fi
+  if declare -F worktree_deps_ensure >/dev/null 2>&1; then
+    worktree_deps_ensure "$challenger_wt_dir" "$primary_wt_dir" "$arm_key" || \
+      log_warn "  $arm_key: dependency setup returned non-zero — review may fail if node_modules is required"
   fi
 
   # Step 3: feature-dir copy. Explicit exclusions keep the challenger from
