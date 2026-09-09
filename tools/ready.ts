@@ -46,13 +46,17 @@ function buildChallengeEvidenceResolver(input: {
         prNumber: String(pairing.siblingPr),
         headSha: sibling.head_sha,
       };
+      // Both record sources resolve worktree-aware to the main repo's evals
+      // dir; a bare readChallengeComparisons() would look under the
+      // worktree's cwd, where no records exist.
+      const evalsDir = resolveEvalsDir(undefined, input.repoDir).dir;
       return evaluateChallengeReadyEvidence({
         pairId: pairing.pairId,
         side: pairing.side,
         primary: pairing.side === 'primary' ? self : siblingArm,
         challenger: pairing.side === 'primary' ? siblingArm : self,
-        evalRecords: readEvalRecords({ dir: resolveEvalsDir(undefined, input.repoDir).dir }),
-        comparisons: readChallengeComparisons(),
+        evalRecords: readEvalRecords({ dir: evalsDir }),
+        comparisons: readChallengeComparisons(evalsDir),
       });
     } catch {
       return null;
