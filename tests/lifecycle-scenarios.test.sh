@@ -196,6 +196,7 @@ for fn in \
   resolve_pair_on_primary_merge \
   cleanup_merged_primary_challenge_task \
   closed_pr_resource_policy \
+  monitor_deregister_terminal_arm \
   monitor_issue_state
 do
   extract_function "$MONITOR_SCRIPT_FILE" "$fn" >> "$MONITOR_FUNC_FILE"
@@ -233,6 +234,7 @@ run_lifecycle_scenario() {
       declare -gAg SLUG_BY_ISSUE=()
       declare -gAg PR_BY_ISSUE=()
       declare -gAg CLEANED=()
+      declare -gAg CLOSED_PR_LOGGED=()
 
       ISSUE="HOK-1294"
       SLUG="$SCENARIO_NAME"

@@ -167,6 +167,7 @@ for f in \
   "$REPO_DIR"/tests/fixtures/lifecycle/monitor_consumes_command_file.sh \
   "$REPO_DIR"/tests/fixtures/lifecycle/parent_pr_triggers_child_launch.sh \
   "$REPO_DIR"/tests/fixtures/lifecycle/parent_branch_missing_fails_clearly.sh \
+  "$REPO_DIR"/tests/fixtures/lifecycle/closed_primary_open_challenger_pr_cleanup.sh \
   "$REPO_DIR"/tests/incident-fixtures-terminal-panes.test.sh \
   "$REPO_DIR"/tests/incident-fixtures-safety-controls.test.sh \
   "$REPO_DIR"/tests/lib/incident-fixture-harness.sh \

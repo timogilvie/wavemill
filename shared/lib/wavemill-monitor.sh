@@ -13133,12 +13133,39 @@ Implement from the issue description plus direct codebase analysis."
 # Parse initial tasks from file
 declare -A PR_BY_ISSUE BRANCH_BY_ISSUE SLUG_BY_ISSUE CLEANED
 
+# HOK-2972: per-session dedup of closed-PR transition logs. Without this a
+# closed challenge arm whose sibling stays active would emit a WARN every poll
+# until the sibling merges. The key is issue:pr; entries are cleared when the
+# arm is deregistered so a reopened PR still logs its transition once.
+declare -A CLOSED_PR_LOGGED
+
+# HOK-2972: idempotent terminal deregistration. Marks the arm CLEANED and
+# drops it from the live registries so the main monitor loop, queue selector,
+# and rehydration paths all skip it, preventing resource recreation. The
+# durable tombstone lives in workflow-state.json terminal reconciliation
+# markers written by wavemill_reconcile_terminal.
+monitor_deregister_terminal_arm() {
+  local issue="${1:?issue required}"
+  [[ -n "${CLEANED[$issue]:-}" ]] && return 0
+  CLEANED["$issue"]=1
+  unset "BRANCH_BY_ISSUE[$issue]" 2>/dev/null || true
+  unset "SLUG_BY_ISSUE[$issue]" 2>/dev/null || true
+  unset "PR_BY_ISSUE[$issue]" 2>/dev/null || true
+  unset "CLOSED_PR_LOGGED[$issue]" 2>/dev/null || true
+  return 0
+}
+
 # Rehydrate tracked tasks from persisted state first so restarts continue
 # monitoring prior in-flight issues.
+#
+# HOK-2972: skip tasks whose lifecycle.workflowOutcome is terminal (merged,
+# closed, aborted, error) so a restarted controller cannot recreate the
+# worktree/window resources for an arm the terminal reconciler already
+# retired. The durable tombstone in workflow-state.json remains for audit.
 if [[ -f "$STATE_FILE" ]]; then
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
-    IFS='|' read -r ISSUE SLUG BRANCH PR <<<"$line"
+    IFS='|' read -r ISSUE SLUG BRANCH PR OUTCOME <<<"$line"
     [[ -z "$ISSUE" ]] && continue
 
     if [[ -z "$SLUG" && -n "$BRANCH" ]]; then
@@ -13149,10 +13176,14 @@ if [[ -f "$STATE_FILE" ]]; then
     fi
 
     [[ -z "$SLUG" || -z "$BRANCH" ]] && continue
+    if [[ -n "$OUTCOME" && "$OUTCOME" != "active" ]]; then
+      CLEANED["$ISSUE"]=1
+      continue
+    fi
     BRANCH_BY_ISSUE["$ISSUE"]="$BRANCH"
     SLUG_BY_ISSUE["$ISSUE"]="$SLUG"
     [[ -n "$PR" ]] && PR_BY_ISSUE["$ISSUE"]="$PR"
-  done < <(jq -r '.tasks | to_entries[] | "\(.key)|\(.value.slug // "")|\(.value.branch // "")|\(.value.pr // "")"' "$STATE_FILE" 2>/dev/null)
+  done < <(jq -r '.tasks | to_entries[] | "\(.key)|\(.value.slug // "")|\(.value.branch // "")|\(.value.pr // "")|\(.value.lifecycle.workflowOutcome // "active")"' "$STATE_FILE" 2>/dev/null)
 fi
 
 # Overlay tasks selected in this launch.
@@ -15392,10 +15423,18 @@ monitor_issue_state() {
     # Fails open ("true") when state is unreadable so an unknown task still
     # takes the normal closed-PR path.
     if [[ "$(read_state_value "true" --arg i "$ISSUE" '.tasks[$i] != null')" == "false" ]]; then
-      CLEANED["$ISSUE"]=1
+      monitor_deregister_terminal_arm "$ISSUE"
       return 0
     fi
-    log_warn "$ISSUE → PR #$PR CLOSED without merge"
+    # HOK-2972: emit the closed-PR transition once per (issue,pr). Repeated
+    # polls that catch the sibling still deferring must not spam WARN.
+    local _closed_pr_log_key="${ISSUE}:${PR}"
+    if [[ -z "${CLOSED_PR_LOGGED[$_closed_pr_log_key]:-}" ]]; then
+      log_warn "$ISSUE → PR #$PR CLOSED without merge"
+      CLOSED_PR_LOGGED["$_closed_pr_log_key"]=1
+    else
+      log "debug" "$ISSUE → PR #$PR CLOSED without merge (dedup)"
+    fi
     local linear_status="Backlog"
     if is_challenge_task "$ISSUE"; then
       local sibling_pr sibling_state
@@ -15444,7 +15483,7 @@ monitor_issue_state() {
       # Challenger awaiting challenge comparison under auto-merge: git work
       # must survive for the comparison, but the pane is done.
       if wavemill_release_terminal_pane "$SESSION" "$ISSUE" "$SLUG" "pr_closed_unmerged" "$PR"; then
-        CLEANED["$ISSUE"]=1
+        monitor_deregister_terminal_arm "$ISSUE"
       else
         log "debug" "  ↳ $ISSUE pane release deferred (${WAVEMILL_PANE_RELEASE_BLOCK_REASON:-blocked})"
       fi

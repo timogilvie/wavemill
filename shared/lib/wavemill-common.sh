@@ -405,6 +405,22 @@ cleanup_episode_config_value() {
   fi
 }
 
+# HOK-2972: controller-owned artifacts (observer findings written into a task
+# worktree for compatibility) must not make a worktree "dirty" for cleanup
+# purposes. Every other tracked/untracked path stays a blocker, including any
+# other file under `.wavemill/`. This helper filters git-status --porcelain
+# output; callers pipe status through it before deciding cleanliness.
+wavemill_filter_controller_owned_dirty_status() {
+  awk '
+    {
+      path = substr($0, 4)
+      if (path == ".wavemill/observer-findings.jsonl") next
+      if (path == "\".wavemill/observer-findings.jsonl\"") next
+      print
+    }
+  '
+}
+
 cleanup_episode_enabled() {
   local enabled
   if [[ -n "${WAVEMILL_CLEANUP_EPISODES_ENABLED+x}" ]]; then
@@ -483,7 +499,7 @@ cleanup_episode_collect_inputs() {
 
   if [[ -n "$wt_dir" && -d "$wt_dir" ]]; then
     worktree_exists="true"
-    dirty_status="$(git -C "$wt_dir" status --porcelain --untracked-files=all 2>/dev/null || printf '__wavemill_status_failed__')"
+    dirty_status="$(git -C "$wt_dir" status --porcelain --untracked-files=all 2>/dev/null | wavemill_filter_controller_owned_dirty_status || printf '__wavemill_status_failed__')"
     dirty_status_hash="$(printf '%s' "$dirty_status" | cleanup_episode_sha256)"
   fi
   if [[ -n "${REPO_DIR:-}" && -n "$task_branch" ]] && git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/$task_branch" 2>/dev/null; then
@@ -1121,6 +1137,10 @@ safe_remove_task_worktree_and_branch() {
       WAVEMILL_CLEANUP_OUTCOME="retain_dirty"
       return 10
     fi
+    # HOK-2972: strip controller-owned artifacts (e.g. observer findings) from
+    # the dirtiness view so machine-generated files inside the worktree can't
+    # block safe cleanup. User-authored changes remain visible and blocking.
+    dirty_status="$(printf '%s\n' "$dirty_status" | wavemill_filter_controller_owned_dirty_status)"
     if [[ -n "$dirty_status" ]]; then
       SAFE_CLEANUP_PRESERVATION_REASON="dirty_worktree"
       SAFE_CLEANUP_VERIFICATION_REASON=""
@@ -1300,7 +1320,12 @@ safe_remove_task_worktree_and_branch() {
   # work instead of losing it.
   if [[ "$local_branch_exists" == "true" ]]; then
     if [[ -n "$wt_dir" && -d "$wt_dir" ]]; then
-      if ! final_dirty="$(git -C "$wt_dir" status --porcelain --untracked-files=all 2>/dev/null)" || [[ -n "$final_dirty" ]]; then
+      if ! final_dirty="$(git -C "$wt_dir" status --porcelain --untracked-files=all 2>/dev/null)"; then
+        final_check_passed="false"
+      else
+        final_dirty="$(printf '%s\n' "$final_dirty" | wavemill_filter_controller_owned_dirty_status)"
+      fi
+      if [[ "$final_check_passed" == "false" || -n "$final_dirty" ]]; then
         final_check_passed="false"
         if ! _wavemill_record_cleanup_decision "retain_dirty" "dirty_worktree" "worktree_dirty_before_deletion" "false"; then
           log_warn "  Failed to write preserved-branch incident marker for $task_branch"
@@ -1338,6 +1363,10 @@ safe_remove_task_worktree_and_branch() {
   fi
 
   if [[ -n "$wt_dir" && -d "$wt_dir" ]]; then
+    # HOK-2972: the controller-owned observer findings file (if present) is
+    # cleared here so `git worktree remove` doesn't refuse over a
+    # machine-owned artifact after our dirty check has already passed.
+    [[ -f "$wt_dir/.wavemill/observer-findings.jsonl" ]] && rm -f "$wt_dir/.wavemill/observer-findings.jsonl" 2>/dev/null || true
     if wavemill_cleanup_run git -C "$REPO_DIR" worktree remove "$wt_dir" >>"${MILL_LOG_FILE:-/dev/null}" 2>/dev/null; then
       log "debug" "Removed worktree: $wt_dir"
     else
@@ -5327,6 +5356,7 @@ task_worktree_release_safety() {
     printf '%s\n' "git-error"
     return 1
   fi
+  dirty_status="$(printf '%s\n' "$dirty_status" | wavemill_filter_controller_owned_dirty_status)"
   if [[ -n "$dirty_status" ]]; then
     printf '%s\n' "dirty-worktree"
     return 1

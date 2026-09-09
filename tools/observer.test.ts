@@ -2232,6 +2232,85 @@ test('terminal parked arm produces a deduped terminal_arm_parked_with_residue in
   }
 });
 
+test('HOK-2972: active coding branch with unpushed commits does not emit stale_orphaned_state cleanup incident', async () => {
+  const fixture = createResidueGitFixture({ commits: 5, slug: 'active-coding-unpublished' });
+  try {
+    const snapshot = {
+      timestamp: new Date().toISOString(),
+      sessions: ['wavemill'],
+      panes: [],
+      processes: [],
+      repos: [{
+        session: 'wavemill',
+        repoDir: fixture.repoDir,
+        tasks: [{
+          issue: 'HOK-2963',
+          slug: fixture.slug,
+          branch: fixture.branch,
+          phase: 'coding',
+          status: 'active',
+          worktree: fixture.repoDir,
+          updated: agoIso(1),
+          lifecycle: {
+            schemaVersion: 1,
+            workflowOutcome: 'active',
+            resourceDisposition: 'allocated',
+          },
+        }],
+      }],
+      findings: [],
+    };
+    await reconcileIncidents(snapshot, defaultObserverOptions());
+
+    const cleanup = await parkedIncidents(fixture.repoDir, 'cleanup_unpublished_at_risk');
+    assert.equal(cleanup.length, 0, 'active coding is not cleanup residue');
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('HOK-2972: superseded terminal task with intentional base-branch provenance drift does not emit recurring config-drift incident', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-superseded-drift-'));
+  try {
+    writePermissiveSchema(repoDir);
+    const snapshot = {
+      timestamp: new Date().toISOString(),
+      sessions: ['wavemill'],
+      panes: [],
+      processes: [],
+      repos: [{
+        session: 'wavemill',
+        repoDir,
+        tasks: [{
+          issue: 'HOK-1309',
+          slug: 'superseded-scope',
+          branch: 'task/superseded-scope',
+          phase: 'closed',
+          status: 'closed',
+          worktree: repoDir,
+          updated: agoIso(600),
+          lifecycle: {
+            schemaVersion: 1,
+            workflowOutcome: 'closed',
+            resourceDisposition: 'retained',
+            launchContract: {
+              baseBranch: 'auto/integration',
+              provenance: { baseBranch: 'launch-contract' },
+            },
+          },
+        }],
+      }],
+      findings: [],
+    };
+    await reconcileIncidents(snapshot, defaultObserverOptions());
+
+    const drift = await parkedIncidents(repoDir, 'config_drift_base_branch');
+    assert.equal(drift.length, 0, 'terminal superseded records preserve provenance without recurring incident');
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
 test('arm died with unpushed work produces a critical incident carrying commit subjects', async () => {
   const fixture = createResidueGitFixture({ commits: 2, slug: 'incident-unpushed' });
   try {

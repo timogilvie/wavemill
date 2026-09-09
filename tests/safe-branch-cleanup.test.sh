@@ -48,6 +48,8 @@ helper_file="$tmp/safe-cleanup-helper.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_cleanup_run"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_filter_controller_owned_dirty_status"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "_wavemill_write_preserved_branch_incident"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "cleanup_outcome_is_safe"
@@ -512,6 +514,49 @@ case_unresolvable_base_preserved() {
   [[ "$(jq -r '.reason' "$marker")" == "unpushed_commits" ]] || fail "missing-base marker reason mismatch"
 }
 
+case_controller_owned_observer_findings_ignored() {
+  # HOK-2972: .wavemill/observer-findings.jsonl is owned by the controller
+  # (not the task agent) and must not by itself make a worktree dirty. The
+  # branch must be deletable when it is the only untracked file.
+  local repo branch wt out
+  repo="$(setup_repo controller-findings)"
+  branch="task/controller-findings"
+  wt="$tmp/controller-findings/wt"
+  add_task_worktree "$repo" "$branch" "$wt"
+  git -C "$wt" push -u origin "$branch" >/dev/null 2>&1
+  mkdir -p "$wt/.wavemill"
+  printf '{"issue":"HOK-2972","kind":"observer"}\n' > "$wt/.wavemill/observer-findings.jsonl"
+
+  out="$(run_helper "$repo" "$wt" "$branch")"
+  assert_contains "$out" "rc=0" "controller-findings-only branch cleaned"
+  case "$out" in
+    *"outcome=safe_exact_remote"*|*"outcome=safe_ancestor"*|*"outcome=safe_noop"*) ;;
+    *) fail "controller-findings-only branch had unexpected outcome: $out" ;;
+  esac
+  branch_exists "$repo" "$branch" && fail "controller-findings-only branch was retained"
+  assert_absent "$wt"
+}
+
+case_controller_owned_findings_plus_user_changes_still_dirty() {
+  # HOK-2972: any user-authored change alongside the controller-owned finding
+  # still marks the worktree dirty.
+  local repo branch wt out marker
+  repo="$(setup_repo controller-findings-with-user)"
+  branch="task/controller-findings-with-user"
+  wt="$tmp/controller-findings-with-user/wt"
+  add_task_worktree "$repo" "$branch" "$wt"
+  mkdir -p "$wt/.wavemill"
+  printf '{"issue":"HOK-2972"}\n' > "$wt/.wavemill/observer-findings.jsonl"
+  printf 'user work\n' > "$wt/user.txt"
+
+  out="$(run_helper "$repo" "$wt" "$branch")"
+  marker="$(marker_path "$repo" "$branch")"
+  assert_contains "$out" "outcome=retain_dirty" "user work still blocks cleanup"
+  branch_exists "$repo" "$branch" || fail "user-authored dirty branch was deleted"
+  assert_exists "$wt/user.txt"
+  assert_exists "$marker"
+}
+
 case_all_sites_refactored() {
   local non_helper_matches helper_matches
   non_helper_matches="$(grep -nE 'branch -[dD]|worktree remove --force|worktree remove' \
@@ -544,6 +589,8 @@ case_pr_gate_disabled_retained
 case_protected_branch_refused
 case_branch_already_absent
 case_unresolvable_base_preserved
+case_controller_owned_observer_findings_ignored
+case_controller_owned_findings_plus_user_changes_still_dirty
 case_all_sites_refactored
 
 echo "safe-branch-cleanup test passed"

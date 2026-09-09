@@ -804,7 +804,12 @@ function detectCleanupIncidentsForRepo(repo: RepoSnapshot, timestamp: string): I
     const residue = branch ? inspectTaskBranchResidue(repo.repoDir, branch, config.baseBranch.value) : undefined;
     const classified = classifyResidue(task, config, residue);
     const rootCauseClass = cleanupRootCause(classified.disposition);
-    if (rootCauseClass && (taskHasTerminalResidueStatus(task) || taskCleanupEpisode(task) || classified.disposition === 'unpublished-at-risk')) {
+    // HOK-2972: cleanup incidents require terminal lifecycle evidence or a real
+    // cleanup episode. An active coding branch that is ahead and unpushed is
+    // normal delivery-in-progress, not cleanup failure; that risk surfaces
+    // through the age-gated parked-arm detectors, not this classifier.
+    const isTerminal = taskHasTerminalResidueStatus(task);
+    if (rootCauseClass && (isTerminal || taskCleanupEpisode(task))) {
       const key = `cleanup:${task.issue}:${classified.disposition}:${cleanupEvidenceKey(task, config, residue)}`;
       incidents.push(createIncidentDraft({
         taskId: task.issue,
@@ -832,7 +837,11 @@ function detectCleanupIncidentsForRepo(repo: RepoSnapshot, timestamp: string): I
         },
       }));
     }
-    if (config.baseBranch.driftFromRepoConfig !== undefined) {
+    // HOK-2972: intentional launch-contract provenance on superseded/terminal
+    // records is preserved in status/findings, but does not surface as a
+    // recurring actionable incident. Unexpected drift on an active task still
+    // registers.
+    if (config.baseBranch.driftFromRepoConfig !== undefined && !isTerminal) {
       incidents.push(createIncidentDraft({
         taskId: task.issue,
         session: repo.session,
@@ -853,7 +862,7 @@ function detectCleanupIncidentsForRepo(repo: RepoSnapshot, timestamp: string): I
         metadata: { effectiveBaseBranch: config.baseBranch.value, repoConfigBaseBranch: config.baseBranch.driftFromRepoConfig },
       }));
     }
-    if (config.requireConfirm.driftFromRepoConfig !== undefined) {
+    if (config.requireConfirm.driftFromRepoConfig !== undefined && !isTerminal) {
       incidents.push(createIncidentDraft({
         taskId: task.issue,
         session: repo.session,
