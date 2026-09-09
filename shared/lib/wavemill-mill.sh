@@ -500,12 +500,14 @@ write_launch_plan() {
   local t issue slug title branch wt_dir linear_issue task_packet_file details_file issue_json_file route_file
   local route_json route_planner route_coder route_reviewer route_plan_depth route_code_depth route_review_mode route_max_cost_usd
   local route_payload challenge_flag challenge_pair challenge_role challenge_model migration_number task_agent
-  local depends_on base_from_task
+  local depends_on base_from_task attempt_id attempt_json
 
   for t in "${LAUNCH_ARGS[@]}"; do
     IFS='|' read -r issue slug title <<<"$t"
     branch="task/${slug}"
     wt_dir="${WORKTREE_ROOT}/${slug}"
+    attempt_id="$(wavemill_default_attempt_id "$issue" "$branch")"
+    attempt_json="$(wavemill_attempt_context_json "$issue" "$attempt_id" "$branch" "$branch" "$BASE_BRANCH" "launch-plan")"
     linear_issue="${TASK_LINEAR_ISSUE_BY_ISSUE[$issue]:-$issue}"
     task_packet_file="/tmp/${SESSION}-${issue}-taskpacket.md"
     details_file="/tmp/${SESSION}-${issue}-taskpacket-details.md"
@@ -596,11 +598,13 @@ write_launch_plan() {
       --arg agent "$task_agent" \
       --argjson dependsOn "$depends_on" \
       --arg baseFromTask "$base_from_task" \
+      --argjson attempt "$attempt_json" \
       '$tasks + [{
         issue: $issue,
         slug: $slug,
         title: $title,
         branch: $branch,
+        attempt: $attempt,
         worktreeDir: $worktreeDir,
         linearIssueId: $linearIssueId,
         taskPacketFile: $taskPacketFile,

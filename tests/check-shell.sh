@@ -123,6 +123,7 @@ for f in \
   "$REPO_DIR"/tests/agent-tmux-runtime-guard.test.sh \
   "$REPO_DIR"/tests/terminal-reconciler.test.sh \
   "$REPO_DIR"/tests/startup-terminal-preflight.test.sh \
+  "$REPO_DIR"/tests/fresh-launch-terminal-preflight.test.sh \
   "$REPO_DIR"/tests/startup-cleanup-integration.test.sh \
   "$REPO_DIR"/tests/challenge-intent-roundtrip.test.sh \
   "$REPO_DIR"/tests/challenge-varied-model-abort.test.sh \
@@ -723,10 +724,11 @@ else
   # closes the pipe while echo is still writing, causing SIGPIPE (exit 141).
   # With `set -euo pipefail`, this makes the pipeline fail even though the pattern matched.
 
-  if grep -qE 'gh pr list --head "\$branch" --state all --json number' <<< "$HEREDOC_CONTENT"; then
-    pass "monitor find_pr_for_branch queries all PR states"
+  if grep -qF 'wavemill_resolve_pr_attempt "$issue" "$branch"' <<< "$HEREDOC_CONTENT" \
+    && grep -qF 'classification" == "current-open"' <<< "$HEREDOC_CONTENT"; then
+    pass "monitor find_pr_for_branch uses attempt resolver"
   else
-    fail "monitor find_pr_for_branch is missing --state all"
+    fail "monitor find_pr_for_branch is not routed through attempt resolver"
   fi
 
   if grep -qF 'check_pr_exists "$BRANCH"' <<< "$HEREDOC_CONTENT" \
