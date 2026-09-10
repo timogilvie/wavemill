@@ -22,9 +22,9 @@ The observed result is not a flat, above-90% agreement surface. It shows order-s
 | Item | Value |
 |---|---|
 | Git HEAD | `c09e74b55765306b864b169eb4a91094769d599f` |
-| Corpus file | `/Users/timothyogilvie/Dropbox/wavemill/.wavemill/evals/challenge-records.jsonl` |
+| Corpus file | `<repo>/.wavemill/evals/challenge-records.jsonl` |
 | Corpus SHA-256 | `d4f592613dc96c812213680c4001add5b9aee0486f50dd77a9a7aefdc21b7e2c` |
-| Eval file | `/Users/timothyogilvie/Dropbox/wavemill/.wavemill/evals/evals.jsonl` |
+| Eval file | `<repo>/.wavemill/evals/evals.jsonl` |
 | Eval SHA-256 | `aa8a069c0182ca420a837b18a333783417bcd081c99c409b094acf47c1f56d8b` |
 | Survival labels | `/tmp/hok-2802-arbiter/survival-labels.jsonl` |
 | Survival labels SHA-256 | `972e3a40910e0255e4f3d0542b3bd9f0b5de9d76a54cacdd8d10ef9bad889124` |
@@ -205,13 +205,13 @@ The measurement can be reproduced from the pinned corpus snapshot and local eval
 ```bash
 npx tsx tools/swap-test.ts --hydrate \
   --repo-dir "$PWD" \
-  --evals-dir /Users/timothyogilvie/Dropbox/wavemill/.wavemill/evals
+  --evals-dir "$PWD/.wavemill/evals"
 
 npx tsx tools/swap-test.ts --run --dry-run \
   --run-id p1-3-incumbent-2026-09-09-usable \
   --pairs "$(cat /tmp/hok-2802-arbiter/swap-pairs.txt)" \
   --repo-dir "$PWD" \
-  --evals-dir /Users/timothyogilvie/Dropbox/wavemill/.wavemill/evals
+  --evals-dir "$PWD/.wavemill/evals"
 
 npx tsx tools/swap-test.ts --run \
   --run-id p1-3-incumbent-2026-09-09-usable \
@@ -219,13 +219,13 @@ npx tsx tools/swap-test.ts --run \
   --max-cost-usd 300 \
   --concurrency 2 \
   --repo-dir "$PWD" \
-  --evals-dir /Users/timothyogilvie/Dropbox/wavemill/.wavemill/evals
+  --evals-dir "$PWD/.wavemill/evals"
 
 npx tsx tools/swap-test.ts --report \
   --run-id p1-3-incumbent-2026-09-09-usable \
   --pairs "$(cat /tmp/hok-2802-arbiter/swap-pairs.txt)" \
   --repo-dir "$PWD" \
-  --evals-dir /Users/timothyogilvie/Dropbox/wavemill/.wavemill/evals
+  --evals-dir "$PWD/.wavemill/evals"
 
 npx tsx tools/backfill-survival.ts \
   --integration-branch auto/integration \
@@ -235,8 +235,8 @@ npx tsx tools/backfill-survival.ts \
 
 npx tsx tools/arbiter-probe-p1-2.ts --probe b --horizon 30 \
   --repo-dir "$PWD" \
-  --evals-dir /Users/timothyogilvie/Dropbox/wavemill/.wavemill/evals \
-  --records /Users/timothyogilvie/Dropbox/wavemill/.wavemill/evals/challenge-records.jsonl \
+  --evals-dir "$PWD/.wavemill/evals" \
+  --records "$PWD/.wavemill/evals/challenge-records.jsonl" \
   --survival-labels /tmp/hok-2802-arbiter/survival-labels.jsonl \
   --out-dir /tmp/hok-2802-arbiter/reports \
   --data-out-dir /tmp/hok-2802-arbiter/probes \
@@ -244,8 +244,8 @@ npx tsx tools/arbiter-probe-p1-2.ts --probe b --horizon 30 \
 
 npx tsx tools/arbiter-probe-p1-2.ts --probe c \
   --repo-dir "$PWD" \
-  --evals-dir /Users/timothyogilvie/Dropbox/wavemill/.wavemill/evals \
-  --records /Users/timothyogilvie/Dropbox/wavemill/.wavemill/evals/challenge-records.jsonl \
+  --evals-dir "$PWD/.wavemill/evals" \
+  --records "$PWD/.wavemill/evals/challenge-records.jsonl" \
   --out-dir /tmp/hok-2802-arbiter/reports \
   --data-out-dir /tmp/hok-2802-arbiter/probes \
   --json
