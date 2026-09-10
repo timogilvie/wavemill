@@ -209,13 +209,11 @@ npx tsx tools/swap-test.ts --hydrate \
 
 npx tsx tools/swap-test.ts --run --dry-run \
   --run-id p1-3-incumbent-2026-09-09-usable \
-  --pairs "$(cat /tmp/hok-2802-arbiter/swap-pairs.txt)" \
   --repo-dir "$PWD" \
   --evals-dir "$PWD/.wavemill/evals"
 
 npx tsx tools/swap-test.ts --run \
   --run-id p1-3-incumbent-2026-09-09-usable \
-  --pairs "$(cat /tmp/hok-2802-arbiter/swap-pairs.txt)" \
   --max-cost-usd 300 \
   --concurrency 2 \
   --repo-dir "$PWD" \
@@ -223,7 +221,6 @@ npx tsx tools/swap-test.ts --run \
 
 npx tsx tools/swap-test.ts --report \
   --run-id p1-3-incumbent-2026-09-09-usable \
-  --pairs "$(cat /tmp/hok-2802-arbiter/swap-pairs.txt)" \
   --repo-dir "$PWD" \
   --evals-dir "$PWD/.wavemill/evals"
 
