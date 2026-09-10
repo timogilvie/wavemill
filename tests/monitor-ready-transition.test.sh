@@ -54,6 +54,8 @@ extract_function "$MONITOR_SCRIPT_FILE" "get_main_head_sha" >> "$MONITOR_FUNC_FI
 extract_function "$MONITOR_SCRIPT_FILE" "ready_stage_allows_merge" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "ready_stage_warn_bypass_once" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "ready_stage_pending_verdict" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "ready_pending_reason" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "ready_pending_is_challenge_work" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "pane_release_marker_path" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "pane_release_reason_actionable" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "clear_stale_pane_release_blocked_marker" >> "$MONITOR_FUNC_FILE"
@@ -150,6 +152,9 @@ run_monitor_case() {
     MAIN_SHA_RETURN="current-main-sha"
     MERGE_QUEUE_ON="false"
     QUEUE_STATE="ready"
+    CHALLENGE_TASK="false"
+    HANDLER_RC=0
+    HANDLER_CALLS=0
 
     mkdir -p "$WORKTREE_ROOT/$SLUG/features/$SLUG" "$REPO_DIR"
     FEATURE_DIR="$WORKTREE_ROOT/$SLUG/features/$SLUG"
@@ -328,6 +333,61 @@ JSON
 {"stage":"review","status":"completed","artifacts":{"type":"review","prNumber":321,"exitCode":"missing","verdict":"unknown","iterations":0,"blockerCount":1}}
 JSON
         ;;
+      # HOK-2963: typed challenge waits route to the orchestration handler
+      # and never consume the generic pending-ready-recheck budget.
+      challenge_pending_orchestrates)
+        CURRENT_PHASE="ready"
+        READY_STATUS="running"
+        CHALLENGE_TASK="true"
+        HANDLER_RC=0
+        cat > "$READY_DIR/.ready-result.json" <<JSON
+{"stage":"ready","status":"running","artifacts":{"verdict":"pending","pendingReason":"challenge-eval-pending","implementationReady":true}}
+JSON
+        printf "%s\n" "1" > "$READY_DIR/.retry-pending-ready-recheck-count"
+        printf "%s\n" "current-head" > "$READY_DIR/.retry-pending-ready-recheck-head"
+        printf "%s\n" "0" > "$READY_DIR/.retry-pending-ready-recheck-last-at"
+        ;;
+      challenge_pending_terminal)
+        CURRENT_PHASE="ready"
+        READY_STATUS="running"
+        CHALLENGE_TASK="true"
+        HANDLER_RC=1
+        cat > "$READY_DIR/.ready-result.json" <<JSON
+{"stage":"ready","status":"running","artifacts":{"verdict":"pending","pendingReason":"challenge-comparison-pending","implementationReady":true}}
+JSON
+        ;;
+      challenge_pending_settled_reruns_ready)
+        CURRENT_PHASE="ready"
+        READY_STATUS="running"
+        CHALLENGE_TASK="true"
+        HANDLER_RC=2
+        READY_LAUNCH_RC=0
+        cat > "$READY_DIR/.ready-result.json" <<JSON
+{"stage":"ready","status":"running","artifacts":{"verdict":"pending","pendingReason":"challenge-comparison-pending","implementationReady":true}}
+JSON
+        printf "%s\n" "2" > "$READY_DIR/.retry-pending-ready-recheck-count"
+        printf "%s\n" "current-head" > "$READY_DIR/.retry-pending-ready-recheck-head"
+        printf "%s\n" "0" > "$READY_DIR/.retry-pending-ready-recheck-last-at"
+        ;;
+      challenge_pending_compared_falls_back)
+        CURRENT_PHASE="ready"
+        READY_STATUS="running"
+        CHALLENGE_TASK="true"
+        HANDLER_RC=3
+        READY_LAUNCH_RC=4
+        cat > "$READY_DIR/.ready-result.json" <<JSON
+{"stage":"ready","status":"running","artifacts":{"verdict":"pending","pendingReason":"challenge-eval-pending","implementationReady":true}}
+JSON
+        ;;
+      challenge_pending_untyped_uses_generic)
+        CURRENT_PHASE="ready"
+        READY_STATUS="running"
+        CHALLENGE_TASK="true"
+        READY_LAUNCH_RC=4
+        cat > "$READY_DIR/.ready-result.json" <<JSON
+{"stage":"ready","status":"running","artifacts":{"verdict":"pending"}}
+JSON
+        ;;
       ready_conflict_merged)
         CURRENT_PHASE="ready"
         READY_STATUS="completed"
@@ -462,7 +522,11 @@ JSON
     }
     _with_timeout() { shift; "$@"; }
     gh() { return 1; }
-    is_challenge_task() { return 1; }
+    is_challenge_task() { [[ "${CHALLENGE_TASK:-false}" == "true" ]]; }
+    handle_challenge_pending_ready() {
+      HANDLER_CALLS=$((HANDLER_CALLS + 1))
+      return "${HANDLER_RC:-0}"
+    }
     maybe_run_challenge_eval() { :; }
     maybe_run_challenge_comparison() { :; }
     dispatch_queued_children_for_parent() { :; }
@@ -581,6 +645,7 @@ JSON
     pending_exhausted_log_count="$(printf "%s" "$LOG_OUTPUT" | grep -o "Pending-ready re-checks exhausted" | grep -c . || true)"
     printf "pending_count=%s\npending_sentinel=%s\npending_exhausted_log_count=%s\n" \
       "$pending_count" "$pending_sentinel" "$pending_exhausted_log_count"
+    printf "handler_calls=%s\n" "$HANDLER_CALLS"
   '
 }
 
@@ -680,6 +745,43 @@ check_contains "unacceptable review artifact launches once" "$pending_recheck_te
 check_contains "verdictless review artifact does not terminalize pending recheck" "$pending_recheck_terminal_output" "pending_sentinel=absent"
 check_not_contains "verdictless review artifact is recoverable" "$pending_recheck_terminal_output" "refused by review gate"
 check_contains "unacceptable review artifact flags user" "$pending_recheck_terminal_output" "attention=needs-user"
+
+echo "=== Challenge Typed Pending Routing (HOK-2963) ==="
+
+# REQ-F1/F5: a typed challenge wait routes to the orchestration handler,
+# leaves the generic pending-ready budget untouched, and stays active.
+challenge_orchestrates_output="$(run_monitor_case challenge_pending_orchestrates)"
+check_contains "challenge wait invokes orchestration handler" "$challenge_orchestrates_output" "handler_calls=1"
+check_contains "challenge wait does not relaunch ready" "$challenge_orchestrates_output" "ready_launches=0"
+check_contains "challenge wait leaves generic budget untouched" "$challenge_orchestrates_output" "pending_count=1"
+check_contains "challenge wait keeps attention clear" "$challenge_orchestrates_output" "attention=clear"
+check_contains "challenge wait holds slot active" "$challenge_orchestrates_output" "active_count=1"
+
+challenge_terminal_output="$(run_monitor_case challenge_pending_terminal)"
+check_contains "challenge terminal state invokes handler" "$challenge_terminal_output" "handler_calls=1"
+check_contains "challenge terminal state flags user" "$challenge_terminal_output" "attention=needs-user"
+check_contains "challenge terminal state does not relaunch ready" "$challenge_terminal_output" "ready_launches=0"
+
+# REQ-F3/F4: a settled comparison triggers exactly one Ready re-run outside
+# the generic budget so the fresh record can complete Ready.
+challenge_settled_output="$(run_monitor_case challenge_pending_settled_reruns_ready)"
+check_contains "settled comparison reruns ready once" "$challenge_settled_output" "ready_launches=1"
+check_contains "settled comparison completes ready" "$challenge_settled_output" "Ready checks completed after challenge comparison (PR #321)"
+check_contains "settled comparison keeps attention clear" "$challenge_settled_output" "attention=clear"
+check_contains "settled comparison does not increment generic budget" "$challenge_settled_output" "pending_count=2"
+
+# Missing pair identity (rc=3) falls back to the bounded generic pending
+# path, which behaves exactly as before.
+challenge_fallback_output="$(run_monitor_case challenge_pending_compared_falls_back)"
+check_contains "handler fallback invokes handler" "$challenge_fallback_output" "handler_calls=1"
+check_contains "handler fallback relaunches ready via generic path" "$challenge_fallback_output" "ready_launches=1"
+check_contains "handler fallback clears generic budget after relaunch" "$challenge_fallback_output" "pending_count=
+"
+
+# An untyped pending on a challenge task keeps the generic CI re-poll path.
+challenge_untyped_output="$(run_monitor_case challenge_pending_untyped_uses_generic)"
+check_contains "untyped challenge pending skips handler" "$challenge_untyped_output" "handler_calls=0"
+check_contains "untyped challenge pending re-polls via generic path" "$challenge_untyped_output" "ready_launches=1"
 
 ready_conflict_merged_output="$(run_monitor_case ready_conflict_merged)"
 check_contains "ready merge wins over conflict rerun" "$ready_conflict_merged_output" "cleanup_count=1"
