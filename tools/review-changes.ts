@@ -50,6 +50,7 @@ runTool({
     'ui-only': { type: 'boolean', description: 'Run only UI verification (skip code review)' },
     'since-commit': { type: 'string', description: 'Only review changes after this commit SHA (scopes review to task-specific changes)' },
     'operating-mode': { type: 'string', description: 'Force review mode: normal, constrained, or survival. Auto-detected when omitted.' },
+    'reviewer-model': { type: 'string', description: 'Explicit reviewer model to pin for analysis (overrides WAVEMILL_RESOLVED_MODEL)' },
   },
   positional: {
     name: 'targetBranch repoDir',
@@ -207,6 +208,9 @@ Use the relative path: npx tsx tools/review-changes.ts ${targetBranch} --json
         console.error('');
       }
 
+      const reviewerModel = (args['reviewer-model'] as string | undefined)
+        || process.env.WAVEMILL_RESOLVED_MODEL;
+
       const result = await reviewChanges({
         targetBranch,
         repoDir,
@@ -217,6 +221,7 @@ Use the relative path: npx tsx tools/review-changes.ts ${targetBranch} --json
         sinceCommit,
         operatingMode,
         featureDir: featureDir ?? undefined,
+        reviewerModel,
       });
 
       // Add iteration to metric

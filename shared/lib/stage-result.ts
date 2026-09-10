@@ -131,6 +131,32 @@ export interface DismissedReviewBlocker {
   evidence?: string;
 }
 
+export interface ReviewExecutedIdentity {
+  /** Requested model ID (null if not pinned) */
+  requested: string | null;
+  /** Actual model that executed (null if not run or pinned analysis unavailable) */
+  resolved: string | null;
+  /** Provider name for resolved model (e.g., 'anthropic', 'openrouter') */
+  resolvedProvider?: string;
+  /** Status: 'pinned', 'fallback', 'conflict', 'unavailable', 'unpinned', 'not-run' */
+  status: 'pinned' | 'fallback' | 'conflict' | 'unavailable' | 'unpinned' | 'not-run';
+  /** Source of the requested model: 'env', 'cli', 'config', or null */
+  requestSource?: string | null;
+}
+
+export interface ReviewExecutedIdentitySet {
+  /** Review orchestrator (outer caller) */
+  orchestrator: ReviewExecutedIdentity;
+  /** Substantive analysis model (the challenged dimension) */
+  analysis: ReviewExecutedIdentity;
+  /** Optional remediation/fix model (not counted toward analysis) */
+  remediation?: ReviewExecutedIdentity | null;
+  /** Timestamp when identities were recorded (ISO 8601) */
+  recordedAt: string;
+  /** Optional narrative about identity conflicts or fallbacks */
+  notes?: string;
+}
+
 export interface ReviewArtifacts {
   type: 'review';
   prNumber?: number;
@@ -157,6 +183,8 @@ export interface ReviewArtifacts {
   diagnostics?: Record<string, unknown>;
   /** Head SHA reviewed for this artifact; a later head makes it stale (HOK-2964). */
   reviewHeadSha?: string;
+  /** Execution identities for orchestrator, analysis, and remediation (HOK-2969). */
+  executedIdentities?: ReviewExecutedIdentitySet;
 }
 
 export interface ReviewOutcome {
@@ -261,12 +289,6 @@ export interface StageResult {
   cleanupReport?: CleanupReport;
   /** Previous terminal attempts preserved when recovery starts a fresh run. */
   history?: StageResultHistoryEntry[];
-  /**
-   * Set to `"inherited"` when the artifact was carried across a challenge
-   * fork rather than produced by a run in this arm's worktree (HOK-2811,
-   * Arbiter P2.4a). Absent on any locally produced artifact.
-   */
-  source?: 'inherited';
 }
 
 export type StageResultHistoryEntry = Pick<

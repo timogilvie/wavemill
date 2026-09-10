@@ -77,6 +77,13 @@ export interface ReviewResult {
     uiVerificationRun: boolean;
     deniedTools?: Array<{ tool: string; reason: string; message: string }>;
   };
+  /** Execution identities for orchestrator, analysis, and remediation (HOK-2969) */
+  executedIdentities?: {
+    orchestrator: { requested: string | null; resolved: string | null; status: string };
+    analysis: { requested: string | null; resolved: string | null; status: string };
+    remediation?: { requested: string | null; resolved: string | null; status: string } | null;
+    recordedAt: string;
+  };
 }
 
 export interface ReviewEngineOptions {
@@ -100,6 +107,14 @@ export interface ReviewEngineOptions {
   operatingMode?: OperatingMode;
   /** Feature directory for stage-result cleanup reporting when review runs natively */
   featureDir?: string;
+  /** Explicit reviewer model to pin for analysis (HOK-2969) */
+  reviewerModel?: string;
+  /** Session ID for transcript/evidence tracking */
+  session?: string;
+  /** Issue ID for evidence attribution */
+  issue?: string;
+  /** Repository directory (needed for native review evidence) */
+  repoDir?: string;
 }
 
 interface JudgeConfig {
@@ -878,16 +893,22 @@ export async function runReview(
   repoDir: string,
   options: ReviewEngineOptions = {}
 ): Promise<ReviewResult> {
+  // Resolve effective reviewer model early for identity tracking
+  const requestedReviewerModel = options.reviewerModel || process.env.WAVEMILL_RESOLVED_MODEL;
+
   if (isNativeReviewOptedIn(repoDir)) {
     const nativeReview = await reviewEngineDeps.loadNativeReviewModule();
-    return nativeReview.runNativeReview(context, repoDir, options);
+    return nativeReview.runNativeReview(context, repoDir, {
+      ...options,
+      reviewerModel: requestedReviewerModel,
+    });
   }
 
   // Load configuration
   const config = reviewEngineDeps.loadConfig(repoDir);
 
   // Determine effective settings (options override config)
-  const model = options.model || config.judge.model;
+  const model = options.model || requestedReviewerModel || config.judge.model;
   const timeout = options.timeout || DEFAULT_TIMEOUT_MS;
   const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
   const operatingMode = options.operatingMode ?? 'normal';

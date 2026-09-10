@@ -183,8 +183,32 @@ function normalizedPricingFromModel(model: WavemillLoopConfig['model']): Normali
   return { inputPerMTok, outputPerMTok };
 }
 
-function selectReviewProvider(repoDir: string, env: NodeJS.ProcessEnv = process.env): SelectedProvider {
+function selectReviewProvider(
+  repoDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+  requestedModel?: string,
+): SelectedProvider {
   const providers = resolveNativeAgentProviders(repoDir, { env, phase: 'review' });
+
+  // If a specific model was requested, try to find a ready provider for it
+  if (requestedModel) {
+    const requestedEntry = providers.find(
+      (entry): entry is ReadyNativeProviderEntry =>
+        entry.status === 'ready' && entry.model.id === requestedModel,
+    );
+    if (requestedEntry) {
+      return { ok: true, entry: requestedEntry };
+    }
+
+    // Requested model not available/ready - return specific error
+    return {
+      ok: false,
+      message: `Requested reviewer model '${requestedModel}' is not available. ` +
+        `${buildNativeProviderResolutionFailureMessage('review', providers)}`,
+    };
+  }
+
+  // No specific model requested - use first ready provider
   const readyEntry = providers.find(
     (entry): entry is ReadyNativeProviderEntry => entry.status === 'ready',
   );
@@ -314,7 +338,8 @@ export async function runNativeReview(
   repoDir: string,
   options: ReviewEngineOptions = {},
 ): Promise<ReviewResult> {
-  const provider = nativeReviewDeps.selectReviewProvider(repoDir, process.env);
+  const requestedReviewerModel = options.reviewerModel || process.env.WAVEMILL_RESOLVED_MODEL;
+  const provider = nativeReviewDeps.selectReviewProvider(repoDir, process.env, requestedReviewerModel);
   if (!provider.ok) {
     return nativeReviewFailure(context, 'native-runtime-unavailable', provider.message);
   }
@@ -516,6 +541,32 @@ export async function runNativeReview(
       ...result.metadata,
       deniedTools,
     };
+
+    // Record execution identities (HOK-2969)
+    const now = new Date().toISOString();
+    const requestedModel = requestedReviewerModel || null;
+    const resolvedModel = provider.entry.model.id;
+    const resolvedProvider = provider.entry.providerName;
+    const status = requestedReviewerModel && requestedReviewerModel !== resolvedModel
+      ? 'fallback'
+      : (requestedReviewerModel ? 'pinned' : 'unpinned');
+
+    result.executedIdentities = {
+      orchestrator: {
+        requested: null,
+        resolved: modelConfig.id,
+        status: 'not-run', // Orchestrator is the outer caller
+      },
+      analysis: {
+        requested: requestedModel,
+        resolved: resolvedModel,
+        resolvedProvider,
+        status,
+      },
+      remediation: null,
+      recordedAt: now,
+    };
+
     return result;
   } catch (error) {
     return nativeReviewFailure(

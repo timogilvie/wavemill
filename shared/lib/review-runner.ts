@@ -63,6 +63,8 @@ export interface ReviewOptions {
   featureDir?: string;
   /** Additional task-local context appended to the review prompt. */
   additionalContext?: string;
+  /** Explicit reviewer model to pin for analysis (HOK-2969) */
+  reviewerModel?: string;
 }
 
 // Re-export types from review-engine for backward compatibility
@@ -180,6 +182,7 @@ export async function reviewChanges(
     skipClaudePreflight: true,
     operatingMode: options.operatingMode,
     featureDir: options.featureDir,
+    reviewerModel: options.reviewerModel,
   });
 
   return mergeDeterministicFindings(result, deterministic);
