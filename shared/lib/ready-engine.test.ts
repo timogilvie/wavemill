@@ -12,6 +12,7 @@ import {
   type ReadyEngineContext,
 } from './ready-engine.ts';
 import { WM_LABELS } from './pr-state-labels.ts';
+import type { ChallengeReadyEvidence } from './challenge-ready-evidence.ts';
 
 function buildContext(overrides: Partial<ReadyEngineContext> = {}): ReadyEngineContext {
   const {
@@ -47,8 +48,31 @@ function buildContext(overrides: Partial<ReadyEngineContext> = {}): ReadyEngineC
     fetchLinearIssueState: fetchLinearIssueState ?? (async () => ({ completedAt: '2026-04-27T00:00:00Z', canceledAt: null })),
     readChallengeComparisons: readChallengeComparisons ?? (() => []),
     requiredCheckRead: overrides.requiredCheckRead,
+    resolveChallengeEvidence: overrides.resolveChallengeEvidence,
   };
 }
+
+const CHALLENGE_BODY = ['<!-- wavemill-meta', 'challenge: true', '-->'].join('\n');
+
+function challengeEvidence(overrides: Partial<ChallengeReadyEvidence> = {}): ChallengeReadyEvidence {
+  return {
+    pairId: 'HOK-2963-PAIR',
+    side: 'primary',
+    outcome: 'eval-pending',
+    pendingReason: 'challenge-eval-pending',
+    primaryEval: { ok: true, evalId: 'eval-1', evaluatedPrHeadSha: 'a'.repeat(40) },
+    challengerEval: { ok: false, refusalReason: 'no_matching_pr' },
+    staleComparisons: 0,
+    ...overrides,
+  };
+}
+
+const GREEN_CHECKS = {
+  ok: true as const,
+  requiredContexts: ['Shell and Unit Tests'],
+  requiredSource: 'config' as const,
+  checks: [{ name: 'Shell and Unit Tests', status: 'success' as const, rawStatus: 'SUCCESS' }],
+};
 
 describe('checkBaseBranch', () => {
   it('fails when the base branch does not match the integration branch', async () => {
@@ -403,6 +427,136 @@ describe('evaluateReady', () => {
       readChallengeComparisons: () => [],
     }));
     assert.deepEqual(result.output.labels, [WM_LABELS.wrongBase, WM_LABELS.challengeUnresolved]);
+  });
+});
+
+describe('evaluateReady typed challenge pending (HOK-2963)', () => {
+  it('returns typed challenge-eval-pending with implementationReady when guards are green and an eval is missing', async () => {
+    const result = await evaluateReady(buildContext({
+      pr: { body: CHALLENGE_BODY } as ReadyEngineContext['pr'],
+      requiredCheckRead: GREEN_CHECKS,
+      resolveChallengeEvidence: async () => challengeEvidence(),
+    }));
+
+    assert.equal(result.status, 'pending');
+    assert.equal(result.implementationReady, true);
+    assert.equal(result.pendingReason, 'challenge-eval-pending');
+    assert.deepEqual(result.pendingReasons, ['challenge-eval-pending']);
+    assert.equal(result.challenge?.pairId, 'HOK-2963-PAIR');
+    assert.equal(result.challenge?.challengerEval.refusalReason, 'no_matching_pr');
+  });
+
+  it('returns challenge-comparison-pending when both current-head evals exist without a comparison', async () => {
+    const result = await evaluateReady(buildContext({
+      pr: { body: CHALLENGE_BODY } as ReadyEngineContext['pr'],
+      requiredCheckRead: GREEN_CHECKS,
+      resolveChallengeEvidence: async () => challengeEvidence({
+        outcome: 'comparison-pending',
+        pendingReason: 'challenge-comparison-pending',
+        challengerEval: { ok: true, evalId: 'eval-2', evaluatedPrHeadSha: 'b'.repeat(40) },
+      }),
+    }));
+
+    assert.equal(result.status, 'pending');
+    assert.equal(result.pendingReason, 'challenge-comparison-pending');
+  });
+
+  it('suppresses the typed reason while CI is still pending', async () => {
+    const result = await evaluateReady(buildContext({
+      pr: { body: CHALLENGE_BODY } as ReadyEngineContext['pr'],
+      requiredCheckRead: {
+        ok: true,
+        requiredContexts: ['Shell and Unit Tests'],
+        requiredSource: 'config',
+        checks: [{ name: 'Shell and Unit Tests', status: 'pending', rawStatus: 'QUEUED' }],
+      },
+      resolveChallengeEvidence: async () => challengeEvidence(),
+    }));
+
+    assert.equal(result.status, 'pending');
+    assert.equal(result.implementationReady, false);
+    assert.equal(result.pendingReason, undefined);
+    assert.equal(result.pendingReasons, undefined);
+    assert.match(result.reasons.join('\n'), /Waiting on/);
+  });
+
+  it('passes when the evidence reports a current-head comparison', async () => {
+    const result = await evaluateReady(buildContext({
+      pr: { body: CHALLENGE_BODY } as ReadyEngineContext['pr'],
+      requiredCheckRead: GREEN_CHECKS,
+      resolveChallengeEvidence: async () => challengeEvidence({
+        outcome: 'comparison-valid',
+        pendingReason: undefined,
+        challengerEval: { ok: true, evalId: 'eval-2' },
+      }),
+    }));
+
+    assert.equal(result.status, 'pass');
+    assert.equal(result.pendingReason, undefined);
+  });
+
+  it('passes for an explicit terminal resolution', async () => {
+    const result = await evaluateReady(buildContext({
+      pr: { body: CHALLENGE_BODY } as ReadyEngineContext['pr'],
+      requiredCheckRead: GREEN_CHECKS,
+      resolveChallengeEvidence: async () => challengeEvidence({
+        outcome: 'terminal-resolution',
+        pendingReason: undefined,
+      }),
+    }));
+
+    assert.equal(result.status, 'pass');
+  });
+
+  it('falls back to the legacy fail-closed gate when evidence cannot be resolved', async () => {
+    const result = await evaluateReady(buildContext({
+      pr: { body: CHALLENGE_BODY } as ReadyEngineContext['pr'],
+      requiredCheckRead: GREEN_CHECKS,
+      resolveChallengeEvidence: async () => null,
+    }));
+
+    assert.equal(result.status, 'fail');
+    assert.ok(result.output.labels.includes(WM_LABELS.challengeUnresolved));
+  });
+
+  it('falls back to the legacy fail-closed gate when the resolver throws', async () => {
+    const result = await evaluateReady(buildContext({
+      pr: { body: CHALLENGE_BODY } as ReadyEngineContext['pr'],
+      requiredCheckRead: GREEN_CHECKS,
+      resolveChallengeEvidence: async () => {
+        throw new Error('gh unavailable');
+      },
+    }));
+
+    assert.equal(result.status, 'fail');
+  });
+
+  it('keeps non-challenge pending behavior untyped', async () => {
+    const result = await evaluateReady(buildContext({
+      pr: {
+        body: ['<!-- wavemill-meta', 'depends_on: ["PR#101"]', '-->'].join('\n'),
+      } as ReadyEngineContext['pr'],
+      requiredCheckRead: GREEN_CHECKS,
+      fetchPrState: async () => ({ state: 'OPEN', mergedAt: null }),
+    }));
+
+    assert.equal(result.status, 'pending');
+    assert.equal(result.implementationReady, false);
+    assert.equal(result.pendingReason, undefined);
+  });
+
+  it('does not invoke the resolver for non-challenge PRs', async () => {
+    let invoked = 0;
+    const result = await evaluateReady(buildContext({
+      requiredCheckRead: GREEN_CHECKS,
+      resolveChallengeEvidence: async () => {
+        invoked += 1;
+        return challengeEvidence();
+      },
+    }));
+
+    assert.equal(result.status, 'pass');
+    assert.equal(invoked, 0);
   });
 });
 

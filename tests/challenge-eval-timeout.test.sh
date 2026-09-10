@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MILL_SCRIPT="$REPO_DIR/shared/lib/wavemill-mill.sh"
+MONITOR_SCRIPT_FILE="$REPO_DIR/shared/lib/wavemill-monitor.sh"
 STATUS_SCRIPT="$REPO_DIR/shared/lib/wavemill-status.sh"
 
 PASS=0
@@ -75,13 +76,16 @@ for fn in \
   challenge_pair_timed_out_sides_csv:1 \
   challenge_pair_timeout_reason:1 \
   challenge_pair_manual_artifact_path:1 \
-  write_manual_challenge_comparison_artifact:1 \
-  poll_challenge_jobs:1
+  write_manual_challenge_comparison_artifact:1
 do
   IFS=: read -r name occurrence <<<"$fn"
   extract_function_occurrence "$MILL_SCRIPT" "$name" "$occurrence" >> "$FUNCTION_FILE"
   printf '\n' >> "$FUNCTION_FILE"
 done
+# poll_challenge_jobs lives only in the committed monitor script (HOK-2899
+# extracted the heredoc body; the mill copy no longer exists).
+extract_function_occurrence "$MONITOR_SCRIPT_FILE" "poll_challenge_jobs" 1 >> "$FUNCTION_FILE"
+printf '\n' >> "$FUNCTION_FILE"
 
 STATUS_FUNCTION_FILE="$TEST_TMP/challenge-timeout-status-functions.sh"
 : > "$STATUS_FUNCTION_FILE"

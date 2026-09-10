@@ -78,6 +78,8 @@ extract_function_occurrence "$MONITOR_SCRIPT_FILE" "read_job_state_value" 1 >> "
 printf '\n' >> "$FUNCTION_FILE"
 extract_function_occurrence "$MONITOR_SCRIPT_FILE" "launch_tracked_job" 1 >> "$FUNCTION_FILE"
 printf '\n' >> "$FUNCTION_FILE"
+extract_function_occurrence "$MONITOR_SCRIPT_FILE" "challenge_comparison_check_only_evidence" 1 >> "$FUNCTION_FILE"
+printf '\n' >> "$FUNCTION_FILE"
 extract_function_occurrence "$MONITOR_SCRIPT_FILE" "maybe_run_challenge_comparison" 1 >> "$FUNCTION_FILE"
 
 if [[ ! -s "$FUNCTION_FILE" ]]; then
