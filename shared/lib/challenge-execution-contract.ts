@@ -939,6 +939,42 @@ export function enforceChallengeIntentPresence(
   return true;
 }
 
+const CHALLENGE_STAGE_VALUES: ReadonlySet<ChallengeStage> = new Set(['plan', 'implementation', 'review']);
+
+function isChallengeStageValue(value: unknown): value is ChallengeStage {
+  return typeof value === 'string' && CHALLENGE_STAGE_VALUES.has(value as ChallengeStage);
+}
+
+/**
+ * Stages this record's side inherited across a challenge fork.
+ *
+ * The `challengeIntent.<side>.inheritedStages` field is the P0.5 marker for
+ * work the arm did not perform itself but carried forward from the shared
+ * pre-fork prefix. Coverage counting must skip these — otherwise a coder
+ * model would be credited for an implementation stage another workflow ran.
+ *
+ * Records without a challenge side or intent (independent pairs, historical
+ * records) return an empty list so they stay countable as before.
+ */
+export function inheritedStagesForRecord(record: EvalRecord): ChallengeStage[] {
+  const intent = record.challengeIntent as unknown as {
+    primary?: { inheritedStages?: unknown };
+    challenger?: { inheritedStages?: unknown };
+  } | undefined;
+  const side = record.challengeSide;
+  if (!intent || (side !== 'primary' && side !== 'challenger')) return [];
+  const raw = intent[side]?.inheritedStages;
+  return Array.isArray(raw) ? raw.filter(isChallengeStageValue) : [];
+}
+
+/**
+ * Map a challenge/diversity stage key to the corresponding intent stage.
+ * `implementation` in coverage tables lines up with the intent's `implementation`.
+ */
+export function stageInherited(record: EvalRecord, stage: ChallengeStage): boolean {
+  return inheritedStagesForRecord(record).includes(stage);
+}
+
 export function loadChallengeIntentFromFeatureDir(featureDir: string): ChallengeExecutionIntent | undefined {
   for (const file of ['challenge-intent.json', '.challenge-intent.json']) {
     const candidate = path.join(featureDir, file);
