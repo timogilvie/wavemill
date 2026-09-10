@@ -1168,7 +1168,7 @@ safe_remove_task_worktree_and_branch() {
       if [[ -z "$pr" ]]; then
         pr="$(jq -r --arg i "$issue" '.tasks[$i].pr // .tasks[$i].lifecycle.deliveryEvidence.prNumber // empty' "$STATE_FILE" 2>/dev/null || true)"
       fi
-      contract_base_branch="$(effective_task_base_branch "$issue" 2>/dev/null || jq -r --arg i "$issue" '.tasks[$i].lifecycle.launchContract.baseBranch // empty' "$STATE_FILE" 2>/dev/null || true)"
+      contract_base_branch="$(jq -r --arg i "$issue" '.tasks[$i].lifecycle.launchContract.baseBranch // .tasks[$i].baseBranch // empty' "$STATE_FILE" 2>/dev/null || true)"
       configured_merge_method="$(jq -r --arg i "$issue" '.tasks[$i].lifecycle.launchContract.mergeMethod // empty' "$STATE_FILE" 2>/dev/null || true)"
       [[ -n "$contract_base_branch" ]] && base_branch="$contract_base_branch"
     fi
