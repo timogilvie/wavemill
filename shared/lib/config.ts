@@ -347,8 +347,44 @@ export interface CleanupEpisodesConfig {
   jitterRatio?: number;
 }
 
+export interface CleanupPrAwareConfig {
+  enabled?: boolean;
+}
+
+export type BranchDeletionMode = 'off' | 'shadow' | 'enforce';
+
+export interface CleanupBranchDeletionConfig {
+  mode?: BranchDeletionMode;
+  ledgerPath?: string;
+}
+
 export interface CleanupConfig {
   episodes?: CleanupEpisodesConfig;
+  prAwareCleanup?: CleanupPrAwareConfig;
+  branchDeletion?: CleanupBranchDeletionConfig;
+}
+
+export const CLEANUP_BRANCH_DELETION_DEFAULT_MODE: BranchDeletionMode = 'shadow';
+export const CLEANUP_BRANCH_DELETION_DEFAULT_LEDGER_PATH = '.wavemill/shadow/cleanup-decisions.jsonl';
+export const CLEANUP_PR_AWARE_DEFAULT_ENABLED = true;
+
+/**
+ * Resolve the branch deletion mode from config + env override.
+ * Precedence: WAVEMILL_BRANCH_DELETION_MODE env > config > default (shadow).
+ */
+export function resolveBranchDeletionMode(
+  config?: CleanupBranchDeletionConfig,
+  env: Record<string, string | undefined> = process.env,
+): BranchDeletionMode {
+  const envMode = env.WAVEMILL_BRANCH_DELETION_MODE?.trim().toLowerCase();
+  if (envMode === 'off' || envMode === 'shadow' || envMode === 'enforce') {
+    return envMode;
+  }
+  const configMode = config?.mode;
+  if (configMode === 'off' || configMode === 'shadow' || configMode === 'enforce') {
+    return configMode;
+  }
+  return CLEANUP_BRANCH_DELETION_DEFAULT_MODE;
 }
 
 export interface UiConfig {
@@ -1549,6 +1585,14 @@ export function getChallengeSchedulerConfig(repoDir?: string): ChallengeSchedule
  */
 export function getEvalConfig(repoDir?: string): EvalConfig {
   return loadWavemillConfig(repoDir).eval || {};
+}
+
+export function getCleanupConfig(repoDir?: string): CleanupConfig {
+  return loadWavemillConfig(repoDir).cleanup || {};
+}
+
+export function getBranchDeletionMode(repoDir?: string): BranchDeletionMode {
+  return resolveBranchDeletionMode(getCleanupConfig(repoDir).branchDeletion);
 }
 
 export function getEvalContextUpdatesConfig(repoDir?: string): Required<EvalContextUpdatesConfig> {

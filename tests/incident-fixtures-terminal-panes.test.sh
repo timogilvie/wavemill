@@ -23,6 +23,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # scenario's own clone), and every fixture/assertion below reads that. The
 # wavemill repo root itself is available as $INCIDENT_REPO_DIR once the
 # harness below is sourced.
+# HOK-2957: these regression fixtures predate the shadow-mode default and
+# assert structural cleanup happens. Force enforce so pre-existing behavior
+# is what gets exercised. Shadow mode is covered by
+# tests/lifecycle-certification.test.sh.
+export WAVEMILL_BRANCH_DELETION_MODE=enforce
+
 # shellcheck source=lib/incident-fixture-harness.sh
 source "$SCRIPT_DIR/lib/incident-fixture-harness.sh"
 incident_harness_require_tools

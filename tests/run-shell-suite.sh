@@ -108,6 +108,8 @@ TESTS=(
   run-custom-tests-shard.test.sh
   incident-fixtures-terminal-panes.test.sh
   incident-fixtures-safety-controls.test.sh
+  lifecycle-certification.test.sh
+  lifecycle-certification-faults.test.sh
 )
 
 SHARD_INDEX=1

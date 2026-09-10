@@ -36,7 +36,14 @@ tests/fixtures/incidents/
   control_divergent_local_ahead.sh                 # local ahead of what was actually pushed
   control_missing_network.sh                       # origin remote unreachable
   control_never_pushed.sh                          # branch never pushed to origin
+  merge_commit_delivery.sh                         # HOK-2957: merge-commit merged PR
+  rebase_delivery.sh                               # HOK-2957: rebase-merged PR (rewritten SHAs)
 ```
+
+The HOK-2957 fixtures (`merge_commit_delivery.sh`, `rebase_delivery.sh`)
+extend the same harness; they are consumed by
+`tests/lifecycle-certification.test.sh` and documented in
+`docs/lifecycle-certification.md`.
 
 ## Local invocation
 

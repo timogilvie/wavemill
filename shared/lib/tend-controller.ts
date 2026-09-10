@@ -15,7 +15,8 @@ import {
   WM_LABELS,
 } from './pr-state-labels.ts';
 import { buildStaleMarkerFinding, type MarkerPayload, type MarkerValidation } from './transient-marker.ts';
-import { getIntegrationConfig, getIntegrationReadyPolicy } from './config.ts';
+import { getIntegrationConfig, getIntegrationReadyPolicy, getCleanupConfig, resolveBranchDeletionMode } from './config.ts';
+import { appendShadowCleanupDecision } from './shadow-cleanup-ledger.ts';
 import { readChallengeComparisons } from './challenge-comparison.ts';
 import { getPullRequest, removeLabelFromPullRequest } from './github.ts';
 import { getIssueCompletionState } from './linear.ts';
@@ -698,14 +699,38 @@ export async function executeMerge(
         }
 
         if (integrationConfig.deleteBranchAfterMerge && taskStateAuthorizesRemoteBranchDeletion(options.repoDir, candidate.headBranch)) {
-          try {
-            deps.shellRunner(
-              `git push origin --delete ${escapeShellArg(candidate.headBranch)}`,
-              { encoding: 'utf-8', cwd: options.repoDir, timeout: GIT_MUTATION_TIMEOUT_MS },
-            );
-          } catch (error) {
+          const cleanupCfg = getCleanupConfig(options.repoDir);
+          const deletionMode = resolveBranchDeletionMode(cleanupCfg.branchDeletion);
+          if (deletionMode !== 'off') {
+            appendShadowCleanupDecision(options.repoDir, {
+              branch: candidate.headBranch,
+              proposedAction: 'delete_remote_branch_after_merge',
+              classification: 'safe_terminal_pr_head',
+              mode: deletionMode,
+              wouldDelete: true,
+              evidence: { prNumber: candidate.number, site: 'tend-controller.post-merge' },
+              authority: {
+                deleteBranchAfterMerge: integrationConfig.deleteBranchAfterMerge,
+                branchDeletionAuthorized: true,
+                scope: 'remote-branch',
+                caller: 'tend',
+              },
+            });
+          }
+          if (deletionMode === 'enforce') {
+            try {
+              deps.shellRunner(
+                `git push origin --delete ${escapeShellArg(candidate.headBranch)}`,
+                { encoding: 'utf-8', cwd: options.repoDir, timeout: GIT_MUTATION_TIMEOUT_MS },
+              );
+            } catch (error) {
+              console.warn(
+                `tend: post-merge remote branch cleanup failed for PR #${candidate.number} (${candidate.headBranch}): ${errorMessage(error)}`,
+              );
+            }
+          } else {
             console.warn(
-              `tend: post-merge remote branch cleanup failed for PR #${candidate.number} (${candidate.headBranch}): ${errorMessage(error)}`,
+              `tend: SHADOW_MODE branchDeletion.mode=${deletionMode}; retained remote branch ${candidate.headBranch} for PR #${candidate.number}`,
             );
           }
         }

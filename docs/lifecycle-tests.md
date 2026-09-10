@@ -69,3 +69,24 @@ After adding the test:
 Lifecycle tests must be deterministic and network-free. They must not require real Linear API access, GitHub API access, tmux session state, Claude, or Codex.
 
 Failures should be clear enough to act on from CI output. Scenario tests should print the scenario name, expected state, actual state, and relevant logs whenever an assertion fails.
+
+## Tier carve-out: HOK-2957 lifecycle certification
+
+The requirement above applies to **tier 1** (this suite). **Tier 2** is the
+lifecycle certification suite introduced by HOK-2957, which is deliberately
+different:
+
+- Runs a real isolated tmux server on its own socket + a local bare Git
+  remote (never the developer's live tmux, real task branches, or real
+  remotes).
+- Drives the real `monitor_issue_state` controller, real `tools/observer.ts`,
+  and the real `safe_remove_task_worktree_and_branch` funnel against real
+  git topologies.
+- Registered separately as the CI job `lifecycle-certification`; not part
+  of "Shell and Unit Tests" and not part of `run-lifecycle-tests.sh`.
+- See `docs/lifecycle-certification.md` for the full architecture,
+  scenario/fault matrix, staged-rollout runbook, and rollback procedure.
+
+Keep the two tiers separate: **do not** add tmux-driven scenarios to
+`tests/run-lifecycle-tests.sh` — they belong under
+`tests/lifecycle-certification*.test.sh` or `tests/incident-fixtures-*.test.sh`.

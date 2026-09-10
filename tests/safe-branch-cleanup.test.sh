@@ -66,6 +66,12 @@ helper_file="$tmp/safe-cleanup-helper.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "_wavemill_record_cleanup_decision"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "branch_deletion_mode"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "branch_deletion_ledger_path"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "_wavemill_append_shadow_ledger"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "safe_remove_task_worktree_and_branch"
 } > "$helper_file"
 
@@ -117,6 +123,11 @@ run_helper() {
     LOG_OUTPUT=""
     WARN_OUTPUT=""
     [[ -n "$GATE" ]] && export WAVEMILL_PR_AWARE_CLEANUP="$GATE"
+    # Existing tests were written against the pre-HOK-2957 default (delete).
+    # Force enforce mode unless the caller has already picked one; the new
+    # shadow-mode default is exercised by lifecycle-certification.test.sh.
+    : "${WAVEMILL_BRANCH_DELETION_MODE:=enforce}"
+    export WAVEMILL_BRANCH_DELETION_MODE
     log() { LOG_OUTPUT+="$*\n"; }
     log_warn() { WARN_OUTPUT+="$*\n"; }
     _with_timeout() { shift; "$@"; }

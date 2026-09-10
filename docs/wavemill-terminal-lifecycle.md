@@ -110,6 +110,19 @@ For a closed, unmerged PR, `closed_pr_resource_policy` (shared/lib/wavemill-moni
 2. `pane-transcript-<reason>.txt` beside it holds the final pane scrollback; the feature dir's `.terminal-history.jsonl` holds hook-state history.
 3. If the worktree was retained, it is still on disk at the recorded path; otherwise re-create one with `git worktree add <dir> <branch>`.
 
+### Branch deletion mode + shadow ledger (HOK-2957)
+
+Destructive task-branch deletion is now separately gated by
+`cleanup.branchDeletion.mode` (`off | shadow | enforce`, default **shadow**)
+with `WAVEMILL_BRANCH_DELETION_MODE` as the env override. The gate applies
+at the classification → mutation boundary inside
+`safe_remove_task_worktree_and_branch`: the classification, decision
+record, TOCTOU re-check, and shadow-ledger entry always run; destructive
+git mutations only run when `mode=enforce`. In `shadow`/`off` the outcome
+`retained_shadow_mode` is published and callers treat it as a
+retention-by-policy. See `docs/lifecycle-certification.md` for the staged
+rollout runbook.
+
 ## Startup Terminal Preflight (HOK-2954)
 
 Startup runs `startup_terminal_preflight` before resume menus, launch-plan writing, tmux session creation, task panes, or agent launches. The preflight reads persisted `.tasks`, checks authoritative PR/challenge terminal state where available, and stamps each retained entry with a `rehydration` contract:

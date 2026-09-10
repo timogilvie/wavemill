@@ -178,6 +178,13 @@ for f in \
   "$REPO_DIR"/tests/fixtures/incidents/control_divergent_local_ahead.sh \
   "$REPO_DIR"/tests/fixtures/incidents/control_missing_network.sh \
   "$REPO_DIR"/tests/fixtures/incidents/control_never_pushed.sh \
+  "$REPO_DIR"/tests/fixtures/incidents/merge_commit_delivery.sh \
+  "$REPO_DIR"/tests/fixtures/incidents/rebase_delivery.sh \
+  "$REPO_DIR"/tests/lib/lifecycle-certification-harness.sh \
+  "$REPO_DIR"/tests/lib/lifecycle-invariants.sh \
+  "$REPO_DIR"/tests/lifecycle-certification.test.sh \
+  "$REPO_DIR"/tests/lifecycle-certification-faults.test.sh \
+  "$REPO_DIR"/tests/run-lifecycle-certification.sh \
   "$REPO_DIR/wavemill" \
 ; do
   if [[ ! -f "$f" ]]; then

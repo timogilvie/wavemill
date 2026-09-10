@@ -1519,7 +1519,16 @@ cleanup_stale_tasks() {
           continue
         fi
         if [[ "$cleanup_rc" -eq 0 && "$reason" != "branch deleted" && "$branch" != "main" && "$branch" != "master" ]]; then
-          git -C "$REPO_DIR" push origin --delete "$branch" 2>/dev/null || true
+          local _bd_mode_stale
+          _bd_mode_stale="$(branch_deletion_mode 2>/dev/null || printf 'shadow')"
+          if [[ "$_bd_mode_stale" != "off" ]]; then
+            _wavemill_append_shadow_ledger "$_bd_mode_stale" true "safe_stale_prune" \
+              "$(jq -cn --arg branch "$branch" --arg site "stale_task_pruner" --arg reason "$reason" '{branch:$branch,site:$site,reason:$reason}' 2>/dev/null || echo '{}')" \
+              '{"scope":"stale-prune"}' "$issue" "$branch" 2>/dev/null || true
+          fi
+          if [[ "$_bd_mode_stale" == "enforce" ]]; then
+            git -C "$REPO_DIR" push origin --delete "$branch" 2>/dev/null || true
+          fi
         fi
       fi
       # Remove from state file (dashboard will stop showing it)

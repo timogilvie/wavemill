@@ -2517,7 +2517,7 @@
         },
         "cleanup": {
             "type": "object",
-            "description": "Settings for durable cleanup episodes and retry scheduling.",
+            "description": "Settings for durable cleanup episodes, retry scheduling, and branch deletion authority (HOK-2957 staged rollout).",
             "properties": {
                 "episodes": {
                     "type": "object",
@@ -2551,6 +2551,36 @@
                             "minimum": 0,
                             "maximum": 1,
                             "description": "Deterministic jitter ratio applied to cleanup retry backoff."
+                        }
+                    },
+                    "additionalProperties": false
+                },
+                "prAwareCleanup": {
+                    "type": "object",
+                    "description": "PR-aware deletion authority (HOK-2953/HOK-2957). Disabling skips the safe_terminal_pr_head classification while every other cleanup path is unchanged; affected branches fall back to retention with evidence. The WAVEMILL_PR_AWARE_CLEANUP=0 env var still overrides this to disabled.",
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "Consult PR terminal evidence to authorize deleting task branches whose local head matches the merged PR headRefOid."
+                        }
+                    },
+                    "additionalProperties": false
+                },
+                "branchDeletion": {
+                    "type": "object",
+                    "description": "Staged-rollout gate for destructive task-branch deletion (HOK-2957). Applied at the classification->mutation boundary in safe_remove_task_worktree_and_branch: classification, decision records, and the shadow ledger always execute; destructive git mutations only run when mode=enforce. The WAVEMILL_BRANCH_DELETION_MODE env var overrides this key.",
+                    "properties": {
+                        "mode": {
+                            "type": "string",
+                            "enum": ["off", "shadow", "enforce"],
+                            "default": "shadow",
+                            "description": "off: never delete, do not record shadow ledger; shadow (default during rollout): record every proposed decision and evidence bundle without deleting; enforce: full behavior including destructive git mutations. Defaults off during shadow rollout per HOK-2957."
+                        },
+                        "ledgerPath": {
+                            "type": "string",
+                            "default": ".wavemill/shadow/cleanup-decisions.jsonl",
+                            "description": "Append-only JSONL ledger of proposed cleanup decisions in shadow/enforce mode."
                         }
                     },
                     "additionalProperties": false

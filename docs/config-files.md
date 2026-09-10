@@ -152,6 +152,46 @@ Set `cleanup.episodes.enabled` to `false` only as a rollback for scheduler
 gating. Existing cleanup evidence is preserved, and retained terminal tasks
 still do not consume active mill slots.
 
+### PR-aware cleanup authority (HOK-2957)
+
+```json
+{
+  "cleanup": {
+    "prAwareCleanup": { "enabled": true }
+  }
+}
+```
+
+Default `true`. When disabled, the `safe_terminal_pr_head` authority is
+skipped and branches whose only delivery evidence is a merged PR
+`headRefOid` are retained. The env kill-switch `WAVEMILL_PR_AWARE_CLEANUP=0`
+still overrides.
+
+### Branch deletion mode (HOK-2957 staged rollout)
+
+```json
+{
+  "cleanup": {
+    "branchDeletion": {
+      "mode": "shadow",
+      "ledgerPath": ".wavemill/shadow/cleanup-decisions.jsonl"
+    }
+  }
+}
+```
+
+Default `shadow`. Values:
+
+- `off` — never delete, never record ledger.
+- `shadow` — classify + record decision + append shadow ledger; skip the
+  git mutation. This is the default during rollout; operators flip to
+  `enforce` only after auditing the ledger with
+  `npx tsx tools/audit-shadow-cleanup.ts`.
+- `enforce` — full behavior including destructive git mutations.
+
+Env override: `WAVEMILL_BRANCH_DELETION_MODE={off|shadow|enforce}`. See
+`docs/lifecycle-certification.md` for the full rollout runbook.
+
 ## Recommended Placement by Category
 
 Use `.wavemill-config.json` for:

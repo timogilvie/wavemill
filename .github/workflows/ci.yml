@@ -318,6 +318,22 @@ jobs:
               - 'tests/fixtures/startup/launch-plan-no-queue.json'
               # Stage result CLI tool
               - 'tools/stage-result-cli.ts'
+              # HOK-2957 certification suite
+              - 'tests/lib/lifecycle-certification-harness.sh'
+              - 'tests/lib/lifecycle-invariants.sh'
+              - 'tests/lifecycle-certification.test.sh'
+              - 'tests/lifecycle-certification-faults.test.sh'
+              - 'tests/run-lifecycle-certification.sh'
+              - 'tests/fixtures/incidents/**'
+              - 'tests/incident-fixtures-terminal-panes.test.sh'
+              - 'tests/incident-fixtures-safety-controls.test.sh'
+              - 'shared/lib/lifecycle-budgets.ts'
+              - 'shared/lib/lifecycle-soak.ts'
+              - 'shared/lib/shadow-cleanup-ledger.ts'
+              - 'shared/lib/shadow-cleanup-audit.ts'
+              - 'tools/check-lifecycle-budgets.ts'
+              - 'tools/audit-shadow-cleanup.ts'
+              - 'tools/lifecycle-soak-report.ts'
             openrouter_alias_audit:
               - 'shared/fixtures/model-registry.v1.json'
               - 'shared/lib/disabled-models.ts'
@@ -368,3 +384,63 @@ jobs:
       - name: Run lifecycle integration tests
         if: env.RUN_LIFECYCLE == 'true'
         run: bash tests/run-lifecycle-tests.sh
+
+  # HOK-2957: real-tmux + bare-remote certification suite. Separate job from
+  # lifecycle-integration because the packet's certification tier deliberately
+  # includes tmux (whereas run-lifecycle-tests.sh is tmux-free by charter).
+  # Not aggregated into "Shell and Unit Tests"; branch protection wiring is a
+  # manual follow-up.
+  lifecycle-certification:
+    name: Lifecycle Certification (HOK-2957)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: check-paths
+    if: always()
+    env:
+      RUN_LIFECYCLE: ${{ needs.check-paths.outputs.lifecycle == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    steps:
+      - name: Fail if change detection did not succeed
+        if: needs.check-paths.result != 'success'
+        run: |
+          echo "::error::check-paths did not succeed (${{ needs.check-paths.result }}); cannot determine lifecycle relevance."
+          exit 1
+
+      - name: Report skip
+        if: env.RUN_LIFECYCLE != 'true'
+        run: echo "No lifecycle-relevant changes; certification suite not required for this PR."
+
+      - name: Checkout
+        if: env.RUN_LIFECYCLE == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup
+        if: env.RUN_LIFECYCLE == 'true'
+        uses: ./.github/actions/setup
+        with:
+          packages: jq tmux
+
+      - name: Run lifecycle certification matrix (twice)
+        if: env.RUN_LIFECYCLE == 'true'
+        env:
+          REPORT_DIR: ${{ github.workspace }}/.wavemill-cert-report
+        run: bash tests/run-lifecycle-certification.sh --runs 2
+
+      - name: Run incident-fixture suites (real-tmux coverage)
+        if: env.RUN_LIFECYCLE == 'true'
+        run: |
+          bash tests/incident-fixtures-terminal-panes.test.sh
+          bash tests/incident-fixtures-safety-controls.test.sh
+
+      - name: Check certification budgets
+        if: env.RUN_LIFECYCLE == 'true'
+        run: |
+          npx tsx tools/check-lifecycle-budgets.ts \
+            --report "${{ github.workspace }}/.wavemill-cert-report/certification-report.json"
+
+      - name: Upload certification report
+        if: env.RUN_LIFECYCLE == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lifecycle-certification-report
+          path: ${{ github.workspace }}/.wavemill-cert-report/
+          if-no-files-found: warn

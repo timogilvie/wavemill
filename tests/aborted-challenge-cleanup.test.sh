@@ -68,6 +68,12 @@ cleanup_file="$tmp/aborted-cleanup.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "_wavemill_record_cleanup_decision"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "branch_deletion_mode"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "branch_deletion_ledger_path"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "_wavemill_append_shadow_ledger"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "safe_remove_task_worktree_and_branch"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "remove_task_state"
@@ -88,8 +94,13 @@ run_cleanup_case() {
 
   CASE_DIR="$case_dir" CLEANUP_FILE="$cleanup_file" TEST_CASE="$test_case" bash -lc '
     set -euo pipefail
+    : "${WAVEMILL_BRANCH_DELETION_MODE:=enforce}"
+    export WAVEMILL_BRANCH_DELETION_MODE
     source "$CLEANUP_FILE"
     wavemill_git_remote_with_timeout() { shift; git "$@"; }
+    branch_deletion_mode() { printf "enforce\n"; }
+    branch_deletion_ledger_path() { printf "%s\n" "$CASE_DIR/ledger.jsonl"; }
+    _wavemill_append_shadow_ledger() { :; }
 
     SESSION="wavemill"
     ISSUE="HOK-2839_c"

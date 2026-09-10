@@ -121,7 +121,13 @@ function buildMergeTestOptions(overrides: {
   const repoDir = mkdtempSync(join(tmpdir(), 'wavemill-tend-merge-'));
   writeFileSync(
     join(repoDir, '.wavemill-config.json'),
-    JSON.stringify({ integration: { integrationBranch: 'auto/integration', mergeMethod: 'squash' } }),
+    JSON.stringify({
+      integration: { integrationBranch: 'auto/integration', mergeMethod: 'squash' },
+      // HOK-2957: existing tend-controller assertions predate the shadow
+      // rollout default. Force enforce so the pre-existing behavior is what
+      // gets asserted; shadow mode is exercised in its own test file.
+      cleanup: { branchDeletion: { mode: 'enforce' } },
+    }),
   );
 
   const calls: string[] = [];

@@ -427,6 +427,9 @@ TESTS=(
   shared/lib/test-partitioner.test.ts
   shared/lib/shard-balance.test.ts
   shared/lib/ci-test-timings.test.ts
+  shared/lib/shadow-cleanup-audit.test.ts
+  shared/lib/lifecycle-budgets.test.ts
+  shared/lib/lifecycle-soak.test.ts
 )
 
 SHARD_INDEX=1

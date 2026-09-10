@@ -388,6 +388,19 @@ cleanup_remote_task_branch() {
     return 1
   fi
 
+  local _bd_mode
+  _bd_mode="$(branch_deletion_mode)"
+  local _bd_evidence
+  _bd_evidence="$(jq -cn --arg pr "$pr" --arg branch "$task_branch" --arg site "cleanup_remote_task_branch" \
+    '{prNumber:$pr,branch:$branch,site:$site}' 2>/dev/null || echo '{}')"
+  if [[ "$_bd_mode" != "off" ]]; then
+    _wavemill_append_shadow_ledger "$_bd_mode" true "safe_remote_delete" "$_bd_evidence" '{"scope":"remote-branch"}' "$issue" "$task_branch"
+  fi
+  if [[ "$_bd_mode" != "enforce" ]]; then
+    log "debug" "$issue: remote branch retained; branchDeletion.mode=$_bd_mode"
+    return 0
+  fi
+
   if wavemill_cleanup_run _with_timeout "$API_TIMEOUT" git -C "$REPO_DIR" push origin --delete "$task_branch" >>"${MILL_LOG_FILE:-/dev/null}" 2>&1; then
     log "debug" "Deleted remote branch: $task_branch"
   else
@@ -856,7 +869,7 @@ cleanup_outcome_is_safe() {
 
 cleanup_outcome_is_retain() {
   case "${1:-${WAVEMILL_CLEANUP_OUTCOME:-}}" in
-    retain_dirty|retain_unpublished|retain_closed_unmerged|retain_unverifiable) return 0 ;;
+    retain_dirty|retain_unpublished|retain_closed_unmerged|retain_unverifiable|retained_shadow_mode) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -1014,14 +1027,117 @@ _wavemill_record_cleanup_decision() {
     "$detail" "$extras" "$marker_subdir"
 }
 
-# Rollback gate for PR-aware deletion authority (HOK-2953). Disabling it
-# skips only the safe_terminal_pr_head authority; every other path is
-# unchanged and affected branches fall back to retention with evidence.
+# Rollback gate for PR-aware deletion authority (HOK-2953/HOK-2957).
+# Precedence: WAVEMILL_PR_AWARE_CLEANUP env kill-switch first, then the
+# cleanup.prAwareCleanup.enabled config key (user -> repo -> local layering),
+# defaulting to enabled. Disabling skips only the safe_terminal_pr_head
+# classification; every other path is unchanged and affected branches fall
+# back to retention with evidence.
 wavemill_pr_aware_cleanup_enabled() {
-  case "${WAVEMILL_PR_AWARE_CLEANUP:-1}" in
+  case "${WAVEMILL_PR_AWARE_CLEANUP:-}" in
     0|false|no|off) return 1 ;;
-    *) return 0 ;;
+    1|true|yes|on) return 0 ;;
   esac
+  local repo_dir="${REPO_DIR:-}"
+  local user_config="$HOME/.wavemill/config.json"
+  local repo_config="$repo_dir/.wavemill-config.json"
+  local local_config="$repo_dir/.wavemill-config.local.json"
+  local user_json='{}' repo_json='{}' local_json='{}'
+  [[ -f "$user_config" ]] && user_json=$(cat "$user_config" 2>/dev/null || echo '{}')
+  [[ -f "$repo_config" ]] && repo_json=$(cat "$repo_config" 2>/dev/null || echo '{}')
+  [[ -f "$local_config" ]] && local_json=$(cat "$local_config" 2>/dev/null || echo '{}')
+  local enabled
+  enabled="$(jq -nr \
+    --argjson user "$user_json" \
+    --argjson repo "$repo_json" \
+    --argjson local "$local_json" \
+    '({cleanup:{prAwareCleanup:{enabled:true}}} * $user * $repo * $local).cleanup.prAwareCleanup.enabled
+     | if . == false then "false" else "true" end' 2>/dev/null || printf 'true')"
+  [[ "$enabled" == "true" ]]
+}
+
+# HOK-2957 staged-rollout gate for destructive task-branch deletion.
+# Precedence: WAVEMILL_BRANCH_DELETION_MODE env, then
+# cleanup.branchDeletion.mode config key (user -> repo -> local layering),
+# defaulting to "shadow". Emits exactly one of: off|shadow|enforce.
+branch_deletion_mode() {
+  local env_mode="${WAVEMILL_BRANCH_DELETION_MODE:-}"
+  case "$env_mode" in
+    off|shadow|enforce) printf '%s\n' "$env_mode"; return 0 ;;
+  esac
+  local repo_dir="${REPO_DIR:-}"
+  local user_config="$HOME/.wavemill/config.json"
+  local repo_config="$repo_dir/.wavemill-config.json"
+  local local_config="$repo_dir/.wavemill-config.local.json"
+  local user_json='{}' repo_json='{}' local_json='{}'
+  [[ -f "$user_config" ]] && user_json=$(cat "$user_config" 2>/dev/null || echo '{}')
+  [[ -f "$repo_config" ]] && repo_json=$(cat "$repo_config" 2>/dev/null || echo '{}')
+  [[ -f "$local_config" ]] && local_json=$(cat "$local_config" 2>/dev/null || echo '{}')
+  local mode
+  mode="$(jq -nr \
+    --argjson user "$user_json" \
+    --argjson repo "$repo_json" \
+    --argjson local "$local_json" \
+    '({cleanup:{branchDeletion:{mode:"shadow"}}} * $user * $repo * $local).cleanup.branchDeletion.mode
+     | if . == "off" or . == "enforce" or . == "shadow" then . else "shadow" end' 2>/dev/null || printf 'shadow')"
+  printf '%s\n' "$mode"
+}
+
+# Resolve the shadow-ledger path (repo-relative), honoring config override.
+branch_deletion_ledger_path() {
+  local repo_dir="${REPO_DIR:-}"
+  local user_config="$HOME/.wavemill/config.json"
+  local repo_config="$repo_dir/.wavemill-config.json"
+  local local_config="$repo_dir/.wavemill-config.local.json"
+  local user_json='{}' repo_json='{}' local_json='{}'
+  [[ -f "$user_config" ]] && user_json=$(cat "$user_config" 2>/dev/null || echo '{}')
+  [[ -f "$repo_config" ]] && repo_json=$(cat "$repo_config" 2>/dev/null || echo '{}')
+  [[ -f "$local_config" ]] && local_json=$(cat "$local_config" 2>/dev/null || echo '{}')
+  local rel
+  rel="$(jq -nr \
+    --argjson user "$user_json" \
+    --argjson repo "$repo_json" \
+    --argjson local "$local_json" \
+    '({cleanup:{branchDeletion:{ledgerPath:".wavemill/shadow/cleanup-decisions.jsonl"}}} * $user * $repo * $local).cleanup.branchDeletion.ledgerPath' \
+    2>/dev/null || printf '.wavemill/shadow/cleanup-decisions.jsonl')"
+  [[ -z "$rel" || "$rel" == "null" ]] && rel=".wavemill/shadow/cleanup-decisions.jsonl"
+  case "$rel" in
+    /*) printf '%s\n' "$rel" ;;
+    *)  printf '%s/%s\n' "${repo_dir:-.}" "$rel" ;;
+  esac
+}
+
+# Append a proposed cleanup decision to the shadow ledger.
+# Args: mode, would_delete_bool, classification, evidence_json, authority_json
+# Best-effort: a write failure never blocks the caller.
+_wavemill_append_shadow_ledger() {
+  local mode="$1" would_delete="$2" classification="$3"
+  local evidence_json="${4:-}" authority_json="${5:-}"
+  local issue="${6:-}" branch="${7:-}"
+  # Bash `${VAR:-{}}` parses as `${VAR:-{}` + literal `}`, so give the empty
+  # defaults their own line instead of inlining them into the expansion.
+  [[ -z "$evidence_json" ]] && evidence_json='{}'
+  [[ -z "$authority_json" ]] && authority_json='{}'
+  local ledger ledger_dir ts
+  ledger="$(branch_deletion_ledger_path)"
+  ledger_dir="$(dirname "$ledger")"
+  mkdir -p "$ledger_dir" 2>/dev/null || return 0
+  ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")"
+  local entry
+  entry="$(jq -cn \
+    --arg ts "$ts" \
+    --arg session "${SESSION:-}" \
+    --arg issue "$issue" \
+    --arg branch "$branch" \
+    --arg mode "$mode" \
+    --argjson wouldDelete "$would_delete" \
+    --arg classification "$classification" \
+    --argjson evidence "$evidence_json" \
+    --argjson authority "$authority_json" \
+    '{ts:$ts,session:$session,issue:$issue,branch:$branch,mode:$mode,wouldDelete:$wouldDelete,classification:$classification,evidence:$evidence,authority:$authority}' \
+    2>/dev/null || echo "{}")"
+  [[ -n "$entry" && "$entry" != "{}" ]] || return 0
+  printf '%s\n' "$entry" >> "$ledger" 2>/dev/null || true
 }
 
 # Classify a completed task branch/worktree into a structured cleanup outcome
@@ -1333,6 +1449,41 @@ safe_remove_task_worktree_and_branch() {
     if ! _wavemill_record_cleanup_decision "$classification" "$classification" "" "true" "cleanup-decisions"; then
       log_warn "  Failed to persist cleanup authority record for $task_branch; retained without deletion"
       WAVEMILL_CLEANUP_OUTCOME="retain_unverifiable"
+      return 10
+    fi
+
+    # HOK-2957 staged-rollout gate: always append a shadow-ledger entry for
+    # the proposed deletion; only run destructive git mutations when
+    # mode=enforce. In shadow/off, publish retained_shadow_mode so callers
+    # treat this as a retain (episode records + operator surfacing keep
+    # working) instead of a failure.
+    local _bd_mode
+    _bd_mode="$(branch_deletion_mode)"
+    local _bd_evidence _bd_authority
+    _bd_evidence="$(jq -cn \
+      --arg prNumber "${pr:-}" \
+      --arg prState "${pr_state_evidence:-}" \
+      --arg prHeadSha "${pr_head_oid:-}" \
+      --arg localHead "${local_head_sha:-}" \
+      --arg finalHead "${final_head_sha:-}" \
+      --arg baseBranch "${base_branch:-}" \
+      --arg commitsAhead "${commits_ahead:-}" \
+      '{prNumber:$prNumber,prState:$prState,prHeadSha:$prHeadSha,localHead:$localHead,finalHead:$finalHead,baseBranch:$baseBranch,commitsAhead:$commitsAhead}' \
+      2>/dev/null || echo '{}')"
+    _bd_authority="$(jq -cn \
+      --arg classification "$classification" \
+      --arg cleanupAuthority "${cleanup_authority:-}" \
+      --arg caller "$caller" \
+      '{classification:$classification,cleanupAuthority:$cleanupAuthority,caller:$caller}' \
+      2>/dev/null || echo '{}')"
+    if [[ "$_bd_mode" != "off" ]]; then
+      _wavemill_append_shadow_ledger "$_bd_mode" true "$classification" "$_bd_evidence" "$_bd_authority" "${issue:-}" "$task_branch"
+    fi
+    if [[ "$_bd_mode" != "enforce" ]]; then
+      log_warn "  SHADOW_MODE: $task_branch cleanup authorized (${classification}) but branchDeletion.mode=$_bd_mode; retained. Review .wavemill/shadow/cleanup-decisions.jsonl before enabling enforce."
+      WAVEMILL_CLEANUP_OUTCOME="retained_shadow_mode"
+      SAFE_CLEANUP_PRESERVATION_REASON="shadow_mode"
+      SAFE_CLEANUP_VERIFICATION_REASON="branchDeletion_mode=$_bd_mode"
       return 10
     fi
   fi
