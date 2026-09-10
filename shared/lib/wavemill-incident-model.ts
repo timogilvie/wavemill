@@ -49,6 +49,9 @@ export const INCIDENT_ROOT_CAUSE_CLASSES = [
   'inspection_required',
   'cleanup_retained_by_policy',
   'cleanup_unpublished_at_risk',
+  // Active-task delivery risk (HOK-2972): not a cleanup class - the task is
+  // still alive, the work is unpublished, and the task has stopped progressing.
+  'active_unpublished_work_stalled',
   'cleanup_verification_unavailable',
   'cleanup_dirty_worktree',
   'config_drift_base_branch',
@@ -104,6 +107,9 @@ export function canonicalizeRootCauseClass(raw: string): IncidentRootCauseClass 
   }
   if (/invalid[-_ ]config|schema[-_ ]validation|missing[-_ ]config/.test(lower)) {
     return 'local_config_failure';
+  }
+  if (/active[-_ ]unpublished[-_ ]work[-_ ]stalled|stalled[-_ ]active[-_ ]unpublished/.test(lower)) {
+    return 'active_unpublished_work_stalled';
   }
   if (/cleanup[-_ ]retained[-_ ]by[-_ ]policy/.test(lower)) return 'cleanup_retained_by_policy';
   if (/cleanup[-_ ]unpublished[-_ ]at[-_ ]risk/.test(lower)) return 'cleanup_unpublished_at_risk';
