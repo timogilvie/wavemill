@@ -261,6 +261,12 @@ export interface StageResult {
   cleanupReport?: CleanupReport;
   /** Previous terminal attempts preserved when recovery starts a fresh run. */
   history?: StageResultHistoryEntry[];
+  /**
+   * Set to `"inherited"` when the artifact was carried across a challenge
+   * fork rather than produced by a run in this arm's worktree (HOK-2811,
+   * Arbiter P2.4a). Absent on any locally produced artifact.
+   */
+  source?: 'inherited';
 }
 
 export type StageResultHistoryEntry = Pick<

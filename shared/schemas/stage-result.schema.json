@@ -68,6 +68,12 @@
         "type": "object",
         "additionalProperties": true
       }
+    },
+    "source": {
+      "description": "Set when the artifact was carried across a challenge fork rather than produced by a run in this arm's worktree (HOK-2811).",
+      "enum": [
+        "inherited"
+      ]
     }
   },
   "$defs": {

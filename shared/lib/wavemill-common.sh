@@ -12,6 +12,10 @@ if [[ -f "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/effective-task-config.sh
   # shellcheck source=effective-task-config.sh
   source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/effective-task-config.sh"
 fi
+# Challenge arms[] state helpers (HOK-2811). A pending review-stage challenger
+# lives as a nested arm record on the primary until the fork trigger fires.
+# shellcheck source=challenge-arms.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/challenge-arms.sh"
 
 # Default tmux window names for mill mode surfaces.
 WAVEMILL_WINDOW_MILL="${WAVEMILL_WINDOW_MILL:-mill}"

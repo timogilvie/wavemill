@@ -665,6 +665,76 @@ test('resolver canonicalizes native OpenRouter Kimi planner provenance and prese
   }
 });
 
+test('HOK-2811: stage results stamped source=inherited surface as inherited provenance', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'challenge-inherited-test-'));
+  try {
+    const featureDir = join(tmp, 'features', 'hok-2811-challenger');
+    mkdirSync(featureDir, { recursive: true });
+    // Simulate a challenger arm materialised at fork: planning and coding
+    // stage results were copied from the primary and stamped source=inherited.
+    writeFileSync(
+      join(featureDir, '.planning-result.json'),
+      JSON.stringify({
+        stage: 'planning',
+        status: 'completed',
+        startedAt: '2026-09-09T00:00:00Z',
+        finishedAt: '2026-09-09T00:01:00Z',
+        agent: 'claude',
+        model: 'claude-sonnet-5',
+        notes: '',
+        source: 'inherited',
+      }),
+    );
+    writeFileSync(
+      join(featureDir, '.coding-result.json'),
+      JSON.stringify({
+        stage: 'coding',
+        status: 'completed',
+        startedAt: '2026-09-09T00:00:00Z',
+        finishedAt: '2026-09-09T00:05:00Z',
+        agent: 'claude',
+        model: 'claude-opus-4-7',
+        notes: '',
+        source: 'inherited',
+      }),
+    );
+    // The review stage ran locally on the challenger arm.
+    writeStage(featureDir, 'review', 'claude', 'claude-haiku-4-5-20251001');
+
+    const resolved = resolveChallengeSideExecutionProvenance({ featureDir });
+
+    // Inherited stages preserve model/agent/status but surface `inherited`
+    // as the provenance source so readers can attribute them to the shared
+    // prefix rather than to a run performed in this arm.
+    assert.equal(resolved.planning.source, 'inherited');
+    assert.equal(resolved.planning.model, 'claude-sonnet-5');
+    assert.equal(resolved.planning.status, 'completed');
+    assert.equal(resolved.coding.source, 'inherited');
+    assert.equal(resolved.coding.model, 'claude-opus-4-7');
+    assert.equal(resolved.coding.status, 'completed');
+    // Locally-produced review keeps its file-name source.
+    assert.equal(resolved.review.source, '.review-result.json');
+    assert.equal(resolved.review.model, 'claude-haiku-4-5-20251001');
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('HOK-2811: absence of source field yields the file-name source (backward compatibility)', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'challenge-inherited-backcompat-test-'));
+  try {
+    const featureDir = join(tmp, 'features', 'legacy');
+    mkdirSync(featureDir, { recursive: true });
+    // Legacy artifact without a `source` field — must keep working exactly
+    // as before this change.
+    writeStage(featureDir, 'planning', 'claude', 'claude-sonnet-5');
+    const resolved = resolveChallengeSideExecutionProvenance({ featureDir });
+    assert.equal(resolved.planning.source, '.planning-result.json');
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test('planner intent mismatch with native Kimi execution invalidates challenged stage', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'challenge-provenance-test-'));
   try {

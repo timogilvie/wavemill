@@ -878,6 +878,289 @@ function detectCleanupIncidentsForRepo(repo: RepoSnapshot, timestamp: string): I
   return incidents;
 }
 
+function findingSeverityToIncidentSeverity(severity: Severity): IncidentRecord['severity'] {
+  if (severity === 'urgent') return 'critical';
+  if (severity === 'high') return 'high';
+  if (severity === 'medium') return 'medium';
+  return 'low';
+}
+
+/**
+ * Parked/terminal-arm incidents (HOK-2927). HOK-2911's pane findings for this
+ * class were ephemeral: 67 urgent firings over 2h13m never persisted, deduped,
+ * or reached anyone. These detectors mirror the finding gates but emit
+ * incident records so fingerprint dedup, occurrence counting, threshold
+ * escalation, and the evidence log all apply. Evidence timestamps deliberately
+ * use the observer poll timestamp (not artifact mtimes): each poll of a
+ * still-parked arm is a distinct occurrence, so occurrenceCount records how
+ * long the condition persisted. Evidence *keys* stay stable across polls, so
+ * every poll lands on the same fingerprint and re-running the observer over an
+ * unchanged repo never creates a new record.
+ */
+function detectParkedArmIncidents(
+  repo: RepoSnapshot,
+  snapshot: Pick<ObserverSnapshot, 'panes' | 'processes'>,
+  options: ObserverOptions,
+  timestamp: string,
+): IncidentRecord[] {
+  const incidents: IncidentRecord[] = [];
+  const parsedNow = Date.parse(timestamp);
+  const now = Number.isFinite(parsedNow) ? parsedNow : Date.now();
+
+  for (const task of repo.tasks) {
+    if (!task.issue) continue;
+
+    // Stage markers the mill has not acted on (mirrors buildMarkerIgnoredFinding gates).
+    if (task.worktree && task.slug && !taskWorkflowIsTerminal(task)) {
+      const featureDir = join(task.worktree, 'features', task.slug);
+      for (const stage of [
+        { phase: 'coding', markerName: '.coding-complete' },
+        { phase: 'planning', markerName: '.plan-approved' },
+      ] as const) {
+        if (task.phase !== stage.phase) continue;
+        const markerPath = join(featureDir, stage.markerName);
+        if (!existsSync(markerPath)) continue;
+        const marker = statMarker(markerPath, now);
+        if (!marker || marker.ageMs / 60000 <= options.staleMinutes) continue;
+
+        const uncommitted = stage.phase === 'coding' ? readCodingUncommittedOutput(featureDir) : null;
+        if (uncommitted) {
+          // The mill parked this arm on purpose (dirty tree); the missing piece
+          // is an operator commit, not a monitor repair.
+          incidents.push(createIncidentDraft({
+            taskId: task.issue,
+            session: repo.session,
+            category: 'stale_orphaned_state',
+            severity: 'high',
+            confidence: 'high',
+            lifecycle: 'observed',
+            rootCauseClass: 'arm_parked_awaiting_operator_commit',
+            summary: `${task.issue} coding is parked awaiting an operator commit: ${truncate(uncommitted.summary ?? CODING_UNCOMMITTED_DEFAULT_SUMMARY, 200)}`,
+            operatorAction: buildParkedCommitRecommendation(uncommitted, task.worktree),
+            evidence: [{
+              type: 'workflow_state',
+              source: join(featureDir, '.coding-uncommitted-output.json'),
+              timestamp,
+              redactedData: [
+                `reason=${uncommitted.reason ?? 'coding_output_not_committed'}`,
+                `firstDirtyPath=${uncommitted.firstDirtyPath ?? 'unknown'}`,
+                `marker=${stage.markerName}`,
+                `markerAgeMinutes=${Math.round(marker.ageMs / 60000)}`,
+              ].join(' '),
+              key: `parked-coding:${task.issue}:${uncommitted.firstDirtyPath ?? 'unknown'}`,
+            }],
+            metadata: { markerPath, markerMtime: marker.mtimeIso, uncommittedReason: uncommitted.reason },
+          }));
+        } else {
+          incidents.push(createIncidentDraft({
+            taskId: task.issue,
+            session: repo.session,
+            category: 'stale_orphaned_state',
+            severity: 'high',
+            confidence: 'medium',
+            lifecycle: 'observed',
+            rootCauseClass: 'stage_marker_not_advanced',
+            summary: `${task.issue} has not advanced past ${stage.markerName} in ${stage.phase}.`,
+            operatorAction: 'The mill has not acted on this stage marker. Inspect the monitor poll branch, this task\'s hook file, and any hung monitor child process before restarting anything.',
+            evidence: [{
+              type: 'workflow_state',
+              source: markerPath,
+              timestamp,
+              redactedData: `marker=${stage.markerName} phase=${task.phase} markerAgeMinutes=${Math.round(marker.ageMs / 60000)}`,
+              key: `marker-not-advanced:${task.issue}:${stage.phase}`,
+            }],
+            metadata: { markerPath, markerMtime: marker.mtimeIso, stage: stage.phase },
+          }));
+        }
+      }
+    }
+
+    // Terminal-parked and died-with-unpushed-work (mirrors the residue finding gates).
+    const ageMinutes = taskAgeMinutes(task, repo, now);
+    if (ageMinutes === undefined || !Number.isFinite(ageMinutes) || ageMinutes <= options.staleMinutes) continue;
+    const effectiveConfig = resolveObserverTaskConfig(repo, task.issue, task);
+    const isTerminal = taskHasTerminalResidueStatus(task);
+    const liveEvidence = taskHasLiveExecutionEvidence(repo, task, snapshot.panes, snapshot.processes);
+    if (!isTerminal && liveEvidence) continue;
+
+    const branch = taskBranch(task);
+    const baseBranch = effectiveConfig.baseBranch.value;
+    const paneResidue = taskPaneResidue(repo, task, snapshot.panes);
+    const residue = branch ? inspectTaskBranchResidue(repo.repoDir, branch, baseBranch) : undefined;
+    const classified = classifyResidue(task, effectiveConfig, residue);
+    if (classified.suppressResidueFinding && !isTerminal) continue;
+    const worktreePresent = task.worktree ? existsSync(task.worktree) : false;
+    const unpushedCommits = residue?.unpushedCommits;
+    const confirmedWorkAtRisk = classified.disposition === 'unpublished-at-risk';
+
+    const firesUnpushed = !liveEvidence && residue !== undefined && confirmedWorkAtRisk && !classified.suppressResidueFinding;
+    const terminalResiduePresent = worktreePresent || paneResidue.present || (residue?.localBranchExists ?? false);
+    const firesTerminalParked = isTerminal && terminalResiduePresent && !classified.suppressResidueFinding;
+
+    if (firesUnpushed && residue) {
+      incidents.push(createIncidentDraft({
+        taskId: task.issue,
+        session: repo.session,
+        category: 'stale_orphaned_state',
+        severity: 'critical',
+        confidence: 'high',
+        lifecycle: 'observed',
+        rootCauseClass: 'arm_died_with_unpushed_work',
+        summary: `${task.issue} arm exited with ${unpushedCommits} unpushed commit${unpushedCommits === 1 ? '' : 's'} on ${residue.branch}.`,
+        operatorAction: `These commits exist only locally and are unrecoverable once the worktree and branch are reaped. Push ${residue.branch} to origin and open a PR against ${baseBranch}, or explicitly abandon the branch, before terminalizing cleanup.`,
+        evidence: [{
+          type: 'workflow_state',
+          source: repo.workflowStatePath ?? join(repo.repoDir, '.wavemill', 'workflow-state.json'),
+          timestamp,
+          redactedData: [
+            `branch=${residue.branch}`,
+            `baseBranch=${baseBranch}`,
+            `unpushedCommits=${unpushedCommits}`,
+            'remoteBranch=absent',
+            ...residue.commitSubjects.map((subject) => `commit=${subject}`),
+          ].join(' '),
+          key: `unpushed:${task.issue}:${residue.branch}`,
+        }],
+        metadata: { branch: residue.branch, baseBranch, unpushedCommits },
+      }));
+    }
+
+    if (firesTerminalParked) {
+      incidents.push(createIncidentDraft({
+        taskId: task.issue,
+        session: repo.session,
+        category: 'stale_orphaned_state',
+        severity: findingSeverityToIncidentSeverity(terminalParkedSeverity(ageMinutes, options.staleMinutes, residue)),
+        confidence: 'high',
+        lifecycle: 'observed',
+        rootCauseClass: 'terminal_arm_parked_with_residue',
+        summary: `${task.issue} terminal task is parked with allocated residue.`,
+        operatorAction: (unpushedCommits ?? 0) > 0
+          ? `${classified.recommendation} Then set ${task.issue} phase=aborted (or run \`wavemill mill abort ${task.issue}\`) and let the mill reap the worktree and window.`
+          : `Nothing on the branch is at risk; set ${task.issue} phase=aborted (or run \`wavemill mill abort ${task.issue}\`) and let the mill reap the worktree and window - never remove the worktree manually while the mill loop is live.`,
+        evidence: [{
+          type: 'workflow_state',
+          source: repo.workflowStatePath ?? join(repo.repoDir, '.wavemill', 'workflow-state.json'),
+          timestamp,
+          redactedData: [
+            `status=${task.status ?? 'unknown'}`,
+            `phase=${task.phase ?? 'unknown'}`,
+            `ageMinutes=${Math.round(ageMinutes)}`,
+            `worktree=${worktreePresent ? 'present' : 'absent'}`,
+            `tmuxWindow=${paneResidue.present ? 'present' : 'absent'}`,
+            `localBranch=${residue?.localBranchExists ? 'present' : 'absent'}`,
+            `unpushedCommits=${unpushedCommits ?? 'unknown'}`,
+          ].join(' '),
+          key: `terminal-parked:${task.issue}:${branch ?? 'unknown'}`,
+        }],
+        metadata: { branch, baseBranch, disposition: classified.disposition },
+      }));
+    }
+  }
+
+  // pr-create-failed diagnostics (mirrors the finding sources: mill log first,
+  // then review artifacts, then volatile pane scrollback).
+  const logLines = repo.millLogPath ? tailLines(repo.millLogPath, options.maxLogLines) : [];
+  const prCreateReportedIssues = new Set<string>();
+  const prCreateLogGroups = new Map<string, { lines: string[]; issue?: string }>();
+  for (const line of logLines) {
+    if (!PR_CREATE_FAILED_PATTERN.test(line)) continue;
+    const issue = matchTaskIssueInText(repo, line);
+    const key = issue ?? hashText(normalizeMillLogFingerprintMessage(line));
+    const group = prCreateLogGroups.get(key) ?? { lines: [], issue };
+    group.lines.push(line);
+    prCreateLogGroups.set(key, group);
+  }
+  for (const [groupKey, group] of prCreateLogGroups) {
+    if (group.issue) prCreateReportedIssues.add(group.issue);
+    incidents.push(prCreateFailedIncident(
+      repo,
+      group.issue,
+      group.lines[group.lines.length - 1],
+      repo.millLogPath ?? 'mill-log',
+      'high',
+      timestamp,
+      groupKey,
+    ));
+  }
+  for (const task of repo.tasks) {
+    if (prCreateReportedIssues.has(task.issue)) continue;
+    const artifactText = readTaskReviewArtifactText(task);
+    const artifactMatch = artifactText?.match(PR_CREATE_FAILED_PATTERN);
+    if (artifactMatch && task.worktree && task.slug) {
+      prCreateReportedIssues.add(task.issue);
+      incidents.push(prCreateFailedIncident(
+        repo,
+        task.issue,
+        artifactMatch[0],
+        join(task.worktree, 'features', task.slug, '.review-result.json'),
+        'high',
+        timestamp,
+        task.issue,
+      ));
+      continue;
+    }
+    for (const pane of taskPaneResidue(repo, task, snapshot.panes).panes) {
+      const paneText = capturePaneText(pane);
+      const paneMatch = paneText?.match(PR_CREATE_FAILED_PATTERN);
+      if (!paneMatch) continue;
+      prCreateReportedIssues.add(task.issue);
+      incidents.push(prCreateFailedIncident(
+        repo,
+        task.issue,
+        paneMatch[0],
+        `pane:${pane.session}:${pane.windowIndex}.${pane.paneIndex}`,
+        'medium',
+        timestamp,
+        task.issue,
+      ));
+      break;
+    }
+  }
+
+  return incidents;
+}
+
+/**
+ * One incident per issue (or per normalized message when no issue matches),
+ * keyed independently of the evidence source so a mill-log observation and a
+ * pane observation of the same failure share a fingerprint.
+ */
+function prCreateFailedIncident(
+  repo: RepoSnapshot,
+  issue: string | undefined,
+  rawText: string,
+  source: string,
+  confidence: IncidentRecord['confidence'],
+  timestamp: string,
+  key: string,
+): IncidentRecord {
+  const baseBranch = observerBaseBranchForIssue(repo, issue);
+  const raw = truncate(rawText.trim(), 300);
+  const translation = translatePrCreateFailure(rawText, baseBranch);
+  return createIncidentDraft({
+    taskId: issue ?? null,
+    session: repo.session,
+    category: 'stale_orphaned_state',
+    severity: 'high',
+    confidence,
+    lifecycle: 'observed',
+    rootCauseClass: 'pr_create_failed',
+    summary: issue
+      ? `${issue} failed to create its PR and the arm's work never reached GitHub.`
+      : 'A mill arm failed to create its PR and its work never reached GitHub.',
+    operatorAction: `Push the task branch to origin and re-create the PR against ${baseBranch}, or explicitly abandon the arm. Check \`git rev-list --count ${baseBranch}..<branch>\` locally before trusting the raw GitHub error text.`,
+    evidence: [{
+      type: 'log_excerpt',
+      source,
+      timestamp,
+      redactedData: translation ? `raw=${raw} translation=${translation}` : `raw=${raw}`,
+      key: `pr-create-failed:${key}`,
+    }],
+    metadata: { baseBranch },
+  });
+}
+
 function snapshotRepos(sessions: string[], options: ObserverOptions): RepoSnapshot[] {
   const repos: RepoSnapshot[] = [];
   const seen = new Set<string>();
@@ -980,6 +1263,55 @@ interface MarkerIgnoredConfig {
    * hide a genuinely wedged task indefinitely.
    */
   stateAliveRecommendation: string;
+  /**
+   * Overrides both recommendations when the mill has deliberately parked the
+   * task on uncommitted coding output (HOK-2927). Without this branch the
+   * urgent finding blamed the monitor's poll branch while the monitor was
+   * correctly refusing to advance a dirty tree.
+   */
+  parkedRecommendation?: (artifact: CodingUncommittedOutput, worktree: string | undefined) => string;
+}
+
+const CODING_UNCOMMITTED_DEFAULT_SUMMARY = 'coding completed marker detected, but review cannot start until the coding output is committed';
+const CODING_UNCOMMITTED_DEFAULT_ACTION = 'Commit the coding output, then retry review.';
+
+interface CodingUncommittedOutput {
+  summary?: string;
+  action?: string;
+  reason?: string;
+  firstDirtyPath?: string;
+}
+
+/**
+ * Read the mill's dirty-tree parking artifact. Returns null when the artifact
+ * is absent, empty, or malformed — callers degrade to the generic
+ * marker-not-advanced treatment rather than throwing.
+ */
+function readCodingUncommittedOutput(featureDir: string): CodingUncommittedOutput | null {
+  const artifactPath = join(featureDir, '.coding-uncommitted-output.json');
+  if (!existsSync(artifactPath)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(artifactPath, 'utf8')) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const field = (name: string): string | undefined =>
+      typeof parsed[name] === 'string' && (parsed[name] as string).trim().length > 0
+        ? (parsed[name] as string).trim()
+        : undefined;
+    return {
+      summary: field('summary'),
+      action: field('action'),
+      reason: field('reason'),
+      firstDirtyPath: field('firstDirtyPath'),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function buildParkedCommitRecommendation(artifact: CodingUncommittedOutput, worktree: string | undefined): string {
+  const summary = artifact.summary ?? CODING_UNCOMMITTED_DEFAULT_SUMMARY;
+  const action = artifact.action ?? CODING_UNCOMMITTED_DEFAULT_ACTION;
+  return `Coding parked awaiting operator commit: ${summary}. ${action} The monitor is deliberately holding this task on a dirty tree - do not restart it; run \`git status\` in ${worktree ?? 'the task worktree'} first.`;
 }
 
 function statMarker(path: string, now: number): { mtimeMs: number; ageMs: number; mtimeIso: string } | undefined {
@@ -1019,6 +1351,13 @@ function buildMarkerIgnoredFinding(
   const markerAgeSeconds = Math.floor(marker.ageMs / 1000);
   const markerAgeTitleMinutes = Math.round(markerAgeMinutes);
 
+  const parkedArtifact = config.parkedRecommendation ? readCodingUncommittedOutput(featureDir) : null;
+  const recommendation = parkedArtifact && config.parkedRecommendation
+    ? config.parkedRecommendation(parkedArtifact, task.worktree)
+    : stateNewerThanMarker
+      ? config.stateAliveRecommendation
+      : config.staleRecommendation;
+
   return {
     id: `${config.idPrefix}-${task.issue}`,
     severity: 'urgent',
@@ -1036,8 +1375,9 @@ function buildMarkerIgnoredFinding(
       `stateMtime=${repo.stateMtime ?? 'unknown'}`,
       `stateNewerThanMarker=${stateNewerThanMarker}`,
       `worktree=${task.worktree}`,
+      ...(parkedArtifact ? ['parkedOnUncommittedOutput=true'] : []),
     ],
-    recommendation: stateNewerThanMarker ? config.stateAliveRecommendation : config.staleRecommendation,
+    recommendation,
   };
 }
 
@@ -1245,6 +1585,7 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
           titlePhase: 'coding',
           staleRecommendation: 'The monitor should advance this to review. Check for a hung monitor child process before restarting the session.',
           stateAliveRecommendation: 'The monitor should advance this to review. It is still writing workflow state but has not advanced this task — inspect its poll branch and this task\'s hook file before restarting anything.',
+          parkedRecommendation: buildParkedCommitRecommendation,
         }),
         buildMarkerIgnoredFinding(repo, task, featureDir, now, options, {
           phase: 'planning',
@@ -2287,6 +2628,7 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
         options.dependencyThreshold ?? incidentConfig.detection?.dependencyThreshold ?? 3,
       ));
 
+      candidates.push(...detectParkedArmIncidents(repo, snapshot, options, snapshot.timestamp));
       candidates.push(...detectCleanupIncidentsForRepo(repo, snapshot.timestamp));
     } catch (error) {
       cycleComplete = false;
