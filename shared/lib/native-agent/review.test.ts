@@ -54,6 +54,133 @@ describe('native review', () => {
     }
   });
 
+  it('pins the substantive-analysis identity when the requested model matches what ran (HOK-2969)', async () => {
+    const repoDir = makeTempRepo();
+    setProviderSelection({ requestedModel: 'gpt-4o' });
+
+    nativeReviewTestUtils.setRunWavemillLoop(async (config) => {
+      const message = assistantMessage(JSON.stringify({ verdict: 'ready', codeReviewFindings: [] }));
+      emitCommonEvents(config, message);
+      return {
+        messages: [message],
+        stopReason: 'stop',
+        turnsCompleted: 1,
+        toolCallsExecuted: 0,
+        totalInputTokens: 10,
+        totalOutputTokens: 10,
+        totalCostUsd: 0,
+        wallClockMs: 5,
+      };
+    });
+
+    try {
+      const result = await runNativeReview(makeReviewContext(), repoDir, { model: 'gpt-4o' });
+      assert.equal(result.substantiveAnalysisIdentity?.role, 'substantive_analysis');
+      assert.equal(result.substantiveAnalysisIdentity?.requestedModel, 'gpt-4o');
+      assert.equal(result.substantiveAnalysisIdentity?.resolvedModel, 'gpt-4o');
+      assert.equal(result.substantiveAnalysisIdentity?.agent, 'native-openai');
+      assert.equal(result.substantiveAnalysisIdentity?.pinned, true);
+      assert.equal(result.substantiveAnalysisIdentity?.fallbackReason, undefined);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('records an unpinned fallback identity when the requested model has no ready provider (HOK-2969)', async () => {
+    const repoDir = makeTempRepo();
+    setProviderSelection({
+      requestedModel: 'glm-5.3',
+      fallbackReason: 'requested_model_unavailable',
+    });
+
+    nativeReviewTestUtils.setRunWavemillLoop(async (config) => {
+      const message = assistantMessage(JSON.stringify({ verdict: 'ready', codeReviewFindings: [] }));
+      emitCommonEvents(config, message);
+      return {
+        messages: [message],
+        stopReason: 'stop',
+        turnsCompleted: 1,
+        toolCallsExecuted: 0,
+        totalInputTokens: 10,
+        totalOutputTokens: 10,
+        totalCostUsd: 0,
+        wallClockMs: 5,
+      };
+    });
+
+    try {
+      const result = await runNativeReview(makeReviewContext(), repoDir, { model: 'glm-5.3' });
+      // The fallback entry (from setProviderSelection) still resolves gpt-4o —
+      // a challenge cannot be proven when the wrong model actually ran.
+      assert.equal(result.substantiveAnalysisIdentity?.requestedModel, 'glm-5.3');
+      assert.equal(result.substantiveAnalysisIdentity?.resolvedModel, 'gpt-4o');
+      assert.equal(result.substantiveAnalysisIdentity?.pinned, false);
+      assert.equal(result.substantiveAnalysisIdentity?.fallbackReason, 'requested_model_unavailable');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('carries the substantive-analysis identity onto a malformed-response failure too (HOK-2969)', async () => {
+    const repoDir = makeTempRepo();
+    setProviderSelection({ requestedModel: 'gpt-4o' });
+
+    nativeReviewTestUtils.setRunWavemillLoop(async (config) => {
+      const message = assistantMessage('not json');
+      emitCommonEvents(config, message);
+      return {
+        messages: [message],
+        stopReason: 'stop',
+        turnsCompleted: 1,
+        toolCallsExecuted: 0,
+        totalInputTokens: 10,
+        totalOutputTokens: 10,
+        totalCostUsd: 0,
+        wallClockMs: 5,
+      };
+    });
+
+    try {
+      const result = await runNativeReview(makeReviewContext(), repoDir, { model: 'gpt-4o' });
+      assert.equal(result.verdict, 'not_ready');
+      assert.equal(result.codeReviewFindings[0].category, 'native-review-malformed-response');
+      assert.equal(result.substantiveAnalysisIdentity?.pinned, true);
+      assert.equal(result.substantiveAnalysisIdentity?.resolvedModel, 'gpt-4o');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('treats an unrequested review as self-consistently pinned when no challenge names a model (HOK-2969)', async () => {
+    const repoDir = makeTempRepo();
+    setReadyProvider();
+
+    nativeReviewTestUtils.setRunWavemillLoop(async (config) => {
+      const message = assistantMessage(JSON.stringify({ verdict: 'ready', codeReviewFindings: [] }));
+      emitCommonEvents(config, message);
+      return {
+        messages: [message],
+        stopReason: 'stop',
+        turnsCompleted: 1,
+        toolCallsExecuted: 0,
+        totalInputTokens: 10,
+        totalOutputTokens: 10,
+        totalCostUsd: 0,
+        wallClockMs: 5,
+      };
+    });
+
+    try {
+      const result = await runNativeReview(makeReviewContext(), repoDir, {});
+      assert.equal(result.substantiveAnalysisIdentity?.requestedModel, 'gpt-4o');
+      assert.equal(result.substantiveAnalysisIdentity?.resolvedModel, 'gpt-4o');
+      assert.equal(result.substantiveAnalysisIdentity?.pinned, true);
+      assert.equal(result.substantiveAnalysisIdentity?.source, 'derived');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
   it('records denied tools from transcript events', async () => {
     const repoDir = makeTempRepo();
     setReadyProvider();
@@ -464,6 +591,34 @@ function setReadyProvider() {
   };
 
   nativeReviewTestUtils.setSelectReviewProvider(() => ({ ok: true, entry: provider }));
+  nativeReviewTestUtils.setGetNativeProviderApiKey(() => 'test-key');
+}
+
+/** Like setReadyProvider, but lets a test control the requested/fallback fields (HOK-2969). */
+function setProviderSelection(input: { requestedModel?: string; fallbackReason?: string }) {
+  const provider: ReadyNativeProviderEntry = {
+    providerName: 'openai',
+    modelId: 'gpt-4o',
+    status: 'ready',
+    apiKeyEnv: 'OPENAI_API_KEY',
+    baseUrl: 'https://api.openai.com/v1',
+    headers: {},
+    model: {
+      id: 'openai:gpt-4o',
+      name: 'gpt-4o',
+      api: 'openai-responses',
+      provider: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      headers: {},
+    } as ReadyNativeProviderEntry['model'],
+  };
+
+  nativeReviewTestUtils.setSelectReviewProvider(() => ({
+    ok: true,
+    entry: provider,
+    ...(input.requestedModel ? { requestedModel: input.requestedModel } : {}),
+    ...(input.fallbackReason ? { fallbackReason: input.fallbackReason } : {}),
+  }));
   nativeReviewTestUtils.setGetNativeProviderApiKey(() => 'test-key');
 }
 

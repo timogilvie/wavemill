@@ -18,6 +18,7 @@ import type { ReviewProgressReporter } from './review-progress.ts';
 import type { OperatingMode } from './operating-mode.ts';
 import { loadPromptResourceSync, resolveRuntimeResource } from './resource-retrieval.ts';
 import type { runNativeReview as runNativeReviewFn } from './native-agent/review.ts';
+import { buildExecutedIdentity, type ExecutedIdentity } from './challenge-execution-contract.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Module-level cache
@@ -48,6 +49,14 @@ export interface ReviewFinding {
   dismissalJustification?: string;
   /** Verification the reviewer ran (e.g. a git/test command and its result). */
   dismissalEvidence?: string;
+  /**
+   * Supporting evidence for the finding itself (e.g. a cited excerpt, log
+   * line, or command output) — distinct from `dismissalEvidence`, which
+   * proves a finding invalid rather than substantiating it (HOK-2969).
+   */
+  evidence?: string;
+  /** The reviewer's suggested remediation, when offered (HOK-2969). */
+  proposedFix?: string;
 }
 
 /** A dismissal only counts with a non-blank justification; anything else stays blocking. */
@@ -69,6 +78,13 @@ export interface ReviewResult {
   needsStrongerReviewer?: boolean;
   strongerReviewerReason?: string;
   failureCategory?: string;
+  /**
+   * Identity of the model that actually performed this review's substantive
+   * analysis, with pin/fallback/conflict status (HOK-2969, Arbiter P2.4f).
+   * Populated by native review producers; absent for legacy shell-review
+   * results, where the requested model is always what ran directly.
+   */
+  substantiveAnalysisIdentity?: ExecutedIdentity;
   metadata?: {
     branch: string;
     files: string[];
@@ -1044,6 +1060,17 @@ export async function runReview(
     verdict: hasBlockers ? 'not_ready' : 'ready',
     codeReviewFindings: deduplicatedCodeFindings,
     uiFindings: deduplicatedUiFindings.length > 0 ? deduplicatedUiFindings : undefined,
+    // The legacy (non-native) path always invokes the LLM directly with
+    // `model` — there is no separate provider-discovery step that could pick
+    // a different model, so the requested model is definitionally what ran
+    // (HOK-2969).
+    substantiveAnalysisIdentity: buildExecutedIdentity({
+      role: 'substantive_analysis',
+      requestedModel: model,
+      resolvedModel: model,
+      agent: 'claude-cli',
+      source: 'route',
+    }),
     metadata: {
       branch: context.metadata.branch,
       files: context.metadata.files,

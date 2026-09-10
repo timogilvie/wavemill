@@ -168,6 +168,71 @@ describe('executeReviewChanges', () => {
     assert.ok(second.ok);
     assert.equal(deps.transcriptEvents.length, 2);
   });
+
+  it('records outer/inner identity disagreement for a reviewer-stage challenge (HOK-2969)', async () => {
+    const featureDir = makeTempDir();
+    tempDirs.push(featureDir);
+    // This worktree's own branch ends in "-challenger", so it resolves to the
+    // challenger side regardless of the pairId used here.
+    writeFileSync(join(featureDir, 'challenge-intent.json'), JSON.stringify({
+      pairId: 'pair-2969-test',
+      challengeStage: 'review',
+      primary: {
+        pairId: 'pair-2969-test',
+        side: 'primary',
+        challengeStage: 'review',
+        expectedStageModel: 'claude-haiku-4-5-20251001',
+        expectedStageAgent: 'claude',
+        expectedRoute: { planner: '', coder: '', reviewer: 'claude-haiku-4-5-20251001', planDepth: '', codeDepth: '', reviewMode: '' },
+      },
+      challenger: {
+        pairId: 'pair-2969-test',
+        side: 'challenger',
+        challengeStage: 'review',
+        expectedStageModel: 'glm-5.3',
+        expectedStageAgent: 'native-openrouter',
+        expectedRoute: { planner: '', coder: '', reviewer: 'glm-5.3', planDepth: '', codeDepth: '', reviewMode: '' },
+      },
+    }));
+
+    const reviewResult = loadFixture<ReviewResult>('review-success.json');
+    // The inner analysis call correctly pinned the challenged model even
+    // though the outer calling agent (deps.modelName below) is a different
+    // model — the exact "outer varies, inner stays pinned" case (HOK-2969).
+    (reviewResult as ReviewResult).substantiveAnalysisIdentity = {
+      role: 'substantive_analysis',
+      requestedModel: 'glm-5.3',
+      resolvedModel: 'glm-5.3',
+      agent: 'native-openrouter',
+      source: 'artifact',
+      pinned: true,
+    };
+
+    const deps = makeDeps({
+      phase: 'review',
+      repoDir: process.cwd(),
+      modelName: 'gpt-5.5',
+      agentName: 'codex',
+      reviewChangesImpl: async () => reviewResult,
+    });
+
+    const result = await executeReviewChanges({ base: 'auto/integration', featureDir }, deps);
+    assert.ok(result.ok);
+    if (!result.ok) return;
+
+    const identity = result.executedIdentity;
+    assert.ok(identity);
+    // Outer orchestrator ran gpt-5.5 while the challenge names glm-5.3 for
+    // this side's reviewer stage: this is an unpinned mismatch, not silently
+    // normalized to the requested model.
+    assert.equal(identity?.orchestrator.requestedModel, 'glm-5.3');
+    assert.equal(identity?.orchestrator.resolvedModel, 'gpt-5.5');
+    assert.equal(identity?.orchestrator.pinned, false);
+    // Inner substantive analysis matched the challenged model exactly.
+    assert.equal(identity?.substantiveAnalysis.requestedModel, 'glm-5.3');
+    assert.equal(identity?.substantiveAnalysis.resolvedModel, 'glm-5.3');
+    assert.equal(identity?.substantiveAnalysis.pinned, true);
+  });
 });
 
 describe('executeRouteTask', () => {

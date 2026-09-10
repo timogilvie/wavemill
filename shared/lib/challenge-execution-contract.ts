@@ -661,6 +661,54 @@ function hasUnpinnedIdentity(identity: ReviewExecutedIdentitySet | undefined): b
   return identityItems(identity).some((item) => item.pinned !== true);
 }
 
+/**
+ * Build an {@link ExecutedIdentity} with consistent pin/fallback/conflict
+ * semantics (HOK-2969, Arbiter P2.4f) so every producer (native review
+ * provider selection, legacy review, review orchestration, remediation)
+ * derives `pinned` the same way instead of each hand-rolling the rule.
+ *
+ * `pinned` is true only when a requested model was supplied, it matches the
+ * resolved model exactly, and no conflict was recorded. A missing requested
+ * model, a fallback, or a conflict all fail closed to `pinned: false`.
+ */
+export function buildExecutedIdentity(input: {
+  role: ExecutedIdentityRole;
+  /** Model that was asked for; undefined when no request could be made (fails closed). */
+  requestedModel?: string;
+  resolvedModel: string;
+  agent?: string;
+  source: ExecutedIdentity['source'];
+  fallbackReason?: string;
+  conflict?: ExecutedIdentity['conflict'];
+}): ExecutedIdentity {
+  const requested = clean(input.requestedModel);
+  const resolved = clean(input.resolvedModel);
+  const mismatch = Boolean(requested) && requested !== resolved;
+  const pinned = Boolean(requested) && !mismatch && !input.conflict;
+  return {
+    role: input.role,
+    requestedModel: requested || resolved,
+    resolvedModel: resolved,
+    ...(input.agent ? { agent: input.agent } : {}),
+    source: input.source,
+    ...(input.fallbackReason
+      ? { fallbackReason: input.fallbackReason }
+      : mismatch ? { fallbackReason: 'requested_model_unavailable' } : {}),
+    pinned,
+    ...(input.conflict ? { conflict: input.conflict } : {}),
+  };
+}
+
+/** Exported for eval-assembly consumers that need the same fail-closed check outside folding. */
+export function reviewExecutedIdentityHasConflict(identity: ReviewExecutedIdentitySet | undefined): boolean {
+  return hasIdentityConflict(identity);
+}
+
+/** Exported for eval-assembly consumers that need the same fail-closed check outside folding. */
+export function reviewExecutedIdentityIsFullyPinned(identity: ReviewExecutedIdentitySet | undefined): boolean {
+  return Boolean(identity) && !hasUnpinnedIdentity(identity);
+}
+
 function addForkIdentityReasons(
   reasons: Set<StageAttributionReasonCode>,
   forkIdentity: ForkIdentity | undefined,
@@ -717,6 +765,13 @@ export function foldAttestationsIntoStageAttribution(input: {
   /** Per-arm executed review identities used to detect pinning failures. */
   primaryReviewIdentity?: ReviewExecutedIdentitySet;
   challengerReviewIdentity?: ReviewExecutedIdentitySet;
+  /**
+   * False when either arm's local review artifact is missing complete
+   * per-iteration evidence (findings, commands, reviewer delta). Direct
+   * review-stage attribution requires complete iteration evidence, not just
+   * a pinned identity (HOK-2969).
+   */
+  reviewIterationsComplete?: boolean;
   /** Winner as decided by the comparison judge, if any. */
   judgeWinner?: 'primary' | 'challenger' | 'tie' | null;
 }): StageAttribution {
@@ -753,6 +808,9 @@ export function foldAttestationsIntoStageAttribution(input: {
     }
     if (hasIdentityConflict(input.primaryReviewIdentity) || hasIdentityConflict(input.challengerReviewIdentity)) {
       addReason(reasons, 'executed_identity_conflict');
+    }
+    if (input.reviewIterationsComplete === false) {
+      addReason(reasons, 'insufficient_review_iterations');
     }
   }
 
@@ -950,4 +1008,71 @@ export function loadChallengeIntentFromFeatureDir(featureDir: string): Challenge
     }
   }
   return undefined;
+}
+
+export interface ChallengedStageIntent {
+  pairId: string;
+  model: string;
+  agent?: string;
+}
+
+/**
+ * Extract a side's expected model/agent for one stage, tolerating both the
+ * persisted projection shape (`ChallengeSideIntent`, `expectedStageModel`)
+ * and the raw runtime shape (`ChallengeRuntimeSideIntent`, per-stage route
+ * objects) — `challenge-intent.json` has been observed in both forms across
+ * launcher versions.
+ */
+function extractExpectedStage(
+  side: ChallengeSideIntent | ChallengeRuntimeSideIntent | undefined,
+  stage: ChallengeStage,
+): { model?: string; agent?: string } {
+  if (!side) return {};
+  const projected = side as Partial<ChallengeSideIntent>;
+  if (typeof projected.expectedStageModel === 'string' && projected.expectedStageModel.trim()) {
+    return { model: projected.expectedStageModel.trim(), agent: clean(projected.expectedStageAgent) || undefined };
+  }
+  const route = stageRouteFromRuntimeSide(side as ChallengeRuntimeSideIntent, stage);
+  const model = clean(route?.model);
+  return model ? { model, agent: clean(route?.agent) || undefined } : {};
+}
+
+/**
+ * Resolve the challenged model/agent for one stage of this worktree's own
+ * arm, when this run is part of a reviewer-stage (or any-stage) challenge
+ * pair and the local `challenge-intent.json` names it explicitly.
+ *
+ * Returns `undefined` when there is no feature-dir challenge intent, the
+ * intent varies a different stage, or the side cannot be resolved — the
+ * caller is expected to fail closed (unpinned) rather than guess, exactly as
+ * a missing challenge context should never fabricate a pin (HOK-2969).
+ */
+export function resolveChallengedStageIntent(input: {
+  repoDir: string;
+  featureDir?: string;
+  branchName?: string;
+  issueId?: string;
+  stage: ChallengeStage;
+  /** Authoritative side when already known, bypassing branch/state inference. */
+  explicitSide?: ChallengeSide;
+}): ChallengedStageIntent | undefined {
+  if (!input.featureDir) return undefined;
+  const intent = loadChallengeIntentFromFeatureDir(input.featureDir);
+  if (!intent) return undefined;
+  const actualStage = stageFromIntent(intent);
+  if (actualStage !== input.stage) return undefined;
+
+  const resolution = resolveChallengeSide({
+    repoDir: input.repoDir,
+    branchName: input.branchName,
+    issueId: input.issueId,
+    challengePairId: intent.pairId,
+    explicitSide: input.explicitSide,
+  });
+  if (!resolution.side) return undefined;
+
+  const side = resolution.side === 'challenger' ? intent.challenger : intent.primary;
+  const extracted = extractExpectedStage(side, input.stage);
+  if (!extracted.model) return undefined;
+  return { pairId: intent.pairId, model: extracted.model, agent: extracted.agent };
 }

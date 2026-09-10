@@ -24,6 +24,8 @@ import type { CleanupDecision, CleanupReport, TreeState } from './native-agent/c
 export type { CleanupDecision, CleanupReport, TreeState } from './native-agent/cleanup.ts';
 import type { ReadyRemediationDecision } from './native-agent/workflow-tools/ready-remediation.ts';
 export type { ReadyRemediationDecision } from './native-agent/workflow-tools/ready-remediation.ts';
+import type { ReviewExecutedIdentitySet } from './challenge-execution-contract.ts';
+export type { ReviewExecutedIdentitySet, ExecutedIdentity, ExecutedIdentityRole } from './challenge-execution-contract.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Types
@@ -131,6 +133,72 @@ export interface DismissedReviewBlocker {
   evidence?: string;
 }
 
+/** Disposition of a structured review finding within an iteration record. */
+export type ReviewFindingDisposition = 'open' | 'fixed' | 'dismissed' | 'wont_fix';
+
+/**
+ * One structured finding persisted for a review iteration (HOK-2969).
+ *
+ * This is the local, task-owned evidence record — it is never sent across
+ * the Hokusai privacy boundary. Only derived counts/booleans cross that
+ * boundary (see `hokusai-schema.ts`).
+ */
+export interface ReviewFindingRecord {
+  location: string;
+  category: string;
+  severity: 'blocker' | 'warning';
+  description: string;
+  /** Verification the reviewer performed (e.g. a command and its observed result). */
+  evidence?: string;
+  /** The reviewer's suggested remediation, when offered. */
+  proposedFix?: string;
+  disposition: ReviewFindingDisposition;
+  /** Required, non-blank when `disposition` is `dismissed` (HOK-2932). */
+  dismissalJustification?: string;
+  dismissalEvidence?: string;
+}
+
+/** A reproduction/test command the reviewer ran and its observed result. */
+export interface ReviewCommandRecord {
+  command: string;
+  exitCode?: number;
+  output?: string;
+}
+
+/**
+ * The reviewer-authored delta relative to the shared challenge fork commit,
+ * anchored by SHA rather than embedding the raw diff (kept local-only).
+ */
+export interface ReviewerDeltaRecord {
+  /** Commit both challenge arms shared before diverging. */
+  forkCommit?: string;
+  /** Head SHA this iteration reviewed. */
+  reviewedHeadSha?: string;
+  /** Head SHA after remediation for this iteration, if any commits were made. */
+  remediatedHeadSha?: string;
+  filesChanged?: string[];
+  insertions?: number;
+  deletions?: number;
+}
+
+/**
+ * One `review_changes` run's complete local evidence: findings, commands,
+ * and the reviewer's own delta relative to the fork point. Iterations are
+ * append-only — a rerun never overwrites a prior iteration's evidence
+ * (HOK-2969).
+ */
+export interface ReviewIterationRecord {
+  /** 1-based iteration number within this arm's review stage. */
+  iteration: number;
+  recordedAt: string;
+  verdict?: ReviewOutcomeVerdict;
+  findings: ReviewFindingRecord[];
+  /** Reproduction/test commands executed during this iteration, if any. */
+  commands?: ReviewCommandRecord[];
+  reviewerDelta?: ReviewerDeltaRecord;
+  headSha?: string;
+}
+
 export interface ReviewArtifacts {
   type: 'review';
   prNumber?: number;
@@ -157,6 +225,17 @@ export interface ReviewArtifacts {
   diagnostics?: Record<string, unknown>;
   /** Head SHA reviewed for this artifact; a later head makes it stale (HOK-2964). */
   reviewHeadSha?: string;
+  /**
+   * Complete per-iteration local evidence, append-only across reruns
+   * (HOK-2969). Populated by native review producers; absent on artifacts
+   * written before this field existed.
+   */
+  reviewIterations?: ReviewIterationRecord[];
+  /**
+   * Orchestrator, substantive-analysis, and remediation identities executed
+   * for this review stage, including fallback/conflict status (HOK-2969).
+   */
+  reviewExecutedIdentity?: ReviewExecutedIdentitySet;
 }
 
 export interface ReviewOutcome {
@@ -541,6 +620,46 @@ export function reviewOutcomePassesReadyGate(outcome: ReviewOutcome | null | und
 export function reviewResultPassed(result: StageResult | null | undefined): boolean {
   if (result?.status !== 'completed') return false;
   return reviewOutcomePassesReadyGate(extractReviewOutcome(result));
+}
+
+// ────────────────────────────────────────────────────────────────
+// Review Evidence Helpers (HOK-2969)
+// ────────────────────────────────────────────────────────────────
+
+/**
+ * Read the review iteration array off an existing artifacts value, tolerating
+ * legacy/malformed shapes by treating anything that is not an array as "no
+ * prior iterations" rather than throwing.
+ */
+export function existingReviewIterations(
+  artifacts: ReviewArtifacts | StageArtifacts | null | undefined,
+): ReviewIterationRecord[] {
+  const candidate = (artifacts as ReviewArtifacts | undefined)?.reviewIterations;
+  return Array.isArray(candidate) ? candidate : [];
+}
+
+/**
+ * Compute the next 1-based iteration number for a review artifact.
+ */
+export function nextReviewIterationNumber(
+  artifacts: ReviewArtifacts | StageArtifacts | null | undefined,
+): number {
+  const prior = existingReviewIterations(artifacts);
+  return prior.reduce((max, entry) => Math.max(max, entry.iteration), 0) + 1;
+}
+
+/**
+ * Append (or idempotently replace) one iteration's evidence onto the prior
+ * iteration list. Reruns of the same iteration number replace that entry in
+ * place; every other prior iteration is preserved — a rerun must never
+ * silently drop earlier direct evidence (HOK-2969).
+ */
+export function appendReviewIteration(
+  existing: ReviewArtifacts | StageArtifacts | null | undefined,
+  iteration: ReviewIterationRecord,
+): ReviewIterationRecord[] {
+  const prior = existingReviewIterations(existing).filter((entry) => entry.iteration !== iteration.iteration);
+  return [...prior, iteration].sort((a, b) => a.iteration - b.iteration);
 }
 
 // ────────────────────────────────────────────────────────────────
