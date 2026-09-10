@@ -228,6 +228,18 @@
       "type": "boolean",
       "description": "True when this eval record must not count as challenge/training evidence."
     },
+    "deliveryVerdict": {
+      "$ref": "#/$defs/DeliveryVerdict"
+    },
+    "stageAttribution": {
+      "$ref": "#/$defs/StageAttribution"
+    },
+    "forkIdentity": {
+      "$ref": "#/$defs/ForkIdentity"
+    },
+    "reviewExecutedIdentity": {
+      "$ref": "#/$defs/ReviewExecutedIdentitySet"
+    },
     "prUrl": {
       "type": "string",
       "format": "uri",
@@ -760,9 +772,15 @@
         "roles": {
           "type": "object",
           "properties": {
-            "planner": { "$ref": "#/$defs/modelIdentityObservation" },
-            "coder": { "$ref": "#/$defs/modelIdentityObservation" },
-            "reviewer": { "$ref": "#/$defs/modelIdentityObservation" }
+            "planner": {
+              "$ref": "#/$defs/modelIdentityObservation"
+            },
+            "coder": {
+              "$ref": "#/$defs/modelIdentityObservation"
+            },
+            "reviewer": {
+              "$ref": "#/$defs/modelIdentityObservation"
+            }
           },
           "additionalProperties": false
         },
@@ -770,46 +788,105 @@
           "type": "array",
           "items": {
             "type": "string",
-            "enum": ["planner", "coder", "reviewer"]
+            "enum": [
+              "planner",
+              "coder",
+              "reviewer"
+            ]
           },
           "uniqueItems": true
         },
         "candidateOnlyProvisional": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "uniqueItems": true
         },
         "finalization": {
           "type": "object",
           "properties": {
-            "promotedAt": { "type": "string", "format": "date-time" },
-            "manifestId": { "type": "string" },
-            "fromRevision": { "type": "integer", "minimum": 1 },
-            "toRevision": { "type": "integer", "minimum": 1 },
-            "observedAlias": { "type": "string" },
-            "finalAlias": { "type": "string" }
+            "promotedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "manifestId": {
+              "type": "string"
+            },
+            "fromRevision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "toRevision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "observedAlias": {
+              "type": "string"
+            },
+            "finalAlias": {
+              "type": "string"
+            }
           },
-          "required": ["promotedAt", "manifestId", "fromRevision", "toRevision", "observedAlias", "finalAlias"],
+          "required": [
+            "promotedAt",
+            "manifestId",
+            "fromRevision",
+            "toRevision",
+            "observedAlias",
+            "finalAlias"
+          ],
           "additionalProperties": false
         }
       },
-      "required": ["observedAt", "roles", "provisionalRoles", "candidateOnlyProvisional"],
+      "required": [
+        "observedAt",
+        "roles",
+        "provisionalRoles",
+        "candidateOnlyProvisional"
+      ],
       "additionalProperties": false
     },
     "normalizedEvaluationCost": {
       "type": "object",
       "description": "Promotion-time normalized cost computed from final explicit pricing without mutating observed cost.",
       "properties": {
-        "costUsd": { "type": ["number", "null"], "minimum": 0 },
-        "basis": { "type": "string", "enum": ["explicit_pricing", "incomplete"] },
+        "costUsd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "basis": {
+          "type": "string",
+          "enum": [
+            "explicit_pricing",
+            "incomplete"
+          ]
+        },
         "coverage": {
           "type": "string",
-          "enum": ["complete", "missing_cache_usage", "missing_cache_pricing"]
+          "enum": [
+            "complete",
+            "missing_cache_usage",
+            "missing_cache_pricing"
+          ]
         },
-        "pricingRevision": { "type": "string" },
-        "computedAt": { "type": "string", "format": "date-time" }
+        "pricingRevision": {
+          "type": "string"
+        },
+        "computedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
       },
-      "required": ["costUsd", "basis", "coverage", "computedAt"],
+      "required": [
+        "costUsd",
+        "basis",
+        "coverage",
+        "computedAt"
+      ],
       "additionalProperties": false
     },
     "difficultyBand": {
@@ -2091,8 +2168,8 @@
             "functional_bug",
             "multiple_bugs",
             "heavy_intervention",
-              "unverified_prediction",
-              "vacuous_safety_gate"
+            "unverified_prediction",
+            "vacuous_safety_gate"
           ],
           "description": "Which scoring boundary was the binding constraint on the final score."
         }
@@ -2698,14 +2775,42 @@
     "modelIdentityObservation": {
       "type": "object",
       "properties": {
-        "alias": { "type": "string" },
-        "providerId": { "type": "string" },
-        "identityStatus": { "type": "string", "enum": ["provisional", "verified"] },
-        "identityRevision": { "type": "integer", "minimum": 1 },
-        "fingerprint": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-        "evidencePolicy": { "type": "string", "enum": ["held", "eligible"] }
+        "alias": {
+          "type": "string"
+        },
+        "providerId": {
+          "type": "string"
+        },
+        "identityStatus": {
+          "type": "string",
+          "enum": [
+            "provisional",
+            "verified"
+          ]
+        },
+        "identityRevision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "evidencePolicy": {
+          "type": "string",
+          "enum": [
+            "held",
+            "eligible"
+          ]
+        }
       },
-      "required": ["alias", "identityStatus", "identityRevision", "fingerprint", "evidencePolicy"],
+      "required": [
+        "alias",
+        "identityStatus",
+        "identityRevision",
+        "fingerprint",
+        "evidencePolicy"
+      ],
       "additionalProperties": false
     },
     "PlanningExecutionBounds": {
@@ -3844,6 +3949,378 @@
         "resolvedModelId",
         "sourceLayer"
       ]
+    },
+    "NoComparisonReason": {
+      "type": "string",
+      "enum": [
+        "identical_effective_route",
+        "stage_override_lost",
+        "native_launch_fallback",
+        "operator_reroute",
+        "state_vs_derived_side_mismatch",
+        "missing_challenge_intent",
+        "identical_routing_dimensions",
+        "provenance_invalid",
+        "provenance_inconclusive",
+        "primary_eval_hard_failed",
+        "challenger_eval_hard_failed",
+        "both_eval_hard_failed",
+        "eval_hard_failed",
+        "primary_challenge_aborted",
+        "challenger_challenge_aborted",
+        "both_challenge_aborted",
+        "orphan_pair",
+        "primary_merged",
+        "challenger_never_launched",
+        "challenger_eval_not_persisted",
+        "diff_unavailable",
+        "eval_unscored",
+        "recovery_tie",
+        "unknown"
+      ]
+    },
+    "DeliveryVerdictOutcome": {
+      "enum": [
+        "primary",
+        "challenger",
+        "tie",
+        null
+      ]
+    },
+    "DeliveryVerdict": {
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "$ref": "#/$defs/DeliveryVerdictOutcome"
+        },
+        "reason": {
+          "$ref": "#/$defs/NoComparisonReason"
+        },
+        "prUrl": {
+          "type": "string"
+        },
+        "primaryMerged": {
+          "type": "boolean"
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "final-pr-arbiter",
+            "auto-primary",
+            "operator",
+            "derived-from-comparison"
+          ]
+        },
+        "rationale": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "outcome",
+        "source"
+      ],
+      "additionalProperties": false
+    },
+    "StageAttributionStatus": {
+      "type": "string",
+      "enum": [
+        "valid",
+        "invalid",
+        "insufficient_evidence"
+      ]
+    },
+    "StageAttributionOutcome": {
+      "enum": [
+        "primary",
+        "challenger",
+        "tie",
+        null
+      ]
+    },
+    "StageAttributionReasonCode": {
+      "type": "string",
+      "enum": [
+        "stage_override_lost",
+        "native_launch_fallback",
+        "identical_effective_route",
+        "state_vs_derived_side_mismatch",
+        "operator_reroute",
+        "missing_challenge_intent",
+        "divergent_pre_stage_inputs",
+        "unverified_fork_commit",
+        "missing_fork_identity",
+        "plan_hash_mismatch",
+        "prompt_hash_mismatch",
+        "task_packet_hash_mismatch",
+        "tool_config_hash_mismatch",
+        "missing_direct_review_evidence",
+        "inferred_evidence_only",
+        "executed_identity_conflict",
+        "executed_identity_missing",
+        "inherited_stage_evidence_only",
+        "presentation_order_bias_unresolved",
+        "insufficient_review_iterations",
+        "insufficient_evidence_other"
+      ]
+    },
+    "StageAttribution": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/StageAttributionStatus"
+        },
+        "outcome": {
+          "$ref": "#/$defs/StageAttributionOutcome"
+        },
+        "stage": {
+          "$ref": "#/$defs/ChallengeStage"
+        },
+        "reasonCodes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StageAttributionReasonCode"
+          }
+        },
+        "reasonDetails": {
+          "type": "string"
+        },
+        "winningStageModel": {
+          "type": "string"
+        },
+        "losingStageModel": {
+          "type": "string"
+        },
+        "evidenceProvenance": {
+          "type": "string",
+          "enum": [
+            "direct",
+            "inferred",
+            "insufficient"
+          ]
+        },
+        "divergentInputsSuppressedDirectEvidence": {
+          "type": "boolean"
+        },
+        "decidedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "producer": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "outcome",
+        "stage",
+        "reasonCodes",
+        "evidenceProvenance"
+      ],
+      "additionalProperties": false
+    },
+    "ForkIdentity": {
+      "type": "object",
+      "properties": {
+        "stage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChallengeStage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tree": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "taskPacketHash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "planHash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "promptHash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "toolConfigHash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sharedPrefix": {
+          "type": "boolean"
+        },
+        "primaryInheritedStages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChallengeStage"
+          }
+        },
+        "challengerInheritedStages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChallengeStage"
+          }
+        },
+        "producer": {
+          "type": "string"
+        },
+        "producerVersion": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "stage",
+        "commit",
+        "tree",
+        "taskPacketHash",
+        "planHash",
+        "promptHash",
+        "toolConfigHash"
+      ],
+      "additionalProperties": false
+    },
+    "ExecutedIdentityRole": {
+      "type": "string",
+      "enum": [
+        "review_orchestrator",
+        "substantive_analysis",
+        "remediation"
+      ]
+    },
+    "ExecutedIdentitySource": {
+      "type": "string",
+      "enum": [
+        "route",
+        "artifact",
+        "inherited",
+        "derived",
+        "unknown"
+      ]
+    },
+    "ExecutedIdentity": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "$ref": "#/$defs/ExecutedIdentityRole"
+        },
+        "requestedModel": {
+          "type": "string"
+        },
+        "resolvedModel": {
+          "type": "string"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/ExecutedIdentitySource"
+        },
+        "fallbackReason": {
+          "type": "string"
+        },
+        "pinned": {
+          "type": "boolean"
+        },
+        "conflict": {
+          "type": "object",
+          "properties": {
+            "otherSource": {
+              "$ref": "#/$defs/ExecutedIdentitySource"
+            },
+            "otherResolvedModel": {
+              "type": "string"
+            },
+            "detail": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "otherSource",
+            "otherResolvedModel",
+            "detail"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "role",
+        "requestedModel",
+        "resolvedModel",
+        "source",
+        "pinned"
+      ],
+      "additionalProperties": false
+    },
+    "ReviewExecutedIdentitySet": {
+      "type": "object",
+      "properties": {
+        "orchestrator": {
+          "$ref": "#/$defs/ExecutedIdentity"
+        },
+        "substantiveAnalysis": {
+          "$ref": "#/$defs/ExecutedIdentity"
+        },
+        "remediation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutedIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "orchestrator",
+        "substantiveAnalysis"
+      ],
+      "additionalProperties": false
     }
   }
 }

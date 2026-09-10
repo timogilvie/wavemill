@@ -1,11 +1,19 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { ChallengeStage } from './challenge-mode.ts';
-import type { ChallengeRoutingMeta } from './challenge-comparison.ts';
+import type { ChallengeRoutingMeta, NoComparisonReason } from './challenge-comparison.ts';
 import type { EvalRecord, EvalRouting } from './eval-schema.ts';
 import { resolveEffectiveChallengeRole } from './challenge-role-utils.ts';
 
 export type ChallengeValidity = 'valid' | 'invalid_challenge' | 'identical_control';
+export const INVALID_CHALLENGE_REASONS = [
+  'stage_override_lost',
+  'native_launch_fallback',
+  'identical_effective_route',
+  'state_vs_derived_side_mismatch',
+  'operator_reroute',
+  'missing_challenge_intent',
+] as const;
 export type InvalidChallengeReason =
   | 'stage_override_lost'
   | 'native_launch_fallback'
@@ -19,6 +27,133 @@ export type InvalidChallengeReason =
    * selected model had been replaced still counted as clean evidence.
    */
   | 'missing_challenge_intent';
+
+export type DeliveryVerdictOutcome = 'primary' | 'challenger' | 'tie' | null;
+
+export interface DeliveryVerdict {
+  /** Which arm's PR was accepted as the delivered contribution. */
+  outcome: DeliveryVerdictOutcome;
+  /** Stable reason code when no arm delivered. */
+  reason?: NoComparisonReason;
+  /** URL of the delivered PR when outcome is primary or challenger. */
+  prUrl?: string;
+  /** True when the primary PR was accepted through the merge lane. */
+  primaryMerged?: boolean;
+  /** Producer that stamped the verdict. */
+  source: 'final-pr-arbiter' | 'auto-primary' | 'operator' | 'derived-from-comparison';
+  /** Human-readable context; not a training target. */
+  rationale?: string;
+}
+
+export type StageAttributionStatus = 'valid' | 'invalid' | 'insufficient_evidence';
+export type StageAttributionOutcome = 'primary' | 'challenger' | 'tie' | null;
+
+export const STAGE_ATTRIBUTION_REASON_CODES = [
+  ...INVALID_CHALLENGE_REASONS,
+  'divergent_pre_stage_inputs',
+  'unverified_fork_commit',
+  'missing_fork_identity',
+  'plan_hash_mismatch',
+  'prompt_hash_mismatch',
+  'task_packet_hash_mismatch',
+  'tool_config_hash_mismatch',
+  'missing_direct_review_evidence',
+  'inferred_evidence_only',
+  'executed_identity_conflict',
+  'executed_identity_missing',
+  'inherited_stage_evidence_only',
+  'presentation_order_bias_unresolved',
+  'insufficient_review_iterations',
+  'insufficient_evidence_other',
+] as const;
+
+export type StageAttributionReasonCode = typeof STAGE_ATTRIBUTION_REASON_CODES[number];
+
+export interface StageAttribution {
+  /** Causal-attribution status for the varied stage. */
+  status: StageAttributionStatus;
+  /** Winning arm when valid; null when invalid or insufficient. */
+  outcome: StageAttributionOutcome;
+  /** Varied stage this attribution describes. */
+  stage: ChallengeStage;
+  /** Stable, deduplicated reason codes that explain non-valid status. */
+  reasonCodes: StageAttributionReasonCode[];
+  /** Human-readable context; not a training target. */
+  reasonDetails?: string;
+  /** Model whose stage output won when outcome is primary or challenger. */
+  winningStageModel?: string;
+  /** Model whose stage output lost when outcome is primary or challenger. */
+  losingStageModel?: string;
+  /** Provenance for the evidence used to decide the attribution. */
+  evidenceProvenance: 'direct' | 'inferred' | 'insufficient';
+  /** True when direct evidence was present but divergent inputs made it unusable. */
+  divergentInputsSuppressedDirectEvidence?: boolean;
+  /** Timestamp when the attribution was decided. */
+  decidedAt?: string;
+  /** Producer/version stamp for the component that decided attribution. */
+  producer?: string;
+}
+
+export interface ForkIdentity {
+  /** The stage at which the pair forked; null for independently launched pairs. */
+  stage: ChallengeStage | null;
+  /** Git commit both arms share at the fork point; null when no shared prefix. */
+  commit: string | null;
+  /** Git tree object id at the fork point. */
+  tree: string | null;
+  /** SHA-256 over the task packet content at fork time. */
+  taskPacketHash: string | null;
+  /** SHA-256 over the plan artifact at fork time. */
+  planHash: string | null;
+  /** SHA-256 over the prompt artifact at fork time. */
+  promptHash: string | null;
+  /** SHA-256 over the tool-configuration snapshot at fork time. */
+  toolConfigHash: string | null;
+  /** Whether the challenger inherited pre-fork artifacts from the primary arm. */
+  sharedPrefix?: boolean;
+  /** Stages the primary arm inherited from pre-fork execution. */
+  primaryInheritedStages?: ChallengeStage[];
+  /** Stages the challenger arm inherited from pre-fork execution. */
+  challengerInheritedStages?: ChallengeStage[];
+  /** Producer identity for this fork envelope. */
+  producer?: string;
+  /** Producer schema/version stamp. */
+  producerVersion?: string;
+}
+
+export type ExecutedIdentityRole =
+  | 'review_orchestrator'
+  | 'substantive_analysis'
+  | 'remediation';
+
+export interface ExecutedIdentity {
+  role: ExecutedIdentityRole;
+  /** Model the router requested. */
+  requestedModel: string;
+  /** Model that actually ran. */
+  resolvedModel: string;
+  /** Agent runner that executed the role. */
+  agent?: string;
+  /** Where the identity was observed. */
+  source: 'route' | 'artifact' | 'inherited' | 'derived' | 'unknown';
+  /** Reason for requested/resolved divergence, if any. */
+  fallbackReason?: string;
+  /** True when the observed identity was pinned to durable evidence. */
+  pinned: boolean;
+  /** Populated when two sources disagree about the executed identity. */
+  conflict?: {
+    otherSource: ExecutedIdentity['source'];
+    otherResolvedModel: string;
+    detail: string;
+  };
+}
+
+export interface ReviewExecutedIdentitySet {
+  orchestrator: ExecutedIdentity;
+  substantiveAnalysis: ExecutedIdentity;
+  /** Some review passes have no remediation model. */
+  remediation?: ExecutedIdentity | null;
+}
 
 export interface ChallengeSideIntent {
   pairId: string;
@@ -500,6 +635,187 @@ export function modelForChallengeStage(route: ChallengeRoutingMeta | undefined, 
   if (stage === 'plan') return clean(route.planner);
   if (stage === 'review') return clean(route.reviewer);
   return clean(route.coder);
+}
+
+function addReason(
+  reasons: Set<StageAttributionReasonCode>,
+  reason: StageAttributionReasonCode | undefined,
+): void {
+  if (reason) reasons.add(reason);
+}
+
+function identityItems(identity: ReviewExecutedIdentitySet | undefined): ExecutedIdentity[] {
+  if (!identity) return [];
+  return [
+    identity.orchestrator,
+    identity.substantiveAnalysis,
+    ...(identity.remediation ? [identity.remediation] : []),
+  ];
+}
+
+function hasIdentityConflict(identity: ReviewExecutedIdentitySet | undefined): boolean {
+  return identityItems(identity).some((item) => Boolean(item.conflict));
+}
+
+function hasUnpinnedIdentity(identity: ReviewExecutedIdentitySet | undefined): boolean {
+  return identityItems(identity).some((item) => item.pinned !== true);
+}
+
+function addForkIdentityReasons(
+  reasons: Set<StageAttributionReasonCode>,
+  forkIdentity: ForkIdentity | undefined,
+): void {
+  if (!forkIdentity) {
+    reasons.add('missing_fork_identity');
+    return;
+  }
+  if (!forkIdentity.commit) reasons.add('unverified_fork_commit');
+  const hashChecks: Array<[keyof ForkIdentity, StageAttributionReasonCode]> = [
+    ['taskPacketHash', 'task_packet_hash_mismatch'],
+    ['planHash', 'plan_hash_mismatch'],
+    ['promptHash', 'prompt_hash_mismatch'],
+    ['toolConfigHash', 'tool_config_hash_mismatch'],
+  ];
+  for (const [field, reason] of hashChecks) {
+    if (!forkIdentity[field]) reasons.add(reason);
+  }
+  if (
+    reasons.has('task_packet_hash_mismatch')
+    || reasons.has('plan_hash_mismatch')
+    || reasons.has('prompt_hash_mismatch')
+    || reasons.has('tool_config_hash_mismatch')
+  ) {
+    reasons.add('divergent_pre_stage_inputs');
+  }
+}
+
+function inheritedStageReason(
+  stage: ChallengeStage,
+  forkIdentity: ForkIdentity | undefined,
+): StageAttributionReasonCode | undefined {
+  if (!forkIdentity) return undefined;
+  const inherited = [
+    ...(forkIdentity.primaryInheritedStages ?? []),
+    ...(forkIdentity.challengerInheritedStages ?? []),
+  ];
+  return inherited.includes(stage) ? 'inherited_stage_evidence_only' : undefined;
+}
+
+function attributionModel(attestation: ChallengeExecutionAttestation | undefined): string | undefined {
+  return attestation?.expectedStageModel || undefined;
+}
+
+export function foldAttestationsIntoStageAttribution(input: {
+  pairId: string;
+  stage: ChallengeStage;
+  primary?: ChallengeExecutionAttestation;
+  challenger?: ChallengeExecutionAttestation;
+  /** From ChallengeStageEval.provenance, if a stage eval was captured. */
+  evidenceProvenance?: 'direct' | 'inferred';
+  /** Pair-level fork identity used to prove matched pre-stage inputs. */
+  forkIdentity?: ForkIdentity;
+  /** Per-arm executed review identities used to detect pinning failures. */
+  primaryReviewIdentity?: ReviewExecutedIdentitySet;
+  challengerReviewIdentity?: ReviewExecutedIdentitySet;
+  /** Winner as decided by the comparison judge, if any. */
+  judgeWinner?: 'primary' | 'challenger' | 'tie' | null;
+}): StageAttribution {
+  const reasons = new Set<StageAttributionReasonCode>();
+  const details: string[] = [];
+  addForkIdentityReasons(reasons, input.forkIdentity);
+  addReason(reasons, inheritedStageReason(input.stage, input.forkIdentity));
+
+  for (const attestation of [input.primary, input.challenger]) {
+    if (!attestation) {
+      addReason(reasons, 'insufficient_evidence_other');
+      details.push('challenge attestation missing');
+      continue;
+    }
+    if (attestation.validity === 'invalid_challenge') {
+      addReason(reasons, attestation.invalidReason ?? 'insufficient_evidence_other');
+      if (attestation.invalidDetails) details.push(attestation.invalidDetails);
+    } else if (attestation.validity === 'identical_control') {
+      addReason(reasons, 'identical_effective_route');
+    }
+  }
+
+  if (input.stage === 'review') {
+    if (input.evidenceProvenance !== 'direct') {
+      addReason(reasons, input.evidenceProvenance === 'inferred'
+        ? 'inferred_evidence_only'
+        : 'missing_direct_review_evidence');
+    }
+    if (!input.primaryReviewIdentity || !input.challengerReviewIdentity) {
+      addReason(reasons, 'executed_identity_missing');
+    }
+    if (hasUnpinnedIdentity(input.primaryReviewIdentity) || hasUnpinnedIdentity(input.challengerReviewIdentity)) {
+      addReason(reasons, 'executed_identity_missing');
+    }
+    if (hasIdentityConflict(input.primaryReviewIdentity) || hasIdentityConflict(input.challengerReviewIdentity)) {
+      addReason(reasons, 'executed_identity_conflict');
+    }
+  }
+
+  const directEvidenceSuppressed = input.evidenceProvenance === 'direct' && (
+    reasons.has('divergent_pre_stage_inputs')
+    || reasons.has('task_packet_hash_mismatch')
+    || reasons.has('plan_hash_mismatch')
+    || reasons.has('prompt_hash_mismatch')
+    || reasons.has('tool_config_hash_mismatch')
+  );
+  if (directEvidenceSuppressed) {
+    reasons.add('divergent_pre_stage_inputs');
+  }
+
+  const reasonCodes = [...reasons];
+  if (reasonCodes.length > 0) {
+    const insufficientOnly = reasonCodes.every((reason) => [
+      'missing_direct_review_evidence',
+      'inferred_evidence_only',
+      'insufficient_review_iterations',
+      'insufficient_evidence_other',
+    ].includes(reason));
+    return {
+      status: insufficientOnly ? 'insufficient_evidence' : 'invalid',
+      outcome: null,
+      stage: input.stage,
+      reasonCodes,
+      ...(details.length > 0 ? { reasonDetails: details.join(' ') } : {}),
+      evidenceProvenance: insufficientOnly ? 'insufficient' : (input.evidenceProvenance ?? 'insufficient'),
+      ...(directEvidenceSuppressed ? { divergentInputsSuppressedDirectEvidence: true } : {}),
+    };
+  }
+
+  const outcome = input.judgeWinner ?? 'tie';
+  const primaryModel = attributionModel(input.primary);
+  const challengerModel = attributionModel(input.challenger);
+  return {
+    status: 'valid',
+    outcome,
+    stage: input.stage,
+    reasonCodes: [],
+    ...(outcome === 'primary' && primaryModel ? { winningStageModel: primaryModel } : {}),
+    ...(outcome === 'primary' && challengerModel ? { losingStageModel: challengerModel } : {}),
+    ...(outcome === 'challenger' && challengerModel ? { winningStageModel: challengerModel } : {}),
+    ...(outcome === 'challenger' && primaryModel ? { losingStageModel: primaryModel } : {}),
+    evidenceProvenance: input.evidenceProvenance ?? 'inferred',
+  };
+}
+
+export function isStageAttributionEligibleForCoverage(attribution: StageAttribution | undefined): boolean {
+  return Boolean(
+    attribution
+    && attribution.status === 'valid'
+    && attribution.outcome !== null
+    && attribution.reasonCodes.length === 0
+    && (attribution.evidenceProvenance === 'direct' || attribution.evidenceProvenance === 'inferred')
+    && attribution.divergentInputsSuppressedDirectEvidence !== true,
+  );
+}
+
+export function isStageAttributionEligibleForTraining(attribution: StageAttribution | undefined): boolean {
+  return isStageAttributionEligibleForCoverage(attribution)
+    && attribution?.evidenceProvenance === 'direct';
 }
 
 export function routesIdentical(a: ChallengeRoutingMeta | undefined, b: ChallengeRoutingMeta | undefined): boolean {
