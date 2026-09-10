@@ -100,13 +100,13 @@ export function collectShadowDecisionAudit(repoDir: string): ShadowDecisionAudit
     .map((path) => {
       const raw = asRecord(readJson(path));
       const mode = typeof raw.mode === 'string' ? raw.mode : undefined;
-      const wouldDelete = raw.wouldDelete === true || mode === 'shadow';
-      if (mode !== 'shadow' && !wouldDelete) {
+      if (mode !== 'shadow') {
         return null;
       }
+      const wouldDelete = raw.wouldDelete === true;
+      const safeToDelete = raw.safeToDelete === true;
       const authorityPresent = typeof raw.authority === 'string' && raw.authority.trim().length > 0;
       const finalHeadVerified = raw.finalCheckPassed === true && typeof raw.finalHeadSha === 'string' && raw.finalHeadSha.length > 0;
-      const safeToDelete = raw.safeToDelete === true;
       const observerDisposition = typeof raw.observerDisposition === 'string' ? raw.observerDisposition : '';
       const observerDisagrees = /retain|retained|verification-required|unsafe/i.test(observerDisposition);
       const unsafeReasons: string[] = [];
