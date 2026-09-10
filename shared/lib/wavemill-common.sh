@@ -399,7 +399,7 @@ cleanup_remote_task_branch() {
 cleanup_episode_config_value() {
   local jq_expr="$1" fallback="$2"
   if [[ -n "${REPO_DIR:-}" ]] && declare -F wavemill_load_config >/dev/null 2>&1; then
-    wavemill_load_config "$REPO_DIR" | jq -r "$jq_expr // \"$fallback\"" 2>/dev/null || printf '%s\n' "$fallback"
+    wavemill_load_config "$REPO_DIR" | jq -r "if ($jq_expr) == null then \"$fallback\" else ($jq_expr) end" 2>/dev/null || printf '%s\n' "$fallback"
   else
     printf '%s\n' "$fallback"
   fi
@@ -842,6 +842,7 @@ _wavemill_write_preserved_branch_incident() {
 #   safe_exact_remote    remote task branch exists and carries the local head
 #   safe_terminal_pr_head terminal merged PR headRefOid equals the local head
 #   safe_noop            nothing deletable (protected/non-task/absent branch)
+#   shadow_would_delete  deletion authority exists, but branch deletion mode is shadow
 #   retain_dirty         worktree dirty or unreadable
 #   retain_unpublished   local head not proven on base, remote, or PR head
 #   retain_closed_unmerged PR closed without merge and no abandon authority
@@ -849,7 +850,7 @@ _wavemill_write_preserved_branch_incident() {
 #   operation_failed     deletion was authorized but removal failed
 cleanup_outcome_is_safe() {
   case "${1:-${WAVEMILL_CLEANUP_OUTCOME:-}}" in
-    safe_ancestor|safe_exact_remote|safe_terminal_pr_head|safe_noop) return 0 ;;
+    safe_ancestor|safe_exact_remote|safe_terminal_pr_head|safe_noop|shadow_would_delete) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -987,6 +988,8 @@ _wavemill_record_cleanup_decision() {
     --arg finalDirtyStatus "${final_dirty:-}" \
     --arg finalCheckPassed "${final_check_passed:-}" \
     --arg authority "${cleanup_authority:-}" \
+    --arg decisionMode "${cleanup_decision_mode:-}" \
+    --arg wouldDelete "${cleanup_decision_would_delete:-}" \
     --arg operatorGuidance "$guidance" \
     '{
       schemaVersion: 2,
@@ -1008,6 +1011,8 @@ _wavemill_record_cleanup_decision() {
     | if $finalDirtyStatus != "" then . + {finalDirtyStatus: $finalDirtyStatus} else . end
     | if $finalCheckPassed != "" then . + {finalCheckPassed: ($finalCheckPassed == "true")} else . end
     | if $authority != "" then . + {authority: $authority} else . end
+    | if $decisionMode != "" then . + {mode: $decisionMode} else . end
+    | if $wouldDelete != "" then . + {wouldDelete: ($wouldDelete == "true")} else . end
     | if $operatorGuidance != "" then . + {operatorGuidance: $operatorGuidance} else . end' 2>/dev/null || printf '{}')"
   _wavemill_write_preserved_branch_incident "$legacy_reason" "$task_branch" "$wt_dir" "$base_branch" \
     "$commits_ahead" "$commit_shas" "$caller" "$base_sha" "$local_head_sha" "$remote_head_sha" \
@@ -1018,9 +1023,28 @@ _wavemill_record_cleanup_decision() {
 # skips only the safe_terminal_pr_head authority; every other path is
 # unchanged and affected branches fall back to retention with evidence.
 wavemill_pr_aware_cleanup_enabled() {
-  case "${WAVEMILL_PR_AWARE_CLEANUP:-1}" in
-    0|false|no|off) return 1 ;;
-    *) return 0 ;;
+  if [[ -n "${WAVEMILL_PR_AWARE_CLEANUP+x}" ]]; then
+    case "${WAVEMILL_PR_AWARE_CLEANUP:-}" in
+      0|false|False|FALSE|no|NO|off|OFF) return 1 ;;
+      *) return 0 ;;
+    esac
+  fi
+  local enabled
+  enabled="$(cleanup_episode_config_value '.cleanup.branchDeletion.enabled' 'true')"
+  [[ "$enabled" != "false" && "$enabled" != "0" ]]
+}
+
+wavemill_branch_deletion_mode() {
+  local enabled mode
+  enabled="$(cleanup_episode_config_value '.cleanup.branchDeletion.enabled' 'true')"
+  if [[ "$enabled" == "false" || "$enabled" == "0" ]]; then
+    printf 'disabled\n'
+    return 0
+  fi
+  mode="$(cleanup_episode_config_value '.cleanup.branchDeletion.mode' 'shadow')"
+  case "$mode" in
+    enforce|shadow) printf '%s\n' "$mode" ;;
+    *) printf 'shadow\n' ;;
   esac
 }
 
@@ -1070,6 +1094,8 @@ safe_remove_task_worktree_and_branch() {
   local pr_head_ref=""
   local pr_base_ref=""
   local configured_merge_method=""
+  local cleanup_decision_mode=""
+  local cleanup_decision_would_delete=""
   local contract_base_branch=""
   local final_head_sha=""
   local final_dirty=""
@@ -1330,6 +1356,8 @@ safe_remove_task_worktree_and_branch() {
 
     # Deletion requires a durable authority record. If the record cannot be
     # persisted, retain rather than delete without recorded authority.
+    cleanup_decision_mode="$(wavemill_branch_deletion_mode)"
+    cleanup_decision_would_delete="true"
     if ! _wavemill_record_cleanup_decision "$classification" "$classification" "" "true" "cleanup-decisions"; then
       log_warn "  Failed to persist cleanup authority record for $task_branch; retained without deletion"
       WAVEMILL_CLEANUP_OUTCOME="retain_unverifiable"
@@ -1346,6 +1374,12 @@ safe_remove_task_worktree_and_branch() {
       _wavemill_record_cleanup_decision "operation_failed" "operation_failed" "worktree_remove_failed" "false" "cleanup-decisions" 2>/dev/null || true
       return 20
     fi
+  fi
+
+  if [[ "$local_branch_exists" == "true" && "$cleanup_decision_mode" != "enforce" ]]; then
+    log "debug" "Shadow branch cleanup retained branch: $task_branch (authorized classification: $classification)"
+    WAVEMILL_CLEANUP_OUTCOME="shadow_would_delete"
+    return 0
   fi
 
   if [[ "$local_branch_exists" == "true" ]]; then
@@ -1442,6 +1476,7 @@ cleanup_completed_task() {
   local task_branch="task/${slug}"
   local cleanup_rc=0
   local cleanup_outcome=""
+  local cleanup_remote_status=0
   if [[ -n "$cleanup_candidate_json" ]]; then
     CLEANUP_EPISODE_CURRENT_FINGERPRINT="$(printf '%s' "$cleanup_candidate_json" | jq -r '.fingerprint // empty' 2>/dev/null || true)"
   else
@@ -1487,7 +1522,16 @@ cleanup_completed_task() {
     return 1
   fi
 
-  if ! cleanup_remote_task_branch "$issue" "$task_branch" "$pr"; then
+  if [[ "$cleanup_outcome" == "shadow_would_delete" ]]; then
+    log "debug" "$issue cleanup ran in branch-deletion shadow mode; retaining local and remote branches"
+    cleanup_remote_status=0
+  elif ! cleanup_remote_task_branch "$issue" "$task_branch" "$pr"; then
+    cleanup_remote_status=1
+  else
+    cleanup_remote_status=0
+  fi
+
+  if [[ "${cleanup_remote_status:-0}" -ne 0 ]]; then
     if [[ -n "$cleanup_candidate_json" ]]; then
       cleanup_episode_record_outcome "$issue" "transient" "transient" "remote-branch-cleanup-unverified" "$cleanup_candidate_json" "" 2>/dev/null || true
     fi

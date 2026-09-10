@@ -247,6 +247,7 @@ TESTS=(
   shared/lib/blocked-completion.test.ts
   shared/lib/task-contract.test.ts
   shared/lib/task-lifecycle.test.ts
+  shared/lib/terminal-lifecycle-cert.test.ts
   shared/lib/feature-state.test.ts
   shared/lib/soft-gates.test.ts
   shared/lib/openrouter-provider.test.ts
