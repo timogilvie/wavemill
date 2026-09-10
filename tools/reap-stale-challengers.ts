@@ -13,6 +13,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { fileURLToPath } from 'node:url';
 import { mutateJsonState } from '../shared/lib/state-mutex.ts';
 import { runTool, resolveRepoDir, type ParsedArgs } from '../shared/lib/tool-runner.ts';
+import { hasPendingArms } from '../shared/lib/pending-arm-detection.ts';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -175,6 +176,15 @@ export function discoverStaleChallengerCandidates(repoDir: string, state: Workfl
     if (role !== 'challenger' && !challengeAborted && !isChallengerBranch(branch) && !isChallengerWorktree(worktree)) continue;
     if (pr) continue;
     if (!isChallengerBranch(branch) && !isChallengerWorktree(worktree) && !slug?.endsWith('-challenger')) continue;
+
+    // HOK-2813_c: If the primary has pending arms (awaiting_fork), do not
+    // mark the challenger as stale. It hasn't materialized yet.
+    if (role === 'challenger' && issue.endsWith('_c')) {
+      const primaryIssue = issue.slice(0, -2);
+      const primaryTask = tasks[primaryIssue];
+      if (primaryTask && hasPendingArms(primaryTask)) continue;
+    }
+
     put({ id: branch ?? worktree ?? issue, issue, slug, branch, worktree, stateTask: task });
   }
 

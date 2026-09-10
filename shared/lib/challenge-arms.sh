@@ -231,3 +231,15 @@ challenge_arm_read_field() {
   [[ -n "$arm_json" && -n "$jq_path" ]] || return 0
   echo "$arm_json" | jq -r "$jq_path // \"\"" 2>/dev/null || echo ""
 }
+
+# HOK-2813_c: Check if a primary has any valid pending (awaiting_fork) arms.
+# Returns 0 (true) if there is at least one awaiting_fork arm, 1 (false) otherwise.
+# Used by orphan detection, repair tools, and stale-reaping to avoid treating
+# pending arms as missing/orphaned challengers.
+challenge_arm_has_pending() {
+  local primary_issue="$1"
+  [[ -n "$primary_issue" && -n "${STATE_FILE:-}" && -f "${STATE_FILE}" ]] || return 1
+  jq -e --arg issue "$primary_issue" \
+    '(.tasks[$issue].challengeArms // []) | map(select(.challengeArmState == "awaiting_fork")) | length > 0' \
+    "$STATE_FILE" >/dev/null 2>&1
+}

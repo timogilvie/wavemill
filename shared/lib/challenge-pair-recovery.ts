@@ -30,6 +30,7 @@ import {
   type CurrentChallengeEvalRefusalReason,
 } from './current-challenge-eval-selector.ts';
 import { resolvePrIdentityMetadata } from './pr-comparison.ts';
+import { hasPendingArms } from './pending-arm-detection.ts';
 
 export type ChallengeRecoveryVerdict = 'supersedable' | 'quarantine-upheld' | 'pair-not-found';
 
@@ -275,6 +276,15 @@ export function assessChallengePair(
 
   if (!record && !primaryTask) {
     assessment.blockers.push(`no challenge record or task state for ${pairId}`);
+    return assessment;
+  }
+
+  // HOK-2813_c: If the primary has pending arms (awaiting_fork), the challenger
+  // has not materialized yet. Skip recovery assessment for this pair — it is
+  // not broken, just waiting for the fork trigger.
+  if (primaryTask && hasPendingArms(primaryTask)) {
+    assessment.verdict = 'pair-not-found';
+    assessment.blockers.push(`primary has pending challenge arm(s) awaiting fork materialization`);
     return assessment;
   }
 

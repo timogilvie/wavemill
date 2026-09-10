@@ -6597,6 +6597,20 @@ _restore_inflight_task_window_if_missing() {
     return 0
   fi
 
+  # HOK-2813_c: Pending arms (awaiting_fork) are legitimate — no worktree/pane
+  # to restore yet. Skip the restore and let the fork trigger materialise them.
+  if [[ -f "${STATE_FILE:-}" ]]; then
+    local pending_arm_count
+    pending_arm_count=$(jq -r --arg issue "$issue" \
+      '(.tasks[$issue].challengeArms // []) | map(select(.challengeArmState == "awaiting_fork")) | length' \
+      "$STATE_FILE" 2>/dev/null || echo 0)
+    if (( pending_arm_count > 0 )); then
+      log "debug" "$issue → primary has $pending_arm_count pending arm(s), skipping window restore until fork"
+      _RESTORE_STATE="none"
+      return 0
+    fi
+  fi
+
   if [[ -f "${STATE_FILE:-}" ]]; then
     local persisted_outcome rehydration_eligibility rehydration_reason
     persisted_outcome="$(jq -r --arg issue "$issue" "$(task_lifecycle_jq_filter '(.tasks[$issue] // {}) | wm_workflow_outcome')" "$STATE_FILE" 2>/dev/null || echo active)"
@@ -14438,6 +14452,25 @@ monitor_issue_state() {
 	  local challenge_aborted pair_id_for_cleanup
 	  challenge_aborted=$(read_state_value "" --arg issue "$ISSUE" '.tasks[$issue].challengeAborted // empty')
 	  pair_id_for_cleanup=$(read_state_value "" --arg issue "$ISSUE" '.tasks[$issue].challengePairId // empty')
+
+	  # HOK-2813_c: If the primary is aborted/failed and has pending arms
+	  # (awaiting_fork), collapse the challenge with the pre_fork_primary_failure
+	  # reason so the pair accounting layer sees a deliberate no-comparison.
+	  if [[ -n "$challenge_aborted" || "$task_status" == "aborted" || "$task_status" == "failed" ]]; then
+	    local challenge_role pending_count
+	    challenge_role=$(read_state_value "" --arg issue "$ISSUE" '.tasks[$issue].challengeRole // ""')
+	    if [[ "$challenge_role" == "primary" ]]; then
+	      pending_count=$(jq -r --arg issue "$ISSUE" \
+	        '(.tasks[$issue].challengeArms // []) | map(select(.challengeArmState == "awaiting_fork")) | length' \
+	        "$STATE_FILE" 2>/dev/null || echo 0)
+	      if (( pending_count > 0 )); then
+	        log_task "info" "$ISSUE" "Primary with $pending_count pending arm(s) failed before fork; collapsing challenge"
+	        challenge_arms_cancel_pending "$ISSUE" "pre_fork_primary_failure" || true
+	        return 0
+	      fi
+	    fi
+	  fi
+
 	  if [[ "$task_status" == "aborted" ]]; then
 	    if declare -F monitor_cleanup_episode_skip >/dev/null 2>&1 && monitor_cleanup_episode_skip "$ISSUE" "$SLUG" "$PR"; then
 	      return 0

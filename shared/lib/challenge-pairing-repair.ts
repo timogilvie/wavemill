@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { mutateJsonState } from './state-mutex.ts';
 import { resolveEvalsDir } from './evals-paths.ts';
 import { challengeTaskKeyVariants, type EffectiveChallengeRole } from './challenge-role-utils.ts';
+import { hasPendingArms } from './pending-arm-detection.ts';
 
 /**
  * Self-healing repair for drifted challenge pairing metadata.
@@ -66,6 +67,15 @@ function deriveRoleFromPairKey(issueId: string, pairId: string): EffectiveChalle
 function repairTaskStateObject(state: any, pairId: string): boolean {
   const tasks = state?.tasks;
   if (!tasks || typeof tasks !== 'object') return false;
+
+  // HOK-2813_c: If the primary has pending arms (awaiting_fork), the challenger
+  // has not materialized yet. Do not repair pairing metadata while the pair is
+  // in deferred-materialisation state.
+  const primaryTask = tasks[pairId];
+  if (primaryTask && hasPendingArms(primaryTask)) {
+    return false;
+  }
+
   let changed = false;
 
   for (const [issueId, task] of Object.entries(tasks)) {

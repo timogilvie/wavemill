@@ -27,6 +27,7 @@ import {
   type ChallengeArmFailure,
 } from './arm-failure-taxonomy.ts';
 import { repairChallengePairingSync } from './challenge-pairing-repair.ts';
+import { hasPendingArms } from './pending-arm-detection.ts';
 import {
   recordSelectionOutcome,
   releaseReservation,
@@ -340,6 +341,13 @@ function detectUnresolvableReason(
   }
 
   if (pairState.primary && pairState.challenger) {
+    return null;
+  }
+
+  // HOK-2813_c: If the primary has pending arms (awaiting_fork), the pair is
+  // not orphaned — it's just waiting for the fork trigger to materialise the
+  // challenger. Do not treat it as unresolvable.
+  if (pairState.primary && hasPendingArms(pairState.primary)) {
     return null;
   }
 
