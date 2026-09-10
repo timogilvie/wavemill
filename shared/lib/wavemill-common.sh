@@ -1249,6 +1249,10 @@ safe_remove_task_worktree_and_branch() {
       remote_lookup_rc=0
       if remote_output="$(wavemill_git_remote_with_timeout "$remote_timeout" -C "$REPO_DIR" ls-remote --heads origin "$remote_ref" 2>/dev/null)"; then
         remote_head_sha="$(printf '%s\n' "$remote_output" | awk '{print $1; exit}')"
+        if [[ -z "$remote_head_sha" && "$remote_ref" == refs/heads/* ]]; then
+          remote_output="$(wavemill_git_remote_with_timeout "$remote_timeout" -C "$REPO_DIR" ls-remote --heads origin "$task_branch" 2>/dev/null || true)"
+          remote_head_sha="$(printf '%s\n' "$remote_output" | awk '{print $1; exit}')"
+        fi
         :
       else
         remote_lookup_rc=$?
