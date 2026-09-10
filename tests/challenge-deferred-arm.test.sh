@@ -353,6 +353,63 @@ echo "=== stage-result schema accepts source=inherited ==="
 INHERIT_CHECK=$(jq -r '.properties.source.enum[0] // ""' "$REPO_DIR/shared/schemas/stage-result.schema.json")
 check_eq "schema declares source.enum[0]=inherited" "inherited" "$INHERIT_CHECK"
 
+# ────────────────────────────────────────────────────────────────
+# Test 6: HOK-2813_c - Pending arms survive mill restart and orphan/repair/reap skips
+# ────────────────────────────────────────────────────────────────
+echo ""
+echo "=== pending-arm survival and safety checks ==="
+
+# Simulate state with a primary, a pending arm, and no challenger task
+RESTART_STATE="$TMP_ROOT/restart-state.json"
+cat > "$RESTART_STATE" <<'RESTART_JSON'
+{
+  "session":"test",
+  "tasks":{
+    "HOK-5000":{
+      "slug":"foo",
+      "branch":"task/foo",
+      "challenge":true,
+      "challengeRole":"primary",
+      "challengePairId":"HOK-5000",
+      "challengeArms":[{
+        "key":"HOK-5000_c",
+        "slug":"foo-challenger",
+        "branch":"task/foo-challenger",
+        "role":"challenger",
+        "variedStage":"review",
+        "challengeArmState":"awaiting_fork",
+        "recordedAt":"2026-09-10T00:00:00Z"
+      }]
+    }
+  }
+}
+RESTART_JSON
+
+STATE_FILE="$RESTART_STATE"
+export STATE_FILE
+
+# Test: pending arm count detection
+PENDING=$(challenge_arms_list_pending "HOK-5000" | jq 'length')
+check_eq "pending arm count after restart" "1" "$PENDING"
+
+# Test: cancel_pending still works on pending arms
+challenge_arms_cancel_pending "HOK-5000" "pre_fork_primary_failure" || true
+CANCELLED_STATE=$(jq -r '.tasks["HOK-5000"].challengeArms[0].challengeArmState' "$STATE_FILE")
+check_eq "cancel_pending transitions awaiting_fork → cancelled" "cancelled" "$CANCELLED_STATE"
+
+COLLAPSE_REASON=$(jq -r '.tasks["HOK-5000"].challengeCollapseReason' "$STATE_FILE")
+check_eq "collapse reason recorded" "pre_fork_primary_failure" "$COLLAPSE_REASON"
+
+CHALLENGE_AFTER=$(jq -r '.tasks["HOK-5000"].challenge' "$STATE_FILE")
+check_eq "challenge flag cleared by cancel_pending" "false" "$CHALLENGE_AFTER"
+
+# Test: pair is not found in task state (challenger not materialized)
+if ! jq -e '.tasks["HOK-5000_c"]' "$STATE_FILE" >/dev/null 2>&1; then
+  pass "challenger task does not exist for pending arm"
+else
+  fail "challenger task should not exist for pending arm"
+fi
+
 echo ""
 echo "--- Results: $PASS passed, $FAIL failed ---"
 [[ "$FAIL" -eq 0 ]]
