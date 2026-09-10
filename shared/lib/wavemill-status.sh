@@ -1645,6 +1645,26 @@ render_task_row() {
       [[ -n "$_artifact_seg" ]] && render_task_detail_lines "artifacts: ${_artifact_seg}"
     fi
   fi
+
+  # HOK-2813: a deferred challenger nested on this primary is planned work
+  # with no pane, worktree, or task row. Surface it as an annotation under the
+  # primary — state-file only, never a pane lookup or an active-count entry —
+  # so an operator can tell a pending fork from a dead task.
+  render_task_detail_lines "$(render_pending_challenge_arms "$issue")"
+}
+
+# Print one "awaiting fork" line per pending challengeArms[] entry on a
+# primary. Reads only $STATE_FILE; prints nothing when the task carries no
+# pending arms (the overwhelmingly common case).
+render_pending_challenge_arms() {
+  local issue="${1:-}"
+  [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 0
+  jq -r --arg issue "$issue" '
+    (.tasks[$issue].challengeArms // [])
+    | map(select(.challengeArmState == "awaiting_fork"))
+    | .[]
+    | "⏳ challenger \(.key) awaiting fork · \(.variedStage // "?") stage · \(.role // "challenger")"
+  ' "$STATE_FILE" 2>/dev/null || true
 }
 
 render_inbox_section() {

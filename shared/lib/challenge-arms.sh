@@ -176,9 +176,14 @@ challenge_arms_delete() {
 # aborts before the fork could fire, so the pair-accounting layer sees a
 # deliberate no-comparison rather than a phantom one-armed pair.
 #
-# Usage: challenge_arms_cancel_pending <primary_issue> <reason>
+# The reason is a taxonomy value (e.g. pre_fork_primary_failure); the optional
+# detail carries the free-text cause for audit. The cancelled arm record is
+# retained on the primary so the collapse stays inspectable.
+#
+# Usage: challenge_arms_cancel_pending <primary_issue> <reason> [detail]
 challenge_arms_cancel_pending() {
   local primary_issue="$1" reason="${2:-primary_aborted_pre_fork}"
+  local detail="${3:-pending challenger arm cancelled before fork}"
   [[ -n "$primary_issue" ]] || return 1
   [[ -n "${STATE_FILE:-}" && -f "${STATE_FILE}" ]] || return 0
 
@@ -191,7 +196,8 @@ challenge_arms_cancel_pending() {
   [[ -n "$pending_keys" ]] || return 0
 
   local key extra_json
-  extra_json="$(jq -cn --arg r "$reason" '{cancelReason: $r, cancelledAt: (now | todate)}')"
+  extra_json="$(jq -cn --arg r "$reason" --arg d "$detail" \
+    '{cancelReason: $r, cancelDetail: $d, cancelledAt: (now | todate)}')"
   while IFS= read -r key; do
     [[ -n "$key" ]] || continue
     challenge_arms_set_state "$primary_issue" "$key" "awaiting_fork" "cancelled" "$extra_json" 2>/dev/null || true
@@ -210,7 +216,7 @@ challenge_arms_cancel_pending() {
   # collapse paths leave the primary looking identical.
   state_mutate "$STATE_FILE" \
     '.tasks[$issue].challengeCollapseReason = $reason
-     | .tasks[$issue].challengeCollapseDetail = "pending challenger arm cancelled before fork"
+     | .tasks[$issue].challengeCollapseDetail = $detail
      | .tasks[$issue].challenge = false
      | del(.tasks[$issue].challengeRole,
            .tasks[$issue].challengePairId,
@@ -220,8 +226,47 @@ challenge_arms_cancel_pending() {
            .tasks[$issue].challengeModel)
      | .tasks[$issue].updated = (now | todate)' \
     --arg issue "$primary_issue" \
-    --arg reason "$reason" >/dev/null 2>&1 || true
+    --arg reason "$reason" \
+    --arg detail "$detail" >/dev/null 2>&1 || true
 
+  return 0
+}
+
+# Restart recovery (HOK-2813): an arm caught in `materializing` when the mill
+# died never completed its fork. Materialisation is idempotent-by-retry (the
+# branch-at-fork-commit tolerance in challenge_materialize_challenger_arm
+# attaches to a partial attempt, and mismatched identity fails closed), so the
+# safe restart posture is to reset the arm to awaiting_fork and let the fork
+# trigger's bounded-retry gate drive it again. The persisted arm record — the
+# original execution intent, models, and planned identity — is preserved
+# verbatim; only the state field and a recovery stamp change.
+#
+# Usage: challenge_arms_recover_interrupted <primary_issue>
+challenge_arms_recover_interrupted() {
+  local primary_issue="$1"
+  [[ -n "$primary_issue" ]] || return 1
+  [[ -n "${STATE_FILE:-}" && -f "${STATE_FILE}" ]] || return 0
+
+  local interrupted_keys
+  interrupted_keys=$(jq -r --arg issue "$primary_issue" \
+    '(.tasks[$issue].challengeArms // [])
+     | map(select(.challengeArmState == "materializing") | .key)
+     | .[]' \
+    "$STATE_FILE" 2>/dev/null || true)
+  [[ -n "$interrupted_keys" ]] || return 0
+
+  local key extra_json
+  extra_json="$(jq -cn '{recoveredFrom: "materializing", recoveredAt: (now | todate)}')"
+  while IFS= read -r key; do
+    [[ -n "$key" ]] || continue
+    challenge_arms_set_state "$primary_issue" "$key" "materializing" "awaiting_fork" "$extra_json" 2>/dev/null || true
+    if declare -F log_route_lifecycle >/dev/null 2>&1; then
+      log_route_lifecycle "challenge_arm_recovered" \
+        "issue=$primary_issue" \
+        "arm=$key" \
+        "reason=materializing_interrupted_by_restart"
+    fi
+  done <<< "$interrupted_keys"
   return 0
 }
 

@@ -10920,15 +10920,19 @@ cleanup_aborted_challenge_arm() {
     return 1
   }
 
-  # HOK-2811 (Arbiter P2.4a): if this primary has any pending (awaiting_fork)
-  # challenger arms, cancel them so pair accounting sees a deliberate
-  # no-comparison rather than a phantom one-armed pair. No worktree/branch
-  # exists for a pending arm, so there is nothing else to tear down.
+  # HOK-2811/HOK-2813: if this primary has any pending (awaiting_fork)
+  # challenger arms, the primary is failing terminally before the fork could
+  # fire. Collapse the challenge to a single run under the typed
+  # pre_fork_primary_failure reason (the free-text cause is kept as detail)
+  # so pair accounting sees a deliberate no-comparison rather than a phantom
+  # one-armed pair. No worktree/branch/pane/PR exists for a pending arm, so
+  # there is nothing else to tear down — and nothing may be created: the
+  # surviving primary is never promoted to a solo pipeline relaunch.
   local pending_arms_pre_cancel
   pending_arms_pre_cancel=$(read_state_value "" --arg i "$issue" \
     '((.tasks[$i].challengeArms // []) | map(select(.challengeArmState == "awaiting_fork")) | length)')
   if [[ "$pending_arms_pre_cancel" =~ ^[0-9]+$ ]] && (( pending_arms_pre_cancel > 0 )); then
-    challenge_arms_cancel_pending "$issue" "$reason" || true
+    challenge_arms_cancel_pending "$issue" "pre_fork_primary_failure" "$reason" || true
   fi
 
   win="$issue-$slug"
@@ -13531,6 +13535,15 @@ if [[ -f "$STATE_FILE" ]]; then
     BRANCH_BY_ISSUE["$ISSUE"]="$BRANCH"
     SLUG_BY_ISSUE["$ISSUE"]="$SLUG"
     [[ -n "$PR" ]] && PR_BY_ISSUE["$ISSUE"]="$PR"
+
+    # HOK-2813: a deferred challenger arm survives restart as its nested
+    # challengeArms[] record — only the primary rehydrates as a task. An arm
+    # the crash caught mid-materialisation is reset to awaiting_fork here so
+    # the fork trigger retries it; its persisted record (planned identity,
+    # models, immutable intent references) is consumed as-is, never rebuilt.
+    if declare -F challenge_arms_recover_interrupted >/dev/null 2>&1; then
+      challenge_arms_recover_interrupted "$ISSUE" || true
+    fi
   # Terminal tombstones whose resources were already reaped are restart
   # evidence, not work: rehydrating them would let a later tick recreate
   # windows/worktrees for arms that no longer exist (HOK-2972). Terminal rows
@@ -16440,6 +16453,11 @@ monitor_issue_state() {
   # in case the eval was missed on initial PR detection (e.g. challenge
   # flag was incorrect when PR was first found)
   if is_challenge_task "$ISSUE"; then
+    # HOK-2813: restart-safe fork trigger. If the mill restarted after the
+    # primary's review dispatched, the review-phase trigger site may never
+    # run again; a still-pending arm must fork from here too. Guarded
+    # internally, so this is a cheap no-op when no arms are pending.
+    challenge_maybe_materialize_deferred_arms "$ISSUE" "$SLUG" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" || true
     maybe_run_challenge_eval "$ISSUE" "$PR" "$BRANCH" "$SLUG"
     maybe_run_challenge_comparison "$ISSUE"
     maybe_resolve_unresolvable_challenge_pair "$ISSUE"
