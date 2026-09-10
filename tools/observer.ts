@@ -34,6 +34,9 @@ const MODEL_DOWNGRADE_THRESHOLD = 3;
 const TERMINAL_PARKED_HIGH_FLOOR_MINUTES = 60;
 const TERMINAL_PARKED_URGENT_FLOOR_MINUTES = 24 * 60;
 const RESIDUE_COMMIT_SUBJECT_LIMIT = 5;
+// Active-task unpublished work only becomes an operator condition once the
+// task has demonstrably stalled; below this age it is normal in-flight coding.
+const STALLED_ACTIVE_UNPUBLISHED_MINUTES = 120;
 const PR_CREATE_FAILED_PATTERN = /pull request create failed:?\s*(.*)/i;
 
 interface ObserverOptions {
@@ -798,13 +801,43 @@ function cleanupEvidenceKey(task: TaskState, config: EffectiveTaskConfig, residu
 
 function detectCleanupIncidentsForRepo(repo: RepoSnapshot, timestamp: string): IncidentRecord[] {
   const incidents: IncidentRecord[] = [];
+  const parsedNow = Date.parse(timestamp);
+  const now = Number.isFinite(parsedNow) ? parsedNow : Date.now();
   for (const task of repo.tasks) {
     const config = resolveObserverTaskConfig(repo, task.issue, task);
     const branch = taskBranch(task);
     const residue = branch ? inspectTaskBranchResidue(repo.repoDir, branch, config.baseBranch.value) : undefined;
     const classified = classifyResidue(task, config, residue);
     const rootCauseClass = cleanupRootCause(classified.disposition);
-    if (rootCauseClass && (taskHasTerminalResidueStatus(task) || taskCleanupEpisode(task) || classified.disposition === 'unpublished-at-risk')) {
+    // Cleanup incidents require terminal lifecycle evidence or a persisted
+    // cleanup episode. An ordinary active coding branch that is ahead and not
+    // yet pushed is delivery risk, not cleanup failure (HOK-2972).
+    const hasCleanupContext = taskHasTerminalResidueStatus(task) || Boolean(taskCleanupEpisode(task));
+    if (rootCauseClass && !hasCleanupContext && classified.disposition === 'unpublished-at-risk') {
+      const ageMinutes = taskAgeMinutes(task, repo, now);
+      if (ageMinutes !== undefined && Number.isFinite(ageMinutes) && ageMinutes > STALLED_ACTIVE_UNPUBLISHED_MINUTES) {
+        incidents.push(createIncidentDraft({
+          taskId: task.issue,
+          session: repo.session,
+          category: 'configuration_operator_condition',
+          severity: 'medium',
+          confidence: 'high',
+          lifecycle: 'observed',
+          rootCauseClass: 'active_unpublished_work_stalled',
+          summary: `${task.issue} active task has unpublished commits and has not progressed for ${Math.round(ageMinutes)}m.`,
+          operatorAction: `Inspect why ${task.issue} stalled, then let it finish or push ${branch ?? 'the task branch'} to origin. The work is not cleanup residue; do not terminalize or reap it.`,
+          evidence: [{
+            type: 'workflow_state',
+            source: repo.workflowStatePath ?? join(repo.repoDir, '.wavemill', 'workflow-state.json'),
+            timestamp,
+            redactedData: [`ageMinutes=${Math.round(ageMinutes)}`, ...classified.evidence].join(' '),
+            key: `stalled-active-unpublished:${task.issue}:${branch ?? 'no-branch'}`,
+          }],
+          metadata: { disposition: classified.disposition, effectiveBaseBranch: config.baseBranch.value },
+        }));
+      }
+    }
+    if (rootCauseClass && hasCleanupContext) {
       const key = `cleanup:${task.issue}:${classified.disposition}:${cleanupEvidenceKey(task, config, residue)}`;
       incidents.push(createIncidentDraft({
         taskId: task.issue,
@@ -832,7 +865,14 @@ function detectCleanupIncidentsForRepo(repo: RepoSnapshot, timestamp: string): I
         },
       }));
     }
-    if (config.baseBranch.driftFromRepoConfig !== undefined) {
+    // Launch-contract drift on a terminal/superseded record is intentional
+    // historical provenance: the immutable contract simply predates the current
+    // repo config. It stays visible in status/finding provenance but must not
+    // sit in the actionable incident list forever (HOK-1309). Once the task is
+    // terminal these candidates stop, so any existing incident resolves under
+    // the normal consecutive-missed-cycle aging contract.
+    const driftIsHistorical = taskHasTerminalResidueStatus(task);
+    if (!driftIsHistorical && config.baseBranch.driftFromRepoConfig !== undefined) {
       incidents.push(createIncidentDraft({
         taskId: task.issue,
         session: repo.session,
@@ -853,7 +893,7 @@ function detectCleanupIncidentsForRepo(repo: RepoSnapshot, timestamp: string): I
         metadata: { effectiveBaseBranch: config.baseBranch.value, repoConfigBaseBranch: config.baseBranch.driftFromRepoConfig },
       }));
     }
-    if (config.requireConfirm.driftFromRepoConfig !== undefined) {
+    if (!driftIsHistorical && config.requireConfirm.driftFromRepoConfig !== undefined) {
       incidents.push(createIncidentDraft({
         taskId: task.issue,
         session: repo.session,
@@ -2162,7 +2202,9 @@ function terminalStatus(status?: string): boolean {
     || status === 'completed-external'
     || status === 'closed'
     || status === 'done'
-    || status === 'aborted';
+    || status === 'aborted'
+    || status === 'superseded'
+    || status === 'replaced';
 }
 
 function normalizedLifecycle(task: TaskState) {

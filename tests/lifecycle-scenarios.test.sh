@@ -196,6 +196,7 @@ for fn in \
   resolve_pair_on_primary_merge \
   cleanup_merged_primary_challenge_task \
   closed_pr_resource_policy \
+  coding_stage_owner_lost \
   monitor_issue_state
 do
   extract_function "$MONITOR_SCRIPT_FILE" "$fn" >> "$MONITOR_FUNC_FILE"

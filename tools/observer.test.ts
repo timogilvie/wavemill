@@ -2332,3 +2332,173 @@ test('parked-arm incident detection never modifies observer config files', async
     rmSync(fixture.repoDir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// HOK-2972: cleanup incidents require terminal lifecycle evidence; active
+// unpublished work is delivery risk, and historical config drift is
+// provenance, not an actionable incident.
+// ---------------------------------------------------------------------------
+
+function lifecycleIncidentSnapshot(
+  fixture: { repoDir: string; slug: string; branch: string },
+  task: Record<string, unknown>,
+  panes: Record<string, unknown>[] = [],
+) {
+  return {
+    timestamp: new Date().toISOString(),
+    sessions: ['wavemill'],
+    panes,
+    processes: [],
+    repos: [{
+      session: 'wavemill',
+      repoDir: fixture.repoDir,
+      workflowStatePath: join(fixture.repoDir, '.wavemill', 'workflow-state.json'),
+      tasks: [task],
+    }],
+    findings: [],
+  };
+}
+
+function livePaneFor(issue: string, slug: string) {
+  return {
+    session: 'wavemill',
+    windowIndex: '3',
+    paneIndex: '0',
+    windowName: `${issue}-${slug}`,
+    active: true,
+    pid: 4242,
+    command: 'claude',
+    title: `coding ${issue}`,
+  };
+}
+
+async function storedIncidents(repoDir: string) {
+  const store = new IncidentStore(join(repoDir, '.wavemill', 'incidents'));
+  return store.getAllIncidents();
+}
+
+test('active coding task with unpublished commits emits no cleanup incident while progressing', async () => {
+  const fixture = createResidueGitFixture({ commits: 5, slug: 'active-unpublished-fresh' });
+  try {
+    const task = {
+      issue: 'HOK-2963',
+      slug: fixture.slug,
+      branch: fixture.branch,
+      phase: 'coding',
+      status: 'active',
+      worktree: fixture.repoDir,
+      updated: agoIso(5),
+      lifecycle: { schemaVersion: 1, workflowOutcome: 'active', resourceDisposition: 'allocated' },
+    };
+    await reconcileIncidents(
+      lifecycleIncidentSnapshot(fixture, task, [livePaneFor('HOK-2963', fixture.slug)]),
+      defaultObserverOptions(),
+    );
+    const stored = await storedIncidents(fixture.repoDir);
+    assert.equal(stored.some((incident) => incident.category === 'stale_orphaned_state'), false);
+    assert.equal(stored.some((incident) => incident.severity === 'critical'), false);
+    assert.equal(stored.some((incident) => incident.rootCauseClass === 'active_unpublished_work_stalled'), false);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('stalled active unpublished work surfaces as a delivery-risk condition, not a cleanup incident', async () => {
+  const fixture = createResidueGitFixture({ commits: 5, slug: 'active-unpublished-stalled' });
+  try {
+    const task = {
+      issue: 'HOK-2963',
+      slug: fixture.slug,
+      branch: fixture.branch,
+      phase: 'coding',
+      status: 'active',
+      worktree: fixture.repoDir,
+      updated: agoIso(180),
+      lifecycle: { schemaVersion: 1, workflowOutcome: 'active', resourceDisposition: 'allocated' },
+    };
+    await reconcileIncidents(
+      lifecycleIncidentSnapshot(fixture, task, [livePaneFor('HOK-2963', fixture.slug)]),
+      defaultObserverOptions(),
+    );
+    const stored = await storedIncidents(fixture.repoDir);
+    const stalled = stored.filter((incident) => incident.rootCauseClass === 'active_unpublished_work_stalled');
+    assert.equal(stalled.length, 1);
+    assert.equal(stalled[0].category, 'configuration_operator_condition');
+    assert.equal(stalled[0].severity, 'medium');
+    assert.doesNotMatch(stalled[0].operatorAction, /terminaliz.*cleanup/i);
+    assert.equal(stored.some((incident) => incident.category === 'stale_orphaned_state'), false);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('terminal task with unpublished commits keeps the critical recovery-first cleanup incident', async () => {
+  const fixture = createResidueGitFixture({ commits: 3, slug: 'terminal-unpublished' });
+  try {
+    const task = {
+      issue: 'HOK-2911',
+      slug: fixture.slug,
+      branch: fixture.branch,
+      phase: 'error',
+      status: 'error',
+      worktree: fixture.repoDir,
+      updated: agoIso(90),
+    };
+    await reconcileIncidents(lifecycleIncidentSnapshot(fixture, task), defaultObserverOptions());
+    const stored = await storedIncidents(fixture.repoDir);
+    const cleanup = stored.filter((incident) => incident.rootCauseClass === 'cleanup_unpublished_at_risk');
+    assert.equal(cleanup.length, 1);
+    assert.equal(cleanup[0].category, 'stale_orphaned_state');
+    assert.equal(cleanup[0].severity, 'critical');
+    assert.match(cleanup[0].operatorAction, /Recover the work first/);
+    assert.equal(stored.some((incident) => incident.rootCauseClass === 'active_unpublished_work_stalled'), false);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+function driftTask(issue: string, fixture: { repoDir: string; slug: string; branch: string }, overrides: Record<string, unknown>) {
+  return {
+    issue,
+    slug: fixture.slug,
+    branch: fixture.branch,
+    worktree: fixture.repoDir,
+    updated: agoIso(2),
+    ...overrides,
+    lifecycle: {
+      schemaVersion: 1,
+      launchContract: {
+        baseBranch: 'auto/integration',
+        provenance: { baseBranch: 'runtime-env' },
+      },
+      ...((overrides.lifecycle as Record<string, unknown>) ?? {}),
+    },
+  };
+}
+
+test('launch-contract drift on a superseded terminal record is provenance, not an incident; active drift stays visible', async () => {
+  const fixture = createMainIntegrationDivergenceFixture();
+  try {
+    const terminalTask = driftTask('HOK-1309', fixture, {
+      phase: 'closed',
+      status: 'superseded',
+      lifecycle: { workflowOutcome: 'closed', resourceDisposition: 'retained' },
+    });
+    await reconcileIncidents(lifecycleIncidentSnapshot(fixture, terminalTask), defaultObserverOptions());
+    let stored = await storedIncidents(fixture.repoDir);
+    assert.equal(stored.some((incident) => incident.rootCauseClass === 'config_drift_base_branch'), false);
+
+    const activeTask = driftTask('HOK-2963', fixture, {
+      phase: 'coding',
+      status: 'active',
+      lifecycle: { workflowOutcome: 'active', resourceDisposition: 'allocated' },
+    });
+    await reconcileIncidents(lifecycleIncidentSnapshot(fixture, activeTask), defaultObserverOptions());
+    stored = await storedIncidents(fixture.repoDir);
+    const drift = stored.filter((incident) => incident.rootCauseClass === 'config_drift_base_branch');
+    assert.equal(drift.length, 1);
+    assert.equal(drift[0].taskId, 'HOK-2963');
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});

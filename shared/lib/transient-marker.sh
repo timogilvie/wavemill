@@ -227,9 +227,15 @@ marker_emit_finding() {
     return 0  # No kind, can't emit
   fi
 
-  # Build finding JSONL
-  local findings_file=".wavemill/observer-findings.jsonl"
-  mkdir -p .wavemill
+  # Build finding JSONL. Prefer the controller repository's state location
+  # (HOK-2972) so the artifact never lands inside - and never dirties - a
+  # task worktree; standalone callers without REPO_DIR keep the cwd path.
+  local findings_root="."
+  if [[ -n "${REPO_DIR:-}" && -d "${REPO_DIR:-}" ]]; then
+    findings_root="$REPO_DIR"
+  fi
+  local findings_file="$findings_root/.wavemill/observer-findings.jsonl"
+  mkdir -p "$findings_root/.wavemill"
 
   local context_json
   if [[ -n "$task_id" ]]; then

@@ -249,18 +249,20 @@ test_marker_read_nonexistent() {
 }
 
 # Test 9: marker_emit_finding appends JSONL
+# HOK-2972: findings land in the controller repository's state location
+# (REPO_DIR) so they never dirty a task worktree. Pin REPO_DIR to a temp
+# root so the test is hermetic even when the caller's shell exports one.
 test_marker_emit_finding() {
   local marker_path="$TMPDIR/test-marker-9"
-  local findings_file=".wavemill/observer-findings.jsonl"
+  local findings_root="$TMPDIR/findings-repo"
+  local findings_file="$findings_root/.wavemill/observer-findings.jsonl"
 
+  mkdir -p "$findings_root"
   rm -f "$findings_file"
 
   marker_write "$marker_path" --kind "test-kind" --head "abc123" --reason "test reason"
 
-  # Create findings directory for the test
-  mkdir -p "$(dirname "$findings_file")"
-
-  marker_emit_finding "$marker_path" "test reason" "test-repo"
+  REPO_DIR="$findings_root" marker_emit_finding "$marker_path" "test reason" "test-repo"
 
   if [[ ! -f "$findings_file" ]]; then
     echo "Finding file was not created" >&2

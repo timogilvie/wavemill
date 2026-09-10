@@ -1019,6 +1019,44 @@ _wavemill_record_cleanup_decision() {
     "$detail" "$extras" "$marker_subdir"
 }
 
+# HOK-2972: the one controller-owned artifact the observer writes inside a
+# task worktree. It is machine-generated with explicit provenance and must
+# never make a worktree "dirty" for cleanup or release-safety purposes. The
+# exclusion is exact: only an *untracked* file at this precise path is
+# ignored; every other tracked or untracked change - including anything else
+# under .wavemill/ - remains a cleanup blocker.
+WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT=".wavemill/observer-findings.jsonl"
+
+# Porcelain status of a worktree with the controller-owned observer artifact
+# excluded. Prints the filtered status; propagates git's failure (non-zero,
+# no output) so callers can keep treating an unreadable status as dirty.
+wavemill_worktree_dirty_status() {
+  local wt_dir="${1:-}" raw_status=""
+  raw_status="$(git -C "$wt_dir" status --porcelain --untracked-files=all 2>/dev/null)" || return 1
+  printf '%s\n' "$raw_status" | grep -v -x -F "?? ${WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT}" | grep -v -x '' || true
+}
+
+# Migrate (or drop) the controller-owned observer artifact out of a task
+# worktree before that worktree is reaped. Appends its content to the
+# repository-level findings file when REPO_DIR is a different checkout so no
+# recorded findings are lost. Only removes the exact untracked artifact.
+wavemill_migrate_controller_observer_artifact() {
+  local wt_dir="${1:-}" artifact
+  [[ -n "$wt_dir" && -d "$wt_dir" ]] || return 0
+  artifact="$wt_dir/$WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT"
+  [[ -f "$artifact" ]] || return 0
+  # Never touch a tracked file of the same name; the exclusion covers only the
+  # untracked controller artifact.
+  if git -C "$wt_dir" ls-files --error-unmatch "$WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT" >/dev/null 2>&1; then
+    return 0
+  fi
+  if [[ -n "${REPO_DIR:-}" && -d "${REPO_DIR:-}" && "$REPO_DIR" != "$wt_dir" ]]; then
+    mkdir -p "$REPO_DIR/.wavemill" 2>/dev/null || true
+    cat "$artifact" >> "$REPO_DIR/$WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT" 2>/dev/null || true
+  fi
+  rm -f "$artifact" 2>/dev/null || true
+}
+
 # Rollback gate for PR-aware deletion authority (HOK-2953). Disabling it
 # skips only the safe_terminal_pr_head authority; every other path is
 # unchanged and affected branches fall back to retention with evidence.
@@ -1137,7 +1175,7 @@ safe_remove_task_worktree_and_branch() {
   fi
 
   if [[ -n "$wt_dir" && -d "$wt_dir" ]]; then
-    if ! dirty_status="$(git -C "$wt_dir" status --porcelain --untracked-files=all 2>/dev/null)"; then
+    if ! dirty_status="$(wavemill_worktree_dirty_status "$wt_dir")"; then
       SAFE_CLEANUP_PRESERVATION_REASON="dirty_worktree"
       SAFE_CLEANUP_VERIFICATION_REASON="dirty_status_failed"
       if ! _wavemill_record_cleanup_decision "retain_dirty" "dirty_worktree" "worktree_status_unreadable" "false"; then
@@ -1326,7 +1364,7 @@ safe_remove_task_worktree_and_branch() {
   # work instead of losing it.
   if [[ "$local_branch_exists" == "true" ]]; then
     if [[ -n "$wt_dir" && -d "$wt_dir" ]]; then
-      if ! final_dirty="$(git -C "$wt_dir" status --porcelain --untracked-files=all 2>/dev/null)" || [[ -n "$final_dirty" ]]; then
+      if ! final_dirty="$(wavemill_worktree_dirty_status "$wt_dir")" || [[ -n "$final_dirty" ]]; then
         final_check_passed="false"
         if ! _wavemill_record_cleanup_decision "retain_dirty" "dirty_worktree" "worktree_dirty_before_deletion" "false"; then
           log_warn "  Failed to write preserved-branch incident marker for $task_branch"
@@ -1366,6 +1404,10 @@ safe_remove_task_worktree_and_branch() {
   fi
 
   if [[ -n "$wt_dir" && -d "$wt_dir" ]]; then
+    # The controller-owned observer artifact is excluded from dirtiness above,
+    # but `git worktree remove` still refuses untracked content: migrate it to
+    # the repository-level findings file before removal.
+    wavemill_migrate_controller_observer_artifact "$wt_dir"
     if wavemill_cleanup_run git -C "$REPO_DIR" worktree remove "$wt_dir" >>"${MILL_LOG_FILE:-/dev/null}" 2>/dev/null; then
       log "debug" "Removed worktree: $wt_dir"
     else
@@ -1396,6 +1438,29 @@ safe_remove_task_worktree_and_branch() {
   fi
 
   WAVEMILL_CLEANUP_OUTCOME="$classification"
+  return 0
+}
+
+# HOK-2972: one idempotent terminal deregistration path. Marks the arm
+# CLEANED and clears it from the monitor's in-memory registries
+# (BRANCH_BY_ISSUE, SLUG_BY_ISSUE, PR_BY_ISSUE) so neither a later monitor
+# tick nor a post-loop scan can recreate state rows, worktrees, or windows
+# for it. Callers write the durable tombstone/delivery evidence first.
+# The arrays are monitor-local: startup preflight also runs these shared
+# helpers before the monitor exists, so each array is touched only when it is
+# declared (an implicit indexed array would treat HOK-#### issue IDs as
+# arithmetic and abort under `set -u`).
+monitor_deregister_terminal_task() {
+  local issue="${1:-}" _registry
+  [[ -n "$issue" ]] || return 0
+  if declare -p CLEANED >/dev/null 2>&1; then
+    CLEANED["$issue"]=1
+  fi
+  for _registry in BRANCH_BY_ISSUE SLUG_BY_ISSUE PR_BY_ISSUE; do
+    if declare -p "$_registry" >/dev/null 2>&1; then
+      unset "${_registry}[${issue}]" 2>/dev/null || true
+    fi
+  done
   return 0
 }
 
@@ -1549,13 +1614,7 @@ cleanup_completed_task() {
   fi
   set_task_lifecycle_disposition "$issue" "" "reaped" "" "cleanup_completed_task" 2>/dev/null || true
   remove_task_state "$issue"
-  # CLEANED is a monitor-local cache. Startup preflight also calls this shared
-  # helper, before the monitor exists, so do not create an implicit indexed
-  # array here: issue IDs such as HOK-2895 are arithmetic expressions to an
-  # indexed array and abort under `set -u` while resolving the unset HOK token.
-  if declare -p CLEANED >/dev/null 2>&1; then
-    CLEANED["$issue"]=1
-  fi
+  monitor_deregister_terminal_task "$issue"
 
   if [[ -n "$completion_reason" ]]; then
     log "$issue: Complete ($completion_reason)"
@@ -3326,7 +3385,11 @@ wavemill_persist_attempt_reconciliation() {
       | .tasks[$issue].lifecycle.attempt = (if $attempt == null then (.tasks[$issue].lifecycle.attempt // null) else $attempt end)
       | .tasks[$issue].lifecycle.prReconciliation = (if $reconciliation == null then (.tasks[$issue].lifecycle.prReconciliation // null) else $reconciliation end)
       | .tasks[$issue].lifecycle.lastAttemptReconciledBy = $actor
-      | .tasks[$issue].updated = (now | todateiso8601)
+      # Progress clocks stay separate (HOK-2972): a PR-discovery check (for
+      # example a no_pr_candidates result) is a reconciliation heartbeat, not
+      # task progress, so it must not refresh .tasks[].updated and thereby
+      # postpone stale-phase detection.
+      | .tasks[$issue].lifecycle.lastAttemptReconciledAt = (now | todateiso8601)
       | .updated = (now | todateiso8601)
     end' \
     --arg issue "$issue" \
@@ -5367,7 +5430,7 @@ task_worktree_release_safety() {
     printf '%s\n' "git-error"
     return 1
   fi
-  if ! dirty_status="$(git -C "$wt_dir" status --porcelain --untracked-files=all 2>/dev/null)"; then
+  if ! dirty_status="$(wavemill_worktree_dirty_status "$wt_dir")"; then
     printf '%s\n' "git-error"
     return 1
   fi

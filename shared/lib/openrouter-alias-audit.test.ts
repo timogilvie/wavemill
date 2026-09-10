@@ -198,7 +198,7 @@ describe('openrouter alias audit', () => {
     ]);
   });
 
-  it('reports per-field provider pricing drift with expected and actual values', () => {
+  it('reports only missing or understated registry pricing as drift', () => {
     const registry: ModelRegistry = {
       models: {
         'qwen-3-coder': makeModel({
@@ -237,18 +237,51 @@ describe('openrouter alias audit', () => {
     assert.deepEqual(report.findings.map((finding) => finding.reason), [
       'pricing-drift',
       'pricing-drift',
-      'pricing-drift',
-      'pricing-drift',
-      'pricing-drift',
     ]);
     assert.deepEqual(report.findings.map((finding) => finding.detail), [
-      'inputPerMTok drift for pricing.inputCostPerMTok: expected provider 1, actual registry 1.5.',
-      'inputPerMTok drift for costPerMillionInputTokensUsd: expected provider 1, actual registry 0.5.',
-      'outputPerMTok drift for costPerMillionOutputTokensUsd: expected provider 2, actual registry 3.',
-      'cacheReadPerMTok drift for pricing.cacheReadCostPerMTok: expected provider 0.125, actual registry 0.2.',
-      'cacheWritePerMTok drift for pricing.cacheWriteCostPerMTok: expected provider 1.25, actual registry null.',
+      'inputPerMTok drift for costPerMillionInputTokensUsd: provider price 1 exceeds registry 0.5.',
+      'cacheWritePerMTok drift for pricing.cacheWriteCostPerMTok: provider price 1.25 exceeds registry null.',
     ]);
-    assert.equal(report.selectableFindings, 5);
+    assert.equal(report.selectableFindings, 2);
+  });
+
+  it('accepts conservative registry pricing when the live catalog is discounted', () => {
+    const registry: ModelRegistry = {
+      models: {
+        'qwen-3-coder': makeModel({
+          costPerMillionInputTokensUsd: 1,
+          costPerMillionOutputTokensUsd: 2,
+          pricing: {
+            inputCostPerMTok: 1,
+            outputCostPerMTok: 2,
+            cacheReadCostPerMTok: 0.2,
+          },
+          supportedModel: { lifecycle: 'supported', stages: ['coding'], providerNativeId: 'qwen/qwen3-coder' },
+        }),
+      },
+      ladders: {},
+    };
+
+    const report = auditOpenRouterAliases({
+      registry,
+      openRouterModels: new Map<string, OpenRouterModel>([
+        ['qwen/qwen3-coder', {
+          id: 'qwen/qwen3-coder',
+          context_length: 200_000,
+          supported_parameters: ['tools'],
+          pricing: {
+            prompt: '0.00000028',
+            completion: '0.00000088',
+            input_cache_read: '0.000000052',
+          },
+        }],
+      ]),
+      now: new Date('2026-09-10T00:00:00.000Z'),
+      catalogSource: 'live',
+    });
+
+    assert.deepEqual(report.findings, []);
+    assert.equal(report.selectableFindings, 0);
   });
 
   it('does not report cache drift when provider cache prices are absent', () => {
