@@ -289,6 +289,32 @@ test('foldAttestationsIntoStageAttribution suppresses direct evidence on diverge
   assert.equal(isStageAttributionEligibleForCoverage(attribution), false);
 });
 
+test('foldAttestationsIntoStageAttribution rejects inherited varied-stage evidence', () => {
+  const attribution = foldAttestationsIntoStageAttribution({
+    pairId: 'pair-2968',
+    stage: 'implementation',
+    primary: makeAttestation('primary', {
+      challengeStage: 'implementation',
+      expectedStageModel: 'claude-opus-4-6',
+    }),
+    challenger: makeAttestation('challenger', {
+      challengeStage: 'implementation',
+      expectedStageModel: 'gpt-5.4',
+    }),
+    evidenceProvenance: 'direct',
+    forkIdentity: makeForkIdentity({
+      stage: 'implementation',
+      challengerInheritedStages: ['implementation'],
+    }),
+    judgeWinner: 'challenger',
+  });
+
+  assert.equal(attribution.status, 'invalid');
+  assert.equal(attribution.outcome, null);
+  assert.ok(attribution.reasonCodes.includes('inherited_stage_evidence_only'));
+  assert.equal(isStageAttributionEligibleForCoverage(attribution), false);
+});
+
 test('runtime ChallengeExecutionIntent satisfies the JSON schema contract', () => {
   const intent = makeRuntimeIntent();
   assert.equal(validateChallengeIntent(intent), true, JSON.stringify(validateChallengeIntent.errors));
@@ -338,6 +364,9 @@ test('projection accepts the legacy compact intent emitted before HOK-2610', () 
   assert.deepEqual(projected, {
     pairId: 'pair-legacy',
     challengeStage: 'implementation',
+    forkStage: null,
+    forkCommit: null,
+    sharedPrefix: false,
     primary: legacy.primary,
     challenger: legacy.challenger,
   });

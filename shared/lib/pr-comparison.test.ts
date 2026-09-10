@@ -13,6 +13,7 @@ import {
   mapBlindVerdictToSides,
   parseUnifiedDiffLineRanges,
   prNumberFromValue,
+  resolveForkAwareComparisonDiffs,
   resolvePrDiffIdentity,
   resolvePresentationOrder,
   retainLoserPatch,
@@ -181,6 +182,71 @@ test('resolvePrDiffIdentity uses forkCommit as diff base when present', () => {
   assert.equal(gitCommands.some((args) => args[0] === 'merge-base'), false);
 });
 
+test('resolveForkAwareComparisonDiffs returns shared prefix once and arm deltas', () => {
+  const gitCommands: string[][] = [];
+  const diffs = resolveForkAwareComparisonDiffs({
+    primaryPr: '12',
+    challengerPr: '13',
+    forkCommit: 'fork-sha',
+    repoDir: '/repo',
+    deps: {
+      runGh(args) {
+        const pr = args[2];
+        return JSON.stringify({
+          url: `https://github.com/acme/repo/pull/${pr}`,
+          headRefName: `feature-${pr}`,
+          baseRefName: 'main',
+          headRefOid: pr === '12' ? 'primary-head' : 'challenger-head',
+        });
+      },
+      runGit(args) {
+        gitCommands.push(args);
+        if (args[0] === 'rev-parse') return 'fork-tree';
+        if (args[0] === 'merge-base' && args[1] === '--is-ancestor') return '';
+        if (args[0] === 'merge-base') return 'shared-base';
+        if (args[0] === 'diff' && args[1] === 'shared-base') return 'shared prefix diff';
+        if (args[0] === 'diff' && args[1] === 'fork-sha' && args[2] === 'primary-head') return 'primary post-fork diff';
+        if (args[0] === 'diff' && args[1] === 'fork-sha' && args[2] === 'challenger-head') return 'challenger post-fork diff';
+        return '';
+      },
+    },
+  });
+
+  assert.equal(diffs.sharedPrefixDiff, 'shared prefix diff');
+  assert.equal(diffs.primaryDiff, 'primary post-fork diff');
+  assert.equal(diffs.challengerDiff, 'challenger post-fork diff');
+  assert.equal(diffs.forkTree, 'fork-tree');
+  assert.ok(gitCommands.some((args) => args.join(' ') === 'diff shared-base fork-sha'));
+  assert.ok(gitCommands.some((args) => args.join(' ') === 'diff fork-sha primary-head'));
+  assert.ok(gitCommands.some((args) => args.join(' ') === 'diff fork-sha challenger-head'));
+});
+
+test('resolveForkAwareComparisonDiffs rejects fork commits outside either arm history', () => {
+  assert.throws(() => resolveForkAwareComparisonDiffs({
+    primaryPr: '12',
+    challengerPr: '13',
+    forkCommit: 'fork-sha',
+    repoDir: '/repo',
+    deps: {
+      runGh(args) {
+        const pr = args[2];
+        return JSON.stringify({
+          url: `https://github.com/acme/repo/pull/${pr}`,
+          headRefName: `feature-${pr}`,
+          baseRefName: 'main',
+          headRefOid: pr === '12' ? 'primary-head' : 'challenger-head',
+        });
+      },
+      runGit(args) {
+        if (args[0] === 'merge-base' && args[1] === '--is-ancestor' && args[3] === 'challenger-head') {
+          throw new Error('not ancestor');
+        }
+        return '';
+      },
+    },
+  }), /not an ancestor of challenger PR/);
+});
+
 test('retainLoserPatch writes deterministic local artifact under the byte cap', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'loser-patch-test-'));
   try {
@@ -273,6 +339,32 @@ test('buildComparisonPrompt includes workflow context when routing metadata diff
   assert.doesNotMatch(prompt, /scopeDiscipline/);
   assert.doesNotMatch(prompt, /Primary/);
   assert.doesNotMatch(prompt, /Challenger/);
+});
+
+test('buildComparisonPrompt preserves legacy no-fork prompt bytes', () => {
+  const prompt = buildComparisonPrompt({
+    issuePrompt: 'Issue context',
+    primaryDiff: 'alpha diff',
+    challengerDiff: 'beta diff',
+    presentationOrder: 'primary-first',
+    promptTemplate: 'Task context:\n{{ISSUE_PROMPT}}{{SHARED_PREFIX_CONTEXT}}\n\nCandidate A diff:\n{{CANDIDATE_A_DIFF}}\n\nCandidate B diff:\n{{CANDIDATE_B_DIFF}}',
+  });
+
+  assert.equal(prompt, 'Task context:\nIssue context\n\nCandidate A diff:\nalpha diff\n\nCandidate B diff:\nbeta diff');
+});
+
+test('buildComparisonPrompt puts fork shared prefix before blinded arm deltas', () => {
+  const prompt = buildComparisonPrompt({
+    issuePrompt: 'Issue context',
+    sharedPrefixDiff: 'shared prefix diff',
+    primaryDiff: 'primary delta',
+    challengerDiff: 'challenger delta',
+    presentationOrder: 'challenger-first',
+  });
+
+  assert.ok(prompt.indexOf('Shared prefix diff') < prompt.indexOf('Candidate A diff:\nchallenger delta'));
+  assert.ok(prompt.indexOf('Candidate A diff:\nchallenger delta') < prompt.indexOf('Candidate B diff:\nprimary delta'));
+  assert.equal((prompt.match(/shared prefix diff/g) ?? []).length, 1);
 });
 
 test('buildComparisonPrompt includes direct stage evidence for planner challenges', () => {

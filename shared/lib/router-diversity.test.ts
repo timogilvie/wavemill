@@ -30,6 +30,7 @@ function makeRecord(
   models: { planner?: string; coder: string; reviewer?: string },
   timestamp: string,
   routingMode?: string,
+  overrides: Partial<EvalRecord> = {},
 ): EvalRecord {
   return {
     id,
@@ -71,6 +72,7 @@ function makeRecord(
       },
     },
     ...(routingMode ? { routeProvenance: { routingMode } } : {}),
+    ...overrides,
   } as EvalRecord;
 }
 
@@ -174,6 +176,54 @@ test('records without per-stage attribution only count toward implementation', (
   assert.equal(report.windowRecords.plan, 0);
   assert.equal(report.windowRecords.review, 0);
   assert.equal(report.windowRecords.implementation, 1);
+});
+
+test('inherited stages are excluded from window and cumulative coverage counts', () => {
+  const records = [
+    makeRecord(
+      'forked',
+      { planner: 'planner-model', coder: 'coder-model', reviewer: 'reviewer-model' },
+      '2026-06-01T00:00:00Z',
+      undefined,
+      {
+        challengePairId: 'pair-1',
+        challengeSide: 'challenger',
+        challengeIntent: {
+          pairId: 'pair-1',
+          challengeStage: 'review',
+          primary: {
+            pairId: 'pair-1',
+            side: 'primary',
+            challengeStage: 'review',
+            expectedStageModel: 'reviewer-a',
+            expectedRoute: { planner: 'planner-model', coder: 'coder-model', reviewer: 'reviewer-a', planDepth: 'light', codeDepth: 'light', reviewMode: 'static' },
+            inheritedStages: [],
+          },
+          challenger: {
+            pairId: 'pair-1',
+            side: 'challenger',
+            challengeStage: 'review',
+            expectedStageModel: 'reviewer-model',
+            expectedRoute: { planner: 'planner-model', coder: 'coder-model', reviewer: 'reviewer-model', planDepth: 'light', codeDepth: 'light', reviewMode: 'static' },
+            inheritedStages: ['plan', 'implementation'],
+          },
+          forkStage: 'review',
+          forkCommit: 'f'.repeat(40),
+          sharedPrefix: true,
+        },
+      },
+    ),
+  ];
+  const report = buildDiversityReport(records, {
+    coverage: resolveCoverageConfig({ window: 10, minRecordsPerModelStage: 1 }),
+  });
+
+  assert.equal(report.windowRecords.plan, 0);
+  assert.equal(report.windowRecords.implementation, 0);
+  assert.equal(report.windowRecords.review, 1);
+  assert.equal(report.coverageCells.find((cell) => cell.model === 'planner-model' && cell.stage === 'plan'), undefined);
+  assert.equal(report.coverageCells.find((cell) => cell.model === 'coder-model' && cell.stage === 'implementation'), undefined);
+  assert.equal(report.coverageCells.find((cell) => cell.model === 'reviewer-model' && cell.stage === 'review')?.count, 1);
 });
 
 test('routing modes are tallied over the window', () => {

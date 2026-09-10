@@ -21,6 +21,7 @@ import type { StageAwareDecision } from './stage-aware-router.ts';
 import type { WorkflowRouteDecision } from './workflow-router.ts';
 import { filterDisabledModels } from './disabled-models.ts';
 import { partitionEvidence } from './model-evidence-policy.ts';
+import { isStageAttributionEligibleForCoverage } from './challenge-execution-contract.ts';
 
 export type ChallengeReason = 'low-confidence' | 'new-model' | 'low-data-stage' | 'disabled';
 export type ChallengeStage = 'plan' | 'implementation' | 'review';
@@ -563,6 +564,35 @@ export function recordStageModel(record: EvalRecord, stage: ChallengeStage): str
   return stages?.coder?.model || record.modelId || undefined;
 }
 
+export function recordStageInherited(record: EvalRecord, stage: ChallengeStage): boolean {
+  const sideInherited = record.challengeSide === 'challenger'
+    ? record.challengeIntent?.challenger?.inheritedStages
+    : record.challengeSide === 'primary'
+      ? record.challengeIntent?.primary?.inheritedStages
+      : undefined;
+  if (sideInherited?.includes(stage)) {
+    return true;
+  }
+  if (record.challengeSide === 'primary') {
+    return record.forkIdentity?.primaryInheritedStages?.includes(stage) === true;
+  }
+  if (record.challengeSide === 'challenger') {
+    return record.forkIdentity?.challengerInheritedStages?.includes(stage) === true;
+  }
+  return record.forkIdentity?.primaryInheritedStages?.includes(stage) === true
+    || record.forkIdentity?.challengerInheritedStages?.includes(stage) === true;
+}
+
+export function recordStageCountsForCoverage(record: EvalRecord, stage: ChallengeStage): boolean {
+  if (recordStageInherited(record, stage)) {
+    return false;
+  }
+  if (record.stageAttribution?.stage === stage && !isStageAttributionEligibleForCoverage(record.stageAttribution)) {
+    return false;
+  }
+  return true;
+}
+
 /**
  * Build a lightweight summary of historical eval coverage for challenge policy.
  *
@@ -613,6 +643,10 @@ export function buildEvalSummary(repoDir?: string): EvalSummary {
       }
 
       for (const stage of STAGES) {
+        if (!recordStageCountsForCoverage(record, stage)) {
+          continue;
+        }
+
         if (recordStagePresence(record, stage)) {
           summary.recordsByStage[stage] = (summary.recordsByStage[stage] ?? 0) + 1;
         }

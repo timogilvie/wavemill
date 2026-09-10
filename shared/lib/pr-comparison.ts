@@ -82,7 +82,7 @@ Use these criterion definitions exactly:
 {{STAGE_EVIDENCE_CONTEXT}}
 
 Task context:
-{{ISSUE_PROMPT}}
+{{ISSUE_PROMPT}}{{SHARED_PREFIX_CONTEXT}}
 
 Candidate A diff:
 {{CANDIDATE_A_DIFF}}
@@ -373,6 +373,74 @@ export function resolvePrDiffIdentity(input: {
   });
 }
 
+export interface ForkAwareComparisonDiffs {
+  sharedPrefixDiff: string;
+  primaryDiff: string;
+  challengerDiff: string;
+  primaryMetadata: PrIdentityMetadata;
+  challengerMetadata: PrIdentityMetadata;
+  forkTree: string;
+}
+
+function isAncestor(runGit: (args: string[]) => string, ancestor: string, descendant: string): boolean {
+  try {
+    runGit(['merge-base', '--is-ancestor', ancestor, descendant]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Fetch the three diff sections needed for a forked pair: the shared prefix
+ * once, then each arm's post-fork contribution. The legacy full-PR diff path
+ * remains outside this helper so independent pairs keep their prompt bytes.
+ */
+export function resolveForkAwareComparisonDiffs(input: {
+  primaryPr: string;
+  challengerPr: string;
+  forkCommit: string;
+  repoDir: string;
+  deps?: DiffIdentityDeps;
+}): ForkAwareComparisonDiffs {
+  const runGit = gitRunner(input.repoDir, input.deps);
+  const primaryNumber = prNumberFromValue(input.primaryPr);
+  const challengerNumber = prNumberFromValue(input.challengerPr);
+  const primaryMetadata = resolvePrIdentityMetadata(input.primaryPr, input.repoDir, input.deps);
+  const challengerMetadata = resolvePrIdentityMetadata(input.challengerPr, input.repoDir, input.deps);
+
+  ensureLocalComparisonObjects({
+    prNumber: primaryNumber,
+    metadata: primaryMetadata,
+    forkCommit: input.forkCommit,
+    runGit,
+  });
+  ensureLocalComparisonObjects({
+    prNumber: challengerNumber,
+    metadata: challengerMetadata,
+    forkCommit: input.forkCommit,
+    runGit,
+  });
+
+  if (!isAncestor(runGit, input.forkCommit, primaryMetadata.head_sha)) {
+    throw new Error(`Fork commit ${input.forkCommit} is not an ancestor of primary PR ${primaryNumber} head ${primaryMetadata.head_sha}`);
+  }
+  if (!isAncestor(runGit, input.forkCommit, challengerMetadata.head_sha)) {
+    throw new Error(`Fork commit ${input.forkCommit} is not an ancestor of challenger PR ${challengerNumber} head ${challengerMetadata.head_sha}`);
+  }
+
+  const forkTree = runGit(['rev-parse', `${input.forkCommit}^{tree}`]).trim();
+  const sharedBase = runGit(['merge-base', `refs/remotes/origin/${primaryMetadata.baseRefName}`, input.forkCommit]).trim();
+  return {
+    sharedPrefixDiff: runGit(['diff', sharedBase, input.forkCommit]),
+    primaryDiff: runGit(['diff', input.forkCommit, primaryMetadata.head_sha]),
+    challengerDiff: runGit(['diff', input.forkCommit, challengerMetadata.head_sha]),
+    primaryMetadata,
+    challengerMetadata,
+    forkTree,
+  };
+}
+
 export interface LoserPatchRetentionResult {
   path: string;
   written: boolean;
@@ -450,6 +518,7 @@ export function buildComparisonPrompt(input: {
   issuePrompt: string;
   primaryDiff: string;
   challengerDiff: string;
+  sharedPrefixDiff?: string;
   presentationOrder: PresentationOrder;
   promptTemplate?: string;
   primaryRouting?: ChallengeRoutingMeta;
@@ -513,11 +582,17 @@ ${formatStageEvidenceBlock('Candidate B', sideB.stageEval)}
 `;
   }
 
+  const sharedPrefixContext = input.sharedPrefixDiff === undefined ? '' : `
+
+Shared prefix diff (common context for both candidates; do not score as a candidate-specific contribution):
+${input.sharedPrefixDiff}`;
+
   return fillPromptTemplate(input.promptTemplate ?? DEFAULT_ARBITER_JUDGE_PROMPT_TEMPLATE, {
     RUBRIC: formatRubricForJudgePrompt(),
     WORKFLOW_CONTEXT: workflowContext,
     STAGE_EVIDENCE_CONTEXT: stageEvidenceContext,
     ISSUE_PROMPT: input.issuePrompt,
+    SHARED_PREFIX_CONTEXT: sharedPrefixContext,
     CANDIDATE_A_DIFF: sideA.diff,
     CANDIDATE_B_DIFF: sideB.diff,
   });
@@ -613,18 +688,26 @@ export function buildCappedComparisonPrompt(
     ...input,
     primaryDiff: '',
     challengerDiff: '',
+    ...(input.sharedPrefixDiff !== undefined ? { sharedPrefixDiff: '' } : {}),
   }));
   let availableDiffBytes = Math.max(0, maxPromptBytes - scaffoldBytes);
+  const sharedPrefixBytes = byteLength(input.sharedPrefixDiff ?? '');
   const primaryBytes = byteLength(input.primaryDiff);
   const challengerBytes = byteLength(input.challengerDiff);
-  const totalDiffBytes = primaryBytes + challengerBytes;
+  const totalDiffBytes = sharedPrefixBytes + primaryBytes + challengerBytes;
+  const sharedPrefixBudget = totalDiffBytes > 0
+    ? Math.floor(availableDiffBytes * (sharedPrefixBytes / totalDiffBytes))
+    : 0;
   const primaryBudget = totalDiffBytes > 0
     ? Math.floor(availableDiffBytes * (primaryBytes / totalDiffBytes))
     : 0;
-  const challengerBudget = Math.max(0, availableDiffBytes - primaryBudget);
+  const challengerBudget = Math.max(0, availableDiffBytes - sharedPrefixBudget - primaryBudget);
 
   let prompt = buildComparisonPrompt({
     ...input,
+    ...(input.sharedPrefixDiff !== undefined
+      ? { sharedPrefixDiff: truncateDiffForPrompt(input.sharedPrefixDiff, 'shared prefix', sharedPrefixBudget) }
+      : {}),
     primaryDiff: truncateDiffForPrompt(
       input.primaryDiff,
       input.presentationOrder === 'primary-first' ? 'candidate A' : 'candidate B',
@@ -639,12 +722,18 @@ export function buildCappedComparisonPrompt(
 
   while (byteLength(prompt) > maxPromptBytes && availableDiffBytes > 0) {
     availableDiffBytes = Math.floor(availableDiffBytes * 0.9);
+    const nextSharedPrefixBudget = totalDiffBytes > 0
+      ? Math.floor(availableDiffBytes * (sharedPrefixBytes / totalDiffBytes))
+      : 0;
     const nextPrimaryBudget = totalDiffBytes > 0
       ? Math.floor(availableDiffBytes * (primaryBytes / totalDiffBytes))
       : 0;
-    const nextChallengerBudget = Math.max(0, availableDiffBytes - nextPrimaryBudget);
+    const nextChallengerBudget = Math.max(0, availableDiffBytes - nextSharedPrefixBudget - nextPrimaryBudget);
     prompt = buildComparisonPrompt({
       ...input,
+      ...(input.sharedPrefixDiff !== undefined
+        ? { sharedPrefixDiff: truncateDiffForPrompt(input.sharedPrefixDiff, 'shared prefix', nextSharedPrefixBudget) }
+        : {}),
       primaryDiff: truncateDiffForPrompt(
         input.primaryDiff,
         input.presentationOrder === 'primary-first' ? 'candidate A' : 'candidate B',

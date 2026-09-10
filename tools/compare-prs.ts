@@ -24,7 +24,9 @@ import {
 } from '../shared/lib/challenge-comparison.ts';
 import {
   routesIdentical,
+  foldAttestationsIntoStageAttribution,
   type InvalidChallengeReason,
+  type ForkIdentity,
 } from '../shared/lib/challenge-execution-contract.ts';
 import {
   selectChallengeEvalScore,
@@ -36,6 +38,7 @@ import {
   buildChallengeCommentBody,
   formatRoutingSummary,
   prNumberFromValue,
+  resolveForkAwareComparisonDiffs,
   resolvePrDiffIdentity,
   resolvePrIdentityMetadata,
   resolvePresentationOrder,
@@ -52,6 +55,7 @@ type ComparisonForkDescriptor = Pick<
   ChallengeComparison,
   | 'forkStage'
   | 'forkCommit'
+  | 'forkIdentity'
   | 'sharedPrefix'
   | 'primaryInheritedStages'
   | 'challengerInheritedStages'
@@ -60,6 +64,11 @@ type ComparisonForkDescriptor = Pick<
 type ChallengeIntentForkShape = {
   forkStage?: unknown;
   forkCommit?: unknown;
+  forkTree?: unknown;
+  taskPacketHash?: unknown;
+  planHash?: unknown;
+  promptHash?: unknown;
+  toolConfigHash?: unknown;
   sharedPrefix?: unknown;
   primary?: { inheritedStages?: unknown };
   challenger?: { inheritedStages?: unknown };
@@ -79,6 +88,23 @@ function inheritedStages(value: unknown): ChallengeStage[] {
   return Array.isArray(value) ? value.filter(isChallengeStage) : [];
 }
 
+function cleanString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function chooseMatchingString(
+  field: keyof ChallengeIntentForkShape,
+  primary: ChallengeIntentForkShape | undefined,
+  challenger: ChallengeIntentForkShape | undefined,
+): string | null {
+  const primaryValue = cleanString(primary?.[field]);
+  const challengerValue = cleanString(challenger?.[field]);
+  if (primaryValue && challengerValue && primaryValue !== challengerValue) {
+    return null;
+  }
+  return primaryValue ?? challengerValue ?? null;
+}
+
 function resolveComparisonForkDescriptor(
   primaryIntent: unknown,
   challengerIntent: unknown,
@@ -95,13 +121,39 @@ function resolveComparisonForkDescriptor(
     : typeof challenger?.forkCommit === 'string' && challenger.forkCommit.trim()
       ? challenger.forkCommit.trim()
       : null;
+  const sharedPrefix = primary?.sharedPrefix === true || challenger?.sharedPrefix === true;
+  const primaryInheritedStages = inheritedStages(primary?.primary?.inheritedStages ?? challenger?.primary?.inheritedStages);
+  const challengerInheritedStages = inheritedStages(challenger?.challenger?.inheritedStages ?? primary?.challenger?.inheritedStages);
+  const forkIdentity = forkStage !== null || forkCommit !== null ? {
+    stage: forkStage,
+    commit: forkCommit,
+    tree: chooseMatchingString('forkTree', primary, challenger),
+    taskPacketHash: chooseMatchingString('taskPacketHash', primary, challenger),
+    planHash: chooseMatchingString('planHash', primary, challenger),
+    promptHash: chooseMatchingString('promptHash', primary, challenger),
+    toolConfigHash: chooseMatchingString('toolConfigHash', primary, challenger),
+    sharedPrefix,
+    primaryInheritedStages,
+    challengerInheritedStages,
+    producer: 'compare-prs/fork-intent',
+    producerVersion: '1.0.0',
+  } satisfies ForkIdentity : undefined;
   return {
     forkStage,
     forkCommit,
-    sharedPrefix: primary?.sharedPrefix === true || challenger?.sharedPrefix === true,
-    primaryInheritedStages: inheritedStages(primary?.primary?.inheritedStages ?? challenger?.primary?.inheritedStages),
-    challengerInheritedStages: inheritedStages(challenger?.challenger?.inheritedStages ?? primary?.challenger?.inheritedStages),
+    ...(forkIdentity ? { forkIdentity } : {}),
+    sharedPrefix,
+    primaryInheritedStages,
+    challengerInheritedStages,
   };
+}
+
+function reconcileForkCommit(cliValue: unknown, descriptor: ComparisonForkDescriptor): string | null {
+  const cliForkCommit = cleanString(cliValue);
+  if (cliForkCommit && descriptor.forkCommit && cliForkCommit !== descriptor.forkCommit) {
+    throw new Error(`--fork-commit ${cliForkCommit} does not match persisted fork commit ${descriptor.forkCommit}`);
+  }
+  return descriptor.forkCommit ?? cliForkCommit;
 }
 
 function retainComparedLoserPatch(input: {
@@ -177,6 +229,7 @@ runTool({
     comment: { type: 'boolean', description: 'Post recommendation comments on both PRs' },
     'auto-merge': { type: 'boolean', description: 'Merge winner and close loser after comparison' },
     'check-only': { type: 'boolean', description: 'Only verify required eval records exist' },
+    'fork-commit': { type: 'string', description: 'Shared fork commit for fork-aware comparison diffs' },
     'presentation-order': { type: 'string', description: 'Judge presentation order: primary-first, challenger-first, or random' },
     'result-file': { type: 'string', description: 'Optional path for structured job results' },
   },
@@ -244,26 +297,33 @@ runTool({
         throw new Error(`Invalid eval scores for challenge pair ${pairId}`);
       }
 
-      // Do not retrieve potentially large diffs for readiness checks or
-      // current-head evidence refusals. The judge path receives them only
-      // after both selectors have proven their matching eval rows.
-      const primaryPrContext = fetchPrContext(primaryNumber, repoDir);
-      const challengerPrContext = fetchPrContext(challengerNumber, repoDir);
-
-      const forkDescriptor = resolveComparisonForkDescriptor(
+      let forkDescriptor = resolveComparisonForkDescriptor(
         primaryEval.challengeIntent,
         challengerEval.challengeIntent,
       );
-      const primaryDiffIdentity = resolvePrDiffIdentity({
-        pr: primaryNumber,
-        repoDir,
-        forkCommit: forkDescriptor.forkCommit,
-      });
-      const challengerDiffIdentity = resolvePrDiffIdentity({
-        pr: challengerNumber,
-        repoDir,
-        forkCommit: forkDescriptor.forkCommit,
-      });
+      const effectiveForkCommit = reconcileForkCommit(args['fork-commit'], forkDescriptor);
+      forkDescriptor = {
+        ...forkDescriptor,
+        forkCommit: effectiveForkCommit,
+      };
+      let primaryDiffIdentity: ChallengeComparison['primaryDiffIdentity'];
+      let challengerDiffIdentity: ChallengeComparison['challengerDiffIdentity'];
+      let diffIdentityError: Error | undefined;
+      try {
+        primaryDiffIdentity = resolvePrDiffIdentity({
+          pr: primaryNumber,
+          repoDir,
+          forkCommit: effectiveForkCommit,
+        });
+        challengerDiffIdentity = resolvePrDiffIdentity({
+          pr: challengerNumber,
+          repoDir,
+          forkCommit: effectiveForkCommit,
+        });
+      } catch (error) {
+        if (!effectiveForkCommit) throw error;
+        diffIdentityError = error instanceof Error ? error : new Error(String(error));
+      }
 
     // Build routing metadata if provided
       const primaryRouting: ChallengeRoutingMeta | undefined = args['primary-planner'] ? {
@@ -519,32 +579,80 @@ runTool({
         return;
       }
 
-      const diffAvailability = {
-        primary: primaryPrContext.availability.available
-          ? {
-              available: true as const,
-              source: primaryPrContext.availability.source,
-              bytes: primaryPrContext.availability.bytes,
-            }
-          : {
-              available: false as const,
-              reason: primaryPrContext.availability.reason,
-              detail: primaryPrContext.availability.detail,
-            },
-        challenger: challengerPrContext.availability.available
-          ? {
-              available: true as const,
-              source: challengerPrContext.availability.source,
-              bytes: challengerPrContext.availability.bytes,
-            }
-          : {
-              available: false as const,
-              reason: challengerPrContext.availability.reason,
-              detail: challengerPrContext.availability.detail,
-            },
-      };
+      let primaryDiff = '';
+      let challengerDiff = '';
+      let sharedPrefixDiff: string | undefined;
+      let diffAvailability: NonNullable<ChallengeComparison['diffAvailability']>;
+      if (effectiveForkCommit) {
+        try {
+          if (diffIdentityError) throw diffIdentityError;
+          const forkedDiffs = resolveForkAwareComparisonDiffs({
+            primaryPr: primaryNumber,
+            challengerPr: challengerNumber,
+            forkCommit: effectiveForkCommit,
+            repoDir,
+          });
+          sharedPrefixDiff = forkedDiffs.sharedPrefixDiff;
+          primaryDiff = forkedDiffs.primaryDiff;
+          challengerDiff = forkedDiffs.challengerDiff;
+          if (forkDescriptor.forkIdentity) {
+            forkDescriptor = {
+              ...forkDescriptor,
+              forkIdentity: {
+                ...forkDescriptor.forkIdentity,
+                commit: effectiveForkCommit,
+                tree: forkDescriptor.forkIdentity.tree === forkedDiffs.forkTree
+                  ? forkedDiffs.forkTree
+                  : null,
+              },
+            };
+          }
+          diffAvailability = {
+            primary: { available: true, source: 'local-git', bytes: Buffer.byteLength(primaryDiff, 'utf8') },
+            challenger: { available: true, source: 'local-git', bytes: Buffer.byteLength(challengerDiff, 'utf8') },
+          };
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          diffAvailability = {
+            primary: { available: false, reason: 'local_diff_failed', detail },
+            challenger: { available: false, reason: 'local_diff_failed', detail },
+          };
+        }
+      } else {
+        // Do not retrieve potentially large diffs for readiness checks or
+        // current-head evidence refusals. The judge path receives them only
+        // after both selectors have proven their matching eval rows.
+        const primaryPrContext = fetchPrContext(primaryNumber, repoDir);
+        const challengerPrContext = fetchPrContext(challengerNumber, repoDir);
+        primaryDiff = primaryPrContext.diff;
+        challengerDiff = challengerPrContext.diff;
+        diffAvailability = {
+          primary: primaryPrContext.availability.available
+            ? {
+                available: true as const,
+                source: primaryPrContext.availability.source,
+                bytes: primaryPrContext.availability.bytes,
+              }
+            : {
+                available: false as const,
+                reason: primaryPrContext.availability.reason,
+                detail: primaryPrContext.availability.detail,
+              },
+          challenger: challengerPrContext.availability.available
+            ? {
+                available: true as const,
+                source: challengerPrContext.availability.source,
+                bytes: challengerPrContext.availability.bytes,
+              }
+            : {
+                available: false as const,
+                reason: challengerPrContext.availability.reason,
+                detail: challengerPrContext.availability.detail,
+              },
+        };
+      }
 
-      if (!primaryPrContext.availability.available || !challengerPrContext.availability.available) {
+      if (!diffAvailability.primary.available || !diffAvailability.challenger.available) {
         const record = buildDiffUnavailableComparison({
           challengePairId: pairId,
           primaryModel,
@@ -625,8 +733,6 @@ runTool({
         return;
       }
 
-      const primaryDiff = primaryPrContext.diff;
-      const challengerDiff = challengerPrContext.diff;
       const primarySelected = selectChallengeEvalScore(primaryEval, challengeType);
       const challengerSelected = selectChallengeEvalScore(challengerEval, challengeType);
 
@@ -667,6 +773,7 @@ runTool({
         issuePrompt,
         primaryDiff,
         challengerDiff,
+        ...(sharedPrefixDiff !== undefined ? { sharedPrefixDiff } : {}),
         presentationOrder,
         promptTemplate: judgePromptTemplate,
         model: comparisonModel,
@@ -688,16 +795,46 @@ runTool({
         console.warn('LLM returned JavaScript syntax. Retrying with stricter JSON instructions...');
       }
       const verdict = judgeOutcome.verdict;
+      const deliveryVerdict = {
+        outcome: verdict.winner,
+        source: 'derived-from-comparison',
+        ...(verdict.winner === 'primary'
+          ? { prUrl: primaryPrUrl }
+          : verdict.winner === 'challenger'
+            ? { prUrl: challengerPrUrl }
+            : {}),
+        rationale: verdict.rationale,
+      } satisfies ChallengeComparison['deliveryVerdict'];
+      const stageAttribution = variedStage && effectiveForkCommit
+        ? foldAttestationsIntoStageAttribution({
+            pairId,
+            stage: variedStage,
+            primary: primaryAttestation,
+            challenger: challengerAttestation,
+            evidenceProvenance: primaryStageEval?.provenance === 'direct' && challengerStageEval?.provenance === 'direct'
+              ? 'direct'
+              : primaryStageEval || challengerStageEval
+                ? 'inferred'
+                : undefined,
+            forkIdentity: forkDescriptor.forkIdentity,
+            primaryReviewIdentity: primaryEval.reviewExecutedIdentity,
+            challengerReviewIdentity: challengerEval.reviewExecutedIdentity,
+            judgeWinner: verdict.winner,
+          })
+        : undefined;
+      if (stageAttribution) {
+        stageAttribution.decidedAt = new Date().toISOString();
+        stageAttribution.producer = 'compare-prs/stage-attribution-v1';
+      }
 
       // Attribute the win to the varied stage's model. For planner/reviewer
       // challenges the coder is shared, so crediting it would be meaningless.
-      const winnerRouting = verdict.winner === 'primary' ? primaryRouting : challengerRouting;
       const winnerSolutionModel = verdict.winner === 'primary' ? primaryModel : challengerModel;
-      const winnerModel = challengeType === 'planner-only'
-        ? (winnerRouting?.planner || winnerSolutionModel)
-        : challengeType === 'reviewer-only'
-          ? (winnerRouting?.reviewer || winnerSolutionModel)
-        : winnerSolutionModel;
+      const winnerModel = stageAttribution?.status === 'valid' && stageAttribution.winningStageModel
+        ? stageAttribution.winningStageModel
+        : challengeType === 'planner-only' || challengeType === 'reviewer-only'
+          ? winnerSolutionModel
+          : winnerSolutionModel;
       const primaryDisagreement = detectJudgeDisagreement({
         side: 'primary',
         evalScore: primarySelected.score,
@@ -741,6 +878,11 @@ runTool({
         challengeType,
         variedStage,
         stageEvidenceMode,
+        deliveryVerdict,
+        ...(stageAttribution ? { stageAttribution } : {}),
+        ...(forkDescriptor.forkIdentity ? { forkIdentity: forkDescriptor.forkIdentity } : {}),
+        ...(primaryEval.reviewExecutedIdentity ? { primaryReviewExecutedIdentity: primaryEval.reviewExecutedIdentity } : {}),
+        ...(challengerEval.reviewExecutedIdentity ? { challengerReviewExecutedIdentity: challengerEval.reviewExecutedIdentity } : {}),
         presentationOrder,
         workflowInsight: verdict.workflowInsight,
         judge_model: judgeOutcome.judgeModel,

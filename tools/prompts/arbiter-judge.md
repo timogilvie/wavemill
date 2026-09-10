@@ -32,7 +32,7 @@ Use these criterion definitions exactly:
 {{STAGE_EVIDENCE_CONTEXT}}
 
 Task context:
-{{ISSUE_PROMPT}}
+{{ISSUE_PROMPT}}{{SHARED_PREFIX_CONTEXT}}
 
 Candidate A diff:
 {{CANDIDATE_A_DIFF}}

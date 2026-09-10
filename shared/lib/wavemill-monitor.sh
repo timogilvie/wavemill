@@ -1651,12 +1651,41 @@ challenge_assert_arms_diverge() {
 # `inherited_stages_json` is the JSON array of ChallengeStage values that
 # the challenger inherits from the primary (e.g. `["plan","implementation"]`
 # for a review-stage fork).
+wavemill_file_sha256() {
+  local file="$1"
+  [[ -f "$file" ]] || return 1
+  node -e 'const fs = require("fs"); const crypto = require("crypto"); process.stdout.write(crypto.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex") + "\n");' "$file"
+}
+
+challenge_task_packet_hash() {
+  local feature_dir="$1"
+  if [[ -f "$feature_dir/task-packet.md" ]]; then
+    wavemill_file_sha256 "$feature_dir/task-packet.md"
+    return $?
+  fi
+  if [[ -f "$feature_dir/task-packet-header.md" && -f "$feature_dir/task-packet-details.md" ]]; then
+    node -e 'const fs = require("fs"); const crypto = require("crypto"); const hash = crypto.createHash("sha256"); hash.update(fs.readFileSync(process.argv[1])); hash.update("\n"); hash.update(fs.readFileSync(process.argv[2])); process.stdout.write(hash.digest("hex") + "\n");' "$feature_dir/task-packet-header.md" "$feature_dir/task-packet-details.md"
+    return $?
+  fi
+  return 1
+}
+
 challenge_intent_stamp_fork_descriptor() {
   local primary_issue="$1" challenger_key="$2"
   local primary_feature_dir="$3" challenger_feature_dir="$4"
   local fork_stage="$5" fork_commit="$6"
   local inherited_stages_json="${7:-[]}"
   [[ -n "$primary_issue" && -n "$fork_stage" && -n "$fork_commit" ]] || return 1
+
+  local fork_tree task_packet_hash plan_hash prompt_hash tool_config_hash
+  fork_tree="$(git -C "${primary_feature_dir%/features/*}" rev-parse "${fork_commit}^{tree}" 2>/dev/null \
+    || git -C "${REPO_DIR:-.}" rev-parse "${fork_commit}^{tree}" 2>/dev/null || true)"
+  task_packet_hash="$(challenge_task_packet_hash "$primary_feature_dir" 2>/dev/null || true)"
+  plan_hash="$(wavemill_file_sha256 "$primary_feature_dir/plan.md" 2>/dev/null || true)"
+  prompt_hash="$(wavemill_file_sha256 "$primary_feature_dir/task-packet-header.md" 2>/dev/null \
+    || wavemill_file_sha256 "$primary_feature_dir/task-packet.md" 2>/dev/null || true)"
+  tool_config_hash="$(wavemill_file_sha256 "$primary_feature_dir/.routing-complete" 2>/dev/null \
+    || wavemill_file_sha256 "$primary_feature_dir/.phase-config.json" 2>/dev/null || true)"
 
   local dir file tmp
   for dir in "$primary_feature_dir" "$challenger_feature_dir"; do
@@ -1667,10 +1696,20 @@ challenge_intent_stamp_fork_descriptor() {
       if jq \
         --arg fs "$fork_stage" \
         --arg fc "$fork_commit" \
+        --arg ft "$fork_tree" \
+        --arg tph "$task_packet_hash" \
+        --arg ph "$plan_hash" \
+        --arg prh "$prompt_hash" \
+        --arg tch "$tool_config_hash" \
         --argjson primaryInherited '[]' \
         --argjson challengerInherited "$inherited_stages_json" \
         '.forkStage = $fs
          | .forkCommit = $fc
+         | (if $ft != "" then .forkTree = $ft else . end)
+         | (if $tph != "" then .taskPacketHash = $tph else . end)
+         | (if $ph != "" then .planHash = $ph else . end)
+         | (if $prh != "" then .promptHash = $prh else . end)
+         | (if $tch != "" then .toolConfigHash = $tch else . end)
          | .sharedPrefix = true
          | .primary = ((.primary // {}) + {inheritedStages: $primaryInherited})
          | .challenger = ((.challenger // {}) + {inheritedStages: $challengerInherited})' \
@@ -1693,6 +1732,11 @@ challenge_intent_stamp_fork_descriptor() {
          primary: (($existing.primary // {}) + {inheritedStages: []}),
          challenger: (($existing.challenger // {}) + {inheritedStages: $challengerInherited})
        })
+     | (if $ft != "" then .tasks[$issue].challengeExecutionIntent.forkTree = $ft else . end)
+     | (if $tph != "" then .tasks[$issue].challengeExecutionIntent.taskPacketHash = $tph else . end)
+     | (if $ph != "" then .tasks[$issue].challengeExecutionIntent.planHash = $ph else . end)
+     | (if $prh != "" then .tasks[$issue].challengeExecutionIntent.promptHash = $prh else . end)
+     | (if $tch != "" then .tasks[$issue].challengeExecutionIntent.toolConfigHash = $tch else . end)
      | if $challenger != "" and (.tasks[$challenger] != null) then
          (.tasks[$challenger].challengeExecutionIntent // {}) as $cexist
          | .tasks[$challenger].challengeExecutionIntent = ($cexist + {
@@ -1700,12 +1744,22 @@ challenge_intent_stamp_fork_descriptor() {
              primary: (($cexist.primary // {}) + {inheritedStages: []}),
              challenger: (($cexist.challenger // {}) + {inheritedStages: $challengerInherited})
            })
+         | (if $ft != "" then .tasks[$challenger].challengeExecutionIntent.forkTree = $ft else . end)
+         | (if $tph != "" then .tasks[$challenger].challengeExecutionIntent.taskPacketHash = $tph else . end)
+         | (if $ph != "" then .tasks[$challenger].challengeExecutionIntent.planHash = $ph else . end)
+         | (if $prh != "" then .tasks[$challenger].challengeExecutionIntent.promptHash = $prh else . end)
+         | (if $tch != "" then .tasks[$challenger].challengeExecutionIntent.toolConfigHash = $tch else . end)
        else . end
      | .tasks[$issue].updated = (now | todate)' \
     --arg issue "$primary_issue" \
     --arg challenger "$challenger_key" \
     --arg fs "$fork_stage" \
     --arg fc "$fork_commit" \
+    --arg ft "$fork_tree" \
+    --arg tph "$task_packet_hash" \
+    --arg ph "$plan_hash" \
+    --arg prh "$prompt_hash" \
+    --arg tch "$tool_config_hash" \
     --argjson challengerInherited "$inherited_stages_json" >/dev/null 2>&1 || true
   return 0
 }
@@ -10627,7 +10681,8 @@ maybe_run_challenge_comparison() {
   local primary_slug challenger_slug primary_worktree challenger_worktree primary_feature_dir challenger_feature_dir
   local primary_planner primary_reviewer primary_plan_depth primary_code_depth primary_review_mode
   local challenger_planner challenger_reviewer challenger_plan_depth challenger_code_depth challenger_review_mode
-  local job_id job_status job_reason pairing_repaired job_dir log_path result_path pid
+  local job_id job_status job_reason pairing_repaired job_dir log_path result_path pid fork_commit
+  local -a compare_fork_args=()
   local current_evidence stored_evidence
   pair_id=$(get_task_meta "$issue" "challengePairId")
   [[ -z "$pair_id" ]] && return 0
@@ -10724,6 +10779,9 @@ maybe_run_challenge_comparison() {
   challenger_code_depth=$(get_task_meta "$challenger_key" "codeDepth")
   challenger_review_mode=$(get_task_meta "$challenger_key" "reviewMode")
 
+  fork_commit=$(read_state_value "" --arg i "$primary_key" '.tasks[$i].challengeExecutionIntent.forkCommit // empty')
+  [[ -n "$fork_commit" ]] && compare_fork_args=(--fork-commit "$fork_commit")
+
   log "status" "  ⚖ [mill] comparison running: pair=$pair_id primary_pr=#$primary_pr challenger_pr=#$challenger_pr"
   job_dir=$(challenge_job_dir)
   log_path="$job_dir/${job_id}.log"
@@ -10749,6 +10807,7 @@ maybe_run_challenge_comparison() {
     --challenger-plan-depth "$challenger_plan_depth" --challenger-code-depth "$challenger_code_depth" --challenger-review-mode "$challenger_review_mode" \
     --primary-feature-dir "${primary_feature_dir:-}" --challenger-feature-dir "${challenger_feature_dir:-}" \
     --repo-dir "$REPO_DIR" --comment \
+    "${compare_fork_args[@]}" \
     --result-file "$result_path" \
     >"$log_path" 2>&1 &
   pid=$!

@@ -3300,6 +3300,61 @@
           ],
           "description": "Git SHA both arms share, or null if the pair did not fork from a shared commit (HOK-2794)."
         },
+        "forkTree": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Git tree object id at the fork commit when a shared prefix is present."
+        },
+        "taskPacketHash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "SHA-256 of the task packet content at fork time."
+        },
+        "planHash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "SHA-256 of the plan artifact at fork time."
+        },
+        "promptHash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "SHA-256 of the prompt artifact at fork time."
+        },
+        "toolConfigHash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "SHA-256 of the tool-configuration snapshot at fork time."
+        },
         "sharedPrefix": {
           "type": "boolean",
           "description": "Whether the challenger inherited pre-fork execution artifacts. False until challenge.fork() ships (HOK-2794)."

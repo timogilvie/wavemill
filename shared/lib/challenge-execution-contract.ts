@@ -230,6 +230,11 @@ export interface ChallengeExecutionIntent {
   // Fork descriptor fields (P0.5 Phase 0, HOK-2794)
   forkStage?: ChallengeStage | null;
   forkCommit?: string | null;
+  forkTree?: string | null;
+  taskPacketHash?: string | null;
+  planHash?: string | null;
+  promptHash?: string | null;
+  toolConfigHash?: string | null;
   sharedPrefix?: boolean;
 }
 
@@ -239,6 +244,14 @@ export interface ChallengeExecutionIntentProjection {
   intentionallyIdentical?: boolean;
   decisionSource?: ChallengeDecisionSource;
   selectedStage?: ChallengeStage;
+  forkStage?: ChallengeStage | null;
+  forkCommit?: string | null;
+  forkTree?: string | null;
+  taskPacketHash?: string | null;
+  planHash?: string | null;
+  promptHash?: string | null;
+  toolConfigHash?: string | null;
+  sharedPrefix?: boolean;
   primary: ChallengeSideIntent;
   challenger: ChallengeSideIntent;
 }
@@ -549,6 +562,7 @@ function projectSideIntent(
       expectedStageModel: value.expectedStageModel,
       ...(value.expectedStageAgent ? { expectedStageAgent: value.expectedStageAgent } : {}),
       expectedRoute: value.expectedRoute,
+      ...(value.inheritedStages ? { inheritedStages: value.inheritedStages } : {}),
     };
   }
 
@@ -564,6 +578,7 @@ function projectSideIntent(
     expectedStageModel,
     ...(expectedStageAgent ? { expectedStageAgent } : {}),
     expectedRoute: routeFromRuntimeSide(runtimeSide),
+    ...(runtimeSide?.inheritedStages ? { inheritedStages: runtimeSide.inheritedStages } : {}),
   };
 }
 
@@ -582,6 +597,14 @@ export function projectChallengeIntentForPersistence(
     ...(intent.intentionallyIdentical ? { intentionallyIdentical: true } : {}),
     ...(intent.decisionSource ? { decisionSource: intent.decisionSource } : {}),
     ...(intent.selectedStage ? { selectedStage: intent.selectedStage } : {}),
+    ...(intent.forkStage !== undefined ? { forkStage: intent.forkStage } : {}),
+    ...(intent.forkCommit !== undefined ? { forkCommit: intent.forkCommit } : {}),
+    ...(intent.forkTree !== undefined ? { forkTree: intent.forkTree } : {}),
+    ...(intent.taskPacketHash !== undefined ? { taskPacketHash: intent.taskPacketHash } : {}),
+    ...(intent.planHash !== undefined ? { planHash: intent.planHash } : {}),
+    ...(intent.promptHash !== undefined ? { promptHash: intent.promptHash } : {}),
+    ...(intent.toolConfigHash !== undefined ? { toolConfigHash: intent.toolConfigHash } : {}),
+    ...(intent.sharedPrefix !== undefined ? { sharedPrefix: intent.sharedPrefix } : {}),
     primary,
     challenger,
   };
@@ -602,6 +625,9 @@ export function buildChallengeExecutionIntent(input: {
     ...(input.intentionallyIdentical ? { intentionallyIdentical: true } : {}),
     ...(input.routeContext ? { routeContext: input.routeContext } : {}),
     ...(input.selectionReason ? { selectionReason: input.selectionReason } : {}),
+    forkStage: null,
+    forkCommit: null,
+    sharedPrefix: false,
     primary: projectEntryToSideIntent({
       pairId: input.pairId,
       side: 'primary',
@@ -669,7 +695,7 @@ function addForkIdentityReasons(
     reasons.add('missing_fork_identity');
     return;
   }
-  if (!forkIdentity.commit) reasons.add('unverified_fork_commit');
+  if (!forkIdentity.commit || !forkIdentity.tree) reasons.add('unverified_fork_commit');
   const hashChecks: Array<[keyof ForkIdentity, StageAttributionReasonCode]> = [
     ['taskPacketHash', 'task_packet_hash_mismatch'],
     ['planHash', 'plan_hash_mismatch'],

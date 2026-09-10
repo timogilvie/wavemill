@@ -696,6 +696,77 @@ test('buildEvalSummary excludes held records before coverage counters', () => {
   }
 });
 
+test('buildEvalSummary excludes inherited stages from model-stage coverage', () => {
+  const { repoDir, cleanup } = makeRepo();
+  try {
+    const inherited = makeEvalRecord('forked-challenger', 'coder-model', {
+      challengePairId: 'pair-1',
+      challengeSide: 'challenger',
+      challengeIntent: {
+        pairId: 'pair-1',
+        challengeStage: 'review',
+        primary: {
+          pairId: 'pair-1',
+          side: 'primary',
+          challengeStage: 'review',
+          expectedStageModel: 'reviewer-a',
+          expectedRoute: { planner: 'planner-model', coder: 'coder-model', reviewer: 'reviewer-a', planDepth: 'light', codeDepth: 'light', reviewMode: 'static' },
+          inheritedStages: [],
+        },
+        challenger: {
+          pairId: 'pair-1',
+          side: 'challenger',
+          challengeStage: 'review',
+          expectedStageModel: 'reviewer-b',
+          expectedRoute: { planner: 'planner-model', coder: 'coder-model', reviewer: 'reviewer-b', planDepth: 'light', codeDepth: 'light', reviewMode: 'static' },
+          inheritedStages: ['plan', 'implementation'],
+        },
+        forkStage: 'review',
+        forkCommit: 'f'.repeat(40),
+        sharedPrefix: true,
+      },
+      taskDescriptor: {
+        schema_version: '1.0',
+        signals: {
+          heuristic: {
+            task_type: 'feature',
+            languages: ['ts'],
+            framework_tags: [],
+            files_touched: 1,
+            repo_size_loc: 1000,
+            description_tokens: 50,
+            is_greenfield: false,
+            has_migration: false,
+            has_ui: false,
+            has_tests: true,
+            cross_service: false,
+          },
+          learned: { complexity: 3, domain: 'backend', risk_flags: [] },
+        },
+        constraints: { models_available: [], objective: 'balanced' },
+        stages: {
+          planner: { model: 'planner-model' },
+          coder: { model: 'coder-model' },
+          reviewer: { model: 'reviewer-b' },
+        },
+      },
+    });
+    writeFileSync(join(repoDir, '.wavemill', 'evals', 'evals.jsonl'), `${JSON.stringify(inherited)}\n`, 'utf-8');
+    clearChallengeSchedulerCache(repoDir);
+
+    const summary = buildEvalSummary(repoDir);
+
+    assert.equal(summary.recordsByModelStage?.['planner-model']?.plan, undefined);
+    assert.equal(summary.recordsByModelStage?.['coder-model']?.implementation, undefined);
+    assert.equal(summary.recordsByModelStage?.['reviewer-b']?.review, 1);
+    assert.equal(summary.recordsByStage.plan, 0);
+    assert.equal(summary.recordsByStage.implementation, 0);
+    assert.equal(summary.recordsByStage.review, 1);
+  } finally {
+    cleanup();
+  }
+});
+
 
 console.log(`\n--- Results: ${passed} passed, ${failed} failed ---`);
 if (failed > 0) {
