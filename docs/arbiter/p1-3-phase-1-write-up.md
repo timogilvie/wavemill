@@ -203,6 +203,8 @@ The reviewer-stage rollout boundary remains unchanged. Closing HOK-2802 does not
 The measurement can be reproduced from the pinned corpus snapshot and local eval artifacts:
 
 ```bash
+mkdir -p /tmp/hok-2802-arbiter
+
 npx tsx tools/swap-test.ts --hydrate \
   --repo-dir "$PWD" \
   --evals-dir "$PWD/.wavemill/evals"
