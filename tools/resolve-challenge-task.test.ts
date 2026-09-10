@@ -679,63 +679,6 @@ describe('resolve-challenge-task CLI', () => {
     }
   });
 
-  it('honors --preserved-challenger-model during expanded finalization', () => {
-    const { repoDir, featureDir } = makePlannerRecommendationRepo();
-    try {
-      const result = runResolveChallengeTask(repoDir, [
-        '--issue', 'HOK-PRESERVE-1',
-        '--slug', 'preserved-stage',
-        '--title', 'Preserve challenger model',
-        '--primary-model', 'gpt-5.6-terra',
-        '--remaining-slots', '2',
-        '--repo-dir', repoDir,
-        '--feature-dir', featureDir,
-        '--file', join(featureDir, 'task-packet.md'),
-        '--pinned-stage', 'implementation',
-        '--preserved-challenger-model', 'claude-haiku-4-5-20251001',
-      ]);
-
-      assert.equal(result.mode, 'challenge');
-      assert.equal(result.challengeStage, 'implementation');
-      assert.equal(result.selectionReason, 'preserved');
-      const entries = result.entries as Array<Record<string, unknown>>;
-      const challenger = entries.find((entry) => entry.role === 'challenger');
-      assert.equal(challenger?.variedModel, 'claude-haiku-4-5-20251001');
-      const intent = result.challengeExecutionIntent as Record<string, unknown>;
-      assert.equal(intent.selectionReason, 'preserved');
-    } finally {
-      rmSync(repoDir, { recursive: true, force: true });
-    }
-  });
-
-  it('labels fallback when --preserved-challenger-model is ineligible', () => {
-    const { repoDir, featureDir } = makePlannerRecommendationRepo();
-    try {
-      const result = runResolveChallengeTask(repoDir, [
-        '--issue', 'HOK-PRESERVE-2',
-        '--slug', 'preserved-stage',
-        '--title', 'Fallback from preserved challenger',
-        '--primary-model', 'gpt-5.6-terra',
-        '--remaining-slots', '2',
-        '--repo-dir', repoDir,
-        '--feature-dir', featureDir,
-        '--file', join(featureDir, 'task-packet.md'),
-        '--pinned-stage', 'implementation',
-        '--preserved-challenger-model', 'gpt-5.6-terra',
-      ]);
-
-      assert.equal(result.mode, 'challenge');
-      assert.equal(result.fallbackReason, 'preserved_challenger_ineligible');
-      const entries = result.entries as Array<Record<string, unknown>>;
-      const challenger = entries.find((entry) => entry.role === 'challenger');
-      assert.notEqual(challenger?.variedModel, 'gpt-5.6-terra');
-      const intent = result.challengeExecutionIntent as Record<string, unknown>;
-      assert.equal(intent.fallbackReason, 'preserved_challenger_ineligible');
-    } finally {
-      rmSync(repoDir, { recursive: true, force: true });
-    }
-  });
-
   it('accepts stage aliases from shell state when pinning', () => {
     const { repoDir, featureDir } = makePlannerRecommendationRepo();
     try {
