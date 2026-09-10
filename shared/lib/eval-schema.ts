@@ -106,11 +106,6 @@
  *   request head evaluated by a challenge eval. Historical rows remain valid;
  *   consumers may only derive this from immutable verification telemetry.
  *   (HOK-2949)
- * - **1.46.0**: Added the challenge validity contract for P2.4e (HOK-2968):
- *   optional `deliveryVerdict`, `stageAttribution`, `forkIdentity` and
- *   `reviewExecutedIdentity` on EvalRecord and ChallengeComparison, plus
- *   the StageAttributionReasonCode enum. Additive; legacy records without
- *   these fields still validate.
  * - **1.28.0**: Added optional `quarantine_reason` and write-time eval corpus
  *   validation for `taskDescriptor`, non-empty `models_available`, and
  *   canonical reviewer/stage model IDs (HOK-2072); expanded
@@ -180,11 +175,7 @@ import type { RuntimeResourceSelection } from './resource-selection.ts';
 import type {
   ChallengeExecutionAttestation,
   ChallengeExecutionIntentProjection,
-  DeliveryVerdict,
-  ForkIdentity,
   InvalidChallengeReason,
-  ReviewExecutedIdentitySet,
-  StageAttribution,
 } from './challenge-execution-contract.ts';
 import type { ChallengeRoutingMeta } from './challenge-comparison.ts';
 import type { ChallengeStage } from './challenge-mode.ts';
@@ -192,9 +183,9 @@ import type { ChallengeStage } from './challenge-mode.ts';
 /**
  * Current eval schema version for newly emitted records.
  *
- * @since 1.44.0 added unknown_attribution intervention type (HOK-2894)
+ * @since 1.47.0 added directReviewEvidence for reviewer-stage challenge attribution (HOK-2969)
  */
-export const SCHEMA_VERSION = '1.46.0';
+export const SCHEMA_VERSION = '1.47.0';
 
 export type RoutingRole = 'planner' | 'coder' | 'reviewer';
 
@@ -2015,18 +2006,6 @@ export interface EvalRecord {
   /** True when this eval record must not count as challenge/training evidence. */
   invalidChallenge?: boolean;
 
-  /** Final delivery decision, independent from causal stage attribution. */
-  deliveryVerdict?: DeliveryVerdict;
-
-  /** Causal validity and outcome for the varied challenge stage. */
-  stageAttribution?: StageAttribution;
-
-  /** Immutable fork/input identity proving matched pre-stage inputs. */
-  forkIdentity?: ForkIdentity;
-
-  /** Executed review identities split by orchestration, analysis and remediation. */
-  reviewExecutedIdentity?: ReviewExecutedIdentitySet;
-
   /**
    * General routing provenance for operator and eval attribution.
    *
@@ -2158,6 +2137,57 @@ export interface EvalRecord {
    */
   featureOutcomeDiagnostics?: FeatureOutcomeDiagnostics;
 
+  /**
+   * Direct review evidence summary for reviewer-stage experiments (HOK-2969).
+   *
+   * Compact summary of local review evidence that persists only derived metrics,
+   * identity status, and provenance. Raw findings, prompts, and diffs remain local.
+   * This enables Arbiter to validate challenge authenticity without crossing privacy boundary.
+   *
+   * @since 1.46.0
+   */
+  directReviewEvidence?: DirectReviewEvidenceSummary;
+
   /** Optional extensibility bag for additional metadata */
   metadata?: Record<string, unknown>;
+}
+
+/**
+ * Compact summary of direct review evidence for privacy-respecting Arbiter attribution.
+ *
+ * Contains only derived metrics and identity status, not raw findings or diffs.
+ * Readers should validate executedIdentities and evidenceMode before crediting review analysis.
+ */
+export interface DirectReviewEvidenceSummary {
+  /** Schema version of the evidence artifact (e.g., '1.0.0') */
+  schemaVersion?: string;
+  /**
+   * Evidence mode: 'direct' (analysis pinned), 'inferred-fallback' (analysis ran but outer
+   * remediation varied), 'not-applicable' (analysis identity invalid/absent).
+   */
+  evidenceMode?: 'direct' | 'inferred-fallback' | 'not-applicable';
+  /** Reason if evidence is insufficient (e.g., 'analysis-identity-invalid', 'missing-artifact') */
+  insufficientReason?: string;
+  /** Total findings across all iterations */
+  findingCount?: number;
+  /** Blocking findings that passed (not dismissed) */
+  blockingFindings?: number;
+  /** Dismissed findings (false positives investigated and disproved) */
+  dismissedFindings?: number;
+  /** Number of review iterations that passed */
+  passedIterations?: number;
+  /**
+   * Execution identities for orchestrator, analysis, and remediation.
+   * Analysis identity is the challenged dimension; its status must be 'pinned'.
+   */
+  executedIdentities?: {
+    orchestrator?: { requested: string | null; resolved: string | null; status: string };
+    analysis?: { requested: string | null; resolved: string | null; status: string };
+    remediation?: { requested: string | null; resolved: string | null; status: string } | null;
+    recordedAt?: string;
+  };
+  /** SHA-256 digest of evidence artifact content (for integrity checking) */
+  contentDigest?: string;
+  /** Timestamp when evidence was persisted (ISO 8601) */
+  recordedAt?: string;
 }
