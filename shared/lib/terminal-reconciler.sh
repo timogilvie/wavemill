@@ -356,10 +356,6 @@ wavemill_release_terminal_pane() {
     [[ -n "$slug" ]] || slug="$(jq -r --arg issue "$issue" '.tasks[$issue].slug // empty' "$STATE_FILE" 2>/dev/null || true)"
     branch="$(jq -r --arg issue "$issue" '.tasks[$issue].branch // empty' "$STATE_FILE" 2>/dev/null || true)"
     wt_dir="$(jq -r --arg issue "$issue" '.tasks[$issue].worktree // empty' "$STATE_FILE" 2>/dev/null || true)"
-    # Fully released already: short-circuit before any tmux call.
-    if [[ "$(jq -r --arg issue "$issue" '.tasks[$issue].paneReleased // false' "$STATE_FILE" 2>/dev/null || echo false)" == "true" ]]; then
-      return 0
-    fi
   fi
   [[ -n "$branch" || -z "$slug" ]] || branch="task/${slug}"
   [[ -n "$wt_dir" || -z "$slug" || -z "${WORKTREE_ROOT:-}" ]] || wt_dir="${WORKTREE_ROOT%/}/${slug}"
@@ -369,6 +365,10 @@ wavemill_release_terminal_pane() {
   # success (the durable record below is still written).
   if command -v tmux >/dev/null 2>&1; then
     target="$(_tmux_task_window_target "$session" "$issue" "$slug" "${STATE_FILE:-}" "$wt_dir" 2>/dev/null || true)"
+  fi
+  if [[ -z "$target" && -n "${STATE_FILE:-}" && -r "${STATE_FILE:-}" ]] \
+    && [[ "$(jq -r --arg issue "$issue" '.tasks[$issue].paneReleased // false' "$STATE_FILE" 2>/dev/null || echo false)" == "true" ]]; then
+    return 0
   fi
   if [[ -n "$target" ]]; then
     window_exists="true"

@@ -46,6 +46,9 @@ run_lifecycle_test "error recovery" bash tests/error-recovery.test.sh
 run_lifecycle_test "dependent task launch" bash tests/wavemill-dependent-launch.test.sh
 run_lifecycle_test "queued tasks state" bash tests/wavemill-queued-tasks-state.test.sh
 run_lifecycle_test "launch plan queue metadata" bash tests/wavemill-launch-plan-queue-metadata.test.sh
+run_lifecycle_test "terminal lifecycle cert matrix" bash tests/terminal-lifecycle-cert-matrix.test.sh
+run_lifecycle_test "terminal lifecycle cert restart" bash tests/terminal-lifecycle-cert-restart.test.sh
+run_lifecycle_test "terminal lifecycle cert budgets" bash tests/terminal-lifecycle-cert-budgets.test.sh
 
 # Skip control layout test in CI - tmux session creation fails in containerized environments
 if [[ -z "${CI:-}" ]]; then

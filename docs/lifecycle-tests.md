@@ -36,14 +36,16 @@ Current categories:
 - Hook protocol: `shared/hooks/**`
 - Phase and prompt handoff instructions: `tools/prompts/**`
 - Top-level launcher: `wavemill`
-- Lifecycle test definitions: `tests/run-lifecycle-tests.sh`, `tests/planning-validation.test.sh`, `tests/startup-handoff.test.sh`, `tests/stage-state.test.sh`, `tests/stage-state.test.ts`, `tests/monitor-ready-transition.test.sh`, `tests/error-recovery.test.sh`, `tests/control-layout.test.sh`, `tests/wavemill-status.test.sh`
+- Lifecycle test definitions: `tests/run-lifecycle-tests.sh`, `tests/planning-validation.test.sh`, `tests/startup-handoff.test.sh`, `tests/stage-state.test.sh`, `tests/stage-state.test.ts`, `tests/monitor-ready-transition.test.sh`, `tests/error-recovery.test.sh`, `tests/control-layout.test.sh`, `tests/wavemill-status.test.sh`, `tests/terminal-lifecycle-cert-*.test.sh`, `tests/terminal-lifecycle-flags.test.sh`
 - Dependency-aware task queue: `tests/lifecycle-harness.test.sh`, `tests/lifecycle-scenarios.test.sh`, `tests/wavemill-dependent-launch.test.sh`, `tests/wavemill-queued-tasks-state.test.sh`, `tests/wavemill-launch-plan-queue-metadata.test.sh`, `tests/fixtures/lifecycle/**`
+- Terminal lifecycle certification: `tests/lib/terminal-lifecycle-cert-harness.sh`, `tests/fixtures/terminal-lifecycle/**`, `shared/lib/terminal-lifecycle-cert.ts`, `shared/lib/terminal-lifecycle-cert.test.ts`, `tools/terminal-lifecycle-cert-report.ts`, `tools/terminal-lifecycle-soak.ts`, `docs/terminal-lifecycle-certification.md`
 - Stage result CLI: `tools/stage-result-cli.ts`
 
 CI-specific lifecycle categories currently include:
 
 - Dependency-queue lifecycle: `tests/wavemill-dependent-launch.test.sh`, `tests/wavemill-queued-tasks-state.test.sh`, `tests/wavemill-launch-plan-queue-metadata.test.sh`
 - Lifecycle scenario fixtures: `tests/lifecycle-scenarios.test.sh`, `tests/lifecycle-harness.test.sh`, `tests/fixtures/lifecycle/**`
+- Terminal lifecycle certification: `tests/terminal-lifecycle-cert-matrix.test.sh`, `tests/terminal-lifecycle-cert-restart.test.sh`, `tests/terminal-lifecycle-cert-budgets.test.sh`, `tests/fixtures/terminal-lifecycle/**`
 
 The ready-stage lifecycle coverage also includes automatic remediation transitions. When a fixable ready failure launches remediation, lifecycle tests should verify that the monitor keeps the task active, clears operator attention, and avoids repeated relaunch while the remediation head is still in flight.
 

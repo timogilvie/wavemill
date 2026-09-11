@@ -248,6 +248,7 @@ TESTS=(
   shared/lib/blocked-completion.test.ts
   shared/lib/task-contract.test.ts
   shared/lib/task-lifecycle.test.ts
+  shared/lib/terminal-lifecycle-cert.test.ts
   shared/lib/feature-state.test.ts
   shared/lib/soft-gates.test.ts
   shared/lib/openrouter-provider.test.ts
@@ -323,6 +324,7 @@ TESTS=(
   shared/lib/pre-pr-verification-drift-validator.test.ts
   tools/check-ci-verification.test.ts
   tests/verification-scenarios.test.ts
+  tests/fork-aware-comparison.test.ts
   # Registration-complete shared and tool tests.
   shared/lib/artifact-diagnostics.test.ts
   shared/lib/challenge-coverage-selector.test.ts
