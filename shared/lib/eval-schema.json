@@ -2744,6 +2744,9 @@
         }
       }
     },
+    "directReviewEvidence": {
+      "$ref": "#/$defs/DirectReviewEvidenceSummary"
+    },
     "metadata": {
       "type": "object",
       "additionalProperties": true,
@@ -4320,6 +4323,55 @@
         "orchestrator",
         "substantiveAnalysis"
       ],
+      "additionalProperties": false
+    },
+    "DirectReviewEvidenceIdentity": {
+      "type": "object",
+      "properties": {
+        "requested": {
+          "type": ["string", "null"]
+        },
+        "resolved": {
+          "type": ["string", "null"]
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": ["requested", "resolved", "status"],
+      "additionalProperties": false
+    },
+    "DirectReviewEvidenceSummary": {
+      "type": "object",
+      "properties": {
+        "schemaVersion": { "type": "string" },
+        "evidenceMode": {
+          "type": "string",
+          "enum": ["direct", "inferred-fallback", "not-applicable"]
+        },
+        "insufficientReason": { "type": "string" },
+        "findingCount": { "type": "integer", "minimum": 0 },
+        "blockingFindings": { "type": "integer", "minimum": 0 },
+        "dismissedFindings": { "type": "integer", "minimum": 0 },
+        "passedIterations": { "type": "integer", "minimum": 0 },
+        "executedIdentities": {
+          "type": "object",
+          "properties": {
+            "orchestrator": { "$ref": "#/$defs/DirectReviewEvidenceIdentity" },
+            "analysis": { "$ref": "#/$defs/DirectReviewEvidenceIdentity" },
+            "remediation": {
+              "anyOf": [
+                { "$ref": "#/$defs/DirectReviewEvidenceIdentity" },
+                { "type": "null" }
+              ]
+            },
+            "recordedAt": { "type": "string", "format": "date-time" }
+          },
+          "additionalProperties": false
+        },
+        "contentDigest": { "type": "string" },
+        "recordedAt": { "type": "string", "format": "date-time" }
+      },
       "additionalProperties": false
     }
   }

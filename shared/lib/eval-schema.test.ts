@@ -789,6 +789,35 @@ test('SCHEMA_VERSION is bumped for eval schema updates', () => {
   assert.equal(SCHEMA_VERSION, '1.47.0');
 });
 
+test('directReviewEvidence validates while prior challenge fields remain additive', () => {
+  const record: EvalRecord = {
+    ...scenarios[0].record,
+    schemaVersion: '1.47.0',
+    directReviewEvidence: {
+      schemaVersion: '1.0.0',
+      evidenceMode: 'direct',
+      findingCount: 2,
+      blockingFindings: 0,
+      dismissedFindings: 1,
+      passedIterations: 1,
+      executedIdentities: {
+        orchestrator: { requested: 'glm-5.3', resolved: 'gpt-5.5', status: 'fallback' },
+        analysis: { requested: 'glm-5.3', resolved: 'glm-5.3', status: 'pinned' },
+        remediation: null,
+      },
+      contentDigest: 'a'.repeat(64),
+    },
+    deliveryVerdict: {
+      outcome: 'primary',
+      source: 'final-pr-arbiter',
+    },
+    reviewExecutedIdentity: validReviewIdentitySet(),
+  };
+
+  const result = validateAgainstSchema(record as unknown as Record<string, unknown>);
+  assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
+});
+
 function validReviewIdentitySet() {
   return {
     orchestrator: {

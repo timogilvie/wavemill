@@ -106,6 +106,13 @@
  *   request head evaluated by a challenge eval. Historical rows remain valid;
  *   consumers may only derive this from immutable verification telemetry.
  *   (HOK-2949)
+ * - **1.46.0**: Added the challenge validity contract for P2.4e (HOK-2968):
+ *   optional `deliveryVerdict`, `stageAttribution`, `forkIdentity` and
+ *   `reviewExecutedIdentity` on EvalRecord and ChallengeComparison, plus
+ *   the StageAttributionReasonCode enum. Additive; legacy records without
+ *   these fields still validate.
+ * - **1.47.0**: Added optional `directReviewEvidence` for compact,
+ *   privacy-preserving reviewer-stage challenge attribution (HOK-2969).
  * - **1.28.0**: Added optional `quarantine_reason` and write-time eval corpus
  *   validation for `taskDescriptor`, non-empty `models_available`, and
  *   canonical reviewer/stage model IDs (HOK-2072); expanded
@@ -175,7 +182,11 @@ import type { RuntimeResourceSelection } from './resource-selection.ts';
 import type {
   ChallengeExecutionAttestation,
   ChallengeExecutionIntentProjection,
+  DeliveryVerdict,
+  ForkIdentity,
   InvalidChallengeReason,
+  ReviewExecutedIdentitySet,
+  StageAttribution,
 } from './challenge-execution-contract.ts';
 import type { ChallengeRoutingMeta } from './challenge-comparison.ts';
 import type { ChallengeStage } from './challenge-mode.ts';
@@ -2006,6 +2017,18 @@ export interface EvalRecord {
   /** True when this eval record must not count as challenge/training evidence. */
   invalidChallenge?: boolean;
 
+  /** Final delivery decision, independent from causal stage attribution. */
+  deliveryVerdict?: DeliveryVerdict;
+
+  /** Causal validity and outcome for the varied challenge stage. */
+  stageAttribution?: StageAttribution;
+
+  /** Immutable fork/input identity proving matched pre-stage inputs. */
+  forkIdentity?: ForkIdentity;
+
+  /** Executed review identities split by orchestration, analysis and remediation. */
+  reviewExecutedIdentity?: ReviewExecutedIdentitySet;
+
   /**
    * General routing provenance for operator and eval attribution.
    *
@@ -2144,7 +2167,7 @@ export interface EvalRecord {
    * identity status, and provenance. Raw findings, prompts, and diffs remain local.
    * This enables Arbiter to validate challenge authenticity without crossing privacy boundary.
    *
-   * @since 1.46.0
+   * @since 1.47.0
    */
   directReviewEvidence?: DirectReviewEvidenceSummary;
 
