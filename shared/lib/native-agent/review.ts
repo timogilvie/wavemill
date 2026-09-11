@@ -56,6 +56,13 @@ const NATIVE_REVIEW_PHASE_PROMPT_PATH = resolve(
   __dirname,
   '../../../tools/prompts/native-read-only-phase.md',
 );
+const REVIEW_ANALYSIS_TURN_LIMIT = 10;
+const REVIEW_TOOL_CALL_LIMIT = 30;
+const REVIEW_FINAL_SYNTHESIS_PROMPT = [
+  'Stop investigating. This is your reserved terminal synthesis turn.',
+  'Using only the evidence already gathered, return the required review JSON now.',
+  'Do not call tools, narrate your process, or wrap the JSON in Markdown.',
+].join(' ');
 
 export interface DeniedToolRecord {
   tool: string;
@@ -494,7 +501,10 @@ export async function runNativeReview(
     });
   }
 
-  const maxRetries = options.maxRetries ?? 1;
+  // Native review needs an evidence-gathering budget independent of transport
+  // retry count. Keep larger explicit retry settings backward-compatible while
+  // guaranteeing enough analysis turns for repository-scale reviews.
+  const analysisTurnLimit = Math.max(REVIEW_ANALYSIS_TURN_LIMIT, (options.maxRetries ?? 1) + 1);
   const cleanupTracker = createCleanupTracker();
   let loopResult;
   try {
@@ -531,9 +541,13 @@ export async function runNativeReview(
         }
       },
       budget: {
-        maxTurns: maxRetries + 1,
-        maxToolCalls: 12,
+        // One additional turn is reserved for tool-free terminal synthesis.
+        maxTurns: analysisTurnLimit + 1,
+        maxToolCalls: REVIEW_TOOL_CALL_LIMIT,
         maxWallClockMs: options.timeout ?? 300_000,
+      },
+      terminalSynthesis: {
+        prompt: REVIEW_FINAL_SYNTHESIS_PROMPT,
       },
     });
   } catch (error) {

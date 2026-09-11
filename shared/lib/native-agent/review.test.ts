@@ -27,6 +27,9 @@ describe('native review', () => {
 
     nativeReviewTestUtils.setRunWavemillLoop(async (config) => {
       assert.equal(config.maxTokens, 8192);
+      assert.equal(config.budget?.maxTurns, 11);
+      assert.equal(config.budget?.maxToolCalls, 30);
+      assert.match(config.terminalSynthesis?.prompt ?? '', /reserved terminal synthesis turn/);
       const message = assistantMessage(JSON.stringify({
         verdict: 'ready',
         codeReviewFindings: [],
