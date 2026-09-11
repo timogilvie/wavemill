@@ -13,6 +13,9 @@ import * as os from 'node:os';
 import { execFileSync } from 'node:child_process';
 
 import {
+  appendReviewIteration,
+  existingReviewIterations,
+  nextReviewIterationNumber,
   writeStageResult,
   writeStageResultWithHistory,
   readStageResult,
@@ -36,6 +39,7 @@ import type {
   CodingArtifacts,
   ReviewArtifacts,
   ReadyArtifacts,
+  ReviewIterationRecord,
 } from './stage-result.ts';
 
 let testDir: string;
@@ -925,5 +929,89 @@ describe('isValidStatus', () => {
     assert.ok(!isValidStatus('pending'));
     assert.ok(!isValidStatus(''));
     assert.ok(!isValidStatus('RUNNING'));
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// Review iteration evidence helpers (HOK-2969, Arbiter P2.4f)
+// ────────────────────────────────────────────────────────────────
+
+function makeIteration(overrides: Partial<ReviewIterationRecord> = {}): ReviewIterationRecord {
+  return {
+    iteration: 1,
+    recordedAt: '2026-04-09T10:00:00Z',
+    verdict: 'not_ready',
+    findings: [],
+    ...overrides,
+  };
+}
+
+describe('existingReviewIterations', () => {
+  it('returns an empty array for artifacts with no prior iterations', () => {
+    assert.deepEqual(existingReviewIterations(undefined), []);
+    assert.deepEqual(existingReviewIterations({ type: 'review' }), []);
+  });
+
+  it('tolerates a malformed reviewIterations value rather than throwing', () => {
+    assert.deepEqual(
+      existingReviewIterations({ type: 'review', reviewIterations: 'not-an-array' } as unknown as ReviewArtifacts),
+      [],
+    );
+  });
+
+  it('returns the prior iteration list unchanged', () => {
+    const prior = [makeIteration({ iteration: 1 }), makeIteration({ iteration: 2 })];
+    assert.deepEqual(existingReviewIterations({ type: 'review', reviewIterations: prior }), prior);
+  });
+});
+
+describe('nextReviewIterationNumber', () => {
+  it('starts at 1 with no prior iterations', () => {
+    assert.equal(nextReviewIterationNumber(undefined), 1);
+  });
+
+  it('increments from the highest recorded iteration', () => {
+    const prior = [makeIteration({ iteration: 1 }), makeIteration({ iteration: 3 })];
+    assert.equal(nextReviewIterationNumber({ type: 'review', reviewIterations: prior }), 4);
+  });
+});
+
+describe('appendReviewIteration', () => {
+  it('appends a new iteration without dropping prior ones', () => {
+    const first = makeIteration({ iteration: 1, findings: [{
+      location: 'a.ts:1', category: 'logic', severity: 'blocker', description: 'x', disposition: 'open',
+    }] });
+    const result = appendReviewIteration({ type: 'review', reviewIterations: [first] }, makeIteration({ iteration: 2 }));
+    assert.equal(result.length, 2);
+    assert.deepEqual(result[0], first);
+    assert.equal(result[1].iteration, 2);
+  });
+
+  it('replaces a rerun of the same iteration number in place, preserving other iterations', () => {
+    const first = makeIteration({ iteration: 1 });
+    const second = makeIteration({ iteration: 2 });
+    const rerunFirst = makeIteration({ iteration: 1, verdict: 'ready', findings: [{
+      location: 'a.ts:1', category: 'logic', severity: 'blocker', description: 'x', disposition: 'fixed',
+    }] });
+
+    const result = appendReviewIteration({ type: 'review', reviewIterations: [first, second] }, rerunFirst);
+    assert.equal(result.length, 2);
+    const replaced = result.find((entry) => entry.iteration === 1);
+    assert.equal(replaced?.verdict, 'ready');
+    assert.equal(replaced?.findings[0]?.disposition, 'fixed');
+    assert.ok(result.some((entry) => entry.iteration === 2));
+  });
+
+  it('starts a fresh iteration list when there is no prior artifact', () => {
+    const result = appendReviewIteration(undefined, makeIteration({ iteration: 1 }));
+    assert.deepEqual(result, [makeIteration({ iteration: 1 })]);
+  });
+
+  it('keeps iterations sorted by iteration number regardless of append order', () => {
+    const result = appendReviewIteration(
+      { type: 'review', reviewIterations: [makeIteration({ iteration: 3 })] },
+      makeIteration({ iteration: 1 }),
+    );
+    assert.deepEqual(result.map((entry) => entry.iteration), [1, 3]);
   });
 });

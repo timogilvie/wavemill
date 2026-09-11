@@ -49,10 +49,19 @@ export const INCIDENT_ROOT_CAUSE_CLASSES = [
   'inspection_required',
   'cleanup_retained_by_policy',
   'cleanup_unpublished_at_risk',
+  // Active-task delivery risk (HOK-2972): not a cleanup class - the task is
+  // still alive, the work is unpublished, and the task has stopped progressing.
+  'active_unpublished_work_stalled',
   'cleanup_verification_unavailable',
   'cleanup_dirty_worktree',
   'config_drift_base_branch',
   'config_drift_confirm',
+  // Parked/terminal-arm delivery gaps (HOK-2927; stale_orphaned_state)
+  'arm_parked_awaiting_operator_commit',
+  'stage_marker_not_advanced',
+  'terminal_arm_parked_with_residue',
+  'arm_died_with_unpushed_work',
+  'pr_create_failed',
   'unclassified_local_failure',
 ] as const;
 
@@ -76,11 +85,31 @@ export function canonicalizeRootCauseClass(raw: string): IncidentRootCauseClass 
   if (/blocked[-_ ]completion|live blocking command|auto[-_ ]advance[-_ ]refused/.test(lower)) {
     return 'harness_liveness_deadlock';
   }
+  // Parked/terminal-arm legacy slugs (HOK-2927); before the generic local/remote
+  // signatures so branch/commit vocabulary is not mislabelled.
+  if (/parked[-_ ]awaiting[-_ ]operator[-_ ]commit/.test(lower)) {
+    return 'arm_parked_awaiting_operator_commit';
+  }
+  if (/(?:stage[-_ ])?marker[-_ ]not[-_ ]advanced/.test(lower)) {
+    return 'stage_marker_not_advanced';
+  }
+  if (/terminal[-_ ](?:arm|task)[-_ ]parked/.test(lower)) {
+    return 'terminal_arm_parked_with_residue';
+  }
+  if (/(?:arm[-_ ]died[-_ ]with[-_ ])?unpushed[-_ ]work/.test(lower)) {
+    return 'arm_died_with_unpushed_work';
+  }
+  if (/pr[-_ ]create[-_ ]failed|pull[-_ ]request[-_ ]create[-_ ]failed/.test(lower)) {
+    return 'pr_create_failed';
+  }
   if (/failed[-_ ]to[-_ ]parse|unexpected[-_ ]token|parse[-_ ]error|syntax[-_ ]error|malformed[-_ ]json/.test(lower)) {
     return 'local_parse_failure';
   }
   if (/invalid[-_ ]config|schema[-_ ]validation|missing[-_ ]config/.test(lower)) {
     return 'local_config_failure';
+  }
+  if (/active[-_ ]unpublished[-_ ]work[-_ ]stalled|stalled[-_ ]active[-_ ]unpublished/.test(lower)) {
+    return 'active_unpublished_work_stalled';
   }
   if (/cleanup[-_ ]retained[-_ ]by[-_ ]policy/.test(lower)) return 'cleanup_retained_by_policy';
   if (/cleanup[-_ ]unpublished[-_ ]at[-_ ]risk/.test(lower)) return 'cleanup_unpublished_at_risk';

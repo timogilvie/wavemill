@@ -1,5 +1,6 @@
 #!/usr/bin/env -S npx tsx
 
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { runTool } from '../shared/lib/tool-runner.ts';
 import { fetchIssueData, formatIssueAsPrompt, fetchPrContext } from '../shared/lib/eval-context-gatherer.ts';
@@ -24,7 +25,10 @@ import {
 } from '../shared/lib/challenge-comparison.ts';
 import {
   routesIdentical,
+  foldAttestationsIntoStageAttribution,
   type InvalidChallengeReason,
+  type ForkIdentity,
+  type StageAttribution,
 } from '../shared/lib/challenge-execution-contract.ts';
 import {
   selectChallengeEvalScore,
@@ -34,6 +38,8 @@ import { resolveEvalsDir } from '../shared/lib/evals-paths.ts';
 import {
   ARBITER_JUDGE_PROMPT_TEMPLATE_PATH,
   buildChallengeCommentBody,
+  ensureLocalComparisonObjects,
+  fetchForkAwareDiffs,
   formatRoutingSummary,
   prNumberFromValue,
   resolvePrDiffIdentity,
@@ -42,7 +48,9 @@ import {
   retainLoserPatch,
   runBlindJudge,
   tryGh,
+  verifyForkCommit,
   withBodyFile,
+  type ForkCommitValidationResult,
 } from '../shared/lib/pr-comparison.ts';
 import { writeJobResultFile } from '../shared/lib/job-tracker.ts';
 import type { ChallengeStage } from '../shared/lib/challenge-mode.ts';
@@ -82,6 +90,7 @@ function inheritedStages(value: unknown): ChallengeStage[] {
 function resolveComparisonForkDescriptor(
   primaryIntent: unknown,
   challengerIntent: unknown,
+  overrideForkCommit?: string,
 ): ComparisonForkDescriptor {
   const primary = intentObject(primaryIntent);
   const challenger = intentObject(challengerIntent);
@@ -90,11 +99,13 @@ function resolveComparisonForkDescriptor(
     : isChallengeStage(challenger?.forkStage)
       ? challenger.forkStage
       : null;
-  const forkCommit = typeof primary?.forkCommit === 'string' && primary.forkCommit.trim()
+  const persistedForkCommit = typeof primary?.forkCommit === 'string' && primary.forkCommit.trim()
     ? primary.forkCommit.trim()
     : typeof challenger?.forkCommit === 'string' && challenger.forkCommit.trim()
       ? challenger.forkCommit.trim()
       : null;
+  const cliForkCommit = overrideForkCommit && overrideForkCommit.trim() ? overrideForkCommit.trim() : null;
+  const forkCommit = cliForkCommit ?? persistedForkCommit;
   return {
     forkStage,
     forkCommit,
@@ -103,6 +114,18 @@ function resolveComparisonForkDescriptor(
     challengerInheritedStages: inheritedStages(challenger?.challenger?.inheritedStages ?? primary?.challenger?.inheritedStages),
   };
 }
+
+function selectRecordedForkIdentity(
+  primary: EvalRecordWithForkIdentity | undefined,
+  challenger: EvalRecordWithForkIdentity | undefined,
+): ForkIdentity | undefined {
+  return primary?.forkIdentity ?? challenger?.forkIdentity ?? undefined;
+}
+
+type EvalRecordWithForkIdentity = {
+  forkIdentity?: ForkIdentity;
+  reviewExecutedIdentity?: import('../shared/lib/challenge-execution-contract.ts').ReviewExecutedIdentitySet;
+};
 
 function retainComparedLoserPatch(input: {
   record: Pick<ChallengeComparison, 'winner' | 'primaryDiffIdentity' | 'challengerDiffIdentity'>;
@@ -178,6 +201,7 @@ runTool({
     'auto-merge': { type: 'boolean', description: 'Merge winner and close loser after comparison' },
     'check-only': { type: 'boolean', description: 'Only verify required eval records exist' },
     'presentation-order': { type: 'string', description: 'Judge presentation order: primary-first, challenger-first, or random' },
+    'fork-commit': { type: 'string', description: 'Shared fork commit for post-fork delta comparison (override; falls back to challengeIntent)' },
     'result-file': { type: 'string', description: 'Optional path for structured job results' },
   },
   async run({ args }) {
@@ -253,7 +277,25 @@ runTool({
       const forkDescriptor = resolveComparisonForkDescriptor(
         primaryEval.challengeIntent,
         challengerEval.challengeIntent,
+        args['fork-commit'] as string | undefined,
       );
+      const forkIdentityRecorded = selectRecordedForkIdentity(
+        primaryEval as EvalRecordWithForkIdentity,
+        challengerEval as EvalRecordWithForkIdentity,
+      );
+      let forkValidation: ForkCommitValidationResult | undefined;
+      if (forkDescriptor.forkCommit) {
+        forkValidation = verifyForkCommit({
+          forkCommit: forkDescriptor.forkCommit,
+          recordedTree: forkIdentityRecorded?.tree,
+          primaryHeadSha: primaryPrIdentity.head_sha,
+          challengerHeadSha: challengerPrIdentity.head_sha,
+          repoDir,
+        });
+        if (!forkValidation.valid) {
+          console.warn(`[compare-prs] Fork commit ${forkDescriptor.forkCommit} validation failed (${forkValidation.reason}): ${forkValidation.detail ?? ''}`);
+        }
+      }
       const primaryDiffIdentity = resolvePrDiffIdentity({
         pr: primaryNumber,
         repoDir,
@@ -625,8 +667,45 @@ runTool({
         return;
       }
 
-      const primaryDiff = primaryPrContext.diff;
-      const challengerDiff = challengerPrContext.diff;
+      let primaryDiff = primaryPrContext.diff;
+      let challengerDiff = challengerPrContext.diff;
+      let sharedContext = '';
+      let forkAwareDiffApplied = false;
+      if (forkDescriptor.forkCommit && forkValidation?.valid) {
+        const runGit = (gitArgs: string[]): string => execFileSync('git', gitArgs, {
+          cwd: repoDir,
+          encoding: 'utf-8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        }).trim();
+        try {
+          ensureLocalComparisonObjects({
+            prNumber: primaryNumber,
+            metadata: primaryPrIdentity,
+            forkCommit: forkDescriptor.forkCommit,
+            runGit,
+          });
+          ensureLocalComparisonObjects({
+            prNumber: challengerNumber,
+            metadata: challengerPrIdentity,
+            forkCommit: forkDescriptor.forkCommit,
+            runGit,
+          });
+          const forkDiffs = fetchForkAwareDiffs({
+            forkCommit: forkDescriptor.forkCommit,
+            primaryHeadSha: primaryPrIdentity.head_sha,
+            challengerHeadSha: challengerPrIdentity.head_sha,
+            baseRefName: primaryPrIdentity.baseRefName,
+            repoDir,
+          });
+          primaryDiff = forkDiffs.primaryDelta;
+          challengerDiff = forkDiffs.challengerDelta;
+          sharedContext = forkDiffs.sharedContext;
+          forkAwareDiffApplied = true;
+          console.log(`[compare-prs] pair=${pairId} fork_aware_diff=true fork_commit=${forkDescriptor.forkCommit} shared_bytes=${sharedContext.length}`);
+        } catch (error) {
+          console.warn(`[compare-prs] Fork-aware diff computation failed for ${pairId}; falling back to full PR diffs: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
       const primarySelected = selectChallengeEvalScore(primaryEval, challengeType);
       const challengerSelected = selectChallengeEvalScore(challengerEval, challengeType);
 
@@ -678,6 +757,7 @@ runTool({
         challengerStageEval,
         primaryExecution,
         challengerExecution,
+        sharedContext,
       });
       if (judgeOutcome.truncated) {
         console.warn(
@@ -717,6 +797,48 @@ runTool({
         }
       }
 
+      // Fold direct reviewer evidence, executed-review identity, inherited-stage
+      // flags, and fork validity through the P2.4e attribution helper. When any
+      // required identity is absent, mismatched, or unverified the helper
+      // marks the varied stage's attribution invalid/insufficient — so the
+      // varied reviewer stage gets no winner and cannot count for coverage or
+      // training, while the generic delivery verdict is still recorded.
+      const stageForAttribution = variedStage === 'plan'
+        ? 'plan'
+        : variedStage === 'implementation'
+          ? 'implementation'
+          : variedStage === 'review'
+            ? 'review'
+            : undefined;
+      let stageAttribution: StageAttribution | undefined;
+      const primaryReviewIdentity = (primaryEval as EvalRecordWithForkIdentity).reviewExecutedIdentity;
+      const challengerReviewIdentity = (challengerEval as EvalRecordWithForkIdentity).reviewExecutedIdentity;
+      if (stageForAttribution) {
+        const stageEvalProvenance = (
+          stageForAttribution === 'plan' || stageForAttribution === 'review'
+        ) && primaryStageEval?.provenance && challengerStageEval?.provenance
+          ? (primaryStageEval.provenance === 'direct' && challengerStageEval.provenance === 'direct'
+            ? 'direct'
+            : 'inferred') as 'direct' | 'inferred'
+          : undefined;
+        stageAttribution = foldAttestationsIntoStageAttribution({
+          pairId,
+          stage: stageForAttribution,
+          primary: primaryAttestation,
+          challenger: challengerAttestation,
+          evidenceProvenance: stageEvalProvenance,
+          forkIdentity: forkAwareDiffApplied ? forkIdentityRecorded : undefined,
+          primaryReviewIdentity,
+          challengerReviewIdentity,
+          judgeWinner: verdict.winner,
+        });
+        stageAttribution = {
+          ...stageAttribution,
+          decidedAt: new Date().toISOString(),
+          producer: 'compare-prs@p2.4b',
+        };
+      }
+
       const record: ChallengeComparison = {
         challengePairId: pairId,
         primaryModel,
@@ -736,6 +858,11 @@ runTool({
         challengerRouting,
         primaryExecution,
         challengerExecution,
+        // Local executed review identities, when either arm's eval record
+        // carries one (HOK-2969, Arbiter P2.4f). Additive: undefined when
+        // the varied stage was not review or no native identity was captured.
+        ...(primaryEval.reviewExecutedIdentity ? { primaryReviewExecutedIdentity: primaryEval.reviewExecutedIdentity } : {}),
+        ...(challengerEval.reviewExecutedIdentity ? { challengerReviewExecutedIdentity: challengerEval.reviewExecutedIdentity } : {}),
         provenanceValidation,
         variedDimensions,
         challengeType,
@@ -755,8 +882,16 @@ runTool({
         comparisonOutcome: 'compared',
         selectedEvalEvidence: evalEvidence,
         ...forkDescriptor,
+        // Persist that a shared prefix was actually used at comparison time.
+        // Absent an explicit challengeIntent flag, fork-aware execution is
+        // itself the evidence that both arms carried a shared pre-fork prefix.
+        ...(forkAwareDiffApplied ? { sharedPrefix: true } : {}),
         primaryDiffIdentity,
         challengerDiffIdentity,
+        ...(forkIdentityRecorded ? { forkIdentity: forkIdentityRecorded } : {}),
+        ...(primaryReviewIdentity ? { primaryReviewExecutedIdentity: primaryReviewIdentity } : {}),
+        ...(challengerReviewIdentity ? { challengerReviewExecutedIdentity: challengerReviewIdentity } : {}),
+        ...(stageAttribution ? { stageAttribution } : {}),
       };
       recordForResult = record;
 

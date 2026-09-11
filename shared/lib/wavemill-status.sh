@@ -439,23 +439,6 @@ planning_rejection_detail() {
   printf 'Planning needs attention: edited %s; reverted. Review plan.md and re-approve.%s\n' "$files" "$notify_suffix"
 }
 
-# Read the arm-preservation flag that apply_expanded_route_if_present stamps on
-# .routing-complete.  Prints "true", "false", or nothing when the task has no
-# worktree, no routing artifact, or predates the flag.
-challenge_arm_preserved_flag() {
-  local issue="$1"
-  local worktree slug routing_file
-
-  [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "${STATE_FILE:-}" ]] || return 0
-  worktree=$(jq -r --arg issue "$issue" '.tasks[$issue].worktree // empty' "$STATE_FILE" 2>/dev/null || true)
-  slug=$(jq -r --arg issue "$issue" '.tasks[$issue].slug // empty' "$STATE_FILE" 2>/dev/null || true)
-  [[ -n "$worktree" && -n "$slug" ]] || return 0
-
-  routing_file="$worktree/features/$slug/.routing-complete"
-  [[ -f "$routing_file" ]] || return 0
-  jq -r '.challengeArmPreserved // empty' "$routing_file" 2>/dev/null || true
-}
-
 native_launch_failure_detail() {
   local worktree="$1" slug="$2"
   local feature_dir="$worktree/features/$slug"
@@ -1124,7 +1107,7 @@ task_running_detail() {
   # Surface the varied stage and both arms from the selection record, so an arm
   # replaced by rerouting is visible while the run is still live rather than
   # only after the comparison rejects the pair.
-  local challenge_stage challenge_varied challenge_other challenge_role arm_preserved
+  local challenge_stage challenge_varied challenge_other challenge_role
   challenge_stage=$(jq -r --arg issue "$issue" '.tasks[$issue].challengeStage // empty' "$STATE_FILE" 2>/dev/null || true)
   if [[ -n "$challenge_stage" ]]; then
     challenge_role=$(jq -r --arg issue "$issue" '.tasks[$issue].challengeRole // "primary"' "$STATE_FILE" 2>/dev/null || echo "primary")
@@ -1138,12 +1121,6 @@ task_running_detail() {
         printf 'challenge %s (stage=%s): this=%s vs %s\n' "$challenge_role" "$challenge_stage" "$challenge_varied" "$challenge_other"
       else
         printf 'challenge %s (stage=%s): this=%s\n' "$challenge_role" "$challenge_stage" "$challenge_varied"
-      fi
-      # apply_expanded_route_if_present stamps this false when it could not
-      # retain the selected arm through rerouting.
-      arm_preserved=$(challenge_arm_preserved_flag "$issue")
-      if [[ "$arm_preserved" == "false" ]]; then
-        printf 'challenge arm NOT preserved through rerouting — comparison will be unattributable\n'
       fi
     fi
   fi
@@ -1645,6 +1622,26 @@ render_task_row() {
       [[ -n "$_artifact_seg" ]] && render_task_detail_lines "artifacts: ${_artifact_seg}"
     fi
   fi
+
+  # HOK-2813: a deferred challenger nested on this primary is planned work
+  # with no pane, worktree, or task row. Surface it as an annotation under the
+  # primary — state-file only, never a pane lookup or an active-count entry —
+  # so an operator can tell a pending fork from a dead task.
+  render_task_detail_lines "$(render_pending_challenge_arms "$issue")"
+}
+
+# Print one "awaiting fork" line per pending challengeArms[] entry on a
+# primary. Reads only $STATE_FILE; prints nothing when the task carries no
+# pending arms (the overwhelmingly common case).
+render_pending_challenge_arms() {
+  local issue="${1:-}"
+  [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 0
+  jq -r --arg issue "$issue" '
+    (.tasks[$issue].challengeArms // [])
+    | map(select(.challengeArmState == "awaiting_fork"))
+    | .[]
+    | "⏳ challenger \(.key) awaiting fork · \(.variedStage // "?") stage · \(.role // "challenger")"
+  ' "$STATE_FILE" 2>/dev/null || true
 }
 
 render_inbox_section() {

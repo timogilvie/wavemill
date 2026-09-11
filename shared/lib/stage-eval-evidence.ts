@@ -12,6 +12,7 @@ import type {
   RoutePrediction,
   RoutingDecision,
 } from './eval-schema.ts';
+import type { ExecutedIdentity, ReviewExecutedIdentitySet } from './challenge-execution-contract.ts';
 
 const MAX_SNIPPET_CHARS = 320;
 
@@ -81,6 +82,10 @@ type StageResultShape = {
       reviewToolError?: unknown;
       findingCount?: unknown;
     };
+    /** Per-iteration local review evidence (HOK-2969); shape validated defensively before use. */
+    reviewIterations?: unknown;
+    /** Executed identity envelope for the review stage (HOK-2969); shape validated defensively before use. */
+    reviewExecutedIdentity?: unknown;
   };
 };
 
@@ -396,6 +401,146 @@ function buildPlannerStageEval(
   };
 }
 
+// ────────────────────────────────────────────────────────────────
+// Review Executed-Identity / Iteration Evidence Helpers (HOK-2969)
+// ────────────────────────────────────────────────────────────────
+
+type RawReviewIteration = {
+  iteration?: unknown;
+  findings?: unknown;
+};
+
+function rawReviewIterations(result: StageResultShape | null | undefined): RawReviewIteration[] {
+  const candidate = result?.artifacts?.reviewIterations;
+  return Array.isArray(candidate) ? candidate as RawReviewIteration[] : [];
+}
+
+/**
+ * Iteration evidence is complete when at least one iteration was recorded
+ * and every iteration carries a findings array (possibly empty) — a review
+ * that genuinely found nothing still has to show it looked.
+ */
+function reviewIterationsAreComplete(result: StageResultShape | null | undefined): boolean {
+  const iterations = rawReviewIterations(result);
+  if (iterations.length === 0) return false;
+  return iterations.every((entry) => typeof entry.iteration === 'number' && Array.isArray(entry.findings));
+}
+
+function summarizeReviewIterations(result: StageResultShape | null | undefined): string | undefined {
+  const iterations = rawReviewIterations(result);
+  if (iterations.length === 0) return undefined;
+  const findingCount = iterations.reduce(
+    (sum, entry) => sum + (Array.isArray(entry.findings) ? entry.findings.length : 0),
+    0,
+  );
+  return `iterationCount=${iterations.length}, findingCount=${findingCount}, complete=${reviewIterationsAreComplete(result)}`;
+}
+
+type RawExecutedIdentity = {
+  role?: unknown;
+  requestedModel?: unknown;
+  resolvedModel?: unknown;
+  agent?: unknown;
+  source?: unknown;
+  fallbackReason?: unknown;
+  pinned?: unknown;
+  conflict?: unknown;
+};
+
+type RawReviewExecutedIdentitySet = {
+  orchestrator?: RawExecutedIdentity;
+  substantiveAnalysis?: RawExecutedIdentity;
+  remediation?: RawExecutedIdentity | null;
+};
+
+function isRawExecutedIdentity(value: unknown): value is RawExecutedIdentity {
+  return typeof value === 'object' && value !== null;
+}
+
+function isValidExecutedIdentity(value: RawExecutedIdentity | undefined): value is RawExecutedIdentity {
+  return Boolean(value)
+    && typeof value?.role === 'string'
+    && typeof value?.requestedModel === 'string'
+    && typeof value?.resolvedModel === 'string'
+    && typeof value?.pinned === 'boolean';
+}
+
+function rawReviewExecutedIdentity(result: StageResultShape | null | undefined): RawReviewExecutedIdentitySet | undefined {
+  const candidate = result?.artifacts?.reviewExecutedIdentity;
+  if (!candidate || typeof candidate !== 'object') return undefined;
+  const record = candidate as Record<string, unknown>;
+  return {
+    orchestrator: isRawExecutedIdentity(record.orchestrator) ? record.orchestrator : undefined,
+    substantiveAnalysis: isRawExecutedIdentity(record.substantiveAnalysis) ? record.substantiveAnalysis : undefined,
+    remediation: record.remediation === null
+      ? null
+      : isRawExecutedIdentity(record.remediation) ? record.remediation : undefined,
+  };
+}
+
+/**
+ * Fully pinned means both required roles validated as complete identities,
+ * every present identity is pinned, and none carries a recorded conflict —
+ * missing or conflicting identity must never read as pinned (HOK-2969).
+ */
+function reviewExecutedIdentityIsPinned(result: StageResultShape | null | undefined): boolean {
+  const identity = rawReviewExecutedIdentity(result);
+  if (!isValidExecutedIdentity(identity?.orchestrator) || !isValidExecutedIdentity(identity?.substantiveAnalysis)) {
+    return false;
+  }
+  const items = [
+    identity!.orchestrator!,
+    identity!.substantiveAnalysis!,
+    ...(identity!.remediation ? [identity!.remediation] : []),
+  ];
+  return items.every((item) => item.pinned === true && !item.conflict);
+}
+
+function summarizeReviewExecutedIdentity(result: StageResultShape | null | undefined): string | undefined {
+  const identity = rawReviewExecutedIdentity(result);
+  if (!identity?.orchestrator && !identity?.substantiveAnalysis) return undefined;
+  const describe = (label: string, item: RawExecutedIdentity | undefined | null): string => {
+    if (!item) return '';
+    const model = typeof item.resolvedModel === 'string' ? item.resolvedModel : 'unknown';
+    return `${label}=${model}(pinned=${item.pinned === true}${item.conflict ? ',conflict' : ''})`;
+  };
+  return [
+    describe('orchestrator', identity.orchestrator),
+    describe('analysis', identity.substantiveAnalysis),
+    identity.remediation ? describe('remediation', identity.remediation) : '',
+  ].filter(Boolean).join(', ');
+}
+
+/**
+ * Read and validate the review stage's executed-identity envelope for use
+ * outside this module's `ChallengeStageEval` summaries (e.g. attaching
+ * `EvalRecord.reviewExecutedIdentity` from `post-completion-hook.ts`).
+ * Returns `undefined` rather than a partial/malformed set — a consumer must
+ * never treat an invalid envelope as present identity evidence.
+ */
+export function extractReviewExecutedIdentity(input: {
+  repoDir: string;
+  issueId?: string;
+  branchName?: string;
+  worktreePath?: string;
+}): ReviewExecutedIdentitySet | undefined {
+  const slug = deriveSlug(input.branchName, input.worktreePath);
+  const result = readStageResult(input.repoDir, input.issueId, slug, input.worktreePath, 'review');
+  const raw = rawReviewExecutedIdentity(result);
+  if (!isValidExecutedIdentity(raw?.orchestrator) || !isValidExecutedIdentity(raw?.substantiveAnalysis)) {
+    return undefined;
+  }
+  return {
+    orchestrator: raw!.orchestrator as unknown as ExecutedIdentity,
+    substantiveAnalysis: raw!.substantiveAnalysis as unknown as ExecutedIdentity,
+    ...(raw!.remediation === null
+      ? { remediation: null }
+      : isValidExecutedIdentity(raw!.remediation)
+        ? { remediation: raw!.remediation as unknown as ExecutedIdentity }
+        : {}),
+  };
+}
+
 function buildReviewerStageEval(
   input: BuildChallengeStageEvalInput,
   slug: string | undefined,
@@ -416,16 +561,24 @@ function buildReviewerStageEval(
       '.review-result.json',
     );
   }
+  addEvidence(evidence, 'review_iterations', summarizeReviewIterations(reviewResult), '.review-result.json');
+  addEvidence(evidence, 'review_identity', summarizeReviewExecutedIdentity(reviewResult), '.review-result.json');
 
+  // Reviewer-stage direct provenance requires complete per-iteration local
+  // evidence and a fully pinned executed identity, not just presence of a
+  // review-result artifact — a challenge cannot prove which model performed
+  // substantive analysis from a summary alone (HOK-2969, Arbiter P2.4f).
   const missing: string[] = [];
   if (!selfReviewSummary) missing.push('self-review summary');
   if (!reviewResult) missing.push('.review-result.json');
+  if (reviewResult && !reviewIterationsAreComplete(reviewResult)) missing.push('complete review iteration evidence');
+  if (reviewResult && !reviewExecutedIdentityIsPinned(reviewResult)) missing.push('pinned reviewer execution identity');
 
   if (missing.length === 0) {
     return {
       stage: 'review',
       provenance: 'direct',
-      summary: 'Direct review evidence captured from self-review output and review result artifacts.',
+      summary: 'Direct review evidence captured from self-review output, review result artifacts, complete iteration evidence, and a pinned executed identity.',
       evidence,
     };
   }

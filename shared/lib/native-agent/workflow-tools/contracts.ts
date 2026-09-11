@@ -15,12 +15,13 @@
  */
 
 import type { ToolResultMetadata } from '../tools/types.ts';
+import type { ExecutedIdentity } from '../../challenge-execution-contract.ts';
 
 // ---------------------------------------------------------------------------
 // Schema version
 // ---------------------------------------------------------------------------
 
-export const WORKFLOW_TOOL_SCHEMA_VERSION = '1.2.0' as const;
+export const WORKFLOW_TOOL_SCHEMA_VERSION = '1.3.0' as const;
 
 // ---------------------------------------------------------------------------
 // Tool names
@@ -437,6 +438,16 @@ export interface ReviewChangesSuccess extends WorkflowToolResultBase {
   blockerCount?: number;
   warningCount?: number;
   failureCategory?: string;
+  /**
+   * Orchestrator (calling agent) and substantive-analysis identities executed
+   * for this call, with pin/fallback status (HOK-2969, Arbiter P2.4f).
+   * Remediation identity is layered on separately by the review flow that
+   * applies fixes across findings from potentially multiple calls.
+   */
+  executedIdentity?: {
+    orchestrator: ExecutedIdentity;
+    substantiveAnalysis: ExecutedIdentity;
+  };
 }
 
 export interface ReviewChangesError extends WorkflowToolResultBase {

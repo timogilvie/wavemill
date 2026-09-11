@@ -110,6 +110,12 @@ TESTS=(
   shared/lib/review-formatter.test.ts
   shared/lib/pr-comparison.test.ts
   shared/lib/swap-test/swap-test.test.ts
+  shared/lib/arbiter-probes/strata-cells.test.ts
+  shared/lib/arbiter-probes/survival-labels.test.ts
+  shared/lib/arbiter-probes/pair-context.test.ts
+  shared/lib/arbiter-probes/survival-agreement.test.ts
+  shared/lib/arbiter-probes/eval-disagreement.test.ts
+  tools/arbiter-probe-p1-2.test.ts
   shared/lib/pr-diff-provider.test.ts
   shared/lib/pr-metadata.test.ts
   shared/lib/pr-attribution.test.ts
@@ -147,6 +153,7 @@ TESTS=(
   shared/lib/challenge-pair-recovery.test.ts
   shared/lib/current-challenge-eval-selector.test.ts
   shared/lib/challenge-comparison-eval-evidence.test.ts
+  shared/lib/challenge-ready-evidence.test.ts
   shared/lib/harness-replay.test.ts
   shared/lib/cross-repo-parity.valid.test.ts
   shared/lib/cross-repo-parity.missing.test.ts
@@ -202,6 +209,7 @@ TESTS=(
   shared/lib/transient-marker.test.ts
   shared/lib/wavemill-incident-artifact-diagnostics.test.ts
   shared/lib/wavemill-incident-detector.test.ts
+  shared/lib/wavemill-incident-model.test.ts
   shared/lib/wavemill-incident-store.test.ts
   shared/lib/state-mutex.test.ts
   shared/lib/job-tracker.test.ts
@@ -240,6 +248,7 @@ TESTS=(
   shared/lib/blocked-completion.test.ts
   shared/lib/task-contract.test.ts
   shared/lib/task-lifecycle.test.ts
+  shared/lib/terminal-lifecycle-cert.test.ts
   shared/lib/feature-state.test.ts
   shared/lib/soft-gates.test.ts
   shared/lib/openrouter-provider.test.ts
@@ -264,6 +273,7 @@ TESTS=(
   tools/check-pi-version.test.ts
   tools/check-ci-command-map-drift.test.ts
   tools/check-ci-concurrency.test.ts
+  tools/check-openrouter-alias-audit-ci.test.ts
   tools/check-cross-pr-reverts.test.ts
   tools/hok2423-verify-native-provider-gate.test.ts
   tools/hok2424-verify-native-expansion.test.ts
@@ -314,6 +324,7 @@ TESTS=(
   shared/lib/pre-pr-verification-drift-validator.test.ts
   tools/check-ci-verification.test.ts
   tests/verification-scenarios.test.ts
+  tests/fork-aware-comparison.test.ts
   # Registration-complete shared and tool tests.
   shared/lib/artifact-diagnostics.test.ts
   shared/lib/challenge-coverage-selector.test.ts

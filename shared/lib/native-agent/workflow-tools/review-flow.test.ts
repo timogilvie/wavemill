@@ -1012,4 +1012,178 @@ describe('runReviewFlow', () => {
     assert.match(stored.artifacts.failureReason, /branch was never pushed to origin/);
     assert.equal(stored.artifacts.failureCategory, 'branch-publication');
   });
+
+  describe('review evidence persistence (HOK-2969, Arbiter P2.4f)', () => {
+    it('accumulates distinct per-iteration evidence across reruns instead of overwriting it', async () => {
+      const featureDir = mkdtempSync(path.join(os.tmpdir(), 'review-flow-'));
+      tempDirs.push(featureDir);
+      const state = makeState();
+      const recorder = makeRecorder();
+      const registry = createInMemoryDedupeRegistry({ clock: () => 1_000 });
+
+      const firstReview = makeReview({
+        verdict: 'not_ready',
+        codeReviewFindings: [{
+          severity: 'blocker',
+          location: 'src/app.ts:10',
+          category: 'correctness',
+          description: 'First-pass blocker.',
+        }],
+        uiFindings: [],
+      });
+      await runReviewFlow({
+        ...baseOptions(featureDir, state, recorder),
+        registry,
+        reviewChangesImpl: async () => firstReview,
+        fixFindings: async ({ finding }) => ({
+          ok: true,
+          outcome: 'applied',
+          findingId: finding.id,
+          filesChanged: ['src/app.ts'],
+        }),
+      });
+
+      const secondReview = makeReview({ verdict: 'ready', codeReviewFindings: [], uiFindings: [] });
+      await runReviewFlow({
+        ...baseOptions(featureDir, state, recorder),
+        registry,
+        headSha: 'def456',
+        reviewChangesImpl: async () => secondReview,
+      });
+
+      const stored = JSON.parse(readFileSync(path.join(featureDir, '.review-result.json'), 'utf8')) as {
+        artifacts: {
+          reviewIterations: Array<{
+            iteration: number;
+            findings: unknown[];
+            headSha?: string;
+            reviewerDelta?: { reviewedHeadSha?: string };
+          }>;
+        };
+      };
+      assert.equal(stored.artifacts.reviewIterations.length, 2);
+      assert.equal(stored.artifacts.reviewIterations[0].iteration, 1);
+      assert.equal(stored.artifacts.reviewIterations[0].findings.length, 1);
+      assert.equal(stored.artifacts.reviewIterations[0].headSha, 'abc123');
+      assert.equal(stored.artifacts.reviewIterations[0].reviewerDelta?.reviewedHeadSha, 'abc123');
+      assert.equal(stored.artifacts.reviewIterations[1].iteration, 2);
+      assert.equal(stored.artifacts.reviewIterations[1].findings.length, 0);
+      assert.equal(stored.artifacts.reviewIterations[1].headSha, 'def456');
+    });
+
+    it('persists dismissal justification and evidence in the iteration finding record (HOK-2932, HOK-2969)', async () => {
+      const featureDir = mkdtempSync(path.join(os.tmpdir(), 'review-flow-'));
+      tempDirs.push(featureDir);
+      const state = makeState();
+      const recorder = makeRecorder();
+      const dismissedReview = makeReview({
+        verdict: 'ready',
+        codeReviewFindings: [{
+          severity: 'blocker',
+          location: 'src/app.ts:10',
+          category: 'correctness',
+          description: 'Looked like a bug on first read.',
+          dismissed: true,
+          dismissalJustification: 'Verified against fixture; path is unreachable.',
+          dismissalEvidence: 'git log -- src/app.ts',
+        }],
+        uiFindings: [],
+      });
+
+      await runReviewFlow({
+        ...baseOptions(featureDir, state, recorder),
+        reviewChangesImpl: async () => dismissedReview,
+      });
+
+      const stored = JSON.parse(readFileSync(path.join(featureDir, '.review-result.json'), 'utf8')) as {
+        artifacts: {
+          reviewIterations: Array<{
+            findings: Array<{
+              disposition: string;
+              dismissalJustification?: string;
+              dismissalEvidence?: string;
+            }>;
+          }>;
+        };
+      };
+      const finding = stored.artifacts.reviewIterations[0].findings[0];
+      assert.equal(finding.disposition, 'dismissed');
+      assert.equal(finding.dismissalJustification, 'Verified against fixture; path is unreachable.');
+      assert.equal(finding.dismissalEvidence, 'git log -- src/app.ts');
+    });
+
+    it('records remediation identity only once a fix was actually applied', async () => {
+      const featureDir = mkdtempSync(path.join(os.tmpdir(), 'review-flow-'));
+      tempDirs.push(featureDir);
+      const state = makeState();
+      const recorder = makeRecorder();
+      const review = makeReview({
+        verdict: 'not_ready',
+        codeReviewFindings: [{
+          severity: 'blocker',
+          location: 'src/app.ts:10',
+          category: 'correctness',
+          description: 'Needs a fix.',
+        }],
+        uiFindings: [],
+      });
+      review.substantiveAnalysisIdentity = {
+        role: 'substantive_analysis',
+        requestedModel: 'glm-5.3',
+        resolvedModel: 'glm-5.3',
+        agent: 'native-openrouter',
+        source: 'artifact',
+        pinned: true,
+      };
+
+      await runReviewFlow({
+        ...baseOptions(featureDir, state, recorder),
+        reviewChangesImpl: async () => review,
+        fixFindings: async ({ finding }) => ({
+          ok: true,
+          outcome: 'applied',
+          findingId: finding.id,
+          filesChanged: ['src/app.ts'],
+        }),
+      });
+
+      const stored = JSON.parse(readFileSync(path.join(featureDir, '.review-result.json'), 'utf8')) as {
+        artifacts: {
+          reviewExecutedIdentity?: {
+            orchestrator: { role: string };
+            substantiveAnalysis: { resolvedModel: string };
+            remediation: null | { role: string };
+          };
+        };
+      };
+      assert.equal(stored.artifacts.reviewExecutedIdentity?.substantiveAnalysis.resolvedModel, 'glm-5.3');
+      assert.equal(stored.artifacts.reviewExecutedIdentity?.remediation?.role, 'remediation');
+    });
+
+    it('leaves remediation identity null when no fix was applied', async () => {
+      const featureDir = mkdtempSync(path.join(os.tmpdir(), 'review-flow-'));
+      tempDirs.push(featureDir);
+      const state = makeState();
+      const recorder = makeRecorder();
+      const review = makeReview({ verdict: 'ready', codeReviewFindings: [], uiFindings: [] });
+      review.substantiveAnalysisIdentity = {
+        role: 'substantive_analysis',
+        requestedModel: 'glm-5.3',
+        resolvedModel: 'glm-5.3',
+        agent: 'native-openrouter',
+        source: 'artifact',
+        pinned: true,
+      };
+
+      await runReviewFlow({
+        ...baseOptions(featureDir, state, recorder),
+        reviewChangesImpl: async () => review,
+      });
+
+      const stored = JSON.parse(readFileSync(path.join(featureDir, '.review-result.json'), 'utf8')) as {
+        artifacts: { reviewExecutedIdentity?: { remediation: null | { role: string } } };
+      };
+      assert.equal(stored.artifacts.reviewExecutedIdentity?.remediation, null);
+    });
+  });
 });

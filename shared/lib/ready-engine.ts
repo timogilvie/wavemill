@@ -1,4 +1,5 @@
 import type { ChallengeComparison } from './challenge-comparison.ts';
+import type { ChallengeReadyEvidence, ChallengeReadyOutcome } from './challenge-ready-evidence.ts';
 import { validatePrMetadata, type PrMetadata, type MetadataValidation } from './pr-metadata.ts';
 import { WM_LABELS } from './pr-state-labels.ts';
 import type { IntegrationReadyPolicyConfig } from './config.ts';
@@ -8,17 +9,50 @@ import {
   type RequiredContextsSource,
 } from './pr-ci-status.ts';
 
+/**
+ * Typed Ready pending reasons (HOK-2963). Additive: untyped pending (CI,
+ * dependency, risk-acknowledgement waits) keeps its existing string-only
+ * reporting; only challenge orchestration waits are typed so the monitor can
+ * route them away from the generic pending-ready retry budget.
+ */
+export type ReadyPendingReason =
+  | 'challenge-eval-pending'
+  | 'challenge-comparison-pending';
+
 export interface GuardResult {
   status: 'pass' | 'warn' | 'pending' | 'fail';
   reason?: string;
   labels?: string[];
   commentFragment?: string;
+  /** Set only for typed challenge waits; untyped pending leaves it absent. */
+  pendingReason?: ReadyPendingReason;
+}
+
+/** Challenge diagnostics surfaced additively on the verdict and JSON output. */
+export interface ChallengeReadyVerdictDiagnostics {
+  pairId: string;
+  side: 'primary' | 'challenger';
+  outcome: ChallengeReadyOutcome;
+  primaryEval: { ok: boolean; evalId?: string; refusalReason?: string };
+  challengerEval: { ok: boolean; evalId?: string; refusalReason?: string };
+  staleComparisons: number;
 }
 
 export interface ReadyVerdict {
   status: 'pass' | 'warn' | 'pending' | 'fail';
   reasons: string[];
   output: { labels: string[]; comment: string };
+  /**
+   * True when the implementation guards (CI, base branch, metadata,
+   * dependencies, migration coupling, risk) aggregate to pass/warn — i.e.
+   * the PR is mergeable but for challenge-pair resolution.
+   */
+  implementationReady?: boolean;
+  /** First typed pending reason; set only when implementationReady is true. */
+  pendingReason?: ReadyPendingReason;
+  /** All typed pending reasons, when any. */
+  pendingReasons?: ReadyPendingReason[];
+  challenge?: ChallengeReadyVerdictDiagnostics;
 }
 
 export type CheckReadErrorType = 'command-failed' | 'timeout' | 'malformed-json' | 'network' | 'unknown';
@@ -47,6 +81,15 @@ export interface ReadyEngineContext {
   fetchLinearIssueState: (id: string) => Promise<{ completedAt: string | null; canceledAt: string | null } | null>;
   readChallengeComparisons: () => ChallengeComparison[];
   requiredCheckRead?: CheckReadResult;
+  /**
+   * Optional current-head challenge evidence resolver (HOK-2963). When
+   * provided and it returns evidence, the challenge guard reports typed
+   * pending for launchable eval/comparison work instead of the legacy
+   * fail-closed "no comparison record" verdict. A null return (or a throw)
+   * falls back to the legacy record-presence gate, so unresolvable pair
+   * identity stays fail-closed.
+   */
+  resolveChallengeEvidence?: () => Promise<ChallengeReadyEvidence | null>;
 }
 
 function aggregateStatus(results: GuardResult[]): ReadyVerdict['status'] {
@@ -248,10 +291,66 @@ export async function checkRiskPolicy(ctx: ReadyEngineContext): Promise<GuardRes
   };
 }
 
-export async function checkChallengePairs(ctx: ReadyEngineContext): Promise<GuardResult> {
+function challengeDiagnostics(evidence: ChallengeReadyEvidence): ChallengeReadyVerdictDiagnostics {
+  return {
+    pairId: evidence.pairId,
+    side: evidence.side,
+    outcome: evidence.outcome,
+    primaryEval: {
+      ok: evidence.primaryEval.ok,
+      ...(evidence.primaryEval.evalId ? { evalId: evidence.primaryEval.evalId } : {}),
+      ...(evidence.primaryEval.refusalReason ? { refusalReason: evidence.primaryEval.refusalReason } : {}),
+    },
+    challengerEval: {
+      ok: evidence.challengerEval.ok,
+      ...(evidence.challengerEval.evalId ? { evalId: evidence.challengerEval.evalId } : {}),
+      ...(evidence.challengerEval.refusalReason ? { refusalReason: evidence.challengerEval.refusalReason } : {}),
+    },
+    staleComparisons: evidence.staleComparisons,
+  };
+}
+
+interface ChallengeGuardDetail {
+  guard: GuardResult;
+  challenge?: ChallengeReadyVerdictDiagnostics;
+}
+
+async function checkChallengePairsDetailed(ctx: ReadyEngineContext): Promise<ChallengeGuardDetail> {
   const metadata = await getMetadata(ctx);
   if (metadata.challenge !== true) {
-    return { status: 'pass' };
+    return { guard: { status: 'pass' } };
+  }
+
+  // Current-head evidence path (HOK-2963): typed pending while eval or
+  // comparison orchestration can still make progress; pass only for a
+  // comparison valid at the live heads or an explicit terminal resolution.
+  if (ctx.resolveChallengeEvidence) {
+    let evidence: ChallengeReadyEvidence | null = null;
+    try {
+      evidence = await ctx.resolveChallengeEvidence();
+    } catch {
+      evidence = null;
+    }
+    if (evidence) {
+      const diagnostics = challengeDiagnostics(evidence);
+      if (evidence.outcome === 'comparison-valid' || evidence.outcome === 'terminal-resolution') {
+        return { guard: { status: 'pass' }, challenge: diagnostics };
+      }
+      const reason = evidence.outcome === 'eval-pending'
+        ? `Challenge pair ${evidence.pairId} is waiting on current-head eval evidence.`
+        : `Challenge pair ${evidence.pairId} has current-head evals but no comparison yet.`;
+      return {
+        guard: {
+          status: 'pending',
+          reason,
+          pendingReason: evidence.pendingReason,
+          commentFragment: toFragment('Challenge Pair Pending', [reason]),
+        },
+        challenge: diagnostics,
+      };
+    }
+    // Fall through to the legacy fail-closed gate when pair identity or
+    // evidence could not be resolved.
   }
 
   try {
@@ -261,25 +360,33 @@ export async function checkChallengePairs(ctx: ReadyEngineContext): Promise<Guar
     );
 
     if (matched) {
-      return { status: 'pass' };
+      return { guard: { status: 'pass' } };
     }
 
     const reason = 'Challenge PR is missing a resolved comparison pair.';
     return {
-      status: 'fail',
-      reason,
-      labels: [WM_LABELS.challengeUnresolved],
-      commentFragment: toFragment('Challenge Pair Unresolved', [reason]),
+      guard: {
+        status: 'fail',
+        reason,
+        labels: [WM_LABELS.challengeUnresolved],
+        commentFragment: toFragment('Challenge Pair Unresolved', [reason]),
+      },
     };
   } catch {
     const reason = 'Challenge resolution unavailable.';
     return {
-      status: 'fail',
-      reason,
-      labels: [WM_LABELS.challengeUnresolved],
-      commentFragment: toFragment('Challenge Pair Unresolved', [reason]),
+      guard: {
+        status: 'fail',
+        reason,
+        labels: [WM_LABELS.challengeUnresolved],
+        commentFragment: toFragment('Challenge Pair Unresolved', [reason]),
+      },
     };
   }
+}
+
+export async function checkChallengePairs(ctx: ReadyEngineContext): Promise<GuardResult> {
+  return (await checkChallengePairsDetailed(ctx)).guard;
 }
 
 function formatList(values: string[], limit = 5): string {
@@ -341,7 +448,10 @@ export async function evaluateReady(ctx: ReadyEngineContext): Promise<ReadyVerdi
     };
   }
 
-  const guardResults = await Promise.all([
+  // Implementation guards decide "mergeable but for challenge resolution";
+  // the challenge guard is evaluated separately so its typed pending reasons
+  // can be suppressed while implementation work (e.g. CI) is still pending.
+  const implementationGuards = await Promise.all([
     Promise.resolve(ctx.requiredCheckRead ? readRequiredChecks(ctx.requiredCheckRead) : { status: 'pass' as const }),
     checkBaseBranch(ctx),
     checkMetadata(ctx),
@@ -356,16 +466,30 @@ export async function evaluateReady(ctx: ReadyEngineContext): Promise<ReadyVerdi
       reason: `Risk evaluation failed: ${(error as Error).message}`,
       commentFragment: toFragment('High Risk Blocked', [`Risk evaluation failed: ${(error as Error).message}`]),
     })),
-    checkChallengePairs(ctx).catch((error) => ({
+  ]);
+
+  const challengeDetail = await checkChallengePairsDetailed(ctx).catch((error): ChallengeGuardDetail => ({
+    guard: {
       status: 'fail' as const,
       reason: `Challenge evaluation failed: ${(error as Error).message}`,
       labels: [WM_LABELS.challengeUnresolved],
       commentFragment: toFragment('Challenge Pair Unresolved', [`Challenge evaluation failed: ${(error as Error).message}`]),
-    })),
-  ]);
+    },
+  }));
+
+  const guardResults = [...implementationGuards, challengeDetail.guard];
+  const implementationStatus = aggregateStatus(implementationGuards);
+  const implementationReady = implementationStatus === 'pass' || implementationStatus === 'warn';
+  const status = aggregateStatus(guardResults);
+  // Typed pending reasons surface only once the implementation guards are
+  // green: a CI wait must keep reporting as CI pending, never as challenge
+  // pending (REQ-F2 inverse).
+  const pendingReasons = status === 'pending' && implementationReady
+    ? dedupe(guardResults.flatMap((result) => result.pendingReason ? [result.pendingReason] : []))
+    : [];
 
   return {
-    status: aggregateStatus(guardResults),
+    status,
     reasons: guardResults.flatMap((result) => result.reason ? [result.reason] : []),
     output: {
       labels: dedupe(guardResults.flatMap((result) => result.labels ?? [])),
@@ -373,5 +497,10 @@ export async function evaluateReady(ctx: ReadyEngineContext): Promise<ReadyVerdi
         .flatMap((result) => result.commentFragment ? [result.commentFragment] : [])
         .join('\n\n'),
     },
+    implementationReady,
+    ...(pendingReasons.length > 0
+      ? { pendingReason: pendingReasons[0] as ReadyPendingReason, pendingReasons: pendingReasons as ReadyPendingReason[] }
+      : {}),
+    ...(challengeDetail.challenge ? { challenge: challengeDetail.challenge } : {}),
   };
 }

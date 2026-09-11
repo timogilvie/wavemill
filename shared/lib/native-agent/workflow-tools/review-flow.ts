@@ -2,11 +2,21 @@ import { createHash } from 'node:crypto';
 
 import { isDismissedFinding, type ReviewFinding, type ReviewResult } from '../../review-engine.ts';
 import {
+  appendReviewIteration,
+  nextReviewIterationNumber,
+  readStageResult,
   reviewOutcomePassesReadyGate,
   type DismissedReviewBlocker,
+  type ExecutedIdentity,
+  type ReviewerDeltaRecord,
+  type ReviewExecutedIdentitySet,
+  type ReviewFindingDisposition,
+  type ReviewFindingRecord,
+  type ReviewIterationRecord,
   type ReviewOutcomeVerdict,
   type StageStatus,
 } from '../../stage-result.ts';
+import { loadChallengeIntentFromFeatureDir } from '../../challenge-execution-contract.ts';
 import {
   executeReviewChanges,
   executeWriteStageResult,
@@ -29,6 +39,7 @@ import type {
   GitHubLabelRef,
   GitHubPullRequestRef,
   LinearCommentResult,
+  ReviewChangesResult,
   WorkflowPhase,
 } from './contracts.ts';
 import {
@@ -206,6 +217,90 @@ function extractDismissedBlockers(review: ReviewResult): DismissedReviewBlocker[
     }));
 }
 
+/**
+ * A fix outcome that did not actually resolve the finding leaves it `open`
+ * rather than inventing a status the executor never reported (HOK-2969):
+ * `skipped`/`denied`/`failed` all still need attention.
+ */
+function dispositionFromFixOutcome(outcome: ReviewFindingFixResult['outcome'] | undefined): ReviewFindingDisposition {
+  return outcome === 'applied' ? 'fixed' : 'open';
+}
+
+/**
+ * Build the complete per-finding evidence record for one review iteration:
+ * location, category, severity, evidence, proposed fix, and disposition —
+ * dismissed false positives keep their justification/evidence, and every
+ * other finding's disposition reflects the matching fix-loop outcome, if any
+ * (HOK-2969, Arbiter P2.4f).
+ */
+function buildFindingRecords(review: ReviewResult, fixes: ReviewFlowFixSummary): ReviewFindingRecord[] {
+  const records: ReviewFindingRecord[] = [];
+  const collect = (source: 'code' | 'ui', list: ReviewFinding[] | undefined) => {
+    for (const finding of list ?? []) {
+      const id = normalizeFinding(source, finding).id;
+      const base: ReviewFindingRecord = {
+        location: finding.location,
+        category: finding.category,
+        severity: finding.severity,
+        description: finding.description,
+        ...(finding.evidence ? { evidence: finding.evidence } : {}),
+        ...(finding.proposedFix ? { proposedFix: finding.proposedFix } : {}),
+        disposition: 'open',
+      };
+      if (isDismissedFinding(finding)) {
+        records.push({
+          ...base,
+          disposition: 'dismissed',
+          dismissalJustification: finding.dismissalJustification,
+          ...(finding.dismissalEvidence ? { dismissalEvidence: finding.dismissalEvidence } : {}),
+        });
+        continue;
+      }
+      const fixOutcome = fixes.outcomes.find((entry) => entry.findingId === id);
+      records.push({ ...base, disposition: dispositionFromFixOutcome(fixOutcome?.outcome) });
+    }
+  };
+  collect('code', review.codeReviewFindings);
+  collect('ui', review.uiFindings);
+  return records;
+}
+
+/**
+ * The reviewer-authored delta is anchored by SHA relative to the shared
+ * challenge fork commit rather than embedding a raw diff (HOK-2969): the
+ * fork commit and reviewed head are enough to reconstruct the delta on
+ * demand, and the raw diff never needs to leave this local artifact.
+ */
+function buildReviewerDelta(options: ReviewFlowOptions): ReviewerDeltaRecord | undefined {
+  const intent = loadChallengeIntentFromFeatureDir(options.featureDir);
+  const forkCommit = intent?.forkCommit ?? undefined;
+  if (!forkCommit && !options.headSha) return undefined;
+  return {
+    ...(forkCommit ? { forkCommit } : {}),
+    ...(options.headSha ? { reviewedHeadSha: options.headSha } : {}),
+  };
+}
+
+/**
+ * Layer remediation identity onto the orchestrator/substantive-analysis pair
+ * `executeReviewChanges` already resolved. The remediation step in this flow
+ * is the same calling agent applying its own fix-loop edits, so remediation
+ * identity is only meaningful (non-null) once a fix was actually applied
+ * (HOK-2969) — inventing one for a run with zero applied fixes would assert
+ * evidence for work that never happened.
+ */
+function buildIterationExecutedIdentity(
+  reviewCall: ReviewChangesResult,
+  fixes: ReviewFlowFixSummary,
+): ReviewExecutedIdentitySet | undefined {
+  if (!reviewCall.ok || !reviewCall.executedIdentity) return undefined;
+  const { orchestrator, substantiveAnalysis } = reviewCall.executedIdentity;
+  const remediation: ExecutedIdentity | null = fixes.applied > 0
+    ? { ...orchestrator, role: 'remediation' }
+    : null;
+  return { orchestrator, substantiveAnalysis, remediation };
+}
+
 function parseStructuredReview(findings: string): ReviewResult {
   const parsed = JSON.parse(findings) as Partial<ReviewResult>;
   if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.codeReviewFindings)) {
@@ -278,6 +373,10 @@ function buildStageArtifacts(input: {
   labels: GitHubAddLabelResult[];
   warnings: string[];
   headSha?: string;
+  /** This run's complete per-iteration local evidence, merged onto any prior iterations (HOK-2969). */
+  reviewIterations?: ReviewIterationRecord[];
+  /** Orchestrator/substantive-analysis/remediation identity for this run's iteration (HOK-2969). */
+  reviewExecutedIdentity?: ReviewExecutedIdentitySet;
 }): Record<string, unknown> {
   const pullRequestSummary = summarizeMutation(input.pullRequest);
   const prNumber = input.pullRequest?.ok ? input.pullRequest.idempotency.ref?.number : undefined;
@@ -296,6 +395,8 @@ function buildStageArtifacts(input: {
     // Head reviewed for this artifact (HOK-2964): a later head makes this
     // verdict stale, which recovery/reconciliation consumers rely on.
     ...(input.headSha ? { reviewHeadSha: input.headSha } : {}),
+    ...(input.reviewIterations && input.reviewIterations.length > 0 ? { reviewIterations: input.reviewIterations } : {}),
+    ...(input.reviewExecutedIdentity ? { reviewExecutedIdentity: input.reviewExecutedIdentity } : {}),
     review: {
       status: input.review.status,
       verdict: input.review.verdict,
@@ -418,6 +519,8 @@ async function writeTerminalStageResult(
     warnings: string[];
     failureReason?: string;
     failureCategory?: string;
+    reviewIterations?: ReviewIterationRecord[];
+    reviewExecutedIdentity?: ReviewExecutedIdentitySet;
   },
 ): Promise<Awaited<ReturnType<typeof executeWriteStageResult>>> {
   const status: StageStatus = input.ok ? 'completed' : 'failed';
@@ -459,6 +562,21 @@ export async function runReviewFlow(options: ReviewFlowOptions): Promise<ReviewF
 
   const deps = createDeps(options);
   const registry = deps.registry;
+
+  // Read prior iteration evidence before this run's write so a rerun appends
+  // rather than overwriting earlier direct evidence (HOK-2969, Arbiter P2.4f).
+  const readStageResultImpl = options.readStageResultImpl ?? readStageResult;
+  const existingReviewResult = await readStageResultImpl(options.featureDir, 'review');
+  const iterationNumber = nextReviewIterationNumber(existingReviewResult?.artifacts);
+  const recordedAt = new Date(now(options.clock)).toISOString();
+  const appendIteration = (
+    entry: Omit<ReviewIterationRecord, 'iteration' | 'recordedAt'>,
+  ): ReviewIterationRecord[] => appendReviewIteration(existingReviewResult?.artifacts, {
+    iteration: iterationNumber,
+    recordedAt,
+    ...entry,
+  });
+
   const reviewWorktreeDir = options.worktreeDir ?? options.featureDir;
   const reviewCall = await executeReviewChanges({
     base: options.base,
@@ -493,6 +611,7 @@ export async function runReviewFlow(options: ReviewFlowOptions): Promise<ReviewF
       labels: [],
       warnings,
       failureReason: reviewCall.message,
+      reviewIterations: appendIteration({ verdict: 'error', findings: [] }),
     });
     return {
       ok: false,
@@ -525,6 +644,7 @@ export async function runReviewFlow(options: ReviewFlowOptions): Promise<ReviewF
       labels: [],
       warnings,
       failureReason: message,
+      reviewIterations: appendIteration({ verdict: 'error', findings: [] }),
     });
     return {
       ok: false,
@@ -621,6 +741,20 @@ export async function runReviewFlow(options: ReviewFlowOptions): Promise<ReviewF
     }
   }
 
+  // Complete local evidence for this iteration: structured findings (with
+  // disposition), the reviewer-authored delta anchored to the shared fork
+  // commit, and the executed identity that produced them (HOK-2969). `fixes`
+  // is final by this point on every remaining path below, so this is
+  // computed once and reused for every subsequent terminal write.
+  const reviewerDelta = buildReviewerDelta(options);
+  const reviewIterations = appendIteration({
+    verdict: review.verdict,
+    ...(options.headSha ? { headSha: options.headSha } : {}),
+    findings: buildFindingRecords(parsedReview, fixes),
+    ...(reviewerDelta ? { reviewerDelta } : {}),
+  });
+  const reviewExecutedIdentity = buildIterationExecutedIdentity(reviewCall, fixes);
+
   if (review.needsStrongerReviewer) {
     const stageResult = await writeTerminalStageResult(options, deps, {
       ok: true,
@@ -628,6 +762,8 @@ export async function runReviewFlow(options: ReviewFlowOptions): Promise<ReviewF
       fixes,
       labels,
       warnings,
+      reviewIterations,
+      ...(reviewExecutedIdentity ? { reviewExecutedIdentity } : {}),
     });
     return {
       ok: true,
@@ -715,6 +851,8 @@ export async function runReviewFlow(options: ReviewFlowOptions): Promise<ReviewF
       warnings,
       failureReason: `branch publication failed (${branchPublication.reason}): ${branchPublication.message}; recover with: ${branchPublication.recoveryCommand}`,
       failureCategory,
+      reviewIterations,
+      ...(reviewExecutedIdentity ? { reviewExecutedIdentity } : {}),
     });
     return {
       ok: false,
@@ -794,6 +932,8 @@ export async function runReviewFlow(options: ReviewFlowOptions): Promise<ReviewF
       warnings,
       failureReason,
       failureCategory: translated ? 'branch-publication' : 'pr-orchestration',
+      reviewIterations,
+      ...(reviewExecutedIdentity ? { reviewExecutedIdentity } : {}),
     });
     return {
       ok: false,
@@ -877,6 +1017,8 @@ export async function runReviewFlow(options: ReviewFlowOptions): Promise<ReviewF
     pullRequest,
     labels,
     warnings,
+    reviewIterations,
+    ...(reviewExecutedIdentity ? { reviewExecutedIdentity } : {}),
   });
 
   return {

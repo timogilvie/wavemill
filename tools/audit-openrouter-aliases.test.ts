@@ -135,7 +135,7 @@ describe('audit-openrouter-aliases command', () => {
       assert.equal(code, 1);
       assert.match(output.stdout.join('\n'), /pricing-drift/);
       assert.match(output.stdout.join('\n'), /outputPerMTok drift/);
-      assert.match(output.stdout.join('\n'), /expected provider 3, actual registry 2/);
+      assert.match(output.stdout.join('\n'), /provider price 3 exceeds registry 2/);
     } finally {
       output.restore();
     }

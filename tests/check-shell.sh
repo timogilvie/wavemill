@@ -83,6 +83,7 @@ echo "=== Syntax Check (bash -n) ==="
 for f in \
   "$LIB_DIR"/wavemill-*.sh \
   "$LIB_DIR"/bounded-retry.sh \
+  "$LIB_DIR"/challenge-arms.sh \
   "$LIB_DIR"/transient-marker.sh \
   "$LIB_DIR"/terminal-reconciler.sh \
   "$LIB_DIR"/startup-terminal-preflight.sh \
@@ -131,6 +132,7 @@ for f in \
   "$REPO_DIR"/tests/native-terminal-failure.test.sh \
   "$REPO_DIR"/tests/native-failure-classification.test.sh \
   "$REPO_DIR"/tests/challenger-transient-retry.test.sh \
+  "$REPO_DIR"/tests/challenge-deferred-arm.test.sh \
   "$REPO_DIR"/tests/parent-monitor-function-drift.test.sh \
   "$REPO_DIR"/tests/linear-state-canonicalization.test.sh \
   "$REPO_DIR"/tests/task-phase-canonicalization.test.sh \
@@ -152,6 +154,7 @@ for f in \
   "$REPO_DIR"/tests/launch-pane-liveness.test.sh \
   "$REPO_DIR"/tests/launch-failure-log-capture.test.sh \
   "$REPO_DIR"/tests/challenge-eval-soft-retry.test.sh \
+  "$REPO_DIR"/tests/challenge-eval-timeout.test.sh \
   "$REPO_DIR"/tests/run-shell-suite.sh \
   "$REPO_DIR"/tests/run-unit-tests.sh \
   "$REPO_DIR"/tests/run-custom-tests.sh \
@@ -165,9 +168,22 @@ for f in \
   "$REPO_DIR"/tests/fixtures/lifecycle/monitor_consumes_command_file.sh \
   "$REPO_DIR"/tests/fixtures/lifecycle/parent_pr_triggers_child_launch.sh \
   "$REPO_DIR"/tests/fixtures/lifecycle/parent_branch_missing_fails_clearly.sh \
+  "$REPO_DIR"/tests/fixtures/lifecycle/closed_primary_pr_cleanup.sh \
+  "$REPO_DIR"/tests/fixtures/lifecycle/closed_primary_sibling_merged_marks_done.sh \
+  "$REPO_DIR"/tests/fixtures/lifecycle/coding_agent_exit_interrupted.sh \
   "$REPO_DIR"/tests/incident-fixtures-terminal-panes.test.sh \
   "$REPO_DIR"/tests/incident-fixtures-safety-controls.test.sh \
   "$REPO_DIR"/tests/lib/incident-fixture-harness.sh \
+  "$REPO_DIR"/tests/lib/terminal-lifecycle-cert-harness.sh \
+  "$REPO_DIR"/tests/terminal-lifecycle-cert-matrix.test.sh \
+  "$REPO_DIR"/tests/terminal-lifecycle-cert-restart.test.sh \
+  "$REPO_DIR"/tests/terminal-lifecycle-cert-budgets.test.sh \
+  "$REPO_DIR"/tests/terminal-lifecycle-flags.test.sh \
+  "$REPO_DIR"/tests/fixtures/terminal-lifecycle/merge_commit_delivery.sh \
+  "$REPO_DIR"/tests/fixtures/terminal-lifecycle/squash_delivery.sh \
+  "$REPO_DIR"/tests/fixtures/terminal-lifecycle/rebase_delivery.sh \
+  "$REPO_DIR"/tests/fixtures/terminal-lifecycle/changed_after_review_head.sh \
+  "$REPO_DIR"/tests/fixtures/terminal-lifecycle/merged_pr_plain.sh \
   "$REPO_DIR"/tests/fixtures/incidents/hok2595_closed_non_challenge.sh \
   "$REPO_DIR"/tests/fixtures/incidents/hok2913c_superseded_challenger.sh \
   "$REPO_DIR"/tests/fixtures/incidents/squash_delivery_deleted_remote_head.sh \
@@ -477,6 +493,9 @@ else
     # Extract function definitions from bounded-retry.sh (sourced by wavemill-common.sh)
     BOUNDED_RETRY_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/bounded-retry.sh" | sed 's/()//' | sort -u)
 
+    # Extract function definitions from challenge-arms.sh (also sourced by wavemill-common.sh, HOK-2811)
+    CHALLENGE_ARMS_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/challenge-arms.sh" | sed 's/()//' | sort -u)
+
     # Extract function definitions from the hook protocol sourced by common helpers.
     HOOK_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$REPO_DIR/shared/hooks/wavemill-hook-protocol.sh" | sed 's/()//' | sort -u)
 
@@ -489,8 +508,11 @@ else
     # Extract function definitions from terminal-reconciler.sh (also sourced by monitor)
     RECONCILER_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/terminal-reconciler.sh" | sed 's/()//' | sort -u)
 
+    # Extract function definitions from wavemill-worktree-deps.sh (sourced by monitor, HOK-2811)
+    WORKTREE_DEPS_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/wavemill-worktree-deps.sh" | sed 's/()//' | sort -u)
+
     # Combine all available function definitions
-    ALL_DEFINED=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' "$HEREDOC_FUNCS" "$ADAPTER_FUNCS" "$COMMON_FUNCS" "$BOUNDED_RETRY_FUNCS" "$HOOK_FUNCS" "$QUEUE_HEALTH_FUNCS" "$MARKER_FUNCS" "$RECONCILER_FUNCS" | sort -u)
+    ALL_DEFINED=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' "$HEREDOC_FUNCS" "$ADAPTER_FUNCS" "$COMMON_FUNCS" "$BOUNDED_RETRY_FUNCS" "$CHALLENGE_ARMS_FUNCS" "$HOOK_FUNCS" "$QUEUE_HEALTH_FUNCS" "$MARKER_FUNCS" "$RECONCILER_FUNCS" "$WORKTREE_DEPS_FUNCS" | sort -u)
 
     # Known external commands and bash builtins that are NOT custom functions
     # This list covers standard utilities, coreutils, and tools used by wavemill
@@ -521,7 +543,7 @@ else
       | grep -vE '^(try|catch|def|fromjson|add|rollout_path|thread_id|thread_row|updated_at|exits|setting|falling|select|strings|tostring|valid_dismissal_count)$' \
       | grep -vE '^(bad|internal|keeping|marking|monitor|rate|reduce|service|skipping|staying|timed|too|using|wavemill|waiting)$' \
       | grep -vE '^(advance|review)$' \
-      | grep -vE '^(not_eligible|routing_error)$' \
+      | grep -vE '^(not_eligible|routing_error|invalid_challenge)$' \
       | grep -vE '^(a|aborted|already|available|blocked_by_count|break|coding|cp|debug|elapsed|empty_queue|execute|file|fresh|gtimeout|heartbeat_epoch|i|id|launch|length|main|mapfile|missing|next|not|overloaded|plan|ready|required|reservation|slots|staleness|streak|the|they|timeout|todate|todateiso8601|tonumber|tracked|user)$' \
       | grep -vE '^(capabilities|const|import|throw)$')
 
@@ -939,15 +961,19 @@ else
   fi
 
   CLOSED_BLOCK=$(awk '
-    index($0, "log_warn \"$ISSUE → PR #$PR CLOSED without merge\"") { in_block=1 }
+    index($0, "local closed_pr_recorded=") { in_block=1 }
     in_block { print }
     in_block && /^[[:space:]]*return 0$/ { exit }
   ' <<< "$MONITOR_ISSUE_BLOCK")
 
-  if grep -Fq 'log_warn "$ISSUE → PR #$PR CLOSED without merge"' <<< "$CLOSED_BLOCK"; then
-    pass "closed PR path preserves warning log"
+  # HOK-2972: the per-poll WARN was replaced with a deduplicated transition -
+  # first observation logs at status, already-recorded transitions at debug.
+  if grep -Fq 'log "status" "$ISSUE → PR #$PR closed without merge"' <<< "$CLOSED_BLOCK" \
+    && grep -Fq 'terminal transition already recorded' <<< "$CLOSED_BLOCK" \
+    && ! grep -Fq 'log_warn "$ISSUE → PR #$PR CLOSED without merge"' <<< "$CLOSED_BLOCK"; then
+    pass "closed PR path logs a deduplicated transition, not per-poll warnings"
   else
-    fail "closed PR path is missing warning log"
+    fail "closed PR path is missing the deduplicated transition log"
   fi
 
   if grep -Fq 'closed_pr_resource_policy() {' <<< "$HEREDOC_CONTENT" \

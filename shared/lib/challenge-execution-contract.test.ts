@@ -7,12 +7,19 @@ import { createRequire } from 'node:module';
 import { test } from 'node:test';
 import { SCHEMA_VERSION, type EvalRecord } from './eval-schema.ts';
 import {
+  foldAttestationsIntoStageAttribution,
+  INVALID_CHALLENGE_REASONS,
+  isStageAttributionEligibleForCoverage,
+  STAGE_ATTRIBUTION_REASON_CODES,
   resolveChallengeSide,
   buildChallengeExecutionIntent,
   enforceChallengeIntentPresence,
   projectChallengeIntentForPersistence,
+  type ChallengeExecutionAttestation,
   type ChallengeExecutionIntent,
+  type ForkIdentity,
   type InvalidChallengeReason,
+  type ReviewExecutedIdentitySet,
 } from './challenge-execution-contract.ts';
 import { attachChallengeExecutionMetadata } from './eval-record-builder.ts';
 import { appendEvalRecord, readEvalRecords } from './eval-persistence.ts';
@@ -143,6 +150,162 @@ function makeRecord(overrides: Partial<EvalRecord> = {}): EvalRecord {
     ...overrides,
   };
 }
+
+function makeAttestation(
+  side: 'primary' | 'challenger',
+  overrides: Partial<ChallengeExecutionAttestation> = {},
+): ChallengeExecutionAttestation {
+  return {
+    pairId: 'pair-2968',
+    side,
+    validity: 'valid',
+    challengeStage: 'review',
+    expectedStageModel: side === 'primary' ? 'claude-opus-4-6' : 'gpt-5.4',
+    evidence: [{
+      stage: 'review',
+      model: side === 'primary' ? 'claude-opus-4-6' : 'gpt-5.4',
+      source: 'review-result',
+    }],
+    ...overrides,
+  };
+}
+
+function makeForkIdentity(overrides: Partial<ForkIdentity> = {}): ForkIdentity {
+  return {
+    stage: 'review',
+    commit: 'a'.repeat(40),
+    tree: 'b'.repeat(40),
+    taskPacketHash: 'c'.repeat(64),
+    planHash: 'd'.repeat(64),
+    promptHash: 'e'.repeat(64),
+    toolConfigHash: 'f'.repeat(64),
+    ...overrides,
+  };
+}
+
+function makeReviewIdentitySet(): ReviewExecutedIdentitySet {
+  return {
+    orchestrator: {
+      role: 'review_orchestrator',
+      requestedModel: 'claude-opus-4-6',
+      resolvedModel: 'claude-opus-4-6',
+      source: 'route',
+      pinned: true,
+    },
+    substantiveAnalysis: {
+      role: 'substantive_analysis',
+      requestedModel: 'claude-opus-4-6',
+      resolvedModel: 'claude-opus-4-6',
+      source: 'artifact',
+      pinned: true,
+    },
+    remediation: null,
+  };
+}
+
+test('stage attribution reason codes inherit invalid challenge reasons', () => {
+  for (const reason of INVALID_CHALLENGE_REASONS) {
+    assert.ok(STAGE_ATTRIBUTION_REASON_CODES.includes(reason));
+  }
+});
+
+test('foldAttestationsIntoStageAttribution emits valid attribution for matched inputs', () => {
+  const attribution = foldAttestationsIntoStageAttribution({
+    pairId: 'pair-2968',
+    stage: 'review',
+    primary: makeAttestation('primary'),
+    challenger: makeAttestation('challenger'),
+    evidenceProvenance: 'direct',
+    forkIdentity: makeForkIdentity(),
+    primaryReviewIdentity: makeReviewIdentitySet(),
+    challengerReviewIdentity: makeReviewIdentitySet(),
+    judgeWinner: 'primary',
+  });
+  assert.equal(attribution.status, 'valid');
+  assert.equal(attribution.outcome, 'primary');
+  assert.deepEqual(attribution.reasonCodes, []);
+  assert.equal(attribution.winningStageModel, 'claude-opus-4-6');
+  assert.equal(isStageAttributionEligibleForCoverage(attribution), true);
+});
+
+test('foldAttestationsIntoStageAttribution marks incomplete review iteration evidence insufficient (HOK-2969)', () => {
+  const attribution = foldAttestationsIntoStageAttribution({
+    pairId: 'pair-2968',
+    stage: 'review',
+    primary: makeAttestation('primary'),
+    challenger: makeAttestation('challenger'),
+    evidenceProvenance: 'direct',
+    forkIdentity: makeForkIdentity(),
+    primaryReviewIdentity: makeReviewIdentitySet(),
+    challengerReviewIdentity: makeReviewIdentitySet(),
+    reviewIterationsComplete: false,
+    judgeWinner: 'primary',
+  });
+  assert.equal(attribution.status, 'insufficient_evidence');
+  assert.ok(attribution.reasonCodes.includes('insufficient_review_iterations'));
+  assert.equal(attribution.outcome, null);
+});
+
+test('foldAttestationsIntoStageAttribution lifts invalid attestation reasons', () => {
+  const attribution = foldAttestationsIntoStageAttribution({
+    pairId: 'pair-2968',
+    stage: 'implementation',
+    primary: makeAttestation('primary', {
+      challengeStage: 'implementation',
+      validity: 'invalid_challenge',
+      invalidReason: 'native_launch_fallback',
+      invalidDetails: 'Expected model fell back at launch.',
+      evidence: [{ stage: 'implementation', model: 'fallback-model' }],
+    }),
+    challenger: makeAttestation('challenger', {
+      challengeStage: 'implementation',
+      expectedStageModel: 'gpt-5.4',
+      evidence: [{ stage: 'implementation', model: 'gpt-5.4' }],
+    }),
+    evidenceProvenance: 'direct',
+    forkIdentity: makeForkIdentity({ stage: 'implementation' }),
+    judgeWinner: 'challenger',
+  });
+  assert.equal(attribution.status, 'invalid');
+  assert.equal(attribution.outcome, null);
+  assert.ok(attribution.reasonCodes.includes('native_launch_fallback'));
+  assert.match(attribution.reasonDetails ?? '', /fell back/);
+});
+
+test('foldAttestationsIntoStageAttribution marks missing reviewer evidence insufficient', () => {
+  const attribution = foldAttestationsIntoStageAttribution({
+    pairId: 'pair-2968',
+    stage: 'review',
+    primary: makeAttestation('primary'),
+    challenger: makeAttestation('challenger'),
+    forkIdentity: makeForkIdentity(),
+    primaryReviewIdentity: makeReviewIdentitySet(),
+    challengerReviewIdentity: makeReviewIdentitySet(),
+    judgeWinner: 'primary',
+  });
+  assert.equal(attribution.status, 'insufficient_evidence');
+  assert.deepEqual(attribution.reasonCodes, ['missing_direct_review_evidence']);
+  assert.equal(attribution.evidenceProvenance, 'insufficient');
+});
+
+test('foldAttestationsIntoStageAttribution suppresses direct evidence on divergent hashes', () => {
+  const attribution = foldAttestationsIntoStageAttribution({
+    pairId: 'pair-2968',
+    stage: 'review',
+    primary: makeAttestation('primary'),
+    challenger: makeAttestation('challenger'),
+    evidenceProvenance: 'direct',
+    forkIdentity: makeForkIdentity({ planHash: null }),
+    primaryReviewIdentity: makeReviewIdentitySet(),
+    challengerReviewIdentity: makeReviewIdentitySet(),
+    judgeWinner: 'primary',
+  });
+  assert.equal(attribution.status, 'invalid');
+  assert.ok(attribution.reasonCodes.includes('plan_hash_mismatch'));
+  assert.ok(attribution.reasonCodes.includes('divergent_pre_stage_inputs'));
+  assert.equal(attribution.divergentInputsSuppressedDirectEvidence, true);
+  assert.equal(isStageAttributionEligibleForCoverage(attribution), false);
+});
 
 test('runtime ChallengeExecutionIntent satisfies the JSON schema contract', () => {
   const intent = makeRuntimeIntent();
@@ -294,6 +457,38 @@ test('Hokusai submission boundary omits local challenge contract keys', () => {
   assert.equal('challengeSide' in payload, false);
   assert.equal('challengeIntent' in payload, false);
   assert.equal('challengeExecutionRoute' in payload, false);
+});
+
+// --- reviewer execution identity / evidence must stay local (HOK-2969) ---
+//
+// toHokusaiSubmission is an allowlist builder, so a new EvalRecord field
+// never automatically crosses the privacy boundary — but this pins that
+// guarantee for the reviewer-identity fields this task introduces, and
+// proves raw finding/evidence text specifically never leaks even when
+// present deep inside `reviewExecutedIdentity` or `challengeStageEval`.
+
+test('Hokusai submission boundary omits reviewer execution identity and raw review evidence text', () => {
+  const record = makeRecord();
+  record.reviewExecutedIdentity = makeReviewIdentitySet();
+  record.challengeStageEval = {
+    stage: 'review',
+    provenance: 'direct',
+    summary: 'Direct review evidence captured from self-review output and review result artifacts.',
+    evidence: [{
+      label: 'review_result',
+      summary: 'RAW-SECRET-FINDING-TEXT-SHOULD-NEVER-LEAK',
+      source: '.review-result.json',
+    }],
+  };
+
+  const submission = toHokusaiSubmission(record);
+  assert.equal(submission.ok, true);
+  const serialized = JSON.stringify(submission.ok ? submission.submission : {});
+  const payload = submission.ok ? submission.submission as unknown as Record<string, unknown> : {};
+
+  assert.equal('reviewExecutedIdentity' in payload, false);
+  assert.equal('challengeStageEval' in payload, false);
+  assert.doesNotMatch(serialized, /RAW-SECRET-FINDING-TEXT-SHOULD-NEVER-LEAK/);
 });
 
 // --- a challenge record without an intent must not pass as clean evidence ---

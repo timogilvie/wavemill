@@ -34,6 +34,8 @@ while :; do
     event="select $line"
   elif [[ "$line" =~ ^advance[[:space:]]+.+$ ]]; then
     event="advance ${line#* }"
+  elif [[ "$line" =~ ^re-review[[:space:]]+.+$ ]]; then
+    event="re-review ${line#* }"
   elif [[ "$line" == "m" || "$line" == "more" ]]; then
     event="more"
   elif [[ "$line" == "q" || "$line" == "quit" || "$line" == "exit" ]]; then
