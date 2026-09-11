@@ -57,6 +57,12 @@ import {
   type WorkflowToolTranscriptEvent,
 } from './linear-tools.ts';
 import { isMutationAllowed } from './mutation-policy.ts';
+import { getCurrentBranch } from '../../review-context-gatherer.ts';
+import {
+  buildExecutedIdentity,
+  loadChallengeIntentFromFeatureDir,
+  resolveChallengedStageIntent,
+} from '../../challenge-execution-contract.ts';
 
 export interface CommandToolsDeps {
   registry: DedupeRegistry;
@@ -292,6 +298,68 @@ function classifyIoError(error: unknown): 'io_error' | 'route_failed' {
   return 'route_failed';
 }
 
+/**
+ * Build the orchestrator + substantive-analysis identity pair for one
+ * `review_changes` call (HOK-2969, Arbiter P2.4f).
+ *
+ * The orchestrator is this calling agent (`deps.modelName`/`deps.agentName`)
+ * — the "outer" identity per the reviewer-execution-identity contract.
+ * The substantive-analysis identity is bubbled up from whatever
+ * `review-runner.ts`/`review-engine.ts` actually resolved for the internal
+ * analysis call; a defensive fallback covers test doubles that stub
+ * `reviewChangesImpl` without setting it, so `executedIdentity` is never
+ * fabricated as trustworthy when the real producer did not run.
+ */
+function buildReviewExecutedIdentity(input: {
+  params: { featureDir?: string };
+  deps: CommandToolsDeps;
+  repoDir: string;
+  reviewResult: ReviewResult;
+}): { orchestrator: ReturnType<typeof buildExecutedIdentity>; substantiveAnalysis: ReturnType<typeof buildExecutedIdentity> } {
+  const orchestratorModel = input.deps.modelName || DEFAULT_MODEL_NAME;
+  const orchestratorAgent = input.deps.agentName || DEFAULT_AGENT_NAME;
+
+  // Only resolve the current branch (a git shell-out) when a review-stage
+  // challenge intent actually exists to pin against — most runs (and most
+  // unit tests, which use non-git temp directories) have none, and this
+  // avoids noisy git-not-found errors on every call (HOK-2969).
+  const intent = input.params.featureDir ? loadChallengeIntentFromFeatureDir(input.params.featureDir) : undefined;
+  let requestedModel: string | undefined;
+  if (intent && input.params.featureDir) {
+    try {
+      const challenged = resolveChallengedStageIntent({
+        repoDir: input.repoDir,
+        featureDir: input.params.featureDir,
+        branchName: getCurrentBranch(input.repoDir),
+        stage: 'review',
+      });
+      requestedModel = challenged?.model;
+    } catch {
+      // Branch resolution can fail outside a git worktree; fall through with
+      // no pin rather than fail the review call.
+      requestedModel = undefined;
+    }
+  }
+
+  const orchestrator = buildExecutedIdentity({
+    role: 'review_orchestrator',
+    requestedModel: requestedModel ?? orchestratorModel,
+    resolvedModel: orchestratorModel,
+    agent: orchestratorAgent,
+    source: 'route',
+  });
+
+  const substantiveAnalysis = input.reviewResult.substantiveAnalysisIdentity ?? buildExecutedIdentity({
+    role: 'substantive_analysis',
+    requestedModel: requestedModel ?? orchestratorModel,
+    resolvedModel: orchestratorModel,
+    agent: orchestratorAgent,
+    source: 'unknown',
+  });
+
+  return { orchestrator, substantiveAnalysis };
+}
+
 export async function executeReviewChanges(
   params: {
     base: string;
@@ -367,6 +435,7 @@ export async function executeReviewChanges(
     });
     const counts = countFindings(reviewResult);
     const findings = normalizeReviewFindings(reviewResult, params.json, params.maxOutputBytes);
+    const executedIdentity = buildReviewExecutedIdentity({ params, deps, repoDir, reviewResult });
     const result: ReviewChangesResult = {
       ok: true,
       tool: 'review_changes',
@@ -379,6 +448,7 @@ export async function executeReviewChanges(
       blockerCount: counts.blockingCount,
       warningCount: Math.max(0, counts.findingCount - counts.blockingCount),
       failureCategory: reviewResult.failureCategory,
+      ...(executedIdentity ? { executedIdentity } : {}),
       metadata: { trust: buildTrustMetadata({ sourceKind: 'wavemill_artifact', details: findings }) },
     };
     deps.transcript.append({

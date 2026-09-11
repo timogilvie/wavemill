@@ -858,6 +858,11 @@ runTool({
         challengerRouting,
         primaryExecution,
         challengerExecution,
+        // Local executed review identities, when either arm's eval record
+        // carries one (HOK-2969, Arbiter P2.4f). Additive: undefined when
+        // the varied stage was not review or no native identity was captured.
+        ...(primaryEval.reviewExecutedIdentity ? { primaryReviewExecutedIdentity: primaryEval.reviewExecutedIdentity } : {}),
+        ...(challengerEval.reviewExecutedIdentity ? { challengerReviewExecutedIdentity: challengerEval.reviewExecutedIdentity } : {}),
         provenanceValidation,
         variedDimensions,
         challengeType,

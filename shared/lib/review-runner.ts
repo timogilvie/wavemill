@@ -32,6 +32,7 @@ import {
   type ReviewScopeGuardToolError,
 } from './review-scope-guard.ts';
 import { REVIEW_SCOPE_UNVERIFIABLE_FAILURE_CATEGORY } from './stage-result.ts';
+import { resolveChallengedStageIntent } from './challenge-execution-contract.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Types
@@ -63,6 +64,11 @@ export interface ReviewOptions {
   featureDir?: string;
   /** Additional task-local context appended to the review prompt. */
   additionalContext?: string;
+  /**
+   * Explicit analysis model override. Takes precedence over a challenge-pinned
+   * model derived from `featureDir`'s challenge intent (HOK-2969).
+   */
+  requestedModel?: string;
 }
 
 // Re-export types from review-engine for backward compatibility
@@ -76,6 +82,7 @@ export const reviewRunnerDeps = {
   gatherReviewContextAsync,
   getCurrentBranch,
   getGitDiff,
+  resolveChallengedStageIntent,
   runReview,
   validateReviewScope,
 };
@@ -171,6 +178,21 @@ export async function reviewChanges(
     },
   });
 
+  // Pin the analysis model to the challenged reviewer when this run is part
+  // of a reviewer-stage challenge pair, unless the caller already gave an
+  // explicit override (HOK-2969). Every `review_changes` invocation in a
+  // reviewer-stage challenge — coding-phase self-review included — must use
+  // the same pinned model so all collected evidence attributes consistently.
+  const requestedModel = options.requestedModel
+    ?? (options.featureDir
+      ? reviewRunnerDeps.resolveChallengedStageIntent({
+        repoDir,
+        featureDir: options.featureDir,
+        branchName: branch,
+        stage: 'review',
+      })?.model
+      : undefined);
+
   // Delegate to review engine
   const result = await reviewRunnerDeps.runReview(reviewContext, repoDir, {
     skipUi: options.skipUi,
@@ -180,6 +202,7 @@ export async function reviewChanges(
     skipClaudePreflight: true,
     operatingMode: options.operatingMode,
     featureDir: options.featureDir,
+    ...(requestedModel ? { model: requestedModel } : {}),
   });
 
   return mergeDeterministicFindings(result, deterministic);

@@ -3,11 +3,11 @@
   "$id": "wavemill/workflow-tool-contracts",
   "title": "Workflow Tool Contracts",
   "description": "Input/output schemas for the eight native workflow tools (HOK-2355).",
-  "x-schema-version": "1.2.0",
+  "x-schema-version": "1.3.0",
   "$defs": {
     "schemaVersion": {
       "type": "string",
-      "const": "1.2.0"
+      "const": "1.3.0"
     },
     "workflowToolName": {
       "type": "string",
@@ -297,6 +297,30 @@
       "required": ["base"],
       "additionalProperties": false
     },
+    "executedIdentity": {
+      "type": "object",
+      "properties": {
+        "role":           { "type": "string", "enum": ["review_orchestrator", "substantive_analysis", "remediation"] },
+        "requestedModel": { "type": "string" },
+        "resolvedModel":  { "type": "string" },
+        "agent":          { "type": "string" },
+        "source":         { "type": "string", "enum": ["route", "artifact", "inherited", "derived", "unknown"] },
+        "fallbackReason": { "type": "string" },
+        "pinned":         { "type": "boolean" },
+        "conflict": {
+          "type": "object",
+          "properties": {
+            "otherSource":         { "type": "string", "enum": ["route", "artifact", "inherited", "derived", "unknown"] },
+            "otherResolvedModel":  { "type": "string" },
+            "detail":              { "type": "string" }
+          },
+          "required": ["otherSource", "otherResolvedModel", "detail"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["role", "requestedModel", "resolvedModel", "source", "pinned"],
+      "additionalProperties": false
+    },
     "reviewChangesSuccess": {
       "type": "object",
       "properties": {
@@ -309,7 +333,16 @@
         "verdict":      { "type": "string", "enum": ["ready", "not_ready"] },
         "iterations":   { "type": "integer", "minimum": 1 },
         "blockerCount": { "type": "integer", "minimum": 0 },
-        "warningCount": { "type": "integer", "minimum": 0 }
+        "warningCount": { "type": "integer", "minimum": 0 },
+        "executedIdentity": {
+          "type": "object",
+          "properties": {
+            "orchestrator":        { "$ref": "#/$defs/executedIdentity" },
+            "substantiveAnalysis": { "$ref": "#/$defs/executedIdentity" }
+          },
+          "required": ["orchestrator", "substantiveAnalysis"],
+          "additionalProperties": false
+        }
       },
       "required": ["ok", "tool", "findings"],
       "additionalProperties": false

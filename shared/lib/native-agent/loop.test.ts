@@ -296,6 +296,67 @@ describe('loop — budget stops', () => {
     assert.equal(result.turnsCompleted, 2);
   });
 
+  it('reserves a tool-free terminal synthesis turn at the turn boundary', async () => {
+    const tool = makeTool('inspect', 'parallel', async () => 'evidence');
+    const api = uniqueApi('budget-terminal-synthesis-turn');
+    const seenContexts: ScriptedProviderContext[] = [];
+    let turn = 0;
+    registerScriptedPiProvider({
+      api,
+      turns: (providerContext) => {
+        seenContexts.push(providerContext);
+        turn += 1;
+        if (turn < 3) {
+          return {
+            content: [{ type: 'tool_call', id: `tc${turn}`, name: 'inspect', arguments: {} }],
+            stopReason: 'tool_calls',
+          };
+        }
+        return { content: [{ type: 'text', text: '{"verdict":"ready"}' }], stopReason: 'stop' };
+      },
+    });
+
+    const result = await runWavemillLoop({
+      ...baseConfig(api, [tool]),
+      budget: { maxTurns: 3, maxToolCalls: 10 },
+      terminalSynthesis: { prompt: 'Return terminal JSON now.' },
+    });
+
+    assert.equal(result.stopReason, 'stop');
+    assert.equal(result.turnsCompleted, 3);
+    assert.equal(result.toolCallsExecuted, 2);
+    assert.equal((seenContexts[2].rawContext as { tools?: unknown[] }).tools?.length ?? 0, 0);
+    assert.equal(JSON.stringify(seenContexts[2].messages).includes('Return terminal JSON now.'), true);
+  });
+
+  it('can synthesize successfully after reaching the tool-call boundary', async () => {
+    const tool = makeTool('inspect', 'parallel', async () => 'evidence');
+    const api = uniqueApi('budget-terminal-synthesis-tools');
+    let turn = 0;
+    registerScriptedPiProvider({
+      api,
+      turns: () => {
+        turn += 1;
+        return turn === 1
+          ? {
+              content: [{ type: 'tool_call', id: 'tc1', name: 'inspect', arguments: {} }],
+              stopReason: 'tool_calls',
+            }
+          : { content: [{ type: 'text', text: '{"verdict":"ready"}' }], stopReason: 'stop' };
+      },
+    });
+
+    const result = await runWavemillLoop({
+      ...baseConfig(api, [tool]),
+      budget: { maxTurns: 10, maxToolCalls: 1 },
+      terminalSynthesis: { prompt: 'Return terminal JSON now.' },
+    });
+
+    assert.equal(result.stopReason, 'stop');
+    assert.equal(result.turnsCompleted, 2);
+    assert.equal(result.toolCallsExecuted, 1);
+  });
+
   it('stops when maxInputTokens is exceeded', async () => {
     // First (and only) turn uses 600 input tokens; budget is 500.
     // shouldStopAfterTurn fires after the turn and detects the excess.
