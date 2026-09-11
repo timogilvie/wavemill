@@ -14464,7 +14464,7 @@ monitor_issue_state() {
 	        '(.tasks[$issue].challengeArms // []) | map(select(.challengeArmState == "awaiting_fork")) | length' \
 	        "$STATE_FILE" 2>/dev/null || echo 0)
 	      if (( pending_count > 0 )); then
-	        log_task "info" "$ISSUE" "Primary with $pending_count pending arm(s) failed before fork; collapsing challenge"
+	        log_task "info" "$ISSUE" "Primary with $pending_count pending arm(s) failed before fork and challenge will collapse"
 	        challenge_arms_cancel_pending "$ISSUE" "pre_fork_primary_failure" || true
 	        return 0
 	      fi

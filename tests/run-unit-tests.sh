@@ -161,6 +161,7 @@ TESTS=(
   shared/lib/cross-repo-parity.stale.test.ts
   shared/lib/cross-repo-parity.partial.test.ts
   shared/lib/challenge-execution-contract.test.ts
+  shared/lib/pending-arm-detection.test.ts
   shared/lib/challenge-pairing-repair.test.ts
   shared/lib/config.test.ts
   shared/lib/config-integrity.test.ts
