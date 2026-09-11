@@ -18,6 +18,7 @@ trap cleanup EXIT
 cat <<'IN' | WAVEMILL_INPUT_PENDING_SLEEP=0 WAVEMILL_SESSION="$SESSION" "$READER" >/dev/null
 1 3
 advance HOK-1639
+re-review HOK-2999
 m
 more
 q
@@ -31,6 +32,7 @@ IN
 expected="$(cat <<'OUT'
 select 1 3
 advance HOK-1639
+re-review HOK-2999
 more
 more
 quit

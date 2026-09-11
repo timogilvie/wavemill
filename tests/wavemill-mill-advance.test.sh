@@ -99,6 +99,15 @@ for fn in \
   review_result_missing_final_evidence \
   review_artifacts_with_pr_number \
   clear_review_gate_attention \
+  _challenge_side_for_issue \
+  review_recovery_claim_dir \
+  review_recovery_try_claim \
+  review_recovery_release_claim \
+  review_recovery_record_failure \
+  review_recovery_restore_or_fail_result \
+  read_validated_recovery_contract \
+  prepare_recovery_launch_surfaces \
+  commit_review_recovery_running \
   blocked_completion_current_head \
   blocked_completion_commit_matches_head \
   wavemill_owned_feature_artifact_path \
@@ -130,6 +139,9 @@ do
 done
 source "$FUNCS_FILE"
 
+TOOLS_DIR="$TMP_DIR/tools"
+mkdir -p "$TOOLS_DIR"
+
 resolve_stage_result_model() {
   local _feature_dir="$1" _stage="$2" fallback="$3"
   printf '%s\n' "$fallback"
@@ -137,12 +149,13 @@ resolve_stage_result_model() {
 
 write_stage_result() {
   local feature_dir="$1" stage="$2" status="$3"
+  local agent="${4:-}" model="${5:-}"
   local artifacts_json="${7:-}" artifacts_fragment=""
   if [[ -n "$artifacts_json" ]] && jq empty <<<"$artifacts_json" >/dev/null 2>&1; then
     artifacts_fragment=",\"artifacts\":$artifacts_json"
   fi
   cat > "$feature_dir/.${stage}-result.json" <<EOF
-{"stage":"$stage","status":"$status"$artifacts_fragment}
+{"stage":"$stage","status":"$status","agent":"$agent","model":"$model"$artifacts_fragment}
 EOF
 }
 
@@ -157,6 +170,8 @@ read_phase_config() { printf "\n"; }
 resolve_phase_model() { printf "%s\n" "${2:-$3}"; }
 find_pr_for_branch() { printf "%s\n" "${FOUND_PR:-}"; }
 pr_state() { printf "%s\n" "${PR_STATUS:-OPEN}"; }
+agent_validate_phase_launch() { return 0; }
+prepare_recovery_launch_surfaces() { return "${PREPARE_RECOVERY_RC:-0}"; }
 launch_review_calls=0
 launch_review_phase() {
   launch_review_calls=$((launch_review_calls + 1))
@@ -178,6 +193,17 @@ log() {
 log_warn() {
   warn_lines+=("$*")
 }
+npx() {
+  if [[ "${1:-}" == "tsx" && "${2:-}" == *"/recovery-contract.ts" ]]; then
+    if [[ "${3:-}" == "provider" ]]; then
+      printf '%s\n' '{"ok":true,"provider":"anthropic"}'
+      return 0
+    fi
+    printf '%s\n' '{"ok":true,"contract":{"stageRole":"review","agent":"claude","model":"claude-opus-4-7","provider":"anthropic","challengeSide":null,"selectedAt":"2026-09-11T00:00:00Z"}}'
+    return 0
+  fi
+  command npx "$@"
+}
 acknowledge_command_offset() {
   ACKED_OFFSETS+=("$1")
 }
@@ -194,6 +220,7 @@ reset_harness() {
   launch_review_calls=0
   FOUND_PR=""
   REVIEW_LAUNCH_RC=0
+  PREPARE_RECOVERY_RC=0
 }
 
 init_state() {
@@ -282,8 +309,9 @@ run_advance_quiet() {
 }
 
 run_rereview() {
-  local event="$1" free_slots="${2:-1}"
+  local event="$1" free_slots="${2:-1}" launch_rc="${3:-0}"
   reset_harness
+  REVIEW_LAUNCH_RC="$launch_rc"
   execute_or_defer_monitor_command "new" "$event" "11" "$free_slots" "" "" "" ""
 }
 
@@ -445,9 +473,41 @@ run_rereview "re-review HOK-2012"
 assert_eq "re-review handled" "handled" "$MONITOR_COMMAND_STATUS"
 assert_eq "re-review launches review" "1" "$launch_review_calls"
 assert_eq "re-review resets review status" "running" "$(jq -r '.status' "$FEATURE_REREVIEW/.review-result.json")"
+assert_eq "re-review uses contract agent" "claude" "$(jq -r '.agent' "$FEATURE_REREVIEW/.review-result.json")"
+assert_eq "re-review uses contract model" "claude-opus-4-7" "$(jq -r '.model' "$FEATURE_REREVIEW/.review-result.json")"
 assert_eq "re-review preserves prior verdict in audit" "not_ready" "$(jq -r '.previousReviewResult.artifacts.verdict' "$FEATURE_REREVIEW/.review-rerun-request.json")"
 assert_eq "re-review preserves prior history in audit" "kept" "$(jq -r '.previousReviewResult.artifacts.history[0]' "$FEATURE_REREVIEW/.review-rerun-request.json")"
 assert_file_missing "re-review clears stale review-gate attention" "$FEATURE_REREVIEW/.needs-attention"
+
+WORKTREE_REREVIEW_FAIL="$SCENARIO_DIR/worktree-rereview-fail"
+FEATURE_REREVIEW_FAIL="$WORKTREE_REREVIEW_FAIL/features/rereview-fail-slug"
+mkdir -p "$FEATURE_REREVIEW_FAIL"
+setup_git_worktree "$WORKTREE_REREVIEW_FAIL"
+write_task_state "HOK-2017" "rereview-fail-slug" "$WORKTREE_REREVIEW_FAIL" "ready" "917"
+cat > "$FEATURE_REREVIEW_FAIL/.review-result.json" <<'EOF'
+{
+  "stage": "review",
+  "status": "completed",
+  "agent": "codex",
+  "model": "gpt-5.5",
+  "artifacts": {
+    "type": "review",
+    "prNumber": 917,
+    "exitCode": 1,
+    "verdict": "not_ready",
+    "iterations": 1,
+    "blockerCount": 1,
+    "history": ["kept"]
+  }
+}
+EOF
+run_rereview "re-review HOK-2017" 1 1
+assert_eq "failed re-review invalid" "invalid" "$MONITOR_COMMAND_STATUS"
+assert_eq "failed re-review attempted launch" "1" "$launch_review_calls"
+assert_eq "failed re-review restores terminal status" "completed" "$(jq -r '.status' "$FEATURE_REREVIEW_FAIL/.review-result.json")"
+assert_eq "failed re-review preserves prior history" "kept" "$(jq -r '.artifacts.history[0]' "$FEATURE_REREVIEW_FAIL/.review-result.json")"
+assert_eq "failed re-review records terminal reason" "manual_re_review_launch_failed: rc=1" "$(jq -r '.reason' "$FEATURE_REREVIEW_FAIL/.review-recovery-failure.json")"
+assert_file_missing "failed re-review clears claim" "$FEATURE_REREVIEW_FAIL/.review-recovery-claim"
 
 run_rereview "re-review HOK-2012" 0
 assert_eq "re-review no slots defers" "deferred" "$MONITOR_COMMAND_STATUS"

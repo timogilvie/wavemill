@@ -97,6 +97,16 @@ extract_function "$MONITOR_SCRIPT_FILE" "review_result_review_head_sha" >> "$LAU
 extract_function "$MONITOR_SCRIPT_FILE" "review_infra_recovery_category_label" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_infra_recovery_next_action" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "select_context_window_recovery_reviewer" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "_challenge_side_for_issue" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "_append_recovery_contract_trace" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "review_recovery_claim_dir" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "review_recovery_try_claim" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "review_recovery_release_claim" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "review_recovery_record_failure" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "review_recovery_restore_or_fail_result" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "read_validated_recovery_contract" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "prepare_recovery_launch_surfaces" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "commit_review_recovery_running" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "relaunch_review_after_infra_recovery" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_result_summary" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_artifacts_with_pr_number" >> "$LAUNCH_FUNC_FILE"
@@ -197,6 +207,33 @@ EOF
       infra_retry_healthy)
         cat > "$STATE_DIR/.review-result.json" <<EOF
 {"stage":"review","status":"completed","agent":"native-openrouter","model":"qwen-3-coder","artifacts":{"type":"review","prNumber":304,"exitCode":0,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":0,"failureCategory":"native-runtime-unavailable"}}
+EOF
+        ;;
+      infra_retry_stale_prior_identity)
+        cat > "$STATE_DIR/.review-result.json" <<EOF
+{"stage":"review","status":"completed","agent":"codex","model":"gpt-5.5","artifacts":{"type":"review","prNumber":304,"exitCode":0,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":0,"failureCategory":"native-runtime-unavailable","history":["prior"]}}
+EOF
+        ;;
+      infra_retry_contract_unavailable)
+        cat > "$STATE_DIR/.review-result.json" <<EOF
+{"stage":"review","status":"completed","agent":"codex","model":"gpt-5.5","artifacts":{"type":"review","prNumber":304,"exitCode":0,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":0,"failureCategory":"native-runtime-unavailable","history":["prior"]}}
+EOF
+        ;;
+      infra_retry_prepare_failure)
+        cat > "$STATE_DIR/.review-result.json" <<EOF
+{"stage":"review","status":"completed","agent":"native-openrouter","model":"qwen-3-coder","artifacts":{"type":"review","prNumber":304,"exitCode":0,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":0,"failureCategory":"native-runtime-unavailable","history":["prior"]}}
+EOF
+        ;;
+      infra_retry_launch_failure)
+        cat > "$STATE_DIR/.review-result.json" <<EOF
+{"stage":"review","status":"completed","agent":"native-openrouter","model":"qwen-3-coder","artifacts":{"type":"review","prNumber":304,"exitCode":0,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":0,"failureCategory":"native-runtime-unavailable","history":["prior"]}}
+EOF
+        ;;
+      infra_retry_claim_already_held)
+        mkdir -p "$STATE_DIR/.review-recovery-claim"
+        printf "%s\n" "identity=abc123:native-runtime-unavailable" > "$STATE_DIR/.review-recovery-claim/claim"
+        cat > "$STATE_DIR/.review-result.json" <<EOF
+{"stage":"review","status":"completed","agent":"native-openrouter","model":"qwen-3-coder","artifacts":{"type":"review","prNumber":304,"exitCode":0,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":0,"failureCategory":"native-runtime-unavailable","history":["prior"]}}
 EOF
         ;;
       infra_retry_unhealthy)
@@ -422,10 +459,20 @@ EOF
       PREPARE_RECOVERY_CALLS=$((PREPARE_RECOVERY_CALLS + 1))
       return 0
     }
+    prepare_recovery_launch_surfaces() {
+      PREPARE_RECOVERY_CALLS=$((PREPARE_RECOVERY_CALLS + 1))
+      case "$TEST_CASE" in
+        infra_retry_prepare_failure) return 1 ;;
+        *) return 0 ;;
+      esac
+    }
     launch_review_phase() {
       REVIEW_LAUNCH_CALLS=$((REVIEW_LAUNCH_CALLS + 1))
       REVIEW_LAUNCH_MODEL="${7:-}"
-      return 0
+      case "$TEST_CASE" in
+        infra_retry_launch_failure) return 1 ;;
+        *) return 0 ;;
+      esac
     }
     agent_resolve_from_model() {
       printf "%s\n" "native-openrouter"
@@ -437,6 +484,7 @@ EOF
         *) return 0 ;;
       esac
     }
+    set_task_phase() { :; }
     check_stage_aborted() { return 1; }
     git() {
       if [[ "${1:-}" == "-C" && "${3:-}" == "rev-parse" && "${4:-}" == "--show-toplevel" ]]; then
@@ -455,7 +503,16 @@ EOF
     write_stage_result() {
       printf -v WRITE_STAGE_CALLS "%s%s|%s|%s|%s|%s|%s|%s\n" \
         "$WRITE_STAGE_CALLS" "${1-}" "${2-}" "${3-}" "${4-}" "${5-}" "${6-}" "${7-}"
+      local feature_dir="${1-}" stage="${2-}" status="${3-}" agent="${4-}" model="${5-}" artifacts_json="${7-}" artifacts_fragment=""
+      if [[ -n "$feature_dir" && -n "$stage" ]]; then
+        if [[ -n "$artifacts_json" ]] && jq empty <<<"$artifacts_json" >/dev/null 2>&1; then
+          artifacts_fragment=",\"artifacts\":$artifacts_json"
+        fi
+        printf "%s\n" "{\"stage\":\"$stage\",\"status\":\"$status\",\"agent\":\"$agent\",\"model\":\"$model\"$artifacts_fragment}" > "$feature_dir/.${stage}-result.json"
+      fi
     }
+    write_stage_result_with_history() { write_stage_result "$@"; }
+    clear_review_gate_attention() { rm -f "$1/.needs-attention"; }
     write_ready_attention_file() {
       printf -v READY_ATTENTION_CALLS "%s%s|%s\n" "$READY_ATTENTION_CALLS" "$1" "$2"
       mkdir -p "$1"
@@ -484,6 +541,27 @@ EOF
     npx() {
       if [[ "${1:-}" != "tsx" ]]; then
         return 1
+      fi
+
+      if [[ "${2:-}" == "$TOOLS_DIR/recovery-contract.ts" ]]; then
+        if [[ "${3:-}" == "provider" ]]; then
+          printf "%s\n" "{\"ok\":true,\"provider\":\"native-openrouter\"}"
+          return 0
+        fi
+        case "$TEST_CASE" in
+          infra_retry_contract_unavailable)
+            printf "%s\n" "{\"ok\":false,\"reason\":\"contract_missing\",\"detail\":\"No review contract\"}"
+            return 0
+            ;;
+          infra_retry_stale_prior_identity)
+            printf "%s\n" "{\"ok\":true,\"contract\":{\"stageRole\":\"review\",\"agent\":\"claude\",\"model\":\"claude-opus-4-7\",\"provider\":\"anthropic\",\"challengeSide\":null,\"selectedAt\":\"2026-09-11T00:00:00Z\"}}"
+            return 0
+            ;;
+          *)
+            printf "%s\n" "{\"ok\":true,\"contract\":{\"stageRole\":\"review\",\"agent\":\"native-openrouter\",\"model\":\"qwen-3-coder\",\"provider\":\"native-openrouter\",\"challengeSide\":null,\"selectedAt\":\"2026-09-11T00:00:00Z\"}}"
+            return 0
+            ;;
+        esac
       fi
 
       if [[ "${2:-}" == "$TOOLS_DIR/check-cross-pr-reverts.ts" ]]; then
@@ -627,6 +705,22 @@ EOF
     ready_label_calls="$(cat "$READY_LABEL_COUNT_FILE" 2>/dev/null || echo "0")"
     ready_result_payload=""
     [[ -f "$STATE_DIR/.ready-result.json" ]] && ready_result_payload=$(cat "$STATE_DIR/.ready-result.json")
+    review_status_payload=""
+    review_model_payload=""
+    review_agent_payload=""
+    review_recovery_replay_status=""
+    review_history_payload=""
+    recovery_failure_reason=""
+    recovery_claim="absent"
+    if [[ -f "$STATE_DIR/.review-result.json" ]]; then
+      review_status_payload="$(jq -r ".status // empty" "$STATE_DIR/.review-result.json")"
+      review_model_payload="$(jq -r ".model // empty" "$STATE_DIR/.review-result.json")"
+      review_agent_payload="$(jq -r ".agent // empty" "$STATE_DIR/.review-result.json")"
+      review_recovery_replay_status="$(jq -r ".artifacts.recoveryReplay.status // empty" "$STATE_DIR/.review-result.json")"
+      review_history_payload="$(jq -r ".artifacts.history[0] // empty" "$STATE_DIR/.review-result.json")"
+    fi
+    [[ -f "$STATE_DIR/.review-recovery-failure.json" ]] && recovery_failure_reason="$(jq -r ".reason // empty" "$STATE_DIR/.review-recovery-failure.json")"
+    [[ -d "$STATE_DIR/.review-recovery-claim" ]] && recovery_claim="present"
 
     debug_line_count=0
     [[ -f "$DEBUG_FILE" ]] && debug_line_count=$(wc -l < "$DEBUG_FILE" | tr -d " ")
@@ -636,6 +730,8 @@ EOF
     printf "rc=%s\nstage_calls=%s\nattention_calls=%s\nattention_count=%s\nlaunch_calls=%s\nreview_launch_calls=%s\nreview_launch_model=%s\nprepare_recovery_calls=%s\nagent_validate_calls=%s\nprompt_calls=%s\nerror_count=%s\nlogs=%s\nwarn_logs=%s\nerror_payload=%s\ndebug_file=%s\ndebug_lines=%s\ndebug_payload=%s\nconflict_attention_head=%s\nconflict_attention_reported=%s\nconflict_detected=%s\nneeds_attention=%s\ntransient_attention=%s\ntransient_count=%s\ninfra_retry_count=%s\nready_result_payload=%s\n" \
       "$rc" "$stage_summary" "$attention_summary" "$attention_count" "$LAUNCH_AGENT_CALLS" "$REVIEW_LAUNCH_CALLS" "${REVIEW_LAUNCH_MODEL:-}" "$PREPARE_RECOVERY_CALLS" "$AGENT_VALIDATE_CALLS" "$READY_PROMPT_CALLS" "$error_count" "$LOG_OUTPUT" "$LOG_WARN_OUTPUT" "$LOG_ERROR_OUTPUT" "$DEBUG_FILE" "$debug_line_count" "$debug_payload" "$conflict_attention_head" "$conflict_attention_reported" "$conflict_detected" "$needs_attention" "$transient_attention" "$transient_count" "$infra_retry_count" "$ready_result_payload"
     printf "ready_label_calls=%s\n" "$ready_label_calls"
+    printf "review_status=%s\nreview_agent=%s\nreview_model=%s\nreview_recovery_replay_status=%s\nreview_history=%s\nrecovery_failure_reason=%s\nrecovery_claim=%s\n" \
+      "$review_status_payload" "$review_agent_payload" "$review_model_payload" "$review_recovery_replay_status" "$review_history_payload" "$recovery_failure_reason" "$recovery_claim"
     printf "challenge_orch_calls=%s\n" "$CHALLENGE_ORCH_CALLS"
     printf "prompt_summary=%s\n" "$READY_PROMPT_SUMMARY"
     printf "phase_used=%s\n" "$LAUNCH_AGENT_PHASE"
@@ -1226,6 +1322,42 @@ check_contains "infra retry healthy probes runtime" "$output" "agent_validate_ca
 check_contains "infra retry healthy prepares recovery" "$output" "prepare_recovery_calls=1"
 check_contains "infra retry healthy launches review" "$output" "review_launch_calls=1"
 check_contains "infra retry healthy increments counter" "$output" "infra_retry_count=1"
+check_contains "infra retry healthy publishes running after launch" "$output" "review_status=running"
+check_contains "infra retry healthy releases recovery claim" "$output" "recovery_claim=absent"
+
+output="$(run_launch_case infra_retry_stale_prior_identity)"
+check_contains "stale prior identity retries review" "$output" "rc=6"
+check_contains "stale prior identity launches current contract model" "$output" "review_launch_model=claude-opus-4-7"
+check_contains "stale prior identity publishes current contract agent" "$output" "review_agent=claude"
+check_contains "stale prior identity publishes current contract model" "$output" "review_model=claude-opus-4-7"
+
+output="$(run_launch_case infra_retry_contract_unavailable)"
+check_contains "contract unavailable refuses ready" "$output" "rc=1"
+check_contains "contract unavailable does not launch review" "$output" "review_launch_calls=0"
+check_contains "contract unavailable restores terminal result" "$output" "review_status=completed"
+check_contains "contract unavailable keeps prior history" "$output" "review_history=prior"
+check_contains "contract unavailable records deterministic failure" "$output" "recovery_failure_reason=recovery_contract_unavailable"
+check_contains "contract unavailable leaves no recovery claim" "$output" "recovery_claim=absent"
+
+output="$(run_launch_case infra_retry_prepare_failure)"
+check_contains "prepare failure refuses ready" "$output" "rc=1"
+check_contains "prepare failure does not launch review" "$output" "review_launch_calls=0"
+check_contains "prepare failure restores terminal result" "$output" "review_status=completed"
+check_contains "prepare failure leaves no running replay" "$output" "review_recovery_replay_status="
+check_contains "prepare failure records deterministic failure" "$output" "recovery_failure_reason=review_recovery_prepare_failed"
+
+output="$(run_launch_case infra_retry_launch_failure)"
+check_contains "launch failure refuses ready" "$output" "rc=1"
+check_contains "launch failure attempts review launch" "$output" "review_launch_calls=1"
+check_contains "launch failure restores terminal result" "$output" "review_status=completed"
+check_contains "launch failure does not increment retry" "$output" "infra_retry_count="
+check_contains "launch failure records deterministic failure" "$output" "recovery_failure_reason=review_recovery_launch_failed"
+
+output="$(run_launch_case infra_retry_claim_already_held)"
+check_contains "held claim refuses duplicate recovery" "$output" "rc=1"
+check_contains "held claim does not validate launch" "$output" "agent_validate_calls=0"
+check_contains "held claim does not launch review" "$output" "review_launch_calls=0"
+check_contains "held claim preserves original result" "$output" "review_status=completed"
 
 output="$(run_launch_case infra_retry_unhealthy)"
 check_contains "infra retry unhealthy refuses ready" "$output" "rc=1"
