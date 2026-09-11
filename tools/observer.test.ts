@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -2046,5 +2046,459 @@ test('incident reconciliation correlates stalled Tend markers into typed remedia
     assert.equal(second.incidents?.filter((item) => item.rootCauseClass === 'review_context_overflow_stale_base').length, 1);
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+// --- Parked/terminal-arm incident detectors (HOK-2927) ---
+
+function createParkedCodingFixture(issue = 'HOK-2918_c') {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-parked-arm-'));
+  const slug = 'parked-arm-fixture';
+  const featureDir = join(repoDir, 'features', slug);
+  mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
+  mkdirSync(featureDir, { recursive: true });
+  writePermissiveSchema(repoDir);
+  const markerPath = join(featureDir, '.coding-complete');
+  writeFileSync(markerPath, '{}\n');
+  const markerMtime = new Date(Date.now() - 30 * 60_000);
+  utimesSync(markerPath, markerMtime, markerMtime);
+  writeFileSync(join(featureDir, '.coding-uncommitted-output.json'), JSON.stringify({
+    issue,
+    slug,
+    reason: 'coding_output_dirty_tree',
+    baseBranch: 'auto/integration',
+    aheadCount: 0,
+    behindCount: 0,
+    dirtyPaths: ['shared/lib/promote-provisional-model.ts'],
+    firstDirtyPath: 'shared/lib/promote-provisional-model.ts',
+    summary: 'coding completed marker detected, but worktree still contains uncommitted coding output',
+    action: 'Clean the dirty paths, then retry review.',
+    detectedAt: new Date().toISOString(),
+  }));
+  writeFileSync(join(repoDir, '.wavemill', 'workflow-state.json'), JSON.stringify({
+    tasks: { [issue]: { issue, slug, worktree: repoDir, phase: 'coding', status: 'running' } },
+  }));
+  return { repoDir, slug, featureDir, issue };
+}
+
+function parkedArmSnapshot(fixture: { repoDir: string; slug: string; issue: string }, timestamp: string) {
+  return {
+    timestamp,
+    sessions: ['wavemill'],
+    panes: [],
+    processes: [],
+    repos: [{
+      session: 'wavemill',
+      repoDir: fixture.repoDir,
+      workflowStatePath: join(fixture.repoDir, '.wavemill', 'workflow-state.json'),
+      tasks: [{
+        issue: fixture.issue,
+        phase: 'coding',
+        status: 'running',
+        slug: fixture.slug,
+        worktree: fixture.repoDir,
+        updated: agoIso(30),
+      }],
+    }],
+    findings: [],
+  };
+}
+
+async function parkedIncidents(repoDir: string, rootCauseClass: string) {
+  const store = new IncidentStore(join(repoDir, '.wavemill', 'incidents'));
+  return (await store.getAllIncidents()).filter((incident) => incident.rootCauseClass === rootCauseClass);
+}
+
+test('parked coding arm produces one incident record that escalates and counts every poll', async () => {
+  const fixture = createParkedCodingFixture();
+  try {
+    const base = Date.now();
+    for (let poll = 0; poll < 4; poll += 1) {
+      const timestamp = new Date(base + poll * 1000).toISOString();
+      await reconcileIncidents(parkedArmSnapshot(fixture, timestamp), defaultObserverOptions());
+    }
+
+    const parked = await parkedIncidents(fixture.repoDir, 'arm_parked_awaiting_operator_commit');
+    assert.equal(parked.length, 1);
+    assert.equal(parked[0].occurrenceCount, 4);
+    assert.equal(parked[0].lifecycle, 'active');
+    assert.equal(parked[0].taskId, fixture.issue);
+    assert.equal(parked[0].category, 'stale_orphaned_state');
+    assert.equal(parked[0].metadata.thresholdTriggered, true);
+    assert.ok(typeof parked[0].metadata.escalatedAt === 'string');
+    assert.match(parked[0].operatorAction, /Clean the dirty paths, then retry review\./);
+    assert.doesNotMatch(parked[0].operatorAction, /inspect its poll branch/);
+  } finally {
+    rmSync(fixture.repoDir, { recursive: true, force: true });
+  }
+});
+
+test('re-running the observer over an unchanged repo creates no new parked-arm records', async () => {
+  const fixture = createParkedCodingFixture();
+  try {
+    const timestamp = new Date().toISOString();
+    await reconcileIncidents(parkedArmSnapshot(fixture, timestamp), defaultObserverOptions());
+    await reconcileIncidents(parkedArmSnapshot(fixture, timestamp), defaultObserverOptions());
+
+    let parked = await parkedIncidents(fixture.repoDir, 'arm_parked_awaiting_operator_commit');
+    assert.equal(parked.length, 1);
+    // Identical poll timestamp means an identical event key: a re-poll, not a fresh occurrence.
+    assert.equal(parked[0].occurrenceCount, 1);
+
+    // A later poll of the unchanged condition counts an occurrence on the SAME record.
+    await reconcileIncidents(parkedArmSnapshot(fixture, new Date(Date.now() + 1000).toISOString()), defaultObserverOptions());
+    parked = await parkedIncidents(fixture.repoDir, 'arm_parked_awaiting_operator_commit');
+    assert.equal(parked.length, 1);
+    assert.equal(parked[0].occurrenceCount, 2);
+  } finally {
+    rmSync(fixture.repoDir, { recursive: true, force: true });
+  }
+});
+
+test('coding-marker-ignored recommendation names the dirty-tree handoff when the mill parked the arm', () => {
+  const fixture = createParkedCodingFixture();
+  try {
+    const findings = buildFindings(markerSnapshot({
+      repoDir: fixture.repoDir,
+      slug: fixture.slug,
+      phase: 'coding',
+      issue: fixture.issue,
+      // State newer than the marker previously selected the misleading
+      // "inspect its poll branch" recommendation.
+      stateMtime: new Date().toISOString(),
+    }), defaultObserverOptions());
+
+    const finding = findings.find((candidate) => candidate.id === `coding-marker-ignored-${fixture.issue}`);
+    assert.ok(finding);
+    assert.equal(finding.severity, 'urgent');
+    assert.match(finding.recommendation, /Clean the dirty paths, then retry review\./);
+    assert.match(finding.recommendation, /git status/);
+    assert.doesNotMatch(finding.recommendation, /inspect its poll branch/);
+    assert.ok(finding.evidence.includes('parkedOnUncommittedOutput=true'));
+  } finally {
+    rmSync(fixture.repoDir, { recursive: true, force: true });
+  }
+});
+
+test('malformed uncommitted-output artifact degrades to stage_marker_not_advanced', async () => {
+  const fixture = createParkedCodingFixture();
+  try {
+    writeFileSync(join(fixture.featureDir, '.coding-uncommitted-output.json'), 'not json');
+    await reconcileIncidents(parkedArmSnapshot(fixture, new Date().toISOString()), defaultObserverOptions());
+
+    assert.equal((await parkedIncidents(fixture.repoDir, 'arm_parked_awaiting_operator_commit')).length, 0);
+    const degraded = await parkedIncidents(fixture.repoDir, 'stage_marker_not_advanced');
+    assert.equal(degraded.length, 1);
+    assert.equal(degraded[0].confidence, 'medium');
+  } finally {
+    rmSync(fixture.repoDir, { recursive: true, force: true });
+  }
+});
+
+test('terminal parked arm produces a deduped terminal_arm_parked_with_residue incident', async () => {
+  const fixture = createResidueGitFixture({ commits: 0, slug: 'incident-clean-terminal' });
+  try {
+    const snap = (timestamp: string) => ({
+      timestamp,
+      sessions: ['wavemill'],
+      panes: [],
+      processes: [],
+      repos: [{
+        session: 'wavemill',
+        repoDir: fixture.repoDir,
+        tasks: [{
+          issue: 'HOK-2845',
+          slug: fixture.slug,
+          branch: fixture.branch,
+          phase: 'closed',
+          status: 'closed',
+          worktree: fixture.repoDir,
+          updated: agoIso(30),
+        }],
+      }],
+      findings: [],
+    });
+    await reconcileIncidents(snap(new Date().toISOString()), defaultObserverOptions());
+    await reconcileIncidents(snap(new Date(Date.now() + 1000).toISOString()), defaultObserverOptions());
+
+    const parked = await parkedIncidents(fixture.repoDir, 'terminal_arm_parked_with_residue');
+    assert.equal(parked.length, 1);
+    assert.equal(parked[0].occurrenceCount, 2);
+    assert.equal(parked[0].severity, 'medium');
+    assert.equal(parked[0].taskId, 'HOK-2845');
+    assert.match(parked[0].operatorAction, /wavemill mill abort HOK-2845/);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('arm died with unpushed work produces a critical incident carrying commit subjects', async () => {
+  const fixture = createResidueGitFixture({ commits: 2, slug: 'incident-unpushed' });
+  try {
+    const snapshot = {
+      timestamp: new Date().toISOString(),
+      sessions: ['wavemill'],
+      panes: [],
+      processes: [],
+      repos: [{
+        session: 'wavemill',
+        repoDir: fixture.repoDir,
+        tasks: [{
+          issue: 'HOK-2911',
+          slug: fixture.slug,
+          branch: fixture.branch,
+          phase: 'error',
+          status: 'error',
+          worktree: fixture.repoDir,
+          updated: agoIso(30),
+        }],
+      }],
+      findings: [],
+    };
+    await reconcileIncidents(snapshot, defaultObserverOptions());
+
+    const records = await parkedIncidents(fixture.repoDir, 'arm_died_with_unpushed_work');
+    assert.equal(records.length, 1);
+    assert.equal(records[0].severity, 'critical');
+    assert.equal(records[0].confidence, 'high');
+    assert.equal(records[0].taskId, 'HOK-2911');
+    assert.match(records[0].evidence[0].redactedData, /unpushedCommits=2/);
+    assert.match(records[0].evidence[0].redactedData, /task commit 2/);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('pr-create-failed incidents share one fingerprint across mill-log and review-artifact sources', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-pr-create-incident-'));
+  const slug = 'pr-create-fixture';
+  const featureDir = join(repoDir, 'features', slug);
+  try {
+    mkdirSync(featureDir, { recursive: true });
+    mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
+    writePermissiveSchema(repoDir);
+    const logPath = join(repoDir, 'mill-wavemill.log');
+    const snap = (timestamp: string, millLogPath?: string) => ({
+      timestamp,
+      sessions: ['wavemill'],
+      panes: [],
+      processes: [],
+      repos: [{
+        session: 'wavemill',
+        repoDir,
+        millLogPath,
+        tasks: [{
+          issue: 'HOK-2929',
+          slug,
+          branch: `task/${slug}`,
+          phase: 'review',
+          status: 'running',
+          worktree: repoDir,
+          updated: new Date().toISOString(),
+        }],
+      }],
+      findings: [],
+    });
+
+    writeFileSync(logPath, "10:00:01 [error] HOK-2929 pull request create failed: Head sha can't be blank\n");
+    await reconcileIncidents(snap(new Date().toISOString(), logPath), defaultObserverOptions());
+
+    rmSync(logPath);
+    writeFileSync(join(featureDir, '.review-result.json'), JSON.stringify({
+      status: 'failed',
+      notes: "pull request create failed: Head sha can't be blank",
+    }));
+    await reconcileIncidents(snap(new Date(Date.now() + 1000).toISOString(), undefined), defaultObserverOptions());
+
+    const records = await parkedIncidents(repoDir, 'pr_create_failed');
+    assert.equal(records.length, 1);
+    assert.equal(records[0].occurrenceCount, 2);
+    assert.equal(records[0].taskId, 'HOK-2929');
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('parked-arm incident detection never modifies observer config files', async () => {
+  const fixture = createParkedCodingFixture();
+  try {
+    const configPath = join(fixture.repoDir, '.wavemill-config.json');
+    const before = readFileSync(configPath, 'utf8');
+    await reconcileIncidents(parkedArmSnapshot(fixture, new Date().toISOString()), defaultObserverOptions());
+
+    assert.equal(readFileSync(configPath, 'utf8'), before);
+    assert.equal(existsSync(join(fixture.repoDir, '.wavemill-config.local.json')), false);
+  } finally {
+    rmSync(fixture.repoDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// HOK-2972: cleanup incidents require terminal lifecycle evidence; active
+// unpublished work is delivery risk, and historical config drift is
+// provenance, not an actionable incident.
+// ---------------------------------------------------------------------------
+
+function lifecycleIncidentSnapshot(
+  fixture: { repoDir: string; slug: string; branch: string },
+  task: Record<string, unknown>,
+  panes: Record<string, unknown>[] = [],
+) {
+  return {
+    timestamp: new Date().toISOString(),
+    sessions: ['wavemill'],
+    panes,
+    processes: [],
+    repos: [{
+      session: 'wavemill',
+      repoDir: fixture.repoDir,
+      workflowStatePath: join(fixture.repoDir, '.wavemill', 'workflow-state.json'),
+      tasks: [task],
+    }],
+    findings: [],
+  };
+}
+
+function livePaneFor(issue: string, slug: string) {
+  return {
+    session: 'wavemill',
+    windowIndex: '3',
+    paneIndex: '0',
+    windowName: `${issue}-${slug}`,
+    active: true,
+    pid: 4242,
+    command: 'claude',
+    title: `coding ${issue}`,
+  };
+}
+
+async function storedIncidents(repoDir: string) {
+  const store = new IncidentStore(join(repoDir, '.wavemill', 'incidents'));
+  return store.getAllIncidents();
+}
+
+test('active coding task with unpublished commits emits no cleanup incident while progressing', async () => {
+  const fixture = createResidueGitFixture({ commits: 5, slug: 'active-unpublished-fresh' });
+  try {
+    const task = {
+      issue: 'HOK-2963',
+      slug: fixture.slug,
+      branch: fixture.branch,
+      phase: 'coding',
+      status: 'active',
+      worktree: fixture.repoDir,
+      updated: agoIso(5),
+      lifecycle: { schemaVersion: 1, workflowOutcome: 'active', resourceDisposition: 'allocated' },
+    };
+    await reconcileIncidents(
+      lifecycleIncidentSnapshot(fixture, task, [livePaneFor('HOK-2963', fixture.slug)]),
+      defaultObserverOptions(),
+    );
+    const stored = await storedIncidents(fixture.repoDir);
+    assert.equal(stored.some((incident) => incident.category === 'stale_orphaned_state'), false);
+    assert.equal(stored.some((incident) => incident.severity === 'critical'), false);
+    assert.equal(stored.some((incident) => incident.rootCauseClass === 'active_unpublished_work_stalled'), false);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('stalled active unpublished work surfaces as a delivery-risk condition, not a cleanup incident', async () => {
+  const fixture = createResidueGitFixture({ commits: 5, slug: 'active-unpublished-stalled' });
+  try {
+    const task = {
+      issue: 'HOK-2963',
+      slug: fixture.slug,
+      branch: fixture.branch,
+      phase: 'coding',
+      status: 'active',
+      worktree: fixture.repoDir,
+      updated: agoIso(180),
+      lifecycle: { schemaVersion: 1, workflowOutcome: 'active', resourceDisposition: 'allocated' },
+    };
+    await reconcileIncidents(
+      lifecycleIncidentSnapshot(fixture, task, [livePaneFor('HOK-2963', fixture.slug)]),
+      defaultObserverOptions(),
+    );
+    const stored = await storedIncidents(fixture.repoDir);
+    const stalled = stored.filter((incident) => incident.rootCauseClass === 'active_unpublished_work_stalled');
+    assert.equal(stalled.length, 1);
+    assert.equal(stalled[0].category, 'configuration_operator_condition');
+    assert.equal(stalled[0].severity, 'medium');
+    assert.doesNotMatch(stalled[0].operatorAction, /terminaliz.*cleanup/i);
+    assert.equal(stored.some((incident) => incident.category === 'stale_orphaned_state'), false);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('terminal task with unpublished commits keeps the critical recovery-first cleanup incident', async () => {
+  const fixture = createResidueGitFixture({ commits: 3, slug: 'terminal-unpublished' });
+  try {
+    const task = {
+      issue: 'HOK-2911',
+      slug: fixture.slug,
+      branch: fixture.branch,
+      phase: 'error',
+      status: 'error',
+      worktree: fixture.repoDir,
+      updated: agoIso(90),
+    };
+    await reconcileIncidents(lifecycleIncidentSnapshot(fixture, task), defaultObserverOptions());
+    const stored = await storedIncidents(fixture.repoDir);
+    const cleanup = stored.filter((incident) => incident.rootCauseClass === 'cleanup_unpublished_at_risk');
+    assert.equal(cleanup.length, 1);
+    assert.equal(cleanup[0].category, 'stale_orphaned_state');
+    assert.equal(cleanup[0].severity, 'critical');
+    assert.match(cleanup[0].operatorAction, /Recover the work first/);
+    assert.equal(stored.some((incident) => incident.rootCauseClass === 'active_unpublished_work_stalled'), false);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+function driftTask(issue: string, fixture: { repoDir: string; slug: string; branch: string }, overrides: Record<string, unknown>) {
+  return {
+    issue,
+    slug: fixture.slug,
+    branch: fixture.branch,
+    worktree: fixture.repoDir,
+    updated: agoIso(2),
+    ...overrides,
+    lifecycle: {
+      schemaVersion: 1,
+      launchContract: {
+        baseBranch: 'auto/integration',
+        provenance: { baseBranch: 'runtime-env' },
+      },
+      ...((overrides.lifecycle as Record<string, unknown>) ?? {}),
+    },
+  };
+}
+
+test('launch-contract drift on a superseded terminal record is provenance, not an incident; active drift stays visible', async () => {
+  const fixture = createMainIntegrationDivergenceFixture();
+  try {
+    const terminalTask = driftTask('HOK-1309', fixture, {
+      phase: 'closed',
+      status: 'superseded',
+      lifecycle: { workflowOutcome: 'closed', resourceDisposition: 'retained' },
+    });
+    await reconcileIncidents(lifecycleIncidentSnapshot(fixture, terminalTask), defaultObserverOptions());
+    let stored = await storedIncidents(fixture.repoDir);
+    assert.equal(stored.some((incident) => incident.rootCauseClass === 'config_drift_base_branch'), false);
+
+    const activeTask = driftTask('HOK-2963', fixture, {
+      phase: 'coding',
+      status: 'active',
+      lifecycle: { workflowOutcome: 'active', resourceDisposition: 'allocated' },
+    });
+    await reconcileIncidents(lifecycleIncidentSnapshot(fixture, activeTask), defaultObserverOptions());
+    stored = await storedIncidents(fixture.repoDir);
+    const drift = stored.filter((incident) => incident.rootCauseClass === 'config_drift_base_branch');
+    assert.equal(drift.length, 1);
+    assert.equal(drift[0].taskId, 'HOK-2963');
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
   }
 });

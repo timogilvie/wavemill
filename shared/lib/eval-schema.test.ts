@@ -19,7 +19,13 @@ import {
   SCORE_BANDS,
   getScoreBand,
 } from './eval-schema.ts';
-import { buildChallengeExecutionIntent } from './challenge-execution-contract.ts';
+import {
+  buildChallengeExecutionIntent,
+  INVALID_CHALLENGE_REASONS,
+  isStageAttributionEligibleForCoverage,
+  isStageAttributionEligibleForTraining,
+  STAGE_ATTRIBUTION_REASON_CODES,
+} from './challenge-execution-contract.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const schema = JSON.parse(
@@ -780,7 +786,200 @@ function validPromptSizeDiagnostic() {
 }
 
 test('SCHEMA_VERSION is bumped for eval schema updates', () => {
-  assert.equal(SCHEMA_VERSION, '1.45.0');
+  assert.equal(SCHEMA_VERSION, '1.46.0');
+});
+
+function validReviewIdentitySet() {
+  return {
+    orchestrator: {
+      role: 'review_orchestrator',
+      requestedModel: 'claude-opus-4-6',
+      resolvedModel: 'claude-opus-4-6',
+      source: 'route',
+      pinned: true,
+    },
+    substantiveAnalysis: {
+      role: 'substantive_analysis',
+      requestedModel: 'claude-opus-4-6',
+      resolvedModel: 'claude-opus-4-6',
+      source: 'artifact',
+      pinned: true,
+    },
+    remediation: {
+      role: 'remediation',
+      requestedModel: 'gpt-5.4',
+      resolvedModel: 'gpt-5.4',
+      source: 'artifact',
+      pinned: true,
+    },
+  };
+}
+
+function validForkIdentity() {
+  return {
+    stage: 'review',
+    commit: 'a'.repeat(40),
+    tree: 'b'.repeat(40),
+    taskPacketHash: 'c'.repeat(64),
+    planHash: 'd'.repeat(64),
+    promptHash: 'e'.repeat(64),
+    toolConfigHash: 'f'.repeat(64),
+    sharedPrefix: true,
+    primaryInheritedStages: ['plan'],
+    challengerInheritedStages: ['plan'],
+    producer: 'challenge.fork/v1',
+    producerVersion: '1.0.0',
+  };
+}
+
+test('Challenge validity contract fields validate and remain optional', () => {
+  const current = {
+    ...scenarios[0].record,
+    schemaVersion: SCHEMA_VERSION,
+    deliveryVerdict: {
+      outcome: 'primary',
+      prUrl: 'https://github.com/org/repo/pull/42',
+      primaryMerged: true,
+      source: 'final-pr-arbiter',
+      rationale: 'Primary PR was accepted.',
+    },
+    stageAttribution: {
+      status: 'valid',
+      outcome: 'primary',
+      stage: 'review',
+      reasonCodes: [],
+      winningStageModel: 'claude-opus-4-6',
+      losingStageModel: 'gpt-5.4',
+      evidenceProvenance: 'direct',
+      decidedAt: '2026-09-10T12:00:00Z',
+      producer: 'reviewer-stage-adjudicator/v1',
+    },
+    forkIdentity: validForkIdentity(),
+    reviewExecutedIdentity: validReviewIdentitySet(),
+  } as unknown as Record<string, unknown>;
+  const result = validateAgainstSchema(current);
+  assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
+
+  const legacy = { ...current };
+  delete legacy.deliveryVerdict;
+  delete legacy.stageAttribution;
+  delete legacy.forkIdentity;
+  delete legacy.reviewExecutedIdentity;
+  const legacyResult = validateAgainstSchema(legacy);
+  assert.ok(legacyResult.valid, `Legacy record should validate: ${legacyResult.errors.join('; ')}`);
+});
+
+test('Challenge validity contract enum definitions match TypeScript constants', () => {
+  assert.deepEqual(
+    [...STAGE_ATTRIBUTION_REASON_CODES].sort(),
+    [...(schema.$defs.StageAttributionReasonCode.enum as string[])].sort(),
+  );
+  assert.deepEqual(
+    [...INVALID_CHALLENGE_REASONS].sort(),
+    [...(schema.$defs.InvalidChallengeReason.enum as string[])].sort(),
+  );
+  assert.deepEqual(schema.$defs.DeliveryVerdictOutcome.enum, ['primary', 'challenger', 'tie', null]);
+  assert.deepEqual(schema.$defs.StageAttributionStatus.enum, ['valid', 'invalid', 'insufficient_evidence']);
+  assert.deepEqual(schema.$defs.StageAttributionOutcome.enum, ['primary', 'challenger', 'tie', null]);
+  assert.deepEqual(schema.$defs.ExecutedIdentityRole.enum, [
+    'review_orchestrator',
+    'substantive_analysis',
+    'remediation',
+  ]);
+  for (const reason of INVALID_CHALLENGE_REASONS) {
+    assert.ok(STAGE_ATTRIBUTION_REASON_CODES.includes(reason));
+  }
+});
+
+test('Stage attribution eligibility fails closed for invalid or insufficient evidence', () => {
+  const valid = {
+    status: 'valid',
+    outcome: 'primary',
+    stage: 'review',
+    reasonCodes: [],
+    evidenceProvenance: 'direct',
+  } as const;
+  assert.equal(isStageAttributionEligibleForCoverage(undefined), false);
+  assert.equal(isStageAttributionEligibleForTraining(undefined), false);
+  assert.equal(isStageAttributionEligibleForCoverage(valid), true);
+  assert.equal(isStageAttributionEligibleForTraining(valid), true);
+  assert.equal(isStageAttributionEligibleForCoverage({ ...valid, outcome: null }), false);
+  assert.equal(isStageAttributionEligibleForTraining({ ...valid, evidenceProvenance: 'inferred' }), false);
+  assert.equal(isStageAttributionEligibleForCoverage({
+    status: 'invalid',
+    outcome: null,
+    stage: 'review',
+    reasonCodes: ['plan_hash_mismatch'],
+    evidenceProvenance: 'direct',
+    divergentInputsSuppressedDirectEvidence: true,
+  }), false);
+  assert.equal(isStageAttributionEligibleForCoverage({
+    status: 'insufficient_evidence',
+    outcome: null,
+    stage: 'review',
+    reasonCodes: ['missing_direct_review_evidence'],
+    evidenceProvenance: 'insufficient',
+  }), false);
+});
+
+test('Delivery verdict remains usable when stage attribution is invalid', () => {
+  const record = {
+    ...scenarios[0].record,
+    deliveryVerdict: {
+      outcome: 'primary',
+      source: 'final-pr-arbiter',
+      prUrl: 'https://github.com/org/repo/pull/42',
+    },
+    stageAttribution: {
+      status: 'invalid',
+      outcome: null,
+      stage: 'review',
+      reasonCodes: ['plan_hash_mismatch', 'divergent_pre_stage_inputs'],
+      evidenceProvenance: 'direct',
+      divergentInputsSuppressedDirectEvidence: true,
+    },
+  } as unknown as Record<string, unknown>;
+  const result = validateAgainstSchema(record);
+  assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
+  assert.equal((record.deliveryVerdict as { outcome: string }).outcome, 'primary');
+  assert.equal(isStageAttributionEligibleForTraining(record.stageAttribution as never), false);
+});
+
+test('ChallengeComparison contract fields round-trip through JSON', () => {
+  const comparison = {
+    challengePairId: 'pair-2968',
+    primaryModel: 'claude-opus-4-6',
+    challengerModel: 'gpt-5.4',
+    primaryPrUrl: 'https://github.com/org/repo/pull/1',
+    challengerPrUrl: 'https://github.com/org/repo/pull/2',
+    primaryEvalScore: 0.9,
+    challengerEvalScore: 0.8,
+    rationale: 'Primary delivered the accepted PR.',
+    dimensions: {
+      completeness: { primary: 1, challenger: 0.8 },
+      correctness: { primary: 1, challenger: 0.8 },
+      code_quality: { primary: 0.9, challenger: 0.8 },
+      intervention_impact: { primary: 1, challenger: 1 },
+      autonomy: { primary: 1, challenger: 1 },
+    },
+    timestamp: '2026-09-10T12:00:00Z',
+    deliveryVerdict: {
+      outcome: 'primary',
+      source: 'derived-from-comparison',
+      prUrl: 'https://github.com/org/repo/pull/1',
+    },
+    stageAttribution: {
+      status: 'valid',
+      outcome: 'primary',
+      stage: 'review',
+      reasonCodes: [],
+      evidenceProvenance: 'direct',
+    },
+    forkIdentity: validForkIdentity(),
+    primaryReviewExecutedIdentity: validReviewIdentitySet(),
+    challengerReviewExecutedIdentity: validReviewIdentitySet(),
+  };
+  assert.equal(JSON.stringify(JSON.parse(JSON.stringify(comparison))), JSON.stringify(comparison));
 });
 
 test('evaluatedPrHeadSha validates and remains optional for historical rows', () => {
@@ -2174,8 +2373,8 @@ test('Wavemill router fields validate and schema stays in parity', () => {
   assert.equal(properties.wavemill_router_scoring?.$ref, '#/$defs/WavemillRouterScoringMetadata');
 });
 
-test('Schema version constant is 1.45.0', () => {
-  assert.equal(SCHEMA_VERSION, '1.45.0');
+test('Schema version constant is 1.46.0', () => {
+  assert.equal(SCHEMA_VERSION, '1.46.0');
 });
 
 test('Record with an unknown_attribution intervention validates (HOK-2894)', () => {

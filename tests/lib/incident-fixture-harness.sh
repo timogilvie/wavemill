@@ -262,6 +262,7 @@ incident_scenario_new() {
   git init --bare "$ORIGIN_DIR" >/dev/null
   git clone "$ORIGIN_DIR" "$REPO_DIR" >/dev/null 2>&1
   mkdir -p "$REPO_DIR/.wavemill"
+  jq -n '{cleanup:{branchDeletion:{enabled:true,mode:"enforce"}}}' > "$REPO_DIR/.wavemill-config.json"
   git -C "$REPO_DIR" config user.email "wavemill-incident@example.com"
   git -C "$REPO_DIR" config user.name "Wavemill Incident Fixture"
   git -C "$REPO_DIR" checkout -b auto/integration >/dev/null 2>&1

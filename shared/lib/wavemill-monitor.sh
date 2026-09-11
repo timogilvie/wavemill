@@ -238,6 +238,14 @@ fi
 if [[ -f "$LIB_DIR/queue-health.sh" ]]; then
 source "$LIB_DIR/queue-health.sh"
 fi
+# Worktree-deps reuse helper (HOK-2811): challenge_materialize_challenger_arm
+# forks a fresh challenger worktree at the primary's coding HEAD, so node_modules
+# is missing until we prime it. worktree_deps_ensure prefers CoW/symlink reuse
+# from the primary's node_modules and falls back to running the install command.
+if [[ -f "$LIB_DIR/wavemill-worktree-deps.sh" ]]; then
+# shellcheck source=wavemill-worktree-deps.sh
+source "$LIB_DIR/wavemill-worktree-deps.sh"
+fi
 _update_effective_max_parallel
 
 # Ensure gh commands target the correct GitHub repo (not inherited CWD)
@@ -762,6 +770,14 @@ dispatch_task_and_persist() {
 # A challenge intent is sealed once any stage it describes has produced a
 # result. After that point it is evidence about a run that already happened,
 # not a routing decision that can still be revised.
+#
+# Exempt writers: challenge_intent_stamp_fork_descriptor (HOK-2811) is the
+# only writer that may touch a sealed intent. It touches only the
+# fork-descriptor fields (forkStage, forkCommit, sharedPrefix, per-side
+# inheritedStages), never the selection fields the seal protects, so it is
+# safe by construction — new callers of that kind must add themselves to
+# this list.
+#
 # Usage: challenge_intent_is_sealed <feature_dir>
 challenge_intent_is_sealed() {
   local feature_dir="$1" stage status
@@ -1320,22 +1336,26 @@ finalize_challenge_execution_intent_before_coding() {
     return 0
   fi
 
-  local refresh_title issue_json packet_arg refreshed_plan refreshed_source refreshed_mode refreshed_reason refreshed_fallback_reason
-  local pinned_stage_arg=() preserved_challenger_arg=()
+  # HOK-2813: a primary carrying nested challengeArms[] records is in the
+  # deferred-materialisation flow. Its challenger selection is sealed in the
+  # arm record itself; re-running resolve-challenge-task here could resample
+  # the pair while no challenger task exists yet — the historic `_c` pairing
+  # drift. With no arm running before the fork, there is nothing to preserve
+  # through an expanded route: keep the immutable intent and stop.
+  local nested_arm_count
+  nested_arm_count=$(read_state_value "0" --arg i "$issue" '((.tasks[$i].challengeArms // []) | length)')
+  if [[ "$nested_arm_count" =~ ^[0-9]+$ ]] && (( nested_arm_count > 0 )); then
+    log "status" "  $issue: Deferred challenger arm holds the sealed selection; skipping expanded challenge refinalization"
+    return 0
+  fi
+
+  local refresh_title issue_json packet_arg refreshed_plan refreshed_source refreshed_mode refreshed_reason
+  local pinned_stage_arg=()
   if [[ -n "$pinned_stage" && "$pinned_stage" != "null" ]]; then
     # Without this the refresh rolls a fresh stage from challenge.stageWeights,
     # which is how an already-selected implementation-stage arm (a Qwen or Kimi
     # coder) became an unrelated plan-stage pair on the way to coding.
     pinned_stage_arg=(--pinned-stage "$pinned_stage")
-  fi
-  local preserved_challenger_key preserved_challenger_model
-  preserved_challenger_key="${issue}_c"
-  preserved_challenger_model=$(read_state_value "" --arg i "$preserved_challenger_key" '.tasks[$i].challengeVariedModel // ""' 2>/dev/null || true)
-  if [[ -z "$preserved_challenger_model" && "$pinned_stage" == "implementation" ]]; then
-    preserved_challenger_model=$(read_state_value "" --arg i "$preserved_challenger_key" '.tasks[$i].coderModel // ""' 2>/dev/null || true)
-  fi
-  if [[ -n "$preserved_challenger_model" && "$preserved_challenger_model" != "null" ]]; then
-    preserved_challenger_arg=(--preserved-challenger-model "$preserved_challenger_model")
   fi
   refresh_title=$(read_state_value "" --arg i "$issue" '.tasks[$i].title // ""')
   if [[ -z "$refresh_title" ]]; then
@@ -1359,12 +1379,10 @@ finalize_challenge_execution_intent_before_coding() {
     --primary-model "$primary_coder" \
     --feature-dir "$feature_dir" \
     "${pinned_stage_arg[@]}" \
-    "${preserved_challenger_arg[@]}" \
     "${packet_arg[@]}" 2>/dev/null || echo "")
   refreshed_source=$(echo "$refreshed_plan" | jq -r '.decisionSource // "bootstrap"' 2>/dev/null || echo "bootstrap")
   refreshed_mode=$(echo "$refreshed_plan" | jq -r '.mode // "single"' 2>/dev/null || echo "single")
   refreshed_reason=$(echo "$refreshed_plan" | jq -r '.reason // empty' 2>/dev/null || echo "")
-  refreshed_fallback_reason=$(echo "$refreshed_plan" | jq -r '.fallbackReason // empty' 2>/dev/null || echo "")
 
   if [[ "$refreshed_source" != "expanded" && "$refreshed_source" != "preserved" ]]; then
     log_warn "$issue → expanded challenge finalization did not use expanded/preserved route (source=$refreshed_source); keeping current challenge state"
@@ -1386,9 +1404,6 @@ finalize_challenge_execution_intent_before_coding() {
     fi
     persist_challenge_execution_intent "$issue" "" "$feature_dir" "$intent_json"
     [[ -n "$refreshed_reason" ]] && log_warn "$issue → challenge finalization produced no challenge ($refreshed_reason)"
-    if [[ "$refreshed_fallback_reason" == "preserved_challenger_ineligible" ]]; then
-      log_warn "$issue → preserved challenger model was ineligible during challenge finalization"
-    fi
     return 0
   fi
 
@@ -1474,9 +1489,6 @@ finalize_challenge_execution_intent_before_coding() {
     challenge_cancel_challenger_arm "$issue" "$slug" "$new_challenger_key" "$feature_dir" "$new_challenge_stage" "$new_primary_varied" "$collapse_reason" "$collapse_detail"
     persist_challenge_execution_intent "$issue" "" "$feature_dir" "$collapsed_intent"
     log_warn "$issue → challenge finalization cancelled challenger ($collapse_reason)"
-    if [[ "$refreshed_fallback_reason" == "preserved_challenger_ineligible" ]]; then
-      log_warn "$issue → preserved challenger model was ineligible during challenge finalization"
-    fi
     FINALIZED_CHALLENGE_CODER=""
     FINALIZED_CHALLENGE_STAGE=""
     return 0
@@ -1512,14 +1524,16 @@ finalize_challenge_execution_intent_before_coding() {
   FINALIZED_CHALLENGE_CODER="$new_primary"
   FINALIZED_CHALLENGE_STAGE="$new_challenge_stage"
 
-  if [[ "$refreshed_fallback_reason" == "preserved_challenger_ineligible" ]]; then
-    log_warn "$issue → preserved challenger model was ineligible during challenge finalization"
-  fi
   log "status" "  $issue: Challenge intent finalized ($refreshed_source route, stage=$new_challenge_stage): $new_primary_varied vs $new_challenger_varied"
   challenge_assert_arms_diverge "$issue" "$new_challenge_stage" "$new_primary_varied" "$new_challenger_varied" "$intent_json"
 }
 
 challenge_cancel_challenger_arm() {
+  # Teardown for a challenger arm that already exists on disk. HOK-2811
+  # introduced a mirror for the deferred-arm variant: see
+  # challenge_materialize_challenger_arm() (creation) and
+  # challenge_arms_cancel_pending() (cancellation of an arm that never
+  # materialised).
   local issue="$1" primary_slug="$2" challenger_key="${3:-}" feature_dir="${4:-}" stage="${5:-}" varied_model="${6:-}" reason="${7:-}" detail="${8:-}"
   [[ -n "$issue" && -n "$reason" ]] || return 1
 
@@ -1613,6 +1627,426 @@ challenge_assert_arms_diverge() {
   return 0
 }
 
+# HOK-2811 (Arbiter P2.4a) — the narrow writer for fork-descriptor fields.
+#
+# `persist_challenge_execution_intent` refuses to touch an intent once any
+# stage it describes has produced a result (`challenge_intent_is_sealed`), and
+# by fork time the primary's coding stage is completed so the intent is
+# sealed. This writer sets only the fork-descriptor fields (`forkStage`,
+# `forkCommit`, `sharedPrefix`, and per-side `inheritedStages`), never the
+# selection fields the seal check protects, so exempting it from the seal
+# check is safe by construction.
+#
+# Usage: challenge_intent_stamp_fork_descriptor <primary_issue> <challenger_key> \
+#   <primary_feature_dir> <challenger_feature_dir> \
+#   <fork_stage> <fork_commit> <inherited_stages_json>
+#
+# `inherited_stages_json` is the JSON array of ChallengeStage values that
+# the challenger inherits from the primary (e.g. `["plan","implementation"]`
+# for a review-stage fork).
+challenge_intent_stamp_fork_descriptor() {
+  local primary_issue="$1" challenger_key="$2"
+  local primary_feature_dir="$3" challenger_feature_dir="$4"
+  local fork_stage="$5" fork_commit="$6"
+  local inherited_stages_json="${7:-[]}"
+  [[ -n "$primary_issue" && -n "$fork_stage" && -n "$fork_commit" ]] || return 1
+
+  local dir file tmp
+  for dir in "$primary_feature_dir" "$challenger_feature_dir"; do
+    [[ -n "$dir" && -d "$dir" ]] || continue
+    for file in "$dir/.challenge-intent.json" "$dir/challenge-intent.json"; do
+      [[ -f "$file" ]] || continue
+      tmp="$(mktemp)" || continue
+      if jq \
+        --arg fs "$fork_stage" \
+        --arg fc "$fork_commit" \
+        --argjson primaryInherited '[]' \
+        --argjson challengerInherited "$inherited_stages_json" \
+        '.forkStage = $fs
+         | .forkCommit = $fc
+         | .sharedPrefix = true
+         | .primary = ((.primary // {}) + {inheritedStages: $primaryInherited})
+         | .challenger = ((.challenger // {}) + {inheritedStages: $challengerInherited})' \
+        "$file" > "$tmp" 2>/dev/null; then
+        mv "$tmp" "$file"
+      else
+        rm -f "$tmp"
+      fi
+    done
+  done
+
+  # Mirror the fields into state so callers reading state (rather than files)
+  # observe the same descriptor. This does NOT trigger the seal check because
+  # persist_challenge_execution_intent isn't in the path.
+  [[ -n "${STATE_FILE:-}" && -f "${STATE_FILE}" ]] || return 0
+  state_mutate "$STATE_FILE" \
+    '(.tasks[$issue].challengeExecutionIntent // {}) as $existing
+     | .tasks[$issue].challengeExecutionIntent = ($existing + {
+         forkStage: $fs, forkCommit: $fc, sharedPrefix: true,
+         primary: (($existing.primary // {}) + {inheritedStages: []}),
+         challenger: (($existing.challenger // {}) + {inheritedStages: $challengerInherited})
+       })
+     | if $challenger != "" and (.tasks[$challenger] != null) then
+         (.tasks[$challenger].challengeExecutionIntent // {}) as $cexist
+         | .tasks[$challenger].challengeExecutionIntent = ($cexist + {
+             forkStage: $fs, forkCommit: $fc, sharedPrefix: true,
+             primary: (($cexist.primary // {}) + {inheritedStages: []}),
+             challenger: (($cexist.challenger // {}) + {inheritedStages: $challengerInherited})
+           })
+       else . end
+     | .tasks[$issue].updated = (now | todate)' \
+    --arg issue "$primary_issue" \
+    --arg challenger "$challenger_key" \
+    --arg fs "$fork_stage" \
+    --arg fc "$fork_commit" \
+    --argjson challengerInherited "$inherited_stages_json" >/dev/null 2>&1 || true
+  return 0
+}
+
+# HOK-2811 (Arbiter P2.4a) — mirror of challenge_cancel_challenger_arm.
+#
+# Materialise a deferred (awaiting_fork) challenger arm at the primary's
+# current head commit. Called by the fork trigger after the primary's coding
+# stage has completed. Returns 0 only on full success; on failure the caller
+# is expected to leave the arm in `materializing` for the bounded_retry gate
+# to retry (or terminalise) on the next monitor tick.
+#
+# Steps (mirroring the cancel inventory):
+#   1. Read the primary's HEAD as the fork commit.
+#   2. Create branch task/<slug>-challenger + worktree at that commit.
+#   3. Copy the primary's feature dir into the challenger's, excluding review
+#      artifacts and transient markers.
+#   4. Stamp .planning-result.json and .coding-result.json with source=inherited.
+#   5. Stamp the fork descriptor onto both arms' intent files + state.
+#   6. Save the challenger's task-state entry at phase=review.
+#   7. Launch the review phase directly (same sequence as the coding→review
+#      transition in monitor_issue_state), so the arm is indistinguishable
+#      from a normally-transitioned task from that point on.
+#
+# Usage: challenge_materialize_challenger_arm <primary_issue> <primary_slug> \
+#   <arm_json> <primary_wt_dir> <primary_feature_dir> [base_branch]
+challenge_materialize_challenger_arm() {
+  local primary_issue="$1" primary_slug="$2" arm_json="$3"
+  local primary_wt_dir="$4" primary_feature_dir="$5"
+  local base_branch="${6:-${BASE_BRANCH:-main}}"
+
+  local arm_key arm_slug arm_branch varied_stage
+  local coder_model planner_model reviewer_model
+  local coder_agent planner_agent reviewer_agent
+  local plan_depth code_depth review_mode
+  arm_key=$(challenge_arm_read_field "$arm_json" '.key')
+  arm_slug=$(challenge_arm_read_field "$arm_json" '.slug')
+  arm_branch=$(challenge_arm_read_field "$arm_json" '.branch')
+  varied_stage=$(challenge_arm_read_field "$arm_json" '.variedStage')
+  coder_model=$(challenge_arm_read_field "$arm_json" '.models.coder')
+  planner_model=$(challenge_arm_read_field "$arm_json" '.models.planner')
+  reviewer_model=$(challenge_arm_read_field "$arm_json" '.models.reviewer')
+  coder_agent=$(challenge_arm_read_field "$arm_json" '.agents.coder')
+  planner_agent=$(challenge_arm_read_field "$arm_json" '.agents.planner')
+  reviewer_agent=$(challenge_arm_read_field "$arm_json" '.agents.reviewer')
+  plan_depth=$(challenge_arm_read_field "$arm_json" '.planDepth')
+  code_depth=$(challenge_arm_read_field "$arm_json" '.codeDepth')
+  review_mode=$(challenge_arm_read_field "$arm_json" '.reviewMode')
+  [[ -z "$review_mode" ]] && review_mode="static"
+
+  if [[ -z "$arm_key" || -z "$arm_slug" || -z "$arm_branch" ]]; then
+    log_error "  $primary_issue: materialise called with malformed arm record"
+    return 1
+  fi
+
+  local challenger_wt_dir="${WORKTREE_ROOT}/${arm_slug}"
+  local challenger_feature_dir="${challenger_wt_dir}/features/${arm_slug}"
+
+  # Step 1: fork commit — primary's HEAD after coding completed.
+  local fork_commit=""
+  fork_commit="$(git -C "$primary_wt_dir" rev-parse HEAD 2>/dev/null || echo "")"
+  if [[ -z "$fork_commit" ]]; then
+    log_error "  $primary_issue: cannot resolve fork commit from primary worktree $primary_wt_dir"
+    return 1
+  fi
+
+  # Guard: challenger's review must not already have run in this or a prior
+  # attempt (would indicate materialisation somehow already produced a review).
+  if [[ -f "$challenger_feature_dir/.review-result.json" ]]; then
+    log_warn "  $arm_key: refusing to materialise — .review-result.json already exists"
+    return 1
+  fi
+
+  # Step 2: branch + worktree. Tolerate a partial prior attempt where the
+  # branch exists at the fork commit — attach in that case.
+  local worktree_created="false"
+  if git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/$arm_branch" 2>/dev/null; then
+    local existing_sha
+    existing_sha="$(git -C "$REPO_DIR" rev-parse "$arm_branch" 2>/dev/null || echo "")"
+    if [[ "$existing_sha" != "$fork_commit" ]]; then
+      log_error "  $arm_key: branch $arm_branch already exists at $existing_sha, not at fork commit $fork_commit"
+      return 1
+    fi
+    if [[ ! -d "$challenger_wt_dir" ]]; then
+      if ! ensure_worktree "$arm_branch" "$challenger_wt_dir" "$REPO_DIR" >/dev/null 2>>"${MILL_LOG_FILE:-/dev/null}"; then
+        log_error "  $arm_key: ensure_worktree failed for $arm_branch"
+        return 1
+      fi
+    fi
+  else
+    if [[ -d "$challenger_wt_dir" ]]; then
+      log_error "  $arm_key: worktree $challenger_wt_dir exists without branch $arm_branch"
+      return 1
+    fi
+    if ! git -C "$REPO_DIR" worktree add -b "$arm_branch" "$challenger_wt_dir" "$fork_commit" >>"${MILL_LOG_FILE:-/dev/null}" 2>&1; then
+      log_error "  $arm_key: git worktree add failed at fork commit $fork_commit"
+      return 1
+    fi
+    worktree_created="true"
+  fi
+
+  # Step 2b: post-worktree seeding — mirror what launch_task's post-`worktree
+  # add` block does so the fresh challenger looks the same as any other task
+  # worktree. The .wavemill-config.local.json overlay is gitignored (won't come
+  # via `git worktree add`) and the reviewer's tooling won't see the operator's
+  # overrides without it; worktree_deps_ensure prefers CoW/symlink reuse of the
+  # primary's node_modules (fork commit ⇒ identical package.json + lockfile,
+  # so reuse is safe) and falls back to running the install command.
+  if [[ -f "$REPO_DIR/.wavemill-config.local.json" ]]; then
+    cp "$REPO_DIR/.wavemill-config.local.json" "$challenger_wt_dir/.wavemill-config.local.json" 2>/dev/null || \
+      log_warn "  $arm_key: copy .wavemill-config.local.json failed"
+  fi
+  if declare -F worktree_deps_ensure >/dev/null 2>&1; then
+    worktree_deps_ensure "$challenger_wt_dir" "$primary_wt_dir" "$arm_key" || \
+      log_warn "  $arm_key: dependency setup returned non-zero — review may fail when node_modules is required"
+  fi
+
+  # Step 3: feature-dir copy. Explicit exclusions keep the challenger from
+  # inheriting review artifacts, transient markers, or window state.
+  mkdir -p "$challenger_feature_dir" || {
+    log_error "  $arm_key: mkdir $challenger_feature_dir failed"
+    return 1
+  }
+  local artifact
+  for artifact in \
+    plan.md .plan-approved .phase-config.json \
+    .routing-complete .initial-route.json .post-expansion-route.json \
+    selected-task.json \
+    task-packet.md task-packet-header.md task-packet-details.md \
+    challenge-intent.json .challenge-intent.json \
+    .trace-context.json trace.jsonl routing.jsonl \
+    .planning-result.json .coding-result.json .coding-complete; do
+    if [[ -e "$primary_feature_dir/$artifact" ]]; then
+      cp -R "$primary_feature_dir/$artifact" "$challenger_feature_dir/$artifact" 2>/dev/null || \
+        log_warn "  $arm_key: copy $artifact failed"
+    fi
+  done
+
+  # Step 4: stamp inherited stage results. The files are jq-additive rewrites
+  # so schema validation (source: inherited allowed by
+  # shared/schemas/stage-result.schema.json) still passes.
+  local stage_file tmp
+  for stage_file in .planning-result.json .coding-result.json; do
+    local target="$challenger_feature_dir/$stage_file"
+    [[ -f "$target" ]] || continue
+    tmp="$(mktemp)" || continue
+    if jq '.source = "inherited"' "$target" > "$tmp" 2>/dev/null; then
+      mv "$tmp" "$target"
+    else
+      rm -f "$tmp"
+      log_warn "  $arm_key: failed to stamp source=inherited on $stage_file"
+    fi
+  done
+
+  # Step 5: fork descriptor onto both arms' intent files + state.
+  challenge_intent_stamp_fork_descriptor \
+    "$primary_issue" "$arm_key" \
+    "$primary_feature_dir" "$challenger_feature_dir" \
+    "$varied_stage" "$fork_commit" \
+    '["plan","implementation"]' || \
+    log_warn "  $arm_key: fork-descriptor stamp reported failure"
+
+  # Step 6: save the challenger's task-state entry at phase=review.
+  local linear_issue
+  linear_issue="$(get_linear_issue_id "$primary_issue" 2>/dev/null || echo "$primary_issue")"
+  save_task_state "$arm_key" "$arm_slug" "$arm_branch" "$challenger_wt_dir" \
+    "" "" "${planner_agent:-$coder_agent}" "$linear_issue" \
+    "true" "$primary_issue" "challenger" "$coder_model" \
+    "$planner_model" "$coder_model" "$reviewer_model" \
+    "$plan_depth" "$code_depth" "$review_mode" \
+    "$varied_stage" "review"
+
+  # Register in monitor arrays so subsequent monitor_issue_state ticks find
+  # the arm through the same lookup as any other task.
+  BRANCH_BY_ISSUE["$arm_key"]="$arm_branch"
+  SLUG_BY_ISSUE["$arm_key"]="$arm_slug"
+
+  # Mark that the challenger was successfully launched (mirrors the write
+  # done alongside save_task_state at the non-deferred site).
+  state_mutate "$STATE_FILE" \
+    '.tasks[$issue].challengerLaunched = true
+     | .tasks[$issue].updated = (now | todate)' \
+    --arg issue "$primary_issue" >/dev/null 2>&1 || true
+
+  # Step 7: launch the review phase directly. Same sequence as the
+  # coding→review transition in monitor_issue_state, so any downstream
+  # phase-machinery guards (bounded_retry, handle_phase_launch_result, etc.)
+  # see identical inputs.
+  local reviewer_launch_model="$reviewer_model" resolved_reviewer_agent=""
+  if declare -F agent_resolve_model >/dev/null 2>&1; then
+    reviewer_launch_model="$(agent_resolve_model "reviewer" "$reviewer_model" "$REPO_DIR" 2>/dev/null || echo "$reviewer_model")"
+  fi
+  if declare -F agent_resolve_from_model >/dev/null 2>&1; then
+    resolved_reviewer_agent="$(agent_resolve_from_model "$reviewer_launch_model" "review" 2>/dev/null || echo "")"
+  fi
+  [[ -n "$resolved_reviewer_agent" ]] || resolved_reviewer_agent="${reviewer_agent:-$coder_agent}"
+
+  set_task_phase "$arm_key" "review"
+  write_stage_result_with_history "$challenger_feature_dir" "review" "running" \
+    "$resolved_reviewer_agent" "$reviewer_launch_model"
+
+  local arm_title
+  arm_title=$(read_state_value "" --arg i "$primary_issue" '.tasks[$i].title // ""')
+  [[ -n "$arm_title" ]] || arm_title="$arm_slug"
+
+  local launch_rc=0
+  _run_phase_launch review launch_review_phase "$arm_key" "$arm_slug" "$arm_title" \
+    "$challenger_wt_dir" "$arm_branch" "$base_branch" \
+    "$reviewer_launch_model" "$resolved_reviewer_agent" "$review_mode" || launch_rc=$?
+  if (( launch_rc != 0 )); then
+    log_error "  $arm_key: review launch failed rc=$launch_rc — arm left for retry"
+    if [[ "$worktree_created" == "true" ]]; then
+      # A partial materialisation is retryable next tick — leave the worktree
+      # in place so step-2 tolerance attaches on the next attempt.
+      :
+    fi
+    return 1
+  fi
+
+  log "status" "  $primary_issue → challenger arm $arm_key materialised at $fork_commit"
+  log_route_lifecycle "challenge_arm_materialized" \
+    "issue=$primary_issue" \
+    "arm=$arm_key" \
+    "stage=$varied_stage" \
+    "fork_commit=$fork_commit"
+  return 0
+}
+
+# HOK-2811 (Arbiter P2.4a) — fork trigger; re-entrant and guarded.
+#
+# Called from monitor_issue_state on every tick where the primary is at
+# review-or-later. Idempotent by construction:
+#   - No pending arms → fast no-op.
+#   - Bounded-retry gate on bucket challenger-materialize, keyed to the
+#     primary's HEAD SHA (HOK-2924 invariant).
+#   - Checked-and-set awaiting_fork → materializing gives exactly-once
+#     semantics under race.
+#   - Materialisation failure resets to awaiting_fork so the next tick
+#     retries; ceiling terminalises to `exhausted` with a greppable sentinel
+#     and the primary continues solo.
+#
+# Usage: challenge_maybe_materialize_deferred_arms <primary_issue> \
+#   <primary_slug> <primary_feature_dir> <primary_wt_dir>
+challenge_maybe_materialize_deferred_arms() {
+  local primary_issue="$1" primary_slug="$2"
+  local primary_feature_dir="$3" primary_wt_dir="$4"
+  [[ -n "$primary_issue" ]] || return 0
+
+  # Fast no-op: only the primary drives materialisation.
+  local role
+  role="$(get_task_meta "$primary_issue" "challengeRole" 2>/dev/null || true)"
+  if [[ "$role" == "challenger" ]]; then
+    return 0
+  fi
+
+  local pending_json
+  pending_json="$(challenge_arms_list_pending "$primary_issue")"
+  local pending_count
+  pending_count=$(echo "$pending_json" | jq -r 'length' 2>/dev/null || echo "0")
+  [[ "$pending_count" =~ ^[0-9]+$ ]] || pending_count=0
+  (( pending_count > 0 )) || return 0
+
+  # Coding must be complete before we fork. The coding result file is the
+  # canonical marker; without a `completed` stage there is nothing worth
+  # inheriting.
+  local coding_status
+  coding_status="$(read_stage_status "$primary_feature_dir" "coding" 2>/dev/null || echo "")"
+  if [[ "$coding_status" != "completed" ]]; then
+    return 0
+  fi
+
+  local head
+  head="$(git -C "$primary_wt_dir" rev-parse HEAD 2>/dev/null || echo "")"
+
+  local limit="${WAVEMILL_CHALLENGE_MATERIALIZE_MAX_ATTEMPTS:-4}"
+  [[ "$limit" =~ ^[0-9]+$ ]] || limit=4
+
+  local arm_key arm_json
+  # Iterate pending arms — under happy-path scope there is exactly one.
+  local i=0
+  while (( i < pending_count )); do
+    arm_json=$(echo "$pending_json" | jq -c ".[$i]")
+    arm_key=$(echo "$arm_json" | jq -r '.key // ""')
+    i=$((i + 1))
+    [[ -n "$arm_key" ]] || continue
+
+    local bucket="challenger-materialize-$arm_key"
+    local disposition
+    disposition="$(bounded_retry_gate "$primary_feature_dir" "$bucket" "$head" "$limit")"
+    case "$disposition" in
+      backoff)
+        continue
+        ;;
+      exhausted)
+        local attempts reason
+        attempts=$(bounded_retry_count "$primary_feature_dir" "$bucket")
+        reason="Challenger arm materialisation exhausted after ${attempts} attempt(s) at head ${head:-unknown}"
+        if bounded_retry_mark_exhausted "$primary_feature_dir" "$bucket" "$reason"; then
+          log "status" "⛔ $primary_issue → challenger arm $arm_key materialisation exhausted after ${attempts} attempts"
+        fi
+        challenge_arms_set_state "$primary_issue" "$arm_key" "awaiting_fork" "exhausted" \
+          "$(jq -cn --arg r "$reason" '{exhaustReason: $r, exhaustedAt: (now | todate)}')" 2>/dev/null || true
+        log_route_lifecycle "challenge_arm_exhausted" \
+          "issue=$primary_issue" \
+          "arm=$arm_key" \
+          "reason=materialisation_ceiling"
+        continue
+        ;;
+      exhausted-quiet)
+        continue
+        ;;
+      proceed)
+        : # fall through
+        ;;
+      *)
+        continue
+        ;;
+    esac
+
+    # Exactly-once transition. If another writer beat us to `materializing`
+    # this call is a no-op for that arm.
+    if ! challenge_arms_set_state "$primary_issue" "$arm_key" "awaiting_fork" "materializing"; then
+      continue
+    fi
+    bounded_retry_increment "$primary_feature_dir" "$bucket" "$head" >/dev/null 2>&1 || true
+
+    local materialise_rc=0
+    challenge_materialize_challenger_arm \
+      "$primary_issue" "$primary_slug" "$arm_json" \
+      "$primary_wt_dir" "$primary_feature_dir" || materialise_rc=$?
+
+    if (( materialise_rc == 0 )); then
+      # Stamp materialisation success + the fork commit.
+      local fork_commit
+      fork_commit="$(git -C "$primary_wt_dir" rev-parse HEAD 2>/dev/null || echo "")"
+      challenge_arms_set_state "$primary_issue" "$arm_key" "materializing" "materialized" \
+        "$(jq -cn --arg fc "$fork_commit" '{materializedAt: (now | todate), forkCommit: $fc}')" 2>/dev/null || true
+      bounded_retry_clear "$primary_feature_dir" "$bucket"
+    else
+      # Retryable failure — reset the arm to awaiting_fork so the next tick
+      # re-enters through the gate.
+      challenge_arms_set_state "$primary_issue" "$arm_key" "materializing" "awaiting_fork" 2>/dev/null || true
+      log_warn "  $primary_issue: arm $arm_key materialisation failed rc=$materialise_rc — retrying next tick"
+    fi
+  done
+  return 0
+}
+
 update_free_slots_state() {
   local slots="$1"
   local queue_owned="${queue_owned_count:-0}"
@@ -1688,6 +2122,10 @@ mark_eval_completed() {
   if [[ -n "$slug" && -n "${WORKTREE_ROOT:-}" ]]; then
     bounded_retry_clear "${WORKTREE_ROOT}/${slug}/features/${slug}" "challenge-eval-soft"
     bounded_retry_clear "${WORKTREE_ROOT}/${slug}/features/${slug}" "challenge-eval-hard"
+    # challenge-eval-stale is deliberately NOT cleared here: a successful eval
+    # run does not prove the persisted record satisfies the current-head
+    # selector, and clearing on success would let a persistently-refused
+    # record refill its own relaunch budget (HOK-2963). A new head resets it.
   fi
 }
 
@@ -2537,6 +2975,46 @@ fresh_hook_state_for_issue() {
   jq -r '.state // empty' "$hook_file" 2>/dev/null || true
 }
 
+# HOK-2972 / HOK-2963: detect a coding stage result stuck at "running" whose
+# recorded agent process has exited. A pane surviving at a bare shell prompt,
+# its title text, and periodically refreshed reconciliation timestamps are NOT
+# evidence of progress. Protective evidence that keeps the stage alive: a
+# fresh hook heartbeat, any live descendant under the pane shell (agent or a
+# controller-owned validation job), or an indeterminate probe. A minimum
+# stage age guards launch wrappers that briefly show only a shell.
+# Returns 0 only when the owner is affirmatively lost.
+coding_stage_owner_lost() {
+  local issue="$1" feature_dir="$2" win_target="$3"
+  local started_at started_epoch now_epoch hook_state pane_pid live_rc
+  local grace="${WAVEMILL_CODING_OWNER_GRACE_SECONDS:-300}"
+
+  [[ -f "$feature_dir/.coding-result.json" ]] || return 1
+  started_at="$(jq -r '.startedAt // empty' "$feature_dir/.coding-result.json" 2>/dev/null || true)"
+  [[ -n "$started_at" ]] || return 1
+  started_epoch="$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$started_at" +%s 2>/dev/null \
+    || date -u -d "$started_at" +%s 2>/dev/null || true)"
+  [[ "$started_epoch" =~ ^[0-9]+$ ]] || return 1
+  now_epoch="$(date +%s)"
+  (( now_epoch - started_epoch >= grace )) || return 1
+
+  hook_state="$(fresh_hook_state_for_issue "$issue" 2>/dev/null || true)"
+  case "$hook_state" in
+    working) return 1 ;;
+    waiting) return 1 ;;
+    approval-needed) return 1 ;;
+    blocked) return 1 ;;
+  esac
+
+  command -v tmux >/dev/null 2>&1 || return 1
+  pane_pid="$(tmux list-panes -t "$win_target" -F '#{pane_pid}' 2>/dev/null | head -n 1 || true)"
+  [[ -n "$pane_pid" ]] || return 1
+  live_rc=0
+  mill_pane_has_live_blocking_process "$pane_pid" || live_rc=$?
+  # 0 = live descendant (agent or owned validation), 2 = indeterminate: both protect.
+  [[ "$live_rc" -eq 1 ]] || return 1
+  return 0
+}
+
 pane_release_preflight() {
   local issue="$1" slug="$2" state_dir="$3" wt_dir="$4" pr_number="$5"
   local branch="${6:-}" base_branch="${7:-${BASE_BRANCH:-main}}" pr_state_value current_head review_status
@@ -2580,7 +3058,16 @@ pane_release_preflight() {
     mill_pane_has_live_blocking_process "$pane_pid" || live_rc=$?
     live_rc="${live_rc:-0}"
     case "$live_rc" in
-      0) printf '%s\n' "live-agent-child"; return 1 ;;
+      0)
+        # Phase-aware liveness (HOK-2972): the stage evidence gates above have
+        # already passed, so an agent whose own Stop hook recorded idle is an
+        # idle REPL, not active work; anything else keeps blocking.
+        if ! declare -F wavemill_terminal_agent_idle_evidence >/dev/null 2>&1 \
+          || ! wavemill_terminal_agent_idle_evidence "$SESSION" "$issue" 2>/dev/null; then
+          printf '%s\n' "live-agent-child"
+          return 1
+        fi
+        ;;
       2) printf '%s\n' "liveness-indeterminate"; return 1 ;;
     esac
   fi
@@ -6025,33 +6512,36 @@ _stop_task_recovery_contract_unavailable() {
 _prepare_recovery_phase_launch() {
   local issue="$1" slug="$2" phase="$3" feature_dir="$4" wt_dir="$5"
   local agent="$6" model="$7" contract_payload="$8" lifecycle_phase="${9:-}"
+  local result_write_mode="${10:-write-result}"
   local win contract_title resolved_window artifacts_json=""
 
-  if [[ -f "$feature_dir/.${phase}-result.json" ]]; then
-    artifacts_json="$(jq -c --arg phase "$phase" '
-      if ((.artifacts // null) | type) == "object" then
-        .artifacts
-        | if $phase == "review" then
-            . + {
-              recoveryReplay: {
-                status: "running",
-                preservesPriorVerdict: true
+  if [[ "$result_write_mode" != "defer-result" ]]; then
+    if [[ -f "$feature_dir/.${phase}-result.json" ]]; then
+      artifacts_json="$(jq -c --arg phase "$phase" '
+        if ((.artifacts // null) | type) == "object" then
+          .artifacts
+          | if $phase == "review" then
+              . + {
+                recoveryReplay: {
+                  status: "running",
+                  preservesPriorVerdict: true
+                }
               }
-            }
-          else
-            .
-          end
-      else
-        empty
-      end
-    ' "$feature_dir/.${phase}-result.json" 2>/dev/null || true)"
-  fi
+            else
+              .
+            end
+        else
+          empty
+        end
+      ' "$feature_dir/.${phase}-result.json" 2>/dev/null || true)"
+    fi
 
-  if ! write_stage_result_with_history "$feature_dir" "$phase" "running" "$agent" "$model" "Recovery replay of persisted execution contract" \
-      "$artifacts_json" \
-    || ! jq -e --arg phase "$phase" '.stage == $phase and .status == "running"' "$feature_dir/.${phase}-result.json" >/dev/null 2>&1; then
-    log_warn "$issue → failed to record recovered $phase stage"
-    return 1
+    if ! write_stage_result_with_history "$feature_dir" "$phase" "running" "$agent" "$model" "Recovery replay of persisted execution contract" \
+        "$artifacts_json" \
+      || ! jq -e --arg phase "$phase" '.stage == $phase and .status == "running"' "$feature_dir/.${phase}-result.json" >/dev/null 2>&1; then
+      log_warn "$issue → failed to record recovered $phase stage"
+      return 1
+    fi
   fi
 
   if ! configure_agent_hooks "$agent" "$wt_dir" "$REPO_DIR"; then
@@ -7244,6 +7734,37 @@ ready_stage_pending_verdict() {
   jq -r '.artifacts.verdict // empty' "$result_file" 2>/dev/null || echo ""
 }
 
+# Typed Ready pending reason recorded by launch_ready_phase (HOK-2963).
+# Empty for CI and other untyped pending verdicts.
+ready_pending_reason() {
+  local state_dir="$1"
+  local result_file="$state_dir/.ready-result.json"
+
+  [[ -f "$result_file" ]] || { echo ""; return 0; }
+  jq -r '.artifacts.pendingReason // empty' "$result_file" 2>/dev/null || echo ""
+}
+
+# Whether the recorded Ready result says the implementation guards (CI, base,
+# metadata, dependencies, migration, risk) are green (HOK-2963).
+ready_implementation_ready() {
+  local state_dir="$1"
+  local result_file="$state_dir/.ready-result.json"
+
+  [[ -f "$result_file" ]] || { echo "false"; return 0; }
+  jq -r 'if (.artifacts.implementationReady // false) == true then "true" else "false" end' \
+    "$result_file" 2>/dev/null || echo "false"
+}
+
+# True when the recorded Ready wait is challenge eval/comparison work the
+# monitor should orchestrate outside the generic pending-ready budget.
+ready_pending_is_challenge_work() {
+  local state_dir="$1"
+  case "$(ready_pending_reason "$state_dir")" in
+    challenge-eval-pending|challenge-comparison-pending) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 READY_TRANSIENT_MAX_ATTEMPTS=6
 
 # Failed-ready re-check budget (HOK-2893). Operator env overrides survive the
@@ -8058,14 +8579,329 @@ select_context_window_recovery_reviewer() {
   printf '%s\n' "$selected_model"
 }
 
+review_recovery_contract_payload() {
+  local issue="$1" feature_dir="$2" challenge_side contract_json contract_ok reason detail
+  REVIEW_RECOVERY_CONTRACT_ERROR=""
+  challenge_side="$(_challenge_side_for_issue "$issue" 2>/dev/null || true)"
+  local recovery_args=(read-and-validate --feature-dir "$feature_dir" --stage review --repo "$REPO_DIR" --json)
+  [[ -n "$challenge_side" ]] && recovery_args+=(--challenge-side "$challenge_side")
+  if ! contract_json="$(npx tsx "$TOOLS_DIR/recovery-contract.ts" "${recovery_args[@]}" 2>/dev/null)"; then
+    REVIEW_RECOVERY_CONTRACT_ERROR="recovery-contract CLI exited non-zero"
+    return 1
+  fi
+  contract_ok="$(printf '%s' "$contract_json" | jq -r '.ok // false' 2>/dev/null || echo "false")"
+  if [[ "$contract_ok" != "true" ]]; then
+    reason="$(printf '%s' "$contract_json" | jq -r '.reason // "contract_malformed"' 2>/dev/null || echo "contract_malformed")"
+    detail="$(printf '%s' "$contract_json" | jq -r '.detail // "Persisted review recovery contract is unavailable."' 2>/dev/null || echo "Persisted review recovery contract is unavailable.")"
+    REVIEW_RECOVERY_CONTRACT_ERROR="$reason: $detail"
+    return 1
+  fi
+  printf '%s' "$contract_json" | jq -c '.contract'
+}
+
+review_recovery_claim_path() {
+  printf '%s\n' "$1/.review-recovery-claim.json"
+}
+
+review_recovery_write_claim() {
+  local feature_dir="$1" issue="$2" reason="$3" category="$4" identity="$5" attempt="$6" source="$7"
+  jq -cn \
+    --arg issue "$issue" \
+    --arg reason "$reason" \
+    --arg category "$category" \
+    --arg identity "$identity" \
+    --arg attempt "$attempt" \
+    --arg source "$source" \
+    '{schemaVersion:1,status:"claimed",issue:$issue,reason:$reason,category:$category,identity:$identity,attempt:$attempt,source:$source,claimedAt:(now|todateiso8601)}' \
+    > "$(review_recovery_claim_path "$feature_dir")"
+}
+
+review_recovery_settle_claim() {
+  local feature_dir="$1" status="$2" detail="${3:-}" claim_path tmp
+  claim_path="$(review_recovery_claim_path "$feature_dir")"
+  [[ -f "$claim_path" ]] || return 0
+  tmp=$(mktemp) || return 0
+  if jq --arg status "$status" --arg detail "$detail" \
+    '.status = $status | .detail = $detail | .settledAt = (now | todateiso8601)' \
+    "$claim_path" > "$tmp" 2>/dev/null; then
+    mv "$tmp" "$claim_path"
+  else
+    rm -f "$tmp"
+  fi
+}
+
+review_recovery_write_audit() {
+  local feature_dir="$1" issue="$2" pr_number="$3" reason="$4" source="$5" prior_json="$6" contract_payload="$7"
+  local audit_path audit_tmp audit_timestamp
+  audit_path="$feature_dir/.review-rerun-request.json"
+  audit_timestamp="$(monitor_command_timestamp 2>/dev/null || date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  audit_tmp=$(mktemp) || return 1
+  if jq -n \
+    --arg timestamp "$audit_timestamp" \
+    --arg issue "$issue" \
+    --argjson prNumber "$pr_number" \
+    --arg reason "$reason" \
+    --arg source "$source" \
+    --argjson prior "$prior_json" \
+    --argjson contract "$contract_payload" \
+    '{timestamp:$timestamp, issue:$issue, prNumber:$prNumber, reason:$reason, source:$source, previousReviewResult:$prior, recoveryContract:$contract}' \
+    > "$audit_tmp"; then
+    mv "$audit_tmp" "$audit_path"
+    return 0
+  fi
+  rm -f "$audit_tmp"
+  return 1
+}
+
+review_recovery_terminal_artifacts_json() {
+  local prior_json="$1" reason="$2" source="$3"
+  jq -cn --arg reason "$reason" --arg source "$source" --argjson prior "$prior_json" '
+    ($prior.artifacts // {type:"review"}) as $artifacts
+    | (if ($artifacts | type) == "object" then $artifacts else {type:"review"} end)
+    | if ((.recoveryReplay // null) | type) == "object" then
+        .recoveryReplay = (.recoveryReplay + {status:"failed", terminalReason:$reason, source:$source})
+      else
+        . + {recoveryReplay:{status:"failed", terminalReason:$reason, source:$source}}
+      end
+  ' 2>/dev/null
+}
+
+review_recovery_restore_terminal_result() {
+  local feature_dir="$1" agent="$2" model="$3" reason="$4" source="$5" prior_json="$6"
+  local prior_status prior_agent prior_model prior_notes artifacts_json
+  prior_status="$(printf '%s' "$prior_json" | jq -r '.status // empty' 2>/dev/null || true)"
+  prior_agent="$(printf '%s' "$prior_json" | jq -r '.agent // empty' 2>/dev/null || true)"
+  prior_model="$(printf '%s' "$prior_json" | jq -r '.model // empty' 2>/dev/null || true)"
+  prior_notes="$(printf '%s' "$prior_json" | jq -r '.notes // empty' 2>/dev/null || true)"
+  artifacts_json="$(review_recovery_terminal_artifacts_json "$prior_json" "$reason" "$source")"
+  [[ -n "$artifacts_json" ]] || artifacts_json="$(jq -cn --arg reason "$reason" --arg source "$source" '{type:"review",recoveryReplay:{status:"failed",terminalReason:$reason,source:$source}}')"
+
+  case "$prior_status" in
+    completed|failed|aborted)
+      write_stage_result_with_history "$feature_dir" "review" "$prior_status" "${prior_agent:-$agent}" "${prior_model:-$model}" "${prior_notes:-$reason}" "$artifacts_json"
+      ;;
+    *)
+      write_stage_result_with_history "$feature_dir" "review" "failed" "$agent" "$model" "$reason" "$artifacts_json"
+      ;;
+  esac
+}
+
+review_recovery_running_artifacts_json() {
+  local prior_json="$1" pr_number="$2" source="$3" attempt="$4" contract_payload="$5"
+  jq -cn --argjson prNumber "$pr_number" --arg source "$source" --arg attempt "$attempt" --argjson contract "$contract_payload" --argjson prior "$prior_json" '
+    ($prior.artifacts // {type:"review"}) as $artifacts
+    | (if ($artifacts | type) == "object" then $artifacts else {type:"review"} end)
+    | .type = (.type // "review")
+    | .prNumber = $prNumber
+    | .recoveryReplay = {
+        status: "running",
+        preservesPriorVerdict: true,
+        source: $source,
+        attempt: ($attempt | tonumber? // null),
+        contract: $contract
+      }
+  ' 2>/dev/null
+}
+
+review_recovery_clear_ready_handoff_state() {
+  local feature_dir="$1"
+  rm -f \
+    "$feature_dir/.failed-ready-recheck-count" \
+    "$feature_dir/.failed-ready-recheck-head" \
+    "$feature_dir/.failed-ready-recheck-last-at" \
+    "$feature_dir/.failed-ready-recheck-reason.json" \
+    "$feature_dir/.failed-ready-recheck-exhausted" \
+    "$feature_dir/.retry-ready-remediation-count" \
+    "$feature_dir/.retry-ready-remediation-head" \
+    "$feature_dir/.retry-ready-remediation-last-at" \
+    "$feature_dir/.retry-ready-remediation-exhausted" \
+    2>/dev/null || true
+}
+
+review_recovery_publish_running() {
+  local issue="$1" feature_dir="$2" agent="$3" model="$4" provider="$5" pr_number="$6" source="$7" attempt="$8" contract_payload="$9" prior_json="${10}"
+  local artifacts_json
+  artifacts_json="$(review_recovery_running_artifacts_json "$prior_json" "$pr_number" "$source" "$attempt" "$contract_payload")"
+  [[ -n "$artifacts_json" ]] || return 1
+  if ! write_stage_result_with_history "$feature_dir" "review" "running" "$agent" "$model" "Recovery re-review accepted for PR #$pr_number" "$artifacts_json"; then
+    return 1
+  fi
+  if [[ -f "${STATE_FILE:-}" ]]; then
+    state_mutate "$STATE_FILE" \
+      '.tasks[$issue].phase = "review"
+       | .tasks[$issue].model = $model
+       | .tasks[$issue].agent = $agent
+       | .tasks[$issue].provider = $provider
+       | .tasks[$issue].stageRole = "review"
+       | .tasks[$issue].executionOwner = "task"
+       | .tasks[$issue].paneState = "active"
+       | .tasks[$issue].updated = (now | todate)
+       | .tasks[$issue].lifecycle = ((.tasks[$issue].lifecycle // {}) + {
+           schemaVersion: 1,
+           workflowOutcome: (.tasks[$issue].lifecycle.workflowOutcome // "active"),
+           resourceDisposition: "allocated"
+         })
+       | del(.tasks[$issue].queueHandoffAt, .tasks[$issue].capsuleDigest)' \
+      --arg issue "$issue" \
+      --arg model "$model" \
+      --arg agent "$agent" \
+      --arg provider "$provider" >/dev/null || return 1
+  fi
+  clear_review_gate_attention "$feature_dir"
+  review_recovery_clear_ready_handoff_state "$feature_dir"
+}
+
+review_recovery_window_observable() {
+  local issue="$1" slug="$2" wt_dir="$3" target resolved_window
+  target="$(_tmux_task_window_target "$SESSION" "$issue" "$slug" "${STATE_FILE:-}" "$wt_dir" 2>/dev/null || true)"
+  [[ -n "$target" ]] || return 1
+  resolved_window="$(tmux display-message -p -t "$target" '#{window_id}' 2>/dev/null || true)"
+  [[ -n "$resolved_window" ]]
+}
+
+review_recovery_coordinator() {
+  local issue="$1" slug="$2" title="$3" wt_dir="$4" branch="$5" base_branch="$6" pr_number="$7" feature_dir="$8" reason="$9" source="${10}" category="${11:-manual}" retry_identity="${12:-}" retry_limit="${13:-0}" allow_context_reroute="${14:-false}"
+  wavemill_lock_run "review-recovery-${issue}" \
+    review_recovery_coordinator_locked "$issue" "$slug" "$title" "$wt_dir" "$branch" "$base_branch" "$pr_number" "$feature_dir" "$reason" "$source" "$category" "$retry_identity" "$retry_limit" "$allow_context_reroute"
+}
+
+review_recovery_coordinator_locked() {
+  local issue="$1" slug="$2" title="$3" wt_dir="$4" branch="$5" base_branch="$6" pr_number="$7" feature_dir="$8" reason="$9" source="${10}" category="${11}" retry_identity="${12}" retry_limit="${13}" allow_context_reroute="${14}"
+  local prior_json="null" review_status contract_payload reviewer_model reviewer_agent provider review_mode
+  local disposition retry_number="0" rc=0 rerouted_model="" reroute_json="" failure_reason
+
+  review_status="$(read_stage_status "$feature_dir" "review" 2>/dev/null || true)"
+  if [[ "$review_status" == "running" ]]; then
+    log_warn "$issue review is already running"
+    return 9
+  fi
+
+  if [[ -f "$feature_dir/.review-result.json" ]]; then
+    prior_json="$(jq -c '.' "$feature_dir/.review-result.json" 2>/dev/null || printf 'null')"
+  fi
+
+  if ! contract_payload="$(review_recovery_contract_payload "$issue" "$feature_dir")"; then
+    failure_reason="review recovery contract unavailable: ${REVIEW_RECOVERY_CONTRACT_ERROR:-unknown}"
+    review_recovery_restore_terminal_result "$feature_dir" "" "" "$failure_reason" "$source" "$prior_json"
+    return 1
+  fi
+
+  reviewer_model="$(printf '%s' "$contract_payload" | jq -r '.model // empty')"
+  reviewer_agent="$(printf '%s' "$contract_payload" | jq -r '.agent // empty')"
+  provider="$(printf '%s' "$contract_payload" | jq -r '.provider // empty')"
+  if [[ -z "$reviewer_model" || -z "$reviewer_agent" ]]; then
+    failure_reason="review recovery contract missing model or agent"
+    review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
+    return 1
+  fi
+
+  if [[ "$retry_limit" =~ ^[0-9]+$ && "$retry_limit" -gt 0 ]]; then
+    disposition=$(bounded_retry_gate "$feature_dir" "review-infra-recovery" "$retry_identity" "$retry_limit")
+    case "$disposition" in
+      backoff)
+        log "debug" "  $issue: holding review recovery for PR #$pr_number (backoff, category=${category})"
+        return 8
+        ;;
+      exhausted)
+        failure_reason="Review infrastructure recovery exhausted after $(bounded_retry_count "$feature_dir" "review-infra-recovery") attempt(s) for PR #$pr_number (category=${category}); $(review_infra_recovery_next_action "$category")"
+        bounded_retry_mark_exhausted "$feature_dir" "review-infra-recovery" "$failure_reason" || true
+        write_ready_attention_file "$feature_dir" "Review failed on infrastructure (${category}) for PR #$pr_number, $(review_infra_recovery_next_action "$category")."
+        review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
+        return 1
+        ;;
+      exhausted-quiet)
+        return 8
+        ;;
+    esac
+    retry_number=$(bounded_retry_increment "$feature_dir" "review-infra-recovery" "$retry_identity")
+  fi
+
+  if [[ "$allow_context_reroute" == "true" ]]; then
+    if ! rerouted_model="$(select_context_window_recovery_reviewer "$reviewer_model" "$wt_dir")"; then
+      failure_reason="Review context-window recovery cannot find a certified larger-context reviewer for PR #$pr_number (category=${category}); $(review_infra_recovery_next_action "$category")"
+      bounded_retry_mark_exhausted "$feature_dir" "review-infra-recovery" "$failure_reason" || true
+      write_ready_attention_file "$feature_dir" "Review failed on infrastructure (${category}) for PR #$pr_number, $(review_infra_recovery_next_action "$category"). ${REVIEW_CONTEXT_REROUTE_LAST_ERROR:-No larger-context reviewer available.}"
+      review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
+      return 1
+    fi
+    reroute_json="${REVIEW_CONTEXT_REROUTE_LAST_JSON:-}"
+    reviewer_model="$rerouted_model"
+    if ! reviewer_agent="$(agent_resolve_from_model "$reviewer_model" "review")"; then
+      failure_reason="Review context-window recovery selected $reviewer_model, but its review agent could not be resolved"
+      review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
+      return 1
+    fi
+    provider="$(npx tsx "$TOOLS_DIR/recovery-contract.ts" provider --model "$reviewer_model" --json 2>/dev/null | jq -r '.provider // empty' 2>/dev/null || true)"
+    contract_payload="$(printf '%s' "$contract_payload" | jq -c --arg agent "$reviewer_agent" --arg model "$reviewer_model" --arg provider "$provider" --argjson reroute "${reroute_json:-null}" \
+      '.agent = $agent | .model = $model | .provider = $provider | .contextWindowReroute = $reroute')"
+  fi
+
+  if ! agent_validate_phase_launch "$reviewer_agent" "review" "$reviewer_model" "$REPO_DIR"; then
+    failure_reason="${AGENT_RESOLVE_LAST_DIAGNOSTIC:-review recovery launch validation failed for agent=$reviewer_agent model=$reviewer_model}"
+    if [[ "$source" == "infra" ]]; then
+      write_ready_attention_file "$feature_dir" "Review infrastructure is still unavailable for PR #$pr_number; waiting for reviewer runtime recovery."
+      log_error "  $issue: waiting for reviewer runtime recovery before re-reviewing PR #$pr_number"
+    fi
+    review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
+    return 1
+  fi
+
+  review_recovery_write_claim "$feature_dir" "$issue" "$reason" "$category" "$retry_identity" "$retry_number" "$source" || true
+  if ! review_recovery_write_audit "$feature_dir" "$issue" "$pr_number" "$reason" "$source" "$prior_json" "$contract_payload"; then
+    failure_reason="could not record review recovery request"
+    review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
+    review_recovery_settle_claim "$feature_dir" "failed" "$failure_reason"
+    return 1
+  fi
+
+  review_mode="$(read_phase_config "$feature_dir" "review" "mode" 2>/dev/null || true)"
+  [[ -n "$review_mode" ]] || review_mode="static"
+
+  if ! _prepare_recovery_phase_launch "$issue" "$slug" "review" "$feature_dir" "$wt_dir" "$reviewer_agent" "$reviewer_model" "$contract_payload" "review" "defer-result"; then
+    failure_reason="failed to prepare review recovery launch surfaces"
+    review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
+    review_recovery_settle_claim "$feature_dir" "failed" "$failure_reason"
+    return 1
+  fi
+
+  launch_review_phase "$issue" "$slug" "$title" "$wt_dir" "$branch" "$base_branch" \
+    "$reviewer_model" "$reviewer_agent" "$review_mode" || rc=$?
+  if [[ "$rc" -eq 2 ]] && check_stage_aborted "$feature_dir"; then
+    review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "review recovery launch aborted" "$source" "$prior_json"
+    review_recovery_settle_claim "$feature_dir" "aborted" "review recovery launch aborted"
+    return 2
+  fi
+  if [[ "$rc" -ne 0 ]]; then
+    failure_reason="review recovery launch failed with rc=$rc"
+    review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
+    review_recovery_settle_claim "$feature_dir" "failed" "$failure_reason"
+    return 1
+  fi
+
+  if ! review_recovery_window_observable "$issue" "$slug" "$wt_dir"; then
+    failure_reason="review recovery launch accepted but pane ownership was not observable"
+    review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
+    review_recovery_settle_claim "$feature_dir" "failed" "$failure_reason"
+    return 1
+  fi
+
+  if ! review_recovery_publish_running "$issue" "$feature_dir" "$reviewer_agent" "$reviewer_model" "$provider" "$pr_number" "$source" "$retry_number" "$contract_payload" "$prior_json"; then
+    failure_reason="review recovery launch accepted but state publication failed"
+    review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
+    review_recovery_settle_claim "$feature_dir" "failed" "$failure_reason"
+    return 1
+  fi
+
+  review_recovery_settle_claim "$feature_dir" "accepted" "reviewer launch accepted"
+  return 0
+}
+
 relaunch_review_after_infra_recovery() {
   local issue="$1" slug="$2" title="$3" wt_dir="$4" branch="$5" base_branch="$6" pr_number="$7" state_dir="$8"
-  local review_file="$state_dir/.review-result.json"
-  local bucket="review-infra-recovery"
   local category recorded_head current_head identity
-  local retry_limit effective_retry_limit disposition retry_number reviewer_agent reviewer_model review_mode contract_payload rc=0
-  local scope_note="" next_action reason
-  local context_overflow_current_scope="false" rerouted_model="" reroute_json="" reroute_note=""
+  local retry_limit effective_retry_limit rc=0
+  local scope_note="" reroute_note=""
+  local context_overflow_current_scope="false"
 
   # Bounded-retry identity (HOK-2964 REQ-F2/F4): keyed to the current head and
   # the failure category, not a path-specific counter. A new commit or a
@@ -8084,85 +8920,26 @@ relaunch_review_after_infra_recovery() {
     effective_retry_limit=1
   fi
 
-  disposition=$(bounded_retry_gate "$state_dir" "$bucket" "$identity" "$effective_retry_limit")
-  case "$disposition" in
-    backoff)
-      log "debug" "  $issue: holding review infra recovery for PR #$pr_number (backoff, category=${category})"
-      return 1
-      ;;
-    exhausted)
-      next_action="$(review_infra_recovery_next_action "$category")"
-      reason="Review infrastructure recovery exhausted after $(bounded_retry_count "$state_dir" "$bucket") attempt(s) for PR #$pr_number (category=${category}); ${next_action}"
-      bounded_retry_mark_exhausted "$state_dir" "$bucket" "$reason" || true
-      write_ready_attention_file "$state_dir" "Review failed on infrastructure (${category}) for PR #$pr_number, ${next_action}."
-      log_error "  $issue: review infrastructure recovery exhausted for PR #$pr_number ($reason)"
-      return 1
-      ;;
-    exhausted-quiet)
-      return 1
-      ;;
-  esac
-
-  reviewer_agent="$(jq -r '.agent // empty' "$review_file" 2>/dev/null || echo "")"
-  reviewer_model="$(jq -r '.model // empty' "$review_file" 2>/dev/null || echo "")"
-  [[ -n "$reviewer_agent" ]] || reviewer_agent="$(read_state_value "" --arg i "$issue" '.tasks[$i].agent // ""')"
-  [[ -n "$reviewer_agent" ]] || reviewer_agent="$AGENT_CMD"
-  [[ -n "$reviewer_model" ]] || reviewer_model="$(read_state_value "" --arg i "$issue" '.tasks[$i].model // ""')"
-
-  if [[ "$context_overflow_current_scope" == "true" ]]; then
-    if ! rerouted_model="$(select_context_window_recovery_reviewer "$reviewer_model" "$wt_dir")"; then
-      next_action="$(review_infra_recovery_next_action "$category")"
-      reason="Review context-window recovery cannot find a certified larger-context reviewer for PR #$pr_number (category=${category}); ${next_action}"
-      bounded_retry_mark_exhausted "$state_dir" "$bucket" "$reason" || true
-      write_ready_attention_file "$state_dir" "Review failed on infrastructure (${category}) for PR #$pr_number, ${next_action}. ${REVIEW_CONTEXT_REROUTE_LAST_ERROR:-No larger-context reviewer available.}"
-      log_error "  $issue: review context-window recovery blocked for PR #$pr_number (${REVIEW_CONTEXT_REROUTE_LAST_ERROR:-no larger-context reviewer available})"
-      return 1
-    fi
-    reroute_json="${REVIEW_CONTEXT_REROUTE_LAST_JSON:-}"
-    reviewer_model="$rerouted_model"
-    if ! reviewer_agent="$(agent_resolve_from_model "$reviewer_model" "review")"; then
-      write_ready_attention_file "$state_dir" "Review context-window recovery selected $reviewer_model for PR #$pr_number, but its review agent could not be resolved."
-      log_error "  $issue: context-window recovery selected unresolved reviewer model $reviewer_model"
-      return 1
-    fi
-    reroute_note=" (rerouted to larger-context reviewer: ${reviewer_model})"
-  fi
-
-  if ! agent_validate_phase_launch "$reviewer_agent" "review" "$reviewer_model" "$REPO_DIR"; then
-    write_ready_attention_file "$state_dir" "Review infrastructure is still unavailable for PR #$pr_number; waiting for reviewer runtime recovery."
-    log_error "  $issue: waiting for reviewer runtime recovery before re-reviewing PR #$pr_number"
-    return 1
-  fi
-
-  retry_number=$(bounded_retry_increment "$state_dir" "$bucket" "$identity")
-  review_mode="static"
-  if declare -F read_phase_config >/dev/null 2>&1; then
-    review_mode=$(read_phase_config "$state_dir" "review" "mode")
-    [[ -n "$review_mode" ]] || review_mode="static"
-  fi
-  contract_payload="$(jq -cn --arg agent "$reviewer_agent" --arg model "$reviewer_model" --argjson reroute "${reroute_json:-null}" \
-    '{stageRole:"review",agent:$agent,model:$model} + (if $reroute == null then {} else {contextWindowReroute:$reroute} end)')"
-
-  if ! _prepare_recovery_phase_launch "$issue" "$slug" "review" "$state_dir" "$wt_dir" "$reviewer_agent" "$reviewer_model" "$contract_payload" "review"; then
-    write_ready_attention_file "$state_dir" "Could not prepare infrastructure re-review for PR #$pr_number."
-    return 1
-  fi
-
   if [[ -n "$recorded_head" && -n "$current_head" && "$recorded_head" != "$current_head" ]]; then
     scope_note=" (scope refreshed: head ${recorded_head:0:7}→${current_head:0:7})"
   fi
 
-  launch_review_phase "$issue" "$slug" "$title" "$wt_dir" "$branch" "$base_branch" \
-    "$reviewer_model" "$reviewer_agent" "$review_mode" || rc=$?
+  review_recovery_coordinator "$issue" "$slug" "$title" "$wt_dir" "$branch" "$base_branch" "$pr_number" "$state_dir" \
+    "infrastructure review recovery for PR #$pr_number" "infra" "$category" "$identity" "$effective_retry_limit" "$context_overflow_current_scope" || rc=$?
   if [[ "$rc" -eq 0 ]]; then
     marker_clear "$state_dir/.needs-attention"
-    log "status" "♻ $issue → review relaunched after infrastructure recovery (attempt ${retry_number}/${effective_retry_limit}, category=${category})${scope_note}${reroute_note}"
+    if [[ "$context_overflow_current_scope" == "true" ]]; then
+      reroute_note=" (rerouted to larger-context reviewer)"
+    fi
+    log "status" "♻ $issue → review relaunched after infrastructure recovery (category=${category})${scope_note}${reroute_note}"
     return 6
   fi
   if [[ "$rc" -eq 2 ]] && check_stage_aborted "$state_dir"; then
     return 2
   fi
-  write_ready_attention_file "$state_dir" "Could not relaunch infrastructure re-review for PR #$pr_number (rc=$rc)."
+  if [[ "$rc" -eq 1 && ! -f "$state_dir/.needs-attention" ]]; then
+    write_ready_attention_file "$state_dir" "Could not relaunch infrastructure re-review for PR #$pr_number (rc=$rc)."
+  fi
   return 1
 }
 
@@ -8666,7 +9443,7 @@ launch_ready_phase() {
     ready_stderr_file=""
   }
   if [[ -n "$ready_stderr_file" ]]; then
-    if result=$(cd "$wt_dir" && npx tsx "$TOOLS_DIR/ready.ts" "$pr_number" --state-dir "$state_dir" 2>"$ready_stderr_file"); then
+    if result=$(cd "$wt_dir" && npx tsx "$TOOLS_DIR/ready.ts" "$pr_number" --state-dir "$state_dir" ${STATE_FILE:+--state-file "$STATE_FILE"} 2>"$ready_stderr_file"); then
       ready_rc=0
     else
       ready_rc=$?
@@ -8682,7 +9459,7 @@ launch_ready_phase() {
     fi
     rm -f "$ready_stderr_file"
   else
-    if result=$(cd "$wt_dir" && npx tsx "$TOOLS_DIR/ready.ts" "$pr_number" --state-dir "$state_dir" 2>/dev/null); then
+    if result=$(cd "$wt_dir" && npx tsx "$TOOLS_DIR/ready.ts" "$pr_number" --state-dir "$state_dir" ${STATE_FILE:+--state-file "$STATE_FILE"} 2>/dev/null); then
       ready_rc=0
     else
       ready_rc=$?
@@ -8910,6 +9687,48 @@ launch_ready_phase() {
 
   if [[ "$ready_rc" -eq 2 ]]; then
     local pending_artifacts_json prior_remediation_failures_json
+    local pending_reason implementation_ready challenge_diag_json
+    pending_reason=$(printf '%s' "$result" | jq -r '.pendingReason // empty' 2>/dev/null || echo "")
+
+    # Typed challenge waits (HOK-2963): the arm is implementation-ready and
+    # only eval/comparison orchestration is outstanding. Record the typed
+    # state, never log it as CI pending, and kick orchestration immediately
+    # so one monitor tick can launch the missing eval.
+    if [[ "$pending_reason" == "challenge-eval-pending" || "$pending_reason" == "challenge-comparison-pending" ]]; then
+      implementation_ready=$(printf '%s' "$result" | jq -r 'if (.implementationReady // false) == true then "true" else "false" end' 2>/dev/null || echo "false")
+      challenge_diag_json=$(printf '%s' "$result" | jq -c '.challenge // {}' 2>/dev/null || echo '{}')
+      pending_artifacts_json=$(jq -cn \
+        --arg merge_status "${merge_status:-UNKNOWN}" \
+        --argjson checks_run "${checks_run:-0}" \
+        --argjson checks_passed "${checks_passed:-0}" \
+        --argjson pr_number "${pr_number}" \
+        --arg pending_reason "$pending_reason" \
+        --argjson implementation_ready "$implementation_ready" \
+        --arg ready_head_sha "$ready_head_sha" \
+        --arg ci_conclusion "$ci_conclusion" \
+        --argjson challenge "$challenge_diag_json" \
+        '{
+          type: "ready",
+          verdict: "pending",
+          checksRun: $checks_run,
+          checksPassed: $checks_passed,
+          mergeConflict: $merge_status,
+          prNumber: $pr_number,
+          pendingReason: $pending_reason,
+          implementationReady: $implementation_ready,
+          readyHeadSha: $ready_head_sha,
+          ciConclusion: $ci_conclusion,
+          challenge: $challenge
+        } | with_entries(select(.value != ""))')
+      pending_artifacts_json=$(merge_queue_enrich_ready_artifacts "$state_dir" "$pending_artifacts_json" "candidate-progress")
+      write_stage_result "$state_dir" "ready" "running" "$current_agent" "$current_model" \
+        "Implementation-ready; waiting on ${pending_reason} for PR #$pr_number" \
+        "$pending_artifacts_json"
+      log "$pending_log_level" "  $issue: PR #$pr_number implementation-ready; waiting on ${pending_reason} (CI ${ci_conclusion:-unknown})"
+      handle_challenge_pending_ready "$issue" "$pr_number" "$branch" "$slug" "$state_dir" || true
+      return 4
+    fi
+
     prior_remediation_failures_json=$(jq -c '.artifacts.remediationFailures // []' "$ready_result_file" 2>/dev/null || echo '[]')
     pending_artifacts_json=$(jq -cn \
       --arg merge_status "${merge_status:-UNKNOWN}" \
@@ -9412,6 +10231,17 @@ handle_comparison_job_success() {
   challenger_model=$(get_task_meta "$challenger_key" "challengeModel")
   render_challenge_comparison_summary "$pair_id" "$primary_pr" "$challenger_pr" "$primary_model" "$challenger_model" "$result_path"
 
+  # A settled comparison is structured progress for both arms (HOK-2963):
+  # drop a one-shot marker in each arm's feature dir so a challenge-pending
+  # Ready phase re-runs promptly against the fresh record.
+  local settled_key settled_slug settled_dir
+  for settled_key in "$primary_key" "$challenger_key"; do
+    settled_slug=$(get_task_meta "$settled_key" "slug")
+    [[ -n "$settled_slug" && -n "${WORKTREE_ROOT:-}" ]] || continue
+    settled_dir="${WORKTREE_ROOT}/${settled_slug}/features/${settled_slug}"
+    [[ -d "$settled_dir" ]] && : > "$settled_dir/.challenge-comparison-settled"
+  done
+
   if [[ "$(jq -r '.invalidChallenge // .comparison.invalidChallenge // false' "$result_path" 2>/dev/null || echo "false")" == "true" ]]; then
     local invalid_reason invalid_details
     invalid_reason=$(jq -r '.comparison.invalidChallengeReason // "invalid_challenge"' "$result_path" 2>/dev/null || echo "invalid_challenge")
@@ -9601,6 +10431,165 @@ poll_challenge_jobs() {
   done < <(echo "$poll_json" | jq -c '.unsettled[]?')
 }
 
+# Compact fingerprint of a pair's orchestration state (HOK-2963). A change
+# between two snapshots inside one tick means structured progress happened:
+# an eval/comparison job was launched or settled, an eval flag flipped, or
+# the pair state advanced. Mere polling leaves it unchanged.
+challenge_orchestration_fingerprint() {
+  local pair_id="$1"
+  read_state_value "" --arg pair "$pair_id" '
+    [
+      (.tasks // {} | to_entries[]
+        | select((.value.challengePairId // "") == $pair)
+        | "task:\(.key):\(.value.evalCompleted // false):\(.value.evalFailed // false):\(.value.comparisonState // ""):\(.value.challengeCompared // false):\(.value.evalRunning.startedAt // ""):\(.value.comparisonRunning.startedAt // "")"),
+      (.jobs // {} | to_entries[]
+        | select((.value.pairId // "") == $pair)
+        | "job:\(.key):\(.value.status // "")")
+    ] | sort | join("|")'
+}
+
+# Whether one challenge arm has valid eval evidence at its current PR head
+# (HOK-2963). Prints:
+#   current - a valid current-head eval record exists
+#   stale   - the selector positively refused (missing/old-head/invalid)
+#   unknown - the check itself failed (fail-safe: treat as current)
+challenge_eval_current_head_state() {
+  local issue="$1" pr="$2"
+  local pair_id side out ok
+  pair_id=$(get_task_meta "$issue" "challengePairId")
+  side=$(get_task_meta "$issue" "challengeRole")
+  [[ -z "$side" ]] && side="primary"
+  if [[ -z "$pair_id" || -z "$pr" ]]; then
+    printf 'unknown\n'
+    return 0
+  fi
+  if ! out=$(npx tsx "$TOOLS_DIR/challenge-eval-evidence.ts" \
+      --pair-id "$pair_id" --side "$side" --pr "$pr" --repo-dir "$REPO_DIR" 2>/dev/null); then
+    printf 'unknown\n'
+    return 0
+  fi
+  # `.ok` directly, not `.ok // empty`: jq's alternative operator swallows
+  # `false`, which is exactly the value that means "stale".
+  ok=$(jq -r '.ok' <<<"$out" 2>/dev/null || echo "")
+  case "$ok" in
+    true) printf 'current\n' ;;
+    false) printf 'stale\n' ;;
+    *) printf 'unknown\n' ;;
+  esac
+}
+
+# Bounded budget for stale current-head eval relaunches (HOK-2963), using the
+# shared bounded-retry invariant (HOK-2924): head-keyed, backoff between
+# attempts, terminalized at a ceiling with a greppable sentinel. Exhaustion
+# resolves the pair to manual comparison so it can never loop silently on
+# evidence the selector keeps refusing. Returns 0 when a relaunch may proceed.
+challenge_eval_stale_relaunch_allowed() {
+  local issue="$1" slug="$2"
+  local state_dir head disposition limit pair_id primary_key challenger_key artifact_path
+  state_dir="${WORKTREE_ROOT}/${slug}/features/${slug}"
+  head=$(git -C "${WORKTREE_ROOT}/${slug}" rev-parse HEAD 2>/dev/null || echo "")
+  limit="${WAVEMILL_CHALLENGE_EVAL_STALE_MAX_ATTEMPTS:-3}"
+  [[ "$limit" =~ ^[0-9]+$ ]] || limit=3
+  disposition=$(bounded_retry_gate "$state_dir" "challenge-eval-stale" "$head" "$limit")
+  case "$disposition" in
+    proceed)
+      bounded_retry_increment "$state_dir" "challenge-eval-stale" "$head" >/dev/null
+      return 0
+      ;;
+    backoff)
+      log "debug" "challenge eval stale-evidence relaunch for $issue holding (backoff)"
+      return 1
+      ;;
+    exhausted)
+      pair_id=$(get_task_meta "$issue" "challengePairId")
+      if bounded_retry_mark_exhausted "$state_dir" "challenge-eval-stale" \
+          "Challenge eval stale-evidence relaunches exhausted for $issue (pair ${pair_id:-unknown}) after $(bounded_retry_count "$state_dir" "challenge-eval-stale")/${limit} attempt(s) - manual comparison needed"; then
+        if [[ -n "$pair_id" ]]; then
+          primary_key="$pair_id"
+          challenger_key="${pair_id}_c"
+          artifact_path=$(write_manual_challenge_comparison_artifact "$pair_id" "$primary_key" "$challenger_key" "" \
+            "$(bounded_retry_count "$state_dir" "challenge-eval-stale")" "$limit" || true)
+          write_challenge_pair_state "$pair_id" "manual_comparison_needed" "stale_eval_evidence" \
+            "$(bounded_retry_count "$state_dir" "challenge-eval-stale")" "$limit" "" "" "$artifact_path" >/dev/null || true
+        fi
+        log_warn "challenge eval stale-evidence relaunches exhausted for $issue - manual comparison needed"
+      fi
+      return 1
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# Orchestrate challenge eval/comparison for an implementation-ready arm whose
+# Ready verdict is a typed challenge wait (HOK-2963). Never consumes the
+# generic pending-ready-recheck budget. Returns:
+#   0 - orchestration active (launchable or running work; keep window active)
+#   1 - terminal manual state (operator attention required)
+#   2 - a comparison settled since Ready last ran; caller should re-run Ready
+#       to canonicalize the final verdict
+#   3 - not orchestration work (no challenge pair identity); caller falls
+#       back to the generic pending-ready handling
+handle_challenge_pending_ready() {
+  local issue="$1" pr="$2" branch="$3" slug="$4" state_dir="$5"
+  local pair_id primary_key comparison_state progress_before progress_after
+  pair_id=$(get_task_meta "$issue" "challengePairId")
+  [[ -n "$pair_id" ]] || return 3
+  primary_key="$pair_id"
+
+  # A settled comparison is structured progress: consume the marker, clear
+  # stale same-head pending-ready markers, and ask for a Ready re-run.
+  if [[ -f "$state_dir/.challenge-comparison-settled" ]]; then
+    rm -f "$state_dir/.challenge-comparison-settled"
+    bounded_retry_clear "$state_dir" "pending-ready-recheck"
+    marker_clear "$state_dir/.needs-attention"
+    return 2
+  fi
+
+  comparison_state=$(read_state_value "" --arg i "$primary_key" '.tasks[$i].comparisonState // empty')
+  case "$comparison_state" in
+    manual_comparison_needed|invalid_challenge)
+      return 1
+      ;;
+  esac
+
+  # Already-compared pairs have no launchable eval/comparison work left; a
+  # typed pending here means the recorded comparison does not satisfy Ready
+  # at the current heads (stale evidence after a head change). Re-running
+  # Ready cannot change that, so surface explicit operator attention instead
+  # of looping (the safe pre-HOK-2963 stall, without accepting stale
+  # evidence).
+  if [[ "$(read_state_value "false" --arg i "$primary_key" '.tasks[$i].challengeCompared // false')" == "true" ]]; then
+    write_ready_attention_file "$state_dir" \
+      "Challenge pair $pair_id has a comparison record that does not satisfy Ready at the current heads for PR #$pr (stale evidence after a head change). Manual supersession or re-comparison required."
+    return 1
+  fi
+
+  progress_before=$(challenge_orchestration_fingerprint "$pair_id")
+  maybe_run_challenge_eval "$issue" "$pr" "$branch" "$slug"
+  maybe_run_challenge_comparison "$issue"
+  progress_after=$(challenge_orchestration_fingerprint "$pair_id")
+
+  if [[ "$progress_before" != "$progress_after" ]]; then
+    # Structured same-head progress (job launched, eval persisted, pair state
+    # advanced) clears stale attention and pending-ready exhaustion markers;
+    # mere polling never does (HOK-2963).
+    bounded_retry_clear "$state_dir" "pending-ready-recheck"
+    marker_clear "$state_dir/.needs-attention"
+  fi
+
+  # Terminal states can be reached inside this very tick (e.g. hard-failure
+  # retries exhausted); surface them immediately instead of one tick late.
+  comparison_state=$(read_state_value "" --arg i "$primary_key" '.tasks[$i].comparisonState // empty')
+  case "$comparison_state" in
+    manual_comparison_needed|invalid_challenge)
+      return 1
+      ;;
+  esac
+  return 0
+}
+
 maybe_run_challenge_eval() {
   local issue="$1" pr="$2" branch="$3" slug="$4"
   local eval_completed eval_failed eval_hard_retry_count eval_hard_retry_max
@@ -9613,7 +10602,24 @@ maybe_run_challenge_eval() {
     return 0
   fi
   eval_completed=$(read_state_value "false" --arg i "$issue" '.tasks[$i].evalCompleted // false')
-  [[ "$eval_completed" == "true" ]] && return 0
+  # evalCompleted alone is not sufficient: it can be stale relative to a new
+  # PR head (HOK-2963). Only skip when a valid current-head record exists;
+  # 'unknown' (check infrastructure failed) fails safe by trusting the flag.
+  local eval_head_state=""
+  if [[ "$eval_completed" == "true" ]]; then
+    eval_head_state=$(challenge_eval_current_head_state "$issue" "$pr")
+    if [[ "$eval_head_state" != "stale" ]]; then
+      return 0
+    fi
+    if ! challenge_eval_stale_relaunch_allowed "$issue" "$slug"; then
+      return 0
+    fi
+    log "status" "  📊 challenge eval for $issue is stale for the current PR head - relaunching (HOK-2963)"
+    state_mutate "$STATE_FILE" '
+      .tasks[$issue].evalCompleted = false
+      | .tasks[$issue].updated = (now | todateiso8601)
+    ' --arg issue "$issue" >/dev/null || true
+  fi
 
   pair_id=$(get_task_meta "$issue" "challengePairId")
   if [[ "$(read_state_value "false" --arg i "$issue" '.tasks[$i].challengeCompared // false')" == "true" ]]; then
@@ -9679,8 +10685,23 @@ maybe_run_challenge_eval() {
   challenge_stage=$(get_task_meta "$issue" "challengeStage")
   job_id=$(build_eval_job_id "$issue" "$side" "$pr")
   job_status=$(read_job_state_value "$job_id" "" '.jobs[$id].status // empty')
-  if [[ "$job_status" == "running" || "$job_status" == "succeeded" ]]; then
+  if [[ "$job_status" == "running" ]]; then
     return 0
+  fi
+  if [[ "$job_status" == "succeeded" ]]; then
+    # A succeeded job for this PR can predate the current head (HOK-2963):
+    # only suppress relaunch while valid current-head evidence exists.
+    # launch_tracked_job upserts by job id, replacing the stale entry.
+    if [[ -z "$eval_head_state" ]]; then
+      eval_head_state=$(challenge_eval_current_head_state "$issue" "$pr")
+      if [[ "$eval_head_state" == "stale" ]] && ! challenge_eval_stale_relaunch_allowed "$issue" "$slug"; then
+        return 0
+      fi
+    fi
+    if [[ "$eval_head_state" != "stale" ]]; then
+      return 0
+    fi
+    log "status" "  📊 succeeded eval job for $issue predates the current PR head - relaunching (HOK-2963)"
   fi
 
   job_dir=$(challenge_job_dir)
@@ -9834,6 +10855,24 @@ should_skip_post_completion_eval() {
   return 1
 }
 
+# Print the selected current-head eval evidence identity for a pair as
+# "<primaryEvalId>:<challengerEvalId>" using `compare-prs --check-only`
+# (HOK-2963). Returns non-zero when either arm's selector refuses, i.e. a
+# comparison launch would be built on missing or stale eval evidence.
+challenge_comparison_check_only_evidence() {
+  local linear_issue="$1" pair_id="$2" primary_pr="$3" challenger_pr="$4" primary_model="$5" challenger_model="$6"
+  local out
+  if ! out=$(npx tsx "$TOOLS_DIR/compare-prs.ts" \
+      --issue "$linear_issue" --pair-id "$pair_id" \
+      --primary-pr "$primary_pr" --challenger-pr "$challenger_pr" \
+      --primary-model "$primary_model" --challenger-model "$challenger_model" \
+      --repo-dir "$REPO_DIR" --check-only 2>/dev/null); then
+    return 1
+  fi
+  jq -r '((.primary.evalId // "") + ":" + (.challenger.evalId // ""))' <<<"$out" 2>/dev/null || printf ':\n'
+  return 0
+}
+
 maybe_run_challenge_comparison() {
   local issue="$1"
   local pair_id primary_key challenger_key compared primary_pr challenger_pr primary_eval challenger_eval linear_issue primary_model challenger_model
@@ -9841,6 +10880,7 @@ maybe_run_challenge_comparison() {
   local primary_planner primary_reviewer primary_plan_depth primary_code_depth primary_review_mode
   local challenger_planner challenger_reviewer challenger_plan_depth challenger_code_depth challenger_review_mode
   local job_id job_status job_reason pairing_repaired job_dir log_path result_path pid
+  local current_evidence stored_evidence
   pair_id=$(get_task_meta "$issue" "challengePairId")
   [[ -z "$pair_id" ]] && return 0
   primary_key="$pair_id"
@@ -9859,16 +10899,22 @@ maybe_run_challenge_comparison() {
   primary_eval=$(read_state_value "false" --arg i "$primary_key" '.tasks[$i].evalCompleted // false')
   challenger_eval=$(read_state_value "false" --arg i "$challenger_key" '.tasks[$i].evalCompleted // false')
   [[ -z "$primary_pr" || -z "$challenger_pr" || "$primary_eval" != "true" || "$challenger_eval" != "true" ]] && return 0
+  linear_issue=$(get_linear_issue_id "$primary_key")
+  primary_model=$(get_task_meta "$primary_key" "challengeModel")
+  challenger_model=$(get_task_meta "$challenger_key" "challengeModel")
+  current_evidence=""
   job_id=$(build_comparison_job_id "$pair_id" "$primary_pr" "$challenger_pr")
   job_status=$(read_job_state_value "$job_id" "" '.jobs[$id].status // empty')
   if [[ -n "$job_status" ]]; then
     # A prior comparison already ran. By default that's terminal: succeeded /
     # running need no action, and genuinely failing comparisons (LLM errors,
     # invalid scores) must not relaunch every poll and burn repeated LLM calls.
-    #
-    # The one exception is a failure caused by drifted challenge pairing
-    # metadata ("Missing eval records"): the eval scores exist but the
-    # challenger record is filed under the wrong pair id. We attempt a single
+    if [[ "$job_status" == "running" || "$job_status" == "succeeded" ]]; then
+      return 0
+    fi
+    # Exception 1: a failure caused by drifted challenge pairing metadata
+    # ("Missing eval records"): the eval scores exist but the challenger
+    # record is filed under the wrong pair id. We attempt a single
     # self-healing repair + retry, gated by a one-shot flag so a pair can never
     # loop here. launch_tracked_job upserts by job id, overwriting the failed
     # entry when we proceed below.
@@ -9880,13 +10926,32 @@ maybe_run_challenge_comparison() {
         log_warn "challenge pairing repair failed for $pair_id (continuing to retry comparison)"
       state_mutate "$STATE_FILE" '.tasks[$i].comparisonPairingRepaired = true' --arg i "$primary_key" >/dev/null || true
     else
+      # Exception 2 (HOK-2963): a failed/timed-out job whose selected eval
+      # evidence differs from the current selection belongs to an older head
+      # and must not block the new-head comparison. Identical evidence stays
+      # terminal exactly as before.
+      if ! current_evidence=$(challenge_comparison_check_only_evidence \
+          "$linear_issue" "$pair_id" "$primary_pr" "$challenger_pr" "$primary_model" "$challenger_model"); then
+        return 0
+      fi
+      stored_evidence=$(read_state_value "" --arg i "$primary_key" '.tasks[$i].comparisonLaunchEvidence // empty')
+      if [[ -z "$current_evidence" || "$current_evidence" == "$stored_evidence" ]]; then
+        return 0
+      fi
+      log "status" "  ⚖ $pair_id prior comparison job used superseded eval evidence — relaunching for current heads"
+    fi
+  fi
+
+  # Current-head evidence gate (HOK-2963): never launch a comparison unless
+  # both arms' selectors accept eval evidence at the live PR heads.
+  if [[ -z "$current_evidence" ]]; then
+    if ! current_evidence=$(challenge_comparison_check_only_evidence \
+        "$linear_issue" "$pair_id" "$primary_pr" "$challenger_pr" "$primary_model" "$challenger_model"); then
+      log "debug" "challenge comparison launch deferred for $pair_id: current-head eval evidence not ready"
       return 0
     fi
   fi
 
-  linear_issue=$(get_linear_issue_id "$primary_key")
-  primary_model=$(get_task_meta "$primary_key" "challengeModel")
-  challenger_model=$(get_task_meta "$challenger_key" "challengeModel")
   primary_slug=$(get_task_meta "$primary_key" "slug")
   challenger_slug=$(get_task_meta "$challenger_key" "slug")
   primary_worktree=$(get_task_meta "$primary_key" "worktree")
@@ -9919,6 +10984,13 @@ maybe_run_challenge_comparison() {
     log_warn "challenge comparison launch skipped for $pair_id: failed to persist running state"
     return 1
   fi
+  # Persist the selected eval-evidence identity for this launch (HOK-2963):
+  # duplicate ticks at the same evidence reuse the job, while a failed job at
+  # superseded evidence can be relaunched for the new heads.
+  state_mutate "$STATE_FILE" '
+    .tasks[$i].comparisonLaunchEvidence = $evidence
+    | .tasks[$i].updated = (now | todateiso8601)
+  ' --arg i "$primary_key" --arg evidence "${current_evidence:-}" >/dev/null || true
   npx tsx "$TOOLS_DIR/compare-prs.ts" \
     --issue "$linear_issue" --pair-id "$pair_id" \
     --primary-pr "$primary_pr" --challenger-pr "$challenger_pr" \
@@ -10100,6 +11172,21 @@ cleanup_aborted_challenge_arm() {
     return 1
   }
 
+  # HOK-2811/HOK-2813: if this primary has any pending (awaiting_fork)
+  # challenger arms, the primary is failing terminally before the fork could
+  # fire. Collapse the challenge to a single run under the typed
+  # pre_fork_primary_failure reason (the free-text cause is kept as detail)
+  # so pair accounting sees a deliberate no-comparison rather than a phantom
+  # one-armed pair. No worktree/branch/pane/PR exists for a pending arm, so
+  # there is nothing else to tear down — and nothing may be created: the
+  # surviving primary is never promoted to a solo pipeline relaunch.
+  local pending_arms_pre_cancel
+  pending_arms_pre_cancel=$(read_state_value "" --arg i "$issue" \
+    '((.tasks[$i].challengeArms // []) | map(select(.challengeArmState == "awaiting_fork")) | length)')
+  if [[ "$pending_arms_pre_cancel" =~ ^[0-9]+$ ]] && (( pending_arms_pre_cancel > 0 )); then
+    challenge_arms_cancel_pending "$issue" "pre_fork_primary_failure" "$reason" || true
+  fi
+
   win="$issue-$slug"
   wt_dir=$(read_state_value "" --arg i "$issue" '.tasks[$i].worktree // empty')
   [[ -z "$wt_dir" ]] && wt_dir="${WORKTREE_ROOT}/${slug}"
@@ -10150,7 +11237,7 @@ cleanup_aborted_challenge_arm() {
     rm -f "/tmp/wavemill-${SESSION}-${issue}.hook" 2>/dev/null || true
     reset_retry_count "$SESSION" "$issue" 2>/dev/null || true
     remove_task_state "$issue"
-    CLEANED["$issue"]=1
+    monitor_deregister_terminal_task "$issue"
     log "$issue: Complete (aborted cleanup, worktree preserved due to PR #$pr)"
     return 0
   fi
@@ -10212,7 +11299,7 @@ cleanup_aborted_challenge_arm() {
     cleanup_episode_record_outcome "$issue" "reaped" "none" "cleanup-complete" "$cleanup_candidate_json" "" 2>/dev/null || true
   fi
   remove_task_state "$issue"
-  CLEANED["$issue"]=1
+  monitor_deregister_terminal_task "$issue"
   log "$issue: Complete (aborted challenge cleanup)"
 }
 
@@ -12083,15 +13170,31 @@ EOF
       challenger_review_mode=$(echo "$challenge_plan" | jq -r '.entries[1].reviewMode // "static"' 2>/dev/null)
       challenge_intent=$(echo "$challenge_plan" | jq -c '.challengeIntent // null' 2>/dev/null || echo "null")
 
-      cp "$packet_file" "/tmp/${SESSION}-${challenger_key}-taskpacket.md" 2>/dev/null || true
-      cp "/tmp/${SESSION}-${issue}-issue.json" "/tmp/${SESSION}-${challenger_key}-issue.json" 2>/dev/null || true
-      cp "/tmp/${SESSION}-${issue}-taskpacket-details.md" "/tmp/${SESSION}-${challenger_key}-taskpacket-details.md" 2>/dev/null || true
-
-      should_launch_challenger="true"
+      # HOK-2811: Review-stage challenges defer the challenger to a fork trigger
+      # that fires after the primary's coding completes. Pre-fork the packet
+      # fan-out is skipped — the challenger's feature dir is copied wholesale
+      # from the primary at materialisation time, so /tmp packet mirrors would
+      # be stale by then anyway.
+      local defer_challenger="false"
+      if [[ "$challenge_stage" == "review" ]]; then
+        defer_challenger="true"
+      fi
+      if [[ "$defer_challenger" != "true" ]]; then
+        cp "$packet_file" "/tmp/${SESSION}-${challenger_key}-taskpacket.md" 2>/dev/null || true
+        cp "/tmp/${SESSION}-${issue}-issue.json" "/tmp/${SESSION}-${challenger_key}-issue.json" 2>/dev/null || true
+        cp "/tmp/${SESSION}-${issue}-taskpacket-details.md" "/tmp/${SESSION}-${challenger_key}-taskpacket-details.md" 2>/dev/null || true
+        should_launch_challenger="true"
+      else
+        should_launch_challenger="false"
+      fi
       LAST_LAUNCHED_SLOTS=1  # Challenger is free overhead, doesn't consume a slot
       primary_varied=$(echo "$challenge_plan" | jq -r '.entries[0].variedModel // .entries[0].model // empty' 2>/dev/null)
       challenger_varied=$(echo "$challenge_plan" | jq -r '.entries[1].variedModel // .entries[1].model // empty' 2>/dev/null)
-      log "status" "  Challenge selected (stage=${challenge_stage}: ${primary_varied} vs ${challenger_varied}) [challenger is extra pane]"
+      if [[ "$defer_challenger" == "true" ]]; then
+        log "status" "  Challenge selected (stage=${challenge_stage}: ${primary_varied} vs ${challenger_varied}) [challenger deferred until fork]"
+      else
+        log "status" "  Challenge selected (stage=${challenge_stage}: ${primary_varied} vs ${challenger_varied}) [challenger is extra pane]"
+      fi
       challenge_assert_arms_diverge "$issue" "$challenge_stage" "$primary_varied" "$challenger_varied" "$challenge_execution_intent"
     elif [[ -n "$challenge_reason" ]] && [[ "$challenge_reason" != "challenge_disabled" ]] && [[ "$challenge_reason" != "roll_not_selected" ]]; then
       log "debug" "  Challenge skipped ($challenge_reason), launching single-model run"
@@ -12296,20 +13399,45 @@ EOF
   fi
   save_task_state "$issue" "$slug" "$branch" "$wt_dir" "" "" "${planner_agent:-$task_agent_cmd}" "$linear_issue" "$effective_challenge" "$challenge_pair" "${challenge_role:-}" "$task_model" "$planner_model" "$task_model" "$reviewer_model" "$plan_depth" "$code_depth" "$review_mode" "${challenge_stage:-}"
   if [[ "$challenge_enabled_for_launch" == "true" ]]; then
-    save_task_state "$challenger_key" "$challenger_slug" "task/${challenger_slug}" "${WORKTREE_ROOT}/${challenger_slug}" "" "" "${challenger_planner_agent:-$challenger_agent}" "$linear_issue" "true" "$challenge_pair" "challenger" "$challenger_model" "$challenger_planner" "$challenger_model" "$challenger_reviewer" "$challenger_plan_depth" "$challenger_code_depth" "$challenger_review_mode" "$challenge_stage"
-    state_mutate "$STATE_FILE" '.tasks[$issue].challengeStage = $stage' --arg issue "$challenger_key" --arg stage "$challenge_stage" || true
-    state_mutate "$STATE_FILE" \
-      '.tasks[$issue].challengerLaunched = true
-       | .tasks[$issue].updated = (now | todate)' \
-      --arg issue "$issue" >/dev/null 2>&1 || true
-    # One writer, both arms, both surfaces.  The separate challengeIntent write
-    # that used to live here persisted a second, independently-built schema
-    # under a different key; resolve-challenge-task.ts now emits the canonical
-    # intent alone and persist_challenge_execution_intent is its only writer.
-    persist_challenge_execution_intent "$issue" "$challenger_key" \
-      "${WORKTREE_ROOT}/${slug}/features/${slug}" \
-      "$challenge_execution_intent" \
-      "${WORKTREE_ROOT}/${challenger_slug}/features/${challenger_slug}"
+    if [[ "${defer_challenger:-false}" == "true" ]]; then
+      # HOK-2811: Review-stage — record the challenger as a pending arm on the
+      # primary rather than creating a second live task. No worktree, window,
+      # or state-ledger entry exists for the challenger yet; the fork trigger
+      # (challenge_maybe_materialize_deferred_arms) will materialise it after
+      # the primary's coding completes. Skip challengerLaunched too so the
+      # existing "lone primary + challengerLaunched=true → orphan" accounting
+      # keeps counting pre-fork pairs correctly.
+      local pending_arm_json
+      pending_arm_json="$(challenge_arm_json_build \
+        "$challenger_key" "$challenger_slug" "task/${challenger_slug}" \
+        "challenger" "$challenge_stage" \
+        "$challenger_model" "$challenger_planner" "$challenger_reviewer" \
+        "$challenger_agent" "${challenger_planner_agent:-$challenger_agent}" "${challenger_reviewer_agent:-$challenger_agent}" \
+        "$challenger_plan_depth" "$challenger_code_depth" "$challenger_review_mode")"
+      challenge_arms_record_pending "$issue" "$pending_arm_json" || \
+        log_warn "  $issue: failed to record pending challenger arm $challenger_key"
+      # Persist the intent into the primary's feature dir only — the challenger
+      # dir doesn't exist yet. Materialisation copies the intent alongside the
+      # other feature-dir artifacts.
+      persist_challenge_execution_intent "$issue" "$challenger_key" \
+        "${WORKTREE_ROOT}/${slug}/features/${slug}" \
+        "$challenge_execution_intent"
+    else
+      save_task_state "$challenger_key" "$challenger_slug" "task/${challenger_slug}" "${WORKTREE_ROOT}/${challenger_slug}" "" "" "${challenger_planner_agent:-$challenger_agent}" "$linear_issue" "true" "$challenge_pair" "challenger" "$challenger_model" "$challenger_planner" "$challenger_model" "$challenger_reviewer" "$challenger_plan_depth" "$challenger_code_depth" "$challenger_review_mode" "$challenge_stage"
+      state_mutate "$STATE_FILE" '.tasks[$issue].challengeStage = $stage' --arg issue "$challenger_key" --arg stage "$challenge_stage" || true
+      state_mutate "$STATE_FILE" \
+        '.tasks[$issue].challengerLaunched = true
+         | .tasks[$issue].updated = (now | todate)' \
+        --arg issue "$issue" >/dev/null 2>&1 || true
+      # One writer, both arms, both surfaces.  The separate challengeIntent write
+      # that used to live here persisted a second, independently-built schema
+      # under a different key; resolve-challenge-task.ts now emits the canonical
+      # intent alone and persist_challenge_execution_intent is its only writer.
+      persist_challenge_execution_intent "$issue" "$challenger_key" \
+        "${WORKTREE_ROOT}/${slug}/features/${slug}" \
+        "$challenge_execution_intent" \
+        "${WORKTREE_ROOT}/${challenger_slug}/features/${challenger_slug}"
+    fi
   fi
   if [[ -n "${challenge_stage:-}" ]]; then
     state_mutate "$STATE_FILE" '.tasks[$issue].challengeStage = $stage' --arg issue "$issue" --arg stage "$challenge_stage" || true
@@ -12659,7 +13787,23 @@ if [[ -f "$STATE_FILE" ]]; then
     BRANCH_BY_ISSUE["$ISSUE"]="$BRANCH"
     SLUG_BY_ISSUE["$ISSUE"]="$SLUG"
     [[ -n "$PR" ]] && PR_BY_ISSUE["$ISSUE"]="$PR"
-  done < <(jq -r '.tasks | to_entries[] | "\(.key)|\(.value.slug // "")|\(.value.branch // "")|\(.value.pr // "")"' "$STATE_FILE" 2>/dev/null)
+
+    # HOK-2813: a deferred challenger arm survives restart as its nested
+    # challengeArms[] record — only the primary rehydrates as a task. An arm
+    # the crash caught mid-materialisation is reset to awaiting_fork here so
+    # the fork trigger retries it; its persisted record (planned identity,
+    # models, immutable intent references) is consumed as-is, never rebuilt.
+    if declare -F challenge_arms_recover_interrupted >/dev/null 2>&1; then
+      challenge_arms_recover_interrupted "$ISSUE" || true
+    fi
+  # Terminal tombstones whose resources were already reaped are restart
+  # evidence, not work: rehydrating them would let a later tick recreate
+  # windows/worktrees for arms that no longer exist (HOK-2972). Terminal rows
+  # with retained/unverified resources still rehydrate so cleanup can retry.
+  done < <(jq -r '.tasks | to_entries[]
+    | select(((.value.lifecycle.workflowOutcome // "active") == "active") or
+        ((.value.lifecycle.resourceDisposition // "") != "reaped"))
+    | "\(.key)|\(.value.slug // "")|\(.value.branch // "")|\(.value.pr // "")"' "$STATE_FILE" 2>/dev/null)
 fi
 
 # Overlay tasks selected in this launch.
@@ -13265,8 +14409,7 @@ handle_advance_command() {
 handle_re_review_command() {
   local event="$1" free_slots="${2:-1}"
   local payload issue slug worktree branch feature_dir current_phase task_phase review_status
-  local pr pr_state_value title issue_json audit_path audit_timestamp prior_json audit_tmp
-  local current_agent reviewer_agent reviewer_model review_mode base_branch artifacts_json rc=0
+  local pr pr_state_value title issue_json base_branch rc=0
 
   MONITOR_COMMAND_STATUS="noop"
   MONITOR_COMMAND_DEFER_EVENT=""
@@ -13357,50 +14500,11 @@ handle_re_review_command() {
     title=$(echo "$issue_json" | jq -r '.title // "Task"' 2>/dev/null || echo "Task")
   fi
 
-  audit_path="$feature_dir/.review-rerun-request.json"
-  audit_timestamp="$(monitor_command_timestamp)"
-  prior_json="null"
-  if [[ -f "$feature_dir/.review-result.json" ]]; then
-    prior_json="$(jq -c '.' "$feature_dir/.review-result.json" 2>/dev/null || printf 'null')"
-  fi
-  audit_tmp=$(mktemp) || {
-    log_warn "$issue could not record re-review request"
-    MONITOR_COMMAND_STATUS="invalid"
-    return 0
-  }
-  if ! jq -n \
-    --arg timestamp "$audit_timestamp" \
-    --arg issue "$issue" \
-    --argjson prNumber "$pr" \
-    --arg reason "manual re-review via mill input" \
-    --argjson prior "$prior_json" \
-    '{timestamp:$timestamp, issue:$issue, prNumber:$prNumber, reason:$reason, previousReviewResult:$prior}' > "$audit_tmp"; then
-    rm -f "$audit_tmp"
-    log_warn "$issue could not record re-review request"
-    MONITOR_COMMAND_STATUS="invalid"
-    return 0
-  fi
-  mv "$audit_tmp" "$audit_path"
-
-  current_agent=$(read_state_value "" --arg i "$issue" '.tasks[$i].agent // ""')
-  reviewer_agent="$(read_phase_config "$feature_dir" "review" "agent" 2>/dev/null || true)"
-  [[ -n "$reviewer_agent" ]] || reviewer_agent="${current_agent:-$AGENT_CMD}"
-  reviewer_model="$(read_phase_config "$feature_dir" "review" "model" 2>/dev/null || true)"
-  [[ -n "$reviewer_model" ]] || reviewer_model="$(read_state_value "" --arg i "$issue" '.tasks[$i].reviewerModel // .tasks[$i].model // ""')"
-  reviewer_model="$(resolve_phase_model "review" "$reviewer_model" "claude-sonnet-5")"
-  review_mode="$(read_phase_config "$feature_dir" "review" "mode" 2>/dev/null || true)"
-  [[ -n "$review_mode" ]] || review_mode="static"
   base_branch="$(effective_task_base_branch "$issue" 2>/dev/null || read_state_value "" --arg i "$issue" '.tasks[$i].baseBranch // empty')"
   [[ -n "$base_branch" ]] || base_branch="${BASE_BRANCH:-main}"
 
-  artifacts_json="$(review_artifacts_with_pr_number "$feature_dir" "$pr" | jq -c --arg timestamp "$audit_timestamp" --arg issue "$issue" \
-    '. + {manualRereview:{requestedAt:$timestamp, issue:$issue}}')"
-  write_stage_result_with_history "$feature_dir" "review" "running" "$reviewer_agent" "$reviewer_model" \
-    "Manual re-review requested for PR #$pr" "$artifacts_json"
-  set_task_phase "$issue" "review"
-  clear_review_gate_attention "$feature_dir"
-
-  launch_review_phase "$issue" "$slug" "$title" "$worktree" "$branch" "$base_branch" "$reviewer_model" "$reviewer_agent" "$review_mode" || rc=$?
+  review_recovery_coordinator "$issue" "$slug" "$title" "$worktree" "$branch" "$base_branch" "$pr" "$feature_dir" \
+    "manual re-review via mill input" "manual" "manual-rereview" "" 0 "false" || rc=$?
   if [[ "$rc" -eq 0 ]]; then
     log "status" "$issue -> re-review launched for PR #$pr"
     MONITOR_COMMAND_STATUS="handled"
@@ -14349,6 +15453,15 @@ monitor_issue_state() {
             fi
             set_window_attention_state "$WIN" "clear"
             log "status" "$ISSUE → Coding complete, launching review phase"
+
+            # HOK-2811 (Arbiter P2.4a): fork trigger. If this task has any
+            # deferred (awaiting_fork) challenge arms, materialise them now
+            # that coding has committed and the primary's review has
+            # dispatched. Guarded internally so a materialisation failure
+            # cannot block the primary — the primary's review has already
+            # been dispatched at this point.
+            challenge_maybe_materialize_deferred_arms "$ISSUE" "$SLUG" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" || true
+
             active_count=$((active_count + 1))
             return 0
           fi
@@ -14424,6 +15537,32 @@ monitor_issue_state() {
             log "debug" "$ISSUE → Coding still running: waiting for .coding-complete"
           fi
 
+          # Reconcile phase state with process ownership (HOK-2963): a
+          # "running" coding result with no live agent descendant, no fresh
+          # hook heartbeat, and no completion marker is interrupted, not
+          # healthy active coding. Persist a typed interrupted outcome that
+          # preserves the durable commits and names the recovery action.
+          if [[ "$coding_status" == "running" ]] \
+            && coding_stage_owner_lost "$ISSUE" "$FEATURE_DIR" "$WIN_TARGET"; then
+            local interrupted_head interrupted_artifacts
+            interrupted_head="$(git -C "${WORKTREE_ROOT}/${SLUG}" rev-parse HEAD 2>/dev/null || true)"
+            interrupted_artifacts="$(jq -cn --arg head "$interrupted_head" \
+              '{type: "coding",
+                terminationClass: "interrupted",
+                exitEvidence: "agent process exited without a terminal stage result (pane at shell prompt)",
+                lastDurableCommit: (if $head == "" then null else $head end),
+                validationState: "unknown",
+                recoveryAction: "Relaunch the coding phase to resume from the last durable commit, or push the branch and open a PR manually if the work is already complete."}')"
+            write_stage_result "$FEATURE_DIR" "coding" "failed" "$current_agent" \
+              "$(resolve_stage_result_model "$FEATURE_DIR" "coding" "claude-opus-4-7")" \
+              "Interrupted: coding agent exited without recording a result - durable commits preserved${interrupted_head:+ at ${interrupted_head:0:7}}" \
+              "$interrupted_artifacts"
+            log_warn "$ISSUE → Coding agent exited without a terminal result - marked interrupted (work preserved${interrupted_head:+ at ${interrupted_head:0:7}})"
+            set_window_attention_state "$WIN" "needs-user"
+            active_count=$((active_count + 1))
+            return 0
+          fi
+
           # Stage still running
           if [[ "$coding_status" == "running" ]]; then
             set_window_attention_state "$WIN" "clear"
@@ -14457,6 +15596,13 @@ monitor_issue_state() {
             set_window_attention_state "$WIN" "needs-user"
             return 0
           fi
+
+          # HOK-2811 (Arbiter P2.4a): re-entrant fork trigger site. The
+          # coding→review transition (above) is a one-shot; if materialisation
+          # failed transiently there, the bounded-retry gate needs another
+          # tick to retry. Guarded internally so cheap when there are no
+          # pending arms.
+          challenge_maybe_materialize_deferred_arms "$ISSUE" "$SLUG" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" || true
 
           local review_status
           local pr_number
@@ -14883,10 +16029,24 @@ monitor_issue_state() {
     # Fails open ("true") when state is unreadable so an unknown task still
     # takes the normal closed-PR path.
     if [[ "$(read_state_value "true" --arg i "$ISSUE" '.tasks[$i] != null')" == "false" ]]; then
-      CLEANED["$ISSUE"]=1
+      monitor_deregister_terminal_task "$ISSUE"
       return 0
     fi
-    log_warn "$ISSUE → PR #$PR CLOSED without merge"
+    # Deduplicated transition logging (HOK-2972): the first observation is a
+    # status event; once the durable terminal transition is recorded, repeat
+    # polls (cleanup retries, restarts) log at debug instead of warning.
+    local closed_pr_recorded="false" closed_pr_key=""
+    if declare -F wavemill_terminal_marker_key >/dev/null 2>&1 && declare -F wavemill_terminal_marker_field >/dev/null 2>&1; then
+      closed_pr_key="$(wavemill_terminal_marker_key "pr_closed_unmerged" "$PR" 2>/dev/null || true)"
+      if [[ -n "$closed_pr_key" && "$(wavemill_terminal_marker_field "$ISSUE" "$closed_pr_key" "stateApplied")" == "true" ]]; then
+        closed_pr_recorded="true"
+      fi
+    fi
+    if [[ "$closed_pr_recorded" == "true" ]]; then
+      log "debug" "$ISSUE → PR #$PR closed without merge (terminal transition already recorded)"
+    else
+      log "status" "$ISSUE → PR #$PR closed without merge"
+    fi
     local linear_status="Backlog"
     if is_challenge_task "$ISSUE"; then
       local sibling_pr sibling_state
@@ -14918,12 +16078,16 @@ monitor_issue_state() {
           ;;
       esac
     fi
-    if [[ -n "$linear_status" ]]; then
-      if [[ "${WAVEMILL_TERMINAL_RECONCILER_LOADED:-0}" == "1" ]]; then
-        wavemill_reconcile_terminal "$SESSION" "$ISSUE" "pr_closed_unmerged" "$PR" || true
-      elif should_update_linear_state "$ISSUE"; then
-        linear_set_state "$(get_linear_issue_id "$ISSUE")" "$linear_status"
-      fi
+    if [[ "${WAVEMILL_TERMINAL_RECONCILER_LOADED:-0}" == "1" ]]; then
+      # Symmetric losing-arm handling (HOK-2972): whichever role this arm has
+      # (primary or challenger), a closed PR with a live sibling is a normal
+      # losing/terminal arm. Record the durable transition unconditionally; the
+      # reconciler derives the Linear move itself (Done once the sibling
+      # merges, Backlog only when both arms are closed, deferred while the
+      # sibling is still open) so the shared issue never bounces to Backlog.
+      wavemill_reconcile_terminal "$SESSION" "$ISSUE" "pr_closed_unmerged" "$PR" || true
+    elif [[ -n "$linear_status" ]] && should_update_linear_state "$ISSUE"; then
+      linear_set_state "$(get_linear_issue_id "$ISSUE")" "$linear_status"
     fi
     # HOK-2952: one ownership policy for every closed-PR role. The old
     # in-memory-only `CLEANED=1` branch (which left pane/worktree/state
@@ -15057,6 +16221,7 @@ monitor_issue_state() {
     local launch_head current_head title launch_rc _conflict_cleared
     local recheck_disposition recheck_attempt recheck_limit
     local pending_recheck_disposition pending_recheck_limit pending_recheck_reason
+    local challenge_pending_rc
     _conflict_cleared=false
     resolved_phase=$(resolve_phase "$FEATURE_DIR")
     if [[ "$resolved_phase" == "aborted" ]]; then
@@ -15343,6 +16508,55 @@ monitor_issue_state() {
       return 0
     fi
 
+    # Implementation-ready challenge arms with a typed eval/comparison wait
+    # (HOK-2963) are orchestrated here and never consume the generic
+    # pending-ready-recheck budget while their work is launchable or running.
+    if [[ "$ready_status" == "running" ]] && is_challenge_task "$ISSUE" && ready_pending_is_challenge_work "$ready_state_dir_path"; then
+      handle_challenge_pending_ready "$ISSUE" "$PR" "$BRANCH" "$SLUG" "$ready_state_dir_path" \
+        && challenge_pending_rc=0 || challenge_pending_rc=$?
+      if [[ "$challenge_pending_rc" -eq 1 ]]; then
+        set_window_attention_state "$WIN" "needs-user"
+        return 0
+      fi
+      if [[ "$challenge_pending_rc" -eq 2 ]]; then
+        # A comparison settled since Ready last ran: re-run Ready now so the
+        # fresh record can canonicalize the final verdict. This bypass is
+        # bounded by the one-shot settled marker the handler just consumed.
+        title=$(read_state_value "" --arg i "$ISSUE" '.tasks[$i].title // ""')
+        if [[ -z "$title" ]]; then
+          issue_json=$(cat "/tmp/${SESSION}-${ISSUE}-issue.json" 2>/dev/null || echo "{}")
+          title=$(echo "$issue_json" | jq -r '.title // "Task"' 2>/dev/null || echo "Task")
+        fi
+        if launch_ready_phase "$ISSUE" "$SLUG" "$title" "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$PR"; then
+          launch_rc=0
+        else
+          launch_rc=$?
+        fi
+        if [[ "$launch_rc" -eq 2 ]] && check_stage_aborted "$FEATURE_DIR"; then
+          log_task "status" "$ISSUE" "⛔ $ISSUE → Workflow aborted during post-comparison ready re-check"
+          set_task_phase "$ISSUE" "aborted"
+          set_window_attention_state "$WIN" "needs-user"
+          return 0
+        fi
+        if [[ "$launch_rc" -eq 0 || "$launch_rc" -eq 3 || "$launch_rc" -eq 4 || "$launch_rc" -eq 5 || "$launch_rc" -eq 6 ]]; then
+          [[ "$launch_rc" -eq 0 ]] && log "status" "$ISSUE → Ready checks completed after challenge comparison (PR #$PR)"
+          set_window_attention_state "$WIN" "clear"
+          active_count=$((active_count + 1))
+          return 0
+        fi
+        log "status" "⚠ $ISSUE → Ready re-check failed after challenge comparison (PR #$PR)"
+        set_window_attention_state "$WIN" "needs-user"
+        return 0
+      fi
+      if [[ "$challenge_pending_rc" -eq 0 ]]; then
+        set_window_attention_state "$WIN" "clear"
+        active_count=$((active_count + 1))
+        return 0
+      fi
+      # rc 3: no challenge pair identity in state — fall through to the
+      # bounded generic pending-ready re-check below.
+    fi
+
     # Re-run ready checks when CI is still computing (verdict=pending) OR when
 	    # a remediation agent has pushed new commits past the launch head — without
     # the second case, a successful remediation leaves status=running/verdict=fail
@@ -15451,6 +16665,11 @@ monitor_issue_state() {
   # in case the eval was missed on initial PR detection (e.g. challenge
   # flag was incorrect when PR was first found)
   if is_challenge_task "$ISSUE"; then
+    # HOK-2813: restart-safe fork trigger. If the mill restarted after the
+    # primary's review dispatched, the review-phase trigger site may never
+    # run again; a still-pending arm must fork from here too. Guarded
+    # internally, so this is a cheap no-op when no arms are pending.
+    challenge_maybe_materialize_deferred_arms "$ISSUE" "$SLUG" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" || true
     maybe_run_challenge_eval "$ISSUE" "$PR" "$BRANCH" "$SLUG"
     maybe_run_challenge_comparison "$ISSUE"
     maybe_resolve_unresolvable_challenge_pair "$ISSUE"

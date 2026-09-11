@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import type { EvalRecord } from './eval-schema.ts';
-import { buildChallengeStageEval } from './stage-eval-evidence.ts';
+import { buildChallengeStageEval, extractReviewExecutedIdentity } from './stage-eval-evidence.ts';
 
 function makeRecord(): EvalRecord {
   return {
@@ -157,6 +157,190 @@ describe('buildChallengeStageEval review dismissal evidence (HOK-2932)', () => {
       assert.match(reviewEvidence.summary, /blockers=1/);
       assert.match(reviewEvidence.summary, /dismissedBlockers=1/);
       assert.match(reviewEvidence.summary, /dismissalJustifications=.*stale diff base/);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+});
+
+function setupReviewResult(slug: string, artifacts: Record<string, unknown>): { repoDir: string; featureDir: string } {
+  const repoDir = mkdtempSync(join(tmpdir(), 'stage-evidence-review-identity-'));
+  const featureDir = join(repoDir, 'features', slug);
+  mkdirSync(featureDir, { recursive: true });
+  writeFileSync(join(featureDir, '.review-result.json'), `${JSON.stringify({
+    stage: 'review',
+    status: 'completed',
+    agent: 'codex',
+    model: 'gpt-5.5',
+    notes: '',
+    artifacts: { type: 'review', exitCode: 0, verdict: 'ready', blockerCount: 0, warningCount: 0, ...artifacts },
+  }, null, 2)}\n`);
+  return { repoDir, featureDir };
+}
+
+const PINNED_IDENTITY = {
+  orchestrator: {
+    role: 'review_orchestrator',
+    requestedModel: 'glm-5.3',
+    resolvedModel: 'glm-5.3',
+    agent: 'native-openrouter',
+    source: 'route',
+    pinned: true,
+  },
+  substantiveAnalysis: {
+    role: 'substantive_analysis',
+    requestedModel: 'glm-5.3',
+    resolvedModel: 'glm-5.3',
+    agent: 'native-openrouter',
+    source: 'artifact',
+    pinned: true,
+  },
+  remediation: null,
+};
+
+const COMPLETE_ITERATIONS = [{
+  iteration: 1,
+  recordedAt: '2026-07-30T12:00:00.000Z',
+  verdict: 'ready',
+  findings: [],
+}];
+
+describe('buildChallengeStageEval reviewer-stage direct provenance requires complete identity/iteration evidence (HOK-2969)', () => {
+  it('is direct when iteration evidence and a fully pinned identity are both present', () => {
+    const slug = 'review-complete-identity';
+    const { repoDir } = setupReviewResult(slug, {
+      reviewIterations: COMPLETE_ITERATIONS,
+      reviewExecutedIdentity: PINNED_IDENTITY,
+    });
+
+    try {
+      const evalStage = buildChallengeStageEval({
+        repoDir,
+        issueId: 'HOK-2969',
+        branchName: `task/${slug}`,
+        challengeStage: 'review',
+        record: makeRecord(),
+        stageArtifacts: { selfReviewSummary: 'verdict=ready blockers=0' },
+      });
+      assert.equal(evalStage?.provenance, 'direct');
+      assert.ok(evalStage?.evidence.some((item) => item.label === 'review_identity'));
+      assert.ok(evalStage?.evidence.some((item) => item.label === 'review_iterations'));
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to inferred when iteration evidence is missing even with a pinned identity', () => {
+    const slug = 'review-missing-iterations';
+    const { repoDir } = setupReviewResult(slug, {
+      reviewExecutedIdentity: PINNED_IDENTITY,
+    });
+
+    try {
+      const evalStage = buildChallengeStageEval({
+        repoDir,
+        issueId: 'HOK-2969',
+        branchName: `task/${slug}`,
+        challengeStage: 'review',
+        record: makeRecord(),
+        stageArtifacts: { selfReviewSummary: 'verdict=ready blockers=0' },
+      });
+      assert.equal(evalStage?.provenance, 'inferred');
+      assert.match(evalStage?.fallbackReason ?? '', /complete review iteration evidence/);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to inferred when the identity is not pinned even with complete iterations', () => {
+    const slug = 'review-unpinned-identity';
+    const { repoDir } = setupReviewResult(slug, {
+      reviewIterations: COMPLETE_ITERATIONS,
+      reviewExecutedIdentity: {
+        ...PINNED_IDENTITY,
+        substantiveAnalysis: { ...PINNED_IDENTITY.substantiveAnalysis, pinned: false, fallbackReason: 'requested_model_unavailable' },
+      },
+    });
+
+    try {
+      const evalStage = buildChallengeStageEval({
+        repoDir,
+        issueId: 'HOK-2969',
+        branchName: `task/${slug}`,
+        challengeStage: 'review',
+        record: makeRecord(),
+        stageArtifacts: { selfReviewSummary: 'verdict=ready blockers=0' },
+      });
+      assert.equal(evalStage?.provenance, 'inferred');
+      assert.match(evalStage?.fallbackReason ?? '', /pinned reviewer execution identity/);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to inferred when the identity carries a conflict, even if marked pinned', () => {
+    const slug = 'review-conflicting-identity';
+    const { repoDir } = setupReviewResult(slug, {
+      reviewIterations: COMPLETE_ITERATIONS,
+      reviewExecutedIdentity: {
+        ...PINNED_IDENTITY,
+        substantiveAnalysis: {
+          ...PINNED_IDENTITY.substantiveAnalysis,
+          conflict: { otherSource: 'route', otherResolvedModel: 'claude-haiku-4-5-20251001', detail: 'route disagrees with artifact' },
+        },
+      },
+    });
+
+    try {
+      const evalStage = buildChallengeStageEval({
+        repoDir,
+        issueId: 'HOK-2969',
+        branchName: `task/${slug}`,
+        challengeStage: 'review',
+        record: makeRecord(),
+        stageArtifacts: { selfReviewSummary: 'verdict=ready blockers=0' },
+      });
+      assert.equal(evalStage?.provenance, 'inferred');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('extractReviewExecutedIdentity (HOK-2969)', () => {
+  it('returns the validated identity envelope when present', () => {
+    const slug = 'extract-review-identity';
+    const { repoDir } = setupReviewResult(slug, { reviewExecutedIdentity: PINNED_IDENTITY });
+
+    try {
+      const identity = extractReviewExecutedIdentity({ repoDir, issueId: 'HOK-2969', branchName: `task/${slug}` });
+      assert.equal(identity?.orchestrator.resolvedModel, 'glm-5.3');
+      assert.equal(identity?.substantiveAnalysis.pinned, true);
+      assert.equal(identity?.remediation, null);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns undefined for a malformed identity rather than a partial object', () => {
+    const slug = 'extract-review-identity-malformed';
+    const { repoDir } = setupReviewResult(slug, {
+      reviewExecutedIdentity: { orchestrator: { role: 'review_orchestrator' } },
+    });
+
+    try {
+      const identity = extractReviewExecutedIdentity({ repoDir, issueId: 'HOK-2969', branchName: `task/${slug}` });
+      assert.equal(identity, undefined);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns undefined when there is no review result at all', () => {
+    const repoDir = mkdtempSync(join(tmpdir(), 'stage-evidence-review-identity-'));
+    try {
+      const identity = extractReviewExecutedIdentity({ repoDir, issueId: 'HOK-2969', branchName: 'task/none' });
+      assert.equal(identity, undefined);
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }

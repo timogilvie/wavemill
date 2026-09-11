@@ -56,6 +56,20 @@ type RegistryPriceField = {
   actual: number | null;
 };
 
+/**
+ * The live OpenRouter catalog can expose temporary or provider-local discounts.
+ * A registry price above the live value is conservative and must not halt the
+ * integration lane; only a missing or lower registry value can understate
+ * routing and budget cost.
+ */
+function understatesProviderPrice(actual: number | null, expected: number): boolean {
+  if (actual === null || !Number.isFinite(actual)) {
+    return true;
+  }
+  const tolerance = Math.max(1e-12, Math.abs(expected) * 1e-9);
+  return actual + tolerance < expected;
+}
+
 function registryPriceFields(
   capabilities: ModelRegistry['models'][string],
 ): RegistryPriceField[] {
@@ -205,7 +219,7 @@ export function auditOpenRouterAliases(input: {
       if (expected === null) {
         continue;
       }
-      if (field.actual !== expected) {
+      if (understatesProviderPrice(field.actual, expected)) {
         findings.push({
           alias,
           providerNativeId,
@@ -213,7 +227,7 @@ export function auditOpenRouterAliases(input: {
           reason: 'pricing-drift',
           lifecycle,
           selectable,
-          detail: `${field.dimension} drift for ${field.registryField}: expected provider ${expected}, actual registry ${String(field.actual)}.`,
+          detail: `${field.dimension} drift for ${field.registryField}: provider price ${expected} exceeds registry ${String(field.actual)}.`,
         });
       }
     }

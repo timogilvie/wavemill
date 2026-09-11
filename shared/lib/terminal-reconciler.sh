@@ -308,6 +308,32 @@ wavemill_terminal_fresh_hook_state() {
   jq -r '.state // empty' "$hook_file" 2>/dev/null || true
 }
 
+# HOK-2972: proof that the pane's surviving process is an idle agent REPL.
+# Only the agent's own Stop hook (state=idle, event=Stop) counts, read with
+# the TTL ignored - after stage evidence is terminal, an aged Stop record is
+# exactly the evidence that nothing ran since. The record is accepted either
+# from the live hook file or from the archived payload that
+# wavemill_hook_terminalize preserved in .terminal-history.jsonl before
+# overwriting the file with the controller's terminal state. Controller
+# writes (event=<terminal reason>) never count as agent idleness, so a task
+# whose agent died mid-work (last agent state "working") stays protected.
+wavemill_terminal_agent_idle_evidence() {
+  local session="$1" issue="$2" hook_file feature_dir history_file last
+  command -v jq >/dev/null 2>&1 || return 1
+  hook_file="/tmp/wavemill-${session}-${issue}.hook"
+  if [[ -f "$hook_file" ]] \
+    && [[ "$(jq -r '((.state // "") + ":" + (.event // ""))' "$hook_file" 2>/dev/null)" == "idle:Stop" ]]; then
+    return 0
+  fi
+  feature_dir="$(wavemill_terminal_feature_dir "$issue" 2>/dev/null || true)"
+  [[ -n "$feature_dir" ]] || return 1
+  history_file="$feature_dir/.terminal-history.jsonl"
+  [[ -f "$history_file" ]] || return 1
+  last="$(tail -n 1 "$history_file" 2>/dev/null || true)"
+  [[ -n "$last" ]] || return 1
+  [[ "$(jq -r '((.payload.state // "") + ":" + (.payload.event // ""))' <<<"$last" 2>/dev/null)" == "idle:Stop" ]]
+}
+
 # wavemill_release_terminal_pane <session> <issue> [slug] [reason] [pr]
 #
 # Fault-ordered release: ownership guard -> archive diagnostics -> durable
@@ -330,10 +356,6 @@ wavemill_release_terminal_pane() {
     [[ -n "$slug" ]] || slug="$(jq -r --arg issue "$issue" '.tasks[$issue].slug // empty' "$STATE_FILE" 2>/dev/null || true)"
     branch="$(jq -r --arg issue "$issue" '.tasks[$issue].branch // empty' "$STATE_FILE" 2>/dev/null || true)"
     wt_dir="$(jq -r --arg issue "$issue" '.tasks[$issue].worktree // empty' "$STATE_FILE" 2>/dev/null || true)"
-    # Fully released already: short-circuit before any tmux call.
-    if [[ "$(jq -r --arg issue "$issue" '.tasks[$issue].paneReleased // false' "$STATE_FILE" 2>/dev/null || echo false)" == "true" ]]; then
-      return 0
-    fi
   fi
   [[ -n "$branch" || -z "$slug" ]] || branch="task/${slug}"
   [[ -n "$wt_dir" || -z "$slug" || -z "${WORKTREE_ROOT:-}" ]] || wt_dir="${WORKTREE_ROOT%/}/${slug}"
@@ -344,6 +366,10 @@ wavemill_release_terminal_pane() {
   if command -v tmux >/dev/null 2>&1; then
     target="$(_tmux_task_window_target "$session" "$issue" "$slug" "${STATE_FILE:-}" "$wt_dir" 2>/dev/null || true)"
   fi
+  if [[ -z "$target" && -n "${STATE_FILE:-}" && -r "${STATE_FILE:-}" ]] \
+    && [[ "$(jq -r --arg issue "$issue" '.tasks[$issue].paneReleased // false' "$STATE_FILE" 2>/dev/null || echo false)" == "true" ]]; then
+    return 0
+  fi
   if [[ -n "$target" ]]; then
     window_exists="true"
     joined_target="$(_tmux_target_join "$session" "$target" 2>/dev/null || printf '%s' "$target")"
@@ -352,8 +378,17 @@ wavemill_release_terminal_pane() {
       live_rc=0
       mill_pane_has_live_blocking_process "$pane_pid" || live_rc=$?
       if [[ "$live_rc" -eq 0 ]]; then
-        WAVEMILL_PANE_RELEASE_BLOCK_REASON="live-agent-process"
-        return 1
+        # Phase-aware liveness (HOK-2972): a descendant process at an idle
+        # prompt after its stage evidence is complete must not block terminal
+        # release forever. The agent's own Stop hook recording idle is that
+        # proof; anything else (working/stale-working/missing hook) keeps the
+        # conservative live-agent-process retention.
+        if wavemill_terminal_agent_idle_evidence "$session" "$issue" 2>/dev/null; then
+          declare -F log >/dev/null 2>&1 && log "debug" "  $issue pane holds an idle agent REPL (agent Stop recorded); releasing" || true
+        else
+          WAVEMILL_PANE_RELEASE_BLOCK_REASON="live-agent-process"
+          return 1
+        fi
       elif [[ "$live_rc" -eq 2 ]]; then
         WAVEMILL_PANE_RELEASE_BLOCK_REASON="liveness-indeterminate"
         return 1
@@ -526,6 +561,14 @@ wavemill_reconcile_terminal() {
   local feature_dir stage stage_status agent model notes artifacts existing_artifacts
 
   wavemill_terminal_reason_valid "$reason" || return 2
+  # HOK-2813: never reconcile an issue that has no task entry. A deferred
+  # challenger (nested awaiting_fork arm on its primary) has no .tasks row,
+  # no worktree, and no pane by design; state_mutate against its key would
+  # auto-vivify a malformed stub task. Existence is the guard.
+  if [[ -n "${STATE_FILE:-}" && -f "${STATE_FILE}" ]] \
+    && [[ "$(jq -r --arg issue "$issue" '.tasks[$issue] != null' "$STATE_FILE" 2>/dev/null)" != "true" ]]; then
+    return 0
+  fi
   if [[ -n "$pr_number" ]]; then
     pr_json="$(wavemill_pr_live_state "$pr_number" 2>/dev/null || true)"
     if [[ -z "$pr_json" ]]; then

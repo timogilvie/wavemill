@@ -156,7 +156,7 @@ for stage in plan implementation review; do
     phase_field="$(phase_field_for_stage "$stage")"
     actual_route="$(jq -r --arg f "$routing_field" '.[$f] // ""' "$feature_dir/.routing-complete" 2>/dev/null || true)"
     actual_phase="$(jq -r --arg f "$phase_field" '.[$f].model // ""' "$feature_dir/.phase-config.json" 2>/dev/null || true)"
-    preserved="$(jq -r '.challengeArmPreserved // ""' "$feature_dir/.routing-complete" 2>/dev/null || true)"
+    preserved="$(jq -r '.challengeIntentApplied // ""' "$feature_dir/.routing-complete" 2>/dev/null || true)"
 
     if [[ "$actual_route" == "$selected" && "$actual_phase" == "$selected" && "$preserved" == "true" ]]; then
       pass "stage=$stage side=$side retains the selected arm ($selected) through rerouting"

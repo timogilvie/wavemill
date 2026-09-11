@@ -30,6 +30,7 @@ import {
   type CurrentChallengeEvalRefusalReason,
 } from './current-challenge-eval-selector.ts';
 import { resolvePrIdentityMetadata } from './pr-comparison.ts';
+import { taskHasPendingChallengeArm } from './tend-challenge-gate.ts';
 
 export type ChallengeRecoveryVerdict = 'supersedable' | 'quarantine-upheld' | 'pair-not-found';
 
@@ -105,6 +106,7 @@ interface TaskState {
     selectedStage?: string;
     challengeStage?: string;
   } | null;
+  challengeArms?: unknown;
 }
 
 function defaultResolvePrIdentity(pr: string, repoDir: string): { url: string; headSha: string } {
@@ -275,6 +277,16 @@ export function assessChallengePair(
 
   if (!record && !primaryTask) {
     assessment.blockers.push(`no challenge record or task state for ${pairId}`);
+    return assessment;
+  }
+
+  // HOK-2813: a challenger nested on the primary as an awaiting_fork arm has
+  // no task state, worktree, or evidence yet by design. The pair is deferred,
+  // not damaged — uphold the status quo without collecting arm evidence or
+  // treating the missing side as a gap.
+  if (!challengerTask && taskHasPendingChallengeArm(primaryTask ?? {})) {
+    assessment.verdict = 'quarantine-upheld';
+    assessment.blockers.push('challenger arm is awaiting fork (deferred materialisation); nothing to recover yet');
     return assessment;
   }
 

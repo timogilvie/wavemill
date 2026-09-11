@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { mutateJsonState } from './state-mutex.ts';
 import { resolveEvalsDir } from './evals-paths.ts';
 import { challengeTaskKeyVariants, type EffectiveChallengeRole } from './challenge-role-utils.ts';
+import { taskHasPendingChallengeArm } from './tend-challenge-gate.ts';
 
 /**
  * Self-healing repair for drifted challenge pairing metadata.
@@ -66,6 +67,16 @@ function deriveRoleFromPairKey(issueId: string, pairId: string): EffectiveChalle
 function repairTaskStateObject(state: any, pairId: string): boolean {
   const tasks = state?.tasks;
   if (!tasks || typeof tasks !== 'object') return false;
+
+  // HOK-2813: while the challenger is a nested awaiting_fork arm on the
+  // primary, the pair has exactly one task and no pairing drift is possible.
+  // Leave the deferred pair untouched rather than rewriting its metadata.
+  const primaryTask = tasks[pairId];
+  if (primaryTask && typeof primaryTask === 'object'
+    && taskHasPendingChallengeArm(primaryTask as { challengeArms?: unknown })) {
+    return false;
+  }
+
   let changed = false;
 
   for (const [issueId, task] of Object.entries(tasks)) {

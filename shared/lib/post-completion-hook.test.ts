@@ -610,6 +610,44 @@ await test('runPostCompletionEval persists direct reviewer challenge stage evide
         type: 'review',
         findingsCount: 3,
         blockingIssues: 1,
+        // Complete per-iteration evidence and a fully pinned executed
+        // identity are required for direct provenance (HOK-2969); a
+        // review-result artifact alone is no longer sufficient.
+        reviewIterations: [
+          {
+            iteration: 1,
+            recordedAt: '2026-04-06T12:04:00.000Z',
+            verdict: 'not_ready',
+            findings: [
+              {
+                location: 'src/api/users.ts:45',
+                category: 'security',
+                severity: 'blocker',
+                description: 'Unsanitized input reaches the query builder.',
+                disposition: 'open',
+              },
+            ],
+          },
+        ],
+        reviewExecutedIdentity: {
+          orchestrator: {
+            role: 'review_orchestrator',
+            requestedModel: 'gpt-5.5',
+            resolvedModel: 'gpt-5.5',
+            agent: 'codex',
+            source: 'route',
+            pinned: true,
+          },
+          substantiveAnalysis: {
+            role: 'substantive_analysis',
+            requestedModel: 'gpt-5.5',
+            resolvedModel: 'gpt-5.5',
+            agent: 'native-openai',
+            source: 'artifact',
+            pinned: true,
+          },
+          remediation: null,
+        },
       },
     }),
   );
@@ -656,6 +694,8 @@ await test('runPostCompletionEval persists direct reviewer challenge stage evide
     assert.equal(persistedRecord?.challengeStageEval?.provenance, 'direct');
     assert.ok(persistedRecord?.challengeStageEval?.evidence.some((item) => item.label === 'self_review_summary'));
     assert.ok(persistedRecord?.challengeStageEval?.evidence.some((item) => item.label === 'review_result'));
+    assert.equal(persistedRecord?.reviewExecutedIdentity?.orchestrator.pinned, true);
+    assert.equal(persistedRecord?.reviewExecutedIdentity?.substantiveAnalysis.resolvedModel, 'gpt-5.5');
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
   }

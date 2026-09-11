@@ -44,6 +44,7 @@ TESTS=(
   linear-state-canonicalization.test.sh
   task-phase-canonicalization.test.sh
   pr-state-merge-canonicalization.test.sh
+  review-recovery.test.sh
   with-timeout.test.sh
   native-agent-shell-operators.test.sh
   native-coding-commit.test.sh
@@ -59,6 +60,7 @@ TESTS=(
   launch-pane-liveness.test.sh
   launch-failure-log-capture.test.sh
   challenge-eval-soft-retry.test.sh
+  challenge-deferred-arm.test.sh
   review-scope-baseline-handoff.test.sh
   launch-native-planning-phase.test.sh
   log-hygiene.test.sh
@@ -81,6 +83,7 @@ TESTS=(
   challenge-comparison-state.test.sh
   challenge-running-state.test.sh
   challenge-eval-hard-failure.test.sh
+  challenge-eval-timeout.test.sh
   challenge-job-monitor-loop.test.sh
   task-selection-renderer.test.sh
   wavemill-backlog-pane-no-flash.test.sh
@@ -92,6 +95,7 @@ TESTS=(
   model-inheritance-chain.test.sh
   wavemill-monitor-command-draining.test.sh
   wavemill-mill-session.test.sh
+  wavemill-input-reader.test.sh
   merge-retry-marker.test.sh
   queue-health.test.sh
   merge-queue-live-ci.test.sh
@@ -107,6 +111,7 @@ TESTS=(
   run-custom-tests-shard.test.sh
   incident-fixtures-terminal-panes.test.sh
   incident-fixtures-safety-controls.test.sh
+  terminal-lifecycle-flags.test.sh
 )
 
 SHARD_INDEX=1

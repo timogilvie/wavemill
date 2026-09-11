@@ -60,7 +60,18 @@ cleanup_file="$tmp/aborted-cleanup.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "_wavemill_cleanup_operator_guidance"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_load_config"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "cleanup_episode_config_value"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_pr_aware_cleanup_enabled"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_branch_deletion_mode"
+  printf '\n'
+  printf '%s\n' 'WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT=".wavemill/observer-findings.jsonl"'
+  extract_function "$COMMON_SCRIPT" "wavemill_worktree_dirty_status"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_migrate_controller_observer_artifact"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_fetch_pr_terminal_evidence"
   printf '\n'
@@ -69,6 +80,8 @@ cleanup_file="$tmp/aborted-cleanup.sh"
   extract_function "$COMMON_SCRIPT" "_wavemill_record_cleanup_decision"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "safe_remove_task_worktree_and_branch"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "monitor_deregister_terminal_task"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "remove_task_state"
   printf '\n'
@@ -102,6 +115,7 @@ run_cleanup_case() {
     AUTO_EVAL=true
     AGENT_CMD=codex
     mkdir -p "$WORKTREE_ROOT/$SLUG/features/$SLUG"
+    printf "%s\n" "{\"cleanup\":{\"branchDeletion\":{\"enabled\":true,\"mode\":\"enforce\"}}}" > "$REPO_DIR/.wavemill-config.json"
     printf "{\"reason\":\"failed\"}\n" > "$WORKTREE_ROOT/$SLUG/features/$SLUG/.challenge-aborted.json"
     printf "{\"transcriptPath\":\"native-session.jsonl\"}\n" > "$WORKTREE_ROOT/$SLUG/features/$SLUG/.coding-failure-handoff.json"
     printf "{}\n" > "$WORKTREE_ROOT/$SLUG/features/$SLUG/native-session.jsonl"

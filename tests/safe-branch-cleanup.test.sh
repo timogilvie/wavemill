@@ -58,7 +58,18 @@ helper_file="$tmp/safe-cleanup-helper.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "_wavemill_cleanup_operator_guidance"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_load_config"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "cleanup_episode_config_value"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_pr_aware_cleanup_enabled"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_branch_deletion_mode"
+  printf '\n'
+  printf '%s\n' 'WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT=".wavemill/observer-findings.jsonl"'
+  extract_function "$COMMON_SCRIPT" "wavemill_worktree_dirty_status"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_migrate_controller_observer_artifact"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_fetch_pr_terminal_evidence"
   printf '\n'
@@ -83,6 +94,7 @@ setup_repo() {
   mkdir -p "$case_dir"
   git init --bare "$origin" >/dev/null
   git clone "$origin" "$repo" >/dev/null 2>&1
+  jq -n '{cleanup:{branchDeletion:{enabled:true,mode:"enforce"}}}' > "$repo/.wavemill-config.json"
   git -C "$repo" config user.email "test@example.com"
   git -C "$repo" config user.name "Wavemill Test"
   git -C "$repo" checkout -b auto/integration >/dev/null 2>&1
@@ -331,6 +343,47 @@ case_dirty_worktree_retained() {
   assert_contains "$out" "PRESERVED_DIRTY_WORKTREE" "dirty warning"
 }
 
+# HOK-2972: the controller-owned observer artifact alone never makes a
+# worktree dirty; cleanup proceeds and the artifact is migrated to the
+# repository-level findings file rather than lost.
+case_observer_artifact_only_cleaned() {
+  local repo branch wt out
+  repo="$(setup_repo observer-artifact)"
+  branch="task/observer-artifact"
+  wt="$tmp/observer-artifact/wt"
+  add_task_worktree "$repo" "$branch" "$wt"
+  mkdir -p "$wt/.wavemill"
+  printf '{"title":"finding"}\n' > "$wt/.wavemill/observer-findings.jsonl"
+
+  out="$(run_helper "$repo" "$wt" "$branch")"
+  assert_contains "$out" "rc=0" "observer-artifact return"
+  branch_exists "$repo" "$branch" && fail "observer-artifact branch was retained"
+  assert_absent "$wt"
+  assert_exists "$repo/.wavemill/observer-findings.jsonl"
+  grep -q '"title":"finding"' "$repo/.wavemill/observer-findings.jsonl" \
+    || fail "observer-artifact content was not migrated to the repo-level findings file"
+}
+
+# Any other untracked content - even next to the excluded artifact, even
+# under .wavemill/ - still blocks destructive cleanup.
+case_observer_artifact_plus_user_file_retained() {
+  local repo branch wt out
+  repo="$(setup_repo observer-artifact-dirty)"
+  branch="task/observer-artifact-dirty"
+  wt="$tmp/observer-artifact-dirty/wt"
+  add_task_worktree "$repo" "$branch" "$wt"
+  mkdir -p "$wt/.wavemill"
+  printf '{"title":"finding"}\n' > "$wt/.wavemill/observer-findings.jsonl"
+  printf 'user work\n' > "$wt/.wavemill/notes.md"
+
+  out="$(run_helper "$repo" "$wt" "$branch")"
+  assert_contains "$out" "rc=10" "observer-artifact-dirty return"
+  assert_contains "$out" "outcome=retain_dirty" "observer-artifact-dirty outcome"
+  branch_exists "$repo" "$branch" || fail "observer-artifact-dirty branch was deleted"
+  assert_exists "$wt/.wavemill/notes.md"
+  assert_exists "$wt/.wavemill/observer-findings.jsonl"
+}
+
 # Shared topology for the PR-aware cases: a squash-delivered branch. The task
 # branch is pushed, origin auto/integration is rewritten with a squash commit
 # of the branch tip, and the remote task branch is deleted, so neither the
@@ -381,6 +434,30 @@ case_squash_pr_head_deleted() {
   [[ "$(jq -r '.safeToDelete' "$decision")" == "true" ]] || fail "squash-pr decision safeToDelete mismatch"
   [[ "$(jq -r '.issue' "$decision")" == "HOK-9001" ]] || fail "squash-pr decision issue mismatch"
   [[ "$(jq -r '.prNumber' "$decision")" == "4242" ]] || fail "squash-pr decision prNumber mismatch"
+}
+
+case_squash_pr_head_shadow_records_decision() {
+  local repo branch wt out decision head fixture
+  repo="$(setup_squash_delivery squash-pr-shadow)"
+  jq -n '{cleanup:{branchDeletion:{enabled:true,mode:"shadow"}}}' > "$repo/.wavemill-config.json"
+  branch="task/squash-pr-shadow"
+  wt="$tmp/squash-pr-shadow/wt"
+  head="$(git -C "$wt" rev-parse HEAD)"
+  fixture="$tmp/squash-pr-shadow/pr.json"
+  record_pr_fixture "$fixture" "MERGED" "2026-09-04T12:00:00Z" "$head" "auto/integration"
+
+  out="$(run_helper "$repo" "$wt" "$branch" "auto/integration" "test" "HOK-9010" "4242" "$fixture")"
+  decision="$(decision_path "$repo" "$branch")"
+  assert_contains "$out" "rc=0" "squash-pr-shadow return"
+  assert_contains "$out" "outcome=shadow_would_delete" "squash-pr-shadow outcome"
+  branch_exists "$repo" "$branch" || fail "squash-pr-shadow branch was deleted in shadow mode"
+  assert_absent "$wt"
+  assert_exists "$decision"
+  [[ "$(jq -r '.classification' "$decision")" == "safe_terminal_pr_head" ]] || fail "squash-pr-shadow decision classification mismatch"
+  [[ "$(jq -r '.mode' "$decision")" == "shadow" ]] || fail "squash-pr-shadow decision mode mismatch"
+  [[ "$(jq -r '.wouldDelete' "$decision")" == "true" ]] || fail "squash-pr-shadow wouldDelete mismatch"
+  [[ "$(jq -r '.authority' "$decision")" == *"headRefOid exactly equal"* ]] || fail "squash-pr-shadow authority missing"
+  [[ "$(jq -r '.finalCheckPassed' "$decision")" == "true" ]] || fail "squash-pr-shadow finalCheckPassed mismatch"
 }
 
 case_pr_head_mismatch_retained() {
@@ -535,7 +612,10 @@ case_stale_local_base_uses_origin_base
 case_remote_verification_failure_preserved
 case_no_new_commits_deleted
 case_dirty_worktree_retained
+case_observer_artifact_only_cleaned
+case_observer_artifact_plus_user_file_retained
 case_squash_pr_head_deleted
+case_squash_pr_head_shadow_records_decision
 case_pr_head_mismatch_retained
 case_pr_closed_unmerged_retained
 case_pr_lookup_failure_retained

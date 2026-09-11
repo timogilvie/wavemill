@@ -114,6 +114,25 @@ export interface ReadyResult {
 
   /** GitHub merge-state status observed with CI. */
   mergeStateStatus?: string;
+
+  /**
+   * Typed pending reason (HOK-2963), set only for challenge eval/comparison
+   * waits on implementation-ready PRs. Additive; absent for CI and other
+   * untyped pending verdicts.
+   */
+  pendingReason?: string;
+
+  /** All typed pending reasons, when any. */
+  pendingReasons?: string[];
+
+  /**
+   * True when CI, base-branch, metadata, dependency, migration, and risk
+   * guards all pass/warn — i.e. only challenge resolution blocks merge.
+   */
+  implementationReady?: boolean;
+
+  /** Challenge pair diagnostics (pair id, per-side eval evidence, outcome). */
+  challenge?: Record<string, unknown>;
 }
 
 /**

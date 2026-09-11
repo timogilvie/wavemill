@@ -21,6 +21,7 @@ import type { StageAwareDecision } from './stage-aware-router.ts';
 import type { WorkflowRouteDecision } from './workflow-router.ts';
 import { filterDisabledModels } from './disabled-models.ts';
 import { partitionEvidence } from './model-evidence-policy.ts';
+import { stageInherited } from './challenge-execution-contract.ts';
 
 export type ChallengeReason = 'low-confidence' | 'new-model' | 'low-data-stage' | 'disabled';
 export type ChallengeStage = 'plan' | 'implementation' | 'review';
@@ -615,6 +616,12 @@ export function buildEvalSummary(repoDir?: string): EvalSummary {
       for (const stage of STAGES) {
         if (recordStagePresence(record, stage)) {
           summary.recordsByStage[stage] = (summary.recordsByStage[stage] ?? 0) + 1;
+        }
+
+        // Do not credit a model for a stage this arm inherited from the shared
+        // pre-fork prefix — the model never actually ran that stage here.
+        if (stageInherited(record, stage)) {
+          continue;
         }
 
         const stageModel = recordStageModel(record, stage);

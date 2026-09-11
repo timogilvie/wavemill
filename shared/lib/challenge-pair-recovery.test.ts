@@ -421,3 +421,39 @@ describe('challenge recovery application', () => {
     }
   });
 });
+describe('deferred awaiting_fork arms (HOK-2813)', () => {
+  it('upholds the status quo for a pair whose challenger is still awaiting fork', () => {
+    const repoDir = mkdtempSync(join(tmpdir(), 'challenge-recovery-deferred-'));
+    try {
+      mkdirSync(join(repoDir, '.wavemill', 'evals'), { recursive: true });
+      writeFileSync(join(repoDir, '.wavemill', 'workflow-state.json'), JSON.stringify({
+        tasks: {
+          'HOK-77': {
+            slug: 'deferred-primary',
+            challengePairId: 'HOK-77',
+            challengeRole: 'primary',
+            challengeExecutionIntent: { createdAt: NOW(), selectedStage: 'review' },
+            challengeArms: [{
+              key: 'HOK-77_c',
+              slug: 'deferred-primary-challenger',
+              role: 'challenger',
+              variedStage: 'review',
+              challengeArmState: 'awaiting_fork',
+            }],
+          },
+        },
+      }));
+
+      const assessment = assess(repoDir, 'HOK-77');
+      assert.equal(assessment.verdict, 'quarantine-upheld');
+      assert.equal(assessment.arms.length, 0);
+      assert.match(assessment.blockers.join('; '), /awaiting fork/);
+
+      // Applying recovery must not write a superseding comparison record.
+      recover(repoDir, ['HOK-77'], true);
+      assert.equal(existsSync(join(repoDir, '.wavemill', 'evals', 'challenge-records.jsonl')), false);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+});

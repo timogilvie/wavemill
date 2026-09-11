@@ -46,12 +46,23 @@ import {
 } from '../stage-result.ts';
 import { getNativeContextManagementConfig } from '../config.ts';
 import type { NormalizedPricing } from '../openrouter-catalog.ts';
+import {
+  buildExecutedIdentity,
+  type ExecutedIdentity,
+} from '../challenge-execution-contract.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const NATIVE_REVIEW_PHASE_PROMPT_PATH = resolve(
   __dirname,
   '../../../tools/prompts/native-read-only-phase.md',
 );
+const REVIEW_ANALYSIS_TURN_LIMIT = 10;
+const REVIEW_TOOL_CALL_LIMIT = 30;
+const REVIEW_FINAL_SYNTHESIS_PROMPT = [
+  'Stop investigating. This is your reserved terminal synthesis turn.',
+  'Using only the evidence already gathered, return the required review JSON now.',
+  'Do not call tools, narrate your process, or wrap the JSON in Markdown.',
+].join(' ');
 
 export interface DeniedToolRecord {
   tool: string;
@@ -62,6 +73,10 @@ export interface DeniedToolRecord {
 interface SelectedProviderSuccess {
   ok: true;
   entry: ReadyNativeProviderEntry;
+  /** Populated only when a specific analysis model was requested (challenge pinning). */
+  requestedModel?: string;
+  /** Set when the requested model could not be selected and a fallback ran instead. */
+  fallbackReason?: string;
 }
 
 interface SelectedProviderFailure {
@@ -71,11 +86,39 @@ interface SelectedProviderFailure {
 
 type SelectedProvider = SelectedProviderSuccess | SelectedProviderFailure;
 
+/**
+ * Normalize a requested model selector down to the bare model id and an
+ * optional provider hint, tolerating the `provider/model`,
+ * `native-provider/model`, and bare `model` forms observed across challenge
+ * routing and agent-identifier strings.
+ */
+function parseRequestedNativeModel(requested: string): { providerName?: string; modelId: string } {
+  const trimmed = requested.trim();
+  const separatorIndex = trimmed.indexOf('/');
+  if (separatorIndex <= 0) {
+    return { modelId: trimmed };
+  }
+  const rawProvider = trimmed.slice(0, separatorIndex);
+  const modelId = trimmed.slice(separatorIndex + 1);
+  const providerName = rawProvider.startsWith('native-') ? rawProvider.slice('native-'.length) : rawProvider;
+  return { providerName: providerName || undefined, modelId };
+}
+
+function matchesRequestedModel(
+  entry: ReadyNativeProviderEntry,
+  requested: { providerName?: string; modelId: string },
+): boolean {
+  if (entry.modelId !== requested.modelId) return false;
+  if (requested.providerName && requested.providerName !== entry.providerName) return false;
+  return true;
+}
+
 function nativeReviewFailure(
   context: ReviewContext,
   category: string,
   description: string,
   deniedTools: DeniedToolRecord[] = [],
+  substantiveAnalysisIdentity?: ExecutedIdentity,
 ): ReviewResult {
   const blocker: ReviewFinding = {
     severity: 'blocker',
@@ -88,6 +131,7 @@ function nativeReviewFailure(
     verdict: 'not_ready',
     codeReviewFindings: [blocker],
     failureCategory: category,
+    ...(substantiveAnalysisIdentity ? { substantiveAnalysisIdentity } : {}),
     metadata: {
       branch: context.metadata.branch,
       files: context.metadata.files,
@@ -183,13 +227,43 @@ function normalizedPricingFromModel(model: WavemillLoopConfig['model']): Normali
   return { inputPerMTok, outputPerMTok };
 }
 
-function selectReviewProvider(repoDir: string, env: NodeJS.ProcessEnv = process.env): SelectedProvider {
+/**
+ * Select the native provider entry that performs substantive review
+ * analysis.
+ *
+ * When `requestedModel` is given (a reviewer-stage challenge pins the exact
+ * analysis model under test), the exact ready entry matching it is selected.
+ * If that model is not among the ready entries, this falls back to the first
+ * ready entry as before — availability must not regress — but the caller
+ * records the fallback so the executed identity comes back unpinned rather
+ * than silently normalized (HOK-2969): a challenge cannot prove which model
+ * analyzed the diff when the wrong model ran instead.
+ */
+function selectReviewProvider(
+  repoDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+  requestedModel?: string,
+): SelectedProvider {
   const providers = resolveNativeAgentProviders(repoDir, { env, phase: 'review' });
-  const readyEntry = providers.find(
+  const readyEntries = providers.filter(
     (entry): entry is ReadyNativeProviderEntry => entry.status === 'ready',
   );
+
+  if (requestedModel) {
+    const parsed = parseRequestedNativeModel(requestedModel);
+    const exactMatch = readyEntries.find((entry) => matchesRequestedModel(entry, parsed));
+    if (exactMatch) {
+      return { ok: true, entry: exactMatch, requestedModel };
+    }
+  }
+
+  const readyEntry = readyEntries[0];
   if (readyEntry) {
-    return { ok: true, entry: readyEntry };
+    return {
+      ok: true,
+      entry: readyEntry,
+      ...(requestedModel ? { requestedModel, fallbackReason: 'requested_model_unavailable' } : {}),
+    };
   }
 
   return {
@@ -314,10 +388,25 @@ export async function runNativeReview(
   repoDir: string,
   options: ReviewEngineOptions = {},
 ): Promise<ReviewResult> {
-  const provider = nativeReviewDeps.selectReviewProvider(repoDir, process.env);
+  const requestedAnalysisModel = options.model?.trim() || undefined;
+  const provider = nativeReviewDeps.selectReviewProvider(repoDir, process.env, requestedAnalysisModel);
   if (!provider.ok) {
     return nativeReviewFailure(context, 'native-runtime-unavailable', provider.message);
   }
+
+  // `resolvedModel` must stay in the same bare-model-id namespace as
+  // `requestedModel` (challenge routing emits bare ids like "glm-5.3", never
+  // the "provider/model" canonical form) — comparing against the canonical
+  // form would report a mismatch on every exact match (HOK-2969).
+  const resolvedModelId = provider.entry.modelId;
+  const substantiveAnalysisIdentity = buildExecutedIdentity({
+    role: 'substantive_analysis',
+    requestedModel: provider.requestedModel ?? resolvedModelId,
+    resolvedModel: resolvedModelId,
+    agent: `native-${provider.entry.providerName}`,
+    source: provider.requestedModel ? 'route' : 'derived',
+    fallbackReason: provider.fallbackReason,
+  });
 
   const template = loadPromptResourceSync({
     kind: 'prompt',
@@ -330,6 +419,8 @@ export async function runNativeReview(
       context,
       'native-review-prompt-missing',
       'Native review could not load the general review prompt template.',
+      [],
+      substantiveAnalysisIdentity,
     );
   }
 
@@ -352,6 +443,8 @@ export async function runNativeReview(
       context,
       'native-runtime-unavailable',
       `${provider.entry.apiKeyEnv} resolved to an empty value for native review.`,
+      [],
+      substantiveAnalysisIdentity,
     );
   }
 
@@ -408,7 +501,10 @@ export async function runNativeReview(
     });
   }
 
-  const maxRetries = options.maxRetries ?? 1;
+  // Native review needs an evidence-gathering budget independent of transport
+  // retry count. Keep larger explicit retry settings backward-compatible while
+  // guaranteeing enough analysis turns for repository-scale reviews.
+  const analysisTurnLimit = Math.max(REVIEW_ANALYSIS_TURN_LIMIT, (options.maxRetries ?? 1) + 1);
   const cleanupTracker = createCleanupTracker();
   let loopResult;
   try {
@@ -445,17 +541,21 @@ export async function runNativeReview(
         }
       },
       budget: {
-        maxTurns: maxRetries + 1,
-        maxToolCalls: 12,
+        // One additional turn is reserved for tool-free terminal synthesis.
+        maxTurns: analysisTurnLimit + 1,
+        maxToolCalls: REVIEW_TOOL_CALL_LIMIT,
         maxWallClockMs: options.timeout ?? 300_000,
+      },
+      terminalSynthesis: {
+        prompt: REVIEW_FINAL_SYNTHESIS_PROMPT,
       },
     });
   } catch (error) {
     if (error instanceof ContextExhaustedError) {
-      return nativeReviewFailure(context, 'native-context-exhausted', error.message);
+      return nativeReviewFailure(context, 'native-context-exhausted', error.message, [], substantiveAnalysisIdentity);
     }
     if (error instanceof ContextWindowExceededError || error instanceof ContextWindowUnverifiableError) {
-      return nativeReviewFailure(context, 'native-context-window-exceeded', error.message);
+      return nativeReviewFailure(context, 'native-context-window-exceeded', error.message, [], substantiveAnalysisIdentity);
     }
     throw error;
   }
@@ -497,6 +597,7 @@ export async function runNativeReview(
       reviewFailureCategoryForProviderErrorKind(providerErrorKind),
       providerDescription || stopReasonDescription(loopResult.stopReason),
       deniedTools,
+      substantiveAnalysisIdentity,
     );
   }
 
@@ -507,6 +608,7 @@ export async function runNativeReview(
       'native-review-malformed-response',
       'Native review returned an empty final assistant message.',
       deniedTools,
+      substantiveAnalysisIdentity,
     );
   }
 
@@ -516,6 +618,7 @@ export async function runNativeReview(
       ...result.metadata,
       deniedTools,
     };
+    result.substantiveAnalysisIdentity = substantiveAnalysisIdentity;
     return result;
   } catch (error) {
     return nativeReviewFailure(
@@ -523,6 +626,7 @@ export async function runNativeReview(
       'native-review-malformed-response',
       `Native review returned malformed response: ${(error as Error).message}`,
       deniedTools,
+      substantiveAnalysisIdentity,
     );
   }
 }

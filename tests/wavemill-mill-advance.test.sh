@@ -99,6 +99,17 @@ for fn in \
   review_result_missing_final_evidence \
   review_artifacts_with_pr_number \
   clear_review_gate_attention \
+  review_recovery_claim_path \
+  review_recovery_write_claim \
+  review_recovery_settle_claim \
+  review_recovery_write_audit \
+  review_recovery_terminal_artifacts_json \
+  review_recovery_restore_terminal_result \
+  review_recovery_running_artifacts_json \
+  review_recovery_clear_ready_handoff_state \
+  review_recovery_publish_running \
+  review_recovery_coordinator \
+  review_recovery_coordinator_locked \
   blocked_completion_current_head \
   blocked_completion_commit_matches_head \
   wavemill_owned_feature_artifact_path \
@@ -160,8 +171,16 @@ pr_state() { printf "%s\n" "${PR_STATUS:-OPEN}"; }
 launch_review_calls=0
 launch_review_phase() {
   launch_review_calls=$((launch_review_calls + 1))
+  launch_review_agent="${8:-}"
+  launch_review_model="${7:-}"
   return "${REVIEW_LAUNCH_RC:-0}"
 }
+_prepare_recovery_phase_launch() { return 0; }
+agent_validate_phase_launch() { return 0; }
+review_recovery_contract_payload() {
+  jq -cn '{stageRole:"review",agent:"claude",model:"claude-sonnet-5",provider:"anthropic"}'
+}
+review_recovery_window_observable() { return 0; }
 set_task_phase() { :; }
 write_ready_attention_file() {
   mkdir -p "$1"
@@ -444,6 +463,8 @@ printf '%s\n' 'Review verdict does not pass readiness gate for PR #912.' > "$FEA
 run_rereview "re-review HOK-2012"
 assert_eq "re-review handled" "handled" "$MONITOR_COMMAND_STATUS"
 assert_eq "re-review launches review" "1" "$launch_review_calls"
+assert_eq "re-review uses contract agent" "claude" "$launch_review_agent"
+assert_eq "re-review uses contract model" "claude-sonnet-5" "$launch_review_model"
 assert_eq "re-review resets review status" "running" "$(jq -r '.status' "$FEATURE_REREVIEW/.review-result.json")"
 assert_eq "re-review preserves prior verdict in audit" "not_ready" "$(jq -r '.previousReviewResult.artifacts.verdict' "$FEATURE_REREVIEW/.review-rerun-request.json")"
 assert_eq "re-review preserves prior history in audit" "kept" "$(jq -r '.previousReviewResult.artifacts.history[0]' "$FEATURE_REREVIEW/.review-rerun-request.json")"
