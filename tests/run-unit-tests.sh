@@ -324,6 +324,7 @@ TESTS=(
   shared/lib/pre-pr-verification-drift-validator.test.ts
   tools/check-ci-verification.test.ts
   tests/verification-scenarios.test.ts
+  tests/fork-aware-comparison.test.ts
   # Registration-complete shared and tool tests.
   shared/lib/artifact-diagnostics.test.ts
   shared/lib/challenge-coverage-selector.test.ts
