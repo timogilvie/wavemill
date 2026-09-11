@@ -194,6 +194,7 @@ run_common() {
 
 run_pr_state() {
   (
+    unset SESSION || true
     export "$@" API_TIMEOUT=1
     run_common 'pr_state 123'
   )
@@ -204,7 +205,17 @@ run_validate() {
   shift
   local quoted_pr
   printf -v quoted_pr '%q' "$pr"
+  local has_session=0
+  for arg in "$@"; do
+    if [[ "$arg" == SESSION=* ]]; then
+      has_session=1
+      break
+    fi
+  done
   (
+    if [[ $has_session -eq 0 ]]; then
+      unset SESSION || true
+    fi
     export "$@" API_TIMEOUT=1 BASE_BRANCH=auto/integration
     run_common '
     if validate_pr_merge '"$quoted_pr"'; then
