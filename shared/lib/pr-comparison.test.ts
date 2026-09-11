@@ -9,6 +9,7 @@ import {
   buildChallengeCommentBody,
   buildCappedComparisonPrompt,
   buildComparisonPrompt,
+  fetchForkAwareDiffs,
   formatRoutingSummary,
   mapBlindVerdictToSides,
   parseUnifiedDiffLineRanges,
@@ -18,6 +19,7 @@ import {
   retainLoserPatch,
   runBlindJudge,
   validateComparisonJson,
+  verifyForkCommit,
 } from './pr-comparison.ts';
 import { loadPromptTemplate } from './prompt-utils.ts';
 import { hashString } from './prompt-hash.ts';
@@ -977,4 +979,164 @@ test('buildChallengeCommentBody reports invalid comparisons without a winner', (
 
   assert.match(body, /Comparison outcome: invalid/);
   assert.doesNotMatch(body, /Recommended winner/);
+});
+
+test('verifyForkCommit validates fork commit presence, tree, and ancestry', () => {
+  const gitCommands: string[][] = [];
+  const result = verifyForkCommit({
+    forkCommit: 'fork-sha',
+    recordedTree: 'expected-tree',
+    primaryHeadSha: 'primary-sha',
+    challengerHeadSha: 'challenger-sha',
+    repoDir: '/repo',
+    deps: {
+      runGit(args) {
+        gitCommands.push(args);
+        if (args[0] === 'cat-file') return '';
+        if (args[0] === 'rev-parse') return 'expected-tree';
+        if (args[0] === 'merge-base') return '';
+        return '';
+      },
+    },
+  });
+
+  assert.equal(result.valid, true);
+  assert.equal(result.resolvedTree, 'expected-tree');
+  assert.ok(gitCommands.some((cmd) => cmd.join(' ').includes('cat-file -e fork-sha')));
+  assert.ok(gitCommands.some((cmd) => cmd.join(' ').includes('rev-parse fork-sha^{tree}')));
+  assert.ok(gitCommands.some((cmd) => cmd.join(' ').includes('merge-base --is-ancestor fork-sha primary-sha')));
+  assert.ok(gitCommands.some((cmd) => cmd.join(' ').includes('merge-base --is-ancestor fork-sha challenger-sha')));
+});
+
+test('verifyForkCommit rejects fork commit when tree does not match recorded value', () => {
+  const result = verifyForkCommit({
+    forkCommit: 'fork-sha',
+    recordedTree: 'expected-tree',
+    primaryHeadSha: 'primary-sha',
+    challengerHeadSha: 'challenger-sha',
+    repoDir: '/repo',
+    deps: {
+      runGit(args) {
+        if (args[0] === 'cat-file') return '';
+        if (args[0] === 'rev-parse') return 'different-tree';
+        return '';
+      },
+    },
+  });
+
+  assert.equal(result.valid, false);
+  assert.equal(result.reason, 'tree_mismatch');
+  assert.match(result.detail!, /expected-tree does not match resolved tree different-tree/);
+});
+
+test('verifyForkCommit rejects fork commit when not ancestor of primary', () => {
+  const result = verifyForkCommit({
+    forkCommit: 'fork-sha',
+    recordedTree: undefined,
+    primaryHeadSha: 'primary-sha',
+    challengerHeadSha: 'challenger-sha',
+    repoDir: '/repo',
+    deps: {
+      runGit(args) {
+        if (args[0] === 'cat-file') return '';
+        if (args[0] === 'rev-parse') return 'tree-sha';
+        if (args[0] === 'merge-base' && args[3] === 'primary-sha') throw new Error('not ancestor');
+        return '';
+      },
+    },
+  });
+
+  assert.equal(result.valid, false);
+  assert.equal(result.reason, 'not_ancestor_of_primary');
+  assert.match(result.detail!, /not an ancestor of primary/);
+});
+
+test('verifyForkCommit rejects fork commit when not ancestor of challenger', () => {
+  const result = verifyForkCommit({
+    forkCommit: 'fork-sha',
+    recordedTree: undefined,
+    primaryHeadSha: 'primary-sha',
+    challengerHeadSha: 'challenger-sha',
+    repoDir: '/repo',
+    deps: {
+      runGit(args) {
+        if (args[0] === 'cat-file') return '';
+        if (args[0] === 'rev-parse') return 'tree-sha';
+        if (args[0] === 'merge-base' && args[3] === 'primary-sha') return '';
+        if (args[0] === 'merge-base' && args[3] === 'challenger-sha') throw new Error('not ancestor');
+        return '';
+      },
+    },
+  });
+
+  assert.equal(result.valid, false);
+  assert.equal(result.reason, 'not_ancestor_of_challenger');
+  assert.match(result.detail!, /not an ancestor of challenger/);
+});
+
+test('verifyForkCommit rejects when fork commit is not available locally', () => {
+  const result = verifyForkCommit({
+    forkCommit: 'fork-sha',
+    recordedTree: undefined,
+    primaryHeadSha: 'primary-sha',
+    challengerHeadSha: 'challenger-sha',
+    repoDir: '/repo',
+    deps: {
+      runGit() {
+        throw new Error('commit not found');
+      },
+    },
+  });
+
+  assert.equal(result.valid, false);
+  assert.equal(result.reason, 'unverified_fork_commit');
+  assert.match(result.detail!, /not available locally/);
+});
+
+test('fetchForkAwareDiffs computes shared prefix and each arm delta', () => {
+  const gitCommands: string[][] = [];
+  const diffs = fetchForkAwareDiffs({
+    forkCommit: 'fork-sha',
+    primaryHeadSha: 'primary-sha',
+    challengerHeadSha: 'challenger-sha',
+    baseRefName: 'main',
+    repoDir: '/repo',
+    deps: {
+      runGit(args) {
+        gitCommands.push(args);
+        if (args[0] === 'merge-base') return 'base-sha';
+        if (args[0] === 'diff' && args[1] === 'base-sha') return 'shared prefix diff content';
+        if (args[0] === 'diff' && args[2] === 'primary-sha') return 'primary delta diff';
+        if (args[0] === 'diff' && args[2] === 'challenger-sha') return 'challenger delta diff';
+        return '';
+      },
+    },
+  });
+
+  assert.equal(diffs.sharedContext, 'shared prefix diff content');
+  assert.equal(diffs.primaryDelta, 'primary delta diff');
+  assert.equal(diffs.challengerDelta, 'challenger delta diff');
+  assert.ok(gitCommands.some((cmd) => cmd.join(' ') === 'merge-base refs/remotes/origin/main fork-sha'));
+});
+
+test('buildCappedComparisonPrompt accounts for sharedContext in byte budgeting', () => {
+  const sharedContext = 'x'.repeat(1000);
+  const primaryDiff = 'p'.repeat(1500);
+  const challengerDiff = 'c'.repeat(1500);
+
+  const result = buildCappedComparisonPrompt({
+    issuePrompt: 'Issue context',
+    primaryDiff,
+    challengerDiff,
+    presentationOrder: 'primary-first',
+    sharedContext,
+  }, 3500);
+
+  // Total would be: ~500 scaffold + 1000 shared + 1500 primary + 1500 challenger = 4500
+  // With a 3500 byte budget, both diffs should be truncated to make room for shared context
+  assert.equal(result.truncated, true);
+  assert.ok(result.finalBytes <= 3500);
+  // Shared context should be preserved in the prompt
+  assert.match(result.prompt, /Shared Pre-Fork Context/);
+  assert.ok(result.prompt.includes(sharedContext));
 });

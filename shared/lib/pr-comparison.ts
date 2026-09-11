@@ -750,12 +750,16 @@ export function buildCappedComparisonPrompt(
     return { prompt: originalPrompt, truncated: false, originalBytes, finalBytes: originalBytes };
   }
 
+  // Account for shared context in the scaffold calculation so diffs cannot be
+  // crowded out. The scaffold includes workflow context, stage evidence, and now
+  // the shared pre-fork prefix when present.
+  const sharedContextBytes = byteLength(input.sharedContext ?? '');
   const scaffoldBytes = byteLength(buildComparisonPrompt({
     ...input,
     primaryDiff: '',
     challengerDiff: '',
   }));
-  let availableDiffBytes = Math.max(0, maxPromptBytes - scaffoldBytes);
+  let availableDiffBytes = Math.max(0, maxPromptBytes - scaffoldBytes - sharedContextBytes);
   const primaryBytes = byteLength(input.primaryDiff);
   const challengerBytes = byteLength(input.challengerDiff);
   const totalDiffBytes = primaryBytes + challengerBytes;
