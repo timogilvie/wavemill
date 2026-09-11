@@ -99,6 +99,8 @@ interface TaskState {
   agent?: string;
   challengeRole?: string;
   challengePairId?: string;
+  challengeArmState?: string;
+  challengeArms?: Array<{ key?: string; challengeArmState?: string }>;
   executionOwner?: string;
   paneState?: string;
   lifecycle?: TaskLifecycleState | Record<string, unknown>;
@@ -533,6 +535,8 @@ function readWorkflowTasks(stateFile: string): TaskState[] {
         agent: stringValue(task.agent),
         challengeRole: stringValue(task.challengeRole),
         challengePairId: stringValue(task.challengePairId),
+        challengeArmState: stringValue(task.challengeArmState),
+        challengeArms: challengeArmSummaries(task.challengeArms),
         executionOwner: stringValue(task.executionOwner),
         paneState: stringValue(task.paneState),
         lifecycle: task.lifecycle && typeof task.lifecycle === 'object' && !Array.isArray(task.lifecycle)
@@ -547,6 +551,34 @@ function readWorkflowTasks(stateFile: string): TaskState[] {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function challengeArmSummaries(value: unknown): TaskState['challengeArms'] {
+  if (!Array.isArray(value)) return undefined;
+  return value
+    .filter((arm): arm is Record<string, unknown> => Boolean(arm) && typeof arm === 'object' && !Array.isArray(arm))
+    .map((arm) => ({
+      key: stringValue(arm.key),
+      challengeArmState: stringValue(arm.challengeArmState),
+    }));
+}
+
+/**
+ * Deferred arms normally exist only as nested records on their primary. If a
+ * restart or older producer also left a synthetic top-level row, exclude that
+ * row from every observer detector: awaiting_fork owns no pane, worktree, or
+ * process yet and therefore cannot be stale or orphaned.
+ */
+function withoutPendingChallengeArmTasks(repo: RepoSnapshot): RepoSnapshot {
+  const pendingKeys = new Set<string>();
+  for (const task of repo.tasks) {
+    if (task.challengeArmState === 'awaiting_fork') pendingKeys.add(task.issue);
+    for (const arm of task.challengeArms ?? []) {
+      if (arm.challengeArmState === 'awaiting_fork' && arm.key) pendingKeys.add(arm.key);
+    }
+  }
+  if (pendingKeys.size === 0) return repo;
+  return { ...repo, tasks: repo.tasks.filter((task) => !pendingKeys.has(task.issue)) };
 }
 
 function taskCleanupEpisode(task: TaskState): CleanupEpisode | undefined {
@@ -1438,7 +1470,7 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
     findings.push(configIntegrityFinding(issue, snapshot.sessions[0] ?? 'global'));
   }
 
-  for (const repo of snapshot.repos) {
+  for (const repo of snapshot.repos.map(withoutPendingChallengeArmTasks)) {
     for (const issue of detectRepoConfigIntegrity(repo.repoDir)) {
       findings.push(configIntegrityFinding(issue, repo.session, repo.repoDir));
     }
@@ -2625,7 +2657,7 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
     return { ...snapshot, incidents };
   }
 
-  for (const repo of snapshot.repos) {
+  for (const repo of snapshot.repos.map(withoutPendingChallengeArmTasks)) {
     let incidentConfig: ReturnType<typeof getIncidentConfig>;
     try {
       incidentConfig = getIncidentConfig(repo.repoDir);
@@ -3133,7 +3165,9 @@ export function compactSnapshotForRender(snapshot: ObserverSnapshot): ObserverSn
 }
 
 function renderSummary(snapshot: ObserverSnapshot): string {
-  const activeTasks = snapshot.repos.flatMap((repo) => repo.tasks.filter((task) => !taskWorkflowIsTerminal(task)));
+  const activeTasks = snapshot.repos
+    .map(withoutPendingChallengeArmTasks)
+    .flatMap((repo) => repo.tasks.filter((task) => !taskWorkflowIsTerminal(task)));
   const counts: Record<Severity, number> = { urgent: 0, high: 0, medium: 0, low: 0 };
   for (const finding of snapshot.findings) {
     counts[finding.severity] += 1;

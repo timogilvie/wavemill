@@ -6,7 +6,7 @@ import { isUnresolvableReason, UNRESOLVABLE_REASONS } from '../shared/lib/tend-c
 
 runTool({
   name: 'resolve-orphan-challenge-pair',
-  description: 'Write a terminal challenge comparison record when a pair is confirmed unresolvable.',
+  description: 'Write a terminal challenge comparison record when a pair is confirmed unresolvable; awaiting-fork pairs are always deferred.',
   options: {
     'pair-id': { type: 'string', description: 'Challenge pair identifier' },
     reason: { type: 'string', description: 'Optional explicit unresolvable reason override' },

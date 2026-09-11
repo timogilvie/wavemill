@@ -16,6 +16,7 @@ import {
   isSiblingLive,
   listRemoteTaskBranches,
   loadWorkflowStateChallengeData,
+  pairHasPendingChallengeArm,
   type PairTaskState,
   type TaskEvalState,
   type UnresolvableReason,
@@ -27,7 +28,6 @@ import {
   type ChallengeArmFailure,
 } from './arm-failure-taxonomy.ts';
 import { repairChallengePairingSync } from './challenge-pairing-repair.ts';
-import { hasPendingArms } from './pending-arm-detection.ts';
 import {
   recordSelectionOutcome,
   releaseReservation,
@@ -89,6 +89,15 @@ export async function resolveUnresolvablePair(input: UnresolvablePairInput): Pro
     return { status: 'skipped', reason: `Pair ${input.pairId} is not present in workflow state.` };
   }
   const pairState = hydrateCleanedAbortedArm(input.pairId, evalsDir, trackedPairState);
+
+  // A challenger nested on the primary as an awaiting_fork arm is
+  // legitimately missing until the fork trigger materialises it. Keep this
+  // guard ahead of explicit-reason handling so an operator-supplied orphan
+  // reason cannot accidentally forfeit a deferred pair.
+  if (pairHasPendingChallengeArm(pairState)) {
+    return { status: 'skipped', reason: `Pair ${input.pairId} has a challenger arm awaiting fork; deferred, not orphaned.` };
+  }
+
   const retryMax = getChallengeEvalHardFailureRetryMaxAttempts(input.repoDir);
 
   if ((workflow.activeJobsByPair.get(input.pairId) ?? []).length > 0) {
@@ -341,13 +350,6 @@ function detectUnresolvableReason(
   }
 
   if (pairState.primary && pairState.challenger) {
-    return null;
-  }
-
-  // HOK-2813_c: If the primary has pending arms (awaiting_fork), the pair is
-  // not orphaned — it's just waiting for the fork trigger to materialise the
-  // challenger. Do not treat it as unresolvable.
-  if (pairState.primary && hasPendingArms(pairState.primary)) {
     return null;
   }
 

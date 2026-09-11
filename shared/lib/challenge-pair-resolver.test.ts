@@ -1116,3 +1116,51 @@ test('resolver dry run reports orphan-sibling without writing a comparison', asy
     cleanup();
   }
 });
+
+test('resolver defers a pair whose challenger is an awaiting_fork arm (HOK-2813)', async () => {
+  const { repoDir, cleanup } = setupRepoDir();
+  try {
+    const tasks = {
+      HOK_9: {
+        pr: 900,
+        branch: 'task/deferred-primary',
+        updated: '2026-07-01T00:00:00Z',
+        challengePairId: 'pair-deferred',
+        challengeRole: 'primary',
+        challengeModel: 'gpt-5.5',
+        evalCompleted: true,
+        challengeArms: [{
+          key: 'HOK_9_c',
+          slug: 'deferred-primary-challenger',
+          branch: 'task/deferred-primary-challenger',
+          role: 'challenger',
+          variedStage: 'review',
+          challengeArmState: 'awaiting_fork',
+        }],
+      },
+    };
+    writeWorkflowState(repoDir, tasks);
+
+    const detected = await resolveUnresolvablePair({
+      pairId: 'pair-deferred',
+      repoDir,
+      now: () => new Date('2026-07-17T12:00:00Z'),
+    });
+    const forced = await resolveUnresolvablePair({
+      pairId: 'pair-deferred',
+      repoDir,
+      reason: 'orphan-sibling',
+      now: () => new Date('2026-07-17T12:00:00Z'),
+    });
+
+    assert.equal(detected.status, 'skipped');
+    assert.match(detected.reason, /awaiting fork/);
+    assert.equal(forced.status, 'skipped');
+    assert.match(forced.reason, /awaiting fork/);
+    assert.equal(readChallengeComparisons(join(repoDir, '.wavemill', 'evals')).length, 0);
+    const state = JSON.parse(readFileSync(join(repoDir, '.wavemill', 'workflow-state.json'), 'utf-8'));
+    assert.deepEqual(state.tasks, tasks);
+  } finally {
+    cleanup();
+  }
+});

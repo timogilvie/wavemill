@@ -9,6 +9,7 @@ import type { PrMetadata } from './pr-metadata.ts';
 import { WM_LABELS } from './pr-state-labels.ts';
 import { escapeShellArg, execShellCommand } from './shell-utils.ts';
 import { resolveEffectiveChallengeRole } from './challenge-role-utils.ts';
+import { hasPendingArms } from './pending-arm-detection.ts';
 
 export type ChallengeRole = 'primary' | 'challenger';
 export const UNRESOLVABLE_REASONS = [
@@ -79,6 +80,8 @@ export interface TaskEvalState {
   challengeAbortedStage: string | null;
   /** Set to true when the challenger arm is actually launched (P0.6, HOK-2798). */
   challengerLaunched?: boolean;
+  /** The missing challenger is still a valid nested deferred arm. */
+  hasPendingChallengeArm?: boolean;
 }
 
 export interface PairTaskState {
@@ -106,6 +109,7 @@ interface WorkflowStateTask {
   comparisonState?: unknown;
   challengeAborted?: unknown;
   challengerLaunched?: unknown;
+  challengeArms?: unknown;
 }
 
 type WorkflowStateFile = WorkflowStateLike & {
@@ -296,6 +300,7 @@ export function loadWorkflowStateChallengeData(repoDir: string): WorkflowStateCh
             ? task.challengeAbortedStage
             : null,
           challengerLaunched: task.challengerLaunched === true,
+          hasPendingChallengeArm: hasPendingArms(task),
         };
         taskStateByPair.set(pairId, pairTaskState);
       }
@@ -314,6 +319,11 @@ export function loadWorkflowStateChallengeData(repoDir: string): WorkflowStateCh
       activeJobsByPair: new Map(),
     };
   }
+}
+
+/** True when a pair's challenger is legitimately absent until its fork trigger. */
+export function pairHasPendingChallengeArm(pairState: PairTaskState | undefined): boolean {
+  return pairState?.primary?.hasPendingChallengeArm === true && !pairState.challenger;
 }
 
 function stageVariedModel(task: Record<string, unknown>): string | null {
@@ -421,6 +431,15 @@ export function classifyChallengeState(
         pairId,
         otherPr,
         reason: hardFailureState,
+      };
+    }
+
+    if (pairHasPendingChallengeArm(pairState)) {
+      return {
+        kind: 'pair-unresolved',
+        pairId,
+        otherPr,
+        reason: 'pair-unresolved:challenger-awaiting-fork',
       };
     }
 
@@ -856,6 +875,9 @@ function isOrphanedPair(
     return false;
   }
   if (pairState.primary && pairState.challenger) {
+    return false;
+  }
+  if (pairHasPendingChallengeArm(pairState)) {
     return false;
   }
   if (otherPr !== null || siblingLive) {

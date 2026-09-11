@@ -5,11 +5,13 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   applyChallengePairGates,
+  classifyChallengeState,
   classifyPairUnresolvableState,
   getSiblingBranch,
   isUnresolvableReason,
   isSiblingLive,
   loadWorkflowStateChallengeData,
+  pairHasPendingChallengeArm,
   parseRemoteBranchOutput,
   UNRESOLVABLE_REASONS,
   type ChallengeBlockedCandidate,
@@ -57,6 +59,53 @@ describe('unresolvable reason helpers', () => {
       primary: task('primary', { aborted: 'terminal' }),
       challenger: task('challenger', { aborted: 'terminal' }),
     }, 2), 'both-challenge-aborted');
+  });
+});
+
+describe('pending deferred challenger arms (HOK-2813)', () => {
+  it('projects the pending arm and keeps the pair unresolved instead of orphaned', () => {
+    const { repoDir, cleanup } = setupRepoDir();
+    try {
+      writeWorkflowState(repoDir, {
+        'HOK-2813': {
+          pr: 500,
+          branch: 'task/deferred-primary',
+          updated: '2026-07-01T00:00:00Z',
+          challengePairId: 'HOK-2813',
+          challengeRole: 'primary',
+          challengeArms: [{
+            key: 'HOK-2813_c',
+            role: 'challenger',
+            variedStage: 'review',
+            challengeArmState: 'awaiting_fork',
+          }],
+        },
+      });
+
+      const data = loadWorkflowStateChallengeData(repoDir);
+      const pairState = data.taskStateByPair.get('HOK-2813');
+      assert.equal(pairHasPendingChallengeArm(pairState), true);
+      assert.deepEqual(classifyChallengeState(
+        500,
+        { challenge: true, challengePairId: 'HOK-2813' },
+        data.challengePairMap,
+        [],
+        false,
+        new Set([500]),
+        {
+          taskStateByPair: data.taskStateByPair,
+          activeJobsByPair: data.activeJobsByPair,
+          nowMs: () => Date.parse('2026-07-02T00:00:00Z'),
+        },
+      ), {
+        kind: 'pair-unresolved',
+        pairId: 'HOK-2813',
+        otherPr: null,
+        reason: 'pair-unresolved:challenger-awaiting-fork',
+      });
+    } finally {
+      cleanup();
+    }
   });
 });
 

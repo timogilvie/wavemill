@@ -870,6 +870,40 @@ test('fresh active challenge arm is not surfaced as stale', () => {
   }
 });
 
+test('awaiting_fork arm is excluded from stale detection even with a synthetic task row', () => {
+  const old = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
+  const findings = buildFindings({
+    timestamp: new Date().toISOString(),
+    sessions: ['wavemill'],
+    panes: [],
+    processes: [],
+    repos: [{
+      session: 'wavemill',
+      repoDir: '/tmp/repo',
+      stateMtime: old,
+      tasks: [{
+        issue: 'HOK-2813',
+        phase: 'coding',
+        status: 'active',
+        updated: new Date().toISOString(),
+        challengeRole: 'primary',
+        challengeArms: [{ key: 'HOK-2813_c', challengeArmState: 'awaiting_fork' }],
+      }, {
+        issue: 'HOK-2813_c',
+        slug: 'deferred-challenger',
+        phase: 'coding',
+        status: 'active',
+        updated: old,
+        challengeRole: 'challenger',
+        challengeArmState: 'awaiting_fork',
+      }],
+    }],
+  }, defaultObserverOptions());
+
+  assert.equal(findings.some((finding) => finding.issue === 'HOK-2813_c'), false);
+  assert.equal(findings.some((finding) => finding.id.includes('HOK-2813_c')), false);
+});
+
 test('stale active task with a surviving pane is surfaced as stalled residue', () => {
   const repoDir = mkdtempSync(join(tmpdir(), 'observer-stale-live-pane-'));
   const worktree = join(repoDir, 'worktrees', 'parked-agent');
