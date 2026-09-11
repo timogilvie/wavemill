@@ -346,6 +346,77 @@ REASON=$(bounded_retry_exhaustion_reason "$RETRY_STATE" "$BUCKET")
 check_contains "exhaustion reason is greppable" "$REASON" "ceiling"
 
 # ────────────────────────────────────────────────────────────────
+# Test 4b (HOK-2813): restart recovery + pre-fork collapse
+# ────────────────────────────────────────────────────────────────
+echo ""
+echo "=== HOK-2813 pending-arm restart and pre-fork collapse ==="
+
+# A restart with an arm stuck in `materializing` resets it to awaiting_fork,
+# preserving the rest of the record verbatim.
+printf '%s\n' '{"session":"test","tasks":{"HOK-1234":{"slug":"foo","challenge":true,"challengeRole":"primary","challengePairId":"HOK-1234"}}}' > "$STATE_FILE"
+challenge_arms_record_pending "HOK-1234" "$ARM_JSON"
+challenge_arms_set_state "HOK-1234" "HOK-1234_c" "awaiting_fork" "materializing"
+challenge_arms_recover_interrupted "HOK-1234"
+RECOVERED_STATE=$(jq -r '.tasks["HOK-1234"].challengeArms[0].challengeArmState' "$STATE_FILE")
+check_eq "recover_interrupted resets materializing → awaiting_fork" "awaiting_fork" "$RECOVERED_STATE"
+RECOVERED_FROM=$(jq -r '.tasks["HOK-1234"].challengeArms[0].recoveredFrom' "$STATE_FILE")
+check_eq "recover_interrupted stamps recoveredFrom" "materializing" "$RECOVERED_FROM"
+RECOVERED_MODEL=$(jq -r '.tasks["HOK-1234"].challengeArms[0].models.reviewer' "$STATE_FILE")
+check_eq "recover_interrupted preserves the arm record" "claude-haiku-4-5-20251001" "$RECOVERED_MODEL"
+# Idempotent, and never touches an awaiting_fork/materialized arm.
+challenge_arms_recover_interrupted "HOK-1234"
+check_eq "recover_interrupted is idempotent" "awaiting_fork" "$(jq -r '.tasks["HOK-1234"].challengeArms[0].challengeArmState' "$STATE_FILE")"
+
+# The rehydrate loop must only enumerate .tasks rows: a nested pending arm
+# never becomes a slug/branch entry of its own.
+REHYDRATE_ROWS=$(jq -r '.tasks | to_entries[]
+  | select(((.value.lifecycle.workflowOutcome // "active") == "active") or
+      ((.value.lifecycle.resourceDisposition // "") != "reaped"))
+  | "\(.key)|\(.value.slug // "")|\(.value.branch // "")|\(.value.pr // "")"' "$STATE_FILE")
+check_eq "rehydration enumerates only the primary" "1" "$(printf '%s\n' "$REHYDRATE_ROWS" | grep -c 'HOK-1234')"
+check_contains "rehydration row is the primary, not the arm" "$REHYDRATE_ROWS" "HOK-1234|foo"
+if printf '%s\n' "$REHYDRATE_ROWS" | grep -q '_c|'; then
+  fail "pending arm does not rehydrate as a task"
+else
+  pass "pending arm does not rehydrate as a task"
+fi
+
+# Pre-fork primary failure collapses the challenge under the typed reason,
+# keeping the free-text cause as detail and retaining the cancelled arm.
+challenge_arms_cancel_pending "HOK-1234" "pre_fork_primary_failure" "quarantined coding: agent exited"
+check_eq "typed cancelReason recorded on arm" "pre_fork_primary_failure" "$(jq -r '.tasks["HOK-1234"].challengeArms[0].cancelReason' "$STATE_FILE")"
+check_eq "cancel detail carries the cause" "quarantined coding: agent exited" "$(jq -r '.tasks["HOK-1234"].challengeArms[0].cancelDetail' "$STATE_FILE")"
+check_eq "collapse reason on primary is typed" "pre_fork_primary_failure" "$(jq -r '.tasks["HOK-1234"].challengeCollapseReason' "$STATE_FILE")"
+check_eq "cancelled arm retained for audit" "cancelled" "$(jq -r '.tasks["HOK-1234"].challengeArms[0].challengeArmState' "$STATE_FILE")"
+check_eq "pair selection cleared from primary" "false" "$(jq -r '.tasks["HOK-1234"].challenge' "$STATE_FILE")"
+if jq -e '.tasks["HOK-1234_c"]' "$STATE_FILE" >/dev/null 2>&1; then
+  fail "collapse never creates a challenger task"
+else
+  pass "collapse never creates a challenger task"
+fi
+
+# Source checks: the monitor wires the pieces at the right seams.
+check_contains "rehydrate loop recovers interrupted arms" \
+  "$(sed -n '/Rehydrate tracked tasks from persisted state/,/^fi$/p' "$MONITOR_SCRIPT_FILE")" \
+  'challenge_arms_recover_interrupted "$ISSUE"'
+CLEANUP_BLOCK=$(awk '/^cleanup_aborted_challenge_arm\(\) \{/{capture=1} capture{print} /^}/ && capture{exit}' "$MONITOR_SCRIPT_FILE")
+check_contains "pre-fork cleanup cancels with typed reason" "$CLEANUP_BLOCK" 'challenge_arms_cancel_pending "$issue" "pre_fork_primary_failure" "$reason"'
+PR_OPEN_BLOCK=$(awk '
+  /PR open but not merged/ { capture=1 }
+  capture && lines < 20 { print; lines++ }
+  capture && lines >= 20 { exit }
+' "$MONITOR_SCRIPT_FILE")
+check_contains "PR-open tick re-enters the fork trigger" "$PR_OPEN_BLOCK" 'challenge_maybe_materialize_deferred_arms "$ISSUE"'
+
+# Taxonomy: pre_fork_primary_failure is a registered no-comparison reason.
+check_contains "NO_COMPARISON_REASONS carries pre_fork_primary_failure" \
+  "$(grep -A 30 'NO_COMPARISON_REASONS = \[' "$REPO_DIR/shared/lib/challenge-comparison.ts")" \
+  "'pre_fork_primary_failure'"
+check_contains "eval-schema.json carries pre_fork_primary_failure" \
+  "$(cat "$REPO_DIR/shared/lib/eval-schema.json")" \
+  '"pre_fork_primary_failure"'
+
+# ────────────────────────────────────────────────────────────────
 # Test 5: schema allows source=inherited on stage-result files
 # ────────────────────────────────────────────────────────────────
 echo ""

@@ -476,7 +476,7 @@ EOF
   if run_apply "$feature_dir" "$state_file" "HOK-1512" \
     && [[ "$(jq -r '.reviewer' "$feature_dir/.routing-complete")" == "gpt-5.6-terra" ]] \
     && [[ "$(jq -r '.intendedStage' "$feature_dir/.routing-complete")" == "review" ]] \
-    && [[ "$(jq -r '.challengeArmPreserved' "$feature_dir/.routing-complete")" == "true" ]] \
+    && [[ "$(jq -r '.challengeIntentApplied' "$feature_dir/.routing-complete")" == "true" ]] \
     && [[ "$(jq -r '.coder' "$feature_dir/.routing-complete")" == "bootstrap-coder" ]]; then
     pass "envelope-schema intent preserves the primary's varied reviewer"
   else
@@ -534,7 +534,7 @@ EOF
     && [[ "$(jq -r '.coder' "$feature_dir/.routing-complete")" == "qwen-2.5-coder-32b" ]] \
     && [[ "$(jq -r '.coding.model' "$feature_dir/.phase-config.json")" == "qwen-2.5-coder-32b" ]] \
     && [[ "$(jq -r '.tasks["HOK-1512_c"].coderModel' "$state_file")" == "qwen-2.5-coder-32b" ]] \
-    && [[ "$(jq -r '.challengeArmPreserved' "$feature_dir/.routing-complete")" == "true" ]]; then
+    && [[ "$(jq -r '.challengeIntentApplied' "$feature_dir/.routing-complete")" == "true" ]]; then
     pass "envelope-schema intent preserves a Qwen coder through rerouting"
   else
     fail "envelope-schema intent did not preserve the Qwen coder"
@@ -570,10 +570,8 @@ EOF
 EOF
 
   if run_apply "$feature_dir" "$state_file" "HOK-1512" 2>/dev/null \
-    && [[ "$(jq -r '.challengeArmPreserved' "$feature_dir/.routing-complete")" == "false" ]] \
-    && [[ "$(jq -r '.challengeIntentApplied // "unset"' "$feature_dir/.routing-complete")" == "unset" ]] \
-    && [[ "$(jq -r '.challengeArmPreserveReason' "$feature_dir/.routing-complete")" == "unresolved_challenge_stage" ]]; then
-    pass "unreadable intent records a preservation failure instead of a false success"
+    && [[ "$(jq -r '.challengeIntentApplied // "unset"' "$feature_dir/.routing-complete")" == "unset" ]]; then
+    pass "unreadable intent is not reported as applied"
   else
     fail "unreadable intent was reported as applied"
   fi
