@@ -79,6 +79,13 @@ export interface TaskEvalState {
   challengeAbortedStage: string | null;
   /** Set to true when the challenger arm is actually launched (P0.6, HOK-2798). */
   challengerLaunched?: boolean;
+  /**
+   * True when this task carries a nested `challengeArms[]` entry in the
+   * `awaiting_fork` state (HOK-2813). The challenger is planned but not yet
+   * materialised — it legitimately has no task entry, worktree, pane, or PR,
+   * and must not be treated as a missing/orphaned side.
+   */
+  hasPendingChallengeArm?: boolean;
 }
 
 export interface PairTaskState {
@@ -106,6 +113,7 @@ interface WorkflowStateTask {
   comparisonState?: unknown;
   challengeAborted?: unknown;
   challengerLaunched?: unknown;
+  challengeArms?: unknown;
 }
 
 type WorkflowStateFile = WorkflowStateLike & {
@@ -296,6 +304,7 @@ export function loadWorkflowStateChallengeData(repoDir: string): WorkflowStateCh
             ? task.challengeAbortedStage
             : null,
           challengerLaunched: task.challengerLaunched === true,
+          hasPendingChallengeArm: taskHasPendingChallengeArm(task),
         };
         taskStateByPair.set(pairId, pairTaskState);
       }
@@ -314,6 +323,32 @@ export function loadWorkflowStateChallengeData(repoDir: string): WorkflowStateCh
       activeJobsByPair: new Map(),
     };
   }
+}
+
+/**
+ * True when a raw workflow-state task record carries a nested `challengeArms[]`
+ * entry still in the `awaiting_fork` state (HOK-2813, deferred challenger
+ * materialisation). Such an arm is planned work, not a task: it has no
+ * `.tasks` entry, worktree, pane, or PR until the fork trigger fires, so every
+ * missing-side/orphan classifier must treat the pair as intact-but-deferred.
+ */
+export function taskHasPendingChallengeArm(task: { challengeArms?: unknown }): boolean {
+  const arms = task.challengeArms;
+  if (!Array.isArray(arms)) {
+    return false;
+  }
+  return arms.some((arm) =>
+    typeof arm === 'object'
+    && arm !== null
+    && (arm as { challengeArmState?: unknown }).challengeArmState === 'awaiting_fork');
+}
+
+/**
+ * True when a pair's challenger side is legitimately absent because it is
+ * still nested on the primary as an `awaiting_fork` arm.
+ */
+export function pairHasPendingChallengeArm(pairState: PairTaskState | undefined): boolean {
+  return pairState?.primary?.hasPendingChallengeArm === true && !pairState.challenger;
 }
 
 function stageVariedModel(task: Record<string, unknown>): string | null {
@@ -421,6 +456,15 @@ export function classifyChallengeState(
         pairId,
         otherPr,
         reason: hardFailureState,
+      };
+    }
+
+    if (pairHasPendingChallengeArm(pairState)) {
+      return {
+        kind: 'pair-unresolved',
+        pairId,
+        otherPr,
+        reason: 'pair-unresolved:challenger-awaiting-fork',
       };
     }
 
@@ -856,6 +900,11 @@ function isOrphanedPair(
     return false;
   }
   if (pairState.primary && pairState.challenger) {
+    return false;
+  }
+  if (pairHasPendingChallengeArm(pairState)) {
+    // The challenger is a deferred arm awaiting fork (HOK-2813) — absent by
+    // design, not orphaned.
     return false;
   }
   if (otherPr !== null || siblingLive) {

@@ -2862,6 +2862,31 @@ else
   fail "progressing tend rendering regressed"
 fi
 
+# --- Pending deferred challenger arm annotation (HOK-2813) ---
+# A primary carrying an awaiting_fork challengeArms[] entry renders an
+# "awaiting fork" detail line from state alone — no pane lookup, and the arm
+# never appears as a task row. Cancelled/materialized arms render nothing.
+PENDING_ARM_DIR="$(mktemp -d)"
+pending_arm_probe="$(
+  set -- test-session "$WORKTREES_DIR" "$PENDING_ARM_DIR/state.json"
+  source "$REPO_DIR/shared/lib/wavemill-status.sh" >/dev/null 2>&1
+  printf '%s\n' '{"tasks":{"HOK-2813":{"slug":"deferred-primary","challenge":true,"challengeRole":"primary","challengePairId":"HOK-2813","challengeArms":[{"key":"HOK-2813_c","slug":"deferred-primary-challenger","role":"challenger","variedStage":"review","challengeArmState":"awaiting_fork"}]}}}' > "$PENDING_ARM_DIR/state.json"
+  STATE_FILE="$PENDING_ARM_DIR/state.json"
+  echo "pending:$(render_pending_challenge_arms "HOK-2813")"
+  printf '%s\n' '{"tasks":{"HOK-2813":{"slug":"deferred-primary","challengeArms":[{"key":"HOK-2813_c","challengeArmState":"cancelled","cancelReason":"pre_fork_primary_failure"}]}}}' > "$PENDING_ARM_DIR/state.json"
+  echo "cancelled:$(render_pending_challenge_arms "HOK-2813")"
+  echo "absent:$(render_pending_challenge_arms "HOK-9999")"
+)"
+if [[ "$pending_arm_probe" == *"pending:⏳ challenger HOK-2813_c awaiting fork · review stage · challenger"* \
+  && "$pending_arm_probe" == *$'cancelled:\n'* \
+  && "$pending_arm_probe" == *"absent:"* ]]; then
+  pass "pending deferred arm renders an awaiting-fork annotation from state only"
+else
+  echo "    probe: $pending_arm_probe"
+  fail "pending deferred arm annotation contract violated"
+fi
+rm -rf "$PENDING_ARM_DIR"
+
 echo ""
 echo "--- Results: $PASS passed, $FAIL failed ---"
 

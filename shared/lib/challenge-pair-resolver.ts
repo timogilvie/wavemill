@@ -16,6 +16,7 @@ import {
   isSiblingLive,
   listRemoteTaskBranches,
   loadWorkflowStateChallengeData,
+  pairHasPendingChallengeArm,
   type PairTaskState,
   type TaskEvalState,
   type UnresolvableReason,
@@ -88,6 +89,14 @@ export async function resolveUnresolvablePair(input: UnresolvablePairInput): Pro
     return { status: 'skipped', reason: `Pair ${input.pairId} is not present in workflow state.` };
   }
   const pairState = hydrateCleanedAbortedArm(input.pairId, evalsDir, trackedPairState);
+
+  // HOK-2813: a challenger nested on the primary as an awaiting_fork arm is
+  // legitimately missing until the fork trigger materialises it. The pair is
+  // deferred, not orphaned — never forfeit it, even under an explicit reason.
+  if (pairHasPendingChallengeArm(pairState)) {
+    return { status: 'skipped', reason: `Pair ${input.pairId} has a challenger arm awaiting fork; deferred, not orphaned.` };
+  }
+
   const retryMax = getChallengeEvalHardFailureRetryMaxAttempts(input.repoDir);
 
   if ((workflow.activeJobsByPair.get(input.pairId) ?? []).length > 0) {

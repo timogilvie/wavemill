@@ -155,10 +155,14 @@ for (const dereferenced of ['expectedRoute', 'selectedStage', 'challengeStage'])
     );
   }
 }
-if (!commonShSource.includes('challengeArmPreserved')) {
+// challengeArmPreserved was retired with the reroute arm-preservation path
+// (HOK-2813): deferred materialisation means no challenger arm runs before
+// the fork, so there is nothing to preserve through an expanded route. The
+// merge still stamps challengeIntentApplied for intent application.
+if (!commonShSource.includes('challengeIntentApplied')) {
   errors.push(
-    'wavemill-common.sh must record challengeArmPreserved so a failed preservation is visible '
-    + 'instead of being reported as applied',
+    'wavemill-common.sh must record challengeIntentApplied so a failed intent application is '
+    + 'visible instead of being reported as applied',
   );
 }
 

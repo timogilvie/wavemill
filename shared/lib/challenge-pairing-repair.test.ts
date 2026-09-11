@@ -155,4 +155,34 @@ describe('repairChallengePairing', () => {
     const pairIds = readEvalLines().map((l) => JSON.parse(l).challengePairId).sort();
     assert.deepEqual(pairIds, ['HOK-4', 'HOK-9_c']);
   });
+  it('leaves a deferred pair with an awaiting_fork arm untouched (HOK-2813)', async () => {
+    const tasks = {
+      'HOK-7': {
+        pr: '70',
+        challengePairId: 'HOK-7_stale',
+        challengeRole: '',
+        challengeArms: [{
+          key: 'HOK-7_c',
+          role: 'challenger',
+          variedStage: 'review',
+          challengeArmState: 'awaiting_fork',
+        }],
+      },
+    };
+    writeState({ tasks });
+    writeEvals([
+      JSON.stringify({ challengePairId: 'HOK-7', prUrl: 'https://x/pull/70', score: 0.8 }),
+    ]);
+
+    const result = await repairChallengePairing({
+      pairId: 'HOK-7',
+      repoDir: tempRoot,
+      statePath,
+      evalsDir,
+    });
+
+    assert.equal(result.taskRepaired, false);
+    assert.equal(result.recordsRelabeled, 0);
+    assert.deepEqual(readState().tasks, tasks);
+  });
 });

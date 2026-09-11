@@ -3992,12 +3992,10 @@ apply_expanded_route_if_present() {
              else "" end) as $variedModel
           | if $stage == "" or $variedModel == "" then
               # The intent could not be read.  Leave the expanded route alone
-              # rather than claiming a preservation that did not happen: a false
-              # challengeIntentApplied hides the loss from every later check.
+              # rather than claiming an intent application that did not happen:
+              # a false challengeIntentApplied hides the loss from every later
+              # check.
               $rawEffective
-              | .challengeArmPreserved = false
-              | .challengeArmPreserveReason =
-                  (if $stage == "" then "unresolved_challenge_stage" else "missing_expected_stage_model" end)
             else
               $rawEffective
               | if $stage == "plan" then
@@ -4012,8 +4010,6 @@ apply_expanded_route_if_present() {
                   | .codeDepth = nz($expected.codeDepth; .codeDepth)
                 end
               | .challengeIntentApplied = true
-              | .challengeArmPreserved = true
-              | .challengeArmPreserveReason = "applied"
               | .intendedStage = $stage
               | .rawExpandedRoute = $route
             end
@@ -4048,26 +4044,6 @@ apply_expanded_route_if_present() {
     active_route="$(route_lifecycle_route_id "$feature_dir/.routing-complete" 2>/dev/null || true)"
     log_route_lifecycle "expansion_failed" "issue=$issue" "reason=invalid_artifact" "active_route=\"${active_route}\""
     return 1
-  fi
-  if [[ -n "$challenge_intent_file" ]]; then
-    local arm_preserved arm_reason
-    arm_preserved="$(jq -r '.challengeArmPreserved // "unset"' "$routing_file" 2>/dev/null || echo "unset")"
-    arm_reason="$(jq -r '.challengeArmPreserveReason // "unknown"' "$routing_file" 2>/dev/null || echo "unknown")"
-    if [[ "$arm_preserved" != "true" ]]; then
-      # The selected experimental arm was NOT retained through rerouting.  The
-      # pair will still run, but its varied stage now matches the expanded
-      # route instead of the selection, so any comparison is unattributable.
-      local arm_msg="  $issue: challenge arm NOT preserved through expanded routing (reason=$arm_reason, side=${challenge_side:-unknown}, intent=$challenge_intent_file)"
-      if declare -F log_error >/dev/null 2>&1; then
-        log_error "$arm_msg"
-      else
-        log "warn" "$arm_msg"
-      fi
-      log_route_lifecycle "challenge_arm_lost" \
-        "issue=$issue" \
-        "reason=$arm_reason" \
-        "side=${challenge_side:-unknown}"
-    fi
   fi
   # The intent is written once at selection and is read-only from here on.
   # Copying the consumed intent back over the feature-dir file (and, previously,

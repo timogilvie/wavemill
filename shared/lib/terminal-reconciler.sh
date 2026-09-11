@@ -561,6 +561,14 @@ wavemill_reconcile_terminal() {
   local feature_dir stage stage_status agent model notes artifacts existing_artifacts
 
   wavemill_terminal_reason_valid "$reason" || return 2
+  # HOK-2813: never reconcile an issue that has no task entry. A deferred
+  # challenger (nested awaiting_fork arm on its primary) has no .tasks row,
+  # no worktree, and no pane by design; state_mutate against its key would
+  # auto-vivify a malformed stub task. Existence is the guard.
+  if [[ -n "${STATE_FILE:-}" && -f "${STATE_FILE}" ]] \
+    && [[ "$(jq -r --arg issue "$issue" '.tasks[$issue] != null' "$STATE_FILE" 2>/dev/null)" != "true" ]]; then
+    return 0
+  fi
   if [[ -n "$pr_number" ]]; then
     pr_json="$(wavemill_pr_live_state "$pr_number" 2>/dev/null || true)"
     if [[ -z "$pr_json" ]]; then
