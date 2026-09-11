@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path, { dirname, join } from 'node:path';
@@ -171,9 +172,14 @@ describe('executeReviewChanges', () => {
 
   it('records outer/inner identity disagreement for a reviewer-stage challenge (HOK-2969)', async () => {
     const featureDir = makeTempDir();
-    tempDirs.push(featureDir);
-    // This worktree's own branch ends in "-challenger", so it resolves to the
-    // challenger side regardless of the pairId used here.
+    const repoDir = makeTempDir();
+    tempDirs.push(featureDir, repoDir);
+    // Use a named challenger branch so the fixture is independent of whether
+    // the test runner checked out a branch or GitHub's detached merge ref.
+    execFileSync('git', ['init', '-b', 'task/reviewer-identity-challenger'], {
+      cwd: repoDir,
+      stdio: 'ignore',
+    });
     writeFileSync(join(featureDir, 'challenge-intent.json'), JSON.stringify({
       pairId: 'pair-2969-test',
       challengeStage: 'review',
@@ -210,7 +216,7 @@ describe('executeReviewChanges', () => {
 
     const deps = makeDeps({
       phase: 'review',
-      repoDir: process.cwd(),
+      repoDir,
       modelName: 'gpt-5.5',
       agentName: 'codex',
       reviewChangesImpl: async () => reviewResult,
