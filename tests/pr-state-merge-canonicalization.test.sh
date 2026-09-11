@@ -185,6 +185,7 @@ run_common() {
       fi
     }
     source "$COMMON_SCRIPT"
+    log() { local level="$1"; shift; printf "%s:%s\n" "$level" "$*" >> "${LOG_FILE:-/dev/null}"; }
     log_warn() { printf "WARN:%s\n" "$*" >> "${LOG_FILE:-/dev/null}"; }
     log_error() { printf "ERROR:%s\n" "$*" >> "${LOG_FILE:-/dev/null}"; }
     eval "$1"
@@ -249,6 +250,19 @@ check_contains "CLOSED merge validation logs not MERGED" "$(cat "$LOG_FILE")" "n
 check_eq "validate_pr_merge rejects OPEN" \
   "rc=1" "$(run_validate 123 LOG_FILE="$LOG_FILE" GH_STATE=OPEN GH_BASE=auto/integration)"
 check_contains "OPEN merge validation logs not MERGED" "$(cat "$LOG_FILE")" "not MERGED"
+
+: > "$LOG_FILE"
+WARNING_SESSION="pr-merge-warning-test-$$"
+WARNING_SENTINEL="/tmp/wavemill-${WARNING_SESSION}-hook-warnings.txt"
+rm -f "$WARNING_SENTINEL"
+SESSION="$WARNING_SESSION" LOG_FILE="$LOG_FILE" GH_STATE=OPEN GH_BASE=auto/integration \
+  API_TIMEOUT=1 BASE_BRANCH=auto/integration run_common '
+    validate_pr_merge 123 || true
+    validate_pr_merge 123 || true
+  '
+rm -f "$WARNING_SENTINEL"
+check_eq "repeated OPEN merge validation logs once per session" \
+  "1" "$(wc -l < "$LOG_FILE" | tr -d ' ')"
 
 : > "$LOG_FILE"
 check_eq "validate_pr_merge rejects gh failure" \
