@@ -347,7 +347,13 @@ export interface CleanupEpisodesConfig {
   jitterRatio?: number;
 }
 
+export interface CleanupBranchDeletionConfig {
+  enabled?: boolean;
+  mode?: 'shadow' | 'enforce';
+}
+
 export interface CleanupConfig {
+  branchDeletion?: CleanupBranchDeletionConfig;
   episodes?: CleanupEpisodesConfig;
 }
 
@@ -1575,6 +1581,23 @@ export function getHarnessRetentionConfig(repoDir?: string): Required<HarnessRet
 
 export function getMintEligibilityConfig(repoDir?: string): MintEligibilityConfig | undefined {
   return getEvalConfig(repoDir).mintEligibility;
+}
+
+export function getCleanupConfig(repoDir?: string): Required<CleanupConfig> {
+  const config = loadWavemillConfig(repoDir).cleanup ?? {};
+  return {
+    branchDeletion: {
+      enabled: config.branchDeletion?.enabled ?? true,
+      mode: config.branchDeletion?.mode ?? 'shadow',
+    },
+    episodes: {
+      enabled: config.episodes?.enabled ?? true,
+      maxAttempts: config.episodes?.maxAttempts ?? 5,
+      backoffBaseSeconds: config.episodes?.backoffBaseSeconds ?? 30,
+      backoffCapSeconds: config.episodes?.backoffCapSeconds ?? 900,
+      jitterRatio: config.episodes?.jitterRatio ?? 0.2,
+    },
+  };
 }
 
 /**

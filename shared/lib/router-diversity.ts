@@ -11,6 +11,7 @@
 import type { EvalRecord } from './eval-schema.ts';
 import type { ChallengeStage } from './challenge-scheduler.ts';
 import { recordStageModel } from './challenge-scheduler.ts';
+import { stageInherited } from './challenge-execution-contract.ts';
 import { getRouterConfig } from './config.ts';
 import { getConfiguredModelsForDescriptorStage } from './model-registry.ts';
 import { loadStageAwareEvalRecords } from './stage-aware-router.ts';
@@ -124,6 +125,9 @@ export function buildDiversityReport(
   for (const stage of DIVERSITY_STAGES) {
     const counts = new Map<string, number>();
     for (const record of windowed) {
+      if (stageInherited(record, stage)) {
+        continue;
+      }
       const model = recordStageModel(record, stage);
       if (!model) {
         continue;
@@ -160,6 +164,9 @@ export function buildDiversityReport(
   );
   for (const record of sorted) {
     for (const stage of DIVERSITY_STAGES) {
+      if (stageInherited(record, stage)) {
+        continue;
+      }
       const model = recordStageModel(record, stage);
       if (!model) {
         continue;

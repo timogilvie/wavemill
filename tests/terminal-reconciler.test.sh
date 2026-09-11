@@ -263,6 +263,16 @@ check_eq "second pass does not kill again" "1" "$(kill_count)"
 check_eq "second pass leaves record untouched" "$record_mtime_1" "$(file_mtime "$(record_for HOK-2610)")"
 check_eq "record stays a single JSON object" "1" "$(wc -l < "$(record_for HOK-2610)" | tr -d ' ')"
 
+# Restart replay: if state says released but the window is still discoverable,
+# release must converge the pane instead of trusting stale state.
+reset_case "HOK-2610R" "release-replay-stale-pane" "110"
+write_pr_state "110" "CLOSED"
+setup_fake_window "HOK-2610R" "release-replay-stale-pane"
+state_mutate "$STATE_FILE" '.tasks[$issue].paneReleased = true | .tasks[$issue].paneState = "released"' --arg issue "HOK-2610R" >/dev/null
+wavemill_release_terminal_pane "$SESSION" "HOK-2610R" "release-replay-stale-pane" "pr_closed_unmerged" "110"
+check_eq "stale released state still kills live pane" "1" "$(kill_count)"
+check_eq "stale released state pane gone" "absent" "$([[ -f "$FAKE_TMUX_STATE/alive" ]] && echo present || echo absent)"
+
 # Missing window + proven ownership: idempotent success, record still written.
 reset_case "HOK-2611" "release-missing-window" "111"
 write_pr_state "111" "CLOSED"
@@ -349,6 +359,18 @@ check_eq "retained git disposition survives pane release" "retained" "$(jq -r '.
 check_eq "retention reason intact after pane release" "local-work-preserved" "$(jq -r '.tasks["HOK-2617"].lifecycle.retention.reason' "$STATE_FILE")"
 check_eq "retained git task still releases pane" "released" "$(jq -r '.tasks["HOK-2617"].paneState' "$STATE_FILE")"
 unset FAKE_TMUX_STATE
+
+# HOK-2813: a deferred challenger arm (nested awaiting_fork record on the
+# primary, no .tasks entry of its own) must never be reconciled — the call is
+# a no-op and must not auto-vivify a stub task entry for the arm key.
+reset_case "HOK-2813" "deferred-primary" "118"
+state_mutate "$STATE_FILE" '.tasks[$issue].challengeArms = [{key:"HOK-2813_c", slug:"deferred-primary-challenger", role:"challenger", variedStage:"review", challengeArmState:"awaiting_fork"}]' --arg issue "HOK-2813" >/dev/null
+write_pr_state "118" "CLOSED"
+rc=0
+wavemill_reconcile_terminal "$SESSION" "HOK-2813_c" "pr_closed_unmerged" "118" || rc=$?
+check_eq "pending-arm key reconcile returns success no-op" "0" "$rc"
+check_eq "pending-arm key does not auto-vivify a task stub" "false" "$(jq -r '.tasks | has("HOK-2813_c")' "$STATE_FILE")"
+check_eq "pending arm record untouched" "awaiting_fork" "$(jq -r '.tasks["HOK-2813"].challengeArms[0].challengeArmState' "$STATE_FILE")"
 
 echo ""
 echo "--- Results: $PASS passed, $FAIL failed ---"

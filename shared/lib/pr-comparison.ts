@@ -346,6 +346,122 @@ export function buildDiffIdentity(input: {
   };
 }
 
+export interface ForkCommitValidationInput {
+  forkCommit: string;
+  recordedTree?: string | null;
+  primaryHeadSha: string;
+  challengerHeadSha: string;
+  repoDir: string;
+  deps?: DiffIdentityDeps;
+}
+
+export type ForkCommitValidationReason =
+  | 'unverified_fork_commit'
+  | 'tree_mismatch'
+  | 'not_ancestor_of_primary'
+  | 'not_ancestor_of_challenger';
+
+export interface ForkCommitValidationResult {
+  valid: boolean;
+  reason?: ForkCommitValidationReason;
+  detail?: string;
+  resolvedTree?: string;
+}
+
+/**
+ * Verify that a recorded fork commit is present locally, resolves to the
+ * expected tree, and is an ancestor of both selected PR heads.
+ *
+ * Callers use this to decide whether to gate causal stage attribution on the
+ * fork. Failure never throws — the reason is returned so the comparison record
+ * can carry it as `stageAttribution.reasonCodes`.
+ */
+export function verifyForkCommit(input: ForkCommitValidationInput): ForkCommitValidationResult {
+  const runGit = gitRunner(input.repoDir, input.deps);
+  if (!hasCommit(runGit, input.forkCommit)) {
+    return {
+      valid: false,
+      reason: 'unverified_fork_commit',
+      detail: `Fork commit ${input.forkCommit} not available locally.`,
+    };
+  }
+  let resolvedTree = '';
+  try {
+    resolvedTree = runGit(['rev-parse', `${input.forkCommit}^{tree}`]);
+  } catch (error) {
+    return {
+      valid: false,
+      reason: 'unverified_fork_commit',
+      detail: `Failed to resolve fork tree: ${errorMessage(error)}`,
+    };
+  }
+  if (input.recordedTree && resolvedTree && input.recordedTree !== resolvedTree) {
+    return {
+      valid: false,
+      reason: 'tree_mismatch',
+      detail: `Recorded fork tree ${input.recordedTree} does not match resolved tree ${resolvedTree}.`,
+      resolvedTree,
+    };
+  }
+  for (const [side, head, reason] of [
+    ['primary', input.primaryHeadSha, 'not_ancestor_of_primary' as const],
+    ['challenger', input.challengerHeadSha, 'not_ancestor_of_challenger' as const],
+  ] as const) {
+    if (!head) continue;
+    try {
+      runGit(['merge-base', '--is-ancestor', input.forkCommit, head]);
+    } catch {
+      return {
+        valid: false,
+        reason,
+        detail: `Fork commit ${input.forkCommit} is not an ancestor of ${side} head ${head}.`,
+        resolvedTree,
+      };
+    }
+  }
+  return { valid: true, resolvedTree };
+}
+
+export interface ForkAwareDiffInput {
+  forkCommit: string;
+  primaryHeadSha: string;
+  challengerHeadSha: string;
+  baseRefName: string;
+  repoDir: string;
+  deps?: DiffIdentityDeps;
+}
+
+export interface ForkAwareDiffs {
+  sharedContext: string;
+  primaryDelta: string;
+  challengerDelta: string;
+}
+
+/**
+ * Compute the shared pre-fork prefix once and each arm's fork..head delta.
+ *
+ * The shared prefix is the diff from the base branch (its merge-base with the
+ * fork commit) up to the fork commit itself. Each arm's delta is its own
+ * post-fork contribution. All three diffs are read from local git; the caller
+ * must have ensured the fork commit and both PR heads are available first.
+ */
+export function fetchForkAwareDiffs(input: ForkAwareDiffInput): ForkAwareDiffs {
+  const runGit = gitRunner(input.repoDir, input.deps);
+  const baseRef = `refs/remotes/origin/${input.baseRefName}`;
+  let prefixBase = '';
+  try {
+    prefixBase = runGit(['merge-base', baseRef, input.forkCommit]);
+  } catch {
+    prefixBase = '';
+  }
+  const sharedContext = prefixBase
+    ? runGit(['diff', prefixBase, input.forkCommit])
+    : '';
+  const primaryDelta = runGit(['diff', input.forkCommit, input.primaryHeadSha]);
+  const challengerDelta = runGit(['diff', input.forkCommit, input.challengerHeadSha]);
+  return { sharedContext, primaryDelta, challengerDelta };
+}
+
 export function resolvePrDiffIdentity(input: {
   pr: string;
   repoDir: string;
@@ -445,6 +561,12 @@ export function retainLoserPatch(input: {
 
 /**
  * Build the LLM prompt used to compare two challenge PRs.
+ *
+ * When a `sharedContext` string is supplied (post-fork pairs), it is presented
+ * as neutral context outside the Candidate A/B sections so the judge compares
+ * only each arm's post-fork delta. When omitted or empty, the prompt bytes are
+ * unchanged from the non-fork baseline — the shared-context block only appears
+ * when there is something to share.
  */
 export function buildComparisonPrompt(input: {
   issuePrompt: string;
@@ -459,6 +581,11 @@ export function buildComparisonPrompt(input: {
   challengerStageEval?: ChallengeStageEval;
   primaryExecution?: ChallengeSideExecutionProvenance;
   challengerExecution?: ChallengeSideExecutionProvenance;
+  /**
+   * Shared pre-fork prefix diff, presented once outside the candidate blocks.
+   * When null/empty the prompt is byte-identical to the non-fork behavior.
+   */
+  sharedContext?: string;
 }): string {
   let workflowContext = '';
   let stageEvidenceContext = '';
@@ -511,6 +638,20 @@ ${formatStageEvidenceBlock('Candidate A', sideA.stageEval)}
 
 ${formatStageEvidenceBlock('Candidate B', sideB.stageEval)}
 `;
+  }
+
+  // Append the shared pre-fork prefix once, outside Candidate A/B, so the
+  // judge treats it as neutral context. When absent, nothing is appended and
+  // the rendered prompt matches the non-fork baseline byte-for-byte.
+  const sharedContextTrimmed = (input.sharedContext ?? '').trim();
+  if (sharedContextTrimmed.length > 0) {
+    stageEvidenceContext = `${stageEvidenceContext}
+
+## Shared Pre-Fork Context
+
+Both candidates share the following prefix committed before the challenge fork. It represents work neither arm authored on its own; do not credit or penalize either candidate for it.
+
+${input.sharedContext}`;
   }
 
   return fillPromptTemplate(input.promptTemplate ?? DEFAULT_ARBITER_JUDGE_PROMPT_TEMPLATE, {
@@ -609,12 +750,16 @@ export function buildCappedComparisonPrompt(
     return { prompt: originalPrompt, truncated: false, originalBytes, finalBytes: originalBytes };
   }
 
+  // Account for shared context in the scaffold calculation so diffs cannot be
+  // crowded out. The scaffold includes workflow context, stage evidence, and now
+  // the shared pre-fork prefix when present.
+  const sharedContextBytes = byteLength(input.sharedContext ?? '');
   const scaffoldBytes = byteLength(buildComparisonPrompt({
     ...input,
     primaryDiff: '',
     challengerDiff: '',
   }));
-  let availableDiffBytes = Math.max(0, maxPromptBytes - scaffoldBytes);
+  let availableDiffBytes = Math.max(0, maxPromptBytes - scaffoldBytes - sharedContextBytes);
   const primaryBytes = byteLength(input.primaryDiff);
   const challengerBytes = byteLength(input.challengerDiff);
   const totalDiffBytes = primaryBytes + challengerBytes;

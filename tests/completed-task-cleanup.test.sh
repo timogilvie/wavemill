@@ -96,7 +96,13 @@ CLEANUP_FILE="$TEST_TMP/cleanup_completed_task.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "_wavemill_cleanup_operator_guidance"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_load_config"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "cleanup_episode_config_value"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_pr_aware_cleanup_enabled"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_branch_deletion_mode"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_fetch_pr_terminal_evidence"
   printf '\n'
@@ -230,6 +236,7 @@ run_cleanup_case() {
     MILL_LOG_FILE="$CASE_DIR/mill.log"
     API_TIMEOUT=5
     BASE_BRANCH="auto/integration"
+    printf "%s\n" "{\"cleanup\":{\"branchDeletion\":{\"enabled\":true,\"mode\":\"enforce\"}}}" > "$REPO_DIR/.wavemill-config.json"
 
     state_pr_json=",\"pr\":4242"
     if [[ "$TEST_CASE" == "no-pr" ]]; then
@@ -493,6 +500,7 @@ run_common_dry_run_case() {
     MILL_LOG_FILE="$CASE_DIR/mill.log"
     API_TIMEOUT=5
     DRY_RUN=true
+    printf "%s\n" "{\"cleanup\":{\"branchDeletion\":{\"enabled\":true,\"mode\":\"enforce\"}}}" > "$REPO_DIR/.wavemill-config.json"
 
     cat > "$STATE_FILE" <<EOF
 {"tasks":{"$ISSUE":{"windowId":"@31","pr":4242,"lifecycle":{"schemaVersion":1,"workflowOutcome":"merged","resourceDisposition":"reaping","launchContract":{"remoteBranchDeletionPolicy":{"allowed":true,"mode":"merged-pr-task-branch","source":"test"}}}}}}

@@ -27,6 +27,7 @@ import {
   getRouterConfig,
   getEvalConfig,
   getHarnessRetentionConfig,
+  getCleanupConfig,
   getIntegrationConfig,
   getPromotionConfig,
   getReviewMergeConfig,
@@ -207,6 +208,7 @@ test('valid config passes validation', () => {
         },
       },
       eval: { evalsDir: '.wavemill/evals' },
+      cleanup: { branchDeletion: { enabled: true, mode: 'enforce' } },
       mill: { maxParallel: 5 },
     }));
     const config = loadWavemillConfig(tmp);
@@ -217,8 +219,23 @@ test('valid config passes validation', () => {
     assert.equal(config.challengeScheduler?.confidenceThreshold, 0.65);
     assert.equal(config.providers?.deepseek?.enabled, true);
     assert.equal(config.eval?.evalsDir, '.wavemill/evals');
+    assert.equal(config.cleanup?.branchDeletion?.mode, 'enforce');
     assert.equal(config.mill?.maxParallel, 5);
     assert.equal(config.resources?.runtimeSelection?.defaultVariant, 'optimized');
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('cleanup config defaults branch deletion to shadow mode', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, '{}');
+    const cleanup = getCleanupConfig(tmp);
+    assert.equal(cleanup.branchDeletion.enabled, true);
+    assert.equal(cleanup.branchDeletion.mode, 'shadow');
+    assert.equal(cleanup.episodes.enabled, true);
   } finally {
     cleanUp(tmp);
   }
