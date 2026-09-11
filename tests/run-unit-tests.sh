@@ -104,6 +104,7 @@ TESTS=(
   shared/lib/outcome-collectors.test.ts
   shared/lib/context-analyzer.test.ts
   shared/lib/review-engine.test.ts
+  shared/lib/review-evidence-contract.test.ts
   shared/lib/review-runner.test.ts
   shared/lib/review-scope-guard.test.ts
   shared/lib/review-progress.test.ts
