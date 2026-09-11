@@ -476,7 +476,8 @@ EOF
     write_stage_result_with_history() {
       write_stage_result "$@"
       if [[ "${2-}" == "review" ]]; then
-        local feature_dir="${1-}" stage="${2-}" status="${3-}" agent="${4-}" model="${5-}" notes="${6-}" artifacts="${7:-{}}"
+        local feature_dir="${1-}" stage="${2-}" status="${3-}" agent="${4-}" model="${5-}" notes="${6-}" artifacts="${7-}"
+        [[ -n "$artifacts" ]] || artifacts='{}'
         mkdir -p "$feature_dir"
         jq -cn --arg stage "$stage" --arg status "$status" --arg agent "$agent" --arg model "$model" --arg notes "$notes" --argjson artifacts "$artifacts" \
           "{stage:\$stage,status:\$status,agent:\$agent,model:\$model,notes:\$notes,artifacts:\$artifacts}" > "$feature_dir/.review-result.json"
