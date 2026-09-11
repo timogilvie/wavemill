@@ -165,6 +165,15 @@ export interface WavemillLoopConfig {
    *  for continuation via replayed thinkingSignature / responseId metadata. */
   priorState?: { messages: AgentMessage[] };
   budget?: LoopBudget;
+  /**
+   * Reserve the final turn for a tool-free synthesis response. When an
+   * in-progress tool turn reaches the turn or tool-call boundary, the loop
+   * injects this prompt, removes all tools, and permits one last provider
+   * request to produce the caller's terminal artifact.
+   */
+  terminalSynthesis?: {
+    prompt: string;
+  };
   signal?: AbortSignal;
   /**
    * Optional prompt size logging configuration. When provided, prompt sizes will be logged.
@@ -564,6 +573,8 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
   let totalOutputTokens = 0;
   let totalCostUsd = 0;
   let budgetStopReason: LoopStopReason | undefined;
+  let terminalSynthesisActive = false;
+  let terminalSynthesisPromptPending = false;
   let finalProviderError: LoopResult['providerError'] | undefined;
   let providerErrorRetryAttempts = 0;
   const providerErrorRetryMaxAttempts = config.providerErrorRetry?.maxAttempts ?? 3;
@@ -688,7 +699,14 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
       turnsCompleted++;
 
       // Evaluate budget limits in deterministic order.
-      if (budget?.maxTurns !== undefined && turnsCompleted >= budget.maxTurns) {
+      // A pending terminal synthesis is the single graceful exception to the
+      // analysis turn/tool limits. Token, cost, abort, and wall-clock limits
+      // remain hard safety boundaries.
+      if (
+        !terminalSynthesisPromptPending
+        && budget?.maxTurns !== undefined
+        && turnsCompleted >= budget.maxTurns
+      ) {
         budgetStopReason = 'turn_limit';
         return true;
       }
@@ -707,7 +725,15 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
         budgetStopReason = 'token_limit';
         return true;
       }
-      if (budget?.maxToolCalls !== undefined && toolCallsExecuted >= budget.maxToolCalls) {
+      const terminalSynthesisCompleted = terminalSynthesisActive
+        && !terminalSynthesisPromptPending
+        && msg.stopReason === 'stop';
+      if (
+        !terminalSynthesisPromptPending
+        && !terminalSynthesisCompleted
+        && budget?.maxToolCalls !== undefined
+        && toolCallsExecuted >= budget.maxToolCalls
+      ) {
         budgetStopReason = 'tool_call_limit';
         return true;
       }
@@ -921,28 +947,72 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
     },
   };
 
-  if (contextWindowLimit) {
+  if (contextWindowLimit || config.terminalSynthesis) {
     piConfig.prepareNextTurn = async (ctx) => {
-      const inputTokens = estimatePromptTokens({
-        systemPrompt: context.systemPrompt,
-        messages: ctx.context.messages,
-        tools: context.tools,
-      }).inputTokens;
-      const nextMaxTokens = computeDynamicMaxTokens({
-        inputTokens,
-        contextWindowTokens: contextWindowLimit!.limit,
-        phaseCeiling: phaseMaxTokens,
-        minOutputTokens: contextManagement.minOutputTokens,
-        safetyMarginPct: contextManagement.safetyMarginPct,
-      });
-      if (nextMaxTokens === currentMaxTokens) {
+      let nextModel: Model<any> | undefined;
+      if (contextWindowLimit) {
+        const inputTokens = estimatePromptTokens({
+          systemPrompt: context.systemPrompt,
+          messages: ctx.context.messages,
+          tools: ctx.context.tools,
+        }).inputTokens;
+        const nextMaxTokens = computeDynamicMaxTokens({
+          inputTokens,
+          contextWindowTokens: contextWindowLimit.limit,
+          phaseCeiling: phaseMaxTokens,
+          minOutputTokens: contextManagement.minOutputTokens,
+          safetyMarginPct: contextManagement.safetyMarginPct,
+        });
+        if (nextMaxTokens !== currentMaxTokens) {
+          currentMaxTokens = nextMaxTokens;
+          piConfig.maxTokens = nextMaxTokens;
+          nextModel = toPiModel(config.model, nextMaxTokens, contextWindowLimit.limit);
+        }
+      }
+
+      const currentTurn = turnsCompleted + 1;
+      const requestedTools = ctx.message.content.some((block) => block.type === 'toolCall');
+      const reachedTurnBoundary = budget?.maxTurns !== undefined
+        && currentTurn >= budget.maxTurns - 1;
+      const reachedToolBoundary = budget?.maxToolCalls !== undefined
+        && toolCallsExecuted >= budget.maxToolCalls;
+      if (
+        config.terminalSynthesis
+        && !terminalSynthesisActive
+        && requestedTools
+        && (reachedTurnBoundary || reachedToolBoundary)
+      ) {
+        terminalSynthesisActive = true;
+        terminalSynthesisPromptPending = true;
+        return {
+          ...(nextModel ? { model: nextModel } : {}),
+          context: {
+            ...ctx.context,
+            tools: [],
+          },
+        };
+      }
+
+      if (!nextModel) {
         return undefined;
       }
-      currentMaxTokens = nextMaxTokens;
-      piConfig.maxTokens = nextMaxTokens;
       return {
-        model: toPiModel(config.model, nextMaxTokens, contextWindowLimit!.limit),
+        model: nextModel,
       };
+    };
+  }
+
+  if (config.terminalSynthesis) {
+    piConfig.getSteeringMessages = async () => {
+      if (!terminalSynthesisPromptPending) {
+        return [];
+      }
+      terminalSynthesisPromptPending = false;
+      return [{
+        role: 'user',
+        content: config.terminalSynthesis!.prompt,
+        timestamp: Date.now(),
+      }];
     };
   }
 

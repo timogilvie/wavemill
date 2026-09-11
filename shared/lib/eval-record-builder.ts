@@ -63,6 +63,7 @@ import type { ChallengeStage } from './challenge-mode.ts';
 import type {
   ChallengeExecutionAttestation,
   ChallengeExecutionIntent,
+  ReviewExecutedIdentitySet,
 } from './challenge-execution-contract.ts';
 import { projectChallengeIntentForPersistence } from './challenge-execution-contract.ts';
 import type { WorkflowCostOutcome, WorkflowCostResult, WorkflowCostFailure } from './workflow-cost.ts';
@@ -143,6 +144,11 @@ export interface EvalRecordMetadata {
   challengeStageEval?: ChallengeStageEval | null;
   /** Verification telemetry from pre-PR verification and remote CI. */
   verificationTelemetry?: VerificationTelemetry | null;
+  /**
+   * Executed review identities (orchestrator/substantive-analysis/remediation)
+   * read from this arm's local `.review-result.json` (HOK-2969, Arbiter P2.4f).
+   */
+  reviewExecutedIdentity?: ReviewExecutedIdentitySet | null;
 }
 
 /** Richer eval metadata attachment used by training-facing eval entrypoints. */
@@ -274,6 +280,20 @@ export function attachChallengeStageEval(
 ): void {
   if (challengeStageEval) {
     record.challengeStageEval = challengeStageEval;
+  }
+}
+
+/**
+ * Attach this arm's local executed review identity (HOK-2969, Arbiter
+ * P2.4f). Additive: absent when the review stage did not run natively or
+ * produced no identity envelope, matching every other optional attach here.
+ */
+export function attachReviewExecutedIdentity(
+  record: EvalRecord,
+  reviewExecutedIdentity?: ReviewExecutedIdentitySet | null,
+): void {
+  if (reviewExecutedIdentity) {
+    record.reviewExecutedIdentity = reviewExecutedIdentity;
   }
 }
 
@@ -1600,6 +1620,7 @@ export function enrichEvalRecord(record: EvalRecord, metadata: EvalRecordMetadat
     evidence: metadata.challengeExecutionEvidence,
   });
   attachChallengeStageEval(record, metadata.challengeStageEval);
+  attachReviewExecutedIdentity(record, metadata.reviewExecutedIdentity);
   attachChallengeRouteContext(record, metadata.challengeRouteContext);
   attachRouteProvenance(record, metadata.routeProvenance);
   attachExecutedPlanning(record, metadata.executedPlanning);
@@ -1660,6 +1681,7 @@ export function enrichTrainingMetadata(
     evidence: metadata.challengeExecutionEvidence,
   });
   attachChallengeStageEval(record, metadata.challengeStageEval);
+  attachReviewExecutedIdentity(record, metadata.reviewExecutedIdentity);
   attachChallengeRouteContext(record, metadata.challengeRouteContext);
   attachRouteProvenance(record, metadata.routeProvenance);
   attachExecutedPlanning(record, metadata.executedPlanning);

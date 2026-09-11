@@ -1336,22 +1336,26 @@ finalize_challenge_execution_intent_before_coding() {
     return 0
   fi
 
-  local refresh_title issue_json packet_arg refreshed_plan refreshed_source refreshed_mode refreshed_reason refreshed_fallback_reason
-  local pinned_stage_arg=() preserved_challenger_arg=()
+  # HOK-2813: a primary carrying nested challengeArms[] records is in the
+  # deferred-materialisation flow. Its challenger selection is sealed in the
+  # arm record itself; re-running resolve-challenge-task here could resample
+  # the pair while no challenger task exists yet — the historic `_c` pairing
+  # drift. With no arm running before the fork, there is nothing to preserve
+  # through an expanded route: keep the immutable intent and stop.
+  local nested_arm_count
+  nested_arm_count=$(read_state_value "0" --arg i "$issue" '((.tasks[$i].challengeArms // []) | length)')
+  if [[ "$nested_arm_count" =~ ^[0-9]+$ ]] && (( nested_arm_count > 0 )); then
+    log "status" "  $issue: Deferred challenger arm holds the sealed selection; skipping expanded challenge refinalization"
+    return 0
+  fi
+
+  local refresh_title issue_json packet_arg refreshed_plan refreshed_source refreshed_mode refreshed_reason
+  local pinned_stage_arg=()
   if [[ -n "$pinned_stage" && "$pinned_stage" != "null" ]]; then
     # Without this the refresh rolls a fresh stage from challenge.stageWeights,
     # which is how an already-selected implementation-stage arm (a Qwen or Kimi
     # coder) became an unrelated plan-stage pair on the way to coding.
     pinned_stage_arg=(--pinned-stage "$pinned_stage")
-  fi
-  local preserved_challenger_key preserved_challenger_model
-  preserved_challenger_key="${issue}_c"
-  preserved_challenger_model=$(read_state_value "" --arg i "$preserved_challenger_key" '.tasks[$i].challengeVariedModel // ""' 2>/dev/null || true)
-  if [[ -z "$preserved_challenger_model" && "$pinned_stage" == "implementation" ]]; then
-    preserved_challenger_model=$(read_state_value "" --arg i "$preserved_challenger_key" '.tasks[$i].coderModel // ""' 2>/dev/null || true)
-  fi
-  if [[ -n "$preserved_challenger_model" && "$preserved_challenger_model" != "null" ]]; then
-    preserved_challenger_arg=(--preserved-challenger-model "$preserved_challenger_model")
   fi
   refresh_title=$(read_state_value "" --arg i "$issue" '.tasks[$i].title // ""')
   if [[ -z "$refresh_title" ]]; then
@@ -1375,12 +1379,10 @@ finalize_challenge_execution_intent_before_coding() {
     --primary-model "$primary_coder" \
     --feature-dir "$feature_dir" \
     "${pinned_stage_arg[@]}" \
-    "${preserved_challenger_arg[@]}" \
     "${packet_arg[@]}" 2>/dev/null || echo "")
   refreshed_source=$(echo "$refreshed_plan" | jq -r '.decisionSource // "bootstrap"' 2>/dev/null || echo "bootstrap")
   refreshed_mode=$(echo "$refreshed_plan" | jq -r '.mode // "single"' 2>/dev/null || echo "single")
   refreshed_reason=$(echo "$refreshed_plan" | jq -r '.reason // empty' 2>/dev/null || echo "")
-  refreshed_fallback_reason=$(echo "$refreshed_plan" | jq -r '.fallbackReason // empty' 2>/dev/null || echo "")
 
   if [[ "$refreshed_source" != "expanded" && "$refreshed_source" != "preserved" ]]; then
     log_warn "$issue → expanded challenge finalization did not use expanded/preserved route (source=$refreshed_source); keeping current challenge state"
@@ -1402,9 +1404,6 @@ finalize_challenge_execution_intent_before_coding() {
     fi
     persist_challenge_execution_intent "$issue" "" "$feature_dir" "$intent_json"
     [[ -n "$refreshed_reason" ]] && log_warn "$issue → challenge finalization produced no challenge ($refreshed_reason)"
-    if [[ "$refreshed_fallback_reason" == "preserved_challenger_ineligible" ]]; then
-      log_warn "$issue → preserved challenger model was ineligible during challenge finalization"
-    fi
     return 0
   fi
 
@@ -1490,9 +1489,6 @@ finalize_challenge_execution_intent_before_coding() {
     challenge_cancel_challenger_arm "$issue" "$slug" "$new_challenger_key" "$feature_dir" "$new_challenge_stage" "$new_primary_varied" "$collapse_reason" "$collapse_detail"
     persist_challenge_execution_intent "$issue" "" "$feature_dir" "$collapsed_intent"
     log_warn "$issue → challenge finalization cancelled challenger ($collapse_reason)"
-    if [[ "$refreshed_fallback_reason" == "preserved_challenger_ineligible" ]]; then
-      log_warn "$issue → preserved challenger model was ineligible during challenge finalization"
-    fi
     FINALIZED_CHALLENGE_CODER=""
     FINALIZED_CHALLENGE_STAGE=""
     return 0
@@ -1528,9 +1524,6 @@ finalize_challenge_execution_intent_before_coding() {
   FINALIZED_CHALLENGE_CODER="$new_primary"
   FINALIZED_CHALLENGE_STAGE="$new_challenge_stage"
 
-  if [[ "$refreshed_fallback_reason" == "preserved_challenger_ineligible" ]]; then
-    log_warn "$issue → preserved challenger model was ineligible during challenge finalization"
-  fi
   log "status" "  $issue: Challenge intent finalized ($refreshed_source route, stage=$new_challenge_stage): $new_primary_varied vs $new_challenger_varied"
   challenge_assert_arms_diverge "$issue" "$new_challenge_stage" "$new_primary_varied" "$new_challenger_varied" "$intent_json"
 }
@@ -11179,15 +11172,19 @@ cleanup_aborted_challenge_arm() {
     return 1
   }
 
-  # HOK-2811 (Arbiter P2.4a): if this primary has any pending (awaiting_fork)
-  # challenger arms, cancel them so pair accounting sees a deliberate
-  # no-comparison rather than a phantom one-armed pair. No worktree/branch
-  # exists for a pending arm, so there is nothing else to tear down.
+  # HOK-2811/HOK-2813: if this primary has any pending (awaiting_fork)
+  # challenger arms, the primary is failing terminally before the fork could
+  # fire. Collapse the challenge to a single run under the typed
+  # pre_fork_primary_failure reason (the free-text cause is kept as detail)
+  # so pair accounting sees a deliberate no-comparison rather than a phantom
+  # one-armed pair. No worktree/branch/pane/PR exists for a pending arm, so
+  # there is nothing else to tear down — and nothing may be created: the
+  # surviving primary is never promoted to a solo pipeline relaunch.
   local pending_arms_pre_cancel
   pending_arms_pre_cancel=$(read_state_value "" --arg i "$issue" \
     '((.tasks[$i].challengeArms // []) | map(select(.challengeArmState == "awaiting_fork")) | length)')
   if [[ "$pending_arms_pre_cancel" =~ ^[0-9]+$ ]] && (( pending_arms_pre_cancel > 0 )); then
-    challenge_arms_cancel_pending "$issue" "$reason" || true
+    challenge_arms_cancel_pending "$issue" "pre_fork_primary_failure" "$reason" || true
   fi
 
   win="$issue-$slug"
@@ -13790,6 +13787,15 @@ if [[ -f "$STATE_FILE" ]]; then
     BRANCH_BY_ISSUE["$ISSUE"]="$BRANCH"
     SLUG_BY_ISSUE["$ISSUE"]="$SLUG"
     [[ -n "$PR" ]] && PR_BY_ISSUE["$ISSUE"]="$PR"
+
+    # HOK-2813: a deferred challenger arm survives restart as its nested
+    # challengeArms[] record — only the primary rehydrates as a task. An arm
+    # the crash caught mid-materialisation is reset to awaiting_fork here so
+    # the fork trigger retries it; its persisted record (planned identity,
+    # models, immutable intent references) is consumed as-is, never rebuilt.
+    if declare -F challenge_arms_recover_interrupted >/dev/null 2>&1; then
+      challenge_arms_recover_interrupted "$ISSUE" || true
+    fi
   # Terminal tombstones whose resources were already reaped are restart
   # evidence, not work: rehydrating them would let a later tick recreate
   # windows/worktrees for arms that no longer exist (HOK-2972). Terminal rows
@@ -16659,6 +16665,11 @@ monitor_issue_state() {
   # in case the eval was missed on initial PR detection (e.g. challenge
   # flag was incorrect when PR was first found)
   if is_challenge_task "$ISSUE"; then
+    # HOK-2813: restart-safe fork trigger. If the mill restarted after the
+    # primary's review dispatched, the review-phase trigger site may never
+    # run again; a still-pending arm must fork from here too. Guarded
+    # internally, so this is a cheap no-op when no arms are pending.
+    challenge_maybe_materialize_deferred_arms "$ISSUE" "$SLUG" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" || true
     maybe_run_challenge_eval "$ISSUE" "$PR" "$BRANCH" "$SLUG"
     maybe_run_challenge_comparison "$ISSUE"
     maybe_resolve_unresolvable_challenge_pair "$ISSUE"

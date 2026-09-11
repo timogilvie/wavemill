@@ -33,7 +33,7 @@ import {
   enrichTrainingMetadata,
   buildVerificationTelemetryFromArtifact,
 } from './eval-record-builder.ts';
-import { buildChallengeStageEval } from './stage-eval-evidence.ts';
+import { buildChallengeStageEval, extractReviewExecutedIdentity } from './stage-eval-evidence.ts';
 import { buildTaskDescriptor } from './task-descriptor-builder.ts';
 import { getEvalContextUpdatesConfig, getMaxCostUsd } from './config.ts';
 import { runConfiguredHarnessRetentionReplay } from './harness-replay.ts';
@@ -524,6 +524,15 @@ export function enrichPostCompletionRecord(
         planningExecutionOutcome: input.planningExecutionOutcome || undefined,
         phaseDurations: input.phaseDurations || undefined,
       },
+    }),
+    // Local executed review identity for this arm, when a `.review-result.json`
+    // carries a valid envelope (HOK-2969, Arbiter P2.4f). Additive: undefined
+    // for runs without a native review identity to report.
+    reviewExecutedIdentity: extractReviewExecutedIdentity({
+      repoDir: input.repoDir,
+      issueId: input.issueId,
+      branchName: input.branchName,
+      worktreePath: input.worktreePath,
     }),
     routeProvenance: deriveRouteProvenance(
       input.repoDir,

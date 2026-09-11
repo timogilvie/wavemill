@@ -122,6 +122,7 @@ check_not_contains "canonical validate_pr_merge does not read CI rollup" \
 
 TEST_TMP="$(mktemp -d)"
 trap 'rm -rf "$TEST_TMP"' EXIT
+TEST_SESSION="pr-merge-validation-test-$$"
 
 GH_STUB_DIR="$TEST_TMP/bin"
 mkdir -p "$GH_STUB_DIR"
@@ -205,7 +206,8 @@ run_validate() {
   local quoted_pr
   printf -v quoted_pr '%q' "$pr"
   (
-    export "$@" API_TIMEOUT=1 BASE_BRANCH=auto/integration
+    export SESSION="$TEST_SESSION" API_TIMEOUT=1 BASE_BRANCH=auto/integration
+    export "$@"
     run_common '
     if validate_pr_merge '"$quoted_pr"'; then
       printf "rc=0\n"

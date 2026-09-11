@@ -159,6 +159,7 @@ export const NO_COMPARISON_REASONS = [
   'primary_challenge_aborted',
   'challenger_challenge_aborted',
   'both_challenge_aborted',
+  'pre_fork_primary_failure',
   'orphan_pair',
   'primary_merged',
   'challenger_never_launched',

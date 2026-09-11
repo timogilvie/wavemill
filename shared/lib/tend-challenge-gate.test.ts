@@ -5,12 +5,15 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   applyChallengePairGates,
+  classifyChallengeState,
   classifyPairUnresolvableState,
   getSiblingBranch,
   isUnresolvableReason,
   isSiblingLive,
   loadWorkflowStateChallengeData,
+  pairHasPendingChallengeArm,
   parseRemoteBranchOutput,
+  taskHasPendingChallengeArm,
   UNRESOLVABLE_REASONS,
   type ChallengeBlockedCandidate,
   type ChallengeEligibleWorkItem,
@@ -1565,5 +1568,69 @@ describe('HOK-2602: Regression tests for invalid comparison auto-close', () => {
     } finally {
       cleanup();
     }
+  });
+});
+
+describe('pending deferred challenger arms (HOK-2813)', () => {
+  it('projects hasPendingChallengeArm and classifies the pair as deferred, not orphaned', () => {
+    const { repoDir, cleanup } = setupRepoDir();
+    try {
+      writeWorkflowState(repoDir, {
+        'HOK-2900': {
+          pr: 500,
+          branch: 'task/deferred-primary',
+          updated: '2026-07-01T00:00:00Z',
+          challengePairId: 'HOK-2900',
+          challengeRole: 'primary',
+          challengeStage: 'review',
+          reviewerModel: 'claude-sonnet-5',
+          challengeArms: [{
+            key: 'HOK-2900_c',
+            slug: 'deferred-primary-challenger',
+            branch: 'task/deferred-primary-challenger',
+            role: 'challenger',
+            variedStage: 'review',
+            challengeArmState: 'awaiting_fork',
+          }],
+        },
+      });
+
+      const data = loadWorkflowStateChallengeData(repoDir);
+      const pairState = data.taskStateByPair.get('HOK-2900');
+      assert.equal(pairState?.primary?.hasPendingChallengeArm, true);
+      assert.equal(pairHasPendingChallengeArm(pairState), true);
+
+      // Far past the orphan grace window, the pair must classify as
+      // benign/deferred rather than pair-unresolvable:orphan-sibling.
+      const gate = classifyChallengeState(
+        500,
+        { challenge: true, challengePairId: 'HOK-2900' },
+        data.challengePairMap,
+        [],
+        false,
+        new Set([500]),
+        {
+          taskStateByPair: data.taskStateByPair,
+          activeJobsByPair: data.activeJobsByPair,
+          nowMs: () => Date.parse('2026-07-02T00:00:00Z'),
+        },
+      );
+      assert.deepEqual(gate, {
+        kind: 'pair-unresolved',
+        pairId: 'HOK-2900',
+        otherPr: null,
+        reason: 'pair-unresolved:challenger-awaiting-fork',
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('does not treat cancelled or materialized arms as pending', () => {
+    assert.equal(taskHasPendingChallengeArm({
+      challengeArms: [{ challengeArmState: 'cancelled' }, { challengeArmState: 'materialized' }],
+    }), false);
+    assert.equal(taskHasPendingChallengeArm({}), false);
+    assert.equal(taskHasPendingChallengeArm({ challengeArms: 'junk' }), false);
   });
 });

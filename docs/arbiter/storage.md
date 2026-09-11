@@ -40,6 +40,49 @@ The fork descriptor is stamped by the narrow writer
 guards `persist_challenge_execution_intent`, because it never touches the
 selection fields the seal protects — only the descriptor.
 
+## Pending challenger arms (`challengeArms[]`)
+
+Before materialisation, a deferred challenger exists only as a nested record
+in the primary task's `challengeArms[]` array in
+`.wavemill/workflow-state.json` (HOK-2811/HOK-2813). The record is written by
+`challenge_arm_json_build()` in `shared/lib/challenge-arms.sh` and carries the
+planned key/slug/branch, role, varied stage, per-role models and agents,
+depths, and review mode. State machine:
+
+```text
+awaiting_fork → materializing → materialized      (happy path)
+              → cancelled                         (pre-fork collapse)
+              → exhausted                         (materialisation retry ceiling)
+materializing → awaiting_fork                     (retryable failure, or restart recovery)
+```
+
+Lifecycle contract:
+
+- **No task, worktree, pane, branch, or PR exists** for an `awaiting_fork`
+  arm — by design, not by damage. Sweepers, watchdogs, orphan resolvers,
+  pairing repair, pair recovery, and terminal reconciliation treat the pair
+  as intact-but-deferred (`taskHasPendingChallengeArm` /
+  `pairHasPendingChallengeArm` in `shared/lib/tend-challenge-gate.ts`); the
+  dashboard renders the arm as an `awaiting fork` annotation under the
+  primary without any pane lookup.
+- **Restart:** only the primary rehydrates as a task. An arm caught in
+  `materializing` by a restart is reset to `awaiting_fork`
+  (`challenge_arms_recover_interrupted()`) and retried through the
+  bounded-retry fork trigger. Recovery consumes the persisted arm record
+  verbatim — planned identity, models, and immutable intent references are
+  never recomputed. If the recovered fork identity cannot be verified at
+  comparison time, delivery recovery proceeds but stage attribution is marked
+  invalid with the existing typed reason codes (`unverified_fork_commit`,
+  `missing_fork_identity`).
+- **Pre-fork primary failure:** the primary's terminal pre-fork cleanup
+  collapses the challenge to a single run via
+  `challenge_arms_cancel_pending(issue, "pre_fork_primary_failure", detail)`.
+  The cancelled arm record is retained on the primary for audit
+  (`cancelReason`, `cancelDetail`, `cancelledAt`); active pairing selection
+  is cleared; `pre_fork_primary_failure` is a registered no-comparison
+  reason. The surviving primary is never promoted to a fresh solo pipeline,
+  and no challenger task/worktree/branch/PR is created by the collapse.
+
 The losing side's full patch is retained locally when there is a winner:
 
 ```text

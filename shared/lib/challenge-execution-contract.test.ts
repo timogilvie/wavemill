@@ -228,6 +228,24 @@ test('foldAttestationsIntoStageAttribution emits valid attribution for matched i
   assert.equal(isStageAttributionEligibleForCoverage(attribution), true);
 });
 
+test('foldAttestationsIntoStageAttribution marks incomplete review iteration evidence insufficient (HOK-2969)', () => {
+  const attribution = foldAttestationsIntoStageAttribution({
+    pairId: 'pair-2968',
+    stage: 'review',
+    primary: makeAttestation('primary'),
+    challenger: makeAttestation('challenger'),
+    evidenceProvenance: 'direct',
+    forkIdentity: makeForkIdentity(),
+    primaryReviewIdentity: makeReviewIdentitySet(),
+    challengerReviewIdentity: makeReviewIdentitySet(),
+    reviewIterationsComplete: false,
+    judgeWinner: 'primary',
+  });
+  assert.equal(attribution.status, 'insufficient_evidence');
+  assert.ok(attribution.reasonCodes.includes('insufficient_review_iterations'));
+  assert.equal(attribution.outcome, null);
+});
+
 test('foldAttestationsIntoStageAttribution lifts invalid attestation reasons', () => {
   const attribution = foldAttestationsIntoStageAttribution({
     pairId: 'pair-2968',
@@ -439,6 +457,38 @@ test('Hokusai submission boundary omits local challenge contract keys', () => {
   assert.equal('challengeSide' in payload, false);
   assert.equal('challengeIntent' in payload, false);
   assert.equal('challengeExecutionRoute' in payload, false);
+});
+
+// --- reviewer execution identity / evidence must stay local (HOK-2969) ---
+//
+// toHokusaiSubmission is an allowlist builder, so a new EvalRecord field
+// never automatically crosses the privacy boundary — but this pins that
+// guarantee for the reviewer-identity fields this task introduces, and
+// proves raw finding/evidence text specifically never leaks even when
+// present deep inside `reviewExecutedIdentity` or `challengeStageEval`.
+
+test('Hokusai submission boundary omits reviewer execution identity and raw review evidence text', () => {
+  const record = makeRecord();
+  record.reviewExecutedIdentity = makeReviewIdentitySet();
+  record.challengeStageEval = {
+    stage: 'review',
+    provenance: 'direct',
+    summary: 'Direct review evidence captured from self-review output and review result artifacts.',
+    evidence: [{
+      label: 'review_result',
+      summary: 'RAW-SECRET-FINDING-TEXT-SHOULD-NEVER-LEAK',
+      source: '.review-result.json',
+    }],
+  };
+
+  const submission = toHokusaiSubmission(record);
+  assert.equal(submission.ok, true);
+  const serialized = JSON.stringify(submission.ok ? submission.submission : {});
+  const payload = submission.ok ? submission.submission as unknown as Record<string, unknown> : {};
+
+  assert.equal('reviewExecutedIdentity' in payload, false);
+  assert.equal('challengeStageEval' in payload, false);
+  assert.doesNotMatch(serialized, /RAW-SECRET-FINDING-TEXT-SHOULD-NEVER-LEAK/);
 });
 
 // --- a challenge record without an intent must not pass as clean evidence ---
