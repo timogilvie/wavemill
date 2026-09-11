@@ -174,6 +174,16 @@ for f in \
   "$REPO_DIR"/tests/incident-fixtures-terminal-panes.test.sh \
   "$REPO_DIR"/tests/incident-fixtures-safety-controls.test.sh \
   "$REPO_DIR"/tests/lib/incident-fixture-harness.sh \
+  "$REPO_DIR"/tests/lib/terminal-lifecycle-cert-harness.sh \
+  "$REPO_DIR"/tests/terminal-lifecycle-cert-matrix.test.sh \
+  "$REPO_DIR"/tests/terminal-lifecycle-cert-restart.test.sh \
+  "$REPO_DIR"/tests/terminal-lifecycle-cert-budgets.test.sh \
+  "$REPO_DIR"/tests/terminal-lifecycle-flags.test.sh \
+  "$REPO_DIR"/tests/fixtures/terminal-lifecycle/merge_commit_delivery.sh \
+  "$REPO_DIR"/tests/fixtures/terminal-lifecycle/squash_delivery.sh \
+  "$REPO_DIR"/tests/fixtures/terminal-lifecycle/rebase_delivery.sh \
+  "$REPO_DIR"/tests/fixtures/terminal-lifecycle/changed_after_review_head.sh \
+  "$REPO_DIR"/tests/fixtures/terminal-lifecycle/merged_pr_plain.sh \
   "$REPO_DIR"/tests/fixtures/incidents/hok2595_closed_non_challenge.sh \
   "$REPO_DIR"/tests/fixtures/incidents/hok2913c_superseded_challenger.sh \
   "$REPO_DIR"/tests/fixtures/incidents/squash_delivery_deleted_remote_head.sh \

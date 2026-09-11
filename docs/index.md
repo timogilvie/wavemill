@@ -40,6 +40,7 @@ Use supporting commands when you need to prepare work, inspect outcomes, or inte
 - [`wavemill tend`](autonomous-integration.md) for autonomous merging into a staging branch before `main`
 - [Adding Models](model-additions.md) for the maintainer checklist when new models become available
 - [Native Launch Certification](native-launch-certification.md) for native model runability and launch certification status
+- [Terminal Lifecycle Certification](terminal-lifecycle-certification.md) for cleanup shadow rollout, soak gates, and rollback
 - [`wavemill context`](cli-reference.md) for maintaining agent-readable project memory
 
 ## Quick Start

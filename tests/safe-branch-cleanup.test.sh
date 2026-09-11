@@ -58,7 +58,13 @@ helper_file="$tmp/safe-cleanup-helper.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "_wavemill_cleanup_operator_guidance"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_load_config"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "cleanup_episode_config_value"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_pr_aware_cleanup_enabled"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_branch_deletion_mode"
   printf '\n'
   printf '%s\n' 'WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT=".wavemill/observer-findings.jsonl"'
   extract_function "$COMMON_SCRIPT" "wavemill_worktree_dirty_status"
@@ -88,6 +94,7 @@ setup_repo() {
   mkdir -p "$case_dir"
   git init --bare "$origin" >/dev/null
   git clone "$origin" "$repo" >/dev/null 2>&1
+  jq -n '{cleanup:{branchDeletion:{enabled:true,mode:"enforce"}}}' > "$repo/.wavemill-config.json"
   git -C "$repo" config user.email "test@example.com"
   git -C "$repo" config user.name "Wavemill Test"
   git -C "$repo" checkout -b auto/integration >/dev/null 2>&1
@@ -429,6 +436,30 @@ case_squash_pr_head_deleted() {
   [[ "$(jq -r '.prNumber' "$decision")" == "4242" ]] || fail "squash-pr decision prNumber mismatch"
 }
 
+case_squash_pr_head_shadow_records_decision() {
+  local repo branch wt out decision head fixture
+  repo="$(setup_squash_delivery squash-pr-shadow)"
+  jq -n '{cleanup:{branchDeletion:{enabled:true,mode:"shadow"}}}' > "$repo/.wavemill-config.json"
+  branch="task/squash-pr-shadow"
+  wt="$tmp/squash-pr-shadow/wt"
+  head="$(git -C "$wt" rev-parse HEAD)"
+  fixture="$tmp/squash-pr-shadow/pr.json"
+  record_pr_fixture "$fixture" "MERGED" "2026-09-04T12:00:00Z" "$head" "auto/integration"
+
+  out="$(run_helper "$repo" "$wt" "$branch" "auto/integration" "test" "HOK-9010" "4242" "$fixture")"
+  decision="$(decision_path "$repo" "$branch")"
+  assert_contains "$out" "rc=0" "squash-pr-shadow return"
+  assert_contains "$out" "outcome=shadow_would_delete" "squash-pr-shadow outcome"
+  branch_exists "$repo" "$branch" || fail "squash-pr-shadow branch was deleted in shadow mode"
+  assert_absent "$wt"
+  assert_exists "$decision"
+  [[ "$(jq -r '.classification' "$decision")" == "safe_terminal_pr_head" ]] || fail "squash-pr-shadow decision classification mismatch"
+  [[ "$(jq -r '.mode' "$decision")" == "shadow" ]] || fail "squash-pr-shadow decision mode mismatch"
+  [[ "$(jq -r '.wouldDelete' "$decision")" == "true" ]] || fail "squash-pr-shadow wouldDelete mismatch"
+  [[ "$(jq -r '.authority' "$decision")" == *"headRefOid exactly equal"* ]] || fail "squash-pr-shadow authority missing"
+  [[ "$(jq -r '.finalCheckPassed' "$decision")" == "true" ]] || fail "squash-pr-shadow finalCheckPassed mismatch"
+}
+
 case_pr_head_mismatch_retained() {
   local repo branch wt out marker fixture
   repo="$(setup_squash_delivery squash-pr-mismatch)"
@@ -584,6 +615,7 @@ case_dirty_worktree_retained
 case_observer_artifact_only_cleaned
 case_observer_artifact_plus_user_file_retained
 case_squash_pr_head_deleted
+case_squash_pr_head_shadow_records_decision
 case_pr_head_mismatch_retained
 case_pr_closed_unmerged_retained
 case_pr_lookup_failure_retained

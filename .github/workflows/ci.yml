@@ -311,11 +311,23 @@ jobs:
               - 'tests/wavemill-dependent-launch.test.sh'
               - 'tests/wavemill-queued-tasks-state.test.sh'
               - 'tests/wavemill-launch-plan-queue-metadata.test.sh'
+              - 'tests/terminal-lifecycle-cert-matrix.test.sh'
+              - 'tests/terminal-lifecycle-cert-restart.test.sh'
+              - 'tests/terminal-lifecycle-cert-budgets.test.sh'
+              - 'tests/terminal-lifecycle-flags.test.sh'
+              - 'tests/lib/terminal-lifecycle-cert-harness.sh'
               - 'tests/fixtures/lifecycle/parent_pr_triggers_child_launch.sh'
               - 'tests/fixtures/lifecycle/parent_branch_missing_fails_clearly.sh'
               - 'tests/fixtures/lifecycle/**'
+              - 'tests/fixtures/terminal-lifecycle/**'
               - 'tests/fixtures/startup/launch-plan-with-queue.json'
               - 'tests/fixtures/startup/launch-plan-no-queue.json'
+              # Terminal lifecycle certification report and soak gates
+              - 'shared/lib/terminal-lifecycle-cert.ts'
+              - 'shared/lib/terminal-lifecycle-cert.test.ts'
+              - 'tools/terminal-lifecycle-cert-report.ts'
+              - 'tools/terminal-lifecycle-soak.ts'
+              - 'docs/terminal-lifecycle-certification.md'
               # Stage result CLI tool
               - 'tools/stage-result-cli.ts'
             openrouter_alias_audit:

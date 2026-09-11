@@ -263,6 +263,16 @@ check_eq "second pass does not kill again" "1" "$(kill_count)"
 check_eq "second pass leaves record untouched" "$record_mtime_1" "$(file_mtime "$(record_for HOK-2610)")"
 check_eq "record stays a single JSON object" "1" "$(wc -l < "$(record_for HOK-2610)" | tr -d ' ')"
 
+# Restart replay: if state says released but the window is still discoverable,
+# release must converge the pane instead of trusting stale state.
+reset_case "HOK-2610R" "release-replay-stale-pane" "110"
+write_pr_state "110" "CLOSED"
+setup_fake_window "HOK-2610R" "release-replay-stale-pane"
+state_mutate "$STATE_FILE" '.tasks[$issue].paneReleased = true | .tasks[$issue].paneState = "released"' --arg issue "HOK-2610R" >/dev/null
+wavemill_release_terminal_pane "$SESSION" "HOK-2610R" "release-replay-stale-pane" "pr_closed_unmerged" "110"
+check_eq "stale released state still kills live pane" "1" "$(kill_count)"
+check_eq "stale released state pane gone" "absent" "$([[ -f "$FAKE_TMUX_STATE/alive" ]] && echo present || echo absent)"
+
 # Missing window + proven ownership: idempotent success, record still written.
 reset_case "HOK-2611" "release-missing-window" "111"
 write_pr_state "111" "CLOSED"
