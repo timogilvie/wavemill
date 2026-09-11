@@ -786,7 +786,7 @@ function validPromptSizeDiagnostic() {
 }
 
 test('SCHEMA_VERSION is bumped for eval schema updates', () => {
-  assert.equal(SCHEMA_VERSION, '1.46.0');
+  assert.equal(SCHEMA_VERSION, '1.47.0');
 });
 
 function validReviewIdentitySet() {
@@ -2373,8 +2373,8 @@ test('Wavemill router fields validate and schema stays in parity', () => {
   assert.equal(properties.wavemill_router_scoring?.$ref, '#/$defs/WavemillRouterScoringMetadata');
 });
 
-test('Schema version constant is 1.46.0', () => {
-  assert.equal(SCHEMA_VERSION, '1.46.0');
+test('Schema version constant is 1.47.0', () => {
+  assert.equal(SCHEMA_VERSION, '1.47.0');
 });
 
 test('Record with an unknown_attribution intervention validates (HOK-2894)', () => {
