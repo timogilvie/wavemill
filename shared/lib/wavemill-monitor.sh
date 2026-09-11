@@ -8730,6 +8730,9 @@ review_recovery_publish_running() {
   local artifacts_json
   artifacts_json="$(review_recovery_running_artifacts_json "$prior_json" "$pr_number" "$source" "$attempt" "$contract_payload")"
   [[ -n "$artifacts_json" ]] || return 1
+  if ! write_stage_result_with_history "$feature_dir" "review" "running" "$agent" "$model" "Recovery re-review accepted for PR #$pr_number" "$artifacts_json"; then
+    return 1
+  fi
   if [[ -f "${STATE_FILE:-}" ]]; then
     state_mutate "$STATE_FILE" \
       '.tasks[$issue].phase = "review"
@@ -8751,7 +8754,6 @@ review_recovery_publish_running() {
       --arg agent "$agent" \
       --arg provider "$provider" >/dev/null || return 1
   fi
-  write_stage_result_with_history "$feature_dir" "review" "running" "$agent" "$model" "Recovery re-review accepted for PR #$pr_number" "$artifacts_json"
   clear_review_gate_attention "$feature_dir"
   review_recovery_clear_ready_handoff_state "$feature_dir"
 }

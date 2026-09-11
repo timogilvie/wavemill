@@ -84,6 +84,7 @@ read_stage_status() {
 }
 write_stage_result_with_history() {
   local feature_dir="$1" stage="$2" status="$3" agent="${4:-}" model="${5:-}" notes="${6:-}" artifacts="${7:-{}}"
+  [[ "${WRITE_STAGE_RESULT_FAIL:-0}" != "1" ]] || return 1
   mkdir -p "$feature_dir"
   if [[ -z "$artifacts" ]] || ! jq empty <<<"$artifacts" >/dev/null 2>&1; then
     artifacts='{}'
@@ -140,6 +141,20 @@ assert_eq "failed launch restores terminal status" "failed" "$(jq -r '.status' "
 assert_eq "failed launch leaves no running replay" "not-running" "$(jq -r 'if (.artifacts.recoveryReplay.status // "") == "running" then "running" else "not-running" end' "$FEATURE_DIR/.review-result.json")"
 assert_eq "failed launch keeps original verdict in audit" "error" "$(jq -r '.previousReviewResult.artifacts.verdict' "$FEATURE_DIR/.review-rerun-request.json")"
 assert_eq "failed launch keeps task in ready" "ready" "$(jq -r '.tasks["HOK-2999_c"].phase' "$STATE_FILE")"
+
+setup_case "publication-failure"
+touch "$FEATURE_DIR/.needs-attention"
+prior_json='{"stage":"review","status":"failed","artifacts":{"type":"review","prNumber":1378}}'
+contract_json='{"stageRole":"review","agent":"claude","model":"claude-sonnet-5","provider":"anthropic"}'
+if WRITE_STAGE_RESULT_FAIL=1 review_recovery_publish_running \
+  "HOK-2999_c" "$FEATURE_DIR" "claude" "claude-sonnet-5" "anthropic" "1378" \
+  "manual" "0" "$contract_json" "$prior_json"; then
+  fail "failed result publication is reported"
+else
+  pass "failed result publication is reported"
+fi
+assert_eq "failed result publication leaves task in ready" "ready" "$(jq -r '.tasks["HOK-2999_c"].phase' "$STATE_FILE")"
+assert_eq "failed result publication preserves ready attention" "present" "$([[ -f "$FEATURE_DIR/.needs-attention" ]] && printf present || printf missing)"
 
 setup_case "duplicate"
 cat > "$FEATURE_DIR/.review-result.json" <<'EOF'
