@@ -5776,7 +5776,13 @@ validate_pr_merge() {
 
   # Check 1: Must be MERGED (not CLOSED or OPEN).
   if [[ "$state" != "MERGED" ]]; then
-    if declare -F log_warn >/dev/null 2>&1; then
+    if [[ -n "${SESSION:-}" ]] \
+        && declare -F warn_once_per_session >/dev/null 2>&1 \
+        && declare -F log >/dev/null 2>&1; then
+      warn_once_per_session \
+        "pr-merge-validation:$pr:$state" \
+        "PR #$pr state is $state (not MERGED)"
+    elif declare -F log_warn >/dev/null 2>&1; then
       log_warn "PR #$pr state is $state (not MERGED)"
     fi
     return 1

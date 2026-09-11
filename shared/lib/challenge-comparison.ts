@@ -7,7 +7,13 @@ import { resolveWavemillAliasFromOpenRouterId } from './openrouter-catalog.ts';
 import type { StageName, StageResult, StageStatus } from './stage-result.ts';
 import type { ChallengeArmFailure } from './arm-failure-taxonomy.ts';
 import type { ChallengeStage } from './challenge-mode.ts';
-import type { InvalidChallengeReason } from './challenge-execution-contract.ts';
+import type {
+  DeliveryVerdict,
+  ForkIdentity,
+  InvalidChallengeReason,
+  ReviewExecutedIdentitySet,
+  StageAttribution,
+} from './challenge-execution-contract.ts';
 import type { PrDiffUnavailableReason } from './pr-diff-provider.ts';
 
 export interface ChallengeRoutingMeta {
@@ -291,6 +297,17 @@ export interface ChallengeComparison {
 
   // No-comparison accounting field (P0.6, HOK-2794)
   noComparisonReason?: NoComparisonReason;
+
+  /** Final delivery decision, independent from causal stage attribution. */
+  deliveryVerdict?: DeliveryVerdict;
+  /** Causal validity and outcome for the varied challenge stage. */
+  stageAttribution?: StageAttribution;
+  /** Immutable fork/input identity proving matched pre-stage inputs. */
+  forkIdentity?: ForkIdentity;
+  /** Executed review identities observed for the primary arm. */
+  primaryReviewExecutedIdentity?: ReviewExecutedIdentitySet;
+  /** Executed review identities observed for the challenger arm. */
+  challengerReviewExecutedIdentity?: ReviewExecutedIdentitySet;
 }
 
 export interface ChallengeComparisonDimensions {
