@@ -401,7 +401,11 @@ check_contains "rehydrate loop recovers interrupted arms" \
   'challenge_arms_recover_interrupted "$ISSUE"'
 CLEANUP_BLOCK=$(awk '/^cleanup_aborted_challenge_arm\(\) \{/{capture=1} capture{print} /^}/ && capture{exit}' "$MONITOR_SCRIPT_FILE")
 check_contains "pre-fork cleanup cancels with typed reason" "$CLEANUP_BLOCK" 'challenge_arms_cancel_pending "$issue" "pre_fork_primary_failure" "$reason"'
-PR_OPEN_BLOCK=$(awk '/PR open but not merged/,/^fi$/' "$MONITOR_SCRIPT_FILE" | head -20)
+PR_OPEN_BLOCK=$(awk '
+  /PR open but not merged/ { capture=1 }
+  capture && lines < 20 { print; lines++ }
+  capture && lines >= 20 { exit }
+' "$MONITOR_SCRIPT_FILE")
 check_contains "PR-open tick re-enters the fork trigger" "$PR_OPEN_BLOCK" 'challenge_maybe_materialize_deferred_arms "$ISSUE"'
 
 # Taxonomy: pre_fork_primary_failure is a registered no-comparison reason.
