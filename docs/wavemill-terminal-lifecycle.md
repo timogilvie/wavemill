@@ -65,7 +65,7 @@ Invalid combinations:
 
 - Panes: task-owned while `allocated`; queue-owned when `released`; cleanup-owned while `reaping`; manually owned when `retained` or `verification-required`.
 - Worktrees and local branches: cleanup may remove them only after existing dirty/unpushed-work guards pass.
-- Remote branches: deletion requires an explicit lifecycle launch contract and existing PR-merged evidence. Legacy state never grants this authority by default.
+- Remote branches: deletion requires an explicit lifecycle launch contract and existing PR-merged evidence. Legacy state never grants this authority by default. `cleanup.branchDeletion.mode=shadow` records would-delete evidence and retains branches until an operator enables `enforce`.
 - Hooks: terminal reconciliation may terminalize hook state, but that is not proof of pane release.
 - Retries and incidents: cleanup failures retain task state and write retry/incident evidence rather than deleting uncertain resources.
 - Task-state entries: removed only after cleanup has reached `reaped`, or by pre-existing explicit state-removal paths whose safety contracts already own that decision.
@@ -148,6 +148,11 @@ Run identity is recorded separately from historical task state. The mill creates
 Restart behavior is idempotent: each preflight step is either a read, a `state_mutate` stamp, or a call into the idempotent terminal reconciler and cleanup disposition machine. Re-running startup after a crash converges to the same eligibility, terminal markers, and resource disposition as an uninterrupted run.
 
 Rollback: `startup.terminalPreflight.enabled=false` or `WAVEMILL_STARTUP_TERMINAL_PREFLIGHT=0` skips classification. The epoch and `rehydration` fields are retained as harmless historical fields; disabled startup never rewrites terminal entries back to active.
+
+## Certification And Rollout
+
+End-to-end certification, shadow-mode audit, soak gates, and rollback steps are
+documented in [Terminal Lifecycle Certification](terminal-lifecycle-certification.md).
 
 ## Legacy Migration
 

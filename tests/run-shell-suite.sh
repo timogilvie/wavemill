@@ -109,6 +109,7 @@ TESTS=(
   run-custom-tests-shard.test.sh
   incident-fixtures-terminal-panes.test.sh
   incident-fixtures-safety-controls.test.sh
+  terminal-lifecycle-flags.test.sh
 )
 
 SHARD_INDEX=1

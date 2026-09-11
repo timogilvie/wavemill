@@ -2517,8 +2517,29 @@
         },
         "cleanup": {
             "type": "object",
-            "description": "Settings for durable cleanup episodes and retry scheduling.",
+            "description": "Settings for durable cleanup episodes, retry scheduling, and staged branch-deletion rollout.",
             "properties": {
+                "branchDeletion": {
+                    "type": "object",
+                    "description": "Branch deletion authority rollout gate. The WAVEMILL_PR_AWARE_CLEANUP env var can disable PR-aware deletion proof independently; destructive branch deletion still requires mode=enforce.",
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "Allow cleanup logic to evaluate branch deletion authority. When false, branch deletion stays disabled and cleanup records evidence without deleting branches."
+                        },
+                        "mode": {
+                            "type": "string",
+                            "enum": [
+                                "shadow",
+                                "enforce"
+                            ],
+                            "default": "shadow",
+                            "description": "shadow records would-delete decisions and retains branches; enforce performs branch deletion after authority and final-head verification are recorded."
+                        }
+                    },
+                    "additionalProperties": false
+                },
                 "episodes": {
                     "type": "object",
                     "properties": {

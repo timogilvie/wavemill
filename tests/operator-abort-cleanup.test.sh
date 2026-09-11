@@ -62,7 +62,13 @@ cleanup_file="$tmp/operator-abort-cleanup.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "_wavemill_cleanup_operator_guidance"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_load_config"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "cleanup_episode_config_value"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_pr_aware_cleanup_enabled"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_branch_deletion_mode"
   printf '\n'
   printf '%s\n' 'WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT=".wavemill/observer-findings.jsonl"'
   extract_function "$COMMON_SCRIPT" "wavemill_worktree_dirty_status"
@@ -104,6 +110,8 @@ run_operator_abort_case() {
     WORKTREE_ROOT="$CASE_DIR/worktrees"
     STATE_FILE="$CASE_DIR/state.json"
     MILL_LOG_FILE="$CASE_DIR/mill.log"
+    mkdir -p "$REPO_DIR"
+    printf "%s\n" "{\"cleanup\":{\"branchDeletion\":{\"enabled\":true,\"mode\":\"enforce\"}}}" > "$REPO_DIR/.wavemill-config.json"
     mkdir -p "$WORKTREE_ROOT/$SLUG/features/$SLUG"
     cat > "$STATE_FILE" <<EOF
 {"tasks":{"$ISSUE":{"slug":"$SLUG","branch":"task/$SLUG","worktree":"$WORKTREE_ROOT/$SLUG","status":"active","phase":"planning","pr":"$TEST_PR","challengeAborted":""}}}
