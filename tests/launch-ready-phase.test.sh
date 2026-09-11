@@ -97,6 +97,19 @@ extract_function "$MONITOR_SCRIPT_FILE" "review_result_review_head_sha" >> "$LAU
 extract_function "$MONITOR_SCRIPT_FILE" "review_infra_recovery_category_label" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_infra_recovery_next_action" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "select_context_window_recovery_reviewer" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "review_recovery_contract_payload" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "review_recovery_claim_path" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "review_recovery_write_claim" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "review_recovery_settle_claim" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "review_recovery_write_audit" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "review_recovery_terminal_artifacts_json" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "review_recovery_restore_terminal_result" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "review_recovery_running_artifacts_json" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "review_recovery_clear_ready_handoff_state" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "review_recovery_publish_running" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "review_recovery_window_observable" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "review_recovery_coordinator" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "review_recovery_coordinator_locked" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "relaunch_review_after_infra_recovery" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_result_summary" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_artifacts_with_pr_number" >> "$LAUNCH_FUNC_FILE"
@@ -437,6 +450,10 @@ EOF
         *) return 0 ;;
       esac
     }
+    review_recovery_contract_payload() {
+      jq -cn "{stageRole:\"review\",agent:\"claude\",model:\"claude-sonnet-5\",provider:\"anthropic\"}"
+    }
+    review_recovery_window_observable() { return 0; }
     check_stage_aborted() { return 1; }
     git() {
       if [[ "${1:-}" == "-C" && "${3:-}" == "rev-parse" && "${4:-}" == "--show-toplevel" ]]; then
@@ -455,6 +472,16 @@ EOF
     write_stage_result() {
       printf -v WRITE_STAGE_CALLS "%s%s|%s|%s|%s|%s|%s|%s\n" \
         "$WRITE_STAGE_CALLS" "${1-}" "${2-}" "${3-}" "${4-}" "${5-}" "${6-}" "${7-}"
+    }
+    write_stage_result_with_history() {
+      write_stage_result "$@"
+      if [[ "${2-}" == "review" ]]; then
+        local feature_dir="${1-}" stage="${2-}" status="${3-}" agent="${4-}" model="${5-}" notes="${6-}" artifacts="${7-}"
+        [[ -n "$artifacts" ]] || artifacts='{}'
+        mkdir -p "$feature_dir"
+        jq -cn --arg stage "$stage" --arg status "$status" --arg agent "$agent" --arg model "$model" --arg notes "$notes" --argjson artifacts "$artifacts" \
+          "{stage:\$stage,status:\$status,agent:\$agent,model:\$model,notes:\$notes,artifacts:\$artifacts}" > "$feature_dir/.review-result.json"
+      fi
     }
     write_ready_attention_file() {
       printf -v READY_ATTENTION_CALLS "%s%s|%s\n" "$READY_ATTENTION_CALLS" "$1" "$2"

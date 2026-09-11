@@ -44,6 +44,7 @@ TESTS=(
   linear-state-canonicalization.test.sh
   task-phase-canonicalization.test.sh
   pr-state-merge-canonicalization.test.sh
+  review-recovery.test.sh
   with-timeout.test.sh
   native-agent-shell-operators.test.sh
   native-coding-commit.test.sh
@@ -94,6 +95,7 @@ TESTS=(
   model-inheritance-chain.test.sh
   wavemill-monitor-command-draining.test.sh
   wavemill-mill-session.test.sh
+  wavemill-input-reader.test.sh
   merge-retry-marker.test.sh
   queue-health.test.sh
   merge-queue-live-ci.test.sh

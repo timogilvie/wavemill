@@ -6512,33 +6512,36 @@ _stop_task_recovery_contract_unavailable() {
 _prepare_recovery_phase_launch() {
   local issue="$1" slug="$2" phase="$3" feature_dir="$4" wt_dir="$5"
   local agent="$6" model="$7" contract_payload="$8" lifecycle_phase="${9:-}"
+  local result_write_mode="${10:-write-result}"
   local win contract_title resolved_window artifacts_json=""
 
-  if [[ -f "$feature_dir/.${phase}-result.json" ]]; then
-    artifacts_json="$(jq -c --arg phase "$phase" '
-      if ((.artifacts // null) | type) == "object" then
-        .artifacts
-        | if $phase == "review" then
-            . + {
-              recoveryReplay: {
-                status: "running",
-                preservesPriorVerdict: true
+  if [[ "$result_write_mode" != "defer-result" ]]; then
+    if [[ -f "$feature_dir/.${phase}-result.json" ]]; then
+      artifacts_json="$(jq -c --arg phase "$phase" '
+        if ((.artifacts // null) | type) == "object" then
+          .artifacts
+          | if $phase == "review" then
+              . + {
+                recoveryReplay: {
+                  status: "running",
+                  preservesPriorVerdict: true
+                }
               }
-            }
-          else
-            .
-          end
-      else
-        empty
-      end
-    ' "$feature_dir/.${phase}-result.json" 2>/dev/null || true)"
-  fi
+            else
+              .
+            end
+        else
+          empty
+        end
+      ' "$feature_dir/.${phase}-result.json" 2>/dev/null || true)"
+    fi
 
-  if ! write_stage_result_with_history "$feature_dir" "$phase" "running" "$agent" "$model" "Recovery replay of persisted execution contract" \
-      "$artifacts_json" \
-    || ! jq -e --arg phase "$phase" '.stage == $phase and .status == "running"' "$feature_dir/.${phase}-result.json" >/dev/null 2>&1; then
-    log_warn "$issue → failed to record recovered $phase stage"
-    return 1
+    if ! write_stage_result_with_history "$feature_dir" "$phase" "running" "$agent" "$model" "Recovery replay of persisted execution contract" \
+        "$artifacts_json" \
+      || ! jq -e --arg phase "$phase" '.stage == $phase and .status == "running"' "$feature_dir/.${phase}-result.json" >/dev/null 2>&1; then
+      log_warn "$issue → failed to record recovered $phase stage"
+      return 1
+    fi
   fi
 
   if ! configure_agent_hooks "$agent" "$wt_dir" "$REPO_DIR"; then
@@ -8576,14 +8579,329 @@ select_context_window_recovery_reviewer() {
   printf '%s\n' "$selected_model"
 }
 
+review_recovery_contract_payload() {
+  local issue="$1" feature_dir="$2" challenge_side contract_json contract_ok reason detail
+  REVIEW_RECOVERY_CONTRACT_ERROR=""
+  challenge_side="$(_challenge_side_for_issue "$issue" 2>/dev/null || true)"
+  local recovery_args=(read-and-validate --feature-dir "$feature_dir" --stage review --repo "$REPO_DIR" --json)
+  [[ -n "$challenge_side" ]] && recovery_args+=(--challenge-side "$challenge_side")
+  if ! contract_json="$(npx tsx "$TOOLS_DIR/recovery-contract.ts" "${recovery_args[@]}" 2>/dev/null)"; then
+    REVIEW_RECOVERY_CONTRACT_ERROR="recovery-contract CLI exited non-zero"
+    return 1
+  fi
+  contract_ok="$(printf '%s' "$contract_json" | jq -r '.ok // false' 2>/dev/null || echo "false")"
+  if [[ "$contract_ok" != "true" ]]; then
+    reason="$(printf '%s' "$contract_json" | jq -r '.reason // "contract_malformed"' 2>/dev/null || echo "contract_malformed")"
+    detail="$(printf '%s' "$contract_json" | jq -r '.detail // "Persisted review recovery contract is unavailable."' 2>/dev/null || echo "Persisted review recovery contract is unavailable.")"
+    REVIEW_RECOVERY_CONTRACT_ERROR="$reason: $detail"
+    return 1
+  fi
+  printf '%s' "$contract_json" | jq -c '.contract'
+}
+
+review_recovery_claim_path() {
+  printf '%s\n' "$1/.review-recovery-claim.json"
+}
+
+review_recovery_write_claim() {
+  local feature_dir="$1" issue="$2" reason="$3" category="$4" identity="$5" attempt="$6" source="$7"
+  jq -cn \
+    --arg issue "$issue" \
+    --arg reason "$reason" \
+    --arg category "$category" \
+    --arg identity "$identity" \
+    --arg attempt "$attempt" \
+    --arg source "$source" \
+    '{schemaVersion:1,status:"claimed",issue:$issue,reason:$reason,category:$category,identity:$identity,attempt:$attempt,source:$source,claimedAt:(now|todateiso8601)}' \
+    > "$(review_recovery_claim_path "$feature_dir")"
+}
+
+review_recovery_settle_claim() {
+  local feature_dir="$1" status="$2" detail="${3:-}" claim_path tmp
+  claim_path="$(review_recovery_claim_path "$feature_dir")"
+  [[ -f "$claim_path" ]] || return 0
+  tmp=$(mktemp) || return 0
+  if jq --arg status "$status" --arg detail "$detail" \
+    '.status = $status | .detail = $detail | .settledAt = (now | todateiso8601)' \
+    "$claim_path" > "$tmp" 2>/dev/null; then
+    mv "$tmp" "$claim_path"
+  else
+    rm -f "$tmp"
+  fi
+}
+
+review_recovery_write_audit() {
+  local feature_dir="$1" issue="$2" pr_number="$3" reason="$4" source="$5" prior_json="$6" contract_payload="$7"
+  local audit_path audit_tmp audit_timestamp
+  audit_path="$feature_dir/.review-rerun-request.json"
+  audit_timestamp="$(monitor_command_timestamp 2>/dev/null || date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  audit_tmp=$(mktemp) || return 1
+  if jq -n \
+    --arg timestamp "$audit_timestamp" \
+    --arg issue "$issue" \
+    --argjson prNumber "$pr_number" \
+    --arg reason "$reason" \
+    --arg source "$source" \
+    --argjson prior "$prior_json" \
+    --argjson contract "$contract_payload" \
+    '{timestamp:$timestamp, issue:$issue, prNumber:$prNumber, reason:$reason, source:$source, previousReviewResult:$prior, recoveryContract:$contract}' \
+    > "$audit_tmp"; then
+    mv "$audit_tmp" "$audit_path"
+    return 0
+  fi
+  rm -f "$audit_tmp"
+  return 1
+}
+
+review_recovery_terminal_artifacts_json() {
+  local prior_json="$1" reason="$2" source="$3"
+  jq -cn --arg reason "$reason" --arg source "$source" --argjson prior "$prior_json" '
+    ($prior.artifacts // {type:"review"}) as $artifacts
+    | (if ($artifacts | type) == "object" then $artifacts else {type:"review"} end)
+    | if ((.recoveryReplay // null) | type) == "object" then
+        .recoveryReplay = (.recoveryReplay + {status:"failed", terminalReason:$reason, source:$source})
+      else
+        . + {recoveryReplay:{status:"failed", terminalReason:$reason, source:$source}}
+      end
+  ' 2>/dev/null
+}
+
+review_recovery_restore_terminal_result() {
+  local feature_dir="$1" agent="$2" model="$3" reason="$4" source="$5" prior_json="$6"
+  local prior_status prior_agent prior_model prior_notes artifacts_json
+  prior_status="$(printf '%s' "$prior_json" | jq -r '.status // empty' 2>/dev/null || true)"
+  prior_agent="$(printf '%s' "$prior_json" | jq -r '.agent // empty' 2>/dev/null || true)"
+  prior_model="$(printf '%s' "$prior_json" | jq -r '.model // empty' 2>/dev/null || true)"
+  prior_notes="$(printf '%s' "$prior_json" | jq -r '.notes // empty' 2>/dev/null || true)"
+  artifacts_json="$(review_recovery_terminal_artifacts_json "$prior_json" "$reason" "$source")"
+  [[ -n "$artifacts_json" ]] || artifacts_json="$(jq -cn --arg reason "$reason" --arg source "$source" '{type:"review",recoveryReplay:{status:"failed",terminalReason:$reason,source:$source}}')"
+
+  case "$prior_status" in
+    completed|failed|aborted)
+      write_stage_result_with_history "$feature_dir" "review" "$prior_status" "${prior_agent:-$agent}" "${prior_model:-$model}" "${prior_notes:-$reason}" "$artifacts_json"
+      ;;
+    *)
+      write_stage_result_with_history "$feature_dir" "review" "failed" "$agent" "$model" "$reason" "$artifacts_json"
+      ;;
+  esac
+}
+
+review_recovery_running_artifacts_json() {
+  local prior_json="$1" pr_number="$2" source="$3" attempt="$4" contract_payload="$5"
+  jq -cn --argjson prNumber "$pr_number" --arg source "$source" --arg attempt "$attempt" --argjson contract "$contract_payload" --argjson prior "$prior_json" '
+    ($prior.artifacts // {type:"review"}) as $artifacts
+    | (if ($artifacts | type) == "object" then $artifacts else {type:"review"} end)
+    | .type = (.type // "review")
+    | .prNumber = $prNumber
+    | .recoveryReplay = {
+        status: "running",
+        preservesPriorVerdict: true,
+        source: $source,
+        attempt: ($attempt | tonumber? // null),
+        contract: $contract
+      }
+  ' 2>/dev/null
+}
+
+review_recovery_clear_ready_handoff_state() {
+  local feature_dir="$1"
+  rm -f \
+    "$feature_dir/.failed-ready-recheck-count" \
+    "$feature_dir/.failed-ready-recheck-head" \
+    "$feature_dir/.failed-ready-recheck-last-at" \
+    "$feature_dir/.failed-ready-recheck-reason.json" \
+    "$feature_dir/.failed-ready-recheck-exhausted" \
+    "$feature_dir/.retry-ready-remediation-count" \
+    "$feature_dir/.retry-ready-remediation-head" \
+    "$feature_dir/.retry-ready-remediation-last-at" \
+    "$feature_dir/.retry-ready-remediation-exhausted" \
+    2>/dev/null || true
+}
+
+review_recovery_publish_running() {
+  local issue="$1" feature_dir="$2" agent="$3" model="$4" provider="$5" pr_number="$6" source="$7" attempt="$8" contract_payload="$9" prior_json="${10}"
+  local artifacts_json
+  artifacts_json="$(review_recovery_running_artifacts_json "$prior_json" "$pr_number" "$source" "$attempt" "$contract_payload")"
+  [[ -n "$artifacts_json" ]] || return 1
+  if ! write_stage_result_with_history "$feature_dir" "review" "running" "$agent" "$model" "Recovery re-review accepted for PR #$pr_number" "$artifacts_json"; then
+    return 1
+  fi
+  if [[ -f "${STATE_FILE:-}" ]]; then
+    state_mutate "$STATE_FILE" \
+      '.tasks[$issue].phase = "review"
+       | .tasks[$issue].model = $model
+       | .tasks[$issue].agent = $agent
+       | .tasks[$issue].provider = $provider
+       | .tasks[$issue].stageRole = "review"
+       | .tasks[$issue].executionOwner = "task"
+       | .tasks[$issue].paneState = "active"
+       | .tasks[$issue].updated = (now | todate)
+       | .tasks[$issue].lifecycle = ((.tasks[$issue].lifecycle // {}) + {
+           schemaVersion: 1,
+           workflowOutcome: (.tasks[$issue].lifecycle.workflowOutcome // "active"),
+           resourceDisposition: "allocated"
+         })
+       | del(.tasks[$issue].queueHandoffAt, .tasks[$issue].capsuleDigest)' \
+      --arg issue "$issue" \
+      --arg model "$model" \
+      --arg agent "$agent" \
+      --arg provider "$provider" >/dev/null || return 1
+  fi
+  clear_review_gate_attention "$feature_dir"
+  review_recovery_clear_ready_handoff_state "$feature_dir"
+}
+
+review_recovery_window_observable() {
+  local issue="$1" slug="$2" wt_dir="$3" target resolved_window
+  target="$(_tmux_task_window_target "$SESSION" "$issue" "$slug" "${STATE_FILE:-}" "$wt_dir" 2>/dev/null || true)"
+  [[ -n "$target" ]] || return 1
+  resolved_window="$(tmux display-message -p -t "$target" '#{window_id}' 2>/dev/null || true)"
+  [[ -n "$resolved_window" ]]
+}
+
+review_recovery_coordinator() {
+  local issue="$1" slug="$2" title="$3" wt_dir="$4" branch="$5" base_branch="$6" pr_number="$7" feature_dir="$8" reason="$9" source="${10}" category="${11:-manual}" retry_identity="${12:-}" retry_limit="${13:-0}" allow_context_reroute="${14:-false}"
+  wavemill_lock_run "review-recovery-${issue}" \
+    review_recovery_coordinator_locked "$issue" "$slug" "$title" "$wt_dir" "$branch" "$base_branch" "$pr_number" "$feature_dir" "$reason" "$source" "$category" "$retry_identity" "$retry_limit" "$allow_context_reroute"
+}
+
+review_recovery_coordinator_locked() {
+  local issue="$1" slug="$2" title="$3" wt_dir="$4" branch="$5" base_branch="$6" pr_number="$7" feature_dir="$8" reason="$9" source="${10}" category="${11}" retry_identity="${12}" retry_limit="${13}" allow_context_reroute="${14}"
+  local prior_json="null" review_status contract_payload reviewer_model reviewer_agent provider review_mode
+  local disposition retry_number="0" rc=0 rerouted_model="" reroute_json="" failure_reason
+
+  review_status="$(read_stage_status "$feature_dir" "review" 2>/dev/null || true)"
+  if [[ "$review_status" == "running" ]]; then
+    log_warn "$issue review is already running"
+    return 9
+  fi
+
+  if [[ -f "$feature_dir/.review-result.json" ]]; then
+    prior_json="$(jq -c '.' "$feature_dir/.review-result.json" 2>/dev/null || printf 'null')"
+  fi
+
+  if ! contract_payload="$(review_recovery_contract_payload "$issue" "$feature_dir")"; then
+    failure_reason="review recovery contract unavailable: ${REVIEW_RECOVERY_CONTRACT_ERROR:-unknown}"
+    review_recovery_restore_terminal_result "$feature_dir" "" "" "$failure_reason" "$source" "$prior_json"
+    return 1
+  fi
+
+  reviewer_model="$(printf '%s' "$contract_payload" | jq -r '.model // empty')"
+  reviewer_agent="$(printf '%s' "$contract_payload" | jq -r '.agent // empty')"
+  provider="$(printf '%s' "$contract_payload" | jq -r '.provider // empty')"
+  if [[ -z "$reviewer_model" || -z "$reviewer_agent" ]]; then
+    failure_reason="review recovery contract missing model or agent"
+    review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
+    return 1
+  fi
+
+  if [[ "$retry_limit" =~ ^[0-9]+$ && "$retry_limit" -gt 0 ]]; then
+    disposition=$(bounded_retry_gate "$feature_dir" "review-infra-recovery" "$retry_identity" "$retry_limit")
+    case "$disposition" in
+      backoff)
+        log "debug" "  $issue: holding review recovery for PR #$pr_number (backoff, category=${category})"
+        return 8
+        ;;
+      exhausted)
+        failure_reason="Review infrastructure recovery exhausted after $(bounded_retry_count "$feature_dir" "review-infra-recovery") attempt(s) for PR #$pr_number (category=${category}); $(review_infra_recovery_next_action "$category")"
+        bounded_retry_mark_exhausted "$feature_dir" "review-infra-recovery" "$failure_reason" || true
+        write_ready_attention_file "$feature_dir" "Review failed on infrastructure (${category}) for PR #$pr_number, $(review_infra_recovery_next_action "$category")."
+        review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
+        return 1
+        ;;
+      exhausted-quiet)
+        return 8
+        ;;
+    esac
+    retry_number=$(bounded_retry_increment "$feature_dir" "review-infra-recovery" "$retry_identity")
+  fi
+
+  if [[ "$allow_context_reroute" == "true" ]]; then
+    if ! rerouted_model="$(select_context_window_recovery_reviewer "$reviewer_model" "$wt_dir")"; then
+      failure_reason="Review context-window recovery cannot find a certified larger-context reviewer for PR #$pr_number (category=${category}); $(review_infra_recovery_next_action "$category")"
+      bounded_retry_mark_exhausted "$feature_dir" "review-infra-recovery" "$failure_reason" || true
+      write_ready_attention_file "$feature_dir" "Review failed on infrastructure (${category}) for PR #$pr_number, $(review_infra_recovery_next_action "$category"). ${REVIEW_CONTEXT_REROUTE_LAST_ERROR:-No larger-context reviewer available.}"
+      review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
+      return 1
+    fi
+    reroute_json="${REVIEW_CONTEXT_REROUTE_LAST_JSON:-}"
+    reviewer_model="$rerouted_model"
+    if ! reviewer_agent="$(agent_resolve_from_model "$reviewer_model" "review")"; then
+      failure_reason="Review context-window recovery selected $reviewer_model, but its review agent could not be resolved"
+      review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
+      return 1
+    fi
+    provider="$(npx tsx "$TOOLS_DIR/recovery-contract.ts" provider --model "$reviewer_model" --json 2>/dev/null | jq -r '.provider // empty' 2>/dev/null || true)"
+    contract_payload="$(printf '%s' "$contract_payload" | jq -c --arg agent "$reviewer_agent" --arg model "$reviewer_model" --arg provider "$provider" --argjson reroute "${reroute_json:-null}" \
+      '.agent = $agent | .model = $model | .provider = $provider | .contextWindowReroute = $reroute')"
+  fi
+
+  if ! agent_validate_phase_launch "$reviewer_agent" "review" "$reviewer_model" "$REPO_DIR"; then
+    failure_reason="${AGENT_RESOLVE_LAST_DIAGNOSTIC:-review recovery launch validation failed for agent=$reviewer_agent model=$reviewer_model}"
+    if [[ "$source" == "infra" ]]; then
+      write_ready_attention_file "$feature_dir" "Review infrastructure is still unavailable for PR #$pr_number; waiting for reviewer runtime recovery."
+      log_error "  $issue: waiting for reviewer runtime recovery before re-reviewing PR #$pr_number"
+    fi
+    review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
+    return 1
+  fi
+
+  review_recovery_write_claim "$feature_dir" "$issue" "$reason" "$category" "$retry_identity" "$retry_number" "$source" || true
+  if ! review_recovery_write_audit "$feature_dir" "$issue" "$pr_number" "$reason" "$source" "$prior_json" "$contract_payload"; then
+    failure_reason="could not record review recovery request"
+    review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
+    review_recovery_settle_claim "$feature_dir" "failed" "$failure_reason"
+    return 1
+  fi
+
+  review_mode="$(read_phase_config "$feature_dir" "review" "mode" 2>/dev/null || true)"
+  [[ -n "$review_mode" ]] || review_mode="static"
+
+  if ! _prepare_recovery_phase_launch "$issue" "$slug" "review" "$feature_dir" "$wt_dir" "$reviewer_agent" "$reviewer_model" "$contract_payload" "review" "defer-result"; then
+    failure_reason="failed to prepare review recovery launch surfaces"
+    review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
+    review_recovery_settle_claim "$feature_dir" "failed" "$failure_reason"
+    return 1
+  fi
+
+  launch_review_phase "$issue" "$slug" "$title" "$wt_dir" "$branch" "$base_branch" \
+    "$reviewer_model" "$reviewer_agent" "$review_mode" || rc=$?
+  if [[ "$rc" -eq 2 ]] && check_stage_aborted "$feature_dir"; then
+    review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "review recovery launch aborted" "$source" "$prior_json"
+    review_recovery_settle_claim "$feature_dir" "aborted" "review recovery launch aborted"
+    return 2
+  fi
+  if [[ "$rc" -ne 0 ]]; then
+    failure_reason="review recovery launch failed with rc=$rc"
+    review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
+    review_recovery_settle_claim "$feature_dir" "failed" "$failure_reason"
+    return 1
+  fi
+
+  if ! review_recovery_window_observable "$issue" "$slug" "$wt_dir"; then
+    failure_reason="review recovery launch accepted but pane ownership was not observable"
+    review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
+    review_recovery_settle_claim "$feature_dir" "failed" "$failure_reason"
+    return 1
+  fi
+
+  if ! review_recovery_publish_running "$issue" "$feature_dir" "$reviewer_agent" "$reviewer_model" "$provider" "$pr_number" "$source" "$retry_number" "$contract_payload" "$prior_json"; then
+    failure_reason="review recovery launch accepted but state publication failed"
+    review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
+    review_recovery_settle_claim "$feature_dir" "failed" "$failure_reason"
+    return 1
+  fi
+
+  review_recovery_settle_claim "$feature_dir" "accepted" "reviewer launch accepted"
+  return 0
+}
+
 relaunch_review_after_infra_recovery() {
   local issue="$1" slug="$2" title="$3" wt_dir="$4" branch="$5" base_branch="$6" pr_number="$7" state_dir="$8"
-  local review_file="$state_dir/.review-result.json"
-  local bucket="review-infra-recovery"
   local category recorded_head current_head identity
-  local retry_limit effective_retry_limit disposition retry_number reviewer_agent reviewer_model review_mode contract_payload rc=0
-  local scope_note="" next_action reason
-  local context_overflow_current_scope="false" rerouted_model="" reroute_json="" reroute_note=""
+  local retry_limit effective_retry_limit rc=0
+  local scope_note="" reroute_note=""
+  local context_overflow_current_scope="false"
 
   # Bounded-retry identity (HOK-2964 REQ-F2/F4): keyed to the current head and
   # the failure category, not a path-specific counter. A new commit or a
@@ -8602,85 +8920,26 @@ relaunch_review_after_infra_recovery() {
     effective_retry_limit=1
   fi
 
-  disposition=$(bounded_retry_gate "$state_dir" "$bucket" "$identity" "$effective_retry_limit")
-  case "$disposition" in
-    backoff)
-      log "debug" "  $issue: holding review infra recovery for PR #$pr_number (backoff, category=${category})"
-      return 1
-      ;;
-    exhausted)
-      next_action="$(review_infra_recovery_next_action "$category")"
-      reason="Review infrastructure recovery exhausted after $(bounded_retry_count "$state_dir" "$bucket") attempt(s) for PR #$pr_number (category=${category}); ${next_action}"
-      bounded_retry_mark_exhausted "$state_dir" "$bucket" "$reason" || true
-      write_ready_attention_file "$state_dir" "Review failed on infrastructure (${category}) for PR #$pr_number, ${next_action}."
-      log_error "  $issue: review infrastructure recovery exhausted for PR #$pr_number ($reason)"
-      return 1
-      ;;
-    exhausted-quiet)
-      return 1
-      ;;
-  esac
-
-  reviewer_agent="$(jq -r '.agent // empty' "$review_file" 2>/dev/null || echo "")"
-  reviewer_model="$(jq -r '.model // empty' "$review_file" 2>/dev/null || echo "")"
-  [[ -n "$reviewer_agent" ]] || reviewer_agent="$(read_state_value "" --arg i "$issue" '.tasks[$i].agent // ""')"
-  [[ -n "$reviewer_agent" ]] || reviewer_agent="$AGENT_CMD"
-  [[ -n "$reviewer_model" ]] || reviewer_model="$(read_state_value "" --arg i "$issue" '.tasks[$i].model // ""')"
-
-  if [[ "$context_overflow_current_scope" == "true" ]]; then
-    if ! rerouted_model="$(select_context_window_recovery_reviewer "$reviewer_model" "$wt_dir")"; then
-      next_action="$(review_infra_recovery_next_action "$category")"
-      reason="Review context-window recovery cannot find a certified larger-context reviewer for PR #$pr_number (category=${category}); ${next_action}"
-      bounded_retry_mark_exhausted "$state_dir" "$bucket" "$reason" || true
-      write_ready_attention_file "$state_dir" "Review failed on infrastructure (${category}) for PR #$pr_number, ${next_action}. ${REVIEW_CONTEXT_REROUTE_LAST_ERROR:-No larger-context reviewer available.}"
-      log_error "  $issue: review context-window recovery blocked for PR #$pr_number (${REVIEW_CONTEXT_REROUTE_LAST_ERROR:-no larger-context reviewer available})"
-      return 1
-    fi
-    reroute_json="${REVIEW_CONTEXT_REROUTE_LAST_JSON:-}"
-    reviewer_model="$rerouted_model"
-    if ! reviewer_agent="$(agent_resolve_from_model "$reviewer_model" "review")"; then
-      write_ready_attention_file "$state_dir" "Review context-window recovery selected $reviewer_model for PR #$pr_number, but its review agent could not be resolved."
-      log_error "  $issue: context-window recovery selected unresolved reviewer model $reviewer_model"
-      return 1
-    fi
-    reroute_note=" (rerouted to larger-context reviewer: ${reviewer_model})"
-  fi
-
-  if ! agent_validate_phase_launch "$reviewer_agent" "review" "$reviewer_model" "$REPO_DIR"; then
-    write_ready_attention_file "$state_dir" "Review infrastructure is still unavailable for PR #$pr_number; waiting for reviewer runtime recovery."
-    log_error "  $issue: waiting for reviewer runtime recovery before re-reviewing PR #$pr_number"
-    return 1
-  fi
-
-  retry_number=$(bounded_retry_increment "$state_dir" "$bucket" "$identity")
-  review_mode="static"
-  if declare -F read_phase_config >/dev/null 2>&1; then
-    review_mode=$(read_phase_config "$state_dir" "review" "mode")
-    [[ -n "$review_mode" ]] || review_mode="static"
-  fi
-  contract_payload="$(jq -cn --arg agent "$reviewer_agent" --arg model "$reviewer_model" --argjson reroute "${reroute_json:-null}" \
-    '{stageRole:"review",agent:$agent,model:$model} + (if $reroute == null then {} else {contextWindowReroute:$reroute} end)')"
-
-  if ! _prepare_recovery_phase_launch "$issue" "$slug" "review" "$state_dir" "$wt_dir" "$reviewer_agent" "$reviewer_model" "$contract_payload" "review"; then
-    write_ready_attention_file "$state_dir" "Could not prepare infrastructure re-review for PR #$pr_number."
-    return 1
-  fi
-
   if [[ -n "$recorded_head" && -n "$current_head" && "$recorded_head" != "$current_head" ]]; then
     scope_note=" (scope refreshed: head ${recorded_head:0:7}→${current_head:0:7})"
   fi
 
-  launch_review_phase "$issue" "$slug" "$title" "$wt_dir" "$branch" "$base_branch" \
-    "$reviewer_model" "$reviewer_agent" "$review_mode" || rc=$?
+  review_recovery_coordinator "$issue" "$slug" "$title" "$wt_dir" "$branch" "$base_branch" "$pr_number" "$state_dir" \
+    "infrastructure review recovery for PR #$pr_number" "infra" "$category" "$identity" "$effective_retry_limit" "$context_overflow_current_scope" || rc=$?
   if [[ "$rc" -eq 0 ]]; then
     marker_clear "$state_dir/.needs-attention"
-    log "status" "♻ $issue → review relaunched after infrastructure recovery (attempt ${retry_number}/${effective_retry_limit}, category=${category})${scope_note}${reroute_note}"
+    if [[ "$context_overflow_current_scope" == "true" ]]; then
+      reroute_note=" (rerouted to larger-context reviewer)"
+    fi
+    log "status" "♻ $issue → review relaunched after infrastructure recovery (category=${category})${scope_note}${reroute_note}"
     return 6
   fi
   if [[ "$rc" -eq 2 ]] && check_stage_aborted "$state_dir"; then
     return 2
   fi
-  write_ready_attention_file "$state_dir" "Could not relaunch infrastructure re-review for PR #$pr_number (rc=$rc)."
+  if [[ "$rc" -eq 1 && ! -f "$state_dir/.needs-attention" ]]; then
+    write_ready_attention_file "$state_dir" "Could not relaunch infrastructure re-review for PR #$pr_number (rc=$rc)."
+  fi
   return 1
 }
 
@@ -14150,8 +14409,7 @@ handle_advance_command() {
 handle_re_review_command() {
   local event="$1" free_slots="${2:-1}"
   local payload issue slug worktree branch feature_dir current_phase task_phase review_status
-  local pr pr_state_value title issue_json audit_path audit_timestamp prior_json audit_tmp
-  local current_agent reviewer_agent reviewer_model review_mode base_branch artifacts_json rc=0
+  local pr pr_state_value title issue_json base_branch rc=0
 
   MONITOR_COMMAND_STATUS="noop"
   MONITOR_COMMAND_DEFER_EVENT=""
@@ -14242,50 +14500,11 @@ handle_re_review_command() {
     title=$(echo "$issue_json" | jq -r '.title // "Task"' 2>/dev/null || echo "Task")
   fi
 
-  audit_path="$feature_dir/.review-rerun-request.json"
-  audit_timestamp="$(monitor_command_timestamp)"
-  prior_json="null"
-  if [[ -f "$feature_dir/.review-result.json" ]]; then
-    prior_json="$(jq -c '.' "$feature_dir/.review-result.json" 2>/dev/null || printf 'null')"
-  fi
-  audit_tmp=$(mktemp) || {
-    log_warn "$issue could not record re-review request"
-    MONITOR_COMMAND_STATUS="invalid"
-    return 0
-  }
-  if ! jq -n \
-    --arg timestamp "$audit_timestamp" \
-    --arg issue "$issue" \
-    --argjson prNumber "$pr" \
-    --arg reason "manual re-review via mill input" \
-    --argjson prior "$prior_json" \
-    '{timestamp:$timestamp, issue:$issue, prNumber:$prNumber, reason:$reason, previousReviewResult:$prior}' > "$audit_tmp"; then
-    rm -f "$audit_tmp"
-    log_warn "$issue could not record re-review request"
-    MONITOR_COMMAND_STATUS="invalid"
-    return 0
-  fi
-  mv "$audit_tmp" "$audit_path"
-
-  current_agent=$(read_state_value "" --arg i "$issue" '.tasks[$i].agent // ""')
-  reviewer_agent="$(read_phase_config "$feature_dir" "review" "agent" 2>/dev/null || true)"
-  [[ -n "$reviewer_agent" ]] || reviewer_agent="${current_agent:-$AGENT_CMD}"
-  reviewer_model="$(read_phase_config "$feature_dir" "review" "model" 2>/dev/null || true)"
-  [[ -n "$reviewer_model" ]] || reviewer_model="$(read_state_value "" --arg i "$issue" '.tasks[$i].reviewerModel // .tasks[$i].model // ""')"
-  reviewer_model="$(resolve_phase_model "review" "$reviewer_model" "claude-sonnet-5")"
-  review_mode="$(read_phase_config "$feature_dir" "review" "mode" 2>/dev/null || true)"
-  [[ -n "$review_mode" ]] || review_mode="static"
   base_branch="$(effective_task_base_branch "$issue" 2>/dev/null || read_state_value "" --arg i "$issue" '.tasks[$i].baseBranch // empty')"
   [[ -n "$base_branch" ]] || base_branch="${BASE_BRANCH:-main}"
 
-  artifacts_json="$(review_artifacts_with_pr_number "$feature_dir" "$pr" | jq -c --arg timestamp "$audit_timestamp" --arg issue "$issue" \
-    '. + {manualRereview:{requestedAt:$timestamp, issue:$issue}}')"
-  write_stage_result_with_history "$feature_dir" "review" "running" "$reviewer_agent" "$reviewer_model" \
-    "Manual re-review requested for PR #$pr" "$artifacts_json"
-  set_task_phase "$issue" "review"
-  clear_review_gate_attention "$feature_dir"
-
-  launch_review_phase "$issue" "$slug" "$title" "$worktree" "$branch" "$base_branch" "$reviewer_model" "$reviewer_agent" "$review_mode" || rc=$?
+  review_recovery_coordinator "$issue" "$slug" "$title" "$worktree" "$branch" "$base_branch" "$pr" "$feature_dir" \
+    "manual re-review via mill input" "manual" "manual-rereview" "" 0 "false" || rc=$?
   if [[ "$rc" -eq 0 ]]; then
     log "status" "$issue -> re-review launched for PR #$pr"
     MONITOR_COMMAND_STATUS="handled"
