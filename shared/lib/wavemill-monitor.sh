@@ -2451,7 +2451,7 @@ write_stage_result() {
     [[ -n "$started_at_override" ]] && cli_args+=(--started-at "$started_at_override")
     # HOK-2917: execution-truth fields
     [[ -n "${STAGE_INTENDED_MODEL:-}" ]] && cli_args+=(--intended-model "$STAGE_INTENDED_MODEL")
-    [[ -n "${STAGE_EXECUTED_MODEL:-}" ]] && cli_args+=(--executed-model "$STAGE_EXECUTED_MODEL")
+    [[ -n "${STAGE_EXECUTED_MODEL+x}" ]] && cli_args+=(--executed-model "$STAGE_EXECUTED_MODEL")
     [[ -n "${STAGE_EVIDENCE_STATUS:-}" ]] && cli_args+=(--execution-evidence-status "$STAGE_EVIDENCE_STATUS")
     [[ -n "${STAGE_QUALITY_ELIGIBLE:-}" ]] && cli_args+=(--quality-eligible "$STAGE_QUALITY_ELIGIBLE")
 
