@@ -199,8 +199,8 @@ cat > "$STATE_DIR/backstage-health.json" <<'JSON'
 JSON
 hold_summary="$(classify_backstage_health "$pane_details" 1893456060 210 10)"
 IFS=$'\t' read -r hold_status hold_detail _hold_count _hold_pane <<< "$hold_summary"
-if [[ "$hold_status" != "stalled" || "$hold_detail" != *"HOK-2677"* || "$hold_detail" != *"needs-user"* ]]; then
-  echo "FAIL: old needs-user classification should stall backstage health (got $hold_status: $hold_detail)"
+if [[ "$hold_status" != "alive-needs-user" || "$hold_detail" != *"HOK-2677"* || "$hold_detail" != *"needs-user"* ]]; then
+  echo "FAIL: live needs-user classification should hold backstage health (got $hold_status: $hold_detail)"
   exit 1
 fi
 rm -f "$STATE_DIR/ready-watchdog-state.json"

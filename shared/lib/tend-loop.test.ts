@@ -105,10 +105,14 @@ describe('runTendLoop', () => {
       iteration: number;
       pollStartedAt: string;
       pollCompletedAt: string;
+      laneCondition: string;
+      laneEvidenceId: string;
     };
     assert.equal(heartbeat.iteration, 1);
     assert.equal(heartbeat.pollStartedAt, '2026-08-18T12:00:00.000Z');
     assert.equal(heartbeat.pollCompletedAt, '2026-08-18T12:00:00.000Z');
+    assert.equal(heartbeat.laneCondition, 'no-eligible');
+    assert.match(heartbeat.laneEvidenceId, /^[0-9a-f]{12}$/);
     assert.match(r.lines[0], /^iter=1 poll_started=2026-08-18T12:00:00.000Z poll_completed=2026-08-18T12:00:00.000Z /);
   });
 
@@ -300,6 +304,8 @@ describe('writeTendHeartbeat', () => {
         iteration: 8,
         pollStartedAt: '2026-08-18T12:00:59Z',
         pollCompletedAt: '2026-08-18T12:01:00Z',
+        laneCondition: 'needs-user-hold',
+        laneEvidenceId: 'abc123def456',
       });
       const parsed = JSON.parse(readFileSync(join(repoDir, '.wavemill', 'backstage-health.json'), 'utf-8'));
       assert.equal(parsed.services.tend.status, 'healthy');
@@ -307,6 +313,8 @@ describe('writeTendHeartbeat', () => {
       assert.equal(parsed.services.tend.lastError, null);
       assert.equal(parsed.services.tend.iteration, 8);
       assert.equal(parsed.services.tend.lastSuccessfulPollAt, '2026-08-18T12:01:00Z');
+      assert.equal(parsed.services.tend.laneCondition, 'needs-user-hold');
+      assert.equal(parsed.services.tend.laneEvidenceId, 'abc123def456');
       assert.equal(parsed.restartAttemptCount, undefined);
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
@@ -433,6 +441,9 @@ describe('merge-lane progress detection (HOK-2919)', () => {
       const stalledHeartbeats = harness.heartbeats.filter((heartbeat) => heartbeat.progressState === 'stalled');
       assert.ok(stalledHeartbeats.length > 0);
       assert.equal(harness.heartbeats[0]?.progressState, 'progressing');
+      assert.equal(harness.heartbeats[0]?.laneCondition, 'needs-user-hold');
+      assert.equal(stalledHeartbeats[0]?.laneCondition, 'idle-blocked-stall');
+      assert.match(String(stalledHeartbeats[0]?.laneEvidenceId), /^[0-9a-f]{12}$/);
       assert.ok(typeof harness.heartbeats[0]?.lastProgressAt === 'string');
     } finally {
       harness.cleanup();
@@ -453,6 +464,8 @@ describe('merge-lane progress detection (HOK-2919)', () => {
       // Every poll changed the lane signature, so progress stays current and
       // the heartbeat never reports a stall.
       assert.ok(harness.heartbeats.every((heartbeat) => heartbeat.progressState !== 'stalled'));
+      const evidenceIds = new Set(harness.heartbeats.map((heartbeat) => heartbeat.laneEvidenceId));
+      assert.equal(evidenceIds.size, 2);
     } finally {
       harness.cleanup();
     }
@@ -464,6 +477,8 @@ describe('merge-lane progress detection (HOK-2919)', () => {
       await harness.run();
       assert.deepEqual(harness.findings, []);
       assert.ok(harness.heartbeats.every((heartbeat) => heartbeat.progressState === 'idle'));
+      assert.ok(harness.heartbeats.every((heartbeat) => heartbeat.laneCondition === 'no-eligible'));
+      assert.equal(new Set(harness.heartbeats.map((heartbeat) => heartbeat.laneEvidenceId)).size, 1);
     } finally {
       harness.cleanup();
     }
