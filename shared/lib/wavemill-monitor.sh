@@ -11065,7 +11065,8 @@ resolve_pair_on_primary_merge() {
       ;;
     already-resolved)
       mark_challenge_compared "$pair_id" "record" >/dev/null || true
-      log "status" "challenge pair $pair_id already resolved, primary merge cleanup continuing"
+      # This is the expected idempotent result on later monitor polls. Keep it
+      # silent so a retained merged-primary record does not spam the status log.
       ;;
     skipped|"")
       resolve_reason=$(jq -r '.reason // "unknown"' <<<"$resolve_output" 2>/dev/null || echo "unknown")
