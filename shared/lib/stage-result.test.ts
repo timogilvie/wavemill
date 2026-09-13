@@ -182,6 +182,75 @@ describe('writeStageResult and readStageResult', () => {
     assert.equal(read?.history?.length, 1);
     assert.equal(read?.history?.[0].status, 'failed');
   });
+
+  it('stage-result-cli separates intended and executed model evidence', async () => {
+    execFileSync('npx', [
+      'tsx',
+      'tools/stage-result-cli.ts',
+      'write',
+      testDir,
+      'coding',
+      'completed',
+      '--agent',
+      'claude',
+      '--model',
+      'claude-opus-4-7',
+    ], {
+      cwd: process.cwd(),
+      encoding: 'utf-8',
+    });
+
+    const shellOnly = await readStageResult(testDir, 'coding');
+    assert.equal(shellOnly?.intendedModel, 'claude-opus-4-7');
+    assert.equal(shellOnly?.executedModel, null);
+    assert.equal(shellOnly?.modelAttributionEligible, false);
+    assert.equal(shellOnly?.modelAttributionIneligibleReason, 'missing_execution_evidence');
+
+    execFileSync('npx', [
+      'tsx',
+      'tools/stage-result-cli.ts',
+      'write-with-history',
+      testDir,
+      'coding',
+      'running',
+      '--agent',
+      'native',
+      '--model',
+      'glm-5.3',
+      '--intended-model',
+      'glm-5.3',
+      '--executed-model',
+      'glm-5.3',
+      '--execution-evidence-status',
+      'direct',
+      '--execution-evidence-source',
+      'native-runtime',
+    ], {
+      cwd: process.cwd(),
+      encoding: 'utf-8',
+    });
+    execFileSync('npx', [
+      'tsx',
+      'tools/stage-result-cli.ts',
+      'write',
+      testDir,
+      'coding',
+      'completed',
+      '--agent',
+      'native',
+      '--model',
+      'glm-5.3',
+    ], {
+      cwd: process.cwd(),
+      encoding: 'utf-8',
+    });
+
+    const nativeCompleted = await readStageResult(testDir, 'coding');
+    assert.equal(nativeCompleted?.intendedModel, 'glm-5.3');
+    assert.equal(nativeCompleted?.executedModel, 'glm-5.3');
+    assert.equal(nativeCompleted?.executionEvidence?.source, 'native-runtime');
+    assert.equal(nativeCompleted?.modelAttributionEligible, true);
+  });
 });
 
 // ────────────────────────────────────────────────────────────────

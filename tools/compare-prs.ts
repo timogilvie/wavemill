@@ -18,6 +18,7 @@ import {
   detectVariedDimensions,
   hasAnyVariedDimension,
   classifyChallengeType,
+  modelForChallengeVariedStage,
   resolveChallengeSideExecutionProvenance,
   validateChallengeExecutionProvenance,
   type ChallengeComparison,
@@ -407,12 +408,14 @@ runTool({
         variedDimensions,
         repoDir,
       });
+      const primaryStageModel = modelForChallengeVariedStage(primaryExecution, challengeType, primaryModel);
+      const challengerStageModel = modelForChallengeVariedStage(challengerExecution, challengeType, challengerModel);
 
       if (!provenanceValidation.valid) {
         const invalidRecord = buildInvalidProvenanceComparison({
           challengePairId: pairId,
-          primaryModel,
-          challengerModel,
+          primaryModel: primaryStageModel,
+          challengerModel: challengerStageModel,
           primaryPrUrl,
           challengerPrUrl,
           primaryHarnessId: primaryEval.harnessId,
@@ -481,8 +484,8 @@ runTool({
       if (variedDimensions && !hasAnyVariedDimension(variedDimensions)) {
         const skippedRecord = buildSkippedIdenticalComparison({
           challengePairId: pairId,
-          primaryModel,
-          challengerModel,
+          primaryModel: primaryStageModel,
+          challengerModel: challengerStageModel,
           primaryPrUrl,
           challengerPrUrl,
           primaryHarnessId: primaryEval.harnessId,
@@ -589,8 +592,8 @@ runTool({
       if (!primaryPrContext.availability.available || !challengerPrContext.availability.available) {
         const record = buildDiffUnavailableComparison({
           challengePairId: pairId,
-          primaryModel,
-          challengerModel,
+          primaryModel: primaryStageModel,
+          challengerModel: challengerStageModel,
           primaryPrUrl,
           challengerPrUrl,
           primaryHarnessId: primaryEval.harnessId,
@@ -631,8 +634,8 @@ runTool({
         ].filter(Boolean);
         const record = buildUnscoredEvalComparison({
           challengePairId: pairId,
-          primaryModel,
-          challengerModel,
+          primaryModel: primaryStageModel,
+          challengerModel: challengerStageModel,
           primaryPrUrl,
           challengerPrUrl,
           primaryHarnessId: primaryEval.harnessId,
@@ -769,15 +772,10 @@ runTool({
       }
       const verdict = judgeOutcome.verdict;
 
-      // Attribute the win to the varied stage's model. For planner/reviewer
-      // challenges the coder is shared, so crediting it would be meaningless.
-      const winnerRouting = verdict.winner === 'primary' ? primaryRouting : challengerRouting;
-      const winnerSolutionModel = verdict.winner === 'primary' ? primaryModel : challengerModel;
-      const winnerModel = challengeType === 'planner-only'
-        ? (winnerRouting?.planner || winnerSolutionModel)
-        : challengeType === 'reviewer-only'
-          ? (winnerRouting?.reviewer || winnerSolutionModel)
-        : winnerSolutionModel;
+      const winningStageModel = verdict.winner === 'primary' ? primaryStageModel : challengerStageModel;
+      const winnerModel = provenanceValidation.modelAttributionEligible === false
+        ? undefined
+        : winningStageModel;
       const primaryDisagreement = detectJudgeDisagreement({
         side: 'primary',
         evalScore: primarySelected.score,
@@ -837,12 +835,26 @@ runTool({
           decidedAt: new Date().toISOString(),
           producer: 'compare-prs@p2.4b',
         };
+        if (provenanceValidation.modelAttributionEligible === false) {
+          stageAttribution = {
+            status: 'invalid',
+            outcome: null,
+            stage: stageForAttribution,
+            reasonCodes: ['executed_identity_conflict'],
+            reasonDetails: provenanceValidation.issues
+              .map((issue) => `${issue.side} ${issue.role}: ${issue.reason}`)
+              .join('; ') || 'Model attribution ineligible for varied-stage execution evidence.',
+            evidenceProvenance: 'insufficient',
+            decidedAt: new Date().toISOString(),
+            producer: 'compare-prs@execution-truth',
+          };
+        }
       }
 
       const record: ChallengeComparison = {
         challengePairId: pairId,
-        primaryModel,
-        challengerModel,
+        primaryModel: primaryStageModel,
+        challengerModel: challengerStageModel,
         primaryPrUrl,
         challengerPrUrl,
         primaryHarnessId: primaryEval.harnessId,
@@ -850,7 +862,7 @@ runTool({
         primaryEvalScore: primarySelected.score,
         challengerEvalScore: challengerSelected.score,
         winner: verdict.winner,
-        winnerModel,
+        ...(winnerModel ? { winnerModel } : {}),
         rationale: verdict.rationale,
         dimensions: verdict.dimensions,
         timestamp: new Date().toISOString(),
@@ -941,7 +953,10 @@ runTool({
         const winnerNumber = record.winner === 'primary' ? primaryNumber : challengerNumber;
         const loserNumber = record.winner === 'primary' ? challengerNumber : primaryNumber;
         tryGh(['pr', 'merge', winnerNumber, '--merge', '--delete-branch=false'], repoDir, `merge winner PR ${winnerNumber}`);
-        withBodyFile(`Closing after challenge comparison. Recommended winner: ${record.winnerModel}`, (bodyFile) => {
+        const closeSummary = record.winnerModel
+          ? `Closing after challenge comparison. Recommended winner: ${record.winnerModel}`
+          : `Closing after challenge comparison. Recommended side: ${record.winner}; model attribution unavailable`;
+        withBodyFile(closeSummary, (bodyFile) => {
           tryGh(['pr', 'comment', loserNumber, '--body-file', bodyFile], repoDir, `comment loser PR ${loserNumber}`);
         });
         tryGh(['pr', 'close', loserNumber], repoDir, `close loser PR ${loserNumber}`);
