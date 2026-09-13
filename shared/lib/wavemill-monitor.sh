@@ -1079,17 +1079,33 @@ challenge_abort_pair() {
   mkdir -p "$feature_dir"
   artifact="$feature_dir/.challenge-aborted.json"
   tmp="$artifact.tmp.$$"
-  jq -n -S \
+  local abort_payload
+  abort_payload=$(jq -n -S \
     --arg pairId "${pair_id:-$issue}" \
+    --arg side "${role:-unknown}" \
     --arg stage "$(challenge_stage_for_launch_env "$stage")" \
     --arg model "$model" \
     --arg reason "$reason" \
     --arg abortedAt "$now" \
     --arg detail "$detail" \
     --arg nextAction "$next_action" \
-    '{pairId:$pairId, stage:$stage, model:$model, reason:$reason, abortedAt:$abortedAt, detail:$detail}
-     + (if $nextAction == "" then {} else {nextAction:$nextAction} end)' \
-    > "$tmp" 2>/dev/null && mv "$tmp" "$artifact" || rm -f "$tmp"
+    '{pairId:$pairId, side:$side, stage:$stage, model:$model, reason:$reason, abortedAt:$abortedAt, detail:$detail}
+     + (if $nextAction == "" then {} else {nextAction:$nextAction} end)' 2>/dev/null || true)
+  if [[ -n "$abort_payload" ]]; then
+    printf '%s\n' "$abort_payload" > "$tmp" && mv "$tmp" "$artifact" || rm -f "$tmp"
+
+    # HOK-2917: persist a pair-level abort fact alongside the arm-level one.
+    # The pair-level artifact uses the pair ID directory so the healthy arm can
+    # discover it without probing its peer's feature directory.
+    if [[ -n "$pair_id" ]]; then
+      local pair_dir
+      pair_dir="$(dirname "$feature_dir")/.challenge-pair-${pair_id}"
+      mkdir -p "$pair_dir"
+      local pair_abort_file="$pair_dir/.pair-abort-${role:-unknown}.json"
+      local pair_tmp="$pair_abort_file.tmp.$$"
+      printf '%s\n' "$abort_payload" > "$pair_tmp" && mv "$pair_tmp" "$pair_abort_file" || rm -f "$pair_tmp"
+    fi
+  fi
 
   if [[ -n "${REPO_DIR:-}" && -f "$REPO_DIR/tools/record-arm-failure.ts" && ( "$role" == "primary" || "$role" == "challenger" ) ]]; then
     (
@@ -2411,6 +2427,8 @@ check_routing_complete() {
 # Stages: routing, planning, coding, review, ready
 # Statuses: running, awaiting_user, completed, aborted, failed
 # artifacts_json: optional JSON string for stage-specific artifacts (HOK-1192)
+# Execution-truth fields (HOK-2917) are read from env: STAGE_INTENDED_MODEL,
+# STAGE_EXECUTED_MODEL, STAGE_EVIDENCE_STATUS, STAGE_QUALITY_ELIGIBLE
 write_stage_result() {
   local feature_dir="$1" stage="$2" status="$3"
   local agent="${4:-}" model="${5:-}" notes="${6:-}" artifacts_json="${7:-}"
@@ -2431,6 +2449,11 @@ write_stage_result() {
     [[ -n "$notes" ]] && cli_args+=(--notes "$notes")
     [[ -n "$artifacts_json" ]] && cli_args+=(--artifacts "$artifacts_json")
     [[ -n "$started_at_override" ]] && cli_args+=(--started-at "$started_at_override")
+    # HOK-2917: execution-truth fields
+    [[ -n "${STAGE_INTENDED_MODEL:-}" ]] && cli_args+=(--intended-model "$STAGE_INTENDED_MODEL")
+    [[ -n "${STAGE_EXECUTED_MODEL:-}" ]] && cli_args+=(--executed-model "$STAGE_EXECUTED_MODEL")
+    [[ -n "${STAGE_EVIDENCE_STATUS:-}" ]] && cli_args+=(--execution-evidence-status "$STAGE_EVIDENCE_STATUS")
+    [[ -n "${STAGE_QUALITY_ELIGIBLE:-}" ]] && cli_args+=(--quality-eligible "$STAGE_QUALITY_ELIGIBLE")
 
     if npx tsx "$TOOLS_DIR/stage-result-cli.ts" write "${cli_args[@]}" 2>/dev/null; then
       _write_stage_result_trace_event "$feature_dir" "$stage" "$status" "$agent" "$model" "$previous_status"
@@ -2457,6 +2480,23 @@ write_stage_result() {
     finished_at="\"$now\""
   fi
 
+  # HOK-2917: build execution-truth JSON fragment
+  local exec_fields=""
+  if [[ -n "${STAGE_INTENDED_MODEL:-}" ]]; then
+    exec_fields="$exec_fields, \"intendedModel\": \"$STAGE_INTENDED_MODEL\""
+  fi
+  if [[ -n "${STAGE_EXECUTED_MODEL:-}" ]]; then
+    exec_fields="$exec_fields, \"executedModel\": \"$STAGE_EXECUTED_MODEL\""
+  elif [[ -n "${STAGE_EVIDENCE_STATUS:-}" && ( "$STAGE_EVIDENCE_STATUS" == "missing" || "$STAGE_EVIDENCE_STATUS" == "contradicted" ) ]]; then
+    exec_fields="$exec_fields, \"executedModel\": null"
+  fi
+  if [[ -n "${STAGE_EVIDENCE_STATUS:-}" ]]; then
+    exec_fields="$exec_fields, \"executionEvidenceStatus\": \"$STAGE_EVIDENCE_STATUS\""
+  fi
+  if [[ -n "${STAGE_QUALITY_ELIGIBLE:-}" ]]; then
+    exec_fields="$exec_fields, \"qualityEligible\": $STAGE_QUALITY_ELIGIBLE"
+  fi
+
   local tmp
   tmp=$(mktemp) || { log_warn "write_stage_result: mktemp failed"; return 0; }
   cat > "$tmp" <<EOF
@@ -2467,7 +2507,7 @@ write_stage_result() {
   "finishedAt": $finished_at,
   "agent": "$agent",
   "model": "$model",
-  "notes": "$notes"
+  "notes": "$notes"$exec_fields
 }
 EOF
   mv "$tmp" "$result_file"
@@ -3371,6 +3411,41 @@ resolve_stage_result_model() {
   esac
 
   printf '%s\n' "${launch_model:-$model}"
+}
+
+# Resolve execution evidence for a stage result (HOK-2917).
+# Returns pipe-delimited: intended_model|executed_model|evidence_status|quality_eligible
+# evidence_status: confirmed (telemetry matches intent), fallback (runtime used different model),
+#                  missing (no telemetry), contradicted (reliability evidence contradicts completion)
+# quality_eligible: true/false
+resolve_execution_evidence() {
+  local feature_dir="$1" stage="$2" intended_model="$3"
+  local result_file="$feature_dir/.${stage}-result.json"
+  local executed="" evidence_status="missing" quality_eligible="true"
+  local reliability_failure_file="$feature_dir/.${stage}-reliability-failure.json"
+
+  # Check runtime telemetry from the existing stage result
+  if [[ -f "$result_file" ]]; then
+    executed=$(jq -r '.executedModel // .model // empty' "$result_file" 2>/dev/null || true)
+  fi
+
+  # Check for reliability failure evidence that contradicts completion
+  if [[ -f "$reliability_failure_file" ]]; then
+    evidence_status="contradicted"
+    quality_eligible="false"
+    executed=""
+  elif [[ -n "$executed" ]]; then
+    if [[ "$executed" == "$intended_model" ]]; then
+      evidence_status="confirmed"
+    else
+      evidence_status="fallback"
+    fi
+  else
+    evidence_status="missing"
+    quality_eligible="false"
+  fi
+
+  printf '%s|%s|%s|%s\n' "$intended_model" "${executed:-}" "$evidence_status" "$quality_eligible"
 }
 
 # Validate that planning stayed within its phase boundary before coding starts.
@@ -4392,6 +4467,11 @@ complete_coding_advance() {
     return 1
   fi
 
+  # HOK-2917: resolve execution evidence
+  local _exec_evidence _intended_model _executed_model _evidence_status _quality_eligible
+  _exec_evidence="$(resolve_execution_evidence "$feature_dir" "coding" "$result_model")"
+  IFS='|' read -r _intended_model _executed_model _evidence_status _quality_eligible <<< "$_exec_evidence"
+
   finished_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   if ! state_mutate "$result_path" '
       .stage = "coding"
@@ -4401,11 +4481,19 @@ complete_coding_advance() {
       | .agent = $agent
       | .model = $model
       | .notes = $notes
+      | .intendedModel = $intendedModel
+      | .executedModel = (if $executedModel == "" then null else $executedModel end)
+      | .executionEvidenceStatus = $evidenceStatus
+      | .qualityEligible = ($qualityEligible == "true")
     ' \
     --arg finishedAt "$finished_at" \
     --arg agent "$advance_agent" \
     --arg model "$result_model" \
-    --arg notes "$stage_notes"; then
+    --arg notes "$stage_notes" \
+    --arg intendedModel "$_intended_model" \
+    --arg executedModel "$_executed_model" \
+    --arg evidenceStatus "$_evidence_status" \
+    --arg qualityEligible "$_quality_eligible"; then
     log_warn "$issue advance failed: could not update coding stage result"
     return 1
   fi

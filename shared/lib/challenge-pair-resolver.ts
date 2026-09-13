@@ -251,6 +251,9 @@ export async function resolvePrimaryMergedPair(input: PrimaryMergedInput): Promi
   const challenger = pairState.challenger;
   const primaryPr = normalizePrNumber(input.primaryPr) ?? primary?.prNumber ?? UNKNOWN_PR_NUMBER;
   const timestamp = (input.now ?? (() => new Date()))().toISOString();
+  const forkStage = normalizeChallengeStage(
+    primary?.challengeStage ?? challenger?.challengeStage ?? null,
+  );
   const record = buildForfeitComparison({
     challengePairId: input.pairId,
     primaryModel: getTaskModel(primary),
@@ -264,6 +267,7 @@ export async function resolvePrimaryMergedPair(input: PrimaryMergedInput): Promi
     terminalReason: 'primary_merged',
     noComparisonReason: 'primary_merged',
     timestamp,
+    forkStage,
   });
 
   if (!input.dryRun) {
@@ -401,6 +405,10 @@ function buildResolutionRecord(input: {
 }): { record: ChallengeComparison; outcome: 'forfeit' | 'double-forfeit' } | null {
   const primary = input.pairState.primary;
   const challenger = input.pairState.challenger;
+  // HOK-2917: extract fork stage from pair state so forfeit records preserve it
+  const forkStage = normalizeChallengeStage(
+    primary?.challengeStage ?? challenger?.challengeStage ?? null,
+  );
 
   if (input.reason === 'both-eval-hard-failed') {
     return {
@@ -416,6 +424,7 @@ function buildResolutionRecord(input: {
         challengerCompleted: challenger?.evalCompleted === true,
         terminalReason: 'both_eval_hard_failed',
         timestamp: input.timestamp,
+        forkStage,
       }),
     };
   }
@@ -438,6 +447,7 @@ function buildResolutionRecord(input: {
           challengerCompleted: true,
           terminalReason: 'primary_eval_hard_failed',
           timestamp: input.timestamp,
+          forkStage,
         }),
       };
     }
@@ -456,6 +466,7 @@ function buildResolutionRecord(input: {
           challengerCompleted: false,
           terminalReason: 'challenger_eval_hard_failed',
           timestamp: input.timestamp,
+          forkStage,
         }),
       };
     }
@@ -484,6 +495,7 @@ function buildResolutionRecord(input: {
         rationale: `${describeTaskFailure(aborted)} The surviving ${survivor.role} side wins by forfeit.`,
         terminalReason: aborted.role === 'primary' ? 'primary_challenge_aborted' : 'challenger_challenge_aborted',
         timestamp: input.timestamp,
+        forkStage,
       }),
     };
   }
@@ -508,6 +520,7 @@ function buildResolutionRecord(input: {
           rationale: `${armFailures.length > 0 ? armFailures.map(describeFailure).join(' ') : 'Both arms carry terminal quarantine marks.'} Only the ${survivor.role} side produced a persisted eval, so it wins by forfeit.`,
           terminalReason: survivor.role === 'primary' ? 'challenger_challenge_aborted' : 'primary_challenge_aborted',
           timestamp: input.timestamp,
+          forkStage,
         }),
       };
     }
@@ -531,6 +544,7 @@ function buildResolutionRecord(input: {
         rationale: `${armFailures.length > 0 ? armFailures.map(describeFailure).join(' ') : 'Both arms were quarantined.'} No valid comparison could be produced.`,
         terminalReason: 'both_challenge_aborted',
         timestamp: input.timestamp,
+        forkStage,
       }),
     };
   }
@@ -566,6 +580,7 @@ function buildResolutionRecord(input: {
           : 'Challenge pair became orphaned before either side produced a persisted eval/comparison result.',
         terminalReason: 'orphan_pair',
         timestamp: input.timestamp,
+        forkStage,
       }),
     };
   }
@@ -594,6 +609,7 @@ function buildResolutionRecord(input: {
       terminalReason: 'orphan_pair',
       noComparisonReason,
       timestamp: input.timestamp,
+      forkStage,
     }),
   };
 }

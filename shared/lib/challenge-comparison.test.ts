@@ -1052,6 +1052,66 @@ test('historical record without fork descriptor fields parses cleanly', () => {
   assert.equal(historicalRecord.challengerDiffIdentity, undefined);
 });
 
+// ────────────────────────────────────────────────────────────────
+// HOK-2917 Execution-Truthful Attribution Tests
+// ────────────────────────────────────────────────────────────────
+
+test('buildForfeitComparison preserves forkStage when provided', () => {
+  const record = buildForfeitComparison({
+    challengePairId: 'HOK-2917-fork',
+    primaryModel: 'claude-opus-4-6',
+    challengerModel: 'claude-sonnet-5',
+    primaryPrUrl: 'https://github.com/org/repo/pull/1',
+    challengerPrUrl: 'https://github.com/org/repo/pull/2',
+    winner: 'primary',
+    rationale: 'Challenger failed.',
+    terminalReason: 'challenger_challenge_aborted',
+    forkStage: 'implementation',
+  });
+  assert.equal(record.forkStage, 'implementation');
+});
+
+test('buildDoubleForfeitComparison preserves forkStage when provided', () => {
+  const record = buildDoubleForfeitComparison({
+    challengePairId: 'HOK-2917-fork',
+    primaryModel: 'claude-opus-4-6',
+    challengerModel: 'claude-sonnet-5',
+    primaryPrUrl: 'https://github.com/org/repo/pull/1',
+    challengerPrUrl: 'https://github.com/org/repo/pull/2',
+    rationale: 'Both failed.',
+    terminalReason: 'both_challenge_aborted',
+    forkStage: 'review',
+  });
+  assert.equal(record.forkStage, 'review');
+});
+
+test('buildForfeitComparison does not set winnerModel (HOK-2917)', () => {
+  const record = buildForfeitComparison({
+    challengePairId: 'HOK-2917-no-credit',
+    primaryModel: 'claude-opus-4-6',
+    challengerModel: 'claude-sonnet-5',
+    primaryPrUrl: 'https://github.com/org/repo/pull/1',
+    challengerPrUrl: 'https://github.com/org/repo/pull/2',
+    winner: 'primary',
+    rationale: 'Challenger failed.',
+    terminalReason: 'challenger_challenge_aborted',
+  });
+  assert.equal(record.winnerModel, undefined);
+});
+
+test('buildDoubleForfeitComparison does not set winnerModel (HOK-2917)', () => {
+  const record = buildDoubleForfeitComparison({
+    challengePairId: 'HOK-2917-no-credit',
+    primaryModel: 'claude-opus-4-6',
+    challengerModel: 'claude-sonnet-5',
+    primaryPrUrl: 'https://github.com/org/repo/pull/1',
+    challengerPrUrl: 'https://github.com/org/repo/pull/2',
+    rationale: 'Both failed.',
+    terminalReason: 'both_challenge_aborted',
+  });
+  assert.equal(record.winnerModel, undefined);
+});
+
 process.on('exit', () => {
   console.log(`\nPassed: ${passed}`);
   console.log(`Failed: ${failed}`);

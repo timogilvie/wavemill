@@ -325,6 +325,9 @@ export type StageArtifacts = (
  * Fields `artifacts` and `failureReason` are optional for backward
  * compatibility with files created before HOK-1192.
  */
+/** How the executed model was determined (HOK-2917). */
+export type ExecutionEvidenceStatus = 'confirmed' | 'fallback' | 'missing' | 'contradicted';
+
 export interface StageResult {
   stage: StageName;
   status: StageStatus;
@@ -333,6 +336,14 @@ export interface StageResult {
   agent: string;
   model: string;
   notes: string;
+  /** The model routing/configuration intended for this stage (HOK-2917). */
+  intendedModel?: string;
+  /** The model that actually executed, resolved from runtime telemetry. Null when evidence is absent or contradictory (HOK-2917). */
+  executedModel?: string | null;
+  /** How the executedModel was determined (HOK-2917). */
+  executionEvidenceStatus?: ExecutionEvidenceStatus;
+  /** Whether this stage result is eligible for model-quality attribution (HOK-2917). */
+  qualityEligible?: boolean;
   artifacts?: StageArtifacts;
   failureReason?: string | null;
   finalTreeState?: TreeState;

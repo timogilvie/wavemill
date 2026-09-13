@@ -749,8 +749,21 @@ function inheritedStageReason(
   return inherited.includes(stage) ? 'inherited_stage_evidence_only' : undefined;
 }
 
+/**
+ * Resolve the execution-truthful model for attribution (HOK-2917).
+ * Prefers evidence-backed resolved/model fields over the intended expectedStageModel.
+ * Returns undefined when no evidence supports any model identity.
+ */
 function attributionModel(attestation: ChallengeExecutionAttestation | undefined): string | undefined {
-  return attestation?.expectedStageModel || undefined;
+  if (!attestation) return undefined;
+  const stageEvidence = attestation.evidence.find(
+    (e) => e.stage === attestation.challengeStage,
+  );
+  if (stageEvidence) {
+    if (stageEvidence.resolvedModel) return stageEvidence.resolvedModel;
+    if (stageEvidence.model) return stageEvidence.model;
+  }
+  return attestation.expectedStageModel || undefined;
 }
 
 export function foldAttestationsIntoStageAttribution(input: {

@@ -19,7 +19,7 @@ import {
   isValidStage,
   isValidStatus,
 } from '../shared/lib/stage-result.ts';
-import type { StageResult, StageName, StageStatus, StageArtifacts } from '../shared/lib/stage-result.ts';
+import type { StageResult, StageName, StageStatus, StageArtifacts, ExecutionEvidenceStatus } from '../shared/lib/stage-result.ts';
 
 const USAGE = `stage-result-cli — manage controller-owned stage result files
 
@@ -129,6 +129,13 @@ async function main(): Promise<void> {
       }
     }
 
+    const VALID_EVIDENCE_STATUSES = ['confirmed', 'fallback', 'missing', 'contradicted'] as const;
+    const evidenceStatus = writeFlags['execution-evidence-status'] as ExecutionEvidenceStatus | undefined;
+    if (evidenceStatus && !(VALID_EVIDENCE_STATUSES as readonly string[]).includes(evidenceStatus)) {
+      console.error(`Error: invalid --execution-evidence-status '${evidenceStatus}'`);
+      process.exit(1);
+    }
+
     const result: StageResult = {
       stage,
       status,
@@ -140,6 +147,10 @@ async function main(): Promise<void> {
       ...(artifacts !== undefined && { artifacts }),
       ...(writeFlags['failure-reason'] !== undefined && { failureReason: writeFlags['failure-reason'] }),
       ...(existing?.history?.length ? { history: existing.history } : {}),
+      ...(writeFlags['intended-model'] !== undefined && { intendedModel: writeFlags['intended-model'] }),
+      ...(writeFlags['executed-model'] !== undefined && { executedModel: writeFlags['executed-model'] || null }),
+      ...(evidenceStatus && { executionEvidenceStatus: evidenceStatus }),
+      ...(writeFlags['quality-eligible'] !== undefined && { qualityEligible: writeFlags['quality-eligible'] === 'true' }),
     };
 
     if (subcommand === 'write-with-history') {

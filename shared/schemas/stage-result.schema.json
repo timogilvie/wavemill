@@ -41,6 +41,22 @@
     "model": {
       "type": "string"
     },
+    "intendedModel": {
+      "description": "The model routing/configuration intended for this stage (HOK-2917).",
+      "type": "string"
+    },
+    "executedModel": {
+      "description": "The model that actually executed, resolved from runtime telemetry. Null when evidence is absent or contradictory (HOK-2917).",
+      "type": ["string", "null"]
+    },
+    "executionEvidenceStatus": {
+      "description": "How the executedModel was determined (HOK-2917).",
+      "enum": ["confirmed", "fallback", "missing", "contradicted"]
+    },
+    "qualityEligible": {
+      "description": "Whether this stage result is eligible for model-quality attribution (HOK-2917).",
+      "type": "boolean"
+    },
     "notes": {
       "type": [
         "string",

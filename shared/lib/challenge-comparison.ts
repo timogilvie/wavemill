@@ -1165,7 +1165,7 @@ export function buildForfeitComparison(input: {
   challengerHarnessId?: string;
   timestamp?: string;
   noComparisonReason?: NoComparisonReason;
-}): ChallengeComparison {
+} & Partial<ComparisonRetentionInput>): ChallengeComparison {
   return {
     challengePairId: input.challengePairId,
     primaryModel: input.primaryModel,
@@ -1180,18 +1180,13 @@ export function buildForfeitComparison(input: {
     challengerCompleted: input.challengerCompleted ?? (input.winner === 'challenger'),
     ...(input.armFailures?.length ? { armFailures: input.armFailures } : {}),
     winner: input.winner,
-    winnerModel: input.winner === 'primary' ? input.primaryModel : input.challengerModel,
     rationale: input.rationale,
     dimensions: EMPTY_DIMENSIONS,
     timestamp: input.timestamp || new Date().toISOString(),
     comparisonOutcome: 'forfeit',
     terminalReason: input.terminalReason,
     noComparisonReason: input.noComparisonReason || (input.terminalReason as NoComparisonReason),
-    forkStage: null,
-    forkCommit: null,
-    sharedPrefix: false,
-    primaryInheritedStages: [],
-    challengerInheritedStages: [],
+    ...comparisonRetentionFields(input),
   };
 }
 
@@ -1210,7 +1205,7 @@ export function buildDoubleForfeitComparison(input: {
   challengerHarnessId?: string;
   timestamp?: string;
   noComparisonReason?: NoComparisonReason;
-}): ChallengeComparison {
+} & Partial<ComparisonRetentionInput>): ChallengeComparison {
   return {
     challengePairId: input.challengePairId,
     primaryModel: input.primaryModel,
@@ -1225,18 +1220,13 @@ export function buildDoubleForfeitComparison(input: {
     challengerCompleted: input.challengerCompleted ?? false,
     ...(input.armFailures?.length ? { armFailures: input.armFailures } : {}),
     winner: 'primary',
-    winnerModel: input.primaryModel,
     rationale: input.rationale,
     dimensions: EMPTY_DIMENSIONS,
     timestamp: input.timestamp || new Date().toISOString(),
     comparisonOutcome: 'double-forfeit',
     terminalReason: input.terminalReason,
     noComparisonReason: input.noComparisonReason || (input.terminalReason as NoComparisonReason),
-    forkStage: null,
-    forkCommit: null,
-    sharedPrefix: false,
-    primaryInheritedStages: [],
-    challengerInheritedStages: [],
+    ...comparisonRetentionFields(input),
   };
 }
 
