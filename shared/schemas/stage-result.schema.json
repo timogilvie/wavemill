@@ -41,6 +41,56 @@
     "model": {
       "type": "string"
     },
+    "intendedModel": {
+      "description": "Model requested by routing/launch. Diagnostic intent only; not execution proof.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "executedModel": {
+      "description": "Model proven by runtime evidence to have executed, or null when evidence is missing/contradictory.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "executionEvidence": {
+      "description": "Durable provenance for executedModel resolution.",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "status": {
+          "enum": [
+            "direct",
+            "missing",
+            "contradicted",
+            "inherited"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "recordedAt": {
+          "type": "string"
+        }
+      }
+    },
+    "modelAttributionEligible": {
+      "description": "True only when executedModel is evidence-backed and usable for model-quality attribution.",
+      "type": "boolean"
+    },
+    "modelAttributionIneligibleReason": {
+      "enum": [
+        "stage_not_completed",
+        "missing_execution_evidence",
+        "execution_contradicted",
+        "runtime_fallback"
+      ]
+    },
     "notes": {
       "type": [
         "string",

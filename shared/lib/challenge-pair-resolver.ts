@@ -251,6 +251,7 @@ export async function resolvePrimaryMergedPair(input: PrimaryMergedInput): Promi
   const challenger = pairState.challenger;
   const primaryPr = normalizePrNumber(input.primaryPr) ?? primary?.prNumber ?? UNKNOWN_PR_NUMBER;
   const timestamp = (input.now ?? (() => new Date()))().toISOString();
+  const forkDescriptor = forkDescriptorForPair(primary, challenger);
   const record = buildForfeitComparison({
     challengePairId: input.pairId,
     primaryModel: getTaskModel(primary),
@@ -264,6 +265,7 @@ export async function resolvePrimaryMergedPair(input: PrimaryMergedInput): Promi
     terminalReason: 'primary_merged',
     noComparisonReason: 'primary_merged',
     timestamp,
+    ...forkDescriptor,
   });
 
   if (!input.dryRun) {
@@ -334,6 +336,44 @@ function normalizeChallengeStage(value: string | null | undefined): ChallengeSta
   return 'implementation';
 }
 
+function readIntentString(intent: Record<string, unknown> | undefined, key: string): string | null {
+  const value = intent?.[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function readInheritedStages(intent: Record<string, unknown> | undefined, side: 'primary' | 'challenger'): ChallengeStage[] {
+  const sideIntent = intent?.[side];
+  if (typeof sideIntent !== 'object' || sideIntent === null || Array.isArray(sideIntent)) return [];
+  const stages = (sideIntent as { inheritedStages?: unknown }).inheritedStages;
+  if (!Array.isArray(stages)) return [];
+  return stages
+    .filter((stage): stage is string => typeof stage === 'string' && stage.trim() !== '')
+    .map((stage) => normalizeChallengeStage(stage));
+}
+
+function forkDescriptorForPair(
+  primary: TaskEvalState | undefined,
+  challenger: TaskEvalState | undefined,
+): {
+  forkStage?: ChallengeStage | null;
+  forkCommit?: string | null;
+  sharedPrefix?: boolean;
+  primaryInheritedStages?: ChallengeStage[];
+  challengerInheritedStages?: ChallengeStage[];
+} {
+  const intent = primary?.challengeExecutionIntent ?? challenger?.challengeExecutionIntent;
+  if (!intent) return {};
+  const forkStage = readIntentString(intent, 'forkStage');
+  const forkCommit = readIntentString(intent, 'forkCommit');
+  return {
+    forkStage: forkStage ? normalizeChallengeStage(forkStage) : null,
+    forkCommit,
+    sharedPrefix: intent.sharedPrefix === true,
+    primaryInheritedStages: readInheritedStages(intent, 'primary'),
+    challengerInheritedStages: readInheritedStages(intent, 'challenger'),
+  };
+}
+
 function detectUnresolvableReason(
   pairId: string,
   repoDir: string,
@@ -401,6 +441,7 @@ function buildResolutionRecord(input: {
 }): { record: ChallengeComparison; outcome: 'forfeit' | 'double-forfeit' } | null {
   const primary = input.pairState.primary;
   const challenger = input.pairState.challenger;
+  const forkDescriptor = forkDescriptorForPair(primary, challenger);
 
   if (input.reason === 'both-eval-hard-failed') {
     return {
@@ -416,6 +457,7 @@ function buildResolutionRecord(input: {
         challengerCompleted: challenger?.evalCompleted === true,
         terminalReason: 'both_eval_hard_failed',
         timestamp: input.timestamp,
+        ...forkDescriptor,
       }),
     };
   }
@@ -438,6 +480,7 @@ function buildResolutionRecord(input: {
           challengerCompleted: true,
           terminalReason: 'primary_eval_hard_failed',
           timestamp: input.timestamp,
+          ...forkDescriptor,
         }),
       };
     }
@@ -456,6 +499,7 @@ function buildResolutionRecord(input: {
           challengerCompleted: false,
           terminalReason: 'challenger_eval_hard_failed',
           timestamp: input.timestamp,
+          ...forkDescriptor,
         }),
       };
     }
@@ -484,6 +528,7 @@ function buildResolutionRecord(input: {
         rationale: `${describeTaskFailure(aborted)} The surviving ${survivor.role} side wins by forfeit.`,
         terminalReason: aborted.role === 'primary' ? 'primary_challenge_aborted' : 'challenger_challenge_aborted',
         timestamp: input.timestamp,
+        ...forkDescriptor,
       }),
     };
   }
@@ -508,6 +553,7 @@ function buildResolutionRecord(input: {
           rationale: `${armFailures.length > 0 ? armFailures.map(describeFailure).join(' ') : 'Both arms carry terminal quarantine marks.'} Only the ${survivor.role} side produced a persisted eval, so it wins by forfeit.`,
           terminalReason: survivor.role === 'primary' ? 'challenger_challenge_aborted' : 'primary_challenge_aborted',
           timestamp: input.timestamp,
+          ...forkDescriptor,
         }),
       };
     }
@@ -531,6 +577,7 @@ function buildResolutionRecord(input: {
         rationale: `${armFailures.length > 0 ? armFailures.map(describeFailure).join(' ') : 'Both arms were quarantined.'} No valid comparison could be produced.`,
         terminalReason: 'both_challenge_aborted',
         timestamp: input.timestamp,
+        ...forkDescriptor,
       }),
     };
   }
@@ -566,6 +613,7 @@ function buildResolutionRecord(input: {
           : 'Challenge pair became orphaned before either side produced a persisted eval/comparison result.',
         terminalReason: 'orphan_pair',
         timestamp: input.timestamp,
+        ...forkDescriptor,
       }),
     };
   }
@@ -594,6 +642,7 @@ function buildResolutionRecord(input: {
       terminalReason: 'orphan_pair',
       noComparisonReason,
       timestamp: input.timestamp,
+      ...forkDescriptor,
     }),
   };
 }

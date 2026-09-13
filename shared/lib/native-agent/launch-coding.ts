@@ -627,6 +627,7 @@ function removeAgentCodingArtifactBeforeStageResult(featureDir: string): void {
 
 async function inspectCompletion(input: {
   featureDir: string;
+  intendedModel: string;
   model: string;
   trackerCommitCount: number;
   stopReason: string;
@@ -656,6 +657,15 @@ async function inspectCompletion(input: {
       finishedAt: new Date().toISOString(),
       agent: 'native',
       model: input.model,
+      intendedModel: input.intendedModel,
+      executedModel: input.model,
+      executionEvidence: {
+        status: 'direct',
+        source: 'native-runtime',
+        recordedAt: new Date().toISOString(),
+      },
+      modelAttributionEligible: input.intendedModel === input.model,
+      ...(input.intendedModel === input.model ? {} : { modelAttributionIneligibleReason: 'runtime_fallback' as const }),
       notes: [
         `Native coding completed with ${normalized.value.confidence} confidence`,
         ...normalized.warnings,
@@ -696,6 +706,15 @@ async function inspectCompletion(input: {
       finishedAt: null,
       agent: 'native',
       model: input.model,
+      intendedModel: input.intendedModel,
+      executedModel: input.model,
+      executionEvidence: {
+        status: 'direct',
+        source: 'native-runtime',
+        recordedAt: new Date().toISOString(),
+      },
+      modelAttributionEligible: false,
+      modelAttributionIneligibleReason: 'stage_not_completed',
       notes: [
         'Native coding produced a blocked-completion handoff for monitor recovery',
         ...normalized.warnings,
@@ -798,6 +817,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       },
     };
     const modelName = model.name ?? model.id;
+    const requestedModelName = options.resolvedModel?.trim() || modelName;
     const transcriptPath = makeTranscriptPath(options.repoDir, options.session, options.issue);
     const transcriptWriter = new TranscriptWriter({
       sessionId: `${options.session}-coding-${options.issue}`,
@@ -858,6 +878,15 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       finishedAt: null,
       agent: 'native',
       model: modelName,
+      intendedModel: requestedModelName,
+      executedModel: modelName,
+      executionEvidence: {
+        status: 'direct',
+        source: 'native-runtime',
+        recordedAt: new Date().toISOString(),
+      },
+      modelAttributionEligible: false,
+      modelAttributionIneligibleReason: 'stage_not_completed',
       notes: 'Native coding running',
       failureReason: null,
     });
@@ -1049,6 +1078,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
 
     let inspection = await inspectCompletion({
       featureDir,
+      intendedModel: requestedModelName,
       model: modelName,
       trackerCommitCount: tracker.commitCount,
       stopReason: result.stopReason,
@@ -1109,6 +1139,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       }
       inspection = await inspectCompletion({
         featureDir,
+        intendedModel: requestedModelName,
         model: modelName,
         trackerCommitCount: tracker.commitCount,
         stopReason: result.stopReason,
@@ -1128,6 +1159,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       ) {
         inspection = await inspectCompletion({
           featureDir,
+          intendedModel: requestedModelName,
           model: modelName,
           trackerCommitCount: tracker.commitCount,
           stopReason: result.stopReason,
@@ -1167,6 +1199,19 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
         status: stageStatus,
         agent: 'native',
         model: modelName,
+        intendedModel: requestedModelName,
+        executedModel: modelName,
+        executionEvidence: {
+          status: 'direct',
+          source: 'native-runtime',
+          recordedAt: new Date().toISOString(),
+        },
+        modelAttributionEligible: stageStatus === 'completed' && requestedModelName === modelName,
+        ...(stageStatus !== 'completed'
+          ? { modelAttributionIneligibleReason: 'stage_not_completed' }
+          : requestedModelName === modelName
+            ? {}
+            : { modelAttributionIneligibleReason: 'runtime_fallback' }),
       }, null, 2));
     }
 
@@ -1200,6 +1245,16 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       finishedAt: new Date().toISOString(),
       agent: 'native',
       model: options.loopModelOverride?.name ?? options.resolvedModel ?? '',
+      intendedModel: options.resolvedModel ?? options.loopModelOverride?.name ?? null,
+      executedModel: null,
+      executionEvidence: {
+        status: 'contradicted',
+        source: 'native-runtime',
+        detail: message,
+        recordedAt: new Date().toISOString(),
+      },
+      modelAttributionEligible: false,
+      modelAttributionIneligibleReason: 'execution_contradicted',
       notes: `Native coding failed: ${message}`,
       failureReason: message,
     });

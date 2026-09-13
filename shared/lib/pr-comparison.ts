@@ -1109,8 +1109,11 @@ export function buildChallengeCommentBody(input: {
     return commentParts.join('\n');
   }
 
+  const winnerLine = input.winnerModel
+    ? `Recommended winner: ${input.winner} (${input.winnerModel})`
+    : `Recommended winner: ${input.winner} (model attribution unavailable)`;
   commentParts.push(
-    `Recommended winner: ${input.winner} (${input.winnerModel})`,
+    winnerLine,
     `Other PR: ${input.otherPrUrl}`,
     ``,
     input.rationale,
