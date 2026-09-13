@@ -87,6 +87,7 @@ output="$(
     log_warn() { WARN_OUTPUT+="$*\n"; }
 
     resolve_pair_on_primary_merge "HOK-2881" "1230"
+    resolve_pair_on_primary_merge "HOK-2881" "1230"
 
     printf "phase=%s\n" "$(jq -r ".tasks[\"HOK-2881_c\"].phase" "$STATE_FILE")"
     printf "status=%s\n" "$(jq -r ".tasks[\"HOK-2881_c\"].status" "$STATE_FILE")"
@@ -94,6 +95,7 @@ output="$(
     printf "compared=%s\n" "$COMPARED_PAIR"
     printf "winner=%s\n" "$(jq -r ".winner" "$REPO_DIR/.wavemill/evals/challenge-records.jsonl")"
     printf "terminal=%s\n" "$(jq -r ".terminalReason" "$REPO_DIR/.wavemill/evals/challenge-records.jsonl")"
+    printf "status_log=%s\n" "$LOG_OUTPUT"
   '
 )"
 
@@ -103,6 +105,7 @@ output="$(
 [[ "$output" == *"compared=HOK-2881"* ]] || { echo "$output"; echo "pair was not marked compared" >&2; exit 1; }
 [[ "$output" == *"winner=primary"* ]] || { echo "$output"; echo "comparison record winner mismatch" >&2; exit 1; }
 [[ "$output" == *"terminal=primary_merged"* ]] || { echo "$output"; echo "terminal reason mismatch" >&2; exit 1; }
+[[ "$output" != *"already resolved, primary merge cleanup continuing"* ]] || { echo "$output"; echo "already-resolved cleanup status was logged" >&2; exit 1; }
 
 preserve_output="$(
   CASE_DIR="$case_dir" REPO_ROOT="$REPO_DIR" bash -lc '
