@@ -51,6 +51,13 @@ export interface BlockedCandidate {
   labels?: string[];
 }
 
+export interface WaitingReadyCandidate {
+  number: number;
+  title: string;
+  headBranch: string;
+  labels?: string[];
+}
+
 export interface IntegrationHealth {
   state: 'healthy' | 'unhealthy';
   reason?: string;
@@ -60,6 +67,8 @@ export interface TendDecision {
   integrationHealth: IntegrationHealth;
   eligible: TendCandidate[];
   blocked: BlockedCandidate[];
+  /** Open Wavemill PRs carrying wm:ready while integration health prevents normal selection. */
+  waitingReady?: WaitingReadyCandidate[];
   nextPR: number | null;
 }
 
@@ -288,7 +297,19 @@ export async function defaultHealthChecker(integrationBranch: string, repoDir: s
   try {
     validateIntegrationBranch(integrationBranch);
 
-    const resolution = resolveIntegrationBranchSha(integrationBranch, repoDir);
+    const refreshError = refreshIntegrationBranchRef(integrationBranch, repoDir);
+    let resolution: IntegrationBranchResolution;
+    try {
+      resolution = resolveIntegrationBranchSha(integrationBranch, repoDir);
+    } catch (error) {
+      if (refreshError) {
+        return {
+          state: 'unhealthy',
+          reason: `health-check-refresh-failed: ${truncateReason(refreshError, 160)}; ${truncateReason(errorMessage(error), 160)}`,
+        };
+      }
+      throw error;
+    }
     const repo = resolveOwnerRepoFromRemote(repoDir);
 
     if (!repo) {
@@ -318,9 +339,28 @@ export async function defaultHealthChecker(integrationBranch: string, repoDir: s
       }
     }
 
+    if (refreshError) {
+      return {
+        state: 'unhealthy',
+        reason: `health-check-refresh-failed: ${truncateReason(refreshError, 200)}`,
+      };
+    }
+
     return { state: 'healthy' };
   } catch (error) {
     return { state: 'unhealthy', reason: `health-check-error: ${errorMessage(error)}` };
+  }
+}
+
+function refreshIntegrationBranchRef(integrationBranch: string, repoDir: string): string | null {
+  try {
+    execShellCommand(
+      `git fetch origin ${escapeShellArg(integrationBranch)} 2>&1`,
+      { encoding: 'utf-8', cwd: repoDir, timeout: GIT_COMMAND_TIMEOUT_MS },
+    );
+    return null;
+  } catch (error) {
+    return outputFromError(error);
   }
 }
 
@@ -400,12 +440,19 @@ export async function selectNextCandidate(options: SelectNextCandidateOptions): 
   const prFetcher = options.prFetcher ?? defaultPrFetcher;
 
   const integrationHealth = await healthChecker(integrationBranch, options.repoDir);
-  if (integrationHealth.state === 'unhealthy') {
-    return { integrationHealth, eligible: [], blocked: [], nextPR: null };
-  }
-
   const allPrs = await prFetcher(integrationBranch, options.repoDir);
   const wavemillPrs = allPrs.filter(isWavemillPr);
+
+  if (integrationHealth.state === 'unhealthy') {
+    return {
+      integrationHealth,
+      eligible: [],
+      blocked: [],
+      waitingReady: wavemillPrs.filter(isReadyPr).map(toWaitingReadyCandidate),
+      nextPR: null,
+    };
+  }
+
   const openPrNumbers = new Set(wavemillPrs.map((pr) => pr.number));
   const blocked: BlockedCandidate[] = [];
   let eligibleWorkItems: EligibleWorkItem[] = [];
@@ -511,7 +558,7 @@ export function formatStatusLine(
     pollCompletedAt?: string | null;
   } = {},
 ): string {
-  const health = decision.integrationHealth.state === 'healthy' ? 'ok' : 'degraded';
+  const health = decision.integrationHealth.state === 'healthy' ? 'ok' : 'unhealthy';
   const last = typeof opts.lastPR === 'number' ? `#${opts.lastPR}` : 'none';
   const action = opts.action ?? 'idle';
 
@@ -522,11 +569,18 @@ export function formatStatusLine(
     `eligible=${decision.eligible.length}`,
     `blocked=${decision.blocked.length}`,
     `health=${health}`,
+    decision.integrationHealth.state === 'unhealthy' && decision.integrationHealth.reason
+      ? `reason=${quoteStatusValue(decision.integrationHealth.reason)}`
+      : null,
     `last=${last}`,
     `action=${action}`,
   ];
 
   return parts.filter((part): part is string => part !== null).join(' ');
+}
+
+function quoteStatusValue(value: string): string {
+  return JSON.stringify(truncateReason(value.replace(/\s+/g, ' ').trim(), 200));
 }
 
 export async function executeMerge(
@@ -2135,6 +2189,10 @@ function isWavemillPr(pr: GhPrListEntry): boolean {
   return labelSet(pr).has(WM_LABELS.wavemill) || validatePrMetadata(pr.body).status === 'valid';
 }
 
+function isReadyPr(pr: GhPrListEntry): boolean {
+  return labelSet(pr).has(WM_LABELS.ready);
+}
+
 function getMetadataValidation(body: string): MetadataValidation {
   return validatePrMetadata(body);
 }
@@ -2888,6 +2946,15 @@ function toBlockedCandidate(pr: GhPrListEntry, reason: string): BlockedCandidate
   };
 }
 
+function toWaitingReadyCandidate(pr: GhPrListEntry): WaitingReadyCandidate {
+  return {
+    number: pr.number,
+    title: pr.title,
+    headBranch: pr.headRefName,
+    labels: [...labelSet(pr)],
+  };
+}
+
 function resolveOwnerRepoFromRemote(repoDir: string): string | null {
   const remoteUrl = String(execShellCommand('git remote get-url origin', {
     encoding: 'utf-8',
@@ -2895,7 +2962,21 @@ function resolveOwnerRepoFromRemote(repoDir: string): string | null {
     timeout: GIT_COMMAND_TIMEOUT_MS,
   })).trim();
 
-  return parseOwnerRepoFromRemoteUrl(remoteUrl);
+  const repo = parseOwnerRepoFromRemoteUrl(remoteUrl);
+  if (repo) {
+    return repo;
+  }
+
+  try {
+    const configuredRemoteUrl = String(execShellCommand('git config --get remote.origin.url', {
+      encoding: 'utf-8',
+      cwd: repoDir,
+      timeout: GIT_COMMAND_TIMEOUT_MS,
+    })).trim();
+    return parseOwnerRepoFromRemoteUrl(configuredRemoteUrl);
+  } catch {
+    return null;
+  }
 }
 
 function parseOwnerRepoFromRemoteUrl(remoteUrl: string): string | null {

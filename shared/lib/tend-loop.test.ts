@@ -5,9 +5,11 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   TEND_READY_UNMERGED_WARN_MS,
+  buildIntegrationUnhealthyFinding,
   buildReadyPrUnmergedFinding,
   classifyTendLoopError,
   formatIdleStallWarning,
+  formatIntegrationUnhealthyWarning,
   formatLaneStallWarning,
   runTendLoop,
   tendLoopBackoffMs,
@@ -364,6 +366,21 @@ describe('merge-lane progress detection (HOK-2919)', () => {
     };
   }
 
+  function integrationUnhealthyDecision(waitingPrs = [1265], reason = 'OpenRouter Alias Audit: failure'): TendDecision {
+    return {
+      integrationHealth: { state: 'unhealthy', reason },
+      eligible: [],
+      blocked: [],
+      waitingReady: waitingPrs.map((number) => ({
+        number,
+        title: `Ready PR ${number}`,
+        headBranch: `task/ready-${number}`,
+        labels: ['wavemill', 'wm:ready'],
+      })),
+      nextPR: null,
+    };
+  }
+
   function loopHarness(options: {
     decision: (iteration: number) => TendDecision;
     iterations: number;
@@ -412,6 +429,83 @@ describe('merge-lane progress detection (HOK-2919)', () => {
       cleanup: () => rmSync(repoDir, { recursive: true, force: true }),
     };
   }
+
+  it('fires a high finding at 30 unhealthy integration polls with ready PRs and escalates at 120', async () => {
+    const harness = loopHarness({ decision: () => integrationUnhealthyDecision([1395, 1398, 1399]), iterations: 121 });
+    try {
+      await harness.run();
+
+      const integrationFindings = harness.findings.filter(
+        (entry) => entry.finding.context?.markerKind === 'merge-lane-integration-unhealthy',
+      );
+      assert.equal(integrationFindings.length, 2);
+      assert.equal(integrationFindings[0]?.finding.severity, 'high');
+      assert.equal(integrationFindings[0]?.finding.context?.consecutivePolls, 30);
+      assert.equal(integrationFindings[0]?.finding.context?.waitingPrs, '1395,1398,1399');
+      assert.equal(integrationFindings[0]?.finding.context?.integrationHealthReason, 'OpenRouter Alias Audit: failure');
+      assert.equal(integrationFindings[0]?.finding.context?.integrationCheck, 'OpenRouter Alias Audit');
+      assert.match(integrationFindings[0]?.finding.body ?? '', /PR #1395 \(task\/ready-1395\)/);
+      assert.equal(integrationFindings[1]?.finding.severity, 'urgent');
+      assert.equal(integrationFindings[1]?.finding.context?.consecutivePolls, 120);
+
+      assert.ok(harness.renderer.lines.some((line) => (
+        line === 'warn=merge-lane-integration-unhealthy severity=high reason="OpenRouter Alias Audit: failure" waiting=#1395,#1398,#1399 consecutive=30'
+      )));
+      assert.ok(harness.renderer.lines.some((line) => /warn=merge-lane-integration-unhealthy severity=urgent/.test(line)));
+      assert.ok(harness.renderer.lines.some((line) => /health=unhealthy reason="OpenRouter Alias Audit: failure"/.test(line)));
+      assert.deepEqual(
+        harness.findings.filter((entry) => entry.finding.context?.markerKind === 'merge-lane-idle-stall'),
+        [],
+      );
+
+      const stalledHeartbeats = harness.heartbeats.filter((heartbeat) => heartbeat.progressState === 'stalled');
+      assert.ok(stalledHeartbeats.length > 0);
+      assert.equal(stalledHeartbeats[0]?.laneCondition, 'integration-unhealthy-stall');
+      assert.equal(stalledHeartbeats[0]?.status, 'unhealthy');
+      assert.match(String(stalledHeartbeats[0]?.detail), /OpenRouter Alias Audit: failure/);
+      assert.match(String(stalledHeartbeats[0]?.laneEvidenceId), /^[0-9a-f]{12}$/);
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it('keeps unhealthy integration quiet when no ready PRs are waiting', async () => {
+    const harness = loopHarness({ decision: () => integrationUnhealthyDecision([]), iterations: 60 });
+    try {
+      await harness.run();
+      assert.deepEqual(harness.findings, []);
+      assert.equal(
+        harness.renderer.lines.some((line) => line.startsWith('warn=merge-lane-integration-unhealthy')),
+        false,
+      );
+      assert.ok(harness.heartbeats.every((heartbeat) => heartbeat.progressState === 'idle'));
+      assert.ok(harness.heartbeats.every((heartbeat) => heartbeat.laneCondition === 'no-eligible'));
+      assert.ok(harness.heartbeats.every((heartbeat) => heartbeat.status === 'healthy'));
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it('resets the unhealthy integration streak when the reason or waiting queue changes', async () => {
+    const harness = loopHarness({
+      decision: (iteration) => integrationUnhealthyDecision([1265], `ci-${iteration % 2}: failure`),
+      iterations: 80,
+    });
+    try {
+      await harness.run();
+      assert.deepEqual(
+        harness.findings.filter((entry) => entry.finding.context?.markerKind === 'merge-lane-integration-unhealthy'),
+        [],
+      );
+      assert.equal(
+        harness.renderer.lines.some((line) => line.startsWith('warn=merge-lane-integration-unhealthy')),
+        false,
+      );
+      assert.ok(harness.heartbeats.every((heartbeat) => heartbeat.progressState !== 'stalled'));
+    } finally {
+      harness.cleanup();
+    }
+  });
 
   it('fires a high finding at 30 idle-blocked polls and escalates to urgent at 120 (REQ-F1/REQ-F3)', async () => {
     const harness = loopHarness({ decision: () => blockedDecision(), iterations: 121 });
@@ -537,6 +631,39 @@ describe('merge-lane finding builders', () => {
       line,
       'warn=merge-lane-idle-stalled severity=high blocked=#1265(challenge:pair-unresolved),#1267(blocked-label:behind-base) consecutive=31',
     );
+  });
+
+  it('formatIntegrationUnhealthyWarning quotes reason and names waiting PRs', () => {
+    const line = formatIntegrationUnhealthyWarning({
+      reason: 'OpenRouter Alias Audit:\nfailure',
+      waiting: [
+        { number: 1395, title: 'a', headBranch: 'task/a' },
+        { number: 1398, title: 'b', headBranch: 'task/b' },
+      ],
+      consecutive: 30,
+      severity: 'high',
+    });
+    assert.equal(
+      line,
+      'warn=merge-lane-integration-unhealthy severity=high reason="OpenRouter Alias Audit: failure" waiting=#1395,#1398 consecutive=30',
+    );
+  });
+
+  it('buildIntegrationUnhealthyFinding names the check and waiters', () => {
+    const finding = buildIntegrationUnhealthyFinding({
+      decision: {
+        integrationHealth: { state: 'unhealthy', reason: 'OpenRouter Alias Audit: failure' },
+        eligible: [],
+        blocked: [],
+        waitingReady: [{ number: 1395, title: 'a', headBranch: 'task/a', labels: ['wm:ready'] }],
+        nextPR: null,
+      },
+      consecutive: 30,
+      severity: 'high',
+      now: '2026-09-14T00:00:00Z',
+    });
+    assert.equal(finding.context?.integrationCheck, 'OpenRouter Alias Audit');
+    assert.equal(finding.context?.waitingPrs, '1395');
   });
 
   it('buildReadyPrUnmergedFinding escalates to urgent past twice the threshold', () => {
