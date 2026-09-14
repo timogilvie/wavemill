@@ -1083,6 +1083,60 @@ describe('hokusai-schema', () => {
       assert.equal(serialized.includes('turn_limit'), false);
       assert.equal(serialized.includes('maxTurns'), false);
     });
+
+    it('omits local execution economics from Hokusai submissions (HOK-2958)', () => {
+      const submission = expectSuccess(toHokusaiSubmission(makeRecord({
+        executionEconomics: [
+          {
+            schemaVersion: '1.0.0',
+            providerContractVersion: 'claude-code/1',
+            harness: 'claude-code',
+            joinEvidence: { issueId: 'HOK-2958', branch: 'task/hok-2958-slug' },
+            sessions: [
+              {
+                sessionId: 'a2f5c9e1-session-uuid',
+                rootSessionId: null,
+                harnessVersion: '2.1.270',
+                triggerSource: { value: 'sdk', provenance: 'claude_code.promptSource', availability: 'available' },
+                stageRole: { value: 'coding', confidence: 'timestamp_window', evidence: 'window overlap' },
+                models: {
+                  requested: 'alias:opus',
+                  forced: null,
+                  resolved: 'claude-opus-4-6',
+                  executed: 'claude-opus-4-6',
+                  provenance: { resolved: 'routing.jsonl', executed: 'session_telemetry' },
+                },
+                turnCount: 1,
+                turns: [],
+                turnsTruncated: false,
+                modelSegments: [{ model: 'claude-opus-4-6', turnCount: 1 }],
+                usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: null, cacheWriteTokens: null, reasoningTokens: null },
+                actualCostUsd: null,
+                estimatedCostUsd: 0.01,
+                costSource: 'local_estimate',
+                pricingRevision: null,
+                pricingTimestamp: '2026-09-01T10:00:00Z',
+                coverage: 'partial',
+                fieldAvailability: { actualCost: 'unavailable' },
+                diagnostics: ['secret-diagnostic-marker'],
+              },
+            ],
+            sessionCount: 1,
+            turnCount: 1,
+            coverage: 'partial',
+            collectedAt: '2026-09-01T10:00:00Z',
+          },
+        ],
+      })));
+      const submissionRecord = submission as unknown as Record<string, unknown>;
+      const serialized = JSON.stringify(submission);
+
+      assert.deepEqual(validateHokusaiSubmission(submission), { valid: true, errors: [] });
+      assert.equal('executionEconomics' in submissionRecord, false);
+      assert.equal(serialized.includes('a2f5c9e1-session-uuid'), false);
+      assert.equal(serialized.includes('secret-diagnostic-marker'), false);
+      assert.equal(serialized.includes('providerContractVersion'), false);
+    });
   });
 
   describe('validateHokusaiSubmission', () => {

@@ -46,6 +46,7 @@ import type {
   VerificationTelemetry,
   VerificationTelemetryLocalExecution,
   RoutingRole,
+  EvalExecutionEconomics,
 } from './eval-schema.ts';
 import {
   getEffectiveRegistry,
@@ -128,6 +129,8 @@ export interface EvalRecordMetadata {
   repoContext?: RepoContext | null;
   /** Workflow cost computation results */
   workflowCost?: WorkflowCostOutcome | null;
+  /** Normalized external-harness execution-economics blocks (HOK-2958). */
+  executionEconomics?: EvalExecutionEconomics[] | null;
   /** Task descriptor for router training */
   taskDescriptor?: TaskDescriptor | null;
   /** Cross-model fallback telemetry */
@@ -810,6 +813,24 @@ export function attachWorkflowCostMetadata(
       ...failure.diagnostics,
     };
   }
+}
+
+/**
+ * Attach normalized execution-economics blocks to an eval record (HOK-2958).
+ *
+ * No-op when `blocks` is null, not an array, or empty — readers must
+ * tolerate absence, and an empty collection carries no evidence worth
+ * persisting. Does not merge with existing data; the collector owns the
+ * complete per-run view.
+ */
+export function attachExecutionEconomics(
+  record: EvalRecord,
+  blocks: EvalExecutionEconomics[] | null | undefined,
+): void {
+  if (!Array.isArray(blocks) || blocks.length === 0) {
+    return;
+  }
+  record.executionEconomics = blocks;
 }
 
 export function attachRoutePrediction(
@@ -1634,6 +1655,7 @@ export function enrichEvalRecord(record: EvalRecord, metadata: EvalRecordMetadat
   attachRepoContextMetadata(record, metadata.repoContext || null);
   attachRoutingDecisions(record, metadata.routing);
   attachWorkflowCostMetadata(record, metadata.workflowCost || null);
+  attachExecutionEconomics(record, metadata.executionEconomics || null);
   attachRouteCalibration(record, computeRouteCalibration(record, record.routePrediction));
   attachTaskDescriptor(record, metadata.taskDescriptor || null);
   attachFallbackEvent(record, metadata.fallbackEvent || null);
@@ -1694,6 +1716,7 @@ export function enrichTrainingMetadata(
   attachRepoContextMetadata(record, metadata.repoContext || null);
   attachRoutingDecisions(record, metadata.routing);
   attachWorkflowCostMetadata(record, metadata.workflowCost || null);
+  attachExecutionEconomics(record, metadata.executionEconomics || null);
   attachRouteCalibration(record, computeRouteCalibration(record, record.routePrediction));
   attachTaskDescriptor(record, metadata.taskDescriptor || null);
   attachFallbackEvent(record, metadata.fallbackEvent || null);

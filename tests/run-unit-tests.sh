@@ -344,6 +344,8 @@ TESTS=(
   shared/lib/eval-backfill.test.ts
   shared/lib/eval-context-gatherer.test.ts
   shared/lib/eval-deduplication.test.ts
+  shared/lib/execution-economics.test.ts
+  shared/lib/execution-economics-report.test.ts
   shared/lib/eval-export.test.ts
   shared/lib/eval-persistence.test.ts
   shared/lib/eval-summary-printer.test.ts
