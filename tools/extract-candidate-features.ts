@@ -20,7 +20,21 @@ import {
 runTool({
   name: 'extract-candidate-features',
   description: 'Extract candidate features (candidate_features/v1) from a PR and checkout',
-  run: async ({ args, positional }) => {
+  options: {
+    checkout: {
+      type: 'string',
+      description: 'Directory containing the candidate checkout (its HEAD is the candidate).',
+    },
+    pr: {
+      type: 'string',
+      description: 'GitHub PR number.',
+    },
+    'base-ref': {
+      type: 'string',
+      description: 'Base ref for diff analysis (default: origin/main).',
+    },
+  },
+  run: async ({ args }) => {
     const checkout = args.checkout as string | undefined;
     const prNumber = args.pr as string | undefined;
     const baseRef = args['base-ref'] as string | undefined;
