@@ -68,6 +68,81 @@ test('captureReplayIncident: missing patches marks as incomplete', () => {
   strictEqual(result.missingFields.includes('goodPatchContent'), true);
 });
 
+test('captureReplayIncident: single evidence patch is not reused as good and bad', () => {
+  const incident = {
+    ...createTestIncident(),
+    evidence: [
+      {
+        type: 'diff' as const,
+        source: 'failed_patch',
+        timestamp: new Date().toISOString(),
+        redactedData: 'diff --git a/file.ts b/file.ts\n@@ -1 +1 @@\n-bad\n+still-bad',
+      },
+    ],
+  };
+
+  const result = captureReplayIncident({
+    incident,
+    taskTitle: 'Test',
+    taskDescription: 'Test description',
+  });
+
+  strictEqual(result.isComplete, false);
+  strictEqual(result.missingFields.includes('goodPatchContent'), true);
+  strictEqual(result.instance.candidates.length, 1);
+  strictEqual(result.instance.candidates[0].label, 'known-bad');
+});
+
+test('captureReplayIncident: distinct evidence patches can fill bad and good', () => {
+  const badPatch = 'diff --git a/file.ts b/file.ts\n@@ -1 +1 @@\n-old\n+bad';
+  const goodPatch = 'diff --git a/file.ts b/file.ts\n@@ -1 +1 @@\n-old\n+good';
+  const incident = {
+    ...createTestIncident(),
+    evidence: [
+      {
+        type: 'diff' as const,
+        source: 'failed_patch',
+        timestamp: new Date().toISOString(),
+        redactedData: badPatch,
+      },
+      {
+        type: 'diff' as const,
+        source: 'fixed_patch',
+        timestamp: new Date().toISOString(),
+        redactedData: goodPatch,
+      },
+    ],
+  };
+
+  const result = captureReplayIncident({
+    incident,
+    taskTitle: 'Test',
+    taskDescription: 'Test description',
+  });
+
+  strictEqual(result.isComplete, true);
+  strictEqual(result.instance.candidates.length, 2);
+  strictEqual(result.instance.candidates[0].patch, badPatch);
+  strictEqual(result.instance.candidates[1].patch, goodPatch);
+});
+
+test('captureReplayIncident: identical explicit patches are incomplete', () => {
+  const incident = createTestIncident();
+  const patch = 'diff --git a/file.ts b/file.ts\n@@ -1 +1 @@\n-old\n+same';
+
+  const result = captureReplayIncident({
+    incident,
+    badPatchContent: patch,
+    goodPatchContent: patch,
+    taskTitle: 'Test',
+    taskDescription: 'Test description',
+  });
+
+  strictEqual(result.isComplete, false);
+  strictEqual(result.missingFields.includes('distinctGoodAndBadPatchContent'), true);
+  strictEqual(result.instance.candidates.length, 1);
+});
+
 test('captureReplayIncident: only good patch marks as incomplete', () => {
   const incident = createTestIncident();
   const goodPatch = 'patch content';

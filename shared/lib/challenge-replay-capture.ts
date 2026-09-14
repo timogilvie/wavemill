@@ -43,19 +43,33 @@ export interface CaptureReplayIncidentResult {
 /**
  * Extract patch or evidence reference from incident evidence.
  */
-function extractPatchFromEvidence(evidence: IncidentRecord['evidence']): string | undefined {
+function extractPatchesFromEvidence(evidence: IncidentRecord['evidence']): string[] {
+  const patches: string[] = [];
+  const seen = new Set<string>();
   for (const ev of evidence || []) {
+    let patch: string | undefined;
     if (ev.type === 'diff' && typeof ev.redactedData === 'string') {
-      return ev.redactedData;
-    }
-    if (ev.type === 'artifact_content' && typeof ev.redactedData === 'string') {
+      patch = ev.redactedData;
+    } else if (ev.type === 'artifact_content' && typeof ev.redactedData === 'string') {
       // Might be a patch artifact
       if (ev.redactedData.includes('---') || ev.redactedData.includes('@@')) {
-        return ev.redactedData;
+        patch = ev.redactedData;
       }
     }
+
+    if (patch && !seen.has(patch)) {
+      patches.push(patch);
+      seen.add(patch);
+    }
   }
-  return undefined;
+  return patches;
+}
+
+function firstDistinctPatch(
+  patches: string[],
+  excludedPatch: string | undefined,
+): string | undefined {
+  return patches.find((patch) => patch !== excludedPatch);
 }
 
 /**
@@ -67,12 +81,19 @@ export function captureReplayIncident(
   options: CaptureReplayIncidentOptions,
 ): CaptureReplayIncidentResult {
   const incident = options.incident;
-  const badPatch = options.badPatchContent ?? extractPatchFromEvidence(incident.evidence);
-  const goodPatch = options.goodPatchContent ?? extractPatchFromEvidence(incident.evidence);
+  const evidencePatches = extractPatchesFromEvidence(incident.evidence);
+  const badPatch = options.badPatchContent ?? evidencePatches[0];
+  const rawGoodPatch =
+    options.goodPatchContent ??
+    firstDistinctPatch(evidencePatches, badPatch);
+  const goodPatch = rawGoodPatch && rawGoodPatch !== badPatch ? rawGoodPatch : undefined;
 
   const missingFields: string[] = [];
   if (!badPatch) missingFields.push('badPatchContent');
   if (!goodPatch) missingFields.push('goodPatchContent');
+  if (badPatch && rawGoodPatch && badPatch === rawGoodPatch) {
+    missingFields.push('distinctGoodAndBadPatchContent');
+  }
   if (!options.taskDescription && !options.taskTitle) missingFields.push('taskDescription/taskTitle');
 
   // Use provided values or synthesize from incident

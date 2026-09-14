@@ -684,12 +684,53 @@ export interface RunPatchSelectionEvalOptions {
   split?: 'train' | 'held-out' | 'all';
   modelsAvailable?: string[];
   repoDir: string;
+  selections?: PatchSelectionSelections;
 }
+
+export interface PatchSelectionSelection {
+  instanceId: string;
+  selectedPatchOrId?: string;
+  selectedCandidateId?: string;
+  selectedPatch?: string;
+}
+
+export type PatchSelectionSelections =
+  | Record<string, string | undefined>
+  | PatchSelectionSelection[];
 
 export interface RunPatchSelectionEvalResult {
   score: PatchSelectionScoreResult;
   hemRecord?: EvalRecord;
   loadInfo: ReturnType<typeof loadPatchSelectionCorpus>['splitInfo'];
+}
+
+function normalizePatchSelectionSelections(
+  selections: PatchSelectionSelections | undefined,
+): Map<string, string> {
+  const normalized = new Map<string, string>();
+  if (!selections) {
+    return normalized;
+  }
+
+  if (Array.isArray(selections)) {
+    for (const selection of selections) {
+      const selectedPatchOrId =
+        selection.selectedPatchOrId ??
+        selection.selectedCandidateId ??
+        selection.selectedPatch;
+      if (selection.instanceId && selectedPatchOrId) {
+        normalized.set(selection.instanceId, selectedPatchOrId);
+      }
+    }
+    return normalized;
+  }
+
+  for (const [instanceId, selectedPatchOrId] of Object.entries(selections)) {
+    if (selectedPatchOrId) {
+      normalized.set(instanceId, selectedPatchOrId);
+    }
+  }
+  return normalized;
 }
 
 /**
@@ -703,11 +744,10 @@ export async function runPatchSelectionEval(
     split: options.split ?? 'train',
   });
 
+  const selections = normalizePatchSelectionSelections(options.selections);
   const records: PatchSelectionScoreRecord[] = corpus.instances.map((instance) => ({
     instanceId: instance.id,
-    // In a real scenario, the selectedPatchOrId would come from the router output.
-    // For now, we score based on the instance itself being available.
-    selectedPatchOrId: instance.knownGoodCandidateId,
+    selectedPatchOrId: selections.get(instance.id) ?? '',
     instance,
   }));
 

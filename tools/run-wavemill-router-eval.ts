@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { runWavemillRouterEval, runPatchSelectionEval } from '../src/evaluation/adapters/wavemill-router-adapter.ts';
 
 interface CliArgs {
@@ -10,6 +11,7 @@ interface CliArgs {
   patchSelectionCorpus?: string;
   corpus?: string;
   split?: 'train' | 'held-out' | 'all';
+  selections?: string;
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -45,6 +47,9 @@ function parseArgs(argv: string[]): CliArgs {
     } else if (token === '--split' && next) {
       args.split = next as CliArgs['split'];
       index += 1;
+    } else if (token === '--selections' && next) {
+      args.selections = next;
+      index += 1;
     }
   }
 
@@ -58,11 +63,15 @@ async function main(): Promise<void> {
   // Check if this is a patch-selection evaluation
   const manifestPath = args.patchSelectionCorpus ?? args.corpus;
   if (manifestPath) {
+    const selections = args.selections
+      ? JSON.parse(readFileSync(args.selections, 'utf-8'))
+      : undefined;
     const result = await runPatchSelectionEval({
       manifestPath,
       split: args.split ?? 'train',
       modelsAvailable: args.modelsAvailable,
       repoDir,
+      selections,
     });
 
     console.log(JSON.stringify({
