@@ -142,6 +142,33 @@ describe('collectStaticAnalysisOutcome', () => {
     assert.ok(typeof outcome === 'object');
     assert.ok(!Array.isArray(outcome));
   });
+
+  it('accepts an optional checkoutDir without throwing (HOK-2806)', () => {
+    assert.doesNotThrow(() =>
+      collectStaticAnalysisOutcome(
+        '999',
+        'feature-branch',
+        'main',
+        '/nonexistent',
+        '/nonexistent-checkout',
+      ),
+    );
+  });
+
+  it('does not populate S1 fields with 0/false on collector failure (HOK-2806 null discipline)', () => {
+    // With a nonexistent repoDir + checkoutDir, no tool can complete, so any
+    // S1 fields that appear must be null, never coerced to 0/false.
+    const outcome = collectStaticAnalysisOutcome(
+      '999',
+      'feature-branch',
+      'main',
+      '/nonexistent',
+      '/nonexistent-checkout',
+    );
+    if ('type_errors' in outcome) assert.equal(outcome.type_errors, null);
+    if ('lint_errors' in outcome) assert.equal(outcome.lint_errors, null);
+    if ('build_ok' in outcome) assert.equal(outcome.build_ok, null);
+  });
 });
 
 describe('collectReviewOutcome', () => {
