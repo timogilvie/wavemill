@@ -1284,3 +1284,284 @@ describe('matchesIssue', () => {
     assert.equal(matchesIssue('expansion-abc123.jsonl', 'HOK-2728_c', 'task/my-slug'), true);
   });
 });
+
+// ────────────────────────────────────────────────────────────────
+// External session detail (HOK-2958)
+// ────────────────────────────────────────────────────────────────
+
+describe('ClaudeSessionAdapter externalSessions', () => {
+  it('captures per-turn model switches, lineage, reasoning tokens, and trigger source', () => {
+    const { worktreePath, projectsDir, cleanup } = setupClaudeSessionDir();
+    try {
+      const lines = [
+        JSON.stringify({
+          type: 'user',
+          sessionId: 'sess-rich',
+          version: '2.1.270',
+          gitBranch: 'task/test',
+          isSidechain: false,
+          promptSource: 'sdk',
+          promptId: 'prompt-1',
+          uuid: 'u0',
+          timestamp: '2026-09-01T10:00:00Z',
+          message: { role: 'user', content: 'go' },
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          sessionId: 'sess-rich',
+          version: '2.1.270',
+          gitBranch: 'task/test',
+          isSidechain: false,
+          uuid: 'a1',
+          parentUuid: 'u0',
+          timestamp: '2026-09-01T10:00:05Z',
+          message: {
+            model: 'claude-opus-4-6',
+            role: 'assistant',
+            content: [],
+            usage: {
+              input_tokens: 100,
+              cache_creation_input_tokens: 50,
+              cache_read_input_tokens: 200,
+              output_tokens: 30,
+              output_tokens_details: { thinking_tokens: 12 },
+            },
+          },
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          sessionId: 'sess-rich',
+          version: '2.1.270',
+          gitBranch: 'task/test',
+          isSidechain: true,
+          uuid: 'a2',
+          parentUuid: 'a1',
+          timestamp: '2026-09-01T10:01:00Z',
+          message: {
+            model: 'claude-haiku-4-5-20251001',
+            role: 'assistant',
+            content: [],
+            usage: { input_tokens: 40, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 10 },
+          },
+        }),
+      ].join('\n');
+      writeFileSync(join(projectsDir, 'sess-rich.jsonl'), lines);
+
+      const result = new ClaudeSessionAdapter().scan({ worktreePath, branchName: 'task/test' });
+      assert.ok(result);
+      assert.equal(result.externalSessions?.length, 1);
+      const session = result.externalSessions![0];
+      assert.equal(session.sessionId, 'sess-rich');
+      assert.equal(session.harness, 'claude-code');
+      assert.equal(session.harnessVersion, '2.1.270');
+      assert.equal(session.triggerSource, 'sdk');
+      assert.equal(session.triggerProvenance, 'claude_code.promptSource');
+      assert.equal(session.turnCount, 2);
+      assert.deepEqual(session.turns.map((t) => t.model), ['claude-opus-4-6', 'claude-haiku-4-5-20251001']);
+      assert.deepEqual(session.turns.map((t) => t.isSubagent), [false, true]);
+      assert.equal(session.turns[1].parentId, 'a1');
+      assert.equal(session.turns[0].usage.reasoningTokens, 12);
+      assert.equal(session.turns[0].usage.cacheWriteTokens, 50);
+      // Second turn has no thinking tokens reported → null, never 0
+      assert.equal(session.turns[1].usage.reasoningTokens, null);
+      assert.equal(session.usage.inputTokens, 140);
+      assert.equal(session.usage.reasoningTokens, 12);
+      // No costUSD in current Claude Code versions → null, never 0
+      assert.equal(session.actualCostUsd, null);
+      // Aggregate result unchanged in shape and content
+      assert.equal(result.models['claude-opus-4-6'].inputTokens, 100);
+      assert.equal(result.models['claude-haiku-4-5-20251001'].inputTokens, 40);
+      assert.equal(result.turnCount, 2);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('degrades gracefully for old-version entries lacking uuid/isSidechain/thinking_tokens', () => {
+    const { worktreePath, projectsDir, cleanup } = setupClaudeSessionDir();
+    try {
+      writeFileSync(
+        join(projectsDir, 'sess-old.jsonl'),
+        claudeAssistantTurn({ branch: 'task/test' }),
+      );
+
+      const result = new ClaudeSessionAdapter().scan({ worktreePath, branchName: 'task/test' });
+      assert.ok(result);
+      const session = result.externalSessions![0];
+      assert.equal(session.turns[0].turnId, null);
+      assert.equal(session.turns[0].isSubagent, null);
+      assert.equal(session.turns[0].usage.reasoningTokens, null);
+      assert.equal(session.triggerSource, null);
+      assert.equal(session.harnessVersion, null);
+      assert.ok(session.diagnostics.some((d) => d.includes('uuid')));
+      assert.ok(session.diagnostics.some((d) => d.includes('thinking_tokens')));
+      // Aggregate unchanged despite the missing detail fields
+      assert.equal(result.models['claude-opus-4-6'].inputTokens, 100);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('drops identity attributes embedded in raw session lines', () => {
+    const { worktreePath, projectsDir, cleanup } = setupClaudeSessionDir();
+    try {
+      const line = JSON.stringify({
+        type: 'assistant',
+        sessionId: 'sess-priv',
+        gitBranch: 'task/test',
+        uuid: 'a1',
+        cwd: '/Users/someone/secret-project',
+        user: { email: 'person@example.com', account_uuid: 'acct-uuid-123' },
+        organization: { id: 'org-id-456' },
+        message: {
+          model: 'claude-opus-4-6',
+          role: 'assistant',
+          content: [],
+          usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 5 },
+        },
+      });
+      writeFileSync(join(projectsDir, 'sess-priv.jsonl'), line);
+
+      const result = new ClaudeSessionAdapter().scan({ worktreePath, branchName: 'task/test' });
+      assert.ok(result);
+      const serialized = JSON.stringify(result.externalSessions);
+      assert.equal(serialized.includes('person@example.com'), false);
+      assert.equal(serialized.includes('acct-uuid-123'), false);
+      assert.equal(serialized.includes('org-id-456'), false);
+      assert.equal(serialized.includes('secret-project'), false);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe('CodexSessionAdapter externalSessions', () => {
+  function codexTurnContextWithIds(model: string, turnId: string, rootTurnId: string): string {
+    return JSON.stringify({
+      timestamp: '2026-09-01T11:00:00Z',
+      type: 'turn_context',
+      payload: { cwd: '/test', model, effort: 'medium', turn_id: turnId, root_turn_id: rootTurnId },
+    });
+  }
+
+  function codexTokenCountWithDelta(opts: {
+    total: Record<string, number>;
+    last?: Record<string, number>;
+  }): string {
+    return JSON.stringify({
+      timestamp: '2026-09-01T11:00:10Z',
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        info: {
+          total_token_usage: opts.total,
+          ...(opts.last ? { last_token_usage: opts.last } : {}),
+        },
+        rate_limits: { primary_window: 'secret-rate-limit' },
+      },
+    });
+  }
+
+  it('captures per-turn deltas, turn identity, cache writes, and reasoning tokens', () => {
+    const { sessionsDir, cleanup } = setupCodexSessionDir();
+    try {
+      const lines = [
+        codexSessionMeta({ cwd: '/some/worktree', branch: 'task/test' }),
+        codexTurnContextWithIds('gpt-5.3-codex', 't1', 't1'),
+        codexTokenCountWithDelta({
+          total: { input_tokens: 100, cached_input_tokens: 20, output_tokens: 30, reasoning_output_tokens: 5, total_tokens: 130 },
+          last: { input_tokens: 100, cached_input_tokens: 20, cache_write_input_tokens: 8, output_tokens: 30, reasoning_output_tokens: 5 },
+        }),
+        codexTurnContextWithIds('gpt-5.3-codex-mini', 't2', 't1'),
+        codexTokenCountWithDelta({
+          total: { input_tokens: 150, cached_input_tokens: 30, output_tokens: 45, reasoning_output_tokens: 9, total_tokens: 195 },
+          last: { input_tokens: 50, cached_input_tokens: 10, cache_write_input_tokens: 2, output_tokens: 15, reasoning_output_tokens: 4 },
+        }),
+      ].join('\n');
+      writeFileSync(join(sessionsDir, 'rollout-rich.jsonl'), lines);
+
+      const result = new CodexSessionAdapter().scan({ worktreePath: '/some/worktree', branchName: 'task/test' });
+      assert.ok(result);
+      assert.equal(result.externalSessions?.length, 1);
+      const session = result.externalSessions![0];
+      assert.equal(session.harness, 'codex');
+      assert.equal(session.sessionId, '019c7ba0-test');
+      assert.equal(session.harnessVersion, '0.99.0');
+      assert.equal(session.triggerSource, 'codex_exec');
+      assert.equal(session.triggerProvenance, 'codex.session_meta.originator');
+      assert.equal(session.turnCount, 2);
+      assert.deepEqual(session.turns.map((t) => t.turnId), ['t1', 't2']);
+      assert.deepEqual(session.turns.map((t) => t.parentId), ['t1', 't1']);
+      assert.deepEqual(session.turns.map((t) => t.model), ['gpt-5.3-codex', 'gpt-5.3-codex-mini']);
+      assert.equal(session.turns[0].usage.cacheWriteTokens, 8);
+      assert.equal(session.turns[1].usage.reasoningTokens, 4);
+      // Session totals come from cumulative total_token_usage
+      assert.equal(session.usage.inputTokens, 150);
+      assert.equal(session.usage.reasoningTokens, 9);
+      // total_token_usage carries no cache_write field → null, never 0
+      assert.equal(session.usage.cacheWriteTokens, null);
+      assert.equal(session.actualCostUsd, null);
+      // Aggregate result unchanged: last turn_context model, cumulative totals
+      assert.equal(result.models['gpt-5.3-codex-mini'].inputTokens, 150);
+      assert.equal(result.models['gpt-5.3-codex-mini'].outputTokens, 45 + 9);
+      assert.equal(result.turnCount, 1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('degrades to session-level usage when only cumulative totals exist', () => {
+    const { sessionsDir, cleanup } = setupCodexSessionDir();
+    try {
+      const lines = [
+        codexSessionMeta({ cwd: '/some/worktree', branch: 'task/test' }),
+        codexTurnContext('gpt-5.3-codex'),
+        codexTokenCount({ inputTokens: 100, cachedInputTokens: 20, outputTokens: 30, reasoningOutputTokens: 5 }),
+      ].join('\n');
+      writeFileSync(join(sessionsDir, 'rollout-old.jsonl'), lines);
+
+      const result = new CodexSessionAdapter().scan({ worktreePath: '/some/worktree', branchName: 'task/test' });
+      assert.ok(result);
+      const session = result.externalSessions![0];
+      // Old turn_context without turn ids still yields a turn with null identity
+      assert.equal(session.turnCount, 1);
+      assert.equal(session.turns[0].turnId, null);
+      assert.equal(session.turns[0].usageAvailable, false);
+      assert.ok(session.diagnostics.some((d) => d.includes('last_token_usage')));
+      assert.equal(session.usage.inputTokens, 100);
+      // Aggregate identical to the pre-HOK-2958 behavior
+      assert.equal(result.models['gpt-5.3-codex'].inputTokens, 100);
+      assert.equal(result.models['gpt-5.3-codex'].outputTokens, 35);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('drops cwd, repository_url, rate limits, and identity attributes', () => {
+    const { sessionsDir, cleanup } = setupCodexSessionDir();
+    try {
+      const meta = JSON.parse(codexSessionMeta({ cwd: '/some/worktree', branch: 'task/test' }));
+      meta.payload.user = { email: 'person@example.com', account_uuid: 'acct-uuid-123' };
+      meta.payload.organization = { id: 'org-id-456' };
+      const lines = [
+        JSON.stringify(meta),
+        codexTurnContext('gpt-5.3-codex'),
+        codexTokenCount({ inputTokens: 10, cachedInputTokens: 0, outputTokens: 5, reasoningOutputTokens: 0 }),
+      ].join('\n');
+      writeFileSync(join(sessionsDir, 'rollout-priv.jsonl'), lines);
+
+      const result = new CodexSessionAdapter().scan({ worktreePath: '/some/worktree', branchName: 'task/test' });
+      assert.ok(result);
+      const serialized = JSON.stringify(result.externalSessions);
+      assert.equal(serialized.includes('person@example.com'), false);
+      assert.equal(serialized.includes('acct-uuid-123'), false);
+      assert.equal(serialized.includes('org-id-456'), false);
+      assert.equal(serialized.includes('/some/worktree'), false);
+      assert.equal(serialized.includes('repository_url'), false);
+      assert.equal(serialized.includes('git@github.com'), false);
+      assert.equal(serialized.includes('secret-rate-limit'), false);
+    } finally {
+      cleanup();
+    }
+  });
+});
