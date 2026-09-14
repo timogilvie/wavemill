@@ -261,6 +261,153 @@ EOF
   check_contains "queue plan has expected shape" "$output" "queue_plan_shape=ok"
 }
 
+test_filter_keeps_issue_with_no_children() {
+  local backlog output ids
+  backlog='[
+    { "identifier": "HOK-leaf", "title": "Leaf", "children": { "nodes": [] } }
+  ]'
+
+  output=$(FUNCTIONS_FILE="$FUNCTIONS_FILE" BACKLOG_JSON="$backlog" bash -lc '
+    set -euo pipefail
+    # shellcheck source=/dev/null
+    source "$FUNCTIONS_FILE"
+    filter_parent_issues "$BACKLOG_JSON"
+  ')
+  ids="$(jq -r '.[].identifier' <<<"$output")"
+
+  check_eq "filter keeps issue with no children" "HOK-leaf" "$ids"
+}
+
+test_filter_drops_issue_with_active_children() {
+  local backlog output stderr_text stderr_file
+  stderr_file="$TEST_TMP/filter-active.err"
+  backlog='[
+    {
+      "identifier": "HOK-active-parent",
+      "children": {
+        "nodes": [
+          { "id": "child-active", "identifier": "HOK-active-child", "state": { "type": "started" } }
+        ]
+      }
+    }
+  ]'
+
+  output=$(FUNCTIONS_FILE="$FUNCTIONS_FILE" BACKLOG_JSON="$backlog" bash -lc '
+    set -euo pipefail
+    # shellcheck source=/dev/null
+    source "$FUNCTIONS_FILE"
+    filter_parent_issues "$BACKLOG_JSON"
+  ' 2>"$stderr_file")
+  stderr_text="$(cat "$stderr_file")"
+
+  check_eq "filter drops issue with active children" "0" "$(jq 'length' <<<"$output")"
+  check_contains "filter active child warns" "$stderr_text" "WARN: Skipping parent issue HOK-active-parent"
+}
+
+test_filter_keeps_parent_with_all_terminal_children() {
+  local backlog output stderr_text stderr_file
+  stderr_file="$TEST_TMP/filter-terminal.err"
+  backlog='[
+    {
+      "identifier": "HOK-2917",
+      "state": { "name": "Backlog" },
+      "children": {
+        "nodes": [
+          { "id": "child-done", "identifier": "HOK-2895", "state": { "name": "Done", "type": "completed" } }
+        ]
+      }
+    }
+  ]'
+
+  output=$(FUNCTIONS_FILE="$FUNCTIONS_FILE" BACKLOG_JSON="$backlog" bash -lc '
+    set -euo pipefail
+    # shellcheck source=/dev/null
+    source "$FUNCTIONS_FILE"
+    filter_parent_issues "$BACKLOG_JSON"
+  ' 2>"$stderr_file")
+  stderr_text="$(cat "$stderr_file")"
+
+  check_eq "filter keeps all-terminal parent" "HOK-2917" "$(jq -r '.[0].identifier' <<<"$output")"
+  check_contains "filter all-terminal info" "$stderr_text" "INFO: Keeping parent issue HOK-2917 (all 1 children terminal: HOK-2895)"
+}
+
+test_filter_uses_completed_at_fallback() {
+  local backlog output
+  backlog='[
+    {
+      "identifier": "HOK-terminal-fallback",
+      "children": {
+        "nodes": [
+          { "id": "child-done", "identifier": "HOK-done-child", "completedAt": "2026-09-13T12:00:00.000Z" }
+        ]
+      }
+    }
+  ]'
+
+  output=$(FUNCTIONS_FILE="$FUNCTIONS_FILE" BACKLOG_JSON="$backlog" bash -lc '
+    set -euo pipefail
+    # shellcheck source=/dev/null
+    source "$FUNCTIONS_FILE"
+    filter_parent_issues "$BACKLOG_JSON"
+  ' 2>/dev/null)
+
+  check_eq "filter uses completedAt fallback" "HOK-terminal-fallback" "$(jq -r '.[0].identifier' <<<"$output")"
+}
+
+test_filter_treats_unknown_state_as_nonterminal() {
+  local backlog output stderr_text stderr_file
+  stderr_file="$TEST_TMP/filter-unknown.err"
+  backlog='[
+    {
+      "identifier": "HOK-unknown-parent",
+      "children": {
+        "nodes": [
+          { "id": "child-unknown", "identifier": "HOK-unknown-child" }
+        ]
+      }
+    }
+  ]'
+
+  output=$(FUNCTIONS_FILE="$FUNCTIONS_FILE" BACKLOG_JSON="$backlog" bash -lc '
+    set -euo pipefail
+    # shellcheck source=/dev/null
+    source "$FUNCTIONS_FILE"
+    filter_parent_issues "$BACKLOG_JSON"
+  ' 2>"$stderr_file")
+  stderr_text="$(cat "$stderr_file")"
+
+  check_eq "filter treats unknown child state as nonterminal" "0" "$(jq 'length' <<<"$output")"
+  check_contains "filter unknown state warns" "$stderr_text" "WARN: Skipping parent issue HOK-unknown-parent"
+}
+
+test_filter_dedupes_all_terminal_info() {
+  local backlog stderr_text stderr_file info_count
+  stderr_file="$TEST_TMP/filter-dedupe.err"
+  backlog='[
+    {
+      "identifier": "HOK-2917",
+      "children": {
+        "nodes": [
+          { "id": "child-done", "identifier": "HOK-2895", "state": { "type": "completed" } }
+        ]
+      }
+    }
+  ]'
+
+  FUNCTIONS_FILE="$FUNCTIONS_FILE" BACKLOG_JSON="$backlog" bash -lc '
+    set -euo pipefail
+    # shellcheck source=/dev/null
+    source "$FUNCTIONS_FILE"
+    filter_parent_issues "$BACKLOG_JSON" >/dev/null
+    filter_parent_issues "$BACKLOG_JSON" >/dev/null
+  ' 2>"$stderr_file"
+  stderr_text="$(cat "$stderr_file")"
+  info_count="$(grep -c "INFO: Keeping parent issue HOK-2917" "$stderr_file" || true)"
+
+  check_eq "filter dedupes all-terminal info" "1" "$info_count"
+  check_contains "filter dedupe still announces once" "$stderr_text" "all 1 children terminal"
+}
+
 test_invoke_first_wave_helper_packs_priority_without_violating_dependencies() {
   local wave_result
   wave_result=$(FUNCTIONS_FILE="$FUNCTIONS_FILE" REPO_DIR="$REPO_DIR" LINEAR_BACKLOG_JSON="$LINEAR_BACKLOG_JSON" CANDIDATES="$CANDIDATES" bash -lc '
@@ -738,6 +885,12 @@ test_fetch_queue_plan_warning_stays_quiet_without_debug() {
 echo "=== Task Selection Renderer ==="
 test_fetch_queue_plan_transforms_linear_backlog
 test_backlog_refresh_persists_cache_in_parent_shell
+test_filter_keeps_issue_with_no_children
+test_filter_drops_issue_with_active_children
+test_filter_keeps_parent_with_all_terminal_children
+test_filter_uses_completed_at_fallback
+test_filter_treats_unknown_state_as_nonterminal
+test_filter_dedupes_all_terminal_info
 test_invoke_first_wave_helper_packs_priority_without_violating_dependencies
 test_grouped_render_with_fixture_output
 test_grouped_render_orders_available_by_score

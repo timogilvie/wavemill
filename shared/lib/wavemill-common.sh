@@ -4574,27 +4574,71 @@ issue_payload_is_complete() {
 # PARENT ISSUE FILTERING (HOK-2867)
 # ============================================================================
 
-# Filter parent issues from the backlog JSON.
-# Parents are identified by having children.nodes with at least one entry.
+# Filter parent/container issues from the backlog JSON.
+# Parents with active children are skipped; parents whose children are all
+# terminal are eligible because they may still have executable parent work.
 # Args: $1 = backlog_json, $2 = optional log_dest (file descriptor for skip warnings)
-# Output: Filtered JSON (parents removed), one warning per skipped parent to stderr/log
+# Output: Filtered JSON, warnings/diagnostics to stderr/log
 filter_parent_issues() {
   local backlog_json="$1"
   local log_dest="${2:-/dev/stderr}"
 
-  # Emit warnings for skipped parents first, then output filtered JSON
-  {
-    printf '%s\n' "$backlog_json" | jq -r '
-      .[]
-      | select((.children.nodes // []) | length > 0)
-      | "\(.identifier)|\(([.children.nodes[].identifier] | join(",")))"
-    '
-  } 2>/dev/null | while IFS='|' read -r parent_id child_ids; do
-    printf 'WARN: Skipping parent issue %s (has Linear children: %s)\n' "$parent_id" "$child_ids" >&"$log_dest"
-  done
+  if ! declare -p WAVEMILL_TERMINAL_PARENT_ANNOUNCED >/dev/null 2>&1; then
+    declare -gA WAVEMILL_TERMINAL_PARENT_ANNOUNCED=()
+  fi
 
-  # Output filtered JSON (remove parents)
-  printf '%s\n' "$backlog_json" | jq '[ .[] | select((.children.nodes // []) | length == 0) ]'
+  local parent_id child_ids child_count
+  while IFS='|' read -r parent_id child_ids child_count; do
+    [[ -n "$parent_id" ]] || continue
+    if [[ -z "${WAVEMILL_TERMINAL_PARENT_ANNOUNCED[$parent_id]:-}" ]]; then
+      printf 'INFO: Keeping parent issue %s (all %s children terminal: %s)\n' "$parent_id" "$child_count" "$child_ids" >&"$log_dest"
+      WAVEMILL_TERMINAL_PARENT_ANNOUNCED[$parent_id]=1
+    fi
+  done < <(
+    printf '%s\n' "$backlog_json" | jq -r '
+      def child_is_terminal:
+        ((.state.type // "") == "completed")
+        or ((.state.type // "") == "canceled")
+        or (.completedAt != null)
+        or (.canceledAt != null);
+      .[]
+      | (.children.nodes // []) as $children
+      | select(($children | length) > 0)
+      | select($children | all(child_is_terminal))
+      | "\(.identifier)|\(($children | map(.identifier // .id // "<unknown>") | join(",")))|\($children | length)"
+    ' 2>/dev/null
+  )
+
+  while IFS='|' read -r parent_id child_ids; do
+    [[ -n "$parent_id" ]] || continue
+    printf 'WARN: Skipping parent issue %s (has Linear children: %s)\n' "$parent_id" "$child_ids" >&"$log_dest"
+  done < <(
+    printf '%s\n' "$backlog_json" | jq -r '
+      def child_is_terminal:
+        ((.state.type // "") == "completed")
+        or ((.state.type // "") == "canceled")
+        or (.completedAt != null)
+        or (.canceledAt != null);
+      .[]
+      | (.children.nodes // []) as $children
+      | select(($children | length) > 0)
+      | select($children | any(child_is_terminal | not))
+      | "\(.identifier)|\(($children | map(.identifier // .id // "<unknown>") | join(",")))"
+    ' 2>/dev/null
+  )
+
+  printf '%s\n' "$backlog_json" | jq '
+    def child_is_terminal:
+      ((.state.type // "") == "completed")
+      or ((.state.type // "") == "canceled")
+      or (.completedAt != null)
+      or (.canceledAt != null);
+    [
+      .[]
+      | (.children.nodes // []) as $children
+      | select(($children | length) == 0 or ($children | all(child_is_terminal)))
+    ]
+  '
 }
 
 # ============================================================================
