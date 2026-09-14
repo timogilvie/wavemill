@@ -311,7 +311,10 @@ if [[ "$rc" -eq 1 ]] \
   && [[ "$(jq -r '.tasks["PAIR-9_c"].challengeAbortedDetail' "$STATE_FILE")" == *"attempts=3"* ]] \
   && [[ "$(jq -r '.tasks["PAIR-9"] | has("challengeAborted")' "$STATE_FILE")" == "false" ]] \
   && [[ "$(jq -r '.tasks["PAIR-9"] | has("challengeAbortedDetail")' "$STATE_FILE")" == "false" ]] \
+  && [[ "$(jq -r '.challengePairAbortions["PAIR-9"].challenger.reason' "$STATE_FILE")" == "retry_exhausted:provider-transient-error" ]] \
+  && [[ "$(jq -r '.challengePairAbortions["PAIR-9"].challenger.scope' "$STATE_FILE")" == "single" ]] \
   && [[ -f "$fd/.challenge-aborted.json" ]] \
+  && [[ "$(jq -r '.role' "$fd/.challenge-aborted.json")" == "challenger" ]] \
   && [[ "$CLEANUP_CALLS" == *"PAIR-9_c|coding|retry_exhausted:provider-transient-error"* ]]; then
   pass "exhausted budget aborts only the challenger"
 else

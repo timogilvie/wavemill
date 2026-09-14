@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { mutateJsonState } from './state-mutex.ts';
@@ -60,6 +61,7 @@ export interface MergeLaneObserverFinding {
 
 /** 'progressing' | 'idle' (empty lane) | 'stalled' (blocked lane, no movement). */
 export type TendProgressState = 'progressing' | 'idle' | 'stalled';
+export type TendLaneCondition = 'progressing' | 'no-eligible' | 'needs-user-hold' | 'idle-blocked-stall';
 
 export interface TendLoopOptions {
   repoDir: string;
@@ -294,6 +296,9 @@ export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExi
         const progressState: TendProgressState = idleBlockedStreak >= TEND_IDLE_STALL_HIGH_ITERATIONS
           ? 'stalled'
           : decision.blocked.length > 0 ? 'progressing' : 'idle';
+        const laneCondition: TendLaneCondition = decision.blocked.length === 0
+          ? 'no-eligible'
+          : idleBlockedStreak >= TEND_IDLE_STALL_HIGH_ITERATIONS ? 'idle-blocked-stall' : 'needs-user-hold';
 
         options.renderer.write(formatStatusLine(decision, {
           action: 'idle',
@@ -330,6 +335,8 @@ export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExi
           timestamp: pollCompletedAt,
           lastProgressAt,
           progressState,
+          laneCondition,
+          laneEvidenceId: decisionEvidenceId(decision),
           ...pollMetadata,
         });
         await deps.sleep(intervalMs);
@@ -358,6 +365,8 @@ export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExi
         timestamp: pollCompletedAt,
         lastProgressAt,
         progressState: 'progressing',
+        laneCondition: 'progressing',
+        laneEvidenceId: decisionEvidenceId(decision),
         ...pollMetadata,
       });
 
@@ -481,6 +490,10 @@ function decisionSignature(decision: TendDecision): string {
   return JSON.stringify({ eligible, blocked });
 }
 
+function decisionEvidenceId(decision: TendDecision): string {
+  return createHash('sha256').update(decisionSignature(decision)).digest('hex').slice(0, 12);
+}
+
 export function classifyTendLoopError(error: unknown): TendLoopErrorClass {
   if (isTransientError(error)) {
     return 'transient';
@@ -544,6 +557,8 @@ export async function writeTendHeartbeat(
     /** Last real state change (merge/retry/lane movement), not the last tick. */
     lastProgressAt?: string;
     progressState?: TendProgressState;
+    laneCondition?: TendLaneCondition;
+    laneEvidenceId?: string;
   },
 ): Promise<void> {
   const healthPath = join(repoDir, '.wavemill', 'backstage-health.json');
@@ -572,6 +587,8 @@ export async function writeTendHeartbeat(
         pollCompletedAt: health.pollCompletedAt ?? timestamp,
         ...(health.lastProgressAt !== undefined ? { lastProgressAt: health.lastProgressAt } : {}),
         ...(health.progressState !== undefined ? { progressState: health.progressState } : {}),
+        ...(health.laneCondition !== undefined ? { laneCondition: health.laneCondition } : {}),
+        ...(health.laneEvidenceId !== undefined ? { laneEvidenceId: health.laneEvidenceId } : {}),
       };
       next.updatedAt = timestamp;
       next.status = 'healthy';
@@ -639,6 +656,8 @@ export async function writeTendPollHeartbeatBestEffort(
     pollCompletedAt?: string | null;
     lastProgressAt?: string;
     progressState?: TendProgressState;
+    laneCondition?: TendLaneCondition;
+    laneEvidenceId?: string;
   } = {},
 ): Promise<void> {
   try {
@@ -654,6 +673,8 @@ export async function writeTendPollHeartbeatBestEffort(
         pollCompletedAt: options.pollCompletedAt,
         lastProgressAt: options.lastProgressAt,
         progressState: options.progressState,
+        laneCondition: options.laneCondition,
+        laneEvidenceId: options.laneEvidenceId,
       },
     );
   } catch (error) {

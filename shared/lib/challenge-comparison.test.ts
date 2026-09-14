@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -17,6 +17,7 @@ import {
   hasAnyVariedDimension,
   isDecisiveChallengeComparison,
   classifyChallengeType,
+  modelForChallengeVariedStage,
   readDecisiveChallengeComparisons,
   resolveChallengeSideExecutionProvenance,
   validateChallengeExecutionProvenance,
@@ -514,6 +515,7 @@ test('buildSkippedIdenticalComparison returns deterministic primary-wins metadat
   assert.equal(record.skipReason, 'identical-routing-dimensions');
   assert.equal(record.noComparisonReason, 'identical_routing_dimensions');
   assert.equal(record.cleanupPolicy, 'primary-wins-close-challenger');
+  assert.equal(record.winnerModel, undefined);
   assert.equal(record.challengeType, undefined);
   assert.equal(record.workflowInsight, 'No LLM comparison was run because both workflows resolved to identical routing dimensions.');
 });
@@ -637,6 +639,14 @@ function writeStage(featureDir: string, stage: 'planning' | 'coding' | 'review',
       finishedAt: '2026-07-29T00:01:00Z',
       agent,
       model,
+      intendedModel: model,
+      executedModel: status === 'completed' ? model : null,
+      executionEvidence: {
+        status: status === 'completed' ? 'direct' : 'missing',
+        source: 'test-runtime',
+      },
+      modelAttributionEligible: status === 'completed',
+      ...(status === 'completed' ? {} : { modelAttributionIneligibleReason: 'stage_not_completed' }),
       notes: '',
     }),
   );
@@ -681,6 +691,10 @@ test('HOK-2811: stage results stamped source=inherited surface as inherited prov
         finishedAt: '2026-09-09T00:01:00Z',
         agent: 'claude',
         model: 'claude-sonnet-5',
+        intendedModel: 'claude-sonnet-5',
+        executedModel: 'claude-sonnet-5',
+        executionEvidence: { status: 'direct', source: 'test-runtime' },
+        modelAttributionEligible: true,
         notes: '',
         source: 'inherited',
       }),
@@ -694,6 +708,10 @@ test('HOK-2811: stage results stamped source=inherited surface as inherited prov
         finishedAt: '2026-09-09T00:05:00Z',
         agent: 'claude',
         model: 'claude-opus-4-7',
+        intendedModel: 'claude-opus-4-7',
+        executedModel: 'claude-opus-4-7',
+        executionEvidence: { status: 'direct', source: 'test-runtime' },
+        modelAttributionEligible: true,
         notes: '',
         source: 'inherited',
       }),
@@ -735,7 +753,64 @@ test('HOK-2811: absence of source field yields the file-name source (backward co
   }
 });
 
-test('planner intent mismatch with native Kimi execution invalidates challenged stage', () => {
+test('legacy stage model is diagnostic and not execution proof', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'challenge-legacy-stage-test-'));
+  try {
+    const featureDir = join(tmp, 'features', 'legacy');
+    mkdirSync(featureDir, { recursive: true });
+    writeFileSync(
+      join(featureDir, '.coding-result.json'),
+      JSON.stringify({
+        stage: 'coding',
+        status: 'completed',
+        agent: 'claude',
+        model: 'claude-opus-4-7',
+        notes: '',
+      }),
+    );
+    const resolved = resolveChallengeSideExecutionProvenance({ featureDir });
+    assert.equal(resolved.coding.model, '');
+    assert.equal(resolved.coding.intendedModel, 'claude-opus-4-7');
+    assert.equal(resolved.coding.executionEvidenceStatus, 'missing');
+    assert.equal(resolved.coding.modelAttributionEligible, false);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('matching intended and executed varied-stage models are attribution eligible', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'challenge-match-stage-test-'));
+  try {
+    const primaryDir = join(tmp, 'features', 'primary');
+    const challengerDir = join(tmp, 'features', 'challenger');
+    mkdirSync(primaryDir, { recursive: true });
+    mkdirSync(challengerDir, { recursive: true });
+    writeStage(primaryDir, 'coding', 'native', 'glm-5.3');
+    writeStage(challengerDir, 'coding', 'native', 'qwen-3-coder');
+    const primaryRouting = makeRouting({ coder: 'glm-5.3' });
+    const challengerRouting = makeRouting({ coder: 'qwen-3-coder' });
+    const primaryExecution = resolveChallengeSideExecutionProvenance({ featureDir: primaryDir });
+    const challengerExecution = resolveChallengeSideExecutionProvenance({ featureDir: challengerDir });
+    const challengeType = classifyChallengeType(detectVariedDimensions(primaryRouting, challengerRouting)!);
+    const validation = validateChallengeExecutionProvenance({
+      primaryExecution,
+      challengerExecution,
+      primaryRouting,
+      challengerRouting,
+      primaryModel: primaryRouting.coder,
+      challengerModel: challengerRouting.coder,
+      variedDimensions: detectVariedDimensions(primaryRouting, challengerRouting),
+    });
+    assert.equal(validation.valid, true);
+    assert.equal(validation.modelAttributionEligible, true);
+    assert.equal(modelForChallengeVariedStage(primaryExecution, challengeType, 'ladder-head'), 'glm-5.3');
+    assert.equal(modelForChallengeVariedStage(challengerExecution, challengeType, 'ladder-head'), 'qwen-3-coder');
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('planner verified runtime fallback is compared but model-attribution ineligible', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'challenge-provenance-test-'));
   try {
     const primaryDir = join(tmp, 'features', 'primary');
@@ -743,6 +818,12 @@ test('planner intent mismatch with native Kimi execution invalidates challenged 
     mkdirSync(primaryDir, { recursive: true });
     mkdirSync(challengerDir, { recursive: true });
     writeStage(primaryDir, 'planning', 'native-openrouter', 'moonshotai/kimi-k2.7-code');
+    const primaryPlanning = join(primaryDir, '.planning-result.json');
+    const primaryPlanningJson = JSON.parse(readFileSync(primaryPlanning, 'utf-8')) as Record<string, unknown>;
+    primaryPlanningJson.intendedModel = 'claude-opus-4-7';
+    primaryPlanningJson.modelAttributionEligible = false;
+    primaryPlanningJson.modelAttributionIneligibleReason = 'runtime_fallback';
+    writeFileSync(primaryPlanning, JSON.stringify(primaryPlanningJson));
     writeStage(challengerDir, 'planning', 'claude', 'claude-sonnet-5');
 
     const primaryRouting = makeRouting({ planner: 'claude-opus-4-7' });
@@ -760,37 +841,68 @@ test('planner intent mismatch with native Kimi execution invalidates challenged 
       variedDimensions,
     });
 
-    assert.equal(validation.valid, false);
-    assert.equal(validation.outcome, 'invalid');
+    assert.equal(validation.valid, true);
+    assert.equal(validation.modelAttributionEligible, false);
+    assert.equal(validation.outcome, undefined);
     assert.equal(validation.challengedStage, 'planning');
     assert.equal(validation.issues[0].side, 'primary');
     assert.equal(validation.issues[0].reason, 'executed-model-mismatch');
     assert.equal(validation.issues[0].intendedModel, 'claude-opus-4-7');
     assert.equal(validation.issues[0].executedModel, 'kimi-k2.7-code');
     assert.match(validation.issues[0].artifactPath || '', /\.planning-result\.json$/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
 
-    const record = buildInvalidProvenanceComparison({
-      challengePairId: 'HOK-2578',
-      primaryModel: primaryRouting.coder,
-      challengerModel: challengerRouting.coder,
-      primaryPrUrl: 'https://github.com/org/repo/pull/1',
-      challengerPrUrl: 'https://github.com/org/repo/pull/2',
-      primaryEvalScore: 0.8,
-      challengerEvalScore: 0.8,
+test('missing executed model and contradictory evidence fail closed', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'challenge-bad-evidence-test-'));
+  try {
+    const missingDir = join(tmp, 'features', 'missing');
+    const contradictedDir = join(tmp, 'features', 'contradicted');
+    mkdirSync(missingDir, { recursive: true });
+    mkdirSync(contradictedDir, { recursive: true });
+    writeFileSync(join(missingDir, '.coding-result.json'), JSON.stringify({
+      stage: 'coding',
+      status: 'completed',
+      agent: 'native',
+      model: 'glm-5.3',
+      intendedModel: 'glm-5.3',
+      executedModel: null,
+      executionEvidence: { status: 'missing', source: 'test-runtime' },
+      modelAttributionEligible: false,
+      modelAttributionIneligibleReason: 'missing_execution_evidence',
+      notes: '',
+    }));
+    writeFileSync(join(contradictedDir, '.coding-result.json'), JSON.stringify({
+      stage: 'coding',
+      status: 'completed',
+      agent: 'native',
+      model: 'qwen-3-coder',
+      intendedModel: 'qwen-3-coder',
+      executedModel: 'qwen-3-coder',
+      executionEvidence: { status: 'contradicted', source: 'reliability', detail: 'terminal abort' },
+      modelAttributionEligible: false,
+      modelAttributionIneligibleReason: 'execution_contradicted',
+      notes: '',
+    }));
+    const primaryRouting = makeRouting({ coder: 'glm-5.3' });
+    const challengerRouting = makeRouting({ coder: 'qwen-3-coder' });
+    const variedDimensions = detectVariedDimensions(primaryRouting, challengerRouting);
+    const validation = validateChallengeExecutionProvenance({
+      primaryExecution: resolveChallengeSideExecutionProvenance({ featureDir: missingDir }),
+      challengerExecution: resolveChallengeSideExecutionProvenance({ featureDir: contradictedDir }),
       primaryRouting,
       challengerRouting,
-      primaryExecution,
-      challengerExecution,
-      provenanceValidation: validation,
+      primaryModel: primaryRouting.coder,
+      challengerModel: challengerRouting.coder,
       variedDimensions,
-      challengeType: 'planner-only',
-      variedStage: 'plan',
     });
-    assert.equal(record.comparisonOutcome, 'invalid');
-    assert.equal(record.noComparisonReason, 'provenance_invalid');
-    assert.equal(record.winner, undefined);
-    assert.equal(record.winnerModel, undefined);
-    assert.equal(record.terminalReason, 'provenance_validation_failed');
+    assert.equal(validation.valid, false);
+    assert.deepEqual(validation.issues.map((issue) => issue.reason), [
+      'executed-model-missing',
+      'execution-evidence-contradicted',
+    ]);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -841,6 +953,9 @@ test('forfeit builders use null scores and explicit completion metadata', () => 
     rationale: 'Challenger failed.',
     terminalReason: 'challenger_challenge_aborted',
     challengerCompleted: false,
+    forkStage: 'implementation',
+    forkCommit: 'fork-forfeit',
+    sharedPrefix: true,
     armFailures: [{
       side: 'challenger',
       model: 'qwen-2.5-coder-32b',
@@ -853,6 +968,10 @@ test('forfeit builders use null scores and explicit completion metadata', () => 
   assert.equal(forfeit.challengerEvalScore, null);
   assert.equal(forfeit.primaryCompleted, true);
   assert.equal(forfeit.challengerCompleted, false);
+  assert.equal(forfeit.winnerModel, undefined);
+  assert.equal(forfeit.forkStage, 'implementation');
+  assert.equal(forfeit.forkCommit, 'fork-forfeit');
+  assert.equal(forfeit.sharedPrefix, true);
   assert.equal(forfeit.armFailures?.[0].faultClass, 'selection-fault');
   assert.equal(forfeit.primaryHarnessId, 'e'.repeat(64));
   assert.equal(forfeit.challengerHarnessId, 'f'.repeat(64));
@@ -872,6 +991,7 @@ test('forfeit builders use null scores and explicit completion metadata', () => 
   assert.equal(doubleForfeit.challengerEvalScore, null);
   assert.equal(doubleForfeit.primaryCompleted, false);
   assert.equal(doubleForfeit.challengerCompleted, false);
+  assert.equal(doubleForfeit.winnerModel, undefined);
   assert.equal(doubleForfeit.primaryHarnessId, '1'.repeat(64));
   assert.equal(doubleForfeit.challengerHarnessId, '2'.repeat(64));
 });

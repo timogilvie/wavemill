@@ -4,7 +4,7 @@ import { appendJsonlRecord, readJsonlFile } from './jsonl-utils.ts';
 import { isChallengeRecordVoided, readChallengeRecordVoids } from './challenge-record-void.ts';
 import { getEffectiveRegistry, resolveModelRegistryKey } from './model-registry.ts';
 import { resolveWavemillAliasFromOpenRouterId } from './openrouter-catalog.ts';
-import type { StageName, StageResult, StageStatus } from './stage-result.ts';
+import type { StageExecutionEvidenceStatus, StageName, StageResult, StageStatus } from './stage-result.ts';
 import type { ChallengeArmFailure } from './arm-failure-taxonomy.ts';
 import type { ChallengeStage } from './challenge-mode.ts';
 import type {
@@ -174,6 +174,8 @@ export type ChallengeProvenanceValidationReason =
   | 'missing-artifact'
   | 'malformed-artifact'
   | 'stage-not-completed'
+  | 'executed-model-missing'
+  | 'execution-evidence-contradicted'
   | 'executed-model-mismatch'
   | 'same-intent-different-execution';
 
@@ -182,11 +184,15 @@ export interface ChallengeExecutedStageProvenance {
   role: ChallengeStageRole;
   model: string;
   rawModel?: string;
+  intendedModel?: string | null;
   agent: string;
   status: StageStatus | 'missing' | 'malformed';
   source: ChallengeProvenanceSource;
   artifactPath?: string;
   consultedArtifactPaths: string[];
+  executionEvidenceStatus?: StageExecutionEvidenceStatus;
+  modelAttributionEligible?: boolean;
+  modelAttributionIneligibleReason?: StageResult['modelAttributionIneligibleReason'];
 }
 
 export interface ChallengeSideExecutionProvenance {
@@ -210,6 +216,7 @@ export interface ChallengeProvenanceValidationIssue {
 
 export interface ChallengeProvenanceValidation {
   valid: boolean;
+  modelAttributionEligible?: boolean;
   outcome?: 'invalid' | 'inconclusive';
   challengedStage?: StageName;
   challengedRole?: ChallengeStageRole;
@@ -668,6 +675,30 @@ function emptyStageProvenance(
   };
 }
 
+function hasOwn(value: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function stringRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function pinnedReviewExecutedIdentity(result: StageResult): { model: string; requestedModel?: string; agent?: string } | null {
+  const artifacts = stringRecord(result.artifacts);
+  const identity = stringRecord(artifacts?.reviewExecutedIdentity);
+  const substantive = stringRecord(identity?.substantiveAnalysis);
+  if (!substantive || substantive.pinned !== true) return null;
+  const model = normalizeUnknown(substantive.resolvedModel);
+  if (!model) return null;
+  return {
+    model,
+    requestedModel: normalizeUnknown(substantive.requestedModel) || undefined,
+    agent: normalizeUnknown(substantive.agent) || undefined,
+  };
+}
+
 function parseStageArtifact(
   stage: StageName,
   artifactPath: string,
@@ -696,7 +727,14 @@ function parseStageArtifact(
     };
   }
 
-  const rawModel = normalizeUnknown(parsed.model);
+  const hasExecutedModel = hasOwn(parsed, 'executedModel');
+  const reviewIdentity = stage === 'review' ? pinnedReviewExecutedIdentity(parsed) : null;
+  const rawModel = hasExecutedModel
+    ? normalizeUnknown(parsed.executedModel)
+    : reviewIdentity?.model ?? '';
+  const rawIntendedModel = hasOwn(parsed, 'intendedModel')
+    ? normalizeUnknown(parsed.intendedModel)
+    : reviewIdentity?.requestedModel ?? normalizeUnknown(parsed.model);
   // A stage result stamped `source: "inherited"` was carried across a
   // challenge fork (HOK-2811). The file lives on the challenger's disk but
   // does not describe a run performed there — preserve model/agent/status
@@ -710,11 +748,15 @@ function parseStageArtifact(
     role: STAGE_ROLES[stage] as ChallengeStageRole,
     model: canonicalizeChallengeModelId(rawModel, repoDir),
     rawModel,
-    agent: normalizeUnknown(parsed.agent),
+    intendedModel: rawIntendedModel || null,
+    agent: reviewIdentity?.agent ?? normalizeUnknown(parsed.agent),
     status: parsed.status,
     source,
     artifactPath,
     consultedArtifactPaths,
+    executionEvidenceStatus: parsed.executionEvidence?.status ?? (reviewIdentity ? 'direct' : 'missing'),
+    modelAttributionEligible: parsed.modelAttributionEligible ?? (reviewIdentity ? parsed.status === 'completed' : false),
+    modelAttributionIneligibleReason: parsed.modelAttributionIneligibleReason,
   };
 }
 
@@ -737,10 +779,14 @@ function evalPlanningFallback(
     role: 'planner',
     model: canonicalizeChallengeModelId(rawModel, repoDir),
     rawModel,
+    intendedModel: null,
     agent: normalizeUnknown(executedPlanning.agent),
     status: status === 'completed' ? 'completed' : (status as StageStatus || 'completed'),
     source: 'eval.executedPlanning',
     consultedArtifactPaths: existing.consultedArtifactPaths,
+    executionEvidenceStatus: rawModel ? 'direct' : 'missing',
+    modelAttributionEligible: status === 'completed' && Boolean(rawModel),
+    ...(!rawModel ? { modelAttributionIneligibleReason: 'missing_execution_evidence' as const } : {}),
   };
 }
 
@@ -778,6 +824,23 @@ export function challengeRoleForVariedDimensions(varied: VariedDimensions | unde
 
 function stageForRole(role: ChallengeStageRole): StageName {
   return ROLE_STAGES[role];
+}
+
+export function modelForChallengeVariedStage(
+  execution: ChallengeSideExecutionProvenance | undefined,
+  challengeType: ChallengeType | undefined,
+  fallbackModel: string,
+): string {
+  const role = challengeType === 'planner-only'
+    ? 'planner'
+    : challengeType === 'reviewer-only'
+      ? 'reviewer'
+      : challengeType === 'coder-only'
+        ? 'coder'
+        : undefined;
+  if (!role || !execution) return fallbackModel || 'unknown';
+  const stage = stageForRole(role);
+  return execution[stage]?.model || fallbackModel || 'unknown';
 }
 
 function intendedModelForRole(routing: ChallengeRoutingMeta | undefined, role: ChallengeStageRole, fallbackCoder: string): string {
@@ -833,10 +896,26 @@ function validateStageForSide(input: {
   }
   if (stageProvenance.status !== 'completed') {
     addStageValidationIssue(input.issues, input.side, stageProvenance, 'stage-not-completed', intendedModel);
+    return;
+  }
+  if (!stageProvenance.model) {
+    addStageValidationIssue(input.issues, input.side, stageProvenance, 'executed-model-missing', intendedModel);
+    return;
+  }
+  if (
+    stageProvenance.executionEvidenceStatus === 'contradicted'
+    || stageProvenance.modelAttributionIneligibleReason === 'execution_contradicted'
+  ) {
+    addStageValidationIssue(input.issues, input.side, stageProvenance, 'execution-evidence-contradicted', intendedModel);
+    return;
   }
   if (intendedModel && stageProvenance.model && stageProvenance.model !== intendedModel) {
     addStageValidationIssue(input.issues, input.side, stageProvenance, 'executed-model-mismatch', intendedModel);
   }
+}
+
+function isFatalProvenanceIssue(issue: ChallengeProvenanceValidationIssue): boolean {
+  return issue.reason !== 'executed-model-mismatch';
 }
 
 function materiallyDifferentExecution(
@@ -880,9 +959,11 @@ export function validateChallengeExecutionProvenance(input: {
       repoDir: input.repoDir,
       issues,
     });
+    const fatalIssues = issues.filter(isFatalProvenanceIssue);
     return {
-      valid: issues.length === 0,
-      outcome: issues.length === 0 ? undefined : 'invalid',
+      valid: fatalIssues.length === 0,
+      modelAttributionEligible: issues.length === 0,
+      outcome: fatalIssues.length === 0 ? undefined : 'invalid',
       challengedStage: stageForRole(role),
       challengedRole: role,
       issues,
@@ -913,6 +994,7 @@ export function validateChallengeExecutionProvenance(input: {
 
   return {
     valid: issues.length === 0,
+    modelAttributionEligible: issues.length === 0,
     outcome: issues.length === 0 ? undefined : 'inconclusive',
     issues,
   };
@@ -1003,7 +1085,6 @@ export function buildSkippedIdenticalComparison(input: {
     primaryEvalScore: input.primaryEvalScore,
     challengerEvalScore: input.challengerEvalScore,
     winner: 'primary',
-    winnerModel: input.primaryRouting?.coder || input.primaryModel,
     rationale: 'Comparison skipped because primary and challenger used identical routing dimensions.',
     dimensions: EMPTY_DIMENSIONS,
     timestamp: input.timestamp || new Date().toISOString(),
@@ -1165,7 +1246,7 @@ export function buildForfeitComparison(input: {
   challengerHarnessId?: string;
   timestamp?: string;
   noComparisonReason?: NoComparisonReason;
-}): ChallengeComparison {
+} & ComparisonRetentionInput): ChallengeComparison {
   return {
     challengePairId: input.challengePairId,
     primaryModel: input.primaryModel,
@@ -1180,18 +1261,13 @@ export function buildForfeitComparison(input: {
     challengerCompleted: input.challengerCompleted ?? (input.winner === 'challenger'),
     ...(input.armFailures?.length ? { armFailures: input.armFailures } : {}),
     winner: input.winner,
-    winnerModel: input.winner === 'primary' ? input.primaryModel : input.challengerModel,
     rationale: input.rationale,
     dimensions: EMPTY_DIMENSIONS,
     timestamp: input.timestamp || new Date().toISOString(),
     comparisonOutcome: 'forfeit',
     terminalReason: input.terminalReason,
     noComparisonReason: input.noComparisonReason || (input.terminalReason as NoComparisonReason),
-    forkStage: null,
-    forkCommit: null,
-    sharedPrefix: false,
-    primaryInheritedStages: [],
-    challengerInheritedStages: [],
+    ...comparisonRetentionFields(input),
   };
 }
 
@@ -1210,7 +1286,7 @@ export function buildDoubleForfeitComparison(input: {
   challengerHarnessId?: string;
   timestamp?: string;
   noComparisonReason?: NoComparisonReason;
-}): ChallengeComparison {
+} & ComparisonRetentionInput): ChallengeComparison {
   return {
     challengePairId: input.challengePairId,
     primaryModel: input.primaryModel,
@@ -1225,18 +1301,13 @@ export function buildDoubleForfeitComparison(input: {
     challengerCompleted: input.challengerCompleted ?? false,
     ...(input.armFailures?.length ? { armFailures: input.armFailures } : {}),
     winner: 'primary',
-    winnerModel: input.primaryModel,
     rationale: input.rationale,
     dimensions: EMPTY_DIMENSIONS,
     timestamp: input.timestamp || new Date().toISOString(),
     comparisonOutcome: 'double-forfeit',
     terminalReason: input.terminalReason,
     noComparisonReason: input.noComparisonReason || (input.terminalReason as NoComparisonReason),
-    forkStage: null,
-    forkCommit: null,
-    sharedPrefix: false,
-    primaryInheritedStages: [],
-    challengerInheritedStages: [],
+    ...comparisonRetentionFields(input),
   };
 }
 

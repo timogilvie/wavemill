@@ -90,6 +90,7 @@ LAST_BACKSTAGE_HEALTH_CHECK=0
 LAST_BACKSTAGE_HEALTH_STATUS=""
 PANE_PROBE=""
 CONFIRM_RC=1
+BACKSTAGE_RESTART_BUCKET="backstage-tend-restart"
 
 backstage_health_enabled() { return 0; }
 probe_backstage_panes() { printf '%s\n' "$PANE_PROBE"; }
@@ -115,6 +116,18 @@ write_health() {
   if [[ -n "$heartbeat" ]]; then
     state_mutate "$HEALTH_FILE" '.services.tend.heartbeatAt = $heartbeat' --arg heartbeat "$heartbeat"
   fi
+  state_mutate "$HEALTH_FILE" 'del(.services.tend.laneCondition, .services.tend.laneEvidenceId)'
+}
+
+write_tend_service() {
+  local status="$1" detail="$2" pane="${3:-%9}" heartbeat="${4:-}" lane_condition="${5:-}" lane_evidence_id="${6:-}"
+  wavemill_write_backstage_service_health "$HEALTH_FILE" "tend" "$status" "$detail" 0 "" "$pane" "$heartbeat" 1
+  if [[ -n "$lane_condition$lane_evidence_id" ]]; then
+    state_mutate "$HEALTH_FILE" '
+      .services.tend.laneCondition = $laneCondition
+      | .services.tend.laneEvidenceId = $laneEvidenceId
+    ' --arg laneCondition "$lane_condition" --arg laneEvidenceId "$lane_evidence_id"
+  fi
 }
 
 old_iso() {
@@ -137,6 +150,31 @@ assert_eq "backoff 4" "480" "$(backstage_restart_backoff_seconds 4)"
 assert_eq "backoff 5" "900" "$(backstage_restart_backoff_seconds 5)"
 assert_eq "backoff cap" "900" "$(backstage_restart_backoff_seconds 40)"
 
+PANE_PROBE=$'%9\tWavemill Tend Loop\t0\tnode\tnpx tsx tools/tend.ts'
+write_tend_service "healthy" "ok" "%9" "$(old_iso 1)" "no-eligible" "empty-lane-a"
+check_backstage_health
+assert_eq "no eligible status" "alive-no-eligible" "$(jq -r '.status' "$HEALTH_FILE")"
+assert_eq "no eligible count" "0" "$(jq -r '.restartAttemptCount' "$HEALTH_FILE")"
+assert_eq "no eligible restarts" "0" "$(wc -l < "$RESTART_LOG" | tr -d ' ')"
+
+cat > "$STATE_DIR/ready-watchdog-state.json" <<JSON
+{"updatedAt":"2026-08-23T12:00:00.000Z","tasks":{"HOK-1":{"classification":"needs-user","classificationSince":"2026-08-23T11:00:00Z","updatedAt":"2026-08-23T11:00:00Z","detail":"waiting"}}}
+JSON
+write_tend_service "healthy" "ok" "%9" "$(old_iso 1)" "needs-user-hold" "blocked-lane-a"
+LOG_BEFORE="$(wc -l < "$LOG_FILE" | tr -d ' ')"
+check_backstage_health
+assert_eq "needs user live status" "alive-needs-user" "$(jq -r '.status' "$HEALTH_FILE")"
+assert_eq "needs user live count" "0" "$(jq -r '.restartAttemptCount' "$HEALTH_FILE")"
+assert_eq "needs user live restarts" "0" "$(wc -l < "$RESTART_LOG" | tr -d ' ')"
+LOG_AFTER_FIRST="$(wc -l < "$LOG_FILE" | tr -d ' ')"
+assert_eq "needs user warns once first" "$(( LOG_BEFORE + 1 ))" "$LOG_AFTER_FIRST"
+check_backstage_health
+assert_eq "needs user warning throttled" "$LOG_AFTER_FIRST" "$(wc -l < "$LOG_FILE" | tr -d ' ')"
+state_mutate "$HEALTH_FILE" '.services.tend.laneEvidenceId = "blocked-lane-b"'
+check_backstage_health
+assert_eq "needs user warning resets on evidence" "$(( LOG_AFTER_FIRST + 1 ))" "$(wc -l < "$LOG_FILE" | tr -d ' ')"
+rm -f "$STATE_DIR/ready-watchdog-state.json"
+
 PANE_PROBE=$'%1\tWavemill Jobs\t0\tzsh\tzsh'
 check_backstage_health
 assert_eq "first restart count" "1" "$(jq -r '.restartAttemptCount' "$HEALTH_FILE")"
@@ -149,31 +187,47 @@ check_backstage_health
 assert_eq "cooldown restart calls" "1" "$(wc -l < "$RESTART_LOG" | tr -d ' ')"
 assert_contains "cooldown detail" "$(jq -r '.detail' "$HEALTH_FILE")" "next automatic restart"
 
+perl -e 'print time() - 70, "\n"' > "$STATE_DIR/.retry-${BACKSTAGE_RESTART_BUCKET}-last-at"
 write_health "missing-tend-loop" "old miss" 1 "$(old_iso 70)"
 check_backstage_health
 assert_eq "second restart calls" "2" "$(wc -l < "$RESTART_LOG" | tr -d ' ')"
 assert_eq "second count" "2" "$(jq -r '.restartAttemptCount' "$HEALTH_FILE")"
 
-write_health "missing-tend-loop" "old miss" 3 "$(old_iso 300)"
+perl -e 'print time() - 300, "\n"' > "$STATE_DIR/.retry-${BACKSTAGE_RESTART_BUCKET}-last-at"
 check_backstage_health
 assert_eq "needs user still restarts" "3" "$(wc -l < "$RESTART_LOG" | tr -d ' ')"
 assert_eq "needs user status" "needs-user" "$(jq -r '.status' "$HEALTH_FILE")"
+assert_contains "needs user immediate exhausted detail" "$(jq -r '.detail' "$HEALTH_FILE")" "restart attempts are exhausted"
+assert_eq "exhausted sentinel written" "tend-restart-exhausted evidence=missing-tend-loop:backstage:test-session:backstage:1 attempts=3" "$(cat "$STATE_DIR/.retry-${BACKSTAGE_RESTART_BUCKET}-exhausted")"
 
+perl -e 'print time() - 600, "\n"' > "$STATE_DIR/.retry-${BACKSTAGE_RESTART_BUCKET}-last-at"
 write_health "needs-user" "waiting" 5 "$(old_iso 600)"
 check_backstage_health
 assert_eq "needs user cooldown no restart" "3" "$(wc -l < "$RESTART_LOG" | tr -d ' ')"
-assert_contains "needs user cooldown detail" "$(jq -r '.detail' "$HEALTH_FILE")" "next automatic restart"
+assert_contains "needs user exhausted detail" "$(jq -r '.detail' "$HEALTH_FILE")" "restart attempts are exhausted"
+
+PANE_PROBE=$'%1\tWavemill Jobs\t0\tzsh\tzsh\n%2\tWavemill Queue\t0\tzsh\tzsh'
+check_backstage_health
+assert_eq "identity change resets restart calls" "4" "$(wc -l < "$RESTART_LOG" | tr -d ' ')"
+assert_eq "identity change count" "1" "$(jq -r '.restartAttemptCount' "$HEALTH_FILE")"
 
 CONFIRM_RC=0
-write_health "missing-tend-loop" "old miss" 3 "$(old_iso 300)"
+PANE_PROBE=$'%1\tWavemill Jobs\t0\tzsh\tzsh'
+rm -f "$STATE_DIR/.retry-${BACKSTAGE_RESTART_BUCKET}-"*
+bounded_retry_increment "$STATE_DIR" "$BACKSTAGE_RESTART_BUCKET" "missing-tend-loop:backstage:test-session:backstage:1" >/dev/null
+perl -e 'print time() - 300, "\n"' > "$STATE_DIR/.retry-${BACKSTAGE_RESTART_BUCKET}-last-at"
+write_health "missing-tend-loop" "old miss" 1 "$(old_iso 300)"
 check_backstage_health
 assert_eq "confirmed status" "healthy" "$(jq -r '.status' "$HEALTH_FILE")"
 assert_eq "confirmed count" "0" "$(jq -r '.restartAttemptCount' "$HEALTH_FILE")"
 assert_contains "confirmed log" "$(cat "$LOG_FILE")" "confirmed by heartbeat"
+assert_eq "confirmed clears retry count" "0" "$(bounded_retry_count "$STATE_DIR" "$BACKSTAGE_RESTART_BUCKET")"
 CONFIRM_RC=1
 
 attempt_at="$(old_iso 30)"
 write_health "missing-tend-loop" "pending" 1 "$attempt_at" "%9" "$(old_iso 90)"
+bounded_retry_increment "$STATE_DIR" "$BACKSTAGE_RESTART_BUCKET" "missing-tend-loop:backstage:test-session:backstage:1" >/dev/null
+perl -e 'print time() - 30, "\n"' > "$STATE_DIR/.retry-${BACKSTAGE_RESTART_BUCKET}-last-at"
 PANE_PROBE=$'%9\tWavemill Tend Loop\t0\tnode\tnpx tsx tools/tend.ts'
 check_backstage_health
 assert_eq "pending status" "missing-tend-loop" "$(jq -r '.status' "$HEALTH_FILE")"
@@ -181,14 +235,16 @@ assert_eq "pending count" "1" "$(jq -r '.restartAttemptCount' "$HEALTH_FILE")"
 assert_contains "pending detail" "$(jq -r '.detail' "$HEALTH_FILE")" "pending"
 
 state_mutate "$HEALTH_FILE" '.services.tend.heartbeatAt = $heartbeat' --arg heartbeat "$(old_iso 1)"
+state_mutate "$HEALTH_FILE" '.services.tend.laneCondition = "progressing" | .services.tend.laneEvidenceId = "progressable"'
 check_backstage_health
 assert_eq "new heartbeat status" "healthy" "$(jq -r '.status' "$HEALTH_FILE")"
 assert_eq "new heartbeat count" "0" "$(jq -r '.restartAttemptCount' "$HEALTH_FILE")"
 
+rm -f "$STATE_DIR/.retry-${BACKSTAGE_RESTART_BUCKET}-"*
 write_health "healthy" "ok" 0 "" "%9" "$(old_iso 300)"
 PANE_PROBE=$'%9\tWavemill Tend Loop\t0\tnode\tnpx tsx tools/tend.ts'
 check_backstage_health
-assert_eq "stale heartbeat restarts" "5" "$(wc -l < "$RESTART_LOG" | tr -d ' ')"
+assert_eq "stale heartbeat restarts" "6" "$(wc -l < "$RESTART_LOG" | tr -d ' ')"
 assert_eq "stale heartbeat status" "stalled" "$(jq -r '.status' "$HEALTH_FILE")"
 assert_eq "stale heartbeat count" "1" "$(jq -r '.restartAttemptCount' "$HEALTH_FILE")"
 assert_contains "stale heartbeat detail" "$(jq -r '.detail' "$HEALTH_FILE")" "fresh heartbeat"
