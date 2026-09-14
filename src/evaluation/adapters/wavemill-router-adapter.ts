@@ -22,6 +22,15 @@ import {
   type WavemillRouterScoreRecord,
   type WavemillRouterScoreResult,
 } from '../scorers/wavemill/success-rate-under-budget.ts';
+import {
+  scorePatchSelection,
+  type PatchSelectionScoreRecord,
+  type PatchSelectionScoreResult,
+} from '../scorers/wavemill/patch-selection.ts';
+import {
+  loadPatchSelectionCorpus,
+  type LoadPatchSelectionCorpusOptions,
+} from '../../../shared/fixtures/harness-replay/patch-selection-v1/loader.ts';
 
 interface ParsedRouteArtifact {
   issueId?: string;
@@ -68,6 +77,9 @@ export interface RunWavemillRouterEvalOptions {
   evalsDir?: string;
   artifactsDir?: string;
   persist?: boolean;
+  // Patch-selection corpus evaluation options
+  patchSelectionManifestPath?: string;
+  patchSelectionSplit?: 'train' | 'held-out' | 'all';
 }
 
 export interface RunWavemillRouterEvalResult {
@@ -660,5 +672,51 @@ export async function runWavemillRouterEval(
       count: evidencePartition.excluded.length,
       reasonCounts: evidencePartition.reasonCounts,
     },
+  };
+}
+
+/**
+ * Evaluate patch-selection accuracy against a replay corpus.
+ * Loads instances from a manifest and scores a set of selections.
+ */
+export interface RunPatchSelectionEvalOptions {
+  manifestPath: string;
+  split?: 'train' | 'held-out' | 'all';
+  modelsAvailable?: string[];
+  repoDir: string;
+}
+
+export interface RunPatchSelectionEvalResult {
+  score: PatchSelectionScoreResult;
+  hemRecord?: EvalRecord;
+  loadInfo: ReturnType<typeof loadPatchSelectionCorpus>['splitInfo'];
+}
+
+/**
+ * Score patch selections against the replay corpus.
+ */
+export async function runPatchSelectionEval(
+  options: RunPatchSelectionEvalOptions,
+): Promise<RunPatchSelectionEvalResult> {
+  const corpus = loadPatchSelectionCorpus({
+    manifestPath: options.manifestPath,
+    split: options.split ?? 'train',
+  });
+
+  const records: PatchSelectionScoreRecord[] = corpus.instances.map((instance) => ({
+    instanceId: instance.id,
+    // In a real scenario, the selectedPatchOrId would come from the router output.
+    // For now, we score based on the instance itself being available.
+    selectedPatchOrId: instance.knownGoodCandidateId,
+    instance,
+  }));
+
+  const score = scorePatchSelection(records, {
+    measurementPolicy: 'patch_selection',
+  });
+
+  return {
+    score,
+    loadInfo: corpus.splitInfo,
   };
 }

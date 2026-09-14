@@ -1,0 +1,101 @@
+{
+  "schemaVersion": "1.0",
+  "instances": [
+    {
+      "id": "seed-001-missing-import",
+      "taskTitle": "Add missing import statement",
+      "taskDescription": "Task: add missing import for util module at the top of the file",
+      "baseSha": "abc123def456",
+      "candidates": [
+        {
+          "id": "good-001-import",
+          "patch": "--- a/src/utils.ts\n+++ b/src/utils.ts\n@@ -1,3 +1,4 @@\n+import { helper } from './helper';\n export function process() {\n   return helper();\n }",
+          "patchHash": "sha256:good001hash",
+          "patchSizeBytes": 95,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-001-wrong-import",
+          "patch": "--- a/src/utils.ts\n+++ b/src/utils.ts\n@@ -1,3 +1,4 @@\n+import { wrongHelper } from './helper';\n export function process() {\n   return helper();\n }",
+          "patchHash": "sha256:bad001hash",
+          "patchSizeBytes": 98,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-001-import",
+      "knownBadCandidateIds": ["bad-001-wrong-import"],
+      "source": {
+        "curationRationale": "merged_winner",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353600
+    },
+    {
+      "id": "seed-002-type-error",
+      "taskTitle": "Fix TypeScript type annotation",
+      "taskDescription": "Task: correct the parameter type annotation in the function signature",
+      "baseSha": "def456ghi789",
+      "candidates": [
+        {
+          "id": "good-002-type",
+          "patch": "--- a/src/handler.ts\n+++ b/src/handler.ts\n@@ -1,3 +1,3 @@\n-function handle(data: any): void {\n+function handle(data: Record<string, unknown>): void {\n   console.log(data);\n }",
+          "patchHash": "sha256:good002hash",
+          "patchSizeBytes": 110,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-002-generic",
+          "patch": "--- a/src/handler.ts\n+++ b/src/handler.ts\n@@ -1,3 +1,3 @@\n-function handle(data: any): void {\n+function handle(data: T): void {\n   console.log(data);\n }",
+          "patchHash": "sha256:bad002hash",
+          "patchSizeBytes": 95,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-002-type",
+      "knownBadCandidateIds": ["bad-002-generic"],
+      "source": {
+        "curationRationale": "incident_fix",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353600
+    },
+    {
+      "id": "seed-003-null-check",
+      "taskTitle": "Add null safety check",
+      "taskDescription": "Task: add a null check before accessing object property",
+      "baseSha": "ghi789jkl012",
+      "candidates": [
+        {
+          "id": "good-003-check",
+          "patch": "--- a/src/accessor.ts\n+++ b/src/accessor.ts\n@@ -1,3 +1,5 @@\n function getValue(obj: any) {\n+  if (!obj || obj.value === null) return undefined;\n   return obj.value;\n }",
+          "patchHash": "sha256:good003hash",
+          "patchSizeBytes": 125,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-003-incomplete",
+          "patch": "--- a/src/accessor.ts\n+++ b/src/accessor.ts\n@@ -1,3 +1,4 @@\n function getValue(obj: any) {\n+  if (!obj) return;\n   return obj.value;\n }",
+          "patchHash": "sha256:bad003hash",
+          "patchSizeBytes": 110,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-003-check",
+      "knownBadCandidateIds": ["bad-003-incomplete"],
+      "source": {
+        "curationRationale": "survival_confirmed",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353600
+    }
+  ],
+  "split": {
+    "heldOutIds": [],
+    "strategy": "hash_deterministic_20pct"
+  },
+  "createdAt": 1726353600,
+  "updatedAt": 1726353600
+}
