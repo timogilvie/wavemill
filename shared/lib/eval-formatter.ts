@@ -44,6 +44,11 @@ function formatRouteSignature(route?: {
 function formatNullable(value: number | boolean | null | undefined): string {
   if (value === null || value === undefined) return '-';
   if (typeof value === 'boolean') return value ? '✓' : '✗';
+  return String(value);
+}
+
+function formatDelta(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '-';
   return value > 0 ? `+${value}` : String(value);
 }
 
@@ -201,7 +206,7 @@ export function formatEvalRecord(record: EvalRecord): string {
         parts.push(`build ${formatNullable(o.staticAnalysis.build_ok)}`);
       }
       if ('complexity_delta' in o.staticAnalysis) {
-        parts.push(`cx ${formatNullable(o.staticAnalysis.complexity_delta)}`);
+        parts.push(`Δcx ${formatDelta(o.staticAnalysis.complexity_delta)}`);
       }
       if (parts.length > 0) {
         lines.push(`    ${BOLD}Analysis:${NC}  ${parts.join(', ')}`);
