@@ -610,10 +610,12 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
         ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
       },
     };
+    const modelName = model.name ?? model.id;
+    const requestedModelName = options.resolvedModel?.trim() || modelName;
     const transcriptPath = makeTranscriptPath(options.repoDir, options.session, options.issue);
     const transcriptWriter = new TranscriptWriter({
       sessionId: `${options.session}-planning-${options.issue}`,
-      model: model.name ?? model.id,
+      model: modelName,
       api: model.api,
       provider: model.provider,
       worktreePath: options.wtDir,
@@ -630,21 +632,21 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
       phase: 'planning',
       eventStreamPath,
       repoDir: options.repoDir,
-      initialConfigDigest: `model:${model.provider}:${model.name ?? model.id}`,
+      initialConfigDigest: `model:${model.provider}:${modelName}`,
     };
 
     registerAndRecordNativeProvenance({
       sessionId: options.session,
       phase: 'planning',
       provider: model.provider,
-      model: model.name ?? model.id,
+      model: modelName,
       api: model.api,
       tools: registryMetadata.map((meta) => ({ name: meta.name, class: meta.class })),
       promptRef,
       repoDir: options.repoDir,
     });
 
-    writeHookStatus(hookPath, 'working', 'run_native_model', model.name ?? model.id, 'native');
+    writeHookStatus(hookPath, 'working', 'run_native_model', modelName, 'native');
 
     const cleanupTracker = createCleanupTracker();
     const planningLimits = resolveNativePlanningLimits(getNativeAgentConfig(options.repoDir).planning);
@@ -678,7 +680,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
     if (model.provider === 'openrouter' && !options.loopModelOverride) {
       assertOpenRouterBalanceSufficient({
         repoDir: options.repoDir,
-        model: model.name ?? model.id,
+        model: modelName,
         pricing,
         reservedOutputTokens: effectiveMaxTokens,
       });
@@ -714,7 +716,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
     });
     const planningOutcomeArtifacts = buildPlanningOutcomeArtifacts({
       repoDir: options.repoDir,
-      modelId: model.name ?? model.id,
+      modelId: modelName,
       planningLimits,
       result,
       promptRef,
@@ -747,7 +749,17 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
         status: stopFailureReason === 'aborted' ? 'aborted' : 'failed',
         finishedAt: new Date().toISOString(),
         agent: 'native',
-        model: model.name ?? model.id,
+        model: modelName,
+        intendedModel: requestedModelName,
+        executedModel: null,
+        executionEvidence: {
+          status: 'contradicted',
+          source: 'native-runtime',
+          detail: providerFailureReason || stopFailureReason,
+          recordedAt: new Date().toISOString(),
+        },
+        modelAttributionEligible: false,
+        modelAttributionIneligibleReason: 'execution_contradicted',
         notes: `Native planning rejected before approval: ${stopFailureReason}.`,
         artifacts: {
           type: 'planning',
@@ -773,7 +785,17 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
         status: 'failed',
         finishedAt: new Date().toISOString(),
         agent: 'native',
-        model: model.name ?? model.id,
+        model: modelName,
+        intendedModel: requestedModelName,
+        executedModel: null,
+        executionEvidence: {
+          status: 'contradicted',
+          source: 'native-runtime',
+          detail: providerError || 'empty_final_plan',
+          recordedAt: new Date().toISOString(),
+        },
+        modelAttributionEligible: false,
+        modelAttributionIneligibleReason: 'execution_contradicted',
         notes: providerError
           ? `Native planning failed: ${providerError}`
           : `Native planning completed without a final plan (stopReason=${result.stopReason})`,
@@ -798,7 +820,17 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
         status: 'failed',
         finishedAt: new Date().toISOString(),
         agent: 'native',
-        model: model.name ?? model.id,
+        model: modelName,
+        intendedModel: requestedModelName,
+        executedModel: null,
+        executionEvidence: {
+          status: 'contradicted',
+          source: 'native-runtime',
+          detail: validation.reason ?? 'invalid',
+          recordedAt: new Date().toISOString(),
+        },
+        modelAttributionEligible: false,
+        modelAttributionIneligibleReason: 'execution_contradicted',
         notes: `Native planning final artifact rejected: ${validation.reason ?? 'invalid'}.`,
         artifacts: {
           type: 'planning',
@@ -821,7 +853,16 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
       status: 'awaiting_user',
       finishedAt: null,
       agent: 'native',
-      model: model.name ?? model.id,
+      model: modelName,
+      intendedModel: requestedModelName,
+      executedModel: modelName,
+      executionEvidence: {
+        status: 'direct',
+        source: 'native-runtime',
+        recordedAt: new Date().toISOString(),
+      },
+      modelAttributionEligible: false,
+      modelAttributionIneligibleReason: 'stage_not_completed',
       notes: 'Native planning ready for approval',
       artifacts: {
         type: 'planning',
@@ -842,7 +883,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
       approvalMarkerPath,
       hookPath,
       provider: model.provider,
-      model: model.name ?? model.id,
+      model: modelName,
       stopReason: result.stopReason,
       transcriptPath,
     };

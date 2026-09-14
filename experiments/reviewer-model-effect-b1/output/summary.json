@@ -1,0 +1,4401 @@
+{
+  "alternate_baseline": "gpt-5.5",
+  "analysis": "HOK-2073 reviewer-model effect B1",
+  "baseline_reviewer": "claude-opus-4-7",
+  "challenge_appendix": {
+    "challenge_records_path": "/Users/timothyogilvie/Dropbox/wavemill/.wavemill/evals/challenge-records.jsonl",
+    "challenge_records_rows": 268,
+    "challenger_model_counts": {
+      "claude-fable-5": 2,
+      "claude-haiku-4-5": 4,
+      "claude-haiku-4-5-20251001": 21,
+      "claude-opus-4-6": 21,
+      "claude-opus-4-7": 10,
+      "claude-opus-4-8": 1,
+      "claude-sonnet-4-5-20250929": 13,
+      "claude-sonnet-4-6": 31,
+      "devstral-small": 1,
+      "gemini-2.5-flash": 2,
+      "gemini-2.5-pro": 6,
+      "glm-5.2": 6,
+      "glm-5.3-flash": 1,
+      "gpt-5.3-codex": 15,
+      "gpt-5.4": 29,
+      "gpt-5.5": 45,
+      "gpt-5.6-terra": 3,
+      "kimi-k2": 1,
+      "kimi-k2-thinking": 1,
+      "kimi-k2.7-code": 7,
+      "llama-3.3-70b": 1,
+      "llama-4-scout": 2,
+      "mistral-medium-3": 1,
+      "qwen-2.5-coder-32b": 3,
+      "qwen-3-235b": 1,
+      "qwen-3-coder": 6,
+      "unknown": 34
+    },
+    "eval_challenge_tagged_rows": 319,
+    "primary_model_counts": {
+      "claude-fable-5": 20,
+      "claude-haiku-4-5-20251001": 5,
+      "claude-opus-4-7": 1,
+      "claude-sonnet-4-5-20250929": 9,
+      "claude-sonnet-4-6": 25,
+      "claude-sonnet-5": 1,
+      "gpt-5.3-codex": 8,
+      "gpt-5.4": 99,
+      "gpt-5.5": 94,
+      "gpt-5.6-terra": 1,
+      "unknown": 5
+    },
+    "reviewer_counts_on_challenge_tagged_evals": {
+      "claude-fable-5": 1,
+      "claude-haiku-4-5-20251001": 63,
+      "claude-opus-4-6": 1,
+      "claude-opus-4-7": 115,
+      "claude-opus-4-8": 4,
+      "claude-sonnet-4-6": 1,
+      "claude-sonnet-5": 1,
+      "gemini-2.5-pro": 1,
+      "glm-5.2": 1,
+      "gpt-5.4": 9,
+      "gpt-5.5": 119,
+      "gpt-5.6-terra": 3
+    },
+    "winner_model_counts": {
+      "claude-fable-5": 19,
+      "claude-haiku-4-5-20251001": 8,
+      "claude-opus-4-6": 6,
+      "claude-opus-4-7": 9,
+      "claude-opus-4-8": 9,
+      "claude-sonnet-4-5-20250929": 3,
+      "claude-sonnet-4-6": 20,
+      "claude-sonnet-5": 1,
+      "gemini-2.5-pro": 2,
+      "glm-5.3": 1,
+      "glm-5.3-flash": 1,
+      "gpt-5.3-codex": 12,
+      "gpt-5.4": 74,
+      "gpt-5.5": 85,
+      "gpt-5.6-terra": 2,
+      "kimi-k2-thinking": 1,
+      "llama-3.3-70b": 1,
+      "mistral-large-2": 1,
+      "qwen-3-coder": 1,
+      "unknown": 2
+    }
+  },
+  "cluster_bootstrap_score_ci": {
+    "claude-haiku-4-5-20251001": {
+      "ci_high": 0.028455694277612728,
+      "ci_low": -0.06593069659594344,
+      "iterations": 1000
+    },
+    "gpt-5.5": {
+      "ci_high": 0.03991365987267499,
+      "ci_low": -0.04073229056620843,
+      "iterations": 1000
+    }
+  },
+  "data": {
+    "latest_three_schema_versions": [
+      "1.45.0",
+      "1.46.0",
+      "1.47.0"
+    ],
+    "malformed_lines": 0,
+    "normalization_counts": {
+      "alias": 1,
+      "canonical": 442,
+      "missing": 1513,
+      "unresolvable": 0
+    },
+    "normalization_drop_rate_among_review_candidates": 0.0,
+    "primary_reviewers": [
+      "gpt-5.5",
+      "claude-opus-4-7",
+      "claude-haiku-4-5-20251001"
+    ],
+    "reviewer_counts": {
+      "claude-fable-5": 1,
+      "claude-haiku-4-5-20251001": 94,
+      "claude-opus-4-6": 2,
+      "claude-opus-4-7": 150,
+      "claude-opus-4-8": 5,
+      "claude-sonnet-4-6": 1,
+      "claude-sonnet-5": 1,
+      "gemini-2.5-pro": 1,
+      "glm-5.2": 1,
+      "glm-5.3": 1,
+      "gpt-5.4": 10,
+      "gpt-5.5": 167,
+      "gpt-5.6-terra": 7,
+      "kimi-k2.7-code": 1,
+      "qwen-3-coder": 1
+    },
+    "reviewer_rows": 443,
+    "source": "/Users/timothyogilvie/Dropbox/wavemill/.wavemill/evals/evals.jsonl",
+    "total_records": 1956,
+    "used_rows": 443
+  },
+  "descriptives": {
+    "claude-fable-5": {
+      "intervention_rate": 1.0,
+      "intervention_rate_ci": [
+        0.20654931437723745,
+        1.0
+      ],
+      "mean_complexity": 5.0,
+      "mean_estimated_cost": 0.46215619999999996,
+      "mean_score": 0.65,
+      "mean_workflow_cost": 13.055718875,
+      "n": 1,
+      "success_rate": 0.0,
+      "success_rate_ci": [
+        0.0,
+        0.7934506856227626
+      ]
+    },
+    "claude-haiku-4-5-20251001": {
+      "intervention_rate": 0.6276595744680851,
+      "intervention_rate_ci": [
+        0.5267266550436647,
+        0.7185681339882812
+      ],
+      "mean_complexity": 4.180851063829787,
+      "mean_estimated_cost": 0.4519207265957448,
+      "mean_score": 0.7503191489361702,
+      "mean_workflow_cost": 8.962366415425532,
+      "n": 94,
+      "success_rate": 0.5425531914893617,
+      "success_rate_ci": [
+        0.4421544766623874,
+        0.6396104530149279
+      ]
+    },
+    "claude-opus-4-6": {
+      "intervention_rate": 0.0,
+      "intervention_rate_ci": [
+        0.0,
+        0.6576197724933469
+      ],
+      "mean_complexity": 4.0,
+      "mean_estimated_cost": 0.3246126,
+      "mean_score": 0.9,
+      "mean_workflow_cost": 14.600666775,
+      "n": 2,
+      "success_rate": 1.0,
+      "success_rate_ci": [
+        0.34238022750665303,
+        1.0
+      ]
+    },
+    "claude-opus-4-7": {
+      "intervention_rate": 0.5933333333333334,
+      "intervention_rate_ci": [
+        0.5133466505133206,
+        0.6686589038713051
+      ],
+      "mean_complexity": 3.973333333333333,
+      "mean_estimated_cost": 0.4613292533333333,
+      "mean_score": 0.768,
+      "mean_workflow_cost": 16.47825878068,
+      "n": 150,
+      "success_rate": 0.5933333333333334,
+      "success_rate_ci": [
+        0.5133466505133206,
+        0.6686589038713051
+      ]
+    },
+    "claude-opus-4-8": {
+      "intervention_rate": 0.4,
+      "intervention_rate_ci": [
+        0.11762077423264783,
+        0.769275718723987
+      ],
+      "mean_complexity": 3.8,
+      "mean_estimated_cost": 0.32172073999999995,
+      "mean_score": 0.882,
+      "mean_workflow_cost": 38.764910106,
+      "n": 5,
+      "success_rate": 0.8,
+      "success_rate_ci": [
+        0.37553462976252533,
+        0.9637758913675698
+      ]
+    },
+    "claude-sonnet-4-6": {
+      "intervention_rate": 0.0,
+      "intervention_rate_ci": [
+        0.0,
+        0.7934506856227626
+      ],
+      "mean_complexity": 4.0,
+      "mean_estimated_cost": 0.37305650000000007,
+      "mean_score": 0.95,
+      "mean_workflow_cost": 19.759699,
+      "n": 1,
+      "success_rate": 1.0,
+      "success_rate_ci": [
+        0.20654931437723745,
+        1.0
+      ]
+    },
+    "claude-sonnet-5": {
+      "intervention_rate": 0.0,
+      "intervention_rate_ci": [
+        0.0,
+        0.7934506856227626
+      ],
+      "mean_complexity": 5.0,
+      "mean_estimated_cost": 0.5048262,
+      "mean_score": 0.92,
+      "mean_workflow_cost": 0.0,
+      "n": 1,
+      "success_rate": 1.0,
+      "success_rate_ci": [
+        0.20654931437723745,
+        1.0
+      ]
+    },
+    "gemini-2.5-pro": {
+      "intervention_rate": 1.0,
+      "intervention_rate_ci": [
+        0.20654931437723745,
+        1.0
+      ],
+      "mean_complexity": 5.0,
+      "mean_estimated_cost": 0.6295248,
+      "mean_score": 0.6,
+      "mean_workflow_cost": 13.870630124999998,
+      "n": 1,
+      "success_rate": 0.0,
+      "success_rate_ci": [
+        0.0,
+        0.7934506856227626
+      ]
+    },
+    "glm-5.2": {
+      "intervention_rate": 0.0,
+      "intervention_rate_ci": [
+        0.0,
+        0.7934506856227626
+      ],
+      "mean_complexity": 4.0,
+      "mean_estimated_cost": 0.48226440000000004,
+      "mean_score": 0.91,
+      "mean_workflow_cost": 10.140538375,
+      "n": 1,
+      "success_rate": 1.0,
+      "success_rate_ci": [
+        0.20654931437723745,
+        1.0
+      ]
+    },
+    "glm-5.3": {
+      "intervention_rate": 1.0,
+      "intervention_rate_ci": [
+        0.20654931437723745,
+        1.0
+      ],
+      "mean_complexity": 5.0,
+      "mean_estimated_cost": 0.4716366,
+      "mean_score": 0.58,
+      "mean_workflow_cost": 17.875682625,
+      "n": 1,
+      "success_rate": 0.0,
+      "success_rate_ci": [
+        0.0,
+        0.7934506856227626
+      ]
+    },
+    "gpt-5.4": {
+      "intervention_rate": 0.6,
+      "intervention_rate_ci": [
+        0.31267376973365824,
+        0.8318196702937638
+      ],
+      "mean_complexity": 3.8,
+      "mean_estimated_cost": 0.32646516,
+      "mean_score": 0.771,
+      "mean_workflow_cost": 17.260434797,
+      "n": 10,
+      "success_rate": 0.5,
+      "success_rate_ci": [
+        0.236593090512564,
+        0.7634069094874361
+      ]
+    },
+    "gpt-5.5": {
+      "intervention_rate": 0.5209580838323353,
+      "intervention_rate_ci": [
+        0.4455753814404054,
+        0.5953982794515144
+      ],
+      "mean_complexity": 4.059880239520958,
+      "mean_estimated_cost": 0.44401109700598806,
+      "mean_score": 0.7669461077844312,
+      "mean_workflow_cost": 11.925446067185629,
+      "n": 167,
+      "success_rate": 0.5568862275449101,
+      "success_rate_ci": [
+        0.4811070996931829,
+        0.630107122727742
+      ]
+    },
+    "gpt-5.6-terra": {
+      "intervention_rate": 0.2857142857142857,
+      "intervention_rate_ci": [
+        0.08221892400405678,
+        0.6410655481673808
+      ],
+      "mean_complexity": 2.5714285714285716,
+      "mean_estimated_cost": 0.2987465142857143,
+      "mean_score": 0.8157142857142856,
+      "mean_workflow_cost": 7.646910785714286,
+      "n": 7,
+      "success_rate": 0.7142857142857143,
+      "success_rate_ci": [
+        0.35893445183261935,
+        0.9177810759959433
+      ]
+    },
+    "kimi-k2.7-code": {
+      "intervention_rate": 1.0,
+      "intervention_rate_ci": [
+        0.20654931437723745,
+        1.0
+      ],
+      "mean_complexity": 4.0,
+      "mean_estimated_cost": 0.3453914,
+      "mean_score": 0.62,
+      "mean_workflow_cost": 17.875682625,
+      "n": 1,
+      "success_rate": 0.0,
+      "success_rate_ci": [
+        0.0,
+        0.7934506856227626
+      ]
+    },
+    "qwen-3-coder": {
+      "intervention_rate": 1.0,
+      "intervention_rate_ci": [
+        0.20654931437723745,
+        1.0
+      ],
+      "mean_complexity": 3.0,
+      "mean_estimated_cost": 0.3091376,
+      "mean_score": 0.55,
+      "mean_workflow_cost": 14.759697625,
+      "n": 1,
+      "success_rate": 0.0,
+      "success_rate_ci": [
+        0.0,
+        0.7934506856227626
+      ]
+    }
+  },
+  "generated_at": "2026-09-14T13:29:08.656389+00:00",
+  "go_no_go": {
+    "decision_rule": "Go if score >=0.05, intervention-rate >=5pp, or cost-efficiency >=30% has a 95% CI excluding zero and survives S1/S2/S3.",
+    "rationale": "No reviewer contrast clears the precommitted effect-size, confidence-interval, and sensitivity gates on the current observational corpus.",
+    "recommendation": "No-Go",
+    "score_mde_approx_95pct": 0.03813125821210847,
+    "sensitivity_direction_checks": {
+      "claude-haiku-4-5-20251001": {
+        "cost": {
+          "gpt_5_5_baseline": {
+            "ci_high": -0.11126211445636347,
+            "ci_low": -9.422411132897071,
+            "estimate": -4.766836623676717,
+            "se": 2.37529311694916
+          },
+          "latest_three_schema_versions": {
+            "ci_high": 2.774937953991656,
+            "ci_low": -1.1653209337602348,
+            "estimate": 0.8048085101157105,
+            "se": 1.0051680836101762
+          },
+          "survives": false,
+          "training_eligible": {
+            "ci_high": -1.569082582753607,
+            "ci_low": -9.398713683222388,
+            "estimate": -5.483898132987997,
+            "se": 1.9973548725685666
+          }
+        },
+        "intervention_rate": {
+          "gpt_5_5_baseline": {
+            "ci_high": 0.23010852569973125,
+            "ci_low": -0.1110441206223757,
+            "estimate": 0.059532202538677775,
+            "se": 0.08702873630665994
+          },
+          "latest_three_schema_versions": {
+            "ci_high": 0.7445066690374199,
+            "ci_low": -0.272032461390732,
+            "estimate": 0.23623710382334395,
+            "se": 0.2593212067418755
+          },
+          "survives": true,
+          "training_eligible": {
+            "ci_high": 0.19019872602201254,
+            "ci_low": -0.08228320914509597,
+            "estimate": 0.05395775843845828,
+            "se": 0.06951069774671136
+          }
+        },
+        "score": {
+          "gpt_5_5_baseline": {
+            "ci_high": 0.038019639284597076,
+            "ci_low": -0.0782358381621348,
+            "estimate": -0.02010809943876886,
+            "se": 0.02965700955273772
+          },
+          "latest_three_schema_versions": {
+            "ci_high": 0.14945287125840956,
+            "ci_low": -0.2097584501802412,
+            "estimate": -0.030152789460915826,
+            "se": 0.09163554118332927
+          },
+          "survives": true,
+          "training_eligible": {
+            "ci_high": 0.02710547624731695,
+            "ci_low": -0.06624671767894476,
+            "estimate": -0.0195706207158139,
+            "se": 0.023814335185270843
+          }
+        }
+      },
+      "gpt-5.5": {
+        "cost": {
+          "gpt_5_5_baseline": {
+            "ci_high": 1.4184150411727696,
+            "ci_low": -6.094272440657885,
+            "estimate": -2.337928699742558,
+            "se": 1.9165019086302693
+          },
+          "latest_three_schema_versions": {
+            "ci_high": 2.122124801306085,
+            "ci_low": -0.9741347225127439,
+            "estimate": 0.5739950393966706,
+            "se": 0.7898621234231707
+          },
+          "survives": false,
+          "training_eligible": {
+            "ci_high": 1.449484115717158,
+            "ci_low": -6.444947142911099,
+            "estimate": -2.49773151359697,
+            "se": 2.0138855251602696
+          }
+        },
+        "intervention_rate": {
+          "gpt_5_5_baseline": {
+            "ci_high": 0.04074146243264741,
+            "ci_low": -0.17799101700902364,
+            "estimate": -0.06862477728818811,
+            "se": 0.055799101898385474
+          },
+          "latest_three_schema_versions": {
+            "ci_high": 0.8266355564372714,
+            "ci_low": -0.0910143294215553,
+            "estimate": 0.36781061350785804,
+            "se": 0.23409435863745578
+          },
+          "survives": false,
+          "training_eligible": {
+            "ci_high": 0.03746213626911887,
+            "ci_low": -0.18625743712989654,
+            "estimate": -0.07439765043038883,
+            "se": 0.05707131974464679
+          }
+        },
+        "score": {
+          "gpt_5_5_baseline": {
+            "ci_high": 0.03730354545217365,
+            "ci_low": -0.03895897097204347,
+            "estimate": -0.000827712759934907,
+            "se": 0.019454723577606407
+          },
+          "latest_three_schema_versions": {
+            "ci_high": 0.08548971092357882,
+            "ci_low": -0.2688753074918804,
+            "estimate": -0.09169279828415078,
+            "se": 0.09039923939169878
+          },
+          "survives": true,
+          "training_eligible": {
+            "ci_high": 0.03776346130001894,
+            "ci_low": -0.0411726315692212,
+            "estimate": -0.0017045851346011325,
+            "se": 0.02013675838501024
+          }
+        }
+      }
+    },
+    "triggers": []
+  },
+  "ipw_mean_differences": {
+    "available": false,
+    "reason": "multinomial propensity fit failed: Desired error not necessarily achieved due to precision loss."
+  },
+  "min_primary_reviewer_n": 30,
+  "primary_estimates": {
+    "available": true,
+    "baseline": "claude-opus-4-7",
+    "contrasts": {
+      "cost": {
+        "available": true,
+        "kind": "ols",
+        "n": 443,
+        "reviewer_effects": {
+          "claude-haiku-4-5-20251001": {
+            "ci_high": -1.0695684038748983,
+            "ci_low": -8.464104843478594,
+            "estimate": -4.766836623676746,
+            "p_value": 0.011504123774704,
+            "se": 1.886361336633596
+          },
+          "claude-opus-4-7": {
+            "ci_high": 0.0,
+            "ci_low": 0.0,
+            "estimate": 0.0,
+            "p_value": 1.0,
+            "se": 0.0
+          },
+          "gpt-5.5": {
+            "ci_high": 1.4184150411727456,
+            "ci_low": -6.09427244065792,
+            "estimate": -2.337928699742587,
+            "p_value": 0.2225051555180273,
+            "se": 1.916501908630272
+          }
+        },
+        "terms": {
+          "Intercept": {
+            "ci_high": 4.763007488067626,
+            "ci_low": -6.098049275979734,
+            "estimate": -0.6675208939560535,
+            "p_value": 0.8096145440938567,
+            "se": 2.770677745930449
+          },
+          "complexity": {
+            "ci_high": 4.98593032398228,
+            "ci_low": 1.4309758104608312,
+            "estimate": 3.2084530672215554,
+            "p_value": 0.00040329594386090406,
+            "se": 0.9068761514085327
+          },
+          "domain:data-pipeline": {
+            "ci_high": 5.126180896503942,
+            "ci_low": -5.552115910114277,
+            "estimate": -0.21296750680516713,
+            "p_value": 0.9376846190471673,
+            "se": 2.72405530781077
+          },
+          "domain:devtools": {
+            "ci_high": 5.5901896983044,
+            "ci_low": -10.604447382313662,
+            "estimate": -2.5071288420046316,
+            "p_value": 0.5439410551606543,
+            "se": 4.131284969545424
+          },
+          "domain:frontend": {
+            "ci_high": 8.827488663809294,
+            "ci_low": -3.8311412573005494,
+            "estimate": 2.4981737032543725,
+            "p_value": 0.4391615397010127,
+            "se": 3.229242326813736
+          },
+          "domain:full-stack": {
+            "ci_high": 9.289053389214928,
+            "ci_low": -0.5440752443490933,
+            "estimate": 4.372489072432917,
+            "p_value": 0.0813156043789478,
+            "se": 2.508451182031638
+          },
+          "domain:infrastructure": {
+            "ci_high": 1.0542042503485325,
+            "ci_low": -15.907901808456813,
+            "estimate": -7.426848779054141,
+            "p_value": 0.08609437356188399,
+            "se": 4.327067872144221
+          },
+          "reviewer:claude-haiku-4-5-20251001": {
+            "ci_high": -1.0695684038748983,
+            "ci_low": -8.464104843478594,
+            "estimate": -4.766836623676746,
+            "p_value": 0.011504123774704,
+            "se": 1.886361336633596
+          },
+          "reviewer:gpt-5.5": {
+            "ci_high": 1.4184150411727456,
+            "ci_low": -6.09427244065792,
+            "estimate": -2.337928699742587,
+            "p_value": 0.2225051555180273,
+            "se": 1.916501908630272
+          },
+          "reviewer:other_lt30": {
+            "ci_high": 11.393607952635968,
+            "ci_low": -0.886306028639769,
+            "estimate": 5.253650961998099,
+            "p_value": 0.09352821432525626,
+            "se": 3.132631117672382
+          },
+          "task_type:feature": {
+            "ci_high": 1.2979604417383546,
+            "ci_low": -6.6306687743769785,
+            "estimate": -2.6663541663193118,
+            "p_value": 0.18741183240526382,
+            "se": 2.0226094939069728
+          },
+          "task_type:infra": {
+            "ci_high": 5.063803452236355,
+            "ci_low": -9.86683124450354,
+            "estimate": -2.4015138961335922,
+            "p_value": 0.5283600865123195,
+            "se": 3.808835381821402
+          },
+          "task_type:refactor": {
+            "ci_high": 1.5580958956547102,
+            "ci_low": -6.098306754403277,
+            "estimate": -2.2701054293742833,
+            "p_value": 0.2451254810394965,
+            "se": 1.9531639413413233
+          },
+          "task_type:test": {
+            "ci_high": 2.5046437315615835,
+            "ci_low": -9.047405652797945,
+            "estimate": -3.2713809606181803,
+            "p_value": 0.26696028830443774,
+            "se": 2.946951373561104
+          }
+        }
+      },
+      "estimated_cost": {
+        "available": true,
+        "kind": "ols",
+        "n": 443,
+        "reviewer_effects": {
+          "claude-haiku-4-5-20251001": {
+            "ci_high": 0.03025951123902402,
+            "ci_low": -0.10141603132094681,
+            "estimate": -0.035578260040961394,
+            "p_value": 0.289522382501463,
+            "se": 0.03359069963264562
+          },
+          "claude-opus-4-7": {
+            "ci_high": 0.0,
+            "ci_low": 0.0,
+            "estimate": 0.0,
+            "p_value": 1.0,
+            "se": 0.0
+          },
+          "gpt-5.5": {
+            "ci_high": 0.040784906909542076,
+            "ci_low": -0.07974969543971645,
+            "estimate": -0.019482394265087192,
+            "p_value": 0.5263404847867184,
+            "se": 0.030748623048280237
+          }
+        },
+        "terms": {
+          "Intercept": {
+            "ci_high": 0.40228244014654124,
+            "ci_low": 0.1745850987576112,
+            "estimate": 0.2884337694520762,
+            "p_value": 6.847898106343564e-07,
+            "se": 0.05808605647676787
+          },
+          "complexity": {
+            "ci_high": 0.08869796261908205,
+            "ci_low": 0.03367504548208664,
+            "estimate": 0.06118650405058435,
+            "p_value": 1.3059086199307401e-05,
+            "se": 0.014036458453315158
+          },
+          "domain:data-pipeline": {
+            "ci_high": 0.14206712145072214,
+            "ci_low": -0.054692459230461385,
+            "estimate": 0.04368733111013037,
+            "p_value": 0.3840962875318368,
+            "se": 0.05019377058193457
+          },
+          "domain:devtools": {
+            "ci_high": 0.20265073610729847,
+            "ci_low": -0.1198580297991835,
+            "estimate": 0.041396353154057486,
+            "p_value": 0.6148513628954673,
+            "se": 0.08227264436389846
+          },
+          "domain:frontend": {
+            "ci_high": 0.025981140580130346,
+            "ci_low": -0.16070382253015866,
+            "estimate": -0.06736134097501416,
+            "p_value": 0.15722995881528146,
+            "se": 0.04762371507915536
+          },
+          "domain:full-stack": {
+            "ci_high": 0.028965735570880044,
+            "ci_low": -0.09862381543391886,
+            "estimate": -0.03482903993151941,
+            "p_value": 0.28458749922772597,
+            "se": 0.032548354848162986
+          },
+          "domain:infrastructure": {
+            "ci_high": 0.22037823517536384,
+            "ci_low": 0.025641022469161584,
+            "estimate": 0.12300962882226271,
+            "p_value": 0.013280930442977068,
+            "se": 0.04967786038423527
+          },
+          "reviewer:claude-haiku-4-5-20251001": {
+            "ci_high": 0.03025951123902402,
+            "ci_low": -0.10141603132094681,
+            "estimate": -0.035578260040961394,
+            "p_value": 0.289522382501463,
+            "se": 0.03359069963264562
+          },
+          "reviewer:gpt-5.5": {
+            "ci_high": 0.040784906909542076,
+            "ci_low": -0.07974969543971645,
+            "estimate": -0.019482394265087192,
+            "p_value": 0.5263404847867184,
+            "se": 0.030748623048280237
+          },
+          "reviewer:other_lt30": {
+            "ci_high": -0.026179495403824693,
+            "ci_low": -0.16040349315325692,
+            "estimate": -0.0932914942785408,
+            "p_value": 0.006438530932790121,
+            "se": 0.03424081575240618
+          },
+          "task_type:feature": {
+            "ci_high": -0.017789486150129548,
+            "ci_low": -0.13312731907423692,
+            "estimate": -0.07545840261218323,
+            "p_value": 0.010329085570967012,
+            "se": 0.029422916562272288
+          },
+          "task_type:infra": {
+            "ci_high": 0.007683533461107783,
+            "ci_low": -0.17259877388429495,
+            "estimate": -0.08245762021159359,
+            "p_value": 0.07298383921045692,
+            "se": 0.04599038452688845
+          },
+          "task_type:refactor": {
+            "ci_high": 0.1330292696806424,
+            "ci_low": -0.10332243578921534,
+            "estimate": 0.01485341694571354,
+            "p_value": 0.805410810767959,
+            "se": 0.06029380241578004
+          },
+          "task_type:test": {
+            "ci_high": -0.028692357222290438,
+            "ci_low": -0.22999488488546302,
+            "estimate": -0.12934362105387673,
+            "p_value": 0.011777846941827708,
+            "se": 0.05135268562836035
+          }
+        }
+      },
+      "intervention_logit": {
+        "available": true,
+        "kind": "logit",
+        "n": 443,
+        "reviewer_effects": {
+          "claude-haiku-4-5-20251001": {
+            "ci_high": 0.816799561291648,
+            "ci_low": -0.30828313813220676,
+            "estimate": 0.2542582115797206,
+            "p_value": 0.3756803131386326,
+            "se": 0.28701089271016705
+          },
+          "claude-opus-4-7": {
+            "ci_high": 0.0,
+            "ci_low": 0.0,
+            "estimate": 0.0,
+            "p_value": 1.0,
+            "se": 0.0
+          },
+          "gpt-5.5": {
+            "ci_high": 0.1686941761050632,
+            "ci_low": -0.7407001036460046,
+            "estimate": -0.2860029637704707,
+            "p_value": 0.21763793712767932,
+            "se": 0.23198833667119076
+          }
+        },
+        "terms": {
+          "Intercept": {
+            "ci_high": 0.8770276747706743,
+            "ci_low": -1.3129991266945096,
+            "estimate": -0.21798572596191765,
+            "p_value": 0.6964036561329197,
+            "se": 0.5586803064962205
+          },
+          "complexity": {
+            "ci_high": 0.1852485020519281,
+            "ci_low": -0.31694955769646094,
+            "estimate": -0.06585052782226641,
+            "p_value": 0.6072460511461346,
+            "se": 0.12811174993581353
+          },
+          "domain:data-pipeline": {
+            "ci_high": 1.4972227704351821,
+            "ci_low": -0.5903174301211767,
+            "estimate": 0.4534526701570027,
+            "p_value": 0.394493262909418,
+            "se": 0.5325357654480507
+          },
+          "domain:devtools": {
+            "ci_high": 2.4404158365842608,
+            "ci_low": -1.6602514487762066,
+            "estimate": 0.3900821939040271,
+            "p_value": 0.7092258905691513,
+            "se": 1.0460885932042008
+          },
+          "domain:frontend": {
+            "ci_high": 1.479808728350783,
+            "ci_low": -0.045746994815134445,
+            "estimate": 0.7170308667678242,
+            "p_value": 0.06540927185990153,
+            "se": 0.38917237835865237
+          },
+          "domain:full-stack": {
+            "ci_high": 1.1617930410828663,
+            "ci_low": 0.015997233774931785,
+            "estimate": 0.588895137428899,
+            "p_value": 0.043932969750534845,
+            "se": 0.2922948488030445
+          },
+          "domain:infrastructure": {
+            "ci_high": 557.1169050730448,
+            "ci_low": -578.929984447879,
+            "estimate": -10.906539687417094,
+            "p_value": 0.9699797468295233,
+            "se": 289.8078799798275
+          },
+          "reviewer:claude-haiku-4-5-20251001": {
+            "ci_high": 0.816799561291648,
+            "ci_low": -0.30828313813220676,
+            "estimate": 0.2542582115797206,
+            "p_value": 0.3756803131386326,
+            "se": 0.28701089271016705
+          },
+          "reviewer:gpt-5.5": {
+            "ci_high": 0.1686941761050632,
+            "ci_low": -0.7407001036460046,
+            "estimate": -0.2860029637704707,
+            "p_value": 0.21763793712767932,
+            "se": 0.23198833667119076
+          },
+          "reviewer:other_lt30": {
+            "ci_high": 0.40409312896992655,
+            "ci_low": -1.1878648275803136,
+            "estimate": -0.39188584930519355,
+            "p_value": 0.3345595676039208,
+            "se": 0.40611172360975517
+          },
+          "task_type:feature": {
+            "ci_high": 1.0831699105865955,
+            "ci_low": 0.1505316917807764,
+            "estimate": 0.616850801183686,
+            "p_value": 0.009522459896215807,
+            "se": 0.23791791296066814
+          },
+          "task_type:infra": {
+            "ci_high": 1.1655702354576218,
+            "ci_low": -0.6699859082864912,
+            "estimate": 0.24779216358556533,
+            "p_value": 0.5966784425223914,
+            "se": 0.46825411830206964
+          },
+          "task_type:refactor": {
+            "ci_high": 2.3035319637656504,
+            "ci_low": -0.5694625992887308,
+            "estimate": 0.8670346822384598,
+            "p_value": 0.23680592137990297,
+            "se": 0.7329067762893829
+          },
+          "task_type:test": {
+            "ci_high": 1.7804240245798835,
+            "ci_low": -0.6735943083705731,
+            "estimate": 0.5534148581046552,
+            "p_value": 0.37668872553154564,
+            "se": 0.626025084936341
+          }
+        }
+      },
+      "intervention_rate": {
+        "available": true,
+        "kind": "ols",
+        "n": 443,
+        "reviewer_effects": {
+          "claude-haiku-4-5-20251001": {
+            "ci_high": 0.1935313447025431,
+            "ci_low": -0.07446693962518089,
+            "estimate": 0.0595322025386811,
+            "p_value": 0.3838769612451429,
+            "se": 0.06836690926727652
+          },
+          "claude-opus-4-7": {
+            "ci_high": 0.0,
+            "ci_low": 0.0,
+            "estimate": 0.0,
+            "p_value": 1.0,
+            "se": 0.0
+          },
+          "gpt-5.5": {
+            "ci_high": 0.04074146243265127,
+            "ci_low": -0.17799101700901965,
+            "estimate": -0.0686247772881842,
+            "p_value": 0.2187515903840893,
+            "se": 0.05579910189838544
+          }
+        },
+        "terms": {
+          "Intercept": {
+            "ci_high": 0.7054902429539366,
+            "ci_low": 0.19272830854932477,
+            "estimate": 0.4491092757516307,
+            "p_value": 0.0005960983277992771,
+            "se": 0.13080661591954384
+          },
+          "complexity": {
+            "ci_high": 0.04387550747053091,
+            "ci_low": -0.07586565657446737,
+            "estimate": -0.015995074551968233,
+            "p_value": 0.6005322714759351,
+            "se": 0.030546215317601603
+          },
+          "domain:data-pipeline": {
+            "ci_high": 0.36021531341780205,
+            "ci_low": -0.14217725629884342,
+            "estimate": 0.10901902855947933,
+            "p_value": 0.3949700520546273,
+            "se": 0.12816136982567486
+          },
+          "domain:devtools": {
+            "ci_high": 0.6094821572048437,
+            "ci_low": -0.42295975276221354,
+            "estimate": 0.09326120222131509,
+            "p_value": 0.7232666768100786,
+            "se": 0.26337803825690237
+          },
+          "domain:frontend": {
+            "ci_high": 0.3512764352222829,
+            "ci_low": -0.0070958686805391025,
+            "estimate": 0.17209028327087192,
+            "p_value": 0.05978404077668986,
+            "se": 0.09142150609765869
+          },
+          "domain:full-stack": {
+            "ci_high": 0.27665720364199575,
+            "ci_low": 0.005572580552829942,
+            "estimate": 0.14111489209741285,
+            "p_value": 0.04129240212717189,
+            "se": 0.06915424058397088
+          },
+          "domain:infrastructure": {
+            "ci_high": -0.15172515003103257,
+            "ci_low": -0.6014599426716667,
+            "estimate": -0.37659254635134964,
+            "p_value": 0.0010290045990652974,
+            "se": 0.1147282634287332
+          },
+          "reviewer:claude-haiku-4-5-20251001": {
+            "ci_high": 0.1935313447025431,
+            "ci_low": -0.07446693962518089,
+            "estimate": 0.0595322025386811,
+            "p_value": 0.3838769612451429,
+            "se": 0.06836690926727652
+          },
+          "reviewer:gpt-5.5": {
+            "ci_high": 0.04074146243265127,
+            "ci_low": -0.17799101700901965,
+            "estimate": -0.0686247772881842,
+            "p_value": 0.2187515903840893,
+            "se": 0.05579910189838544
+          },
+          "reviewer:other_lt30": {
+            "ci_high": 0.10465013068920129,
+            "ci_low": -0.29484288758150834,
+            "estimate": -0.09509637844615351,
+            "p_value": 0.3507542943038082,
+            "se": 0.10191148425273204
+          },
+          "task_type:feature": {
+            "ci_high": 0.2611578565009993,
+            "ci_low": 0.03516526034980767,
+            "estimate": 0.1481615584254035,
+            "p_value": 0.01017084697761006,
+            "se": 0.057651172487548884
+          },
+          "task_type:infra": {
+            "ci_high": 0.2718249108573907,
+            "ci_low": -0.15164821866584924,
+            "estimate": 0.06008834609577071,
+            "p_value": 0.5780570908477822,
+            "se": 0.10802885957225508
+          },
+          "task_type:refactor": {
+            "ci_high": 0.5175945157298086,
+            "ci_low": -0.11247507242545116,
+            "estimate": 0.20255972165217875,
+            "p_value": 0.20758553821272696,
+            "se": 0.16073203779470915
+          },
+          "task_type:test": {
+            "ci_high": 0.3886013095094697,
+            "ci_low": -0.12445206018860311,
+            "estimate": 0.1320746246604333,
+            "p_value": 0.3129169824341076,
+            "se": 0.13088096165767163
+          }
+        }
+      },
+      "placebo_prompt_bytes": {
+        "available": true,
+        "kind": "ols",
+        "n": 443,
+        "reviewer_effects": {
+          "claude-haiku-4-5-20251001": {
+            "ci_high": 15968.819111358756,
+            "ci_low": -43091.60588206652,
+            "estimate": -13561.393385353884,
+            "p_value": 0.3680636705813065,
+            "se": 15066.434947302369
+          },
+          "claude-opus-4-7": {
+            "ci_high": 0.0,
+            "ci_low": 0.0,
+            "estimate": 0.0,
+            "p_value": 1.0,
+            "se": 0.0
+          },
+          "gpt-5.5": {
+            "ci_high": 16051.315675468826,
+            "ci_low": -23829.498038735037,
+            "estimate": -3889.091181633105,
+            "p_value": 0.7022611273436092,
+            "se": 10173.676967909149
+          }
+        },
+        "terms": {
+          "Intercept": {
+            "ci_high": 45066.10492712536,
+            "ci_low": -39253.38746462148,
+            "estimate": 2906.3587312519353,
+            "p_value": 0.8925200316234392,
+            "se": 21510.07458973134
+          },
+          "complexity": {
+            "ci_high": 44393.7388405343,
+            "ci_low": 26918.426457438538,
+            "estimate": 35656.08264898642,
+            "p_value": 1.3322676295501878e-15,
+            "se": 4457.987852830552
+          },
+          "domain:data-pipeline": {
+            "ci_high": 40364.95444381965,
+            "ci_low": -17627.330225815604,
+            "estimate": 11368.812109002027,
+            "p_value": 0.4422037831136567,
+            "se": 14793.950170825321
+          },
+          "domain:devtools": {
+            "ci_high": 76352.25417720407,
+            "ci_low": -41143.27568516198,
+            "estimate": 17604.48924602105,
+            "p_value": 0.556976677109223,
+            "se": 29973.349454685216
+          },
+          "domain:frontend": {
+            "ci_high": 57163.047549824725,
+            "ci_low": -2568.903162069986,
+            "estimate": 27297.07219387737,
+            "p_value": 0.07322723228458461,
+            "se": 15237.74252854457
+          },
+          "domain:full-stack": {
+            "ci_high": 53462.1178105938,
+            "ci_low": 14769.592178326744,
+            "estimate": 34115.85499446027,
+            "p_value": 0.0005475837300155106,
+            "se": 9870.54225312935
+          },
+          "domain:infrastructure": {
+            "ci_high": 18241.41085192693,
+            "ci_low": -49247.35580778047,
+            "estimate": -15502.97247792677,
+            "p_value": 0.3678698492694221,
+            "se": 17216.522107068213
+          },
+          "reviewer:claude-haiku-4-5-20251001": {
+            "ci_high": 15968.819111358756,
+            "ci_low": -43091.60588206652,
+            "estimate": -13561.393385353884,
+            "p_value": 0.3680636705813065,
+            "se": 15066.434947302369
+          },
+          "reviewer:gpt-5.5": {
+            "ci_high": 16051.315675468826,
+            "ci_low": -23829.498038735037,
+            "estimate": -3889.091181633105,
+            "p_value": 0.7022611273436092,
+            "se": 10173.676967909149
+          },
+          "reviewer:other_lt30": {
+            "ci_high": -9877.618058472108,
+            "ci_low": -49293.09435016202,
+            "estimate": -29585.356204317064,
+            "p_value": 0.0032571901241542633,
+            "se": 10054.968441757632
+          },
+          "task_type:feature": {
+            "ci_high": -8332.872458450904,
+            "ci_low": -45699.23933209931,
+            "estimate": -27016.055895275105,
+            "p_value": 0.004594371708708467,
+            "se": 9532.236447359286
+          },
+          "task_type:infra": {
+            "ci_high": -3567.0633651526077,
+            "ci_low": -64112.18797012611,
+            "estimate": -33839.62566763936,
+            "p_value": 0.028455420627326644,
+            "se": 15445.184848207527
+          },
+          "task_type:refactor": {
+            "ci_high": 62742.06759445761,
+            "ci_low": -49516.92152375502,
+            "estimate": 6612.573035351289,
+            "p_value": 0.8173877452268539,
+            "se": 28637.497224033836
+          },
+          "task_type:test": {
+            "ci_high": -12070.169842670271,
+            "ci_low": -64687.19337083151,
+            "estimate": -38378.68160675089,
+            "p_value": 0.004246641489994429,
+            "se": 13422.710083714603
+          }
+        }
+      },
+      "reviewer_score": {
+        "available": true,
+        "kind": "ols",
+        "n": 443,
+        "reviewer_effects": {
+          "claude-haiku-4-5-20251001": {
+            "ci_high": 0.021383133456835433,
+            "ci_low": -0.05903701427877668,
+            "estimate": -0.018826940410970622,
+            "p_value": 0.3587757078236855,
+            "se": 0.02051534381010513
+          },
+          "claude-opus-4-7": {
+            "ci_high": 0.0,
+            "ci_low": 0.0,
+            "estimate": 0.0,
+            "p_value": 1.0,
+            "se": 0.0
+          },
+          "gpt-5.5": {
+            "ci_high": 0.02361443420191197,
+            "ci_low": -0.04410320928521106,
+            "estimate": -0.010244387541649544,
+            "p_value": 0.5531669550027014,
+            "se": 0.017274909052837507
+          }
+        },
+        "terms": {
+          "Intercept": {
+            "ci_high": 0.6871964632211952,
+            "ci_low": 0.5163808927111789,
+            "estimate": 0.6017886779661871,
+            "p_value": 0.0,
+            "se": 0.043575400640310256
+          },
+          "complexity": {
+            "ci_high": 0.04160772756459111,
+            "ci_low": 0.0019129946232234532,
+            "estimate": 0.02176036109390728,
+            "p_value": 0.03164112165938904,
+            "se": 0.010126207383001953
+          },
+          "domain:data-pipeline": {
+            "ci_high": 0.049813853866802246,
+            "ci_low": -0.09881052351389229,
+            "estimate": -0.02449833482354502,
+            "p_value": 0.518182952998631,
+            "se": 0.03791438198487106
+          },
+          "domain:devtools": {
+            "ci_high": 0.2015218415935539,
+            "ci_low": -0.10186305374308091,
+            "estimate": 0.049829393925236505,
+            "p_value": 0.5196794208380475,
+            "se": 0.07739410595322317
+          },
+          "domain:frontend": {
+            "ci_high": 0.04008738135630304,
+            "ci_low": -0.08031169720356277,
+            "estimate": -0.02011215792362986,
+            "p_value": 0.5125840028647384,
+            "se": 0.03071405065302699
+          },
+          "domain:full-stack": {
+            "ci_high": 0.047045657381537195,
+            "ci_low": -0.039287562398498996,
+            "estimate": 0.003879047491519098,
+            "p_value": 0.86019184761842,
+            "se": 0.022023780556131682
+          },
+          "domain:infrastructure": {
+            "ci_high": -0.032371946773039645,
+            "ci_low": -0.18674721688761034,
+            "estimate": -0.10955958183032499,
+            "p_value": 0.005402335868510466,
+            "se": 0.03938144645779865
+          },
+          "reviewer:claude-haiku-4-5-20251001": {
+            "ci_high": 0.021383133456835433,
+            "ci_low": -0.05903701427877668,
+            "estimate": -0.018826940410970622,
+            "p_value": 0.3587757078236855,
+            "se": 0.02051534381010513
+          },
+          "reviewer:gpt-5.5": {
+            "ci_high": 0.02361443420191197,
+            "ci_low": -0.04410320928521106,
+            "estimate": -0.010244387541649544,
+            "p_value": 0.5531669550027014,
+            "se": 0.017274909052837507
+          },
+          "reviewer:other_lt30": {
+            "ci_high": 0.0770945324578634,
+            "ci_low": -0.045244140908035274,
+            "estimate": 0.015925195774914063,
+            "p_value": 0.6098565193877272,
+            "se": 0.03120884524640272
+          },
+          "task_type:feature": {
+            "ci_high": 0.0204611100887546,
+            "ci_low": -0.04758508704888809,
+            "estimate": -0.013561988480066746,
+            "p_value": 0.43463902351309525,
+            "se": 0.017358723759602727
+          },
+          "task_type:infra": {
+            "ci_high": 0.0511420007394185,
+            "ci_low": -0.08919430667911568,
+            "estimate": -0.019026152969848588,
+            "p_value": 0.5951030855623842,
+            "se": 0.035800078423095454
+          },
+          "task_type:refactor": {
+            "ci_high": 0.09227803998413617,
+            "ci_low": -0.08532288773177299,
+            "estimate": 0.003477576126181593,
+            "p_value": 0.9388169304433049,
+            "se": 0.045306359111201316
+          },
+          "task_type:test": {
+            "ci_high": 0.08549215043490588,
+            "ci_low": -0.09582671332939327,
+            "estimate": -0.005167281447243698,
+            "p_value": 0.911050669404827,
+            "se": 0.04625481218477019
+          }
+        }
+      },
+      "score": {
+        "available": true,
+        "kind": "ols",
+        "n": 443,
+        "reviewer_effects": {
+          "claude-haiku-4-5-20251001": {
+            "ci_high": 0.02555648933644784,
+            "ci_low": -0.0657726882139754,
+            "estimate": -0.020108099438763783,
+            "p_value": 0.38809731650102175,
+            "se": 0.023298259579189604
+          },
+          "claude-opus-4-7": {
+            "ci_high": 0.0,
+            "ci_low": 0.0,
+            "estimate": 0.0,
+            "p_value": 1.0,
+            "se": 0.0
+          },
+          "gpt-5.5": {
+            "ci_high": 0.03730354545217979,
+            "ci_low": -0.038958970972037155,
+            "estimate": -0.0008277127599286819,
+            "p_value": 0.9660637663200753,
+            "se": 0.019454723577606362
+          }
+        },
+        "terms": {
+          "Intercept": {
+            "ci_high": 0.8597858881639913,
+            "ci_low": 0.676241895415105,
+            "estimate": 0.7680138917895482,
+            "p_value": 0.0,
+            "se": 0.04682244712981789
+          },
+          "complexity": {
+            "ci_high": 0.030703414879306702,
+            "ci_low": -0.012535675509055676,
+            "estimate": 0.009083869685125513,
+            "p_value": 0.41020559873618145,
+            "se": 0.011030380201112851
+          },
+          "domain:data-pipeline": {
+            "ci_high": 0.046268734309797575,
+            "ci_low": -0.14174840520210136,
+            "estimate": -0.047739835446151895,
+            "p_value": 0.31957306212728387,
+            "se": 0.0479635559979334
+          },
+          "domain:devtools": {
+            "ci_high": 0.1796239856856228,
+            "ci_low": -0.183981216761848,
+            "estimate": -0.0021786155381125927,
+            "p_value": 0.9812614186868496,
+            "se": 0.09275642919578336
+          },
+          "domain:frontend": {
+            "ci_high": 0.010496118009225612,
+            "ci_low": -0.12068472870404084,
+            "estimate": -0.05509430534740762,
+            "p_value": 0.09969157974042053,
+            "se": 0.03346450171256798
+          },
+          "domain:full-stack": {
+            "ci_high": 0.02096732558254419,
+            "ci_low": -0.06885275889198178,
+            "estimate": -0.023942716654718796,
+            "p_value": 0.29605661785456583,
+            "se": 0.02291328685574642
+          },
+          "domain:infrastructure": {
+            "ci_high": 0.11855156485730356,
+            "ci_low": -0.034604993517350864,
+            "estimate": 0.041973285669976344,
+            "p_value": 0.28269061709787535,
+            "se": 0.039070550605779186
+          },
+          "reviewer:claude-haiku-4-5-20251001": {
+            "ci_high": 0.02555648933644784,
+            "ci_low": -0.0657726882139754,
+            "estimate": -0.020108099438763783,
+            "p_value": 0.38809731650102175,
+            "se": 0.023298259579189604
+          },
+          "reviewer:gpt-5.5": {
+            "ci_high": 0.03730354545217979,
+            "ci_low": -0.038958970972037155,
+            "estimate": -0.0008277127599286819,
+            "p_value": 0.9660637663200753,
+            "se": 0.019454723577606362
+          },
+          "reviewer:other_lt30": {
+            "ci_high": 0.08824834189543682,
+            "ci_low": -0.04098894805691922,
+            "estimate": 0.023629696919258796,
+            "p_value": 0.4735399036927599,
+            "se": 0.03296869641641736
+          },
+          "task_type:feature": {
+            "ci_high": 0.020859018510506682,
+            "ci_low": -0.05653026915858829,
+            "estimate": -0.017835625324040805,
+            "p_value": 0.36629877207205874,
+            "se": 0.0197421652217079
+          },
+          "task_type:infra": {
+            "ci_high": 0.04828406109011994,
+            "ci_low": -0.09927394797033225,
+            "estimate": -0.025494943440106155,
+            "p_value": 0.4982193334033427,
+            "se": 0.03764234925011536
+          },
+          "task_type:refactor": {
+            "ci_high": 0.09251781619349266,
+            "ci_low": -0.1607793517873155,
+            "estimate": -0.03413076779691142,
+            "p_value": 0.5973576645161698,
+            "se": 0.06461662448490003
+          },
+          "task_type:test": {
+            "ci_high": 0.06321491826994477,
+            "ci_low": -0.1240615517244138,
+            "estimate": -0.030423316727234518,
+            "p_value": 0.5242490543551319,
+            "se": 0.047774609692438415
+          }
+        }
+      },
+      "success_logit": {
+        "available": true,
+        "kind": "logit",
+        "n": 443,
+        "reviewer_effects": {
+          "claude-haiku-4-5-20251001": {
+            "ci_high": 0.2948318170739811,
+            "ci_low": -0.8047778067681747,
+            "estimate": -0.2549729948470968,
+            "p_value": 0.3633746123055863,
+            "se": 0.28051265914340706
+          },
+          "claude-opus-4-7": {
+            "ci_high": 0.0,
+            "ci_low": 0.0,
+            "estimate": 0.0,
+            "p_value": 1.0,
+            "se": 0.0
+          },
+          "gpt-5.5": {
+            "ci_high": 0.2972360699687897,
+            "ci_low": -0.6091260609931456,
+            "estimate": -0.15594499551217791,
+            "p_value": 0.5000193430905793,
+            "se": 0.2312148293270243
+          }
+        },
+        "terms": {
+          "Intercept": {
+            "ci_high": 0.9981903009061208,
+            "ci_low": -1.1871482587872115,
+            "estimate": -0.09447897894054536,
+            "p_value": 0.865423990546579,
+            "se": 0.5574843264523807
+          },
+          "complexity": {
+            "ci_high": 0.5017704791812113,
+            "ci_low": -0.003094427036968911,
+            "estimate": 0.24933802607212122,
+            "p_value": 0.05287095086864002,
+            "se": 0.1287920679128011
+          },
+          "domain:data-pipeline": {
+            "ci_high": 0.3877228020663379,
+            "ci_low": -1.6783361651943762,
+            "estimate": -0.6453066815640192,
+            "p_value": 0.22081604399243338,
+            "se": 0.5270558589950801
+          },
+          "domain:devtools": {
+            "ci_high": 1.4308533626984405,
+            "ci_low": -2.711246836968106,
+            "estimate": -0.6401967371348328,
+            "p_value": 0.5446015692616788,
+            "se": 1.0566582142006495
+          },
+          "domain:frontend": {
+            "ci_high": 0.27326943532591236,
+            "ci_low": -1.2535177308664511,
+            "estimate": -0.4901241477702694,
+            "p_value": 0.20825241405975703,
+            "se": 0.38948652198784783
+          },
+          "domain:full-stack": {
+            "ci_high": 0.191645058549745,
+            "ci_low": -0.9729740353542301,
+            "estimate": -0.39066448840224255,
+            "p_value": 0.18852990557783444,
+            "se": 0.2970967076285651
+          },
+          "domain:infrastructure": {
+            "ci_high": 566.6474975899255,
+            "ci_low": -543.7213869155869,
+            "estimate": 11.463055337169333,
+            "p_value": 0.9677194663708464,
+            "se": 283.2573684963042
+          },
+          "reviewer:claude-haiku-4-5-20251001": {
+            "ci_high": 0.2948318170739811,
+            "ci_low": -0.8047778067681747,
+            "estimate": -0.2549729948470968,
+            "p_value": 0.3633746123055863,
+            "se": 0.28051265914340706
+          },
+          "reviewer:gpt-5.5": {
+            "ci_high": 0.2972360699687897,
+            "ci_low": -0.6091260609931456,
+            "estimate": -0.15594499551217791,
+            "p_value": 0.5000193430905793,
+            "se": 0.2312148293270243
+          },
+          "reviewer:other_lt30": {
+            "ci_high": 0.8358031264425759,
+            "ci_low": -0.779782311616359,
+            "estimate": 0.028010407413108476,
+            "p_value": 0.9458147114654782,
+            "se": 0.4121391423619732
+          },
+          "task_type:feature": {
+            "ci_high": 0.23119653548177937,
+            "ci_low": -0.6978358711680162,
+            "estimate": -0.23331966784311842,
+            "p_value": 0.3248799443088717,
+            "se": 0.23699806292086623
+          },
+          "task_type:infra": {
+            "ci_high": 0.09308412605580496,
+            "ci_low": -1.7604055223874746,
+            "estimate": -0.8336606981658348,
+            "p_value": 0.07787795397046415,
+            "se": 0.4728289919498162
+          },
+          "task_type:refactor": {
+            "ci_high": 0.8361986225307836,
+            "ci_low": -1.8226530609493043,
+            "estimate": -0.49322721920926044,
+            "p_value": 0.46711870678666245,
+            "se": 0.678278490683696
+          },
+          "task_type:test": {
+            "ci_high": 1.1249932413547912,
+            "ci_low": -1.3001761610635625,
+            "estimate": -0.08759145985438561,
+            "p_value": 0.8874107757192871,
+            "se": 0.6186656638822331
+          }
+        }
+      }
+    },
+    "n": 443
+  },
+  "sensitivities": {
+    "gpt_5_5_baseline": {
+      "available": true,
+      "baseline": "gpt-5.5",
+      "contrasts": {
+        "cost": {
+          "available": true,
+          "kind": "ols",
+          "n": 443,
+          "reviewer_effects": {
+            "claude-haiku-4-5-20251001": {
+              "ci_high": 0.32141127772018274,
+              "ci_low": -5.1792271255885005,
+              "estimate": -2.4289079239341587,
+              "p_value": 0.08346103880049505,
+              "se": 1.4032240824767048
+            },
+            "claude-opus-4-7": {
+              "ci_high": 6.094272440657885,
+              "ci_low": -1.4184150411727696,
+              "estimate": 2.337928699742558,
+              "p_value": 0.22250515551803263,
+              "se": 1.9165019086302693
+            },
+            "gpt-5.5": {
+              "ci_high": 0.0,
+              "ci_low": 0.0,
+              "estimate": 0.0,
+              "p_value": 1.0,
+              "se": 0.0
+            }
+          },
+          "terms": {
+            "Intercept": {
+              "ci_high": 2.597044447918351,
+              "ci_low": -8.607943635315593,
+              "estimate": -3.005449593698621,
+              "p_value": 0.2930569731542567,
+              "se": 2.858415327355598
+            },
+            "complexity": {
+              "ci_high": 4.985930323982261,
+              "ci_low": 1.4309758104608257,
+              "estimate": 3.2084530672215434,
+              "p_value": 0.00040329594386090406,
+              "se": 0.9068761514085295
+            },
+            "domain:data-pipeline": {
+              "ci_high": 5.126180896504204,
+              "ci_low": -5.552115910114029,
+              "estimate": -0.21296750680491303,
+              "p_value": 0.9376846190472417,
+              "se": 2.7240553078107737
+            },
+            "domain:devtools": {
+              "ci_high": 5.59018969830475,
+              "ci_low": -10.604447382313316,
+              "estimate": -2.5071288420042825,
+              "p_value": 0.5439410551607105,
+              "se": 4.131284969545425
+            },
+            "domain:frontend": {
+              "ci_high": 8.82748866380939,
+              "ci_low": -3.8311412573004966,
+              "estimate": 2.4981737032544467,
+              "p_value": 0.4391615397010007,
+              "se": 3.2292423268137465
+            },
+            "domain:full-stack": {
+              "ci_high": 9.28905338921507,
+              "ci_low": -0.5440752443490231,
+              "estimate": 4.372489072433024,
+              "p_value": 0.08131560437894247,
+              "se": 2.508451182031657
+            },
+            "domain:infrastructure": {
+              "ci_high": 1.0542042503485725,
+              "ci_low": -15.907901808456785,
+              "estimate": -7.426848779054106,
+              "p_value": 0.08609437356188576,
+              "se": 4.327067872144224
+            },
+            "reviewer:claude-haiku-4-5-20251001": {
+              "ci_high": 0.32141127772018274,
+              "ci_low": -5.1792271255885005,
+              "estimate": -2.4289079239341587,
+              "p_value": 0.08346103880049505,
+              "se": 1.4032240824767048
+            },
+            "reviewer:claude-opus-4-7": {
+              "ci_high": 6.094272440657885,
+              "ci_low": -1.4184150411727696,
+              "estimate": 2.337928699742558,
+              "p_value": 0.22250515551803263,
+              "se": 1.9165019086302693
+            },
+            "reviewer:other_lt30": {
+              "ci_high": 13.36670036089236,
+              "ci_low": 1.8164589625890804,
+              "estimate": 7.59157966174072,
+              "p_value": 0.00998113217594132,
+              "se": 2.946490152628388
+            },
+            "task_type:feature": {
+              "ci_high": 1.297960441738375,
+              "ci_low": -6.6306687743769555,
+              "estimate": -2.66635416631929,
+              "p_value": 0.18741183240526738,
+              "se": 2.022609493906972
+            },
+            "task_type:infra": {
+              "ci_high": 5.063803452236423,
+              "ci_low": -9.866831244503471,
+              "estimate": -2.4015138961335243,
+              "p_value": 0.5283600865123312,
+              "se": 3.8088353818214014
+            },
+            "task_type:refactor": {
+              "ci_high": 1.5580958956548274,
+              "ci_low": -6.098306754403164,
+              "estimate": -2.2701054293741683,
+              "p_value": 0.24512548103952048,
+              "se": 1.9531639413413244
+            },
+            "task_type:test": {
+              "ci_high": 2.5046437315616417,
+              "ci_low": -9.04740565279784,
+              "estimate": -3.271380960618099,
+              "p_value": 0.2669602883044475,
+              "se": 2.946951373561092
+            }
+          }
+        },
+        "estimated_cost": {
+          "available": true,
+          "kind": "ols",
+          "n": 443,
+          "reviewer_effects": {
+            "claude-haiku-4-5-20251001": {
+              "ci_high": 0.045876702236264444,
+              "ci_low": -0.0780684337880123,
+              "estimate": -0.01609586577587393,
+              "p_value": 0.610708568506036,
+              "se": 0.03161865714905019
+            },
+            "claude-opus-4-7": {
+              "ci_high": 0.07974969543971812,
+              "ci_low": -0.040784906909540244,
+              "estimate": 0.01948239426508894,
+              "p_value": 0.5263404847866806,
+              "se": 0.030748623048280195
+            },
+            "gpt-5.5": {
+              "ci_high": 0.0,
+              "ci_low": 0.0,
+              "estimate": 0.0,
+              "p_value": 1.0,
+              "se": 0.0
+            }
+          },
+          "terms": {
+            "Intercept": {
+              "ci_high": 0.3912057739660535,
+              "ci_low": 0.1466969764079461,
+              "estimate": 0.2689513751869998,
+              "p_value": 1.6188187736076998e-05,
+              "se": 0.06237469325461924
+            },
+            "complexity": {
+              "ci_high": 0.08869796261907997,
+              "ci_low": 0.03367504548208409,
+              "estimate": 0.06118650405058203,
+              "p_value": 1.3059086199307401e-05,
+              "se": 0.014036458453315276
+            },
+            "domain:data-pipeline": {
+              "ci_high": 0.14206712145072894,
+              "ci_low": -0.05469245923045519,
+              "estimate": 0.043687331110136875,
+              "p_value": 0.3840962875317673,
+              "se": 0.05019377058193473
+            },
+            "domain:devtools": {
+              "ci_high": 0.20265073610730933,
+              "ci_low": -0.11985802979917702,
+              "estimate": 0.04139635315406616,
+              "p_value": 0.614851362895398,
+              "se": 0.08227264436389958
+            },
+            "domain:frontend": {
+              "ci_high": 0.025981140580130513,
+              "ci_low": -0.16070382253015933,
+              "estimate": -0.06736134097501441,
+              "p_value": 0.15722995881528212,
+              "se": 0.047623715079155575
+            },
+            "domain:full-stack": {
+              "ci_high": 0.02896573557088119,
+              "ci_low": -0.09862381543391915,
+              "estimate": -0.034829039931518986,
+              "p_value": 0.2845874992277371,
+              "se": 0.032548354848163354
+            },
+            "domain:infrastructure": {
+              "ci_high": 0.2203782351753616,
+              "ci_low": 0.025641022469159183,
+              "estimate": 0.1230096288222604,
+              "p_value": 0.013280930442979066,
+              "se": 0.049677860384235314
+            },
+            "reviewer:claude-haiku-4-5-20251001": {
+              "ci_high": 0.045876702236264444,
+              "ci_low": -0.0780684337880123,
+              "estimate": -0.01609586577587393,
+              "p_value": 0.610708568506036,
+              "se": 0.03161865714905019
+            },
+            "reviewer:claude-opus-4-7": {
+              "ci_high": 0.07974969543971812,
+              "ci_low": -0.040784906909540244,
+              "estimate": 0.01948239426508894,
+              "p_value": 0.5263404847866806,
+              "se": 0.030748623048280195
+            },
+            "reviewer:other_lt30": {
+              "ci_high": -0.008255671555459518,
+              "ci_low": -0.1393625284714467,
+              "estimate": -0.07380910001345312,
+              "p_value": 0.027325337549596318,
+              "se": 0.03344562676428245
+            },
+            "task_type:feature": {
+              "ci_high": -0.017789486150128014,
+              "ci_low": -0.1331273190742354,
+              "estimate": -0.0754584026121817,
+              "p_value": 0.010329085570968566,
+              "se": 0.02942291656227229
+            },
+            "task_type:infra": {
+              "ci_high": 0.007683533461111072,
+              "ci_low": -0.17259877388429146,
+              "estimate": -0.08245762021159019,
+              "p_value": 0.07298383921046847,
+              "se": 0.045990384526888396
+            },
+            "task_type:refactor": {
+              "ci_high": 0.13302926968064677,
+              "ci_low": -0.1033224357892106,
+              "estimate": 0.01485341694571808,
+              "p_value": 0.8054108107679003,
+              "se": 0.060293802415779946
+            },
+            "task_type:test": {
+              "ci_high": -0.028692357222289244,
+              "ci_low": -0.22999488488546088,
+              "estimate": -0.12934362105387506,
+              "p_value": 0.011777846941828374,
+              "se": 0.05135268562836011
+            }
+          }
+        },
+        "intervention_logit": {
+          "available": true,
+          "kind": "logit",
+          "n": 443,
+          "reviewer_effects": {
+            "claude-haiku-4-5-20251001": {
+              "ci_high": 1.0870274963665298,
+              "ci_low": -0.00650518828610136,
+              "estimate": 0.5402611540402142,
+              "p_value": 0.052784377603607435,
+              "se": 0.27896241955424267
+            },
+            "claude-opus-4-7": {
+              "ci_high": 0.7407001009798122,
+              "ci_low": -0.1686941827165317,
+              "estimate": 0.28600295913164026,
+              "p_value": 0.2176379465853746,
+              "se": 0.23198833767763877
+            },
+            "gpt-5.5": {
+              "ci_high": 0.0,
+              "ci_low": 0.0,
+              "estimate": 0.0,
+              "p_value": 1.0,
+              "se": 0.0
+            }
+          },
+          "terms": {
+            "Intercept": {
+              "ci_high": 0.5990253627436253,
+              "ci_low": -1.6070027181327353,
+              "estimate": -0.503988677694555,
+              "p_value": 0.37048656991208717,
+              "se": 0.5627622655296838
+            },
+            "complexity": {
+              "ci_high": 0.18524850275733867,
+              "ci_low": -0.31694955678882847,
+              "estimate": -0.0658505270157449,
+              "p_value": 0.6072460554028762,
+              "se": 0.12811174988422633
+            },
+            "domain:data-pipeline": {
+              "ci_high": 1.4972227580424424,
+              "ci_low": -0.5903174407381417,
+              "estimate": 0.4534526586521503,
+              "p_value": 0.3944932745030556,
+              "se": 0.532535764995047
+            },
+            "domain:devtools": {
+              "ci_high": 2.440415824013121,
+              "ci_low": -1.6602514589696447,
+              "estimate": 0.3900821825217382,
+              "p_value": 0.709225898506759,
+              "se": 1.0460885925976444
+            },
+            "domain:frontend": {
+              "ci_high": 1.4798087200952796,
+              "ci_low": -0.04574700133943621,
+              "estimate": 0.7170308593779218,
+              "p_value": 0.06540927432958243,
+              "se": 0.38917237791701936
+            },
+            "domain:full-stack": {
+              "ci_high": 1.1617930331372985,
+              "ci_low": 0.015997226076381765,
+              "estimate": 0.5888951296068402,
+              "p_value": 0.04393297251049644,
+              "se": 0.2922948487400298
+            },
+            "domain:infrastructure": {
+              "ci_high": 555.9940204615476,
+              "ci_low": -577.7984269540685,
+              "estimate": -10.902203246260488,
+              "p_value": 0.9699320366875737,
+              "se": 289.2327671978613
+            },
+            "reviewer:claude-haiku-4-5-20251001": {
+              "ci_high": 1.0870274963665298,
+              "ci_low": -0.00650518828610136,
+              "estimate": 0.5402611540402142,
+              "p_value": 0.052784377603607435,
+              "se": 0.27896241955424267
+            },
+            "reviewer:claude-opus-4-7": {
+              "ci_high": 0.7407001009798122,
+              "ci_low": -0.1686941827165317,
+              "estimate": 0.28600295913164026,
+              "p_value": 0.2176379465853746,
+              "se": 0.23198833767763877
+            },
+            "reviewer:other_lt30": {
+              "ci_high": 0.6808492789074945,
+              "ci_low": -0.892615134963423,
+              "estimate": -0.10588292802796428,
+              "p_value": 0.7919432587313424,
+              "se": 0.4013939831303361
+            },
+            "task_type:feature": {
+              "ci_high": 1.0831699096588312,
+              "ci_low": 0.1505316909803086,
+              "estimate": 0.6168508003195698,
+              "p_value": 0.009522459986971654,
+              "se": 0.2379179129281945
+            },
+            "task_type:infra": {
+              "ci_high": 1.1655702352174555,
+              "ci_low": -0.669985908808439,
+              "estimate": 0.2477921632045083,
+              "p_value": 0.5966784431432082,
+              "se": 0.4682541183739527
+            },
+            "task_type:refactor": {
+              "ci_high": 2.303531948625602,
+              "ci_low": -0.5694626061884356,
+              "estimate": 0.8670346712185832,
+              "p_value": 0.2368059259940969,
+              "se": 0.7329067741872545
+            },
+            "task_type:test": {
+              "ci_high": 1.7804240471746238,
+              "ci_low": -0.6735942882393284,
+              "estimate": 0.5534148794676477,
+              "p_value": 0.3766887075895544,
+              "se": 0.6260250855647838
+            }
+          }
+        },
+        "intervention_rate": {
+          "available": true,
+          "kind": "ols",
+          "n": 443,
+          "reviewer_effects": {
+            "claude-haiku-4-5-20251001": {
+              "ci_high": 0.25905888062463467,
+              "ci_low": -0.00274492097090287,
+              "estimate": 0.12815697982686589,
+              "p_value": 0.05499696838363621,
+              "se": 0.06678668408049426
+            },
+            "claude-opus-4-7": {
+              "ci_high": 0.17799101700902364,
+              "ci_low": -0.04074146243264741,
+              "estimate": 0.06862477728818811,
+              "p_value": 0.21875159038406355,
+              "se": 0.055799101898385474
+            },
+            "gpt-5.5": {
+              "ci_high": 0.0,
+              "ci_low": 0.0,
+              "estimate": 0.0,
+              "p_value": 1.0,
+              "se": 0.0
+            }
+          },
+          "terms": {
+            "Intercept": {
+              "ci_high": 0.6391784168389891,
+              "ci_low": 0.12179058008793758,
+              "estimate": 0.3804844984634633,
+              "p_value": 0.003942215117825887,
+              "se": 0.13198669304873764
+            },
+            "complexity": {
+              "ci_high": 0.043875507470529145,
+              "ci_low": -0.07586565657447328,
+              "estimate": -0.015995074551972063,
+              "p_value": 0.6005322714758605,
+              "se": 0.030546215317602658
+            },
+            "domain:data-pipeline": {
+              "ci_high": 0.36021531341780916,
+              "ci_low": -0.14217725629883632,
+              "estimate": 0.10901902855948643,
+              "p_value": 0.39497005205459645,
+              "se": 0.12816136982567486
+            },
+            "domain:devtools": {
+              "ci_high": 0.6094821572048572,
+              "ci_low": -0.4229597527622071,
+              "estimate": 0.09326120222132508,
+              "p_value": 0.723266676810052,
+              "se": 0.26337803825690415
+            },
+            "domain:frontend": {
+              "ci_high": 0.3512764352222819,
+              "ci_low": -0.0070958686805416005,
+              "estimate": 0.17209028327087017,
+              "p_value": 0.05978404077669364,
+              "se": 0.09142150609765907
+            },
+            "domain:full-stack": {
+              "ci_high": 0.27665720364199653,
+              "ci_low": 0.0055725805528279715,
+              "estimate": 0.14111489209741226,
+              "p_value": 0.041292402127175,
+              "se": 0.06915424058397159
+            },
+            "domain:infrastructure": {
+              "ci_high": -0.15172515003103507,
+              "ci_low": -0.601459942671671,
+              "estimate": -0.37659254635135303,
+              "p_value": 0.0010290045990650754,
+              "se": 0.11472826342873366
+            },
+            "reviewer:claude-haiku-4-5-20251001": {
+              "ci_high": 0.25905888062463467,
+              "ci_low": -0.00274492097090287,
+              "estimate": 0.12815697982686589,
+              "p_value": 0.05499696838363621,
+              "se": 0.06678668408049426
+            },
+            "reviewer:claude-opus-4-7": {
+              "ci_high": 0.17799101700902364,
+              "ci_low": -0.04074146243264741,
+              "estimate": 0.06862477728818811,
+              "p_value": 0.21875159038406355,
+              "se": 0.055799101898385474
+            },
+            "reviewer:other_lt30": {
+              "ci_high": 0.17195478404027803,
+              "ci_low": -0.22489798635621555,
+              "estimate": -0.026471601157968747,
+              "p_value": 0.7937231205789241,
+              "se": 0.10123795163175857
+            },
+            "task_type:feature": {
+              "ci_high": 0.2611578565010022,
+              "ci_low": 0.03516526034980973,
+              "estimate": 0.14816155842540596,
+              "p_value": 0.010170846977609171,
+              "se": 0.0576511724875491
+            },
+            "task_type:infra": {
+              "ci_high": 0.2718249108573952,
+              "ci_low": -0.15164821866584444,
+              "estimate": 0.060088346095775375,
+              "p_value": 0.5780570908477525,
+              "se": 0.10802885957225501
+            },
+            "task_type:refactor": {
+              "ci_high": 0.5175945157298132,
+              "ci_low": -0.11247507242544563,
+              "estimate": 0.20255972165218378,
+              "p_value": 0.2075855382127152,
+              "se": 0.16073203779470888
+            },
+            "task_type:test": {
+              "ci_high": 0.38860130950947,
+              "ci_low": -0.12445206018860078,
+              "estimate": 0.13207462466043463,
+              "p_value": 0.31291698243410093,
+              "se": 0.13088096165767113
+            }
+          }
+        },
+        "placebo_prompt_bytes": {
+          "available": true,
+          "kind": "ols",
+          "n": 443,
+          "reviewer_effects": {
+            "claude-haiku-4-5-20251001": {
+              "ci_high": 18851.949900997657,
+              "ci_low": -38196.554308439154,
+              "estimate": -9672.302203720748,
+              "p_value": 0.5062952809992811,
+              "se": 14553.189849346125
+            },
+            "claude-opus-4-7": {
+              "ci_high": 23829.498038734797,
+              "ci_low": -16051.315675469006,
+              "estimate": 3889.091181632896,
+              "p_value": 0.7022611273436241,
+              "se": 10173.676967909134
+            },
+            "gpt-5.5": {
+              "ci_high": 0.0,
+              "ci_low": 0.0,
+              "estimate": 0.0,
+              "p_value": 1.0,
+              "se": 0.0
+            }
+          },
+          "terms": {
+            "Intercept": {
+              "ci_high": 43752.232554164126,
+              "ci_low": -45717.69745492598,
+              "estimate": -982.7324503809252,
+              "p_value": 0.9656560570554251,
+              "se": 22823.96173701278
+            },
+            "complexity": {
+              "ci_high": 44393.738840534366,
+              "ci_low": 26918.426457438283,
+              "estimate": 35656.082648986325,
+              "p_value": 1.3322676295501878e-15,
+              "se": 4457.9878528306335
+            },
+            "domain:data-pipeline": {
+              "ci_high": 40364.954443822804,
+              "ci_low": -17627.330225812482,
+              "estimate": 11368.812109005159,
+              "p_value": 0.44220378311353103,
+              "se": 14793.950170825328
+            },
+            "domain:devtools": {
+              "ci_high": 76352.25417720844,
+              "ci_low": -41143.275685158165,
+              "estimate": 17604.489246025132,
+              "p_value": 0.5569766771091336,
+              "se": 29973.349454685358
+            },
+            "domain:frontend": {
+              "ci_high": 57163.04754982576,
+              "ci_low": -2568.9031620692804,
+              "estimate": 27297.07219387824,
+              "p_value": 0.07322723228457706,
+              "se": 15237.742528544653
+            },
+            "domain:full-stack": {
+              "ci_high": 53462.117810595184,
+              "ci_low": 14769.592178327803,
+              "estimate": 34115.85499446149,
+              "p_value": 0.0005475837300152886,
+              "se": 9870.542253129433
+            },
+            "domain:infrastructure": {
+              "ci_high": 18241.410851927318,
+              "ci_low": -49247.35580778016,
+              "estimate": -15502.972477926418,
+              "p_value": 0.36786984926943367,
+              "se": 17216.522107068235
+            },
+            "reviewer:claude-haiku-4-5-20251001": {
+              "ci_high": 18851.949900997657,
+              "ci_low": -38196.554308439154,
+              "estimate": -9672.302203720748,
+              "p_value": 0.5062952809992811,
+              "se": 14553.189849346125
+            },
+            "reviewer:claude-opus-4-7": {
+              "ci_high": 23829.498038734797,
+              "ci_low": -16051.315675469006,
+              "estimate": 3889.091181632896,
+              "p_value": 0.7022611273436241,
+              "se": 10173.676967909134
+            },
+            "reviewer:other_lt30": {
+              "ci_high": -6551.689433308238,
+              "ci_low": -44840.84061205863,
+              "estimate": -25696.265022683434,
+              "p_value": 0.008519554029259524,
+              "se": 9767.64060682408
+            },
+            "task_type:feature": {
+              "ci_high": -8332.872458450725,
+              "ci_low": -45699.23933209907,
+              "estimate": -27016.055895274894,
+              "p_value": 0.004594371708708689,
+              "se": 9532.23644735927
+            },
+            "task_type:infra": {
+              "ci_high": -3567.0633651518656,
+              "ci_low": -64112.187970125255,
+              "estimate": -33839.62566763856,
+              "p_value": 0.028455420627330197,
+              "se": 15445.184848207498
+            },
+            "task_type:refactor": {
+              "ci_high": 62742.067594458786,
+              "ci_low": -49516.92152375383,
+              "estimate": 6612.573035352476,
+              "p_value": 0.8173877452268217,
+              "se": 28637.497224033832
+            },
+            "task_type:test": {
+              "ci_high": -12070.169842669406,
+              "ci_low": -64687.19337083046,
+              "estimate": -38378.68160674993,
+              "p_value": 0.0042466414899950955,
+              "se": 13422.710083714554
+            }
+          }
+        },
+        "reviewer_score": {
+          "available": true,
+          "kind": "ols",
+          "n": 443,
+          "reviewer_effects": {
+            "claude-haiku-4-5-20251001": {
+              "ci_high": 0.03207794990414076,
+              "ci_low": -0.049243055642781336,
+              "estimate": -0.008582552869320293,
+              "p_value": 0.6790838542599511,
+              "se": 0.020745154476255637
+            },
+            "claude-opus-4-7": {
+              "ci_high": 0.044103209285215814,
+              "ci_low": -0.02361443420190731,
+              "estimate": 0.010244387541654253,
+              "p_value": 0.5531669550025196,
+              "se": 0.017274909052837534
+            },
+            "gpt-5.5": {
+              "ci_high": 0.0,
+              "ci_low": 0.0,
+              "estimate": 0.0,
+              "p_value": 1.0,
+              "se": 0.0
+            }
+          },
+          "terms": {
+            "Intercept": {
+              "ci_high": 0.6788652476003123,
+              "ci_low": 0.504223333248808,
+              "estimate": 0.5915442904245601,
+              "p_value": 0.0,
+              "se": 0.04455150876313887
+            },
+            "complexity": {
+              "ci_high": 0.04160772756458676,
+              "ci_low": 0.001912994623218093,
+              "estimate": 0.021760361093902426,
+              "p_value": 0.031641121659431226,
+              "se": 0.010126207383002211
+            },
+            "domain:data-pipeline": {
+              "ci_high": 0.049813853866810504,
+              "ci_low": -0.09881052351388434,
+              "estimate": -0.024498334823536916,
+              "p_value": 0.5181829529987703,
+              "se": 0.03791438198487113
+            },
+            "domain:devtools": {
+              "ci_high": 0.20152184159356068,
+              "ci_low": -0.10186305374306509,
+              "estimate": 0.0498293939252478,
+              "p_value": 0.5196794208379403,
+              "se": 0.07739410595322085
+            },
+            "domain:frontend": {
+              "ci_high": 0.040087381356300994,
+              "ci_low": -0.08031169720356533,
+              "estimate": -0.020112157923632173,
+              "p_value": 0.5125840028646917,
+              "se": 0.030714050653027125
+            },
+            "domain:full-stack": {
+              "ci_high": 0.04704565738153613,
+              "ci_low": -0.03928756239850077,
+              "estimate": 0.0038790474915176803,
+              "p_value": 0.8601918476184718,
+              "se": 0.022023780556131863
+            },
+            "domain:infrastructure": {
+              "ci_high": -0.03237194677304464,
+              "ci_low": -0.18674721688761542,
+              "estimate": -0.10955958183033003,
+              "p_value": 0.005402335868508246,
+              "se": 0.03938144645779867
+            },
+            "reviewer:claude-haiku-4-5-20251001": {
+              "ci_high": 0.03207794990414076,
+              "ci_low": -0.049243055642781336,
+              "estimate": -0.008582552869320293,
+              "p_value": 0.6790838542599511,
+              "se": 0.020745154476255637
+            },
+            "reviewer:claude-opus-4-7": {
+              "ci_high": 0.044103209285215814,
+              "ci_low": -0.02361443420190731,
+              "estimate": 0.010244387541654253,
+              "p_value": 0.5531669550025196,
+              "se": 0.017274909052837534
+            },
+            "reviewer:other_lt30": {
+              "ci_high": 0.08772834505925316,
+              "ci_low": -0.03538917842612503,
+              "estimate": 0.026169583316564063,
+              "p_value": 0.4047170757217682,
+              "se": 0.03140753150137199
+            },
+            "task_type:feature": {
+              "ci_high": 0.020461110088757586,
+              "ci_low": -0.04758508704888516,
+              "estimate": -0.013561988480063788,
+              "p_value": 0.43463902351319605,
+              "se": 0.01735872375960274
+            },
+            "task_type:infra": {
+              "ci_high": 0.051142000739424064,
+              "ci_low": -0.08919430667910952,
+              "estimate": -0.01902615296984273,
+              "p_value": 0.5951030855624959,
+              "se": 0.0358000784230953
+            },
+            "task_type:refactor": {
+              "ci_high": 0.09227803998414442,
+              "ci_low": -0.0853228877317669,
+              "estimate": 0.0034775761261887682,
+              "p_value": 0.9388169304431797,
+              "se": 0.04530635911120187
+            },
+            "task_type:test": {
+              "ci_high": 0.08549215043490797,
+              "ci_low": -0.09582671332939242,
+              "estimate": -0.005167281447242228,
+              "p_value": 0.9110506694048528,
+              "se": 0.04625481218477051
+            }
+          }
+        },
+        "score": {
+          "available": true,
+          "kind": "ols",
+          "n": 443,
+          "reviewer_effects": {
+            "claude-haiku-4-5-20251001": {
+              "ci_high": 0.024592625028289586,
+              "ci_low": -0.06315339838595749,
+              "estimate": -0.01928038667883395,
+              "p_value": 0.3890510875371396,
+              "se": 0.022384189646491602
+            },
+            "claude-opus-4-7": {
+              "ci_high": 0.03895897097204347,
+              "ci_low": -0.03730354545217365,
+              "estimate": 0.000827712759934907,
+              "p_value": 0.9660637663198204,
+              "se": 0.019454723577606407
+            },
+            "gpt-5.5": {
+              "ci_high": 0.0,
+              "ci_low": 0.0,
+              "estimate": 0.0,
+              "p_value": 1.0,
+              "se": 0.0
+            }
+          },
+          "terms": {
+            "Intercept": {
+              "ci_high": 0.8601689949578746,
+              "ci_low": 0.6742033631014219,
+              "estimate": 0.7671861790296483,
+              "p_value": 0.0,
+              "se": 0.04744021220827871
+            },
+            "complexity": {
+              "ci_high": 0.030703414879301512,
+              "ci_low": -0.012535675509062668,
+              "estimate": 0.009083869685119423,
+              "p_value": 0.41020559873651496,
+              "se": 0.011030380201113311
+            },
+            "domain:data-pipeline": {
+              "ci_high": 0.04626873430980662,
+              "ci_low": -0.14174840520209364,
+              "estimate": -0.04773983544614352,
+              "p_value": 0.31957306212737224,
+              "se": 0.04796355599793374
+            },
+            "domain:devtools": {
+              "ci_high": 0.1796239856856292,
+              "ci_low": -0.1839812167618315,
+              "estimate": -0.0021786155381011544,
+              "p_value": 0.9812614186869473,
+              "se": 0.0927564291957808
+            },
+            "domain:frontend": {
+              "ci_high": 0.010496118009222247,
+              "ci_low": -0.12068472870404463,
+              "estimate": -0.05509430534741119,
+              "p_value": 0.09969157974039966,
+              "se": 0.03346450171256808
+            },
+            "domain:full-stack": {
+              "ci_high": 0.020967325582542013,
+              "ci_low": -0.06885275889198471,
+              "estimate": -0.023942716654721346,
+              "p_value": 0.29605661785451853,
+              "se": 0.02291328685574661
+            },
+            "domain:infrastructure": {
+              "ci_high": 0.11855156485729737,
+              "ci_low": -0.03460499351735711,
+              "estimate": 0.04197328566997013,
+              "p_value": 0.28269061709794663,
+              "se": 0.0390705506057792
+            },
+            "reviewer:claude-haiku-4-5-20251001": {
+              "ci_high": 0.024592625028289586,
+              "ci_low": -0.06315339838595749,
+              "estimate": -0.01928038667883395,
+              "p_value": 0.3890510875371396,
+              "se": 0.022384189646491602
+            },
+            "reviewer:claude-opus-4-7": {
+              "ci_high": 0.03895897097204347,
+              "ci_low": -0.03730354545217365,
+              "estimate": 0.000827712759934907,
+              "p_value": 0.9660637663198204,
+              "se": 0.019454723577606407
+            },
+            "reviewer:other_lt30": {
+              "ci_high": 0.08840064594530933,
+              "ci_low": -0.039485826586933725,
+              "estimate": 0.024457409679187803,
+              "p_value": 0.4534516236997468,
+              "se": 0.03262410013577629
+            },
+            "task_type:feature": {
+              "ci_high": 0.020859018510510464,
+              "ci_low": -0.05653026915858492,
+              "estimate": -0.017835625324037225,
+              "p_value": 0.36629877207215733,
+              "se": 0.019742165221708005
+            },
+            "task_type:infra": {
+              "ci_high": 0.04828406109012695,
+              "ci_low": -0.09927394797032538,
+              "estimate": -0.025494943440099213,
+              "p_value": 0.49821933340346014,
+              "se": 0.03764234925011539
+            },
+            "task_type:refactor": {
+              "ci_high": 0.0925178161935033,
+              "ci_low": -0.1607793517873088,
+              "estimate": -0.034130767796902745,
+              "p_value": 0.5973576645162688,
+              "se": 0.06461662448490105
+            },
+            "task_type:test": {
+              "ci_high": 0.06321491826994685,
+              "ci_low": -0.12406155172441305,
+              "estimate": -0.030423316727233106,
+              "p_value": 0.5242490543551539,
+              "se": 0.04777460969243875
+            }
+          }
+        },
+        "success_logit": {
+          "available": true,
+          "kind": "logit",
+          "n": 443,
+          "reviewer_effects": {
+            "claude-haiku-4-5-20251001": {
+              "ci_high": 0.43421747360600865,
+              "ci_low": -0.6322734923335158,
+              "estimate": -0.0990280093637536,
+              "p_value": 0.7158670521951371,
+              "se": 0.2720640219233481
+            },
+            "claude-opus-4-7": {
+              "ci_high": 0.6091260679381051,
+              "ci_low": -0.29723606703485983,
+              "estimate": 0.1559450004516226,
+              "p_value": 0.5000193314099872,
+              "se": 0.23121483035024615
+            },
+            "gpt-5.5": {
+              "ci_high": 0.0,
+              "ci_low": 0.0,
+              "estimate": 0.0,
+              "p_value": 1.0,
+              "se": 0.0
+            }
+          },
+          "terms": {
+            "Intercept": {
+              "ci_high": 0.8489432123329006,
+              "ci_low": -1.349791125313925,
+              "estimate": -0.2504239564905122,
+              "p_value": 0.6552600809284725,
+              "se": 0.5609016167466392
+            },
+            "complexity": {
+              "ci_high": 0.501770476280111,
+              "ci_low": -0.003094429738754123,
+              "estimate": 0.24933802327067844,
+              "p_value": 0.052870953439223545,
+              "se": 0.1287920678619554
+            },
+            "domain:data-pipeline": {
+              "ci_high": 0.38772280166310413,
+              "ci_low": -1.6783361662845029,
+              "estimate": -0.6453066823106993,
+              "p_value": 0.22081604361172613,
+              "se": 0.5270558591703078
+            },
+            "domain:devtools": {
+              "ci_high": 1.4308533453517032,
+              "ci_low": -2.71124685433229,
+              "estimate": -0.6401967544902933,
+              "p_value": 0.5446015583557084,
+              "se": 1.0566582142051002
+            },
+            "domain:frontend": {
+              "ci_high": 0.2732694253969166,
+              "ci_low": -1.253517740450543,
+              "estimate": -0.4901241575268132,
+              "p_value": 0.20825240490210017,
+              "se": 0.38948652189986216
+            },
+            "domain:full-stack": {
+              "ci_high": 0.19164505172561386,
+              "ci_low": -0.97297404336699,
+              "estimate": -0.3906644958206881,
+              "p_value": 0.18852989763638095,
+              "se": 0.2970967079317867
+            },
+            "domain:infrastructure": {
+              "ci_high": 566.5933179494635,
+              "ci_low": -543.6676300776809,
+              "estimate": 11.462843935891291,
+              "p_value": 0.967716924909634,
+              "se": 283.229833680394
+            },
+            "reviewer:claude-haiku-4-5-20251001": {
+              "ci_high": 0.43421747360600865,
+              "ci_low": -0.6322734923335158,
+              "estimate": -0.0990280093637536,
+              "p_value": 0.7158670521951371,
+              "se": 0.2720640219233481
+            },
+            "reviewer:claude-opus-4-7": {
+              "ci_high": 0.6091260679381051,
+              "ci_low": -0.29723606703485983,
+              "estimate": 0.1559450004516226,
+              "p_value": 0.5000193314099872,
+              "se": 0.23121483035024615
+            },
+            "reviewer:other_lt30": {
+              "ci_high": 0.9829715591721752,
+              "ci_low": -0.6150607801947604,
+              "estimate": 0.18395538948870735,
+              "p_value": 0.6518125183942971,
+              "se": 0.40766131106299375
+            },
+            "task_type:feature": {
+              "ci_high": 0.23119653786002053,
+              "ci_low": -0.6978358687759489,
+              "estimate": -0.23331966545796423,
+              "p_value": 0.32487994924765595,
+              "se": 0.23699806291733916
+            },
+            "task_type:infra": {
+              "ci_high": 0.09308413186123576,
+              "ci_low": -1.7604055173396604,
+              "estimate": -0.8336606927392123,
+              "p_value": 0.07787795602721692,
+              "se": 0.47282899214308577
+            },
+            "task_type:refactor": {
+              "ci_high": 0.8361986342727854,
+              "ci_low": -1.8226530496193853,
+              "estimate": -0.4932272076732999,
+              "p_value": 0.4671187172731548,
+              "se": 0.6782784907888191
+            },
+            "task_type:test": {
+              "ci_high": 1.1249932368388391,
+              "ci_low": -1.3001761651577577,
+              "estimate": -0.08759146415945933,
+              "p_value": 0.887410770203013,
+              "se": 0.618665663774642
+            }
+          }
+        }
+      },
+      "n": 443
+    },
+    "latest_three_schema_versions": {
+      "available": true,
+      "baseline": "claude-opus-4-7",
+      "contrasts": {
+        "cost": {
+          "available": true,
+          "kind": "ols",
+          "n": 45,
+          "reviewer_effects": {
+            "claude-haiku-4-5-20251001": {
+              "ci_high": 2.774937953991656,
+              "ci_low": -1.1653209337602348,
+              "estimate": 0.8048085101157105,
+              "p_value": 0.42332238004311873,
+              "se": 1.0051680836101762
+            },
+            "claude-opus-4-7": {
+              "ci_high": 0.0,
+              "ci_low": 0.0,
+              "estimate": 0.0,
+              "p_value": 1.0,
+              "se": 0.0
+            },
+            "gpt-5.5": {
+              "ci_high": 2.122124801306085,
+              "ci_low": -0.9741347225127439,
+              "estimate": 0.5739950393966706,
+              "p_value": 0.4674080202059465,
+              "se": 0.7898621234231707
+            }
+          },
+          "terms": {
+            "Intercept": {
+              "ci_high": 18.842275409043623,
+              "ci_low": 11.584781164876919,
+              "estimate": 15.21352828696027,
+              "p_value": 2.220446049250313e-16,
+              "se": 1.8514015928996697
+            },
+            "complexity": {
+              "ci_high": 1.1462367860857134,
+              "ci_low": -0.2852288721234299,
+              "estimate": 0.4305039569811418,
+              "p_value": 0.23843225369728271,
+              "se": 0.3651698107676386
+            },
+            "domain:data-pipeline": {
+              "ci_high": -0.08731862984937733,
+              "ci_low": -4.407958002484177,
+              "estimate": -2.2476383161667775,
+              "p_value": 0.04142789150189374,
+              "se": 1.1022039215905104
+            },
+            "domain:frontend": {
+              "ci_high": 0.7755625826008009,
+              "ci_low": -1.6599707890063602,
+              "estimate": -0.4422041032027796,
+              "p_value": 0.476632516184365,
+              "se": 0.6213095335732554
+            },
+            "domain:full-stack": {
+              "ci_high": -1.0356303808755105,
+              "ci_low": -2.2035516855114388,
+              "estimate": -1.6195910331934746,
+              "p_value": 5.449606876872792e-08,
+              "se": 0.29793910832549186
+            },
+            "reviewer:claude-haiku-4-5-20251001": {
+              "ci_high": 2.774937953991656,
+              "ci_low": -1.1653209337602348,
+              "estimate": 0.8048085101157105,
+              "p_value": 0.42332238004311873,
+              "se": 1.0051680836101762
+            },
+            "reviewer:gpt-5.5": {
+              "ci_high": 2.122124801306085,
+              "ci_low": -0.9741347225127439,
+              "estimate": 0.5739950393966706,
+              "p_value": 0.4674080202059465,
+              "se": 0.7898621234231707
+            },
+            "reviewer:other_lt30": {
+              "ci_high": 2.90748920007701,
+              "ci_low": -1.83666171509881,
+              "estimate": 0.5354137424890999,
+              "p_value": 0.6581983293680207,
+              "se": 1.210242580401995
+            },
+            "task_type:feature": {
+              "ci_high": 0.46226863135402774,
+              "ci_low": -1.7301424294356527,
+              "estimate": -0.6339368990408124,
+              "p_value": 0.25701684083424525,
+              "se": 0.5592885359157348
+            }
+          }
+        },
+        "estimated_cost": {
+          "available": true,
+          "kind": "ols",
+          "n": 45,
+          "reviewer_effects": {
+            "claude-haiku-4-5-20251001": {
+              "ci_high": 0.08837026130863444,
+              "ci_low": -0.20886065855728947,
+              "estimate": -0.06024519862432752,
+              "p_value": 0.4268824565210796,
+              "se": 0.0758242142515112
+            },
+            "claude-opus-4-7": {
+              "ci_high": 0.0,
+              "ci_low": 0.0,
+              "estimate": 0.0,
+              "p_value": 1.0,
+              "se": 0.0
+            },
+            "gpt-5.5": {
+              "ci_high": 0.07827284138955845,
+              "ci_low": -0.2514535775699016,
+              "estimate": -0.0865903680901716,
+              "p_value": 0.30327199473514077,
+              "se": 0.08411388238761737
+            }
+          },
+          "terms": {
+            "Intercept": {
+              "ci_high": 1.2277137342470952,
+              "ci_low": 0.4209517448254851,
+              "estimate": 0.8243327395362902,
+              "p_value": 6.19191595061519e-05,
+              "se": 0.2058066299544924
+            },
+            "complexity": {
+              "ci_high": 0.09543121537312263,
+              "ci_low": -0.061207285829084884,
+              "estimate": 0.017111964772018876,
+              "p_value": 0.6684762568511278,
+              "se": 0.03995880132709376
+            },
+            "domain:data-pipeline": {
+              "ci_high": -0.34354191716690824,
+              "ci_low": -0.5971570984385639,
+              "estimate": -0.47034950780273604,
+              "p_value": 3.597122599785507e-13,
+              "se": 0.06469775032440195
+            },
+            "domain:frontend": {
+              "ci_high": -0.3022526094665014,
+              "ci_low": -0.5894933501158099,
+              "estimate": -0.44587297979115564,
+              "p_value": 1.1658709553330482e-09,
+              "se": 0.07327569914523176
+            },
+            "domain:full-stack": {
+              "ci_high": -0.3629487776185548,
+              "ci_low": -0.5604350788416069,
+              "estimate": -0.4616919282300809,
+              "p_value": 0.0,
+              "se": 0.0503791584752684
+            },
+            "reviewer:claude-haiku-4-5-20251001": {
+              "ci_high": 0.08837026130863444,
+              "ci_low": -0.20886065855728947,
+              "estimate": -0.06024519862432752,
+              "p_value": 0.4268824565210796,
+              "se": 0.0758242142515112
+            },
+            "reviewer:gpt-5.5": {
+              "ci_high": 0.07827284138955845,
+              "ci_low": -0.2514535775699016,
+              "estimate": -0.0865903680901716,
+              "p_value": 0.30327199473514077,
+              "se": 0.08411388238761737
+            },
+            "reviewer:other_lt30": {
+              "ci_high": -0.4349127823612895,
+              "ci_low": -0.8319306173559853,
+              "estimate": -0.6334216998586374,
+              "p_value": 3.996611930290328e-10,
+              "se": 0.10128005994762648
+            },
+            "task_type:feature": {
+              "ci_high": 0.23855347869431748,
+              "ci_low": -0.00649420955912014,
+              "estimate": 0.11602963456759867,
+              "p_value": 0.06343747192949056,
+              "se": 0.0625121653707749
+            }
+          }
+        },
+        "intervention_logit": {
+          "available": true,
+          "kind": "logit",
+          "n": 45,
+          "reviewer_effects": {
+            "claude-haiku-4-5-20251001": {
+              "ci_high": 3.3783763196469945,
+              "ci_low": -1.425685090327587,
+              "estimate": 0.9763456146597036,
+              "p_value": 0.4256399053570916,
+              "se": 1.2255258698914748
+            },
+            "claude-opus-4-7": {
+              "ci_high": 0.0,
+              "ci_low": 0.0,
+              "estimate": 0.0,
+              "p_value": 1.0,
+              "se": 0.0
+            },
+            "gpt-5.5": {
+              "ci_high": 3.998560720893111,
+              "ci_low": -0.5916147683861686,
+              "estimate": 1.7034729762534713,
+              "p_value": 0.14573508969495874,
+              "se": 1.1709631350202243
+            }
+          },
+          "terms": {
+            "Intercept": {
+              "ci_high": 369.97170008832796,
+              "ci_low": -350.787826202433,
+              "estimate": 9.591936942947505,
+              "p_value": 0.9583950407125332,
+              "se": 183.86722609458187
+            },
+            "complexity": {
+              "ci_high": 1.486879607620307,
+              "ci_low": -1.4883649078465875,
+              "estimate": -0.0007426501131403006,
+              "p_value": 0.9992192937656226,
+              "se": 0.7589909478231874
+            },
+            "domain:data-pipeline": {
+              "ci_high": 351.0870079366501,
+              "ci_low": -369.566345459684,
+              "estimate": -9.239668761516937,
+              "p_value": 0.9599157915263483,
+              "se": 183.8401411725342
+            },
+            "domain:frontend": {
+              "ci_high": 349.48438276951185,
+              "ci_low": -371.1552420506745,
+              "estimate": -10.835429640581323,
+              "p_value": 0.9529994728198066,
+              "se": 183.83663898474143
+            },
+            "domain:full-stack": {
+              "ci_high": 350.6948162866368,
+              "ci_low": -369.9411354584242,
+              "estimate": -9.623159585893674,
+              "p_value": 0.9582525850479038,
+              "se": 183.83570197578086
+            },
+            "reviewer:claude-haiku-4-5-20251001": {
+              "ci_high": 3.3783763196469945,
+              "ci_low": -1.425685090327587,
+              "estimate": 0.9763456146597036,
+              "p_value": 0.4256399053570916,
+              "se": 1.2255258698914748
+            },
+            "reviewer:gpt-5.5": {
+              "ci_high": 3.998560720893111,
+              "ci_low": -0.5916147683861686,
+              "estimate": 1.7034729762534713,
+              "p_value": 0.14573508969495874,
+              "se": 1.1709631350202243
+            },
+            "reviewer:other_lt30": {
+              "ci_high": 934.3371734892991,
+              "ci_low": -926.530150341281,
+              "estimate": 3.903511574009028,
+              "p_value": 0.9934391320658704,
+              "se": 474.71105199759694
+            },
+            "task_type:feature": {
+              "ci_high": 2.220761389788602,
+              "ci_low": -2.101265907672044,
+              "estimate": 0.059747741058279076,
+              "p_value": 0.9567836982902722,
+              "se": 1.102557984046083
+            }
+          }
+        },
+        "intervention_rate": {
+          "available": true,
+          "kind": "ols",
+          "n": 45,
+          "reviewer_effects": {
+            "claude-haiku-4-5-20251001": {
+              "ci_high": 0.7445066690374199,
+              "ci_low": -0.272032461390732,
+              "estimate": 0.23623710382334395,
+              "p_value": 0.36230454850091465,
+              "se": 0.2593212067418755
+            },
+            "claude-opus-4-7": {
+              "ci_high": 0.0,
+              "ci_low": 0.0,
+              "estimate": 0.0,
+              "p_value": 1.0,
+              "se": 0.0
+            },
+            "gpt-5.5": {
+              "ci_high": 0.8266355564372714,
+              "ci_low": -0.0910143294215553,
+              "estimate": 0.36781061350785804,
+              "p_value": 0.11613465544024404,
+              "se": 0.23409435863745578
+            }
+          },
+          "terms": {
+            "Intercept": {
+              "ci_high": 2.04069992270488,
+              "ci_low": -0.5547539713913278,
+              "estimate": 0.7429729756567761,
+              "p_value": 0.2618043222285116,
+              "se": 0.6621055852286244
+            },
+            "complexity": {
+              "ci_high": 0.2773044703298801,
+              "ci_low": -0.26690951006992353,
+              "estimate": 0.0051974801299782825,
+              "p_value": 0.970136009995175,
+              "se": 0.13883009704076624
+            },
+            "domain:data-pipeline": {
+              "ci_high": 0.4517956125716014,
+              "ci_low": -0.8524375429778264,
+              "estimate": -0.2003209652031125,
+              "p_value": 0.5471180873630179,
+              "se": 0.33271253968097647
+            },
+            "domain:frontend": {
+              "ci_high": -0.07723924044876568,
+              "ci_low": -0.9853957855174424,
+              "estimate": -0.531317512983104,
+              "p_value": 0.021825086051124876,
+              "se": 0.23167258802772364
+            },
+            "domain:full-stack": {
+              "ci_high": 0.07439969674938596,
+              "ci_low": -0.6414858216242085,
+              "estimate": -0.2835430624374113,
+              "p_value": 0.12051707310785664,
+              "se": 0.18262385672795778
+            },
+            "reviewer:claude-haiku-4-5-20251001": {
+              "ci_high": 0.7445066690374199,
+              "ci_low": -0.272032461390732,
+              "estimate": 0.23623710382334395,
+              "p_value": 0.36230454850091465,
+              "se": 0.2593212067418755
+            },
+            "reviewer:gpt-5.5": {
+              "ci_high": 0.8266355564372714,
+              "ci_low": -0.0910143294215553,
+              "estimate": 0.36781061350785804,
+              "p_value": 0.11613465544024404,
+              "se": 0.23409435863745578
+            },
+            "reviewer:other_lt30": {
+              "ci_high": 0.899421202443216,
+              "ci_low": -0.437911256919467,
+              "estimate": 0.2307549727618745,
+              "p_value": 0.498792499313754,
+              "se": 0.3411562396333375
+            },
+            "task_type:feature": {
+              "ci_high": 0.4303216089047611,
+              "ci_low": -0.4193573467819083,
+              "estimate": 0.0054821310614264485,
+              "p_value": 0.9798221736110557,
+              "se": 0.21675483563435444
+            }
+          }
+        },
+        "placebo_prompt_bytes": {
+          "available": true,
+          "kind": "ols",
+          "n": 45,
+          "reviewer_effects": {
+            "claude-haiku-4-5-20251001": {
+              "ci_high": 51004.36056477755,
+              "ci_low": -47144.57755674894,
+              "estimate": 1929.891504014303,
+              "p_value": 0.9385610822872565,
+              "se": 25037.994418756756
+            },
+            "claude-opus-4-7": {
+              "ci_high": 0.0,
+              "ci_low": 0.0,
+              "estimate": 0.0,
+              "p_value": 1.0,
+              "se": 0.0
+            },
+            "gpt-5.5": {
+              "ci_high": 43449.54257929909,
+              "ci_low": -39748.88173711343,
+              "estimate": 1850.3304210928316,
+              "p_value": 0.9305278955859266,
+              "se": 21224.087835819522
+            }
+          },
+          "terms": {
+            "Intercept": {
+              "ci_high": 326098.34686885116,
+              "ci_low": 32773.19566789118,
+              "estimate": 179435.77126837117,
+              "p_value": 0.016485707462841726,
+              "se": 74827.84469412244
+            },
+            "complexity": {
+              "ci_high": 63391.55899044999,
+              "ci_low": 7657.109623365839,
+              "estimate": 35524.33430690791,
+              "p_value": 0.01247020317436287,
+              "se": 14217.971777317385
+            },
+            "domain:data-pipeline": {
+              "ci_high": -169381.8379664403,
+              "ci_low": -257129.27231880696,
+              "estimate": -213255.55514262363,
+              "p_value": 0.0,
+              "se": 22384.549579685372
+            },
+            "domain:frontend": {
+              "ci_high": -105856.35685758537,
+              "ci_low": -208668.01904907264,
+              "estimate": -157262.187953329,
+              "p_value": 2.021274925212424e-09,
+              "se": 26227.464844767164
+            },
+            "domain:full-stack": {
+              "ci_high": -179574.51345903837,
+              "ci_low": -222148.28957626314,
+              "estimate": -200861.40151765075,
+              "p_value": 0.0,
+              "se": 10860.657172761415
+            },
+            "reviewer:claude-haiku-4-5-20251001": {
+              "ci_high": 51004.36056477755,
+              "ci_low": -47144.57755674894,
+              "estimate": 1929.891504014303,
+              "p_value": 0.9385610822872565,
+              "se": 25037.994418756756
+            },
+            "reviewer:gpt-5.5": {
+              "ci_high": 43449.54257929909,
+              "ci_low": -39748.88173711343,
+              "estimate": 1850.3304210928316,
+              "p_value": 0.9305278955859266,
+              "se": 21224.087835819522
+            },
+            "reviewer:other_lt30": {
+              "ci_high": -193091.2621456395,
+              "ci_low": -288036.67608989374,
+              "estimate": -240563.96911776662,
+              "p_value": 0.0,
+              "se": 24220.768863330155
+            },
+            "task_type:feature": {
+              "ci_high": 64820.429112037,
+              "ci_low": -18769.37453518077,
+              "estimate": 23025.52728842812,
+              "p_value": 0.2802323329109846,
+              "se": 21323.92950184127
+            }
+          }
+        },
+        "reviewer_score": {
+          "available": true,
+          "kind": "ols",
+          "n": 45,
+          "reviewer_effects": {
+            "claude-haiku-4-5-20251001": {
+              "ci_high": 0.20088525180906014,
+              "ci_low": -0.10538175301410489,
+              "estimate": 0.04775174939747763,
+              "p_value": 0.5410748252559865,
+              "se": 0.07812933796509312
+            },
+            "claude-opus-4-7": {
+              "ci_high": 0.0,
+              "ci_low": 0.0,
+              "estimate": 0.0,
+              "p_value": 1.0,
+              "se": 0.0
+            },
+            "gpt-5.5": {
+              "ci_high": 0.1827262428464766,
+              "ci_low": -0.16467003989131695,
+              "estimate": 0.009028101477579811,
+              "p_value": 0.9188578096994122,
+              "se": 0.08862150069841672
+            }
+          },
+          "terms": {
+            "Intercept": {
+              "ci_high": 0.9380907403268948,
+              "ci_low": -0.07955014848927694,
+              "estimate": 0.4292702959188089,
+              "p_value": 0.09821508910062815,
+              "se": 0.2596022675551458
+            },
+            "complexity": {
+              "ci_high": 0.12756114184044035,
+              "ci_low": -0.0910721644985763,
+              "estimate": 0.01824448867093203,
+              "p_value": 0.7435803480396226,
+              "se": 0.05577380263750425
+            },
+            "domain:data-pipeline": {
+              "ci_high": 0.16204973610134382,
+              "ci_low": -0.21580380431641094,
+              "estimate": -0.026877034107533563,
+              "p_value": 0.780373115080212,
+              "se": 0.09639120929024356
+            },
+            "domain:frontend": {
+              "ci_high": 0.23452473673710694,
+              "ci_low": -0.05027948489909391,
+              "estimate": 0.09212262591900651,
+              "p_value": 0.20481181820591976,
+              "se": 0.07265413817250022
+            },
+            "domain:full-stack": {
+              "ci_high": 0.14956087490175474,
+              "ci_low": -0.07976017310957188,
+              "estimate": 0.03490035089609142,
+              "p_value": 0.5507848434175278,
+              "se": 0.05850026734982822
+            },
+            "reviewer:claude-haiku-4-5-20251001": {
+              "ci_high": 0.20088525180906014,
+              "ci_low": -0.10538175301410489,
+              "estimate": 0.04775174939747763,
+              "p_value": 0.5410748252559865,
+              "se": 0.07812933796509312
+            },
+            "reviewer:gpt-5.5": {
+              "ci_high": 0.1827262428464766,
+              "ci_low": -0.16467003989131695,
+              "estimate": 0.009028101477579811,
+              "p_value": 0.9188578096994122,
+              "se": 0.08862150069841672
+            },
+            "reviewer:other_lt30": {
+              "ci_high": 0.1619776229991429,
+              "ci_low": -0.2750706674449357,
+              "estimate": -0.05654652222289641,
+              "p_value": 0.6120281813331225,
+              "se": 0.11149191082757108
+            },
+            "task_type:feature": {
+              "ci_high": 0.17063996059089934,
+              "ci_low": -0.09537675068353027,
+              "estimate": 0.03763160495368454,
+              "p_value": 0.579211950722248,
+              "se": 0.0678614059373545
+            }
+          }
+        },
+        "score": {
+          "available": true,
+          "kind": "ols",
+          "n": 45,
+          "reviewer_effects": {
+            "claude-haiku-4-5-20251001": {
+              "ci_high": 0.14945287125840956,
+              "ci_low": -0.2097584501802412,
+              "estimate": -0.030152789460915826,
+              "p_value": 0.7421169502858367,
+              "se": 0.09163554118332927
+            },
+            "claude-opus-4-7": {
+              "ci_high": 0.0,
+              "ci_low": 0.0,
+              "estimate": 0.0,
+              "p_value": 1.0,
+              "se": 0.0
+            },
+            "gpt-5.5": {
+              "ci_high": 0.08548971092357882,
+              "ci_low": -0.2688753074918804,
+              "estimate": -0.09169279828415078,
+              "p_value": 0.31043513998633276,
+              "se": 0.09039923939169878
+            }
+          },
+          "terms": {
+            "Intercept": {
+              "ci_high": 0.8841923493973115,
+              "ci_low": -0.3288849476692254,
+              "estimate": 0.27765370086404306,
+              "p_value": 0.3695992064347904,
+              "se": 0.3094584941496268
+            },
+            "complexity": {
+              "ci_high": 0.15658157886136434,
+              "ci_low": -0.11033203456292603,
+              "estimate": 0.023124772149219156,
+              "p_value": 0.7341429814964211,
+              "se": 0.06809020750619653
+            },
+            "domain:data-pipeline": {
+              "ci_high": 0.45686466663921005,
+              "ci_low": -0.13295438558661693,
+              "estimate": 0.16195514052629656,
+              "p_value": 0.28176134563254074,
+              "se": 0.15046404393515994
+            },
+            "domain:frontend": {
+              "ci_high": 0.555994028298717,
+              "ci_low": 0.2128475889913983,
+              "estimate": 0.3844208086450577,
+              "p_value": 1.125683452030124e-05,
+              "se": 0.08753735696615274
+            },
+            "domain:full-stack": {
+              "ci_high": 0.44548282885692425,
+              "ci_low": 0.21200598251737712,
+              "estimate": 0.3287444056871507,
+              "p_value": 3.3994391079872344e-08,
+              "se": 0.059560419984578346
+            },
+            "reviewer:claude-haiku-4-5-20251001": {
+              "ci_high": 0.14945287125840956,
+              "ci_low": -0.2097584501802412,
+              "estimate": -0.030152789460915826,
+              "p_value": 0.7421169502858367,
+              "se": 0.09163554118332927
+            },
+            "reviewer:gpt-5.5": {
+              "ci_high": 0.08548971092357882,
+              "ci_low": -0.2688753074918804,
+              "estimate": -0.09169279828415078,
+              "p_value": 0.31043513998633276,
+              "se": 0.09039923939169878
+            },
+            "reviewer:other_lt30": {
+              "ci_high": 0.45667957863512054,
+              "ci_low": -0.06164465688341325,
+              "estimate": 0.19751746087585365,
+              "p_value": 0.13523006872535426,
+              "se": 0.13222557028534027
+            },
+            "task_type:feature": {
+              "ci_high": 0.17044308694873594,
+              "ci_low": -0.13911692095563277,
+              "estimate": 0.015663082996551593,
+              "p_value": 0.8427761428978009,
+              "se": 0.07896938977152264
+            }
+          }
+        },
+        "success_logit": {
+          "available": true,
+          "kind": "logit",
+          "n": 45,
+          "reviewer_effects": {
+            "claude-haiku-4-5-20251001": {
+              "ci_high": 1.635963252782727,
+              "ci_low": -2.9302060601711086,
+              "estimate": -0.6471214036941907,
+              "p_value": 0.5785214343673539,
+              "se": 1.1648391104474072
+            },
+            "claude-opus-4-7": {
+              "ci_high": 0.0,
+              "ci_low": 0.0,
+              "estimate": 0.0,
+              "p_value": 1.0,
+              "se": 0.0
+            },
+            "gpt-5.5": {
+              "ci_high": 1.20885730589975,
+              "ci_low": -3.122952766740009,
+              "estimate": -0.9570477304201296,
+              "p_value": 0.38645476904141063,
+              "se": 1.1050535899591223
+            }
+          },
+          "terms": {
+            "Intercept": {
+              "ci_high": 362.9311615629337,
+              "ci_low": -376.9702939800099,
+              "estimate": -7.019566208538091,
+              "p_value": 0.9703337658230922,
+              "se": 188.7503713119754
+            },
+            "complexity": {
+              "ci_high": 0.6600377135638335,
+              "ci_low": -2.1401131163488376,
+              "estimate": -0.740037701392502,
+              "p_value": 0.3002035537421006,
+              "se": 0.7143241913042528
+            },
+            "domain:data-pipeline": {
+              "ci_high": 378.74651309786435,
+              "ci_low": -361.06474809762875,
+              "estimate": 8.840882500117774,
+              "p_value": 0.9626369780920774,
+              "se": 188.7273625498707
+            },
+            "domain:frontend": {
+              "ci_high": 380.25926120168634,
+              "ci_low": -359.5390895252107,
+              "estimate": 10.360085838237792,
+              "p_value": 0.9562217857427866,
+              "se": 188.72406906298394
+            },
+            "domain:full-stack": {
+              "ci_high": 379.57997759860456,
+              "ci_low": -360.2157577844286,
+              "estimate": 9.682109907087966,
+              "p_value": 0.959083937336402,
+              "se": 188.72340188342682
+            },
+            "reviewer:claude-haiku-4-5-20251001": {
+              "ci_high": 1.635963252782727,
+              "ci_low": -2.9302060601711086,
+              "estimate": -0.6471214036941907,
+              "p_value": 0.5785214343673539,
+              "se": 1.1648391104474072
+            },
+            "reviewer:gpt-5.5": {
+              "ci_high": 1.20885730589975,
+              "ci_low": -3.122952766740009,
+              "estimate": -0.9570477304201296,
+              "p_value": 0.38645476904141063,
+              "se": 1.1050535899591223
+            },
+            "reviewer:other_lt30": {
+              "ci_high": 875.8166309708715,
+              "ci_low": -885.0715061522537,
+              "estimate": -4.627437590691155,
+              "p_value": 0.9917808434974131,
+              "se": 449.2061574293687
+            },
+            "task_type:feature": {
+              "ci_high": 3.109298762484969,
+              "ci_low": -1.0088847367182976,
+              "estimate": 1.0502070128833356,
+              "p_value": 0.31747176402908317,
+              "se": 1.050557015102874
+            }
+          }
+        }
+      },
+      "n": 45
+    },
+    "training_eligible": {
+      "available": true,
+      "baseline": "claude-opus-4-7",
+      "contrasts": {
+        "cost": {
+          "available": true,
+          "kind": "ols",
+          "n": 424,
+          "reviewer_effects": {
+            "claude-haiku-4-5-20251001": {
+              "ci_high": -1.569082582753607,
+              "ci_low": -9.398713683222388,
+              "estimate": -5.483898132987997,
+              "p_value": 0.006040398841333339,
+              "se": 1.9973548725685666
+            },
+            "claude-opus-4-7": {
+              "ci_high": 0.0,
+              "ci_low": 0.0,
+              "estimate": 0.0,
+              "p_value": 1.0,
+              "se": 0.0
+            },
+            "gpt-5.5": {
+              "ci_high": 1.449484115717158,
+              "ci_low": -6.444947142911099,
+              "estimate": -2.49773151359697,
+              "p_value": 0.21488110544353267,
+              "se": 2.0138855251602696
+            }
+          },
+          "terms": {
+            "Intercept": {
+              "ci_high": 4.672971695357919,
+              "ci_low": -6.545245687933706,
+              "estimate": -0.9361369962878936,
+              "p_value": 0.74358024320484,
+              "se": 2.861790148798884
+            },
+            "complexity": {
+              "ci_high": 5.534139899112515,
+              "ci_low": 1.7715815298546571,
+              "estimate": 3.652860714483586,
+              "p_value": 0.0001413967693302265,
+              "se": 0.959836318688229
+            },
+            "domain:data-pipeline": {
+              "ci_high": 5.688197082018423,
+              "ci_low": -5.4297568281554724,
+              "estimate": 0.12922012693147478,
+              "p_value": 0.9636603121219713,
+              "se": 2.836212732187218
+            },
+            "domain:devtools": {
+              "ci_high": 7.881915386148217,
+              "ci_low": -11.246221808707292,
+              "estimate": -1.6821532112795379,
+              "p_value": 0.7302974467352166,
+              "se": 4.879626835422323
+            },
+            "domain:frontend": {
+              "ci_high": 8.301492187092208,
+              "ci_low": -5.029962229038215,
+              "estimate": 1.6357649790269968,
+              "p_value": 0.6305288061360295,
+              "se": 3.4008812286047
+            },
+            "domain:full-stack": {
+              "ci_high": 9.164058767298775,
+              "ci_low": -1.2019799139851046,
+              "estimate": 3.9810394266568347,
+              "p_value": 0.13220540817247706,
+              "se": 2.6443976227765
+            },
+            "reviewer:claude-haiku-4-5-20251001": {
+              "ci_high": -1.569082582753607,
+              "ci_low": -9.398713683222388,
+              "estimate": -5.483898132987997,
+              "p_value": 0.006040398841333339,
+              "se": 1.9973548725685666
+            },
+            "reviewer:gpt-5.5": {
+              "ci_high": 1.449484115717158,
+              "ci_low": -6.444947142911099,
+              "estimate": -2.49773151359697,
+              "p_value": 0.21488110544353267,
+              "se": 2.0138855251602696
+            },
+            "reviewer:other_lt30": {
+              "ci_high": 10.847543006396602,
+              "ci_low": -1.6806186994027836,
+              "estimate": 4.583462153496909,
+              "p_value": 0.15153154504235,
+              "se": 3.195959618826374
+            },
+            "task_type:feature": {
+              "ci_high": 0.6892956852527194,
+              "ci_low": -7.563407409156259,
+              "estimate": -3.43705586195177,
+              "p_value": 0.10255580578594015,
+              "se": 2.1052814016349437
+            },
+            "task_type:infra": {
+              "ci_high": 4.98418219576755,
+              "ci_low": -10.401118040724658,
+              "estimate": -2.7084679224785537,
+              "p_value": 0.49013953625500983,
+              "se": 3.9248214889010735
+            },
+            "task_type:refactor": {
+              "ci_high": 0.7197533955457538,
+              "ci_low": -7.400019044129861,
+              "estimate": -3.3401328242920534,
+              "p_value": 0.10684815612887921,
+              "se": 2.071370520325412
+            },
+            "task_type:test": {
+              "ci_high": 1.6819437391186707,
+              "ci_low": -10.259256059559858,
+              "estimate": -4.288656160220594,
+              "p_value": 0.15917266346170322,
+              "se": 3.0462244384384003
+            }
+          }
+        },
+        "estimated_cost": {
+          "available": true,
+          "kind": "ols",
+          "n": 424,
+          "reviewer_effects": {
+            "claude-haiku-4-5-20251001": {
+              "ci_high": 0.03774784054599693,
+              "ci_low": -0.09908072190112359,
+              "estimate": -0.03066644067756333,
+              "p_value": 0.3796385218440119,
+              "se": 0.034905245522224626
+            },
+            "claude-opus-4-7": {
+              "ci_high": 0.0,
+              "ci_low": 0.0,
+              "estimate": 0.0,
+              "p_value": 1.0,
+              "se": 0.0
+            },
+            "gpt-5.5": {
+              "ci_high": 0.050447053997165314,
+              "ci_low": -0.07464207111563767,
+              "estimate": -0.012097508559236178,
+              "p_value": 0.7046079892885906,
+              "se": 0.031910491100204844
+            }
+          },
+          "terms": {
+            "Intercept": {
+              "ci_high": 0.3945015885294654,
+              "ci_low": 0.16529420792256036,
+              "estimate": 0.27989789822601285,
+              "p_value": 1.6935159348197004e-06,
+              "se": 0.05847127056298597
+            },
+            "complexity": {
+              "ci_high": 0.08647698976400425,
+              "ci_low": 0.029946991545041542,
+              "estimate": 0.0582119906545229,
+              "p_value": 5.4223190421032186e-05,
+              "se": 0.014420917913000693
+            },
+            "domain:data-pipeline": {
+              "ci_high": 0.1453748623580986,
+              "ci_low": -0.06427691087949929,
+              "estimate": 0.04054897573929965,
+              "p_value": 0.4483483618231301,
+              "se": 0.05348259521367293
+            },
+            "domain:devtools": {
+              "ci_high": 0.17805414457421803,
+              "ci_low": -0.1733820252177002,
+              "estimate": 0.0023360596782589227,
+              "p_value": 0.9792119160536514,
+              "se": 0.08965208413059138
+            },
+            "domain:frontend": {
+              "ci_high": 0.03829400051215863,
+              "ci_low": -0.15533383794425276,
+              "estimate": -0.05851991871604707,
+              "p_value": 0.2361214139220973,
+              "se": 0.049394856749084545
+            },
+            "domain:full-stack": {
+              "ci_high": 0.04123704741331712,
+              "ci_low": -0.09275484870762754,
+              "estimate": -0.025758900647155213,
+              "p_value": 0.4510957308286736,
+              "se": 0.034181606153302214
+            },
+            "reviewer:claude-haiku-4-5-20251001": {
+              "ci_high": 0.03774784054599693,
+              "ci_low": -0.09908072190112359,
+              "estimate": -0.03066644067756333,
+              "p_value": 0.3796385218440119,
+              "se": 0.034905245522224626
+            },
+            "reviewer:gpt-5.5": {
+              "ci_high": 0.050447053997165314,
+              "ci_low": -0.07464207111563767,
+              "estimate": -0.012097508559236178,
+              "p_value": 0.7046079892885906,
+              "se": 0.031910491100204844
+            },
+            "reviewer:other_lt30": {
+              "ci_high": -0.017959903631395227,
+              "ci_low": -0.15413902607629082,
+              "estimate": -0.08604946485384302,
+              "p_value": 0.013249676532655963,
+              "se": 0.03473957205226928
+            },
+            "task_type:feature": {
+              "ci_high": -0.006193473465205393,
+              "ci_low": -0.1260075714588189,
+              "estimate": -0.06610052246201215,
+              "p_value": 0.030569337159000565,
+              "se": 0.03056482091673814
+            },
+            "task_type:infra": {
+              "ci_high": 0.029894825567631803,
+              "ci_low": -0.1526301156162181,
+              "estimate": -0.061367645024293135,
+              "p_value": 0.18751594351120104,
+              "se": 0.046562484995880074
+            },
+            "task_type:refactor": {
+              "ci_high": 0.14503628109546834,
+              "ci_low": -0.08913238271448673,
+              "estimate": 0.027951949190490814,
+              "p_value": 0.6398435117488239,
+              "se": 0.05973690403315181
+            },
+            "task_type:test": {
+              "ci_high": -0.015670459650299173,
+              "ci_low": -0.22065855980906918,
+              "estimate": -0.11816450972968418,
+              "p_value": 0.02384191593841023,
+              "se": 0.052292882693563775
+            }
+          }
+        },
+        "intervention_logit": {
+          "available": true,
+          "kind": "logit",
+          "n": 424,
+          "reviewer_effects": {
+            "claude-haiku-4-5-20251001": {
+              "ci_high": 0.8172817519341149,
+              "ci_low": -0.3479429788776678,
+              "estimate": 0.23466938652822356,
+              "p_value": 0.429840352059883,
+              "se": 0.2972512068397405
+            },
+            "claude-opus-4-7": {
+              "ci_high": 0.0,
+              "ci_low": 0.0,
+              "estimate": 0.0,
+              "p_value": 1.0,
+              "se": 0.0
+            },
+            "gpt-5.5": {
+              "ci_high": 0.15637927869949714,
+              "ci_low": -0.783413808762141,
+              "estimate": -0.31351726503132193,
+              "p_value": 0.19096776911666202,
+              "se": 0.23974313455654034
+            }
+          },
+          "terms": {
+            "Intercept": {
+              "ci_high": 0.9290847341135087,
+              "ci_low": -1.2956456180409712,
+              "estimate": -0.18328044196373128,
+              "p_value": 0.746739009977089,
+              "se": 0.5675332531006326
+            },
+            "complexity": {
+              "ci_high": 0.2306412719160631,
+              "ci_low": -0.2826379058948406,
+              "estimate": -0.025998316989388745,
+              "p_value": 0.842611992234422,
+              "se": 0.13093856576808768
+            },
+            "domain:data-pipeline": {
+              "ci_high": 1.4195694671548105,
+              "ci_low": -0.7766935156727119,
+              "estimate": 0.32143797574104926,
+              "p_value": 0.5661582577586428,
+              "se": 0.5602711690886537
+            },
+            "domain:devtools": {
+              "ci_high": 1.9893028435222546,
+              "ci_low": -2.98443425970765,
+              "estimate": -0.4975657080926977,
+              "p_value": 0.6949464094034732,
+              "se": 1.2688104855178328
+            },
+            "domain:frontend": {
+              "ci_high": 1.3918499956955497,
+              "ci_low": -0.1703109880135606,
+              "estimate": 0.6107695038409946,
+              "p_value": 0.12536678240059818,
+              "se": 0.3985104550278343
+            },
+            "domain:full-stack": {
+              "ci_high": 1.1068239541932618,
+              "ci_low": -0.07293853116405224,
+              "estimate": 0.5169427115146048,
+              "p_value": 0.08586103197842876,
+              "se": 0.30095981769319236
+            },
+            "reviewer:claude-haiku-4-5-20251001": {
+              "ci_high": 0.8172817519341149,
+              "ci_low": -0.3479429788776678,
+              "estimate": 0.23466938652822356,
+              "p_value": 0.429840352059883,
+              "se": 0.2972512068397405
+            },
+            "reviewer:gpt-5.5": {
+              "ci_high": 0.15637927869949714,
+              "ci_low": -0.783413808762141,
+              "estimate": -0.31351726503132193,
+              "p_value": 0.19096776911666202,
+              "se": 0.23974313455654034
+            },
+            "reviewer:other_lt30": {
+              "ci_high": 0.30291439395136044,
+              "ci_low": -1.2980179947973856,
+              "estimate": -0.4975518004230125,
+              "p_value": 0.22311304428190182,
+              "se": 0.40840111957876174
+            },
+            "task_type:feature": {
+              "ci_high": 1.0592265710449174,
+              "ci_low": 0.09991732808752407,
+              "estimate": 0.5795719495662207,
+              "p_value": 0.01787054461093307,
+              "se": 0.24472174565239624
+            },
+            "task_type:infra": {
+              "ci_high": 1.163645174481513,
+              "ci_low": -0.7176611050573836,
+              "estimate": 0.22299203471206477,
+              "p_value": 0.6421898052870216,
+              "se": 0.47992507131094303
+            },
+            "task_type:refactor": {
+              "ci_high": 2.173159527269932,
+              "ci_low": -0.7081845226875236,
+              "estimate": 0.7324875022912041,
+              "p_value": 0.31899181796938336,
+              "se": 0.7350367474381264
+            },
+            "task_type:test": {
+              "ci_high": 1.6803394389722288,
+              "ci_low": -0.7790144822035288,
+              "estimate": 0.45066247838435003,
+              "p_value": 0.47256155355200424,
+              "se": 0.6273862043815708
+            }
+          }
+        },
+        "intervention_rate": {
+          "available": true,
+          "kind": "ols",
+          "n": 424,
+          "reviewer_effects": {
+            "claude-haiku-4-5-20251001": {
+              "ci_high": 0.19019872602201254,
+              "ci_low": -0.08228320914509597,
+              "estimate": 0.05395775843845828,
+              "p_value": 0.43760071544452117,
+              "se": 0.06951069774671136
+            },
+            "claude-opus-4-7": {
+              "ci_high": 0.0,
+              "ci_low": 0.0,
+              "estimate": 0.0,
+              "p_value": 1.0,
+              "se": 0.0
+            },
+            "gpt-5.5": {
+              "ci_high": 0.03746213626911887,
+              "ci_low": -0.18625743712989654,
+              "estimate": -0.07439765043038883,
+              "p_value": 0.1923731208064967,
+              "se": 0.05707131974464679
+            }
+          },
+          "terms": {
+            "Intercept": {
+              "ci_high": 0.7179953291737474,
+              "ci_low": 0.19911721000591576,
+              "estimate": 0.4585562695898316,
+              "p_value": 0.0005316471510403709,
+              "se": 0.13236686713465093
+            },
+            "complexity": {
+              "ci_high": 0.054337045929224115,
+              "ci_low": -0.0670851589382429,
+              "estimate": -0.006374056504509395,
+              "p_value": 0.8369625060453032,
+              "se": 0.030975052262108935
+            },
+            "domain:data-pipeline": {
+              "ci_high": 0.3354589458128567,
+              "ci_low": -0.18045680653779933,
+              "estimate": 0.07750106963752866,
+              "p_value": 0.5559525358225952,
+              "se": 0.13161116131394288
+            },
+            "domain:devtools": {
+              "ci_high": 0.41719528358983465,
+              "ci_low": -0.6534987589671483,
+              "estimate": -0.11815173768865679,
+              "p_value": 0.6653240052726532,
+              "se": 0.2731362353461691
+            },
+            "domain:frontend": {
+              "ci_high": 0.3282844567760075,
+              "ci_low": -0.03750210912882798,
+              "estimate": 0.14539117382358974,
+              "p_value": 0.11920866798933583,
+              "se": 0.09331289946551924
+            },
+            "domain:full-stack": {
+              "ci_high": 0.26233046837335816,
+              "ci_low": -0.016771602144738565,
+              "estimate": 0.12277943311430979,
+              "p_value": 0.08462805181642152,
+              "se": 0.07119950778522875
+            },
+            "reviewer:claude-haiku-4-5-20251001": {
+              "ci_high": 0.19019872602201254,
+              "ci_low": -0.08228320914509597,
+              "estimate": 0.05395775843845828,
+              "p_value": 0.43760071544452117,
+              "se": 0.06951069774671136
+            },
+            "reviewer:gpt-5.5": {
+              "ci_high": 0.03746213626911887,
+              "ci_low": -0.18625743712989654,
+              "estimate": -0.07439765043038883,
+              "p_value": 0.1923731208064967,
+              "se": 0.05707131974464679
+            },
+            "reviewer:other_lt30": {
+              "ci_high": 0.07866125558973093,
+              "ci_low": -0.31930614782935607,
+              "estimate": -0.12032244611981256,
+              "p_value": 0.23594531078778158,
+              "se": 0.10152229679058342
+            },
+            "task_type:feature": {
+              "ci_high": 0.25306024635693647,
+              "ci_low": 0.02166877717083128,
+              "estimate": 0.13736451176388387,
+              "p_value": 0.019960449862477248,
+              "se": 0.05902843601686357
+            },
+            "task_type:infra": {
+              "ci_high": 0.27005326187365175,
+              "ci_low": -0.16281490183366024,
+              "estimate": 0.05361918001999577,
+              "p_value": 0.6272730679694369,
+              "se": 0.11042555196615103
+            },
+            "task_type:refactor": {
+              "ci_high": 0.484822476953789,
+              "ci_low": -0.14413017020388205,
+              "estimate": 0.17034615337495349,
+              "p_value": 0.28837341869082245,
+              "se": 0.16044710386675282
+            },
+            "task_type:test": {
+              "ci_high": 0.36457252900322223,
+              "ci_low": -0.15176023716007925,
+              "estimate": 0.1064061459215715,
+              "p_value": 0.41918511452173,
+              "se": 0.13171754238859731
+            }
+          }
+        },
+        "placebo_prompt_bytes": {
+          "available": true,
+          "kind": "ols",
+          "n": 424,
+          "reviewer_effects": {
+            "claude-haiku-4-5-20251001": {
+              "ci_high": 18005.521546748303,
+              "ci_low": -43114.24044682813,
+              "estimate": -12554.359450039912,
+              "p_value": 0.4207094053698994,
+              "se": 15591.776018769498
+            },
+            "claude-opus-4-7": {
+              "ci_high": 0.0,
+              "ci_low": 0.0,
+              "estimate": 0.0,
+              "p_value": 1.0,
+              "se": 0.0
+            },
+            "gpt-5.5": {
+              "ci_high": 19260.60715491885,
+              "ci_low": -22480.28206817405,
+              "estimate": -1609.8374566275988,
+              "p_value": 0.8798304157679719,
+              "se": 10648.186026299209
+            }
+          },
+          "terms": {
+            "Intercept": {
+              "ci_high": 44914.902880573216,
+              "ci_low": -40076.69239491343,
+              "estimate": 2419.1052428298945,
+              "p_value": 0.9111608122814616,
+              "se": 21681.529407011898
+            },
+            "complexity": {
+              "ci_high": 44535.58887330654,
+              "ci_low": 26684.29602105047,
+              "estimate": 35609.9424471785,
+              "p_value": 5.329070518200751e-15,
+              "se": 4553.901237820424
+            },
+            "domain:data-pipeline": {
+              "ci_high": 43454.38060459924,
+              "ci_low": -19644.52880164755,
+              "estimate": 11904.925901475846,
+              "p_value": 0.4595489351166471,
+              "se": 16096.660562818059
+            },
+            "domain:devtools": {
+              "ci_high": 2251.959901911836,
+              "ci_low": -34603.536370249625,
+              "estimate": -16175.788234168896,
+              "p_value": 0.08534549392290747,
+              "se": 9401.912314326904
+            },
+            "domain:frontend": {
+              "ci_high": 58071.62315396835,
+              "ci_low": -3170.4379683777333,
+              "estimate": 27450.592592795307,
+              "p_value": 0.07890661696482892,
+              "se": 15622.974776108695
+            },
+            "domain:full-stack": {
+              "ci_high": 54644.47669181457,
+              "ci_low": 14554.668205184986,
+              "estimate": 34599.57244849978,
+              "p_value": 0.0007165630272945034,
+              "se": 10226.991960874893
+            },
+            "reviewer:claude-haiku-4-5-20251001": {
+              "ci_high": 18005.521546748303,
+              "ci_low": -43114.24044682813,
+              "estimate": -12554.359450039912,
+              "p_value": 0.4207094053698994,
+              "se": 15591.776018769498
+            },
+            "reviewer:gpt-5.5": {
+              "ci_high": 19260.60715491885,
+              "ci_low": -22480.28206817405,
+              "estimate": -1609.8374566275988,
+              "p_value": 0.8798304157679719,
+              "se": 10648.186026299209
+            },
+            "reviewer:other_lt30": {
+              "ci_high": -9179.765686764971,
+              "ci_low": -49664.252903302404,
+              "estimate": -29422.009295033688,
+              "p_value": 0.0043877408634551696,
+              "se": 10327.675310341181
+            },
+            "task_type:feature": {
+              "ci_high": -7298.641821150028,
+              "ci_low": -46630.040447798216,
+              "estimate": -26964.34113447412,
+              "p_value": 0.007200508812147399,
+              "se": 10033.520057818416
+            },
+            "task_type:infra": {
+              "ci_high": -627.8372413449324,
+              "ci_low": -62640.72523382942,
+              "estimate": -31634.281237587176,
+              "p_value": 0.04553404407224826,
+              "se": 15819.614283797064
+            },
+            "task_type:refactor": {
+              "ci_high": 62219.98417132811,
+              "ci_low": -50624.781277979426,
+              "estimate": 5797.601446674344,
+              "p_value": 0.8403881577336669,
+              "se": 28786.929961558046
+            },
+            "task_type:test": {
+              "ci_high": -12099.425349826044,
+              "ci_low": -66262.0819922896,
+              "estimate": -39180.75367105783,
+              "p_value": 0.004572667319348467,
+              "se": 13817.004245526421
+            }
+          }
+        },
+        "reviewer_score": {
+          "available": true,
+          "kind": "ols",
+          "n": 424,
+          "reviewer_effects": {
+            "claude-haiku-4-5-20251001": {
+              "ci_high": 0.02412440849962871,
+              "ci_low": -0.057957189525217764,
+              "estimate": -0.01691639051279453,
+              "p_value": 0.4191584775441459,
+              "se": 0.020939183169603692
+            },
+            "claude-opus-4-7": {
+              "ci_high": 0.0,
+              "ci_low": 0.0,
+              "estimate": 0.0,
+              "p_value": 1.0,
+              "se": 0.0
+            },
+            "gpt-5.5": {
+              "ci_high": 0.024592787425566857,
+              "ci_low": -0.04516373987290482,
+              "estimate": -0.010285476223668981,
+              "p_value": 0.5632661128364065,
+              "se": 0.017795032474099918
+            }
+          },
+          "terms": {
+            "Intercept": {
+              "ci_high": 0.6796807055472358,
+              "ci_low": 0.5053205406973258,
+              "estimate": 0.5925006231222808,
+              "p_value": 0.0,
+              "se": 0.04447963389028315
+            },
+            "complexity": {
+              "ci_high": 0.04005901684432182,
+              "ci_low": -0.0006386062024708802,
+              "estimate": 0.019710205320925468,
+              "p_value": 0.057631646376597345,
+              "se": 0.010382046695610382
+            },
+            "domain:data-pipeline": {
+              "ci_high": 0.04056624277028063,
+              "ci_low": -0.10864648871774742,
+              "estimate": -0.03404012297373339,
+              "p_value": 0.3711745338216388,
+              "se": 0.0380644723183745
+            },
+            "domain:devtools": {
+              "ci_high": 0.27746328902364736,
+              "ci_low": -0.05732873572010032,
+              "estimate": 0.11006727665177353,
+              "p_value": 0.19748449164890491,
+              "se": 0.08540612876116013
+            },
+            "domain:frontend": {
+              "ci_high": 0.05127935862261781,
+              "ci_low": -0.07154711478977563,
+              "estimate": -0.010133878083578907,
+              "p_value": 0.7463755570273762,
+              "se": 0.031333284033773834
+            },
+            "domain:full-stack": {
+              "ci_high": 0.05754312131355034,
+              "ci_low": -0.031165289720003445,
+              "estimate": 0.013188915796773448,
+              "p_value": 0.5600181697889421,
+              "se": 0.02262969669223311
+            },
+            "reviewer:claude-haiku-4-5-20251001": {
+              "ci_high": 0.02412440849962871,
+              "ci_low": -0.057957189525217764,
+              "estimate": -0.01691639051279453,
+              "p_value": 0.4191584775441459,
+              "se": 0.020939183169603692
+            },
+            "reviewer:gpt-5.5": {
+              "ci_high": 0.024592787425566857,
+              "ci_low": -0.04516373987290482,
+              "estimate": -0.010285476223668981,
+              "p_value": 0.5632661128364065,
+              "se": 0.017795032474099918
+            },
+            "reviewer:other_lt30": {
+              "ci_high": 0.08365307396973382,
+              "ci_low": -0.039145844332296904,
+              "estimate": 0.02225361481871846,
+              "p_value": 0.47746713630611115,
+              "se": 0.03132625466888539
+            },
+            "task_type:feature": {
+              "ci_high": 0.027452793292663712,
+              "ci_low": -0.042089612435248364,
+              "estimate": -0.007318409571292327,
+              "p_value": 0.6799527153726519,
+              "se": 0.01774040962446737
+            },
+            "task_type:infra": {
+              "ci_high": 0.069847417477334,
+              "ci_low": -0.07374678960925157,
+              "estimate": -0.0019496860659587861,
+              "p_value": 0.9575528159101125,
+              "se": 0.036631175277190196
+            },
+            "task_type:refactor": {
+              "ci_high": 0.10806912066560706,
+              "ci_low": -0.07223794419840732,
+              "estimate": 0.01791558823359988,
+              "p_value": 0.696908344729299,
+              "se": 0.04599670022041183
+            },
+            "task_type:test": {
+              "ci_high": 0.10109174950873681,
+              "ci_low": -0.0852606525782357,
+              "estimate": 0.007915548465250555,
+              "p_value": 0.867758099140034,
+              "se": 0.047538878083411354
+            }
+          }
+        },
+        "score": {
+          "available": true,
+          "kind": "ols",
+          "n": 424,
+          "reviewer_effects": {
+            "claude-haiku-4-5-20251001": {
+              "ci_high": 0.02710547624731695,
+              "ci_low": -0.06624671767894476,
+              "estimate": -0.0195706207158139,
+              "p_value": 0.4111907322991959,
+              "se": 0.023814335185270843
+            },
+            "claude-opus-4-7": {
+              "ci_high": 0.0,
+              "ci_low": 0.0,
+              "estimate": 0.0,
+              "p_value": 1.0,
+              "se": 0.0
+            },
+            "gpt-5.5": {
+              "ci_high": 0.03776346130001894,
+              "ci_low": -0.0411726315692212,
+              "estimate": -0.0017045851346011325,
+              "p_value": 0.9325393103686277,
+              "se": 0.02013675838501024
+            }
+          },
+          "terms": {
+            "Intercept": {
+              "ci_high": 0.8545973217149126,
+              "ci_low": 0.6676081073238195,
+              "estimate": 0.7611027145193661,
+              "p_value": 0.0,
+              "se": 0.04770133020180947
+            },
+            "complexity": {
+              "ci_high": 0.02956915322062274,
+              "ci_low": -0.0144370251211275,
+              "estimate": 0.00756606404974762,
+              "p_value": 0.500328551105605,
+              "se": 0.011226065903507713
+            },
+            "domain:data-pipeline": {
+              "ci_high": 0.043455601282473666,
+              "ci_low": -0.15582119005052542,
+              "estimate": -0.056182794384025875,
+              "p_value": 0.2690819713812376,
+              "se": 0.050835916156377316
+            },
+            "domain:devtools": {
+              "ci_high": 0.24822189663876684,
+              "ci_low": -0.07663552165658885,
+              "estimate": 0.085793187491089,
+              "p_value": 0.3005512356815645,
+              "se": 0.08287179038146829
+            },
+            "domain:frontend": {
+              "ci_high": 0.0187805726514673,
+              "ci_low": -0.11543292423622875,
+              "estimate": -0.04832617579238072,
+              "p_value": 0.15810545042934177,
+              "se": 0.03423813696114695
+            },
+            "domain:full-stack": {
+              "ci_high": 0.028494821042058784,
+              "ci_low": -0.0651152757821479,
+              "estimate": -0.018310227370044556,
+              "p_value": 0.4432266783504213,
+              "se": 0.02388012674086905
+            },
+            "reviewer:claude-haiku-4-5-20251001": {
+              "ci_high": 0.02710547624731695,
+              "ci_low": -0.06624671767894476,
+              "estimate": -0.0195706207158139,
+              "p_value": 0.4111907322991959,
+              "se": 0.023814335185270843
+            },
+            "reviewer:gpt-5.5": {
+              "ci_high": 0.03776346130001894,
+              "ci_low": -0.0411726315692212,
+              "estimate": -0.0017045851346011325,
+              "p_value": 0.9325393103686277,
+              "se": 0.02013675838501024
+            },
+            "reviewer:other_lt30": {
+              "ci_high": 0.0946706216138718,
+              "ci_low": -0.03543944414077247,
+              "estimate": 0.02961558873654966,
+              "p_value": 0.37224905602043834,
+              "se": 0.03319134330475619
+            },
+            "task_type:feature": {
+              "ci_high": 0.026304595628004433,
+              "ci_low": -0.053041706715674895,
+              "estimate": -0.013368555543835231,
+              "p_value": 0.5089612757427622,
+              "se": 0.02024140365910187
+            },
+            "task_type:infra": {
+              "ci_high": 0.05921555692697561,
+              "ci_low": -0.09479238898743389,
+              "estimate": -0.01778841603022914,
+              "p_value": 0.6507124360693382,
+              "se": 0.039287741304696304
+            },
+            "task_type:refactor": {
+              "ci_high": 0.10630965085412541,
+              "ci_low": -0.14974560816096205,
+              "estimate": -0.02171797865341831,
+              "p_value": 0.7395232308771618,
+              "se": 0.0653202191365019
+            },
+            "task_type:test": {
+              "ci_high": 0.07614743631222466,
+              "ci_low": -0.11505242383133447,
+              "estimate": -0.019452493759554906,
+              "p_value": 0.6900279693112821,
+              "se": 0.04877547452641815
+            }
+          }
+        },
+        "success_logit": {
+          "available": true,
+          "kind": "logit",
+          "n": 424,
+          "reviewer_effects": {
+            "claude-haiku-4-5-20251001": {
+              "ci_high": 0.3179583654406264,
+              "ci_low": -0.8038952457456512,
+              "estimate": -0.24296844015251243,
+              "p_value": 0.39588993790843463,
+              "se": 0.2861871457107851
+            },
+            "claude-opus-4-7": {
+              "ci_high": 0.0,
+              "ci_low": 0.0,
+              "estimate": 0.0,
+              "p_value": 1.0,
+              "se": 0.0
+            },
+            "gpt-5.5": {
+              "ci_high": 0.2711825590838354,
+              "ci_low": -0.6547607516400066,
+              "estimate": -0.19178909627808563,
+              "p_value": 0.4168242971491021,
+              "se": 0.23621002824587806
+            }
+          },
+          "terms": {
+            "Intercept": {
+              "ci_high": 0.9609529413313049,
+              "ci_low": -1.2473036964897026,
+              "estimate": -0.1431753775791989,
+              "p_value": 0.7993730104115717,
+              "se": 0.5633307749543387
+            },
+            "complexity": {
+              "ci_high": 0.48303505463932006,
+              "ci_low": -0.030665548254087766,
+              "estimate": 0.22618475319261613,
+              "p_value": 0.08434846621275671,
+              "se": 0.13104607216668568
+            },
+            "domain:data-pipeline": {
+              "ci_high": 0.31952911733289424,
+              "ci_low": -1.8535310870331738,
+              "estimate": -0.7670009848501398,
+              "p_value": 0.16648128387651173,
+              "se": 0.5543520929505276
+            },
+            "domain:devtools": {
+              "ci_high": 2.8433711256592575,
+              "ci_low": -2.129902560180872,
+              "estimate": 0.35673428273919294,
+              "p_value": 0.7785702937422576,
+              "se": 1.2686922667959515
+            },
+            "domain:frontend": {
+              "ci_high": 0.37328915910987354,
+              "ci_low": -1.1783207152926842,
+              "estimate": -0.4025157780914053,
+              "p_value": 0.30919187554956196,
+              "se": 0.39581884551085655
+            },
+            "domain:full-stack": {
+              "ci_high": 0.2581460261450057,
+              "ci_low": -0.9289381049659586,
+              "estimate": -0.33539603941047647,
+              "p_value": 0.26805713724253755,
+              "se": 0.30282758446708274
+            },
+            "reviewer:claude-haiku-4-5-20251001": {
+              "ci_high": 0.3179583654406264,
+              "ci_low": -0.8038952457456512,
+              "estimate": -0.24296844015251243,
+              "p_value": 0.39588993790843463,
+              "se": 0.2861871457107851
+            },
+            "reviewer:gpt-5.5": {
+              "ci_high": 0.2711825590838354,
+              "ci_low": -0.6547607516400066,
+              "estimate": -0.19178909627808563,
+              "p_value": 0.4168242971491021,
+              "se": 0.23621002824587806
+            },
+            "reviewer:other_lt30": {
+              "ci_high": 0.9026882835766272,
+              "ci_low": -0.7176698277183999,
+              "estimate": 0.09250922792911359,
+              "p_value": 0.8229129164373585,
+              "se": 0.4133566610446498
+            },
+            "task_type:feature": {
+              "ci_high": 0.30242310754794444,
+              "ci_low": -0.6433681634382622,
+              "estimate": -0.1704725279451589,
+              "p_value": 0.47984387837612985,
+              "se": 0.24127328341484863
+            },
+            "task_type:infra": {
+              "ci_high": 0.1290745150213064,
+              "ci_low": -1.7761664747065935,
+              "estimate": -0.8235459798426435,
+              "p_value": 0.09018332869168999,
+              "se": 0.4860308647265051
+            },
+            "task_type:refactor": {
+              "ci_high": 0.9899976403142684,
+              "ci_low": -1.680711769890665,
+              "estimate": -0.3453570647881984,
+              "p_value": 0.6122204945117842,
+              "se": 0.6813034209706463
+            },
+            "task_type:test": {
+              "ci_high": 1.26207359674695,
+              "ci_low": -1.168799786838159,
+              "estimate": 0.04663690495439548,
+              "p_value": 0.9400506784232374,
+              "se": 0.6201207611186503
+            }
+          }
+        }
+      },
+      "n": 424
+    }
+  },
+  "stratified_contrasts": {
+    "cost": {
+      "claude-haiku-4-5-20251001": {
+        "available": true,
+        "baseline_n_in_cells": 78,
+        "ci_high": -1.2740674647769206,
+        "ci_low": -10.815981572870488,
+        "eligible_cells": 3,
+        "estimate": -6.045024518823705,
+        "se": 2.4341617622687672,
+        "target_n_in_cells": 35
+      },
+      "gpt-5.5": {
+        "available": true,
+        "baseline_n_in_cells": 101,
+        "ci_high": 3.335580390460934,
+        "ci_low": -4.0421071122514,
+        "eligible_cells": 4,
+        "estimate": -0.3532633608952329,
+        "se": 1.8820631384470239,
+        "target_n_in_cells": 95
+      }
+    },
+    "intervention_rate": {
+      "claude-haiku-4-5-20251001": {
+        "available": true,
+        "baseline_n_in_cells": 78,
+        "ci_high": 0.1285305977708852,
+        "ci_low": -0.2561141619559496,
+        "eligible_cells": 3,
+        "estimate": -0.0637917820925322,
+        "se": 0.09812366319562113,
+        "target_n_in_cells": 35
+      },
+      "gpt-5.5": {
+        "available": true,
+        "baseline_n_in_cells": 101,
+        "ci_high": 0.07041894208087886,
+        "ci_low": -0.2092790405449606,
+        "eligible_cells": 4,
+        "estimate": -0.06943004923204087,
+        "se": 0.07135152618006109,
+        "target_n_in_cells": 95
+      }
+    },
+    "score": {
+      "claude-haiku-4-5-20251001": {
+        "available": true,
+        "baseline_n_in_cells": 78,
+        "ci_high": 0.08167129376136567,
+        "ci_low": -0.040997690030180944,
+        "eligible_cells": 3,
+        "estimate": 0.020336801865592367,
+        "se": 0.031293108110088425,
+        "target_n_in_cells": 35
+      },
+      "gpt-5.5": {
+        "available": true,
+        "baseline_n_in_cells": 101,
+        "ci_high": 0.07931992008396849,
+        "ci_low": -0.015184081673689863,
+        "eligible_cells": 4,
+        "estimate": 0.03206791920513931,
+        "se": 0.024108163713688353,
+        "target_n_in_cells": 95
+      }
+    }
+  }
+}

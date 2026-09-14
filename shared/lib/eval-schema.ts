@@ -111,6 +111,14 @@
  *   `reviewExecutedIdentity` on EvalRecord and ChallengeComparison, plus
  *   the StageAttributionReasonCode enum. Additive; legacy records without
  *   these fields still validate.
+ * - **1.47.0**: Added optional `executionEconomics` — a versioned,
+ *   provider-independent execution-economics record normalized from Claude
+ *   Code and Codex session telemetry (per-turn model switches, subagent
+ *   lineage, trigger source, token/cache/reasoning usage, actual vs estimated
+ *   cost with provenance, and record/field-level coverage). Missing or
+ *   unpriced values are `null`, never `0`. Local-only: not projected to
+ *   Hokusai submissions. Additive; legacy records without this field still
+ *   validate. (HOK-2958)
  * - **1.28.0**: Added optional `quarantine_reason` and write-time eval corpus
  *   validation for `taskDescriptor`, non-empty `models_available`, and
  *   canonical reviewer/stage model IDs (HOK-2072); expanded
@@ -194,7 +202,7 @@ import type { ChallengeStage } from './challenge-mode.ts';
  *
  * @since 1.44.0 added unknown_attribution intervention type (HOK-2894)
  */
-export const SCHEMA_VERSION = '1.46.0';
+export const SCHEMA_VERSION = '1.47.0';
 
 export type RoutingRole = 'planner' | 'coder' | 'reviewer';
 
@@ -426,6 +434,147 @@ export interface WorkflowCostAttribution {
   pricedSessions: number;
   unpricedSessions: number;
   models: WorkflowCostAttributionModel[];
+}
+
+// ────────────────────────────────────────────────────────────────
+// Execution Economics (HOK-2958)
+// ────────────────────────────────────────────────────────────────
+
+/**
+ * Version of the normalized execution-economics block. Evolves independently
+ * of the eval schema; additive changes only.
+ *
+ * Kept in sync with `$defs.EvalExecutionEconomics` in eval-schema.json.
+ */
+export const EXECUTION_ECONOMICS_SCHEMA_VERSION = '1.0.0';
+
+/** External harness the record was normalized from. */
+export type ExecutionEconomicsHarness = 'claude-code' | 'codex';
+
+/**
+ * Availability of a single field or field class in the source telemetry.
+ * A literal zero is only ever represented as `known_zero`; a missing or
+ * unpriced value is `unavailable` (with the value itself `null`).
+ */
+export type FieldAvailability = 'available' | 'partial' | 'unavailable' | 'known_zero';
+
+/** Where a session's cost figure came from. */
+export type ExecutionEconomicsCostSource = 'provider_reported' | 'local_estimate' | 'none';
+
+/** Confidence tier for joining a session to Wavemill workflow evidence. */
+export type ExecutionJoinConfidence = 'branch_worktree' | 'timestamp_window' | 'unattributed';
+
+/** Token usage where every unavailable dimension is `null`, never `0`. */
+export interface ExecutionEconomicsTokenUsage {
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  /** thinking_tokens (Claude Code) / reasoning_output_tokens (Codex). */
+  reasoningTokens: number | null;
+}
+
+/**
+ * Requested / forced / resolved / executed model identity with per-field
+ * provenance. Disagreements between route intent and executed evidence are
+ * surfaced via `conflict` (shape mirrors `ExecutedIdentity.conflict` from
+ * challenge-execution-contract.ts), never coerced.
+ */
+export interface ExecutionEconomicsModelIdentity {
+  /** Requested selector from routing.jsonl, rendered as a string. */
+  requested: string | null;
+  /** Policy/pin-forced model when route artifacts carry that evidence. */
+  forced: string | null;
+  /** Resolved model from routing.jsonl. */
+  resolved: string | null;
+  /** Model actually observed in session telemetry (dominant when mixed). */
+  executed: string | null;
+  provenance: { requested?: string; forced?: string; resolved?: string; executed?: string };
+  conflict?: { otherSource: string; otherResolvedModel?: string; detail: string };
+}
+
+/** One observed harness turn. Fields the source lacks are `null`. */
+export interface ExecutionEconomicsTurn {
+  /** Claude Code `uuid` / Codex `turn_id`. */
+  turnId: string | null;
+  /** Claude Code `parentUuid` / Codex `root_turn_id`. */
+  parentId: string | null;
+  /** Claude Code `isSidechain`; `null` when the source lacks lineage. */
+  isSubagent: boolean | null;
+  model: string | null;
+  timestamp: string | null;
+  usage: ExecutionEconomicsTokenUsage;
+  usageCoverage: FieldAvailability;
+  actualCostUsd: number | null;
+}
+
+/** Trigger-source evidence with provenance and availability. */
+export interface ExecutionEconomicsTriggerSource {
+  value: string | null;
+  provenance: string;
+  availability: FieldAvailability;
+}
+
+/** Stage/subagent role join evidence with explicit confidence. */
+export interface ExecutionEconomicsStageRole {
+  value: 'planning' | 'coding' | 'review' | null;
+  confidence: ExecutionJoinConfidence;
+  evidence: string | null;
+}
+
+/** One normalized external harness session. */
+export interface ExecutionEconomicsSession {
+  /** Pseudonymous source session UUID (local join key only). */
+  sessionId: string;
+  rootSessionId: string | null;
+  /** Observed harness version (`version` entry field / `cli_version`). */
+  harnessVersion: string | null;
+  triggerSource: ExecutionEconomicsTriggerSource;
+  stageRole: ExecutionEconomicsStageRole;
+  models: ExecutionEconomicsModelIdentity;
+  /** Real turns observed in the source, before any cap. */
+  turnCount: number;
+  /** Bounded per-turn detail (see `turnsTruncated`). */
+  turns: ExecutionEconomicsTurn[];
+  turnsTruncated: boolean;
+  /** Consecutive same-model turn runs; survives turn truncation. */
+  modelSegments: Array<{ model: string; turnCount: number }>;
+  /** Session-level usage totals. */
+  usage: ExecutionEconomicsTokenUsage;
+  actualCostUsd: number | null;
+  estimatedCostUsd: number | null;
+  costSource: ExecutionEconomicsCostSource;
+  /** Pricing table provenance when `estimatedCostUsd` is present. */
+  pricingRevision: string | null;
+  pricingTimestamp: string | null;
+  /** Record-level coverage for this session. */
+  coverage: WorkflowCostAttributionCoverage;
+  /** Availability per field class (triggerSource, reasoningTokens, …). */
+  fieldAvailability: Record<string, FieldAvailability>;
+  /** Source-version / missing-field notes; never a parse failure. */
+  diagnostics: string[];
+}
+
+/**
+ * Versioned, provider-independent execution-economics record for one
+ * external harness, joined to Wavemill route/stage evidence. Local-only;
+ * excluded from Hokusai submissions by the allowlist projection.
+ */
+export interface EvalExecutionEconomics {
+  /** {@link EXECUTION_ECONOMICS_SCHEMA_VERSION} at write time. */
+  schemaVersion: string;
+  /** Parsing contract implemented, e.g. 'claude-code/1' | 'codex/1'. */
+  providerContractVersion: string;
+  harness: ExecutionEconomicsHarness;
+  /** Discovery-level join predicates that selected these sessions. */
+  joinEvidence: { issueId: string | null; branch: string | null };
+  sessions: ExecutionEconomicsSession[];
+  /** Actual session records (not per-model aggregates). */
+  sessionCount: number;
+  /** Actual turn records (not per-model aggregates). */
+  turnCount: number;
+  coverage: WorkflowCostAttributionCoverage;
+  collectedAt: string;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -1819,6 +1968,16 @@ export interface EvalRecord {
 
   /** Native workflow-cost attribution and coverage metadata. */
   workflowCostAttribution?: WorkflowCostAttribution;
+
+  /**
+   * Normalized external-harness execution-economics records, one entry per
+   * harness (Claude Code, Codex) that produced sessions for this workflow.
+   * Local-only diagnostic/economics evidence; not projected to Hokusai
+   * submissions. Readers must tolerate absence.
+   *
+   * @since 1.47.0
+   */
+  executionEconomics?: EvalExecutionEconomics[];
 
   /** Whether the record includes the fields required for training export. */
   trainingEligible?: boolean;

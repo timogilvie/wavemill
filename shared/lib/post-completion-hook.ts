@@ -17,6 +17,7 @@ import { resolveEvalsDir, resolveRouteArtifactArchiveDir } from './evals-paths.t
 import { execShellCommand } from './shell-utils.ts';
 import { detectAndFormatInterventions } from './intervention-detector.ts';
 import { computeWorkflowCost, loadPricingTable } from './workflow-cost.ts';
+import { collectExecutionEconomics } from './execution-economics.ts';
 import { getDeepSeekProviderMetadata } from './deepseek-provider.ts';
 import { runEvalAnalysis } from './eval-analysis.ts';
 import { callHeadlessLLM } from './headless-llm.ts';
@@ -62,6 +63,7 @@ import { errorMessage } from './error-utils.ts';
 import { resolvePrIdentityMetadata } from './pr-comparison.ts';
 import type {
   EvalExecutedPlanning,
+  EvalExecutionEconomics,
   EvalPhaseDurations,
   EvalRecord,
   EvalRouteProvenance,
@@ -241,6 +243,7 @@ function persistJudgeFailureArtifact(
 export const postCompletionHookDeps = {
   gatherEvalContext,
   gatherStageArtifacts,
+  collectExecutionEconomics,
   execShellCommand,
   detectAndFormatInterventions,
   runEvalAnalysis,
@@ -335,6 +338,8 @@ interface PostCompletionEnrichmentInput {
   taskContextData: TaskContext | null;
   repoContextData: RepoContext | null;
   costOutcome: WorkflowCostOutcome | null;
+  /** Normalized external-harness execution economics (HOK-2958). */
+  executionEconomics?: EvalExecutionEconomics[] | null;
   interventionRecords: InterventionRecord[];
   routingDecision?: RoutingDecision;
   routing?: EvalRouting | null;
@@ -553,6 +558,7 @@ export function enrichPostCompletionRecord(
     taskContext: input.taskContextData,
     repoContext: input.repoContextData,
     workflowCost: input.costOutcome,
+    executionEconomics: input.executionEconomics,
     taskDescriptor,
     constraints: (() => {
       const maxCostUsd = resolvePostCompletionBudget(input);
@@ -753,6 +759,7 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
 
     // 5. Compute workflow cost
     let costOutcome: ReturnType<typeof computeWorkflowCost> | null = null;
+    let executionEconomics: EvalExecutionEconomics[] | null = null;
     if (ctx.worktreePath && branchName) {
       console.log('Post-completion eval: computing workflow cost...');
 
@@ -795,6 +802,27 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
           if (!debug) {
             console.log('Post-completion eval: run with DEBUG_COST=1 for detailed diagnostics');
           }
+        }
+        // Normalized execution-economics collection (HOK-2958): fail-soft,
+        // observation-only — never influences routing or the workflow.
+        try {
+          executionEconomics = await postCompletionHookDeps.collectExecutionEconomics({
+            worktreePath: ctx.worktreePath,
+            branchName,
+            repoDir,
+            issueId: ctx.issueId,
+            routing: stageArtifacts.routing ?? null,
+            stageResultsDir: stageArtifacts.stageResultsDir ?? null,
+            pricingTable,
+          });
+          if (executionEconomics.length > 0) {
+            const summary = executionEconomics
+              .map((block) => `${block.harness}: ${block.sessionCount} session(s), ${block.turnCount} turn(s), coverage ${block.coverage}`)
+              .join('; ');
+            console.log(`Post-completion eval: execution economics — ${summary}`);
+          }
+        } catch (economicsErr: unknown) {
+          console.warn(`Post-completion eval: execution economics collection failed — ${errorMessage(economicsErr)}`);
         }
       } catch (costErr: unknown) {
         const costMsg = errorMessage(costErr);
@@ -839,6 +867,7 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
       taskContextData,
       repoContextData,
       costOutcome,
+      executionEconomics,
       interventionRecords: interventionData.records,
       routingDecision: stageArtifacts.routingDecision,
       routing: stageArtifacts.routing,
