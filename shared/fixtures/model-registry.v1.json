@@ -2064,7 +2064,7 @@
         "pricing": {
           "inputCostPerMTok": 3.0,
           "outputCostPerMTok": 15.0,
-          "cacheReadCostPerMTok": 0.3
+          "cacheReadCostPerMTok": 0.31
         },
         "defaultLadderEligible": false,
         "contextWindowTokens": 1048576,
