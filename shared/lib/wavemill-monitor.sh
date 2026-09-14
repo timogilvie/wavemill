@@ -1066,9 +1066,22 @@ challenge_abort_pair() {
               | .tasks[$key].updated = (now | todate)
          else .
          end;
-       mark($issue) | (if $scope == "pair" then mark($peer) else . end)' \
+       mark($issue)
+       | (if $scope == "pair" then mark($peer) else . end)
+       | if $pairId != "" and $role != "" then
+           .challengePairAbortions[$pairId][$role] = {
+             reason: $reason,
+             detail: $detail,
+             stage: $stage,
+             issue: $issue,
+             scope: $scope,
+             updated: (now | todate)
+           } + (if $nextAction != "" then {nextAction:$nextAction} else {} end)
+         else . end' \
       --arg issue "$issue" \
       --arg peer "${peer:-}" \
+      --arg pairId "${pair_id:-}" \
+      --arg role "$role" \
       --arg reason "$reason" \
       --arg detail "$detail" \
       --arg stage "$(challenge_stage_for_launch_env "$stage")" \
@@ -1081,13 +1094,14 @@ challenge_abort_pair() {
   tmp="$artifact.tmp.$$"
   jq -n -S \
     --arg pairId "${pair_id:-$issue}" \
+    --arg role "$role" \
     --arg stage "$(challenge_stage_for_launch_env "$stage")" \
     --arg model "$model" \
     --arg reason "$reason" \
     --arg abortedAt "$now" \
     --arg detail "$detail" \
     --arg nextAction "$next_action" \
-    '{pairId:$pairId, stage:$stage, model:$model, reason:$reason, abortedAt:$abortedAt, detail:$detail}
+    '{pairId:$pairId, role:$role, stage:$stage, model:$model, reason:$reason, abortedAt:$abortedAt, detail:$detail}
      + (if $nextAction == "" then {} else {nextAction:$nextAction} end)' \
     > "$tmp" 2>/dev/null && mv "$tmp" "$artifact" || rm -f "$tmp"
 
@@ -2428,6 +2442,7 @@ write_stage_result() {
     local cli_args=("$feature_dir" "$stage" "$status")
     [[ -n "$agent" ]] && cli_args+=(--agent "$agent")
     [[ -n "$model" ]] && cli_args+=(--model "$model")
+    cli_args+=(--intended-model "$model")
     [[ -n "$notes" ]] && cli_args+=(--notes "$notes")
     [[ -n "$artifacts_json" ]] && cli_args+=(--artifacts "$artifacts_json")
     [[ -n "$started_at_override" ]] && cli_args+=(--started-at "$started_at_override")
@@ -2457,19 +2472,38 @@ write_stage_result() {
     finished_at="\"$now\""
   fi
 
+  local model_attribution_reason="stage_not_completed"
+  if [[ "$status" == "completed" ]]; then
+    model_attribution_reason="missing_execution_evidence"
+  fi
+
   local tmp
   tmp=$(mktemp) || { log_warn "write_stage_result: mktemp failed"; return 0; }
-  cat > "$tmp" <<EOF
-{
-  "stage": "$stage",
-  "status": "$status",
-  "startedAt": "$started_at",
-  "finishedAt": $finished_at,
-  "agent": "$agent",
-  "model": "$model",
-  "notes": "$notes"
-}
-EOF
+  jq -n \
+    --arg stage "$stage" \
+    --arg status "$status" \
+    --arg startedAt "$started_at" \
+    --argjson finishedAt "$finished_at" \
+    --arg agent "$agent" \
+    --arg model "$model" \
+    --arg notes "$notes" \
+    --arg evidenceSource "shell-fallback" \
+    --arg evidenceStatus "missing" \
+    --arg ineligibleReason "$model_attribution_reason" \
+    '{
+      stage: $stage,
+      status: $status,
+      startedAt: $startedAt,
+      finishedAt: $finishedAt,
+      agent: $agent,
+      model: $model,
+      intendedModel: ($model | if . == "" then null else . end),
+      executedModel: null,
+      executionEvidence: {status: $evidenceStatus, source: $evidenceSource},
+      modelAttributionEligible: false,
+      modelAttributionIneligibleReason: $ineligibleReason,
+      notes: $notes
+    }' > "$tmp" 2>/dev/null || { rm -f "$tmp"; log_warn "write_stage_result: jq failed"; return 0; }
   mv "$tmp" "$result_file"
   _write_stage_result_trace_event "$feature_dir" "$stage" "$status" "$agent" "$model" "$previous_status"
 }
@@ -2488,6 +2522,7 @@ write_stage_result_with_history() {
     local cli_args=("$feature_dir" "$stage" "$status")
     [[ -n "$agent" ]] && cli_args+=(--agent "$agent")
     [[ -n "$model" ]] && cli_args+=(--model "$model")
+    cli_args+=(--intended-model "$model")
     [[ -n "$notes" ]] && cli_args+=(--notes "$notes")
     [[ -n "$artifacts_json" ]] && cli_args+=(--artifacts "$artifacts_json")
     [[ -n "$started_at_override" ]] && cli_args+=(--started-at "$started_at_override")
