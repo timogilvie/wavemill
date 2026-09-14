@@ -1319,6 +1319,9 @@ safe_remove_task_worktree_and_branch() {
               elif [[ "$pr_head_oid" == "$local_head_sha" ]]; then
                 classification="safe_terminal_pr_head"
                 cleanup_authority="PR #${pr} merged into ${base_branch} with headRefOid exactly equal to local head ${local_head_sha}"
+              elif git -C "$REPO_DIR" merge-base --is-ancestor "$pr_head_oid" "$local_head_sha" 2>/dev/null; then
+                classification="retain_unpublished"
+                verification_reason="changed_after_pr_head"
               elif patch_cherry_output="$(git -C "$REPO_DIR" cherry "$base_ref" "$task_branch" 2>/dev/null)"; then
                 patch_unique_count="$(printf '%s\n' "$patch_cherry_output" | awk '/^\+/ { count++ } END { print count + 0 }')"
                 patch_equivalent_count="$(printf '%s\n' "$patch_cherry_output" | awk '/^-/ { count++ } END { print count + 0 }')"
