@@ -396,7 +396,7 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
         : undefined,
     staticAnalysis:
       prNumber && branch
-        ? evalOrchestratorDeps.collectStaticAnalysisOutcome(prNumber, branch, 'main', repoDir)
+        ? evalOrchestratorDeps.collectStaticAnalysisOutcome(prNumber, branch, 'main', repoDir, { worktreePath: repoDir })
         : undefined,
     review: prNumber
       ? evalOrchestratorDeps.collectReviewOutcome(prNumber, interventionSummary, repoDir, undefined, issueId, branch)

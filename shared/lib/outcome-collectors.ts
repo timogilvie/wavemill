@@ -20,6 +20,7 @@ import { fetchPrReviews, resolveOwnerRepo } from './github.ts';
 import { readJsonlFile } from './jsonl-utils.ts';
 import { escapeShellArg, execShellCommand } from './shell-utils.ts';
 import { loadReviewInterventions } from './review-intervention-mapper.ts';
+import { collectStaticFeatures } from './static-feature-collector.ts';
 
 // Maps gh CLI's `bucket` field (pass/fail/pending/skipping/cancel) to the
 // legacy `conclusion` values the collectors below were written against.
@@ -302,17 +303,17 @@ export function collectStaticAnalysisOutcome(
   branchName: string,
   baseBranch: string,
   repoDir?: string,
+  opts?: { worktreePath?: string; expectedHeadSha?: string },
 ): StaticAnalysisOutcome {
   const cwd = repoDir || process.cwd();
   const outcome: StaticAnalysisOutcome = {};
+  if (!prNumber || !branchName) {
+    return outcome;
+  }
 
   try {
     // Fetch PR checks via shared cache
     const checks = fetchPrChecks(prNumber, cwd);
-
-    if (checks.length === 0) {
-      return outcome;
-    }
 
     // Look for typecheck-related checks
     const typecheckCheck = checks.find((c: { name: string }) =>
@@ -339,12 +340,45 @@ export function collectStaticAnalysisOutcome(
     if (securityCheck) {
       outcome.securityFindingsDelta = securityCheck.conclusion === 'success' ? 0 : 1;
     }
+
+    const allTerminal = checks.every((check: { conclusion?: unknown }) => check.conclusion !== null && check.conclusion !== undefined);
+    const ciEvidence = {
+      ran: checks.length > 0,
+      allTerminal,
+      passed: checks.every((check: { conclusion?: unknown }) => {
+        const conclusion = String(check.conclusion || '').toLowerCase();
+        return conclusion !== 'failure' && conclusion !== 'cancelled';
+      }),
+    };
+    const expectedHeadSha = opts?.expectedHeadSha || resolveGitRef(cwd, branchName);
+    const checkoutDir = opts?.worktreePath && existsSync(opts.worktreePath) ? opts.worktreePath : cwd;
+    const staticFeatures = collectStaticFeatures({
+      checkoutDir,
+      baseRef: baseBranch || 'main',
+      headRef: expectedHeadSha || branchName || 'HEAD',
+      expectedHeadSha,
+      ciEvidence,
+    });
+    Object.assign(outcome, staticFeatures);
   } catch (err: unknown) {
     const message = errorMessage(err);
     console.warn(`[outcome-collectors] Failed to collect static analysis outcome: ${message}`);
   }
 
   return outcome;
+}
+
+function resolveGitRef(repoDir: string, ref: string): string | undefined {
+  if (!ref) return undefined;
+  try {
+    const resolved = execShellCommand(
+      `git rev-parse ${escapeShellArg(ref)} 2>/dev/null`,
+      { encoding: 'utf-8', cwd: repoDir, timeout: 10_000 }
+    ).trim();
+    return resolved || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // ────────────────────────────────────────────────────────────────

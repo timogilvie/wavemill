@@ -178,6 +178,10 @@
  * - **1.41.0**: Added optional `harnessId` attribution to eval records and
  *   route artifacts (HOK-2843), computed from behavior-relevant manifest
  *   resources while excluding environment/tool version churn.
+ * - **1.48.0**: Added S1 Static feature fields (`type_errors`,
+ *   `lint_errors`, `build_ok`, `complexity_delta`) plus collection metadata
+ *   so missing evidence is explicit null rather than absent or fabricated
+ *   zero (HOK-2806).
  *
  * @module eval-schema
  */
@@ -200,9 +204,9 @@ import type { ChallengeStage } from './challenge-mode.ts';
 /**
  * Current eval schema version for newly emitted records.
  *
- * @since 1.44.0 added unknown_attribution intervention type (HOK-2894)
+ * @since 1.48.0 added S1 Static features (HOK-2806)
  */
-export const SCHEMA_VERSION = '1.47.0';
+export const SCHEMA_VERSION = '1.48.0';
 
 export type RoutingRole = 'planner' | 'coder' | 'reviewer';
 
@@ -1172,6 +1176,35 @@ export interface TestsOutcome {
 /**
  * Static analysis outcome: lint, typecheck, and security findings.
  */
+export type StaticFeatureReason =
+  | 'no-tool-configured'
+  | 'deps-not-installed'
+  | 'tool-timeout'
+  | 'tool-error-uncountable'
+  | 'head-mismatch'
+  | 'ci-not-terminal'
+  | 'diff-unavailable'
+  | 'no-supported-files';
+
+export interface StaticFeatureCollectionMeta {
+  /** Version of the collector implementation that emitted these features. */
+  collectorVersion: string;
+  /** Tool used to observe `type_errors`, or null when unavailable. */
+  typeChecker: 'tsc' | 'mypy' | null;
+  /** Tool used to observe `lint_errors`, or null when unavailable. */
+  linter: 'eslint' | 'ruff' | 'package-script' | null;
+  /** Evidence source used to observe `build_ok`, or null when unavailable. */
+  buildEvidence: 'build-script' | 'ci-terminal' | null;
+  /** Versioned complexity metric name, or null when unavailable. */
+  complexityMetric: 'hok-branch-count/1' | null;
+  /** Checkout HEAD actually measured for tool-backed fields. */
+  collectedAtSha: string | null;
+  /** Closed-vocabulary reasons for explicit null feature values. */
+  reasons: Partial<Record<'type_errors' | 'lint_errors' | 'build_ok' | 'complexity_delta', StaticFeatureReason>>;
+  /** True when reconstructable static fields were added after initial record emission. */
+  backfilled?: boolean;
+}
+
 export interface StaticAnalysisOutcome {
   /** Change in lint errors (negative = improvement, positive = regression) */
   lintDelta?: number;
@@ -1179,6 +1212,16 @@ export interface StaticAnalysisOutcome {
   typecheckPassed?: boolean;
   /** Change in security findings (negative = improvement) */
   securityFindingsDelta?: number;
+  /**
+   * S1 candidate_features/v1 Static group (HOK-2806). Explicit null means
+   * collection ran but evidence was unavailable; absent means a pre-1.48.0
+   * record. Zero and false are observed values.
+   */
+  type_errors?: number | null;
+  lint_errors?: number | null;
+  build_ok?: boolean | null;
+  complexity_delta?: number | null;
+  collection?: StaticFeatureCollectionMeta;
 }
 
 /**

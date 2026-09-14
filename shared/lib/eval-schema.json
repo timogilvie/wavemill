@@ -1425,6 +1425,166 @@
             "securityFindingsDelta": {
               "type": "number",
               "description": "Change in security findings (negative = improvement)."
+            },
+            "type_errors": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "description": "S1 Static: type-check errors reported for the candidate; null means no supported type checker completed successfully."
+            },
+            "lint_errors": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "description": "S1 Static: lint errors reported for the candidate; null means no supported linter completed successfully."
+            },
+            "build_ok": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "S1 Static: whether the configured build completed successfully; null means no build ran to a terminal result or collection failed."
+            },
+            "complexity_delta": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "S1 Static: candidate-minus-base change in the configured code-complexity metric; null means no supported analyzer completed on both revisions."
+            },
+            "collection": {
+              "type": "object",
+              "description": "Static feature collection metadata and null-evidence reasons.",
+              "properties": {
+                "collectorVersion": {
+                  "type": "string"
+                },
+                "typeChecker": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "tsc",
+                    "mypy",
+                    null
+                  ]
+                },
+                "linter": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "eslint",
+                    "ruff",
+                    "package-script",
+                    null
+                  ]
+                },
+                "buildEvidence": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "build-script",
+                    "ci-terminal",
+                    null
+                  ]
+                },
+                "complexityMetric": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "hok-branch-count/1",
+                    null
+                  ]
+                },
+                "collectedAtSha": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reasons": {
+                  "type": "object",
+                  "properties": {
+                    "type_errors": {
+                      "type": "string",
+                      "enum": [
+                        "no-tool-configured",
+                        "deps-not-installed",
+                        "tool-timeout",
+                        "tool-error-uncountable",
+                        "head-mismatch",
+                        "ci-not-terminal",
+                        "diff-unavailable",
+                        "no-supported-files"
+                      ]
+                    },
+                    "lint_errors": {
+                      "type": "string",
+                      "enum": [
+                        "no-tool-configured",
+                        "deps-not-installed",
+                        "tool-timeout",
+                        "tool-error-uncountable",
+                        "head-mismatch",
+                        "ci-not-terminal",
+                        "diff-unavailable",
+                        "no-supported-files"
+                      ]
+                    },
+                    "build_ok": {
+                      "type": "string",
+                      "enum": [
+                        "no-tool-configured",
+                        "deps-not-installed",
+                        "tool-timeout",
+                        "tool-error-uncountable",
+                        "head-mismatch",
+                        "ci-not-terminal",
+                        "diff-unavailable",
+                        "no-supported-files"
+                      ]
+                    },
+                    "complexity_delta": {
+                      "type": "string",
+                      "enum": [
+                        "no-tool-configured",
+                        "deps-not-installed",
+                        "tool-timeout",
+                        "tool-error-uncountable",
+                        "head-mismatch",
+                        "ci-not-terminal",
+                        "diff-unavailable",
+                        "no-supported-files"
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "backfilled": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "collectorVersion",
+                "typeChecker",
+                "linter",
+                "buildEvidence",
+                "complexityMetric",
+                "collectedAtSha",
+                "reasons"
+              ],
+              "additionalProperties": false
             }
           },
           "additionalProperties": false

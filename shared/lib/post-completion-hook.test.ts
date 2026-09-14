@@ -1068,6 +1068,50 @@ await test('collectPostCompletionOutcomes returns stable defaults without PR or 
   assert.deepEqual(outcomes.delivery, { prCreated: false, merged: false });
 });
 
+await test('collectPostCompletionOutcomes passes worktreePath to static collector', async () => {
+  await withMockedPostCompletionDeps(() => {
+    let captured:
+      | { prNumber: string; branchName: string; baseBranch: string; repoDir?: string; opts?: { worktreePath?: string } }
+      | undefined;
+    postCompletionHookDeps.collectCiOutcome = () => ({ ran: true, passed: true, checks: [] });
+    postCompletionHookDeps.collectTestsOutcome = () => ({ added: false });
+    postCompletionHookDeps.collectStaticAnalysisOutcome = (prNumber, branchName, baseBranch, repoDir, opts) => {
+      captured = { prNumber, branchName, baseBranch, repoDir, opts };
+      return {
+        type_errors: null,
+        lint_errors: 0,
+        build_ok: true,
+        complexity_delta: 1,
+      };
+    };
+    postCompletionHookDeps.collectReviewOutcome = () => ({
+      humanReviewRequired: false,
+      rounds: 0,
+      approvals: 0,
+      changeRequests: 0,
+    });
+    postCompletionHookDeps.collectReworkOutcome = () => ({ agentIterations: 0 });
+    postCompletionHookDeps.collectDeliveryOutcome = () => ({ prCreated: true, merged: false });
+
+    const outcomes = collectPostCompletionOutcomes({
+      prNumber: '2806',
+      branchName: 'task/static',
+      repoDir: '/repo',
+      worktreePath: '/repo/worktree',
+      interventionSummary: makeInterventionSummary(0),
+    });
+
+    assert.equal(outcomes.staticAnalysis?.lint_errors, 0);
+    assert.deepEqual(captured, {
+      prNumber: '2806',
+      branchName: 'task/static',
+      baseBranch: 'main',
+      repoDir: '/repo',
+      opts: { worktreePath: '/repo/worktree' },
+    });
+  });
+});
+
 await test('runPostCompletionEval persists outcomes and clears missing_outcome eligibility failure', async () => {
   const repoDir = mkdtempSync(join(tmpdir(), 'post-completion-persist-'));
   makeEligibleRepo(repoDir, 'persist-outcomes', 'HOK-1550');

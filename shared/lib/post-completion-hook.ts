@@ -297,7 +297,7 @@ export function collectPostCompletionOutcomes(input: PostCompletionOutcomeInput)
       : undefined,
     staticAnalysis: prNumber && branchName
       ? safeCollectOutcome('static analysis', {}, () =>
-          postCompletionHookDeps.collectStaticAnalysisOutcome(prNumber, branchName, 'main', repoDir))
+          postCompletionHookDeps.collectStaticAnalysisOutcome(prNumber, branchName, 'main', repoDir, { worktreePath }))
       : undefined,
     review: prNumber
       ? safeCollectOutcome('review', reviewFallback, () =>

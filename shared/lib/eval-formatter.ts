@@ -41,6 +41,12 @@ function formatRouteSignature(route?: {
   return `${route.coder}, ${route.codeDepth}, ${route.reviewer}, ${route.reviewMode}`;
 }
 
+function formatNullable(value: number | boolean | null | undefined): string {
+  if (value === null || value === undefined) return '-';
+  if (typeof value === 'boolean') return value ? '✓' : '✗';
+  return value > 0 ? `+${value}` : String(value);
+}
+
 // ────────────────────────────────────────────────────────────────
 // Public API
 // ────────────────────────────────────────────────────────────────
@@ -184,6 +190,18 @@ export function formatEvalRecord(record: EvalRecord): string {
             ? '✓'
             : `+${o.staticAnalysis.lintDelta}`;
         parts.push(`lint ${lintStatus}`);
+      }
+      if ('type_errors' in o.staticAnalysis) {
+        parts.push(`types ${formatNullable(o.staticAnalysis.type_errors)}`);
+      }
+      if ('lint_errors' in o.staticAnalysis) {
+        parts.push(`lint ${formatNullable(o.staticAnalysis.lint_errors)}`);
+      }
+      if ('build_ok' in o.staticAnalysis) {
+        parts.push(`build ${formatNullable(o.staticAnalysis.build_ok)}`);
+      }
+      if ('complexity_delta' in o.staticAnalysis) {
+        parts.push(`cx ${formatNullable(o.staticAnalysis.complexity_delta)}`);
       }
       if (parts.length > 0) {
         lines.push(`    ${BOLD}Analysis:${NC}  ${parts.join(', ')}`);

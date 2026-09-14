@@ -101,6 +101,7 @@ TESTS=(
   shared/lib/native-agent/launch-planning.test.ts
   shared/lib/native-agent/planning-canary.test.ts
   shared/lib/feature-outcome-consumer.test.ts
+  shared/lib/static-feature-collector.test.ts
   shared/lib/outcome-collectors.test.ts
   shared/lib/context-analyzer.test.ts
   shared/lib/review-engine.test.ts
