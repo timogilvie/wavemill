@@ -67,6 +67,22 @@ real_challenge_intent() {
   npx tsx "$REPO_DIR/tests/fixtures/build-challenge-intent.ts" "$@"
 }
 
+{
+  root="$(mktemp -d "/tmp/challenge-intent-missing-dir.XXXXXX")"
+  STATE_FILE="$root/workflow-state.json"
+  printf '%s\n' '{"tasks":{"HOK-900":{"slug":"pair-slug"}}}' > "$STATE_FILE"
+  intent="$(real_challenge_intent --stage review --pair-id HOK-900 --slug pair-slug \
+    --primary-reviewer gpt-5.6-terra --challenger-reviewer kimi-k2 --challenger-reviewer-agent native-openrouter)"
+  warning="$(persist_challenge_execution_intent "HOK-900" "HOK-900_c" "$root/not-created-yet" "$intent" 2>&1 || true)"
+  if [[ "$warning" == *"challenge intent target dir missing"* ]] \
+    && jq -e '.tasks["HOK-900"].challengeExecutionIntent.pairId == "HOK-900"' "$STATE_FILE" >/dev/null; then
+    pass "missing target dir logs warning and keeps intent pending in state"
+  else
+    fail "missing target dir dropped intent or warning: $warning"
+  fi
+  rm -rf "$root"
+}
+
 # Build a worktree pair, run the real producer, then the real consumer.
 # Echoes the root dir so the caller can inspect and clean up.
 roundtrip() {

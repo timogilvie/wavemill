@@ -351,7 +351,7 @@ function buildReviewExecutedIdentity(input: {
 
   const substantiveAnalysis = input.reviewResult.substantiveAnalysisIdentity ?? buildExecutedIdentity({
     role: 'substantive_analysis',
-    requestedModel: requestedModel ?? orchestratorModel,
+    requestedModel,
     resolvedModel: orchestratorModel,
     agent: orchestratorAgent,
     source: 'unknown',

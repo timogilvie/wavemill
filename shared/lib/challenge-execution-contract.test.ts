@@ -12,6 +12,7 @@ import {
   isStageAttributionEligibleForCoverage,
   STAGE_ATTRIBUTION_REASON_CODES,
   resolveChallengeSide,
+  resolveReviewStageChallengePin,
   buildChallengeExecutionIntent,
   enforceChallengeIntentPresence,
   projectChallengeIntentForPersistence,
@@ -96,6 +97,39 @@ function makeRuntimeIntent(overrides: Partial<ChallengeExecutionIntent> = {}): C
     },
     ...overrides,
   };
+}
+
+function makeReviewIntent(overrides: Partial<ChallengeExecutionIntent> = {}): ChallengeExecutionIntent {
+  const pairId = overrides.pairId ?? 'pair-2604';
+  const issueId = overrides.issueId ?? 'HOK-2604';
+  return makeRuntimeIntent({
+    pairId,
+    issueId,
+    selectedStage: 'review',
+    challengeStage: 'review',
+    primary: {
+      pairId,
+      side: 'primary',
+      challengeStage: 'review',
+      expectedStageModel: 'gpt-5.5',
+      expectedStageAgent: 'codex',
+      expectedRoute: { planner: '', coder: '', reviewer: 'gpt-5.5', planDepth: '', codeDepth: '', reviewMode: '' },
+    },
+    challenger: {
+      pairId,
+      side: 'challenger',
+      challengeStage: 'review',
+      expectedStageModel: 'kimi-k3',
+      expectedStageAgent: 'native-openrouter',
+      expectedRoute: { planner: '', coder: '', reviewer: 'kimi-k3', planDepth: '', codeDepth: '', reviewMode: '' },
+    },
+    ...overrides,
+  });
+}
+
+function writeWorkflowState(repoDir: string, state: unknown): void {
+  mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
+  writeFileSync(join(repoDir, '.wavemill', 'workflow-state.json'), JSON.stringify(state));
 }
 
 function makeRecord(overrides: Partial<EvalRecord> = {}): EvalRecord {
@@ -628,6 +662,175 @@ test('resolveChallengeSide: inference still applies when no explicit side is giv
     });
     assert.equal(res.side, 'challenger');
     assert.equal(res.invalidReason, undefined);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('resolveReviewStageChallengePin prefers the feature-dir intent when present', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'review-pin-file-'));
+  try {
+    const featureDir = join(repoDir, 'features', 'review-pin-challenger');
+    mkdirSync(featureDir, { recursive: true });
+    writeWorkflowState(repoDir, {
+      tasks: {
+        'HOK-2958_c': {
+          slug: 'review-pin-challenger',
+          branch: 'task/review-pin-challenger',
+          challengePairId: 'HOK-2958',
+          challengeRole: 'challenger',
+          challengeStage: 'review',
+          challengeExecutionIntent: makeReviewIntent({
+            pairId: 'HOK-2958',
+            issueId: 'HOK-2958',
+            challenger: {
+              pairId: 'HOK-2958',
+              side: 'challenger',
+              challengeStage: 'review',
+              expectedStageModel: 'state-reviewer',
+              expectedRoute: { planner: '', coder: '', reviewer: 'state-reviewer', planDepth: '', codeDepth: '', reviewMode: '' },
+            },
+          }),
+        },
+      },
+    });
+    writeFileSync(join(featureDir, 'challenge-intent.json'), JSON.stringify(makeReviewIntent({
+      pairId: 'HOK-2958',
+      issueId: 'HOK-2958',
+      challenger: {
+        pairId: 'HOK-2958',
+        side: 'challenger',
+        challengeStage: 'review',
+        expectedStageModel: 'file-reviewer',
+        expectedStageAgent: 'native-openrouter',
+        expectedRoute: { planner: '', coder: '', reviewer: 'file-reviewer', planDepth: '', codeDepth: '', reviewMode: '' },
+      },
+    })));
+
+    const pin = resolveReviewStageChallengePin({
+      repoDir,
+      featureDir,
+      branchName: 'task/review-pin-challenger',
+    });
+    assert.deepEqual(pin, { pairId: 'HOK-2958', model: 'file-reviewer', agent: 'native-openrouter' });
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('resolveReviewStageChallengePin falls back to canonical state intent for _c task keys', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'review-pin-state-'));
+  try {
+    const featureDir = join(repoDir, 'features', 'external-harness-challenger');
+    mkdirSync(featureDir, { recursive: true });
+    writeWorkflowState(repoDir, {
+      tasks: {
+        'HOK-2958_c': {
+          slug: 'external-harness-challenger',
+          branch: 'task/external-harness-challenger',
+          challengePairId: 'HOK-2958',
+          challengeRole: 'challenger',
+          challengeStage: 'review',
+          challengeExecutionIntent: makeReviewIntent({ pairId: 'HOK-2958', issueId: 'HOK-2958' }),
+        },
+      },
+    });
+
+    const pin = resolveReviewStageChallengePin({
+      repoDir,
+      featureDir,
+      branchName: 'task/external-harness-challenger',
+    });
+    assert.deepEqual(pin, { pairId: 'HOK-2958', model: 'kimi-k3', agent: 'native-openrouter' });
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('resolveReviewStageChallengePin resolves a -challenger arm record before task materialisation', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'review-pin-arm-'));
+  try {
+    const featureDir = join(repoDir, 'features', 'external-harness-challenger');
+    mkdirSync(featureDir, { recursive: true });
+    writeWorkflowState(repoDir, {
+      tasks: {
+        'HOK-2958': {
+          slug: 'external-harness',
+          branch: 'task/external-harness',
+          challengePairId: 'HOK-2958',
+          challengeRole: 'primary',
+          challengeArms: [{
+            key: 'HOK-2958-challenger',
+            slug: 'external-harness-challenger',
+            branch: 'task/external-harness-challenger',
+            role: 'challenger',
+            variedStage: 'review',
+            executionIntent: makeReviewIntent({ pairId: 'HOK-2958', issueId: 'HOK-2958' }),
+          }],
+        },
+      },
+    });
+
+    const pin = resolveReviewStageChallengePin({
+      repoDir,
+      featureDir,
+      branchName: 'task/external-harness-challenger',
+    });
+    assert.deepEqual(pin, { pairId: 'HOK-2958', model: 'kimi-k3', agent: 'native-openrouter' });
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('resolveReviewStageChallengePin returns unresolvable for known review challenge with no canonical intent', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'review-pin-missing-'));
+  try {
+    const featureDir = join(repoDir, 'features', 'external-harness-challenger');
+    mkdirSync(featureDir, { recursive: true });
+    writeWorkflowState(repoDir, {
+      tasks: {
+        'HOK-2958_c': {
+          slug: 'external-harness-challenger',
+          branch: 'task/external-harness-challenger',
+          challengePairId: 'HOK-2958',
+          challengeRole: 'challenger',
+          challengeStage: 'review',
+          challengeExecutionIntent: { forkStage: 'review', forkCommit: 'c8c0f018', challenger: { inheritedStages: ['plan', 'implementation'] } },
+        },
+      },
+    });
+
+    const pin = resolveReviewStageChallengePin({
+      repoDir,
+      featureDir,
+      branchName: 'task/external-harness-challenger',
+    });
+    assert.deepEqual(pin, { pairId: 'HOK-2958', unresolvable: true });
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('resolveReviewStageChallengePin ignores non-challenge directories', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'review-pin-none-'));
+  try {
+    const featureDir = join(repoDir, 'features', 'solo-task');
+    mkdirSync(featureDir, { recursive: true });
+    writeWorkflowState(repoDir, {
+      tasks: {
+        'HOK-3000': {
+          slug: 'solo-task',
+          branch: 'task/solo-task',
+        },
+      },
+    });
+
+    const pin = resolveReviewStageChallengePin({
+      repoDir,
+      featureDir,
+      branchName: 'task/solo-task',
+    });
+    assert.equal(pin, undefined);
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
   }

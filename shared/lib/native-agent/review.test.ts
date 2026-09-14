@@ -154,7 +154,7 @@ describe('native review', () => {
     }
   });
 
-  it('treats an unrequested review as self-consistently pinned when no challenge names a model (HOK-2969)', async () => {
+  it('records an unrequested review as derived and unpinned', async () => {
     const repoDir = makeTempRepo();
     setReadyProvider();
 
@@ -177,7 +177,7 @@ describe('native review', () => {
       const result = await runNativeReview(makeReviewContext(), repoDir, {});
       assert.equal(result.substantiveAnalysisIdentity?.requestedModel, 'gpt-4o');
       assert.equal(result.substantiveAnalysisIdentity?.resolvedModel, 'gpt-4o');
-      assert.equal(result.substantiveAnalysisIdentity?.pinned, true);
+      assert.equal(result.substantiveAnalysisIdentity?.pinned, false);
       assert.equal(result.substantiveAnalysisIdentity?.source, 'derived');
     } finally {
       rmSync(repoDir, { recursive: true, force: true });

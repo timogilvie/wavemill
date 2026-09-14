@@ -807,11 +807,19 @@ persist_challenge_execution_intent() {
   shift 4 2>/dev/null || true
   local extra_feature_dirs=("$@")
   [[ -n "$issue" && -n "$intent_json" ]] || return 0
-  echo "$intent_json" | jq -e '.schemaVersion == 1 and (.pairId // "") != "" and (.issueId // "") != ""' >/dev/null 2>&1 || return 0
+  challenge_intent_json_is_canonical "$intent_json" || return 0
+
+  challenge_intent_record_selection "$issue" "$challenger_key" "$intent_json"
 
   local dir intent_file
   for dir in "$feature_dir" "${extra_feature_dirs[@]}"; do
-    [[ -n "$dir" && -d "$dir" ]] || continue
+    if [[ -z "$dir" ]]; then
+      continue
+    fi
+    if [[ ! -d "$dir" ]]; then
+      log_warn "  $issue: challenge intent target dir missing: $dir (intent kept pending in state)"
+      continue
+    fi
     intent_file="$dir/.challenge-intent.json"
 
     # The intent is the pre-registered hypothesis: which stage is varied and
@@ -826,6 +834,9 @@ persist_challenge_execution_intent() {
     # actually ran an implementation-stage challenge was relabelled as a
     # plan-stage challenge against a model that never executed.
     if [[ -f "$intent_file" ]] && challenge_intent_is_sealed "$dir"; then
+      if [[ ! -f "$dir/challenge-intent.json" ]]; then
+        printf '%s\n' "$intent_json" | jq -S . > "$dir/challenge-intent.json" 2>/dev/null || true
+      fi
       continue
     fi
 
@@ -841,36 +852,6 @@ persist_challenge_execution_intent() {
       printf '%s\n' "$intent_json" | jq -S . > "$dir/challenge-intent.json" 2>/dev/null || true
     fi
   done
-
-  # Promote each side's varied stage model into first-class state fields.
-  #
-  # Until now the varied model for a plan- or review-stage challenge lived only
-  # inside .routing-complete, the one artifact a rerouting pass overwrites, so
-  # those stages had no equivalent of the challengeModel backstop that the
-  # implementation stage has always enjoyed.  Deriving them here keeps a single
-  # writer: they come straight off the canonical intent.
-  state_mutate "$STATE_FILE" \
-    '($intent.selectedStage // $intent.challengeStage // "") as $stage
-     | ($intent.primary // {}) as $p
-     | ($intent.challenger // {}) as $c
-     | .tasks[$issue].challengeExecutionIntent = $intent
-     | (if $stage != "" then .tasks[$issue].challengeStage = $stage else . end)
-     | (if ($p.expectedStageModel // "") != ""
-        then .tasks[$issue].challengeVariedModel = $p.expectedStageModel
-             | .tasks[$issue].challengeVariedAgent = ($p.expectedStageAgent // "")
-        else . end)
-     | if $challenger != "" and (.tasks[$challenger] != null)
-       then .tasks[$challenger].challengeExecutionIntent = $intent
-            | (if $stage != "" then .tasks[$challenger].challengeStage = $stage else . end)
-            | (if ($c.expectedStageModel // "") != ""
-               then .tasks[$challenger].challengeVariedModel = $c.expectedStageModel
-                    | .tasks[$challenger].challengeVariedAgent = ($c.expectedStageAgent // "")
-               else . end)
-       else .
-       end' \
-    --arg issue "$issue" \
-    --arg challenger "$challenger_key" \
-    --argjson intent "$intent_json" || true
 }
 
 # The model this task's challenge selected for the stage about to launch.
@@ -1717,6 +1698,25 @@ challenge_intent_stamp_fork_descriptor() {
   return 0
 }
 
+challenge_intent_file_json() {
+  local dir="$1" file candidate
+  [[ -n "$dir" && -d "$dir" ]] || return 1
+  for file in "$dir/challenge-intent.json" "$dir/.challenge-intent.json"; do
+    [[ -f "$file" ]] || continue
+    candidate="$(jq -c . "$file" 2>/dev/null || true)"
+    if challenge_intent_json_is_canonical "$candidate"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+challenge_intent_files_valid() {
+  local dir="$1"
+  challenge_intent_file_json "$dir" >/dev/null 2>&1
+}
+
 # HOK-2811 (Arbiter P2.4a) — mirror of challenge_cancel_challenger_arm.
 #
 # Materialise a deferred (awaiting_fork) challenger arm at the primary's
@@ -1729,11 +1729,13 @@ challenge_intent_stamp_fork_descriptor() {
 #   1. Read the primary's HEAD as the fork commit.
 #   2. Create branch task/<slug>-challenger + worktree at that commit.
 #   3. Copy the primary's feature dir into the challenger's, excluding review
-#      artifacts and transient markers.
+#      artifacts and transient markers. If the intent file was never written,
+#      rebuild it from the arm record or task state before proceeding.
 #   4. Stamp .planning-result.json and .coding-result.json with source=inherited.
 #   5. Stamp the fork descriptor onto both arms' intent files + state.
-#   6. Save the challenger's task-state entry at phase=review.
-#   7. Launch the review phase directly (same sequence as the coding→review
+#   6. Validate both arms have canonical intent.
+#   7. Save the challenger's task-state entry at phase=review.
+#   8. Launch the review phase directly (same sequence as the coding→review
 #      transition in monitor_issue_state), so the arm is indistinguishable
 #      from a normally-transitioned task from that point on.
 #
@@ -1851,6 +1853,38 @@ challenge_materialize_challenger_arm() {
     fi
   done
 
+  local intent_needs_backfill="false"
+  if [[ ! -f "$primary_feature_dir/challenge-intent.json" || ! -f "$challenger_feature_dir/challenge-intent.json" ]]; then
+    intent_needs_backfill="true"
+  fi
+  if ! challenge_intent_files_valid "$primary_feature_dir" || ! challenge_intent_files_valid "$challenger_feature_dir"; then
+    intent_needs_backfill="true"
+  fi
+  if [[ "$intent_needs_backfill" == "true" ]]; then
+    local backfill_intent=""
+    backfill_intent="$(echo "$arm_json" | jq -c '.executionIntent // empty' 2>/dev/null || true)"
+    if ! challenge_intent_json_is_canonical "$backfill_intent"; then
+      backfill_intent=""
+      if [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]]; then
+        backfill_intent="$(jq -c --arg issue "$primary_issue" \
+          '.tasks[$issue].challengeExecutionIntent // empty' \
+          "$STATE_FILE" 2>/dev/null || true)"
+      fi
+    fi
+    if ! challenge_intent_json_is_canonical "$backfill_intent"; then
+      backfill_intent="$(challenge_intent_file_json "$primary_feature_dir" 2>/dev/null || true)"
+    fi
+
+    if challenge_intent_json_is_canonical "$backfill_intent"; then
+      persist_challenge_execution_intent \
+        "$primary_issue" "$arm_key" \
+        "$primary_feature_dir" "$backfill_intent" "$challenger_feature_dir"
+      log "status" "  $arm_key: challenge intent backfilled during materialisation"
+    else
+      log_warn "  $arm_key: cannot backfill challenge intent before materialisation"
+    fi
+  fi
+
   # Step 4: stamp inherited stage results. The files are jq-additive rewrites
   # so schema validation (source: inherited allowed by
   # shared/schemas/stage-result.schema.json) still passes.
@@ -1875,7 +1909,13 @@ challenge_materialize_challenger_arm() {
     '["plan","implementation"]' || \
     log_warn "  $arm_key: fork-descriptor stamp reported failure"
 
-  # Step 6: save the challenger's task-state entry at phase=review.
+  # Step 6: refuse to launch an arm whose intent cannot be attested.
+  if ! challenge_intent_files_valid "$primary_feature_dir" || ! challenge_intent_files_valid "$challenger_feature_dir"; then
+    log_error "  $arm_key: refusing to launch - challenge intent missing/invalid (primary=$primary_feature_dir challenger=$challenger_feature_dir)"
+    return 2
+  fi
+
+  # Step 7: save the challenger's task-state entry at phase=review.
   local linear_issue
   linear_issue="$(get_linear_issue_id "$primary_issue" 2>/dev/null || echo "$primary_issue")"
   save_task_state "$arm_key" "$arm_slug" "$arm_branch" "$challenger_wt_dir" \
@@ -1897,7 +1937,7 @@ challenge_materialize_challenger_arm() {
      | .tasks[$issue].updated = (now | todate)' \
     --arg issue "$primary_issue" >/dev/null 2>&1 || true
 
-  # Step 7: launch the review phase directly. Same sequence as the
+  # Step 8: launch the review phase directly. Same sequence as the
   # coding→review transition in monitor_issue_state, so any downstream
   # phase-machinery guards (bounded_retry, handle_phase_launch_result, etc.)
   # see identical inputs.
@@ -2051,6 +2091,17 @@ challenge_maybe_materialize_deferred_arms() {
       challenge_arms_set_state "$primary_issue" "$arm_key" "materializing" "materialized" \
         "$(jq -cn --arg fc "$fork_commit" '{materializedAt: (now | todate), forkCommit: $fc}')" 2>/dev/null || true
       bounded_retry_clear "$primary_feature_dir" "$bucket"
+    elif (( materialise_rc == 2 )); then
+      local reason="missing_challenge_intent: no canonical intent in arm record, task state, or primary feature dir"
+      if bounded_retry_mark_exhausted "$primary_feature_dir" "$bucket" "$reason"; then
+        log "status" "  $primary_issue: challenger arm $arm_key invalid before review ($reason)"
+      fi
+      challenge_arms_set_state "$primary_issue" "$arm_key" "materializing" "exhausted" \
+        "$(jq -cn --arg r "missing_challenge_intent" '{exhaustReason: $r, exhaustedAt: (now | todate)}')" 2>/dev/null || true
+      log_route_lifecycle "challenge_arm_invalid_intent" \
+        "issue=$primary_issue" \
+        "arm=$arm_key" \
+        "reason=missing_challenge_intent"
     else
       # Retryable failure — reset the arm to awaiting_fork so the next tick
       # re-enters through the gate.
@@ -13449,12 +13500,13 @@ EOF
         "challenger" "$challenge_stage" \
         "$challenger_model" "$challenger_planner" "$challenger_reviewer" \
         "$challenger_agent" "${challenger_planner_agent:-$challenger_agent}" "${challenger_reviewer_agent:-$challenger_agent}" \
-        "$challenger_plan_depth" "$challenger_code_depth" "$challenger_review_mode")"
+        "$challenger_plan_depth" "$challenger_code_depth" "$challenger_review_mode" \
+        "$challenge_execution_intent")"
       challenge_arms_record_pending "$issue" "$pending_arm_json" || \
         log_warn "  $issue: failed to record pending challenger arm $challenger_key"
-      # Persist the intent into the primary's feature dir only — the challenger
-      # dir doesn't exist yet. Materialisation copies the intent alongside the
-      # other feature-dir artifacts.
+      # Persist the intent into the primary's feature dir when present, and
+      # always into state. Materialisation copies it from disk, rebuilds it
+      # from state/arm intent, or refuses the arm before review spend.
       persist_challenge_execution_intent "$issue" "$challenger_key" \
         "${WORKTREE_ROOT}/${slug}/features/${slug}" \
         "$challenge_execution_intent"
