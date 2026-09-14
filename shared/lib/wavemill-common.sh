@@ -4581,7 +4581,7 @@ issue_payload_is_complete() {
 # Output: Filtered JSON, warnings/diagnostics to stderr/log
 filter_parent_issues() {
   local backlog_json="$1"
-  local log_dest="${2:-/dev/stderr}"
+  local log_dest="${2:-2}"
 
   if ! declare -p WAVEMILL_TERMINAL_PARENT_ANNOUNCED >/dev/null 2>&1; then
     declare -gA WAVEMILL_TERMINAL_PARENT_ANNOUNCED=()
