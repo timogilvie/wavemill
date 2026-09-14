@@ -293,7 +293,7 @@ export function collectPostCompletionOutcomes(input: PostCompletionOutcomeInput)
       : undefined,
     tests: prNumber && branchName
       ? safeCollectOutcome('tests', { added: false }, () =>
-          postCompletionHookDeps.collectTestsOutcome(prNumber, branchName, 'main', repoDir))
+          postCompletionHookDeps.collectTestsOutcome(prNumber, branchName, 'main', repoDir, worktreePath))
       : undefined,
     staticAnalysis: prNumber && branchName
       ? safeCollectOutcome('static analysis', {}, () =>

@@ -18,12 +18,14 @@ import {
   collectReworkOutcome,
   collectDeliveryOutcome,
   clearPrChecksCache,
+  clearCandidateFeaturesCache,
 } from './outcome-collectors.ts';
 import type { InterventionSummary } from './intervention-detector.ts';
 
-// Clear cache before each test to ensure test isolation
+// Clear caches before each test to ensure test isolation
 beforeEach(() => {
   clearPrChecksCache();
+  clearCandidateFeaturesCache();
 });
 
 function withFakeGh(checks: unknown[], run: (repoDir: string) => void): void {

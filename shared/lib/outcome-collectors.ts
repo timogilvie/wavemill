@@ -24,7 +24,10 @@ import {
   collectStaticFeatures,
   type StaticFeaturesResult,
 } from './static-features.ts';
-import { extractCandidateFeatures } from './candidate-features.ts';
+import {
+  extractCandidateFeatures,
+  type CandidateFeaturesV1,
+} from './candidate-features.ts';
 
 // Maps gh CLI's `bucket` field (pass/fail/pending/skipping/cancel) to the
 // legacy `conclusion` values the collectors below were written against.
@@ -70,6 +73,13 @@ interface PrCheckEvidence {
 const prChecksCache = new Map<string, PrCheckEvidence[]>();
 
 /**
+ * Cache of extracted candidate features, keyed by `${prNumber}:${checkoutDir}:${repoDir}`.
+ * Lets Tests and Static outcome collectors share one call to
+ * `extractCandidateFeatures` per PR so each feature group is computed once.
+ */
+const candidateFeaturesCache = new Map<string, CandidateFeaturesV1 | null>();
+
+/**
  * Clear the PR checks cache for a specific PR or all PRs.
  *
  * @param prNumber - PR number (omit to clear all cached checks)
@@ -81,6 +91,46 @@ export function clearPrChecksCache(prNumber?: string, repoDir?: string): void {
     prChecksCache.delete(key);
   } else {
     prChecksCache.clear();
+  }
+}
+
+/**
+ * Clear the candidate features cache. Test-only helper for isolation.
+ */
+export function clearCandidateFeaturesCache(): void {
+  candidateFeaturesCache.clear();
+}
+
+/**
+ * Return the extracted `candidate_features/v1` for a PR, caching by
+ * `(prNumber, checkoutDir, repoDir)` so multiple outcome collectors share one
+ * extraction. Returns `null` when the inputs are unusable (no PR number, no
+ * checkout, extractor failure). Non-throwing.
+ */
+function getCandidateFeaturesForPr(
+  prNumber: string,
+  checkoutDir: string,
+  repoDir: string,
+): CandidateFeaturesV1 | null {
+  if (!prNumber || !/^\d+$/.test(prNumber)) return null;
+  if (!isExistingDir(checkoutDir)) return null;
+  const key = `${prNumber}:${checkoutDir}:${repoDir}`;
+  if (candidateFeaturesCache.has(key)) {
+    return candidateFeaturesCache.get(key) ?? null;
+  }
+  try {
+    const features = extractCandidateFeatures({
+      checkoutDir,
+      prNumber,
+      repoDir,
+    });
+    candidateFeaturesCache.set(key, features);
+    return features;
+  } catch (err: unknown) {
+    const message = errorMessage(err);
+    console.warn(`[outcome-collectors] Failed to extract candidate features: ${message}`);
+    candidateFeaturesCache.set(key, null);
+    return null;
   }
 }
 
@@ -250,40 +300,50 @@ export function collectTestsOutcome(
   branchName: string,
   baseBranch: string,
   repoDir?: string,
+  checkoutDir?: string,
 ): TestsOutcome {
   const cwd = repoDir || process.cwd();
   const outcome: TestsOutcome = {
     added: false,
   };
 
+  // Prefer the unified extractor when a checkout is available: it is the
+  // canonical source for `tests_changed` / `test_pass_rate` and its output is
+  // memoized so `collectStaticAnalysisOutcome` reuses the same result.
+  const candidate = checkoutDir
+    ? getCandidateFeaturesForPr(prNumber, checkoutDir, cwd)
+    : null;
+
+  if (candidate) {
+    if (candidate.tests_changed !== null) outcome.added = candidate.tests_changed;
+    if (candidate.test_pass_rate !== null) outcome.passRate = candidate.test_pass_rate;
+    return outcome;
+  }
+
+  // Fallback path when no checkout is available (e.g. older callers or bare
+  // repoDir contexts): retain the legacy diff+CI heuristic so behavior is
+  // preserved for records collected without a candidate checkout.
   try {
-    // Detect test file additions via git diff
-    // Look for files matching common test patterns
     const diffRaw = execShellCommand(
       `git diff --name-status ${escapeShellArg(baseBranch)}...${escapeShellArg(branchName)} 2>/dev/null | grep -E '\\.(test|spec)\\.(js|ts|jsx|tsx)$' || echo ''`,
       { encoding: 'utf-8', cwd, timeout: 10_000 }
     ).trim();
 
     if (diffRaw) {
-      // Check if any files were added (A) or modified (M)
       const lines = diffRaw.split('\n').filter(Boolean);
       outcome.added = lines.some((line) => line.startsWith('A') || line.startsWith('M'));
     }
 
-    // Try to extract test pass rate from CI checks
-    // Look for a check with "test" in the name
     const checks = fetchPrChecks(prNumber, cwd);
     const testCheck = checks.find((c) =>
       typeof c.name === 'string' && c.name.toLowerCase().includes('test')
     );
 
     if (testCheck) {
-      // If we found a test check, infer pass rate from conclusion
-      // This is a simple heuristic; actual pass rate would require parsing check output
       if (testCheck.conclusion === 'success') {
         outcome.passRate = 1.0;
       } else if (testCheck.conclusion === 'failure') {
-        outcome.passRate = 0.0; // Could be partial, but we don't have granular data
+        outcome.passRate = 0.0;
       }
     }
   } catch (err: unknown) {
@@ -488,19 +548,25 @@ function collectStaticFeaturesViaCandidate(options: {
   prNumber: string;
   repoDir: string;
 }): StaticFeaturesResult {
+  // `build_evidence` and `complexity_metric` live outside the frozen
+  // `candidate_features/v1` shape, so we still need the raw collector for
+  // those two provenance fields. The four v1 fields are then taken from the
+  // shared extractor output — the same object `collectTestsOutcome` uses —
+  // so both collectors report the same numbers without double extraction.
   const staticFeatures = collectStaticFeatures(options);
-  const candidate = extractCandidateFeatures({
-    ...options,
-    staticFeatures,
-    offline: true,
-  });
-  return {
-    ...staticFeatures,
-    type_errors: candidate.type_errors,
-    lint_errors: candidate.lint_errors,
-    build_ok: candidate.build_ok,
-    complexity_delta: candidate.complexity_delta,
-  };
+  const shared = getCandidateFeaturesForPr(options.prNumber, options.checkoutDir, options.repoDir);
+  if (shared) {
+    return {
+      ...staticFeatures,
+      type_errors: shared.type_errors,
+      lint_errors: shared.lint_errors,
+      build_ok: shared.build_ok,
+      complexity_delta: shared.complexity_delta,
+    };
+  }
+  // Cache miss (invalid PR / unusable checkout): the extractor could not run,
+  // so fall back to the raw collector values (already null-disciplined).
+  return staticFeatures;
 }
 
 function fetchPrHeadSha(prNumber: string, repoDir: string): string | null {
