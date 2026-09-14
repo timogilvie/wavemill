@@ -222,6 +222,7 @@ export function validateManifest(manifest: ReplayPatchSelectionManifest): Valida
 
   const seenIds = new Set<string>();
   const instanceIds = new Set<string>();
+  const heldOutIds = new Set(manifest.split?.heldOutIds ?? []);
 
   for (const instance of manifest.instances) {
     diagnostics.totalInstances = (diagnostics.totalInstances as number) + 1;
@@ -246,11 +247,17 @@ export function validateManifest(manifest: ReplayPatchSelectionManifest): Valida
     if (instance.heldOut) {
       (diagnostics.heldOutCount as number)++;
     }
+
+    if (instance.heldOut !== heldOutIds.has(instance.id)) {
+      errors.push(
+        `Instance ${instance.id}: heldOut flag must match split.heldOutIds membership`
+      );
+    }
   }
 
   // Check held-out split integrity
   if (manifest.split && manifest.split.heldOutIds) {
-    for (const heldOutId of manifest.split.heldOutIds) {
+    for (const heldOutId of heldOutIds) {
       if (!instanceIds.has(heldOutId)) {
         (diagnostics.missingHeldOutIds as string[]).push(heldOutId);
         errors.push(`Held-out id not found in instances: "${heldOutId}"`);

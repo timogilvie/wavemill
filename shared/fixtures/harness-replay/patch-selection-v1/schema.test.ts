@@ -139,6 +139,34 @@ test('validateManifest: held-out id not in instances fails', () => {
   strictEqual(result.errors.some((e) => e.includes('not found in instances')), true);
 });
 
+test('validateManifest: heldOut flag must be listed in split', () => {
+  const manifest: ReplayPatchSelectionManifest = {
+    ...validManifest,
+    instances: [{ ...validInstance, heldOut: true }],
+    split: {
+      heldOutIds: [],
+      strategy: 'test',
+    },
+  };
+  const result = validateManifest(manifest);
+  strictEqual(result.valid, false);
+  strictEqual(result.errors.some((e) => e.includes('heldOut flag must match')), true);
+});
+
+test('validateManifest: split held-out id must set heldOut flag', () => {
+  const manifest: ReplayPatchSelectionManifest = {
+    ...validManifest,
+    instances: [{ ...validInstance, heldOut: false }],
+    split: {
+      heldOutIds: [validInstance.id],
+      strategy: 'test',
+    },
+  };
+  const result = validateManifest(manifest);
+  strictEqual(result.valid, false);
+  strictEqual(result.errors.some((e) => e.includes('heldOut flag must match')), true);
+});
+
 test('validateManifest: counts diagnostics correctly', () => {
   const instance1: ReplayPatchSelectionInstance = {
     ...validInstance,
