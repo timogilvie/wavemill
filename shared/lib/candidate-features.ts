@@ -321,3 +321,29 @@ export async function extractCandidateFeatures(
     throw err;
   }
 }
+
+/**
+ * Wavemill adapter: extract candidate features with optional task descriptor enrichment.
+ *
+ * This is the entry point for calling the extractor from within wavemill workflows.
+ * It differs from the standalone extractCandidateFeatures by accepting a derived task
+ * descriptor (from @hokusai/core's deriveTaskDescriptor) to enrich Intent features.
+ *
+ * When called without enrichment, yields the same output as extractCandidateFeatures.
+ *
+ * @internal Used by wavemill post-completion hook and outcome collectors.
+ */
+export async function extractCandidateFeaturesForWavemill(
+  options: ExtractCandidateFeaturesOptions,
+): Promise<CandidateFeaturesV1> {
+  // Phase 3: Thin wavemill adapter.
+  // In a full implementation, this would:
+  // 1. Read the task descriptor from wavemill state (already derived by caller)
+  // 2. Compute Intent enrichment from the descriptor + PR diff
+  // 3. Pass enrichmentContext to extractCandidateFeatures
+  //
+  // For now, it's a passthrough. Intent will be fully null.
+  // TODO: Add Intent enrichment logic when task descriptor context is available.
+
+  return extractCandidateFeatures(options);
+}
