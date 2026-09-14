@@ -59,6 +59,7 @@ export class LinearApiError extends Error {
 export interface LinearState {
   id?: string;
   name: string;
+  type?: string;
 }
 
 /**
@@ -653,6 +654,9 @@ export async function getBacklogForScoring(projectName?: string): Promise<Linear
             nodes {
               id
               identifier
+              state { name type }
+              completedAt
+              canceledAt
             }
           }
           relations {

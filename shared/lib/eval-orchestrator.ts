@@ -71,6 +71,7 @@ import { getMaxCostUsd } from './config.ts';
 import { formatHokusaiSubmissionTriggerResult, triggerHokusaiSubmission } from './hokusai-submission-trigger.ts';
 import { getConfiguredModelsForDescriptor } from './model-registry.ts';
 import { computeWorkflowCostWithExactPricing, loadPricingTable, type WorkflowCostOutcome } from './workflow-cost.ts';
+import { collectExecutionEconomics } from './execution-economics.ts';
 import type {
   EvalRecord,
   EvalRouteProvenance,
@@ -104,6 +105,7 @@ export const evalOrchestratorDeps = {
   appendEvalRecord,
   triggerHokusaiSubmission,
   computeWorkflowCost: computeWorkflowCostWithExactPricing,
+  collectExecutionEconomics,
   loadPricingTable,
   execShellCommand,
 };
@@ -533,6 +535,24 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
     };
   }
 
+  // 9c. Collect normalized execution economics (HOK-2958): fail-soft,
+  // observation-only, mirroring the post-completion hook.
+  let executionEconomics: Awaited<ReturnType<typeof collectExecutionEconomics>> | null = null;
+  if (worktreePath && branch) {
+    try {
+      executionEconomics = await evalOrchestratorDeps.collectExecutionEconomics({
+        worktreePath,
+        branchName: branch,
+        repoDir,
+        issueId,
+        routing: stageArtifacts.routing ?? null,
+        stageResultsDir: stageArtifacts.stageResultsDir ?? null,
+      });
+    } catch (err) {
+      console.warn(`Warning: failed to collect execution economics: ${errorMessage(err)}`);
+    }
+  }
+
   const resolvedWorkflowCost = workflowCostOutcome?.status === 'success'
     ? workflowCostOutcome.totalCostUsd
     : undefined;
@@ -718,6 +738,7 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
     taskContext: taskContextData,
     repoContext: repoContextData,
     workflowCost: workflowCostOutcome,
+    executionEconomics,
     taskDescriptor,
     constraints: evalConstraints,
     featureOutcomeDiagnostics,

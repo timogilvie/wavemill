@@ -37,6 +37,12 @@ Options (write/update):
   --failure-reason <text>   Failure reason (for failed/aborted status)
   --started-at <iso>        Override startedAt timestamp
   --finished-at <iso>       Override finishedAt timestamp
+  --intended-model <name>   Model requested by routing/launch
+  --executed-model <name>   Evidence-backed executed model, or null
+  --execution-evidence-status <status>  direct | missing | contradicted | inherited
+  --execution-evidence-source <source>  Evidence producer/source
+  --execution-evidence-detail <text>    Human-readable evidence diagnostic
+  --model-attribution-eligible <bool>   Override quality-attribution eligibility
 
 Examples:
   npx tsx tools/stage-result-cli.ts write features/my-feat planning running --agent claude --model opus-4-6
@@ -54,6 +60,106 @@ function parseFlags(args: string[]): Record<string, string> {
     }
   }
   return flags;
+}
+
+function nullableModel(value: string | undefined): string | null | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  if (trimmed === '' || trimmed === 'null') return null;
+  return trimmed;
+}
+
+function boolFlag(value: string | undefined): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  return undefined;
+}
+
+function validEvidenceStatus(value: string | undefined): value is 'direct' | 'missing' | 'contradicted' | 'inherited' {
+  return value === 'direct' || value === 'missing' || value === 'contradicted' || value === 'inherited';
+}
+
+function executionTruthFields(input: {
+  status: StageStatus;
+  flags: Record<string, string>;
+  existing: StageResult | null;
+  now: string;
+}): Pick<StageResult, 'intendedModel' | 'executedModel' | 'executionEvidence' | 'modelAttributionEligible' | 'modelAttributionIneligibleReason'> {
+  const flagModel = nullableModel(input.flags.model);
+  const intendedModel = nullableModel(input.flags['intended-model'])
+    ?? flagModel
+    ?? input.existing?.intendedModel
+    ?? (input.flags.model === undefined ? input.existing?.model : undefined)
+    ?? null;
+
+  const explicitExecuted = nullableModel(input.flags['executed-model']);
+  const mayPreserveExisting =
+    explicitExecuted === undefined
+    && input.existing?.status === 'running'
+    && (
+      input.flags.model === undefined
+      || input.existing.model === input.flags.model
+      || input.existing.executedModel === input.flags.model
+    );
+  const executedModel = explicitExecuted !== undefined
+    ? explicitExecuted
+    : mayPreserveExisting
+      ? input.existing?.executedModel ?? null
+      : null;
+
+  const explicitEvidenceStatus = input.flags['execution-evidence-status'];
+  if (explicitEvidenceStatus !== undefined && !validEvidenceStatus(explicitEvidenceStatus)) {
+    throw new Error(`invalid --execution-evidence-status '${explicitEvidenceStatus}'`);
+  }
+  const evidenceStatus = explicitEvidenceStatus
+    ?? (executedModel ? (mayPreserveExisting ? input.existing?.executionEvidence?.status ?? 'direct' : 'direct') : 'missing');
+  const evidenceSource = input.flags['execution-evidence-source']
+    ?? (mayPreserveExisting ? input.existing?.executionEvidence?.source : undefined)
+    ?? (executedModel ? 'stage-result-cli' : 'unknown');
+  const executionEvidence = {
+    status: evidenceStatus,
+    source: evidenceSource,
+    ...(input.flags['execution-evidence-detail'] !== undefined
+      ? { detail: input.flags['execution-evidence-detail'] }
+      : input.existing?.executionEvidence?.detail && mayPreserveExisting
+        ? { detail: input.existing.executionEvidence.detail }
+        : {}),
+    recordedAt: input.now,
+  };
+
+  let modelAttributionEligible = boolFlag(input.flags['model-attribution-eligible']);
+  let modelAttributionIneligibleReason = input.existing?.modelAttributionIneligibleReason;
+  if (modelAttributionEligible === undefined) {
+    if (input.status !== 'completed') {
+      modelAttributionEligible = false;
+      modelAttributionIneligibleReason = 'stage_not_completed';
+    } else if (!executedModel) {
+      modelAttributionEligible = false;
+      modelAttributionIneligibleReason = 'missing_execution_evidence';
+    } else if (evidenceStatus === 'contradicted') {
+      modelAttributionEligible = false;
+      modelAttributionIneligibleReason = 'execution_contradicted';
+    } else if (intendedModel && intendedModel !== executedModel) {
+      modelAttributionEligible = false;
+      modelAttributionIneligibleReason = 'runtime_fallback';
+    } else {
+      modelAttributionEligible = true;
+      modelAttributionIneligibleReason = undefined;
+    }
+  } else if (modelAttributionEligible) {
+    modelAttributionIneligibleReason = undefined;
+  } else {
+    modelAttributionIneligibleReason ??= !executedModel ? 'missing_execution_evidence' : 'execution_contradicted';
+  }
+
+  return {
+    intendedModel,
+    executedModel,
+    executionEvidence,
+    modelAttributionEligible,
+    ...(modelAttributionIneligibleReason ? { modelAttributionIneligibleReason } : {}),
+  };
 }
 
 async function main(): Promise<void> {
@@ -136,6 +242,7 @@ async function main(): Promise<void> {
       finishedAt,
       agent: writeFlags['agent'] ?? existing?.agent ?? '',
       model: writeFlags['model'] ?? existing?.model ?? '',
+      ...executionTruthFields({ status, flags: writeFlags, existing, now }),
       notes: writeFlags['notes'] ?? '',
       ...(artifacts !== undefined && { artifacts }),
       ...(writeFlags['failure-reason'] !== undefined && { failureReason: writeFlags['failure-reason'] }),
@@ -168,6 +275,23 @@ async function main(): Promise<void> {
     if (updateFlags['started-at'] !== undefined) patch.startedAt = updateFlags['started-at'];
     if (updateFlags['finished-at'] !== undefined) patch.finishedAt = updateFlags['finished-at'];
     if (updateFlags['failure-reason'] !== undefined) patch.failureReason = updateFlags['failure-reason'];
+    if (
+      updateFlags['intended-model'] !== undefined
+      || updateFlags['executed-model'] !== undefined
+      || updateFlags['execution-evidence-status'] !== undefined
+      || updateFlags['execution-evidence-source'] !== undefined
+      || updateFlags['execution-evidence-detail'] !== undefined
+      || updateFlags['model-attribution-eligible'] !== undefined
+    ) {
+      const existing = await readStageResult(featureDir, stage);
+      const status = (patch.status ?? existing?.status ?? 'running') as StageStatus;
+      Object.assign(patch, executionTruthFields({
+        status,
+        flags: updateFlags,
+        existing,
+        now: new Date().toISOString(),
+      }));
+    }
 
     if (updateFlags['artifacts']) {
       try {

@@ -2862,6 +2862,36 @@ else
   fail "progressing tend rendering regressed"
 fi
 
+cat > "$BACKSTAGE_DIR/backstage-health.json" <<JSON
+{
+  "status": "alive-needs-user",
+  "services": {
+    "tend": {
+      "status": "alive-needs-user",
+      "heartbeatAt": "$recent_tick",
+      "progressState": "stalled",
+      "laneCondition": "idle-blocked-stall",
+      "laneEvidenceId": "blocked-lane-a",
+      "lastProgressAt": "$old_progress",
+      "failureCount": 0
+    }
+  }
+}
+JSON
+backstage_probe_plain="$(
+  set -- test-session "$WORKTREES_DIR" "$BACKSTAGE_STATE_FILE"
+  source "$REPO_DIR/shared/lib/wavemill-status.sh" >/dev/null 2>&1
+  backstage_health_dashboard_line "$BACKSTAGE_STATE_FILE" 2>/dev/null | strip_ansi || echo "RENDER_FAILED"
+)"
+if [[ "$backstage_probe_plain" == *"Tend: alive-needs-user (idle-blocked-stall)"* \
+  && "$backstage_probe_plain" == *"tick "* \
+  && "$backstage_probe_plain" == *"progress "* ]]; then
+  pass "alive needs-user tend renders lane condition and ages"
+else
+  echo "    probe: $backstage_probe_plain"
+  fail "alive needs-user tend rendering regressed"
+fi
+
 # --- Pending deferred challenger arm annotation (HOK-2813) ---
 # A primary carrying an awaiting_fork challengeArms[] entry renders an
 # "awaiting fork" detail line from state alone — no pane lookup, and the arm

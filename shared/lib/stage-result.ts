@@ -37,6 +37,28 @@ export type StageStatus = 'running' | 'awaiting_user' | 'completed' | 'aborted' 
 /** Stage names used in result file naming. */
 export type StageName = 'planning' | 'coding' | 'review' | 'ready';
 
+/** How the orchestrator resolved execution identity for a stage result. */
+export type StageExecutionEvidenceStatus = 'direct' | 'missing' | 'contradicted' | 'inherited';
+
+/** Stable reason a stage result cannot be used for model-quality attribution. */
+export type ModelAttributionIneligibleReason =
+  | 'stage_not_completed'
+  | 'missing_execution_evidence'
+  | 'execution_contradicted'
+  | 'runtime_fallback';
+
+/** Durable execution-truth evidence for stage result model attribution. */
+export interface StageExecutionEvidence {
+  /** Evidence state: direct runtime evidence, absent evidence, contradiction, or inherited pre-fork evidence. */
+  status: StageExecutionEvidenceStatus;
+  /** Producer/source that supplied the evidence, for example native-runtime or stage-result-cli. */
+  source?: string;
+  /** Optional human-readable diagnostic context. Not a model-quality target. */
+  detail?: string;
+  /** Timestamp at which the evidence stamp was produced. */
+  recordedAt?: string;
+}
+
 /** Valid stage names for runtime validation. */
 const VALID_STAGES: readonly StageName[] = ['planning', 'coding', 'review', 'ready'] as const;
 
@@ -331,7 +353,22 @@ export interface StageResult {
   startedAt: string;
   finishedAt: string | null;
   agent: string;
+  /**
+   * Legacy display model. New attribution readers must use `executedModel`
+   * and `modelAttributionEligible`; this field may be launch intent on
+   * shell-written artifacts kept for backward-compatible diagnostics.
+   */
   model: string;
+  /** Model requested by routing/launch, retained for diagnostics. */
+  intendedModel?: string | null;
+  /** Model proven to have executed, or null/absent when durable evidence is missing. */
+  executedModel?: string | null;
+  /** Evidence/provenance used to decide `executedModel`. */
+  executionEvidence?: StageExecutionEvidence;
+  /** True only when this stage can emit model-quality attribution. */
+  modelAttributionEligible?: boolean;
+  /** Stable reason when `modelAttributionEligible` is false. */
+  modelAttributionIneligibleReason?: ModelAttributionIneligibleReason;
   notes: string;
   artifacts?: StageArtifacts;
   failureReason?: string | null;
@@ -350,10 +387,12 @@ export interface StageResult {
 
 export type StageResultHistoryEntry = Pick<
   StageResult,
-  'status' | 'agent' | 'model' | 'startedAt' | 'finishedAt' | 'notes'
+  'status' | 'agent' | 'model' | 'intendedModel' | 'executedModel' | 'startedAt' | 'finishedAt' | 'notes'
 > & {
   error?: string;
   failureReason?: string | null;
+  modelAttributionEligible?: boolean;
+  modelAttributionIneligibleReason?: ModelAttributionIneligibleReason;
 };
 
 /** All stage result files found in a feature directory. */
@@ -748,6 +787,10 @@ export async function writeStageResultWithHistory(
       startedAt: existing.startedAt,
       finishedAt: existing.finishedAt,
       notes: existing.notes,
+      intendedModel: existing.intendedModel,
+      executedModel: existing.executedModel,
+      modelAttributionEligible: existing.modelAttributionEligible,
+      modelAttributionIneligibleReason: existing.modelAttributionIneligibleReason,
       ...(existing.failureReason !== undefined ? { failureReason: existing.failureReason } : {}),
     }]
     : [];

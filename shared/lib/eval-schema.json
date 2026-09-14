@@ -423,6 +423,13 @@
         }
       }
     },
+    "executionEconomics": {
+      "type": "array",
+      "description": "Normalized external-harness execution-economics records (HOK-2958), one entry per harness that produced sessions. Local-only; excluded from Hokusai submissions.",
+      "items": {
+        "$ref": "#/$defs/EvalExecutionEconomics"
+      }
+    },
     "trainingEligible": {
       "type": "boolean",
       "description": "Whether the record includes the fields required for training export."
@@ -2772,6 +2779,472 @@
     }
   },
   "$defs": {
+    "ExecutionEconomicsFieldAvailability": {
+      "type": "string",
+      "enum": [
+        "available",
+        "partial",
+        "unavailable",
+        "known_zero"
+      ]
+    },
+    "ExecutionEconomicsCoverage": {
+      "type": "string",
+      "enum": [
+        "complete",
+        "partial",
+        "unavailable",
+        "known_zero"
+      ]
+    },
+    "ExecutionEconomicsTokenUsage": {
+      "type": "object",
+      "description": "Token usage where every unavailable dimension is null, never 0.",
+      "required": [
+        "inputTokens",
+        "outputTokens",
+        "cacheReadTokens",
+        "cacheWriteTokens",
+        "reasoningTokens"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "inputTokens": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "outputTokens": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "cacheReadTokens": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "cacheWriteTokens": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "reasoningTokens": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    },
+    "ExecutionEconomicsModelIdentity": {
+      "type": "object",
+      "description": "Requested/forced/resolved/executed model identity with per-field provenance; disagreements surface via conflict, never coerced.",
+      "required": [
+        "requested",
+        "forced",
+        "resolved",
+        "executed",
+        "provenance"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "requested": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "forced": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resolved": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "executed": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "requested": {
+              "type": "string"
+            },
+            "forced": {
+              "type": "string"
+            },
+            "resolved": {
+              "type": "string"
+            },
+            "executed": {
+              "type": "string"
+            }
+          }
+        },
+        "conflict": {
+          "type": "object",
+          "required": [
+            "otherSource",
+            "detail"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "otherSource": {
+              "type": "string"
+            },
+            "otherResolvedModel": {
+              "type": "string"
+            },
+            "detail": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "ExecutionEconomicsTurn": {
+      "type": "object",
+      "required": [
+        "turnId",
+        "parentId",
+        "isSubagent",
+        "model",
+        "timestamp",
+        "usage",
+        "usageCoverage",
+        "actualCostUsd"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "turnId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parentId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "isSubagent": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timestamp": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "usage": {
+          "$ref": "#/$defs/ExecutionEconomicsTokenUsage"
+        },
+        "usageCoverage": {
+          "$ref": "#/$defs/ExecutionEconomicsFieldAvailability"
+        },
+        "actualCostUsd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    },
+    "ExecutionEconomicsSession": {
+      "type": "object",
+      "required": [
+        "sessionId",
+        "rootSessionId",
+        "harnessVersion",
+        "triggerSource",
+        "stageRole",
+        "models",
+        "turnCount",
+        "turns",
+        "turnsTruncated",
+        "modelSegments",
+        "usage",
+        "actualCostUsd",
+        "estimatedCostUsd",
+        "costSource",
+        "pricingRevision",
+        "pricingTimestamp",
+        "coverage",
+        "fieldAvailability",
+        "diagnostics"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "rootSessionId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "harnessVersion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "triggerSource": {
+          "type": "object",
+          "required": [
+            "value",
+            "provenance",
+            "availability"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "value": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "provenance": {
+              "type": "string"
+            },
+            "availability": {
+              "$ref": "#/$defs/ExecutionEconomicsFieldAvailability"
+            }
+          }
+        },
+        "stageRole": {
+          "type": "object",
+          "required": [
+            "value",
+            "confidence",
+            "evidence"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "value": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "enum": [
+                "planning",
+                "coding",
+                "review",
+                null
+              ]
+            },
+            "confidence": {
+              "type": "string",
+              "enum": [
+                "branch_worktree",
+                "timestamp_window",
+                "unattributed"
+              ]
+            },
+            "evidence": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "models": {
+          "$ref": "#/$defs/ExecutionEconomicsModelIdentity"
+        },
+        "turnCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "turns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExecutionEconomicsTurn"
+          }
+        },
+        "turnsTruncated": {
+          "type": "boolean"
+        },
+        "modelSegments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "model",
+              "turnCount"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "model": {
+                "type": "string"
+              },
+              "turnCount": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "usage": {
+          "$ref": "#/$defs/ExecutionEconomicsTokenUsage"
+        },
+        "actualCostUsd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "estimatedCostUsd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "costSource": {
+          "type": "string",
+          "enum": [
+            "provider_reported",
+            "local_estimate",
+            "none"
+          ]
+        },
+        "pricingRevision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pricingTimestamp": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "coverage": {
+          "$ref": "#/$defs/ExecutionEconomicsCoverage"
+        },
+        "fieldAvailability": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/ExecutionEconomicsFieldAvailability"
+          }
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "EvalExecutionEconomics": {
+      "type": "object",
+      "description": "Versioned, provider-independent execution-economics record for one external harness (HOK-2958).",
+      "required": [
+        "schemaVersion",
+        "providerContractVersion",
+        "harness",
+        "joinEvidence",
+        "sessions",
+        "sessionCount",
+        "turnCount",
+        "coverage",
+        "collectedAt"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        },
+        "providerContractVersion": {
+          "type": "string"
+        },
+        "harness": {
+          "type": "string",
+          "enum": [
+            "claude-code",
+            "codex"
+          ]
+        },
+        "joinEvidence": {
+          "type": "object",
+          "required": [
+            "issueId",
+            "branch"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "issueId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "branch": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExecutionEconomicsSession"
+          }
+        },
+        "sessionCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "turnCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "coverage": {
+          "$ref": "#/$defs/ExecutionEconomicsCoverage"
+        },
+        "collectedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
     "modelIdentityObservation": {
       "type": "object",
       "properties": {

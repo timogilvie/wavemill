@@ -71,6 +71,71 @@ export interface NativeSessionUsageRecord {
   invalidUsage: boolean;
 }
 
+/**
+ * Per-turn token usage for external harness sessions (HOK-2958).
+ *
+ * Unlike {@link SessionModelUsage}, an unavailable dimension is `null`,
+ * never coerced to `0` — downstream economics records must be able to
+ * distinguish "not reported" from a genuine zero.
+ */
+export interface ExternalTurnUsage {
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  /** thinking_tokens (Claude Code) / reasoning_output_tokens (Codex). */
+  reasoningTokens: number | null;
+}
+
+/** One observed turn in an external harness session (HOK-2958). */
+export interface ExternalSessionTurn {
+  /** Claude Code `uuid` / Codex `turn_id`; null when the source lacks it. */
+  turnId: string | null;
+  /** Claude Code `parentUuid` / Codex `root_turn_id`. */
+  parentId: string | null;
+  /** Claude Code `isSidechain`; null when the source has no lineage flag. */
+  isSubagent: boolean | null;
+  model: string | null;
+  timestamp: string | null;
+  usage: ExternalTurnUsage;
+  usageAvailable: boolean;
+  /** Provider-reported cost; absent in current harness versions → null. */
+  actualCostUsd: number | null;
+}
+
+/**
+ * Normalized per-session detail for external (Claude Code / Codex) sessions.
+ *
+ * Parallel to {@link NativeSessionUsageRecord}: populated alongside the
+ * unchanged `models` aggregate so existing callers are unaffected. Only
+ * allowlisted fields are ever copied from raw session entries — `cwd`,
+ * file paths, `repository_url`, rate limits, and any `user.*` /
+ * `organization.*` / account identity attributes are dropped by
+ * construction (HOK-2958 privacy requirement).
+ */
+export interface ExternalSessionUsageRecord {
+  /** Pseudonymous source session UUID. */
+  sessionId: string;
+  harness: 'claude-code' | 'codex';
+  /** Observed harness version (`version` entry field / `cli_version`). */
+  harnessVersion: string | null;
+  /** Trigger evidence: `promptSource` (Claude Code) / `originator` (Codex). */
+  triggerSource: string | null;
+  /** Source-field provenance for `triggerSource`. */
+  triggerProvenance: string | null;
+  startedAt: string | null;
+  endedAt: string | null;
+  /** Real turns observed in the source. */
+  turnCount: number;
+  turns: ExternalSessionTurn[];
+  /** Session-level usage totals (null dimensions were never reported). */
+  usage: ExternalTurnUsage;
+  /** Provider-reported session cost; null when the source reports none. */
+  actualCostUsd: number | null;
+  /** Missing-field / source-version notes; never a parse failure. */
+  diagnostics: string[];
+}
+
 /** Result of scanning sessions for a given agent. */
 export interface SessionUsageResult {
   /** Per-model token usage breakdown. */
@@ -83,6 +148,8 @@ export interface SessionUsageResult {
   source?: AgentType;
   /** Native per-session usage details. Present only for native transcript scans. */
   nativeSessions?: NativeSessionUsageRecord[];
+  /** External per-session detail. Present only for Claude/Codex scans (HOK-2958). */
+  externalSessions?: ExternalSessionUsageRecord[];
 }
 
 /** Options for scanning sessions. */
@@ -107,6 +174,48 @@ export interface SessionScanOptions {
 /** A session adapter knows how to scan an agent's session files. */
 export interface SessionAdapter {
   scan(opts: SessionScanOptions): SessionUsageResult | null;
+}
+
+// ────────────────────────────────────────────────────────────────
+// External session helpers (HOK-2958)
+// ────────────────────────────────────────────────────────────────
+
+function finiteNonNegativeOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function emptyExternalUsage(): ExternalTurnUsage {
+  return {
+    inputTokens: null,
+    outputTokens: null,
+    cacheReadTokens: null,
+    cacheWriteTokens: null,
+    reasoningTokens: null,
+  };
+}
+
+/** Add an observed value into a null-preserving total (null + n → n). */
+function addObserved(total: number | null, value: number | null): number | null {
+  if (value === null) return total;
+  return (total ?? 0) + value;
+}
+
+function sumExternalUsage(total: ExternalTurnUsage, turn: ExternalTurnUsage): void {
+  total.inputTokens = addObserved(total.inputTokens, turn.inputTokens);
+  total.outputTokens = addObserved(total.outputTokens, turn.outputTokens);
+  total.cacheReadTokens = addObserved(total.cacheReadTokens, turn.cacheReadTokens);
+  total.cacheWriteTokens = addObserved(total.cacheWriteTokens, turn.cacheWriteTokens);
+  total.reasoningTokens = addObserved(total.reasoningTokens, turn.reasoningTokens);
+}
+
+/** Derive a pseudonymous session ID from a session file name (UUID basename). */
+function sessionIdFromFileName(filePath: string): string {
+  const base = filePath.slice(filePath.lastIndexOf('/') + 1);
+  return base.replace(/\.jsonl$/, '');
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -174,12 +283,33 @@ export class ClaudeSessionAdapter implements SessionAdapter {
     let sessionCount = 0;
     let totalAssistantTurns = 0;
     let branchMismatchCount = 0;
+    const externalSessions: ExternalSessionUsageRecord[] = [];
 
     for (const filePath of sessionFiles) {
       let sessionHadTurns = false;
+      let sessionId: string | null = null;
+      let harnessVersion: string | null = null;
+      let triggerSource: string | null = null;
+      const sessionTurns: ExternalSessionTurn[] = [];
+      const sessionUsage = emptyExternalUsage();
+      let sessionActualCost: number | null = null;
+      const missingFieldCounts = new Map<string, number>();
 
       try {
         for (const entry of readJsonlFile<Record<string, unknown>>(filePath)) {
+          sessionId ??= stringOrNull(entry.sessionId);
+          harnessVersion ??= stringOrNull(entry.version);
+
+          // Session-level trigger: the first typed/sdk user prompt on this
+          // branch (sidechain user entries are subagent-internal, not triggers).
+          if (
+            entry.type === 'user'
+            && triggerSource === null
+            && entry.isSidechain !== true
+            && entry.gitBranch === opts.branchName
+          ) {
+            triggerSource = stringOrNull(entry.promptSource);
+          }
 
           if (entry.type !== 'assistant') continue;
           totalAssistantTurns++;
@@ -212,6 +342,39 @@ export class ClaudeSessionAdapter implements SessionAdapter {
 
           turnCount++;
           sessionHadTurns = true;
+
+          // Normalized per-turn detail (allowlisted fields only; unavailable
+          // dimensions stay null instead of collapsing into 0).
+          const outputDetails = usage.output_tokens_details as Record<string, unknown> | undefined;
+          const turnUsage: ExternalTurnUsage = {
+            inputTokens: finiteNonNegativeOrNull(usage.input_tokens),
+            outputTokens: finiteNonNegativeOrNull(usage.output_tokens),
+            cacheReadTokens: finiteNonNegativeOrNull(usage.cache_read_input_tokens),
+            cacheWriteTokens: finiteNonNegativeOrNull(usage.cache_creation_input_tokens),
+            reasoningTokens: finiteNonNegativeOrNull(outputDetails?.thinking_tokens),
+          };
+          const turn: ExternalSessionTurn = {
+            turnId: stringOrNull(entry.uuid),
+            parentId: stringOrNull(entry.parentUuid),
+            isSubagent: typeof entry.isSidechain === 'boolean' ? entry.isSidechain : null,
+            model: stringOrNull(message.model),
+            timestamp: stringOrNull(entry.timestamp),
+            usage: turnUsage,
+            usageAvailable: turnUsage.inputTokens !== null || turnUsage.outputTokens !== null,
+            actualCostUsd: finiteNonNegativeOrNull(entry.costUSD),
+          };
+          for (const [field, value] of [
+            ['uuid', turn.turnId],
+            ['isSidechain', turn.isSubagent],
+            ['thinking_tokens', turnUsage.reasoningTokens],
+          ] as const) {
+            if (value === null) {
+              missingFieldCounts.set(field, (missingFieldCounts.get(field) ?? 0) + 1);
+            }
+          }
+          sumExternalUsage(sessionUsage, turnUsage);
+          sessionActualCost = addObserved(sessionActualCost, turn.actualCostUsd);
+          sessionTurns.push(turn);
         }
       } catch {
         continue;
@@ -219,6 +382,23 @@ export class ClaudeSessionAdapter implements SessionAdapter {
 
       if (sessionHadTurns) {
         sessionCount++;
+        const diagnostics = [...missingFieldCounts.entries()].map(
+          ([field, count]) => `${count}/${sessionTurns.length} turn(s) missing ${field}`,
+        );
+        externalSessions.push({
+          sessionId: sessionId ?? sessionIdFromFileName(filePath),
+          harness: 'claude-code',
+          harnessVersion,
+          triggerSource,
+          triggerProvenance: triggerSource !== null ? 'claude_code.promptSource' : null,
+          startedAt: sessionTurns[0]?.timestamp ?? null,
+          endedAt: sessionTurns[sessionTurns.length - 1]?.timestamp ?? null,
+          turnCount: sessionTurns.length,
+          turns: sessionTurns,
+          usage: sessionUsage,
+          actualCostUsd: sessionActualCost,
+          diagnostics,
+        });
       }
     }
 
@@ -242,7 +422,7 @@ export class ClaudeSessionAdapter implements SessionAdapter {
       console.log(`[DEBUG_COST]   ✓ Successfully scanned ${sessionCount} session(s) with ${turnCount} turn(s)`);
     }
 
-    return { models, sessionCount, turnCount, source: 'claude' };
+    return { models, sessionCount, turnCount, source: 'claude', externalSessions };
   }
 }
 
@@ -301,6 +481,7 @@ export class CodexSessionAdapter implements SessionAdapter {
     const models: Record<string, SessionModelUsage> = {};
     let sessionCount = 0;
     let turnCount = 0;
+    const externalSessions: ExternalSessionUsageRecord[] = [];
 
     for (const filePath of matchingFiles) {
       const result = this.parseSessionFile(filePath);
@@ -318,6 +499,7 @@ export class CodexSessionAdapter implements SessionAdapter {
 
       sessionCount++;
       turnCount++;
+      externalSessions.push(result.external);
     }
 
     if (sessionCount === 0) {
@@ -331,7 +513,7 @@ export class CodexSessionAdapter implements SessionAdapter {
       console.log(`[DEBUG_COST]   ✓ Successfully scanned ${sessionCount} session(s)`);
     }
 
-    return { models, sessionCount, turnCount, source: 'codex' };
+    return { models, sessionCount, turnCount, source: 'codex', externalSessions };
   }
 
   /**
@@ -413,12 +595,44 @@ export class CodexSessionAdapter implements SessionAdapter {
    * - cacheCreationTokens = 0 (Codex doesn't separate cache writes)
    * - output_tokens + reasoning_output_tokens → outputTokens
    */
-  private parseSessionFile(filePath: string): { modelId: string; usage: SessionModelUsage } | null {
+  private parseSessionFile(
+    filePath: string,
+  ): { modelId: string; usage: SessionModelUsage; external: ExternalSessionUsageRecord } | null {
     try {
       let modelId = 'unknown';
       let lastTokenUsage: Record<string, number> | null = null;
 
+      let sessionId: string | null = null;
+      let harnessVersion: string | null = null;
+      let triggerSource: string | null = null;
+      let triggerProvenance: string | null = null;
+      let startedAt: string | null = null;
+      let endedAt: string | null = null;
+      const turns: ExternalSessionTurn[] = [];
+      let currentTurn: ExternalSessionTurn | null = null;
+      const diagnostics: string[] = [];
+
       for (const entry of readJsonlFile<Record<string, unknown>>(filePath)) {
+        endedAt = stringOrNull(entry.timestamp) ?? endedAt;
+
+        // Allowlist copy from session_meta: identity/version/trigger only.
+        // cwd, git.*, repository_url, rate limits, and any user/organization
+        // attributes are intentionally never captured (HOK-2958 privacy).
+        if (entry.type === 'session_meta') {
+          const payload = entry.payload as Record<string, unknown> | undefined;
+          sessionId ??= stringOrNull(payload?.id) ?? stringOrNull(payload?.session_id);
+          harnessVersion ??= stringOrNull(payload?.cli_version);
+          startedAt ??= stringOrNull(payload?.timestamp) ?? stringOrNull(entry.timestamp);
+          const originator = stringOrNull(payload?.originator);
+          const source = stringOrNull(payload?.source);
+          if (originator) {
+            triggerSource = originator;
+            triggerProvenance = 'codex.session_meta.originator';
+          } else if (source) {
+            triggerSource = source;
+            triggerProvenance = 'codex.session_meta.source';
+          }
+        }
 
         // Extract model from turn_context entries
         if (entry.type === 'turn_context') {
@@ -426,6 +640,17 @@ export class CodexSessionAdapter implements SessionAdapter {
           if (payload?.model) {
             modelId = payload.model as string;
           }
+          currentTurn = {
+            turnId: stringOrNull(payload?.turn_id),
+            parentId: stringOrNull(payload?.root_turn_id),
+            isSubagent: null,
+            model: stringOrNull(payload?.model),
+            timestamp: stringOrNull(entry.timestamp),
+            usage: emptyExternalUsage(),
+            usageAvailable: false,
+            actualCostUsd: null,
+          };
+          turns.push(currentTurn);
         }
 
         // Track the last token_count entry (cumulative total)
@@ -437,11 +662,65 @@ export class CodexSessionAdapter implements SessionAdapter {
             if (usage) {
               lastTokenUsage = usage;
             }
+
+            // Per-event delta feeds per-turn usage (older files lack it).
+            const delta = info?.last_token_usage as Record<string, unknown> | undefined;
+            if (delta) {
+              if (!currentTurn) {
+                // Usage observed before any turn_context: keep it, without
+                // a turn identity, rather than dropping the tokens.
+                currentTurn = {
+                  turnId: null,
+                  parentId: null,
+                  isSubagent: null,
+                  model: stringOrNull(modelId === 'unknown' ? null : modelId),
+                  timestamp: stringOrNull(entry.timestamp),
+                  usage: emptyExternalUsage(),
+                  usageAvailable: false,
+                  actualCostUsd: null,
+                };
+                turns.push(currentTurn);
+              }
+              const deltaUsage: ExternalTurnUsage = {
+                inputTokens: finiteNonNegativeOrNull(delta.input_tokens),
+                outputTokens: finiteNonNegativeOrNull(delta.output_tokens),
+                cacheReadTokens: finiteNonNegativeOrNull(delta.cached_input_tokens),
+                cacheWriteTokens: finiteNonNegativeOrNull(delta.cache_write_input_tokens),
+                reasoningTokens: finiteNonNegativeOrNull(delta.reasoning_output_tokens),
+              };
+              sumExternalUsage(currentTurn.usage, deltaUsage);
+              currentTurn.usageAvailable =
+                currentTurn.usage.inputTokens !== null || currentTurn.usage.outputTokens !== null;
+            }
           }
         }
       }
 
       if (!lastTokenUsage) return null;
+
+      const sessionUsage: ExternalTurnUsage = {
+        inputTokens: finiteNonNegativeOrNull(lastTokenUsage.input_tokens),
+        outputTokens: finiteNonNegativeOrNull(lastTokenUsage.output_tokens),
+        cacheReadTokens: finiteNonNegativeOrNull(lastTokenUsage.cached_input_tokens),
+        cacheWriteTokens: finiteNonNegativeOrNull(lastTokenUsage.cache_write_input_tokens),
+        reasoningTokens: finiteNonNegativeOrNull(lastTokenUsage.reasoning_output_tokens),
+      };
+
+      if (sessionId === null) {
+        diagnostics.push('session_meta missing session id; using file-derived pseudonymous id');
+      }
+      if (turns.length === 0) {
+        diagnostics.push('per-turn usage unavailable; only cumulative totals present');
+      } else if (turns.every((turn) => !turn.usageAvailable)) {
+        diagnostics.push('turn contexts present but last_token_usage unavailable');
+      } else {
+        // Cross-check per-turn deltas against the cumulative total; when they
+        // disagree the session totals stay authoritative (HOK-2958 risk note).
+        const summedOutput = turns.reduce((sum, turn) => sum + (turn.usage.outputTokens ?? 0), 0);
+        if (sessionUsage.outputTokens !== null && summedOutput > sessionUsage.outputTokens) {
+          diagnostics.push('per-turn usage deltas exceed cumulative session total; session totals are authoritative');
+        }
+      }
 
       return {
         modelId,
@@ -452,6 +731,20 @@ export class CodexSessionAdapter implements SessionAdapter {
           outputTokens:
             (lastTokenUsage.output_tokens || 0) +
             (lastTokenUsage.reasoning_output_tokens || 0),
+        },
+        external: {
+          sessionId: sessionId ?? sessionIdFromFileName(filePath),
+          harness: 'codex',
+          harnessVersion,
+          triggerSource,
+          triggerProvenance,
+          startedAt,
+          endedAt,
+          turnCount: turns.length,
+          turns,
+          usage: sessionUsage,
+          actualCostUsd: null,
+          diagnostics,
         },
       };
     } catch {

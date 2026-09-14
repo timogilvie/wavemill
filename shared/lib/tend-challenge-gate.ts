@@ -77,6 +77,7 @@ export interface TaskEvalState {
   challengeAbortedDetail: string | null;
   challengeAbortedNextAction: string | null;
   challengeAbortedStage: string | null;
+  challengeExecutionIntent?: Record<string, unknown>;
   /** Set to true when the challenger arm is actually launched (P0.6, HOK-2798). */
   challengerLaunched?: boolean;
   /**
@@ -112,6 +113,10 @@ interface WorkflowStateTask {
   evalHardFailureRetryCount?: unknown;
   comparisonState?: unknown;
   challengeAborted?: unknown;
+  challengeAbortedDetail?: unknown;
+  challengeAbortedNextAction?: unknown;
+  challengeAbortedStage?: unknown;
+  challengeExecutionIntent?: unknown;
   challengerLaunched?: unknown;
   challengeArms?: unknown;
 }
@@ -303,6 +308,9 @@ export function loadWorkflowStateChallengeData(repoDir: string): WorkflowStateCh
           challengeAbortedStage: typeof task.challengeAbortedStage === 'string' && task.challengeAbortedStage
             ? task.challengeAbortedStage
             : null,
+          challengeExecutionIntent: typeof task.challengeExecutionIntent === 'object' && task.challengeExecutionIntent !== null && !Array.isArray(task.challengeExecutionIntent)
+            ? task.challengeExecutionIntent as Record<string, unknown>
+            : undefined,
           challengerLaunched: task.challengerLaunched === true,
           hasPendingChallengeArm: taskHasPendingChallengeArm(task),
         };
