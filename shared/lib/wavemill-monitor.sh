@@ -11150,11 +11150,12 @@ cleanup_merged_primary_challenge_task() {
     return 0
   fi
 
-  if ! state_mutate "$STATE_FILE" \
-    '.tasks[$issue] = ($preserved + {updated: (now | todate)}) | .updated = (now | todate)' \
-    --arg issue "$issue" \
-    --argjson preserved "$preserved"; then
-    log_warn "cleanup_merged_primary_challenge_task: failed to preserve $issue challenge metadata"
+  if declare -F write_terminal_task_history_record >/dev/null 2>&1; then
+    if ! write_terminal_task_history_record "$issue" "$preserved"; then
+      log_warn "cleanup_merged_primary_challenge_task: failed to preserve $issue challenge metadata"
+    fi
+  else
+    log_warn "cleanup_merged_primary_challenge_task: terminal history writer unavailable for $issue"
   fi
 }
 
