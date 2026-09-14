@@ -1412,19 +1412,48 @@
         },
         "staticAnalysis": {
           "type": "object",
-          "description": "Static analysis results.",
+          "description": "Static analysis results. Includes both the S1 Static feature group (type_errors/lint_errors/build_ok/complexity_delta plus provenance) collected per HOK-2806, and legacy CI-check-name fields (lintDelta/typecheckPassed/securityFindingsDelta) preserved for backward compat.",
           "properties": {
+            "type_errors": {
+              "type": ["integer", "null"],
+              "minimum": 0,
+              "description": "S1: Type-check errors reported for the candidate. Null when no supported type checker completed successfully. Zero is an observed value, never a default."
+            },
+            "lint_errors": {
+              "type": ["integer", "null"],
+              "minimum": 0,
+              "description": "S1: Lint errors reported for the candidate. Null when no supported linter completed successfully."
+            },
+            "build_ok": {
+              "type": ["boolean", "null"],
+              "description": "S1: Whether the configured build completed successfully. Null when no build ran to a terminal result; CiOutcome.ran=false maps to null."
+            },
+            "complexity_delta": {
+              "type": ["number", "null"],
+              "description": "S1: Candidate-minus-base change in the configured code-complexity metric. Null when the analyzer could not run on both revisions."
+            },
+            "build_evidence": {
+              "anyOf": [
+                { "type": "string", "enum": ["local-build", "ci-build-check", "ci-pipeline"] },
+                { "type": "null" }
+              ],
+              "description": "Provenance for build_ok: which rung of the build ladder produced the value."
+            },
+            "complexity_metric": {
+              "type": ["string", "null"],
+              "description": "Metric id used to compute complexity_delta (e.g. wavemill-cyclomatic/v1)."
+            },
             "lintDelta": {
               "type": "number",
-              "description": "Change in lint errors (negative = improvement, positive = regression)."
+              "description": "Legacy: change in lint errors (negative = improvement, positive = regression). Pre-HOK-2806; distinct from lint_errors."
             },
             "typecheckPassed": {
               "type": "boolean",
-              "description": "Whether typecheck passed."
+              "description": "Legacy: whether typecheck passed. Pre-HOK-2806; distinct from type_errors."
             },
             "securityFindingsDelta": {
               "type": "number",
-              "description": "Change in security findings (negative = improvement)."
+              "description": "Legacy: change in security findings (negative = improvement)."
             }
           },
           "additionalProperties": false
