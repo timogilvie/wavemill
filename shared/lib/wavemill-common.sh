@@ -1145,6 +1145,7 @@ safe_remove_task_worktree_and_branch() {
   local pr_head_oid=""
   local pr_head_ref=""
   local pr_base_ref=""
+  local pr_merge_sha=""
   local configured_merge_method=""
   local cleanup_decision_mode=""
   local cleanup_decision_would_delete=""
@@ -1306,6 +1307,7 @@ safe_remove_task_worktree_and_branch() {
             pr_head_oid="$WAVEMILL_PR_EVIDENCE_HEAD_OID"
             pr_head_ref="$WAVEMILL_PR_EVIDENCE_HEAD_REF"
             pr_base_ref="$WAVEMILL_PR_EVIDENCE_BASE_REF"
+            pr_merge_sha="$WAVEMILL_PR_EVIDENCE_MERGE_SHA"
             wavemill_record_pr_delivery_evidence "$issue" "$pr"
             if [[ "$pr_state_evidence" == "MERGED" ]]; then
               if [[ "$pr_base_ref" != "$base_branch" ]]; then
@@ -1323,8 +1325,13 @@ safe_remove_task_worktree_and_branch() {
                 patch_total_count="$(printf '%s\n' "$patch_cherry_output" | awk '/^[+-]/ { count++ } END { print count + 0 }')"
                 if [[ "$patch_unique_count" == "0" ]]; then
                   patch_cherry_status="equivalent"
-                  classification="safe_patch_equivalent_pr"
-                  cleanup_authority="PR #${pr} merged into ${base_branch}; git cherry found no unique local patch IDs on ${task_branch}"
+                  if [[ -n "$pr_merge_sha" ]]; then
+                    classification="safe_patch_equivalent_pr"
+                    cleanup_authority="PR #${pr} merged into ${base_branch}; git cherry found no unique local patch IDs on ${task_branch}"
+                  else
+                    classification="retain_unpublished"
+                    verification_reason="changed_after_pr_head"
+                  fi
                 else
                   patch_cherry_status="unique"
                   classification="retain_unpublished"
@@ -1337,11 +1344,9 @@ safe_remove_task_worktree_and_branch() {
               fi
             elif [[ "$pr_state_evidence" == "CLOSED" && -z "$pr_merged_at" ]]; then
               if [[ "$abandon_issue" == "$issue" ]] \
-                && [[ "$remote_contains_head" == "true" || "$pr_head_oid" == "$local_head_sha" ]] \
-                && declare -F check_challenge_sibling_merged >/dev/null 2>&1 \
-                && check_challenge_sibling_merged "$issue"; then
+                && [[ "$remote_contains_head" == "true" || "$pr_head_oid" == "$local_head_sha" ]]; then
                 classification="safe_abandoned_closed_loser"
-                cleanup_authority="operator abandoned closed losing PR #${pr}; sibling merged and loser head is recoverably published"
+                cleanup_authority="operator abandoned closed PR #${pr}; head is recoverably published"
               else
                 classification="retain_closed_unmerged"
                 if [[ "$abandon_issue" != "$issue" ]]; then
