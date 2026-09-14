@@ -24,6 +24,7 @@ import {
   collectStaticFeatures,
   type StaticFeaturesResult,
 } from './static-features.ts';
+import { extractCandidateFeatures } from './candidate-features.ts';
 
 // Maps gh CLI's `bucket` field (pass/fail/pending/skipping/cancel) to the
 // legacy `conclusion` values the collectors below were written against.
@@ -57,7 +58,16 @@ import { resolveProjectsDirs } from './workflow-cost.ts';
  * In-memory cache of PR checks, keyed by "${prNumber}:${repoDir}".
  * Lifetime: process-level singleton (cleared manually or on process exit).
  */
-const prChecksCache = new Map<string, any[]>();
+interface PrCheckEvidence {
+  name?: string;
+  state?: string;
+  bucket?: string;
+  conclusion?: string | null;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+const prChecksCache = new Map<string, PrCheckEvidence[]>();
 
 /**
  * Clear the PR checks cache for a specific PR or all PRs.
@@ -84,7 +94,7 @@ export function clearPrChecksCache(prNumber?: string, repoDir?: string): void {
  * @param repoDir - Repository directory (defaults to cwd)
  * @returns Array of check objects, or empty array on error
  */
-function fetchPrChecks(prNumber: string, repoDir?: string): any[] {
+function fetchPrChecks(prNumber: string, repoDir?: string): PrCheckEvidence[] {
   const cwd = repoDir || process.cwd();
   const cacheKey = `${prNumber}:${cwd}`;
 
@@ -115,7 +125,7 @@ function fetchPrChecks(prNumber: string, repoDir?: string): any[] {
       return [];
     }
 
-    const checks = parsed.map((entry: { conclusion?: unknown; bucket?: unknown }) => ({
+    const checks: PrCheckEvidence[] = parsed.map((entry: { conclusion?: unknown; bucket?: unknown }) => ({
       ...entry,
       conclusion: typeof entry.conclusion === 'string'
         ? entry.conclusion
@@ -263,8 +273,8 @@ export function collectTestsOutcome(
     // Try to extract test pass rate from CI checks
     // Look for a check with "test" in the name
     const checks = fetchPrChecks(prNumber, cwd);
-    const testCheck = checks.find((c: { name: string }) =>
-      c.name.toLowerCase().includes('test')
+    const testCheck = checks.find((c) =>
+      typeof c.name === 'string' && c.name.toLowerCase().includes('test')
     );
 
     if (testCheck) {
@@ -316,20 +326,20 @@ export function collectStaticAnalysisOutcome(
   try {
     const checks = fetchPrChecks(prNumber, cwd);
     if (checks.length > 0) {
-      const typecheckCheck = checks.find((c: { name: string }) =>
-        /type|tsc|typecheck/i.test(c.name)
+      const typecheckCheck = checks.find((c) =>
+        /type|tsc|typecheck/i.test(c.name ?? '')
       );
       if (typecheckCheck) {
         outcome.typecheckPassed = typecheckCheck.conclusion === 'success';
       }
-      const lintCheck = checks.find((c: { name: string }) =>
-        /lint|eslint|prettier/i.test(c.name)
+      const lintCheck = checks.find((c) =>
+        /lint|eslint|prettier/i.test(c.name ?? '')
       );
       if (lintCheck) {
         outcome.lintDelta = lintCheck.conclusion === 'success' ? 0 : 1;
       }
-      const securityCheck = checks.find((c: { name: string }) =>
-        /security|codeql|snyk|dependabot/i.test(c.name)
+      const securityCheck = checks.find((c) =>
+        /security|codeql|snyk|dependabot/i.test(c.name ?? '')
       );
       if (securityCheck) {
         outcome.securityFindingsDelta = securityCheck.conclusion === 'success' ? 0 : 1;
@@ -394,7 +404,7 @@ function resolveStaticFeatures(
       { cwd: checkoutDir, timeout: 10_000, encoding: 'utf-8' },
     );
     if (!localHead.failed && localHead.stdout.trim() === prHeadSha) {
-      return collectStaticFeatures({
+      return collectStaticFeaturesViaCandidate({
         checkoutDir,
         prNumber,
         repoDir,
@@ -405,7 +415,7 @@ function resolveStaticFeatures(
   if (!prHeadSha) {
     // No head SHA and no verified checkout ⇒ tool-based signals cannot run.
     // CI-evidence build_ok may still work if repoDir has gh access.
-    return collectStaticFeatures({
+    return collectStaticFeaturesViaCandidate({
       checkoutDir: checkoutDir ?? repoDir,
       prNumber,
       repoDir,
@@ -457,7 +467,7 @@ function resolveStaticFeatures(
   }
 
   try {
-    return collectStaticFeatures({
+    return collectStaticFeaturesViaCandidate({
       checkoutDir: workDir,
       prNumber,
       repoDir,
@@ -471,6 +481,26 @@ function resolveStaticFeatures(
       try { rmSync(workDir, { recursive: true, force: true }); } catch { /* best effort */ }
     }
   }
+}
+
+function collectStaticFeaturesViaCandidate(options: {
+  checkoutDir: string;
+  prNumber: string;
+  repoDir: string;
+}): StaticFeaturesResult {
+  const staticFeatures = collectStaticFeatures(options);
+  const candidate = extractCandidateFeatures({
+    ...options,
+    staticFeatures,
+    offline: true,
+  });
+  return {
+    ...staticFeatures,
+    type_errors: candidate.type_errors,
+    lint_errors: candidate.lint_errors,
+    build_ok: candidate.build_ok,
+    complexity_delta: candidate.complexity_delta,
+  };
 }
 
 function fetchPrHeadSha(prNumber: string, repoDir: string): string | null {
