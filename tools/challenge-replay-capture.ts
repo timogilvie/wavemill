@@ -97,7 +97,6 @@ async function main(): Promise<void> {
     taskTitle: args.taskTitle,
     taskDescription: args.taskDescription,
     baseSha: args.baseSha,
-    markScorable: args.markReady,
   });
 
   let instance = result.instance;

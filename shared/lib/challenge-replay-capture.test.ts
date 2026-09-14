@@ -199,6 +199,19 @@ test('captureReplayIncident: sets source provenance correctly', () => {
   strictEqual(result.instance.source.sanitized, true);
 });
 
+test('captureReplayIncident: does not use task id as baseSha fallback', () => {
+  const incident = createTestIncident();
+  const result = captureReplayIncident({
+    incident,
+    badPatchContent: 'bad',
+    goodPatchContent: 'good',
+    taskTitle: 'Test',
+    taskDescription: 'Test description',
+  });
+
+  strictEqual(result.instance.baseSha, undefined);
+});
+
 test('captureReplayIncident: calculates patch sizes', () => {
   const incident = createTestIncident();
   const badPatch = 'bad patch content';

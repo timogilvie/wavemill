@@ -30,8 +30,6 @@ export interface CaptureReplayIncidentOptions {
   taskTitle?: string;
   /** Git SHA of the base commit */
   baseSha?: string;
-  /** Whether the instance is ready for scoring (has both patches) */
-  markScorable?: boolean;
 }
 
 export interface CaptureReplayIncidentResult {
@@ -75,7 +73,6 @@ function firstDistinctPatch(
 /**
  * Capture a replay instance from an incident.
  * Returns a partially-filled instance if patches are missing.
- * Mark `markScorable: true` only when both patches are present.
  */
 export function captureReplayIncident(
   options: CaptureReplayIncidentOptions,
@@ -136,7 +133,7 @@ export function captureReplayIncident(
     id: `incident-${incident.fingerprint.slice(0, 12)}`,
     taskTitle,
     taskDescription,
-    baseSha: options.baseSha ?? incident.taskId,
+    baseSha: options.baseSha,
     candidates,
     knownGoodCandidateId: goodCandidateId,
     knownBadCandidateIds: badPatch ? [badCandidateId] : [],
