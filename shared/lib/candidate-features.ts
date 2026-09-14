@@ -179,10 +179,12 @@ function isTestFile(filePath: string): boolean {
 // ────────────────────────────────────────────────────────────────
 
 function extractShapeFeatures(diffStats: DiffStats): ShapeFeatures {
+  // Diff was parsed successfully, so 0 is a valid observed value, not "unavailable".
+  // Null is reserved for the diff-unavailable branch in extractCandidateFeatures.
   return {
-    files_changed: diffStats.files_changed > 0 ? diffStats.files_changed : null,
-    lines_added: diffStats.lines_added > 0 ? diffStats.lines_added : null,
-    lines_removed: diffStats.lines_removed > 0 ? diffStats.lines_removed : null,
+    files_changed: diffStats.files_changed,
+    lines_added: diffStats.lines_added,
+    lines_removed: diffStats.lines_removed,
   };
 }
 
@@ -211,9 +213,11 @@ async function extractStaticFeatures(options: ExtractCandidateFeaturesOptions): 
 }
 
 function extractTestFeatures(diffStats: DiffStats): TestFeatures {
+  // Diff was parsed successfully, so 0 (a PR that touches no test files) is a valid
+  // observation, not "unavailable". Null is reserved for the diff-unavailable branch.
   return {
-    test_files_changed: diffStats.test_files_changed > 0 ? diffStats.test_files_changed : null,
-    test_changed_lines: diffStats.test_changed_lines > 0 ? diffStats.test_changed_lines : null,
+    test_files_changed: diffStats.test_files_changed,
+    test_changed_lines: diffStats.test_changed_lines,
   };
 }
 

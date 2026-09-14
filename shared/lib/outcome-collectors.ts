@@ -297,7 +297,7 @@ export function collectTestsOutcome(
  *
  * @param prNumber - GitHub PR number
  * @param branchName - Git branch name (unused currently, for future expansion)
- * @param baseBranch - Base branch (unused currently, for future expansion)
+ * @param baseBranch - Base ref for complexity-delta computation (e.g. 'main', 'auto/integration'). Forwarded to `collectStaticFeatures` so PRs targeting non-default bases get correct deltas.
  * @param repoDir - Repository directory (defaults to cwd)
  * @returns Static analysis outcome
  */
@@ -342,7 +342,7 @@ export function collectStaticAnalysisOutcome(
 
   // S1 Static feature group (HOK-2806).
   try {
-    const s1 = resolveStaticFeatures(prNumber, cwd, checkoutDir);
+    const s1 = resolveStaticFeatures(prNumber, cwd, checkoutDir, baseBranch);
     outcome.type_errors = s1.type_errors;
     outcome.lint_errors = s1.lint_errors;
     outcome.build_ok = s1.build_ok;
@@ -371,6 +371,7 @@ function resolveStaticFeatures(
   prNumber: string,
   repoDir: string,
   checkoutDir?: string,
+  baseRef?: string,
 ): StaticFeaturesResult {
   // Fast-fail short-circuits so we don't shell out on obviously bogus inputs.
   const empty: StaticFeaturesResult = {
@@ -398,6 +399,7 @@ function resolveStaticFeatures(
         checkoutDir,
         prNumber,
         repoDir,
+        baseRef,
       });
     }
   }
@@ -409,6 +411,7 @@ function resolveStaticFeatures(
       checkoutDir: checkoutDir ?? repoDir,
       prNumber,
       repoDir,
+      baseRef,
     });
   }
 
@@ -461,6 +464,7 @@ function resolveStaticFeatures(
       checkoutDir: workDir,
       prNumber,
       repoDir,
+      baseRef,
     });
   } finally {
     try {

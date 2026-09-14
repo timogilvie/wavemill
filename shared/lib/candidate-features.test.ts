@@ -79,8 +79,8 @@ test('Intent features are all null without enrichment context', () => {
 });
 
 test('Shape features handle zero changes', () => {
-  // A PR with no changes should emit null for shape metrics
-  // (not 0, per the null discipline)
+  // When the diff is available and parsed, observed 0 stays 0.
+  // Null is reserved for the diff-unavailable branch, not for legitimate zero counts.
   const emptyDiff = '';
   // This would be tested in integration; skipping for unit test
 });
