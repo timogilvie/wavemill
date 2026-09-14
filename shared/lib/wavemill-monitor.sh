@@ -1066,9 +1066,22 @@ challenge_abort_pair() {
               | .tasks[$key].updated = (now | todate)
          else .
          end;
-       mark($issue) | (if $scope == "pair" then mark($peer) else . end)' \
+       mark($issue)
+       | (if $scope == "pair" then mark($peer) else . end)
+       | if $pairId != "" and $role != "" then
+           .challengePairAbortions[$pairId][$role] = {
+             reason: $reason,
+             detail: $detail,
+             stage: $stage,
+             issue: $issue,
+             scope: $scope,
+             updated: (now | todate)
+           } + (if $nextAction != "" then {nextAction:$nextAction} else {} end)
+         else . end' \
       --arg issue "$issue" \
       --arg peer "${peer:-}" \
+      --arg pairId "${pair_id:-}" \
+      --arg role "$role" \
       --arg reason "$reason" \
       --arg detail "$detail" \
       --arg stage "$(challenge_stage_for_launch_env "$stage")" \
@@ -1081,13 +1094,14 @@ challenge_abort_pair() {
   tmp="$artifact.tmp.$$"
   jq -n -S \
     --arg pairId "${pair_id:-$issue}" \
+    --arg role "$role" \
     --arg stage "$(challenge_stage_for_launch_env "$stage")" \
     --arg model "$model" \
     --arg reason "$reason" \
     --arg abortedAt "$now" \
     --arg detail "$detail" \
     --arg nextAction "$next_action" \
-    '{pairId:$pairId, stage:$stage, model:$model, reason:$reason, abortedAt:$abortedAt, detail:$detail}
+    '{pairId:$pairId, role:$role, stage:$stage, model:$model, reason:$reason, abortedAt:$abortedAt, detail:$detail}
      + (if $nextAction == "" then {} else {nextAction:$nextAction} end)' \
     > "$tmp" 2>/dev/null && mv "$tmp" "$artifact" || rm -f "$tmp"
 
@@ -2428,6 +2442,7 @@ write_stage_result() {
     local cli_args=("$feature_dir" "$stage" "$status")
     [[ -n "$agent" ]] && cli_args+=(--agent "$agent")
     [[ -n "$model" ]] && cli_args+=(--model "$model")
+    cli_args+=(--intended-model "$model")
     [[ -n "$notes" ]] && cli_args+=(--notes "$notes")
     [[ -n "$artifacts_json" ]] && cli_args+=(--artifacts "$artifacts_json")
     [[ -n "$started_at_override" ]] && cli_args+=(--started-at "$started_at_override")
@@ -2457,19 +2472,38 @@ write_stage_result() {
     finished_at="\"$now\""
   fi
 
+  local model_attribution_reason="stage_not_completed"
+  if [[ "$status" == "completed" ]]; then
+    model_attribution_reason="missing_execution_evidence"
+  fi
+
   local tmp
   tmp=$(mktemp) || { log_warn "write_stage_result: mktemp failed"; return 0; }
-  cat > "$tmp" <<EOF
-{
-  "stage": "$stage",
-  "status": "$status",
-  "startedAt": "$started_at",
-  "finishedAt": $finished_at,
-  "agent": "$agent",
-  "model": "$model",
-  "notes": "$notes"
-}
-EOF
+  jq -n \
+    --arg stage "$stage" \
+    --arg status "$status" \
+    --arg startedAt "$started_at" \
+    --argjson finishedAt "$finished_at" \
+    --arg agent "$agent" \
+    --arg model "$model" \
+    --arg notes "$notes" \
+    --arg evidenceSource "shell-fallback" \
+    --arg evidenceStatus "missing" \
+    --arg ineligibleReason "$model_attribution_reason" \
+    '{
+      stage: $stage,
+      status: $status,
+      startedAt: $startedAt,
+      finishedAt: $finishedAt,
+      agent: $agent,
+      model: $model,
+      intendedModel: ($model | if . == "" then null else . end),
+      executedModel: null,
+      executionEvidence: {status: $evidenceStatus, source: $evidenceSource},
+      modelAttributionEligible: false,
+      modelAttributionIneligibleReason: $ineligibleReason,
+      notes: $notes
+    }' > "$tmp" 2>/dev/null || { rm -f "$tmp"; log_warn "write_stage_result: jq failed"; return 0; }
   mv "$tmp" "$result_file"
   _write_stage_result_trace_event "$feature_dir" "$stage" "$status" "$agent" "$model" "$previous_status"
 }
@@ -2488,6 +2522,7 @@ write_stage_result_with_history() {
     local cli_args=("$feature_dir" "$stage" "$status")
     [[ -n "$agent" ]] && cli_args+=(--agent "$agent")
     [[ -n "$model" ]] && cli_args+=(--model "$model")
+    cli_args+=(--intended-model "$model")
     [[ -n "$notes" ]] && cli_args+=(--notes "$notes")
     [[ -n "$artifacts_json" ]] && cli_args+=(--artifacts "$artifacts_json")
     [[ -n "$started_at_override" ]] && cli_args+=(--started-at "$started_at_override")
@@ -16863,6 +16898,7 @@ BACKSTAGE_TEND_RESTART_GRACE_SECONDS=120
 READY_WATCHDOG_FAILURE_LOG_INTERVAL=60
 LAST_BACKSTAGE_HEALTH_STATUS=""
 LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS=""
+LAST_BACKSTAGE_TEND_ALIVE_IDENTITY=""
 LAST_READY_WATCHDOG_FAILURE_DETAIL=""
 LAST_READY_WATCHDOG_FAILURE_AT=0
 
@@ -16967,10 +17003,11 @@ classify_backstage_health() {
   local pane_details="${1-}" now="${2:-$(date +%s)}" stale_seconds="${3:-$BACKSTAGE_TEND_HEARTBEAT_STALE_SECONDS}" hold_stale_seconds="${4:-$BACKSTAGE_CLASSIFICATION_HOLD_STALE_SECONDS}"
   local pane_count=0 tend_alive=0 tend_count=0 status_panes=0
   local executor_pane_id="" pane_id pane_title pane_dead _pane_cmd _start_cmd
-  local heartbeat_at="" heartbeat_epoch=0 heartbeat_age="" updated_at="" updated_epoch=0 updated_age="" hold_detail=""
+  local heartbeat_at="" heartbeat_epoch=0 heartbeat_age="" updated_at="" updated_epoch=0 updated_age="" hold_detail="" detail=""
+  local lane_condition="" lane_evidence_id="" progress_state="" last_progress_at="" evidence_id=""
 
   if [[ -z "$pane_details" ]]; then
-    printf 'backstage-missing\t\t0\t\t0\n'
+    printf 'backstage-missing\t\t0\t\t0\tbackstage-missing\n'
     return 0
   fi
 
@@ -16989,12 +17026,17 @@ classify_backstage_health() {
 
   if (( tend_alive == 1 )); then
     heartbeat_at="$(read_backstage_service_health_field "tend" '.heartbeatAt' || true)"
+    lane_condition="$(read_backstage_service_health_field "tend" '.laneCondition' || true)"
+    lane_evidence_id="$(read_backstage_service_health_field "tend" '.laneEvidenceId' || true)"
+    progress_state="$(read_backstage_service_health_field "tend" '.progressState' || true)"
+    last_progress_at="$(read_backstage_service_health_field "tend" '.lastProgressAt' || true)"
     if [[ -n "$heartbeat_at" ]]; then
       heartbeat_epoch="$(wavemill_iso8601_to_epoch "$heartbeat_at" 2>/dev/null || echo 0)"
       if (( heartbeat_epoch > 0 )); then
         heartbeat_age=$(( now - heartbeat_epoch ))
         if (( heartbeat_age > stale_seconds )); then
-          printf 'stalled\ttend heartbeat is stale (%ss old)\t%s\t%s\t%s\n' "$heartbeat_age" "$pane_count" "$executor_pane_id" "$tend_count"
+          evidence_id="${heartbeat_epoch:-$heartbeat_at}"
+          printf 'stalled\ttend heartbeat is stale (%ss old)\t%s\t%s\t%s\t%s\n' "$heartbeat_age" "$pane_count" "$executor_pane_id" "$tend_count" "$evidence_id"
           return 0
         fi
       fi
@@ -17005,7 +17047,8 @@ classify_backstage_health() {
         if (( updated_epoch > 0 )); then
           updated_age=$(( now - updated_epoch ))
           if (( updated_age > stale_seconds )); then
-            printf 'stalled\ttend heartbeat is missing and health update is stale (%ss old)\t%s\t%s\t%s\n' "$updated_age" "$pane_count" "$executor_pane_id" "$tend_count"
+            evidence_id="${updated_epoch:-missing-heartbeat}"
+            printf 'stalled\ttend heartbeat is missing and health update is stale (%ss old)\t%s\t%s\t%s\t%s\n' "$updated_age" "$pane_count" "$executor_pane_id" "$tend_count" "$evidence_id"
             return 0
           fi
         fi
@@ -17013,21 +17056,42 @@ classify_backstage_health() {
     fi
 
     hold_detail="$(classify_ready_watchdog_hold_health "$now" "$hold_stale_seconds" || true)"
+    case "$lane_condition" in
+      no-eligible)
+        evidence_id="${lane_evidence_id:-lane:no-eligible}"
+        printf 'alive-no-eligible\tbackstage tend loop is alive with no eligible candidates\t%s\t%s\t%s\t%s\n' "$pane_count" "$executor_pane_id" "$tend_count" "$evidence_id"
+        return 0
+        ;;
+      needs-user-hold|idle-blocked-stall)
+        evidence_id="${lane_evidence_id:-lane:$lane_condition}"
+        detail="${hold_detail:-backstage tend loop is alive with durable blocked merge-lane evidence ($lane_condition)}"
+        printf 'alive-needs-user\t%s\t%s\t%s\t%s\t%s\n' "$detail" "$pane_count" "$executor_pane_id" "$tend_count" "$evidence_id"
+        return 0
+        ;;
+    esac
     if [[ -n "$hold_detail" ]]; then
-      printf 'stalled\t%s\t%s\t%s\t%s\n' "$hold_detail" "$pane_count" "$executor_pane_id" "$tend_count"
+      evidence_id="${lane_evidence_id:-hold:$hold_detail}"
+      printf 'alive-needs-user\t%s\t%s\t%s\t%s\t%s\n' "$hold_detail" "$pane_count" "$executor_pane_id" "$tend_count" "$evidence_id"
+      return 0
+    fi
+    if [[ "$progress_state" == "stalled" ]]; then
+      evidence_id="${lane_evidence_id:-progress-stalled:${last_progress_at:-$heartbeat_at}}"
+      printf 'alive-not-progressing\tbackstage tend loop is alive but the merge lane is not progressing\t%s\t%s\t%s\t%s\n' "$pane_count" "$executor_pane_id" "$tend_count" "$evidence_id"
       return 0
     fi
 
-    printf 'healthy\tbackstage tend loop is running\t%s\t%s\t%s\n' "$pane_count" "$executor_pane_id" "$tend_count"
+    evidence_id="${lane_evidence_id:-${heartbeat_epoch:-$heartbeat_at}}"
+    printf 'healthy\tbackstage tend loop is running\t%s\t%s\t%s\t%s\n' "$pane_count" "$executor_pane_id" "$tend_count" "$evidence_id"
     return 0
   fi
 
   if (( status_panes > 0 )); then
-    printf 'missing-tend-loop\tbackstage window is missing the %s executor pane while status panes remain\t%s\t\t0\n' "$WAVEMILL_BACKSTAGE_TEND_PANE_TITLE" "$pane_count"
+    evidence_id="backstage:${SESSION:-unknown}:${WAVEMILL_WINDOW_BACKSTAGE:-backstage}:${pane_count}"
+    printf 'missing-tend-loop\tbackstage window is missing the %s executor pane while status panes remain\t%s\t\t0\t%s\n' "$WAVEMILL_BACKSTAGE_TEND_PANE_TITLE" "$pane_count" "$evidence_id"
     return 0
   fi
 
-  printf 'backstage-missing\tbackstage window is unavailable\t%s\t\t0\n' "$pane_count"
+  printf 'backstage-missing\tbackstage window is unavailable\t%s\t\t0\tbackstage-missing\n' "$pane_count"
 }
 
 restart_backstage_tend_loop() {
@@ -17052,13 +17116,17 @@ restart_backstage_tend_loop() {
 
 backstage_tend_restart_confirmed() {
   local prior_heartbeat="${1:-}" restart_epoch="${2:?restart epoch required}" expected_pane="${3:-}"
-  local deadline now pane_probe pane_summary pane_status _detail _pane_count executor_pane_id _tend_count heartbeat_at heartbeat_epoch
+  local deadline now pane_probe pane_summary pane_status _detail _pane_count executor_pane_id _tend_count _evidence_id heartbeat_at heartbeat_epoch
 
   deadline=$(( $(date +%s) + BACKSTAGE_TEND_RESTART_CONFIRM_SECONDS ))
   while (( $(date +%s) <= deadline )); do
     pane_probe="$(probe_backstage_panes 2>/dev/null || true)"
     pane_summary="$(classify_backstage_health "$pane_probe")"
-    IFS=$'\t' read -r pane_status _detail _pane_count executor_pane_id _tend_count <<< "$pane_summary"
+    while [[ "$pane_summary" == *$'\t\t'* ]]; do
+      pane_summary="${pane_summary//$'\t\t'/$'\t \t'}"
+    done
+    IFS=$'\t' read -r pane_status _detail _pane_count executor_pane_id _tend_count _evidence_id <<< "$pane_summary"
+    [[ "$executor_pane_id" == " " ]] && executor_pane_id=""
     if [[ "$pane_status" == "healthy" && ( -z "$expected_pane" || "$executor_pane_id" == "$expected_pane" ) ]]; then
       heartbeat_at="$(read_backstage_service_health_field "tend" '.heartbeatAt' || true)"
       heartbeat_epoch="$(wavemill_iso8601_to_epoch "$heartbeat_at" 2>/dev/null || echo 0)"
@@ -17239,37 +17307,51 @@ check_backstage_observer_health() {
 }
 
 check_backstage_health() {
-  local now health_file pane_probe pane_summary pane_status detail pane_count executor_pane_id tend_count heartbeat_at
+  local now health_file pane_probe pane_summary pane_status detail pane_count executor_pane_id tend_count evidence_id heartbeat_at
   local prior_attempt_at prior_attempt_count elapsed restart_pane_id prior_heartbeat restart_error
   local prior_attempt_epoch heartbeat_epoch backoff remaining next_attempt_count status next_backoff attempt_at
+  local bucket identity disposition retry_limit restart_instance_count lane_condition lane_evidence_id alive_identity
+  local reason marked_exhausted
 
   now=$(date +%s)
   (( now - LAST_BACKSTAGE_HEALTH_CHECK < BACKSTAGE_HEALTH_INTERVAL )) && return 0
   LAST_BACKSTAGE_HEALTH_CHECK=$now
+  bucket="backstage-tend-restart"
+  retry_limit="$BACKSTAGE_RESTART_NEEDS_USER_AFTER_ATTEMPTS"
+  [[ "$retry_limit" =~ ^[0-9]+$ ]] || retry_limit=3
+  (( retry_limit > 0 )) || retry_limit=3
 
   health_file="$(wavemill_backstage_health_file "$STATE_DIR" 2>/dev/null || true)"
   if ! backstage_health_enabled; then
     [[ -n "$health_file" ]] && wavemill_write_backstage_health "$health_file" "disabled" "integration mill-session backstage health checks are disabled"
     LAST_BACKSTAGE_HEALTH_STATUS="disabled"
+    LAST_BACKSTAGE_TEND_ALIVE_IDENTITY=""
     return 0
   fi
 
   pane_probe="$(probe_backstage_panes 2>/dev/null || true)"
   pane_summary="$(classify_backstage_health "$pane_probe")"
-  IFS=$'\t' read -r pane_status detail pane_count executor_pane_id tend_count <<< "$pane_summary"
+  while [[ "$pane_summary" == *$'\t\t'* ]]; do
+    pane_summary="${pane_summary//$'\t\t'/$'\t \t'}"
+  done
+  IFS=$'\t' read -r pane_status detail pane_count executor_pane_id tend_count evidence_id <<< "$pane_summary"
+  [[ "$executor_pane_id" == " " ]] && executor_pane_id=""
   [[ "$tend_count" =~ ^[0-9]+$ ]] || tend_count=0
 
-  prior_attempt_at="$(read_backstage_health_field '.lastRestartAttemptAt' || true)"
-  prior_attempt_count="$(read_backstage_health_field '.restartAttemptCount' || true)"
+  prior_attempt_count="$(bounded_retry_count "$STATE_DIR" "$bucket")"
   [[ "$prior_attempt_count" =~ ^[0-9]+$ ]] || prior_attempt_count=0
-  prior_attempt_epoch=0
+  prior_attempt_epoch="$(bounded_retry_last_at "$STATE_DIR" "$bucket")"
+  [[ "$prior_attempt_epoch" =~ ^[0-9]+$ ]] || prior_attempt_epoch=0
+  prior_attempt_at=""
+  if (( prior_attempt_epoch > 0 )); then
+    prior_attempt_at="$(cleanup_episode_iso_from_epoch "$prior_attempt_epoch" 2>/dev/null || true)"
+  fi
+  if [[ -z "$prior_attempt_at" ]]; then
+    prior_attempt_at="$(read_backstage_health_field '.lastRestartAttemptAt' || true)"
+  fi
   elapsed="$BACKSTAGE_RESTART_COOLDOWN"
-  if [[ -n "$prior_attempt_at" ]]; then
-    prior_attempt_epoch="$(wavemill_iso8601_to_epoch "$prior_attempt_at" 2>/dev/null || echo 0)"
-    [[ "$prior_attempt_epoch" =~ ^[0-9]+$ ]] || prior_attempt_epoch=0
-    if (( prior_attempt_epoch > 0 )); then
-      elapsed=$(( now - prior_attempt_epoch ))
-    fi
+  if (( prior_attempt_epoch > 0 )); then
+    elapsed=$(( now - prior_attempt_epoch ))
   fi
 
   if (( prior_attempt_count > 0 && elapsed < BACKSTAGE_TEND_RESTART_GRACE_SECONDS )) && [[ -n "$executor_pane_id" && ( "$pane_status" == "healthy" || "$pane_status" == "stalled" ) ]]; then
@@ -17278,9 +17360,26 @@ check_backstage_health() {
     [[ "$heartbeat_epoch" =~ ^[0-9]+$ ]] || heartbeat_epoch=0
     if (( prior_attempt_epoch == 0 || heartbeat_epoch <= prior_attempt_epoch )); then
       detail="Backstage tend restart attempt ${prior_attempt_count} is pending: pane ${executor_pane_id} is alive, awaiting first heartbeat (${elapsed}s elapsed). Restart 'npx tsx tools/tend.ts --loop --repo-dir $REPO_DIR' in tmux."
-      [[ -n "$health_file" ]] && wavemill_write_backstage_health "$health_file" "missing-tend-loop" "$detail" "$prior_attempt_count" "$prior_attempt_at" "$executor_pane_id" "$tend_count"
+      [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "tend" "missing-tend-loop" "$detail" "$prior_attempt_count" "$prior_attempt_at" "$executor_pane_id" "$heartbeat_at" "$tend_count"
       LAST_BACKSTAGE_HEALTH_STATUS="missing-tend-loop"
+      LAST_BACKSTAGE_TEND_ALIVE_IDENTITY=""
       return 0
+    fi
+  fi
+  if (( prior_attempt_count > 0 )) && [[ -n "$executor_pane_id" && "$pane_status" == "healthy" ]]; then
+    heartbeat_at="$(read_backstage_service_health_field "tend" '.heartbeatAt' || true)"
+    heartbeat_epoch="$(wavemill_iso8601_to_epoch "$heartbeat_at" 2>/dev/null || echo 0)"
+    [[ "$heartbeat_epoch" =~ ^[0-9]+$ ]] || heartbeat_epoch=0
+    if (( prior_attempt_epoch == 0 || heartbeat_epoch <= prior_attempt_epoch )); then
+      local prior_retry_head=""
+      prior_retry_head="$(bounded_retry_head "$STATE_DIR" "$bucket")"
+      if [[ "$prior_retry_head" == missing-tend-loop:* ]]; then
+        evidence_id="${prior_retry_head#missing-tend-loop:}"
+      else
+        evidence_id="${evidence_id:-unconfirmed-restart}"
+      fi
+      detail="Backstage tend restart attempt ${prior_attempt_count} is unconfirmed: pane ${executor_pane_id} is alive but has not produced a fresh heartbeat after ${elapsed}s."
+      pane_status="missing-tend-loop"
     fi
   fi
 
@@ -17291,7 +17390,9 @@ check_backstage_health() {
       if (( prior_attempt_count > 0 )); then
         log "status" "Backstage tend loop restart confirmed by heartbeat"
       fi
+      bounded_retry_clear "$STATE_DIR" "$bucket"
       LAST_BACKSTAGE_HEALTH_STATUS="healthy"
+      LAST_BACKSTAGE_TEND_ALIVE_IDENTITY=""
       return 0
       ;;
     'backstage-missing')
@@ -17300,30 +17401,112 @@ check_backstage_health() {
         log_warn "Backstage health check could not find the backstage window."
       fi
       LAST_BACKSTAGE_HEALTH_STATUS="backstage-missing"
+      LAST_BACKSTAGE_TEND_ALIVE_IDENTITY=""
+      return 0
+      ;;
+    alive-needs-user|alive-no-eligible|alive-not-progressing)
+      heartbeat_at="$(read_backstage_service_health_field "tend" '.heartbeatAt' || true)"
+      lane_condition="$(read_backstage_service_health_field "tend" '.laneCondition' || true)"
+      lane_evidence_id="$(read_backstage_service_health_field "tend" '.laneEvidenceId' || true)"
+      case "$pane_status" in
+        alive-needs-user) [[ -n "$lane_condition" ]] || lane_condition="needs-user-hold" ;;
+        alive-no-eligible) [[ -n "$lane_condition" ]] || lane_condition="no-eligible" ;;
+        alive-not-progressing) [[ -n "$lane_condition" ]] || lane_condition="idle-blocked-stall" ;;
+      esac
+      [[ -n "$lane_evidence_id" ]] || lane_evidence_id="$evidence_id"
+      if [[ -n "$health_file" ]]; then
+        wavemill_write_backstage_service_health "$health_file" "tend" "$pane_status" "$detail" 0 "" "$executor_pane_id" "$heartbeat_at" "$tend_count"
+        state_mutate "$health_file" '
+          .services.tend.laneCondition = $laneCondition
+          | .services.tend.laneEvidenceId = $laneEvidenceId
+        ' --arg laneCondition "$lane_condition" --arg laneEvidenceId "$lane_evidence_id" >/dev/null 2>&1 || true
+      fi
+      alive_identity="${pane_status}:${lane_evidence_id:-${evidence_id:-$detail}}"
+      if [[ "$LAST_BACKSTAGE_HEALTH_STATUS" != "$pane_status" || "$LAST_BACKSTAGE_TEND_ALIVE_IDENTITY" != "$alive_identity" ]]; then
+        case "$pane_status" in
+          alive-no-eligible)
+            log_warn "Backstage tend loop is alive with no eligible candidates; not restarting."
+            ;;
+          alive-not-progressing)
+            log_warn "Backstage tend loop is alive but not making merge progress: $detail"
+            ;;
+          *)
+            log_warn "Backstage tend loop is alive but waiting for operator-blocked lane evidence: $detail"
+            ;;
+        esac
+      fi
+      LAST_BACKSTAGE_HEALTH_STATUS="$pane_status"
+      LAST_BACKSTAGE_TEND_ALIVE_IDENTITY="$alive_identity"
       return 0
       ;;
   esac
 
-  backoff="$(backstage_restart_backoff_seconds "$prior_attempt_count")"
-  if (( prior_attempt_count > 0 && elapsed < backoff )); then
-    remaining=$(( backoff - elapsed ))
-    status="$pane_status"
-    [[ "$status" == "stalled" ]] || status="missing-tend-loop"
-    (( prior_attempt_count >= BACKSTAGE_RESTART_NEEDS_USER_AFTER_ATTEMPTS )) && status="needs-user"
-    if [[ "$pane_status" == "stalled" ]]; then
-      detail="Backstage tend loop is stalled (restart attempt ${prior_attempt_count} unconfirmed: $detail); next automatic restart in ${remaining}s. Restart 'npx tsx tools/tend.ts --loop --repo-dir $REPO_DIR' in tmux."
-    else
-      detail="Backstage window '$WAVEMILL_WINDOW_BACKSTAGE' is missing the ${WAVEMILL_BACKSTAGE_TEND_PANE_TITLE} executor (restart attempt ${prior_attempt_count} unconfirmed: $detail); next automatic restart in ${remaining}s. Restart 'npx tsx tools/tend.ts --loop --repo-dir $REPO_DIR' in tmux."
-    fi
-    [[ -n "$health_file" ]] && wavemill_write_backstage_health "$health_file" "$status" "$detail" "$prior_attempt_count" "$prior_attempt_at" "$executor_pane_id" "$tend_count"
-    if [[ "$LAST_BACKSTAGE_HEALTH_STATUS" != "$status" ]]; then
-      log_warn "$detail"
-    fi
-    LAST_BACKSTAGE_HEALTH_STATUS="$status"
+  identity="${pane_status}:${evidence_id:-unknown}"
+  bounded_retry_reset_if_new_head "$STATE_DIR" "$bucket" "$identity"
+  prior_attempt_count="$(bounded_retry_count "$STATE_DIR" "$bucket")"
+  [[ "$prior_attempt_count" =~ ^[0-9]+$ ]] || prior_attempt_count=0
+  prior_attempt_epoch="$(bounded_retry_last_at "$STATE_DIR" "$bucket")"
+  [[ "$prior_attempt_epoch" =~ ^[0-9]+$ ]] || prior_attempt_epoch=0
+  prior_attempt_at=""
+  if (( prior_attempt_epoch > 0 )); then
+    prior_attempt_at="$(cleanup_episode_iso_from_epoch "$prior_attempt_epoch" 2>/dev/null || true)"
+    elapsed=$(( now - prior_attempt_epoch ))
+  else
+    elapsed="$BACKSTAGE_RESTART_COOLDOWN"
+  fi
+
+  disposition="$(bounded_retry_gate "$STATE_DIR" "$bucket" "$identity" "$retry_limit" "$BACKSTAGE_RESTART_COOLDOWN" "$BACKSTAGE_RESTART_BACKOFF_MAX_SECONDS")"
+  case "$disposition" in
+    backoff)
+      backoff="$(bounded_retry_backoff_seconds "$prior_attempt_count" "$BACKSTAGE_RESTART_COOLDOWN" "$BACKSTAGE_RESTART_BACKOFF_MAX_SECONDS")"
+      remaining=$(( backoff - elapsed ))
+      (( remaining < 0 )) && remaining=0
+      status="$pane_status"
+      [[ "$status" == "stalled" ]] || status="missing-tend-loop"
+      if [[ "$pane_status" == "stalled" ]]; then
+        detail="Backstage tend loop is stalled (restart attempt ${prior_attempt_count} unconfirmed: $detail); next automatic restart in ${remaining}s. Restart 'npx tsx tools/tend.ts --loop --repo-dir $REPO_DIR' in tmux."
+      else
+        detail="Backstage window '$WAVEMILL_WINDOW_BACKSTAGE' is missing the ${WAVEMILL_BACKSTAGE_TEND_PANE_TITLE} executor (restart attempt ${prior_attempt_count} unconfirmed: $detail); next automatic restart in ${remaining}s. Restart 'npx tsx tools/tend.ts --loop --repo-dir $REPO_DIR' in tmux."
+      fi
+      heartbeat_at="$(read_backstage_service_health_field "tend" '.heartbeatAt' || true)"
+      [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "tend" "$status" "$detail" "$prior_attempt_count" "$prior_attempt_at" "$executor_pane_id" "$heartbeat_at" "$tend_count"
+      if [[ "$LAST_BACKSTAGE_HEALTH_STATUS" != "$status" ]]; then
+        log_warn "$detail"
+      fi
+      LAST_BACKSTAGE_HEALTH_STATUS="$status"
+      LAST_BACKSTAGE_TEND_ALIVE_IDENTITY=""
+      return 0
+      ;;
+    exhausted|exhausted-quiet)
+      status="needs-user"
+      reason="tend-restart-exhausted evidence=${identity} attempts=${prior_attempt_count}"
+      detail="Backstage tend loop restart attempts are exhausted for ${identity} after ${prior_attempt_count}/${retry_limit} attempt(s). Restart 'npx tsx tools/tend.ts --loop --repo-dir $REPO_DIR' in tmux after fixing the underlying process evidence."
+      heartbeat_at="$(read_backstage_service_health_field "tend" '.heartbeatAt' || true)"
+      [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "tend" "$status" "$detail" "$prior_attempt_count" "$prior_attempt_at" "$executor_pane_id" "$heartbeat_at" "$tend_count"
+      marked_exhausted=1
+      if [[ "$disposition" == "exhausted" ]]; then
+        bounded_retry_mark_exhausted "$STATE_DIR" "$bucket" "$reason" && marked_exhausted=0 || marked_exhausted=1
+      fi
+      if (( marked_exhausted == 0 )); then
+        log_warn "$detail"
+      fi
+      LAST_BACKSTAGE_HEALTH_STATUS="$status"
+      LAST_BACKSTAGE_TEND_ALIVE_IDENTITY=""
+      return 0
+      ;;
+  esac
+
+  if [[ "$disposition" != "proceed" ]]; then
+    LAST_BACKSTAGE_HEALTH_STATUS="$pane_status"
+    LAST_BACKSTAGE_TEND_ALIVE_IDENTITY=""
     return 0
   fi
 
-  next_attempt_count=$(( prior_attempt_count + 1 ))
+  next_attempt_count="$(bounded_retry_increment "$STATE_DIR" "$bucket" "$identity")"
+  [[ "$next_attempt_count" =~ ^[0-9]+$ ]] || next_attempt_count=$(( prior_attempt_count + 1 ))
+  prior_attempt_epoch="$(bounded_retry_last_at "$STATE_DIR" "$bucket")"
+  [[ "$prior_attempt_epoch" =~ ^[0-9]+$ ]] || prior_attempt_epoch="$now"
+  attempt_at="$(cleanup_episode_iso_from_epoch "$prior_attempt_epoch" 2>/dev/null || date -u +"%Y-%m-%dT%H:%M:%SZ")"
   if [[ "$pane_status" == "stalled" ]]; then
     log_warn "Backstage health check detected a stalled tend loop. Attempting respawn (attempt ${next_attempt_count}) in '$WAVEMILL_WINDOW_BACKSTAGE'."
   else
@@ -17336,27 +17519,36 @@ check_backstage_health() {
     restart_pane_id="$(restart_backstage_tend_loop || true)"
   fi
   if [[ -n "$restart_pane_id" ]] && heartbeat_at="$(backstage_tend_restart_confirmed "$prior_heartbeat" "$now" "$restart_pane_id")"; then
+    bounded_retry_clear "$STATE_DIR" "$bucket"
     [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "tend" "healthy" "backstage tend loop was restarted automatically" 0 "" "${executor_pane_id:-$restart_pane_id}" "$heartbeat_at" 1
     log "status" "Backstage tend loop restart confirmed by heartbeat"
     LAST_BACKSTAGE_HEALTH_STATUS="healthy"
+    LAST_BACKSTAGE_TEND_ALIVE_IDENTITY=""
     return 0
   fi
 
   restart_error="$(backstage_tend_restart_diagnostic)"
-  attempt_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   next_backoff="$(backstage_restart_backoff_seconds "$next_attempt_count")"
   status="$pane_status"
   [[ "$status" == "stalled" ]] || status="missing-tend-loop"
-  (( next_attempt_count >= BACKSTAGE_RESTART_NEEDS_USER_AFTER_ATTEMPTS )) && status="needs-user"
-  if [[ -n "$restart_pane_id" ]]; then
+  if (( next_attempt_count >= retry_limit )); then
+    status="needs-user"
+    reason="tend-restart-exhausted evidence=${identity} attempts=${next_attempt_count}"
+    if bounded_retry_mark_exhausted "$STATE_DIR" "$bucket" "$reason" >/dev/null 2>&1; then
+      log_warn "Backstage tend loop restart attempts are exhausted for ${identity} after ${next_attempt_count}/${retry_limit} attempt(s): ${restart_error}"
+    fi
+    detail="Backstage tend loop restart attempts are exhausted for ${identity} after ${next_attempt_count}/${retry_limit} attempt(s). Last restart attempt did not produce a fresh heartbeat: $restart_error. Restart 'npx tsx tools/tend.ts --loop --repo-dir $REPO_DIR' in tmux after fixing the underlying process evidence."
+  elif [[ -n "$restart_pane_id" ]]; then
     detail="Backstage tend restart attempt ${next_attempt_count} did not produce a fresh heartbeat within ${BACKSTAGE_TEND_RESTART_CONFIRM_SECONDS}s: $restart_error. Watching the new pane for ${BACKSTAGE_TEND_RESTART_GRACE_SECONDS}s and retrying no earlier than ${next_backoff}s after that. Restart 'npx tsx tools/tend.ts --loop --repo-dir $REPO_DIR' in tmux."
   else
     detail="Backstage tend restart attempt ${next_attempt_count} could not split a backstage pane: $restart_error. Retrying no earlier than ${next_backoff}s. Restart 'npx tsx tools/tend.ts --loop --repo-dir $REPO_DIR' in tmux."
   fi
-  local restart_instance_count="$tend_count"
+  restart_instance_count="$tend_count"
   [[ -n "$restart_pane_id" ]] && restart_instance_count=1
-  [[ -n "$health_file" ]] && wavemill_write_backstage_health "$health_file" "$status" "$detail" "$next_attempt_count" "$attempt_at" "${restart_pane_id:-$executor_pane_id}" "$restart_instance_count"
+  heartbeat_at="$(read_backstage_service_health_field "tend" '.heartbeatAt' || true)"
+  [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "tend" "$status" "$detail" "$next_attempt_count" "$attempt_at" "${restart_pane_id:-$executor_pane_id}" "$heartbeat_at" "$restart_instance_count"
   LAST_BACKSTAGE_HEALTH_STATUS="$status"
+  LAST_BACKSTAGE_TEND_ALIVE_IDENTITY=""
 }
 
 while :; do

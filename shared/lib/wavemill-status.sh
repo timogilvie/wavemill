@@ -1967,7 +1967,7 @@ format_backstage_service_status() {
     disabled) printf '%b' "${D}disabled${N}" ;;
     needs-user) printf '%b' "${R}needs-user${N}" ;;
     stalled) printf '%b' "${R}${status}${N}" ;;
-    alive-not-progressing) printf '%b' "${Y}${status}${N}" ;;
+    alive-not-progressing|alive-needs-user|alive-no-eligible) printf '%b' "${Y}${status}${N}" ;;
     missing-*|stale-*|backstage-missing) printf '%b' "${Y}${status}${N}" ;;
     *) printf '%b' "${D}${status}${N}" ;;
   esac
@@ -1981,6 +1981,12 @@ backstage_effective_service_status() {
   local health_file="$1" service="$2" status="${3:-unknown}"
   local progress_state
   progress_state="$(jq -r --arg service "$service" '.services[$service].progressState // empty' "$health_file" 2>/dev/null || true)"
+  case "$status" in
+    alive-not-progressing|alive-needs-user|alive-no-eligible)
+      printf '%s' "$status"
+      return 0
+      ;;
+  esac
   if [[ "$progress_state" == "stalled" && "$status" == "healthy" ]]; then
     printf 'alive-not-progressing'
   else
@@ -2036,7 +2042,7 @@ queue_health_dashboard_status() {
 }
 
 backstage_health_dashboard_line() {
-  local state_file="${1:-}" state_dir health_file tend_status observer_status observer_instance_count heartbeat_at heartbeat_age queue_status_line tend_failure_count progress_age
+  local state_file="${1:-}" state_dir health_file tend_status observer_status observer_instance_count heartbeat_at heartbeat_age queue_status_line tend_failure_count progress_age lane_condition progress_state
   [[ -n "$state_file" ]] || return 1
   state_dir="$(dirname "$state_file" 2>/dev/null || echo '')"
   [[ -n "$state_dir" ]] || return 1
@@ -2049,6 +2055,11 @@ backstage_health_dashboard_line() {
 
   tend_status="$(backstage_effective_service_status "$health_file" 'tend' "${tend_status:-unknown}")"
   printf 'Tend: %b' "$(format_backstage_service_status "$tend_status")"
+  lane_condition="$(jq -r '.services.tend.laneCondition // empty' "$health_file" 2>/dev/null || true)"
+  progress_state="$(jq -r '.services.tend.progressState // empty' "$health_file" 2>/dev/null || true)"
+  if [[ -n "$lane_condition" && "$lane_condition" != "$progress_state" && "$tend_status" == alive-* ]]; then
+    printf ' (%s)' "$lane_condition"
+  fi
   heartbeat_at="$(jq -r '.services.tend.heartbeatAt // empty' "$health_file" 2>/dev/null || true)"
   if heartbeat_age="$(format_backstage_heartbeat_age "$heartbeat_at" 2>/dev/null)"; then
     if progress_age="$(format_backstage_progress_age "$health_file" 'tend' 2>/dev/null)"; then
