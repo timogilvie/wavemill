@@ -1,0 +1,236 @@
+{
+  "$comment": "HOK-2807 contract fixture for candidate_features/v1. This is a local mirror of the frozen Arbiter S1 schema until @hokusai/core publishes the canonical artifact. When hokusai/core publishes candidate_features.v1 with all five groups (Shape, Static, Test, Intent, Provenance), replace this fixture with a direct SDK import.",
+  "schema": "candidate_features/v1",
+  "groups": {
+    "shape": {
+      "description": "PR shape metrics (diff size)",
+      "fields": {
+        "files_changed": {
+          "types": ["integer", "null"],
+          "minimum": 1,
+          "nullMeans": "diff unavailable",
+          "source": "unified diff line parsing"
+        },
+        "lines_added": {
+          "types": ["integer", "null"],
+          "minimum": 1,
+          "nullMeans": "diff unavailable",
+          "source": "unified diff line parsing"
+        },
+        "lines_removed": {
+          "types": ["integer", "null"],
+          "minimum": 1,
+          "nullMeans": "diff unavailable",
+          "source": "unified diff line parsing"
+        }
+      }
+    },
+    "static": {
+      "description": "S1 Static group (HOK-2806): typecheck, lint, build, complexity",
+      "fields": {
+        "type_errors": {
+          "types": ["integer", "null"],
+          "minimum": 0,
+          "nullMeans": "no supported type checker completed successfully",
+          "source": "HOK-2806 static collector"
+        },
+        "lint_errors": {
+          "types": ["integer", "null"],
+          "minimum": 0,
+          "nullMeans": "no supported linter completed successfully",
+          "source": "HOK-2806 static collector"
+        },
+        "build_ok": {
+          "types": ["boolean", "null"],
+          "nullMeans": "no build ran to a terminal result; CiOutcome.ran=false maps to null",
+          "source": "Wavemill CI/build checks; CiOutcome.ran must be true"
+        },
+        "complexity_delta": {
+          "types": ["number", "null"],
+          "nullMeans": "no supported complexity analyzer completed on both revisions",
+          "source": "HOK-2806 static collector"
+        },
+        "build_evidence": {
+          "types": ["string", "null"],
+          "nullMeans": "no build ran",
+          "source": "wavemill CI evidence chain"
+        },
+        "complexity_metric": {
+          "types": ["string", "null"],
+          "nullMeans": "no metric computed",
+          "source": "static collector metric id"
+        }
+      }
+    },
+    "test": {
+      "description": "Test coverage change metrics",
+      "fields": {
+        "test_files_changed": {
+          "types": ["integer", "null"],
+          "minimum": 1,
+          "nullMeans": "diff unavailable",
+          "source": "diff file pattern matching (*.test.ts, *.spec.js, tests/*, etc.)"
+        },
+        "test_changed_lines": {
+          "types": ["integer", "null"],
+          "minimum": 1,
+          "nullMeans": "diff unavailable",
+          "source": "unified diff line counting for test files"
+        }
+      }
+    },
+    "intent": {
+      "description": "Task intent features (enriched only from wavemill with task descriptor)",
+      "fields": {
+        "touched_out_of_scope_files": {
+          "types": ["boolean", "null"],
+          "nullMeans": "no task contract available",
+          "source": "task descriptor scope check"
+        },
+        "modified_non_implementation_files": {
+          "types": ["boolean", "null"],
+          "nullMeans": "no task contract available",
+          "source": "task descriptor implementation boundary"
+        },
+        "added_new_dependencies": {
+          "types": ["boolean", "null"],
+          "nullMeans": "no task contract available",
+          "source": "task descriptor dependency check"
+        },
+        "schema_migration": {
+          "types": ["boolean", "null"],
+          "nullMeans": "no task contract available",
+          "source": "task descriptor schema migration flag"
+        },
+        "database_change_risk": {
+          "types": ["string", "null"],
+          "nullMeans": "no task contract available",
+          "source": "task descriptor risk assessment"
+        }
+      }
+    },
+    "provenance": {
+      "description": "PR and git metadata for traceability",
+      "fields": {
+        "pr_number": {
+          "types": ["string", "null"],
+          "nullMeans": "invalid PR number",
+          "source": "gh pr view"
+        },
+        "head_sha": {
+          "types": ["string", "null"],
+          "nullMeans": "PR metadata missing",
+          "source": "gh pr view headRefOid"
+        },
+        "base_ref": {
+          "types": ["string", "null"],
+          "nullMeans": "PR metadata missing",
+          "source": "gh pr view baseRefName"
+        },
+        "pr_url": {
+          "types": ["string", "null"],
+          "nullMeans": "PR metadata missing",
+          "source": "gh pr view url"
+        }
+      }
+    }
+  },
+  "examples": {
+    "fully_populated": {
+      "shape": {
+        "files_changed": 5,
+        "lines_added": 234,
+        "lines_removed": 12
+      },
+      "static": {
+        "type_errors": 3,
+        "lint_errors": 0,
+        "build_ok": true,
+        "complexity_delta": 4,
+        "build_evidence": "ci_passed",
+        "complexity_metric": "wavemill-cyclomatic/v1"
+      },
+      "test": {
+        "test_files_changed": 2,
+        "test_changed_lines": 45
+      },
+      "intent": {
+        "touched_out_of_scope_files": false,
+        "modified_non_implementation_files": false,
+        "added_new_dependencies": false,
+        "schema_migration": false,
+        "database_change_risk": null
+      },
+      "provenance": {
+        "pr_number": "1234",
+        "head_sha": "abc1234567890",
+        "base_ref": "main",
+        "pr_url": "https://github.com/owner/repo/pull/1234"
+      }
+    },
+    "evidence_unavailable": {
+      "shape": {
+        "files_changed": null,
+        "lines_added": null,
+        "lines_removed": null
+      },
+      "static": {
+        "type_errors": null,
+        "lint_errors": null,
+        "build_ok": null,
+        "complexity_delta": null,
+        "build_evidence": null,
+        "complexity_metric": null
+      },
+      "test": {
+        "test_files_changed": null,
+        "test_changed_lines": null
+      },
+      "intent": {
+        "touched_out_of_scope_files": null,
+        "modified_non_implementation_files": null,
+        "added_new_dependencies": null,
+        "schema_migration": null,
+        "database_change_risk": null
+      },
+      "provenance": {
+        "pr_number": null,
+        "head_sha": null,
+        "base_ref": null,
+        "pr_url": null
+      }
+    },
+    "docs_only_change": {
+      "shape": {
+        "files_changed": 3,
+        "lines_added": 50,
+        "lines_removed": 20
+      },
+      "static": {
+        "type_errors": 0,
+        "lint_errors": 0,
+        "build_ok": true,
+        "complexity_delta": 0,
+        "build_evidence": "ci_passed",
+        "complexity_metric": "wavemill-cyclomatic/v1"
+      },
+      "test": {
+        "test_files_changed": null,
+        "test_changed_lines": null
+      },
+      "intent": {
+        "touched_out_of_scope_files": null,
+        "modified_non_implementation_files": null,
+        "added_new_dependencies": null,
+        "schema_migration": null,
+        "database_change_risk": null
+      },
+      "provenance": {
+        "pr_number": "5678",
+        "head_sha": "def5678901234",
+        "base_ref": "main",
+        "pr_url": "https://github.com/owner/repo/pull/5678"
+      }
+    }
+  }
+}
