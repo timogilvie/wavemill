@@ -26,6 +26,7 @@ import {
 } from './static-features.ts';
 import {
   extractCandidateFeatures,
+  type CandidateFeatureContract,
   type CandidateFeaturesV1,
 } from './candidate-features.ts';
 
@@ -72,12 +73,28 @@ interface PrCheckEvidence {
 
 const prChecksCache = new Map<string, PrCheckEvidence[]>();
 
+interface SharedCandidateCacheEntry {
+  features: CandidateFeaturesV1 | null;
+  staticFeatures: StaticFeaturesResult | null;
+  resolvedCheckoutDir: string | null;
+  cleanup: (() => void) | null;
+}
+
 /**
- * Cache of extracted candidate features, keyed by `${prNumber}:${checkoutDir}:${repoDir}`.
- * Lets Tests and Static outcome collectors share one call to
- * `extractCandidateFeatures` per PR so each feature group is computed once.
+ * Cache of shared candidate + static features, keyed by `${prNumber}:${repoDir}`.
+ * The Tests and Static outcome collectors resolve to the same PR-head checkout
+ * once (creating a disposable worktree when necessary) and share one call each
+ * to `collectStaticFeatures` and `extractCandidateFeatures`. Prevents the
+ * expensive tsc / eslint / complexity passes from running twice and prevents
+ * one collector from analyzing a non-PR-head worktree while the other analyzes
+ * the correct head.
  */
-const candidateFeaturesCache = new Map<string, CandidateFeaturesV1 | null>();
+const sharedCandidateCache = new Map<string, SharedCandidateCacheEntry>();
+
+interface SharedCandidateOptions {
+  baseRef?: string;
+  contract?: CandidateFeatureContract;
+}
 
 /**
  * Clear the PR checks cache for a specific PR or all PRs.
@@ -95,42 +112,157 @@ export function clearPrChecksCache(prNumber?: string, repoDir?: string): void {
 }
 
 /**
- * Clear the candidate features cache. Test-only helper for isolation.
+ * Clear the shared candidate features cache and run any pending worktree
+ * cleanups. Test-only helper for isolation; also called at end of a
+ * post-completion collection so disposable worktrees are removed.
  */
 export function clearCandidateFeaturesCache(): void {
-  candidateFeaturesCache.clear();
+  for (const entry of sharedCandidateCache.values()) {
+    entry.cleanup?.();
+  }
+  sharedCandidateCache.clear();
+}
+
+interface ResolvedPrHeadCheckout {
+  checkoutDir: string;
+  cleanup: (() => void) | null;
 }
 
 /**
- * Return the extracted `candidate_features/v1` for a PR, caching by
- * `(prNumber, checkoutDir, repoDir)` so multiple outcome collectors share one
- * extraction. Returns `null` when the inputs are unusable (no PR number, no
- * checkout, extractor failure). Non-throwing.
+ * Resolve the PR-head checkout for `prNumber`.
+ *
+ * When the caller-supplied `checkoutDir`'s HEAD already matches the PR head
+ * SHA, reuse it directly. Otherwise, create a disposable worktree at the PR
+ * head SHA under `repoDir/.static-collect-worktrees/` and return that;
+ * `cleanup` removes the worktree.
+ *
+ * Returns `null` when the inputs are unusable (bad PR number, missing repo
+ * dir, unable to fetch head SHA).
  */
-function getCandidateFeaturesForPr(
+function resolvePrHeadCheckout(
   prNumber: string,
-  checkoutDir: string,
   repoDir: string,
-): CandidateFeaturesV1 | null {
+  checkoutDir?: string,
+): ResolvedPrHeadCheckout | null {
   if (!prNumber || !/^\d+$/.test(prNumber)) return null;
-  if (!isExistingDir(checkoutDir)) return null;
-  const key = `${prNumber}:${checkoutDir}:${repoDir}`;
-  if (candidateFeaturesCache.has(key)) {
-    return candidateFeaturesCache.get(key) ?? null;
+  if (!isExistingDir(repoDir)) return null;
+  if (checkoutDir && !isExistingDir(checkoutDir)) return null;
+
+  const prHeadSha = fetchPrHeadSha(prNumber, repoDir);
+  if (!prHeadSha) {
+    // Without a head SHA we cannot verify or create a matching worktree; use
+    // the caller's checkout (if any) or the repo dir as a best effort.
+    const dir = checkoutDir ?? repoDir;
+    return { checkoutDir: dir, cleanup: null };
   }
+
+  if (checkoutDir) {
+    const localHead = execArgvCommand(
+      'git', ['rev-parse', 'HEAD'],
+      { cwd: checkoutDir, timeout: 10_000, encoding: 'utf-8' },
+    );
+    if (!localHead.failed && localHead.stdout.trim() === prHeadSha) {
+      return { checkoutDir, cleanup: null };
+    }
+  }
+
+  const workDir = join(repoDir, '.static-collect-worktrees', `pr-${prNumber}-${process.pid}`);
+  pruneStaleWorktrees(repoDir);
+
+  const shaExists = execArgvCommand(
+    'git', ['cat-file', '-e', prHeadSha],
+    { cwd: repoDir, timeout: 10_000, encoding: 'utf-8' },
+  );
+  if (shaExists.exitCode !== 0) {
+    const fetchResult = execArgvCommand(
+      'git',
+      ['fetch', 'origin', `refs/pull/${prNumber}/head:refs/wavemill/static/pr-${prNumber}`],
+      { cwd: repoDir, timeout: 60_000, encoding: 'utf-8' },
+    );
+    if (fetchResult.exitCode !== 0) return null;
+  }
+
+  const addResult = execArgvCommand(
+    'git', ['worktree', 'add', '--detach', workDir, prHeadSha],
+    { cwd: repoDir, timeout: 60_000, encoding: 'utf-8' },
+  );
+  if (addResult.exitCode !== 0) return null;
+
+  const cleanup = () => {
+    try {
+      execArgvCommand('git', ['worktree', 'remove', '--force', workDir], {
+        cwd: repoDir, timeout: 30_000, encoding: 'utf-8',
+      });
+    } catch {
+      try { rmSync(workDir, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+  };
+  return { checkoutDir: workDir, cleanup };
+}
+
+/**
+ * Return the shared candidate + static features for `prNumber`, computed once
+ * from the resolved PR-head checkout. `collectStaticFeatures` and
+ * `extractCandidateFeatures` each run at most once per PR: the static result
+ * is passed into the extractor via its `staticFeatures` option so its
+ * internal call is skipped.
+ *
+ * Returns an entry whose `features` / `staticFeatures` are `null` when the
+ * inputs are unusable (bad PR number, no head SHA, extractor failure). Both
+ * collectors treat null as "evidence unavailable" and fall back accordingly.
+ */
+function getSharedCandidateFeaturesForPr(
+  prNumber: string,
+  checkoutDir: string | undefined,
+  repoDir: string,
+  options: SharedCandidateOptions = {},
+): SharedCandidateCacheEntry {
+  const key = `${prNumber}:${repoDir}`;
+  const cached = sharedCandidateCache.get(key);
+  if (cached) return cached;
+
+  const emptyEntry: SharedCandidateCacheEntry = {
+    features: null,
+    staticFeatures: null,
+    resolvedCheckoutDir: null,
+    cleanup: null,
+  };
+
+  const resolved = resolvePrHeadCheckout(prNumber, repoDir, checkoutDir);
+  if (!resolved) {
+    sharedCandidateCache.set(key, emptyEntry);
+    return emptyEntry;
+  }
+
   try {
-    const features = extractCandidateFeatures({
-      checkoutDir,
+    const staticFeatures = collectStaticFeatures({
+      checkoutDir: resolved.checkoutDir,
       prNumber,
       repoDir,
+      ...(options.baseRef ? { baseRef: options.baseRef } : {}),
     });
-    candidateFeaturesCache.set(key, features);
-    return features;
+    const features = extractCandidateFeatures({
+      checkoutDir: resolved.checkoutDir,
+      prNumber,
+      repoDir,
+      ...(options.baseRef ? { baseRef: options.baseRef } : {}),
+      ...(options.contract ? { contract: options.contract } : {}),
+      staticFeatures,
+    });
+    const entry: SharedCandidateCacheEntry = {
+      features,
+      staticFeatures,
+      resolvedCheckoutDir: resolved.checkoutDir,
+      cleanup: resolved.cleanup,
+    };
+    sharedCandidateCache.set(key, entry);
+    return entry;
   } catch (err: unknown) {
     const message = errorMessage(err);
     console.warn(`[outcome-collectors] Failed to extract candidate features: ${message}`);
-    candidateFeaturesCache.set(key, null);
-    return null;
+    resolved.cleanup?.();
+    sharedCandidateCache.set(key, emptyEntry);
+    return emptyEntry;
   }
 }
 
@@ -301,18 +433,25 @@ export function collectTestsOutcome(
   baseBranch: string,
   repoDir?: string,
   checkoutDir?: string,
+  contract?: CandidateFeatureContract,
 ): TestsOutcome {
   const cwd = repoDir || process.cwd();
   const outcome: TestsOutcome = {
     added: false,
   };
 
-  // Prefer the unified extractor when a checkout is available: it is the
-  // canonical source for `tests_changed` / `test_pass_rate` and its output is
-  // memoized so `collectStaticAnalysisOutcome` reuses the same result.
-  const candidate = checkoutDir
-    ? getCandidateFeaturesForPr(prNumber, checkoutDir, cwd)
+  // Prefer the unified extractor when we can resolve to the PR-head checkout:
+  // it is the canonical source for `tests_changed` / `test_pass_rate` and its
+  // output is memoized so `collectStaticAnalysisOutcome` reuses the same
+  // resolved head + extraction (no extra tsc / eslint / complexity passes,
+  // and no risk of analyzing a divergent commit).
+  const shared = prNumber
+    ? getSharedCandidateFeaturesForPr(prNumber, checkoutDir, cwd, {
+        baseRef: baseBranch,
+        ...(contract ? { contract } : {}),
+      })
     : null;
+  const candidate = shared?.features ?? null;
 
   if (candidate) {
     if (candidate.tests_changed !== null) outcome.added = candidate.tests_changed;
@@ -367,8 +506,14 @@ export function collectTestsOutcome(
  *
  * @param prNumber - GitHub PR number
  * @param branchName - Git branch name (unused currently, for future expansion)
- * @param baseBranch - Base branch (unused currently, for future expansion)
+ * @param baseBranch - Base ref for `complexity_delta` computation
+ *   (e.g. `'main'`, `'auto/integration'`). Forwarded to `collectStaticFeatures`
+ *   so PRs targeting non-default bases compute the correct delta.
  * @param repoDir - Repository directory (defaults to cwd)
+ * @param checkoutDir - Optional checkout to reuse when its HEAD matches the
+ *   PR head SHA; otherwise a disposable worktree is created.
+ * @param contract - Optional wavemill enrichment contract used for Intent +
+ *   Provenance when composing the shared candidate features cache entry.
  * @returns Static analysis outcome
  */
 export function collectStaticAnalysisOutcome(
@@ -377,6 +522,7 @@ export function collectStaticAnalysisOutcome(
   baseBranch: string,
   repoDir?: string,
   checkoutDir?: string,
+  contract?: CandidateFeatureContract,
 ): StaticAnalysisOutcome {
   const cwd = repoDir || process.cwd();
   const outcome: StaticAnalysisOutcome = {};
@@ -410,9 +556,11 @@ export function collectStaticAnalysisOutcome(
     console.warn(`[outcome-collectors] Failed to collect legacy CI check names: ${message}`);
   }
 
-  // S1 Static feature group (HOK-2806).
+  // S1 Static feature group (HOK-2806). Threads `baseBranch` down to
+  // `collectStaticFeatures` so PRs targeting non-default bases (e.g.
+  // `auto/integration`) compute `complexity_delta` against the correct ref.
   try {
-    const s1 = resolveStaticFeatures(prNumber, cwd, checkoutDir);
+    const s1 = resolveStaticFeatures(prNumber, cwd, checkoutDir, baseBranch, contract);
     outcome.type_errors = s1.type_errors;
     outcome.lint_errors = s1.lint_errors;
     outcome.build_ok = s1.build_ok;
@@ -430,19 +578,21 @@ export function collectStaticAnalysisOutcome(
 }
 
 /**
- * Resolve a PR-head checkout and run `collectStaticFeatures`.
+ * Resolve a PR-head checkout, run `collectStaticFeatures` once, and return
+ * the S1 Static + provenance fields for `StaticAnalysisOutcome`.
  *
- * When `checkoutDir` is already at the PR head, run in place. Otherwise
- * create a disposable worktree at the head SHA inside `repoDir` (so
- * `node_modules` resolution walks up to the repo's dev deps — required for
- * `npx --no-install tsc/eslint`). Always cleans up the temp worktree.
+ * Delegates PR-head resolution, worktree creation, and static-features
+ * computation to `getSharedCandidateFeaturesForPr`, so `collectTestsOutcome`
+ * and this function analyze the same commit and the expensive tsc / eslint /
+ * complexity passes only run once per PR.
  */
 function resolveStaticFeatures(
   prNumber: string,
   repoDir: string,
   checkoutDir?: string,
+  baseRef?: string,
+  contract?: CandidateFeatureContract,
 ): StaticFeaturesResult {
-  // Fast-fail short-circuits so we don't shell out on obviously bogus inputs.
   const empty: StaticFeaturesResult = {
     type_errors: null,
     lint_errors: null,
@@ -455,118 +605,24 @@ function resolveStaticFeatures(
   if (!isExistingDir(repoDir)) return empty;
   if (checkoutDir && !isExistingDir(checkoutDir)) return empty;
 
-  const prHeadSha = fetchPrHeadSha(prNumber, repoDir);
-
-  if (checkoutDir && prHeadSha) {
-    const localHead = execArgvCommand(
-      'git',
-      ['rev-parse', 'HEAD'],
-      { cwd: checkoutDir, timeout: 10_000, encoding: 'utf-8' },
-    );
-    if (!localHead.failed && localHead.stdout.trim() === prHeadSha) {
-      return collectStaticFeaturesViaCandidate({
-        checkoutDir,
-        prNumber,
-        repoDir,
-      });
-    }
-  }
-
-  if (!prHeadSha) {
-    // No head SHA and no verified checkout ⇒ tool-based signals cannot run.
-    // CI-evidence build_ok may still work if repoDir has gh access.
-    return collectStaticFeaturesViaCandidate({
-      checkoutDir: checkoutDir ?? repoDir,
-      prNumber,
-      repoDir,
-    });
-  }
-
-  // Create a disposable worktree at the head SHA.
-  const workDir = join(repoDir, '.static-collect-worktrees', `pr-${prNumber}-${process.pid}`);
-  pruneStaleWorktrees(repoDir);
-
-  // Ensure the SHA exists locally; fetch if not.
-  const shaExists = execArgvCommand(
-    'git',
-    ['cat-file', '-e', prHeadSha],
-    { cwd: repoDir, timeout: 10_000, encoding: 'utf-8' },
-  );
-  if (shaExists.exitCode !== 0) {
-    const fetchResult = execArgvCommand(
-      'git',
-      ['fetch', 'origin', `refs/pull/${prNumber}/head:refs/wavemill/static/pr-${prNumber}`],
-      { cwd: repoDir, timeout: 60_000, encoding: 'utf-8' },
-    );
-    if (fetchResult.exitCode !== 0) {
-      return {
-        type_errors: null,
-        lint_errors: null,
-        build_ok: null,
-        complexity_delta: null,
-        build_evidence: null,
-        complexity_metric: null,
-      };
-    }
-  }
-
-  const addResult = execArgvCommand(
-    'git',
-    ['worktree', 'add', '--detach', workDir, prHeadSha],
-    { cwd: repoDir, timeout: 60_000, encoding: 'utf-8' },
-  );
-  if (addResult.exitCode !== 0) {
-    return {
-      type_errors: null,
-      lint_errors: null,
-      build_ok: null,
-      complexity_delta: null,
-      build_evidence: null,
-      complexity_metric: null,
-    };
-  }
-
-  try {
-    return collectStaticFeaturesViaCandidate({
-      checkoutDir: workDir,
-      prNumber,
-      repoDir,
-    });
-  } finally {
-    try {
-      execArgvCommand('git', ['worktree', 'remove', '--force', workDir], {
-        cwd: repoDir, timeout: 30_000, encoding: 'utf-8',
-      });
-    } catch {
-      try { rmSync(workDir, { recursive: true, force: true }); } catch { /* best effort */ }
-    }
-  }
-}
-
-function collectStaticFeaturesViaCandidate(options: {
-  checkoutDir: string;
-  prNumber: string;
-  repoDir: string;
-}): StaticFeaturesResult {
+  const shared = getSharedCandidateFeaturesForPr(prNumber, checkoutDir, repoDir, {
+    ...(baseRef ? { baseRef } : {}),
+    ...(contract ? { contract } : {}),
+  });
+  const staticFeatures = shared.staticFeatures;
+  if (!staticFeatures) return empty;
+  if (!shared.features) return staticFeatures;
   // `build_evidence` and `complexity_metric` live outside the frozen
-  // `candidate_features/v1` shape, so we still need the raw collector for
-  // those two provenance fields. The four v1 fields are then taken from the
-  // shared extractor output — the same object `collectTestsOutcome` uses —
-  // so both collectors report the same numbers without double extraction.
-  const staticFeatures = collectStaticFeatures(options);
-  const shared = getCandidateFeaturesForPr(options.prNumber, options.checkoutDir, options.repoDir);
-  if (shared) {
-    return {
-      ...staticFeatures,
-      type_errors: shared.type_errors,
-      lint_errors: shared.lint_errors,
-      build_ok: shared.build_ok,
-      complexity_delta: shared.complexity_delta,
-    };
-  }
-  // Cache miss (invalid PR / unusable checkout): the extractor could not run,
-  // so fall back to the raw collector values (already null-disciplined).
-  return staticFeatures;
+  // `candidate_features/v1` shape, so keep them from the raw static result;
+  // the four v1 fields come from the extractor (identical values here since
+  // we passed `staticFeatures` in — the extractor doesn't recompute).
+  return {
+    ...staticFeatures,
+    type_errors: shared.features.type_errors,
+    lint_errors: shared.features.lint_errors,
+    build_ok: shared.features.build_ok,
+    complexity_delta: shared.features.complexity_delta,
+  };
 }
 
 function fetchPrHeadSha(prNumber: string, repoDir: string): string | null {

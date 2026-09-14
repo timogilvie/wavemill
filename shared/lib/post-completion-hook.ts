@@ -6,7 +6,7 @@
  */
 
 import { readFileSync, existsSync, appendFileSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { randomUUID } from 'node:crypto';
@@ -53,6 +53,7 @@ import {
   collectReworkOutcome,
   collectDeliveryOutcome,
 } from './outcome-collectors.ts';
+import type { CandidateFeatureContract } from './candidate-features.ts';
 import {
   buildRouteLifecycleProvenance,
   deriveRouteDecisionSource,
@@ -273,6 +274,88 @@ async function triggerHokusaiSubmissionAfterPersistence(record: EvalRecord, repo
   }
 }
 
+/**
+ * Wavemill enrichment layer for `candidate_features/v1`.
+ *
+ * The extractor in `candidate-features.ts` intentionally knows nothing about
+ * wavemill state so it can run against a bare checkout. Inside wavemill,
+ * this local helper translates the selected-task record and available
+ * workflow artifacts into a `CandidateFeatureContract`, so Intent (via the
+ * `deriveTaskDescriptor` bridge on the task text) and bounded Provenance
+ * fields (`self_review_iterations`, `human_intervention_count`,
+ * `agent_iterations`) are populated when collectors run in-workflow.
+ *
+ * Kept inside the wavemill-only post-completion module so `Arbiter S4` can
+ * lift `candidate-features.ts` into `@hokusai/scan` without pulling any
+ * workflow state through with it.
+ */
+export function buildWavemillCandidateContract(inputs: {
+  featureDir?: string;
+  selectedTask?: { title?: string; description?: string };
+  reviewResult?: { artifacts?: { iterations?: unknown } };
+  humanInterventionCount?: number;
+  agentIterations?: number;
+}): CandidateFeatureContract | undefined {
+  const selectedTask = inputs.selectedTask ?? readWavemillJson(inputs.featureDir, 'selected-task.json') as
+    | { title?: string; description?: string } | undefined;
+  const reviewResult = inputs.reviewResult ?? readWavemillJson(inputs.featureDir, '.review-result.json') as
+    | { artifacts?: { iterations?: unknown } } | undefined;
+
+  const parts: string[] = [];
+  if (typeof selectedTask?.title === 'string' && selectedTask.title.trim()) parts.push(selectedTask.title.trim());
+  if (typeof selectedTask?.description === 'string' && selectedTask.description.trim()) {
+    parts.push(selectedTask.description.trim());
+  }
+  const taskText = parts.length > 0 ? parts.join('\n\n') : undefined;
+
+  const iterationsRaw = reviewResult?.artifacts?.iterations;
+  const selfReviewIterations = typeof iterationsRaw === 'number' && Number.isInteger(iterationsRaw) && iterationsRaw >= 0
+    ? iterationsRaw
+    : null;
+
+  const contract: CandidateFeatureContract = {};
+  if (taskText) contract.taskText = taskText;
+
+  const provenance: NonNullable<CandidateFeatureContract['provenance']> = {};
+  if (selfReviewIterations !== null) provenance.self_review_iterations = selfReviewIterations;
+  if (typeof inputs.agentIterations === 'number' && inputs.agentIterations >= 0) {
+    provenance.agent_iterations = inputs.agentIterations;
+  }
+  if (typeof inputs.humanInterventionCount === 'number' && inputs.humanInterventionCount >= 0) {
+    provenance.human_intervention_count = inputs.humanInterventionCount;
+  }
+  if (Object.keys(provenance).length > 0) contract.provenance = provenance;
+
+  return Object.keys(contract).length > 0 ? contract : undefined;
+}
+
+/**
+ * Resolve `features/<slug>/` for a wavemill worktree, matching
+ * `basename(worktreePath)` against a directory under `repoDir/features/`.
+ */
+export function resolveWavemillFeatureDir(
+  worktreePath: string | undefined,
+  repoDir: string,
+): string | undefined {
+  if (!worktreePath) return undefined;
+  const slug = basename(worktreePath);
+  if (!slug) return undefined;
+  const candidate = join(repoDir, 'features', slug);
+  return existsSync(candidate) ? candidate : undefined;
+}
+
+function readWavemillJson(featureDir: string | undefined, name: string): unknown {
+  if (!featureDir) return undefined;
+  const path = join(featureDir, name);
+  if (!existsSync(path)) return undefined;
+  try {
+    return JSON.parse(readFileSync(path, 'utf-8'));
+  } catch (err: unknown) {
+    console.warn(`[wavemill-adapter] Failed to read ${name}: ${errorMessage(err)}`);
+    return undefined;
+  }
+}
+
 export function collectPostCompletionOutcomes(input: PostCompletionOutcomeInput): Outcomes {
   const {
     prNumber,
@@ -284,6 +367,17 @@ export function collectPostCompletionOutcomes(input: PostCompletionOutcomeInput)
     interventionSummary,
   } = input;
   const reviewFallback = defaultReviewOutcome(interventionSummary);
+  // Build the wavemill enrichment contract once so both Tests and Static
+  // paths share the same Intent + Provenance signals (Intent via
+  // `deriveTaskDescriptor` on the selected-task text, self-review iterations
+  // from `.review-result.json`, and the intervention summary's totals).
+  const featureDir = resolveWavemillFeatureDir(worktreePath, repoDir);
+  const contract = featureDir
+    ? buildWavemillCandidateContract({
+        featureDir,
+        humanInterventionCount: interventionSummary?.interventions?.length ?? 0,
+      })
+    : undefined;
 
   return {
     success: false,
@@ -293,11 +387,15 @@ export function collectPostCompletionOutcomes(input: PostCompletionOutcomeInput)
       : undefined,
     tests: prNumber && branchName
       ? safeCollectOutcome('tests', { added: false }, () =>
-          postCompletionHookDeps.collectTestsOutcome(prNumber, branchName, 'main', repoDir, worktreePath))
+          postCompletionHookDeps.collectTestsOutcome(
+            prNumber, branchName, 'main', repoDir, worktreePath, contract,
+          ))
       : undefined,
     staticAnalysis: prNumber && branchName
       ? safeCollectOutcome('static analysis', {}, () =>
-          postCompletionHookDeps.collectStaticAnalysisOutcome(prNumber, branchName, 'main', repoDir, worktreePath))
+          postCompletionHookDeps.collectStaticAnalysisOutcome(
+            prNumber, branchName, 'main', repoDir, worktreePath, contract,
+          ))
       : undefined,
     review: prNumber
       ? safeCollectOutcome('review', reviewFallback, () =>

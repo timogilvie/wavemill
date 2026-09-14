@@ -10,6 +10,7 @@ import {
   validateCandidateFeatures,
   type CandidateFeaturesV1,
 } from './candidate-features.ts';
+import { buildWavemillCandidateContract } from './post-completion-hook.ts';
 
 const EXPECTED_CANDIDATE_FEATURE_KEYS = [
   'schema_version',
@@ -235,9 +236,37 @@ test('validation rejects missing, unknown, and invalid fields without coercion',
   }
 });
 
-test('bare checkout and wavemill-style adapter call match on checkout-derived groups', () => {
+test('bare checkout and wavemill-adapter call match on checkout-derived groups', () => {
+  // Exercises the real wavemill enrichment path: writes a
+  // `features/<slug>/selected-task.json` + `.review-result.json`, invokes the
+  // adapter, and passes the resulting contract to the extractor. This is the
+  // exact code path `collectPostCompletionOutcomes` uses in-workflow.
   const dir = makeCandidateRepo();
+  const featureDir = mkdtempSync(join(tmpdir(), 'cf-feature-'));
   try {
+    writeFileSync(
+      join(featureDir, 'selected-task.json'),
+      JSON.stringify({
+        taskId: 'HOK-0000',
+        title: 'Implement a backend feature',
+        description: 'Deliver the new capability described above.',
+        workflowType: 'feature',
+      }),
+      'utf-8',
+    );
+    writeFileSync(
+      join(featureDir, '.review-result.json'),
+      JSON.stringify({ artifacts: { iterations: 2 } }),
+      'utf-8',
+    );
+
+    const contract = buildWavemillCandidateContract({
+      featureDir,
+      agentIterations: 1,
+      humanInterventionCount: 0,
+    });
+    assert.ok(contract, 'adapter should produce a contract when artifacts exist');
+
     const standalone = extractCandidateFeatures({
       checkoutDir: dir,
       prNumber: 123,
@@ -249,12 +278,7 @@ test('bare checkout and wavemill-style adapter call match on checkout-derived gr
       prNumber: 123,
       baseRef: 'main',
       offline: true,
-      contract: {
-        taskText: 'Implement a backend feature',
-        repositorySignals: { fileCount: 42, extensionCounts: { ts: 2 } },
-        intent: { domain: 'backend', risk_level: 'low' },
-        provenance: { agent_iterations: 1 },
-      },
+      contract,
     });
 
     for (const key of [
@@ -279,10 +303,19 @@ test('bare checkout and wavemill-style adapter call match on checkout-derived gr
     for (const key of intentKeys()) {
       assert.equal(standalone[key], null, `${key} should be null standalone`);
     }
+    // Adapter enriches Intent via deriveTaskDescriptor on the task text, and
+    // Provenance via the artifacts on disk + explicit adapter inputs. Language
+    // requires repositorySignals the adapter does not compute today, so it
+    // remains null until a signals collector is added.
     assert.equal(adapter.task_type, 'feature');
-    assert.equal(adapter.language, 'typescript');
+    assert.equal(adapter.self_review_iterations, 2);
     assert.equal(adapter.agent_iterations, 1);
+    assert.equal(adapter.human_intervention_count, 0);
+    // description_length_bucket is derived from taskText so it should now be
+    // populated (whereas it is null in the standalone extraction above).
+    assert.notEqual(adapter.description_length_bucket, null);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+    rmSync(featureDir, { recursive: true, force: true });
   }
 });

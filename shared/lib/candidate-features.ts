@@ -495,11 +495,21 @@ function collectTestPassRate(prNumber: string, repoDir: string): number | null {
     return null;
   }
   if (!Array.isArray(checks)) return null;
-  const testCheck = checks.find((check) => /test|spec|jest|vitest|pytest/i.test(check.name ?? ''));
-  if (!testCheck) return null;
-  if (testCheck.bucket === 'pass') return 1;
-  if (testCheck.bucket === 'fail') return 0;
-  return null;
+  // Aggregate across every check whose name matches a test tool. Sharded
+  // pipelines (e.g. `unit-shard-3/7`) expose per-shard checks; taking only
+  // the first would report the pass rate of one shard as if it were the
+  // whole suite. Skipped/cancelled/pending shards are excluded from the
+  // denominator so the rate reflects only checks that reported a verdict.
+  const testChecks = checks.filter((check) => /test|spec|jest|vitest|pytest/i.test(check.name ?? ''));
+  if (testChecks.length === 0) return null;
+  let passed = 0;
+  let scored = 0;
+  for (const check of testChecks) {
+    if (check.bucket === 'pass') { passed += 1; scored += 1; }
+    else if (check.bucket === 'fail') { scored += 1; }
+  }
+  if (scored === 0) return null;
+  return passed / scored;
 }
 
 function collectReviewEvidence(
