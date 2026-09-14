@@ -119,6 +119,15 @@
  *   unpriced values are `null`, never `0`. Local-only: not projected to
  *   Hokusai submissions. Additive; legacy records without this field still
  *   validate. (HOK-2958)
+ * - **1.48.0**: Added the S1 Static feature group to
+ *   `StaticAnalysisOutcome` (HOK-2806): `type_errors`, `lint_errors`,
+ *   `build_ok`, `complexity_delta` plus provenance `build_evidence` and
+ *   `complexity_metric`. Snake_case is deliberate — names come verbatim from
+ *   the frozen `candidate_features/v1` contract (Arbiter S1). Null means the
+ *   documented evidence was unavailable; `0`/`false` are observed values, not
+ *   defaults. Legacy `lintDelta`/`typecheckPassed`/`securityFindingsDelta`
+ *   remain and are unrelated to the S1 fields (they were CI-name pattern
+ *   matches). Additive; legacy records still validate.
  * - **1.28.0**: Added optional `quarantine_reason` and write-time eval corpus
  *   validation for `taskDescriptor`, non-empty `models_available`, and
  *   canonical reviewer/stage model IDs (HOK-2072); expanded
@@ -202,7 +211,7 @@ import type { ChallengeStage } from './challenge-mode.ts';
  *
  * @since 1.44.0 added unknown_attribution intervention type (HOK-2894)
  */
-export const SCHEMA_VERSION = '1.47.0';
+export const SCHEMA_VERSION = '1.48.0';
 
 export type RoutingRole = 'planner' | 'coder' | 'reviewer';
 
@@ -1170,9 +1179,63 @@ export interface TestsOutcome {
 }
 
 /**
- * Static analysis outcome: lint, typecheck, and security findings.
+ * Provenance for a `build_ok` value: which rung of the collection ladder
+ * produced it. See `docs/arbiter/static-features.md` for the full ladder.
+ *
+ * - `local-build`: ran a configured build command inside the candidate checkout.
+ * - `ci-build-check`: read a build-named CI check from `gh pr checks`.
+ * - `ci-pipeline`: derived from the conjunction of terminal CI checks when no
+ *   single build-named check exists but CI compiles the tree end-to-end.
+ */
+export type StaticBuildEvidence = 'local-build' | 'ci-build-check' | 'ci-pipeline';
+
+/**
+ * Static analysis outcome.
+ *
+ * Two sets of fields coexist here:
+ *
+ * 1. **S1 Static group** (`type_errors`, `lint_errors`, `build_ok`,
+ *    `complexity_delta`, plus provenance `build_evidence` and
+ *    `complexity_metric`). Names and semantics are verbatim from the frozen
+ *    `candidate_features/v1` contract (Arbiter S1). Null means the documented
+ *    evidence was unavailable; `0` and `false` are observed values, never
+ *    defaults. Collected by `shared/lib/static-features.ts` per HOK-2806.
+ * 2. **Legacy CI-check-name matches** (`lintDelta`, `typecheckPassed`,
+ *    `securityFindingsDelta`). These were empty in 100% of records because
+ *    wavemill's CI check names don't match the pattern; retained for
+ *    backward compat but distinct from the S1 group above.
  */
 export interface StaticAnalysisOutcome {
+  // ── S1 Static group (HOK-2806) ──
+  /**
+   * Type-check errors reported for the candidate. `null` when no supported
+   * type checker completed successfully (missing binary, missing config,
+   * timeout, spawn failure, unparseable output).
+   */
+  type_errors?: number | null;
+  /**
+   * Lint errors reported for the candidate. `null` when no supported linter
+   * completed successfully.
+   */
+  lint_errors?: number | null;
+  /**
+   * Whether the configured build completed successfully. `null` when no
+   * build ran to a terminal result. Per the frozen S1 note: a CI
+   * `{ ran: false, passed: true }` conclusion maps to `null`, not `false`.
+   */
+  build_ok?: boolean | null;
+  /**
+   * Candidate-minus-base change in the configured code-complexity metric.
+   * `null` when the analyzer could not run on both revisions. See the
+   * `complexity_metric` provenance field for the metric id.
+   */
+  complexity_delta?: number | null;
+  /** Which rung of the build ladder produced `build_ok`. */
+  build_evidence?: StaticBuildEvidence | null;
+  /** Metric id used to compute `complexity_delta` (e.g. `wavemill-cyclomatic/v1`). */
+  complexity_metric?: string | null;
+
+  // ── Legacy CI-check-name matches ──
   /** Change in lint errors (negative = improvement, positive = regression) */
   lintDelta?: number;
   /** Whether typecheck passed */

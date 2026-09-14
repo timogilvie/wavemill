@@ -2774,6 +2774,39 @@
             },
             "additionalProperties": false
         },
+        "staticAnalysis": {
+            "type": "object",
+            "description": "HOK-2806: overrides for the S1 Static feature group collector. All fields optional; auto-detection is used when absent. The collector reads only the committed .wavemill-config.json (never the .local overlay) so bare-checkout parity is preserved.",
+            "properties": {
+                "typecheckCommand": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Shell command that runs a type checker in the checkout. Its stdout/stderr are scanned for tsc-style 'error TSNNNN' lines to count type_errors. Non-tsc checkers work as long as they emit that marker."
+                },
+                "lintCommand": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Shell command that runs a linter and emits eslint --format json on stdout. lint_errors is summed from errorCount across the JSON entries (warnings excluded)."
+                },
+                "buildCommand": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Shell command whose exit code determines build_ok (0 ⇒ true). Absent ⇒ auto-detect npm run build, else fall back to CI evidence."
+                },
+                "timeoutSeconds": {
+                    "type": "object",
+                    "description": "Per-signal timeouts in seconds. Explicit collector options.timeouts take precedence over these; these take precedence over the built-in defaults.",
+                    "properties": {
+                        "typecheck": { "type": "number", "minimum": 1 },
+                        "lint": { "type": "number", "minimum": 1 },
+                        "build": { "type": "number", "minimum": 1 },
+                        "complexity": { "type": "number", "minimum": 1 }
+                    },
+                    "additionalProperties": false
+                }
+            },
+            "additionalProperties": false
+        },
         "promotion": {
             "type": "object",
             "description": "Settings for how wavemill promote behaves when squash-snapshot reconciliation would need to mutate a protected integration branch.",
