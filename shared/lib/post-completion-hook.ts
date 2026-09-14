@@ -52,6 +52,7 @@ import {
   collectReviewOutcome,
   collectReworkOutcome,
   collectDeliveryOutcome,
+  clearCandidateFeaturesCache,
 } from './outcome-collectors.ts';
 import type { CandidateFeatureContract } from './candidate-features.ts';
 import {
@@ -379,44 +380,52 @@ export function collectPostCompletionOutcomes(input: PostCompletionOutcomeInput)
       })
     : undefined;
 
-  return {
-    success: false,
-    ci: prNumber
-      ? safeCollectOutcome('ci', { ran: false, passed: true, checks: [] }, () =>
-          postCompletionHookDeps.collectCiOutcome(prNumber, repoDir))
-      : undefined,
-    tests: prNumber && branchName
-      ? safeCollectOutcome('tests', { added: false }, () =>
-          postCompletionHookDeps.collectTestsOutcome(
-            prNumber, branchName, 'main', repoDir, worktreePath, contract,
-          ))
-      : undefined,
-    staticAnalysis: prNumber && branchName
-      ? safeCollectOutcome('static analysis', {}, () =>
-          postCompletionHookDeps.collectStaticAnalysisOutcome(
-            prNumber, branchName, 'main', repoDir, worktreePath, contract,
-          ))
-      : undefined,
-    review: prNumber
-      ? safeCollectOutcome('review', reviewFallback, () =>
-          postCompletionHookDeps.collectReviewOutcome(
-            prNumber,
-            interventionSummary,
-            repoDir,
-            undefined,
-            issueId,
-            branchName,
-          ))
-      : reviewFallback,
-    rework: branchName
-      ? safeCollectOutcome('rework', { agentIterations: 0 }, () =>
-          postCompletionHookDeps.collectReworkOutcome(worktreePath || repoDir, branchName, agentType, repoDir))
-      : { agentIterations: 0 },
-    delivery: prNumber
-      ? safeCollectOutcome('delivery', { prCreated: false, merged: false }, () =>
-          postCompletionHookDeps.collectDeliveryOutcome(prNumber, repoDir))
-      : { prCreated: false, merged: false },
-  };
+  try {
+    return {
+      success: false,
+      ci: prNumber
+        ? safeCollectOutcome('ci', { ran: false, passed: true, checks: [] }, () =>
+            postCompletionHookDeps.collectCiOutcome(prNumber, repoDir))
+        : undefined,
+      tests: prNumber && branchName
+        ? safeCollectOutcome('tests', { added: false }, () =>
+            postCompletionHookDeps.collectTestsOutcome(
+              prNumber, branchName, 'main', repoDir, worktreePath, contract,
+            ))
+        : undefined,
+      staticAnalysis: prNumber && branchName
+        ? safeCollectOutcome('static analysis', {}, () =>
+            postCompletionHookDeps.collectStaticAnalysisOutcome(
+              prNumber, branchName, 'main', repoDir, worktreePath, contract,
+            ))
+        : undefined,
+      review: prNumber
+        ? safeCollectOutcome('review', reviewFallback, () =>
+            postCompletionHookDeps.collectReviewOutcome(
+              prNumber,
+              interventionSummary,
+              repoDir,
+              undefined,
+              issueId,
+              branchName,
+            ))
+        : reviewFallback,
+      rework: branchName
+        ? safeCollectOutcome('rework', { agentIterations: 0 }, () =>
+            postCompletionHookDeps.collectReworkOutcome(worktreePath || repoDir, branchName, agentType, repoDir))
+        : { agentIterations: 0 },
+      delivery: prNumber
+        ? safeCollectOutcome('delivery', { prCreated: false, merged: false }, () =>
+            postCompletionHookDeps.collectDeliveryOutcome(prNumber, repoDir))
+        : { prCreated: false, merged: false },
+    };
+  } finally {
+    // Runs each cached entry's cleanup callback, which removes any disposable
+    // `.static-collect-worktrees/pr-<N>-<pid>/` worktree created during head
+    // resolution. Guarantees no worktree survives a normal or exceptional
+    // collection exit (previously the callback was cached but never invoked).
+    clearCandidateFeaturesCache();
+  }
 }
 
 interface PostCompletionEnrichmentInput {

@@ -81,19 +81,63 @@ interface SharedCandidateCacheEntry {
 }
 
 /**
- * Cache of shared candidate + static features, keyed by `${prNumber}:${repoDir}`.
- * The Tests and Static outcome collectors resolve to the same PR-head checkout
- * once (creating a disposable worktree when necessary) and share one call each
- * to `collectStaticFeatures` and `extractCandidateFeatures`. Prevents the
+ * Cache of shared candidate + static features, keyed by
+ * `${prNumber}:${repoDir}:${baseRef}:${contractFingerprint}`. The Tests and
+ * Static outcome collectors resolve to the same PR-head checkout once
+ * (creating a disposable worktree when necessary) and share one call each to
+ * `collectStaticFeatures` and `extractCandidateFeatures`. Prevents the
  * expensive tsc / eslint / complexity passes from running twice and prevents
  * one collector from analyzing a non-PR-head worktree while the other analyzes
  * the correct head.
+ *
+ * `baseRef` and the contract fingerprint are part of the key so a second
+ * caller that supplies different options for the same PR does not read a
+ * stale entry — it triggers a fresh extraction instead.
+ *
+ * Disposable worktrees created during resolution are cleaned up when the
+ * cache is cleared (`clearCandidateFeaturesCache`); callers that use the
+ * shared cache MUST clear it when their collection pass ends. In the
+ * wavemill workflow, `collectPostCompletionOutcomes` wraps its work in
+ * try/finally so no worktree survives a normal or exceptional exit.
  */
 const sharedCandidateCache = new Map<string, SharedCandidateCacheEntry>();
 
 interface SharedCandidateOptions {
   baseRef?: string;
   contract?: CandidateFeatureContract;
+}
+
+/**
+ * Deterministic fingerprint for the (baseRef, contract) pair, so two callers
+ * that supply different enrichment for the same PR do not read each other's
+ * cache entry. Contract fingerprint uses stable-sorted `JSON.stringify` on
+ * primitive-only fields; unknown / non-serializable values collapse to their
+ * `String()` form (functions do not appear in `CandidateFeatureContract`).
+ *
+ * Exported for tests only.
+ */
+export function sharedCandidateCacheKey(
+  prNumber: string,
+  repoDir: string,
+  options: SharedCandidateOptions,
+): string {
+  const contractFp = options.contract
+    ? JSON.stringify(sortObjectDeep(options.contract))
+    : '';
+  return `${prNumber}:${repoDir}:${options.baseRef ?? ''}:${contractFp}`;
+}
+
+function sortObjectDeep(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortObjectDeep);
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(record).sort()) {
+      sorted[key] = sortObjectDeep(record[key]);
+    }
+    return sorted;
+  }
+  return value;
 }
 
 /**
@@ -217,7 +261,7 @@ function getSharedCandidateFeaturesForPr(
   repoDir: string,
   options: SharedCandidateOptions = {},
 ): SharedCandidateCacheEntry {
-  const key = `${prNumber}:${repoDir}`;
+  const key = sharedCandidateCacheKey(prNumber, repoDir, options);
   const cached = sharedCandidateCache.get(key);
   if (cached) return cached;
 
