@@ -34,7 +34,7 @@ cat > "$REPO_DIR/.wavemill-config.json" <<EOF
     "agentCmd": "codex",
     "baseBranch": "auto/integration",
     "worktreeRoot": "$TMP_DIR/worktrees",
-    "maxParallel": 2,
+    "maxParallel": 3,
     "requireConfirm": false
   },
   "taskSelection": {
@@ -95,8 +95,35 @@ cat > "$BACKLOG_FILE" <<'EOF'
     },
     "children": {
       "nodes": [
-        { "id": "child-1", "identifier": "HOK-2867-child-1" },
-        { "id": "child-2", "identifier": "HOK-2867-child-2" }
+        { "id": "child-1", "identifier": "HOK-2867-child-1", "state": { "name": "In Progress", "type": "started" } },
+        { "id": "child-2", "identifier": "HOK-2867-child-2", "state": { "name": "Todo", "type": "unstarted" } }
+      ]
+    },
+    "relations": { "nodes": [] },
+    "inverseRelations": { "nodes": [] }
+  },
+  {
+    "id": "issue-4",
+    "identifier": "HOK-2917",
+    "title": "Finish parent issue after child completion",
+    "description": "This parent has only terminal child history and still has parent-level implementation work.",
+    "priority": 1,
+    "estimate": 3,
+    "state": { "name": "Backlog" },
+    "labels": {
+      "nodes": [
+        { "name": "Area: Task-Selection" }
+      ]
+    },
+    "children": {
+      "nodes": [
+        {
+          "id": "child-done",
+          "identifier": "HOK-2895",
+          "state": { "name": "Done", "type": "completed" },
+          "completedAt": "2026-09-13T12:00:00.000Z",
+          "canceledAt": null
+        }
       ]
     },
     "relations": { "nodes": [] },
@@ -192,6 +219,13 @@ if ! jq -e '.tasks[] | select(.issue == "HOK-1600")' "$LAUNCH_PLAN_FILE" >/dev/n
   exit 1
 fi
 
+# HOK-2917: Verify all-terminal-child parent remains eligible
+if ! jq -e '.tasks[] | select(.issue == "HOK-2917")' "$LAUNCH_PLAN_FILE" >/dev/null 2>&1; then
+  echo "FAIL: all-terminal-child parent HOK-2917 should be in launch plan"
+  cat "$LAUNCH_PLAN_FILE"
+  exit 1
+fi
+
 # HOK-2867: Verify skip warning was logged
 if ! grep -q "Skipping parent issue HOK-2867" "$STDERR_FILE" "$STDOUT_FILE" 2>/dev/null; then
   echo "FAIL: expected skip warning for parent issue HOK-2867"
@@ -203,6 +237,14 @@ fi
 # HOK-2867: Verify child IDs are in warning
 if ! grep -q "HOK-2867-child-1,HOK-2867-child-2" "$STDERR_FILE" "$STDOUT_FILE" 2>/dev/null; then
   echo "FAIL: expected child IDs in skip warning"
+  cat "$STDERR_FILE"
+  cat "$STDOUT_FILE"
+  exit 1
+fi
+
+# HOK-2917: Verify all-terminal diagnostic was logged
+if ! grep -q "Keeping parent issue HOK-2917 (all 1 children terminal: HOK-2895)" "$STDERR_FILE" "$STDOUT_FILE" 2>/dev/null; then
+  echo "FAIL: expected all-terminal-child diagnostic for HOK-2917"
   cat "$STDERR_FILE"
   cat "$STDOUT_FILE"
   exit 1
