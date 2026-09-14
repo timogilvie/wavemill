@@ -33,6 +33,7 @@ import {
   attachTaskContextMetadata,
   attachRepoContextMetadata,
   attachWorkflowCostMetadata,
+  attachExecutionEconomics,
   attachFeatureOutcomeDiagnostics,
   attachPlanningExecutionOutcome,
   attachVerificationTelemetry,
@@ -345,6 +346,43 @@ describe('eval-record-builder', () => {
       const before = { ...baseRecord };
       attachRepoContextMetadata(baseRecord, null);
       expect(baseRecord).toEqual(before);
+    });
+  });
+
+  describe('attachExecutionEconomics', () => {
+    const block = {
+      schemaVersion: '1.0.0',
+      providerContractVersion: 'claude-code/1',
+      harness: 'claude-code' as const,
+      joinEvidence: { issueId: 'HOK-2958', branch: 'task/slug' },
+      sessions: [],
+      sessionCount: 0,
+      turnCount: 0,
+      coverage: 'unavailable' as const,
+      collectedAt: '2026-09-01T10:00:00Z',
+    };
+
+    it('attaches execution economics blocks when provided', () => {
+      attachExecutionEconomics(baseRecord, [block]);
+      expect(baseRecord.executionEconomics).toEqual([block]);
+    });
+
+    it('is a no-op for null, undefined, and empty input', () => {
+      const before = { ...baseRecord };
+      attachExecutionEconomics(baseRecord, null);
+      attachExecutionEconomics(baseRecord, undefined);
+      attachExecutionEconomics(baseRecord, []);
+      expect(baseRecord).toEqual(before);
+    });
+
+    it('is wired into enrichTrainingMetadata via the metadata bag', () => {
+      enrichTrainingMetadata(baseRecord, { executionEconomics: [block] });
+      expect(baseRecord.executionEconomics).toEqual([block]);
+    });
+
+    it('leaves the record without the field when metadata omits it', () => {
+      enrichTrainingMetadata(baseRecord, {});
+      expect(baseRecord.executionEconomics).toBeUndefined();
     });
   });
 
