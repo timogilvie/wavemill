@@ -549,5 +549,14 @@
   "promotion": {
     "protectedIntegrationStrategy": "use-promotion-head",
     "promotionHeadBranch": "auto/promotion"
+  },
+  "staticAnalysis": {
+    "typecheckCommand": "npx --no-install tsc --noEmit -p tsconfig.static.json",
+    "lintCommand": "npx --no-install eslint 'shared/**/*.{ts,tsx,js,mjs,cjs}' 'tools/**/*.{ts,tsx,js,mjs,cjs}' 'codex/src/**/*.{ts,tsx,js,mjs,cjs}' --format json",
+    "timeoutSeconds": {
+      "typecheck": 600,
+      "lint": 900,
+      "complexity": 120
+    }
   }
 }

@@ -46,7 +46,7 @@ function makeSession(overrides: Record<string, unknown> = {}) {
 function makeEvalLine(id: string, economics: unknown[]): string {
   return JSON.stringify({
     id,
-    schemaVersion: '1.47.0',
+    schemaVersion: '1.48.0',
     originalPrompt: 'p',
     modelId: 'claude-opus-4-6',
     modelVersion: 'claude-opus-4-6',

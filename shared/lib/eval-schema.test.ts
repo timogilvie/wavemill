@@ -111,7 +111,7 @@ function validateNode(
     return;
   }
 
-  if (expectedTypes.includes('integer')) {
+  if (expectedTypes.includes('integer') && value !== null) {
     if (typeof value !== 'number' || !Number.isInteger(value)) {
       errors.push(`${path}: expected integer, got ${value}`);
     }
@@ -786,7 +786,7 @@ function validPromptSizeDiagnostic() {
 }
 
 test('SCHEMA_VERSION is bumped for eval schema updates', () => {
-  assert.equal(SCHEMA_VERSION, '1.47.0');
+  assert.equal(SCHEMA_VERSION, '1.48.0');
 });
 
 function validReviewIdentitySet() {
@@ -1583,6 +1583,104 @@ test('Record with outcomes field validates', () => {
   assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
 });
 
+test('Record with S1 static-group fields (HOK-2806) validates', () => {
+  const record = {
+    ...scenarios[0].record,
+    outcomes: {
+      success: true,
+      staticAnalysis: {
+        type_errors: 3,
+        lint_errors: 0,
+        build_ok: true,
+        complexity_delta: 4,
+        build_evidence: 'ci-pipeline',
+        complexity_metric: 'wavemill-cyclomatic/v1',
+      },
+      review: { humanReviewRequired: false, rounds: 0, approvals: 1, changeRequests: 0 },
+      rework: { agentIterations: 1 },
+      delivery: { prCreated: true, merged: true },
+    },
+  } as unknown as Record<string, unknown>;
+  const result = validateAgainstSchema(record);
+  assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
+});
+
+test('Record with all-null S1 static-group fields validates (evidence unavailable)', () => {
+  const record = {
+    ...scenarios[0].record,
+    outcomes: {
+      success: true,
+      staticAnalysis: {
+        type_errors: null,
+        lint_errors: null,
+        build_ok: null,
+        complexity_delta: null,
+        build_evidence: null,
+        complexity_metric: null,
+      },
+      review: { humanReviewRequired: false, rounds: 0, approvals: 1, changeRequests: 0 },
+      rework: { agentIterations: 1 },
+      delivery: { prCreated: true, merged: true },
+    },
+  } as unknown as Record<string, unknown>;
+  const result = validateAgainstSchema(record);
+  assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
+});
+
+test('Record with negative S1 type_errors fails schema (counts must be ≥0)', () => {
+  const record = {
+    ...scenarios[0].record,
+    outcomes: {
+      success: true,
+      staticAnalysis: {
+        type_errors: -1,
+      },
+      review: { humanReviewRequired: false, rounds: 0, approvals: 1, changeRequests: 0 },
+      rework: { agentIterations: 1 },
+      delivery: { prCreated: true, merged: true },
+    },
+  } as unknown as Record<string, unknown>;
+  const result = validateAgainstSchema(record);
+  assert.equal(result.valid, false);
+});
+
+test('Record with unknown extra key in staticAnalysis fails schema', () => {
+  const record = {
+    ...scenarios[0].record,
+    outcomes: {
+      success: true,
+      staticAnalysis: {
+        type_errors: 0,
+        // @ts-expect-error deliberate unknown key
+        not_a_real_field: 'oops',
+      },
+      review: { humanReviewRequired: false, rounds: 0, approvals: 1, changeRequests: 0 },
+      rework: { agentIterations: 1 },
+      delivery: { prCreated: true, merged: true },
+    },
+  } as unknown as Record<string, unknown>;
+  const result = validateAgainstSchema(record);
+  assert.equal(result.valid, false);
+});
+
+test('Record with invalid build_evidence enum fails schema', () => {
+  const record = {
+    ...scenarios[0].record,
+    outcomes: {
+      success: true,
+      staticAnalysis: {
+        build_ok: true,
+        build_evidence: 'nowhere',
+      },
+      review: { humanReviewRequired: false, rounds: 0, approvals: 1, changeRequests: 0 },
+      rework: { agentIterations: 1 },
+      delivery: { prCreated: true, merged: true },
+    },
+  } as unknown as Record<string, unknown>;
+  const result = validateAgainstSchema(record);
+  assert.equal(result.valid, false);
+});
+
 test('Record with negative CI durationSeconds fails schema', () => {
   const record = {
     ...scenarios[0].record,
@@ -2373,8 +2471,8 @@ test('Wavemill router fields validate and schema stays in parity', () => {
   assert.equal(properties.wavemill_router_scoring?.$ref, '#/$defs/WavemillRouterScoringMetadata');
 });
 
-test('Schema version constant is 1.47.0', () => {
-  assert.equal(SCHEMA_VERSION, '1.47.0');
+test('Schema version constant is 1.48.0', () => {
+  assert.equal(SCHEMA_VERSION, '1.48.0');
 });
 
 test('Record with an unknown_attribution intervention validates (HOK-2894)', () => {
@@ -2710,7 +2808,7 @@ function validExecutionEconomicsBlock(overrides: Record<string, unknown> = {}) {
 test('Record with Claude Code executionEconomics validates', () => {
   const record = {
     ...scenarios[0].record,
-    schemaVersion: '1.47.0',
+    schemaVersion: '1.48.0',
     executionEconomics: [validExecutionEconomicsBlock()],
   } as unknown as Record<string, unknown>;
   const result = validateAgainstSchema(record);
@@ -2720,7 +2818,7 @@ test('Record with Claude Code executionEconomics validates', () => {
 test('Record with Codex executionEconomics (degraded coverage) validates', () => {
   const record = {
     ...scenarios[0].record,
-    schemaVersion: '1.47.0',
+    schemaVersion: '1.48.0',
     executionEconomics: [
       validExecutionEconomicsBlock({
         providerContractVersion: 'codex/1',

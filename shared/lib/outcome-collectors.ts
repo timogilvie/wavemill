@@ -13,13 +13,17 @@
  * @module outcome-collectors
  */
 
-import { readdirSync, existsSync } from "node:fs";
+import { readdirSync, existsSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { errorMessage } from './error-utils.ts';
 import { fetchPrReviews, resolveOwnerRepo } from './github.ts';
 import { readJsonlFile } from './jsonl-utils.ts';
-import { escapeShellArg, execShellCommand } from './shell-utils.ts';
+import { escapeShellArg, execArgvCommand, execShellCommand } from './shell-utils.ts';
 import { loadReviewInterventions } from './review-intervention-mapper.ts';
+import {
+  collectStaticFeatures,
+  type StaticFeaturesResult,
+} from './static-features.ts';
 
 // Maps gh CLI's `bucket` field (pass/fail/pending/skipping/cancel) to the
 // legacy `conclusion` values the collectors below were written against.
@@ -302,49 +306,199 @@ export function collectStaticAnalysisOutcome(
   branchName: string,
   baseBranch: string,
   repoDir?: string,
+  checkoutDir?: string,
 ): StaticAnalysisOutcome {
   const cwd = repoDir || process.cwd();
   const outcome: StaticAnalysisOutcome = {};
 
+  // Legacy CI-check-name matches (kept for backward compat with historical
+  // consumers). These were empty in 100% of records; they remain as-is.
   try {
-    // Fetch PR checks via shared cache
     const checks = fetchPrChecks(prNumber, cwd);
-
-    if (checks.length === 0) {
-      return outcome;
-    }
-
-    // Look for typecheck-related checks
-    const typecheckCheck = checks.find((c: { name: string }) =>
-      /type|tsc|typecheck/i.test(c.name)
-    );
-    if (typecheckCheck) {
-      outcome.typecheckPassed = typecheckCheck.conclusion === 'success';
-    }
-
-    // Look for lint-related checks
-    const lintCheck = checks.find((c: { name: string }) =>
-      /lint|eslint|prettier/i.test(c.name)
-    );
-    if (lintCheck) {
-      // We can't determine actual delta without detailed output, but we can infer
-      // 0 (no change/passed) vs positive (failures) from conclusion
-      outcome.lintDelta = lintCheck.conclusion === 'success' ? 0 : 1;
-    }
-
-    // Look for security scan checks
-    const securityCheck = checks.find((c: { name: string }) =>
-      /security|codeql|snyk|dependabot/i.test(c.name)
-    );
-    if (securityCheck) {
-      outcome.securityFindingsDelta = securityCheck.conclusion === 'success' ? 0 : 1;
+    if (checks.length > 0) {
+      const typecheckCheck = checks.find((c: { name: string }) =>
+        /type|tsc|typecheck/i.test(c.name)
+      );
+      if (typecheckCheck) {
+        outcome.typecheckPassed = typecheckCheck.conclusion === 'success';
+      }
+      const lintCheck = checks.find((c: { name: string }) =>
+        /lint|eslint|prettier/i.test(c.name)
+      );
+      if (lintCheck) {
+        outcome.lintDelta = lintCheck.conclusion === 'success' ? 0 : 1;
+      }
+      const securityCheck = checks.find((c: { name: string }) =>
+        /security|codeql|snyk|dependabot/i.test(c.name)
+      );
+      if (securityCheck) {
+        outcome.securityFindingsDelta = securityCheck.conclusion === 'success' ? 0 : 1;
+      }
     }
   } catch (err: unknown) {
     const message = errorMessage(err);
-    console.warn(`[outcome-collectors] Failed to collect static analysis outcome: ${message}`);
+    console.warn(`[outcome-collectors] Failed to collect legacy CI check names: ${message}`);
+  }
+
+  // S1 Static feature group (HOK-2806).
+  try {
+    const s1 = resolveStaticFeatures(prNumber, cwd, checkoutDir);
+    outcome.type_errors = s1.type_errors;
+    outcome.lint_errors = s1.lint_errors;
+    outcome.build_ok = s1.build_ok;
+    outcome.complexity_delta = s1.complexity_delta;
+    outcome.build_evidence = s1.build_evidence;
+    outcome.complexity_metric = s1.complexity_metric;
+  } catch (err: unknown) {
+    const message = errorMessage(err);
+    console.warn(`[outcome-collectors] Failed to collect S1 static features: ${message}`);
+    // Leave S1 fields absent on hard collector failure. Downstream consumers
+    // treat absent and null identically (both = evidence unavailable).
   }
 
   return outcome;
+}
+
+/**
+ * Resolve a PR-head checkout and run `collectStaticFeatures`.
+ *
+ * When `checkoutDir` is already at the PR head, run in place. Otherwise
+ * create a disposable worktree at the head SHA inside `repoDir` (so
+ * `node_modules` resolution walks up to the repo's dev deps — required for
+ * `npx --no-install tsc/eslint`). Always cleans up the temp worktree.
+ */
+function resolveStaticFeatures(
+  prNumber: string,
+  repoDir: string,
+  checkoutDir?: string,
+): StaticFeaturesResult {
+  // Fast-fail short-circuits so we don't shell out on obviously bogus inputs.
+  const empty: StaticFeaturesResult = {
+    type_errors: null,
+    lint_errors: null,
+    build_ok: null,
+    complexity_delta: null,
+    build_evidence: null,
+    complexity_metric: null,
+  };
+  if (!prNumber || !/^\d+$/.test(prNumber)) return empty;
+  if (!isExistingDir(repoDir)) return empty;
+  if (checkoutDir && !isExistingDir(checkoutDir)) return empty;
+
+  const prHeadSha = fetchPrHeadSha(prNumber, repoDir);
+
+  if (checkoutDir && prHeadSha) {
+    const localHead = execArgvCommand(
+      'git',
+      ['rev-parse', 'HEAD'],
+      { cwd: checkoutDir, timeout: 10_000, encoding: 'utf-8' },
+    );
+    if (!localHead.failed && localHead.stdout.trim() === prHeadSha) {
+      return collectStaticFeatures({
+        checkoutDir,
+        prNumber,
+        repoDir,
+      });
+    }
+  }
+
+  if (!prHeadSha) {
+    // No head SHA and no verified checkout ⇒ tool-based signals cannot run.
+    // CI-evidence build_ok may still work if repoDir has gh access.
+    return collectStaticFeatures({
+      checkoutDir: checkoutDir ?? repoDir,
+      prNumber,
+      repoDir,
+    });
+  }
+
+  // Create a disposable worktree at the head SHA.
+  const workDir = join(repoDir, '.static-collect-worktrees', `pr-${prNumber}-${process.pid}`);
+  pruneStaleWorktrees(repoDir);
+
+  // Ensure the SHA exists locally; fetch if not.
+  const shaExists = execArgvCommand(
+    'git',
+    ['cat-file', '-e', prHeadSha],
+    { cwd: repoDir, timeout: 10_000, encoding: 'utf-8' },
+  );
+  if (shaExists.exitCode !== 0) {
+    const fetchResult = execArgvCommand(
+      'git',
+      ['fetch', 'origin', `refs/pull/${prNumber}/head:refs/wavemill/static/pr-${prNumber}`],
+      { cwd: repoDir, timeout: 60_000, encoding: 'utf-8' },
+    );
+    if (fetchResult.exitCode !== 0) {
+      return {
+        type_errors: null,
+        lint_errors: null,
+        build_ok: null,
+        complexity_delta: null,
+        build_evidence: null,
+        complexity_metric: null,
+      };
+    }
+  }
+
+  const addResult = execArgvCommand(
+    'git',
+    ['worktree', 'add', '--detach', workDir, prHeadSha],
+    { cwd: repoDir, timeout: 60_000, encoding: 'utf-8' },
+  );
+  if (addResult.exitCode !== 0) {
+    return {
+      type_errors: null,
+      lint_errors: null,
+      build_ok: null,
+      complexity_delta: null,
+      build_evidence: null,
+      complexity_metric: null,
+    };
+  }
+
+  try {
+    return collectStaticFeatures({
+      checkoutDir: workDir,
+      prNumber,
+      repoDir,
+    });
+  } finally {
+    try {
+      execArgvCommand('git', ['worktree', 'remove', '--force', workDir], {
+        cwd: repoDir, timeout: 30_000, encoding: 'utf-8',
+      });
+    } catch {
+      try { rmSync(workDir, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+  }
+}
+
+function fetchPrHeadSha(prNumber: string, repoDir: string): string | null {
+  const result = execArgvCommand(
+    'gh',
+    ['pr', 'view', prNumber, '--json', 'headRefOid', '-q', '.headRefOid'],
+    { cwd: repoDir, timeout: 15_000, encoding: 'utf-8' },
+  );
+  if (result.failed || result.exitCode !== 0) return null;
+  const sha = result.stdout.trim();
+  return sha.length === 40 ? sha : null;
+}
+
+function isExistingDir(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function pruneStaleWorktrees(repoDir: string): void {
+  try {
+    // git worktree prune removes worktrees whose directories are gone.
+    execArgvCommand('git', ['worktree', 'prune'], {
+      cwd: repoDir, timeout: 10_000, encoding: 'utf-8',
+    });
+  } catch { /* best effort */ }
 }
 
 // ────────────────────────────────────────────────────────────────
