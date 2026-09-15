@@ -123,6 +123,7 @@ TESTS=(
   tools/cleanup-terminal-inbox.test.ts
   shared/lib/pr-diff-provider.test.ts
   shared/lib/pr-metadata.test.ts
+  shared/lib/pr-route-provenance.test.ts
   shared/lib/pr-attribution.test.ts
   shared/lib/pr-ci-status.test.ts
   shared/lib/ready-engine.test.ts

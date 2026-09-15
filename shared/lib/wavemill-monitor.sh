@@ -9256,6 +9256,17 @@ set_ready_pass_labels() {
 
   review_result_passes_ready_gate "$feature_dir" || return 1
 
+  # HOK-2945: stamp executed route provenance before ready labeling.
+  # Best-effort until HOK-3017 lands (route_ready_gate config switch).
+  if [[ -n "${TOOLS_DIR:-}" ]]; then
+    local stamp_issue="${ISSUE:-}"
+    if [[ -z "$stamp_issue" ]]; then
+      stamp_issue="$(basename "$wt_dir")"
+    fi
+    (cd "$wt_dir" && npx tsx "$TOOLS_DIR/stamp-pr-route.ts" "$pr_number" \
+      --issue "$stamp_issue" --feature-dir "$feature_dir") 2>/dev/null || true
+  fi
+
   (cd "$wt_dir" && npx tsx "$TOOLS_DIR/set-pr-ready-label.ts" "$pr_number" --marker-root "$REPO_DIR")
 }
 

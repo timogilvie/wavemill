@@ -12,6 +12,8 @@ export interface PrMetadata {
   risk?: RiskLevel;
   challenge?: boolean;
   challengePairId?: string;
+  route_schema?: string;
+  executed_route?: string;
 }
 
 export interface PrMetadataError {
@@ -32,7 +34,7 @@ export type MetadataValidation =
 const BLOCK_REGEX = /<!-- wavemill-meta\n([\s\S]*?)\n-->/g;
 const LINE_REGEX = /^([a-zA-Z_][a-zA-Z0-9_-]*):\s*(.*)$/;
 const ARRAY_FIELDS = new Set<keyof PrMetadata>(['depends_on', 'depends_on_linear', 'requires']);
-const STRING_FIELDS = new Set<keyof PrMetadata>(['task', 'stack', 'challengePairId']);
+const STRING_FIELDS = new Set<keyof PrMetadata>(['task', 'stack', 'challengePairId', 'route_schema']);
 const FIELD_ORDER: Array<keyof PrMetadata> = [
   'schema-version',
   'task',
@@ -43,6 +45,8 @@ const FIELD_ORDER: Array<keyof PrMetadata> = [
   'risk',
   'challenge',
   'challengePairId',
+  'route_schema',
+  'executed_route',
 ];
 
 function trimBlockAdjacentWhitespace(body: string): string {
@@ -140,7 +144,37 @@ export function parsePrMetadata(body: string): ParseResult {
         continue;
       }
 
-      metadata[field as 'task' | 'stack' | 'challengePairId'] = rawValue.trim();
+      metadata[field as 'task' | 'stack' | 'challengePairId' | 'route_schema'] = rawValue.trim();
+      continue;
+    }
+
+    if (field === 'executed_route') {
+      if (!rawValue.trim()) {
+        errors.push({
+          field,
+          code: 'empty-value',
+          message: 'Expected non-empty JSON for executed_route',
+        });
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(rawValue) as unknown;
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+          errors.push({
+            field,
+            code: 'wrong-type',
+            message: 'Expected a JSON object for executed_route',
+          });
+          continue;
+        }
+        metadata.executed_route = JSON.stringify(parsed);
+      } catch {
+        errors.push({
+          field,
+          code: 'wrong-type',
+          message: 'Invalid JSON for executed_route',
+        });
+      }
       continue;
     }
 
@@ -234,6 +268,24 @@ export function validateMetadataFields(meta: PrMetadata): PrMetadataError[] {
       code: 'unsupported-version',
       message: 'Unsupported wavemill-meta schema-version',
     });
+  }
+  if (meta.executed_route !== undefined) {
+    try {
+      const parsed = JSON.parse(meta.executed_route) as unknown;
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        errors.push({
+          field: 'executed_route',
+          code: 'wrong-type',
+          message: 'executed_route must be a JSON object string',
+        });
+      }
+    } catch {
+      errors.push({
+        field: 'executed_route',
+        code: 'wrong-type',
+        message: 'executed_route is not valid JSON',
+      });
+    }
   }
   return errors;
 }
