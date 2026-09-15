@@ -2424,6 +2424,7 @@ test('getIntegrationConfig returns a full valid integration block', () => {
     deleteBranchAfterMerge: false,
     haltOnRed: false,
     requiredChecks: ['ci'],
+    advisoryChecks: ['Custom Advisory'],
     highRiskPolicy: 'allow' as const,
     useMillSession: false,
     mergeLockTimeoutMinutes: 60,
@@ -2433,6 +2434,64 @@ test('getIntegrationConfig returns a full valid integration block', () => {
     writeConfig(tmp, JSON.stringify({ integration }));
 
     assert.deepEqual(getIntegrationConfig(tmp), integration);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('INTEGRATION_DEFAULTS includes OpenRouter Alias Audit in advisoryChecks (HOK-3009)', () => {
+  assert.deepEqual(INTEGRATION_DEFAULTS.advisoryChecks, ['OpenRouter Alias Audit']);
+});
+
+test('getIntegrationConfig returns default advisoryChecks when unset', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ integration: {} }));
+
+    assert.deepEqual(getIntegrationConfig(tmp).advisoryChecks, ['OpenRouter Alias Audit']);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('getIntegrationConfig advisoryChecks override replaces the default list', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      integration: { advisoryChecks: ['Some Other Check', 'Another'] },
+    }));
+
+    assert.deepEqual(getIntegrationConfig(tmp).advisoryChecks, ['Some Other Check', 'Another']);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('getIntegrationConfig accepts an empty advisoryChecks list (opt-out)', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      integration: { advisoryChecks: [] },
+    }));
+
+    assert.deepEqual(getIntegrationConfig(tmp).advisoryChecks, []);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('schema rejects non-string advisoryChecks entries', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      integration: { advisoryChecks: [123] },
+    }));
+
+    assert.throws(() => loadWavemillConfig(tmp), /advisoryChecks/);
   } finally {
     cleanUp(tmp);
   }

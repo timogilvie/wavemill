@@ -6,6 +6,7 @@ import {
   executeMerge,
   formatStatusLine,
   selectNextCandidate,
+  type AdvisoryCheckFailure,
   type BlockedCandidate,
   type MergeExecutionResult,
   type TendDecision,
@@ -455,6 +456,7 @@ export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExi
           laneEvidenceId: decisionEvidenceId(decision),
           status: heartbeatStatus,
           detail: heartbeatDetail,
+          integrationAdvisory: decision.integrationHealth.advisoryFailures ?? [],
           ...pollMetadata,
         });
         await deps.sleep(intervalMs);
@@ -487,6 +489,7 @@ export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExi
         progressState: 'progressing',
         laneCondition: 'progressing',
         laneEvidenceId: decisionEvidenceId(decision),
+        integrationAdvisory: decision.integrationHealth.advisoryFailures ?? [],
         ...pollMetadata,
       });
 
@@ -712,6 +715,14 @@ export async function writeTendHeartbeat(
     laneEvidenceId?: string;
     status?: 'healthy' | 'degraded' | 'unhealthy';
     detail?: string;
+    /**
+     * Failing advisory checks currently observed on the integration tip. When
+     * defined, the field is written even as `[]` so a cleared advisory
+     * condition overwrites the stale record. When `undefined`, the existing
+     * value is preserved (e.g. failure-state writers that never observed
+     * check runs).
+     */
+    integrationAdvisory?: AdvisoryCheckFailure[];
   },
 ): Promise<void> {
   const healthPath = join(repoDir, '.wavemill', 'backstage-health.json');
@@ -743,6 +754,7 @@ export async function writeTendHeartbeat(
         ...(health.progressState !== undefined ? { progressState: health.progressState } : {}),
         ...(health.laneCondition !== undefined ? { laneCondition: health.laneCondition } : {}),
         ...(health.laneEvidenceId !== undefined ? { laneEvidenceId: health.laneEvidenceId } : {}),
+        ...(health.integrationAdvisory !== undefined ? { integrationAdvisory: health.integrationAdvisory } : {}),
       };
       next.updatedAt = timestamp;
       next.status = status;
@@ -814,6 +826,7 @@ export async function writeTendPollHeartbeatBestEffort(
     laneEvidenceId?: string;
     status?: 'healthy' | 'degraded' | 'unhealthy';
     detail?: string;
+    integrationAdvisory?: AdvisoryCheckFailure[];
   } = {},
 ): Promise<void> {
   try {
@@ -833,6 +846,7 @@ export async function writeTendPollHeartbeatBestEffort(
         laneEvidenceId: options.laneEvidenceId,
         status: options.status,
         detail: options.detail,
+        integrationAdvisory: options.integrationAdvisory,
       },
     );
   } catch (error) {

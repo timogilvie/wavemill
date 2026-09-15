@@ -2723,6 +2723,17 @@
                         "minLength": 1
                     }
                 },
+                "advisoryChecks": {
+                    "type": "array",
+                    "default": [
+                        "OpenRouter Alias Audit"
+                    ],
+                    "description": "Check-run names on the integration tip whose failure is recorded (surfaced in tend status and .wavemill/backstage-health.json) but never makes integration unhealthy. Applies only to the merge-lane tip health gate, never to the PR-level ready gate. Exact-match names; a renamed CI job must update this list.",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                },
                 "highRiskPolicy": {
                     "type": "string",
                     "enum": [
