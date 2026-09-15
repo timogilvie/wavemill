@@ -79,6 +79,29 @@ else
   echo "$ARM_JSON"
   fail "challenge_arm_json_build produces well-formed record"
 fi
+check_eq "14-arg arm build keeps executionIntent null" "null" "$(echo "$ARM_JSON" | jq -r '.executionIntent | type')"
+
+CANONICAL_INTENT='{"schemaVersion":1,"pairId":"HOK-1234","issueId":"HOK-1234","selectedStage":"review","challengeStage":"review","primary":{"pairId":"HOK-1234","side":"primary","challengeStage":"review","expectedStageModel":"claude-sonnet-5","expectedRoute":{}},"challenger":{"pairId":"HOK-1234","side":"challenger","challengeStage":"review","expectedStageModel":"claude-haiku-4-5-20251001","expectedRoute":{}}}'
+ARM_WITH_INTENT="$(challenge_arm_json_build \
+  "HOK-1234_c" "foo-challenger" "task/foo-challenger" \
+  "challenger" "review" \
+  "claude-opus-4-7" "claude-sonnet-5" "claude-haiku-4-5-20251001" \
+  "claude" "claude" "claude" \
+  "light" "medium" "static" \
+  "$CANONICAL_INTENT")"
+if echo "$ARM_WITH_INTENT" | jq -e '.executionIntent.schemaVersion == 1 and .executionIntent.pairId == "HOK-1234"' >/dev/null; then
+  pass "challenge_arm_json_build embeds canonical execution intent"
+else
+  echo "$ARM_WITH_INTENT"
+  fail "challenge_arm_json_build embeds canonical execution intent"
+fi
+
+challenge_intent_record_selection "HOK-1234" "HOK-1234_c" "$CANONICAL_INTENT"
+if jq -e '.tasks["HOK-1234"].challengeExecutionIntent.pairId == "HOK-1234" and .tasks["HOK-1234"].challengeStage == "review"' "$STATE_FILE" >/dev/null; then
+  pass "challenge_intent_record_selection promotes canonical intent to state"
+else
+  fail "challenge_intent_record_selection promotes canonical intent to state"
+fi
 
 challenge_arms_record_pending "HOK-1234" "$ARM_JSON"
 PENDING_COUNT=$(challenge_arms_list_pending "HOK-1234" | jq -r 'length')
@@ -191,6 +214,18 @@ MATERIALIZE_BLOCK=$(awk '
 ' "$MONITOR_SCRIPT_FILE")
 check_contains "materialiser copies .wavemill-config.local.json overlay" "$MATERIALIZE_BLOCK" '.wavemill-config.local.json'
 check_contains "materialiser primes deps via worktree_deps_ensure" "$MATERIALIZE_BLOCK" 'worktree_deps_ensure "$challenger_wt_dir" "$primary_wt_dir"'
+check_contains "materialiser backfills missing challenge intent" "$MATERIALIZE_BLOCK" 'challenge intent backfilled during materialisation'
+check_contains "materialiser validates primary challenge intent before review" "$MATERIALIZE_BLOCK" 'challenge_intent_files_valid "$primary_feature_dir"'
+check_contains "materialiser returns terminal rc for missing intent" "$MATERIALIZE_BLOCK" 'return 2'
+
+FORK_TRIGGER_BLOCK=$(awk '
+  /^challenge_maybe_materialize_deferred_arms\(\) \{/ { capture=1 }
+  capture { print }
+  /^}/ && capture { exit }
+' "$MONITOR_SCRIPT_FILE")
+check_contains "fork trigger treats missing intent as terminal" "$FORK_TRIGGER_BLOCK" 'materialise_rc == 2'
+check_contains "fork trigger records missing_challenge_intent exhaustion" "$FORK_TRIGGER_BLOCK" 'exhaustReason: $r'
+check_contains "fork trigger emits invalid intent lifecycle event" "$FORK_TRIGGER_BLOCK" 'challenge_arm_invalid_intent'
 
 # ────────────────────────────────────────────────────────────────
 # Test 3: materialisation happy path (scratch git repo)

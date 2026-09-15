@@ -401,7 +401,7 @@ export async function runNativeReview(
   const resolvedModelId = provider.entry.modelId;
   const substantiveAnalysisIdentity = buildExecutedIdentity({
     role: 'substantive_analysis',
-    requestedModel: provider.requestedModel ?? resolvedModelId,
+    requestedModel: provider.requestedModel,
     resolvedModel: resolvedModelId,
     agent: `native-${provider.entry.providerName}`,
     source: provider.requestedModel ? 'route' : 'derived',
