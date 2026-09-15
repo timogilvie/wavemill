@@ -2424,6 +2424,7 @@ test('getIntegrationConfig returns a full valid integration block', () => {
     deleteBranchAfterMerge: false,
     haltOnRed: false,
     requiredChecks: ['ci'],
+    advisoryChecks: ['OpenRouter Alias Audit'],
     highRiskPolicy: 'allow' as const,
     useMillSession: false,
     mergeLockTimeoutMinutes: 60,

@@ -1479,6 +1479,120 @@ describe('defaultHealthChecker', () => {
       repo.cleanup();
     }
   });
+
+  it('treats default advisory check failures as healthy but surfaced', async () => {
+    const repo = createRepoWithRemoteIntegration();
+
+    try {
+      await withFakeGh(
+        '{"check_runs":[{"name":"OpenRouter Alias Audit","conclusion":"failure"},{"name":"ci","conclusion":"success"}]}',
+        async () => {
+          const health = await defaultHealthChecker('auto/integration', repo.repoDir);
+          assert.deepEqual(health, {
+            state: 'healthy',
+            advisoryFailures: [{ name: 'OpenRouter Alias Audit', conclusion: 'failure' }],
+          });
+        },
+      );
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('halts on non-advisory failures even when advisory failures are present', async () => {
+    const repo = createRepoWithRemoteIntegration();
+
+    try {
+      await withFakeGh(
+        '{"check_runs":[{"name":"OpenRouter Alias Audit","conclusion":"failure"},{"name":"ci","conclusion":"failure"}]}',
+        async () => {
+          const health = await defaultHealthChecker('auto/integration', repo.repoDir);
+          assert.deepEqual(health, { state: 'unhealthy', reason: 'ci: failure' });
+        },
+      );
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('allows configs to opt out of advisory integration-tip checks', async () => {
+    const repo = createRepoWithRemoteIntegration();
+
+    try {
+      writeFileSync(
+        join(repo.repoDir, '.wavemill-config.json'),
+        JSON.stringify({ integration: { integrationBranch: 'auto/integration', advisoryChecks: [] } }),
+      );
+
+      await withFakeGh('{"check_runs":[{"name":"OpenRouter Alias Audit","conclusion":"failure"}]}', async () => {
+        const health = await defaultHealthChecker('auto/integration', repo.repoDir);
+        assert.deepEqual(health, { state: 'unhealthy', reason: 'OpenRouter Alias Audit: failure' });
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('honors custom advisory check names only', async () => {
+    const repo = createRepoWithRemoteIntegration();
+
+    try {
+      writeFileSync(
+        join(repo.repoDir, '.wavemill-config.json'),
+        JSON.stringify({ integration: { integrationBranch: 'auto/integration', advisoryChecks: ['Nightly Fuzz'] } }),
+      );
+
+      await withFakeGh('{"check_runs":[{"name":"Nightly Fuzz","conclusion":"failure"}]}', async () => {
+        const health = await defaultHealthChecker('auto/integration', repo.repoDir);
+        assert.deepEqual(health, {
+          state: 'healthy',
+          advisoryFailures: [{ name: 'Nightly Fuzz', conclusion: 'failure' }],
+        });
+      });
+
+      await withFakeGh('{"check_runs":[{"name":"OpenRouter Alias Audit","conclusion":"failure"}]}', async () => {
+        const health = await defaultHealthChecker('auto/integration', repo.repoDir);
+        assert.deepEqual(health, { state: 'unhealthy', reason: 'OpenRouter Alias Audit: failure' });
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('surfaces advisory timed-out checks without making integration unhealthy', async () => {
+    const repo = createRepoWithRemoteIntegration();
+
+    try {
+      await withFakeGh('{"check_runs":[{"name":"OpenRouter Alias Audit","conclusion":"timed_out"}]}', async () => {
+        const health = await defaultHealthChecker('auto/integration', repo.repoDir);
+        assert.deepEqual(health, {
+          state: 'healthy',
+          advisoryFailures: [{ name: 'OpenRouter Alias Audit', conclusion: 'timed_out' }],
+        });
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('dedupes advisory failures by check name', async () => {
+    const repo = createRepoWithRemoteIntegration();
+
+    try {
+      await withFakeGh(
+        '{"check_runs":[{"name":"OpenRouter Alias Audit","conclusion":"failure"},{"name":"OpenRouter Alias Audit","conclusion":"timed_out"}]}',
+        async () => {
+          const health = await defaultHealthChecker('auto/integration', repo.repoDir);
+          assert.deepEqual(health, {
+            state: 'healthy',
+            advisoryFailures: [{ name: 'OpenRouter Alias Audit', conclusion: 'failure' }],
+          });
+        },
+      );
+    } finally {
+      repo.cleanup();
+    }
+  });
 });
 
 describe('selectNextCandidate with real integration health', () => {
@@ -1512,6 +1626,27 @@ describe('selectNextCandidate with real integration health', () => {
       });
     } finally {
       repo.cleanup();
+    }
+  });
+
+  it('selects ready PRs when integration health only has advisory failures', async () => {
+    const options = buildTestOptions([
+      pr({ number: 181, title: 'Ready with drift', headRefName: 'task/ready-with-drift' }),
+    ], {
+      state: 'healthy',
+      advisoryFailures: [{ name: 'OpenRouter Alias Audit', conclusion: 'failure' }],
+    });
+
+    try {
+      const decision = await selectNextCandidate(options);
+      assert.deepEqual(decision.integrationHealth, {
+        state: 'healthy',
+        advisoryFailures: [{ name: 'OpenRouter Alias Audit', conclusion: 'failure' }],
+      });
+      assert.equal(decision.eligible.length, 1);
+      assert.equal(decision.nextPR, 181);
+    } finally {
+      options.cleanup();
     }
   });
 });
@@ -1550,6 +1685,21 @@ describe('formatStatusLine', () => {
         pollCompletedAt: '2026-08-22T14:00:02.000Z',
       }),
       'iter=3 poll_started=2026-08-22T14:00:00.000Z poll_completed=2026-08-22T14:00:02.000Z eligible=1 blocked=0 health=ok last=none action=merging-#42',
+    );
+  });
+
+  it('includes advisory check failures while keeping health ok', () => {
+    assert.equal(
+      formatStatusLine({
+        integrationHealth: {
+          state: 'healthy',
+          advisoryFailures: [{ name: 'OpenRouter Alias Audit', conclusion: 'failure' }],
+        },
+        eligible: [],
+        blocked: [],
+        nextPR: null,
+      }),
+      'eligible=0 blocked=0 health=ok advisory=1 advisory_reason="OpenRouter Alias Audit: failure" last=none action=idle',
     );
   });
 });

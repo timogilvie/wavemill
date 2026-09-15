@@ -483,6 +483,8 @@ export interface IntegrationConfig {
   deleteBranchAfterMerge: boolean;
   haltOnRed: boolean;
   requiredChecks: string[];
+  /** Check names on the integration tip whose failures are reported but never make integration unhealthy. */
+  advisoryChecks: string[];
   highRiskPolicy: 'block' | 'manual' | 'allow';
   useMillSession: boolean;
   mergeLockTimeoutMinutes: number;
@@ -856,6 +858,7 @@ export const INTEGRATION_DEFAULTS: IntegrationConfig = {
   deleteBranchAfterMerge: true,
   haltOnRed: true,
   requiredChecks: [],
+  advisoryChecks: ['OpenRouter Alias Audit'],
   highRiskPolicy: 'manual',
   useMillSession: true,
   mergeLockTimeoutMinutes: 45,

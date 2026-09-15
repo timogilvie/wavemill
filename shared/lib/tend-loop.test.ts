@@ -118,6 +118,46 @@ describe('runTendLoop', () => {
     assert.match(r.lines[0], /^iter=1 poll_started=2026-08-18T12:00:00.000Z poll_completed=2026-08-18T12:00:00.000Z /);
   });
 
+  it('threads advisory check failures through successful poll heartbeats', async () => {
+    const d = deps({
+      selectNextCandidate: async () => ({
+        integrationHealth: {
+          state: 'healthy',
+          advisoryFailures: [{ name: 'OpenRouter Alias Audit', conclusion: 'failure' }],
+        },
+        eligible: [],
+        blocked: [],
+        nextPR: null,
+      }),
+    });
+
+    await assert.rejects(
+      runTendLoop({ repoDir: '/tmp/repo', renderer: renderer(), deps: d }),
+      TypeError,
+    );
+
+    const heartbeat = d.heartbeats.find((entry) => (entry as { kind?: string }).kind === 'success') as {
+      advisoryCheckFailures: unknown;
+    };
+    assert.deepEqual(heartbeat.advisoryCheckFailures, [
+      { name: 'OpenRouter Alias Audit', conclusion: 'failure' },
+    ]);
+  });
+
+  it('threads an empty advisory list through recovered successful poll heartbeats', async () => {
+    const d = deps();
+
+    await assert.rejects(
+      runTendLoop({ repoDir: '/tmp/repo', renderer: renderer(), deps: d }),
+      TypeError,
+    );
+
+    const heartbeat = d.heartbeats.find((entry) => (entry as { kind?: string }).kind === 'success') as {
+      advisoryCheckFailures: unknown;
+    };
+    assert.deepEqual(heartbeat.advisoryCheckFailures, []);
+  });
+
   it('continues after a transient selection error and clears failure heartbeat on success', async () => {
     const r = renderer();
     let calls = 0;
@@ -318,6 +358,36 @@ describe('writeTendHeartbeat', () => {
       assert.equal(parsed.services.tend.laneCondition, 'needs-user-hold');
       assert.equal(parsed.services.tend.laneEvidenceId, 'abc123def456');
       assert.equal(parsed.restartAttemptCount, undefined);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('records advisory check failures and clears them on recovery', async () => {
+    const repoDir = mkdtempSync(join(tmpdir(), 'wavemill-tend-loop-'));
+    try {
+      mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
+      await writeTendHeartbeat(repoDir, '2026-09-14T16:00:00Z', {
+        failureCount: 0,
+        lastError: null,
+        lastErrorAt: null,
+        advisoryCheckFailures: [{ name: 'OpenRouter Alias Audit', conclusion: 'failure' }],
+      });
+
+      let parsed = JSON.parse(readFileSync(join(repoDir, '.wavemill', 'backstage-health.json'), 'utf-8'));
+      assert.deepEqual(parsed.services.tend.advisoryCheckFailures, [
+        { name: 'OpenRouter Alias Audit', conclusion: 'failure' },
+      ]);
+
+      await writeTendHeartbeat(repoDir, '2026-09-14T16:01:00Z', {
+        failureCount: 0,
+        lastError: null,
+        lastErrorAt: null,
+        advisoryCheckFailures: [],
+      });
+
+      parsed = JSON.parse(readFileSync(join(repoDir, '.wavemill', 'backstage-health.json'), 'utf-8'));
+      assert.equal(parsed.services.tend.advisoryCheckFailures, undefined);
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }

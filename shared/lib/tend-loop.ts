@@ -6,6 +6,7 @@ import {
   executeMerge,
   formatStatusLine,
   selectNextCandidate,
+  type AdvisoryCheckFailure,
   type BlockedCandidate,
   type MergeExecutionResult,
   type TendDecision,
@@ -94,7 +95,7 @@ interface BackstageHealthFile {
   restartAttemptCount?: number;
   lastRestartAttemptAt?: string | null;
   executorPaneId?: string | null;
-  services?: Record<string, Record<string, unknown>>;
+  services?: Record<string, Record<string, unknown> & { advisoryCheckFailures?: AdvisoryCheckFailure[] }>;
   [key: string]: unknown;
 }
 
@@ -453,6 +454,7 @@ export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExi
           progressState,
           laneCondition,
           laneEvidenceId: decisionEvidenceId(decision),
+          advisoryCheckFailures: decision.integrationHealth.advisoryFailures ?? [],
           status: heartbeatStatus,
           detail: heartbeatDetail,
           ...pollMetadata,
@@ -487,6 +489,7 @@ export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExi
         progressState: 'progressing',
         laneCondition: 'progressing',
         laneEvidenceId: decisionEvidenceId(decision),
+        advisoryCheckFailures: decision.integrationHealth.advisoryFailures ?? [],
         ...pollMetadata,
       });
 
@@ -710,6 +713,7 @@ export async function writeTendHeartbeat(
     progressState?: TendProgressState;
     laneCondition?: TendLaneCondition;
     laneEvidenceId?: string;
+    advisoryCheckFailures?: AdvisoryCheckFailure[];
     status?: 'healthy' | 'degraded' | 'unhealthy';
     detail?: string;
   },
@@ -721,6 +725,13 @@ export async function writeTendHeartbeat(
       const next = { ...(current ?? {}) };
       const services = { ...(next.services ?? {}) };
       const existing = { ...(services.tend ?? {}) };
+      if (health.advisoryCheckFailures !== undefined) {
+        if (health.advisoryCheckFailures.length > 0) {
+          existing.advisoryCheckFailures = health.advisoryCheckFailures;
+        } else {
+          delete existing.advisoryCheckFailures;
+        }
+      }
       const status = health.status ?? 'healthy';
       const detail = health.detail ?? (health.progressState === 'stalled'
         ? 'backstage tend loop is alive but the merge lane is not progressing'
@@ -812,6 +823,7 @@ export async function writeTendPollHeartbeatBestEffort(
     progressState?: TendProgressState;
     laneCondition?: TendLaneCondition;
     laneEvidenceId?: string;
+    advisoryCheckFailures?: AdvisoryCheckFailure[];
     status?: 'healthy' | 'degraded' | 'unhealthy';
     detail?: string;
   } = {},
@@ -831,6 +843,7 @@ export async function writeTendPollHeartbeatBestEffort(
         progressState: options.progressState,
         laneCondition: options.laneCondition,
         laneEvidenceId: options.laneEvidenceId,
+        advisoryCheckFailures: options.advisoryCheckFailures,
         status: options.status,
         detail: options.detail,
       },

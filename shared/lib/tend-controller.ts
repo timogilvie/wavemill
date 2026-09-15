@@ -58,9 +58,16 @@ export interface WaitingReadyCandidate {
   labels?: string[];
 }
 
+export interface AdvisoryCheckFailure {
+  name: string;
+  conclusion: string;
+}
+
 export interface IntegrationHealth {
   state: 'healthy' | 'unhealthy';
   reason?: string;
+  /** Failing integration-tip checks configured as advisory: surfaced, never blocking. */
+  advisoryFailures?: AdvisoryCheckFailure[];
 }
 
 export interface TendDecision {
@@ -332,10 +339,21 @@ export async function defaultHealthChecker(integrationBranch: string, repoDir: s
       checkRuns = await readCheckRuns(repo, remoteResolution.sha, repoDir);
     }
 
+    const advisoryChecks = new Set(getIntegrationConfig(repoDir).advisoryChecks);
+    const advisoryFailures: AdvisoryCheckFailure[] = [];
+    const seenAdvisoryFailures = new Set<string>();
     for (const checkRun of checkRuns) {
       const conclusion = checkRun.conclusion ?? '';
       if (FAILING_CHECK_CONCLUSIONS.has(conclusion)) {
-        return { state: 'unhealthy', reason: `${checkRun.name || 'check'}: ${conclusion}` };
+        const name = checkRun.name || 'check';
+        if (advisoryChecks.has(name)) {
+          if (!seenAdvisoryFailures.has(name)) {
+            advisoryFailures.push({ name, conclusion });
+            seenAdvisoryFailures.add(name);
+          }
+          continue;
+        }
+        return { state: 'unhealthy', reason: `${name}: ${conclusion}` };
       }
     }
 
@@ -346,7 +364,9 @@ export async function defaultHealthChecker(integrationBranch: string, repoDir: s
       };
     }
 
-    return { state: 'healthy' };
+    return advisoryFailures.length > 0
+      ? { state: 'healthy', advisoryFailures }
+      : { state: 'healthy' };
   } catch (error) {
     return { state: 'unhealthy', reason: `health-check-error: ${errorMessage(error)}` };
   }
@@ -571,6 +591,12 @@ export function formatStatusLine(
     `health=${health}`,
     decision.integrationHealth.state === 'unhealthy' && decision.integrationHealth.reason
       ? `reason=${quoteStatusValue(decision.integrationHealth.reason)}`
+      : null,
+    decision.integrationHealth.advisoryFailures && decision.integrationHealth.advisoryFailures.length > 0
+      ? `advisory=${decision.integrationHealth.advisoryFailures.length}`
+      : null,
+    decision.integrationHealth.advisoryFailures && decision.integrationHealth.advisoryFailures.length > 0
+      ? `advisory_reason=${quoteStatusValue(`${decision.integrationHealth.advisoryFailures[0].name}: ${decision.integrationHealth.advisoryFailures[0].conclusion}`)}`
       : null,
     `last=${last}`,
     `action=${action}`,
