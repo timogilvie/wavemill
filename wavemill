@@ -160,6 +160,19 @@ ${GREEN}Commands:${NC}
                ${CYAN}--repo-dir${NC} <path>          Repository directory to inspect
                ${CYAN}--state-file${NC} <path>        Workflow state file override
 
+  ${CYAN}cleanup${NC}   Inspect and finalize terminal Inbox tasks
+             - Defaults to dry-run; mutations require --execute
+             - Bulk mode skips closed losing challenge arms that need --abandon
+             Usage:
+               ${CYAN}wavemill cleanup inbox --dry-run${NC}
+               ${CYAN}wavemill cleanup inbox --execute${NC}
+               ${CYAN}wavemill cleanup HOK-3002_c --abandon --execute${NC}
+             Options:
+               ${CYAN}--execute${NC}                  Perform eligible cleanup
+               ${CYAN}--abandon${NC}                  Explicit single-issue loser abandonment
+               ${CYAN}--repo-dir${NC} <path>          Repository directory to inspect
+               ${CYAN}--state-file${NC} <path>        Workflow state file override
+
   ${CYAN}tend${NC}      Tend the integration queue or run promotion mode
              - \`wavemill tend --once\` runs a single tend pass
              - \`wavemill tend --loop\` runs the integration queue loop
@@ -1404,6 +1417,17 @@ run_abort() {
   exec npx tsx "$abort_tool" "$@"
 }
 
+run_cleanup() {
+  local cleanup_tool="$TOOLS_DIR/cleanup-terminal-inbox.ts"
+
+  if [[ ! -f "$cleanup_tool" ]]; then
+    echo -e "${RED}Error:${NC} Cleanup tool not found at: $cleanup_tool" >&2
+    exit 1
+  fi
+
+  exec npx tsx "$cleanup_tool" "$@"
+}
+
 run_context() {
   local context_script="$LIB_DIR/wavemill-context.sh"
 
@@ -1640,6 +1664,10 @@ case "${1:-}" in
   abort)
     shift
     run_abort "$@"
+    ;;
+  cleanup)
+    shift
+    run_cleanup "$@"
     ;;
   tend)
     shift

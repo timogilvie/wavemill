@@ -73,5 +73,10 @@ prompt-registry.jsonl
 worktrees/
 test-reg-*/
 
+# HOK-2806: disposable worktrees created by the static-features collector when
+# it needs to run tools at the PR head SHA. Always removed in a finally, but
+# a crash could leave one behind; git worktree prune reaps them next run.
+.static-collect-worktrees/
+
 # Python
 __pycache__/
