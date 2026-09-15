@@ -2393,6 +2393,7 @@ for t in "${TASKS[@]}"; do
     fi
 
     FINAL_LAUNCH_ARGS+=("$ISSUE|$SLUG|$TITLE")
+    challenge_execution_intent="$(jq -c '.challengeExecutionIntent // empty' <<<"$challenge_plan" 2>/dev/null || true)"
     if [[ "$defer_challenger" != "true" ]]; then
       FINAL_LAUNCH_ARGS+=("$challenger_key|$challenger_slug|$TITLE")
     else
@@ -2414,9 +2415,15 @@ for t in "${TASKS[@]}"; do
         "${challenger_entry_reviewer_agent:-${challenger_agent:-$AGENT_CMD}}" \
         "${challenger_entry_plan_depth:-$route_plan_depth}" \
         "${challenger_entry_code_depth:-$route_code_depth}" \
-        "${challenger_entry_review_mode:-$route_review_mode}")"
+        "${challenger_entry_review_mode:-$route_review_mode}" \
+        "$challenge_execution_intent")"
       challenge_arms_record_pending "$ISSUE" "$pending_arm_json" || \
         log "warn" "  $ISSUE: failed to record pending challenger arm $challenger_key"
+      if challenge_intent_json_is_canonical "$challenge_execution_intent"; then
+        challenge_intent_record_selection "$ISSUE" "$challenger_key" "$challenge_execution_intent"
+      else
+        log "warn" "  $ISSUE: challenge pair $challenge_pair has no canonical execution intent at deferred selection"
+      fi
     fi
     slots_used=$((slots_used + 1))  # Challenger is free overhead
     primary_varied=$(echo "$challenge_plan" | jq -r '.entries[0].variedModel // .entries[0].model // empty' 2>/dev/null)

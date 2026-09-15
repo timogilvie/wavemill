@@ -13,13 +13,22 @@
  * @module outcome-collectors
  */
 
-import { readdirSync, existsSync } from "node:fs";
+import { readdirSync, existsSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { errorMessage } from './error-utils.ts';
 import { fetchPrReviews, resolveOwnerRepo } from './github.ts';
 import { readJsonlFile } from './jsonl-utils.ts';
-import { escapeShellArg, execShellCommand } from './shell-utils.ts';
+import { escapeShellArg, execArgvCommand, execShellCommand } from './shell-utils.ts';
 import { loadReviewInterventions } from './review-intervention-mapper.ts';
+import {
+  collectStaticFeatures,
+  type StaticFeaturesResult,
+} from './static-features.ts';
+import {
+  extractCandidateFeatures,
+  type CandidateFeatureContract,
+  type CandidateFeaturesV1,
+} from './candidate-features.ts';
 
 // Maps gh CLI's `bucket` field (pass/fail/pending/skipping/cancel) to the
 // legacy `conclusion` values the collectors below were written against.
@@ -53,7 +62,83 @@ import { resolveProjectsDirs } from './workflow-cost.ts';
  * In-memory cache of PR checks, keyed by "${prNumber}:${repoDir}".
  * Lifetime: process-level singleton (cleared manually or on process exit).
  */
-const prChecksCache = new Map<string, any[]>();
+interface PrCheckEvidence {
+  name?: string;
+  state?: string;
+  bucket?: string;
+  conclusion?: string | null;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+const prChecksCache = new Map<string, PrCheckEvidence[]>();
+
+interface SharedCandidateCacheEntry {
+  features: CandidateFeaturesV1 | null;
+  staticFeatures: StaticFeaturesResult | null;
+  resolvedCheckoutDir: string | null;
+  cleanup: (() => void) | null;
+}
+
+/**
+ * Cache of shared candidate + static features, keyed by
+ * `${prNumber}:${repoDir}:${baseRef}:${contractFingerprint}`. The Tests and
+ * Static outcome collectors resolve to the same PR-head checkout once
+ * (creating a disposable worktree when necessary) and share one call each to
+ * `collectStaticFeatures` and `extractCandidateFeatures`. Prevents the
+ * expensive tsc / eslint / complexity passes from running twice and prevents
+ * one collector from analyzing a non-PR-head worktree while the other analyzes
+ * the correct head.
+ *
+ * `baseRef` and the contract fingerprint are part of the key so a second
+ * caller that supplies different options for the same PR does not read a
+ * stale entry — it triggers a fresh extraction instead.
+ *
+ * Disposable worktrees created during resolution are cleaned up when the
+ * cache is cleared (`clearCandidateFeaturesCache`); callers that use the
+ * shared cache MUST clear it when their collection pass ends. In the
+ * wavemill workflow, `collectPostCompletionOutcomes` wraps its work in
+ * try/finally so no worktree survives a normal or exceptional exit.
+ */
+const sharedCandidateCache = new Map<string, SharedCandidateCacheEntry>();
+
+interface SharedCandidateOptions {
+  baseRef?: string;
+  contract?: CandidateFeatureContract;
+}
+
+/**
+ * Deterministic fingerprint for the (baseRef, contract) pair, so two callers
+ * that supply different enrichment for the same PR do not read each other's
+ * cache entry. Contract fingerprint uses stable-sorted `JSON.stringify` on
+ * primitive-only fields; unknown / non-serializable values collapse to their
+ * `String()` form (functions do not appear in `CandidateFeatureContract`).
+ *
+ * Exported for tests only.
+ */
+export function sharedCandidateCacheKey(
+  prNumber: string,
+  repoDir: string,
+  options: SharedCandidateOptions,
+): string {
+  const contractFp = options.contract
+    ? JSON.stringify(sortObjectDeep(options.contract))
+    : '';
+  return `${prNumber}:${repoDir}:${options.baseRef ?? ''}:${contractFp}`;
+}
+
+function sortObjectDeep(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortObjectDeep);
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(record).sort()) {
+      sorted[key] = sortObjectDeep(record[key]);
+    }
+    return sorted;
+  }
+  return value;
+}
 
 /**
  * Clear the PR checks cache for a specific PR or all PRs.
@@ -71,6 +156,161 @@ export function clearPrChecksCache(prNumber?: string, repoDir?: string): void {
 }
 
 /**
+ * Clear the shared candidate features cache and run any pending worktree
+ * cleanups. Test-only helper for isolation; also called at end of a
+ * post-completion collection so disposable worktrees are removed.
+ */
+export function clearCandidateFeaturesCache(): void {
+  for (const entry of sharedCandidateCache.values()) {
+    entry.cleanup?.();
+  }
+  sharedCandidateCache.clear();
+}
+
+interface ResolvedPrHeadCheckout {
+  checkoutDir: string;
+  cleanup: (() => void) | null;
+}
+
+/**
+ * Resolve the PR-head checkout for `prNumber`.
+ *
+ * When the caller-supplied `checkoutDir`'s HEAD already matches the PR head
+ * SHA, reuse it directly. Otherwise, create a disposable worktree at the PR
+ * head SHA under `repoDir/.static-collect-worktrees/` and return that;
+ * `cleanup` removes the worktree.
+ *
+ * Returns `null` when the inputs are unusable (bad PR number, missing repo
+ * dir, unable to fetch head SHA).
+ */
+function resolvePrHeadCheckout(
+  prNumber: string,
+  repoDir: string,
+  checkoutDir?: string,
+): ResolvedPrHeadCheckout | null {
+  if (!prNumber || !/^\d+$/.test(prNumber)) return null;
+  if (!isExistingDir(repoDir)) return null;
+  if (checkoutDir && !isExistingDir(checkoutDir)) return null;
+
+  const prHeadSha = fetchPrHeadSha(prNumber, repoDir);
+  if (!prHeadSha) {
+    // Without a head SHA we cannot verify or create a matching worktree; use
+    // the caller's checkout (if any) or the repo dir as a best effort.
+    const dir = checkoutDir ?? repoDir;
+    return { checkoutDir: dir, cleanup: null };
+  }
+
+  if (checkoutDir) {
+    const localHead = execArgvCommand(
+      'git', ['rev-parse', 'HEAD'],
+      { cwd: checkoutDir, timeout: 10_000, encoding: 'utf-8' },
+    );
+    if (!localHead.failed && localHead.stdout.trim() === prHeadSha) {
+      return { checkoutDir, cleanup: null };
+    }
+  }
+
+  const workDir = join(repoDir, '.static-collect-worktrees', `pr-${prNumber}-${process.pid}`);
+  pruneStaleWorktrees(repoDir);
+
+  const shaExists = execArgvCommand(
+    'git', ['cat-file', '-e', prHeadSha],
+    { cwd: repoDir, timeout: 10_000, encoding: 'utf-8' },
+  );
+  if (shaExists.exitCode !== 0) {
+    const fetchResult = execArgvCommand(
+      'git',
+      ['fetch', 'origin', `refs/pull/${prNumber}/head:refs/wavemill/static/pr-${prNumber}`],
+      { cwd: repoDir, timeout: 60_000, encoding: 'utf-8' },
+    );
+    if (fetchResult.exitCode !== 0) return null;
+  }
+
+  const addResult = execArgvCommand(
+    'git', ['worktree', 'add', '--detach', workDir, prHeadSha],
+    { cwd: repoDir, timeout: 60_000, encoding: 'utf-8' },
+  );
+  if (addResult.exitCode !== 0) return null;
+
+  const cleanup = () => {
+    try {
+      execArgvCommand('git', ['worktree', 'remove', '--force', workDir], {
+        cwd: repoDir, timeout: 30_000, encoding: 'utf-8',
+      });
+    } catch {
+      try { rmSync(workDir, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+  };
+  return { checkoutDir: workDir, cleanup };
+}
+
+/**
+ * Return the shared candidate + static features for `prNumber`, computed once
+ * from the resolved PR-head checkout. `collectStaticFeatures` and
+ * `extractCandidateFeatures` each run at most once per PR: the static result
+ * is passed into the extractor via its `staticFeatures` option so its
+ * internal call is skipped.
+ *
+ * Returns an entry whose `features` / `staticFeatures` are `null` when the
+ * inputs are unusable (bad PR number, no head SHA, extractor failure). Both
+ * collectors treat null as "evidence unavailable" and fall back accordingly.
+ */
+function getSharedCandidateFeaturesForPr(
+  prNumber: string,
+  checkoutDir: string | undefined,
+  repoDir: string,
+  options: SharedCandidateOptions = {},
+): SharedCandidateCacheEntry {
+  const key = sharedCandidateCacheKey(prNumber, repoDir, options);
+  const cached = sharedCandidateCache.get(key);
+  if (cached) return cached;
+
+  const emptyEntry: SharedCandidateCacheEntry = {
+    features: null,
+    staticFeatures: null,
+    resolvedCheckoutDir: null,
+    cleanup: null,
+  };
+
+  const resolved = resolvePrHeadCheckout(prNumber, repoDir, checkoutDir);
+  if (!resolved) {
+    sharedCandidateCache.set(key, emptyEntry);
+    return emptyEntry;
+  }
+
+  try {
+    const staticFeatures = collectStaticFeatures({
+      checkoutDir: resolved.checkoutDir,
+      prNumber,
+      repoDir,
+      ...(options.baseRef ? { baseRef: options.baseRef } : {}),
+    });
+    const features = extractCandidateFeatures({
+      checkoutDir: resolved.checkoutDir,
+      prNumber,
+      repoDir,
+      ...(options.baseRef ? { baseRef: options.baseRef } : {}),
+      ...(options.contract ? { contract: options.contract } : {}),
+      staticFeatures,
+    });
+    const entry: SharedCandidateCacheEntry = {
+      features,
+      staticFeatures,
+      resolvedCheckoutDir: resolved.checkoutDir,
+      cleanup: resolved.cleanup,
+    };
+    sharedCandidateCache.set(key, entry);
+    return entry;
+  } catch (err: unknown) {
+    const message = errorMessage(err);
+    console.warn(`[outcome-collectors] Failed to extract candidate features: ${message}`);
+    resolved.cleanup?.();
+    sharedCandidateCache.set(key, emptyEntry);
+    return emptyEntry;
+  }
+}
+
+/**
  * Fetch PR checks from GitHub, with in-process caching.
  *
  * Makes a single `gh pr checks` call per PR and caches the result.
@@ -80,7 +320,7 @@ export function clearPrChecksCache(prNumber?: string, repoDir?: string): void {
  * @param repoDir - Repository directory (defaults to cwd)
  * @returns Array of check objects, or empty array on error
  */
-function fetchPrChecks(prNumber: string, repoDir?: string): any[] {
+function fetchPrChecks(prNumber: string, repoDir?: string): PrCheckEvidence[] {
   const cwd = repoDir || process.cwd();
   const cacheKey = `${prNumber}:${cwd}`;
 
@@ -111,7 +351,7 @@ function fetchPrChecks(prNumber: string, repoDir?: string): any[] {
       return [];
     }
 
-    const checks = parsed.map((entry: { conclusion?: unknown; bucket?: unknown }) => ({
+    const checks: PrCheckEvidence[] = parsed.map((entry: { conclusion?: unknown; bucket?: unknown }) => ({
       ...entry,
       conclusion: typeof entry.conclusion === 'string'
         ? entry.conclusion
@@ -236,40 +476,57 @@ export function collectTestsOutcome(
   branchName: string,
   baseBranch: string,
   repoDir?: string,
+  checkoutDir?: string,
+  contract?: CandidateFeatureContract,
 ): TestsOutcome {
   const cwd = repoDir || process.cwd();
   const outcome: TestsOutcome = {
     added: false,
   };
 
+  // Prefer the unified extractor when we can resolve to the PR-head checkout:
+  // it is the canonical source for `tests_changed` / `test_pass_rate` and its
+  // output is memoized so `collectStaticAnalysisOutcome` reuses the same
+  // resolved head + extraction (no extra tsc / eslint / complexity passes,
+  // and no risk of analyzing a divergent commit).
+  const shared = prNumber
+    ? getSharedCandidateFeaturesForPr(prNumber, checkoutDir, cwd, {
+        baseRef: baseBranch,
+        ...(contract ? { contract } : {}),
+      })
+    : null;
+  const candidate = shared?.features ?? null;
+
+  if (candidate) {
+    if (candidate.tests_changed !== null) outcome.added = candidate.tests_changed;
+    if (candidate.test_pass_rate !== null) outcome.passRate = candidate.test_pass_rate;
+    return outcome;
+  }
+
+  // Fallback path when no checkout is available (e.g. older callers or bare
+  // repoDir contexts): retain the legacy diff+CI heuristic so behavior is
+  // preserved for records collected without a candidate checkout.
   try {
-    // Detect test file additions via git diff
-    // Look for files matching common test patterns
     const diffRaw = execShellCommand(
       `git diff --name-status ${escapeShellArg(baseBranch)}...${escapeShellArg(branchName)} 2>/dev/null | grep -E '\\.(test|spec)\\.(js|ts|jsx|tsx)$' || echo ''`,
       { encoding: 'utf-8', cwd, timeout: 10_000 }
     ).trim();
 
     if (diffRaw) {
-      // Check if any files were added (A) or modified (M)
       const lines = diffRaw.split('\n').filter(Boolean);
       outcome.added = lines.some((line) => line.startsWith('A') || line.startsWith('M'));
     }
 
-    // Try to extract test pass rate from CI checks
-    // Look for a check with "test" in the name
     const checks = fetchPrChecks(prNumber, cwd);
-    const testCheck = checks.find((c: { name: string }) =>
-      c.name.toLowerCase().includes('test')
+    const testCheck = checks.find((c) =>
+      typeof c.name === 'string' && c.name.toLowerCase().includes('test')
     );
 
     if (testCheck) {
-      // If we found a test check, infer pass rate from conclusion
-      // This is a simple heuristic; actual pass rate would require parsing check output
       if (testCheck.conclusion === 'success') {
         outcome.passRate = 1.0;
       } else if (testCheck.conclusion === 'failure') {
-        outcome.passRate = 0.0; // Could be partial, but we don't have granular data
+        outcome.passRate = 0.0;
       }
     }
   } catch (err: unknown) {
@@ -293,8 +550,14 @@ export function collectTestsOutcome(
  *
  * @param prNumber - GitHub PR number
  * @param branchName - Git branch name (unused currently, for future expansion)
- * @param baseBranch - Base branch (unused currently, for future expansion)
+ * @param baseBranch - Base ref for `complexity_delta` computation
+ *   (e.g. `'main'`, `'auto/integration'`). Forwarded to `collectStaticFeatures`
+ *   so PRs targeting non-default bases compute the correct delta.
  * @param repoDir - Repository directory (defaults to cwd)
+ * @param checkoutDir - Optional checkout to reuse when its HEAD matches the
+ *   PR head SHA; otherwise a disposable worktree is created.
+ * @param contract - Optional wavemill enrichment contract used for Intent +
+ *   Provenance when composing the shared candidate features cache entry.
  * @returns Static analysis outcome
  */
 export function collectStaticAnalysisOutcome(
@@ -302,49 +565,136 @@ export function collectStaticAnalysisOutcome(
   branchName: string,
   baseBranch: string,
   repoDir?: string,
+  checkoutDir?: string,
+  contract?: CandidateFeatureContract,
 ): StaticAnalysisOutcome {
   const cwd = repoDir || process.cwd();
   const outcome: StaticAnalysisOutcome = {};
 
+  // Legacy CI-check-name matches (kept for backward compat with historical
+  // consumers). These were empty in 100% of records; they remain as-is.
   try {
-    // Fetch PR checks via shared cache
     const checks = fetchPrChecks(prNumber, cwd);
-
-    if (checks.length === 0) {
-      return outcome;
-    }
-
-    // Look for typecheck-related checks
-    const typecheckCheck = checks.find((c: { name: string }) =>
-      /type|tsc|typecheck/i.test(c.name)
-    );
-    if (typecheckCheck) {
-      outcome.typecheckPassed = typecheckCheck.conclusion === 'success';
-    }
-
-    // Look for lint-related checks
-    const lintCheck = checks.find((c: { name: string }) =>
-      /lint|eslint|prettier/i.test(c.name)
-    );
-    if (lintCheck) {
-      // We can't determine actual delta without detailed output, but we can infer
-      // 0 (no change/passed) vs positive (failures) from conclusion
-      outcome.lintDelta = lintCheck.conclusion === 'success' ? 0 : 1;
-    }
-
-    // Look for security scan checks
-    const securityCheck = checks.find((c: { name: string }) =>
-      /security|codeql|snyk|dependabot/i.test(c.name)
-    );
-    if (securityCheck) {
-      outcome.securityFindingsDelta = securityCheck.conclusion === 'success' ? 0 : 1;
+    if (checks.length > 0) {
+      const typecheckCheck = checks.find((c) =>
+        /type|tsc|typecheck/i.test(c.name ?? '')
+      );
+      if (typecheckCheck) {
+        outcome.typecheckPassed = typecheckCheck.conclusion === 'success';
+      }
+      const lintCheck = checks.find((c) =>
+        /lint|eslint|prettier/i.test(c.name ?? '')
+      );
+      if (lintCheck) {
+        outcome.lintDelta = lintCheck.conclusion === 'success' ? 0 : 1;
+      }
+      const securityCheck = checks.find((c) =>
+        /security|codeql|snyk|dependabot/i.test(c.name ?? '')
+      );
+      if (securityCheck) {
+        outcome.securityFindingsDelta = securityCheck.conclusion === 'success' ? 0 : 1;
+      }
     }
   } catch (err: unknown) {
     const message = errorMessage(err);
-    console.warn(`[outcome-collectors] Failed to collect static analysis outcome: ${message}`);
+    console.warn(`[outcome-collectors] Failed to collect legacy CI check names: ${message}`);
+  }
+
+  // S1 Static feature group (HOK-2806). Threads `baseBranch` down to
+  // `collectStaticFeatures` so PRs targeting non-default bases (e.g.
+  // `auto/integration`) compute `complexity_delta` against the correct ref.
+  try {
+    const s1 = resolveStaticFeatures(prNumber, cwd, checkoutDir, baseBranch, contract);
+    outcome.type_errors = s1.type_errors;
+    outcome.lint_errors = s1.lint_errors;
+    outcome.build_ok = s1.build_ok;
+    outcome.complexity_delta = s1.complexity_delta;
+    outcome.build_evidence = s1.build_evidence;
+    outcome.complexity_metric = s1.complexity_metric;
+  } catch (err: unknown) {
+    const message = errorMessage(err);
+    console.warn(`[outcome-collectors] Failed to collect S1 static features: ${message}`);
+    // Leave S1 fields absent on hard collector failure. Downstream consumers
+    // treat absent and null identically (both = evidence unavailable).
   }
 
   return outcome;
+}
+
+/**
+ * Resolve a PR-head checkout, run `collectStaticFeatures` once, and return
+ * the S1 Static + provenance fields for `StaticAnalysisOutcome`.
+ *
+ * Delegates PR-head resolution, worktree creation, and static-features
+ * computation to `getSharedCandidateFeaturesForPr`, so `collectTestsOutcome`
+ * and this function analyze the same commit and the expensive tsc / eslint /
+ * complexity passes only run once per PR.
+ */
+function resolveStaticFeatures(
+  prNumber: string,
+  repoDir: string,
+  checkoutDir?: string,
+  baseRef?: string,
+  contract?: CandidateFeatureContract,
+): StaticFeaturesResult {
+  const empty: StaticFeaturesResult = {
+    type_errors: null,
+    lint_errors: null,
+    build_ok: null,
+    complexity_delta: null,
+    build_evidence: null,
+    complexity_metric: null,
+  };
+  if (!prNumber || !/^\d+$/.test(prNumber)) return empty;
+  if (!isExistingDir(repoDir)) return empty;
+  if (checkoutDir && !isExistingDir(checkoutDir)) return empty;
+
+  const shared = getSharedCandidateFeaturesForPr(prNumber, checkoutDir, repoDir, {
+    ...(baseRef ? { baseRef } : {}),
+    ...(contract ? { contract } : {}),
+  });
+  const staticFeatures = shared.staticFeatures;
+  if (!staticFeatures) return empty;
+  if (!shared.features) return staticFeatures;
+  // `build_evidence` and `complexity_metric` live outside the frozen
+  // `candidate_features/v1` shape, so keep them from the raw static result;
+  // the four v1 fields come from the extractor (identical values here since
+  // we passed `staticFeatures` in — the extractor doesn't recompute).
+  return {
+    ...staticFeatures,
+    type_errors: shared.features.type_errors,
+    lint_errors: shared.features.lint_errors,
+    build_ok: shared.features.build_ok,
+    complexity_delta: shared.features.complexity_delta,
+  };
+}
+
+function fetchPrHeadSha(prNumber: string, repoDir: string): string | null {
+  const result = execArgvCommand(
+    'gh',
+    ['pr', 'view', prNumber, '--json', 'headRefOid', '-q', '.headRefOid'],
+    { cwd: repoDir, timeout: 15_000, encoding: 'utf-8' },
+  );
+  if (result.failed || result.exitCode !== 0) return null;
+  const sha = result.stdout.trim();
+  return sha.length === 40 ? sha : null;
+}
+
+function isExistingDir(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function pruneStaleWorktrees(repoDir: string): void {
+  try {
+    // git worktree prune removes worktrees whose directories are gone.
+    execArgvCommand('git', ['worktree', 'prune'], {
+      cwd: repoDir, timeout: 10_000, encoding: 'utf-8',
+    });
+  } catch { /* best effort */ }
 }
 
 // ────────────────────────────────────────────────────────────────

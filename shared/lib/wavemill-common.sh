@@ -582,19 +582,19 @@ cleanup_episode_required_action() {
   local failure_class="$1" outcome="$2" branch="$3"
   case "$failure_class:$outcome" in
     expected-preservation:dirty_worktree|expected-preservation:local-work-preserved)
-      printf 'Commit, stash, or discard the retained worktree changes, then acknowledge cleanup recovery.'
+      printf 'Commit, stash, or discard the retained worktree changes, then run wavemill cleanup <issue> --dry-run.'
       ;;
     expected-preservation:*)
-      printf 'Push %s to origin or explicitly abandon it, then acknowledge cleanup recovery.' "$branch"
+      printf 'Push %s to origin or explicitly abandon it, then run wavemill cleanup <issue> --dry-run.' "$branch"
       ;;
     transient:*)
       printf 'Restore remote/GitHub connectivity or credentials; cleanup will retry with backoff.'
       ;;
     operational:*)
-      printf 'Inspect local worktree, branch, and tmux cleanup failure, then acknowledge cleanup recovery.'
+      printf 'Inspect local worktree, branch, and tmux cleanup failure, then run wavemill cleanup <issue> --dry-run.'
       ;;
     *)
-      printf 'Inspect cleanup evidence and acknowledge recovery when resolved.'
+      printf 'Inspect cleanup evidence with wavemill cleanup <issue> --dry-run; finalize with --execute only after the decision is safe.'
       ;;
   esac
 }
@@ -653,7 +653,7 @@ cleanup_episode_record_outcome() {
       if (( next_attempt >= max_attempts )); then
         disposition="needs-user"
         resource_disposition="verification-required"
-        required_action="Cleanup retry budget exhausted. Inspect evidence and acknowledge recovery."
+        required_action="Cleanup retry budget exhausted. Inspect evidence with wavemill cleanup ${issue} --dry-run; finalize with --execute only after the decision is safe."
         next_retry_at=""
       else
         delay="$(cleanup_episode_backoff_delay_seconds "$next_attempt" "$(printf '%s' "$candidate_json" | jq -r '.fingerprint')")"
@@ -841,6 +841,8 @@ _wavemill_write_preserved_branch_incident() {
 #   safe_ancestor        local head is an ancestor of the effective base
 #   safe_exact_remote    remote task branch exists and carries the local head
 #   safe_terminal_pr_head terminal merged PR headRefOid equals the local head
+#   safe_patch_equivalent_pr merged PR/base contains the same patch IDs
+#   safe_abandoned_closed_loser closed losing challenge arm explicitly abandoned
 #   safe_noop            nothing deletable (protected/non-task/absent branch)
 #   shadow_would_delete  deletion authority exists, but branch deletion mode is shadow
 #   retain_dirty         worktree dirty or unreadable
@@ -850,7 +852,7 @@ _wavemill_write_preserved_branch_incident() {
 #   operation_failed     deletion was authorized but removal failed
 cleanup_outcome_is_safe() {
   case "${1:-${WAVEMILL_CLEANUP_OUTCOME:-}}" in
-    safe_ancestor|safe_exact_remote|safe_terminal_pr_head|safe_noop|shadow_would_delete) return 0 ;;
+    safe_ancestor|safe_exact_remote|safe_terminal_pr_head|safe_patch_equivalent_pr|safe_abandoned_closed_loser|safe_noop|shadow_would_delete) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -876,6 +878,8 @@ _wavemill_cleanup_operator_guidance() {
     retain_unpublished)
       if [[ "$detail" == "changed_after_pr_head" ]]; then
         printf 'Local head of %s moved past the recorded PR head; inspect the extra commits (git log %s) and open a follow-up PR if they matter before deleting.' "$branch" "$branch"
+      elif [[ "$detail" == "unique_local_patch" ]]; then
+        printf 'Local patches on %s are not patch-equivalent to the merged PR/base; inspect or publish the unique commits before retrying cleanup.' "$branch"
       else
         printf 'Branch %s has commits not proven on the base, the remote, or a merged PR; push the branch or explicitly abandon it. Do not recreate deleted remote branches automatically.' "$branch"
       fi
@@ -987,6 +991,10 @@ _wavemill_record_cleanup_decision() {
     --arg finalHeadSha "${final_head_sha:-}" \
     --arg finalDirtyStatus "${final_dirty:-}" \
     --arg finalCheckPassed "${final_check_passed:-}" \
+    --arg patchCherryStatus "${patch_cherry_status:-}" \
+    --arg patchUniqueCount "${patch_unique_count:-}" \
+    --arg patchEquivalentCount "${patch_equivalent_count:-}" \
+    --arg patchTotalCount "${patch_total_count:-}" \
     --arg authority "${cleanup_authority:-}" \
     --arg decisionMode "${cleanup_decision_mode:-}" \
     --arg wouldDelete "${cleanup_decision_would_delete:-}" \
@@ -1010,6 +1018,12 @@ _wavemill_record_cleanup_decision() {
     | if $finalHeadSha != "" then . + {finalHeadSha: $finalHeadSha} else . end
     | if $finalDirtyStatus != "" then . + {finalDirtyStatus: $finalDirtyStatus} else . end
     | if $finalCheckPassed != "" then . + {finalCheckPassed: ($finalCheckPassed == "true")} else . end
+    | if $patchCherryStatus != "" then . + {patchEquivalence: {
+        status: $patchCherryStatus,
+        uniqueCount: (if ($patchUniqueCount | test("^[0-9]+$")) then ($patchUniqueCount | tonumber) else null end),
+        equivalentCount: (if ($patchEquivalentCount | test("^[0-9]+$")) then ($patchEquivalentCount | tonumber) else null end),
+        totalCount: (if ($patchTotalCount | test("^[0-9]+$")) then ($patchTotalCount | tonumber) else null end)
+      }} else . end
     | if $authority != "" then . + {authority: $authority} else . end
     | if $decisionMode != "" then . + {mode: $decisionMode} else . end
     | if $wouldDelete != "" then . + {wouldDelete: ($wouldDelete == "true")} else . end
@@ -1131,6 +1145,7 @@ safe_remove_task_worktree_and_branch() {
   local pr_head_oid=""
   local pr_head_ref=""
   local pr_base_ref=""
+  local pr_merge_sha=""
   local configured_merge_method=""
   local cleanup_decision_mode=""
   local cleanup_decision_would_delete=""
@@ -1138,6 +1153,12 @@ safe_remove_task_worktree_and_branch() {
   local final_head_sha=""
   local final_dirty=""
   local final_check_passed=""
+  local patch_cherry_output=""
+  local patch_cherry_status=""
+  local patch_unique_count=""
+  local patch_equivalent_count=""
+  local patch_total_count=""
+  local abandon_issue="${WAVEMILL_CLEANUP_ABANDON_ISSUE:-}"
 
   WAVEMILL_CLEANUP_OUTCOME=""
 
@@ -1277,43 +1298,83 @@ safe_remove_task_worktree_and_branch() {
           fi
         fi
 
-        if [[ -z "$verification_reason" && "$remote_contains_head" != "true" ]]; then
-          if wavemill_pr_aware_cleanup_enabled && [[ -n "$pr" ]]; then
-            pr_lookup_status="attempted"
-            if wavemill_fetch_pr_terminal_evidence "$pr"; then
-              pr_lookup_status="ok"
-              pr_state_evidence="$WAVEMILL_PR_EVIDENCE_STATE"
-              pr_merged_at="$WAVEMILL_PR_EVIDENCE_MERGED_AT"
-              pr_head_oid="$WAVEMILL_PR_EVIDENCE_HEAD_OID"
-              pr_head_ref="$WAVEMILL_PR_EVIDENCE_HEAD_REF"
-              pr_base_ref="$WAVEMILL_PR_EVIDENCE_BASE_REF"
-              wavemill_record_pr_delivery_evidence "$issue" "$pr"
-              if [[ "$pr_state_evidence" == "MERGED" ]]; then
-                if [[ "$pr_base_ref" != "$base_branch" ]]; then
-                  classification="retain_unverifiable"
-                  verification_reason="pr_base_mismatch:${pr_base_ref:-unknown}"
-                elif [[ -z "$pr_head_oid" ]]; then
-                  classification="retain_unverifiable"
-                  verification_reason="pr_head_oid_missing"
-                elif [[ "$pr_head_oid" == "$local_head_sha" ]]; then
-                  classification="safe_terminal_pr_head"
-                  cleanup_authority="PR #${pr} merged into ${base_branch} with headRefOid exactly equal to local head ${local_head_sha}"
-                else
-                  classification="retain_unpublished"
-                  verification_reason="changed_after_pr_head"
-                fi
-              elif [[ "$pr_state_evidence" == "CLOSED" && -z "$pr_merged_at" ]]; then
-                classification="retain_closed_unmerged"
-                verification_reason="pr_closed_unmerged"
-              else
+        if [[ -z "$verification_reason" ]] && wavemill_pr_aware_cleanup_enabled && [[ -n "$pr" ]]; then
+          pr_lookup_status="attempted"
+          if wavemill_fetch_pr_terminal_evidence "$pr"; then
+            pr_lookup_status="ok"
+            pr_state_evidence="$WAVEMILL_PR_EVIDENCE_STATE"
+            pr_merged_at="$WAVEMILL_PR_EVIDENCE_MERGED_AT"
+            pr_head_oid="$WAVEMILL_PR_EVIDENCE_HEAD_OID"
+            pr_head_ref="$WAVEMILL_PR_EVIDENCE_HEAD_REF"
+            pr_base_ref="$WAVEMILL_PR_EVIDENCE_BASE_REF"
+            pr_merge_sha="$WAVEMILL_PR_EVIDENCE_MERGE_SHA"
+            wavemill_record_pr_delivery_evidence "$issue" "$pr"
+            if [[ "$pr_state_evidence" == "MERGED" ]]; then
+              if [[ "$pr_base_ref" != "$base_branch" ]]; then
+                classification="retain_unverifiable"
+                verification_reason="pr_base_mismatch:${pr_base_ref:-unknown}"
+              elif [[ -z "$pr_head_oid" ]]; then
+                classification="retain_unverifiable"
+                verification_reason="pr_head_oid_missing"
+              elif [[ "$pr_head_oid" == "$local_head_sha" ]]; then
+                classification="safe_terminal_pr_head"
+                cleanup_authority="PR #${pr} merged into ${base_branch} with headRefOid exactly equal to local head ${local_head_sha}"
+              elif git -C "$REPO_DIR" merge-base --is-ancestor "$pr_head_oid" "$local_head_sha" 2>/dev/null; then
                 classification="retain_unpublished"
-                verification_reason="pr_not_terminal:${pr_state_evidence}"
+                verification_reason="changed_after_pr_head"
+              elif patch_cherry_output="$(git -C "$REPO_DIR" cherry "$base_ref" "$task_branch" 2>/dev/null)"; then
+                patch_unique_count="$(printf '%s\n' "$patch_cherry_output" | awk '/^\+/ { count++ } END { print count + 0 }')"
+                patch_equivalent_count="$(printf '%s\n' "$patch_cherry_output" | awk '/^-/ { count++ } END { print count + 0 }')"
+                patch_total_count="$(printf '%s\n' "$patch_cherry_output" | awk '/^[+-]/ { count++ } END { print count + 0 }')"
+                if [[ "$patch_unique_count" == "0" ]]; then
+                  patch_cherry_status="equivalent"
+                  if [[ -n "$pr_merge_sha" ]]; then
+                    classification="safe_patch_equivalent_pr"
+                    cleanup_authority="PR #${pr} merged into ${base_branch}; git cherry found no unique local patch IDs on ${task_branch}"
+                  else
+                    classification="retain_unpublished"
+                    verification_reason="changed_after_pr_head"
+                  fi
+                else
+                  patch_cherry_status="unique"
+                  classification="retain_unpublished"
+                  verification_reason="unique_local_patch"
+                fi
+              else
+                patch_cherry_status="failed"
+                classification="retain_unverifiable"
+                verification_reason="patch_equivalence_failed"
+              fi
+            elif [[ "$pr_state_evidence" == "CLOSED" && -z "$pr_merged_at" ]]; then
+              if [[ "$abandon_issue" == "$issue" ]] \
+                && [[ "$remote_contains_head" == "true" || "$pr_head_oid" == "$local_head_sha" ]]; then
+                classification="safe_abandoned_closed_loser"
+                cleanup_authority="operator abandoned closed PR #${pr}; head is recoverably published"
+              else
+                classification="retain_closed_unmerged"
+                if [[ "$abandon_issue" != "$issue" ]]; then
+                  verification_reason="closed_loser_requires_abandon"
+                elif [[ "$remote_contains_head" != "true" && "$pr_head_oid" != "$local_head_sha" ]]; then
+                  verification_reason="closed_loser_head_unpublished"
+                else
+                  verification_reason="closed_loser_sibling_not_merged"
+                fi
               fi
             else
-              pr_lookup_status="failed"
-              classification="retain_unverifiable"
-              verification_reason="pr_lookup_failed"
+              classification="retain_unpublished"
+              verification_reason="pr_not_terminal:${pr_state_evidence}"
             fi
+          else
+            pr_lookup_status="failed"
+            classification="retain_unverifiable"
+            verification_reason="pr_lookup_failed"
+          fi
+        fi
+
+        if [[ -z "$verification_reason" && "$remote_contains_head" != "true" && -z "$classification" ]]; then
+          if wavemill_pr_aware_cleanup_enabled && [[ -n "$pr" ]]; then
+            classification="retain_unverifiable"
+            verification_reason="pr_cleanup_unclassified"
           fi
           if [[ -z "$classification" ]]; then
             verification_reason="remote_missing_local_head"
@@ -1617,6 +1678,11 @@ cleanup_completed_task() {
     cleanup_episode_record_outcome "$issue" "reaped" "none" "cleanup-complete" "$cleanup_candidate_json" "" 2>/dev/null || true
   fi
   set_task_lifecycle_disposition "$issue" "" "reaped" "" "cleanup_completed_task" 2>/dev/null || true
+  if ! write_terminal_task_tombstone "$issue" "cleanup_completed_task" "${completion_reason:-cleanup_completed_task}" "${cleanup_outcome:-reaped}" ""; then
+    set_task_lifecycle_disposition "$issue" "" "verification-required" "terminal-tombstone-write-failed" "cleanup_completed_task" 2>/dev/null || true
+    log_warn "  $issue cleanup could not write terminal tombstone; keeping task state"
+    return 1
+  fi
   remove_task_state "$issue"
   monitor_deregister_terminal_task "$issue"
 
@@ -5150,6 +5216,96 @@ state_mutate() {
   return "$mutate_status"
 }
 
+terminal_task_tombstone_matches() {
+  local issue="${1:-}" pr="${2:-}" branch="${3:-}" worktree="${4:-}" run_epoch="${5:-}"
+  [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
+  jq -e \
+    --arg issue "$issue" \
+    --arg pr "$pr" \
+    --arg branch "$branch" \
+    --arg worktree "$worktree" \
+    --arg runEpoch "$run_epoch" '
+    (.tasks[$issue] == null) and
+    (((.terminalTaskTombstones // {}) | to_entries
+      | map(select(
+          (.value.issue // "") == $issue
+          and (
+            ($pr != "" and ((.value.prNumber // "") | tostring) == $pr)
+            or ($branch != "" and (.value.branch // "") == $branch)
+            or ($worktree != "" and (.value.worktree // "") == $worktree)
+          )
+          and (((.value.runEpoch // "") == "") or ($runEpoch == "") or ((.value.runEpoch // "") == $runEpoch))
+        ))
+      | length) > 0)' "$STATE_FILE" >/dev/null 2>&1
+}
+
+write_terminal_task_history_record() {
+  local issue="$1" record_json="$2"
+  [[ -n "$issue" && -n "$record_json" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
+  state_mutate "$STATE_FILE" '
+    .terminalTaskHistory.tasks[$issue] = $record
+    | if (($record.challengePairId // "") != "" and ($record.challengeRole // "") != "") then
+        .terminalTaskHistory.challengePairs[$record.challengePairId][$record.challengeRole] = $record
+      else .
+      end
+    | .updated = (now | todateiso8601)' \
+    --arg issue "$issue" \
+    --argjson record "$record_json"
+}
+
+write_terminal_task_tombstone() {
+  local issue="$1" actor="${2:-wavemill}" command="${3:-cleanup_completed_task}" decision_status="${4:-reaped}" decision_reason="${5:-}"
+  local task_json tombstone key
+  [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
+  task_json="$(jq -c --arg issue "$issue" '.tasks[$issue] // empty' "$STATE_FILE" 2>/dev/null)" || return 1
+  [[ -n "$task_json" ]] || return 1
+  tombstone="$(jq -cn \
+    --arg issue "$issue" \
+    --arg actor "$actor" \
+    --arg command "$command" \
+    --arg decisionStatus "$decision_status" \
+    --arg decisionReason "$decision_reason" \
+    --arg now "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+    --argjson task "$task_json" '
+    ($task.lifecycle // {}) as $l
+    | ($l.launchContract // {}) as $contract
+    | ($l.deliveryEvidence // {}) as $delivery
+    | {
+        schemaVersion: 1,
+        issue: $issue,
+        slug: ($task.slug // ""),
+        branch: ($task.branch // ""),
+        worktree: ($task.worktree // ""),
+        prNumber: (($task.pr // $task.prNumber // $delivery.prNumber // "") | tostring),
+        workflowOutcome: ($l.workflowOutcome // $task.status // ""),
+        resourceDisposition: ($l.resourceDisposition // ""),
+        challengePairId: ($task.challengePairId // ""),
+        challengeRole: ($task.challengeRole // ""),
+        runEpoch: ($contract.runEpoch // ""),
+        attempt: (($task.attempt // $l.attempt // "") | tostring),
+        actor: $actor,
+        command: $command,
+        createdAt: $now,
+        decisionStatus: $decisionStatus,
+        decisionReason: $decisionReason,
+        cleanupDecision: ($l.cleanupEpisode // null),
+        deliveryEvidence: $delivery,
+        task: $task
+      }')" || return 1
+  key="$(jq -r '[.issue, (if .prNumber != "" then .prNumber else .branch end), (if .runEpoch != "" then .runEpoch else "no-epoch" end), (if .attempt != "" then .attempt else "no-attempt" end)] | join("|")' <<<"$tombstone" 2>/dev/null)" || return 1
+  state_mutate "$STATE_FILE" '
+    .terminalTaskTombstones[$key] = $tombstone
+    | .terminalTaskHistory.tasks[$issue] = $tombstone
+    | if (($tombstone.challengePairId // "") != "" and ($tombstone.challengeRole // "") != "") then
+        .terminalTaskHistory.challengePairs[$tombstone.challengePairId][$tombstone.challengeRole] = $tombstone
+      else .
+      end
+    | .updated = (now | todateiso8601)' \
+    --arg key "$key" \
+    --arg issue "$issue" \
+    --argjson tombstone "$tombstone"
+}
+
 # ============================================================================
 # TASK STATE LEDGER
 # ============================================================================
@@ -5341,7 +5497,23 @@ get_challenge_sibling_pr() {
     return 1
   fi
 
-  jq -r --arg issue "$sibling_key" '.tasks[$issue].pr // empty' "$STATE_FILE" 2>/dev/null || true
+  jq -r --arg issue "$sibling_key" --arg pair "$pair_id" --arg role "$role" '
+    (.tasks[$issue].pr // empty) as $activePr
+    | if $activePr != "" then
+        $activePr
+      elif $role == "primary" then
+        .terminalTaskHistory.challengePairs[$pair].challenger.prNumber
+          // .terminalTaskHistory.challengePairs[$pair].challenger.pr
+          // .terminalTaskHistory.tasks[$issue].prNumber
+          // .terminalTaskHistory.tasks[$issue].pr
+          // empty
+      else
+        .terminalTaskHistory.challengePairs[$pair].primary.prNumber
+          // .terminalTaskHistory.challengePairs[$pair].primary.pr
+          // .terminalTaskHistory.tasks[$issue].prNumber
+          // .terminalTaskHistory.tasks[$issue].pr
+          // empty
+      end' "$STATE_FILE" 2>/dev/null || true
 }
 
 # Check if a challenge task's sibling PR was merged.
@@ -5639,6 +5811,13 @@ save_task_state() {
   [[ "$remote_deletion_allowed" == "0" ]] && remote_deletion_allowed="false"
   [[ "$remote_deletion_allowed" == "true" ]] || remote_deletion_allowed="false"
   run_epoch="${WAVEMILL_RUN_EPOCH:-${RUN_EPOCH:-}}"
+
+  if terminal_task_tombstone_matches "$issue" "$pr" "$branch" "$worktree" "$run_epoch"; then
+    if declare -F log_warn >/dev/null 2>&1; then
+      log_warn "save_task_state: refusing to recreate terminal task $issue from tombstone history"
+    fi
+    return 1
+  fi
 
   if ! state_mutate "$STATE_FILE" \
      "$(task_lifecycle_jq_filter '(.tasks[$issue] // {}) as $existing |

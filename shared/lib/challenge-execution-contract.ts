@@ -279,9 +279,24 @@ export interface ChallengeSideResolution {
 }
 
 type WorkflowChallengeTaskState = {
+  slug?: unknown;
+  branch?: unknown;
+  challengePairId?: unknown;
+  challengeStage?: unknown;
+  challengeVariedStage?: unknown;
   challengeRole?: unknown;
   challengeExecutionIntent?: ChallengeExecutionIntent;
   challengeIntent?: ChallengeExecutionIntent;
+  challengeArms?: WorkflowChallengeArmState[];
+};
+
+type WorkflowChallengeArmState = {
+  key?: unknown;
+  slug?: unknown;
+  branch?: unknown;
+  role?: unknown;
+  variedStage?: unknown;
+  executionIntent?: ChallengeExecutionIntent;
 };
 
 type WorkflowChallengeState = {
@@ -1052,6 +1067,10 @@ export interface ChallengedStageIntent {
   agent?: string;
 }
 
+export type ReviewStageChallengePinResolution =
+  | ChallengedStageIntent
+  | { pairId: string; unresolvable: true };
+
 /**
  * Extract a side's expected model/agent for one stage, tolerating both the
  * persisted projection shape (`ChallengeSideIntent`, `expectedStageModel`)
@@ -1111,4 +1130,126 @@ export function resolveChallengedStageIntent(input: {
   const extracted = extractExpectedStage(side, input.stage);
   if (!extracted.model) return undefined;
   return { pairId: intent.pairId, model: extracted.model, agent: extracted.agent };
+}
+
+function challengeIntentIsCanonical(intent: ChallengeExecutionIntent | undefined): intent is ChallengeExecutionIntent {
+  return Boolean(
+    intent
+    && Number(intent.schemaVersion) === 1
+    && clean(intent.pairId)
+    && clean(intent.issueId),
+  );
+}
+
+function taskOrArmMatchesRun(input: {
+  key: string;
+  task: WorkflowChallengeTaskState;
+  featureSlug?: string;
+  branchName?: string;
+}): { taskMatched: boolean; arm?: WorkflowChallengeArmState } {
+  const branch = clean(input.branchName);
+  const branchSlug = branch.replace(/^(task|bug)\//, '');
+  const featureSlug = clean(input.featureSlug);
+  const taskSlug = clean(input.task.slug);
+  const taskBranch = clean(input.task.branch);
+  const taskMatched = Boolean(
+    (featureSlug && (input.key === featureSlug || taskSlug === featureSlug))
+    || (branch && (input.key === branch || taskBranch === branch))
+    || (branchSlug && (input.key === branchSlug || taskSlug === branchSlug))
+  );
+
+  const arm = (input.task.challengeArms ?? []).find((candidate) => {
+    const armKey = clean(candidate.key);
+    const armSlug = clean(candidate.slug);
+    const armBranch = clean(candidate.branch);
+    return Boolean(
+      (featureSlug && (armKey === featureSlug || armSlug === featureSlug))
+      || (branch && (armKey === branch || armBranch === branch))
+      || (branchSlug && (armKey === branchSlug || armSlug === branchSlug))
+    );
+  });
+
+  return { taskMatched, arm };
+}
+
+function taskHasReviewChallengeArm(task: WorkflowChallengeTaskState): boolean {
+  return (task.challengeArms ?? []).some((arm) => clean(arm.variedStage) === 'review');
+}
+
+function taskIsReviewStageChallengeMember(
+  task: WorkflowChallengeTaskState,
+  arm?: WorkflowChallengeArmState,
+): boolean {
+  if (arm) return clean(arm.variedStage) === 'review';
+  const taskStage = clean(task.challengeStage) || clean(task.challengeVariedStage);
+  if (taskStage === 'review') return true;
+  if (task.challengeExecutionIntent && stageFromIntent(task.challengeExecutionIntent) === 'review') return true;
+  return taskHasReviewChallengeArm(task);
+}
+
+/**
+ * Resolve the mandatory reviewer-stage challenge pin. Unlike
+ * resolveChallengedStageIntent, this function treats known review-stage
+ * challenge membership with no resolvable canonical intent as terminally
+ * unresolvable so callers can fail closed instead of launching unpinned.
+ */
+export function resolveReviewStageChallengePin(input: {
+  repoDir: string;
+  featureDir?: string;
+  branchName?: string;
+}): ReviewStageChallengePinResolution | undefined {
+  const filePin = resolveChallengedStageIntent({
+    repoDir: input.repoDir,
+    featureDir: input.featureDir,
+    branchName: input.branchName,
+    stage: 'review',
+  });
+  if (filePin) return filePin;
+
+  const state = loadWorkflowChallengeState(input.repoDir);
+  const featureSlug = input.featureDir ? path.basename(input.featureDir) : undefined;
+  const tasks = state?.tasks ?? {};
+  for (const [key, task] of Object.entries(tasks)) {
+    const match = taskOrArmMatchesRun({
+      key,
+      task,
+      featureSlug,
+      branchName: input.branchName,
+    });
+    if (!match.taskMatched && !match.arm) continue;
+    if (!taskIsReviewStageChallengeMember(task, match.arm)) continue;
+
+    const pairId = clean(task.challengePairId)
+      || clean(task.challengeExecutionIntent?.pairId)
+      || clean(match.arm?.executionIntent?.pairId);
+    if (!pairId) continue;
+
+    const stateIntent = loadChallengeIntentFromState(input.repoDir, key, pairId);
+    const armIntent = match.arm?.executionIntent;
+    const intent = challengeIntentIsCanonical(stateIntent)
+      ? stateIntent
+      : challengeIntentIsCanonical(armIntent)
+        ? armIntent
+        : undefined;
+    if (intent && stageFromIntent(intent) === 'review') {
+      const explicitSide = asChallengeSide(match.arm?.role) ?? asChallengeSide(task.challengeRole);
+      const resolution = resolveChallengeSide({
+        repoDir: input.repoDir,
+        slug: featureSlug,
+        branchName: input.branchName,
+        issueId: key,
+        challengePairId: pairId,
+        explicitSide,
+      });
+      const sideIntent = resolution.side === 'challenger' ? intent.challenger : intent.primary;
+      const extracted = extractExpectedStage(sideIntent, 'review');
+      if (extracted.model) {
+        return { pairId, model: extracted.model, agent: extracted.agent };
+      }
+    }
+
+    return { pairId, unresolvable: true };
+  }
+
+  return undefined;
 }

@@ -109,6 +109,53 @@ describe('review-runner', () => {
       assert.match(source, /operatingMode:\s*options\.operatingMode/);
     });
 
+    it('fails closed without running review when a reviewer-stage challenge pin is unresolvable', async () => {
+      const featureDir = join(TEST_DIR, 'features', 'external-harness-challenger');
+      mkdirSync(featureDir, { recursive: true });
+      mock.method(reviewRunnerDeps, 'getCurrentBranch', () => 'task/external-harness-challenger');
+      mock.method(reviewRunnerDeps, 'getGitDiff', () => 'diff --git a/app.ts b/app.ts');
+      mock.method(reviewRunnerDeps, 'assertReviewableDiff', () => undefined);
+      mock.method(reviewRunnerDeps, 'ensureClaudeAvailable', async () => undefined);
+      mock.method(reviewRunnerDeps, 'gatherReviewContextAsync', async () => ({
+        diff: 'diff --git a/app.ts b/app.ts',
+        plan: 'plan',
+        taskPacket: 'packet',
+        designContext: null,
+        metadata: {
+          branch: 'task/external-harness-challenger',
+          files: ['app.ts'],
+          lineCount: { added: 1, removed: 0 },
+          hasUiChanges: false,
+        },
+      }));
+      mock.method(reviewRunnerDeps, 'validateReviewScope', () => ({
+        ok: true,
+        status: 'pass',
+        baselineSource: 'explicit',
+        inScopePaths: ['app.ts'],
+        outOfScopePaths: [],
+        findings: [],
+      } satisfies ReviewScopeGuardResult));
+      mock.method(reviewRunnerDeps, 'detectCrossPrReverts', () => []);
+      mock.method(reviewRunnerDeps, 'resolveReviewStageChallengePin', () => ({
+        pairId: 'HOK-2958',
+        unresolvable: true,
+      }));
+      const runReview = mock.method(reviewRunnerDeps, 'runReview', async () => {
+        throw new Error('runReview should not be called');
+      });
+
+      const result = await reviewChanges({ repoDir: TEST_DIR, featureDir });
+
+      assert.equal(runReview.mock.callCount(), 0);
+      assert.equal(result.verdict, 'not_ready');
+      assert.equal(result.failureCategory, 'challenge-review-pin-unresolvable');
+      assert.equal(result.substantiveAnalysisIdentity?.source, 'derived');
+      assert.equal(result.substantiveAnalysisIdentity?.pinned, false);
+      assert.equal(result.substantiveAnalysisIdentity?.fallbackReason, 'challenge_intent_unresolvable');
+      assert.match(result.codeReviewFindings[0].description, /HOK-2958/);
+    });
+
     it('adds a deterministic blocker for unacknowledged cross-PR reverts', async () => {
       mock.method(reviewRunnerDeps, 'getCurrentBranch', () => 'task/remove-strategy');
       mock.method(reviewRunnerDeps, 'getGitDiff', () => 'diff --git a/strategy.txt b/strategy.txt');
