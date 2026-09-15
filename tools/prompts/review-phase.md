@@ -62,7 +62,10 @@ The implementation is complete. Your job is to review and create a PR.
    - A "## Changes" section listing the key files/modules modified
    - A "## Test plan" section describing how the changes were validated
    - A "## Self-review" section noting the review verdict and iterations run
-   - A "## Routing" section when route artifacts or `{{FEATURE_DIR}}/routing.jsonl` exist.
+   - An optional "## Routing" section when route artifacts or `{{FEATURE_DIR}}/routing.jsonl` exist.
+     Label it **Non-authoritative routing context**. Wavemill stamps the authoritative
+     machine-readable executed planner/coder/reviewer route into `wavemill-meta`
+     before `wm:ready`.
      Distinguish these concepts explicitly when the artifacts are available:
      bootstrap route from `{{FEATURE_DIR}}/.initial-route.json`,
      actual planning execution from `{{FEATURE_DIR}}/.planning-result.json`,

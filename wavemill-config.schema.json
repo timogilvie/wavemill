@@ -1645,6 +1645,23 @@
                         "type": "string"
                     }
                 },
+                "routeStamp": {
+                    "type": "object",
+                    "description": "PR route provenance stamping before wm:ready. Stamping is enabled by default; requireComplete stays false until all stage producers emit durable executedModel evidence.",
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "Stamp evidence-backed route metadata into wavemill-meta before restoring wm:ready."
+                        },
+                        "requireComplete": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Block wm:ready unless planner, coder, and reviewer route metadata is complete."
+                        }
+                    },
+                    "additionalProperties": false
+                },
                 "remediation": {
                     "type": "object",
                     "description": "Automatic remediation settings for fixable ready-check failures.",

@@ -636,8 +636,14 @@ export interface ReadyConfig {
   remediationLogMaxBytes?: number;
   verificationGatingEnabled?: boolean;
   localCommandMap?: Record<string, string>;
+  routeStamp?: ReadyRouteStampConfig;
   remediation?: ReadyRemediationConfig;
   watchdog?: ReadyWatchdogConfig;
+}
+
+export interface ReadyRouteStampConfig {
+  enabled?: boolean;
+  requireComplete?: boolean;
 }
 
 export interface ReadyMigrationBaseRefreshConfig {

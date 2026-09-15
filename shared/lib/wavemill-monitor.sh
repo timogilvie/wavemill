@@ -3012,6 +3012,38 @@ post_pr_reconciliation_enabled() {
   jq -r 'if .enabled == true then "true" else "false" end' <<< "$recon_json" 2>/dev/null || echo "false"
 }
 
+ready_route_stamp_config_json() {
+  local wt_dir="$1"
+  local user_config="$HOME/.wavemill/config.json"
+  local repo_config="$wt_dir/.wavemill-config.json"
+  local local_config="$wt_dir/.wavemill-config.local.json"
+  local user_json='{}' repo_json='{}' local_json='{}'
+
+  [[ -f "$user_config" ]] && user_json=$(cat "$user_config" 2>/dev/null || echo '{}')
+  [[ -f "$repo_config" ]] && repo_json=$(cat "$repo_config" 2>/dev/null || echo '{}')
+  [[ -f "$local_config" ]] && local_json=$(cat "$local_config" 2>/dev/null || echo '{}')
+
+  jq -n -c \
+    --argjson user "$user_json" \
+    --argjson repo "$repo_json" \
+    --argjson local "$local_json" \
+    '
+    ({ready:{routeStamp:{enabled:true,requireComplete:false}}} * $user * $repo * $local).ready.routeStamp
+    ' 2>/dev/null || echo '{"enabled":true,"requireComplete":false}'
+}
+
+ready_route_stamp_enabled() {
+  local wt_dir="$1" stamp_json
+  stamp_json=$(ready_route_stamp_config_json "$wt_dir")
+  jq -r 'if .enabled == false then "false" else "true" end' <<< "$stamp_json" 2>/dev/null || echo "true"
+}
+
+ready_route_stamp_requires_complete() {
+  local wt_dir="$1" stamp_json
+  stamp_json=$(ready_route_stamp_config_json "$wt_dir")
+  jq -r 'if .requireComplete == true then "true" else "false" end' <<< "$stamp_json" 2>/dev/null || echo "false"
+}
+
 # ── Queue-owned pane release (HOK-2937) ─────────────────────────────────────
 
 PANE_RELEASE_PREREQ_WARNED=false
@@ -9249,12 +9281,33 @@ set_ready_pass_labels() {
   local wt_dir="$1"
   local pr_number="$2"
   local feature_dir="${3:-}"
+  local issue="${4:-}"
 
   if [[ -z "$feature_dir" ]]; then
     feature_dir="$wt_dir/features/$(basename "$wt_dir")"
   fi
+  if [[ -z "$issue" && -f "$feature_dir/.trace-context.json" ]]; then
+    issue=$(jq -r '.issueId // empty' "$feature_dir/.trace-context.json" 2>/dev/null || true)
+  fi
 
   review_result_passes_ready_gate "$feature_dir" || return 1
+
+  if [[ "$(ready_route_stamp_enabled "$wt_dir")" == "true" ]]; then
+    local stamp_args=()
+    if [[ "$(ready_route_stamp_requires_complete "$wt_dir")" == "true" ]]; then
+      stamp_args=(--require-complete)
+    fi
+    if [[ -z "$issue" ]]; then
+      write_ready_attention_file "$feature_dir" "Ready passed for PR #$pr_number, but route metadata could not be stamped because the issue id is unknown."
+      (cd "$wt_dir" && gh pr edit "$pr_number" --remove-label "wm:ready") >/dev/null 2>&1 || true
+      return 1
+    fi
+    if ! (cd "$wt_dir" && npx tsx "$TOOLS_DIR/stamp-pr-route.ts" "$pr_number" --issue "$issue" --feature-dir "$feature_dir" "${stamp_args[@]}"); then
+      write_ready_attention_file "$feature_dir" "Ready passed for PR #$pr_number, but route metadata stamping failed. Re-run tools/stamp-pr-route.ts with --issue $issue and inspect stage-result evidence."
+      (cd "$wt_dir" && gh pr edit "$pr_number" --remove-label "wm:ready") >/dev/null 2>&1 || true
+      return 1
+    fi
+  fi
 
   (cd "$wt_dir" && npx tsx "$TOOLS_DIR/set-pr-ready-label.ts" "$pr_number" --marker-root "$REPO_DIR")
 }
@@ -9741,7 +9794,7 @@ launch_ready_phase() {
   if [[ "$ready_rc" -eq 0 ]]; then
     local main_sha completed_artifacts_json label_failed_artifacts_json
     main_sha=$(get_main_head_sha "$wt_dir" "$base_branch")
-    if ! set_ready_pass_labels "$wt_dir" "$pr_number" "$state_dir" >/dev/null 2>&1; then
+    if ! set_ready_pass_labels "$wt_dir" "$pr_number" "$state_dir" "$issue" >/dev/null 2>&1; then
       label_failed_artifacts_json=$(jq -cn \
         --arg verdict "${verdict:-unknown}" \
         --arg merge_status "${merge_status:-UNKNOWN}" \

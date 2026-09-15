@@ -394,6 +394,7 @@ TESTS=(
   shared/lib/ready-diagnostics.test.ts
   shared/lib/ready-migration-base.test.ts
   shared/lib/repo-context-analyzer.test.ts
+  shared/lib/pr-route-provenance.test.ts
   shared/lib/resource-adapters/dspy-adapter.test.ts
   shared/lib/resource-adapters/native-runtime-adapter.test.ts
   shared/lib/resource-adapters/prompt-adapter.test.ts
@@ -438,6 +439,7 @@ TESTS=(
   tools/openrouter-smoke.test.ts
   tools/plan-launch-priority-certifications.test.ts
   tools/reap-stale-challengers.test.ts
+  tools/stamp-pr-route.test.ts
   shared/lib/test-partitioner.test.ts
   shared/lib/shard-balance.test.ts
   shared/lib/ci-test-timings.test.ts
