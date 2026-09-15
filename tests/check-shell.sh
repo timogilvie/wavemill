@@ -98,6 +98,7 @@ for f in \
   "$REPO_DIR"/tests/project-context-suggestion.test.sh \
   "$REPO_DIR"/tests/wavemill-usage-tips.test.sh \
   "$REPO_DIR"/tests/wavemill-dependent-launch.test.sh \
+  "$REPO_DIR"/tests/wavemill-monitor-executed-model.test.sh \
   "$REPO_DIR"/tests/wavemill-guards.test.sh \
   "$REPO_DIR"/tests/dashboard-incidents-section.test.sh \
   "$REPO_DIR"/tests/review-scope-baseline-handoff.test.sh \

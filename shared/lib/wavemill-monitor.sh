@@ -2481,11 +2481,33 @@ write_stage_result() {
   local agent="${4:-}" model="${5:-}" notes="${6:-}" artifacts_json="${7:-}"
   local started_at_override="${8:-}"
   local result_file="$feature_dir/.${stage}-result.json" previous_status=""
+  local now_for_write=""
+  local resolved_executed_model="" resolved_evidence_status="" resolved_evidence_source="" resolved_evidence_detail=""
 
   # Capture the transition before either writer replaces the result. A malformed
   # or missing result is intentionally treated as an unknown prior state.
   if [[ -f "$result_file" ]]; then
     previous_status="$(jq -r '.status // empty' "$result_file" 2>/dev/null || true)"
+  fi
+
+  if [[ "$status" == "completed" && -n "${TOOLS_DIR:-}" ]]; then
+    local effective_agent="$agent"
+    if [[ -z "$effective_agent" && -f "$result_file" ]]; then
+      effective_agent="$(jq -r '.agent // empty' "$result_file" 2>/dev/null || true)"
+    fi
+    if [[ "$effective_agent" == "claude" || "$effective_agent" == "codex" ]]; then
+      now_for_write="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+      local resolver_args=(--feature-dir "$feature_dir" --stage "$stage" --agent "$effective_agent" --finished-at "$now_for_write")
+      [[ -n "$started_at_override" ]] && resolver_args+=(--started-at "$started_at_override")
+      local resolver_json
+      resolver_json="$(npx tsx "$TOOLS_DIR/resolve-executed-model.ts" "${resolver_args[@]}" 2>/dev/null || true)"
+      if [[ -n "$resolver_json" ]] && jq -e . >/dev/null 2>&1 <<<"$resolver_json"; then
+        resolved_executed_model="$(jq -r '.executedModel // empty' <<<"$resolver_json" 2>/dev/null || true)"
+        resolved_evidence_status="$(jq -r '.evidenceStatus // empty' <<<"$resolver_json" 2>/dev/null || true)"
+        resolved_evidence_source="$(jq -r '.evidenceSource // empty' <<<"$resolver_json" 2>/dev/null || true)"
+        resolved_evidence_detail="$(jq -r '.evidenceDetail // empty' <<<"$resolver_json" 2>/dev/null || true)"
+      fi
+    fi
   fi
 
   # Try the TypeScript CLI first (HOK-1192: structured writes with artifacts support)
@@ -2497,6 +2519,11 @@ write_stage_result() {
     [[ -n "$notes" ]] && cli_args+=(--notes "$notes")
     [[ -n "$artifacts_json" ]] && cli_args+=(--artifacts "$artifacts_json")
     [[ -n "$started_at_override" ]] && cli_args+=(--started-at "$started_at_override")
+    [[ -n "$now_for_write" ]] && cli_args+=(--finished-at "$now_for_write")
+    [[ -n "$resolved_executed_model" ]] && cli_args+=(--executed-model "$resolved_executed_model")
+    [[ -n "$resolved_evidence_status" ]] && cli_args+=(--execution-evidence-status "$resolved_evidence_status")
+    [[ -n "$resolved_evidence_source" ]] && cli_args+=(--execution-evidence-source "$resolved_evidence_source")
+    [[ -n "$resolved_evidence_detail" ]] && cli_args+=(--execution-evidence-detail "$resolved_evidence_detail")
 
     if npx tsx "$TOOLS_DIR/stage-result-cli.ts" write "${cli_args[@]}" 2>/dev/null; then
       _write_stage_result_trace_event "$feature_dir" "$stage" "$status" "$agent" "$model" "$previous_status"
@@ -2507,7 +2534,7 @@ write_stage_result() {
 
   # Fallback: inline JSON construction (legacy path)
   local now
-  now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  now="${now_for_write:-$(date -u +"%Y-%m-%dT%H:%M:%SZ")}"
 
   mkdir -p "$feature_dir"
 
@@ -2523,9 +2550,21 @@ write_stage_result() {
     finished_at="\"$now\""
   fi
 
+  local evidence_status="${resolved_evidence_status:-missing}"
+  local evidence_source="${resolved_evidence_source:-shell-fallback}"
+  local model_attribution_eligible="false"
   local model_attribution_reason="stage_not_completed"
   if [[ "$status" == "completed" ]]; then
-    model_attribution_reason="missing_execution_evidence"
+    if [[ -z "$resolved_executed_model" ]]; then
+      model_attribution_reason="missing_execution_evidence"
+    elif [[ "$evidence_status" == "contradicted" ]]; then
+      model_attribution_reason="execution_contradicted"
+    elif [[ -n "$model" && "$model" != "$resolved_executed_model" ]]; then
+      model_attribution_reason="runtime_fallback"
+    else
+      model_attribution_eligible="true"
+      model_attribution_reason=""
+    fi
   fi
 
   local tmp
@@ -2538,8 +2577,12 @@ write_stage_result() {
     --arg agent "$agent" \
     --arg model "$model" \
     --arg notes "$notes" \
-    --arg evidenceSource "shell-fallback" \
-    --arg evidenceStatus "missing" \
+    --arg executedModel "$resolved_executed_model" \
+    --arg evidenceSource "$evidence_source" \
+    --arg evidenceStatus "$evidence_status" \
+    --arg evidenceDetail "$resolved_evidence_detail" \
+    --arg recordedAt "$now" \
+    --argjson modelAttributionEligible "$model_attribution_eligible" \
     --arg ineligibleReason "$model_attribution_reason" \
     '{
       stage: $stage,
@@ -2549,12 +2592,13 @@ write_stage_result() {
       agent: $agent,
       model: $model,
       intendedModel: ($model | if . == "" then null else . end),
-      executedModel: null,
-      executionEvidence: {status: $evidenceStatus, source: $evidenceSource},
-      modelAttributionEligible: false,
-      modelAttributionIneligibleReason: $ineligibleReason,
+      executedModel: ($executedModel | if . == "" then null else . end),
+      executionEvidence: ({status: $evidenceStatus, source: $evidenceSource}
+        + (if $evidenceDetail == "" then {} else {detail: $evidenceDetail} end)
+        + {recordedAt: $recordedAt}),
+      modelAttributionEligible: $modelAttributionEligible,
       notes: $notes
-    }' > "$tmp" 2>/dev/null || { rm -f "$tmp"; log_warn "write_stage_result: jq failed"; return 0; }
+    } + (if $ineligibleReason == "" then {} else {modelAttributionIneligibleReason: $ineligibleReason} end)' > "$tmp" 2>/dev/null || { rm -f "$tmp"; log_warn "write_stage_result: jq failed"; return 0; }
   mv "$tmp" "$result_file"
   _write_stage_result_trace_event "$feature_dir" "$stage" "$status" "$agent" "$model" "$previous_status"
 }

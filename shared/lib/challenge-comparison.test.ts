@@ -810,6 +810,89 @@ test('matching intended and executed varied-stage models are attribution eligibl
   }
 });
 
+test('session-derived Claude and Codex coder evidence passes provenance validation', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'challenge-cli-session-stage-test-'));
+  try {
+    const primaryDir = join(tmp, 'features', 'primary');
+    const challengerDir = join(tmp, 'features', 'challenger');
+    mkdirSync(primaryDir, { recursive: true });
+    mkdirSync(challengerDir, { recursive: true });
+    writeStage(primaryDir, 'coding', 'codex', 'gpt-5.5');
+    writeStage(challengerDir, 'coding', 'claude', 'claude-haiku-4-5');
+    for (const [filePath, source] of [
+      [join(primaryDir, '.coding-result.json'), 'codex-session'],
+      [join(challengerDir, '.coding-result.json'), 'claude-session'],
+    ] as const) {
+      const json = JSON.parse(readFileSync(filePath, 'utf8')) as Record<string, unknown>;
+      json.executionEvidence = { status: 'direct', source, detail: 'models=1; sessions=1' };
+      writeFileSync(filePath, JSON.stringify(json));
+    }
+
+    const primaryRouting = makeRouting({ coder: 'gpt-5.5' });
+    const challengerRouting = makeRouting({ coder: 'claude-haiku-4-5' });
+    const variedDimensions = detectVariedDimensions(primaryRouting, challengerRouting);
+    const validation = validateChallengeExecutionProvenance({
+      primaryExecution: resolveChallengeSideExecutionProvenance({ featureDir: primaryDir }),
+      challengerExecution: resolveChallengeSideExecutionProvenance({ featureDir: challengerDir }),
+      primaryRouting,
+      challengerRouting,
+      primaryModel: primaryRouting.coder,
+      challengerModel: challengerRouting.coder,
+      variedDimensions,
+    });
+
+    assert.equal(validation.valid, true);
+    assert.equal(validation.modelAttributionEligible, true);
+    assert.deepEqual(validation.issues, []);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('session-observed coder model switch is a valid runtime-fallback downgrade', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'challenge-cli-runtime-fallback-test-'));
+  try {
+    const primaryDir = join(tmp, 'features', 'primary');
+    const challengerDir = join(tmp, 'features', 'challenger');
+    mkdirSync(primaryDir, { recursive: true });
+    mkdirSync(challengerDir, { recursive: true });
+    writeStage(primaryDir, 'coding', 'codex', 'gpt-5.5');
+    writeStage(challengerDir, 'coding', 'claude', 'claude-haiku-4-5');
+    const primaryCoding = join(primaryDir, '.coding-result.json');
+    const primaryJson = JSON.parse(readFileSync(primaryCoding, 'utf8')) as Record<string, unknown>;
+    primaryJson.executedModel = 'gpt-5.4';
+    primaryJson.executionEvidence = {
+      status: 'direct',
+      source: 'codex-session',
+      detail: 'models=gpt-5.5:1,gpt-5.4:4; sessions=1',
+    };
+    primaryJson.modelAttributionEligible = false;
+    primaryJson.modelAttributionIneligibleReason = 'runtime_fallback';
+    writeFileSync(primaryCoding, JSON.stringify(primaryJson));
+
+    const primaryRouting = makeRouting({ coder: 'gpt-5.5' });
+    const challengerRouting = makeRouting({ coder: 'claude-haiku-4-5' });
+    const variedDimensions = detectVariedDimensions(primaryRouting, challengerRouting);
+    const validation = validateChallengeExecutionProvenance({
+      primaryExecution: resolveChallengeSideExecutionProvenance({ featureDir: primaryDir }),
+      challengerExecution: resolveChallengeSideExecutionProvenance({ featureDir: challengerDir }),
+      primaryRouting,
+      challengerRouting,
+      primaryModel: primaryRouting.coder,
+      challengerModel: challengerRouting.coder,
+      variedDimensions,
+    });
+
+    assert.equal(validation.valid, true);
+    assert.equal(validation.modelAttributionEligible, false);
+    assert.equal(validation.issues[0].reason, 'executed-model-mismatch');
+    assert.equal(validation.issues[0].intendedModel, 'gpt-5.5');
+    assert.equal(validation.issues[0].executedModel, 'gpt-5.4');
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test('planner verified runtime fallback is compared but model-attribution ineligible', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'challenge-provenance-test-'));
   try {

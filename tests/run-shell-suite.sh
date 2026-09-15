@@ -32,6 +32,7 @@ TESTS=(
   monitor-env-completeness.test.sh
   wavemill-expand-direct.test.sh
   routing-complete-writes.test.sh
+  wavemill-monitor-executed-model.test.sh
   apply-expanded-route.test.sh
   challenge-intent-roundtrip.test.sh
   challenge-varied-model-abort.test.sh
