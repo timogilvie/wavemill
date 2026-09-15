@@ -10761,7 +10761,7 @@ terminalize_challenge_invalid_evidence() {
       "Challenge eval evidence for $issue (pair $pair_id) is invalid_challenge ($divergence_reason; eval $eval_ids) - terminal, no relaunch can fix it - retire the invalid arm or run challenge-pair-recovery"; then
     # First-time transition: write artifact and mark invalid
     artifact_path=$(write_manual_challenge_comparison_artifact "$pair_id" "$primary_key" "$challenger_key" "" 0 0 "invalid" "$divergence_reason" "$eval_ids" || true)
-    mark_challenge_invalid "$pair_id" "$divergence_reason" "invalid current-head eval evidence (eval $eval_ids) at head $head; see $artifact_path" "$artifact_path"
+    mark_challenge_invalid "$pair_id" "$divergence_reason" "invalid current-head eval evidence (eval $eval_ids) at head $head - details in $artifact_path" "$artifact_path"
     log_warn "challenge eval evidence invalid for $issue (pair $pair_id): $divergence_reason - terminal, not relaunching"
   else
     # Sentinel already exists or mark_exhausted failed; check if state is already invalid
@@ -10770,7 +10770,7 @@ terminalize_challenge_invalid_evidence() {
     if [[ "$comparison_state" != "invalid_challenge" ]]; then
       # Pre-existing sentinel from earlier mislabeled stale exhaustion; fix it now
       artifact_path=$(write_manual_challenge_comparison_artifact "$pair_id" "$primary_key" "$challenger_key" "" 0 0 "invalid" "$divergence_reason" "$eval_ids" || true)
-      mark_challenge_invalid "$pair_id" "$divergence_reason" "invalid current-head eval evidence (eval $eval_ids) at head $head; see $artifact_path" "$artifact_path"
+      mark_challenge_invalid "$pair_id" "$divergence_reason" "invalid current-head eval evidence (eval $eval_ids) at head $head - details in $artifact_path" "$artifact_path"
       log_warn "challenge eval evidence invalid for $issue (pair $pair_id): $divergence_reason - correcting terminal state"
     fi
   fi
