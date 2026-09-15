@@ -460,3 +460,107 @@ describe('validateMetadataFields', () => {
     assert.equal(errors[0].field, 'schema-version');
   });
 });
+
+describe('route metadata (HOK-2945)', () => {
+  const ROUTE_JSON = JSON.stringify({
+    head_sha: 'abc123',
+    planner: { status: 'executed', model: 'claude-opus-5' },
+    coder: { status: 'executed', model: 'claude-fable-5' },
+    reviewer: { status: 'executed', model: 'gpt-5.5' },
+  });
+
+  it('round-trips route_schema and executed_route', () => {
+    const metadata: PrMetadata = {
+      task: 'HOK-2945',
+      route_schema: '1',
+      executed_route: ROUTE_JSON,
+    };
+    const rendered = renderPrMetadata(metadata);
+    const parsed = parsePrMetadata(rendered);
+    assert.equal(parsed.ok, true);
+    if (!parsed.ok) return;
+    assert.equal(parsed.metadata.route_schema, '1');
+    assert.equal(parsed.metadata.executed_route, ROUTE_JSON);
+  });
+
+  it('old blocks without route fields remain valid', () => {
+    const body = ['<!-- wavemill-meta', 'task: HOK-1234', '-->'].join('\n');
+    const parsed = parsePrMetadata(body);
+    assert.equal(parsed.ok, true);
+    if (!parsed.ok) return;
+    assert.equal(parsed.metadata.task, 'HOK-1234');
+    assert.equal(parsed.metadata.route_schema, undefined);
+    assert.equal(parsed.metadata.executed_route, undefined);
+  });
+
+  it('rejects malformed executed_route JSON', () => {
+    const body = ['<!-- wavemill-meta', 'executed_route: not-json', '-->'].join('\n');
+    const parsed = parsePrMetadata(body);
+    assert.equal(parsed.ok, false);
+    if (parsed.ok) return;
+    assert.equal(parsed.errors[0].field, 'executed_route');
+    assert.equal(parsed.errors[0].code, 'wrong-type');
+  });
+
+  it('rejects non-object executed_route', () => {
+    const body = ['<!-- wavemill-meta', 'executed_route: [1,2,3]', '-->'].join('\n');
+    const parsed = parsePrMetadata(body);
+    assert.equal(parsed.ok, false);
+    if (parsed.ok) return;
+    assert.equal(parsed.errors[0].field, 'executed_route');
+    assert.equal(parsed.errors[0].code, 'wrong-type');
+  });
+
+  it('renders route fields in deterministic order after other fields', () => {
+    const rendered = renderPrMetadata({
+      route_schema: '1',
+      executed_route: ROUTE_JSON,
+      task: 'HOK-2945',
+    });
+    const lines = rendered.split('\n');
+    const taskIdx = lines.findIndex((l) => l.startsWith('task:'));
+    const schemaIdx = lines.findIndex((l) => l.startsWith('route_schema:'));
+    const routeIdx = lines.findIndex((l) => l.startsWith('executed_route:'));
+    assert.ok(taskIdx < schemaIdx, 'task before route_schema');
+    assert.ok(schemaIdx < routeIdx, 'route_schema before executed_route');
+  });
+
+  it('preserves existing metadata when adding route fields via updatePrMetadata', () => {
+    const body = ['# PR Summary', '', '<!-- wavemill-meta', 'task: HOK-2945', 'risk: high', '-->'].join('\n');
+    const updated = updatePrMetadata(body, {
+      task: 'HOK-2945',
+      risk: 'high',
+      route_schema: '1',
+      executed_route: ROUTE_JSON,
+    });
+    const parsed = parsePrMetadata(updated);
+    assert.equal(parsed.ok, true);
+    if (!parsed.ok) return;
+    assert.equal(parsed.metadata.task, 'HOK-2945');
+    assert.equal(parsed.metadata.risk, 'high');
+    assert.equal(parsed.metadata.route_schema, '1');
+    assert.equal(parsed.metadata.executed_route, ROUTE_JSON);
+    assert.ok(updated.includes('# PR Summary'));
+  });
+
+  it('idempotent update with route fields', () => {
+    const metadata: PrMetadata = {
+      task: 'HOK-2945',
+      route_schema: '1',
+      executed_route: ROUTE_JSON,
+    };
+    const once = updatePrMetadata('Summary', metadata);
+    const twice = updatePrMetadata(once, metadata);
+    assert.equal(twice, once);
+  });
+
+  it('validateMetadataFields rejects invalid executed_route JSON at write time', () => {
+    const errors = validateMetadataFields({
+      task: 'HOK-1',
+      executed_route: 'not-json',
+    });
+    assert.equal(errors.length, 1);
+    assert.equal(errors[0].field, 'executed_route');
+    assert.equal(errors[0].code, 'wrong-type');
+  });
+});
