@@ -27,6 +27,7 @@ import {
   type TendCandidate,
   type TendDecision,
 } from './tend-controller.ts';
+import { clearConfigCache } from './config.ts';
 
 function metadata(lines: string[] = ['task: HOK-1437']): string {
   return ['<!-- wavemill-meta', ...lines, '-->'].join('\n');
@@ -1479,6 +1480,130 @@ describe('defaultHealthChecker', () => {
       repo.cleanup();
     }
   });
+
+  // HOK-3009: an advisory check (OpenRouter Alias Audit by default) failing on
+  // the integration tip must not halt the merge lane — the failure is
+  // surfaced through advisoryFailures so the status line and
+  // backstage-health.json can display it.
+  it('classifies an advisory check failure as healthy with advisoryFailures surfaced', async () => {
+    const repo = createRepoWithRemoteIntegration();
+
+    try {
+      clearConfigCache();
+      await withFakeGh(
+        '{"check_runs":[{"name":"OpenRouter Alias Audit","conclusion":"failure"},{"name":"ci","conclusion":"success"}]}',
+        async () => {
+          const health = await defaultHealthChecker('auto/integration', repo.repoDir);
+          assert.deepEqual(health, {
+            state: 'healthy',
+            advisoryFailures: [{ name: 'OpenRouter Alias Audit', conclusion: 'failure' }],
+          });
+        },
+      );
+    } finally {
+      clearConfigCache();
+      repo.cleanup();
+    }
+  });
+
+  it('reports unhealthy when a non-advisory failure is present alongside an advisory failure', async () => {
+    const repo = createRepoWithRemoteIntegration();
+
+    try {
+      clearConfigCache();
+      await withFakeGh(
+        '{"check_runs":[{"name":"OpenRouter Alias Audit","conclusion":"failure"},{"name":"unit","conclusion":"failure"}]}',
+        async () => {
+          const health = await defaultHealthChecker('auto/integration', repo.repoDir);
+          assert.equal(health.state, 'unhealthy');
+          assert.equal(health.reason, 'unit: failure');
+        },
+      );
+    } finally {
+      clearConfigCache();
+      repo.cleanup();
+    }
+  });
+
+  it('omits the advisoryFailures field when the advisory check is passing', async () => {
+    const repo = createRepoWithRemoteIntegration();
+
+    try {
+      clearConfigCache();
+      await withFakeGh(
+        '{"check_runs":[{"name":"OpenRouter Alias Audit","conclusion":"success"},{"name":"ci","conclusion":"success"}]}',
+        async () => {
+          const health = await defaultHealthChecker('auto/integration', repo.repoDir);
+          assert.deepEqual(health, { state: 'healthy' });
+        },
+      );
+    } finally {
+      clearConfigCache();
+      repo.cleanup();
+    }
+  });
+
+  it('respects a repo-level advisoryChecks override', async () => {
+    const repo = createRepoWithRemoteIntegration();
+
+    try {
+      // Override the default advisory list: 'OpenRouter Alias Audit' is now
+      // non-advisory (should halt), 'Something Else' is advisory.
+      writeFileSync(
+        join(repo.repoDir, '.wavemill-config.json'),
+        JSON.stringify({
+          integration: {
+            integrationBranch: 'auto/integration',
+            advisoryChecks: ['Something Else'],
+          },
+        }),
+      );
+      clearConfigCache();
+
+      await withFakeGh(
+        '{"check_runs":[{"name":"OpenRouter Alias Audit","conclusion":"failure"}]}',
+        async () => {
+          const health = await defaultHealthChecker('auto/integration', repo.repoDir);
+          assert.deepEqual(health, { state: 'unhealthy', reason: 'OpenRouter Alias Audit: failure' });
+        },
+      );
+
+      await withFakeGh(
+        '{"check_runs":[{"name":"Something Else","conclusion":"failure"},{"name":"ci","conclusion":"success"}]}',
+        async () => {
+          const health = await defaultHealthChecker('auto/integration', repo.repoDir);
+          assert.deepEqual(health, {
+            state: 'healthy',
+            advisoryFailures: [{ name: 'Something Else', conclusion: 'failure' }],
+          });
+        },
+      );
+    } finally {
+      clearConfigCache();
+      repo.cleanup();
+    }
+  });
+
+  it('dedupes repeated advisory failures by name', async () => {
+    const repo = createRepoWithRemoteIntegration();
+
+    try {
+      clearConfigCache();
+      await withFakeGh(
+        '{"check_runs":[{"name":"OpenRouter Alias Audit","conclusion":"failure"},{"name":"OpenRouter Alias Audit","conclusion":"timed_out"}]}',
+        async () => {
+          const health = await defaultHealthChecker('auto/integration', repo.repoDir);
+          assert.deepEqual(health, {
+            state: 'healthy',
+            advisoryFailures: [{ name: 'OpenRouter Alias Audit', conclusion: 'failure' }],
+          });
+        },
+      );
+    } finally {
+      clearConfigCache();
+      repo.cleanup();
+    }
+  });
 });
 
 describe('selectNextCandidate with real integration health', () => {
@@ -1511,6 +1636,49 @@ describe('selectNextCandidate with real integration health', () => {
         assert.equal(decision.nextPR, 180);
       });
     } finally {
+      repo.cleanup();
+    }
+  });
+
+  // HOK-3009: an advisory-failing tip must not prevent selection of a
+  // green wm:ready PR — the lane keeps merging while the drift is red.
+  it('selects a green wm:ready PR when only an advisory check is failing on the tip', async () => {
+    const repo = createRepoWithRemoteIntegration();
+
+    try {
+      mkdirSync(join(repo.repoDir, '.wavemill', 'evals'), { recursive: true });
+      clearConfigCache();
+      const options: SelectNextCandidateOptions = {
+        repoDir: repo.repoDir,
+        prFetcher: async () => [
+          pr({
+            number: 195,
+            title: 'Ready PR',
+            headRefName: 'task/ready-pr',
+            body: metadata(['task: HOK-1729']),
+          }),
+        ],
+        challengeGateDeps: {
+          linearSiblingLookup: async () => [],
+          branchExists: async () => false,
+        },
+      };
+
+      await withFakeGh(
+        '{"check_runs":[{"name":"OpenRouter Alias Audit","conclusion":"failure"},{"name":"ci","conclusion":"success"}]}',
+        async () => {
+          const decision = await selectNextCandidate(options);
+          assert.equal(decision.integrationHealth.state, 'healthy');
+          assert.deepEqual(decision.integrationHealth.advisoryFailures, [
+            { name: 'OpenRouter Alias Audit', conclusion: 'failure' },
+          ]);
+          assert.equal(decision.eligible.length, 1);
+          assert.equal(decision.blocked.length, 0);
+          assert.equal(decision.nextPR, 195);
+        },
+      );
+    } finally {
+      clearConfigCache();
       repo.cleanup();
     }
   });
@@ -1550,6 +1718,54 @@ describe('formatStatusLine', () => {
         pollCompletedAt: '2026-08-22T14:00:02.000Z',
       }),
       'iter=3 poll_started=2026-08-22T14:00:00.000Z poll_completed=2026-08-22T14:00:02.000Z eligible=1 blocked=0 health=ok last=none action=merging-#42',
+    );
+  });
+
+  // HOK-3009: advisory failures render inline as an `advisory=` token while
+  // health stays `ok`, keeping the drift condition greppable in the status
+  // stream even though it does not halt the lane.
+  it('renders advisory failures with health=ok and an advisory token', () => {
+    assert.equal(
+      formatStatusLine({
+        integrationHealth: {
+          state: 'healthy',
+          advisoryFailures: [{ name: 'OpenRouter Alias Audit', conclusion: 'failure' }],
+        },
+        eligible: [],
+        blocked: [],
+        nextPR: null,
+      }),
+      'eligible=0 blocked=0 health=ok advisory="OpenRouter Alias Audit: failure" last=none action=idle',
+    );
+  });
+
+  it('omits the advisory token when there are no advisory failures', () => {
+    assert.equal(
+      formatStatusLine({
+        integrationHealth: { state: 'healthy' },
+        eligible: [],
+        blocked: [],
+        nextPR: null,
+      }),
+      'eligible=0 blocked=0 health=ok last=none action=idle',
+    );
+  });
+
+  it('joins multiple advisory failures with commas', () => {
+    assert.equal(
+      formatStatusLine({
+        integrationHealth: {
+          state: 'healthy',
+          advisoryFailures: [
+            { name: 'OpenRouter Alias Audit', conclusion: 'failure' },
+            { name: 'Other Advisory', conclusion: 'timed_out' },
+          ],
+        },
+        eligible: [],
+        blocked: [],
+        nextPR: null,
+      }),
+      'eligible=0 blocked=0 health=ok advisory="OpenRouter Alias Audit: failure, Other Advisory: timed_out" last=none action=idle',
     );
   });
 });
@@ -2103,6 +2319,29 @@ describe('executeMerge', () => {
       assert.equal(result.phase, 'integration');
       assert.ok(hasCall(options.calls, /gh pr merge 42/));
       assert.ok(hasCall(options.calls, /gh pr comment 42 --body/));
+      assert.deepEqual(options.labels, ['merging:42', 'merged:42']);
+    } finally {
+      options.cleanup();
+    }
+  });
+
+  // HOK-3009: a post-merge health check returning healthy-with-advisory must
+  // not halt the loop — advisory failures are surfaced but do not gate
+  // merges.
+  it('does not halt after merge when only advisory checks fail on the tip', async () => {
+    const options = buildMergeTestOptions({
+      healthChecker: async () => ({
+        state: 'healthy',
+        advisoryFailures: [{ name: 'OpenRouter Alias Audit', conclusion: 'failure' }],
+      }),
+    });
+
+    try {
+      const result = await executeMerge(candidate(), { repoDir: options.repoDir, deps: options.deps });
+
+      assert.equal(result.status, 'merged');
+      assert.equal(result.haltLoop, false);
+      assert.ok(hasCall(options.calls, /gh pr merge 42/));
       assert.deepEqual(options.labels, ['merging:42', 'merged:42']);
     } finally {
       options.cleanup();

@@ -58,9 +58,23 @@ export interface WaitingReadyCandidate {
   labels?: string[];
 }
 
+export interface AdvisoryCheckFailure {
+  name: string;
+  conclusion: string;
+}
+
 export interface IntegrationHealth {
   state: 'healthy' | 'unhealthy';
   reason?: string;
+  /**
+   * Failing check runs on the integration tip whose names appear in
+   * `integration.advisoryChecks`. Reported when `state === 'healthy'` so the
+   * failure stays visible in the status line and backstage-health.json even
+   * though it does not halt the merge lane. Omitted (never `[]`) when there
+   * are no advisory failures, so existing `{ state: 'healthy' }` assertions
+   * stay stable.
+   */
+  advisoryFailures?: AdvisoryCheckFailure[];
 }
 
 export interface TendDecision {
@@ -332,11 +346,26 @@ export async function defaultHealthChecker(integrationBranch: string, repoDir: s
       checkRuns = await readCheckRuns(repo, remoteResolution.sha, repoDir);
     }
 
+    const advisorySet = new Set(getIntegrationConfig(repoDir).advisoryChecks);
+    const advisoryFailures: AdvisoryCheckFailure[] = [];
+    const seenAdvisoryNames = new Set<string>();
+
     for (const checkRun of checkRuns) {
       const conclusion = checkRun.conclusion ?? '';
-      if (FAILING_CHECK_CONCLUSIONS.has(conclusion)) {
-        return { state: 'unhealthy', reason: `${checkRun.name || 'check'}: ${conclusion}` };
+      if (!FAILING_CHECK_CONCLUSIONS.has(conclusion)) {
+        continue;
       }
+      const name = checkRun.name || 'check';
+      if (advisorySet.has(name)) {
+        // Dedupe by name — re-runs can produce multiple check-run entries
+        // with the same name. Keep the first failing conclusion observed.
+        if (!seenAdvisoryNames.has(name)) {
+          seenAdvisoryNames.add(name);
+          advisoryFailures.push({ name, conclusion });
+        }
+        continue;
+      }
+      return { state: 'unhealthy', reason: `${name}: ${conclusion}` };
     }
 
     if (refreshError) {
@@ -346,6 +375,9 @@ export async function defaultHealthChecker(integrationBranch: string, repoDir: s
       };
     }
 
+    if (advisoryFailures.length > 0) {
+      return { state: 'healthy', advisoryFailures };
+    }
     return { state: 'healthy' };
   } catch (error) {
     return { state: 'unhealthy', reason: `health-check-error: ${errorMessage(error)}` };
@@ -562,6 +594,14 @@ export function formatStatusLine(
   const last = typeof opts.lastPR === 'number' ? `#${opts.lastPR}` : 'none';
   const action = opts.action ?? 'idle';
 
+  const advisory = decision.integrationHealth.state === 'healthy'
+    && decision.integrationHealth.advisoryFailures
+    && decision.integrationHealth.advisoryFailures.length > 0
+    ? decision.integrationHealth.advisoryFailures
+        .map((f) => `${f.name}: ${f.conclusion}`)
+        .join(', ')
+    : null;
+
   const parts = [
     typeof opts.iteration === 'number' ? `iter=${opts.iteration}` : null,
     opts.pollStartedAt ? `poll_started=${opts.pollStartedAt}` : null,
@@ -572,6 +612,7 @@ export function formatStatusLine(
     decision.integrationHealth.state === 'unhealthy' && decision.integrationHealth.reason
       ? `reason=${quoteStatusValue(decision.integrationHealth.reason)}`
       : null,
+    advisory ? `advisory=${quoteStatusValue(advisory)}` : null,
     `last=${last}`,
     `action=${action}`,
   ];
