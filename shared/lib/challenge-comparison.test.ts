@@ -732,7 +732,8 @@ test('HOK-2811: stage results stamped source=inherited surface as inherited prov
     assert.equal(resolved.coding.status, 'completed');
     // Locally-produced review keeps its file-name source.
     assert.equal(resolved.review.source, '.review-result.json');
-    assert.equal(resolved.review.model, 'claude-haiku-4-5-20251001');
+    assert.equal(resolved.review.model, 'claude-haiku-4-5');
+    assert.equal(resolved.review.rawModel, 'claude-haiku-4-5-20251001');
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
