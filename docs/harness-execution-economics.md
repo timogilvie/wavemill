@@ -96,6 +96,20 @@ mirroring `ExecutedIdentity.conflict`) — both values stay visible, and
 first-party stage evidence outranks route intent in the conflict detail. No
 causal or off-policy claim may be made from this telemetry alone.
 
+## Stage-result execution evidence
+
+Completed Claude Code and Codex planning/coding/review stage results also use
+the normalized session/turn telemetry above to populate `executedModel`.
+`write_stage_result` resolves turns inside the stage window and passes direct
+evidence to `stage-result-cli.ts`; the persisted `executionEvidence.source` is
+`claude-session` or `codex-session`.
+
+If the observed model differs from route intent (for example a CLI fallback or
+model switch), the observed model is recorded as `executedModel` and the shared
+stage-result truth rules mark the artifact `runtime_fallback`. Missing session
+coverage remains `missing_execution_evidence`; the intended model is never
+copied into `executedModel`.
+
 ## Privacy exclusions
 
 Adapters copy only allowlisted fields, so the following never reach persisted

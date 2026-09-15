@@ -39,6 +39,7 @@ TESTS=(
   shared/lib/intervention-detector.test.ts
   shared/lib/stage-result.test.ts
   shared/lib/session-adapters.test.ts
+  shared/lib/executed-model-resolver.test.ts
   shared/lib/native-agent/provider.test.ts
   shared/lib/native-agent/provider-error-classifier.test.ts
   shared/lib/native-agent/providers.test.ts
@@ -269,6 +270,7 @@ TESTS=(
   tools/abort-task.test.ts
   tools/add-pr-label.test.ts
   tools/backfill-challenge-stage.test.ts
+  tools/backfill-stage-executed-model.test.ts
   tools/backfill-hokusai-submissions.test.ts
   tools/certify-patch-coding.test.ts
   tools/promote-provisional-model.test.ts

@@ -403,6 +403,120 @@ export interface StageResultMap {
   ready?: StageResult;
 }
 
+export interface ExecutionTruthFieldsInput {
+  status: StageStatus;
+  flags: Record<string, string>;
+  existing: StageResult | null;
+  now: string;
+}
+
+export type ExecutionTruthFields = Pick<
+  StageResult,
+  'intendedModel' | 'executedModel' | 'executionEvidence' | 'modelAttributionEligible' | 'modelAttributionIneligibleReason'
+>;
+
+function nullableModel(value: string | undefined): string | null | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  if (trimmed === '' || trimmed === 'null') return null;
+  return trimmed;
+}
+
+function boolFlag(value: string | undefined): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  return undefined;
+}
+
+function validEvidenceStatus(value: string | undefined): value is StageExecutionEvidenceStatus {
+  return value === 'direct' || value === 'missing' || value === 'contradicted' || value === 'inherited';
+}
+
+/**
+ * Compute the execution-truth and attribution-eligibility block for a stage result.
+ *
+ * This function intentionally never infers `executedModel` from launch intent:
+ * callers must pass direct execution evidence, or the result remains
+ * attribution-ineligible with `missing_execution_evidence`.
+ */
+export function executionTruthFields(input: ExecutionTruthFieldsInput): ExecutionTruthFields {
+  const flagModel = nullableModel(input.flags.model);
+  const intendedModel = nullableModel(input.flags['intended-model'])
+    ?? flagModel
+    ?? input.existing?.intendedModel
+    ?? (input.flags.model === undefined ? input.existing?.model : undefined)
+    ?? null;
+
+  const explicitExecuted = nullableModel(input.flags['executed-model']);
+  const mayPreserveExisting =
+    explicitExecuted === undefined
+    && input.existing?.status === 'running'
+    && (
+      input.flags.model === undefined
+      || input.existing.model === input.flags.model
+      || input.existing.executedModel === input.flags.model
+    );
+  const executedModel = explicitExecuted !== undefined
+    ? explicitExecuted
+    : mayPreserveExisting
+      ? input.existing?.executedModel ?? null
+      : null;
+
+  const explicitEvidenceStatus = input.flags['execution-evidence-status'];
+  if (explicitEvidenceStatus !== undefined && !validEvidenceStatus(explicitEvidenceStatus)) {
+    throw new Error(`invalid --execution-evidence-status '${explicitEvidenceStatus}'`);
+  }
+  const evidenceStatus = explicitEvidenceStatus
+    ?? (executedModel ? (mayPreserveExisting ? input.existing?.executionEvidence?.status ?? 'direct' : 'direct') : 'missing');
+  const evidenceSource = input.flags['execution-evidence-source']
+    ?? (mayPreserveExisting ? input.existing?.executionEvidence?.source : undefined)
+    ?? (executedModel ? 'stage-result-cli' : 'unknown');
+  const executionEvidence: StageExecutionEvidence = {
+    status: evidenceStatus,
+    source: evidenceSource,
+    ...(input.flags['execution-evidence-detail'] !== undefined
+      ? { detail: input.flags['execution-evidence-detail'] }
+      : input.existing?.executionEvidence?.detail && mayPreserveExisting
+        ? { detail: input.existing.executionEvidence.detail }
+        : {}),
+    recordedAt: input.now,
+  };
+
+  let modelAttributionEligible = boolFlag(input.flags['model-attribution-eligible']);
+  let modelAttributionIneligibleReason = input.existing?.modelAttributionIneligibleReason;
+  if (modelAttributionEligible === undefined) {
+    if (input.status !== 'completed') {
+      modelAttributionEligible = false;
+      modelAttributionIneligibleReason = 'stage_not_completed';
+    } else if (!executedModel) {
+      modelAttributionEligible = false;
+      modelAttributionIneligibleReason = 'missing_execution_evidence';
+    } else if (evidenceStatus === 'contradicted') {
+      modelAttributionEligible = false;
+      modelAttributionIneligibleReason = 'execution_contradicted';
+    } else if (intendedModel && intendedModel !== executedModel) {
+      modelAttributionEligible = false;
+      modelAttributionIneligibleReason = 'runtime_fallback';
+    } else {
+      modelAttributionEligible = true;
+      modelAttributionIneligibleReason = undefined;
+    }
+  } else if (modelAttributionEligible) {
+    modelAttributionIneligibleReason = undefined;
+  } else {
+    modelAttributionIneligibleReason ??= !executedModel ? 'missing_execution_evidence' : 'execution_contradicted';
+  }
+
+  return {
+    intendedModel,
+    executedModel,
+    executionEvidence,
+    modelAttributionEligible,
+    ...(modelAttributionIneligibleReason ? { modelAttributionIneligibleReason } : {}),
+  };
+}
+
 // ────────────────────────────────────────────────────────────────
 // Path Helpers
 // ────────────────────────────────────────────────────────────────
