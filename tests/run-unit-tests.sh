@@ -38,6 +38,8 @@ TESTS=(
   shared/lib/operator-intervention.test.ts
   shared/lib/intervention-detector.test.ts
   shared/lib/stage-result.test.ts
+  shared/lib/stage-execution-evidence.test.ts
+  shared/lib/stage-execution-backfill.test.ts
   shared/lib/session-adapters.test.ts
   shared/lib/native-agent/provider.test.ts
   shared/lib/native-agent/provider-error-classifier.test.ts

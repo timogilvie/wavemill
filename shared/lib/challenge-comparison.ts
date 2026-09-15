@@ -2,8 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { appendJsonlRecord, readJsonlFile } from './jsonl-utils.ts';
 import { isChallengeRecordVoided, readChallengeRecordVoids } from './challenge-record-void.ts';
-import { getEffectiveRegistry, resolveModelRegistryKey } from './model-registry.ts';
-import { resolveWavemillAliasFromOpenRouterId } from './openrouter-catalog.ts';
+import { canonicalizeModelId } from './model-registry.ts';
 import type { StageExecutionEvidenceStatus, StageName, StageResult, StageStatus } from './stage-result.ts';
 import type { ChallengeArmFailure } from './arm-failure-taxonomy.ts';
 import type { ChallengeStage } from './challenge-mode.ts';
@@ -434,14 +433,7 @@ function normalizeUnknown(value: unknown): string {
 }
 
 export function canonicalizeChallengeModelId(modelId: string, repoDir?: string): string {
-  const trimmed = normalize(modelId);
-  if (!trimmed) return '';
-  const registry = getEffectiveRegistry(repoDir);
-  const registryKey = resolveModelRegistryKey(registry, trimmed);
-  if (registry.models[registryKey]) {
-    return registryKey;
-  }
-  return resolveWavemillAliasFromOpenRouterId(trimmed) ?? trimmed;
+  return canonicalizeModelId(modelId, repoDir);
 }
 
 function variantDiffers(a: string | undefined, b: string | undefined): boolean {

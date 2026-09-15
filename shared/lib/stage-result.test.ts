@@ -251,6 +251,34 @@ describe('writeStageResult and readStageResult', () => {
     assert.equal(nativeCompleted?.executionEvidence?.source, 'native-runtime');
     assert.equal(nativeCompleted?.modelAttributionEligible, true);
   });
+
+  it('stage-result-cli records session-derived CLI evidence and preserves awaiting-user evidence', async () => {
+    const projectsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-session-'));
+    try {
+      await fs.writeFile(path.join(projectsDir, 'session.jsonl'), JSON.stringify({
+        type: 'assistant', gitBranch: 'task/evidence', timestamp: '2026-09-14T19:45:00.000Z',
+        message: { model: 'claude-haiku-4-5-20251001', usage: { input_tokens: 1, output_tokens: 1 } },
+      }) + '\n');
+      execFileSync('npx', ['tsx', 'tools/stage-result-cli.ts', 'write', testDir, 'coding', 'running',
+        '--agent', 'claude', '--model', 'claude-haiku-4-5', '--started-at', '2026-09-14T19:40:00.000Z'], { cwd: process.cwd() });
+      execFileSync('npx', ['tsx', 'tools/stage-result-cli.ts', 'write', testDir, 'coding', 'completed',
+        '--agent', 'claude', '--model', 'claude-haiku-4-5', '--resolve-executed-from-session',
+        '--worktree', '/deleted/worktree', '--branch', 'task/evidence', '--claude-projects-dir', projectsDir,
+        '--finished-at', '2026-09-14T19:50:00.000Z'], { cwd: process.cwd() });
+      const resolved = await readStageResult(testDir, 'coding');
+      assert.equal(resolved?.executedModel, 'claude-haiku-4-5');
+      assert.equal(resolved?.executionEvidence?.status, 'direct');
+      assert.equal(resolved?.executionEvidence?.source, 'claude-session');
+
+      await writeStageResult(testDir, makeResult({ stage: 'planning', status: 'awaiting_user', agent: 'native', model: 'gpt-5.5', intendedModel: 'gpt-5.5', executedModel: 'gpt-5.5', executionEvidence: { status: 'direct', source: 'native-runtime' } }));
+      execFileSync('npx', ['tsx', 'tools/stage-result-cli.ts', 'write', testDir, 'planning', 'completed', '--agent', 'native', '--model', 'gpt-5.5'], { cwd: process.cwd() });
+      const approved = await readStageResult(testDir, 'planning');
+      assert.equal(approved?.executedModel, 'gpt-5.5');
+      assert.equal(approved?.executionEvidence?.source, 'native-runtime');
+    } finally {
+      await fs.rm(projectsDir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ────────────────────────────────────────────────────────────────

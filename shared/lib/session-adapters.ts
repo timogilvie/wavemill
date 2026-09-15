@@ -169,6 +169,10 @@ export interface SessionScanOptions {
    * this every task's usage is summed into whichever task is being costed.
    */
   issueId?: string;
+  /** Test/backfill override for Claude project directories. */
+  claudeProjectsDirs?: string[];
+  /** Test/backfill override for the Codex sessions root. */
+  codexSessionsRoot?: string;
 }
 
 /** A session adapter knows how to scan an agent's session files. */
@@ -231,7 +235,7 @@ function sessionIdFromFileName(filePath: string): string {
 export class ClaudeSessionAdapter implements SessionAdapter {
   scan(opts: SessionScanOptions): SessionUsageResult | null {
     const debug = process.env.DEBUG_COST === '1' || process.env.DEBUG_COST === 'true';
-    const projectsDirs = resolveProjectsDirs(opts.worktreePath);
+    const projectsDirs = opts.claudeProjectsDirs ?? resolveProjectsDirs(opts.worktreePath);
 
     if (debug) {
       console.log(`[DEBUG_COST] ClaudeSessionAdapter.scan:`);
@@ -445,7 +449,7 @@ export class CodexSessionAdapter implements SessionAdapter {
 
   scan(opts: SessionScanOptions): SessionUsageResult | null {
     const debug = process.env.DEBUG_COST === '1' || process.env.DEBUG_COST === 'true';
-    const sessionsRoot = join(homedir(), '.codex', 'sessions');
+    const sessionsRoot = opts.codexSessionsRoot ?? join(homedir(), '.codex', 'sessions');
 
     if (debug) {
       console.log(`[DEBUG_COST] CodexSessionAdapter.scan:`);

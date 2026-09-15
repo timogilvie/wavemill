@@ -20,6 +20,7 @@ import {
   isValidStatus,
 } from '../shared/lib/stage-result.ts';
 import type { StageResult, StageName, StageStatus, StageArtifacts } from '../shared/lib/stage-result.ts';
+import { resolveStageExecutionEvidence } from '../shared/lib/stage-execution-evidence.ts';
 
 const USAGE = `stage-result-cli — manage controller-owned stage result files
 
@@ -43,6 +44,9 @@ Options (write/update):
   --execution-evidence-source <source>  Evidence producer/source
   --execution-evidence-detail <text>    Human-readable evidence diagnostic
   --model-attribution-eligible <bool>   Override quality-attribution eligibility
+  --resolve-executed-from-session       Resolve CLI identity from retained session telemetry
+  --worktree <path>                     Session worktree for resolution
+  --branch <name>                       Session branch for resolution
 
 Examples:
   npx tsx tools/stage-result-cli.ts write features/my-feat planning running --agent claude --model opus-4-6
@@ -53,10 +57,14 @@ Examples:
 function parseFlags(args: string[]): Record<string, string> {
   const flags: Record<string, string> = {};
   for (let i = 0; i < args.length; i++) {
-    if (args[i].startsWith('--') && i + 1 < args.length) {
+    if (args[i].startsWith('--')) {
       const key = args[i].slice(2);
-      flags[key] = args[i + 1];
-      i++; // skip value
+      if (i + 1 < args.length && !args[i + 1].startsWith('--')) {
+        flags[key] = args[i + 1];
+        i++; // skip value
+      } else {
+        flags[key] = 'true';
+      }
     }
   }
   return flags;
@@ -96,7 +104,7 @@ function executionTruthFields(input: {
   const explicitExecuted = nullableModel(input.flags['executed-model']);
   const mayPreserveExisting =
     explicitExecuted === undefined
-    && input.existing?.status === 'running'
+    && (input.existing?.status === 'running' || input.existing?.status === 'awaiting_user')
     && (
       input.flags.model === undefined
       || input.existing.model === input.flags.model
@@ -162,6 +170,50 @@ function executionTruthFields(input: {
   };
 }
 
+function cliAgent(value: string | undefined): value is 'claude' | 'codex' | 'claude-deepseek' {
+  return value === 'claude' || value === 'codex' || value === 'claude-deepseek';
+}
+
+function preservesDirectEvidence(flags: Record<string, string>, existing: StageResult | null): boolean {
+  if (flags['executed-model'] !== undefined || existing?.executionEvidence?.status !== 'direct') return false;
+  return flags.model === undefined
+    || existing.model === flags.model
+    || existing.executedModel === flags.model;
+}
+
+/** Add fail-closed telemetry evidence to flags, while keeping explicit evidence authoritative. */
+async function resolveExecutionEvidenceFlags(input: {
+  flags: Record<string, string>;
+  existing: StageResult | null;
+  agent: string | undefined;
+  startedAt: string | null;
+  finishedAt: string | null;
+}): Promise<void> {
+  if (
+    input.flags['resolve-executed-from-session'] === undefined
+    || input.flags['executed-model'] !== undefined
+    || !cliAgent(input.agent)
+    || preservesDirectEvidence(input.flags, input.existing)
+  ) return;
+  const worktreePath = input.flags.worktree;
+  const branchName = input.flags.branch;
+  if (!worktreePath || !branchName) return;
+  const evidence = await resolveStageExecutionEvidence({
+    agentType: input.agent,
+    worktreePath,
+    branchName,
+    windowStart: input.startedAt,
+    windowEnd: input.finishedAt,
+    repoDir: input.flags['repo-dir'] ?? worktreePath,
+    ...(input.flags['claude-projects-dir'] ? { claudeProjectsDirs: input.flags['claude-projects-dir'].split(':') } : {}),
+    ...(input.flags['codex-sessions-root'] ? { codexSessionsRoot: input.flags['codex-sessions-root'] } : {}),
+  });
+  input.flags['executed-model'] = evidence.executedModel ?? 'null';
+  input.flags['execution-evidence-status'] = evidence.evidenceStatus;
+  input.flags['execution-evidence-source'] = evidence.evidenceSource;
+  input.flags['execution-evidence-detail'] = evidence.detail;
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
 
@@ -225,6 +277,14 @@ async function main(): Promise<void> {
     const startedAt = writeFlags['started-at'] ?? existing?.startedAt ?? now;
     const finishedAt = writeFlags['finished-at'] ?? (isTerminal ? now : null);
 
+    await resolveExecutionEvidenceFlags({
+      flags: writeFlags,
+      existing,
+      agent: writeFlags.agent ?? existing?.agent,
+      startedAt,
+      finishedAt,
+    });
+
     let artifacts: StageArtifacts | undefined;
     if (writeFlags['artifacts']) {
       try {
@@ -282,9 +342,17 @@ async function main(): Promise<void> {
       || updateFlags['execution-evidence-source'] !== undefined
       || updateFlags['execution-evidence-detail'] !== undefined
       || updateFlags['model-attribution-eligible'] !== undefined
+      || updateFlags['resolve-executed-from-session'] !== undefined
     ) {
       const existing = await readStageResult(featureDir, stage);
       const status = (patch.status ?? existing?.status ?? 'running') as StageStatus;
+      await resolveExecutionEvidenceFlags({
+        flags: updateFlags,
+        existing,
+        agent: updateFlags.agent ?? existing?.agent,
+        startedAt: updateFlags['started-at'] ?? existing?.startedAt ?? null,
+        finishedAt: updateFlags['finished-at'] ?? (['completed', 'aborted', 'failed'].includes(status) ? new Date().toISOString() : null),
+      });
       Object.assign(patch, executionTruthFields({
         status,
         flags: updateFlags,

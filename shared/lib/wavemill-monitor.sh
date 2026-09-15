@@ -2472,7 +2472,7 @@ check_routing_complete() {
 # ────────────────────────────────────────────────────────────────
 
 # Write a structured stage result JSON file.
-# Usage: write_stage_result <feature_dir> <stage> <status> [agent] [model] [notes] [artifacts_json] [started_at]
+# Usage: write_stage_result <feature_dir> <stage> <status> [agent] [model] [notes] [artifacts_json] [started_at] [executed_model] [evidence_status] [evidence_source]
 # Stages: routing, planning, coding, review, ready
 # Statuses: running, awaiting_user, completed, aborted, failed
 # artifacts_json: optional JSON string for stage-specific artifacts (HOK-1192)
@@ -2480,6 +2480,7 @@ write_stage_result() {
   local feature_dir="$1" stage="$2" status="$3"
   local agent="${4:-}" model="${5:-}" notes="${6:-}" artifacts_json="${7:-}"
   local started_at_override="${8:-}"
+  local executed_model="${9:-}" evidence_status="${10:-}" evidence_source="${11:-}"
   local result_file="$feature_dir/.${stage}-result.json" previous_status=""
 
   # Capture the transition before either writer replaces the result. A malformed
@@ -2497,6 +2498,24 @@ write_stage_result() {
     [[ -n "$notes" ]] && cli_args+=(--notes "$notes")
     [[ -n "$artifacts_json" ]] && cli_args+=(--artifacts "$artifacts_json")
     [[ -n "$started_at_override" ]] && cli_args+=(--started-at "$started_at_override")
+    if [[ -n "$executed_model" ]]; then
+      cli_args+=(--executed-model "$executed_model")
+      [[ -n "$evidence_status" ]] && cli_args+=(--execution-evidence-status "$evidence_status")
+      [[ -n "$evidence_source" ]] && cli_args+=(--execution-evidence-source "$evidence_source")
+    elif [[ "$status" == "completed" || "$status" == "aborted" || "$status" == "failed" ]] \
+      && [[ "$agent" == "claude" || "$agent" == "codex" || "$agent" == "claude-deepseek" ]]; then
+      local stage_worktree="" stage_branch=""
+      case "$feature_dir" in
+        */features/*) stage_worktree="${feature_dir%/features/*}" ;;
+        */bugs/*) stage_worktree="${feature_dir%/bugs/*}" ;;
+      esac
+      if [[ -n "$stage_worktree" ]]; then
+        stage_branch="$(git -C "$stage_worktree" branch --show-current 2>/dev/null || true)"
+      fi
+      if [[ -n "$stage_worktree" && -n "$stage_branch" ]]; then
+        cli_args+=(--resolve-executed-from-session --worktree "$stage_worktree" --branch "$stage_branch")
+      fi
+    fi
 
     if npx tsx "$TOOLS_DIR/stage-result-cli.ts" write "${cli_args[@]}" 2>/dev/null; then
       _write_stage_result_trace_event "$feature_dir" "$stage" "$status" "$agent" "$model" "$previous_status"
@@ -2523,9 +2542,21 @@ write_stage_result() {
     finished_at="\"$now\""
   fi
 
-  local model_attribution_reason="stage_not_completed"
+  local fallback_executed="${executed_model:-}"
+  local fallback_evidence_status="${evidence_status:-missing}"
+  local fallback_evidence_source="${evidence_source:-shell-fallback}"
+  local model_attribution_eligible="false" model_attribution_reason="stage_not_completed"
   if [[ "$status" == "completed" ]]; then
-    model_attribution_reason="missing_execution_evidence"
+    if [[ -z "$fallback_executed" ]]; then
+      model_attribution_reason="missing_execution_evidence"
+    elif [[ "$fallback_evidence_status" == "contradicted" ]]; then
+      model_attribution_reason="execution_contradicted"
+    elif [[ -n "$model" && "$model" != "$fallback_executed" ]]; then
+      model_attribution_reason="runtime_fallback"
+    else
+      model_attribution_eligible="true"
+      model_attribution_reason=""
+    fi
   fi
 
   local tmp
@@ -2538,8 +2569,10 @@ write_stage_result() {
     --arg agent "$agent" \
     --arg model "$model" \
     --arg notes "$notes" \
-    --arg evidenceSource "shell-fallback" \
-    --arg evidenceStatus "missing" \
+    --arg executedModel "$fallback_executed" \
+    --arg evidenceSource "$fallback_evidence_source" \
+    --arg evidenceStatus "$fallback_evidence_status" \
+    --argjson modelAttributionEligible "$model_attribution_eligible" \
     --arg ineligibleReason "$model_attribution_reason" \
     '{
       stage: $stage,
@@ -2549,12 +2582,11 @@ write_stage_result() {
       agent: $agent,
       model: $model,
       intendedModel: ($model | if . == "" then null else . end),
-      executedModel: null,
+      executedModel: ($executedModel | if . == "" then null else . end),
       executionEvidence: {status: $evidenceStatus, source: $evidenceSource},
-      modelAttributionEligible: false,
-      modelAttributionIneligibleReason: $ineligibleReason,
+      modelAttributionEligible: $modelAttributionEligible,
       notes: $notes
-    }' > "$tmp" 2>/dev/null || { rm -f "$tmp"; log_warn "write_stage_result: jq failed"; return 0; }
+    } + (if $ineligibleReason == "" then {} else {modelAttributionIneligibleReason: $ineligibleReason} end)' > "$tmp" 2>/dev/null || { rm -f "$tmp"; log_warn "write_stage_result: jq failed"; return 0; }
   mv "$tmp" "$result_file"
   _write_stage_result_trace_event "$feature_dir" "$stage" "$status" "$agent" "$model" "$previous_status"
 }
@@ -2563,6 +2595,7 @@ write_stage_result_with_history() {
   local feature_dir="$1" stage="$2" status="$3"
   local agent="${4:-}" model="${5:-}" notes="${6:-}" artifacts_json="${7:-}"
   local started_at_override="${8:-}"
+  local executed_model="${9:-}" evidence_status="${10:-}" evidence_source="${11:-}"
   local result_file="$feature_dir/.${stage}-result.json" previous_status=""
 
   if [[ -f "$result_file" ]]; then
@@ -2577,6 +2610,20 @@ write_stage_result_with_history() {
     [[ -n "$notes" ]] && cli_args+=(--notes "$notes")
     [[ -n "$artifacts_json" ]] && cli_args+=(--artifacts "$artifacts_json")
     [[ -n "$started_at_override" ]] && cli_args+=(--started-at "$started_at_override")
+    if [[ -n "$executed_model" ]]; then
+      cli_args+=(--executed-model "$executed_model")
+      [[ -n "$evidence_status" ]] && cli_args+=(--execution-evidence-status "$evidence_status")
+      [[ -n "$evidence_source" ]] && cli_args+=(--execution-evidence-source "$evidence_source")
+    elif [[ "$status" == "completed" || "$status" == "aborted" || "$status" == "failed" ]] \
+      && [[ "$agent" == "claude" || "$agent" == "codex" || "$agent" == "claude-deepseek" ]]; then
+      local stage_worktree="" stage_branch=""
+      case "$feature_dir" in
+        */features/*) stage_worktree="${feature_dir%/features/*}" ;;
+        */bugs/*) stage_worktree="${feature_dir%/bugs/*}" ;;
+      esac
+      [[ -n "$stage_worktree" ]] && stage_branch="$(git -C "$stage_worktree" branch --show-current 2>/dev/null || true)"
+      [[ -n "$stage_worktree" && -n "$stage_branch" ]] && cli_args+=(--resolve-executed-from-session --worktree "$stage_worktree" --branch "$stage_branch")
+    fi
 
     if npx tsx "$TOOLS_DIR/stage-result-cli.ts" write-with-history "${cli_args[@]}" 2>/dev/null; then
       _write_stage_result_trace_event "$feature_dir" "$stage" "$status" "$agent" "$model" "$previous_status"
@@ -2585,7 +2632,7 @@ write_stage_result_with_history() {
     log_warn "write_stage_result_with_history: TypeScript CLI failed, falling back to write_stage_result"
   fi
 
-  write_stage_result "$feature_dir" "$stage" "$status" "$agent" "$model" "$notes" "$artifacts_json" "$started_at_override"
+  write_stage_result "$feature_dir" "$stage" "$status" "$agent" "$model" "$notes" "$artifacts_json" "$started_at_override" "$executed_model" "$evidence_status" "$evidence_source"
 }
 
 # Emit trace events when a stage result is written (HOK-2259).
@@ -4478,20 +4525,7 @@ complete_coding_advance() {
     return 1
   fi
 
-  finished_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-  if ! state_mutate "$result_path" '
-      .stage = "coding"
-      | .status = "completed"
-      | .startedAt = (.startedAt // $finishedAt)
-      | .finishedAt = $finishedAt
-      | .agent = $agent
-      | .model = $model
-      | .notes = $notes
-    ' \
-    --arg finishedAt "$finished_at" \
-    --arg agent "$advance_agent" \
-    --arg model "$result_model" \
-    --arg notes "$stage_notes"; then
+  if ! write_stage_result "$feature_dir" "coding" "completed" "$advance_agent" "$result_model" "$stage_notes"; then
     log_warn "$issue advance failed: could not update coding stage result"
     return 1
   fi

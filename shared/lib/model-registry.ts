@@ -1712,6 +1712,25 @@ export function resolveModelRegistryKey(registry: ModelRegistry, modelId: string
   return alias && registry.models[alias] ? alias : modelId;
 }
 
+/**
+ * Convert an observed runtime model identifier to the registry identity used
+ * by stage artifacts and challenge attribution. Unknown identifiers are kept
+ * verbatim: telemetry must never be made to look more certain than it is.
+ */
+export function canonicalizeModelId(modelId: string, repoDir?: string): string {
+  const trimmed = modelId.trim();
+  if (!trimmed) return '';
+  const registry = getEffectiveRegistry(repoDir);
+  const supportedAlias = Object.entries(registry.models).find(
+    ([, capabilities]) => capabilities.supportedModel?.providerNativeId === trimmed,
+  )?.[1].supportedModel?.wavemillAlias;
+  if (supportedAlias) return supportedAlias;
+  const registryKey = resolveModelRegistryKey(registry, trimmed);
+  return registry.models[registryKey]
+    ? registryKey
+    : resolveWavemillAliasFromOpenRouterId(trimmed) ?? trimmed;
+}
+
 export function getModel(registry: ModelRegistry, modelId: string): ModelCapabilities | undefined {
   if (!modelId) {
     return undefined;
