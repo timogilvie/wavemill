@@ -77,8 +77,18 @@ write_fake_npx
 
 output="$(cd "$REPO_ROOT" && npx tsx tools/tend.ts --once --dry-run --repo-dir "$REPO_DIR" 2>&1)"
 
-if [[ "$output" != *"health=degraded"* ]] || [[ "$output" != *"eligible=0"* ]]; then
-  echo "expected health=degraded and eligible=0, got: $output"
+if [[ "$output" != *'health=unhealthy reason="integration-ci: failure"'* ]] || [[ "$output" != *"eligible=0"* ]]; then
+  echo "expected health=unhealthy with reason and eligible=0, got: $output"
+  exit 1
+fi
+
+if [[ "$output" == *"action=merging-"* ]]; then
+  echo "expected no candidate selection while integration is unhealthy, got: $output"
+  exit 1
+fi
+
+if ! grep -q "fetch origin auto/integration" "$GIT_CALL_LOG"; then
+  echo "expected tend to fetch integration before health check"
   exit 1
 fi
 

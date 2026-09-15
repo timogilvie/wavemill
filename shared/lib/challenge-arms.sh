@@ -58,12 +58,16 @@ challenge_arms_get() {
 # Usage: challenge_arm_json_build <key> <slug> <branch> <role> <varied_stage> \
 #   <coder_model> <planner_model> <reviewer_model> \
 #   <coder_agent> <planner_agent> <reviewer_agent> \
-#   <plan_depth> <code_depth> <review_mode>
+#   <plan_depth> <code_depth> <review_mode> [execution_intent_json]
 challenge_arm_json_build() {
   local key="$1" slug="$2" branch="$3" role="$4" varied_stage="$5"
   local coder_model="${6:-}" planner_model="${7:-}" reviewer_model="${8:-}"
   local coder_agent="${9:-}" planner_agent="${10:-}" reviewer_agent="${11:-}"
   local plan_depth="${12:-}" code_depth="${13:-}" review_mode="${14:-}"
+  local execution_intent_json="${15:-}" execution_intent_arg="null"
+  if challenge_intent_json_is_canonical "$execution_intent_json"; then
+    execution_intent_arg="$execution_intent_json"
+  fi
 
   jq -cn \
     --arg key "$key" \
@@ -80,6 +84,7 @@ challenge_arm_json_build() {
     --arg planDepth "$plan_depth" \
     --arg codeDepth "$code_depth" \
     --arg reviewMode "$review_mode" \
+    --argjson executionIntent "$execution_intent_arg" \
     '{
       key: $key,
       slug: $slug,
@@ -92,10 +97,55 @@ challenge_arm_json_build() {
       planDepth: $planDepth,
       codeDepth: $codeDepth,
       reviewMode: $reviewMode,
+      executionIntent: $executionIntent,
       recordedAt: (now | todate),
       materializedAt: null,
       forkCommit: null
     }'
+}
+
+# True when JSON is the canonical challenge execution intent envelope.
+challenge_intent_json_is_canonical() {
+  local intent_json="${1:-}"
+  [[ -n "$intent_json" ]] || return 1
+  echo "$intent_json" | jq -e \
+    '.schemaVersion == 1 and (.pairId // "") != "" and (.issueId // "") != ""' \
+    >/dev/null 2>&1
+}
+
+# Selection-time state writer for canonical challenge execution intent.
+#
+# Usage: challenge_intent_record_selection <primary_issue> <challenger_key> <intent_json>
+challenge_intent_record_selection() {
+  local issue="$1" challenger_key="${2:-}" intent_json="${3:-}"
+  [[ -n "$issue" ]] || return 0
+  challenge_intent_json_is_canonical "$intent_json" || return 0
+  [[ -n "${STATE_FILE:-}" && -f "${STATE_FILE}" ]] || return 0
+  declare -F state_mutate >/dev/null 2>&1 || return 0
+
+  state_mutate "$STATE_FILE" \
+    '($intent.selectedStage // $intent.challengeStage // "") as $stage
+     | ($intent.primary // {}) as $p
+     | ($intent.challenger // {}) as $c
+     | .tasks[$issue] = (.tasks[$issue] // {})
+     | .tasks[$issue].challengeExecutionIntent = $intent
+     | (if $stage != "" then .tasks[$issue].challengeStage = $stage else . end)
+     | (if ($p.expectedStageModel // "") != ""
+        then .tasks[$issue].challengeVariedModel = $p.expectedStageModel
+             | .tasks[$issue].challengeVariedAgent = ($p.expectedStageAgent // "")
+        else . end)
+     | if $challenger != "" and (.tasks[$challenger] != null)
+       then .tasks[$challenger].challengeExecutionIntent = $intent
+            | (if $stage != "" then .tasks[$challenger].challengeStage = $stage else . end)
+            | (if ($c.expectedStageModel // "") != ""
+               then .tasks[$challenger].challengeVariedModel = $c.expectedStageModel
+                    | .tasks[$challenger].challengeVariedAgent = ($c.expectedStageAgent // "")
+               else . end)
+       else .
+       end' \
+    --arg issue "$issue" \
+    --arg challenger "$challenger_key" \
+    --argjson intent "$intent_json" || true
 }
 
 # Append (or replace by .key) an arm record on the primary's task entry.

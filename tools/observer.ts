@@ -568,7 +568,7 @@ function cleanupEpisodeFinding(repo: RepoSnapshot, task: TaskState): Finding | u
   const nextRetry = episode.nextRetryAt ? `nextRetryAt=${episode.nextRetryAt}` : 'nextRetryAt=none';
   const action = typeof episode.requiredOperatorAction === 'string' && episode.requiredOperatorAction.length > 0
     ? episode.requiredOperatorAction
-    : 'Inspect cleanup evidence and acknowledge recovery when resolved.';
+    : `Inspect cleanup evidence with wavemill cleanup ${task.issue} --dry-run; finalize with --execute only after the decision is safe.`;
   const titleDisposition = episode.disposition === 'transient'
     ? 'waiting for cleanup retry'
     : `cleanup ${episode.disposition}`;
@@ -649,7 +649,7 @@ function renderCleanupRecommendation(disposition: ResidueDisposition, task: Task
     case 'retained-by-policy':
       return `The recorded cleanup policy does not authorize deleting ${branch}; leave it retained or update the policy through the normal controller path after verification.`;
     case 'dirty-worktree':
-      return taskCleanupEpisode(task)?.requiredOperatorAction ?? `Inspect ${branch}'s worktree, commit or discard local changes, then acknowledge recovery in workflow state.`;
+      return taskCleanupEpisode(task)?.requiredOperatorAction ?? `Inspect ${branch}'s worktree, commit or discard local changes, then run wavemill cleanup ${task.issue} --dry-run again.`;
     case 'transient':
       return taskCleanupEpisode(task)?.requiredOperatorAction ?? `Wait for the scheduled cleanup retry, then inspect cleanup evidence if it remains unchanged.`;
     case 'verification-unavailable':
@@ -657,7 +657,7 @@ function renderCleanupRecommendation(disposition: ResidueDisposition, task: Task
     case 'unpublished-at-risk':
       return `Recover the work first: push ${branch} to origin and open or update a PR against ${base}, or explicitly abandon the branch, before terminalizing cleanup.`;
     case 'residue-retained':
-      return taskCleanupEpisode(task)?.requiredOperatorAction ?? `Follow the recorded cleanup disposition for ${branch}; do not recreate a branch unless delivery evidence is absent and recovery requires it.`;
+      return taskCleanupEpisode(task)?.requiredOperatorAction ?? `Run wavemill cleanup ${task.issue} --dry-run and follow the recorded cleanup disposition for ${branch}; do not recreate a branch unless delivery evidence is absent and recovery requires it.`;
     case 'clean':
     default:
       if (policy?.allowed === false) return `No work is ahead of ${base}; keep retained resources only if the recorded policy requires it.`;
