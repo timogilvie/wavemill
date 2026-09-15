@@ -332,6 +332,8 @@ EOF
     CHALLENGE_ORCH_CALLS=0
     READY_LABEL_COUNT_FILE="$CASE_DIR/ready-label-calls"
     printf "%s\n" "0" > "$READY_LABEL_COUNT_FILE"
+    ROUTE_STAMP_COUNT_FILE="$CASE_DIR/route-stamp-calls"
+    printf "%s\n" "0" > "$ROUTE_STAMP_COUNT_FILE"
 
     _ensure_window_exists() { :; }
     handle_challenge_pending_ready() {
@@ -542,6 +544,17 @@ EOF
         esac
       fi
 
+      if [[ "${2:-}" == "$TOOLS_DIR/stamp-pr-route.ts" ]]; then
+        printf "%s\n" "$(( $(cat "$ROUTE_STAMP_COUNT_FILE") + 1 ))" > "$ROUTE_STAMP_COUNT_FILE"
+        case "$TEST_CASE" in
+          route_stamp_failure)
+            printf "%s\n" "missing current-head reviewer execution evidence" >&2
+            return 1
+            ;;
+          *) return 0 ;;
+        esac
+      fi
+
       if [[ "${2:-}" == "-e" && "${3:-}" == *"getConfiguredModelsForDescriptorStage"* ]]; then
         case "$TEST_CASE" in
           infra_retry_context_window_reroute)
@@ -568,7 +581,7 @@ EOF
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"pending\",\"pendingReason\":\"challenge-comparison-pending\",\"pendingReasons\":[\"challenge-comparison-pending\"],\"implementationReady\":true,\"headSha\":\"abc123\",\"ciConclusion\":\"pass\",\"challenge\":{\"pairId\":\"HOK-1300\",\"side\":\"primary\",\"outcome\":\"comparison-pending\",\"primaryEval\":{\"ok\":true,\"evalId\":\"eval-1\"},\"challengerEval\":{\"ok\":true,\"evalId\":\"eval-2\"},\"staleComparisons\":0},\"checks\":[{\"name\":\"ci-status\",\"status\":\"pass\",\"message\":\"All CI checks passing\",\"details\":{\"totalChecks\":3}},{\"name\":\"ready-policy\",\"status\":\"pending\",\"message\":\"Challenge pair HOK-1300 has current-head evals but no comparison yet.\",\"details\":{\"pendingReason\":\"challenge-comparison-pending\",\"implementationReady\":true}}],\"timestamp\":\"2026-04-16T14:12:00.431Z\",\"summary\":\"Challenge pair HOK-1300 has current-head evals but no comparison yet.\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"BLOCKED\",\"attempts\":1}}"
           return 2
           ;;
-        pass_after_remediation|pass_clears_recheck|dismissed_blockers_pass)
+        pass_after_remediation|pass_clears_recheck|dismissed_blockers_pass|route_stamp_failure)
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"pass\",\"checks\":[{\"name\":\"ci-status\",\"status\":\"pass\",\"message\":\"All CI checks passing\",\"details\":{\"totalChecks\":3}}],\"timestamp\":\"2026-04-16T14:12:00.431Z\",\"summary\":\"All checks passed\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"attempts\":1}}"
           return 0
           ;;
@@ -652,6 +665,7 @@ EOF
     transient_count="$(cat "$STATE_DIR/.transient-mergeability-count" 2>/dev/null || echo "")"
     infra_retry_count="$(cat "$STATE_DIR/.retry-review-infra-recovery-count" 2>/dev/null || echo "")"
     ready_label_calls="$(cat "$READY_LABEL_COUNT_FILE" 2>/dev/null || echo "0")"
+    route_stamp_calls="$(cat "$ROUTE_STAMP_COUNT_FILE" 2>/dev/null || echo "0")"
     ready_result_payload=""
     [[ -f "$STATE_DIR/.ready-result.json" ]] && ready_result_payload=$(cat "$STATE_DIR/.ready-result.json")
 
@@ -663,6 +677,7 @@ EOF
     printf "rc=%s\nstage_calls=%s\nattention_calls=%s\nattention_count=%s\nlaunch_calls=%s\nreview_launch_calls=%s\nreview_launch_model=%s\nprepare_recovery_calls=%s\nagent_validate_calls=%s\nprompt_calls=%s\nerror_count=%s\nlogs=%s\nwarn_logs=%s\nerror_payload=%s\ndebug_file=%s\ndebug_lines=%s\ndebug_payload=%s\nconflict_attention_head=%s\nconflict_attention_reported=%s\nconflict_detected=%s\nneeds_attention=%s\ntransient_attention=%s\ntransient_count=%s\ninfra_retry_count=%s\nready_result_payload=%s\n" \
       "$rc" "$stage_summary" "$attention_summary" "$attention_count" "$LAUNCH_AGENT_CALLS" "$REVIEW_LAUNCH_CALLS" "${REVIEW_LAUNCH_MODEL:-}" "$PREPARE_RECOVERY_CALLS" "$AGENT_VALIDATE_CALLS" "$READY_PROMPT_CALLS" "$error_count" "$LOG_OUTPUT" "$LOG_WARN_OUTPUT" "$LOG_ERROR_OUTPUT" "$DEBUG_FILE" "$debug_line_count" "$debug_payload" "$conflict_attention_head" "$conflict_attention_reported" "$conflict_detected" "$needs_attention" "$transient_attention" "$transient_count" "$infra_retry_count" "$ready_result_payload"
     printf "ready_label_calls=%s\n" "$ready_label_calls"
+    printf "route_stamp_calls=%s\n" "$route_stamp_calls"
     printf "challenge_orch_calls=%s\n" "$CHALLENGE_ORCH_CALLS"
     printf "prompt_summary=%s\n" "$READY_PROMPT_SUMMARY"
     printf "phase_used=%s\n" "$LAUNCH_AGENT_PHASE"
@@ -1376,6 +1391,15 @@ check_contains "ready label failure keeps attention" "$output" "needs_attention=
 check_contains "ready label failure writes operator message" "$output" "Ready passed for PR #304, but updating wm:ready labels failed."
 check_contains "ready label failure records label update failure" "$output" "\"readyLabelsUpdated\":false"
 check_contains "ready label failure logs terse error" "$output" "Ready passed for HOK-1300 but failed to restore PR labels"
+
+output="$(run_launch_case route_stamp_failure)"
+check_contains "route stamp failure returns failure" "$output" "rc=1"
+check_contains "route stamp failure writes failed stage" "$output" "|ready|failed|"
+check_contains "route stamp failure runs stamper once" "$output" "route_stamp_calls=1"
+check_contains "route stamp failure does not add ready label" "$output" "ready_label_calls=0"
+check_contains "route stamp failure keeps attention" "$output" "needs_attention=present"
+check_contains "route stamp failure writes operator message" "$output" "Ready blocked for PR #304: route metadata stamping failed"
+check_contains "route stamp failure includes action hint" "$output" "missing current-head reviewer execution evidence"
 
 output="$(run_launch_case clean_after_unknown)"
 check_contains "clean after unknown returns success" "$output" "rc=0"

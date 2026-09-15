@@ -9257,14 +9257,21 @@ set_ready_pass_labels() {
   review_result_passes_ready_gate "$feature_dir" || return 1
 
   # HOK-2945: stamp executed route provenance before ready labeling.
-  # Best-effort until HOK-3017 lands (route_ready_gate config switch).
   if [[ -n "${TOOLS_DIR:-}" ]]; then
-    local stamp_issue="${ISSUE:-}"
+    local stamp_issue="${ISSUE:-}" stamp_stderr stamp_error
     if [[ -z "$stamp_issue" ]]; then
       stamp_issue="$(basename "$wt_dir")"
     fi
-    (cd "$wt_dir" && npx tsx "$TOOLS_DIR/stamp-pr-route.ts" "$pr_number" \
-      --issue "$stamp_issue" --feature-dir "$feature_dir") 2>/dev/null || true
+    stamp_stderr="$(mktemp "${TMPDIR:-/tmp}/wavemill-route-stamp.XXXXXX")" || return 1
+    if ! (cd "$wt_dir" && npx tsx "$TOOLS_DIR/stamp-pr-route.ts" "$pr_number" \
+      --issue "$stamp_issue" --feature-dir "$feature_dir") 2>"$stamp_stderr"; then
+      stamp_error="$(tr '\n' ' ' < "$stamp_stderr" | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
+      rm -f "$stamp_stderr"
+      [[ -n "$stamp_error" ]] || stamp_error="no diagnostic output"
+      write_ready_attention_file "$feature_dir" "Ready blocked for PR #$pr_number: route metadata stamping failed ($stamp_error)."
+      return 2
+    fi
+    rm -f "$stamp_stderr"
   fi
 
   (cd "$wt_dir" && npx tsx "$TOOLS_DIR/set-pr-ready-label.ts" "$pr_number" --marker-root "$REPO_DIR")
@@ -9752,7 +9759,13 @@ launch_ready_phase() {
   if [[ "$ready_rc" -eq 0 ]]; then
     local main_sha completed_artifacts_json label_failed_artifacts_json
     main_sha=$(get_main_head_sha "$wt_dir" "$base_branch")
-    if ! set_ready_pass_labels "$wt_dir" "$pr_number" "$state_dir" >/dev/null 2>&1; then
+    local ready_label_rc
+    if set_ready_pass_labels "$wt_dir" "$pr_number" "$state_dir" >/dev/null 2>&1; then
+      ready_label_rc=0
+    else
+      ready_label_rc=$?
+    fi
+    if [[ "$ready_label_rc" -ne 0 ]]; then
       label_failed_artifacts_json=$(jq -cn \
         --arg verdict "${verdict:-unknown}" \
         --arg merge_status "${merge_status:-UNKNOWN}" \
@@ -9780,11 +9793,18 @@ launch_ready_phase() {
           } | with_entries(select(.value != ""))
         ')
       label_failed_artifacts_json=$(merge_queue_enrich_ready_artifacts "$state_dir" "$label_failed_artifacts_json" "candidate-progress")
-      write_stage_result "$state_dir" "ready" "failed" "$current_agent" "$current_model" \
-        "Ready passed but failed to restore PR labels" \
-        "$label_failed_artifacts_json"
-      write_ready_attention_file "$state_dir" "Ready passed for PR #$pr_number, but updating wm:ready labels failed."
-      log_error "  Ready passed for $issue but failed to restore PR labels"
+      if [[ "$ready_label_rc" -eq 2 ]]; then
+        write_stage_result "$state_dir" "ready" "failed" "$current_agent" "$current_model" \
+          "Ready passed but route metadata stamping failed" \
+          "$label_failed_artifacts_json"
+        log_error "  Ready passed for $issue but route metadata stamping failed"
+      else
+        write_stage_result "$state_dir" "ready" "failed" "$current_agent" "$current_model" \
+          "Ready passed but failed to restore PR labels" \
+          "$label_failed_artifacts_json"
+        write_ready_attention_file "$state_dir" "Ready passed for PR #$pr_number, but updating wm:ready labels failed."
+        log_error "  Ready passed for $issue but failed to restore PR labels"
+      fi
       return 1
     fi
 
