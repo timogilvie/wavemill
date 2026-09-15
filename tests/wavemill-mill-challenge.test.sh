@@ -695,13 +695,15 @@ echo "=== HOK-2811: Review-stage deferral (Arbiter P2.4a) ==="
 MILL_REVIEW_BLOCK="$(awk '
   /HOK-2811: Review-stage challenges defer the challenger to a fork trigger/ { capture=1 }
   capture { print }
-  /challenge_arms_record_pending "\$ISSUE"/ && capture { print; exit }
+  /has no canonical execution intent at deferred selection/ && capture { exit }
 ' "$MILL_SCRIPT")"
 
 check_contains "startup gates FINAL_LAUNCH_ARGS challenger on defer" "$MILL_REVIEW_BLOCK" 'if [[ "$defer_challenger" != "true" ]]; then
       FINAL_LAUNCH_ARGS+=("$challenger_key|$challenger_slug|$TITLE")'
 check_contains "startup records pending arm when deferring" "$MILL_REVIEW_BLOCK" 'challenge_arms_record_pending "$ISSUE"'
 check_contains "startup uses challenge_arm_json_build" "$MILL_REVIEW_BLOCK" 'challenge_arm_json_build'
+check_contains "startup persists deferred challenge intent to state" "$MILL_REVIEW_BLOCK" 'challenge_intent_record_selection "$ISSUE" "$challenger_key" "$challenge_execution_intent"'
+check_contains "startup stores deferred challenge intent on arm record" "$MILL_REVIEW_BLOCK" '"$challenge_execution_intent"'
 
 # The monitor's launch_task defers on review-stage as well.
 MONITOR_LAUNCH_BLOCK="$(awk '

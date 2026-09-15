@@ -1,0 +1,3332 @@
+{
+  "schemaVersion": "1.0",
+  "instances": [
+    {
+      "id": "seed-001-missing-import",
+      "taskTitle": "Add missing import statement (001)",
+      "taskDescription": "Task: add a missing import so the referenced helper resolves at runtime. Replay seed variant 1.",
+      "baseSha": "3d8a0c8e46f5c971cefd21f4f28333d58ca596d4",
+      "candidates": [
+        {
+          "id": "good-001-missing-import",
+          "patch": "--- a/src/utils.ts\n+++ b/src/utils.ts\n@@ -1,3 +1,4 @@\n-export function process() {\n-  return helper();\n-}\n+import { helper } from './helper';\n+export function process() {\n+  return helper();\n+}",
+          "patchHash": "sha256:da008136fad38f88d945fdc4d0f59508727e5dc4044917b25878898fa89e3baf",
+          "patchSizeBytes": 193,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-001-missing-import",
+          "patch": "--- a/src/utils.ts\n+++ b/src/utils.ts\n@@ -1,3 +1,4 @@\n-export function process() {\n-  return helper();\n-}\n+import { wrongHelper } from './helper';\n+export function process() {\n+  return helper();\n+}",
+          "patchHash": "sha256:7c688f61367ed252cdbf45b7bae5d704f1499a928bc72288b15ab94c4a3c1bd0",
+          "patchSizeBytes": 198,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-001-missing-import",
+      "knownBadCandidateIds": [
+        "bad-001-missing-import"
+      ],
+      "source": {
+        "curationRationale": "merged_winner",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353601,
+      "notes": "Known-bad patch imports the wrong symbol and leaves the original reference unresolved. Deterministic replay-corpus seed 001."
+    },
+    {
+      "id": "seed-002-type-error",
+      "taskTitle": "Fix TypeScript type annotation (002)",
+      "taskDescription": "Task: tighten an unsafe parameter type without introducing an undeclared generic. Replay seed variant 1.",
+      "baseSha": "dd43578a4cab12387e3e9600a378cdee2226b5b7",
+      "candidates": [
+        {
+          "id": "good-002-type-error",
+          "patch": "--- a/src/handler.ts\n+++ b/src/handler.ts\n@@ -1,3 +1,3 @@\n-function handle(data: any): void {\n-  console.log(data);\n-}\n+function handle(data: Record<string, unknown>): void {\n+  console.log(data);\n+}",
+          "patchHash": "sha256:dc1d7b48a6c8805d0498d98d987f370eeecdac357ceeba844def10e886b1b36c",
+          "patchSizeBytes": 199,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-002-type-error",
+          "patch": "--- a/src/handler.ts\n+++ b/src/handler.ts\n@@ -1,3 +1,3 @@\n-function handle(data: any): void {\n-  console.log(data);\n-}\n+function handle(data: T): void {\n+  console.log(data);\n+}",
+          "patchHash": "sha256:79608f9f02bc2b3f7645a2dfa94fa67313a5c2aa97e922099ec3a84c0e325d92",
+          "patchSizeBytes": 177,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-002-type-error",
+      "knownBadCandidateIds": [
+        "bad-002-type-error"
+      ],
+      "source": {
+        "curationRationale": "incident_fix",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353602,
+      "notes": "Known-bad patch uses an undeclared generic type. Deterministic replay-corpus seed 002."
+    },
+    {
+      "id": "seed-003-null-check",
+      "taskTitle": "Add null safety check (003)",
+      "taskDescription": "Task: add a null check before accessing a property. Replay seed variant 1.",
+      "baseSha": "e1dbb6b3761e31dc58d54b5964aaca390d166ab2",
+      "candidates": [
+        {
+          "id": "good-003-null-check",
+          "patch": "--- a/src/accessor.ts\n+++ b/src/accessor.ts\n@@ -1,3 +1,4 @@\n-function getValue(obj: any) {\n-  return obj.value;\n-}\n+function getValue(obj: any) {\n+  if (!obj || obj.value === null) return undefined;\n+  return obj.value;\n+}",
+          "patchHash": "sha256:ba5d3dc1bedb0fa09f3bee4c38ad1297254b12dc8027fbb67a6ef1bab2711a06",
+          "patchSizeBytes": 222,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-003-null-check",
+          "patch": "--- a/src/accessor.ts\n+++ b/src/accessor.ts\n@@ -1,3 +1,4 @@\n-function getValue(obj: any) {\n-  return obj.value;\n-}\n+function getValue(obj: any) {\n+  if (!obj) return;\n+  return obj.value;\n+}",
+          "patchHash": "sha256:42c8ed4b6dec59f3806cf95918ea412f9bcf8428f52e289b69429d2cbc879338",
+          "patchSizeBytes": 190,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-003-null-check",
+      "knownBadCandidateIds": [
+        "bad-003-null-check"
+      ],
+      "source": {
+        "curationRationale": "eval_implied",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353603,
+      "notes": "Known-bad patch misses the null value case and changes the return convention. Deterministic replay-corpus seed 003."
+    },
+    {
+      "id": "seed-004-async-await",
+      "taskTitle": "Await asynchronous setup before use (004)",
+      "taskDescription": "Task: ensure asynchronous setup completes before the client is used. Replay seed variant 1.",
+      "baseSha": "00924d82840e3c8dd19bf3bf7d73ec481d105ef2",
+      "candidates": [
+        {
+          "id": "good-004-async-await",
+          "patch": "--- a/src/client.ts\n+++ b/src/client.ts\n@@ -1,3 +1,4 @@\n-export async function run() {\n-  const client = connect();\n-  return client.fetch();\n-}\n+export async function run() {\n+  const client = await connect();\n+  return client.fetch();\n+}",
+          "patchHash": "sha256:05b4df00eb15e96ac83a54978036dded20b502ec3739fc286b147ba3dd0cbbd1",
+          "patchSizeBytes": 239,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-004-async-await",
+          "patch": "--- a/src/client.ts\n+++ b/src/client.ts\n@@ -1,3 +1,4 @@\n-export async function run() {\n-  const client = connect();\n-  return client.fetch();\n-}\n+export async function run() {\n+  const client = connect();\n+  return await client.fetch();\n+}",
+          "patchHash": "sha256:903f95548ccc8b9331a4c7270598df94fea7641524e60e04503b6f761d57bb6a",
+          "patchSizeBytes": 239,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-004-async-await",
+      "knownBadCandidateIds": [
+        "bad-004-async-await"
+      ],
+      "source": {
+        "curationRationale": "survival_confirmed",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353604,
+      "notes": "Known-bad patch awaits the downstream call but still treats a Promise as the client. Deterministic replay-corpus seed 004."
+    },
+    {
+      "id": "seed-005-bounds-check",
+      "taskTitle": "Fix off-by-one bounds check (005)",
+      "taskDescription": "Task: reject indexes outside the array range. Replay seed variant 1.",
+      "baseSha": "ef78a3d1c9d0c330df6bfe4848efd17f1694aff5",
+      "candidates": [
+        {
+          "id": "good-005-bounds-check",
+          "patch": "--- a/src/list.ts\n+++ b/src/list.ts\n@@ -1,3 +1,4 @@\n-export function at(items: string[], index: number) {\n-  if (index > items.length) return undefined;\n-  return items[index];\n-}\n+export function at(items: string[], index: number) {\n+  if (index < 0 || index >= items.length) return undefined;\n+  return items[index];\n+}",
+          "patchHash": "sha256:e25da27ce441789f7e734a2307e93ecee364894037df5bc074e438144d7e6d6c",
+          "patchSizeBytes": 321,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-005-bounds-check",
+          "patch": "--- a/src/list.ts\n+++ b/src/list.ts\n@@ -1,3 +1,4 @@\n-export function at(items: string[], index: number) {\n-  if (index > items.length) return undefined;\n-  return items[index];\n-}\n+export function at(items: string[], index: number) {\n+  if (index > items.length - 1) return undefined;\n+  return items[index];\n+}",
+          "patchHash": "sha256:8ab9d61f72b26caaabc81a50651ebd649d9f8223945859ded26df4e403e6825e",
+          "patchSizeBytes": 311,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-005-bounds-check",
+      "knownBadCandidateIds": [
+        "bad-005-bounds-check"
+      ],
+      "source": {
+        "curationRationale": "merged_winner",
+        "sanitized": true
+      },
+      "heldOut": true,
+      "curatedAt": 1726353605,
+      "notes": "Known-bad patch handles the upper edge but still accepts negative indexes. Deterministic replay-corpus seed 005."
+    },
+    {
+      "id": "seed-006-error-propagation",
+      "taskTitle": "Preserve error propagation (006)",
+      "taskDescription": "Task: keep operation failures visible while adding context. Replay seed variant 1.",
+      "baseSha": "a3b2a796d9e1d4541fd0a038b424813f1baa1d48",
+      "candidates": [
+        {
+          "id": "good-006-error-propagation",
+          "patch": "--- a/src/runner.ts\n+++ b/src/runner.ts\n@@ -1,3 +1,7 @@\n-export async function runJob(job: Job) {\n-  return execute(job);\n-}\n+export async function runJob(job: Job) {\n+  try {\n+    return await execute(job);\n+  } catch (error) {\n+    throw new Error(`job failed: ${String(error)}`);\n+  }\n+}",
+          "patchHash": "sha256:9f4a03f308b3d4b7eae3fb5899b8ecfd7f014b3c696f2392866d6a2fef123b88",
+          "patchSizeBytes": 290,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-006-error-propagation",
+          "patch": "--- a/src/runner.ts\n+++ b/src/runner.ts\n@@ -1,3 +1,7 @@\n-export async function runJob(job: Job) {\n-  return execute(job);\n-}\n+export async function runJob(job: Job) {\n+  try {\n+    return await execute(job);\n+  } catch {\n+    return undefined;\n+  }\n+}",
+          "patchHash": "sha256:08a41258913e496387d3ff9b4d9044663550d8403e7f5db521270fb1210ffabf",
+          "patchSizeBytes": 251,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-006-error-propagation",
+      "knownBadCandidateIds": [
+        "bad-006-error-propagation"
+      ],
+      "source": {
+        "curationRationale": "incident_fix",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353606,
+      "notes": "Known-bad patch swallows the error and creates a false success. Deterministic replay-corpus seed 006."
+    },
+    {
+      "id": "seed-007-path-normalization",
+      "taskTitle": "Normalize relative artifact paths (007)",
+      "taskDescription": "Task: normalize artifact paths before joining them to the workspace root. Replay seed variant 1.",
+      "baseSha": "ff4d1f7ec59550c5fbe6cd65869a9a431a3f965f",
+      "candidates": [
+        {
+          "id": "good-007-path-normalization",
+          "patch": "--- a/src/artifacts.ts\n+++ b/src/artifacts.ts\n@@ -1,3 +1,3 @@\n-export function artifactPath(root: string, name: string) {\n-  return `${root}/${name}`;\n-}\n+export function artifactPath(root: string, name: string) {\n+  return join(root, normalize(name));\n+}",
+          "patchHash": "sha256:330ea3b7d46e963ad97fac8d14cf55e59870565f33d635446a2c5a7401987197",
+          "patchSizeBytes": 255,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-007-path-normalization",
+          "patch": "--- a/src/artifacts.ts\n+++ b/src/artifacts.ts\n@@ -1,3 +1,3 @@\n-export function artifactPath(root: string, name: string) {\n-  return `${root}/${name}`;\n-}\n+export function artifactPath(root: string, name: string) {\n+  return normalize(`${root}/${name}`);\n+}",
+          "patchHash": "sha256:3633989ee4aef9393798418eb1a0581ac10fe4c168f4334e162ca12a54f0f26f",
+          "patchSizeBytes": 256,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-007-path-normalization",
+      "knownBadCandidateIds": [
+        "bad-007-path-normalization"
+      ],
+      "source": {
+        "curationRationale": "eval_implied",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353607,
+      "notes": "Known-bad patch normalizes the whole string and can erase the intended root boundary. Deterministic replay-corpus seed 007."
+    },
+    {
+      "id": "seed-008-dedupe-events",
+      "taskTitle": "Deduplicate repeated event keys (008)",
+      "taskDescription": "Task: avoid emitting duplicate event keys while preserving order. Replay seed variant 1.",
+      "baseSha": "e350d1435be5859f16f57b50a3f62ee5cef49a73",
+      "candidates": [
+        {
+          "id": "good-008-dedupe-events",
+          "patch": "--- a/src/events.ts\n+++ b/src/events.ts\n@@ -1,3 +1,3 @@\n-export function keys(events: Event[]) {\n-  return events.map((event) => event.key);\n-}\n+export function keys(events: Event[]) {\n+  return [...new Set(events.map((event) => event.key))];\n+}",
+          "patchHash": "sha256:a07a05f6f6156521a37a506d497448e67dc541335ecf13a7c7af8ffcedfe5b39",
+          "patchSizeBytes": 245,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-008-dedupe-events",
+          "patch": "--- a/src/events.ts\n+++ b/src/events.ts\n@@ -1,3 +1,3 @@\n-export function keys(events: Event[]) {\n-  return events.map((event) => event.key);\n-}\n+export function keys(events: Event[]) {\n+  return events.sort().map((event) => event.key);\n+}",
+          "patchHash": "sha256:ec1c5fab4a40a6a58678c2adf2bb345837f58d90390b29072d402b29be4d7621",
+          "patchSizeBytes": 238,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-008-dedupe-events",
+      "knownBadCandidateIds": [
+        "bad-008-dedupe-events"
+      ],
+      "source": {
+        "curationRationale": "survival_confirmed",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353608,
+      "notes": "Known-bad patch sorts object records and still does not deduplicate keys. Deterministic replay-corpus seed 008."
+    },
+    {
+      "id": "seed-009-config-default",
+      "taskTitle": "Apply default retry count (009)",
+      "taskDescription": "Task: preserve explicit zero while defaulting missing retry count. Replay seed variant 1.",
+      "baseSha": "3617383bcb170183ea10578170f250e98e29df32",
+      "candidates": [
+        {
+          "id": "good-009-config-default",
+          "patch": "--- a/src/config.ts\n+++ b/src/config.ts\n@@ -1,3 +1,3 @@\n-export function retries(config: Config) {\n-  return config.retries || 3;\n-}\n+export function retries(config: Config) {\n+  return config.retries ?? 3;\n+}",
+          "patchHash": "sha256:e751a4cad721378312da184fa6eb7a05a74e5224641a0fd127f8ad6da29f1b70",
+          "patchSizeBytes": 209,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-009-config-default",
+          "patch": "--- a/src/config.ts\n+++ b/src/config.ts\n@@ -1,3 +1,3 @@\n-export function retries(config: Config) {\n-  return config.retries || 3;\n-}\n+export function retries(config: Config) {\n+  return config.retries ? config.retries : 3;\n+}",
+          "patchHash": "sha256:980dffa6d1eb597932cc4b686963f921eb9744a742222bfe57d4664a898f3ed5",
+          "patchSizeBytes": 225,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-009-config-default",
+      "knownBadCandidateIds": [
+        "bad-009-config-default"
+      ],
+      "source": {
+        "curationRationale": "merged_winner",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353609,
+      "notes": "Known-bad patch still overwrites an explicit zero retry count. Deterministic replay-corpus seed 009."
+    },
+    {
+      "id": "seed-010-json-parse",
+      "taskTitle": "Handle malformed JSON input (010)",
+      "taskDescription": "Task: classify malformed JSON as invalid input without crashing the batch. Replay seed variant 1.",
+      "baseSha": "ed8b1f8dc145dfbcfe8cce169a33b39bd5bace6d",
+      "candidates": [
+        {
+          "id": "good-010-json-parse",
+          "patch": "--- a/src/parser.ts\n+++ b/src/parser.ts\n@@ -1,3 +1,7 @@\n-export function parse(raw: string) {\n-  return JSON.parse(raw);\n-}\n+export function parse(raw: string) {\n+  try {\n+    return { ok: true, value: JSON.parse(raw) };\n+  } catch (error) {\n+    return { ok: false, error: String(error) };\n+  }\n+}",
+          "patchHash": "sha256:55eabbea01c6d3e752102949f7d300d2e7114b0f78438c8e421488600545d9ea",
+          "patchSizeBytes": 298,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-010-json-parse",
+          "patch": "--- a/src/parser.ts\n+++ b/src/parser.ts\n@@ -1,3 +1,3 @@\n-export function parse(raw: string) {\n-  return JSON.parse(raw);\n-}\n+export function parse(raw: string) {\n+  return { ok: true, value: JSON.parse(raw) };\n+}",
+          "patchHash": "sha256:424b899f96711b43894fbad1b289c8ae819cd142a10ffec8dd2a3d36c9222218",
+          "patchSizeBytes": 212,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-010-json-parse",
+      "knownBadCandidateIds": [
+        "bad-010-json-parse"
+      ],
+      "source": {
+        "curationRationale": "incident_fix",
+        "sanitized": true
+      },
+      "heldOut": true,
+      "curatedAt": 1726353610,
+      "notes": "Known-bad patch wraps the success shape but still throws on malformed input. Deterministic replay-corpus seed 010."
+    },
+    {
+      "id": "seed-011-missing-import",
+      "taskTitle": "Add missing import statement (011)",
+      "taskDescription": "Task: add a missing import so the referenced helper resolves at runtime. Replay seed variant 2.",
+      "baseSha": "24a7759e4498874a67cab684dd5c4d9733511fb9",
+      "candidates": [
+        {
+          "id": "good-011-missing-import",
+          "patch": "--- a/src/utils.ts\n+++ b/src/utils.ts\n@@ -1,3 +1,4 @@\n-export function process() {\n-  return helper();\n-}\n+import { helper } from './helper';\n+export function process() {\n+  return helper();\n+}",
+          "patchHash": "sha256:da008136fad38f88d945fdc4d0f59508727e5dc4044917b25878898fa89e3baf",
+          "patchSizeBytes": 193,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-011-missing-import",
+          "patch": "--- a/src/utils.ts\n+++ b/src/utils.ts\n@@ -1,3 +1,4 @@\n-export function process() {\n-  return helper();\n-}\n+import { wrongHelper } from './helper';\n+export function process() {\n+  return helper();\n+}",
+          "patchHash": "sha256:7c688f61367ed252cdbf45b7bae5d704f1499a928bc72288b15ab94c4a3c1bd0",
+          "patchSizeBytes": 198,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-011-missing-import",
+      "knownBadCandidateIds": [
+        "bad-011-missing-import"
+      ],
+      "source": {
+        "curationRationale": "eval_implied",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353611,
+      "notes": "Known-bad patch imports the wrong symbol and leaves the original reference unresolved. Deterministic replay-corpus seed 011."
+    },
+    {
+      "id": "seed-012-type-error",
+      "taskTitle": "Fix TypeScript type annotation (012)",
+      "taskDescription": "Task: tighten an unsafe parameter type without introducing an undeclared generic. Replay seed variant 2.",
+      "baseSha": "2cef37d3afc347bee5e9cf18fe35450f4cf39899",
+      "candidates": [
+        {
+          "id": "good-012-type-error",
+          "patch": "--- a/src/handler.ts\n+++ b/src/handler.ts\n@@ -1,3 +1,3 @@\n-function handle(data: any): void {\n-  console.log(data);\n-}\n+function handle(data: Record<string, unknown>): void {\n+  console.log(data);\n+}",
+          "patchHash": "sha256:dc1d7b48a6c8805d0498d98d987f370eeecdac357ceeba844def10e886b1b36c",
+          "patchSizeBytes": 199,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-012-type-error",
+          "patch": "--- a/src/handler.ts\n+++ b/src/handler.ts\n@@ -1,3 +1,3 @@\n-function handle(data: any): void {\n-  console.log(data);\n-}\n+function handle(data: T): void {\n+  console.log(data);\n+}",
+          "patchHash": "sha256:79608f9f02bc2b3f7645a2dfa94fa67313a5c2aa97e922099ec3a84c0e325d92",
+          "patchSizeBytes": 177,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-012-type-error",
+      "knownBadCandidateIds": [
+        "bad-012-type-error"
+      ],
+      "source": {
+        "curationRationale": "survival_confirmed",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353612,
+      "notes": "Known-bad patch uses an undeclared generic type. Deterministic replay-corpus seed 012."
+    },
+    {
+      "id": "seed-013-null-check",
+      "taskTitle": "Add null safety check (013)",
+      "taskDescription": "Task: add a null check before accessing a property. Replay seed variant 2.",
+      "baseSha": "c21593489f95722647764190e74471ea25794e31",
+      "candidates": [
+        {
+          "id": "good-013-null-check",
+          "patch": "--- a/src/accessor.ts\n+++ b/src/accessor.ts\n@@ -1,3 +1,4 @@\n-function getValue(obj: any) {\n-  return obj.value;\n-}\n+function getValue(obj: any) {\n+  if (!obj || obj.value === null) return undefined;\n+  return obj.value;\n+}",
+          "patchHash": "sha256:ba5d3dc1bedb0fa09f3bee4c38ad1297254b12dc8027fbb67a6ef1bab2711a06",
+          "patchSizeBytes": 222,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-013-null-check",
+          "patch": "--- a/src/accessor.ts\n+++ b/src/accessor.ts\n@@ -1,3 +1,4 @@\n-function getValue(obj: any) {\n-  return obj.value;\n-}\n+function getValue(obj: any) {\n+  if (!obj) return;\n+  return obj.value;\n+}",
+          "patchHash": "sha256:42c8ed4b6dec59f3806cf95918ea412f9bcf8428f52e289b69429d2cbc879338",
+          "patchSizeBytes": 190,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-013-null-check",
+      "knownBadCandidateIds": [
+        "bad-013-null-check"
+      ],
+      "source": {
+        "curationRationale": "merged_winner",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353613,
+      "notes": "Known-bad patch misses the null value case and changes the return convention. Deterministic replay-corpus seed 013."
+    },
+    {
+      "id": "seed-014-async-await",
+      "taskTitle": "Await asynchronous setup before use (014)",
+      "taskDescription": "Task: ensure asynchronous setup completes before the client is used. Replay seed variant 2.",
+      "baseSha": "d5076040bf4daa144a72b774bc85573a0613fe0e",
+      "candidates": [
+        {
+          "id": "good-014-async-await",
+          "patch": "--- a/src/client.ts\n+++ b/src/client.ts\n@@ -1,3 +1,4 @@\n-export async function run() {\n-  const client = connect();\n-  return client.fetch();\n-}\n+export async function run() {\n+  const client = await connect();\n+  return client.fetch();\n+}",
+          "patchHash": "sha256:05b4df00eb15e96ac83a54978036dded20b502ec3739fc286b147ba3dd0cbbd1",
+          "patchSizeBytes": 239,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-014-async-await",
+          "patch": "--- a/src/client.ts\n+++ b/src/client.ts\n@@ -1,3 +1,4 @@\n-export async function run() {\n-  const client = connect();\n-  return client.fetch();\n-}\n+export async function run() {\n+  const client = connect();\n+  return await client.fetch();\n+}",
+          "patchHash": "sha256:903f95548ccc8b9331a4c7270598df94fea7641524e60e04503b6f761d57bb6a",
+          "patchSizeBytes": 239,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-014-async-await",
+      "knownBadCandidateIds": [
+        "bad-014-async-await"
+      ],
+      "source": {
+        "curationRationale": "incident_fix",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353614,
+      "notes": "Known-bad patch awaits the downstream call but still treats a Promise as the client. Deterministic replay-corpus seed 014."
+    },
+    {
+      "id": "seed-015-bounds-check",
+      "taskTitle": "Fix off-by-one bounds check (015)",
+      "taskDescription": "Task: reject indexes outside the array range. Replay seed variant 2.",
+      "baseSha": "61b302a624d4a3c045f19e620f6a3dfc9918f4b3",
+      "candidates": [
+        {
+          "id": "good-015-bounds-check",
+          "patch": "--- a/src/list.ts\n+++ b/src/list.ts\n@@ -1,3 +1,4 @@\n-export function at(items: string[], index: number) {\n-  if (index > items.length) return undefined;\n-  return items[index];\n-}\n+export function at(items: string[], index: number) {\n+  if (index < 0 || index >= items.length) return undefined;\n+  return items[index];\n+}",
+          "patchHash": "sha256:e25da27ce441789f7e734a2307e93ecee364894037df5bc074e438144d7e6d6c",
+          "patchSizeBytes": 321,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-015-bounds-check",
+          "patch": "--- a/src/list.ts\n+++ b/src/list.ts\n@@ -1,3 +1,4 @@\n-export function at(items: string[], index: number) {\n-  if (index > items.length) return undefined;\n-  return items[index];\n-}\n+export function at(items: string[], index: number) {\n+  if (index > items.length - 1) return undefined;\n+  return items[index];\n+}",
+          "patchHash": "sha256:8ab9d61f72b26caaabc81a50651ebd649d9f8223945859ded26df4e403e6825e",
+          "patchSizeBytes": 311,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-015-bounds-check",
+      "knownBadCandidateIds": [
+        "bad-015-bounds-check"
+      ],
+      "source": {
+        "curationRationale": "eval_implied",
+        "sanitized": true
+      },
+      "heldOut": true,
+      "curatedAt": 1726353615,
+      "notes": "Known-bad patch handles the upper edge but still accepts negative indexes. Deterministic replay-corpus seed 015."
+    },
+    {
+      "id": "seed-016-error-propagation",
+      "taskTitle": "Preserve error propagation (016)",
+      "taskDescription": "Task: keep operation failures visible while adding context. Replay seed variant 2.",
+      "baseSha": "a9f221051ca68cf382071bc1bca9dc16181aebaa",
+      "candidates": [
+        {
+          "id": "good-016-error-propagation",
+          "patch": "--- a/src/runner.ts\n+++ b/src/runner.ts\n@@ -1,3 +1,7 @@\n-export async function runJob(job: Job) {\n-  return execute(job);\n-}\n+export async function runJob(job: Job) {\n+  try {\n+    return await execute(job);\n+  } catch (error) {\n+    throw new Error(`job failed: ${String(error)}`);\n+  }\n+}",
+          "patchHash": "sha256:9f4a03f308b3d4b7eae3fb5899b8ecfd7f014b3c696f2392866d6a2fef123b88",
+          "patchSizeBytes": 290,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-016-error-propagation",
+          "patch": "--- a/src/runner.ts\n+++ b/src/runner.ts\n@@ -1,3 +1,7 @@\n-export async function runJob(job: Job) {\n-  return execute(job);\n-}\n+export async function runJob(job: Job) {\n+  try {\n+    return await execute(job);\n+  } catch {\n+    return undefined;\n+  }\n+}",
+          "patchHash": "sha256:08a41258913e496387d3ff9b4d9044663550d8403e7f5db521270fb1210ffabf",
+          "patchSizeBytes": 251,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-016-error-propagation",
+      "knownBadCandidateIds": [
+        "bad-016-error-propagation"
+      ],
+      "source": {
+        "curationRationale": "survival_confirmed",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353616,
+      "notes": "Known-bad patch swallows the error and creates a false success. Deterministic replay-corpus seed 016."
+    },
+    {
+      "id": "seed-017-path-normalization",
+      "taskTitle": "Normalize relative artifact paths (017)",
+      "taskDescription": "Task: normalize artifact paths before joining them to the workspace root. Replay seed variant 2.",
+      "baseSha": "837ff35d062f8039e9d5d171a69d67b091cf218b",
+      "candidates": [
+        {
+          "id": "good-017-path-normalization",
+          "patch": "--- a/src/artifacts.ts\n+++ b/src/artifacts.ts\n@@ -1,3 +1,3 @@\n-export function artifactPath(root: string, name: string) {\n-  return `${root}/${name}`;\n-}\n+export function artifactPath(root: string, name: string) {\n+  return join(root, normalize(name));\n+}",
+          "patchHash": "sha256:330ea3b7d46e963ad97fac8d14cf55e59870565f33d635446a2c5a7401987197",
+          "patchSizeBytes": 255,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-017-path-normalization",
+          "patch": "--- a/src/artifacts.ts\n+++ b/src/artifacts.ts\n@@ -1,3 +1,3 @@\n-export function artifactPath(root: string, name: string) {\n-  return `${root}/${name}`;\n-}\n+export function artifactPath(root: string, name: string) {\n+  return normalize(`${root}/${name}`);\n+}",
+          "patchHash": "sha256:3633989ee4aef9393798418eb1a0581ac10fe4c168f4334e162ca12a54f0f26f",
+          "patchSizeBytes": 256,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-017-path-normalization",
+      "knownBadCandidateIds": [
+        "bad-017-path-normalization"
+      ],
+      "source": {
+        "curationRationale": "merged_winner",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353617,
+      "notes": "Known-bad patch normalizes the whole string and can erase the intended root boundary. Deterministic replay-corpus seed 017."
+    },
+    {
+      "id": "seed-018-dedupe-events",
+      "taskTitle": "Deduplicate repeated event keys (018)",
+      "taskDescription": "Task: avoid emitting duplicate event keys while preserving order. Replay seed variant 2.",
+      "baseSha": "c36b624a25f4dc077b56b32667c6655e9420ae63",
+      "candidates": [
+        {
+          "id": "good-018-dedupe-events",
+          "patch": "--- a/src/events.ts\n+++ b/src/events.ts\n@@ -1,3 +1,3 @@\n-export function keys(events: Event[]) {\n-  return events.map((event) => event.key);\n-}\n+export function keys(events: Event[]) {\n+  return [...new Set(events.map((event) => event.key))];\n+}",
+          "patchHash": "sha256:a07a05f6f6156521a37a506d497448e67dc541335ecf13a7c7af8ffcedfe5b39",
+          "patchSizeBytes": 245,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-018-dedupe-events",
+          "patch": "--- a/src/events.ts\n+++ b/src/events.ts\n@@ -1,3 +1,3 @@\n-export function keys(events: Event[]) {\n-  return events.map((event) => event.key);\n-}\n+export function keys(events: Event[]) {\n+  return events.sort().map((event) => event.key);\n+}",
+          "patchHash": "sha256:ec1c5fab4a40a6a58678c2adf2bb345837f58d90390b29072d402b29be4d7621",
+          "patchSizeBytes": 238,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-018-dedupe-events",
+      "knownBadCandidateIds": [
+        "bad-018-dedupe-events"
+      ],
+      "source": {
+        "curationRationale": "incident_fix",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353618,
+      "notes": "Known-bad patch sorts object records and still does not deduplicate keys. Deterministic replay-corpus seed 018."
+    },
+    {
+      "id": "seed-019-config-default",
+      "taskTitle": "Apply default retry count (019)",
+      "taskDescription": "Task: preserve explicit zero while defaulting missing retry count. Replay seed variant 2.",
+      "baseSha": "1463d7f2d956b48b835a6a1b0f9ad121c651c8c8",
+      "candidates": [
+        {
+          "id": "good-019-config-default",
+          "patch": "--- a/src/config.ts\n+++ b/src/config.ts\n@@ -1,3 +1,3 @@\n-export function retries(config: Config) {\n-  return config.retries || 3;\n-}\n+export function retries(config: Config) {\n+  return config.retries ?? 3;\n+}",
+          "patchHash": "sha256:e751a4cad721378312da184fa6eb7a05a74e5224641a0fd127f8ad6da29f1b70",
+          "patchSizeBytes": 209,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-019-config-default",
+          "patch": "--- a/src/config.ts\n+++ b/src/config.ts\n@@ -1,3 +1,3 @@\n-export function retries(config: Config) {\n-  return config.retries || 3;\n-}\n+export function retries(config: Config) {\n+  return config.retries ? config.retries : 3;\n+}",
+          "patchHash": "sha256:980dffa6d1eb597932cc4b686963f921eb9744a742222bfe57d4664a898f3ed5",
+          "patchSizeBytes": 225,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-019-config-default",
+      "knownBadCandidateIds": [
+        "bad-019-config-default"
+      ],
+      "source": {
+        "curationRationale": "eval_implied",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353619,
+      "notes": "Known-bad patch still overwrites an explicit zero retry count. Deterministic replay-corpus seed 019."
+    },
+    {
+      "id": "seed-020-json-parse",
+      "taskTitle": "Handle malformed JSON input (020)",
+      "taskDescription": "Task: classify malformed JSON as invalid input without crashing the batch. Replay seed variant 2.",
+      "baseSha": "12229d4a5b73553690fb67868538925f5c605a58",
+      "candidates": [
+        {
+          "id": "good-020-json-parse",
+          "patch": "--- a/src/parser.ts\n+++ b/src/parser.ts\n@@ -1,3 +1,7 @@\n-export function parse(raw: string) {\n-  return JSON.parse(raw);\n-}\n+export function parse(raw: string) {\n+  try {\n+    return { ok: true, value: JSON.parse(raw) };\n+  } catch (error) {\n+    return { ok: false, error: String(error) };\n+  }\n+}",
+          "patchHash": "sha256:55eabbea01c6d3e752102949f7d300d2e7114b0f78438c8e421488600545d9ea",
+          "patchSizeBytes": 298,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-020-json-parse",
+          "patch": "--- a/src/parser.ts\n+++ b/src/parser.ts\n@@ -1,3 +1,3 @@\n-export function parse(raw: string) {\n-  return JSON.parse(raw);\n-}\n+export function parse(raw: string) {\n+  return { ok: true, value: JSON.parse(raw) };\n+}",
+          "patchHash": "sha256:424b899f96711b43894fbad1b289c8ae819cd142a10ffec8dd2a3d36c9222218",
+          "patchSizeBytes": 212,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-020-json-parse",
+      "knownBadCandidateIds": [
+        "bad-020-json-parse"
+      ],
+      "source": {
+        "curationRationale": "survival_confirmed",
+        "sanitized": true
+      },
+      "heldOut": true,
+      "curatedAt": 1726353620,
+      "notes": "Known-bad patch wraps the success shape but still throws on malformed input. Deterministic replay-corpus seed 020."
+    },
+    {
+      "id": "seed-021-missing-import",
+      "taskTitle": "Add missing import statement (021)",
+      "taskDescription": "Task: add a missing import so the referenced helper resolves at runtime. Replay seed variant 3.",
+      "baseSha": "53ae8a42e22212d2f5ad1f26f9b24b2995e5ed56",
+      "candidates": [
+        {
+          "id": "good-021-missing-import",
+          "patch": "--- a/src/utils.ts\n+++ b/src/utils.ts\n@@ -1,3 +1,4 @@\n-export function process() {\n-  return helper();\n-}\n+import { helper } from './helper';\n+export function process() {\n+  return helper();\n+}",
+          "patchHash": "sha256:da008136fad38f88d945fdc4d0f59508727e5dc4044917b25878898fa89e3baf",
+          "patchSizeBytes": 193,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-021-missing-import",
+          "patch": "--- a/src/utils.ts\n+++ b/src/utils.ts\n@@ -1,3 +1,4 @@\n-export function process() {\n-  return helper();\n-}\n+import { wrongHelper } from './helper';\n+export function process() {\n+  return helper();\n+}",
+          "patchHash": "sha256:7c688f61367ed252cdbf45b7bae5d704f1499a928bc72288b15ab94c4a3c1bd0",
+          "patchSizeBytes": 198,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-021-missing-import",
+      "knownBadCandidateIds": [
+        "bad-021-missing-import"
+      ],
+      "source": {
+        "curationRationale": "merged_winner",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353621,
+      "notes": "Known-bad patch imports the wrong symbol and leaves the original reference unresolved. Deterministic replay-corpus seed 021."
+    },
+    {
+      "id": "seed-022-type-error",
+      "taskTitle": "Fix TypeScript type annotation (022)",
+      "taskDescription": "Task: tighten an unsafe parameter type without introducing an undeclared generic. Replay seed variant 3.",
+      "baseSha": "05c7592d08585fce02f17e80cf0daf2eb1a14c61",
+      "candidates": [
+        {
+          "id": "good-022-type-error",
+          "patch": "--- a/src/handler.ts\n+++ b/src/handler.ts\n@@ -1,3 +1,3 @@\n-function handle(data: any): void {\n-  console.log(data);\n-}\n+function handle(data: Record<string, unknown>): void {\n+  console.log(data);\n+}",
+          "patchHash": "sha256:dc1d7b48a6c8805d0498d98d987f370eeecdac357ceeba844def10e886b1b36c",
+          "patchSizeBytes": 199,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-022-type-error",
+          "patch": "--- a/src/handler.ts\n+++ b/src/handler.ts\n@@ -1,3 +1,3 @@\n-function handle(data: any): void {\n-  console.log(data);\n-}\n+function handle(data: T): void {\n+  console.log(data);\n+}",
+          "patchHash": "sha256:79608f9f02bc2b3f7645a2dfa94fa67313a5c2aa97e922099ec3a84c0e325d92",
+          "patchSizeBytes": 177,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-022-type-error",
+      "knownBadCandidateIds": [
+        "bad-022-type-error"
+      ],
+      "source": {
+        "curationRationale": "incident_fix",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353622,
+      "notes": "Known-bad patch uses an undeclared generic type. Deterministic replay-corpus seed 022."
+    },
+    {
+      "id": "seed-023-null-check",
+      "taskTitle": "Add null safety check (023)",
+      "taskDescription": "Task: add a null check before accessing a property. Replay seed variant 3.",
+      "baseSha": "5167faceb0ec2d74f910354edc2c5f2c73c21ac3",
+      "candidates": [
+        {
+          "id": "good-023-null-check",
+          "patch": "--- a/src/accessor.ts\n+++ b/src/accessor.ts\n@@ -1,3 +1,4 @@\n-function getValue(obj: any) {\n-  return obj.value;\n-}\n+function getValue(obj: any) {\n+  if (!obj || obj.value === null) return undefined;\n+  return obj.value;\n+}",
+          "patchHash": "sha256:ba5d3dc1bedb0fa09f3bee4c38ad1297254b12dc8027fbb67a6ef1bab2711a06",
+          "patchSizeBytes": 222,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-023-null-check",
+          "patch": "--- a/src/accessor.ts\n+++ b/src/accessor.ts\n@@ -1,3 +1,4 @@\n-function getValue(obj: any) {\n-  return obj.value;\n-}\n+function getValue(obj: any) {\n+  if (!obj) return;\n+  return obj.value;\n+}",
+          "patchHash": "sha256:42c8ed4b6dec59f3806cf95918ea412f9bcf8428f52e289b69429d2cbc879338",
+          "patchSizeBytes": 190,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-023-null-check",
+      "knownBadCandidateIds": [
+        "bad-023-null-check"
+      ],
+      "source": {
+        "curationRationale": "eval_implied",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353623,
+      "notes": "Known-bad patch misses the null value case and changes the return convention. Deterministic replay-corpus seed 023."
+    },
+    {
+      "id": "seed-024-async-await",
+      "taskTitle": "Await asynchronous setup before use (024)",
+      "taskDescription": "Task: ensure asynchronous setup completes before the client is used. Replay seed variant 3.",
+      "baseSha": "34030f7605b644de49bef0f7a3ea7caf8bd86d39",
+      "candidates": [
+        {
+          "id": "good-024-async-await",
+          "patch": "--- a/src/client.ts\n+++ b/src/client.ts\n@@ -1,3 +1,4 @@\n-export async function run() {\n-  const client = connect();\n-  return client.fetch();\n-}\n+export async function run() {\n+  const client = await connect();\n+  return client.fetch();\n+}",
+          "patchHash": "sha256:05b4df00eb15e96ac83a54978036dded20b502ec3739fc286b147ba3dd0cbbd1",
+          "patchSizeBytes": 239,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-024-async-await",
+          "patch": "--- a/src/client.ts\n+++ b/src/client.ts\n@@ -1,3 +1,4 @@\n-export async function run() {\n-  const client = connect();\n-  return client.fetch();\n-}\n+export async function run() {\n+  const client = connect();\n+  return await client.fetch();\n+}",
+          "patchHash": "sha256:903f95548ccc8b9331a4c7270598df94fea7641524e60e04503b6f761d57bb6a",
+          "patchSizeBytes": 239,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-024-async-await",
+      "knownBadCandidateIds": [
+        "bad-024-async-await"
+      ],
+      "source": {
+        "curationRationale": "survival_confirmed",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353624,
+      "notes": "Known-bad patch awaits the downstream call but still treats a Promise as the client. Deterministic replay-corpus seed 024."
+    },
+    {
+      "id": "seed-025-bounds-check",
+      "taskTitle": "Fix off-by-one bounds check (025)",
+      "taskDescription": "Task: reject indexes outside the array range. Replay seed variant 3.",
+      "baseSha": "b51f9e7ed6b389ee1c8386028f04657dda82edb1",
+      "candidates": [
+        {
+          "id": "good-025-bounds-check",
+          "patch": "--- a/src/list.ts\n+++ b/src/list.ts\n@@ -1,3 +1,4 @@\n-export function at(items: string[], index: number) {\n-  if (index > items.length) return undefined;\n-  return items[index];\n-}\n+export function at(items: string[], index: number) {\n+  if (index < 0 || index >= items.length) return undefined;\n+  return items[index];\n+}",
+          "patchHash": "sha256:e25da27ce441789f7e734a2307e93ecee364894037df5bc074e438144d7e6d6c",
+          "patchSizeBytes": 321,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-025-bounds-check",
+          "patch": "--- a/src/list.ts\n+++ b/src/list.ts\n@@ -1,3 +1,4 @@\n-export function at(items: string[], index: number) {\n-  if (index > items.length) return undefined;\n-  return items[index];\n-}\n+export function at(items: string[], index: number) {\n+  if (index > items.length - 1) return undefined;\n+  return items[index];\n+}",
+          "patchHash": "sha256:8ab9d61f72b26caaabc81a50651ebd649d9f8223945859ded26df4e403e6825e",
+          "patchSizeBytes": 311,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-025-bounds-check",
+      "knownBadCandidateIds": [
+        "bad-025-bounds-check"
+      ],
+      "source": {
+        "curationRationale": "merged_winner",
+        "sanitized": true
+      },
+      "heldOut": true,
+      "curatedAt": 1726353625,
+      "notes": "Known-bad patch handles the upper edge but still accepts negative indexes. Deterministic replay-corpus seed 025."
+    },
+    {
+      "id": "seed-026-error-propagation",
+      "taskTitle": "Preserve error propagation (026)",
+      "taskDescription": "Task: keep operation failures visible while adding context. Replay seed variant 3.",
+      "baseSha": "5337837251ed1ed446dccb6dfea936c945e4782b",
+      "candidates": [
+        {
+          "id": "good-026-error-propagation",
+          "patch": "--- a/src/runner.ts\n+++ b/src/runner.ts\n@@ -1,3 +1,7 @@\n-export async function runJob(job: Job) {\n-  return execute(job);\n-}\n+export async function runJob(job: Job) {\n+  try {\n+    return await execute(job);\n+  } catch (error) {\n+    throw new Error(`job failed: ${String(error)}`);\n+  }\n+}",
+          "patchHash": "sha256:9f4a03f308b3d4b7eae3fb5899b8ecfd7f014b3c696f2392866d6a2fef123b88",
+          "patchSizeBytes": 290,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-026-error-propagation",
+          "patch": "--- a/src/runner.ts\n+++ b/src/runner.ts\n@@ -1,3 +1,7 @@\n-export async function runJob(job: Job) {\n-  return execute(job);\n-}\n+export async function runJob(job: Job) {\n+  try {\n+    return await execute(job);\n+  } catch {\n+    return undefined;\n+  }\n+}",
+          "patchHash": "sha256:08a41258913e496387d3ff9b4d9044663550d8403e7f5db521270fb1210ffabf",
+          "patchSizeBytes": 251,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-026-error-propagation",
+      "knownBadCandidateIds": [
+        "bad-026-error-propagation"
+      ],
+      "source": {
+        "curationRationale": "incident_fix",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353626,
+      "notes": "Known-bad patch swallows the error and creates a false success. Deterministic replay-corpus seed 026."
+    },
+    {
+      "id": "seed-027-path-normalization",
+      "taskTitle": "Normalize relative artifact paths (027)",
+      "taskDescription": "Task: normalize artifact paths before joining them to the workspace root. Replay seed variant 3.",
+      "baseSha": "99de1a0f005184cba8eb5a453ec03daac4990c87",
+      "candidates": [
+        {
+          "id": "good-027-path-normalization",
+          "patch": "--- a/src/artifacts.ts\n+++ b/src/artifacts.ts\n@@ -1,3 +1,3 @@\n-export function artifactPath(root: string, name: string) {\n-  return `${root}/${name}`;\n-}\n+export function artifactPath(root: string, name: string) {\n+  return join(root, normalize(name));\n+}",
+          "patchHash": "sha256:330ea3b7d46e963ad97fac8d14cf55e59870565f33d635446a2c5a7401987197",
+          "patchSizeBytes": 255,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-027-path-normalization",
+          "patch": "--- a/src/artifacts.ts\n+++ b/src/artifacts.ts\n@@ -1,3 +1,3 @@\n-export function artifactPath(root: string, name: string) {\n-  return `${root}/${name}`;\n-}\n+export function artifactPath(root: string, name: string) {\n+  return normalize(`${root}/${name}`);\n+}",
+          "patchHash": "sha256:3633989ee4aef9393798418eb1a0581ac10fe4c168f4334e162ca12a54f0f26f",
+          "patchSizeBytes": 256,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-027-path-normalization",
+      "knownBadCandidateIds": [
+        "bad-027-path-normalization"
+      ],
+      "source": {
+        "curationRationale": "eval_implied",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353627,
+      "notes": "Known-bad patch normalizes the whole string and can erase the intended root boundary. Deterministic replay-corpus seed 027."
+    },
+    {
+      "id": "seed-028-dedupe-events",
+      "taskTitle": "Deduplicate repeated event keys (028)",
+      "taskDescription": "Task: avoid emitting duplicate event keys while preserving order. Replay seed variant 3.",
+      "baseSha": "3e13a53b4189df220aea8008daf1f0672e1d5d67",
+      "candidates": [
+        {
+          "id": "good-028-dedupe-events",
+          "patch": "--- a/src/events.ts\n+++ b/src/events.ts\n@@ -1,3 +1,3 @@\n-export function keys(events: Event[]) {\n-  return events.map((event) => event.key);\n-}\n+export function keys(events: Event[]) {\n+  return [...new Set(events.map((event) => event.key))];\n+}",
+          "patchHash": "sha256:a07a05f6f6156521a37a506d497448e67dc541335ecf13a7c7af8ffcedfe5b39",
+          "patchSizeBytes": 245,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-028-dedupe-events",
+          "patch": "--- a/src/events.ts\n+++ b/src/events.ts\n@@ -1,3 +1,3 @@\n-export function keys(events: Event[]) {\n-  return events.map((event) => event.key);\n-}\n+export function keys(events: Event[]) {\n+  return events.sort().map((event) => event.key);\n+}",
+          "patchHash": "sha256:ec1c5fab4a40a6a58678c2adf2bb345837f58d90390b29072d402b29be4d7621",
+          "patchSizeBytes": 238,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-028-dedupe-events",
+      "knownBadCandidateIds": [
+        "bad-028-dedupe-events"
+      ],
+      "source": {
+        "curationRationale": "survival_confirmed",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353628,
+      "notes": "Known-bad patch sorts object records and still does not deduplicate keys. Deterministic replay-corpus seed 028."
+    },
+    {
+      "id": "seed-029-config-default",
+      "taskTitle": "Apply default retry count (029)",
+      "taskDescription": "Task: preserve explicit zero while defaulting missing retry count. Replay seed variant 3.",
+      "baseSha": "c62483cf110b5153c8300c4d160c08919cc5fded",
+      "candidates": [
+        {
+          "id": "good-029-config-default",
+          "patch": "--- a/src/config.ts\n+++ b/src/config.ts\n@@ -1,3 +1,3 @@\n-export function retries(config: Config) {\n-  return config.retries || 3;\n-}\n+export function retries(config: Config) {\n+  return config.retries ?? 3;\n+}",
+          "patchHash": "sha256:e751a4cad721378312da184fa6eb7a05a74e5224641a0fd127f8ad6da29f1b70",
+          "patchSizeBytes": 209,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-029-config-default",
+          "patch": "--- a/src/config.ts\n+++ b/src/config.ts\n@@ -1,3 +1,3 @@\n-export function retries(config: Config) {\n-  return config.retries || 3;\n-}\n+export function retries(config: Config) {\n+  return config.retries ? config.retries : 3;\n+}",
+          "patchHash": "sha256:980dffa6d1eb597932cc4b686963f921eb9744a742222bfe57d4664a898f3ed5",
+          "patchSizeBytes": 225,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-029-config-default",
+      "knownBadCandidateIds": [
+        "bad-029-config-default"
+      ],
+      "source": {
+        "curationRationale": "merged_winner",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353629,
+      "notes": "Known-bad patch still overwrites an explicit zero retry count. Deterministic replay-corpus seed 029."
+    },
+    {
+      "id": "seed-030-json-parse",
+      "taskTitle": "Handle malformed JSON input (030)",
+      "taskDescription": "Task: classify malformed JSON as invalid input without crashing the batch. Replay seed variant 3.",
+      "baseSha": "5f6c8ad382fda9fc53df767c50c6b32b2dd7a34b",
+      "candidates": [
+        {
+          "id": "good-030-json-parse",
+          "patch": "--- a/src/parser.ts\n+++ b/src/parser.ts\n@@ -1,3 +1,7 @@\n-export function parse(raw: string) {\n-  return JSON.parse(raw);\n-}\n+export function parse(raw: string) {\n+  try {\n+    return { ok: true, value: JSON.parse(raw) };\n+  } catch (error) {\n+    return { ok: false, error: String(error) };\n+  }\n+}",
+          "patchHash": "sha256:55eabbea01c6d3e752102949f7d300d2e7114b0f78438c8e421488600545d9ea",
+          "patchSizeBytes": 298,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-030-json-parse",
+          "patch": "--- a/src/parser.ts\n+++ b/src/parser.ts\n@@ -1,3 +1,3 @@\n-export function parse(raw: string) {\n-  return JSON.parse(raw);\n-}\n+export function parse(raw: string) {\n+  return { ok: true, value: JSON.parse(raw) };\n+}",
+          "patchHash": "sha256:424b899f96711b43894fbad1b289c8ae819cd142a10ffec8dd2a3d36c9222218",
+          "patchSizeBytes": 212,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-030-json-parse",
+      "knownBadCandidateIds": [
+        "bad-030-json-parse"
+      ],
+      "source": {
+        "curationRationale": "incident_fix",
+        "sanitized": true
+      },
+      "heldOut": true,
+      "curatedAt": 1726353630,
+      "notes": "Known-bad patch wraps the success shape but still throws on malformed input. Deterministic replay-corpus seed 030."
+    },
+    {
+      "id": "seed-031-missing-import",
+      "taskTitle": "Add missing import statement (031)",
+      "taskDescription": "Task: add a missing import so the referenced helper resolves at runtime. Replay seed variant 4.",
+      "baseSha": "ce09c9d9b3b6a004bad9d3c15544bebf236385d7",
+      "candidates": [
+        {
+          "id": "good-031-missing-import",
+          "patch": "--- a/src/utils.ts\n+++ b/src/utils.ts\n@@ -1,3 +1,4 @@\n-export function process() {\n-  return helper();\n-}\n+import { helper } from './helper';\n+export function process() {\n+  return helper();\n+}",
+          "patchHash": "sha256:da008136fad38f88d945fdc4d0f59508727e5dc4044917b25878898fa89e3baf",
+          "patchSizeBytes": 193,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-031-missing-import",
+          "patch": "--- a/src/utils.ts\n+++ b/src/utils.ts\n@@ -1,3 +1,4 @@\n-export function process() {\n-  return helper();\n-}\n+import { wrongHelper } from './helper';\n+export function process() {\n+  return helper();\n+}",
+          "patchHash": "sha256:7c688f61367ed252cdbf45b7bae5d704f1499a928bc72288b15ab94c4a3c1bd0",
+          "patchSizeBytes": 198,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-031-missing-import",
+      "knownBadCandidateIds": [
+        "bad-031-missing-import"
+      ],
+      "source": {
+        "curationRationale": "eval_implied",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353631,
+      "notes": "Known-bad patch imports the wrong symbol and leaves the original reference unresolved. Deterministic replay-corpus seed 031."
+    },
+    {
+      "id": "seed-032-type-error",
+      "taskTitle": "Fix TypeScript type annotation (032)",
+      "taskDescription": "Task: tighten an unsafe parameter type without introducing an undeclared generic. Replay seed variant 4.",
+      "baseSha": "fc7f9e45b1ca07729e3ce05c6fdf94fc8ae2863c",
+      "candidates": [
+        {
+          "id": "good-032-type-error",
+          "patch": "--- a/src/handler.ts\n+++ b/src/handler.ts\n@@ -1,3 +1,3 @@\n-function handle(data: any): void {\n-  console.log(data);\n-}\n+function handle(data: Record<string, unknown>): void {\n+  console.log(data);\n+}",
+          "patchHash": "sha256:dc1d7b48a6c8805d0498d98d987f370eeecdac357ceeba844def10e886b1b36c",
+          "patchSizeBytes": 199,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-032-type-error",
+          "patch": "--- a/src/handler.ts\n+++ b/src/handler.ts\n@@ -1,3 +1,3 @@\n-function handle(data: any): void {\n-  console.log(data);\n-}\n+function handle(data: T): void {\n+  console.log(data);\n+}",
+          "patchHash": "sha256:79608f9f02bc2b3f7645a2dfa94fa67313a5c2aa97e922099ec3a84c0e325d92",
+          "patchSizeBytes": 177,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-032-type-error",
+      "knownBadCandidateIds": [
+        "bad-032-type-error"
+      ],
+      "source": {
+        "curationRationale": "survival_confirmed",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353632,
+      "notes": "Known-bad patch uses an undeclared generic type. Deterministic replay-corpus seed 032."
+    },
+    {
+      "id": "seed-033-null-check",
+      "taskTitle": "Add null safety check (033)",
+      "taskDescription": "Task: add a null check before accessing a property. Replay seed variant 4.",
+      "baseSha": "8f353db8430fa8e037987ae0e6a2a1268cdb0059",
+      "candidates": [
+        {
+          "id": "good-033-null-check",
+          "patch": "--- a/src/accessor.ts\n+++ b/src/accessor.ts\n@@ -1,3 +1,4 @@\n-function getValue(obj: any) {\n-  return obj.value;\n-}\n+function getValue(obj: any) {\n+  if (!obj || obj.value === null) return undefined;\n+  return obj.value;\n+}",
+          "patchHash": "sha256:ba5d3dc1bedb0fa09f3bee4c38ad1297254b12dc8027fbb67a6ef1bab2711a06",
+          "patchSizeBytes": 222,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-033-null-check",
+          "patch": "--- a/src/accessor.ts\n+++ b/src/accessor.ts\n@@ -1,3 +1,4 @@\n-function getValue(obj: any) {\n-  return obj.value;\n-}\n+function getValue(obj: any) {\n+  if (!obj) return;\n+  return obj.value;\n+}",
+          "patchHash": "sha256:42c8ed4b6dec59f3806cf95918ea412f9bcf8428f52e289b69429d2cbc879338",
+          "patchSizeBytes": 190,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-033-null-check",
+      "knownBadCandidateIds": [
+        "bad-033-null-check"
+      ],
+      "source": {
+        "curationRationale": "merged_winner",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353633,
+      "notes": "Known-bad patch misses the null value case and changes the return convention. Deterministic replay-corpus seed 033."
+    },
+    {
+      "id": "seed-034-async-await",
+      "taskTitle": "Await asynchronous setup before use (034)",
+      "taskDescription": "Task: ensure asynchronous setup completes before the client is used. Replay seed variant 4.",
+      "baseSha": "c705d727a37647b2d26190ac4b37be2084762e05",
+      "candidates": [
+        {
+          "id": "good-034-async-await",
+          "patch": "--- a/src/client.ts\n+++ b/src/client.ts\n@@ -1,3 +1,4 @@\n-export async function run() {\n-  const client = connect();\n-  return client.fetch();\n-}\n+export async function run() {\n+  const client = await connect();\n+  return client.fetch();\n+}",
+          "patchHash": "sha256:05b4df00eb15e96ac83a54978036dded20b502ec3739fc286b147ba3dd0cbbd1",
+          "patchSizeBytes": 239,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-034-async-await",
+          "patch": "--- a/src/client.ts\n+++ b/src/client.ts\n@@ -1,3 +1,4 @@\n-export async function run() {\n-  const client = connect();\n-  return client.fetch();\n-}\n+export async function run() {\n+  const client = connect();\n+  return await client.fetch();\n+}",
+          "patchHash": "sha256:903f95548ccc8b9331a4c7270598df94fea7641524e60e04503b6f761d57bb6a",
+          "patchSizeBytes": 239,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-034-async-await",
+      "knownBadCandidateIds": [
+        "bad-034-async-await"
+      ],
+      "source": {
+        "curationRationale": "incident_fix",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353634,
+      "notes": "Known-bad patch awaits the downstream call but still treats a Promise as the client. Deterministic replay-corpus seed 034."
+    },
+    {
+      "id": "seed-035-bounds-check",
+      "taskTitle": "Fix off-by-one bounds check (035)",
+      "taskDescription": "Task: reject indexes outside the array range. Replay seed variant 4.",
+      "baseSha": "cbf075fbaf737a851c85919e53502e4102e3330f",
+      "candidates": [
+        {
+          "id": "good-035-bounds-check",
+          "patch": "--- a/src/list.ts\n+++ b/src/list.ts\n@@ -1,3 +1,4 @@\n-export function at(items: string[], index: number) {\n-  if (index > items.length) return undefined;\n-  return items[index];\n-}\n+export function at(items: string[], index: number) {\n+  if (index < 0 || index >= items.length) return undefined;\n+  return items[index];\n+}",
+          "patchHash": "sha256:e25da27ce441789f7e734a2307e93ecee364894037df5bc074e438144d7e6d6c",
+          "patchSizeBytes": 321,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-035-bounds-check",
+          "patch": "--- a/src/list.ts\n+++ b/src/list.ts\n@@ -1,3 +1,4 @@\n-export function at(items: string[], index: number) {\n-  if (index > items.length) return undefined;\n-  return items[index];\n-}\n+export function at(items: string[], index: number) {\n+  if (index > items.length - 1) return undefined;\n+  return items[index];\n+}",
+          "patchHash": "sha256:8ab9d61f72b26caaabc81a50651ebd649d9f8223945859ded26df4e403e6825e",
+          "patchSizeBytes": 311,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-035-bounds-check",
+      "knownBadCandidateIds": [
+        "bad-035-bounds-check"
+      ],
+      "source": {
+        "curationRationale": "eval_implied",
+        "sanitized": true
+      },
+      "heldOut": true,
+      "curatedAt": 1726353635,
+      "notes": "Known-bad patch handles the upper edge but still accepts negative indexes. Deterministic replay-corpus seed 035."
+    },
+    {
+      "id": "seed-036-error-propagation",
+      "taskTitle": "Preserve error propagation (036)",
+      "taskDescription": "Task: keep operation failures visible while adding context. Replay seed variant 4.",
+      "baseSha": "42aacd4e54bdad9db04be08b2c92391d06d3e7f0",
+      "candidates": [
+        {
+          "id": "good-036-error-propagation",
+          "patch": "--- a/src/runner.ts\n+++ b/src/runner.ts\n@@ -1,3 +1,7 @@\n-export async function runJob(job: Job) {\n-  return execute(job);\n-}\n+export async function runJob(job: Job) {\n+  try {\n+    return await execute(job);\n+  } catch (error) {\n+    throw new Error(`job failed: ${String(error)}`);\n+  }\n+}",
+          "patchHash": "sha256:9f4a03f308b3d4b7eae3fb5899b8ecfd7f014b3c696f2392866d6a2fef123b88",
+          "patchSizeBytes": 290,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-036-error-propagation",
+          "patch": "--- a/src/runner.ts\n+++ b/src/runner.ts\n@@ -1,3 +1,7 @@\n-export async function runJob(job: Job) {\n-  return execute(job);\n-}\n+export async function runJob(job: Job) {\n+  try {\n+    return await execute(job);\n+  } catch {\n+    return undefined;\n+  }\n+}",
+          "patchHash": "sha256:08a41258913e496387d3ff9b4d9044663550d8403e7f5db521270fb1210ffabf",
+          "patchSizeBytes": 251,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-036-error-propagation",
+      "knownBadCandidateIds": [
+        "bad-036-error-propagation"
+      ],
+      "source": {
+        "curationRationale": "survival_confirmed",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353636,
+      "notes": "Known-bad patch swallows the error and creates a false success. Deterministic replay-corpus seed 036."
+    },
+    {
+      "id": "seed-037-path-normalization",
+      "taskTitle": "Normalize relative artifact paths (037)",
+      "taskDescription": "Task: normalize artifact paths before joining them to the workspace root. Replay seed variant 4.",
+      "baseSha": "de2e82d87500fee9783808b21e63c333559b0a85",
+      "candidates": [
+        {
+          "id": "good-037-path-normalization",
+          "patch": "--- a/src/artifacts.ts\n+++ b/src/artifacts.ts\n@@ -1,3 +1,3 @@\n-export function artifactPath(root: string, name: string) {\n-  return `${root}/${name}`;\n-}\n+export function artifactPath(root: string, name: string) {\n+  return join(root, normalize(name));\n+}",
+          "patchHash": "sha256:330ea3b7d46e963ad97fac8d14cf55e59870565f33d635446a2c5a7401987197",
+          "patchSizeBytes": 255,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-037-path-normalization",
+          "patch": "--- a/src/artifacts.ts\n+++ b/src/artifacts.ts\n@@ -1,3 +1,3 @@\n-export function artifactPath(root: string, name: string) {\n-  return `${root}/${name}`;\n-}\n+export function artifactPath(root: string, name: string) {\n+  return normalize(`${root}/${name}`);\n+}",
+          "patchHash": "sha256:3633989ee4aef9393798418eb1a0581ac10fe4c168f4334e162ca12a54f0f26f",
+          "patchSizeBytes": 256,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-037-path-normalization",
+      "knownBadCandidateIds": [
+        "bad-037-path-normalization"
+      ],
+      "source": {
+        "curationRationale": "merged_winner",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353637,
+      "notes": "Known-bad patch normalizes the whole string and can erase the intended root boundary. Deterministic replay-corpus seed 037."
+    },
+    {
+      "id": "seed-038-dedupe-events",
+      "taskTitle": "Deduplicate repeated event keys (038)",
+      "taskDescription": "Task: avoid emitting duplicate event keys while preserving order. Replay seed variant 4.",
+      "baseSha": "2a4f0a7072319015c1287ecb0acbdd2b8eddbad2",
+      "candidates": [
+        {
+          "id": "good-038-dedupe-events",
+          "patch": "--- a/src/events.ts\n+++ b/src/events.ts\n@@ -1,3 +1,3 @@\n-export function keys(events: Event[]) {\n-  return events.map((event) => event.key);\n-}\n+export function keys(events: Event[]) {\n+  return [...new Set(events.map((event) => event.key))];\n+}",
+          "patchHash": "sha256:a07a05f6f6156521a37a506d497448e67dc541335ecf13a7c7af8ffcedfe5b39",
+          "patchSizeBytes": 245,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-038-dedupe-events",
+          "patch": "--- a/src/events.ts\n+++ b/src/events.ts\n@@ -1,3 +1,3 @@\n-export function keys(events: Event[]) {\n-  return events.map((event) => event.key);\n-}\n+export function keys(events: Event[]) {\n+  return events.sort().map((event) => event.key);\n+}",
+          "patchHash": "sha256:ec1c5fab4a40a6a58678c2adf2bb345837f58d90390b29072d402b29be4d7621",
+          "patchSizeBytes": 238,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-038-dedupe-events",
+      "knownBadCandidateIds": [
+        "bad-038-dedupe-events"
+      ],
+      "source": {
+        "curationRationale": "incident_fix",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353638,
+      "notes": "Known-bad patch sorts object records and still does not deduplicate keys. Deterministic replay-corpus seed 038."
+    },
+    {
+      "id": "seed-039-config-default",
+      "taskTitle": "Apply default retry count (039)",
+      "taskDescription": "Task: preserve explicit zero while defaulting missing retry count. Replay seed variant 4.",
+      "baseSha": "70e260498af645e2a007ca6850f6eec25bde908d",
+      "candidates": [
+        {
+          "id": "good-039-config-default",
+          "patch": "--- a/src/config.ts\n+++ b/src/config.ts\n@@ -1,3 +1,3 @@\n-export function retries(config: Config) {\n-  return config.retries || 3;\n-}\n+export function retries(config: Config) {\n+  return config.retries ?? 3;\n+}",
+          "patchHash": "sha256:e751a4cad721378312da184fa6eb7a05a74e5224641a0fd127f8ad6da29f1b70",
+          "patchSizeBytes": 209,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-039-config-default",
+          "patch": "--- a/src/config.ts\n+++ b/src/config.ts\n@@ -1,3 +1,3 @@\n-export function retries(config: Config) {\n-  return config.retries || 3;\n-}\n+export function retries(config: Config) {\n+  return config.retries ? config.retries : 3;\n+}",
+          "patchHash": "sha256:980dffa6d1eb597932cc4b686963f921eb9744a742222bfe57d4664a898f3ed5",
+          "patchSizeBytes": 225,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-039-config-default",
+      "knownBadCandidateIds": [
+        "bad-039-config-default"
+      ],
+      "source": {
+        "curationRationale": "eval_implied",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353639,
+      "notes": "Known-bad patch still overwrites an explicit zero retry count. Deterministic replay-corpus seed 039."
+    },
+    {
+      "id": "seed-040-json-parse",
+      "taskTitle": "Handle malformed JSON input (040)",
+      "taskDescription": "Task: classify malformed JSON as invalid input without crashing the batch. Replay seed variant 4.",
+      "baseSha": "d2008cbefbd5c8e15719ad3c197e05ab08ca79e7",
+      "candidates": [
+        {
+          "id": "good-040-json-parse",
+          "patch": "--- a/src/parser.ts\n+++ b/src/parser.ts\n@@ -1,3 +1,7 @@\n-export function parse(raw: string) {\n-  return JSON.parse(raw);\n-}\n+export function parse(raw: string) {\n+  try {\n+    return { ok: true, value: JSON.parse(raw) };\n+  } catch (error) {\n+    return { ok: false, error: String(error) };\n+  }\n+}",
+          "patchHash": "sha256:55eabbea01c6d3e752102949f7d300d2e7114b0f78438c8e421488600545d9ea",
+          "patchSizeBytes": 298,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-040-json-parse",
+          "patch": "--- a/src/parser.ts\n+++ b/src/parser.ts\n@@ -1,3 +1,3 @@\n-export function parse(raw: string) {\n-  return JSON.parse(raw);\n-}\n+export function parse(raw: string) {\n+  return { ok: true, value: JSON.parse(raw) };\n+}",
+          "patchHash": "sha256:424b899f96711b43894fbad1b289c8ae819cd142a10ffec8dd2a3d36c9222218",
+          "patchSizeBytes": 212,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-040-json-parse",
+      "knownBadCandidateIds": [
+        "bad-040-json-parse"
+      ],
+      "source": {
+        "curationRationale": "survival_confirmed",
+        "sanitized": true
+      },
+      "heldOut": true,
+      "curatedAt": 1726353640,
+      "notes": "Known-bad patch wraps the success shape but still throws on malformed input. Deterministic replay-corpus seed 040."
+    },
+    {
+      "id": "seed-041-missing-import",
+      "taskTitle": "Add missing import statement (041)",
+      "taskDescription": "Task: add a missing import so the referenced helper resolves at runtime. Replay seed variant 5.",
+      "baseSha": "14cf5496d631066c6655234ec59056ed7d828d8e",
+      "candidates": [
+        {
+          "id": "good-041-missing-import",
+          "patch": "--- a/src/utils.ts\n+++ b/src/utils.ts\n@@ -1,3 +1,4 @@\n-export function process() {\n-  return helper();\n-}\n+import { helper } from './helper';\n+export function process() {\n+  return helper();\n+}",
+          "patchHash": "sha256:da008136fad38f88d945fdc4d0f59508727e5dc4044917b25878898fa89e3baf",
+          "patchSizeBytes": 193,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-041-missing-import",
+          "patch": "--- a/src/utils.ts\n+++ b/src/utils.ts\n@@ -1,3 +1,4 @@\n-export function process() {\n-  return helper();\n-}\n+import { wrongHelper } from './helper';\n+export function process() {\n+  return helper();\n+}",
+          "patchHash": "sha256:7c688f61367ed252cdbf45b7bae5d704f1499a928bc72288b15ab94c4a3c1bd0",
+          "patchSizeBytes": 198,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-041-missing-import",
+      "knownBadCandidateIds": [
+        "bad-041-missing-import"
+      ],
+      "source": {
+        "curationRationale": "merged_winner",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353641,
+      "notes": "Known-bad patch imports the wrong symbol and leaves the original reference unresolved. Deterministic replay-corpus seed 041."
+    },
+    {
+      "id": "seed-042-type-error",
+      "taskTitle": "Fix TypeScript type annotation (042)",
+      "taskDescription": "Task: tighten an unsafe parameter type without introducing an undeclared generic. Replay seed variant 5.",
+      "baseSha": "fd0adc8ed052991ad0bdc562f960785d076a1275",
+      "candidates": [
+        {
+          "id": "good-042-type-error",
+          "patch": "--- a/src/handler.ts\n+++ b/src/handler.ts\n@@ -1,3 +1,3 @@\n-function handle(data: any): void {\n-  console.log(data);\n-}\n+function handle(data: Record<string, unknown>): void {\n+  console.log(data);\n+}",
+          "patchHash": "sha256:dc1d7b48a6c8805d0498d98d987f370eeecdac357ceeba844def10e886b1b36c",
+          "patchSizeBytes": 199,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-042-type-error",
+          "patch": "--- a/src/handler.ts\n+++ b/src/handler.ts\n@@ -1,3 +1,3 @@\n-function handle(data: any): void {\n-  console.log(data);\n-}\n+function handle(data: T): void {\n+  console.log(data);\n+}",
+          "patchHash": "sha256:79608f9f02bc2b3f7645a2dfa94fa67313a5c2aa97e922099ec3a84c0e325d92",
+          "patchSizeBytes": 177,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-042-type-error",
+      "knownBadCandidateIds": [
+        "bad-042-type-error"
+      ],
+      "source": {
+        "curationRationale": "incident_fix",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353642,
+      "notes": "Known-bad patch uses an undeclared generic type. Deterministic replay-corpus seed 042."
+    },
+    {
+      "id": "seed-043-null-check",
+      "taskTitle": "Add null safety check (043)",
+      "taskDescription": "Task: add a null check before accessing a property. Replay seed variant 5.",
+      "baseSha": "82e86124eb23420478c2d45eed1aaea154c255fa",
+      "candidates": [
+        {
+          "id": "good-043-null-check",
+          "patch": "--- a/src/accessor.ts\n+++ b/src/accessor.ts\n@@ -1,3 +1,4 @@\n-function getValue(obj: any) {\n-  return obj.value;\n-}\n+function getValue(obj: any) {\n+  if (!obj || obj.value === null) return undefined;\n+  return obj.value;\n+}",
+          "patchHash": "sha256:ba5d3dc1bedb0fa09f3bee4c38ad1297254b12dc8027fbb67a6ef1bab2711a06",
+          "patchSizeBytes": 222,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-043-null-check",
+          "patch": "--- a/src/accessor.ts\n+++ b/src/accessor.ts\n@@ -1,3 +1,4 @@\n-function getValue(obj: any) {\n-  return obj.value;\n-}\n+function getValue(obj: any) {\n+  if (!obj) return;\n+  return obj.value;\n+}",
+          "patchHash": "sha256:42c8ed4b6dec59f3806cf95918ea412f9bcf8428f52e289b69429d2cbc879338",
+          "patchSizeBytes": 190,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-043-null-check",
+      "knownBadCandidateIds": [
+        "bad-043-null-check"
+      ],
+      "source": {
+        "curationRationale": "eval_implied",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353643,
+      "notes": "Known-bad patch misses the null value case and changes the return convention. Deterministic replay-corpus seed 043."
+    },
+    {
+      "id": "seed-044-async-await",
+      "taskTitle": "Await asynchronous setup before use (044)",
+      "taskDescription": "Task: ensure asynchronous setup completes before the client is used. Replay seed variant 5.",
+      "baseSha": "42653dec47296be914b1f93e8c77990c38313fac",
+      "candidates": [
+        {
+          "id": "good-044-async-await",
+          "patch": "--- a/src/client.ts\n+++ b/src/client.ts\n@@ -1,3 +1,4 @@\n-export async function run() {\n-  const client = connect();\n-  return client.fetch();\n-}\n+export async function run() {\n+  const client = await connect();\n+  return client.fetch();\n+}",
+          "patchHash": "sha256:05b4df00eb15e96ac83a54978036dded20b502ec3739fc286b147ba3dd0cbbd1",
+          "patchSizeBytes": 239,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-044-async-await",
+          "patch": "--- a/src/client.ts\n+++ b/src/client.ts\n@@ -1,3 +1,4 @@\n-export async function run() {\n-  const client = connect();\n-  return client.fetch();\n-}\n+export async function run() {\n+  const client = connect();\n+  return await client.fetch();\n+}",
+          "patchHash": "sha256:903f95548ccc8b9331a4c7270598df94fea7641524e60e04503b6f761d57bb6a",
+          "patchSizeBytes": 239,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-044-async-await",
+      "knownBadCandidateIds": [
+        "bad-044-async-await"
+      ],
+      "source": {
+        "curationRationale": "survival_confirmed",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353644,
+      "notes": "Known-bad patch awaits the downstream call but still treats a Promise as the client. Deterministic replay-corpus seed 044."
+    },
+    {
+      "id": "seed-045-bounds-check",
+      "taskTitle": "Fix off-by-one bounds check (045)",
+      "taskDescription": "Task: reject indexes outside the array range. Replay seed variant 5.",
+      "baseSha": "f0c1e3d7d5a545f418ca7e8ac08649349b09c5f0",
+      "candidates": [
+        {
+          "id": "good-045-bounds-check",
+          "patch": "--- a/src/list.ts\n+++ b/src/list.ts\n@@ -1,3 +1,4 @@\n-export function at(items: string[], index: number) {\n-  if (index > items.length) return undefined;\n-  return items[index];\n-}\n+export function at(items: string[], index: number) {\n+  if (index < 0 || index >= items.length) return undefined;\n+  return items[index];\n+}",
+          "patchHash": "sha256:e25da27ce441789f7e734a2307e93ecee364894037df5bc074e438144d7e6d6c",
+          "patchSizeBytes": 321,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-045-bounds-check",
+          "patch": "--- a/src/list.ts\n+++ b/src/list.ts\n@@ -1,3 +1,4 @@\n-export function at(items: string[], index: number) {\n-  if (index > items.length) return undefined;\n-  return items[index];\n-}\n+export function at(items: string[], index: number) {\n+  if (index > items.length - 1) return undefined;\n+  return items[index];\n+}",
+          "patchHash": "sha256:8ab9d61f72b26caaabc81a50651ebd649d9f8223945859ded26df4e403e6825e",
+          "patchSizeBytes": 311,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-045-bounds-check",
+      "knownBadCandidateIds": [
+        "bad-045-bounds-check"
+      ],
+      "source": {
+        "curationRationale": "merged_winner",
+        "sanitized": true
+      },
+      "heldOut": true,
+      "curatedAt": 1726353645,
+      "notes": "Known-bad patch handles the upper edge but still accepts negative indexes. Deterministic replay-corpus seed 045."
+    },
+    {
+      "id": "seed-046-error-propagation",
+      "taskTitle": "Preserve error propagation (046)",
+      "taskDescription": "Task: keep operation failures visible while adding context. Replay seed variant 5.",
+      "baseSha": "4272ba19593116416e66d616853834f5e45f14c2",
+      "candidates": [
+        {
+          "id": "good-046-error-propagation",
+          "patch": "--- a/src/runner.ts\n+++ b/src/runner.ts\n@@ -1,3 +1,7 @@\n-export async function runJob(job: Job) {\n-  return execute(job);\n-}\n+export async function runJob(job: Job) {\n+  try {\n+    return await execute(job);\n+  } catch (error) {\n+    throw new Error(`job failed: ${String(error)}`);\n+  }\n+}",
+          "patchHash": "sha256:9f4a03f308b3d4b7eae3fb5899b8ecfd7f014b3c696f2392866d6a2fef123b88",
+          "patchSizeBytes": 290,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-046-error-propagation",
+          "patch": "--- a/src/runner.ts\n+++ b/src/runner.ts\n@@ -1,3 +1,7 @@\n-export async function runJob(job: Job) {\n-  return execute(job);\n-}\n+export async function runJob(job: Job) {\n+  try {\n+    return await execute(job);\n+  } catch {\n+    return undefined;\n+  }\n+}",
+          "patchHash": "sha256:08a41258913e496387d3ff9b4d9044663550d8403e7f5db521270fb1210ffabf",
+          "patchSizeBytes": 251,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-046-error-propagation",
+      "knownBadCandidateIds": [
+        "bad-046-error-propagation"
+      ],
+      "source": {
+        "curationRationale": "incident_fix",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353646,
+      "notes": "Known-bad patch swallows the error and creates a false success. Deterministic replay-corpus seed 046."
+    },
+    {
+      "id": "seed-047-path-normalization",
+      "taskTitle": "Normalize relative artifact paths (047)",
+      "taskDescription": "Task: normalize artifact paths before joining them to the workspace root. Replay seed variant 5.",
+      "baseSha": "7fae7fb16d72310499a84f570b4427f46381bbc4",
+      "candidates": [
+        {
+          "id": "good-047-path-normalization",
+          "patch": "--- a/src/artifacts.ts\n+++ b/src/artifacts.ts\n@@ -1,3 +1,3 @@\n-export function artifactPath(root: string, name: string) {\n-  return `${root}/${name}`;\n-}\n+export function artifactPath(root: string, name: string) {\n+  return join(root, normalize(name));\n+}",
+          "patchHash": "sha256:330ea3b7d46e963ad97fac8d14cf55e59870565f33d635446a2c5a7401987197",
+          "patchSizeBytes": 255,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-047-path-normalization",
+          "patch": "--- a/src/artifacts.ts\n+++ b/src/artifacts.ts\n@@ -1,3 +1,3 @@\n-export function artifactPath(root: string, name: string) {\n-  return `${root}/${name}`;\n-}\n+export function artifactPath(root: string, name: string) {\n+  return normalize(`${root}/${name}`);\n+}",
+          "patchHash": "sha256:3633989ee4aef9393798418eb1a0581ac10fe4c168f4334e162ca12a54f0f26f",
+          "patchSizeBytes": 256,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-047-path-normalization",
+      "knownBadCandidateIds": [
+        "bad-047-path-normalization"
+      ],
+      "source": {
+        "curationRationale": "eval_implied",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353647,
+      "notes": "Known-bad patch normalizes the whole string and can erase the intended root boundary. Deterministic replay-corpus seed 047."
+    },
+    {
+      "id": "seed-048-dedupe-events",
+      "taskTitle": "Deduplicate repeated event keys (048)",
+      "taskDescription": "Task: avoid emitting duplicate event keys while preserving order. Replay seed variant 5.",
+      "baseSha": "d28af2fa96f8e3b6095dce0a29de61db63d21727",
+      "candidates": [
+        {
+          "id": "good-048-dedupe-events",
+          "patch": "--- a/src/events.ts\n+++ b/src/events.ts\n@@ -1,3 +1,3 @@\n-export function keys(events: Event[]) {\n-  return events.map((event) => event.key);\n-}\n+export function keys(events: Event[]) {\n+  return [...new Set(events.map((event) => event.key))];\n+}",
+          "patchHash": "sha256:a07a05f6f6156521a37a506d497448e67dc541335ecf13a7c7af8ffcedfe5b39",
+          "patchSizeBytes": 245,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-048-dedupe-events",
+          "patch": "--- a/src/events.ts\n+++ b/src/events.ts\n@@ -1,3 +1,3 @@\n-export function keys(events: Event[]) {\n-  return events.map((event) => event.key);\n-}\n+export function keys(events: Event[]) {\n+  return events.sort().map((event) => event.key);\n+}",
+          "patchHash": "sha256:ec1c5fab4a40a6a58678c2adf2bb345837f58d90390b29072d402b29be4d7621",
+          "patchSizeBytes": 238,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-048-dedupe-events",
+      "knownBadCandidateIds": [
+        "bad-048-dedupe-events"
+      ],
+      "source": {
+        "curationRationale": "survival_confirmed",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353648,
+      "notes": "Known-bad patch sorts object records and still does not deduplicate keys. Deterministic replay-corpus seed 048."
+    },
+    {
+      "id": "seed-049-config-default",
+      "taskTitle": "Apply default retry count (049)",
+      "taskDescription": "Task: preserve explicit zero while defaulting missing retry count. Replay seed variant 5.",
+      "baseSha": "160d8544c52a2db8c604188b83af873bcf215d6a",
+      "candidates": [
+        {
+          "id": "good-049-config-default",
+          "patch": "--- a/src/config.ts\n+++ b/src/config.ts\n@@ -1,3 +1,3 @@\n-export function retries(config: Config) {\n-  return config.retries || 3;\n-}\n+export function retries(config: Config) {\n+  return config.retries ?? 3;\n+}",
+          "patchHash": "sha256:e751a4cad721378312da184fa6eb7a05a74e5224641a0fd127f8ad6da29f1b70",
+          "patchSizeBytes": 209,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-049-config-default",
+          "patch": "--- a/src/config.ts\n+++ b/src/config.ts\n@@ -1,3 +1,3 @@\n-export function retries(config: Config) {\n-  return config.retries || 3;\n-}\n+export function retries(config: Config) {\n+  return config.retries ? config.retries : 3;\n+}",
+          "patchHash": "sha256:980dffa6d1eb597932cc4b686963f921eb9744a742222bfe57d4664a898f3ed5",
+          "patchSizeBytes": 225,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-049-config-default",
+      "knownBadCandidateIds": [
+        "bad-049-config-default"
+      ],
+      "source": {
+        "curationRationale": "merged_winner",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353649,
+      "notes": "Known-bad patch still overwrites an explicit zero retry count. Deterministic replay-corpus seed 049."
+    },
+    {
+      "id": "seed-050-json-parse",
+      "taskTitle": "Handle malformed JSON input (050)",
+      "taskDescription": "Task: classify malformed JSON as invalid input without crashing the batch. Replay seed variant 5.",
+      "baseSha": "81e334e4639a78b71b26c7d12fb12c8b41f8d600",
+      "candidates": [
+        {
+          "id": "good-050-json-parse",
+          "patch": "--- a/src/parser.ts\n+++ b/src/parser.ts\n@@ -1,3 +1,7 @@\n-export function parse(raw: string) {\n-  return JSON.parse(raw);\n-}\n+export function parse(raw: string) {\n+  try {\n+    return { ok: true, value: JSON.parse(raw) };\n+  } catch (error) {\n+    return { ok: false, error: String(error) };\n+  }\n+}",
+          "patchHash": "sha256:55eabbea01c6d3e752102949f7d300d2e7114b0f78438c8e421488600545d9ea",
+          "patchSizeBytes": 298,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-050-json-parse",
+          "patch": "--- a/src/parser.ts\n+++ b/src/parser.ts\n@@ -1,3 +1,3 @@\n-export function parse(raw: string) {\n-  return JSON.parse(raw);\n-}\n+export function parse(raw: string) {\n+  return { ok: true, value: JSON.parse(raw) };\n+}",
+          "patchHash": "sha256:424b899f96711b43894fbad1b289c8ae819cd142a10ffec8dd2a3d36c9222218",
+          "patchSizeBytes": 212,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-050-json-parse",
+      "knownBadCandidateIds": [
+        "bad-050-json-parse"
+      ],
+      "source": {
+        "curationRationale": "incident_fix",
+        "sanitized": true
+      },
+      "heldOut": true,
+      "curatedAt": 1726353650,
+      "notes": "Known-bad patch wraps the success shape but still throws on malformed input. Deterministic replay-corpus seed 050."
+    },
+    {
+      "id": "seed-051-missing-import",
+      "taskTitle": "Add missing import statement (051)",
+      "taskDescription": "Task: add a missing import so the referenced helper resolves at runtime. Replay seed variant 6.",
+      "baseSha": "a3ad5cb3dbca13207cf22f34c967d55c76f43b16",
+      "candidates": [
+        {
+          "id": "good-051-missing-import",
+          "patch": "--- a/src/utils.ts\n+++ b/src/utils.ts\n@@ -1,3 +1,4 @@\n-export function process() {\n-  return helper();\n-}\n+import { helper } from './helper';\n+export function process() {\n+  return helper();\n+}",
+          "patchHash": "sha256:da008136fad38f88d945fdc4d0f59508727e5dc4044917b25878898fa89e3baf",
+          "patchSizeBytes": 193,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-051-missing-import",
+          "patch": "--- a/src/utils.ts\n+++ b/src/utils.ts\n@@ -1,3 +1,4 @@\n-export function process() {\n-  return helper();\n-}\n+import { wrongHelper } from './helper';\n+export function process() {\n+  return helper();\n+}",
+          "patchHash": "sha256:7c688f61367ed252cdbf45b7bae5d704f1499a928bc72288b15ab94c4a3c1bd0",
+          "patchSizeBytes": 198,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-051-missing-import",
+      "knownBadCandidateIds": [
+        "bad-051-missing-import"
+      ],
+      "source": {
+        "curationRationale": "eval_implied",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353651,
+      "notes": "Known-bad patch imports the wrong symbol and leaves the original reference unresolved. Deterministic replay-corpus seed 051."
+    },
+    {
+      "id": "seed-052-type-error",
+      "taskTitle": "Fix TypeScript type annotation (052)",
+      "taskDescription": "Task: tighten an unsafe parameter type without introducing an undeclared generic. Replay seed variant 6.",
+      "baseSha": "9f79c4e230bd5d096c907907e2d1c35483df8ba3",
+      "candidates": [
+        {
+          "id": "good-052-type-error",
+          "patch": "--- a/src/handler.ts\n+++ b/src/handler.ts\n@@ -1,3 +1,3 @@\n-function handle(data: any): void {\n-  console.log(data);\n-}\n+function handle(data: Record<string, unknown>): void {\n+  console.log(data);\n+}",
+          "patchHash": "sha256:dc1d7b48a6c8805d0498d98d987f370eeecdac357ceeba844def10e886b1b36c",
+          "patchSizeBytes": 199,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-052-type-error",
+          "patch": "--- a/src/handler.ts\n+++ b/src/handler.ts\n@@ -1,3 +1,3 @@\n-function handle(data: any): void {\n-  console.log(data);\n-}\n+function handle(data: T): void {\n+  console.log(data);\n+}",
+          "patchHash": "sha256:79608f9f02bc2b3f7645a2dfa94fa67313a5c2aa97e922099ec3a84c0e325d92",
+          "patchSizeBytes": 177,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-052-type-error",
+      "knownBadCandidateIds": [
+        "bad-052-type-error"
+      ],
+      "source": {
+        "curationRationale": "survival_confirmed",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353652,
+      "notes": "Known-bad patch uses an undeclared generic type. Deterministic replay-corpus seed 052."
+    },
+    {
+      "id": "seed-053-null-check",
+      "taskTitle": "Add null safety check (053)",
+      "taskDescription": "Task: add a null check before accessing a property. Replay seed variant 6.",
+      "baseSha": "4bc285cf562f7594168047000f7965630f46fa7c",
+      "candidates": [
+        {
+          "id": "good-053-null-check",
+          "patch": "--- a/src/accessor.ts\n+++ b/src/accessor.ts\n@@ -1,3 +1,4 @@\n-function getValue(obj: any) {\n-  return obj.value;\n-}\n+function getValue(obj: any) {\n+  if (!obj || obj.value === null) return undefined;\n+  return obj.value;\n+}",
+          "patchHash": "sha256:ba5d3dc1bedb0fa09f3bee4c38ad1297254b12dc8027fbb67a6ef1bab2711a06",
+          "patchSizeBytes": 222,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-053-null-check",
+          "patch": "--- a/src/accessor.ts\n+++ b/src/accessor.ts\n@@ -1,3 +1,4 @@\n-function getValue(obj: any) {\n-  return obj.value;\n-}\n+function getValue(obj: any) {\n+  if (!obj) return;\n+  return obj.value;\n+}",
+          "patchHash": "sha256:42c8ed4b6dec59f3806cf95918ea412f9bcf8428f52e289b69429d2cbc879338",
+          "patchSizeBytes": 190,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-053-null-check",
+      "knownBadCandidateIds": [
+        "bad-053-null-check"
+      ],
+      "source": {
+        "curationRationale": "merged_winner",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353653,
+      "notes": "Known-bad patch misses the null value case and changes the return convention. Deterministic replay-corpus seed 053."
+    },
+    {
+      "id": "seed-054-async-await",
+      "taskTitle": "Await asynchronous setup before use (054)",
+      "taskDescription": "Task: ensure asynchronous setup completes before the client is used. Replay seed variant 6.",
+      "baseSha": "52aee26fceaa52135b7cfa42c25a2aa40af53c84",
+      "candidates": [
+        {
+          "id": "good-054-async-await",
+          "patch": "--- a/src/client.ts\n+++ b/src/client.ts\n@@ -1,3 +1,4 @@\n-export async function run() {\n-  const client = connect();\n-  return client.fetch();\n-}\n+export async function run() {\n+  const client = await connect();\n+  return client.fetch();\n+}",
+          "patchHash": "sha256:05b4df00eb15e96ac83a54978036dded20b502ec3739fc286b147ba3dd0cbbd1",
+          "patchSizeBytes": 239,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-054-async-await",
+          "patch": "--- a/src/client.ts\n+++ b/src/client.ts\n@@ -1,3 +1,4 @@\n-export async function run() {\n-  const client = connect();\n-  return client.fetch();\n-}\n+export async function run() {\n+  const client = connect();\n+  return await client.fetch();\n+}",
+          "patchHash": "sha256:903f95548ccc8b9331a4c7270598df94fea7641524e60e04503b6f761d57bb6a",
+          "patchSizeBytes": 239,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-054-async-await",
+      "knownBadCandidateIds": [
+        "bad-054-async-await"
+      ],
+      "source": {
+        "curationRationale": "incident_fix",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353654,
+      "notes": "Known-bad patch awaits the downstream call but still treats a Promise as the client. Deterministic replay-corpus seed 054."
+    },
+    {
+      "id": "seed-055-bounds-check",
+      "taskTitle": "Fix off-by-one bounds check (055)",
+      "taskDescription": "Task: reject indexes outside the array range. Replay seed variant 6.",
+      "baseSha": "000732400f2a92e318ecd7f3ee125707da8eaeeb",
+      "candidates": [
+        {
+          "id": "good-055-bounds-check",
+          "patch": "--- a/src/list.ts\n+++ b/src/list.ts\n@@ -1,3 +1,4 @@\n-export function at(items: string[], index: number) {\n-  if (index > items.length) return undefined;\n-  return items[index];\n-}\n+export function at(items: string[], index: number) {\n+  if (index < 0 || index >= items.length) return undefined;\n+  return items[index];\n+}",
+          "patchHash": "sha256:e25da27ce441789f7e734a2307e93ecee364894037df5bc074e438144d7e6d6c",
+          "patchSizeBytes": 321,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-055-bounds-check",
+          "patch": "--- a/src/list.ts\n+++ b/src/list.ts\n@@ -1,3 +1,4 @@\n-export function at(items: string[], index: number) {\n-  if (index > items.length) return undefined;\n-  return items[index];\n-}\n+export function at(items: string[], index: number) {\n+  if (index > items.length - 1) return undefined;\n+  return items[index];\n+}",
+          "patchHash": "sha256:8ab9d61f72b26caaabc81a50651ebd649d9f8223945859ded26df4e403e6825e",
+          "patchSizeBytes": 311,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-055-bounds-check",
+      "knownBadCandidateIds": [
+        "bad-055-bounds-check"
+      ],
+      "source": {
+        "curationRationale": "eval_implied",
+        "sanitized": true
+      },
+      "heldOut": true,
+      "curatedAt": 1726353655,
+      "notes": "Known-bad patch handles the upper edge but still accepts negative indexes. Deterministic replay-corpus seed 055."
+    },
+    {
+      "id": "seed-056-error-propagation",
+      "taskTitle": "Preserve error propagation (056)",
+      "taskDescription": "Task: keep operation failures visible while adding context. Replay seed variant 6.",
+      "baseSha": "70ff82af034071610ab8b5afdff75c953d9dceaf",
+      "candidates": [
+        {
+          "id": "good-056-error-propagation",
+          "patch": "--- a/src/runner.ts\n+++ b/src/runner.ts\n@@ -1,3 +1,7 @@\n-export async function runJob(job: Job) {\n-  return execute(job);\n-}\n+export async function runJob(job: Job) {\n+  try {\n+    return await execute(job);\n+  } catch (error) {\n+    throw new Error(`job failed: ${String(error)}`);\n+  }\n+}",
+          "patchHash": "sha256:9f4a03f308b3d4b7eae3fb5899b8ecfd7f014b3c696f2392866d6a2fef123b88",
+          "patchSizeBytes": 290,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-056-error-propagation",
+          "patch": "--- a/src/runner.ts\n+++ b/src/runner.ts\n@@ -1,3 +1,7 @@\n-export async function runJob(job: Job) {\n-  return execute(job);\n-}\n+export async function runJob(job: Job) {\n+  try {\n+    return await execute(job);\n+  } catch {\n+    return undefined;\n+  }\n+}",
+          "patchHash": "sha256:08a41258913e496387d3ff9b4d9044663550d8403e7f5db521270fb1210ffabf",
+          "patchSizeBytes": 251,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-056-error-propagation",
+      "knownBadCandidateIds": [
+        "bad-056-error-propagation"
+      ],
+      "source": {
+        "curationRationale": "survival_confirmed",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353656,
+      "notes": "Known-bad patch swallows the error and creates a false success. Deterministic replay-corpus seed 056."
+    },
+    {
+      "id": "seed-057-path-normalization",
+      "taskTitle": "Normalize relative artifact paths (057)",
+      "taskDescription": "Task: normalize artifact paths before joining them to the workspace root. Replay seed variant 6.",
+      "baseSha": "ade240bc2a8d65aea3bb8c5dc7bb5dc0aed04711",
+      "candidates": [
+        {
+          "id": "good-057-path-normalization",
+          "patch": "--- a/src/artifacts.ts\n+++ b/src/artifacts.ts\n@@ -1,3 +1,3 @@\n-export function artifactPath(root: string, name: string) {\n-  return `${root}/${name}`;\n-}\n+export function artifactPath(root: string, name: string) {\n+  return join(root, normalize(name));\n+}",
+          "patchHash": "sha256:330ea3b7d46e963ad97fac8d14cf55e59870565f33d635446a2c5a7401987197",
+          "patchSizeBytes": 255,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-057-path-normalization",
+          "patch": "--- a/src/artifacts.ts\n+++ b/src/artifacts.ts\n@@ -1,3 +1,3 @@\n-export function artifactPath(root: string, name: string) {\n-  return `${root}/${name}`;\n-}\n+export function artifactPath(root: string, name: string) {\n+  return normalize(`${root}/${name}`);\n+}",
+          "patchHash": "sha256:3633989ee4aef9393798418eb1a0581ac10fe4c168f4334e162ca12a54f0f26f",
+          "patchSizeBytes": 256,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-057-path-normalization",
+      "knownBadCandidateIds": [
+        "bad-057-path-normalization"
+      ],
+      "source": {
+        "curationRationale": "merged_winner",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353657,
+      "notes": "Known-bad patch normalizes the whole string and can erase the intended root boundary. Deterministic replay-corpus seed 057."
+    },
+    {
+      "id": "seed-058-dedupe-events",
+      "taskTitle": "Deduplicate repeated event keys (058)",
+      "taskDescription": "Task: avoid emitting duplicate event keys while preserving order. Replay seed variant 6.",
+      "baseSha": "1a851c38e1a7823d63ca86f00bebb8fd9a1b10ab",
+      "candidates": [
+        {
+          "id": "good-058-dedupe-events",
+          "patch": "--- a/src/events.ts\n+++ b/src/events.ts\n@@ -1,3 +1,3 @@\n-export function keys(events: Event[]) {\n-  return events.map((event) => event.key);\n-}\n+export function keys(events: Event[]) {\n+  return [...new Set(events.map((event) => event.key))];\n+}",
+          "patchHash": "sha256:a07a05f6f6156521a37a506d497448e67dc541335ecf13a7c7af8ffcedfe5b39",
+          "patchSizeBytes": 245,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-058-dedupe-events",
+          "patch": "--- a/src/events.ts\n+++ b/src/events.ts\n@@ -1,3 +1,3 @@\n-export function keys(events: Event[]) {\n-  return events.map((event) => event.key);\n-}\n+export function keys(events: Event[]) {\n+  return events.sort().map((event) => event.key);\n+}",
+          "patchHash": "sha256:ec1c5fab4a40a6a58678c2adf2bb345837f58d90390b29072d402b29be4d7621",
+          "patchSizeBytes": 238,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-058-dedupe-events",
+      "knownBadCandidateIds": [
+        "bad-058-dedupe-events"
+      ],
+      "source": {
+        "curationRationale": "incident_fix",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353658,
+      "notes": "Known-bad patch sorts object records and still does not deduplicate keys. Deterministic replay-corpus seed 058."
+    },
+    {
+      "id": "seed-059-config-default",
+      "taskTitle": "Apply default retry count (059)",
+      "taskDescription": "Task: preserve explicit zero while defaulting missing retry count. Replay seed variant 6.",
+      "baseSha": "faef09c068a883b666c326561124a6c113ca7d38",
+      "candidates": [
+        {
+          "id": "good-059-config-default",
+          "patch": "--- a/src/config.ts\n+++ b/src/config.ts\n@@ -1,3 +1,3 @@\n-export function retries(config: Config) {\n-  return config.retries || 3;\n-}\n+export function retries(config: Config) {\n+  return config.retries ?? 3;\n+}",
+          "patchHash": "sha256:e751a4cad721378312da184fa6eb7a05a74e5224641a0fd127f8ad6da29f1b70",
+          "patchSizeBytes": 209,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-059-config-default",
+          "patch": "--- a/src/config.ts\n+++ b/src/config.ts\n@@ -1,3 +1,3 @@\n-export function retries(config: Config) {\n-  return config.retries || 3;\n-}\n+export function retries(config: Config) {\n+  return config.retries ? config.retries : 3;\n+}",
+          "patchHash": "sha256:980dffa6d1eb597932cc4b686963f921eb9744a742222bfe57d4664a898f3ed5",
+          "patchSizeBytes": 225,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-059-config-default",
+      "knownBadCandidateIds": [
+        "bad-059-config-default"
+      ],
+      "source": {
+        "curationRationale": "eval_implied",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353659,
+      "notes": "Known-bad patch still overwrites an explicit zero retry count. Deterministic replay-corpus seed 059."
+    },
+    {
+      "id": "seed-060-json-parse",
+      "taskTitle": "Handle malformed JSON input (060)",
+      "taskDescription": "Task: classify malformed JSON as invalid input without crashing the batch. Replay seed variant 6.",
+      "baseSha": "5b67c760525c8d9303224ed67209045b7c9ea320",
+      "candidates": [
+        {
+          "id": "good-060-json-parse",
+          "patch": "--- a/src/parser.ts\n+++ b/src/parser.ts\n@@ -1,3 +1,7 @@\n-export function parse(raw: string) {\n-  return JSON.parse(raw);\n-}\n+export function parse(raw: string) {\n+  try {\n+    return { ok: true, value: JSON.parse(raw) };\n+  } catch (error) {\n+    return { ok: false, error: String(error) };\n+  }\n+}",
+          "patchHash": "sha256:55eabbea01c6d3e752102949f7d300d2e7114b0f78438c8e421488600545d9ea",
+          "patchSizeBytes": 298,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-060-json-parse",
+          "patch": "--- a/src/parser.ts\n+++ b/src/parser.ts\n@@ -1,3 +1,3 @@\n-export function parse(raw: string) {\n-  return JSON.parse(raw);\n-}\n+export function parse(raw: string) {\n+  return { ok: true, value: JSON.parse(raw) };\n+}",
+          "patchHash": "sha256:424b899f96711b43894fbad1b289c8ae819cd142a10ffec8dd2a3d36c9222218",
+          "patchSizeBytes": 212,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-060-json-parse",
+      "knownBadCandidateIds": [
+        "bad-060-json-parse"
+      ],
+      "source": {
+        "curationRationale": "survival_confirmed",
+        "sanitized": true
+      },
+      "heldOut": true,
+      "curatedAt": 1726353660,
+      "notes": "Known-bad patch wraps the success shape but still throws on malformed input. Deterministic replay-corpus seed 060."
+    },
+    {
+      "id": "seed-061-missing-import",
+      "taskTitle": "Add missing import statement (061)",
+      "taskDescription": "Task: add a missing import so the referenced helper resolves at runtime. Replay seed variant 7.",
+      "baseSha": "4c8671d5e36ac5d34e04405ddbef073cfd2c5246",
+      "candidates": [
+        {
+          "id": "good-061-missing-import",
+          "patch": "--- a/src/utils.ts\n+++ b/src/utils.ts\n@@ -1,3 +1,4 @@\n-export function process() {\n-  return helper();\n-}\n+import { helper } from './helper';\n+export function process() {\n+  return helper();\n+}",
+          "patchHash": "sha256:da008136fad38f88d945fdc4d0f59508727e5dc4044917b25878898fa89e3baf",
+          "patchSizeBytes": 193,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-061-missing-import",
+          "patch": "--- a/src/utils.ts\n+++ b/src/utils.ts\n@@ -1,3 +1,4 @@\n-export function process() {\n-  return helper();\n-}\n+import { wrongHelper } from './helper';\n+export function process() {\n+  return helper();\n+}",
+          "patchHash": "sha256:7c688f61367ed252cdbf45b7bae5d704f1499a928bc72288b15ab94c4a3c1bd0",
+          "patchSizeBytes": 198,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-061-missing-import",
+      "knownBadCandidateIds": [
+        "bad-061-missing-import"
+      ],
+      "source": {
+        "curationRationale": "merged_winner",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353661,
+      "notes": "Known-bad patch imports the wrong symbol and leaves the original reference unresolved. Deterministic replay-corpus seed 061."
+    },
+    {
+      "id": "seed-062-type-error",
+      "taskTitle": "Fix TypeScript type annotation (062)",
+      "taskDescription": "Task: tighten an unsafe parameter type without introducing an undeclared generic. Replay seed variant 7.",
+      "baseSha": "79290a1ff3ff031a59ef52bc502e9aeee95edb3e",
+      "candidates": [
+        {
+          "id": "good-062-type-error",
+          "patch": "--- a/src/handler.ts\n+++ b/src/handler.ts\n@@ -1,3 +1,3 @@\n-function handle(data: any): void {\n-  console.log(data);\n-}\n+function handle(data: Record<string, unknown>): void {\n+  console.log(data);\n+}",
+          "patchHash": "sha256:dc1d7b48a6c8805d0498d98d987f370eeecdac357ceeba844def10e886b1b36c",
+          "patchSizeBytes": 199,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-062-type-error",
+          "patch": "--- a/src/handler.ts\n+++ b/src/handler.ts\n@@ -1,3 +1,3 @@\n-function handle(data: any): void {\n-  console.log(data);\n-}\n+function handle(data: T): void {\n+  console.log(data);\n+}",
+          "patchHash": "sha256:79608f9f02bc2b3f7645a2dfa94fa67313a5c2aa97e922099ec3a84c0e325d92",
+          "patchSizeBytes": 177,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-062-type-error",
+      "knownBadCandidateIds": [
+        "bad-062-type-error"
+      ],
+      "source": {
+        "curationRationale": "incident_fix",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353662,
+      "notes": "Known-bad patch uses an undeclared generic type. Deterministic replay-corpus seed 062."
+    },
+    {
+      "id": "seed-063-null-check",
+      "taskTitle": "Add null safety check (063)",
+      "taskDescription": "Task: add a null check before accessing a property. Replay seed variant 7.",
+      "baseSha": "dc1405a13deca6329995f6b546b1959febaf4234",
+      "candidates": [
+        {
+          "id": "good-063-null-check",
+          "patch": "--- a/src/accessor.ts\n+++ b/src/accessor.ts\n@@ -1,3 +1,4 @@\n-function getValue(obj: any) {\n-  return obj.value;\n-}\n+function getValue(obj: any) {\n+  if (!obj || obj.value === null) return undefined;\n+  return obj.value;\n+}",
+          "patchHash": "sha256:ba5d3dc1bedb0fa09f3bee4c38ad1297254b12dc8027fbb67a6ef1bab2711a06",
+          "patchSizeBytes": 222,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-063-null-check",
+          "patch": "--- a/src/accessor.ts\n+++ b/src/accessor.ts\n@@ -1,3 +1,4 @@\n-function getValue(obj: any) {\n-  return obj.value;\n-}\n+function getValue(obj: any) {\n+  if (!obj) return;\n+  return obj.value;\n+}",
+          "patchHash": "sha256:42c8ed4b6dec59f3806cf95918ea412f9bcf8428f52e289b69429d2cbc879338",
+          "patchSizeBytes": 190,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-063-null-check",
+      "knownBadCandidateIds": [
+        "bad-063-null-check"
+      ],
+      "source": {
+        "curationRationale": "eval_implied",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353663,
+      "notes": "Known-bad patch misses the null value case and changes the return convention. Deterministic replay-corpus seed 063."
+    },
+    {
+      "id": "seed-064-async-await",
+      "taskTitle": "Await asynchronous setup before use (064)",
+      "taskDescription": "Task: ensure asynchronous setup completes before the client is used. Replay seed variant 7.",
+      "baseSha": "0bb9605511da9351923ff1a049191d390299580a",
+      "candidates": [
+        {
+          "id": "good-064-async-await",
+          "patch": "--- a/src/client.ts\n+++ b/src/client.ts\n@@ -1,3 +1,4 @@\n-export async function run() {\n-  const client = connect();\n-  return client.fetch();\n-}\n+export async function run() {\n+  const client = await connect();\n+  return client.fetch();\n+}",
+          "patchHash": "sha256:05b4df00eb15e96ac83a54978036dded20b502ec3739fc286b147ba3dd0cbbd1",
+          "patchSizeBytes": 239,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-064-async-await",
+          "patch": "--- a/src/client.ts\n+++ b/src/client.ts\n@@ -1,3 +1,4 @@\n-export async function run() {\n-  const client = connect();\n-  return client.fetch();\n-}\n+export async function run() {\n+  const client = connect();\n+  return await client.fetch();\n+}",
+          "patchHash": "sha256:903f95548ccc8b9331a4c7270598df94fea7641524e60e04503b6f761d57bb6a",
+          "patchSizeBytes": 239,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-064-async-await",
+      "knownBadCandidateIds": [
+        "bad-064-async-await"
+      ],
+      "source": {
+        "curationRationale": "survival_confirmed",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353664,
+      "notes": "Known-bad patch awaits the downstream call but still treats a Promise as the client. Deterministic replay-corpus seed 064."
+    },
+    {
+      "id": "seed-065-bounds-check",
+      "taskTitle": "Fix off-by-one bounds check (065)",
+      "taskDescription": "Task: reject indexes outside the array range. Replay seed variant 7.",
+      "baseSha": "4f58b3bbbd7e58ee29b065e9336abd79625639d3",
+      "candidates": [
+        {
+          "id": "good-065-bounds-check",
+          "patch": "--- a/src/list.ts\n+++ b/src/list.ts\n@@ -1,3 +1,4 @@\n-export function at(items: string[], index: number) {\n-  if (index > items.length) return undefined;\n-  return items[index];\n-}\n+export function at(items: string[], index: number) {\n+  if (index < 0 || index >= items.length) return undefined;\n+  return items[index];\n+}",
+          "patchHash": "sha256:e25da27ce441789f7e734a2307e93ecee364894037df5bc074e438144d7e6d6c",
+          "patchSizeBytes": 321,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-065-bounds-check",
+          "patch": "--- a/src/list.ts\n+++ b/src/list.ts\n@@ -1,3 +1,4 @@\n-export function at(items: string[], index: number) {\n-  if (index > items.length) return undefined;\n-  return items[index];\n-}\n+export function at(items: string[], index: number) {\n+  if (index > items.length - 1) return undefined;\n+  return items[index];\n+}",
+          "patchHash": "sha256:8ab9d61f72b26caaabc81a50651ebd649d9f8223945859ded26df4e403e6825e",
+          "patchSizeBytes": 311,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-065-bounds-check",
+      "knownBadCandidateIds": [
+        "bad-065-bounds-check"
+      ],
+      "source": {
+        "curationRationale": "merged_winner",
+        "sanitized": true
+      },
+      "heldOut": true,
+      "curatedAt": 1726353665,
+      "notes": "Known-bad patch handles the upper edge but still accepts negative indexes. Deterministic replay-corpus seed 065."
+    },
+    {
+      "id": "seed-066-error-propagation",
+      "taskTitle": "Preserve error propagation (066)",
+      "taskDescription": "Task: keep operation failures visible while adding context. Replay seed variant 7.",
+      "baseSha": "5ef1dc30496c183f44840acca6ab3afbda3366a1",
+      "candidates": [
+        {
+          "id": "good-066-error-propagation",
+          "patch": "--- a/src/runner.ts\n+++ b/src/runner.ts\n@@ -1,3 +1,7 @@\n-export async function runJob(job: Job) {\n-  return execute(job);\n-}\n+export async function runJob(job: Job) {\n+  try {\n+    return await execute(job);\n+  } catch (error) {\n+    throw new Error(`job failed: ${String(error)}`);\n+  }\n+}",
+          "patchHash": "sha256:9f4a03f308b3d4b7eae3fb5899b8ecfd7f014b3c696f2392866d6a2fef123b88",
+          "patchSizeBytes": 290,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-066-error-propagation",
+          "patch": "--- a/src/runner.ts\n+++ b/src/runner.ts\n@@ -1,3 +1,7 @@\n-export async function runJob(job: Job) {\n-  return execute(job);\n-}\n+export async function runJob(job: Job) {\n+  try {\n+    return await execute(job);\n+  } catch {\n+    return undefined;\n+  }\n+}",
+          "patchHash": "sha256:08a41258913e496387d3ff9b4d9044663550d8403e7f5db521270fb1210ffabf",
+          "patchSizeBytes": 251,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-066-error-propagation",
+      "knownBadCandidateIds": [
+        "bad-066-error-propagation"
+      ],
+      "source": {
+        "curationRationale": "incident_fix",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353666,
+      "notes": "Known-bad patch swallows the error and creates a false success. Deterministic replay-corpus seed 066."
+    },
+    {
+      "id": "seed-067-path-normalization",
+      "taskTitle": "Normalize relative artifact paths (067)",
+      "taskDescription": "Task: normalize artifact paths before joining them to the workspace root. Replay seed variant 7.",
+      "baseSha": "56f1b39b4943db55d7834c89e48ce127fc4dde33",
+      "candidates": [
+        {
+          "id": "good-067-path-normalization",
+          "patch": "--- a/src/artifacts.ts\n+++ b/src/artifacts.ts\n@@ -1,3 +1,3 @@\n-export function artifactPath(root: string, name: string) {\n-  return `${root}/${name}`;\n-}\n+export function artifactPath(root: string, name: string) {\n+  return join(root, normalize(name));\n+}",
+          "patchHash": "sha256:330ea3b7d46e963ad97fac8d14cf55e59870565f33d635446a2c5a7401987197",
+          "patchSizeBytes": 255,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-067-path-normalization",
+          "patch": "--- a/src/artifacts.ts\n+++ b/src/artifacts.ts\n@@ -1,3 +1,3 @@\n-export function artifactPath(root: string, name: string) {\n-  return `${root}/${name}`;\n-}\n+export function artifactPath(root: string, name: string) {\n+  return normalize(`${root}/${name}`);\n+}",
+          "patchHash": "sha256:3633989ee4aef9393798418eb1a0581ac10fe4c168f4334e162ca12a54f0f26f",
+          "patchSizeBytes": 256,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-067-path-normalization",
+      "knownBadCandidateIds": [
+        "bad-067-path-normalization"
+      ],
+      "source": {
+        "curationRationale": "eval_implied",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353667,
+      "notes": "Known-bad patch normalizes the whole string and can erase the intended root boundary. Deterministic replay-corpus seed 067."
+    },
+    {
+      "id": "seed-068-dedupe-events",
+      "taskTitle": "Deduplicate repeated event keys (068)",
+      "taskDescription": "Task: avoid emitting duplicate event keys while preserving order. Replay seed variant 7.",
+      "baseSha": "4ba3cda9f998421a592ecc7b6ee8d8fb7a656c1d",
+      "candidates": [
+        {
+          "id": "good-068-dedupe-events",
+          "patch": "--- a/src/events.ts\n+++ b/src/events.ts\n@@ -1,3 +1,3 @@\n-export function keys(events: Event[]) {\n-  return events.map((event) => event.key);\n-}\n+export function keys(events: Event[]) {\n+  return [...new Set(events.map((event) => event.key))];\n+}",
+          "patchHash": "sha256:a07a05f6f6156521a37a506d497448e67dc541335ecf13a7c7af8ffcedfe5b39",
+          "patchSizeBytes": 245,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-068-dedupe-events",
+          "patch": "--- a/src/events.ts\n+++ b/src/events.ts\n@@ -1,3 +1,3 @@\n-export function keys(events: Event[]) {\n-  return events.map((event) => event.key);\n-}\n+export function keys(events: Event[]) {\n+  return events.sort().map((event) => event.key);\n+}",
+          "patchHash": "sha256:ec1c5fab4a40a6a58678c2adf2bb345837f58d90390b29072d402b29be4d7621",
+          "patchSizeBytes": 238,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-068-dedupe-events",
+      "knownBadCandidateIds": [
+        "bad-068-dedupe-events"
+      ],
+      "source": {
+        "curationRationale": "survival_confirmed",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353668,
+      "notes": "Known-bad patch sorts object records and still does not deduplicate keys. Deterministic replay-corpus seed 068."
+    },
+    {
+      "id": "seed-069-config-default",
+      "taskTitle": "Apply default retry count (069)",
+      "taskDescription": "Task: preserve explicit zero while defaulting missing retry count. Replay seed variant 7.",
+      "baseSha": "713d9bcd5a3f6f779f921782f54c703c888c2733",
+      "candidates": [
+        {
+          "id": "good-069-config-default",
+          "patch": "--- a/src/config.ts\n+++ b/src/config.ts\n@@ -1,3 +1,3 @@\n-export function retries(config: Config) {\n-  return config.retries || 3;\n-}\n+export function retries(config: Config) {\n+  return config.retries ?? 3;\n+}",
+          "patchHash": "sha256:e751a4cad721378312da184fa6eb7a05a74e5224641a0fd127f8ad6da29f1b70",
+          "patchSizeBytes": 209,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-069-config-default",
+          "patch": "--- a/src/config.ts\n+++ b/src/config.ts\n@@ -1,3 +1,3 @@\n-export function retries(config: Config) {\n-  return config.retries || 3;\n-}\n+export function retries(config: Config) {\n+  return config.retries ? config.retries : 3;\n+}",
+          "patchHash": "sha256:980dffa6d1eb597932cc4b686963f921eb9744a742222bfe57d4664a898f3ed5",
+          "patchSizeBytes": 225,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-069-config-default",
+      "knownBadCandidateIds": [
+        "bad-069-config-default"
+      ],
+      "source": {
+        "curationRationale": "merged_winner",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353669,
+      "notes": "Known-bad patch still overwrites an explicit zero retry count. Deterministic replay-corpus seed 069."
+    },
+    {
+      "id": "seed-070-json-parse",
+      "taskTitle": "Handle malformed JSON input (070)",
+      "taskDescription": "Task: classify malformed JSON as invalid input without crashing the batch. Replay seed variant 7.",
+      "baseSha": "ea80034adb4628cf0ea472496cb2c05ab742e93f",
+      "candidates": [
+        {
+          "id": "good-070-json-parse",
+          "patch": "--- a/src/parser.ts\n+++ b/src/parser.ts\n@@ -1,3 +1,7 @@\n-export function parse(raw: string) {\n-  return JSON.parse(raw);\n-}\n+export function parse(raw: string) {\n+  try {\n+    return { ok: true, value: JSON.parse(raw) };\n+  } catch (error) {\n+    return { ok: false, error: String(error) };\n+  }\n+}",
+          "patchHash": "sha256:55eabbea01c6d3e752102949f7d300d2e7114b0f78438c8e421488600545d9ea",
+          "patchSizeBytes": 298,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-070-json-parse",
+          "patch": "--- a/src/parser.ts\n+++ b/src/parser.ts\n@@ -1,3 +1,3 @@\n-export function parse(raw: string) {\n-  return JSON.parse(raw);\n-}\n+export function parse(raw: string) {\n+  return { ok: true, value: JSON.parse(raw) };\n+}",
+          "patchHash": "sha256:424b899f96711b43894fbad1b289c8ae819cd142a10ffec8dd2a3d36c9222218",
+          "patchSizeBytes": 212,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-070-json-parse",
+      "knownBadCandidateIds": [
+        "bad-070-json-parse"
+      ],
+      "source": {
+        "curationRationale": "incident_fix",
+        "sanitized": true
+      },
+      "heldOut": true,
+      "curatedAt": 1726353670,
+      "notes": "Known-bad patch wraps the success shape but still throws on malformed input. Deterministic replay-corpus seed 070."
+    },
+    {
+      "id": "seed-071-missing-import",
+      "taskTitle": "Add missing import statement (071)",
+      "taskDescription": "Task: add a missing import so the referenced helper resolves at runtime. Replay seed variant 8.",
+      "baseSha": "f0e12dfd1471674fd4a820b82df58bf6f02c3c94",
+      "candidates": [
+        {
+          "id": "good-071-missing-import",
+          "patch": "--- a/src/utils.ts\n+++ b/src/utils.ts\n@@ -1,3 +1,4 @@\n-export function process() {\n-  return helper();\n-}\n+import { helper } from './helper';\n+export function process() {\n+  return helper();\n+}",
+          "patchHash": "sha256:da008136fad38f88d945fdc4d0f59508727e5dc4044917b25878898fa89e3baf",
+          "patchSizeBytes": 193,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-071-missing-import",
+          "patch": "--- a/src/utils.ts\n+++ b/src/utils.ts\n@@ -1,3 +1,4 @@\n-export function process() {\n-  return helper();\n-}\n+import { wrongHelper } from './helper';\n+export function process() {\n+  return helper();\n+}",
+          "patchHash": "sha256:7c688f61367ed252cdbf45b7bae5d704f1499a928bc72288b15ab94c4a3c1bd0",
+          "patchSizeBytes": 198,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-071-missing-import",
+      "knownBadCandidateIds": [
+        "bad-071-missing-import"
+      ],
+      "source": {
+        "curationRationale": "eval_implied",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353671,
+      "notes": "Known-bad patch imports the wrong symbol and leaves the original reference unresolved. Deterministic replay-corpus seed 071."
+    },
+    {
+      "id": "seed-072-type-error",
+      "taskTitle": "Fix TypeScript type annotation (072)",
+      "taskDescription": "Task: tighten an unsafe parameter type without introducing an undeclared generic. Replay seed variant 8.",
+      "baseSha": "cfb31d65457d0b7d76ac75a4444d677f01c64bc7",
+      "candidates": [
+        {
+          "id": "good-072-type-error",
+          "patch": "--- a/src/handler.ts\n+++ b/src/handler.ts\n@@ -1,3 +1,3 @@\n-function handle(data: any): void {\n-  console.log(data);\n-}\n+function handle(data: Record<string, unknown>): void {\n+  console.log(data);\n+}",
+          "patchHash": "sha256:dc1d7b48a6c8805d0498d98d987f370eeecdac357ceeba844def10e886b1b36c",
+          "patchSizeBytes": 199,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-072-type-error",
+          "patch": "--- a/src/handler.ts\n+++ b/src/handler.ts\n@@ -1,3 +1,3 @@\n-function handle(data: any): void {\n-  console.log(data);\n-}\n+function handle(data: T): void {\n+  console.log(data);\n+}",
+          "patchHash": "sha256:79608f9f02bc2b3f7645a2dfa94fa67313a5c2aa97e922099ec3a84c0e325d92",
+          "patchSizeBytes": 177,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-072-type-error",
+      "knownBadCandidateIds": [
+        "bad-072-type-error"
+      ],
+      "source": {
+        "curationRationale": "survival_confirmed",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353672,
+      "notes": "Known-bad patch uses an undeclared generic type. Deterministic replay-corpus seed 072."
+    },
+    {
+      "id": "seed-073-null-check",
+      "taskTitle": "Add null safety check (073)",
+      "taskDescription": "Task: add a null check before accessing a property. Replay seed variant 8.",
+      "baseSha": "508008f1430952b236aafbd8dd63ca002c583fe3",
+      "candidates": [
+        {
+          "id": "good-073-null-check",
+          "patch": "--- a/src/accessor.ts\n+++ b/src/accessor.ts\n@@ -1,3 +1,4 @@\n-function getValue(obj: any) {\n-  return obj.value;\n-}\n+function getValue(obj: any) {\n+  if (!obj || obj.value === null) return undefined;\n+  return obj.value;\n+}",
+          "patchHash": "sha256:ba5d3dc1bedb0fa09f3bee4c38ad1297254b12dc8027fbb67a6ef1bab2711a06",
+          "patchSizeBytes": 222,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-073-null-check",
+          "patch": "--- a/src/accessor.ts\n+++ b/src/accessor.ts\n@@ -1,3 +1,4 @@\n-function getValue(obj: any) {\n-  return obj.value;\n-}\n+function getValue(obj: any) {\n+  if (!obj) return;\n+  return obj.value;\n+}",
+          "patchHash": "sha256:42c8ed4b6dec59f3806cf95918ea412f9bcf8428f52e289b69429d2cbc879338",
+          "patchSizeBytes": 190,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-073-null-check",
+      "knownBadCandidateIds": [
+        "bad-073-null-check"
+      ],
+      "source": {
+        "curationRationale": "merged_winner",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353673,
+      "notes": "Known-bad patch misses the null value case and changes the return convention. Deterministic replay-corpus seed 073."
+    },
+    {
+      "id": "seed-074-async-await",
+      "taskTitle": "Await asynchronous setup before use (074)",
+      "taskDescription": "Task: ensure asynchronous setup completes before the client is used. Replay seed variant 8.",
+      "baseSha": "43ce7a36582d790dda331e883829feb5e57700f5",
+      "candidates": [
+        {
+          "id": "good-074-async-await",
+          "patch": "--- a/src/client.ts\n+++ b/src/client.ts\n@@ -1,3 +1,4 @@\n-export async function run() {\n-  const client = connect();\n-  return client.fetch();\n-}\n+export async function run() {\n+  const client = await connect();\n+  return client.fetch();\n+}",
+          "patchHash": "sha256:05b4df00eb15e96ac83a54978036dded20b502ec3739fc286b147ba3dd0cbbd1",
+          "patchSizeBytes": 239,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-074-async-await",
+          "patch": "--- a/src/client.ts\n+++ b/src/client.ts\n@@ -1,3 +1,4 @@\n-export async function run() {\n-  const client = connect();\n-  return client.fetch();\n-}\n+export async function run() {\n+  const client = connect();\n+  return await client.fetch();\n+}",
+          "patchHash": "sha256:903f95548ccc8b9331a4c7270598df94fea7641524e60e04503b6f761d57bb6a",
+          "patchSizeBytes": 239,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-074-async-await",
+      "knownBadCandidateIds": [
+        "bad-074-async-await"
+      ],
+      "source": {
+        "curationRationale": "incident_fix",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353674,
+      "notes": "Known-bad patch awaits the downstream call but still treats a Promise as the client. Deterministic replay-corpus seed 074."
+    },
+    {
+      "id": "seed-075-bounds-check",
+      "taskTitle": "Fix off-by-one bounds check (075)",
+      "taskDescription": "Task: reject indexes outside the array range. Replay seed variant 8.",
+      "baseSha": "6b14beab5c47853f2a129030c0117a523b7d1ece",
+      "candidates": [
+        {
+          "id": "good-075-bounds-check",
+          "patch": "--- a/src/list.ts\n+++ b/src/list.ts\n@@ -1,3 +1,4 @@\n-export function at(items: string[], index: number) {\n-  if (index > items.length) return undefined;\n-  return items[index];\n-}\n+export function at(items: string[], index: number) {\n+  if (index < 0 || index >= items.length) return undefined;\n+  return items[index];\n+}",
+          "patchHash": "sha256:e25da27ce441789f7e734a2307e93ecee364894037df5bc074e438144d7e6d6c",
+          "patchSizeBytes": 321,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-075-bounds-check",
+          "patch": "--- a/src/list.ts\n+++ b/src/list.ts\n@@ -1,3 +1,4 @@\n-export function at(items: string[], index: number) {\n-  if (index > items.length) return undefined;\n-  return items[index];\n-}\n+export function at(items: string[], index: number) {\n+  if (index > items.length - 1) return undefined;\n+  return items[index];\n+}",
+          "patchHash": "sha256:8ab9d61f72b26caaabc81a50651ebd649d9f8223945859ded26df4e403e6825e",
+          "patchSizeBytes": 311,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-075-bounds-check",
+      "knownBadCandidateIds": [
+        "bad-075-bounds-check"
+      ],
+      "source": {
+        "curationRationale": "eval_implied",
+        "sanitized": true
+      },
+      "heldOut": true,
+      "curatedAt": 1726353675,
+      "notes": "Known-bad patch handles the upper edge but still accepts negative indexes. Deterministic replay-corpus seed 075."
+    },
+    {
+      "id": "seed-076-error-propagation",
+      "taskTitle": "Preserve error propagation (076)",
+      "taskDescription": "Task: keep operation failures visible while adding context. Replay seed variant 8.",
+      "baseSha": "c11cecb638b0fc2a83afdb167af3ab6269623194",
+      "candidates": [
+        {
+          "id": "good-076-error-propagation",
+          "patch": "--- a/src/runner.ts\n+++ b/src/runner.ts\n@@ -1,3 +1,7 @@\n-export async function runJob(job: Job) {\n-  return execute(job);\n-}\n+export async function runJob(job: Job) {\n+  try {\n+    return await execute(job);\n+  } catch (error) {\n+    throw new Error(`job failed: ${String(error)}`);\n+  }\n+}",
+          "patchHash": "sha256:9f4a03f308b3d4b7eae3fb5899b8ecfd7f014b3c696f2392866d6a2fef123b88",
+          "patchSizeBytes": 290,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-076-error-propagation",
+          "patch": "--- a/src/runner.ts\n+++ b/src/runner.ts\n@@ -1,3 +1,7 @@\n-export async function runJob(job: Job) {\n-  return execute(job);\n-}\n+export async function runJob(job: Job) {\n+  try {\n+    return await execute(job);\n+  } catch {\n+    return undefined;\n+  }\n+}",
+          "patchHash": "sha256:08a41258913e496387d3ff9b4d9044663550d8403e7f5db521270fb1210ffabf",
+          "patchSizeBytes": 251,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-076-error-propagation",
+      "knownBadCandidateIds": [
+        "bad-076-error-propagation"
+      ],
+      "source": {
+        "curationRationale": "survival_confirmed",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353676,
+      "notes": "Known-bad patch swallows the error and creates a false success. Deterministic replay-corpus seed 076."
+    },
+    {
+      "id": "seed-077-path-normalization",
+      "taskTitle": "Normalize relative artifact paths (077)",
+      "taskDescription": "Task: normalize artifact paths before joining them to the workspace root. Replay seed variant 8.",
+      "baseSha": "eb533fe4f0c4eec6e4f19b7db8ce04a6eb938d9b",
+      "candidates": [
+        {
+          "id": "good-077-path-normalization",
+          "patch": "--- a/src/artifacts.ts\n+++ b/src/artifacts.ts\n@@ -1,3 +1,3 @@\n-export function artifactPath(root: string, name: string) {\n-  return `${root}/${name}`;\n-}\n+export function artifactPath(root: string, name: string) {\n+  return join(root, normalize(name));\n+}",
+          "patchHash": "sha256:330ea3b7d46e963ad97fac8d14cf55e59870565f33d635446a2c5a7401987197",
+          "patchSizeBytes": 255,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-077-path-normalization",
+          "patch": "--- a/src/artifacts.ts\n+++ b/src/artifacts.ts\n@@ -1,3 +1,3 @@\n-export function artifactPath(root: string, name: string) {\n-  return `${root}/${name}`;\n-}\n+export function artifactPath(root: string, name: string) {\n+  return normalize(`${root}/${name}`);\n+}",
+          "patchHash": "sha256:3633989ee4aef9393798418eb1a0581ac10fe4c168f4334e162ca12a54f0f26f",
+          "patchSizeBytes": 256,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-077-path-normalization",
+      "knownBadCandidateIds": [
+        "bad-077-path-normalization"
+      ],
+      "source": {
+        "curationRationale": "merged_winner",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353677,
+      "notes": "Known-bad patch normalizes the whole string and can erase the intended root boundary. Deterministic replay-corpus seed 077."
+    },
+    {
+      "id": "seed-078-dedupe-events",
+      "taskTitle": "Deduplicate repeated event keys (078)",
+      "taskDescription": "Task: avoid emitting duplicate event keys while preserving order. Replay seed variant 8.",
+      "baseSha": "b7b64fbbc3c1172b983c07761caacd4537198198",
+      "candidates": [
+        {
+          "id": "good-078-dedupe-events",
+          "patch": "--- a/src/events.ts\n+++ b/src/events.ts\n@@ -1,3 +1,3 @@\n-export function keys(events: Event[]) {\n-  return events.map((event) => event.key);\n-}\n+export function keys(events: Event[]) {\n+  return [...new Set(events.map((event) => event.key))];\n+}",
+          "patchHash": "sha256:a07a05f6f6156521a37a506d497448e67dc541335ecf13a7c7af8ffcedfe5b39",
+          "patchSizeBytes": 245,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-078-dedupe-events",
+          "patch": "--- a/src/events.ts\n+++ b/src/events.ts\n@@ -1,3 +1,3 @@\n-export function keys(events: Event[]) {\n-  return events.map((event) => event.key);\n-}\n+export function keys(events: Event[]) {\n+  return events.sort().map((event) => event.key);\n+}",
+          "patchHash": "sha256:ec1c5fab4a40a6a58678c2adf2bb345837f58d90390b29072d402b29be4d7621",
+          "patchSizeBytes": 238,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-078-dedupe-events",
+      "knownBadCandidateIds": [
+        "bad-078-dedupe-events"
+      ],
+      "source": {
+        "curationRationale": "incident_fix",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353678,
+      "notes": "Known-bad patch sorts object records and still does not deduplicate keys. Deterministic replay-corpus seed 078."
+    },
+    {
+      "id": "seed-079-config-default",
+      "taskTitle": "Apply default retry count (079)",
+      "taskDescription": "Task: preserve explicit zero while defaulting missing retry count. Replay seed variant 8.",
+      "baseSha": "71e5c1dd67cf5e2947f1c0ff0715a8d7e45edc37",
+      "candidates": [
+        {
+          "id": "good-079-config-default",
+          "patch": "--- a/src/config.ts\n+++ b/src/config.ts\n@@ -1,3 +1,3 @@\n-export function retries(config: Config) {\n-  return config.retries || 3;\n-}\n+export function retries(config: Config) {\n+  return config.retries ?? 3;\n+}",
+          "patchHash": "sha256:e751a4cad721378312da184fa6eb7a05a74e5224641a0fd127f8ad6da29f1b70",
+          "patchSizeBytes": 209,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-079-config-default",
+          "patch": "--- a/src/config.ts\n+++ b/src/config.ts\n@@ -1,3 +1,3 @@\n-export function retries(config: Config) {\n-  return config.retries || 3;\n-}\n+export function retries(config: Config) {\n+  return config.retries ? config.retries : 3;\n+}",
+          "patchHash": "sha256:980dffa6d1eb597932cc4b686963f921eb9744a742222bfe57d4664a898f3ed5",
+          "patchSizeBytes": 225,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-079-config-default",
+      "knownBadCandidateIds": [
+        "bad-079-config-default"
+      ],
+      "source": {
+        "curationRationale": "eval_implied",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353679,
+      "notes": "Known-bad patch still overwrites an explicit zero retry count. Deterministic replay-corpus seed 079."
+    },
+    {
+      "id": "seed-080-json-parse",
+      "taskTitle": "Handle malformed JSON input (080)",
+      "taskDescription": "Task: classify malformed JSON as invalid input without crashing the batch. Replay seed variant 8.",
+      "baseSha": "31d4e38fa372bab5c6cb3c55a78323ed638636f9",
+      "candidates": [
+        {
+          "id": "good-080-json-parse",
+          "patch": "--- a/src/parser.ts\n+++ b/src/parser.ts\n@@ -1,3 +1,7 @@\n-export function parse(raw: string) {\n-  return JSON.parse(raw);\n-}\n+export function parse(raw: string) {\n+  try {\n+    return { ok: true, value: JSON.parse(raw) };\n+  } catch (error) {\n+    return { ok: false, error: String(error) };\n+  }\n+}",
+          "patchHash": "sha256:55eabbea01c6d3e752102949f7d300d2e7114b0f78438c8e421488600545d9ea",
+          "patchSizeBytes": 298,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-080-json-parse",
+          "patch": "--- a/src/parser.ts\n+++ b/src/parser.ts\n@@ -1,3 +1,3 @@\n-export function parse(raw: string) {\n-  return JSON.parse(raw);\n-}\n+export function parse(raw: string) {\n+  return { ok: true, value: JSON.parse(raw) };\n+}",
+          "patchHash": "sha256:424b899f96711b43894fbad1b289c8ae819cd142a10ffec8dd2a3d36c9222218",
+          "patchSizeBytes": 212,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-080-json-parse",
+      "knownBadCandidateIds": [
+        "bad-080-json-parse"
+      ],
+      "source": {
+        "curationRationale": "survival_confirmed",
+        "sanitized": true
+      },
+      "heldOut": true,
+      "curatedAt": 1726353680,
+      "notes": "Known-bad patch wraps the success shape but still throws on malformed input. Deterministic replay-corpus seed 080."
+    },
+    {
+      "id": "seed-081-missing-import",
+      "taskTitle": "Add missing import statement (081)",
+      "taskDescription": "Task: add a missing import so the referenced helper resolves at runtime. Replay seed variant 9.",
+      "baseSha": "3aaa46cdf9cf458b36a33c4db65ec474f129aa4b",
+      "candidates": [
+        {
+          "id": "good-081-missing-import",
+          "patch": "--- a/src/utils.ts\n+++ b/src/utils.ts\n@@ -1,3 +1,4 @@\n-export function process() {\n-  return helper();\n-}\n+import { helper } from './helper';\n+export function process() {\n+  return helper();\n+}",
+          "patchHash": "sha256:da008136fad38f88d945fdc4d0f59508727e5dc4044917b25878898fa89e3baf",
+          "patchSizeBytes": 193,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-081-missing-import",
+          "patch": "--- a/src/utils.ts\n+++ b/src/utils.ts\n@@ -1,3 +1,4 @@\n-export function process() {\n-  return helper();\n-}\n+import { wrongHelper } from './helper';\n+export function process() {\n+  return helper();\n+}",
+          "patchHash": "sha256:7c688f61367ed252cdbf45b7bae5d704f1499a928bc72288b15ab94c4a3c1bd0",
+          "patchSizeBytes": 198,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-081-missing-import",
+      "knownBadCandidateIds": [
+        "bad-081-missing-import"
+      ],
+      "source": {
+        "curationRationale": "merged_winner",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353681,
+      "notes": "Known-bad patch imports the wrong symbol and leaves the original reference unresolved. Deterministic replay-corpus seed 081."
+    },
+    {
+      "id": "seed-082-type-error",
+      "taskTitle": "Fix TypeScript type annotation (082)",
+      "taskDescription": "Task: tighten an unsafe parameter type without introducing an undeclared generic. Replay seed variant 9.",
+      "baseSha": "857fbf9172f2f644b8ee8c124709c5fcade2479b",
+      "candidates": [
+        {
+          "id": "good-082-type-error",
+          "patch": "--- a/src/handler.ts\n+++ b/src/handler.ts\n@@ -1,3 +1,3 @@\n-function handle(data: any): void {\n-  console.log(data);\n-}\n+function handle(data: Record<string, unknown>): void {\n+  console.log(data);\n+}",
+          "patchHash": "sha256:dc1d7b48a6c8805d0498d98d987f370eeecdac357ceeba844def10e886b1b36c",
+          "patchSizeBytes": 199,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-082-type-error",
+          "patch": "--- a/src/handler.ts\n+++ b/src/handler.ts\n@@ -1,3 +1,3 @@\n-function handle(data: any): void {\n-  console.log(data);\n-}\n+function handle(data: T): void {\n+  console.log(data);\n+}",
+          "patchHash": "sha256:79608f9f02bc2b3f7645a2dfa94fa67313a5c2aa97e922099ec3a84c0e325d92",
+          "patchSizeBytes": 177,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-082-type-error",
+      "knownBadCandidateIds": [
+        "bad-082-type-error"
+      ],
+      "source": {
+        "curationRationale": "incident_fix",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353682,
+      "notes": "Known-bad patch uses an undeclared generic type. Deterministic replay-corpus seed 082."
+    },
+    {
+      "id": "seed-083-null-check",
+      "taskTitle": "Add null safety check (083)",
+      "taskDescription": "Task: add a null check before accessing a property. Replay seed variant 9.",
+      "baseSha": "263d19f64c86d51ea17791502ee5740159f52085",
+      "candidates": [
+        {
+          "id": "good-083-null-check",
+          "patch": "--- a/src/accessor.ts\n+++ b/src/accessor.ts\n@@ -1,3 +1,4 @@\n-function getValue(obj: any) {\n-  return obj.value;\n-}\n+function getValue(obj: any) {\n+  if (!obj || obj.value === null) return undefined;\n+  return obj.value;\n+}",
+          "patchHash": "sha256:ba5d3dc1bedb0fa09f3bee4c38ad1297254b12dc8027fbb67a6ef1bab2711a06",
+          "patchSizeBytes": 222,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-083-null-check",
+          "patch": "--- a/src/accessor.ts\n+++ b/src/accessor.ts\n@@ -1,3 +1,4 @@\n-function getValue(obj: any) {\n-  return obj.value;\n-}\n+function getValue(obj: any) {\n+  if (!obj) return;\n+  return obj.value;\n+}",
+          "patchHash": "sha256:42c8ed4b6dec59f3806cf95918ea412f9bcf8428f52e289b69429d2cbc879338",
+          "patchSizeBytes": 190,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-083-null-check",
+      "knownBadCandidateIds": [
+        "bad-083-null-check"
+      ],
+      "source": {
+        "curationRationale": "eval_implied",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353683,
+      "notes": "Known-bad patch misses the null value case and changes the return convention. Deterministic replay-corpus seed 083."
+    },
+    {
+      "id": "seed-084-async-await",
+      "taskTitle": "Await asynchronous setup before use (084)",
+      "taskDescription": "Task: ensure asynchronous setup completes before the client is used. Replay seed variant 9.",
+      "baseSha": "5cf7c487a207d9df986723611fd8c24f8931c7fc",
+      "candidates": [
+        {
+          "id": "good-084-async-await",
+          "patch": "--- a/src/client.ts\n+++ b/src/client.ts\n@@ -1,3 +1,4 @@\n-export async function run() {\n-  const client = connect();\n-  return client.fetch();\n-}\n+export async function run() {\n+  const client = await connect();\n+  return client.fetch();\n+}",
+          "patchHash": "sha256:05b4df00eb15e96ac83a54978036dded20b502ec3739fc286b147ba3dd0cbbd1",
+          "patchSizeBytes": 239,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-084-async-await",
+          "patch": "--- a/src/client.ts\n+++ b/src/client.ts\n@@ -1,3 +1,4 @@\n-export async function run() {\n-  const client = connect();\n-  return client.fetch();\n-}\n+export async function run() {\n+  const client = connect();\n+  return await client.fetch();\n+}",
+          "patchHash": "sha256:903f95548ccc8b9331a4c7270598df94fea7641524e60e04503b6f761d57bb6a",
+          "patchSizeBytes": 239,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-084-async-await",
+      "knownBadCandidateIds": [
+        "bad-084-async-await"
+      ],
+      "source": {
+        "curationRationale": "survival_confirmed",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353684,
+      "notes": "Known-bad patch awaits the downstream call but still treats a Promise as the client. Deterministic replay-corpus seed 084."
+    },
+    {
+      "id": "seed-085-bounds-check",
+      "taskTitle": "Fix off-by-one bounds check (085)",
+      "taskDescription": "Task: reject indexes outside the array range. Replay seed variant 9.",
+      "baseSha": "645d976f989c58f34341df930dbb3b3058594c8d",
+      "candidates": [
+        {
+          "id": "good-085-bounds-check",
+          "patch": "--- a/src/list.ts\n+++ b/src/list.ts\n@@ -1,3 +1,4 @@\n-export function at(items: string[], index: number) {\n-  if (index > items.length) return undefined;\n-  return items[index];\n-}\n+export function at(items: string[], index: number) {\n+  if (index < 0 || index >= items.length) return undefined;\n+  return items[index];\n+}",
+          "patchHash": "sha256:e25da27ce441789f7e734a2307e93ecee364894037df5bc074e438144d7e6d6c",
+          "patchSizeBytes": 321,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-085-bounds-check",
+          "patch": "--- a/src/list.ts\n+++ b/src/list.ts\n@@ -1,3 +1,4 @@\n-export function at(items: string[], index: number) {\n-  if (index > items.length) return undefined;\n-  return items[index];\n-}\n+export function at(items: string[], index: number) {\n+  if (index > items.length - 1) return undefined;\n+  return items[index];\n+}",
+          "patchHash": "sha256:8ab9d61f72b26caaabc81a50651ebd649d9f8223945859ded26df4e403e6825e",
+          "patchSizeBytes": 311,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-085-bounds-check",
+      "knownBadCandidateIds": [
+        "bad-085-bounds-check"
+      ],
+      "source": {
+        "curationRationale": "merged_winner",
+        "sanitized": true
+      },
+      "heldOut": true,
+      "curatedAt": 1726353685,
+      "notes": "Known-bad patch handles the upper edge but still accepts negative indexes. Deterministic replay-corpus seed 085."
+    },
+    {
+      "id": "seed-086-error-propagation",
+      "taskTitle": "Preserve error propagation (086)",
+      "taskDescription": "Task: keep operation failures visible while adding context. Replay seed variant 9.",
+      "baseSha": "cb603e5bb30a74f1c96cb36f046dd53907fe9833",
+      "candidates": [
+        {
+          "id": "good-086-error-propagation",
+          "patch": "--- a/src/runner.ts\n+++ b/src/runner.ts\n@@ -1,3 +1,7 @@\n-export async function runJob(job: Job) {\n-  return execute(job);\n-}\n+export async function runJob(job: Job) {\n+  try {\n+    return await execute(job);\n+  } catch (error) {\n+    throw new Error(`job failed: ${String(error)}`);\n+  }\n+}",
+          "patchHash": "sha256:9f4a03f308b3d4b7eae3fb5899b8ecfd7f014b3c696f2392866d6a2fef123b88",
+          "patchSizeBytes": 290,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-086-error-propagation",
+          "patch": "--- a/src/runner.ts\n+++ b/src/runner.ts\n@@ -1,3 +1,7 @@\n-export async function runJob(job: Job) {\n-  return execute(job);\n-}\n+export async function runJob(job: Job) {\n+  try {\n+    return await execute(job);\n+  } catch {\n+    return undefined;\n+  }\n+}",
+          "patchHash": "sha256:08a41258913e496387d3ff9b4d9044663550d8403e7f5db521270fb1210ffabf",
+          "patchSizeBytes": 251,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-086-error-propagation",
+      "knownBadCandidateIds": [
+        "bad-086-error-propagation"
+      ],
+      "source": {
+        "curationRationale": "incident_fix",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353686,
+      "notes": "Known-bad patch swallows the error and creates a false success. Deterministic replay-corpus seed 086."
+    },
+    {
+      "id": "seed-087-path-normalization",
+      "taskTitle": "Normalize relative artifact paths (087)",
+      "taskDescription": "Task: normalize artifact paths before joining them to the workspace root. Replay seed variant 9.",
+      "baseSha": "67b84f7b19facce0c2608b689291a713a5e8038a",
+      "candidates": [
+        {
+          "id": "good-087-path-normalization",
+          "patch": "--- a/src/artifacts.ts\n+++ b/src/artifacts.ts\n@@ -1,3 +1,3 @@\n-export function artifactPath(root: string, name: string) {\n-  return `${root}/${name}`;\n-}\n+export function artifactPath(root: string, name: string) {\n+  return join(root, normalize(name));\n+}",
+          "patchHash": "sha256:330ea3b7d46e963ad97fac8d14cf55e59870565f33d635446a2c5a7401987197",
+          "patchSizeBytes": 255,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-087-path-normalization",
+          "patch": "--- a/src/artifacts.ts\n+++ b/src/artifacts.ts\n@@ -1,3 +1,3 @@\n-export function artifactPath(root: string, name: string) {\n-  return `${root}/${name}`;\n-}\n+export function artifactPath(root: string, name: string) {\n+  return normalize(`${root}/${name}`);\n+}",
+          "patchHash": "sha256:3633989ee4aef9393798418eb1a0581ac10fe4c168f4334e162ca12a54f0f26f",
+          "patchSizeBytes": 256,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-087-path-normalization",
+      "knownBadCandidateIds": [
+        "bad-087-path-normalization"
+      ],
+      "source": {
+        "curationRationale": "eval_implied",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353687,
+      "notes": "Known-bad patch normalizes the whole string and can erase the intended root boundary. Deterministic replay-corpus seed 087."
+    },
+    {
+      "id": "seed-088-dedupe-events",
+      "taskTitle": "Deduplicate repeated event keys (088)",
+      "taskDescription": "Task: avoid emitting duplicate event keys while preserving order. Replay seed variant 9.",
+      "baseSha": "005df02d430e8c62daa6df45e9cf4dde63c4101e",
+      "candidates": [
+        {
+          "id": "good-088-dedupe-events",
+          "patch": "--- a/src/events.ts\n+++ b/src/events.ts\n@@ -1,3 +1,3 @@\n-export function keys(events: Event[]) {\n-  return events.map((event) => event.key);\n-}\n+export function keys(events: Event[]) {\n+  return [...new Set(events.map((event) => event.key))];\n+}",
+          "patchHash": "sha256:a07a05f6f6156521a37a506d497448e67dc541335ecf13a7c7af8ffcedfe5b39",
+          "patchSizeBytes": 245,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-088-dedupe-events",
+          "patch": "--- a/src/events.ts\n+++ b/src/events.ts\n@@ -1,3 +1,3 @@\n-export function keys(events: Event[]) {\n-  return events.map((event) => event.key);\n-}\n+export function keys(events: Event[]) {\n+  return events.sort().map((event) => event.key);\n+}",
+          "patchHash": "sha256:ec1c5fab4a40a6a58678c2adf2bb345837f58d90390b29072d402b29be4d7621",
+          "patchSizeBytes": 238,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-088-dedupe-events",
+      "knownBadCandidateIds": [
+        "bad-088-dedupe-events"
+      ],
+      "source": {
+        "curationRationale": "survival_confirmed",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353688,
+      "notes": "Known-bad patch sorts object records and still does not deduplicate keys. Deterministic replay-corpus seed 088."
+    },
+    {
+      "id": "seed-089-config-default",
+      "taskTitle": "Apply default retry count (089)",
+      "taskDescription": "Task: preserve explicit zero while defaulting missing retry count. Replay seed variant 9.",
+      "baseSha": "d466c370c7b39d2a9e07596ee4ba05c9a36c7e1f",
+      "candidates": [
+        {
+          "id": "good-089-config-default",
+          "patch": "--- a/src/config.ts\n+++ b/src/config.ts\n@@ -1,3 +1,3 @@\n-export function retries(config: Config) {\n-  return config.retries || 3;\n-}\n+export function retries(config: Config) {\n+  return config.retries ?? 3;\n+}",
+          "patchHash": "sha256:e751a4cad721378312da184fa6eb7a05a74e5224641a0fd127f8ad6da29f1b70",
+          "patchSizeBytes": 209,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-089-config-default",
+          "patch": "--- a/src/config.ts\n+++ b/src/config.ts\n@@ -1,3 +1,3 @@\n-export function retries(config: Config) {\n-  return config.retries || 3;\n-}\n+export function retries(config: Config) {\n+  return config.retries ? config.retries : 3;\n+}",
+          "patchHash": "sha256:980dffa6d1eb597932cc4b686963f921eb9744a742222bfe57d4664a898f3ed5",
+          "patchSizeBytes": 225,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-089-config-default",
+      "knownBadCandidateIds": [
+        "bad-089-config-default"
+      ],
+      "source": {
+        "curationRationale": "merged_winner",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353689,
+      "notes": "Known-bad patch still overwrites an explicit zero retry count. Deterministic replay-corpus seed 089."
+    },
+    {
+      "id": "seed-090-json-parse",
+      "taskTitle": "Handle malformed JSON input (090)",
+      "taskDescription": "Task: classify malformed JSON as invalid input without crashing the batch. Replay seed variant 9.",
+      "baseSha": "b2863cd321113fbe94101a9656fde2ca0db85aa2",
+      "candidates": [
+        {
+          "id": "good-090-json-parse",
+          "patch": "--- a/src/parser.ts\n+++ b/src/parser.ts\n@@ -1,3 +1,7 @@\n-export function parse(raw: string) {\n-  return JSON.parse(raw);\n-}\n+export function parse(raw: string) {\n+  try {\n+    return { ok: true, value: JSON.parse(raw) };\n+  } catch (error) {\n+    return { ok: false, error: String(error) };\n+  }\n+}",
+          "patchHash": "sha256:55eabbea01c6d3e752102949f7d300d2e7114b0f78438c8e421488600545d9ea",
+          "patchSizeBytes": 298,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-090-json-parse",
+          "patch": "--- a/src/parser.ts\n+++ b/src/parser.ts\n@@ -1,3 +1,3 @@\n-export function parse(raw: string) {\n-  return JSON.parse(raw);\n-}\n+export function parse(raw: string) {\n+  return { ok: true, value: JSON.parse(raw) };\n+}",
+          "patchHash": "sha256:424b899f96711b43894fbad1b289c8ae819cd142a10ffec8dd2a3d36c9222218",
+          "patchSizeBytes": 212,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-090-json-parse",
+      "knownBadCandidateIds": [
+        "bad-090-json-parse"
+      ],
+      "source": {
+        "curationRationale": "incident_fix",
+        "sanitized": true
+      },
+      "heldOut": true,
+      "curatedAt": 1726353690,
+      "notes": "Known-bad patch wraps the success shape but still throws on malformed input. Deterministic replay-corpus seed 090."
+    },
+    {
+      "id": "seed-091-missing-import",
+      "taskTitle": "Add missing import statement (091)",
+      "taskDescription": "Task: add a missing import so the referenced helper resolves at runtime. Replay seed variant 10.",
+      "baseSha": "974c6969e0b26e86a42d6668ab94816070ec52d0",
+      "candidates": [
+        {
+          "id": "good-091-missing-import",
+          "patch": "--- a/src/utils.ts\n+++ b/src/utils.ts\n@@ -1,3 +1,4 @@\n-export function process() {\n-  return helper();\n-}\n+import { helper } from './helper';\n+export function process() {\n+  return helper();\n+}",
+          "patchHash": "sha256:da008136fad38f88d945fdc4d0f59508727e5dc4044917b25878898fa89e3baf",
+          "patchSizeBytes": 193,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-091-missing-import",
+          "patch": "--- a/src/utils.ts\n+++ b/src/utils.ts\n@@ -1,3 +1,4 @@\n-export function process() {\n-  return helper();\n-}\n+import { wrongHelper } from './helper';\n+export function process() {\n+  return helper();\n+}",
+          "patchHash": "sha256:7c688f61367ed252cdbf45b7bae5d704f1499a928bc72288b15ab94c4a3c1bd0",
+          "patchSizeBytes": 198,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-091-missing-import",
+      "knownBadCandidateIds": [
+        "bad-091-missing-import"
+      ],
+      "source": {
+        "curationRationale": "eval_implied",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353691,
+      "notes": "Known-bad patch imports the wrong symbol and leaves the original reference unresolved. Deterministic replay-corpus seed 091."
+    },
+    {
+      "id": "seed-092-type-error",
+      "taskTitle": "Fix TypeScript type annotation (092)",
+      "taskDescription": "Task: tighten an unsafe parameter type without introducing an undeclared generic. Replay seed variant 10.",
+      "baseSha": "b510d592f1cbbbb93b44eded7394fcd74655eb7e",
+      "candidates": [
+        {
+          "id": "good-092-type-error",
+          "patch": "--- a/src/handler.ts\n+++ b/src/handler.ts\n@@ -1,3 +1,3 @@\n-function handle(data: any): void {\n-  console.log(data);\n-}\n+function handle(data: Record<string, unknown>): void {\n+  console.log(data);\n+}",
+          "patchHash": "sha256:dc1d7b48a6c8805d0498d98d987f370eeecdac357ceeba844def10e886b1b36c",
+          "patchSizeBytes": 199,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-092-type-error",
+          "patch": "--- a/src/handler.ts\n+++ b/src/handler.ts\n@@ -1,3 +1,3 @@\n-function handle(data: any): void {\n-  console.log(data);\n-}\n+function handle(data: T): void {\n+  console.log(data);\n+}",
+          "patchHash": "sha256:79608f9f02bc2b3f7645a2dfa94fa67313a5c2aa97e922099ec3a84c0e325d92",
+          "patchSizeBytes": 177,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-092-type-error",
+      "knownBadCandidateIds": [
+        "bad-092-type-error"
+      ],
+      "source": {
+        "curationRationale": "survival_confirmed",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353692,
+      "notes": "Known-bad patch uses an undeclared generic type. Deterministic replay-corpus seed 092."
+    },
+    {
+      "id": "seed-093-null-check",
+      "taskTitle": "Add null safety check (093)",
+      "taskDescription": "Task: add a null check before accessing a property. Replay seed variant 10.",
+      "baseSha": "8dce04fe07372b0f61cfd75e65f02b136a34264e",
+      "candidates": [
+        {
+          "id": "good-093-null-check",
+          "patch": "--- a/src/accessor.ts\n+++ b/src/accessor.ts\n@@ -1,3 +1,4 @@\n-function getValue(obj: any) {\n-  return obj.value;\n-}\n+function getValue(obj: any) {\n+  if (!obj || obj.value === null) return undefined;\n+  return obj.value;\n+}",
+          "patchHash": "sha256:ba5d3dc1bedb0fa09f3bee4c38ad1297254b12dc8027fbb67a6ef1bab2711a06",
+          "patchSizeBytes": 222,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-093-null-check",
+          "patch": "--- a/src/accessor.ts\n+++ b/src/accessor.ts\n@@ -1,3 +1,4 @@\n-function getValue(obj: any) {\n-  return obj.value;\n-}\n+function getValue(obj: any) {\n+  if (!obj) return;\n+  return obj.value;\n+}",
+          "patchHash": "sha256:42c8ed4b6dec59f3806cf95918ea412f9bcf8428f52e289b69429d2cbc879338",
+          "patchSizeBytes": 190,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-093-null-check",
+      "knownBadCandidateIds": [
+        "bad-093-null-check"
+      ],
+      "source": {
+        "curationRationale": "merged_winner",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353693,
+      "notes": "Known-bad patch misses the null value case and changes the return convention. Deterministic replay-corpus seed 093."
+    },
+    {
+      "id": "seed-094-async-await",
+      "taskTitle": "Await asynchronous setup before use (094)",
+      "taskDescription": "Task: ensure asynchronous setup completes before the client is used. Replay seed variant 10.",
+      "baseSha": "92a72e4d3b4cacf430ddb6170e84e391831eea14",
+      "candidates": [
+        {
+          "id": "good-094-async-await",
+          "patch": "--- a/src/client.ts\n+++ b/src/client.ts\n@@ -1,3 +1,4 @@\n-export async function run() {\n-  const client = connect();\n-  return client.fetch();\n-}\n+export async function run() {\n+  const client = await connect();\n+  return client.fetch();\n+}",
+          "patchHash": "sha256:05b4df00eb15e96ac83a54978036dded20b502ec3739fc286b147ba3dd0cbbd1",
+          "patchSizeBytes": 239,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-094-async-await",
+          "patch": "--- a/src/client.ts\n+++ b/src/client.ts\n@@ -1,3 +1,4 @@\n-export async function run() {\n-  const client = connect();\n-  return client.fetch();\n-}\n+export async function run() {\n+  const client = connect();\n+  return await client.fetch();\n+}",
+          "patchHash": "sha256:903f95548ccc8b9331a4c7270598df94fea7641524e60e04503b6f761d57bb6a",
+          "patchSizeBytes": 239,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-094-async-await",
+      "knownBadCandidateIds": [
+        "bad-094-async-await"
+      ],
+      "source": {
+        "curationRationale": "incident_fix",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353694,
+      "notes": "Known-bad patch awaits the downstream call but still treats a Promise as the client. Deterministic replay-corpus seed 094."
+    },
+    {
+      "id": "seed-095-bounds-check",
+      "taskTitle": "Fix off-by-one bounds check (095)",
+      "taskDescription": "Task: reject indexes outside the array range. Replay seed variant 10.",
+      "baseSha": "4d8a14d8d9d1ca3694a525d9a67e19724e729e80",
+      "candidates": [
+        {
+          "id": "good-095-bounds-check",
+          "patch": "--- a/src/list.ts\n+++ b/src/list.ts\n@@ -1,3 +1,4 @@\n-export function at(items: string[], index: number) {\n-  if (index > items.length) return undefined;\n-  return items[index];\n-}\n+export function at(items: string[], index: number) {\n+  if (index < 0 || index >= items.length) return undefined;\n+  return items[index];\n+}",
+          "patchHash": "sha256:e25da27ce441789f7e734a2307e93ecee364894037df5bc074e438144d7e6d6c",
+          "patchSizeBytes": 321,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-095-bounds-check",
+          "patch": "--- a/src/list.ts\n+++ b/src/list.ts\n@@ -1,3 +1,4 @@\n-export function at(items: string[], index: number) {\n-  if (index > items.length) return undefined;\n-  return items[index];\n-}\n+export function at(items: string[], index: number) {\n+  if (index > items.length - 1) return undefined;\n+  return items[index];\n+}",
+          "patchHash": "sha256:8ab9d61f72b26caaabc81a50651ebd649d9f8223945859ded26df4e403e6825e",
+          "patchSizeBytes": 311,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-095-bounds-check",
+      "knownBadCandidateIds": [
+        "bad-095-bounds-check"
+      ],
+      "source": {
+        "curationRationale": "eval_implied",
+        "sanitized": true
+      },
+      "heldOut": true,
+      "curatedAt": 1726353695,
+      "notes": "Known-bad patch handles the upper edge but still accepts negative indexes. Deterministic replay-corpus seed 095."
+    },
+    {
+      "id": "seed-096-error-propagation",
+      "taskTitle": "Preserve error propagation (096)",
+      "taskDescription": "Task: keep operation failures visible while adding context. Replay seed variant 10.",
+      "baseSha": "ffeec3667f9e677940794cf84dcad2b0adbffa52",
+      "candidates": [
+        {
+          "id": "good-096-error-propagation",
+          "patch": "--- a/src/runner.ts\n+++ b/src/runner.ts\n@@ -1,3 +1,7 @@\n-export async function runJob(job: Job) {\n-  return execute(job);\n-}\n+export async function runJob(job: Job) {\n+  try {\n+    return await execute(job);\n+  } catch (error) {\n+    throw new Error(`job failed: ${String(error)}`);\n+  }\n+}",
+          "patchHash": "sha256:9f4a03f308b3d4b7eae3fb5899b8ecfd7f014b3c696f2392866d6a2fef123b88",
+          "patchSizeBytes": 290,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-096-error-propagation",
+          "patch": "--- a/src/runner.ts\n+++ b/src/runner.ts\n@@ -1,3 +1,7 @@\n-export async function runJob(job: Job) {\n-  return execute(job);\n-}\n+export async function runJob(job: Job) {\n+  try {\n+    return await execute(job);\n+  } catch {\n+    return undefined;\n+  }\n+}",
+          "patchHash": "sha256:08a41258913e496387d3ff9b4d9044663550d8403e7f5db521270fb1210ffabf",
+          "patchSizeBytes": 251,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-096-error-propagation",
+      "knownBadCandidateIds": [
+        "bad-096-error-propagation"
+      ],
+      "source": {
+        "curationRationale": "survival_confirmed",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353696,
+      "notes": "Known-bad patch swallows the error and creates a false success. Deterministic replay-corpus seed 096."
+    },
+    {
+      "id": "seed-097-path-normalization",
+      "taskTitle": "Normalize relative artifact paths (097)",
+      "taskDescription": "Task: normalize artifact paths before joining them to the workspace root. Replay seed variant 10.",
+      "baseSha": "de64e7ca7340e74d2793add99d529076880e5b4d",
+      "candidates": [
+        {
+          "id": "good-097-path-normalization",
+          "patch": "--- a/src/artifacts.ts\n+++ b/src/artifacts.ts\n@@ -1,3 +1,3 @@\n-export function artifactPath(root: string, name: string) {\n-  return `${root}/${name}`;\n-}\n+export function artifactPath(root: string, name: string) {\n+  return join(root, normalize(name));\n+}",
+          "patchHash": "sha256:330ea3b7d46e963ad97fac8d14cf55e59870565f33d635446a2c5a7401987197",
+          "patchSizeBytes": 255,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-097-path-normalization",
+          "patch": "--- a/src/artifacts.ts\n+++ b/src/artifacts.ts\n@@ -1,3 +1,3 @@\n-export function artifactPath(root: string, name: string) {\n-  return `${root}/${name}`;\n-}\n+export function artifactPath(root: string, name: string) {\n+  return normalize(`${root}/${name}`);\n+}",
+          "patchHash": "sha256:3633989ee4aef9393798418eb1a0581ac10fe4c168f4334e162ca12a54f0f26f",
+          "patchSizeBytes": 256,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-097-path-normalization",
+      "knownBadCandidateIds": [
+        "bad-097-path-normalization"
+      ],
+      "source": {
+        "curationRationale": "merged_winner",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353697,
+      "notes": "Known-bad patch normalizes the whole string and can erase the intended root boundary. Deterministic replay-corpus seed 097."
+    },
+    {
+      "id": "seed-098-dedupe-events",
+      "taskTitle": "Deduplicate repeated event keys (098)",
+      "taskDescription": "Task: avoid emitting duplicate event keys while preserving order. Replay seed variant 10.",
+      "baseSha": "9733b11d1a5ad7e612da70c31b06d38610a9f22a",
+      "candidates": [
+        {
+          "id": "good-098-dedupe-events",
+          "patch": "--- a/src/events.ts\n+++ b/src/events.ts\n@@ -1,3 +1,3 @@\n-export function keys(events: Event[]) {\n-  return events.map((event) => event.key);\n-}\n+export function keys(events: Event[]) {\n+  return [...new Set(events.map((event) => event.key))];\n+}",
+          "patchHash": "sha256:a07a05f6f6156521a37a506d497448e67dc541335ecf13a7c7af8ffcedfe5b39",
+          "patchSizeBytes": 245,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-098-dedupe-events",
+          "patch": "--- a/src/events.ts\n+++ b/src/events.ts\n@@ -1,3 +1,3 @@\n-export function keys(events: Event[]) {\n-  return events.map((event) => event.key);\n-}\n+export function keys(events: Event[]) {\n+  return events.sort().map((event) => event.key);\n+}",
+          "patchHash": "sha256:ec1c5fab4a40a6a58678c2adf2bb345837f58d90390b29072d402b29be4d7621",
+          "patchSizeBytes": 238,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-098-dedupe-events",
+      "knownBadCandidateIds": [
+        "bad-098-dedupe-events"
+      ],
+      "source": {
+        "curationRationale": "incident_fix",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353698,
+      "notes": "Known-bad patch sorts object records and still does not deduplicate keys. Deterministic replay-corpus seed 098."
+    },
+    {
+      "id": "seed-099-config-default",
+      "taskTitle": "Apply default retry count (099)",
+      "taskDescription": "Task: preserve explicit zero while defaulting missing retry count. Replay seed variant 10.",
+      "baseSha": "c5e2b639bd8e1f9263dec62cd358e73dae91ed28",
+      "candidates": [
+        {
+          "id": "good-099-config-default",
+          "patch": "--- a/src/config.ts\n+++ b/src/config.ts\n@@ -1,3 +1,3 @@\n-export function retries(config: Config) {\n-  return config.retries || 3;\n-}\n+export function retries(config: Config) {\n+  return config.retries ?? 3;\n+}",
+          "patchHash": "sha256:e751a4cad721378312da184fa6eb7a05a74e5224641a0fd127f8ad6da29f1b70",
+          "patchSizeBytes": 209,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-099-config-default",
+          "patch": "--- a/src/config.ts\n+++ b/src/config.ts\n@@ -1,3 +1,3 @@\n-export function retries(config: Config) {\n-  return config.retries || 3;\n-}\n+export function retries(config: Config) {\n+  return config.retries ? config.retries : 3;\n+}",
+          "patchHash": "sha256:980dffa6d1eb597932cc4b686963f921eb9744a742222bfe57d4664a898f3ed5",
+          "patchSizeBytes": 225,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-099-config-default",
+      "knownBadCandidateIds": [
+        "bad-099-config-default"
+      ],
+      "source": {
+        "curationRationale": "eval_implied",
+        "sanitized": true
+      },
+      "heldOut": false,
+      "curatedAt": 1726353699,
+      "notes": "Known-bad patch still overwrites an explicit zero retry count. Deterministic replay-corpus seed 099."
+    },
+    {
+      "id": "seed-100-json-parse",
+      "taskTitle": "Handle malformed JSON input (100)",
+      "taskDescription": "Task: classify malformed JSON as invalid input without crashing the batch. Replay seed variant 10.",
+      "baseSha": "f92f3eaf07ffc0a23dd8b31eec32158e3d160a82",
+      "candidates": [
+        {
+          "id": "good-100-json-parse",
+          "patch": "--- a/src/parser.ts\n+++ b/src/parser.ts\n@@ -1,3 +1,7 @@\n-export function parse(raw: string) {\n-  return JSON.parse(raw);\n-}\n+export function parse(raw: string) {\n+  try {\n+    return { ok: true, value: JSON.parse(raw) };\n+  } catch (error) {\n+    return { ok: false, error: String(error) };\n+  }\n+}",
+          "patchHash": "sha256:55eabbea01c6d3e752102949f7d300d2e7114b0f78438c8e421488600545d9ea",
+          "patchSizeBytes": 298,
+          "label": "known-good"
+        },
+        {
+          "id": "bad-100-json-parse",
+          "patch": "--- a/src/parser.ts\n+++ b/src/parser.ts\n@@ -1,3 +1,3 @@\n-export function parse(raw: string) {\n-  return JSON.parse(raw);\n-}\n+export function parse(raw: string) {\n+  return { ok: true, value: JSON.parse(raw) };\n+}",
+          "patchHash": "sha256:424b899f96711b43894fbad1b289c8ae819cd142a10ffec8dd2a3d36c9222218",
+          "patchSizeBytes": 212,
+          "label": "known-bad"
+        }
+      ],
+      "knownGoodCandidateId": "good-100-json-parse",
+      "knownBadCandidateIds": [
+        "bad-100-json-parse"
+      ],
+      "source": {
+        "curationRationale": "survival_confirmed",
+        "sanitized": true
+      },
+      "heldOut": true,
+      "curatedAt": 1726353700,
+      "notes": "Known-bad patch wraps the success shape but still throws on malformed input. Deterministic replay-corpus seed 100."
+    }
+  ],
+  "split": {
+    "heldOutIds": [
+      "seed-005-bounds-check",
+      "seed-010-json-parse",
+      "seed-015-bounds-check",
+      "seed-020-json-parse",
+      "seed-025-bounds-check",
+      "seed-030-json-parse",
+      "seed-035-bounds-check",
+      "seed-040-json-parse",
+      "seed-045-bounds-check",
+      "seed-050-json-parse",
+      "seed-055-bounds-check",
+      "seed-060-json-parse",
+      "seed-065-bounds-check",
+      "seed-070-json-parse",
+      "seed-075-bounds-check",
+      "seed-080-json-parse",
+      "seed-085-bounds-check",
+      "seed-090-json-parse",
+      "seed-095-bounds-check",
+      "seed-100-json-parse"
+    ],
+    "strategy": "hash_deterministic_20pct_seed_modulo_5"
+  },
+  "createdAt": 1726353600,
+  "updatedAt": 1789409995
+}

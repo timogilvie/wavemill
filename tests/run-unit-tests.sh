@@ -102,6 +102,9 @@ TESTS=(
   shared/lib/native-agent/planning-canary.test.ts
   shared/lib/feature-outcome-consumer.test.ts
   shared/lib/outcome-collectors.test.ts
+  shared/lib/static-features.test.ts
+  shared/lib/static-features-contract.test.ts
+  shared/lib/candidate-features.test.ts
   shared/lib/context-analyzer.test.ts
   shared/lib/review-engine.test.ts
   shared/lib/review-runner.test.ts
@@ -116,6 +119,7 @@ TESTS=(
   shared/lib/arbiter-probes/survival-agreement.test.ts
   shared/lib/arbiter-probes/eval-disagreement.test.ts
   tools/arbiter-probe-p1-2.test.ts
+  tools/cleanup-terminal-inbox.test.ts
   shared/lib/pr-diff-provider.test.ts
   shared/lib/pr-metadata.test.ts
   shared/lib/pr-attribution.test.ts
@@ -432,6 +436,9 @@ TESTS=(
   shared/lib/test-partitioner.test.ts
   shared/lib/shard-balance.test.ts
   shared/lib/ci-test-timings.test.ts
+  shared/fixtures/harness-replay/patch-selection-v1/schema.test.ts
+  src/evaluation/scorers/wavemill/patch-selection.test.ts
+  shared/lib/challenge-replay-capture.test.ts
 )
 
 SHARD_INDEX=1

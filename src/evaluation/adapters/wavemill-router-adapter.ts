@@ -22,6 +22,15 @@ import {
   type WavemillRouterScoreRecord,
   type WavemillRouterScoreResult,
 } from '../scorers/wavemill/success-rate-under-budget.ts';
+import {
+  scorePatchSelection,
+  type PatchSelectionScoreRecord,
+  type PatchSelectionScoreResult,
+} from '../scorers/wavemill/patch-selection.ts';
+import {
+  loadPatchSelectionCorpus,
+  type LoadPatchSelectionCorpusOptions,
+} from '../../../shared/fixtures/harness-replay/patch-selection-v1/loader.ts';
 
 interface ParsedRouteArtifact {
   issueId?: string;
@@ -68,6 +77,9 @@ export interface RunWavemillRouterEvalOptions {
   evalsDir?: string;
   artifactsDir?: string;
   persist?: boolean;
+  // Patch-selection corpus evaluation options
+  patchSelectionManifestPath?: string;
+  patchSelectionSplit?: 'train' | 'held-out' | 'all';
 }
 
 export interface RunWavemillRouterEvalResult {
@@ -660,5 +672,91 @@ export async function runWavemillRouterEval(
       count: evidencePartition.excluded.length,
       reasonCounts: evidencePartition.reasonCounts,
     },
+  };
+}
+
+/**
+ * Evaluate patch-selection accuracy against a replay corpus.
+ * Loads instances from a manifest and scores a set of selections.
+ */
+export interface RunPatchSelectionEvalOptions {
+  manifestPath: string;
+  split?: 'train' | 'held-out' | 'all';
+  modelsAvailable?: string[];
+  repoDir: string;
+  selections?: PatchSelectionSelections;
+}
+
+export interface PatchSelectionSelection {
+  instanceId: string;
+  selectedPatchOrId?: string;
+  selectedCandidateId?: string;
+  selectedPatch?: string;
+}
+
+export type PatchSelectionSelections =
+  | Record<string, string | undefined>
+  | PatchSelectionSelection[];
+
+export interface RunPatchSelectionEvalResult {
+  score: PatchSelectionScoreResult;
+  hemRecord?: EvalRecord;
+  loadInfo: ReturnType<typeof loadPatchSelectionCorpus>['splitInfo'];
+}
+
+function normalizePatchSelectionSelections(
+  selections: PatchSelectionSelections | undefined,
+): Map<string, string> {
+  const normalized = new Map<string, string>();
+  if (!selections) {
+    return normalized;
+  }
+
+  if (Array.isArray(selections)) {
+    for (const selection of selections) {
+      const selectedPatchOrId =
+        selection.selectedPatchOrId ??
+        selection.selectedCandidateId ??
+        selection.selectedPatch;
+      if (selection.instanceId && selectedPatchOrId) {
+        normalized.set(selection.instanceId, selectedPatchOrId);
+      }
+    }
+    return normalized;
+  }
+
+  for (const [instanceId, selectedPatchOrId] of Object.entries(selections)) {
+    if (selectedPatchOrId) {
+      normalized.set(instanceId, selectedPatchOrId);
+    }
+  }
+  return normalized;
+}
+
+/**
+ * Score patch selections against the replay corpus.
+ */
+export async function runPatchSelectionEval(
+  options: RunPatchSelectionEvalOptions,
+): Promise<RunPatchSelectionEvalResult> {
+  const corpus = loadPatchSelectionCorpus({
+    manifestPath: options.manifestPath,
+    split: options.split ?? 'train',
+  });
+
+  const selections = normalizePatchSelectionSelections(options.selections);
+  const records: PatchSelectionScoreRecord[] = corpus.instances.map((instance) => ({
+    instanceId: instance.id,
+    selectedPatchOrId: selections.get(instance.id) ?? '',
+    instance,
+  }));
+
+  const score = scorePatchSelection(records, {
+    measurementPolicy: 'patch_selection',
+  });
+
+  return {
+    score,
+    loadInfo: corpus.splitInfo,
   };
 }

@@ -45,11 +45,13 @@
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.79.8",
     "@earendil-works/pi-ai": "0.79.8",
-    "@hokusai/core": "^0.2.0",
+    "@hokusai/core": "^0.4.0",
     "ajv": "^8.18.0"
   },
   "devDependencies": {
+    "eslint": "^9.39.5",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.70.0"
   }
 }
