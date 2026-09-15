@@ -33,6 +33,7 @@ import {
   attachStageOutcomes,
   enrichTrainingMetadata,
   buildVerificationTelemetryFromArtifact,
+  isEvalTaskScorerResult,
 } from './eval-record-builder.ts';
 import { buildChallengeStageEval, extractReviewExecutedIdentity } from './stage-eval-evidence.ts';
 import { buildTaskDescriptor } from './task-descriptor-builder.ts';
@@ -70,6 +71,7 @@ import type {
   EvalRecord,
   EvalRouteProvenance,
   EvalRouting,
+  EvalTaskScorerResult,
   InterventionRecord,
   PlanningExecutionOutcome,
   RoutePrediction,
@@ -357,6 +359,17 @@ function readWavemillJson(featureDir: string | undefined, name: string): unknown
   }
 }
 
+function loadTaskScorerResult(repoDir: string, worktreePath: string | undefined): EvalTaskScorerResult | null {
+  const featureDir = resolveWavemillFeatureDir(worktreePath, repoDir);
+  const raw = readWavemillJson(featureDir, '.task-scorer-result.json');
+  if (!raw) return null;
+  if (isEvalTaskScorerResult(raw)) {
+    return raw;
+  }
+  console.warn('[wavemill-adapter] Ignoring malformed .task-scorer-result.json');
+  return null;
+}
+
 export function collectPostCompletionOutcomes(input: PostCompletionOutcomeInput): Outcomes {
   const {
     prNumber,
@@ -456,6 +469,7 @@ interface PostCompletionEnrichmentInput {
   phaseDurations?: EvalPhaseDurations | null;
   planContent?: string;
   selfReviewSummary?: string;
+  taskScorerResult?: EvalTaskScorerResult | null;
 }
 
 function resolveRouteArtifactDirs(
@@ -652,6 +666,7 @@ export function enrichPostCompletionRecord(
       input.branchName,
       input.worktreePath,
     ),
+    taskScorerResult: input.taskScorerResult ?? loadTaskScorerResult(input.repoDir, input.worktreePath),
     executedPlanning: input.executedPlanning,
     planningExecutionOutcome: input.planningExecutionOutcome,
     verificationTelemetry,

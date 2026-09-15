@@ -497,7 +497,7 @@ write_launch_plan() {
   fi
 
   local tasks_json='[]'
-  local t issue slug title branch wt_dir linear_issue task_packet_file details_file issue_json_file route_file
+  local t issue slug title branch wt_dir linear_issue task_packet_file details_file issue_json_file route_file scorer_file
   local route_json route_planner route_coder route_reviewer route_plan_depth route_code_depth route_review_mode route_max_cost_usd
   local route_payload challenge_flag challenge_pair challenge_role challenge_model migration_number task_agent
   local depends_on base_from_task attempt_id attempt_json
@@ -513,6 +513,7 @@ write_launch_plan() {
     details_file="/tmp/${SESSION}-${issue}-taskpacket-details.md"
     issue_json_file="/tmp/${SESSION}-${issue}-issue.json"
     route_file="/tmp/${SESSION}-${issue}-route.json"
+    scorer_file="/tmp/${SESSION}-${issue}-task-scorer-result.json"
     route_json='{}'
     [[ -f "$route_file" ]] && route_json="$(cat "$route_file" 2>/dev/null || echo '{}')"
 
@@ -587,6 +588,7 @@ write_launch_plan() {
       --arg taskPacketDetailsFile "$details_file" \
       --arg issueJsonFile "$issue_json_file" \
       --arg routeFile "$route_file" \
+      --arg taskScorerResultFile "$scorer_file" \
       --argjson route "$route_payload" \
       --arg challenge "$challenge_flag" \
       --arg challengePairId "$challenge_pair" \
@@ -611,6 +613,7 @@ write_launch_plan() {
         taskPacketDetailsFile: $taskPacketDetailsFile,
         issueJsonFile: $issueJsonFile,
         routeFile: $routeFile,
+        taskScorerResultFile: $taskScorerResultFile,
         route: $route,
         challenge: ($challenge == "true"),
         challengePairId: (if $challengePairId == "" then null else $challengePairId end),
@@ -714,6 +717,37 @@ execute() {
   else
     "$@"
   fi
+}
+
+score_task_packets_shadow() {
+  local t issue slug title packet_file result_file stdout_file stderr_file
+  for t in "${LAUNCH_ARGS[@]}"; do
+    IFS='|' read -r issue slug title <<<"$t"
+    packet_file="/tmp/${SESSION}-${issue}-taskpacket.md"
+    result_file="/tmp/${SESSION}-${issue}-task-scorer-result.json"
+    rm -f "$result_file" 2>/dev/null || true
+    if [[ ! -f "$packet_file" ]]; then
+      log_warn "  $issue: task scorer skipped (missing packet); dispatch continuing"
+      continue
+    fi
+    stdout_file="$(mktemp "/tmp/${SESSION}-${issue}-task-scorer.XXXXXX.out")"
+    stderr_file="$(mktemp "/tmp/${SESSION}-${issue}-task-scorer.XXXXXX.err")"
+    if _with_timeout 5 npx tsx "$TOOLS_DIR/score-task-packet.ts" "$packet_file" >"$stdout_file" 2>"$stderr_file" \
+      && jq -e '
+        type == "object"
+        and (.decision | IN("run","expand","split","return"))
+        and (.confidence | type == "number" and . >= 0 and . <= 1)
+        and (.explanation | type == "string" and length > 0)
+        and (.model_version | type == "string" and length > 0)
+      ' "$stdout_file" >/dev/null 2>&1; then
+      mv "$stdout_file" "$result_file"
+      log "debug" "  $issue: task scorer result staged"
+    else
+      log_warn "  $issue: task scorer failed; dispatch continuing"
+      rm -f "$stdout_file" 2>/dev/null || true
+    fi
+    rm -f "$stderr_file" 2>/dev/null || true
+  done
 }
 
 
@@ -2457,6 +2491,7 @@ for t in "${TASKS[@]}"; do
 done
 
 LAUNCH_ARGS=("${FINAL_LAUNCH_ARGS[@]}")
+score_task_packets_shadow
 # Create monitoring script that will run in tmux
 STATUS_LOG_FILE="/tmp/${SESSION}-mill-status.log"
 MONITOR_ENV="/tmp/${SESSION}-monitor.env"

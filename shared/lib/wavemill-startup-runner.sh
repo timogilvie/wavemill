@@ -1010,7 +1010,7 @@ challenge_selection_health_release() {
 
 startup_run_task_phases() {
   local task_json="$1" ordinal="${2:-}" total="${3:-}"
-  local issue slug title branch wt_dir linear_issue task_packet_file details_file issue_json_file
+  local issue slug title branch wt_dir linear_issue task_packet_file details_file issue_json_file task_scorer_result_file
   local planner_model coder_model reviewer_model plan_depth code_depth review_mode route_max_cost_usd
   local challenge challenge_pair challenge_role challenge_model challenge_stage task_agent win
   local depends_on base_from_task
@@ -1035,6 +1035,7 @@ startup_run_task_phases() {
   task_packet_file="$(echo "$task_json" | jq -r '.taskPacketFile')"
   details_file="$(echo "$task_json" | jq -r '.taskPacketDetailsFile')"
   issue_json_file="$(echo "$task_json" | jq -r '.issueJsonFile')"
+  task_scorer_result_file="$(echo "$task_json" | jq -r '.taskScorerResultFile // empty')"
   planner_model="$(echo "$task_json" | jq -r '.route.planner // empty')"
   coder_model="$(echo "$task_json" | jq -r '.route.coder // empty')"
   reviewer_model="$(echo "$task_json" | jq -r '.route.reviewer // empty')"
@@ -1220,6 +1221,20 @@ startup_run_task_phases() {
   feature_dir="$wt_dir/features/$slug"
   mkdir -p "$feature_dir"
   reset_startup_phase_artifacts "$feature_dir"
+
+  if [[ -n "$task_scorer_result_file" && -f "$task_scorer_result_file" ]]; then
+    if jq -e '
+      type == "object"
+      and (.decision | IN("run","expand","split","return"))
+      and (.confidence | type == "number" and . >= 0 and . <= 1)
+      and (.explanation | type == "string" and length > 0)
+      and (.model_version | type == "string" and length > 0)
+    ' "$task_scorer_result_file" >/dev/null 2>&1; then
+      cp "$task_scorer_result_file" "$feature_dir/.task-scorer-result.json" 2>/dev/null || true
+    else
+      startup_task_log "$issue" "WARN: ignoring malformed task scorer result"
+    fi
+  fi
 
   if [[ -f "$details_file" ]]; then
     if [[ "$PLANNING_MODE" == "interactive" ]]; then

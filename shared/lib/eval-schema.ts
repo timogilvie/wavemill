@@ -128,6 +128,8 @@
  *   defaults. Legacy `lintDelta`/`typecheckPassed`/`securityFindingsDelta`
  *   remain and are unrelated to the S1 fields (they were CI-name pattern
  *   matches). Additive; legacy records still validate.
+ * - **1.49.0**: Added optional `task_scorer_result` shadow-mode prediction
+ *   metadata for HOK-2845. Additive; omitted or null when scoring fails.
  * - **1.28.0**: Added optional `quarantine_reason` and write-time eval corpus
  *   validation for `taskDescriptor`, non-empty `models_available`, and
  *   canonical reviewer/stage model IDs (HOK-2072); expanded
@@ -211,7 +213,7 @@ import type { ChallengeStage } from './challenge-mode.ts';
  *
  * @since 1.44.0 added unknown_attribution intervention type (HOK-2894)
  */
-export const SCHEMA_VERSION = '1.48.0';
+export const SCHEMA_VERSION = '1.49.0';
 
 export type RoutingRole = 'planner' | 'coder' | 'reviewer';
 
@@ -250,6 +252,15 @@ export interface ResolvedModelRoutingDecision {
 }
 
 export type EvalRouting = Partial<Record<RoutingRole, ResolvedModelRoutingDecision>>;
+
+export type TaskScorerDecision = 'run' | 'expand' | 'split' | 'return';
+
+export interface EvalTaskScorerResult {
+  decision: TaskScorerDecision;
+  confidence: number;
+  explanation: string;
+  model_version: string;
+}
 
 export interface EvalExecutedPlanning {
   agent?: string;
@@ -2065,6 +2076,14 @@ export interface EvalRecord {
 
   /** Stable machine-readable eval failure reason for fast-fail records. */
   failureReason?: EvalFailureReason;
+
+  /**
+   * Shadow-mode task packet readiness prediction captured before dispatch.
+   * Optional and nullable so scorer failures never invalidate eval records.
+   *
+   * @since 1.49.0
+   */
+  task_scorer_result?: EvalTaskScorerResult | null;
 
   /** Byte-size diagnostic for the eval prompt submitted or rejected. */
   promptSizeDiagnostic?: PromptSizeDiagnostic;
