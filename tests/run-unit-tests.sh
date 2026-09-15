@@ -119,6 +119,7 @@ TESTS=(
   shared/lib/arbiter-probes/survival-agreement.test.ts
   shared/lib/arbiter-probes/eval-disagreement.test.ts
   tools/arbiter-probe-p1-2.test.ts
+  tools/cleanup-terminal-inbox.test.ts
   shared/lib/pr-diff-provider.test.ts
   shared/lib/pr-metadata.test.ts
   shared/lib/pr-attribution.test.ts

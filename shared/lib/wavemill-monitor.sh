@@ -11150,11 +11150,17 @@ cleanup_merged_primary_challenge_task() {
     return 0
   fi
 
-  if ! state_mutate "$STATE_FILE" \
-    '.tasks[$issue] = ($preserved + {updated: (now | todate)}) | .updated = (now | todate)' \
-    --arg issue "$issue" \
-    --argjson preserved "$preserved"; then
-    log_warn "cleanup_merged_primary_challenge_task: failed to preserve $issue challenge metadata"
+  if declare -F write_terminal_task_history_record >/dev/null 2>&1; then
+    if ! write_terminal_task_history_record "$issue" "$preserved"; then
+      log_warn "cleanup_merged_primary_challenge_task: failed to preserve $issue challenge metadata"
+    fi
+  else
+    if ! state_mutate "$STATE_FILE" \
+      '.tasks[$issue] = ($preserved + {updated: (now | todate)}) | .updated = (now | todate)' \
+      --arg issue "$issue" \
+      --argjson preserved "$preserved"; then
+      log_warn "cleanup_merged_primary_challenge_task: failed to preserve $issue challenge metadata"
+    fi
   fi
 }
 
@@ -16083,6 +16089,19 @@ monitor_issue_state() {
     else
       log "status" "$ISSUE → PR #$PR closed without merge"
     fi
+    if is_challenge_task "$ISSUE"; then
+      local closed_role closed_pair_id inferred_closed_role
+      closed_role=$(get_task_meta "$ISSUE" "challengeRole")
+      closed_pair_id=$(get_task_meta "$ISSUE" "challengePairId")
+      if [[ -z "$closed_role" && -n "$closed_pair_id" ]]; then
+        inferred_closed_role="challenger"
+        [[ "$closed_pair_id" == "$ISSUE" ]] && inferred_closed_role="primary"
+        state_mutate "$STATE_FILE" \
+          '.tasks[$issue].challengeRole = $role | .tasks[$issue].updated = (now | todate)' \
+          --arg issue "$ISSUE" \
+          --arg role "$inferred_closed_role" >/dev/null 2>&1 || true
+      fi
+    fi
     local linear_status="Backlog"
     if is_challenge_task "$ISSUE"; then
       local sibling_pr sibling_state
@@ -16145,7 +16164,20 @@ monitor_issue_state() {
       if declare -F monitor_cleanup_episode_skip >/dev/null 2>&1 && monitor_cleanup_episode_skip "$ISSUE" "$SLUG" "$PR"; then
         return 0
       fi
+      local previous_cleanup_abandon="" previous_cleanup_abandon_set="false"
+      if [[ -n "${WAVEMILL_CLEANUP_ABANDON_ISSUE+x}" ]]; then
+        previous_cleanup_abandon="$WAVEMILL_CLEANUP_ABANDON_ISSUE"
+        previous_cleanup_abandon_set="true"
+      fi
+      if is_challenge_task "$ISSUE"; then
+        WAVEMILL_CLEANUP_ABANDON_ISSUE="$ISSUE"
+      fi
       cleanup_completed_task "$ISSUE" "$SLUG" "closed without merge" || true
+      if [[ "$previous_cleanup_abandon_set" == "true" ]]; then
+        WAVEMILL_CLEANUP_ABANDON_ISSUE="$previous_cleanup_abandon"
+      else
+        unset WAVEMILL_CLEANUP_ABANDON_ISSUE
+      fi
     fi
     return 0
   fi
