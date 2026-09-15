@@ -199,6 +199,8 @@ function createCommit(repoDir: string, filename: string, contents: string, messa
 
 function createRepoWithRemoteIntegration(): {
   repoDir: string;
+  remoteDir: string;
+  seedDir: string;
   remoteSha: string;
   cleanup: () => void;
 } {
@@ -221,6 +223,7 @@ function createRepoWithRemoteIntegration(): {
   runGit(repoDir, ['remote', 'add', 'origin', remoteDir]);
   runGit(repoDir, ['fetch', 'origin', 'auto/integration']);
   runGit(repoDir, ['remote', 'set-url', 'origin', 'git@github.com:example/repo.git']);
+  runGit(repoDir, ['config', `url.${remoteDir}.insteadOf`, 'git@github.com:example/repo.git']);
   writeFileSync(
     join(repoDir, '.wavemill-config.json'),
     JSON.stringify({ integration: { integrationBranch: 'auto/integration' } }),
@@ -228,6 +231,8 @@ function createRepoWithRemoteIntegration(): {
 
   return {
     repoDir,
+    remoteDir,
+    seedDir,
     remoteSha,
     cleanup: () => rmSync(rootDir, { recursive: true, force: true }),
   };
@@ -705,13 +710,27 @@ describe('selectNextCandidate ordering and health', () => {
     });
   });
 
-  it('short-circuits when integration health is unhealthy', async () => {
-    await withDecision([pr()], (decision) => {
+  it('lists ready waiters but skips eligibility gates when integration health is unhealthy', async () => {
+    const options = buildTestOptions([
+      pr({ number: 10 }),
+      pr({ number: 11, labels: [label(WM_LABELS.wavemill)] }),
+    ], { state: 'unhealthy', reason: 'ci: failure' });
+    let gateCalls = 0;
+    options.crossPrGuardChecker = async () => {
+      gateCalls += 1;
+      return { status: 'pass', checkedHeadSha: 'head-current' };
+    };
+    try {
+      const decision = await selectNextCandidate(options);
       assert.equal(decision.integrationHealth.state, 'unhealthy');
       assert.equal(decision.eligible.length, 0);
       assert.equal(decision.blocked.length, 0);
+      assert.deepEqual(decision.waitingReady?.map((candidate) => candidate.number), [10]);
       assert.equal(decision.nextPR, null);
-    }, { state: 'unhealthy', reason: 'ci: failure' });
+      assert.equal(gateCalls, 0);
+    } finally {
+      options.cleanup();
+    }
   });
 
   it('returns an empty decision for empty input', async () => {
@@ -1325,6 +1344,42 @@ describe('selectNextCandidate dependency cycles', () => {
 });
 
 describe('defaultHealthChecker', () => {
+  it('fetches origin integration before reading check runs', async () => {
+    const repo = createRepoWithRemoteIntegration();
+
+    try {
+      const updatedSha = createCommit(repo.seedDir, 'CHANGE.md', 'remote update\n', 'advance integration branch');
+      runGit(repo.seedDir, ['push', 'origin', 'auto/integration']);
+      assert.equal(runGit(repo.repoDir, ['rev-parse', 'refs/remotes/origin/auto/integration']), repo.remoteSha);
+
+      await withFakeGh('{"check_runs":[{"name":"ci","conclusion":"success"}]}', async ({ logPath }) => {
+        const health = await defaultHealthChecker('auto/integration', repo.repoDir);
+        assert.deepEqual(health, { state: 'healthy' });
+        assert.deepEqual(readGhApiPaths(logPath), [`repos/example/repo/commits/${updatedSha}/check-runs`]);
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('keeps a known sha but reports unhealthy when the pre-check fetch fails', async () => {
+    const repo = createRepoWithRemoteIntegration();
+
+    try {
+      runGit(repo.repoDir, ['config', '--unset-all', `url.${repo.remoteDir}.insteadOf`]);
+      runGit(repo.repoDir, ['config', 'url./tmp/wavemill-missing-remote.git.insteadOf', 'git@github.com:example/repo.git']);
+
+      await withFakeGh('{"check_runs":[{"name":"ci","conclusion":"success"}]}', async ({ logPath }) => {
+        const health = await defaultHealthChecker('auto/integration', repo.repoDir);
+        assert.equal(health.state, 'unhealthy');
+        assert.match(health.reason ?? '', /^health-check-refresh-failed:/);
+        assert.deepEqual(readGhApiPaths(logPath), [`repos/example/repo/commits/${repo.remoteSha}/check-runs`]);
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
   it('resolves origin integration when local branch is missing', async () => {
     const repo = createRepoWithRemoteIntegration();
 
@@ -1361,7 +1416,7 @@ describe('defaultHealthChecker', () => {
     }
   });
 
-  it('retries once with origin integration after a local-only sha gets a missing-commit 422', async () => {
+  it('uses refreshed origin integration instead of a local-only sha', async () => {
     const repo = createRepoWithRemoteIntegration();
 
     try {
@@ -1375,10 +1430,8 @@ describe('defaultHealthChecker', () => {
         async ({ logPath }) => {
           const health = await defaultHealthChecker('auto/integration', repo.repoDir);
           assert.deepEqual(health, { state: 'healthy' });
-          assert.deepEqual(readGhApiPaths(logPath), [
-            `repos/example/repo/commits/${localSha}/check-runs`,
-            `repos/example/repo/commits/${repo.remoteSha}/check-runs`,
-          ]);
+          assert.deepEqual(readGhApiPaths(logPath), [`repos/example/repo/commits/${repo.remoteSha}/check-runs`]);
+          assert.notEqual(localSha, repo.remoteSha);
         },
         {
           missingCommitShas: [localSha],
@@ -1393,7 +1446,7 @@ describe('defaultHealthChecker', () => {
     }
   });
 
-  it('reports degraded health when neither local nor origin ref resolves', async () => {
+  it('reports unhealthy health when neither local nor origin ref resolves', async () => {
     const repoDir = mkdtempSync(join(tmpdir(), 'wavemill-tend-health-missing-'));
     writeFileSync(
       join(repoDir, '.wavemill-config.json'),
@@ -1405,7 +1458,7 @@ describe('defaultHealthChecker', () => {
     try {
       const health = await defaultHealthChecker('auto/integration', repoDir);
       assert.equal(health.state, 'unhealthy');
-      assert.match(health.reason ?? '', /health-check-error/);
+      assert.match(health.reason ?? '', /health-check-refresh-failed/);
       assert.match(health.reason ?? '', /auto\/integration/);
       assert.match(health.reason ?? '', /refs\/remotes\/origin\/auto\/integration/);
     } finally {
@@ -1470,15 +1523,15 @@ describe('formatStatusLine', () => {
     });
   });
 
-  it('includes degraded health, last merged PR, and action overrides', () => {
+  it('includes unhealthy health reason, last merged PR, and action overrides', () => {
     assert.equal(
       formatStatusLine({
-        integrationHealth: { state: 'unhealthy', reason: 'ci: failure' },
+        integrationHealth: { state: 'unhealthy', reason: 'ci:\nfailure' },
         eligible: [],
         blocked: [],
         nextPR: null,
       }, { action: 'merged-#42', lastPR: 42 }),
-      'eligible=0 blocked=0 health=degraded last=#42 action=merged-#42',
+      'eligible=0 blocked=0 health=unhealthy reason="ci: failure" last=#42 action=merged-#42',
     );
   });
 
