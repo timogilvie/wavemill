@@ -2,7 +2,15 @@ import { createHash } from 'node:crypto';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { mutateJsonState } from './state-mutex.ts';
-import { executeMerge, formatStatusLine, selectNextCandidate, type BlockedCandidate, type MergeExecutionResult, type TendDecision } from './tend-controller.ts';
+import {
+  executeMerge,
+  formatStatusLine,
+  selectNextCandidate,
+  type BlockedCandidate,
+  type MergeExecutionResult,
+  type TendDecision,
+  type WaitingReadyCandidate,
+} from './tend-controller.ts';
 import { WM_LABELS } from './pr-state-labels.ts';
 import type { StatusRenderer } from './tend-status-renderer.ts';
 import { computeBackoffDelayMs, isTransientError } from './transient-retry.ts';
@@ -59,9 +67,15 @@ export interface MergeLaneObserverFinding {
   context?: Record<string, unknown>;
 }
 
-/** 'progressing' | 'idle' (empty lane) | 'stalled' (blocked lane, no movement). */
+/** 'progressing' | 'idle' (empty lane) | 'stalled' (blocked/unhealthy lane, no movement). */
 export type TendProgressState = 'progressing' | 'idle' | 'stalled';
-export type TendLaneCondition = 'progressing' | 'no-eligible' | 'needs-user-hold' | 'idle-blocked-stall';
+export type TendLaneCondition =
+  | 'progressing'
+  | 'no-eligible'
+  | 'needs-user-hold'
+  | 'idle-blocked-stall'
+  | 'integration-unhealthy'
+  | 'integration-unhealthy-stall';
 
 export interface TendLoopOptions {
   repoDir: string;
@@ -133,9 +147,27 @@ export function formatIdleStallWarning(options: {
   return `warn=merge-lane-idle-stalled severity=${options.severity} blocked=${blockedList} consecutive=${options.consecutive}`;
 }
 
+export function formatIntegrationUnhealthyWarning(options: {
+  reason: string;
+  waiting: WaitingReadyCandidate[];
+  consecutive: number;
+  severity: 'high' | 'urgent';
+}): string {
+  const waiting = options.waiting.length > 0
+    ? options.waiting.map((candidate) => `#${candidate.number}`).join(',')
+    : 'unknown';
+  return `warn=merge-lane-integration-unhealthy severity=${options.severity} `
+    + `reason=${quoteLogValue(options.reason)} waiting=${waiting} consecutive=${options.consecutive}`;
+}
+
 function describeBlockedCandidate(candidate: BlockedCandidate): string {
   const labels = candidate.labels && candidate.labels.length > 0 ? candidate.labels.join(',') : '(unknown)';
   return `PR #${candidate.number} (${candidate.headBranch}) labels=[${labels}] gate=${candidate.reason}`;
+}
+
+function describeWaitingReadyCandidate(candidate: WaitingReadyCandidate): string {
+  const labels = candidate.labels && candidate.labels.length > 0 ? candidate.labels.join(',') : '(unknown)';
+  return `PR #${candidate.number} (${candidate.headBranch}) labels=[${labels}]`;
 }
 
 /**
@@ -171,6 +203,40 @@ export function buildMergeLaneStalledFinding(options: {
       firstBlockedPr: first?.number ?? null,
       firstBlockedLabels: first?.labels?.join(',') ?? '',
       firstBlockedGate: first?.reason ?? '',
+      observedAt: options.now,
+    },
+  };
+}
+
+export function buildIntegrationUnhealthyFinding(options: {
+  decision: TendDecision;
+  consecutive: number;
+  severity: 'high' | 'urgent';
+  now: string;
+}): MergeLaneObserverFinding {
+  const waiting = options.decision.waitingReady ?? [];
+  const first = waiting[0];
+  const reason = integrationUnhealthyReason(options.decision);
+  return {
+    subsystem: 'merge-lane',
+    title: `Merge lane halted: integration unhealthy with ${waiting.length} ready PR${waiting.length === 1 ? '' : 's'} waiting`,
+    body: [
+      `tend reported health=unhealthy for ${options.consecutive} consecutive polls while wm:ready PRs were waiting; `
+      + `integration check: ${reason}.`,
+      ...waiting.map((candidate) => describeWaitingReadyCandidate(candidate)),
+    ].join('\n'),
+    severity: options.severity,
+    recommendation: 'Fix the failing integration check on the integration branch; tend will not select another PR while the tip is unhealthy.',
+    context: {
+      markerPath: `merge-lane/integration-unhealthy/${first ? `#${first.number}` : 'none'}`,
+      markerKind: 'merge-lane-integration-unhealthy',
+      consecutivePolls: options.consecutive,
+      waitingCount: waiting.length,
+      waitingPrs: waiting.map((candidate) => candidate.number).join(','),
+      integrationHealthReason: reason,
+      integrationCheck: integrationCheckName(reason),
+      firstWaitingPr: first?.number ?? null,
+      firstWaitingLabels: first?.labels?.join(',') ?? '',
       observedAt: options.now,
     },
   };
@@ -232,6 +298,8 @@ export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExi
   // a merge, a retry-refresh, or the lane's PR set/gates changing — never a
   // successful poll by itself.
   let idleBlockedStreak = 0;
+  let integrationUnhealthyStreak = 0;
+  let lastIntegrationUnhealthySignature: string | null = null;
   let lastProgressAt = deps.now().toISOString();
   let lastDecisionSignature: string | null = null;
   const readyUnmergedTracker = new Map<number, { firstSeenMs: number; lastEmittedMs: number }>();
@@ -287,18 +355,45 @@ export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExi
       trackReadyUnmerged(decision, pollCompletedAt);
 
       if (decision.nextPR === null) {
+        const waitingReady = decision.waitingReady ?? [];
+        const hasIntegrationUnhealthyWaiters = decision.integrationHealth.state === 'unhealthy' && waitingReady.length > 0;
+        if (hasIntegrationUnhealthyWaiters) {
+          const unhealthySignature = integrationUnhealthySignature(decision);
+          integrationUnhealthyStreak = unhealthySignature === lastIntegrationUnhealthySignature
+            ? integrationUnhealthyStreak + 1
+            : 1;
+          lastIntegrationUnhealthySignature = unhealthySignature;
+        } else {
+          integrationUnhealthyStreak = 0;
+          lastIntegrationUnhealthySignature = null;
+        }
+
         // A changed lane signature (PRs entering/leaving, gates changing) is
         // real state movement and restarts the stall count; only an unchanged
         // blocked lane accumulates toward the stall thresholds.
-        idleBlockedStreak = decision.blocked.length === 0
+        idleBlockedStreak = decision.blocked.length === 0 || decision.integrationHealth.state === 'unhealthy'
           ? 0
           : decisionProgressed ? 1 : idleBlockedStreak + 1;
-        const progressState: TendProgressState = idleBlockedStreak >= TEND_IDLE_STALL_HIGH_ITERATIONS
+        const integrationUnhealthyStalled = integrationUnhealthyStreak >= TEND_IDLE_STALL_HIGH_ITERATIONS;
+        const progressState: TendProgressState = integrationUnhealthyStalled || idleBlockedStreak >= TEND_IDLE_STALL_HIGH_ITERATIONS
           ? 'stalled'
-          : decision.blocked.length > 0 ? 'progressing' : 'idle';
-        const laneCondition: TendLaneCondition = decision.blocked.length === 0
-          ? 'no-eligible'
-          : idleBlockedStreak >= TEND_IDLE_STALL_HIGH_ITERATIONS ? 'idle-blocked-stall' : 'needs-user-hold';
+          : decision.blocked.length > 0 || hasIntegrationUnhealthyWaiters ? 'progressing' : 'idle';
+        let laneCondition: TendLaneCondition;
+        if (integrationUnhealthyStalled) {
+          laneCondition = 'integration-unhealthy-stall';
+        } else if (hasIntegrationUnhealthyWaiters) {
+          laneCondition = 'integration-unhealthy';
+        } else if (decision.blocked.length === 0) {
+          laneCondition = 'no-eligible';
+        } else {
+          laneCondition = idleBlockedStreak >= TEND_IDLE_STALL_HIGH_ITERATIONS
+            ? 'idle-blocked-stall'
+            : 'needs-user-hold';
+        }
+        const heartbeatStatus = integrationUnhealthyStalled ? 'unhealthy' : 'healthy';
+        const heartbeatDetail = integrationUnhealthyStalled
+          ? `backstage tend loop is alive but integration is unhealthy: ${integrationUnhealthyReason(decision)}`
+          : undefined;
 
         options.renderer.write(formatStatusLine(decision, {
           action: 'idle',
@@ -323,6 +418,27 @@ export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExi
           }
         }
 
+        if (integrationUnhealthyStalled) {
+          const severity = integrationUnhealthyStreak >= TEND_IDLE_STALL_URGENT_ITERATIONS ? 'urgent' : 'high';
+          options.renderer.write(formatIntegrationUnhealthyWarning({
+            reason: integrationUnhealthyReason(decision),
+            waiting: waitingReady,
+            consecutive: integrationUnhealthyStreak,
+            severity,
+          }));
+          if (
+            integrationUnhealthyStreak === TEND_IDLE_STALL_HIGH_ITERATIONS
+            || integrationUnhealthyStreak === TEND_IDLE_STALL_URGENT_ITERATIONS
+          ) {
+            deps.emitObserverFinding(options.repoDir, buildIntegrationUnhealthyFinding({
+              decision,
+              consecutive: integrationUnhealthyStreak,
+              severity,
+              now: pollCompletedAt,
+            }));
+          }
+        }
+
         consecutiveFailures = 0;
         consecutiveUnknown = 0;
         lastError = null;
@@ -337,6 +453,8 @@ export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExi
           progressState,
           laneCondition,
           laneEvidenceId: decisionEvidenceId(decision),
+          status: heartbeatStatus,
+          detail: heartbeatDetail,
           ...pollMetadata,
         });
         await deps.sleep(intervalMs);
@@ -344,6 +462,8 @@ export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExi
       }
 
       idleBlockedStreak = 0;
+      integrationUnhealthyStreak = 0;
+      lastIntegrationUnhealthySignature = null;
       const candidate = decision.eligible.find((item) => item.number === decision.nextPR);
       if (!candidate) {
         throw new Error(`tend: selected PR #${decision.nextPR} was not found in eligible candidates`);
@@ -487,11 +607,42 @@ function decisionSignature(decision: TendDecision): string {
   const blocked = decision.blocked
     .map((candidate) => `${candidate.number}:${candidate.reason}`)
     .sort();
-  return JSON.stringify({ eligible, blocked });
+  const waitingReady = (decision.waitingReady ?? [])
+    .map((candidate) => `${candidate.number}:${candidate.labels?.join(',') ?? ''}`)
+    .sort();
+  return JSON.stringify({
+    health: decision.integrationHealth.state,
+    reason: integrationUnhealthyReason(decision),
+    eligible,
+    blocked,
+    waitingReady,
+  });
 }
 
 function decisionEvidenceId(decision: TendDecision): string {
   return createHash('sha256').update(decisionSignature(decision)).digest('hex').slice(0, 12);
+}
+
+function integrationUnhealthySignature(decision: TendDecision): string {
+  return JSON.stringify({
+    reason: integrationUnhealthyReason(decision),
+    waitingReady: (decision.waitingReady ?? [])
+      .map((candidate) => `${candidate.number}:${candidate.labels?.join(',') ?? ''}`)
+      .sort(),
+  });
+}
+
+function integrationUnhealthyReason(decision: TendDecision): string {
+  return truncateOneLine(decision.integrationHealth.reason || 'integration branch is unhealthy', 200);
+}
+
+function integrationCheckName(reason: string): string {
+  const [checkName] = reason.split(':', 1);
+  return checkName?.trim() || reason;
+}
+
+function quoteLogValue(value: string): string {
+  return JSON.stringify(truncateOneLine(value, 200));
 }
 
 export function classifyTendLoopError(error: unknown): TendLoopErrorClass {
@@ -559,6 +710,8 @@ export async function writeTendHeartbeat(
     progressState?: TendProgressState;
     laneCondition?: TendLaneCondition;
     laneEvidenceId?: string;
+    status?: 'healthy' | 'degraded' | 'unhealthy';
+    detail?: string;
   },
 ): Promise<void> {
   const healthPath = join(repoDir, '.wavemill', 'backstage-health.json');
@@ -568,12 +721,13 @@ export async function writeTendHeartbeat(
       const next = { ...(current ?? {}) };
       const services = { ...(next.services ?? {}) };
       const existing = { ...(services.tend ?? {}) };
-      const detail = health.progressState === 'stalled'
+      const status = health.status ?? 'healthy';
+      const detail = health.detail ?? (health.progressState === 'stalled'
         ? 'backstage tend loop is alive but the merge lane is not progressing'
-        : 'backstage tend loop is running';
+        : 'backstage tend loop is running');
       services.tend = {
         ...existing,
-        status: 'healthy',
+        status,
         detail,
         heartbeatAt: timestamp,
         lastSuccessfulPollAt: timestamp,
@@ -591,7 +745,7 @@ export async function writeTendHeartbeat(
         ...(health.laneEvidenceId !== undefined ? { laneEvidenceId: health.laneEvidenceId } : {}),
       };
       next.updatedAt = timestamp;
-      next.status = 'healthy';
+      next.status = status;
       next.detail = detail;
       next.services = services;
       return next;
@@ -658,6 +812,8 @@ export async function writeTendPollHeartbeatBestEffort(
     progressState?: TendProgressState;
     laneCondition?: TendLaneCondition;
     laneEvidenceId?: string;
+    status?: 'healthy' | 'degraded' | 'unhealthy';
+    detail?: string;
   } = {},
 ): Promise<void> {
   try {
@@ -675,6 +831,8 @@ export async function writeTendPollHeartbeatBestEffort(
         progressState: options.progressState,
         laneCondition: options.laneCondition,
         laneEvidenceId: options.laneEvidenceId,
+        status: options.status,
+        detail: options.detail,
       },
     );
   } catch (error) {
