@@ -44,6 +44,7 @@ export interface ChallengeEvalCandidateDiagnostic {
   evaluatedPrHeadSha?: string;
   timestamp?: string;
   rejection?: string;
+  challengeDivergenceReason?: string;
 }
 
 export interface CurrentChallengeEvalDiagnostics {
@@ -141,6 +142,9 @@ function candidateDiagnostic(record: EvalRecord, rejection?: string): ChallengeE
     evaluatedPrHeadSha: getAuthoritativeEvaluatedPrHeadSha(record),
     timestamp: nonEmptyString(record.timestamp),
     ...(rejection ? { rejection } : {}),
+    ...(nonEmptyString(record.challengeDivergenceReason)
+      ? { challengeDivergenceReason: nonEmptyString(record.challengeDivergenceReason) }
+      : {}),
   };
 }
 

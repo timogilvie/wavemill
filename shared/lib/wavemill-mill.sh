@@ -987,13 +987,31 @@ challenge_pair_manual_artifact_path() {
 }
 
 write_manual_challenge_comparison_artifact() {
-  local pair_id="$1" primary_key="$2" challenger_key="$3" timed_out_sides_csv="$4" retry_count="$5" retry_max="$6"
+  local pair_id="$1" primary_key="$2" challenger_key="$3" timed_out_sides_csv="$4" retry_count="$5" retry_max="$6" cause="${7:-eval_timeout}"
   local artifact_path primary_pr challenger_pr
   artifact_path=$(challenge_pair_manual_artifact_path "$primary_key") || return 1
   primary_pr=$(read_state_value "" --arg i "$primary_key" '.tasks[$i].pr // empty')
   challenger_pr=$(read_state_value "" --arg i "$challenger_key" '.tasks[$i].pr // empty')
   mkdir -p "$(dirname "$artifact_path")"
-  cat > "$artifact_path" <<EOF
+  if [[ "$cause" == "stale_eval_evidence" ]]; then
+    cat > "$artifact_path" <<EOF
+# Challenge Comparison Needs Manual Action
+
+Pair ID: $pair_id
+Primary issue: $primary_key
+Challenger issue: $challenger_key
+Primary PR: ${primary_pr:-unknown}
+Challenger PR: ${challenger_pr:-unknown}
+Cause: eval evidence repeatedly refused as stale at the current PR head (relaunches exhausted)
+Retry count: $retry_count/$retry_max
+
+Next action:
+1. Inspect \`npx tsx tools/challenge-eval-evidence.ts --pair-id $pair_id --side <side> --pr <pr> --repo-dir .\` and re-run the eval manually if the refusal is transient.
+2. If eval cannot be recovered quickly, compare PRs #${primary_pr:-?} and #${challenger_pr:-?} manually.
+3. Close the losing PR and proceed with the winner.
+EOF
+  else
+    cat > "$artifact_path" <<EOF
 # Challenge Comparison Needs Manual Action
 
 Pair ID: $pair_id
@@ -1008,6 +1026,34 @@ Next action:
 1. Re-run the timed-out eval job(s) manually when infrastructure is healthy.
 2. If eval cannot be recovered quickly, compare PRs #${primary_pr:-?} and #${challenger_pr:-?} manually.
 3. Close the losing PR and proceed with the winner.
+EOF
+  fi
+  printf '%s\n' "$artifact_path"
+}
+
+write_invalid_challenge_artifact() {
+  local pair_id="$1" primary_key="$2" challenger_key="$3" divergence_reason="$4" eval_ids_csv="$5"
+  local artifact_path primary_pr challenger_pr
+  artifact_path=$(challenge_pair_manual_artifact_path "$primary_key") || return 1
+  primary_pr=$(read_state_value "" --arg i "$primary_key" '.tasks[$i].pr // empty')
+  challenger_pr=$(read_state_value "" --arg i "$challenger_key" '.tasks[$i].pr // empty')
+  mkdir -p "$(dirname "$artifact_path")"
+  cat > "$artifact_path" <<EOF
+# Challenge Pair Invalid - Manual Action
+
+Pair ID: $pair_id
+Primary issue: $primary_key
+Challenger issue: $challenger_key
+Primary PR: ${primary_pr:-unknown}
+Challenger PR: ${challenger_pr:-unknown}
+Cause: invalid_challenge (${divergence_reason:-unknown})
+Eval ID(s): ${eval_ids_csv:-unknown}
+
+The eval ran at the current PR head. Its record is invalid. Re-running evals will reproduce this result - do not re-run them.
+
+Next action:
+1. Retire the invalid arm: close its PR, mark the arm aborted, then ship the surviving PR.
+2. Or assess/supersede the pair with \`npx tsx tools/challenge-pair-recovery.ts --pair $pair_id\`. Add \`--apply\` after reviewing the dry run.
 EOF
   printf '%s\n' "$artifact_path"
 }
