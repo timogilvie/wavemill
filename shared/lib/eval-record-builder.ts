@@ -47,6 +47,7 @@ import type {
   VerificationTelemetryLocalExecution,
   RoutingRole,
   EvalExecutionEconomics,
+  EvalTaskScorerResult,
 } from './eval-schema.ts';
 import {
   getEffectiveRegistry,
@@ -131,6 +132,8 @@ export interface EvalRecordMetadata {
   workflowCost?: WorkflowCostOutcome | null;
   /** Normalized external-harness execution-economics blocks (HOK-2958). */
   executionEconomics?: EvalExecutionEconomics[] | null;
+  /** Shadow-mode task packet readiness prediction. */
+  taskScorerResult?: EvalTaskScorerResult | null;
   /** Task descriptor for router training */
   taskDescriptor?: TaskDescriptor | null;
   /** Cross-model fallback telemetry */
@@ -831,6 +834,33 @@ export function attachExecutionEconomics(
     return;
   }
   record.executionEconomics = blocks;
+}
+
+export function isEvalTaskScorerResult(value: unknown): value is EvalTaskScorerResult {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return (
+    ['run', 'expand', 'split', 'return'].includes(String(candidate.decision)) &&
+    typeof candidate.confidence === 'number' &&
+    Number.isFinite(candidate.confidence) &&
+    candidate.confidence >= 0 &&
+    candidate.confidence <= 1 &&
+    typeof candidate.explanation === 'string' &&
+    candidate.explanation.trim().length > 0 &&
+    typeof candidate.model_version === 'string' &&
+    candidate.model_version.trim().length > 0
+  );
+}
+
+export function attachTaskScorerResult(
+  record: EvalRecord,
+  result?: EvalTaskScorerResult | null,
+): void {
+  if (isEvalTaskScorerResult(result)) {
+    record.task_scorer_result = result;
+  }
 }
 
 export function attachRoutePrediction(
@@ -1656,6 +1686,7 @@ export function enrichEvalRecord(record: EvalRecord, metadata: EvalRecordMetadat
   attachRoutingDecisions(record, metadata.routing);
   attachWorkflowCostMetadata(record, metadata.workflowCost || null);
   attachExecutionEconomics(record, metadata.executionEconomics || null);
+  attachTaskScorerResult(record, metadata.taskScorerResult || null);
   attachRouteCalibration(record, computeRouteCalibration(record, record.routePrediction));
   attachTaskDescriptor(record, metadata.taskDescriptor || null);
   attachFallbackEvent(record, metadata.fallbackEvent || null);
@@ -1717,6 +1748,7 @@ export function enrichTrainingMetadata(
   attachRoutingDecisions(record, metadata.routing);
   attachWorkflowCostMetadata(record, metadata.workflowCost || null);
   attachExecutionEconomics(record, metadata.executionEconomics || null);
+  attachTaskScorerResult(record, metadata.taskScorerResult || null);
   attachRouteCalibration(record, computeRouteCalibration(record, record.routePrediction));
   attachTaskDescriptor(record, metadata.taskDescriptor || null);
   attachFallbackEvent(record, metadata.fallbackEvent || null);

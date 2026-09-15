@@ -2841,7 +2841,7 @@ wavemill_cleanup_launch_attempt() {
           rm -f "$path" 2>/dev/null || cleanup_status="partial"
           ;;
       esac
-    done < <(jq -r '.tasks[]? | .taskPacketFile, .taskPacketDetailsFile, .issueJsonFile, .routeFile | select(type == "string" and length > 0)' "$launch_plan_file" 2>/dev/null || true)
+    done < <(jq -r '.tasks[]? | .taskPacketFile, .taskPacketDetailsFile, .issueJsonFile, .routeFile, .taskScorerResultFile | select(type == "string" and length > 0)' "$launch_plan_file" 2>/dev/null || true)
   fi
 
   local path
