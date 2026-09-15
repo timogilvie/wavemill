@@ -953,12 +953,44 @@ challenge_pair_manual_artifact_path() {
 }
 
 write_manual_challenge_comparison_artifact() {
-  local pair_id="$1" primary_key="$2" challenger_key="$3" timed_out_sides_csv="$4" retry_count="$5" retry_max="$6"
-  local artifact_path primary_pr challenger_pr
+  local pair_id="$1" primary_key="$2" challenger_key="$3" timed_out_sides_csv="$4" retry_count="$5" retry_max="$6" cause="${7:-timeout}" divergence_reason="${8:-}" eval_ids="${9:-}"
+  local artifact_path primary_pr challenger_pr next_actions
   artifact_path=$(challenge_pair_manual_artifact_path "$primary_key") || return 1
   primary_pr=$(read_state_value "" --arg i "$primary_key" '.tasks[$i].pr // empty')
   challenger_pr=$(read_state_value "" --arg i "$challenger_key" '.tasks[$i].pr // empty')
   mkdir -p "$(dirname "$artifact_path")"
+
+  case "$cause" in
+    timeout)
+      next_actions="1. Re-run the timed-out eval job(s) manually when infrastructure is healthy.
+2. If eval cannot be recovered quickly, compare PRs #${primary_pr:-?} and #${challenger_pr:-?} manually.
+3. Close the losing PR and proceed with the winner."
+      ;;
+    stale)
+      next_actions="The evidence selector kept refusing current-head evidence.
+
+1. Inspect the cached evidence at \`.challenge-eval-evidence.json\` to understand why candidates were rejected.
+2. Compare PRs #${primary_pr:-?} and #${challenger_pr:-?} manually.
+3. Close the losing PR and proceed with the winner."
+      ;;
+    invalid)
+      next_actions="The current-head eval evidence is invalid and re-running is guaranteed to reproduce the same invalid record.
+
+Remedies:
+1. Retire the invalid arm and ship the other PR (close the invalid arm's PR).
+2. Or investigate and fix the underlying divergence reason, then run:
+   \`\`\`
+   npx tsx tools/challenge-pair-recovery.ts --pair $pair_id --dry-run
+   npx tsx tools/challenge-pair-recovery.ts --pair $pair_id --apply
+   \`\`\`"
+      ;;
+    *)
+      next_actions="1. Re-run the timed-out eval job(s) manually when infrastructure is healthy.
+2. If eval cannot be recovered quickly, compare PRs #${primary_pr:-?} and #${challenger_pr:-?} manually.
+3. Close the losing PR and proceed with the winner."
+      ;;
+  esac
+
   cat > "$artifact_path" <<EOF
 # Challenge Comparison Needs Manual Action
 
@@ -967,13 +999,29 @@ Primary issue: $primary_key
 Challenger issue: $challenger_key
 Primary PR: ${primary_pr:-unknown}
 Challenger PR: ${challenger_pr:-unknown}
+EOF
+
+  if [[ "$cause" == "timeout" ]]; then
+    cat >> "$artifact_path" <<EOF
 Timed out member(s): ${timed_out_sides_csv:-unknown}
 Retry count: $retry_count/$retry_max
+EOF
+  elif [[ "$cause" == "stale" ]]; then
+    cat >> "$artifact_path" <<EOF
+Reason: Stale-evidence relaunches exhausted (${retry_count}/${retry_max})
+EOF
+  elif [[ "$cause" == "invalid" ]]; then
+    cat >> "$artifact_path" <<EOF
+Reason: Invalid challenge evidence (terminal condition)
+Divergence reason: ${divergence_reason:-unknown}
+Eval IDs: ${eval_ids:-unknown}
+EOF
+  fi
+
+  cat >> "$artifact_path" <<EOF
 
 Next action:
-1. Re-run the timed-out eval job(s) manually when infrastructure is healthy.
-2. If eval cannot be recovered quickly, compare PRs #${primary_pr:-?} and #${challenger_pr:-?} manually.
-3. Close the losing PR and proceed with the winner.
+$next_actions
 EOF
   printf '%s\n' "$artifact_path"
 }
