@@ -118,4 +118,37 @@ describe('current challenge eval selector', () => {
     assert.equal(result.ok, false);
     if (!result.ok) assert.equal(result.reason, 'ambiguous_current_head');
   });
+
+  it('includes divergenceReason in candidate diagnostic when present', () => {
+    const result = select([
+      evalRow({
+        id: 'eval-invalid',
+        invalidChallenge: true,
+        challengeDivergenceReason: 'missing_challenge_intent',
+      }),
+    ]);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.reason, 'ineligible_evidence');
+      assert.equal(result.diagnostics.candidates.length, 1);
+      const candidate = result.diagnostics.candidates[0];
+      assert.equal(candidate.rejection, 'invalid_challenge');
+      assert.equal(candidate.divergenceReason, 'missing_challenge_intent');
+    }
+  });
+
+  it('omits divergenceReason from candidate diagnostic when absent', () => {
+    const result = select([
+      evalRow({
+        id: 'eval-old-head',
+        evaluatedPrHeadSha: HEAD_OLD,
+      }),
+    ]);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.reason, 'old_head_only');
+      const candidate = result.diagnostics.candidates[0];
+      assert.equal(candidate.divergenceReason, undefined);
+    }
+  });
 });
