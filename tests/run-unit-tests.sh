@@ -436,6 +436,9 @@ TESTS=(
   shared/lib/test-partitioner.test.ts
   shared/lib/shard-balance.test.ts
   shared/lib/ci-test-timings.test.ts
+  shared/fixtures/harness-replay/patch-selection-v1/schema.test.ts
+  src/evaluation/scorers/wavemill/patch-selection.test.ts
+  shared/lib/challenge-replay-capture.test.ts
 )
 
 SHARD_INDEX=1

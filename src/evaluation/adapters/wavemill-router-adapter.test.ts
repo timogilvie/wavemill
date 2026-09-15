@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
-import { runWavemillRouterEval } from './wavemill-router-adapter.ts';
+import { runPatchSelectionEval, runWavemillRouterEval } from './wavemill-router-adapter.ts';
 
 const fixtureRoot = resolve('tests/fixtures/wavemill-router-eval');
 
@@ -174,6 +174,78 @@ test('challenge_prospective reroutes with injected modelsAvailable', async () =>
       result.score.wavemill_router_scoring.measurement_policy,
       'challenge_prospective',
     );
+  } finally {
+    cleanup(tmp);
+  }
+});
+
+test('patch-selection eval scores provided selections instead of ground truth', async () => {
+  const tmp = makeTempDir();
+  try {
+    const manifestPath = join(tmp, 'manifest.json');
+    writeFileSync(manifestPath, JSON.stringify({
+      schemaVersion: '1.0',
+      instances: [
+        {
+          id: 'patch-select-1',
+          taskTitle: 'Pick the complete fix',
+          taskDescription: 'Choose the candidate that preserves null safety.',
+          candidates: [
+            {
+              id: 'good',
+              patch: 'diff --git a/file.ts b/file.ts\n@@ -1 +1 @@\n-return item.value\n+return item?.value',
+              patchSizeBytes: 85,
+              label: 'known-good',
+            },
+            {
+              id: 'bad',
+              patch: 'diff --git a/file.ts b/file.ts\n@@ -1 +1 @@\n-return item.value\n+return item.value',
+              patchSizeBytes: 84,
+              label: 'known-bad',
+            },
+          ],
+          knownGoodCandidateId: 'good',
+          knownBadCandidateIds: ['bad'],
+          source: {
+            curationRationale: 'merged_winner',
+            sanitized: true,
+          },
+          heldOut: false,
+          curatedAt: 1726353600,
+        },
+      ],
+      split: {
+        heldOutIds: [],
+        strategy: 'test',
+      },
+      createdAt: 1726353600,
+      updatedAt: 1726353600,
+    }, null, 2), 'utf-8');
+
+    const missing = await runPatchSelectionEval({
+      repoDir: process.cwd(),
+      manifestPath,
+      split: 'all',
+    });
+    assert.equal(missing.score.patch_selection_accuracy, 0);
+    assert.equal(missing.score.wavemill_router_diagnostics.missing_selection_count, 1);
+
+    const wrong = await runPatchSelectionEval({
+      repoDir: process.cwd(),
+      manifestPath,
+      split: 'all',
+      selections: { 'patch-select-1': 'bad' },
+    });
+    assert.equal(wrong.score.patch_selection_accuracy, 0);
+    assert.equal(wrong.score.wavemill_router_diagnostics.known_bad_selected_count, 1);
+
+    const correct = await runPatchSelectionEval({
+      repoDir: process.cwd(),
+      manifestPath,
+      split: 'all',
+      selections: { 'patch-select-1': 'good' },
+    });
+    assert.equal(correct.score.patch_selection_accuracy, 1);
   } finally {
     cleanup(tmp);
   }
