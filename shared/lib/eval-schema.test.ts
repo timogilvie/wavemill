@@ -786,7 +786,7 @@ function validPromptSizeDiagnostic() {
 }
 
 test('SCHEMA_VERSION is bumped for eval schema updates', () => {
-  assert.equal(SCHEMA_VERSION, '1.48.0');
+  assert.equal(SCHEMA_VERSION, '1.49.0');
 });
 
 function validReviewIdentitySet() {
@@ -2471,8 +2471,8 @@ test('Wavemill router fields validate and schema stays in parity', () => {
   assert.equal(properties.wavemill_router_scoring?.$ref, '#/$defs/WavemillRouterScoringMetadata');
 });
 
-test('Schema version constant is 1.48.0', () => {
-  assert.equal(SCHEMA_VERSION, '1.48.0');
+test('Schema version constant is 1.49.0', () => {
+  assert.equal(SCHEMA_VERSION, '1.49.0');
 });
 
 test('Record with an unknown_attribution intervention validates (HOK-2894)', () => {
@@ -2808,7 +2808,7 @@ function validExecutionEconomicsBlock(overrides: Record<string, unknown> = {}) {
 test('Record with Claude Code executionEconomics validates', () => {
   const record = {
     ...scenarios[0].record,
-    schemaVersion: '1.48.0',
+    schemaVersion: '1.49.0',
     executionEconomics: [validExecutionEconomicsBlock()],
   } as unknown as Record<string, unknown>;
   const result = validateAgainstSchema(record);
@@ -2818,7 +2818,7 @@ test('Record with Claude Code executionEconomics validates', () => {
 test('Record with Codex executionEconomics (degraded coverage) validates', () => {
   const record = {
     ...scenarios[0].record,
-    schemaVersion: '1.48.0',
+    schemaVersion: '1.49.0',
     executionEconomics: [
       validExecutionEconomicsBlock({
         providerContractVersion: 'codex/1',
@@ -2911,6 +2911,68 @@ test('Execution economics enums match the schema definitions', () => {
     'local_estimate',
     'none',
   ]);
+});
+
+// ────────────────────────────────────────────────────────────────
+// task_scorer_result tests (HOK-2845)
+// ────────────────────────────────────────────────────────────────
+
+test('task_scorer_result optional field validates when present', () => {
+  const record = {
+    ...scenarios[0].record,
+    task_scorer_result: {
+      decision: 'run',
+      confidence: 0.85,
+      explanation: 'Packet is ready.',
+      model_version: 'v1.0.0-heuristic',
+    },
+  };
+  const result = validateAgainstSchema(record as Record<string, unknown>);
+  assert.ok(result.valid, `Errors: ${result.errors.join(', ')}`);
+});
+
+test('task_scorer_result validates when absent (backward compatibility)', () => {
+  const record = { ...scenarios[0].record };
+  delete (record as Record<string, unknown>).task_scorer_result;
+  const result = validateAgainstSchema(record as Record<string, unknown>);
+  assert.ok(result.valid, `Errors: ${result.errors.join(', ')}`);
+});
+
+test('task_scorer_result accepts null value', () => {
+  const record = {
+    ...scenarios[0].record,
+    task_scorer_result: null,
+  };
+  const result = validateAgainstSchema(record as Record<string, unknown>);
+  assert.ok(result.valid, `Errors: ${result.errors.join(', ')}`);
+});
+
+test('task_scorer_result rejects invalid decision value', () => {
+  const record = {
+    ...scenarios[0].record,
+    task_scorer_result: {
+      decision: 'invalid_decision',
+      confidence: 0.5,
+      explanation: 'test',
+      model_version: 'v1',
+    },
+  };
+  const result = validateAgainstSchema(record as Record<string, unknown>);
+  assert.ok(!result.valid, 'Should reject invalid decision value');
+});
+
+test('task_scorer_result rejects confidence outside [0,1]', () => {
+  const record = {
+    ...scenarios[0].record,
+    task_scorer_result: {
+      decision: 'run',
+      confidence: 1.5,
+      explanation: 'test',
+      model_version: 'v1',
+    },
+  };
+  const result = validateAgainstSchema(record as Record<string, unknown>);
+  assert.ok(!result.valid, 'Should reject confidence > 1');
 });
 
 // ────────────────────────────────────────────────────────────────

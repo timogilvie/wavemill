@@ -47,6 +47,7 @@ import type {
   VerificationTelemetryLocalExecution,
   RoutingRole,
   EvalExecutionEconomics,
+  TaskScorerResultRecord,
 } from './eval-schema.ts';
 import {
   getEffectiveRegistry,
@@ -152,6 +153,8 @@ export interface EvalRecordMetadata {
    * read from this arm's local `.review-result.json` (HOK-2969, Arbiter P2.4f).
    */
   reviewExecutedIdentity?: ReviewExecutedIdentitySet | null;
+  /** Shadow-mode task packet readiness score (HOK-2845). */
+  taskScorerResult?: TaskScorerResultRecord | null;
 }
 
 /** Richer eval metadata attachment used by training-facing eval entrypoints. */
@@ -179,6 +182,15 @@ const RUBRIC_DETERMINATIVE_BOUNDARY_SET = new Set<string>(RUBRIC_DETERMINATIVE_B
  */
 export function attachAgentType(record: EvalRecord, agentType?: string): void {
   record.agentType = agentType || 'claude';
+}
+
+export function attachTaskScorerResult(
+  record: EvalRecord,
+  result?: TaskScorerResultRecord | null,
+): void {
+  if (result) {
+    record.task_scorer_result = result;
+  }
 }
 
 export function attachProviderMetadata(
@@ -1633,6 +1645,7 @@ export function attachFeatureOutcomeDiagnostics(
 export function enrichEvalRecord(record: EvalRecord, metadata: EvalRecordMetadata): void {
   attachAgentType(record, metadata.agentType);
   attachProviderMetadata(record, metadata.provider, metadata.endpoint);
+  attachTaskScorerResult(record, metadata.taskScorerResult);
   attachChallengePairId(record, metadata.challengePairId);
   attachEvaluatedPrHeadSha(record, metadata.evaluatedPrHeadSha);
   attachChallengeExecutionMetadata(record, {
@@ -1695,6 +1708,7 @@ export function enrichTrainingMetadata(
 ): void {
   attachAgentType(record, metadata.agentType);
   attachProviderMetadata(record, metadata.provider, metadata.endpoint);
+  attachTaskScorerResult(record, metadata.taskScorerResult);
   attachChallengePairId(record, metadata.challengePairId);
   attachEvaluatedPrHeadSha(record, metadata.evaluatedPrHeadSha);
   attachChallengeExecutionMetadata(record, {

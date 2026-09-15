@@ -2805,6 +2805,40 @@
       "type": "string",
       "pattern": "^[a-f0-9]{64}$",
       "description": "Stable harness content hash for the behavior-relevant manifest resources."
+    },
+    "task_scorer_result": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["decision", "confidence", "explanation", "model_version"],
+          "properties": {
+            "decision": {
+              "type": "string",
+              "enum": ["run", "expand", "split", "return"],
+              "description": "Readiness decision from the task packet scorer."
+            },
+            "confidence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Confidence score between 0 and 1."
+            },
+            "explanation": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Human-readable explanation for the decision."
+            },
+            "model_version": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Version identifier for the scorer model."
+            }
+          }
+        },
+        { "type": "null" }
+      ],
+      "description": "Pre-dispatch readiness prediction from the task packet scorer (HOK-2845). Shadow-mode only."
     }
   },
   "$defs": {

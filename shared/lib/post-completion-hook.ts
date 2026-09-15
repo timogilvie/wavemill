@@ -611,10 +611,28 @@ export function enrichPostCompletionRecord(
     }
   }
 
+  // Load task scorer result artifact (HOK-2845) — best effort
+  let taskScorerResult = null;
+  try {
+    const { featureDir } = resolveRouteArtifactDirs(input.repoDir, input.branchName, input.worktreePath, input.issueId);
+    if (featureDir) {
+      const scorerPath = join(featureDir, '.task-scorer-result.json');
+      if (existsSync(scorerPath)) {
+        const raw = JSON.parse(readFileSync(scorerPath, 'utf-8'));
+        if (raw && typeof raw.decision === 'string' && typeof raw.confidence === 'number') {
+          taskScorerResult = raw;
+        }
+      }
+    }
+  } catch {
+    // Scorer result unavailable — not an error
+  }
+
   enrichTrainingMetadata(record, {
     agentType: input.agentType,
     provider: getDeepSeekProviderMetadata(record.modelId, input.repoDir)?.provider,
     endpoint: getDeepSeekProviderMetadata(record.modelId, input.repoDir)?.endpoint,
+    taskScorerResult,
     challengePairId: input.challengePairId,
     challengeSide: challengeSide.side,
     evaluatedPrHeadSha,

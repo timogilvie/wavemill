@@ -15335,6 +15335,26 @@ monitor_issue_state() {
 
             archive_stale_coding_artifacts "$ISSUE" "$FEATURE_DIR"
 
+            # Shadow-mode task packet scoring (HOK-2845)
+            # Score the finalized packet before coding launch; result is written
+            # to an artifact file for post-completion enrichment. Failures are
+            # logged and never block dispatch.
+            local _scorer_artifact="$FEATURE_DIR/.task-scorer-result.json"
+            if [[ -f "$FEATURE_DIR/task-packet.md" ]] || [[ -f "$FEATURE_DIR/task-packet-header.md" ]]; then
+              local _scorer_target="$FEATURE_DIR/task-packet.md"
+              [[ -f "$_scorer_target" ]] || _scorer_target="$FEATURE_DIR/task-packet-header.md"
+              local _scorer_json=""
+              if _scorer_json=$(_with_timeout 5 wavemill_run_tsx_tool "$TOOLS_DIR/score-task-packet.ts" "$_scorer_target" 2>/dev/null); then
+                if printf '%s' "$_scorer_json" | jq -e '.decision and .confidence' >/dev/null 2>&1; then
+                  printf '%s\n' "$_scorer_json" > "$_scorer_artifact"
+                else
+                  log "warn" "$ISSUE → task scorer returned invalid JSON, skipping"
+                fi
+              else
+                log "warn" "$ISSUE → task scorer failed or timed out, skipping"
+              fi
+            fi
+
             # Record coding stage as running (HOK-1177)
             local coding_started_at
             coding_started_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"

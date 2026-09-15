@@ -119,6 +119,10 @@
  *   unpriced values are `null`, never `0`. Local-only: not projected to
  *   Hokusai submissions. Additive; legacy records without this field still
  *   validate. (HOK-2958)
+ * - **1.49.0**: Added optional `task_scorer_result` field (HOK-2845) to
+ *   persist pre-dispatch readiness predictions from the task packet scorer.
+ *   Shadow-mode only — the scorer never gates dispatch. Additive; legacy
+ *   records without this field still validate.
  * - **1.48.0**: Added the S1 Static feature group to
  *   `StaticAnalysisOutcome` (HOK-2806): `type_errors`, `lint_errors`,
  *   `build_ok`, `complexity_delta` plus provenance `build_evidence` and
@@ -209,9 +213,9 @@ import type { ChallengeStage } from './challenge-mode.ts';
 /**
  * Current eval schema version for newly emitted records.
  *
- * @since 1.44.0 added unknown_attribution intervention type (HOK-2894)
+ * @since 1.49.0 added task_scorer_result (HOK-2845)
  */
-export const SCHEMA_VERSION = '1.48.0';
+export const SCHEMA_VERSION = '1.49.0';
 
 export type RoutingRole = 'planner' | 'coder' | 'reviewer';
 
@@ -856,6 +860,19 @@ export interface FeatureOutcomeDiagnostics {
   conflictsWithReconstruction?: boolean;
   /** Names of fields that differ between artifact and reconstruction. */
   conflictingFields?: string[];
+}
+
+// ────────────────────────────────────────────────────────────────
+// Task Scorer Result (HOK-2845)
+// ────────────────────────────────────────────────────────────────
+
+export type TaskScorerDecision = 'run' | 'expand' | 'split' | 'return';
+
+export interface TaskScorerResultRecord {
+  decision: TaskScorerDecision;
+  confidence: number;
+  explanation: string;
+  model_version: string;
 }
 
 export type EvalFailureReason = 'eval_prompt_too_large' | 'pr_diff_unavailable';
@@ -2379,6 +2396,16 @@ export interface EvalRecord {
    * @since 1.30.0
    */
   featureOutcomeDiagnostics?: FeatureOutcomeDiagnostics;
+
+  /**
+   * Pre-dispatch readiness prediction from the task packet scorer.
+   *
+   * Shadow-mode only: the scorer's decision never gates or alters dispatch.
+   * Absent when the scorer was not invoked or failed.
+   *
+   * @since 1.49.0
+   */
+  task_scorer_result?: TaskScorerResultRecord | null;
 
   /** Optional extensibility bag for additional metadata */
   metadata?: Record<string, unknown>;
