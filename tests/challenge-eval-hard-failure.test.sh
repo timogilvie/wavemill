@@ -87,6 +87,8 @@ for fn in \
   post_merge_eval_timeout_seconds:1:monitor \
   challenge_eval_current_head_state:1:monitor \
   challenge_eval_stale_relaunch_allowed:1:monitor \
+  terminalize_challenge_invalid_evidence:1:monitor \
+  mark_challenge_invalid:1:monitor \
   write_challenge_pair_state:1:monitor \
   challenge_pair_manual_artifact_path:1:monitor \
   write_manual_challenge_comparison_artifact:1:monitor \
@@ -775,6 +777,152 @@ JSON
   printf 'stale_sentinel=%s\n' "$([[ -f "$bucket_dir/.retry-challenge-eval-stale-exhausted" ]] && echo present || echo absent)"
   printf 'stale_sentinel_reason=%s\n' "$(cat "$bucket_dir/.retry-challenge-eval-stale-exhausted" 2>/dev/null | head -1 || true)"
   printf 'stale_pair_state=%s\n' "$(jq -r '.tasks["HOK-2462"].comparisonState // empty' "$STATE_FILE")"
+  # Check that stale exhaustion artifact does not contain timeout text
+  local artifact_path="$WORKTREE_ROOT/hok-2462/features/hok-2462/ready/challenge-comparison-needed.md"
+  printf 'stale_artifact_no_timeout=%s\n' "$([[ -f "$artifact_path" ]] && ! grep -q 'Timed out' "$artifact_path" && echo true || echo false)"
+}
+
+run_invalid_case() {
+  INVALID_HEAD="sha-one"
+  git() {
+    if [[ "${1:-}" == "-C" && "${3:-}" == "rev-parse" ]]; then
+      printf '%s\n' "$INVALID_HEAD"
+      return 0
+    fi
+    return 1
+  }
+  local bucket_dir="$WORKTREE_ROOT/hok-2462/features/hok-2462"
+
+  cat > "$STATE_FILE" <<JSON
+{
+  "tasks": {
+    "HOK-2462": {
+      "slug": "hok-2462",
+      "branch": "task/hok-2462",
+      "worktree": "$WORKTREE_ROOT/hok-2462",
+      "pr": "101",
+      "status": "ready",
+      "agent": "codex",
+      "phase": "ready",
+      "evalCompleted": true,
+      "evalFailed": false,
+      "challengeCompared": false,
+      "challenge": true,
+      "challengePairId": "HOK-2462",
+      "challengeRole": "primary",
+      "challengeModel": "model-a"
+    },
+    "HOK-2462_c": {
+      "slug": "hok-2462-c",
+      "branch": "task/hok-2462-c",
+      "worktree": "$WORKTREE_ROOT/hok-2462-c",
+      "pr": "102",
+      "status": "ready",
+      "agent": "codex",
+      "phase": "ready",
+      "evalCompleted": true,
+      "evalFailed": false,
+      "challengeCompared": false,
+      "challenge": true,
+      "challengePairId": "HOK-2462",
+      "challengeRole": "challenger",
+      "challengeModel": "model-b"
+    }
+  },
+  "jobs": {}
+}
+JSON
+
+  # Tick 1: invalid evidence immediately terminates without relaunch
+  EVIDENCE_JSON='{"ok":false,"reason":"ineligible_evidence","currentHeadSha":"sha-one",
+    "candidates":[{"evalId":"eval-x","evaluatedPrHeadSha":"sha-one",
+    "rejection":"invalid_challenge","divergenceReason":"missing_challenge_intent"}]}' \
+    maybe_run_challenge_eval "HOK-2462" "101" "task/hok-2462" "hok-2462"
+  wait || true
+  printf 'invalid_launches_1=%s\n' "$JOB_TRACKER_CALLS"
+  printf 'invalid_stale_count=%s\n' "$(bounded_retry_count "$bucket_dir" challenge-eval-stale)"
+  printf 'invalid_sentinel=%s\n' "$([[ -f "$bucket_dir/.retry-challenge-eval-stale-exhausted" ]] && echo present || echo absent)"
+  printf 'invalid_sentinel_reason=%s\n' "$(cat "$bucket_dir/.retry-challenge-eval-stale-exhausted" 2>/dev/null | head -1 || true)"
+  printf 'invalid_state=%s\n' "$(jq -r '.tasks["HOK-2462"].comparisonState // empty' "$STATE_FILE")"
+  printf 'invalid_reason=%s\n' "$(jq -r '.tasks["HOK-2462"].invalidChallengeReason // empty' "$STATE_FILE")"
+  printf 'invalid_evalCompleted=%s\n' "$(jq -r '.tasks["HOK-2462"].evalCompleted' "$STATE_FILE")"
+  local artifact_path="$WORKTREE_ROOT/hok-2462/features/hok-2462/ready/challenge-comparison-needed.md"
+  printf 'invalid_artifact_exists=%s\n' "$([[ -f "$artifact_path" ]] && echo true || echo false)"
+  printf 'invalid_artifact_has_divergence=%s\n' "$([[ -f "$artifact_path" ]] && grep -q 'missing_challenge_intent' "$artifact_path" && echo true || echo false)"
+  printf 'invalid_artifact_has_eval_id=%s\n' "$([[ -f "$artifact_path" ]] && grep -q 'eval-x' "$artifact_path" && echo true || echo false)"
+  printf 'invalid_artifact_has_recovery=%s\n' "$([[ -f "$artifact_path" ]] && grep -q 'challenge-pair-recovery' "$artifact_path" && echo true || echo false)"
+  printf 'invalid_artifact_no_rerun=%s\n' "$([[ -f "$artifact_path" ]] && ! grep -q 'Re-run' "$artifact_path" && echo true || echo false)"
+
+  # Tick 2: idempotent - no second artifact write or warn
+  EVIDENCE_JSON='{"ok":false,"reason":"ineligible_evidence","currentHeadSha":"sha-one",
+    "candidates":[{"evalId":"eval-x","evaluatedPrHeadSha":"sha-one",
+    "rejection":"invalid_challenge","divergenceReason":"missing_challenge_intent"}]}' \
+    maybe_run_challenge_eval "HOK-2462" "101" "task/hok-2462" "hok-2462"
+  printf 'invalid_warn_count=%s\n' "$(printf '%s' "$LOG_OUTPUT" | grep -c 'challenge eval evidence invalid' || echo 0)"
+}
+
+run_invalid_mixed_case() {
+  MIXED_HEAD="sha-one"
+  git() {
+    if [[ "${1:-}" == "-C" && "${3:-}" == "rev-parse" ]]; then
+      printf '%s\n' "$MIXED_HEAD"
+      return 0
+    fi
+    return 1
+  }
+  local bucket_dir="$WORKTREE_ROOT/hok-2462/features/hok-2462"
+
+  cat > "$STATE_FILE" <<JSON
+{
+  "tasks": {
+    "HOK-2462": {
+      "slug": "hok-2462",
+      "branch": "task/hok-2462",
+      "worktree": "$WORKTREE_ROOT/hok-2462",
+      "pr": "101",
+      "status": "ready",
+      "agent": "codex",
+      "phase": "ready",
+      "evalCompleted": true,
+      "evalFailed": false,
+      "challengeCompared": false,
+      "challenge": true,
+      "challengePairId": "HOK-2462",
+      "challengeRole": "primary",
+      "challengeModel": "model-a"
+    },
+    "HOK-2462_c": {
+      "slug": "hok-2462-c",
+      "branch": "task/hok-2462-c",
+      "worktree": "$WORKTREE_ROOT/hok-2462-c",
+      "pr": "102",
+      "status": "ready",
+      "agent": "codex",
+      "phase": "ready",
+      "evalCompleted": true,
+      "evalFailed": false,
+      "challengeCompared": false,
+      "challenge": true,
+      "challengePairId": "HOK-2462",
+      "challengeRole": "challenger",
+      "challengeModel": "model-b"
+    }
+  },
+  "jobs": {}
+}
+JSON
+
+  # Mixed rejections (invalid_challenge + harness_mismatch) → treated as stale
+  EVIDENCE_JSON='{"ok":false,"reason":"ineligible_evidence","currentHeadSha":"sha-one",
+    "candidates":[
+      {"evalId":"eval-x","evaluatedPrHeadSha":"sha-one","rejection":"invalid_challenge","divergenceReason":"missing_challenge_intent"},
+      {"evalId":"eval-y","evaluatedPrHeadSha":"sha-one","rejection":"harness_mismatch"}
+    ]}' \
+    maybe_run_challenge_eval "HOK-2462" "101" "task/hok-2462" "hok-2462"
+  wait || true
+  printf 'mixed_launches=%s\n' "$JOB_TRACKER_CALLS"
+  printf 'mixed_stale_count=%s\n' "$(bounded_retry_count "$bucket_dir" challenge-eval-stale)"
+  printf 'mixed_is_stale=%s\n' "$([[ -f "$bucket_dir/.retry-challenge-eval-stale-count" ]] && echo true || echo false)"
 }
 
 "run_${CASE_NAME}_case"
@@ -813,6 +961,8 @@ helper_invalid_env_output="$(CONFIG_JSON='{"challenge":{"eval":{"retryMaxAttempt
 config_retry_output="$(CONFIG_JSON='{"challenge":{"eval":{"hardFailureRetryMaxAttempts":3}}}' CASE_NAME=config_retry CASE_DIR="$TEST_TMP/config-retry" REPO_DIR="$REPO_DIR" FUNCTION_FILE="$FUNCTION_FILE" "$TEST_TMP/run-case.sh")"
 bucket_output="$(CASE_NAME=bucket CASE_DIR="$TEST_TMP/bucket" REPO_DIR="$REPO_DIR" FUNCTION_FILE="$FUNCTION_FILE" "$TEST_TMP/run-case.sh")"
 stale_output="$(CASE_NAME=stale CASE_DIR="$TEST_TMP/stale" REPO_DIR="$REPO_DIR" FUNCTION_FILE="$FUNCTION_FILE" "$TEST_TMP/run-case.sh")"
+invalid_output="$(CASE_NAME=invalid CASE_DIR="$TEST_TMP/invalid" REPO_DIR="$REPO_DIR" FUNCTION_FILE="$FUNCTION_FILE" "$TEST_TMP/run-case.sh")"
+invalid_mixed_output="$(CASE_NAME=invalid_mixed CASE_DIR="$TEST_TMP/invalid-mixed" REPO_DIR="$REPO_DIR" FUNCTION_FILE="$FUNCTION_FILE" "$TEST_TMP/run-case.sh")"
 
 check_contains "legacy hard failure defaults retry counter to zero then increments" "$retry_output" "retry_counter=1"
 check_contains "hard failure retry clears evalFailed before relaunch" "$retry_output" "retry_failed=false"
@@ -852,6 +1002,26 @@ check_contains "stale exhaustion stops relaunching" "$stale_output" "stale_launc
 check_contains "stale exhaustion writes greppable sentinel" "$stale_output" "stale_sentinel=present"
 check_contains "stale exhaustion names the cause" "$stale_output" "stale-evidence relaunches exhausted for HOK-2462"
 check_contains "stale exhaustion resolves to manual comparison" "$stale_output" "stale_pair_state=manual_comparison_needed"
+check_contains "stale exhaustion artifact no longer mentions timeout" "$stale_output" "stale_artifact_no_timeout=true"
+
+check_contains "invalid evidence does not relaunch eval" "$invalid_output" "invalid_launches_1=0"
+check_contains "invalid evidence does not consume stale budget" "$invalid_output" "invalid_stale_count=0"
+check_contains "invalid evidence writes bounded-retry sentinel" "$invalid_output" "invalid_sentinel=present"
+check_contains "invalid evidence sentinel includes invalid_challenge" "$invalid_output" "invalid_challenge"
+check_contains "invalid evidence sentinel includes divergence reason" "$invalid_output" "missing_challenge_intent"
+check_contains "invalid evidence marks pair state invalid_challenge" "$invalid_output" "invalid_state=invalid_challenge"
+check_contains "invalid evidence records divergence reason" "$invalid_output" "invalid_reason=missing_challenge_intent"
+check_contains "invalid evidence preserves evalCompleted flag" "$invalid_output" "invalid_evalCompleted=true"
+check_contains "invalid evidence creates manual comparison artifact" "$invalid_output" "invalid_artifact_exists=true"
+check_contains "invalid evidence artifact names divergence reason" "$invalid_output" "invalid_artifact_has_divergence=true"
+check_contains "invalid evidence artifact includes eval ID" "$invalid_output" "invalid_artifact_has_eval_id=true"
+check_contains "invalid evidence artifact references recovery tool" "$invalid_output" "invalid_artifact_has_recovery=true"
+check_contains "invalid evidence artifact does not suggest re-run" "$invalid_output" "invalid_artifact_no_rerun=true"
+check_contains "invalid evidence terminalization is idempotent" "$invalid_output" "invalid_warn_count=1"
+
+check_contains "mixed rejections treat invalid_challenge as stale" "$invalid_mixed_output" "mixed_launches=1"
+check_contains "mixed rejections consume stale budget" "$invalid_mixed_output" "mixed_stale_count=1"
+check_contains "mixed rejections write budget counter file" "$invalid_mixed_output" "mixed_is_stale=true"
 
 check_contains "double hard failure writes exactly one terminal record" "$double_output" "double_lines=1"
 check_contains "double hard failure writes double-forfeit outcome" "$double_output" "double_outcome=double-forfeit"
