@@ -115,6 +115,7 @@ TESTS=(
   incident-fixtures-terminal-panes.test.sh
   incident-fixtures-safety-controls.test.sh
   terminal-lifecycle-flags.test.sh
+  challenge-provenance.test.sh
 )
 
 SHARD_INDEX=1
