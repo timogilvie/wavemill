@@ -308,3 +308,242 @@ test('incident store consolidates legacy fanned-out records under canonical attr
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('multiple tasks with same evidence source/key produce separate records with task-aware fingerprints', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'incident-multi-task-'));
+  try {
+    const store = new IncidentStore(dir, { escalationThreshold: 3 });
+    // Simulate three different eval jobs failing with identical evidence source/key
+    // but different task IDs (e.g., failed evaluations of different tasks)
+    const baseEvidence = [{
+      type: 'job_state' as const,
+      source: '.wavemill/workflow-state.json',
+      timestamp: '2026-08-03T12:00:00.000Z',
+      redactedData: 'stage=coding result=failed',
+      key: 'failed_job_no_result',
+    }];
+
+    const incident1 = await store.upsert(incident({
+      taskId: 'HOK-3017',
+      category: 'model_task_harness_outcome',
+      rootCauseClass: 'evaluation_failed',
+      summary: 'Evaluation failed for HOK-3017',
+      evidence: baseEvidence,
+    }));
+
+    const incident2 = await store.upsert(incident({
+      taskId: 'HOK-2845_c',
+      category: 'model_task_harness_outcome',
+      rootCauseClass: 'evaluation_failed',
+      summary: 'Evaluation failed for HOK-2845_c',
+      evidence: baseEvidence,
+    }));
+
+    const incident3 = await store.upsert(incident({
+      taskId: 'HOK-3009',
+      category: 'model_task_harness_outcome',
+      rootCauseClass: 'evaluation_failed',
+      summary: 'Evaluation failed for HOK-3009',
+      evidence: baseEvidence,
+    }));
+
+    // Three distinct records with task-aware fingerprints
+    assert.notEqual(incident1.fingerprint, incident2.fingerprint);
+    assert.notEqual(incident2.fingerprint, incident3.fingerprint);
+    assert.notEqual(incident1.fingerprint, incident3.fingerprint);
+
+    // Each maintains its own task identity
+    assert.equal(incident1.taskId, 'HOK-3017');
+    assert.equal(incident2.taskId, 'HOK-2845_c');
+    assert.equal(incident3.taskId, 'HOK-3009');
+
+    // Each maintains its own summary
+    assert.equal(incident1.summary, 'Evaluation failed for HOK-3017');
+    assert.equal(incident2.summary, 'Evaluation failed for HOK-2845_c');
+    assert.equal(incident3.summary, 'Evaluation failed for HOK-3009');
+
+    // Each has occurrence count of 1 (no consolidation)
+    assert.equal(incident1.occurrenceCount, 1);
+    assert.equal(incident2.occurrenceCount, 1);
+    assert.equal(incident3.occurrenceCount, 1);
+
+    // Re-poll one unchanged task: no count change, other tasks untouched
+    const repoll = await store.upsertDetailed(incident({
+      taskId: 'HOK-2845_c',
+      category: 'model_task_harness_outcome',
+      rootCauseClass: 'evaluation_failed',
+      summary: 'Evaluation failed for HOK-2845_c',
+      evidence: baseEvidence,
+    }));
+
+    assert.equal(repoll.freshEvent, false);
+    assert.equal(repoll.record.occurrenceCount, 1);
+
+    const incidents = await store.getIncidents();
+    assert.equal(incidents.length, 3);
+    const taskIds = incidents.map((r) => r.taskId).sort();
+    assert.deepEqual(taskIds, ['HOK-2845_c', 'HOK-3009', 'HOK-3017']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('same-task legacy canonicalization refreshes summary/evidence while preserving Linear/audit metadata', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'incident-same-task-legacy-'));
+  try {
+    const store = new IncidentStore(dir, { escalationThreshold: 3 });
+    // Seed a legacy record with raw/different root cause class
+    const legacy = await store.upsert(incident({
+      taskId: 'HOK-1_c',
+      category: 'configuration_operator_condition',
+      rootCauseClass: 'error_failed_to_parse_backlog_json_from_stdin_unexpected_token_a',
+      summary: 'Legacy parse error for HOK-1_c',
+      evidence: [{
+        type: 'backstage_health',
+        source: '.wavemill/queue-health.json',
+        timestamp: '2026-08-03T12:00:00.000Z',
+        redactedData: 'reason=parse failure',
+        key: 'queue_planner_fallback',
+      }],
+    }));
+
+    // Link it to a Linear issue
+    await store.recordLinearSync(legacy.fingerprint, {
+      linearIssueId: 'HOK-9999',
+      evidenceRevision: 'rev-1',
+      syncedAt: '2026-08-03T12:01:00.000Z',
+    });
+
+    // Upsert same-task incident with slightly different raw root cause
+    // (should consolidate via legacy canonicalization)
+    const canonical = await store.upsert(incident({
+      taskId: 'HOK-1_c',
+      category: 'configuration_operator_condition',
+      rootCauseClass: 'error_failed_to_parse_backlog_json_from_stdin_unexpected_token_b',
+      summary: 'Updated parse error for HOK-1_c',
+      evidence: [{
+        type: 'backstage_health',
+        source: '.wavemill/queue-health.json',
+        timestamp: '2026-08-03T13:00:00.000Z',
+        redactedData: 'reason=parse failure',
+        key: 'queue_planner_fallback',
+      }],
+    }));
+
+    // Should have consolidated (same canonical root cause for parse errors)
+    // and refreshed canonical fields
+    assert.equal(canonical.fingerprint, legacy.fingerprint);
+    assert.equal(canonical.summary, 'Updated parse error for HOK-1_c');
+    assert.equal(canonical.rootCauseClass, 'local_parse_failure');
+    assert.equal(canonical.taskId, 'HOK-1_c');
+    assert.equal(canonical.occurrenceCount, 2); // legacy + canonical
+
+    // Linear metadata preserved
+    assert.equal(canonical.metadata.linkedLinearId, 'HOK-9999');
+    assert.equal(canonical.metadata.lastSyncedAt, '2026-08-03T12:01:00.000Z');
+
+    // Only one active incident (the consolidated record)
+    const incidents = await store.getIncidents();
+    assert.equal(incidents.length, 1);
+    assert.equal(incidents[0].fingerprint, canonical.fingerprint);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('task-to-null repo migration is explicit and does not permit task-to-different-task consolidation', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'incident-task-migration-'));
+  try {
+    const store = new IncidentStore(dir, { escalationThreshold: 3 });
+
+    // Create repo-scoped queue health incidents (safe-to-migrate evidence)
+    const task1Queue = await store.upsert(incident({
+      taskId: 'HOK-2841',
+      category: 'external_transient_dependency',
+      rootCauseClass: 'remote_timeout',
+      summary: 'Queue planner fallback is active: timeout.',
+      evidence: [{
+        type: 'backstage_health',
+        source: '.wavemill/queue-health.json',
+        timestamp: '2026-08-03T12:00:00.000Z',
+        redactedData: 'reason=timeout',
+        key: 'queue_planner_fallback',
+      }],
+    }));
+
+    const task2Queue = await store.upsert(incident({
+      taskId: 'HOK-2842',
+      category: 'external_transient_dependency',
+      rootCauseClass: 'remote_timeout',
+      summary: 'Queue planner fallback is active: timeout.',
+      evidence: [{
+        type: 'backstage_health',
+        source: '.wavemill/queue-health.json',
+        timestamp: '2026-08-03T12:00:00.000Z',
+        redactedData: 'reason=timeout',
+        key: 'queue_planner_fallback',
+      }],
+    }));
+
+    // Repo-scoped candidate with same evidence: consolidates both task records
+    const repoScoped = await store.upsert(incident({
+      taskId: null,
+      category: 'external_transient_dependency',
+      rootCauseClass: 'remote_timeout',
+      summary: 'Queue planner fallback is active: timeout.',
+      evidence: [{
+        type: 'backstage_health',
+        source: '.wavemill/queue-health.json',
+        timestamp: '2026-08-03T12:00:00.000Z',
+        redactedData: 'reason=timeout',
+        key: 'queue_planner_fallback',
+      }],
+    }));
+
+    const incidents = await store.getIncidents();
+    assert.equal(incidents.length, 1);
+    assert.equal(repoScoped.taskId, null);
+    assert.equal(repoScoped.occurrenceCount, 3); // consolidated 2 tasks + 1 repo
+
+    // Now test that task-to-different-task consolidation is blocked
+    // (using a different evidence type that is NOT safe-to-migrate)
+    const taskA = await store.upsert(incident({
+      taskId: 'HOK-1000_c',
+      category: 'model_task_harness_outcome',
+      rootCauseClass: 'evaluation_failed',
+      summary: 'Evaluation failed for HOK-1000_c',
+      evidence: [{
+        type: 'job_state',
+        source: '.wavemill/workflow-state.json',
+        timestamp: '2026-08-03T12:00:00.000Z',
+        redactedData: 'stage=coding result=failed',
+        key: 'failed_job_no_result',
+      }],
+    }));
+
+    const taskB = await store.upsert(incident({
+      taskId: 'HOK-1001_c',
+      category: 'model_task_harness_outcome',
+      rootCauseClass: 'evaluation_failed',
+      summary: 'Evaluation failed for HOK-1001_c',
+      evidence: [{
+        type: 'job_state',
+        source: '.wavemill/workflow-state.json',
+        timestamp: '2026-08-03T12:00:00.000Z',
+        redactedData: 'stage=coding result=failed',
+        key: 'failed_job_no_result',
+      }],
+    }));
+
+    // Two separate records, never consolidated across tasks
+    assert.notEqual(taskA.fingerprint, taskB.fingerprint);
+    assert.equal(taskA.taskId, 'HOK-1000_c');
+    assert.equal(taskB.taskId, 'HOK-1001_c');
+
+    // Total 3 incidents: 1 consolidated repo queue + 2 separate task eval failures
+    const allIncidents = await store.getIncidents();
+    assert.equal(allIncidents.length, 3);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
