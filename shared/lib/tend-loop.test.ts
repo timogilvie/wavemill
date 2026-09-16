@@ -354,6 +354,81 @@ describe('writeTendHeartbeat', () => {
       rmSync(repoDir, { recursive: true, force: true });
     }
   });
+
+  // HOK-3009: advisory drift on the integration tip is recorded in
+  // .wavemill/backstage-health.json so operators can see the condition
+  // even though it does not halt the lane. A subsequent poll with no
+  // drift must clear the record.
+  it('records integrationAdvisory in backstage-health.json and clears it when drift resolves', async () => {
+    const repoDir = mkdtempSync(join(tmpdir(), 'wavemill-tend-loop-'));
+    try {
+      mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
+      await writeTendHeartbeat(repoDir, '2026-09-14T08:36:00Z', {
+        failureCount: 0,
+        lastError: null,
+        lastErrorAt: null,
+        iteration: 1,
+        pollStartedAt: '2026-09-14T08:35:59Z',
+        pollCompletedAt: '2026-09-14T08:36:00Z',
+        integrationAdvisory: [{ name: 'OpenRouter Alias Audit', conclusion: 'failure' }],
+      });
+      let parsed = JSON.parse(readFileSync(join(repoDir, '.wavemill', 'backstage-health.json'), 'utf-8'));
+      assert.deepEqual(
+        parsed.services.tend.integrationAdvisory,
+        [{ name: 'OpenRouter Alias Audit', conclusion: 'failure' }],
+      );
+
+      // A later heartbeat with an empty array clears the stale record.
+      await writeTendHeartbeat(repoDir, '2026-09-14T11:45:00Z', {
+        failureCount: 0,
+        lastError: null,
+        lastErrorAt: null,
+        iteration: 2,
+        pollStartedAt: '2026-09-14T11:44:59Z',
+        pollCompletedAt: '2026-09-14T11:45:00Z',
+        integrationAdvisory: [],
+      });
+      parsed = JSON.parse(readFileSync(join(repoDir, '.wavemill', 'backstage-health.json'), 'utf-8'));
+      assert.deepEqual(parsed.services.tend.integrationAdvisory, []);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves the existing integrationAdvisory value when the field is undefined', async () => {
+    const repoDir = mkdtempSync(join(tmpdir(), 'wavemill-tend-loop-'));
+    try {
+      mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
+      await writeTendHeartbeat(repoDir, '2026-09-14T08:36:00Z', {
+        failureCount: 0,
+        lastError: null,
+        lastErrorAt: null,
+        iteration: 1,
+        pollStartedAt: '2026-09-14T08:35:59Z',
+        pollCompletedAt: '2026-09-14T08:36:00Z',
+        integrationAdvisory: [{ name: 'OpenRouter Alias Audit', conclusion: 'failure' }],
+      });
+      // Failure-state writer never observed check runs; do not clobber the
+      // previously recorded advisory.
+      await writeTendFailureState(repoDir, '2026-09-14T08:37:00Z', {
+        status: 'degraded',
+        detail: 'backstage tend loop poll failed (transient)',
+        failureCount: 1,
+        lastError: 'transient: timeout',
+        lastErrorAt: '2026-09-14T08:37:00Z',
+        iteration: 2,
+        pollStartedAt: '2026-09-14T08:36:59Z',
+        pollCompletedAt: null,
+      });
+      const parsed = JSON.parse(readFileSync(join(repoDir, '.wavemill', 'backstage-health.json'), 'utf-8'));
+      assert.deepEqual(
+        parsed.services.tend.integrationAdvisory,
+        [{ name: 'OpenRouter Alias Audit', conclusion: 'failure' }],
+      );
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('merge-lane progress detection (HOK-2919)', () => {

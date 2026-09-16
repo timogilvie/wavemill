@@ -39,6 +39,7 @@ TESTS=(
   shared/lib/intervention-detector.test.ts
   shared/lib/stage-result.test.ts
   shared/lib/session-adapters.test.ts
+  shared/lib/executed-model-resolver.test.ts
   shared/lib/native-agent/provider.test.ts
   shared/lib/native-agent/provider-error-classifier.test.ts
   shared/lib/native-agent/providers.test.ts
@@ -269,6 +270,7 @@ TESTS=(
   tools/abort-task.test.ts
   tools/add-pr-label.test.ts
   tools/backfill-challenge-stage.test.ts
+  tools/backfill-stage-executed-model.test.ts
   tools/backfill-hokusai-submissions.test.ts
   tools/certify-patch-coding.test.ts
   tools/promote-provisional-model.test.ts
@@ -392,6 +394,7 @@ TESTS=(
   shared/lib/ready-diagnostics.test.ts
   shared/lib/ready-migration-base.test.ts
   shared/lib/repo-context-analyzer.test.ts
+  shared/lib/pr-route-provenance.test.ts
   shared/lib/resource-adapters/dspy-adapter.test.ts
   shared/lib/resource-adapters/native-runtime-adapter.test.ts
   shared/lib/resource-adapters/prompt-adapter.test.ts
@@ -413,7 +416,10 @@ TESTS=(
   shared/lib/task-descriptor-backfill.test.ts
   shared/lib/task-descriptor-builder.test.ts
   shared/lib/task-difficulty-classifier.test.ts
+  shared/lib/task-packet-feature-extractor.test.ts
   shared/lib/task-packet-classifier.test.ts
+  shared/lib/task-packet-scorer.test.ts
+  shared/lib/task-packet-signal-analysis.test.ts
   shared/lib/task-packet-utils.test.ts
   shared/lib/task-packet-validator.test.ts
   shared/lib/tool-runner.test.ts
@@ -433,6 +439,7 @@ TESTS=(
   tools/openrouter-smoke.test.ts
   tools/plan-launch-priority-certifications.test.ts
   tools/reap-stale-challengers.test.ts
+  tools/stamp-pr-route.test.ts
   shared/lib/test-partitioner.test.ts
   shared/lib/shard-balance.test.ts
   shared/lib/ci-test-timings.test.ts

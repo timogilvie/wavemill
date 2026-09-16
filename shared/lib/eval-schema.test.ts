@@ -786,7 +786,7 @@ function validPromptSizeDiagnostic() {
 }
 
 test('SCHEMA_VERSION is bumped for eval schema updates', () => {
-  assert.equal(SCHEMA_VERSION, '1.48.0');
+  assert.equal(SCHEMA_VERSION, '1.49.0');
 });
 
 function validReviewIdentitySet() {
@@ -2471,8 +2471,8 @@ test('Wavemill router fields validate and schema stays in parity', () => {
   assert.equal(properties.wavemill_router_scoring?.$ref, '#/$defs/WavemillRouterScoringMetadata');
 });
 
-test('Schema version constant is 1.48.0', () => {
-  assert.equal(SCHEMA_VERSION, '1.48.0');
+test('Schema version constant is 1.49.0', () => {
+  assert.equal(SCHEMA_VERSION, '1.49.0');
 });
 
 test('Record with an unknown_attribution intervention validates (HOK-2894)', () => {
@@ -2911,6 +2911,66 @@ test('Execution economics enums match the schema definitions', () => {
     'local_estimate',
     'none',
   ]);
+});
+
+test('Record without task_scorer_result still validates (additive)', () => {
+  const record = {
+    ...scenarios[0].record,
+    schemaVersion: SCHEMA_VERSION,
+  } as unknown as Record<string, unknown>;
+  assert.equal('task_scorer_result' in record, false);
+  const result = validateAgainstSchema(record);
+  assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
+});
+
+test('Record with task_scorer_result validates', () => {
+  const record = {
+    ...scenarios[0].record,
+    schemaVersion: SCHEMA_VERSION,
+    task_scorer_result: {
+      decision: 'expand',
+      confidence: 0.72,
+      explanation: 'Shadow prediction based on sparse validation detail.',
+      model_version: 'task-packet-scorer-v1-test',
+    },
+  } as unknown as Record<string, unknown>;
+  const result = validateAgainstSchema(record);
+  assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
+});
+
+test('Null task_scorer_result validates', () => {
+  const record = {
+    ...scenarios[0].record,
+    schemaVersion: SCHEMA_VERSION,
+    task_scorer_result: null,
+  } as unknown as Record<string, unknown>;
+  const result = validateAgainstSchema(record);
+  assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
+});
+
+test('Malformed task_scorer_result is rejected', () => {
+  const badConfidence = {
+    ...scenarios[0].record,
+    task_scorer_result: {
+      decision: 'expand',
+      confidence: 'high',
+      explanation: 'bad',
+      model_version: 'test',
+    },
+  } as unknown as Record<string, unknown>;
+  assert.equal(validateAgainstSchema(badConfidence).valid, false);
+
+  const unknownNested = {
+    ...scenarios[0].record,
+    task_scorer_result: {
+      decision: 'expand',
+      confidence: 0.5,
+      explanation: 'bad',
+      model_version: 'test',
+      extra: true,
+    },
+  } as unknown as Record<string, unknown>;
+  assert.equal(validateAgainstSchema(unknownNested).valid, false);
 });
 
 // ────────────────────────────────────────────────────────────────

@@ -114,6 +114,9 @@ extract_function "$MONITOR_SCRIPT_FILE" "relaunch_review_after_infra_recovery" >
 extract_function "$MONITOR_SCRIPT_FILE" "review_result_summary" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_artifacts_with_pr_number" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "strip_ready_label_if_review_not_passed" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "ready_route_stamp_config_json" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "ready_route_stamp_enabled" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "ready_route_stamp_requires_complete" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "set_ready_pass_labels" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "post_pr_reconciliation_config_json" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "post_pr_reconciliation_enabled" >> "$LAUNCH_FUNC_FILE"
@@ -542,6 +545,13 @@ EOF
         esac
       fi
 
+      if [[ "${2:-}" == "$TOOLS_DIR/stamp-pr-route.ts" ]]; then
+        case "$TEST_CASE" in
+          route_stamp_failure) return 1 ;;
+          *) printf "%s\n" '{"prNumber":304,"updated":true,"complete":true,"diagnostics":[]}'; return 0 ;;
+        esac
+      fi
+
       if [[ "${2:-}" == "-e" && "${3:-}" == *"getConfiguredModelsForDescriptorStage"* ]]; then
         case "$TEST_CASE" in
           infra_retry_context_window_reroute)
@@ -568,7 +578,7 @@ EOF
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"pending\",\"pendingReason\":\"challenge-comparison-pending\",\"pendingReasons\":[\"challenge-comparison-pending\"],\"implementationReady\":true,\"headSha\":\"abc123\",\"ciConclusion\":\"pass\",\"challenge\":{\"pairId\":\"HOK-1300\",\"side\":\"primary\",\"outcome\":\"comparison-pending\",\"primaryEval\":{\"ok\":true,\"evalId\":\"eval-1\"},\"challengerEval\":{\"ok\":true,\"evalId\":\"eval-2\"},\"staleComparisons\":0},\"checks\":[{\"name\":\"ci-status\",\"status\":\"pass\",\"message\":\"All CI checks passing\",\"details\":{\"totalChecks\":3}},{\"name\":\"ready-policy\",\"status\":\"pending\",\"message\":\"Challenge pair HOK-1300 has current-head evals but no comparison yet.\",\"details\":{\"pendingReason\":\"challenge-comparison-pending\",\"implementationReady\":true}}],\"timestamp\":\"2026-04-16T14:12:00.431Z\",\"summary\":\"Challenge pair HOK-1300 has current-head evals but no comparison yet.\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"BLOCKED\",\"attempts\":1}}"
           return 2
           ;;
-        pass_after_remediation|pass_clears_recheck|dismissed_blockers_pass)
+        pass_after_remediation|pass_clears_recheck|dismissed_blockers_pass|route_stamp_failure)
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"pass\",\"checks\":[{\"name\":\"ci-status\",\"status\":\"pass\",\"message\":\"All CI checks passing\",\"details\":{\"totalChecks\":3}}],\"timestamp\":\"2026-04-16T14:12:00.431Z\",\"summary\":\"All checks passed\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"attempts\":1}}"
           return 0
           ;;
@@ -1463,6 +1473,11 @@ output="$(run_launch_case pass_clears_recheck)"
 check_contains "ready pass returns success" "$output" "rc=0"
 check_contains "ready pass writes completed stage result" "$output" "|ready|completed|"
 check_contains "ready pass clears recheck budget files" "$output" "recheck_files=absent,absent,absent,absent,absent"
+
+output="$(run_launch_case route_stamp_failure)"
+check_contains "route stamp failure blocks ready" "$output" "rc=1"
+check_contains "route stamp failure writes failed stage result" "$output" "|ready|failed|"
+check_contains "route stamp failure records attention" "$output" "route metadata stamping failed"
 
 echo "=== Watchdog Launch Helper ==="
 

@@ -508,6 +508,46 @@
       ],
       "description": "Stable machine-readable eval failure reason for fast-fail records."
     },
+    "task_scorer_result": {
+      "anyOf": [
+        {
+          "type": "object",
+          "description": "Shadow-mode task packet readiness prediction captured before dispatch.",
+          "required": [
+            "decision",
+            "confidence",
+            "explanation",
+            "model_version"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "decision": {
+              "type": "string",
+              "enum": [
+                "run",
+                "expand",
+                "split",
+                "return"
+              ]
+            },
+            "confidence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "explanation": {
+              "type": "string"
+            },
+            "model_version": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "promptSizeDiagnostic": {
       "type": "object",
       "description": "Byte-size diagnostic for the eval prompt submitted or rejected.",

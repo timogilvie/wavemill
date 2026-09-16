@@ -497,7 +497,7 @@ write_launch_plan() {
   fi
 
   local tasks_json='[]'
-  local t issue slug title branch wt_dir linear_issue task_packet_file details_file issue_json_file route_file
+  local t issue slug title branch wt_dir linear_issue task_packet_file details_file issue_json_file route_file scorer_file
   local route_json route_planner route_coder route_reviewer route_plan_depth route_code_depth route_review_mode route_max_cost_usd
   local route_payload challenge_flag challenge_pair challenge_role challenge_model migration_number task_agent
   local depends_on base_from_task attempt_id attempt_json
@@ -513,6 +513,7 @@ write_launch_plan() {
     details_file="/tmp/${SESSION}-${issue}-taskpacket-details.md"
     issue_json_file="/tmp/${SESSION}-${issue}-issue.json"
     route_file="/tmp/${SESSION}-${issue}-route.json"
+    scorer_file="/tmp/${SESSION}-${issue}-task-scorer-result.json"
     route_json='{}'
     [[ -f "$route_file" ]] && route_json="$(cat "$route_file" 2>/dev/null || echo '{}')"
 
@@ -587,6 +588,7 @@ write_launch_plan() {
       --arg taskPacketDetailsFile "$details_file" \
       --arg issueJsonFile "$issue_json_file" \
       --arg routeFile "$route_file" \
+      --arg taskScorerResultFile "$scorer_file" \
       --argjson route "$route_payload" \
       --arg challenge "$challenge_flag" \
       --arg challengePairId "$challenge_pair" \
@@ -611,6 +613,7 @@ write_launch_plan() {
         taskPacketDetailsFile: $taskPacketDetailsFile,
         issueJsonFile: $issueJsonFile,
         routeFile: $routeFile,
+        taskScorerResultFile: $taskScorerResultFile,
         route: $route,
         challenge: ($challenge == "true"),
         challengePairId: (if $challengePairId == "" then null else $challengePairId end),
@@ -714,6 +717,37 @@ execute() {
   else
     "$@"
   fi
+}
+
+score_task_packets_shadow() {
+  local t issue slug title packet_file result_file stdout_file stderr_file
+  for t in "${LAUNCH_ARGS[@]}"; do
+    IFS='|' read -r issue slug title <<<"$t"
+    packet_file="/tmp/${SESSION}-${issue}-taskpacket.md"
+    result_file="/tmp/${SESSION}-${issue}-task-scorer-result.json"
+    rm -f "$result_file" 2>/dev/null || true
+    if [[ ! -f "$packet_file" ]]; then
+      log_warn "  $issue: task scorer skipped (missing packet); dispatch continuing"
+      continue
+    fi
+    stdout_file="$(mktemp "/tmp/${SESSION}-${issue}-task-scorer.XXXXXX.out")"
+    stderr_file="$(mktemp "/tmp/${SESSION}-${issue}-task-scorer.XXXXXX.err")"
+    if _with_timeout 5 npx tsx "$TOOLS_DIR/score-task-packet.ts" "$packet_file" >"$stdout_file" 2>"$stderr_file" \
+      && jq -e '
+        type == "object"
+        and (.decision | IN("run","expand","split","return"))
+        and (.confidence | type == "number" and . >= 0 and . <= 1)
+        and (.explanation | type == "string" and length > 0)
+        and (.model_version | type == "string" and length > 0)
+      ' "$stdout_file" >/dev/null 2>&1; then
+      mv "$stdout_file" "$result_file"
+      log "debug" "  $issue: task scorer result staged"
+    else
+      log_warn "  $issue: task scorer failed; dispatch continuing"
+      rm -f "$stdout_file" 2>/dev/null || true
+    fi
+    rm -f "$stderr_file" 2>/dev/null || true
+  done
 }
 
 
@@ -953,13 +987,31 @@ challenge_pair_manual_artifact_path() {
 }
 
 write_manual_challenge_comparison_artifact() {
-  local pair_id="$1" primary_key="$2" challenger_key="$3" timed_out_sides_csv="$4" retry_count="$5" retry_max="$6"
+  local pair_id="$1" primary_key="$2" challenger_key="$3" timed_out_sides_csv="$4" retry_count="$5" retry_max="$6" cause="${7:-eval_timeout}"
   local artifact_path primary_pr challenger_pr
   artifact_path=$(challenge_pair_manual_artifact_path "$primary_key") || return 1
   primary_pr=$(read_state_value "" --arg i "$primary_key" '.tasks[$i].pr // empty')
   challenger_pr=$(read_state_value "" --arg i "$challenger_key" '.tasks[$i].pr // empty')
   mkdir -p "$(dirname "$artifact_path")"
-  cat > "$artifact_path" <<EOF
+  if [[ "$cause" == "stale_eval_evidence" ]]; then
+    cat > "$artifact_path" <<EOF
+# Challenge Comparison Needs Manual Action
+
+Pair ID: $pair_id
+Primary issue: $primary_key
+Challenger issue: $challenger_key
+Primary PR: ${primary_pr:-unknown}
+Challenger PR: ${challenger_pr:-unknown}
+Cause: eval evidence repeatedly refused as stale at the current PR head (relaunches exhausted)
+Retry count: $retry_count/$retry_max
+
+Next action:
+1. Inspect \`npx tsx tools/challenge-eval-evidence.ts --pair-id $pair_id --side <side> --pr <pr> --repo-dir .\` and re-run the eval manually if the refusal is transient.
+2. If eval cannot be recovered quickly, compare PRs #${primary_pr:-?} and #${challenger_pr:-?} manually.
+3. Close the losing PR and proceed with the winner.
+EOF
+  else
+    cat > "$artifact_path" <<EOF
 # Challenge Comparison Needs Manual Action
 
 Pair ID: $pair_id
@@ -974,6 +1026,34 @@ Next action:
 1. Re-run the timed-out eval job(s) manually when infrastructure is healthy.
 2. If eval cannot be recovered quickly, compare PRs #${primary_pr:-?} and #${challenger_pr:-?} manually.
 3. Close the losing PR and proceed with the winner.
+EOF
+  fi
+  printf '%s\n' "$artifact_path"
+}
+
+write_invalid_challenge_artifact() {
+  local pair_id="$1" primary_key="$2" challenger_key="$3" divergence_reason="$4" eval_ids_csv="$5"
+  local artifact_path primary_pr challenger_pr
+  artifact_path=$(challenge_pair_manual_artifact_path "$primary_key") || return 1
+  primary_pr=$(read_state_value "" --arg i "$primary_key" '.tasks[$i].pr // empty')
+  challenger_pr=$(read_state_value "" --arg i "$challenger_key" '.tasks[$i].pr // empty')
+  mkdir -p "$(dirname "$artifact_path")"
+  cat > "$artifact_path" <<EOF
+# Challenge Pair Invalid - Manual Action
+
+Pair ID: $pair_id
+Primary issue: $primary_key
+Challenger issue: $challenger_key
+Primary PR: ${primary_pr:-unknown}
+Challenger PR: ${challenger_pr:-unknown}
+Cause: invalid_challenge (${divergence_reason:-unknown})
+Eval ID(s): ${eval_ids_csv:-unknown}
+
+The eval ran at the current PR head. Its record is invalid. Re-running evals will reproduce this result - do not re-run them.
+
+Next action:
+1. Retire the invalid arm: close its PR, mark the arm aborted, then ship the surviving PR.
+2. Or assess/supersede the pair with \`npx tsx tools/challenge-pair-recovery.ts --pair $pair_id\`. Add \`--apply\` after reviewing the dry run.
 EOF
   printf '%s\n' "$artifact_path"
 }
@@ -2457,6 +2537,7 @@ for t in "${TASKS[@]}"; do
 done
 
 LAUNCH_ARGS=("${FINAL_LAUNCH_ARGS[@]}")
+score_task_packets_shadow
 # Create monitoring script that will run in tmux
 STATUS_LOG_FILE="/tmp/${SESSION}-mill-status.log"
 MONITOR_ENV="/tmp/${SESSION}-monitor.env"

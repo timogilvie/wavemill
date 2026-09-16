@@ -32,6 +32,7 @@ TESTS=(
   monitor-env-completeness.test.sh
   wavemill-expand-direct.test.sh
   routing-complete-writes.test.sh
+  wavemill-monitor-executed-model.test.sh
   apply-expanded-route.test.sh
   challenge-intent-roundtrip.test.sh
   challenge-varied-model-abort.test.sh
@@ -83,6 +84,7 @@ TESTS=(
   challenge-comparison-state.test.sh
   challenge-running-state.test.sh
   challenge-eval-hard-failure.test.sh
+  challenge-eval-invalid-challenge.test.sh
   challenge-eval-timeout.test.sh
   challenge-job-monitor-loop.test.sh
   task-selection-renderer.test.sh
