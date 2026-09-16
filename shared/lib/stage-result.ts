@@ -130,12 +130,14 @@ export const NATIVE_CONTEXT_WINDOW_EXCEEDED_CATEGORY = 'native-context-window-ex
  * (HOK-2964 REQ-F5) — never collapsed into generic `native-review-failed`.
  */
 export const PROVIDER_CREDIT_EXHAUSTED_CATEGORY = 'provider-credit-exhausted';
+export const NATIVE_REVIEW_TIMEOUT_CATEGORY = 'native-review-timeout';
 export const INFRA_REVIEW_FAILURE_CATEGORIES = [
   'native-runtime-unavailable',
   'native-review-prompt-missing',
   REVIEW_SCOPE_UNVERIFIABLE_FAILURE_CATEGORY,
   NATIVE_CONTEXT_WINDOW_EXCEEDED_CATEGORY,
   PROVIDER_CREDIT_EXHAUSTED_CATEGORY,
+  NATIVE_REVIEW_TIMEOUT_CATEGORY,
 ] as const;
 export type InfrastructureReviewFailureCategory = typeof INFRA_REVIEW_FAILURE_CATEGORIES[number];
 

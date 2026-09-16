@@ -105,6 +105,56 @@ else
   fail "recovery CLI does not replay the complete persisted contract"
 fi
 
+cat > "$tmpdir/.phase-config.json" <<'EOF'
+{
+  "resolvedAt": "2026-09-15T12:00:00Z",
+  "review": {
+    "model": "claude-haiku-4-5-20251001",
+    "provider": "anthropic",
+    "agent": "claude",
+    "stageRole": "review",
+    "challengeSide": null,
+    "selectedAt": "2026-09-15T12:00:00Z"
+  }
+}
+EOF
+cat > "$tmpdir/challenge-intent.json" <<'EOF'
+{
+  "pairId": "HOK-3010",
+  "challengeStage": "review",
+  "createdAt": "2026-09-14T19:00:00Z",
+  "primary": {
+    "pairId": "HOK-3010",
+    "side": "primary",
+    "challengeStage": "review",
+    "expectedStageModel": "claude-haiku-4-5-20251001",
+    "expectedStageAgent": "claude",
+    "expectedRoute": {"planner":"","coder":"","reviewer":"claude-haiku-4-5-20251001","planDepth":"","codeDepth":"","reviewMode":""}
+  },
+  "challenger": {
+    "pairId": "HOK-3010",
+    "side": "challenger",
+    "challengeStage": "review",
+    "expectedStageModel": "kimi-k3",
+    "expectedStageAgent": "native-openrouter",
+    "expectedRoute": {"planner":"","coder":"","reviewer":"kimi-k3","planDepth":"","codeDepth":"","reviewMode":""}
+  }
+}
+EOF
+
+review_contract_json="$(npx tsx "$REPO_DIR/tools/recovery-contract.ts" read --feature-dir "$tmpdir" --stage review --challenge-side challenger --json)"
+if jq -e '
+  .ok == true
+  and .contract.model == "kimi-k3"
+  and .contract.agent == "native-openrouter"
+  and .contract.stageRole == "review"
+  and .contract.challengeSide == "challenger"
+' <<<"$review_contract_json" >/dev/null 2>&1; then
+  pass "review recovery CLI prefers reviewer-stage challenge intent over inherited phase config"
+else
+  fail "review recovery CLI did not prefer reviewer-stage challenge intent"
+fi
+
 rm "$tmpdir/.phase-config.json"
 missing_json="$(npx tsx "$REPO_DIR/tools/recovery-contract.ts" read --feature-dir "$tmpdir" --stage coding --json)"
 if jq -e '.ok == false and .reason == "contract_missing"' <<<"$missing_json" >/dev/null 2>&1; then

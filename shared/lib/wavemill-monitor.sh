@@ -8662,6 +8662,7 @@ review_result_infra_failure() {
       (($review.failureCategory // "") == "review-scope-unverifiable") or
       (($review.failureCategory // "") == "native-context-window-exceeded") or
       (($review.failureCategory // "") == "provider-credit-exhausted") or
+      (($review.failureCategory // "") == "native-review-timeout") or
       ((($review.verdict // "") == "error") and ((($review.reviewToolError // "") | tostring | length) > 0))
     )
   ' "$review_file" >/dev/null 2>&1
@@ -8728,10 +8729,62 @@ review_infra_recovery_next_action() {
     provider-credit-exhausted)
       printf 'provider credits were exhausted and did not recover within the retry budget. Top up credits, then manual re-review required'
       ;;
+    native-review-timeout)
+      printf 'native review exhausted its wall-clock budget after escalated retries, challenger arms forfeit, otherwise manual re-review required'
+      ;;
     *)
       printf 'manual re-review required'
       ;;
   esac
+}
+
+review_result_native_timeout_identity() {
+  local feature_dir="$1"
+  local review_file="$feature_dir/.review-result.json"
+  [[ -f "$review_file" ]] || { printf 'unknown-timeout-input\n'; return 0; }
+  jq -r '
+    (.artifacts // {}) as $artifacts
+    | (if ($artifacts.type // "") == "review" then $artifacts else ($artifacts.review // {}) end) as $review
+    | [
+        ($review.reviewHeadSha // ""),
+        (($review.effectiveNativeTimeoutMs // "") | tostring),
+        (($review.reviewInputDiffBytes // "") | tostring),
+        (($review.reviewInputTaskPacketBytes // "") | tostring),
+        (($review.reviewInputFileCount // "") | tostring),
+        ($review.reviewExecutedIdentity.substantiveAnalysis.resolvedModel // $review.reviewExecutedIdentity.orchestrator.resolvedModel // ""),
+        ($review.reviewExecutedIdentity.substantiveAnalysis.agent // $review.reviewExecutedIdentity.orchestrator.agent // "")
+      ] | join(":")
+  ' "$review_file" 2>/dev/null || printf 'unknown-timeout-input\n'
+}
+
+review_recovery_timeout_state_path() {
+  printf '%s\n' "$1/.review-infra-recovery.json"
+}
+
+review_recovery_write_timeout_state() {
+  local feature_dir="$1" attempt="$2" category="$3"
+  local review_file="$feature_dir/.review-result.json"
+  local prior base max multiplier next timeout_path
+  [[ "$category" == "native-review-timeout" ]] || return 0
+  prior="$(jq -r '(.artifacts // {}) as $a | (if ($a.type // "") == "review" then $a else ($a.review // {}) end).effectiveNativeTimeoutMs // 300000' "$review_file" 2>/dev/null || echo 300000)"
+  base="$(jq -r '(.artifacts // {}) as $a | (if ($a.type // "") == "review" then $a else ($a.review // {}) end).nativeTimeoutBaseMs // 300000' "$review_file" 2>/dev/null || echo 300000)"
+  max="$(jq -r '(.artifacts // {}) as $a | (if ($a.type // "") == "review" then $a else ($a.review // {}) end).nativeTimeoutMaxMs // 1200000' "$review_file" 2>/dev/null || echo 1200000)"
+  multiplier="$(jq -r '(.artifacts // {}) as $a | (if ($a.type // "") == "review" then $a else ($a.review // {}) end).nativeTimeoutMultiplier // 2' "$review_file" 2>/dev/null || echo 2)"
+  [[ "$prior" =~ ^[0-9]+$ ]] || prior=300000
+  [[ "$base" =~ ^[0-9]+$ ]] || base=300000
+  [[ "$max" =~ ^[0-9]+$ ]] || max=1200000
+  [[ "$multiplier" =~ ^[0-9]+$ && "$multiplier" -ge 1 ]] || multiplier=2
+  next=$(( prior * multiplier ))
+  (( next > max )) && next="$max"
+  timeout_path="$(review_recovery_timeout_state_path "$feature_dir")"
+  jq -n \
+    --argjson attempt "$attempt" \
+    --argjson effectiveNativeTimeoutMs "$next" \
+    --argjson nativeTimeoutBaseMs "$base" \
+    --argjson nativeTimeoutMaxMs "$max" \
+    --argjson nativeTimeoutMultiplier "$multiplier" \
+    '{schemaVersion:1, category:"native-review-timeout", nativeTimeoutAttempt:$attempt, effectiveNativeTimeoutMs:$effectiveNativeTimeoutMs, nativeTimeoutBaseMs:$nativeTimeoutBaseMs, nativeTimeoutMaxMs:$nativeTimeoutMaxMs, nativeTimeoutMultiplier:$nativeTimeoutMultiplier, recordedAt:(now|todateiso8601)}' \
+    > "$timeout_path" 2>/dev/null || true
 }
 
 select_context_window_recovery_reviewer() {
@@ -9014,6 +9067,13 @@ review_recovery_coordinator_locked() {
         failure_reason="Review infrastructure recovery exhausted after $(bounded_retry_count "$feature_dir" "review-infra-recovery") attempt(s) for PR #$pr_number (category=${category}); $(review_infra_recovery_next_action "$category")"
         bounded_retry_mark_exhausted "$feature_dir" "review-infra-recovery" "$failure_reason" || true
         write_ready_attention_file "$feature_dir" "Review failed on infrastructure (${category}) for PR #$pr_number, $(review_infra_recovery_next_action "$category")."
+        if [[ "$category" == "native-review-timeout" && "$(_challenge_side_for_issue "$issue" 2>/dev/null || true)" == "challenger" ]]; then
+          challenge_abort_pair "$issue" "$feature_dir" "" "review" "$reviewer_model" \
+            "review_timeout_exhausted" \
+            "Challenger review timed out after bounded retries for model ${reviewer_model}; attempts=$(bounded_retry_count "$feature_dir" "review-infra-recovery")" \
+            "the challenger forfeits this reviewer-stage challenge, sibling may proceed" \
+            "single" || true
+        fi
         review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
         return 1
         ;;
@@ -9022,6 +9082,7 @@ review_recovery_coordinator_locked() {
         ;;
     esac
     retry_number=$(bounded_retry_increment "$feature_dir" "review-infra-recovery" "$retry_identity")
+    review_recovery_write_timeout_state "$feature_dir" "$retry_number" "$category" || true
   fi
 
   if [[ "$allow_context_reroute" == "true" ]]; then
@@ -9106,7 +9167,7 @@ review_recovery_coordinator_locked() {
 
 relaunch_review_after_infra_recovery() {
   local issue="$1" slug="$2" title="$3" wt_dir="$4" branch="$5" base_branch="$6" pr_number="$7" state_dir="$8"
-  local category recorded_head current_head identity
+  local category recorded_head current_head identity timeout_identity reviewer_identity
   local retry_limit effective_retry_limit rc=0
   local scope_note="" reroute_note=""
   local context_overflow_current_scope="false"
@@ -9118,7 +9179,16 @@ relaunch_review_after_infra_recovery() {
   category="$(review_infra_recovery_category_label "$state_dir")"
   recorded_head="$(review_result_review_head_sha "$state_dir")"
   current_head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || echo "")"
-  identity="${current_head}:${category}"
+  reviewer_identity="$(jq -r '(.artifacts // {}) as $a | (if ($a.type // "") == "review" then $a else ($a.review // {}) end) | [
+    (.reviewExecutedIdentity.substantiveAnalysis.resolvedModel // .reviewExecutedIdentity.orchestrator.resolvedModel // ""),
+    (.reviewExecutedIdentity.substantiveAnalysis.agent // .reviewExecutedIdentity.orchestrator.agent // "")
+  ] | join("/")' "$state_dir/.review-result.json" 2>/dev/null || echo "")"
+  if [[ "$category" == "native-review-timeout" ]]; then
+    timeout_identity="$(review_result_native_timeout_identity "$state_dir")"
+    identity="${current_head}:${recorded_head}:${category}:${reviewer_identity}:${timeout_identity}"
+  else
+    identity="${current_head}:${category}"
+  fi
 
   retry_limit="${WAVEMILL_REVIEW_INFRA_RETRY_MAX:-2}"
   [[ "$retry_limit" =~ ^[0-9]+$ ]] || retry_limit=2
@@ -10883,6 +10953,11 @@ maybe_run_challenge_eval() {
   challenge_aborted=$(read_state_value "" --arg i "$issue" '.tasks[$i].challengeAborted // empty')
   if [[ "$task_status" == "aborted" || ( -n "$challenge_aborted" && -z "$pr" ) ]]; then
     log "debug" "challenge eval skipped for $issue: aborted/no-PR arm"
+    return 0
+  fi
+  local review_feature_dir="${WORKTREE_ROOT}/${slug}/features/${slug}"
+  if [[ -f "$review_feature_dir/.review-result.json" ]] && ! review_result_has_final_evidence "$review_feature_dir"; then
+    log "debug" "challenge eval skipped for $issue: review produced no final evidence"
     return 0
   fi
   eval_completed=$(read_state_value "false" --arg i "$issue" '.tasks[$i].evalCompleted // false')

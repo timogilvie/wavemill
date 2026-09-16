@@ -463,6 +463,10 @@ export interface ReviewChangesError extends WorkflowToolResultBase {
   warningCount?: number;
   failureCategory?: string;
   diagnostics?: Record<string, unknown>;
+  executedIdentity?: {
+    orchestrator: ExecutedIdentity;
+    substantiveAnalysis: ExecutedIdentity;
+  };
 }
 
 export type ReviewChangesResult = ReviewChangesSuccess | ReviewChangesError;

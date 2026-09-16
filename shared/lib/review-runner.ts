@@ -231,6 +231,7 @@ export async function reviewChanges(
     skipClaudePreflight: true,
     operatingMode: options.operatingMode,
     featureDir: options.featureDir,
+    repoDir,
     ...(requestedModel ? { model: requestedModel } : {}),
   });
 

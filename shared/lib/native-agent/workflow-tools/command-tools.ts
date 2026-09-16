@@ -21,6 +21,7 @@ import {
 import { routeBatch } from '../../route-batch.ts';
 import {
   getResultFilePath,
+  isInfrastructureReviewFailure,
   readStageResult,
   updateStageResult,
   writeStageResult,
@@ -436,6 +437,47 @@ export async function executeReviewChanges(
     const counts = countFindings(reviewResult);
     const findings = normalizeReviewFindings(reviewResult, params.json, params.maxOutputBytes);
     const executedIdentity = buildReviewExecutedIdentity({ params, deps, repoDir, reviewResult });
+    if (reviewResult.verdict === 'error' || isInfrastructureReviewFailure(reviewResult)) {
+      const message = reviewResult.reviewToolError
+        ?? reviewResult.failureCategory
+        ?? 'review_changes did not produce final review evidence';
+      const result: ReviewChangesResult = {
+        ok: false,
+        tool: 'review_changes',
+        error: 'review_failed',
+        message,
+        exitCode: 2,
+        verdict: 'error',
+        iterations: 1,
+        blockerCount: 0,
+        warningCount: 0,
+        failureCategory: reviewResult.failureCategory,
+        diagnostics: {
+          reviewToolError: reviewResult.reviewToolError ?? message,
+          ...(reviewResult.metadata ? { metadata: reviewResult.metadata } : {}),
+        },
+        ...(executedIdentity ? { executedIdentity } : {}),
+        metadata: { trust: buildTrustMetadata({ sourceKind: 'wavemill_artifact', details: message }) },
+      };
+      deps.transcript.append({
+        type: 'workflow_tool_call',
+        tool: 'review_changes',
+        phase,
+        action: 'read',
+        details: actionDetails({
+          command: 'review_changes',
+          invocation: { base: params.base, repoDir, json: !!params.json },
+          outcome: 'error',
+          diagnostics: {
+            verdict: reviewResult.verdict,
+            failureCategory: reviewResult.failureCategory,
+            message,
+          },
+        }),
+        at: ts,
+      });
+      return result;
+    }
     const result: ReviewChangesResult = {
       ok: true,
       tool: 'review_changes',
