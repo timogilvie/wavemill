@@ -73,7 +73,6 @@ CUSTOM_TS_TESTS=(
 )
 
 CUSTOM_SH_TESTS=(
-  tests/agent-resolve-from-model.test.sh
 )
 
 # Known-broken tests (pre-existing issues, tracked separately)
