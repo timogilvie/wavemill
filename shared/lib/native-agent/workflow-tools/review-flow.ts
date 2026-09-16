@@ -126,6 +126,7 @@ export interface ReviewFlowReviewSummary {
   dismissedBlockers: DismissedReviewBlocker[];
   reviewToolError?: string;
   failureCategory?: string;
+  diagnostics?: Record<string, unknown>;
   needsStrongerReviewer: boolean;
 }
 
@@ -392,6 +393,8 @@ function buildStageArtifacts(input: {
     ...(dismissedBlockers.length > 0 ? { dismissedBlockers } : {}),
     ...(input.review.reviewToolError ? { reviewToolError: input.review.reviewToolError } : {}),
     ...(input.review.failureCategory ? { failureCategory: input.review.failureCategory } : {}),
+    ...(input.review.verdict === 'error' ? { missingReviewEvidence: true, evidence: 'missing-review-verdict' } : {}),
+    ...(input.review.diagnostics ? { diagnostics: input.review.diagnostics } : {}),
     // Head reviewed for this artifact (HOK-2964): a later head makes this
     // verdict stale, which recovery/reconciliation consumers rely on.
     ...(input.headSha ? { reviewHeadSha: input.headSha } : {}),
@@ -409,6 +412,8 @@ function buildStageArtifacts(input: {
       ...(dismissedBlockers.length > 0 ? { dismissedBlockers } : {}),
       reviewToolError: input.review.reviewToolError,
       failureCategory: input.review.failureCategory,
+      ...(input.review.verdict === 'error' ? { missingReviewEvidence: true, evidence: 'missing-review-verdict' } : {}),
+      ...(input.review.diagnostics ? { diagnostics: input.review.diagnostics } : {}),
       needsStrongerReviewer: input.review.needsStrongerReviewer,
       ...(input.headSha ? { reviewHeadSha: input.headSha } : {}),
     },
@@ -598,6 +603,7 @@ export async function runReviewFlow(options: ReviewFlowOptions): Promise<ReviewF
     dismissedBlockers: [],
     reviewToolError: reviewCall.ok ? undefined : reviewCall.message,
     failureCategory: reviewCall.failureCategory,
+    diagnostics: reviewCall.ok ? undefined : reviewCall.diagnostics,
     needsStrongerReviewer: false,
   };
   const emptyFixes = makeFixSummary();
@@ -611,7 +617,14 @@ export async function runReviewFlow(options: ReviewFlowOptions): Promise<ReviewF
       labels: [],
       warnings,
       failureReason: reviewCall.message,
+      failureCategory: reviewCall.failureCategory,
       reviewIterations: appendIteration({ verdict: 'error', findings: [] }),
+      ...(reviewCall.executedIdentity ? {
+        reviewExecutedIdentity: {
+          ...reviewCall.executedIdentity,
+          remediation: null,
+        },
+      } : {}),
     });
     return {
       ok: false,

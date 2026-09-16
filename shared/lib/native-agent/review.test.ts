@@ -275,7 +275,7 @@ describe('native review', () => {
     }
   });
 
-  it('maps turn-limit exits to a blocker finding', async () => {
+  it('maps turn-limit exits to the no-evidence timeout category', async () => {
     const repoDir = makeTempRepo();
     setReadyProvider();
 
@@ -296,9 +296,48 @@ describe('native review', () => {
 
     try {
       const result = await runNativeReview(makeReviewContext(), repoDir, {});
-      assert.equal(result.verdict, 'not_ready');
-      assert.equal(result.codeReviewFindings[0].category, 'native-review-failed');
-      assert.match(result.codeReviewFindings[0].description, /iteration limit/i);
+      assert.equal(result.verdict, 'error');
+      assert.equal(result.failureCategory, 'native-review-timeout');
+      assert.equal(result.codeReviewFindings.length, 0);
+      assert.match(result.reviewToolError ?? '', /iteration limit/i);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('maps wall-clock exits to native-review-timeout without a synthetic not_ready finding', async () => {
+    const repoDir = makeTempRepo({
+      review: {
+        nativeTimeoutMs: 1234,
+        nativeTimeoutMaxMs: 5000,
+        nativeTimeoutMultiplier: 2,
+      },
+    });
+    setReadyProvider();
+
+    nativeReviewTestUtils.setRunWavemillLoop(async (config) => {
+      assert.equal(config.budget?.maxWallClockMs, 1234);
+      return {
+        messages: [],
+        stopReason: 'wall_clock_limit',
+        turnsCompleted: 2,
+        toolCallsExecuted: 1,
+        totalInputTokens: 10,
+        totalOutputTokens: 10,
+        totalCostUsd: 0,
+        wallClockMs: 1234,
+      };
+    });
+
+    try {
+      const result = await runNativeReview(makeReviewContext(), repoDir, {});
+      assert.equal(result.verdict, 'error');
+      assert.equal(result.failureCategory, 'native-review-timeout');
+      assert.equal(result.codeReviewFindings.length, 0);
+      assert.match(result.reviewToolError ?? '', /wall-clock budget/i);
+      assert.equal(result.metadata?.effectiveNativeTimeoutMs, 1234);
+      assert.equal(result.metadata?.nativeTimeoutMaxMs, 5000);
+      assert.equal(result.metadata?.reviewInputFileCount, 1);
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }
@@ -401,8 +440,9 @@ describe('native review', () => {
 
     try {
       const result = await runNativeReview(makeReviewContext(), repoDir, { featureDir });
-      assert.equal(result.verdict, 'not_ready');
-      assert.match(result.codeReviewFindings[0].description, /wall-clock budget/i);
+      assert.equal(result.verdict, 'error');
+      assert.equal(result.failureCategory, 'native-review-timeout');
+      assert.equal(result.codeReviewFindings.length, 0);
 
       const transcript = loadTranscript(repoDir);
       const cleanup = transcript.find((event) => event.type === 'cleanup_report');
@@ -417,6 +457,9 @@ describe('native review', () => {
         readFileSync(join(featureDir, '.review-result.json'), 'utf-8'),
       ) as Record<string, unknown>;
       assert.equal(stageResult.status, 'failed');
+      assert.equal((stageResult.artifacts as Record<string, unknown>).failureCategory, 'native-review-timeout');
+      assert.equal((stageResult.artifacts as Record<string, unknown>).missingReviewEvidence, true);
+      assert.equal((stageResult.artifacts as Record<string, unknown>).effectiveNativeTimeoutMs, 300_000);
       assert.equal(stageResult.finalTreeState, 'clean');
       assert.equal(stageResult.cleanupDecision, 'no-action-needed');
       assert.equal((stageResult.cleanupReport as Record<string, unknown>).reason, 'timeout');

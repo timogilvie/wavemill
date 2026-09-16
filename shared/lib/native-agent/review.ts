@@ -41,10 +41,11 @@ import { loadPromptResourceSync } from '../resource-retrieval.ts';
 import { createCleanupTracker, runCleanup, type CleanupReason } from './cleanup.ts';
 import {
   NATIVE_CONTEXT_WINDOW_EXCEEDED_CATEGORY,
+  NATIVE_REVIEW_TIMEOUT_CATEGORY,
   PROVIDER_CREDIT_EXHAUSTED_CATEGORY,
   updateStageResult,
 } from '../stage-result.ts';
-import { getNativeContextManagementConfig } from '../config.ts';
+import { getNativeContextManagementConfig, getNativeReviewTimeoutConfig } from '../config.ts';
 import type { NormalizedPricing } from '../openrouter-catalog.ts';
 import {
   buildExecutedIdentity,
@@ -139,6 +140,32 @@ function nativeReviewFailure(
       designContextAvailable: context.designContext !== null,
       uiVerificationRun: false,
       deniedTools,
+    },
+  };
+}
+
+function nativeReviewNoEvidenceFailure(
+  context: ReviewContext,
+  category: string,
+  description: string,
+  deniedTools: DeniedToolRecord[] = [],
+  substantiveAnalysisIdentity?: ExecutedIdentity,
+  metadata: Partial<NonNullable<ReviewResult['metadata']>> = {},
+): ReviewResult {
+  return {
+    verdict: 'error',
+    codeReviewFindings: [],
+    failureCategory: category,
+    reviewToolError: description,
+    ...(substantiveAnalysisIdentity ? { substantiveAnalysisIdentity } : {}),
+    metadata: {
+      branch: context.metadata.branch,
+      files: context.metadata.files,
+      hasUiChanges: context.metadata.hasUiChanges,
+      designContextAvailable: context.designContext !== null,
+      uiVerificationRun: false,
+      deniedTools,
+      ...metadata,
     },
   };
 }
@@ -363,6 +390,18 @@ function reviewFailureCategoryForProviderErrorKind(kind: ProviderErrorKind | und
   }
 }
 
+function reviewFailureCategoryForStopReason(stopReason: LoopStopReason): string {
+  switch (stopReason) {
+    case 'wall_clock_limit':
+    case 'turn_limit':
+    case 'tool_call_limit':
+    case 'token_limit':
+      return NATIVE_REVIEW_TIMEOUT_CATEGORY;
+    default:
+      return 'native-review-failed';
+  }
+}
+
 function cleanupReasonForStopReason(stopReason: LoopStopReason): CleanupReason | null {
   if (stopReason === 'aborted') {
     return 'aborted';
@@ -371,6 +410,36 @@ function cleanupReasonForStopReason(stopReason: LoopStopReason): CleanupReason |
     return 'timeout';
   }
   return null;
+}
+
+function readRecoveryTimeout(featureDir?: string): { attempt?: number; timeoutMs?: number } {
+  if (!featureDir) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(join(featureDir, '.review-infra-recovery.json'), 'utf-8')) as {
+      nativeTimeoutAttempt?: unknown;
+      attempt?: unknown;
+      effectiveNativeTimeoutMs?: unknown;
+      timeoutMs?: unknown;
+    };
+    const raw = parsed.nativeTimeoutAttempt ?? parsed.attempt;
+    const timeout = parsed.effectiveNativeTimeoutMs ?? parsed.timeoutMs;
+    return {
+      ...(Number.isInteger(raw) && (raw as number) >= 0 ? { attempt: raw as number } : {}),
+      ...(Number.isInteger(timeout) && (timeout as number) > 0 ? { timeoutMs: timeout as number } : {}),
+    };
+  } catch {
+    return {};
+  }
+}
+
+function reviewInputMetadata(context: ReviewContext): Pick<NonNullable<ReviewResult['metadata']>,
+  'reviewInputDiffBytes' | 'reviewInputTaskPacketBytes' | 'reviewInputFileCount'
+> {
+  return {
+    reviewInputDiffBytes: Buffer.byteLength(context.diff ?? '', 'utf8'),
+    reviewInputTaskPacketBytes: Buffer.byteLength(context.taskPacket ?? '', 'utf8'),
+    reviewInputFileCount: context.metadata.files.length,
+  };
 }
 
 const nativeReviewDeps = {
@@ -399,6 +468,22 @@ export async function runNativeReview(
   // the "provider/model" canonical form) — comparing against the canonical
   // form would report a mismatch on every exact match (HOK-2969).
   const resolvedModelId = provider.entry.modelId;
+  const recoveryTimeout = readRecoveryTimeout(options.featureDir);
+  const timeoutAttempt = options.nativeTimeoutAttempt ?? recoveryTimeout.attempt;
+  const timeoutConfig = getNativeReviewTimeoutConfig(
+    repoDir,
+    requestedAnalysisModel ?? resolvedModelId,
+    timeoutAttempt ?? 0,
+  );
+  const effectiveNativeTimeoutMs = options.timeout ?? recoveryTimeout.timeoutMs ?? timeoutConfig.timeoutMs;
+  const nativeReviewMetadata = {
+    effectiveNativeTimeoutMs,
+    nativeTimeoutAttempt: timeoutConfig.attempt,
+    nativeTimeoutBaseMs: timeoutConfig.baseTimeoutMs,
+    nativeTimeoutMaxMs: timeoutConfig.maxMs,
+    nativeTimeoutMultiplier: timeoutConfig.multiplier,
+    ...reviewInputMetadata(context),
+  };
   const substantiveAnalysisIdentity = buildExecutedIdentity({
     role: 'substantive_analysis',
     requestedModel: provider.requestedModel,
@@ -544,7 +629,7 @@ export async function runNativeReview(
         // One additional turn is reserved for tool-free terminal synthesis.
         maxTurns: analysisTurnLimit + 1,
         maxToolCalls: REVIEW_TOOL_CALL_LIMIT,
-        maxWallClockMs: options.timeout ?? 300_000,
+        maxWallClockMs: effectiveNativeTimeoutMs,
       },
       terminalSynthesis: {
         prompt: REVIEW_FINAL_SYNTHESIS_PROMPT,
@@ -585,6 +670,15 @@ export async function runNativeReview(
         modelAttributionIneligibleReason: 'execution_contradicted',
         notes: `Native review stopped with ${loopResult.stopReason}; cleanup decision ${cleanupReport.cleanupDecision}.`,
         failureReason: loopResult.stopReason,
+        artifacts: {
+          type: 'review',
+          failureCategory: reviewFailureCategoryForStopReason(loopResult.stopReason),
+          verdict: 'error',
+          reviewToolError: stopReasonDescription(loopResult.stopReason),
+          missingReviewEvidence: true,
+          evidence: 'missing-review-verdict',
+          ...nativeReviewMetadata,
+        },
         finalTreeState: cleanupReport.finalTreeState,
         cleanupDecision: cleanupReport.cleanupDecision,
         cleanupReport,
@@ -602,13 +696,24 @@ export async function runNativeReview(
     const providerDescription = providerErrorMessage
       ? `${providerErrorKind ?? 'provider-unknown-error'}: ${providerErrorMessage}`
       : '';
-    return nativeReviewFailure(
-      context,
-      reviewFailureCategoryForProviderErrorKind(providerErrorKind),
-      providerDescription || stopReasonDescription(loopResult.stopReason),
-      deniedTools,
-      substantiveAnalysisIdentity,
-    );
+    const category = providerErrorKind
+      ? reviewFailureCategoryForProviderErrorKind(providerErrorKind)
+      : reviewFailureCategoryForStopReason(loopResult.stopReason);
+    const description = providerDescription || stopReasonDescription(loopResult.stopReason);
+    if (category === NATIVE_REVIEW_TIMEOUT_CATEGORY) {
+      return nativeReviewNoEvidenceFailure(
+        context,
+        category,
+        description,
+        deniedTools,
+        substantiveAnalysisIdentity,
+        {
+          ...nativeReviewMetadata,
+          nativeLoopStopReason: loopResult.stopReason,
+        },
+      );
+    }
+    return nativeReviewFailure(context, category, description, deniedTools, substantiveAnalysisIdentity);
   }
 
   const responseText = nativeReviewDeps.extractFinalAssistantText(loopResult.messages);
@@ -627,6 +732,7 @@ export async function runNativeReview(
     result.metadata = {
       ...result.metadata,
       deniedTools,
+      ...nativeReviewMetadata,
     };
     result.substantiveAnalysisIdentity = substantiveAnalysisIdentity;
     return result;

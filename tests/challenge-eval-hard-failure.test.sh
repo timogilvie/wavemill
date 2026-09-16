@@ -105,6 +105,14 @@ if [[ ! -s "$FUNCTION_FILE" ]]; then
   exit 1
 fi
 
+maybe_eval_body="$(extract_function_occurrence "$MONITOR_SCRIPT_FILE" "maybe_run_challenge_eval" 1)"
+if grep -Fq 'review_result_has_final_evidence' <<<"$maybe_eval_body" \
+  && grep -Fq 'review produced no final evidence' <<<"$maybe_eval_body"; then
+  pass "challenge eval checks for final review evidence before launch"
+else
+  fail "challenge eval does not guard missing review evidence"
+fi
+
 cat > "$TEST_TMP/run-case.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail

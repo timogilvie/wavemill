@@ -39,6 +39,16 @@ for fn in \
   review_recovery_terminal_artifacts_json \
   review_recovery_restore_terminal_result \
   review_recovery_running_artifacts_json \
+  review_result_has_final_evidence \
+  review_result_missing_final_evidence \
+  review_result_infra_failure \
+  review_result_failure_category \
+  review_result_review_head_sha \
+  review_infra_recovery_category_label \
+  review_infra_recovery_next_action \
+  review_result_native_timeout_identity \
+  review_recovery_timeout_state_path \
+  review_recovery_write_timeout_state \
   review_recovery_clear_ready_handoff_state \
   review_recovery_publish_running \
   review_recovery_coordinator \
@@ -78,6 +88,10 @@ review_recovery_window_observable() { return 0; }
 clear_review_gate_attention() { rm -f "$1/.needs-attention"; }
 write_ready_attention_file() { printf '%s\n' "$2" > "$1/.needs-attention"; }
 check_stage_aborted() { return 1; }
+_challenge_side_for_issue() { [[ "$1" == *_c ]] && printf 'challenger\n' || printf '\n'; }
+challenge_abort_pair() {
+  printf '%s|%s|%s|%s|%s\n' "$1" "$4" "$5" "$6" "${9:-pair}" >> "$CHALLENGE_ABORT_LOG"
+}
 read_stage_status() {
   local feature_dir="$1" stage="$2"
   jq -r '.status // empty' "$feature_dir/.${stage}-result.json" 2>/dev/null || true
@@ -112,8 +126,10 @@ setup_case() {
   WT_DIR="$CASE_DIR/worktree"
   FEATURE_DIR="$WT_DIR/features/slug"
   LAUNCH_LOG="$CASE_DIR/launch.log"
+  CHALLENGE_ABORT_LOG="$CASE_DIR/challenge-abort.log"
   mkdir -p "$FEATURE_DIR"
   : > "$LAUNCH_LOG"
+  : > "$CHALLENGE_ABORT_LOG"
   cat > "$STATE_FILE" <<EOF
 {"tasks":{"HOK-2999_c":{"phase":"ready","slug":"slug","worktree":"$WT_DIR","branch":"task/slug","provider":"openai","agent":"codex","model":"gpt-5","executionOwner":"queue","paneState":"released","lifecycle":{"resourceDisposition":"released"}}}}
 EOF
@@ -163,6 +179,36 @@ EOF
 review_recovery_coordinator "HOK-2999_c" "slug" "Task" "$WT_DIR" "task/slug" "auto/integration" "1378" "$FEATURE_DIR" "test recovery" "manual" "manual" "" 0 "false"
 review_recovery_coordinator "HOK-2999_c" "slug" "Task" "$WT_DIR" "task/slug" "auto/integration" "1378" "$FEATURE_DIR" "test recovery" "manual" "manual" "" 0 "false" || true
 assert_eq "duplicate recovery launches at most once" "1" "$(wc -l < "$LAUNCH_LOG" | tr -d ' ')"
+
+setup_case "timeout-classification"
+cat > "$FEATURE_DIR/.review-result.json" <<'EOF'
+{"stage":"review","status":"failed","agent":"native","model":"kimi-k3","artifacts":{"type":"review","failureCategory":"native-review-timeout","verdict":"error","reviewToolError":"Native review exceeded its wall-clock budget before producing a final JSON result.","effectiveNativeTimeoutMs":300000,"nativeTimeoutMaxMs":1200000,"nativeTimeoutMultiplier":2,"reviewInputDiffBytes":9000,"reviewInputTaskPacketBytes":1000,"reviewInputFileCount":4,"reviewExecutedIdentity":{"substantiveAnalysis":{"resolvedModel":"kimi-k3","agent":"native-openrouter"}}}}
+EOF
+if review_result_infra_failure "$FEATURE_DIR"; then
+  pass "native-review-timeout is an infra review failure"
+else
+  fail "native-review-timeout is not an infra review failure"
+fi
+review_recovery_write_timeout_state "$FEATURE_DIR" "1" "native-review-timeout"
+assert_eq "timeout retry writes doubled budget" "600000" "$(jq -r '.effectiveNativeTimeoutMs' "$FEATURE_DIR/.review-infra-recovery.json")"
+identity="$(review_result_native_timeout_identity "$FEATURE_DIR")"
+if [[ "$identity" == *"9000"* && "$identity" == *"kimi-k3"* ]]; then
+  pass "timeout retry identity includes input size and reviewer"
+else
+  fail "timeout retry identity omits input size or reviewer"
+fi
+
+setup_case "timeout-exhaustion"
+cat > "$FEATURE_DIR/.review-result.json" <<'EOF'
+{"stage":"review","status":"failed","agent":"native","model":"kimi-k3","artifacts":{"type":"review","failureCategory":"native-review-timeout","verdict":"error","reviewToolError":"Native review exceeded its wall-clock budget before producing a final JSON result.","effectiveNativeTimeoutMs":1200000,"nativeTimeoutMaxMs":1200000,"nativeTimeoutMultiplier":2}}
+EOF
+bounded_retry_increment "$FEATURE_DIR" "review-infra-recovery" "same-head:native-review-timeout" >/dev/null
+if review_recovery_coordinator "HOK-2999_c" "slug" "Task" "$WT_DIR" "task/slug" "auto/integration" "1378" "$FEATURE_DIR" "test recovery" "infra" "native-review-timeout" "same-head:native-review-timeout" 1 "false"; then
+  fail "timeout exhaustion returns failure"
+else
+  pass "timeout exhaustion returns failure"
+fi
+assert_eq "timeout exhaustion aborts only challenger" "HOK-2999_c|review|claude-sonnet-5|review_timeout_exhausted|single" "$(cat "$CHALLENGE_ABORT_LOG")"
 
 echo ""
 echo "Passed: $PASS"
