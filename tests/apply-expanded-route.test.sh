@@ -432,6 +432,50 @@ EOF
 }
 
 {
+  mapfile -t fixture < <(new_fixture "expanded-route-challenger-missing-primary-route")
+  root="${fixture[0]}"
+  wt_dir="${fixture[1]}"
+  state_file="${fixture[2]}"
+  feature_dir="$wt_dir/features/test-slug"
+  real_challenge_intent --stage implementation \
+    --primary-coder gpt-5.5 \
+    --challenger-coder claude-opus-4-7 --challenger-coder-agent claude \
+    > "$feature_dir/challenge-intent.json"
+  cat > "$feature_dir/.post-expansion-route.json" <<'EOF'
+{
+  "planner": "challenger-expanded-planner",
+  "coder": "challenger-expanded-coder",
+  "reviewer": "challenger-expanded-reviewer",
+  "planDepth": "deep",
+  "codeDepth": "deep",
+  "reviewMode": "llm"
+}
+EOF
+
+  jq '.tasks["HOK-1512"] |= del(.plannerModel, .coderModel, .reviewerModel, .planDepth, .codeDepth, .reviewMode)
+      | .tasks["HOK-1512_c"] = (.tasks["HOK-1512"] + {
+          challengePairId:"HOK-1512",
+          challengeRole:"challenger",
+          challengeStage:"implementation"
+        })' "$state_file" > "$root/state.tmp"
+  mv "$root/state.tmp" "$state_file"
+
+  set +e
+  output="$(run_apply "$feature_dir" "$state_file" "HOK-1512_c" 2>&1)"
+  status=$?
+  set -e
+
+  if [[ "$status" -ne 0 ]] \
+    && grep -q 'primary planning/review route unavailable' <<< "$output" \
+    && [[ "$(jq -r '.challengeSharedRouteApplied // false' "$feature_dir/.routing-complete")" == "false" ]]; then
+    pass "real challenger fails closed when the primary finalized route is unavailable"
+  else
+    fail "challenger did not fail closed without a primary finalized route: status=$status output=$output"
+  fi
+  rm -rf "$root"
+}
+
+{
   mapfile -t fixture < <(new_fixture "expanded-route-execution-intent-fallback")
   root="${fixture[0]}"
   wt_dir="${fixture[1]}"

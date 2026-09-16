@@ -3997,11 +3997,6 @@ sync_challenger_shared_route_from_primary() {
   primary_code_depth="$(jq -r --arg issue "$primary_issue" '.tasks[$issue].codeDepth // ""' "$state_file" 2>/dev/null || true)"
   primary_review_mode="$(jq -r --arg issue "$primary_issue" '.tasks[$issue].reviewMode // ""' "$state_file" 2>/dev/null || true)"
 
-  if [[ -z "$primary_planner$primary_coder$primary_reviewer" ]]; then
-    log "debug" "challenger shared route sync skipped: no finalized primary route in state for $issue"
-    return 0
-  fi
-
   case "$selected_stage" in
     plan)
       if [[ -z "$primary_coder" || -z "$primary_reviewer" ]]; then

@@ -101,7 +101,9 @@ roundtrip() {
 
   STATE_FILE="$root/workflow-state.json"
   cat > "$STATE_FILE" <<JSON
-{"tasks":{"HOK-900":{"slug":"pair-slug","worktree":"$root/pair-slug","phase":"planning"},
+{"tasks":{"HOK-900":{"slug":"pair-slug","worktree":"$root/pair-slug","phase":"planning",
+                        "plannerModel":"bootstrap-planner","coderModel":"bootstrap-coder","reviewerModel":"bootstrap-reviewer",
+                        "planDepth":"light","codeDepth":"medium","reviewMode":"llm"},
           "HOK-900_c":{"slug":"pair-slug-challenger","worktree":"$root/pair-slug-challenger","phase":"planning"}}}
 JSON
 
