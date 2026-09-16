@@ -367,6 +367,23 @@ export interface UiConfig {
 export interface ReviewConfig {
   maxIterations?: number;
   enabled?: boolean;
+  nativeTimeoutMs?: number;
+  nativeTimeoutMaxMs?: number;
+  nativeTimeoutMultiplier?: number;
+  nativeTimeoutModelOverrides?: Record<string, number | {
+    timeoutMs?: number;
+    maxMs?: number;
+    multiplier?: number;
+  }>;
+}
+
+export interface ResolvedNativeReviewTimeoutConfig {
+  timeoutMs: number;
+  maxMs: number;
+  multiplier: number;
+  attempt: number;
+  baseTimeoutMs: number;
+  model?: string;
 }
 
 export interface CrossPrRevertCheckConfig {
@@ -938,6 +955,9 @@ export const DEFAULT_READY_MIGRATION_DANGER_LABELS = {
 } as const;
 
 const DEFAULT_CHALLENGE_EVAL_HARD_FAILURE_RETRY_MAX_ATTEMPTS = 2;
+const DEFAULT_NATIVE_REVIEW_TIMEOUT_MS = 300_000;
+const DEFAULT_NATIVE_REVIEW_TIMEOUT_MAX_MS = 1_200_000;
+const DEFAULT_NATIVE_REVIEW_TIMEOUT_MULTIPLIER = 2;
 
 // ────────────────────────────────────────────────────────────────
 // Schema Validation
@@ -1758,6 +1778,49 @@ export function getReviewMergeConfig(repoDir?: string): ResolvedReviewMergeConfi
       maxRecentMerges:
         crossPrRevertCheck.maxRecentMerges ?? REVIEW_MERGE_DEFAULTS.crossPrRevertCheck.maxRecentMerges,
     },
+  };
+}
+
+function positiveInteger(value: unknown): number | undefined {
+  return Number.isInteger(value) && (value as number) > 0 ? value as number : undefined;
+}
+
+function nativeReviewOverrideForModel(
+  overrides: ReviewConfig['nativeTimeoutModelOverrides'],
+  model?: string,
+): number | { timeoutMs?: number; maxMs?: number; multiplier?: number } | undefined {
+  const cleanModel = model?.trim();
+  if (!cleanModel || !overrides) return undefined;
+  return overrides[cleanModel] ?? overrides[cleanModel.replace(/^native-[^/]+\//, '')] ?? overrides[cleanModel.replace(/^[^/]+\//, '')];
+}
+
+export function getNativeReviewTimeoutConfig(
+  repoDir?: string,
+  model?: string,
+  retryAttempt = 0,
+): ResolvedNativeReviewTimeoutConfig {
+  const review = loadWavemillConfig(repoDir).review ?? {};
+  const override = nativeReviewOverrideForModel(review.nativeTimeoutModelOverrides, model);
+  const overrideObject = typeof override === 'object' && override !== null ? override : undefined;
+  const configuredBase = positiveInteger(typeof override === 'number' ? override : overrideObject?.timeoutMs)
+    ?? positiveInteger(review.nativeTimeoutMs)
+    ?? DEFAULT_NATIVE_REVIEW_TIMEOUT_MS;
+  const configuredMax = positiveInteger(overrideObject?.maxMs)
+    ?? positiveInteger(review.nativeTimeoutMaxMs)
+    ?? DEFAULT_NATIVE_REVIEW_TIMEOUT_MAX_MS;
+  const configuredMultiplier = positiveInteger(overrideObject?.multiplier)
+    ?? positiveInteger(review.nativeTimeoutMultiplier)
+    ?? DEFAULT_NATIVE_REVIEW_TIMEOUT_MULTIPLIER;
+  const maxMs = Math.max(configuredBase, configuredMax);
+  const attempt = Math.max(0, Math.floor(retryAttempt));
+  const scaled = configuredBase * Math.pow(configuredMultiplier, attempt);
+  return {
+    timeoutMs: Math.min(maxMs, Math.round(scaled)),
+    maxMs,
+    multiplier: configuredMultiplier,
+    attempt,
+    baseTimeoutMs: configuredBase,
+    ...(model ? { model } : {}),
   };
 }
 

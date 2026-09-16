@@ -46,6 +46,7 @@ TESTS=(
   task-phase-canonicalization.test.sh
   pr-state-merge-canonicalization.test.sh
   review-recovery.test.sh
+  recovery-contract-replay.test.sh
   with-timeout.test.sh
   native-agent-shell-operators.test.sh
   native-coding-commit.test.sh

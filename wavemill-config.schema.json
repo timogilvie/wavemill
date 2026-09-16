@@ -2638,6 +2638,54 @@
                     "default": true,
                     "description": "Enable the self-review loop in workflow commands. When false, workflow proceeds directly from implementation to validation."
                 },
+                "nativeTimeoutMs": {
+                    "type": "integer",
+                    "default": 300000,
+                    "minimum": 1,
+                    "description": "Base wall-clock budget in milliseconds for native-agent review runs. Defaults to 300000 (5 minutes)."
+                },
+                "nativeTimeoutMaxMs": {
+                    "type": "integer",
+                    "default": 1200000,
+                    "minimum": 1,
+                    "description": "Maximum wall-clock budget in milliseconds for escalated native-agent review retries."
+                },
+                "nativeTimeoutMultiplier": {
+                    "type": "integer",
+                    "default": 2,
+                    "minimum": 1,
+                    "description": "Multiplier applied to nativeTimeoutMs for each bounded infra recovery retry."
+                },
+                "nativeTimeoutModelOverrides": {
+                    "type": "object",
+                    "description": "Per-reviewer native review timeout overrides keyed by model id.",
+                    "additionalProperties": {
+                        "oneOf": [
+                            {
+                                "type": "integer",
+                                "minimum": 1
+                            },
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "timeoutMs": {
+                                        "type": "integer",
+                                        "minimum": 1
+                                    },
+                                    "maxMs": {
+                                        "type": "integer",
+                                        "minimum": 1
+                                    },
+                                    "multiplier": {
+                                        "type": "integer",
+                                        "minimum": 1
+                                    }
+                                },
+                                "additionalProperties": false
+                            }
+                        ]
+                    }
+                },
                 "metricsLog": {
                     "type": "string",
                     "default": ".wavemill/review-log.json",
