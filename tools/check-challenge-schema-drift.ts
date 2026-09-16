@@ -173,7 +173,7 @@ const invalidReasonMatch = contractSource.match(
 if (!invalidReasonMatch) {
   errors.push('Missing exported type InvalidChallengeReason');
 } else {
-  const unionMembers = [...invalidReasonMatch[1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]).sort();
+  const unionMembers = [...invalidReasonMatch[1].matchAll(/'([a-z_-]+)'/g)].map((m) => m[1]).sort();
   const schemaEnum = [...((schema.$defs?.InvalidChallengeReason?.enum as string[] | undefined) ?? [])].sort();
   if (JSON.stringify(unionMembers) !== JSON.stringify(schemaEnum)) {
     errors.push(
