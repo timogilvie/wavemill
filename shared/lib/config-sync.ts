@@ -87,7 +87,7 @@ export const CANONICAL_CONFIG_TEMPLATE: WavemillConfig = {
   hokusai: {
     dataSubmission: {
       enabled: false,
-      consentVersion: '1.0',
+      consentVersion: '1.1',
     },
   },
   providers: {

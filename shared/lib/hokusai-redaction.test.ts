@@ -6,6 +6,8 @@ import { after, describe, it } from 'node:test';
 import { loadUserConfig } from './hokusai-consent.ts';
 import {
   getOrCreateRedactionSalt,
+  PROTECTED_EGRESS_FIELD_FIXTURE,
+  protectedEgressSentinelValues,
   redactHokusaiSubmission,
 } from './hokusai-redaction.ts';
 import type { HokusaiSubmission } from './hokusai-schema.ts';
@@ -131,6 +133,27 @@ describe('hokusai-redaction', () => {
       valid: true,
       errors: [],
     });
+  });
+
+  it('strips every protected vendor-telemetry and reviewer-evidence field (HOK-2787)', () => {
+    const input = {
+      ...makeSubmission(),
+      ...structuredClone(PROTECTED_EGRESS_FIELD_FIXTURE),
+      vendor_telemetry: structuredClone(PROTECTED_EGRESS_FIELD_FIXTURE),
+    } as HokusaiSubmission & Record<string, unknown>;
+
+    const result = redactHokusaiSubmission(input, { salt: '3'.repeat(64) });
+    const serialized = JSON.stringify(result);
+
+    const sentinels = protectedEgressSentinelValues();
+    assert.ok(sentinels.length >= 12, 'fixture must cover the September protected fields');
+    for (const sentinel of sentinels) {
+      const needle = JSON.stringify(sentinel).slice(1, -1);
+      assert.ok(
+        !serialized.includes(needle),
+        `protected value must not survive redaction: ${sentinel}`,
+      );
+    }
   });
 
   it('returns a submission that still validates', () => {
