@@ -131,6 +131,34 @@ describe('hokusai-queue-drain', () => {
     }
   });
 
+  it('uploads only the redacted rows, never the local provenance envelope (HOK-2787)', async () => {
+    const { repoDir, configDir } = makeRepo({ batchSize: 1 });
+    await enqueueContribution(makeRow('redacted-abc123'), {
+      repoDir,
+      configDir,
+      provenance: { evalId: 'eval-private-identifier', source: 'live', identityFingerprint: 'fp-1' },
+    });
+    let capturedBody = '';
+
+    const result = await drainContributionQueue({
+      repoDir,
+      configDir,
+      fetchImpl: async (_input, init) => {
+        capturedBody = String(init?.body);
+        return new Response(null, { status: 204 });
+      },
+    });
+
+    assert.equal(result.status, 'uploaded');
+    const body = JSON.parse(capturedBody) as Record<string, unknown>;
+    assert.deepEqual(Object.keys(body).sort(), ['metadata', 'rows']);
+    assert.deepEqual(Object.keys(body.metadata as Record<string, unknown>), ['idempotency_key']);
+    assert.deepEqual(body.rows, [makeRow('redacted-abc123')]);
+    assert.ok(!capturedBody.includes('eval-private-identifier'));
+    assert.ok(!capturedBody.includes('provenance'));
+    assert.ok(!capturedBody.includes('fp-1'));
+  });
+
   it('accepts 204 empty responses', async () => {
     const { repoDir, configDir } = makeRepo();
     await enqueueContribution(makeRow('a'), { repoDir, configDir });
