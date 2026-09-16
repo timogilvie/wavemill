@@ -379,6 +379,59 @@ EOF
 }
 
 {
+  mapfile -t fixture < <(new_fixture "expanded-route-challenger-shared-stages")
+  root="${fixture[0]}"
+  wt_dir="${fixture[1]}"
+  state_file="${fixture[2]}"
+  feature_dir="$wt_dir/features/test-slug"
+  real_challenge_intent --stage implementation \
+    --primary-coder gpt-5.5 \
+    --challenger-coder claude-opus-4-7 --challenger-coder-agent claude \
+    > "$feature_dir/challenge-intent.json"
+  cat > "$feature_dir/.post-expansion-route.json" <<'EOF'
+{
+  "planner": "challenger-expanded-planner",
+  "coder": "challenger-expanded-coder",
+  "reviewer": "challenger-expanded-reviewer",
+  "planDepth": "deep",
+  "codeDepth": "deep",
+  "reviewMode": "llm"
+}
+EOF
+
+  jq '.tasks["HOK-1512"] += {
+        plannerModel:"primary-expanded-planner",
+        coderModel:"gpt-5.5",
+        reviewerModel:"primary-expanded-reviewer",
+        planDepth:"medium",
+        codeDepth:"medium",
+        reviewMode:"static"
+      }
+      | .tasks["HOK-1512_c"] = (.tasks["HOK-1512"] + {
+        challengePairId:"HOK-1512",
+        challengeRole:"challenger",
+        challengeStage:"implementation"
+      })' "$state_file" > "$root/state.tmp"
+  mv "$root/state.tmp" "$state_file"
+
+  if run_apply "$feature_dir" "$state_file" "HOK-1512_c" \
+    && [[ "$(jq -r '.planner' "$feature_dir/.routing-complete")" == "primary-expanded-planner" ]] \
+    && [[ "$(jq -r '.reviewer' "$feature_dir/.routing-complete")" == "primary-expanded-reviewer" ]] \
+    && [[ "$(jq -r '.coder' "$feature_dir/.routing-complete")" == "claude-opus-4-7" ]] \
+    && [[ "$(jq -r '.challengeSharedRouteApplied' "$feature_dir/.routing-complete")" == "true" ]] \
+    && [[ "$(jq -r '.planning.model' "$feature_dir/.phase-config.json")" == "primary-expanded-planner" ]] \
+    && [[ "$(jq -r '.review.model' "$feature_dir/.phase-config.json")" == "primary-expanded-reviewer" ]] \
+    && [[ "$(jq -r '.coding.model' "$feature_dir/.phase-config.json")" == "claude-opus-4-7" ]] \
+    && [[ "$(jq -r '.tasks["HOK-1512_c"].plannerModel' "$state_file")" == "primary-expanded-planner" ]] \
+    && [[ "$(jq -r '.tasks["HOK-1512_c"].reviewerModel' "$state_file")" == "primary-expanded-reviewer" ]]; then
+    pass "challenger implementation route copies primary shared stages after independent expansion"
+  else
+    fail "challenger implementation route did not copy primary shared stages"
+  fi
+  rm -rf "$root"
+}
+
+{
   mapfile -t fixture < <(new_fixture "expanded-route-execution-intent-fallback")
   root="${fixture[0]}"
   wt_dir="${fixture[1]}"
