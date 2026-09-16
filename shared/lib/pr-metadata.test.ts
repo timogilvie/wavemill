@@ -4,12 +4,58 @@ import {
   extractMetadataBlock,
   parsePrMetadata,
   PR_METADATA_SCHEMA_VERSION,
+  PR_ROUTE_METADATA_SCHEMA_VERSION,
   renderPrMetadata,
+  stableJsonStringify,
   updatePrMetadata,
   validatePrMetadata,
   validateMetadataFields,
+  type ExecutedPrRoute,
   type PrMetadata,
 } from './pr-metadata.ts';
+
+const EXECUTED_ROUTE_FIXTURE: ExecutedPrRoute = {
+  schema: PR_ROUTE_METADATA_SCHEMA_VERSION,
+  issue: 'HOK-2945',
+  head_sha: 'abc123',
+  planner: {
+    status: 'executed',
+    requested_selector: 'planner-a',
+    resolved_model: 'planner-a',
+    adapter: 'claude',
+    source: 'artifact',
+    pinned: true,
+    evidence: { source: 'stage-result', status: 'direct', stage: 'planning', head_sha: 'abc123' },
+  },
+  coder: {
+    status: 'executed',
+    requested_selector: 'coder-a',
+    resolved_model: 'coder-b',
+    adapter: 'codex',
+    source: 'artifact',
+    pinned: false,
+    fallback_reason: 'runtime_fallback',
+    evidence: { source: 'stage-result', status: 'direct', stage: 'coding', head_sha: 'abc123' },
+  },
+  reviewer: {
+    status: 'executed',
+    evidence: { source: 'native-runtime', status: 'direct', stage: 'review', head_sha: 'abc123' },
+    orchestrator: {
+      requested_selector: 'claude-haiku-4-5',
+      resolved_model: 'claude-haiku-4-5',
+      adapter: 'native',
+      source: 'artifact',
+      pinned: true,
+    },
+    substantiveAnalysis: {
+      requested_selector: 'gemini',
+      resolved_model: 'google/gemini-2.5-pro',
+      adapter: 'openrouter',
+      source: 'derived',
+      pinned: false,
+    },
+  },
+};
 
 describe('extractMetadataBlock', () => {
   it('returns the original body when no block is present', () => {
@@ -66,6 +112,8 @@ describe('parsePrMetadata', () => {
       risk: 'medium',
       challenge: false,
       challengePairId: 'pair-1',
+      route_schema: PR_ROUTE_METADATA_SCHEMA_VERSION,
+      executed_route: EXECUTED_ROUTE_FIXTURE,
     };
 
     const parsed = parsePrMetadata(renderPrMetadata(metadata));
@@ -256,6 +304,8 @@ describe('renderPrMetadata', () => {
       'schema-version': PR_METADATA_SCHEMA_VERSION,
       challenge: true,
       challengePairId: 'pair-9',
+      route_schema: PR_ROUTE_METADATA_SCHEMA_VERSION,
+      executed_route: EXECUTED_ROUTE_FIXTURE,
       risk: 'high',
       requires: ['qa'],
       task: 'HOK-1432',
@@ -277,8 +327,49 @@ describe('renderPrMetadata', () => {
         'risk: high',
         'challenge: true',
         'challengePairId: pair-9',
+        'route_schema: 1',
+        `executed_route: ${stableJsonStringify(EXECUTED_ROUTE_FIXTURE)}`,
         '-->',
       ].join('\n'),
+    );
+  });
+
+  it('rejects route metadata without the paired schema fields', () => {
+    assert.throws(
+      () => renderPrMetadata({ task: 'HOK-2945', executed_route: EXECUTED_ROUTE_FIXTURE }),
+      /executed_route requires route_schema/,
+    );
+
+    const parsed = parsePrMetadata([
+      '<!-- wavemill-meta',
+      'task: HOK-2945',
+      'route_schema: 1',
+      '-->',
+    ].join('\n'));
+    assert.equal(parsed.ok, false);
+    if (!parsed.ok) {
+      assert.equal(parsed.errors[0].message, 'route_schema requires executed_route');
+    }
+  });
+
+  it('rejects derived identities that are falsely pinned', () => {
+    const route: ExecutedPrRoute = {
+      ...EXECUTED_ROUTE_FIXTURE,
+      reviewer: {
+        ...EXECUTED_ROUTE_FIXTURE.reviewer,
+        substantiveAnalysis: {
+          ...EXECUTED_ROUTE_FIXTURE.reviewer.substantiveAnalysis,
+          pinned: true,
+        },
+      },
+    };
+
+    assert.throws(
+      () => renderPrMetadata({
+        route_schema: PR_ROUTE_METADATA_SCHEMA_VERSION,
+        executed_route: route,
+      }),
+      /Derived identity cannot be pinned/,
     );
   });
 
