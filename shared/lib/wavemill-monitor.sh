@@ -127,6 +127,11 @@ log_warn() {
   append_status_log "$formatted" || echo "$formatted" >&2
 }
 
+render_unknown_input_for_log() {
+  local payload="$1"
+  printf '%q' "$payload"
+}
+
 replay_route_transparency_logs() {
   local stderr_file="$1"
   [[ -s "$stderr_file" ]] || return 0
@@ -14918,7 +14923,7 @@ execute_or_defer_monitor_command() {
       MONITOR_COMMAND_STATUS="handled"
       ;;
     unknown\ *)
-      log_warn "Unknown input: ${event#unknown }"
+      log_warn "Unknown input: $(render_unknown_input_for_log "${event#unknown }")"
       MONITOR_COMMAND_STATUS="invalid"
       ;;
     enter)
@@ -18191,7 +18196,7 @@ while :; do
           execute_or_defer_monitor_command "new" "$REPLY" "$MONITOR_PHASE_C_REPLY_OFFSET" "$free_slots" "$queue_plan_json" "$avail_unblocked" "$avail_blocked" "$select_from"
           MONITOR_PHASE_C_REPLY_OFFSET=""
         elif [[ "$REPLY" =~ ^unknown\  ]]; then
-          log_warn "Unknown input: ${REPLY#unknown }"
+          log_warn "Unknown input: $(render_unknown_input_for_log "${REPLY#unknown }")"
         elif [[ "$REPLY" == "enter" ]]; then
           if [[ "${ENTER_LAUNCHES_WAVE:-true}" == "true" ]]; then
             wave_plan_json="${queue_plan_json:-$QUEUE_PLAN_CACHE}"
