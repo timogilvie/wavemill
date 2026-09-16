@@ -1,0 +1,12 @@
+{
+  "issueId": "HOK-2959E",
+  "planner": "claude-haiku-4-5-20251001",
+  "coder": "claude-haiku-4-5-20251001",
+  "reviewer": "claude-haiku-4-5-20251001",
+  "maxCostUsd": 5,
+  "routingMode": "stage-aware",
+  "task": {
+    "issueId": "HOK-2959E",
+    "prompt": "Implement a fixture row with conflicting execution economics."
+  }
+}

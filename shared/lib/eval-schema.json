@@ -2667,6 +2667,10 @@
     "wavemill_router_scoring": {
       "$ref": "#/$defs/WavemillRouterScoringMetadata"
     },
+    "subagent_model_economics_policy": {
+      "$ref": "#/$defs/EvalSubagentModelEconomicsPolicyReport",
+      "description": "Shadow-only subagent model economics policy report. Evaluator diagnostic only; routers and launchers must not consume it to force model selection."
+    },
     "featureOutcomeDiagnostics": {
       "type": "object",
       "description": "Diagnostics for the feature-outcome artifact consumption path (HOK-2262).",
@@ -4261,7 +4265,8 @@
           "type": "string",
           "enum": [
             "replay_exact_match",
-            "challenge_prospective"
+            "challenge_prospective",
+            "subagent_model_economics_shadow"
           ]
         }
       },
@@ -4270,6 +4275,68 @@
         "measurement_policy"
       ],
       "additionalProperties": false
+    },
+    "EvalSubagentModelEconomicsPolicyReport": {
+      "type": "object",
+      "required": [
+        "schemaVersion",
+        "policy"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "type": "string"
+        },
+        "policy": {
+          "type": "string",
+          "const": "subagent_model_economics_shadow"
+        },
+        "generatedAt": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "workflows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "evidenceKind": {
+          "type": "string",
+          "enum": [
+            "observational",
+            "paired_replay"
+          ]
+        },
+        "recommendation": {
+          "type": "object",
+          "required": [
+            "gate",
+            "reasons"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "gate": {
+              "type": "string",
+              "enum": [
+                "proceed",
+                "collect_more_data",
+                "stop"
+              ]
+            },
+            "reasons": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
     },
     "RubricCriterion": {
       "type": "object",

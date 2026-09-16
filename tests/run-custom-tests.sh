@@ -61,6 +61,7 @@ CUSTOM_TS_TESTS=(
   shared/lib/router-exploration.test.ts
   shared/lib/rule-generator.test.ts
   shared/lib/stage-aware-router.test.ts
+  shared/lib/subagent-economics-policy.test.ts
   shared/lib/task-descriptor-backfill.test.ts
   shared/lib/task-context-analyzer.test.ts
   shared/lib/post-completion-hook.test.ts

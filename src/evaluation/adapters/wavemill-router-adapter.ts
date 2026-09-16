@@ -6,13 +6,14 @@ import {
   SCHEMA_VERSION,
   type EvalRecord,
   type EvalRouting,
+  type EvalSubagentModelEconomicsPolicyReport,
   type RoutePrediction,
   type WavemillRouterMeasurementPolicy,
 } from '../../../shared/lib/eval-schema.ts';
 import { isEvalSuccess } from '../../../shared/lib/eval-success-policy.ts';
 import { appendEvalRecord, readEvalRecords } from '../../../shared/lib/eval-persistence.ts';
 import { buildRoutePrediction } from '../../../shared/lib/route-artifact.ts';
-import { routeBatch, type RouteBatchOptions } from '../../../shared/lib/route-batch.ts';
+import { routeBatch, type RouteBatchOptions, type RouteBatchResult } from '../../../shared/lib/route-batch.ts';
 import { meetsMintEligibility, type MintEligibilityEvaluation } from '../../../shared/lib/eval-aggregator.ts';
 import { getMintEligibilityConfig } from '../../../shared/lib/config.ts';
 import { buildTaskDescriptor } from '../../../shared/lib/task-descriptor-builder.ts';
@@ -27,6 +28,13 @@ import {
   type PatchSelectionScoreRecord,
   type PatchSelectionScoreResult,
 } from '../scorers/wavemill/patch-selection.ts';
+import {
+  buildSubagentEconomicsReport,
+  runSubagentEconomicsShadowPolicy,
+  type SubagentEconomicsReport,
+  type SubagentEconomicsWorkflowReport,
+} from '../../../shared/lib/subagent-economics-policy.ts';
+import type { WorkflowRouteDecision } from '../../../shared/lib/workflow-router.ts';
 import {
   loadPatchSelectionCorpus,
   type LoadPatchSelectionCorpusOptions,
@@ -77,6 +85,10 @@ export interface RunWavemillRouterEvalOptions {
   evalsDir?: string;
   artifactsDir?: string;
   persist?: boolean;
+  routeBatchImpl?: (
+    tasks: Array<{ issueId?: string; prompt?: string; file?: string }>,
+    options?: RouteBatchOptions,
+  ) => Promise<RouteBatchResult[]>;
   // Patch-selection corpus evaluation options
   patchSelectionManifestPath?: string;
   patchSelectionSplit?: 'train' | 'held-out' | 'all';
@@ -87,6 +99,7 @@ export interface RunWavemillRouterEvalResult {
   hemRecord: EvalRecord;
   mintEligibility: MintEligibilityEvaluation;
   records: WavemillRouterEvalInputRecord[];
+  subagentModelEconomicsPolicy?: SubagentEconomicsReport;
   excludedEvidence: {
     count: number;
     reasonCounts: Record<string, number>;
@@ -420,38 +433,61 @@ function predictionForRecord(
   return evalRecord?.routePrediction ?? artifact.routePrediction;
 }
 
-async function rerouteArtifact(
-  artifact: ArtifactGroup,
+async function routeArtifactBatch(
+  artifacts: ArtifactGroup[],
   repoDir: string,
   modelsAvailable: string[] | undefined,
-): Promise<ParsedRouteArtifact['routeDecision'] | undefined> {
-  if (!artifact.prompt) {
-    return undefined;
+  modeOverride: RouteBatchOptions['mode'] | undefined,
+  routeBatchImpl: NonNullable<RunWavemillRouterEvalOptions['routeBatchImpl']>,
+): Promise<Map<string, WorkflowRouteDecision>> {
+  const routable = artifacts
+    .map((artifact, index) => ({ artifact, index }))
+    .filter((entry) => Boolean(entry.artifact.prompt));
+  const decisions = new Map<string, WorkflowRouteDecision>();
+
+  if (routable.length === 0) {
+    return decisions;
   }
 
-  const results = await routeBatch(
-    [{ issueId: artifact.issueId, prompt: artifact.prompt }],
-    {
-      repoDir,
-      modelsAvailable,
-      mode: artifact.routeDecision?.routeMode,
-      operatingMode: artifact.routeDecision?.operatingMode,
-    },
-  );
-
-  const decision = results[0]?.decision;
-  if (!decision) {
-    return undefined;
+  const groups = new Map<string, typeof routable>();
+  for (const entry of routable) {
+    const key = JSON.stringify({
+      mode: modeOverride ?? entry.artifact.routeDecision?.routeMode,
+      operatingMode: entry.artifact.routeDecision?.operatingMode,
+      maxCostUsd: entry.artifact.routeDecision?.maxCostUsd,
+    });
+    groups.set(key, [...(groups.get(key) ?? []), entry]);
   }
 
-  return {
-    planner: decision.planner,
-    coder: decision.coder,
-    reviewer: decision.reviewer,
-    maxCostUsd: decision.constraints?.maxCostUsd,
-    operatingMode: artifact.routeDecision?.operatingMode,
-    routeMode: artifact.routeDecision?.routeMode,
-  };
+  for (const [key, group] of groups.entries()) {
+    const options = JSON.parse(key) as {
+      mode?: RouteBatchOptions['mode'];
+      operatingMode?: RouteBatchOptions['operatingMode'];
+      maxCostUsd?: number;
+    };
+    const results = await routeBatchImpl(
+      group.map(({ artifact }) => ({
+        issueId: artifact.issueId,
+        prompt: artifact.prompt as string,
+      })),
+      {
+        repoDir,
+        modelsAvailable,
+        mode: options.mode,
+        operatingMode: options.operatingMode,
+        maxCostUsd: options.maxCostUsd,
+      },
+    );
+
+    for (let index = 0; index < group.length; index += 1) {
+      const decision = results[index]?.decision;
+      if (decision) {
+        decisions.set(group[index].artifact.routePath, decision);
+      }
+    }
+  }
+
+  return decisions;
 }
 
 function buildHemRecord(
@@ -460,6 +496,7 @@ function buildHemRecord(
   score: WavemillRouterScoreResult,
   mintEligibility: MintEligibilityEvaluation,
   modelsAvailable?: string[],
+  subagentModelEconomicsPolicy?: EvalSubagentModelEconomicsPolicyReport,
 ): EvalRecord {
   const aggregateScore = score.workflow_success_rate_under_budget;
   const constrainedModel = modelsAvailable?.length === 1 ? modelsAvailable[0] : undefined;
@@ -517,6 +554,7 @@ function buildHemRecord(
       mintEligibility,
     },
     ...(constrainedRouting ? { routing: constrainedRouting } : {}),
+    ...(subagentModelEconomicsPolicy ? { subagent_model_economics_policy: subagentModelEconomicsPolicy } : {}),
     taskDescriptor: buildTaskDescriptor({
       originalPrompt: `Wavemill router eval (${policy})`,
       score: aggregateScore,
@@ -561,28 +599,67 @@ export async function runWavemillRouterEval(
 
   const matchedEvalIds = new Set<string>();
   const records: WavemillRouterEvalInputRecord[] = [...invalidRecords];
+  const evalsByChallengePair = new Map<string, EvalRecord[]>();
+  for (const record of evalRecords) {
+    if (!record.challengePairId) {
+      continue;
+    }
+    const existing = evalsByChallengePair.get(record.challengePairId) ?? [];
+    existing.push(record);
+    evalsByChallengePair.set(record.challengePairId, existing);
+  }
+  const shadowReports: SubagentEconomicsWorkflowReport[] = [];
+  const batchRerouteDecisions = options.policy === 'challenge_prospective'
+    ? await routeArtifactBatch(grouped, repoDir, options.modelsAvailable, undefined, options.routeBatchImpl ?? routeBatch)
+    : new Map<string, WorkflowRouteDecision>();
+  const batchShadowDecisions = options.policy === 'subagent_model_economics_shadow'
+    ? await routeArtifactBatch(grouped, repoDir, options.modelsAvailable, 'stage-aware', options.routeBatchImpl ?? routeBatch)
+    : new Map<string, WorkflowRouteDecision>();
 
   for (const artifact of grouped) {
     let routeDecision = artifact.routeDecision;
     let routeValid = Boolean(routeDecision);
+    let proposedShadowDecision: WorkflowRouteDecision | null = null;
 
     if (options.policy === 'challenge_prospective') {
-      const prospectiveDecision = await rerouteArtifact(
-        artifact,
-        repoDir,
-        options.modelsAvailable,
-      );
+      const prospectiveDecision = batchRerouteDecisions.get(artifact.routePath);
       if (prospectiveDecision) {
-        routeDecision = prospectiveDecision;
+        routeDecision = {
+          planner: prospectiveDecision.planner,
+          coder: prospectiveDecision.coder,
+          reviewer: prospectiveDecision.reviewer,
+          maxCostUsd: prospectiveDecision.constraints?.maxCostUsd,
+          operatingMode: artifact.routeDecision?.operatingMode,
+          routeMode: artifact.routeDecision?.routeMode,
+        };
       } else {
         routeValid = false;
       }
     }
 
     const evalRecord = chooseEvalRecord(artifact, evalByIssueAndHash, evalByIssue);
+    if (options.policy === 'subagent_model_economics_shadow') {
+      proposedShadowDecision = batchShadowDecisions.get(artifact.routePath) ?? null;
+    }
     const prediction = predictionForRecord(evalRecord, artifact);
     if (evalRecord) {
       matchedEvalIds.add(evalRecord.id);
+    }
+
+    if (options.policy === 'subagent_model_economics_shadow') {
+      const pairedRecords = evalRecord?.challengePairId
+        ? (evalsByChallengePair.get(evalRecord.challengePairId) ?? []).filter((record) => record.id !== evalRecord.id)
+        : undefined;
+      shadowReports.push(await runSubagentEconomicsShadowPolicy({
+        repoDir,
+        record: evalRecord,
+        prompt: artifact.prompt,
+        issueId: artifact.issueId,
+        proposedDecision: proposedShadowDecision,
+        modelsAvailable: options.modelsAvailable,
+        maxCostUsd: maxBudgetForRecord(evalRecord, artifact),
+        pairedRecords,
+      }));
     }
 
     records.push({
@@ -648,12 +725,16 @@ export async function runWavemillRouterEval(
     score.wavemill_router_diagnostics,
     getMintEligibilityConfig(repoDir),
   );
+  const subagentModelEconomicsPolicy = options.policy === 'subagent_model_economics_shadow'
+    ? buildSubagentEconomicsReport(shadowReports)
+    : undefined;
   const hemRecord = buildHemRecord(
     repoDir,
     options.policy,
     score,
     mintEligibility,
     options.modelsAvailable,
+    subagentModelEconomicsPolicy,
   );
 
   if (persist) {
@@ -668,6 +749,7 @@ export async function runWavemillRouterEval(
     hemRecord,
     mintEligibility,
     records,
+    ...(subagentModelEconomicsPolicy ? { subagentModelEconomicsPolicy } : {}),
     excludedEvidence: {
       count: evidencePartition.excluded.length,
       reasonCounts: evidencePartition.reasonCounts,

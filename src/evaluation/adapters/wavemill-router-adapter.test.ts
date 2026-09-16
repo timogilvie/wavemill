@@ -4,8 +4,11 @@ import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import { runPatchSelectionEval, runWavemillRouterEval } from './wavemill-router-adapter.ts';
+import type { RouteBatchResult } from '../../../shared/lib/route-batch.ts';
 
 const fixtureRoot = resolve('tests/fixtures/wavemill-router-eval');
+const shadowFixtureRoot = resolve('tests/fixtures/wavemill-router-eval/shadow');
+const injectedModel = 'claude-haiku-4-5-20251001';
 
 function makeTempDir(): string {
   return mkdtempSync(join(tmpdir(), 'wavemill-router-eval-'));
@@ -21,6 +24,42 @@ function writeFixtureEvals(targetDir: string, extraLines: string[] = []): string
   const content = [base, ...extraLines].filter(Boolean).join('\n') + '\n';
   writeFileSync(join(targetDir, 'evals.jsonl'), content, 'utf-8');
   return targetDir;
+}
+
+async function fakeRouteBatch(
+  tasks: Array<{ issueId?: string; prompt?: string; file?: string }>,
+): Promise<RouteBatchResult[]> {
+  return tasks.map((task) => ({
+    task: {
+      issueId: task.issueId,
+      prompt: task.prompt ?? '',
+      file: task.file,
+    },
+    decision: {
+      planner: injectedModel,
+      coder: injectedModel,
+      reviewer: injectedModel,
+      planDepth: 'medium',
+      codeDepth: 'medium',
+      reviewRecommended: 'llm',
+      expectedSuccess: 0.82,
+      expectedCostPlan: 0.5,
+      expectedCostCode: 1,
+      expectedCostReview: 0.5,
+      confidence: 0.74,
+      reasoning: ['injected test route'],
+      signals: {
+        taskType: 'feature',
+        promptLength: 'medium',
+        complexityScore: 3,
+        fileTypes: ['ts'],
+        riskScore: 0.2,
+      },
+      routingMode: 'stage-aware',
+      neighborCount: 12,
+      neighborSimilarityRange: [0.7, 0.95],
+    },
+  }));
 }
 
 test('replay_exact_match joins route artifacts and eval records', async () => {
@@ -161,7 +200,8 @@ test('challenge_prospective reroutes with injected modelsAvailable', async () =>
       policy: 'challenge_prospective',
       evalsDir,
       artifactsDir: join(fixtureRoot, 'artifacts'),
-      modelsAvailable: ['claude-haiku-4-5-20251001'],
+      modelsAvailable: [injectedModel],
+      routeBatchImpl: fakeRouteBatch,
       persist: false,
     });
 
@@ -287,6 +327,30 @@ test('single-model prospective run persists launch-priority attribution', async 
       evalsDir,
       artifactsDir: join(fixtureRoot, 'artifacts'),
       modelsAvailable: ['glm-5.2'],
+      routeBatchImpl: async (tasks) => tasks.map((task) => ({
+        task: { issueId: task.issueId, prompt: task.prompt ?? '', file: task.file },
+        decision: {
+          planner: 'glm-5.2',
+          coder: 'glm-5.2',
+          reviewer: 'glm-5.2',
+          planDepth: 'medium',
+          codeDepth: 'medium',
+          reviewRecommended: 'llm',
+          expectedSuccess: 0.8,
+          expectedCostPlan: 1,
+          expectedCostCode: 1,
+          expectedCostReview: 1,
+          confidence: 0.8,
+          reasoning: ['injected test route'],
+          signals: {
+            taskType: 'feature',
+            promptLength: 'medium',
+            complexityScore: 3,
+            fileTypes: ['ts'],
+            riskScore: 0.2,
+          },
+        },
+      })),
       persist: true,
     });
 
@@ -302,6 +366,61 @@ test('single-model prospective run persists launch-priority attribution', async 
     assert.equal(hem.routing.planner.resolvedModelId, 'glm-5.2');
     assert.equal(hem.routing.coder.resolvedModelId, 'glm-5.2');
     assert.equal(hem.routing.reviewer.resolvedModelId, 'glm-5.2');
+  } finally {
+    cleanup(tmp);
+  }
+});
+
+test('subagent_model_economics_shadow emits dry-run report with abstentions and paired evidence', async () => {
+  const result = await runWavemillRouterEval({
+    repoDir: process.cwd(),
+    policy: 'subagent_model_economics_shadow',
+    evalsDir: join(shadowFixtureRoot, 'evals'),
+    artifactsDir: join(shadowFixtureRoot, 'artifacts'),
+    modelsAvailable: [injectedModel],
+    routeBatchImpl: fakeRouteBatch,
+    persist: false,
+  });
+
+  const shadow = result.subagentModelEconomicsPolicy;
+  assert.ok(shadow);
+  assert.equal(shadow.policy, 'subagent_model_economics_shadow');
+  assert.equal(shadow.summary.totalWorkflows, 5);
+  assert.ok(shadow.summary.pairedEvidenceCount >= 1);
+  assert.equal(result.hemRecord.subagent_model_economics_policy?.policy, 'subagent_model_economics_shadow');
+  assert.equal(result.hemRecord.wavemill_router_scoring?.measurement_policy, 'subagent_model_economics_shadow');
+
+  const partialCost = shadow.workflows.find((workflow) => workflow.task.issueId === 'HOK-2959D');
+  assert.ok(partialCost?.abstentionReasons.includes('partial_cost_coverage'));
+
+  const conflict = shadow.workflows.find((workflow) => workflow.task.issueId === 'HOK-2959E');
+  assert.equal(conflict?.coverage.executedModelIdentity, 'conflict');
+  assert.ok(conflict?.abstentionReasons.includes('executed_model_identity_conflict'));
+
+  const paired = shadow.workflows.find((workflow) => workflow.task.issueId === 'HOK-2959B');
+  assert.equal(paired?.pairedEvidence?.label, 'paired_replay_causal');
+  assert.equal(paired.observationalDelta?.label, 'non_causal_observational');
+});
+
+test('subagent_model_economics_shadow fixture run is read-only by default', async () => {
+  const tmp = makeTempDir();
+  try {
+    const source = readFileSync(join(shadowFixtureRoot, 'evals', 'evals.jsonl'), 'utf-8');
+    const evalsDir = join(tmp, 'evals');
+    mkdirSync(evalsDir, { recursive: true });
+    writeFileSync(join(evalsDir, 'evals.jsonl'), source, 'utf-8');
+
+    await runWavemillRouterEval({
+      repoDir: process.cwd(),
+      policy: 'subagent_model_economics_shadow',
+      evalsDir,
+      artifactsDir: join(shadowFixtureRoot, 'artifacts'),
+      modelsAvailable: [injectedModel],
+      routeBatchImpl: fakeRouteBatch,
+      persist: false,
+    });
+
+    assert.equal(readFileSync(join(evalsDir, 'evals.jsonl'), 'utf-8'), source);
   } finally {
     cleanup(tmp);
   }
