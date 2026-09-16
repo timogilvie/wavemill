@@ -409,6 +409,7 @@ TESTS=(
   shared/lib/rubric.test.ts
   shared/lib/rule-generator.test.ts
   shared/lib/stage-aware-router.test.ts
+  shared/lib/subagent-economics-policy.test.ts
   shared/lib/subsystem-cross-reference.test.ts
   shared/lib/subsystem-search.test.ts
   shared/lib/sync-config-classifier.test.ts
