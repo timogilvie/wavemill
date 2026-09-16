@@ -203,7 +203,7 @@
   "hokusai": {
     "dataSubmission": {
       "enabled": false,
-      "consentVersion": "1.0",
+      "consentVersion": "1.1",
       "endpoint": "https://api.hokusai.dev/v1/submit"
     }
   },
