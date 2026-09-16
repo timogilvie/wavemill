@@ -581,6 +581,7 @@ test('every TypeScript divergence reason is accepted by the eval JSON schema', (
     'state_vs_derived_side_mismatch',
     'operator_reroute',
     'missing_challenge_intent',
+    'multiple-varied-roles',
   ];
   for (const reason of reasons) {
     assert.equal(validateReason(reason), true, `schema rejects divergence reason ${reason}`);

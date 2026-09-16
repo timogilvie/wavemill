@@ -157,6 +157,7 @@ for f in \
   "$REPO_DIR"/tests/challenge-eval-soft-retry.test.sh \
   "$REPO_DIR"/tests/challenge-eval-invalid-challenge.test.sh \
   "$REPO_DIR"/tests/challenge-eval-timeout.test.sh \
+  "$REPO_DIR"/tests/challenge-provenance.test.sh \
   "$REPO_DIR"/tests/run-shell-suite.sh \
   "$REPO_DIR"/tests/run-unit-tests.sh \
   "$REPO_DIR"/tests/run-custom-tests.sh \

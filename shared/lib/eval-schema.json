@@ -3510,7 +3510,8 @@
         "identical_effective_route",
         "state_vs_derived_side_mismatch",
         "operator_reroute",
-        "missing_challenge_intent"
+        "missing_challenge_intent",
+        "multiple-varied-roles"
       ]
     },
     "ChallengeRoutingMeta": {
@@ -4589,6 +4590,7 @@
         "state_vs_derived_side_mismatch",
         "operator_reroute",
         "missing_challenge_intent",
+        "multiple-varied-roles",
         "divergent_pre_stage_inputs",
         "unverified_fork_commit",
         "missing_fork_identity",

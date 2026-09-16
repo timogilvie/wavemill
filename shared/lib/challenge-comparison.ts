@@ -119,6 +119,7 @@ export type NoComparisonReason =
   | 'operator_reroute'
   | 'state_vs_derived_side_mismatch'
   | 'missing_challenge_intent'
+  | 'multiple-varied-roles'
   // legacy skip reason
   | 'identical_routing_dimensions'
   // provenance validation outcomes
@@ -149,6 +150,7 @@ export const NO_COMPARISON_REASONS = [
   'operator_reroute',
   'state_vs_derived_side_mismatch',
   'missing_challenge_intent',
+  'multiple-varied-roles',
   'identical_routing_dimensions',
   'provenance_invalid',
   'provenance_inconclusive',
@@ -217,10 +219,12 @@ export interface ChallengeProvenanceValidationIssue {
 export interface ChallengeProvenanceValidation {
   valid: boolean;
   modelAttributionEligible?: boolean;
-  outcome?: 'invalid' | 'inconclusive';
+  outcome?: 'invalid' | 'inconclusive' | 'invalid_challenge';
   challengedStage?: StageName;
   challengedRole?: ChallengeStageRole;
   issues: ChallengeProvenanceValidationIssue[];
+  /** Details about why the challenge was invalid, e.g. which dimensions varied. */
+  invalidChallengeDetails?: string;
 }
 
 export interface ChallengeComparison {
@@ -822,6 +826,105 @@ export function challengeRoleForVariedDimensions(varied: VariedDimensions | unde
   return roles.length === 1 ? roles[0] : undefined;
 }
 
+/**
+ * List all roles that differ between primary and challenger.
+ */
+export function listVariedRoles(varied: VariedDimensions | undefined): ChallengeStageRole[] {
+  if (!varied) return [];
+  const roles: ChallengeStageRole[] = [];
+  if (varied.planner) roles.push('planner');
+  if (varied.coder) roles.push('coder');
+  if (varied.reviewer) roles.push('reviewer');
+  return roles;
+}
+
+/**
+ * List all varied dimension names (roles and non-roles).
+ */
+export function getVariedDimensionNames(varied: VariedDimensions | undefined): string[] {
+  if (!varied) return [];
+  const dims: string[] = [];
+  if (varied.planner) dims.push('planner');
+  if (varied.coder) dims.push('coder');
+  if (varied.reviewer) dims.push('reviewer');
+  if (varied.planDepth) dims.push('planDepth');
+  if (varied.codeDepth) dims.push('codeDepth');
+  if (varied.reviewMode) dims.push('reviewMode');
+  if (varied.routerVariant) dims.push('routerVariant');
+  if (varied.plannerPromptVariant) dims.push('plannerPromptVariant');
+  if (varied.reviewerPromptVariant) dims.push('reviewerPromptVariant');
+  return dims;
+}
+
+/**
+ * Check if more than one role varies, violating the one-variable invariant.
+ */
+export function hasMultiRoleVariation(varied: VariedDimensions | undefined): boolean {
+  const roles = listVariedRoles(varied);
+  return roles.length > 1;
+}
+
+/**
+ * Check if a role varies alongside a non-role dimension (e.g., role + depth or role + mode).
+ * This also violates the one-variable invariant.
+ */
+export function hasRoleAndNonRoleVariation(varied: VariedDimensions | undefined): boolean {
+  if (!varied) return false;
+  const roles = listVariedRoles(varied);
+  if (roles.length === 0) return false;
+  const nonRoles = [
+    varied.planDepth,
+    varied.codeDepth,
+    varied.reviewMode,
+    varied.routerVariant,
+    varied.plannerPromptVariant,
+    varied.reviewerPromptVariant,
+  ];
+  return nonRoles.some(Boolean);
+}
+
+/**
+ * Check if the challenger's non-selected stages diverge from the primary's finalized route.
+ * For an implementation-stage challenge, checks that planner and reviewer match.
+ * Returns diverged dimensions if any are found.
+ */
+export function detectChallengerRouteNonSelectedDivergence(
+  primaryRouting: ChallengeRoutingMeta | undefined,
+  challengerRouting: ChallengeRoutingMeta | undefined,
+  variedStage?: 'plan' | 'implementation' | 'review',
+): string[] {
+  if (!primaryRouting || !challengerRouting) return [];
+
+  const diverged: string[] = [];
+
+  // For each stage, check non-selected dimensions
+  if (variedStage === 'plan') {
+    // Coding and review are non-selected
+    if (primaryRouting.coder !== challengerRouting.coder) diverged.push('coder');
+    if (primaryRouting.codeDepth !== challengerRouting.codeDepth) diverged.push('codeDepth');
+    if (primaryRouting.reviewer !== challengerRouting.reviewer) diverged.push('reviewer');
+    if ((primaryRouting.reviewMode || primaryRouting.reviewRecommended) !== (challengerRouting.reviewMode || challengerRouting.reviewRecommended)) {
+      diverged.push('reviewMode');
+    }
+  } else if (variedStage === 'implementation') {
+    // Planning and review are non-selected
+    if (primaryRouting.planner !== challengerRouting.planner) diverged.push('planner');
+    if (primaryRouting.planDepth !== challengerRouting.planDepth) diverged.push('planDepth');
+    if (primaryRouting.reviewer !== challengerRouting.reviewer) diverged.push('reviewer');
+    if ((primaryRouting.reviewMode || primaryRouting.reviewRecommended) !== (challengerRouting.reviewMode || challengerRouting.reviewRecommended)) {
+      diverged.push('reviewMode');
+    }
+  } else if (variedStage === 'review') {
+    // Planning and coding are non-selected
+    if (primaryRouting.planner !== challengerRouting.planner) diverged.push('planner');
+    if (primaryRouting.planDepth !== challengerRouting.planDepth) diverged.push('planDepth');
+    if (primaryRouting.coder !== challengerRouting.coder) diverged.push('coder');
+    if (primaryRouting.codeDepth !== challengerRouting.codeDepth) diverged.push('codeDepth');
+  }
+
+  return diverged;
+}
+
 function stageForRole(role: ChallengeStageRole): StageName {
   return ROLE_STAGES[role];
 }
@@ -935,9 +1038,41 @@ export function validateChallengeExecutionProvenance(input: {
   primaryModel: string;
   challengerModel: string;
   variedDimensions?: VariedDimensions;
+  variedStage?: 'plan' | 'implementation' | 'review';
   repoDir?: string;
 }): ChallengeProvenanceValidation {
   const issues: ChallengeProvenanceValidationIssue[] = [];
+
+  // Detect multi-role variation or role-plus-non-role variation (invariant violation)
+  if (hasMultiRoleVariation(input.variedDimensions) || hasRoleAndNonRoleVariation(input.variedDimensions)) {
+    const variedDims = getVariedDimensionNames(input.variedDimensions);
+    const details = `Multiple varied dimensions: ${variedDims.join(', ')}`;
+    return {
+      valid: false,
+      modelAttributionEligible: false,
+      outcome: 'invalid_challenge',
+      invalidChallengeDetails: details,
+      issues,
+    };
+  }
+
+  // Detect challenger's non-selected stage route divergence (phase 2 violation)
+  const divergedDims = detectChallengerRouteNonSelectedDivergence(
+    input.primaryRouting,
+    input.challengerRouting,
+    input.variedStage,
+  );
+  if (divergedDims.length > 0) {
+    const details = `Challenger non-selected stages diverged from primary: ${divergedDims.join(', ')}`;
+    return {
+      valid: false,
+      modelAttributionEligible: false,
+      outcome: 'invalid_challenge',
+      invalidChallengeDetails: details,
+      issues,
+    };
+  }
+
   const role = challengeRoleForVariedDimensions(input.variedDimensions);
 
   if (role) {
@@ -1020,17 +1155,28 @@ export function buildInvalidProvenanceComparison(input: {
   variedStage?: 'plan' | 'implementation' | 'review';
   timestamp?: string;
 } & ComparisonRetentionInput): ChallengeComparison {
-  const reason = input.provenanceValidation.issues
-    .map((issue) => {
-      const side = issue.side === 'pair' ? 'pair' : `${issue.side} ${issue.role}`;
-      const path = issue.artifactPath ? ` (${issue.artifactPath})` : '';
-      const intended = issue.intendedModel ? ` intended=${issue.intendedModel}` : '';
-      const executed = issue.executedModel ? ` executed=${issue.executedModel}` : '';
-      return `${side}: ${issue.reason}${intended}${executed}${path}`;
-    })
-    .join('; ');
   const outcome = input.provenanceValidation.outcome ?? 'invalid';
-  const noComparisonReason = outcome === 'invalid' ? 'provenance_invalid' : 'provenance_inconclusive';
+  const reason = outcome === 'invalid_challenge'
+    ? input.provenanceValidation.invalidChallengeDetails || 'multiple varied dimensions'
+    : input.provenanceValidation.issues
+      .map((issue) => {
+        const side = issue.side === 'pair' ? 'pair' : `${issue.side} ${issue.role}`;
+        const path = issue.artifactPath ? ` (${issue.artifactPath})` : '';
+        const intended = issue.intendedModel ? ` intended=${issue.intendedModel}` : '';
+        const executed = issue.executedModel ? ` executed=${issue.executedModel}` : '';
+        return `${side}: ${issue.reason}${intended}${executed}${path}`;
+      })
+      .join('; ');
+
+  let noComparisonReason: NoComparisonReason;
+  let invalidChallengeReason: InvalidChallengeReason | undefined;
+  if (outcome === 'invalid_challenge') {
+    noComparisonReason = 'multiple-varied-roles';
+    invalidChallengeReason = 'multiple-varied-roles';
+  } else {
+    noComparisonReason = outcome === 'invalid' ? 'provenance_invalid' : 'provenance_inconclusive';
+  }
+
   return {
     challengePairId: input.challengePairId,
     primaryModel: input.primaryModel,
@@ -1053,6 +1199,9 @@ export function buildInvalidProvenanceComparison(input: {
     challengeType: input.challengeType,
     variedStage: input.variedStage,
     comparisonOutcome: outcome,
+    invalidChallengeReason,
+    invalidChallenge: outcome === 'invalid_challenge',
+    invalidChallengeDetails: input.provenanceValidation.invalidChallengeDetails,
     terminalReason: 'provenance_validation_failed',
     noComparisonReason,
     ...comparisonRetentionFields(input),
