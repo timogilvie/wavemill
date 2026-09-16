@@ -3957,6 +3957,143 @@ ensure_phase_config_state_file() {
 EOF
 }
 
+sync_challenger_shared_route_from_primary() {
+  local routing_file="$1" issue="$2" state_file="$3" challenge_intent_file="$4" challenge_side="$5"
+  [[ "$challenge_side" == "challenger" ]] || return 0
+  [[ -n "$routing_file" && -f "$routing_file" && -n "$state_file" && -f "$state_file" ]] || return 0
+  [[ -n "$challenge_intent_file" && -f "$challenge_intent_file" ]] || return 0
+
+  local selected_stage primary_issue
+  selected_stage="$(jq -r --arg side "$challenge_side" '
+    def nz(a; b): if ((a // "") == "") then b else a end;
+    (.[$side] // {}) as $sideObj
+    | (nz(.selectedStage; nz(.challengeStage; $sideObj.challengeStage)) | tostring | ascii_downcase) as $raw
+    | if   $raw == "plan" or $raw == "planning" or $raw == "planner" then "plan"
+      elif $raw == "review" or $raw == "reviewer" then "review"
+      elif $raw == "implementation" or $raw == "coding" or $raw == "coder" then "implementation"
+      else "" end
+  ' "$challenge_intent_file" 2>/dev/null || true)"
+  case "$selected_stage" in
+    plan|implementation|review) ;;
+    *) return 0 ;;
+  esac
+
+  primary_issue="$(jq -r --arg issue "$issue" '
+    (.tasks[$issue].challengePairId // "") as $pair
+    | if ($pair != "" and $pair != $issue and (.tasks[$pair]? != null)) then $pair
+      elif ($issue | endswith("_c")) and (.tasks[($issue | sub("_c$"; ""))]? != null) then ($issue | sub("_c$"; ""))
+      else "" end
+  ' "$state_file" 2>/dev/null || true)"
+  if [[ -z "$primary_issue" || "$primary_issue" == "null" ]]; then
+    log "warn" "challenger expanded route invalid: primary finalized route unavailable for $issue"
+    return 1
+  fi
+
+  local primary_planner primary_coder primary_reviewer primary_plan_depth primary_code_depth primary_review_mode
+  primary_planner="$(jq -r --arg issue "$primary_issue" '.tasks[$issue].plannerModel // ""' "$state_file" 2>/dev/null || true)"
+  primary_coder="$(jq -r --arg issue "$primary_issue" '.tasks[$issue].coderModel // ""' "$state_file" 2>/dev/null || true)"
+  primary_reviewer="$(jq -r --arg issue "$primary_issue" '.tasks[$issue].reviewerModel // ""' "$state_file" 2>/dev/null || true)"
+  primary_plan_depth="$(jq -r --arg issue "$primary_issue" '.tasks[$issue].planDepth // ""' "$state_file" 2>/dev/null || true)"
+  primary_code_depth="$(jq -r --arg issue "$primary_issue" '.tasks[$issue].codeDepth // ""' "$state_file" 2>/dev/null || true)"
+  primary_review_mode="$(jq -r --arg issue "$primary_issue" '.tasks[$issue].reviewMode // ""' "$state_file" 2>/dev/null || true)"
+
+  case "$selected_stage" in
+    plan)
+      if [[ -z "$primary_coder" || -z "$primary_reviewer" ]]; then
+        log "warn" "challenger expanded route invalid: primary coding/review route unavailable for $issue"
+        return 1
+      fi
+      ;;
+    implementation)
+      if [[ -z "$primary_planner" || -z "$primary_reviewer" ]]; then
+        log "warn" "challenger expanded route invalid: primary planning/review route unavailable for $issue"
+        return 1
+      fi
+      ;;
+    review)
+      if [[ -z "$primary_planner" || -z "$primary_coder" ]]; then
+        log "warn" "challenger expanded route invalid: primary planning/coding route unavailable for $issue"
+        return 1
+      fi
+      ;;
+  esac
+
+  if ! state_mutate "$routing_file" \
+    'def nz(a; b): if ((a // "") == "") then b else a end;
+     if $stage == "plan" then
+       .coder = $coder
+       | .codeDepth = nz($codeDepth; .codeDepth)
+       | .reviewer = $reviewer
+       | .reviewMode = nz($reviewMode; nz(.reviewMode; .reviewRecommended))
+       | .reviewRecommended = .reviewMode
+     elif $stage == "implementation" then
+       .planner = $planner
+       | .planDepth = nz($planDepth; .planDepth)
+       | .reviewer = $reviewer
+       | .reviewMode = nz($reviewMode; nz(.reviewMode; .reviewRecommended))
+       | .reviewRecommended = .reviewMode
+     elif $stage == "review" then
+       .planner = $planner
+       | .planDepth = nz($planDepth; .planDepth)
+       | .coder = $coder
+       | .codeDepth = nz($codeDepth; .codeDepth)
+     else . end
+     | .challengeSharedRouteApplied = true
+     | .challengeSharedRouteSource = {
+         primaryIssue: $primaryIssue,
+         selectedStage: $stage,
+         appliedAt: (now | todateiso8601)
+       }' \
+    --arg stage "$selected_stage" \
+    --arg primaryIssue "$primary_issue" \
+    --arg planner "$primary_planner" \
+    --arg coder "$primary_coder" \
+    --arg reviewer "$primary_reviewer" \
+    --arg planDepth "$primary_plan_depth" \
+    --arg codeDepth "$primary_code_depth" \
+    --arg reviewMode "$primary_review_mode"; then
+    log "warn" "challenger expanded route invalid: failed to sync primary shared route for $issue"
+    return 1
+  fi
+
+  local divergence
+  divergence="$(jq -r \
+    --arg stage "$selected_stage" \
+    --arg planner "$primary_planner" \
+    --arg coder "$primary_coder" \
+    --arg reviewer "$primary_reviewer" \
+    --arg planDepth "$primary_plan_depth" \
+    --arg codeDepth "$primary_code_depth" \
+    --arg reviewMode "$primary_review_mode" \
+    'def mismatch(name; actual; expected):
+       if expected != "" and ((actual // "") != expected) then name else empty end;
+     [
+       if $stage == "plan" then
+         mismatch("coder"; .coder; $coder),
+         mismatch("codeDepth"; .codeDepth; $codeDepth),
+         mismatch("reviewer"; .reviewer; $reviewer),
+         mismatch("reviewMode"; (.reviewMode // .reviewRecommended // ""); $reviewMode)
+       elif $stage == "implementation" then
+         mismatch("planner"; .planner; $planner),
+         mismatch("planDepth"; .planDepth; $planDepth),
+         mismatch("reviewer"; .reviewer; $reviewer),
+         mismatch("reviewMode"; (.reviewMode // .reviewRecommended // ""); $reviewMode)
+       elif $stage == "review" then
+         mismatch("planner"; .planner; $planner),
+         mismatch("planDepth"; .planDepth; $planDepth),
+         mismatch("coder"; .coder; $coder),
+         mismatch("codeDepth"; .codeDepth; $codeDepth)
+       else empty end
+     ] | join(",")' "$routing_file" 2>/dev/null || true)"
+  if [[ -n "$divergence" && "$divergence" != "null" ]]; then
+    log "warn" "challenger expanded route invalid: shared route still diverges for $issue ($divergence)"
+    return 1
+  fi
+
+  log_route_lifecycle "challenge_shared_route_synced" "issue=$issue" "primary=$primary_issue" "stage=$selected_stage"
+  return 0
+}
+
 apply_expanded_route_if_present() {
   local feature_dir="$1" issue="$2" slug="$3" worktree_dir="$4" state_file="${5:-${STATE_FILE:-}}"
   local route_file routing_file phase_config_file planner_model plan_depth coder_model code_depth reviewer_model review_mode
@@ -4118,6 +4255,12 @@ apply_expanded_route_if_present() {
   # disarmed preservation for every later phase of the same task.
   if [[ -n "$challenge_intent_file" && ! -f "$feature_dir/challenge-intent.json" ]]; then
     cp "$challenge_intent_file" "$feature_dir/challenge-intent.json" 2>/dev/null || true
+  fi
+
+  if ! sync_challenger_shared_route_from_primary "$routing_file" "$issue" "$state_file" "$challenge_intent_file" "$challenge_side"; then
+    active_route="$(route_lifecycle_route_id "$routing_file" 2>/dev/null || true)"
+    log_route_lifecycle "expansion_failed" "issue=$issue" "reason=challenger_shared_route_diverged" "active_route=\"${active_route}\""
+    return 1
   fi
   if [[ -n "$challenge_intent_tmp" ]]; then
     rm -f "$challenge_intent_tmp" 2>/dev/null || true
