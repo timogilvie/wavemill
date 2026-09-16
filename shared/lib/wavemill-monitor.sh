@@ -2398,13 +2398,31 @@ challenge_pair_manual_artifact_path() {
 }
 
 write_manual_challenge_comparison_artifact() {
-  local pair_id="$1" primary_key="$2" challenger_key="$3" timed_out_sides_csv="$4" retry_count="$5" retry_max="$6"
+  local pair_id="$1" primary_key="$2" challenger_key="$3" timed_out_sides_csv="$4" retry_count="$5" retry_max="$6" cause="${7:-eval_timeout}"
   local artifact_path primary_pr challenger_pr
   artifact_path=$(challenge_pair_manual_artifact_path "$primary_key") || return 1
   primary_pr=$(read_state_value "" --arg i "$primary_key" '.tasks[$i].pr // empty')
   challenger_pr=$(read_state_value "" --arg i "$challenger_key" '.tasks[$i].pr // empty')
   mkdir -p "$(dirname "$artifact_path")"
-  cat > "$artifact_path" <<EOF
+  if [[ "$cause" == "stale_eval_evidence" ]]; then
+    cat > "$artifact_path" <<EOF
+# Challenge Comparison Needs Manual Action
+
+Pair ID: $pair_id
+Primary issue: $primary_key
+Challenger issue: $challenger_key
+Primary PR: ${primary_pr:-unknown}
+Challenger PR: ${challenger_pr:-unknown}
+Cause: eval evidence repeatedly refused as stale at the current PR head (relaunches exhausted)
+Retry count: $retry_count/$retry_max
+
+Next action:
+1. Inspect \`npx tsx tools/challenge-eval-evidence.ts --pair-id $pair_id --side <side> --pr <pr> --repo-dir .\` and re-run the eval manually if the refusal is transient.
+2. If eval cannot be recovered quickly, compare PRs #${primary_pr:-?} and #${challenger_pr:-?} manually.
+3. Close the losing PR and proceed with the winner.
+EOF
+  else
+    cat > "$artifact_path" <<EOF
 # Challenge Comparison Needs Manual Action
 
 Pair ID: $pair_id
@@ -2419,6 +2437,34 @@ Next action:
 1. Re-run the timed-out eval job(s) manually when infrastructure is healthy.
 2. If eval cannot be recovered quickly, compare PRs #${primary_pr:-?} and #${challenger_pr:-?} manually.
 3. Close the losing PR and proceed with the winner.
+EOF
+  fi
+  printf '%s\n' "$artifact_path"
+}
+
+write_invalid_challenge_artifact() {
+  local pair_id="$1" primary_key="$2" challenger_key="$3" divergence_reason="$4" eval_ids_csv="$5"
+  local artifact_path primary_pr challenger_pr
+  artifact_path=$(challenge_pair_manual_artifact_path "$primary_key") || return 1
+  primary_pr=$(read_state_value "" --arg i "$primary_key" '.tasks[$i].pr // empty')
+  challenger_pr=$(read_state_value "" --arg i "$challenger_key" '.tasks[$i].pr // empty')
+  mkdir -p "$(dirname "$artifact_path")"
+  cat > "$artifact_path" <<EOF
+# Challenge Pair Invalid - Manual Action
+
+Pair ID: $pair_id
+Primary issue: $primary_key
+Challenger issue: $challenger_key
+Primary PR: ${primary_pr:-unknown}
+Challenger PR: ${challenger_pr:-unknown}
+Cause: invalid_challenge (${divergence_reason:-unknown})
+Eval ID(s): ${eval_ids_csv:-unknown}
+
+The eval ran at the current PR head. Its record is invalid. Re-running evals will reproduce this result - do not re-run them.
+
+Next action:
+1. Retire the invalid arm: close its PR, mark the arm aborted, then ship the surviving PR.
+2. Or assess/supersede the pair with \`npx tsx tools/challenge-pair-recovery.ts --pair $pair_id\`. Add \`--apply\` after reviewing the dry run.
 EOF
   printf '%s\n' "$artifact_path"
 }
@@ -10219,7 +10265,7 @@ mark_challenge_compared() {
 }
 
 mark_challenge_invalid() {
-  local pair_id="$1" reason="$2" details="${3:-}"
+  local pair_id="$1" reason="$2" details="${3:-}" artifact_path="${4:-}"
   if ! state_mutate "$STATE_FILE" '
     .tasks |= with_entries(
       if (.value.challengePairId // "") == $pair then
@@ -10228,6 +10274,7 @@ mark_challenge_invalid() {
         .value.invalidChallengeReason = $reason |
         .value.invalidChallengeDetails = $details |
         .value.challengeRepairAction = ("wavemill mill challenge repair " + $pair) |
+        .value |= (if $artifactPath != "" then .manualComparisonArtifact = $artifactPath else . end) |
         .value |= (
           del(
             .comparisonRunning,
@@ -10238,7 +10285,7 @@ mark_challenge_invalid() {
       else
         .
       end
-    )' --arg pair "$pair_id" --arg reason "$reason" --arg details "$details"; then
+    )' --arg pair "$pair_id" --arg reason "$reason" --arg details "$details" --arg artifactPath "$artifact_path"; then
     log_warn "mark_challenge_invalid: failed for $pair_id"
   fi
 }
@@ -10634,11 +10681,12 @@ challenge_orchestration_fingerprint() {
 # Whether one challenge arm has valid eval evidence at its current PR head
 # (HOK-2963). Prints:
 #   current - a valid current-head eval record exists
-#   stale   - the selector positively refused (missing/old-head/invalid)
+#   stale   - the selector positively refused for relaunchable evidence
+#   invalid - every current-head candidate is an invalid challenge
 #   unknown - the check itself failed (fail-safe: treat as current)
 challenge_eval_current_head_state() {
-  local issue="$1" pr="$2"
-  local pair_id side out ok
+  local issue="$1" pr="$2" evidence_out="${3:-}"
+  local pair_id side out ok disposition
   pair_id=$(get_task_meta "$issue" "challengePairId")
   side=$(get_task_meta "$issue" "challengeRole")
   [[ -z "$side" ]] && side="primary"
@@ -10651,12 +10699,29 @@ challenge_eval_current_head_state() {
     printf 'unknown\n'
     return 0
   fi
+  if [[ -n "$evidence_out" ]]; then
+    mkdir -p "$(dirname "$evidence_out")" 2>/dev/null && printf '%s\n' "$out" > "$evidence_out" 2>/dev/null || true
+  fi
   # `.ok` directly, not `.ok // empty`: jq's alternative operator swallows
   # `false`, which is exactly the value that means "stale".
   ok=$(jq -r '.ok' <<<"$out" 2>/dev/null || echo "")
   case "$ok" in
     true) printf 'current\n' ;;
-    false) printf 'stale\n' ;;
+    false)
+      disposition=$(jq -r '
+        (.currentHeadSha // "") as $head
+        | [(.candidates // [])[] | select((.evaluatedPrHeadSha // "") == $head)] as $currentHeadCandidates
+        | if (.reason == "ineligible_evidence" and
+            $head != "" and
+            ($currentHeadCandidates | length) > 0 and
+            all($currentHeadCandidates[]; .rejection == "invalid_challenge"))
+          then "invalid" else "stale" end
+      ' <<<"$out" 2>/dev/null || echo "stale")
+      case "$disposition" in
+        invalid) printf 'invalid\n' ;;
+        *) printf 'stale\n' ;;
+      esac
+      ;;
     *) printf 'unknown\n' ;;
   esac
 }
@@ -10691,7 +10756,7 @@ challenge_eval_stale_relaunch_allowed() {
           primary_key="$pair_id"
           challenger_key="${pair_id}_c"
           artifact_path=$(write_manual_challenge_comparison_artifact "$pair_id" "$primary_key" "$challenger_key" "" \
-            "$(bounded_retry_count "$state_dir" "challenge-eval-stale")" "$limit" || true)
+            "$(bounded_retry_count "$state_dir" "challenge-eval-stale")" "$limit" "stale_eval_evidence" || true)
           write_challenge_pair_state "$pair_id" "manual_comparison_needed" "stale_eval_evidence" \
             "$(bounded_retry_count "$state_dir" "challenge-eval-stale")" "$limit" "" "" "$artifact_path" >/dev/null || true
         fi
@@ -10703,6 +10768,41 @@ challenge_eval_stale_relaunch_allowed() {
       return 1
       ;;
   esac
+}
+
+challenge_eval_invalid_terminalize() {
+  local issue="$1" slug="$2" evidence_json_path="$3"
+  local state_dir pair_id primary_key challenger_key divergence eval_ids artifact_path details
+  state_dir="${WORKTREE_ROOT}/${slug}/features/${slug}"
+  pair_id=$(get_task_meta "$issue" "challengePairId")
+  [[ -n "$pair_id" ]] || return 0
+  primary_key="$pair_id"
+  challenger_key="${pair_id}_c"
+  divergence=$(jq -r '
+    (.currentHeadSha // "") as $head
+    | [(.candidates // [])[] | select((.evaluatedPrHeadSha // "") == $head)] as $currentHeadCandidates
+    | ($currentHeadCandidates[0].challengeDivergenceReason // $currentHeadCandidates[0].rejection // "invalid_challenge")
+  ' "$evidence_json_path" 2>/dev/null || echo "invalid_challenge")
+  [[ -n "$divergence" && "$divergence" != "null" ]] || divergence="invalid_challenge"
+  eval_ids=$(jq -r '
+    (.currentHeadSha // "") as $head
+    | [(.candidates // [])[] | select((.evaluatedPrHeadSha // "") == $head).evalId // empty]
+    | map(select(length > 0))
+    | join(",")
+  ' "$evidence_json_path" 2>/dev/null || echo "")
+
+  if bounded_retry_mark_exhausted "$state_dir" "challenge-eval-stale" \
+      "Challenge eval evidence for $issue (pair ${pair_id}) is invalid_challenge (${divergence}) at the current PR head - terminal, relaunch cannot fix it (HOK-3007)"; then
+    artifact_path=$(write_invalid_challenge_artifact "$pair_id" "$primary_key" "$challenger_key" "$divergence" "$eval_ids" || true)
+    details="Current-head challenge eval evidence is invalid_challenge (${divergence})."
+    if [[ -n "$eval_ids" ]]; then
+      details="${details} Eval ID(s): ${eval_ids}."
+    fi
+    details="${details} Re-running evals will reproduce the same invalid record. Retire the invalid arm or run challenge-pair-recovery.ts."
+    mark_challenge_invalid "$pair_id" "$divergence" "$details" "$artifact_path"
+    log_warn "challenge eval evidence for $issue is invalid_challenge (${divergence}) - terminal, no relaunch (pair ${pair_id})"
+  fi
+  return 0
 }
 
 # Orchestrate challenge eval/comparison for an implementation-ready arm whose
@@ -10778,6 +10878,7 @@ maybe_run_challenge_eval() {
   local eval_completed eval_failed eval_hard_retry_count eval_hard_retry_max
   local pair_id solution_model linear_issue eval_agent side challenge_stage job_id job_status job_dir log_path result_path pid eval_timeout
   local task_status challenge_aborted
+  local evidence_json_path="${WORKTREE_ROOT}/${slug}/features/${slug}/.challenge-eval-evidence.json"
   task_status=$(read_state_value "" --arg i "$issue" '.tasks[$i].status // empty')
   challenge_aborted=$(read_state_value "" --arg i "$issue" '.tasks[$i].challengeAborted // empty')
   if [[ "$task_status" == "aborted" || ( -n "$challenge_aborted" && -z "$pr" ) ]]; then
@@ -10790,13 +10891,21 @@ maybe_run_challenge_eval() {
   # 'unknown' (check infrastructure failed) fails safe by trusting the flag.
   local eval_head_state=""
   if [[ "$eval_completed" == "true" ]]; then
-    eval_head_state=$(challenge_eval_current_head_state "$issue" "$pr")
-    if [[ "$eval_head_state" != "stale" ]]; then
-      return 0
-    fi
-    if ! challenge_eval_stale_relaunch_allowed "$issue" "$slug"; then
-      return 0
-    fi
+    eval_head_state=$(challenge_eval_current_head_state "$issue" "$pr" "$evidence_json_path")
+    case "$eval_head_state" in
+      invalid)
+        challenge_eval_invalid_terminalize "$issue" "$slug" "$evidence_json_path"
+        return 0
+        ;;
+      stale)
+        if ! challenge_eval_stale_relaunch_allowed "$issue" "$slug"; then
+          return 0
+        fi
+        ;;
+      *)
+        return 0
+        ;;
+    esac
     log "status" "  📊 challenge eval for $issue is stale for the current PR head - relaunching (HOK-2963)"
     state_mutate "$STATE_FILE" '
       .tasks[$issue].evalCompleted = false
@@ -10876,10 +10985,18 @@ maybe_run_challenge_eval() {
     # only suppress relaunch while valid current-head evidence exists.
     # launch_tracked_job upserts by job id, replacing the stale entry.
     if [[ -z "$eval_head_state" ]]; then
-      eval_head_state=$(challenge_eval_current_head_state "$issue" "$pr")
-      if [[ "$eval_head_state" == "stale" ]] && ! challenge_eval_stale_relaunch_allowed "$issue" "$slug"; then
-        return 0
-      fi
+      eval_head_state=$(challenge_eval_current_head_state "$issue" "$pr" "$evidence_json_path")
+      case "$eval_head_state" in
+        invalid)
+          challenge_eval_invalid_terminalize "$issue" "$slug" "$evidence_json_path"
+          return 0
+          ;;
+        stale)
+          if ! challenge_eval_stale_relaunch_allowed "$issue" "$slug"; then
+            return 0
+          fi
+          ;;
+      esac
     fi
     if [[ "$eval_head_state" != "stale" ]]; then
       return 0
