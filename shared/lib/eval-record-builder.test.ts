@@ -30,6 +30,7 @@ import {
   attachNonRewardReason,
   attachRubricEval,
   attachStageOutcomes,
+  attachTaskScorerResult,
   attachTaskContextMetadata,
   attachRepoContextMetadata,
   attachWorkflowCostMetadata,
@@ -206,6 +207,27 @@ describe('eval-record-builder', () => {
       attachProviderMetadata(baseRecord, undefined, undefined);
       expect(baseRecord.provider).toBeUndefined();
       expect(baseRecord.endpoint).toBeUndefined();
+    });
+  });
+
+  describe('attachTaskScorerResult', () => {
+    it('attaches valid scorer results and ignores malformed input', () => {
+      attachTaskScorerResult(baseRecord, {
+        decision: 'expand',
+        confidence: 0.7,
+        explanation: 'Sparse validation details.',
+        model_version: 'task-packet-scorer-v1-test',
+      });
+      expect(baseRecord.task_scorer_result?.decision).toBe('expand');
+
+      const malformed = { ...baseRecord, task_scorer_result: undefined };
+      attachTaskScorerResult(malformed, {
+        decision: 'run',
+        confidence: 2,
+        explanation: 'bad',
+        model_version: 'bad',
+      } as never);
+      expect(malformed.task_scorer_result).toBeUndefined();
     });
   });
 

@@ -483,6 +483,15 @@ export interface IntegrationConfig {
   deleteBranchAfterMerge: boolean;
   haltOnRed: boolean;
   requiredChecks: string[];
+  /**
+   * Check-run names on the integration tip whose failure is recorded but never
+   * makes integration unhealthy. Applies only to the merge-lane tip health
+   * gate, never to the PR-level ready gate — a PR whose own head SHA reports
+   * one of these checks as failed is still blocked by the standard rollup.
+   * Exact name matching (no glob/regex) to avoid accidentally demoting real
+   * checks; a renamed CI job must update this list.
+   */
+  advisoryChecks: string[];
   highRiskPolicy: 'block' | 'manual' | 'allow';
   useMillSession: boolean;
   mergeLockTimeoutMinutes: number;
@@ -627,8 +636,14 @@ export interface ReadyConfig {
   remediationLogMaxBytes?: number;
   verificationGatingEnabled?: boolean;
   localCommandMap?: Record<string, string>;
+  routeStamp?: ReadyRouteStampConfig;
   remediation?: ReadyRemediationConfig;
   watchdog?: ReadyWatchdogConfig;
+}
+
+export interface ReadyRouteStampConfig {
+  enabled?: boolean;
+  requireComplete?: boolean;
 }
 
 export interface ReadyMigrationBaseRefreshConfig {
@@ -856,6 +871,7 @@ export const INTEGRATION_DEFAULTS: IntegrationConfig = {
   deleteBranchAfterMerge: true,
   haltOnRed: true,
   requiredChecks: [],
+  advisoryChecks: ['OpenRouter Alias Audit'],
   highRiskPolicy: 'manual',
   useMillSession: true,
   mergeLockTimeoutMinutes: 45,

@@ -8,6 +8,7 @@
  * Prints a single JSON object:
  *   { ok: true,  evalId, evaluatedPrHeadSha, currentHeadSha }
  *   { ok: false, reason, currentHeadSha, candidates }
+ *     candidates may include challengeDivergenceReason for invalid challenges.
  *
  * Exit code is 0 for both outcomes; infrastructure failures (unresolvable PR
  * identity, unreadable records) exit non-zero so callers can distinguish
