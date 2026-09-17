@@ -81,11 +81,11 @@ describe('GPT-5.5 production inventory audit', () => {
   });
 
   it('headless default is not gpt-5.5', async () => {
-    const { HEADLESS_DEFAULT_MODEL } = await import('../shared/lib/headless-llm.ts');
-    
+    const { HEADLESS_DEFAULT_MODEL } = await import('./headless-llm.ts');
+
     const envOverride = process.env.WAVEMILL_HEADLESS_MODEL;
     const effective = envOverride || HEADLESS_DEFAULT_MODEL;
-    
+
     assert.notEqual(
       effective,
       'gpt-5.5',
