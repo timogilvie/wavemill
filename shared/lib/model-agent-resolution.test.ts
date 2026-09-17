@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ModelRegistry } from './model-registry.ts';
-import { resolveModelAgent, type AgentResolution } from './model-agent-resolution.ts';
+import { resolveModelAgent, resolveLaunchPreflight, type AgentResolution } from './model-agent-resolution.ts';
 import { getStageContextWindowFloor } from './model-registry.ts';
 
 function makeRegistry(modelId: string, model: ModelRegistry['models'][string]): ModelRegistry {
@@ -438,5 +438,169 @@ describe('resolveModelAgent', () => {
     assert.equal(result.ok, true);
     if (!result.ok) assert.fail('expected successful resolution for planning stage');
     assert.equal(result.agent, 'native-openrouter');
+  });
+});
+
+describe('resolveLaunchPreflight', () => {
+  it('succeeds for valid non-retired models', () => {
+    const registry = makeRegistry('claude-sonnet-5', {
+      vendor: 'anthropic',
+    });
+    const result = resolveLaunchPreflight({
+      requestedModel: 'claude-sonnet-5',
+      phase: 'coding',
+      registry,
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) assert.fail('expected success');
+    assert.equal(result.requestedModel, 'claude-sonnet-5');
+    assert.equal(result.resolvedModel, 'claude-sonnet-5');
+    assert.equal(result.agent, 'claude');
+  });
+
+  it('resolves deprecated models through successor chain', () => {
+    const registry: ModelRegistry = {
+      models: {
+        'gpt-5.5': {
+          vendor: 'openai',
+          class: 'frontier',
+          strengths: [],
+          weaknesses: [],
+          qualityScores: { routing: 70, planning: 70, coding: 70, review: 70, classify: 70 },
+          contextWindowTokens: 400_000,
+          toolSupport: 'full',
+          multimodal: { text: true, image: true },
+          latencyTier: 'slow',
+          reasoningTier: 'advanced',
+          costPerMillionInputTokensUsd: 5,
+          costPerMillionOutputTokensUsd: 30,
+          agent: 'codex',
+          codexChatgptCapability: { supported: false, reason: 'Retired model' },
+          identity: {
+            status: 'verified',
+            revision: 1,
+            fingerprint: 'test',
+            displayName: 'gpt-5.5',
+            family: 'gpt',
+            evidencePolicy: 'eligible',
+            lineage: {
+              successor: 'gpt-5.6-terra',
+            },
+          },
+          supportedModel: {
+            lifecycle: 'deprecated',
+            launchEligible: false,
+            routingEligible: false,
+          },
+        },
+        'gpt-5.6-terra': {
+          vendor: 'openai',
+          class: 'strong_generalist',
+          strengths: [],
+          weaknesses: [],
+          qualityScores: { routing: 70, planning: 70, coding: 70, review: 70, classify: 70 },
+          contextWindowTokens: 1_050_000,
+          toolSupport: 'full',
+          multimodal: { text: true, image: true },
+          latencyTier: 'standard',
+          reasoningTier: 'advanced',
+          costPerMillionInputTokensUsd: 2.5,
+          costPerMillionOutputTokensUsd: 15,
+          agent: 'codex',
+          codexChatgptCapability: { supported: true },
+          identity: {
+            status: 'verified',
+            revision: 1,
+            fingerprint: 'test',
+            displayName: 'gpt-5.6-terra',
+            family: 'gpt',
+            evidencePolicy: 'eligible',
+          },
+        },
+      },
+      ladders: { coding: ['gpt-5.6-terra'] },
+    };
+
+    const result = resolveLaunchPreflight({
+      requestedModel: 'gpt-5.5',
+      phase: 'coding',
+      registry,
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) assert.fail('expected successor resolution');
+    assert.equal(result.requestedModel, 'gpt-5.5');
+    assert.equal(result.resolvedModel, 'gpt-5.6-terra');
+    assert.equal(result.agent, 'codex');
+  });
+
+  it('fails for retired models without a valid successor', () => {
+    const registry: ModelRegistry = {
+      models: {
+        'gpt-5.5': {
+          vendor: 'openai',
+          class: 'frontier',
+          strengths: [],
+          weaknesses: [],
+          qualityScores: { routing: 70, planning: 70, coding: 70, review: 70, classify: 70 },
+          contextWindowTokens: 400_000,
+          toolSupport: 'full',
+          multimodal: { text: true, image: true },
+          latencyTier: 'slow',
+          reasoningTier: 'advanced',
+          costPerMillionInputTokensUsd: 5,
+          costPerMillionOutputTokensUsd: 30,
+          agent: 'codex',
+          codexChatgptCapability: { supported: false },
+          identity: {
+            status: 'verified',
+            revision: 1,
+            fingerprint: 'test',
+            displayName: 'gpt-5.5',
+            family: 'gpt',
+            evidencePolicy: 'eligible',
+          },
+          supportedModel: {
+            lifecycle: 'deprecated',
+            launchEligible: false,
+            routingEligible: false,
+          },
+        },
+      },
+      ladders: {},
+    };
+
+    const result = resolveLaunchPreflight({
+      requestedModel: 'gpt-5.5',
+      phase: 'coding',
+      registry,
+    });
+
+    assert.equal(result.ok, false);
+    if (result.ok) assert.fail('expected rejection');
+    assert.equal(result.requestedModel, 'gpt-5.5');
+    assert.equal(result.resolvedModel, null);
+    assert.equal(result.reason, 'retired-model-no-successor');
+    assert.match(result.diagnostic, /retired-model-no-successor/);
+  });
+
+  it('fails for unknown models', () => {
+    const registry: ModelRegistry = {
+      models: {},
+      ladders: {},
+    };
+
+    const result = resolveLaunchPreflight({
+      requestedModel: 'gpt-99-turbo',
+      phase: 'coding',
+      registry,
+    });
+
+    assert.equal(result.ok, false);
+    if (result.ok) assert.fail('expected unknown model rejection');
+    assert.equal(result.requestedModel, 'gpt-99-turbo');
+    assert.equal(result.resolvedModel, null);
+    assert.equal(result.reason, 'unknown-model');
   });
 });

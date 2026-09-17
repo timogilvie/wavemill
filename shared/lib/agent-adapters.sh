@@ -1266,7 +1266,7 @@ You are in the **ROUTING PHASE** of a multi-phase workflow. Your job is to:
 3. Save the routing results to $routing_path as JSON:
    {
      "planner": "gpt-5.6-terra",
-     "coder": "gpt-5.5",
+     "coder": "gpt-5.6-terra",
      "reviewer": "gpt-5.6-terra",
      "planDepth": "light",
      "codeDepth": "medium",
@@ -1284,7 +1284,7 @@ You are in the **ROUTING PHASE** of a multi-phase workflow. Your job is to:
 - Use the routing tool's recommendations directly - don't override them
 - If the routing tool fails, use sensible defaults:
   - planner: gpt-5.6-terra
-  - coder: gpt-5.5
+  - coder: gpt-5.6-terra
   - reviewer: gpt-5.6-terra
   - planDepth: light
   - codeDepth: medium

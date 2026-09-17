@@ -1282,7 +1282,7 @@ $details_context"
   if [[ -f "$startup_route_file" ]] && jq -e '.planner and .coder and .reviewer' "$startup_route_file" >/dev/null 2>&1; then
     jq \
       --arg planner "${planner_model:-gpt-5.6-terra}" \
-      --arg coder "${coder_model:-gpt-5.5}" \
+      --arg coder "${coder_model:-gpt-5.6-terra}" \
       --arg reviewer "${reviewer_model:-gpt-5.6-terra}" \
       --arg planDepth "$plan_depth" \
       --arg codeDepth "$code_depth" \
@@ -1316,7 +1316,7 @@ $details_context"
   else
     jq -n \
       --arg planner "${planner_model:-gpt-5.6-terra}" \
-      --arg coder "${coder_model:-gpt-5.5}" \
+      --arg coder "${coder_model:-gpt-5.6-terra}" \
       --arg reviewer "${reviewer_model:-gpt-5.6-terra}" \
       --arg planDepth "$plan_depth" \
       --arg codeDepth "$code_depth" \
