@@ -105,10 +105,6 @@
         "cacheWriteCostPerMTok": 3.125,
         "cacheReadCostPerMTok": 0.25
       },
-      "gpt-5.5": {
-        "inputCostPerMTok": 5,
-        "outputCostPerMTok": 30
-      },
       "qwen-3-coder": {
         "inputCostPerMTok": 0.35,
         "outputCostPerMTok": 1.05

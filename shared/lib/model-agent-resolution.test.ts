@@ -145,12 +145,16 @@ describe('resolveModelAgent', () => {
     assert.equal(result.reason, 'codex-chatgpt-ineligible');
   });
 
-  it('resolves hosted gpt models to codex', () => {
+  it('rejects retired gpt-5.5 with lifecycle-blocked', () => {
     const result = resolveModelAgent({
       model: 'gpt-5.5',
       phase: 'review',
     });
-    assert.deepEqual(result, { ok: true, agent: 'codex' });
+    assert.equal(result.ok, false);
+    if (result.ok) assert.fail('expected gpt-5.5 to be rejected');
+    assert.equal(result.reason, 'lifecycle-blocked');
+    assert.match(result.diagnostic, /gpt-5\.5/);
+    assert.match(result.diagnostic, /lifecycle-blocked/);
   });
 
   it('routes the GPT-5.6 Terra Codex replacement and rejects retired GPT-5.4 launches', () => {
