@@ -72,6 +72,40 @@ describe('setPrReadyLabel', () => {
     assert.throws(() => setPrReadyLabel('304'), /still has wm:merging/);
   });
 
+  it('treats a matching Tend claim as successful handoff (HOK-3038)', () => {
+    // Regression: Tend claims the PR (applies wm:merging) between Ready's
+    // label write and verification. With a matching handoff record, Ready
+    // should succeed instead of throwing.
+    mock.method(setPrReadyLabelDeps, 'setWavemillReady', () =>
+      pullRequestWithLabels(['wavemill', WM_LABELS.merging]));
+    mock.method(setPrReadyLabelDeps, 'isTendClaimedForHead', () => true);
+    const logged: string[] = [];
+    mock.method(setPrReadyLabelDeps, 'log', (line: string) => { logged.push(line); });
+
+    const result = setPrReadyLabel('304', undefined, undefined, '/tmp/state-dir');
+
+    assert.equal(result.tendClaimed, true);
+    assert.equal(logged.length, 1);
+    assert.match(logged[0], /Tend claimed PR #304/);
+  });
+
+  it('still throws on wm:merging without a handoff state dir', () => {
+    mock.method(setPrReadyLabelDeps, 'setWavemillReady', () =>
+      pullRequestWithLabels(['wavemill', WM_LABELS.merging]));
+    mock.method(setPrReadyLabelDeps, 'log', () => {});
+
+    assert.throws(() => setPrReadyLabel('304'), /still has wm:merging/);
+  });
+
+  it('still throws on wm:merging when Tend has not claimed the handoff', () => {
+    mock.method(setPrReadyLabelDeps, 'setWavemillReady', () =>
+      pullRequestWithLabels(['wavemill', WM_LABELS.merging]));
+    mock.method(setPrReadyLabelDeps, 'isTendClaimedForHead', () => false);
+    mock.method(setPrReadyLabelDeps, 'log', () => {});
+
+    assert.throws(() => setPrReadyLabel('304', undefined, undefined, '/tmp/state-dir'), /still has wm:merging/);
+  });
+
   it('names every observed label so the failure is diagnosable', () => {
     mock.method(setPrReadyLabelDeps, 'setWavemillReady', () =>
       pullRequestWithLabels(['wavemill', WM_LABELS.blocked]));

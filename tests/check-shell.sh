@@ -109,6 +109,7 @@ for f in \
   "$REPO_DIR"/tests/wavemill-mill-model-flags.test.sh \
   "$REPO_DIR"/tests/wavemill-mill-config-preflight.test.sh \
   "$REPO_DIR"/tests/wavemill-mill-router-fallback.test.sh \
+  "$REPO_DIR"/tests/ready-label-state.test.sh \
   "$REPO_DIR"/tests/backstage-tend-watchdog.test.sh \
   "$REPO_DIR"/tests/backstage-observer-watchdog.test.sh \
   "$REPO_DIR"/tests/backstage-observer-pane-promotion.test.sh \

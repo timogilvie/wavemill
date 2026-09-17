@@ -14,6 +14,7 @@ import {
   writePrStateMarker,
   WM_LABELS,
 } from './pr-state-labels.ts';
+import { claimTendHandoff } from './ready-tend-handoff.ts';
 import { buildStaleMarkerFinding, type MarkerPayload, type MarkerValidation } from './transient-marker.ts';
 import { getIntegrationConfig, getIntegrationReadyPolicy } from './config.ts';
 import { readChallengeComparisons } from './challenge-comparison.ts';
@@ -133,6 +134,7 @@ export interface MergeExecutionDeps {
   strictBaseRetry: StrictBaseRetryOps;
   /** Best-effort lane-progress telemetry recorder; must never fail the merge. */
   recordLaneProgress: (prNumber: number, event: LaneProgressEvent, repoDir: string) => Promise<void>;
+  claimHandoff: (prNumber: number, repoDir: string) => Promise<void>;
 }
 
 export interface ExecuteMergeOptions {
@@ -665,6 +667,11 @@ export async function executeMerge(
     }
     // Every holder's lock was stale and reclaimed — the lane is free, proceed.
   }
+
+  // Claim the Ready→Tend handoff record before acquiring the merging label
+  // (HOK-3038). Best-effort: missing state dir or absent record does not
+  // block the merge (backwards compatible).
+  await deps.claimHandoff(candidate.number, options.repoDir);
 
   try {
     await retryTransient(() => deps.acquireMerging(candidate.number), {
@@ -1953,6 +1960,28 @@ function mergeExecutionDeps(deps: Partial<MergeExecutionDeps> | undefined, marke
     strictBaseRetry: defaultStrictBaseRetryOps,
     recordLaneProgress: async (prNumber, event, repoDir) => {
       await recordLaneProgress(prNumber, repoDir, event);
+    },
+    claimHandoff: async (prNumber, repoDir) => {
+      try {
+        const prData = getPullRequest(String(prNumber), {});
+        const headSha = prData?.headRefOid ?? '';
+        if (!headSha) return;
+        const stateDir = resolveReadyStateDir(repoDir, {
+          number: prNumber,
+          title: '',
+          headRefName: '',
+          headRefOid: headSha,
+          createdAt: '',
+          isDraft: false,
+          labels: [],
+          body: '',
+        }, null);
+        if (stateDir) {
+          await claimTendHandoff(stateDir, prNumber, headSha);
+        }
+      } catch {
+        // Best-effort: missing state dir or absent record does not block merge.
+      }
     },
     ...deps,
   };

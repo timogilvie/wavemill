@@ -57,6 +57,7 @@ TESTS=(
   config-version-prompt.test.sh
   monitor-ready-transition.test.sh
   launch-ready-phase.test.sh
+  ready-label-state.test.sh
   bounded-retry.test.sh
   handle-phase-launch-result.test.sh
   launch-pane-liveness.test.sh

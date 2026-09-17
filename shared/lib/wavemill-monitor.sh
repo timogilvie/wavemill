@@ -9430,7 +9430,7 @@ set_ready_pass_labels() {
     fi
   fi
 
-  (cd "$wt_dir" && npx tsx "$TOOLS_DIR/set-pr-ready-label.ts" "$pr_number" --marker-root "$REPO_DIR")
+  (cd "$wt_dir" && npx tsx "$TOOLS_DIR/set-pr-ready-label.ts" "$pr_number" --marker-root "$REPO_DIR" --handoff-state-dir "$feature_dir")
 }
 
 _launch_ready_remediation_attempt() {
@@ -9914,8 +9914,40 @@ launch_ready_phase() {
 
   if [[ "$ready_rc" -eq 0 ]]; then
     local main_sha completed_artifacts_json label_failed_artifacts_json
+    local label_output label_rc handoff_failure_stage
     main_sha=$(get_main_head_sha "$wt_dir" "$base_branch")
-    if ! set_ready_pass_labels "$wt_dir" "$pr_number" "$state_dir" "$issue" >/dev/null 2>&1; then
+
+    # Publish the handoff record before exposing wm:ready (HOK-3038).
+    # This lets Tend claim the record atomically, and Ready's label
+    # verification can recognize a matching Tend claim as success.
+    if command -v npx >/dev/null 2>&1; then
+      npx tsx "$TOOLS_DIR/../shared/lib/ready-tend-handoff-cli.ts" publish \
+        --state-dir "$state_dir" --pr "$pr_number" --head "$ready_head_sha" 2>/dev/null || true
+    fi
+
+    label_output=$(set_ready_pass_labels "$wt_dir" "$pr_number" "$state_dir" "$issue" 2>&1) || label_rc=$?
+    label_rc=${label_rc:-0}
+
+    if [[ "$label_rc" -ne 0 ]]; then
+      # Determine typed failure stage from captured output (HOK-3038).
+      handoff_failure_stage="ready-label"
+      if printf '%s' "$label_output" | grep -qi "route.*stamp\|stamp.*route\|stamping failed"; then
+        handoff_failure_stage="route-stamp"
+      elif printf '%s' "$label_output" | grep -qi "Tend claimed.*handoff"; then
+        handoff_failure_stage="ownership-changed"
+      elif printf '%s' "$label_output" | grep -qi "GraphQL\|HttpError\|ECONNREFUSED\|rate limit"; then
+        handoff_failure_stage="github-api"
+      fi
+
+      # Persist typed failure diagnostics in handoff record.
+      if command -v npx >/dev/null 2>&1; then
+        local bounded_output
+        bounded_output=$(printf '%s' "$label_output" | head -c 500 | sed 's/gh[opusr]_[A-Za-z0-9_]*/[redacted-token]/g')
+        npx tsx "$TOOLS_DIR/../shared/lib/ready-tend-handoff-cli.ts" record-failure \
+          --state-dir "$state_dir" --stage "$handoff_failure_stage" \
+          --diagnostic "$bounded_output" 2>/dev/null || true
+      fi
+
       label_failed_artifacts_json=$(jq -cn \
         --arg verdict "${verdict:-unknown}" \
         --arg merge_status "${merge_status:-UNKNOWN}" \
@@ -9926,7 +9958,8 @@ launch_ready_phase() {
         --arg ready_head_sha "$ready_head_sha" \
         --arg ci_conclusion "$ci_conclusion" \
         --arg required_source "$required_source" \
-        --argjson required_contexts "$required_contexts_json" '
+        --argjson required_contexts "$required_contexts_json" \
+        --arg failure_stage "$handoff_failure_stage" '
           {
             type:"ready",
             verdict:$verdict,
@@ -9939,15 +9972,16 @@ launch_ready_phase() {
             readyHeadSha:$ready_head_sha,
             ciConclusion:$ci_conclusion,
             requiredSource:$required_source,
-            requiredContexts:$required_contexts
+            requiredContexts:$required_contexts,
+            handoffFailureStage:$failure_stage
           } | with_entries(select(.value != ""))
         ')
       label_failed_artifacts_json=$(merge_queue_enrich_ready_artifacts "$state_dir" "$label_failed_artifacts_json" "candidate-progress")
       write_stage_result "$state_dir" "ready" "failed" "$current_agent" "$current_model" \
-        "Ready passed but failed to restore PR labels" \
+        "Ready passed but failed to restore PR labels (stage: $handoff_failure_stage)" \
         "$label_failed_artifacts_json"
-      write_ready_attention_file "$state_dir" "Ready passed for PR #$pr_number, but updating wm:ready labels failed."
-      log_error "  Ready passed for $issue but failed to restore PR labels"
+      write_ready_attention_file "$state_dir" "Ready passed for PR #$pr_number, but updating wm:ready labels failed (stage: $handoff_failure_stage)."
+      log_error "  Ready passed for $issue but failed to restore PR labels (stage: $handoff_failure_stage)"
       return 1
     fi
 

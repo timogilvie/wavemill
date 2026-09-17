@@ -2,14 +2,21 @@
 
 import { fileURLToPath } from 'node:url';
 import { WM_LABELS, setWavemillReady } from '../shared/lib/pr-state-labels.ts';
+import { isTendClaimedForHead } from '../shared/lib/ready-tend-handoff.ts';
 import { runTool } from '../shared/lib/tool-runner.ts';
 
 export const setPrReadyLabelDeps = {
   setWavemillReady,
+  isTendClaimedForHead,
   log: console.log,
 };
 
-export function setPrReadyLabel(prNumber: string, repo?: string, markerRoot?: string): void {
+export interface SetPrReadyLabelResult {
+  prNumber: number;
+  tendClaimed: boolean;
+}
+
+export function setPrReadyLabel(prNumber: string, repo?: string, markerRoot?: string, handoffStateDir?: string): SetPrReadyLabelResult {
   if (!prNumber) {
     throw new Error('PR number is required');
   }
@@ -21,12 +28,6 @@ export function setPrReadyLabel(prNumber: string, repo?: string, markerRoot?: st
 
   // Verify the write actually landed before claiming success.
   //
-  // A label mutation can report success while changing nothing -- `gh pr edit
-  // --add-label` fails on a Projects-classic GraphQL deprecation, and the mill
-  // has logged "Restored ready labels for PR #N" on consecutive polls while the
-  // PR stayed wm:blocked. A log line that lies about the outcome turns a
-  // one-line fix into a long diagnosis, so fail loudly instead.
-  //
   // setWavemillReady re-fetches after mutating, so these labels are post-write
   // state rather than the values we asked for.
   const labels = new Set(pr.labels.map((label) => label.name));
@@ -37,6 +38,20 @@ export function setPrReadyLabel(prNumber: string, repo?: string, markerRoot?: st
   const problems = [...missing, ...lingering];
 
   if (problems.length > 0) {
+    // If wm:merging is present (with or without wm:ready missing — Tend removes
+    // wm:ready when it applies wm:merging) and Tend has legitimately claimed this
+    // PR for the same head, treat this as a successful handoff rather than a
+    // Ready label failure (HOK-3038).
+    const mergingIsFromTend = labels.has(WM_LABELS.merging)
+      && !labels.has(WM_LABELS.blocked);
+    if (mergingIsFromTend && handoffStateDir) {
+      const headSha = pr.headRefOid ?? '';
+      if (headSha && setPrReadyLabelDeps.isTendClaimedForHead(handoffStateDir, Number(prNumber), headSha)) {
+        setPrReadyLabelDeps.log(`Tend claimed PR #${pr.number} during Ready finalization — treating as successful handoff`);
+        return { prNumber: pr.number, tendClaimed: true };
+      }
+    }
+
     const observed = [...labels].sort().join(', ') || '(none)';
     throw new Error(
       `Ready label reconciliation failed for PR #${pr.number}: ${problems.join('; ')}. Observed labels: [${observed}]`,
@@ -44,6 +59,7 @@ export function setPrReadyLabel(prNumber: string, repo?: string, markerRoot?: st
   }
 
   setPrReadyLabelDeps.log(`Canonicalized ready labels for PR #${pr.number}`);
+  return { prNumber: pr.number, tendClaimed: false };
 }
 
 const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
@@ -60,6 +76,10 @@ const config = {
       type: 'string',
       description: 'Shared repository root for the PR-state marker sidecar',
     },
+    'handoff-state-dir': {
+      type: 'string',
+      description: 'Feature/state directory for ready-tend handoff record',
+    },
   },
   positional: {
     name: 'pr-number',
@@ -71,7 +91,7 @@ const config = {
     'npx tsx tools/set-pr-ready-label.ts 229 --repo owner/repo',
   ],
   async run({ args, positional }) {
-    setPrReadyLabel(positional[0], args.repo, args['marker-root']);
+    setPrReadyLabel(positional[0], args.repo, args['marker-root'], args['handoff-state-dir']);
   },
 } as const;
 
