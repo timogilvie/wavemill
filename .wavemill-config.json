@@ -138,7 +138,7 @@
       "kimi-k2.7-code": {
         "inputCostPerMTok": 0.71,
         "outputCostPerMTok": 3.5,
-        "cacheReadCostPerMTok": 0.15
+        "cacheReadCostPerMTok": 0.18
       },
       "gemini-2.5-pro": {
         "inputCostPerMTok": 1.25,
