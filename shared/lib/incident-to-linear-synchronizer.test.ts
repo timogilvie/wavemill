@@ -16,6 +16,8 @@ import {
 import { IncidentStore } from './wavemill-incident-store.ts';
 import { createIncidentDraft, type IncidentCategory, type IncidentRecord } from './wavemill-incident-model.ts';
 import { LinearApiError, type LinearIssueSummary } from './linear.ts';
+import type { IncidentFilingTruthReader } from './incident-filing-reconciler.ts';
+import type { JobResultFile, MillJob, WorkflowStateLike } from './job-tracker.ts';
 
 function config(overrides: Partial<ObserverLinearConfig> = {}): ObserverLinearConfig {
   return {
@@ -97,6 +99,79 @@ function mockClient(overrides: Partial<IncidentLinearClient> = {}): IncidentLine
       },
     }),
     ...overrides,
+  };
+}
+
+function job(overrides: Partial<MillJob> = {}): MillJob {
+  return {
+    id: 'eval-HOK-1-primary-101',
+    kind: 'eval',
+    session: 'wavemill',
+    issueId: 'HOK-1',
+    side: 'primary',
+    prNumbers: [101],
+    pid: 123,
+    startedAt: '2026-08-04T12:00:00.000Z',
+    timeoutSeconds: 600,
+    logPath: '/tmp/job.log',
+    resultPath: '/tmp/job.result.json',
+    status: 'failed',
+    exitCode: 1,
+    finishedAt: '2026-08-04T12:05:00.000Z',
+    reason: 'no_result_file',
+    excerpt: null,
+    settled: false,
+    ...overrides,
+  };
+}
+
+function jobIncident(overrides: Partial<IncidentRecord> = {}): IncidentRecord {
+  return incident({
+    category: 'stale_orphaned_state',
+    severity: 'medium',
+    rootCauseClass: 'failed_job_no_result',
+    summary: 'eval job eval-HOK-1-primary-101 ended failed.',
+    operatorAction: 'Review the managed job result/log evidence and retry or settle the orphaned job through the controller.',
+    evidence: [{
+      type: 'job_state',
+      source: '.wavemill/workflow-state.json',
+      timestamp: '2026-08-04T12:05:00.000Z',
+      redactedData: 'id=eval-HOK-1-primary-101 kind=eval status=failed reason=no_result_file resultMissing=true',
+      key: 'failed_job_no_result',
+    }],
+    metadata: {
+      thresholdTriggered: true,
+      jobId: 'eval-HOK-1-primary-101',
+      jobKind: 'eval',
+      resultPath: '/tmp/job.result.json',
+    },
+    ...overrides,
+  });
+}
+
+function truthReader(jobs: MillJob[], results: Record<string, JobResultFile | null> = {}): IncidentFilingTruthReader {
+  return {
+    readWorkflowState: (): WorkflowStateLike => ({ jobs: Object.fromEntries(jobs.map((item) => [item.id, item])) }),
+    readJobArtifacts: () => [],
+    readResult: (path) => results[path] ?? null,
+    resultExists: (path) => Object.prototype.hasOwnProperty.call(results, path),
+  };
+}
+
+function forbiddenClient(onCall: () => void): IncidentLinearClient {
+  const fail = async () => {
+    onCall();
+    throw new Error('Linear must not be called');
+  };
+  return {
+    getTeams: fail as IncidentLinearClient['getTeams'],
+    getProjects: fail as IncidentLinearClient['getProjects'],
+    searchIssues: fail as IncidentLinearClient['searchIssues'],
+    getIssue: fail as IncidentLinearClient['getIssue'],
+    createIssue: fail as IncidentLinearClient['createIssue'],
+    createComment: fail as IncidentLinearClient['createComment'],
+    getOrCreateLabel: fail as IncidentLinearClient['getOrCreateLabel'],
+    addLabelsToIssue: fail as IncidentLinearClient['addLabelsToIssue'],
   };
 }
 
@@ -408,6 +483,149 @@ test('retryable Linear failure is queued and stored as sync error', async () => 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('recovered job-backed incident skips before any Linear API call', async () => {
+  let linearCalls = 0;
+  const result = await syncIncident({
+    incident: jobIncident(),
+    config: config(),
+    client: forbiddenClient(() => {
+      linearCalls += 1;
+    }),
+    reconciler: {
+      repoDir: '/repo',
+      reader: truthReader([
+        job({ status: 'succeeded', exitCode: 0, reason: null }),
+      ], {
+        '/tmp/job.result.json': { ok: true, exitCode: 0 },
+      }),
+    },
+  });
+
+  assert.equal(result.status, 'skipped');
+  assert.equal(result.reconciliation?.status, 'recovered');
+  assert.equal(linearCalls, 0);
+});
+
+test('newer same-task successful retry suppresses create but other-task success does not', async () => {
+  let sameTaskCalls = 0;
+  const superseded = await syncIncident({
+    incident: jobIncident(),
+    config: config(),
+    client: forbiddenClient(() => {
+      sameTaskCalls += 1;
+    }),
+    reconciler: {
+      repoDir: '/repo',
+      reader: truthReader([
+        job(),
+        job({
+          id: 'eval-HOK-1-primary-102',
+          status: 'succeeded',
+          exitCode: 0,
+          reason: null,
+          startedAt: '2026-08-04T12:10:00.000Z',
+          finishedAt: '2026-08-04T12:15:00.000Z',
+          resultPath: '/tmp/retry.result.json',
+        }),
+      ], {
+        '/tmp/retry.result.json': { ok: true, exitCode: 0 },
+      }),
+    },
+  });
+  assert.equal(superseded.status, 'skipped');
+  assert.equal(superseded.reconciliation?.status, 'superseded');
+  assert.equal(sameTaskCalls, 0);
+
+  let createCalls = 0;
+  const otherTask = await syncIncident({
+    incident: jobIncident(),
+    config: config(),
+    client: mockClient({
+      createIssue: async (params) => {
+        createCalls += 1;
+        return mockClient().createIssue(params);
+      },
+    }),
+    reconciler: {
+      repoDir: '/repo',
+      reader: truthReader([
+        job(),
+        job({
+          id: 'eval-HOK-2-primary-102',
+          issueId: 'HOK-2',
+          status: 'succeeded',
+          exitCode: 0,
+          reason: null,
+          startedAt: '2026-08-04T12:10:00.000Z',
+          finishedAt: '2026-08-04T12:15:00.000Z',
+          resultPath: '/tmp/other-task.result.json',
+        }),
+      ], {
+        '/tmp/other-task.result.json': { ok: true, exitCode: 0 },
+      }),
+    },
+  });
+  assert.equal(otherTask.status, 'created');
+  assert.equal(otherTask.reconciliation?.status, 'confirmed_active');
+  assert.equal(createCalls, 1);
+});
+
+test('ambiguous succeeded job without result needs inspection and follows normal policy', async () => {
+  let createCalls = 0;
+  const result = await syncIncident({
+    incident: jobIncident(),
+    config: config(),
+    client: mockClient({
+      createIssue: async (params) => {
+        createCalls += 1;
+        return mockClient().createIssue(params);
+      },
+    }),
+    reconciler: {
+      repoDir: '/repo',
+      reader: truthReader([
+        job({ status: 'succeeded', exitCode: 0, reason: null }),
+      ]),
+    },
+  });
+
+  assert.equal(result.reconciliation?.status, 'needs_inspection');
+  assert.equal(result.status, 'created');
+  assert.equal(createCalls, 1);
+});
+
+test('still-active failed job continues through filing policy', async () => {
+  const result = await syncIncident({
+    incident: jobIncident(),
+    config: config(),
+    client: mockClient(),
+    reconciler: {
+      repoDir: '/repo',
+      reader: truthReader([job()]),
+    },
+  });
+
+  assert.equal(result.reconciliation?.status, 'confirmed_active');
+  assert.equal(result.status, 'created');
+});
+
+test('dry-run includes reconciliation decision and evidence', async () => {
+  const result = await syncIncident({
+    incident: jobIncident(),
+    config: config(),
+    dryRun: true,
+    reconciler: {
+      repoDir: '/repo',
+      reader: truthReader([job()]),
+    },
+  });
+
+  assert.equal(result.status, 'skipped');
+  assert.equal(result.dryRun, true);
+  assert.equal(result.reconciliation?.status, 'confirmed_active');
+  assert.equal(result.reconciliation?.evidence.jobId, 'eval-HOK-1-primary-101');
 });
 
 function issueSummary(identifier: string): LinearIssueSummary {

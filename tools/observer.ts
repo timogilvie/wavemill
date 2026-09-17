@@ -2680,8 +2680,8 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
     const freshFingerprints: string[] = [];
     for (const incident of dedupeIncidentCandidates(candidates, store)) {
       try {
-        const { record: stored } = await store.upsertDetailed(incident);
-        freshFingerprints.push(stored.fingerprint);
+        const { record: stored, freshEvent } = await store.upsertDetailed(incident);
+        if (freshEvent) freshFingerprints.push(stored.fingerprint);
         incidents.push(stored);
       } catch (error) {
         cycleComplete = false;
@@ -2989,6 +2989,7 @@ export async function syncIncidentsToLinear(snapshot: ObserverSnapshot, options:
           config,
           maxEntries: config.maxRetryEntriesPerPass,
           now: new Date(snapshot.timestamp),
+          reconciler: { repoDir: repo.repoDir },
           log: console,
         });
         summary.retryProcessed += retry.processed;
@@ -3020,6 +3021,7 @@ export async function syncIncidentsToLinear(snapshot: ObserverSnapshot, options:
         dryRun: options.incidentsDryRun,
         replay: options.incidentsReplay === incident.fingerprint,
         now: new Date(snapshot.timestamp),
+        reconciler: { repoDir: repo.repoDir },
         retryQueue: {
           enqueueIncidentSync: (input) => enqueueIncidentSync({
             repoDir: repo.repoDir,

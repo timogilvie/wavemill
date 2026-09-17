@@ -15,6 +15,7 @@ import {
   type LinearProject,
   type LinearTeam,
 } from './linear.ts';
+import { reconcileIncidentFiling, type IncidentFilingReconciliation, type IncidentFilingReconcilerOptions } from './incident-filing-reconciler.ts';
 import { IncidentStore } from './wavemill-incident-store.ts';
 import type { IncidentCategory, IncidentEvidence, IncidentRecord } from './wavemill-incident-model.ts';
 
@@ -74,6 +75,7 @@ export interface SyncResult {
   dryRun?: boolean;
   nextRetryAt?: string;
   plannedTitle?: string;
+  reconciliation?: IncidentFilingReconciliation;
 }
 
 export interface IncidentLinearRetryEnqueuer {
@@ -106,6 +108,7 @@ export interface SyncIncidentOptions {
   now?: Date;
   client?: IncidentLinearClient;
   retryQueue?: IncidentLinearRetryEnqueuer;
+  reconciler?: IncidentFilingReconcilerOptions;
   audit?: (message: string, fields?: Record<string, unknown>) => void;
 }
 
@@ -444,10 +447,25 @@ export async function syncIncident(options: SyncIncidentOptions): Promise<SyncRe
   const dryRun = options.dryRun === true || config.detectionOnly === true;
   const incident = options.incident;
   const audit = options.audit ?? (() => {});
-  const baseResult = { fingerprint: incident.fingerprint, evidenceRevision, dryRun };
+  const reconciliation = reconcileIncidentFiling(incident, options.reconciler);
+  const baseResult = { fingerprint: incident.fingerprint, evidenceRevision, dryRun, reconciliation };
+
+  if (!incident.metadata?.linkedLinearId && (reconciliation.status === 'recovered' || reconciliation.status === 'superseded')) {
+    audit('incident linear skip after reconciliation', {
+      fingerprint: incident.fingerprint,
+      reconciliationStatus: reconciliation.status,
+      reason: reconciliation.evidence.reason,
+    });
+    return {
+      ...baseResult,
+      action: 'skip',
+      status: 'skipped',
+      reason: `filing reconciler: ${reconciliation.status} (${reconciliation.evidence.reason})`,
+    };
+  }
 
   if (dryRun) {
-    return planOfflineSync(incident, config, evidenceRevision, now, options.replay === true);
+    return planOfflineSync(incident, config, evidenceRevision, now, options.replay === true, reconciliation);
   }
 
   if (!config.enabled && !dryRun) {
@@ -564,8 +582,9 @@ function planOfflineSync(
   evidenceRevision: string,
   now: Date,
   replay: boolean,
+  reconciliation: IncidentFilingReconciliation,
 ): SyncResult {
-  const baseResult = { fingerprint: incident.fingerprint, evidenceRevision, dryRun: true, plannedTitle: generateIssueTitle(incident) };
+  const baseResult = { fingerprint: incident.fingerprint, evidenceRevision, dryRun: true, plannedTitle: generateIssueTitle(incident), reconciliation };
   if (incident.metadata?.linkedLinearId) {
     const update = shouldUpdateIncident(incident, evidenceRevision, now, replay);
     if (!update.allowed) {

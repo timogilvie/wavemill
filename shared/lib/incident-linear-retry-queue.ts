@@ -3,6 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeF
 import { dirname, isAbsolute, join } from 'node:path';
 import { classifyLinearError, type ClassifiedLinearError } from './linear.ts';
 import { syncIncident, type IncidentLinearClient, type ObserverLinearConfig } from './incident-to-linear-synchronizer.ts';
+import type { IncidentFilingReconcilerOptions } from './incident-filing-reconciler.ts';
 import { IncidentStore } from './wavemill-incident-store.ts';
 
 const SCHEMA_VERSION = '1.0';
@@ -64,6 +65,7 @@ export interface DrainIncidentQueueOptions {
   store: IncidentStore;
   config: ObserverLinearConfig;
   client?: IncidentLinearClient;
+  reconciler?: IncidentFilingReconcilerOptions;
   maxEntries?: number;
   now?: Date;
   log?: Pick<Console, 'error'>;
@@ -193,6 +195,7 @@ export async function drainIncidentQueue(options: DrainIncidentQueueOptions): Pr
         replay: true,
         now,
         client: options.client,
+        reconciler: options.reconciler,
         retryQueue: {
           enqueueIncidentSync: (input) => enqueueIncidentSync({
             repoDir,
@@ -206,7 +209,13 @@ export async function drainIncidentQueue(options: DrainIncidentQueueOptions): Pr
           }),
         },
       });
-      if (syncResult.status === 'created' || syncResult.status === 'updated' || syncResult.action === 'no_op') {
+      if (
+        syncResult.status === 'created'
+        || syncResult.status === 'updated'
+        || syncResult.action === 'no_op'
+        || syncResult.reconciliation?.status === 'recovered'
+        || syncResult.reconciliation?.status === 'superseded'
+      ) {
         appendRecord(path, { schemaVersion: SCHEMA_VERSION, recordType: 'tombstone', id: record.id, settledAt: toIso(now) });
         result.succeeded += 1;
         continue;

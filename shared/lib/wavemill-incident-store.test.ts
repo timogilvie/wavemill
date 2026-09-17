@@ -213,6 +213,48 @@ test('resolution sweep resolves records missing for N cycles and keeps fresh one
   }
 });
 
+test('unchanged re-observed event accrues missed cycles and resolves when not fresh', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'incident-unchanged-resolves-'));
+  try {
+    const store = new IncidentStore(dir, { escalationThreshold: 3, resolutionAfterCycles: 2 });
+    const original = await store.upsert(incidentEvent('2026-08-03T12:00:00.000Z', {
+      category: 'stale_orphaned_state',
+      rootCauseClass: 'failed_job_no_result',
+      evidence: [{
+        type: 'job_state',
+        source: '.wavemill/workflow-state.json',
+        timestamp: '2026-08-03T12:00:00.000Z',
+        redactedData: 'id=job-1 kind=eval status=failed reason=no_result_file resultMissing=true',
+        key: 'failed_job_no_result',
+      }],
+      metadata: { jobId: 'job-1', jobKind: 'eval', resultPath: '/tmp/missing-result.json' },
+    }));
+    const repoll = await store.upsertDetailed(incidentEvent('2026-08-03T12:00:00.000Z', {
+      category: 'stale_orphaned_state',
+      rootCauseClass: 'failed_job_no_result',
+      evidence: [{
+        type: 'job_state',
+        source: '.wavemill/workflow-state.json',
+        timestamp: '2026-08-03T12:00:00.000Z',
+        redactedData: 'id=job-1 kind=eval status=failed reason=no_result_file resultMissing=true',
+        key: 'failed_job_no_result',
+      }],
+      metadata: { jobId: 'job-1', jobKind: 'eval', resultPath: '/tmp/missing-result.json' },
+    }));
+
+    assert.equal(repoll.freshEvent, false);
+    await store.runResolutionSweep([]);
+    const firstSweep = await store.getIncident(original.fingerprint);
+    assert.equal(firstSweep?.metadata.missedCycles, 1);
+    const resolved = await store.runResolutionSweep([]);
+    assert.equal(resolved.length, 1);
+    assert.equal(resolved[0].fingerprint, original.fingerprint);
+    assert.equal(resolved[0].lifecycle, 'resolved');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('operator resolve and archive transition lifecycle with audit metadata', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'incident-operator-'));
   try {
