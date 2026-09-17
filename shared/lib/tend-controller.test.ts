@@ -28,6 +28,7 @@ import {
   type TendDecision,
 } from './tend-controller.ts';
 import { clearConfigCache } from './config.ts';
+import { publishReadyHandoff, readReadyTendHandoff } from './ready-tend-handoff.ts';
 
 function metadata(lines: string[] = ['task: HOK-1437']): string {
   return ['<!-- wavemill-meta', ...lines, '-->'].join('\n');
@@ -1831,6 +1832,46 @@ describe('merge transient error classification', () => {
 });
 
 describe('executeMerge', () => {
+  it('claims the published Ready handoff before applying wm:merging', async () => {
+    const options = buildMergeTestOptions();
+    const featureDir = join(options.repoDir, 'features', 'handoff-pr');
+    const claims: string[] = [];
+    try {
+      await publishReadyHandoff(featureDir, 42, 'head-sha');
+      const result = await executeMerge(
+        candidate({ headSha: 'head-sha', featureDir }),
+        {
+          repoDir: options.repoDir,
+          deps: {
+            ...options.deps,
+            acquireMerging: (prNumber) => {
+              assert.equal(readReadyTendHandoff(featureDir)?.state, 'tend-claimed');
+              claims.push(`merging:${prNumber}`);
+            },
+          },
+        },
+      );
+      assert.equal(result.status, 'merged');
+      assert.deepEqual(claims, ['merging:42']);
+      assert.equal(readReadyTendHandoff(featureDir)?.tendOwner, 'tend');
+    } finally {
+      options.cleanup();
+    }
+  });
+
+  it('does not enter the merge lane when the current-head Ready handoff is absent', async () => {
+    const options = buildMergeTestOptions();
+    const featureDir = join(options.repoDir, 'features', 'missing-handoff');
+    try {
+      const result = await executeMerge(candidate({ headSha: 'head-sha', featureDir }), { repoDir: options.repoDir, deps: options.deps });
+      assert.equal(result.status, 'skipped');
+      assert.equal(result.phase, 'handoff');
+      assert.ok(!options.labels.includes('merging'));
+    } finally {
+      options.cleanup();
+    }
+  });
+
   it('rebases, pushes, waits, merges, and marks merged', async () => {
     const options = buildMergeTestOptions();
     try {

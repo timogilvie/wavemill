@@ -9403,6 +9403,7 @@ set_ready_pass_labels() {
   local pr_number="$2"
   local feature_dir="${3:-}"
   local issue="${4:-}"
+  local head_sha="${5:-}"
 
   if [[ -z "$feature_dir" ]]; then
     feature_dir="$wt_dir/features/$(basename "$wt_dir")"
@@ -9419,18 +9420,44 @@ set_ready_pass_labels() {
       stamp_args=(--require-complete)
     fi
     if [[ -z "$issue" ]]; then
-      write_ready_attention_file "$feature_dir" "Ready passed for PR #$pr_number, but route metadata could not be stamped because the issue id is unknown."
-      (cd "$wt_dir" && gh pr edit "$pr_number" --remove-label "wm:ready") >/dev/null 2>&1 || true
+      printf '%s\n' '{"transitionFailure":{"stage":"route-stamp","detail":"issue id is unknown"}}' >&2
       return 1
     fi
     if ! (cd "$wt_dir" && npx tsx "$TOOLS_DIR/stamp-pr-route.ts" "$pr_number" --issue "$issue" --feature-dir "$feature_dir" "${stamp_args[@]}"); then
-      write_ready_attention_file "$feature_dir" "Ready passed for PR #$pr_number, but route metadata stamping failed. Re-run tools/stamp-pr-route.ts with --issue $issue and inspect stage-result evidence."
-      (cd "$wt_dir" && gh pr edit "$pr_number" --remove-label "wm:ready") >/dev/null 2>&1 || true
+      printf '%s\n' '{"transitionFailure":{"stage":"route-stamp"}}' >&2
       return 1
     fi
   fi
 
-  (cd "$wt_dir" && npx tsx "$TOOLS_DIR/set-pr-ready-label.ts" "$pr_number" --marker-root "$REPO_DIR")
+  if [[ -z "$head_sha" ]]; then
+    # The normal path supplies GitHub's fresh head. This fallback preserves
+    # compatibility for older Ready tool output while still never inventing a
+    # token when even the checkout has no resolvable commit.
+    head_sha=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)
+    if [[ -z "$head_sha" ]]; then
+      printf '%s\n' '{"transitionFailure":{"stage":"ownership-changed","detail":"current GitHub head is unavailable"}}' >&2
+      return 1
+    fi
+  fi
+  if ! (cd "$wt_dir" && npx tsx "$TOOLS_DIR/ready-tend-handoff.ts" checked "$pr_number" --feature-dir "$feature_dir" --head "$head_sha"); then
+    printf '%s\n' '{"transitionFailure":{"stage":"ownership-changed"}}' >&2
+    return 1
+  fi
+  # Publish before exposing wm:ready. Tend can claim this exact PR/head while
+  # this label operation is in flight, and the label helper preserves the claim.
+  if ! (cd "$wt_dir" && npx tsx "$TOOLS_DIR/ready-tend-handoff.ts" publish "$pr_number" --feature-dir "$feature_dir" --head "$head_sha"); then
+    printf '%s\n' '{"transitionFailure":{"stage":"ownership-changed"}}' >&2
+    return 1
+  fi
+  if ! (cd "$wt_dir" && npx tsx "$TOOLS_DIR/set-pr-ready-label.ts" "$pr_number" --marker-root "$REPO_DIR" --feature-dir "$feature_dir" --head "$head_sha"); then
+    printf '%s\n' '{"transitionFailure":{"stage":"ready-label"}}' >&2
+    return 1
+  fi
+}
+
+ready_current_github_head() {
+  local wt_dir="$1" pr_number="$2"
+  (cd "$wt_dir" && gh pr view "$pr_number" --json headRefOid --jq '.headRefOid') 2>/dev/null || true
 }
 
 _launch_ready_remediation_attempt() {
@@ -9600,6 +9627,21 @@ launch_ready_watchdog_remediation() {
   remediation_launch_head=$(ready_remediation_launch_head "$state_dir")
   ready_status=$(read_stage_status "$state_dir" "ready")
   ready_result_file="$state_dir/.ready-result.json"
+
+  # GitHub is authoritative: local task worktrees can lag a pushed PR head.
+  local remote_ready_head
+  remote_ready_head=$(ready_current_github_head "$wt_dir" "$pr_number")
+  if [[ -n "$remote_ready_head" ]]; then
+    if [[ -n "$ready_head_sha" && "$ready_head_sha" != "$remote_ready_head" ]]; then
+      bounded_retry_reset_if_new_head "$state_dir" "ready-remediation" "$remote_ready_head"
+      bounded_retry_reset_if_new_head "$state_dir" "pending-ready-recheck" "$remote_ready_head"
+      write_stage_result "$state_dir" "ready" "running" "$current_agent" "$current_model" \
+        "PR #$pr_number changed head while Ready was finalizing; rechecking current GitHub head" \
+        "$(jq -cn --argjson pr "$pr_number" --arg head "$remote_ready_head" '{type:"ready",verdict:"pending",prNumber:$pr,readyHeadSha:$head,pendingReason:"head-changed"}')"
+      return 4
+    fi
+    ready_head_sha="$remote_ready_head"
+  fi
   checks_run=$(jq -r '.artifacts.checksRun // 0' "$ready_result_file" 2>/dev/null || echo "0")
   checks_passed=$(jq -r '.artifacts.checksPassed // 0' "$ready_result_file" 2>/dev/null || echo "0")
   merge_status=$(jq -r '.artifacts.mergeConflict // "UNKNOWN"' "$ready_result_file" 2>/dev/null || echo "UNKNOWN")
@@ -9913,9 +9955,16 @@ launch_ready_phase() {
   clear_transient_mergeability_state "$state_dir"
 
   if [[ "$ready_rc" -eq 0 ]]; then
-    local main_sha completed_artifacts_json label_failed_artifacts_json
+    local main_sha completed_artifacts_json label_failed_artifacts_json label_output transition_stage transition_output transition_failure_json
     main_sha=$(get_main_head_sha "$wt_dir" "$base_branch")
-    if ! set_ready_pass_labels "$wt_dir" "$pr_number" "$state_dir" "$issue" >/dev/null 2>&1; then
+    if ! label_output=$(set_ready_pass_labels "$wt_dir" "$pr_number" "$state_dir" "$issue" "$ready_head_sha" 2>&1); then
+      transition_stage=$(printf '%s' "$label_output" | jq -r '.transitionFailure.stage // empty' 2>/dev/null | tail -n 1)
+      [[ -n "$transition_stage" ]] || transition_stage="github-api"
+      transition_output=$(printf '%s' "$label_output" | sed -E \
+        -e 's/(gh[pousr]_[[:alnum:]_]{12,}|github_pat_[[:alnum:]_]{12,})/[REDACTED:github-token]/g' \
+        -e 's/([Aa][Pp][Ii]_?[Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt])=[^[:space:]]+/\1=[REDACTED]/g' | head -c 2000)
+      transition_failure_json=$(jq -cn --arg stage "$transition_stage" --arg stderr "$transition_output" \
+        '{stage:$stage,stderr:$stderr,redacted:($stderr | test("REDACTED")),truncated:($stderr | length >= 2000)}')
       label_failed_artifacts_json=$(jq -cn \
         --arg verdict "${verdict:-unknown}" \
         --arg merge_status "${merge_status:-UNKNOWN}" \
@@ -9926,7 +9975,8 @@ launch_ready_phase() {
         --arg ready_head_sha "$ready_head_sha" \
         --arg ci_conclusion "$ci_conclusion" \
         --arg required_source "$required_source" \
-        --argjson required_contexts "$required_contexts_json" '
+        --argjson required_contexts "$required_contexts_json" \
+        --argjson transition_failure "$transition_failure_json" '
           {
             type:"ready",
             verdict:$verdict,
@@ -9939,18 +9989,21 @@ launch_ready_phase() {
             readyHeadSha:$ready_head_sha,
             ciConclusion:$ci_conclusion,
             requiredSource:$required_source,
-            requiredContexts:$required_contexts
+            requiredContexts:$required_contexts,
+            transitionFailure:$transition_failure
           } | with_entries(select(.value != ""))
         ')
       label_failed_artifacts_json=$(merge_queue_enrich_ready_artifacts "$state_dir" "$label_failed_artifacts_json" "candidate-progress")
       write_stage_result "$state_dir" "ready" "failed" "$current_agent" "$current_model" \
-        "Ready passed but failed to restore PR labels" \
+        "Ready passed but failed at ${transition_stage}" \
         "$label_failed_artifacts_json"
-      write_ready_attention_file "$state_dir" "Ready passed for PR #$pr_number, but updating wm:ready labels failed."
-      log_error "  Ready passed for $issue but failed to restore PR labels"
+      write_ready_attention_file "$state_dir" "Ready passed for PR #$pr_number, but the ${transition_stage} transition failed. ${transition_output:0:500}"
+      log_error "  Ready passed for $issue but ${transition_stage} transition failed"
       return 1
     fi
 
+    local handoff_outcome=""
+    [[ "$label_output" == *'"outcome":"tend-owned"'* ]] && handoff_outcome="tend-owned"
     completed_artifacts_json=$(jq -cn \
       --arg verdict "${verdict:-unknown}" \
       --arg merge_status "${merge_status:-UNKNOWN}" \
@@ -9961,7 +10014,8 @@ launch_ready_phase() {
       --arg ready_head_sha "$ready_head_sha" \
       --arg ci_conclusion "$ci_conclusion" \
       --arg required_source "$required_source" \
-      --argjson required_contexts "$required_contexts_json" '
+      --argjson required_contexts "$required_contexts_json" \
+      --arg handoff_outcome "$handoff_outcome" '
         {
           type:"ready",
           verdict:$verdict,
@@ -9974,7 +10028,8 @@ launch_ready_phase() {
           readyHeadSha:$ready_head_sha,
           ciConclusion:$ci_conclusion,
           requiredSource:$required_source,
-          requiredContexts:$required_contexts
+          requiredContexts:$required_contexts,
+          readyTendHandoff: (if $handoff_outcome == "" then "ready-published" else "tend-claimed" end)
         } | with_entries(select(.value != ""))
       ')
     completed_artifacts_json=$(merge_queue_enrich_ready_artifacts "$state_dir" "$completed_artifacts_json" "completed")
