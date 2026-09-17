@@ -688,6 +688,62 @@ agent_model_is_openrouter() {
   esac
 }
 
+# Validate that a model can be launched for a given phase using registry-backed
+# preflight resolution. This handles retired models with successors and rejects
+# retired models without successors before pane/process creation.
+# Args: $1 = model ID, $2 = phase, $3 = repo_dir (optional)
+# Output: resolved model on stdout if ok, error message on stderr if rejected
+AGENT_MODEL_PREFLIGHT_LAST_JSON=""
+
+agent_model_launch_preflight() {
+  local model="${1:-}"
+  local phase="${2:-}"
+  local repo_dir="${3:-${REPO_DIR:-$(pwd)}}"
+  local tool="${TOOLS_DIR:-$(agent_wavemill_tools_dir)}/resolve-model-agent.ts"
+  local output=""
+
+  AGENT_MODEL_PREFLIGHT_LAST_JSON=""
+
+  if [[ -z "$model" ]] || [[ -z "$phase" ]]; then
+    echo "Error: agent_model_launch_preflight requires model and phase" >&2
+    return 1
+  fi
+
+  if [[ ! -f "$tool" ]]; then
+    echo "Error: launch preflight tool not found at $tool" >&2
+    return 1
+  fi
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "Error: jq is required for model launch preflight" >&2
+    return 1
+  fi
+
+  output="$(cd "$repo_dir" 2>/dev/null && agent_run_tsx_tool "$tool" --model "$model" --phase "$phase" --repo "$repo_dir" --preflight --json 2>/dev/null)" || {
+    if [[ -n "$output" ]]; then
+      AGENT_MODEL_PREFLIGHT_LAST_JSON="$output"
+      local detail
+      detail="$(printf '%s' "$output" | jq -r '.diagnostic // .reason // "unknown error"' 2>/dev/null)"
+      echo "Error: model launch preflight failed for $model/$phase: $detail" >&2
+    else
+      echo "Error: model launch preflight tool failed for $model/$phase" >&2
+    fi
+    return 1
+  }
+
+  AGENT_MODEL_PREFLIGHT_LAST_JSON="$output"
+
+  if ! printf '%s' "$output" | jq -e '.ok == true' >/dev/null 2>&1; then
+    local detail
+    detail="$(printf '%s' "$output" | jq -r '.diagnostic // .reason // "model not launchable"' 2>/dev/null)"
+    echo "Error: model launch preflight rejected $model for $phase: $detail" >&2
+    return 1
+  fi
+
+  # Return the resolved model
+  printf '%s' "$output" | jq -r '.resolvedModel // .requestedModel' 2>/dev/null
+}
+
 agent_json_get() {
   local json_input="$1"
   local field="$2"
@@ -1921,6 +1977,13 @@ agent_launch_autonomous() {
 
   if [[ -n "$model" ]]; then
     model="$(agent_resolve_model "${role:-coder}" "$model" "$repo_dir")"
+
+    # Preflight check: ensure the model is launchable (handles retired models with successors)
+    if ! resolved_model="$(agent_model_launch_preflight "$model" "${launch_phase:-coding}" "$repo_dir")"; then
+      return 1
+    fi
+    model="$resolved_model"
+
     local resolved_agent
     if ! resolved_agent="$(agent_resolve_from_model "$model" "${launch_phase:-coding}")"; then
       return 1
@@ -2423,7 +2486,12 @@ agent_launch_interactive() {
       _agent_log_warn "Failed to resolve model selector '$requested_model' for $agent_cmd"
       return 1
     fi
-    model="$resolved_model"
+
+    # Preflight check: ensure the model is launchable (handles retired models with successors)
+    if ! model="$(agent_model_launch_preflight "$resolved_model" "${launch_phase:-coding}" "$repo_dir")"; then
+      return 1
+    fi
+
     local resolved_agent
     if ! resolved_agent="$(agent_resolve_from_model "$model" "${launch_phase:-coding}")"; then
       return 1
