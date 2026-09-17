@@ -7149,16 +7149,29 @@ $issue_desc
 # deliverable, so a missing baseline degrades scope narrowing, not liveness.
 ensure_review_scope_baseline() {
   local issue="$1" worktree="$2" feature_dir="$3"
-  local out rc=0
+  local out rc=0 launch_base="" launch_base_branch="" extra_args=()
   if [[ ! -d "$feature_dir" ]]; then
     log_warn "$issue → review-scope baseline skipped: feature dir missing ($feature_dir)"
     return 1
   fi
+  if [[ -n "${STATE_FILE:-}" && -f "${STATE_FILE:-}" ]]; then
+    launch_base="$(jq -r --arg issue "$issue" '.tasks[$issue].lifecycle.launchContract.baseSha // empty' "$STATE_FILE" 2>/dev/null || true)"
+    launch_base_branch="$(jq -r --arg issue "$issue" '.tasks[$issue].lifecycle.launchContract.baseBranch // .tasks[$issue].baseBranch // empty' "$STATE_FILE" 2>/dev/null || true)"
+  fi
+  if [[ "$launch_base" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+    extra_args+=(--since-commit "$launch_base" --since-commit-source launch-base)
+  fi
+  if [[ -n "$launch_base_branch" ]]; then
+    extra_args+=(--integration-ref "origin/$launch_base_branch")
+  fi
   out="$(wavemill_run_tsx_tool "$TOOLS_DIR/write-review-scope-baseline.ts" \
-    --repo-dir "$worktree" --feature-dir "$feature_dir" 2>&1)" || rc=$?
+    --repo-dir "$worktree" --feature-dir "$feature_dir" "${extra_args[@]}" 2>&1)" || rc=$?
   if (( rc != 0 )); then
     log_warn "$issue → review-scope baseline not materialized (guard falls back to merge-base scope): $(printf '%s' "$out" | tail -n 2 | tr '\n' ' ')"
     return 1
+  fi
+  if declare -F log >/dev/null 2>&1; then
+    log info "$issue → $(printf '%s' "$out" | tail -n 1)"
   fi
   return 0
 }
