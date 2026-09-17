@@ -9424,6 +9424,7 @@ set_ready_pass_labels() {
       return 1
     fi
     if ! (cd "$wt_dir" && npx tsx "$TOOLS_DIR/stamp-pr-route.ts" "$pr_number" --issue "$issue" --feature-dir "$feature_dir" "${stamp_args[@]}"); then
+      printf '%s\n' "route metadata stamping failed for PR #$pr_number" >&2
       write_ready_attention_file "$feature_dir" "Ready passed for PR #$pr_number, but route metadata stamping failed. Re-run tools/stamp-pr-route.ts with --issue $issue and inspect stage-result evidence."
       (cd "$wt_dir" && gh pr edit "$pr_number" --remove-label "wm:ready") >/dev/null 2>&1 || true
       return 1

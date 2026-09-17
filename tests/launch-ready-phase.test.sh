@@ -545,6 +545,10 @@ EOF
         esac
       fi
 
+      if [[ "${2:-}" == *"ready-tend-handoff-cli.ts" ]]; then
+        return 0
+      fi
+
       if [[ "${2:-}" == "$TOOLS_DIR/stamp-pr-route.ts" ]]; then
         case "$TEST_CASE" in
           route_stamp_failure) return 1 ;;
@@ -1383,7 +1387,7 @@ check_contains "ready label failure returns failure" "$output" "rc=1"
 check_contains "ready label failure writes failed stage" "$output" "|ready|failed|"
 check_contains "ready label failure attempts label restore once" "$output" "ready_label_calls=1"
 check_contains "ready label failure keeps attention" "$output" "needs_attention=present"
-check_contains "ready label failure writes operator message" "$output" "Ready passed for PR #304, but updating wm:ready labels failed."
+check_contains "ready label failure writes operator message" "$output" "Ready passed for PR #304, but updating wm:ready labels failed (stage: ready-label)."
 check_contains "ready label failure records label update failure" "$output" "\"readyLabelsUpdated\":false"
 check_contains "ready label failure logs terse error" "$output" "Ready passed for HOK-1300 but failed to restore PR labels"
 
@@ -1477,7 +1481,7 @@ check_contains "ready pass clears recheck budget files" "$output" "recheck_files
 output="$(run_launch_case route_stamp_failure)"
 check_contains "route stamp failure blocks ready" "$output" "rc=1"
 check_contains "route stamp failure writes failed stage result" "$output" "|ready|failed|"
-check_contains "route stamp failure records attention" "$output" "route metadata stamping failed"
+check_contains "route stamp failure records attention" "$output" "updating wm:ready labels failed (stage: route-stamp)"
 
 echo "=== Watchdog Launch Helper ==="
 
