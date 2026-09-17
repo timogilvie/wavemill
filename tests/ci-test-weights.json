@@ -159,7 +159,11 @@
       "shared/lib/task-descriptor-backfill.test.ts": 222,
       "shared/lib/task-packet-validator.test.ts": 619,
       "shared/lib/workflow-cost.test.ts": 817,
-      "shared/lib/workflow-router.test.ts": 238084
+      "shared/lib/workflow-router-difficulty-budget.test.ts": 48307,
+      "shared/lib/workflow-router-heuristic.test.ts": 62109,
+      "shared/lib/workflow-router-hokusai.test.ts": 31054,
+      "shared/lib/workflow-router-native-certification.test.ts": 48307,
+      "shared/lib/workflow-router-quota-policy.test.ts": 48307
     },
     "unit": {
       "shared/lib/arm-failure-taxonomy.test.ts": 195,
