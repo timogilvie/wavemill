@@ -58,7 +58,6 @@ function baseConfig() {
         'claude-haiku-4-5-20251001': { inputCostPerMTok: 0.8, outputCostPerMTok: 4, cacheWriteCostPerMTok: 1, cacheReadCostPerMTok: 0.08 },
         'gpt-5.3-codex': { inputCostPerMTok: 1.75, outputCostPerMTok: 14, cacheWriteCostPerMTok: 2.1875, cacheReadCostPerMTok: 0.44 },
         'gpt-5.6-terra': { inputCostPerMTok: 1.75, outputCostPerMTok: 14, cacheWriteCostPerMTok: 2.1875, cacheReadCostPerMTok: 0.44 },
-        'gpt-5.5': { inputCostPerMTok: 5, outputCostPerMTok: 30, cacheWriteCostPerMTok: 6.25, cacheReadCostPerMTok: 0.5 },
       },
     },
   };
@@ -104,20 +103,13 @@ function frontierSiblingConfig() {
           weaknesses: ['api dependency'],
           qualityScores: { planning: 88, coding: 82, review: 85, classify: 70, routing: 72 },
         },
-        'gpt-5.5': {
-          vendor: 'openai',
-          class: 'frontier',
-          strengths: ['code generation'],
-          weaknesses: ['api dependency'],
-          qualityScores: { planning: 92, coding: 90, review: 90, classify: 72, routing: 74 },
-        },
       },
       ladders: {
-        planning: ['claude-opus-4-8', 'claude-opus-4-7', 'gpt-5.5', 'gpt-5.6-terra', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
-        coding: ['claude-opus-4-8', 'claude-opus-4-7', 'gpt-5.5', 'gpt-5.6-terra', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
-        review: ['claude-opus-4-8', 'claude-opus-4-7', 'gpt-5.5', 'gpt-5.6-terra', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
-        routing: ['claude-haiku-4-5-20251001', 'claude-sonnet-5', 'claude-opus-4-8', 'claude-opus-4-7', 'gpt-5.5', 'gpt-5.6-terra'],
-        classify: ['claude-haiku-4-5-20251001', 'claude-sonnet-5', 'gpt-5.5', 'gpt-5.6-terra'],
+        planning: ['claude-opus-4-8', 'claude-opus-4-7', 'gpt-5.6-terra', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
+        coding: ['claude-opus-4-8', 'claude-opus-4-7', 'gpt-5.6-terra', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
+        review: ['claude-opus-4-8', 'claude-opus-4-7', 'gpt-5.6-terra', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
+        routing: ['claude-haiku-4-5-20251001', 'claude-sonnet-5', 'claude-opus-4-8', 'claude-opus-4-7', 'gpt-5.6-terra'],
+        classify: ['claude-haiku-4-5-20251001', 'claude-sonnet-5', 'gpt-5.6-terra'],
       },
     },
   };
@@ -1423,9 +1415,9 @@ await test('auto mode routes to healthy frontier sibling when anthropic frontier
       taskDifficulty: 'hard',
       skipDifficultyClassification: true,
     });
-    assert.equal(decision.planner, 'gpt-5.5');
-    assert.equal(decision.coder, 'gpt-5.5');
-    assert.equal(decision.reviewer, 'gpt-5.5');
+    assert.equal(decision.planner, 'gpt-5.6-terra');
+    assert.equal(decision.coder, 'gpt-5.6-terra');
+    assert.equal(decision.reviewer, 'gpt-5.6-terra');
     assert.doesNotMatch(decision.reasoning[0], /Constrained mode|Survival mode/);
   } finally {
     cleanup();
@@ -1451,9 +1443,9 @@ await test('tryPolicyResolution pools select healthy frontier for all three role
       skipDifficultyClassification: true,
     });
     assert.equal(decision?.routingMode, 'policy');
-    assert.equal(decision?.planner, 'gpt-5.5');
-    assert.equal(decision?.coder, 'gpt-5.5');
-    assert.equal(decision?.reviewer, 'gpt-5.5');
+    assert.equal(decision?.planner, 'gpt-5.6-terra');
+    assert.equal(decision?.coder, 'gpt-5.6-terra');
+    assert.equal(decision?.reviewer, 'gpt-5.6-terra');
   } finally {
     cleanup();
   }
@@ -1479,11 +1471,11 @@ await test('emits same-class substitution log for adjusted roles and no constrai
         skipDifficultyClassification: true,
       })
     );
-    assert.equal(result.planner, 'gpt-5.5');
-    assert.equal(result.coder, 'gpt-5.5');
-    assert.equal(result.reviewer, 'gpt-5.5');
-    assert.match(stderr, /\[planner] policy adjustment: claude-fable-5 -> gpt-5\.5 \(quota=exhausted, same-class=frontier\)/);
-    assert.match(stderr, /\[coder] policy adjustment: claude-fable-5 -> gpt-5\.5 \(quota=exhausted, same-class=frontier\)/);
+    assert.equal(result.planner, 'gpt-5.6-terra');
+    assert.equal(result.coder, 'gpt-5.6-terra');
+    assert.equal(result.reviewer, 'gpt-5.6-terra');
+    assert.match(stderr, /\[planner] policy adjustment: claude-fable-5 -> gpt-5\.6-terra \(quota=exhausted, same-class=frontier\)/);
+    assert.match(stderr, /\[coder] policy adjustment: claude-fable-5 -> gpt-5\.6-terra \(quota=exhausted, same-class=frontier\)/);
     assert.doesNotMatch(stderr, /\[router] (constrained|survival) mode:/);
     assert.doesNotMatch(result.reasoning[0], /Constrained mode|Survival mode/);
   } finally {
