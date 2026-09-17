@@ -9636,7 +9636,7 @@ launch_ready_watchdog_remediation() {
       bounded_retry_reset_if_new_head "$state_dir" "ready-remediation" "$remote_ready_head"
       bounded_retry_reset_if_new_head "$state_dir" "pending-ready-recheck" "$remote_ready_head"
       write_stage_result "$state_dir" "ready" "running" "$current_agent" "$current_model" \
-        "PR #$pr_number changed head while Ready was finalizing; rechecking current GitHub head" \
+        "PR #$pr_number changed head while Ready was finalizing, rechecking current GitHub head" \
         "$(jq -cn --argjson pr "$pr_number" --arg head "$remote_ready_head" '{type:"ready",verdict:"pending",prNumber:$pr,readyHeadSha:$head,pendingReason:"head-changed"}')"
       return 4
     fi
