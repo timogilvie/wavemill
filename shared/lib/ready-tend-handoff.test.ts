@@ -66,11 +66,12 @@ describe('ready-tend-handoff', () => {
     assert.equal(second.outcome, 'already-claimed');
   });
 
-  it('creates a record on Tend claim when no prior publish', async () => {
+  it('refuses Tend claim without a prior Ready publish (REQ-F1)', async () => {
     const dir = setup();
     const claim = await claimTendHandoff(dir, 1426, 'abc123');
-    assert.equal(claim.outcome, 'claimed');
-    assert.equal(claim.record.state, 'tend-claimed');
+    assert.equal(claim.outcome, 'no-ready-artifact');
+    assert.equal(claim.record, null);
+    assert.equal(readHandoffRecord(dir), null);
   });
 
   it('records typed failure stage', async () => {

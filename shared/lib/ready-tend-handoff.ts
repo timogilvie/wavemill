@@ -23,8 +23,14 @@ export interface HandoffRecord {
 }
 
 export interface HandoffResult {
-  outcome: 'published' | 'claimed' | 'already-claimed' | 'stale-head' | 'conflict';
-  record: HandoffRecord;
+  outcome:
+    | 'published'
+    | 'claimed'
+    | 'already-claimed'
+    | 'stale-head'
+    | 'conflict'
+    | 'no-ready-artifact';
+  record: HandoffRecord | null;
 }
 
 function handoffPath(stateDir: string): string {
@@ -94,21 +100,7 @@ export async function claimTendHandoff(
   const existing = readHandoffRecord(stateDir);
 
   if (!existing) {
-    const record: HandoffRecord = {
-      schemaVersion: 1,
-      prNumber,
-      headSha,
-      state: 'tend-claimed',
-      owner: 'tend',
-      publishedAt: new Date().toISOString(),
-      claimedAt: new Date().toISOString(),
-    };
-    const result = await mutateJsonState<HandoffRecord>(
-      handoffPath(stateDir),
-      () => record,
-      { createIfMissing: true, initial: record },
-    );
-    return { outcome: 'claimed', record: result };
+    return { outcome: 'no-ready-artifact', record: null };
   }
 
   if (existing.headSha !== headSha) {
