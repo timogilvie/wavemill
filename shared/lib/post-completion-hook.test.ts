@@ -400,7 +400,8 @@ await test('enrichPostCompletionRecord attaches taskDescriptor for persisted rec
     assert.equal(record.taskDescriptor?.outcome?.total_cost_usd, 4.25);
     assert.equal(record.taskDescriptor?.outcome?.interventions, 1);
     assert.ok((record.taskDescriptor?.constraints.models_available.length || 0) > 0);
-    assert.ok(record.taskDescriptor?.constraints.models_available.includes('gpt-5.5'));
+    assert.ok(record.taskDescriptor?.constraints.models_available.includes('gpt-5.6-terra'));
+    assert.ok(!record.taskDescriptor?.constraints.models_available.includes('gpt-5.5'));
     assert.ok(!record.taskDescriptor?.constraints.models_available.includes('gpt-5.3-codex'));
     assert.equal(record.workflowCostStatus, 'success');
     assert.equal(record.enrichmentDiagnostics, undefined);

@@ -154,6 +154,6 @@ describe('callHeadlessLLM', () => {
     assert.equal(result.provider, 'codex');
     const [invocation] = readLog(logPath);
     const modelIdx = invocation.args.indexOf('--model');
-    assert.equal(invocation.args[modelIdx + 1], 'gpt-5.5');
+    assert.equal(invocation.args[modelIdx + 1], 'gpt-5.6-terra');
   });
 });
