@@ -2042,7 +2042,9 @@ test('incident reconciliation correlates stalled Tend markers into typed remedia
     const stalled = stored.filter((item) => item.rootCauseClass === 'review_context_overflow_stale_base');
     assert.equal(stalled.length, 1);
     assert.equal(stalled[0].occurrenceCount, 1);
-    assert.equal(stalled[0].metadata.missedCycles, 0);
+    // A repeat of the same stored source event is not fresh observation. It
+    // must therefore accrue a missed cycle and eventually auto-resolve.
+    assert.equal(stalled[0].metadata.missedCycles, 1);
     assert.equal(second.incidents?.filter((item) => item.rootCauseClass === 'review_context_overflow_stale_base').length, 1);
   } finally {
     rmSync(repoDir, { recursive: true, force: true });

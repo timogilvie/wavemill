@@ -318,6 +318,7 @@ TESTS=(
   tools/native-agent-certifications.test.ts
   shared/lib/incident-linear-retry-queue.test.ts
   shared/lib/incident-to-linear-synchronizer.test.ts
+  shared/lib/incident-filing-reconciler.test.ts
   shared/lib/verification-metrics.test.ts
   shared/lib/ci-verification-drift-detector.test.ts
   shared/lib/pre-pr-verification-drift-validator.test.ts
