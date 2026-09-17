@@ -150,7 +150,7 @@ NATIVE_CODING_PROMPT="/tmp/wavemill-HOK-2542-coding-prompt.txt"
 NATIVE_CODING_LAUNCHER="/tmp/sess-HOK-2542-autonomous-launcher.sh"
 rm -f "$NATIVE_CODING_LAUNCHER"
 REPO_DIR="$REPO_DIR" \
-agent_launch_autonomous "sess" "@95" "$NATIVE_CODING_PROMPT" "native-openrouter" "glm-5.2" "HOK-2542"
+agent_launch_autonomous "sess" "@95" "$NATIVE_CODING_PROMPT" "native-openrouter" "qwen-3-coder" "HOK-2542"
 
 check_contains "native coding dispatches launcher path" "$(cat "$TMUX_LOG")" "$NATIVE_CODING_LAUNCHER"
 check_contains "native coding launcher invokes coding flow tool" "$(cat "$NATIVE_CODING_LAUNCHER")" "tools/launch-native-coding.ts"
