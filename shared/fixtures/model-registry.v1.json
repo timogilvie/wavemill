@@ -418,8 +418,14 @@
             "predecessors": [
               "gpt-5",
               "gpt-5-mini"
-            ]
+            ],
+            "successor": "gpt-5.6-terra"
           }
+        },
+        "supportedModel": {
+          "lifecycle": "deprecated",
+          "launchEligible": false,
+          "routingEligible": false
         }
       }
     },
@@ -712,7 +718,7 @@
           "family": "gpt",
           "evidencePolicy": "eligible",
           "lineage": {
-            "successor": "gpt-5.5",
+            "successor": "gpt-5.6-terra",
             "disclosedAt": "2026-08-23",
             "disclosureSource": "HOK-2862"
           }
@@ -767,7 +773,7 @@
           "family": "gpt",
           "evidencePolicy": "eligible",
           "lineage": {
-            "successor": "gpt-5.5",
+            "successor": "gpt-5.6-terra",
             "disclosedAt": "2026-08-23",
             "disclosureSource": "HOK-2862"
           }
@@ -1329,7 +1335,7 @@
         },
         "pricing": {
           "inputCostPerMTok": 0.39999999999999997,
-          "outputCostPerMTok": 2.0,
+          "outputCostPerMTok": 2,
           "cacheReadCostPerMTok": 0.04
         },
         "defaultLadderEligible": false,
@@ -1342,7 +1348,7 @@
         "latencyTier": "standard",
         "reasoningTier": "advanced",
         "costPerMillionInputTokensUsd": 0.39999999999999997,
-        "costPerMillionOutputTokensUsd": 2.0,
+        "costPerMillionOutputTokensUsd": 2,
         "agent": "native-openrouter",
         "nativeCapability": {
           "nativeProvider": "openrouter",
@@ -1490,7 +1496,7 @@
         },
         "pricing": {
           "inputCostPerMTok": 0.3,
-          "outputCostPerMTok": 1.0,
+          "outputCostPerMTok": 1,
           "cacheReadCostPerMTok": 0.09999999999999999
         },
         "defaultLadderEligible": false,
@@ -1503,7 +1509,7 @@
         "latencyTier": "standard",
         "reasoningTier": "standard",
         "costPerMillionInputTokensUsd": 0.3,
-        "costPerMillionOutputTokensUsd": 1.0,
+        "costPerMillionOutputTokensUsd": 1,
         "agent": "native-openrouter",
         "nativeCapability": {
           "nativeProvider": "openrouter",
@@ -2062,8 +2068,8 @@
           "classify": 60
         },
         "pricing": {
-          "inputCostPerMTok": 3.0,
-          "outputCostPerMTok": 15.0,
+          "inputCostPerMTok": 3,
+          "outputCostPerMTok": 15,
           "cacheReadCostPerMTok": 0.31
         },
         "defaultLadderEligible": false,
@@ -2075,8 +2081,8 @@
         },
         "latencyTier": "standard",
         "reasoningTier": "advanced",
-        "costPerMillionInputTokensUsd": 3.0,
-        "costPerMillionOutputTokensUsd": 15.0,
+        "costPerMillionInputTokensUsd": 3,
+        "costPerMillionOutputTokensUsd": 15,
         "agent": "native-openrouter",
         "nativeCapability": {
           "nativeProvider": "openrouter",
@@ -2668,7 +2674,6 @@
       "claude-haiku-4-5-20251001",
       "deepseek-v4-flash",
       "claude-sonnet-5",
-      "gpt-5.5",
       "gpt-5.6-terra",
       "deepseek-v4-pro",
       "claude-fable-5",
@@ -2677,7 +2682,6 @@
     ],
     "planning": [
       "claude-fable-5",
-      "gpt-5.5",
       "claude-opus-4-8",
       "claude-opus-4-7",
       "gpt-5.6-terra",
@@ -2688,7 +2692,6 @@
     ],
     "coding": [
       "claude-fable-5",
-      "gpt-5.5",
       "gpt-5.6-terra",
       "deepseek-v4-pro",
       "claude-sonnet-5",
@@ -2699,7 +2702,6 @@
       "claude-haiku-4-5-20251001"
     ],
     "review": [
-      "gpt-5.5",
       "claude-fable-5",
       "claude-opus-4-8",
       "claude-opus-4-7",
@@ -2713,7 +2715,6 @@
       "claude-haiku-4-5-20251001",
       "deepseek-v4-flash",
       "claude-sonnet-5",
-      "gpt-5.5",
       "gpt-5.6-terra",
       "claude-fable-5"
     ]
