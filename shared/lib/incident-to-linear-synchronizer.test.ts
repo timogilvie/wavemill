@@ -339,6 +339,29 @@ test('dry-run returns offline unknown plan without Linear API calls', async () =
   assert.match(result.plannedTitle ?? '', /Observer crashed/);
 });
 
+test('recovered unlinked incident is skipped before every Linear client call and dry-run reports evidence', async () => {
+  let calls = 0;
+  const recovered = () => ({ outcome: 'recovered' as const, evidence: { jobId: 'job-1', resultExists: true } });
+  const result = await syncIncident({
+    incident: incident({ rootCauseClass: 'failed_job_no_result', metadata: { jobId: 'job-1', jobKind: 'eval', thresholdTriggered: true } }),
+    config: config(),
+    reconciler: recovered,
+    client: mockClient({ searchIssues: async () => { calls += 1; return []; }, getTeams: async () => { calls += 1; return []; } }),
+  });
+  assert.equal(result.status, 'skipped');
+  assert.equal(result.reconciliation?.outcome, 'recovered');
+  assert.equal(calls, 0);
+
+  const dry = await syncIncident({
+    incident: incident({ rootCauseClass: 'failed_job_no_result', metadata: { jobId: 'job-1', jobKind: 'eval', thresholdTriggered: true } }),
+    config: config({ detectionOnly: true }),
+    reconciler: recovered,
+    client: mockClient({ searchIssues: async () => { calls += 1; return []; } }),
+  });
+  assert.equal(dry.reconciliation?.evidence.resultExists, true);
+  assert.equal(calls, 0);
+});
+
 test('detectionOnly returns local update plan without Linear API calls', async () => {
   let linearCalls = 0;
   const result = await syncIncident({

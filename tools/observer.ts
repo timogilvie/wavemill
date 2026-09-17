@@ -2680,8 +2680,8 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
     const freshFingerprints: string[] = [];
     for (const incident of dedupeIncidentCandidates(candidates, store)) {
       try {
-        const { record: stored } = await store.upsertDetailed(incident);
-        freshFingerprints.push(stored.fingerprint);
+        const { record: stored, freshEvent } = await store.upsertDetailed(incident);
+        if (freshEvent) freshFingerprints.push(stored.fingerprint);
         incidents.push(stored);
       } catch (error) {
         cycleComplete = false;
@@ -3031,6 +3031,7 @@ export async function syncIncidentsToLinear(snapshot: ObserverSnapshot, options:
             now: input.now,
           }),
         },
+        repoDir: repo.repoDir,
       });
       collectSyncResult(summary, result);
     }
