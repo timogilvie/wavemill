@@ -68,6 +68,11 @@ tmux() {
 agent_resolve_dashboard_pid() { printf '%s\n' "123"; }
 agent_hooks_dir() { printf '%s\n' "$REPO_DIR/shared/hooks"; }
 agent_validate_model() { return 0; }
+agent_model_launch_preflight() {
+  AGENT_MODEL_PREFLIGHT_LAST_JSON='{"ok":true,"requestedModel":"'$1'","resolvedModel":"'$1'","agent":"native-openrouter","phase":"'$2'"}'
+  printf '%s\n' "$1"
+  return 0
+}
 agent_resolve_model() { printf '%s\n' "$2"; }
 agent_resolve_from_model() {
   if [[ "$1" == "gpt-5.6-terra" ]]; then
