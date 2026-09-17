@@ -17,6 +17,10 @@ import {
 } from './linear.ts';
 import { IncidentStore } from './wavemill-incident-store.ts';
 import type { IncidentCategory, IncidentEvidence, IncidentRecord } from './wavemill-incident-model.ts';
+import {
+  reconcileIncidentForFiling,
+  type IncidentFilingReconciliation,
+} from './incident-filing-reconciler.ts';
 
 export type IncidentPolicyStrategy = 'create' | 'no_create' | 'threshold' | 'create_if_persistent';
 
@@ -74,6 +78,7 @@ export interface SyncResult {
   dryRun?: boolean;
   nextRetryAt?: string;
   plannedTitle?: string;
+  reconciliation?: IncidentFilingReconciliation;
 }
 
 export interface IncidentLinearRetryEnqueuer {
@@ -107,6 +112,10 @@ export interface SyncIncidentOptions {
   client?: IncidentLinearClient;
   retryQueue?: IncidentLinearRetryEnqueuer;
   audit?: (message: string, fields?: Record<string, unknown>) => void;
+  /** Repository whose persisted workflow state is the filing authority. */
+  repoDir?: string;
+  /** Injectable read-only gate for tests and alternate read-only stores. */
+  reconciler?: (incident: IncidentRecord, repoDir: string) => IncidentFilingReconciliation;
 }
 
 const DEFAULT_CLIENT: IncidentLinearClient = {
@@ -444,10 +453,18 @@ export async function syncIncident(options: SyncIncidentOptions): Promise<SyncRe
   const dryRun = options.dryRun === true || config.detectionOnly === true;
   const incident = options.incident;
   const audit = options.audit ?? (() => {});
-  const baseResult = { fingerprint: incident.fingerprint, evidenceRevision, dryRun };
+  const reconciliation = (options.reconciler ?? reconcileIncidentForFiling)(incident, options.repoDir ?? process.cwd());
+  const baseResult = { fingerprint: incident.fingerprint, evidenceRevision, dryRun, reconciliation };
+
+  // An unlinked incident proven recovered/superseded must not cause even a
+  // lookup: queue replay and dry-run both pass through this same early gate.
+  if (!incident.metadata?.linkedLinearId && (reconciliation.outcome === 'recovered' || reconciliation.outcome === 'superseded')) {
+    audit('incident filing suppressed by reconciliation', { fingerprint: incident.fingerprint, ...reconciliation });
+    return { ...baseResult, action: 'skip', status: 'skipped', reason: `reconciliation: ${reconciliation.outcome}` };
+  }
 
   if (dryRun) {
-    return planOfflineSync(incident, config, evidenceRevision, now, options.replay === true);
+    return { ...planOfflineSync(incident, config, evidenceRevision, now, options.replay === true), reconciliation };
   }
 
   if (!config.enabled && !dryRun) {

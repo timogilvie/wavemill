@@ -143,6 +143,36 @@ test('drainIncidentQueue replays queued incident and tombstones success', async 
   }
 });
 
+test('drainIncidentQueue tombstones a recovered queued create without Linear calls', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'incident-queue-recovered-'));
+  const originalRandom = Math.random;
+  Math.random = () => 0;
+  try {
+    const store = new IncidentStore(join(repoDir, '.wavemill', 'incidents'));
+    const stored = await store.upsert(createIncidentDraft({
+      taskId: 'HOK-1', category: 'stale_orphaned_state', severity: 'medium', confidence: 'definite', lifecycle: 'active',
+      rootCauseClass: 'failed_job_no_result', summary: 'job failed', operatorAction: 'retry',
+      evidence: [{ type: 'job_state', source: 'state', timestamp: '2026-08-04T12:00:00.000Z', redactedData: 'failed', key: 'failed' }],
+      metadata: { jobId: 'job-1', jobKind: 'eval' },
+    }));
+    enqueueIncidentSync({ repoDir, incidentFingerprint: stored.fingerprint, linearAction: 'create', lastError: {
+      category: 'rate_limit', httpStatus: 429, graphqlErrors: [], isRetryable: true, message: 'rate limited',
+    }, now: new Date('2026-08-04T12:00:00.000Z') });
+    const result = await drainIncidentQueue({
+      repoDir, store, config: { ...DEFAULT_INCIDENT_LINEAR_CONFIG, enabled: true, requestDelayMs: 0, rateLimitBackoffMs: 0 },
+      now: new Date('2026-08-04T12:01:00.000Z'),
+      reconciler: () => ({ outcome: 'recovered', evidence: { jobId: 'job-1' } }),
+      client: successClient({ searchIssues: async () => { throw new Error('Linear must not be called'); } }),
+    });
+    const rows = readFileSync(queuePath(repoDir), 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
+    assert.equal(result.succeeded, 1);
+    assert.equal(rows.at(-1).recordType, 'tombstone');
+  } finally {
+    Math.random = originalRandom;
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
 test('drainIncidentQueue marks nonretryable replay failure permanent', async () => {
   const repoDir = mkdtempSync(join(tmpdir(), 'incident-queue-permanent-'));
   const originalRandom = Math.random;
