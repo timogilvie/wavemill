@@ -461,8 +461,8 @@ describe('model-registry', () => {
 
   it('resolves generic successors from declared lineage', () => {
     assert.equal(resolveModelSuccessor('gpt-5.4', DEFAULT_MODEL_REGISTRY, { stage: 'planning' }), 'gpt-5.6-terra');
-    assert.equal(resolveModelSuccessor('gpt-5-mini', DEFAULT_MODEL_REGISTRY, { stage: 'review' }), 'gpt-5.5');
-    assert.equal(resolveModelSuccessor('gpt-5.5', DEFAULT_MODEL_REGISTRY, { stage: 'coding' }), null);
+    assert.equal(resolveModelSuccessor('gpt-5-mini', DEFAULT_MODEL_REGISTRY, { stage: 'review' }), 'gpt-5.6-terra');
+    assert.equal(resolveModelSuccessor('gpt-5.5', DEFAULT_MODEL_REGISTRY, { stage: 'coding' }), 'gpt-5.6-terra');
   });
 
   describe('registry admission criteria', () => {
@@ -599,12 +599,11 @@ describe('model-registry', () => {
   });
 
   it('getLadder returns configured default ladders', () => {
-    assert.equal(getLadder(DEFAULT_MODEL_REGISTRY, 'review')[0], 'gpt-5.5');
+    assert.equal(getLadder(DEFAULT_MODEL_REGISTRY, 'review')[0], 'claude-fable-5');
     assert.deepEqual(getLadder(DEFAULT_MODEL_REGISTRY, 'classify'), [
       'claude-haiku-4-5-20251001',
       'deepseek-v4-flash',
       'claude-sonnet-5',
-      'gpt-5.5',
       'gpt-5.6-terra',
       'claude-fable-5',
     ]);
@@ -698,7 +697,6 @@ describe('model-registry', () => {
     });
 
     assert.deepEqual(once, [
-      'gpt-5.5',
       'claude-fable-5',
       'claude-opus-4-8',
       'claude-opus-4-7',
@@ -730,7 +728,6 @@ describe('model-registry', () => {
   it('rankCandidates returns the full ladder when no exclusions are provided', () => {
     assert.deepEqual(rankCandidates(DEFAULT_MODEL_REGISTRY, 'coding'), [
       'claude-fable-5',
-      'gpt-5.5',
       'gpt-5.6-terra',
       'deepseek-v4-pro',
       'claude-sonnet-5',
@@ -1102,7 +1099,7 @@ describe('model-registry', () => {
 
       const descriptorModels = getConfiguredModelsForDescriptor(repoDir);
       assert.ok(descriptorModels.length > 0);
-      assert.ok(descriptorModels.includes('gpt-5.5'));
+      assert.ok(!descriptorModels.includes('gpt-5.5'));
       assert.ok(descriptorModels.includes('gpt-5.6-terra'));
       assert.notDeepEqual(descriptorModels, [
         'claude-sonnet-5',
