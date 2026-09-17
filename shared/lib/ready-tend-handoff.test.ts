@@ -76,7 +76,7 @@ describe('ready-tend-handoff', () => {
   it('records typed failure stage', async () => {
     const dir = setup();
     await publishReadyHandoff(dir, 1426, 'abc123');
-    recordHandoffFailure(dir, 'route-stamp', 'stamp-pr-route.ts failed on PR #1426');
+    await recordHandoffFailure(dir, 'route-stamp', 'stamp-pr-route.ts failed on PR #1426');
 
     const record = readHandoffRecord(dir);
     assert.ok(record);
@@ -87,7 +87,7 @@ describe('ready-tend-handoff', () => {
   it('redacts sensitive content in diagnostics', async () => {
     const dir = setup();
     await publishReadyHandoff(dir, 1426, 'abc123');
-    recordHandoffFailure(dir, 'github-api', 'token=ghp_secret123abc and /Users/john/repo failed');
+    await recordHandoffFailure(dir, 'github-api', 'token=ghp_secret123abc and /Users/john/repo failed');
 
     const record = readHandoffRecord(dir);
     assert.ok(record);

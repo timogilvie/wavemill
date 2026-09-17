@@ -27,7 +27,7 @@ async function main(): Promise<void> {
     if (!stateDir || !stage) {
       process.exit(1);
     }
-    recordHandoffFailure(stateDir, stage, diagnostic);
+    await recordHandoffFailure(stateDir, stage, diagnostic);
   } else {
     console.error(`Unknown command: ${command}`);
     process.exit(1);

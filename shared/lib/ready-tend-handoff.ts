@@ -1,5 +1,4 @@
-import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { mutateJsonState } from './state-mutex.ts';
 
@@ -151,23 +150,21 @@ export function isTendClaimedForHead(
     && record.headSha === headSha;
 }
 
-export function recordHandoffFailure(
+export async function recordHandoffFailure(
   stateDir: string,
   stage: HandoffFailureStage,
   diagnosticOutput?: string,
-): void {
-  const filePath = handoffPath(stateDir);
+): Promise<void> {
   const existing = readHandoffRecord(stateDir);
   if (!existing) return;
 
-  const updated: HandoffRecord = {
-    ...existing,
-    failureStage: stage,
-    diagnosticExcerpt: diagnosticOutput ? redactDiagnostic(diagnosticOutput) : undefined,
-  };
-
-  mkdirSync(stateDir, { recursive: true });
-  const tmpPath = `${filePath}.tmp.${process.pid}.${randomUUID()}`;
-  writeFileSync(tmpPath, JSON.stringify(updated, null, 2) + '\n', 'utf-8');
-  renameSync(tmpPath, filePath);
+  await mutateJsonState<HandoffRecord>(
+    handoffPath(stateDir),
+    (current) => ({
+      ...current,
+      failureStage: stage,
+      diagnosticExcerpt: diagnosticOutput ? redactDiagnostic(diagnosticOutput) : undefined,
+    }),
+    { createIfMissing: false },
+  );
 }
