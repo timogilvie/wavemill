@@ -14,6 +14,7 @@ import {
   writePrStateMarker,
   WM_LABELS,
 } from './pr-state-labels.ts';
+import { claimReadyHandoff } from './ready-tend-handoff.ts';
 import { buildStaleMarkerFinding, type MarkerPayload, type MarkerValidation } from './transient-marker.ts';
 import { getIntegrationConfig, getIntegrationReadyPolicy } from './config.ts';
 import { readChallengeComparisons } from './challenge-comparison.ts';
@@ -40,6 +41,9 @@ export interface TendCandidate {
   headBranch: string;
   createdAt: string;
   dependencyDepth: number;
+  /** Fresh GitHub head and resolved artifact location, supplied by selection. */
+  headSha?: string;
+  featureDir?: string;
 }
 
 export interface BlockedCandidate {
@@ -554,6 +558,8 @@ export async function selectNextCandidate(options: SelectNextCandidateOptions): 
       headBranch: item.pr.headRefName,
       createdAt: item.pr.createdAt,
       dependencyDepth: item.dependencyDepth,
+      headSha: item.pr.headRefOid,
+      featureDir: resolveReadyStateDir(options.repoDir, item.pr, item.metadata) ?? undefined,
     }))
     .sort((a, b) => a.dependencyDepth - b.dependencyDepth || a.createdAt.localeCompare(b.createdAt));
 
@@ -664,6 +670,33 @@ export async function executeMerge(
       };
     }
     // Every holder's lock was stale and reclaimed — the lane is free, proceed.
+  }
+
+  // New Ready artifacts use an explicit ownership transfer. Keep the legacy
+  // path tolerant of older artifacts that predate the additive handoff file.
+  if (candidate.headSha && candidate.featureDir) {
+    // Selection may have happened seconds ago. Re-read GitHub before claiming
+    // so a force-push cannot inherit the old Ready token.
+    const liveHead = readPrMergeDiagnostics(candidate.number, options.repoDir, deps.shellRunner).headRefOid;
+    if (!liveHead || liveHead !== candidate.headSha) {
+      return {
+        status: 'skipped',
+        prNumber: candidate.number,
+        phase: 'handoff',
+        failureExcerpt: 'GitHub PR head changed or could not be verified before Tend ownership claim.',
+        haltLoop: false,
+      };
+    }
+    const handoff = await claimReadyHandoff(candidate.featureDir, candidate.number, liveHead);
+    if (handoff.outcome !== 'claimed' && handoff.outcome !== 'already-claimed') {
+      return {
+        status: 'skipped',
+        prNumber: candidate.number,
+        phase: 'handoff',
+        failureExcerpt: 'Ready completion artifact is missing, stale, or not published for the current PR head.',
+        haltLoop: false,
+      };
+    }
   }
 
   try {
