@@ -154,6 +154,7 @@ export interface ReviewScopeGuardOptions {
   repoDir: string;
   featureDir?: string;
   sinceCommit?: string;
+  sinceCommitSource?: 'launch-base' | 'explicit';
   baseRef?: string;
   headRef?: string;
   /** Explicit integration ref override for merge-base derivation. */
@@ -183,7 +184,15 @@ export interface ReviewScopeBaseline {
   sinceCommit: string;
   headRef: string;
   paths: string[];
+  provenance?: ReviewScopeBaselineProvenance;
+  baseRef?: string;
 }
+
+export type ReviewScopeBaselineProvenance =
+  | 'launch-base'
+  | 'remote-merge-base'
+  | 'local-merge-base-fallback'
+  | 'explicit-since-commit';
 
 const BASELINE_FILE = '.review-scope-baseline.json';
 const DEFAULT_DELETION_RATIO = 3;
@@ -302,6 +311,7 @@ export function validateReviewScope(options: ReviewScopeGuardOptions): ReviewSco
         repoDir,
         featureDir,
         sinceCommit: options.sinceCommit,
+        sinceCommitSource: options.sinceCommitSource,
         headRef,
         writeBaseline: options.writeBaseline ?? true,
         shellRunner,
@@ -650,6 +660,136 @@ function resolveIntegrationRef(repoDir: string, explicitIntegrationRef: string |
   return integrationConfig.integrationBranch;
 }
 
+interface ResolvedBaselineBase {
+  sinceCommit: string;
+  provenance: ReviewScopeBaselineProvenance;
+  baseRef?: string;
+}
+
+function validateSinceCommit(input: {
+  repoDir: string;
+  sinceCommit: string;
+  headRef: string;
+  source: 'launch-base' | 'explicit';
+  shellRunner: ShellRunner;
+}): ResolvedBaselineBase {
+  const label = input.source === 'launch-base' ? 'recorded launch base' : 'explicit since commit';
+  const sinceCommit = input.sinceCommit.trim();
+  if (!commitExists(input.repoDir, sinceCommit, input.shellRunner)) {
+    throw new Error(
+      `review-scope baseline: ${label} ${sinceCommit} could not be resolved as a commit; refusing to widen scope`,
+    );
+  }
+  if (!isAncestor(input.repoDir, sinceCommit, input.headRef, input.shellRunner)) {
+    throw new Error(
+      `review-scope baseline: ${label} ${sinceCommit} is not an ancestor of ${input.headRef}; refusing to widen scope`,
+    );
+  }
+  return {
+    sinceCommit,
+    provenance: input.source === 'launch-base' ? 'launch-base' : 'explicit-since-commit',
+    baseRef: sinceCommit,
+  };
+}
+
+function resolveBaselineBase(input: {
+  repoDir: string;
+  sinceCommit?: string;
+  sinceCommitSource?: 'launch-base' | 'explicit';
+  headRef: string;
+  integrationRef?: string;
+  shellRunner: ShellRunner;
+}): ResolvedBaselineBase {
+  const sinceCommit = input.sinceCommit?.trim();
+  if (sinceCommit) {
+    return validateSinceCommit({
+      repoDir: input.repoDir,
+      sinceCommit,
+      headRef: input.headRef,
+      source: input.sinceCommitSource ?? 'explicit',
+      shellRunner: input.shellRunner,
+    });
+  }
+
+  const resolvedRef = resolveIntegrationBaseRef(input.repoDir, input.integrationRef, input.shellRunner);
+  const mergeBase = runGitChecked(
+    input.shellRunner,
+    input.repoDir,
+    `git merge-base ${escapeShellArg(resolvedRef.ref)} ${escapeShellArg(input.headRef)}`,
+    'git-merge-base',
+  ).trim();
+  if (!mergeBase) {
+    throw new Error(`git merge-base returned an empty base for ${resolvedRef.ref} and ${input.headRef}`);
+  }
+  return {
+    sinceCommit: mergeBase,
+    provenance: resolvedRef.kind === 'remote' ? 'remote-merge-base' : 'local-merge-base-fallback',
+    baseRef: resolvedRef.ref,
+  };
+}
+
+function resolveIntegrationBaseRef(
+  repoDir: string,
+  explicitIntegrationRef: string | undefined,
+  shellRunner: ShellRunner,
+): { ref: string; kind: 'remote' | 'local' } {
+  const integrationRef = resolveIntegrationRef(repoDir, explicitIntegrationRef);
+  if (isRemoteIntegrationRef(integrationRef)) {
+    return { ref: integrationRef, kind: 'remote' };
+  }
+
+  const remoteRef = `origin/${stripLocalBranchPrefix(integrationRef)}`;
+  bestEffortFetch(repoDir, stripLocalBranchPrefix(integrationRef), shellRunner);
+  if (commitExists(repoDir, remoteRef, shellRunner)) {
+    return { ref: remoteRef, kind: 'remote' };
+  }
+
+  return { ref: integrationRef, kind: 'local' };
+}
+
+function isRemoteIntegrationRef(ref: string): boolean {
+  return ref.startsWith('origin/') || ref.startsWith('refs/remotes/origin/');
+}
+
+function stripLocalBranchPrefix(ref: string): string {
+  return ref.replace(/^refs\/heads\//, '').replace(/^origin\//, '').replace(/^refs\/remotes\/origin\//, '');
+}
+
+function commitExists(repoDir: string, ref: string, shellRunner: ShellRunner): boolean {
+  try {
+    runGit(shellRunner, repoDir, `git rev-parse --verify --quiet ${escapeShellArg(`${ref}^{commit}`)}`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isAncestor(repoDir: string, ancestor: string, descendant: string, shellRunner: ShellRunner): boolean {
+  try {
+    runGit(shellRunner, repoDir, `git merge-base --is-ancestor ${escapeShellArg(ancestor)} ${escapeShellArg(descendant)}`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function bestEffortFetch(repoDir: string, branch: string, shellRunner: ShellRunner): boolean {
+  const trimmedBranch = branch.trim();
+  if (!trimmedBranch || trimmedBranch.includes('..') || trimmedBranch.startsWith('-')) {
+    return false;
+  }
+  try {
+    runGit(
+      shellRunner,
+      repoDir,
+      `if command -v timeout >/dev/null 2>&1; then timeout 10s git fetch --quiet origin ${escapeShellArg(trimmedBranch)} 2>/dev/null; else false; fi`,
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 
 /**
  * Resolve the feature directory owning the current task.
@@ -811,6 +951,9 @@ function loadOrCreateBaseline(input: {
   repoDir: string;
   featureDir: string;
   sinceCommit?: string;
+  sinceCommitSource?: 'launch-base' | 'explicit';
+  provenance?: ReviewScopeBaselineProvenance;
+  baseRef?: string;
   headRef: string;
   writeBaseline: boolean;
   shellRunner: ShellRunner;
@@ -825,14 +968,29 @@ function loadOrCreateBaseline(input: {
     return null;
   }
 
-  const paths = collectNameOnly(input.repoDir, input.sinceCommit, input.headRef, input.shellRunner);
+  const resolvedBase = input.provenance
+    ? {
+      sinceCommit: input.sinceCommit,
+      provenance: input.provenance,
+      baseRef: input.baseRef,
+    }
+    : validateSinceCommit({
+      repoDir: input.repoDir,
+      sinceCommit: input.sinceCommit,
+      headRef: input.headRef,
+      source: input.sinceCommitSource ?? 'explicit',
+      shellRunner: input.shellRunner,
+    });
+  const paths = collectNameOnly(input.repoDir, resolvedBase.sinceCommit, input.headRef, input.shellRunner);
   const baseline: ReviewScopeBaseline = {
     version: 1,
     createdAt: new Date().toISOString(),
-    source: `git diff --name-only ${input.sinceCommit} ${input.headRef}`,
-    sinceCommit: input.sinceCommit,
+    source: `git diff --name-only ${resolvedBase.sinceCommit} ${input.headRef}`,
+    sinceCommit: resolvedBase.sinceCommit,
     headRef: input.headRef,
     paths,
+    provenance: resolvedBase.provenance,
+    baseRef: resolvedBase.baseRef,
   };
 
   if (input.writeBaseline) {
@@ -867,6 +1025,7 @@ export function ensureReviewScopeBaseline(options: {
   repoDir: string;
   featureDir: string;
   sinceCommit?: string;
+  sinceCommitSource?: 'launch-base' | 'explicit';
   headRef?: string;
   integrationRef?: string;
   shellRunner?: ShellRunner;
@@ -882,24 +1041,21 @@ export function ensureReviewScopeBaseline(options: {
     return { created: false, baselinePath, baseline: existing };
   }
 
-  let sinceCommit = options.sinceCommit?.trim() || '';
-  if (!sinceCommit) {
-    const integrationRef = resolveIntegrationRef(repoDir, options.integrationRef);
-    sinceCommit = runGitChecked(
-      shellRunner,
-      repoDir,
-      `git merge-base ${escapeShellArg(integrationRef)} ${escapeShellArg(headRef)}`,
-      'git-merge-base',
-    ).trim();
-    if (!sinceCommit) {
-      throw new Error(`git merge-base returned an empty base for ${integrationRef} and ${headRef}`);
-    }
-  }
+  const resolvedBase = resolveBaselineBase({
+    repoDir,
+    sinceCommit: options.sinceCommit,
+    sinceCommitSource: options.sinceCommitSource,
+    headRef,
+    integrationRef: options.integrationRef,
+    shellRunner,
+  });
 
   const baseline = loadOrCreateBaseline({
     repoDir,
     featureDir,
-    sinceCommit,
+    sinceCommit: resolvedBase.sinceCommit,
+    provenance: resolvedBase.provenance,
+    baseRef: resolvedBase.baseRef,
     headRef,
     writeBaseline: true,
     shellRunner,
@@ -910,7 +1066,7 @@ export function ensureReviewScopeBaseline(options: {
   return { created: true, baselinePath, baseline };
 }
 
-function readBaseline(path: string): ReviewScopeBaseline | null {
+export function readBaseline(path: string): ReviewScopeBaseline | null {
   try {
     if (!existsSync(path)) {
       return null;
@@ -926,10 +1082,19 @@ function readBaseline(path: string): ReviewScopeBaseline | null {
       sinceCommit: parsed.sinceCommit,
       headRef: typeof parsed.headRef === 'string' ? parsed.headRef : 'HEAD',
       paths: [...new Set(parsed.paths.map(normalizeRepoPath).filter(Boolean))].sort(),
+      provenance: isReviewScopeBaselineProvenance(parsed.provenance) ? parsed.provenance : undefined,
+      baseRef: typeof parsed.baseRef === 'string' ? parsed.baseRef : undefined,
     };
   } catch {
     return null;
   }
+}
+
+function isReviewScopeBaselineProvenance(value: unknown): value is ReviewScopeBaselineProvenance {
+  return value === 'launch-base'
+    || value === 'remote-merge-base'
+    || value === 'local-merge-base-fallback'
+    || value === 'explicit-since-commit';
 }
 
 function collectNameOnly(
