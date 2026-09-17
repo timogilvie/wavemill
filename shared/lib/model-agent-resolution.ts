@@ -328,6 +328,14 @@ export function resolveModelAgent(opts: ResolveModelAgentOptions): AgentResoluti
   }
 
   if (resolvedAgent === 'codex' || resolvedAgent === 'claude') {
+    if (capabilities?.supportedModel?.launchEligible === false) {
+      const lifecycle = capabilities.supportedModel.lifecycle || 'unknown';
+      return {
+        ok: false,
+        reason: 'lifecycle-blocked',
+        diagnostic: `[agent-resolution] model=${modelId} phase=${opts.phase} provider=${capabilities?.vendor} reason=lifecycle-blocked certification=${lifecycle} detail="Model is not eligible for launch"`,
+      };
+    }
     if (resolvedAgent === 'codex' && !isCodexChatgptLaunchEligible(capabilities)) {
       const reason = capabilities?.codexChatgptCapability?.reason
         ?? 'No explicit ChatGPT/Codex launch capability is declared.';
