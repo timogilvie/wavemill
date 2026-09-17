@@ -54,7 +54,6 @@ export const CANONICAL_CONFIG_TEMPLATE: WavemillConfig = {
       'claude-haiku-4-5-20251001': { inputCostPerMTok: 0.8, outputCostPerMTok: 4, cacheWriteCostPerMTok: 1, cacheReadCostPerMTok: 0.08 },
       'gpt-5.3-codex': { inputCostPerMTok: 1.75, outputCostPerMTok: 14, cacheReadCostPerMTok: 0.44 },
       'gpt-5.6-terra': { inputCostPerMTok: 2.5, outputCostPerMTok: 15, cacheWriteCostPerMTok: 3.125, cacheReadCostPerMTok: 0.25 },
-      'gpt-5.5': { inputCostPerMTok: 5, outputCostPerMTok: 30 },
       'gpt-4.1': { inputCostPerMTok: 2, outputCostPerMTok: 8 },
       'qwen-3-coder': { inputCostPerMTok: 0.35, outputCostPerMTok: 1.05 },
       'qwen-3-235b': { inputCostPerMTok: 0.09, outputCostPerMTok: 0.55 },

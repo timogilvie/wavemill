@@ -23,7 +23,7 @@ test_multi_role_validation() {
   # Create test data: planner, coder, and reviewer all differ
   local primary_routing='{
     "planner": "claude-opus-4-7",
-    "coder": "gpt-5.5",
+    "coder": "gpt-5.6-terra",
     "reviewer": "claude-opus-4-7",
     "planDepth": "medium",
     "codeDepth": "medium",
@@ -31,9 +31,9 @@ test_multi_role_validation() {
   }'
 
   local challenger_routing='{
-    "planner": "gpt-5.5",
+    "planner": "gpt-5.6-terra",
     "coder": "claude-opus-4-7",
-    "reviewer": "gpt-5.5",
+    "reviewer": "gpt-5.6-terra",
     "planDepth": "medium",
     "codeDepth": "medium",
     "reviewMode": "llm"
@@ -53,7 +53,7 @@ test_route_divergence() {
   # - Should detect if they differ between primary and challenger
 
   local primary_planner="claude-opus-4-7"
-  local challenger_planner="gpt-5.5"
+  local challenger_planner="gpt-5.6-terra"
 
   if [[ "$primary_planner" != "$challenger_planner" ]]; then
     # This divergence should trigger invalid_challenge

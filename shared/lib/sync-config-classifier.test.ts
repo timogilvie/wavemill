@@ -86,7 +86,7 @@ test('nested object and arrays containing absolute paths => requires decision', 
 test('paths already present in base config are omitted', () => {
   const entries = classifyLocalOverrideFields({
     baseConfig: { router: { defaultModel: 'claude-sonnet-4-6' } },
-    localConfig: { router: { defaultModel: 'gpt-5.5' } },
+    localConfig: { router: { defaultModel: 'gpt-5.6-terra' } },
     canonicalConfig: CANONICAL_CONFIG_TEMPLATE as unknown as Record<string, unknown>,
   });
 

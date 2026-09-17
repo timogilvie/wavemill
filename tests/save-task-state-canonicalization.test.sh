@@ -148,7 +148,7 @@ cat > "$STATE_FILE" <<JSON
       "comparisonTimedOutSides": [],
       "manualComparisonArtifact": "/tmp/manual-comparison.md",
       "launchFailure": {"reason": "routing", "detail": "No PR created"},
-      "routing": {"planner": "gpt-5.6-terra", "coder": "gpt-5.5"},
+      "routing": {"planner": "gpt-5.6-terra", "coder": "gpt-5.6-terra"},
       "retry": {"count": 1},
       "execution": {"attempt": 2},
       "unknownFutureField": {"nested": {"deep": true}},

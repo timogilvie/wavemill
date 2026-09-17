@@ -111,9 +111,9 @@ function makeReviewIntent(overrides: Partial<ChallengeExecutionIntent> = {}): Ch
       pairId,
       side: 'primary',
       challengeStage: 'review',
-      expectedStageModel: 'gpt-5.5',
+      expectedStageModel: 'gpt-5.6-terra',
       expectedStageAgent: 'codex',
-      expectedRoute: { planner: '', coder: '', reviewer: 'gpt-5.5', planDepth: '', codeDepth: '', reviewMode: '' },
+      expectedRoute: { planner: '', coder: '', reviewer: 'gpt-5.6-terra', planDepth: '', codeDepth: '', reviewMode: '' },
     },
     challenger: {
       pairId,

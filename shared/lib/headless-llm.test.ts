@@ -78,7 +78,7 @@ afterEach(() => {
 
 describe('resolveProviderForModel', () => {
   it('routes registry OpenAI/gpt models to codex', () => {
-    assert.equal(resolveProviderForModel('gpt-5.5'), 'codex');
+    assert.equal(resolveProviderForModel('gpt-5.6-terra'), 'codex');
     assert.equal(resolveProviderForModel('gpt-5.4'), 'codex');
   });
 
@@ -104,7 +104,7 @@ describe('callHeadlessLLM', () => {
 
     const result = await callHeadlessLLM('USER PROMPT', {
       mode: 'sync',
-      model: 'gpt-5.5',
+      model: 'gpt-5.6-terra',
       systemInstruction: 'OUTPUT ONLY JSON',
       noTools: true,
     });
@@ -145,7 +145,7 @@ describe('callHeadlessLLM', () => {
     assert.equal(invocation.stdin, 'USER PROMPT');
   });
 
-  it('defaults to the codex/gpt-5.5 headless model when none is given', async () => {
+  it('defaults to the codex/gpt-5.6-terra headless model when none is given', async () => {
     const logPath = join(tempRoot, 'codex.log');
     process.env.CODEX_CMD = writeMockCodex(logPath);
 

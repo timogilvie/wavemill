@@ -136,7 +136,7 @@ task_json() {
       taskPacketFile: "/tmp/task.md",
       taskPacketDetailsFile: "/tmp/details.md",
       issueJsonFile: $issueFile,
-      route: {planner:"gpt-5.6-terra", coder:"gpt-5.5", reviewer:"gpt-5.6-terra"}
+      route: {planner:"gpt-5.6-terra", coder:"gpt-5.6-terra", reviewer:"gpt-5.6-terra"}
     } + $extra'
 }
 

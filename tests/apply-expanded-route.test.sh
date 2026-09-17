@@ -355,7 +355,7 @@ EOF
 {
   "planner": "bootstrap-planner",
   "coder": "bootstrap-coder",
-  "reviewer": "gpt-5.5",
+  "reviewer": "gpt-5.6-terra",
   "planDepth": "light",
   "codeDepth": "medium",
   "reviewMode": "llm"
@@ -370,7 +370,7 @@ EOF
     && [[ "$(jq -r '.review.model' "$feature_dir/.phase-config.json")" == "glm-5.2" ]] \
     && [[ "$(jq -r '.tasks["HOK-1512_c"].reviewerModel' "$state_file")" == "glm-5.2" ]] \
     && [[ "$(jq -r '.challengeIntentApplied' "$feature_dir/.routing-complete")" == "true" ]] \
-    && [[ "$(jq -r '.rawExpandedRoute.reviewer' "$feature_dir/.routing-complete")" == "gpt-5.5" ]]; then
+    && [[ "$(jq -r '.rawExpandedRoute.reviewer' "$feature_dir/.routing-complete")" == "gpt-5.6-terra" ]]; then
     pass "challenger review intent survives expanded route overwrite"
   else
     fail "challenger review intent was not preserved during expanded route promotion"
@@ -385,7 +385,7 @@ EOF
   state_file="${fixture[2]}"
   feature_dir="$wt_dir/features/test-slug"
   real_challenge_intent --stage implementation \
-    --primary-coder gpt-5.5 \
+    --primary-coder gpt-5.6-terra \
     --challenger-coder claude-opus-4-7 --challenger-coder-agent claude \
     > "$feature_dir/challenge-intent.json"
   cat > "$feature_dir/.post-expansion-route.json" <<'EOF'
@@ -401,7 +401,7 @@ EOF
 
   jq '.tasks["HOK-1512"] += {
         plannerModel:"primary-expanded-planner",
-        coderModel:"gpt-5.5",
+        coderModel:"gpt-5.6-terra",
         reviewerModel:"primary-expanded-reviewer",
         planDepth:"medium",
         codeDepth:"medium",
@@ -438,7 +438,7 @@ EOF
   state_file="${fixture[2]}"
   feature_dir="$wt_dir/features/test-slug"
   real_challenge_intent --stage implementation \
-    --primary-coder gpt-5.5 \
+    --primary-coder gpt-5.6-terra \
     --challenger-coder claude-opus-4-7 --challenger-coder-agent claude \
     > "$feature_dir/challenge-intent.json"
   cat > "$feature_dir/.post-expansion-route.json" <<'EOF'
@@ -502,7 +502,7 @@ EOF
 {
   "planner": "bootstrap-planner",
   "coder": "bootstrap-coder",
-  "reviewer": "gpt-5.5",
+  "reviewer": "gpt-5.6-terra",
   "planDepth": "light",
   "codeDepth": "medium",
   "reviewMode": "llm"
@@ -603,7 +603,7 @@ EOF
       primary: {
         key: "HOK-1512", role: "primary",
         planner:  {model: "bootstrap-planner", agent: "claude"},
-        coder:    {model: "gpt-5.5",           agent: "codex"},
+        coder:    {model: "gpt-5.6-terra",           agent: "codex"},
         reviewer: {model: "bootstrap-reviewer", agent: "claude"}
       },
       challenger: {
@@ -619,7 +619,7 @@ EOF
   cat > "$feature_dir/.post-expansion-route.json" <<'EOF'
 {
   "planner": "bootstrap-planner",
-  "coder": "gpt-5.5",
+  "coder": "gpt-5.6-terra",
   "reviewer": "bootstrap-reviewer",
   "planDepth": "light",
   "codeDepth": "deep",
@@ -658,7 +658,7 @@ EOF
   cat > "$feature_dir/.post-expansion-route.json" <<'EOF'
 {
   "planner": "expanded-planner",
-  "coder": "gpt-5.5",
+  "coder": "gpt-5.6-terra",
   "reviewer": "claude-opus-4-7",
   "planDepth": "deep",
   "codeDepth": "deep",
