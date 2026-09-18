@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { mutateJsonState } from './state-mutex.ts';
 import {
   executeMerge,
   formatStatusLine,
@@ -15,6 +14,17 @@ import {
 import { WM_LABELS } from './pr-state-labels.ts';
 import type { StatusRenderer } from './tend-status-renderer.ts';
 import { computeBackoffDelayMs, isTransientError } from './transient-retry.ts';
+import {
+  writeTendHeartbeat,
+  writeTendPollHeartbeatBestEffort,
+  writeTendFailureState,
+  writeTendFailureStateBestEffort,
+  type TendProgressState,
+  type TendLaneCondition,
+} from './tend-heartbeat.ts';
+import { reconcileStalledMerges, type TendPrepStateDeps } from './tend-prep-state.ts';
+import { getPullRequest } from './github.ts';
+import { setWavemillReady, setWavemillBlocked, setWavemillMerging } from './pr-state-labels.ts';
 
 export const TEND_LOOP_INTERVAL_MS = 60_000;
 export const TEND_LOOP_ERROR_BACKOFF_BASE_MS = 30_000;
@@ -69,14 +79,8 @@ export interface MergeLaneObserverFinding {
 }
 
 /** 'progressing' | 'idle' (empty lane) | 'stalled' (blocked/unhealthy lane, no movement). */
-export type TendProgressState = 'progressing' | 'idle' | 'stalled';
-export type TendLaneCondition =
-  | 'progressing'
-  | 'no-eligible'
-  | 'needs-user-hold'
-  | 'idle-blocked-stall'
-  | 'integration-unhealthy'
-  | 'integration-unhealthy-stall';
+// Re-export types from tend-heartbeat for backward compatibility
+export type { TendProgressState, TendLaneCondition } from './tend-heartbeat.ts';
 
 export interface TendLoopOptions {
   repoDir: string;
@@ -88,16 +92,6 @@ export interface TendLoopOptions {
   maxConsecutiveUnknownFailures?: number;
 }
 
-interface BackstageHealthFile {
-  updatedAt?: string;
-  status?: string;
-  detail?: string | null;
-  restartAttemptCount?: number;
-  lastRestartAttemptAt?: string | null;
-  executorPaneId?: string | null;
-  services?: Record<string, Record<string, unknown>>;
-  [key: string]: unknown;
-}
 
 const TERMINAL_ERROR_PATTERNS = [
   /integration branch not configured/i,
@@ -295,6 +289,45 @@ export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExi
   let lastErrorAt: string | null = null;
   let iteration = 0;
   let laneStallStreak = 0;
+
+  // Startup reconciliation: recover from any stalled merge-lane states
+  try {
+    const reconcileDeps: TendPrepStateDeps = {
+      readPrHeadSha: async (prNumber: number) => {
+        try {
+          const pr = await getPullRequest(prNumber, options.repoDir);
+          return pr?.headRefOid ?? null;
+        } catch {
+          return null;
+        }
+      },
+      readPrMergeState: async (prNumber: number) => {
+        try {
+          const pr = await getPullRequest(prNumber, options.repoDir);
+          return pr?.state === 'MERGED' ? 'MERGED' : pr?.state === 'OPEN' ? 'OPEN' : null;
+        } catch {
+          return null;
+        }
+      },
+      restoreWmReady: (prNumber: number) => {
+        setWavemillReady(prNumber, { markerRoot: options.repoDir });
+      },
+      restoreWmBlocked: (prNumber: number, reason: string) => {
+        setWavemillBlocked(prNumber, { markerRoot: options.repoDir, reason });
+      },
+      restoreWmMerging: (prNumber: number) => {
+        setWavemillMerging(prNumber, { markerRoot: options.repoDir });
+      },
+      addPrComment: async (prNumber: number, body: string) => {
+        // Best-effort; comment addition would be implemented here if needed
+        // For now, this is a no-op to avoid missing function dependency
+      },
+    };
+    await reconcileStalledMerges(options.repoDir, reconcileDeps);
+  } catch (err) {
+    // Reconciliation failure is best-effort; don't fail the loop
+    console.error(`Startup reconciliation failed: ${err instanceof Error ? err.message : err}`);
+  }
   // Progress-vs-liveness state (HOK-2919): progress is a real state change —
   // a merge, a retry-refresh, or the lane's PR set/gates changing — never a
   // successful poll by itself.
@@ -698,195 +731,14 @@ export function formatLoopErrorLine(options: {
   return parts.filter((part): part is string => part !== null).join(' ');
 }
 
-export async function writeTendHeartbeat(
-  repoDir: string,
-  timestamp: string,
-  health: {
-    failureCount: number;
-    lastError: string | null;
-    lastErrorAt: string | null;
-    iteration?: number;
-    pollStartedAt?: string;
-    pollCompletedAt?: string | null;
-    /** Last real state change (merge/retry/lane movement), not the last tick. */
-    lastProgressAt?: string;
-    progressState?: TendProgressState;
-    laneCondition?: TendLaneCondition;
-    laneEvidenceId?: string;
-    status?: 'healthy' | 'degraded' | 'unhealthy';
-    detail?: string;
-    /**
-     * Failing advisory checks currently observed on the integration tip. When
-     * defined, the field is written even as `[]` so a cleared advisory
-     * condition overwrites the stale record. When `undefined`, the existing
-     * value is preserved (e.g. failure-state writers that never observed
-     * check runs).
-     */
-    integrationAdvisory?: AdvisoryCheckFailure[];
-  },
-): Promise<void> {
-  const healthPath = join(repoDir, '.wavemill', 'backstage-health.json');
-  await mutateJsonState<BackstageHealthFile>(
-    healthPath,
-    (current) => {
-      const next = { ...(current ?? {}) };
-      const services = { ...(next.services ?? {}) };
-      const existing = { ...(services.tend ?? {}) };
-      const status = health.status ?? 'healthy';
-      const detail = health.detail ?? (health.progressState === 'stalled'
-        ? 'backstage tend loop is alive but the merge lane is not progressing'
-        : 'backstage tend loop is running');
-      services.tend = {
-        ...existing,
-        status,
-        detail,
-        heartbeatAt: timestamp,
-        lastSuccessfulPollAt: timestamp,
-        updatedAt: timestamp,
-        repoDir,
-        failureCount: health.failureCount,
-        lastError: health.lastError,
-        lastErrorAt: health.lastErrorAt,
-        iteration: health.iteration,
-        pollStartedAt: health.pollStartedAt,
-        pollCompletedAt: health.pollCompletedAt ?? timestamp,
-        ...(health.lastProgressAt !== undefined ? { lastProgressAt: health.lastProgressAt } : {}),
-        ...(health.progressState !== undefined ? { progressState: health.progressState } : {}),
-        ...(health.laneCondition !== undefined ? { laneCondition: health.laneCondition } : {}),
-        ...(health.laneEvidenceId !== undefined ? { laneEvidenceId: health.laneEvidenceId } : {}),
-        ...(health.integrationAdvisory !== undefined ? { integrationAdvisory: health.integrationAdvisory } : {}),
-      };
-      next.updatedAt = timestamp;
-      next.status = status;
-      next.detail = detail;
-      next.services = services;
-      return next;
-    },
-    { createIfMissing: true, initial: {} },
-  );
-}
+// Re-export heartbeat functions from tend-heartbeat for backward compatibility
+export {
+  writeTendHeartbeat,
+  writeTendPollHeartbeatBestEffort,
+  writeTendFailureState,
+  writeTendFailureStateBestEffort,
+} from './tend-heartbeat.ts';
 
-export async function writeTendFailureState(
-  repoDir: string,
-  timestamp: string,
-  health: {
-    status: 'degraded' | 'unhealthy';
-    detail: string;
-    failureCount: number;
-    lastError: string | null;
-    lastErrorAt: string | null;
-    iteration?: number;
-    pollStartedAt?: string;
-    pollCompletedAt?: string | null;
-  },
-): Promise<void> {
-  const healthPath = join(repoDir, '.wavemill', 'backstage-health.json');
-  await mutateJsonState<BackstageHealthFile>(
-    healthPath,
-    (current) => {
-      const next = { ...(current ?? {}) };
-      const services = { ...(next.services ?? {}) };
-      const existing = { ...(services.tend ?? {}) };
-      services.tend = {
-        ...existing,
-        status: health.status,
-        detail: health.detail,
-        updatedAt: timestamp,
-        repoDir,
-        failureCount: health.failureCount,
-        lastError: health.lastError,
-        lastErrorAt: health.lastErrorAt,
-        iteration: health.iteration,
-        pollStartedAt: health.pollStartedAt,
-        pollCompletedAt: health.pollCompletedAt ?? null,
-      };
-      next.updatedAt = timestamp;
-      next.status = health.status;
-      next.detail = health.detail;
-      next.services = services;
-      return next;
-    },
-    { createIfMissing: true, initial: {} },
-  );
-}
-
-export async function writeTendPollHeartbeatBestEffort(
-  repoDir: string,
-  options: {
-    failureCount?: number;
-    lastError?: string | null;
-    lastErrorAt?: string | null;
-    timestamp?: string;
-    iteration?: number;
-    pollStartedAt?: string;
-    pollCompletedAt?: string | null;
-    lastProgressAt?: string;
-    progressState?: TendProgressState;
-    laneCondition?: TendLaneCondition;
-    laneEvidenceId?: string;
-    status?: 'healthy' | 'degraded' | 'unhealthy';
-    detail?: string;
-    integrationAdvisory?: AdvisoryCheckFailure[];
-  } = {},
-): Promise<void> {
-  try {
-    await writeTendHeartbeat(
-      repoDir,
-      options.timestamp ?? new Date().toISOString(),
-      {
-        failureCount: options.failureCount ?? 0,
-        lastError: options.lastError ?? null,
-        lastErrorAt: options.lastErrorAt ?? null,
-        iteration: options.iteration,
-        pollStartedAt: options.pollStartedAt,
-        pollCompletedAt: options.pollCompletedAt,
-        lastProgressAt: options.lastProgressAt,
-        progressState: options.progressState,
-        laneCondition: options.laneCondition,
-        laneEvidenceId: options.laneEvidenceId,
-        status: options.status,
-        detail: options.detail,
-        integrationAdvisory: options.integrationAdvisory,
-      },
-    );
-  } catch (error) {
-    console.error(`tend: failed to write heartbeat: ${errorMessage(error)}`);
-  }
-}
-
-export async function writeTendFailureStateBestEffort(
-  repoDir: string,
-  options: {
-    status?: 'degraded' | 'unhealthy';
-    detail?: string;
-    failureCount?: number;
-    lastError?: string | null;
-    lastErrorAt?: string | null;
-    timestamp?: string;
-    iteration?: number;
-    pollStartedAt?: string;
-    pollCompletedAt?: string | null;
-  } = {},
-): Promise<void> {
-  try {
-    await writeTendFailureState(
-      repoDir,
-      options.timestamp ?? new Date().toISOString(),
-      {
-        status: options.status ?? 'unhealthy',
-        detail: options.detail ?? 'backstage tend loop poll failed',
-        failureCount: options.failureCount ?? 0,
-        lastError: options.lastError ?? null,
-        lastErrorAt: options.lastErrorAt ?? null,
-        iteration: options.iteration,
-        pollStartedAt: options.pollStartedAt,
-        pollCompletedAt: options.pollCompletedAt,
-      },
-    );
-  } catch (error) {
-    console.error(`tend: failed to write failure state: ${errorMessage(error)}`);
-  }
-}
 
 function tendLoopDeps(overrides: Partial<TendLoopDeps> | undefined): TendLoopDeps {
   return {

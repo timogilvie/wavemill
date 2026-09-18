@@ -34,6 +34,32 @@ import {
 import { isTransientErrorText, retryTransient, TransientError } from './transient-retry.ts';
 import { normalizeTaskLifecycle } from './task-lifecycle.ts';
 import { resolveEffectiveTaskConfig } from './effective-task-config.ts';
+import { writeTendPollHeartbeatBestEffort } from './tend-heartbeat.ts';
+import {
+  readInflightMarker,
+  writeInflightMarker,
+  advanceInflightPhase,
+  recordActivePgid,
+  recordPrePushShas,
+  clearInflightMarker,
+  checkRecoveryBlocker,
+  type TendInflightRecord,
+  type TendMergePhase,
+} from './tend-prep-state.ts';
+import { runCommandInProcessGroup, createDeadline, type Deadline } from './process-group-runner.ts';
+
+/**
+ * Custom error for worktree preparation timeout.
+ */
+class WorktreeTimeoutError extends Error {
+  readonly phase: string;
+
+  constructor(message: string, phase: string) {
+    super(message);
+    this.name = 'WorktreeTimeoutError';
+    this.phase = phase;
+  }
+}
 
 export interface TendCandidate {
   number: number;
@@ -137,6 +163,10 @@ export interface MergeExecutionDeps {
   strictBaseRetry: StrictBaseRetryOps;
   /** Best-effort lane-progress telemetry recorder; must never fail the merge. */
   recordLaneProgress: (prNumber: number, event: LaneProgressEvent, repoDir: string) => Promise<void>;
+  /** Runner for worktree prep commands with deadline and process group management. */
+  prepCommandRunner?: (cmd: string, opts: { cwd?: string; timeoutMs: number }) => Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; pgid?: number }>;
+  /** Best-effort phase heartbeat recorder for tend health updates during long operations. */
+  recordPhaseHeartbeat?: (prNumber: number, phase: string) => Promise<void>;
 }
 
 export interface ExecuteMergeOptions {
@@ -640,6 +670,18 @@ export async function executeMerge(
 
   validateBranchName(candidate.headBranch, 'PR branch');
 
+  // Recovery check: if there's an uncertain recovery marker from a prior crash, hold
+  const recoveryCheck = checkRecoveryBlocker(options.repoDir);
+  if (recoveryCheck.blocked) {
+    return {
+      status: 'skipped',
+      prNumber: candidate.number,
+      phase: 'prep-recovery-hold',
+      failureExcerpt: recoveryCheck.reason || 'Recovery from prior timeout is uncertain',
+      haltLoop: false,
+    };
+  }
+
   let activeMerges: number[];
   try {
     activeMerges = await listMergingPrs(options.repoDir, deps);
@@ -731,6 +773,11 @@ export async function executeMerge(
   const block = async (phase: string, output: string): Promise<MergeExecutionResult> => {
     const failureExcerpt = truncateOutput(output);
     try {
+      await clearInflightMarker(options.repoDir);
+    } catch (error) {
+      console.warn(`tend: failed to clear inflight marker on block for PR #${candidate.number}: ${errorMessage(error)}`);
+    }
+    try {
       postFailureComment(candidate.number, buildFailureComment(phase, failureExcerpt), options.repoDir, deps.shellRunner);
     } catch {
       // Comment posting failure is non-fatal; always release the PR from merging state.
@@ -751,13 +798,39 @@ export async function executeMerge(
     return { status: 'blocked', prNumber: candidate.number, phase, failureExcerpt, haltLoop: false };
   };
 
+  // Write inflight marker before merge attempt
+  try {
+    const headSha = candidate.headSha || readPrMergeDiagnostics(candidate.number, options.repoDir, deps.shellRunner).headRefOid || 'unknown';
+    await writeInflightMarker(options.repoDir, {
+      version: 1,
+      prNumber: candidate.number,
+      headBranch: candidate.headBranch,
+      headSha,
+      featureDir: candidate.featureDir,
+      phase: 'claimed',
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      pid: process.pid,
+    });
+  } catch (error) {
+    console.warn(`tend: failed to write inflight marker for PR #${candidate.number}: ${errorMessage(error)}`);
+  }
+
   let worktreeResult: MergeExecutionResult | null;
   try {
+    const prepTimeoutMs = (integrationConfig.tendWorktreePrepTimeoutSeconds ?? 180) * 1000;
     worktreeResult = await withScratchWorktree(
       candidate.number,
       candidate.headBranch,
       options.repoDir,
       async (worktreePath) => {
+        // Advance phase to merge-attempt
+        try {
+          await advanceInflightPhase(options.repoDir, 'rebase-local');
+        } catch (error) {
+          console.warn(`tend: failed to advance inflight phase for PR #${candidate.number}: ${errorMessage(error)}`);
+        }
+
         await recordLaneProgressSafe(deps, candidate.number, 'merge-attempt', options.repoDir);
 
         let pushedHeadSha: string | undefined;
@@ -767,6 +840,12 @@ export async function executeMerge(
           if (rebaseResult.rebased) {
             await recordLaneProgressSafe(deps, candidate.number, 'rebase', options.repoDir);
             await recordLaneProgressSafe(deps, candidate.number, 'ci-restart', options.repoDir);
+            // Record pre-push SHAs
+            try {
+              await recordPrePushShas(options.repoDir, rebaseResult.baseSha || '', rebaseResult.headSha || '');
+            } catch (error) {
+              console.warn(`tend: failed to record pre-push SHAs for PR #${candidate.number}: ${errorMessage(error)}`);
+            }
           }
         } catch (error) {
           return block('rebase', outputFromError(error));
@@ -780,6 +859,13 @@ export async function executeMerge(
             requiredChecks: integrationConfig.requiredChecks,
             retrySleep: deps.retrySleep,
             expectedHeadSha: pushedHeadSha,
+            onPoll: deps.recordPhaseHeartbeat ? async (prNumber) => {
+              try {
+                await deps.recordPhaseHeartbeat(prNumber, 'checks');
+              } catch {
+                // Best-effort; poll failures should not block merge
+              }
+            } : undefined,
           },
         );
         if (checks.outcome !== 'pass') {
@@ -793,6 +879,13 @@ export async function executeMerge(
           }
         } catch (error) {
           return block('ready', outputFromError(error));
+        }
+
+        // Advance phase to merging
+        try {
+          await advanceInflightPhase(options.repoDir, 'merging');
+        } catch (error) {
+          console.warn(`tend: failed to advance inflight phase to merging for PR #${candidate.number}: ${errorMessage(error)}`);
         }
 
         try {
@@ -849,8 +942,32 @@ export async function executeMerge(
         return null;
       },
       deps.shellRunner,
+      deps.prepCommandRunner,
+      prepTimeoutMs,
+      deps.recordPhaseHeartbeat,
     );
   } catch (error) {
+    // Handle timeout errors specifically
+    if (error instanceof WorktreeTimeoutError) {
+      try {
+        await clearInflightMarker(options.repoDir);
+      } catch (e) {
+        console.warn(`tend: failed to clear inflight marker after timeout for PR #${candidate.number}: ${errorMessage(e)}`);
+      }
+      return {
+        status: 'skipped',
+        prNumber: candidate.number,
+        phase: `worktree-${error.phase}`,
+        failureExcerpt: truncateOutput(error.message),
+        haltLoop: false,
+      };
+    }
+    // Handle other errors
+    try {
+      await clearInflightMarker(options.repoDir);
+    } catch (e) {
+      console.warn(`tend: failed to clear inflight marker for PR #${candidate.number}: ${errorMessage(e)}`);
+    }
     return block('worktree', outputFromError(error));
   }
 
@@ -863,6 +980,13 @@ export async function executeMerge(
     health = await deps.healthChecker(integrationBranch, options.repoDir);
   } catch (error) {
     health = { state: 'unhealthy', reason: `health-check-error: ${errorMessage(error)}` };
+  }
+
+  // Clear inflight marker on success
+  try {
+    await clearInflightMarker(options.repoDir);
+  } catch (error) {
+    console.warn(`tend: failed to clear inflight marker after successful merge for PR #${candidate.number}: ${errorMessage(error)}`);
   }
 
   if (health.state === 'unhealthy') {
@@ -916,6 +1040,9 @@ async function withScratchWorktree<T>(
   repoDir: string,
   fn: (worktreePath: string) => Promise<T>,
   shellRunner: MergeExecutionDeps['shellRunner'],
+  prepCommandRunner?: MergeExecutionDeps['prepCommandRunner'],
+  prepDeadlineMs?: number,
+  recordHeartbeat?: MergeExecutionDeps['recordPhaseHeartbeat'],
 ): Promise<T> {
   validateBranchName(prBranch, 'PR branch');
 
@@ -935,13 +1062,53 @@ async function withScratchWorktree<T>(
   // fail with "already exists" on every subsequent attempt for that PR.
   reapStaleTendWorktrees(tendWorktreeDir, repoDir, shellRunner);
 
+  // Create deadline for preparation if prepCommandRunner is available
+  const deadline = prepDeadlineMs && prepCommandRunner ? createDeadline(prepDeadlineMs) : undefined;
+
+  // Record phase heartbeat for liveness
+  if (recordHeartbeat) {
+    try {
+      await recordHeartbeat(prNumber, 'fetch');
+    } catch {
+      // Best-effort
+    }
+  }
+
   // Fetch the latest remote tip for the PR branch so the detached worktree
   // operates on what GitHub considers the branch's current state, not a
   // possibly-stale local ref.
-  shellRunner(
-    `git fetch origin ${escapeShellArg(prBranch)} 2>&1`,
-    { encoding: 'utf-8', cwd: repoDir, timeout: GIT_MUTATION_TIMEOUT_MS },
-  );
+  if (prepCommandRunner && deadline) {
+    const remaining = deadline.remainingMs();
+    if (remaining > 0) {
+      const result = await prepCommandRunner(
+        `git fetch origin ${escapeShellArg(prBranch)} 2>&1`,
+        { cwd: repoDir, timeoutMs: remaining },
+      );
+      if (result.timedOut) {
+        throw new WorktreeTimeoutError(`Git fetch timed out (deadline exceeded): ${result.stderr || '(no output)'}`, 'fetch');
+      }
+      if (result.exitCode !== 0) {
+        throw new Error(`Git fetch failed: ${result.stderr || result.stdout || '(no output)'}`);
+      }
+      if (result.pgid) {
+        await recordActivePgid(repoDir, result.pgid);
+      }
+    }
+  } else {
+    shellRunner(
+      `git fetch origin ${escapeShellArg(prBranch)} 2>&1`,
+      { encoding: 'utf-8', cwd: repoDir, timeout: GIT_MUTATION_TIMEOUT_MS },
+    );
+  }
+
+  // Record phase heartbeat before worktree add
+  if (recordHeartbeat) {
+    try {
+      await recordHeartbeat(prNumber, 'worktree-add');
+    } catch {
+      // Best-effort
+    }
+  }
 
   // Use --detach so this worktree gets a detached HEAD at the PR's remote
   // tip rather than checking out the branch by name. Mill creates its own
@@ -949,10 +1116,29 @@ async function withScratchWorktree<T>(
   // to check out the same branch in two worktrees. Tend doesn't need branch
   // ownership — it just needs the tree at that commit so it can rebase and
   // push back to origin's <prBranch> ref by name (see rebaseAndPush).
-  shellRunner(
-    `git worktree add --detach ${escapeShellArg(worktreePath)} ${escapeShellArg(`origin/${prBranch}`)}`,
-    { encoding: 'utf-8', cwd: repoDir, timeout: GIT_MUTATION_TIMEOUT_MS },
-  );
+  if (prepCommandRunner && deadline) {
+    const remaining = deadline.remainingMs();
+    if (remaining > 0) {
+      const result = await prepCommandRunner(
+        `git worktree add --detach ${escapeShellArg(worktreePath)} ${escapeShellArg(`origin/${prBranch}`)}`,
+        { cwd: repoDir, timeoutMs: remaining },
+      );
+      if (result.timedOut) {
+        throw new WorktreeTimeoutError(`Git worktree add timed out (deadline exceeded): ${result.stderr || '(no output)'}`, 'worktree-add');
+      }
+      if (result.exitCode !== 0) {
+        throw new Error(`Git worktree add failed: ${result.stderr || result.stdout || '(no output)'}`);
+      }
+      if (result.pgid) {
+        await recordActivePgid(repoDir, result.pgid);
+      }
+    }
+  } else {
+    shellRunner(
+      `git worktree add --detach ${escapeShellArg(worktreePath)} ${escapeShellArg(`origin/${prBranch}`)}`,
+      { encoding: 'utf-8', cwd: repoDir, timeout: GIT_MUTATION_TIMEOUT_MS },
+    );
+  }
 
   try {
     return await fn(worktreePath);
@@ -1296,6 +1482,8 @@ export async function waitForChecks(
     expectedHeadSha?: string;
     /** Poll interval override for tests; production uses CHECK_POLL_INTERVAL_MS. */
     pollIntervalMs?: number;
+    /** Callback invoked on each poll iteration; must never fail the merge if it throws. */
+    onPoll?: (prNumber: number) => Promise<void>;
   } = {},
 ): Promise<CheckWaitResult> {
   const timeoutMs = options.timeoutMs ?? 30 * 60 * 1000;
@@ -1354,6 +1542,14 @@ export async function waitForChecks(
 
     if (Date.now() >= deadline) {
       return { outcome: 'timeout', summary: waitSummary };
+    }
+
+    if (options.onPoll) {
+      try {
+        await options.onPoll(prNumber);
+      } catch (error) {
+        console.error(`waitForChecks onPoll callback failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
 
     await sleep(pollIntervalMs);
@@ -1986,6 +2182,21 @@ function mergeExecutionDeps(deps: Partial<MergeExecutionDeps> | undefined, marke
     strictBaseRetry: defaultStrictBaseRetryOps,
     recordLaneProgress: async (prNumber, event, repoDir) => {
       await recordLaneProgress(prNumber, repoDir, event);
+    },
+    prepCommandRunner: (cmd, opts) => runCommandInProcessGroup(cmd, opts),
+    recordPhaseHeartbeat: async (prNumber, phase) => {
+      // Best-effort phase heartbeat: update the detail field with current phase
+      try {
+        await writeTendPollHeartbeatBestEffort({
+          repoDir: markerRoot,
+          failureCount: 0,
+          lastError: null,
+          lastErrorAt: null,
+          detail: `worktree preparation: ${phase}`,
+        });
+      } catch {
+        // Best-effort; don't fail the merge on heartbeat error
+      }
     },
     ...deps,
   };

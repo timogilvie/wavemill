@@ -512,6 +512,8 @@ export interface IntegrationConfig {
   highRiskPolicy: 'block' | 'manual' | 'allow';
   useMillSession: boolean;
   mergeLockTimeoutMinutes: number;
+  /** Timeout in seconds for scratch-worktree preparation (reap/fetch/add/setup). */
+  tendWorktreePrepTimeoutSeconds?: number;
   readyPolicy?: IntegrationReadyPolicyConfig;
 }
 
@@ -892,6 +894,7 @@ export const INTEGRATION_DEFAULTS: IntegrationConfig = {
   highRiskPolicy: 'manual',
   useMillSession: true,
   mergeLockTimeoutMinutes: 45,
+  tendWorktreePrepTimeoutSeconds: 180,
 };
 
 export const OBSERVER_DEFAULTS: ObserverConfig = {
