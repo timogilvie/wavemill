@@ -389,6 +389,16 @@ export function createProcessGroupPrepRunner(options: CreateProcessGroupPrepRunn
         if (killTimer !== null) clearTimeout(killTimer);
         if (heartbeatTimer !== null) clearInterval(heartbeatTimer);
       };
+      // Release Node's references to the child's stdio and process handle so a
+      // descendant that inherited the pipes (e.g. a backgrounded `sleep &`
+      // outliving the pgid kill under a rare cgroup race) cannot keep the
+      // event loop of the parent (or a `node --test` file worker) alive after
+      // the direct child exits.
+      const releaseChildHandles = (): void => {
+        try { child.stdout?.destroy(); } catch { /* noop */ }
+        try { child.stderr?.destroy(); } catch { /* noop */ }
+        try { child.unref(); } catch { /* noop */ }
+      };
 
       let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
       let killTimer: ReturnType<typeof setTimeout> | null = null;
@@ -419,6 +429,7 @@ export function createProcessGroupPrepRunner(options: CreateProcessGroupPrepRunn
         if (settled) return;
         settled = true;
         cleanupTimers();
+        releaseChildHandles();
         const output = Buffer.concat(chunks).toString('utf-8');
         const elapsedMs = now() - startedAt;
         const deadlineHit = commandDeadlineMs <= (now() - cmdStartedAt);
@@ -452,6 +463,7 @@ export function createProcessGroupPrepRunner(options: CreateProcessGroupPrepRunn
         if (settled) return;
         settled = true;
         cleanupTimers();
+        releaseChildHandles();
         reject(error);
       });
       child.on('exit', onExit);
