@@ -6,6 +6,9 @@ import { runPromotion } from '../shared/lib/promotion-controller.ts';
 import { acquireTendLock } from '../shared/lib/tend-singleton.ts';
 import { runTool } from '../shared/lib/tool-runner.ts';
 import { runTendLoop, statusActionForResult } from '../shared/lib/tend-loop.ts';
+import { reconcileStalledMerges, type TendPrepStateDeps } from '../shared/lib/tend-prep-state.ts';
+import { getPullRequest, addPullRequestComment } from '../shared/lib/github.ts';
+import { setWavemillReady, setWavemillBlocked, setWavemillMerging } from '../shared/lib/pr-state-labels.ts';
 
 runTool({
   name: 'tend',
@@ -55,6 +58,47 @@ runTool({
     }
 
     const repoDir = String(args['repo-dir'] || process.cwd());
+
+    // Startup reconciliation for both --once and --loop modes
+    try {
+      const reconcileDeps: TendPrepStateDeps = {
+        readPrHeadSha: async (prNumber: number) => {
+          try {
+            const pr = await getPullRequest(prNumber, repoDir);
+            return pr?.headRefOid ?? null;
+          } catch {
+            return null;
+          }
+        },
+        readPrMergeState: async (prNumber: number) => {
+          try {
+            const pr = await getPullRequest(prNumber, repoDir);
+            return pr?.state === 'MERGED' ? 'MERGED' : pr?.state === 'OPEN' ? 'OPEN' : null;
+          } catch {
+            return null;
+          }
+        },
+        restoreWmReady: (prNumber: number) => {
+          setWavemillReady(prNumber, { markerRoot: repoDir });
+        },
+        restoreWmBlocked: (prNumber: number, reason: string) => {
+          setWavemillBlocked(prNumber, { markerRoot: repoDir, reason });
+        },
+        restoreWmMerging: (prNumber: number) => {
+          setWavemillMerging(prNumber, { markerRoot: repoDir });
+        },
+        addPrComment: async (prNumber: number, body: string) => {
+          try {
+            await addPullRequestComment(prNumber, body, repoDir);
+          } catch (err) {
+            console.error(`Failed to add comment to PR #${prNumber}: ${err instanceof Error ? err.message : err}`);
+          }
+        },
+      };
+      await reconcileStalledMerges(repoDir, reconcileDeps);
+    } catch (err) {
+      console.error(`Startup reconciliation failed: ${err instanceof Error ? err.message : err}`);
+    }
 
     if (args.loop) {
       const renderer = createStatusRenderer(process.stdout as NodeJS.WriteStream);

@@ -46,6 +46,7 @@ import {
   type TendInflightRecord,
   type TendMergePhase,
 } from './tend-prep-state.ts';
+import { runCommandInProcessGroup, createDeadline, type Deadline } from './process-group-runner.ts';
 
 export interface TendCandidate {
   number: number;
@@ -781,6 +782,7 @@ export async function executeMerge(
 
   let worktreeResult: MergeExecutionResult | null;
   try {
+    const prepTimeoutMs = (integrationConfig.tendWorktreePrepTimeoutSeconds ?? 180) * 1000;
     worktreeResult = await withScratchWorktree(
       candidate.number,
       candidate.headBranch,
@@ -877,6 +879,8 @@ export async function executeMerge(
         return null;
       },
       deps.shellRunner,
+      deps.prepCommandRunner,
+      prepTimeoutMs,
     );
   } catch (error) {
     return block('worktree', outputFromError(error));
@@ -944,6 +948,8 @@ async function withScratchWorktree<T>(
   repoDir: string,
   fn: (worktreePath: string) => Promise<T>,
   shellRunner: MergeExecutionDeps['shellRunner'],
+  prepCommandRunner?: MergeExecutionDeps['prepCommandRunner'],
+  prepDeadlineMs?: number,
 ): Promise<T> {
   validateBranchName(prBranch, 'PR branch');
 
@@ -963,13 +969,32 @@ async function withScratchWorktree<T>(
   // fail with "already exists" on every subsequent attempt for that PR.
   reapStaleTendWorktrees(tendWorktreeDir, repoDir, shellRunner);
 
+  // Create deadline for preparation if prepCommandRunner is available
+  const deadline = prepDeadlineMs && prepCommandRunner ? createDeadline(prepDeadlineMs) : undefined;
+
   // Fetch the latest remote tip for the PR branch so the detached worktree
   // operates on what GitHub considers the branch's current state, not a
   // possibly-stale local ref.
-  shellRunner(
-    `git fetch origin ${escapeShellArg(prBranch)} 2>&1`,
-    { encoding: 'utf-8', cwd: repoDir, timeout: GIT_MUTATION_TIMEOUT_MS },
-  );
+  if (prepCommandRunner && deadline) {
+    const remaining = deadline.remainingMs();
+    if (remaining > 0) {
+      const result = await prepCommandRunner(
+        `git fetch origin ${escapeShellArg(prBranch)} 2>&1`,
+        { cwd: repoDir, timeoutMs: remaining },
+      );
+      if (result.timedOut) {
+        throw new Error(`Git fetch timed out (deadline exceeded): ${result.stderr || '(no output)'}`);
+      }
+      if (result.exitCode !== 0) {
+        throw new Error(`Git fetch failed: ${result.stderr || result.stdout || '(no output)'}`);
+      }
+    }
+  } else {
+    shellRunner(
+      `git fetch origin ${escapeShellArg(prBranch)} 2>&1`,
+      { encoding: 'utf-8', cwd: repoDir, timeout: GIT_MUTATION_TIMEOUT_MS },
+    );
+  }
 
   // Use --detach so this worktree gets a detached HEAD at the PR's remote
   // tip rather than checking out the branch by name. Mill creates its own
@@ -977,10 +1002,26 @@ async function withScratchWorktree<T>(
   // to check out the same branch in two worktrees. Tend doesn't need branch
   // ownership — it just needs the tree at that commit so it can rebase and
   // push back to origin's <prBranch> ref by name (see rebaseAndPush).
-  shellRunner(
-    `git worktree add --detach ${escapeShellArg(worktreePath)} ${escapeShellArg(`origin/${prBranch}`)}`,
-    { encoding: 'utf-8', cwd: repoDir, timeout: GIT_MUTATION_TIMEOUT_MS },
-  );
+  if (prepCommandRunner && deadline) {
+    const remaining = deadline.remainingMs();
+    if (remaining > 0) {
+      const result = await prepCommandRunner(
+        `git worktree add --detach ${escapeShellArg(worktreePath)} ${escapeShellArg(`origin/${prBranch}`)}`,
+        { cwd: repoDir, timeoutMs: remaining },
+      );
+      if (result.timedOut) {
+        throw new Error(`Git worktree add timed out (deadline exceeded): ${result.stderr || '(no output)'}`);
+      }
+      if (result.exitCode !== 0) {
+        throw new Error(`Git worktree add failed: ${result.stderr || result.stdout || '(no output)'}`);
+      }
+    }
+  } else {
+    shellRunner(
+      `git worktree add --detach ${escapeShellArg(worktreePath)} ${escapeShellArg(`origin/${prBranch}`)}`,
+      { encoding: 'utf-8', cwd: repoDir, timeout: GIT_MUTATION_TIMEOUT_MS },
+    );
+  }
 
   try {
     return await fn(worktreePath);
@@ -2025,6 +2066,7 @@ function mergeExecutionDeps(deps: Partial<MergeExecutionDeps> | undefined, marke
     recordLaneProgress: async (prNumber, event, repoDir) => {
       await recordLaneProgress(prNumber, repoDir, event);
     },
+    prepCommandRunner: (cmd, opts) => runCommandInProcessGroup(cmd, opts),
     ...deps,
   };
 }
