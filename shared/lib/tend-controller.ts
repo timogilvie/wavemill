@@ -48,6 +48,16 @@ import {
 } from './tend-prep-state.ts';
 import { runCommandInProcessGroup, createDeadline, type Deadline } from './process-group-runner.ts';
 
+/**
+ * Custom error for worktree preparation timeout.
+ */
+class WorktreeTimeoutError extends Error {
+  constructor(message: string, public readonly phase: string) {
+    super(message);
+    this.name = 'WorktreeTimeoutError';
+  }
+}
+
 export interface TendCandidate {
   number: number;
   title: string;
@@ -760,6 +770,11 @@ export async function executeMerge(
   const block = async (phase: string, output: string): Promise<MergeExecutionResult> => {
     const failureExcerpt = truncateOutput(output);
     try {
+      await clearInflightMarker(options.repoDir);
+    } catch (error) {
+      console.warn(`tend: failed to clear inflight marker on block for PR #${candidate.number}: ${errorMessage(error)}`);
+    }
+    try {
       postFailureComment(candidate.number, buildFailureComment(phase, failureExcerpt), options.repoDir, deps.shellRunner);
     } catch {
       // Comment posting failure is non-fatal; always release the PR from merging state.
@@ -780,6 +795,24 @@ export async function executeMerge(
     return { status: 'blocked', prNumber: candidate.number, phase, failureExcerpt, haltLoop: false };
   };
 
+  // Write inflight marker before merge attempt
+  try {
+    const headSha = candidate.headSha || readPrMergeDiagnostics(candidate.number, options.repoDir, deps.shellRunner).headRefOid || 'unknown';
+    await writeInflightMarker(options.repoDir, {
+      version: 1,
+      prNumber: candidate.number,
+      headBranch: candidate.headBranch,
+      headSha,
+      featureDir: candidate.featureDir,
+      phase: 'claimed',
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      pid: process.pid,
+    });
+  } catch (error) {
+    console.warn(`tend: failed to write inflight marker for PR #${candidate.number}: ${errorMessage(error)}`);
+  }
+
   let worktreeResult: MergeExecutionResult | null;
   try {
     const prepTimeoutMs = (integrationConfig.tendWorktreePrepTimeoutSeconds ?? 180) * 1000;
@@ -788,6 +821,13 @@ export async function executeMerge(
       candidate.headBranch,
       options.repoDir,
       async (worktreePath) => {
+        // Advance phase to merge-attempt
+        try {
+          await advanceInflightPhase(options.repoDir, 'rebase-local');
+        } catch (error) {
+          console.warn(`tend: failed to advance inflight phase for PR #${candidate.number}: ${errorMessage(error)}`);
+        }
+
         await recordLaneProgressSafe(deps, candidate.number, 'merge-attempt', options.repoDir);
 
         let pushedHeadSha: string | undefined;
@@ -797,6 +837,12 @@ export async function executeMerge(
           if (rebaseResult.rebased) {
             await recordLaneProgressSafe(deps, candidate.number, 'rebase', options.repoDir);
             await recordLaneProgressSafe(deps, candidate.number, 'ci-restart', options.repoDir);
+            // Record pre-push SHAs
+            try {
+              await recordPrePushShas(options.repoDir, rebaseResult.baseSha || '', rebaseResult.headSha || '');
+            } catch (error) {
+              console.warn(`tend: failed to record pre-push SHAs for PR #${candidate.number}: ${errorMessage(error)}`);
+            }
           }
         } catch (error) {
           return block('rebase', outputFromError(error));
@@ -823,6 +869,13 @@ export async function executeMerge(
           }
         } catch (error) {
           return block('ready', outputFromError(error));
+        }
+
+        // Advance phase to merging
+        try {
+          await advanceInflightPhase(options.repoDir, 'merging');
+        } catch (error) {
+          console.warn(`tend: failed to advance inflight phase to merging for PR #${candidate.number}: ${errorMessage(error)}`);
         }
 
         try {
@@ -884,6 +937,27 @@ export async function executeMerge(
       deps.recordPhaseHeartbeat,
     );
   } catch (error) {
+    // Handle timeout errors specifically
+    if (error instanceof WorktreeTimeoutError) {
+      try {
+        await clearInflightMarker(options.repoDir);
+      } catch (e) {
+        console.warn(`tend: failed to clear inflight marker after timeout for PR #${candidate.number}: ${errorMessage(e)}`);
+      }
+      return {
+        status: 'skipped',
+        prNumber: candidate.number,
+        phase: `worktree-${error.phase}`,
+        failureExcerpt: truncateOutput(error.message),
+        haltLoop: false,
+      };
+    }
+    // Handle other errors
+    try {
+      await clearInflightMarker(options.repoDir);
+    } catch (e) {
+      console.warn(`tend: failed to clear inflight marker for PR #${candidate.number}: ${errorMessage(e)}`);
+    }
     return block('worktree', outputFromError(error));
   }
 
@@ -896,6 +970,13 @@ export async function executeMerge(
     health = await deps.healthChecker(integrationBranch, options.repoDir);
   } catch (error) {
     health = { state: 'unhealthy', reason: `health-check-error: ${errorMessage(error)}` };
+  }
+
+  // Clear inflight marker on success
+  try {
+    await clearInflightMarker(options.repoDir);
+  } catch (error) {
+    console.warn(`tend: failed to clear inflight marker after successful merge for PR #${candidate.number}: ${errorMessage(error)}`);
   }
 
   if (health.state === 'unhealthy') {
@@ -994,10 +1075,13 @@ async function withScratchWorktree<T>(
         { cwd: repoDir, timeoutMs: remaining },
       );
       if (result.timedOut) {
-        throw new Error(`Git fetch timed out (deadline exceeded): ${result.stderr || '(no output)'}`);
+        throw new WorktreeTimeoutError(`Git fetch timed out (deadline exceeded): ${result.stderr || '(no output)'}`, 'fetch');
       }
       if (result.exitCode !== 0) {
         throw new Error(`Git fetch failed: ${result.stderr || result.stdout || '(no output)'}`);
+      }
+      if (result.pgid) {
+        await recordActivePgid(repoDir, result.pgid);
       }
     }
   } else {
@@ -1030,10 +1114,13 @@ async function withScratchWorktree<T>(
         { cwd: repoDir, timeoutMs: remaining },
       );
       if (result.timedOut) {
-        throw new Error(`Git worktree add timed out (deadline exceeded): ${result.stderr || '(no output)'}`);
+        throw new WorktreeTimeoutError(`Git worktree add timed out (deadline exceeded): ${result.stderr || '(no output)'}`, 'worktree-add');
       }
       if (result.exitCode !== 0) {
         throw new Error(`Git worktree add failed: ${result.stderr || result.stdout || '(no output)'}`);
+      }
+      if (result.pgid) {
+        await recordActivePgid(repoDir, result.pgid);
       }
     }
   } else {
