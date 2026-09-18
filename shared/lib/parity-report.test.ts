@@ -36,7 +36,7 @@ describe('buildGlobalModelParityReport', () => {
       writeCleanConfig(fixture.consumers[0].repoDir);
       const report = withGlobalRoot(fixture.global.root, () => buildGlobalModelParityReport({
         repoDir: fixture.consumers[0].repoDir,
-        now: new Date('2026-08-01T00:00:00.000Z'),
+        now: new Date(),
       }));
 
       assert.equal(report.globalCatalogVersion, 'v3');
@@ -62,7 +62,7 @@ describe('buildGlobalModelParityReport', () => {
       writeCleanConfig(fixture.consumers[0].repoDir);
       const report = withGlobalRoot(fixture.global.root, () => buildGlobalModelParityReport({
         repoDir: fixture.consumers[0].repoDir,
-        now: new Date('2026-08-01T00:00:00.000Z'),
+        now: new Date(),
       }));
 
       assert.equal(report.challengePairAvailability.coding, false);
@@ -77,7 +77,7 @@ describe('buildGlobalModelParityReport', () => {
     try {
       const report = withGlobalRoot(fixture.global.root, () => buildGlobalModelParityReport({
         repoDir: fixture.consumers[0].repoDir,
-        now: new Date('2026-08-01T00:00:00.000Z'),
+        now: new Date(),
       }));
       assert.ok(report.forbiddenLocalConfig.some((entry) => entry.path === 'router.models'));
     } finally {

@@ -736,11 +736,11 @@ describe('routing-policy integration', () => {
       // the same filter to the expected sets (robust to the disable set).
       assert.deepEqual(
         availableModels?.available_coder_models?.sort(),
-        filterDisabledModels(['claude-fable-5', 'claude-opus-4-6', 'claude-opus-4-7', 'claude-opus-4-8', 'gpt-5.5']).sort(),
+        filterDisabledModels(['claude-fable-5', 'claude-opus-4-6', 'claude-opus-4-7', 'claude-opus-4-8']).sort(),
       );
       assert.deepEqual(
         availableModels?.available_planner_models?.sort(),
-        filterDisabledModels(['claude-fable-5', 'claude-opus-4-6', 'claude-opus-4-7', 'claude-opus-4-8', 'gpt-5.5']).sort(),
+        filterDisabledModels(['claude-fable-5', 'claude-opus-4-6', 'claude-opus-4-7', 'claude-opus-4-8']).sort(),
       );
       assert.equal(decision.signals.taskDifficulty, 'critical');
     } finally {
