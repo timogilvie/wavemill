@@ -656,6 +656,18 @@ export async function executeMerge(
 
   validateBranchName(candidate.headBranch, 'PR branch');
 
+  // Recovery check: if there's an uncertain recovery marker from a prior crash, hold
+  const recoveryCheck = checkRecoveryBlocker(options.repoDir);
+  if (recoveryCheck.blocked) {
+    return {
+      status: 'skipped',
+      prNumber: candidate.number,
+      phase: 'prep-recovery-hold',
+      failureExcerpt: recoveryCheck.reason || 'Recovery from prior timeout is uncertain',
+      haltLoop: false,
+    };
+  }
+
   let activeMerges: number[];
   try {
     activeMerges = await listMergingPrs(options.repoDir, deps);
