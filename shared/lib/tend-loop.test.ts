@@ -76,6 +76,63 @@ describe('tendLoopBackoffMs', () => {
 });
 
 describe('runTendLoop', () => {
+  it('calls reconcileScratchPrepState once at startup, before the first poll (HOK-3039)', async () => {
+    let reconcileCalls = 0;
+    let selectCalls = 0;
+    const d = deps({
+      reconcileScratchPrepState: async () => {
+        reconcileCalls += 1;
+        assert.equal(selectCalls, 0, 'reconcile must run before the first selectNextCandidate');
+        return [];
+      },
+      selectNextCandidate: async () => {
+        selectCalls += 1;
+        throw new TypeError('stop after first poll');
+      },
+    });
+    await assert.rejects(runTendLoop({ repoDir: '/tmp/repo', renderer: renderer(), deps: d }), TypeError);
+    assert.equal(reconcileCalls, 1);
+  });
+
+  it('continues even when reconcileScratchPrepState throws at startup (best-effort)', async () => {
+    const d = deps({
+      reconcileScratchPrepState: async () => {
+        throw new Error('boom');
+      },
+      selectNextCandidate: async () => {
+        throw new TypeError('stop');
+      },
+    });
+    await assert.rejects(runTendLoop({ repoDir: '/tmp/repo', renderer: renderer(), deps: d }), TypeError);
+  });
+
+  it('passes onPhaseProgress to executeMerge, which writes a merging-#N worktree-prep heartbeat', async () => {
+    const r = renderer();
+    const capturedHeartbeats: Array<{ detail?: string }> = [];
+    let phaseUpdates: unknown[] = [];
+    const d = deps({
+      selectNextCandidate: async () => ({
+        integrationHealth: { state: 'healthy' },
+        eligible: [{ number: 42, title: 'PR', headBranch: 'task/pr', createdAt: '2026-08-18T00:00:00Z', dependencyDepth: 0 }],
+        blocked: [],
+        nextPR: 42,
+      }),
+      executeMerge: async (_candidate, opts) => {
+        // Simulate a phase-progress emission during preparation.
+        await opts.onPhaseProgress?.({ prNumber: 42, phase: 'fetch', at: '2026-08-18T12:00:00.000Z' });
+        phaseUpdates.push({ prNumber: 42, phase: 'fetch' });
+        return { status: 'merged', prNumber: 42, haltLoop: false };
+      },
+      writePollHeartbeat: async (_repoDir, health) => {
+        capturedHeartbeats.push(health as { detail?: string });
+      },
+    });
+    await assert.rejects(runTendLoop({ repoDir: '/tmp/repo', renderer: r, deps: d }), TypeError);
+    assert.equal(phaseUpdates.length, 1);
+    const merging = capturedHeartbeats.find((h) => typeof h.detail === 'string' && h.detail.includes('worktree-prep:fetch'));
+    assert.ok(merging, `expected a worktree-prep heartbeat, got ${JSON.stringify(capturedHeartbeats)}`);
+  });
+
   it('does not write a heartbeat before selectNextCandidate succeeds', async () => {
     const d = deps({
       selectNextCandidate: async () => {

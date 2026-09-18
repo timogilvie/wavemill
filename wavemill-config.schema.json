@@ -2820,6 +2820,12 @@
                     "default": 45,
                     "description": "Minutes after which another tend process may reclaim a wm:merging merge-lane lock as stale (measured from the label's most recent application on GitHub). 0 disables expiry. Must exceed the worst-case legitimate merge duration (rebase + 30 min check wait + 5 min merge retry window, roughly 40 minutes)."
                 },
+                "worktreePrepTimeoutMinutes": {
+                    "type": "number",
+                    "minimum": 1,
+                    "default": 10,
+                    "description": "End-to-end deadline (minutes) for the scratch-worktree preparation phase (reap + fetch + worktree add). On expiry the whole process group is terminated (SIGTERM then SIGKILL after a short grace) to defeat leaked git descendants (ssh, git-remote-https, hooks). Kept above the individual git command timeouts (~5m) but well below mergeLockTimeoutMinutes so preparation stalls surface long before the generic stale-lock reclaim."
+                },
                 "readyPolicy": {
                     "type": "object",
                     "description": "Eligibility guards for the autonomous merge controller",
