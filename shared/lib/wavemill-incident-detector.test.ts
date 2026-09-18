@@ -13,6 +13,7 @@ import {
   WorkflowStateDetector,
 } from './wavemill-incident-detector.ts';
 import { canonicalizeRootCauseClass, INCIDENT_ROOT_CAUSE_CLASSES } from './wavemill-incident-model.ts';
+import { IncidentStore } from './wavemill-incident-store.ts';
 
 const now = new Date('2026-08-03T12:00:00.000Z');
 
@@ -210,6 +211,163 @@ test('dependency detector preserves structured queue fallback reason', () => {
     assert.equal(incidents[0].category, 'external_transient_dependency');
     assert.equal(incidents[0].severity, 'medium');
     assert.match(incidents[0].evidence[0].redactedData, /github_ssh_probe_failed/);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('job detector enriches failed job with module_export_contract_mismatch from log file (HOK-2845 fixture)', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-jobs-module-export-'));
+  try {
+    mkdirSync(join(repo, '.wavemill', 'jobs'), { recursive: true });
+    const logPath = join(repo, '.wavemill', 'jobs', 'HOK-2845_c.log');
+    writeFileSync(logPath, [
+      '[info] starting eval',
+      "SyntaxError: The requested module '@hokusai/core' does not provide an export named 'deriveTaskDescriptor'",
+      '  at file.js:12:5',
+    ].join('\n'));
+    writeFileSync(join(repo, '.wavemill', 'jobs', 'eval.json'), JSON.stringify({
+      id: 'eval-HOK-2845_c-1',
+      kind: 'eval',
+      status: 'failed',
+      issueId: 'HOK-2845_c',
+      reason: 'no_result_file',
+      finishedAt: now.toISOString(),
+      logPath,
+    }));
+
+    const incidents = new JobFailureDetector().detect(repo, null, { repoDir: repo, now });
+    assert.equal(incidents.length, 1);
+    const incident = incidents[0];
+    assert.equal(incident.rootCauseClass, 'module_export_contract_mismatch');
+    assert.equal(incident.category, 'product_defect');
+    assert.equal(incident.metadata.observedSymptom, 'failed_job_no_result');
+    assert.equal(incident.metadata.diagnosedClass, 'module_export_contract_mismatch');
+    assert.equal(incident.metadata.logExcerptSource, 'log_head_tail');
+
+    const logExcerpt = incident.evidence.find((item) => item.type === 'log_excerpt');
+    assert.ok(logExcerpt, 'expected a log_excerpt evidence item');
+    assert.equal(logExcerpt!.key, 'diag:module_export_contract_mismatch');
+    assert.match(logExcerpt!.redactedData, /does not provide an export named/);
+    assert.doesNotMatch(logExcerpt!.redactedData, /supersecret|Bearer\s+[A-Za-z0-9]/);
+
+    const jobEvidence = incident.evidence.find((item) => item.type === 'job_state');
+    assert.ok(jobEvidence, 'expected job_state evidence to be preserved as observed symptom');
+    assert.equal(jobEvidence!.key, 'observed:failed_job_no_result');
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('job detector prefers persisted job.error over reading the log file', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-jobs-persisted-error-'));
+  try {
+    mkdirSync(join(repo, '.wavemill', 'jobs'), { recursive: true });
+    // logPath deliberately points to a nonexistent file: persisted error path must be used.
+    writeFileSync(join(repo, '.wavemill', 'jobs', 'eval.json'), JSON.stringify({
+      id: 'eval-HOK-2845_c-2',
+      kind: 'eval',
+      status: 'failed',
+      issueId: 'HOK-2845_c',
+      reason: 'no_result_file',
+      finishedAt: now.toISOString(),
+      excerpt: "SyntaxError: The requested module '@hokusai/core' does not provide an export named 'deriveTaskDescriptor'",
+      logPath: join(repo, 'does-not-exist.log'),
+    }));
+
+    const incidents = new JobFailureDetector().detect(repo, null, { repoDir: repo, now });
+    assert.equal(incidents[0].rootCauseClass, 'module_export_contract_mismatch');
+    assert.equal(incidents[0].metadata.logExcerptSource, 'persisted_error');
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('job detector fingerprint is stable across stack-frame drift for the same diagnosed class', async () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-jobs-fingerprint-'));
+  try {
+    mkdirSync(join(repo, '.wavemill', 'jobs'), { recursive: true });
+    const jobPath = join(repo, '.wavemill', 'jobs', 'eval.json');
+    writeFileSync(jobPath, JSON.stringify({
+      id: 'eval-HOK-2845_c-3',
+      kind: 'eval',
+      status: 'failed',
+      issueId: 'HOK-2845_c',
+      reason: 'no_result_file',
+      finishedAt: now.toISOString(),
+      excerpt: "SyntaxError: does not provide an export named 'x'\n  at foo.js:12:5",
+    }));
+    const first = new JobFailureDetector().detect(repo, null, { repoDir: repo, now })[0];
+
+    // Simulate a re-run with a shifted stack frame but the same class.
+    writeFileSync(jobPath, JSON.stringify({
+      id: 'eval-HOK-2845_c-3',
+      kind: 'eval',
+      status: 'failed',
+      issueId: 'HOK-2845_c',
+      reason: 'no_result_file',
+      finishedAt: now.toISOString(),
+      excerpt: "SyntaxError: does not provide an export named 'x'\n  at bar.js:987:3",
+    }));
+    const second = new JobFailureDetector().detect(repo, null, { repoDir: repo, now })[0];
+
+    const store = new IncidentStore(mkdtempSync(join(tmpdir(), 'incident-fp-store-')));
+    assert.equal(store.computeFingerprint(first), store.computeFingerprint(second));
+
+    // Repeated poll (identical inputs, later `now`) yields identical event key.
+    const later = new JobFailureDetector().detect(repo, null, { repoDir: repo, now: new Date(now.getTime() + 60_000) })[0];
+    assert.equal(store.computeEventKey(second), store.computeEventKey(later));
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('job detector degrades to generic failed_job_no_result when logPath is missing and no persisted error', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-jobs-degrade-'));
+  try {
+    mkdirSync(join(repo, '.wavemill', 'jobs'), { recursive: true });
+    writeFileSync(join(repo, '.wavemill', 'jobs', 'eval.json'), JSON.stringify({
+      id: 'eval-HOK-2845_c-4',
+      kind: 'eval',
+      status: 'failed',
+      issueId: 'HOK-2845_c',
+      reason: 'no_result_file',
+      finishedAt: now.toISOString(),
+    }));
+
+    const incidents = new JobFailureDetector().detect(repo, null, { repoDir: repo, now });
+    assert.equal(incidents.length, 1);
+    assert.equal(incidents[0].rootCauseClass, 'failed_job_no_result');
+    assert.equal(incidents[0].category, 'stale_orphaned_state');
+    assert.equal(incidents[0].metadata.observedSymptom, 'failed_job_no_result');
+    assert.equal(incidents[0].metadata.diagnosedClass, null);
+    assert.equal(incidents[0].metadata.logExcerptSource, 'unavailable');
+    assert.equal(incidents[0].evidence.some((item) => item.type === 'log_excerpt'), false);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('job detector degrades safely when logPath is binary', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-jobs-binary-'));
+  try {
+    mkdirSync(join(repo, '.wavemill', 'jobs'), { recursive: true });
+    const logPath = join(repo, '.wavemill', 'jobs', 'HOK.log');
+    writeFileSync(logPath, Buffer.from([0, 1, 2, 3, 4, 5]));
+    writeFileSync(join(repo, '.wavemill', 'jobs', 'eval.json'), JSON.stringify({
+      id: 'eval-HOK-2845_c-5',
+      kind: 'eval',
+      status: 'failed',
+      issueId: 'HOK-2845_c',
+      reason: 'no_result_file',
+      finishedAt: now.toISOString(),
+      logPath,
+    }));
+
+    const incidents = new JobFailureDetector().detect(repo, null, { repoDir: repo, now });
+    assert.equal(incidents[0].rootCauseClass, 'failed_job_no_result');
+    assert.equal(incidents[0].metadata.logExcerptSource, 'unavailable');
+    assert.equal(incidents[0].evidence.some((item) => item.type === 'log_excerpt'), false);
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }

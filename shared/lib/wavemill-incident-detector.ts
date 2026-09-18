@@ -26,6 +26,7 @@ import {
   type RemediationForbiddenAction,
   type RemediationProposal,
 } from './wavemill-incident-model.ts';
+import { readIncidentLogExcerpt } from './incident-log-excerpt-reader.ts';
 
 const PLANNING_TERMINAL_REASONS = new Set([
   'turn_limit',
@@ -155,28 +156,60 @@ export class JobFailureDetector {
 
       const missingResult = job.resultPath ? !existsSync(job.resultPath) : /no_result|missing/i.test(job.reason ?? '');
       const missingEvalEvidence = job.kind === 'comparison' && /eval|record|no_result|missing/i.test(`${job.reason ?? ''} ${job.error ?? ''}`);
-      const rootCauseClass = missingEvalEvidence ? 'missing_eval_records_for_comparison' : missingResult ? 'failed_job_no_result' : 'failed_background_job';
+      const observedSymptom: IncidentRootCauseClass = missingEvalEvidence
+        ? 'missing_eval_records_for_comparison'
+        : missingResult
+          ? 'failed_job_no_result'
+          : 'failed_background_job';
+
+      const terminalTimestamp = job.finishedAt ?? job.startedAt ?? timestamp;
+      const excerpt = readIncidentLogExcerpt(job, repoDir, observedSymptom);
+      const diagnosed = excerpt.diagnosedClass;
+      const rootCauseClass: IncidentRootCauseClass = diagnosed ?? observedSymptom;
+      const category = diagnosed
+        ? categoryForDiagnosedClass(diagnosed)
+        : (observedSymptom === 'failed_background_job' ? 'product_defect' : 'stale_orphaned_state');
+
+      const summary = diagnosed
+        ? `${job.kind ?? 'background'} job ${job.id ?? '(unknown)'} ended ${job.status}: ${diagnosed}.`
+        : `${job.kind ?? 'background'} job ${job.id ?? '(unknown)'} ended ${job.status}.`;
+      const operatorAction = diagnosed
+        ? operatorActionForDiagnosedClass(diagnosed)
+        : (missingEvalEvidence
+          ? 'Inspect eval-record production for the compared pair and retry comparison only after records exist.'
+          : 'Review the managed job result/log evidence and retry or settle the orphaned job through the controller.');
+
+      const jobEvidence: IncidentEvidence = {
+        type: 'job_state',
+        source: job.source,
+        // Terminal event time, not poll time: an un-reaped historical failure
+        // must not register a fresh occurrence every observer cycle.
+        timestamp: terminalTimestamp,
+        redactedData: redactIncidentData(`id=${job.id ?? 'unknown'} kind=${job.kind ?? 'unknown'} status=${job.status} reason=${job.reason ?? 'unknown'} resultMissing=${missingResult}`),
+        key: `observed:${observedSymptom}`,
+      };
+      const evidence: IncidentEvidence[] = [jobEvidence];
+      if (excerpt.source !== 'unavailable') {
+        evidence.push({
+          type: 'log_excerpt',
+          source: excerpt.logFileBasename ?? excerpt.source,
+          timestamp: terminalTimestamp,
+          redactedData: redactIncidentData(excerpt.redactedText),
+          key: excerpt.key,
+        });
+      }
+
       incidents.push(createIncidentDraft({
         taskId: subjectTaskId,
         session: context.session ?? null,
-        category: rootCauseClass === 'failed_background_job' ? 'product_defect' : 'stale_orphaned_state',
+        category,
         severity: 'medium',
         confidence: 'definite',
         lifecycle: 'observed',
         rootCauseClass,
-        summary: `${job.kind ?? 'background'} job ${job.id ?? '(unknown)'} ended ${job.status}.`,
-        operatorAction: missingEvalEvidence
-          ? 'Inspect eval-record production for the compared pair and retry comparison only after records exist.'
-          : 'Review the managed job result/log evidence and retry or settle the orphaned job through the controller.',
-        evidence: [{
-          type: 'job_state',
-          source: job.source,
-          // Terminal event time, not poll time: an un-reaped historical failure
-          // must not register a fresh occurrence every observer cycle.
-          timestamp: job.finishedAt ?? job.startedAt ?? timestamp,
-          redactedData: redactIncidentData(`id=${job.id ?? 'unknown'} kind=${job.kind ?? 'unknown'} status=${job.status} reason=${job.reason ?? 'unknown'} resultMissing=${missingResult}`),
-          key: rootCauseClass,
-        }],
+        summary,
+        operatorAction,
+        evidence,
         metadata: {
           jobId: job.id,
           jobKind: job.kind,
@@ -184,10 +217,13 @@ export class JobFailureDetector {
           side: job.side,
           resultPath: job.resultPath,
           logPath: job.logPath,
+          observedSymptom,
+          diagnosedClass: diagnosed ?? null,
+          logExcerptSource: excerpt.source,
           // Preserve the terminal event time used for this incident. Filing
           // reconciliation compares later successes against this value rather
           // than against observer poll time.
-          authoritativeFailureAt: job.finishedAt ?? job.startedAt ?? timestamp,
+          authoritativeFailureAt: terminalTimestamp,
         },
       }));
     }
@@ -834,6 +870,31 @@ function readPairStateForTask(repoDir: string, taskDir: string | null, taskId: s
     manualComparisonArtifactPath: stringField(task.manualComparisonArtifact),
     source,
   };
+}
+
+/**
+ * Category routing for a diagnosed job-log root cause. Product/API contract
+ * mismatches are always a product defect; parse errors are operator-owned
+ * configuration. Anything else keeps the caller's observed-symptom category.
+ */
+function categoryForDiagnosedClass(rootCauseClass: IncidentRootCauseClass): IncidentCategory {
+  if (rootCauseClass === 'module_export_contract_mismatch') return 'product_defect';
+  if (rootCauseClass === 'local_parse_failure') return 'configuration_operator_condition';
+  return 'product_defect';
+}
+
+/**
+ * Fixed operator-action strings for the diagnosed classes we can currently
+ * detect from job logs. Kept small on purpose so the taxonomy stays bounded.
+ */
+function operatorActionForDiagnosedClass(rootCauseClass: IncidentRootCauseClass): string {
+  if (rootCauseClass === 'module_export_contract_mismatch') {
+    return 'Fix the missing module/API export or downgrade the caller to a compatible version before retrying the job.';
+  }
+  if (rootCauseClass === 'local_parse_failure') {
+    return 'Repair the malformed input feeding the job (JSON/YAML/config parse) before retrying; do not retry blindly.';
+  }
+  return 'Review the diagnosed failure evidence and address it before retrying the job.';
 }
 
 /**
