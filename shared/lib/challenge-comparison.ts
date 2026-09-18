@@ -320,6 +320,18 @@ export interface ChallengeComparison {
   primaryReviewExecutedIdentity?: ReviewExecutedIdentitySet;
   /** Executed review identities observed for the challenger arm. */
   challengerReviewExecutedIdentity?: ReviewExecutedIdentitySet;
+
+  /**
+   * Corrective marker written by legacy sweeps (HOK-2970) and other quarantine
+   * tools. Additive — historical rows without this key remain valid; rows
+   * carrying it must be excluded from stage-attribution training and coverage.
+   */
+  quarantined?: {
+    reason: string;
+    ticket: string;
+    at: string;
+    evidence?: Record<string, unknown>;
+  };
 }
 
 export interface ChallengeComparisonDimensions {
@@ -593,6 +605,17 @@ export function deriveNoComparisonReason(
     return 'provenance_inconclusive';
   }
 
+  // HOK-2970: invalid_challenge records that came from the auto-resolve path
+  // (aborted-arm-was-invalid) carry the aborted eval's invalidChallengeReason
+  // as their no-comparison reason. If we get here without an explicit reason,
+  // fall back to the abort's terminalReason for debugging attribution.
+  if (record.comparisonOutcome === 'invalid_challenge') {
+    if (record.terminalReason) {
+      return 'missing_challenge_intent';
+    }
+    return 'missing_challenge_intent';
+  }
+
   // Forfeit and double-forfeit use terminalReason
   if (record.terminalReason) {
     return record.terminalReason as NoComparisonReason;
@@ -625,8 +648,20 @@ export function appendChallengeComparison(record: ChallengeComparison, dir?: str
   appendJsonlRecord(resolveRecordsFile(dir), recordToAppend);
 }
 
-export function isDecisiveChallengeComparison(record: Pick<ChallengeComparison, 'comparisonOutcome' | 'primaryCompleted' | 'challengerCompleted' | 'armFailures' | 'terminalReason'>): boolean {
+export function isDecisiveChallengeComparison(record: Pick<ChallengeComparison, 'comparisonOutcome' | 'primaryCompleted' | 'challengerCompleted' | 'armFailures' | 'terminalReason' | 'invalidChallenge' | 'quarantined'>): boolean {
   const outcome = record.comparisonOutcome;
+  // HOK-2970: a `forfeit` whose losing arm was actually `invalid_challenge`
+  // must never be treated as decisive by the merge lane or by stage-attribution
+  // training. New records use `invalid_challenge` directly (see
+  // `buildInvalidChallengeArmComparison`); this guard catches legacy pre-fix
+  // rows still on disk before the quarantine sweep has been applied, and any
+  // row corrected by that sweep.
+  if (record.invalidChallenge === true) {
+    return false;
+  }
+  if (record.quarantined) {
+    return false;
+  }
   if (
     record.terminalReason === 'eval_hard_failed'
     || record.terminalReason === 'primary_eval_hard_failed'
@@ -1456,6 +1491,87 @@ export function buildDoubleForfeitComparison(input: {
     comparisonOutcome: 'double-forfeit',
     terminalReason: input.terminalReason,
     noComparisonReason: input.noComparisonReason || (input.terminalReason as NoComparisonReason),
+    ...comparisonRetentionFields(input),
+  };
+}
+
+/**
+ * Auto-resolution stamp for a pair where one arm aborted after its eval was
+ * already marked `invalidChallenge: true` (HOK-2970 / HOK-2958). Unlike
+ * {@link buildForfeitComparison}, this records no winner: the surviving arm
+ * cannot "win" a challenge that never had a valid opponent, so the pair is
+ * an `invalid_challenge` and must not count as reviewer-stage evidence.
+ *
+ * `terminalReason` is preserved so debugging keeps the abort context.
+ * `forkStage` and related retention fields propagate via
+ * {@link comparisonRetentionFields}.
+ */
+export type InvalidChallengeArmReason =
+  | 'primary_challenge_aborted_invalid'
+  | 'challenger_challenge_aborted_invalid'
+  | 'both_challenge_aborted_invalid';
+
+export function buildInvalidChallengeArmComparison(input: {
+  challengePairId: string;
+  primaryModel: string;
+  challengerModel: string;
+  primaryPrUrl: string;
+  challengerPrUrl: string;
+  primaryHarnessId?: string;
+  challengerHarnessId?: string;
+  primaryCompleted?: boolean;
+  challengerCompleted?: boolean;
+  armFailures?: ChallengeArmFailure[];
+  /** Which arm carried the invalid_challenge eval when it aborted. */
+  abortedSide: 'primary' | 'challenger' | 'both';
+  /** Preserved terminal reason from the original abort. */
+  terminalReason:
+    | 'primary_challenge_aborted'
+    | 'challenger_challenge_aborted'
+    | 'both_challenge_aborted';
+  /**
+   * Reason drawn from the aborted eval (e.g. `missing_challenge_intent`); when
+   * absent the builder falls back to `missing_challenge_intent`, matching the
+   * root cause named by HOK-3006.
+   */
+  invalidChallengeReason?: InvalidChallengeReason;
+  invalidChallengeDetails?: string;
+  rationale?: string;
+  timestamp?: string;
+  primaryRouting?: ChallengeRoutingMeta;
+  challengerRouting?: ChallengeRoutingMeta;
+} & ComparisonRetentionInput): ChallengeComparison {
+  const reason: InvalidChallengeReason = input.invalidChallengeReason ?? 'missing_challenge_intent';
+  const sideLabel = input.abortedSide === 'both'
+    ? 'both arms'
+    : `the ${input.abortedSide} arm`;
+  const rationale = input.rationale
+    ?? `Challenge arm ${sideLabel} was aborted after its eval was marked invalid (${reason}); pair cannot decide a reviewer-stage winner.`;
+  return {
+    challengePairId: input.challengePairId,
+    primaryModel: input.primaryModel,
+    challengerModel: input.challengerModel,
+    primaryPrUrl: input.primaryPrUrl,
+    challengerPrUrl: input.challengerPrUrl,
+    primaryHarnessId: input.primaryHarnessId,
+    challengerHarnessId: input.challengerHarnessId,
+    primaryEvalScore: null,
+    challengerEvalScore: null,
+    primaryCompleted: input.primaryCompleted,
+    challengerCompleted: input.challengerCompleted,
+    ...(input.armFailures?.length ? { armFailures: input.armFailures } : {}),
+    rationale,
+    dimensions: EMPTY_DIMENSIONS,
+    timestamp: input.timestamp || new Date().toISOString(),
+    primaryRouting: input.primaryRouting,
+    challengerRouting: input.challengerRouting,
+    comparisonOutcome: 'invalid_challenge',
+    invalidChallenge: true,
+    invalidChallengeReason: reason,
+    ...(input.invalidChallengeDetails ? { invalidChallengeDetails: input.invalidChallengeDetails } : {}),
+    terminalReason: input.terminalReason,
+    noComparisonReason: reason as NoComparisonReason,
+    workflowInsight: 'No reviewer-stage winner was decided because one or both arms aborted after their eval was marked invalid.',
     ...comparisonRetentionFields(input),
   };
 }
