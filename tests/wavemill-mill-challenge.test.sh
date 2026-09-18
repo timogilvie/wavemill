@@ -252,7 +252,7 @@ if [[ -n "$FINALIZATION_HELPER" ]]; then
   check_contains "finalizer cancels collapsed identical challenger" "$FINALIZATION_HELPER" 'challenge_cancel_challenger_arm "$issue" "$slug" "$new_challenger_key"'
   check_contains "finalizer exposes in-memory coder" "$FINALIZATION_HELPER" 'FINALIZED_CHALLENGE_CODER="$new_primary"'
   # Printing the coders made every plan/review pair look degenerate in the log
-  # ("gpt-5.5 vs gpt-5.5") because those stages share a coder by design.
+  # ("gpt-5.6-terra vs gpt-5.6-terra") because those stages share a coder by design.
   check_contains "finalizer logs the varied models and stage" "$FINALIZATION_HELPER" 'stage=$new_challenge_stage): $new_primary_varied vs $new_challenger_varied'
   check_contains "finalizer checks the arms actually diverge" "$FINALIZATION_HELPER" 'challenge_assert_arms_diverge "$issue" "$new_challenge_stage"'
 else
@@ -394,9 +394,9 @@ if [[ -n "$DIVERGE_HELPER" ]]; then
     log_error() { printf 'ERROR %s\n' "$*" >> "$DIVERGE_TMP/out"; }
     log_route_lifecycle() { printf 'LIFECYCLE %s\n' "$*" >> "$DIVERGE_TMP/out"; }
     : > "$DIVERGE_TMP/out"
-    challenge_assert_arms_diverge "HOK-1" "implementation" "kimi-k2" "gpt-5.5" ""
-    challenge_assert_arms_diverge "HOK-2" "review" "gpt-5.5" "gpt-5.5" ""
-    challenge_assert_arms_diverge "HOK-3" "plan" "gpt-5.5" "gpt-5.5" '{"intentionallyIdentical":true}'
+    challenge_assert_arms_diverge "HOK-1" "implementation" "kimi-k2" "gpt-5.6-terra" ""
+    challenge_assert_arms_diverge "HOK-2" "review" "gpt-5.6-terra" "gpt-5.6-terra" ""
+    challenge_assert_arms_diverge "HOK-3" "plan" "gpt-5.6-terra" "gpt-5.6-terra" '{"intentionallyIdentical":true}'
     challenge_assert_arms_diverge "HOK-4" "plan" "" "" ""
   )
   DIVERGE_OUT="$(cat "$DIVERGE_TMP/out" 2>/dev/null || true)"
@@ -504,7 +504,7 @@ cat > "$STATE_FILE" <<'JSON'
 JSON
 
 REFRESHED_PLAN='{"decisionSource":"expanded","entries":[
-  {"model":"gpt-5.4","planner":"gpt-5.5","reviewer":"gpt-5.5","planDepth":"deep","codeDepth":"deep","reviewMode":"static","key":"HOK-9999"},
+  {"model":"gpt-5.4","planner":"gpt-5.6-terra","reviewer":"gpt-5.6-terra","planDepth":"deep","codeDepth":"deep","reviewMode":"static","key":"HOK-9999"},
   {"model":"claude-sonnet-4-6","planner":"claude-sonnet-4-6","reviewer":"claude-sonnet-4-6","planDepth":"deep","codeDepth":"deep","reviewMode":"static+llm","key":"HOK-9999_c"}
 ]}'
 
@@ -634,8 +634,8 @@ challenger_challenge_stage=$(jq -r '.tasks["HOK-9999_c"].challengeStage // empty
 
 check_eq "primary challengeModel set to refreshed primary model" "gpt-5.4" "$primary_challenge_model"
 check_eq "primary coderModel aligned with refreshed primary model" "gpt-5.4" "$primary_coder_model"
-check_eq "primary plannerModel set from refreshed entry" "gpt-5.5" "$primary_planner_model"
-check_eq "primary reviewerModel set from refreshed entry" "gpt-5.5" "$primary_reviewer_model"
+check_eq "primary plannerModel set from refreshed entry" "gpt-5.6-terra" "$primary_planner_model"
+check_eq "primary reviewerModel set from refreshed entry" "gpt-5.6-terra" "$primary_reviewer_model"
 check_eq "primary planDepth set from refreshed entry" "deep" "$primary_plan_depth"
 check_eq "primary codeDepth set from refreshed entry" "deep" "$primary_code_depth"
 check_eq "primary reviewMode set from refreshed entry" "static" "$primary_review_mode"
@@ -663,7 +663,7 @@ STATE_FILE_GUARD="$TEST_TMP/state-guard.json"
 cp "$STATE_FILE" "$STATE_FILE_GUARD"
 
 MISSING_MODEL_PLAN='{"decisionSource":"expanded","entries":[
-  {"model":"gpt-5.4","planner":"gpt-5.5","reviewer":"gpt-5.5","planDepth":"deep","codeDepth":"deep","reviewMode":"static","key":"HOK-9999"},
+  {"model":"gpt-5.4","planner":"gpt-5.6-terra","reviewer":"gpt-5.6-terra","planDepth":"deep","codeDepth":"deep","reviewMode":"static","key":"HOK-9999"},
   {"planner":"claude-sonnet-4-6","key":"HOK-9999_c"}
 ]}'
 

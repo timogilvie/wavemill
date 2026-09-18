@@ -10,10 +10,10 @@ const __dirname = dirname(__filename);
 const toolSource = readFileSync(join(__dirname, 'backfill-stage-scores.ts'), 'utf-8');
 
 // Verify the default model used in the tool routes to codex
-const BACKFILL_DEFAULT_MODEL = 'gpt-5.5';
+const BACKFILL_DEFAULT_MODEL = 'gpt-5.6-terra';
 
 describe('backfill-stage-scores provider routing', () => {
-  it('default model (gpt-5.5) resolves to codex', () => {
+  it('default model (gpt-5.6-terra) resolves to codex', () => {
     assert.equal(resolveProviderForModel(BACKFILL_DEFAULT_MODEL, process.cwd()), 'codex');
   });
 
@@ -59,11 +59,11 @@ describe('backfill-stage-scores.ts source', () => {
     );
   });
 
-  it('uses gpt-5.5 as the default model', () => {
+  it('uses gpt-5.6-terra as the default model', () => {
     assert.match(
       toolSource,
-      /gpt-5\.5/,
-      'default model should be gpt-5.5 (routes to codex)',
+      /gpt-5\.6-terra/,
+      'default model should be gpt-5.6-terra (routes to codex)',
     );
   });
 });

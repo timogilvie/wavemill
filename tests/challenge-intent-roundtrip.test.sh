@@ -205,7 +205,7 @@ done
 # the coding launch reads .phase-config.json, so a lost agent silently
 # downgrades the arm to the incumbent CLI.
 {
-  mapfile -t out < <(roundtrip "implementation" "challenger" "gpt-5.6-terra" "qwen-3-coder" "gpt-5.5")
+  mapfile -t out < <(roundtrip "implementation" "challenger" "gpt-5.6-terra" "qwen-3-coder" "gpt-5.6-terra")
   root="${out[0]}"
   feature_dir="${out[1]}"
   coding_model="$(jq -r '.coding.model' "$feature_dir/.phase-config.json")"

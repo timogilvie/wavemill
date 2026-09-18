@@ -280,17 +280,17 @@ EOF
         ;;
       infra_retry_error_tool)
         cat > "$STATE_DIR/.review-result.json" <<EOF
-{"stage":"review","status":"completed","agent":"codex","model":"gpt-5.5","artifacts":{"type":"review","prNumber":304,"exitCode":2,"verdict":"error","iterations":1,"blockerCount":0,"warningCount":0,"reviewToolError":"spawnSync /bin/bash ETIMEDOUT"}}
+{"stage":"review","status":"completed","agent":"codex","model":"gpt-5.6-terra","artifacts":{"type":"review","prNumber":304,"exitCode":2,"verdict":"error","iterations":1,"blockerCount":0,"warningCount":0,"reviewToolError":"spawnSync /bin/bash ETIMEDOUT"}}
 EOF
         ;;
       infra_retry_scope_unverifiable)
         cat > "$STATE_DIR/.review-result.json" <<EOF
-{"stage":"review","status":"completed","agent":"codex","model":"gpt-5.5","artifacts":{"type":"review","prNumber":304,"exitCode":1,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":1,"failureCategory":"review-scope-unverifiable","terminalReason":"review_complete"}}
+{"stage":"review","status":"completed","agent":"codex","model":"gpt-5.6-terra","artifacts":{"type":"review","prNumber":304,"exitCode":1,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":1,"failureCategory":"review-scope-unverifiable","terminalReason":"review_complete"}}
 EOF
         ;;
       verdictless_completed_recovery)
         cat > "$STATE_DIR/.review-result.json" <<EOF
-{"stage":"review","status":"completed","agent":"codex","model":"gpt-5.5","artifacts":{"type":"review","prNumber":304,"missingReviewEvidence":true}}
+{"stage":"review","status":"completed","agent":"codex","model":"gpt-5.6-terra","artifacts":{"type":"review","prNumber":304,"missingReviewEvidence":true}}
 EOF
         ;;
       missing_review_recovery)
@@ -298,7 +298,7 @@ EOF
         ;;
       verdictless_running_recovery)
         cat > "$STATE_DIR/.review-result.json" <<EOF
-{"stage":"review","status":"running","agent":"codex","model":"gpt-5.5","artifacts":{"type":"review","prNumber":304,"recoveryReplay":{"status":"running","preservesPriorVerdict":true}}}
+{"stage":"review","status":"running","agent":"codex","model":"gpt-5.6-terra","artifacts":{"type":"review","prNumber":304,"recoveryReplay":{"status":"running","preservesPriorVerdict":true}}}
 EOF
         ;;
       infra_retry_running_preserved_failure)
@@ -308,7 +308,7 @@ EOF
         ;;
       review_not_ready_no_category)
         cat > "$STATE_DIR/.review-result.json" <<EOF
-{"stage":"review","status":"completed","agent":"codex","model":"gpt-5.5","artifacts":{"type":"review","prNumber":304,"exitCode":1,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":0,"terminalReason":"review_complete"}}
+{"stage":"review","status":"completed","agent":"codex","model":"gpt-5.6-terra","artifacts":{"type":"review","prNumber":304,"exitCode":1,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":0,"terminalReason":"review_complete"}}
 EOF
         ;;
       dismissed_blockers_pass)
@@ -725,7 +725,7 @@ run_watchdog_launch_case() {
     STATE_DIR="$CASE_DIR/feature/ready"
     WT_DIR="$CASE_DIR/worktree"
     mkdir -p "$STATE_DIR" "$WT_DIR"
-    printf "%s\n" "{\"stage\":\"ready\",\"status\":\"running\",\"startedAt\":\"2026-05-05T11:55:00.000Z\",\"finishedAt\":null,\"agent\":\"codex\",\"model\":\"gpt-5.5\",\"notes\":null,\"artifacts\":{\"type\":\"ready\",\"verdict\":\"fail\",\"prNumber\":304,\"checksRun\":3,\"checksPassed\":2,\"mergeConflict\":\"CLEAN\"}}" > "$STATE_DIR/.ready-result.json"
+    printf "%s\n" "{\"stage\":\"ready\",\"status\":\"running\",\"startedAt\":\"2026-05-05T11:55:00.000Z\",\"finishedAt\":null,\"agent\":\"codex\",\"model\":\"gpt-5.6-terra\",\"notes\":null,\"artifacts\":{\"type\":\"ready\",\"verdict\":\"fail\",\"prNumber\":304,\"checksRun\":3,\"checksPassed\":2,\"mergeConflict\":\"CLEAN\"}}" > "$STATE_DIR/.ready-result.json"
 
     WRITE_STAGE_CALLS=""
     READY_PROMPT_CALLS=0
@@ -740,7 +740,7 @@ run_watchdog_launch_case() {
       if [[ "$filter" == *".agent"* ]]; then
         printf "%s\n" "codex"
       elif [[ "$filter" == *".model"* ]]; then
-        printf "%s\n" "gpt-5.5"
+        printf "%s\n" "gpt-5.6-terra"
       elif [[ "$filter" == *".coderModel"* ]]; then
         printf "%s\n" "kimi-k2-thinking"
       else

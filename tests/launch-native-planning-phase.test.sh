@@ -68,6 +68,11 @@ tmux() {
 agent_resolve_dashboard_pid() { printf '%s\n' "123"; }
 agent_hooks_dir() { printf '%s\n' "$REPO_DIR/shared/hooks"; }
 agent_validate_model() { return 0; }
+agent_model_launch_preflight() {
+  AGENT_MODEL_PREFLIGHT_LAST_JSON='{"ok":true,"requestedModel":"'$1'","resolvedModel":"'$1'","agent":"native-openrouter","phase":"'$2'"}'
+  printf '%s\n' "$1"
+  return 0
+}
 agent_resolve_model() { printf '%s\n' "$2"; }
 agent_resolve_from_model() {
   if [[ "$1" == "gpt-5.6-terra" ]]; then
@@ -150,7 +155,7 @@ NATIVE_CODING_PROMPT="/tmp/wavemill-HOK-2542-coding-prompt.txt"
 NATIVE_CODING_LAUNCHER="/tmp/sess-HOK-2542-autonomous-launcher.sh"
 rm -f "$NATIVE_CODING_LAUNCHER"
 REPO_DIR="$REPO_DIR" \
-agent_launch_autonomous "sess" "@95" "$NATIVE_CODING_PROMPT" "native-openrouter" "glm-5.2" "HOK-2542"
+agent_launch_autonomous "sess" "@95" "$NATIVE_CODING_PROMPT" "native-openrouter" "qwen-3-coder" "HOK-2542"
 
 check_contains "native coding dispatches launcher path" "$(cat "$TMUX_LOG")" "$NATIVE_CODING_LAUNCHER"
 check_contains "native coding launcher invokes coding flow tool" "$(cat "$NATIVE_CODING_LAUNCHER")" "tools/launch-native-coding.ts"

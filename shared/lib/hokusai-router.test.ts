@@ -117,7 +117,7 @@ await test('upgrades retired Codex IDs returned by Hokusai to supported successo
   try {
     const decision = await routeViaHokusai('Implement a backend feature with tests.', { repoDir });
     assert.equal(decision?.planner, 'gpt-5.6-terra');
-    assert.equal(decision?.coder, 'gpt-5.5');
+    assert.equal(decision?.coder, 'gpt-5.6-terra');
     assert.equal(decision?.reviewer, 'gpt-5.6-terra');
   } finally {
     globalThis.fetch = originalFetch;
