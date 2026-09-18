@@ -7,10 +7,12 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { mutateJsonState } from './state-mutex.ts';
 import { mergeLaneStateDir } from './merge-queue.ts';
-import { execShellCommand } from './shell-utils.ts';
+import { execShellCommand, escapeShellArg } from './shell-utils.ts';
+import { execArgvCommand } from './shell-utils.ts';
 
 export type TendMergePhase =
   | 'claimed'
@@ -237,6 +239,26 @@ function isPreMutationPhase(phase: TendMergePhase): boolean {
   return ['claimed', 'worktree-reap', 'worktree-fetch', 'worktree-add', 'rebase-local'].includes(phase);
 }
 
+const TEND_PREP_RECOVERY_BUCKET = 'tend-prep-recovery';
+const TEND_PREP_RECOVERY_MAX_ATTEMPTS = 2;
+const BOUNDED_RETRY_HELPER_TIMEOUT_MS = 30_000;
+const BOUNDED_RETRY_HELPER_PATH = join(dirname(fileURLToPath(import.meta.url)), 'bounded-retry.sh');
+
+/**
+ * Run a bounded-retry shell command.
+ */
+function runBoundedRetryHelper(repoDir: string, invocation: string): string {
+  const result = execArgvCommand(
+    'bash',
+    ['-c', `source ${escapeShellArg(BOUNDED_RETRY_HELPER_PATH)} && ${invocation}`],
+    { cwd: repoDir, encoding: 'utf-8', timeout: BOUNDED_RETRY_HELPER_TIMEOUT_MS },
+  );
+  if (result.failed) {
+    throw new Error(`bounded-retry helper unavailable: ${result.stderr || 'bash not found'}`);
+  }
+  return result.stdout.trim();
+}
+
 /**
  * Reconcile inflight state on startup.
  *
@@ -275,27 +297,29 @@ export async function reconcileTendInflightState(
   const phase = marker.phase;
 
   if (isPreMutationPhase(phase)) {
-    // Pre-mutation: safe to retry
-    // Attempt to gate via bounded-retry helper; if exhausted, block
-    const gateBucket = 'tend-prep-recovery';
-    const gateKey = `${mergeLaneStateDir(prNumber, repoDir)},${gateBucket},${marker.headSha}`;
+    // Pre-mutation: safe to retry using bounded-retry helper
+    const stateDir = mergeLaneStateDir(prNumber, repoDir);
+    const decision = runBoundedRetryHelper(
+      repoDir,
+      `bounded_retry_gate ${escapeShellArg(stateDir)} ${escapeShellArg(TEND_PREP_RECOVERY_BUCKET)} `
+      + `${escapeShellArg(marker.headSha)} ${TEND_PREP_RECOVERY_MAX_ATTEMPTS}`,
+    );
 
-    // For now, we'll assume a simple check: if we've never retried this before, proceed
-    // In real implementation, this would call the bounded-retry shell helper
-    // For this skeleton, we allow one retry by checking for a sentinel
-    const exhaustedMarkerPath = join(mergeLaneStateDir(prNumber, repoDir), `.retry-${gateBucket}-exhausted`);
-    const isExhausted = existsSync(exhaustedMarkerPath);
-
-    if (isExhausted) {
+    if (decision === 'exhausted' || decision === 'exhausted-quiet') {
       // Exhausted: block the PR
       deps.restoreWmBlocked(prNumber, `Worktree preparation retry budget exhausted at ${phase} phase`);
       await clearInflightMarker(repoDir);
       return 'released-blocked';
-    } else {
-      // Not exhausted: release to retryable, mark that we retried once
+    } else if (decision === 'proceed') {
+      // Not exhausted: release to retryable
       deps.restoreWmReady(prNumber);
       await clearInflightMarker(repoDir);
       return 'released-retryable';
+    } else {
+      // backoff or unknown: treat as blocked to be safe
+      deps.restoreWmBlocked(prNumber, `Unexpected retry gate decision: ${decision} at ${phase} phase`);
+      await clearInflightMarker(repoDir);
+      return 'released-blocked';
     }
   }
 

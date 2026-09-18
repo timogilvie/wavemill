@@ -405,3 +405,57 @@ test('tend-prep-state: markRecoveryUncertain flags uncertain state', async () =>
     rmSync(tmpDir, { recursive: true });
   }
 });
+
+// T14: Process group termination during reconciliation
+test('tend-prep-state: reconciliation terminates leaked process group (activePgid)', async () => {
+  const tmpDir = mkdtempSync('/tmp/tend-prep-state-test-');
+  try {
+    const prNumber = 3001;
+    const leakedPgid = 99888; // Fake process group ID
+
+    const record: TendInflightRecord = {
+      version: 1,
+      prNumber,
+      headBranch: 'main',
+      headSha: 'pgid000',
+      phase: 'worktree-add',
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      pid: 99887, // Dead process
+      activePgid: leakedPgid, // Leaked process group
+    };
+
+    await writeInflightMarker(tmpDir, record);
+
+    // Track calls to process.kill
+    const killCalls: Array<[number, string]> = [];
+    const originalKill = process.kill;
+    process.kill = ((pgid: number, signal?: string) => {
+      killCalls.push([pgid, signal || '']);
+      // Don't actually kill anything; just track the call
+      return true;
+    }) as any;
+
+    try {
+      const deps = {
+        readPrHeadSha: async () => 'pgid000',
+        readPrMergeState: async () => 'OPEN' as const,
+        restoreWmReady: () => {},
+        restoreWmBlocked: () => {},
+        restoreWmMerging: () => {},
+        addPrComment: async () => {},
+      };
+
+      const outcome = await reconcileTendInflightState(tmpDir, prNumber, deps);
+      assert.equal(outcome, 'released-retryable', 'Should release to retryable');
+
+      // Verify process.kill was called for the leaked pgid with SIGTERM
+      const sigTermCall = killCalls.find(([pgid, signal]) => pgid === -leakedPgid && signal === 'SIGTERM');
+      assert.ok(sigTermCall, 'Should call process.kill with -pgid and SIGTERM for leaked process group');
+    } finally {
+      process.kill = originalKill;
+    }
+  } finally {
+    rmSync(tmpDir, { recursive: true });
+  }
+});
