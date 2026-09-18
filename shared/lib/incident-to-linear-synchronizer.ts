@@ -239,6 +239,7 @@ export function generateIssueBody(incident: IncidentRecord, config: ObserverLine
     `- **Severity**: ${incident.severity}`,
     `- **Confidence**: ${incident.confidence}`,
     `- **Root Cause**: ${incident.rootCauseClass}`,
+    `- **Observed Symptom**: ${typeof incident.metadata?.observedSymptom === 'string' ? incident.metadata.observedSymptom : incident.rootCauseClass}`,
     `- **Status**: ${incident.lifecycle}`,
     `- **First Seen**: ${incident.firstObservedAt || incident.createdAt}`,
     `- **Last Seen**: ${incident.lastObservedAt}`,
