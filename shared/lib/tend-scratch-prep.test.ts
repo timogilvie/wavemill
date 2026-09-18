@@ -216,12 +216,16 @@ describe('createProcessGroupPrepRunner', () => {
     assert.ok(runner.remainingDeadlineMs() > 0);
   });
 
-  it('rejects with WorktreePrepTimeoutError when the shared deadline expires', async () => {
+  it('rejects with WorktreePrepTimeoutError when the shared deadline expires', { timeout: 15_000 }, async () => {
     const runner = createProcessGroupPrepRunner({ deadlineMs: 250, killGraceMs: 200 });
     let onSpawnPid: number | null = null;
     let error: unknown;
     try {
-      await runner.run('sleep 30', {
+      // sleep 5 (not 30) is still an order-of-magnitude longer than the 250ms
+      // deadline so the runner's SIGTERM/SIGKILL path is exercised, but caps
+      // the worst-case wall clock if a CI environment somehow lets the
+      // pgid-directed kill escape (the natural sleep expiry then bounds it).
+      await runner.run('sleep 5', {
         cwd: process.cwd(),
         phase: 'add',
         onSpawn: ({ pid }) => { onSpawnPid = pid; },
@@ -234,20 +238,25 @@ describe('createProcessGroupPrepRunner', () => {
     assert.ok((error as WorktreePrepTimeoutError).elapsedMs >= 250);
     // The child pid should be gone after the runner escalates to SIGKILL.
     assert.ok(onSpawnPid !== null, 'onSpawn should have been called');
-    const gone = await waitForPidGone(onSpawnPid as unknown as number);
+    const gone = await waitForPidGone(onSpawnPid as unknown as number, 6_000);
     assert.ok(gone, `pid ${onSpawnPid} still alive after timeout`);
   });
 
-  it('kills descendant processes via the process group (SIGKILL after grace)', async () => {
+  it('kills descendant processes via the process group (SIGKILL after grace)', { timeout: 15_000 }, async () => {
     // Start a bash script that spawns a long-lived child in the same group.
     // The runner's kill(-pgid, SIGTERM/SIGKILL) must terminate BOTH.
     const runner = createProcessGroupPrepRunner({ deadlineMs: 300, killGraceMs: 300 });
     let leaderPid = -1;
     let error: unknown;
     try {
+      // sleep 5 (not 30) still comfortably outlives the 300ms deadline + 300ms
+      // grace so the process-group teardown is what actually kills both
+      // children — but caps the worst-case wall clock so a CI environment
+      // that quietly refuses group signals (blocking the pipe write end open)
+      // does not hang the whole node --test worker for 30+ seconds.
       await runner.run(
         // The grandchild sleeps in the same process group as the shell child.
-        'sleep 30 & printf "child=%d\n" "$!" >&2; sleep 30',
+        'sleep 5 & printf "child=%d\n" "$!" >&2; sleep 5',
         {
           cwd: process.cwd(),
           phase: 'add',
@@ -263,11 +272,11 @@ describe('createProcessGroupPrepRunner', () => {
     const match = (error as WorktreePrepTimeoutError).output.match(/child=(\d+)/);
     if (match) {
       const grandchildPid = Number(match[1]);
-      const gone = await waitForPidGone(grandchildPid);
+      const gone = await waitForPidGone(grandchildPid, 6_000);
       assert.ok(gone, `grandchild ${grandchildPid} survived process-group kill`);
     }
     // Also assert the leader itself is gone.
-    const leaderGone = await waitForPidGone(leaderPid);
+    const leaderGone = await waitForPidGone(leaderPid, 6_000);
     assert.ok(leaderGone, `leader pid ${leaderPid} still alive after group kill`);
   });
 

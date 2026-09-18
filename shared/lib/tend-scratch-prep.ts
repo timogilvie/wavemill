@@ -403,6 +403,10 @@ export function createProcessGroupPrepRunner(options: CreateProcessGroupPrepRunn
       let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
       let killTimer: ReturnType<typeof setTimeout> | null = null;
       let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+      // Set true once the deadline timer has issued the first group-directed
+      // signal, so the on-exit hook knows a stray descendant may exist and it
+      // is safe to broadcast a final SIGKILL to the same pgid.
+      let groupSignaled = false;
 
       const cmdStartedAt = now();
       if (options.onHeartbeat) {
@@ -418,7 +422,10 @@ export function createProcessGroupPrepRunner(options: CreateProcessGroupPrepRunn
 
       deadlineTimer = setTimeout(() => {
         if (settled) return;
-        if (pgid > 0) killGroup(pgid, 'SIGTERM', signaller);
+        if (pgid > 0) {
+          groupSignaled = true;
+          killGroup(pgid, 'SIGTERM', signaller);
+        }
         killTimer = setTimeout(() => {
           if (settled) return;
           if (pgid > 0) killGroup(pgid, 'SIGKILL', signaller);
@@ -429,6 +436,17 @@ export function createProcessGroupPrepRunner(options: CreateProcessGroupPrepRunn
         if (settled) return;
         settled = true;
         cleanupTimers();
+        // Belt-and-suspenders group-directed SIGKILL when the runner already
+        // initiated a group teardown: the direct child may have exited on the
+        // first SIGTERM (which cancels our scheduled SIGKILL) while a
+        // backgrounded descendant (e.g. `git fetch`'s ssh helper or a
+        // `sleep &`) still holds the pgid and keeps the stdio pipe write end
+        // open. That would keep the `node --test` file worker's event loop
+        // alive indefinitely and hang the shard. Guarded on `groupSignaled`
+        // to avoid signalling a reused pgid on a clean, on-time exit.
+        // killGroup swallows ESRCH, so this is a no-op when the group has
+        // already exited on its own.
+        if (groupSignaled && pgid > 0) killGroup(pgid, 'SIGKILL', signaller);
         releaseChildHandles();
         const output = Buffer.concat(chunks).toString('utf-8');
         const elapsedMs = now() - startedAt;
