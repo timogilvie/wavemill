@@ -7,9 +7,11 @@ import {
   buildDiffUnavailableComparison,
   buildDoubleForfeitComparison,
   buildForfeitComparison,
+  buildInvalidChallengeArmComparison,
   buildInvalidChallengeComparison,
   buildSkippedIdenticalComparison,
   buildInvalidProvenanceComparison,
+  deriveNoComparisonReason,
   detectJudgeDisagreement,
   listVariedRoutingDimensions,
   readChallengeComparisons,
@@ -29,6 +31,7 @@ import {
   type ChallengeComparison,
   type ChallengeDiffIdentity,
   type ChallengeRoutingMeta,
+  type StoredChallengeComparison,
 } from './challenge-comparison.ts';
 import { appendChallengeRecordVoid } from './challenge-record-void.ts';
 
@@ -1437,6 +1440,97 @@ test('buildInvalidProvenanceComparison: produces no winner for invalid_challenge
   assert.equal(comparison.invalidChallengeReason, 'multiple-varied-roles');
   assert.equal(comparison.noComparisonReason, 'multiple-varied-roles');
   assert.equal(comparison.winner, undefined);
+});
+
+// ────────────────────────────────────────────────────────────────
+// HOK-2970 — invalid-challenge-arm builder and decisiveness guard
+// ────────────────────────────────────────────────────────────────
+
+console.log('\n--- HOK-2970 Invalid Challenge Arm Tests ---\n');
+
+test('buildInvalidChallengeArmComparison produces invalid_challenge with no winner and preserves forkStage', () => {
+  const record = buildInvalidChallengeArmComparison({
+    challengePairId: 'HOK-2958',
+    primaryModel: 'gpt-5.5',
+    challengerModel: 'kimi-k3',
+    primaryPrUrl: 'https://github.com/org/repo/pull/100',
+    challengerPrUrl: 'https://github.com/org/repo/pull/101',
+    primaryCompleted: true,
+    challengerCompleted: false,
+    abortedSide: 'challenger',
+    terminalReason: 'challenger_challenge_aborted',
+    invalidChallengeReason: 'missing_challenge_intent',
+    forkStage: 'review',
+    forkCommit: 'abc1234',
+    sharedPrefix: true,
+    primaryInheritedStages: ['plan', 'implementation'],
+    challengerInheritedStages: ['plan', 'implementation'],
+  });
+  assert.equal(record.comparisonOutcome, 'invalid_challenge');
+  assert.equal(record.invalidChallenge, true);
+  assert.equal(record.winner, undefined);
+  assert.equal(record.winnerModel, undefined);
+  assert.equal(record.forkStage, 'review');
+  assert.equal(record.sharedPrefix, true);
+  assert.equal(record.terminalReason, 'challenger_challenge_aborted');
+  assert.equal(record.invalidChallengeReason, 'missing_challenge_intent');
+  assert.equal(record.noComparisonReason, 'missing_challenge_intent');
+});
+
+test('buildInvalidChallengeArmComparison labels rationale for both-arms case', () => {
+  const record = buildInvalidChallengeArmComparison({
+    challengePairId: 'HOK-2958',
+    primaryModel: 'gpt-5.5',
+    challengerModel: 'kimi-k3',
+    primaryPrUrl: 'https://github.com/org/repo/pull/100',
+    challengerPrUrl: 'https://github.com/org/repo/pull/101',
+    abortedSide: 'both',
+    terminalReason: 'both_challenge_aborted',
+    invalidChallengeReason: 'missing_challenge_intent',
+  });
+  assert.match(record.rationale, /both arms/);
+  assert.equal(record.comparisonOutcome, 'invalid_challenge');
+  assert.equal(record.terminalReason, 'both_challenge_aborted');
+});
+
+test('isDecisiveChallengeComparison excludes forfeit + invalidChallenge=true', () => {
+  const legacyPhantom = makeRecord({
+    comparisonOutcome: 'forfeit',
+    winner: 'primary',
+    terminalReason: 'challenger_challenge_aborted',
+    invalidChallenge: true,
+    primaryCompleted: true,
+    challengerCompleted: false,
+  });
+  assert.equal(isDecisiveChallengeComparison(legacyPhantom), false);
+});
+
+test('isDecisiveChallengeComparison excludes quarantined rows', () => {
+  const quarantined = makeRecord({
+    comparisonOutcome: 'forfeit',
+    winner: 'primary',
+    terminalReason: 'challenger_challenge_aborted',
+    primaryCompleted: true,
+    challengerCompleted: false,
+    quarantined: {
+      reason: 'aborted-arm-was-invalid',
+      ticket: 'HOK-2970',
+      at: '2026-09-16T00:00:00Z',
+    },
+  });
+  assert.equal(isDecisiveChallengeComparison(quarantined), false);
+});
+
+test('deriveNoComparisonReason maps invalid_challenge to missing_challenge_intent', () => {
+  const row: StoredChallengeComparison = {
+    ...makeRecord(),
+    comparisonOutcome: 'invalid_challenge',
+    invalidChallenge: true,
+    terminalReason: 'challenger_challenge_aborted',
+    winner: undefined,
+  };
+  const reason = deriveNoComparisonReason(row);
+  assert.equal(reason, 'missing_challenge_intent');
 });
 
 process.on('exit', () => {
