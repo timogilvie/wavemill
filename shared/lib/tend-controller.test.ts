@@ -169,6 +169,14 @@ function buildMergeTestOptions(overrides: {
       reclaimStaleMerging: (prNumber) => {
         labels.push(`ready-reclaim:${prNumber}`);
       },
+      prepCommandRunner: async (cmd) => {
+        calls.push(cmd);
+        // Mock process group runner for tests
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      },
+      recordPhaseHeartbeat: async () => {
+        // No-op for tests
+      },
     },
     cleanup: () => rmSync(repoDir, { recursive: true, force: true }),
   };
