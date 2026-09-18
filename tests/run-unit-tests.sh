@@ -515,11 +515,16 @@ if [[ -n "$TIMING_OUT" ]]; then
   # while the spec reporter keeps human-readable output on stdout. The shard
   # label reaches the reporter through the environment.
   export WAVEMILL_TIMING_SHARD="${SHARD_INDEX}/${SHARD_TOTAL}"
-  exec node --test \
+  # --test-force-exit: exit after all test results are reported, even if a
+  # subprocess-spawning test left a stale handle (e.g. an inherited stdio pipe
+  # descriptor after a process-group teardown) keeping its file worker's event
+  # loop alive. Without this, shard 7 has been hanging in CI for the full 20m
+  # timeout after every test in the file completes — see HOK-3039.
+  exec node --test --test-force-exit \
     --test-reporter spec --test-reporter-destination stdout \
     --test-reporter "$REPO_DIR/tests/lib/unit-timing-reporter.mjs" \
     --test-reporter-destination "$TIMING_OUT" \
     "${SELECTED[@]}"
 fi
 
-exec node --test "${SELECTED[@]}"
+exec node --test --test-force-exit "${SELECTED[@]}"
