@@ -240,7 +240,7 @@ function isPreMutationPhase(phase: TendMergePhase): boolean {
 }
 
 const TEND_PREP_RECOVERY_BUCKET = 'tend-prep-recovery';
-const TEND_PREP_RECOVERY_MAX_ATTEMPTS = 2;
+const TEND_PREP_RECOVERY_MAX_ATTEMPTS = 1;
 const BOUNDED_RETRY_HELPER_TIMEOUT_MS = 30_000;
 const BOUNDED_RETRY_HELPER_PATH = join(dirname(fileURLToPath(import.meta.url)), 'bounded-retry.sh');
 

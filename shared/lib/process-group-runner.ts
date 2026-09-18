@@ -111,13 +111,20 @@ export async function runCommandInProcessGroup(
     pgid = child.pid;
 
     // Collect output with limit.
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
+
     if (child.stdout) {
       child.stdout.on('data', (chunk) => {
         if (stdout.length < outputLimit) {
-          stdout += chunk.toString();
+          const newContent = chunk.toString();
+          stdout += newContent;
           if (stdout.length > outputLimit) {
             stdout = stdout.slice(0, outputLimit);
+            stdoutTruncated = true;
           }
+        } else if (!stdoutTruncated) {
+          stdoutTruncated = true;
         }
       });
     }
@@ -125,10 +132,14 @@ export async function runCommandInProcessGroup(
     if (child.stderr) {
       child.stderr.on('data', (chunk) => {
         if (stderr.length < outputLimit) {
-          stderr += chunk.toString();
+          const newContent = chunk.toString();
+          stderr += newContent;
           if (stderr.length > outputLimit) {
             stderr = stderr.slice(0, outputLimit);
+            stderrTruncated = true;
           }
+        } else if (!stderrTruncated) {
+          stderrTruncated = true;
         }
       });
     }
@@ -138,10 +149,9 @@ export async function runCommandInProcessGroup(
       if (killTimeout) clearTimeout(killTimeout);
       if (timeoutHandle) clearTimeout(timeoutHandle);
 
-      const truncationLimit = outputLimit;
       resolve({
-        stdout: stdout.length > truncationLimit ? stdout.slice(0, truncationLimit) + '... (truncated)' : stdout,
-        stderr: stderr.length > truncationLimit ? stderr.slice(0, truncationLimit) + '... (truncated)' : stderr,
+        stdout: stdoutTruncated ? stdout + '... (truncated)' : stdout,
+        stderr: stderrTruncated ? stderr + '... (truncated)' : stderr,
         exitCode,
         timedOut,
         pgid,
