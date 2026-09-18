@@ -856,6 +856,13 @@ export async function executeMerge(
             requiredChecks: integrationConfig.requiredChecks,
             retrySleep: deps.retrySleep,
             expectedHeadSha: pushedHeadSha,
+            onPoll: deps.recordPhaseHeartbeat ? async (prNumber) => {
+              try {
+                await deps.recordPhaseHeartbeat(prNumber, 'checks');
+              } catch {
+                // Best-effort; poll failures should not block merge
+              }
+            } : undefined,
           },
         );
         if (checks.outcome !== 'pass') {
