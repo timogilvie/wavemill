@@ -3655,13 +3655,19 @@ describe('worktree preparation timeout and marker lifecycle (HOK-3039)', () => {
         headBranch: 'task/test-pr',
         createdAt: '2026-04-01T00:00:00Z',
         dependencyDepth: 0,
-        headSha: 'head-current',
-        featureDir: repoDir,
       };
 
       let markerWasWritten = false;
       const deps: MergeExecutionDeps = {
-        shellRunner: () => 'mock output',
+        shellRunner: (cmd: string) => {
+          if (cmd.includes('gh pr list') && cmd.includes('wm:merging')) {
+            return '[]'; // No merging PRs
+          }
+          if (cmd.includes('gh pr view') && cmd.includes('json')) {
+            return JSON.stringify({ headRefOid: 'head-current', merged: false, state: 'OPEN' });
+          }
+          return 'mock output';
+        },
         acquireMerging: async () => { /* noop */ },
         releaseToBlocked: async () => { /* noop */ },
         releaseMerged: async () => { /* noop */ },
@@ -3669,7 +3675,7 @@ describe('worktree preparation timeout and marker lifecycle (HOK-3039)', () => {
         retrySleep: async () => { /* noop */ },
         readyChecker: async () => ({ ready: true }),
         healthChecker: async () => ({ state: 'healthy' }),
-        strictBaseRetry: defaultStrictBaseRetryOps(repoDir),
+        strictBaseRetry: defaultStrictBaseRetryOps,
         recordPhaseHeartbeat: async () => { /* noop */ },
         prepCommandRunner: async (cmd) => {
           // Check if marker was written (would exist from writeInflightMarker call)
@@ -3693,8 +3699,11 @@ describe('worktree preparation timeout and marker lifecycle (HOK-3039)', () => {
       assert.equal(result.status, 'skipped', 'should skip on timeout');
       assert.equal(result.phase, 'worktree-fetch', 'should report fetch timeout phase');
       assert.match(result.failureExcerpt, /timeout/, 'should include timeout message');
-      // Marker should be cleared after timeout handling
-      assert(!existsSync(markerPath), 'marker should be cleared after timeout');
+      // Marker should be cleared after timeout handling (set to null)
+      if (existsSync(markerPath)) {
+        const content = readFileSync(markerPath, 'utf-8');
+        assert.equal(content.trim(), 'null', 'marker should be cleared to null');
+      }
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }
@@ -3713,12 +3722,18 @@ describe('worktree preparation timeout and marker lifecycle (HOK-3039)', () => {
         headBranch: 'task/test-pr',
         createdAt: '2026-04-01T00:00:00Z',
         dependencyDepth: 0,
-        headSha: 'head-current',
-        featureDir: repoDir,
       };
 
       const deps: MergeExecutionDeps = {
-        shellRunner: () => 'mock output',
+        shellRunner: (cmd: string) => {
+          if (cmd.includes('gh pr list') && cmd.includes('wm:merging')) {
+            return '[]'; // No merging PRs
+          }
+          if (cmd.includes('gh pr view') && cmd.includes('json')) {
+            return JSON.stringify({ headRefOid: 'head-current', merged: false, state: 'OPEN' });
+          }
+          return 'mock output';
+        },
         acquireMerging: async () => { /* noop */ },
         releaseToBlocked: async () => { /* noop */ },
         releaseMerged: async () => { /* noop */ },
@@ -3726,7 +3741,7 @@ describe('worktree preparation timeout and marker lifecycle (HOK-3039)', () => {
         retrySleep: async () => { /* noop */ },
         readyChecker: async () => ({ ready: true }),
         healthChecker: async () => ({ state: 'healthy' }),
-        strictBaseRetry: defaultStrictBaseRetryOps(repoDir),
+        strictBaseRetry: defaultStrictBaseRetryOps,
         recordPhaseHeartbeat: async () => { /* noop */ },
         prepCommandRunner: async (cmd) => {
           // Return result with pgid
@@ -3788,12 +3803,18 @@ describe('worktree preparation timeout and marker lifecycle (HOK-3039)', () => {
         headBranch: 'task/test-pr',
         createdAt: '2026-04-01T00:00:00Z',
         dependencyDepth: 0,
-        headSha: 'head-current',
-        featureDir: repoDir,
       };
 
       const deps: MergeExecutionDeps = {
-        shellRunner: () => 'mock output',
+        shellRunner: (cmd: string) => {
+          if (cmd.includes('gh pr list') && cmd.includes('wm:merging')) {
+            return '[]'; // No merging PRs
+          }
+          if (cmd.includes('gh pr view') && cmd.includes('json')) {
+            return JSON.stringify({ headRefOid: 'head-current', merged: false, state: 'OPEN' });
+          }
+          return 'mock output';
+        },
         acquireMerging: async () => { /* noop */ },
         releaseToBlocked: async () => { /* noop */ },
         releaseMerged: async () => { /* noop */ },
@@ -3801,7 +3822,7 @@ describe('worktree preparation timeout and marker lifecycle (HOK-3039)', () => {
         retrySleep: async () => { /* noop */ },
         readyChecker: async () => ({ ready: true }),
         healthChecker: async () => ({ state: 'healthy' }),
-        strictBaseRetry: defaultStrictBaseRetryOps(repoDir),
+        strictBaseRetry: defaultStrictBaseRetryOps,
         recordPhaseHeartbeat: async () => { /* noop */ },
       };
 

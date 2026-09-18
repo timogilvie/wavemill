@@ -52,9 +52,12 @@ import { runCommandInProcessGroup, createDeadline, type Deadline } from './proce
  * Custom error for worktree preparation timeout.
  */
 class WorktreeTimeoutError extends Error {
-  constructor(message: string, public readonly phase: string) {
+  readonly phase: string;
+
+  constructor(message: string, phase: string) {
     super(message);
     this.name = 'WorktreeTimeoutError';
+    this.phase = phase;
   }
 }
 
