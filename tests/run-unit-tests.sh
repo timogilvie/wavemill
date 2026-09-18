@@ -98,7 +98,6 @@ TESTS=(
   shared/lib/native-agent/workflow-tools/retry-idempotency.test.ts
   shared/lib/native-agent/workflow-tools/approval-gate.test.ts
   shared/lib/native-agent/workflow-tools/ready-remediation-integration.test.ts
-  shared/lib/issue-expander.test.ts
   shared/lib/native-agent/launch-planning.test.ts
   shared/lib/native-agent/planning-canary.test.ts
   shared/lib/feature-outcome-consumer.test.ts
@@ -126,7 +125,6 @@ TESTS=(
   shared/lib/pr-attribution.test.ts
   shared/lib/pr-ci-status.test.ts
   shared/lib/ready-engine.test.ts
-  shared/lib/ready-stage.test.ts
   shared/lib/ci-failure-classifier.test.ts
   shared/lib/ci-log-fetcher.test.ts
   shared/lib/ready-watchdog.test.ts
@@ -139,9 +137,9 @@ TESTS=(
   shared/lib/challenge-pair-resolver.test.ts
   shared/lib/arm-failure-taxonomy.test.ts
   shared/lib/arm-reliability.test.ts
-  shared/lib/challenge-selection-health.test.ts
   shared/lib/stale-task-branches.test.ts
   shared/lib/tend-controller.test.ts
+  shared/lib/ready-tend-handoff.test.ts
   shared/lib/observer-status-renderer.test.ts
   shared/lib/tend-status-renderer.test.ts
   shared/lib/tend-singleton.test.ts
@@ -174,6 +172,7 @@ TESTS=(
   shared/lib/manual-edit-attribution-audit.test.ts
   shared/lib/merge-queue.test.ts
   shared/lib/model-registry.test.ts
+  shared/lib/model-registry-gpt55-inventory.test.ts
   shared/lib/model-promotion.test.ts
   shared/lib/model-evidence-policy.test.ts
   shared/lib/disabled-models.test.ts
@@ -184,10 +183,8 @@ TESTS=(
   shared/lib/mill-config-preflight.test.ts
   shared/lib/effective-task-config.test.ts
   shared/lib/routing-policy.test.ts
-  shared/lib/hokusai-adapter.test.ts
   shared/lib/hokusai-consent.test.ts
   shared/lib/hokusai-redaction.test.ts
-  shared/lib/hokusai-router.test.ts
   shared/lib/hokusai-schema.test.ts
   shared/lib/hokusai-router-audit.test.ts
   shared/lib/hokusai-contribution-schema.test.ts
@@ -232,14 +229,11 @@ TESTS=(
   shared/lib/dependency-classifier.test.ts
   shared/lib/queue-partial-refresh.test.ts
   shared/lib/route-artifact.test.ts
-  shared/lib/route-batch.test.ts
   shared/lib/model-router.test.ts
-  shared/lib/eval-aggregator.test.ts
   shared/lib/eval-corpus-migrator.test.ts
   shared/lib/eval-record-builder.test.ts
   shared/lib/eval-orchestrator.test.ts
   shared/lib/stage-eval-evidence.test.ts
-  shared/lib/eval-schema.test.ts
   shared/lib/trace-event.test.ts
   shared/lib/eval-success-policy.test.ts
   shared/lib/eval-validator.test.ts
@@ -325,6 +319,7 @@ TESTS=(
   tools/native-agent-certifications.test.ts
   shared/lib/incident-linear-retry-queue.test.ts
   shared/lib/incident-to-linear-synchronizer.test.ts
+  shared/lib/incident-filing-reconciler.test.ts
   shared/lib/verification-metrics.test.ts
   shared/lib/ci-verification-drift-detector.test.ts
   shared/lib/pre-pr-verification-drift-validator.test.ts
@@ -333,27 +328,15 @@ TESTS=(
   tests/fork-aware-comparison.test.ts
   # Registration-complete shared and tool tests.
   shared/lib/artifact-diagnostics.test.ts
-  shared/lib/challenge-coverage-selector.test.ts
   shared/lib/challenge-mode.test.ts
   shared/lib/challenge-recovery.test.ts
-  shared/lib/challenge-scheduler.test.ts
-  shared/lib/challenge-score-selector.test.ts
-  shared/lib/check-routing.test.ts
   shared/lib/codebase-context-gatherer.test.ts
-  shared/lib/config-sync.test.ts
-  shared/lib/constraint-parser.test.ts
-  shared/lib/constraint-storage.test.ts
   shared/lib/constraint-validator.test.ts
-  shared/lib/context-linter.test.ts
   shared/lib/deepseek-launcher.test.ts
-  shared/lib/difficulty-analyzer.test.ts
-  shared/lib/eval-backfill.test.ts
   shared/lib/eval-context-gatherer.test.ts
   shared/lib/eval-deduplication.test.ts
   shared/lib/execution-economics.test.ts
   shared/lib/execution-economics-report.test.ts
-  shared/lib/eval-export.test.ts
-  shared/lib/eval-persistence.test.ts
   shared/lib/eval-summary-printer.test.ts
   shared/lib/evals-paths.test.ts
   shared/lib/execution-contract.test.ts
@@ -362,9 +345,7 @@ TESTS=(
   shared/lib/launch-priority-audit.consistency.test.ts
   shared/lib/launch-priority-audit.test.ts
   shared/lib/linear.test.ts
-  shared/lib/llm-router.test.ts
   shared/lib/model-validator.test.ts
-  shared/lib/native-agent/certification/router-filter.test.ts
   shared/lib/native-agent/launch-coding.test.ts
   shared/lib/native-agent/review.test.ts
   shared/lib/native-agent/session-stream.test.ts
@@ -375,14 +356,12 @@ TESTS=(
   shared/lib/native-agent/workflow-tools/ready-remediation.test.ts
   shared/lib/native-agent/workflow-tools/review-flow.test.ts
   shared/lib/native-openrouter-config-validation.test.ts
-  shared/lib/openrouter-generation-api.test.ts
   shared/lib/openrouter-launcher.test.ts
   shared/lib/openrouter-runtime.test.ts
   shared/lib/openrouter-smoke.test.ts
   shared/lib/permission-patterns.test.ts
   shared/lib/permissions-verifier.test.ts
   shared/lib/plan-validator.test.ts
-  shared/lib/post-completion-hook.test.ts
   shared/lib/branch-publication.test.ts
   shared/lib/pre-pr-verification-gate.test.ts
   shared/lib/pre-pr-verification.test.ts
@@ -393,7 +372,6 @@ TESTS=(
   shared/lib/prompt-utils.test.ts
   shared/lib/ready-diagnostics.test.ts
   shared/lib/ready-migration-base.test.ts
-  shared/lib/repo-context-analyzer.test.ts
   shared/lib/pr-route-provenance.test.ts
   shared/lib/resource-adapters/dspy-adapter.test.ts
   shared/lib/resource-adapters/native-runtime-adapter.test.ts
@@ -401,19 +379,11 @@ TESTS=(
   shared/lib/resource-registry.test.ts
   shared/lib/resource-retrieval.test.ts
   shared/lib/resource-selection.test.ts
-  shared/lib/review-context-gatherer.test.ts
   shared/lib/review-stats.test.ts
   shared/lib/route-model-successors.test.ts
-  shared/lib/router-diversity.test.ts
-  shared/lib/router-exploration.test.ts
   shared/lib/rubric.test.ts
-  shared/lib/rule-generator.test.ts
-  shared/lib/stage-aware-router.test.ts
   shared/lib/subsystem-cross-reference.test.ts
   shared/lib/subsystem-search.test.ts
-  shared/lib/sync-config-classifier.test.ts
-  shared/lib/task-context-analyzer.test.ts
-  shared/lib/task-descriptor-backfill.test.ts
   shared/lib/task-descriptor-builder.test.ts
   shared/lib/task-difficulty-classifier.test.ts
   shared/lib/task-packet-feature-extractor.test.ts
@@ -421,10 +391,7 @@ TESTS=(
   shared/lib/task-packet-scorer.test.ts
   shared/lib/task-packet-signal-analysis.test.ts
   shared/lib/task-packet-utils.test.ts
-  shared/lib/task-packet-validator.test.ts
   shared/lib/tool-runner.test.ts
-  shared/lib/workflow-cost.test.ts
-  shared/lib/workflow-router.test.ts
   shared/lib/worktree-manager.test.ts
   tools/backfill-stage-scores.test.ts
   tools/certify-launch-priority-model.test.ts

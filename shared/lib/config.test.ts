@@ -66,6 +66,7 @@ import {
   getPrePrVerificationConfig,
   getObserverLinearConfig,
   getChallengeEvalHardFailureRetryMaxAttempts,
+  getNativeReviewTimeoutConfig,
 } from './config.ts';
 
 // ────────────────────────────────────────────────────────────────
@@ -273,6 +274,48 @@ test('removed repo-local model fields are rejected with migration guidance', () 
     } finally {
       cleanUp(tmp);
     }
+  }
+});
+
+test('native review timeout defaults to five minutes with bounded escalation', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, '{}');
+    assert.deepEqual(getNativeReviewTimeoutConfig(tmp, 'kimi-k3', 0), {
+      timeoutMs: 300_000,
+      maxMs: 1_200_000,
+      multiplier: 2,
+      attempt: 0,
+      baseTimeoutMs: 300_000,
+      model: 'kimi-k3',
+    });
+    assert.equal(getNativeReviewTimeoutConfig(tmp, 'kimi-k3', 2).timeoutMs, 1_200_000);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('native review timeout honors global and per-model overrides', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      review: {
+        nativeTimeoutMs: 400_000,
+        nativeTimeoutMaxMs: 900_000,
+        nativeTimeoutMultiplier: 2,
+        nativeTimeoutModelOverrides: {
+          'moonshotai/kimi-k3': { timeoutMs: 600_000, maxMs: 1_500_000, multiplier: 3 },
+          'gpt-4o': 200_000,
+        },
+      },
+    }));
+    assert.equal(getNativeReviewTimeoutConfig(tmp, 'other-model', 1).timeoutMs, 800_000);
+    assert.equal(getNativeReviewTimeoutConfig(tmp, 'moonshotai/kimi-k3', 1).timeoutMs, 1_500_000);
+    assert.equal(getNativeReviewTimeoutConfig(tmp, 'native-openai/gpt-4o', 1).timeoutMs, 400_000);
+  } finally {
+    cleanUp(tmp);
   }
 });
 

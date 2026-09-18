@@ -84,7 +84,7 @@ case "$(basename "$script")" in
         printf '{"executedModel":"claude-haiku-4-5","evidenceStatus":"direct","evidenceSource":"claude-session","evidenceDetail":"models=claude-haiku-4-5:2; sessions=1"}\n'
         ;;
       codex)
-        printf '{"executedModel":"gpt-5.5","evidenceStatus":"direct","evidenceSource":"codex-session","evidenceDetail":"models=gpt-5.5:1; sessions=1"}\n'
+        printf '{"executedModel":"gpt-5.6-terra","evidenceStatus":"direct","evidenceSource":"codex-session","evidenceDetail":"models=gpt-5.6-terra:1; sessions=1"}\n'
         ;;
       missing)
         printf '{"executedModel":null,"evidenceStatus":"missing","evidenceSource":"claude-session","evidenceDetail":"sessions=0; inWindowTurns=0"}\n'

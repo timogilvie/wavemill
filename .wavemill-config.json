@@ -105,10 +105,6 @@
         "cacheWriteCostPerMTok": 3.125,
         "cacheReadCostPerMTok": 0.25
       },
-      "gpt-5.5": {
-        "inputCostPerMTok": 5,
-        "outputCostPerMTok": 30
-      },
       "qwen-3-coder": {
         "inputCostPerMTok": 0.35,
         "outputCostPerMTok": 1.05
@@ -138,7 +134,7 @@
       "kimi-k2.7-code": {
         "inputCostPerMTok": 0.71,
         "outputCostPerMTok": 3.5,
-        "cacheReadCostPerMTok": 0.15
+        "cacheReadCostPerMTok": 0.18
       },
       "gemini-2.5-pro": {
         "inputCostPerMTok": 1.25,
@@ -203,7 +199,7 @@
   "hokusai": {
     "dataSubmission": {
       "enabled": false,
-      "consentVersion": "1.0",
+      "consentVersion": "1.1",
       "endpoint": "https://api.hokusai.dev/v1/submit"
     }
   },

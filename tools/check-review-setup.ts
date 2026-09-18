@@ -25,12 +25,12 @@ import { GREEN, RED, NC } from '../shared/lib/colors.ts';
 
 /**
  * Determine the active review provider from the environment.
- * Falls back to `gpt-5.5` (Codex) unless overridden.
+ * Falls back to `gpt-5.6-terra` (Codex, successor to retired gpt-5.5) unless overridden.
  * Exported for testing.
  */
 export function getReviewProvider(): LLMProvider {
   const model =
-    process.env.WAVEMILL_REVIEW_MODEL || process.env.WAVEMILL_HEADLESS_MODEL || 'gpt-5.5';
+    process.env.WAVEMILL_REVIEW_MODEL || process.env.WAVEMILL_HEADLESS_MODEL || 'gpt-5.6-terra';
   return resolveProviderForModel(model, process.cwd());
 }
 

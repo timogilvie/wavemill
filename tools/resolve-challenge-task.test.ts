@@ -488,7 +488,7 @@ describe('resolve-challenge-task CLI', () => {
   it('finalizes expanded top-level implementation recommendations into native coder intent', () => {
     const repoDir = makeRepo([], {
       aliases: ['glm-5.2'],
-      primaryModels: ['gpt-5.5'],
+      primaryModels: ['gpt-5.6-terra'],
       patchCodingEnabled: true,
       suiteVersion: DEFAULT_CERTIFICATION_SUITE_VERSION,
       certificationPhase: 'patch',
@@ -496,9 +496,9 @@ describe('resolve-challenge-task CLI', () => {
     const featureDir = join(repoDir, 'features', 'hok-2570-timing');
     mkdirSync(featureDir, { recursive: true });
     writeFileSync(join(featureDir, '.post-expansion-route.json'), JSON.stringify({
-      planner: 'gpt-5.5',
-      coder: 'gpt-5.5',
-      reviewer: 'gpt-5.5',
+      planner: 'gpt-5.6-terra',
+      coder: 'gpt-5.6-terra',
+      reviewer: 'gpt-5.6-terra',
       planDepth: 'medium',
       codeDepth: 'medium',
       reviewMode: 'llm',
@@ -517,7 +517,7 @@ describe('resolve-challenge-task CLI', () => {
         '--issue', 'HOK-2570',
         '--slug', 'hok-2570-timing',
         '--title', 'Make registry reusable',
-        '--primary-model', 'gpt-5.5',
+        '--primary-model', 'gpt-5.6-terra',
         '--remaining-slots', '2',
         '--repo-dir', repoDir,
         '--feature-dir', featureDir,
@@ -531,7 +531,7 @@ describe('resolve-challenge-task CLI', () => {
       const entries = result.entries as Array<Record<string, unknown>>;
       const primary = entries.find((entry) => entry.role === 'primary');
       const challenger = entries.find((entry) => entry.role === 'challenger');
-      assert.equal(primary?.model, 'gpt-5.5');
+      assert.equal(primary?.model, 'gpt-5.6-terra');
       assert.equal(primary?.agent, 'codex');
       assert.equal(challenger?.model, 'glm-5.2');
       assert.equal(challenger?.agent, 'native-openrouter');

@@ -15,6 +15,11 @@ import {
   readChallengeComparisons,
   detectVariedDimensions,
   hasAnyVariedDimension,
+  hasMultiRoleVariation,
+  hasRoleAndNonRoleVariation,
+  listVariedRoles,
+  getVariedDimensionNames,
+  detectChallengerRouteNonSelectedDivergence,
   isDecisiveChallengeComparison,
   classifyChallengeType,
   modelForChallengeVariedStage,
@@ -1253,6 +1258,185 @@ test('historical record without fork descriptor fields parses cleanly', () => {
   assert.equal(historicalRecord.challengerInheritedStages, undefined);
   assert.equal(historicalRecord.primaryDiffIdentity, undefined);
   assert.equal(historicalRecord.challengerDiffIdentity, undefined);
+});
+
+test('hasMultiRoleVariation: detects when more than one role varies', () => {
+  const varied = {
+    planner: true,
+    coder: true,
+    reviewer: false,
+    planDepth: false,
+    codeDepth: false,
+    reviewMode: false,
+    routerVariant: false,
+    plannerPromptVariant: false,
+    reviewerPromptVariant: false,
+  };
+  assert.equal(hasMultiRoleVariation(varied), true);
+});
+
+test('hasMultiRoleVariation: returns false for single role variation', () => {
+  const varied = {
+    planner: false,
+    coder: true,
+    reviewer: false,
+    planDepth: false,
+    codeDepth: false,
+    reviewMode: false,
+    routerVariant: false,
+    plannerPromptVariant: false,
+    reviewerPromptVariant: false,
+  };
+  assert.equal(hasMultiRoleVariation(varied), false);
+});
+
+test('hasRoleAndNonRoleVariation: detects role + non-role variation', () => {
+  const varied = {
+    planner: false,
+    coder: true,
+    reviewer: false,
+    planDepth: false,
+    codeDepth: true,
+    reviewMode: false,
+    routerVariant: false,
+    plannerPromptVariant: false,
+    reviewerPromptVariant: false,
+  };
+  assert.equal(hasRoleAndNonRoleVariation(varied), true);
+});
+
+test('hasRoleAndNonRoleVariation: returns false when only role varies', () => {
+  const varied = {
+    planner: false,
+    coder: true,
+    reviewer: false,
+    planDepth: false,
+    codeDepth: false,
+    reviewMode: false,
+    routerVariant: false,
+    plannerPromptVariant: false,
+    reviewerPromptVariant: false,
+  };
+  assert.equal(hasRoleAndNonRoleVariation(varied), false);
+});
+
+test('getVariedDimensionNames: lists all varied dimensions', () => {
+  const varied = {
+    planner: true,
+    coder: false,
+    reviewer: true,
+    planDepth: true,
+    codeDepth: false,
+    reviewMode: false,
+    routerVariant: false,
+    plannerPromptVariant: false,
+    reviewerPromptVariant: false,
+  };
+  const names = getVariedDimensionNames(varied);
+  assert.deepEqual(names.sort(), ['planDepth', 'planner', 'reviewer'].sort());
+});
+
+test('validateChallengeExecutionProvenance: detects multi-role violation', () => {
+  const primaryRouting: ChallengeRoutingMeta = {
+    planner: 'claude-opus-4-7',
+    coder: 'gpt-5.5',
+    reviewer: 'claude-opus-4-7',
+    planDepth: 'medium',
+    codeDepth: 'medium',
+    reviewMode: 'llm',
+  };
+  const challengerRouting: ChallengeRoutingMeta = {
+    planner: 'gpt-5.5',
+    coder: 'claude-opus-4-7',
+    reviewer: 'gpt-5.5',
+    planDepth: 'medium',
+    codeDepth: 'medium',
+    reviewMode: 'llm',
+  };
+  const execution = {
+    planning: { stage: 'planning', role: 'planner', model: '', agent: '', status: 'missing' as const, source: 'missing' as const, consultedArtifactPaths: [] },
+    coding: { stage: 'coding', role: 'coder', model: '', agent: '', status: 'missing' as const, source: 'missing' as const, consultedArtifactPaths: [] },
+    review: { stage: 'review', role: 'reviewer', model: '', agent: '', status: 'missing' as const, source: 'missing' as const, consultedArtifactPaths: [] },
+  };
+  const variedDimensions = detectVariedDimensions(primaryRouting, challengerRouting);
+
+  const result = validateChallengeExecutionProvenance({
+    primaryExecution: execution,
+    challengerExecution: execution,
+    primaryRouting,
+    challengerRouting,
+    primaryModel: 'gpt-5.5',
+    challengerModel: 'claude-opus-4-7',
+    variedDimensions,
+    variedStage: 'implementation',
+  });
+
+  assert.equal(result.valid, false);
+  assert.equal(result.outcome, 'invalid_challenge');
+  assert.equal(result.modelAttributionEligible, false);
+  assert.ok(result.invalidChallengeDetails?.includes('Multiple varied dimensions'));
+});
+
+test('detectChallengerRouteNonSelectedDivergence: detects planner divergence in implementation challenge', () => {
+  const primaryRouting: ChallengeRoutingMeta = {
+    planner: 'claude-opus-4-7',
+    coder: 'gpt-5.5',
+    reviewer: 'claude-opus-4-7',
+    planDepth: 'medium',
+    codeDepth: 'medium',
+    reviewMode: 'llm',
+  };
+  const challengerRouting: ChallengeRoutingMeta = {
+    planner: 'gpt-5.5',
+    coder: 'gpt-5.5',
+    reviewer: 'gpt-5.5',
+    planDepth: 'medium',
+    codeDepth: 'medium',
+    reviewMode: 'llm',
+  };
+
+  const diverged = detectChallengerRouteNonSelectedDivergence(primaryRouting, challengerRouting, 'implementation');
+
+  assert.ok(diverged.includes('planner'));
+  assert.ok(diverged.includes('reviewer'));
+  assert.equal(diverged.includes('coder'), false);
+});
+
+test('buildInvalidProvenanceComparison: produces no winner for invalid_challenge', () => {
+  const provenanceValidation = {
+    valid: false,
+    modelAttributionEligible: false,
+    outcome: 'invalid_challenge' as const,
+    invalidChallengeDetails: 'Multiple varied dimensions: planner, coder, reviewer',
+    issues: [],
+  };
+
+  const comparison = buildInvalidProvenanceComparison({
+    challengePairId: 'HOK-2806:HOK-2806_c',
+    primaryModel: 'claude-opus-4-7',
+    challengerModel: 'gpt-5.5',
+    primaryPrUrl: 'https://github.com/org/repo/pull/1',
+    challengerPrUrl: 'https://github.com/org/repo/pull/2',
+    primaryEvalScore: 0.75,
+    challengerEvalScore: 0.80,
+    primaryExecution: {
+      planning: { stage: 'planning', role: 'planner', model: '', agent: '', status: 'missing' as const, source: 'missing' as const, consultedArtifactPaths: [] },
+      coding: { stage: 'coding', role: 'coder', model: '', agent: '', status: 'missing' as const, source: 'missing' as const, consultedArtifactPaths: [] },
+      review: { stage: 'review', role: 'reviewer', model: '', agent: '', status: 'missing' as const, source: 'missing' as const, consultedArtifactPaths: [] },
+    },
+    challengerExecution: {
+      planning: { stage: 'planning', role: 'planner', model: '', agent: '', status: 'missing' as const, source: 'missing' as const, consultedArtifactPaths: [] },
+      coding: { stage: 'coding', role: 'coder', model: '', agent: '', status: 'missing' as const, source: 'missing' as const, consultedArtifactPaths: [] },
+      review: { stage: 'review', role: 'reviewer', model: '', agent: '', status: 'missing' as const, source: 'missing' as const, consultedArtifactPaths: [] },
+    },
+    provenanceValidation,
+  });
+
+  assert.equal(comparison.comparisonOutcome, 'invalid_challenge');
+  assert.equal(comparison.invalidChallenge, true);
+  assert.equal(comparison.invalidChallengeReason, 'multiple-varied-roles');
+  assert.equal(comparison.noComparisonReason, 'multiple-varied-roles');
+  assert.equal(comparison.winner, undefined);
 });
 
 process.on('exit', () => {

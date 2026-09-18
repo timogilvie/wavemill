@@ -61,18 +61,22 @@ CUSTOM_TS_TESTS=(
   shared/lib/router-exploration.test.ts
   shared/lib/rule-generator.test.ts
   shared/lib/stage-aware-router.test.ts
+  shared/lib/subagent-economics-policy.test.ts
   shared/lib/task-descriptor-backfill.test.ts
   shared/lib/task-context-analyzer.test.ts
   shared/lib/post-completion-hook.test.ts
   shared/lib/task-packet-validator.test.ts
   shared/lib/openrouter-generation-api.test.ts
-  shared/lib/workflow-router.test.ts
+  shared/lib/workflow-router-difficulty-budget.test.ts
+  shared/lib/workflow-router-heuristic.test.ts
+  shared/lib/workflow-router-hokusai.test.ts
+  shared/lib/workflow-router-native-certification.test.ts
+  shared/lib/workflow-router-quota-policy.test.ts
   shared/lib/workflow-cost.test.ts
   shared/lib/native-agent/certification/router-filter.test.ts
 )
 
 CUSTOM_SH_TESTS=(
-  tests/agent-resolve-from-model.test.sh
 )
 
 # Known-broken tests (pre-existing issues, tracked separately)

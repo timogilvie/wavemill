@@ -121,7 +121,7 @@ export class IncidentStore {
 
     const updatedIndex = await this.mutateIndex(indexPath, (index) => {
       const legacyEntries = Object.entries(index)
-        .filter(([key, record]) => key !== fingerprint && this.sameCanonicalIncident(record, canonicalIncident));
+        .filter(([key, record]) => key !== fingerprint && this.sameCanonicalIncident(record, canonicalIncident, record.taskId, canonicalIncident.taskId));
       for (const [key] of legacyEntries) delete index[key];
 
       const existing = this.mergeStoredRecords([
@@ -135,13 +135,12 @@ export class IncidentStore {
         const firstObservedAt = this.backfillFirstObservedAt(existing, observedAt);
         if (!freshEvent) {
           // Re-poll of an already-counted event: no count/liveness change,
-          // but persist canonicalization and first-observed backfill.
+          // but refresh canonical identity and presentation fields while preserving store-owned metadata.
+          const refreshed = this.refreshCanonicalFields(existing, canonicalIncident);
           stored = {
-            ...existing,
-            schemaVersion: WAVEMILL_INCIDENT_SCHEMA_VERSION,
-            fingerprint,
+            ...refreshed,
             firstObservedAt,
-            rootCauseClass: canonicalizeRootCauseClass(existing.rootCauseClass),
+            metadata: this.preserveStoreOwnedMetadata(existing.metadata, canonicalIncident.metadata),
           };
           index[fingerprint] = stored;
           return index;
@@ -168,21 +167,11 @@ export class IncidentStore {
           } : {}),
         };
         stored = {
-          ...existing,
-          schemaVersion: WAVEMILL_INCIDENT_SCHEMA_VERSION,
-          fingerprint,
-          taskId: canonicalIncident.taskId ?? null,
-          session: canonicalIncident.session ?? existing.session ?? null,
-          category: canonicalIncident.category,
-          rootCauseClass: canonicalIncident.rootCauseClass,
-          severity: this.maxSeverity(existing.severity, canonicalIncident.severity),
-          confidence: this.maxConfidence(existing.confidence, canonicalIncident.confidence),
+          ...this.refreshCanonicalFields(existing, canonicalIncident),
           lifecycle,
           firstObservedAt,
           lastObservedAt: observedAt,
           occurrenceCount,
-          summary: canonicalIncident.summary,
-          operatorAction: canonicalIncident.operatorAction,
           evidence: [...existing.evidence, ...redactedEvidence].slice(-this.maxEvidencePerRecord),
           metadata,
         };
@@ -502,12 +491,29 @@ export class IncidentStore {
   private sameCanonicalIncident(
     stored: Pick<IncidentRecord, 'category' | 'rootCauseClass' | 'evidence'>,
     candidate: Pick<IncidentRecord, 'category' | 'rootCauseClass' | 'evidence'>,
+    storedTaskId: string | null | undefined,
+    candidateTaskId: string | null | undefined,
   ): boolean {
-    // Legacy records carry raw slugified error text as their class; two parse
-    // errors differing only in token offset must consolidate to one record.
-    return stored.category === candidate.category
+    // Base canonical match: same category, root cause, and evidence identity
+    const baseMatch = stored.category === candidate.category
       && canonicalizeRootCauseClass(stored.rootCauseClass) === canonicalizeRootCauseClass(candidate.rootCauseClass)
       && this.evidenceIdentity(stored.evidence) === this.evidenceIdentity(candidate.evidence);
+
+    if (!baseMatch) return false;
+
+    // Attribution match: task-aware consolidation rules
+    // 1. Both non-null and different: DO NOT consolidate (prevent task-A → task-B)
+    if (storedTaskId && candidateTaskId && storedTaskId !== candidateTaskId) return false;
+
+    // 2. Both null: consolidate (repo-scoped incidents can merge)
+    if (!storedTaskId && !candidateTaskId) return true;
+
+    // 3. Same task ID (including both null after above checks): consolidate
+    if (storedTaskId === candidateTaskId) return true;
+
+    // 4. One task-scoped, one repo-scoped: allow consolidation only for safe-to-migrate evidence classes
+    // Repository-owned evidence (e.g., backstage_health) can migrate to repo scope.
+    return this.isSafeToMigrateToRepoScope(stored.evidence, candidate.evidence);
   }
 
   private evidenceIdentity(evidence: IncidentEvidence[]): string {
@@ -515,6 +521,64 @@ export class IncidentStore {
       .map((item) => `${item.type}:${item.source}:${item.key ?? ''}`)
       .sort())]
       .join('|');
+  }
+
+  private isSafeToMigrateToRepoScope(storedEvidence: IncidentEvidence[], candidateEvidence: IncidentEvidence[]): boolean {
+    // Evidence types that are repository-owned and safe to consolidate across tasks into repo scope
+    const repoOwnedEvidenceTypes = new Set<string>(['backstage_health']);
+    const allEvidence = [...storedEvidence, ...candidateEvidence];
+    return allEvidence.every((item) => repoOwnedEvidenceTypes.has(item.type));
+  }
+
+  private refreshCanonicalFields(
+    stored: IncidentRecord,
+    canonical: IncidentRecord,
+  ): IncidentRecord {
+    // Rebuild a record by preserving store-owned lifecycle/sync metadata while
+    // refreshing canonical identity and presentation fields from the current incident.
+    return {
+      ...stored,
+      schemaVersion: WAVEMILL_INCIDENT_SCHEMA_VERSION,
+      fingerprint: this.computeFingerprint(canonical),
+      taskId: canonical.taskId ?? null,
+      session: canonical.session ?? stored.session ?? null,
+      category: canonical.category,
+      rootCauseClass: canonical.rootCauseClass,
+      severity: this.maxSeverity(stored.severity, canonical.severity),
+      confidence: this.maxConfidence(stored.confidence, canonical.confidence),
+      summary: canonical.summary,
+      operatorAction: canonical.operatorAction,
+    };
+  }
+
+  private preserveStoreOwnedMetadata(
+    storedMetadata: IncidentRecord['metadata'] | undefined,
+    currentMetadata: IncidentRecord['metadata'] | undefined,
+  ): IncidentRecord['metadata'] {
+    // Preserve store-owned metadata fields (Linear sync, lifecycle audit, recurrence tracking)
+    // while allowing detector metadata to be refreshed from the current canonical incident.
+    const storeOwned = {
+      linkedLinearId: storedMetadata?.linkedLinearId,
+      linkedLinearUrl: storedMetadata?.linkedLinearUrl,
+      lastSyncedAt: storedMetadata?.lastSyncedAt,
+      lastSyncedEvidenceRevision: storedMetadata?.lastSyncedEvidenceRevision,
+      syncCooldownUntil: storedMetadata?.syncCooldownUntil,
+      updateCount: storedMetadata?.updateCount,
+      syncErrors: storedMetadata?.syncErrors,
+      linearSyncConflict: storedMetadata?.linearSyncConflict,
+      seenEventKeys: storedMetadata?.seenEventKeys,
+      resolution: storedMetadata?.resolution,
+      recurrence: storedMetadata?.recurrence,
+    };
+    // Merge, with stored taking precedence for store-owned fields
+    return {
+      ...(currentMetadata ?? {}),
+      ...Object.fromEntries(
+        Object.entries(storeOwned)
+          .filter(([, v]) => v !== undefined)
+          .map(([k, v]) => [k, v])
+      ),
+    };
   }
 
   private mergeStoredRecords(records: IncidentRecord[]): IncidentRecord | undefined {

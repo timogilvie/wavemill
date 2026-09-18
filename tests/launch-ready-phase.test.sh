@@ -117,6 +117,7 @@ extract_function "$MONITOR_SCRIPT_FILE" "strip_ready_label_if_review_not_passed"
 extract_function "$MONITOR_SCRIPT_FILE" "ready_route_stamp_config_json" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "ready_route_stamp_enabled" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "ready_route_stamp_requires_complete" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "ready_current_github_head" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "set_ready_pass_labels" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "post_pr_reconciliation_config_json" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "post_pr_reconciliation_enabled" >> "$LAUNCH_FUNC_FILE"
@@ -164,6 +165,7 @@ run_launch_case() {
     STATE_DIR="$CASE_DIR/feature/ready"
     WT_DIR="$CASE_DIR/worktree"
     mkdir -p "$STATE_DIR" "$WT_DIR"
+    HANDOFF_CLAIM_COUNT_FILE="$CASE_DIR/handoff-claim-count"
     cat > "$STATE_DIR/.review-result.json" <<EOF
 {"stage":"review","status":"completed","artifacts":{"type":"review","prNumber":304,"exitCode":0,"verdict":"ready","iterations":1,"blockerCount":0,"warningCount":0}}
 EOF
@@ -278,17 +280,17 @@ EOF
         ;;
       infra_retry_error_tool)
         cat > "$STATE_DIR/.review-result.json" <<EOF
-{"stage":"review","status":"completed","agent":"codex","model":"gpt-5.5","artifacts":{"type":"review","prNumber":304,"exitCode":2,"verdict":"error","iterations":1,"blockerCount":0,"warningCount":0,"reviewToolError":"spawnSync /bin/bash ETIMEDOUT"}}
+{"stage":"review","status":"completed","agent":"codex","model":"gpt-5.6-terra","artifacts":{"type":"review","prNumber":304,"exitCode":2,"verdict":"error","iterations":1,"blockerCount":0,"warningCount":0,"reviewToolError":"spawnSync /bin/bash ETIMEDOUT"}}
 EOF
         ;;
       infra_retry_scope_unverifiable)
         cat > "$STATE_DIR/.review-result.json" <<EOF
-{"stage":"review","status":"completed","agent":"codex","model":"gpt-5.5","artifacts":{"type":"review","prNumber":304,"exitCode":1,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":1,"failureCategory":"review-scope-unverifiable","terminalReason":"review_complete"}}
+{"stage":"review","status":"completed","agent":"codex","model":"gpt-5.6-terra","artifacts":{"type":"review","prNumber":304,"exitCode":1,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":1,"failureCategory":"review-scope-unverifiable","terminalReason":"review_complete"}}
 EOF
         ;;
       verdictless_completed_recovery)
         cat > "$STATE_DIR/.review-result.json" <<EOF
-{"stage":"review","status":"completed","agent":"codex","model":"gpt-5.5","artifacts":{"type":"review","prNumber":304,"missingReviewEvidence":true}}
+{"stage":"review","status":"completed","agent":"codex","model":"gpt-5.6-terra","artifacts":{"type":"review","prNumber":304,"missingReviewEvidence":true}}
 EOF
         ;;
       missing_review_recovery)
@@ -296,7 +298,7 @@ EOF
         ;;
       verdictless_running_recovery)
         cat > "$STATE_DIR/.review-result.json" <<EOF
-{"stage":"review","status":"running","agent":"codex","model":"gpt-5.5","artifacts":{"type":"review","prNumber":304,"recoveryReplay":{"status":"running","preservesPriorVerdict":true}}}
+{"stage":"review","status":"running","agent":"codex","model":"gpt-5.6-terra","artifacts":{"type":"review","prNumber":304,"recoveryReplay":{"status":"running","preservesPriorVerdict":true}}}
 EOF
         ;;
       infra_retry_running_preserved_failure)
@@ -306,7 +308,7 @@ EOF
         ;;
       review_not_ready_no_category)
         cat > "$STATE_DIR/.review-result.json" <<EOF
-{"stage":"review","status":"completed","agent":"codex","model":"gpt-5.5","artifacts":{"type":"review","prNumber":304,"exitCode":1,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":0,"terminalReason":"review_complete"}}
+{"stage":"review","status":"completed","agent":"codex","model":"gpt-5.6-terra","artifacts":{"type":"review","prNumber":304,"exitCode":1,"verdict":"not_ready","iterations":1,"blockerCount":1,"warningCount":0,"terminalReason":"review_complete"}}
 EOF
         ;;
       dismissed_blockers_pass)
@@ -541,8 +543,18 @@ EOF
         printf "%s\n" "$(( $(cat "$READY_LABEL_COUNT_FILE") + 1 ))" > "$READY_LABEL_COUNT_FILE"
         case "$TEST_CASE" in
           ready_label_failure) return 1 ;;
+          tend_claims_during_ready_label)
+            printf "%s\n" "1" > "$HANDOFF_CLAIM_COUNT_FILE"
+            printf "%s\n" "{\"outcome\":\"tend-owned\",\"prNumber\":304}"
+            return 0
+            ;;
           *) printf "Canonicalized ready labels for PR #%s\n" "${3:-304}"; return 0 ;;
         esac
+      fi
+
+      if [[ "${2:-}" == "$TOOLS_DIR/ready-tend-handoff.ts" ]]; then
+        printf "%s\n" "{\"outcome\":\"published\",\"record\":{\"state\":\"ready-published\",\"token\":\"test-token\"}}"
+        return 0
       fi
 
       if [[ "${2:-}" == "$TOOLS_DIR/stamp-pr-route.ts" ]]; then
@@ -578,7 +590,7 @@ EOF
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"pending\",\"pendingReason\":\"challenge-comparison-pending\",\"pendingReasons\":[\"challenge-comparison-pending\"],\"implementationReady\":true,\"headSha\":\"abc123\",\"ciConclusion\":\"pass\",\"challenge\":{\"pairId\":\"HOK-1300\",\"side\":\"primary\",\"outcome\":\"comparison-pending\",\"primaryEval\":{\"ok\":true,\"evalId\":\"eval-1\"},\"challengerEval\":{\"ok\":true,\"evalId\":\"eval-2\"},\"staleComparisons\":0},\"checks\":[{\"name\":\"ci-status\",\"status\":\"pass\",\"message\":\"All CI checks passing\",\"details\":{\"totalChecks\":3}},{\"name\":\"ready-policy\",\"status\":\"pending\",\"message\":\"Challenge pair HOK-1300 has current-head evals but no comparison yet.\",\"details\":{\"pendingReason\":\"challenge-comparison-pending\",\"implementationReady\":true}}],\"timestamp\":\"2026-04-16T14:12:00.431Z\",\"summary\":\"Challenge pair HOK-1300 has current-head evals but no comparison yet.\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"BLOCKED\",\"attempts\":1}}"
           return 2
           ;;
-        pass_after_remediation|pass_clears_recheck|dismissed_blockers_pass|route_stamp_failure)
+        pass_after_remediation|pass_clears_recheck|dismissed_blockers_pass|route_stamp_failure|tend_claims_during_ready_label)
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"pass\",\"checks\":[{\"name\":\"ci-status\",\"status\":\"pass\",\"message\":\"All CI checks passing\",\"details\":{\"totalChecks\":3}}],\"timestamp\":\"2026-04-16T14:12:00.431Z\",\"summary\":\"All checks passed\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"attempts\":1}}"
           return 0
           ;;
@@ -662,6 +674,7 @@ EOF
     transient_count="$(cat "$STATE_DIR/.transient-mergeability-count" 2>/dev/null || echo "")"
     infra_retry_count="$(cat "$STATE_DIR/.retry-review-infra-recovery-count" 2>/dev/null || echo "")"
     ready_label_calls="$(cat "$READY_LABEL_COUNT_FILE" 2>/dev/null || echo "0")"
+    handoff_claims="$(cat "$HANDOFF_CLAIM_COUNT_FILE" 2>/dev/null || echo "0")"
     ready_result_payload=""
     [[ -f "$STATE_DIR/.ready-result.json" ]] && ready_result_payload=$(cat "$STATE_DIR/.ready-result.json")
 
@@ -673,6 +686,7 @@ EOF
     printf "rc=%s\nstage_calls=%s\nattention_calls=%s\nattention_count=%s\nlaunch_calls=%s\nreview_launch_calls=%s\nreview_launch_model=%s\nprepare_recovery_calls=%s\nagent_validate_calls=%s\nprompt_calls=%s\nerror_count=%s\nlogs=%s\nwarn_logs=%s\nerror_payload=%s\ndebug_file=%s\ndebug_lines=%s\ndebug_payload=%s\nconflict_attention_head=%s\nconflict_attention_reported=%s\nconflict_detected=%s\nneeds_attention=%s\ntransient_attention=%s\ntransient_count=%s\ninfra_retry_count=%s\nready_result_payload=%s\n" \
       "$rc" "$stage_summary" "$attention_summary" "$attention_count" "$LAUNCH_AGENT_CALLS" "$REVIEW_LAUNCH_CALLS" "${REVIEW_LAUNCH_MODEL:-}" "$PREPARE_RECOVERY_CALLS" "$AGENT_VALIDATE_CALLS" "$READY_PROMPT_CALLS" "$error_count" "$LOG_OUTPUT" "$LOG_WARN_OUTPUT" "$LOG_ERROR_OUTPUT" "$DEBUG_FILE" "$debug_line_count" "$debug_payload" "$conflict_attention_head" "$conflict_attention_reported" "$conflict_detected" "$needs_attention" "$transient_attention" "$transient_count" "$infra_retry_count" "$ready_result_payload"
     printf "ready_label_calls=%s\n" "$ready_label_calls"
+    printf "handoff_claims=%s\n" "$handoff_claims"
     printf "challenge_orch_calls=%s\n" "$CHALLENGE_ORCH_CALLS"
     printf "prompt_summary=%s\n" "$READY_PROMPT_SUMMARY"
     printf "phase_used=%s\n" "$LAUNCH_AGENT_PHASE"
@@ -711,7 +725,7 @@ run_watchdog_launch_case() {
     STATE_DIR="$CASE_DIR/feature/ready"
     WT_DIR="$CASE_DIR/worktree"
     mkdir -p "$STATE_DIR" "$WT_DIR"
-    printf "%s\n" "{\"stage\":\"ready\",\"status\":\"running\",\"startedAt\":\"2026-05-05T11:55:00.000Z\",\"finishedAt\":null,\"agent\":\"codex\",\"model\":\"gpt-5.5\",\"notes\":null,\"artifacts\":{\"type\":\"ready\",\"verdict\":\"fail\",\"prNumber\":304,\"checksRun\":3,\"checksPassed\":2,\"mergeConflict\":\"CLEAN\"}}" > "$STATE_DIR/.ready-result.json"
+    printf "%s\n" "{\"stage\":\"ready\",\"status\":\"running\",\"startedAt\":\"2026-05-05T11:55:00.000Z\",\"finishedAt\":null,\"agent\":\"codex\",\"model\":\"gpt-5.6-terra\",\"notes\":null,\"artifacts\":{\"type\":\"ready\",\"verdict\":\"fail\",\"prNumber\":304,\"checksRun\":3,\"checksPassed\":2,\"mergeConflict\":\"CLEAN\"}}" > "$STATE_DIR/.ready-result.json"
 
     WRITE_STAGE_CALLS=""
     READY_PROMPT_CALLS=0
@@ -726,7 +740,7 @@ run_watchdog_launch_case() {
       if [[ "$filter" == *".agent"* ]]; then
         printf "%s\n" "codex"
       elif [[ "$filter" == *".model"* ]]; then
-        printf "%s\n" "gpt-5.5"
+        printf "%s\n" "gpt-5.6-terra"
       elif [[ "$filter" == *".coderModel"* ]]; then
         printf "%s\n" "kimi-k2-thinking"
       else
@@ -1383,9 +1397,19 @@ check_contains "ready label failure returns failure" "$output" "rc=1"
 check_contains "ready label failure writes failed stage" "$output" "|ready|failed|"
 check_contains "ready label failure attempts label restore once" "$output" "ready_label_calls=1"
 check_contains "ready label failure keeps attention" "$output" "needs_attention=present"
-check_contains "ready label failure writes operator message" "$output" "Ready passed for PR #304, but updating wm:ready labels failed."
 check_contains "ready label failure records label update failure" "$output" "\"readyLabelsUpdated\":false"
-check_contains "ready label failure logs terse error" "$output" "Ready passed for HOK-1300 but failed to restore PR labels"
+check_contains "ready label failure records typed stage" "$output" "\"stage\":\"ready-label\""
+
+# HOK-3030 / PR #1426: Tend can claim the already-published exact head while
+# Ready is waiting for its final label write. That is a legal handoff, not a
+# false "failed to restore labels" result or a retry-consuming failure.
+output="$(run_launch_case tend_claims_during_ready_label)"
+check_contains "Tend interleave returns Ready success" "$output" "rc=0"
+check_contains "Tend interleave completes Ready" "$output" "|ready|completed|"
+check_contains "Tend interleave retains one legal claim" "$output" "handoff_claims=1"
+check_contains "Tend interleave persists claimed handoff" "$output" "\"readyTendHandoff\":\"tend-claimed\""
+check_contains "Tend interleave does not charge Ready retry" "$output" "recheck_files=absent,absent,absent,absent,absent"
+check_not_contains "Tend interleave has no false label failure" "$output" "failed to restore PR labels"
 
 output="$(run_launch_case clean_after_unknown)"
 check_contains "clean after unknown returns success" "$output" "rc=0"
@@ -1477,7 +1501,8 @@ check_contains "ready pass clears recheck budget files" "$output" "recheck_files
 output="$(run_launch_case route_stamp_failure)"
 check_contains "route stamp failure blocks ready" "$output" "rc=1"
 check_contains "route stamp failure writes failed stage result" "$output" "|ready|failed|"
-check_contains "route stamp failure records attention" "$output" "route metadata stamping failed"
+check_contains "route stamp failure records attention" "$output" "route-stamp transition failed"
+check_contains "route stamp failure records typed stage" "$output" "\"stage\":\"route-stamp\""
 
 echo "=== Watchdog Launch Helper ==="
 

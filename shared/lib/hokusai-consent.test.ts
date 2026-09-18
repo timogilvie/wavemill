@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import {
+  CONSENT_TEXT,
+  CURRENT_CONSENT_VERSION,
   disableSubmission,
   enableSubmission,
   getContributionStatus,
@@ -57,6 +59,33 @@ after(() => {
 });
 
 describe('hokusai-consent', () => {
+  describe('consent version and text (HOK-2787)', () => {
+    it('bumps the consent version for the September 2026 privacy boundary', () => {
+      assert.equal(CURRENT_CONSENT_VERSION, '1.1');
+    });
+
+    it('names the vendor-telemetry and reviewer-evidence exclusions in the consent text', () => {
+      assert.match(CONSENT_TEXT, /user email/i);
+      assert.match(CONSENT_TEXT, /organization id/i);
+      assert.match(CONSENT_TEXT, /account UUID/i);
+      assert.match(CONSENT_TEXT, /session\/account identifiers/i);
+      assert.match(CONSENT_TEXT, /transcript paths/i);
+      assert.match(CONSENT_TEXT, /provider request\/response payloads/i);
+      assert.match(CONSENT_TEXT, /reviewer evidence/i);
+      assert.match(CONSENT_TEXT, /remediation\s+patches/i);
+      assert.match(CONSENT_TEXT, /default-deny allowlist/i);
+    });
+
+    it('invalidates consent recorded under the previous version', () => {
+      const configDir = makeTempDir('hokusai-consent-config-');
+      saveUserConfig({
+        hokusai: { consentedAt: '2026-04-14T12:00:00.000Z', consentVersion: '1.0' },
+      }, configDir);
+
+      assert.equal(isConsentValid(CURRENT_CONSENT_VERSION, configDir), false);
+    });
+  });
+
   describe('loadUserConfig / saveUserConfig', () => {
     it('reads existing config correctly', () => {
       const configDir = makeTempDir('hokusai-consent-config-');

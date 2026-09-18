@@ -111,9 +111,9 @@ function makeReviewIntent(overrides: Partial<ChallengeExecutionIntent> = {}): Ch
       pairId,
       side: 'primary',
       challengeStage: 'review',
-      expectedStageModel: 'gpt-5.5',
+      expectedStageModel: 'gpt-5.6-terra',
       expectedStageAgent: 'codex',
-      expectedRoute: { planner: '', coder: '', reviewer: 'gpt-5.5', planDepth: '', codeDepth: '', reviewMode: '' },
+      expectedRoute: { planner: '', coder: '', reviewer: 'gpt-5.6-terra', planDepth: '', codeDepth: '', reviewMode: '' },
     },
     challenger: {
       pairId,
@@ -581,6 +581,7 @@ test('every TypeScript divergence reason is accepted by the eval JSON schema', (
     'state_vs_derived_side_mismatch',
     'operator_reroute',
     'missing_challenge_intent',
+    'multiple-varied-roles',
   ];
   for (const reason of reasons) {
     assert.equal(validateReason(reason), true, `schema rejects divergence reason ${reason}`);

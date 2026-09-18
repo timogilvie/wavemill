@@ -16,6 +16,7 @@ runTool({
     'repo-dir': { type: 'string', description: 'Repository directory (worktree)' },
     'feature-dir': { type: 'string', description: 'Task feature directory owning the baseline (default: derived from branch)' },
     'since-commit': { type: 'string', description: 'Task start commit (default: merge base against the integration branch)' },
+    'since-commit-source': { type: 'string', description: 'Source for --since-commit: launch-base or explicit (default: explicit)' },
     'head-ref': { type: 'string', description: 'Head ref for the baseline diff (default: HEAD)' },
     'integration-ref': { type: 'string', description: 'Integration ref for merge-base derivation (default: configured integration branch)' },
     json: { type: 'boolean', description: 'Emit machine-readable JSON' },
@@ -38,6 +39,7 @@ runTool({
         repoDir,
         featureDir,
         sinceCommit: args['since-commit'] as string | undefined,
+        sinceCommitSource: parseSinceCommitSource(args['since-commit-source'] as string | undefined),
         headRef: args['head-ref'] as string | undefined,
         integrationRef: args['integration-ref'] as string | undefined,
       });
@@ -48,6 +50,10 @@ runTool({
           `${result.created ? 'Created' : 'Kept existing'} review-scope baseline at ${result.baselinePath} `
           + `(${result.baseline.paths.length} path(s), since ${result.baseline.sinceCommit})`,
         );
+        console.log(
+          `Provenance: ${result.baseline.provenance ?? 'unknown'}`
+          + `${result.baseline.baseRef ? ` baseRef: ${result.baseline.baseRef}` : ''}`,
+        );
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -56,3 +62,13 @@ runTool({
     }
   },
 });
+
+function parseSinceCommitSource(value: string | undefined): 'launch-base' | 'explicit' | undefined {
+  if (!value) {
+    return undefined;
+  }
+  if (value === 'launch-base' || value === 'explicit') {
+    return value;
+  }
+  throw new Error(`--since-commit-source must be "launch-base" or "explicit" (got ${value})`);
+}

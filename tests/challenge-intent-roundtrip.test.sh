@@ -101,7 +101,9 @@ roundtrip() {
 
   STATE_FILE="$root/workflow-state.json"
   cat > "$STATE_FILE" <<JSON
-{"tasks":{"HOK-900":{"slug":"pair-slug","worktree":"$root/pair-slug","phase":"planning"},
+{"tasks":{"HOK-900":{"slug":"pair-slug","worktree":"$root/pair-slug","phase":"planning",
+                        "plannerModel":"bootstrap-planner","coderModel":"bootstrap-coder","reviewerModel":"bootstrap-reviewer",
+                        "planDepth":"light","codeDepth":"medium","reviewMode":"llm"},
           "HOK-900_c":{"slug":"pair-slug-challenger","worktree":"$root/pair-slug-challenger","phase":"planning"}}}
 JSON
 
@@ -203,7 +205,7 @@ done
 # the coding launch reads .phase-config.json, so a lost agent silently
 # downgrades the arm to the incumbent CLI.
 {
-  mapfile -t out < <(roundtrip "implementation" "challenger" "gpt-5.6-terra" "qwen-3-coder" "gpt-5.5")
+  mapfile -t out < <(roundtrip "implementation" "challenger" "gpt-5.6-terra" "qwen-3-coder" "gpt-5.6-terra")
   root="${out[0]}"
   feature_dir="${out[1]}"
   coding_model="$(jq -r '.coding.model' "$feature_dir/.phase-config.json")"

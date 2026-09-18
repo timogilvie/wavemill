@@ -29,6 +29,24 @@ partitioner, and how to refresh or extend any of them.
 invoking the partitioner, so plain `bash tests/run-unit-tests.sh` has no new
 dependencies.
 
+## Unit/custom registration coverage
+
+Scoped TypeScript tests (`*.test.ts` under `shared/`, `tools/`, and `src/`) are
+covered by the union of the unit runner's `TESTS` array and the custom runner's
+`CUSTOM_TS_TESTS` array. Each scoped TypeScript test must appear in exactly one
+of those two arrays: unit for normal `node --test` execution, or custom for the
+separate-process TSX harness.
+
+`tools/check-test-registration.ts` enforces that union coverage during
+preflight. It reports missing registrations, stale paths, within-suite
+duplicates, and an explicit cross-suite overlap diagnostic naming any file that
+appears in both `TESTS` and `CUSTOM_TS_TESTS`.
+
+Shell tests follow the same exclusivity principle between the shell suite and
+custom shell registry. `tests/agent-resolve-from-model.test.sh` belongs to the
+shell suite only; `CUSTOM_SH_TESTS` remains checked for duplicate and missing
+files when populated.
+
 ## Timing artifacts
 
 Both runners accept `--timing-out FILE` (or the `TIMING_OUTPUT` env var) and
@@ -88,10 +106,9 @@ registered lists from the runners, and the manifest, then fails when:
   unless a single named indivisible test alone exceeds the bound (REQ-F3) —
   that exception is printed and allowed.
 
-`tools/check-test-registration.ts` additionally enforces unit
-discovery-completeness (every `*.test.ts` under `shared/`, `tools/`, `src/`
-registered exactly once) and custom-harness hygiene (no duplicate entries, no
-entries whose files are missing).
+`tools/check-test-registration.ts` additionally enforces scoped TypeScript
+discovery-completeness across the unit/custom union and custom-harness hygiene
+(no duplicate entries, no entries whose files are missing).
 
 ## Shard-count decision rule
 

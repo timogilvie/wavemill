@@ -70,7 +70,7 @@ stub_launch_ok() {
 }
 
 stub_launch_fail() {
-  echo "Error: invalid model selector 'gpt-5.5' for codex" >&2
+  echo "Error: invalid model selector 'gpt-5.6-terra' for codex" >&2
   return 1
 }
 
@@ -100,7 +100,7 @@ reset_capture
 rc=0
 _run_phase_launch coding stub_launch_fail 2>/dev/null || rc=$?
 check_eq "failed launch preserves rc" "$rc" "1"
-check_contains "failed launch warn carries real error" "$WARN_LOG" "Error: invalid model selector 'gpt-5.5' for codex"
+check_contains "failed launch warn carries real error" "$WARN_LOG" "Error: invalid model selector 'gpt-5.6-terra' for codex"
 check_contains "failed launch warn names the phase" "$WARN_LOG" "coding-launch stderr:"
 
 # --- failure: stderr is still replayed to the caller -------------------------

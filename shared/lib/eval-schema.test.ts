@@ -786,7 +786,7 @@ function validPromptSizeDiagnostic() {
 }
 
 test('SCHEMA_VERSION is bumped for eval schema updates', () => {
-  assert.equal(SCHEMA_VERSION, '1.49.0');
+  assert.equal(SCHEMA_VERSION, '1.50.0');
 });
 
 function validReviewIdentitySet() {
@@ -2471,8 +2471,8 @@ test('Wavemill router fields validate and schema stays in parity', () => {
   assert.equal(properties.wavemill_router_scoring?.$ref, '#/$defs/WavemillRouterScoringMetadata');
 });
 
-test('Schema version constant is 1.49.0', () => {
-  assert.equal(SCHEMA_VERSION, '1.49.0');
+test('Schema version constant is 1.50.0', () => {
+  assert.equal(SCHEMA_VERSION, '1.50.0');
 });
 
 test('Record with an unknown_attribution intervention validates (HOK-2894)', () => {
@@ -2971,6 +2971,51 @@ test('Malformed task_scorer_result is rejected', () => {
     },
   } as unknown as Record<string, unknown>;
   assert.equal(validateAgainstSchema(unknownNested).valid, false);
+});
+
+test('Record with subagent_model_economics_policy validates', () => {
+  const record = {
+    ...scenarios[0].record,
+    schemaVersion: SCHEMA_VERSION,
+    wavemill_router_scoring: {
+      scorer_id: 'hokusai.scorers.wavemill.success_rate_under_budget:v1',
+      measurement_policy: 'subagent_model_economics_shadow',
+    },
+    subagent_model_economics_policy: {
+      schemaVersion: '1.0.0',
+      policy: 'subagent_model_economics_shadow',
+      generatedAt: '2026-09-01T00:00:00.000Z',
+      summary: {
+        totalWorkflows: 1,
+        eligibleWorkflows: 1,
+      },
+      workflows: [
+        {
+          evidenceKind: 'observational',
+          abstentionReasons: [],
+        },
+      ],
+      recommendation: {
+        gate: 'collect_more_data',
+        reasons: ['No paired replay evidence is available.'],
+      },
+    },
+  } as unknown as Record<string, unknown>;
+  const result = validateAgainstSchema(record);
+  assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
+});
+
+test('Malformed subagent_model_economics_policy is rejected', () => {
+  const record = {
+    ...scenarios[0].record,
+    schemaVersion: SCHEMA_VERSION,
+    subagent_model_economics_policy: {
+      schemaVersion: '1.0.0',
+      policy: 'enforced_model_policy',
+    },
+  } as unknown as Record<string, unknown>;
+
+  assert.equal(validateAgainstSchema(record).valid, false);
 });
 
 // ────────────────────────────────────────────────────────────────

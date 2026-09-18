@@ -127,6 +127,11 @@ log_warn() {
   append_status_log "$formatted" || echo "$formatted" >&2
 }
 
+render_unknown_input_for_log() {
+  local payload="$1"
+  printf '%q' "$payload"
+}
+
 replay_route_transparency_logs() {
   local stderr_file="$1"
   [[ -s "$stderr_file" ]] || return 0
@@ -7144,16 +7149,29 @@ $issue_desc
 # deliverable, so a missing baseline degrades scope narrowing, not liveness.
 ensure_review_scope_baseline() {
   local issue="$1" worktree="$2" feature_dir="$3"
-  local out rc=0
+  local out rc=0 launch_base="" launch_base_branch="" extra_args=()
   if [[ ! -d "$feature_dir" ]]; then
     log_warn "$issue → review-scope baseline skipped: feature dir missing ($feature_dir)"
     return 1
   fi
+  if [[ -n "${STATE_FILE:-}" && -f "${STATE_FILE:-}" ]]; then
+    launch_base="$(jq -r --arg issue "$issue" '.tasks[$issue].lifecycle.launchContract.baseSha // empty' "$STATE_FILE" 2>/dev/null || true)"
+    launch_base_branch="$(jq -r --arg issue "$issue" '.tasks[$issue].lifecycle.launchContract.baseBranch // .tasks[$issue].baseBranch // empty' "$STATE_FILE" 2>/dev/null || true)"
+  fi
+  if [[ "$launch_base" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+    extra_args+=(--since-commit "$launch_base" --since-commit-source launch-base)
+  fi
+  if [[ -n "$launch_base_branch" ]]; then
+    extra_args+=(--integration-ref "origin/$launch_base_branch")
+  fi
   out="$(wavemill_run_tsx_tool "$TOOLS_DIR/write-review-scope-baseline.ts" \
-    --repo-dir "$worktree" --feature-dir "$feature_dir" 2>&1)" || rc=$?
+    --repo-dir "$worktree" --feature-dir "$feature_dir" "${extra_args[@]}" 2>&1)" || rc=$?
   if (( rc != 0 )); then
     log_warn "$issue → review-scope baseline not materialized (guard falls back to merge-base scope): $(printf '%s' "$out" | tail -n 2 | tr '\n' ' ')"
     return 1
+  fi
+  if declare -F log >/dev/null 2>&1; then
+    log info "$issue → $(printf '%s' "$out" | tail -n 1)"
   fi
   return 0
 }
@@ -8662,6 +8680,7 @@ review_result_infra_failure() {
       (($review.failureCategory // "") == "review-scope-unverifiable") or
       (($review.failureCategory // "") == "native-context-window-exceeded") or
       (($review.failureCategory // "") == "provider-credit-exhausted") or
+      (($review.failureCategory // "") == "native-review-timeout") or
       ((($review.verdict // "") == "error") and ((($review.reviewToolError // "") | tostring | length) > 0))
     )
   ' "$review_file" >/dev/null 2>&1
@@ -8728,10 +8747,62 @@ review_infra_recovery_next_action() {
     provider-credit-exhausted)
       printf 'provider credits were exhausted and did not recover within the retry budget. Top up credits, then manual re-review required'
       ;;
+    native-review-timeout)
+      printf 'native review exhausted its wall-clock budget after escalated retries, challenger arms forfeit, otherwise manual re-review required'
+      ;;
     *)
       printf 'manual re-review required'
       ;;
   esac
+}
+
+review_result_native_timeout_identity() {
+  local feature_dir="$1"
+  local review_file="$feature_dir/.review-result.json"
+  [[ -f "$review_file" ]] || { printf 'unknown-timeout-input\n'; return 0; }
+  jq -r '
+    (.artifacts // {}) as $artifacts
+    | (if ($artifacts.type // "") == "review" then $artifacts else ($artifacts.review // {}) end) as $review
+    | [
+        ($review.reviewHeadSha // ""),
+        (($review.effectiveNativeTimeoutMs // "") | tostring),
+        (($review.reviewInputDiffBytes // "") | tostring),
+        (($review.reviewInputTaskPacketBytes // "") | tostring),
+        (($review.reviewInputFileCount // "") | tostring),
+        ($review.reviewExecutedIdentity.substantiveAnalysis.resolvedModel // $review.reviewExecutedIdentity.orchestrator.resolvedModel // ""),
+        ($review.reviewExecutedIdentity.substantiveAnalysis.agent // $review.reviewExecutedIdentity.orchestrator.agent // "")
+      ] | join(":")
+  ' "$review_file" 2>/dev/null || printf 'unknown-timeout-input\n'
+}
+
+review_recovery_timeout_state_path() {
+  printf '%s\n' "$1/.review-infra-recovery.json"
+}
+
+review_recovery_write_timeout_state() {
+  local feature_dir="$1" attempt="$2" category="$3"
+  local review_file="$feature_dir/.review-result.json"
+  local prior base max multiplier next timeout_path
+  [[ "$category" == "native-review-timeout" ]] || return 0
+  prior="$(jq -r '(.artifacts // {}) as $a | (if ($a.type // "") == "review" then $a else ($a.review // {}) end).effectiveNativeTimeoutMs // 300000' "$review_file" 2>/dev/null || echo 300000)"
+  base="$(jq -r '(.artifacts // {}) as $a | (if ($a.type // "") == "review" then $a else ($a.review // {}) end).nativeTimeoutBaseMs // 300000' "$review_file" 2>/dev/null || echo 300000)"
+  max="$(jq -r '(.artifacts // {}) as $a | (if ($a.type // "") == "review" then $a else ($a.review // {}) end).nativeTimeoutMaxMs // 1200000' "$review_file" 2>/dev/null || echo 1200000)"
+  multiplier="$(jq -r '(.artifacts // {}) as $a | (if ($a.type // "") == "review" then $a else ($a.review // {}) end).nativeTimeoutMultiplier // 2' "$review_file" 2>/dev/null || echo 2)"
+  [[ "$prior" =~ ^[0-9]+$ ]] || prior=300000
+  [[ "$base" =~ ^[0-9]+$ ]] || base=300000
+  [[ "$max" =~ ^[0-9]+$ ]] || max=1200000
+  [[ "$multiplier" =~ ^[0-9]+$ && "$multiplier" -ge 1 ]] || multiplier=2
+  next=$(( prior * multiplier ))
+  (( next > max )) && next="$max"
+  timeout_path="$(review_recovery_timeout_state_path "$feature_dir")"
+  jq -n \
+    --argjson attempt "$attempt" \
+    --argjson effectiveNativeTimeoutMs "$next" \
+    --argjson nativeTimeoutBaseMs "$base" \
+    --argjson nativeTimeoutMaxMs "$max" \
+    --argjson nativeTimeoutMultiplier "$multiplier" \
+    '{schemaVersion:1, category:"native-review-timeout", nativeTimeoutAttempt:$attempt, effectiveNativeTimeoutMs:$effectiveNativeTimeoutMs, nativeTimeoutBaseMs:$nativeTimeoutBaseMs, nativeTimeoutMaxMs:$nativeTimeoutMaxMs, nativeTimeoutMultiplier:$nativeTimeoutMultiplier, recordedAt:(now|todateiso8601)}' \
+    > "$timeout_path" 2>/dev/null || true
 }
 
 select_context_window_recovery_reviewer() {
@@ -9014,6 +9085,13 @@ review_recovery_coordinator_locked() {
         failure_reason="Review infrastructure recovery exhausted after $(bounded_retry_count "$feature_dir" "review-infra-recovery") attempt(s) for PR #$pr_number (category=${category}); $(review_infra_recovery_next_action "$category")"
         bounded_retry_mark_exhausted "$feature_dir" "review-infra-recovery" "$failure_reason" || true
         write_ready_attention_file "$feature_dir" "Review failed on infrastructure (${category}) for PR #$pr_number, $(review_infra_recovery_next_action "$category")."
+        if [[ "$category" == "native-review-timeout" && "$(_challenge_side_for_issue "$issue" 2>/dev/null || true)" == "challenger" ]]; then
+          challenge_abort_pair "$issue" "$feature_dir" "" "review" "$reviewer_model" \
+            "review_timeout_exhausted" \
+            "Challenger review timed out after bounded retries for model ${reviewer_model}; attempts=$(bounded_retry_count "$feature_dir" "review-infra-recovery")" \
+            "the challenger forfeits this reviewer-stage challenge, sibling may proceed" \
+            "single" || true
+        fi
         review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
         return 1
         ;;
@@ -9022,6 +9100,7 @@ review_recovery_coordinator_locked() {
         ;;
     esac
     retry_number=$(bounded_retry_increment "$feature_dir" "review-infra-recovery" "$retry_identity")
+    review_recovery_write_timeout_state "$feature_dir" "$retry_number" "$category" || true
   fi
 
   if [[ "$allow_context_reroute" == "true" ]]; then
@@ -9106,7 +9185,7 @@ review_recovery_coordinator_locked() {
 
 relaunch_review_after_infra_recovery() {
   local issue="$1" slug="$2" title="$3" wt_dir="$4" branch="$5" base_branch="$6" pr_number="$7" state_dir="$8"
-  local category recorded_head current_head identity
+  local category recorded_head current_head identity timeout_identity reviewer_identity
   local retry_limit effective_retry_limit rc=0
   local scope_note="" reroute_note=""
   local context_overflow_current_scope="false"
@@ -9118,7 +9197,16 @@ relaunch_review_after_infra_recovery() {
   category="$(review_infra_recovery_category_label "$state_dir")"
   recorded_head="$(review_result_review_head_sha "$state_dir")"
   current_head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || echo "")"
-  identity="${current_head}:${category}"
+  reviewer_identity="$(jq -r '(.artifacts // {}) as $a | (if ($a.type // "") == "review" then $a else ($a.review // {}) end) | [
+    (.reviewExecutedIdentity.substantiveAnalysis.resolvedModel // .reviewExecutedIdentity.orchestrator.resolvedModel // ""),
+    (.reviewExecutedIdentity.substantiveAnalysis.agent // .reviewExecutedIdentity.orchestrator.agent // "")
+  ] | join("/")' "$state_dir/.review-result.json" 2>/dev/null || echo "")"
+  if [[ "$category" == "native-review-timeout" ]]; then
+    timeout_identity="$(review_result_native_timeout_identity "$state_dir")"
+    identity="${current_head}:${recorded_head}:${category}:${reviewer_identity}:${timeout_identity}"
+  else
+    identity="${current_head}:${category}"
+  fi
 
   retry_limit="${WAVEMILL_REVIEW_INFRA_RETRY_MAX:-2}"
   [[ "$retry_limit" =~ ^[0-9]+$ ]] || retry_limit=2
@@ -9328,6 +9416,7 @@ set_ready_pass_labels() {
   local pr_number="$2"
   local feature_dir="${3:-}"
   local issue="${4:-}"
+  local head_sha="${5:-}"
 
   if [[ -z "$feature_dir" ]]; then
     feature_dir="$wt_dir/features/$(basename "$wt_dir")"
@@ -9344,18 +9433,44 @@ set_ready_pass_labels() {
       stamp_args=(--require-complete)
     fi
     if [[ -z "$issue" ]]; then
-      write_ready_attention_file "$feature_dir" "Ready passed for PR #$pr_number, but route metadata could not be stamped because the issue id is unknown."
-      (cd "$wt_dir" && gh pr edit "$pr_number" --remove-label "wm:ready") >/dev/null 2>&1 || true
+      printf '%s\n' '{"transitionFailure":{"stage":"route-stamp","detail":"issue id is unknown"}}' >&2
       return 1
     fi
     if ! (cd "$wt_dir" && npx tsx "$TOOLS_DIR/stamp-pr-route.ts" "$pr_number" --issue "$issue" --feature-dir "$feature_dir" "${stamp_args[@]}"); then
-      write_ready_attention_file "$feature_dir" "Ready passed for PR #$pr_number, but route metadata stamping failed. Re-run tools/stamp-pr-route.ts with --issue $issue and inspect stage-result evidence."
-      (cd "$wt_dir" && gh pr edit "$pr_number" --remove-label "wm:ready") >/dev/null 2>&1 || true
+      printf '%s\n' '{"transitionFailure":{"stage":"route-stamp"}}' >&2
       return 1
     fi
   fi
 
-  (cd "$wt_dir" && npx tsx "$TOOLS_DIR/set-pr-ready-label.ts" "$pr_number" --marker-root "$REPO_DIR")
+  if [[ -z "$head_sha" ]]; then
+    # The normal path supplies GitHub's fresh head. This fallback preserves
+    # compatibility for older Ready tool output while still never inventing a
+    # token when even the checkout has no resolvable commit.
+    head_sha=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)
+    if [[ -z "$head_sha" ]]; then
+      printf '%s\n' '{"transitionFailure":{"stage":"ownership-changed","detail":"current GitHub head is unavailable"}}' >&2
+      return 1
+    fi
+  fi
+  if ! (cd "$wt_dir" && npx tsx "$TOOLS_DIR/ready-tend-handoff.ts" checked "$pr_number" --feature-dir "$feature_dir" --head "$head_sha"); then
+    printf '%s\n' '{"transitionFailure":{"stage":"ownership-changed"}}' >&2
+    return 1
+  fi
+  # Publish before exposing wm:ready. Tend can claim this exact PR/head while
+  # this label operation is in flight, and the label helper preserves the claim.
+  if ! (cd "$wt_dir" && npx tsx "$TOOLS_DIR/ready-tend-handoff.ts" publish "$pr_number" --feature-dir "$feature_dir" --head "$head_sha"); then
+    printf '%s\n' '{"transitionFailure":{"stage":"ownership-changed"}}' >&2
+    return 1
+  fi
+  if ! (cd "$wt_dir" && npx tsx "$TOOLS_DIR/set-pr-ready-label.ts" "$pr_number" --marker-root "$REPO_DIR" --feature-dir "$feature_dir" --head "$head_sha"); then
+    printf '%s\n' '{"transitionFailure":{"stage":"ready-label"}}' >&2
+    return 1
+  fi
+}
+
+ready_current_github_head() {
+  local wt_dir="$1" pr_number="$2"
+  (cd "$wt_dir" && gh pr view "$pr_number" --json headRefOid --jq '.headRefOid') 2>/dev/null || true
 }
 
 _launch_ready_remediation_attempt() {
@@ -9525,6 +9640,21 @@ launch_ready_watchdog_remediation() {
   remediation_launch_head=$(ready_remediation_launch_head "$state_dir")
   ready_status=$(read_stage_status "$state_dir" "ready")
   ready_result_file="$state_dir/.ready-result.json"
+
+  # GitHub is authoritative: local task worktrees can lag a pushed PR head.
+  local remote_ready_head
+  remote_ready_head=$(ready_current_github_head "$wt_dir" "$pr_number")
+  if [[ -n "$remote_ready_head" ]]; then
+    if [[ -n "$ready_head_sha" && "$ready_head_sha" != "$remote_ready_head" ]]; then
+      bounded_retry_reset_if_new_head "$state_dir" "ready-remediation" "$remote_ready_head"
+      bounded_retry_reset_if_new_head "$state_dir" "pending-ready-recheck" "$remote_ready_head"
+      write_stage_result "$state_dir" "ready" "running" "$current_agent" "$current_model" \
+        "PR #$pr_number changed head while Ready was finalizing, rechecking current GitHub head" \
+        "$(jq -cn --argjson pr "$pr_number" --arg head "$remote_ready_head" '{type:"ready",verdict:"pending",prNumber:$pr,readyHeadSha:$head,pendingReason:"head-changed"}')"
+      return 4
+    fi
+    ready_head_sha="$remote_ready_head"
+  fi
   checks_run=$(jq -r '.artifacts.checksRun // 0' "$ready_result_file" 2>/dev/null || echo "0")
   checks_passed=$(jq -r '.artifacts.checksPassed // 0' "$ready_result_file" 2>/dev/null || echo "0")
   merge_status=$(jq -r '.artifacts.mergeConflict // "UNKNOWN"' "$ready_result_file" 2>/dev/null || echo "UNKNOWN")
@@ -9838,9 +9968,16 @@ launch_ready_phase() {
   clear_transient_mergeability_state "$state_dir"
 
   if [[ "$ready_rc" -eq 0 ]]; then
-    local main_sha completed_artifacts_json label_failed_artifacts_json
+    local main_sha completed_artifacts_json label_failed_artifacts_json label_output transition_stage transition_output transition_failure_json
     main_sha=$(get_main_head_sha "$wt_dir" "$base_branch")
-    if ! set_ready_pass_labels "$wt_dir" "$pr_number" "$state_dir" "$issue" >/dev/null 2>&1; then
+    if ! label_output=$(set_ready_pass_labels "$wt_dir" "$pr_number" "$state_dir" "$issue" "$ready_head_sha" 2>&1); then
+      transition_stage=$(printf '%s' "$label_output" | jq -r '.transitionFailure.stage // empty' 2>/dev/null | tail -n 1)
+      [[ -n "$transition_stage" ]] || transition_stage="github-api"
+      transition_output=$(printf '%s' "$label_output" | sed -E \
+        -e 's/(gh[pousr]_[[:alnum:]_]{12,}|github_pat_[[:alnum:]_]{12,})/[REDACTED:github-token]/g' \
+        -e 's/([Aa][Pp][Ii]_?[Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt])=[^[:space:]]+/\1=[REDACTED]/g' | head -c 2000)
+      transition_failure_json=$(jq -cn --arg stage "$transition_stage" --arg stderr "$transition_output" \
+        '{stage:$stage,stderr:$stderr,redacted:($stderr | test("REDACTED")),truncated:($stderr | length >= 2000)}')
       label_failed_artifacts_json=$(jq -cn \
         --arg verdict "${verdict:-unknown}" \
         --arg merge_status "${merge_status:-UNKNOWN}" \
@@ -9851,7 +9988,8 @@ launch_ready_phase() {
         --arg ready_head_sha "$ready_head_sha" \
         --arg ci_conclusion "$ci_conclusion" \
         --arg required_source "$required_source" \
-        --argjson required_contexts "$required_contexts_json" '
+        --argjson required_contexts "$required_contexts_json" \
+        --argjson transition_failure "$transition_failure_json" '
           {
             type:"ready",
             verdict:$verdict,
@@ -9864,18 +10002,21 @@ launch_ready_phase() {
             readyHeadSha:$ready_head_sha,
             ciConclusion:$ci_conclusion,
             requiredSource:$required_source,
-            requiredContexts:$required_contexts
+            requiredContexts:$required_contexts,
+            transitionFailure:$transition_failure
           } | with_entries(select(.value != ""))
         ')
       label_failed_artifacts_json=$(merge_queue_enrich_ready_artifacts "$state_dir" "$label_failed_artifacts_json" "candidate-progress")
       write_stage_result "$state_dir" "ready" "failed" "$current_agent" "$current_model" \
-        "Ready passed but failed to restore PR labels" \
+        "Ready passed but failed at ${transition_stage}" \
         "$label_failed_artifacts_json"
-      write_ready_attention_file "$state_dir" "Ready passed for PR #$pr_number, but updating wm:ready labels failed."
-      log_error "  Ready passed for $issue but failed to restore PR labels"
+      write_ready_attention_file "$state_dir" "Ready passed for PR #$pr_number, but the ${transition_stage} transition failed. ${transition_output:0:500}"
+      log_error "  Ready passed for $issue but ${transition_stage} transition failed"
       return 1
     fi
 
+    local handoff_outcome=""
+    [[ "$label_output" == *'"outcome":"tend-owned"'* ]] && handoff_outcome="tend-owned"
     completed_artifacts_json=$(jq -cn \
       --arg verdict "${verdict:-unknown}" \
       --arg merge_status "${merge_status:-UNKNOWN}" \
@@ -9886,7 +10027,8 @@ launch_ready_phase() {
       --arg ready_head_sha "$ready_head_sha" \
       --arg ci_conclusion "$ci_conclusion" \
       --arg required_source "$required_source" \
-      --argjson required_contexts "$required_contexts_json" '
+      --argjson required_contexts "$required_contexts_json" \
+      --arg handoff_outcome "$handoff_outcome" '
         {
           type:"ready",
           verdict:$verdict,
@@ -9899,7 +10041,8 @@ launch_ready_phase() {
           readyHeadSha:$ready_head_sha,
           ciConclusion:$ci_conclusion,
           requiredSource:$required_source,
-          requiredContexts:$required_contexts
+          requiredContexts:$required_contexts,
+          readyTendHandoff: (if $handoff_outcome == "" then "ready-published" else "tend-claimed" end)
         } | with_entries(select(.value != ""))
       ')
     completed_artifacts_json=$(merge_queue_enrich_ready_artifacts "$state_dir" "$completed_artifacts_json" "completed")
@@ -10883,6 +11026,11 @@ maybe_run_challenge_eval() {
   challenge_aborted=$(read_state_value "" --arg i "$issue" '.tasks[$i].challengeAborted // empty')
   if [[ "$task_status" == "aborted" || ( -n "$challenge_aborted" && -z "$pr" ) ]]; then
     log "debug" "challenge eval skipped for $issue: aborted/no-PR arm"
+    return 0
+  fi
+  local review_feature_dir="${WORKTREE_ROOT}/${slug}/features/${slug}"
+  if [[ -f "$review_feature_dir/.review-result.json" ]] && ! review_result_has_final_evidence "$review_feature_dir"; then
+    log "debug" "challenge eval skipped for $issue: review produced no final evidence"
     return 0
   fi
   eval_completed=$(read_state_value "false" --arg i "$issue" '.tasks[$i].evalCompleted // false')
@@ -14843,7 +14991,7 @@ execute_or_defer_monitor_command() {
       MONITOR_COMMAND_STATUS="handled"
       ;;
     unknown\ *)
-      log_warn "Unknown input: ${event#unknown }"
+      log_warn "Unknown input: $(render_unknown_input_for_log "${event#unknown }")"
       MONITOR_COMMAND_STATUS="invalid"
       ;;
     enter)
@@ -18116,7 +18264,7 @@ while :; do
           execute_or_defer_monitor_command "new" "$REPLY" "$MONITOR_PHASE_C_REPLY_OFFSET" "$free_slots" "$queue_plan_json" "$avail_unblocked" "$avail_blocked" "$select_from"
           MONITOR_PHASE_C_REPLY_OFFSET=""
         elif [[ "$REPLY" =~ ^unknown\  ]]; then
-          log_warn "Unknown input: ${REPLY#unknown }"
+          log_warn "Unknown input: $(render_unknown_input_for_log "${REPLY#unknown }")"
         elif [[ "$REPLY" == "enter" ]]; then
           if [[ "${ENTER_LAUNCHES_WAVE:-true}" == "true" ]]; then
             wave_plan_json="${queue_plan_json:-$QUEUE_PLAN_CACHE}"
