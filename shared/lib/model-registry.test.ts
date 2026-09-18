@@ -2800,11 +2800,9 @@ describe('canonical supported-model helpers', () => {
     assert.notEqual(planningReason, 'context-window-insufficient', 'kimi-k2 should be eligible for planning');
   });
 
-  it('mistral-large-2 clears the coding floor after the 2512 repoint', () => {
-    // HOK-2947 repointed mistral-large-2 to mistralai/mistral-large-2512
-    // (262,144 tokens), which clears the 144,384 coding floor.
+  it('mistral-large-2 is blocked after its 2512 endpoint disappeared', () => {
     const reason = explainModelSupportExclusion('mistral-large-2', 'coding');
-    assert.equal(reason, undefined, 'mistral-large-2 should be codeable after the repoint');
+    assert.equal(reason, 'blocked-lifecycle');
   });
 
   // The long-blocked/stale aliases were removed outright by HOK-2947;
@@ -2827,7 +2825,7 @@ describe('canonical supported-model helpers', () => {
     // But kimi-k2 should still be eligible for planning
     const planningModels = listSupportedModelsForStage('planning');
     assert.ok(planningModels.includes('kimi-k2'), 'kimi-k2 should be in planning models');
-    assert.ok(planningModels.includes('mistral-large-2'), 'mistral-large-2 should be in planning models');
+    assert.ok(!planningModels.includes('mistral-large-2'), 'blocked mistral-large-2 should not be in planning models');
   });
 
   // REQ-F2: floors are configurable via .wavemill-config.json. A configured

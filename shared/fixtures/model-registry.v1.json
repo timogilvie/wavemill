@@ -1224,12 +1224,12 @@
             "model": "mistral-large-2512",
             "suiteVersion": "v3"
           },
-          "lifecycle": "supported",
+          "lifecycle": "blocked",
           "compatibilityFlags": {
             "thinkingFormat": "openrouter"
           },
-          "launchEligible": true,
-          "routingEligible": true
+          "launchEligible": false,
+          "routingEligible": false
         }
       }
     },
@@ -2957,7 +2957,7 @@
       "wavemillAlias": "mistral-large-2",
       "openrouterId": "mistralai/mistral-large-2512",
       "family": "mistral",
-      "status": "active",
+      "status": "deprecated",
       "priorityTier": 2,
       "roleEligibility": [
         "planning",
