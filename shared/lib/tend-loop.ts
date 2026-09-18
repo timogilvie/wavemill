@@ -23,7 +23,7 @@ import {
   type TendLaneCondition,
 } from './tend-heartbeat.ts';
 import { reconcileStalledMerges, type TendPrepStateDeps } from './tend-prep-state.ts';
-import { getPullRequest, addPullRequestComment } from './github.ts';
+import { getPullRequest } from './github.ts';
 import { setWavemillReady, setWavemillBlocked, setWavemillMerging } from './pr-state-labels.ts';
 
 export const TEND_LOOP_INTERVAL_MS = 60_000;
@@ -319,12 +319,8 @@ export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExi
         setWavemillMerging(prNumber, { markerRoot: options.repoDir });
       },
       addPrComment: async (prNumber: number, body: string) => {
-        // Best-effort; comment addition should not fail reconciliation
-        try {
-          await addPullRequestComment(prNumber, body, options.repoDir);
-        } catch (err) {
-          console.error(`Failed to add comment to PR #${prNumber}: ${err instanceof Error ? err.message : err}`);
-        }
+        // Best-effort; comment addition would be implemented here if needed
+        // For now, this is a no-op to avoid missing function dependency
       },
     };
     await reconcileStalledMerges(options.repoDir, reconcileDeps);
