@@ -1056,14 +1056,20 @@ function filterProviderPool(
   const deepSeekFiltered = filterDeepSeekModels(filterDisabledModels(models), repoDir, stage);
   const openRouterFiltered = filterOpenRouterModels(deepSeekFiltered.models, repoDir, stage);
   const registry = getEffectiveRegistry(repoDir);
+  const routingRejected = openRouterFiltered.models.filter((modelId) =>
+    registry.models[modelId]?.supportedModel?.routingEligible === false
+  );
   const codexRejected = openRouterFiltered.models.filter((modelId) => {
     const capabilities = registry.models[modelId];
     return capabilities?.agent === 'codex' && !isCodexChatgptLaunchEligible(capabilities);
   });
   return {
-    models: openRouterFiltered.models.filter((modelId) => !codexRejected.includes(modelId)),
+    models: openRouterFiltered.models.filter((modelId) =>
+      !routingRejected.includes(modelId) && !codexRejected.includes(modelId)
+    ),
     warnings: [
       ...mergePoolWarnings(deepSeekFiltered, openRouterFiltered),
+      ...routingRejected.map((modelId) => `Excluded ${modelId}: global model projection declares it ineligible for routing.`),
       ...codexRejected.map((modelId) => `Excluded ${modelId}: global model projection declares it ineligible for the codex-chatgpt launch surface.`),
     ],
   };
