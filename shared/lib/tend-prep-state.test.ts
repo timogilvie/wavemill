@@ -6,7 +6,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   readInflightMarker,
@@ -426,6 +426,7 @@ test('tend-prep-state: pre-mutation marker with exhausted retry budget blocks PR
 
     // Create the exhausted marker to simulate that retries are exhausted
     const stateDir = mergeLaneStateDir(prNumber, tmpDir);
+    mkdirSync(stateDir, { recursive: true });
     const exhaustedPath = join(stateDir, '.retry-tend-prep-recovery-exhausted');
     writeFileSync(exhaustedPath, 'Test exhaustion reason');
 
@@ -481,6 +482,12 @@ test('tend-prep-state: reconciliation terminates leaked process group (activePgi
     const originalKill = process.kill;
     process.kill = ((pgid: number, signal?: string) => {
       killCalls.push([pgid, signal || '']);
+      // Simulate dead process for alive check (signal 0)
+      if (signal === 0 && pgid === 99887) {
+        const err = new Error('No such process') as NodeJS.ErrnoException;
+        err.code = 'ESRCH';
+        throw err;
+      }
       // Don't actually kill anything; just track the call
       return true;
     }) as any;
