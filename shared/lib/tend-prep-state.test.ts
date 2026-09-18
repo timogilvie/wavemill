@@ -406,6 +406,55 @@ test('tend-prep-state: markRecoveryUncertain flags uncertain state', async () =>
   }
 });
 
+// T8: Pre-mutation marker, retry budget exhausted → wm:blocked
+test('tend-prep-state: pre-mutation marker with exhausted retry budget blocks PR', async () => {
+  const tmpDir = mkdtempSync('/tmp/tend-prep-state-test-');
+  try {
+    const prNumber = 2500;
+    const record: TendInflightRecord = {
+      version: 1,
+      prNumber,
+      headBranch: 'main',
+      headSha: 'exhausted123',
+      phase: 'worktree-add',
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      pid: 99950, // Non-existent PID
+    };
+
+    await writeInflightMarker(tmpDir, record);
+
+    // Create the exhausted marker to simulate that retries are exhausted
+    const stateDir = mergeLaneStateDir(prNumber, tmpDir);
+    const exhaustedPath = join(stateDir, '.retry-tend-prep-recovery-exhausted');
+    writeFileSync(exhaustedPath, 'Test exhaustion reason');
+
+    let blockedCalled = false;
+    let blockReason = '';
+    const deps = {
+      readPrHeadSha: async () => 'exhausted123',
+      readPrMergeState: async () => 'OPEN' as const,
+      restoreWmReady: () => {},
+      restoreWmBlocked: (pn: number, reason: string) => {
+        blockedCalled = true;
+        blockReason = reason;
+      },
+      restoreWmMerging: () => {},
+      addPrComment: async () => {},
+    };
+
+    const outcome = await reconcileTendInflightState(tmpDir, prNumber, deps);
+    assert.equal(outcome, 'released-blocked', 'Should release as blocked when retries exhausted');
+    assert.ok(blockedCalled, 'Should call restoreWmBlocked');
+    assert.match(blockReason, /retry budget exhausted/, 'Should include budget exhaustion reason');
+
+    const cleared = readInflightMarker(tmpDir);
+    assert.strictEqual(cleared, null, 'Marker should be cleared');
+  } finally {
+    rmSync(tmpDir, { recursive: true });
+  }
+});
+
 // T14: Process group termination during reconciliation
 test('tend-prep-state: reconciliation terminates leaked process group (activePgid)', async () => {
   const tmpDir = mkdtempSync('/tmp/tend-prep-state-test-');

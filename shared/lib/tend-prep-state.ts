@@ -260,6 +260,43 @@ function runBoundedRetryHelper(repoDir: string, invocation: string): string {
 }
 
 /**
+ * Scan for any stalled merge-lane states and reconcile them.
+ * Called at Tend loop startup to recover from previous failures.
+ */
+export async function reconcileStalledMerges(
+  repoDir: string,
+  deps: TendPrepStateDeps,
+): Promise<void> {
+  try {
+    const { readdirSync } = await import('node:fs');
+    const mergeLaneDir = join(repoDir, '.wavemill', 'merge-lane');
+
+    if (!existsSync(mergeLaneDir)) {
+      return; // No stalled merges
+    }
+
+    const entries = readdirSync(mergeLaneDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+
+      const prDirName = entry.name;
+      if (!/^\d+$/.test(prDirName)) continue; // Only process numeric directories
+
+      const prNumber = parseInt(prDirName, 10);
+      try {
+        await reconcileTendInflightState(repoDir, prNumber, deps);
+      } catch (err) {
+        // Log but don't fail the whole loop; continue with other PRs
+        console.error(`Failed to reconcile PR #${prNumber}: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+  } catch (err) {
+    // Scan failure is best-effort; don't fail the loop
+    console.error(`Failed to scan merge-lane directory: ${err instanceof Error ? err.message : err}`);
+  }
+}
+
+/**
  * Reconcile inflight state on startup.
  *
  * Returns the outcome and performs necessary cleanup/remediation.

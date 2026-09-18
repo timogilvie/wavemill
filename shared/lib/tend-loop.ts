@@ -22,6 +22,9 @@ import {
   type TendProgressState,
   type TendLaneCondition,
 } from './tend-heartbeat.ts';
+import { reconcileStalledMerges, type TendPrepStateDeps } from './tend-prep-state.ts';
+import { getPullRequest, addPullRequestComment } from './github.ts';
+import { setWavemillReady, setWavemillBlocked, setWavemillMerging } from './pr-state-labels.ts';
 
 export const TEND_LOOP_INTERVAL_MS = 60_000;
 export const TEND_LOOP_ERROR_BACKOFF_BASE_MS = 30_000;
@@ -286,6 +289,49 @@ export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExi
   let lastErrorAt: string | null = null;
   let iteration = 0;
   let laneStallStreak = 0;
+
+  // Startup reconciliation: recover from any stalled merge-lane states
+  try {
+    const reconcileDeps: TendPrepStateDeps = {
+      readPrHeadSha: async (prNumber: number) => {
+        try {
+          const pr = await getPullRequest(prNumber, options.repoDir);
+          return pr?.headRefOid ?? null;
+        } catch {
+          return null;
+        }
+      },
+      readPrMergeState: async (prNumber: number) => {
+        try {
+          const pr = await getPullRequest(prNumber, options.repoDir);
+          return pr?.state === 'MERGED' ? 'MERGED' : pr?.state === 'OPEN' ? 'OPEN' : null;
+        } catch {
+          return null;
+        }
+      },
+      restoreWmReady: (prNumber: number) => {
+        setWavemillReady(prNumber, { markerRoot: options.repoDir });
+      },
+      restoreWmBlocked: (prNumber: number, reason: string) => {
+        setWavemillBlocked(prNumber, { markerRoot: options.repoDir, reason });
+      },
+      restoreWmMerging: (prNumber: number) => {
+        setWavemillMerging(prNumber, { markerRoot: options.repoDir });
+      },
+      addPrComment: async (prNumber: number, body: string) => {
+        // Best-effort; comment addition should not fail reconciliation
+        try {
+          await addPullRequestComment(prNumber, body, options.repoDir);
+        } catch (err) {
+          console.error(`Failed to add comment to PR #${prNumber}: ${err instanceof Error ? err.message : err}`);
+        }
+      },
+    };
+    await reconcileStalledMerges(options.repoDir, reconcileDeps);
+  } catch (err) {
+    // Reconciliation failure is best-effort; don't fail the loop
+    console.error(`Startup reconciliation failed: ${err instanceof Error ? err.message : err}`);
+  }
   // Progress-vs-liveness state (HOK-2919): progress is a real state change —
   // a merge, a retry-refresh, or the lane's PR set/gates changing — never a
   // successful poll by itself.
