@@ -3764,12 +3764,19 @@ describe('worktree preparation timeout and marker lifecycle (HOK-3039)', () => {
   it('returns skipped with recovery-hold phase when recovery blocker is detected (T21)', async () => {
     const repoDir = mkdtempSync(join(tmpdir(), 'tend-test-'));
     try {
-      // Create a recovery marker to simulate a prior uncertain state
+      // Create an inflight marker with uncertain recovery to simulate prior crash
       mkdirSync(join(repoDir, '.wavemill', 'merge-lane'), { recursive: true });
       writeFileSync(
-        join(repoDir, '.wavemill', 'merge-lane', 'tend-recovery-marker.json'),
+        join(repoDir, '.wavemill', 'merge-lane', 'tend-inflight.json'),
         JSON.stringify({
+          version: 1,
           prNumber: 1,
+          headBranch: 'task/test-pr',
+          headSha: 'head-current',
+          phase: 'push',
+          startedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          pid: 12345,
           recovery: 'uncertain',
           recoveryReason: 'Push may have occurred before crash',
         }),
