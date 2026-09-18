@@ -6,10 +6,6 @@ import { runPromotion } from '../shared/lib/promotion-controller.ts';
 import { acquireTendLock } from '../shared/lib/tend-singleton.ts';
 import { runTool } from '../shared/lib/tool-runner.ts';
 import { runTendLoop, statusActionForResult } from '../shared/lib/tend-loop.ts';
-import { reconcileStalledMerges, type TendPrepStateDeps } from '../shared/lib/tend-prep-state.ts';
-import { getPullRequest, addPullRequestComment } from '../shared/lib/github.ts';
-import { setWavemillReady, setWavemillBlocked, setWavemillMerging } from '../shared/lib/pr-state-labels.ts';
-import { execShellCommand } from '../shared/lib/shell-utils.ts';
 
 runTool({
   name: 'tend',
@@ -88,63 +84,6 @@ runTool({
         lock.release();
       }
       return;
-    }
-
-    // Startup reconciliation for --once mode to recover from prior crashes/timeouts
-    try {
-      const reconcileDeps: TendPrepStateDeps = {
-        readPrHeadSha: async (prNumber) => {
-          try {
-            const pr = await getPullRequest(prNumber, repoDir);
-            return pr?.headRefOid || null;
-          } catch {
-            return null;
-          }
-        },
-        readPrMergeState: async (prNumber) => {
-          try {
-            const pr = await getPullRequest(prNumber, repoDir);
-            if (!pr) return null;
-            if (pr.merged) return 'MERGED';
-            if (!pr.closed) return 'OPEN';
-            return null;
-          } catch {
-            return null;
-          }
-        },
-        restoreWmReady: (prNumber) => {
-          try {
-            setWavemillReady(prNumber, repoDir);
-          } catch (err) {
-            console.warn(`Failed to restore wm:ready for PR #${prNumber}: ${err instanceof Error ? err.message : err}`);
-          }
-        },
-        restoreWmBlocked: (prNumber, reason) => {
-          try {
-            setWavemillBlocked(prNumber, reason, repoDir);
-          } catch (err) {
-            console.warn(`Failed to restore wm:blocked for PR #${prNumber}: ${err instanceof Error ? err.message : err}`);
-          }
-        },
-        restoreWmMerging: (prNumber) => {
-          try {
-            setWavemillMerging(prNumber, repoDir);
-          } catch (err) {
-            console.warn(`Failed to restore wm:merging for PR #${prNumber}: ${err instanceof Error ? err.message : err}`);
-          }
-        },
-        addPrComment: async (prNumber: number, body: string) => {
-          try {
-            await addPullRequestComment(prNumber, body, repoDir);
-          } catch (err) {
-            console.error(`Failed to add comment to PR #${prNumber}: ${err instanceof Error ? err.message : err}`);
-          }
-        },
-      };
-      await reconcileStalledMerges(repoDir, reconcileDeps);
-    } catch (err) {
-      // Reconciliation failure is best-effort; don't fail the run
-      console.warn(`Startup reconciliation failed: ${err instanceof Error ? err.message : err}`);
     }
 
     const decision = await selectNextCandidate({
