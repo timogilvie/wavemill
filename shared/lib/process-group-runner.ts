@@ -138,9 +138,10 @@ export async function runCommandInProcessGroup(
       if (killTimeout) clearTimeout(killTimeout);
       if (timeoutHandle) clearTimeout(timeoutHandle);
 
+      const truncationLimit = outputLimit;
       resolve({
-        stdout: stdout.length > 32000 ? stdout.slice(0, 32000) + '... (truncated)' : stdout,
-        stderr: stderr.length > 32000 ? stderr.slice(0, 32000) + '... (truncated)' : stderr,
+        stdout: stdout.length > truncationLimit ? stdout.slice(0, truncationLimit) + '... (truncated)' : stdout,
+        stderr: stderr.length > truncationLimit ? stderr.slice(0, truncationLimit) + '... (truncated)' : stderr,
         exitCode,
         timedOut,
         pgid,

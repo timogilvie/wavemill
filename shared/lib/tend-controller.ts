@@ -881,6 +881,7 @@ export async function executeMerge(
       deps.shellRunner,
       deps.prepCommandRunner,
       prepTimeoutMs,
+      deps.recordPhaseHeartbeat,
     );
   } catch (error) {
     return block('worktree', outputFromError(error));
@@ -950,6 +951,7 @@ async function withScratchWorktree<T>(
   shellRunner: MergeExecutionDeps['shellRunner'],
   prepCommandRunner?: MergeExecutionDeps['prepCommandRunner'],
   prepDeadlineMs?: number,
+  recordHeartbeat?: MergeExecutionDeps['recordPhaseHeartbeat'],
 ): Promise<T> {
   validateBranchName(prBranch, 'PR branch');
 
@@ -971,6 +973,15 @@ async function withScratchWorktree<T>(
 
   // Create deadline for preparation if prepCommandRunner is available
   const deadline = prepDeadlineMs && prepCommandRunner ? createDeadline(prepDeadlineMs) : undefined;
+
+  // Record phase heartbeat for liveness
+  if (recordHeartbeat) {
+    try {
+      await recordHeartbeat(prNumber, 'fetch');
+    } catch {
+      // Best-effort
+    }
+  }
 
   // Fetch the latest remote tip for the PR branch so the detached worktree
   // operates on what GitHub considers the branch's current state, not a
@@ -994,6 +1005,15 @@ async function withScratchWorktree<T>(
       `git fetch origin ${escapeShellArg(prBranch)} 2>&1`,
       { encoding: 'utf-8', cwd: repoDir, timeout: GIT_MUTATION_TIMEOUT_MS },
     );
+  }
+
+  // Record phase heartbeat before worktree add
+  if (recordHeartbeat) {
+    try {
+      await recordHeartbeat(prNumber, 'worktree-add');
+    } catch {
+      // Best-effort
+    }
   }
 
   // Use --detach so this worktree gets a detached HEAD at the PR's remote
@@ -2067,6 +2087,20 @@ function mergeExecutionDeps(deps: Partial<MergeExecutionDeps> | undefined, marke
       await recordLaneProgress(prNumber, repoDir, event);
     },
     prepCommandRunner: (cmd, opts) => runCommandInProcessGroup(cmd, opts),
+    recordPhaseHeartbeat: async (prNumber, phase) => {
+      // Best-effort phase heartbeat: update the detail field with current phase
+      try {
+        await writeTendPollHeartbeatBestEffort({
+          repoDir: markerRoot,
+          failureCount: 0,
+          lastError: null,
+          lastErrorAt: null,
+          detail: `worktree preparation: ${phase}`,
+        });
+      } catch {
+        // Best-effort; don't fail the merge on heartbeat error
+      }
+    },
     ...deps,
   };
 }
