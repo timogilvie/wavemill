@@ -125,6 +125,33 @@ exactly that reason. If the estimated max drifts up
 the balance preflight and `run-custom-tests-shard.test.sh` pick the new count
 up automatically.
 
+### HOK-3042 refresh (2026-09-18)
+
+The manifest was regenerated from three post-change successful CI runs
+(`35353831868`, `35354100546`, `35354660120`) after HOK-3040 made suite
+membership exclusive and HOK-3041 split `workflow-router` tests into
+shardable files. Every registered test (382 unit, 41 custom) now carries a
+measured median; no test falls back to `defaultMs`.
+
+Candidate matrix sizes evaluated with `tools/partition-tests.ts --report`
+against the refreshed manifest:
+
+| Suite  | Shards | LPT-estimated max shard | Decision                  |
+|--------|-------:|-------------------------:|---------------------------|
+| unit   |      5 | 342s                     | rejected (> 240s)         |
+| unit   |      6 | 285s                     | rejected (> 240s)         |
+| unit   |      7 | 244s                     | **kept** (at 240s target) |
+| custom |      2 | 267s                     | rejected (> 240s, serial) |
+| custom |      3 | 184s                     | **kept**                  |
+
+`unit=7 / custom=3` remained the smallest counts satisfying the ≤ ~240s LPT
+target under the refreshed weights, so the workflow matrix, the required
+check list in `.wavemill-config.json`, and the runner `--shard` denominators
+were left untouched. The heaviest single custom test
+(`shared/lib/stage-aware-router.test.ts`, 184.5s) still sets the wall-clock
+floor for custom, but stays below the 240s target — no `indivisibleHotspots`
+exception was needed.
+
 ## Measuring the aggregator (REQ-F6)
 
 ```bash
@@ -134,6 +161,28 @@ npx tsx tools/ci-test-timings.ts report <run-id> <run-id> …
 prints per-run workflow-created → `Shell and Unit Tests`-completed durations,
 the slowest jobs per run, and median/p90 across the given runs. Requirement:
 median ≤ 5:00 and p90 ≤ 7:00 over ten representative successful PR runs.
+
+### HOK-3042 measurement
+
+Baseline (three representative pre-change runs on the September-2 weights and
+the pre-split `workflow-router` suite — `35097572922`, `34973530214`,
+`34867039948`):
+
+- created → aggregator **median 4:38 (278s)**, **p90 4:45 (285s)**
+- slowest jobs were all unit shards (≈ 4:07–4:32).
+
+After the refresh and prerequisite merges (three representative post-change
+runs — `35353831868`, `35354100546`, `35354660120`):
+
+- created → aggregator **median 3:31 (211s)**, **p90 4:04 (244s)**
+- slowest jobs are custom shards (≈ 3:05–3:55); unit shards drop to
+  ~2:50–3:11 despite the shard count remaining at 7.
+
+Both are within the ≤ 5:00 median / ≤ 7:00 p90 budget. The full REQ-F6
+measurement over ten representative successful post-change PR runs is a
+follow-up step once ten green runs exist on the new topology; the numbers
+above stand in as the three-run interim reading recorded on the HOK-3042
+Linear issue.
 
 ## Setup caching: evaluated, not added
 
