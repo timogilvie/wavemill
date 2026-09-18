@@ -2820,6 +2820,12 @@
                     "default": 45,
                     "description": "Minutes after which another tend process may reclaim a wm:merging merge-lane lock as stale (measured from the label's most recent application on GitHub). 0 disables expiry. Must exceed the worst-case legitimate merge duration (rebase + 30 min check wait + 5 min merge retry window, roughly 40 minutes)."
                 },
+                "tendWorktreePrepTimeoutSeconds": {
+                    "type": "number",
+                    "minimum": 30,
+                    "default": 180,
+                    "description": "Timeout in seconds for scratch-worktree preparation operations (reap, fetch, git worktree add, setup). Must be less than the merge-lock timeout; typical values 30-600s. Default 180s allows slow fetches."
+                },
                 "readyPolicy": {
                     "type": "object",
                     "description": "Eligibility guards for the autonomous merge controller",

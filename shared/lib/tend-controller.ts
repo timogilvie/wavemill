@@ -34,6 +34,18 @@ import {
 import { isTransientErrorText, retryTransient, TransientError } from './transient-retry.ts';
 import { normalizeTaskLifecycle } from './task-lifecycle.ts';
 import { resolveEffectiveTaskConfig } from './effective-task-config.ts';
+import { writeTendPollHeartbeatBestEffort } from './tend-heartbeat.ts';
+import {
+  readInflightMarker,
+  writeInflightMarker,
+  advanceInflightPhase,
+  recordActivePgid,
+  recordPrePushShas,
+  clearInflightMarker,
+  checkRecoveryBlocker,
+  type TendInflightRecord,
+  type TendMergePhase,
+} from './tend-prep-state.ts';
 
 export interface TendCandidate {
   number: number;
@@ -137,6 +149,10 @@ export interface MergeExecutionDeps {
   strictBaseRetry: StrictBaseRetryOps;
   /** Best-effort lane-progress telemetry recorder; must never fail the merge. */
   recordLaneProgress: (prNumber: number, event: LaneProgressEvent, repoDir: string) => Promise<void>;
+  /** Runner for worktree prep commands with deadline and process group management. */
+  prepCommandRunner?: (cmd: string, opts: { cwd?: string; timeoutMs: number }) => Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; pgid?: number }>;
+  /** Best-effort phase heartbeat recorder for tend health updates during long operations. */
+  recordPhaseHeartbeat?: (prNumber: number, phase: string) => Promise<void>;
 }
 
 export interface ExecuteMergeOptions {
@@ -1296,6 +1312,8 @@ export async function waitForChecks(
     expectedHeadSha?: string;
     /** Poll interval override for tests; production uses CHECK_POLL_INTERVAL_MS. */
     pollIntervalMs?: number;
+    /** Callback invoked on each poll iteration; must never fail the merge if it throws. */
+    onPoll?: (prNumber: number) => Promise<void>;
   } = {},
 ): Promise<CheckWaitResult> {
   const timeoutMs = options.timeoutMs ?? 30 * 60 * 1000;
@@ -1354,6 +1372,14 @@ export async function waitForChecks(
 
     if (Date.now() >= deadline) {
       return { outcome: 'timeout', summary: waitSummary };
+    }
+
+    if (options.onPoll) {
+      try {
+        await options.onPoll(prNumber);
+      } catch (error) {
+        console.error(`waitForChecks onPoll callback failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
 
     await sleep(pollIntervalMs);

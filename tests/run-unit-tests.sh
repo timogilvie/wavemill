@@ -138,6 +138,8 @@ TESTS=(
   shared/lib/arm-failure-taxonomy.test.ts
   shared/lib/arm-reliability.test.ts
   shared/lib/stale-task-branches.test.ts
+  shared/lib/process-group-runner.test.ts
+  shared/lib/tend-prep-state.test.ts
   shared/lib/tend-controller.test.ts
   shared/lib/ready-tend-handoff.test.ts
   shared/lib/observer-status-renderer.test.ts
