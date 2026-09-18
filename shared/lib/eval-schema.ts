@@ -130,6 +130,11 @@
  *   matches). Additive; legacy records still validate.
  * - **1.49.0**: Added optional `task_scorer_result` shadow-mode prediction
  *   metadata for HOK-2845. Additive; omitted or null when scoring fails.
+ * - **1.50.0**: Added optional shadow-only
+ *   `subagent_model_economics_policy` report metadata and
+ *   `subagent_model_economics_shadow` router measurement policy (HOK-2959).
+ *   Additive; evaluators may emit dry-run economics without mutating launch
+ *   configuration or route artifacts.
  * - **1.28.0**: Added optional `quarantine_reason` and write-time eval corpus
  *   validation for `taskDescriptor`, non-empty `models_available`, and
  *   canonical reviewer/stage model IDs (HOK-2072); expanded
@@ -213,7 +218,7 @@ import type { ChallengeStage } from './challenge-mode.ts';
  *
  * @since 1.44.0 added unknown_attribution intervention type (HOK-2894)
  */
-export const SCHEMA_VERSION = '1.49.0';
+export const SCHEMA_VERSION = '1.50.0';
 
 export type RoutingRole = 'planner' | 'coder' | 'reviewer';
 
@@ -1819,7 +1824,8 @@ export interface FallbackEventMetadata {
 
 export type WavemillRouterMeasurementPolicy =
   | 'replay_exact_match'
-  | 'challenge_prospective';
+  | 'challenge_prospective'
+  | 'subagent_model_economics_shadow';
 
 export interface WavemillRouterDiagnostics {
   scoreable_coverage: number;
@@ -1907,6 +1913,22 @@ export interface RouteCalibration {
   actualCostUsd?: number;
   interventionCount?: number;
   durationMs?: number;
+}
+
+export type SubagentModelEconomicsGate = 'proceed' | 'collect_more_data' | 'stop';
+export type SubagentModelEconomicsEvidenceKind = 'observational' | 'paired_replay';
+
+export interface EvalSubagentModelEconomicsPolicyReport {
+  schemaVersion: string;
+  policy: 'subagent_model_economics_shadow';
+  generatedAt?: string;
+  summary?: Record<string, unknown>;
+  workflows?: Array<Record<string, unknown>>;
+  evidenceKind?: SubagentModelEconomicsEvidenceKind;
+  recommendation?: {
+    gate: SubagentModelEconomicsGate;
+    reasons: string[];
+  };
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -2378,6 +2400,18 @@ export interface EvalRecord {
 
   /** Wavemill router scorer metadata for replay/prospective measurement. */
   wavemill_router_scoring?: WavemillRouterScoringMetadata;
+
+  /**
+   * Shadow-only subagent model economics policy report.
+   *
+   * Captures proposed planner/coder/reviewer assignment, expected economics,
+   * actual executed route evidence, abstentions, and non-causal vs paired
+   * evidence distinctions. Evaluators may write this field, but routers and
+   * launchers must not consume it to force model selection.
+   *
+   * @since 1.50.0
+   */
+  subagent_model_economics_policy?: EvalSubagentModelEconomicsPolicyReport;
 
   /**
    * Task trace correlation ID linking this eval record to the lifecycle

@@ -232,6 +232,12 @@ export interface IncidentMetadata {
   authoritativeHead?: string;
   authoritativeBase?: string;
   pairId?: string;
+  /** Immutable lineage captured from a job-backed detector event. */
+  jobId?: string;
+  jobKind?: string;
+  side?: string;
+  resultPath?: string;
+  authoritativeFailureAt?: string;
   /** Consecutive successful observer cycles without a fresh distinct event. */
   missedCycles?: number;
   /** How and when the record last transitioned to resolved/archived. */

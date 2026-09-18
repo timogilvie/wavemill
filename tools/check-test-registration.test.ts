@@ -32,14 +32,49 @@ function withRepo(entries: string[], testFiles: string[], fn: (repoDir: string) 
   }
 }
 
-test('checkTestRegistration passes when discovered tests are registered exactly once', () => {
+test('checkTestRegistration passes when discovered tests are registered in unit only', () => {
   withRepo(['shared/lib/a.test.ts', 'tools/b.test.ts'], ['shared/lib/a.test.ts', 'tools/b.test.ts'], (repoDir) => {
     const result = checkTestRegistration(repoDir);
 
     assert.equal(result.ok, true);
     assert.deepEqual(result.unregistered, []);
+    assert.deepEqual(result.overlap, []);
     assert.match(formatTestRegistration(result), /2 discovered, 2 registered/);
   });
+});
+
+test('checkTestRegistration passes when discovered tests are registered in custom TS only', () => {
+  withRepo(
+    [],
+    ['shared/lib/a.test.ts', 'src/b.test.ts'],
+    (repoDir) => {
+      const result = checkTestRegistration(repoDir);
+
+      assert.equal(result.ok, true);
+      assert.deepEqual(result.unregistered, []);
+      assert.deepEqual(result.staleCustom, []);
+      assert.deepEqual(result.overlap, []);
+      assert.match(formatTestRegistration(result), /2 discovered, 2 registered/);
+    },
+    { customTsEntries: ['shared/lib/a.test.ts', 'src/b.test.ts'] }
+  );
+});
+
+test('checkTestRegistration reports cross-suite overlap', () => {
+  withRepo(
+    ['shared/lib/a.test.ts'],
+    ['shared/lib/a.test.ts'],
+    (repoDir) => {
+      const result = checkTestRegistration(repoDir);
+      const message = formatTestRegistration(result);
+
+      assert.equal(result.ok, false);
+      assert.deepEqual(result.overlap, ['shared/lib/a.test.ts']);
+      assert.match(message, /Cross-suite overlap \(registered in both TESTS and CUSTOM_TS_TESTS\):/);
+      assert.match(message, /shared\/lib\/a\.test\.ts/);
+    },
+    { customTsEntries: ['shared/lib/a.test.ts'] }
+  );
 });
 
 test('checkTestRegistration reports unregistered test files with the registration remedy', () => {
@@ -51,6 +86,7 @@ test('checkTestRegistration reports unregistered test files with the registratio
     assert.deepEqual(result.unregistered, ['src/b.test.ts']);
     assert.match(message, /Unregistered test files:/);
     assert.match(message, /tests\/run-unit-tests\.sh/);
+    assert.match(message, /tests\/run-custom-tests\.sh/);
   });
 });
 
@@ -64,23 +100,9 @@ test('checkTestRegistration reports stale and duplicate registrations', () => {
   });
 });
 
-test('checkTestRegistration passes with valid custom harness registrations', () => {
+test('checkTestRegistration reports duplicate custom TS registrations', () => {
   withRepo(
-    ['shared/lib/a.test.ts'],
-    ['shared/lib/a.test.ts', 'tests/b.test.sh'],
-    (repoDir) => {
-      const result = checkTestRegistration(repoDir);
-      assert.equal(result.ok, true);
-      assert.deepEqual(result.customDuplicates, []);
-      assert.deepEqual(result.customMissing, []);
-    },
-    { customTsEntries: ['shared/lib/a.test.ts'], customShEntries: ['tests/b.test.sh'] }
-  );
-});
-
-test('checkTestRegistration reports duplicate custom harness registrations', () => {
-  withRepo(
-    ['shared/lib/a.test.ts'],
+    [],
     ['shared/lib/a.test.ts'],
     (repoDir) => {
       const result = checkTestRegistration(repoDir);
@@ -94,7 +116,24 @@ test('checkTestRegistration reports duplicate custom harness registrations', () 
   );
 });
 
-test('checkTestRegistration reports custom harness entries whose files are missing', () => {
+test('checkTestRegistration reports stale custom TS registrations', () => {
+  withRepo(
+    ['shared/lib/a.test.ts'],
+    ['shared/lib/a.test.ts'],
+    (repoDir) => {
+      const result = checkTestRegistration(repoDir);
+      const message = formatTestRegistration(result);
+
+      assert.equal(result.ok, false);
+      assert.deepEqual(result.staleCustom, ['shared/lib/gone.test.ts']);
+      assert.deepEqual(result.customMissing, ['shared/lib/gone.test.ts']);
+      assert.match(message, /Stale custom TS registrations:/);
+    },
+    { customTsEntries: ['shared/lib/gone.test.ts'] }
+  );
+});
+
+test('checkTestRegistration reports missing custom shell registrations', () => {
   withRepo(
     ['shared/lib/a.test.ts'],
     ['shared/lib/a.test.ts'],

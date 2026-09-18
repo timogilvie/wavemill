@@ -12,7 +12,12 @@ import { errorMessage } from './error-utils.ts';
 import { isLegacyUnscopedContributionEndpoint } from './hokusai-local-config.ts';
 import { hokusaiQueueStatus } from './hokusai-queue.ts';
 
-export const CURRENT_CONSENT_VERSION = '1.0';
+// Consent version history:
+// - 1.0: initial opt-in consent for anonymized workflow outcome submission.
+// - 1.1 (HOK-2787): names the vendor-telemetry and reviewer-evidence
+//   exclusions explicitly. Bumping this invalidates prior consent, so users
+//   re-confirm under the expanded text before any further submission.
+export const CURRENT_CONSENT_VERSION = '1.1';
 
 export const CONSENT_TEXT = `Hokusai data submission is strictly opt-in.
 
@@ -23,10 +28,20 @@ If enabled, Wavemill may submit anonymized workflow outcome data to Hokusai, inc
 - success outcomes such as pass/fail and intervention counts
 
 Wavemill does NOT submit:
-- source code or file contents
+- source code, diffs, patches, or file contents
 - raw repository names after redaction
 - commit messages or PR descriptions
 - API keys or other secrets
+- prompts, task text, or provider request/response payloads
+- vendor telemetry identity fields such as user email, organization id,
+  account UUID, raw session/account identifiers, or transcript paths
+- reviewer evidence: raw review prompts, structured findings, reproduction
+  evidence, or remediation patches (only derived reviewer metrics and
+  validity/provenance fields may leave this machine)
+
+Only locally derived features and aggregates leave this machine, and every
+outbound field must pass a default-deny allowlist: unlisted string fields are
+stripped before anything is queued for upload.
 
 Participating earns token rewards that offset Hokusai routing costs.
 

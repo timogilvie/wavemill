@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import { classifyLinearError, type ClassifiedLinearError } from './linear.ts';
-import { syncIncident, type IncidentLinearClient, type ObserverLinearConfig } from './incident-to-linear-synchronizer.ts';
+import { syncIncident, type IncidentLinearClient, type ObserverLinearConfig, type SyncIncidentOptions } from './incident-to-linear-synchronizer.ts';
 import { IncidentStore } from './wavemill-incident-store.ts';
 
 const SCHEMA_VERSION = '1.0';
@@ -67,6 +67,7 @@ export interface DrainIncidentQueueOptions {
   maxEntries?: number;
   now?: Date;
   log?: Pick<Console, 'error'>;
+  reconciler?: SyncIncidentOptions['reconciler'];
 }
 
 export interface DrainIncidentQueueResult {
@@ -205,7 +206,14 @@ export async function drainIncidentQueue(options: DrainIncidentQueueOptions): Pr
             now: input.now,
           }),
         },
+        repoDir,
+        reconciler: options.reconciler,
       });
+      if (record.linearAction === 'create' && (syncResult.reconciliation?.outcome === 'recovered' || syncResult.reconciliation?.outcome === 'superseded')) {
+        appendRecord(path, { schemaVersion: SCHEMA_VERSION, recordType: 'tombstone', id: record.id, settledAt: toIso(now) });
+        result.succeeded += 1;
+        continue;
+      }
       if (syncResult.status === 'created' || syncResult.status === 'updated' || syncResult.action === 'no_op') {
         appendRecord(path, { schemaVersion: SCHEMA_VERSION, recordType: 'tombstone', id: record.id, settledAt: toIso(now) });
         result.succeeded += 1;

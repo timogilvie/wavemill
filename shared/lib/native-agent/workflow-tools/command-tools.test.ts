@@ -122,6 +122,34 @@ describe('executeReviewChanges', () => {
     assert.equal((deps.transcriptEvents[0].details as { diagnostics: { error: string } }).diagnostics.error, 'review_failed');
   });
 
+  it('maps native review timeout results to ReviewChangesError', async () => {
+    const deps = makeDeps({
+      phase: 'review',
+      reviewChangesImpl: async () => ({
+        verdict: 'error',
+        codeReviewFindings: [],
+        failureCategory: 'native-review-timeout',
+        reviewToolError: 'Native review exceeded its wall-clock budget before producing a final JSON result.',
+        metadata: {
+          branch: 'task/native-review-timeout',
+          files: ['src/app.ts'],
+          hasUiChanges: false,
+          designContextAvailable: false,
+          uiVerificationRun: false,
+          effectiveNativeTimeoutMs: 300_000,
+        },
+      }),
+    });
+
+    const result = await executeReviewChanges({ base: 'auto/integration', json: true }, deps);
+    assert.equal(result.ok, false);
+    assert.equal(result.verdict, 'error');
+    assert.equal(result.failureCategory, 'native-review-timeout');
+    assert.equal(result.blockerCount, 0);
+    assert.match(result.message, /wall-clock budget/);
+    assert.equal((result.diagnostics?.metadata as { effectiveNativeTimeoutMs?: number }).effectiveNativeTimeoutMs, 300_000);
+  });
+
   it('denies review_changes outside review phase', async () => {
     const deps = makeDeps({ phase: 'coding' });
     const result = await executeReviewChanges({ base: 'auto/integration' }, deps);

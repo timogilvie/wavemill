@@ -5,6 +5,8 @@ import {
   getStageContextWindowFloor,
   getModel,
   isCodexChatgptLaunchEligible,
+  resolveCodexChatgptSuccessor,
+  resolveModelSuccessor,
   type AgentType,
   type ModelRegistry,
   type NativeProviderName,
@@ -31,6 +33,30 @@ export type UnroutableReason =
 export type AgentResolution =
   | { ok: true; agent: AgentType }
   | { ok: false; reason: UnroutableReason; diagnostic: string; certifyCommand?: string };
+
+export type LaunchPreflightFailureReason =
+  | 'retired-model-no-successor'
+  | 'successor-ineligible'
+  | UnroutableReason;
+
+export type LaunchPreflight =
+  | {
+    ok: true;
+    requestedModel: string;
+    resolvedModel: string;
+    agent: AgentType;
+    phase: AgentResolutionPhase;
+  }
+  | {
+    ok: false;
+    requestedModel: string;
+    resolvedModel: string | null;
+    phase: AgentResolutionPhase;
+    reason: LaunchPreflightFailureReason;
+    diagnostic: string;
+    remediation?: string;
+    certifyCommand?: string;
+  };
 
 interface ResolveModelAgentOptions {
   model: string;
@@ -302,6 +328,14 @@ export function resolveModelAgent(opts: ResolveModelAgentOptions): AgentResoluti
   }
 
   if (resolvedAgent === 'codex' || resolvedAgent === 'claude') {
+    if (capabilities?.supportedModel?.launchEligible === false) {
+      const lifecycle = capabilities.supportedModel.lifecycle || 'unknown';
+      return {
+        ok: false,
+        reason: 'lifecycle-blocked',
+        diagnostic: `[agent-resolution] model=${modelId} phase=${opts.phase} provider=${capabilities?.vendor} reason=lifecycle-blocked certification=${lifecycle} detail="Model is not eligible for launch"`,
+      };
+    }
     if (resolvedAgent === 'codex' && !isCodexChatgptLaunchEligible(capabilities)) {
       const reason = capabilities?.codexChatgptCapability?.reason
         ?? 'No explicit ChatGPT/Codex launch capability is declared.';
@@ -347,5 +381,115 @@ export function resolveModelAgent(opts: ResolveModelAgentOptions): AgentResoluti
       reason: 'unknown-model',
       certificationStatus: 'unsupported-agent',
     }),
+  };
+}
+
+/**
+ * Resolves a model through successor chain before agent selection.
+ * If the requested model is retired/blocked/unsupported without a valid successor,
+ * returns a terminal failure. Preserves both requested and resolved identities.
+ * Used at every execution boundary before pane/process creation.
+ */
+export function resolveLaunchPreflight(opts: {
+  requestedModel: string;
+  phase: AgentResolutionPhase;
+  repoDir?: string;
+  registry?: ModelRegistry;
+  now?: Date;
+  certificationRoot?: string;
+}): LaunchPreflight {
+  const requestedModel = opts.requestedModel.trim();
+  const registry = opts.registry ?? DEFAULT_MODEL_REGISTRY;
+
+  // First, check if the requested model resolves
+  const requested = resolveModelAgent({
+    model: requestedModel,
+    phase: opts.phase,
+    repoDir: opts.repoDir,
+    registry,
+    now: opts.now,
+    certificationRoot: opts.certificationRoot,
+  });
+
+  if (requested.ok) {
+    // Requested model is valid, return it as both requested and resolved
+    return {
+      ok: true,
+      requestedModel,
+      resolvedModel: requestedModel,
+      agent: requested.agent,
+      phase: opts.phase,
+    };
+  }
+
+  // Requested model failed. Try to resolve a successor for Codex models
+  const capabilities = getModel(registry, requestedModel);
+  if (!capabilities) {
+    // Unknown model with no successor
+    return {
+      ok: false,
+      requestedModel,
+      resolvedModel: null,
+      phase: opts.phase,
+      reason: 'unknown-model',
+      diagnostic: `[launch-preflight] requested_model=${requestedModel} phase=${opts.phase} reason=unknown-model detail="Model not found in registry"`,
+    };
+  }
+
+  // Try registry-backed successor first (handles lifecycle: deprecated, unsupported, etc.)
+  const registrySuccessor = capabilities.agent === 'codex'
+    ? resolveCodexChatgptSuccessor(requestedModel, registry)
+    : resolveModelSuccessor(requestedModel, registry);
+
+  if (!registrySuccessor) {
+    // Requested model failed and has no valid successor
+    const reason = capabilities.supportedModel?.lifecycle === 'deprecated'
+      ? 'retired-model-no-successor'
+      : requested.reason;
+
+    return {
+      ok: false,
+      requestedModel,
+      resolvedModel: null,
+      phase: opts.phase,
+      reason,
+      diagnostic: `[launch-preflight] requested_model=${requestedModel} phase=${opts.phase} reason=${reason} detail="${requested.reason}:${requested.diagnostic}"`,
+      remediation: capabilities.supportedModel?.lifecycle === 'deprecated'
+        ? `Model ${requestedModel} is retired and has no available successor. Select a different model.`
+        : undefined,
+    };
+  }
+
+  // Try to resolve the successor
+  const successorResolution = resolveModelAgent({
+    model: registrySuccessor,
+    phase: opts.phase,
+    repoDir: opts.repoDir,
+    registry,
+    now: opts.now,
+    certificationRoot: opts.certificationRoot,
+  });
+
+  if (successorResolution.ok) {
+    // Successor is valid
+    return {
+      ok: true,
+      requestedModel,
+      resolvedModel: registrySuccessor,
+      agent: successorResolution.agent,
+      phase: opts.phase,
+    };
+  }
+
+  // Successor exists but is ineligible (e.g., phase-incompatible, uncertified)
+  return {
+    ok: false,
+    requestedModel,
+    resolvedModel: registrySuccessor,
+    phase: opts.phase,
+    reason: 'successor-ineligible',
+    diagnostic: `[launch-preflight] requested_model=${requestedModel} resolved_model=${registrySuccessor} phase=${opts.phase} reason=successor-ineligible detail="${successorResolution.reason}:${successorResolution.diagnostic}"`,
+    remediation: `Successor model ${registrySuccessor} for ${requestedModel} is not eligible for this phase.`,
+    certifyCommand: successorResolution.certifyCommand,
   };
 }

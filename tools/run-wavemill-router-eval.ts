@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { runWavemillRouterEval, runPatchSelectionEval } from '../src/evaluation/adapters/wavemill-router-adapter.ts';
 
 interface CliArgs {
-  policy?: 'replay_exact_match' | 'challenge_prospective';
+  policy?: 'replay_exact_match' | 'challenge_prospective' | 'subagent_model_economics_shadow';
   fixture?: string;
   evalsDir?: string;
   repoDir?: string;
@@ -99,6 +99,14 @@ async function main(): Promise<void> {
     persist: args.persist ?? false,
     modelsAvailable: args.modelsAvailable,
   });
+
+  if (args.policy === 'subagent_model_economics_shadow') {
+    console.log(JSON.stringify({
+      hemRecord: result.hemRecord,
+      subagent_model_economics_policy: result.subagentModelEconomicsPolicy,
+    }, null, 2));
+    return;
+  }
 
   console.log(JSON.stringify(result.hemRecord, null, 2));
 }

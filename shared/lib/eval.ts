@@ -47,11 +47,11 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Headless eval judge runs on Codex/gpt-5.5 by default (HOK-2226). The provider
+// Headless eval judge runs on Codex/gpt-5.6-terra by default (HOK-2226, HOK-3044). The provider
 // follows the model, so configuring eval.judge.model (or EVAL_MODEL) to a
 // claude-* id routes the judge back to Claude. Baseline note: changing the judge
 // model shifts eval scores — see docs/codex-migration-plan.md.
-const DEFAULT_MODEL = 'gpt-5.5';
+const DEFAULT_MODEL = 'gpt-5.6-terra';
 const DEFAULT_PROVIDER = 'claude-cli';
 const SUPPORTED_PROVIDERS = ['claude-cli', 'anthropic'] as const;
 const MAX_RETRIES = 2;

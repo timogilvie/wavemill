@@ -13,6 +13,7 @@ export const INVALID_CHALLENGE_REASONS = [
   'state_vs_derived_side_mismatch',
   'operator_reroute',
   'missing_challenge_intent',
+  'multiple-varied-roles',
 ] as const;
 export type InvalidChallengeReason =
   | 'stage_override_lost'
@@ -26,7 +27,13 @@ export type InvalidChallengeReason =
    * stayed training-eligible with no verdict at all, which is how an arm whose
    * selected model had been replaced still counted as clean evidence.
    */
-  | 'missing_challenge_intent';
+  | 'missing_challenge_intent'
+  /**
+   * The pair violates the one-variable invariant: more than one role differs
+   * (planner/coder/reviewer), or a role differs alongside a non-role dimension
+   * (depth, mode, variant). This invalidates the challenge at launch time.
+   */
+  | 'multiple-varied-roles';
 
 export type DeliveryVerdictOutcome = 'primary' | 'challenger' | 'tie' | null;
 

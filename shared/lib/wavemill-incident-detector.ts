@@ -177,7 +177,18 @@ export class JobFailureDetector {
           redactedData: redactIncidentData(`id=${job.id ?? 'unknown'} kind=${job.kind ?? 'unknown'} status=${job.status} reason=${job.reason ?? 'unknown'} resultMissing=${missingResult}`),
           key: rootCauseClass,
         }],
-        metadata: { jobId: job.id, jobKind: job.kind, resultPath: job.resultPath, logPath: job.logPath },
+        metadata: {
+          jobId: job.id,
+          jobKind: job.kind,
+          pairId: job.pairId,
+          side: job.side,
+          resultPath: job.resultPath,
+          logPath: job.logPath,
+          // Preserve the terminal event time used for this incident. Filing
+          // reconciliation compares later successes against this value rather
+          // than against observer poll time.
+          authoritativeFailureAt: job.finishedAt ?? job.startedAt ?? timestamp,
+        },
       }));
     }
 
@@ -915,6 +926,7 @@ function readJobs(repoDir: string): JobStateWithSource[] {
       resultPath: stringField(job.resultPath),
       logPath: stringField(job.logPath),
       pairId: stringField(job.pairId),
+      side: stringField(job.side) ?? stringField(job.challengeRole) ?? stringField(job.role),
       source: workflowStatePath,
     });
   }

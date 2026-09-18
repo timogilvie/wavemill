@@ -46,6 +46,7 @@ TESTS=(
   task-phase-canonicalization.test.sh
   pr-state-merge-canonicalization.test.sh
   review-recovery.test.sh
+  recovery-contract-replay.test.sh
   with-timeout.test.sh
   native-agent-shell-operators.test.sh
   native-coding-commit.test.sh
@@ -114,6 +115,7 @@ TESTS=(
   incident-fixtures-terminal-panes.test.sh
   incident-fixtures-safety-controls.test.sh
   terminal-lifecycle-flags.test.sh
+  challenge-provenance.test.sh
 )
 
 SHARD_INDEX=1

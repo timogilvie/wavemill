@@ -406,6 +406,7 @@ runTool({
         primaryModel,
         challengerModel,
         variedDimensions,
+        variedStage,
         repoDir,
       });
       const primaryStageModel = modelForChallengeVariedStage(primaryExecution, challengeType, primaryModel);

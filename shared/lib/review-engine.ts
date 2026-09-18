@@ -72,12 +72,13 @@ export function isBlockingFinding(finding: ReviewFinding): boolean {
 }
 
 export interface ReviewResult {
-  verdict: 'ready' | 'not_ready';
+  verdict: 'ready' | 'not_ready' | 'error';
   codeReviewFindings: ReviewFinding[];
   uiFindings?: ReviewFinding[];
   needsStrongerReviewer?: boolean;
   strongerReviewerReason?: string;
   failureCategory?: string;
+  reviewToolError?: string;
   /**
    * Identity of the model that actually performed this review's substantive
    * analysis, with pin/fallback/conflict status (HOK-2969, Arbiter P2.4f).
@@ -92,6 +93,15 @@ export interface ReviewResult {
     designContextAvailable: boolean;
     uiVerificationRun: boolean;
     deniedTools?: Array<{ tool: string; reason: string; message: string }>;
+    effectiveNativeTimeoutMs?: number;
+    nativeTimeoutAttempt?: number;
+    nativeTimeoutBaseMs?: number;
+    nativeTimeoutMaxMs?: number;
+    nativeTimeoutMultiplier?: number;
+    reviewInputDiffBytes?: number;
+    reviewInputTaskPacketBytes?: number;
+    reviewInputFileCount?: number;
+    nativeLoopStopReason?: string;
   };
 }
 
@@ -116,6 +126,11 @@ export interface ReviewEngineOptions {
   operatingMode?: OperatingMode;
   /** Feature directory for stage-result cleanup reporting when review runs natively */
   featureDir?: string;
+  /** Repository/session context passed through to native loop telemetry. */
+  repoDir?: string;
+  session?: string;
+  issue?: string;
+  nativeTimeoutAttempt?: number;
 }
 
 interface JudgeConfig {
