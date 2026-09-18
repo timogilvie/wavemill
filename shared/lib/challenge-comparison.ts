@@ -607,12 +607,8 @@ export function deriveNoComparisonReason(
 
   // HOK-2970: invalid_challenge records that came from the auto-resolve path
   // (aborted-arm-was-invalid) carry the aborted eval's invalidChallengeReason
-  // as their no-comparison reason. If we get here without an explicit reason,
-  // fall back to the abort's terminalReason for debugging attribution.
+  // as their no-comparison reason.
   if (record.comparisonOutcome === 'invalid_challenge') {
-    if (record.terminalReason) {
-      return 'missing_challenge_intent';
-    }
     return 'missing_challenge_intent';
   }
 
