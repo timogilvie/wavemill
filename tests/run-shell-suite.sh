@@ -116,6 +116,9 @@ TESTS=(
   incident-fixtures-safety-controls.test.sh
   terminal-lifecycle-flags.test.sh
   challenge-provenance.test.sh
+  quarantine-legacy-reviewer-forfeits.test.sh
+  reviewer-stage-hok2939-shaped.test.sh
+  reviewer-stage-hok2954-shaped.test.sh
 )
 
 SHARD_INDEX=1

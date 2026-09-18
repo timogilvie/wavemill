@@ -39,6 +39,7 @@ export const INCIDENT_ROOT_CAUSE_CLASSES = [
   // Local harness / configuration conditions
   'local_parse_failure',
   'local_config_failure',
+  'module_export_contract_mismatch',
   'native_completion_protocol_failure',
   'harness_liveness_deadlock',
   'queue_planner_degraded',
@@ -101,6 +102,9 @@ export function canonicalizeRootCauseClass(raw: string): IncidentRootCauseClass 
   }
   if (/pr[-_ ]create[-_ ]failed|pull[-_ ]request[-_ ]create[-_ ]failed/.test(lower)) {
     return 'pr_create_failed';
+  }
+  if (/does[-_ ]not[-_ ]provide[-_ ]an[-_ ]export|export[-_ ]named|module[-_ ]export[-_ ]contract/.test(lower)) {
+    return 'module_export_contract_mismatch';
   }
   if (/failed[-_ ]to[-_ ]parse|unexpected[-_ ]token|parse[-_ ]error|syntax[-_ ]error|malformed[-_ ]json/.test(lower)) {
     return 'local_parse_failure';

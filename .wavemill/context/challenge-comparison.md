@@ -125,7 +125,22 @@ Challenge skipped native model <id> for <stage> stage (phase=<phase>, reason=<re
 
 This mirrors the router's `reasoning` field so dashboard tooling has consistent parity between router-level and challenge-level native rejections.
 
+## Invalid-challenge auto-resolution (HOK-2970)
+
+When the challenge-pair resolver runs on `sibling-challenge-aborted` or `both-challenge-aborted`, it now cross-references the aborted arm(s)' latest eval record in `evals.jsonl`. If that record carries `invalidChallenge: true`, the pair is stamped as `comparisonOutcome: 'invalid_challenge'` (via `buildInvalidChallengeArmComparison`) with no `winner`/`winnerModel`, rather than a phantom `forfeit` handed to the surviving arm. `forkStage` and other retention fields are preserved.
+
+Rules of the road:
+
+- **New records use `invalid_challenge` directly.** Producers must never mint a `forfeit` row where the losing arm's eval was `invalidChallenge: true`.
+- **`isDecisiveChallengeComparison` is a belt-and-braces guard.** Any row carrying `invalidChallenge: true` OR a `quarantined` marker is non-decisive regardless of `comparisonOutcome`. Legacy pre-fix rows on disk therefore stop counting even before the quarantine sweep runs.
+- **Legacy rewrite tool:** `tools/quarantine-legacy-reviewer-forfeits.ts` sweeps historical `forfeit` rows whose aborted arm's latest eval was invalid and rewrites them to `invalid_challenge` with a `quarantined: {reason: 'aborted-arm-was-invalid', ticket: 'HOK-2970'}` marker. `--dry-run` prints the diff; `--apply` writes atomically after a `.bak.<ISO>` backup and is idempotent.
+- **Reviewer-stage adjudicator:** `shared/lib/reviewer-stage-adjudicator.ts` is a thin façade over `foldAttestationsIntoStageAttribution` that fails closed to `insufficient_evidence` when the pair did not fork at `review` or lacks a shared implementation prefix. Delivery selection (`deliveryVerdict`) remains the generic arbiter's job; reviewer-stage adjudication is independent.
+
 ## Recent Changes
+
+### 2026-09-18T00:00:00.000Z - HOK-2970: Reviewer-stage adjudication, delivery/stage split, legacy quarantine
+
+Added `buildInvalidChallengeArmComparison`; tightened `isDecisiveChallengeComparison` to exclude any row where `invalidChallenge === true` or `quarantined` is present; wired invalid-arm detection into `challenge-pair-resolver.ts` for both `sibling-challenge-aborted` and `both-challenge-aborted`; added `shared/lib/reviewer-stage-adjudicator.ts` and `tools/quarantine-legacy-reviewer-forfeits.ts`. Extended `ResolveOutcome` union with `invalid_challenge`. Regression fixtures `tests/reviewer-stage-hok2939-shaped.test.sh` and `tests/reviewer-stage-hok2954-shaped.test.sh` cover CI-shard and startup-rehydration abort shapes respectively.
 
 ### 2026-08-23T00:00:00.000Z - HOK-2859: Provisional evidence holds
 

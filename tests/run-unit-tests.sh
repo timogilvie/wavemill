@@ -135,6 +135,9 @@ TESTS=(
   shared/lib/challenge-comparison.test.ts
   shared/lib/no-comparison-report.test.ts
   shared/lib/challenge-pair-resolver.test.ts
+  shared/lib/challenge-pair-resolver.hok2958.test.ts
+  shared/lib/reviewer-stage-adjudicator.test.ts
+  tools/quarantine-legacy-reviewer-forfeits.test.ts
   shared/lib/arm-failure-taxonomy.test.ts
   shared/lib/arm-reliability.test.ts
   shared/lib/stale-task-branches.test.ts
@@ -322,6 +325,7 @@ TESTS=(
   shared/lib/incident-linear-retry-queue.test.ts
   shared/lib/incident-to-linear-synchronizer.test.ts
   shared/lib/incident-filing-reconciler.test.ts
+  shared/lib/incident-log-excerpt-reader.test.ts
   shared/lib/verification-metrics.test.ts
   shared/lib/ci-verification-drift-detector.test.ts
   shared/lib/pre-pr-verification-drift-validator.test.ts
