@@ -800,7 +800,7 @@ export async function executeMerge(
 
   // Write inflight marker before merge attempt
   try {
-    const headSha = candidate.headSha || readPrMergeDiagnostics(candidate.number, options.repoDir, deps.shellRunner).headRefOid || 'unknown';
+    const headSha = candidate.headSha || 'unknown';
     await writeInflightMarker(options.repoDir, {
       version: 1,
       prNumber: candidate.number,
