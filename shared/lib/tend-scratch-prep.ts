@@ -369,6 +369,20 @@ export function createProcessGroupPrepRunner(options: CreateProcessGroupPrepRunn
           // A caller-supplied onSpawn must not derail command execution.
         }
       }
+      // Unref the child process handle and its stdio pipes immediately, so
+      // that even if a descendant inherits the pipe write ends and outlives
+      // the direct child (e.g. `git fetch`'s ssh helper, or a `sleep &` under
+      // a cgroup that refuses group-directed signals), no libuv handle owned
+      // by this runner keeps the parent Node event loop alive after the awaited
+      // promise settles. Data events still fire while the caller is awaiting
+      // `runner.run(...)`, since the pending promise keeps the loop alive on
+      // its own. Once the promise settles, the loop is free to exit even if a
+      // stray pipe write end is still open somewhere.
+      try { child.unref(); } catch { /* noop */ }
+      // `unref()` on stdio Readables exists at runtime (libuv pipe handles)
+      // even though it is not on the public @types/node `Readable` surface.
+      try { (child.stdout as unknown as { unref?: () => void } | null)?.unref?.(); } catch { /* noop */ }
+      try { (child.stderr as unknown as { unref?: () => void } | null)?.unref?.(); } catch { /* noop */ }
 
       const chunks: Buffer[] = [];
       let capturedBytes = 0;
