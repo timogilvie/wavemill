@@ -47,6 +47,7 @@ export interface PrEvidence {
 
 export interface GitEvidence {
   worktreeExists: boolean;
+  worktreeIdentity?: string;
   worktreeDirty: boolean | 'unknown';
   dirtyStatus: string;
   localBranchExists: boolean;
@@ -57,7 +58,26 @@ export interface GitEvidence {
   patchEquivalent: boolean | 'unknown';
   patchUniqueCount: number | null;
   patchEquivalentCount: number | null;
+  equivalentShas?: string[];
+  uniqueLocalOnlyShas?: string[];
+  uniquePublishedShas?: string[];
+  dirtPaths?: string[];
   patchError?: string;
+}
+
+export interface CanonicalCleanupDecision {
+  schemaVersion: number;
+  classification: string;
+  safeToDelete: boolean;
+  remoteBranchExists: boolean;
+  issue?: string;
+  prNumber?: string;
+  prState?: string;
+  verificationReason?: string;
+  worktreeIdentity?: string;
+  expectedWorktree?: string;
+  operatorAction?: string;
+  [key: string]: unknown;
 }
 
 export type TerminalInboxStatus =
@@ -97,6 +117,7 @@ export interface CleanupDeps {
   git(args: string[], cwd: string): string;
   gh(args: string[], cwd: string): string;
   cleanup(decision: TerminalInboxDecision, context: CleanupExecuteContext): void;
+  classify?(issue: string, context: CleanupExecuteContext): CanonicalCleanupDecision | undefined;
   now(): string;
 }
 
@@ -130,6 +151,32 @@ export const defaultCleanupDeps: CleanupDeps = {
   },
   gh(args, cwd) {
     return execFileSync('gh', args, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+  },
+  classify(issue, context) {
+    try {
+      const script = [
+        'set -euo pipefail',
+        `source "${join(context.repoDir, 'shared/lib/wavemill-common.sh').replace(/"/g, '\\"')}"`,
+        `source "${join(context.repoDir, 'shared/lib/terminal-reconciler.sh').replace(/"/g, '\\"')}"`,
+        `cleanup_completed_task "${issue.replace(/"/g, '\\"')}" "" "terminal inbox dry-run classification" || true`,
+        'printf %s "$WAVEMILL_CLEANUP_DECISION_JSON"',
+      ].join('\n');
+      const env = {
+        ...process.env,
+        REPO_DIR: context.repoDir,
+        STATE_FILE: context.stateFile,
+        SESSION: context.session,
+        BASE_BRANCH: context.baseBranch,
+        WORKTREE_ROOT: context.repoDir,
+        WAVEMILL_CLEANUP_ABANDON_ISSUE: context.abandon ? issue : '',
+        WAVEMILL_CLEANUP_DRY_RUN: '1',
+      };
+      const output = execFileSync('bash', ['-lc', script], { cwd: context.repoDir, env, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+      if (!output) return undefined;
+      return JSON.parse(output) as CanonicalCleanupDecision;
+    } catch {
+      return undefined;
+    }
   },
   cleanup(decision, context) {
     const script = [
