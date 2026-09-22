@@ -5,7 +5,17 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildFindings, compactSnapshotForRender, parseArgs, reconcileIncidents, redactObserverText, syncIncidentsToLinear, writeServiceHeartbeat } from './observer.ts';
+import {
+  buildFindings,
+  compactSnapshotForRender,
+  matchInteractivePromptSignature,
+  normalizeInteractivePromptText,
+  parseArgs,
+  reconcileIncidents,
+  redactObserverText,
+  syncIncidentsToLinear,
+  writeServiceHeartbeat,
+} from './observer.ts';
 import { IncidentStore } from '../shared/lib/wavemill-incident-store.ts';
 import { createIncidentDraft } from '../shared/lib/wavemill-incident-model.ts';
 
@@ -2502,5 +2512,322 @@ test('launch-contract drift on a superseded terminal record is provenance, not a
     assert.equal(drift[0].taskId, 'HOK-2963');
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// HOK-3045: task pane blocked on a known interactive agent lifecycle prompt.
+// The detector must match only high-confidence catalog signatures against a
+// correlated task pane, persist a bounded signature summary (never the raw
+// capture), and refuse to auto-resolve while the correlated task remains
+// nonterminal and has not advanced.
+// ---------------------------------------------------------------------------
+
+const CODEX_RETIREMENT_PANE_TEXT = [
+  'wavemill mill running',
+  '',
+  '  GPT-5.5 retires on October 14, 2026',
+  '  Try new model',
+  '  Use existing model',
+  '',
+].join('\n');
+
+function interactivePromptFixture(issue: string, slug: string) {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-interactive-prompt-'));
+  mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
+  writePermissiveSchema(repoDir);
+  return { repoDir, issue, slug };
+}
+
+function interactivePromptSnapshot(
+  fixture: { repoDir: string; issue: string; slug: string },
+  paneText: string | undefined,
+  overrides: { taskUpdated?: string; timestamp?: string; task?: Record<string, unknown> } = {},
+) {
+  const windowName = `${fixture.issue}-${fixture.slug}`;
+  const pane = {
+    session: 'wavemill',
+    windowIndex: '4',
+    paneIndex: '0',
+    windowName,
+    active: true,
+    pid: 5001,
+    command: 'codex',
+    title: `coding ${fixture.issue}`,
+    capturedText: paneText,
+  };
+  return {
+    timestamp: overrides.timestamp ?? new Date().toISOString(),
+    sessions: ['wavemill'],
+    panes: paneText === undefined ? [] : [pane],
+    processes: [],
+    repos: [{
+      session: 'wavemill',
+      repoDir: fixture.repoDir,
+      workflowStatePath: join(fixture.repoDir, '.wavemill', 'workflow-state.json'),
+      tasks: [{
+        issue: fixture.issue,
+        phase: 'coding',
+        status: 'running',
+        slug: fixture.slug,
+        worktree: fixture.repoDir,
+        updated: overrides.taskUpdated ?? new Date().toISOString(),
+        ...(overrides.task ?? {}),
+      }],
+    }],
+    findings: [],
+  };
+}
+
+async function promptIncidents(repoDir: string) {
+  const store = new IncidentStore(join(repoDir, '.wavemill', 'incidents'));
+  return (await store.getAllIncidents()).filter(
+    (incident) => incident.rootCauseClass === 'agent_interactive_prompt_blocked',
+  );
+}
+
+test('interactive prompt matcher requires the full retirement chooser layout', () => {
+  const signature = matchInteractivePromptSignature(CODEX_RETIREMENT_PANE_TEXT);
+  assert.ok(signature);
+  assert.equal(signature.id, 'codex_model_retirement');
+  assert.equal(signature.agent, 'codex');
+});
+
+test('interactive prompt matcher normalizes ANSI escapes and hard wraps', () => {
+  const paneText = [
+    '\u001b[1;32m  GPT-5.5 retires on\u001b[0m October 14, 2026',
+    '  Try new',
+    '   model',
+    '\u001b[36m  Use existing model\u001b[0m',
+  ].join('\n');
+  const signature = matchInteractivePromptSignature(paneText);
+  assert.ok(signature);
+  assert.equal(signature.id, 'codex_model_retirement');
+});
+
+test('interactive prompt matcher rejects single-token mentions and source code', () => {
+  assert.equal(matchInteractivePromptSignature('GPT-5.5 retires on October 14, 2026'), undefined);
+  assert.equal(matchInteractivePromptSignature('only Try new model here'), undefined);
+  assert.equal(
+    matchInteractivePromptSignature('function retires() { return "Try new model" + "Use existing model"; }'),
+    undefined,
+  );
+});
+
+test('interactive prompt normalizer bounds runaway captures', () => {
+  const bounded = normalizeInteractivePromptText('x'.repeat(20_000));
+  assert.ok(bounded.length <= 8_000);
+});
+
+test('correlated Codex task pane at the retirement chooser produces a high-confidence incident', async () => {
+  const fixture = interactivePromptFixture('HOK-3040', 'codex-model-retirement');
+  try {
+    await reconcileIncidents(
+      interactivePromptSnapshot(fixture, CODEX_RETIREMENT_PANE_TEXT),
+      defaultObserverOptions(),
+    );
+    const incidents = await promptIncidents(fixture.repoDir);
+    assert.equal(incidents.length, 1);
+    const [incident] = incidents;
+    assert.equal(incident.taskId, 'HOK-3040');
+    assert.equal(incident.severity, 'high');
+    assert.equal(incident.confidence, 'high');
+    assert.equal(incident.category, 'configuration_operator_condition');
+    assert.equal(incident.metadata.promptSignatureId, 'codex_model_retirement');
+    assert.equal(incident.metadata.promptAgent, 'codex');
+    // Evidence carries only the signature summary — never the raw capture.
+    assert.match(incident.evidence[0].redactedData, /prompt=codex_model_retirement/);
+    assert.doesNotMatch(incident.evidence[0].redactedData, /GPT-5\.5/i);
+    assert.doesNotMatch(incident.evidence[0].redactedData, /October/);
+  } finally {
+    rmSync(fixture.repoDir, { recursive: true, force: true });
+  }
+});
+
+test('normal pane text without the full chooser produces no interactive-prompt incident', async () => {
+  const fixture = interactivePromptFixture('HOK-3050', 'codex-normal-output');
+  try {
+    await reconcileIncidents(
+      interactivePromptSnapshot(fixture, 'wavemill mill: coding phase in progress...\nRead observer.ts\n'),
+      defaultObserverOptions(),
+    );
+    const incidents = await promptIncidents(fixture.repoDir);
+    assert.equal(incidents.length, 0);
+  } finally {
+    rmSync(fixture.repoDir, { recursive: true, force: true });
+  }
+});
+
+test('interactive prompt incident dedupes across polls and increments occurrence', async () => {
+  const fixture = interactivePromptFixture('HOK-3041', 'codex-repeat-poll');
+  try {
+    const base = Date.now();
+    for (let poll = 0; poll < 3; poll += 1) {
+      await reconcileIncidents(
+        interactivePromptSnapshot(fixture, CODEX_RETIREMENT_PANE_TEXT, {
+          timestamp: new Date(base + poll * 1000).toISOString(),
+        }),
+        defaultObserverOptions(),
+      );
+    }
+    const incidents = await promptIncidents(fixture.repoDir);
+    assert.equal(incidents.length, 1);
+    assert.equal(incidents[0].occurrenceCount, 3);
+    // Threshold=3 -> the third distinct event escalates to active.
+    assert.equal(incidents[0].lifecycle, 'active');
+  } finally {
+    rmSync(fixture.repoDir, { recursive: true, force: true });
+  }
+});
+
+test('interactive prompt incident stays active when the prompt disappears without task progress', async () => {
+  const fixture = interactivePromptFixture('HOK-3042', 'codex-disappears');
+  try {
+    const observedAt = new Date().toISOString();
+    // Two polls with the prompt to seed the incident.
+    await reconcileIncidents(
+      interactivePromptSnapshot(fixture, CODEX_RETIREMENT_PANE_TEXT, {
+        timestamp: observedAt,
+        taskUpdated: observedAt,
+      }),
+      defaultObserverOptions(),
+    );
+    await reconcileIncidents(
+      interactivePromptSnapshot(fixture, CODEX_RETIREMENT_PANE_TEXT, {
+        timestamp: new Date(Date.parse(observedAt) + 1000).toISOString(),
+        taskUpdated: observedAt,
+      }),
+      defaultObserverOptions(),
+    );
+
+    // Enough absent cycles to exceed the default resolutionAfterCycles=5.
+    for (let i = 0; i < 8; i += 1) {
+      await reconcileIncidents(
+        interactivePromptSnapshot(fixture, undefined, {
+          timestamp: new Date(Date.parse(observedAt) + (i + 2) * 1000).toISOString(),
+          taskUpdated: observedAt,
+        }),
+        defaultObserverOptions(),
+      );
+    }
+
+    const store = new IncidentStore(join(fixture.repoDir, '.wavemill', 'incidents'));
+    const all = (await store.getAllIncidents()).filter(
+      (incident) => incident.rootCauseClass === 'agent_interactive_prompt_blocked',
+    );
+    assert.equal(all.length, 1);
+    assert.notEqual(all[0].lifecycle, 'resolved');
+  } finally {
+    rmSync(fixture.repoDir, { recursive: true, force: true });
+  }
+});
+
+test('interactive prompt incident auto-resolves once the correlated task advances', async () => {
+  const fixture = interactivePromptFixture('HOK-3043', 'codex-progress');
+  try {
+    const observedAt = new Date().toISOString();
+    await reconcileIncidents(
+      interactivePromptSnapshot(fixture, CODEX_RETIREMENT_PANE_TEXT, {
+        timestamp: observedAt,
+        taskUpdated: observedAt,
+      }),
+      defaultObserverOptions(),
+    );
+
+    // Prompt gone AND task has advanced beyond the recorded observation.
+    const laterUpdated = new Date(Date.parse(observedAt) + 60_000).toISOString();
+    for (let i = 0; i < 6; i += 1) {
+      await reconcileIncidents(
+        interactivePromptSnapshot(fixture, undefined, {
+          timestamp: new Date(Date.parse(laterUpdated) + i * 1000).toISOString(),
+          taskUpdated: laterUpdated,
+        }),
+        defaultObserverOptions(),
+      );
+    }
+
+    const store = new IncidentStore(join(fixture.repoDir, '.wavemill', 'incidents'));
+    const all = (await store.getAllIncidents()).filter(
+      (incident) => incident.rootCauseClass === 'agent_interactive_prompt_blocked',
+    );
+    assert.equal(all.length, 1);
+    assert.equal(all[0].lifecycle, 'resolved');
+  } finally {
+    rmSync(fixture.repoDir, { recursive: true, force: true });
+  }
+});
+
+test('two blocked task panes get independent task-scoped incident fingerprints', async () => {
+  const fixture = interactivePromptFixture('HOK-3044A', 'codex-multi-a');
+  try {
+    // The fixture only carries one repoDir; make two tasks with distinct panes
+    // in the same snapshot.
+    const paneA = {
+      session: 'wavemill',
+      windowIndex: '4',
+      paneIndex: '0',
+      windowName: 'HOK-3044A-codex-multi-a',
+      active: true,
+      pid: 6001,
+      command: 'codex',
+      title: 'coding HOK-3044A',
+      capturedText: CODEX_RETIREMENT_PANE_TEXT,
+    };
+    const paneB = {
+      session: 'wavemill',
+      windowIndex: '5',
+      paneIndex: '0',
+      windowName: 'HOK-3044B-codex-multi-b',
+      active: true,
+      pid: 6002,
+      command: 'codex',
+      title: 'coding HOK-3044B',
+      capturedText: CODEX_RETIREMENT_PANE_TEXT,
+    };
+    const now = new Date().toISOString();
+    const snapshot = {
+      timestamp: now,
+      sessions: ['wavemill'],
+      panes: [paneA, paneB],
+      processes: [],
+      repos: [{
+        session: 'wavemill',
+        repoDir: fixture.repoDir,
+        workflowStatePath: join(fixture.repoDir, '.wavemill', 'workflow-state.json'),
+        tasks: [
+          {
+            issue: 'HOK-3044A',
+            phase: 'coding',
+            status: 'running',
+            slug: 'codex-multi-a',
+            worktree: fixture.repoDir,
+            updated: now,
+          },
+          {
+            issue: 'HOK-3044B',
+            phase: 'coding',
+            status: 'running',
+            slug: 'codex-multi-b',
+            worktree: fixture.repoDir,
+            updated: now,
+          },
+        ],
+      }],
+      findings: [],
+    };
+    await reconcileIncidents(snapshot, defaultObserverOptions());
+
+    const store = new IncidentStore(join(fixture.repoDir, '.wavemill', 'incidents'));
+    const all = (await store.getAllIncidents()).filter(
+      (incident) => incident.rootCauseClass === 'agent_interactive_prompt_blocked',
+    );
+    const byTask = new Set(all.map((incident) => incident.taskId));
+    assert.equal(all.length, 2);
+    assert.equal(byTask.size, 2);
+    assert.ok(byTask.has('HOK-3044A'));
+    assert.ok(byTask.has('HOK-3044B'));
+    assert.notEqual(all[0].fingerprint, all[1].fingerprint);
+  } finally {
+    rmSync(fixture.repoDir, { recursive: true, force: true });
   }
 });
