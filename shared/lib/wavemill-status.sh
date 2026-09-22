@@ -903,6 +903,28 @@ gather_tasks() {
   fi
 }
 
+# HOK-3068: canonical lifecycle outcome for a task, read from the state file.
+# Terminal outcomes (merged/closed/aborted/error) must never occupy the Active
+# section, Inbox, or active-slot accounting regardless of retained worktrees,
+# branches, or tmux panes. Retained resources belong only in Backstage.
+task_workflow_outcome() {
+  local issue="$1"
+  [[ -n "$issue" && "$issue" != "—" ]] || { printf 'active\n'; return 0; }
+  [[ -n "$STATE_FILE" && -f "$STATE_FILE" ]] || { printf 'active\n'; return 0; }
+  declare -F task_lifecycle_jq_filter >/dev/null 2>&1 || { printf 'active\n'; return 0; }
+  local outcome
+  outcome="$(jq -r --arg issue "$issue" \
+    "$(task_lifecycle_jq_filter '(.tasks[$issue] // {}) | wm_workflow_outcome')" \
+    "$STATE_FILE" 2>/dev/null || true)"
+  [[ -n "$outcome" ]] || outcome="active"
+  printf '%s\n' "$outcome"
+}
+
+task_outcome_is_terminal() {
+  local outcome="$1"
+  [[ -n "$outcome" && "$outcome" != "active" ]]
+}
+
 refresh_window_metadata_for_active_tasks() {
   declare -F wavemill_apply_window_metadata >/dev/null 2>&1 || return 0
   [[ -n "$STATE_FILE" && -f "$STATE_FILE" ]] || return 0
@@ -913,6 +935,8 @@ refresh_window_metadata_for_active_tasks() {
 
   while IFS='|' read -r issue slug branch worktree status phase pr; do
     [[ -n "$issue" && -n "$slug" ]] || continue
+    # HOK-3068: never refresh window metadata for terminal work.
+    task_outcome_is_terminal "$(task_workflow_outcome "$issue")" && continue
     if ! is_active "$worktree" "$issue-$slug"; then
       continue
     fi
@@ -1749,6 +1773,70 @@ render_incidents_section() {
   done <<<"$incident_lines"
 }
 
+# HOK-3068: extract compact Backstage fields for one terminal retained task.
+# Emits a tab-separated "disposition\treason\twhen\taction" record, degrading
+# gracefully on missing metadata. Used only by the Backstage recovery section.
+backstage_retained_detail() {
+  local issue="$1"
+  [[ -n "$STATE_FILE" && -f "$STATE_FILE" ]] || return 0
+  jq -r --arg issue "$issue" '
+    (.tasks[$issue] // {}) as $t
+    | ($t.lifecycle // {}) as $l
+    | ($l.cleanupEpisode // {}) as $ep
+    | (($l.resourceDisposition // $ep.disposition // "retained")) as $disp
+    | (($l.retention.reason // $ep.lastOutcome // $ep.failureClass // "")) as $reason
+    | (($ep.lastAttemptAt // $ep.updatedAt // $t.updated // "")) as $when
+    | (($ep.requiredOperatorAction // $l.retention.requiredAction // "")) as $action
+    | [$disp, $reason, $when, $action] | @tsv
+  ' "$STATE_FILE" 2>/dev/null || true
+}
+
+# Format an ISO-8601 timestamp as a compact "Nm"/"Nh"/"Nd" age, or "-".
+format_backstage_age() {
+  local ts="$1" epoch now age
+  [[ -n "$ts" ]] || { printf '-'; return 0; }
+  epoch="$(parse_iso_timestamp_epoch "$ts")"
+  (( epoch > 0 )) || { printf '-'; return 0; }
+  now="$(date +%s)"
+  (( now >= epoch )) || { printf '0m'; return 0; }
+  age=$(( (now - epoch) / 60 ))
+  if (( age < 60 )); then
+    printf '%dm' "$age"
+  elif (( age < 1440 )); then
+    printf '%dh' $(( age / 60 ))
+  else
+    printf '%dd' $(( age / 1440 ))
+  fi
+}
+
+# HOK-3068: compact Backstage recovery section for terminal retained resources.
+# Shows issue, disposition/reason, age, and one explicit operator action when
+# stored — never a per-task warning stream and never full completed-task rows.
+render_backstage_retained_section() {
+  local count="${#backstage_terminal_rows[@]}"
+  (( count == 0 )) && return 0
+
+  local row issue slug branch worktree outcome detail disp reason when action age
+  printf "${EL}\n${B}%s${N} ${D}(%s)${N}${EL}\n" "🗄️  BACKSTAGE (retained)" "$count" >> "$FRAME"
+  printf "${D}%s${N}${EL}\n" "terminal resources retained for recovery — not active" >> "$FRAME"
+  for row in "${backstage_terminal_rows[@]}"; do
+    IFS='|' read -r issue slug branch worktree outcome <<<"$row"
+    detail="$(backstage_retained_detail "$issue")"
+    IFS=$'\t' read -r disp reason when action <<<"$detail"
+    [[ -n "$disp" ]] || disp="retained"
+    age="$(format_backstage_age "$when")"
+    if [[ -n "$reason" ]]; then
+      printf "${D}%-10s  %s  %s (%s)${N}${EL}\n" "$issue" "$outcome" "$disp" "$reason" >> "$FRAME"
+    else
+      printf "${D}%-10s  %s  %s${N}${EL}\n" "$issue" "$outcome" "$disp" >> "$FRAME"
+    fi
+    printf "${D}%10s  └─ age %s${N}${EL}\n" "" "$age" >> "$FRAME"
+    if [[ -n "$action" ]]; then
+      printf "${Y}%10s  └─ %s${N}${EL}\n" "" "$(truncate_detail "$action")" >> "$FRAME"
+    fi
+  done
+}
+
 render_active_section() {
   local count="${#active_tasks[@]}"
   local task_data issue slug branch worktree task_status task_phase state_pr agent_state
@@ -2099,9 +2187,11 @@ backstage_health_dashboard_line() {
 
 render_dashboard() {
   local tasks line issue slug branch worktree task_status task_phase state_pr
-  local win agent_state classification task_data free_slots queue_owned_tasks usage_tip openrouter_warning backstage_health_line malformed_challenge_warning resource_disposition
+  local win agent_state classification task_data free_slots queue_owned_tasks usage_tip openrouter_warning backstage_health_line malformed_challenge_warning resource_disposition workflow_outcome
   declare -ga inbox_tasks=()
   declare -ga active_tasks=()
+  # HOK-3068: terminal work with retained resources is surfaced only here.
+  declare -ga backstage_terminal_rows=()
 
   # Build entire frame into a temp file (avoids $() stripping newlines)
   : > "$FRAME"
@@ -2145,6 +2235,16 @@ render_dashboard() {
       win="${issue}-${slug}"
       [[ "$issue" == "—" ]] && win="$slug"
 
+      # HOK-3068: a task whose canonical lifecycle outcome is terminal never
+      # occupies Active/Inbox even when a worktree, branch, or tmux pane is
+      # retained. Route it to Backstage so retained resources stay discoverable
+      # without making completed work look active or consuming an active slot.
+      workflow_outcome="$(task_workflow_outcome "$issue")"
+      if task_outcome_is_terminal "$workflow_outcome"; then
+        backstage_terminal_rows+=("$issue|$slug|$branch|$worktree|$workflow_outcome")
+        continue
+      fi
+
       is_active "$worktree" "$win" || continue
 
       agent_state=""
@@ -2182,6 +2282,7 @@ render_dashboard() {
   fi
   render_inbox_section
   render_active_section
+  render_backstage_retained_section
   render_project_context_suggestion
 
   local now_ts

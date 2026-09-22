@@ -1519,6 +1519,14 @@ cleanup_stale_tasks() {
   local cleaned=0
   while IFS= read -r issue; do
     [[ -z "$issue" ]] && continue
+    # HOK-3068: the startup terminal preflight is the single owner of terminal
+    # cleanup for this run epoch. Skip rows it already classified as terminal so
+    # the stale-task pass does not re-run remote PR/Git/Linear checks or retry
+    # cleanup a second time on the same issue in one startup.
+    if declare -F startup_preflight_owns_terminal_row >/dev/null 2>&1 \
+       && startup_preflight_owns_terminal_row "$issue"; then
+      continue
+    fi
     local task_json
     task_json=$(jq -r --arg i "$issue" '.tasks[$i]' "$STATE_FILE")
     local slug branch worktree pr linear_issue eval_completed
