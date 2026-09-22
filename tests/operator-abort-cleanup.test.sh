@@ -70,6 +70,12 @@ cleanup_file="$tmp/operator-abort-cleanup.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_branch_deletion_mode"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "normalize_worktree_path"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_task_worktree_identity"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_orphan_dir_retention_paths"
+  printf '\n'
   printf '%s\n' 'WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT=".wavemill/observer-findings.jsonl"'
   extract_function "$COMMON_SCRIPT" "wavemill_worktree_dirty_status"
   printf '\n'
@@ -78,6 +84,8 @@ cleanup_file="$tmp/operator-abort-cleanup.sh"
   extract_function "$COMMON_SCRIPT" "wavemill_fetch_pr_terminal_evidence"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_record_pr_delivery_evidence"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "_wavemill_cleanup_decision_json"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "_wavemill_record_cleanup_decision"
   printf '\n'
@@ -131,6 +139,9 @@ EOF
     set_window_attention_state() { ATTENTION="$2"; }
     reset_retry_count() { :; }
     archive_stage_artifacts() { ORDER+="archive;"; }
+    wavemill_task_worktree_identity() { printf "ok\n"; }
+    normalize_worktree_path() { printf "%s\n" "$1"; }
+    wavemill_orphan_dir_retention_paths() { printf "\n"; }
     read_state_value() {
       local default="$1"
       shift
