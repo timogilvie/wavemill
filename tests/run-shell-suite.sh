@@ -82,6 +82,7 @@ TESTS=(
   backstage-observer-watchdog.test.sh
   backstage-observer-pane-promotion.test.sh
   control-layout.test.sh
+  control-pane-recovery.test.sh
   challenge-comparison-state.test.sh
   challenge-running-state.test.sh
   challenge-eval-hard-failure.test.sh

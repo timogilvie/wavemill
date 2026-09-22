@@ -91,6 +91,7 @@ for f in \
   "$LIB_DIR"/agent-adapters.sh \
   "$REPO_DIR"/shared/hooks/*.sh \
   "$REPO_DIR"/shared/agent-bin/tmux \
+  "$REPO_DIR"/tests/control-pane-recovery.test.sh \
   "$REPO_DIR"/tests/dashboard-refresh.test.sh \
   "$REPO_DIR"/tests/state-mutex.test.sh \
   "$REPO_DIR"/tests/task-id-log-prefix.test.sh \

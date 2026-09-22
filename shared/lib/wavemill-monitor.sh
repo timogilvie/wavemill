@@ -17227,9 +17227,14 @@ check_mill_pane_health() {
     local status_script="$LIB_DIR/wavemill-status.sh"
 
     if (( pane_count == 1 )); then
-      # Single pane remaining — recreate both missing panes
-      tmux split-window -t "$SESSION:$WAVEMILL_WINDOW_MILL.0" -hb -p 50 "exec bash" 2>/dev/null || true
+      # Single pane remaining — recreate both missing panes.
+      # Mirror setup_control_dashboard() exactly so the surviving monitor
+      # stays as pane 0: vertical split at 65% first, then a full-height
+      # horizontal split at 50%. Do NOT use -b: it would insert the new pane
+      # before the target and renumber the live monitor, causing the later
+      # respawn-pane on .1 and .2 to replace the monitor itself.
       tmux split-window -t "$SESSION:$WAVEMILL_WINDOW_MILL.0" -v -p 65 "exec bash" 2>/dev/null || true
+      tmux split-window -t "$SESSION:$WAVEMILL_WINDOW_MILL.0" -h -f -p 50 "exec bash" 2>/dev/null || true
     elif (( pane_count == 2 )); then
       # Two panes — add the missing one
       tmux split-window -t "$SESSION:$WAVEMILL_WINDOW_MILL.0" -v -p 65 "exec bash" 2>/dev/null || true
