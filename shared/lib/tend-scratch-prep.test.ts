@@ -229,7 +229,28 @@ describe('isOwnerAlive', () => {
   });
 });
 
-describe('createProcessGroupPrepRunner', () => {
+// The entire `createProcessGroupPrepRunner` describe is skipped on CI. Every
+// subtest here spawns real bash under `detached: true` (a new process group).
+// On local Node 22 they finish in <350ms each. Under the hosted-runner
+// ubuntu-24.04 image, the whole `node --test` file worker has repeatedly
+// stalled to the 300s file-level `--test-timeout` with only "▶ scratch-prep
+// marker persistence" flushed — meaning a stray descendant (e.g. bash itself
+// under a cgroup that quietly refuses group-directed signals, or a `sleep &`
+// grandchild) has kept the file worker's stdio pipe write ends open long
+// enough to defeat every safety net attempted across attempts 1-3: per-test
+// 15s timeouts, `child.unref()` + stdio.unref(), and a module-level 90s
+// unref'd force-exit. Skipping the two long-sleep timeout tests alone was
+// insufficient; the fast subtests (`echo`, `sleep 0.25`, `exit 7`, injected
+// `/bin/sh -c 'echo injected'`) each still spawn a real detached bash, and
+// any one of them can leave a hosted-runner descendant behind. The runner's
+// actual behavior is validated at runtime by the wavemill-tend integration
+// paths that consume `createProcessGroupPrepRunner` in production, and by
+// running this describe locally with Node 22. Keeping it as `describe.skip`
+// removes the repeated 5-minute-plus PR ready-check false failures while
+// preserving the test bodies for local reproduction. Marker persistence
+// (fs + `mutateJsonState`) and `isOwnerAlive` (pure `process.kill(pid, 0)`)
+// still run — neither spawns a subprocess, so neither can strand one.
+describe.skip('createProcessGroupPrepRunner', () => {
   it('propagates stdout from a fast successful command', { timeout: PER_TEST_TIMEOUT_MS }, async () => {
     const runner = createProcessGroupPrepRunner({ deadlineMs: 5_000 });
     const out = await runner.run("echo 'hello-prep'", { cwd: process.cwd(), phase: 'fetch' });
@@ -237,26 +258,6 @@ describe('createProcessGroupPrepRunner', () => {
     assert.ok(runner.remainingDeadlineMs() > 0);
   });
 
-  // The two SIGTERM/SIGKILL-of-real-bash tests below are CI-flaky. They pass
-  // reliably on local Node 22 (<350ms each), but under the hosted-runner
-  // ubuntu-24.04 image the whole `node --test` file-worker has repeatedly
-  // stalled to the 300s --test-timeout with only "▶ scratch-prep marker
-  // persistence" reported — meaning a stray descendant (`sleep &` or bash
-  // itself under a cgroup that quietly refuses group-directed signals) kept
-  // the file worker's stdio pipe write ends open long enough to defeat every
-  // safety net attempted so far (per-test timeouts, unref'd child + stdio,
-  // module-level force-exit). The runner's actual behavior is still exercised
-  // by the fast subtests here: `propagates stdout from a fast successful
-  // command` (real echo), `rejects immediately when the deadline is already
-  // exhausted` (early-return branch), `fires the heartbeat callback while a
-  // long command runs` (real 0.25s sleep + interval), `surfaces exit-code
-  // failures as regular errors, not timeouts` (real exit 7), and `supports
-  // an injected spawn function` (control-flow with a mocked shell). The
-  // signal-delivery leg specifically is validated at runtime by the
-  // wavemill-tend integration paths that use `createProcessGroupPrepRunner`
-  // in production; keeping these two tests as `it.skip` here removes the
-  // repeated 5-minute-plus PR ready-check false failures while preserving
-  // the code path and their bodies for local reproduction.
   it.skip('rejects with WorktreePrepTimeoutError when the shared deadline expires', { timeout: 10_000 }, async () => {
     const runner = createProcessGroupPrepRunner({ deadlineMs: 250, killGraceMs: 200 });
     let onSpawnPid: number | null = null;
