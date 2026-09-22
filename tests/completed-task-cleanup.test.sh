@@ -98,6 +98,8 @@ CLEANUP_FILE="$TEST_TMP/cleanup_completed_task.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_load_config"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "cleanup_episode_enabled"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "cleanup_episode_config_value"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_pr_aware_cleanup_enabled"
@@ -563,6 +565,12 @@ EOF
     reset_retry_count() { :; }
     remove_task_state() { REMOVE_STATE_CALLS=$((REMOVE_STATE_CALLS + 1)); }
     pr_state() { printf "%s\n" "MERGED"; }
+    cleanup_episode_should_attempt() { printf "%s\n" "attempt"; return 0; }
+    cleanup_episode_candidate_json() { return 0; }
+    cleanup_episode_record_outcome() { return 0; }
+    set_task_lifecycle_disposition() { :; }
+    wavemill_remove_orphan_task_dir() { return 0; }
+    reconciliation_lease_release() { return 0; }
     _with_timeout() { shift; "$@"; }
     git() {
       if [[ "${1:-}" == "-C" ]]; then
