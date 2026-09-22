@@ -7,9 +7,11 @@ import {
   claimReservation,
   computeSelectionExclusions,
   emptySelectionHealthState,
+  circuitKeyFor,
   readSelectionHealth,
   recordSelectionOutcome,
   releaseReservation,
+  resolveSelectionHealthKey,
   resolveSelectionHealthPath,
   type SelectionHealthOwner,
 } from './challenge-selection-health.ts';
@@ -264,6 +266,79 @@ test('missing file reads empty and corrupt JSON fails closed without repair', ()
     writeFileSync(path, '{bad json', 'utf-8');
     assert.throws(() => readSelectionHealth({ repoDir, config }), /corrupt/);
     assert.equal(readFileSync(path, 'utf-8'), '{bad json');
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('typed review-timeout provider faults open the model circuit (HOK-3064)', async () => {
+  const repoDir = repo();
+  const circuitConfig = { ...config, circuit: { transientFailureThreshold: 3, windowSeconds: 300, cooldownSeconds: 60 } };
+  try {
+    let now = Date.parse('2026-09-22T00:00:00.000Z');
+    // Three terminal review-timeout attempts, recorded as provider-fault via
+    // the typed native-review-timeout kind, must open the circuit.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await recordSelectionOutcome({
+        repoDir,
+        model: 'kimi-k2',
+        stage: 'review',
+        owner: owner(`HOK-${attempt}`),
+        failureKind: 'native-review-timeout',
+        faultClass: 'provider-fault',
+        now: () => now,
+        config: circuitConfig,
+      });
+      now += 1000;
+    }
+    const exclusions = computeSelectionExclusions({
+      stage: 'review',
+      candidates: ['kimi-k2'],
+      snapshot: readSelectionHealth({ repoDir, now: () => now, config: circuitConfig }),
+      owner: owner('HOK-new'),
+      now,
+      config: circuitConfig,
+    });
+    assert.equal(exclusions.eligible.length, 0);
+    assert.equal(exclusions.excludedByCircuit.length, 1);
+    assert.equal(exclusions.excludedByCircuit[0]?.reason, 'circuit-open');
+    assert.equal(exclusions.excludedByCircuit[0]?.provider, 'openrouter');
+    assert.equal(exclusions.excludedByCircuit[0]?.canonicalModel, 'kimi-k2');
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('provider identity normalizes across native/native-openrouter/bare forms (HOK-3064)', async () => {
+  // A single OpenRouter execution can surface under bare, provider/model, and
+  // native-provider/model forms across intent, stage result, and abort marker.
+  // All three must key to one circuit rather than diluting across health rows.
+  assert.deepEqual(resolveSelectionHealthKey('kimi-k2'), { provider: 'openrouter', canonicalModel: 'kimi-k2' });
+  assert.deepEqual(resolveSelectionHealthKey('openrouter/kimi-k2'), { provider: 'openrouter', canonicalModel: 'kimi-k2' });
+  assert.deepEqual(resolveSelectionHealthKey('native-openrouter/kimi-k2'), { provider: 'openrouter', canonicalModel: 'kimi-k2' });
+  assert.equal(circuitKeyFor('native-openrouter/kimi-k2'), circuitKeyFor('kimi-k2'));
+
+  const repoDir = repo();
+  const circuitConfig = { ...config, circuit: { transientFailureThreshold: 3, windowSeconds: 300, cooldownSeconds: 60 } };
+  try {
+    let now = Date.parse('2026-09-22T00:00:00.000Z');
+    for (const model of ['native-openrouter/kimi-k2', 'openrouter/kimi-k2', 'kimi-k2']) {
+      await recordSelectionOutcome({
+        repoDir,
+        model,
+        stage: 'review',
+        owner: owner('HOK-shared'),
+        failureKind: 'native-review-timeout',
+        faultClass: 'provider-fault',
+        now: () => now,
+        config: circuitConfig,
+      });
+      now += 1000;
+    }
+    const state = readSelectionHealth({ repoDir, now: () => now, config: circuitConfig });
+    assert.deepEqual(Object.keys(state.circuits), ['openrouter|kimi-k2']);
+    assert.equal(state.circuits['openrouter|kimi-k2']?.recentTransientAt.length, 3);
+    assert.equal(state.circuits['openrouter|kimi-k2']?.state, 'open');
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
   }
