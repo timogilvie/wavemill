@@ -229,8 +229,17 @@ export class IncidentStore {
    * to resolved at the configured threshold. Must NOT be called when detection
    * for the repository failed or was disabled — absence of data is not absence
    * of the incident.
+   *
+   * An optional `canResolveByAbsence` gate lets the caller keep specific
+   * records active despite absence — for example, an interactive-prompt block
+   * (HOK-3045) that must not auto-resolve until its correlated task advances
+   * or reaches a terminal state. When the gate returns false, missed cycles
+   * still accrue for audit but the record stays active.
    */
-  async runResolutionSweep(freshFingerprints: Iterable<string>): Promise<IncidentRecord[]> {
+  async runResolutionSweep(
+    freshFingerprints: Iterable<string>,
+    canResolveByAbsence?: (record: IncidentRecord) => boolean,
+  ): Promise<IncidentRecord[]> {
     const fresh = new Set(freshFingerprints);
     const indexPath = join(this.incidentsDir, 'index.json');
     if (!existsSync(indexPath)) return [];
@@ -244,7 +253,8 @@ export class IncidentStore {
           continue;
         }
         const missedCycles = (typeof record.metadata?.missedCycles === 'number' ? record.metadata.missedCycles : 0) + 1;
-        if (missedCycles >= this.resolutionAfterCycles) {
+        const gateAllowsResolve = canResolveByAbsence ? canResolveByAbsence(record) : true;
+        if (gateAllowsResolve && missedCycles >= this.resolutionAfterCycles) {
           const updated: IncidentRecord = {
             ...record,
             lifecycle: 'resolved',

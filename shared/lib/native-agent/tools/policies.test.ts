@@ -170,4 +170,39 @@ describe('native-agent tool policies', () => {
       /non-empty worktreePath/,
     );
   });
+
+  it('denies with not_exposed when eligibleNames excludes the tool', () => {
+    const decision = evaluate({
+      phase: 'coding',
+      name: 'browser_navigate',
+      registry: [makeMetadata('browser_navigate', 'read-only', ['coding'])],
+      config: { eligibleNames: ['read_file'] },
+    });
+
+    assert.deepEqual(decision, {
+      kind: 'deny',
+      reason: 'not_exposed',
+      message: 'not_exposed: tool "browser_navigate" is not exposed for coding',
+    });
+  });
+
+  it('allows the same tool when eligibleNames includes it', () => {
+    const decision = evaluate({
+      phase: 'coding',
+      name: 'browser_navigate',
+      registry: [makeMetadata('browser_navigate', 'read-only', ['coding'])],
+      config: { eligibleNames: ['browser_navigate'] },
+    });
+
+    assert.deepEqual(decision, { kind: 'allow' });
+  });
+
+  it('does not alter Tier 1–4 behavior when eligibleNames is absent', () => {
+    const decision = evaluate({
+      phase: 'planning',
+      name: 'read_file',
+      registry: [makeMetadata('read_file', 'read-only', ['planning', 'coding', 'review'])],
+    });
+    assert.deepEqual(decision, { kind: 'allow' });
+  });
 });
