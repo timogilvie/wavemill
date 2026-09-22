@@ -104,9 +104,17 @@ CLEANUP_FILE="$TEST_TMP/cleanup_completed_task.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_branch_deletion_mode"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "normalize_worktree_path"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_task_worktree_identity"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_orphan_dir_retention_paths"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_fetch_pr_terminal_evidence"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_record_pr_delivery_evidence"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "_wavemill_cleanup_decision_json"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "_wavemill_record_cleanup_decision"
   printf '\n'
@@ -272,6 +280,9 @@ EOF
     reset_retry_count() { RESET_RETRY_CALLS=$((RESET_RETRY_CALLS + 1)); ORDER+="reset;"; }
     remove_task_state() { REMOVE_STATE_CALLS=$((REMOVE_STATE_CALLS + 1)); ORDER+="remove-state;"; }
     check_challenge_sibling_merged() { [[ "$TEST_CASE" == "closed-loser-abandoned" ]]; }
+    wavemill_task_worktree_identity() { printf "ok\n"; }
+    normalize_worktree_path() { printf "%s\n" "$1"; }
+    wavemill_orphan_dir_retention_paths() { printf "\n"; }
     _with_timeout() { shift; "$@"; }
     pr_state() {
       case "$TEST_CASE" in
