@@ -1332,6 +1332,10 @@ safe_remove_task_worktree_and_branch() {
   local verified_toplevel=""
   local orphan_reason=""
   local orphan_independent_paths=""
+  local patch_unique_shas=""
+  local patch_equivalent_shas=""
+  local patch_published_undelivered_shas=""
+  local patch_equivalence_scope=""
 
   WAVEMILL_CLEANUP_OUTCOME=""
 
@@ -1508,17 +1512,43 @@ safe_remove_task_worktree_and_branch() {
                 classification="safe_terminal_pr_head"
                 cleanup_authority="PR #${pr} merged into ${base_branch} with headRefOid exactly equal to local head ${local_head_sha}"
               elif git -C "$REPO_DIR" merge-base --is-ancestor "$pr_head_oid" "$local_head_sha" 2>/dev/null; then
-                classification="retain_unpublished"
-                verification_reason="changed_after_pr_head"
+                if patch_cherry_output="$(git -C "$REPO_DIR" cherry "$base_ref" "$task_branch" "$pr_head_oid" 2>/dev/null)"; then
+                  patch_unique_count="$(printf '%s\n' "$patch_cherry_output" | awk '/^\+/ { count++ } END { print count + 0 }')"
+                  patch_equivalent_count="$(printf '%s\n' "$patch_cherry_output" | awk '/^-/ { count++ } END { print count + 0 }')"
+                  patch_total_count="$(printf '%s\n' "$patch_cherry_output" | awk '/^[+-]/ { count++ } END { print count + 0 }')"
+                  patch_equivalence_scope="post_pr_head"
+                  if [[ "$patch_unique_count" == "0" ]]; then
+                    patch_cherry_status="equivalent"
+                    if [[ -n "$pr_merge_sha" ]]; then
+                      classification="safe_patch_equivalent_pr"
+                      cleanup_authority="PR #${pr} merged into ${base_branch}; post-PR commits are patch-equivalent to base"
+                      patch_equivalent_shas="$(printf '%s\n' "$patch_cherry_output" | awk '/^-/ { print $2 }' | tr '\n' ' ')"
+                    else
+                      classification="retain_unpublished"
+                      verification_reason="changed_after_pr_head"
+                    fi
+                  else
+                    patch_cherry_status="unique"
+                    classification="retain_unpublished"
+                    verification_reason="unique_local_patch"
+                    patch_unique_shas="$(printf '%s\n' "$patch_cherry_output" | awk '/^\+/ { print $2 }' | tr '\n' ' ')"
+                  fi
+                else
+                  patch_cherry_status="failed"
+                  classification="retain_unverifiable"
+                  verification_reason="patch_equivalence_failed"
+                fi
               elif patch_cherry_output="$(git -C "$REPO_DIR" cherry "$base_ref" "$task_branch" 2>/dev/null)"; then
                 patch_unique_count="$(printf '%s\n' "$patch_cherry_output" | awk '/^\+/ { count++ } END { print count + 0 }')"
                 patch_equivalent_count="$(printf '%s\n' "$patch_cherry_output" | awk '/^-/ { count++ } END { print count + 0 }')"
                 patch_total_count="$(printf '%s\n' "$patch_cherry_output" | awk '/^[+-]/ { count++ } END { print count + 0 }')"
+                patch_equivalence_scope="whole_branch"
                 if [[ "$patch_unique_count" == "0" ]]; then
                   patch_cherry_status="equivalent"
                   if [[ -n "$pr_merge_sha" ]]; then
                     classification="safe_patch_equivalent_pr"
                     cleanup_authority="PR #${pr} merged into ${base_branch}; git cherry found no unique local patch IDs on ${task_branch}"
+                    patch_equivalent_shas="$(printf '%s\n' "$patch_cherry_output" | awk '/^-/ { print $2 }' | tr '\n' ' ')"
                   else
                     classification="retain_unpublished"
                     verification_reason="changed_after_pr_head"
@@ -1527,6 +1557,7 @@ safe_remove_task_worktree_and_branch() {
                   patch_cherry_status="unique"
                   classification="retain_unpublished"
                   verification_reason="unique_local_patch"
+                  patch_unique_shas="$(printf '%s\n' "$patch_cherry_output" | awk '/^\+/ { print $2 }' | tr '\n' ' ')"
                 fi
               else
                 patch_cherry_status="failed"
