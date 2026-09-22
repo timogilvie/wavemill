@@ -67,3 +67,55 @@ if declare -p CLEANED >/dev/null 2>&1; then
 fi
 
 echo "PASS: startup cleanup runs without monitor arrays under set -u"
+
+# ── HOK-3068: startup preflight skips settled cleanup episodes ──────────
+# A task with a previous terminal classification and settled cleanup episode
+# should be re-classified as terminal without PR fetches.
+jq -n '{
+  session: "startup-cleanup-integration",
+  tasks: {
+    "HOK-3068": {
+      slug: "settled-retained-task",
+      branch: "task/settled-retained-task",
+      worktree: "'"$WORKTREE_ROOT"'/settled-retained-task",
+      status: "merged",
+      phase: "done",
+      pr: "999",
+      rehydration: {
+        eligibility: "terminal",
+        reason: "pr_merged",
+        runEpoch: "previous-epoch"
+      },
+      lifecycle: {
+        workflowOutcome: "merged",
+        resourceDisposition: "retained",
+        retention: { reason: "unique-local-work" },
+        cleanupEpisode: {
+          disposition: "retained",
+          fingerprint: "abc123",
+          attemptCount: 1
+        }
+      }
+    }
+  }
+}' > "$STATE_FILE"
+
+# Count calls to wavemill_fetch_pr_terminal_evidence — should be 0
+_pr_fetch_count=0
+wavemill_fetch_pr_terminal_evidence() {
+  _pr_fetch_count=$((_pr_fetch_count + 1))
+  return 1
+}
+
+startup_terminal_preflight "$SESSION"
+
+if [[ "$_pr_fetch_count" -eq 0 ]]; then
+  echo "PASS: settled cleanup episode skipped PR fetch on startup"
+else
+  echo "FAIL: settled cleanup episode fetched PR $_pr_fetch_count time(s)" >&2
+  exit 1
+fi
+
+# Task may be cleaned up (removed from state) which is correct behavior.
+# The key contract: no remote PR check was performed for this settled task.
+echo "PASS: settled terminal task classified without remote checks"

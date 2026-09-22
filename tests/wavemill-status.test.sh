@@ -672,11 +672,17 @@ EOF
 OUTPUT_CLEANUP_EPISODE="$TMP_DIR/output-cleanup-episode.txt"
 run_render "$STATE_FILE_CLEANUP_EPISODE" "$WORKTREES_DIR" "$BEHAVIOR_SKIPPED" "$OUTPUT_CLEANUP_EPISODE"
 
-if grep -q 'cleanup: retained attempts=1 outcome=local-work-preserved fp=abc1' "$OUTPUT_CLEANUP_EPISODE" \
-  && grep -q 'lifecycle: outcome=merged disposition=retained reason=local-work-' "$OUTPUT_CLEANUP_EPISODE"; then
-  pass "dashboard renders retained cleanup episode detail"
+# HOK-3068: terminal merged tasks are now escrowed from Active/Inbox.
+# The cleanup episode detail moves to Backstage; verify the task is excluded.
+if ! grep -q 'HOK-2955' "$OUTPUT_CLEANUP_EPISODE"; then
+  pass "terminal merged task with cleanup episode excluded from dashboard (HOK-3068)"
 else
-  fail "dashboard cleanup episode detail is missing"
+  fail "terminal merged task with cleanup episode should not appear in Active/Inbox"
+fi
+if grep -q 'terminal resource.*retained' "$OUTPUT_CLEANUP_EPISODE"; then
+  pass "cleanup episode retained task counted in terminal summary"
+else
+  fail "cleanup episode retained task should appear in terminal summary"
 fi
 
 STATE_FILE_MONITOR_QUEUE="$TMP_DIR/state-monitor-queue.json"
@@ -1329,11 +1335,11 @@ else
   fail "ready queue state labels are missing"
 fi
 
-if grep -q 'HOK-1313.*✓ done.*✓ merged.*#424 MERGED' "$OUTPUT_READY_QUEUE" \
-  && ! grep -q 'HOK-1313.*ready-stale' "$OUTPUT_READY_QUEUE"; then
-  pass "merged tasks override stale ready queue labels"
+# HOK-3068: terminal merged tasks are now escrowed from Active/Inbox entirely.
+if ! grep -q 'HOK-1313' "$OUTPUT_READY_QUEUE"; then
+  pass "merged task excluded from dashboard entirely (HOK-3068 terminal escrow)"
 else
-  fail "merged task should not display stale ready queue label"
+  fail "merged task should not appear in Active/Inbox after HOK-3068"
 fi
 
 STATE_FILE_READY_WATCHDOG="$TMP_DIR/state-ready-watchdog.json"
@@ -2916,6 +2922,104 @@ else
   fail "pending deferred arm annotation contract violated"
 fi
 rm -rf "$PENDING_ARM_DIR"
+
+# ── HOK-3068: terminal task escrow ──────────────────────────────────────────
+echo ""
+echo "=== HOK-3068: terminal task escrow from active dashboard ==="
+
+ESCROW_DIR="$TMP_DIR/escrow"
+mkdir -p "$ESCROW_DIR/worktrees/retained-merged/features/retained-merged" \
+         "$ESCROW_DIR/worktrees/active-coding/features/active-coding" \
+         "$ESCROW_DIR/worktrees/retained-dirty/features/retained-dirty"
+
+ESCROW_STATE="$ESCROW_DIR/state.json"
+cat > "$ESCROW_STATE" <<ESCROW_JSON
+{
+  "freeSlots": 3,
+  "tasks": {
+    "HOK-5001": {
+      "slug": "retained-merged",
+      "branch": "task/retained-merged",
+      "worktree": "$ESCROW_DIR/worktrees/retained-merged",
+      "status": "merged",
+      "phase": "done",
+      "pr": "500",
+      "lifecycle": {
+        "workflowOutcome": "merged",
+        "resourceDisposition": "retained",
+        "retention": { "reason": "unique-local-work" }
+      }
+    },
+    "HOK-5002": {
+      "slug": "active-coding",
+      "branch": "task/active-coding",
+      "worktree": "$ESCROW_DIR/worktrees/active-coding",
+      "status": "",
+      "phase": "coding",
+      "pr": ""
+    },
+    "HOK-5003": {
+      "slug": "retained-dirty",
+      "branch": "task/retained-dirty",
+      "worktree": "$ESCROW_DIR/worktrees/retained-dirty",
+      "status": "closed",
+      "phase": "closed",
+      "pr": "501",
+      "lifecycle": {
+        "workflowOutcome": "closed",
+        "resourceDisposition": "retained",
+        "retention": { "reason": "dirty-worktree" }
+      }
+    }
+  }
+}
+ESCROW_JSON
+
+ESCROW_BEHAVIOR="$ESCROW_DIR/behavior.json"
+cat > "$ESCROW_BEHAVIOR" <<'ESCROW_BEH'
+{
+  "pane": {},
+  "hook": {},
+  "reported": {},
+  "planning": {},
+  "pr": {},
+  "checks": {}
+}
+ESCROW_BEH
+
+ESCROW_OUTPUT="$ESCROW_DIR/output.txt"
+run_render "$ESCROW_STATE" "$ESCROW_DIR/worktrees" "$ESCROW_BEHAVIOR" "$ESCROW_OUTPUT"
+
+# Terminal merged task must NOT appear in ACTIVE or INBOX
+if ! grep -q 'HOK-5001' "$ESCROW_OUTPUT"; then
+  pass "terminal merged task (HOK-5001) excluded from dashboard"
+else
+  fail "terminal merged task (HOK-5001) should not appear in Active/Inbox"
+fi
+
+# Active task must still appear
+if grep -q 'HOK-5002' "$ESCROW_OUTPUT"; then
+  pass "active coding task (HOK-5002) still in dashboard"
+else
+  fail "active coding task (HOK-5002) should remain in dashboard"
+fi
+
+# Terminal closed task must NOT appear
+if ! grep -q 'HOK-5003' "$ESCROW_OUTPUT"; then
+  pass "terminal closed task (HOK-5003) excluded from dashboard"
+else
+  fail "terminal closed task (HOK-5003) should not appear in Active/Inbox"
+fi
+
+# Retained summary should appear in header
+if grep -q 'terminal resource.*retained' "$ESCROW_OUTPUT"; then
+  pass "retained terminal resource summary shown in header"
+else
+  cat "$ESCROW_OUTPUT"
+  fail "retained terminal resource summary should appear in header"
+fi
+
+rm -rf "$ESCROW_DIR"
 
 echo ""
 echo "--- Results: $PASS passed, $FAIL failed ---"

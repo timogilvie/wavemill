@@ -883,6 +883,25 @@ agent_status() {
   if [[ "$dead" == "1" ]]; then echo "exited"; else echo "running"; fi
 }
 
+# ── Terminal lifecycle filter (HOK-3068) ──────────────────────────────────
+# Returns 0 (true) when a task's workflow outcome is terminal and should be
+# excluded from Active/Inbox dashboard sections.  Uses the canonical
+# wm_workflow_outcome jq def from wavemill-common.sh.
+is_terminal_workflow_outcome() {
+  local issue="$1"
+  [[ -n "$STATE_FILE" && -f "$STATE_FILE" ]] || return 1
+  if declare -F task_lifecycle_jq_filter >/dev/null 2>&1; then
+    local outcome
+    outcome="$(jq -r --arg issue "$issue" \
+      "$(task_lifecycle_jq_filter '(.tasks[$issue] // {}) | wm_workflow_outcome')" \
+      "$STATE_FILE" 2>/dev/null || true)"
+    case "$outcome" in
+      merged|closed|aborted|error) return 0 ;;
+    esac
+  fi
+  return 1
+}
+
 # ── Task discovery ────────────────────────────────────────────────────────
 # Prefer state file (from mill), fall back to worktree directories.
 # Output: issue|slug|branch|worktree|status|phase|pr  per line
@@ -2100,6 +2119,7 @@ backstage_health_dashboard_line() {
 render_dashboard() {
   local tasks line issue slug branch worktree task_status task_phase state_pr
   local win agent_state classification task_data free_slots queue_owned_tasks usage_tip openrouter_warning backstage_health_line malformed_challenge_warning resource_disposition
+  local terminal_retained_count=0
   declare -ga inbox_tasks=()
   declare -ga active_tasks=()
 
@@ -2145,6 +2165,13 @@ render_dashboard() {
       win="${issue}-${slug}"
       [[ "$issue" == "—" ]] && win="$slug"
 
+      # HOK-3068: exclude terminal tasks from Active/Inbox regardless of
+      # retained worktree, branch, tmux pane, or task-state row.
+      if is_terminal_workflow_outcome "$issue"; then
+        terminal_retained_count=$((terminal_retained_count + 1))
+        continue
+      fi
+
       is_active "$worktree" "$win" || continue
 
       agent_state=""
@@ -2175,6 +2202,11 @@ render_dashboard() {
       fi
     done <<<"$tasks"
 
+  fi
+
+  # HOK-3068: compact retained-resource summary in header instead of per-task rows.
+  if (( terminal_retained_count > 0 )); then
+    printf "${D}├─ %d terminal resource(s) retained — see Backstage${N}${EL}\n" "$terminal_retained_count" >> "$FRAME"
   fi
 
   if declare -f render_incidents_section >/dev/null 2>&1; then

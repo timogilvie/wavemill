@@ -88,6 +88,17 @@ startup_task_eligibility() {
     return 0
   fi
 
+  # HOK-3068: skip remote PR/Git checks when the task already has a settled
+  # cleanup episode from a previous run with an unchanged fingerprint.
+  local _prev_eligibility _cleanup_disposition
+  _prev_eligibility="$(jq -r '.rehydration.eligibility // empty' <<<"$task_json" 2>/dev/null || true)"
+  _cleanup_disposition="$(jq -r '.lifecycle.cleanupEpisode.disposition // empty' <<<"$task_json" 2>/dev/null || true)"
+  if [[ "$_prev_eligibility" == "terminal" ]] && [[ "$_cleanup_disposition" == "retained" || "$_cleanup_disposition" == "reaped" || "$_cleanup_disposition" == "verification-required" ]]; then
+    reason="$(jq -r '.rehydration.reason // "settled_cleanup"' <<<"$task_json" 2>/dev/null || echo "settled_cleanup")"
+    printf 'terminal:%s\n' "$reason"
+    return 0
+  fi
+
   pr="$(jq -r '.pr // .lifecycle.deliveryEvidence.prNumber // empty' <<<"$task_json" 2>/dev/null || true)"
   worktree="$(jq -r '.worktree // empty' <<<"$task_json" 2>/dev/null || true)"
   phase="$(jq -r '.phase // empty' <<<"$task_json" 2>/dev/null || true)"

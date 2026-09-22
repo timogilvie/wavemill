@@ -1509,6 +1509,8 @@ cleanup_terminal_missing_worktree_entries() {
 
 # Prune stale tasks from previous runs
 # Check each task: if PR merged or branch deleted, clean up worktree + state
+# HOK-3068: skip tasks already classified as terminal by startup_terminal_preflight
+# to avoid duplicate remote PR/Git checks and repeated cleanup warnings.
 cleanup_stale_tasks() {
   cleanup_terminal_missing_worktree_entries
 
@@ -1519,6 +1521,12 @@ cleanup_stale_tasks() {
   local cleaned=0
   while IFS= read -r issue; do
     [[ -z "$issue" ]] && continue
+    # HOK-3068: skip issues already handled by startup_terminal_preflight.
+    local preflight_eligibility
+    preflight_eligibility="$(jq -r --arg issue "$issue" '.tasks[$issue].rehydration.eligibility // empty' "$STATE_FILE" 2>/dev/null || true)"
+    if [[ "$preflight_eligibility" == "terminal" ]]; then
+      continue
+    fi
     local task_json
     task_json=$(jq -r --arg i "$issue" '.tasks[$i]' "$STATE_FILE")
     local slug branch worktree pr linear_issue eval_completed
@@ -1650,6 +1658,14 @@ if (( stale_count > 0 )); then
     startup_terminal_preflight "$SESSION"
   fi
   cleanup_stale_tasks
+  # HOK-3068: emit one aggregate summary for terminal retained resources.
+  local _terminal_retained_count=0
+  _terminal_retained_count="$(jq -r "$(task_lifecycle_jq_filter '
+    [(.tasks // {}) | to_entries[] | select(.value | wm_workflow_outcome != "active")] | length
+  ')" "$STATE_FILE" 2>/dev/null || echo 0)"
+  if [[ "$_terminal_retained_count" =~ ^[0-9]+$ ]] && (( _terminal_retained_count > 0 )); then
+    log "status" "Startup: ${_terminal_retained_count} terminal task(s) escrowed from active dashboard"
+  fi
 fi
 
 SKIP_BACKLOG_SELECTION=false
