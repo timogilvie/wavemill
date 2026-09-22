@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import {
   clearScratchPrepMarkerBestEffort,
   createProcessGroupPrepRunner,
@@ -16,6 +16,21 @@ import {
   writeScratchPrepMarkerBestEffort,
   WorktreePrepTimeoutError,
 } from './tend-scratch-prep.ts';
+
+// CI safety net: if a spawned descendant survives our pgid kill (e.g. under
+// a cgroup that quietly refuses group-directed signals) and inherits our
+// stdio pipe write ends, the node --test file worker's event loop can stay
+// alive after every subtest has already asserted and returned. Node --test
+// then cancels the whole file at the 300s --test-timeout, which reads in CI
+// as a real failure. Attempt 2 added unref() on the child process handle and
+// its stdio pipes, but the observed CI hang persisted, so this after() hook
+// installs an unref'd 500ms timer that force-exits with the current
+// process.exitCode ONLY if the loop is still alive by then. On a healthy run
+// the loop exits naturally before 500ms and this timer is discarded (unref'd
+// timers never keep the loop alive on their own), so it costs nothing.
+after(() => {
+  setTimeout(() => process.exit(process.exitCode ?? 0), 500).unref();
+});
 
 function makeRepoDir(): { repoDir: string; cleanup: () => void } {
   const repoDir = mkdtempSync(join(tmpdir(), 'wavemill-scratch-prep-'));
