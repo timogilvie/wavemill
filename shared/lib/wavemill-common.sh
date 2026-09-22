@@ -964,17 +964,44 @@ wavemill_record_pr_delivery_evidence() {
     --arg mergedAt "${WAVEMILL_PR_EVIDENCE_MERGED_AT:-}" >/dev/null 2>&1 || true
 }
 
-# Records the structured evidence for one cleanup classification. Reads the
-# classification context (task_branch, wt_dir, issue, pr, PR evidence, final
-# check state, ...) from the calling scope of
-# safe_remove_task_worktree_and_branch via bash dynamic scoping; only that
-# function may call it. Arguments: classification, legacy marker reason,
-# verification detail, safeToDelete flag, marker subdirectory.
-_wavemill_record_cleanup_decision() {
-  local classification="$1" legacy_reason="$2" detail="$3" safe_to_delete="$4" marker_subdir="${5:-preserved-branches}"
-  local guidance extras
+# Build the canonical cleanup decision JSON (HOK-3067). Reads the
+# classification context from the calling scope via bash dynamic scoping.
+# This is consumed by both marker writing and dry-run emission.
+_wavemill_cleanup_decision_json() {
+  local classification="$1" safe_to_delete="$2" detail="$3"
+  local guidance operator_action=""
+  local equivalentShas uniqueLocalShas uniquePublishedShas
+
   guidance="$(_wavemill_cleanup_operator_guidance "$classification" "$task_branch" "$detail")"
-  extras="$(jq -cn \
+
+  # Determine operator action based on classification and detail
+  case "$classification" in
+    retain_dirty)
+      case "$detail" in
+        orphan_independent_files) operator_action="salvage" ;;
+        *) operator_action="salvage" ;;
+      esac
+      ;;
+    retain_unpublished)
+      if [[ -n "$unique_local_shas" ]] || [[ -n "$unique_published_shas" ]]; then
+        operator_action="salvage"
+      elif [[ "$detail" == "remote_missing_local_head" ]]; then
+        operator_action="push"
+      else
+        operator_action="salvage"
+      fi
+      ;;
+    retain_closed_unmerged) operator_action="abandon" ;;
+    retain_unverifiable) operator_action="retry-verification" ;;
+    *) operator_action="" ;;
+  esac
+
+  # Build SHA lists for JSON (remove trailing newlines, convert to jq arrays)
+  equivalentShas="$(printf '%s\n' "$cherry_equivalent_shas" | grep -v '^$' | jq -Rs 'split("\n") | map(select(length > 0))' 2>/dev/null || printf '[]')"
+  uniqueLocalShas="$(printf '%s\n' "$unique_local_shas" | grep -v '^$' | jq -Rs 'split("\n") | map(select(length > 0))' 2>/dev/null || printf '[]')"
+  uniquePublishedShas="$(printf '%s\n' "$unique_published_shas" | grep -v '^$' | jq -Rs 'split("\n") | map(select(length > 0))' 2>/dev/null || printf '[]')"
+
+  jq -cn \
     --arg classification "$classification" \
     --arg safeToDelete "$safe_to_delete" \
     --arg issue "${issue:-}" \
@@ -999,6 +1026,17 @@ _wavemill_record_cleanup_decision() {
     --arg decisionMode "${cleanup_decision_mode:-}" \
     --arg wouldDelete "${cleanup_decision_would_delete:-}" \
     --arg operatorGuidance "$guidance" \
+    --arg operatorAction "$operator_action" \
+    --arg expectedWorktree "${wt_dir:-}" \
+    --arg verifiedToplevel "${verified_toplevel:-}" \
+    --arg worktreeIdentity "${worktree_identity:-}" \
+    --arg localHeadSha "${local_head_sha:-}" \
+    --arg remoteHeadSha "${remote_head_sha:-}" \
+    --arg baseSha "${base_sha:-}" \
+    --argjson equivalentShas "$equivalentShas" \
+    --argjson uniqueLocalOnlyShas "$uniqueLocalShas" \
+    --argjson uniquePublishedShas "$uniquePublishedShas" \
+    --arg dirtPathsRaw "${dirt_paths:-}" \
     '{
       schemaVersion: 2,
       classification: $classification,
@@ -1022,12 +1060,43 @@ _wavemill_record_cleanup_decision() {
         status: $patchCherryStatus,
         uniqueCount: (if ($patchUniqueCount | test("^[0-9]+$")) then ($patchUniqueCount | tonumber) else null end),
         equivalentCount: (if ($patchEquivalentCount | test("^[0-9]+$")) then ($patchEquivalentCount | tonumber) else null end),
-        totalCount: (if ($patchTotalCount | test("^[0-9]+$")) then ($patchTotalCount | tonumber) else null end)
+        totalCount: (if ($patchTotalCount | test("^[0-9]+$")) then ($patchTotalCount | tonumber) else null end),
+        equivalentShas: $equivalentShas,
+        uniqueLocalOnlyShas: $uniqueLocalOnlyShas,
+        uniquePublishedShas: $uniquePublishedShas
       }} else . end
     | if $authority != "" then . + {authority: $authority} else . end
     | if $decisionMode != "" then . + {mode: $decisionMode} else . end
     | if $wouldDelete != "" then . + {wouldDelete: ($wouldDelete == "true")} else . end
-    | if $operatorGuidance != "" then . + {operatorGuidance: $operatorGuidance} else . end' 2>/dev/null || printf '{}')"
+    | if $operatorGuidance != "" then . + {operatorGuidance: $operatorGuidance} else . end
+    | if $operatorAction != "" then . + {operatorAction: $operatorAction} else . end
+    | if $expectedWorktree != "" then . + {expectedWorktree: $expectedWorktree} else . end
+    | if $verifiedToplevel != "" then . + {verifiedToplevel: $verifiedToplevel} else . end
+    | if $worktreeIdentity != "" then . + {worktreeIdentity: $worktreeIdentity} else . end
+    | if $localHeadSha != "" then . + {localHeadSha: $localHeadSha} else . end
+    | if $remoteHeadSha != "" then . + {remoteHeadSha: $remoteHeadSha} else . end
+    | if $baseSha != "" then . + {baseSha: $baseSha} else . end
+    | if ($dirtPathsRaw | length) > 0 then . + {dirtPaths: ($dirtPathsRaw | split("\n") | map(select(length > 0)))} else . end' 2>/dev/null || printf '{}'
+}
+
+# Records the structured evidence for one cleanup classification. Reads the
+# classification context from the calling scope via bash dynamic scoping.
+# Only safe_remove_task_worktree_and_branch may call it.
+# Arguments: classification, legacy marker reason, verification detail, safeToDelete flag, marker subdirectory.
+_wavemill_record_cleanup_decision() {
+  local classification="$1" legacy_reason="$2" detail="$3" safe_to_delete="$4" marker_subdir="${5:-preserved-branches}"
+  local extras
+
+  # Build canonical decision JSON
+  extras="$(_wavemill_cleanup_decision_json "$classification" "$safe_to_delete" "$detail")"
+
+  # Set the global decision JSON for dry-run emission
+  WAVEMILL_CLEANUP_DECISION_JSON="$extras"
+
+  # Skip marker writes in dry-run mode
+  [[ "${WAVEMILL_CLEANUP_DRY_RUN:-0}" == "1" ]] && return 0
+
+  # Write incident marker (non-dry-run only)
   _wavemill_write_preserved_branch_incident "$legacy_reason" "$task_branch" "$wt_dir" "$base_branch" \
     "$commits_ahead" "$commit_shas" "$caller" "$base_sha" "$local_head_sha" "$remote_head_sha" \
     "$detail" "$extras" "$marker_subdir"
@@ -1305,6 +1374,7 @@ safe_remove_task_worktree_and_branch() {
   local orphan_unsafe_files=""
 
   WAVEMILL_CLEANUP_OUTCOME=""
+  WAVEMILL_CLEANUP_DECISION_JSON=""
 
   SAFE_CLEANUP_PRESERVATION_REASON=""
   SAFE_CLEANUP_VERIFICATION_REASON=""
@@ -1723,6 +1793,13 @@ safe_remove_task_worktree_and_branch() {
   fi
 
   [[ -z "$classification" ]] && classification="safe_noop"
+
+  # In dry-run mode, skip TOCTOU and deletion; just emit the decision and exit
+  if [[ "${WAVEMILL_CLEANUP_DRY_RUN:-0}" == "1" ]]; then
+    _wavemill_record_cleanup_decision "$classification" "$classification" "" "false"
+    WAVEMILL_CLEANUP_OUTCOME="$classification"
+    return 0
+  fi
 
   # TOCTOU guard: re-verify the worktree and branch head immediately before
   # deletion so a commit or edit landing after classification retains the
