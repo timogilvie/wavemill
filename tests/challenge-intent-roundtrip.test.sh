@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# HOK-2814: non-forked control path — the plan- and implementation-stage
+# round-trips here are the regression backstop for the un-forked pairs
+# (plan-stage is not forked, coder stage is not forked until enabled).
+# The intent-persisted-before-worktree seam is extended below in the
+# "intent persisted before worktree" case; do not remove that case without
+# reading the HOK-3006 addendum in the P2.4d plan.
 # Producer/consumer round-trip for the challenge intent.
 #
 # The bug this suite exists for lived exactly in the seam between two files:
@@ -80,6 +86,61 @@ real_challenge_intent() {
   else
     fail "missing target dir dropped intent or warning: $warning"
   fi
+
+  # HOK-2814 / HOK-3006: intent is selected BEFORE the primary worktree
+  # exists (deferred-arm review-stage flow). After materialisation creates
+  # the challenger feature dir, the backfill step must recover the intent
+  # from state, write it into both feature dirs, and both files must match
+  # byte-for-byte. Regression: the deferred pair used to lose its intent
+  # in the seam between selection and materialisation.
+  primary_feature="$root/features/pair-slug"
+  challenger_feature="$root/features/pair-slug-challenger"
+  mkdir -p "$primary_feature" "$challenger_feature"
+
+  # Persist the intent into the primary feature dir (now that it exists),
+  # then re-persist for the challenger — the same sequence the materialiser
+  # runs against the freshly-created challenger dir.
+  persist_challenge_execution_intent "HOK-900" "HOK-900_c" "$primary_feature" "$intent" >/dev/null 2>&1 || true
+  persist_challenge_execution_intent "HOK-900" "HOK-900_c" "$challenger_feature" "$intent" >/dev/null 2>&1 || true
+
+  # Extract challenge_intent_file_json + challenge_intent_files_valid — the
+  # helpers the materialiser uses to attest the intent files after backfill.
+  eval "$(awk '
+    /^challenge_intent_file_json\(\) \{/ { capture=1 }
+    capture { print }
+    /^}/ && capture { exit }
+  ' "$MONITOR_SCRIPT_FILE")"
+  eval "$(awk '
+    /^challenge_intent_files_valid\(\) \{/ { capture=1 }
+    capture { print }
+    /^}/ && capture { exit }
+  ' "$MONITOR_SCRIPT_FILE")"
+  eval "$(awk '
+    /^challenge_intent_json_is_canonical\(\) \{/ { capture=1 }
+    capture { print }
+    /^}/ && capture { exit }
+  ' "$REPO_DIR/shared/lib/challenge-arms.sh")"
+
+  primary_ok="no"
+  challenger_ok="no"
+  challenge_intent_files_valid "$primary_feature" && primary_ok="yes"
+  challenge_intent_files_valid "$challenger_feature" && challenger_ok="yes"
+  if [[ "$primary_ok" == "yes" && "$challenger_ok" == "yes" ]]; then
+    pass "after backfill, both arms have a valid challenge-intent.json"
+  else
+    fail "after backfill, intent files are not valid (primary=$primary_ok challenger=$challenger_ok)"
+  fi
+
+  # SHA compare the two intent files — the materialiser guarantees both
+  # arms see byte-identical intent (HOK-3006).
+  primary_sha="$(shasum -a 256 "$primary_feature/challenge-intent.json" 2>/dev/null | awk '{print $1}' || true)"
+  challenger_sha="$(shasum -a 256 "$challenger_feature/challenge-intent.json" 2>/dev/null | awk '{print $1}' || true)"
+  if [[ -n "$primary_sha" && "$primary_sha" == "$challenger_sha" ]]; then
+    pass "both arms carry byte-identical challenge-intent.json after backfill"
+  else
+    fail "challenge-intent.json differs between arms (primary=$primary_sha challenger=$challenger_sha)"
+  fi
+
   rm -rf "$root"
 }
 

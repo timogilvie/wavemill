@@ -929,6 +929,49 @@ Acceptance:
 - Each advanced tool family has its own phase policy, output caps, transcript format, and smoke suite.
 - No advanced tool is globally available by default.
 
+#### Advanced-tool exposure contract (HOK-3053)
+
+The first Epic 10 landing is the catalog and default-off policy — no advanced
+executor ships with it. Descriptors declare `family` (`browser` / `screenshot`
+/ `mcp` / `code_search` / `ast` / `eval`), a family-scoped `logicalId`,
+`exposure: 'opt-in'`, a full `ToolPolicyMetadata` shape (pathMode, network,
+mutation surfaces, approval, timeout, byte/token caps, redaction profile), a
+`ToolProvenanceClass`, and a `NativeCertificationRequirement`. Legacy Tier
+1–4 descriptors inflate to `family: 'core'` / `exposure: 'always'` /
+`certificationRequirement: 'none'` at registration time; no descriptor site
+had to change.
+
+Eligibility is calculated once per phase launch by `computeEligibility()` in
+`shared/lib/native-agent/tools/exposure.ts`. It is a pure function; the only
+inputs are the requested phase, the resolved wavemill config, the native
+certification snapshot, and the registry metadata. No tool output, prompt
+content, or environment lookup can enable a family. Advanced families remain
+denied (`family_not_enabled`) until an operator opts in via
+`nativeAgent.advanced` in `.wavemill-config.json`, e.g.:
+
+```json
+{
+  "nativeAgent": {
+    "advanced": {
+      "browser": {
+        "enabled": true,
+        "allowedPhases": ["coding"],
+        "logicalIds": ["browser.navigate"]
+      }
+    }
+  }
+}
+```
+
+Enabled → `allowedPhases` must contain the requested phase; the descriptor's
+own `allowedPhases` must also permit it; the model's `maxCertifiedPhase` must
+satisfy the descriptor's requirement (default `workflow` for advanced
+families); if a `logicalIds` allowlist is present, the logical id must appear
+in it. Every failure surfaces as a structured `EligibilityDenial` for logs
+and dashboards. The per-call policy evaluator adds a defense-in-depth
+`not_exposed` reason so that a materialised call for a hidden tool is
+rejected even if exposure and materialisation are ever wired asymmetrically.
+
 ## Rollout Plan
 
 ### Phase A: Internal Mock Runtime

@@ -39,6 +39,39 @@ const RESIDUE_COMMIT_SUBJECT_LIMIT = 5;
 const STALLED_ACTIVE_UNPUBLISHED_MINUTES = 120;
 const PR_CREATE_FAILED_PATTERN = /pull request create failed:?\s*(.*)/i;
 
+// HOK-3045: closed catalog of interactive agent lifecycle prompts that block
+// a task pane. Each entry lists multiple stable required tokens so a single
+// mention (source code, chat log, unrelated console output) never matches; the
+// matcher normalizes ANSI/whitespace before comparing. Adding a new signature
+// must include both positive and negative fixtures.
+interface InteractivePromptSignature {
+  id: string;
+  agent: 'codex' | 'claude' | 'generic';
+  /** All required substrings must be present in the normalized capture. */
+  requiredTokens: string[];
+  /** Any of these disqualifies the match (e.g. source-code frames). */
+  exclusionTokens?: string[];
+  /** Human-readable number of choices this prompt offers, for stable evidence. */
+  choiceCount?: number;
+  operatorAction: string;
+}
+
+const INTERACTIVE_PROMPT_SIGNATURES: InteractivePromptSignature[] = [
+  {
+    id: 'codex_model_retirement',
+    agent: 'codex',
+    requiredTokens: ['retires on', 'try new model', 'use existing model'],
+    exclusionTokens: ['function ', 'const ', '@Test', 'describe('],
+    choiceCount: 2,
+    operatorAction:
+      'Codex is parked at its model-retirement chooser. Inspect the task pane and pick either "Try new model" or "Use existing model"; the observer will not press keys on your behalf.',
+  },
+];
+
+// Cap the input the matcher sees so a runaway capture cannot degrade the loop
+// and so injected secrets/paths past the visible chooser never enter the match.
+const INTERACTIVE_PROMPT_MATCH_INPUT_LIMIT = 8_000;
+
 interface ObserverOptions {
   loop: boolean;
   once: boolean;
@@ -2427,6 +2460,134 @@ function capturePaneText(pane: Pane): string | undefined {
   return result.ok ? result.stdout : undefined;
 }
 
+/**
+ * Normalize pane text for interactive-prompt matching (HOK-3045):
+ * strip ANSI/control sequences, collapse whitespace and hard-wrap breaks, and
+ * lowercase. Bounded by the match-input limit so a runaway capture cannot
+ * inflate observer work.
+ */
+export function normalizeInteractivePromptText(input: string | undefined): string {
+  if (!input) return '';
+  const bounded = input.length > INTERACTIVE_PROMPT_MATCH_INPUT_LIMIT
+    ? input.slice(-INTERACTIVE_PROMPT_MATCH_INPUT_LIMIT)
+    : input;
+  return bounded
+    // eslint-disable-next-line no-control-regex
+    .replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Attempts to identify a task pane parked on a known interactive lifecycle
+ * prompt. Returns the matching signature or undefined. All required tokens
+ * must be present after normalization; any exclusion token disqualifies.
+ */
+export function matchInteractivePromptSignature(paneText: string | undefined): InteractivePromptSignature | undefined {
+  const normalized = normalizeInteractivePromptText(paneText);
+  if (!normalized) return undefined;
+  for (const signature of INTERACTIVE_PROMPT_SIGNATURES) {
+    const allRequiredPresent = signature.requiredTokens.every((token) =>
+      normalized.includes(token.toLowerCase()),
+    );
+    if (!allRequiredPresent) continue;
+    const hasExclusion = (signature.exclusionTokens ?? []).some((token) =>
+      normalized.includes(token.toLowerCase()),
+    );
+    if (hasExclusion) continue;
+    return signature;
+  }
+  return undefined;
+}
+
+/**
+ * HOK-3045: emit an incident when a task-correlated pane is parked at a known
+ * interactive agent lifecycle prompt. Only nonterminal task panes are
+ * inspected, and each pane's text is captured at most once per cycle.
+ * Evidence carries only the signature id and choice count — never the raw
+ * capture — so persisted incidents cannot leak prompt content, transcripts,
+ * paths, tokens, or user identifiers.
+ */
+function detectInteractivePromptBlockedIncidents(
+  repo: RepoSnapshot,
+  snapshot: Pick<ObserverSnapshot, 'panes'>,
+  timestamp: string,
+): IncidentRecord[] {
+  const incidents: IncidentRecord[] = [];
+  for (const task of repo.tasks) {
+    if (!task.issue) continue;
+    if (taskWorkflowIsTerminal(task)) continue;
+    const residue = taskPaneResidue(repo, task, snapshot.panes);
+    if (!residue.present) continue;
+    // Inspect each correlated pane at most once per observation cycle.
+    for (const pane of residue.panes) {
+      const paneText = capturePaneText(pane);
+      const signature = matchInteractivePromptSignature(paneText);
+      if (!signature) continue;
+      const paneTarget = `${pane.session}:${pane.windowIndex}.${pane.paneIndex}`;
+      const evidenceKey = `interactive-prompt:${task.issue}:${signature.id}`;
+      incidents.push(createIncidentDraft({
+        taskId: task.issue,
+        session: repo.session,
+        category: 'configuration_operator_condition',
+        severity: 'high',
+        confidence: 'high',
+        lifecycle: 'observed',
+        rootCauseClass: 'agent_interactive_prompt_blocked',
+        summary: `${task.issue} task pane is parked at an interactive ${signature.agent} prompt (${signature.id}).`,
+        operatorAction: signature.operatorAction,
+        evidence: [{
+          type: 'hook_status',
+          source: `pane:${paneTarget}`,
+          timestamp,
+          redactedData: `agent=${signature.agent} prompt=${signature.id}${signature.choiceCount ? ` choices=${signature.choiceCount}` : ''}`,
+          key: evidenceKey,
+        }],
+        metadata: {
+          promptSignatureId: signature.id,
+          promptAgent: signature.agent,
+          paneTarget,
+          // Captured for the current-truth resolution gate — the incident may
+          // not auto-resolve until this task advances past this timestamp or
+          // becomes terminal (HOK-3045).
+          observedTaskUpdatedAt: task.updated ?? null,
+        },
+      }));
+      // A task pane's signature only matches once per pane per cycle; a second
+      // match on the same pane would produce a duplicate fingerprint anyway.
+      break;
+    }
+  }
+  return incidents;
+}
+
+/**
+ * Gate for the incident-store resolution sweep (HOK-3045): interactive-prompt
+ * incidents must not auto-resolve on absence while their correlated task is
+ * still nonterminal and has not advanced past the last observation. This
+ * mirrors the current-truth reconciliation contract from HOK-3032.
+ */
+function canResolveInteractivePromptByAbsence(
+  record: IncidentRecord,
+  repo: RepoSnapshot,
+): boolean {
+  if (record.rootCauseClass !== 'agent_interactive_prompt_blocked') return true;
+  const taskId = record.taskId;
+  if (!taskId) return true;
+  const task = repo.tasks.find((candidate) => candidate.issue === taskId);
+  if (!task) return true; // task went away → nothing to protect
+  if (taskWorkflowIsTerminal(task) || taskHasTerminalResidueStatus(task)) return true;
+  const observedAt = typeof record.metadata?.observedTaskUpdatedAt === 'string'
+    ? Date.parse(record.metadata.observedTaskUpdatedAt)
+    : NaN;
+  const currentAt = task.updated ? Date.parse(task.updated) : NaN;
+  if (!Number.isFinite(observedAt) || !Number.isFinite(currentAt)) return false;
+  return currentAt > observedAt;
+}
+
 function readTaskReviewArtifactText(task: TaskState): string | undefined {
   if (!task.worktree || !task.slug) return undefined;
   const artifactPath = join(task.worktree, 'features', task.slug, '.review-result.json');
@@ -2672,6 +2833,7 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
 
       candidates.push(...detectParkedArmIncidents(repo, snapshot, options, snapshot.timestamp));
       candidates.push(...detectCleanupIncidentsForRepo(repo, snapshot.timestamp));
+      candidates.push(...detectInteractivePromptBlockedIncidents(repo, snapshot, snapshot.timestamp));
     } catch (error) {
       cycleComplete = false;
       addConfigDegradedFindingIfMissing(snapshot.findings, repo, error, 'incident detection');
@@ -2702,7 +2864,10 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
 
     if (cycleComplete) {
       try {
-        await store.runResolutionSweep(freshFingerprints);
+        await store.runResolutionSweep(
+          freshFingerprints,
+          (record) => canResolveInteractivePromptByAbsence(record, repo),
+        );
       } catch (error) {
         snapshot.findings.push({
           id: `incident-sweep-error-${repo.session}-${hashText(repo.repoDir)}`,

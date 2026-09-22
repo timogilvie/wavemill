@@ -468,6 +468,31 @@ export interface NativePlanningConfig {
   };
 }
 
+export interface NativeAgentAdvancedFamilyConfig {
+  /** Master toggle for this advanced family. Defaults to false. */
+  enabled?: boolean;
+  /**
+   * Phases for which this family is eligible when enabled. Empty or omitted
+   * → family stays hidden even when `enabled` is true (fail-closed).
+   */
+  allowedPhases?: NativeAgentAllowedPhase[];
+  /**
+   * Optional narrow allowlist of family-scoped logical ids. When present, only
+   * listed logical ids become eligible. Unknown logical ids surface as a
+   * deterministic diagnostic during eligibility computation.
+   */
+  logicalIds?: string[];
+}
+
+export interface NativeAgentAdvancedConfig {
+  browser?: NativeAgentAdvancedFamilyConfig;
+  screenshot?: NativeAgentAdvancedFamilyConfig;
+  mcp?: NativeAgentAdvancedFamilyConfig;
+  code_search?: NativeAgentAdvancedFamilyConfig;
+  ast?: NativeAgentAdvancedFamilyConfig;
+  eval?: NativeAgentAdvancedFamilyConfig;
+}
+
 export interface NativeAgentConfig {
   enabled?: boolean;
   allowedPhases?: NativeAgentAllowedPhase[];
@@ -479,6 +504,12 @@ export interface NativeAgentConfig {
   certification?: NativeCertificationConfig;
   contextManagement?: NativeContextManagementConfig;
   providers?: NativeAgentProvidersConfig;
+  /**
+   * Advanced-tool family opt-ins (Epic 10). Every family defaults off; a
+   * family becomes eligible only when explicitly enabled for the target
+   * phase. See `shared/lib/native-agent/tools/exposure.ts`.
+   */
+  advanced?: NativeAgentAdvancedConfig;
 }
 
 export interface NativeExpansionConfig {

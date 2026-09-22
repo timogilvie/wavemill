@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# HOK-2814: post-fork shape audit — exercises hard eval-failure end-to-end with
+# both arms already present with PRs. This is still the correct shape post-fork;
+# the fork itself is covered by challenge-deferred-arm.test.sh and
+# challenge-fork-*.test.sh.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

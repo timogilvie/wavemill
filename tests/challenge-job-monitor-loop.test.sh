@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# HOK-2814: post-fork shape audit — the tracked job monitor loop assumes both
+# arms are already present, which is still the correct shape post-fork (by the
+# time a tracked job is polling, both arms exist). The fork itself is covered
+# by challenge-deferred-arm.test.sh and challenge-fork-*.test.sh.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

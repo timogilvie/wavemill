@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# HOK-2814: this fixture drives the tend-side merge-winner cleanup for a fully
+# materialised pair with two live PRs. It is not on the pre-fork path — the
+# fork lifecycle is covered by deferred_challenger_materialises_after_coding.
 set -euo pipefail
 
 # Guard against being sourced by lifecycle-scenarios.test.sh

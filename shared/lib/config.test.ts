@@ -3276,6 +3276,87 @@ test('valid nativeAgent allowedPhases validate and are returned by the accessor'
   }
 });
 
+test('advanced tool config: absent block loads as undefined', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({}));
+    assert.equal(loadWavemillConfig(tmp).nativeAgent?.advanced, undefined);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('advanced tool config: accepts a well-formed browser block', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      nativeAgent: {
+        advanced: {
+          browser: {
+            enabled: true,
+            allowedPhases: ['coding'],
+            logicalIds: ['browser.navigate'],
+          },
+        },
+      },
+    }));
+    const advanced = loadWavemillConfig(tmp).nativeAgent?.advanced;
+    assert.deepEqual(advanced, {
+      browser: {
+        enabled: true,
+        allowedPhases: ['coding'],
+        logicalIds: ['browser.navigate'],
+      },
+    });
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('advanced tool config: rejects an unknown family via schema', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      nativeAgent: {
+        advanced: {
+          not_a_family: { enabled: true },
+        },
+      },
+    }));
+    if (hasAjv) {
+      assert.throws(() => loadWavemillConfig(tmp), /validation failed/);
+    } else {
+      assert.doesNotThrow(() => loadWavemillConfig(tmp));
+    }
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('advanced tool config: rejects an unknown allowed phase', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      nativeAgent: {
+        advanced: {
+          browser: { enabled: true, allowedPhases: ['not-a-phase'] },
+        },
+      },
+    }));
+    if (hasAjv) {
+      assert.throws(() => loadWavemillConfig(tmp), /validation failed/);
+    } else {
+      assert.doesNotThrow(() => loadWavemillConfig(tmp));
+    }
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
 test('native expansion config defaults to disabled and no fallback', () => {
   const tmp = makeTempRepo();
   try {

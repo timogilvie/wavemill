@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash disable=SC2034,SC2153,SC2154
+#
+# HOK-2814: this scenario assumes a materialised pair with the challenger PR
+# CLOSED and the sibling still OPEN. It drives the closed-challenger cleanup
+# path in the monitor and is not on the pre-fork path — a pending arm never
+# has a PR. The fork lifecycle is covered by
+# deferred_challenger_materialises_after_coding.
 
 register_lifecycle_scenario closed_challenger_pr_cleanup
 
