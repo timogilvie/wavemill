@@ -32,8 +32,14 @@ import { createReadOnlyTools, READ_ONLY_PATH_FIELDS } from './tools/read-only.ts
 import { createGitTools, gitAfterToolCall } from './tools/git.ts';
 import { createArtifactTools } from './tools/artifacts.ts';
 import { createToolRegistry } from './tools/registry.ts';
-import { toPiAgentTool, type AgentTool } from './tools/pi-adapter.ts';
+import type { AgentTool } from './tools/pi-adapter.ts';
 import type { ToolDescriptor, ToolMetadata, WavemillToolResult } from './tools/types.ts';
+import {
+  createLaunchMenuProvider,
+  formatMenuDenials,
+} from './tools/menu-resolver.ts';
+import { inferCertificationSnapshotForPhase } from './tools/certification-snapshot.ts';
+import { loadWavemillConfig } from '../config.ts';
 import { loadNativePhasePrompt, registerAndRecordNativeProvenance } from './prompts.ts';
 import { isTaskPacketContent } from '../task-packet-utils.ts';
 import { createCleanupTracker, runCleanup, type CleanupReason } from './cleanup.ts';
@@ -400,10 +406,6 @@ function defaultHookPath(session: string, issue: string): string {
   return `/tmp/wavemill-${session}-${issue}.hook`;
 }
 
-function toPiTools(descriptors: readonly ToolDescriptor[]): AgentTool<unknown, unknown>[] {
-  return descriptors.map((descriptor) => toPiAgentTool(descriptor) as AgentTool<unknown, unknown>);
-}
-
 function canonicalNativeModelIds(modelId: string | undefined): Set<string> {
   const trimmed = modelId?.trim();
   if (!trimmed) {
@@ -650,6 +652,22 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
 
     const cleanupTracker = createCleanupTracker();
     const planningLimits = resolveNativePlanningLimits(getNativeAgentConfig(options.repoDir).planning);
+    const menuLaunchProvider = createLaunchMenuProvider({
+      phase: 'planning',
+      config: loadWavemillConfig(options.repoDir),
+      certification: inferCertificationSnapshotForPhase({
+        phase: 'planning',
+        readyProviderPresent: Boolean(readyProvider),
+        loopModelOverridePresent: Boolean(options.loopModelOverride),
+      }),
+      descriptors,
+    });
+    if (menuLaunchProvider.initialMenu.denials.length > 0) {
+      const formatted = formatMenuDenials(menuLaunchProvider.initialMenu.denials);
+      if (formatted) {
+        console.warn(`[native-planning] menu denials:\n${formatted}`);
+      }
+    }
     const context: AgentContext = {
       systemPrompt,
       messages: [{
@@ -667,7 +685,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
         }),
         timestamp: 0,
       }],
-      tools: toPiTools(descriptors),
+      tools: menuLaunchProvider.providerToolsForContext as AgentTool<unknown, unknown>[],
     };
     const pricing = normalizedPricingFromModel(model);
     const effectiveMaxTokens = model.provider === 'openrouter' && !options.loopModelOverride
@@ -712,6 +730,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
         transcriptWriter.handleEvent(event);
       },
       sessionStreamConfig,
+      menuProvider: menuLaunchProvider.menuProvider,
       budget: toLoopBudget(planningLimits),
     });
     const planningOutcomeArtifacts = buildPlanningOutcomeArtifacts({

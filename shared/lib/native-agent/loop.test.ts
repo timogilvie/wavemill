@@ -4,7 +4,12 @@ import type { AgentContext, AgentTool, AgentToolResult } from '@earendil-works/p
 import type { Message, TextContent } from '@earendil-works/pi-ai';
 import type { ModelRegistry } from '../model-registry.ts';
 import { registerScriptedPiProvider, type ScriptedProviderContext } from './provider.ts';
-import { runWavemillLoop, HEARTBEAT_AGENT, type HeartbeatEvent, type WavemillLoopConfig } from './loop.ts';
+import { runWavemillLoop, HEARTBEAT_AGENT, ProviderToolMenuDriftError, type HeartbeatEvent, type WavemillLoopConfig } from './loop.ts';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { parseSessionEventJsonl } from './session-stream.schema.ts';
+import { SessionStreamWriter, computeValueDigest } from './session-stream.ts';
 import {
   ContextExhaustedError,
   ContextWindowExceededError,
@@ -1665,5 +1670,300 @@ describe('loop — batch semantics', () => {
     assert.ok(skipBMsg, 'skip_b tool result must appear in final messages');
     assert.equal(skipAMsg.content?.[0]?.text, 'skipped_after_failure');
     assert.equal(skipBMsg.content?.[0]?.text, 'skipped_after_failure');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-turn tool exposure (HOK-3054)
+// ---------------------------------------------------------------------------
+
+function makeMenuTempDir(): string {
+  return mkdtempSync(join(tmpdir(), 'loop-menu-'));
+}
+
+function readEventStream(path: string) {
+  const raw = readFileSync(path, 'utf-8');
+  return parseSessionEventJsonl(raw);
+}
+
+function makePiTool(name: string): AgentTool<any, any> {
+  return {
+    name,
+    description: `Menu tool ${name}`,
+    parameters: { type: 'object', properties: {} } as any,
+    label: name,
+    executionMode: 'sequential',
+    async execute() {
+      return { content: [{ type: 'text' as const, text: `${name} ok` }], details: undefined };
+    },
+  } as unknown as AgentTool<any, any>;
+}
+
+describe('loop — per-turn menu provenance', () => {
+  it('emits tool_menu, provider_tools, and both digests on model_request', async () => {
+    const tempDir = makeMenuTempDir();
+    try {
+      const api = uniqueApi('menu-happy');
+      registerScriptedPiProvider({
+        api,
+        turns: [
+          { content: [{ type: 'text', text: 'done' }], stopReason: 'stop' },
+        ],
+      });
+
+      const tool = makePiTool('menu_read');
+      const menuCanonical = '[{"name":"menu_read"}]';
+      const providerCanonical = '[{"name":"menu_read","parameters":{}}]';
+      const menuDigest = computeValueDigest(JSON.parse(menuCanonical));
+      const providerDigest = computeValueDigest(JSON.parse(providerCanonical));
+
+      const sessionId = 'menu-happy-session';
+      const eventStreamPath = join(tempDir, `${sessionId}.jsonl`);
+      const writer = new SessionStreamWriter(
+        { sessionId, traceId: sessionId, phase: 'planning', path: eventStreamPath },
+        tempDir,
+      );
+      writer.writeSessionStarted({ initialConfigDigest: 'test' });
+
+      const menuCalls: Array<{ turnIndex: number; terminalSynthesis: boolean }> = [];
+
+      await runWavemillLoop({
+        ...baseConfig(api, [tool]),
+        sessionStreamConfig: {
+          sessionId,
+          traceId: sessionId,
+          phase: 'planning',
+          eventStreamPath,
+          repoDir: tempDir,
+          writerInstance: writer,
+          externalWriterManagesSessionBoundaries: true,
+        },
+        menuProvider: {
+          resolveForTurn(input) {
+            menuCalls.push(input);
+            return {
+              toolMenu: {
+                canonical: menuCanonical,
+                digest: menuDigest,
+                toolNames: ['menu_read'],
+                byteSize: menuCanonical.length,
+              },
+              providerTools: {
+                canonical: providerCanonical,
+                digest: providerDigest,
+                toolCount: 1,
+                toolNames: ['menu_read'],
+                byteSize: providerCanonical.length,
+              },
+            };
+          },
+        },
+      });
+
+      assert.equal(menuCalls.length, 1);
+      assert.equal(menuCalls[0].terminalSynthesis, false);
+
+      const events = readEventStream(eventStreamPath);
+      const toolMenuEvent = events.find((e) => e.type === 'tool_menu');
+      const providerToolsEvent = events.find((e) => e.type === 'provider_tools');
+      const modelRequestEvent = events.find((e) => e.type === 'model_request');
+      assert.ok(toolMenuEvent, 'tool_menu event missing');
+      assert.ok(providerToolsEvent, 'provider_tools event missing');
+      assert.ok(modelRequestEvent, 'model_request event missing');
+      assert.equal((toolMenuEvent as any).digest, menuDigest);
+      assert.equal((providerToolsEvent as any).digest, providerDigest);
+      assert.equal((modelRequestEvent as any).toolMenuDigest, menuDigest);
+      assert.equal((modelRequestEvent as any).providerToolsDigest, providerDigest);
+      // Ordering: menu events must precede the model_request event they describe.
+      const idxToolMenu = events.indexOf(toolMenuEvent);
+      const idxProviderTools = events.indexOf(providerToolsEvent);
+      const idxModelRequest = events.indexOf(modelRequestEvent);
+      assert.ok(idxToolMenu < idxModelRequest);
+      assert.ok(idxProviderTools < idxModelRequest);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('backward compat — with menuProvider omitted, model_request has no digest fields', async () => {
+    const tempDir = makeMenuTempDir();
+    try {
+      const api = uniqueApi('menu-optout');
+      registerScriptedPiProvider({
+        api,
+        turns: [{ content: [{ type: 'text', text: 'done' }], stopReason: 'stop' }],
+      });
+
+      const sessionId = 'menu-optout-session';
+      const eventStreamPath = join(tempDir, `${sessionId}.jsonl`);
+      const writer = new SessionStreamWriter(
+        { sessionId, traceId: sessionId, phase: 'planning', path: eventStreamPath },
+        tempDir,
+      );
+      writer.writeSessionStarted({ initialConfigDigest: 'test' });
+
+      await runWavemillLoop({
+        ...baseConfig(api),
+        sessionStreamConfig: {
+          sessionId,
+          traceId: sessionId,
+          phase: 'planning',
+          eventStreamPath,
+          repoDir: tempDir,
+          writerInstance: writer,
+          externalWriterManagesSessionBoundaries: true,
+        },
+      });
+
+      const events = readEventStream(eventStreamPath);
+      const menuEvents = events.filter((e) => e.type === 'tool_menu' || e.type === 'provider_tools');
+      assert.equal(menuEvents.length, 0);
+      const modelRequest = events.find((e) => e.type === 'model_request') as any;
+      assert.ok(modelRequest);
+      assert.equal(modelRequest.toolMenuDigest, undefined);
+      assert.equal(modelRequest.providerToolsDigest, undefined);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails the run when the resolved provider menu drifts from context.tools', async () => {
+    const tempDir = makeMenuTempDir();
+    try {
+      const api = uniqueApi('menu-drift');
+      registerScriptedPiProvider({
+        api,
+        turns: [{ content: [{ type: 'text', text: 'never' }], stopReason: 'stop' }],
+      });
+      const tool = makePiTool('menu_read');
+
+      await assert.rejects(
+        runWavemillLoop({
+          ...baseConfig(api, [tool]),
+          menuProvider: {
+            resolveForTurn: () => ({
+              toolMenu: {
+                canonical: '[]',
+                digest: 'x'.repeat(64),
+                toolNames: [],
+                byteSize: 2,
+              },
+              // Resolver claims a tool named "other_tool" is being sent, but
+              // context.tools only contains "menu_read" — this is exactly the
+              // silent-mismatch failure mode HOK-3054 must catch.
+              providerTools: {
+                canonical: '[{"name":"other_tool"}]',
+                digest: 'y'.repeat(64),
+                toolCount: 1,
+                toolNames: ['other_tool'],
+                byteSize: 25,
+              },
+            }),
+          },
+        }),
+        (err: unknown) => err instanceof ProviderToolMenuDriftError,
+      );
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('terminal synthesis re-resolves with terminalSynthesis: true and provider names must be empty', async () => {
+    const tempDir = makeMenuTempDir();
+    try {
+      const api = uniqueApi('menu-terminal');
+      let turn = 0;
+      registerScriptedPiProvider({
+        api,
+        turns: () => {
+          turn += 1;
+          return turn === 1
+            ? {
+                content: [{ type: 'tool_call', id: 'tc1', name: 'menu_read', arguments: {} }],
+                stopReason: 'tool_calls',
+              }
+            : { content: [{ type: 'text', text: '{"final":true}' }], stopReason: 'stop' };
+        },
+      });
+      const tool = makePiTool('menu_read');
+      const menuCalls: Array<{ turnIndex: number; terminalSynthesis: boolean }> = [];
+      const nonTerminalMenu = {
+        toolMenu: {
+          canonical: '[{"name":"menu_read"}]',
+          digest: 'a'.repeat(64),
+          toolNames: ['menu_read'],
+          byteSize: 24,
+        },
+        providerTools: {
+          canonical: '[{"name":"menu_read"}]',
+          digest: 'b'.repeat(64),
+          toolCount: 1,
+          toolNames: ['menu_read'],
+          byteSize: 24,
+        },
+      };
+      const terminalMenu = {
+        toolMenu: {
+          canonical: '[{"name":"menu_read"}]',
+          digest: 'a'.repeat(64),
+          toolNames: ['menu_read'],
+          byteSize: 24,
+        },
+        providerTools: {
+          canonical: '[]',
+          digest: 'c'.repeat(64),
+          toolCount: 0,
+          toolNames: [],
+          byteSize: 2,
+        },
+      };
+
+      const sessionId = 'menu-terminal-session';
+      const eventStreamPath = join(tempDir, `${sessionId}.jsonl`);
+      const writer = new SessionStreamWriter(
+        { sessionId, traceId: sessionId, phase: 'planning', path: eventStreamPath },
+        tempDir,
+      );
+      writer.writeSessionStarted({ initialConfigDigest: 'test' });
+
+      await runWavemillLoop({
+        ...baseConfig(api, [tool]),
+        budget: { maxTurns: 2, maxToolCalls: 10 },
+        terminalSynthesis: { prompt: 'Return final JSON.' },
+        sessionStreamConfig: {
+          sessionId,
+          traceId: sessionId,
+          phase: 'planning',
+          eventStreamPath,
+          repoDir: tempDir,
+          writerInstance: writer,
+          externalWriterManagesSessionBoundaries: true,
+        },
+        menuProvider: {
+          resolveForTurn(input) {
+            menuCalls.push(input);
+            return input.terminalSynthesis ? terminalMenu : nonTerminalMenu;
+          },
+        },
+      });
+
+      assert.equal(menuCalls.length, 2);
+      assert.equal(menuCalls[0].terminalSynthesis, false);
+      assert.equal(menuCalls[1].terminalSynthesis, true);
+
+      const events = readEventStream(eventStreamPath);
+      const modelRequests = events.filter((e) => e.type === 'model_request');
+      assert.equal(modelRequests.length, 2);
+      const firstDigest = (modelRequests[0] as any).providerToolsDigest;
+      const secondDigest = (modelRequests[1] as any).providerToolsDigest;
+      assert.equal(firstDigest, 'b'.repeat(64));
+      assert.equal(secondDigest, 'c'.repeat(64));
+      // Terminal request must always carry the empty-menu digest.
+      const providerToolsEvents = events.filter((e) => e.type === 'provider_tools');
+      assert.equal(providerToolsEvents.length, 2);
+      assert.equal((providerToolsEvents[1] as any).toolCount, 0);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });
