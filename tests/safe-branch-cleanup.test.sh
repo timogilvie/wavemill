@@ -144,6 +144,9 @@ run_helper() {
       [[ -n "$GH_FIXTURE" && -f "$GH_FIXTURE" ]] || return 1
       cat "$GH_FIXTURE"
     }
+    wavemill_task_worktree_identity() { printf "ok\n"; }
+    normalize_worktree_path() { printf "%s\n" "$1"; }
+    wavemill_orphan_dir_retention_paths() { printf "\n"; }
     set +e
     safe_remove_task_worktree_and_branch "$WT_DIR" "$BRANCH" "$BASE" "$CALLER" "$ISSUE_ARG" "$PR_ARG"
     rc=$?
