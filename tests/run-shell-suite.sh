@@ -119,6 +119,12 @@ TESTS=(
   quarantine-legacy-reviewer-forfeits.test.sh
   reviewer-stage-hok2939-shaped.test.sh
   reviewer-stage-hok2954-shaped.test.sh
+  challenge-fork-materialisation.test.sh
+  challenge-fork-restart.test.sh
+  challenge-fork-pre-fork-collapse.test.sh
+  challenge-fork-inherited-provenance.test.sh
+  challenge-fork-non-forked-regression.test.sh
+  challenge-fork-review-launch-refusal.test.sh
 )
 
 SHARD_INDEX=1
