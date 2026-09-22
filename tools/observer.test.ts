@@ -2640,8 +2640,10 @@ test('prompt-blocked incident does not fire for uncorrelated or terminal task pa
         repoDir,
         workflowStatePath: join(repoDir, '.wavemill', 'workflow-state.json'),
         tasks: [{
-          issue: 'HOK-3040',
-          slug: 'prompt-arm',
+          // Distinct issue ID from other prompt tests to isolate the
+          // module-level debounce state across tests in this file.
+          issue: 'HOK-3041',
+          slug: 'prompt-arm-uncorrelated',
           phase: 'coding',
           status: 'active',
           worktree: repoDir,
@@ -2706,6 +2708,121 @@ test('two blocked task panes produce independent task-scoped incidents', async (
     assert.equal(promptIncidents.length, 2);
     const taskIds = promptIncidents.map((i) => i.taskId).sort();
     assert.deepEqual(taskIds, ['HOK-3032', 'HOK-3040']);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('prompt disappears without task progress: incident stays fresh (REQ-F5)', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-prompt-nores-'));
+  const slug = 'req-f5-arm';
+  try {
+    writePermissiveSchema(repoDir);
+    mkdirSync(join(repoDir, '.wavemill', 'incidents'), { recursive: true });
+
+    const stableUpdated = new Date('2026-09-20T12:00:00.000Z').toISOString();
+    const makePane = (capturedText: string) => ({
+      session: 'wavemill',
+      windowIndex: '5',
+      paneIndex: '0',
+      windowName: `HOK-3055-${slug}`,
+      active: true,
+      pid: 22222,
+      command: 'node',
+      title: 'codex',
+      capturedText,
+    });
+    const makeSnap = (paneText: string) => ({
+      timestamp: new Date().toISOString(),
+      sessions: ['wavemill'],
+      panes: [makePane(paneText)],
+      processes: [],
+      repos: [{
+        session: 'wavemill',
+        repoDir,
+        workflowStatePath: join(repoDir, '.wavemill', 'workflow-state.json'),
+        tasks: [{
+          issue: 'HOK-3055',
+          slug,
+          phase: 'coding',
+          status: 'active',
+          worktree: repoDir,
+          updated: stableUpdated,
+        }],
+      }],
+      findings: [],
+    });
+
+    await reconcileIncidents(makeSnap(RETIREMENT_CHOOSER_FIXTURE), defaultObserverOptions());
+    const confirmed = await reconcileIncidents(makeSnap(RETIREMENT_CHOOSER_FIXTURE), defaultObserverOptions());
+    const confirmedPrompt = (confirmed.incidents ?? []).filter((i) => i.rootCauseClass === 'agent_interactive_prompt_blocked');
+    assert.equal(confirmedPrompt.length, 1);
+    const stableFingerprint = confirmedPrompt[0].fingerprint;
+
+    // Prompt gone but task.updated unchanged: incident must stay fresh so the
+    // resolution sweep does not auto-resolve it on pane absence alone.
+    const after = await reconcileIncidents(makeSnap('idle shell prompt\n$'), defaultObserverOptions());
+    const stillEmitted = (after.incidents ?? []).filter((i) => i.rootCauseClass === 'agent_interactive_prompt_blocked');
+    assert.equal(stillEmitted.length, 1, 'incident must re-emit while task has not advanced');
+    assert.equal(stillEmitted[0].fingerprint, stableFingerprint, 'fingerprint must be stable');
+    assert.notEqual(stillEmitted[0].lifecycle, 'resolved', 'incident must not auto-resolve on pane absence alone');
+    const laterEvidence = stillEmitted[0].evidence[stillEmitted[0].evidence.length - 1];
+    assert.match(laterEvidence.redactedData, /paneVisible=false/);
+    assert.match(laterEvidence.redactedData, /progressAdvanced=false/);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('prompt disappears after task progress: incident stops re-emitting (REQ-F6)', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-prompt-res-'));
+  const slug = 'req-f6-arm';
+  try {
+    writePermissiveSchema(repoDir);
+    mkdirSync(join(repoDir, '.wavemill', 'incidents'), { recursive: true });
+
+    const initialUpdated = new Date('2026-09-20T12:00:00.000Z').toISOString();
+    const laterUpdated = new Date('2026-09-20T12:05:00.000Z').toISOString();
+    const makeSnap = (paneText: string, updated: string) => ({
+      timestamp: new Date().toISOString(),
+      sessions: ['wavemill'],
+      panes: [{
+        session: 'wavemill',
+        windowIndex: '6',
+        paneIndex: '0',
+        windowName: `HOK-3056-${slug}`,
+        active: true,
+        pid: 33333,
+        command: 'node',
+        title: 'codex',
+        capturedText: paneText,
+      }],
+      processes: [],
+      repos: [{
+        session: 'wavemill',
+        repoDir,
+        workflowStatePath: join(repoDir, '.wavemill', 'workflow-state.json'),
+        tasks: [{
+          issue: 'HOK-3056',
+          slug,
+          phase: 'coding',
+          status: 'active',
+          worktree: repoDir,
+          updated,
+        }],
+      }],
+      findings: [],
+    });
+
+    await reconcileIncidents(makeSnap(RETIREMENT_CHOOSER_FIXTURE, initialUpdated), defaultObserverOptions());
+    const confirmed = await reconcileIncidents(makeSnap(RETIREMENT_CHOOSER_FIXTURE, initialUpdated), defaultObserverOptions());
+    const confirmedPrompt = (confirmed.incidents ?? []).filter((i) => i.rootCauseClass === 'agent_interactive_prompt_blocked');
+    assert.equal(confirmedPrompt.length, 1);
+
+    // Prompt gone AND task.updated has advanced.
+    const after = await reconcileIncidents(makeSnap('idle shell prompt\n$', laterUpdated), defaultObserverOptions());
+    const stillEmitted = (after.incidents ?? []).filter((i) => i.rootCauseClass === 'agent_interactive_prompt_blocked');
+    assert.equal(stillEmitted.length, 0, 'incident must not re-emit once task has advanced past the confirmed observation');
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
   }

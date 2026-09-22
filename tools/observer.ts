@@ -98,21 +98,48 @@ export function matchPromptSignature(rawText: string): PromptMatchResult | null 
   return null;
 }
 
-// Two-poll debounce: keyed by `taskId:signatureId`, stores first-seen timestamp.
-const promptObservationState = new Map<string, { firstSeenAt: string; pollCount: number }>();
+// Two-poll debounce: keyed by `taskId:signatureId`. On the confirming poll
+// we snapshot the task's authoritative `updated` timestamp and the last
+// observed pane source so REQ-F5/F6 can distinguish "prompt disappeared but
+// task made no progress" (keep incident active) from "prompt disappeared and
+// task advanced or terminalized" (allow sweep to resolve).
+interface PromptObservationState {
+  firstSeenAt: string;
+  pollCount: number;
+  confirmedTaskUpdatedAt?: string;
+  lastPaneSource?: string;
+  match?: PromptMatchResult;
+}
+
+const promptObservationState = new Map<string, PromptObservationState>();
 
 function promptDebounceKey(taskId: string, signatureId: string): string {
   return `${taskId}:${signatureId}`;
 }
 
-function recordPromptObservation(taskId: string, signatureId: string, timestamp: string): { confirmed: boolean } {
+function recordPromptObservation(
+  taskId: string,
+  signatureId: string,
+  timestamp: string,
+  context: { taskUpdatedAt?: string; paneSource?: string; match?: PromptMatchResult } = {},
+): { confirmed: boolean } {
   const key = promptDebounceKey(taskId, signatureId);
   const existing = promptObservationState.get(key);
   if (existing) {
     existing.pollCount += 1;
+    if (context.taskUpdatedAt !== undefined && existing.confirmedTaskUpdatedAt === undefined) {
+      existing.confirmedTaskUpdatedAt = context.taskUpdatedAt;
+    }
+    if (context.paneSource !== undefined) existing.lastPaneSource = context.paneSource;
+    if (context.match !== undefined) existing.match = context.match;
     return { confirmed: true };
   }
-  promptObservationState.set(key, { firstSeenAt: timestamp, pollCount: 1 });
+  promptObservationState.set(key, {
+    firstSeenAt: timestamp,
+    pollCount: 1,
+    lastPaneSource: context.paneSource,
+    match: context.match,
+  });
   return { confirmed: false };
 }
 
@@ -1190,6 +1217,7 @@ function detectParkedArmIncidents(
     return text;
   }
 
+  const observedPromptsThisCycle = new Set<string>();
   for (const task of repo.tasks) {
     if (!task.issue || taskWorkflowIsTerminal(task)) continue;
     const paneResidue = taskPaneResidue(repo, task, snapshot.panes);
@@ -1201,9 +1229,15 @@ function detectParkedArmIncidents(
       const match = matchPromptSignature(paneText);
       if (!match) continue;
 
-      const obs = recordPromptObservation(task.issue, match.signatureId, timestamp);
+      const paneSource = `pane:${pane.session}:${pane.windowIndex}.${pane.paneIndex}`;
+      const obs = recordPromptObservation(task.issue, match.signatureId, timestamp, {
+        taskUpdatedAt: task.updated,
+        paneSource,
+        match,
+      });
       if (!obs.confirmed) continue;
 
+      observedPromptsThisCycle.add(promptDebounceKey(task.issue, match.signatureId));
       incidents.push(createIncidentDraft({
         taskId: task.issue,
         session: repo.session,
@@ -1216,7 +1250,7 @@ function detectParkedArmIncidents(
         operatorAction: match.recommendation,
         evidence: [{
           type: 'pane_scrollback',
-          source: `pane:${pane.session}:${pane.windowIndex}.${pane.paneIndex}`,
+          source: paneSource,
           timestamp,
           redactedData: `agent=${match.agent} prompt=${match.signatureId} choices=${match.choices}`,
           key: `prompt-blocked:${task.issue}:${match.signatureId}`,
@@ -1230,8 +1264,15 @@ function detectParkedArmIncidents(
     }
   }
 
-  // Detect resolution: clear debounce state for tasks whose prompt is gone.
-  for (const [key] of promptObservationState) {
+  // REQ-F5/F6: prompt-disappeared reconciliation.
+  //   - Task terminal ⇒ clear observation; existing incident resolves via
+  //     the normal missed-cycle sweep once terminal state is truth.
+  //   - Task advanced (authoritative `updated` moved past the value snapshot
+  //     when the incident was confirmed) ⇒ clear observation; sweep resolves.
+  //   - Otherwise ⇒ re-emit the incident with the same fingerprint so it
+  //     stays fresh and the sweep does NOT auto-resolve on pane absence alone.
+  for (const [key, state] of promptObservationState) {
+    if (observedPromptsThisCycle.has(key)) continue;
     const [taskId, signatureId] = key.split(':');
     const task = repo.tasks.find((t) => t.issue === taskId);
     if (!task) {
@@ -1242,14 +1283,42 @@ function detectParkedArmIncidents(
       clearPromptObservation(taskId, signatureId);
       continue;
     }
-    const panes = taskPaneResidue(repo, task, snapshot.panes);
-    const stillBlocked = panes.panes.some((pane) => {
-      const text = getCachedPaneText(pane);
-      return text ? matchPromptSignature(text)?.signatureId === signatureId : false;
-    });
-    if (!stillBlocked) {
+    if (
+      state.confirmedTaskUpdatedAt !== undefined
+      && task.updated !== undefined
+      && task.updated !== state.confirmedTaskUpdatedAt
+    ) {
       clearPromptObservation(taskId, signatureId);
+      continue;
     }
+    // Only re-emit once the observation has been confirmed (≥2 polls). A
+    // first-poll observation that vanishes on the next poll is not confirmed
+    // and never produced an incident, so there is nothing to keep fresh.
+    if (state.pollCount < 2 || !state.match) continue;
+    incidents.push(createIncidentDraft({
+      taskId,
+      session: repo.session,
+      category: 'stale_orphaned_state',
+      severity: state.match.severity,
+      confidence: 'high',
+      lifecycle: 'observed',
+      rootCauseClass: 'agent_interactive_prompt_blocked',
+      summary: `${taskId} is blocked on an interactive ${state.match.agent} prompt (${state.match.signatureId}).`,
+      operatorAction: state.match.recommendation,
+      evidence: [{
+        type: 'pane_scrollback',
+        source: state.lastPaneSource ?? `task:${taskId}`,
+        timestamp,
+        redactedData: `agent=${state.match.agent} prompt=${state.match.signatureId} choices=${state.match.choices} paneVisible=false progressAdvanced=false`,
+        key: `prompt-blocked:${taskId}:${state.match.signatureId}`,
+      }],
+      metadata: {
+        signatureId: state.match.signatureId,
+        agent: state.match.agent,
+        paneVisible: false,
+        progressAdvanced: false,
+      },
+    }));
   }
 
   // pr-create-failed diagnostics (mirrors the finding sources: mill log first,
