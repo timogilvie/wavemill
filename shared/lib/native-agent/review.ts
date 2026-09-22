@@ -25,8 +25,13 @@ import {
 import { createReadOnlyTools, READ_ONLY_PATH_FIELDS } from './tools/read-only.ts';
 import { createGitTools, gitAfterToolCall, gitToolPolicyConfig } from './tools/git.ts';
 import { createToolRegistry } from './tools/registry.ts';
-import { toPiAgentTool } from './tools/pi-adapter.ts';
 import type { ToolDescriptor } from './tools/types.ts';
+import {
+  createLaunchMenuProvider,
+  formatMenuDenials,
+} from './tools/menu-resolver.ts';
+import { inferCertificationSnapshotForPhase } from './tools/certification-snapshot.ts';
+import { loadWavemillConfig } from '../config.ts';
 import { renderNativePhasePrompt, type NativePhasePromptOptions } from './prompts.ts';
 import type { ReviewContext } from '../review-context-gatherer.ts';
 import { logPromptUsage } from '../prompt-registry.ts';
@@ -187,6 +192,7 @@ function buildReviewToolRegistry(worktreePath: string) {
   const phaseTools = registry.getTools({ phase });
   return {
     registry,
+    descriptors,
     phaseTools,
     phaseMetadata: registry.list({ phase }),
   };
@@ -565,7 +571,23 @@ export async function runNativeReview(
   }
 
   const userPrompt = fillReviewPromptTemplate(template, context, true);
-  const { phaseTools, phaseMetadata, registry } = buildReviewToolRegistry(repoDir);
+  const { phaseMetadata, registry, descriptors: reviewDescriptors } = buildReviewToolRegistry(repoDir);
+  const menuLaunchProvider = createLaunchMenuProvider({
+    phase: 'review',
+    config: loadWavemillConfig(repoDir),
+    certification: inferCertificationSnapshotForPhase({
+      phase: 'review',
+      readyProviderPresent: true,
+      loopModelOverridePresent: false,
+    }),
+    descriptors: reviewDescriptors,
+  });
+  if (menuLaunchProvider.initialMenu.denials.length > 0) {
+    const formatted = formatMenuDenials(menuLaunchProvider.initialMenu.denials);
+    if (formatted) {
+      console.warn(`[native-review] menu denials:\n${formatted}`);
+    }
+  }
   const { content: systemPrompt, promptRef } = nativeReviewDeps.loadNativeReviewPrompt(repoDir, {
     tools: phaseMetadata,
     phase: 'review',
@@ -663,7 +685,7 @@ export async function runNativeReview(
       content: userPrompt,
       timestamp: 0,
     }],
-    tools: phaseTools.map((tool) => toPiAgentTool(tool)),
+    tools: menuLaunchProvider.providerToolsForContext as unknown as AgentContext['tools'],
   };
   const pricing = normalizedPricingFromModel(modelConfig);
   const effectiveMaxTokens = modelConfig.provider === 'openrouter'
@@ -721,6 +743,7 @@ export async function runNativeReview(
           transcriptEvents.push(derived);
         }
       },
+      menuProvider: menuLaunchProvider.menuProvider,
       budget: {
         // One additional turn is reserved for tool-free terminal synthesis.
         maxTurns: analysisTurnLimit + 1,

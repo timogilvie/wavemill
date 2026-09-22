@@ -57,6 +57,27 @@ import type {
   ToolResultMetadata,
 } from './tools/types.ts';
 
+/**
+ * Thrown when the resolved provider menu diverges from the schemas Pi will
+ * actually send this turn. Never silently logged — a wrong-menu record is
+ * worse than no record because it lies about what the model saw (HOK-3054).
+ */
+export class ProviderToolMenuDriftError extends Error {
+  readonly turnIndex: number;
+  readonly expected: readonly string[];
+  readonly resolved: readonly string[];
+
+  constructor(turnIndex: number, expected: readonly string[], resolved: readonly string[]) {
+    super(
+      `provider-tool-menu drift: turn=${turnIndex} expected=[${[...expected].sort().join(',')}] resolved=[${[...resolved].sort().join(',')}]`,
+    );
+    this.name = 'ProviderToolMenuDriftError';
+    this.turnIndex = turnIndex;
+    this.expected = expected;
+    this.resolved = resolved;
+  }
+}
+
 const EMPTY_ASSISTANT_CONTINUATION_LIMIT = 1;
 const EMPTY_ASSISTANT_CONTINUATION_PROMPT = [
   'Your previous response contained internal reasoning only and no actionable text or tool calls.',
@@ -210,6 +231,42 @@ export interface WavemillLoopConfig {
     backoffDelaysMs?: number[];
     sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   };
+  /**
+   * Per-turn tool exposure hook (HOK-3054). When provided, the loop emits
+   * `tool_menu` and `provider_tools` events at each turn boundary, attaches
+   * both digests to the corresponding `model_request` event, and asserts that
+   * the resolved provider tool names match the schemas actually sent this
+   * turn. A mismatch is a hard failure — silent divergence would defeat the
+   * point of recording the menu.
+   *
+   * Backward compatible: when omitted, the loop behaves exactly as before
+   * (no menu events, no digest fields on `model_request`).
+   */
+  menuProvider?: {
+    resolveForTurn(input: {
+      turnIndex: number;
+      terminalSynthesis: boolean;
+    }): {
+      toolMenu: {
+        canonical: string;
+        digest: string;
+        toolNames: readonly string[];
+        byteSize: number;
+      };
+      providerTools: {
+        canonical: string;
+        digest: string;
+        toolCount: number;
+        toolNames: readonly string[];
+        byteSize: number;
+      };
+    };
+  };
+  /**
+   * Maximum canonical byte size to inline in a menu event before spilling the
+   * canonical content to the artifact store. Defaults to 8 KiB.
+   */
+  menuInlineMaxBytes?: number;
 }
 
 export interface NativeContextManagementConfig {
@@ -591,6 +648,16 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
   // Track current turn's model request event ID and callId for linking response
   let currentTurnRequestEventId: string | undefined;
   let currentTurnRequestCallId: string | undefined;
+
+  // Track the provider-visible tool names Pi will send for the next request.
+  // Seeded from the launch-supplied context.tools; mutated to [] when
+  // terminal synthesis rewrites the next-turn tool list. Used by the
+  // menu-drift assertion in the turn_start handler (HOK-3054).
+  const initialProviderToolNames: readonly string[] = (context.tools ?? []).map(
+    (tool) => String((tool as { name: unknown }).name),
+  );
+  let currentTurnProviderToolNames: readonly string[] = initialProviderToolNames;
+  const menuInlineMaxBytes = config.menuInlineMaxBytes ?? 8192;
 
   const toolsForCompat = config.toolPolicy?.registry.length
     ? config.toolPolicy.registry
@@ -984,6 +1051,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
       ) {
         terminalSynthesisActive = true;
         terminalSynthesisPromptPending = true;
+        currentTurnProviderToolNames = [];
         return {
           ...(nextModel ? { model: nextModel } : {}),
           context: {
@@ -1100,8 +1168,65 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
       config.onEvent?.(event);
     }
     switch (event.type) {
-      case 'turn_start':
+      case 'turn_start': {
         onHeartbeat?.({ state: 'working', event: 'turn_start', agent: HEARTBEAT_AGENT });
+
+        // Resolve the per-turn menu (HOK-3054). Do the drift check before
+        // emitting any events so a mismatch fails the run rather than
+        // silently persisting a wrong-menu record.
+        let toolMenuDigest: string | undefined;
+        let providerToolsDigest: string | undefined;
+        if (config.menuProvider) {
+          const resolved = config.menuProvider.resolveForTurn({
+            turnIndex: turnsCompleted,
+            terminalSynthesis: terminalSynthesisActive,
+          });
+          const expected = [...currentTurnProviderToolNames].sort().join(',');
+          const actual = [...resolved.providerTools.toolNames].sort().join(',');
+          if (expected !== actual) {
+            throw new ProviderToolMenuDriftError(
+              turnsCompleted,
+              currentTurnProviderToolNames,
+              resolved.providerTools.toolNames,
+            );
+          }
+          toolMenuDigest = resolved.toolMenu.digest;
+          providerToolsDigest = resolved.providerTools.digest;
+
+          if (sessionStreamWriter) {
+            try {
+              const menuArtifactRef = resolved.toolMenu.byteSize > menuInlineMaxBytes
+                ? storeArtifact(
+                  resolved.toolMenu.canonical,
+                  config.sessionStreamConfig?.repoDir,
+                )
+                : undefined;
+              sessionStreamWriter.writeToolMenu({
+                toolNames: [...resolved.toolMenu.toolNames],
+                digest: resolved.toolMenu.digest,
+                ...(menuArtifactRef ? { artifactRef: menuArtifactRef } : {}),
+              });
+            } catch (error) {
+              console.warn(`Failed to log tool_menu event: ${(error as Error).message}`);
+            }
+            try {
+              const providerArtifactRef = resolved.providerTools.byteSize > menuInlineMaxBytes
+                ? storeArtifact(
+                  resolved.providerTools.canonical,
+                  config.sessionStreamConfig?.repoDir,
+                )
+                : undefined;
+              sessionStreamWriter.writeProviderTools({
+                toolCount: resolved.providerTools.toolCount,
+                digest: resolved.providerTools.digest,
+                ...(providerArtifactRef ? { artifactRef: providerArtifactRef } : {}),
+              });
+            } catch (error) {
+              console.warn(`Failed to log provider_tools event: ${(error as Error).message}`);
+            }
+          }
+        }
+
         // Log model request event when turn starts
         if (sessionStreamWriter) {
           try {
@@ -1118,6 +1243,8 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
               contextDigest: computeArgsFingerprint(context),
               promptRefs: config.sessionStreamConfig?.promptRefs ?? [],
               injectedContextRefs: config.sessionStreamConfig?.injectedContextRefs,
+              ...(toolMenuDigest ? { toolMenuDigest } : {}),
+              ...(providerToolsDigest ? { providerToolsDigest } : {}),
             });
             currentTurnRequestEventId = modelRequestEvent.eventId;
           } catch (error) {
@@ -1125,6 +1252,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
           }
         }
         break;
+      }
       case 'message_update':
         onHeartbeat?.({ state: 'working', event: 'message_update', agent: HEARTBEAT_AGENT });
         break;
@@ -1342,6 +1470,9 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
   }
 
   if (loopError instanceof ContextExhaustedError) {
+    throw loopError;
+  }
+  if (loopError instanceof ProviderToolMenuDriftError) {
     throw loopError;
   }
 

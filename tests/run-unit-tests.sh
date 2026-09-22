@@ -77,6 +77,7 @@ TESTS=(
   shared/lib/native-agent/tools/policies.test.ts
   shared/lib/native-agent/tools/registry.test.ts
   shared/lib/native-agent/tools/exposure.test.ts
+  shared/lib/native-agent/tools/menu-resolver.test.ts
   shared/lib/native-agent/tools/git.test.ts
   shared/lib/native-agent/tools/apply-patch-tool.test.ts
   shared/lib/native-agent/tools/command-tools.test.ts
