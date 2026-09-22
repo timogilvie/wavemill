@@ -85,6 +85,12 @@ cleanup_file="$tmp/aborted-cleanup.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "remove_task_state"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_task_worktree_identity"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "_wavemill_build_cleanup_evidence_json"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_orphan_dir_scan"
+  printf '\n'
   extract_function "$MONITOR_SCRIPT_FILE" "mark_task_aborted_for_cleanup"
   printf '\n'
   extract_function "$MONITOR_SCRIPT_FILE" "cleanup_aborted_challenge_arm"
@@ -176,6 +182,14 @@ EOF
         "worktree remove") ORDER+="git-worktree;" ; return 0 ;;
         "fetch origin") return 0 ;;
         "show-ref --verify") return 0 ;;
+        "rev-parse --show-toplevel")
+          printf "%s\n" "$WORKTREE_ROOT/$SLUG"
+          return 0
+          ;;
+        "worktree list")
+          printf "worktree %s\n" "$WORKTREE_ROOT/$SLUG"
+          return 0
+          ;;
         "rev-parse --verify")
           case "${3:-}" in
             *demo-challenger*) printf "%s\n" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ;;
