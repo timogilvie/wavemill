@@ -27,6 +27,11 @@ test('parked-arm patterns do not swallow the typed completion-protocol classes',
   assert.equal(canonicalizeRootCauseClass('cleanup-unpublished-at-risk'), 'cleanup_unpublished_at_risk');
 });
 
+test('agent_interactive_prompt_blocked round-trips and canonicalizes from legacy slugs', () => {
+  assert.equal(canonicalizeRootCauseClass('agent_interactive_prompt_blocked'), 'agent_interactive_prompt_blocked');
+  assert.equal(canonicalizeRootCauseClass('agent-interactive-prompt-blocked'), 'agent_interactive_prompt_blocked');
+});
+
 test('module-export contract mismatches map to the bounded product-defect class before generic parse-error fallback', () => {
   assert.equal(
     canonicalizeRootCauseClass("SyntaxError: The requested module '@hokusai/core' does not provide an export named 'deriveTaskDescriptor'"),

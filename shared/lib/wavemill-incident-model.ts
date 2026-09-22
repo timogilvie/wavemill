@@ -63,6 +63,8 @@ export const INCIDENT_ROOT_CAUSE_CLASSES = [
   'terminal_arm_parked_with_residue',
   'arm_died_with_unpushed_work',
   'pr_create_failed',
+  // Agent lifecycle prompt blockage (HOK-3045)
+  'agent_interactive_prompt_blocked',
   'unclassified_local_failure',
 ] as const;
 
@@ -102,6 +104,9 @@ export function canonicalizeRootCauseClass(raw: string): IncidentRootCauseClass 
   }
   if (/pr[-_ ]create[-_ ]failed|pull[-_ ]request[-_ ]create[-_ ]failed/.test(lower)) {
     return 'pr_create_failed';
+  }
+  if (/agent[-_ ]interactive[-_ ]prompt[-_ ]blocked/.test(lower)) {
+    return 'agent_interactive_prompt_blocked';
   }
   if (/does[-_ ]not[-_ ]provide[-_ ]an[-_ ]export|export[-_ ]named|module[-_ ]export[-_ ]contract/.test(lower)) {
     return 'module_export_contract_mismatch';
@@ -159,7 +164,8 @@ export type IncidentEvidenceType =
   | 'challenge_pair_state'
   | 'eval_fallback_event'
   | 'quota_state'
-  | 'log_excerpt';
+  | 'log_excerpt'
+  | 'pane_scrollback';
 
 export type RemediationProposalKind =
   | 'refresh_base_and_rereview'

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildFindings, compactSnapshotForRender, parseArgs, reconcileIncidents, redactObserverText, syncIncidentsToLinear, writeServiceHeartbeat } from './observer.ts';
+import { buildFindings, compactSnapshotForRender, matchPromptSignature, parseArgs, reconcileIncidents, redactObserverText, syncIncidentsToLinear, writeServiceHeartbeat } from './observer.ts';
 import { IncidentStore } from '../shared/lib/wavemill-incident-store.ts';
 import { createIncidentDraft } from '../shared/lib/wavemill-incident-model.ts';
 
@@ -2502,5 +2502,211 @@ test('launch-contract drift on a superseded terminal record is provenance, not a
     assert.equal(drift[0].taskId, 'HOK-2963');
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+// ── Interactive agent lifecycle prompt detection (HOK-3045) ─────────
+
+const RETIREMENT_CHOOSER_FIXTURE =
+  'Codex CLI v1.2.3\n\n' +
+  'GPT-5.5 retires on October 14, 2026\n\n' +
+  '  Try new model\n' +
+  '  Use existing model\n';
+
+test('matchPromptSignature matches the retirement chooser', () => {
+  const match = matchPromptSignature(RETIREMENT_CHOOSER_FIXTURE);
+  assert.ok(match);
+  assert.equal(match.signatureId, 'codex_model_retirement');
+  assert.equal(match.agent, 'codex');
+  assert.equal(match.choices, 2);
+});
+
+test('matchPromptSignature matches with ANSI escape sequences and line wrapping', () => {
+  const ansiText =
+    '\x1b[1m\x1b[34mGPT-5.5 retires on October 14, 2026\x1b[0m\n\n' +
+    '\x1b[32m  Try new\n  model\x1b[0m\n' +
+    '\x1b[33m  Use existing model\x1b[0m\n';
+  const match = matchPromptSignature(ansiText);
+  assert.ok(match);
+  assert.equal(match.signatureId, 'codex_model_retirement');
+});
+
+test('matchPromptSignature rejects partial/missing tokens', () => {
+  assert.equal(matchPromptSignature('GPT-5.5 retires on October 14, 2026'), null);
+  assert.equal(matchPromptSignature('Try new model\nUse existing model'), null);
+  assert.equal(matchPromptSignature('GPT-5.5 retires\nTry new model'), null);
+});
+
+test('matchPromptSignature rejects normal output mentioning model names', () => {
+  assert.equal(matchPromptSignature('Using model GPT-5.5 for code generation\nTask completed successfully'), null);
+  assert.equal(matchPromptSignature('// GPT-5.5 retires soon, see migration plan'), null);
+});
+
+test('matchPromptSignature bounds input to last 16KB', () => {
+  const padding = 'x'.repeat(32_768);
+  const textAtEnd = padding + RETIREMENT_CHOOSER_FIXTURE;
+  const match = matchPromptSignature(textAtEnd);
+  assert.ok(match);
+
+  const textAtStart = RETIREMENT_CHOOSER_FIXTURE + padding;
+  const noMatch = matchPromptSignature(textAtStart);
+  assert.equal(noMatch, null);
+});
+
+test('prompt-blocked incident fires after two polls for a correlated task pane', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-prompt-'));
+  const slug = 'prompt-arm';
+  try {
+    writePermissiveSchema(repoDir);
+    mkdirSync(join(repoDir, '.wavemill', 'incidents'), { recursive: true });
+
+    const snap = () => ({
+      timestamp: new Date().toISOString(),
+      sessions: ['wavemill'],
+      panes: [{
+        session: 'wavemill',
+        windowIndex: '3',
+        paneIndex: '0',
+        windowName: `HOK-3040-${slug}`,
+        active: true,
+        pid: 12345,
+        command: 'node',
+        title: 'codex',
+        capturedText: RETIREMENT_CHOOSER_FIXTURE,
+      }],
+      processes: [],
+      repos: [{
+        session: 'wavemill',
+        repoDir,
+        workflowStatePath: join(repoDir, '.wavemill', 'workflow-state.json'),
+        tasks: [{
+          issue: 'HOK-3040',
+          slug,
+          phase: 'coding',
+          status: 'active',
+          worktree: repoDir,
+          updated: new Date().toISOString(),
+        }],
+      }],
+      findings: [],
+    });
+
+    // Poll 1: debounce, no incident
+    const result1 = await reconcileIncidents(snap(), defaultObserverOptions());
+    const promptIncidents1 = (result1.incidents ?? []).filter(
+      (i) => i.rootCauseClass === 'agent_interactive_prompt_blocked',
+    );
+    assert.equal(promptIncidents1.length, 0);
+
+    // Poll 2: confirmed
+    const result2 = await reconcileIncidents(snap(), defaultObserverOptions());
+    const promptIncidents2 = (result2.incidents ?? []).filter(
+      (i) => i.rootCauseClass === 'agent_interactive_prompt_blocked',
+    );
+    assert.equal(promptIncidents2.length, 1);
+    assert.equal(promptIncidents2[0].taskId, 'HOK-3040');
+    assert.ok(promptIncidents2[0].evidence[0].redactedData.includes('prompt=codex_model_retirement'));
+    assert.ok(promptIncidents2[0].evidence[0].redactedData.includes('agent=codex'));
+    assert.ok(!promptIncidents2[0].evidence[0].redactedData.includes('GPT-5.5'));
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('prompt-blocked incident does not fire for uncorrelated or terminal task panes', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-prompt-neg-'));
+  try {
+    writePermissiveSchema(repoDir);
+    mkdirSync(join(repoDir, '.wavemill', 'incidents'), { recursive: true });
+
+    // Pane belongs to a different session (not task-correlated)
+    const result = await reconcileIncidents({
+      timestamp: new Date().toISOString(),
+      sessions: ['wavemill'],
+      panes: [{
+        session: 'other-session',
+        windowIndex: '1',
+        paneIndex: '0',
+        windowName: 'shell',
+        active: true,
+        pid: 9999,
+        command: 'bash',
+        title: 'shell',
+        capturedText: RETIREMENT_CHOOSER_FIXTURE,
+      }],
+      processes: [],
+      repos: [{
+        session: 'wavemill',
+        repoDir,
+        workflowStatePath: join(repoDir, '.wavemill', 'workflow-state.json'),
+        tasks: [{
+          issue: 'HOK-3040',
+          slug: 'prompt-arm',
+          phase: 'coding',
+          status: 'active',
+          worktree: repoDir,
+        }],
+      }],
+      findings: [],
+    }, defaultObserverOptions());
+
+    const promptIncidents = (result.incidents ?? []).filter(
+      (i) => i.rootCauseClass === 'agent_interactive_prompt_blocked',
+    );
+    assert.equal(promptIncidents.length, 0);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('two blocked task panes produce independent task-scoped incidents', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-prompt-multi-'));
+  try {
+    writePermissiveSchema(repoDir);
+    mkdirSync(join(repoDir, '.wavemill', 'incidents'), { recursive: true });
+
+    const makePanes = (issue: string, slug: string, windowIndex: string) => ({
+      session: 'wavemill',
+      windowIndex,
+      paneIndex: '0',
+      windowName: `${issue}-${slug}`,
+      active: true,
+      pid: 10000 + parseInt(windowIndex),
+      command: 'node',
+      title: 'codex',
+      capturedText: RETIREMENT_CHOOSER_FIXTURE,
+    });
+
+    const snap = {
+      timestamp: new Date().toISOString(),
+      sessions: ['wavemill'],
+      panes: [
+        makePanes('HOK-3040', 'arm-a', '3'),
+        makePanes('HOK-3032', 'arm-b', '4'),
+      ],
+      processes: [],
+      repos: [{
+        session: 'wavemill',
+        repoDir,
+        workflowStatePath: join(repoDir, '.wavemill', 'workflow-state.json'),
+        tasks: [
+          { issue: 'HOK-3040', slug: 'arm-a', phase: 'coding', status: 'active', worktree: repoDir, updated: new Date().toISOString() },
+          { issue: 'HOK-3032', slug: 'arm-b', phase: 'coding', status: 'active', worktree: repoDir, updated: new Date().toISOString() },
+        ],
+      }],
+      findings: [],
+    };
+
+    // Two polls to pass debounce
+    await reconcileIncidents(snap, defaultObserverOptions());
+    const result = await reconcileIncidents(snap, defaultObserverOptions());
+    const promptIncidents = (result.incidents ?? []).filter(
+      (i) => i.rootCauseClass === 'agent_interactive_prompt_blocked',
+    );
+    assert.equal(promptIncidents.length, 2);
+    const taskIds = promptIncidents.map((i) => i.taskId).sort();
+    assert.deepEqual(taskIds, ['HOK-3032', 'HOK-3040']);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
   }
 });

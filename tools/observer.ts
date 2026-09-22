@@ -39,6 +39,87 @@ const RESIDUE_COMMIT_SUBJECT_LIMIT = 5;
 const STALLED_ACTIVE_UNPUBLISHED_MINUTES = 120;
 const PR_CREATE_FAILED_PATTERN = /pull request create failed:?\s*(.*)/i;
 
+// ── Interactive agent lifecycle prompt detection (HOK-3045) ─────────
+const PANE_TEXT_MATCH_LIMIT = 16_384;
+
+interface PromptSignature {
+  id: string;
+  agent: string;
+  requiredTokens: RegExp[];
+  severity: IncidentRecord['severity'];
+  recommendation: string;
+}
+
+const PROMPT_SIGNATURE_CATALOG: PromptSignature[] = [
+  {
+    id: 'codex_model_retirement',
+    agent: 'codex',
+    requiredTokens: [
+      /GPT-5\.5\s+retires?\b/i,
+      /Try\s+new\s+model/i,
+      /Use\s+existing\s+model/i,
+    ],
+    severity: 'high',
+    recommendation: 'The Codex agent is blocked on a model retirement chooser. Select an option in the task pane or update the Codex model configuration to bypass the prompt.',
+  },
+];
+
+interface PromptMatchResult {
+  signatureId: string;
+  agent: string;
+  severity: IncidentRecord['severity'];
+  recommendation: string;
+  choices: number;
+}
+
+function normalizeAnsi(text: string): string {
+  return text
+    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
+    .replace(/\x1b\][^\x07]*\x07/g, '')
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n');
+}
+
+export function matchPromptSignature(rawText: string): PromptMatchResult | null {
+  const bounded = rawText.slice(-PANE_TEXT_MATCH_LIMIT);
+  const normalized = normalizeAnsi(bounded);
+  for (const sig of PROMPT_SIGNATURE_CATALOG) {
+    if (sig.requiredTokens.every((re) => re.test(normalized))) {
+      return {
+        signatureId: sig.id,
+        agent: sig.agent,
+        severity: sig.severity,
+        recommendation: sig.recommendation,
+        choices: sig.requiredTokens.length - 1,
+      };
+    }
+  }
+  return null;
+}
+
+// Two-poll debounce: keyed by `taskId:signatureId`, stores first-seen timestamp.
+const promptObservationState = new Map<string, { firstSeenAt: string; pollCount: number }>();
+
+function promptDebounceKey(taskId: string, signatureId: string): string {
+  return `${taskId}:${signatureId}`;
+}
+
+function recordPromptObservation(taskId: string, signatureId: string, timestamp: string): { confirmed: boolean } {
+  const key = promptDebounceKey(taskId, signatureId);
+  const existing = promptObservationState.get(key);
+  if (existing) {
+    existing.pollCount += 1;
+    return { confirmed: true };
+  }
+  promptObservationState.set(key, { firstSeenAt: timestamp, pollCount: 1 });
+  return { confirmed: false };
+}
+
+function clearPromptObservation(taskId: string, signatureId: string): void {
+  promptObservationState.delete(promptDebounceKey(taskId, signatureId));
+}
+
 interface ObserverOptions {
   loop: boolean;
   once: boolean;
@@ -1095,6 +1176,79 @@ function detectParkedArmIncidents(
         }],
         metadata: { branch, baseBranch, disposition: classified.disposition },
       }));
+    }
+  }
+
+  // Interactive agent lifecycle prompt detection (HOK-3045).
+  // Scans task-correlated panes for known interactive prompts.
+  const capturedPaneCache = new Map<string, string | undefined>();
+  function getCachedPaneText(pane: Pane): string | undefined {
+    const key = `${pane.session}:${pane.windowIndex}.${pane.paneIndex}`;
+    if (capturedPaneCache.has(key)) return capturedPaneCache.get(key);
+    const text = capturePaneText(pane);
+    capturedPaneCache.set(key, text);
+    return text;
+  }
+
+  for (const task of repo.tasks) {
+    if (!task.issue || taskWorkflowIsTerminal(task)) continue;
+    const paneResidue = taskPaneResidue(repo, task, snapshot.panes);
+    if (!paneResidue.present || !paneResidue.live) continue;
+
+    for (const pane of paneResidue.panes) {
+      const paneText = getCachedPaneText(pane);
+      if (!paneText) continue;
+      const match = matchPromptSignature(paneText);
+      if (!match) continue;
+
+      const obs = recordPromptObservation(task.issue, match.signatureId, timestamp);
+      if (!obs.confirmed) continue;
+
+      incidents.push(createIncidentDraft({
+        taskId: task.issue,
+        session: repo.session,
+        category: 'stale_orphaned_state',
+        severity: match.severity,
+        confidence: 'high',
+        lifecycle: 'observed',
+        rootCauseClass: 'agent_interactive_prompt_blocked',
+        summary: `${task.issue} is blocked on an interactive ${match.agent} prompt (${match.signatureId}).`,
+        operatorAction: match.recommendation,
+        evidence: [{
+          type: 'pane_scrollback',
+          source: `pane:${pane.session}:${pane.windowIndex}.${pane.paneIndex}`,
+          timestamp,
+          redactedData: `agent=${match.agent} prompt=${match.signatureId} choices=${match.choices}`,
+          key: `prompt-blocked:${task.issue}:${match.signatureId}`,
+        }],
+        metadata: {
+          signatureId: match.signatureId,
+          agent: match.agent,
+        },
+      }));
+      break;
+    }
+  }
+
+  // Detect resolution: clear debounce state for tasks whose prompt is gone.
+  for (const [key] of promptObservationState) {
+    const [taskId, signatureId] = key.split(':');
+    const task = repo.tasks.find((t) => t.issue === taskId);
+    if (!task) {
+      clearPromptObservation(taskId, signatureId);
+      continue;
+    }
+    if (taskWorkflowIsTerminal(task)) {
+      clearPromptObservation(taskId, signatureId);
+      continue;
+    }
+    const panes = taskPaneResidue(repo, task, snapshot.panes);
+    const stillBlocked = panes.panes.some((pane) => {
+      const text = getCachedPaneText(pane);
+      return text ? matchPromptSignature(text)?.signatureId === signatureId : false;
+    });
+    if (!stillBlocked) {
+      clearPromptObservation(taskId, signatureId);
     }
   }
 
