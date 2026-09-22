@@ -1,9 +1,18 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { ToolDescriptor, ToolMetadata } from './types.ts';
+import type {
+  NativeCertificationRequirement,
+  ToolDescriptor,
+  ToolExposureMode,
+  ToolFamilyId,
+  ToolMetadata,
+} from './types.ts';
 import {
   createToolRegistry,
+  DuplicateLogicalIdError,
   DuplicateToolError,
+  InvalidExposureError,
+  UnknownLogicalIdError,
   UnknownToolError,
 } from './registry.ts';
 import { toPiAgentTool } from './pi-adapter.ts';
@@ -28,6 +37,34 @@ function makeDescriptor(
     parameters: { type: 'object', properties: {} },
     async execute(_toolCallId, _params) {
       return { content: [{ type: 'text', text: `result:${name}` }], details: undefined };
+    },
+  };
+}
+
+function makeAdvancedDescriptor(options: {
+  name: string;
+  family: ToolFamilyId;
+  logicalId?: string;
+  phases?: ToolMetadata['allowedPhases'];
+  exposure?: ToolExposureMode;
+  certificationRequirement?: NativeCertificationRequirement;
+}): ToolDescriptor {
+  return {
+    metadata: {
+      name: options.name,
+      description: `Description for ${options.name}`,
+      class: 'read-only',
+      allowedPhases: options.phases ?? ['planning', 'coding', 'review'],
+      executionMode: 'parallel',
+      outputCapPolicy: { strategy: 'none' },
+      family: options.family,
+      logicalId: options.logicalId,
+      exposure: options.exposure,
+      certificationRequirement: options.certificationRequirement,
+    },
+    parameters: { type: 'object', properties: {} },
+    async execute(_toolCallId, _params) {
+      return { content: [{ type: 'text', text: `result:${options.name}` }], details: undefined };
     },
   };
 }
@@ -118,6 +155,23 @@ describe('registry — deterministic ordering', () => {
       ['alpha', 'charlie'],
     );
   });
+
+  it('preserves registration order when family and logicalIds filters compose', () => {
+    const registry = createToolRegistry([
+      makeDescriptor('read_file'),
+      makeAdvancedDescriptor({ name: 'browser_navigate', family: 'browser', exposure: 'opt-in' }),
+      makeAdvancedDescriptor({ name: 'browser_snapshot', family: 'browser', exposure: 'opt-in' }),
+    ]);
+
+    const result = registry.getTools({
+      family: 'browser',
+      logicalIds: ['browser.browser_snapshot', 'browser.browser_navigate'],
+    });
+    assert.deepEqual(
+      result.map((d) => d.metadata.name),
+      ['browser_navigate', 'browser_snapshot'],
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -160,6 +214,175 @@ describe('registry — duplicate registration', () => {
     registry.register(makeDescriptor('Read_File'));
     assert.doesNotThrow(() => registry.register(makeDescriptor('read_file')));
     assert.equal(registry.getTools().length, 2);
+  });
+
+  it('throws DuplicateLogicalIdError when two descriptors share a logical id within a family', () => {
+    const registry = createToolRegistry();
+    registry.register(
+      makeAdvancedDescriptor({
+        name: 'browser_navigate',
+        family: 'browser',
+        logicalId: 'browser.navigate',
+        exposure: 'opt-in',
+      }),
+    );
+
+    assert.throws(
+      () =>
+        registry.register(
+          makeAdvancedDescriptor({
+            name: 'browser_navigate_v2',
+            family: 'browser',
+            logicalId: 'browser.navigate',
+            exposure: 'opt-in',
+          }),
+        ),
+      (err: unknown) => {
+        assert.ok(err instanceof DuplicateLogicalIdError);
+        assert.ok(err.message.includes('browser.navigate'));
+        assert.equal(err.name, 'DuplicateLogicalIdError');
+        return true;
+      },
+    );
+  });
+
+  it('allows the same logical suffix across different families', () => {
+    const registry = createToolRegistry();
+    registry.register(
+      makeAdvancedDescriptor({
+        name: 'browser_open',
+        family: 'browser',
+        logicalId: 'browser.open',
+        exposure: 'opt-in',
+      }),
+    );
+    assert.doesNotThrow(() =>
+      registry.register(
+        makeAdvancedDescriptor({
+          name: 'mcp_open',
+          family: 'mcp',
+          logicalId: 'mcp.open',
+          exposure: 'opt-in',
+        }),
+      ),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Exposure invariants
+// ---------------------------------------------------------------------------
+
+describe('registry — exposure invariants', () => {
+  it('rejects core tools declared with opt-in exposure', () => {
+    const registry = createToolRegistry();
+    const descriptor = makeDescriptor('read_file');
+    descriptor.metadata = { ...descriptor.metadata, family: 'core', exposure: 'opt-in' };
+
+    assert.throws(() => registry.register(descriptor), (err: unknown) => {
+      assert.ok(err instanceof InvalidExposureError);
+      assert.equal(err.name, 'InvalidExposureError');
+      return true;
+    });
+  });
+
+  it('rejects advanced-family tools declared with always exposure', () => {
+    const registry = createToolRegistry();
+    const descriptor = makeAdvancedDescriptor({
+      name: 'browser_navigate',
+      family: 'browser',
+      exposure: 'always',
+    });
+
+    assert.throws(() => registry.register(descriptor), InvalidExposureError);
+  });
+
+  it('inflates legacy descriptors to core/always/none via withDefaultMetadata', () => {
+    const registry = createToolRegistry([makeDescriptor('read_file')]);
+    const [meta] = registry.list();
+    assert.equal(meta.family, 'core');
+    assert.equal(meta.logicalId, 'core.read_file');
+    assert.equal(meta.exposure, 'always');
+    assert.equal(meta.certificationRequirement, 'none');
+    assert.equal(meta.provenance, 'repo-trusted');
+    assert.ok(meta.policy);
+    assert.equal(meta.policy.pathMode, 'read-only');
+  });
+
+  it('advanced descriptors inflate to opt-in and workflow certification by default', () => {
+    const registry = createToolRegistry();
+    registry.register(
+      makeAdvancedDescriptor({ name: 'browser_navigate', family: 'browser' }),
+    );
+    const [meta] = registry.list({ family: 'browser' });
+    assert.equal(meta.exposure, 'opt-in');
+    assert.equal(meta.certificationRequirement, 'workflow');
+    assert.equal(meta.family, 'browser');
+    assert.equal(meta.logicalId, 'browser.browser_navigate');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Family and logical id catalog queries
+// ---------------------------------------------------------------------------
+
+describe('registry — family and logical id queries', () => {
+  it('getFamilies returns families in first-registration order', () => {
+    const registry = createToolRegistry([
+      makeDescriptor('read_file'),
+      makeAdvancedDescriptor({ name: 'browser_navigate', family: 'browser' }),
+      makeAdvancedDescriptor({ name: 'mcp_call', family: 'mcp' }),
+      makeAdvancedDescriptor({ name: 'browser_snapshot', family: 'browser' }),
+    ]);
+    assert.deepEqual(registry.getFamilies(), ['core', 'browser', 'mcp']);
+  });
+
+  it('getByFamily restricts to the requested family', () => {
+    const registry = createToolRegistry([
+      makeDescriptor('read_file'),
+      makeAdvancedDescriptor({ name: 'browser_navigate', family: 'browser' }),
+      makeAdvancedDescriptor({ name: 'mcp_call', family: 'mcp' }),
+    ]);
+    const browserOnly = registry.getByFamily('browser');
+    assert.deepEqual(
+      browserOnly.map((d) => d.metadata.name),
+      ['browser_navigate'],
+    );
+  });
+
+  it('logicalIds filter throws UnknownLogicalIdError on unknown ids', () => {
+    const registry = createToolRegistry([
+      makeAdvancedDescriptor({ name: 'browser_navigate', family: 'browser' }),
+    ]);
+    assert.throws(
+      () => registry.getTools({ logicalIds: ['browser.does_not_exist'] }),
+      (err: unknown) => {
+        assert.ok(err instanceof UnknownLogicalIdError);
+        assert.ok(err.message.includes('browser.does_not_exist'));
+        assert.equal(err.name, 'UnknownLogicalIdError');
+        return true;
+      },
+    );
+  });
+
+  it('logicalIds empty array returns empty list', () => {
+    const registry = createToolRegistry([
+      makeAdvancedDescriptor({ name: 'browser_navigate', family: 'browser' }),
+    ]);
+    assert.deepEqual(registry.getTools({ logicalIds: [] }), []);
+  });
+
+  it('hasLogicalId reflects registered descriptors', () => {
+    const registry = createToolRegistry();
+    registry.register(
+      makeAdvancedDescriptor({
+        name: 'browser_navigate',
+        family: 'browser',
+        logicalId: 'browser.navigate',
+      }),
+    );
+    assert.equal(registry.hasLogicalId('browser.navigate'), true);
+    assert.equal(registry.hasLogicalId('browser.does_not_exist'), false);
   });
 });
 

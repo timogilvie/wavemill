@@ -1517,6 +1517,19 @@
                         }
                     },
                     "additionalProperties": false
+                },
+                "advanced": {
+                    "type": "object",
+                    "description": "Advanced-tool family opt-ins (Epic 10). Every family defaults off; a family becomes eligible only when explicitly enabled for the target phase. See shared/lib/native-agent/tools/exposure.ts.",
+                    "properties": {
+                        "browser": { "$ref": "#/definitions/nativeAgentAdvancedFamily" },
+                        "screenshot": { "$ref": "#/definitions/nativeAgentAdvancedFamily" },
+                        "mcp": { "$ref": "#/definitions/nativeAgentAdvancedFamily" },
+                        "code_search": { "$ref": "#/definitions/nativeAgentAdvancedFamily" },
+                        "ast": { "$ref": "#/definitions/nativeAgentAdvancedFamily" },
+                        "eval": { "$ref": "#/definitions/nativeAgentAdvancedFamily" }
+                    },
+                    "additionalProperties": false
                 }
             },
             "additionalProperties": false
@@ -3253,6 +3266,35 @@
         }
     },
     "definitions": {
+        "nativeAgentAdvancedFamily": {
+            "type": "object",
+            "description": "Per-family opt-in for an Epic 10 advanced tool family. Every field is optional and defaults to off/empty.",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Master toggle for this advanced family."
+                },
+                "allowedPhases": {
+                    "type": "array",
+                    "description": "Phases for which this family is eligible when enabled. Empty or omitted keeps the family hidden even when enabled.",
+                    "items": {
+                        "type": "string",
+                        "enum": ["task-expansion", "planning", "coding", "review"]
+                    },
+                    "default": []
+                },
+                "logicalIds": {
+                    "type": "array",
+                    "description": "Optional narrow allowlist of family-scoped logical ids. When present, only listed logical ids become eligible.",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                }
+            },
+            "additionalProperties": false
+        },
         "observerLinearPolicy": {
             "type": "object",
             "properties": {
