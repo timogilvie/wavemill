@@ -9645,7 +9645,7 @@ launch_ready_watchdog_remediation() {
   local remote_ready_head
   remote_ready_head=$(ready_current_github_head "$wt_dir" "$pr_number")
   if [[ -n "$remote_ready_head" ]]; then
-    if [[ -n "$ready_head_sha" && "$ready_head_sha" != "$remote_ready_head" ]]; then
+    if [[ -n "$current_head" && "$current_head" != "$remote_ready_head" ]]; then
       bounded_retry_reset_if_new_head "$state_dir" "ready-remediation" "$remote_ready_head"
       bounded_retry_reset_if_new_head "$state_dir" "pending-ready-recheck" "$remote_ready_head"
       write_stage_result "$state_dir" "ready" "running" "$current_agent" "$current_model" \
@@ -9653,7 +9653,6 @@ launch_ready_watchdog_remediation() {
         "$(jq -cn --argjson pr "$pr_number" --arg head "$remote_ready_head" '{type:"ready",verdict:"pending",prNumber:$pr,readyHeadSha:$head,pendingReason:"head-changed"}')"
       return 4
     fi
-    ready_head_sha="$remote_ready_head"
   fi
   checks_run=$(jq -r '.artifacts.checksRun // 0' "$ready_result_file" 2>/dev/null || echo "0")
   checks_passed=$(jq -r '.artifacts.checksPassed // 0' "$ready_result_file" 2>/dev/null || echo "0")

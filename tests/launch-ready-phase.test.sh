@@ -783,6 +783,17 @@ run_watchdog_launch_case() {
       fi
       return 1
     }
+    # ready_current_github_head shells out to `gh` via a subshell that inherits
+    # exported functions; stubbing it here exercises the HOK-3051 authenticated
+    # path under set -u instead of silently falling through when gh is absent.
+    gh() {
+      case "$TEST_CASE" in
+        remote_head_matches) printf "%s\n" "abc123"; return 0 ;;
+        remote_head_changed) printf "%s\n" "def456"; return 0 ;;
+        *) return 1 ;;
+      esac
+    }
+    export -f gh
     merge_queue_enrich_ready_artifacts() { printf "%s\n" "$2"; }
     write_stage_result() {
       printf -v WRITE_STAGE_CALLS "%s%s|%s|%s|%s|%s|%s|%s\n" \
@@ -795,7 +806,17 @@ run_watchdog_launch_case() {
     log() { :; }
     log_error() { :; }
 
+    if [[ "$TEST_CASE" == "remote_head_changed" ]]; then
+      printf "%s\n" "1"      > "$STATE_DIR/.retry-ready-remediation-count"
+      printf "%s\n" "abc123" > "$STATE_DIR/.retry-ready-remediation-head"
+      printf "%s\n" "$(date +%s)" > "$STATE_DIR/.retry-ready-remediation-last-at"
+      printf "%s\n" "1"      > "$STATE_DIR/.retry-pending-ready-recheck-count"
+      printf "%s\n" "abc123" > "$STATE_DIR/.retry-pending-ready-recheck-head"
+      printf "%s\n" "$(date +%s)" > "$STATE_DIR/.retry-pending-ready-recheck-last-at"
+    fi
+
     output_file="$CASE_DIR/watchdog-output.json"
+    rc=0
     launch_ready_watchdog_remediation \
       "HOK-1300" \
       "fix-failing-ci-tests" \
@@ -806,12 +827,17 @@ run_watchdog_launch_case() {
       "Alembic Check (FAILURE)" \
       "1" \
       "3" \
-      "[\"Alembic Check\"]" > "$output_file"
+      "[\"Alembic Check\"]" > "$output_file" || rc=$?
     output=$(cat "$output_file")
 
+    remediation_head_after="cleared"
+    [[ -f "$STATE_DIR/.retry-ready-remediation-head" ]] && remediation_head_after=$(cat "$STATE_DIR/.retry-ready-remediation-head")
+    pending_head_after="cleared"
+    [[ -f "$STATE_DIR/.retry-pending-ready-recheck-head" ]] && pending_head_after=$(cat "$STATE_DIR/.retry-pending-ready-recheck-head")
+
     stage_summary=$(printf "%s" "$WRITE_STAGE_CALLS" | tr "\n" ";")
-    printf "output=%s\nstage_calls=%s\nlaunch_calls=%s\nprompt_calls=%s\nprompt_summary=%s\n" \
-      "$output" "$stage_summary" "$LAUNCH_AGENT_CALLS" "$READY_PROMPT_CALLS" "$READY_PROMPT_SUMMARY"
+    printf "output=%s\nstage_calls=%s\nlaunch_calls=%s\nprompt_calls=%s\nprompt_summary=%s\nrc=%s\nremediation_head_after=%s\npending_head_after=%s\n" \
+      "$output" "$stage_summary" "$LAUNCH_AGENT_CALLS" "$READY_PROMPT_CALLS" "$READY_PROMPT_SUMMARY" "$rc" "$remediation_head_after" "$pending_head_after"
   ' 2>&1
 }
 
@@ -1521,6 +1547,31 @@ output="$(run_watchdog_launch_case inflight_same_head)"
 check_contains "watchdog inflight skips launch" "$output" '"status":"skipped-in-flight"'
 check_contains "watchdog inflight does not relaunch agent" "$output" "launch_calls=0"
 check_contains "watchdog inflight does not rewrite stage" "$output" "stage_calls="
+
+# HOK-3051 regression: non-empty remote head equal to local current_head must
+# proceed to remediation instead of tripping nounset on the unset ready_head_sha.
+output="$(run_watchdog_launch_case remote_head_matches)"
+check_contains "watchdog remote head match launches" "$output" '"status":"launched"'
+check_contains "watchdog remote head match writes running stage" "$output" "|ready|running|"
+check_contains "watchdog remote head match invokes agent" "$output" "launch_calls=1"
+check_contains "watchdog remote head match returns success" "$output" "rc=0"
+
+# HOK-3051 acceptance: non-empty remote head differing from current_head reports
+# head-changed without launching agents and resets both retry buckets.
+output="$(run_watchdog_launch_case remote_head_changed)"
+check_contains "watchdog remote head change returns head-changed" "$output" "rc=4"
+check_contains "watchdog remote head change does not launch agent" "$output" "launch_calls=0"
+check_contains "watchdog remote head change writes running stage" "$output" "|ready|running|"
+check_contains "watchdog remote head change records remote sha" "$output" '"readyHeadSha":"def456"'
+check_contains "watchdog remote head change records pending reason" "$output" '"pendingReason":"head-changed"'
+check_contains "watchdog remote head change resets remediation bucket" "$output" "remediation_head_after=cleared"
+check_contains "watchdog remote head change resets pending recheck bucket" "$output" "pending_head_after=cleared"
+
+# HOK-3051: remote head unavailable (gh fails) must preserve pre-fix behavior.
+output="$(run_watchdog_launch_case remote_head_unavailable)"
+check_contains "watchdog remote head unavailable launches" "$output" '"status":"launched"'
+check_contains "watchdog remote head unavailable invokes agent" "$output" "launch_calls=1"
+check_contains "watchdog remote head unavailable returns success" "$output" "rc=0"
 
 echo "=== Sequential Failing Launch Scenario ==="
 

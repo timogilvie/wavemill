@@ -63,6 +63,10 @@ export const INCIDENT_ROOT_CAUSE_CLASSES = [
   'terminal_arm_parked_with_residue',
   'arm_died_with_unpushed_work',
   'pr_create_failed',
+  // Task pane blocked on a known interactive agent lifecycle prompt (HOK-3045).
+  // Captured only from a correlated task pane against a closed prompt-signature
+  // catalog; evidence carries only the signature id, not raw prompt text.
+  'agent_interactive_prompt_blocked',
   'unclassified_local_failure',
 ] as const;
 
@@ -102,6 +106,9 @@ export function canonicalizeRootCauseClass(raw: string): IncidentRootCauseClass 
   }
   if (/pr[-_ ]create[-_ ]failed|pull[-_ ]request[-_ ]create[-_ ]failed/.test(lower)) {
     return 'pr_create_failed';
+  }
+  if (/agent[-_ ]interactive[-_ ]prompt[-_ ]blocked|interactive[-_ ]prompt[-_ ]blocked/.test(lower)) {
+    return 'agent_interactive_prompt_blocked';
   }
   if (/does[-_ ]not[-_ ]provide[-_ ]an[-_ ]export|export[-_ ]named|module[-_ ]export[-_ ]contract/.test(lower)) {
     return 'module_export_contract_mismatch';
