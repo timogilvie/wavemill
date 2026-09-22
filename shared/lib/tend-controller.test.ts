@@ -16,6 +16,7 @@ import {
   isBasePolicyMergeError,
   isRequiredChecksExpectedMergeError,
   mergeRetryMarkerPath,
+  reconcileScratchPrepState,
   selectNextCandidate,
   waitForChecks,
   type GhPrListEntry,
@@ -27,6 +28,13 @@ import {
   type TendCandidate,
   type TendDecision,
 } from './tend-controller.ts';
+import {
+  readScratchPrepMarker,
+  scratchPrepMarkerPath,
+  writeScratchPrepMarker,
+  WorktreePrepTimeoutError,
+  type ScratchPrepRunner,
+} from './tend-scratch-prep.ts';
 import { clearConfigCache } from './config.ts';
 import { publishReadyHandoff, readReadyTendHandoff } from './ready-tend-handoff.ts';
 
@@ -109,10 +117,35 @@ function candidate(overrides: Partial<TendCandidate> = {}): TendCandidate {
   };
 }
 
+/**
+ * Build a prep runner that delegates to the test's shellRunner. Keeps every
+ * existing `hasCall(options.calls, /git worktree add/)` assertion green
+ * while `withScratchWorktree` runs its reap/fetch/add commands through the
+ * (new, async) `deps.prepRunner`.
+ */
+function shellRunnerBackedPrepRunner(
+  shellRunnerRef: { current: MergeExecutionDeps['shellRunner'] },
+  cwdOverride: string,
+): ScratchPrepRunner {
+  return {
+    remainingDeadlineMs: () => Number.POSITIVE_INFINITY,
+    run: async (cmd, opts) => {
+      const out = shellRunnerRef.current(cmd, {
+        encoding: 'utf-8',
+        cwd: opts.cwd || cwdOverride,
+        timeout: opts.perCommandDeadlineMs ?? 60_000,
+      });
+      return String(out);
+    },
+  };
+}
+
 function buildMergeTestOptions(overrides: {
   shellRunner?: MergeExecutionDeps['shellRunner'];
   readyChecker?: MergeExecutionDeps['readyChecker'];
   healthChecker?: MergeExecutionDeps['healthChecker'];
+  prepRunnerFactory?: MergeExecutionDeps['prepRunnerFactory'];
+  scratchPrepRetry?: MergeExecutionDeps['scratchPrepRetry'];
 } = {}): {
   repoDir: string;
   calls: string[];
@@ -146,12 +179,20 @@ function buildMergeTestOptions(overrides: {
     return '';
   };
 
+  const shellRunnerRef = { current: overrides.shellRunner ?? defaultShellRunner };
+  const noopStrictBaseRetry: StrictBaseRetryOps = {
+    gate: () => 'proceed',
+    increment: () => {},
+    markExhausted: () => {},
+    clear: () => {},
+  };
+
   return {
     repoDir,
     calls,
     labels,
     deps: {
-      shellRunner: overrides.shellRunner ?? defaultShellRunner,
+      shellRunner: shellRunnerRef.current,
       readyChecker: overrides.readyChecker ?? (async () => ({ ready: true })),
       healthChecker: overrides.healthChecker ?? (async () => ({ state: 'healthy' })),
       acquireMerging: (prNumber) => {
@@ -169,6 +210,8 @@ function buildMergeTestOptions(overrides: {
       reclaimStaleMerging: (prNumber) => {
         labels.push(`ready-reclaim:${prNumber}`);
       },
+      prepRunnerFactory: overrides.prepRunnerFactory ?? (() => shellRunnerBackedPrepRunner(shellRunnerRef, repoDir)),
+      scratchPrepRetry: overrides.scratchPrepRetry ?? noopStrictBaseRetry,
     },
     cleanup: () => rmSync(repoDir, { recursive: true, force: true }),
   };
@@ -3636,6 +3679,284 @@ describe('wm:blocked reconciliation against live state (HOK-2919)', () => {
       assert.match(findings, /Mill and tend disagree on PR #1 merge candidacy/);
       assert.match(findings, /ready-failed:not-ready/);
       assert.match(findings, /pass: 16\/3 checks/);
+    } finally {
+      options.cleanup();
+    }
+  });
+});
+
+describe('executeMerge worktree-prep timeout (HOK-3039)', () => {
+  function makeTimeoutRunner(phase: 'reap' | 'fetch' | 'add'): () => ScratchPrepRunner {
+    return () => ({
+      remainingDeadlineMs: () => 0,
+      run: (cmd, opts) => {
+        if (opts.phase !== phase) {
+          // Let earlier prep phases succeed.
+          return Promise.resolve('');
+        }
+        return Promise.reject(new WorktreePrepTimeoutError({
+          phase,
+          elapsedMs: 42,
+          output: `simulated ${cmd}`,
+        }));
+      },
+    });
+  }
+
+  it('returns wm:ready and skipped when the first prep timeout fits in the recovery budget', async () => {
+    let gateCalls = 0;
+    const scratchPrepRetry: StrictBaseRetryOps = {
+      gate: () => { gateCalls += 1; return 'proceed'; },
+      increment: () => {},
+      markExhausted: () => { throw new Error('markExhausted should not be called on the first timeout'); },
+      clear: () => {},
+    };
+    const options = buildMergeTestOptions({
+      prepRunnerFactory: makeTimeoutRunner('add'),
+      scratchPrepRetry,
+    });
+    try {
+      const result = await executeMerge(
+        candidate({ headSha: 'head-first-timeout' }),
+        { repoDir: options.repoDir, deps: options.deps },
+      );
+      assert.equal(result.status, 'skipped');
+      assert.equal(result.phase, 'worktree-timeout');
+      assert.match(String(result.failureExcerpt), /worktree-prep-timeout phase=add/);
+      // Ready restored on the way out — the incident should NOT terminally block.
+      assert.ok(options.labels.includes('ready:42'), `labels=${options.labels.join(',')}`);
+      assert.ok(!options.labels.includes('blocked:42'));
+      assert.equal(gateCalls, 1);
+      // Marker cleared on the recovery path so the next Tend loop starts clean.
+      assert.ok(!existsSync(scratchPrepMarkerPath(42, options.repoDir)));
+    } finally {
+      options.cleanup();
+    }
+  });
+
+  it('blocks the PR when scratch-prep recovery is exhausted at the same head', async () => {
+    let markExhaustedCalled = false;
+    const scratchPrepRetry: StrictBaseRetryOps = {
+      gate: () => 'exhausted',
+      increment: () => {},
+      markExhausted: () => { markExhaustedCalled = true; },
+      clear: () => {},
+    };
+    const options = buildMergeTestOptions({
+      prepRunnerFactory: makeTimeoutRunner('add'),
+      scratchPrepRetry,
+    });
+    try {
+      const result = await executeMerge(
+        candidate({ headSha: 'head-exhausted' }),
+        { repoDir: options.repoDir, deps: options.deps },
+      );
+      assert.equal(result.status, 'blocked');
+      assert.equal(result.phase, 'worktree-timeout');
+      assert.match(String(result.failureExcerpt), /scratch-prep-recovery budget exhausted/);
+      assert.ok(options.labels.includes('blocked:42'), `labels=${options.labels.join(',')}`);
+      assert.ok(markExhaustedCalled);
+    } finally {
+      options.cleanup();
+    }
+  });
+
+  it('never leaves the marker after a normal merge lifecycle', async () => {
+    const options = buildMergeTestOptions();
+    try {
+      const result = await executeMerge(candidate(), { repoDir: options.repoDir, deps: options.deps });
+      assert.equal(result.status, 'merged');
+      assert.ok(!existsSync(scratchPrepMarkerPath(42, options.repoDir)));
+    } finally {
+      options.cleanup();
+    }
+  });
+
+  it('invokes onPhaseProgress for each scratch-prep phase during a normal merge', async () => {
+    const options = buildMergeTestOptions();
+    const phases: string[] = [];
+    try {
+      const result = await executeMerge(candidate(), {
+        repoDir: options.repoDir,
+        deps: options.deps,
+        onPhaseProgress: async ({ phase }) => { phases.push(phase); },
+      });
+      assert.equal(result.status, 'merged');
+      // We expect reap, fetch, add, and ready — the safe prep phases — in order.
+      assert.deepEqual(
+        phases.filter((p) => p !== 'heartbeat').slice(0, 4),
+        ['reap', 'fetch', 'add', 'ready'],
+      );
+    } finally {
+      options.cleanup();
+    }
+  });
+});
+
+describe('reconcileScratchPrepState (HOK-3039)', () => {
+  it('returns none when no markers are present', async () => {
+    const options = buildMergeTestOptions();
+    try {
+      const outcomes = await reconcileScratchPrepState(options.repoDir, options.deps);
+      assert.deepEqual(outcomes, []);
+    } finally {
+      options.cleanup();
+    }
+  });
+
+  it('refuses to touch a marker whose owning pid is still alive (active-run guard)', async () => {
+    const options = buildMergeTestOptions();
+    try {
+      await writeScratchPrepMarker(options.repoDir, {
+        prNumber: 42,
+        headBranch: 'task/merge-me',
+        phase: 'push',
+        pid: process.pid, // We are the "live" owner.
+        prePushSha: 'pre-sha',
+        rebasedHeadSha: 'rebased-sha',
+      });
+      const outcomes = await reconcileScratchPrepState(options.repoDir, options.deps);
+      assert.equal(outcomes.length, 1);
+      assert.equal(outcomes[0].kind, 'active-run');
+      assert.equal((outcomes[0] as { prNumber: number }).prNumber, 42);
+      // Marker not cleared, labels not touched.
+      assert.ok(existsSync(scratchPrepMarkerPath(42, options.repoDir)));
+      assert.deepEqual(options.labels, []);
+    } finally {
+      options.cleanup();
+    }
+  });
+
+  it('recovers a safe-phase marker with a dead owner by cleaning + restoring wm:ready', async () => {
+    let incrementCalled = false;
+    const scratchPrepRetry: StrictBaseRetryOps = {
+      gate: () => 'proceed',
+      increment: () => { incrementCalled = true; },
+      markExhausted: () => {},
+      clear: () => {},
+    };
+    const options = buildMergeTestOptions({ scratchPrepRetry });
+    try {
+      await writeScratchPrepMarker(options.repoDir, {
+        prNumber: 77,
+        headBranch: 'task/dead-owner',
+        phase: 'add',
+        headSha: 'head-77',
+        pid: 999_999, // Not this process; treated as dead.
+      });
+      const outcomes = await reconcileScratchPrepState(options.repoDir, options.deps);
+      assert.equal(outcomes.length, 1);
+      assert.equal(outcomes[0].kind, 'recovered-retryable');
+      assert.ok(!existsSync(scratchPrepMarkerPath(77, options.repoDir)));
+      assert.ok(options.labels.includes('ready:77'));
+      assert.ok(incrementCalled);
+    } finally {
+      options.cleanup();
+    }
+  });
+
+  it('recovers a push marker whose origin already matches the pushed head', async () => {
+    const options = buildMergeTestOptions({
+      shellRunner: (cmd) => {
+        options.calls.push(cmd);
+        if (cmd.includes('git fetch origin')) return '';
+        if (cmd.includes('git rev-parse') && cmd.includes('origin/')) return 'rebased-sha';
+        return '';
+      },
+    });
+    try {
+      await writeScratchPrepMarker(options.repoDir, {
+        prNumber: 88,
+        headBranch: 'task/push-recovered',
+        phase: 'push',
+        headSha: 'head-88',
+        prePushSha: 'pre-sha',
+        rebasedHeadSha: 'rebased-sha',
+        pid: 999_999,
+      });
+      const outcomes = await reconcileScratchPrepState(options.repoDir, options.deps);
+      assert.equal(outcomes.length, 1);
+      assert.equal(outcomes[0].kind, 'recovered-pushed');
+      assert.ok(options.labels.includes('ready:88'));
+      assert.ok(!existsSync(scratchPrepMarkerPath(88, options.repoDir)));
+    } finally {
+      options.cleanup();
+    }
+  });
+
+  it('holds a push marker as recovery-uncertain when origin matches neither pre nor rebased', async () => {
+    const options = buildMergeTestOptions({
+      shellRunner: (cmd) => {
+        options.calls.push(cmd);
+        if (cmd.includes('git fetch origin')) return '';
+        if (cmd.includes('git rev-parse') && cmd.includes('origin/')) return 'unrelated-third-party-sha';
+        return '';
+      },
+    });
+    try {
+      await writeScratchPrepMarker(options.repoDir, {
+        prNumber: 99,
+        headBranch: 'task/push-uncertain',
+        phase: 'push',
+        prePushSha: 'pre-sha',
+        rebasedHeadSha: 'rebased-sha',
+        pid: 999_999,
+      });
+      const outcomes = await reconcileScratchPrepState(options.repoDir, options.deps);
+      assert.equal(outcomes.length, 1);
+      assert.equal(outcomes[0].kind, 'recovery-uncertain');
+      // Fail-closed: no label changes, marker still present, retained reason recorded.
+      assert.deepEqual(options.labels, []);
+      const marker = readScratchPrepMarker(options.repoDir, 99);
+      assert.ok(marker);
+      assert.ok(marker?.retained?.reason.includes('push-recovery-uncertain'));
+    } finally {
+      options.cleanup();
+    }
+  });
+
+  it('recovers a push marker as safe when origin still points at the pre-push SHA', async () => {
+    const options = buildMergeTestOptions({
+      shellRunner: (cmd) => {
+        options.calls.push(cmd);
+        if (cmd.includes('git fetch origin')) return '';
+        if (cmd.includes('git rev-parse') && cmd.includes('origin/')) return 'pre-sha';
+        return '';
+      },
+    });
+    try {
+      await writeScratchPrepMarker(options.repoDir, {
+        prNumber: 55,
+        headBranch: 'task/push-never-landed',
+        phase: 'push',
+        headSha: 'head-55',
+        prePushSha: 'pre-sha',
+        rebasedHeadSha: 'rebased-sha',
+        pid: 999_999,
+      });
+      const outcomes = await reconcileScratchPrepState(options.repoDir, options.deps);
+      assert.equal(outcomes.length, 1);
+      assert.equal(outcomes[0].kind, 'recovered-retryable');
+      assert.ok(options.labels.includes('ready:55'));
+      assert.ok(!existsSync(scratchPrepMarkerPath(55, options.repoDir)));
+    } finally {
+      options.cleanup();
+    }
+  });
+
+  it('is idempotent: reconciling twice over the same dead marker leaves no state', async () => {
+    const options = buildMergeTestOptions();
+    try {
+      await writeScratchPrepMarker(options.repoDir, {
+        prNumber: 200,
+        headBranch: 'task/idempotent',
+        phase: 'ready',
+        pid: 999_999,
+      });
+      const first = await reconcileScratchPrepState(options.repoDir, options.deps);
+      assert.equal(first[0].kind, 'recovered-retryable');
+      const second = await reconcileScratchPrepState(options.repoDir, options.deps);
+      assert.deepEqual(second, []); // marker cleared after first pass
     } finally {
       options.cleanup();
     }

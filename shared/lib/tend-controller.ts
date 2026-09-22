@@ -34,6 +34,21 @@ import {
 import { isTransientErrorText, retryTransient, TransientError } from './transient-retry.ts';
 import { normalizeTaskLifecycle } from './task-lifecycle.ts';
 import { resolveEffectiveTaskConfig } from './effective-task-config.ts';
+import {
+  clearScratchPrepMarkerBestEffort,
+  createProcessGroupPrepRunner,
+  isOwnerAlive,
+  listScratchPrepMarkers,
+  readScratchPrepMarker,
+  SAFE_PREP_PHASES,
+  writeScratchPrepMarker,
+  writeScratchPrepMarkerBestEffort,
+  WorktreePrepTimeoutError,
+  type ScratchPrepMarker,
+  type ScratchPrepPhase,
+  type ScratchPrepReconcileOutcome,
+  type ScratchPrepRunner,
+} from './tend-scratch-prep.ts';
 
 export interface TendCandidate {
   number: number;
@@ -137,11 +152,36 @@ export interface MergeExecutionDeps {
   strictBaseRetry: StrictBaseRetryOps;
   /** Best-effort lane-progress telemetry recorder; must never fail the merge. */
   recordLaneProgress: (prNumber: number, event: LaneProgressEvent, repoDir: string) => Promise<void>;
+  /**
+   * Scratch-prep bounded-retry ops (HOK-3039). Records recovery attempts per
+   * (mergeLaneStateDir, `scratch-prep-recovery` bucket, head SHA) and marks
+   * the bucket exhausted after the ceiling — retry-exactly-once matches the
+   * issue's "next Tend loop restores a safe state and can retry exactly once"
+   * success criterion. Defaults to the bounded-retry.sh helper.
+   */
+  scratchPrepRetry: StrictBaseRetryOps;
+  /**
+   * Factory for the process-group prep runner used by `withScratchWorktree`.
+   * Called once per merge attempt; each attempt gets a fresh shared deadline.
+   * Tests inject a fake to simulate timeouts without spawning processes.
+   */
+  prepRunnerFactory: (repoDir: string, options: { onHeartbeat?: () => void }) => ScratchPrepRunner;
 }
 
 export interface ExecuteMergeOptions {
   repoDir: string;
   deps?: Partial<MergeExecutionDeps>;
+  /**
+   * Optional phase-progress callback. Fires as `withScratchWorktree` advances
+   * the scratch-prep phase, and periodically while a long prep command runs
+   * (via the runner's heartbeat). Used by the Tend loop to keep the
+   * backstage-health.json heartbeat fresh during otherwise-quiet prep steps.
+   */
+  onPhaseProgress?: (update: {
+    prNumber: number;
+    phase: ScratchPrepPhase | 'heartbeat';
+    at: string;
+  }) => Promise<void> | void;
 }
 
 export interface GhPrListEntry {
@@ -751,18 +791,73 @@ export async function executeMerge(
     return { status: 'blocked', prNumber: candidate.number, phase, failureExcerpt, haltLoop: false };
   };
 
+  const emitPhaseProgress = async (phase: ScratchPrepPhase | 'heartbeat'): Promise<void> => {
+    if (!options.onPhaseProgress) return;
+    try {
+      await options.onPhaseProgress({
+        prNumber: candidate.number,
+        phase,
+        at: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.warn(
+        `tend: onPhaseProgress callback failed for PR #${candidate.number} phase=${phase}: ${errorMessage(error)}`,
+      );
+    }
+  };
+
+  const prepRunner = deps.prepRunnerFactory(options.repoDir, {
+    onHeartbeat: () => {
+      // A best-effort tick — the callback is fire-and-forget from the runner.
+      void emitPhaseProgress('heartbeat');
+    },
+  });
+
   let worktreeResult: MergeExecutionResult | null;
   try {
     worktreeResult = await withScratchWorktree(
-      candidate.number,
-      candidate.headBranch,
-      options.repoDir,
+      {
+        prNumber: candidate.number,
+        prBranch: candidate.headBranch,
+        repoDir: options.repoDir,
+        candidate,
+        shellRunner: deps.shellRunner,
+        prepRunner,
+        emitProgress: emitPhaseProgress,
+      },
       async (worktreePath) => {
         await recordLaneProgressSafe(deps, candidate.number, 'merge-attempt', options.repoDir);
 
         let pushedHeadSha: string | undefined;
         try {
-          const rebaseResult = rebaseAndPush(worktreePath, candidate.headBranch, integrationBranch, deps.shellRunner);
+          const rebaseResult = await rebaseAndPush(worktreePath, candidate.headBranch, integrationBranch, deps.shellRunner, {
+            onBeforePush: async (preSha, newSha) => {
+              // HOK-3039: fail-closed marker write BEFORE the push. If we
+              // cannot record that a mutation is starting, we must abort to
+              // the block path rather than push untracked. Every other prep
+              // marker is best-effort.
+              await writeScratchPrepMarker(options.repoDir, {
+                prNumber: candidate.number,
+                headBranch: candidate.headBranch,
+                headSha: candidate.headSha,
+                featureDir: candidate.featureDir,
+                phase: 'push',
+                worktreePath,
+                prePushSha: preSha,
+                rebasedHeadSha: newSha,
+              });
+            },
+            onAfterPush: async () => {
+              await writeScratchPrepMarkerBestEffort(options.repoDir, {
+                prNumber: candidate.number,
+                headBranch: candidate.headBranch,
+                headSha: candidate.headSha,
+                featureDir: candidate.featureDir,
+                phase: 'pushed',
+                worktreePath,
+              });
+            },
+          });
           pushedHeadSha = rebaseResult.headSha || undefined;
           if (rebaseResult.rebased) {
             await recordLaneProgressSafe(deps, candidate.number, 'rebase', options.repoDir);
@@ -796,6 +891,14 @@ export async function executeMerge(
         }
 
         try {
+          await writeScratchPrepMarkerBestEffort(options.repoDir, {
+            prNumber: candidate.number,
+            headBranch: candidate.headBranch,
+            headSha: candidate.headSha,
+            featureDir: candidate.featureDir,
+            phase: 'merge',
+            worktreePath,
+          });
           await mergeWithTransientRetry(
             candidate.number,
             integrationConfig.mergeMethod,
@@ -824,6 +927,11 @@ export async function executeMerge(
         } catch (error) {
           console.warn(`tend: failed to clear strict-base retry budget for PR #${candidate.number}: ${errorMessage(error)}`);
         }
+        try {
+          deps.scratchPrepRetry.clear(candidate.number, options.repoDir);
+        } catch (error) {
+          console.warn(`tend: failed to clear scratch-prep-recovery budget for PR #${candidate.number}: ${errorMessage(error)}`);
+        }
 
         if (integrationConfig.deleteBranchAfterMerge && taskStateAuthorizesRemoteBranchDeletion(options.repoDir, candidate.headBranch)) {
           try {
@@ -848,11 +956,28 @@ export async function executeMerge(
         }
         return null;
       },
-      deps.shellRunner,
     );
   } catch (error) {
+    if (error instanceof WorktreePrepTimeoutError) {
+      const timeoutResult = await handleWorktreePrepTimeout({
+        candidate,
+        repoDir: options.repoDir,
+        deps,
+        error,
+        block,
+      });
+      // Marker cleared inside handleWorktreePrepTimeout on all safe paths.
+      return timeoutResult;
+    }
+    clearScratchPrepMarkerBestEffort(options.repoDir, candidate.number);
     return block('worktree', outputFromError(error));
   }
+
+  // Every path below is post-worktree; the marker (if any) is safe to clear:
+  // either the merge succeeded, or a `block` was returned from inside the
+  // withScratchWorktree callback (in which case the marker also no longer
+  // reflects an active mutation).
+  clearScratchPrepMarkerBestEffort(options.repoDir, candidate.number);
 
   if (worktreeResult) {
     return worktreeResult;
@@ -910,13 +1035,21 @@ export function buildFailureComment(phase: string, excerpt: string): string {
   ].join('\n');
 }
 
+interface WithScratchWorktreeOptions {
+  prNumber: number;
+  prBranch: string;
+  repoDir: string;
+  candidate: TendCandidate;
+  shellRunner: MergeExecutionDeps['shellRunner'];
+  prepRunner: ScratchPrepRunner;
+  emitProgress: (phase: ScratchPrepPhase | 'heartbeat') => Promise<void>;
+}
+
 async function withScratchWorktree<T>(
-  prNumber: number,
-  prBranch: string,
-  repoDir: string,
+  options: WithScratchWorktreeOptions,
   fn: (worktreePath: string) => Promise<T>,
-  shellRunner: MergeExecutionDeps['shellRunner'],
 ): Promise<T> {
+  const { prNumber, prBranch, repoDir, candidate, shellRunner, prepRunner, emitProgress } = options;
   validateBranchName(prBranch, 'PR branch');
 
   const commonGitDir = String(shellRunner('git rev-parse --git-common-dir', {
@@ -927,32 +1060,40 @@ async function withScratchWorktree<T>(
   const tendWorktreeDir = join(commonGitDir, 'wavemill-tend');
   const worktreePath = join(tendWorktreeDir, String(prNumber));
 
-  // Safe because this runs only while holding the exclusive wm:merging lane
-  // lock: no other merge can be in flight, so every existing wavemill-tend
-  // entry is an orphan of an interrupted run whose scratch contents (a
-  // detached checkout that is re-fetched and re-rebased on every attempt) are
-  // worthless. Without this, a leftover directory makes `git worktree add`
-  // fail with "already exists" on every subsequent attempt for that PR.
-  reapStaleTendWorktrees(tendWorktreeDir, repoDir, shellRunner);
+  const markerBase = {
+    prNumber,
+    headBranch: prBranch,
+    headSha: candidate.headSha,
+    featureDir: candidate.featureDir,
+    worktreePath,
+  };
 
-  // Fetch the latest remote tip for the PR branch so the detached worktree
-  // operates on what GitHub considers the branch's current state, not a
-  // possibly-stale local ref.
-  shellRunner(
+  // reap phase: safe. No remote mutation possible during reap/fetch/add.
+  await writeScratchPrepMarkerBestEffort(repoDir, { ...markerBase, phase: 'reap' });
+  await emitProgress('reap');
+  await reapStaleTendWorktrees(tendWorktreeDir, repoDir, prepRunner);
+
+  // fetch phase.
+  await writeScratchPrepMarkerBestEffort(repoDir, { ...markerBase, phase: 'fetch' });
+  await emitProgress('fetch');
+  await prepRunner.run(
     `git fetch origin ${escapeShellArg(prBranch)} 2>&1`,
-    { encoding: 'utf-8', cwd: repoDir, timeout: GIT_MUTATION_TIMEOUT_MS },
+    { cwd: repoDir, phase: 'fetch', perCommandDeadlineMs: GIT_MUTATION_TIMEOUT_MS },
   );
 
-  // Use --detach so this worktree gets a detached HEAD at the PR's remote
-  // tip rather than checking out the branch by name. Mill creates its own
-  // task worktree that already holds <prBranch> checked out, and git refuses
-  // to check out the same branch in two worktrees. Tend doesn't need branch
-  // ownership — it just needs the tree at that commit so it can rebase and
-  // push back to origin's <prBranch> ref by name (see rebaseAndPush).
-  shellRunner(
+  // add phase: use --detach so the worktree gets a detached HEAD at the
+  // PR's remote tip rather than the branch by name (mill's task worktree
+  // already holds prBranch checked out).
+  await writeScratchPrepMarkerBestEffort(repoDir, { ...markerBase, phase: 'add' });
+  await emitProgress('add');
+  await prepRunner.run(
     `git worktree add --detach ${escapeShellArg(worktreePath)} ${escapeShellArg(`origin/${prBranch}`)}`,
-    { encoding: 'utf-8', cwd: repoDir, timeout: GIT_MUTATION_TIMEOUT_MS },
+    { cwd: repoDir, phase: 'add', perCommandDeadlineMs: GIT_MUTATION_TIMEOUT_MS },
   );
+
+  // ready phase: worktree prepared, no remote mutation yet.
+  await writeScratchPrepMarkerBestEffort(repoDir, { ...markerBase, phase: 'ready' });
+  await emitProgress('ready');
 
   try {
     return await fn(worktreePath);
@@ -975,12 +1116,16 @@ async function withScratchWorktree<T>(
  * remove fails on those, but `git worktree add` would still refuse the
  * non-empty directory). A final `git worktree prune` drops any registration
  * whose directory is now gone.
+ *
+ * Runs through the shared prep runner (HOK-3039) so the shared end-to-end
+ * deadline covers reap → fetch → add, and the process-group kill covers any
+ * git descendants (hooks, git-remote-*) an interrupted run left behind.
  */
-function reapStaleTendWorktrees(
+async function reapStaleTendWorktrees(
   tendWorktreeDir: string,
   repoDir: string,
-  shellRunner: MergeExecutionDeps['shellRunner'],
-): void {
+  prepRunner: ScratchPrepRunner,
+): Promise<void> {
   let entries: string[];
   try {
     entries = readdirSync(tendWorktreeDir);
@@ -994,11 +1139,14 @@ function reapStaleTendWorktrees(
   for (const entry of entries) {
     const stalePath = join(tendWorktreeDir, entry);
     try {
-      shellRunner(
+      await prepRunner.run(
         `git worktree remove --force ${escapeShellArg(stalePath)}`,
-        { encoding: 'utf-8', cwd: repoDir, timeout: GIT_MUTATION_TIMEOUT_MS },
+        { cwd: repoDir, phase: 'reap', perCommandDeadlineMs: GIT_MUTATION_TIMEOUT_MS },
       );
-    } catch {
+    } catch (error) {
+      if (error instanceof WorktreePrepTimeoutError) {
+        throw error; // propagate — the enclosing withScratchWorktree turns it into a typed timeout result
+      }
       // Registration may already be pruned; the directory removal below still applies.
     }
     try {
@@ -1013,11 +1161,14 @@ function reapStaleTendWorktrees(
   }
 
   try {
-    shellRunner(
+    await prepRunner.run(
       'git worktree prune',
-      { encoding: 'utf-8', cwd: repoDir, timeout: GIT_MUTATION_TIMEOUT_MS },
+      { cwd: repoDir, phase: 'reap', perCommandDeadlineMs: GIT_MUTATION_TIMEOUT_MS },
     );
   } catch (error) {
+    if (error instanceof WorktreePrepTimeoutError) {
+      throw error;
+    }
     console.warn(`tend: git worktree prune failed after reaping stale tend worktrees: ${errorMessage(error)}`);
   }
 }
@@ -1042,6 +1193,26 @@ async function reclaimStaleMergeLocks(
   const remaining: number[] = [];
 
   for (const holder of activeMerges) {
+    // HOK-3039: consult the scratch-prep marker before the label-age reclaim.
+    // A marker in an uncertain phase (push/merge) means the previous run may
+    // have started remote mutation — even past the generic stale-lock
+    // timeout, we must not reclaim without deterministic evidence that the
+    // push did not land. Fail closed: keep the holder marked live.
+    const marker = readScratchPrepMarker(repoDir, holder);
+    if (marker && !SAFE_PREP_PHASES.has(marker.phase) && !isOwnerAlive(marker.pid)) {
+      // Owner is dead and the marker phase is uncertain: only remote-state
+      // check can resolve this, and that is `reconcileScratchPrepState`'s
+      // responsibility. From reclaim's perspective, the holder stays live.
+      remaining.push(holder);
+      continue;
+    }
+    if (marker && isOwnerAlive(marker.pid)) {
+      // Owner is alive: another Tend run is actively holding the lane; do
+      // not reclaim even if the GitHub label timestamp says the lock is old.
+      remaining.push(holder);
+      continue;
+    }
+
     const appliedAtMs = timeoutMs > 0 ? await readMergingLabelAppliedAt(holder, repoDir, deps) : null;
     if (appliedAtMs === null || deps.currentTimeMs() - appliedAtMs <= timeoutMs) {
       remaining.push(holder);
@@ -1061,6 +1232,10 @@ async function reclaimStaleMergeLocks(
       remaining.push(holder);
       continue;
     }
+
+    // Reclaim succeeded: clear any lingering scratch-prep marker so the next
+    // execution starts with a clean state.
+    clearScratchPrepMarkerBestEffort(repoDir, holder);
 
     console.warn(
       `tend: reclaimed stale wm:merging lock from PR #${holder} (held ~${heldMinutes}m > ${mergeLockTimeoutMinutes}m timeout)`,
@@ -1159,6 +1334,300 @@ async function readMergingLabelAppliedAt(
   return latestMs;
 }
 
+/**
+ * Startup reconciliation for scratch-prep markers (HOK-3039).
+ *
+ * Scans every per-PR merge-lane directory for a `scratch-prep.json`. For
+ * each nonterminal marker whose owning process is dead:
+ *
+ * - Safe phases (`reap`/`fetch`/`add`/`ready`): clean the scratch dir, drop
+ *   the wm:merging label back to wm:ready, delete the marker, record one
+ *   attempt in the scratch-prep-recovery bounded-retry bucket keyed on
+ *   `(mergeLaneStateDir, bucket, headSha)` — this restores the safe state
+ *   on the next Tend loop start, not after 45 minutes of stale-lock wait.
+ *
+ * - `push` phase: deterministic remote-state check. If origin/<branch> is
+ *   still the pre-push SHA, the push never landed → treat as safe. If it
+ *   matches the rebased head we intended to push, the push landed → clean
+ *   scratch, restore ready, delete marker. Anything else or fetch failure
+ *   → uncertain: fail closed, keep wm:merging, retain scratch with reason,
+ *   surface a bounded diagnostic, leave the marker so the check re-runs.
+ *
+ * - `merge` phase: `gh pr view` → merged → run merged finalization; open
+ *   with unchanged head → safe; query fails → uncertain.
+ *
+ * Live-owner markers (dead in normal recovery) return `active-run` — the
+ * duplicate-mutation guard. Combined with `acquireTendLock`, this ensures
+ * a watchdog respawn cannot start a second merge while the first may still
+ * be pushing.
+ */
+export async function reconcileScratchPrepState(
+  repoDir: string,
+  overrides: Partial<MergeExecutionDeps> = {},
+): Promise<ScratchPrepReconcileOutcome[]> {
+  const deps = mergeExecutionDeps(overrides, repoDir);
+  const outcomes: ScratchPrepReconcileOutcome[] = [];
+  const markers = listScratchPrepMarkers(repoDir);
+  for (const marker of markers) {
+    try {
+      outcomes.push(await reconcileOneScratchPrepMarker(marker, repoDir, deps));
+    } catch (error) {
+      console.warn(
+        `tend: scratch-prep reconciliation failed for PR #${marker.prNumber}: ${errorMessage(error)}`,
+      );
+      outcomes.push({
+        kind: 'recovery-uncertain',
+        prNumber: marker.prNumber,
+        phase: marker.phase,
+        detail: `reconciliation threw: ${errorMessage(error)}`,
+      });
+    }
+  }
+  return outcomes;
+}
+
+async function reconcileOneScratchPrepMarker(
+  marker: ScratchPrepMarker,
+  repoDir: string,
+  deps: MergeExecutionDeps,
+): Promise<ScratchPrepReconcileOutcome> {
+  if (isOwnerAlive(marker.pid)) {
+    return { kind: 'active-run', prNumber: marker.prNumber, pid: marker.pid, phase: marker.phase };
+  }
+
+  if (SAFE_PREP_PHASES.has(marker.phase)) {
+    return await recoverSafePhaseMarker(marker, repoDir, deps);
+  }
+
+  if (marker.phase === 'push' || marker.phase === 'pushed') {
+    return await reconcilePushMarker(marker, repoDir, deps);
+  }
+
+  if (marker.phase === 'merge') {
+    return await reconcileMergeMarker(marker, repoDir, deps);
+  }
+
+  return { kind: 'none' };
+}
+
+async function recoverSafePhaseMarker(
+  marker: ScratchPrepMarker,
+  repoDir: string,
+  deps: MergeExecutionDeps,
+): Promise<ScratchPrepReconcileOutcome> {
+  // Bounded-retry key on the head Tend claimed at handoff. When headSha is
+  // absent (legacy pre-handoff candidates), key on the head branch so the
+  // helper still resets on a new branch tip.
+  const headSha = marker.headSha ?? marker.headBranch;
+  let decision: StrictBaseRetryDecision;
+  try {
+    decision = deps.scratchPrepRetry.gate(marker.prNumber, headSha, repoDir);
+  } catch (error) {
+    return {
+      kind: 'recovery-uncertain',
+      prNumber: marker.prNumber,
+      phase: marker.phase,
+      detail: `bounded-retry gate failed: ${errorMessage(error)}`,
+    };
+  }
+  if (decision === 'exhausted' || decision === 'exhausted-quiet') {
+    if (decision === 'exhausted') {
+      try {
+        deps.scratchPrepRetry.markExhausted(
+          marker.prNumber,
+          `scratch-prep-recovery exhausted at head=${headSha}`,
+          repoDir,
+        );
+      } catch (error) {
+        console.warn(
+          `tend: failed to record scratch-prep-recovery exhaustion for PR #${marker.prNumber}: ${errorMessage(error)}`,
+        );
+      }
+    }
+    try {
+      await retryTransient(() => deps.releaseToBlocked(marker.prNumber), {
+        label: 'set blocked label after scratch-prep-recovery exhaustion',
+        sleep: deps.retrySleep,
+      });
+    } catch (error) {
+      console.warn(
+        `tend: failed to set blocked label for PR #${marker.prNumber} after scratch-prep-recovery exhaustion: ${errorMessage(error)}`,
+      );
+    }
+    clearScratchPrepMarkerBestEffort(repoDir, marker.prNumber);
+    return { kind: 'exhausted', prNumber: marker.prNumber };
+  }
+  await cleanScratchWorktreeBestEffort(marker.prNumber, repoDir, deps);
+  try {
+    await retryTransient(() => deps.restoreReady(marker.prNumber), {
+      label: 'restore ready label during scratch-prep reconciliation',
+      sleep: deps.retrySleep,
+    });
+  } catch (error) {
+    console.warn(
+      `tend: failed to restore wm:ready on PR #${marker.prNumber} during scratch-prep reconciliation: ${errorMessage(error)}`,
+    );
+  }
+  if (decision === 'proceed') {
+    try {
+      deps.scratchPrepRetry.increment(marker.prNumber, headSha, repoDir);
+    } catch (error) {
+      console.warn(
+        `tend: failed to record scratch-prep-recovery attempt for PR #${marker.prNumber}: ${errorMessage(error)}`,
+      );
+    }
+  }
+  clearScratchPrepMarkerBestEffort(repoDir, marker.prNumber);
+  return { kind: 'recovered-retryable', prNumber: marker.prNumber, phase: marker.phase };
+}
+
+async function reconcilePushMarker(
+  marker: ScratchPrepMarker,
+  repoDir: string,
+  deps: MergeExecutionDeps,
+): Promise<ScratchPrepReconcileOutcome> {
+  // Deterministic remote-state check: fetch origin/<branch> and compare.
+  try {
+    deps.shellRunner(`git fetch origin ${escapeShellArg(marker.headBranch)} 2>&1`, {
+      encoding: 'utf-8',
+      cwd: repoDir,
+      timeout: GIT_MUTATION_TIMEOUT_MS,
+    });
+  } catch (error) {
+    return recordPushUncertain(marker, repoDir, deps, `fetch failed: ${errorMessage(error)}`);
+  }
+
+  let originSha: string;
+  try {
+    originSha = String(deps.shellRunner(
+      `git rev-parse ${escapeShellArg(`origin/${marker.headBranch}`)}`,
+      { encoding: 'utf-8', cwd: repoDir, timeout: GIT_COMMAND_TIMEOUT_MS },
+    )).trim();
+  } catch (error) {
+    return recordPushUncertain(marker, repoDir, deps, `rev-parse failed: ${errorMessage(error)}`);
+  }
+
+  if (marker.prePushSha && originSha === marker.prePushSha) {
+    // Origin has not moved from the pre-push tip → the push never landed.
+    // Treat as a safe-phase recovery.
+    return await recoverSafePhaseMarker({ ...marker, phase: 'ready' }, repoDir, deps);
+  }
+  if (marker.rebasedHeadSha && originSha === marker.rebasedHeadSha) {
+    // The rebased head is what origin has → the push landed deterministically.
+    // Clean scratch, return to ready. The head-keyed handoff forces a fresh
+    // ready pass at the new head before any future claim.
+    await cleanScratchWorktreeBestEffort(marker.prNumber, repoDir, deps);
+    try {
+      await retryTransient(() => deps.restoreReady(marker.prNumber), {
+        label: 'restore ready label after recovered push',
+        sleep: deps.retrySleep,
+      });
+    } catch (error) {
+      console.warn(
+        `tend: failed to restore wm:ready on PR #${marker.prNumber} after recovered push: ${errorMessage(error)}`,
+      );
+    }
+    clearScratchPrepMarkerBestEffort(repoDir, marker.prNumber);
+    return { kind: 'recovered-pushed', prNumber: marker.prNumber };
+  }
+
+  return recordPushUncertain(
+    marker,
+    repoDir,
+    deps,
+    `origin=${originSha} does not match prePushSha=${marker.prePushSha ?? '(missing)'} `
+    + `or rebasedHeadSha=${marker.rebasedHeadSha ?? '(missing)'}`,
+  );
+}
+
+async function recordPushUncertain(
+  marker: ScratchPrepMarker,
+  repoDir: string,
+  deps: MergeExecutionDeps,
+  detail: string,
+): Promise<ScratchPrepReconcileOutcome> {
+  // Fail closed: keep the marker (with an updated timestamp), keep the
+  // scratch dir with a retained reason, and leave labels untouched so the
+  // lane stays closed. reclaimStaleMergeLocks will refuse this holder as
+  // long as the marker exists in an uncertain phase.
+  const bounded = truncateReason(detail, 400);
+  try {
+    await writeScratchPrepMarker(repoDir, {
+      prNumber: marker.prNumber,
+      headBranch: marker.headBranch,
+      headSha: marker.headSha,
+      featureDir: marker.featureDir,
+      phase: marker.phase,
+      worktreePath: marker.worktreePath,
+      prePushSha: marker.prePushSha,
+      rebasedHeadSha: marker.rebasedHeadSha,
+      retained: { reason: `push-recovery-uncertain: ${bounded}` },
+    });
+  } catch (error) {
+    console.warn(
+      `tend: failed to update scratch-prep marker during push-recovery-uncertain: ${errorMessage(error)}`,
+    );
+  }
+  // Best-effort observer/warning signal so the operator has bounded diagnostics.
+  console.warn(
+    `tend: scratch-prep recovery uncertain for PR #${marker.prNumber} (${marker.phase}): ${bounded}`,
+  );
+  // Suppress unused deps warning; deps intentionally reserved for future observer hook.
+  void deps;
+  return { kind: 'recovery-uncertain', prNumber: marker.prNumber, phase: marker.phase, detail: bounded };
+}
+
+async function reconcileMergeMarker(
+  marker: ScratchPrepMarker,
+  repoDir: string,
+  deps: MergeExecutionDeps,
+): Promise<ScratchPrepReconcileOutcome> {
+  let diagnostics: PrMergeDiagnostics;
+  try {
+    diagnostics = readPrMergeDiagnostics(marker.prNumber, repoDir, deps.shellRunner);
+  } catch (error) {
+    return recordPushUncertain(marker, repoDir, deps, `gh pr view failed: ${errorMessage(error)}`);
+  }
+  if (diagnostics.unavailableReason) {
+    return recordPushUncertain(marker, repoDir, deps, `gh pr view unavailable: ${diagnostics.unavailableReason}`);
+  }
+
+  // Compare against the mergeStateStatus and headRefOid to distinguish merged
+  // vs still-open. A missing mergeStateStatus is treated as uncertain (fail
+  // closed) — we never derive "merged" from absence.
+  const mergeStateStatus = (diagnostics.mergeStateStatus ?? '').toUpperCase();
+  const observedHead = diagnostics.headRefOid ?? '';
+  if (mergeStateStatus === 'MERGED' || /^merged$/i.test(mergeStateStatus)) {
+    // Finalize: mark merged, clean the scratch dir, clear the marker.
+    try {
+      await retryTransient(() => deps.releaseMerged(marker.prNumber), {
+        label: 'set merged label after recovered merge',
+        sleep: deps.retrySleep,
+      });
+    } catch (error) {
+      console.warn(
+        `tend: failed to mark PR #${marker.prNumber} merged during scratch-prep reconciliation: ${errorMessage(error)}`,
+      );
+    }
+    await cleanScratchWorktreeBestEffort(marker.prNumber, repoDir, deps);
+    clearScratchPrepMarkerBestEffort(repoDir, marker.prNumber);
+    return { kind: 'finalized-merge', prNumber: marker.prNumber };
+  }
+
+  if (marker.rebasedHeadSha && observedHead && observedHead === marker.rebasedHeadSha) {
+    // PR still open at the same head we intended to merge — safe retry.
+    return await recoverSafePhaseMarker({ ...marker, phase: 'ready' }, repoDir, deps);
+  }
+
+  return recordPushUncertain(
+    marker,
+    repoDir,
+    deps,
+    `mergeStateStatus=${mergeStateStatus || '(missing)'} head=${observedHead || '(missing)'} `
+    + `expected=${marker.rebasedHeadSha ?? '(missing)'}`,
+  );
+}
+
 async function listMergingPrs(repoDir: string, deps: MergeExecutionDeps): Promise<number[]> {
   return retryTransient(
     () => {
@@ -1178,12 +1647,29 @@ async function listMergingPrs(repoDir: string, deps: MergeExecutionDeps): Promis
   );
 }
 
-function rebaseAndPush(
+/**
+ * Optional bracketing hooks for rebaseAndPush (HOK-3039).
+ *
+ * `onBeforePush` runs after the rebase computes both the pre-push SHA and
+ * the rebased head we're about to push, but before the actual push executes.
+ * The scratch-prep marker is written here (fail-closed) so a crash during
+ * the push leaves an authoritative record of what was intended vs pushed.
+ *
+ * `onAfterPush` runs immediately after a successful push, advancing the
+ * marker to `pushed` (best-effort).
+ */
+interface RebaseAndPushHooks {
+  onBeforePush?: (prePushSha: string, rebasedHeadSha: string) => Promise<void> | void;
+  onAfterPush?: (rebasedHeadSha: string) => Promise<void> | void;
+}
+
+async function rebaseAndPush(
   worktreePath: string,
   prBranch: string,
   integrationBranch: string,
   shellRunner: MergeExecutionDeps['shellRunner'],
-): { output: string; headSha: string; rebased: boolean } {
+  hooks: RebaseAndPushHooks = {},
+): Promise<{ output: string; headSha: string; rebased: boolean }> {
   validateBranchName(prBranch, 'PR branch');
   validateBranchName(integrationBranch, 'integration branch');
 
@@ -1205,6 +1691,8 @@ function rebaseAndPush(
   const integrationRemoteRef = `origin/${integrationBranch}`;
   if (isRemoteIntegrationAncestorOfPrHead(integrationRemoteRef, prBranchSha, worktreePath, shellRunner)) {
     output.push(`tend: skipping pre-merge rebase because ${integrationRemoteRef} is already an ancestor of ${prBranchSha}`);
+    // Ancestor early return: no push happened, so we deliberately skip the
+    // push hooks. The scratch-prep marker stays at 'ready'.
     return { output: output.join('\n'), headSha: prBranchSha, rebased: false };
   }
 
@@ -1235,6 +1723,13 @@ function rebaseAndPush(
     timeout: GIT_COMMAND_TIMEOUT_MS,
   })).trim();
 
+  if (hooks.onBeforePush) {
+    // Fail-closed: if the caller's marker write throws, we do NOT push. That
+    // keeps startup reconciliation deterministic — a `push` marker either
+    // exists (mutation may have begun) or does not (mutation did not begin).
+    await hooks.onBeforePush(prBranchSha, rebasedHeadSha);
+  }
+
   // Push the rebased commits back to origin's <prBranch>. We use HEAD:<branch>
   // syntax because withScratchWorktree intentionally checks out a detached
   // HEAD (so it doesn't fight mill's task worktree for branch ownership).
@@ -1244,6 +1739,16 @@ function rebaseAndPush(
     `git push --force-with-lease=${escapeShellArg(prBranch)}:${escapeShellArg(prBranchSha)} origin HEAD:${escapeShellArg(prBranch)} 2>&1`,
     { encoding: 'utf-8', cwd: worktreePath, timeout: GIT_MUTATION_TIMEOUT_MS },
   )));
+
+  if (hooks.onAfterPush) {
+    try {
+      await hooks.onAfterPush(rebasedHeadSha);
+    } catch (error) {
+      // Best-effort: pushed-phase marker write is not load-bearing for
+      // recovery correctness — reconciliation re-derives from origin's tip.
+      console.warn(`tend: onAfterPush hook failed after push: ${errorMessage(error)}`);
+    }
+  }
 
   return { output: output.join('\n'), headSha: rebasedHeadSha, rebased: true };
 }
@@ -1635,6 +2140,9 @@ function failingRollupCheckNames(rollup: unknown): string[] {
 
 const STRICT_BASE_REFRESH_BUCKET = 'strict-base-refresh';
 const STRICT_BASE_REFRESH_MAX_ATTEMPTS = 4;
+const SCRATCH_PREP_RECOVERY_BUCKET = 'scratch-prep-recovery';
+const SCRATCH_PREP_RECOVERY_MAX_ATTEMPTS = 1;
+const SCRATCH_PREP_PROGRESS_HEARTBEAT_MS = 30_000;
 const BOUNDED_RETRY_HELPER_TIMEOUT_MS = 30_000;
 const BOUNDED_RETRY_HELPER_PATH = join(dirname(fileURLToPath(import.meta.url)), 'bounded-retry.sh');
 const STRICT_BASE_RETRY_DECISIONS = new Set<StrictBaseRetryDecision>(['proceed', 'backoff', 'exhausted', 'exhausted-quiet']);
@@ -1663,43 +2171,226 @@ function sanitizeHeadShaForRetryKey(headSha: string): string {
  * greppable `.retry-strict-base-refresh-exhausted` sentinel, and reset by a
  * new head or a successful merge.
  */
-export const defaultStrictBaseRetryOps: StrictBaseRetryOps = {
-  gate: (prNumber, headSha, repoDir) => {
-    const stateDir = mergeLaneStateDir(prNumber, repoDir);
-    const decision = runBoundedRetryHelper(
-      repoDir,
-      `bounded_retry_gate ${escapeShellArg(stateDir)} ${escapeShellArg(STRICT_BASE_REFRESH_BUCKET)} `
-      + `${escapeShellArg(sanitizeHeadShaForRetryKey(headSha))} ${STRICT_BASE_REFRESH_MAX_ATTEMPTS}`,
+export const defaultStrictBaseRetryOps: StrictBaseRetryOps = createBoundedRetryOps(
+  STRICT_BASE_REFRESH_BUCKET,
+  STRICT_BASE_REFRESH_MAX_ATTEMPTS,
+);
+
+/**
+ * Default HOK-3039 bounded-retry wiring for scratch-prep recovery. Same
+ * bounded-retry.sh helper as strict-base, keyed on the head SHA Tend saw at
+ * handoff. Limit is 1 (retry exactly once per head, per the success
+ * criterion); the shared helper terminalizes with a greppable sentinel and
+ * resets when the head changes.
+ */
+export const defaultScratchPrepRetryOps: StrictBaseRetryOps = createBoundedRetryOps(
+  SCRATCH_PREP_RECOVERY_BUCKET,
+  SCRATCH_PREP_RECOVERY_MAX_ATTEMPTS,
+);
+
+function createBoundedRetryOps(bucket: string, maxAttempts: number): StrictBaseRetryOps {
+  return {
+    gate: (prNumber, headSha, repoDir) => {
+      const stateDir = mergeLaneStateDir(prNumber, repoDir);
+      const decision = runBoundedRetryHelper(
+        repoDir,
+        `bounded_retry_gate ${escapeShellArg(stateDir)} ${escapeShellArg(bucket)} `
+        + `${escapeShellArg(sanitizeHeadShaForRetryKey(headSha))} ${maxAttempts}`,
+      );
+      if (!STRICT_BASE_RETRY_DECISIONS.has(decision as StrictBaseRetryDecision)) {
+        throw new Error(`bounded_retry_gate returned unexpected decision: ${truncateReason(decision || '(empty)', 100)}`);
+      }
+      return decision as StrictBaseRetryDecision;
+    },
+    increment: (prNumber, headSha, repoDir) => {
+      const stateDir = mergeLaneStateDir(prNumber, repoDir);
+      runBoundedRetryHelper(
+        repoDir,
+        `bounded_retry_increment ${escapeShellArg(stateDir)} ${escapeShellArg(bucket)} `
+        + `${escapeShellArg(sanitizeHeadShaForRetryKey(headSha))}`,
+      );
+    },
+    markExhausted: (prNumber, reason, repoDir) => {
+      const stateDir = mergeLaneStateDir(prNumber, repoDir);
+      runBoundedRetryHelper(
+        repoDir,
+        `bounded_retry_mark_exhausted ${escapeShellArg(stateDir)} ${escapeShellArg(bucket)} `
+        + `${escapeShellArg(reason)} || true`,
+      );
+    },
+    clear: (prNumber, repoDir) => {
+      const stateDir = mergeLaneStateDir(prNumber, repoDir);
+      runBoundedRetryHelper(
+        repoDir,
+        `bounded_retry_clear ${escapeShellArg(stateDir)} ${escapeShellArg(bucket)}`,
+      );
+    },
+  };
+}
+
+/**
+ * Handle a `WorktreePrepTimeoutError` from `withScratchWorktree`. Cleans the
+ * scratch directory and worktree registration best-effort, consults the
+ * scratch-prep-recovery bounded-retry bucket keyed on the candidate's head
+ * SHA, and either returns to `wm:ready` for immediate retry (budget
+ * available) or blocks (budget exhausted). Never let a marker leak — on
+ * every terminal path the marker is cleared.
+ */
+async function handleWorktreePrepTimeout(args: {
+  candidate: TendCandidate;
+  repoDir: string;
+  deps: MergeExecutionDeps;
+  error: WorktreePrepTimeoutError;
+  block: (phase: string, output: string) => Promise<MergeExecutionResult>;
+}): Promise<MergeExecutionResult> {
+  const { candidate, repoDir, deps, error, block } = args;
+  const headSha = candidate.headSha ?? '';
+  const diagnostic = `worktree-prep-timeout phase=${error.phase} elapsedMs=${error.elapsedMs}`;
+
+  // Best-effort scoped cleanup: try to remove the specific scratch worktree
+  // for THIS PR (registration + directory) so a later attempt does not fail
+  // with "already exists".
+  await cleanScratchWorktreeBestEffort(candidate.number, repoDir, deps);
+
+  clearScratchPrepMarkerBestEffort(repoDir, candidate.number);
+
+  let decision: StrictBaseRetryDecision;
+  try {
+    decision = deps.scratchPrepRetry.gate(candidate.number, headSha, repoDir);
+  } catch (gateError) {
+    console.warn(
+      `tend: scratch-prep-recovery retry gate failed for PR #${candidate.number}: ${errorMessage(gateError)}`,
     );
-    if (!STRICT_BASE_RETRY_DECISIONS.has(decision as StrictBaseRetryDecision)) {
-      throw new Error(`bounded_retry_gate returned unexpected decision: ${truncateReason(decision || '(empty)', 100)}`);
+    // Fail-closed: an unusable gate keeps the terminal blocking path.
+    return block('worktree-timeout', `${diagnostic}: retry gate unusable — ${errorMessage(gateError)}\n${error.output}`);
+  }
+
+  if (decision === 'exhausted' || decision === 'exhausted-quiet') {
+    if (decision === 'exhausted') {
+      try {
+        deps.scratchPrepRetry.markExhausted(
+          candidate.number,
+          `${diagnostic}; head=${headSha || '(unknown)'}`,
+          repoDir,
+        );
+      } catch (markError) {
+        console.warn(
+          `tend: failed to record scratch-prep-recovery exhaustion for PR #${candidate.number}: ${errorMessage(markError)}`,
+        );
+      }
     }
-    return decision as StrictBaseRetryDecision;
-  },
-  increment: (prNumber, headSha, repoDir) => {
-    const stateDir = mergeLaneStateDir(prNumber, repoDir);
-    runBoundedRetryHelper(
-      repoDir,
-      `bounded_retry_increment ${escapeShellArg(stateDir)} ${escapeShellArg(STRICT_BASE_REFRESH_BUCKET)} `
-      + `${escapeShellArg(sanitizeHeadShaForRetryKey(headSha))}`,
+    return block('worktree-timeout', `${diagnostic} — scratch-prep-recovery budget exhausted\n${error.output}`);
+  }
+
+  if (decision === 'backoff') {
+    // Bounded-retry says "not yet" — return the PR to wm:ready and leave the
+    // scratch-prep marker cleared. The next Tend loop poll will retry.
+    await restoreReadyAfterPrepTimeout(candidate, deps);
+    console.warn(
+      `tend: worktree-prep timeout on PR #${candidate.number} phase=${error.phase} — backoff active, PR returned to wm:ready`,
     );
-  },
-  markExhausted: (prNumber, reason, repoDir) => {
-    const stateDir = mergeLaneStateDir(prNumber, repoDir);
-    runBoundedRetryHelper(
-      repoDir,
-      `bounded_retry_mark_exhausted ${escapeShellArg(stateDir)} ${escapeShellArg(STRICT_BASE_REFRESH_BUCKET)} `
-      + `${escapeShellArg(reason)} || true`,
+    return {
+      status: 'skipped',
+      prNumber: candidate.number,
+      phase: 'worktree-timeout',
+      failureExcerpt: truncateOutput(`${diagnostic}\nawaiting bounded-retry backoff\n${error.output}`),
+      haltLoop: false,
+    };
+  }
+
+  // decision === 'proceed': record the attempt and restore ready for retry.
+  try {
+    deps.scratchPrepRetry.increment(candidate.number, headSha, repoDir);
+  } catch (incError) {
+    console.warn(
+      `tend: failed to record scratch-prep-recovery attempt for PR #${candidate.number}: ${errorMessage(incError)}`,
     );
-  },
-  clear: (prNumber, repoDir) => {
-    const stateDir = mergeLaneStateDir(prNumber, repoDir);
-    runBoundedRetryHelper(
-      repoDir,
-      `bounded_retry_clear ${escapeShellArg(stateDir)} ${escapeShellArg(STRICT_BASE_REFRESH_BUCKET)}`,
+  }
+  await restoreReadyAfterPrepTimeout(candidate, deps);
+  console.warn(
+    `tend: worktree-prep timeout on PR #${candidate.number} phase=${error.phase} — cleaned scratch and returned to wm:ready for immediate retry (HOK-3039)`,
+  );
+  return {
+    status: 'skipped',
+    prNumber: candidate.number,
+    phase: 'worktree-timeout',
+    failureExcerpt: truncateOutput(`${diagnostic}\nscratch cleaned, wm:ready restored\n${error.output}`),
+    haltLoop: false,
+  };
+}
+
+async function restoreReadyAfterPrepTimeout(candidate: TendCandidate, deps: MergeExecutionDeps): Promise<void> {
+  try {
+    await retryTransient(() => deps.restoreReady(candidate.number), {
+      label: 'restore ready label after worktree-prep timeout',
+      sleep: deps.retrySleep,
+    });
+  } catch (error) {
+    console.warn(
+      `tend: failed to restore wm:ready on PR #${candidate.number} after worktree-prep timeout; `
+      + `wm:merging may be leaked until the stale-lock timeout reclaims it: ${errorMessage(error)}`,
     );
-  },
-};
+  }
+}
+
+/**
+ * Best-effort cleanup of the scratch worktree registration and directory for
+ * one PR. Uses sync shell calls with short timeouts (no shared deadline —
+ * the caller has already timed out).
+ */
+async function cleanScratchWorktreeBestEffort(
+  prNumber: number,
+  repoDir: string,
+  deps: MergeExecutionDeps,
+): Promise<{ removed: boolean; retained?: string }> {
+  let commonGitDir: string;
+  try {
+    commonGitDir = String(deps.shellRunner('git rev-parse --git-common-dir', {
+      encoding: 'utf-8',
+      cwd: repoDir,
+      timeout: GIT_COMMAND_TIMEOUT_MS,
+    })).trim();
+  } catch (error) {
+    return { removed: false, retained: `git-common-dir failed: ${errorMessage(error)}` };
+  }
+  const tendWorktreeDir = join(commonGitDir, 'wavemill-tend');
+  const worktreePath = join(tendWorktreeDir, String(prNumber));
+
+  let registrationOk = true;
+  try {
+    deps.shellRunner(
+      `git worktree remove --force ${escapeShellArg(worktreePath)}`,
+      { encoding: 'utf-8', cwd: repoDir, timeout: GIT_MUTATION_TIMEOUT_MS },
+    );
+  } catch {
+    registrationOk = false; // Registration may already be pruned; the dir removal below covers it.
+  }
+
+  let dirOk = true;
+  try {
+    if (existsSync(worktreePath)) {
+      rmSync(worktreePath, { recursive: true, force: true });
+    }
+  } catch (error) {
+    dirOk = false;
+    console.warn(`tend: failed to delete scratch worktree ${worktreePath}: ${errorMessage(error)}`);
+  }
+
+  try {
+    deps.shellRunner('git worktree prune', {
+      encoding: 'utf-8',
+      cwd: repoDir,
+      timeout: GIT_MUTATION_TIMEOUT_MS,
+    });
+  } catch (error) {
+    console.warn(`tend: git worktree prune failed after scratch cleanup: ${errorMessage(error)}`);
+  }
+
+  if (!dirOk) {
+    return { removed: false, retained: `directory removal failed for ${worktreePath}` };
+  }
+  return { removed: registrationOk };
+}
 
 interface StrictBaseRecoveryOutcome {
   /** Set when the rejection was recovered as transient; caller returns it. */
@@ -1791,7 +2482,34 @@ async function attemptStrictBaseRecovery(args: {
 
   let refreshedHead: string;
   try {
-    refreshedHead = rebaseAndPush(args.worktreePath, candidate.headBranch, args.integrationBranch, deps.shellRunner).headSha;
+    const refresh = await rebaseAndPush(args.worktreePath, candidate.headBranch, args.integrationBranch, deps.shellRunner, {
+      onBeforePush: async (preSha, newSha) => {
+        // Bracket the strict-base refresh push exactly like the primary
+        // push so a crash during the refresh has the same deterministic
+        // recovery guarantees (HOK-3039).
+        await writeScratchPrepMarker(args.repoDir, {
+          prNumber: candidate.number,
+          headBranch: candidate.headBranch,
+          headSha: candidate.headSha,
+          featureDir: candidate.featureDir,
+          phase: 'push',
+          worktreePath: args.worktreePath,
+          prePushSha: preSha,
+          rebasedHeadSha: newSha,
+        });
+      },
+      onAfterPush: async () => {
+        await writeScratchPrepMarkerBestEffort(args.repoDir, {
+          prNumber: candidate.number,
+          headBranch: candidate.headBranch,
+          headSha: candidate.headSha,
+          featureDir: candidate.featureDir,
+          phase: 'pushed',
+          worktreePath: args.worktreePath,
+        });
+      },
+    });
+    refreshedHead = refresh.headSha;
   } catch (error) {
     return {
       blockDetail: `${args.mergeErrorOutput}\n\n${classifierLine}\n`
@@ -1984,6 +2702,12 @@ function mergeExecutionDeps(deps: Partial<MergeExecutionDeps> | undefined, marke
       writeMergeRetryMarker(prNumber, untilIso, repoDir);
     },
     strictBaseRetry: defaultStrictBaseRetryOps,
+    scratchPrepRetry: defaultScratchPrepRetryOps,
+    prepRunnerFactory: (_repoDir, factoryOptions) => createProcessGroupPrepRunner({
+      deadlineMs: getIntegrationConfig(_repoDir).worktreePrepTimeoutMinutes * 60_000,
+      heartbeatIntervalMs: SCRATCH_PREP_PROGRESS_HEARTBEAT_MS,
+      onHeartbeat: factoryOptions.onHeartbeat,
+    }),
     recordLaneProgress: async (prNumber, event, repoDir) => {
       await recordLaneProgress(prNumber, repoDir, event);
     },
