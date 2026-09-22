@@ -66,6 +66,12 @@ helper_file="$tmp/safe-cleanup-helper.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_branch_deletion_mode"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "normalize_worktree_path"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_task_worktree_identity"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_orphan_dir_retention_paths"
+  printf '\n'
   printf '%s\n' 'WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT=".wavemill/observer-findings.jsonl"'
   extract_function "$COMMON_SCRIPT" "wavemill_worktree_dirty_status"
   printf '\n'
@@ -74,6 +80,8 @@ helper_file="$tmp/safe-cleanup-helper.sh"
   extract_function "$COMMON_SCRIPT" "wavemill_fetch_pr_terminal_evidence"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_record_pr_delivery_evidence"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "_wavemill_cleanup_decision_json"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "_wavemill_record_cleanup_decision"
   printf '\n'
