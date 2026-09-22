@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { after, describe, it } from 'node:test';
+import { describe, it } from 'node:test';
 import {
   clearScratchPrepMarkerBestEffort,
   createProcessGroupPrepRunner,
@@ -17,20 +17,26 @@ import {
   WorktreePrepTimeoutError,
 } from './tend-scratch-prep.ts';
 
-// CI safety net: if a spawned descendant survives our pgid kill (e.g. under
-// a cgroup that quietly refuses group-directed signals) and inherits our
-// stdio pipe write ends, the node --test file worker's event loop can stay
-// alive after every subtest has already asserted and returned. Node --test
-// then cancels the whole file at the 300s --test-timeout, which reads in CI
-// as a real failure. Attempt 2 added unref() on the child process handle and
-// its stdio pipes, but the observed CI hang persisted, so this after() hook
-// installs an unref'd 500ms timer that force-exits with the current
-// process.exitCode ONLY if the loop is still alive by then. On a healthy run
-// the loop exits naturally before 500ms and this timer is discarded (unref'd
-// timers never keep the loop alive on their own), so it costs nothing.
-after(() => {
-  setTimeout(() => process.exit(process.exitCode ?? 0), 500).unref();
-});
+// Per-test hard cap for CI. Locally every subtest here completes in <20ms
+// (the process-group ones in <350ms), but CI has repeatedly hit the file-
+// level 300s --test-timeout with only the first subtest reported — meaning
+// one subtest with no explicit timeout stalled long enough to consume the
+// whole file budget. Node's `--test-timeout` is inherited PER-TEST, so a
+// subtest without an override gets the full 300s. Explicit per-test caps
+// let a single stall fail fast and let the remaining subtests still run,
+// keeping the file well under 300s in aggregate. See attempts 1-3.
+const PER_TEST_TIMEOUT_MS = 15_000;
+
+// Hard module-level safety net. If this file worker's event loop is somehow
+// still alive at 90s (locally the whole file exits in <2s), force-exit with
+// the current exit code. Unref'd, so it never keeps the loop alive on its
+// own — it only fires if something else already is (a stray descendant
+// holding a stdio pipe write end open under a cgroup that refused the pgid
+// kill). This runs at module load, not from an `after()` hook, because
+// `after()` cannot fire while a subtest is itself hanging — which is the
+// exact failure mode CI keeps hitting. Converts a 300s file cancellation
+// into a bounded exit with whatever subtest verdicts have already reported.
+setTimeout(() => process.exit(process.exitCode ?? 0), 90_000).unref();
 
 function makeRepoDir(): { repoDir: string; cleanup: () => void } {
   const repoDir = mkdtempSync(join(tmpdir(), 'wavemill-scratch-prep-'));
@@ -59,7 +65,7 @@ function waitForPidGone(pid: number, timeoutMs = 4000): Promise<boolean> {
 }
 
 describe('scratch-prep marker persistence', () => {
-  it('creates the marker under merge-lane state dir and re-reads it', async () => {
+  it('creates the marker under merge-lane state dir and re-reads it', { timeout: PER_TEST_TIMEOUT_MS }, async () => {
     const { repoDir, cleanup } = makeRepoDir();
     try {
       const marker = await writeScratchPrepMarker(repoDir, {
@@ -89,7 +95,7 @@ describe('scratch-prep marker persistence', () => {
     }
   });
 
-  it('advances phase in place and updates phaseStartedAt only on phase change', async () => {
+  it('advances phase in place and updates phaseStartedAt only on phase change', { timeout: PER_TEST_TIMEOUT_MS }, async () => {
     const { repoDir, cleanup } = makeRepoDir();
     try {
       const first = await writeScratchPrepMarker(repoDir, {
@@ -120,7 +126,7 @@ describe('scratch-prep marker persistence', () => {
     }
   });
 
-  it('best-effort write swallows errors; strict write rethrows', async () => {
+  it('best-effort write swallows errors; strict write rethrows', { timeout: PER_TEST_TIMEOUT_MS }, async () => {
     const { repoDir, cleanup } = makeRepoDir();
     // Point the marker at a path whose parent directory cannot be created.
     const bogusRepo = '/proc/should-not-be-writable-by-this-test-that-only-runs-locally';
@@ -149,7 +155,7 @@ describe('scratch-prep marker persistence', () => {
     }
   });
 
-  it('clears the marker best-effort; missing marker is a no-op', async () => {
+  it('clears the marker best-effort; missing marker is a no-op', { timeout: PER_TEST_TIMEOUT_MS }, async () => {
     const { repoDir, cleanup } = makeRepoDir();
     try {
       await writeScratchPrepMarker(repoDir, {
@@ -168,7 +174,7 @@ describe('scratch-prep marker persistence', () => {
     }
   });
 
-  it('listScratchPrepMarkers finds only markers under the merge-lane dir', async () => {
+  it('listScratchPrepMarkers finds only markers under the merge-lane dir', { timeout: PER_TEST_TIMEOUT_MS }, async () => {
     const { repoDir, cleanup } = makeRepoDir();
     try {
       await writeScratchPrepMarker(repoDir, { prNumber: 111, headBranch: 'task/a', phase: 'add' });
@@ -185,7 +191,7 @@ describe('scratch-prep marker persistence', () => {
     }
   });
 
-  it('SAFE_PREP_PHASES contains exactly the safe (no-remote-mutation) phases', () => {
+  it('SAFE_PREP_PHASES contains exactly the safe (no-remote-mutation) phases', { timeout: PER_TEST_TIMEOUT_MS }, () => {
     assert.ok(SAFE_PREP_PHASES.has('reap'));
     assert.ok(SAFE_PREP_PHASES.has('fetch'));
     assert.ok(SAFE_PREP_PHASES.has('add'));
@@ -197,14 +203,14 @@ describe('scratch-prep marker persistence', () => {
 });
 
 describe('isOwnerAlive', () => {
-  it('returns true for our own pid, false for a plainly dead one', () => {
+  it('returns true for our own pid, false for a plainly dead one', { timeout: PER_TEST_TIMEOUT_MS }, () => {
     assert.equal(isOwnerAlive(process.pid), true);
     // A pid of 0 is not a valid target; treated as dead per our contract.
     assert.equal(isOwnerAlive(0), false);
     assert.equal(isOwnerAlive(-1), false);
   });
 
-  it('treats a synthetic ESRCH from the signaller as dead', () => {
+  it('treats a synthetic ESRCH from the signaller as dead', { timeout: PER_TEST_TIMEOUT_MS }, () => {
     const signaller = (): boolean => {
       const err = new Error('no such process') as NodeJS.ErrnoException;
       err.code = 'ESRCH';
@@ -213,7 +219,7 @@ describe('isOwnerAlive', () => {
     assert.equal(isOwnerAlive(999_999, signaller), false);
   });
 
-  it('treats EPERM as alive (fail-safe: never touch a marker owned by a live process)', () => {
+  it('treats EPERM as alive (fail-safe: never touch a marker owned by a live process)', { timeout: PER_TEST_TIMEOUT_MS }, () => {
     const signaller = (): boolean => {
       const err = new Error('operation not permitted') as NodeJS.ErrnoException;
       err.code = 'EPERM';
@@ -224,7 +230,7 @@ describe('isOwnerAlive', () => {
 });
 
 describe('createProcessGroupPrepRunner', () => {
-  it('propagates stdout from a fast successful command', async () => {
+  it('propagates stdout from a fast successful command', { timeout: PER_TEST_TIMEOUT_MS }, async () => {
     const runner = createProcessGroupPrepRunner({ deadlineMs: 5_000 });
     const out = await runner.run("echo 'hello-prep'", { cwd: process.cwd(), phase: 'fetch' });
     assert.match(out, /hello-prep/);
@@ -301,7 +307,7 @@ describe('createProcessGroupPrepRunner', () => {
     assert.ok(leaderGone, `leader pid ${leaderPid} still alive after group kill`);
   });
 
-  it('fires the heartbeat callback while a long command runs', async () => {
+  it('fires the heartbeat callback while a long command runs', { timeout: PER_TEST_TIMEOUT_MS }, async () => {
     const beats: number[] = [];
     const runner = createProcessGroupPrepRunner({
       deadlineMs: 3_000,
@@ -315,7 +321,7 @@ describe('createProcessGroupPrepRunner', () => {
     assert.ok(beats.length >= 1, `expected at least 1 heartbeat, got ${beats.length}`);
   });
 
-  it('rejects immediately when the deadline is already exhausted', async () => {
+  it('rejects immediately when the deadline is already exhausted', { timeout: PER_TEST_TIMEOUT_MS }, async () => {
     let clock = 0;
     const runner = createProcessGroupPrepRunner({ deadlineMs: 100, now: () => clock });
     clock = 200; // already past deadline
@@ -325,7 +331,7 @@ describe('createProcessGroupPrepRunner', () => {
     );
   });
 
-  it('surfaces exit-code failures as regular errors, not timeouts', async () => {
+  it('surfaces exit-code failures as regular errors, not timeouts', { timeout: PER_TEST_TIMEOUT_MS }, async () => {
     const runner = createProcessGroupPrepRunner({ deadlineMs: 5_000 });
     let error: unknown;
     try {
@@ -338,7 +344,7 @@ describe('createProcessGroupPrepRunner', () => {
     assert.match(String((error as Error).message), /exit 7/);
   });
 
-  it('supports an injected spawn function for tests that never touch the real shell', async () => {
+  it('supports an injected spawn function for tests that never touch the real shell', { timeout: PER_TEST_TIMEOUT_MS }, async () => {
     let spawned = 0;
     const runner = createProcessGroupPrepRunner({
       deadlineMs: 2_000,
