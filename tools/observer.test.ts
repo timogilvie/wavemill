@@ -1031,6 +1031,23 @@ test('incident Linear flags imply filing mode and parse replay/policy controls',
   assert.match(options.incidentsPolicy ?? '', /external_transient_dependency/);
 });
 
+test('--incidents-shadow implies file-incidents and sets shadow mode', () => {
+  const options = parseArgs(['--incidents-shadow']);
+  assert.equal(options.fileIncidents, true);
+  assert.equal(options.incidentsShadow, true);
+  assert.equal(options.incidentsMode, undefined);
+});
+
+test('--incidents-mode=shadow implies file-incidents with the explicit mode', () => {
+  const options = parseArgs(['--incidents-mode=shadow']);
+  assert.equal(options.fileIncidents, true);
+  assert.equal(options.incidentsMode, 'shadow');
+});
+
+test('--incidents-mode rejects invalid values', () => {
+  assert.throws(() => parseArgs(['--incidents-mode=writes-please']), /must be off\|offline\|shadow\|live/);
+});
+
 test('incident sync snapshot is omitted when incident filing is disabled', async () => {
   const snapshot = await syncIncidentsToLinear({
     timestamp: '2026-08-04T12:00:00.000Z',
@@ -1096,6 +1113,137 @@ test('incident sync caps live incident processing per pass', async () => {
 
     assert.equal(snapshot.incidentSync?.totalProcessed, 10);
     assert.equal(snapshot.incidentSync?.skipped, 40);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('incident sync shadow mode caps per pass, writes audit records, and reports counters', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-incident-shadow-'));
+  try {
+    writePermissiveSchema(repoDir);
+    // Enable shadow explicitly.
+    writeFileSync(join(repoDir, '.wavemill-config.json'), JSON.stringify({
+      configVersion: '1.5.0',
+      mill: { baseBranch: 'auto/integration', requireConfirm: true },
+      observer: { linear: { mode: 'shadow', maxIncidentsPerPass: 3 } },
+    }, null, 2));
+
+    const store = new IncidentStore(join(repoDir, '.wavemill', 'incidents'));
+    for (let i = 0; i < 5; i += 1) {
+      await store.upsert(createIncidentDraft({
+        taskId: `HOK-${2000 + i}`,
+        category: 'product_defect',
+        severity: 'high',
+        confidence: 'definite',
+        lifecycle: 'active',
+        rootCauseClass: 'observer_crash',
+        summary: `Shadow ${i}.`,
+        operatorAction: 'Fix parser.',
+        evidence: [{
+          type: 'log_excerpt',
+          source: `mill-${i}.log`,
+          timestamp: '2026-08-04T12:00:00.000Z',
+          redactedData: `ERROR ${i}`,
+          key: `error-${i}`,
+        }],
+        metadata: { thresholdTriggered: true },
+      }));
+    }
+
+    const snapshot = await syncIncidentsToLinear({
+      timestamp: '2026-08-04T12:00:00.000Z',
+      sessions: ['wavemill'],
+      panes: [],
+      processes: [],
+      repos: [{ session: 'wavemill', repoDir, tasks: [] }],
+      findings: [],
+    }, {
+      ...defaultObserverOptions(),
+      fileIncidents: true,
+      incidentsShadow: true,
+    });
+
+    assert.equal(snapshot.incidentSync?.mode, 'shadow');
+    assert.ok(snapshot.incidentSync?.shadow, 'shadow snapshot must be present');
+    // Per-pass cap of 3, five incidents seeded → 3 eligible, 2 skipped.
+    assert.equal(snapshot.incidentSync?.shadow?.eligible, 3);
+    assert.equal(snapshot.incidentSync?.shadow?.mutationAttempts, 0);
+    // Cap fix: shadow must honour maxIncidentsPerPass.
+    assert.ok((snapshot.incidentSync?.skipped ?? 0) >= 2);
+
+    // Audit file was written.
+    const auditPath = join(repoDir, '.wavemill/observer/shadow-audit.jsonl');
+    assert.ok(existsSync(auditPath), `expected audit file at ${auditPath}`);
+    const auditRecords = readFileSync(auditPath, 'utf-8').trim().split('\n').filter(Boolean);
+    assert.equal(auditRecords.length, 3);
+
+    // Counters file was written.
+    const countersPath = join(repoDir, '.wavemill/observer/shadow-counters.json');
+    assert.ok(existsSync(countersPath));
+    const counters = JSON.parse(readFileSync(countersPath, 'utf-8'));
+    assert.equal(counters.eligible, 3);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('writeServiceHeartbeat surfaces shadow mode and counters in Backstage health', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-heartbeat-shadow-'));
+  try {
+    mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
+    writeFileSync(join(repoDir, '.wavemill', 'backstage-health.json'), JSON.stringify({}));
+    await writeServiceHeartbeat({
+      timestamp: '2026-09-22T12:00:00.000Z',
+      sessions: ['wavemill'],
+      panes: [],
+      processes: [],
+      repos: [],
+      findings: [],
+      incidentSync: {
+        mode: 'shadow',
+        totalProcessed: 3,
+        created: 0,
+        updated: 0,
+        failed: 0,
+        skipped: 3,
+        queued: 0,
+        retryProcessed: 0,
+        retrySucceeded: 0,
+        retryFailed: 0,
+        results: [],
+        errors: [],
+        shadow: {
+          eligible: 3,
+          proposedCreate: 2,
+          proposedUpdate: 1,
+          noOp: 0,
+          skipRecovered: 0,
+          ambiguous: 0,
+          redactionFailures: 0,
+          correlationCollisions: 0,
+          mutationAttempts: 0,
+          auditPath: '.wavemill/observer/shadow-audit.jsonl',
+          countersPath: '.wavemill/observer/shadow-counters.json',
+          lookupBudgetUsed: 5,
+          lookupBudgetMax: 40,
+          lookupBudgetExhausted: false,
+        },
+      },
+    }, {
+      ...defaultObserverOptions(),
+      loop: true,
+      once: false,
+      json: true,
+      repoDir,
+      session: 'wavemill',
+      serviceMode: true,
+    });
+    const health = JSON.parse(readFileSync(join(repoDir, '.wavemill', 'backstage-health.json'), 'utf8'));
+    assert.equal(health.services.observer.incidentSync.mode, 'shadow');
+    assert.equal(health.services.observer.incidentSync.shadow.eligible, 3);
+    assert.equal(health.services.observer.incidentSync.shadow.mutationAttempts, 0);
+    assert.equal(health.services.observer.incidentSync.shadow.auditPath, '.wavemill/observer/shadow-audit.jsonl');
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
   }

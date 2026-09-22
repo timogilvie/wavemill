@@ -41,9 +41,20 @@ export interface IncidentLinearRedactionConfig {
   markFormat: string;
 }
 
+export type ObserverLinearMode = 'off' | 'offline' | 'shadow' | 'live';
+
+export interface ObserverLinearShadowConfig {
+  auditPath: string;
+  countersPath: string;
+  maxEntries: number;
+  maxAgeDays: number;
+  maxLookupsPerPass: number;
+}
+
 export interface ObserverLinearConfig {
   enabled: boolean;
   detectionOnly: boolean;
+  mode: ObserverLinearMode;
   project?: string;
   team?: string;
   label?: string;
@@ -55,6 +66,7 @@ export interface ObserverLinearConfig {
   rateLimitBackoffMs: number;
   policies: Record<IncidentCategory, IncidentClassPolicy>;
   redaction: IncidentLinearRedactionConfig;
+  shadow: ObserverLinearShadowConfig;
 }
 
 export type SyncAction =
@@ -62,10 +74,48 @@ export type SyncAction =
   | 'update_comment'
   | 'correlate'
   | 'skip'
+  | 'skip_recovered'
   | 'no_op'
   | 'unknown_needs_lookup'
   | 'queued'
   | 'failed';
+
+export interface RedactionSummary {
+  redactionEnabled: boolean;
+  patternsApplied: number;
+  redactedEmails: boolean;
+  redactedPaths: boolean;
+  truncatedTranscripts: boolean;
+  markersFound: string[];
+}
+
+export interface ShadowCorrelationTarget {
+  issueId?: string;
+  identifier?: string;
+  url?: string;
+  matchedBy: 'linked_metadata' | 'fingerprint_label' | 'content_search' | 'related_issue' | 'none';
+  candidateCount: number;
+}
+
+export interface ShadowSyncPlan {
+  fingerprint: string;
+  class: IncidentCategory;
+  task?: string;
+  evidenceRevision: string;
+  action: SyncAction;
+  reason?: string;
+  plannedTitle: string;
+  plannedBody?: string;
+  plannedCommentBody?: string;
+  correlationTarget: ShadowCorrelationTarget;
+  reconciliation: IncidentFilingReconciliation;
+  redactionSummary: RedactionSummary;
+  policyDecision: {
+    allowed: boolean;
+    reason?: string;
+    strategy: IncidentPolicyStrategy;
+  };
+}
 
 export interface SyncResult {
   fingerprint: string;
@@ -79,6 +129,7 @@ export interface SyncResult {
   nextRetryAt?: string;
   plannedTitle?: string;
   reconciliation?: IncidentFilingReconciliation;
+  shadowPlan?: ShadowSyncPlan;
 }
 
 export interface IncidentLinearRetryEnqueuer {
@@ -116,6 +167,14 @@ export interface SyncIncidentOptions {
   repoDir?: string;
   /** Injectable read-only gate for tests and alternate read-only stores. */
   reconciler?: (incident: IncidentRecord, repoDir: string) => IncidentFilingReconciliation;
+  /** Force shadow-mode planning (equivalent to config.mode === 'shadow'). */
+  shadow?: boolean;
+  /**
+   * Optional bounded-lookup accountant shared across a whole shadow pass.
+   * When present, correlation reads are counted and stopped once the ceiling
+   * is reached so shadow cannot hammer Linear across many incidents.
+   */
+  lookupBudget?: LookupBudget;
 }
 
 const DEFAULT_CLIENT: IncidentLinearClient = {
@@ -135,6 +194,7 @@ const FINGERPRINT_LABEL_PREFIX = 'incident:fingerprint:';
 export const DEFAULT_INCIDENT_LINEAR_CONFIG: ObserverLinearConfig = {
   enabled: false,
   detectionOnly: false,
+  mode: 'off',
   retryQueuePath: '.wavemill/registry/linear-incident-queue.jsonl',
   updateCooldownMinutes: 5,
   maxIncidentsPerPass: 10,
@@ -166,6 +226,13 @@ export const DEFAULT_INCIDENT_LINEAR_CONFIG: ObserverLinearConfig = {
     truncateTranscripts: true,
     truncateLength: 200,
     markFormat: '[REDACTED: {type}]',
+  },
+  shadow: {
+    auditPath: '.wavemill/observer/shadow-audit.jsonl',
+    countersPath: '.wavemill/observer/shadow-counters.json',
+    maxEntries: 500,
+    maxAgeDays: 14,
+    maxLookupsPerPass: 40,
   },
 };
 
@@ -451,7 +518,8 @@ export async function syncIncident(options: SyncIncidentOptions): Promise<SyncRe
   const now = options.now ?? new Date();
   const config = options.config;
   const evidenceRevision = options.store?.computeEvidenceRevision(options.incident) ?? new IncidentStore('').computeEvidenceRevision(options.incident);
-  const dryRun = options.dryRun === true || config.detectionOnly === true;
+  const dryRun = options.dryRun === true || config.detectionOnly === true || config.mode === 'offline' || config.mode === 'shadow';
+  const shadowMode = options.shadow === true || config.mode === 'shadow';
   const incident = options.incident;
   const audit = options.audit ?? (() => {});
   const reconciliation = (options.reconciler ?? reconcileIncidentForFiling)(incident, options.repoDir ?? process.cwd());
@@ -459,9 +527,35 @@ export async function syncIncident(options: SyncIncidentOptions): Promise<SyncRe
 
   // An unlinked incident proven recovered/superseded must not cause even a
   // lookup: queue replay and dry-run both pass through this same early gate.
+  // Shadow mode surfaces this as skip_recovered so operators can see the
+  // suppression separately from generic policy-based skips.
   if (!incident.metadata?.linkedLinearId && (reconciliation.outcome === 'recovered' || reconciliation.outcome === 'superseded')) {
     audit('incident filing suppressed by reconciliation', { fingerprint: incident.fingerprint, ...reconciliation });
+    if (shadowMode) {
+      const plan = planShadowSync({
+        incident,
+        config,
+        evidenceRevision,
+        now,
+        reconciliation,
+        correlation: { matchedBy: 'none', candidateCount: 0 },
+        forcedAction: 'skip_recovered',
+        forcedReason: `reconciliation: ${reconciliation.outcome}`,
+      });
+      return {
+        ...baseResult,
+        action: 'skip_recovered',
+        status: 'skipped',
+        reason: `reconciliation: ${reconciliation.outcome}`,
+        plannedTitle: plan.plannedTitle,
+        shadowPlan: plan,
+      };
+    }
     return { ...baseResult, action: 'skip', status: 'skipped', reason: `reconciliation: ${reconciliation.outcome}` };
+  }
+
+  if (shadowMode) {
+    return await runShadowSync({ ...options, now, evidenceRevision, reconciliation, audit });
   }
 
   if (dryRun) {
@@ -574,6 +668,295 @@ export async function syncIncident(options: SyncIncidentOptions): Promise<SyncRe
     }
     return { ...baseResult, action: 'failed', status: 'failed', reason: classified.message };
   }
+}
+
+export class ShadowMutationBlockedError extends Error {
+  readonly method: string;
+  constructor(method: string) {
+    super(`shadow mode blocked Linear mutation: ${method}()`);
+    this.name = 'ShadowMutationBlockedError';
+    this.method = method;
+  }
+}
+
+export interface LookupBudget {
+  readonly max: number;
+  used: number;
+  exhausted: boolean;
+  /** Ordered list of method names that were counted, for debugging/audit. */
+  callLog: string[];
+}
+
+export function createLookupBudget(max: number): LookupBudget {
+  return { max: Math.max(0, max), used: 0, exhausted: false, callLog: [] };
+}
+
+export interface ReadOnlyIncidentLinearClient {
+  client: IncidentLinearClient;
+  mutationAttempts: number;
+  mutationCallLog: string[];
+}
+
+/**
+ * Wrap an incident linear client so every mutation method throws
+ * ShadowMutationBlockedError and increments a counter on the returned object.
+ * The read methods are passed through unchanged, so shadow correlation still
+ * works but a bug that reaches a write path is loudly caught.
+ */
+export function wrapReadOnlyIncidentLinearClient(client: IncidentLinearClient): ReadOnlyIncidentLinearClient {
+  const wrapper: ReadOnlyIncidentLinearClient = {
+    mutationAttempts: 0,
+    mutationCallLog: [],
+    client: client, // replaced below with the real proxy
+  };
+  const block = (method: string) => async () => {
+    wrapper.mutationAttempts += 1;
+    wrapper.mutationCallLog.push(method);
+    throw new ShadowMutationBlockedError(method);
+  };
+  wrapper.client = {
+    getTeams: client.getTeams,
+    getProjects: client.getProjects,
+    searchIssues: client.searchIssues,
+    getIssue: client.getIssue,
+    createIssue: block('createIssue') as unknown as IncidentLinearClient['createIssue'],
+    createComment: block('createComment') as unknown as IncidentLinearClient['createComment'],
+    getOrCreateLabel: block('getOrCreateLabel') as unknown as IncidentLinearClient['getOrCreateLabel'],
+    addLabelsToIssue: block('addLabelsToIssue') as unknown as IncidentLinearClient['addLabelsToIssue'],
+  };
+  return wrapper;
+}
+
+function withLookupBudget(client: IncidentLinearClient, budget?: LookupBudget): IncidentLinearClient {
+  if (!budget) return client;
+  const guard = (method: string) => {
+    if (budget.used >= budget.max) {
+      budget.exhausted = true;
+      throw new Error(`shadow lookup budget exhausted after ${budget.used}/${budget.max} calls (blocking ${method})`);
+    }
+    budget.used += 1;
+    budget.callLog.push(method);
+  };
+  return {
+    ...client,
+    searchIssues: async (...args) => {
+      guard('searchIssues');
+      return client.searchIssues(...args);
+    },
+    getIssue: async (...args) => {
+      guard('getIssue');
+      return client.getIssue(...args);
+    },
+    getTeams: async (...args) => {
+      guard('getTeams');
+      return client.getTeams(...args);
+    },
+    getProjects: async (...args) => {
+      guard('getProjects');
+      return client.getProjects(...args);
+    },
+  };
+}
+
+function summarizeRedaction(config: IncidentLinearRedactionConfig, ...texts: string[]): RedactionSummary {
+  const combined = texts.join('\n');
+  const markers = new Set<string>();
+  const escaped = config.markFormat.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace('\\{type\\}', '([a-z]+)');
+  try {
+    const markerRe = new RegExp(escaped, 'g');
+    let match: RegExpExecArray | null;
+    while ((match = markerRe.exec(combined)) !== null) {
+      markers.add(match[1]);
+    }
+  } catch {
+    // Ignore malformed operator markFormat rather than blowing up shadow
+    // planning; the audit still records the raw counts below.
+  }
+  return {
+    redactionEnabled: config.enabled,
+    patternsApplied: config.patterns.length,
+    redactedEmails: config.redactEmails,
+    redactedPaths: config.redactPaths,
+    truncatedTranscripts: /\[TRUNCATED/.test(combined),
+    markersFound: [...markers].sort(),
+  };
+}
+
+export interface PlanShadowSyncOptions {
+  incident: IncidentRecord;
+  config: ObserverLinearConfig;
+  evidenceRevision: string;
+  now: Date;
+  reconciliation: IncidentFilingReconciliation;
+  correlation: ShadowCorrelationTarget;
+  forcedAction?: SyncAction;
+  forcedReason?: string;
+  replay?: boolean;
+}
+
+/**
+ * Assemble the exact redacted payload the live path would send, plus the
+ * reconciliation/policy metadata operators need to review a shadow trial.
+ * This is a pure function of its inputs — it never touches a client or store.
+ */
+export function planShadowSync(options: PlanShadowSyncOptions): ShadowSyncPlan {
+  const { incident, config, evidenceRevision, now, reconciliation, correlation } = options;
+  const plannedTitle = generateIssueTitle(incident);
+  const policy = config.policies[incident.category] ?? DEFAULT_INCIDENT_LINEAR_CONFIG.policies[incident.category];
+  const createPolicy = policyAllowsCreate(incident, config);
+
+  let action: SyncAction;
+  let reason: string | undefined;
+  let plannedBody: string | undefined;
+  let plannedCommentBody: string | undefined;
+
+  if (options.forcedAction) {
+    action = options.forcedAction;
+    reason = options.forcedReason;
+    if (action === 'create') {
+      plannedBody = generateIssueBody(incident, config, evidenceRevision, now);
+    } else if (action === 'update_comment') {
+      plannedCommentBody = generateCommentBody(incident, config, evidenceRevision, now);
+    }
+  } else if (correlation.matchedBy !== 'none' && correlation.identifier) {
+    const update = shouldUpdateIncident(incident, evidenceRevision, now, options.replay === true);
+    if (!update.allowed) {
+      action = 'no_op';
+      reason = update.reason;
+    } else {
+      action = 'update_comment';
+      reason = 'shadow: planned evidence update';
+      plannedCommentBody = generateCommentBody(incident, config, evidenceRevision, now);
+    }
+  } else if (!createPolicy.allowed) {
+    action = 'skip';
+    reason = createPolicy.reason;
+  } else {
+    action = 'create';
+    reason = 'shadow: planned issue create';
+    plannedBody = generateIssueBody(incident, config, evidenceRevision, now);
+  }
+
+  const redactionSummary = summarizeRedaction(config.redaction, plannedTitle, plannedBody ?? '', plannedCommentBody ?? '');
+
+  return {
+    fingerprint: incident.fingerprint,
+    class: incident.category,
+    task: incident.taskId,
+    evidenceRevision,
+    action,
+    reason,
+    plannedTitle,
+    plannedBody,
+    plannedCommentBody,
+    correlationTarget: correlation,
+    reconciliation,
+    redactionSummary,
+    policyDecision: {
+      allowed: createPolicy.allowed,
+      reason: createPolicy.reason,
+      strategy: policy.strategy,
+    },
+  };
+}
+
+interface RunShadowSyncOptions extends SyncIncidentOptions {
+  now: Date;
+  evidenceRevision: string;
+  reconciliation: IncidentFilingReconciliation;
+  audit: (message: string, fields?: Record<string, unknown>) => void;
+}
+
+async function runShadowSync(options: RunShadowSyncOptions): Promise<SyncResult> {
+  const { incident, config, now, evidenceRevision, reconciliation, audit } = options;
+  const baseClient = options.client ?? DEFAULT_CLIENT;
+  const wrapped = wrapReadOnlyIncidentLinearClient(baseClient);
+  const budgetedClient = withLookupBudget(wrapped.client, options.lookupBudget);
+  const pacedClient = withRequestPacing(budgetedClient, config);
+  const baseResult = { fingerprint: incident.fingerprint, evidenceRevision, dryRun: true, reconciliation };
+
+  let correlation: ShadowCorrelationTarget = { matchedBy: 'none', candidateCount: 0 };
+  let existing: LinearIssueSummary | null = null;
+  let failure: { reason: string } | undefined;
+
+  try {
+    if (incident.metadata?.linkedLinearId) {
+      existing = await resolveIssueByIdentifier(pacedClient, incident.metadata.linkedLinearId);
+      if (existing) {
+        correlation = {
+          issueId: existing.id,
+          identifier: existing.identifier,
+          url: existing.url,
+          matchedBy: 'linked_metadata',
+          candidateCount: 1,
+        };
+      }
+    } else {
+      existing = await findExistingIssue(incident, config, pacedClient);
+      if (existing) {
+        correlation = {
+          issueId: existing.id,
+          identifier: existing.identifier,
+          url: existing.url,
+          matchedBy: 'fingerprint_label',
+          candidateCount: 1,
+        };
+      }
+    }
+  } catch (error) {
+    failure = { reason: error instanceof Error ? error.message : String(error) };
+    audit('shadow correlation lookup failed', { fingerprint: incident.fingerprint, reason: failure.reason });
+  }
+
+  if (failure) {
+    const failPlan = planShadowSync({
+      incident, config, evidenceRevision, now, reconciliation,
+      correlation,
+      forcedAction: 'failed',
+      forcedReason: `shadow correlation failed: ${failure.reason}`,
+    });
+    if (wrapped.mutationAttempts > 0) {
+      throw new Error(`shadow contract violated: mutation attempted (${wrapped.mutationCallLog.join(',')})`);
+    }
+    return {
+      ...baseResult,
+      action: 'failed',
+      status: 'failed',
+      reason: failPlan.reason,
+      plannedTitle: failPlan.plannedTitle,
+      shadowPlan: failPlan,
+    };
+  }
+
+  const plan = planShadowSync({
+    incident,
+    config,
+    evidenceRevision,
+    now,
+    reconciliation,
+    correlation,
+    replay: options.replay === true,
+  });
+
+  if (wrapped.mutationAttempts > 0) {
+    // Contract violation: even one attempt is a bug we want to loudly fail on.
+    throw new Error(`shadow contract violated: mutation attempted (${wrapped.mutationCallLog.join(',')})`);
+  }
+
+  const status: SyncResult['status'] = plan.action === 'failed'
+    ? 'failed'
+    : 'skipped';
+
+  return {
+    ...baseResult,
+    action: plan.action,
+    status,
+    issueId: correlation.identifier,
+    issueUrl: correlation.url,
+    reason: plan.reason,
+    plannedTitle: plan.plannedTitle,
+    shadowPlan: plan,
+  };
 }
 
 function planOfflineSync(

@@ -59,6 +59,7 @@ TESTS=(
   shared/lib/native-agent/patch-runtime.test.ts
   shared/lib/native-agent/patch-matcher.test.ts
   shared/lib/native-agent/coding-failure-handoff.test.ts
+  shared/lib/native-agent/stage-failure-envelope.test.ts
   shared/lib/native-agent/coding-artifacts.test.ts
   shared/lib/native-agent/completion-normalizer.test.ts
   shared/lib/native-agent/mutation-policy.test.ts
@@ -324,6 +325,7 @@ TESTS=(
   tools/native-agent-certifications.test.ts
   shared/lib/incident-linear-retry-queue.test.ts
   shared/lib/incident-to-linear-synchronizer.test.ts
+  shared/lib/observer-shadow-audit.test.ts
   shared/lib/incident-filing-reconciler.test.ts
   shared/lib/incident-log-excerpt-reader.test.ts
   shared/lib/verification-metrics.test.ts

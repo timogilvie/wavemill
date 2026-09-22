@@ -4203,6 +4203,72 @@ test('observer linear config normalizes partial policies and env project overrid
   }
 });
 
+test('observer linear config derives mode from legacy enabled/detectionOnly by default', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    // enabled=false → off
+    writeConfig(tmp, JSON.stringify({ observer: { linear: { enabled: false } } }));
+    let config = getObserverLinearConfig(tmp);
+    assert.equal(config.mode, 'off');
+
+    // enabled=true, detectionOnly=false → live
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ observer: { linear: { enabled: true } } }));
+    config = getObserverLinearConfig(tmp);
+    assert.equal(config.mode, 'live');
+
+    // enabled=true, detectionOnly=true → offline (legacy alias)
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ observer: { linear: { enabled: true, detectionOnly: true } } }));
+    config = getObserverLinearConfig(tmp);
+    assert.equal(config.mode, 'offline');
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('observer linear config explicit mode overrides legacy enabled/detectionOnly', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    // Explicit shadow works even when enabled=false and detectionOnly=false.
+    writeConfig(tmp, JSON.stringify({ observer: { linear: { mode: 'shadow' } } }));
+    const config = getObserverLinearConfig(tmp);
+    assert.equal(config.mode, 'shadow');
+    assert.equal(config.enabled, false);
+    assert.equal(config.detectionOnly, false);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('observer linear config surfaces default shadow retention', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    const config = getObserverLinearConfig(tmp);
+    assert.equal(config.shadow.auditPath, '.wavemill/observer/shadow-audit.jsonl');
+    assert.equal(config.shadow.countersPath, '.wavemill/observer/shadow-counters.json');
+    assert.equal(config.shadow.maxEntries, 500);
+    assert.equal(config.shadow.maxAgeDays, 14);
+    assert.equal(config.shadow.maxLookupsPerPass, 40);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('observer linear config rejects invalid mode', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ observer: { linear: { mode: 'writes-please' } } }));
+    assert.throws(() => getObserverLinearConfig(tmp), /observer\/linear\/mode|allowed values|mode must be/i);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
 // ────────────────────────────────────────────────────────────────
 // Results
 // ────────────────────────────────────────────────────────────────

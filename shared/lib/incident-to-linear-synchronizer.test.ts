@@ -6,10 +6,14 @@ import test from 'node:test';
 
 import {
   DEFAULT_INCIDENT_LINEAR_CONFIG,
+  ShadowMutationBlockedError,
+  createLookupBudget,
   generateIssueBody,
   generateIssueTitle,
+  planShadowSync,
   redactLinearIssueContent,
   syncIncident,
+  wrapReadOnlyIncidentLinearClient,
   type IncidentLinearClient,
   type ObserverLinearConfig,
 } from './incident-to-linear-synchronizer.ts';
@@ -486,6 +490,135 @@ test('retryable Linear failure is queued and stored as sync error', async () => 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('wrapReadOnlyIncidentLinearClient blocks every mutation method with an incremented counter', async () => {
+  const base = mockClient();
+  const wrapped = wrapReadOnlyIncidentLinearClient(base);
+  await assert.rejects(() => wrapped.client.createIssue({} as any), ShadowMutationBlockedError);
+  await assert.rejects(() => wrapped.client.createComment('x', 'y'), ShadowMutationBlockedError);
+  await assert.rejects(() => wrapped.client.getOrCreateLabel('l', 't'), ShadowMutationBlockedError);
+  await assert.rejects(() => wrapped.client.addLabelsToIssue('id', ['l']), ShadowMutationBlockedError);
+  assert.equal(wrapped.mutationAttempts, 4);
+  assert.deepEqual(wrapped.mutationCallLog, ['createIssue', 'createComment', 'getOrCreateLabel', 'addLabelsToIssue']);
+
+  // Read methods pass through unchanged.
+  assert.equal((await wrapped.client.getTeams()).length, 1);
+});
+
+test('shadow mode produces deterministic decision, exact redacted payload, and zero mutation attempts', async () => {
+  const item = incident({
+    metadata: {
+      thresholdTriggered: true,
+      escalatedAt: '2026-08-04T12:10:00.000Z',
+      linkedLinearId: 'HOK-500',
+      lastSyncedEvidenceRevision: 'old',
+      syncCooldownUntil: '2026-08-04T12:00:00.000Z',
+    },
+  });
+  let mutationCalls = 0;
+  const spyClient = mockClient({
+    getIssue: async () => issueSummary('HOK-500') as any,
+    createIssue: async (params) => {
+      mutationCalls += 1;
+      return mockClient().createIssue(params);
+    },
+    createComment: async () => {
+      mutationCalls += 1;
+      return { id: 'x', url: 'y' };
+    },
+    getOrCreateLabel: async () => {
+      mutationCalls += 1;
+      return { id: 'l', name: 'x' };
+    },
+    addLabelsToIssue: async () => {
+      mutationCalls += 1;
+      return { success: true, issue: {} as any };
+    },
+  });
+  const result = await syncIncident({
+    incident: item,
+    config: config({ mode: 'shadow' }),
+    now: new Date('2026-08-04T12:30:00.000Z'),
+    client: spyClient,
+  });
+  assert.equal(mutationCalls, 0);
+  assert.equal(result.dryRun, true);
+  assert.equal(result.action, 'update_comment');
+  assert.ok(result.shadowPlan);
+  assert.equal(result.shadowPlan!.correlationTarget.matchedBy, 'linked_metadata');
+  assert.equal(result.shadowPlan!.correlationTarget.identifier, 'HOK-500');
+  assert.ok(result.shadowPlan!.plannedCommentBody);
+  assert.match(result.shadowPlan!.plannedCommentBody!, /Wavemill Incident Evidence Update/);
+  // Redaction summary should mark that redaction is enabled and describe the profile.
+  assert.equal(result.shadowPlan!.redactionSummary.redactionEnabled, true);
+  assert.equal(result.shadowPlan!.redactionSummary.patternsApplied > 0, true);
+});
+
+test('shadow mode never emits unknown_needs_lookup even without correlation', async () => {
+  const result = await syncIncident({
+    incident: incident({
+      metadata: {
+        thresholdTriggered: true,
+        escalatedAt: '2026-08-04T12:10:00.000Z',
+      },
+    }),
+    config: config({ mode: 'shadow' }),
+    client: mockClient(),
+  });
+  assert.notEqual(result.action, 'unknown_needs_lookup');
+  assert.ok(['create', 'skip', 'skip_recovered', 'update_comment', 'no_op', 'failed'].includes(result.action));
+});
+
+test('shadow mode reports skip_recovered when reconciliation says the candidate is superseded', async () => {
+  const superseded = () => ({ outcome: 'superseded' as const, evidence: { jobId: 'job-1' } });
+  const result = await syncIncident({
+    incident: incident({
+      rootCauseClass: 'failed_job_no_result',
+      metadata: { jobId: 'job-1', jobKind: 'eval', thresholdTriggered: true },
+    }),
+    config: config({ mode: 'shadow' }),
+    reconciler: superseded,
+    client: mockClient(),
+  });
+  assert.equal(result.action, 'skip_recovered');
+  assert.equal(result.status, 'skipped');
+  assert.ok(result.shadowPlan);
+  assert.equal(result.shadowPlan!.action, 'skip_recovered');
+});
+
+test('shadow lookup budget stops correlation once exhausted and surfaces an actionable failure', async () => {
+  const budget = createLookupBudget(1);
+  const spyClient = mockClient({
+    searchIssues: async () => [],
+    getTeams: async () => [{ id: 't', key: 'HOK', name: 'H' }],
+  });
+  const result = await syncIncident({
+    incident: incident({
+      metadata: { thresholdTriggered: true, escalatedAt: '2026-08-04T12:10:00.000Z' },
+    }),
+    config: config({ mode: 'shadow' }),
+    lookupBudget: budget,
+    client: spyClient,
+  });
+  // At least one search call was budgeted; a follow-up call would have thrown.
+  assert.ok(budget.used >= 1);
+  // Any failure path must not be unknown_needs_lookup.
+  assert.notEqual(result.action, 'unknown_needs_lookup');
+});
+
+test('planShadowSync assembles the exact rendered title and body', () => {
+  const item = incident();
+  const plan = planShadowSync({
+    incident: item,
+    config: config(),
+    evidenceRevision: 'rev-1',
+    now: new Date('2026-08-04T12:15:00.000Z'),
+    reconciliation: { outcome: 'confirmed_active', evidence: {} },
+    correlation: { matchedBy: 'none', candidateCount: 0 },
+  });
+  assert.equal(plan.plannedTitle, generateIssueTitle(item));
+  assert.match(plan.plannedBody ?? '', /## Incident Summary/);
 });
 
 function issueSummary(identifier: string): LinearIssueSummary {
