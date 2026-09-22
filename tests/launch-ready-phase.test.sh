@@ -791,11 +791,27 @@ run_watchdog_launch_case() {
     ensure_ready_worker_window() {
       _ensure_task_window_exists "$SESSION" "$1" "$2" "$4"
     }
+    ready_current_github_head() {
+      case "$TEST_CASE" in
+        remote_head_matches) printf "%s\n" "abc123" ;;
+        remote_head_changed) printf "%s\n" "def456" ;;
+        *) printf "\n" ;;
+      esac
+    }
     write_ready_attention_file() { :; }
     log() { :; }
     log_error() { :; }
 
+    # Seed retry buckets for head-changed case
+    if [[ "$TEST_CASE" == "remote_head_changed" ]]; then
+      printf "%s\n" "1"      > "$STATE_DIR/.retry-ready-remediation-count"
+      printf "%s\n" "abc123" > "$STATE_DIR/.retry-ready-remediation-head"
+      printf "%s\n" "1"      > "$STATE_DIR/.retry-pending-ready-recheck-count"
+      printf "%s\n" "abc123" > "$STATE_DIR/.retry-pending-ready-recheck-head"
+    fi
+
     output_file="$CASE_DIR/watchdog-output.json"
+    rc=0
     launch_ready_watchdog_remediation \
       "HOK-1300" \
       "fix-failing-ci-tests" \
@@ -806,12 +822,14 @@ run_watchdog_launch_case() {
       "Alembic Check (FAILURE)" \
       "1" \
       "3" \
-      "[\"Alembic Check\"]" > "$output_file"
+      "[\"Alembic Check\"]" > "$output_file" || rc=$?
     output=$(cat "$output_file")
 
+    retry_bucket_listing=$(ls "$STATE_DIR"/.retry-* 2>/dev/null || echo "retry_buckets_cleared")
+
     stage_summary=$(printf "%s" "$WRITE_STAGE_CALLS" | tr "\n" ";")
-    printf "output=%s\nstage_calls=%s\nlaunch_calls=%s\nprompt_calls=%s\nprompt_summary=%s\n" \
-      "$output" "$stage_summary" "$LAUNCH_AGENT_CALLS" "$READY_PROMPT_CALLS" "$READY_PROMPT_SUMMARY"
+    printf "output=%s\nstage_calls=%s\nlaunch_calls=%s\nprompt_calls=%s\nprompt_summary=%s\nrc=%s\nretry_buckets=%s\n" \
+      "$output" "$stage_summary" "$LAUNCH_AGENT_CALLS" "$READY_PROMPT_CALLS" "$READY_PROMPT_SUMMARY" "$rc" "$retry_bucket_listing"
   ' 2>&1
 }
 
@@ -1521,6 +1539,26 @@ output="$(run_watchdog_launch_case inflight_same_head)"
 check_contains "watchdog inflight skips launch" "$output" '"status":"skipped-in-flight"'
 check_contains "watchdog inflight does not relaunch agent" "$output" "launch_calls=0"
 check_contains "watchdog inflight does not rewrite stage" "$output" "stage_calls="
+
+echo "=== Watchdog Remote Head Scenarios (HOK-3051) ==="
+
+output="$(run_watchdog_launch_case remote_head_matches)"
+check_contains "watchdog remote head matches launches remediation" "$output" '"status":"launched"'
+check_contains "watchdog remote head matches invokes agent" "$output" "launch_calls=1"
+check_contains "watchdog remote head matches rc=0" "$output" "rc=0"
+
+output="$(run_watchdog_launch_case remote_head_changed)"
+check_contains "watchdog remote head changed returns rc=4" "$output" "rc=4"
+check_not_contains "watchdog remote head changed does not launch agent" "$output" "launch_calls=1"
+check_contains "watchdog remote head changed writes running stage" "$output" "|ready|running|"
+check_contains "watchdog remote head changed records head-changed" "$output" "head-changed"
+check_contains "watchdog remote head changed records remote SHA" "$output" "def456"
+check_contains "watchdog remote head changed clears retry buckets" "$output" "retry_buckets_cleared"
+
+output="$(run_watchdog_launch_case remote_head_unavailable)"
+check_contains "watchdog remote head unavailable launches remediation" "$output" '"status":"launched"'
+check_contains "watchdog remote head unavailable invokes agent" "$output" "launch_calls=1"
+check_contains "watchdog remote head unavailable rc=0" "$output" "rc=0"
 
 echo "=== Sequential Failing Launch Scenario ==="
 
