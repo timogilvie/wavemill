@@ -578,6 +578,8 @@ EOF
       fi
       case "${1:-} ${2:-}" in
         "rev-list --count") printf "0\n" ;;
+        "rev-parse --show-toplevel") printf "%s\n" "$WORKTREE_ROOT/$SLUG" ;;
+        "worktree list") printf "worktree %s\n" "$WORKTREE_ROOT/$SLUG" ;;
       esac
       return 0
     }
