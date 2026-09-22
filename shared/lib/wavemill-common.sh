@@ -1294,6 +1294,9 @@ safe_remove_task_worktree_and_branch() {
   local patch_unique_count=""
   local patch_equivalent_count=""
   local patch_total_count=""
+  local unique_local_shas=""
+  local unique_published_shas=""
+  local cherry_equivalent_shas=""
   local abandon_issue="${WAVEMILL_CLEANUP_ABANDON_ISSUE:-}"
   local worktree_identity=""
   local dirt_paths=""
@@ -1528,12 +1531,82 @@ safe_remove_task_worktree_and_branch() {
                 classification="safe_terminal_pr_head"
                 cleanup_authority="PR #${pr} merged into ${base_branch} with headRefOid exactly equal to local head ${local_head_sha}"
               elif git -C "$REPO_DIR" merge-base --is-ancestor "$pr_head_oid" "$local_head_sha" 2>/dev/null; then
-                classification="retain_unpublished"
-                verification_reason="changed_after_pr_head"
+                # Local head moved past the merged PR head - check post-PR commits (HOK-3018)
+                if [[ -z "$pr_merge_sha" ]]; then
+                  # No merge commit recorded - fail closed
+                  classification="retain_unpublished"
+                  verification_reason="changed_after_pr_head"
+                elif patch_cherry_output="$(git -C "$REPO_DIR" cherry "$base_ref" "$task_branch" "$pr_head_oid" 2>/dev/null)"; then
+                  # Limit cherry to commits AFTER pr_head_oid; collect SHAs by patch status
+                  local cherry_unique_shas="" cherry_equivalent_shas=""
+                  while IFS= read -r cherry_line || [[ -n "$cherry_line" ]]; do
+                    case "$cherry_line" in
+                      +\ *)
+                        cherry_unique_shas+="${cherry_line:2}$'\n'"
+                        ;;
+                      -\ *)
+                        cherry_equivalent_shas+="${cherry_line:2}$'\n'"
+                        ;;
+                    esac
+                  done <<< "$patch_cherry_output"
+
+                  patch_unique_count=$(printf '%s\n' "$cherry_unique_shas" | grep -c '^[0-9a-f]' || true)
+                  patch_equivalent_count=$(printf '%s\n' "$cherry_equivalent_shas" | grep -c '^[0-9a-f]' || true)
+                  patch_total_count=$((patch_unique_count + patch_equivalent_count))
+
+                  if [[ "$patch_unique_count" == "0" ]]; then
+                    # All post-PR commits are patch-equivalent - safe to delete
+                    patch_cherry_status="equivalent"
+                    classification="safe_patch_equivalent_pr"
+                    cleanup_authority="PR #${pr} merged into ${base_branch}; all post-PR commits patch-equivalent on ${base_ref}"
+                  else
+                    # Has unique post-PR commits - check if they're published to remote task branch
+                    local remote_task_ref="refs/remotes/origin/${task_branch}"
+                    local unique_published_shas="" unique_local_shas=""
+
+                    if git -C "$REPO_DIR" cat-file -e "${remote_task_ref}^{commit}" 2>/dev/null; then
+                      # Remote task branch exists - split unique commits by publication
+                      while IFS= read -r unique_sha || [[ -n "$unique_sha" ]]; do
+                        [[ -z "$unique_sha" ]] && continue
+                        if git -C "$REPO_DIR" merge-base --is-ancestor "$unique_sha" "$remote_task_ref" 2>/dev/null; then
+                          unique_published_shas+="$unique_sha"$'\n'
+                        else
+                          unique_local_shas+="$unique_sha"$'\n'
+                        fi
+                      done <<< "$cherry_unique_shas"
+                    else
+                      # No remote task branch - all are local-only
+                      unique_local_shas="$cherry_unique_shas"
+                    fi
+
+                    patch_cherry_status="unique"
+                    classification="retain_unpublished"
+                    verification_reason="unique_local_patch"
+                  fi
+                else
+                  # Cherry command failed
+                  patch_cherry_status="failed"
+                  classification="retain_unverifiable"
+                  verification_reason="patch_equivalence_failed"
+                fi
               elif patch_cherry_output="$(git -C "$REPO_DIR" cherry "$base_ref" "$task_branch" 2>/dev/null)"; then
-                patch_unique_count="$(printf '%s\n' "$patch_cherry_output" | awk '/^\+/ { count++ } END { print count + 0 }')"
-                patch_equivalent_count="$(printf '%s\n' "$patch_cherry_output" | awk '/^-/ { count++ } END { print count + 0 }')"
-                patch_total_count="$(printf '%s\n' "$patch_cherry_output" | awk '/^[+-]/ { count++ } END { print count + 0 }')"
+                # Diverged case - collect SHAs for all commits
+                local cherry_unique_shas="" cherry_equivalent_shas=""
+                while IFS= read -r cherry_line || [[ -n "$cherry_line" ]]; do
+                  case "$cherry_line" in
+                    +\ *)
+                      cherry_unique_shas+="${cherry_line:2}$'\n'"
+                      ;;
+                    -\ *)
+                      cherry_equivalent_shas+="${cherry_line:2}$'\n'"
+                      ;;
+                  esac
+                done <<< "$patch_cherry_output"
+
+                patch_unique_count=$(printf '%s\n' "$cherry_unique_shas" | grep -c '^[0-9a-f]' || true)
+                patch_equivalent_count=$(printf '%s\n' "$cherry_equivalent_shas" | grep -c '^[0-9a-f]' || true)
+                patch_total_count=$((patch_unique_count + patch_equivalent_count))
+
                 if [[ "$patch_unique_count" == "0" ]]; then
                   patch_cherry_status="equivalent"
                   if [[ -n "$pr_merge_sha" ]]; then
@@ -1544,6 +1617,25 @@ safe_remove_task_worktree_and_branch() {
                     verification_reason="changed_after_pr_head"
                   fi
                 else
+                  # Has unique commits - check if they're published to remote task branch
+                  local remote_task_ref="refs/remotes/origin/${task_branch}"
+                  local unique_published_shas="" unique_local_shas=""
+
+                  if git -C "$REPO_DIR" cat-file -e "${remote_task_ref}^{commit}" 2>/dev/null; then
+                    # Remote task branch exists - split unique commits by publication
+                    while IFS= read -r unique_sha || [[ -n "$unique_sha" ]]; do
+                      [[ -z "$unique_sha" ]] && continue
+                      if git -C "$REPO_DIR" merge-base --is-ancestor "$unique_sha" "$remote_task_ref" 2>/dev/null; then
+                        unique_published_shas+="$unique_sha"$'\n'
+                      else
+                        unique_local_shas+="$unique_sha"$'\n'
+                      fi
+                    done <<< "$cherry_unique_shas"
+                  else
+                    # No remote task branch - all are local-only
+                    unique_local_shas="$cherry_unique_shas"
+                  fi
+
                   patch_cherry_status="unique"
                   classification="retain_unpublished"
                   verification_reason="unique_local_patch"
