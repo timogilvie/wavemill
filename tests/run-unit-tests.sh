@@ -59,6 +59,7 @@ TESTS=(
   shared/lib/native-agent/patch-runtime.test.ts
   shared/lib/native-agent/patch-matcher.test.ts
   shared/lib/native-agent/coding-failure-handoff.test.ts
+  shared/lib/native-agent/stage-failure-envelope.test.ts
   shared/lib/native-agent/coding-artifacts.test.ts
   shared/lib/native-agent/completion-normalizer.test.ts
   shared/lib/native-agent/mutation-policy.test.ts
