@@ -324,6 +324,7 @@ TESTS=(
   tools/native-agent-certifications.test.ts
   shared/lib/incident-linear-retry-queue.test.ts
   shared/lib/incident-to-linear-synchronizer.test.ts
+  shared/lib/observer-shadow-audit.test.ts
   shared/lib/incident-filing-reconciler.test.ts
   shared/lib/incident-log-excerpt-reader.test.ts
   shared/lib/verification-metrics.test.ts

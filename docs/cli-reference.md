@@ -126,12 +126,57 @@ Flags:
 - `--json`: emit structured snapshots for a supervising Codex session
 - `--repo-dir <path>` / `--session <name>`: scope observation to one active mill repository/session
 - `--file-linear`: create Linear issues for high-confidence urgent/high findings using `LINEAR_API_KEY` from `.env` or the environment
+- `--file-incidents`: sync canonical incident records to Linear according to the effective `observer.linear.mode`
+- `--incidents-dry-run`: legacy alias for `--incidents-mode=offline` (zero-network preview)
+- `--incidents-shadow`: shadow-audit mode. Performs bounded Linear reads for correlation, resolves every eligible incident to create/update_comment/no_op/skip_recovered/failed, persists a redacted audit JSONL, and enforces zero mutations
+- `--incidents-mode <off|offline|shadow|live>`: explicit mode. Overrides legacy dry-run/enabled flags. `live` still requires `observer.linear.enabled=true` in config
 - `--dry-run`: report what would be found without creating Linear issues
 - `--print-prompt`: print the recommended long-running Codex supervisor prompt
 
 When launched as the Backstage service, Observer runs in detection-only mode
 with `WAVEMILL_OBSERVER_SERVICE=1`, `--json`, and `--dry-run`; Linear filing is
 rejected in that mode.
+
+#### Incident sync modes
+
+The four `observer.linear` modes are:
+
+| Mode | Linear reads | Linear writes | Per-pass cap | Persists audit |
+|------|--------------|---------------|--------------|----------------|
+| `off` | never | never | n/a | no |
+| `offline` | never (unknown_needs_lookup allowed) | never | bypassed | no |
+| `shadow` | bounded correlation reads | **blocked** at runtime | enforced | JSONL + counters |
+| `live` | as needed | yes | enforced | no |
+
+Legacy `enabled`/`detectionOnly` map onto `off`/`offline`/`live` for backward
+compatibility; explicit `mode` on the config overrides both. `shadow` is the
+only mode where operators can inspect the exact rendered title, body, and
+comment before enabling live filing.
+
+#### Shadow trial procedure
+
+To promote shadow → live, run at least one week of `--incidents-shadow` loops
+(or a comparable volume of eligible incidents) with the operator inspecting
+`.wavemill/observer/shadow-audit.jsonl` and the aggregate counters in
+`.wavemill/observer/shadow-counters.json`. Suggested go/no-go thresholds:
+
+- `mutationAttempts` must be `0` for the entire trial.
+- `redactionFailures` must be `0`.
+- `correlationCollisions` must be `0` (or, if non-zero, every collision must
+  have a documented resolution).
+- No incident with reconciliation `recovered` or `superseded` may appear in
+  the audit with an `action` of `create` or `update_comment`.
+- Every eligible incident must resolve to a deterministic decision — the
+  audit must contain zero `unknown_needs_lookup` entries.
+- The duplicate-proposal rate (identical `plannedTitle`+`fingerprint` for
+  incidents that already have a live linked issue) should be indistinguishable
+  from expected update cadence.
+- Retention holds: audit file size stays bounded across restarts and the
+  counters file continues from the previous total instead of resetting.
+
+If any gate fails, set `observer.linear.mode` back to `offline` (or `off`) and
+revert the shadow-planner commit; no Linear mutations were made so there is
+nothing to reverse.
 
 The observer itself is conservative: it detects and reports stuck states, warnings, crashes, and visual pane/display issues. A supervising Codex session should decide whether to apply a narrow operational nudge, file a Linear issue, or make a Wavemill PR targeting `auto/integration`.
 
