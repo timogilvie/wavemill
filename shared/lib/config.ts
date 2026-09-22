@@ -512,6 +512,15 @@ export interface IntegrationConfig {
   highRiskPolicy: 'block' | 'manual' | 'allow';
   useMillSession: boolean;
   mergeLockTimeoutMinutes: number;
+  /**
+   * End-to-end scratch-worktree preparation deadline (minutes). Bounds the
+   * combined reap + fetch + `git worktree add` cost, killing the whole process
+   * group on expiry so leaked git descendants (ssh, git-remote-https, hooks)
+   * do not keep mutating state after the timeout. Kept above the individual
+   * git command timeouts but well below `mergeLockTimeoutMinutes`, so prep
+   * stalls surface long before the generic stale-lock reclaim (HOK-3039).
+   */
+  worktreePrepTimeoutMinutes: number;
   readyPolicy?: IntegrationReadyPolicyConfig;
 }
 
@@ -892,6 +901,7 @@ export const INTEGRATION_DEFAULTS: IntegrationConfig = {
   highRiskPolicy: 'manual',
   useMillSession: true,
   mergeLockTimeoutMinutes: 45,
+  worktreePrepTimeoutMinutes: 10,
 };
 
 export const OBSERVER_DEFAULTS: ObserverConfig = {

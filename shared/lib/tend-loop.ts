@@ -5,6 +5,7 @@ import { mutateJsonState } from './state-mutex.ts';
 import {
   executeMerge,
   formatStatusLine,
+  reconcileScratchPrepState,
   selectNextCandidate,
   type AdvisoryCheckFailure,
   type BlockedCandidate,
@@ -52,6 +53,13 @@ export interface TendLoopDeps {
   writeFailureState: typeof writeTendFailureStateBestEffort;
   /** Best-effort observer-findings JSONL emitter; must never fail the loop. */
   emitObserverFinding: (repoDir: string, finding: MergeLaneObserverFinding) => void;
+  /**
+   * Startup scratch-prep reconciliation (HOK-3039). Called once before the
+   * first poll to recover from an interrupted merge attempt (crash,
+   * watchdog respawn, worktree-prep timeout). Best-effort — a failure logs
+   * and continues; a marker in an uncertain phase stays for the next loop.
+   */
+  reconcileScratchPrepState: typeof reconcileScratchPrepState;
   sleep: (ms: number) => Promise<void>;
   now: () => Date;
   log: (line: string) => void;
@@ -305,6 +313,21 @@ export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExi
   let lastDecisionSignature: string | null = null;
   const readyUnmergedTracker = new Map<number, { firstSeenMs: number; lastEmittedMs: number }>();
 
+  // HOK-3039: startup scratch-prep reconciliation. Runs once, before the
+  // first poll, so an interrupted merge attempt (crash, watchdog respawn,
+  // worktree-prep timeout) is resolved on the next loop start rather than
+  // waiting for the 45-minute label-age reclaim. Best-effort — failures log
+  // and continue; markers in an uncertain phase stay for the next attempt.
+  try {
+    const outcomes = await deps.reconcileScratchPrepState(options.repoDir, {});
+    for (const outcome of outcomes) {
+      if (outcome.kind === 'none') continue;
+      deps.log(`tend: scratch-prep reconcile: ${outcome.kind}${'prNumber' in outcome ? ` PR #${outcome.prNumber}` : ''}`);
+    }
+  } catch (error) {
+    deps.log(`tend: scratch-prep reconciliation threw at startup: ${errorMessage(error)}`);
+  }
+
   const noteDecisionProgress = (decision: TendDecision, at: string): boolean => {
     const signature = decisionSignature(decision);
     const progressed = lastDecisionSignature !== null && signature !== lastDecisionSignature;
@@ -493,7 +516,28 @@ export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExi
         ...pollMetadata,
       });
 
-      const result = await deps.executeMerge(candidate, { repoDir: options.repoDir });
+      const result = await deps.executeMerge(candidate, {
+        repoDir: options.repoDir,
+        // HOK-3039: keep backstage-health.json fresh during long but healthy
+        // preparation steps. Each phase transition and each ~30s heartbeat
+        // from the process-group runner updates the tend service's
+        // heartbeatAt with a descriptive detail, so the watchdog no longer
+        // respawns the loop just because prep took a while.
+        onPhaseProgress: async ({ prNumber, phase, at }) => {
+          await deps.writePollHeartbeat(options.repoDir, {
+            timestamp: at,
+            iteration,
+            pollStartedAt,
+            pollCompletedAt,
+            lastProgressAt,
+            progressState: 'progressing',
+            laneCondition: 'progressing',
+            status: 'healthy',
+            detail: `merging-#${prNumber} worktree-prep:${phase}`,
+            integrationAdvisory: decision.integrationHealth.advisoryFailures ?? [],
+          });
+        },
+      });
       if (result.status === 'merged') {
         lastMergedPR = result.prNumber;
       }
@@ -895,6 +939,7 @@ function tendLoopDeps(overrides: Partial<TendLoopDeps> | undefined): TendLoopDep
     writePollHeartbeat: writeTendPollHeartbeatBestEffort,
     writeFailureState: writeTendFailureStateBestEffort,
     emitObserverFinding: emitObserverFindingBestEffort,
+    reconcileScratchPrepState,
     sleep,
     now: () => new Date(),
     log: (line) => console.error(line),

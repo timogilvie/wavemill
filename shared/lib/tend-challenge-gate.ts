@@ -224,7 +224,14 @@ export function evaluateAutoCloseEligibility(input: {
   }
 
   // If no comparisonOutcome is specified, assume it's a decisive comparison (legacy behavior)
-  // Only reject if it's explicitly marked as non-decisive
+  // Only reject if it's explicitly marked as non-decisive.
+  //
+  // HOK-2970: `invalid_challenge` sits in this set because auto-resolution
+  // now emits it for pairs whose losing arm was actually invalid (root cause
+  // HOK-3006); the `forfeit`/`double-forfeit` phantom-win path is the bug
+  // that patch retires. `isDecisiveChallengeComparison` additionally rejects
+  // any row that carries `invalidChallenge: true` or a `quarantined` marker,
+  // which is the defense-in-depth for legacy rows on disk.
   const outcome = input.comparisonOutcome ?? 'compared';
   const nonDecisiveOutcomes = new Set(['invalid', 'inconclusive', 'invalid_challenge', 'double-forfeit', 'skipped']);
   if (nonDecisiveOutcomes.has(outcome)) {

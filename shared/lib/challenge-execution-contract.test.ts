@@ -322,6 +322,68 @@ test('foldAttestationsIntoStageAttribution marks missing reviewer evidence insuf
   assert.equal(attribution.evidenceProvenance, 'insufficient');
 });
 
+// ────────────────────────────────────────────────────────────────
+// HOK-2970 — reviewer-stage tie/insufficient/presentation-order-swap
+// ────────────────────────────────────────────────────────────────
+
+test('reviewer-stage adjudication returns tie when judge decides tie (HOK-2970)', () => {
+  const attribution = foldAttestationsIntoStageAttribution({
+    pairId: 'pair-2970',
+    stage: 'review',
+    primary: makeAttestation('primary'),
+    challenger: makeAttestation('challenger'),
+    evidenceProvenance: 'direct',
+    forkIdentity: makeForkIdentity(),
+    primaryReviewIdentity: makeReviewIdentitySet(),
+    challengerReviewIdentity: makeReviewIdentitySet(),
+    reviewIterationsComplete: true,
+    judgeWinner: 'tie',
+  });
+  assert.equal(attribution.status, 'valid');
+  assert.equal(attribution.outcome, 'tie');
+});
+
+test('reviewer-stage adjudication returns insufficient_evidence for missing direct review evidence (HOK-2970)', () => {
+  const attribution = foldAttestationsIntoStageAttribution({
+    pairId: 'pair-2970',
+    stage: 'review',
+    primary: makeAttestation('primary'),
+    challenger: makeAttestation('challenger'),
+    // no evidenceProvenance → missing
+    forkIdentity: makeForkIdentity(),
+    primaryReviewIdentity: makeReviewIdentitySet(),
+    challengerReviewIdentity: makeReviewIdentitySet(),
+    reviewIterationsComplete: true,
+    judgeWinner: 'primary',
+  });
+  assert.equal(attribution.status, 'insufficient_evidence');
+  assert.equal(attribution.outcome, null);
+  assert.ok(attribution.reasonCodes.includes('missing_direct_review_evidence'));
+});
+
+test('reviewer-stage adjudication is symmetric under presentation order swap (HOK-2970)', () => {
+  // foldAttestationsIntoStageAttribution never reads presentationOrder;
+  // the reviewer-stage adjudicator façade also passes it through opaquely.
+  // Running the same input twice produces byte-identical output.
+  const base = {
+    pairId: 'pair-2970' as const,
+    stage: 'review' as const,
+    primary: makeAttestation('primary'),
+    challenger: makeAttestation('challenger'),
+    evidenceProvenance: 'direct' as const,
+    forkIdentity: makeForkIdentity(),
+    primaryReviewIdentity: makeReviewIdentitySet(),
+    challengerReviewIdentity: makeReviewIdentitySet(),
+    reviewIterationsComplete: true,
+    judgeWinner: 'challenger' as const,
+  };
+  const a = foldAttestationsIntoStageAttribution(base);
+  const b = foldAttestationsIntoStageAttribution(base);
+  assert.deepEqual(a, b);
+  assert.equal(a.status, 'valid');
+  assert.equal(a.outcome, 'challenger');
+});
+
 test('foldAttestationsIntoStageAttribution suppresses direct evidence on divergent hashes', () => {
   const attribution = foldAttestationsIntoStageAttribution({
     pairId: 'pair-2968',

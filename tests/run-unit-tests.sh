@@ -135,10 +135,14 @@ TESTS=(
   shared/lib/challenge-comparison.test.ts
   shared/lib/no-comparison-report.test.ts
   shared/lib/challenge-pair-resolver.test.ts
+  shared/lib/challenge-pair-resolver.hok2958.test.ts
+  shared/lib/reviewer-stage-adjudicator.test.ts
+  tools/quarantine-legacy-reviewer-forfeits.test.ts
   shared/lib/arm-failure-taxonomy.test.ts
   shared/lib/arm-reliability.test.ts
   shared/lib/stale-task-branches.test.ts
   shared/lib/tend-controller.test.ts
+  shared/lib/tend-scratch-prep.test.ts
   shared/lib/ready-tend-handoff.test.ts
   shared/lib/observer-status-renderer.test.ts
   shared/lib/tend-status-renderer.test.ts
@@ -320,6 +324,7 @@ TESTS=(
   shared/lib/incident-linear-retry-queue.test.ts
   shared/lib/incident-to-linear-synchronizer.test.ts
   shared/lib/incident-filing-reconciler.test.ts
+  shared/lib/incident-log-excerpt-reader.test.ts
   shared/lib/verification-metrics.test.ts
   shared/lib/ci-verification-drift-detector.test.ts
   shared/lib/pre-pr-verification-drift-validator.test.ts
@@ -514,11 +519,19 @@ if [[ -n "$TIMING_OUT" ]]; then
   # while the spec reporter keeps human-readable output on stdout. The shard
   # label reaches the reporter through the environment.
   export WAVEMILL_TIMING_SHARD="${SHARD_INDEX}/${SHARD_TOTAL}"
-  exec node --test \
+  # --test-timeout: bound any single test at 5 minutes so a hung child or
+  # never-resolving await cannot burn the shard's whole 20-minute CI budget.
+  # Route-tasks's slowest subtest runs ~14s and tend-scratch-prep's process-
+  # group tests carry explicit 15s timeouts, so 300000ms is a wide safety net.
+  # Without this, shard 7 was hanging in CI for the full 20m timeout when a
+  # tend-scratch-prep child kept a stdio pipe alive; --test-force-exit hid
+  # that at the cost of racing subprocess-spawning shards to exit, which
+  # then stalled shard 3 for its full 20m — see HOK-3039.
+  exec node --test --test-timeout=300000 \
     --test-reporter spec --test-reporter-destination stdout \
     --test-reporter "$REPO_DIR/tests/lib/unit-timing-reporter.mjs" \
     --test-reporter-destination "$TIMING_OUT" \
     "${SELECTED[@]}"
 fi
 
-exec node --test "${SELECTED[@]}"
+exec node --test --test-timeout=300000 "${SELECTED[@]}"

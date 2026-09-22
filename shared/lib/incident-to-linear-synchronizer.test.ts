@@ -13,6 +13,7 @@ import {
   type IncidentLinearClient,
   type ObserverLinearConfig,
 } from './incident-to-linear-synchronizer.ts';
+import { redactIncidentData } from './artifact-diagnostics.ts';
 import { IncidentStore } from './wavemill-incident-store.ts';
 import { createIncidentDraft, type IncidentCategory, type IncidentRecord } from './wavemill-incident-model.ts';
 import { LinearApiError, type LinearIssueSummary } from './linear.ts';
@@ -107,6 +108,60 @@ test('redaction removes secrets, emails, paths, and truncates transcript-like co
   assert.match(redacted, /\[REDACTED: secret\]/);
   assert.match(redacted, /\[REDACTED: email\]/);
   assert.match(redacted, /\[TRUNCATED\]/);
+});
+
+test('ticket body renders both observed symptom and diagnosed root cause with outbound redaction', () => {
+  const enriched = incident({
+    rootCauseClass: 'module_export_contract_mismatch',
+    summary: "eval job failed: SyntaxError: does not provide an export named 'foo'",
+    metadata: {
+      thresholdTriggered: true,
+      escalatedAt: '2026-08-04T12:10:00.000Z',
+      observedSymptom: 'failed_job_no_result',
+      diagnosedClass: 'module_export_contract_mismatch',
+      logExcerptSource: 'log_head_tail',
+    },
+    evidence: [{
+      type: 'log_excerpt',
+      source: 'HOK-2845_c.log',
+      timestamp: '2026-08-04T12:10:00.000Z',
+      redactedData: "Authorization: Bearer eyJabc user=person@example.com file=/Users/tim/project/logs SyntaxError: does not provide an export named 'foo'",
+      key: 'diag:module_export_contract_mismatch',
+    }],
+  });
+  const body = generateIssueBody(enriched, config(), 'revision-2', new Date('2026-08-04T12:15:00.000Z'));
+  assert.match(body, /Root Cause.*module_export_contract_mismatch/);
+  assert.match(body, /Observed Symptom.*failed_job_no_result/);
+  assert.doesNotMatch(body, /eyJabc|person@example\.com|\/Users\/tim\/project/);
+});
+
+test('inbound 500-char redactor bounds an inflated log_excerpt before it reaches the rendered body', () => {
+  // The detector runs `redactIncidentData` on the excerpt text before writing
+  // evidence to disk; simulate that pass here to prove the rendered body cannot
+  // leak the raw 2 KB payload.
+  const raw = 'x'.repeat(2048) + " SyntaxError: does not provide an export named 'foo'";
+  const preRedacted = redactIncidentData(raw);
+  assert.match(preRedacted, /\[TRUNCATED \d+ chars\]/,
+    'redactIncidentData must truncate oversized text at 500 chars');
+
+  const oversized = incident({
+    rootCauseClass: 'module_export_contract_mismatch',
+    metadata: {
+      thresholdTriggered: true,
+      escalatedAt: '2026-08-04T12:10:00.000Z',
+      observedSymptom: 'failed_job_no_result',
+    },
+    evidence: [{
+      type: 'log_excerpt',
+      source: 'HOK.log',
+      timestamp: '2026-08-04T12:10:00.000Z',
+      redactedData: preRedacted,
+      key: 'diag:module_export_contract_mismatch',
+    }],
+  });
+  const body = generateIssueBody(oversized, config(), 'revision-3', new Date('2026-08-04T12:15:00.000Z'));
+  assert.doesNotMatch(body, /x{600}/, 'raw 2 KB blob must not appear in rendered body');
+  assert.match(body, /\[TRUNCATED \d+ chars\]/, 'rendered body must retain the inbound truncation marker');
 });
 
 test('ticket template includes required incident sections and redacted evidence', () => {
