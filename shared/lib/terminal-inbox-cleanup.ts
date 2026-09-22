@@ -156,9 +156,9 @@ export const defaultCleanupDeps: CleanupDeps = {
     try {
       const script = [
         'set -euo pipefail',
-        `source "${join(context.repoDir, 'shared/lib/wavemill-common.sh').replace(/"/g, '\\"')}"`,
-        `source "${join(context.repoDir, 'shared/lib/terminal-reconciler.sh').replace(/"/g, '\\"')}"`,
-        `cleanup_completed_task "${issue.replace(/"/g, '\\"')}" "" "terminal inbox dry-run classification" || true`,
+        'source "$1"',
+        'source "$2"',
+        'cleanup_completed_task "$3" "$4" "$5" || true',
         'printf %s "$WAVEMILL_CLEANUP_DECISION_JSON"',
       ].join('\n');
       const env = {
@@ -171,7 +171,14 @@ export const defaultCleanupDeps: CleanupDeps = {
         WAVEMILL_CLEANUP_ABANDON_ISSUE: context.abandon ? issue : '',
         WAVEMILL_CLEANUP_DRY_RUN: '1',
       };
-      const output = execFileSync('bash', ['-lc', script], { cwd: context.repoDir, env, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+      const output = execFileSync('bash', [
+        '-c', script, 'wavemill-cleanup-classify',
+        join(context.repoDir, 'shared/lib/wavemill-common.sh'),
+        join(context.repoDir, 'shared/lib/terminal-reconciler.sh'),
+        issue,
+        '',
+        'terminal inbox dry-run classification',
+      ], { cwd: context.repoDir, env, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
       if (!output) return undefined;
       return JSON.parse(output) as CanonicalCleanupDecision;
     } catch {
@@ -181,9 +188,9 @@ export const defaultCleanupDeps: CleanupDeps = {
   cleanup(decision, context) {
     const script = [
       'set -euo pipefail',
-      `source "${join(context.repoDir, 'shared/lib/wavemill-common.sh').replace(/"/g, '\\"')}"`,
-      `source "${join(context.repoDir, 'shared/lib/terminal-reconciler.sh').replace(/"/g, '\\"')}"`,
-      `cleanup_completed_task "${decision.issue.replace(/"/g, '\\"')}" "${decision.slug.replace(/"/g, '\\"')}" "operator terminal inbox cleanup"`,
+      'source "$1"',
+      'source "$2"',
+      'cleanup_completed_task "$3" "$4" "$5"',
     ].join('\n');
     const env = {
       ...process.env,
@@ -195,7 +202,14 @@ export const defaultCleanupDeps: CleanupDeps = {
       WAVEMILL_CLEANUP_ABANDON_ISSUE: context.abandon ? decision.issue : '',
       WAVEMILL_TERMINAL_INBOX_CLEANUP: '1',
     };
-    execFileSync('bash', ['-lc', script], { cwd: context.repoDir, env, stdio: 'inherit' });
+    execFileSync('bash', [
+      '-c', script, 'wavemill-cleanup-execute',
+      join(context.repoDir, 'shared/lib/wavemill-common.sh'),
+      join(context.repoDir, 'shared/lib/terminal-reconciler.sh'),
+      decision.issue,
+      decision.slug,
+      'operator terminal inbox cleanup',
+    ], { cwd: context.repoDir, env, stdio: 'inherit' });
   },
   now() {
     return new Date().toISOString();

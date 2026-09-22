@@ -983,7 +983,7 @@ _wavemill_cleanup_decision_json() {
       esac
       ;;
     retain_unpublished)
-      if [[ -n "$unique_local_shas" ]] || [[ -n "$unique_published_shas" ]]; then
+      if [[ -n "${unique_local_shas:-}" ]] || [[ -n "${unique_published_shas:-}" ]]; then
         operator_action="salvage"
       elif [[ "$detail" == "remote_missing_local_head" ]]; then
         operator_action="push"
@@ -996,10 +996,17 @@ _wavemill_cleanup_decision_json() {
     *) operator_action="" ;;
   esac
 
-  # Build SHA lists for JSON (remove trailing newlines, convert to jq arrays)
-  equivalentShas="$(printf '%s\n' "$cherry_equivalent_shas" | grep -v '^$' | jq -Rs 'split("\n") | map(select(length > 0))' 2>/dev/null || printf '[]')"
-  uniqueLocalShas="$(printf '%s\n' "$unique_local_shas" | grep -v '^$' | jq -Rs 'split("\n") | map(select(length > 0))' 2>/dev/null || printf '[]')"
-  uniquePublishedShas="$(printf '%s\n' "$unique_published_shas" | grep -v '^$' | jq -Rs 'split("\n") | map(select(length > 0))' 2>/dev/null || printf '[]')"
+  # Build SHA lists for JSON (remove trailing newlines, convert to jq arrays).
+  # Caller-scope SHA lists may be unset on legacy paths; default to empty so
+  # set -u does not abort the pipeline and drop the classification. jq handles
+  # empty-line filtering directly so no grep is needed — a grep miss under
+  # pipefail would race the fallback and emit invalid concatenated JSON.
+  equivalentShas="$(printf '%s' "${cherry_equivalent_shas:-}" | jq -Rs 'split("\n") | map(select(length > 0))' 2>/dev/null)"
+  [[ -n "$equivalentShas" ]] || equivalentShas='[]'
+  uniqueLocalShas="$(printf '%s' "${unique_local_shas:-}" | jq -Rs 'split("\n") | map(select(length > 0))' 2>/dev/null)"
+  [[ -n "$uniqueLocalShas" ]] || uniqueLocalShas='[]'
+  uniquePublishedShas="$(printf '%s' "${unique_published_shas:-}" | jq -Rs 'split("\n") | map(select(length > 0))' 2>/dev/null)"
+  [[ -n "$uniquePublishedShas" ]] || uniquePublishedShas='[]'
 
   jq -cn \
     --arg classification "$classification" \
