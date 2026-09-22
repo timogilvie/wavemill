@@ -67,6 +67,12 @@ helper_file="$tmp/safe-cleanup-helper.sh"
   extract_function "$COMMON_SCRIPT" "wavemill_branch_deletion_mode"
   printf '\n'
   printf '%s\n' 'WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT=".wavemill/observer-findings.jsonl"'
+  extract_function "$COMMON_SCRIPT" "wavemill_task_worktree_identity"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_orphan_dir_scan"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_remove_orphan_task_dir"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_worktree_dirty_status"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_migrate_controller_observer_artifact"

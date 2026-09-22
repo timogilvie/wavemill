@@ -1109,25 +1109,28 @@ wavemill_task_worktree_identity() {
   fi
 
   [[ -n "$repo_dir" ]] || repo_dir="$resolved_toplevel"
-  if ! repo_worktrees="$(git -C "$repo_dir" worktree list --porcelain 2>/dev/null)"; then
-    printf 'identity_unverifiable'
-    return 1
+
+  if repo_worktrees="$(git -C "$repo_dir" worktree list --porcelain 2>/dev/null)"; then
+    if printf '%s\n' "$repo_worktrees" | while IFS= read -r line; do
+      local wt_path
+      wt_path="$(printf '%s\n' "$line" | awk '{print $2}')"
+      [[ -z "$wt_path" ]] && continue
+      local resolved_registered_path
+      resolved_registered_path="$(cd "$wt_path" && pwd -P 2>/dev/null)" || continue
+      [[ "$resolved_registered_path" == "$resolved_wt" ]] && exit 0
+    done; then
+      printf 'valid'
+      return 0
+    fi
   fi
 
-  if ! printf '%s\n' "$repo_worktrees" | while IFS= read -r line; do
-    local wt_path
-    wt_path="$(printf '%s\n' "$line" | awk '{print $2}')"
-    [[ -z "$wt_path" ]] && continue
-    local resolved_registered_path
-    resolved_registered_path="$(cd "$wt_path" && pwd -P 2>/dev/null)" || continue
-    [[ "$resolved_registered_path" == "$resolved_wt" ]] && exit 0
-  done; then
-    printf 'unregistered_worktree'
-    return 1
+  if [[ "$resolved_toplevel" == "$resolved_wt" ]]; then
+    printf 'valid'
+    return 0
   fi
 
-  printf 'valid'
-  return 0
+  printf 'unregistered_worktree'
+  return 1
 }
 
 # Scan an orphan task directory for files unexpected in wavemill-created resources.
