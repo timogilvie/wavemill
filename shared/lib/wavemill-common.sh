@@ -1269,6 +1269,153 @@ wavemill_branch_deletion_mode() {
   esac
 }
 
+# Perform read-only classification of a completed task worktree/branch and
+# emit structured evidence JSON on stdout (WAVEMILL_CLEANUP_EVIDENCE_JSON).
+# This is the canonical classifier consumed by both destructive cleanup and
+# dry-run Terminal Inbox analysis. Takes same args as safe_remove_task_worktree_and_branch
+# but performs no recording, deletion, or state mutation. Returns 0 on successful
+# classification (regardless of outcome), 1 on errors that prevent classification.
+wavemill_classify_task_cleanup() {
+  local wt_dir="${1:-}"
+  local task_branch="${2:-}"
+  local base_branch="${3:-${BASE_BRANCH:-main}}"
+  local caller="${4:-classify}"
+  local issue="${5:-}"
+  local pr="${6:-}"
+
+  local classification="" verification_reason="" worktree_identity="" verified_toplevel=""
+  local orphan_reason="" patch_equivalence_scope="" cleanup_authority=""
+  local local_head_sha="" pr_state_evidence="" pr_head_oid="" pr_merge_sha="" base_sha=""
+  local patch_unique_shas="" patch_equivalent_shas="" dirty_paths=""
+
+  if [[ "$task_branch" == "main" || "$task_branch" == "master" ]]; then
+    classification="safe_noop"
+  elif [[ -n "$wt_dir" && -d "$wt_dir" ]]; then
+    worktree_identity="$(wavemill_task_worktree_identity "$wt_dir" "$REPO_DIR")"
+    if [[ "$worktree_identity" != "valid" ]]; then
+      orphan_reason="$worktree_identity"
+      classification="retain_orphan_dir"
+    else
+      verified_toplevel="$(git -C "$wt_dir" rev-parse --show-toplevel 2>/dev/null)" || true
+      if dirty_paths="$(wavemill_worktree_dirty_status "$wt_dir" 2>/dev/null)"; then
+        if [[ -n "$dirty_paths" ]]; then
+          classification="retain_dirty"
+          verification_reason="uncommitted_changes"
+        fi
+      else
+        classification="retain_dirty"
+        verification_reason="dirty_status_failed"
+      fi
+    fi
+  fi
+
+  if [[ -z "$classification" ]] && [[ "$task_branch" == task/* ]]; then
+    if ! git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/$task_branch" 2>/dev/null; then
+      classification="safe_noop"
+    else
+      if ! local_head_sha="$(git -C "$REPO_DIR" rev-parse --verify "${task_branch}^{commit}" 2>/dev/null)"; then
+        classification="retain_unverifiable"
+        verification_reason="local_head_unresolvable"
+      elif git -C "$REPO_DIR" merge-base --is-ancestor "$task_branch" "$base_branch" 2>/dev/null; then
+        classification="safe_ancestor"
+      elif [[ -n "$pr" ]] || [[ -n "$issue" ]]; then
+        if [[ -z "$pr" && -n "$issue" ]]; then
+          pr="$(jq -r --arg i "$issue" '.tasks[$i].pr // .tasks[$i].lifecycle.deliveryEvidence.prNumber // empty' "$STATE_FILE" 2>/dev/null || true)"
+        fi
+
+        if [[ -n "$pr" ]]; then
+          if wavemill_fetch_pr_terminal_evidence "$pr"; then
+            pr_state_evidence="$WAVEMILL_PR_EVIDENCE_STATE"
+            pr_head_oid="$WAVEMILL_PR_EVIDENCE_HEAD_OID"
+            pr_merge_sha="$WAVEMILL_PR_EVIDENCE_MERGE_SHA"
+
+            if [[ "$pr_state_evidence" == "MERGED" ]]; then
+              if [[ "$pr_head_oid" == "$local_head_sha" ]]; then
+                classification="safe_terminal_pr_head"
+                cleanup_authority="PR #${pr} merged with headRefOid exactly equal to local head"
+              elif git -C "$REPO_DIR" merge-base --is-ancestor "$pr_head_oid" "$local_head_sha" 2>/dev/null; then
+                local base_ref="refs/remotes/origin/$base_branch"
+                if git -C "$REPO_DIR" fetch origin "refs/heads/${base_branch}:${base_ref}" >/dev/null 2>&1; then
+                  if git -C "$REPO_DIR" rev-parse --verify "${base_ref}^{commit}" >/dev/null 2>&1; then
+                    if git -C "$REPO_DIR" cherry "$base_ref" "$task_branch" "$pr_head_oid" >/dev/null 2>&1; then
+                      local cherry_output
+                      cherry_output="$(git -C "$REPO_DIR" cherry "$base_ref" "$task_branch" "$pr_head_oid" 2>/dev/null)"
+                      local unique_count
+                      unique_count="$(printf '%s\n' "$cherry_output" | awk '/^\+/ { count++ } END { print count + 0 }')"
+
+                      patch_equivalence_scope="post_pr_head"
+                      if [[ "$unique_count" == "0" && -n "$pr_merge_sha" ]]; then
+                        classification="safe_patch_equivalent_pr"
+                        cleanup_authority="PR merged; post-PR commits are patch-equivalent"
+                        patch_equivalent_shas="$(printf '%s\n' "$cherry_output" | awk '/^-/ { print $2 }' | tr '\n' ' ')"
+                      elif [[ "$unique_count" != "0" ]]; then
+                        classification="retain_unpublished"
+                        verification_reason="unique_local_patch"
+                        patch_unique_shas="$(printf '%s\n' "$cherry_output" | awk '/^\+/ { print $2 }' | tr '\n' ' ')"
+                      else
+                        classification="retain_unpublished"
+                        verification_reason="changed_after_pr_head"
+                      fi
+                    else
+                      classification="retain_unverifiable"
+                      verification_reason="patch_equivalence_failed"
+                    fi
+                  else
+                    classification="retain_unverifiable"
+                    verification_reason="origin_base_unresolvable"
+                  fi
+                else
+                  classification="retain_unverifiable"
+                  verification_reason="base_fetch_failed"
+                fi
+              else
+                local cherry_output
+                if cherry_output="$(git -C "$REPO_DIR" cherry "$base_branch" "$task_branch" 2>/dev/null)"; then
+                  local unique_count
+                  unique_count="$(printf '%s\n' "$cherry_output" | awk '/^\+/ { count++ } END { print count + 0 }')"
+                  patch_equivalence_scope="whole_branch"
+
+                  if [[ "$unique_count" == "0" && -n "$pr_merge_sha" ]]; then
+                    classification="safe_patch_equivalent_pr"
+                    cleanup_authority="PR merged; all commits patch-equivalent"
+                    patch_equivalent_shas="$(printf '%s\n' "$cherry_output" | awk '/^-/ { print $2 }' | tr '\n' ' ')"
+                  elif [[ "$unique_count" != "0" ]]; then
+                    classification="retain_unpublished"
+                    verification_reason="unique_local_patch"
+                    patch_unique_shas="$(printf '%s\n' "$cherry_output" | awk '/^\+/ { print $2 }' | tr '\n' ' ')"
+                  else
+                    classification="retain_unpublished"
+                    verification_reason="changed_after_pr_head"
+                  fi
+                else
+                  classification="retain_unverifiable"
+                  verification_reason="patch_equivalence_failed"
+                fi
+              fi
+            fi
+          fi
+        fi
+      fi
+
+      [[ -z "$classification" ]] && classification="retain_unpublished"
+    fi
+  fi
+
+  [[ -z "$classification" ]] && classification="safe_noop"
+
+  WAVEMILL_CLEANUP_EVIDENCE_JSON="$(jq -n \
+    --arg classification "$classification" \
+    --arg verificationReason "$verification_reason" \
+    --arg worktreeIdentity "$worktree_identity" \
+    --arg verifiedTopLevel "$verified_toplevel" \
+    --arg cleanupAuthority "$cleanup_authority" \
+    --arg patchEquivalenceScope "$patch_equivalence_scope" \
+    '{classification: $classification, verificationReason: $verificationReason, worktreeIdentity: $worktreeIdentity, verifiedTopLevel: $verifiedTopLevel, cleanupAuthority: $cleanupAuthority, patchEquivalenceScope: $patchEquivalenceScope}'
+  )"
+  printf '%s\n' "$WAVEMILL_CLEANUP_EVIDENCE_JSON"
+  return 0
+}
+
 # Classify a completed task branch/worktree into a structured cleanup outcome
 # (HOK-2953), record the evidence used, and delete only under a safe
 # classification that is re-verified immediately before removal. The
