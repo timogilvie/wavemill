@@ -181,6 +181,7 @@ npx() {
 
 seed_state() {
   local completed="${1:-true}"
+  local shape="${2:-flat}"
   cat > "$STATE_FILE" <<JSON
 {
   "tasks": {
@@ -220,6 +221,17 @@ seed_state() {
   "jobs": {}
 }
 JSON
+  if [[ "$shape" == "forked" ]]; then
+    # HOK-2814 / HOK-3007: reviewer-fork shape — both arms carry the fork
+    # descriptor + inherited-stages provenance the materialiser stamps. The
+    # invalid_challenge current-head path must terminate the pair regardless
+    # of shape; the fork fields are informational and must not change the
+    # decision. Add them via jq so the base JSON stays clean under all shapes.
+    tmp="$(mktemp)"
+    jq '.tasks["HOK-3007"] += {"forkStage":"review","forkCommit":"abcdef01","sharedPrefix":true,"challengeArms":[{"key":"HOK-3007_c","challengeArmState":"materialized","forkCommit":"abcdef01"}]}
+        | .tasks["HOK-3007_c"] += {"forkStage":"review","forkCommit":"abcdef01","sharedPrefix":true}' \
+        "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+  fi
   mkdir -p "$WORKTREE_ROOT/hok-3007/features/hok-3007/ready"
   mkdir -p "$WORKTREE_ROOT/hok-3007-c/features/hok-3007-c/ready"
 }
@@ -293,6 +305,33 @@ run_disposition_case() {
   printf 'disp_invalid=%s\n' "$(challenge_eval_current_head_state "HOK-3007" "101")"
 }
 
+# HOK-2814 / HOK-3007: forked-shape variant. The reviewer-fork materialiser
+# stamps both arms with forkStage/forkCommit/sharedPrefix (+ challengeArms
+# on the primary) BEFORE eval runs. The current-head `invalid_challenge`
+# evidence path must behave identically regardless of shape: no relaunch,
+# stale budget untouched, terminal sentinel names missing_challenge_intent,
+# and both arms move to comparisonState=invalid_challenge.
+run_invalid_forked_case() {
+  seed_state true forked
+  local bucket_dir="$WORKTREE_ROOT/hok-3007/features/hok-3007"
+  # Guard: the seed carries the forked-shape fields.
+  printf 'invalid_forked_seed_fork=%s\n' "$(jq -r '.tasks["HOK-3007"].forkStage // empty' "$STATE_FILE")"
+  printf 'invalid_forked_seed_arm=%s\n' "$(jq -r '.tasks["HOK-3007"].challengeArms[0].challengeArmState // empty' "$STATE_FILE")"
+  EVIDENCE_JSON='{"ok":false,"reason":"ineligible_evidence","currentHeadSha":"c8c0f018","candidates":[{"evalId":"eval-1","evaluatedPrHeadSha":"c8c0f018","rejection":"invalid_challenge","challengeDivergenceReason":"missing_challenge_intent"}]}'
+  maybe_run_challenge_eval "HOK-3007" "101" "task/hok-3007" "hok-3007"
+  wait || true
+  printf 'invalid_forked_launch_file=%s\n' "$([[ -f "$CASE_DIR/eval-launched" ]] && echo present || echo absent)"
+  printf 'invalid_forked_tracker_calls=%s\n' "$JOB_TRACKER_CALLS"
+  printf 'invalid_forked_count_file=%s\n' "$([[ -f "$bucket_dir/.retry-challenge-eval-stale-count" ]] && echo present || echo absent)"
+  printf 'invalid_forked_sentinel=%s\n' "$([[ -f "$bucket_dir/.retry-challenge-eval-stale-exhausted" ]] && echo present || echo absent)"
+  printf 'invalid_forked_sentinel_reason=%s\n' "$(cat "$bucket_dir/.retry-challenge-eval-stale-exhausted" 2>/dev/null || true)"
+  printf 'invalid_forked_state_primary=%s\n' "$(jq -r '.tasks["HOK-3007"].comparisonState // empty' "$STATE_FILE")"
+  printf 'invalid_forked_state_challenger=%s\n' "$(jq -r '.tasks["HOK-3007_c"].comparisonState // empty' "$STATE_FILE")"
+  # The fork descriptor is unchanged by the invalid path.
+  printf 'invalid_forked_fork_preserved=%s\n' "$(jq -r '.tasks["HOK-3007"].forkStage // empty' "$STATE_FILE")"
+  printf 'invalid_forked_arm_preserved=%s\n' "$(jq -r '.tasks["HOK-3007"].challengeArms[0].challengeArmState // empty' "$STATE_FILE")"
+}
+
 "run_${CASE_NAME}_case"
 printf 'logs=%s\n' "$(printf '%s' "$LOG_OUTPUT" | tr '\n' ';')"
 EOF
@@ -304,6 +343,7 @@ invalid_output="$(CASE_NAME=invalid CASE_DIR="$TEST_TMP/invalid" REPO_DIR="$REPO
 stale_output="$(CASE_NAME=stale CASE_DIR="$TEST_TMP/stale" REPO_DIR="$REPO_DIR" FUNCTION_FILE="$FUNCTION_FILE" "$TEST_TMP/run-case.sh")"
 stale_exhaustion_output="$(CASE_NAME=stale_exhaustion CASE_DIR="$TEST_TMP/stale-exhaustion" REPO_DIR="$REPO_DIR" FUNCTION_FILE="$FUNCTION_FILE" "$TEST_TMP/run-case.sh")"
 disposition_output="$(CASE_NAME=disposition CASE_DIR="$TEST_TMP/disposition" REPO_DIR="$REPO_DIR" FUNCTION_FILE="$FUNCTION_FILE" "$TEST_TMP/run-case.sh")"
+invalid_forked_output="$(CASE_NAME=invalid_forked CASE_DIR="$TEST_TMP/invalid-forked" REPO_DIR="$REPO_DIR" FUNCTION_FILE="$FUNCTION_FILE" "$TEST_TMP/run-case.sh")"
 
 check_contains "invalid does not launch eval command" "$invalid_output" "invalid_launch_file=absent"
 check_contains "invalid does not register tracked eval launch" "$invalid_output" "invalid_tracker_calls=0"
@@ -341,6 +381,22 @@ check_contains "ok evidence disposition is current" "$disposition_output" "disp_
 check_contains "tool failure disposition is unknown" "$disposition_output" "disp_failure=unknown"
 check_contains "mixed ineligible evidence stays stale" "$disposition_output" "disp_mixed=stale"
 check_contains "all-invalid current-head evidence is invalid" "$disposition_output" "disp_invalid=invalid"
+
+# HOK-2814 / HOK-3007: forked-shape variant asserts the invalid-challenge
+# current-head path behaves identically when the reviewer-fork descriptor
+# is present on the state. No relaunch, stale budget untouched, terminal
+# sentinel, and the fork descriptor is preserved through the terminalisation.
+check_contains "invalid_forked seed carries fork descriptor" "$invalid_forked_output" "invalid_forked_seed_fork=review"
+check_contains "invalid_forked seed carries materialized arm" "$invalid_forked_output" "invalid_forked_seed_arm=materialized"
+check_contains "invalid_forked does not launch eval command" "$invalid_forked_output" "invalid_forked_launch_file=absent"
+check_contains "invalid_forked does not register tracked eval launch" "$invalid_forked_output" "invalid_forked_tracker_calls=0"
+check_contains "invalid_forked leaves stale budget counter untouched" "$invalid_forked_output" "invalid_forked_count_file=absent"
+check_contains "invalid_forked writes terminal stale-bucket sentinel" "$invalid_forked_output" "invalid_forked_sentinel=present"
+check_contains "invalid_forked sentinel names terminal cause" "$invalid_forked_output" "invalid_challenge (missing_challenge_intent)"
+check_contains "invalid_forked marks primary comparisonState terminal" "$invalid_forked_output" "invalid_forked_state_primary=invalid_challenge"
+check_contains "invalid_forked marks challenger comparisonState terminal" "$invalid_forked_output" "invalid_forked_state_challenger=invalid_challenge"
+check_contains "invalid_forked preserves fork descriptor" "$invalid_forked_output" "invalid_forked_fork_preserved=review"
+check_contains "invalid_forked preserves challengeArms state" "$invalid_forked_output" "invalid_forked_arm_preserved=materialized"
 
 echo "challenge-eval-invalid-challenge: $PASS passed, $FAIL failed"
 if (( FAIL > 0 )); then

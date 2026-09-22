@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# HOK-2814: wired for fork — this file already carries an HOK-2811 section
+# grepping the defer + materialise seams. The end-to-end fork lifecycle is
+# covered by challenge-deferred-arm.test.sh + challenge-fork-*.test.sh; keep
+# this file focused on the mill startup and monitor script-text guards.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
