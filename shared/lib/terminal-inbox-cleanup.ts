@@ -159,7 +159,14 @@ export const defaultCleanupDeps: CleanupDeps = {
         `source "${join(repoDir, 'shared/lib/wavemill-common.sh').replace(/"/g, '\\"')}"`,
         `wavemill_classify_task_cleanup "${(request.worktreeDir || '').replace(/"/g, '\\"')}" "${request.taskBranch.replace(/"/g, '\\"')}" "${request.baseBranch.replace(/"/g, '\\"')}" "classify" "${(request.issue || '').replace(/"/g, '\\"')}" "${(request.pr || '').replace(/"/g, '\\"')}"`,
       ].join('\n');
-      const output = execFileSync('bash', ['-lc', script], { cwd: repoDir, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+      const env = {
+        ...process.env,
+        REPO_DIR: repoDir,
+        STATE_FILE: statePath(repoDir),
+        BASE_BRANCH: request.baseBranch,
+        WORKTREE_ROOT: request.worktreeDir ? dirname(request.worktreeDir) : dirname(repoDir),
+      };
+      const output = execFileSync('bash', ['-lc', script], { cwd: repoDir, env, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
       const evidence = JSON.parse(output.trim()) as ClassifyEvidence;
       return evidence;
     } catch (error) {
