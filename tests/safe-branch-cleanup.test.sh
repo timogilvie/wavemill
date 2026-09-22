@@ -67,6 +67,12 @@ helper_file="$tmp/safe-cleanup-helper.sh"
   extract_function "$COMMON_SCRIPT" "wavemill_branch_deletion_mode"
   printf '\n'
   printf '%s\n' 'WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT=".wavemill/observer-findings.jsonl"'
+  extract_function "$COMMON_SCRIPT" "wavemill_task_worktree_identity"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_orphan_dir_scan"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_remove_orphan_task_dir"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_worktree_dirty_status"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_migrate_controller_observer_artifact"
@@ -76,6 +82,10 @@ helper_file="$tmp/safe-cleanup-helper.sh"
   extract_function "$COMMON_SCRIPT" "wavemill_record_pr_delivery_evidence"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "_wavemill_record_cleanup_decision"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "_wavemill_build_cleanup_evidence_json"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_classify_task_cleanup"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "safe_remove_task_worktree_and_branch"
 } > "$helper_file"
@@ -604,6 +614,258 @@ case_all_sites_refactored() {
   [[ "$helper_matches" != *"--force"* ]] || fail "helper still force-removes worktrees"
 }
 
+# Assertion 1 (HOK-3042/HOK-3033 shape): an orphan task directory (no task-local
+# .git metadata; git rev-parse --show-toplevel would walk up to the parent
+# wavemill repo) must not inherit dirt from that parent. It must be classified
+# retain_orphan_dir with the identity_verification reason, never retain_dirty.
+case_orphan_dir_no_git_metadata_retained() {
+  local repo branch wt out marker parent_top
+  repo="$(setup_repo orphan-nested)"
+  branch="task/orphan-nested"
+  wt="$repo/wavemill-worktrees/orphan-nested"
+  # Dirty the parent repo so the ancestor walk would report dirty state.
+  printf 'stray\n' > "$repo/parent-dirty.txt"
+  mkdir -p "$wt"
+  printf 'feature\n' > "$wt/feature.txt"
+
+  out="$(run_helper "$repo" "$wt" "$branch")"
+  marker="$(marker_path "$repo" "$branch")"
+  assert_contains "$out" "rc=10" "orphan-nested return"
+  assert_contains "$out" "outcome=retain_orphan_dir" "orphan-nested classified as retain_orphan_dir, not retain_dirty"
+  assert_exists "$wt"
+  assert_exists "$wt/feature.txt"
+  assert_exists "$marker"
+  [[ "$(jq -r '.reason' "$marker")" == "orphan_worktree" ]] || fail "orphan-nested marker reason mismatch"
+  [[ "$(jq -r '.verificationReason' "$marker")" == no_git_metadata* ]] \
+    || [[ "$(jq -r '.verificationReason' "$marker")" == toplevel_mismatch* ]] \
+    || fail "orphan-nested verification reason should be identity-related, got: $(jq -r '.verificationReason' "$marker")"
+  assert_contains "$out" "PRESERVED_ORPHAN_DIR" "orphan-nested warning"
+}
+
+# Orphan with an independent user file must be retained (allowlist scan flags
+# the file).
+case_orphan_dir_with_user_file_retained() {
+  local repo branch wt out marker
+  repo="$(setup_repo orphan-userfile)"
+  branch="task/orphan-userfile"
+  wt="$repo/wavemill-worktrees/orphan-userfile"
+  mkdir -p "$wt/features/orphan-userfile"
+  printf 'ok\n' > "$wt/features/orphan-userfile/task-packet.md"
+  printf 'user notes\n' > "$wt/notes-from-user.md"
+
+  out="$(run_helper "$repo" "$wt" "$branch")"
+  marker="$(marker_path "$repo" "$branch")"
+  assert_contains "$out" "rc=10" "orphan-userfile return"
+  assert_contains "$out" "outcome=retain_orphan_dir" "orphan-userfile outcome"
+  assert_exists "$wt/notes-from-user.md"
+  assert_exists "$marker"
+  assert_contains "$out" "notes-from-user.md" "orphan-userfile scan lists the offending path"
+}
+
+# Orphan containing ONLY wavemill-generated artifacts must be classified
+# retain_orphan_dir (no branch present) but the directory is safe to delete via
+# the orphan removal path.
+case_orphan_dir_wavemill_artifacts_removable() {
+  local repo branch wt marker
+  repo="$(setup_repo orphan-wavemill)"
+  branch="task/orphan-wavemill"
+  wt="$repo/wavemill-worktrees/orphan-wavemill"
+  mkdir -p "$wt/features/orphan-wavemill" "$wt/.claude" "$wt/.wavemill"
+  printf 'ok\n' > "$wt/features/orphan-wavemill/task-packet.md"
+  printf '{}\n' > "$wt/.claude/settings.local.json"
+  printf '{"title":"finding"}\n' > "$wt/.wavemill/observer-findings.jsonl"
+
+  # Direct helper call: classification alone (branch does not exist).
+  local out
+  out="$(run_helper "$repo" "$wt" "$branch")"
+  # With no branch and only allowlisted files, orphan removal path applies.
+  # rc=0 with successful removal, or rc=10 retained-orphan (still safe: dir
+  # unchanged). Either way the directory must not be misclassified as dirty.
+  [[ "$out" == *"outcome=retain_dirty"* ]] && fail "orphan-wavemill misclassified as dirty"
+  [[ "$out" == *"outcome=retain_orphan_dir"* || "$out" == *"outcome=safe_noop"* ]] \
+    || fail "orphan-wavemill unexpected outcome: $out"
+}
+
+# Bounded-path refusal: wavemill_remove_orphan_task_dir must refuse when the
+# path is outside WORKTREE_ROOT.
+case_orphan_removal_refuses_outside_bounded_root() {
+  local repo out root
+  repo="$(setup_repo orphan-outside)"
+  root="$tmp/orphan-outside/root"
+  mkdir -p "$root"
+  local target="$tmp/orphan-outside-external/wt"
+  mkdir -p "$target"
+  printf 'x\n' > "$target/junk"
+
+  # Invoke removal helper directly through a subshell that sources the
+  # extracted helpers.
+  out="$(REPO_DIR="$repo" WT="$target" WORKTREE_ROOT="$root" HELPER_FILE="$helper_file" bash -lc '
+    set -euo pipefail
+    source "$HELPER_FILE"
+    log() { true; }
+    log_warn() { true; }
+    _with_timeout() { shift; "$@"; }
+    set +e
+    wavemill_remove_orphan_task_dir "$WT" "task/orphan-outside"
+    printf "rc=%s\n" "$?"
+  ')"
+  assert_contains "$out" "rc=1" "orphan removal must refuse path outside WORKTREE_ROOT"
+  assert_exists "$target/junk"
+}
+
+# Assertion 2 (HOK-3018 shape): a merged-PR task with a later local commit
+# whose patch is patch-equivalent to a commit already on the authoritative base
+# is classified safe_patch_equivalent_pr and reaped. `git cherry` marks the
+# post-PR commit with `-` (delivered), which cleanup must honour rather than
+# stopping at changed_after_pr_head.
+case_post_pr_patch_equivalent_deleted() {
+  local repo branch wt out decision head_at_pr head_final fixture
+  local squash_tree_a squash_commit_a
+  local unique_tree_b unique_commit_b_delivered
+  local origin_base_tip origin
+  repo="$(setup_repo post-pr-equiv)"
+  branch="task/post-pr-equiv"
+  wt="$tmp/post-pr-equiv/wt"
+  origin="$tmp/post-pr-equiv/origin.git"
+  add_task_worktree "$repo" "$branch" "$wt"
+
+  # Commit A on the task branch, push it and record its SHA as the PR head.
+  commit_in_worktree "$wt" "featureA.txt" "featureA"
+  git -C "$wt" push -u origin "$branch" >/dev/null 2>&1
+  head_at_pr="$(git -C "$wt" rev-parse HEAD)"
+
+  # Simulate squash-delivery of A: origin auto/integration gets a squash
+  # commit with A's tree; the remote task branch is removed.
+  origin_base_tip="$(git -C "$repo" rev-parse auto/integration)"
+  squash_tree_a="$(git -C "$wt" rev-parse HEAD^{tree})"
+  squash_commit_a="$(git -C "$repo" commit-tree "$squash_tree_a" -p "$origin_base_tip" -m "featureA (squash)")"
+  git -C "$repo" push origin "$squash_commit_a:refs/heads/auto/integration" >/dev/null 2>&1
+  git -C "$origin" update-ref -d "refs/heads/$branch"
+
+  # Local commit B on the task branch after PR head — introduces featureB.
+  commit_in_worktree "$wt" "featureB.txt" "featureB"
+  head_final="$(git -C "$wt" rev-parse HEAD)"
+  unique_tree_b="$(git -C "$wt" rev-parse HEAD^{tree})"
+
+  # ALSO deliver B to origin/auto/integration via a distinct commit SHA —
+  # same tree diff (featureB.txt) but different commit metadata. This is
+  # exactly the HOK-3018 shape: post-PR commit is delivered elsewhere.
+  unique_commit_b_delivered="$(git -C "$repo" commit-tree "$unique_tree_b" -p "$squash_commit_a" -m "featureB (delivered)")"
+  git -C "$repo" push origin "$unique_commit_b_delivered:refs/heads/auto/integration" >/dev/null 2>&1
+
+  fixture="$tmp/post-pr-equiv/pr.json"
+  # Full fixture including mergeCommit — patch-equivalence path requires a
+  # non-empty merge SHA to authorize deletion.
+  jq -cn --arg headOid "$head_at_pr" --arg mergeSha "$squash_commit_a" \
+    '{number: 4242, state: "MERGED", mergedAt: "2026-09-04T12:00:00Z",
+      headRefOid: $headOid, headRefName: "task/fixture",
+      baseRefName: "auto/integration",
+      mergeCommit: {oid: $mergeSha}}' > "$fixture"
+
+  out="$(run_helper "$repo" "$wt" "$branch" "auto/integration" "test" "HOK-3018" "4242" "$fixture")"
+  decision="$(decision_path "$repo" "$branch")"
+  # Local head has one commit beyond head_at_pr; that commit is
+  # patch-equivalent to unique_commit_b_delivered on origin/base.
+  # `git cherry` should emit `-` for it → safe_patch_equivalent_pr.
+  assert_contains "$out" "rc=0" "post-pr-equiv return"
+  assert_contains "$out" "outcome=safe_patch_equivalent_pr" "post-pr-equiv outcome"
+  branch_exists "$repo" "$branch" && fail "post-pr-equiv branch retained despite delivered post-PR commit"
+  assert_absent "$wt"
+  assert_exists "$decision"
+  [[ "$(jq -r '.classification' "$decision")" == "safe_patch_equivalent_pr" ]] \
+    || fail "post-pr-equiv decision classification mismatch"
+  [[ "$(jq -r '.patchEquivalence.status' "$decision")" == "equivalent" ]] \
+    || fail "post-pr-equiv decision patchEquivalence.status should be 'equivalent', got: $(jq -r '.patchEquivalence.status' "$decision")"
+  # Delivered commit count = 1 (the post-PR commit B).
+  [[ "$(jq -r '.patchEquivalence.equivalentCount' "$decision")" == "1" ]] \
+    || fail "post-pr-equiv patchEquivalence.equivalentCount should be 1, got: $(jq -r '.patchEquivalence.equivalentCount' "$decision")"
+}
+
+# Assertion 3: a merged-PR task with a genuinely unique post-PR commit must
+# be retained with the SHA visible.
+case_post_pr_unique_commit_retained() {
+  local repo branch wt out marker fixture head_at_pr squash_tree squash_commit origin_base_tip origin
+  repo="$(setup_repo post-pr-unique)"
+  branch="task/post-pr-unique"
+  wt="$tmp/post-pr-unique/wt"
+  origin="$tmp/post-pr-unique/origin.git"
+  add_task_worktree "$repo" "$branch" "$wt"
+
+  commit_in_worktree "$wt" "featureA.txt" "featureA"
+  git -C "$wt" push -u origin "$branch" >/dev/null 2>&1
+  head_at_pr="$(git -C "$wt" rev-parse HEAD)"
+
+  origin_base_tip="$(git -C "$repo" rev-parse auto/integration)"
+  squash_tree="$(git -C "$wt" rev-parse HEAD^{tree})"
+  squash_commit="$(git -C "$repo" commit-tree "$squash_tree" -p "$origin_base_tip" -m "featureA (squash)")"
+  git -C "$repo" push origin "$squash_commit:refs/heads/auto/integration" >/dev/null 2>&1
+  git -C "$origin" update-ref -d "refs/heads/$branch"
+
+  # Post-PR unique commit with brand new content.
+  commit_in_worktree "$wt" "unique.txt" "unique post-PR work"
+
+  fixture="$tmp/post-pr-unique/pr.json"
+  record_pr_fixture "$fixture" "MERGED" "2026-09-04T12:00:00Z" "$head_at_pr" "auto/integration"
+
+  out="$(run_helper "$repo" "$wt" "$branch" "auto/integration" "test" "HOK-3018U" "4242" "$fixture")"
+  marker="$(marker_path "$repo" "$branch")"
+  assert_contains "$out" "rc=10" "post-pr-unique return"
+  assert_contains "$out" "outcome=retain_unpublished" "post-pr-unique outcome"
+  branch_exists "$repo" "$branch" || fail "post-pr-unique branch was deleted despite unique commit"
+  assert_exists "$wt"
+  assert_exists "$marker"
+  [[ "$(jq -r '.classification' "$marker")" == "retain_unpublished" ]] \
+    || fail "post-pr-unique marker classification mismatch"
+  [[ "$(jq -r '.verificationReason' "$marker")" == "unique_local_patch" ]] \
+    || fail "post-pr-unique marker should report unique_local_patch, got: $(jq -r '.verificationReason' "$marker")"
+}
+
+# Assertion 4: the read-only classifier delegates to the destructive path in
+# WAVEMILL_CLASSIFY_ONLY=1 mode. Both must agree on classification for the same
+# input, and the classifier must not touch state.
+case_classifier_parity_read_only_matches_destructive() {
+  local repo branch wt out classify_out classify_json destructive_class
+  repo="$(setup_repo classify-parity)"
+  branch="task/classify-parity"
+  wt="$tmp/classify-parity/wt"
+  add_task_worktree "$repo" "$branch" "$wt"
+  commit_in_worktree "$wt" "feature.txt" "feature"
+
+  # Snapshot .wavemill/incidents dir contents before the classify call.
+  local before_incidents=""
+  [[ -d "$repo/.wavemill/incidents" ]] && before_incidents="$(find "$repo/.wavemill/incidents" -type f 2>/dev/null | sort)"
+
+  classify_out="$(REPO_DIR="$repo" WT="$wt" BRANCH="$branch" HELPER_FILE="$helper_file" bash -lc '
+    set -euo pipefail
+    source "$HELPER_FILE"
+    log() { true; }
+    log_warn() { true; }
+    _with_timeout() { shift; "$@"; }
+    set +e
+    wavemill_classify_task_cleanup "$WT" "$BRANCH" auto/integration classify
+    printf "rc=%s\n" "$?"
+    printf "outcome=%s\n" "${WAVEMILL_CLEANUP_OUTCOME:-}"
+  ')"
+  classify_json="$(printf '%s\n' "$classify_out" | head -1)"
+  [[ -n "$classify_json" ]] || fail "classifier produced no JSON"
+
+  # State must not have changed after read-only classification.
+  local after_incidents=""
+  [[ -d "$repo/.wavemill/incidents" ]] && after_incidents="$(find "$repo/.wavemill/incidents" -type f 2>/dev/null | sort)"
+  [[ "$before_incidents" == "$after_incidents" ]] \
+    || fail "classifier wrote to .wavemill/incidents (read-only violation)"
+
+  # Now run destructive path and compare classification.
+  out="$(run_helper "$repo" "$wt" "$branch")"
+  destructive_class="$(printf '%s\n' "$out" | awk -F= '/^outcome=/ {print $2}')"
+
+  local classify_class
+  classify_class="$(printf '%s' "$classify_json" | jq -r '.classification')"
+
+  [[ "$classify_class" == "$destructive_class" ]] \
+    || fail "classifier/destructive disagreement: classifier=$classify_class destructive=$destructive_class"
+}
+
 case_unpushed_commits_retained
 case_pushed_unmerged_deleted
 case_merged_deleted
@@ -625,5 +887,12 @@ case_protected_branch_refused
 case_branch_already_absent
 case_unresolvable_base_preserved
 case_all_sites_refactored
+case_orphan_dir_no_git_metadata_retained
+case_orphan_dir_with_user_file_retained
+case_orphan_dir_wavemill_artifacts_removable
+case_orphan_removal_refuses_outside_bounded_root
+case_post_pr_patch_equivalent_deleted
+case_post_pr_unique_commit_retained
+case_classifier_parity_read_only_matches_destructive
 
 echo "safe-branch-cleanup test passed"
