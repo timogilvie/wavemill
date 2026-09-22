@@ -123,6 +123,12 @@ CLEANUP_FILE="$TEST_TMP/cleanup_completed_task.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "safe_remove_task_worktree_and_branch"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_task_worktree_identity"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "_wavemill_build_cleanup_evidence_json"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_orphan_dir_scan"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "cleanup_completed_task"
 } > "$CLEANUP_FILE"
 REMOTE_CLEANUP_FILE="$TEST_TMP/cleanup_remote_task_branch.sh"
@@ -327,6 +333,14 @@ EOF
           return $?
           ;;
         "fetch origin")
+          return 0
+          ;;
+        "rev-parse --show-toplevel")
+          printf "%s\n" "$WORKTREE_ROOT/$SLUG"
+          return 0
+          ;;
+        "worktree list")
+          printf "worktree %s\n" "$WORKTREE_ROOT/$SLUG"
           return 0
           ;;
         "rev-parse --verify")
