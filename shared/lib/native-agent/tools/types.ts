@@ -25,6 +25,88 @@ export interface OutputCapPolicy {
   maxItems?: number;
 }
 
+// ---------------------------------------------------------------------------
+// Advanced tool catalog metadata (Epic 10)
+// ---------------------------------------------------------------------------
+
+/**
+ * Stable family identifier. `core` covers the Tier 1–4 catalog that ships on
+ * every phase; the remaining values seat the Epic 10 advanced families whose
+ * eligibility is gated by opt-in configuration.
+ */
+export type ToolFamilyId =
+  | 'core'
+  | 'browser'
+  | 'screenshot'
+  | 'mcp'
+  | 'code_search'
+  | 'ast'
+  | 'eval';
+
+/** All Epic 10 advanced families (everything except `core`). */
+export const ADVANCED_TOOL_FAMILIES: readonly ToolFamilyId[] = Object.freeze([
+  'browser',
+  'screenshot',
+  'mcp',
+  'code_search',
+  'ast',
+  'eval',
+]);
+
+export function isAdvancedFamily(family: ToolFamilyId): boolean {
+  return family !== 'core';
+}
+
+/**
+ * How a tool becomes eligible to be exposed to the model.
+ *
+ * - `always` — Tier 1–4 tools; eligible on every phase in `allowedPhases`.
+ * - `opt-in` — Advanced-family tools; eligible only when the operator has
+ *   explicitly enabled the family for the requested phase.
+ */
+export type ToolExposureMode = 'always' | 'opt-in';
+
+/**
+ * Minimum certification the model must carry for an advanced tool family to
+ * become eligible. Ordered ascendingly by the ladder used by
+ * `shared/lib/native-agent/certification/schema.ts` — `none` is a sentinel
+ * meaning no certification is required (Tier 1–4 tools always take this).
+ */
+export type NativeCertificationRequirement = 'none' | 'read-only' | 'patch' | 'workflow';
+
+/**
+ * Runtime-level per-call policy metadata. Matches `ToolPolicy` in
+ * docs/native-agent-runtime-plan.md — the runtime loop consults this per call,
+ * separately from the registry-level `outputCapPolicy` (which is a truncation
+ * dial only).
+ */
+export interface ToolPolicyMetadata {
+  pathMode: 'none' | 'read-only' | 'workspace-write' | 'artifact-write';
+  network: 'deny' | 'allowlisted' | 'allow';
+  mutatesGit: boolean;
+  mutatesExternalSystems: boolean;
+  requiresApproval: boolean | 'when-risky';
+  /** Wall-clock timeout for a single call. */
+  timeoutMs: number;
+  /** Per-call maximum bytes returned to the model. */
+  maxOutputBytes: number;
+  /** Per-call maximum tokens returned to the model. */
+  maxOutputTokens: number;
+  redactionProfile: 'default' | 'secrets' | 'none';
+}
+
+/**
+ * Provenance class for the tool as a *producer* — describes the trust tier of
+ * any content it emits.  Matches the taxonomy used by `shared/lib/native-agent/
+ * provenance.ts` for individual tool call outputs.
+ */
+export type ToolProvenanceClass =
+  | 'wavemill-generated'
+  | 'repo-trusted'
+  | 'repo-untrusted'
+  | 'external-untrusted'
+  | 'provider-generated';
+
 /** Stable, provider-agnostic metadata for a registered tool. */
 export interface ToolMetadata {
   name: string;
@@ -33,7 +115,118 @@ export interface ToolMetadata {
   allowedPhases: readonly ToolPhase[];
   executionMode: ToolExecutionMode;
   outputCapPolicy: OutputCapPolicy;
+  /**
+   * Stable family identity. Absent on legacy descriptors; the registry
+   * inflates them to `core` at registration.
+   */
+  family?: ToolFamilyId;
+  /**
+   * Family-scoped short identifier, e.g. `browser.navigate`, `core.read_file`.
+   * Absent on legacy descriptors; the registry inflates them from the family
+   * and `name` at registration. Uniqueness is enforced per family.
+   */
+  logicalId?: string;
+  /** Registration-time gate. Absent → `always`. */
+  exposure?: ToolExposureMode;
+  /** Per-call runtime policy. Inflated from defaults keyed off `class`. */
+  policy?: ToolPolicyMetadata;
+  /** Producer-side provenance for the tool's output. Inflated by class. */
+  provenance?: ToolProvenanceClass;
+  /**
+   * Minimum certification maxCertifiedPhase required for this tool. Advanced
+   * families default to `workflow`; core tools default to `none`.
+   */
+  certificationRequirement?: NativeCertificationRequirement;
 }
+
+/**
+ * Fully-inflated tool metadata after registration.  The registry guarantees
+ * every field is present, so consumers (exposure engine, adapters, policy
+ * evaluator) can rely on the extended contract without null checks.
+ */
+export interface RegisteredToolMetadata extends ToolMetadata {
+  family: ToolFamilyId;
+  logicalId: string;
+  exposure: ToolExposureMode;
+  policy: ToolPolicyMetadata;
+  provenance: ToolProvenanceClass;
+  certificationRequirement: NativeCertificationRequirement;
+}
+
+// ---------------------------------------------------------------------------
+// Defaults and inflation helpers
+// ---------------------------------------------------------------------------
+
+const READ_ONLY_POLICY_DEFAULT: ToolPolicyMetadata = {
+  pathMode: 'read-only',
+  network: 'deny',
+  mutatesGit: false,
+  mutatesExternalSystems: false,
+  requiresApproval: false,
+  timeoutMs: 60_000,
+  maxOutputBytes: 256 * 1024,
+  maxOutputTokens: 8_192,
+  redactionProfile: 'default',
+};
+
+const MUTATION_POLICY_DEFAULT: ToolPolicyMetadata = {
+  pathMode: 'workspace-write',
+  network: 'deny',
+  mutatesGit: false,
+  mutatesExternalSystems: false,
+  requiresApproval: 'when-risky',
+  timeoutMs: 120_000,
+  maxOutputBytes: 256 * 1024,
+  maxOutputTokens: 8_192,
+  redactionProfile: 'default',
+};
+
+function defaultPolicyFor(cls: ToolMutationClass): ToolPolicyMetadata {
+  return cls === 'read-only' ? { ...READ_ONLY_POLICY_DEFAULT } : { ...MUTATION_POLICY_DEFAULT };
+}
+
+function defaultProvenanceFor(cls: ToolMutationClass): ToolProvenanceClass {
+  return cls === 'read-only' ? 'repo-trusted' : 'wavemill-generated';
+}
+
+/**
+ * Return a fully-inflated `RegisteredToolMetadata` from a caller-supplied
+ * `ToolMetadata`.  Every missing field is filled from stable defaults so that
+ * Tier 1–4 descriptors keep working without touching their registration sites.
+ */
+export function withDefaultMetadata(metadata: ToolMetadata): RegisteredToolMetadata {
+  const family: ToolFamilyId = metadata.family ?? 'core';
+  const advanced = isAdvancedFamily(family);
+  const local = metadata.logicalId ?? `${family}.${metadata.name}`;
+  const logicalId = local.includes('.') ? local : `${family}.${local}`;
+  const exposure: ToolExposureMode = metadata.exposure ?? (advanced ? 'opt-in' : 'always');
+  const policy = metadata.policy ?? defaultPolicyFor(metadata.class);
+  const provenance = metadata.provenance ?? defaultProvenanceFor(metadata.class);
+  const certificationRequirement: NativeCertificationRequirement =
+    metadata.certificationRequirement ?? (advanced ? 'workflow' : 'none');
+
+  return {
+    ...metadata,
+    family,
+    logicalId,
+    exposure,
+    policy,
+    provenance,
+    certificationRequirement,
+  };
+}
+
+/**
+ * Certification ladder order used by the exposure engine. Lower index →
+ * weaker certification; the required level is satisfied when the actual level
+ * appears at the same or higher index.
+ */
+export const CERTIFICATION_LEVEL_ORDER: readonly NativeCertificationRequirement[] = Object.freeze([
+  'none',
+  'read-only',
+  'patch',
+  'workflow',
+]);
 
 // ---------------------------------------------------------------------------
 // Tool result metadata (attached additively; optional on all consumers)
