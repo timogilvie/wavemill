@@ -33,6 +33,10 @@ MONITOR_SCRIPT_FILE="$REPO_DIR/shared/lib/wavemill-monitor.sh"
 # to the shared transient-marker lifecycle contract.
 # HOK-3007: write_invalid_challenge_artifact is duplicated with the manual
 # comparison artifact helper so monitor and parent operator artifacts stay in sync.
+# HOK-3065: release_challenge_selection_health_plan is gone from both local
+# scopes — challenge selection is now sealed at t=0 and materialized against the
+# expanded route, so the release-plan health helper is no longer needed in either
+# scope. This drops the duplicated/identical pair count from 37 to 36.
 EXPECTED_DIVERGENT=""
 
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/wavemill-parent-monitor-drift.XXXXXX")"
@@ -75,8 +79,8 @@ identical_count="$(jq '.identical | length' "$baseline_json")"
 divergent_count="$(jq '.divergent | length' "$baseline_json")"
 divergent_names="$(jq -r '.divergent[].name' "$baseline_json" | sort)"
 
-assert_eq "$duplicated_count" "37" "duplicated parent/monitor function count changed"
-assert_eq "$identical_count" "37" "byte-identical parent/monitor function count changed"
+assert_eq "$duplicated_count" "36" "duplicated parent/monitor function count changed"
+assert_eq "$identical_count" "36" "byte-identical parent/monitor function count changed"
 assert_eq "$divergent_count" "0" "allowlisted divergent parent/monitor function count changed"
 assert_eq "$divergent_names" "$EXPECTED_DIVERGENT" "allowlisted divergent parent/monitor function names changed"
 
@@ -112,6 +116,6 @@ printf '%s' "$probe_function" >> "$new_duplicate_monitor"
 new_duplicate_json="$work_dir/new-duplicate.json"
 run_json "$new_duplicate_parent" "$new_duplicate_monitor" > "$new_duplicate_json"
 new_duplicate_count="$(jq '.duplicated | length' "$new_duplicate_json")"
-assert_eq "$new_duplicate_count" "38" "introducing a new duplicated function was not detected" "$new_duplicate_parent" "$new_duplicate_monitor"
+assert_eq "$new_duplicate_count" "37" "introducing a new duplicated function was not detected" "$new_duplicate_parent" "$new_duplicate_monitor"
 
 echo "parent-monitor-function-drift: ok"

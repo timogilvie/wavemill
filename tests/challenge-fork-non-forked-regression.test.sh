@@ -74,25 +74,30 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 # Source-level guard: defer_challenger only sets true for review stage,
 # and only inside the HOK-2811 blocks. No other stage triggers the fork.
 # ────────────────────────────────────────────────────────────────
-echo "=== defer_challenger is gated on 'review' stage only ==="
+echo "=== defer_challenger is gated on a recognized defer path only ==="
 
-# Every assignment of defer_challenger=true in either file must appear
-# alongside the exact `challenge_stage == "review"` guard on the immediate
-# preceding line. Any new stage added to the defer path breaks this test.
+# Every assignment of defer_challenger=true in either file must sit inside a
+# recognized defer stanza. Two paths are legitimate:
+#   • the HOK-2811 review-stage fork  (`challenge_stage == "review"`)
+#   • the HOK-3065 pre-expansion seal (`plan_awaits_expanded_route == "true"`),
+#     which forks the sealed challenger at t=0 once the expanded route lands.
+# Any OTHER stage added to the defer path breaks this test (see the second
+# loop below, which still forbids plan/implementation/coding-stage forks).
 for source in "$MONITOR_SCRIPT_FILE" "$MILL_SCRIPT"; do
   file="$(basename "$source")"
   # Pull every line number that assigns defer_challenger=true.
   while IFS= read -r line_no; do
     [[ -n "$line_no" ]] || continue
-    # Look at the line above; the real code always sits inside the
-    # `if [[ "$challenge_stage" == "review" ]]; then` block.
-    context="$(awk -v n="$line_no" 'NR >= n-1 && NR <= n+1' "$source")"
-    if [[ "$context" == *'challenge_stage" == "review"'* ]]; then
-      pass "$file:$line_no defer_challenger=true is gated on review stage"
+    # Look back a few lines: the guard sits at the top of the stanza, and a
+    # HOK-3065-style block carries explanatory comments before the assignment.
+    context="$(awk -v n="$line_no" 'NR >= n-4 && NR <= n+1' "$source")"
+    if [[ "$context" == *'challenge_stage" == "review"'* \
+       || "$context" == *'plan_awaits_expanded_route" == "true"'* ]]; then
+      pass "$file:$line_no defer_challenger=true is gated on a recognized defer path"
     else
       echo "    context:"
       printf '%s\n' "$context" | sed 's/^/      /'
-      fail "$file:$line_no defer_challenger=true is NOT gated on review stage"
+      fail "$file:$line_no defer_challenger=true is NOT gated on a recognized defer path"
     fi
   done < <(grep -n 'defer_challenger="true"' "$source" | cut -d: -f1)
 done
