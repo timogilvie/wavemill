@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Shard-surface contract test for the weighted-partitioned runners (HOK-2939).
+# Shard-surface contract test for the sharded runners.
 #
-# Asserts, for both tests/run-custom-tests.sh and tests/run-unit-tests.sh at
-# the shard counts configured in .github/workflows/ci.yml:
+# Covers tests/run-custom-tests.sh and tests/run-unit-tests.sh (weighted
+# partitioning, HOK-2939) plus tests/run-shell-suite.sh (round-robin, HOK-3043),
+# all at the shard counts configured in .github/workflows/ci.yml. Asserts:
 #   - the union of every shard's --list output is exactly the full registered
 #     list (every test exactly once, no duplicates, nothing dropped);
 #   - out-of-range and malformed --shard values are rejected;
@@ -93,6 +94,7 @@ check_runner() {
 cd "$REPO_DIR"
 check_runner run-custom-tests.sh custom
 check_runner run-unit-tests.sh unit
+check_runner run-shell-suite.sh shell
 
 echo ""
 echo "--- run-custom-tests-shard: $PASS passed, $FAIL failed ---"
