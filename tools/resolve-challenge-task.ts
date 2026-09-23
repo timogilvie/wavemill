@@ -11,6 +11,7 @@ import {
   chooseChallengeStage,
   decideChallengeLaunch,
   extractChallengeRecommendation,
+  insufficientStagePoolReason,
   variedModelForStage,
   buildChallengeExecutionIntent,
   type ChallengeNativeRejection,
@@ -89,7 +90,19 @@ runTool({
         }
       : {};
     const defaultAgent = router.defaultAgent || 'claude';
-    const pool = getChallengeModelPool(challenge, router);
+    // The challenge stage is resolved before pool construction (HOK-3063): the
+    // pool must reflect the varied stage's effective-model projection, not a
+    // silent 'coding' default. Route artifacts are read here so a pinned stage
+    // or scheduler recommendation can drive stage choice before any pool work.
+    const routeArtifacts = featureDir
+      ? readBothRouteArtifacts(featureDir)
+      : { bootstrap: null, expanded: null };
+    const recommendation = extractChallengeRecommendation(routeArtifacts);
+    const challengeStage = pinnedStage ?? chooseChallengeStage({
+      weights: challenge.stageWeights,
+      recommendedStage: recommendation?.stage,
+    });
+    const pool = getChallengeModelPool(challengeStage, challenge, router);
     const requestedRate = challenge.rate ?? 0.10;
     const strictWhenRequired = challenge.enabled === true && requestedRate >= 1;
 
@@ -183,17 +196,16 @@ runTool({
           }),
           slotsRequired: 0,
           reason: 'challenge_unavailable',
+          challengeStage,
         }));
         return;
       }
-      console.log(JSON.stringify(buildSingle('insufficient_models')));
+      console.log(JSON.stringify(buildSingle(
+        insufficientStagePoolReason(challengeStage),
+        { challengeStage },
+      )));
       return;
     }
-
-    const routeArtifacts = featureDir
-      ? readBothRouteArtifacts(featureDir)
-      : { bootstrap: null, expanded: null };
-    const recommendation = extractChallengeRecommendation(routeArtifacts);
 
     const launchDecision = decideChallengeLaunch({
       pool,
@@ -213,16 +225,10 @@ runTool({
 
     const forcedChallengerModel = launchDecision.forcedChallengerModel;
 
-    // A stage pinned by the caller wins outright. Re-sampling the stage on a
-    // refresh is how an already-selected implementation-stage challenge (e.g.
-    // a Qwen or Kimi coder arm) turned into an unrelated plan-stage pair: the
-    // second roll is independent, so an open-weight coder had to win twice.
-    // Otherwise a recommendation carrying a stage pins it, and failing that we
-    // sample from the configured weights.
-    const challengeStage = pinnedStage ?? chooseChallengeStage({
-      weights: challenge.stageWeights,
-      recommendedStage: launchDecision.recommendation?.stage,
-    });
+    // `challengeStage` was resolved above so the pool reflects the varied
+    // stage's effective-model projection. A stage pinned by the caller wins
+    // outright; otherwise a recommendation stage was preferred, and failing
+    // that the weighted sampler drove the choice.
     const summary = buildEvalSummary(repoDir);
     const coverage = (model: string, stage: 'plan' | 'implementation' | 'review') =>
       modelStageCount(summary, model, stage);
