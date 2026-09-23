@@ -3726,6 +3726,30 @@
       ],
       "additionalProperties": false
     },
+    "ChallengeSelectionEvidence": {
+      "type": "object",
+      "properties": {
+        "coverageCount": {
+          "type": "number"
+        },
+        "attemptCount": {
+          "type": "number"
+        },
+        "lastAttemptAt": {
+          "type": "string"
+        },
+        "cooldownActive": {
+          "type": "boolean"
+        },
+        "priorityTier": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "ChallengeExecutionIntent": {
       "type": "object",
       "properties": {
@@ -3783,6 +3807,9 @@
         },
         "selectionReason": {
           "type": "string"
+        },
+        "selectionEvidence": {
+          "$ref": "#/$defs/ChallengeSelectionEvidence"
         },
         "challengeRecommendation": {
           "description": "Free-form router recommendation that selected or skipped a challenge."
