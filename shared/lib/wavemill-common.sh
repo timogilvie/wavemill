@@ -480,10 +480,16 @@ cleanup_episode_collect_inputs() {
   local issue="$1" slug="$2" wt_dir="$3" task_branch="$4" base_branch="${5:-${BASE_BRANCH:-main}}" pr="${6:-}" verification_reason="${7:-}"
   local dirty_status="" dirty_status_hash="" worktree_exists="false" local_branch_exists="false"
   local local_head_sha="" base_sha="" remote_tracking_head_sha="" pr_state_value="" pr_head_ref_oid="" pr_base_branch=""
+  local worktree_identity=""
 
   if [[ -n "$wt_dir" && -d "$wt_dir" ]]; then
     worktree_exists="true"
-    dirty_status="$(git -C "$wt_dir" status --porcelain --untracked-files=all 2>/dev/null || printf '__wavemill_status_failed__')"
+    worktree_identity="$(wavemill_task_worktree_identity "$wt_dir" "$REPO_DIR")"
+    if [[ "$worktree_identity" == "valid" ]]; then
+      dirty_status="$(git -C "$wt_dir" status --porcelain --untracked-files=all 2>/dev/null || printf '__wavemill_status_failed__')"
+    else
+      dirty_status="orphan:${worktree_identity}:$(wavemill_orphan_dir_scan "$wt_dir" 2>/dev/null || printf '__wavemill_orphan_scan_failed__')"
+    fi
     dirty_status_hash="$(printf '%s' "$dirty_status" | cleanup_episode_sha256)"
   fi
   if [[ -n "${REPO_DIR:-}" && -n "$task_branch" ]] && git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/$task_branch" 2>/dev/null; then
@@ -512,6 +518,7 @@ cleanup_episode_collect_inputs() {
     --arg remoteTrackingHeadSha "$remote_tracking_head_sha" \
     --arg dirtyStatusHash "$dirty_status_hash" \
     --arg dirtyStatus "$dirty_status" \
+    --arg worktreeIdentity "$worktree_identity" \
     --arg prNumber "$pr" \
     --arg prState "$pr_state_value" \
     --arg prHeadRefOid "$pr_head_ref_oid" \
@@ -531,6 +538,7 @@ cleanup_episode_collect_inputs() {
       remoteTrackingHeadSha: $remoteTrackingHeadSha,
       dirtyStatusHash: $dirtyStatusHash,
       dirtyStatus: $dirtyStatus,
+      worktreeIdentity: $worktreeIdentity,
       prNumber: $prNumber,
       prState: $prState,
       prHeadRefOid: $prHeadRefOid,
@@ -726,6 +734,7 @@ cleanup_episode_record_outcome() {
 
 cleanup_episode_should_attempt() {
   local issue="$1" slug="$2" reason="${3:-}" pr="${4:-}" candidate_json stored_json disposition fingerprint stored_fingerprint next_retry_at next_retry_epoch now_epoch
+  [[ "${WAVEMILL_TERMINAL_INBOX_CLEANUP:-0}" == "1" ]] && { printf 'attempt\n'; return 0; }
   cleanup_episode_enabled || { printf 'attempt\n'; return 0; }
   [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || { printf 'attempt\n'; return 0; }
   stored_json="$(cleanup_episode_get "$issue" || true)"
@@ -842,6 +851,7 @@ _wavemill_write_preserved_branch_incident() {
 #   safe_exact_remote    remote task branch exists and carries the local head
 #   safe_terminal_pr_head terminal merged PR headRefOid equals the local head
 #   safe_patch_equivalent_pr merged PR/base contains the same patch IDs
+#   safe_content_equivalent_pr merging the branch into the delivered base leaves its tree unchanged
 #   safe_abandoned_closed_loser closed losing challenge arm explicitly abandoned
 #   safe_noop            nothing deletable (protected/non-task/absent branch)
 #   shadow_would_delete  deletion authority exists, but branch deletion mode is shadow
@@ -853,7 +863,7 @@ _wavemill_write_preserved_branch_incident() {
 #   operation_failed     deletion was authorized but removal failed
 cleanup_outcome_is_safe() {
   case "${1:-${WAVEMILL_CLEANUP_OUTCOME:-}}" in
-    safe_ancestor|safe_exact_remote|safe_terminal_pr_head|safe_patch_equivalent_pr|safe_abandoned_closed_loser|safe_noop|shadow_would_delete) return 0 ;;
+    safe_ancestor|safe_exact_remote|safe_terminal_pr_head|safe_patch_equivalent_pr|safe_content_equivalent_pr|safe_abandoned_closed_loser|safe_noop|shadow_would_delete) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -1138,62 +1148,77 @@ wavemill_task_worktree_identity() {
 }
 
 # Scan an orphan task directory for files unexpected in wavemill-created resources.
-# Returns 0 if all files match the expected allowlist (features/*, .claude/*, .wavemill/*,
-# stale .git file or directory, empty dirs, node_modules).
+# Only exact, disposable terminal markers are allowed. In particular, a task
+# packet or other file under features/ is recoverable work, not cleanup debris.
 # Returns 1 if unexpected files found; prints the offending paths (max 20) and total count to stdout.
 #
 # Dotfiles ARE walked (the previous `-not -path "*/\.*"` exclusion made every
 # .git/.claude/.wavemill/.env path invisible, silently allowing unknown dotfiles).
-# Container directories on the allowlist are skipped so the walk's per-file
-# entries under them do the real checking; unknown non-empty directories still
-# fail because content deeper than maxdepth is not inspected.
+# The walk is recursive and rejects symlinks, including links to paths outside
+# the worktree root.
 wavemill_orphan_dir_scan() {
   local wt_dir="${1:-}"
-  local found_unexpected="false" file_count=0 printed_count=0
+  local found_unexpected="false" file_count=0 printed_count=0 file rel_path
 
   [[ -n "$wt_dir" && -d "$wt_dir" ]] || return 0
+  find "$wt_dir" -mindepth 1 -print >/dev/null 2>&1 || return 1
 
-  while IFS= read -r file; do
-    ((file_count++))
+  while IFS= read -r -d '' file; do
+    ((file_count+=1))
     [[ "$file" == "$wt_dir" ]] && continue
 
     local rel_path="${file#${wt_dir}/}"
     [[ -z "$rel_path" ]] && rel_path="$file"
 
-    # Empty directories are always safe (no content to protect).
-    if [[ -d "$file" ]] && [[ -z "$(find "$file" -mindepth 1 -print -quit 2>/dev/null)" ]]; then
-      continue
+    if [[ ! -L "$file" ]]; then
+      if [[ -d "$file" ]]; then
+        case "$rel_path" in
+          features|features/*|.wavemill) continue ;;
+        esac
+      elif [[ -f "$file" ]]; then
+        case "$rel_path" in
+          features/*/.needs-attention|features/*/.terminal-history.jsonl|features/*/.ready-bypass-warned|.wavemill/observer-findings.jsonl) continue ;;
+        esac
+      fi
     fi
-
-    # Allowlisted container directories: entries under them are inspected
-    # separately by the same walk (maxdepth 3 covers wavemill artifacts).
-    if [[ -d "$file" ]]; then
-      case "$rel_path" in
-        features|.claude|.wavemill|.git|.git/*|node_modules) continue ;;
-      esac
-    fi
-
-    # Allowlisted files anywhere under the walk.
-    case "$rel_path" in
-      features/*) continue ;;
-      .claude/settings.local.json) continue ;;
-      .wavemill/observer-findings.jsonl) continue ;;
-      .git) continue ;;
-      .git/*) continue ;;
-    esac
 
     found_unexpected="true"
     if (( printed_count < 20 )); then
       printf '%s\n' "$rel_path"
-      ((printed_count++))
+      ((printed_count+=1))
     fi
-  done < <(find "$wt_dir" -maxdepth 3 2>/dev/null || true)
+  done < <(find "$wt_dir" -mindepth 1 -print0 2>/dev/null)
 
   if [[ "$found_unexpected" == "true" ]]; then
     printf 'total_unexpected=%d\n' "$file_count"
     return 1
   fi
   return 0
+}
+
+# A squash merge changes commit IDs and often patch IDs. A clean three-way
+# merge that produces exactly the current base tree proves that this branch
+# contributes no remaining file content. Conflicts and missing merge evidence
+# are deliberately inconclusive. The PR's merge commit must be on the base.
+wavemill_branch_content_matches_base() {
+  local base_ref="${1:-}" task_branch="${2:-}" pr_merge_sha="${3:-}"
+  local base_tree merged_tree
+  [[ -n "$base_ref" && -n "$task_branch" && -n "$pr_merge_sha" ]] || return 1
+  git -C "$REPO_DIR" merge-base --is-ancestor "$pr_merge_sha" "$base_ref" 2>/dev/null || return 1
+  base_tree="$(git -C "$REPO_DIR" rev-parse --verify "${base_ref}^{tree}" 2>/dev/null)" || return 1
+  merged_tree="$(git -C "$REPO_DIR" merge-tree --write-tree "$base_ref" "$task_branch" 2>/dev/null)" || return 1
+  [[ "$merged_tree" == "$base_tree" ]]
+}
+
+wavemill_orphan_dir_in_bounds() {
+  local wt_dir="${1:-}" slug="${2:-}" worktree_root="${WORKTREE_ROOT:-}"
+  local resolved_wt resolved_root
+  [[ -n "$wt_dir" && -d "$wt_dir" && ! -L "$wt_dir" ]] || return 1
+  [[ -n "$worktree_root" && -d "$worktree_root" ]] || return 1
+  resolved_wt="$(cd "$wt_dir" && pwd -P 2>/dev/null)" || return 1
+  resolved_root="$(cd "$worktree_root" && pwd -P 2>/dev/null)" || return 1
+  [[ "$resolved_wt" == "$resolved_root/"* ]] || return 1
+  [[ -z "$slug" || "$(basename "$resolved_wt")" == "$slug" ]]
 }
 
 # Safely remove an orphan task directory after bounded-path and file-content verification.
@@ -1232,6 +1257,7 @@ wavemill_remove_orphan_task_dir() {
     log_warn "  Worktree basename mismatch (expected $slug, got $(basename "$resolved_wt")); refusing removal"
     return 1
   fi
+  wavemill_orphan_dir_in_bounds "$wt_dir" "$slug" || return 1
 
   scan_result="$(wavemill_orphan_dir_scan "$wt_dir")" || {
     log_warn "  Orphan directory contains unexpected files; retained: $wt_dir"
@@ -1428,6 +1454,7 @@ safe_remove_task_worktree_and_branch() {
   local patch_equivalent_shas=""
   local patch_published_undelivered_shas=""
   local patch_equivalence_scope=""
+  local orphan_cleanup_candidate="false"
 
   WAVEMILL_CLEANUP_OUTCOME=""
 
@@ -1471,51 +1498,59 @@ safe_remove_task_worktree_and_branch() {
     if [[ "$worktree_identity" != "valid" ]]; then
       orphan_reason="$worktree_identity"
       orphan_independent_paths="$(wavemill_orphan_dir_scan "$wt_dir" 2>/dev/null | head -20 | tr '\n' ' ')"
-      classification="retain_orphan_dir"
-      verification_reason="$orphan_reason"
-      SAFE_CLEANUP_PRESERVATION_REASON="orphan_worktree"
-      SAFE_CLEANUP_VERIFICATION_REASON="$orphan_reason"
-      if [[ "${WAVEMILL_CLASSIFY_ONLY:-0}" != "1" ]]; then
-        if ! _wavemill_record_cleanup_decision "retain_orphan_dir" "orphan_worktree" "$orphan_reason" "false"; then
-          log_warn "  Failed to write preserved-branch incident marker for $task_branch"
+      if [[ ! -e "$wt_dir/.git" && ! -L "$wt_dir/.git" ]] \
+        && wavemill_orphan_dir_in_bounds "$wt_dir" "${task_branch#task/}" \
+        && wavemill_orphan_dir_scan "$wt_dir" >/dev/null 2>&1; then
+        orphan_cleanup_candidate="true"
+      else
+        classification="retain_orphan_dir"
+        verification_reason="$orphan_reason"
+        SAFE_CLEANUP_PRESERVATION_REASON="orphan_worktree"
+        SAFE_CLEANUP_VERIFICATION_REASON="$orphan_reason"
+        if [[ "${WAVEMILL_CLASSIFY_ONLY:-0}" != "1" ]]; then
+          if ! _wavemill_record_cleanup_decision "retain_orphan_dir" "orphan_worktree" "$orphan_reason" "false"; then
+            log_warn "  Failed to write preserved-branch incident marker for $task_branch"
+          fi
+          log_warn "  PRESERVED_ORPHAN_DIR: ${wt_dir} is not a registered task worktree ($orphan_reason); retained (branch=${task_branch}). $(_wavemill_cleanup_operator_guidance retain_orphan_dir "$task_branch" "$orphan_independent_paths")"
         fi
-        log_warn "  PRESERVED_ORPHAN_DIR: ${wt_dir} is not a registered task worktree ($orphan_reason); retained (branch=${task_branch}). $(_wavemill_cleanup_operator_guidance retain_orphan_dir "$task_branch" "$orphan_independent_paths")"
+        WAVEMILL_CLEANUP_OUTCOME="retain_orphan_dir"
+        _wavemill_build_cleanup_evidence_json
+        return 10
       fi
-      WAVEMILL_CLEANUP_OUTCOME="retain_orphan_dir"
-      _wavemill_build_cleanup_evidence_json
-      return 10
     fi
-    verified_toplevel="$(git -C "$wt_dir" rev-parse --show-toplevel 2>/dev/null)" || true
+    if [[ "$orphan_cleanup_candidate" != "true" ]]; then
+      verified_toplevel="$(git -C "$wt_dir" rev-parse --show-toplevel 2>/dev/null)" || true
 
-    if ! dirty_status="$(wavemill_worktree_dirty_status "$wt_dir")"; then
-      classification="retain_dirty"
-      verification_reason="dirty_status_failed"
-      SAFE_CLEANUP_PRESERVATION_REASON="dirty_worktree"
-      SAFE_CLEANUP_VERIFICATION_REASON="dirty_status_failed"
-      if [[ "${WAVEMILL_CLASSIFY_ONLY:-0}" != "1" ]]; then
-        if ! _wavemill_record_cleanup_decision "retain_dirty" "dirty_worktree" "worktree_status_unreadable" "false"; then
-          log_warn "  Failed to write preserved-branch incident marker for $task_branch"
+      if ! dirty_status="$(wavemill_worktree_dirty_status "$wt_dir")"; then
+        classification="retain_dirty"
+        verification_reason="dirty_status_failed"
+        SAFE_CLEANUP_PRESERVATION_REASON="dirty_worktree"
+        SAFE_CLEANUP_VERIFICATION_REASON="dirty_status_failed"
+        if [[ "${WAVEMILL_CLASSIFY_ONLY:-0}" != "1" ]]; then
+          if ! _wavemill_record_cleanup_decision "retain_dirty" "dirty_worktree" "worktree_status_unreadable" "false"; then
+            log_warn "  Failed to write preserved-branch incident marker for $task_branch"
+          fi
+          log_warn "  PRESERVED_DIRTY_WORKTREE: ${wt_dir} status could not be inspected; retained (branch=${task_branch}). $(_wavemill_cleanup_operator_guidance retain_dirty "$task_branch")"
         fi
-        log_warn "  PRESERVED_DIRTY_WORKTREE: ${wt_dir} status could not be inspected; retained (branch=${task_branch}). $(_wavemill_cleanup_operator_guidance retain_dirty "$task_branch")"
+        WAVEMILL_CLEANUP_OUTCOME="retain_dirty"
+        _wavemill_build_cleanup_evidence_json
+        return 10
       fi
-      WAVEMILL_CLEANUP_OUTCOME="retain_dirty"
-      _wavemill_build_cleanup_evidence_json
-      return 10
-    fi
-    if [[ -n "$dirty_status" ]]; then
-      classification="retain_dirty"
-      verification_reason="uncommitted_changes"
-      SAFE_CLEANUP_PRESERVATION_REASON="dirty_worktree"
-      SAFE_CLEANUP_VERIFICATION_REASON=""
-      if [[ "${WAVEMILL_CLASSIFY_ONLY:-0}" != "1" ]]; then
-        if ! _wavemill_record_cleanup_decision "retain_dirty" "dirty_worktree" "uncommitted_changes" "false"; then
-          log_warn "  Failed to write preserved-branch incident marker for $task_branch"
+      if [[ -n "$dirty_status" ]]; then
+        classification="retain_dirty"
+        verification_reason="uncommitted_changes"
+        SAFE_CLEANUP_PRESERVATION_REASON="dirty_worktree"
+        SAFE_CLEANUP_VERIFICATION_REASON=""
+        if [[ "${WAVEMILL_CLASSIFY_ONLY:-0}" != "1" ]]; then
+          if ! _wavemill_record_cleanup_decision "retain_dirty" "dirty_worktree" "uncommitted_changes" "false"; then
+            log_warn "  Failed to write preserved-branch incident marker for $task_branch"
+          fi
+          log_warn "  PRESERVED_DIRTY_WORKTREE: ${wt_dir} has uncommitted changes; retained (branch=${task_branch}). $(_wavemill_cleanup_operator_guidance retain_dirty "$task_branch")"
         fi
-        log_warn "  PRESERVED_DIRTY_WORKTREE: ${wt_dir} has uncommitted changes; retained (branch=${task_branch}). $(_wavemill_cleanup_operator_guidance retain_dirty "$task_branch")"
+        WAVEMILL_CLEANUP_OUTCOME="retain_dirty"
+        _wavemill_build_cleanup_evidence_json
+        return 10
       fi
-      WAVEMILL_CLEANUP_OUTCOME="retain_dirty"
-      _wavemill_build_cleanup_evidence_json
-      return 10
     fi
   fi
 
@@ -1711,6 +1746,14 @@ safe_remove_task_worktree_and_branch() {
       fi
     fi
 
+    if [[ "$pr_state_evidence" == "MERGED" && "$classification" == "retain_unpublished" \
+      && "$verification_reason" == "unique_local_patch" ]] \
+      && wavemill_branch_content_matches_base "$base_ref" "$task_branch" "$pr_merge_sha"; then
+      classification="safe_content_equivalent_pr"
+      cleanup_authority="PR #${pr} merged into ${base_branch}; clean merge of ${task_branch} leaves the verified base tree unchanged"
+      verification_reason=""
+    fi
+
     if [[ -z "$classification" ]]; then
       if [[ -n "$verification_reason" ]]; then
         case "$verification_reason" in
@@ -1727,6 +1770,16 @@ safe_remove_task_worktree_and_branch() {
         classification="retain_unverifiable"
         verification_reason="unclassified"
       fi
+    fi
+
+    # An orphan directory cannot supply its own Git dirt check. Only a
+    # delivered branch proof can authorize removing its generated markers.
+    if [[ "$orphan_cleanup_candidate" == "true" ]]; then
+      case "$classification" in
+        safe_ancestor|safe_terminal_pr_head|safe_patch_equivalent_pr|safe_content_equivalent_pr) ;;
+        retain_*) ;;
+        *) classification="retain_unverifiable"; verification_reason="orphan_delivery_unverified" ;;
+      esac
     fi
 
     if cleanup_outcome_is_retain "$classification"; then
@@ -1770,7 +1823,12 @@ safe_remove_task_worktree_and_branch() {
     if [[ -n "$wt_dir" && -d "$wt_dir" ]]; then
       local final_worktree_identity
       final_worktree_identity="$(wavemill_task_worktree_identity "$wt_dir" "$REPO_DIR")"
-      if [[ "$final_worktree_identity" != "valid" ]]; then
+      if { [[ "$orphan_cleanup_candidate" == "true" ]] \
+          && { [[ "$final_worktree_identity" != "$worktree_identity" ]] \
+            || [[ -e "$wt_dir/.git" || -L "$wt_dir/.git" ]] \
+            || ! wavemill_orphan_dir_scan "$wt_dir" >/dev/null 2>&1; }; } \
+        || { [[ "$orphan_cleanup_candidate" != "true" ]] \
+          && [[ "$final_worktree_identity" != "valid" ]]; }; then
         final_check_passed="false"
         if ! _wavemill_record_cleanup_decision "retain_orphan_dir" "orphan_worktree" "$final_worktree_identity" "false"; then
           log_warn "  Failed to write preserved-branch incident marker for $task_branch"
@@ -1780,7 +1838,8 @@ safe_remove_task_worktree_and_branch() {
         return 10
       fi
 
-      if ! final_dirty="$(wavemill_worktree_dirty_status "$wt_dir")" || [[ -n "$final_dirty" ]]; then
+      if [[ "$orphan_cleanup_candidate" != "true" ]] \
+        && { ! final_dirty="$(wavemill_worktree_dirty_status "$wt_dir")" || [[ -n "$final_dirty" ]]; }; then
         final_check_passed="false"
         if ! _wavemill_record_cleanup_decision "retain_dirty" "dirty_worktree" "worktree_dirty_before_deletion" "false"; then
           log_warn "  Failed to write preserved-branch incident marker for $task_branch"
@@ -1806,6 +1865,15 @@ safe_remove_task_worktree_and_branch() {
       WAVEMILL_CLEANUP_OUTCOME="retain_unverifiable"
       return 10
     fi
+    if [[ "$classification" == "safe_content_equivalent_pr" ]] \
+      && { [[ "$(git -C "$REPO_DIR" rev-parse --verify "${base_ref}^{commit}" 2>/dev/null)" != "$base_sha" ]] \
+        || ! wavemill_branch_content_matches_base "$base_ref" "$task_branch" "$pr_merge_sha"; }; then
+      final_check_passed="false"
+      SAFE_CLEANUP_VERIFICATION_REASON="content_proof_changed"
+      _wavemill_record_cleanup_decision "retain_unverifiable" "delivery_unverified" "content_proof_changed" "false" 2>/dev/null || true
+      WAVEMILL_CLEANUP_OUTCOME="retain_unverifiable"
+      return 10
+    fi
     final_check_passed="true"
 
     # Deletion requires a durable authority record. If the record cannot be
@@ -1825,7 +1893,7 @@ safe_remove_task_worktree_and_branch() {
     final_identity_check="$(wavemill_task_worktree_identity "$wt_dir" "$REPO_DIR")"
 
     if [[ "$final_identity_check" != "valid" ]]; then
-      if wavemill_remove_orphan_task_dir "$wt_dir" "$task_branch"; then
+      if wavemill_remove_orphan_task_dir "$wt_dir" "${task_branch#task/}"; then
         log "debug" "Removed orphan worktree directory: $wt_dir"
       else
         log_warn "  Orphan worktree cleanup failed: $wt_dir (identity=$final_identity_check)"

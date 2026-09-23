@@ -71,6 +71,10 @@ helper_file="$tmp/safe-cleanup-helper.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_orphan_dir_scan"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_branch_content_matches_base"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_orphan_dir_in_bounds"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_remove_orphan_task_dir"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_worktree_dirty_status"
@@ -132,7 +136,8 @@ run_helper() {
   local repo="$1" wt_dir="$2" branch="$3" base_branch="${4:-auto/integration}" caller="${5:-test}"
   local issue="${6:-}" pr="${7:-}" gh_fixture="${8:-}" gate="${9:-}"
   REPO_DIR="$repo" WT_DIR="$wt_dir" BRANCH="$branch" BASE="$base_branch" CALLER="$caller" \
-  ISSUE_ARG="$issue" PR_ARG="$pr" GH_FIXTURE="$gh_fixture" GATE="$gate" HELPER_FILE="$helper_file" bash -lc '
+  ISSUE_ARG="$issue" PR_ARG="$pr" GH_FIXTURE="$gh_fixture" GATE="$gate" HELPER_FILE="$helper_file" \
+  WORKTREE_ROOT="$(dirname "$wt_dir")" bash -lc '
     set -euo pipefail
     source "$HELPER_FILE"
     MILL_LOG_FILE="$REPO_DIR/mill.log"
@@ -805,7 +810,10 @@ case_post_pr_unique_commit_retained() {
   commit_in_worktree "$wt" "unique.txt" "unique post-PR work"
 
   fixture="$tmp/post-pr-unique/pr.json"
-  record_pr_fixture "$fixture" "MERGED" "2026-09-04T12:00:00Z" "$head_at_pr" "auto/integration"
+  jq -cn --arg headOid "$head_at_pr" --arg mergeSha "$squash_commit" \
+    '{number: 4242, state: "MERGED", mergedAt: "2026-09-04T12:00:00Z",
+      headRefOid: $headOid, headRefName: "task/fixture",
+      baseRefName: "auto/integration", mergeCommit: {oid: $mergeSha}}' > "$fixture"
 
   out="$(run_helper "$repo" "$wt" "$branch" "auto/integration" "test" "HOK-3018U" "4242" "$fixture")"
   marker="$(marker_path "$repo" "$branch")"
@@ -818,6 +826,61 @@ case_post_pr_unique_commit_retained() {
     || fail "post-pr-unique marker classification mismatch"
   [[ "$(jq -r '.verificationReason' "$marker")" == "unique_local_patch" ]] \
     || fail "post-pr-unique marker should report unique_local_patch, got: $(jq -r '.verificationReason' "$marker")"
+}
+
+case_squash_content_equivalent_with_different_patch_id_deleted() {
+  local repo branch wt head_at_pr fixture out merge_sha
+  repo="$(setup_repo content-equivalent)"
+  branch="task/content-equivalent"
+  wt="$tmp/content-equivalent/wt"
+  add_task_worktree "$repo" "$branch" "$wt"
+  commit_in_worktree "$wt" "featureA.txt" "featureA"
+  head_at_pr="$(git -C "$wt" rev-parse HEAD)"
+  commit_in_worktree "$wt" "featureB.txt" "featureB"
+
+  # The squash includes both task files and an unrelated base-only file. Its
+  # patch ID cannot match the post-PR task commit, but merging the retained
+  # branch into the base contributes no file content.
+  cp "$wt/featureA.txt" "$repo/featureA.txt"
+  cp "$wt/featureB.txt" "$repo/featureB.txt"
+  printf 'base-only\n' > "$repo/base-only.txt"
+  git -C "$repo" add featureA.txt featureB.txt base-only.txt
+  git -C "$repo" commit -m "combined squash delivery" >/dev/null
+  merge_sha="$(git -C "$repo" rev-parse HEAD)"
+  git -C "$repo" push origin auto/integration >/dev/null 2>&1
+  fixture="$tmp/content-equivalent/pr.json"
+  jq -cn --arg headOid "$head_at_pr" --arg mergeSha "$merge_sha" \
+    '{number: 4242, state: "MERGED", mergedAt: "2026-09-04T12:00:00Z",
+      headRefOid: $headOid, headRefName: "task/fixture",
+      baseRefName: "auto/integration", mergeCommit: {oid: $mergeSha}}' > "$fixture"
+
+  [[ "$(git -C "$repo" cherry origin/auto/integration "$branch" "$head_at_pr" | awk '/^\+/ {count++} END {print count+0}')" == "1" ]] \
+    || fail "content-equivalent fixture did not produce a distinct patch ID"
+  out="$(run_helper "$repo" "$wt" "$branch" auto/integration test HOK-9003 4242 "$fixture")"
+  assert_contains "$out" "outcome=safe_content_equivalent_pr" "content-equivalent outcome"
+  branch_exists "$repo" "$branch" && fail "content-equivalent branch was retained"
+  assert_absent "$wt"
+}
+
+case_orphan_generated_markers_with_merged_pr_deleted() {
+  local repo branch wt head fixture out
+  repo="$(setup_squash_delivery orphan-delivered)"
+  branch="task/orphan-delivered"
+  wt="$tmp/orphan-delivered/wt"
+  head="$(git -C "$wt" rev-parse HEAD)"
+  git -C "$repo" worktree remove --force "$wt"
+  wt="$tmp/orphan-delivered/orphan-delivered"
+  mkdir -p "$wt/features/orphan-delivered"
+  printf 'done\n' > "$wt/features/orphan-delivered/.needs-attention"
+  printf '{}\n' > "$wt/features/orphan-delivered/.terminal-history.jsonl"
+  : > "$wt/features/orphan-delivered/.ready-bypass-warned"
+  fixture="$tmp/orphan-delivered/pr.json"
+  record_pr_fixture "$fixture" MERGED 2026-09-04T12:00:00Z "$head" auto/integration
+
+  out="$(run_helper "$repo" "$wt" "$branch" auto/integration test HOK-9004 4242 "$fixture")"
+  assert_contains "$out" "outcome=safe_terminal_pr_head" "orphan-delivered outcome"
+  branch_exists "$repo" "$branch" && fail "delivered orphan branch was retained"
+  assert_absent "$wt"
 }
 
 # Assertion 4: the read-only classifier delegates to the destructive path in
@@ -893,6 +956,8 @@ case_orphan_dir_wavemill_artifacts_removable
 case_orphan_removal_refuses_outside_bounded_root
 case_post_pr_patch_equivalent_deleted
 case_post_pr_unique_commit_retained
+case_squash_content_equivalent_with_different_patch_id_deleted
+case_orphan_generated_markers_with_merged_pr_deleted
 case_classifier_parity_read_only_matches_destructive
 
 echo "safe-branch-cleanup test passed"
