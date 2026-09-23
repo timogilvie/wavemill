@@ -806,7 +806,7 @@ export async function runNativeReview(
         totalTurns: loopResult?.turnsCompleted ?? 0,
         totalToolCalls: loopResult?.toolCallsExecuted ?? 0,
         ...(loopResult
-          ? { totalTokens: loopResult.totalInputTokens + loopResult.totalOutputTokens }
+          ? { totalTokens: (loopResult.totalInputTokens ?? 0) + (loopResult.totalOutputTokens ?? 0) }
           : {}),
       });
     } catch (error) {
