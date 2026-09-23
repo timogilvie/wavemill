@@ -20,6 +20,10 @@ export type { AgentContext, AgentMessage } from '@earendil-works/pi-agent-core';
 import { computeModelCost, type ModelPricing } from '../workflow-cost.ts';
 import type { ModelRegistry } from '../model-registry.ts';
 import { appendPromptSizeSample, type PromptSizeSample } from './prompt-size-log.ts';
+import { existsSync, readFileSync } from 'node:fs';
+import { projectSessionEvents } from '../tool-decision-projector.ts';
+import { appendDecisionRows } from '../tool-decision-corpus.ts';
+import { parseSessionEventJsonl } from './session-stream.schema.ts';
 import { assertToolCompat } from './tool-compat-validator.ts';
 import {
   assertPromptFitsContextWindow,
@@ -1467,6 +1471,23 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
     }
   } catch (error) {
     console.warn(`Failed to write session_ended event: ${(error as Error).message}`);
+  }
+
+  // Project session events into tool-decision corpus rows
+  try {
+    const streamConfig = config.sessionStreamConfig;
+    if (streamConfig?.repoDir && streamConfig.eventStreamPath) {
+      if (existsSync(streamConfig.eventStreamPath)) {
+        const content = readFileSync(streamConfig.eventStreamPath, 'utf-8');
+        const events = parseSessionEventJsonl(content);
+        const { rows } = projectSessionEvents(events);
+        if (rows.length > 0) {
+          appendDecisionRows(streamConfig.repoDir, streamConfig.sessionId, rows);
+        }
+      }
+    }
+  } catch (error) {
+    console.warn(`Failed to project tool-decision corpus: ${(error as Error).message}`);
   }
 
   if (loopError instanceof ContextExhaustedError) {

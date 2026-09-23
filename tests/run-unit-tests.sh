@@ -422,6 +422,7 @@ TESTS=(
   shared/fixtures/harness-replay/patch-selection-v1/schema.test.ts
   src/evaluation/scorers/wavemill/patch-selection.test.ts
   shared/lib/challenge-replay-capture.test.ts
+  tests/tool-decision-corpus.test.ts
 )
 
 SHARD_INDEX=1
