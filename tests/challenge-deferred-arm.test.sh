@@ -228,6 +228,73 @@ check_contains "fork trigger records missing_challenge_intent exhaustion" "$FORK
 check_contains "fork trigger emits invalid intent lifecycle event" "$FORK_TRIGGER_BLOCK" 'challenge_arm_invalid_intent'
 
 # ────────────────────────────────────────────────────────────────
+# Test 2b (HOK-3065): plan-stage seal + expanded-route materialisation wiring
+# ────────────────────────────────────────────────────────────────
+echo ""
+echo "=== HOK-3065 launch-site seal + materialise wiring ==="
+
+# The mill and monitor must SEAL a plan-stage challenge rather than coerce it to
+# single mode; the pending arm is recorded in awaiting_expanded_route.
+check_contains "mill seals plan-stage instead of coercing to single" \
+  "$(cat "$MILL_SCRIPT")" \
+  'plan_awaits_expanded_route="true"'
+check_contains "mill no longer coerces plan-stage challenge to single" \
+  "$([[ $(grep -c 'plan_stage_expanded_route_unavailable' "$MILL_SCRIPT") == "0" ]] && echo absent || echo present)" \
+  'absent'
+check_contains "mill passes awaiting_expanded_route pending state to arm builder" \
+  "$(grep -B2 -A2 'pending_arm_state="awaiting_expanded_route"' "$MILL_SCRIPT")" \
+  'pending_arm_state="awaiting_expanded_route"'
+check_contains "mill forwards pending_arm_state to challenge_arm_json_build" \
+  "$(cat "$MILL_SCRIPT")" \
+  '"$pending_arm_state")"'
+
+check_contains "monitor seals plan-stage instead of retargeting" \
+  "$(cat "$MONITOR_SCRIPT_FILE")" \
+  'plan_awaits_expanded_route="true"'
+check_contains "monitor no longer retargets plan-stage to implementation" \
+  "$([[ $(grep -c 'retargeted to implementation stage' "$MONITOR_SCRIPT_FILE") == "0" ]] && echo absent || echo present)" \
+  'absent'
+check_contains "monitor forwards pending_arm_state to challenge_arm_json_build" \
+  "$(cat "$MONITOR_SCRIPT_FILE")" \
+  '"${pending_arm_state:-awaiting_fork}")"'
+
+# finalize (plan→code handoff) must materialise awaiting_expanded_route arms.
+FINALIZE_BLOCK=$(awk '
+  /^finalize_challenge_execution_intent_before_coding\(\) \{/ { capture=1 }
+  capture { print }
+  /^}/ && capture { exit }
+' "$MONITOR_SCRIPT_FILE")
+check_contains "finalize lists awaiting_expanded_route arms" "$FINALIZE_BLOCK" 'challenge_arms_list_awaiting_expanded_route "$issue"'
+check_contains "finalize invokes the expanded-route materialiser" "$FINALIZE_BLOCK" 'challenge_maybe_materialize_expanded_route_arms "$issue"'
+
+# The plan-stage materialiser forks at t=0 (base) and launches planning — not
+# the reviewer-stage coding-HEAD fork that launches review.
+MAT_EXPANDED_BLOCK=$(awk '
+  /^challenge_materialize_expanded_route_arm\(\) \{/ { capture=1 }
+  capture { print }
+  /^}/ && capture { exit }
+' "$MONITOR_SCRIPT_FILE")
+check_contains "expanded-route materialiser forks at the base (t=0)" "$MAT_EXPANDED_BLOCK" 'git -C "$REPO_DIR" worktree add -b "$arm_branch" "$challenger_wt_dir" "$fork_ref"'
+check_contains "expanded-route materialiser launches planning, not review" "$MAT_EXPANDED_BLOCK" 'launch_planning_phase "$arm_key"'
+check_contains "expanded-route materialiser resolves the sealed decision" "$MAT_EXPANDED_BLOCK" '--resolve-sealed --sealed-intent'
+check_contains "expanded-route materialiser returns terminal rc for ineligible sealed challenger" "$MAT_EXPANDED_BLOCK" 'return 2'
+check_contains "expanded-route materialiser excludes plan/coding artifacts (plans from t=0)" \
+  "$([[ "$MAT_EXPANDED_BLOCK" == *".coding-complete"* ]] && echo present || echo absent)" \
+  'absent'
+
+# The expanded-route trigger drives only awaiting_expanded_route arms, uses the
+# checked-and-set transition, and collapses (never substitutes) on terminal rc.
+TRIGGER_EXPANDED_BLOCK=$(awk '
+  /^challenge_maybe_materialize_expanded_route_arms\(\) \{/ { capture=1 }
+  capture { print }
+  /^}/ && capture { exit }
+' "$MONITOR_SCRIPT_FILE")
+check_contains "expanded-route trigger lists only its own pending arms" "$TRIGGER_EXPANDED_BLOCK" 'challenge_arms_list_awaiting_expanded_route "$primary_issue"'
+check_contains "expanded-route trigger waits for the expanded route" "$TRIGGER_EXPANDED_BLOCK" '.post-expansion-route.json'
+check_contains "expanded-route trigger uses checked-and-set exactly-once" "$TRIGGER_EXPANDED_BLOCK" 'challenge_arms_set_state "$primary_issue" "$arm_key" "awaiting_expanded_route" "materializing"'
+check_contains "expanded-route trigger collapses (never substitutes) on terminal rc" "$TRIGGER_EXPANDED_BLOCK" 'challenge_cancel_challenger_arm "$primary_issue"'
+
+# ────────────────────────────────────────────────────────────────
 # Test 3: materialisation happy path (scratch git repo)
 # ────────────────────────────────────────────────────────────────
 echo ""
@@ -450,6 +517,75 @@ check_contains "NO_COMPARISON_REASONS carries pre_fork_primary_failure" \
 check_contains "eval-schema.json carries pre_fork_primary_failure" \
   "$(cat "$REPO_DIR/shared/lib/eval-schema.json")" \
   '"pre_fork_primary_failure"'
+
+# ────────────────────────────────────────────────────────────────
+# Test 4c (HOK-3065): awaiting_expanded_route planner-stage arms
+# ────────────────────────────────────────────────────────────────
+echo ""
+echo "=== HOK-3065 awaiting_expanded_route pending arm ==="
+
+# A planner-stage arm is sealed at launch in awaiting_expanded_route, distinct
+# from a reviewer arm's awaiting_fork. The 16th builder arg picks the state.
+PLAN_ARM_JSON="$(challenge_arm_json_build \
+  "HOK-1234_c" "foo-challenger" "task/foo-challenger" \
+  "challenger" "plan" \
+  "bootstrap-coder" "glm-5.2" "bootstrap-reviewer" \
+  "claude" "native-openrouter" "claude" \
+  "light" "medium" "static" \
+  "" "awaiting_expanded_route")"
+check_eq "planner arm starts in awaiting_expanded_route" "awaiting_expanded_route" \
+  "$(echo "$PLAN_ARM_JSON" | jq -r '.challengeArmState')"
+check_eq "planner arm records pendingState marker" "awaiting_expanded_route" \
+  "$(echo "$PLAN_ARM_JSON" | jq -r '.pendingState')"
+check_eq "planner arm keeps the sealed varied planner" "glm-5.2" \
+  "$(echo "$PLAN_ARM_JSON" | jq -r '.models.planner')"
+
+# An unrecognized state falls back to awaiting_fork rather than pinning junk.
+BOGUS_STATE_ARM="$(challenge_arm_json_build \
+  "HOK-1234_c" "foo-challenger" "task/foo-challenger" \
+  "challenger" "plan" \
+  "bootstrap-coder" "glm-5.2" "bootstrap-reviewer" \
+  "claude" "native-openrouter" "claude" \
+  "light" "medium" "static" \
+  "" "not-a-state")"
+check_eq "unrecognized pending state falls back to awaiting_fork" "awaiting_fork" \
+  "$(echo "$BOGUS_STATE_ARM" | jq -r '.challengeArmState')"
+
+printf '%s\n' '{"session":"test","tasks":{"HOK-1234":{"slug":"foo","challenge":true,"challengeRole":"primary","challengePairId":"HOK-1234"}}}' > "$STATE_FILE"
+challenge_arms_record_pending "HOK-1234" "$PLAN_ARM_JSON"
+
+# The reviewer-stage fork trigger must NOT see a planner arm.
+check_eq "list_pending ignores awaiting_expanded_route arms" "0" \
+  "$(challenge_arms_list_pending "HOK-1234" | jq -r 'length')"
+check_eq "list_awaiting_expanded_route finds the planner arm" "1" \
+  "$(challenge_arms_list_awaiting_expanded_route "HOK-1234" | jq -r 'length')"
+
+# Restart recovery returns an interrupted planner arm to awaiting_expanded_route,
+# not to the reviewer-stage awaiting_fork.
+challenge_arms_set_state "HOK-1234" "HOK-1234_c" "awaiting_expanded_route" "materializing"
+challenge_arms_recover_interrupted "HOK-1234"
+check_eq "recover returns planner arm to awaiting_expanded_route" "awaiting_expanded_route" \
+  "$(jq -r '.tasks["HOK-1234"].challengeArms[0].challengeArmState' "$STATE_FILE")"
+check_eq "recover stamps recoveredTo origin" "awaiting_expanded_route" \
+  "$(jq -r '.tasks["HOK-1234"].challengeArms[0].recoveredTo' "$STATE_FILE")"
+# Restart recovery is exactly-once: a second pass leaves the arm untouched.
+challenge_arms_recover_interrupted "HOK-1234"
+check_eq "recover is idempotent for planner arms" "awaiting_expanded_route" \
+  "$(jq -r '.tasks["HOK-1234"].challengeArms[0].challengeArmState' "$STATE_FILE")"
+
+# Pre-materialization cancellation collapses a planner arm too.
+challenge_arms_cancel_pending "HOK-1234" "pre_materialization_failure" "expanded route invalid"
+check_eq "cancel collapses awaiting_expanded_route arm" "cancelled" \
+  "$(jq -r '.tasks["HOK-1234"].challengeArms[0].challengeArmState' "$STATE_FILE")"
+check_eq "cancel stamps typed reason on planner arm" "pre_materialization_failure" \
+  "$(jq -r '.tasks["HOK-1234"].challengeArms[0].cancelReason' "$STATE_FILE")"
+check_eq "cancel clears .challenge on primary for planner arm" "false" \
+  "$(jq -r '.tasks["HOK-1234"].challenge' "$STATE_FILE")"
+if jq -e '.tasks["HOK-1234_c"]' "$STATE_FILE" >/dev/null 2>&1; then
+  fail "planner arm collapse never creates a challenger task"
+else
+  pass "planner arm collapse never creates a challenger task"
+fi
 
 # ────────────────────────────────────────────────────────────────
 # Test 5: schema allows source=inherited on stage-result files

@@ -2323,22 +2323,6 @@ log_challenge_selection_health_plan() {
   fi
 }
 
-release_challenge_selection_health_plan() {
-  local issue="$1" challenge_plan="$2"
-  local stage model
-  stage=$(echo "$challenge_plan" | jq -r '.challengeStage // empty' 2>/dev/null || echo "")
-  model=$(echo "$challenge_plan" | jq -r '.entries[1].variedModel // .entries[1].model // empty' 2>/dev/null || echo "")
-  [[ -n "$stage" && -n "$model" && -n "${REPO_DIR:-}" ]] || return 0
-  [[ -f "$REPO_DIR/tools/challenge-selection-health.ts" ]] || return 0
-  (
-    cd "$REPO_DIR" && npx tsx tools/challenge-selection-health.ts release \
-      --repo-dir "$REPO_DIR" \
-      --pair-id "$issue" \
-      --stage "$stage" \
-      --model "$model"
-  ) >/dev/null 2>&1 || true
-}
-
 # ── Phase 5: Challenge-mode launch planning ──────────────────────────────
 FINAL_LAUNCH_ARGS=()
 slots_used=0
@@ -2381,6 +2365,7 @@ for t in "${TASKS[@]}"; do
   # remaining-slots >= 2 as long as the primary slot is available.
   challenge_mode="single"
   challenge_reason=""
+  plan_awaits_expanded_route="false"
   if [[ -n "${FORCE_MODEL:-}" ]]; then
     challenge_reason="forced_model"
     log "debug" "  $ISSUE: Challenge skipped because FORCE_MODEL is set ($FORCE_MODEL)"
@@ -2402,10 +2387,17 @@ for t in "${TASKS[@]}"; do
       continue
     fi
     if challenge_plan_stage_requires_effective_route "$challenge_plan"; then
-      release_challenge_selection_health_plan "$ISSUE" "$challenge_plan"
-      challenge_mode="single"
-      challenge_reason="plan_stage_expanded_route_unavailable"
-      log_warn "  $ISSUE: Planner challenge deferred until expanded route is available"
+      # HOK-3065: a plan-stage challenge cannot resolve its non-varied route
+      # before the expanded task packet exists, but the *selection* (stage,
+      # pair, challenger identity) is already decided. Coercing to single here
+      # is what later produced `challenger_never_launched`: the system deferred
+      # and prohibited the same action. Instead, seal the decision now and defer
+      # the challenger as an awaiting_expanded_route arm that materialises at t=0
+      # once the expanded route is available. Keep challenge_mode=challenge and
+      # the selection-health reservation so the sealed challenger is preserved.
+      plan_awaits_expanded_route="true"
+      challenge_reason="awaiting_expanded_route"
+      log "status" "  $ISSUE: Planner challenge sealed (challenger deferred until expanded route, awaiting_expanded_route)"
     fi
   fi
 
@@ -2438,8 +2430,15 @@ for t in "${TASKS[@]}"; do
     # for the challenger pre-fork — materialisation copies the primary's whole
     # feature dir into the challenger's, so /tmp mirrors would be stale anyway.
     defer_challenger="false"
+    pending_arm_state="awaiting_fork"
     if [[ "$challenge_stage" == "review" ]]; then
       defer_challenger="true"
+    elif [[ "$plan_awaits_expanded_route" == "true" ]]; then
+      # HOK-3065: plan-stage challenger sealed pre-expansion. Defer it as an
+      # awaiting_expanded_route arm; it forks at t=0 once the expanded route
+      # is available (distinct from the reviewer-stage awaiting_fork arm).
+      defer_challenger="true"
+      pending_arm_state="awaiting_expanded_route"
     fi
     if [[ "$defer_challenger" != "true" ]]; then
       cp "/tmp/${SESSION}-${ISSUE}-taskpacket.md" "/tmp/${SESSION}-${challenger_key}-taskpacket.md" 2>/dev/null || true
@@ -2504,7 +2503,8 @@ for t in "${TASKS[@]}"; do
         "${challenger_entry_plan_depth:-$route_plan_depth}" \
         "${challenger_entry_code_depth:-$route_code_depth}" \
         "${challenger_entry_review_mode:-$route_review_mode}" \
-        "$challenge_execution_intent")"
+        "$challenge_execution_intent" \
+        "$pending_arm_state")"
       challenge_arms_record_pending "$ISSUE" "$pending_arm_json" || \
         log "warn" "  $ISSUE: failed to record pending challenger arm $challenger_key"
       if challenge_intent_json_is_canonical "$challenge_execution_intent"; then
@@ -2516,7 +2516,9 @@ for t in "${TASKS[@]}"; do
     slots_used=$((slots_used + 1))  # Challenger is free overhead
     primary_varied=$(echo "$challenge_plan" | jq -r '.entries[0].variedModel // .entries[0].model // empty' 2>/dev/null)
     challenger_varied=$(echo "$challenge_plan" | jq -r '.entries[1].variedModel // .entries[1].model // empty' 2>/dev/null)
-    if [[ "$defer_challenger" == "true" ]]; then
+    if [[ "$defer_challenger" == "true" && "$pending_arm_state" == "awaiting_expanded_route" ]]; then
+      log "status" "  $ISSUE: Challenge selected (stage=${challenge_stage}: ${primary_varied} vs ${challenger_varied}) [challenger deferred until expanded route]"
+    elif [[ "$defer_challenger" == "true" ]]; then
       log "status" "  $ISSUE: Challenge selected (stage=${challenge_stage}: ${primary_varied} vs ${challenger_varied}) [challenger deferred until fork]"
     else
       log "status" "  $ISSUE: Challenge selected (stage=${challenge_stage}: ${primary_varied} vs ${challenger_varied}) [challenger is extra pane]"

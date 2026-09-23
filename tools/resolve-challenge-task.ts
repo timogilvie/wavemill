@@ -22,6 +22,14 @@ import { buildEvalSummary, modelStageCount } from '../shared/lib/challenge-sched
 import { resolveAgent, tryResolveAgent } from '../shared/lib/model-router.ts';
 import { readBothRouteArtifacts } from '../shared/lib/route-artifact.ts';
 import { readTaskPromptFromFile } from '../shared/lib/workflow-router.ts';
+import {
+  sealChallengeDecision,
+  resolveSealedDecisionAgainstExpandedRoute,
+  type ChallengeExecutionIntent,
+} from '../shared/lib/challenge-execution-contract.ts';
+import type { ChallengeRoutingMeta } from '../shared/lib/challenge-comparison.ts';
+import type { AgentType } from '../shared/lib/model-registry.ts';
+import type { AgentResolutionPhase } from '../shared/lib/model-agent-resolution.ts';
 import { buildChallengeUnavailable } from '../shared/lib/challenge-unavailable.ts';
 import {
   buildSelectionHealthDiagnostic,
@@ -52,9 +60,34 @@ runTool({
       type: 'string',
       description: 'Stage already chosen for this pair (plan|implementation|review); suppresses stage re-sampling',
     },
+    'resolve-sealed': {
+      type: 'boolean',
+      description: 'HOK-3065: resolve a sealed decision against the expanded route instead of running the lottery',
+    },
+    'sealed-intent': {
+      type: 'string',
+      description: 'Sealed challenge execution intent JSON (with --resolve-sealed)',
+    },
   },
   async run({ args }) {
     const repoDir = (args['repo-dir'] as string) || process.cwd();
+
+    // HOK-3065: sealed-decision resolution. Given an intent whose selection was
+    // sealed at launch and a feature dir that now carries the expanded route,
+    // enrich the non-varied fields and preserve the varied challenger, or
+    // collapse with a typed reason. The challenge lottery is never re-run here:
+    // finalization must not turn a single into a challenge, reroll the stage, or
+    // substitute the sealed challenger.
+    if (args['resolve-sealed']) {
+      resolveSealedAndPrint({
+        repoDir,
+        sealedIntentRaw: args['sealed-intent'] as string | undefined,
+        featureDir: args['feature-dir'] as string | undefined,
+        defaultAgent: (loadWavemillConfig(repoDir).router?.defaultAgent) || 'claude',
+      });
+      return;
+    }
+
     const issue = args.issue as string;
     const slug = args.slug as string;
     const title = args.title as string;
@@ -626,6 +659,87 @@ function normalizeChallengeStage(value: string | undefined): ChallengeStage | un
   if (raw === 'review' || raw === 'reviewer') return 'review';
   if (raw === 'implementation' || raw === 'coding' || raw === 'coder') return 'implementation';
   return undefined;
+}
+
+function stageToAgentPhase(stage: 'plan' | 'implementation' | 'review'): AgentResolutionPhase {
+  if (stage === 'plan') return 'planning';
+  if (stage === 'review') return 'review';
+  return 'coding';
+}
+
+/**
+ * HOK-3065 sealed-decision resolution.
+ *
+ * Reads a sealed intent and the expanded route, then enriches the non-varied
+ * route fields while preserving the sealed challenger byte-for-byte. Eligibility
+ * is a direct launchability check of the sealed challenger's varied model for
+ * its stage — if that model can no longer run, the pair collapses with a typed
+ * reason instead of substituting a different challenger. Prints one JSON object:
+ * `{status:'materialize', variedStage, challengerVariedModel, intent}` or
+ * `{status:'collapse', reason, detail}`.
+ */
+function resolveSealedAndPrint(input: {
+  repoDir: string;
+  sealedIntentRaw?: string;
+  featureDir?: string;
+  defaultAgent: AgentType;
+}): void {
+  let sealed: ChallengeExecutionIntent | undefined;
+  try {
+    sealed = input.sealedIntentRaw
+      ? JSON.parse(input.sealedIntentRaw) as ChallengeExecutionIntent
+      : undefined;
+  } catch {
+    sealed = undefined;
+  }
+
+  const decision = sealChallengeDecision(sealed);
+  if (!sealed || !decision) {
+    console.log(JSON.stringify({
+      status: 'collapse',
+      reason: 'sealed_intent_incomplete',
+      detail: '--sealed-intent was missing or not a well-formed two-sided challenge intent.',
+    }));
+    return;
+  }
+
+  const artifacts = input.featureDir
+    ? readBothRouteArtifacts(input.featureDir)
+    : { bootstrap: null, expanded: null };
+  const expanded = artifacts.expanded;
+  if (!expanded) {
+    console.log(JSON.stringify({
+      status: 'collapse',
+      reason: 'expanded_route_missing',
+      detail: 'No expanded route (.post-expansion-route.json) in the feature dir.',
+    }));
+    return;
+  }
+
+  const expandedRoute: ChallengeRoutingMeta = {
+    planner: expanded.planner ?? '',
+    coder: expanded.coder ?? '',
+    reviewer: expanded.reviewer ?? '',
+    planDepth: expanded.planDepth ?? '',
+    codeDepth: expanded.codeDepth ?? '',
+    reviewMode: expanded.reviewMode ?? '',
+  };
+
+  const launchable = tryResolveAgent(
+    decision.challengerVariedModel,
+    {},
+    input.defaultAgent,
+    input.repoDir,
+    stageToAgentPhase(decision.selectedStage),
+  );
+  const eligibleVariedModels = launchable.ok ? [decision.challengerVariedModel] : [];
+
+  const result = resolveSealedDecisionAgainstExpandedRoute({
+    sealed,
+    expandedRoute,
+    eligibleVariedModels,
+  });
+  console.log(JSON.stringify(result));
 }
 
 function recommendationForIntent(value: unknown) {

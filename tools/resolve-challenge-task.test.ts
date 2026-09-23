@@ -700,6 +700,117 @@ describe('resolve-challenge-task CLI', () => {
     }
   });
 
+  // HOK-3065: --resolve-sealed enriches a sealed decision with the expanded
+  // route without ever re-running the lottery.
+  function makeSealedRepo(): { repoDir: string; featureDir: string } {
+    const repoDir = mkdtempSync(join(tmpdir(), 'resolve-sealed-'));
+    writeFileSync(join(repoDir, '.wavemill-config.json'), JSON.stringify({
+      challenge: { enabled: true },
+      router: { defaultAgent: 'claude' },
+    }), 'utf-8');
+    const featureDir = join(repoDir, 'features', 'sealed');
+    mkdirSync(featureDir, { recursive: true });
+    writeFileSync(join(featureDir, '.post-expansion-route.json'), JSON.stringify({
+      planner: 'claude-opus-4-8',
+      coder: 'claude-sonnet-5',
+      reviewer: 'claude-sonnet-5',
+      planDepth: 'deep',
+      codeDepth: 'deep',
+      reviewMode: 'llm',
+    }), 'utf-8');
+    return { repoDir, featureDir };
+  }
+
+  function sealedPlanIntent(challengerPlanner: string): string {
+    return JSON.stringify({
+      schemaVersion: 1,
+      pairId: 'HOK-3065',
+      issueId: 'HOK-3065',
+      selectedStage: 'plan',
+      challengeStage: 'plan',
+      decisionSource: 'bootstrap',
+      primary: {
+        key: 'HOK-3065', role: 'primary',
+        planner: { model: 'bootstrap-planner', agent: 'claude' },
+        coder: { model: 'bootstrap-coder', agent: 'claude' },
+        reviewer: { model: 'bootstrap-reviewer', agent: 'claude' },
+      },
+      challenger: {
+        key: 'HOK-3065_c', role: 'challenger',
+        planner: { model: challengerPlanner, agent: 'claude' },
+        coder: { model: 'bootstrap-coder', agent: 'claude' },
+        reviewer: { model: 'bootstrap-reviewer', agent: 'claude' },
+      },
+    });
+  }
+
+  it('resolve-sealed enriches the non-varied route and preserves the sealed plan challenger', () => {
+    const { repoDir, featureDir } = makeSealedRepo();
+    try {
+      const result = runResolveChallengeTask(repoDir, [
+        '--resolve-sealed',
+        '--sealed-intent', sealedPlanIntent('claude-haiku-4-5-20251001'),
+        '--feature-dir', featureDir,
+        '--repo-dir', repoDir,
+      ]);
+      assert.equal(result.status, 'materialize');
+      assert.equal(result.variedStage, 'plan');
+      assert.equal(result.challengerVariedModel, 'claude-haiku-4-5-20251001');
+      const intent = result.intent as {
+        decisionSource: string;
+        primary: { planner: { model: string }; coder: { model: string } };
+        challenger: { planner: { model: string }; coder: { model: string } };
+      };
+      assert.equal(intent.decisionSource, 'preserved');
+      // Primary incumbent planner enriched from the expanded route.
+      assert.equal(intent.primary.planner.model, 'claude-opus-4-8');
+      // Non-varied stage shared from the expanded route.
+      assert.equal(intent.challenger.coder.model, 'claude-sonnet-5');
+      // Sealed challenger planner preserved byte-for-byte.
+      assert.equal(intent.challenger.planner.model, 'claude-haiku-4-5-20251001');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('resolve-sealed collapses (never substitutes) when the sealed challenger is unlaunchable', () => {
+    const { repoDir, featureDir } = makeSealedRepo();
+    try {
+      const result = runResolveChallengeTask(repoDir, [
+        '--resolve-sealed',
+        '--sealed-intent', sealedPlanIntent('totally-bogus-model-that-cannot-launch'),
+        '--feature-dir', featureDir,
+        '--repo-dir', repoDir,
+      ]);
+      assert.equal(result.status, 'collapse');
+      assert.equal(result.reason, 'sealed_challenger_ineligible');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('resolve-sealed collapses when the expanded route is not yet present', () => {
+    const repoDir = mkdtempSync(join(tmpdir(), 'resolve-sealed-noroute-'));
+    writeFileSync(join(repoDir, '.wavemill-config.json'), JSON.stringify({
+      challenge: { enabled: true },
+      router: { defaultAgent: 'claude' },
+    }), 'utf-8');
+    const featureDir = join(repoDir, 'features', 'sealed');
+    mkdirSync(featureDir, { recursive: true });
+    try {
+      const result = runResolveChallengeTask(repoDir, [
+        '--resolve-sealed',
+        '--sealed-intent', sealedPlanIntent('claude-haiku-4-5-20251001'),
+        '--feature-dir', featureDir,
+        '--repo-dir', repoDir,
+      ]);
+      assert.equal(result.status, 'collapse');
+      assert.equal(result.reason, 'expanded_route_missing');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
   it('ignores an unrecognized pinned stage instead of pinning a bogus one', () => {
     const { repoDir, featureDir } = makePlannerRecommendationRepo();
     try {
