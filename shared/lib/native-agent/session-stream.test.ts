@@ -631,3 +631,123 @@ describe('SessionStreamWriter: persistence', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Per-turn menu event round-trip (HOK-3054)
+// ---------------------------------------------------------------------------
+
+describe('SessionStreamWriter: tool_menu + provider_tools + model_request digest wiring', () => {
+  it('round-trips a menu payload with digests attached to model_request', () => {
+    const tempDir = makeTempDir();
+    try {
+      const path = join(tempDir, 'session-events', 'menu.jsonl');
+      const writer = new SessionStreamWriter(
+        {
+          sessionId: 'menu-round-trip',
+          traceId: 'trace-menu',
+          phase: 'planning',
+          path,
+          clock,
+        },
+        tempDir,
+      );
+
+      const logicalEntries = [
+        {
+          name: 'read_file',
+          family: 'core',
+          logicalId: 'core.read_file',
+        },
+      ];
+      const providerEntries = [
+        {
+          name: 'read_file',
+          parameters: { type: 'object', properties: {} },
+        },
+      ];
+      const toolMenuDigest = computeValueDigest(logicalEntries);
+      const providerToolsDigest = computeValueDigest(providerEntries);
+
+      writer.writeSessionStarted({ initialConfigDigest: 'digest' });
+      writer.writeToolMenu({
+        toolNames: ['read_file'],
+        digest: toolMenuDigest,
+      });
+      writer.writeProviderTools({
+        toolCount: 1,
+        digest: providerToolsDigest,
+      });
+      writer.writeModelRequest({
+        callId: 'req-1',
+        turnIndex: 0,
+        provider: 'test-provider',
+        modelId: 'test-model',
+        config: {},
+        contextDigest: 'ctx',
+        promptRefs: [],
+        toolMenuDigest,
+        providerToolsDigest,
+      });
+      writer.writeSessionEnded({ stopReason: 'stop', totalTurns: 1, totalToolCalls: 0 });
+
+      const events = parseSessionEventJsonl(readFileSync(path, 'utf-8'));
+      const toolMenu = events.find((e) => e.type === 'tool_menu') as any;
+      const providerTools = events.find((e) => e.type === 'provider_tools') as any;
+      const modelRequest = events.find((e) => e.type === 'model_request') as any;
+      assert.ok(toolMenu);
+      assert.ok(providerTools);
+      assert.ok(modelRequest);
+      assert.equal(toolMenu.digest, toolMenuDigest);
+      assert.equal(providerTools.digest, providerToolsDigest);
+      assert.equal(modelRequest.toolMenuDigest, toolMenuDigest);
+      assert.equal(modelRequest.providerToolsDigest, providerToolsDigest);
+      // Digest of the canonical form is reproducible from the payloads themselves.
+      assert.equal(computeValueDigest(logicalEntries), toolMenuDigest);
+      assert.equal(computeValueDigest(providerEntries), providerToolsDigest);
+    } finally {
+      cleanup(tempDir);
+    }
+  });
+
+  it('accepts an empty menu — digest matches the canonical empty-array digest and is byte-stable', () => {
+    const tempDir = makeTempDir();
+    try {
+      const path = join(tempDir, 'session-events', 'menu-empty.jsonl');
+      const writer = new SessionStreamWriter(
+        {
+          sessionId: 'menu-empty',
+          traceId: 'trace-empty',
+          phase: 'planning',
+          path,
+          clock,
+        },
+        tempDir,
+      );
+
+      const emptyDigest = computeValueDigest([]);
+      writer.writeSessionStarted({ initialConfigDigest: 'digest' });
+      writer.writeToolMenu({ toolNames: [], digest: emptyDigest });
+      writer.writeProviderTools({ toolCount: 0, digest: emptyDigest });
+      writer.writeModelRequest({
+        callId: 'req-1',
+        turnIndex: 0,
+        provider: 'test-provider',
+        modelId: 'test-model',
+        config: {},
+        contextDigest: 'ctx',
+        promptRefs: [],
+        toolMenuDigest: emptyDigest,
+        providerToolsDigest: emptyDigest,
+      });
+
+      const events = parseSessionEventJsonl(readFileSync(path, 'utf-8'));
+      const modelRequest = events.find((e) => e.type === 'model_request') as any;
+      assert.equal(modelRequest.toolMenuDigest, emptyDigest);
+      assert.equal(modelRequest.providerToolsDigest, emptyDigest);
+      // Byte-stability: identical inputs yield identical digest strings.
+      assert.equal(computeValueDigest([]), emptyDigest);
+    } finally {
+      cleanup(tempDir);
+    }
+  });
+});

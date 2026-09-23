@@ -171,12 +171,41 @@ export function resolveSelectionHealthPath(opts: SelectionHealthOptions = {}): s
   return join(resolve(opts.repoDir ?? process.cwd()), '.wavemill', CHALLENGE_SELECTION_HEALTH_FILENAME);
 }
 
+/**
+ * Split a model selector into an optional provider hint and the bare model id,
+ * tolerating the `provider/model`, `native-provider/model`, and bare `model`
+ * forms observed across challenge routing, stage results, and abort markers
+ * (HOK-3064). Mirrors `parseRequestedNativeModel` in native-agent/review.ts so
+ * both sides normalize identity the same way.
+ */
+function parseModelSelector(model: string): { providerHint?: string; bareModel: string } {
+  const trimmed = model.trim();
+  const separatorIndex = trimmed.indexOf('/');
+  if (separatorIndex <= 0) {
+    return { bareModel: trimmed };
+  }
+  const rawProvider = trimmed.slice(0, separatorIndex);
+  const bareModel = trimmed.slice(separatorIndex + 1) || trimmed;
+  const providerHint = rawProvider.startsWith('native-') ? rawProvider.slice('native-'.length) : rawProvider;
+  return { providerHint: providerHint || undefined, bareModel };
+}
+
+/**
+ * Resolve a model selector to its canonical `{provider, canonicalModel}` health
+ * key. The registry is tried on the full selector first, then on the parsed
+ * bare id, so `kimi-k2`, `openrouter/kimi-k2`, and `native-openrouter/kimi-k2`
+ * all key to `openrouter|<alias>` — one OpenRouter execution never splits
+ * across `native` and `native-openrouter` health rows (HOK-3064). When the
+ * registry cannot resolve but the selector carried a provider hint, that hint
+ * (stripped of any `native-` prefix) is used instead of `'unknown'`.
+ */
 export function resolveSelectionHealthKey(model: string): SelectionHealthKey {
   const trimmed = model.trim();
-  const resolved = resolveProviderNativeModelId(trimmed);
+  const { providerHint, bareModel } = parseModelSelector(trimmed);
+  const resolved = resolveProviderNativeModelId(trimmed) ?? resolveProviderNativeModelId(bareModel);
   return {
-    provider: resolved?.provider ?? 'unknown',
-    canonicalModel: resolved?.wavemillAlias ?? trimmed,
+    provider: resolved?.provider ?? providerHint ?? 'unknown',
+    canonicalModel: resolved?.wavemillAlias ?? bareModel,
   };
 }
 

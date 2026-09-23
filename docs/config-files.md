@@ -87,6 +87,48 @@ The dedicated Backstage Observer pane is opt-in and only runs when both
   current service writes only redacted heartbeat and finding counts to
   `.wavemill/backstage-health.json`.
 
+#### `observer.linear` shadow mode
+
+`observer.linear` exposes a `mode` field with values `off | offline | shadow |
+live`. `off` is the default. `offline` (or legacy `detectionOnly: true`) makes
+zero network calls and returns `unknown_needs_lookup` where a live path would
+need a Linear read. `shadow` performs bounded Linear reads for correlation but
+a runtime guard blocks every write method (`createIssue`, `createComment`,
+`getOrCreateLabel`, `addLabelsToIssue`), producing exact redacted proposals
+plus an auditable JSONL. `live` is the mutating mode and is unchanged.
+
+```json
+{
+  "observer": {
+    "linear": {
+      "mode": "shadow",
+      "maxIncidentsPerPass": 10,
+      "shadow": {
+        "auditPath": ".wavemill/observer/shadow-audit.jsonl",
+        "countersPath": ".wavemill/observer/shadow-counters.json",
+        "maxEntries": 500,
+        "maxAgeDays": 14,
+        "maxLookupsPerPass": 40
+      }
+    }
+  }
+}
+```
+
+- `mode` overrides legacy `enabled`/`detectionOnly`. Shadow can only be
+  requested through this field; a legacy config keeps its current behaviour.
+- `shadow.auditPath` is the bounded JSONL of every eligible incident's exact
+  proposal (title, body/comment, correlation target, reconciliation, redaction
+  summary, policy decision).
+- `shadow.countersPath` is a small JSON of aggregate counters that survives
+  restart (each pass appends to the previous total).
+- `shadow.maxEntries` and `shadow.maxAgeDays` bound audit retention.
+- `shadow.maxLookupsPerPass` caps the number of Linear reads shadow will make
+  across the whole pass so a large incident store cannot flood Linear.
+
+The trial procedure and go/no-go thresholds for promoting shadow → live are
+documented in `docs/cli-reference.md` under **Shadow trial procedure**.
+
 ### Harness Retention Replay
 
 `harness.retention` controls the fixed held-out replay suite used to detect

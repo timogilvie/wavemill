@@ -364,7 +364,47 @@
                         "detectionOnly": {
                             "type": "boolean",
                             "default": false,
-                            "description": "When true, compute planned sync actions but do not write to Linear."
+                            "description": "When true, compute planned sync actions but do not write to Linear. Legacy alias for mode=offline."
+                        },
+                        "mode": {
+                            "type": "string",
+                            "enum": ["off", "offline", "shadow", "live"],
+                            "description": "Explicit mode for observer.linear. When present, overrides enabled/detectionOnly. off=disabled; offline=no network, dry-run only; shadow=bounded reads for correlation but zero mutations, produces auditable proposals; live=mutating."
+                        },
+                        "shadow": {
+                            "type": "object",
+                            "description": "Bounded shadow-mode audit persistence and lookup budget.",
+                            "properties": {
+                                "auditPath": {
+                                    "type": "string",
+                                    "default": ".wavemill/observer/shadow-audit.jsonl",
+                                    "description": "JSONL audit path for shadow-mode proposals."
+                                },
+                                "countersPath": {
+                                    "type": "string",
+                                    "default": ".wavemill/observer/shadow-counters.json",
+                                    "description": "Aggregate counter JSON path for restart-continuous shadow reporting."
+                                },
+                                "maxEntries": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "default": 500,
+                                    "description": "Bounded upper limit for retained shadow audit records."
+                                },
+                                "maxAgeDays": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "default": 14,
+                                    "description": "Shadow audit records older than this are trimmed on next append."
+                                },
+                                "maxLookupsPerPass": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "default": 40,
+                                    "description": "Ceiling for bounded Linear reads (searches + getIssue calls) per shadow pass across all incidents."
+                                }
+                            },
+                            "additionalProperties": false
                         },
                         "project": {
                             "type": "string",

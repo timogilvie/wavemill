@@ -1,0 +1,24 @@
+{
+  "phase": "coding",
+  "toolMenu": {
+    "digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "toolNames": [],
+    "canonical": []
+  },
+  "providerTools": {
+    "digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "toolCount": 0,
+    "toolNames": [],
+    "canonical": []
+  },
+  "denials": [
+    {
+      "reason": "certification_missing",
+      "family": "browser",
+      "toolName": "browser_navigate",
+      "logicalId": "browser.navigate",
+      "requirement": "workflow",
+      "actual": "none"
+    }
+  ]
+}

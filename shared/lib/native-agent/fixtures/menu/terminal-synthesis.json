@@ -1,0 +1,60 @@
+{
+  "phase": "planning",
+  "toolMenu": {
+    "digest": "3656814d945545715956be9c9da63e90b37504d3570c2a6ac438261f0713a94e",
+    "toolNames": [
+      "read_file",
+      "list_files"
+    ],
+    "canonical": [
+      {
+        "allowedPhases": [
+          "planning",
+          "coding",
+          "review"
+        ],
+        "certificationRequirement": "none",
+        "class": "read-only",
+        "exposure": "always",
+        "family": "core",
+        "logicalId": "core.read_file",
+        "name": "read_file",
+        "provenance": "repo-trusted"
+      },
+      {
+        "allowedPhases": [
+          "planning",
+          "coding",
+          "review"
+        ],
+        "certificationRequirement": "none",
+        "class": "read-only",
+        "exposure": "always",
+        "family": "core",
+        "logicalId": "core.list_files",
+        "name": "list_files",
+        "provenance": "repo-trusted"
+      }
+    ]
+  },
+  "providerTools": {
+    "digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "toolCount": 0,
+    "toolNames": [],
+    "canonical": []
+  },
+  "denials": [
+    {
+      "reason": "family_not_enabled",
+      "family": "browser",
+      "toolName": "browser_navigate",
+      "logicalId": "browser.navigate"
+    },
+    {
+      "reason": "family_not_enabled",
+      "family": "mcp",
+      "toolName": "mcp_call",
+      "logicalId": "mcp.call"
+    }
+  ]
+}

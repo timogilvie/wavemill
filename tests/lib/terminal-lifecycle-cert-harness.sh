@@ -91,6 +91,7 @@ cert_setup_delivery() {
   git -C "$CERT_WT" push -u origin "$CERT_BRANCH" >/dev/null 2>&1
   CERT_HEAD="$(git -C "$CERT_WT" rev-parse HEAD)"
 
+  local CERT_MERGE_COMMIT
   case "$merge_method" in
     merge)
       git -C "$REPO_DIR" merge --no-ff "$CERT_BRANCH" -m "merge $CERT_BRANCH" >/dev/null
@@ -122,7 +123,8 @@ cert_setup_delivery() {
     *) printf 'unknown merge method: %s\n' "$merge_method" >&2; return 1 ;;
   esac
 
-  record_pr "$CERT_PR" "MERGED" "2026-09-04T12:00:00Z" "$CERT_HEAD" "$CERT_BRANCH" "auto/integration"
+  CERT_MERGE_COMMIT="$(git -C "$REPO_DIR" rev-parse auto/integration)"
+  record_pr "$CERT_PR" "MERGED" "2026-09-04T12:00:00Z" "$CERT_HEAD" "$CERT_BRANCH" "auto/integration" "$CERT_MERGE_COMMIT"
   incident_scenario_add_task_window "$CERT_ISSUE" "$CERT_SLUG"
   incident_seed_task "$CERT_ISSUE" "$(jq -cn \
     --arg slug "$CERT_SLUG" --arg branch "$CERT_BRANCH" --arg wt "$CERT_WT" --arg pr "$CERT_PR" \
