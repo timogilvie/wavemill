@@ -129,6 +129,47 @@ plus an auditable JSONL. `live` is the mutating mode and is unchanged.
 The trial procedure and go/no-go thresholds for promoting shadow → live are
 documented in `docs/cli-reference.md` under **Shadow trial procedure**.
 
+#### `observer.linear.rollout` — managed live filing gates (HOK-3036)
+
+`observer.linear.rollout` holds the promotion-gate evidence the managed
+Backstage service requires before it will run `live`. All fields default to the
+safe value, so `live` cannot start until an operator explicitly attests each
+gate. The managed service resolves `off | shadow | live` fail-closed from these
+fields plus routing and credential readiness (see `docs/cli-reference.md` →
+**Managed Backstage filing**).
+
+```json
+{
+  "observer": {
+    "linear": {
+      "mode": "live",
+      "enabled": true,
+      "team": "HOK",
+      "project": "Wavemill",
+      "label": "observer-incident",
+      "rollout": {
+        "gatesPassed": true,
+        "shadowTrialCompleted": true,
+        "rollbackRehearsed": true,
+        "maxProposedPerPass": 5
+      }
+    }
+  }
+}
+```
+
+- `gatesPassed` — operator attestation that HOK-3031..HOK-3035 completion and
+  go/no-go review passed.
+- `shadowTrialCompleted` — the configured shadow trial completed with zero
+  mutations, leakage, cross-task attribution, or ambiguous correlation.
+- `rollbackRehearsed` — live→shadow/off rollback was exercised.
+- `maxProposedPerPass` — hard positive ceiling on proposed create/update actions
+  per pass (default `5`) so a misconfiguration cannot create a ticket storm.
+
+> ⚠️ The generic `--dry-run` flag is **not** the incident-sync safety control;
+> it protects only the legacy `--file-linear` path. Managed filing safety comes
+> entirely from this fail-closed mode resolution.
+
 #### `observer.linear.lifecycle` — resolution / archival / recurrence sync
 
 `observer.linear.lifecycle` governs how the Observer reflects a linked incident's

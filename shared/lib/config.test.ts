@@ -65,6 +65,9 @@ import {
   getIncidentConfig,
   getPrePrVerificationConfig,
   getObserverLinearConfig,
+  resolveObserverLinearServiceMode,
+  resolveObserverLinearModeSource,
+  OBSERVER_LINEAR_ROLLOUT_DEFAULTS,
   getChallengeEvalHardFailureRetryMaxAttempts,
   getNativeReviewTimeoutConfig,
 } from './config.ts';
@@ -4264,6 +4267,103 @@ test('observer linear config rejects invalid mode', () => {
     clearConfigCache();
     writeConfig(tmp, JSON.stringify({ observer: { linear: { mode: 'writes-please' } } }));
     assert.throws(() => getObserverLinearConfig(tmp), /observer\/linear\/mode|allowed values|mode must be/i);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+// ────────────────────────────────────────────────────────────────
+// Managed Observer service-mode resolver (HOK-3036)
+// ────────────────────────────────────────────────────────────────
+
+const LIVE_READY_LINEAR = {
+  mode: 'live' as const,
+  team: 'HOK',
+  project: 'Wavemill',
+  label: 'observer-incident',
+  rollout: {
+    gatesPassed: true,
+    shadowTrialCompleted: true,
+    rollbackRehearsed: true,
+    maxProposedPerPass: 5,
+  },
+};
+
+test('service mode: off and offline both resolve to off, never downgraded', () => {
+  for (const mode of ['off', 'offline'] as const) {
+    const res = resolveObserverLinearServiceMode(
+      { mode, rollout: OBSERVER_LINEAR_ROLLOUT_DEFAULTS },
+      { credentialReady: true },
+    );
+    assert.equal(res.mode, 'off');
+    assert.equal(res.downgraded, false);
+  }
+});
+
+test('service mode: shadow requires a credential and never mutates', () => {
+  const ready = resolveObserverLinearServiceMode(
+    { mode: 'shadow', rollout: OBSERVER_LINEAR_ROLLOUT_DEFAULTS },
+    { credentialReady: true },
+  );
+  assert.equal(ready.mode, 'shadow');
+  assert.equal(ready.downgraded, false);
+
+  const noCred = resolveObserverLinearServiceMode(
+    { mode: 'shadow', rollout: OBSERVER_LINEAR_ROLLOUT_DEFAULTS },
+    { credentialReady: false },
+  );
+  assert.equal(noCred.mode, 'off');
+  assert.equal(noCred.downgraded, true);
+  assert.match(noCred.reasons.join(' '), /credential/i);
+});
+
+test('service mode: live resolves only when every gate holds', () => {
+  const res = resolveObserverLinearServiceMode(LIVE_READY_LINEAR, { credentialReady: true }, 'explicit');
+  assert.equal(res.mode, 'live');
+  assert.equal(res.downgraded, false);
+  assert.equal(res.source, 'explicit');
+  assert.deepEqual(res.reasons, []);
+});
+
+test('service mode: live without a credential fails closed to off', () => {
+  const res = resolveObserverLinearServiceMode(LIVE_READY_LINEAR, { credentialReady: false });
+  assert.equal(res.mode, 'off');
+  assert.equal(res.downgraded, true);
+});
+
+test('service mode: live with unmet gates downgrades to shadow', () => {
+  const cases: Array<[string, typeof LIVE_READY_LINEAR]> = [
+    ['missing routing', { ...LIVE_READY_LINEAR, label: undefined as unknown as string }],
+    ['gates not passed', { ...LIVE_READY_LINEAR, rollout: { ...LIVE_READY_LINEAR.rollout, gatesPassed: false } }],
+    ['no shadow trial', { ...LIVE_READY_LINEAR, rollout: { ...LIVE_READY_LINEAR.rollout, shadowTrialCompleted: false } }],
+    ['no rollback rehearsal', { ...LIVE_READY_LINEAR, rollout: { ...LIVE_READY_LINEAR.rollout, rollbackRehearsed: false } }],
+    ['zero per-pass bound', { ...LIVE_READY_LINEAR, rollout: { ...LIVE_READY_LINEAR.rollout, maxProposedPerPass: 0 } }],
+  ];
+  for (const [label, config] of cases) {
+    const res = resolveObserverLinearServiceMode(config, { credentialReady: true });
+    assert.equal(res.mode, 'shadow', `${label} should downgrade live→shadow`);
+    assert.equal(res.downgraded, true, label);
+    assert.ok(res.reasons.length > 0, `${label} should record a reason`);
+  }
+});
+
+test('resolveObserverLinearModeSource distinguishes explicit, legacy, and default', () => {
+  assert.equal(resolveObserverLinearModeSource({ mode: 'shadow' }), 'explicit');
+  assert.equal(resolveObserverLinearModeSource({ enabled: true }), 'legacy');
+  assert.equal(resolveObserverLinearModeSource({ detectionOnly: true }), 'legacy');
+  assert.equal(resolveObserverLinearModeSource({}), 'default');
+  assert.equal(resolveObserverLinearModeSource(undefined), 'default');
+});
+
+test('observer linear config exposes conservative rollout defaults', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    const config = getObserverLinearConfig(tmp);
+    assert.equal(config.rollout.gatesPassed, false);
+    assert.equal(config.rollout.shadowTrialCompleted, false);
+    assert.equal(config.rollout.rollbackRehearsed, false);
+    assert.equal(config.rollout.maxProposedPerPass, 5);
   } finally {
     cleanUp(tmp);
   }

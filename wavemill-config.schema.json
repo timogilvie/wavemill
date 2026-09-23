@@ -450,6 +450,34 @@
                             },
                             "additionalProperties": false
                         },
+                        "rollout": {
+                            "type": "object",
+                            "description": "Promotion-gate evidence for managed incident-to-Linear filing (HOK-3036). Every field defaults to the safe value; live filing cannot start until an operator explicitly attests each gate. Generic --dry-run is NOT a safety control for incident filing.",
+                            "properties": {
+                                "gatesPassed": {
+                                    "type": "boolean",
+                                    "default": false,
+                                    "description": "Operator attestation that HOK-3031..HOK-3035 completion and go/no-go review passed."
+                                },
+                                "shadowTrialCompleted": {
+                                    "type": "boolean",
+                                    "default": false,
+                                    "description": "Operator attestation that the configured shadow trial completed with zero mutations, leakage, or cross-task attribution."
+                                },
+                                "rollbackRehearsed": {
+                                    "type": "boolean",
+                                    "default": false,
+                                    "description": "Operator attestation that live→shadow/off rollback was exercised."
+                                },
+                                "maxProposedPerPass": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "default": 5,
+                                    "description": "Hard ceiling on proposed create/update actions per pass during the canary."
+                                }
+                            },
+                            "additionalProperties": false
+                        },
                         "project": {
                             "type": "string",
                             "description": "Linear project id or name used for Wavemill incident correlation and issue creation."

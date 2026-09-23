@@ -80,16 +80,37 @@ wavemill_capture_tend_pane_output() {
   tmux pipe-pane -o -t "$pane_id" "$pipe_command" >/dev/null 2>&1 || true
 }
 
+# Build the managed Backstage Observer service command.
+#
+# The generic --dry-run flag protects the legacy --file-linear path ONLY; it is
+# never the incident-synchronizer safety control. The incident sync mode is
+# selected deterministically here via an explicit --incidents-mode flag so that
+# neither a bare --file-incidents nor --dry-run can ever silently select live:
+#   off    → no incident-sync flag at all
+#   shadow → --file-incidents --incidents-mode=shadow  (bounded reads, zero mutations)
+#   live   → --file-incidents --incidents-mode=live    (only after full validation)
+#
+# The Linear credential is NEVER placed in the command text. The Observer
+# process inherits LINEAR_API_KEY from the launching environment instead (see
+# wavemill_observer_ensure_linear_key), so it never appears in pane commands,
+# ps output, logs, or health files.
 wavemill_build_observer_loop_command() {
   local session_name="${1:?session required}"
   local repo_dir="${2:?repo dir required}"
   local tools_dir="${3:?tools dir required}"
   local interval_seconds="${4:-120}"
   local max_log_lines="${5:-240}"
-  local command
+  local service_mode="${6:-off}"
+  local command incident_flags=''
 
-  printf -v command 'exec env WAVEMILL_SESSION=%q WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE=%q WAVEMILL_OBSERVER_SERVICE=1 npx tsx %q --loop --compact --dry-run --repo-dir %q --session %q --interval %q --max-log-lines %q' \
-    "$session_name" "$WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE" "$tools_dir/observer.ts" "$repo_dir" "$session_name" "$interval_seconds" "$max_log_lines"
+  case "$service_mode" in
+    shadow) incident_flags=' --file-incidents --incidents-mode=shadow' ;;
+    live)   incident_flags=' --file-incidents --incidents-mode=live' ;;
+    off|*)  incident_flags='' ;;
+  esac
+
+  printf -v command 'exec env WAVEMILL_SESSION=%q WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE=%q WAVEMILL_OBSERVER_SERVICE=1 npx tsx %q --loop --compact --dry-run --repo-dir %q --session %q --interval %q --max-log-lines %q%s' \
+    "$session_name" "$WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE" "$tools_dir/observer.ts" "$repo_dir" "$session_name" "$interval_seconds" "$max_log_lines" "$incident_flags"
   printf '%s\n' "$command"
 }
 
@@ -4994,6 +5015,101 @@ wavemill_observer_max_log_lines() {
   value="$(printf '%s' "$merged" | jq -r '.observer.maxLogLines // 240' 2>/dev/null || echo 240)"
   [[ "$value" =~ ^[0-9]+$ && "$value" -gt 0 ]] || value=240
   printf '%s\n' "$value"
+}
+
+# Report whether a Linear credential is available WITHOUT ever printing its
+# value. Returns 0 (ready) when LINEAR_API_KEY is a non-empty environment
+# variable, or when a non-empty LINEAR_API_KEY assignment exists in the repo's
+# .env file. Emits nothing but the exit status.
+wavemill_observer_linear_credential_ready() {
+  local repo_dir="${1:-${REPO_DIR:-$PWD}}"
+  [[ -n "${LINEAR_API_KEY:-}" ]] && return 0
+  local env_file="$repo_dir/.env"
+  if [[ -f "$env_file" ]] && grep -Eq '^[[:space:]]*(export[[:space:]]+)?LINEAR_API_KEY[[:space:]]*=[[:space:]]*.+' "$env_file"; then
+    return 0
+  fi
+  return 1
+}
+
+# Ensure LINEAR_API_KEY is exported into the current environment (so a spawned
+# Observer pane inherits it) without echoing, logging, or persisting the value.
+# No-op when already set or when the repo has no .env credential.
+wavemill_observer_ensure_linear_key() {
+  local repo_dir="${1:-${REPO_DIR:-$PWD}}"
+  [[ -z "${LINEAR_API_KEY:-}" ]] || return 0
+  local env_file="$repo_dir/.env" line value
+  [[ -f "$env_file" ]] || return 0
+  line="$(grep -E '^[[:space:]]*(export[[:space:]]+)?LINEAR_API_KEY[[:space:]]*=' "$env_file" 2>/dev/null | tail -n 1 || true)"
+  [[ -n "$line" ]] || return 0
+  value="${line#*=}"
+  # Strip surrounding whitespace and matching quotes.
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  value="${value%\"}"; value="${value#\"}"
+  value="${value%\'}"; value="${value#\'}"
+  [[ -n "$value" ]] || return 0
+  export LINEAR_API_KEY="$value"
+}
+
+# Resolve the managed Observer service mode (off|shadow|live), failing closed.
+# Mirrors resolveObserverLinearServiceMode() in shared/lib/config.ts: offline and
+# unknown modes resolve to off, a missing credential downgrades to off, and live
+# requires full routing plus attested rollout gates or it downgrades to shadow.
+wavemill_observer_linear_service_mode() {
+  local merged="${1:-}" repo_dir="${2:-${REPO_DIR:-$PWD}}"
+  [[ -n "$merged" ]] || merged="$(wavemill_load_config "$repo_dir")"
+
+  local linear mode enabled detection_only
+  linear="$(printf '%s' "$merged" | jq -c '.observer.linear // {}' 2>/dev/null || echo '{}')"
+  mode="$(printf '%s' "$linear" | jq -r '.mode // empty' 2>/dev/null || true)"
+  enabled="$(printf '%s' "$linear" | jq -r '.enabled // false' 2>/dev/null || echo false)"
+  detection_only="$(printf '%s' "$linear" | jq -r '.detectionOnly // false' 2>/dev/null || echo false)"
+
+  # Derive the requested mode from legacy fields when no explicit mode is set.
+  if [[ -z "$mode" ]]; then
+    if [[ "$enabled" != "true" ]]; then
+      mode="off"
+    elif [[ "$detection_only" == "true" ]]; then
+      mode="offline"
+    else
+      mode="live"
+    fi
+  fi
+
+  case "$mode" in
+    off|offline) printf 'off\n'; return 0 ;;
+    shadow|live) ;;
+    *) printf 'off\n'; return 0 ;;
+  esac
+
+  # Both shadow and live read Linear; without a credential, fail closed to off.
+  if ! wavemill_observer_linear_credential_ready "$repo_dir"; then
+    printf 'off\n'
+    return 0
+  fi
+
+  if [[ "$mode" == "shadow" ]]; then
+    printf 'shadow\n'
+    return 0
+  fi
+
+  # live: require full routing and every attested rollout gate.
+  local team project label gates trial rollback max_proposed
+  team="$(printf '%s' "$linear" | jq -r '.team // empty' 2>/dev/null || true)"
+  project="$(printf '%s' "$linear" | jq -r '.project // empty' 2>/dev/null || true)"
+  label="$(printf '%s' "$linear" | jq -r '.label // empty' 2>/dev/null || true)"
+  gates="$(printf '%s' "$linear" | jq -r '.rollout.gatesPassed // false' 2>/dev/null || echo false)"
+  trial="$(printf '%s' "$linear" | jq -r '.rollout.shadowTrialCompleted // false' 2>/dev/null || echo false)"
+  rollback="$(printf '%s' "$linear" | jq -r '.rollout.rollbackRehearsed // false' 2>/dev/null || echo false)"
+  max_proposed="$(printf '%s' "$linear" | jq -r '.rollout.maxProposedPerPass // 5' 2>/dev/null || echo 5)"
+
+  if [[ -n "$team" && -n "$project" && -n "$label" \
+        && "$gates" == "true" && "$trial" == "true" && "$rollback" == "true" \
+        && "$max_proposed" =~ ^[0-9]+$ && "$max_proposed" -gt 0 ]]; then
+    printf 'live\n'
+  else
+    printf 'shadow\n'
+  fi
 }
 
 wavemill_command_offset_path() {
