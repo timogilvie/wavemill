@@ -186,7 +186,7 @@ export const defaultCleanupDeps: CleanupDeps = {
   cleanup(decision, context) {
     const script = [
       'set -euo pipefail',
-      'log() { if [[ "${1:-}" == "debug" ]]; then shift; fi; printf "%s\\n" "$*" >&2; }',
+      'log() { if [[ "$#" -gt 0 && "$1" == "debug" ]]; then shift; fi; printf "%s\\n" "$*" >&2; }',
       'log_warn() { printf "WARN: %s\\n" "$*" >&2; }',
       `source "${join(context.repoDir, 'shared/lib/wavemill-common.sh').replace(/"/g, '\\"')}"`,
       `source "${join(context.repoDir, 'shared/lib/terminal-reconciler.sh').replace(/"/g, '\\"')}"`,
