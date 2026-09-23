@@ -3,6 +3,7 @@ export type { ChallengeStage } from './challenge-scheduler.ts';
 import {
   selectLeastUsedChallenger,
   type ChallengeSelectionReason,
+  type AttemptRankingInfo,
 } from './challenge-coverage-selector.ts';
 import { loadWavemillConfig, type ChallengeConfig, type RouterConfig } from './config.ts';
 import { isDeepSeekModel } from './deepseek-provider.ts';
@@ -86,6 +87,8 @@ export interface ChallengeStageWeights {
 
 export interface ChallengeCoverageOptions {
   coverage?: (model: string, stage: ChallengeStage) => number;
+  attempts?: (model: string, stage: ChallengeStage) => AttemptRankingInfo;
+  attemptRankingEnabled?: boolean;
   rotationSeed?: string;
   recommendedChallengerModel?: string;
 }
@@ -669,6 +672,10 @@ interface ChallengerSelectionResult {
   model: string | null;
   selectionReason?: ChallengeSelectionReason;
   coverageCount?: number;
+  attemptCount?: number;
+  lastAttemptTime?: number | null;
+  isInCooldown?: boolean;
+  rankingEvidence?: unknown;
 }
 
 interface ChallengerSelectionOptions extends ChallengeCoverageOptions {
@@ -720,6 +727,8 @@ function resolveChallengerModel(
       primaryModel,
       candidates: enabledPool,
       coverage: selectionOpts.coverage,
+      attempts: selectionOpts.attempts,
+      attemptRankingEnabled: selectionOpts.attemptRankingEnabled,
       recommendedChallenger: selectionOpts.recommendedChallengerModel?.trim() || trimmed || undefined,
       rotationSeed: selectionOpts.rotationSeed || `${selectionOpts.stage}|${primaryModel}`,
     });
@@ -730,6 +739,10 @@ function resolveChallengerModel(
       model: selection.model,
       selectionReason: selection.selectionReason,
       coverageCount: selection.coverageCount,
+      attemptCount: selection.attemptCount,
+      lastAttemptTime: selection.lastAttemptTime,
+      isInCooldown: selection.isInCooldown,
+      rankingEvidence: selection.rankingEvidence,
     };
   }
   return { model: chooseDistinctChallengerModel(enabledPool, primaryModel, randomFn) };

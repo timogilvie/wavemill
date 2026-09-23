@@ -37,6 +37,7 @@ import {
   claimReservation,
   computeSelectionExclusions,
   normalizeSelectionHealthConfig,
+  queryTerminalAttempts,
   readSelectionHealth,
   type CircuitExclusion,
   type ReservationExclusion,
@@ -268,6 +269,25 @@ runTool({
     const rotationSeed = `${issue}|${challengeStage}`;
     const recommendedChallengerModel = launchDecision.recommendation?.challengerModel;
 
+    // Build health snapshot once for attempt query
+    let selectionHealthSnapshot = null as ReturnType<typeof readSelectionHealth> | null;
+    const attempts = (model: string, stage: 'plan' | 'implementation' | 'review') => {
+      if (!selectionHealthSnapshot) {
+        selectionHealthSnapshot = readSelectionHealth({ repoDir, config: selectionHealthConfig });
+      }
+      const info = queryTerminalAttempts({
+        model,
+        stage,
+        state: selectionHealthSnapshot,
+        config: selectionHealthConfig,
+      });
+      return {
+        failedCount: info.failedCount,
+        lastAttemptTime: info.lastAttemptTime,
+        isInCooldown: info.isInCooldown,
+      };
+    };
+
     const resolvePair = (candidatePool: string[]) => {
       let selectionFailureReason = 'selection_failed';
       let pair;
@@ -301,6 +321,8 @@ runTool({
           defaultAgent,
           repoDir,
           coverage,
+          attempts,
+          attemptRankingEnabled: selectionHealthConfig.attemptRanking.enabled,
           rotationSeed,
           recommendedChallengerModel,
         }, routeArtifacts);
@@ -325,6 +347,8 @@ runTool({
             defaultAgent,
             repoDir,
             coverage,
+            attempts,
+            attemptRankingEnabled: selectionHealthConfig.attemptRanking.enabled,
             rotationSeed,
             recommendedChallengerModel,
           });
@@ -344,6 +368,8 @@ runTool({
             defaultAgent,
             repoDir,
             coverage,
+            attempts,
+            attemptRankingEnabled: selectionHealthConfig.attemptRanking.enabled,
             rotationSeed,
             recommendedChallengerModel,
             strictWhenRequired,
@@ -365,6 +391,8 @@ runTool({
           defaultAgent,
           repoDir,
           coverage,
+          attempts,
+          attemptRankingEnabled: selectionHealthConfig.attemptRanking.enabled,
           rotationSeed,
           recommendedChallengerModel,
           strictWhenRequired,

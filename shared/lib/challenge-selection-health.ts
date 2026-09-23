@@ -14,6 +14,8 @@ const DEFAULT_INFLIGHT_TTL_SECONDS = 7200;
 const DEFAULT_TRANSIENT_FAILURE_THRESHOLD = 3;
 const DEFAULT_WINDOW_SECONDS = 1800;
 const DEFAULT_COOLDOWN_SECONDS = 900;
+const DEFAULT_ATTEMPT_LOOKBACK_SECONDS = 86400; // 24 hours
+const DEFAULT_FAILED_ATTEMPT_COOLDOWN_SECONDS = 600; // 10 minutes
 
 export interface SelectionHealthOwner {
   issueId: string;
@@ -40,10 +42,20 @@ export interface SelectionCircuitRecord {
   updatedAt: string;
 }
 
+export type TerminalAttemptStatus = 'success' | 'failure' | 'forfeit' | 'invalid';
+
+export interface TerminalAttemptRecord {
+  status: TerminalAttemptStatus;
+  failureKind?: string;
+  faultClass?: string;
+  timestamp: string;
+}
+
 export interface SelectionHealthState {
   schemaVersion: 1;
   reservations: Record<string, SelectionReservationRecord>;
   circuits: Record<string, SelectionCircuitRecord>;
+  terminalAttempts: Record<string, TerminalAttemptRecord[]>;
 }
 
 export interface SelectionHealthConfig {
@@ -56,6 +68,11 @@ export interface SelectionHealthConfig {
     transientFailureThreshold: number;
     windowSeconds: number;
     cooldownSeconds: number;
+  };
+  attemptRanking: {
+    enabled: boolean;
+    lookbackWindowSeconds: number;
+    failedAttemptCooldownSeconds: number;
   };
 }
 
@@ -86,10 +103,21 @@ export interface CircuitExclusion {
   reason: 'circuit-open';
 }
 
+export interface AttemptExclusion {
+  model: string;
+  provider: string;
+  canonicalModel: string;
+  failedCount: number;
+  lastAttemptTime: string;
+  cooldownUntil: string;
+  reason: 'active-cooldown';
+}
+
 export interface SelectionHealthEvidence {
   enabled: boolean;
   excludedByReservation: ReservationExclusion[];
   excludedByCircuit: CircuitExclusion[];
+  excludedByAttemptCooldown: AttemptExclusion[];
   probeGranted: { model: string; provider: string; canonicalModel: string } | null;
   thresholds: {
     selectionTtlSeconds: number;
@@ -97,6 +125,9 @@ export interface SelectionHealthEvidence {
     transientFailureThreshold: number;
     windowSeconds: number;
     cooldownSeconds: number;
+    attemptRankingEnabled: boolean;
+    attemptLookbackWindowSeconds: number;
+    failedAttemptCooldownSeconds: number;
   };
 }
 
@@ -161,6 +192,19 @@ export function normalizeSelectionHealthConfig(
       windowSeconds: normalizePositiveInteger(input?.circuit?.windowSeconds, DEFAULT_WINDOW_SECONDS, 60),
       cooldownSeconds: normalizePositiveInteger(input?.circuit?.cooldownSeconds, DEFAULT_COOLDOWN_SECONDS, 60),
     },
+    attemptRanking: {
+      enabled: input?.attemptRanking?.enabled !== false,
+      lookbackWindowSeconds: normalizePositiveInteger(
+        input?.attemptRanking?.lookbackWindowSeconds,
+        DEFAULT_ATTEMPT_LOOKBACK_SECONDS,
+        60,
+      ),
+      failedAttemptCooldownSeconds: normalizePositiveInteger(
+        input?.attemptRanking?.failedAttemptCooldownSeconds,
+        DEFAULT_FAILED_ATTEMPT_COOLDOWN_SECONDS,
+        60,
+      ),
+    },
   };
 }
 
@@ -224,6 +268,7 @@ export function emptySelectionHealthState(): SelectionHealthState {
     schemaVersion: SCHEMA_VERSION,
     reservations: {},
     circuits: {},
+    terminalAttempts: {},
   };
 }
 
@@ -431,6 +476,7 @@ export async function recordSelectionOutcome(input: SelectionHealthOptions & {
   model: string;
   stage: ChallengeStage;
   success?: boolean;
+  status?: TerminalAttemptStatus;
   failureKind?: TerminalFailureKind | string | null;
   faultClass?: ArmFaultClass | null;
 }): Promise<void> {
@@ -440,12 +486,35 @@ export async function recordSelectionOutcome(input: SelectionHealthOptions & {
   const modelKey = resolveSelectionHealthKey(input.model);
   const reservationKey = `${modelKey.provider}|${modelKey.canonicalModel}|${input.stage}`;
   const circuitKey = `${modelKey.provider}|${modelKey.canonicalModel}`;
+  const attemptKey = `${modelKey.provider}|${modelKey.canonicalModel}|${input.stage}`;
 
   await mutateHealthState(statePath, (current) => {
     const state = pruneSelectionHealthState(current, now, config);
     const reservation = state.reservations[reservationKey];
     if (reservation && sameOwner(reservation.owner, input.owner)) {
       delete state.reservations[reservationKey];
+    }
+
+    // Determine terminal status from explicit status or success flag
+    let terminalStatus: TerminalAttemptStatus = 'invalid';
+    if (input.status) {
+      terminalStatus = input.status;
+    } else if (input.success === true) {
+      terminalStatus = 'success';
+    } else if (input.success === false) {
+      terminalStatus = 'failure';
+    }
+
+    // Record attempt if attempt-ranking is enabled
+    if (config.attemptRanking.enabled) {
+      const attempts = state.terminalAttempts[attemptKey] ?? [];
+      attempts.push({
+        status: terminalStatus,
+        ...(input.failureKind ? { failureKind: String(input.failureKind) } : {}),
+        ...(input.faultClass ? { faultClass: String(input.faultClass) } : {}),
+        timestamp: isoAt(now),
+      });
+      state.terminalAttempts[attemptKey] = attempts;
     }
 
     const circuit = state.circuits[circuitKey];
@@ -491,6 +560,7 @@ export function buildSelectionHealthEvidence(input: {
   config?: ChallengeConfig['selectionHealth'] | SelectionHealthConfig;
   excludedByReservation?: ReservationExclusion[];
   excludedByCircuit?: CircuitExclusion[];
+  excludedByAttemptCooldown?: AttemptExclusion[];
   probeGranted?: { model: string; provider: string; canonicalModel: string } | null;
 }): SelectionHealthEvidence {
   const config = normalizeSelectionHealthConfig(input.config);
@@ -498,6 +568,7 @@ export function buildSelectionHealthEvidence(input: {
     enabled: config.enabled,
     excludedByReservation: input.excludedByReservation ?? [],
     excludedByCircuit: input.excludedByCircuit ?? [],
+    excludedByAttemptCooldown: input.excludedByAttemptCooldown ?? [],
     probeGranted: input.probeGranted ?? null,
     thresholds: {
       selectionTtlSeconds: config.reservation.selectionTtlSeconds,
@@ -505,6 +576,9 @@ export function buildSelectionHealthEvidence(input: {
       transientFailureThreshold: config.circuit.transientFailureThreshold,
       windowSeconds: config.circuit.windowSeconds,
       cooldownSeconds: config.circuit.cooldownSeconds,
+      attemptRankingEnabled: config.attemptRanking.enabled,
+      attemptLookbackWindowSeconds: config.attemptRanking.lookbackWindowSeconds,
+      failedAttemptCooldownSeconds: config.attemptRanking.failedAttemptCooldownSeconds,
     },
   };
 }
@@ -603,7 +677,66 @@ export function pruneSelectionHealthState(
       delete next.circuits[key];
     }
   }
+  for (const [key, attempts] of Object.entries(next.terminalAttempts)) {
+    const cutoff = now - config.attemptRanking.lookbackWindowSeconds * 1000;
+    const retained = attempts.filter((attempt) => {
+      const attemptTime = parseMs(attempt.timestamp);
+      return Number.isFinite(attemptTime) && attemptTime > cutoff && attemptTime <= now + 1000;
+    });
+    if (retained.length === 0) {
+      delete next.terminalAttempts[key];
+    } else {
+      next.terminalAttempts[key] = retained;
+    }
+  }
   return next;
+}
+
+export function queryTerminalAttempts(input: {
+  model: string;
+  stage: ChallengeStage;
+  state: SelectionHealthState;
+  now?: number;
+  config?: ChallengeConfig['selectionHealth'] | SelectionHealthConfig;
+}): {
+  attempts: TerminalAttemptRecord[];
+  failedCount: number;
+  lastAttemptTime: number | null;
+  isInCooldown: boolean;
+} {
+  const config = normalizeSelectionHealthConfig(input.config);
+  const now = input.now ?? Date.now();
+  const modelKey = resolveSelectionHealthKey(input.model);
+  const attemptKey = `${modelKey.provider}|${modelKey.canonicalModel}|${input.stage}`;
+  const attempts = input.state.terminalAttempts[attemptKey] ?? [];
+
+  const cutoff = now - config.attemptRanking.lookbackWindowSeconds * 1000;
+  const recentAttempts = attempts.filter((a) => {
+    const attemptTime = parseMs(a.timestamp);
+    return Number.isFinite(attemptTime) && attemptTime > cutoff;
+  });
+
+  const failedAttempts = recentAttempts.filter((a) => a.status === 'failure');
+  const lastAttempt = recentAttempts.length > 0
+    ? recentAttempts.reduce((latest, current) => {
+      const latestTime = parseMs(latest.timestamp);
+      const currentTime = parseMs(current.timestamp);
+      return currentTime > latestTime ? current : latest;
+    })
+    : null;
+
+  const lastAttemptTime = lastAttempt ? parseMs(lastAttempt.timestamp) : null;
+  const cooldownExpiry = lastAttempt && lastAttempt.status === 'failure'
+    ? lastAttemptTime + config.attemptRanking.failedAttemptCooldownSeconds * 1000
+    : null;
+  const isInCooldown = cooldownExpiry ? cooldownExpiry > now : false;
+
+  return {
+    attempts: recentAttempts,
+    failedCount: failedAttempts.length,
+    lastAttemptTime,
+    isInCooldown,
+  };
 }
 
 async function mutateHealthState(
@@ -638,6 +771,7 @@ function normalizeState(value: unknown): SelectionHealthState {
     schemaVersion: SCHEMA_VERSION,
     reservations: sanitizeRecord(input.reservations),
     circuits: sanitizeRecord(input.circuits),
+    terminalAttempts: sanitizeAttemptRecord(input.terminalAttempts),
   };
 }
 
@@ -645,6 +779,19 @@ function sanitizeRecord<T>(value: unknown): Record<string, T> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, T>
     : {};
+}
+
+function sanitizeAttemptRecord(value: unknown): Record<string, TerminalAttemptRecord[]> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+  const record: Record<string, TerminalAttemptRecord[]> = {};
+  for (const [key, attempts] of Object.entries(value)) {
+    if (Array.isArray(attempts)) {
+      record[key] = attempts.filter((a) => a && typeof a === 'object') as TerminalAttemptRecord[];
+    }
+  }
+  return record;
 }
 
 function currentMs(opts: SelectionHealthOptions): number {

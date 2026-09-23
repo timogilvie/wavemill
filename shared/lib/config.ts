@@ -291,6 +291,11 @@ export interface ChallengeSelectionHealthConfig {
     windowSeconds?: number;
     cooldownSeconds?: number;
   };
+  attemptRanking?: {
+    enabled?: boolean;
+    lookbackWindowSeconds?: number;
+    failedAttemptCooldownSeconds?: number;
+  };
 }
 
 export interface ChallengeConfig {
