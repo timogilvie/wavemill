@@ -76,6 +76,23 @@ export {
 } from './identity.ts';
 export { evaluateNativeProviderGate } from './eligibility-gate.ts';
 export { evaluateSuiteCoverage } from './coverage.ts';
+export {
+  CANARY_COHORT_REFRESH_COMMAND,
+  evaluateCanaryCohortHealth,
+  refreshCanaryCohort,
+  renderCanaryCohortHealth,
+  resolveCanaryCohort,
+} from './canary-cohort.ts';
+export type {
+  CanaryCohortHealth,
+  CanaryCohortMember,
+  CohortCertifyFn,
+  CohortMemberCanaryState,
+  CohortMemberStatus,
+  CohortRefreshMemberOutcome,
+  CohortRefreshResult,
+  ResolvedCanaryCohort,
+} from './canary-cohort.ts';
 
 export type { ReadResult, StoreError, StoreErrorCode } from './store.ts';
 

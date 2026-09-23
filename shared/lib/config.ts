@@ -450,9 +450,29 @@ export interface NativePatchCodingConfig {
   enabled?: boolean;
 }
 
+export interface CanaryCohortMemberConfig {
+  provider: 'openai' | 'openrouter';
+  model: string;
+}
+
 export interface NativeCertificationConfig {
   autoRemediate?: boolean;
   renewalWindowDays?: number;
+  /**
+   * Bounded, reviewed cohort of native coding candidates whose live coding
+   * canaries are kept fresh (HOK-3062). Only listed identities are ever
+   * auto-refreshed; the fleet at large is never canaried automatically.
+   */
+  canaryCohort?: CanaryCohortMemberConfig[];
+  /** Minimum coding-ready cohort members before readiness alerts fire. */
+  minCodingReady?: number;
+  /**
+   * Days before live-canary expiry at which a still-valid pass becomes a
+   * refresh target. Must stay below the 14-day canary TTL.
+   */
+  canaryRenewalWindowDays?: number;
+  /** Master switch for automatic cohort canary refresh during preflight. */
+  canaryAutoRefresh?: boolean;
 }
 
 export interface NativeContextManagementConfig {

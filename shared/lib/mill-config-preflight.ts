@@ -14,7 +14,15 @@ import {
   evaluateSuiteCoverage,
   type SuiteCoverageResult,
 } from './native-agent/certification/coverage.ts';
-import type { certifySelectedNativeAgents } from '../../tools/native-agent-certify.ts';
+import {
+  evaluateCanaryCohortHealth,
+  refreshCanaryCohort,
+  renderCanaryCohortHealth,
+  resolveCanaryCohort,
+  type CanaryCohortHealth,
+  type CohortRefreshMemberOutcome,
+} from './native-agent/certification/canary-cohort.ts';
+import type { certifyNativeAgent, certifySelectedNativeAgents } from '../../tools/native-agent-certify.ts';
 
 export const MILL_CONFIG_MIGRATION_COMMAND = 'wavemill config migrate-model-settings';
 
@@ -29,6 +37,13 @@ export interface MillConfigPreflightReport {
     'attempted' | 'mode' | 'targets' | 'published' | 'failed' | 'skipped'
   > & {
     remediationLog: string[];
+  };
+  /** Live-coding canary cohort health (HOK-3062). Present when a cohort is configured. */
+  canaryCohortHealth?: CanaryCohortHealth;
+  canaryCohortRefresh?: {
+    attempted: number;
+    outcomes: CohortRefreshMemberOutcome[];
+    refreshLog: string[];
   };
 }
 
@@ -45,6 +60,9 @@ export interface MillConfigPreflightOptions {
   now?: () => Date;
   certifyFn?: typeof certifySelectedNativeAgents;
   attemptCachePath?: string;
+  /** Test seam for the cohort canary refresh certify pipeline. */
+  canaryCertifyFn?: typeof certifyNativeAgent;
+  canaryAttemptCachePath?: string;
 }
 
 function validationMessage(err: unknown): string | null {
@@ -134,6 +152,57 @@ export async function runMillConfigPreflight(
     });
   }
 
+  // Live-coding canary cohort (HOK-3062): evaluate health for the bounded,
+  // reviewed cohort and run at most one bounded refresh attempt per member
+  // remediation episode when automatic remediation is enabled and credentials
+  // are available. Never expands beyond the configured cohort.
+  let canaryCohortHealth: CanaryCohortHealth | undefined;
+  let canaryCohortRefresh: MillConfigPreflightReport['canaryCohortRefresh'];
+  if (validationError === null && env.WAVEMILL_SKIP_CERTIFICATION_COVERAGE_GUARD !== '1') {
+    const cohort = resolveCanaryCohort({ repoDir: absRepoDir, registry: options.registry });
+    if (cohort.members.length > 0 || cohort.invalid.length > 0) {
+      canaryCohortHealth = await evaluateCanaryCohortHealth({
+        repoDir: absRepoDir,
+        cohort,
+        registry: options.registry,
+        certificationRoot: options.certificationRoot,
+        now: options.now?.(),
+        attemptCachePath: options.canaryAttemptCachePath,
+      });
+      const canaryRefreshEnabled = autoRemediationEnabled
+        && cohort.autoRefreshEnabled
+        && env.WAVEMILL_SKIP_CANARY_AUTO_REFRESH !== '1';
+      const hasRefreshTargets = canaryCohortHealth.members.some((member) =>
+        member.state === 'missing'
+        || member.state === 'stale'
+        || member.state === 'renewal-due'
+        || member.state === 'identity-invalidated'
+        || member.state === 'inconclusive');
+      if (canaryRefreshEnabled && hasRefreshTargets) {
+        const refreshLog: string[] = [];
+        const certifyFn = options.canaryCertifyFn
+          ?? (await import('../../tools/native-agent-certify.ts')).certifyNativeAgent;
+        const refresh = await refreshCanaryCohort({
+          repoDir: absRepoDir,
+          certifyFn,
+          registry: options.registry,
+          certificationRoot: options.certificationRoot,
+          env,
+          now: options.now,
+          respectAttemptGuard: true,
+          attemptCachePath: options.canaryAttemptCachePath,
+          log: (line) => refreshLog.push(line),
+        });
+        canaryCohortRefresh = {
+          attempted: refresh.attempted,
+          outcomes: refresh.outcomes,
+          refreshLog,
+        };
+        canaryCohortHealth = refresh.health;
+      }
+    }
+  }
+
   const certificationCoverageBlocked = certificationCoverage?.status === 'bump-without-publish'
     || certificationCoverage?.status === 'identity-drift';
   const certificationStaleBlocked = certificationCoverage?.status === 'stale';
@@ -147,6 +216,8 @@ export async function runMillConfigPreflight(
     migrationCommand: MILL_CONFIG_MIGRATION_COMMAND,
     ...(certificationCoverage ? { certificationCoverage } : {}),
     ...(certificationRemediation ? { certificationRemediation } : {}),
+    ...(canaryCohortHealth ? { canaryCohortHealth } : {}),
+    ...(canaryCohortRefresh ? { canaryCohortRefresh } : {}),
   };
 
   return {
@@ -249,6 +320,10 @@ export function formatMillConfigPreflightReport(report: MillConfigPreflightRepor
     lines.push('', formatCertificationRemediationReport(report));
   }
 
+  if (report.canaryCohortHealth) {
+    lines.push('', formatCanaryCohortReport(report));
+  }
+
   if (report.removedFields.length > 0 || report.validationError) {
     lines.push(
       '',
@@ -281,6 +356,35 @@ export function formatCertificationRemediationReport(report: MillConfigPreflight
   }
   if (remediation.failed.length > 6) {
     lines.push(`  (+${remediation.failed.length - 6} more failures)`);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Format the live-coding canary cohort block (health, refresh outcomes, and
+ * the below-minimum alert). Empty string when no cohort is configured.
+ */
+export function formatCanaryCohortReport(report: MillConfigPreflightReport): string {
+  const health = report.canaryCohortHealth;
+  if (!health) {
+    return '';
+  }
+  const lines = [renderCanaryCohortHealth(health)];
+  const refresh = report.canaryCohortRefresh;
+  if (refresh) {
+    lines.push(`  refresh attempted=${refresh.attempted}`);
+    for (const line of refresh.refreshLog) {
+      lines.push(`  ${line}`);
+    }
+    for (const outcome of refresh.outcomes) {
+      if (outcome.action === 'not-due' && !outcome.reason) continue;
+      lines.push(
+        `  ${outcome.provider}/${outcome.model}: ${outcome.action}`
+        + (outcome.result ? ` result=${outcome.result}` : '')
+        + ` eligible=${outcome.codingEligible ? 'yes' : 'no'}`
+        + (outcome.reason ? ` - ${outcome.reason}` : ''),
+      );
+    }
   }
   return lines.join('\n');
 }

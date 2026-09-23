@@ -43,6 +43,10 @@ import {
 } from '../shared/lib/native-agent/certification/scenario-runner.ts';
 import { resolveCertificationSubject } from '../shared/lib/native-agent/certification/identity.ts';
 import { writeGlobalCertification } from '../shared/lib/native-agent/certification/store.ts';
+import {
+  refreshCanaryCohort,
+  renderCanaryCohortHealth,
+} from '../shared/lib/native-agent/certification/canary-cohort.ts';
 import { getEffectiveRegistry, type ModelRegistry, type NativeProviderName } from '../shared/lib/model-registry.ts';
 import { resolveWavemillAliasFromOpenRouterId } from '../shared/lib/openrouter-catalog.ts';
 import { runOpenRouterSmoke, type SmokeReport } from '../shared/lib/openrouter-smoke.ts';
@@ -624,6 +628,10 @@ return runTool({
       type: 'boolean',
       description: 'Certify every native-capable registry model. --provider filters the batch when set.',
     },
+    'refresh-canary-cohort': {
+      type: 'boolean',
+      description: 'Refresh live coding canaries for the configured bounded cohort (credentialed; targets only missing/stale/renewal-due/identity-invalidated members).',
+    },
     json: {
       type: 'boolean',
       description: 'Emit machine-readable JSON.',
@@ -639,6 +647,7 @@ return runTool({
     'npx tsx tools/native-agent-certify.ts --provider openrouter --model openai/gpt-4o --phase read-only --json',
     'npx tsx tools/native-agent-certify.ts --all --phase workflow',
     'npx tsx tools/native-agent-certify.ts --provider openrouter --model qwen-3-coder --phase workflow --live-coding-canary',
+    'npx tsx tools/native-agent-certify.ts --refresh-canary-cohort',
   ],
   async run({ args }) {
     const repoDir = (args.repo as string | undefined) || process.cwd();
@@ -656,6 +665,41 @@ return runTool({
     if (liveCodingCanary && dryRun) {
       console.error('Error: --live-coding-canary cannot be combined with --dry-run (the canary is a live provider run).');
       process.exit(2);
+    }
+
+    const refreshCohort = args['refresh-canary-cohort'] === true;
+    if (refreshCohort) {
+      const conflictError = refreshCohortFlagError(args);
+      if (conflictError) {
+        console.error(`Error: ${conflictError}`);
+        process.exit(2);
+      }
+      const refresh = await refreshCanaryCohort({
+        repoDir,
+        certifyFn: certifyNativeAgent,
+        respectAttemptGuard: false,
+        ...(canaryLimits.limits ? { canaryLimits: canaryLimits.limits } : {}),
+        log: (line) => console.error(line),
+      });
+      if (args.json === true) {
+        console.log(JSON.stringify(refresh, null, 2));
+      } else {
+        for (const outcome of refresh.outcomes) {
+          console.log(
+            `${outcome.provider}/${outcome.model}: ${outcome.action}`
+            + (outcome.result ? ` result=${outcome.result}` : ` state=${outcome.state}`)
+            + ` eligible=${outcome.codingEligible ? 'yes' : 'no'}`
+            + (outcome.reason ? ` - ${outcome.reason}` : ''),
+          );
+        }
+        console.log('');
+        console.log(renderCanaryCohortHealth(refresh.health));
+      }
+      const hadError = refresh.outcomes.some((outcome) => outcome.result === 'error');
+      if (hadError || refresh.health.belowMinimum) {
+        process.exit(1);
+      }
+      return;
     }
 
     // Validate required flags
@@ -768,6 +812,27 @@ return runTool({
     }
   },
 }, argv);
+}
+
+/**
+ * Flag-combination validation for `--refresh-canary-cohort`. The cohort path
+ * is exclusively live and exclusively cohort-scoped: dry-run and any explicit
+ * target selection are rejected up front.
+ */
+export function refreshCohortFlagError(args: Record<string, unknown>): string | undefined {
+  if (args['dry-run'] === true) {
+    return '--refresh-canary-cohort cannot be combined with --dry-run (the canary is a live provider run).';
+  }
+  if (args.all === true) {
+    return '--refresh-canary-cohort cannot be combined with --all (the refresh is bounded to the configured cohort).';
+  }
+  if (args.model !== undefined || args.provider !== undefined) {
+    return '--refresh-canary-cohort targets the configured cohort; --provider/--model cannot be combined with it.';
+  }
+  if (args['live-coding-canary'] === true) {
+    return '--refresh-canary-cohort already implies the live coding canary; drop --live-coding-canary.';
+  }
+  return undefined;
 }
 
 /**
