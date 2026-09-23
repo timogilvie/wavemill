@@ -1249,6 +1249,73 @@ test('writeServiceHeartbeat surfaces shadow mode and counters in Backstage healt
   }
 });
 
+test('service mode fails closed to off (zero mutations) when the Linear credential is missing', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-service-nocred-'));
+  const priorKey = process.env.LINEAR_API_KEY;
+  delete process.env.LINEAR_API_KEY;
+  try {
+    writePermissiveSchema(repoDir);
+    // A fully-gated live configuration: only the missing credential should stop it.
+    writeFileSync(join(repoDir, '.wavemill-config.json'), JSON.stringify({
+      configVersion: '1.5.0',
+      mill: { baseBranch: 'auto/integration', requireConfirm: true },
+      observer: {
+        linear: {
+          mode: 'live',
+          enabled: true,
+          team: 'HOK',
+          project: 'Wavemill',
+          label: 'obs',
+          rollout: { gatesPassed: true, shadowTrialCompleted: true, rollbackRehearsed: true, maxProposedPerPass: 5 },
+        },
+      },
+    }, null, 2));
+
+    const store = new IncidentStore(join(repoDir, '.wavemill', 'incidents'));
+    await store.upsert(createIncidentDraft({
+      taskId: 'HOK-4100',
+      category: 'product_defect',
+      severity: 'high',
+      confidence: 'definite',
+      lifecycle: 'active',
+      rootCauseClass: 'observer_crash',
+      summary: 'Fail-closed guard.',
+      operatorAction: 'Fix parser.',
+      evidence: [{
+        type: 'log_excerpt',
+        source: 'mill.log',
+        timestamp: '2026-08-04T12:00:00.000Z',
+        redactedData: 'ERROR',
+        key: 'error-1',
+      }],
+    }));
+
+    const snapshot = await syncIncidentsToLinear({
+      timestamp: '2026-08-04T12:00:00.000Z',
+      sessions: ['wavemill'],
+      panes: [],
+      processes: [],
+      repos: [{ session: 'wavemill', repoDir, tasks: [] }],
+      findings: [],
+    }, {
+      ...defaultObserverOptions(),
+      fileIncidents: true,
+      incidentsMode: 'live',
+      serviceMode: true,
+      repoDir,
+      session: 'wavemill',
+    });
+
+    assert.equal(snapshot.incidentSync?.mode, 'off');
+    assert.equal(snapshot.incidentSync?.created, 0);
+    assert.equal(snapshot.incidentSync?.updated, 0);
+  } finally {
+    if (priorKey === undefined) delete process.env.LINEAR_API_KEY;
+    else process.env.LINEAR_API_KEY = priorKey;
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
 test('repeated failed-ready re-checks surface a stuck loop finding with the blocking reason', () => {
   const repoDir = mkdtempSync(join(tmpdir(), 'observer-ready-recheck-'));
   const slug = 'ready-recheck-fixture';

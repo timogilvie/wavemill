@@ -18110,11 +18110,13 @@ classify_backstage_observer_health() {
 }
 
 restart_backstage_observer_loop() {
-  local merged observer_interval observer_max_log_lines observer_cmd result new_pane action _killed
+  local merged observer_interval observer_max_log_lines observer_cmd result new_pane action _killed observer_service_mode
   merged="$(wavemill_load_config "$REPO_DIR")"
   observer_interval="$(wavemill_observer_interval_seconds "$merged")"
   observer_max_log_lines="$(wavemill_observer_max_log_lines "$merged")"
-  observer_cmd="$(wavemill_build_observer_loop_command "$SESSION" "$REPO_DIR" "$TOOLS_DIR" "$observer_interval" "$observer_max_log_lines")"
+  observer_service_mode="$(wavemill_observer_linear_service_mode "$merged" "$REPO_DIR")"
+  [[ "$observer_service_mode" == "off" ]] || wavemill_observer_ensure_linear_key "$REPO_DIR"
+  observer_cmd="$(wavemill_build_observer_loop_command "$SESSION" "$REPO_DIR" "$TOOLS_DIR" "$observer_interval" "$observer_max_log_lines" "$observer_service_mode")"
   result="$(wavemill_reconcile_backstage_service_pane "$SESSION" "$WAVEMILL_WINDOW_BACKSTAGE" "$WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE" "$observer_cmd" "restart" "$SESSION:$WAVEMILL_WINDOW_BACKSTAGE.0" -d -v -p 25 -c "$REPO_DIR" || true)"
   IFS=$'\t' read -r new_pane action _killed <<< "$result"
   [[ -n "$new_pane" ]] || return 1
@@ -18149,7 +18151,10 @@ check_backstage_observer_health() {
   if [[ "$pane_status" == "healthy" ]] && (( observer_count > 1 )); then
     observer_interval="$(wavemill_observer_interval_seconds "$merged")"
     observer_max_log_lines="$(wavemill_observer_max_log_lines "$merged")"
-    observer_cmd="$(wavemill_build_observer_loop_command "$SESSION" "$REPO_DIR" "$TOOLS_DIR" "$observer_interval" "$observer_max_log_lines")"
+    local dup_service_mode
+    dup_service_mode="$(wavemill_observer_linear_service_mode "$merged" "$REPO_DIR")"
+    [[ "$dup_service_mode" == "off" ]] || wavemill_observer_ensure_linear_key "$REPO_DIR"
+    observer_cmd="$(wavemill_build_observer_loop_command "$SESSION" "$REPO_DIR" "$TOOLS_DIR" "$observer_interval" "$observer_max_log_lines" "$dup_service_mode")"
     reconcile_result="$(wavemill_reconcile_backstage_service_pane "$SESSION" "$WAVEMILL_WINDOW_BACKSTAGE" "$WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE" "$observer_cmd" "reuse" "$SESSION:$WAVEMILL_WINDOW_BACKSTAGE.0" -d -v -p 25 -c "$REPO_DIR" || true)"
     IFS=$'\t' read -r _reconcile_pane _reconcile_action _reconcile_killed <<< "$reconcile_result"
     log_warn "Backstage observer had ${observer_count} duplicate panes, reconciled to one"

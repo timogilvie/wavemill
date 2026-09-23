@@ -5,7 +5,14 @@ import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { mutateJsonState } from '../shared/lib/state-mutex.ts';
-import { getIncidentConfig, getMillConfig, getObserverLinearConfig, type ObserverLinearConfig } from '../shared/lib/config.ts';
+import {
+  getIncidentConfig,
+  getMillConfig,
+  getObserverLinearConfig,
+  loadWavemillConfig,
+  resolveObserverLinearModeSource,
+  type ObserverLinearConfig,
+} from '../shared/lib/config.ts';
 import { detectIncidentsForRepo, detectIncidentsForTask, type TendCandidateDiagnostic } from '../shared/lib/wavemill-incident-detector.ts';
 import { IncidentStore } from '../shared/lib/wavemill-incident-store.ts';
 import { createIncidentDraft, type IncidentRecord, type IncidentRootCauseClass } from '../shared/lib/wavemill-incident-model.ts';
@@ -3131,7 +3138,29 @@ function mergeObserverLinearConfig(config: ObserverLinearConfig, options: Observ
   } else if (options.incidentsDryRun) {
     mode = 'offline';
   }
-  if (mode === 'live' && !config.enabled) {
+  if (options.serviceMode) {
+    // Fail-closed enforcement for the managed Backstage service. These guards
+    // are defense-in-depth behind the deterministic command builder: even if an
+    // unsafe invocation reaches the process it can never mutate Linear.
+    //
+    // A generic --dry-run protects only the legacy --file-linear path; it is
+    // never the incident-sync safety control. Live filing in the service must
+    // be requested explicitly via --incidents-mode=live — a bare
+    // --file-incidents can never silently select live.
+    if (mode === 'live' && options.incidentsMode !== 'live') {
+      mode = 'shadow';
+    }
+    // Live still requires the legacy enabled interlock; downgrade rather than
+    // throw so the managed pane never enters a crash/respawn loop.
+    if (mode === 'live' && !config.enabled) {
+      mode = 'shadow';
+    }
+    // A missing credential fails closed to off (no reads, no restart storm)
+    // without ever exposing the key itself.
+    if ((mode === 'live' || mode === 'shadow') && !process.env.LINEAR_API_KEY) {
+      mode = 'off';
+    }
+  } else if (mode === 'live' && !config.enabled) {
     throw new Error('observer: incidents-mode=live requires observer.linear.enabled=true in config');
   }
   return {
@@ -3270,6 +3299,14 @@ export async function syncIncidentsToLinear(snapshot: ObserverSnapshot, options:
     }
     // Record the strictest mode encountered across repos on the snapshot.
     summary.mode = summary.mode ? maxObserverLinearMode(summary.mode, config.mode) : config.mode;
+    // Fail-closed: in the managed service an `off` mode (including one
+    // downgraded from live/shadow by the enforcement above, e.g. a missing
+    // credential) performs neither Linear reads nor mutations — even if
+    // --file-incidents was supplied. Nothing below this point may run for an
+    // off managed repo. (CLI off retains its legacy dry accounting.)
+    if (options.serviceMode && config.mode === 'off') {
+      continue;
+    }
     const shadowMode = config.mode === 'shadow';
     if (shadowMode && !summary.shadow) {
       summary.shadow = emptyShadowSnapshot();
@@ -3523,8 +3560,21 @@ export async function writeServiceHeartbeat(snapshot: ObserverSnapshot, options:
       const next = { ...(current ?? {}) };
       const services = { ...(next.services ?? {}) };
       const existing = { ...(services.observer ?? {}) };
+      // Surface config source and credential readiness (boolean only — the key
+      // itself is never read into or written from this health file).
+      let configSource: string | undefined;
+      try {
+        const linear = loadWavemillConfig(options.repoDir).observer?.linear;
+        configSource = resolveObserverLinearModeSource(linear);
+      } catch {
+        configSource = undefined;
+      }
+      const credentialReady = Boolean(process.env.LINEAR_API_KEY);
+      const lastError = snapshot.incidentSync?.errors?.[snapshot.incidentSync.errors.length - 1];
       const incidentSyncSummary = snapshot.incidentSync ? {
         mode: snapshot.incidentSync.mode ?? 'off',
+        configSource,
+        credentialReady,
         lastRunAt: snapshot.timestamp,
         totalProcessed: snapshot.incidentSync.totalProcessed,
         created: snapshot.incidentSync.created,
@@ -3532,6 +3582,11 @@ export async function writeServiceHeartbeat(snapshot: ObserverSnapshot, options:
         skipped: snapshot.incidentSync.skipped,
         failed: snapshot.incidentSync.failed,
         queued: snapshot.incidentSync.queued,
+        retryProcessed: snapshot.incidentSync.retryProcessed,
+        retryFailed: snapshot.incidentSync.retryFailed,
+        lastFailure: lastError
+          ? { action: lastError.action, reason: redactObserverText(lastError.reason) }
+          : undefined,
         lifecycleSynced: snapshot.incidentSync.lifecycleSynced,
         lifecycleFailed: snapshot.incidentSync.lifecycleFailed,
         lifecycleRetried: snapshot.incidentSync.lifecycleRetried,

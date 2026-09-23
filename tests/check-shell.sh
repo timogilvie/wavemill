@@ -112,6 +112,7 @@ for f in \
   "$REPO_DIR"/tests/wavemill-mill-router-fallback.test.sh \
   "$REPO_DIR"/tests/backstage-tend-watchdog.test.sh \
   "$REPO_DIR"/tests/backstage-observer-watchdog.test.sh \
+  "$REPO_DIR"/tests/observer-managed-filing.test.sh \
   "$REPO_DIR"/tests/backstage-observer-pane-promotion.test.sh \
   "$REPO_DIR"/tests/model-inheritance-chain.test.sh \
   "$REPO_DIR"/tests/wavemill-background-jobs-cleanup.test.sh \
@@ -284,9 +285,24 @@ fi
 
 observer_helper="$(awk '/^wavemill_build_observer_loop_command\(\) \{/{capture=1} capture{print} capture && /^}/{exit}' "$LIB_DIR/wavemill-common.sh")"
 if [[ "$observer_helper" == *'--dry-run'* && "$observer_helper" != *'--file-linear'* ]]; then
-  pass "observer service launch is detection-only"
+  pass "observer service launch never files legacy Linear findings"
 else
-  fail "observer service launch is not detection-only"
+  fail "observer service launch files legacy Linear findings"
+fi
+
+# HOK-3036: incident filing must be selected by an explicit --incidents-mode, so
+# neither a bare --file-incidents nor --dry-run can silently select live.
+if [[ "$observer_helper" == *'--incidents-mode=shadow'* && "$observer_helper" == *'--incidents-mode=live'* ]]; then
+  pass "observer service launch selects incident mode explicitly (off/shadow/live)"
+else
+  fail "observer service launch does not select incident mode explicitly"
+fi
+
+if grep -q 'wavemill_observer_linear_service_mode' "$LIB_DIR/wavemill-common.sh" \
+  && grep -q 'wavemill_observer_linear_credential_ready' "$LIB_DIR/wavemill-common.sh"; then
+  pass "observer managed-filing resolver and credential guard exist"
+else
+  fail "observer managed-filing resolver or credential guard is missing"
 fi
 
 health_writer="$(awk '/^wavemill_write_backstage_service_health\(\) \{/{capture=1} capture{print} capture && /^}/{exit}' "$LIB_DIR/wavemill-common.sh")"

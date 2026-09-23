@@ -133,9 +133,17 @@ Flags:
 - `--dry-run`: report what would be found without creating Linear issues
 - `--print-prompt`: print the recommended long-running Codex supervisor prompt
 
-When launched as the Backstage service, Observer runs in detection-only mode
-with `WAVEMILL_OBSERVER_SERVICE=1`, `--json`, and `--dry-run`; Linear filing is
-rejected in that mode.
+When launched as the Backstage service (`WAVEMILL_OBSERVER_SERVICE=1`), the
+legacy `--file-linear` finding path is always rejected. Managed incident-to-Linear
+filing is gated by an explicit, fail-closed service mode resolved from
+`observer.linear` (see [Managed Backstage filing](#managed-backstage-filing-hok-3036)
+below): `off` adds no incident-sync flag, `shadow` adds `--file-incidents
+--incidents-mode=shadow`, and `live` adds `--file-incidents --incidents-mode=live`.
+
+> ⚠️ **The generic `--dry-run` flag is NOT the incident-sync safety control.** It
+> protects only the legacy `--file-linear` path. Incident filing safety is
+> governed exclusively by the explicit `--incidents-mode` selection; a bare
+> `--file-incidents` (or `--dry-run` alone) can never select `live`.
 
 #### Incident sync modes
 
@@ -177,6 +185,55 @@ To promote shadow → live, run at least one week of `--incidents-shadow` loops
 If any gate fails, set `observer.linear.mode` back to `offline` (or `off`) and
 revert the shadow-planner commit; no Linear mutations were made so there is
 nothing to reverse.
+
+#### Managed Backstage filing (HOK-3036)
+
+The managed Observer service resolves one of three service modes — `off`,
+`shadow`, or `live` — from `observer.linear`, and **fails closed**. Startup and
+the watchdog restart use the same resolver and command builder, so a restarted
+pane can never preserve stale arguments or silently escalate to `live`.
+
+Resolution rules (mirrored in `resolveObserverLinearServiceMode` in
+`shared/lib/config.ts` and `wavemill_observer_linear_service_mode` in
+`shared/lib/wavemill-common.sh`):
+
+- `off`/`offline` (and any unknown mode) → managed `off` (no incident filing).
+  `offline` is a CLI/legacy no-network compatibility mode, never a route to
+  managed filing.
+- `shadow` → managed `shadow`, but only when a Linear credential is available;
+  a missing credential fails closed to `off` (no reads, no restart storm).
+- `live` → managed `live` **only** when all of the following hold, otherwise it
+  downgrades to `shadow` (credential present) or `off` (credential missing):
+  - a Linear credential is ready,
+  - `team`, `project`, and `label` routing are all configured,
+  - `observer.linear.rollout.gatesPassed`, `shadowTrialCompleted`, and
+    `rollbackRehearsed` are all `true`, and
+  - `observer.linear.rollout.maxProposedPerPass` is a positive bound.
+
+The Linear credential (`LINEAR_API_KEY`) is provided to the Observer process
+through the environment only. It is never placed in pane commands, `ps` output,
+logs, health files, or incident evidence; Backstage health exposes only a
+`credentialReady` boolean.
+
+**Canary enablement (go/no-go):**
+
+1. Confirm HOK-3031 through HOK-3035 are complete and merged.
+2. Run the shadow trial above until every go/no-go threshold holds, then set
+   `observer.linear.rollout.shadowTrialCompleted: true`.
+3. Configure `team`, `project`, and `label`, and validate them plus the
+   lifecycle state policy in a single canary repository.
+4. Rehearse the rollback (below) and set `rollout.rollbackRehearsed: true`.
+5. Keep `rollout.maxProposedPerPass` low (default `5`) so a misconfiguration
+   cannot create a ticket storm.
+6. Only after go/no-go review, set `observer.linear.mode: live`,
+   `enabled: true`, and `rollout.gatesPassed: true`. Backstage reconciles the
+   Observer pane to the `live` command on its next startup/watchdog pass.
+
+**One-change rollback:** set `observer.linear.mode` from `live` back to
+`shadow` (or `off`) — or clear any single `rollout` gate — and let Backstage
+reconcile the pane. No live arguments survive the restart. Do **not** delete
+already-created Linear issues; linked lifecycle synchronization remains
+responsible for them.
 
 The observer itself is conservative: it detects and reports stuck states, warnings, crashes, and visual pane/display issues. A supervising Codex session should decide whether to apply a narrow operational nudge, file a Linear issue, or make a Wavemill PR targeting `auto/integration`.
 

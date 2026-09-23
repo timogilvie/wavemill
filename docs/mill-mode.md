@@ -236,7 +236,7 @@ Configuration (`.wavemill-config.json`):
 - `mill.0` monitor + command input (`1 3`, `advance HOK-1639`, `m`, `d`, `q`)
 - `mill.1` dashboard
 - `mill.2` status log
-- When `observer.enabled` is true and integration mill-session monitoring is active, the Backstage window also includes a dedicated `Wavemill Observer` pane running detection-only `wavemill observer --loop`.
+- When `observer.enabled` is true and integration mill-session monitoring is active, the Backstage window also includes a dedicated `Wavemill Observer` pane running `wavemill observer --loop`. The legacy `--file-linear` finding path is always rejected here; managed incident-to-Linear filing is gated by a fail-closed service mode (`off`/`shadow`/`live`) resolved from `observer.linear`, and defaults to `off`. Startup and the watchdog restart use the same resolver and command builder, so a restarted pane cannot preserve stale arguments or silently escalate to `live`. The generic `--dry-run` flag is not the incident-sync safety control. See `docs/cli-reference.md` → **Managed Backstage filing (HOK-3036)**.
 - On startup and watchdog passes, the Backstage window is reconciled by pane title: tend, jobs, queue, and Observer each keep one pane; duplicate panes are killed; dead panes are respawned in place. `backstage-health.json` records `services.<name>.instanceCount` so a green service status still shows unexpected duplicates.
 - Input is decoupled from the monitor loop internally and written as session-scoped command events at `/tmp/wavemill-${SESSION}-commands`.
 - Seam artifact formats and validation timing are documented in [Seam Artifacts](seam-artifacts.md).
