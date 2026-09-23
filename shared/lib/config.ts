@@ -291,6 +291,11 @@ export interface ChallengeSelectionHealthConfig {
     windowSeconds?: number;
     cooldownSeconds?: number;
   };
+  attemptRanking?: {
+    enabled?: boolean;
+    lookbackSeconds?: number;
+    failedAttemptCooldownSeconds?: number;
+  };
 }
 
 export interface ChallengeConfig {
@@ -445,9 +450,29 @@ export interface NativePatchCodingConfig {
   enabled?: boolean;
 }
 
+export interface CanaryCohortMemberConfig {
+  provider: 'openai' | 'openrouter';
+  model: string;
+}
+
 export interface NativeCertificationConfig {
   autoRemediate?: boolean;
   renewalWindowDays?: number;
+  /**
+   * Bounded, reviewed cohort of native coding candidates whose live coding
+   * canaries are kept fresh (HOK-3062). Only listed identities are ever
+   * auto-refreshed; the fleet at large is never canaried automatically.
+   */
+  canaryCohort?: CanaryCohortMemberConfig[];
+  /** Minimum coding-ready cohort members before readiness alerts fire. */
+  minCodingReady?: number;
+  /**
+   * Days before live-canary expiry at which a still-valid pass becomes a
+   * refresh target. Must stay below the 14-day canary TTL.
+   */
+  canaryRenewalWindowDays?: number;
+  /** Master switch for automatic cohort canary refresh during preflight. */
+  canaryAutoRefresh?: boolean;
 }
 
 export interface NativeContextManagementConfig {
@@ -585,9 +610,58 @@ export interface ObserverLinearRedactionConfig {
   markFormat: string;
 }
 
+export type ObserverLinearMode = 'off' | 'offline' | 'shadow' | 'live';
+
+export interface ObserverLinearShadowConfig {
+  auditPath: string;
+  countersPath: string;
+  maxEntries: number;
+  maxAgeDays: number;
+  maxLookupsPerPass: number;
+}
+
+export interface ObserverLinearLifecycleConfig {
+  enabled: boolean;
+  commentOnly: boolean;
+  closeOnOperatorResolved: boolean;
+  resolvedStateName?: string;
+  closeOnOperatorArchived: boolean;
+  archivedStateName?: string;
+  reopenOnRecurrence: boolean;
+  reopenStateName?: string;
+}
+
+/**
+ * The mode the managed Backstage Observer service actually runs in. This is a
+ * deliberately narrower set than {@link ObserverLinearMode}: `offline` is a
+ * CLI/legacy no-network compatibility mode and is never a route to managed
+ * filing, so the managed service only ever resolves to one of these three.
+ */
+export type ObserverLinearManagedServiceMode = 'off' | 'shadow' | 'live';
+
+/** How the effective observer.linear mode was chosen. */
+export type ObserverLinearModeSource = 'explicit' | 'legacy' | 'default';
+
+/**
+ * Rollout / promotion gate evidence for managed incident-to-Linear filing.
+ * Every field defaults to the safe value so `live` cannot start until an
+ * operator has explicitly recorded that each promotion gate has passed.
+ */
+export interface ObserverLinearRolloutConfig {
+  /** Operator attestation that HOK-3031..HOK-3035 and go/no-go review passed. */
+  gatesPassed: boolean;
+  /** Operator attestation that the configured shadow trial completed cleanly. */
+  shadowTrialCompleted: boolean;
+  /** Operator attestation that live→shadow/off rollback was rehearsed. */
+  rollbackRehearsed: boolean;
+  /** Hard ceiling on proposed create/update actions per pass for the canary. */
+  maxProposedPerPass: number;
+}
+
 export interface ObserverLinearConfig {
   enabled: boolean;
   detectionOnly: boolean;
+  mode: ObserverLinearMode;
   project?: string;
   team?: string;
   label?: string;
@@ -605,6 +679,29 @@ export interface ObserverLinearConfig {
     stale_orphaned_state: ObserverLinearPolicyConfig;
   };
   redaction: ObserverLinearRedactionConfig;
+  shadow: ObserverLinearShadowConfig;
+  lifecycle: ObserverLinearLifecycleConfig;
+  rollout: ObserverLinearRolloutConfig;
+}
+
+/** Runtime inputs the service-mode resolver validates against, beyond config. */
+export interface ObserverLinearServiceContext {
+  /** Whether a Linear API credential is available (boolean only — never the value). */
+  credentialReady: boolean;
+}
+
+/** Fail-closed resolution of the managed Backstage Observer service mode. */
+export interface ObserverLinearServiceModeResolution {
+  /** The mode the managed service will actually run in. */
+  mode: ObserverLinearManagedServiceMode;
+  /** The mode the configuration requested (before any downgrade). */
+  requested: ObserverLinearMode;
+  /** How `requested` was chosen (explicit field vs. legacy vs. default). */
+  source: ObserverLinearModeSource;
+  /** True when the service mode was downgraded from what config requested. */
+  downgraded: boolean;
+  /** Human-readable, secret-free reasons for any downgrade. */
+  reasons: string[];
 }
 
 export interface IncidentConfig {
@@ -945,9 +1042,33 @@ export const OBSERVER_DEFAULTS: ObserverConfig = {
   },
 };
 
+export const OBSERVER_LINEAR_SHADOW_DEFAULTS: ObserverLinearShadowConfig = {
+  auditPath: '.wavemill/observer/shadow-audit.jsonl',
+  countersPath: '.wavemill/observer/shadow-counters.json',
+  maxEntries: 500,
+  maxAgeDays: 14,
+  maxLookupsPerPass: 40,
+};
+
+export const OBSERVER_LINEAR_LIFECYCLE_DEFAULTS: ObserverLinearLifecycleConfig = {
+  enabled: false,
+  commentOnly: true,
+  closeOnOperatorResolved: false,
+  closeOnOperatorArchived: false,
+  reopenOnRecurrence: true,
+};
+
+export const OBSERVER_LINEAR_ROLLOUT_DEFAULTS: ObserverLinearRolloutConfig = {
+  gatesPassed: false,
+  shadowTrialCompleted: false,
+  rollbackRehearsed: false,
+  maxProposedPerPass: 5,
+};
+
 export const OBSERVER_LINEAR_DEFAULTS: ObserverLinearConfig = {
   enabled: false,
   detectionOnly: false,
+  mode: 'off',
   retryQueuePath: '.wavemill/registry/linear-incident-queue.jsonl',
   updateCooldownMinutes: 5,
   maxIncidentsPerPass: 10,
@@ -970,6 +1091,9 @@ export const OBSERVER_LINEAR_DEFAULTS: ObserverLinearConfig = {
     truncateLength: 200,
     markFormat: '[REDACTED: {type}]',
   },
+  shadow: OBSERVER_LINEAR_SHADOW_DEFAULTS,
+  lifecycle: OBSERVER_LINEAR_LIFECYCLE_DEFAULTS,
+  rollout: OBSERVER_LINEAR_ROLLOUT_DEFAULTS,
 };
 
 export const PROMOTION_DEFAULTS: PromotionConfig = {
@@ -1965,10 +2089,17 @@ export function getObserverLinearConfig(repoDir?: string): ObserverLinearConfig 
   const linear = observer.linear ?? {};
   const envEnabled = process.env.WAVEMILL_OBSERVER_LINEAR_ENABLED;
   const envProject = process.env.WAVEMILL_OBSERVER_LINEAR_PROJECT;
+  const enabled = envEnabled === undefined
+    ? linear.enabled ?? OBSERVER_LINEAR_DEFAULTS.enabled
+    : envEnabled === '1' || envEnabled.toLowerCase() === 'true';
+  const detectionOnly = linear.detectionOnly ?? OBSERVER_LINEAR_DEFAULTS.detectionOnly;
+  const mode = resolveObserverLinearMode(linear.mode, enabled, detectionOnly);
   return {
     ...OBSERVER_LINEAR_DEFAULTS,
     ...linear,
-    enabled: envEnabled === undefined ? linear.enabled ?? OBSERVER_LINEAR_DEFAULTS.enabled : envEnabled === '1' || envEnabled.toLowerCase() === 'true',
+    mode,
+    enabled,
+    detectionOnly,
     project: envProject ?? linear.project,
     policies: {
       product_defect: {
@@ -1997,7 +2128,133 @@ export function getObserverLinearConfig(repoDir?: string): ObserverLinearConfig 
       ...(linear.redaction ?? {}),
       patterns: linear.redaction?.patterns ?? OBSERVER_LINEAR_DEFAULTS.redaction.patterns,
     },
+    shadow: {
+      ...OBSERVER_LINEAR_SHADOW_DEFAULTS,
+      ...(linear.shadow ?? {}),
+    },
+    lifecycle: {
+      ...OBSERVER_LINEAR_LIFECYCLE_DEFAULTS,
+      ...(linear.lifecycle ?? {}),
+    },
+    rollout: {
+      ...OBSERVER_LINEAR_ROLLOUT_DEFAULTS,
+      ...(linear.rollout ?? {}),
+    },
   };
+}
+
+/**
+ * Determine how the effective observer.linear mode was chosen, so operators can
+ * see whether an explicit `mode` field, the legacy `enabled`/`detectionOnly`
+ * fields, or the built-in default is driving managed filing.
+ */
+export function resolveObserverLinearModeSource(
+  linear: Partial<ObserverLinearConfig> | undefined,
+): ObserverLinearModeSource {
+  if (linear?.mode !== undefined) return 'explicit';
+  if (linear?.enabled !== undefined || linear?.detectionOnly !== undefined) return 'legacy';
+  return 'default';
+}
+
+/**
+ * Resolve the managed Backstage Observer service mode, failing closed.
+ *
+ * The managed service only ever runs `off`, `shadow`, or `live`. `offline` is a
+ * CLI/legacy no-network compatibility mode and never routes to managed filing,
+ * so it resolves to `off` here. `live` is the most privileged mode and can only
+ * be selected when every promotion gate holds:
+ *   - a Linear credential is ready,
+ *   - team, project, and label routing are all configured,
+ *   - the rollout gates, shadow trial, and rollback rehearsal are attested, and
+ *   - the per-pass proposed-volume ceiling is a sane positive bound.
+ *
+ * Any unmet requirement downgrades `live` to `shadow` (still a safe read-only
+ * mode) when reads are possible, or to `off` when no credential is available.
+ * A missing credential always downgrades to `off` so a shadow trial cannot spin
+ * without the ability to read. Invalid/unknown modes fail closed to `off`.
+ */
+export function resolveObserverLinearServiceMode(
+  config: Pick<ObserverLinearConfig, 'mode' | 'team' | 'project' | 'label' | 'rollout'>,
+  context: ObserverLinearServiceContext,
+  source: ObserverLinearModeSource = 'default',
+): ObserverLinearServiceModeResolution {
+  const requested = config.mode;
+  const reasons: string[] = [];
+
+  const done = (mode: ObserverLinearManagedServiceMode): ObserverLinearServiceModeResolution => {
+    // `offline` maps to `off` for the managed service but is not a "downgrade".
+    const requestedManaged: ObserverLinearManagedServiceMode =
+      requested === 'shadow' || requested === 'live' ? requested : 'off';
+    return { mode, requested, source, downgraded: mode !== requestedManaged, reasons };
+  };
+
+  if (requested === 'off' || requested === 'offline') {
+    return done('off');
+  }
+
+  if (requested !== 'shadow' && requested !== 'live') {
+    reasons.push(`unknown mode ${JSON.stringify(requested)} — failing closed to off`);
+    return done('off');
+  }
+
+  // Both shadow and live perform Linear reads, so a missing credential is fatal
+  // to either and must fail closed all the way to off (never a restart loop).
+  if (!context.credentialReady) {
+    reasons.push('Linear credential is not ready');
+    return done('off');
+  }
+
+  if (requested === 'shadow') {
+    return done('shadow');
+  }
+
+  // requested === 'live' — validate every promotion gate before allowing it.
+  const routingOk = Boolean(config.team && config.project && config.label);
+  if (!routingOk) {
+    reasons.push('routing (team, project, label) is not fully configured');
+  }
+  const { rollout } = config;
+  if (!rollout.gatesPassed) reasons.push('rollout gates are not marked passed');
+  if (!rollout.shadowTrialCompleted) reasons.push('shadow trial is not marked completed');
+  if (!rollout.rollbackRehearsed) reasons.push('rollback has not been rehearsed');
+  if (!(rollout.maxProposedPerPass > 0)) {
+    reasons.push('maxProposedPerPass must be a positive bound');
+  }
+
+  if (reasons.length > 0) {
+    // Credential is present (checked above) so reads are safe: downgrade to
+    // shadow rather than off, preserving observability of what live would do.
+    return done('shadow');
+  }
+
+  return done('live');
+}
+
+const VALID_OBSERVER_LINEAR_MODES: readonly ObserverLinearMode[] = ['off', 'offline', 'shadow', 'live'];
+
+/**
+ * Resolve the effective observer.linear mode.
+ *
+ * Precedence:
+ *   1. Explicit `mode` field wins (shadow can only be requested this way).
+ *   2. Otherwise derive from legacy fields so existing configs behave unchanged:
+ *      - `enabled=false` → `off`
+ *      - `enabled=true && detectionOnly=true` → `offline`
+ *      - `enabled=true && detectionOnly=false` → `live`
+ */
+export function resolveObserverLinearMode(
+  explicit: ObserverLinearMode | undefined,
+  enabled: boolean,
+  detectionOnly: boolean,
+): ObserverLinearMode {
+  if (explicit !== undefined) {
+    if (!VALID_OBSERVER_LINEAR_MODES.includes(explicit)) {
+      throw new Error(`observer.linear.mode must be one of ${VALID_OBSERVER_LINEAR_MODES.join('/')}, got ${JSON.stringify(explicit)}`);
+    }
+    return explicit;
+  }
+  if (!enabled) return 'off';
+  return detectionOnly ? 'offline' : 'live';
 }
 
 export function getIncidentConfig(repoDir?: string): Required<Pick<IncidentConfig, 'enabled'>> & IncidentConfig {

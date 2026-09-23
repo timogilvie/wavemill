@@ -105,6 +105,7 @@ _CURRENT_TIP="tip"
 gather_tasks() { :; }
 render_inbox_section() { :; }
 render_active_section() { :; }
+render_backstage_retained_section() { :; }
 render_project_context_suggestion() { :; }
 wavemill_pick_usage_tip() { printf 'tip\n'; }
 

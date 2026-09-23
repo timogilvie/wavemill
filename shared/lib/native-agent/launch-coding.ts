@@ -21,6 +21,7 @@ import {
 } from './providers.ts';
 import { TranscriptWriter } from './transcript.ts';
 import { SessionStreamWriter, resolveSessionEventStreamPath } from './session-stream.ts';
+import { captureToolDecisionsFromStream } from './tool-decision-capture.ts';
 import type { SessionStreamConfig } from './loop.ts';
 import { createReadOnlyTools, READ_ONLY_PATH_FIELDS } from './tools/read-only.ts';
 import {
@@ -45,8 +46,14 @@ import {
   intendedFilesAfterToolCall,
 } from './tools/intended-files.ts';
 import { createToolRegistry } from './tools/registry.ts';
-import { toPiAgentTool, type AgentTool } from './tools/pi-adapter.ts';
+import type { AgentTool } from './tools/pi-adapter.ts';
 import type { ToolDescriptor, ToolMetadata } from './tools/types.ts';
+import {
+  createLaunchMenuProvider,
+  formatMenuDenials,
+} from './tools/menu-resolver.ts';
+import { inferCertificationSnapshotForPhase } from './tools/certification-snapshot.ts';
+import { loadWavemillConfig } from '../config.ts';
 import { validateCodingArtifacts, type CodingArtifacts } from './coding-artifacts.ts';
 import {
   buildCompletionArtifactRetryGuidance,
@@ -194,10 +201,6 @@ function makeTranscriptPath(repoDir: string, session: string, issue: string): st
     : join(repoDir, '.wavemill', 'runs', session, 'native-sessions');
   mkdirSync(baseDir, { recursive: true });
   return join(baseDir, `coding-${safeIssue}.jsonl`);
-}
-
-function toPiTools(descriptors: readonly ToolDescriptor[]): AgentTool<unknown, unknown>[] {
-  return descriptors.map((descriptor) => toPiAgentTool(descriptor) as AgentTool<unknown, unknown>);
 }
 
 function canonicalNativeModelIds(modelId: string | undefined): Set<string> {
@@ -891,6 +894,22 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       failureReason: null,
     });
 
+    const menuLaunchProvider = createLaunchMenuProvider({
+      phase: 'coding',
+      config: loadWavemillConfig(options.repoDir),
+      certification: inferCertificationSnapshotForPhase({
+        phase: 'coding',
+        readyProviderPresent: Boolean(readyProvider),
+        loopModelOverridePresent: Boolean(options.loopModelOverride),
+      }),
+      descriptors,
+    });
+    if (menuLaunchProvider.initialMenu.denials.length > 0) {
+      const formatted = formatMenuDenials(menuLaunchProvider.initialMenu.denials);
+      if (formatted) {
+        console.warn(`[native-coding] menu denials:\n${formatted}`);
+      }
+    }
     const context: AgentContext = {
       systemPrompt: renderCodingSystemPrompt({
         template: promptTemplate,
@@ -917,7 +936,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
         }),
         timestamp: 0,
       }],
-      tools: toPiTools(descriptors),
+      tools: menuLaunchProvider.providerToolsForContext as AgentTool<unknown, unknown>[],
     };
 
     const mutationFailureTracker: MutationFailureTracker = { count: 0, last: null };
@@ -953,6 +972,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
         issue: options.issue,
       } : undefined,
       sessionStreamConfig,
+      menuProvider: menuLaunchProvider.menuProvider,
       afterToolCall: async (toolContext, signal) => {
         await intendedFilesAfterToolCall(toolContext, tracker);
 
@@ -1227,6 +1247,21 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       }
     } catch (error) {
       console.warn(`Failed to write session_ended event: ${(error as Error).message}`);
+    }
+
+    // Project the canonical event stream into the tool-decision corpus (HOK-2076).
+    // Best-effort; capture failures never alter agent behavior.
+    try {
+      const capture = captureToolDecisionsFromStream({
+        eventStreamPath,
+        repoDir: options.repoDir,
+        provider: model.provider,
+      });
+      if (!capture.ok) {
+        console.warn(`tool-decision capture skipped: ${capture.reason ?? 'unknown'}`);
+      }
+    } catch (error) {
+      console.warn(`tool-decision capture failed: ${(error as Error).message}`);
     }
 
     return {

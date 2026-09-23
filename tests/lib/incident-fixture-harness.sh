@@ -370,10 +370,10 @@ SHIM
   chmod +x "$BIN_DIR/gh"
 }
 
-# record_pr <pr> <state> [mergedAt] [headRefOid] [headRefName] [baseRefName]
+# record_pr <pr> <state> [mergedAt] [headRefOid] [headRefName] [baseRefName] [mergeCommitOid]
 record_pr() {
-  local pr="$1" state="$2" merged_at="${3:-null}" head_oid="${4:-}" head_ref="${5:-}" base_ref="${6:-auto/integration}"
-  local merged_at_json head_oid_json head_ref_json
+  local pr="$1" state="$2" merged_at="${3:-null}" head_oid="${4:-}" head_ref="${5:-}" base_ref="${6:-auto/integration}" merge_commit_oid="${7:-}"
+  local merged_at_json head_oid_json head_ref_json merge_commit_json
   if [[ "$merged_at" == "null" || -z "$merged_at" ]]; then
     merged_at_json="null"
   else
@@ -381,10 +381,16 @@ record_pr() {
   fi
   [[ -n "$head_oid" ]] && head_oid_json="\"$head_oid\"" || head_oid_json="null"
   [[ -n "$head_ref" ]] && head_ref_json="\"$head_ref\"" || head_ref_json="null"
+  if [[ -n "$merge_commit_oid" ]]; then
+    merge_commit_json="{\"oid\":\"$merge_commit_oid\"}"
+  else
+    merge_commit_json="null"
+  fi
   jq -cn --argjson number "$pr" --arg state "$state" --argjson mergedAt "$merged_at_json" \
     --argjson headRefOid "$head_oid_json" --argjson headRefName "$head_ref_json" --arg baseRefName "$base_ref" \
+    --argjson mergeCommit "$merge_commit_json" \
     --arg url "https://example.invalid/pr/$pr" --arg title "Fixture PR #$pr" \
-    '{number:$number,state:$state,mergedAt:$mergedAt,headRefOid:$headRefOid,headRefName:$headRefName,baseRefName:$baseRefName,url:$url,title:$title}' \
+    '{number:$number,state:$state,mergedAt:$mergedAt,headRefOid:$headRefOid,headRefName:$headRefName,baseRefName:$baseRefName,mergeCommit:$mergeCommit,url:$url,title:$title}' \
     > "$GH_PR_DIR/$pr.json"
 }
 

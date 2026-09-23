@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import { classifyLinearError, type ClassifiedLinearError } from './linear.ts';
-import { syncIncident, type IncidentLinearClient, type ObserverLinearConfig, type SyncIncidentOptions } from './incident-to-linear-synchronizer.ts';
+import { syncIncident, syncIncidentLifecycle, type IncidentLinearClient, type ObserverLinearConfig, type SyncIncidentOptions } from './incident-to-linear-synchronizer.ts';
+import type { IncidentLifecycleTransitionKind } from './wavemill-incident-model.ts';
 import { IncidentStore } from './wavemill-incident-store.ts';
 
 const SCHEMA_VERSION = '1.0';
@@ -13,14 +14,19 @@ export interface IncidentRetryErrorSnapshot extends ClassifiedLinearError {
   error: string;
 }
 
+export type IncidentRetryAction = 'create' | 'update_comment' | 'lifecycle';
+
 export interface PendingIncidentRetryRecord {
   schemaVersion: '1.0';
   recordType: 'pending';
   id: string;
   enqueuedAt: string;
   incidentFingerprint: string;
-  linearAction: 'create' | 'update_comment';
+  linearAction: IncidentRetryAction;
   linearIssueId?: string;
+  /** Lifecycle transition metadata (only present when linearAction === 'lifecycle'). */
+  lifecycleKind?: IncidentLifecycleTransitionKind;
+  transitionRevision?: string;
   attempts: number;
   nextRetryAt: string;
   lastError: IncidentRetryErrorSnapshot;
@@ -39,8 +45,10 @@ export interface PermanentlyFailedIncidentRetryRecord {
   id: string;
   failedAt: string;
   incidentFingerprint: string;
-  linearAction: 'create' | 'update_comment';
+  linearAction: IncidentRetryAction;
   linearIssueId?: string;
+  lifecycleKind?: IncidentLifecycleTransitionKind;
+  transitionRevision?: string;
   attempts: number;
   lastError: IncidentRetryErrorSnapshot;
 }
@@ -51,8 +59,10 @@ export interface EnqueueIncidentSyncInput {
   repoDir?: string;
   queuePath?: string;
   incidentFingerprint: string;
-  linearAction: 'create' | 'update_comment';
+  linearAction: IncidentRetryAction;
   linearIssueId?: string;
+  lifecycleKind?: IncidentLifecycleTransitionKind;
+  transitionRevision?: string;
   attempts?: number;
   lastError: ClassifiedLinearError;
   now?: Date;
@@ -136,12 +146,15 @@ export function enqueueIncidentSync(input: EnqueueIncidentSyncInput): PendingInc
   const repoDir = input.repoDir ?? process.cwd();
   const path = resolveQueuePath(repoDir, input.queuePath);
   const now = input.now ?? new Date();
+  // Dedupe pending entries by fingerprint, action, issue, and — for lifecycle —
+  // the transition revision, so replaying the same transition never fans out.
   const existing = [...latestById(parseQueue(path)).values()]
     .find((record): record is PendingIncidentRetryRecord =>
       record.recordType === 'pending'
       && record.incidentFingerprint === input.incidentFingerprint
       && record.linearAction === input.linearAction
-      && (record.linearIssueId ?? '') === (input.linearIssueId ?? ''),
+      && (record.linearIssueId ?? '') === (input.linearIssueId ?? '')
+      && (record.transitionRevision ?? '') === (input.transitionRevision ?? ''),
     );
   const attempts = input.attempts ?? existing?.attempts ?? 1;
   const record: PendingIncidentRetryRecord = {
@@ -152,6 +165,8 @@ export function enqueueIncidentSync(input: EnqueueIncidentSyncInput): PendingInc
     incidentFingerprint: input.incidentFingerprint,
     linearAction: input.linearAction,
     linearIssueId: input.linearIssueId,
+    lifecycleKind: input.lifecycleKind,
+    transitionRevision: input.transitionRevision,
     attempts,
     nextRetryAt: toIso(new Date(now.getTime() + computeIncidentBackoffMs(attempts))),
     lastError: toSnapshot(input.lastError),
@@ -187,6 +202,44 @@ export async function drainIncidentQueue(options: DrainIncidentQueueOptions): Pr
       continue;
     }
     try {
+      // Lifecycle transition replay: settle comment/state steps independently and
+      // skip any step already recorded successful on the reloaded record.
+      if (record.linearAction === 'lifecycle') {
+        const lifecycleResult = await syncIncidentLifecycle({
+          incident,
+          store: options.store,
+          config: options.config,
+          replay: true,
+          now,
+          client: options.client,
+          repoDir,
+          reconciler: options.reconciler,
+          retryQueue: {
+            enqueueLifecycleSync: (input) => enqueueIncidentSync({
+              repoDir,
+              queuePath: options.queuePath ?? options.config.retryQueuePath,
+              incidentFingerprint: input.incidentFingerprint,
+              linearAction: 'lifecycle',
+              linearIssueId: input.linearIssueId,
+              lifecycleKind: input.lifecycleKind,
+              transitionRevision: input.transitionRevision,
+              attempts: record.attempts + 1,
+              lastError: input.lastError,
+              now: input.now,
+            }),
+          },
+        });
+        if (lifecycleResult.status === 'synced' || lifecycleResult.status === 'no_op' || lifecycleResult.status === 'skipped') {
+          appendRecord(path, { schemaVersion: SCHEMA_VERSION, recordType: 'tombstone', id: record.id, settledAt: toIso(now) });
+          result.succeeded += 1;
+          continue;
+        }
+        if (lifecycleResult.status === 'queued') {
+          result.failed += 1;
+          continue;
+        }
+        throw new Error(lifecycleResult.reason ?? 'incident lifecycle retry did not complete');
+      }
       const syncResult = await syncIncident({
         incident,
         store: options.store,
@@ -236,6 +289,8 @@ export async function drainIncidentQueue(options: DrainIncidentQueueOptions): Pr
           incidentFingerprint: record.incidentFingerprint,
           linearAction: record.linearAction,
           linearIssueId: record.linearIssueId,
+          lifecycleKind: record.lifecycleKind,
+          transitionRevision: record.transitionRevision,
           attempts,
           lastError: toSnapshot(classified),
         });

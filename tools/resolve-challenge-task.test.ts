@@ -20,7 +20,7 @@ import {
 } from '../shared/lib/native-agent/coding-certification.ts';
 import { PATCH_CODING_SMOKE_SUITE_REVISION } from '../shared/lib/native-agent/smoke.ts';
 import { listEffectiveModelsForStage } from '../shared/lib/effective-models.ts';
-import { claimReservation } from '../shared/lib/challenge-selection-health.ts';
+import { claimReservation, recordSelectionOutcome } from '../shared/lib/challenge-selection-health.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const resolveChallengeTaskTool = resolve(__dirname, 'resolve-challenge-task.ts');
@@ -700,6 +700,117 @@ describe('resolve-challenge-task CLI', () => {
     }
   });
 
+  // HOK-3065: --resolve-sealed enriches a sealed decision with the expanded
+  // route without ever re-running the lottery.
+  function makeSealedRepo(): { repoDir: string; featureDir: string } {
+    const repoDir = mkdtempSync(join(tmpdir(), 'resolve-sealed-'));
+    writeFileSync(join(repoDir, '.wavemill-config.json'), JSON.stringify({
+      challenge: { enabled: true },
+      router: { defaultAgent: 'claude' },
+    }), 'utf-8');
+    const featureDir = join(repoDir, 'features', 'sealed');
+    mkdirSync(featureDir, { recursive: true });
+    writeFileSync(join(featureDir, '.post-expansion-route.json'), JSON.stringify({
+      planner: 'claude-opus-4-8',
+      coder: 'claude-sonnet-5',
+      reviewer: 'claude-sonnet-5',
+      planDepth: 'deep',
+      codeDepth: 'deep',
+      reviewMode: 'llm',
+    }), 'utf-8');
+    return { repoDir, featureDir };
+  }
+
+  function sealedPlanIntent(challengerPlanner: string): string {
+    return JSON.stringify({
+      schemaVersion: 1,
+      pairId: 'HOK-3065',
+      issueId: 'HOK-3065',
+      selectedStage: 'plan',
+      challengeStage: 'plan',
+      decisionSource: 'bootstrap',
+      primary: {
+        key: 'HOK-3065', role: 'primary',
+        planner: { model: 'bootstrap-planner', agent: 'claude' },
+        coder: { model: 'bootstrap-coder', agent: 'claude' },
+        reviewer: { model: 'bootstrap-reviewer', agent: 'claude' },
+      },
+      challenger: {
+        key: 'HOK-3065_c', role: 'challenger',
+        planner: { model: challengerPlanner, agent: 'claude' },
+        coder: { model: 'bootstrap-coder', agent: 'claude' },
+        reviewer: { model: 'bootstrap-reviewer', agent: 'claude' },
+      },
+    });
+  }
+
+  it('resolve-sealed enriches the non-varied route and preserves the sealed plan challenger', () => {
+    const { repoDir, featureDir } = makeSealedRepo();
+    try {
+      const result = runResolveChallengeTask(repoDir, [
+        '--resolve-sealed',
+        '--sealed-intent', sealedPlanIntent('claude-haiku-4-5-20251001'),
+        '--feature-dir', featureDir,
+        '--repo-dir', repoDir,
+      ]);
+      assert.equal(result.status, 'materialize');
+      assert.equal(result.variedStage, 'plan');
+      assert.equal(result.challengerVariedModel, 'claude-haiku-4-5-20251001');
+      const intent = result.intent as {
+        decisionSource: string;
+        primary: { planner: { model: string }; coder: { model: string } };
+        challenger: { planner: { model: string }; coder: { model: string } };
+      };
+      assert.equal(intent.decisionSource, 'preserved');
+      // Primary incumbent planner enriched from the expanded route.
+      assert.equal(intent.primary.planner.model, 'claude-opus-4-8');
+      // Non-varied stage shared from the expanded route.
+      assert.equal(intent.challenger.coder.model, 'claude-sonnet-5');
+      // Sealed challenger planner preserved byte-for-byte.
+      assert.equal(intent.challenger.planner.model, 'claude-haiku-4-5-20251001');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('resolve-sealed collapses (never substitutes) when the sealed challenger is unlaunchable', () => {
+    const { repoDir, featureDir } = makeSealedRepo();
+    try {
+      const result = runResolveChallengeTask(repoDir, [
+        '--resolve-sealed',
+        '--sealed-intent', sealedPlanIntent('totally-bogus-model-that-cannot-launch'),
+        '--feature-dir', featureDir,
+        '--repo-dir', repoDir,
+      ]);
+      assert.equal(result.status, 'collapse');
+      assert.equal(result.reason, 'sealed_challenger_ineligible');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('resolve-sealed collapses when the expanded route is not yet present', () => {
+    const repoDir = mkdtempSync(join(tmpdir(), 'resolve-sealed-noroute-'));
+    writeFileSync(join(repoDir, '.wavemill-config.json'), JSON.stringify({
+      challenge: { enabled: true },
+      router: { defaultAgent: 'claude' },
+    }), 'utf-8');
+    const featureDir = join(repoDir, 'features', 'sealed');
+    mkdirSync(featureDir, { recursive: true });
+    try {
+      const result = runResolveChallengeTask(repoDir, [
+        '--resolve-sealed',
+        '--sealed-intent', sealedPlanIntent('claude-haiku-4-5-20251001'),
+        '--feature-dir', featureDir,
+        '--repo-dir', repoDir,
+      ]);
+      assert.equal(result.status, 'collapse');
+      assert.equal(result.reason, 'expanded_route_missing');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
   it('ignores an unrecognized pinned stage instead of pinning a bogus one', () => {
     const { repoDir, featureDir } = makePlannerRecommendationRepo();
     try {
@@ -717,6 +828,102 @@ describe('resolve-challenge-task CLI', () => {
 
       // Falls through to the recommendation, which pins 'plan'.
       assert.equal(result.challengeStage, 'plan');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rotates away from a failed zero-coverage challenger and reports attempt evidence (HOK-3066)', async () => {
+    const repoDir = makeRepo([], {
+      aliases: ['qwen-3-coder', 'glm-5.2'],
+      patchCodingEnabled: true,
+      suiteVersion: DEFAULT_CERTIFICATION_SUITE_VERSION,
+      certificationPhase: 'patch',
+    });
+    try {
+      await recordSelectionOutcome({
+        repoDir,
+        owner: { issueId: 'HOK-3066-PRIOR', pairId: 'HOK-3066-PRIOR' },
+        model: 'qwen-3-coder',
+        stage: 'implementation',
+        terminalStatus: 'failure',
+        failureKind: 'native-completion-protocol',
+        faultClass: 'model-fault',
+      });
+
+      const result = runResolveChallengeTask(repoDir, [
+        '--issue', 'HOK-3066-NEXT',
+        '--slug', 'attempt-rotation',
+        '--title', 'Rotate after failed attempt',
+        '--primary-model', 'claude-sonnet-4-6',
+        '--remaining-slots', '2',
+        '--repo-dir', repoDir,
+      ]);
+
+      assert.equal(result.mode, 'challenge');
+      const challenger = (result.entries as Array<Record<string, unknown>>)
+        .find((entry) => entry.role === 'challenger')?.model;
+      assert.equal(challenger, 'glm-5.2');
+      assert.equal(result.attemptCount, 0);
+      assert.equal(result.cooldownActive, false);
+      const attemptEvidence = (result.selectionHealth as {
+        attemptEvidence: Array<Record<string, unknown>>;
+      }).attemptEvidence;
+      const failedEntry = attemptEvidence.find((entry) => entry.model === 'qwen-3-coder');
+      assert.equal(failedEntry?.attemptCount, 1);
+      assert.equal(failedEntry?.cooldownActive, true);
+      const intent = result.challengeExecutionIntent as Record<string, unknown>;
+      const selectionEvidence = intent.selectionEvidence as Record<string, unknown>;
+      assert.equal(selectionEvidence.attemptCount, 0);
+      assert.equal(selectionEvidence.cooldownActive, false);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('attemptRanking.enabled=false restores legacy selection while preserving recorded attempts', async () => {
+    const repoDir = makeRepo([], {
+      aliases: ['qwen-3-coder', 'glm-5.2'],
+      patchCodingEnabled: true,
+      suiteVersion: DEFAULT_CERTIFICATION_SUITE_VERSION,
+      certificationPhase: 'patch',
+    });
+    try {
+      updateRepoConfig(repoDir, (config) => {
+        config.challenge = {
+          ...(config.challenge as Record<string, unknown>),
+          selectionHealth: { attemptRanking: { enabled: false } },
+        };
+      });
+      await recordSelectionOutcome({
+        repoDir,
+        owner: { issueId: 'HOK-3066-PRIOR', pairId: 'HOK-3066-PRIOR' },
+        model: 'qwen-3-coder',
+        stage: 'implementation',
+        terminalStatus: 'failure',
+        failureKind: 'native-completion-protocol',
+        faultClass: 'model-fault',
+      });
+
+      const result = runResolveChallengeTask(repoDir, [
+        '--issue', 'HOK-3066-LEGACY',
+        '--slug', 'attempt-rotation-off',
+        '--title', 'Legacy selection with flag off',
+        '--primary-model', 'claude-sonnet-4-6',
+        '--remaining-slots', '2',
+        '--repo-dir', repoDir,
+      ]);
+
+      assert.equal(result.mode, 'challenge');
+      // Ranking evidence is not consumed or emitted with the flag off...
+      assert.equal((result.selectionHealth as Record<string, unknown>).attemptEvidence, undefined);
+      // ...but the recorded attempt survives in the health state for re-enable.
+      const state = JSON.parse(readFileSync(
+        join(repoDir, '.wavemill', 'challenge-selection-health.json'),
+        'utf-8',
+      )) as { attempts?: Record<string, unknown[]> };
+      const attemptKeys = Object.keys(state.attempts ?? {});
+      assert.equal(attemptKeys.length, 1);
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }

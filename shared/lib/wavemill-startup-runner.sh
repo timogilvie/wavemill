@@ -787,7 +787,13 @@ spawn_integration_window() {
 
   if [[ "$observer_enabled" == "true" ]]; then
     observer_max_log_lines="$(wavemill_observer_max_log_lines "$merged")"
-    observer_cmd="$(wavemill_build_observer_loop_command "$SESSION" "$REPO_DIR" "$TOOLS_DIR" "$observer_interval" "$observer_max_log_lines")"
+    local observer_service_mode
+    observer_service_mode="$(wavemill_observer_linear_service_mode "$merged" "$REPO_DIR")"
+    if [[ "$observer_service_mode" != "off" ]]; then
+      wavemill_observer_ensure_linear_key "$REPO_DIR"
+      startup_log "Observer: managed Linear filing mode=${observer_service_mode}"
+    fi
+    observer_cmd="$(wavemill_build_observer_loop_command "$SESSION" "$REPO_DIR" "$TOOLS_DIR" "$observer_interval" "$observer_max_log_lines" "$observer_service_mode")"
     local observer_split_target="${right_bottom_pane:-${right_top_pane:-$tend_pane}}"
     observer_result="$(wavemill_reconcile_backstage_service_pane "$SESSION" "$WAVEMILL_WINDOW_BACKSTAGE" "$WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE" "$observer_cmd" "reuse" "$observer_split_target" -v -p 50 -c "$REPO_DIR" || true)"
     IFS=$'\t' read -r observer_pane observer_action observer_killed <<< "$observer_result"

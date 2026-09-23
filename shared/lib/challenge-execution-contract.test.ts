@@ -16,6 +16,12 @@ import {
   buildChallengeExecutionIntent,
   enforceChallengeIntentPresence,
   projectChallengeIntentForPersistence,
+  CHALLENGE_ARM_LIFECYCLE_STATES,
+  CHALLENGE_ARM_PENDING_STATES,
+  isChallengeArmPendingState,
+  sealChallengeDecision,
+  sealedSelectionViolations,
+  resolveSealedDecisionAgainstExpandedRoute,
   type ChallengeExecutionAttestation,
   type ChallengeExecutionIntent,
   type ForkIdentity,
@@ -872,6 +878,159 @@ test('resolveReviewStageChallengePin returns unresolvable for known review chall
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
   }
+});
+
+// ────────────────────────────────────────────────────────────────
+// HOK-3065 — sealed decision envelope + expanded-route resolution
+// ────────────────────────────────────────────────────────────────
+
+// A plan-stage challenge sealed at launch: the challenger's planner is the
+// experiment; the primary's planner and every non-varied stage are still
+// bootstrap placeholders waiting on the expanded route.
+function makeSealedPlanIntent(overrides: Partial<ChallengeExecutionIntent> = {}): ChallengeExecutionIntent {
+  return {
+    schemaVersion: 1,
+    pairId: 'HOK-3065',
+    issueId: 'HOK-3065',
+    createdAt: '2026-09-23T00:00:00Z',
+    selectedStage: 'plan',
+    challengeStage: 'plan',
+    decisionSource: 'bootstrap',
+    selectionPath: 'random-roll',
+    primary: {
+      key: 'HOK-3065',
+      role: 'primary',
+      planner: { model: 'bootstrap-planner', agent: 'claude' },
+      coder: { model: 'bootstrap-coder', agent: 'claude' },
+      reviewer: { model: 'bootstrap-reviewer', agent: 'claude' },
+    },
+    challenger: {
+      key: 'HOK-3065_c',
+      role: 'challenger',
+      planner: { model: 'glm-5.2', agent: 'native-openrouter' },
+      coder: { model: 'bootstrap-coder', agent: 'claude' },
+      reviewer: { model: 'bootstrap-reviewer', agent: 'claude' },
+    },
+    forkStage: null,
+    forkCommit: null,
+    sharedPrefix: false,
+    ...overrides,
+  };
+}
+
+const EXPANDED_PLAN_ROUTE = {
+  planner: 'expanded-planner',
+  coder: 'expanded-coder',
+  reviewer: 'expanded-reviewer',
+  planDepth: 'deep',
+  codeDepth: 'deep',
+  reviewMode: 'llm',
+};
+
+test('lifecycle states include the HOK-3065 awaiting_expanded_route pending state', () => {
+  assert.ok(CHALLENGE_ARM_LIFECYCLE_STATES.includes('awaiting_expanded_route'));
+  assert.ok(CHALLENGE_ARM_PENDING_STATES.includes('awaiting_expanded_route'));
+  assert.ok(CHALLENGE_ARM_PENDING_STATES.includes('awaiting_fork'));
+  assert.equal(isChallengeArmPendingState('awaiting_expanded_route'), true);
+  assert.equal(isChallengeArmPendingState('materialized'), false);
+});
+
+test('sealChallengeDecision extracts the immutable selection for a plan-stage intent', () => {
+  const sealed = sealChallengeDecision(makeSealedPlanIntent());
+  assert.ok(sealed);
+  assert.equal(sealed!.pairId, 'HOK-3065');
+  assert.equal(sealed!.selectedStage, 'plan');
+  assert.equal(sealed!.primaryVariedModel, 'bootstrap-planner');
+  assert.equal(sealed!.challengerVariedModel, 'glm-5.2');
+  assert.equal(sealed!.challengerVariedAgent, 'native-openrouter');
+});
+
+test('sealChallengeDecision returns undefined for a one-sided or malformed intent', () => {
+  assert.equal(sealChallengeDecision(undefined), undefined);
+  assert.equal(sealChallengeDecision(makeSealedPlanIntent({ challenger: undefined })), undefined);
+});
+
+test('resolveSealedDecisionAgainstExpandedRoute enriches non-varied fields and preserves the challenger', () => {
+  const result = resolveSealedDecisionAgainstExpandedRoute({
+    sealed: makeSealedPlanIntent(),
+    expandedRoute: EXPANDED_PLAN_ROUTE,
+  });
+  assert.equal(result.status, 'materialize');
+  if (result.status !== 'materialize') return;
+  assert.equal(result.variedStage, 'plan');
+  assert.equal(result.challengerVariedModel, 'glm-5.2');
+  assert.equal(result.intent.decisionSource, 'preserved');
+  const primary = result.intent.primary as { planner: { model: string }; coder: { model: string } };
+  const challenger = result.intent.challenger as { planner: { model: string; agent: string }; coder: { model: string } };
+  // Primary incumbent planner is enriched from the expanded route.
+  assert.equal(primary.planner.model, 'expanded-planner');
+  // Non-varied stages come from the expanded route on both sides.
+  assert.equal(primary.coder.model, 'expanded-coder');
+  assert.equal(challenger.coder.model, 'expanded-coder');
+  // The challenger's varied planner is preserved byte-for-byte.
+  assert.equal(challenger.planner.model, 'glm-5.2');
+  assert.equal(challenger.planner.agent, 'native-openrouter');
+});
+
+test('resolveSealedDecisionAgainstExpandedRoute collapses when the sealed challenger is no longer eligible', () => {
+  const result = resolveSealedDecisionAgainstExpandedRoute({
+    sealed: makeSealedPlanIntent(),
+    expandedRoute: EXPANDED_PLAN_ROUTE,
+    eligibleVariedModels: ['some-other-model', 'and-another'],
+  });
+  assert.equal(result.status, 'collapse');
+  if (result.status !== 'collapse') return;
+  assert.equal(result.reason, 'sealed_challenger_ineligible');
+});
+
+test('resolveSealedDecisionAgainstExpandedRoute keeps the challenger when it is still eligible', () => {
+  const result = resolveSealedDecisionAgainstExpandedRoute({
+    sealed: makeSealedPlanIntent(),
+    expandedRoute: EXPANDED_PLAN_ROUTE,
+    eligibleVariedModels: ['glm-5.2', 'some-other-model'],
+  });
+  assert.equal(result.status, 'materialize');
+});
+
+test('resolveSealedDecisionAgainstExpandedRoute collapses when the expanded route lacks the varied stage', () => {
+  const result = resolveSealedDecisionAgainstExpandedRoute({
+    sealed: makeSealedPlanIntent(),
+    expandedRoute: { planner: '', coder: 'expanded-coder', reviewer: 'expanded-reviewer', planDepth: '', codeDepth: '', reviewMode: '' },
+  });
+  assert.equal(result.status, 'collapse');
+  if (result.status !== 'collapse') return;
+  assert.equal(result.reason, 'expanded_route_missing');
+});
+
+test('resolveSealedDecisionAgainstExpandedRoute never rerolls the sealed choice (idempotent)', () => {
+  const a = resolveSealedDecisionAgainstExpandedRoute({ sealed: makeSealedPlanIntent(), expandedRoute: EXPANDED_PLAN_ROUTE });
+  const b = resolveSealedDecisionAgainstExpandedRoute({ sealed: makeSealedPlanIntent(), expandedRoute: EXPANDED_PLAN_ROUTE });
+  assert.deepEqual(a, b);
+});
+
+test('sealedSelectionViolations reports a changed challenger, stage, or pair', () => {
+  const sealed = sealChallengeDecision(makeSealedPlanIntent());
+  assert.ok(sealed);
+  // An enriched intent that preserved the seal has no violations.
+  const enriched = resolveSealedDecisionAgainstExpandedRoute({ sealed: makeSealedPlanIntent(), expandedRoute: EXPANDED_PLAN_ROUTE });
+  assert.equal(enriched.status, 'materialize');
+  if (enriched.status === 'materialize') {
+    assert.deepEqual(sealedSelectionViolations(sealed!, enriched.intent), []);
+  }
+  // A rerolled challenger is a violation.
+  const rerolled = makeSealedPlanIntent({
+    challenger: {
+      key: 'HOK-3065_c',
+      role: 'challenger',
+      planner: { model: 'a-different-planner', agent: 'claude' },
+      coder: { model: 'bootstrap-coder', agent: 'claude' },
+      reviewer: { model: 'bootstrap-reviewer', agent: 'claude' },
+    },
+  });
+  assert.deepEqual(sealedSelectionViolations(sealed!, rerolled), ['challengerVariedModel']);
+  // A re-sampled stage is a violation.
+  const restaged = makeSealedPlanIntent({ selectedStage: 'implementation', challengeStage: 'implementation' });
+  assert.ok(sealedSelectionViolations(sealed!, restaged).includes('selectedStage'));
 });
 
 test('resolveReviewStageChallengePin ignores non-challenge directories', () => {

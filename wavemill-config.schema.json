@@ -364,7 +364,119 @@
                         "detectionOnly": {
                             "type": "boolean",
                             "default": false,
-                            "description": "When true, compute planned sync actions but do not write to Linear."
+                            "description": "When true, compute planned sync actions but do not write to Linear. Legacy alias for mode=offline."
+                        },
+                        "mode": {
+                            "type": "string",
+                            "enum": ["off", "offline", "shadow", "live"],
+                            "description": "Explicit mode for observer.linear. When present, overrides enabled/detectionOnly. off=disabled; offline=no network, dry-run only; shadow=bounded reads for correlation but zero mutations, produces auditable proposals; live=mutating."
+                        },
+                        "shadow": {
+                            "type": "object",
+                            "description": "Bounded shadow-mode audit persistence and lookup budget.",
+                            "properties": {
+                                "auditPath": {
+                                    "type": "string",
+                                    "default": ".wavemill/observer/shadow-audit.jsonl",
+                                    "description": "JSONL audit path for shadow-mode proposals."
+                                },
+                                "countersPath": {
+                                    "type": "string",
+                                    "default": ".wavemill/observer/shadow-counters.json",
+                                    "description": "Aggregate counter JSON path for restart-continuous shadow reporting."
+                                },
+                                "maxEntries": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "default": 500,
+                                    "description": "Bounded upper limit for retained shadow audit records."
+                                },
+                                "maxAgeDays": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "default": 14,
+                                    "description": "Shadow audit records older than this are trimmed on next append."
+                                },
+                                "maxLookupsPerPass": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "default": 40,
+                                    "description": "Ceiling for bounded Linear reads (searches + getIssue calls) per shadow pass across all incidents."
+                                }
+                            },
+                            "additionalProperties": false
+                        },
+                        "lifecycle": {
+                            "type": "object",
+                            "description": "Conservative lifecycle transition policy for linked incident issues (HOK-3035). Defaults are comment-only; state mutation is opt-in.",
+                            "properties": {
+                                "enabled": {
+                                    "type": "boolean",
+                                    "default": false,
+                                    "description": "Master switch for lifecycle resolution/archival/recurrence comments and state changes."
+                                },
+                                "commentOnly": {
+                                    "type": "boolean",
+                                    "default": true,
+                                    "description": "When true, lifecycle sync only comments and never mutates Linear state."
+                                },
+                                "closeOnOperatorResolved": {
+                                    "type": "boolean",
+                                    "default": false,
+                                    "description": "Move an explicitly operator-resolved issue to resolvedStateName. Requires commentOnly=false."
+                                },
+                                "resolvedStateName": {
+                                    "type": "string",
+                                    "description": "Linear workflow state to move an operator-resolved issue into when closing is enabled."
+                                },
+                                "closeOnOperatorArchived": {
+                                    "type": "boolean",
+                                    "default": false,
+                                    "description": "Move an operator-archived issue to archivedStateName. Requires commentOnly=false."
+                                },
+                                "archivedStateName": {
+                                    "type": "string",
+                                    "description": "Linear workflow state to move an operator-archived issue into when closing is enabled."
+                                },
+                                "reopenOnRecurrence": {
+                                    "type": "boolean",
+                                    "default": true,
+                                    "description": "Reopen an issue on recurrence — but only one the Observer itself previously auto-closed."
+                                },
+                                "reopenStateName": {
+                                    "type": "string",
+                                    "description": "Linear workflow state to move an Observer-auto-closed issue back into on recurrence."
+                                }
+                            },
+                            "additionalProperties": false
+                        },
+                        "rollout": {
+                            "type": "object",
+                            "description": "Promotion-gate evidence for managed incident-to-Linear filing (HOK-3036). Every field defaults to the safe value; live filing cannot start until an operator explicitly attests each gate. Generic --dry-run is NOT a safety control for incident filing.",
+                            "properties": {
+                                "gatesPassed": {
+                                    "type": "boolean",
+                                    "default": false,
+                                    "description": "Operator attestation that HOK-3031..HOK-3035 completion and go/no-go review passed."
+                                },
+                                "shadowTrialCompleted": {
+                                    "type": "boolean",
+                                    "default": false,
+                                    "description": "Operator attestation that the configured shadow trial completed with zero mutations, leakage, or cross-task attribution."
+                                },
+                                "rollbackRehearsed": {
+                                    "type": "boolean",
+                                    "default": false,
+                                    "description": "Operator attestation that live→shadow/off rollback was exercised."
+                                },
+                                "maxProposedPerPass": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "default": 5,
+                                    "description": "Hard ceiling on proposed create/update actions per pass during the canary."
+                                }
+                            },
+                            "additionalProperties": false
                         },
                         "project": {
                             "type": "string",
@@ -1127,6 +1239,30 @@
                                 }
                             },
                             "additionalProperties": false
+                        },
+                        "attemptRanking": {
+                            "type": "object",
+                            "description": "Attempt-aware challenger ranking (HOK-3066). Terminal attempts are always recorded; this switch only controls whether ranking and cooldowns consume them. Set enabled=false as the rollback switch to restore the pure coverage/priority selector.",
+                            "properties": {
+                                "enabled": {
+                                    "type": "boolean",
+                                    "default": true,
+                                    "description": "Whether challenger ranking should prefer fewer recent terminal attempts and apply failed-attempt cooldowns."
+                                },
+                                "lookbackSeconds": {
+                                    "type": "integer",
+                                    "minimum": 60,
+                                    "default": 21600,
+                                    "description": "Rolling window of terminal attempts considered by ranking. Older attempt records are pruned deterministically."
+                                },
+                                "failedAttemptCooldownSeconds": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "default": 1800,
+                                    "description": "Seconds a failed terminal attempt keeps the same provider/model/stage out of selection while a non-cooled healthy candidate exists. Set to 0 to disable cooldowns."
+                                }
+                            },
+                            "additionalProperties": false
                         }
                     },
                     "additionalProperties": false
@@ -1410,6 +1546,42 @@
                             "minimum": 0,
                             "maximum": 30,
                             "default": 7
+                        },
+                        "canaryCohort": {
+                            "type": "array",
+                            "description": "Bounded, reviewed cohort of native coding candidates whose live coding canaries are kept fresh. Canonical registry identities only.",
+                            "maxItems": 8,
+                            "items": {
+                                "type": "object",
+                                "required": ["provider", "model"],
+                                "properties": {
+                                    "provider": {
+                                        "type": "string",
+                                        "enum": ["openai", "openrouter"]
+                                    },
+                                    "model": {
+                                        "type": "string",
+                                        "minLength": 1
+                                    }
+                                },
+                                "additionalProperties": false
+                            }
+                        },
+                        "minCodingReady": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 8,
+                            "default": 2
+                        },
+                        "canaryRenewalWindowDays": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 13,
+                            "default": 3
+                        },
+                        "canaryAutoRefresh": {
+                            "type": "boolean",
+                            "default": true
                         }
                     },
                     "additionalProperties": false

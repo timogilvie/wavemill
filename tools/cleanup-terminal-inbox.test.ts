@@ -22,6 +22,7 @@ function deps(overrides: Partial<CleanupDeps> & { prs?: Record<string, string>; 
   const prs = overrides.prs ?? {};
   return {
     now: overrides.now ?? (() => '2026-09-14T12:00:00.000Z'),
+    classify: overrides.classify,
     gh: overrides.gh ?? ((args) => {
       const pr = args[2];
       const value = prs[pr];
@@ -76,6 +77,56 @@ test('merged rebased patch-equivalent task is eligible to reap', () => {
 
 test('merged task with unique local patch is refused', () => {
   const decision = decideTerminalTask(state({}), 'HOK-3005', process.cwd(), 'auto/integration', deps({ prs: { 101: mergedPr('101') }, cherry: '- abc\n+ def\n' }));
+  assert.equal(decision.status, 'refused');
+  assert.equal(decision.refusalReason, 'unique_local_patch');
+});
+
+test('inbox trusts canonical delivered-content proof over differing patch IDs', () => {
+  const decision = decideTerminalTask(state({}), 'HOK-3005', process.cwd(), 'auto/integration', deps({
+    prs: { 101: mergedPr('101') },
+    cherry: '+ local-commit\n',
+    classify: () => ({
+      classification: 'safe_content_equivalent_pr', verificationReason: '',
+      worktreeIdentity: 'valid', verifiedTopLevel: '/tmp/demo',
+      cleanupAuthority: 'unchanged merge tree', patchEquivalenceScope: 'whole_branch',
+    }),
+  }));
+  assert.equal(decision.status, 'would-reap');
+  assert.equal(decision.git.classifierVerdict, 'safe_content_equivalent_pr');
+  assert.equal(decision.git.patchEquivalent, false);
+});
+
+test('inbox uses canonical orphan classification without checking parent repository dirt', () => {
+  let statusCalled = false;
+  const decision = decideTerminalTask(state({ worktree: '/tmp/orphan-task' }), 'HOK-3005', process.cwd(), 'auto/integration', deps({
+    prs: { 101: mergedPr('101') },
+    git: (args) => {
+      if (args.includes('status')) statusCalled = true;
+      if (args[0] === 'show-ref') return '';
+      if (args[0] === 'rev-parse') return 'local-head';
+      if (args[0] === 'rev-list') return '1';
+      if (args[0] === 'cherry') return '+ local-commit';
+      return '';
+    },
+    classify: () => ({
+      classification: 'safe_terminal_pr_head', verificationReason: '',
+      worktreeIdentity: 'toplevel_mismatch:/tmp', verifiedTopLevel: '',
+      cleanupAuthority: 'merged PR head', patchEquivalenceScope: '',
+    }),
+  }));
+  assert.equal(decision.status, 'would-reap');
+  assert.equal(statusCalled, false);
+});
+
+test('canonical classifier refuses genuinely unique content', () => {
+  const decision = decideTerminalTask(state({}), 'HOK-3005', process.cwd(), 'auto/integration', deps({
+    prs: { 101: mergedPr('101') },
+    classify: () => ({
+      classification: 'retain_unpublished', verificationReason: 'unique_local_patch',
+      worktreeIdentity: 'valid', verifiedTopLevel: '/tmp/demo',
+      cleanupAuthority: '', patchEquivalenceScope: 'whole_branch',
+    }),
+  }));
   assert.equal(decision.status, 'refused');
   assert.equal(decision.refusalReason, 'unique_local_patch');
 });

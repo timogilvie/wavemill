@@ -10,6 +10,7 @@ import {
   buildEvalSummary,
   clearChallengeSchedulerCache,
   evaluateChallenge,
+  modelStageCount,
   type EvalSummary,
 } from './challenge-scheduler.ts';
 import { clearConfigCache } from './config.ts';
@@ -691,6 +692,35 @@ test('buildEvalSummary excludes held records before coverage counters', () => {
     assert.deepEqual(summary.exclusionReasonCounts, { provisional_model_identity: 1 });
     assert.equal(summary.recordsByModel['gpt-5.4'], 1);
     assert.equal(summary.recordsByModel['ox-alpha'], undefined);
+  } finally {
+    cleanup();
+  }
+});
+
+
+test('buildEvalSummary never credits inherited stages as successful coverage (HOK-3066)', () => {
+  const { repoDir, cleanup } = makeRepo();
+  try {
+    writeFileSync(
+      join(repoDir, '.wavemill', 'evals', 'evals.jsonl'),
+      `${JSON.stringify(makeEvalRecord('forked', 'gpt-5.4', {
+        challengeSide: 'challenger',
+        challengeIntent: {
+          pairId: 'HOK-3066',
+          challenger: { inheritedStages: ['plan', 'implementation'] },
+        },
+      } as Partial<EvalRecord>))}\n`,
+      'utf-8',
+    );
+    clearChallengeSchedulerCache(repoDir);
+
+    const summary = buildEvalSummary(repoDir);
+
+    // The varied review stage counts; the shared pre-fork prefix does not, so
+    // attempt-aware selection can trust modelStageCount as success-only.
+    assert.equal(modelStageCount(summary, 'gpt-5.4', 'plan'), 0);
+    assert.equal(modelStageCount(summary, 'gpt-5.4', 'implementation'), 0);
+    assert.equal(modelStageCount(summary, 'gpt-5.4', 'review'), 1);
   } finally {
     cleanup();
   }

@@ -242,6 +242,7 @@ harness_extract_real_functions() {
     challenge_stage_for_launch_env \
     challenge_abort_for_unresolvable_varied_model \
     challenge_guard_varied_model_resolvable \
+    challenge_maybe_materialize_deferred_arms \
     coding_missing_blocked_completion_announce_marker \
     _coding_terminal_blocked_completion_detected \
     emit_terminal_blocked_completion_attention \

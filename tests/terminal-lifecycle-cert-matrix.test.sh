@@ -69,7 +69,7 @@ run_changed_after_review_case() {
   [[ -d "$CERT_WT" ]] || passed=false
   marker="$REPO_DIR/.wavemill/incidents/preserved-branches/${CERT_BRANCH//\//__}.json"
   [[ -f "$marker" ]] || passed=false
-  [[ "$(jq -r '.verificationReason // empty' "$marker")" == "changed_after_pr_head" ]] || passed=false
+  [[ "$(jq -r '.verificationReason // empty' "$marker")" == "unique_local_patch" ]] || passed=false
   end_ms="$(incident_now_ms)"
   if [[ "$passed" == "true" ]]; then
     printf '  PASS %s\n' "$name"
