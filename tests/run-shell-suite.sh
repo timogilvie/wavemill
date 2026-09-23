@@ -29,6 +29,7 @@ TESTS=(
   startup-terminal-preflight.test.sh
   fresh-launch-terminal-preflight.test.sh
   startup-cleanup-integration.test.sh
+  startup-terminal-ownership.test.sh
   monitor-env-completeness.test.sh
   wavemill-expand-direct.test.sh
   routing-complete-writes.test.sh
