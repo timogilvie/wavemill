@@ -9,7 +9,7 @@ import { getIncidentConfig, getMillConfig, getObserverLinearConfig, type Observe
 import { detectIncidentsForRepo, detectIncidentsForTask, type TendCandidateDiagnostic } from '../shared/lib/wavemill-incident-detector.ts';
 import { IncidentStore } from '../shared/lib/wavemill-incident-store.ts';
 import { createIncidentDraft, type IncidentRecord, type IncidentRootCauseClass } from '../shared/lib/wavemill-incident-model.ts';
-import { createLookupBudget, syncIncident, type SyncResult } from '../shared/lib/incident-to-linear-synchronizer.ts';
+import { createLookupBudget, syncIncident, syncIncidentLifecycle, type LifecycleSyncResult, type SyncResult } from '../shared/lib/incident-to-linear-synchronizer.ts';
 import {
   appendShadowRecord,
   buildShadowAuditRecord,
@@ -248,6 +248,11 @@ interface IncidentSyncSnapshot {
   retryProcessed: number;
   retrySucceeded: number;
   retryFailed: number;
+  /** Lifecycle transition sync counters (HOK-3035). */
+  lifecycleSynced: number;
+  lifecycleFailed: number;
+  lifecycleRetried: number;
+  lifecycleResults: LifecycleSyncResult[];
   results: SyncResult[];
   errors: Array<{ fingerprint: string; action: string; reason: string; nextRetry?: string }>;
   shadow?: IncidentSyncShadowSnapshot;
@@ -3153,6 +3158,10 @@ function emptyIncidentSyncSnapshot(mode?: IncidentSyncSnapshot['mode']): Inciden
     retryProcessed: 0,
     retrySucceeded: 0,
     retryFailed: 0,
+    lifecycleSynced: 0,
+    lifecycleFailed: 0,
+    lifecycleRetried: 0,
+    lifecycleResults: [],
     results: [],
     errors: [],
   };
@@ -3358,6 +3367,53 @@ export async function syncIncidentsToLinear(snapshot: ObserverSnapshot, options:
         }
       }
     }
+
+    // Lifecycle transition sync (HOK-3035): resolved/archived/recurrent linked
+    // records are excluded from getIncidents(), so fetch them separately. A
+    // degraded detection cycle (config load failure) must not resolve or close.
+    const cycleComplete = !snapshot.findings.some(
+      (finding) => finding.repoDir === repo.repoDir && finding.id.startsWith('config-integrity-'),
+    );
+    try {
+      const lifecyclePending = await store.getLifecyclePendingIncidents();
+      const lifecycleForPass = bypassCap ? lifecyclePending : lifecyclePending.slice(0, config.maxIncidentsPerPass);
+      for (const incident of lifecycleForPass) {
+        const lifecycleResult = await syncIncidentLifecycle({
+          incident,
+          store,
+          config,
+          dryRun: options.incidentsDryRun || shadowMode,
+          shadow: shadowMode,
+          cycleComplete,
+          now: new Date(snapshot.timestamp),
+          repoDir: repo.repoDir,
+          retryQueue: shadowMode ? undefined : {
+            enqueueLifecycleSync: (input) => enqueueIncidentSync({
+              repoDir: repo.repoDir,
+              queuePath: config.retryQueuePath,
+              incidentFingerprint: input.incidentFingerprint,
+              linearAction: 'lifecycle',
+              linearIssueId: input.linearIssueId,
+              lifecycleKind: input.lifecycleKind,
+              transitionRevision: input.transitionRevision,
+              lastError: input.lastError,
+              now: input.now,
+            }),
+          },
+        });
+        summary.lifecycleResults.push(lifecycleResult);
+        if (lifecycleResult.status === 'synced') summary.lifecycleSynced += 1;
+        else if (lifecycleResult.status === 'failed') summary.lifecycleFailed += 1;
+        else if (lifecycleResult.status === 'queued') summary.lifecycleRetried += 1;
+      }
+    } catch (error) {
+      summary.errors.push({
+        fingerprint: 'lifecycle-sync',
+        action: 'failed',
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+
     if (shadowMode) {
       if (summary.shadow) {
         summary.shadow.mutationAttempts += mutationAttemptsThisPass;
@@ -3476,6 +3532,9 @@ export async function writeServiceHeartbeat(snapshot: ObserverSnapshot, options:
         skipped: snapshot.incidentSync.skipped,
         failed: snapshot.incidentSync.failed,
         queued: snapshot.incidentSync.queued,
+        lifecycleSynced: snapshot.incidentSync.lifecycleSynced,
+        lifecycleFailed: snapshot.incidentSync.lifecycleFailed,
+        lifecycleRetried: snapshot.incidentSync.lifecycleRetried,
         shadow: snapshot.incidentSync.shadow ? {
           eligible: snapshot.incidentSync.shadow.eligible,
           proposedCreate: snapshot.incidentSync.shadow.proposedCreate,

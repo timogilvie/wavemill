@@ -406,6 +406,50 @@
                             },
                             "additionalProperties": false
                         },
+                        "lifecycle": {
+                            "type": "object",
+                            "description": "Conservative lifecycle transition policy for linked incident issues (HOK-3035). Defaults are comment-only; state mutation is opt-in.",
+                            "properties": {
+                                "enabled": {
+                                    "type": "boolean",
+                                    "default": false,
+                                    "description": "Master switch for lifecycle resolution/archival/recurrence comments and state changes."
+                                },
+                                "commentOnly": {
+                                    "type": "boolean",
+                                    "default": true,
+                                    "description": "When true, lifecycle sync only comments and never mutates Linear state."
+                                },
+                                "closeOnOperatorResolved": {
+                                    "type": "boolean",
+                                    "default": false,
+                                    "description": "Move an explicitly operator-resolved issue to resolvedStateName. Requires commentOnly=false."
+                                },
+                                "resolvedStateName": {
+                                    "type": "string",
+                                    "description": "Linear workflow state to move an operator-resolved issue into when closing is enabled."
+                                },
+                                "closeOnOperatorArchived": {
+                                    "type": "boolean",
+                                    "default": false,
+                                    "description": "Move an operator-archived issue to archivedStateName. Requires commentOnly=false."
+                                },
+                                "archivedStateName": {
+                                    "type": "string",
+                                    "description": "Linear workflow state to move an operator-archived issue into when closing is enabled."
+                                },
+                                "reopenOnRecurrence": {
+                                    "type": "boolean",
+                                    "default": true,
+                                    "description": "Reopen an issue on recurrence — but only one the Observer itself previously auto-closed."
+                                },
+                                "reopenStateName": {
+                                    "type": "string",
+                                    "description": "Linear workflow state to move an Observer-auto-closed issue back into on recurrence."
+                                }
+                            },
+                            "additionalProperties": false
+                        },
                         "project": {
                             "type": "string",
                             "description": "Linear project id or name used for Wavemill incident correlation and issue creation."

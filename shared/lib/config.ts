@@ -595,6 +595,17 @@ export interface ObserverLinearShadowConfig {
   maxLookupsPerPass: number;
 }
 
+export interface ObserverLinearLifecycleConfig {
+  enabled: boolean;
+  commentOnly: boolean;
+  closeOnOperatorResolved: boolean;
+  resolvedStateName?: string;
+  closeOnOperatorArchived: boolean;
+  archivedStateName?: string;
+  reopenOnRecurrence: boolean;
+  reopenStateName?: string;
+}
+
 export interface ObserverLinearConfig {
   enabled: boolean;
   detectionOnly: boolean;
@@ -617,6 +628,7 @@ export interface ObserverLinearConfig {
   };
   redaction: ObserverLinearRedactionConfig;
   shadow: ObserverLinearShadowConfig;
+  lifecycle: ObserverLinearLifecycleConfig;
 }
 
 export interface IncidentConfig {
@@ -965,6 +977,14 @@ export const OBSERVER_LINEAR_SHADOW_DEFAULTS: ObserverLinearShadowConfig = {
   maxLookupsPerPass: 40,
 };
 
+export const OBSERVER_LINEAR_LIFECYCLE_DEFAULTS: ObserverLinearLifecycleConfig = {
+  enabled: false,
+  commentOnly: true,
+  closeOnOperatorResolved: false,
+  closeOnOperatorArchived: false,
+  reopenOnRecurrence: true,
+};
+
 export const OBSERVER_LINEAR_DEFAULTS: ObserverLinearConfig = {
   enabled: false,
   detectionOnly: false,
@@ -992,6 +1012,7 @@ export const OBSERVER_LINEAR_DEFAULTS: ObserverLinearConfig = {
     markFormat: '[REDACTED: {type}]',
   },
   shadow: OBSERVER_LINEAR_SHADOW_DEFAULTS,
+  lifecycle: OBSERVER_LINEAR_LIFECYCLE_DEFAULTS,
 };
 
 export const PROMOTION_DEFAULTS: PromotionConfig = {
@@ -2029,6 +2050,10 @@ export function getObserverLinearConfig(repoDir?: string): ObserverLinearConfig 
     shadow: {
       ...OBSERVER_LINEAR_SHADOW_DEFAULTS,
       ...(linear.shadow ?? {}),
+    },
+    lifecycle: {
+      ...OBSERVER_LINEAR_LIFECYCLE_DEFAULTS,
+      ...(linear.lifecycle ?? {}),
     },
   };
 }
