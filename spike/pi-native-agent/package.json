@@ -5,7 +5,8 @@
   "version": "0.0.0",
   "description": "Throwaway spike: prove pi-agent-core is embeddable as Wavemill's native runtime (kill criteria a/b/c).",
   "scripts": {
-    "spike": "node spike.mjs"
+    "spike": "node spike.mjs",
+    "mcp-spike": "node --test mcp-proxy-spike.test.ts"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "0.79.8",

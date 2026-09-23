@@ -33,6 +33,25 @@ only the provider turn and the loop. A Wavemill-style `NativeAgentEvent`
 transcript is derived from Pi's `AgentEvent` stream into `native-session.jsonl`,
 showing the format is not opaque.
 
+## MCP proxy compatibility spike (HOK-3055)
+
+A second, independent spike lives alongside this one and backs
+[`docs/native-agent-mcp-proxy-spike.md`](../../docs/native-agent-mcp-proxy-spike.md).
+It proves an MCP proxy can sit behind Wavemill's policy/provenance boundary
+while the provider sees only one fixed `mcp_call` schema. It is **dependency-free**
+(node builtins + the shipped `shared/lib/native-agent` modules only — no Pi, no
+`@modelcontextprotocol`), so it runs in CI with no `npm install` here.
+
+```bash
+node --test spike/pi-native-agent/mcp-proxy-spike.test.ts
+```
+
+- `mcp-toy-server.mjs` — toy stdio MCP server (success/slow/secret/malformed/shutdown).
+- `mcp-proxy-harness.ts` — Wavemill-owned boundary + result normalization.
+- `mcp-proxy-spike.test.ts` — deterministic fixtures for discovery, bounded
+  schema, phase/path/network denial, timeout/cancel, malformed result, redaction,
+  output cap, provenance, termination, and transcript semantics.
+
 ## Not covered here (still Wavemill-owned per the plan)
 
 `NativePatch` envelope, worktree isolation, MCP, sub-agents, real provider
