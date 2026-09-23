@@ -1211,6 +1211,30 @@
                                 }
                             },
                             "additionalProperties": false
+                        },
+                        "attemptRanking": {
+                            "type": "object",
+                            "description": "Attempt-aware challenger ranking (HOK-3066). Terminal attempts are always recorded; this switch only controls whether ranking and cooldowns consume them. Set enabled=false as the rollback switch to restore the pure coverage/priority selector.",
+                            "properties": {
+                                "enabled": {
+                                    "type": "boolean",
+                                    "default": true,
+                                    "description": "Whether challenger ranking should prefer fewer recent terminal attempts and apply failed-attempt cooldowns."
+                                },
+                                "lookbackSeconds": {
+                                    "type": "integer",
+                                    "minimum": 60,
+                                    "default": 21600,
+                                    "description": "Rolling window of terminal attempts considered by ranking. Older attempt records are pruned deterministically."
+                                },
+                                "failedAttemptCooldownSeconds": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "default": 1800,
+                                    "description": "Seconds a failed terminal attempt keeps the same provider/model/stage out of selection while a non-cooled healthy candidate exists. Set to 0 to disable cooldowns."
+                                }
+                            },
+                            "additionalProperties": false
                         }
                     },
                     "additionalProperties": false

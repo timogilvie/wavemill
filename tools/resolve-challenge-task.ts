@@ -35,11 +35,13 @@ import {
   buildSelectionHealthDiagnostic,
   buildSelectionHealthEvidence,
   claimReservation,
+  computeAttemptEvidence,
   computeSelectionExclusions,
   normalizeSelectionHealthConfig,
   readSelectionHealth,
   type CircuitExclusion,
   type ReservationExclusion,
+  type SelectionAttemptEvidence,
   type SelectionHealthDiagnostic,
 } from '../shared/lib/challenge-selection-health.ts';
 
@@ -111,6 +113,14 @@ runTool({
     let selectionHealthReservationExclusions: ReservationExclusion[] = [];
     let selectionHealthCircuitExclusions: CircuitExclusion[] = [];
     let selectionHealthProbeGranted: { model: string; provider: string; canonicalModel: string } | null = null;
+    // Per-candidate attempt/cooldown evidence for the varied stage, refreshed
+    // with each health snapshot read (HOK-3066). Null when attempt ranking is
+    // disabled, which restores the pure coverage/priority selector.
+    const attemptRankingEnabled = selectionHealthEnabled && selectionHealthConfig.attemptRanking.enabled;
+    let selectionHealthAttemptEvidence: Map<string, SelectionAttemptEvidence> | null = null;
+    const attemptEvidenceFor = attemptRankingEnabled
+      ? (model: string) => selectionHealthAttemptEvidence?.get(model)
+      : undefined;
     const selectionHealthOutput = () => selectionHealthEnabled
       ? {
           selectionHealth: buildSelectionHealthEvidence({
@@ -118,6 +128,9 @@ runTool({
             excludedByReservation: selectionHealthReservationExclusions,
             excludedByCircuit: selectionHealthCircuitExclusions,
             probeGranted: selectionHealthProbeGranted,
+            ...(selectionHealthAttemptEvidence
+              ? { attemptEvidence: [...selectionHealthAttemptEvidence.values()] }
+              : {}),
           }),
           ...(selectionHealthDiagnostic ? { selectionHealthDiagnostic } : {}),
         }
@@ -301,6 +314,7 @@ runTool({
           defaultAgent,
           repoDir,
           coverage,
+          attemptEvidence: attemptEvidenceFor,
           rotationSeed,
           recommendedChallengerModel,
         }, routeArtifacts);
@@ -325,6 +339,7 @@ runTool({
             defaultAgent,
             repoDir,
             coverage,
+            attemptEvidence: attemptEvidenceFor,
             rotationSeed,
             recommendedChallengerModel,
           });
@@ -344,6 +359,7 @@ runTool({
             defaultAgent,
             repoDir,
             coverage,
+            attemptEvidence: attemptEvidenceFor,
             rotationSeed,
             recommendedChallengerModel,
             strictWhenRequired,
@@ -365,6 +381,7 @@ runTool({
           defaultAgent,
           repoDir,
           coverage,
+          attemptEvidence: attemptEvidenceFor,
           rotationSeed,
           recommendedChallengerModel,
           strictWhenRequired,
@@ -432,6 +449,14 @@ runTool({
               circuits: exclusions.excludedByCircuit,
             });
             candidatePool = exclusions.eligible;
+            if (attemptRankingEnabled) {
+              selectionHealthAttemptEvidence = computeAttemptEvidence({
+                stage: challengeStage,
+                candidates: pool,
+                snapshot,
+                config: selectionHealthConfig,
+              });
+            }
           } catch (error) {
             selectionHealthDiagnostic = buildSelectionHealthDiagnostic(error, {
               repoDir,
@@ -590,6 +615,20 @@ runTool({
           stage: launchDecision.recommendation.stage,
         }
       : undefined;
+    const selectionEvidence = {
+      ...(typeof pair.challengerCoverageCount === 'number'
+        ? { coverageCount: pair.challengerCoverageCount }
+        : {}),
+      ...(typeof pair.challengerAttemptCount === 'number'
+        ? { attemptCount: pair.challengerAttemptCount }
+        : {}),
+      ...(pair.challengerLastAttemptAt ? { lastAttemptAt: pair.challengerLastAttemptAt } : {}),
+      ...(typeof pair.challengerCooldownActive === 'boolean'
+        ? { cooldownActive: pair.challengerCooldownActive }
+        : {}),
+      ...(pair.challengerPriorityTier !== undefined ? { priorityTier: pair.challengerPriorityTier } : {}),
+    };
+    const hasSelectionEvidence = Object.keys(selectionEvidence).length > 0;
     const intent = buildChallengeExecutionIntent({
       pairId: pair.pairId,
       issueId: issue,
@@ -598,6 +637,7 @@ runTool({
       selectionPath: launchDecision.selectionPath,
       challengerSource,
       selectionReason: pair.selectionReason,
+      ...(hasSelectionEvidence ? { selectionEvidence } : {}),
       challengeRecommendation,
       routeContext: pair.routeContext,
       primary: pair.primary,
@@ -627,6 +667,14 @@ runTool({
       challengerSource,
       selectionReason: pair.selectionReason,
       coverageCount: pair.challengerCoverageCount,
+      ...(typeof pair.challengerAttemptCount === 'number'
+        ? { attemptCount: pair.challengerAttemptCount }
+        : {}),
+      ...(pair.challengerLastAttemptAt ? { lastAttemptAt: pair.challengerLastAttemptAt } : {}),
+      ...(typeof pair.challengerCooldownActive === 'boolean'
+        ? { cooldownActive: pair.challengerCooldownActive }
+        : {}),
+      ...(pair.challengerPriorityTier !== undefined ? { priorityTier: pair.challengerPriorityTier } : {}),
       challengeStage: effectiveStage,
       ...(challengeRecommendation ? { challengeRecommendation } : {}),
       challengeIntent,

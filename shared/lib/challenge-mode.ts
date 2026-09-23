@@ -2,6 +2,7 @@ import type { ChallengeRecommendation, ChallengeStage } from './challenge-schedu
 export type { ChallengeStage } from './challenge-scheduler.ts';
 import {
   selectLeastUsedChallenger,
+  type ChallengeAttemptRankingInput,
   type ChallengeSelectionReason,
 } from './challenge-coverage-selector.ts';
 import { loadWavemillConfig, type ChallengeConfig, type RouterConfig } from './config.ts';
@@ -15,7 +16,7 @@ import { listVariedRoutingDimensions, routingMetaFromChallengeEntry } from './ch
 import type { ChallengeRoutingMeta } from './challenge-comparison.ts';
 // Value import is safe: challenge-execution-contract.ts imports only *types*
 // from this module, so there is no runtime cycle.
-import { projectEntryToSideIntent } from './challenge-execution-contract.ts';
+import { projectEntryToSideIntent, type ChallengeSelectionEvidence } from './challenge-execution-contract.ts';
 export { routeChangedMaterially } from './route-artifact.ts';
 import { routeChangedMaterially, type RouteArtifactSnapshot } from './route-artifact.ts';
 import { routeWorkflow, type WorkflowRouteDecision } from './workflow-router.ts';
@@ -69,6 +70,11 @@ export interface ChallengePairSelection {
   routeContext?: ChallengeRouteContext;
   selectionReason?: ChallengeSelectionReason;
   challengerCoverageCount?: number;
+  /** Attempt-ranking evidence for the selected challenger (HOK-3066). */
+  challengerAttemptCount?: number;
+  challengerLastAttemptAt?: string;
+  challengerCooldownActive?: boolean;
+  challengerPriorityTier?: number | null;
   /**
    * Which workflow stage the pair varies. Exactly one stage's model differs
    * between primary and challenger; the other two are shared so comparison
@@ -86,6 +92,7 @@ export interface ChallengeStageWeights {
 
 export interface ChallengeCoverageOptions {
   coverage?: (model: string, stage: ChallengeStage) => number;
+  attemptEvidence?: (model: string) => ChallengeAttemptRankingInput | undefined;
   rotationSeed?: string;
   recommendedChallengerModel?: string;
 }
@@ -156,6 +163,7 @@ export interface ChallengeExecutionIntent {
   decisionSource: ChallengeDecisionSource;
   selectionPath?: ChallengeSelectionPath;
   selectionReason?: ChallengeSelectionReason;
+  selectionEvidence?: ChallengeSelectionEvidence;
   challengerSource?: ChallengeSelectionReason | 'recommendation' | 'random';
   challengeRecommendation?: Partial<ChallengeRecommendation>;
   routeContext?: ChallengeRouteContext;
@@ -243,6 +251,7 @@ export function buildChallengeExecutionIntent(input: {
   decisionSource?: ChallengeDecisionSource;
   selectionPath?: ChallengeSelectionPath;
   selectionReason?: ChallengeSelectionReason;
+  selectionEvidence?: ChallengeSelectionEvidence;
   challengerSource?: ChallengeExecutionIntent['challengerSource'];
   challengeRecommendation?: Partial<ChallengeRecommendation>;
   routeContext?: ChallengeRouteContext;
@@ -274,6 +283,7 @@ export function buildChallengeExecutionIntent(input: {
     ...(input.selectedStage ? { selectedStage: input.selectedStage, challengeStage: input.selectedStage } : {}),
     ...(input.selectionPath ? { selectionPath: input.selectionPath } : {}),
     ...(input.selectionReason ? { selectionReason: input.selectionReason } : {}),
+    ...(input.selectionEvidence ? { selectionEvidence: input.selectionEvidence } : {}),
     ...(input.challengerSource ? { challengerSource: input.challengerSource } : {}),
     ...(input.challengeRecommendation ? { challengeRecommendation: input.challengeRecommendation } : {}),
     ...(input.routeContext ? { routeContext: input.routeContext } : {}),
@@ -669,6 +679,10 @@ interface ChallengerSelectionResult {
   model: string | null;
   selectionReason?: ChallengeSelectionReason;
   coverageCount?: number;
+  attemptCount?: number;
+  lastAttemptAt?: string;
+  cooldownActive?: boolean;
+  priorityTier?: number | null;
 }
 
 interface ChallengerSelectionOptions extends ChallengeCoverageOptions {
@@ -688,6 +702,14 @@ function withSelectionMetadata(
     ...(typeof selection.coverageCount === 'number'
       ? { challengerCoverageCount: selection.coverageCount }
       : {}),
+    ...(typeof selection.attemptCount === 'number'
+      ? { challengerAttemptCount: selection.attemptCount }
+      : {}),
+    ...(selection.lastAttemptAt ? { challengerLastAttemptAt: selection.lastAttemptAt } : {}),
+    ...(typeof selection.cooldownActive === 'boolean'
+      ? { challengerCooldownActive: selection.cooldownActive }
+      : {}),
+    ...(selection.priorityTier !== undefined ? { challengerPriorityTier: selection.priorityTier } : {}),
   };
 }
 
@@ -720,6 +742,7 @@ function resolveChallengerModel(
       primaryModel,
       candidates: enabledPool,
       coverage: selectionOpts.coverage,
+      attemptEvidence: selectionOpts.attemptEvidence,
       recommendedChallenger: selectionOpts.recommendedChallengerModel?.trim() || trimmed || undefined,
       rotationSeed: selectionOpts.rotationSeed || `${selectionOpts.stage}|${primaryModel}`,
     });
@@ -730,6 +753,10 @@ function resolveChallengerModel(
       model: selection.model,
       selectionReason: selection.selectionReason,
       coverageCount: selection.coverageCount,
+      attemptCount: selection.attemptCount,
+      ...(selection.lastAttemptAt ? { lastAttemptAt: selection.lastAttemptAt } : {}),
+      cooldownActive: selection.cooldownActive,
+      priorityTier: selection.priorityTier,
     };
   }
   return { model: chooseDistinctChallengerModel(enabledPool, primaryModel, randomFn) };
@@ -971,6 +998,7 @@ export function pickChallengeModelsWithReason(
   const challengerSelection = resolveChallengerModel(uniquePool, primaryModel, suggestedChallengerModel, randomFn, {
     stage: 'implementation',
     coverage: opts.coverage,
+    attemptEvidence: opts.attemptEvidence,
     rotationSeed: opts.rotationSeed,
     recommendedChallengerModel: opts.recommendedChallengerModel,
   });
@@ -1002,6 +1030,7 @@ export function pickChallengeModelsWithReason(
     opts.now,
     {
       coverage: opts.coverage,
+      attemptEvidence: opts.attemptEvidence,
       rotationSeed: opts.rotationSeed,
       recommendedChallengerModel: opts.recommendedChallengerModel,
     },
@@ -1359,6 +1388,7 @@ export function pickChallengeWorkflowsWithReason(
   const challengerSelection = resolveChallengerModel(certifiedPool, primaryVaried, suggestedChallengerModel, randomFn, {
     stage,
     coverage: opts.coverage,
+    attemptEvidence: opts.attemptEvidence,
     rotationSeed: opts.rotationSeed,
     recommendedChallengerModel: opts.recommendedChallengerModel,
   });
@@ -1424,6 +1454,7 @@ export function pickChallengeWorkflowsWithReason(
     opts.now,
     {
       coverage: opts.coverage,
+      attemptEvidence: opts.attemptEvidence,
       rotationSeed: opts.rotationSeed,
       recommendedChallengerModel: opts.recommendedChallengerModel,
     },
@@ -1542,6 +1573,7 @@ function buildPairFromRouteSnapshotWithReason(
       repoDir: opts.repoDir,
       now: opts.now,
       coverage: opts.coverage,
+      attemptEvidence: opts.attemptEvidence,
       rotationSeed: opts.rotationSeed,
       recommendedChallengerModel: opts.recommendedChallengerModel,
     });
@@ -1561,6 +1593,7 @@ function buildPairFromRouteSnapshotWithReason(
       opts.now,
       {
         coverage: opts.coverage,
+        attemptEvidence: opts.attemptEvidence,
         rotationSeed: opts.rotationSeed,
         recommendedChallengerModel: opts.recommendedChallengerModel,
       },
@@ -1616,6 +1649,7 @@ function buildPairFromRouteSnapshotWithReason(
     {
       stage,
       coverage: opts.coverage,
+      attemptEvidence: opts.attemptEvidence,
       rotationSeed: opts.rotationSeed,
       recommendedChallengerModel: opts.recommendedChallengerModel,
     },
@@ -1652,6 +1686,7 @@ function buildPairFromRouteSnapshotWithReason(
     opts.now,
     {
       coverage: opts.coverage,
+      attemptEvidence: opts.attemptEvidence,
       rotationSeed: opts.rotationSeed,
       recommendedChallengerModel: opts.recommendedChallengerModel,
     },

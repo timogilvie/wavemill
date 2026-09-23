@@ -154,7 +154,7 @@ export async function resolveUnresolvablePair(input: UnresolvablePairInput): Pro
 
   if (!input.dryRun) {
     appendChallengeComparison(resolution.record, evalsDir);
-    await safelyReleasePairSelectionHealth(input.repoDir, input.pairId, pairState);
+    await safelyReleasePairSelectionHealth(input.repoDir, input.pairId, pairState, resolution.outcome);
   }
 
   return {
@@ -284,7 +284,7 @@ export async function resolvePrimaryMergedPair(input: PrimaryMergedInput): Promi
 
   if (!input.dryRun) {
     appendChallengeComparison(record, evalsDir);
-    await safelyReleasePairSelectionHealth(input.repoDir, input.pairId, pairState);
+    await safelyReleasePairSelectionHealth(input.repoDir, input.pairId, pairState, 'forfeit');
     if (challenger) {
       await markChallengerSupersededForPrimaryMerge(input.repoDir, challenger, primaryPr, input.now);
     }
@@ -303,9 +303,10 @@ async function safelyReleasePairSelectionHealth(
   repoDir: string,
   pairId: string,
   pairState: PairTaskState,
+  terminalOutcome?: 'forfeit' | 'double-forfeit' | 'invalid_challenge',
 ): Promise<void> {
   try {
-    await releasePairSelectionHealth(repoDir, pairId, pairState);
+    await releasePairSelectionHealth(repoDir, pairId, pairState, terminalOutcome);
   } catch (error) {
     console.warn(`[challenge-pair-resolver] Failed to release selection health for ${pairId}: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -315,6 +316,7 @@ async function releasePairSelectionHealth(
   repoDir: string,
   pairId: string,
   pairState: PairTaskState,
+  terminalOutcome?: 'forfeit' | 'double-forfeit' | 'invalid_challenge',
 ): Promise<void> {
   const owner = { issueId: pairId, pairId };
   const tasks = [pairState.primary, pairState.challenger].filter((task): task is TaskEvalState => Boolean(task));
@@ -331,6 +333,21 @@ async function releasePairSelectionHealth(
         model,
         stage,
         success: true,
+      });
+      return;
+    }
+    // A challenger resolved without a completed eval consumed its selection
+    // slot without producing coverage: record one truthful forfeit/invalid
+    // attempt so attempt-aware ranking rotates exploration (HOK-3066). The
+    // primary arm was never chosen by the exploration selector, so its
+    // reservation is simply released.
+    if (terminalOutcome && task === pairState.challenger) {
+      await recordSelectionOutcome({
+        repoDir,
+        owner,
+        model,
+        stage,
+        terminalStatus: terminalOutcome === 'invalid_challenge' ? 'invalid' : 'forfeit',
       });
       return;
     }

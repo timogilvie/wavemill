@@ -274,6 +274,20 @@ export interface ChallengeModelExclusionDiagnostic {
   reason?: string;
 }
 
+/**
+ * Ranking evidence for the selected challenger at seal time (HOK-3066):
+ * successful coverage, recent terminal attempts, cooldown state, and launch
+ * priority. Persisted so any selection can be reproduced from the intent plus
+ * the health snapshot diagnostics.
+ */
+export interface ChallengeSelectionEvidence {
+  coverageCount?: number;
+  attemptCount?: number;
+  lastAttemptAt?: string;
+  cooldownActive?: boolean;
+  priorityTier?: number | null;
+}
+
 export interface ChallengeExecutionIntent {
   pairId: string;
   challengeStage?: ChallengeStage;
@@ -287,6 +301,7 @@ export interface ChallengeExecutionIntent {
   intentionallyIdentical?: boolean;
   routeContext?: unknown;
   selectionReason?: string;
+  selectionEvidence?: ChallengeSelectionEvidence;
   challengeRecommendation?: unknown;
   nativeCertificationRejections?: ChallengeNativeCertificationRejection[];
   modelExclusions?: ChallengeModelExclusionDiagnostic[];
