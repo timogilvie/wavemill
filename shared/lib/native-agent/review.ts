@@ -802,9 +802,12 @@ export async function runNativeReview(
     // Close review session stream and project into corpus (HOK-2076). Best-effort.
     try {
       reviewSessionStreamWriter?.writeSessionEnded({
-        stopReason: 'end',
-        totalTurns: 0,
-        totalToolCalls: 0,
+        stopReason: loopResult?.stopReason ?? 'error',
+        totalTurns: loopResult?.turnsCompleted ?? 0,
+        totalToolCalls: loopResult?.toolCallsExecuted ?? 0,
+        ...(loopResult
+          ? { totalTokens: loopResult.totalInputTokens + loopResult.totalOutputTokens }
+          : {}),
       });
     } catch (error) {
       console.warn(`Failed to write review session_ended event: ${(error as Error).message}`);
