@@ -145,8 +145,11 @@ function getAvailableModels(
   }
 
   const pricingModels = Object.keys(loadConfiguredPricingTable(repoDir));
+  // Include models from all stages so recommendations can suggest stage-specific candidates
   return filterDisabledModels([...new Set([
+    ...listEffectiveModelsForStage('planning', { repoDir }).models,
     ...listEffectiveModelsForStage('coding', { repoDir }).models,
+    ...listEffectiveModelsForStage('review', { repoDir }).models,
     routingDecision.planner,
     routingDecision.coder,
     routingDecision.reviewer,

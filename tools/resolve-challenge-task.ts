@@ -89,7 +89,6 @@ runTool({
         }
       : {};
     const defaultAgent = router.defaultAgent || 'claude';
-    const pool = getChallengeModelPool(challenge, router);
     const requestedRate = challenge.rate ?? 0.10;
     const strictWhenRequired = challenge.enabled === true && requestedRate >= 1;
 
@@ -166,6 +165,22 @@ runTool({
       return;
     }
 
+    const routeArtifacts = featureDir
+      ? readBothRouteArtifacts(featureDir)
+      : { bootstrap: null, expanded: null };
+    const recommendation = extractChallengeRecommendation(routeArtifacts);
+
+    // Resolve the challenge stage before building the pool so we use the
+    // correct effective-model projection for the stage being varied.
+    // A stage pinned by the caller wins outright. Otherwise a recommendation
+    // carrying a stage pins it, and failing that we sample from the configured weights.
+    const challengeStage = pinnedStage ?? chooseChallengeStage({
+      weights: challenge.stageWeights,
+      recommendedStage: recommendation?.stage,
+    });
+
+    const pool = getChallengeModelPool(challenge, router, challengeStage);
+
     if (!canRunChallenge(pool)) {
       if (strictWhenRequired) {
         console.log(JSON.stringify({
@@ -190,11 +205,6 @@ runTool({
       return;
     }
 
-    const routeArtifacts = featureDir
-      ? readBothRouteArtifacts(featureDir)
-      : { bootstrap: null, expanded: null };
-    const recommendation = extractChallengeRecommendation(routeArtifacts);
-
     const launchDecision = decideChallengeLaunch({
       pool,
       primaryModel,
@@ -211,18 +221,7 @@ runTool({
       return;
     }
 
-    const forcedChallengerModel = launchDecision.forcedChallengerModel;
-
-    // A stage pinned by the caller wins outright. Re-sampling the stage on a
-    // refresh is how an already-selected implementation-stage challenge (e.g.
-    // a Qwen or Kimi coder arm) turned into an unrelated plan-stage pair: the
-    // second roll is independent, so an open-weight coder had to win twice.
-    // Otherwise a recommendation carrying a stage pins it, and failing that we
-    // sample from the configured weights.
-    const challengeStage = pinnedStage ?? chooseChallengeStage({
-      weights: challenge.stageWeights,
-      recommendedStage: launchDecision.recommendation?.stage,
-    });
+    const forcedChallengerModel = launchDecision.suggestedChallengerModel;
     const summary = buildEvalSummary(repoDir);
     const coverage = (model: string, stage: 'plan' | 'implementation' | 'review') =>
       modelStageCount(summary, model, stage);
@@ -274,7 +273,7 @@ runTool({
       if (!pair && taskFile) {
         try {
           const prompt = readTaskPromptFromFile(taskFile);
-          const selection = pickChallengeWorkflowsWithReason(pool, {
+          const selection = pickChallengeWorkflowsWithReason(candidatePool, {
             pairId: issue,
             issueId: issue,
             slug,

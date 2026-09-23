@@ -303,7 +303,7 @@ function resolveNextChallengeModel(
   report: OpenRouterDoctorReport,
   observed: readonly RecentSelection[],
 ): ZeroTrafficNextChallengeModel | null {
-  const challengePool = getChallengeModelPoolFromConfig(repoDir);
+  const challengePool = getChallengeModelPoolFromConfig(repoDir, 'implementation');
   const primaryModel = observed.find((selection) => selection.stage === 'coder')?.model ?? null;
   if (!primaryModel) {
     return {
