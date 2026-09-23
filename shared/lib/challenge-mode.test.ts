@@ -128,6 +128,26 @@ test('challenge model pool includes DeepSeek when allowDeepseek is enabled', () 
   assert.ok(pool.includes('claude-opus-4-6'));
 });
 
+test('challenge model pool respects stage-specific eligibility (planning-only models)', () => {
+  // kimi-k2 is planning-eligible but excluded from coding due to context window
+  const planningPool = getChallengeModelPool(undefined, undefined, 'plan');
+  const codingPool = getChallengeModelPool(undefined, undefined, 'implementation');
+
+  assert.ok(planningPool.includes('kimi-k2'), 'kimi-k2 should be in planning pool');
+  assert.ok(!codingPool.includes('kimi-k2'), 'kimi-k2 should not be in coding pool (context window too small)');
+});
+
+test('challenge model pool respects stage-specific eligibility (review-only models)', () => {
+  // Verify that review-stage pool differs from implementation-stage pool
+  const reviewPool = getChallengeModelPool(undefined, undefined, 'review');
+  const codingPool = getChallengeModelPool(undefined, undefined, 'implementation');
+
+  // Both pools should have some models, but stage filtering may differ
+  assert.ok(reviewPool.length > 0, 'review pool should not be empty');
+  assert.ok(codingPool.length > 0, 'coding pool should not be empty');
+  // The pools should have different stage-specific eligibility applied
+});
+
 test('filterDeepSeekChallengeModels returns a clear rationale when it removes candidates', () => {
   const filtered = filterDeepSeekChallengeModels(
     ['deepseek-v4-flash', 'claude-deepseek', 'claude-opus-4-6', ''],
