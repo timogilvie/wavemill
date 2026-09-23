@@ -190,6 +190,16 @@ auto-transition to `resolved`. A new distinct event for a resolved or archived
 fingerprint reopens the record with recurrence metadata, so an archived
 incident that recurs is distinguishable from one that never did.
 
+Lifecycle sync to Linear: once a record is linked to a Linear issue, the observer
+also reflects its resolution/archival/recurrence onto that issue under
+`observer.linear.lifecycle` (see `docs/config-files.md`). Defaults are comment-only
+— an absence-based auto-resolution never closes the issue, and recurrence reopens
+**only** an issue the observer itself auto-closed. Each transition posts exactly one
+comment across repeated loops and restarts (tracked by a stable transition
+revision), and a partial failure (comment succeeded but state transition failed, or
+vice versa) is retried idempotently via the incident retry queue. Health output
+exposes `lifecycleSynced` / `lifecycleFailed` / `lifecycleRetried` counters.
+
 ### `npx tsx tools/incidents.ts`
 
 Operator surface for the incident store — no more hand-editing

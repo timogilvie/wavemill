@@ -547,3 +547,33 @@ test('task-to-null repo migration is explicit and does not permit task-to-differ
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('getLifecyclePendingIncidents returns only linked records with an unsynced transition; recordLifecycleSync persists', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'incident-lifecycle-'));
+  try {
+    const store = new IncidentStore(dir, { escalationThreshold: 1, resolutionAfterCycles: 1 });
+    const rec = await store.upsert(incident({ lifecycle: 'observed', metadata: {} }));
+    // Unlinked resolved record is not lifecycle-pending (lifecycle only acts on linked issues).
+    await store.resolve(rec.fingerprint);
+    assert.equal((await store.getLifecyclePendingIncidents()).length, 0);
+
+    // Link it: now the resolution transition is pending.
+    await store.recordLinearSync(rec.fingerprint, { linearIssueId: 'HOK-77', evidenceRevision: 'r1' });
+    const pending = await store.getLifecyclePendingIncidents();
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0].fingerprint, rec.fingerprint);
+
+    // Record full delivery; it is no longer pending, and ownership survives a reload.
+    const transition = pending[0].metadata.resolution;
+    const revision = ['resolved', transition?.action, transition?.at].map((p) => String(p ?? '')).join('|');
+    await store.recordLifecycleSync(rec.fingerprint, {
+      transitionRevision: revision, kind: 'resolved', commentDelivered: true, stateApplied: true, observerClosedIssue: true,
+    });
+    assert.equal((await store.getLifecyclePendingIncidents()).length, 0);
+    const reloaded = await store.getIncident(rec.fingerprint);
+    assert.equal(reloaded?.metadata.lifecycleSync?.observerClosedIssue, true);
+    assert.equal(reloaded?.metadata.lifecycleSync?.commentDelivered, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

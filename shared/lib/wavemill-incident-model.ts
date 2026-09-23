@@ -155,6 +155,42 @@ export interface IncidentRecurrenceMetadata {
   reopenedFrom: IncidentLifecycle;
 }
 
+/**
+ * The distinct lifecycle transition kinds the Observer synchronizes to Linear.
+ * Each maps to exactly one comment shape and, optionally, one state mutation.
+ */
+export type IncidentLifecycleTransitionKind = 'resolved' | 'archived' | 'recurred';
+
+/**
+ * Persisted record of the last lifecycle transition the Observer delivered to a
+ * linked Linear issue. Comment and state delivery are tracked independently so a
+ * replay after a partial failure performs only the remaining work. `transitionRevision`
+ * is a stable hash of the particular resolution/archive/recurrence event, so a new
+ * distinct transition resets delivery while a re-run of the same one is a no-op.
+ */
+export interface IncidentLifecycleSyncMetadata {
+  /** Lifecycle last successfully reflected to Linear (comment and/or state). */
+  lastSyncedLifecycle?: IncidentLifecycle;
+  /** Kind of the transition currently being (or last) delivered. */
+  kind?: IncidentLifecycleTransitionKind;
+  /** Stable revision of the specific transition event being delivered. */
+  transitionRevision?: string;
+  /** True once the transition's comment has been posted for `transitionRevision`. */
+  commentDelivered?: boolean;
+  /** True once the transition's state mutation has been applied for `transitionRevision`. */
+  stateApplied?: boolean;
+  /** Last time any lifecycle step for this record succeeded. */
+  syncedAt?: string;
+  /**
+   * True when the Observer itself moved the linked Linear issue into a completed/
+   * canceled state. Recurrence may only reopen an issue the Observer auto-closed;
+   * a human-closed issue never carries this flag and is never reopened.
+   */
+  observerClosedIssue?: boolean;
+  /** Name of the workflow state the Observer moved the issue into, when it did. */
+  observerSetStateName?: string;
+}
+
 export type IncidentEvidenceType =
   | 'planning_result'
   | 'workflow_state'
@@ -255,6 +291,8 @@ export interface IncidentMetadata {
   resolution?: IncidentResolutionMetadata;
   /** Recurrence audit trail: set when a resolved/archived record is reopened. */
   recurrence?: IncidentRecurrenceMetadata;
+  /** Lifecycle transition sync state for the linked Linear issue (HOK-3035). */
+  lifecycleSync?: IncidentLifecycleSyncMetadata;
   [key: string]: unknown;
 }
 
@@ -285,6 +323,74 @@ export type NewIncidentRecord = Omit<
   IncidentRecord,
   'schemaVersion' | 'id' | 'fingerprint' | 'createdAt' | 'firstObservedAt' | 'lastObservedAt' | 'occurrenceCount'
 > & Partial<Pick<IncidentRecord, 'schemaVersion' | 'id' | 'fingerprint' | 'createdAt' | 'firstObservedAt' | 'lastObservedAt' | 'occurrenceCount'>>;
+
+/**
+ * The pending lifecycle transition a linked record wants delivered to Linear,
+ * or null when there is none. Auto vs operator resolution is preserved via
+ * `resolutionAction` so the synchronizer can apply the conservative default
+ * (comment-only) for absence-based resolution while honouring the opt-in close
+ * policy for explicit operator actions.
+ */
+export interface IncidentLifecycleTransition {
+  kind: IncidentLifecycleTransitionKind;
+  /** Stable revision of this specific transition event. */
+  revision: string;
+  /** For resolved/archived: which store action produced the transition. */
+  resolutionAction?: IncidentResolutionAction;
+}
+
+function stableRevision(parts: Array<string | number | undefined>): string {
+  // A short deterministic revision; a plain join is enough because the parts
+  // (action + timestamp, or recurrence count + timestamp) already uniquely
+  // identify the transition event across restarts.
+  return parts.map((part) => String(part ?? '')).join('|');
+}
+
+/**
+ * Derive the lifecycle transition that still needs delivery for a linked record.
+ * Resolved/archived records carry a `resolution` stamp; a record reopened by
+ * recurrence carries a `recurrence` stamp on an observed/active lifecycle. The
+ * revision is stable for a given event so repeated loops and restarts converge.
+ */
+export function classifyLifecycleTransition(record: IncidentRecord): IncidentLifecycleTransition | null {
+  const metadata = record.metadata ?? {};
+  if (record.lifecycle === 'resolved' || record.lifecycle === 'archived') {
+    const resolution = metadata.resolution;
+    const kind: IncidentLifecycleTransitionKind = record.lifecycle === 'archived' ? 'archived' : 'resolved';
+    return {
+      kind,
+      resolutionAction: resolution?.action,
+      revision: stableRevision([kind, resolution?.action, resolution?.at ?? record.lastObservedAt]),
+    };
+  }
+  // Observed/active record that was reopened by recurrence: reflect the reopen.
+  const recurrence = metadata.recurrence;
+  if (recurrence && typeof recurrence.count === 'number' && recurrence.count > 0) {
+    return {
+      kind: 'recurred',
+      revision: stableRevision(['recurred', recurrence.count, recurrence.lastRecurredAt]),
+    };
+  }
+  return null;
+}
+
+/**
+ * True when the record has a lifecycle transition whose revision has not yet been
+ * fully synced to Linear. A record with no linked issue is never lifecycle-pending
+ * — lifecycle effects only act on an already-linked issue.
+ */
+export function hasPendingLifecycleTransition(record: IncidentRecord): boolean {
+  if (!record.metadata?.linkedLinearId) return false;
+  const transition = classifyLifecycleTransition(record);
+  if (!transition) return false;
+  const synced = record.metadata?.lifecycleSync;
+  if (!synced || synced.transitionRevision !== transition.revision) return true;
+  // Same revision already seen: pending only if a step still remains. Whether a
+  // state step is required depends on config, so the synchronizer makes the
+  // final call; here we treat a fully comment+state delivered revision as done
+  // and anything else as still worth a (cheap, idempotent) pass.
+  return !(synced.commentDelivered === true && synced.stateApplied === true);
+}
 
 export function createIncidentDraft(input: NewIncidentRecord): IncidentRecord {
   return {

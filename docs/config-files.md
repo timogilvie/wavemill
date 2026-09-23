@@ -129,6 +129,50 @@ plus an auditable JSONL. `live` is the mutating mode and is unchanged.
 The trial procedure and go/no-go thresholds for promoting shadow → live are
 documented in `docs/cli-reference.md` under **Shadow trial procedure**.
 
+#### `observer.linear.lifecycle` — resolution / archival / recurrence sync
+
+`observer.linear.lifecycle` governs how the Observer reflects a linked incident's
+lifecycle (auto/operator resolution, archival, recurrence) onto its Linear issue.
+Defaults are **conservative and comment-only**; state mutation is opt-in and always
+gated on Observer ownership and current-truth reconciliation.
+
+```json
+{
+  "observer": {
+    "linear": {
+      "lifecycle": {
+        "enabled": false,
+        "commentOnly": true,
+        "closeOnOperatorResolved": false,
+        "resolvedStateName": "Done",
+        "closeOnOperatorArchived": false,
+        "archivedStateName": "Canceled",
+        "reopenOnRecurrence": true,
+        "reopenStateName": "Todo"
+      }
+    }
+  }
+}
+```
+
+- `enabled` (default `false`) — master switch; nothing is commented or transitioned
+  until this is on.
+- `commentOnly` (default `true`) — when true, lifecycle sync only adds a comment and
+  never changes Linear state. Set `false` to allow the opt-in state transitions below.
+- `closeOnOperatorResolved` / `resolvedStateName` — move an **explicitly
+  operator-resolved** issue to the named completed state. Absence-based
+  (auto-resolved) records are always comment-only and never close the issue.
+- `closeOnOperatorArchived` / `archivedStateName` — move an operator-archived issue to
+  the named completed state.
+- `reopenOnRecurrence` / `reopenStateName` — on recurrence, reopen **only** an issue the
+  Observer itself previously auto-closed (recorded ownership); a human-closed or
+  never-closed issue is only commented on.
+
+State names are resolved against the team's workflow states before any mutation; an
+unresolvable name degrades to comment-only rather than leaving an issue half-changed.
+A degraded/incomplete detection cycle never resolves or closes an issue, and
+reconciliation must not still confirm the incident active before a close.
+
 ### Harness Retention Replay
 
 `harness.retention` controls the fixed held-out replay suite used to detect

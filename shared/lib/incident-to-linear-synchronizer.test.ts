@@ -13,10 +13,12 @@ import {
   planShadowSync,
   redactLinearIssueContent,
   syncIncident,
+  syncIncidentLifecycle,
   wrapReadOnlyIncidentLinearClient,
   type IncidentLinearClient,
   type ObserverLinearConfig,
 } from './incident-to-linear-synchronizer.ts';
+import type { IncidentFilingReconciliation } from './incident-filing-reconciler.ts';
 import { redactIncidentData } from './artifact-diagnostics.ts';
 import { IncidentStore } from './wavemill-incident-store.ts';
 import { createIncidentDraft, type IncidentCategory, type IncidentRecord } from './wavemill-incident-model.ts';
@@ -635,3 +637,250 @@ function issueSummary(identifier: string): LinearIssueSummary {
     canceledAt: null,
   };
 }
+
+// ── Lifecycle transition sync (HOK-3035) ──────────────────────────
+
+interface LifecycleClientState {
+  comments: Array<{ issueId: string; body: string }>;
+  stateChanges: Array<{ issueId: string; stateId: string }>;
+}
+
+function lifecycleClient(
+  state: LifecycleClientState,
+  issue: { open: boolean; teamId?: string } = { open: true },
+): IncidentLinearClient {
+  return {
+    ...mockClient(),
+    getIssue: async (identifier) => ({
+      id: `uuid-${identifier}`,
+      identifier,
+      title: 'linked incident issue',
+      state: { name: issue.open ? 'Todo' : 'Done' },
+      labels: { nodes: [] },
+      team: { id: issue.teamId ?? 'team-1', key: 'HOK', name: 'Hokusai' },
+      url: `https://linear.app/hokusai/issue/${identifier}/x`,
+      completedAt: issue.open ? null : '2026-08-05T00:00:00.000Z',
+      canceledAt: null,
+    }),
+    getTeamStates: async () => [
+      { id: 'state-done', name: 'done' },
+      { id: 'state-todo', name: 'todo' },
+    ],
+    createComment: async (issueId, body) => {
+      state.comments.push({ issueId, body });
+      return { id: `comment-${state.comments.length}`, url: 'https://linear.app/comment' };
+    },
+    updateIssue: async (issueId, input) => {
+      state.stateChanges.push({ issueId, stateId: input.stateId ?? '' });
+      return { success: true, issue: { id: issueId, identifier: 'HOK-100', url: 'u' } } as never;
+    },
+  };
+}
+
+const recovered: (i: IncidentRecord) => IncidentFilingReconciliation =
+  () => ({ outcome: 'recovered', evidence: {} });
+const stillActive: (i: IncidentRecord) => IncidentFilingReconciliation =
+  () => ({ outcome: 'confirmed_active', evidence: {} });
+
+function lifecycleConfig(overrides: Partial<ObserverLinearConfig['lifecycle']> = {}): ObserverLinearConfig {
+  return config({ lifecycle: { ...DEFAULT_INCIDENT_LINEAR_CONFIG.lifecycle, enabled: true, ...overrides } });
+}
+
+async function linkedResolvedStore(action: 'operator' | 'auto', dir: string): Promise<{ store: IncidentStore; fingerprint: string }> {
+  const store = new IncidentStore(dir, { escalationThreshold: 1, resolutionAfterCycles: 1 });
+  const rec = await store.upsert(incident({ lifecycle: 'observed', metadata: {} }));
+  await store.recordLinearSync(rec.fingerprint, { linearIssueId: 'HOK-100', linearIssueUrl: 'u', evidenceRevision: 'r1' });
+  if (action === 'operator') {
+    await store.resolve(rec.fingerprint, { reason: 'fixed' });
+  } else {
+    // absence-driven auto resolution
+    await store.runResolutionSweep([]);
+  }
+  return { store, fingerprint: rec.fingerprint };
+}
+
+test('resolved linked incident gets exactly one comment across repeated loops and restart, no close by default', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifecycle-onceonly-'));
+  try {
+    const { store, fingerprint } = await linkedResolvedStore('operator', dir);
+    const state: LifecycleClientState = { comments: [], stateChanges: [] };
+    const client = lifecycleClient(state);
+    const cfg = lifecycleConfig();
+
+    const first = await syncIncidentLifecycle({
+      incident: (await store.getIncident(fingerprint))!, store, config: cfg, client, reconciler: recovered, cycleComplete: true,
+    });
+    assert.equal(first.status, 'synced');
+    assert.equal(first.action, 'comment_only');
+    // Simulate a restart: reload the record and sync again.
+    const second = await syncIncidentLifecycle({
+      incident: (await store.getIncident(fingerprint))!, store, config: cfg, client, reconciler: recovered, cycleComplete: true,
+    });
+    assert.equal(second.status, 'no_op');
+    assert.equal(state.comments.length, 1, 'exactly one resolution comment');
+    assert.equal(state.stateChanges.length, 0, 'default policy never closes the Linear issue');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('explicit operator resolution closes only when configured and records Observer ownership', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifecycle-close-'));
+  try {
+    const { store, fingerprint } = await linkedResolvedStore('operator', dir);
+    const state: LifecycleClientState = { comments: [], stateChanges: [] };
+    const cfg = lifecycleConfig({ commentOnly: false, closeOnOperatorResolved: true, resolvedStateName: 'Done' });
+    const result = await syncIncidentLifecycle({
+      incident: (await store.getIncident(fingerprint))!, store, config: cfg, client: lifecycleClient(state), reconciler: recovered, cycleComplete: true,
+    });
+    assert.equal(result.status, 'synced');
+    assert.equal(result.action, 'comment_and_close');
+    assert.equal(state.comments.length, 1);
+    assert.deepEqual(state.stateChanges, [{ issueId: 'uuid-HOK-100', stateId: 'state-done' }]);
+    const reloaded = await store.getIncident(fingerprint);
+    assert.equal(reloaded?.metadata.lifecycleSync?.observerClosedIssue, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('absence-based auto resolution never closes the Linear issue', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifecycle-auto-'));
+  try {
+    const { store, fingerprint } = await linkedResolvedStore('auto', dir);
+    const state: LifecycleClientState = { comments: [], stateChanges: [] };
+    // Even with closing enabled, an auto_resolved transition is comment-only.
+    const cfg = lifecycleConfig({ commentOnly: false, closeOnOperatorResolved: true, resolvedStateName: 'Done' });
+    const result = await syncIncidentLifecycle({
+      incident: (await store.getIncident(fingerprint))!, store, config: cfg, client: lifecycleClient(state), reconciler: recovered, cycleComplete: true,
+    });
+    assert.equal(result.action, 'comment_only');
+    assert.equal(state.stateChanges.length, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('degraded detection cycle cannot trigger resolution or closure', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifecycle-degraded-'));
+  try {
+    const { store, fingerprint } = await linkedResolvedStore('operator', dir);
+    const state: LifecycleClientState = { comments: [], stateChanges: [] };
+    const result = await syncIncidentLifecycle({
+      incident: (await store.getIncident(fingerprint))!, store, config: lifecycleConfig(), client: lifecycleClient(state), reconciler: recovered, cycleComplete: false,
+    });
+    assert.equal(result.status, 'skipped');
+    assert.equal(state.comments.length, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('reconciliation confirming the incident is still active suppresses resolution', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifecycle-active-'));
+  try {
+    const { store, fingerprint } = await linkedResolvedStore('operator', dir);
+    const state: LifecycleClientState = { comments: [], stateChanges: [] };
+    const result = await syncIncidentLifecycle({
+      incident: (await store.getIncident(fingerprint))!, store, config: lifecycleConfig(), client: lifecycleClient(state), reconciler: stillActive, cycleComplete: true,
+    });
+    assert.equal(result.status, 'skipped');
+    assert.equal(state.comments.length, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('recurrence reopens only an Observer-owned auto-closed issue and comments once', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifecycle-recur-owned-'));
+  try {
+    const store = new IncidentStore(dir, { escalationThreshold: 1, resolutionAfterCycles: 1 });
+    const rec = await store.upsert(incident({ lifecycle: 'observed', metadata: {} }));
+    await store.recordLinearSync(rec.fingerprint, { linearIssueId: 'HOK-100', evidenceRevision: 'r1' });
+    await store.resolve(rec.fingerprint);
+    // Observer owns the auto-close.
+    await store.recordLifecycleSync(rec.fingerprint, { transitionRevision: 'prev', stateApplied: true, observerClosedIssue: true, observerSetStateName: 'done' });
+    // A new distinct event reopens the record (recurrence).
+    await store.upsert(incident({ lifecycle: 'observed', metadata: {}, evidence: [{
+      type: 'log_excerpt', source: '/Users/timothy/project/.wavemill/logs/mill.log', timestamp: '2026-09-01T00:00:00.000Z', redactedData: 'crash again', key: 'crash',
+    }] }));
+    const record = (await store.getIncident(rec.fingerprint))!;
+    assert.ok(record.metadata.recurrence, 'record was reopened by recurrence');
+
+    const state: LifecycleClientState = { comments: [], stateChanges: [] };
+    const cfg = lifecycleConfig({ commentOnly: false, reopenOnRecurrence: true, reopenStateName: 'Todo' });
+    const result = await syncIncidentLifecycle({
+      incident: record, store, config: cfg, client: lifecycleClient(state, { open: false }), cycleComplete: true,
+    });
+    assert.equal(result.action, 'reopen_and_comment');
+    assert.deepEqual(state.stateChanges, [{ issueId: 'uuid-HOK-100', stateId: 'state-todo' }]);
+    assert.equal(state.comments.length, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a manually closed issue the Observer never closed is not reopened on recurrence', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifecycle-recur-manual-'));
+  try {
+    const store = new IncidentStore(dir, { escalationThreshold: 1, resolutionAfterCycles: 1 });
+    const rec = await store.upsert(incident({ lifecycle: 'observed', metadata: {} }));
+    await store.recordLinearSync(rec.fingerprint, { linearIssueId: 'HOK-100', evidenceRevision: 'r1' });
+    await store.resolve(rec.fingerprint);
+    // No observerClosedIssue ownership: a human closed the Linear issue.
+    await store.upsert(incident({ lifecycle: 'observed', metadata: {}, evidence: [{
+      type: 'log_excerpt', source: '/Users/timothy/project/.wavemill/logs/mill.log', timestamp: '2026-09-01T00:00:00.000Z', redactedData: 'crash again', key: 'crash',
+    }] }));
+    const state: LifecycleClientState = { comments: [], stateChanges: [] };
+    const cfg = lifecycleConfig({ commentOnly: false, reopenOnRecurrence: true, reopenStateName: 'Todo' });
+    const result = await syncIncidentLifecycle({
+      incident: (await store.getIncident(rec.fingerprint))!, store, config: cfg, client: lifecycleClient(state, { open: false }), cycleComplete: true,
+    });
+    assert.equal(result.action, 'comment_only');
+    assert.equal(state.stateChanges.length, 0, 'a human-closed issue is never reopened');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('replay skips a delivered comment and retries only the failed state transition', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifecycle-partial-'));
+  try {
+    const { store, fingerprint } = await linkedResolvedStore('operator', dir);
+    const cfg = lifecycleConfig({ commentOnly: false, closeOnOperatorResolved: true, resolvedStateName: 'Done' });
+    const record = (await store.getIncident(fingerprint))!;
+    const transition = record.lifecycle; // resolved
+    assert.equal(transition, 'resolved');
+    // Pre-seed: comment already delivered for this revision, state not yet applied.
+    const rev = record.metadata.resolution;
+    const revision = ['resolved', rev?.action, rev?.at].map((p) => String(p ?? '')).join('|');
+    await store.recordLifecycleSync(fingerprint, { transitionRevision: revision, kind: 'resolved', commentDelivered: true });
+    const state: LifecycleClientState = { comments: [], stateChanges: [] };
+    const result = await syncIncidentLifecycle({
+      incident: (await store.getIncident(fingerprint))!, store, config: cfg, client: lifecycleClient(state), reconciler: recovered, cycleComplete: true,
+    });
+    assert.equal(result.status, 'synced');
+    assert.equal(state.comments.length, 0, 'comment is not repeated');
+    assert.equal(state.stateChanges.length, 1, 'only the state transition is applied on replay');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('shadow mode renders the proposed lifecycle action without mutation', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifecycle-shadow-'));
+  try {
+    const { store, fingerprint } = await linkedResolvedStore('operator', dir);
+    const state: LifecycleClientState = { comments: [], stateChanges: [] };
+    const result = await syncIncidentLifecycle({
+      incident: (await store.getIncident(fingerprint))!, store, config: lifecycleConfig(), client: lifecycleClient(state), reconciler: recovered, cycleComplete: true, shadow: true,
+    });
+    assert.ok(result.shadowPlan);
+    assert.equal(result.shadowPlan?.action, 'comment_only');
+    assert.match(result.shadowPlan?.plannedCommentBody ?? '', /Incident Resolved/);
+    assert.equal(state.comments.length, 0);
+    assert.equal(state.stateChanges.length, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

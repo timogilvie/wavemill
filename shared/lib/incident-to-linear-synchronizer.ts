@@ -8,7 +8,9 @@ import {
   getOrCreateLabel,
   getProjects,
   getTeams,
+  getTeamStates,
   searchIssues,
+  updateIssue,
   type LinearIssue,
   type LinearIssueSummary,
   type LinearLabel,
@@ -16,7 +18,14 @@ import {
   type LinearTeam,
 } from './linear.ts';
 import { IncidentStore } from './wavemill-incident-store.ts';
-import type { IncidentCategory, IncidentEvidence, IncidentRecord } from './wavemill-incident-model.ts';
+import {
+  classifyLifecycleTransition,
+  type IncidentCategory,
+  type IncidentEvidence,
+  type IncidentLifecycleTransition,
+  type IncidentLifecycleTransitionKind,
+  type IncidentRecord,
+} from './wavemill-incident-model.ts';
 import {
   reconcileIncidentForFiling,
   type IncidentFilingReconciliation,
@@ -51,6 +60,29 @@ export interface ObserverLinearShadowConfig {
   maxLookupsPerPass: number;
 }
 
+/**
+ * Conservative lifecycle transition policy (HOK-3035). Defaults are comment-only:
+ * the Observer never closes or reopens a Linear issue unless the corresponding
+ * opt-in is explicitly enabled and the target state name is configured. Human
+ * state changes always win — recurrence reopens only an issue the Observer
+ * itself auto-closed.
+ */
+export interface ObserverLinearLifecycleConfig {
+  /** Master switch: when false, no lifecycle comments or state changes are made. */
+  enabled: boolean;
+  /** When true (default), lifecycle sync only ever comments; state is never mutated. */
+  commentOnly: boolean;
+  /** Move an explicitly operator-resolved issue to this completed state when enabled. */
+  closeOnOperatorResolved: boolean;
+  resolvedStateName?: string;
+  /** Move an operator-archived issue to this completed state when enabled. */
+  closeOnOperatorArchived: boolean;
+  archivedStateName?: string;
+  /** Reopen an Observer-auto-closed issue on recurrence (still gated on ownership). */
+  reopenOnRecurrence: boolean;
+  reopenStateName?: string;
+}
+
 export interface ObserverLinearConfig {
   enabled: boolean;
   detectionOnly: boolean;
@@ -67,6 +99,7 @@ export interface ObserverLinearConfig {
   policies: Record<IncidentCategory, IncidentClassPolicy>;
   redaction: IncidentLinearRedactionConfig;
   shadow: ObserverLinearShadowConfig;
+  lifecycle: ObserverLinearLifecycleConfig;
 }
 
 export type SyncAction =
@@ -151,6 +184,10 @@ export interface IncidentLinearClient {
   createComment: typeof createComment;
   getOrCreateLabel: typeof getOrCreateLabel;
   addLabelsToIssue: typeof addLabelsToIssue;
+  /** Lifecycle sync only: resolve a team's workflow states name→id. */
+  getTeamStates?: typeof getTeamStates;
+  /** Lifecycle sync only: apply a state transition to an issue. */
+  updateIssue?: typeof updateIssue;
 }
 
 export interface SyncIncidentOptions {
@@ -186,6 +223,8 @@ const DEFAULT_CLIENT: IncidentLinearClient = {
   createComment,
   getOrCreateLabel,
   addLabelsToIssue,
+  getTeamStates,
+  updateIssue,
 };
 
 const CLASS_LABEL_PREFIX = 'incident:class:';
@@ -233,6 +272,13 @@ export const DEFAULT_INCIDENT_LINEAR_CONFIG: ObserverLinearConfig = {
     maxEntries: 500,
     maxAgeDays: 14,
     maxLookupsPerPass: 40,
+  },
+  lifecycle: {
+    enabled: false,
+    commentOnly: true,
+    closeOnOperatorResolved: false,
+    closeOnOperatorArchived: false,
+    reopenOnRecurrence: true,
   },
 };
 
@@ -667,6 +713,351 @@ export async function syncIncident(options: SyncIncidentOptions): Promise<SyncRe
       return { ...baseResult, action: 'queued', status: 'queued', reason: classified.message, nextRetryAt };
     }
     return { ...baseResult, action: 'failed', status: 'failed', reason: classified.message };
+  }
+}
+
+// ────────────────────────────────────────────────────────────────
+// Lifecycle transition synchronization (HOK-3035)
+// ────────────────────────────────────────────────────────────────
+
+export type LifecycleSyncStatus = 'synced' | 'skipped' | 'queued' | 'failed' | 'no_op';
+
+export type LifecycleSyncAction =
+  | 'comment_only'
+  | 'comment_and_close'
+  | 'reopen_and_comment'
+  | 'skip'
+  | 'no_op';
+
+export interface LifecycleShadowPlan {
+  fingerprint: string;
+  linkedIssueId?: string;
+  kind: IncidentLifecycleTransitionKind;
+  transitionRevision: string;
+  action: LifecycleSyncAction;
+  reason?: string;
+  plannedCommentBody?: string;
+  /** Configured target workflow state name, when a state mutation is planned. */
+  plannedStateName?: string;
+  willMutateState: boolean;
+}
+
+export interface LifecycleSyncResult {
+  fingerprint: string;
+  kind?: IncidentLifecycleTransitionKind;
+  transitionRevision?: string;
+  status: LifecycleSyncStatus;
+  action: LifecycleSyncAction | 'none';
+  issueId?: string;
+  issueUrl?: string;
+  reason?: string;
+  commentDelivered?: boolean;
+  stateApplied?: boolean;
+  dryRun?: boolean;
+  nextRetryAt?: string;
+  shadowPlan?: LifecycleShadowPlan;
+}
+
+export interface LifecycleRetryEnqueuer {
+  enqueueLifecycleSync(input: {
+    incidentFingerprint: string;
+    linearIssueId?: string;
+    lifecycleKind: IncidentLifecycleTransitionKind;
+    transitionRevision: string;
+    lastError: ReturnType<typeof classifyLinearError>;
+    now?: Date;
+  }): Promise<{ nextRetryAt: string }> | { nextRetryAt: string };
+}
+
+export interface SyncIncidentLifecycleOptions {
+  incident: IncidentRecord;
+  store?: IncidentStore;
+  config: ObserverLinearConfig;
+  now?: Date;
+  client?: IncidentLinearClient;
+  dryRun?: boolean;
+  shadow?: boolean;
+  replay?: boolean;
+  /**
+   * False when the detection cycle that produced this record was degraded or
+   * incomplete. A degraded cycle must never trigger resolution or closure.
+   */
+  cycleComplete?: boolean;
+  reconciler?: (incident: IncidentRecord, repoDir: string) => IncidentFilingReconciliation;
+  repoDir?: string;
+  retryQueue?: LifecycleRetryEnqueuer;
+  audit?: (message: string, fields?: Record<string, unknown>) => void;
+}
+
+function lifecycleCommentBody(incident: IncidentRecord, transition: IncidentLifecycleTransition, action: LifecycleSyncAction, now: Date): string {
+  const header = transition.kind === 'archived'
+    ? '## Wavemill Observer — Incident Archived'
+    : transition.kind === 'recurred'
+      ? '## Wavemill Observer — Incident Recurred'
+      : '## Wavemill Observer — Incident Resolved';
+  const stateNote = action === 'comment_and_close'
+    ? 'The Observer moved this issue to its configured completed state.'
+    : action === 'reopen_and_comment'
+      ? 'The Observer reopened this issue because it previously auto-closed it.'
+      : 'No Linear state change was made (comment-only policy).';
+  const cause = transition.kind === 'recurred'
+    ? `A new distinct occurrence was observed (recurrence #${incident.metadata?.recurrence?.count ?? 1}).`
+    : transition.resolutionAction === 'auto_resolved'
+      ? `Auto-resolved after ${incident.metadata?.missedCycles ?? 'several'} consecutive observer cycles without a fresh occurrence.`
+      : transition.resolutionAction === 'operator_archived'
+        ? 'Explicitly archived by an operator.'
+        : 'Explicitly resolved by an operator.';
+  return [
+    header,
+    `- **Fingerprint**: ${incident.fingerprint}`,
+    `- **Root Cause**: ${incident.rootCauseClass}`,
+    `- **Transition**: ${transition.kind}`,
+    `- **Cause**: ${cause}`,
+    `- **Lifecycle**: ${incident.lifecycle}`,
+    '',
+    stateNote,
+    '',
+    `Synced at: ${now.toISOString()}`,
+  ].join('\n');
+}
+
+/**
+ * Decide the lifecycle action for a transition under the conservative policy.
+ * Pure: never touches a client or store, so shadow renders the identical plan.
+ */
+export function planLifecycleTransition(
+  incident: IncidentRecord,
+  config: ObserverLinearConfig,
+  transition: IncidentLifecycleTransition,
+  reconciliation: IncidentFilingReconciliation,
+  cycleComplete: boolean,
+): { action: LifecycleSyncAction; reason?: string; willMutateState: boolean; plannedStateName?: string } {
+  const lifecycle = config.lifecycle;
+  if (!lifecycle.enabled) return { action: 'skip', reason: 'lifecycle sync disabled', willMutateState: false };
+
+  if (transition.kind === 'recurred') {
+    const sync = incident.metadata?.lifecycleSync;
+    const ownsAutoClose = sync?.observerClosedIssue === true;
+    // Reopen only an issue the Observer itself auto-closed; a human-closed or
+    // never-closed issue is only commented on.
+    if (ownsAutoClose && !lifecycle.commentOnly && lifecycle.reopenOnRecurrence && lifecycle.reopenStateName) {
+      return { action: 'reopen_and_comment', willMutateState: true, plannedStateName: lifecycle.reopenStateName };
+    }
+    return { action: 'comment_only', willMutateState: false };
+  }
+
+  // resolved / archived: absence- or operator-driven. Never act on a degraded cycle
+  // or while reconciliation still confirms the incident is active.
+  if (!cycleComplete) return { action: 'skip', reason: 'degraded or incomplete detection cycle', willMutateState: false };
+  if (reconciliation.outcome === 'confirmed_active') {
+    return { action: 'skip', reason: 'reconciliation still confirms incident active', willMutateState: false };
+  }
+
+  const canClose = !lifecycle.commentOnly
+    && (reconciliation.outcome === 'recovered' || reconciliation.outcome === 'superseded');
+
+  if (transition.kind === 'archived') {
+    if (canClose && lifecycle.closeOnOperatorArchived && lifecycle.archivedStateName && transition.resolutionAction === 'operator_archived') {
+      return { action: 'comment_and_close', willMutateState: true, plannedStateName: lifecycle.archivedStateName };
+    }
+    return { action: 'comment_only', willMutateState: false };
+  }
+
+  // resolved
+  if (transition.resolutionAction === 'operator_resolved'
+    && canClose && lifecycle.closeOnOperatorResolved && lifecycle.resolvedStateName) {
+    return { action: 'comment_and_close', willMutateState: true, plannedStateName: lifecycle.resolvedStateName };
+  }
+  // auto_resolved (absence) and any unconfigured operator resolution: comment only.
+  return { action: 'comment_only', willMutateState: false };
+}
+
+function buildLifecyclePlan(
+  incident: IncidentRecord,
+  transition: IncidentLifecycleTransition,
+  decision: ReturnType<typeof planLifecycleTransition>,
+  now: Date,
+): LifecycleShadowPlan {
+  const commented = decision.action !== 'skip' && decision.action !== 'no_op';
+  return {
+    fingerprint: incident.fingerprint,
+    linkedIssueId: typeof incident.metadata?.linkedLinearId === 'string' ? incident.metadata.linkedLinearId : undefined,
+    kind: transition.kind,
+    transitionRevision: transition.revision,
+    action: decision.action,
+    reason: decision.reason,
+    plannedCommentBody: commented ? lifecycleCommentBody(incident, transition, decision.action, now) : undefined,
+    plannedStateName: decision.plannedStateName,
+    willMutateState: decision.willMutateState,
+  };
+}
+
+/**
+ * Deliver a linked incident's lifecycle transition (resolution/archival/recurrence)
+ * to Linear with exactly-once comment and opt-in, ownership-gated state mutation.
+ * Comment and state delivery are tracked independently so replays only perform
+ * the remaining work.
+ */
+export async function syncIncidentLifecycle(options: SyncIncidentLifecycleOptions): Promise<LifecycleSyncResult> {
+  const now = options.now ?? new Date();
+  const config = options.config;
+  const incident = options.incident;
+  const audit = options.audit ?? (() => {});
+  const dryRun = options.dryRun === true || config.mode === 'offline';
+  const shadowMode = options.shadow === true || config.mode === 'shadow';
+  const cycleComplete = options.cycleComplete !== false;
+  const base = { fingerprint: incident.fingerprint, dryRun: dryRun || shadowMode };
+
+  const transition = classifyLifecycleTransition(incident);
+  if (!transition) return { ...base, status: 'no_op', action: 'none', reason: 'no pending lifecycle transition' };
+  if (!incident.metadata?.linkedLinearId) {
+    return { ...base, status: 'skipped', action: 'skip', kind: transition.kind, transitionRevision: transition.revision, reason: 'incident is not linked to a Linear issue' };
+  }
+
+  const reconciliation = (options.reconciler ?? reconcileIncidentForFiling)(incident, options.repoDir ?? process.cwd());
+  const decision = planLifecycleTransition(incident, config, transition, reconciliation, cycleComplete);
+  const plan = buildLifecyclePlan(incident, transition, decision, now);
+
+  if (shadowMode) {
+    const status: LifecycleSyncStatus = decision.action === 'skip' || decision.action === 'no_op' ? 'skipped' : 'skipped';
+    return {
+      ...base,
+      status,
+      action: decision.action,
+      kind: transition.kind,
+      transitionRevision: transition.revision,
+      issueId: incident.metadata.linkedLinearId,
+      issueUrl: typeof incident.metadata.linkedLinearUrl === 'string' ? incident.metadata.linkedLinearUrl : undefined,
+      reason: decision.reason ?? `shadow: planned ${decision.action}`,
+      shadowPlan: plan,
+    };
+  }
+
+  if (decision.action === 'skip') {
+    audit('lifecycle sync skipped', { fingerprint: incident.fingerprint, reason: decision.reason });
+    return { ...base, status: 'skipped', action: 'skip', kind: transition.kind, transitionRevision: transition.revision, reason: decision.reason, shadowPlan: plan };
+  }
+
+  const sync = incident.metadata?.lifecycleSync;
+  const sameRevision = sync?.transitionRevision === transition.revision;
+  let commentDelivered = sameRevision && sync?.commentDelivered === true;
+  let stateApplied = sameRevision && sync?.stateApplied === true;
+  const stateRequired = decision.willMutateState;
+
+  // Already fully delivered for this revision → exactly-once no-op across loops/restart.
+  if (commentDelivered && (!stateRequired || stateApplied)) {
+    return { ...base, status: 'no_op', action: decision.action, kind: transition.kind, transitionRevision: transition.revision, issueId: incident.metadata.linkedLinearId, reason: 'lifecycle transition already synced', commentDelivered, stateApplied };
+  }
+
+  if (dryRun) {
+    return { ...base, status: 'skipped', action: decision.action, kind: transition.kind, transitionRevision: transition.revision, issueId: incident.metadata.linkedLinearId, reason: 'dry-run planned lifecycle transition', commentDelivered, stateApplied, shadowPlan: plan };
+  }
+
+  if (!config.enabled) {
+    return { ...base, status: 'skipped', action: 'skip', kind: transition.kind, transitionRevision: transition.revision, reason: 'observer.linear.enabled is false' };
+  }
+
+  const client = withRequestPacing(options.client ?? DEFAULT_CLIENT, config);
+  try {
+    const issue = await resolveIssueByIdentifier(client, incident.metadata.linkedLinearId);
+    if (!issue) {
+      return { ...base, status: 'skipped', action: 'skip', kind: transition.kind, transitionRevision: transition.revision, reason: `linked issue ${incident.metadata.linkedLinearId} not found`, shadowPlan: plan };
+    }
+
+    // Resolve the target state id BEFORE mutating anything (never partially mutate
+    // on a bad state name). Degrade to comment-only when the configured state is
+    // unresolvable rather than leave the issue half-changed.
+    let targetStateId: string | undefined;
+    let effectiveAction = decision.action;
+    let mutateState = stateRequired;
+    if (stateRequired && decision.plannedStateName && client.getTeamStates && issue.team?.id) {
+      const states = await client.getTeamStates(issue.team.id);
+      const match = states.find((s) => s.name === decision.plannedStateName!.toLowerCase() || s.name === decision.plannedStateName);
+      if (!match) {
+        mutateState = false;
+        effectiveAction = 'comment_only';
+        audit('lifecycle state unresolved; degrading to comment-only', { fingerprint: incident.fingerprint, stateName: decision.plannedStateName });
+      } else {
+        targetStateId = match.id;
+      }
+    }
+
+    // For a recurrence reopen, only reopen an issue that is currently closed and
+    // that the Observer owns the auto-close of; otherwise comment only.
+    if (transition.kind === 'recurred' && mutateState && issueIsOpen(issue)) {
+      mutateState = false;
+      effectiveAction = 'comment_only';
+    }
+
+    // Step 1: comment (exactly once per revision).
+    if (!commentDelivered) {
+      await client.createComment(issue.id, lifecycleCommentBody(incident, transition, effectiveAction, now));
+      commentDelivered = true;
+      await options.store?.recordLifecycleSync(incident.fingerprint, {
+        transitionRevision: transition.revision,
+        kind: transition.kind,
+        lastSyncedLifecycle: incident.lifecycle,
+        commentDelivered: true,
+      });
+    }
+
+    // Step 2: state mutation (opt-in; idempotent per revision).
+    if (mutateState && !stateApplied && targetStateId && client.updateIssue) {
+      await client.updateIssue(issue.id, { stateId: targetStateId });
+      stateApplied = true;
+      const reopened = transition.kind === 'recurred';
+      await options.store?.recordLifecycleSync(incident.fingerprint, {
+        transitionRevision: transition.revision,
+        kind: transition.kind,
+        lastSyncedLifecycle: incident.lifecycle,
+        stateApplied: true,
+        // Record ownership: the Observer closed it (resolve/archive) or reopened
+        // its own prior auto-close (recurrence clears the ownership flag).
+        observerClosedIssue: reopened ? false : true,
+        observerSetStateName: decision.plannedStateName,
+      });
+    }
+
+    return {
+      ...base,
+      status: 'synced',
+      action: effectiveAction,
+      kind: transition.kind,
+      transitionRevision: transition.revision,
+      issueId: issue.identifier,
+      issueUrl: issue.url,
+      commentDelivered,
+      stateApplied,
+      shadowPlan: plan,
+    };
+  } catch (error) {
+    const classified = classifyLinearError(error);
+    let nextRetryAt: string | undefined;
+    let retryQueued = false;
+    if (classified.category === 'rate_limit' && config.rateLimitBackoffMs > 0) await sleep(config.rateLimitBackoffMs);
+    if (classified.isRetryable && options.retryQueue) {
+      const queued = await options.retryQueue.enqueueLifecycleSync({
+        incidentFingerprint: incident.fingerprint,
+        linearIssueId: incident.metadata.linkedLinearId,
+        lifecycleKind: transition.kind,
+        transitionRevision: transition.revision,
+        lastError: classified,
+        now,
+      });
+      retryQueued = true;
+      nextRetryAt = queued.nextRetryAt;
+    }
+    await options.store?.recordSyncError(incident.fingerprint, {
+      action: `lifecycle_${transition.kind}`,
+      category: classified.category,
+      message: classified.message,
+      retryQueued,
+      at: now.toISOString(),
+    });
+    if (retryQueued) {
+      return { ...base, status: 'queued', action: decision.action, kind: transition.kind, transitionRevision: transition.revision, reason: classified.message, commentDelivered, stateApplied, nextRetryAt };
+    }
+    return { ...base, status: 'failed', action: decision.action, kind: transition.kind, transitionRevision: transition.revision, reason: classified.message, commentDelivered, stateApplied };
   }
 }
 

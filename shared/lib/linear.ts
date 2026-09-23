@@ -498,6 +498,18 @@ async function getTeamWorkflowStates(teamId: string): Promise<Map<string, string
   return byName;
 }
 
+/**
+ * Public: resolve a team's workflow states as name→id pairs. Used by incident
+ * lifecycle sync to validate configured completed/open state names at startup,
+ * before any issue is mutated.
+ */
+export async function getTeamStates(teamId: string): Promise<Array<{ id: string; name: string }>> {
+  const byName = await getTeamWorkflowStates(teamId);
+  // Names are lowercased by getTeamWorkflowStates; that is exactly the key
+  // lifecycle sync compares configured state names against.
+  return [...byName.entries()].map(([name, id]) => ({ id, name }));
+}
+
 // ────────────────────────────────────────────────────────────────
 // Public API
 // ────────────────────────────────────────────────────────────────
