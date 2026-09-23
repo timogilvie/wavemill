@@ -221,6 +221,14 @@
     "patchCoding": {
       "enabled": true
     },
+    "certification": {
+      "canaryCohort": [
+        { "provider": "openrouter", "model": "qwen-3-coder" },
+        { "provider": "openrouter", "model": "kimi-k2.7-code" },
+        { "provider": "openrouter", "model": "glm-5.3" }
+      ],
+      "minCodingReady": 2
+    },
     "expansion": {
       "fallbackOnUnavailable": true
     },

@@ -17,6 +17,11 @@ import {
   serializeReport,
   renderReportTable,
 } from '../shared/lib/native-agent/certification/report.ts';
+import {
+  evaluateCanaryCohortHealth,
+  renderCanaryCohortHealth,
+  resolveCanaryCohort,
+} from '../shared/lib/native-agent/certification/canary-cohort.ts';
 
 export function runModelsReportCommand(argv = process.argv.slice(2)): Promise<void> {
 return runTool({
@@ -61,10 +66,23 @@ return runTool({
       status: args.status as never,
     });
 
+    // Live-coding canary cohort health (HOK-3062): coding-ready count, expiry
+    // horizon, last attempt, and failure reason for the bounded cohort.
+    const cohort = resolveCanaryCohort({ repoDir });
+    const cohortHealth = cohort.members.length > 0 || cohort.invalid.length > 0
+      ? await evaluateCanaryCohortHealth({ repoDir, cohort })
+      : undefined;
+
     if (args.json === true) {
-      console.log(JSON.stringify(serializeReport(rows), null, 2));
+      console.log(JSON.stringify({
+        ...serializeReport(rows),
+        ...(cohortHealth ? { canaryCohort: cohortHealth } : {}),
+      }, null, 2));
     } else {
       process.stdout.write(renderReportTable(rows));
+      if (cohortHealth) {
+        process.stdout.write('\n' + renderCanaryCohortHealth(cohortHealth) + '\n');
+      }
     }
   },
 }, argv);

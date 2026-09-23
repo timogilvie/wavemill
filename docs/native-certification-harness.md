@@ -357,6 +357,21 @@ Properties of the lane:
 - **CI separation**: unit suites exercise the canary through injected loop runners (always recorded `isLive: false`, never eligible). The credentialed live lane is opt-in via `--live-coding-canary` and is not part of default CI.
 - Certifying **without** `--live-coding-canary` still publishes deterministic evidence and carries forward a still-valid previous canary pass, but a model with no valid pass stays coding-ineligible (`missing_live_canary`).
 
+### Canary cohort refresh (HOK-3062)
+
+The bounded cohort configured under `nativeAgent.certification.canaryCohort` is refreshed with one idempotent command on the credentialed mill host:
+
+```bash
+npx tsx tools/native-agent-certify.ts --refresh-canary-cohort
+
+# Optional per-run budget overrides apply to each refreshed member
+npx tsx tools/native-agent-certify.ts --refresh-canary-cohort --canary-max-cost-usd 0.25
+```
+
+The command targets only members whose canary is missing, stale, renewal-due, identity-invalidated, or transiently inconclusive; healthy members and definitive failures are left alone. It reuses the canary lane above (same budgets, credentials, isolation, and redaction), prints per-member outcomes plus the cohort health block (coding-ready count, minimum, nearest expiry, last attempts), and exits non-zero when coding-ready supply stays below `minCodingReady`. It rejects `--dry-run`, `--all`, `--provider`, and `--model`. Mill preflight runs the same refresh automatically with a one-attempt-per-episode guard; see "Live Canary Cohort" in `docs/native-certification-contract.md`.
+
+The composite CI action (`.github/actions/certify-native-fleet/action.yml`) remains deterministic and credentialless; its `${RUNNER_TEMP}` artifacts are never production certification and never satisfy the coding gate.
+
 ---
 
 ## Shared Storage And Default Pools

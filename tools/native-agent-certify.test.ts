@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { certifyAllNativeAgents, certifyNativeAgent, renderCanaryStatusLine } from './native-agent-certify.ts';
+import { certifyAllNativeAgents, certifyNativeAgent, refreshCohortFlagError, renderCanaryStatusLine } from './native-agent-certify.ts';
 import type { HarnessReport, HarnessScenarioResult } from '../shared/lib/native-agent/certification/scenario-runner.ts';
 import { CERTIFICATION_SCHEMA_VERSION, type NativeCertificationArtifact } from '../shared/lib/native-agent/certification/schema.ts';
 import { buildLiveCodingCanaryFixture } from '../shared/lib/native-agent/certification/canary-fixtures.ts';
@@ -1043,5 +1043,24 @@ describe('certifyNativeAgent skipped canary preservation', () => {
     assert.equal(written!.liveCanary?.ranAt, CANARY_RAN_AT);
     assert.equal(result.codingEligible, true);
     assert.equal(result.liveCanary?.carriedForward, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HOK-3062: --refresh-canary-cohort flag validation
+// ---------------------------------------------------------------------------
+
+describe('refreshCohortFlagError', () => {
+  it('rejects dry-run, explicit targeting, --all, and redundant --live-coding-canary', () => {
+    assert.match(refreshCohortFlagError({ 'dry-run': true })!, /--dry-run/);
+    assert.match(refreshCohortFlagError({ all: true })!, /--all/);
+    assert.match(refreshCohortFlagError({ model: 'gpt-4o' })!, /--provider\/--model/);
+    assert.match(refreshCohortFlagError({ provider: 'openai' })!, /--provider\/--model/);
+    assert.match(refreshCohortFlagError({ 'live-coding-canary': true })!, /already implies/);
+  });
+
+  it('accepts the bare cohort refresh invocation with canary limit overrides', () => {
+    assert.equal(refreshCohortFlagError({}), undefined);
+    assert.equal(refreshCohortFlagError({ 'canary-max-cost-usd': '0.25', json: true }), undefined);
   });
 });

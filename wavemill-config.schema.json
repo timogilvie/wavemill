@@ -1546,6 +1546,42 @@
                             "minimum": 0,
                             "maximum": 30,
                             "default": 7
+                        },
+                        "canaryCohort": {
+                            "type": "array",
+                            "description": "Bounded, reviewed cohort of native coding candidates whose live coding canaries are kept fresh. Canonical registry identities only.",
+                            "maxItems": 8,
+                            "items": {
+                                "type": "object",
+                                "required": ["provider", "model"],
+                                "properties": {
+                                    "provider": {
+                                        "type": "string",
+                                        "enum": ["openai", "openrouter"]
+                                    },
+                                    "model": {
+                                        "type": "string",
+                                        "minLength": 1
+                                    }
+                                },
+                                "additionalProperties": false
+                            }
+                        },
+                        "minCodingReady": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 8,
+                            "default": 2
+                        },
+                        "canaryRenewalWindowDays": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 13,
+                            "default": 3
+                        },
+                        "canaryAutoRefresh": {
+                            "type": "boolean",
+                            "default": true
                         }
                     },
                     "additionalProperties": false

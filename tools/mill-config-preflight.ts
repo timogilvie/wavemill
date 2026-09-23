@@ -1,6 +1,7 @@
 #!/usr/bin/env tsx
 import { resolve } from 'node:path';
 import {
+  formatCanaryCohortReport,
   formatCertificationRemediationReport,
   formatMillConfigPreflightReport,
   runMillConfigPreflight,
@@ -47,8 +48,15 @@ async function main(): Promise<void> {
       console.log(JSON.stringify(result, null, 2));
     } else if (!result.ok) {
       console.error(formatMillConfigPreflightReport(result.report));
-    } else if (result.report.certificationRemediation) {
-      console.error(formatCertificationRemediationReport(result.report));
+    } else {
+      if (result.report.certificationRemediation) {
+        console.error(formatCertificationRemediationReport(result.report));
+      }
+      // Cohort alert must reach operators before coding-ready supply hits
+      // zero, so it prints even when preflight succeeds.
+      if (result.report.canaryCohortRefresh || result.report.canaryCohortHealth?.belowMinimum) {
+        console.error(formatCanaryCohortReport(result.report));
+      }
     }
     process.exit(result.ok ? 0 : 2);
   } catch (err) {
