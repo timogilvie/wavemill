@@ -27,6 +27,7 @@ import {
 } from './providers.ts';
 import { TranscriptWriter } from './transcript.ts';
 import { SessionStreamWriter, resolveSessionEventStreamPath } from './session-stream.ts';
+import { captureToolDecisionsFromStream } from './tool-decision-capture.ts';
 import type { SessionStreamConfig } from './loop.ts';
 import { createReadOnlyTools, READ_ONLY_PATH_FIELDS } from './tools/read-only.ts';
 import { createGitTools, gitAfterToolCall } from './tools/git.ts';
@@ -896,6 +897,21 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
     await options.onAwaitingUserStagePublished?.();
     writeHookStatus(hookPath, 'idle', 'process_exit', 'planning_awaiting_user', 'native');
     writeTextStatus(options.session, options.issue, 'awaiting plan approval');
+
+    // Project the canonical event stream into the tool-decision corpus (HOK-2076).
+    // Best-effort; capture failures never alter agent behavior.
+    try {
+      const capture = captureToolDecisionsFromStream({
+        eventStreamPath,
+        repoDir: options.repoDir,
+        provider: model.provider,
+      });
+      if (!capture.ok) {
+        console.warn(`tool-decision capture skipped: ${capture.reason ?? 'unknown'}`);
+      }
+    } catch (error) {
+      console.warn(`tool-decision capture failed: ${(error as Error).message}`);
+    }
 
     return {
       planPath,

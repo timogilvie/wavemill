@@ -16,6 +16,8 @@ import {
   capOpenRouterMaxTokensForBalance,
 } from './openrouter-credits-guard.ts';
 import { TranscriptWriter, type TranscriptEvent, type TranscriptToolResult } from './transcript.ts';
+import { SessionStreamWriter, resolveSessionEventStreamPath } from './session-stream.ts';
+import { captureToolDecisionsFromStream } from './tool-decision-capture.ts';
 import {
   buildNativeProviderResolutionFailureMessage,
   getNativeProviderApiKey,
@@ -623,6 +625,37 @@ export async function runNativeReview(
   });
   const transcriptEvents: TranscriptEvent[] = [];
 
+  // Native review canonical session-event stream (HOK-2076). One JSONL per
+  // review session; feeds the tool-decision corpus after the loop finishes.
+  // Best-effort: any writer failure warns but never blocks review.
+  const reviewEventStreamPath = resolveSessionEventStreamPath(sessionId, repoDir);
+  let reviewSessionStreamWriter: SessionStreamWriter | undefined;
+  try {
+    reviewSessionStreamWriter = new SessionStreamWriter({
+      sessionId,
+      traceId: process.env.WAVEMILL_SESSION || sessionId,
+      phase: 'review',
+      path: reviewEventStreamPath,
+    }, repoDir);
+    reviewSessionStreamWriter.writeSessionStarted({
+      initialConfigDigest: `model:${provider.entry.providerName}:${provider.entry.modelId}`,
+    });
+  } catch (error) {
+    console.warn(`Failed to init review session stream: ${(error as Error).message}`);
+    reviewSessionStreamWriter = undefined;
+  }
+  const reviewSessionStreamConfig = reviewSessionStreamWriter
+    ? {
+        sessionId,
+        traceId: process.env.WAVEMILL_SESSION || sessionId,
+        phase: 'review' as const,
+        eventStreamPath: reviewEventStreamPath,
+        repoDir,
+        initialConfigDigest: `model:${provider.entry.providerName}:${provider.entry.modelId}`,
+        writerInstance: reviewSessionStreamWriter,
+      }
+    : undefined;
+
   // Record the typed native stage-failure envelope for a terminal review
   // attempt (HOK-3064) as soon as the cause is known and BEFORE cleanup can
   // erase process/session context. Gated on `featureDir` (same gate as
@@ -753,6 +786,7 @@ export async function runNativeReview(
       terminalSynthesis: {
         prompt: REVIEW_FINAL_SYNTHESIS_PROMPT,
       },
+      ...(reviewSessionStreamConfig ? { sessionStreamConfig: reviewSessionStreamConfig } : {}),
     });
   } catch (error) {
     if (error instanceof ContextExhaustedError) {
@@ -764,6 +798,32 @@ export async function runNativeReview(
       return nativeReviewFailure(context, 'native-context-window-exceeded', error.message, [], substantiveAnalysisIdentity);
     }
     throw error;
+  } finally {
+    // Close review session stream and project into corpus (HOK-2076). Best-effort.
+    try {
+      reviewSessionStreamWriter?.writeSessionEnded({
+        stopReason: loopResult?.stopReason ?? 'error',
+        totalTurns: loopResult?.turnsCompleted ?? 0,
+        totalToolCalls: loopResult?.toolCallsExecuted ?? 0,
+        ...(loopResult
+          ? { totalTokens: (loopResult.totalInputTokens ?? 0) + (loopResult.totalOutputTokens ?? 0) }
+          : {}),
+      });
+    } catch (error) {
+      console.warn(`Failed to write review session_ended event: ${(error as Error).message}`);
+    }
+    try {
+      const capture = captureToolDecisionsFromStream({
+        eventStreamPath: reviewEventStreamPath,
+        repoDir,
+        provider: provider.entry.providerName,
+      });
+      if (!capture.ok) {
+        console.warn(`tool-decision capture skipped (review): ${capture.reason ?? 'unknown'}`);
+      }
+    } catch (error) {
+      console.warn(`tool-decision capture failed (review): ${(error as Error).message}`);
+    }
   }
 
   const deniedTools = nativeReviewDeps.extractDeniedTools(transcriptEvents);
