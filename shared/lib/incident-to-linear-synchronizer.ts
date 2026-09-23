@@ -9,6 +9,7 @@ import {
   getProjects,
   getTeams,
   searchIssues,
+  updateIssue,
   type LinearIssue,
   type LinearIssueSummary,
   type LinearLabel,
@@ -51,6 +52,21 @@ export interface ObserverLinearShadowConfig {
   maxLookupsPerPass: number;
 }
 
+export interface ObserverLinearLifecyclePolicy {
+  /** Auto-resolution by absence: comment only by default. */
+  autoResolvedComment: boolean;
+  autoResolvedCloseState?: string;
+  /** Operator resolution: optionally move to completed state. */
+  operatorResolvedComment: boolean;
+  operatorResolvedCloseState?: string;
+  /** Operator archival: comment and optionally close. */
+  operatorArchivedComment: boolean;
+  operatorArchivedCloseState?: string;
+  /** Recurrence: reopen only Observer-owned auto-closed issues. */
+  recurrenceComment: boolean;
+  recurrenceReopenState?: string;
+}
+
 export interface ObserverLinearConfig {
   enabled: boolean;
   detectionOnly: boolean;
@@ -67,6 +83,7 @@ export interface ObserverLinearConfig {
   policies: Record<IncidentCategory, IncidentClassPolicy>;
   redaction: IncidentLinearRedactionConfig;
   shadow: ObserverLinearShadowConfig;
+  lifecycle?: ObserverLinearLifecyclePolicy;
 }
 
 export type SyncAction =
@@ -135,8 +152,10 @@ export interface SyncResult {
 export interface IncidentLinearRetryEnqueuer {
   enqueueIncidentSync(input: {
     incidentFingerprint: string;
-    linearAction: 'create' | 'update_comment';
+    linearAction: 'create' | 'update_comment' | 'lifecycle_comment' | 'lifecycle_state';
     linearIssueId?: string;
+    lifecycleRevision?: string;
+    lifecycleSubstep?: 'comment' | 'state';
     lastError: ReturnType<typeof classifyLinearError>;
     now?: Date;
   }): Promise<{ nextRetryAt: string }> | { nextRetryAt: string };
@@ -151,6 +170,7 @@ export interface IncidentLinearClient {
   createComment: typeof createComment;
   getOrCreateLabel: typeof getOrCreateLabel;
   addLabelsToIssue: typeof addLabelsToIssue;
+  updateIssue?: typeof import('./linear.ts').updateIssue;
 }
 
 export interface SyncIncidentOptions {
@@ -186,6 +206,7 @@ const DEFAULT_CLIENT: IncidentLinearClient = {
   createComment,
   getOrCreateLabel,
   addLabelsToIssue,
+  updateIssue,
 };
 
 const CLASS_LABEL_PREFIX = 'incident:class:';
@@ -233,6 +254,12 @@ export const DEFAULT_INCIDENT_LINEAR_CONFIG: ObserverLinearConfig = {
     maxEntries: 500,
     maxAgeDays: 14,
     maxLookupsPerPass: 40,
+  },
+  lifecycle: {
+    autoResolvedComment: true,
+    operatorResolvedComment: true,
+    operatorArchivedComment: true,
+    recurrenceComment: true,
   },
 };
 
@@ -1049,10 +1076,222 @@ function withRequestPacing(client: IncidentLinearClient, config: ObserverLinearC
       await pace();
       return client.addLabelsToIssue(...args);
     },
+    updateIssue: client.updateIssue ? async (...args) => {
+      await pace();
+      return client.updateIssue!(...args);
+    } : undefined,
   };
 }
 
 function sleep(ms: number): Promise<void> {
   if (ms <= 0) return Promise.resolve();
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Generate lifecycle transition comment for resolution, archival, or recurrence.
+ */
+export function generateLifecycleComment(incident: IncidentRecord): string | null {
+  const { lifecycle, metadata } = incident;
+
+  if (lifecycle === 'resolved' && metadata?.resolution) {
+    const { action, at, reason } = metadata.resolution;
+    if (action === 'auto_resolved') {
+      return `**Incident auto-resolved**\n\nThis incident was automatically resolved at ${at} because it was not re-observed for multiple consecutive observer cycles.\n\n${reason ? `Reason: ${reason}` : ''}`;
+    } else if (action === 'operator_resolved') {
+      return `**Incident resolved by operator**\n\nThis incident was manually resolved at ${at}.${reason ? `\n\nReason: ${reason}` : ''}`;
+    }
+  }
+
+  if (lifecycle === 'archived' && metadata?.resolution?.action === 'operator_archived') {
+    const { at, reason } = metadata.resolution;
+    return `**Incident archived**\n\nThis incident was archived at ${at}.${reason ? `\n\nReason: ${reason}` : ''}`;
+  }
+
+  if (metadata?.recurrence) {
+    const { count, lastRecurredAt, reopenedFrom } = metadata.recurrence;
+    return `**Incident recurred**\n\nThis incident has recurred at ${lastRecurredAt}. Previous state: ${reopenedFrom}. Total recurrence count: ${count}.`;
+  }
+
+  return null;
+}
+
+export interface SyncLifecycleOptions {
+  incident: IncidentRecord;
+  store: IncidentStore;
+  config: ObserverLinearConfig;
+  now?: Date;
+  client?: IncidentLinearClient;
+  retryQueue?: IncidentLinearRetryEnqueuer;
+  audit?: (message: string, fields?: Record<string, unknown>) => void;
+  repoDir?: string;
+  reconciler?: (incident: IncidentRecord, repoDir: string) => IncidentFilingReconciliation;
+  shadow?: boolean;
+}
+
+export interface SyncLifecycleResult {
+  fingerprint: string;
+  action: 'lifecycle_sync' | 'no_op' | 'skip' | 'failed';
+  status: 'synced' | 'skipped' | 'queued' | 'failed';
+  lifecycleRevision: string;
+  commentPosted?: boolean;
+  stateChanged?: boolean;
+  reason?: string;
+  dryRun?: boolean;
+}
+
+/**
+ * Synchronize lifecycle transitions (resolution, archival, recurrence) to Linear.
+ * Comment-only by default; state changes are opt-in via config.
+ */
+export async function syncLifecycle(options: SyncLifecycleOptions): Promise<SyncLifecycleResult> {
+  const { incident, store, config, now = new Date(), shadow = false } = options;
+  const baseClient = options.client ?? DEFAULT_CLIENT;
+  const pacedClient = withRequestPacing(baseClient, config);
+  const audit = options.audit ?? (() => {});
+  const repoDir = options.repoDir ?? process.cwd();
+  const reconciler = options.reconciler ?? reconcileIncidentForFiling;
+
+  const lifecycleRevision = store.computeLifecycleRevision(incident);
+  const baseResult = { fingerprint: incident.fingerprint, lifecycleRevision, dryRun: shadow };
+
+  // Must be linked to Linear
+  if (!incident.metadata?.linkedLinearId) {
+    return { ...baseResult, action: 'skip', status: 'skipped', reason: 'not linked to Linear' };
+  }
+
+  // Check if lifecycle was already synced
+  const lastSynced = incident.metadata?.lastSyncedLifecycle;
+  if (lastSynced?.revision === lifecycleRevision && lastSynced.commentPosted) {
+    return { ...baseResult, action: 'no_op', status: 'skipped', reason: 'lifecycle already synced' };
+  }
+
+  // Reconciliation gate: suppress lifecycle sync if incident is recovered or superseded
+  const reconciliation = reconciler(incident, repoDir);
+  if (reconciliation.verdict === 'recovered' || reconciliation.verdict === 'superseded') {
+    return { ...baseResult, action: 'skip', status: 'skipped', reason: `reconciliation: ${reconciliation.verdict}` };
+  }
+
+  // Lifecycle policy
+  const lifecyclePolicy = config.lifecycle ?? DEFAULT_INCIDENT_LINEAR_CONFIG.lifecycle!;
+  const comment = generateLifecycleComment(incident);
+  if (!comment) {
+    return { ...baseResult, action: 'skip', status: 'skipped', reason: 'no lifecycle transition to sync' };
+  }
+
+  // Determine required actions based on lifecycle and policy
+  const needsComment = !lastSynced?.commentPosted;
+  let needsStateChange = false;
+  let targetStateId: string | undefined;
+
+  if (incident.lifecycle === 'resolved' && incident.metadata?.resolution) {
+    const { action } = incident.metadata.resolution;
+    if (action === 'auto_resolved' && lifecyclePolicy.autoResolvedCloseState) {
+      needsStateChange = !lastSynced?.stateChanged;
+      targetStateId = lifecyclePolicy.autoResolvedCloseState;
+    } else if (action === 'operator_resolved' && lifecyclePolicy.operatorResolvedCloseState) {
+      needsStateChange = !lastSynced?.stateChanged;
+      targetStateId = lifecyclePolicy.operatorResolvedCloseState;
+    }
+  } else if (incident.lifecycle === 'archived' && incident.metadata?.resolution?.action === 'operator_archived') {
+    if (lifecyclePolicy.operatorArchivedCloseState) {
+      needsStateChange = !lastSynced?.stateChanged;
+      targetStateId = lifecyclePolicy.operatorArchivedCloseState;
+    }
+  } else if (incident.metadata?.recurrence && lifecyclePolicy.recurrenceReopenState) {
+    // Recurrence: only reopen if Observer previously auto-closed the issue
+    if (lastSynced?.stateChanged && lastSynced.observerStateId) {
+      needsStateChange = true;
+      targetStateId = lifecyclePolicy.recurrenceReopenState;
+    }
+  }
+
+  // Shadow mode: plan only
+  if (shadow || config.mode === 'shadow') {
+    return {
+      ...baseResult,
+      action: 'lifecycle_sync',
+      status: 'skipped',
+      commentPosted: needsComment,
+      stateChanged: needsStateChange,
+      reason: `shadow: would ${needsComment ? 'comment' : ''}${needsComment && needsStateChange ? ' and ' : ''}${needsStateChange ? `change state to ${targetStateId}` : ''}`,
+    };
+  }
+
+  const issueId = incident.metadata.linkedLinearId;
+
+  // Execute lifecycle sync
+  try {
+    // Post comment if needed
+    if (needsComment) {
+      try {
+        await pacedClient.createComment(issueId, comment);
+        await store.recordLifecycleSubstep(incident.fingerprint, {
+          lifecycleRevision,
+          commentPosted: true,
+          at: now.toISOString(),
+        });
+        audit('lifecycle_comment_posted', { fingerprint: incident.fingerprint, issueId });
+      } catch (error) {
+        const classified = classifyLinearError(error);
+        if (options.retryQueue && classified.isRetryable) {
+          options.retryQueue.enqueueIncidentSync({
+            incidentFingerprint: incident.fingerprint,
+            linearAction: 'lifecycle_comment',
+            linearIssueId: issueId,
+            lifecycleRevision,
+            lifecycleSubstep: 'comment',
+            lastError: classified,
+            now,
+          });
+          return { ...baseResult, action: 'lifecycle_sync', status: 'queued', reason: 'comment failed, queued for retry' };
+        }
+        throw error;
+      }
+    }
+
+    // Change state if needed
+    if (needsStateChange && targetStateId && pacedClient.updateIssue) {
+      try {
+        await pacedClient.updateIssue(issueId, { stateId: targetStateId });
+        await store.recordLifecycleSubstep(incident.fingerprint, {
+          lifecycleRevision,
+          stateChanged: true,
+          observerStateId: targetStateId,
+          at: now.toISOString(),
+        });
+        audit('lifecycle_state_changed', { fingerprint: incident.fingerprint, issueId, targetStateId });
+      } catch (error) {
+        const classified = classifyLinearError(error);
+        if (options.retryQueue && classified.isRetryable) {
+          options.retryQueue.enqueueIncidentSync({
+            incidentFingerprint: incident.fingerprint,
+            linearAction: 'lifecycle_state',
+            linearIssueId: issueId,
+            lifecycleRevision,
+            lifecycleSubstep: 'state',
+            lastError: classified,
+            now,
+          });
+          return { ...baseResult, action: 'lifecycle_sync', status: 'queued', reason: 'state change failed, queued for retry' };
+        }
+        throw error;
+      }
+    }
+
+    return {
+      ...baseResult,
+      action: 'lifecycle_sync',
+      status: 'synced',
+      commentPosted: needsComment,
+      stateChanged: needsStateChange,
+    };
+  } catch (error) {
+    await store.recordSyncError(incident.fingerprint, {
+      action: 'lifecycle_sync',
+      message: error instanceof Error ? error.message : String(error),
+      category: 'lifecycle',
+    });
+    return { ...baseResult, action: 'failed', status: 'failed', reason: error instanceof Error ? error.message : String(error) };
+  }
 }

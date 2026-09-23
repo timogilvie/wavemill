@@ -13,14 +13,20 @@ export interface IncidentRetryErrorSnapshot extends ClassifiedLinearError {
   error: string;
 }
 
+export type LinearRetryAction = 'create' | 'update_comment' | 'lifecycle_comment' | 'lifecycle_state';
+
 export interface PendingIncidentRetryRecord {
   schemaVersion: '1.0';
   recordType: 'pending';
   id: string;
   enqueuedAt: string;
   incidentFingerprint: string;
-  linearAction: 'create' | 'update_comment';
+  linearAction: LinearRetryAction;
   linearIssueId?: string;
+  /** For lifecycle actions: stable transition revision being synced. */
+  lifecycleRevision?: string;
+  /** For lifecycle actions: which substep is being retried. */
+  lifecycleSubstep?: 'comment' | 'state';
   attempts: number;
   nextRetryAt: string;
   lastError: IncidentRetryErrorSnapshot;
@@ -39,8 +45,10 @@ export interface PermanentlyFailedIncidentRetryRecord {
   id: string;
   failedAt: string;
   incidentFingerprint: string;
-  linearAction: 'create' | 'update_comment';
+  linearAction: LinearRetryAction;
   linearIssueId?: string;
+  lifecycleRevision?: string;
+  lifecycleSubstep?: 'comment' | 'state';
   attempts: number;
   lastError: IncidentRetryErrorSnapshot;
 }
@@ -51,8 +59,10 @@ export interface EnqueueIncidentSyncInput {
   repoDir?: string;
   queuePath?: string;
   incidentFingerprint: string;
-  linearAction: 'create' | 'update_comment';
+  linearAction: LinearRetryAction;
   linearIssueId?: string;
+  lifecycleRevision?: string;
+  lifecycleSubstep?: 'comment' | 'state';
   attempts?: number;
   lastError: ClassifiedLinearError;
   now?: Date;
@@ -141,7 +151,9 @@ export function enqueueIncidentSync(input: EnqueueIncidentSyncInput): PendingInc
       record.recordType === 'pending'
       && record.incidentFingerprint === input.incidentFingerprint
       && record.linearAction === input.linearAction
-      && (record.linearIssueId ?? '') === (input.linearIssueId ?? ''),
+      && (record.linearIssueId ?? '') === (input.linearIssueId ?? '')
+      && (record.lifecycleRevision ?? '') === (input.lifecycleRevision ?? '')
+      && (record.lifecycleSubstep ?? '') === (input.lifecycleSubstep ?? ''),
     );
   const attempts = input.attempts ?? existing?.attempts ?? 1;
   const record: PendingIncidentRetryRecord = {
@@ -152,6 +164,8 @@ export function enqueueIncidentSync(input: EnqueueIncidentSyncInput): PendingInc
     incidentFingerprint: input.incidentFingerprint,
     linearAction: input.linearAction,
     linearIssueId: input.linearIssueId,
+    lifecycleRevision: input.lifecycleRevision,
+    lifecycleSubstep: input.lifecycleSubstep,
     attempts,
     nextRetryAt: toIso(new Date(now.getTime() + computeIncidentBackoffMs(attempts))),
     lastError: toSnapshot(input.lastError),

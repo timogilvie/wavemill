@@ -208,6 +208,19 @@ export interface IncidentEvidence {
   key?: string;
 }
 
+export interface LifecycleSyncMetadata {
+  /** Stable lifecycle transition revision (hash of lifecycle + resolution + recurrence). */
+  revision: string;
+  /** When this lifecycle transition was synced to Linear. */
+  at: string;
+  /** Whether resolution/archival/recurrence comment was posted. */
+  commentPosted?: boolean;
+  /** Whether Linear issue state was changed (Observer-owned state mutation). */
+  stateChanged?: boolean;
+  /** Observer-owned state ID when stateChanged=true (for recurrence reopening eligibility). */
+  observerStateId?: string;
+}
+
 export interface IncidentMetadata {
   thresholdTriggered?: boolean;
   cooldownExpiresAt?: string;
@@ -232,6 +245,8 @@ export interface IncidentMetadata {
     message: string;
     retryQueued?: boolean;
   }>;
+  /** Lifecycle transition sync metadata for exactly-once resolution/recurrence behavior. */
+  lastSyncedLifecycle?: LifecycleSyncMetadata;
   /** Explicit issue identifiers supplied by the incident detector for correlation. */
   knownIssueIds?: string[];
   /** Stable keys of distinct source events already counted, capped; polling an unchanged event is a no-op. */

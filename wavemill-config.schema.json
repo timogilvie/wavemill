@@ -478,6 +478,49 @@
                                 "markFormat": { "type": "string", "default": "[REDACTED: {type}]" }
                             },
                             "additionalProperties": false
+                        },
+                        "lifecycle": {
+                            "type": "object",
+                            "description": "Conservative lifecycle transition synchronization policy. Comment-only by default; state changes are opt-in.",
+                            "properties": {
+                                "autoResolvedComment": {
+                                    "type": "boolean",
+                                    "default": true,
+                                    "description": "Add a comment when an incident auto-resolves by absence."
+                                },
+                                "autoResolvedCloseState": {
+                                    "type": "string",
+                                    "description": "Optional Linear state name/ID to close auto-resolved incidents. Leave undefined for comment-only."
+                                },
+                                "operatorResolvedComment": {
+                                    "type": "boolean",
+                                    "default": true,
+                                    "description": "Add a comment when an operator explicitly resolves an incident."
+                                },
+                                "operatorResolvedCloseState": {
+                                    "type": "string",
+                                    "description": "Optional Linear state name/ID to close operator-resolved incidents. Leave undefined for comment-only."
+                                },
+                                "operatorArchivedComment": {
+                                    "type": "boolean",
+                                    "default": true,
+                                    "description": "Add a comment when an operator archives an incident."
+                                },
+                                "operatorArchivedCloseState": {
+                                    "type": "string",
+                                    "description": "Optional Linear state name/ID to close archived incidents. Leave undefined for comment-only."
+                                },
+                                "recurrenceComment": {
+                                    "type": "boolean",
+                                    "default": true,
+                                    "description": "Add a comment when a resolved incident recurs."
+                                },
+                                "recurrenceReopenState": {
+                                    "type": "string",
+                                    "description": "Optional Linear state name/ID to reopen recurred incidents that Observer previously auto-closed. Leave undefined to skip reopening."
+                                }
+                            },
+                            "additionalProperties": false
                         }
                     },
                     "additionalProperties": false

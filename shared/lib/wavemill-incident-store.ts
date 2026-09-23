@@ -363,6 +363,27 @@ export class IncidentStore {
     })).digest('hex');
   }
 
+  /**
+   * Compute stable lifecycle transition revision from lifecycle, resolution, and recurrence.
+   * Changes only when the incident's lifecycle state or transition metadata changes.
+   */
+  computeLifecycleRevision(incident: Pick<IncidentRecord, 'lifecycle' | 'metadata'>): string {
+    const normalized = {
+      lifecycle: incident.lifecycle,
+      resolution: incident.metadata?.resolution ? {
+        action: incident.metadata.resolution.action,
+        at: incident.metadata.resolution.at,
+        reason: incident.metadata.resolution.reason ?? null,
+      } : null,
+      recurrence: incident.metadata?.recurrence ? {
+        count: incident.metadata.recurrence.count,
+        lastRecurredAt: incident.metadata.recurrence.lastRecurredAt,
+        reopenedFrom: incident.metadata.recurrence.reopenedFrom,
+      } : null,
+    };
+    return createHash('sha256').update(JSON.stringify(normalized)).digest('hex');
+  }
+
   async getIncident(fingerprint: string): Promise<IncidentRecord | null> {
     const index = this.readIndex(join(this.incidentsDir, 'index.json'));
     return index[fingerprint] ?? null;
@@ -411,6 +432,64 @@ export class IncidentStore {
             message: input.message,
             retryQueued: input.retryQueued,
           }].slice(-5),
+        },
+      };
+      index[fingerprint] = updated;
+      return index;
+    });
+    return updated;
+  }
+
+  /**
+   * Select linked incidents whose lifecycle transition has not been synced.
+   * Returns records that have a linkedLinearId and whose current lifecycle revision
+   * differs from lastSyncedLifecycle.revision (or have no lastSyncedLifecycle).
+   */
+  async getIncidentsWithUnsyncedLifecycle(): Promise<IncidentRecord[]> {
+    const index = this.readIndex(join(this.incidentsDir, 'index.json'));
+    return Object.values(index)
+      .filter((record) => {
+        if (!record.metadata?.linkedLinearId) return false;
+        const currentRevision = this.computeLifecycleRevision(record);
+        const lastSyncedRevision = record.metadata?.lastSyncedLifecycle?.revision;
+        return currentRevision !== lastSyncedRevision;
+      })
+      .sort((a, b) => Date.parse(b.lastObservedAt) - Date.parse(a.lastObservedAt));
+  }
+
+  /**
+   * Mark a lifecycle sync substep (comment or state change) as complete.
+   * This enables idempotent retry: if comment succeeds but state fails,
+   * replay will skip the comment.
+   */
+  async recordLifecycleSubstep(
+    fingerprint: string,
+    input: {
+      lifecycleRevision: string;
+      commentPosted?: boolean;
+      stateChanged?: boolean;
+      observerStateId?: string;
+      at?: string;
+    },
+  ): Promise<IncidentRecord | null> {
+    const indexPath = join(this.incidentsDir, 'index.json');
+    let updated: IncidentRecord | null = null;
+    await this.mutateIndex(indexPath, (index) => {
+      const existing = index[fingerprint];
+      if (!existing) return index;
+      const current = existing.metadata?.lastSyncedLifecycle;
+      const isNewRevision = !current || current.revision !== input.lifecycleRevision;
+      updated = {
+        ...existing,
+        metadata: {
+          ...(existing.metadata ?? {}),
+          lastSyncedLifecycle: {
+            revision: input.lifecycleRevision,
+            at: input.at ?? this.now().toISOString(),
+            commentPosted: input.commentPosted ?? (isNewRevision ? false : current?.commentPosted ?? false),
+            stateChanged: input.stateChanged ?? (isNewRevision ? false : current?.stateChanged ?? false),
+            observerStateId: input.observerStateId ?? (isNewRevision ? undefined : current?.observerStateId),
+          },
         },
       };
       index[fingerprint] = updated;
@@ -572,6 +651,7 @@ export class IncidentStore {
       linkedLinearUrl: storedMetadata?.linkedLinearUrl,
       lastSyncedAt: storedMetadata?.lastSyncedAt,
       lastSyncedEvidenceRevision: storedMetadata?.lastSyncedEvidenceRevision,
+      lastSyncedLifecycle: storedMetadata?.lastSyncedLifecycle,
       syncCooldownUntil: storedMetadata?.syncCooldownUntil,
       updateCount: storedMetadata?.updateCount,
       syncErrors: storedMetadata?.syncErrors,
@@ -628,6 +708,10 @@ export class IncidentStore {
       ...(Array.isArray(a.seenEventKeys) ? a.seenEventKeys : []),
       ...(Array.isArray(b.seenEventKeys) ? b.seenEventKeys : []),
     ])].slice(-MAX_SEEN_EVENT_KEYS);
+    // Lifecycle sync metadata: preserve the most recent
+    const lastSyncedLifecycle = a.lastSyncedLifecycle?.at && laterIso(a.lastSyncedLifecycle.at, b.lastSyncedLifecycle?.at) === a.lastSyncedLifecycle.at
+      ? a.lastSyncedLifecycle
+      : b.lastSyncedLifecycle ?? a.lastSyncedLifecycle;
     return {
       ...a,
       ...b,
@@ -637,6 +721,7 @@ export class IncidentStore {
       lastSyncedEvidenceRevision: a.lastSyncedAt && laterIso(a.lastSyncedAt, b.lastSyncedAt) === a.lastSyncedAt
         ? a.lastSyncedEvidenceRevision
         : b.lastSyncedEvidenceRevision ?? a.lastSyncedEvidenceRevision,
+      lastSyncedLifecycle,
       syncCooldownUntil: laterIso(a.syncCooldownUntil, b.syncCooldownUntil),
       updateCount: Number(a.updateCount ?? 0) + Number(b.updateCount ?? 0),
       syncErrors,

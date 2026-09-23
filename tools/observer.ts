@@ -9,7 +9,7 @@ import { getIncidentConfig, getMillConfig, getObserverLinearConfig, type Observe
 import { detectIncidentsForRepo, detectIncidentsForTask, type TendCandidateDiagnostic } from '../shared/lib/wavemill-incident-detector.ts';
 import { IncidentStore } from '../shared/lib/wavemill-incident-store.ts';
 import { createIncidentDraft, type IncidentRecord, type IncidentRootCauseClass } from '../shared/lib/wavemill-incident-model.ts';
-import { createLookupBudget, syncIncident, type SyncResult } from '../shared/lib/incident-to-linear-synchronizer.ts';
+import { createLookupBudget, syncIncident, syncLifecycle, type SyncResult, type SyncLifecycleResult } from '../shared/lib/incident-to-linear-synchronizer.ts';
 import {
   appendShadowRecord,
   buildShadowAuditRecord,
@@ -248,6 +248,9 @@ interface IncidentSyncSnapshot {
   retryProcessed: number;
   retrySucceeded: number;
   retryFailed: number;
+  lifecycleSynced: number;
+  lifecycleFailed: number;
+  lifecycleSkipped: number;
   results: SyncResult[];
   errors: Array<{ fingerprint: string; action: string; reason: string; nextRetry?: string }>;
   shadow?: IncidentSyncShadowSnapshot;
@@ -3153,6 +3156,9 @@ function emptyIncidentSyncSnapshot(mode?: IncidentSyncSnapshot['mode']): Inciden
     retryProcessed: 0,
     retrySucceeded: 0,
     retryFailed: 0,
+    lifecycleSynced: 0,
+    lifecycleFailed: 0,
+    lifecycleSkipped: 0,
     results: [],
     errors: [],
   };
@@ -3394,6 +3400,53 @@ export async function syncIncidentsToLinear(snapshot: ObserverSnapshot, options:
         });
       }
     }
+
+    // Lifecycle sync: synchronize resolved/archived/recurred transitions to Linear
+    if (!config.detectionOnly && !shadowMode) {
+      const lifecycleIncidents = await store.getIncidentsWithUnsyncedLifecycle();
+      const lifecycleCap = bypassCap ? lifecycleIncidents.length : Math.min(lifecycleIncidents.length, config.maxIncidentsPerPass);
+      for (const incident of lifecycleIncidents.slice(0, lifecycleCap)) {
+        try {
+          const result = await syncLifecycle({
+            incident,
+            store,
+            config,
+            now: new Date(snapshot.timestamp),
+            retryQueue: {
+              enqueueIncidentSync: (input) => enqueueIncidentSync({
+                repoDir: repo.repoDir,
+                queuePath: config.retryQueuePath,
+                incidentFingerprint: input.incidentFingerprint,
+                linearAction: input.linearAction,
+                linearIssueId: input.linearIssueId,
+                lifecycleRevision: input.lifecycleRevision,
+                lifecycleSubstep: input.lifecycleSubstep,
+                lastError: input.lastError,
+                now: input.now,
+              }),
+            },
+            repoDir: repo.repoDir,
+          });
+          if (result.status === 'synced') {
+            summary.lifecycleSynced += 1;
+          } else if (result.status === 'failed') {
+            summary.lifecycleFailed += 1;
+          } else {
+            summary.lifecycleSkipped += 1;
+          }
+        } catch (error) {
+          summary.lifecycleFailed += 1;
+          summary.errors.push({
+            fingerprint: incident.fingerprint,
+            action: 'lifecycle_sync',
+            reason: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      if (!bypassCap && lifecycleIncidents.length > lifecycleCap) {
+        summary.lifecycleSkipped += lifecycleIncidents.length - lifecycleCap;
+      }
+    }
   }
   return { ...snapshot, incidentSync: summary };
 }
@@ -3573,6 +3626,9 @@ function renderSummary(snapshot: ObserverSnapshot): string {
     const sync = snapshot.incidentSync;
     lines.push('');
     lines.push(`Incident Linear sync${sync.mode ? ` (mode=${sync.mode})` : ''}: processed=${sync.totalProcessed} created=${sync.created} updated=${sync.updated} queued=${sync.queued} skipped=${sync.skipped} failed=${sync.failed}`);
+    if (sync.lifecycleSynced > 0 || sync.lifecycleFailed > 0 || sync.lifecycleSkipped > 0) {
+      lines.push(`Incident lifecycle sync: synced=${sync.lifecycleSynced} failed=${sync.lifecycleFailed} skipped=${sync.lifecycleSkipped}`);
+    }
     if (sync.retryProcessed > 0) {
       lines.push(`Incident retry queue: processed=${sync.retryProcessed} succeeded=${sync.retrySucceeded} failed=${sync.retryFailed}`);
     }
