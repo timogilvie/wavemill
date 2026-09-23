@@ -58,6 +58,9 @@ export interface GitEvidence {
   patchUniqueCount: number | null;
   patchEquivalentCount: number | null;
   patchError?: string;
+  worktreeIdentity?: string;
+  verifiedTopLevel?: string;
+  classifierVerdict?: string;
 }
 
 export type TerminalInboxStatus =
@@ -93,9 +96,27 @@ export interface TerminalInboxDecision {
   intendedActions: string[];
 }
 
+export interface ClassifyRequest {
+  worktreeDir?: string;
+  taskBranch: string;
+  baseBranch: string;
+  issue?: string;
+  pr?: string;
+}
+
+export interface ClassifyEvidence {
+  classification: string;
+  verificationReason: string;
+  worktreeIdentity: string;
+  verifiedTopLevel: string;
+  cleanupAuthority: string;
+  patchEquivalenceScope: string;
+}
+
 export interface CleanupDeps {
   git(args: string[], cwd: string): string;
   gh(args: string[], cwd: string): string;
+  classify?(request: ClassifyRequest, repoDir: string): ClassifyEvidence;
   cleanup(decision: TerminalInboxDecision, context: CleanupExecuteContext): void;
   now(): string;
 }
@@ -130,6 +151,34 @@ export const defaultCleanupDeps: CleanupDeps = {
   },
   gh(args, cwd) {
     return execFileSync('gh', args, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+  },
+  classify(request, repoDir) {
+    try {
+      const script = [
+        'set -euo pipefail',
+        `source "${join(repoDir, 'shared/lib/wavemill-common.sh').replace(/"/g, '\\"')}"`,
+        `wavemill_classify_task_cleanup "${(request.worktreeDir || '').replace(/"/g, '\\"')}" "${request.taskBranch.replace(/"/g, '\\"')}" "${request.baseBranch.replace(/"/g, '\\"')}" "classify" "${(request.issue || '').replace(/"/g, '\\"')}" "${(request.pr || '').replace(/"/g, '\\"')}"`,
+      ].join('\n');
+      const env = {
+        ...process.env,
+        REPO_DIR: repoDir,
+        STATE_FILE: statePath(repoDir),
+        BASE_BRANCH: request.baseBranch,
+        WORKTREE_ROOT: request.worktreeDir ? dirname(request.worktreeDir) : dirname(repoDir),
+      };
+      const output = execFileSync('bash', ['-lc', script], { cwd: repoDir, env, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+      const evidence = JSON.parse(output.trim()) as ClassifyEvidence;
+      return evidence;
+    } catch (error) {
+      return {
+        classification: 'retain_unverifiable',
+        verificationReason: 'classifier_unavailable',
+        worktreeIdentity: '',
+        verifiedTopLevel: '',
+        cleanupAuthority: '',
+        patchEquivalenceScope: '',
+      };
+    }
   },
   cleanup(decision, context) {
     const script = [

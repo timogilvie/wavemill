@@ -949,6 +949,28 @@ challenge_selection_health_release() {
   ) >/dev/null 2>&1 || true
 }
 
+# Record a terminal review-timeout outcome for a challenge arm that resolves
+# WITHOUT a challenge_abort_pair (HOK-3064). Primary-side review-timeout
+# exhaustion never aborts the pair, so its terminal outcome would otherwise
+# never reach recordSelectionOutcome and the timed-out reviewer identity would
+# stay immediately reselectable. Best-effort. Challenger arms record via
+# challenge_abort_pair → record-arm-failure.ts instead; calling both would
+# double-count the provider/model circuit window.
+challenge_selection_health_record_review_timeout() {
+  local pair_id="${1:-}" model="${2:-}"
+  [[ -n "$pair_id" && -n "$model" && -n "${REPO_DIR:-}" ]] || return 0
+  [[ -f "$REPO_DIR/tools/challenge-selection-health.ts" ]] || return 0
+  (
+    cd "$REPO_DIR" && npx tsx tools/challenge-selection-health.ts record-outcome \
+      --repo-dir "$REPO_DIR" \
+      --pair-id "$pair_id" \
+      --stage review \
+      --model "$model" \
+      --failure-kind native-review-timeout \
+      --fault-class provider-fault
+  ) >/dev/null 2>&1 || true
+}
+
 write_openrouter_warning_cache() {
   local warning_text="${1:-}"
   local warning_file="/tmp/${SESSION}-openrouter-warning.txt"
@@ -5291,6 +5313,22 @@ native_coding_failure_handoff_reason() {
   npx tsx "$TOOLS_DIR/read-coding-failure-handoff.ts" "$handoff_file" 2>/dev/null
 }
 
+# Read typed evidence from a native stage-failure envelope (HOK-3064), if
+# present. Prints one JSON line
+#   {"failureKind":…,"cause":…,"stage":…,"provider":…,"model":…,"agent":…}
+# on stdout; returns non-zero when the envelope is absent, malformed, fails
+# schema validation, or the reader tool cannot run — callers treat every
+# non-zero as "no typed envelope evidence" and fall back to the coding handoff
+# / substring classification path. Defined for every native stage, unlike the
+# coding-only handoff.
+native_stage_failure_envelope_json() {
+  local feature_dir="${1:-}" stage="${2:-}"
+  local envelope_file="$feature_dir/.${stage}-failure-envelope.json"
+  [[ -n "$feature_dir" && -n "$stage" && -f "$envelope_file" ]] || return 1
+  [[ -n "${TOOLS_DIR:-}" ]] || return 1
+  npx tsx "$TOOLS_DIR/read-stage-failure-envelope.ts" "$envelope_file" 2>/dev/null
+}
+
 # Classify a terminal native failure (HOK-2933). Precedence contract:
 #   1. Typed handoff reason (optional 2nd arg, from .coding-failure-handoff.json):
 #      no_completion_artifact / invalid_completion_artifact →
@@ -5358,6 +5396,12 @@ native_terminal_failure_next_action() {
       printf 'top up OpenRouter credits at https://openrouter.ai/credits\n' ;;
     provider-transient-error)
       printf 'transient upstream failure. Start the phase again\n' ;;
+    native-stage-timeout)
+      printf 'the native stage exhausted its wall-clock/turn/tool-call budget (recoverable infrastructure). Relaunch the same pinned reviewer with an escalated timeout\n' ;;
+    policy-denied)
+      printf 'a mutation/network policy rejected the run (harness fault, not a model/provider signal). Review the policy decision before relaunching\n' ;;
+    cancelled)
+      printf 'the run was cancelled by an operator or the orchestrator (not a model/provider signal). Relaunch the phase when ready\n' ;;
     empty-model-turn)
       printf 'relaunch native coding; the runtime exhausted bounded continuation after empty model turns\n' ;;
     tool-use-unsupported)
@@ -5376,6 +5420,7 @@ native_terminal_failure_next_action() {
 emit_native_terminal_failure_attention() {
   local issue="$1" feature_dir="$2" stage="$3" win="$4" win_target="$5" fallback_agent="${6:-}" fallback_model="${7:-}"
   local stage_status detail handoff_reason failure_kind next_action agent model notes artifacts_json is_challenge
+  local envelope_json="" envelope_cause="" envelope_model=""
 
   stage_status="$(read_stage_status "$feature_dir" "$stage")"
   [[ "$stage_status" == "running" ]] || return 1
@@ -5390,13 +5435,30 @@ emit_native_terminal_failure_attention() {
   agent_or_model_is_native_for_recovery "$agent" "$model" "" || return 1
 
   detail="$(native_hook_terminal_failure_detail "$issue")" || return 1
-  # Only the coding stage produces a typed failure handoff; other stages use
-  # the substring/default classification path unchanged.
+  # Envelope-first precedence (HOK-3064): a typed stage-failure envelope (any
+  # stage) supplies the failure kind and canonical provider/model directly, and
+  # substring matching is skipped entirely — exactly the rule the coding handoff
+  # already enjoys. The coding-only handoff, then the substring/default path,
+  # remain the fallback when no valid envelope exists.
   handoff_reason=""
-  if [[ "$stage" == "coding" ]]; then
-    handoff_reason="$(native_coding_failure_handoff_reason "$feature_dir" 2>/dev/null || true)"
+  failure_kind=""
+  envelope_json="$(native_stage_failure_envelope_json "$feature_dir" "$stage" 2>/dev/null || true)"
+  if [[ -n "$envelope_json" ]]; then
+    failure_kind="$(jq -r '.failureKind // empty' <<<"$envelope_json" 2>/dev/null || true)"
+    envelope_cause="$(jq -r '.cause // empty' <<<"$envelope_json" 2>/dev/null || true)"
+    envelope_model="$(jq -r '.model // empty' <<<"$envelope_json" 2>/dev/null || true)"
+    # Prefer the envelope's canonical model over the (possibly empty or derived)
+    # stage-result model when stamping identity onto the abort/stage result.
+    [[ -z "$envelope_model" ]] || model="$envelope_model"
   fi
-  failure_kind="$(native_terminal_failure_kind "$detail" "$handoff_reason")"
+  if [[ -z "$failure_kind" ]]; then
+    # Only the coding stage produces a typed failure handoff; other stages use
+    # the substring/default classification path unchanged.
+    if [[ "$stage" == "coding" ]]; then
+      handoff_reason="$(native_coding_failure_handoff_reason "$feature_dir" 2>/dev/null || true)"
+    fi
+    failure_kind="$(native_terminal_failure_kind "$detail" "$handoff_reason")"
+  fi
   next_action="$(native_terminal_failure_next_action "$failure_kind")"
   if [[ "$failure_kind" == "provider-credit-exhausted" ]]; then
     write_openrouter_warning_cache "OpenRouter credits exhausted: $next_action"
@@ -5404,6 +5466,7 @@ emit_native_terminal_failure_attention() {
 
   notes="Native ${stage} failed (${failure_kind}): ${detail} Next: ${next_action}"
   [[ -z "$handoff_reason" ]] || notes+=" (typed handoff: ${handoff_reason})"
+  [[ -z "$envelope_cause" ]] || notes+=" (typed envelope cause: ${envelope_cause})"
 
   artifacts_json="$(jq -cn \
     --arg paneTarget "$win_target" \
@@ -5455,6 +5518,7 @@ emit_native_terminal_failure_attention() {
 emit_challenge_stage_failure_quarantine() {
   local issue="$1" feature_dir="$2" stage="$3" win="$4"
   local is_challenge existing detail handoff_reason failure_kind next_action model
+  local envelope_json="" envelope_cause="" envelope_model=""
 
   is_challenge="$(get_task_meta "$issue" "challenge" 2>/dev/null || true)"
   [[ "$is_challenge" == "true" ]] || return 1
@@ -5467,18 +5531,33 @@ emit_challenge_stage_failure_quarantine() {
   [[ -n "$detail" ]] || detail="$(stage_result_field "$feature_dir" "$stage" "notes")"
   [[ -n "$detail" ]] || detail="${stage} stage reported failed without detail"
 
-  # Typed handoff evidence (coding stage only) takes precedence over the
-  # substring heuristics; other stages never produce one.
-  handoff_reason=""
-  if [[ "$stage" == "coding" ]]; then
-    handoff_reason="$(native_coding_failure_handoff_reason "$feature_dir" 2>/dev/null || true)"
-  fi
-  failure_kind="$(native_terminal_failure_kind "$detail" "$handoff_reason")"
-  next_action="$(native_terminal_failure_next_action "$failure_kind")"
   model="$(stage_result_field "$feature_dir" "$stage" "model")"
+  # Envelope-first precedence (HOK-3064): a typed stage-failure envelope (any
+  # stage) supplies the failure kind and canonical provider/model, and substring
+  # matching is skipped entirely. The coding-only handoff and the substring
+  # heuristics remain the fallback when no valid envelope exists.
+  handoff_reason=""
+  failure_kind=""
+  envelope_json="$(native_stage_failure_envelope_json "$feature_dir" "$stage" 2>/dev/null || true)"
+  if [[ -n "$envelope_json" ]]; then
+    failure_kind="$(jq -r '.failureKind // empty' <<<"$envelope_json" 2>/dev/null || true)"
+    envelope_cause="$(jq -r '.cause // empty' <<<"$envelope_json" 2>/dev/null || true)"
+    envelope_model="$(jq -r '.model // empty' <<<"$envelope_json" 2>/dev/null || true)"
+    [[ -z "$envelope_model" ]] || model="$envelope_model"
+  fi
+  if [[ -z "$failure_kind" ]]; then
+    # Typed handoff evidence (coding stage only) takes precedence over the
+    # substring heuristics; other stages never produce one.
+    if [[ "$stage" == "coding" ]]; then
+      handoff_reason="$(native_coding_failure_handoff_reason "$feature_dir" 2>/dev/null || true)"
+    fi
+    failure_kind="$(native_terminal_failure_kind "$detail" "$handoff_reason")"
+  fi
+  next_action="$(native_terminal_failure_next_action "$failure_kind")"
   # Preserve the typed reason in the abort record. Appended only after
   # classification so the token never perturbs substring matching.
   [[ -z "$handoff_reason" ]] || detail+=" [typed handoff reason: ${handoff_reason}]"
+  [[ -z "$envelope_cause" ]] || detail+=" [typed envelope cause: ${envelope_cause}]"
 
   challenge_abort_pair "$issue" "$feature_dir" "$win" "$stage" "$model" \
     "terminal_stage_failure:${failure_kind}" "$detail" "$next_action" \
@@ -9085,12 +9164,29 @@ review_recovery_coordinator_locked() {
         failure_reason="Review infrastructure recovery exhausted after $(bounded_retry_count "$feature_dir" "review-infra-recovery") attempt(s) for PR #$pr_number (category=${category}); $(review_infra_recovery_next_action "$category")"
         bounded_retry_mark_exhausted "$feature_dir" "review-infra-recovery" "$failure_reason" || true
         write_ready_attention_file "$feature_dir" "Review failed on infrastructure (${category}) for PR #$pr_number, $(review_infra_recovery_next_action "$category")."
-        if [[ "$category" == "native-review-timeout" && "$(_challenge_side_for_issue "$issue" 2>/dev/null || true)" == "challenger" ]]; then
-          challenge_abort_pair "$issue" "$feature_dir" "" "review" "$reviewer_model" \
-            "review_timeout_exhausted" \
-            "Challenger review timed out after bounded retries for model ${reviewer_model}; attempts=$(bounded_retry_count "$feature_dir" "review-infra-recovery")" \
-            "the challenger forfeits this reviewer-stage challenge, sibling may proceed" \
-            "single" || true
+        if [[ "$category" == "native-review-timeout" ]]; then
+          local review_timeout_side
+          review_timeout_side="$(_challenge_side_for_issue "$issue" 2>/dev/null || true)"
+          if [[ "$review_timeout_side" == "challenger" ]]; then
+            # Typed exhaustion reason (HOK-3064): retry_exhausted:native-review-timeout
+            # parses to a typed native-review-timeout kind → provider-fault, so
+            # record-arm-failure.ts opens the correct provider/model circuit.
+            challenge_abort_pair "$issue" "$feature_dir" "" "review" "$reviewer_model" \
+              "retry_exhausted:native-review-timeout" \
+              "Challenger review timed out after bounded retries for model ${reviewer_model}; attempts=$(bounded_retry_count "$feature_dir" "review-infra-recovery")" \
+              "the challenger forfeits this reviewer-stage challenge, sibling may proceed" \
+              "single" || true
+          elif [[ -n "$review_timeout_side" ]]; then
+            # Primary-side (any non-challenger challenge arm) review-timeout
+            # exhaustion never aborts the pair, so its terminal outcome would
+            # otherwise never reach recordSelectionOutcome and the timed-out
+            # reviewer would stay immediately reselectable (HOK-3064). Record it
+            # directly. Challenger arms record via challenge_abort_pair above, so
+            # gating on non-challenger here avoids double-counting the circuit.
+            challenge_selection_health_record_review_timeout \
+              "$(get_task_meta "$issue" "challengePairId" 2>/dev/null || printf '%s' "$issue")" \
+              "$reviewer_model" || true
+          fi
         fi
         review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
         return 1

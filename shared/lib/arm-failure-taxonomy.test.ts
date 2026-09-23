@@ -89,3 +89,34 @@ test('parses abort failure kinds and quality eligibility', () => {
   assert.equal(isModelQualitySignal('selection-fault'), false);
   assert.equal(isModelQualitySignal('unknown-fault'), false);
 });
+
+test('classifies typed native stage-failure kinds (HOK-3064)', () => {
+  // A native stage timeout is recoverable provider/infrastructure failure
+  // (HOK-3019). Circuits open only for provider-fault (HOK-2942), so both the
+  // typed envelope kind and the review-stage category string must be eligible.
+  assert.equal(classifyArmFault({ failureKind: 'native-stage-timeout' }), 'provider-fault');
+  assert.equal(classifyArmFault({ failureKind: 'native-review-timeout' }), 'provider-fault');
+  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'native-stage-timeout' })), true);
+  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'native-review-timeout' })), true);
+
+  // Policy denials and explicit cancellations are our own choice — never model
+  // or provider quality evidence.
+  assert.equal(classifyArmFault({ failureKind: 'policy-denied' }), 'harness-fault');
+  assert.equal(classifyArmFault({ failureKind: 'cancelled' }), 'harness-fault');
+  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'policy-denied' })), false);
+  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'cancelled' })), false);
+});
+
+test('parses the typed and legacy review-timeout exhaustion reasons (HOK-3064)', () => {
+  assert.equal(parseAbortFailureKind('retry_exhausted:native-review-timeout'), 'native-review-timeout');
+  // Legacy literal recorded before the typed exhaustion reason existed.
+  assert.equal(parseAbortFailureKind('review_timeout_exhausted'), 'native-review-timeout');
+  assert.equal(
+    classifyArmFault({ failureKind: parseAbortFailureKind('retry_exhausted:native-review-timeout') }),
+    'provider-fault',
+  );
+  assert.equal(
+    classifyArmFault({ failureKind: parseAbortFailureKind('review_timeout_exhausted') }),
+    'provider-fault',
+  );
+});

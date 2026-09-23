@@ -585,9 +585,20 @@ export interface ObserverLinearRedactionConfig {
   markFormat: string;
 }
 
+export type ObserverLinearMode = 'off' | 'offline' | 'shadow' | 'live';
+
+export interface ObserverLinearShadowConfig {
+  auditPath: string;
+  countersPath: string;
+  maxEntries: number;
+  maxAgeDays: number;
+  maxLookupsPerPass: number;
+}
+
 export interface ObserverLinearConfig {
   enabled: boolean;
   detectionOnly: boolean;
+  mode: ObserverLinearMode;
   project?: string;
   team?: string;
   label?: string;
@@ -605,6 +616,7 @@ export interface ObserverLinearConfig {
     stale_orphaned_state: ObserverLinearPolicyConfig;
   };
   redaction: ObserverLinearRedactionConfig;
+  shadow: ObserverLinearShadowConfig;
 }
 
 export interface IncidentConfig {
@@ -945,9 +957,18 @@ export const OBSERVER_DEFAULTS: ObserverConfig = {
   },
 };
 
+export const OBSERVER_LINEAR_SHADOW_DEFAULTS: ObserverLinearShadowConfig = {
+  auditPath: '.wavemill/observer/shadow-audit.jsonl',
+  countersPath: '.wavemill/observer/shadow-counters.json',
+  maxEntries: 500,
+  maxAgeDays: 14,
+  maxLookupsPerPass: 40,
+};
+
 export const OBSERVER_LINEAR_DEFAULTS: ObserverLinearConfig = {
   enabled: false,
   detectionOnly: false,
+  mode: 'off',
   retryQueuePath: '.wavemill/registry/linear-incident-queue.jsonl',
   updateCooldownMinutes: 5,
   maxIncidentsPerPass: 10,
@@ -970,6 +991,7 @@ export const OBSERVER_LINEAR_DEFAULTS: ObserverLinearConfig = {
     truncateLength: 200,
     markFormat: '[REDACTED: {type}]',
   },
+  shadow: OBSERVER_LINEAR_SHADOW_DEFAULTS,
 };
 
 export const PROMOTION_DEFAULTS: PromotionConfig = {
@@ -1965,10 +1987,17 @@ export function getObserverLinearConfig(repoDir?: string): ObserverLinearConfig 
   const linear = observer.linear ?? {};
   const envEnabled = process.env.WAVEMILL_OBSERVER_LINEAR_ENABLED;
   const envProject = process.env.WAVEMILL_OBSERVER_LINEAR_PROJECT;
+  const enabled = envEnabled === undefined
+    ? linear.enabled ?? OBSERVER_LINEAR_DEFAULTS.enabled
+    : envEnabled === '1' || envEnabled.toLowerCase() === 'true';
+  const detectionOnly = linear.detectionOnly ?? OBSERVER_LINEAR_DEFAULTS.detectionOnly;
+  const mode = resolveObserverLinearMode(linear.mode, enabled, detectionOnly);
   return {
     ...OBSERVER_LINEAR_DEFAULTS,
     ...linear,
-    enabled: envEnabled === undefined ? linear.enabled ?? OBSERVER_LINEAR_DEFAULTS.enabled : envEnabled === '1' || envEnabled.toLowerCase() === 'true',
+    mode,
+    enabled,
+    detectionOnly,
     project: envProject ?? linear.project,
     policies: {
       product_defect: {
@@ -1997,7 +2026,38 @@ export function getObserverLinearConfig(repoDir?: string): ObserverLinearConfig 
       ...(linear.redaction ?? {}),
       patterns: linear.redaction?.patterns ?? OBSERVER_LINEAR_DEFAULTS.redaction.patterns,
     },
+    shadow: {
+      ...OBSERVER_LINEAR_SHADOW_DEFAULTS,
+      ...(linear.shadow ?? {}),
+    },
   };
+}
+
+const VALID_OBSERVER_LINEAR_MODES: readonly ObserverLinearMode[] = ['off', 'offline', 'shadow', 'live'];
+
+/**
+ * Resolve the effective observer.linear mode.
+ *
+ * Precedence:
+ *   1. Explicit `mode` field wins (shadow can only be requested this way).
+ *   2. Otherwise derive from legacy fields so existing configs behave unchanged:
+ *      - `enabled=false` → `off`
+ *      - `enabled=true && detectionOnly=true` → `offline`
+ *      - `enabled=true && detectionOnly=false` → `live`
+ */
+export function resolveObserverLinearMode(
+  explicit: ObserverLinearMode | undefined,
+  enabled: boolean,
+  detectionOnly: boolean,
+): ObserverLinearMode {
+  if (explicit !== undefined) {
+    if (!VALID_OBSERVER_LINEAR_MODES.includes(explicit)) {
+      throw new Error(`observer.linear.mode must be one of ${VALID_OBSERVER_LINEAR_MODES.join('/')}, got ${JSON.stringify(explicit)}`);
+    }
+    return explicit;
+  }
+  if (!enabled) return 'off';
+  return detectionOnly ? 'offline' : 'live';
 }
 
 export function getIncidentConfig(repoDir?: string): Required<Pick<IncidentConfig, 'enabled'>> & IncidentConfig {

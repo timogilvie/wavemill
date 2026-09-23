@@ -45,8 +45,14 @@ import {
   intendedFilesAfterToolCall,
 } from './tools/intended-files.ts';
 import { createToolRegistry } from './tools/registry.ts';
-import { toPiAgentTool, type AgentTool } from './tools/pi-adapter.ts';
+import type { AgentTool } from './tools/pi-adapter.ts';
 import type { ToolDescriptor, ToolMetadata } from './tools/types.ts';
+import {
+  createLaunchMenuProvider,
+  formatMenuDenials,
+} from './tools/menu-resolver.ts';
+import { inferCertificationSnapshotForPhase } from './tools/certification-snapshot.ts';
+import { loadWavemillConfig } from '../config.ts';
 import { validateCodingArtifacts, type CodingArtifacts } from './coding-artifacts.ts';
 import {
   buildCompletionArtifactRetryGuidance,
@@ -194,10 +200,6 @@ function makeTranscriptPath(repoDir: string, session: string, issue: string): st
     : join(repoDir, '.wavemill', 'runs', session, 'native-sessions');
   mkdirSync(baseDir, { recursive: true });
   return join(baseDir, `coding-${safeIssue}.jsonl`);
-}
-
-function toPiTools(descriptors: readonly ToolDescriptor[]): AgentTool<unknown, unknown>[] {
-  return descriptors.map((descriptor) => toPiAgentTool(descriptor) as AgentTool<unknown, unknown>);
 }
 
 function canonicalNativeModelIds(modelId: string | undefined): Set<string> {
@@ -891,6 +893,22 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       failureReason: null,
     });
 
+    const menuLaunchProvider = createLaunchMenuProvider({
+      phase: 'coding',
+      config: loadWavemillConfig(options.repoDir),
+      certification: inferCertificationSnapshotForPhase({
+        phase: 'coding',
+        readyProviderPresent: Boolean(readyProvider),
+        loopModelOverridePresent: Boolean(options.loopModelOverride),
+      }),
+      descriptors,
+    });
+    if (menuLaunchProvider.initialMenu.denials.length > 0) {
+      const formatted = formatMenuDenials(menuLaunchProvider.initialMenu.denials);
+      if (formatted) {
+        console.warn(`[native-coding] menu denials:\n${formatted}`);
+      }
+    }
     const context: AgentContext = {
       systemPrompt: renderCodingSystemPrompt({
         template: promptTemplate,
@@ -917,7 +935,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
         }),
         timestamp: 0,
       }],
-      tools: toPiTools(descriptors),
+      tools: menuLaunchProvider.providerToolsForContext as AgentTool<unknown, unknown>[],
     };
 
     const mutationFailureTracker: MutationFailureTracker = { count: 0, last: null };
@@ -953,6 +971,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
         issue: options.issue,
       } : undefined,
       sessionStreamConfig,
+      menuProvider: menuLaunchProvider.menuProvider,
       afterToolCall: async (toolContext, signal) => {
         await intendedFilesAfterToolCall(toolContext, tracker);
 
