@@ -111,6 +111,7 @@ export interface ClassifyEvidence {
   verifiedTopLevel: string;
   cleanupAuthority: string;
   patchEquivalenceScope: string;
+  orphanIndependentPaths?: string;
 }
 
 export interface CleanupDeps {
@@ -154,17 +155,19 @@ export const defaultCleanupDeps: CleanupDeps = {
   },
   classify(request, repoDir) {
     try {
-      const script = [
-        'set -euo pipefail',
-        `source "${join(repoDir, 'shared/lib/wavemill-common.sh').replace(/"/g, '\\"')}"`,
-        `wavemill_classify_task_cleanup "${(request.worktreeDir || '').replace(/"/g, '\\"')}" "${request.taskBranch.replace(/"/g, '\\"')}" "${request.baseBranch.replace(/"/g, '\\"')}" "classify" "${(request.issue || '').replace(/"/g, '\\"')}" "${(request.pr || '').replace(/"/g, '\\"')}"`,
-      ].join('\n');
+      const script = 'set -euo pipefail\nsource "$WAVEMILL_COMMON_SCRIPT"\nwavemill_classify_task_cleanup "$WAVEMILL_CLASSIFY_WORKTREE" "$WAVEMILL_CLASSIFY_BRANCH" "$WAVEMILL_CLASSIFY_BASE" classify "$WAVEMILL_CLASSIFY_ISSUE" "$WAVEMILL_CLASSIFY_PR"';
       const env = {
         ...process.env,
         REPO_DIR: repoDir,
         STATE_FILE: statePath(repoDir),
         BASE_BRANCH: request.baseBranch,
         WORKTREE_ROOT: request.worktreeDir ? dirname(request.worktreeDir) : dirname(repoDir),
+        WAVEMILL_COMMON_SCRIPT: join(repoDir, 'shared/lib/wavemill-common.sh'),
+        WAVEMILL_CLASSIFY_WORKTREE: request.worktreeDir || '',
+        WAVEMILL_CLASSIFY_BRANCH: request.taskBranch,
+        WAVEMILL_CLASSIFY_BASE: request.baseBranch,
+        WAVEMILL_CLASSIFY_ISSUE: request.issue || '',
+        WAVEMILL_CLASSIFY_PR: request.pr || '',
       };
       const output = execFileSync('bash', ['-lc', script], { cwd: repoDir, env, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
       const evidence = JSON.parse(output.trim()) as ClassifyEvidence;
@@ -313,11 +316,11 @@ function safeGit(deps: CleanupDeps, args: string[], cwd: string): string | undef
   }
 }
 
-function collectGitEvidence(repoDir: string, task: JsonRecord | undefined, branch: string, worktree: string, baseBranch: string, deps: CleanupDeps): GitEvidence {
+function collectGitEvidence(repoDir: string, task: JsonRecord | undefined, branch: string, worktree: string, baseBranch: string, deps: CleanupDeps, checkWorktreeStatus = true): GitEvidence {
   const worktreeExists = Boolean(worktree && existsSync(worktree));
   let dirtyStatus = '';
   let worktreeDirty: boolean | 'unknown' = false;
-  if (worktreeExists) {
+  if (worktreeExists && checkWorktreeStatus) {
     const status = safeGit(deps, ['-C', worktree, 'status', '--porcelain', '--untracked-files=all'], repoDir);
     if (status === undefined) {
       worktreeDirty = 'unknown';
@@ -466,7 +469,21 @@ export function decideTerminalTask(
   const outcome = workflowOutcome(task);
   const disposition = resourceDisposition(task);
   const pr = fetchPr(repoDir, prNumber, task, deps);
-  const git = collectGitEvidence(repoDir, task, branch, worktree, taskString(launchContract(task), 'baseBranch') || baseBranch, deps);
+  const effectiveBase = taskString(launchContract(task), 'baseBranch') || baseBranch;
+  let classified: ClassifyEvidence | undefined;
+  if (deps.classify && outcome !== 'active' && pr.state === 'MERGED') {
+    try {
+      classified = deps.classify({ worktreeDir: worktree, taskBranch: branch, baseBranch: effectiveBase, issue, pr: prNumber }, repoDir);
+    } catch {
+      classified = { classification: 'retain_unverifiable', verificationReason: 'classifier_unavailable', worktreeIdentity: '', verifiedTopLevel: '', cleanupAuthority: '', patchEquivalenceScope: '' };
+    }
+  }
+  const git = collectGitEvidence(repoDir, task, branch, worktree, effectiveBase, deps, !classified);
+  if (classified) {
+    git.worktreeIdentity = classified.worktreeIdentity;
+    git.verifiedTopLevel = classified.verifiedTopLevel;
+    git.classifierVerdict = classified.classification;
+  }
   const challengeRole = taskString(task, 'challengeRole');
   const challengePairId = taskString(task, 'challengePairId');
   const sibPr = siblingPr(state, task, issue);
@@ -506,6 +523,19 @@ export function decideTerminalTask(
   if (!isTerminalTask(task) || outcome === 'active' || pr.state === 'OPEN') {
     decision.status = outcome === 'active' ? 'not-terminal' : 'refused';
     decision.refusalReason = pr.state === 'OPEN' ? 'pr_open' : 'workflow_active';
+    return decision;
+  }
+  if (pr.baseRefName && pr.baseRefName !== effectiveBase) {
+    decision.refusalReason = 'pr_base_mismatch';
+    return decision;
+  }
+  if (classified) {
+    if (['safe_ancestor', 'safe_terminal_pr_head', 'safe_patch_equivalent_pr', 'safe_content_equivalent_pr'].includes(classified.classification)) {
+      decision.status = 'would-reap';
+      decision.intendedActions = ['archive-artifacts', 'release-pane', 'write-tombstone', 'remove-local-worktree', 'remove-local-branch', 'remove-active-task-row'];
+    } else {
+      decision.refusalReason = classified.verificationReason || classified.classification || 'classifier_unavailable';
+    }
     return decision;
   }
   if (git.worktreeDirty === true || git.worktreeDirty === 'unknown') {
