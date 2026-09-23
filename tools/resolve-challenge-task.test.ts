@@ -20,7 +20,7 @@ import {
 } from '../shared/lib/native-agent/coding-certification.ts';
 import { PATCH_CODING_SMOKE_SUITE_REVISION } from '../shared/lib/native-agent/smoke.ts';
 import { listEffectiveModelsForStage } from '../shared/lib/effective-models.ts';
-import { claimReservation } from '../shared/lib/challenge-selection-health.ts';
+import { claimReservation, recordSelectionOutcome } from '../shared/lib/challenge-selection-health.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const resolveChallengeTaskTool = resolve(__dirname, 'resolve-challenge-task.ts');
@@ -828,6 +828,102 @@ describe('resolve-challenge-task CLI', () => {
 
       // Falls through to the recommendation, which pins 'plan'.
       assert.equal(result.challengeStage, 'plan');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rotates away from a failed zero-coverage challenger and reports attempt evidence (HOK-3066)', async () => {
+    const repoDir = makeRepo([], {
+      aliases: ['qwen-3-coder', 'glm-5.2'],
+      patchCodingEnabled: true,
+      suiteVersion: DEFAULT_CERTIFICATION_SUITE_VERSION,
+      certificationPhase: 'patch',
+    });
+    try {
+      await recordSelectionOutcome({
+        repoDir,
+        owner: { issueId: 'HOK-3066-PRIOR', pairId: 'HOK-3066-PRIOR' },
+        model: 'qwen-3-coder',
+        stage: 'implementation',
+        terminalStatus: 'failure',
+        failureKind: 'native-completion-protocol',
+        faultClass: 'model-fault',
+      });
+
+      const result = runResolveChallengeTask(repoDir, [
+        '--issue', 'HOK-3066-NEXT',
+        '--slug', 'attempt-rotation',
+        '--title', 'Rotate after failed attempt',
+        '--primary-model', 'claude-sonnet-4-6',
+        '--remaining-slots', '2',
+        '--repo-dir', repoDir,
+      ]);
+
+      assert.equal(result.mode, 'challenge');
+      const challenger = (result.entries as Array<Record<string, unknown>>)
+        .find((entry) => entry.role === 'challenger')?.model;
+      assert.equal(challenger, 'glm-5.2');
+      assert.equal(result.attemptCount, 0);
+      assert.equal(result.cooldownActive, false);
+      const attemptEvidence = (result.selectionHealth as {
+        attemptEvidence: Array<Record<string, unknown>>;
+      }).attemptEvidence;
+      const failedEntry = attemptEvidence.find((entry) => entry.model === 'qwen-3-coder');
+      assert.equal(failedEntry?.attemptCount, 1);
+      assert.equal(failedEntry?.cooldownActive, true);
+      const intent = result.challengeExecutionIntent as Record<string, unknown>;
+      const selectionEvidence = intent.selectionEvidence as Record<string, unknown>;
+      assert.equal(selectionEvidence.attemptCount, 0);
+      assert.equal(selectionEvidence.cooldownActive, false);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('attemptRanking.enabled=false restores legacy selection while preserving recorded attempts', async () => {
+    const repoDir = makeRepo([], {
+      aliases: ['qwen-3-coder', 'glm-5.2'],
+      patchCodingEnabled: true,
+      suiteVersion: DEFAULT_CERTIFICATION_SUITE_VERSION,
+      certificationPhase: 'patch',
+    });
+    try {
+      updateRepoConfig(repoDir, (config) => {
+        config.challenge = {
+          ...(config.challenge as Record<string, unknown>),
+          selectionHealth: { attemptRanking: { enabled: false } },
+        };
+      });
+      await recordSelectionOutcome({
+        repoDir,
+        owner: { issueId: 'HOK-3066-PRIOR', pairId: 'HOK-3066-PRIOR' },
+        model: 'qwen-3-coder',
+        stage: 'implementation',
+        terminalStatus: 'failure',
+        failureKind: 'native-completion-protocol',
+        faultClass: 'model-fault',
+      });
+
+      const result = runResolveChallengeTask(repoDir, [
+        '--issue', 'HOK-3066-LEGACY',
+        '--slug', 'attempt-rotation-off',
+        '--title', 'Legacy selection with flag off',
+        '--primary-model', 'claude-sonnet-4-6',
+        '--remaining-slots', '2',
+        '--repo-dir', repoDir,
+      ]);
+
+      assert.equal(result.mode, 'challenge');
+      // Ranking evidence is not consumed or emitted with the flag off...
+      assert.equal((result.selectionHealth as Record<string, unknown>).attemptEvidence, undefined);
+      // ...but the recorded attempt survives in the health state for re-enable.
+      const state = JSON.parse(readFileSync(
+        join(repoDir, '.wavemill', 'challenge-selection-health.json'),
+        'utf-8',
+      )) as { attempts?: Record<string, unknown[]> };
+      const attemptKeys = Object.keys(state.attempts ?? {});
+      assert.equal(attemptKeys.length, 1);
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   ackLaunch,
   claimReservation,
+  computeAttemptEvidence,
   computeSelectionExclusions,
   emptySelectionHealthState,
   circuitKeyFor,
@@ -339,6 +340,131 @@ test('provider identity normalizes across native/native-openrouter/bare forms (H
     assert.deepEqual(Object.keys(state.circuits), ['openrouter|kimi-k2']);
     assert.equal(state.circuits['openrouter|kimi-k2']?.recentTransientAt.length, 3);
     assert.equal(state.circuits['openrouter|kimi-k2']?.state, 'open');
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('terminal attempts record truthfully per status and drive cooldown from failures only (HOK-3066)', async () => {
+  const repoDir = repo();
+  const attemptConfig = {
+    ...config,
+    attemptRanking: { enabled: true, lookbackSeconds: 600, failedAttemptCooldownSeconds: 120 },
+  };
+  const base = Date.parse('2026-09-23T10:00:00.000Z');
+  let clock = base;
+  const now = () => clock;
+  try {
+    const record = async (model: string, extra: Record<string, unknown>) => recordSelectionOutcome({
+      repoDir,
+      now,
+      config: attemptConfig,
+      owner: owner('HOK-1'),
+      model,
+      stage: 'review',
+      ...extra,
+    });
+
+    await record('kimi-k2', { terminalStatus: 'failure', failureKind: 'native-completion-protocol', faultClass: 'model-fault' });
+    await record('qwen3-coder', { success: true });
+    await record('glm-4.7', { terminalStatus: 'forfeit' });
+    await record('mistral-large', { terminalStatus: 'invalid' });
+
+    clock = base + 60_000;
+    const snapshot = readSelectionHealth({ repoDir, now, config: attemptConfig });
+    const evidence = computeAttemptEvidence({
+      stage: 'review',
+      candidates: ['kimi-k2', 'qwen3-coder', 'glm-4.7', 'mistral-large', 'untried-model'],
+      snapshot,
+      now: now(),
+      config: attemptConfig,
+    });
+
+    // Every terminal status is exactly one attempt; success adds coverage
+    // elsewhere but still counts as an attempt here.
+    assert.equal(evidence.get('kimi-k2')?.attemptCount, 1);
+    assert.equal(evidence.get('qwen3-coder')?.attemptCount, 1);
+    assert.equal(evidence.get('glm-4.7')?.attemptCount, 1);
+    assert.equal(evidence.get('mistral-large')?.attemptCount, 1);
+    assert.equal(evidence.get('untried-model')?.attemptCount, 0);
+
+    // Only the failed attempt cools; forfeit/invalid/success never do.
+    assert.equal(evidence.get('kimi-k2')?.cooldownActive, true);
+    assert.equal(evidence.get('kimi-k2')?.cooldownUntil, new Date(base + 120_000).toISOString());
+    assert.equal(evidence.get('qwen3-coder')?.cooldownActive, false);
+    assert.equal(evidence.get('glm-4.7')?.cooldownActive, false);
+    assert.equal(evidence.get('mistral-large')?.cooldownActive, false);
+
+    // Attempts are stage-scoped: nothing recorded for the implementation stage.
+    const otherStage = computeAttemptEvidence({
+      stage: 'implementation',
+      candidates: ['kimi-k2'],
+      snapshot,
+      now: now(),
+      config: attemptConfig,
+    });
+    assert.equal(otherStage.get('kimi-k2')?.attemptCount, 0);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('cooldowns expire deterministically and lookback prunes attempt evidence (HOK-3066)', async () => {
+  const repoDir = repo();
+  const attemptConfig = {
+    ...config,
+    attemptRanking: { enabled: true, lookbackSeconds: 600, failedAttemptCooldownSeconds: 120 },
+  };
+  const base = Date.parse('2026-09-23T10:00:00.000Z');
+  let clock = base;
+  const now = () => clock;
+  try {
+    await recordSelectionOutcome({
+      repoDir,
+      now,
+      config: attemptConfig,
+      owner: owner('HOK-2'),
+      model: 'kimi-k2',
+      stage: 'review',
+      terminalStatus: 'failure',
+      failureKind: 'native-completion-protocol',
+      faultClass: 'model-fault',
+    });
+
+    // One millisecond past the cooldown boundary the model is warm again.
+    clock = base + 120_001;
+    const warm = computeAttemptEvidence({
+      stage: 'review',
+      candidates: ['kimi-k2'],
+      snapshot: readSelectionHealth({ repoDir, now, config: attemptConfig }),
+      now: now(),
+      config: attemptConfig,
+    });
+    assert.equal(warm.get('kimi-k2')?.cooldownActive, false);
+    assert.equal(warm.get('kimi-k2')?.attemptCount, 1);
+    assert.equal(warm.get('kimi-k2')?.lastAttemptAt, new Date(base).toISOString());
+
+    // Beyond the lookback the attempt record is pruned from the store itself.
+    clock = base + 601_000;
+    await recordSelectionOutcome({
+      repoDir,
+      now,
+      config: attemptConfig,
+      owner: owner('HOK-2'),
+      model: 'qwen3-coder',
+      stage: 'review',
+      success: true,
+    });
+    const pruned = readSelectionHealth({ repoDir, now, config: attemptConfig });
+    assert.equal(pruned.attempts[`${circuitKeyFor('kimi-k2')}|review`], undefined);
+    const evidence = computeAttemptEvidence({
+      stage: 'review',
+      candidates: ['kimi-k2'],
+      snapshot: pruned,
+      now: now(),
+      config: attemptConfig,
+    });
+    assert.equal(evidence.get('kimi-k2')?.attemptCount, 0);
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
   }
