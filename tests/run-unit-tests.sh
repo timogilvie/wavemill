@@ -359,6 +359,12 @@ TESTS=(
   shared/lib/native-agent/review.test.ts
   shared/lib/native-agent/session-stream.test.ts
   shared/lib/native-agent/smoke.test.ts
+  shared/lib/native-agent/tool-decision-schema.test.ts
+  shared/lib/native-agent/tool-decision-projector.test.ts
+  shared/lib/native-agent/tool-decision-corpus.test.ts
+  shared/lib/native-agent/tool-decision-labeler.test.ts
+  shared/lib/native-agent/tool-decision-report.test.ts
+  shared/lib/native-agent/tool-decision-capture.test.ts
   shared/lib/native-agent/tools/command.test.ts
   shared/lib/native-agent/tools/intended-files.test.ts
   shared/lib/native-agent/workflow-tools/dedupe-registry.test.ts
