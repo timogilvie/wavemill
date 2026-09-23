@@ -10,9 +10,11 @@ import {
   createLookupBudget,
   generateIssueBody,
   generateIssueTitle,
+  generateLifecycleComment,
   planShadowSync,
   redactLinearIssueContent,
   syncIncident,
+  syncLifecycle,
   wrapReadOnlyIncidentLinearClient,
   type IncidentLinearClient,
   type ObserverLinearConfig,
@@ -635,3 +637,446 @@ function issueSummary(identifier: string): LinearIssueSummary {
     canceledAt: null,
   };
 }
+
+function linkedIncident(overrides: Partial<IncidentRecord> = {}): IncidentRecord {
+  return incident({
+    metadata: {
+      thresholdTriggered: true,
+      escalatedAt: '2026-08-04T12:10:00.000Z',
+      linkedLinearId: 'HOK-500',
+      linkedLinearUrl: 'https://linear.app/hokusai/issue/HOK-500/test',
+      ...(overrides.metadata ?? {}),
+    },
+    ...overrides,
+  });
+}
+
+function passthroughReconciler(): NonNullable<Parameters<typeof syncLifecycle>[0]['reconciler']> {
+  return () => ({ verdict: 'confirmed', reason: 'stub', evidence: {} });
+}
+
+test('generateLifecycleComment renders one comment per transition and null when nothing to sync', () => {
+  const active = linkedIncident({ lifecycle: 'active' });
+  assert.equal(generateLifecycleComment(active), null);
+
+  const autoResolved = linkedIncident({
+    lifecycle: 'resolved',
+    metadata: {
+      linkedLinearId: 'HOK-500',
+      resolution: { action: 'auto_resolved', at: '2026-08-05T00:00:00.000Z', reason: 'no fresh events' },
+    },
+  });
+  const autoText = generateLifecycleComment(autoResolved) ?? '';
+  assert.match(autoText, /auto-resolved/i);
+  assert.match(autoText, /no fresh events/);
+
+  const archived = linkedIncident({
+    lifecycle: 'archived',
+    metadata: {
+      linkedLinearId: 'HOK-500',
+      resolution: { action: 'operator_archived', at: '2026-08-05T00:00:00.000Z' },
+    },
+  });
+  assert.match(generateLifecycleComment(archived) ?? '', /archived/i);
+
+  const recurred = linkedIncident({
+    lifecycle: 'active',
+    metadata: {
+      linkedLinearId: 'HOK-500',
+      recurrence: { count: 1, lastRecurredAt: '2026-08-06T00:00:00.000Z', reopenedFrom: 'archived' },
+    },
+  });
+  assert.match(generateLifecycleComment(recurred) ?? '', /recurred/i);
+});
+
+test('syncLifecycle skips incidents that are not linked to Linear', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifecycle-unlinked-'));
+  try {
+    const store = new IncidentStore(dir);
+    const unlinked = await store.upsert(incident({ lifecycle: 'resolved', metadata: {
+      resolution: { action: 'auto_resolved', at: '2026-08-05T00:00:00.000Z' },
+    }}));
+    let called = false;
+    const client = mockClient({ createComment: async () => { called = true; return { id: 'c', url: 'u' }; } });
+    const result = await syncLifecycle({
+      incident: unlinked,
+      store,
+      config: config(),
+      client,
+      reconciler: passthroughReconciler(),
+    });
+    assert.equal(result.action, 'skip');
+    assert.equal(result.status, 'skipped');
+    assert.equal(called, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('syncLifecycle for auto_resolved defaults to comment-only and does not close the Linear issue', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifecycle-auto-resolved-'));
+  try {
+    const store = new IncidentStore(dir);
+    const record = await store.upsert(linkedIncident({
+      lifecycle: 'resolved',
+      metadata: {
+        linkedLinearId: 'HOK-500',
+        resolution: { action: 'auto_resolved', at: '2026-08-05T00:00:00.000Z' },
+      },
+    }));
+    let comments = 0;
+    let updates = 0;
+    const client = mockClient({
+      createComment: async () => { comments += 1; return { id: 'c1', url: 'u' }; },
+      updateIssue: async () => { updates += 1; return { success: true, issue: {} as any }; },
+    });
+    const result = await syncLifecycle({
+      incident: record,
+      store,
+      config: config(),
+      client,
+      reconciler: passthroughReconciler(),
+    });
+    assert.equal(result.status, 'synced');
+    assert.equal(result.commentPosted, true);
+    assert.equal(result.stateChanged, false);
+    assert.equal(comments, 1);
+    assert.equal(updates, 0);
+
+    const persisted = await store.getIncident(record.fingerprint);
+    assert.equal(persisted?.metadata.lastSyncedLifecycle?.commentPosted, true);
+    assert.equal(persisted?.metadata.lastSyncedLifecycle?.stateChanged, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('syncLifecycle is exactly-once across repeated invocations at the same lifecycle revision', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifecycle-once-'));
+  try {
+    const store = new IncidentStore(dir);
+    const record = await store.upsert(linkedIncident({
+      lifecycle: 'resolved',
+      metadata: {
+        linkedLinearId: 'HOK-500',
+        resolution: { action: 'auto_resolved', at: '2026-08-05T00:00:00.000Z' },
+      },
+    }));
+    let comments = 0;
+    const client = mockClient({
+      createComment: async () => { comments += 1; return { id: 'c1', url: 'u' }; },
+    });
+    const cfg = config();
+    const opts = { incident: record, store, config: cfg, client, reconciler: passthroughReconciler() };
+    await syncLifecycle(opts);
+
+    const refreshed = await store.getIncident(record.fingerprint);
+    const second = await syncLifecycle({ ...opts, incident: refreshed! });
+
+    assert.equal(second.action, 'no_op');
+    assert.equal(second.status, 'skipped');
+    assert.equal(comments, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('syncLifecycle honors operator_resolved close state when configured and records observer ownership', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifecycle-operator-resolved-'));
+  try {
+    const store = new IncidentStore(dir);
+    const record = await store.upsert(linkedIncident({
+      lifecycle: 'resolved',
+      metadata: {
+        linkedLinearId: 'HOK-500',
+        resolution: { action: 'operator_resolved', at: '2026-08-05T00:00:00.000Z' },
+      },
+    }));
+    const updates: Array<{ issueId: string; stateId?: string }> = [];
+    const client = mockClient({
+      createComment: async () => ({ id: 'c1', url: 'u' }),
+      updateIssue: async (issueId, input) => {
+        updates.push({ issueId, stateId: input.stateId });
+        return { success: true, issue: {} as any };
+      },
+    });
+    const cfg = config({
+      lifecycle: {
+        ...DEFAULT_INCIDENT_LINEAR_CONFIG.lifecycle!,
+        operatorResolvedCloseState: 'done-state-id',
+      },
+    });
+    const result = await syncLifecycle({
+      incident: record,
+      store,
+      config: cfg,
+      client,
+      reconciler: passthroughReconciler(),
+    });
+    assert.equal(result.status, 'synced');
+    assert.equal(result.stateChanged, true);
+    assert.deepEqual(updates, [{ issueId: 'HOK-500', stateId: 'done-state-id' }]);
+
+    const persisted = await store.getIncident(record.fingerprint);
+    assert.equal(persisted?.metadata.lastSyncedLifecycle?.stateChanged, true);
+    assert.equal(persisted?.metadata.lastSyncedLifecycle?.observerStateId, 'done-state-id');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('syncLifecycle recurrence reopens only Observer-owned auto-closed issues', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifecycle-recurrence-'));
+  try {
+    const store = new IncidentStore(dir);
+
+    // Case 1: Observer never closed this issue (no observerStateId in prior sync).
+    const humanOwned = await store.upsert(linkedIncident({
+      lifecycle: 'active',
+      metadata: {
+        linkedLinearId: 'HOK-501',
+        lastSyncedLifecycle: {
+          revision: 'old-revision',
+          at: '2026-08-04T00:00:00.000Z',
+          commentPosted: true,
+          stateChanged: false,
+        },
+        recurrence: { count: 1, lastRecurredAt: '2026-08-06T00:00:00.000Z', reopenedFrom: 'resolved' },
+      },
+    }));
+    let updates = 0;
+    const client = mockClient({
+      createComment: async () => ({ id: 'c1', url: 'u' }),
+      updateIssue: async () => { updates += 1; return { success: true, issue: {} as any }; },
+    });
+    const cfg = config({
+      lifecycle: {
+        ...DEFAULT_INCIDENT_LINEAR_CONFIG.lifecycle!,
+        recurrenceReopenState: 'in-progress-id',
+      },
+    });
+    const humanResult = await syncLifecycle({
+      incident: humanOwned,
+      store,
+      config: cfg,
+      client,
+      reconciler: passthroughReconciler(),
+    });
+    // Comment fires (recurrence has a lifecycle comment); state does NOT.
+    assert.equal(humanResult.status, 'synced');
+    assert.equal(humanResult.stateChanged, false);
+    assert.equal(updates, 0);
+
+    // Case 2: Observer previously auto-closed this issue with a recorded observerStateId.
+    const observerOwned = await store.upsert(linkedIncident({
+      taskId: 'HOK-2',
+      fingerprint: 'a'.repeat(64),
+      lifecycle: 'active',
+      metadata: {
+        linkedLinearId: 'HOK-502',
+        lastSyncedLifecycle: {
+          revision: 'prior-revision',
+          at: '2026-08-04T00:00:00.000Z',
+          commentPosted: true,
+          stateChanged: true,
+          observerStateId: 'auto-closed-id',
+        },
+        recurrence: { count: 1, lastRecurredAt: '2026-08-06T00:00:00.000Z', reopenedFrom: 'resolved' },
+      },
+    }));
+    updates = 0;
+    const reopen: Array<{ issueId: string; stateId?: string }> = [];
+    const client2 = mockClient({
+      createComment: async () => ({ id: 'c2', url: 'u' }),
+      updateIssue: async (issueId, input) => {
+        reopen.push({ issueId, stateId: input.stateId });
+        return { success: true, issue: {} as any };
+      },
+    });
+    const observerResult = await syncLifecycle({
+      incident: observerOwned,
+      store,
+      config: cfg,
+      client: client2,
+      reconciler: passthroughReconciler(),
+    });
+    assert.equal(observerResult.status, 'synced');
+    assert.equal(observerResult.stateChanged, true);
+    assert.deepEqual(reopen, [{ issueId: 'HOK-502', stateId: 'in-progress-id' }]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('syncLifecycle in shadow mode plans without mutating Linear', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifecycle-shadow-'));
+  try {
+    const store = new IncidentStore(dir);
+    const record = await store.upsert(linkedIncident({
+      lifecycle: 'resolved',
+      metadata: {
+        linkedLinearId: 'HOK-500',
+        resolution: { action: 'auto_resolved', at: '2026-08-05T00:00:00.000Z' },
+      },
+    }));
+    let comments = 0;
+    let updates = 0;
+    const client = mockClient({
+      createComment: async () => { comments += 1; return { id: 'c1', url: 'u' }; },
+      updateIssue: async () => { updates += 1; return { success: true, issue: {} as any }; },
+    });
+    const result = await syncLifecycle({
+      incident: record,
+      store,
+      config: config(),
+      client,
+      reconciler: passthroughReconciler(),
+      shadow: true,
+    });
+    assert.equal(result.status, 'skipped');
+    assert.equal(result.dryRun, true);
+    assert.equal(comments, 0);
+    assert.equal(updates, 0);
+
+    const persisted = await store.getIncident(record.fingerprint);
+    assert.equal(persisted?.metadata.lastSyncedLifecycle, undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('syncLifecycle is suppressed when reconciliation says the incident is recovered', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifecycle-reconciled-'));
+  try {
+    const store = new IncidentStore(dir);
+    const record = await store.upsert(linkedIncident({
+      lifecycle: 'resolved',
+      metadata: {
+        linkedLinearId: 'HOK-500',
+        resolution: { action: 'auto_resolved', at: '2026-08-05T00:00:00.000Z' },
+      },
+    }));
+    let comments = 0;
+    const client = mockClient({
+      createComment: async () => { comments += 1; return { id: 'c1', url: 'u' }; },
+    });
+    const result = await syncLifecycle({
+      incident: record,
+      store,
+      config: config(),
+      client,
+      reconciler: () => ({ verdict: 'recovered', reason: 'job green', evidence: {} }),
+    });
+    assert.equal(result.action, 'skip');
+    assert.equal(result.status, 'skipped');
+    assert.match(result.reason ?? '', /reconciliation/);
+    assert.equal(comments, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('syncLifecycle enqueues a lifecycle_comment retry when the comment API errors retryably', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifecycle-retry-comment-'));
+  try {
+    const store = new IncidentStore(dir);
+    const record = await store.upsert(linkedIncident({
+      lifecycle: 'resolved',
+      metadata: {
+        linkedLinearId: 'HOK-500',
+        resolution: { action: 'auto_resolved', at: '2026-08-05T00:00:00.000Z' },
+      },
+    }));
+    const client = mockClient({
+      createComment: async () => { throw new LinearApiError('rate limited', { httpStatus: 429 }); },
+    });
+    const enqueued: any[] = [];
+    const result = await syncLifecycle({
+      incident: record,
+      store,
+      config: config(),
+      client,
+      reconciler: passthroughReconciler(),
+      retryQueue: {
+        enqueueIncidentSync: (input) => { enqueued.push(input); return { nextRetryAt: '2026-08-05T00:01:00.000Z' }; },
+      },
+    });
+    assert.equal(result.status, 'queued');
+    assert.equal(enqueued.length, 1);
+    assert.equal(enqueued[0].linearAction, 'lifecycle_comment');
+    assert.equal(enqueued[0].lifecycleSubstep, 'comment');
+    assert.equal(enqueued[0].lifecycleRevision, result.lifecycleRevision);
+
+    // The comment substep was NOT recorded — replay must re-attempt the comment.
+    const persisted = await store.getIncident(record.fingerprint);
+    assert.equal(persisted?.metadata.lastSyncedLifecycle?.commentPosted ?? false, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('syncLifecycle retry replay does not repost a successful comment after a state failure', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifecycle-retry-state-'));
+  try {
+    const store = new IncidentStore(dir);
+    const record = await store.upsert(linkedIncident({
+      lifecycle: 'resolved',
+      metadata: {
+        linkedLinearId: 'HOK-500',
+        resolution: { action: 'operator_resolved', at: '2026-08-05T00:00:00.000Z' },
+      },
+    }));
+    const cfg = config({
+      lifecycle: {
+        ...DEFAULT_INCIDENT_LINEAR_CONFIG.lifecycle!,
+        operatorResolvedCloseState: 'done-state-id',
+      },
+    });
+
+    // Attempt 1: comment succeeds, state change fails retryably.
+    let comments = 0;
+    let updates = 0;
+    const clientA = mockClient({
+      createComment: async () => { comments += 1; return { id: 'c1', url: 'u' }; },
+      updateIssue: async () => { updates += 1; throw new LinearApiError('rate limited', { httpStatus: 429 }); },
+    });
+    const enqueued: any[] = [];
+    const first = await syncLifecycle({
+      incident: record,
+      store,
+      config: cfg,
+      client: clientA,
+      reconciler: passthroughReconciler(),
+      retryQueue: {
+        enqueueIncidentSync: (input) => { enqueued.push(input); return { nextRetryAt: '2026-08-05T00:01:00.000Z' }; },
+      },
+    });
+    assert.equal(first.status, 'queued');
+    assert.equal(comments, 1);
+    assert.equal(updates, 1);
+    assert.equal(enqueued[0].lifecycleSubstep, 'state');
+
+    // Attempt 2: replay. Comment must NOT be re-sent; state change succeeds.
+    const refreshed = await store.getIncident(record.fingerprint);
+    assert.equal(refreshed?.metadata.lastSyncedLifecycle?.commentPosted, true);
+
+    let commentsB = 0;
+    let updatesB = 0;
+    const clientB = mockClient({
+      createComment: async () => { commentsB += 1; return { id: 'c2', url: 'u' }; },
+      updateIssue: async () => { updatesB += 1; return { success: true, issue: {} as any }; },
+    });
+    const second = await syncLifecycle({
+      incident: refreshed!,
+      store,
+      config: cfg,
+      client: clientB,
+      reconciler: passthroughReconciler(),
+    });
+    assert.equal(second.status, 'synced');
+    assert.equal(commentsB, 0);
+    assert.equal(updatesB, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

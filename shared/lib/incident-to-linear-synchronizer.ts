@@ -1160,11 +1160,7 @@ export async function syncLifecycle(options: SyncLifecycleOptions): Promise<Sync
     return { ...baseResult, action: 'skip', status: 'skipped', reason: 'not linked to Linear' };
   }
 
-  // Check if lifecycle was already synced
   const lastSynced = incident.metadata?.lastSyncedLifecycle;
-  if (lastSynced?.revision === lifecycleRevision && lastSynced.commentPosted) {
-    return { ...baseResult, action: 'no_op', status: 'skipped', reason: 'lifecycle already synced' };
-  }
 
   // Reconciliation gate: suppress lifecycle sync if incident is recovered or superseded
   const reconciliation = reconciler(incident, repoDir);
@@ -1179,31 +1175,43 @@ export async function syncLifecycle(options: SyncLifecycleOptions): Promise<Sync
     return { ...baseResult, action: 'skip', status: 'skipped', reason: 'no lifecycle transition to sync' };
   }
 
-  // Determine required actions based on lifecycle and policy
-  const needsComment = !lastSynced?.commentPosted;
+  // Determine required actions based on lifecycle and policy. When a prior sync at
+  // this same revision already completed a substep, do not repeat it — this keeps
+  // replay idempotent when comment succeeds but state fails, and vice versa.
+  const priorAtSameRevision = lastSynced?.revision === lifecycleRevision;
+  const needsComment = !(priorAtSameRevision && lastSynced?.commentPosted);
   let needsStateChange = false;
   let targetStateId: string | undefined;
 
   if (incident.lifecycle === 'resolved' && incident.metadata?.resolution) {
     const { action } = incident.metadata.resolution;
     if (action === 'auto_resolved' && lifecyclePolicy.autoResolvedCloseState) {
-      needsStateChange = !lastSynced?.stateChanged;
+      needsStateChange = !(priorAtSameRevision && lastSynced?.stateChanged);
       targetStateId = lifecyclePolicy.autoResolvedCloseState;
     } else if (action === 'operator_resolved' && lifecyclePolicy.operatorResolvedCloseState) {
-      needsStateChange = !lastSynced?.stateChanged;
+      needsStateChange = !(priorAtSameRevision && lastSynced?.stateChanged);
       targetStateId = lifecyclePolicy.operatorResolvedCloseState;
     }
   } else if (incident.lifecycle === 'archived' && incident.metadata?.resolution?.action === 'operator_archived') {
     if (lifecyclePolicy.operatorArchivedCloseState) {
-      needsStateChange = !lastSynced?.stateChanged;
+      needsStateChange = !(priorAtSameRevision && lastSynced?.stateChanged);
       targetStateId = lifecyclePolicy.operatorArchivedCloseState;
     }
   } else if (incident.metadata?.recurrence && lifecyclePolicy.recurrenceReopenState) {
-    // Recurrence: only reopen if Observer previously auto-closed the issue
-    if (lastSynced?.stateChanged && lastSynced.observerStateId) {
+    // Recurrence: only reopen if Observer previously auto-closed the issue AND we
+    // have not already reopened at this same revision.
+    const observerOwned = !!(lastSynced?.stateChanged && lastSynced.observerStateId);
+    const alreadyReopened = priorAtSameRevision
+      && lastSynced?.stateChanged === true
+      && lastSynced.observerStateId === lifecyclePolicy.recurrenceReopenState;
+    if (observerOwned && !alreadyReopened) {
       needsStateChange = true;
       targetStateId = lifecyclePolicy.recurrenceReopenState;
     }
+  }
+
+  if (!needsComment && !needsStateChange) {
+    return { ...baseResult, action: 'no_op', status: 'skipped', reason: 'lifecycle already synced' };
   }
 
   // Shadow mode: plan only

@@ -304,6 +304,110 @@ test('drainIncidentQueue keeps replayed 429 pending with incremented attempt', a
   }
 });
 
+test('enqueueIncidentSync stamps lifecycle_comment with revision and substep', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'incident-queue-lifecycle-comment-'));
+  const originalRandom = Math.random;
+  Math.random = () => 0;
+  try {
+    const record = enqueueIncidentSync({
+      repoDir,
+      incidentFingerprint: 'lc-fp',
+      linearAction: 'lifecycle_comment',
+      linearIssueId: 'HOK-777',
+      lifecycleRevision: 'rev-1',
+      lifecycleSubstep: 'comment',
+      lastError: {
+        category: 'rate_limit',
+        httpStatus: 429,
+        graphqlErrors: [],
+        isRetryable: true,
+        message: 'rate limited',
+      },
+      now: new Date('2026-08-04T12:00:00.000Z'),
+    });
+    const rows = readFileSync(queuePath(repoDir), 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].linearAction, 'lifecycle_comment');
+    assert.equal(rows[0].lifecycleRevision, 'rev-1');
+    assert.equal(rows[0].lifecycleSubstep, 'comment');
+    assert.equal(rows[0].linearIssueId, 'HOK-777');
+    assert.equal(record.recordType, 'pending');
+  } finally {
+    Math.random = originalRandom;
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('enqueueIncidentSync dedupes lifecycle_comment for same revision+substep and keys separately from lifecycle_state', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'incident-queue-lifecycle-dedupe-'));
+  const originalRandom = Math.random;
+  Math.random = () => 0;
+  try {
+    const base = {
+      repoDir,
+      incidentFingerprint: 'ls-fp',
+      linearIssueId: 'HOK-778',
+      lifecycleRevision: 'rev-2',
+      lastError: {
+        category: 'rate_limit',
+        httpStatus: 429,
+        graphqlErrors: [],
+        isRetryable: true,
+        message: 'rate limited',
+      },
+      now: new Date('2026-08-04T12:00:00.000Z'),
+    } as const;
+    const firstComment = enqueueIncidentSync({ ...base, linearAction: 'lifecycle_comment', lifecycleSubstep: 'comment' });
+    const secondComment = enqueueIncidentSync({ ...base, linearAction: 'lifecycle_comment', lifecycleSubstep: 'comment', attempts: 2 });
+    const stateAction = enqueueIncidentSync({ ...base, linearAction: 'lifecycle_state', lifecycleSubstep: 'state' });
+
+    assert.equal(firstComment.id, secondComment.id, 'same revision+substep dedupes to one id');
+    assert.notEqual(firstComment.id, stateAction.id, 'lifecycle_state gets a distinct id from lifecycle_comment');
+
+    const distinctPending = new Set(
+      readFileSync(queuePath(repoDir), 'utf-8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line))
+        .filter((row) => row.recordType === 'pending')
+        .map((row) => row.id),
+    );
+    assert.equal(distinctPending.size, 2);
+  } finally {
+    Math.random = originalRandom;
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('enqueueIncidentSync distinguishes different revisions for the same substep', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'incident-queue-lifecycle-revisions-'));
+  const originalRandom = Math.random;
+  Math.random = () => 0;
+  try {
+    const base = {
+      repoDir,
+      incidentFingerprint: 'rev-fp',
+      linearAction: 'lifecycle_comment' as const,
+      linearIssueId: 'HOK-779',
+      lifecycleSubstep: 'comment' as const,
+      lastError: {
+        category: 'rate_limit',
+        httpStatus: 429,
+        graphqlErrors: [],
+        isRetryable: true,
+        message: 'rate limited',
+      },
+      now: new Date('2026-08-04T12:00:00.000Z'),
+    };
+    const first = enqueueIncidentSync({ ...base, lifecycleRevision: 'rev-a' });
+    const second = enqueueIncidentSync({ ...base, lifecycleRevision: 'rev-b' });
+    assert.notEqual(first.id, second.id);
+  } finally {
+    Math.random = originalRandom;
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
 function successClient(overrides: Partial<IncidentLinearClient> = {}): IncidentLinearClient {
   return {
     getTeams: async () => [{ id: 'team-1', key: 'HOK', name: 'Hokusai' }],

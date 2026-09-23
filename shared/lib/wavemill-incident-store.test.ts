@@ -547,3 +547,106 @@ test('task-to-null repo migration is explicit and does not permit task-to-differ
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('computeLifecycleRevision is stable when nothing changes and flips when lifecycle transitions', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'incident-lifecycle-revision-'));
+  try {
+    const store = new IncidentStore(dir, { escalationThreshold: 3 });
+    const created = await store.upsert(incident());
+    const initialRevision = store.computeLifecycleRevision(created);
+
+    const same = await store.getIncident(created.fingerprint);
+    assert.equal(store.computeLifecycleRevision(same!), initialRevision);
+
+    const resolved = await store.resolve(created.fingerprint, { reason: 'fixed upstream' });
+    const resolvedRevision = store.computeLifecycleRevision(resolved!);
+    assert.notEqual(resolvedRevision, initialRevision);
+
+    const archived = await store.archive(created.fingerprint);
+    const archivedRevision = store.computeLifecycleRevision(archived!);
+    assert.notEqual(archivedRevision, resolvedRevision);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('getIncidentsWithUnsyncedLifecycle selects linked incidents whose lifecycle revision changed', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'incident-unsynced-lifecycle-'));
+  try {
+    const store = new IncidentStore(dir, { escalationThreshold: 3 });
+    const created = await store.upsert(incident());
+
+    // Not linked to Linear yet: not selected.
+    assert.equal((await store.getIncidentsWithUnsyncedLifecycle()).length, 0);
+
+    await store.recordLinearSync(created.fingerprint, {
+      linearIssueId: 'HOK-9000',
+      evidenceRevision: 'ev-1',
+      syncedAt: '2026-08-04T12:00:00.000Z',
+    });
+
+    // Linked but lifecycle never synced: selected because current != lastSynced (undefined).
+    const beforeResolve = await store.getIncidentsWithUnsyncedLifecycle();
+    assert.equal(beforeResolve.length, 1);
+    assert.equal(beforeResolve[0].fingerprint, created.fingerprint);
+
+    // Record the lifecycle substep at current revision; now selection is empty.
+    const currentRevision = store.computeLifecycleRevision(created);
+    await store.recordLifecycleSubstep(created.fingerprint, {
+      lifecycleRevision: currentRevision,
+      commentPosted: true,
+    });
+    assert.equal((await store.getIncidentsWithUnsyncedLifecycle()).length, 0);
+
+    // Operator resolves: lifecycle revision changes -> selected again.
+    await store.resolve(created.fingerprint, { reason: 'shipped' });
+    const afterResolve = await store.getIncidentsWithUnsyncedLifecycle();
+    assert.equal(afterResolve.length, 1);
+    assert.equal(afterResolve[0].fingerprint, created.fingerprint);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('recordLifecycleSubstep merges comment and state flags idempotently across replay', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'incident-substep-'));
+  try {
+    const store = new IncidentStore(dir, { escalationThreshold: 3 });
+    const created = await store.upsert(incident());
+    const revision = store.computeLifecycleRevision(created);
+
+    const afterComment = await store.recordLifecycleSubstep(created.fingerprint, {
+      lifecycleRevision: revision,
+      commentPosted: true,
+      at: '2026-08-04T12:00:00.000Z',
+    });
+    assert.equal(afterComment?.metadata.lastSyncedLifecycle?.revision, revision);
+    assert.equal(afterComment?.metadata.lastSyncedLifecycle?.commentPosted, true);
+    assert.equal(afterComment?.metadata.lastSyncedLifecycle?.stateChanged, false);
+
+    // Second substep at the same revision should preserve the earlier commentPosted flag.
+    const afterState = await store.recordLifecycleSubstep(created.fingerprint, {
+      lifecycleRevision: revision,
+      stateChanged: true,
+      observerStateId: 'state-done',
+      at: '2026-08-04T12:05:00.000Z',
+    });
+    assert.equal(afterState?.metadata.lastSyncedLifecycle?.commentPosted, true);
+    assert.equal(afterState?.metadata.lastSyncedLifecycle?.stateChanged, true);
+    assert.equal(afterState?.metadata.lastSyncedLifecycle?.observerStateId, 'state-done');
+
+    // A new revision resets prior substep flags (fresh transition to sync).
+    await store.resolve(created.fingerprint, { reason: 'ship' });
+    const resolved = await store.getIncident(created.fingerprint);
+    const newRevision = store.computeLifecycleRevision(resolved!);
+    const afterReset = await store.recordLifecycleSubstep(created.fingerprint, {
+      lifecycleRevision: newRevision,
+      commentPosted: true,
+    });
+    assert.equal(afterReset?.metadata.lastSyncedLifecycle?.revision, newRevision);
+    assert.equal(afterReset?.metadata.lastSyncedLifecycle?.stateChanged, false);
+    assert.equal(afterReset?.metadata.lastSyncedLifecycle?.observerStateId, undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
