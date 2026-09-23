@@ -102,6 +102,10 @@ export interface ReviewResult {
     reviewInputTaskPacketBytes?: number;
     reviewInputFileCount?: number;
     nativeLoopStopReason?: string;
+    /** Canonical provider that performed the native review (HOK-3064). */
+    reviewProvider?: string;
+    /** Canonical `native-<provider>` agent identity for the native review (HOK-3064). */
+    reviewAgent?: string;
   };
 }
 

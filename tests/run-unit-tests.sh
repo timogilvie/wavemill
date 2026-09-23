@@ -59,6 +59,7 @@ TESTS=(
   shared/lib/native-agent/patch-runtime.test.ts
   shared/lib/native-agent/patch-matcher.test.ts
   shared/lib/native-agent/coding-failure-handoff.test.ts
+  shared/lib/native-agent/stage-failure-envelope.test.ts
   shared/lib/native-agent/coding-artifacts.test.ts
   shared/lib/native-agent/completion-normalizer.test.ts
   shared/lib/native-agent/mutation-policy.test.ts
@@ -76,6 +77,7 @@ TESTS=(
   shared/lib/native-agent/tools/policies.test.ts
   shared/lib/native-agent/tools/registry.test.ts
   shared/lib/native-agent/tools/exposure.test.ts
+  shared/lib/native-agent/tools/menu-resolver.test.ts
   shared/lib/native-agent/tools/git.test.ts
   shared/lib/native-agent/tools/apply-patch-tool.test.ts
   shared/lib/native-agent/tools/command-tools.test.ts
@@ -311,6 +313,7 @@ TESTS=(
   shared/lib/native-agent/certification/store.test.ts
   shared/lib/native-agent/certification/coverage.test.ts
   shared/lib/native-agent/certification/auto-remediate.test.ts
+  shared/lib/native-agent/certification/canary-cohort.test.ts
   shared/lib/native-agent/certification/validator.test.ts
   shared/lib/native-agent/certification/scenarios.test.ts
   shared/lib/native-agent/certification/scenario-runner.test.ts
@@ -324,6 +327,7 @@ TESTS=(
   tools/native-agent-certifications.test.ts
   shared/lib/incident-linear-retry-queue.test.ts
   shared/lib/incident-to-linear-synchronizer.test.ts
+  shared/lib/observer-shadow-audit.test.ts
   shared/lib/incident-filing-reconciler.test.ts
   shared/lib/incident-log-excerpt-reader.test.ts
   shared/lib/verification-metrics.test.ts
@@ -356,6 +360,12 @@ TESTS=(
   shared/lib/native-agent/review.test.ts
   shared/lib/native-agent/session-stream.test.ts
   shared/lib/native-agent/smoke.test.ts
+  shared/lib/native-agent/tool-decision-schema.test.ts
+  shared/lib/native-agent/tool-decision-projector.test.ts
+  shared/lib/native-agent/tool-decision-corpus.test.ts
+  shared/lib/native-agent/tool-decision-labeler.test.ts
+  shared/lib/native-agent/tool-decision-report.test.ts
+  shared/lib/native-agent/tool-decision-capture.test.ts
   shared/lib/native-agent/tools/command.test.ts
   shared/lib/native-agent/tools/intended-files.test.ts
   shared/lib/native-agent/workflow-tools/dedupe-registry.test.ts
@@ -419,6 +429,7 @@ TESTS=(
   shared/fixtures/harness-replay/patch-selection-v1/schema.test.ts
   src/evaluation/scorers/wavemill/patch-selection.test.ts
   shared/lib/challenge-replay-capture.test.ts
+  spike/pi-native-agent/mcp-proxy-spike.test.ts
 )
 
 SHARD_INDEX=1

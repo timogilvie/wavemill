@@ -672,11 +672,67 @@ EOF
 OUTPUT_CLEANUP_EPISODE="$TMP_DIR/output-cleanup-episode.txt"
 run_render "$STATE_FILE_CLEANUP_EPISODE" "$WORKTREES_DIR" "$BEHAVIOR_SKIPPED" "$OUTPUT_CLEANUP_EPISODE"
 
-if grep -q 'cleanup: retained attempts=1 outcome=local-work-preserved fp=abc1' "$OUTPUT_CLEANUP_EPISODE" \
-  && grep -q 'lifecycle: outcome=merged disposition=retained reason=local-work-' "$OUTPUT_CLEANUP_EPISODE"; then
-  pass "dashboard renders retained cleanup episode detail"
+# HOK-3068: a terminal (merged) task with retained resources must leave the
+# Active/Inbox surface entirely and appear only in the compact Backstage
+# recovery section, with disposition/reason and the stored operator action.
+if grep -q 'BACKSTAGE (retained)' "$OUTPUT_CLEANUP_EPISODE" \
+  && grep -q 'HOK-2955.*merged.*retained (local-work-preserved)' "$OUTPUT_CLEANUP_EPISODE" \
+  && grep -q 'Push task/cleanup-episode-task to origin' "$OUTPUT_CLEANUP_EPISODE" \
+  && ! grep -q 'cleanup: retained attempts=1' "$OUTPUT_CLEANUP_EPISODE"; then
+  pass "merged retained task surfaces in Backstage, not Active/Inbox"
 else
-  fail "dashboard cleanup episode detail is missing"
+  fail "Backstage retained cleanup episode detail is missing"
+fi
+
+# HOK-3068: superseded challengers and aborted tasks are terminal by canonical
+# lifecycle outcome. They must leave Active/Inbox and the active-slot count for
+# Backstage, while a genuinely active task alongside them stays in Active.
+STATE_FILE_TERMINAL_LANES="$TMP_DIR/state-terminal-lanes.json"
+cat > "$STATE_FILE_TERMINAL_LANES" <<EOF
+{
+  "tasks": {
+    "HOK-3300": {
+      "slug": "superseded-challenger",
+      "branch": "task/superseded-challenger",
+      "worktree": "$WORKTREES_DIR/active-task",
+      "status": "superseded",
+      "phase": "review",
+      "challengeRole": "challenger",
+      "pr": "tracked"
+    },
+    "HOK-3301": {
+      "slug": "aborted-task",
+      "branch": "task/aborted-task",
+      "worktree": "$WORKTREES_DIR/active-task",
+      "status": "aborted",
+      "phase": "aborted"
+    },
+    "HOK-3302": {
+      "slug": "live-active-task",
+      "branch": "task/live-active-task",
+      "worktree": "$WORKTREES_DIR/active-task",
+      "status": "",
+      "phase": "executing",
+      "pr": "tracked"
+    }
+  }
+}
+EOF
+
+OUTPUT_TERMINAL_LANES="$TMP_DIR/output-terminal-lanes.txt"
+run_render "$STATE_FILE_TERMINAL_LANES" "$WORKTREES_DIR" "$BEHAVIOR_SKIPPED" "$OUTPUT_TERMINAL_LANES"
+
+CLEAN_TERMINAL_LANES="$TMP_DIR/output-terminal-lanes-clean.txt"
+strip_ansi < "$OUTPUT_TERMINAL_LANES" > "$CLEAN_TERMINAL_LANES"
+
+if grep -q 'BACKSTAGE (retained)' "$CLEAN_TERMINAL_LANES" \
+  && grep -q 'HOK-3300.*closed' "$CLEAN_TERMINAL_LANES" \
+  && grep -q 'HOK-3301.*aborted' "$CLEAN_TERMINAL_LANES" \
+  && grep -q 'ACTIVE (1)' "$CLEAN_TERMINAL_LANES" \
+  && grep -q 'HOK-3302' "$CLEAN_TERMINAL_LANES"; then
+  pass "terminal superseded/aborted rows route to Backstage; active row stays Active"
+else
+  fail "terminal rows leaked into Active or Backstage routing is missing"
 fi
 
 STATE_FILE_MONITOR_QUEUE="$TMP_DIR/state-monitor-queue.json"
@@ -1329,9 +1385,13 @@ else
   fail "ready queue state labels are missing"
 fi
 
-if grep -q 'HOK-1313.*✓ done.*✓ merged.*#424 MERGED' "$OUTPUT_READY_QUEUE" \
+# HOK-3068: a merged task (terminal outcome) leaves the ready/Active surface
+# entirely and appears only in Backstage, never with a ready queue label.
+if grep -q 'BACKSTAGE (retained)' "$OUTPUT_READY_QUEUE" \
+  && grep -q 'HOK-1313.*merged' "$OUTPUT_READY_QUEUE" \
+  && ! grep -q 'HOK-1313.*🚦 ready' "$OUTPUT_READY_QUEUE" \
   && ! grep -q 'HOK-1313.*ready-stale' "$OUTPUT_READY_QUEUE"; then
-  pass "merged tasks override stale ready queue labels"
+  pass "merged task leaves ready/Active surface for Backstage"
 else
   fail "merged task should not display stale ready queue label"
 fi

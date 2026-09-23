@@ -949,6 +949,28 @@ challenge_selection_health_release() {
   ) >/dev/null 2>&1 || true
 }
 
+# Record a terminal review-timeout outcome for a challenge arm that resolves
+# WITHOUT a challenge_abort_pair (HOK-3064). Primary-side review-timeout
+# exhaustion never aborts the pair, so its terminal outcome would otherwise
+# never reach recordSelectionOutcome and the timed-out reviewer identity would
+# stay immediately reselectable. Best-effort. Challenger arms record via
+# challenge_abort_pair → record-arm-failure.ts instead; calling both would
+# double-count the provider/model circuit window.
+challenge_selection_health_record_review_timeout() {
+  local pair_id="${1:-}" model="${2:-}"
+  [[ -n "$pair_id" && -n "$model" && -n "${REPO_DIR:-}" ]] || return 0
+  [[ -f "$REPO_DIR/tools/challenge-selection-health.ts" ]] || return 0
+  (
+    cd "$REPO_DIR" && npx tsx tools/challenge-selection-health.ts record-outcome \
+      --repo-dir "$REPO_DIR" \
+      --pair-id "$pair_id" \
+      --stage review \
+      --model "$model" \
+      --failure-kind native-review-timeout \
+      --fault-class provider-fault
+  ) >/dev/null 2>&1 || true
+}
+
 write_openrouter_warning_cache() {
   local warning_text="${1:-}"
   local warning_file="/tmp/${SESSION}-openrouter-warning.txt"
@@ -1241,22 +1263,6 @@ log_challenge_selection_health_plan() {
   fi
 }
 
-release_challenge_selection_health_plan() {
-  local issue="$1" challenge_plan="$2"
-  local stage model
-  stage=$(echo "$challenge_plan" | jq -r '.challengeStage // empty' 2>/dev/null || echo "")
-  model=$(echo "$challenge_plan" | jq -r '.entries[1].variedModel // .entries[1].model // empty' 2>/dev/null || echo "")
-  [[ -n "$stage" && -n "$model" && -n "${REPO_DIR:-}" ]] || return 0
-  [[ -f "$REPO_DIR/tools/challenge-selection-health.ts" ]] || return 0
-  (
-    cd "$REPO_DIR" && npx tsx tools/challenge-selection-health.ts release \
-      --repo-dir "$REPO_DIR" \
-      --pair-id "$issue" \
-      --stage "$stage" \
-      --model "$model"
-  ) >/dev/null 2>&1 || true
-}
-
 record_planning_launch_route_snapshot() {
   local feature_dir="$1" model="$2" agent="$3" depth="$4" source="${5:-effective-route}"
   local route_file="$feature_dir/.routing-complete"
@@ -1333,6 +1339,21 @@ finalize_challenge_execution_intent_before_coding() {
   if [[ -n "$existing_intent" ]] \
     && echo "$existing_intent" | jq -e '(.pairId // "") != "" and (.primary // null) != null and (.challenger // null) != null' >/dev/null 2>&1; then
     log "status" "  $issue: Preserving selected challenge arm through expanded routing"
+    return 0
+  fi
+
+  # HOK-3065: a plan-stage arm sealed at launch in awaiting_expanded_route
+  # materialises here — this is the plan→code handoff, the first point the
+  # expanded route exists. Resolve the sealed decision against the expanded
+  # route and fork the challenger at t=0. The selection is never re-sampled; an
+  # ineligible sealed challenger collapses to single rather than being
+  # substituted. Restart-safe and idempotent (checked-and-set + bounded retry).
+  local expanded_route_arm_count
+  expanded_route_arm_count=$(challenge_arms_list_awaiting_expanded_route "$issue" | jq -r 'length' 2>/dev/null || echo "0")
+  [[ "$expanded_route_arm_count" =~ ^[0-9]+$ ]] || expanded_route_arm_count=0
+  if (( expanded_route_arm_count > 0 )); then
+    log "status" "  $issue: Materialising sealed plan-stage challenger against the expanded route"
+    challenge_maybe_materialize_expanded_route_arms "$issue" "$slug" "$feature_dir" "$wt_dir"
     return 0
   fi
 
@@ -2112,6 +2133,366 @@ challenge_maybe_materialize_deferred_arms() {
       # re-enters through the gate.
       challenge_arms_set_state "$primary_issue" "$arm_key" "materializing" "awaiting_fork" 2>/dev/null || true
       log_warn "  $primary_issue: arm $arm_key materialisation failed rc=$materialise_rc — retrying next tick"
+    fi
+  done
+  return 0
+}
+
+# HOK-3065 — materialise one sealed plan-stage challenger against the expanded
+# route, forking at t=0 (base) so both arms plan the expanded packet
+# independently. Unlike challenge_materialize_challenger_arm (reviewer-stage,
+# forks off completed coding and launches review), this forks off the base and
+# launches planning.
+#
+# Return codes:
+#   0  materialised and planning launched
+#   1  retryable failure (partial worktree left for the next attempt to attach)
+#   2  terminal: the sealed intent is unresolvable or the sealed challenger is
+#      no longer eligible — never substitute; the caller collapses to single.
+#      CHALLENGE_EXPANDED_ROUTE_COLLAPSE_REASON carries the typed reason.
+#
+# Usage: challenge_materialize_expanded_route_arm <primary_issue> <primary_slug> \
+#   <arm_json> <primary_wt_dir> <primary_feature_dir> [base_branch]
+challenge_materialize_expanded_route_arm() {
+  local primary_issue="$1" primary_slug="$2" arm_json="$3"
+  local primary_wt_dir="$4" primary_feature_dir="$5"
+  local base_branch="${6:-${BASE_BRANCH:-main}}"
+
+  CHALLENGE_EXPANDED_ROUTE_COLLAPSE_REASON=""
+
+  local arm_key arm_slug arm_branch varied_stage
+  arm_key=$(challenge_arm_read_field "$arm_json" '.key')
+  arm_slug=$(challenge_arm_read_field "$arm_json" '.slug')
+  arm_branch=$(challenge_arm_read_field "$arm_json" '.branch')
+  varied_stage=$(challenge_arm_read_field "$arm_json" '.variedStage')
+  if [[ -z "$arm_key" || -z "$arm_slug" || -z "$arm_branch" ]]; then
+    log_error "  $primary_issue: expanded-route materialise called with malformed arm record"
+    return 1
+  fi
+
+  # Resolve the sealed decision against the now-available expanded route. The
+  # sealed intent comes from the arm record, then state, then the primary's
+  # feature dir. resolve-challenge-task --resolve-sealed preserves the sealed
+  # challenger and fills only non-varied fields; it never re-runs the lottery.
+  local sealed_intent=""
+  sealed_intent="$(echo "$arm_json" | jq -c '.executionIntent // empty' 2>/dev/null || true)"
+  if ! challenge_intent_json_is_canonical "$sealed_intent"; then
+    sealed_intent="$(jq -c --arg i "$primary_issue" '.tasks[$i].challengeExecutionIntent // empty' "$STATE_FILE" 2>/dev/null || true)"
+  fi
+  if ! challenge_intent_json_is_canonical "$sealed_intent"; then
+    sealed_intent="$(challenge_intent_file_json "$primary_feature_dir" 2>/dev/null || true)"
+  fi
+  if ! challenge_intent_json_is_canonical "$sealed_intent"; then
+    CHALLENGE_EXPANDED_ROUTE_COLLAPSE_REASON="sealed_intent_incomplete"
+    log_error "  $arm_key: no canonical sealed intent to resolve against the expanded route"
+    return 2
+  fi
+
+  local resolution status
+  resolution=$(_with_timeout "$API_TIMEOUT" npx tsx "$TOOLS_DIR/resolve-challenge-task.ts" \
+    --resolve-sealed --sealed-intent "$sealed_intent" \
+    --feature-dir "$primary_feature_dir" --repo-dir "$REPO_DIR" 2>/dev/null || echo "")
+  status="$(echo "$resolution" | jq -r '.status // "collapse"' 2>/dev/null || echo "collapse")"
+  if [[ "$status" != "materialize" ]]; then
+    CHALLENGE_EXPANDED_ROUTE_COLLAPSE_REASON="$(echo "$resolution" | jq -r '.reason // "sealed_challenger_ineligible"' 2>/dev/null || echo "sealed_challenger_ineligible")"
+    log "status" "  $arm_key: sealed plan-stage challenger cannot materialise (${CHALLENGE_EXPANDED_ROUTE_COLLAPSE_REASON})"
+    return 2
+  fi
+
+  local enriched_intent
+  enriched_intent="$(echo "$resolution" | jq -c '.intent' 2>/dev/null || true)"
+  if ! challenge_intent_json_is_canonical "$enriched_intent"; then
+    CHALLENGE_EXPANDED_ROUTE_COLLAPSE_REASON="sealed_intent_incomplete"
+    log_error "  $arm_key: enriched intent from resolve-sealed is not canonical"
+    return 2
+  fi
+
+  # Challenger route: sealed varied planner + shared coder/reviewer. Depths come
+  # from the primary's expanded phase-config (applied before finalize).
+  local challenger_planner challenger_planner_agent shared_coder shared_reviewer
+  challenger_planner="$(echo "$enriched_intent" | jq -r '.challenger.planner.model // ""')"
+  challenger_planner_agent="$(echo "$enriched_intent" | jq -r '.challenger.planner.agent // ""')"
+  shared_coder="$(echo "$enriched_intent" | jq -r '.challenger.coder.model // ""')"
+  shared_reviewer="$(echo "$enriched_intent" | jq -r '.challenger.reviewer.model // ""')"
+  if [[ -z "$challenger_planner" ]]; then
+    CHALLENGE_EXPANDED_ROUTE_COLLAPSE_REASON="sealed_intent_incomplete"
+    log_error "  $arm_key: enriched intent has no challenger planner model"
+    return 2
+  fi
+  local plan_depth code_depth review_mode
+  plan_depth="$(read_phase_config "$primary_feature_dir" "planning" "depth" 2>/dev/null || echo "")"
+  code_depth="$(read_phase_config "$primary_feature_dir" "coding" "depth" 2>/dev/null || echo "")"
+  review_mode="$(read_phase_config "$primary_feature_dir" "review" "mode" 2>/dev/null || echo "")"
+  [[ -n "$plan_depth" ]] || plan_depth="$(challenge_arm_read_field "$arm_json" '.planDepth')"
+  [[ -n "$code_depth" ]] || code_depth="$(challenge_arm_read_field "$arm_json" '.codeDepth')"
+  [[ -n "$review_mode" ]] || review_mode="$(challenge_arm_read_field "$arm_json" '.reviewMode')"
+  [[ -n "$plan_depth" ]] || plan_depth="light"
+  [[ -n "$code_depth" ]] || code_depth="medium"
+  [[ -n "$review_mode" ]] || review_mode="static"
+
+  local challenger_wt_dir="${WORKTREE_ROOT}/${arm_slug}"
+  local challenger_feature_dir="${challenger_wt_dir}/features/${arm_slug}"
+
+  # Fork at t=0: the base branch. Both arms plan independently from the same
+  # base with the expanded packet; the challenger inherits no plan or code.
+  local fork_ref="$base_branch"
+
+  # Branch + worktree, tolerating a partial prior attempt (branch already cut).
+  local worktree_created="false"
+  if git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/$arm_branch" 2>/dev/null; then
+    if [[ ! -d "$challenger_wt_dir" ]]; then
+      if ! ensure_worktree "$arm_branch" "$challenger_wt_dir" "$REPO_DIR" >/dev/null 2>>"${MILL_LOG_FILE:-/dev/null}"; then
+        log_error "  $arm_key: ensure_worktree failed for $arm_branch"
+        return 1
+      fi
+    fi
+  else
+    if [[ -d "$challenger_wt_dir" ]]; then
+      log_error "  $arm_key: worktree $challenger_wt_dir exists without branch $arm_branch"
+      return 1
+    fi
+    if ! git -C "$REPO_DIR" worktree add -b "$arm_branch" "$challenger_wt_dir" "$fork_ref" >>"${MILL_LOG_FILE:-/dev/null}" 2>&1; then
+      log_error "  $arm_key: git worktree add failed at base $fork_ref"
+      return 1
+    fi
+    worktree_created="true"
+  fi
+
+  # Post-worktree seeding (mirror launch_task): gitignored overlay + deps.
+  if [[ -f "$REPO_DIR/.wavemill-config.local.json" ]]; then
+    cp "$REPO_DIR/.wavemill-config.local.json" "$challenger_wt_dir/.wavemill-config.local.json" 2>/dev/null || \
+      log_warn "  $arm_key: copy .wavemill-config.local.json failed"
+  fi
+  if declare -F worktree_deps_ensure >/dev/null 2>&1; then
+    worktree_deps_ensure "$challenger_wt_dir" "$primary_wt_dir" "$arm_key" || \
+      log_warn "  $arm_key: dependency setup returned non-zero"
+  fi
+
+  # Seed the challenger feature dir with the expanded task packet + routing
+  # ONLY. Plan and coding artifacts are excluded so the challenger plans the
+  # expanded packet from t=0 with its own sealed planner.
+  mkdir -p "$challenger_feature_dir" || { log_error "  $arm_key: mkdir feature dir failed"; return 1; }
+  local artifact
+  for artifact in \
+    task-packet.md task-packet-header.md task-packet-details.md \
+    selected-task.json \
+    .initial-route.json .post-expansion-route.json .expanded-route.json \
+    .trace-context.json; do
+    if [[ -e "$primary_feature_dir/$artifact" ]]; then
+      cp -R "$primary_feature_dir/$artifact" "$challenger_feature_dir/$artifact" 2>/dev/null || \
+        log_warn "  $arm_key: copy $artifact failed"
+    fi
+  done
+  # Challenger route snapshot: the primary's expanded route with the planner
+  # overridden to the sealed challenger planner.
+  if [[ -f "$primary_feature_dir/.routing-complete" ]] && jq -e . "$primary_feature_dir/.routing-complete" >/dev/null 2>&1; then
+    jq --arg p "$challenger_planner" '.planner = $p' "$primary_feature_dir/.routing-complete" \
+      > "$challenger_feature_dir/.routing-complete" 2>/dev/null || \
+      cp "$primary_feature_dir/.routing-complete" "$challenger_feature_dir/.routing-complete" 2>/dev/null || true
+  fi
+
+  write_phase_config "$challenger_feature_dir" "$challenger_planner" "$shared_coder" "$shared_reviewer" \
+    "$plan_depth" "$code_depth" "$review_mode" "" || \
+    log_warn "  $arm_key: write_phase_config returned non-zero"
+
+  # Persist the enriched intent to both arms (state + feature dirs) so eval
+  # attestation and the challenger's own launch resolve identically.
+  persist_challenge_execution_intent "$primary_issue" "$arm_key" \
+    "$primary_feature_dir" "$enriched_intent" "$challenger_feature_dir"
+
+  if ! challenge_intent_files_valid "$challenger_feature_dir"; then
+    log_error "  $arm_key: refusing to launch - challenge intent missing/invalid after seeding"
+    return 1
+  fi
+
+  # Save the challenger's task-state entry and register it in the monitor maps.
+  local linear_issue
+  linear_issue="$(get_linear_issue_id "$primary_issue" 2>/dev/null || echo "$primary_issue")"
+  local planner_agent="$challenger_planner_agent"
+  [[ -n "$planner_agent" ]] || planner_agent="$(challenge_arm_read_field "$arm_json" '.agents.planner')"
+  [[ -n "$planner_agent" ]] || planner_agent="${AGENT_CMD:-claude}"
+  save_task_state "$arm_key" "$arm_slug" "$arm_branch" "$challenger_wt_dir" \
+    "" "" "$planner_agent" "$linear_issue" \
+    "true" "$primary_issue" "challenger" "$shared_coder" \
+    "$challenger_planner" "$shared_coder" "$shared_reviewer" \
+    "$plan_depth" "$code_depth" "$review_mode" \
+    "$varied_stage"
+
+  BRANCH_BY_ISSUE["$arm_key"]="$arm_branch"
+  SLUG_BY_ISSUE["$arm_key"]="$arm_slug"
+
+  state_mutate "$STATE_FILE" \
+    '.tasks[$issue].challengerLaunched = true
+     | .tasks[$issue].updated = (now | todate)' \
+    --arg issue "$primary_issue" >/dev/null 2>&1 || true
+
+  # Launch the challenger's planning phase directly (t=0 fork). Mirrors the
+  # coding→review launch in challenge_materialize_challenger_arm so the same
+  # phase-machinery guards apply.
+  local planner_launch_model="$challenger_planner" resolved_planner_agent=""
+  if declare -F agent_resolve_model >/dev/null 2>&1; then
+    planner_launch_model="$(agent_resolve_model "planner" "$challenger_planner" "$REPO_DIR" 2>/dev/null || echo "$challenger_planner")"
+  fi
+  if declare -F agent_resolve_from_model >/dev/null 2>&1; then
+    resolved_planner_agent="$(agent_resolve_from_model "$planner_launch_model" "planning" 2>/dev/null || echo "")"
+  fi
+  [[ -n "$resolved_planner_agent" ]] || resolved_planner_agent="$planner_agent"
+
+  set_task_phase "$arm_key" "planning"
+  write_stage_result_with_history "$challenger_feature_dir" "planning" "running" \
+    "$resolved_planner_agent" "$planner_launch_model"
+
+  local arm_title
+  arm_title=$(read_state_value "" --arg i "$primary_issue" '.tasks[$i].title // ""')
+  [[ -n "$arm_title" ]] || arm_title="$arm_slug"
+
+  local launch_rc=0
+  _run_phase_launch planning launch_planning_phase "$arm_key" "$arm_slug" "$arm_title" \
+    "$challenger_wt_dir" "$arm_branch" "$base_branch" \
+    "$planner_launch_model" "$resolved_planner_agent" "$plan_depth" || launch_rc=$?
+  if (( launch_rc != 0 )); then
+    log_error "  $arm_key: planning launch failed rc=$launch_rc — arm left for retry"
+    return 1
+  fi
+
+  log "status" "  $primary_issue → plan-stage challenger arm $arm_key materialised at t=0 (base $fork_ref)"
+  log_route_lifecycle "challenge_arm_materialized" \
+    "issue=$primary_issue" \
+    "arm=$arm_key" \
+    "stage=$varied_stage" \
+    "fork=t0"
+  return 0
+}
+
+# HOK-3065 — expanded-route fork trigger. Called at the primary's plan→code
+# handoff, where the expanded route first exists. Idempotent and restart-safe
+# by construction (mirrors challenge_maybe_materialize_deferred_arms):
+#   - No awaiting_expanded_route arms → fast no-op.
+#   - Expanded route absent → wait.
+#   - Bounded-retry gate keyed on the base fork SHA (HOK-2924 invariant).
+#   - Checked-and-set awaiting_expanded_route → materializing is exactly-once.
+#   - rc 2 (ineligible/unresolvable) collapses to single with a typed reason and
+#     tears down any partial worktree — never substituting the sealed choice.
+#   - rc 1 resets to awaiting_expanded_route for the next tick; the ceiling
+#     terminalises to `exhausted` and collapses.
+#
+# Usage: challenge_maybe_materialize_expanded_route_arms <primary_issue> \
+#   <primary_slug> <primary_feature_dir> <primary_wt_dir>
+challenge_maybe_materialize_expanded_route_arms() {
+  local primary_issue="$1" primary_slug="$2"
+  local primary_feature_dir="$3" primary_wt_dir="$4"
+  [[ -n "$primary_issue" ]] || return 0
+
+  # Only the primary drives materialisation.
+  local role
+  role="$(get_task_meta "$primary_issue" "challengeRole" 2>/dev/null || true)"
+  if [[ "$role" == "challenger" ]]; then
+    return 0
+  fi
+
+  local pending_json pending_count
+  pending_json="$(challenge_arms_list_awaiting_expanded_route "$primary_issue")"
+  pending_count=$(echo "$pending_json" | jq -r 'length' 2>/dev/null || echo "0")
+  [[ "$pending_count" =~ ^[0-9]+$ ]] || pending_count=0
+  (( pending_count > 0 )) || return 0
+
+  # The expanded route must exist before a plan-stage arm can materialise.
+  if [[ ! -f "$primary_feature_dir/.post-expansion-route.json" && ! -f "$primary_feature_dir/.expanded-route.json" ]]; then
+    return 0
+  fi
+
+  # Key the retry budget on the stable base fork SHA, not the primary's moving
+  # HEAD: a plan-stage arm forks at t=0, so the primary advancing through coding
+  # must not silently reset the budget.
+  local base_branch="${BASE_BRANCH:-main}"
+  local fork_sha
+  fork_sha="$(git -C "$primary_wt_dir" rev-parse "$base_branch" 2>/dev/null \
+    || git -C "$REPO_DIR" rev-parse "$base_branch" 2>/dev/null \
+    || echo "t0")"
+
+  local limit="${WAVEMILL_CHALLENGE_MATERIALIZE_MAX_ATTEMPTS:-4}"
+  [[ "$limit" =~ ^[0-9]+$ ]] || limit=4
+
+  local i=0 arm_json arm_key
+  while (( i < pending_count )); do
+    arm_json=$(echo "$pending_json" | jq -c ".[$i]")
+    arm_key=$(echo "$arm_json" | jq -r '.key // ""')
+    i=$((i + 1))
+    [[ -n "$arm_key" ]] || continue
+
+    local bucket="challenger-expanded-route-$arm_key"
+    local disposition
+    disposition="$(bounded_retry_gate "$primary_feature_dir" "$bucket" "$fork_sha" "$limit")"
+    case "$disposition" in
+      backoff|exhausted-quiet)
+        continue
+        ;;
+      exhausted)
+        local attempts reason
+        attempts=$(bounded_retry_count "$primary_feature_dir" "$bucket")
+        reason="Plan-stage challenger materialisation exhausted after ${attempts} attempt(s) at base ${fork_sha:-unknown}"
+        if bounded_retry_mark_exhausted "$primary_feature_dir" "$bucket" "$reason"; then
+          log "status" "⛔ $primary_issue → plan-stage challenger arm $arm_key materialisation exhausted after ${attempts} attempts"
+        fi
+        challenge_arms_set_state "$primary_issue" "$arm_key" "awaiting_expanded_route" "exhausted" \
+          "$(jq -cn --arg r "$reason" '{exhaustReason: $r, exhaustedAt: (now | todate)}')" 2>/dev/null || true
+        challenge_cancel_challenger_arm "$primary_issue" "$primary_slug" "$arm_key" \
+          "$primary_feature_dir" "$(challenge_arm_read_field "$arm_json" '.variedStage')" \
+          "$(challenge_arm_read_field "$arm_json" '.models.planner')" \
+          "expanded_route_materialisation_ceiling" "$reason" 2>/dev/null || true
+        log_route_lifecycle "challenge_arm_exhausted" \
+          "issue=$primary_issue" \
+          "arm=$arm_key" \
+          "reason=expanded_route_materialisation_ceiling"
+        continue
+        ;;
+      proceed)
+        :
+        ;;
+      *)
+        continue
+        ;;
+    esac
+
+    # Exactly-once transition. A concurrent writer that already moved this arm
+    # to materializing makes this a no-op for that arm.
+    if ! challenge_arms_set_state "$primary_issue" "$arm_key" "awaiting_expanded_route" "materializing"; then
+      continue
+    fi
+    bounded_retry_increment "$primary_feature_dir" "$bucket" "$fork_sha" >/dev/null 2>&1 || true
+
+    local materialise_rc=0
+    CHALLENGE_EXPANDED_ROUTE_COLLAPSE_REASON=""
+    challenge_materialize_expanded_route_arm \
+      "$primary_issue" "$primary_slug" "$arm_json" \
+      "$primary_wt_dir" "$primary_feature_dir" "$base_branch" || materialise_rc=$?
+
+    if (( materialise_rc == 0 )); then
+      challenge_arms_set_state "$primary_issue" "$arm_key" "materializing" "materialized" \
+        "$(jq -cn --arg fc "$fork_sha" '{materializedAt: (now | todate), forkCommit: $fc}')" 2>/dev/null || true
+      bounded_retry_clear "$primary_feature_dir" "$bucket"
+    elif (( materialise_rc == 2 )); then
+      # Terminal: never substitute the sealed challenger. Collapse to single with
+      # the typed reason and tear down any partial worktree/branch/pane so no
+      # orphan or phantom pair is left behind.
+      local reason="${CHALLENGE_EXPANDED_ROUTE_COLLAPSE_REASON:-sealed_challenger_ineligible}"
+      if bounded_retry_mark_exhausted "$primary_feature_dir" "$bucket" "$reason"; then
+        log "status" "  $primary_issue: plan-stage challenger arm $arm_key cannot materialise ($reason)"
+      fi
+      challenge_arms_set_state "$primary_issue" "$arm_key" "materializing" "exhausted" \
+        "$(jq -cn --arg r "$reason" '{exhaustReason: $r, exhaustedAt: (now | todate)}')" 2>/dev/null || true
+      challenge_cancel_challenger_arm "$primary_issue" "$primary_slug" "$arm_key" \
+        "$primary_feature_dir" "$(challenge_arm_read_field "$arm_json" '.variedStage')" \
+        "$(challenge_arm_read_field "$arm_json" '.models.planner')" \
+        "$reason" "Sealed plan-stage challenger could not materialise against the expanded route" 2>/dev/null || true
+      log_route_lifecycle "challenge_arm_invalid_intent" \
+        "issue=$primary_issue" \
+        "arm=$arm_key" \
+        "reason=$reason"
+    else
+      # Retryable — reset to the pending state so the next tick re-enters the gate.
+      challenge_arms_set_state "$primary_issue" "$arm_key" "materializing" "awaiting_expanded_route" 2>/dev/null || true
+      log_warn "  $primary_issue: plan-stage arm $arm_key materialisation failed rc=$materialise_rc — retrying next tick"
     fi
   done
   return 0
@@ -5291,6 +5672,22 @@ native_coding_failure_handoff_reason() {
   npx tsx "$TOOLS_DIR/read-coding-failure-handoff.ts" "$handoff_file" 2>/dev/null
 }
 
+# Read typed evidence from a native stage-failure envelope (HOK-3064), if
+# present. Prints one JSON line
+#   {"failureKind":…,"cause":…,"stage":…,"provider":…,"model":…,"agent":…}
+# on stdout; returns non-zero when the envelope is absent, malformed, fails
+# schema validation, or the reader tool cannot run — callers treat every
+# non-zero as "no typed envelope evidence" and fall back to the coding handoff
+# / substring classification path. Defined for every native stage, unlike the
+# coding-only handoff.
+native_stage_failure_envelope_json() {
+  local feature_dir="${1:-}" stage="${2:-}"
+  local envelope_file="$feature_dir/.${stage}-failure-envelope.json"
+  [[ -n "$feature_dir" && -n "$stage" && -f "$envelope_file" ]] || return 1
+  [[ -n "${TOOLS_DIR:-}" ]] || return 1
+  npx tsx "$TOOLS_DIR/read-stage-failure-envelope.ts" "$envelope_file" 2>/dev/null
+}
+
 # Classify a terminal native failure (HOK-2933). Precedence contract:
 #   1. Typed handoff reason (optional 2nd arg, from .coding-failure-handoff.json):
 #      no_completion_artifact / invalid_completion_artifact →
@@ -5358,6 +5755,12 @@ native_terminal_failure_next_action() {
       printf 'top up OpenRouter credits at https://openrouter.ai/credits\n' ;;
     provider-transient-error)
       printf 'transient upstream failure. Start the phase again\n' ;;
+    native-stage-timeout)
+      printf 'the native stage exhausted its wall-clock/turn/tool-call budget (recoverable infrastructure). Relaunch the same pinned reviewer with an escalated timeout\n' ;;
+    policy-denied)
+      printf 'a mutation/network policy rejected the run (harness fault, not a model/provider signal). Review the policy decision before relaunching\n' ;;
+    cancelled)
+      printf 'the run was cancelled by an operator or the orchestrator (not a model/provider signal). Relaunch the phase when ready\n' ;;
     empty-model-turn)
       printf 'relaunch native coding; the runtime exhausted bounded continuation after empty model turns\n' ;;
     tool-use-unsupported)
@@ -5376,6 +5779,7 @@ native_terminal_failure_next_action() {
 emit_native_terminal_failure_attention() {
   local issue="$1" feature_dir="$2" stage="$3" win="$4" win_target="$5" fallback_agent="${6:-}" fallback_model="${7:-}"
   local stage_status detail handoff_reason failure_kind next_action agent model notes artifacts_json is_challenge
+  local envelope_json="" envelope_cause="" envelope_model=""
 
   stage_status="$(read_stage_status "$feature_dir" "$stage")"
   [[ "$stage_status" == "running" ]] || return 1
@@ -5390,13 +5794,30 @@ emit_native_terminal_failure_attention() {
   agent_or_model_is_native_for_recovery "$agent" "$model" "" || return 1
 
   detail="$(native_hook_terminal_failure_detail "$issue")" || return 1
-  # Only the coding stage produces a typed failure handoff; other stages use
-  # the substring/default classification path unchanged.
+  # Envelope-first precedence (HOK-3064): a typed stage-failure envelope (any
+  # stage) supplies the failure kind and canonical provider/model directly, and
+  # substring matching is skipped entirely — exactly the rule the coding handoff
+  # already enjoys. The coding-only handoff, then the substring/default path,
+  # remain the fallback when no valid envelope exists.
   handoff_reason=""
-  if [[ "$stage" == "coding" ]]; then
-    handoff_reason="$(native_coding_failure_handoff_reason "$feature_dir" 2>/dev/null || true)"
+  failure_kind=""
+  envelope_json="$(native_stage_failure_envelope_json "$feature_dir" "$stage" 2>/dev/null || true)"
+  if [[ -n "$envelope_json" ]]; then
+    failure_kind="$(jq -r '.failureKind // empty' <<<"$envelope_json" 2>/dev/null || true)"
+    envelope_cause="$(jq -r '.cause // empty' <<<"$envelope_json" 2>/dev/null || true)"
+    envelope_model="$(jq -r '.model // empty' <<<"$envelope_json" 2>/dev/null || true)"
+    # Prefer the envelope's canonical model over the (possibly empty or derived)
+    # stage-result model when stamping identity onto the abort/stage result.
+    [[ -z "$envelope_model" ]] || model="$envelope_model"
   fi
-  failure_kind="$(native_terminal_failure_kind "$detail" "$handoff_reason")"
+  if [[ -z "$failure_kind" ]]; then
+    # Only the coding stage produces a typed failure handoff; other stages use
+    # the substring/default classification path unchanged.
+    if [[ "$stage" == "coding" ]]; then
+      handoff_reason="$(native_coding_failure_handoff_reason "$feature_dir" 2>/dev/null || true)"
+    fi
+    failure_kind="$(native_terminal_failure_kind "$detail" "$handoff_reason")"
+  fi
   next_action="$(native_terminal_failure_next_action "$failure_kind")"
   if [[ "$failure_kind" == "provider-credit-exhausted" ]]; then
     write_openrouter_warning_cache "OpenRouter credits exhausted: $next_action"
@@ -5404,6 +5825,7 @@ emit_native_terminal_failure_attention() {
 
   notes="Native ${stage} failed (${failure_kind}): ${detail} Next: ${next_action}"
   [[ -z "$handoff_reason" ]] || notes+=" (typed handoff: ${handoff_reason})"
+  [[ -z "$envelope_cause" ]] || notes+=" (typed envelope cause: ${envelope_cause})"
 
   artifacts_json="$(jq -cn \
     --arg paneTarget "$win_target" \
@@ -5455,6 +5877,7 @@ emit_native_terminal_failure_attention() {
 emit_challenge_stage_failure_quarantine() {
   local issue="$1" feature_dir="$2" stage="$3" win="$4"
   local is_challenge existing detail handoff_reason failure_kind next_action model
+  local envelope_json="" envelope_cause="" envelope_model=""
 
   is_challenge="$(get_task_meta "$issue" "challenge" 2>/dev/null || true)"
   [[ "$is_challenge" == "true" ]] || return 1
@@ -5467,18 +5890,33 @@ emit_challenge_stage_failure_quarantine() {
   [[ -n "$detail" ]] || detail="$(stage_result_field "$feature_dir" "$stage" "notes")"
   [[ -n "$detail" ]] || detail="${stage} stage reported failed without detail"
 
-  # Typed handoff evidence (coding stage only) takes precedence over the
-  # substring heuristics; other stages never produce one.
-  handoff_reason=""
-  if [[ "$stage" == "coding" ]]; then
-    handoff_reason="$(native_coding_failure_handoff_reason "$feature_dir" 2>/dev/null || true)"
-  fi
-  failure_kind="$(native_terminal_failure_kind "$detail" "$handoff_reason")"
-  next_action="$(native_terminal_failure_next_action "$failure_kind")"
   model="$(stage_result_field "$feature_dir" "$stage" "model")"
+  # Envelope-first precedence (HOK-3064): a typed stage-failure envelope (any
+  # stage) supplies the failure kind and canonical provider/model, and substring
+  # matching is skipped entirely. The coding-only handoff and the substring
+  # heuristics remain the fallback when no valid envelope exists.
+  handoff_reason=""
+  failure_kind=""
+  envelope_json="$(native_stage_failure_envelope_json "$feature_dir" "$stage" 2>/dev/null || true)"
+  if [[ -n "$envelope_json" ]]; then
+    failure_kind="$(jq -r '.failureKind // empty' <<<"$envelope_json" 2>/dev/null || true)"
+    envelope_cause="$(jq -r '.cause // empty' <<<"$envelope_json" 2>/dev/null || true)"
+    envelope_model="$(jq -r '.model // empty' <<<"$envelope_json" 2>/dev/null || true)"
+    [[ -z "$envelope_model" ]] || model="$envelope_model"
+  fi
+  if [[ -z "$failure_kind" ]]; then
+    # Typed handoff evidence (coding stage only) takes precedence over the
+    # substring heuristics; other stages never produce one.
+    if [[ "$stage" == "coding" ]]; then
+      handoff_reason="$(native_coding_failure_handoff_reason "$feature_dir" 2>/dev/null || true)"
+    fi
+    failure_kind="$(native_terminal_failure_kind "$detail" "$handoff_reason")"
+  fi
+  next_action="$(native_terminal_failure_next_action "$failure_kind")"
   # Preserve the typed reason in the abort record. Appended only after
   # classification so the token never perturbs substring matching.
   [[ -z "$handoff_reason" ]] || detail+=" [typed handoff reason: ${handoff_reason}]"
+  [[ -z "$envelope_cause" ]] || detail+=" [typed envelope cause: ${envelope_cause}]"
 
   challenge_abort_pair "$issue" "$feature_dir" "$win" "$stage" "$model" \
     "terminal_stage_failure:${failure_kind}" "$detail" "$next_action" \
@@ -9085,12 +9523,29 @@ review_recovery_coordinator_locked() {
         failure_reason="Review infrastructure recovery exhausted after $(bounded_retry_count "$feature_dir" "review-infra-recovery") attempt(s) for PR #$pr_number (category=${category}); $(review_infra_recovery_next_action "$category")"
         bounded_retry_mark_exhausted "$feature_dir" "review-infra-recovery" "$failure_reason" || true
         write_ready_attention_file "$feature_dir" "Review failed on infrastructure (${category}) for PR #$pr_number, $(review_infra_recovery_next_action "$category")."
-        if [[ "$category" == "native-review-timeout" && "$(_challenge_side_for_issue "$issue" 2>/dev/null || true)" == "challenger" ]]; then
-          challenge_abort_pair "$issue" "$feature_dir" "" "review" "$reviewer_model" \
-            "review_timeout_exhausted" \
-            "Challenger review timed out after bounded retries for model ${reviewer_model}; attempts=$(bounded_retry_count "$feature_dir" "review-infra-recovery")" \
-            "the challenger forfeits this reviewer-stage challenge, sibling may proceed" \
-            "single" || true
+        if [[ "$category" == "native-review-timeout" ]]; then
+          local review_timeout_side
+          review_timeout_side="$(_challenge_side_for_issue "$issue" 2>/dev/null || true)"
+          if [[ "$review_timeout_side" == "challenger" ]]; then
+            # Typed exhaustion reason (HOK-3064): retry_exhausted:native-review-timeout
+            # parses to a typed native-review-timeout kind → provider-fault, so
+            # record-arm-failure.ts opens the correct provider/model circuit.
+            challenge_abort_pair "$issue" "$feature_dir" "" "review" "$reviewer_model" \
+              "retry_exhausted:native-review-timeout" \
+              "Challenger review timed out after bounded retries for model ${reviewer_model}; attempts=$(bounded_retry_count "$feature_dir" "review-infra-recovery")" \
+              "the challenger forfeits this reviewer-stage challenge, sibling may proceed" \
+              "single" || true
+          elif [[ -n "$review_timeout_side" ]]; then
+            # Primary-side (any non-challenger challenge arm) review-timeout
+            # exhaustion never aborts the pair, so its terminal outcome would
+            # otherwise never reach recordSelectionOutcome and the timed-out
+            # reviewer would stay immediately reselectable (HOK-3064). Record it
+            # directly. Challenger arms record via challenge_abort_pair above, so
+            # gating on non-challenger here avoids double-counting the circuit.
+            challenge_selection_health_record_review_timeout \
+              "$(get_task_meta "$issue" "challengePairId" 2>/dev/null || printf '%s' "$issue")" \
+              "$reviewer_model" || true
+          fi
         fi
         review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
         return 1
@@ -13544,6 +13999,7 @@ EOF
     # Challengers are free overhead — always pass remaining-slots >= 2
     challenge_mode="single"
     challenge_reason=""
+    local plan_awaits_expanded_route="false"
     if [[ -n "${FORCE_MODEL:-}" ]]; then
       challenge_reason="forced_model"
       log "debug" "  $issue: Challenge skipped because FORCE_MODEL is set ($FORCE_MODEL)"
@@ -13565,26 +14021,16 @@ EOF
         return 1
       fi
       if challenge_plan_stage_requires_effective_route "$challenge_plan"; then
-        release_challenge_selection_health_plan "$issue" "$challenge_plan"
-        # A plan-stage challenge cannot be formed before the expanded route
-        # exists.  Retarget it to the implementation stage rather than dropping
-        # to a single-model run: discarding the pair here is how an already
-        # selected open-weight coder arm disappeared entirely (HOK-534).
-        local retargeted_plan retargeted_mode
-        retargeted_plan=$(_with_timeout "$API_TIMEOUT" npx tsx "$TOOLS_DIR/resolve-challenge-task.ts" \
-          "${challenge_args[@]}" --pinned-stage implementation 2>/dev/null || echo "")
-        retargeted_mode=$(echo "$retargeted_plan" | jq -r '.mode // "single"' 2>/dev/null || echo "single")
-        if [[ "$retargeted_mode" == "challenge" ]]; then
-          challenge_plan="$retargeted_plan"
-          challenge_mode="challenge"
-          challenge_reason=$(echo "$challenge_plan" | jq -r '.reason // empty' 2>/dev/null || echo "")
-          log_challenge_selection_health_plan "$issue" "$challenge_plan"
-          log_warn "  $issue: Planner challenge unavailable before expansion — retargeted to implementation stage"
-        else
-          challenge_mode="single"
-          challenge_reason="plan_stage_expanded_route_unavailable"
-          log_warn "  $issue: Planner challenge deferred until expanded route is available"
-        fi
+        # HOK-3065: seal the plan-stage decision and defer the challenger as an
+        # awaiting_expanded_route arm instead of retargeting to implementation
+        # or coercing to single. The prior retarget (HOK-534) preserved *a*
+        # pair but silently changed the varied stage; sealing preserves the
+        # actual plan-stage selection and materialises it at t=0 once the
+        # expanded route exists. The selection-health reservation is kept so no
+        # other task claims the sealed challenger before materialisation.
+        plan_awaits_expanded_route="true"
+        challenge_reason="awaiting_expanded_route"
+        log "status" "  $issue: Planner challenge sealed (challenger deferred until expanded route, awaiting_expanded_route)"
       fi
     fi
     if [[ "$challenge_mode" == "challenge" ]]; then
@@ -13630,8 +14076,14 @@ EOF
       # from the primary at materialisation time, so /tmp packet mirrors would
       # be stale by then anyway.
       local defer_challenger="false"
+      local pending_arm_state="awaiting_fork"
       if [[ "$challenge_stage" == "review" ]]; then
         defer_challenger="true"
+      elif [[ "$plan_awaits_expanded_route" == "true" ]]; then
+        # HOK-3065: plan-stage challenger sealed pre-expansion; forks at t=0
+        # once the expanded route is available.
+        defer_challenger="true"
+        pending_arm_state="awaiting_expanded_route"
       fi
       if [[ "$defer_challenger" != "true" ]]; then
         cp "$packet_file" "/tmp/${SESSION}-${challenger_key}-taskpacket.md" 2>/dev/null || true
@@ -13644,7 +14096,9 @@ EOF
       LAST_LAUNCHED_SLOTS=1  # Challenger is free overhead, doesn't consume a slot
       primary_varied=$(echo "$challenge_plan" | jq -r '.entries[0].variedModel // .entries[0].model // empty' 2>/dev/null)
       challenger_varied=$(echo "$challenge_plan" | jq -r '.entries[1].variedModel // .entries[1].model // empty' 2>/dev/null)
-      if [[ "$defer_challenger" == "true" ]]; then
+      if [[ "$defer_challenger" == "true" && "$pending_arm_state" == "awaiting_expanded_route" ]]; then
+        log "status" "  Challenge selected (stage=${challenge_stage}: ${primary_varied} vs ${challenger_varied}) [challenger deferred until expanded route]"
+      elif [[ "$defer_challenger" == "true" ]]; then
         log "status" "  Challenge selected (stage=${challenge_stage}: ${primary_varied} vs ${challenger_varied}) [challenger deferred until fork]"
       else
         log "status" "  Challenge selected (stage=${challenge_stage}: ${primary_varied} vs ${challenger_varied}) [challenger is extra pane]"
@@ -13868,7 +14322,8 @@ EOF
         "$challenger_model" "$challenger_planner" "$challenger_reviewer" \
         "$challenger_agent" "${challenger_planner_agent:-$challenger_agent}" "${challenger_reviewer_agent:-$challenger_agent}" \
         "$challenger_plan_depth" "$challenger_code_depth" "$challenger_review_mode" \
-        "$challenge_execution_intent")"
+        "$challenge_execution_intent" \
+        "${pending_arm_state:-awaiting_fork}")"
       challenge_arms_record_pending "$issue" "$pending_arm_json" || \
         log_warn "  $issue: failed to record pending challenger arm $challenger_key"
       # Persist the intent into the primary's feature dir when present, and
@@ -15916,6 +16371,10 @@ monitor_issue_state() {
             # cannot block the primary — the primary's review has already
             # been dispatched at this point.
             challenge_maybe_materialize_deferred_arms "$ISSUE" "$SLUG" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" || true
+            # HOK-3065: also drive any sealed plan-stage arm whose materialisation
+            # was interrupted by a restart. Idempotent and internally guarded on
+            # the expanded route existing.
+            challenge_maybe_materialize_expanded_route_arms "$ISSUE" "$SLUG" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" || true
 
             active_count=$((active_count + 1))
             return 0
@@ -16058,6 +16517,8 @@ monitor_issue_state() {
           # tick to retry. Guarded internally so cheap when there are no
           # pending arms.
           challenge_maybe_materialize_deferred_arms "$ISSUE" "$SLUG" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" || true
+          # HOK-3065: restart-safe re-drive for sealed plan-stage arms.
+          challenge_maybe_materialize_expanded_route_arms "$ISSUE" "$SLUG" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" || true
 
           local review_status
           local pr_number
@@ -17151,6 +17612,7 @@ monitor_issue_state() {
     # run again; a still-pending arm must fork from here too. Guarded
     # internally, so this is a cheap no-op when no arms are pending.
     challenge_maybe_materialize_deferred_arms "$ISSUE" "$SLUG" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" || true
+    challenge_maybe_materialize_expanded_route_arms "$ISSUE" "$SLUG" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" || true
     maybe_run_challenge_eval "$ISSUE" "$PR" "$BRANCH" "$SLUG"
     maybe_run_challenge_comparison "$ISSUE"
     maybe_resolve_unresolvable_challenge_pair "$ISSUE"
@@ -17648,11 +18110,13 @@ classify_backstage_observer_health() {
 }
 
 restart_backstage_observer_loop() {
-  local merged observer_interval observer_max_log_lines observer_cmd result new_pane action _killed
+  local merged observer_interval observer_max_log_lines observer_cmd result new_pane action _killed observer_service_mode
   merged="$(wavemill_load_config "$REPO_DIR")"
   observer_interval="$(wavemill_observer_interval_seconds "$merged")"
   observer_max_log_lines="$(wavemill_observer_max_log_lines "$merged")"
-  observer_cmd="$(wavemill_build_observer_loop_command "$SESSION" "$REPO_DIR" "$TOOLS_DIR" "$observer_interval" "$observer_max_log_lines")"
+  observer_service_mode="$(wavemill_observer_linear_service_mode "$merged" "$REPO_DIR")"
+  [[ "$observer_service_mode" == "off" ]] || wavemill_observer_ensure_linear_key "$REPO_DIR"
+  observer_cmd="$(wavemill_build_observer_loop_command "$SESSION" "$REPO_DIR" "$TOOLS_DIR" "$observer_interval" "$observer_max_log_lines" "$observer_service_mode")"
   result="$(wavemill_reconcile_backstage_service_pane "$SESSION" "$WAVEMILL_WINDOW_BACKSTAGE" "$WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE" "$observer_cmd" "restart" "$SESSION:$WAVEMILL_WINDOW_BACKSTAGE.0" -d -v -p 25 -c "$REPO_DIR" || true)"
   IFS=$'\t' read -r new_pane action _killed <<< "$result"
   [[ -n "$new_pane" ]] || return 1
@@ -17687,7 +18151,10 @@ check_backstage_observer_health() {
   if [[ "$pane_status" == "healthy" ]] && (( observer_count > 1 )); then
     observer_interval="$(wavemill_observer_interval_seconds "$merged")"
     observer_max_log_lines="$(wavemill_observer_max_log_lines "$merged")"
-    observer_cmd="$(wavemill_build_observer_loop_command "$SESSION" "$REPO_DIR" "$TOOLS_DIR" "$observer_interval" "$observer_max_log_lines")"
+    local dup_service_mode
+    dup_service_mode="$(wavemill_observer_linear_service_mode "$merged" "$REPO_DIR")"
+    [[ "$dup_service_mode" == "off" ]] || wavemill_observer_ensure_linear_key "$REPO_DIR"
+    observer_cmd="$(wavemill_build_observer_loop_command "$SESSION" "$REPO_DIR" "$TOOLS_DIR" "$observer_interval" "$observer_max_log_lines" "$dup_service_mode")"
     reconcile_result="$(wavemill_reconcile_backstage_service_pane "$SESSION" "$WAVEMILL_WINDOW_BACKSTAGE" "$WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE" "$observer_cmd" "reuse" "$SESSION:$WAVEMILL_WINDOW_BACKSTAGE.0" -d -v -p 25 -c "$REPO_DIR" || true)"
     IFS=$'\t' read -r _reconcile_pane _reconcile_action _reconcile_killed <<< "$reconcile_result"
     log_warn "Backstage observer had ${observer_count} duplicate panes, reconciled to one"

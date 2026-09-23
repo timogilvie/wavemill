@@ -29,6 +29,7 @@ TESTS=(
   startup-terminal-preflight.test.sh
   fresh-launch-terminal-preflight.test.sh
   startup-cleanup-integration.test.sh
+  startup-terminal-ownership.test.sh
   monitor-env-completeness.test.sh
   wavemill-expand-direct.test.sh
   routing-complete-writes.test.sh
@@ -80,6 +81,7 @@ TESTS=(
   dashboard-incidents-section.test.sh
   backstage-tend-watchdog.test.sh
   backstage-observer-watchdog.test.sh
+  observer-managed-filing.test.sh
   backstage-observer-pane-promotion.test.sh
   control-layout.test.sh
   control-pane-recovery.test.sh

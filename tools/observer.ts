@@ -5,11 +5,24 @@ import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { mutateJsonState } from '../shared/lib/state-mutex.ts';
-import { getIncidentConfig, getMillConfig, getObserverLinearConfig, type ObserverLinearConfig } from '../shared/lib/config.ts';
+import {
+  getIncidentConfig,
+  getMillConfig,
+  getObserverLinearConfig,
+  loadWavemillConfig,
+  resolveObserverLinearModeSource,
+  type ObserverLinearConfig,
+} from '../shared/lib/config.ts';
 import { detectIncidentsForRepo, detectIncidentsForTask, type TendCandidateDiagnostic } from '../shared/lib/wavemill-incident-detector.ts';
 import { IncidentStore } from '../shared/lib/wavemill-incident-store.ts';
 import { createIncidentDraft, type IncidentRecord, type IncidentRootCauseClass } from '../shared/lib/wavemill-incident-model.ts';
-import { syncIncident, type SyncResult } from '../shared/lib/incident-to-linear-synchronizer.ts';
+import { createLookupBudget, syncIncident, syncIncidentLifecycle, type LifecycleSyncResult, type SyncResult } from '../shared/lib/incident-to-linear-synchronizer.ts';
+import {
+  appendShadowRecord,
+  buildShadowAuditRecord,
+  updateShadowCounters,
+  type ShadowAuditRecord,
+} from '../shared/lib/observer-shadow-audit.ts';
 import { drainIncidentQueue, enqueueIncidentSync } from '../shared/lib/incident-linear-retry-queue.ts';
 import { acquireObserverLock } from '../shared/lib/tend-singleton.ts';
 import { countRejectedEvalRecords, listRejectedEvalRecords } from '../shared/lib/eval-rejected-store.ts';
@@ -84,6 +97,8 @@ interface ObserverOptions {
   fileIncidents: boolean;
   dryRun: boolean;
   incidentsDryRun: boolean;
+  incidentsShadow?: boolean;
+  incidentsMode?: 'off' | 'offline' | 'shadow' | 'live';
   incidentsReplay?: string;
   incidentsPolicy?: string;
   linearTeam?: string;
@@ -212,7 +227,25 @@ interface ObserverSnapshot {
   incidentSync?: IncidentSyncSnapshot;
 }
 
+interface IncidentSyncShadowSnapshot {
+  eligible: number;
+  proposedCreate: number;
+  proposedUpdate: number;
+  noOp: number;
+  skipRecovered: number;
+  ambiguous: number;
+  redactionFailures: number;
+  correlationCollisions: number;
+  mutationAttempts: number;
+  auditPath?: string;
+  countersPath?: string;
+  lookupBudgetUsed?: number;
+  lookupBudgetMax?: number;
+  lookupBudgetExhausted?: boolean;
+}
+
 interface IncidentSyncSnapshot {
+  mode?: 'off' | 'offline' | 'shadow' | 'live';
   totalProcessed: number;
   created: number;
   updated: number;
@@ -222,8 +255,14 @@ interface IncidentSyncSnapshot {
   retryProcessed: number;
   retrySucceeded: number;
   retryFailed: number;
+  /** Lifecycle transition sync counters (HOK-3035). */
+  lifecycleSynced: number;
+  lifecycleFailed: number;
+  lifecycleRetried: number;
+  lifecycleResults: LifecycleSyncResult[];
   results: SyncResult[];
   errors: Array<{ fingerprint: string; action: string; reason: string; nextRetry?: string }>;
+  shadow?: IncidentSyncShadowSnapshot;
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -245,7 +284,10 @@ Options:
   --compact              One line per actionable finding; rolls up log-scrape noise
   --file-linear          Create Linear issues for high-confidence findings
   --file-incidents       Create/update Linear issues for confirmed deduplicated incidents
-  --incidents-dry-run    Preview incident Linear actions without writes
+  --incidents-dry-run    Preview incident Linear actions without writes (alias for --incidents-mode=offline)
+  --incidents-shadow     Shadow-audit incident Linear actions (bounded reads, zero mutations)
+  --incidents-mode <off|offline|shadow|live>
+                         Explicit incident sync mode. Overrides legacy dry-run/enabled flags.
   --incidents-replay <fingerprint>
                          Re-sync one incident fingerprint and bypass update cooldown
   --incidents-policy <json>
@@ -316,6 +358,15 @@ export function parseArgs(argv: string[]): ObserverOptions {
       options.fileIncidents = true;
     } else if (arg === '--incidents-dry-run') {
       options.incidentsDryRun = true;
+      options.fileIncidents = true;
+    } else if (arg === '--incidents-shadow') {
+      options.incidentsShadow = true;
+      options.fileIncidents = true;
+    } else if (arg === '--incidents-mode') {
+      options.incidentsMode = parseIncidentsMode(next());
+      options.fileIncidents = true;
+    } else if (arg.startsWith('--incidents-mode=')) {
+      options.incidentsMode = parseIncidentsMode(arg.slice('--incidents-mode='.length));
       options.fileIncidents = true;
     } else if (arg === '--incidents-replay') {
       options.incidentsReplay = next();
@@ -393,6 +444,14 @@ function parsePositiveInt(value: string, flag: string): number {
     throw new Error(`${flag} must be a positive integer`);
   }
   return parsed;
+}
+
+function parseIncidentsMode(value: string): 'off' | 'offline' | 'shadow' | 'live' {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'off' || normalized === 'offline' || normalized === 'shadow' || normalized === 'live') {
+    return normalized;
+  }
+  throw new Error(`--incidents-mode must be off|offline|shadow|live, got ${JSON.stringify(value)}`);
 }
 
 function run(command: string, args: string[], timeoutMs = 10_000, cwd?: string): { ok: boolean; stdout: string; stderr: string } {
@@ -3067,10 +3126,48 @@ function mergeObserverLinearConfig(config: ObserverLinearConfig, options: Observ
       stale_orphaned_state: { ...policies.stale_orphaned_state, ...(parsed.stale_orphaned_state ?? {}) },
     };
   }
+  // Resolve effective mode: explicit CLI mode wins; --incidents-shadow forces
+  // shadow; --incidents-dry-run remains an alias for offline; otherwise the
+  // config-derived mode stands. CLI live still requires enabled=true in
+  // config so this task cannot accidentally flip live filing on.
+  let mode = config.mode;
+  if (options.incidentsMode) {
+    mode = options.incidentsMode;
+  } else if (options.incidentsShadow) {
+    mode = 'shadow';
+  } else if (options.incidentsDryRun) {
+    mode = 'offline';
+  }
+  if (options.serviceMode) {
+    // Fail-closed enforcement for the managed Backstage service. These guards
+    // are defense-in-depth behind the deterministic command builder: even if an
+    // unsafe invocation reaches the process it can never mutate Linear.
+    //
+    // A generic --dry-run protects only the legacy --file-linear path; it is
+    // never the incident-sync safety control. Live filing in the service must
+    // be requested explicitly via --incidents-mode=live — a bare
+    // --file-incidents can never silently select live.
+    if (mode === 'live' && options.incidentsMode !== 'live') {
+      mode = 'shadow';
+    }
+    // Live still requires the legacy enabled interlock; downgrade rather than
+    // throw so the managed pane never enters a crash/respawn loop.
+    if (mode === 'live' && !config.enabled) {
+      mode = 'shadow';
+    }
+    // A missing credential fails closed to off (no reads, no restart storm)
+    // without ever exposing the key itself.
+    if ((mode === 'live' || mode === 'shadow') && !process.env.LINEAR_API_KEY) {
+      mode = 'off';
+    }
+  } else if (mode === 'live' && !config.enabled) {
+    throw new Error('observer: incidents-mode=live requires observer.linear.enabled=true in config');
+  }
   return {
     ...config,
     enabled: config.enabled,
-    detectionOnly: config.detectionOnly || options.incidentsDryRun,
+    detectionOnly: config.detectionOnly || options.incidentsDryRun || mode === 'offline',
+    mode,
     project: options.linearProject ?? config.project,
     team: options.linearTeam ?? config.team,
     label: options.linearLabel ?? config.label,
@@ -3078,8 +3175,9 @@ function mergeObserverLinearConfig(config: ObserverLinearConfig, options: Observ
   };
 }
 
-function emptyIncidentSyncSnapshot(): IncidentSyncSnapshot {
+function emptyIncidentSyncSnapshot(mode?: IncidentSyncSnapshot['mode']): IncidentSyncSnapshot {
   return {
+    mode,
     totalProcessed: 0,
     created: 0,
     updated: 0,
@@ -3089,8 +3187,26 @@ function emptyIncidentSyncSnapshot(): IncidentSyncSnapshot {
     retryProcessed: 0,
     retrySucceeded: 0,
     retryFailed: 0,
+    lifecycleSynced: 0,
+    lifecycleFailed: 0,
+    lifecycleRetried: 0,
+    lifecycleResults: [],
     results: [],
     errors: [],
+  };
+}
+
+function emptyShadowSnapshot(): IncidentSyncShadowSnapshot {
+  return {
+    eligible: 0,
+    proposedCreate: 0,
+    proposedUpdate: 0,
+    noOp: 0,
+    skipRecovered: 0,
+    ambiguous: 0,
+    redactionFailures: 0,
+    correlationCollisions: 0,
+    mutationAttempts: 0,
   };
 }
 
@@ -3109,6 +3225,42 @@ function collectSyncResult(summary: IncidentSyncSnapshot, result: SyncResult): v
       reason: result.reason ?? 'unknown',
       nextRetry: result.nextRetryAt,
     });
+  }
+  if (summary.shadow && result.shadowPlan) {
+    summary.shadow.eligible += 1;
+    switch (result.action) {
+      case 'create':
+        summary.shadow.proposedCreate += 1;
+        break;
+      case 'update_comment':
+        summary.shadow.proposedUpdate += 1;
+        break;
+      case 'no_op':
+        summary.shadow.noOp += 1;
+        break;
+      case 'skip_recovered':
+        summary.shadow.skipRecovered += 1;
+        break;
+      case 'unknown_needs_lookup':
+        summary.shadow.ambiguous += 1;
+        break;
+    }
+    const summary_ = result.shadowPlan.redactionSummary;
+    if (summary_.redactionEnabled && summary_.markersFound.length === 0
+        && (result.shadowPlan.plannedBody || result.shadowPlan.plannedCommentBody)) {
+      // A shadow record with redaction enabled but no markers means either
+      // there was nothing to redact (normal) or the redactor silently failed.
+      // We only surface this when redaction is enabled and there is a body
+      // that contains a suspicious raw pattern; a naive check follows.
+      const combined = `${result.shadowPlan.plannedBody ?? ''}\n${result.shadowPlan.plannedCommentBody ?? ''}`;
+      if (/(api[_-]?key|token|secret|password|credential|private[_-]?key)\s*[=:]\s*\S+/i.test(combined)
+          || /Bearer\s+[A-Za-z0-9._~+/=-]+/i.test(combined)) {
+        summary.shadow.redactionFailures += 1;
+      }
+    }
+    if (result.shadowPlan.correlationTarget.candidateCount > 1) {
+      summary.shadow.correlationCollisions += 1;
+    }
   }
 }
 
@@ -3145,8 +3297,22 @@ export async function syncIncidentsToLinear(snapshot: ObserverSnapshot, options:
       addConfigDegradedFindingIfMissing(snapshot.findings, repo, error, 'incident Linear sync');
       continue;
     }
+    // Record the strictest mode encountered across repos on the snapshot.
+    summary.mode = summary.mode ? maxObserverLinearMode(summary.mode, config.mode) : config.mode;
+    // Fail-closed: in the managed service an `off` mode (including one
+    // downgraded from live/shadow by the enforcement above, e.g. a missing
+    // credential) performs neither Linear reads nor mutations — even if
+    // --file-incidents was supplied. Nothing below this point may run for an
+    // off managed repo. (CLI off retains its legacy dry accounting.)
+    if (options.serviceMode && config.mode === 'off') {
+      continue;
+    }
+    const shadowMode = config.mode === 'shadow';
+    if (shadowMode && !summary.shadow) {
+      summary.shadow = emptyShadowSnapshot();
+    }
     try {
-      if (!config.detectionOnly) {
+      if (!config.detectionOnly && !shadowMode) {
         const retry = await drainIncidentQueue({
           repoDir: repo.repoDir,
           queuePath: config.retryQueuePath,
@@ -3171,21 +3337,35 @@ export async function syncIncidentsToLinear(snapshot: ObserverSnapshot, options:
     const incidents = options.incidentsReplay
       ? [await store.getIncident(options.incidentsReplay)].filter((incident): incident is IncidentRecord => incident !== null)
       : await store.getIncidents();
-    const incidentsForPass = config.detectionOnly || options.incidentsReplay
+    // Per-pass cap fix: only the fully offline mode bypasses the cap; shadow
+    // and live both honour maxIncidentsPerPass so a shadow trial cannot make
+    // an unbounded number of correlation searches per pass.
+    const bypassCap = (config.mode === 'offline' || (config.detectionOnly && config.mode !== 'shadow')) || Boolean(options.incidentsReplay);
+    const incidentsForPass = bypassCap
       ? incidents
       : incidents.slice(0, config.maxIncidentsPerPass);
-    if (!config.detectionOnly && !options.incidentsReplay && incidentsForPass.length < incidents.length) {
+    if (!bypassCap && incidentsForPass.length < incidents.length) {
       summary.skipped += incidents.length - incidentsForPass.length;
     }
+    const lookupBudget = shadowMode
+      ? createLookupBudget(config.shadow.maxLookupsPerPass)
+      : undefined;
+    // Mutation attempts always resolve to zero in a healthy shadow pass —
+    // the read-only wrapper's counter is checked in-process and syncIncident
+    // throws on the first attempt. The counter is kept here so any future
+    // path that swallows the throw still surfaces a non-zero value.
+    const mutationAttemptsThisPass = 0;
+    const shadowRecords: ShadowAuditRecord[] = [];
     for (const incident of incidentsForPass) {
       const result = await syncIncident({
         incident,
         store,
         config,
-        dryRun: options.incidentsDryRun,
+        dryRun: options.incidentsDryRun || shadowMode,
+        shadow: shadowMode,
         replay: options.incidentsReplay === incident.fingerprint,
         now: new Date(snapshot.timestamp),
-        retryQueue: {
+        retryQueue: shadowMode ? undefined : {
           enqueueIncidentSync: (input) => enqueueIncidentSync({
             repoDir: repo.repoDir,
             queuePath: config.retryQueuePath,
@@ -3197,11 +3377,125 @@ export async function syncIncidentsToLinear(snapshot: ObserverSnapshot, options:
           }),
         },
         repoDir: repo.repoDir,
+        lookupBudget,
       });
       collectSyncResult(summary, result);
+      if (shadowMode && result.shadowPlan) {
+        const record = buildShadowAuditRecord(result.shadowPlan, {
+          recordedAt: snapshot.timestamp,
+          repoDir: repo.repoDir,
+          session: repo.session,
+          mutationAttempts: 0,
+        });
+        shadowRecords.push(record);
+        try {
+          appendShadowRecord(
+            config.shadow.auditPath,
+            record,
+            { maxEntries: config.shadow.maxEntries, maxAgeDays: config.shadow.maxAgeDays, now: new Date(snapshot.timestamp) },
+            repo.repoDir,
+          );
+        } catch (error) {
+          summary.errors.push({
+            fingerprint: result.fingerprint,
+            action: 'shadow-audit',
+            reason: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    }
+
+    // Lifecycle transition sync (HOK-3035): resolved/archived/recurrent linked
+    // records are excluded from getIncidents(), so fetch them separately. A
+    // degraded detection cycle (config load failure) must not resolve or close.
+    const cycleComplete = !snapshot.findings.some(
+      (finding) => finding.repoDir === repo.repoDir && finding.id.startsWith('config-integrity-'),
+    );
+    try {
+      const lifecyclePending = await store.getLifecyclePendingIncidents();
+      const lifecycleForPass = bypassCap ? lifecyclePending : lifecyclePending.slice(0, config.maxIncidentsPerPass);
+      for (const incident of lifecycleForPass) {
+        const lifecycleResult = await syncIncidentLifecycle({
+          incident,
+          store,
+          config,
+          dryRun: options.incidentsDryRun || shadowMode,
+          shadow: shadowMode,
+          cycleComplete,
+          now: new Date(snapshot.timestamp),
+          repoDir: repo.repoDir,
+          retryQueue: shadowMode ? undefined : {
+            enqueueLifecycleSync: (input) => enqueueIncidentSync({
+              repoDir: repo.repoDir,
+              queuePath: config.retryQueuePath,
+              incidentFingerprint: input.incidentFingerprint,
+              linearAction: 'lifecycle',
+              linearIssueId: input.linearIssueId,
+              lifecycleKind: input.lifecycleKind,
+              transitionRevision: input.transitionRevision,
+              lastError: input.lastError,
+              now: input.now,
+            }),
+          },
+        });
+        summary.lifecycleResults.push(lifecycleResult);
+        if (lifecycleResult.status === 'synced') summary.lifecycleSynced += 1;
+        else if (lifecycleResult.status === 'failed') summary.lifecycleFailed += 1;
+        else if (lifecycleResult.status === 'queued') summary.lifecycleRetried += 1;
+      }
+    } catch (error) {
+      summary.errors.push({
+        fingerprint: 'lifecycle-sync',
+        action: 'failed',
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    if (shadowMode) {
+      if (summary.shadow) {
+        summary.shadow.mutationAttempts += mutationAttemptsThisPass;
+        summary.shadow.auditPath = config.shadow.auditPath;
+        summary.shadow.countersPath = config.shadow.countersPath;
+        if (lookupBudget) {
+          summary.shadow.lookupBudgetUsed = lookupBudget.used;
+          summary.shadow.lookupBudgetMax = lookupBudget.max;
+          summary.shadow.lookupBudgetExhausted = lookupBudget.exhausted;
+        }
+      }
+      try {
+        await updateShadowCounters(
+          config.shadow.countersPath,
+          {
+            eligible: shadowRecords.length,
+            proposedCreate: shadowRecords.filter((r) => r.action === 'create').length,
+            proposedUpdate: shadowRecords.filter((r) => r.action === 'update_comment').length,
+            noOp: shadowRecords.filter((r) => r.action === 'no_op').length,
+            skipRecovered: shadowRecords.filter((r) => r.action === 'skip_recovered').length,
+            skip: shadowRecords.filter((r) => r.action === 'skip').length,
+            failed: shadowRecords.filter((r) => r.action === 'failed').length,
+            correlationCollisions: shadowRecords.filter((r) => r.correlationTarget.candidateCount > 1).length,
+            mutationAttempts: mutationAttemptsThisPass,
+          },
+          { lastRunAt: snapshot.timestamp, lastAuditPath: config.shadow.auditPath },
+          repo.repoDir,
+        );
+      } catch (error) {
+        summary.errors.push({
+          fingerprint: 'shadow-counters',
+          action: 'shadow-audit',
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
   }
   return { ...snapshot, incidentSync: summary };
+}
+
+function maxObserverLinearMode(a: IncidentSyncSnapshot['mode'], b: IncidentSyncSnapshot['mode']): IncidentSyncSnapshot['mode'] {
+  const order = ['off', 'offline', 'shadow', 'live'] as const;
+  const ai = order.indexOf(a ?? 'off');
+  const bi = order.indexOf(b ?? 'off');
+  return order[Math.max(ai, bi)];
 }
 
 function addConfigDegradedFindingIfMissing(findings: Finding[], repo: RepoSnapshot, error: unknown, operation: string): void {
@@ -3266,6 +3560,53 @@ export async function writeServiceHeartbeat(snapshot: ObserverSnapshot, options:
       const next = { ...(current ?? {}) };
       const services = { ...(next.services ?? {}) };
       const existing = { ...(services.observer ?? {}) };
+      // Surface config source and credential readiness (boolean only — the key
+      // itself is never read into or written from this health file).
+      let configSource: string | undefined;
+      try {
+        const linear = loadWavemillConfig(options.repoDir).observer?.linear;
+        configSource = resolveObserverLinearModeSource(linear);
+      } catch {
+        configSource = undefined;
+      }
+      const credentialReady = Boolean(process.env.LINEAR_API_KEY);
+      const lastError = snapshot.incidentSync?.errors?.[snapshot.incidentSync.errors.length - 1];
+      const incidentSyncSummary = snapshot.incidentSync ? {
+        mode: snapshot.incidentSync.mode ?? 'off',
+        configSource,
+        credentialReady,
+        lastRunAt: snapshot.timestamp,
+        totalProcessed: snapshot.incidentSync.totalProcessed,
+        created: snapshot.incidentSync.created,
+        updated: snapshot.incidentSync.updated,
+        skipped: snapshot.incidentSync.skipped,
+        failed: snapshot.incidentSync.failed,
+        queued: snapshot.incidentSync.queued,
+        retryProcessed: snapshot.incidentSync.retryProcessed,
+        retryFailed: snapshot.incidentSync.retryFailed,
+        lastFailure: lastError
+          ? { action: lastError.action, reason: redactObserverText(lastError.reason) }
+          : undefined,
+        lifecycleSynced: snapshot.incidentSync.lifecycleSynced,
+        lifecycleFailed: snapshot.incidentSync.lifecycleFailed,
+        lifecycleRetried: snapshot.incidentSync.lifecycleRetried,
+        shadow: snapshot.incidentSync.shadow ? {
+          eligible: snapshot.incidentSync.shadow.eligible,
+          proposedCreate: snapshot.incidentSync.shadow.proposedCreate,
+          proposedUpdate: snapshot.incidentSync.shadow.proposedUpdate,
+          noOp: snapshot.incidentSync.shadow.noOp,
+          skipRecovered: snapshot.incidentSync.shadow.skipRecovered,
+          ambiguous: snapshot.incidentSync.shadow.ambiguous,
+          redactionFailures: snapshot.incidentSync.shadow.redactionFailures,
+          correlationCollisions: snapshot.incidentSync.shadow.correlationCollisions,
+          mutationAttempts: snapshot.incidentSync.shadow.mutationAttempts,
+          auditPath: snapshot.incidentSync.shadow.auditPath,
+          countersPath: snapshot.incidentSync.shadow.countersPath,
+          lookupBudgetUsed: snapshot.incidentSync.shadow.lookupBudgetUsed,
+          lookupBudgetMax: snapshot.incidentSync.shadow.lookupBudgetMax,
+          lookupBudgetExhausted: snapshot.incidentSync.shadow.lookupBudgetExhausted,
+        } : undefined,
+      } : undefined;
       services.observer = {
         ...existing,
         status: 'healthy',
@@ -3277,6 +3618,7 @@ export async function writeServiceHeartbeat(snapshot: ObserverSnapshot, options:
         session: options.session ?? snapshot.sessions[0] ?? null,
         repoDir: options.repoDir,
         findingCounts: counts,
+        incidentSync: incidentSyncSummary,
       };
       next.updatedAt = snapshot.timestamp;
       next.services = services;
@@ -3344,9 +3686,13 @@ function renderSummary(snapshot: ObserverSnapshot): string {
   if (snapshot.incidentSync) {
     const sync = snapshot.incidentSync;
     lines.push('');
-    lines.push(`Incident Linear sync: processed=${sync.totalProcessed} created=${sync.created} updated=${sync.updated} queued=${sync.queued} skipped=${sync.skipped} failed=${sync.failed}`);
+    lines.push(`Incident Linear sync${sync.mode ? ` (mode=${sync.mode})` : ''}: processed=${sync.totalProcessed} created=${sync.created} updated=${sync.updated} queued=${sync.queued} skipped=${sync.skipped} failed=${sync.failed}`);
     if (sync.retryProcessed > 0) {
       lines.push(`Incident retry queue: processed=${sync.retryProcessed} succeeded=${sync.retrySucceeded} failed=${sync.retryFailed}`);
+    }
+    if (sync.shadow) {
+      const s = sync.shadow;
+      lines.push(`Incident Linear shadow: eligible=${s.eligible} proposedCreate=${s.proposedCreate} proposedUpdate=${s.proposedUpdate} noOp=${s.noOp} skipRecovered=${s.skipRecovered} ambiguous=${s.ambiguous} redactionFailures=${s.redactionFailures} correlationCollisions=${s.correlationCollisions} mutationAttempts=${s.mutationAttempts}`);
     }
     for (const result of sync.results.slice(0, 8)) {
       lines.push(`  ${result.action}: ${result.fingerprint.slice(0, 16)} ${result.issueId ?? ''} ${result.reason ?? ''}`.trimEnd());

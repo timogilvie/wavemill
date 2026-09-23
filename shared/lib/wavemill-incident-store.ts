@@ -3,8 +3,10 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeF
 import { dirname, join } from 'node:path';
 import {
   canonicalizeRootCauseClass,
+  hasPendingLifecycleTransition,
   type IncidentEvidence,
   type IncidentLifecycle,
+  type IncidentLifecycleSyncMetadata,
   type IncidentRecord,
   type IncidentResolutionAction,
   WAVEMILL_INCIDENT_SCHEMA_VERSION,
@@ -330,6 +332,19 @@ export class IncidentStore {
       .sort((a, b) => Date.parse(b.lastObservedAt) - Date.parse(a.lastObservedAt));
   }
 
+  /**
+   * Linked records whose current lifecycle transition (resolution, archival, or
+   * recurrence) has not yet been fully synchronized to Linear. Unlike
+   * getIncidents() this deliberately includes resolved/archived records, since
+   * those are exactly the lifecycle events evidence sync never sees.
+   */
+  async getLifecyclePendingIncidents(): Promise<IncidentRecord[]> {
+    const index = this.readIndex(join(this.incidentsDir, 'index.json'));
+    return Object.values(index)
+      .filter((incident) => hasPendingLifecycleTransition(incident))
+      .sort((a, b) => Date.parse(b.lastObservedAt) - Date.parse(a.lastObservedAt));
+  }
+
   async getEvidenceForIncident(fingerprint: string): Promise<IncidentEvidenceLogEntry[]> {
     const logPath = join(this.incidentsDir, `${fingerprint}.evidence.jsonl`);
     if (!existsSync(logPath)) return [];
@@ -411,6 +426,44 @@ export class IncidentStore {
             message: input.message,
             retryQueued: input.retryQueued,
           }].slice(-5),
+        },
+      };
+      index[fingerprint] = updated;
+      return index;
+    });
+    return updated;
+  }
+
+  /**
+   * Merge a lifecycle-sync delta into the record's `lifecycleSync` metadata.
+   * Callers pass only the fields a successful step produced (e.g. commentDelivered
+   * after a comment lands, stateApplied after a state mutation), so repeated
+   * replays accumulate independently-successful steps without repeating them.
+   */
+  async recordLifecycleSync(
+    fingerprint: string,
+    delta: Partial<IncidentLifecycleSyncMetadata> & { transitionRevision: string },
+  ): Promise<IncidentRecord | null> {
+    const indexPath = join(this.incidentsDir, 'index.json');
+    let updated: IncidentRecord | null = null;
+    await this.mutateIndex(indexPath, (index) => {
+      const existing = index[fingerprint];
+      if (!existing) return index;
+      const previous = existing.metadata?.lifecycleSync ?? {};
+      // A new transition revision starts fresh delivery tracking; the same
+      // revision merges (so a later state success does not drop the recorded comment).
+      const sameRevision = previous.transitionRevision === delta.transitionRevision;
+      const base: IncidentLifecycleSyncMetadata = sameRevision ? previous : {};
+      const lifecycleSync: IncidentLifecycleSyncMetadata = {
+        ...base,
+        ...delta,
+        syncedAt: delta.syncedAt ?? this.now().toISOString(),
+      };
+      updated = {
+        ...existing,
+        metadata: {
+          ...(existing.metadata ?? {}),
+          lifecycleSync,
         },
       };
       index[fingerprint] = updated;
@@ -579,6 +632,7 @@ export class IncidentStore {
       seenEventKeys: storedMetadata?.seenEventKeys,
       resolution: storedMetadata?.resolution,
       recurrence: storedMetadata?.recurrence,
+      lifecycleSync: storedMetadata?.lifecycleSync,
     };
     // Merge, with stored taking precedence for store-owned fields
     return {
@@ -643,7 +697,24 @@ export class IncidentStore {
       seenEventKeys,
       lastEventAt: laterIso(a.lastEventAt, b.lastEventAt),
       thresholdTriggered: a.thresholdTriggered === true || b.thresholdTriggered === true,
+      lifecycleSync: this.mergeLifecycleSync(a.lifecycleSync, b.lifecycleSync),
       ...(distinctLinks.length > 1 ? { linearSyncConflict: { linkedLinearIds: distinctLinks } } : {}),
+    };
+  }
+
+  private mergeLifecycleSync(
+    a: IncidentLifecycleSyncMetadata | undefined,
+    b: IncidentLifecycleSyncMetadata | undefined,
+  ): IncidentLifecycleSyncMetadata | undefined {
+    if (!a) return b;
+    if (!b) return a;
+    // Prefer the more recently synced snapshot; ownership of a closed issue must
+    // survive either way so recurrence can still tell the Observer auto-closed it.
+    const newer = laterIso(a.syncedAt, b.syncedAt) === b.syncedAt ? b : a;
+    return {
+      ...newer,
+      observerClosedIssue: a.observerClosedIssue === true || b.observerClosedIssue === true,
+      observerSetStateName: newer.observerSetStateName ?? a.observerSetStateName ?? b.observerSetStateName,
     };
   }
 

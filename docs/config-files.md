@@ -87,6 +87,133 @@ The dedicated Backstage Observer pane is opt-in and only runs when both
   current service writes only redacted heartbeat and finding counts to
   `.wavemill/backstage-health.json`.
 
+#### `observer.linear` shadow mode
+
+`observer.linear` exposes a `mode` field with values `off | offline | shadow |
+live`. `off` is the default. `offline` (or legacy `detectionOnly: true`) makes
+zero network calls and returns `unknown_needs_lookup` where a live path would
+need a Linear read. `shadow` performs bounded Linear reads for correlation but
+a runtime guard blocks every write method (`createIssue`, `createComment`,
+`getOrCreateLabel`, `addLabelsToIssue`), producing exact redacted proposals
+plus an auditable JSONL. `live` is the mutating mode and is unchanged.
+
+```json
+{
+  "observer": {
+    "linear": {
+      "mode": "shadow",
+      "maxIncidentsPerPass": 10,
+      "shadow": {
+        "auditPath": ".wavemill/observer/shadow-audit.jsonl",
+        "countersPath": ".wavemill/observer/shadow-counters.json",
+        "maxEntries": 500,
+        "maxAgeDays": 14,
+        "maxLookupsPerPass": 40
+      }
+    }
+  }
+}
+```
+
+- `mode` overrides legacy `enabled`/`detectionOnly`. Shadow can only be
+  requested through this field; a legacy config keeps its current behaviour.
+- `shadow.auditPath` is the bounded JSONL of every eligible incident's exact
+  proposal (title, body/comment, correlation target, reconciliation, redaction
+  summary, policy decision).
+- `shadow.countersPath` is a small JSON of aggregate counters that survives
+  restart (each pass appends to the previous total).
+- `shadow.maxEntries` and `shadow.maxAgeDays` bound audit retention.
+- `shadow.maxLookupsPerPass` caps the number of Linear reads shadow will make
+  across the whole pass so a large incident store cannot flood Linear.
+
+The trial procedure and go/no-go thresholds for promoting shadow → live are
+documented in `docs/cli-reference.md` under **Shadow trial procedure**.
+
+#### `observer.linear.rollout` — managed live filing gates (HOK-3036)
+
+`observer.linear.rollout` holds the promotion-gate evidence the managed
+Backstage service requires before it will run `live`. All fields default to the
+safe value, so `live` cannot start until an operator explicitly attests each
+gate. The managed service resolves `off | shadow | live` fail-closed from these
+fields plus routing and credential readiness (see `docs/cli-reference.md` →
+**Managed Backstage filing**).
+
+```json
+{
+  "observer": {
+    "linear": {
+      "mode": "live",
+      "enabled": true,
+      "team": "HOK",
+      "project": "Wavemill",
+      "label": "observer-incident",
+      "rollout": {
+        "gatesPassed": true,
+        "shadowTrialCompleted": true,
+        "rollbackRehearsed": true,
+        "maxProposedPerPass": 5
+      }
+    }
+  }
+}
+```
+
+- `gatesPassed` — operator attestation that HOK-3031..HOK-3035 completion and
+  go/no-go review passed.
+- `shadowTrialCompleted` — the configured shadow trial completed with zero
+  mutations, leakage, cross-task attribution, or ambiguous correlation.
+- `rollbackRehearsed` — live→shadow/off rollback was exercised.
+- `maxProposedPerPass` — hard positive ceiling on proposed create/update actions
+  per pass (default `5`) so a misconfiguration cannot create a ticket storm.
+
+> ⚠️ The generic `--dry-run` flag is **not** the incident-sync safety control;
+> it protects only the legacy `--file-linear` path. Managed filing safety comes
+> entirely from this fail-closed mode resolution.
+
+#### `observer.linear.lifecycle` — resolution / archival / recurrence sync
+
+`observer.linear.lifecycle` governs how the Observer reflects a linked incident's
+lifecycle (auto/operator resolution, archival, recurrence) onto its Linear issue.
+Defaults are **conservative and comment-only**; state mutation is opt-in and always
+gated on Observer ownership and current-truth reconciliation.
+
+```json
+{
+  "observer": {
+    "linear": {
+      "lifecycle": {
+        "enabled": false,
+        "commentOnly": true,
+        "closeOnOperatorResolved": false,
+        "resolvedStateName": "Done",
+        "closeOnOperatorArchived": false,
+        "archivedStateName": "Canceled",
+        "reopenOnRecurrence": true,
+        "reopenStateName": "Todo"
+      }
+    }
+  }
+}
+```
+
+- `enabled` (default `false`) — master switch; nothing is commented or transitioned
+  until this is on.
+- `commentOnly` (default `true`) — when true, lifecycle sync only adds a comment and
+  never changes Linear state. Set `false` to allow the opt-in state transitions below.
+- `closeOnOperatorResolved` / `resolvedStateName` — move an **explicitly
+  operator-resolved** issue to the named completed state. Absence-based
+  (auto-resolved) records are always comment-only and never close the issue.
+- `closeOnOperatorArchived` / `archivedStateName` — move an operator-archived issue to
+  the named completed state.
+- `reopenOnRecurrence` / `reopenStateName` — on recurrence, reopen **only** an issue the
+  Observer itself previously auto-closed (recorded ownership); a human-closed or
+  never-closed issue is only commented on.
+
+State names are resolved against the team's workflow states before any mutation; an
+unresolvable name degrades to comment-only rather than leaving an issue half-changed.
+A degraded/incomplete detection cycle never resolves or closes an issue, and
+reconciliation must not still confirm the incident active before a close.
+
 ### Harness Retention Replay
 
 `harness.retention` controls the fixed held-out replay suite used to detect

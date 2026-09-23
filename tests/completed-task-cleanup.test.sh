@@ -98,6 +98,8 @@ CLEANUP_FILE="$TEST_TMP/cleanup_completed_task.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_load_config"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "cleanup_episode_enabled"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "cleanup_episode_config_value"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_pr_aware_cleanup_enabled"
@@ -122,6 +124,12 @@ CLEANUP_FILE="$TEST_TMP/cleanup_completed_task.sh"
   extract_function "$COMMON_SCRIPT" "monitor_deregister_terminal_task"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "safe_remove_task_worktree_and_branch"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_task_worktree_identity"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "_wavemill_build_cleanup_evidence_json"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_orphan_dir_scan"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "cleanup_completed_task"
 } > "$CLEANUP_FILE"
@@ -327,6 +335,14 @@ EOF
           return $?
           ;;
         "fetch origin")
+          return 0
+          ;;
+        "rev-parse --show-toplevel")
+          printf "%s\n" "$WORKTREE_ROOT/$SLUG"
+          return 0
+          ;;
+        "worktree list")
+          printf "worktree %s\n" "$WORKTREE_ROOT/$SLUG"
           return 0
           ;;
         "rev-parse --verify")
@@ -549,6 +565,12 @@ EOF
     reset_retry_count() { :; }
     remove_task_state() { REMOVE_STATE_CALLS=$((REMOVE_STATE_CALLS + 1)); }
     pr_state() { printf "%s\n" "MERGED"; }
+    cleanup_episode_should_attempt() { printf "%s\n" "attempt"; return 0; }
+    cleanup_episode_candidate_json() { return 0; }
+    cleanup_episode_record_outcome() { return 0; }
+    set_task_lifecycle_disposition() { :; }
+    wavemill_remove_orphan_task_dir() { return 0; }
+    reconciliation_lease_release() { return 0; }
     _with_timeout() { shift; "$@"; }
     git() {
       if [[ "${1:-}" == "-C" ]]; then
@@ -556,6 +578,8 @@ EOF
       fi
       case "${1:-} ${2:-}" in
         "rev-list --count") printf "0\n" ;;
+        "rev-parse --show-toplevel") printf "%s\n" "$WORKTREE_ROOT/$SLUG" ;;
+        "worktree list") printf "worktree %s\n" "$WORKTREE_ROOT/$SLUG" ;;
       esac
       return 0
     }

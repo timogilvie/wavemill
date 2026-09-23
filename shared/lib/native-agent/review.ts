@@ -16,6 +16,8 @@ import {
   capOpenRouterMaxTokensForBalance,
 } from './openrouter-credits-guard.ts';
 import { TranscriptWriter, type TranscriptEvent, type TranscriptToolResult } from './transcript.ts';
+import { SessionStreamWriter, resolveSessionEventStreamPath } from './session-stream.ts';
+import { captureToolDecisionsFromStream } from './tool-decision-capture.ts';
 import {
   buildNativeProviderResolutionFailureMessage,
   getNativeProviderApiKey,
@@ -25,8 +27,13 @@ import {
 import { createReadOnlyTools, READ_ONLY_PATH_FIELDS } from './tools/read-only.ts';
 import { createGitTools, gitAfterToolCall, gitToolPolicyConfig } from './tools/git.ts';
 import { createToolRegistry } from './tools/registry.ts';
-import { toPiAgentTool } from './tools/pi-adapter.ts';
 import type { ToolDescriptor } from './tools/types.ts';
+import {
+  createLaunchMenuProvider,
+  formatMenuDenials,
+} from './tools/menu-resolver.ts';
+import { inferCertificationSnapshotForPhase } from './tools/certification-snapshot.ts';
+import { loadWavemillConfig } from '../config.ts';
 import { renderNativePhasePrompt, type NativePhasePromptOptions } from './prompts.ts';
 import type { ReviewContext } from '../review-context-gatherer.ts';
 import { logPromptUsage } from '../prompt-registry.ts';
@@ -39,6 +46,13 @@ import {
 } from '../review-engine.ts';
 import { loadPromptResourceSync } from '../resource-retrieval.ts';
 import { createCleanupTracker, runCleanup, type CleanupReason } from './cleanup.ts';
+import {
+  STAGE_FAILURE_ENVELOPE_SCHEMA_VERSION,
+  deleteStageFailureEnvelope,
+  writeStageFailureEnvelope,
+  type StageFailureCause,
+  type StageFailureEnvelope,
+} from './stage-failure-envelope.ts';
 import {
   NATIVE_CONTEXT_WINDOW_EXCEEDED_CATEGORY,
   NATIVE_REVIEW_TIMEOUT_CATEGORY,
@@ -180,6 +194,7 @@ function buildReviewToolRegistry(worktreePath: string) {
   const phaseTools = registry.getTools({ phase });
   return {
     registry,
+    descriptors,
     phaseTools,
     phaseMetadata: registry.list({ phase }),
   };
@@ -402,6 +417,43 @@ function reviewFailureCategoryForStopReason(stopReason: LoopStopReason): string 
   }
 }
 
+/**
+ * Map a terminal loop stop reason (plus any classified provider error kind) to
+ * the typed native stage-failure cause (HOK-3064). Budget exhaustion of any
+ * kind (wall-clock, turn, tool-call, token) is a `stage-timeout`; an explicit
+ * abort is `cancelled`; a provider error carries its classified sub-kind. An
+ * `error` stop with no classifiable provider kind stays `unknown` so it is
+ * excluded from quality signals while remaining visible via bounded evidence.
+ */
+function stageFailureCauseForStopReason(
+  stopReason: LoopStopReason,
+  providerErrorKind: ProviderErrorKind | undefined,
+): StageFailureCause {
+  switch (stopReason) {
+    case 'wall_clock_limit':
+    case 'turn_limit':
+    case 'tool_call_limit':
+    case 'token_limit':
+      return 'stage-timeout';
+    case 'aborted':
+      return 'cancelled';
+    default:
+      break;
+  }
+  switch (providerErrorKind) {
+    case 'provider-transient-error':
+      return 'provider-outage';
+    case 'provider-credit-exhausted':
+      return 'provider-credit-exhausted';
+    case 'provider-config-error':
+      return 'provider-config-error';
+    case 'context-window-exceeded':
+      return 'context-window-exceeded';
+    default:
+      return 'unknown';
+  }
+}
+
 function cleanupReasonForStopReason(stopReason: LoopStopReason): CleanupReason | null {
   if (stopReason === 'aborted') {
     return 'aborted';
@@ -476,12 +528,23 @@ export async function runNativeReview(
     timeoutAttempt ?? 0,
   );
   const effectiveNativeTimeoutMs = options.timeout ?? recoveryTimeout.timeoutMs ?? timeoutConfig.timeoutMs;
+  // Canonical execution identity (HOK-3064): one OpenRouter review must not
+  // split between `native` and `native-openrouter` across intent, stage result,
+  // eval, abort marker, and health state. The stage result's top-level `agent`
+  // stays `native` for backward compatibility with recovery readers; the
+  // canonical identity travels on the artifacts + the failure envelope, which
+  // is what challenge selection-health consumes.
+  const canonicalProvider = provider.entry.providerName;
+  const canonicalModel = provider.entry.modelId;
+  const canonicalAgent = `native-${provider.entry.providerName}`;
   const nativeReviewMetadata = {
     effectiveNativeTimeoutMs,
     nativeTimeoutAttempt: timeoutConfig.attempt,
     nativeTimeoutBaseMs: timeoutConfig.baseTimeoutMs,
     nativeTimeoutMaxMs: timeoutConfig.maxMs,
     nativeTimeoutMultiplier: timeoutConfig.multiplier,
+    reviewProvider: canonicalProvider,
+    reviewAgent: canonicalAgent,
     ...reviewInputMetadata(context),
   };
   const substantiveAnalysisIdentity = buildExecutedIdentity({
@@ -510,7 +573,23 @@ export async function runNativeReview(
   }
 
   const userPrompt = fillReviewPromptTemplate(template, context, true);
-  const { phaseTools, phaseMetadata, registry } = buildReviewToolRegistry(repoDir);
+  const { phaseMetadata, registry, descriptors: reviewDescriptors } = buildReviewToolRegistry(repoDir);
+  const menuLaunchProvider = createLaunchMenuProvider({
+    phase: 'review',
+    config: loadWavemillConfig(repoDir),
+    certification: inferCertificationSnapshotForPhase({
+      phase: 'review',
+      readyProviderPresent: true,
+      loopModelOverridePresent: false,
+    }),
+    descriptors: reviewDescriptors,
+  });
+  if (menuLaunchProvider.initialMenu.denials.length > 0) {
+    const formatted = formatMenuDenials(menuLaunchProvider.initialMenu.denials);
+    if (formatted) {
+      console.warn(`[native-review] menu denials:\n${formatted}`);
+    }
+  }
   const { content: systemPrompt, promptRef } = nativeReviewDeps.loadNativeReviewPrompt(repoDir, {
     tools: phaseMetadata,
     phase: 'review',
@@ -546,6 +625,78 @@ export async function runNativeReview(
   });
   const transcriptEvents: TranscriptEvent[] = [];
 
+  // Native review canonical session-event stream (HOK-2076). One JSONL per
+  // review session; feeds the tool-decision corpus after the loop finishes.
+  // Best-effort: any writer failure warns but never blocks review.
+  const reviewEventStreamPath = resolveSessionEventStreamPath(sessionId, repoDir);
+  let reviewSessionStreamWriter: SessionStreamWriter | undefined;
+  try {
+    reviewSessionStreamWriter = new SessionStreamWriter({
+      sessionId,
+      traceId: process.env.WAVEMILL_SESSION || sessionId,
+      phase: 'review',
+      path: reviewEventStreamPath,
+    }, repoDir);
+    reviewSessionStreamWriter.writeSessionStarted({
+      initialConfigDigest: `model:${provider.entry.providerName}:${provider.entry.modelId}`,
+    });
+  } catch (error) {
+    console.warn(`Failed to init review session stream: ${(error as Error).message}`);
+    reviewSessionStreamWriter = undefined;
+  }
+  const reviewSessionStreamConfig = reviewSessionStreamWriter
+    ? {
+        sessionId,
+        traceId: process.env.WAVEMILL_SESSION || sessionId,
+        phase: 'review' as const,
+        eventStreamPath: reviewEventStreamPath,
+        repoDir,
+        initialConfigDigest: `model:${provider.entry.providerName}:${provider.entry.modelId}`,
+        writerInstance: reviewSessionStreamWriter,
+      }
+    : undefined;
+
+  // Record the typed native stage-failure envelope for a terminal review
+  // attempt (HOK-3064) as soon as the cause is known and BEFORE cleanup can
+  // erase process/session context. Gated on `featureDir` (same gate as
+  // `updateStageResult`); best-effort so envelope recording never masks the
+  // underlying review failure. Identity comes from the already-selected
+  // provider entry so the failed model/provider is not left immediately
+  // reselectable under a split/unknown health key.
+  const recordReviewFailureEnvelope = (
+    cause: StageFailureCause,
+    detail: string,
+    extra: { stopReason?: string; providerErrorKind?: string } = {},
+  ): void => {
+    if (!options.featureDir) {
+      return;
+    }
+    const envelope: StageFailureEnvelope = {
+      schemaVersion: STAGE_FAILURE_ENVELOPE_SCHEMA_VERSION,
+      stage: 'review',
+      cause,
+      ...(extra.stopReason ? { stopReason: extra.stopReason } : {}),
+      ...(extra.providerErrorKind ? { providerErrorKind: extra.providerErrorKind } : {}),
+      ...(Number.isInteger(timeoutConfig.attempt) ? { retryAttempt: timeoutConfig.attempt } : {}),
+      ...(Number.isInteger(effectiveNativeTimeoutMs) ? { configuredTimeoutMs: effectiveNativeTimeoutMs } : {}),
+      provider: canonicalProvider,
+      model: canonicalModel,
+      ...(provider.requestedModel ? { requestedModel: provider.requestedModel } : {}),
+      agent: canonicalAgent,
+      evidence: {
+        source: 'native-runtime',
+        detail,
+        transcriptPath,
+      },
+      createdAt: new Date().toISOString(),
+    };
+    try {
+      writeStageFailureEnvelope(options.featureDir, envelope);
+    } catch {
+      // Never let envelope recording fail the review failure it describes.
+    }
+  };
+
   const modelConfig: WavemillLoopConfig['model'] = {
     id: provider.entry.model.id,
     name: provider.entry.model.name,
@@ -567,7 +718,7 @@ export async function runNativeReview(
       content: userPrompt,
       timestamp: 0,
     }],
-    tools: phaseTools.map((tool) => toPiAgentTool(tool)),
+    tools: menuLaunchProvider.providerToolsForContext as unknown as AgentContext['tools'],
   };
   const pricing = normalizedPricingFromModel(modelConfig);
   const effectiveMaxTokens = modelConfig.provider === 'openrouter'
@@ -625,6 +776,7 @@ export async function runNativeReview(
           transcriptEvents.push(derived);
         }
       },
+      menuProvider: menuLaunchProvider.menuProvider,
       budget: {
         // One additional turn is reserved for tool-free terminal synthesis.
         maxTurns: analysisTurnLimit + 1,
@@ -634,15 +786,77 @@ export async function runNativeReview(
       terminalSynthesis: {
         prompt: REVIEW_FINAL_SYNTHESIS_PROMPT,
       },
+      ...(reviewSessionStreamConfig ? { sessionStreamConfig: reviewSessionStreamConfig } : {}),
     });
   } catch (error) {
     if (error instanceof ContextExhaustedError) {
+      recordReviewFailureEnvelope('context-exhausted', error.message);
       return nativeReviewFailure(context, 'native-context-exhausted', error.message, [], substantiveAnalysisIdentity);
     }
     if (error instanceof ContextWindowExceededError || error instanceof ContextWindowUnverifiableError) {
+      recordReviewFailureEnvelope('context-window-exceeded', error.message);
       return nativeReviewFailure(context, 'native-context-window-exceeded', error.message, [], substantiveAnalysisIdentity);
     }
     throw error;
+  } finally {
+    // Close review session stream and project into corpus (HOK-2076). Best-effort.
+    try {
+      reviewSessionStreamWriter?.writeSessionEnded({
+        stopReason: loopResult?.stopReason ?? 'error',
+        totalTurns: loopResult?.turnsCompleted ?? 0,
+        totalToolCalls: loopResult?.toolCallsExecuted ?? 0,
+        ...(loopResult
+          ? { totalTokens: (loopResult.totalInputTokens ?? 0) + (loopResult.totalOutputTokens ?? 0) }
+          : {}),
+      });
+    } catch (error) {
+      console.warn(`Failed to write review session_ended event: ${(error as Error).message}`);
+    }
+    try {
+      const capture = captureToolDecisionsFromStream({
+        eventStreamPath: reviewEventStreamPath,
+        repoDir,
+        provider: provider.entry.providerName,
+      });
+      if (!capture.ok) {
+        console.warn(`tool-decision capture skipped (review): ${capture.reason ?? 'unknown'}`);
+      }
+    } catch (error) {
+      console.warn(`tool-decision capture failed (review): ${(error as Error).message}`);
+    }
+  }
+
+  const deniedTools = nativeReviewDeps.extractDeniedTools(transcriptEvents);
+
+  // Classify the terminal cause and record the typed failure envelope BEFORE
+  // cleanup runs — cleanup can erase process/session context, so the transcript
+  // path and loop state must be captured first (HOK-3064). Ordering:
+  // classify → write envelope → cleanup → stage result. The category/description
+  // computation is preserved exactly; only the envelope write is added ahead of
+  // the existing cleanup + stage-result path.
+  let terminalCategory = '';
+  let terminalDescription = '';
+  if (loopResult.stopReason !== 'stop') {
+    const providerErrorMessage = loopResult.stopReason === 'error'
+      ? extractFinalAssistantErrorMessage(loopResult.messages)
+      : '';
+    const providerErrorKind = loopResult.providerError?.kind
+      ?? (providerErrorMessage ? classifyProviderError(providerErrorMessage).kind : undefined);
+    const providerDescription = providerErrorMessage
+      ? `${providerErrorKind ?? 'provider-unknown-error'}: ${providerErrorMessage}`
+      : '';
+    terminalCategory = providerErrorKind
+      ? reviewFailureCategoryForProviderErrorKind(providerErrorKind)
+      : reviewFailureCategoryForStopReason(loopResult.stopReason);
+    terminalDescription = providerDescription || stopReasonDescription(loopResult.stopReason);
+    recordReviewFailureEnvelope(
+      stageFailureCauseForStopReason(loopResult.stopReason, providerErrorKind),
+      terminalDescription,
+      {
+        stopReason: loopResult.stopReason,
+        ...(providerErrorKind ? { providerErrorKind } : {}),
+      },
+    );
   }
 
   const cleanupReason = cleanupReasonForStopReason(loopResult.stopReason);
@@ -686,25 +900,12 @@ export async function runNativeReview(
     }
   }
 
-  const deniedTools = nativeReviewDeps.extractDeniedTools(transcriptEvents);
   if (loopResult.stopReason !== 'stop') {
-    const providerErrorMessage = loopResult.stopReason === 'error'
-      ? extractFinalAssistantErrorMessage(loopResult.messages)
-      : '';
-    const providerErrorKind = loopResult.providerError?.kind
-      ?? (providerErrorMessage ? classifyProviderError(providerErrorMessage).kind : undefined);
-    const providerDescription = providerErrorMessage
-      ? `${providerErrorKind ?? 'provider-unknown-error'}: ${providerErrorMessage}`
-      : '';
-    const category = providerErrorKind
-      ? reviewFailureCategoryForProviderErrorKind(providerErrorKind)
-      : reviewFailureCategoryForStopReason(loopResult.stopReason);
-    const description = providerDescription || stopReasonDescription(loopResult.stopReason);
-    if (category === NATIVE_REVIEW_TIMEOUT_CATEGORY) {
+    if (terminalCategory === NATIVE_REVIEW_TIMEOUT_CATEGORY) {
       return nativeReviewNoEvidenceFailure(
         context,
-        category,
-        description,
+        terminalCategory,
+        terminalDescription,
         deniedTools,
         substantiveAnalysisIdentity,
         {
@@ -713,11 +914,16 @@ export async function runNativeReview(
         },
       );
     }
-    return nativeReviewFailure(context, category, description, deniedTools, substantiveAnalysisIdentity);
+    return nativeReviewFailure(context, terminalCategory, terminalDescription, deniedTools, substantiveAnalysisIdentity);
   }
 
   const responseText = nativeReviewDeps.extractFinalAssistantText(loopResult.messages);
   if (responseText.trim() === '') {
+    recordReviewFailureEnvelope(
+      'model-protocol',
+      'Native review returned an empty final assistant message.',
+      { stopReason: loopResult.stopReason },
+    );
     return nativeReviewFailure(
       context,
       'native-review-malformed-response',
@@ -729,6 +935,15 @@ export async function runNativeReview(
 
   try {
     const result = parseNativeReviewResponse(responseText, context, options.operatingMode ?? 'normal');
+    // A successful review supersedes any stale envelope from a prior terminal
+    // attempt so a later success is never misread as a failure (HOK-3064).
+    if (options.featureDir) {
+      try {
+        deleteStageFailureEnvelope(options.featureDir, 'review');
+      } catch {
+        // Best-effort cleanup; never fail a successful review on unlink.
+      }
+    }
     result.metadata = {
       ...result.metadata,
       deniedTools,
@@ -737,10 +952,12 @@ export async function runNativeReview(
     result.substantiveAnalysisIdentity = substantiveAnalysisIdentity;
     return result;
   } catch (error) {
+    const description = `Native review returned malformed response: ${(error as Error).message}`;
+    recordReviewFailureEnvelope('model-protocol', description, { stopReason: loopResult.stopReason });
     return nativeReviewFailure(
       context,
       'native-review-malformed-response',
-      `Native review returned malformed response: ${(error as Error).message}`,
+      description,
       deniedTools,
       substantiveAnalysisIdentity,
     );

@@ -196,13 +196,30 @@ startup_preflight_reconcile_terminal_issue() {
   return "$rc"
 }
 
+# HOK-3068: true when the terminal preflight already classified this issue as
+# terminal during the current run epoch. The startup stale-task pass consults
+# this so a single coordinator (the preflight) owns terminal reconciliation and
+# cleanup per epoch, and the stale-task path never independently rediscovers and
+# retries the same terminal row with a second round of remote PR/Git/Linear work.
+startup_preflight_owns_terminal_row() {
+  local issue="$1"
+  [[ -n "$issue" ]] || return 1
+  [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
+  [[ -n "${WAVEMILL_RUN_EPOCH:-}" ]] || return 1
+  local eligibility run_epoch
+  eligibility="$(jq -r --arg issue "$issue" '.tasks[$issue].rehydration.eligibility // empty' "$STATE_FILE" 2>/dev/null || true)"
+  [[ "$eligibility" == "terminal" ]] || return 1
+  run_epoch="$(jq -r --arg issue "$issue" '.tasks[$issue].rehydration.runEpoch // empty' "$STATE_FILE" 2>/dev/null || true)"
+  [[ "$run_epoch" == "$WAVEMILL_RUN_EPOCH" ]]
+}
+
 startup_terminal_preflight() {
   local session="${1:-${SESSION:-wavemill}}"
   [[ "$(startup_preflight_enabled)" == "true" ]] || return 0
   [[ -n "${STATE_FILE:-}" && -r "$STATE_FILE" ]] || return 0
 
-  local issues issue classification eligibility reason pr slug sibling_pr
-  local terminal_count=0 eligible_count=0 verification_count=0 deferred_count=0
+  local issues issue classification eligibility reason pr slug sibling_pr should_attempt
+  local terminal_count=0 eligible_count=0 verification_count=0 deferred_count=0 retained_count=0
   local deferred_issues=()
   issues="$(jq -r '(.tasks // {}) | keys[]' "$STATE_FILE" 2>/dev/null || true)"
   [[ -n "$issues" ]] || return 0
@@ -214,10 +231,25 @@ startup_terminal_preflight() {
       terminal:*)
         reason="${classification#terminal:}"
         pr="$(jq -r --arg issue "$issue" '.tasks[$issue].pr // .tasks[$issue].lifecycle.deliveryEvidence.prNumber // empty' "$STATE_FILE" 2>/dev/null || true)"
+        slug="$(jq -r --arg issue "$issue" '.tasks[$issue].slug // empty' "$STATE_FILE" 2>/dev/null || true)"
         startup_stamp_rehydration "$issue" "terminal" "$reason" || true
         if [[ "$reason" == "challenge_resolved_winner" ]]; then
           sibling_pr="$(get_challenge_sibling_pr "$issue" 2>/dev/null || true)"
           startup_stamp_superseded_reason "$issue" "$sibling_pr"
+        fi
+        # HOK-3068: consult the persisted cleanup-episode fingerprint before any
+        # reconcile, remote PR/Git, or worktree work. When the fingerprint is
+        # unchanged and the episode is already retained/needs-user, skip the
+        # expensive reconcile + cleanup this epoch. Backstage still surfaces the
+        # retained row; the resource is preserved untouched.
+        should_attempt="attempt"
+        if declare -F cleanup_episode_should_attempt >/dev/null 2>&1; then
+          should_attempt="$(cleanup_episode_should_attempt "$issue" "$slug" "$reason" "$pr" 2>/dev/null || echo attempt)"
+        fi
+        if [[ "$should_attempt" == "skip" ]]; then
+          retained_count=$((retained_count + 1))
+          terminal_count=$((terminal_count + 1))
+          continue
         fi
         if startup_preflight_reconcile_terminal_issue "$session" "$issue" "$reason" "$pr"; then
           if startup_preflight_reason_allows_cleanup "$reason"; then
@@ -263,7 +295,12 @@ startup_terminal_preflight() {
       log_warn "Startup terminal preflight deferred ${deferred_count} task(s) pending PR verification: ${joined}"
     fi
   fi
+  # HOK-3068: one bounded aggregate retained-resource summary instead of a
+  # per-issue warning pair for each terminal retained row.
+  if (( retained_count > 0 )) && declare -F log >/dev/null 2>&1; then
+    log "status" "Startup terminal preflight: ${retained_count} retained resource(s) unchanged — see Backstage"
+  fi
   if declare -F log >/dev/null 2>&1; then
-    log "debug" "Preflight: ${terminal_count} terminal, ${eligible_count} eligible, ${verification_count} verification-required, ${deferred_count} deferred"
+    log "debug" "Preflight: ${terminal_count} terminal (${retained_count} retained unchanged), ${eligible_count} eligible, ${verification_count} verification-required, ${deferred_count} deferred"
   fi
 }
