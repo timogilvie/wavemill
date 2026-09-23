@@ -39,13 +39,13 @@ fi
 STARTUP_BLOCK="$(awk '
   /challenge_args=\(--issue "\$ISSUE"/ { capture=1 }
   capture { print }
-  /log_warn "  \$ISSUE: Planner challenge deferred until expanded route is available"/ && capture { capture=0; exit }
+  /Planner challenge sealed/ && capture { capture=0; exit }
 ' "$MILL_SCRIPT")"
 
 RUNTIME_BLOCK="$(awk '
   /challenge_args=\(--issue "\$issue"/ { capture=1 }
   capture { print }
-  /log_warn "  \$issue: Planner challenge deferred until expanded route is available"/ && capture { capture=0; exit }
+  /Planner challenge sealed/ && capture { capture=0; exit }
 ' "$MONITOR_SCRIPT_FILE")"
 
 if [[ -n "$STARTUP_BLOCK" ]]; then
@@ -436,13 +436,17 @@ else
 fi
 
 check_contains "startup planner challenge defers without effective route" "$STARTUP_BLOCK" 'challenge_plan_stage_requires_effective_route "$challenge_plan"'
-check_contains "startup planner challenge records defer reason" "$STARTUP_BLOCK" 'plan_stage_expanded_route_unavailable'
+# HOK-3065: a plan-stage challenge whose non-varied route is not yet resolvable
+# is sealed and its challenger deferred as an awaiting_expanded_route arm that
+# materialises at t=0 — not retargeted to a different stage and not dropped to
+# single. The prior retarget silently changed the varied stage; dropping to
+# single is how an already-selected open-weight coder arm vanished. Sealing
+# preserves the actual plan-stage selection.
+check_contains "startup planner challenge records seal reason" "$STARTUP_BLOCK" 'challenge_reason="awaiting_expanded_route"'
+check_contains "startup planner challenge seals rather than dropping the pair" "$STARTUP_BLOCK" 'plan_awaits_expanded_route="true"'
 check_contains "runtime planner challenge defers without effective route" "$RUNTIME_BLOCK" 'challenge_plan_stage_requires_effective_route "$challenge_plan"'
-check_contains "runtime planner challenge records defer reason" "$RUNTIME_BLOCK" 'plan_stage_expanded_route_unavailable'
-# A plan-stage challenge that cannot form yet must be retargeted, not deleted:
-# dropping to single is how an already-selected open-weight coder arm vanished.
-check_contains "runtime planner challenge retargets to implementation before dropping" "$RUNTIME_BLOCK" '--pinned-stage implementation'
-check_contains "runtime planner challenge keeps the pair when retargeting works" "$RUNTIME_BLOCK" 'retargeted to implementation stage'
+check_contains "runtime planner challenge records seal reason" "$RUNTIME_BLOCK" 'challenge_reason="awaiting_expanded_route"'
+check_contains "runtime planner challenge seals rather than dropping the pair" "$RUNTIME_BLOCK" 'plan_awaits_expanded_route="true"'
 
 if [[ -n "$CODING_FINALIZATION_BLOCK" ]]; then
   check_contains "coding handoff calls finalizer" "$CODING_FINALIZATION_BLOCK" 'finalize_challenge_execution_intent_before_coding "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR" "$FEATURE_DIR" "$coder_model"'
