@@ -602,7 +602,7 @@ export function filterDeepSeekChallengeModels(
   };
 }
 
-export function getChallengeModelPoolFromConfig(repoDir?: string, stage: ChallengeStage = 'implementation'): string[] {
+export function getChallengeModelPoolFromConfig(repoDir: string | undefined, stage: ChallengeStage): string[] {
   const config = loadWavemillConfig(repoDir);
   // Challenge arms must use the same effective projection enforced by launch
   // preflight; routing-ineligible identities cannot be auto-selected here.
@@ -614,9 +614,9 @@ export function getChallengeModelPoolFromConfig(repoDir?: string, stage: Challen
 }
 
 export function getChallengeModelPool(
-  challengeConfig?: ChallengeConfig,
-  routerConfig?: RouterConfig,
-  stage: ChallengeStage = 'implementation',
+  challengeConfig: ChallengeConfig | undefined,
+  routerConfig: RouterConfig | undefined,
+  stage: ChallengeStage,
 ): string[] {
   // Disabled models must never enter the challenge pool; the disable set is
   // authoritative over the global effective-model projection.

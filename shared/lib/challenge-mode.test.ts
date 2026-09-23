@@ -70,6 +70,7 @@ test('challenge model pool ignores explicit repo-local challenge.models', () => 
   const pool = getChallengeModelPool(
     { models: ['claude-opus-4-6', 'gpt-5.6-terra', 'claude-opus-4-6'] },
     { models: ['claude-sonnet-4-5-20250929'] },
+    'implementation',
   );
   assert.ok(pool.includes('qwen-3-coder'));
   assert.ok(pool.includes('glm-5.2'));
@@ -80,6 +81,7 @@ test('challenge model pool keeps global promoted OpenRouter aliases', () => {
   const pool = getChallengeModelPool(
     { models: ['glm-5.2', 'kimi-k2.7-code', 'glm-5.2'] },
     { models: ['claude-sonnet-4-5-20250929'] },
+    'implementation',
   );
   assert.ok(pool.includes('glm-5.2'));
   assert.ok(pool.includes('kimi-k2.7-code'));
@@ -89,6 +91,7 @@ test('challenge model pool ignores router models when challenge.models is null',
   const pool = getChallengeModelPool(
     { models: null },
     { models: ['claude-sonnet-4-5-20250929', 'gpt-5.6-terra'] },
+    'implementation',
   );
   assert.ok(pool.includes('qwen-3-coder'));
   assert.ok(pool.includes('claude-opus-4-6'));
@@ -98,6 +101,7 @@ test('challenge model pool excludes disabled models from the global pool', () =>
   const pool = getChallengeModelPool(
     { models: ['claude-opus-4-6', 'gpt-5.3-codex'] },
     { models: [] },
+    'implementation',
   );
   assert.ok(pool.includes('claude-opus-4-6'));
   assert.ok(!pool.includes('gpt-5.3-codex'));
@@ -108,6 +112,7 @@ test('challenge model pool excludes DeepSeek by default', () => {
   const pool = getChallengeModelPool(
     { models: ['deepseek-v4-flash', 'claude-opus-4-6', 'deepseek-v4-pro'] },
     { models: ['gpt-5.6-terra'] },
+    'implementation',
   );
   assert.ok(pool.includes('claude-opus-4-6'));
   assert.ok(!pool.some((model) => model.includes('deepseek')));
@@ -117,6 +122,7 @@ test('challenge model pool includes DeepSeek when allowDeepseek is enabled', () 
   const pool = getChallengeModelPool(
     { allowDeepseek: true, models: ['deepseek-v4-flash', 'claude-opus-4-6', 'deepseek-v4-flash'] },
     { models: ['gpt-5.6-terra'] },
+    'implementation',
   );
   assert.ok(pool.includes('deepseek-v4-flash'));
   assert.ok(pool.includes('claude-opus-4-6'));
