@@ -98,6 +98,15 @@ export type ChallengeSelectionFailureReason =
   | 'challenge_unavailable'
   | 'challenge_deferred_selection_health';
 
+/**
+ * Stable, stage-specific reason emitted when the varied-stage projection
+ * cannot yield two distinct identities. Distinguishing this from a generic
+ * `insufficient_models` result lets operators see which stage was filtered.
+ */
+export function insufficientStagePoolReason(stage: ChallengeStage): string {
+  return `insufficient_models_for_${stage}`;
+}
+
 export interface ChallengePairSelectionResult<T extends ChallengePairSelection = ChallengePairSelection> {
   pair: T | null;
   failureReason?: ChallengeSelectionFailureReason;
@@ -602,23 +611,27 @@ export function filterDeepSeekChallengeModels(
   };
 }
 
-export function getChallengeModelPoolFromConfig(repoDir?: string): string[] {
+export function getChallengeModelPoolFromConfig(stage: ChallengeStage, repoDir?: string): string[] {
   const config = loadWavemillConfig(repoDir);
   // Challenge arms must use the same effective projection enforced by launch
-  // preflight; routing-ineligible identities cannot be auto-selected here.
+  // preflight for the varied stage; seeding every pool from 'coding' would
+  // silently drop planning- and review-only identities before stage-specific
+  // filtering can consider them (HOK-3063).
   return filterDisabledModels(filterDeepSeekChallengeModels(
-    listEffectiveModelsForStage('coding', { repoDir }).models,
+    listEffectiveModelsForStage(STAGE_TO_AGENT_PHASE[stage], { repoDir }).models,
     config.challenge,
   ).models);
 }
 
 export function getChallengeModelPool(
+  stage: ChallengeStage,
   challengeConfig?: ChallengeConfig,
   routerConfig?: RouterConfig,
 ): string[] {
   // Disabled models must never enter the challenge pool; the disable set is
-  // authoritative over the global effective-model projection.
-  const source = listEffectiveModelsForStage('coding').models;
+  // authoritative over the global effective-model projection for the varied
+  // stage.
+  const source = listEffectiveModelsForStage(STAGE_TO_AGENT_PHASE[stage]).models;
   return filterDisabledModels(filterDeepSeekChallengeModels(source, challengeConfig).models);
 }
 

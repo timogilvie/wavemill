@@ -16,6 +16,7 @@ import {
   deriveChallengerKey,
   filterDeepSeekChallengeModels,
   getChallengeModelPool,
+  insufficientStagePoolReason,
   pickChallengeWorkflowsWithContext,
   pickChallengeWorkflowsWithContextAndReason,
   pickChallengeModels,
@@ -68,6 +69,7 @@ console.log('\n--- Challenge Mode Tests ---\n');
 
 test('challenge model pool ignores explicit repo-local challenge.models', () => {
   const pool = getChallengeModelPool(
+    'implementation',
     { models: ['claude-opus-4-6', 'gpt-5.6-terra', 'claude-opus-4-6'] },
     { models: ['claude-sonnet-4-5-20250929'] },
   );
@@ -78,6 +80,7 @@ test('challenge model pool ignores explicit repo-local challenge.models', () => 
 
 test('challenge model pool keeps global promoted OpenRouter aliases', () => {
   const pool = getChallengeModelPool(
+    'implementation',
     { models: ['glm-5.2', 'kimi-k2.7-code', 'glm-5.2'] },
     { models: ['claude-sonnet-4-5-20250929'] },
   );
@@ -87,6 +90,7 @@ test('challenge model pool keeps global promoted OpenRouter aliases', () => {
 
 test('challenge model pool ignores router models when challenge.models is null', () => {
   const pool = getChallengeModelPool(
+    'implementation',
     { models: null },
     { models: ['claude-sonnet-4-5-20250929', 'gpt-5.6-terra'] },
   );
@@ -96,6 +100,7 @@ test('challenge model pool ignores router models when challenge.models is null',
 
 test('challenge model pool excludes disabled models from the global pool', () => {
   const pool = getChallengeModelPool(
+    'implementation',
     { models: ['claude-opus-4-6', 'gpt-5.3-codex'] },
     { models: [] },
   );
@@ -106,6 +111,7 @@ test('challenge model pool excludes disabled models from the global pool', () =>
 
 test('challenge model pool excludes DeepSeek by default', () => {
   const pool = getChallengeModelPool(
+    'implementation',
     { models: ['deepseek-v4-flash', 'claude-opus-4-6', 'deepseek-v4-pro'] },
     { models: ['gpt-5.6-terra'] },
   );
@@ -115,11 +121,47 @@ test('challenge model pool excludes DeepSeek by default', () => {
 
 test('challenge model pool includes DeepSeek when allowDeepseek is enabled', () => {
   const pool = getChallengeModelPool(
+    'implementation',
     { allowDeepseek: true, models: ['deepseek-v4-flash', 'claude-opus-4-6', 'deepseek-v4-flash'] },
     { models: ['gpt-5.6-terra'] },
   );
   assert.ok(pool.includes('deepseek-v4-flash'));
   assert.ok(pool.includes('claude-opus-4-6'));
+});
+
+// HOK-3063: pool constructors must reflect the varied stage's projection.
+// Seeding every stage from 'coding' would silently drop planning- and
+// review-only identities before stage-specific filters can consider them.
+test('plan-stage pool includes planning-eligible models absent from coding projection', () => {
+  const planPool = getChallengeModelPool('plan', {}, {});
+  const codingPool = getChallengeModelPool('implementation', {}, {});
+  // kimi-k2 is planning + review eligible but not coding-eligible.
+  assert.ok(planPool.includes('kimi-k2'), 'plan pool should include planning-eligible kimi-k2');
+  assert.ok(!codingPool.includes('kimi-k2'), 'coding pool should exclude non-coding kimi-k2');
+});
+
+test('review-stage pool includes review-eligible models absent from coding projection', () => {
+  const reviewPool = getChallengeModelPool('review', {}, {});
+  const codingPool = getChallengeModelPool('implementation', {}, {});
+  assert.ok(reviewPool.includes('kimi-k2'), 'review pool should include review-eligible kimi-k2');
+  assert.ok(!codingPool.includes('kimi-k2'), 'coding pool should exclude non-coding kimi-k2');
+});
+
+test('implementation-stage pool excludes coding-ineligible models', () => {
+  const codingPool = getChallengeModelPool('implementation', {}, {});
+  // gpt-4.1 / mistral-medium-3 / devstral-medium are coding-only in the
+  // registry; a plan-stage seed would silently drop them, but implementation
+  // must retain them.
+  assert.ok(codingPool.includes('mistral-medium-3'));
+  assert.ok(codingPool.includes('devstral-medium'));
+  // And a planning-only model must not leak into implementation.
+  assert.ok(!codingPool.includes('kimi-k2'));
+});
+
+test('insufficientStagePoolReason emits stable per-stage tokens', () => {
+  assert.equal(insufficientStagePoolReason('plan'), 'insufficient_models_for_plan');
+  assert.equal(insufficientStagePoolReason('implementation'), 'insufficient_models_for_implementation');
+  assert.equal(insufficientStagePoolReason('review'), 'insufficient_models_for_review');
 });
 
 test('filterDeepSeekChallengeModels returns a clear rationale when it removes candidates', () => {
@@ -216,6 +258,7 @@ test('reason-aware model selection preserves generic selection failures', () => 
 
 test('repo-local all-DeepSeek pool does not remove global runnable models', () => {
   const pool = getChallengeModelPool(
+    'implementation',
     { models: ['deepseek-v4-flash', 'deepseek-v4-pro'] },
     { models: [] },
   );
