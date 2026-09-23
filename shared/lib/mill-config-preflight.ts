@@ -8,12 +8,18 @@ import {
 import {
   isCertificationAutoRemediationTrigger,
   runCertificationAutoRemediation,
+  runCanaryCohortRemediation,
   type AutoRemediationResult,
+  type CanaryCohortRemediationResult,
 } from './native-agent/certification/auto-remediate.ts';
 import {
   evaluateSuiteCoverage,
   type SuiteCoverageResult,
 } from './native-agent/certification/coverage.ts';
+import {
+  evaluateCohortHealth,
+  type CohortHealthSummary,
+} from './native-agent/certification/canary-cohort.ts';
 import type { certifySelectedNativeAgents } from '../../tools/native-agent-certify.ts';
 
 export const MILL_CONFIG_MIGRATION_COMMAND = 'wavemill config migrate-model-settings';
@@ -27,6 +33,13 @@ export interface MillConfigPreflightReport {
   certificationRemediation?: Pick<
     AutoRemediationResult,
     'attempted' | 'mode' | 'targets' | 'published' | 'failed' | 'skipped'
+  > & {
+    remediationLog: string[];
+  };
+  canaryCohortHealth?: CohortHealthSummary;
+  canaryCohortRemediation?: Pick<
+    CanaryCohortRemediationResult,
+    'attempted' | 'mode'
   > & {
     remediationLog: string[];
   };
@@ -140,6 +153,46 @@ export async function runMillConfigPreflight(
   const certificationEmptyBlocked = certificationCoverage?.status === 'empty-store'
     && certificationCoverage.nativeModelCount > 0;
 
+  // Canary cohort evaluation and bounded remediation
+  const canaryCohort = config?.nativeAgent?.certification?.canaryCohort;
+  let canaryCohortHealth: CohortHealthSummary | undefined;
+  let canaryCohortRemediation: MillConfigPreflightReport['canaryCohortRemediation'];
+
+  if (canaryCohort && canaryCohort.identities.length > 0) {
+    const cohortRegistry = options.registry ?? undefined;
+    canaryCohortHealth = evaluateCohortHealth(canaryCohort, cohortRegistry ?? (await import('./model-registry.ts')).getEffectiveRegistry(absRepoDir), {
+      root: options.certificationRoot,
+      now: options.now?.(),
+    });
+
+    const cohortRefreshEnabled = canaryCohort.refreshEnabled !== false;
+    if (
+      canaryCohortHealth.belowMinimum
+      && cohortRefreshEnabled
+      && autoRemediationEnabled
+    ) {
+      const cohortLog: string[] = [];
+      const cohortRemediation = await runCanaryCohortRemediation({
+        registry: options.registry,
+        repoDir: absRepoDir,
+        cohort: canaryCohort,
+        root: options.certificationRoot,
+        env,
+        now: options.now,
+        log: (line) => cohortLog.push(line),
+        attemptCachePath: options.attemptCachePath,
+      });
+      canaryCohortRemediation = {
+        attempted: cohortRemediation.attempted,
+        mode: cohortRemediation.mode,
+        remediationLog: cohortLog,
+      };
+      canaryCohortHealth = cohortRemediation.cohortHealth;
+    }
+  }
+
+  const canaryCohortBlocked = canaryCohortHealth?.belowMinimum === true;
+
   const report: MillConfigPreflightReport = {
     repoDir: absRepoDir,
     removedFields,
@@ -147,6 +200,8 @@ export async function runMillConfigPreflight(
     migrationCommand: MILL_CONFIG_MIGRATION_COMMAND,
     ...(certificationCoverage ? { certificationCoverage } : {}),
     ...(certificationRemediation ? { certificationRemediation } : {}),
+    ...(canaryCohortHealth ? { canaryCohortHealth } : {}),
+    ...(canaryCohortRemediation ? { canaryCohortRemediation } : {}),
   };
 
   return {
@@ -154,7 +209,8 @@ export async function runMillConfigPreflight(
       && validationError === null
       && !certificationCoverageBlocked
       && !certificationStaleBlocked
-      && !certificationEmptyBlocked,
+      && !certificationEmptyBlocked
+      && !canaryCohortBlocked,
     report,
   };
 }
@@ -247,6 +303,35 @@ export function formatMillConfigPreflightReport(report: MillConfigPreflightRepor
 
   if (report.certificationRemediation) {
     lines.push('', formatCertificationRemediationReport(report));
+  }
+
+  if (report.canaryCohortHealth?.belowMinimum) {
+    const h = report.canaryCohortHealth;
+    lines.push(
+      '',
+      'Native canary cohort readiness:',
+      `  ERROR: Only ${h.codingReadyCount} of ${h.identities.length} cohort identities are coding-ready (minimum: ${h.minimumReady}).`,
+    );
+    for (const id of h.identities) {
+      const status = id.codingReady ? 'ready' : `not-ready (${id.reason ?? 'unknown'})`;
+      lines.push(`    ${id.provider}/${id.model}: ${status}`);
+    }
+    lines.push(
+      '  Run: npx tsx tools/native-agent-certify.ts --refresh-cohort',
+      '  Automatic refresh can be disabled by setting canaryCohort.refreshEnabled: false.',
+    );
+  }
+
+  if (report.canaryCohortRemediation) {
+    const r = report.canaryCohortRemediation;
+    lines.push(
+      '',
+      'Canary cohort auto-remediation:',
+      `  mode=${r.mode} attempted=${r.attempted ? 'yes' : 'no'}`,
+    );
+    for (const line of r.remediationLog) {
+      lines.push(`  ${line}`);
+    }
   }
 
   if (report.removedFields.length > 0 || report.validationError) {

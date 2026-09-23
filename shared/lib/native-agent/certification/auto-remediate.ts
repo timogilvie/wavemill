@@ -12,10 +12,14 @@ import { resolveCertificationStorage } from './storage.ts';
 import type { SuiteCoverageResult, SuiteCoverageStatus } from './coverage.ts';
 import {
   certifySelectedNativeAgents,
+  refreshCanaryCohort,
   type CertifyAllEntry,
   type CertifyAllResult,
   type CertifySelectedTarget,
+  type RefreshCohortResult,
 } from '../../../../tools/native-agent-certify.ts';
+import type { CanaryCohortConfig } from '../../config.ts';
+import { evaluateCohortHealth, type CohortHealthSummary } from './canary-cohort.ts';
 
 export interface AutoRemediationOptions {
   registry?: ModelRegistry;
@@ -305,4 +309,126 @@ export function isCertificationAutoRemediationTrigger(status: SuiteCoverageStatu
     || status === 'stale'
     || status === 'bump-without-publish'
     || status === 'empty-store';
+}
+
+// ---------------------------------------------------------------------------
+// Canary cohort bounded remediation
+// ---------------------------------------------------------------------------
+
+export interface CanaryCohortRemediationOptions {
+  registry?: ModelRegistry;
+  repoDir: string;
+  cohort: CanaryCohortConfig;
+  root?: string;
+  env?: NodeJS.ProcessEnv;
+  now?: () => Date;
+  log?: (line: string) => void;
+  attemptCachePath?: string;
+  processToken?: string;
+  refreshFn?: typeof refreshCanaryCohort;
+}
+
+export interface CanaryCohortRemediationResult {
+  attempted: boolean;
+  mode: 'canary-cohort-refresh' | 'noop' | 'blocked-by-loop-guard' | 'no-credentials';
+  cohortHealth: CohortHealthSummary;
+  refreshResult?: RefreshCohortResult;
+}
+
+export async function runCanaryCohortRemediation(
+  opts: CanaryCohortRemediationOptions,
+): Promise<CanaryCohortRemediationResult> {
+  const registry = opts.registry ?? getEffectiveRegistry(opts.repoDir);
+  const env = opts.env ?? process.env;
+  const now = opts.now ?? (() => new Date());
+  const processToken = opts.processToken ?? PROCESS_TOKEN;
+
+  const preHealth = evaluateCohortHealth(opts.cohort, registry, {
+    root: opts.root,
+    now: now(),
+  });
+
+  if (!preHealth.belowMinimum) {
+    opts.log?.(`[canary-cohort] coding-ready=${preHealth.codingReadyCount} minimum=${preHealth.minimumReady} reason=above-minimum`);
+    return { attempted: false, mode: 'noop', cohortHealth: preHealth };
+  }
+
+  // Check for provider credentials
+  const hasOpenAiKey = Boolean(env.OPENAI_API_KEY?.trim());
+  const hasOpenRouterKey = Boolean(env.OPENROUTER_API_KEY?.trim());
+  if (!hasOpenAiKey && !hasOpenRouterKey) {
+    opts.log?.('[canary-cohort] no provider credentials available, skipping refresh');
+    return { attempted: false, mode: 'no-credentials', cohortHealth: preHealth };
+  }
+
+  // Bounded attempt guard
+  const cachePath = opts.attemptCachePath
+    ?? join(resolveCertificationStorage({ scope: 'global', root: opts.root }).root, '.canary-cohort-attempts.json');
+  const attemptKey = buildCohortAttemptKey(opts.cohort, registry);
+
+  let existing: AttemptCache['attempts'][string] | undefined;
+  try {
+    existing = await readAttempt(cachePath, attemptKey);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    opts.log?.(`[canary-cohort] BLOCKED by loop guard: ${reason}`);
+    return { attempted: false, mode: 'blocked-by-loop-guard', cohortHealth: preHealth };
+  }
+  if (existing?.processToken === processToken && existing.outcome !== 'success') {
+    opts.log?.(`[canary-cohort] BLOCKED by loop guard: already attempted this episode`);
+    return { attempted: false, mode: 'blocked-by-loop-guard', cohortHealth: preHealth };
+  }
+
+  opts.log?.(`[canary-cohort] coding-ready=${preHealth.codingReadyCount} minimum=${preHealth.minimumReady} reason=below-minimum refreshing`);
+
+  let refreshResult: RefreshCohortResult;
+  try {
+    const refreshFn = opts.refreshFn ?? refreshCanaryCohort;
+    refreshResult = await refreshFn({
+      repoDir: opts.repoDir,
+      registry,
+      cohort: opts.cohort,
+      certificationRoot: opts.root,
+      env,
+      now: opts.now,
+    });
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    opts.log?.(`[canary-cohort] refresh failed: ${reason}`);
+    await safeMarkAttempt(cachePath, attemptKey, 'failed-once', [], processToken, opts.now, opts.log);
+    return { attempted: true, mode: 'canary-cohort-refresh', cohortHealth: preHealth };
+  }
+
+  const outcome = refreshResult.cohortHealth.belowMinimum ? 'failed-once' : 'success';
+  await safeMarkAttempt(cachePath, attemptKey, outcome, [], processToken, opts.now, opts.log);
+  opts.log?.(`[canary-cohort] refresh done coding-ready=${refreshResult.cohortHealth.codingReadyCount}`);
+
+  return {
+    attempted: true,
+    mode: 'canary-cohort-refresh',
+    cohortHealth: refreshResult.cohortHealth,
+    refreshResult,
+  };
+}
+
+function buildCohortAttemptKey(
+  cohort: CanaryCohortConfig,
+  registry: ModelRegistry,
+): string {
+  const identityKeys = cohort.identities
+    .map((i) => `${i.provider}/${i.model}`)
+    .sort()
+    .join(',');
+  let catalogHash = ZERO_CATALOG_HASH;
+  try {
+    catalogHash = hashLaunchPriorityFixture();
+  } catch { /* noop */ }
+  const suiteVersions = [...new Set(cohort.identities
+    .map((i) => registry.models[i.model]?.nativeCapability?.certification?.certificationSuiteVersion)
+    .filter(Boolean))]
+    .sort()
+    .join(',');
+  return createHash('sha256')
+    .update(`canary-cohort\n${catalogHash}\n${suiteVersions}\n${identityKeys}`, 'utf-8')
+    .digest('hex');
 }

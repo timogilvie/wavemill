@@ -1,13 +1,20 @@
 name: Certify Native Fleet
-description: Publish deterministic native certification artifacts for this CI job.
+description: >
+  Publish deterministic native certification artifacts for this CI job.
+  This action uses a runner-scoped temporary store — its artifacts are NOT
+  authoritative for the production mill's live coding canary gate.
+  Live canary refresh requires credentialed execution against the shared
+  global certification root (see: npx tsx tools/native-agent-certify.ts --refresh-cohort).
 
 runs:
   using: composite
   steps:
     - name: Scope native certification store
       shell: bash
+      # Runner-local temporary store; never the production shared root.
       run: echo "WAVEMILL_NATIVE_CERTIFICATION_ROOT=${RUNNER_TEMP}/wavemill-certs" >> "$GITHUB_ENV"
 
     - name: Publish native certification matrix
       shell: bash
+      # Deterministic only — no --live-coding-canary, no --refresh-cohort.
       run: npx tsx tools/native-agent-certify.ts --all --phase workflow

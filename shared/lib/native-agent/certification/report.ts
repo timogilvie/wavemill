@@ -26,9 +26,13 @@ import { checkIdentity } from './validator.ts';
 import { findModelExclusion, type ModelExclusionDiagnostic } from '../../model-exclusions.ts';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { getNativePatchCodingConfig } from '../../config.ts';
+import { getNativePatchCodingConfig, loadWavemillConfig } from '../../config.ts';
 import { PATCH_CODING_CERTIFICATION_RELATIVE_PATH } from '../coding-certification.ts';
 import { resolveNativeLauncherPath } from '../install-paths.ts';
+import {
+  evaluateCohortHealth,
+  type CohortHealthSummary,
+} from './canary-cohort.ts';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -441,6 +445,56 @@ export function renderReportTable(rows: ModelCertificationReportRow[]): string {
 
   lines.push(separator);
   return lines.join('\n') + '\n';
+}
+
+// ---------------------------------------------------------------------------
+// Cohort health summary
+// ---------------------------------------------------------------------------
+
+export function buildCohortHealthReport(
+  opts: { repoDir?: string; registry?: ModelRegistry; now?: Date; certificationRoot?: string } = {},
+): CohortHealthSummary | undefined {
+  const repoDir = opts.repoDir ?? process.cwd();
+  const registry = opts.registry ?? getEffectiveRegistry(repoDir);
+  let config;
+  try {
+    config = loadWavemillConfig(repoDir);
+  } catch {
+    return undefined;
+  }
+  const cohort = config.nativeAgent?.certification?.canaryCohort;
+  if (!cohort || cohort.identities.length === 0) return undefined;
+  return evaluateCohortHealth(cohort, registry, {
+    root: opts.certificationRoot,
+    now: opts.now,
+  });
+}
+
+export function renderCohortHealthSection(health: CohortHealthSummary): string {
+  const lines = [
+    '',
+    `Canary cohort: ${health.codingReadyCount}/${health.identities.length} coding-ready (minimum: ${health.minimumReady})`,
+  ];
+  if (health.nearestExpiry) {
+    lines.push(`Nearest expiry: ${health.nearestExpiry}`);
+  }
+  for (const id of health.identities) {
+    const status = id.codingReady ? 'ready' : `not-ready (${id.reason ?? 'unknown'})`;
+    const detail = [
+      id.lastRanAt ? `lastRanAt=${id.lastRanAt}` : '',
+      id.expiresAt ? `expiresAt=${id.expiresAt}` : '',
+      id.failureReason ? `failure=${id.failureReason}` : '',
+    ].filter(Boolean).join(' ');
+    lines.push(`  ${id.provider}/${id.model}: ${status}${detail ? ` ${detail}` : ''}`);
+  }
+  if (health.belowMinimum) {
+    lines.push(
+      '',
+      `WARNING: Coding-ready count (${health.codingReadyCount}) is below minimum (${health.minimumReady}).`,
+      'Run: npx tsx tools/native-agent-certify.ts --refresh-cohort',
+    );
+  }
+  return lines.join('\n');
 }
 
 // ---------------------------------------------------------------------------

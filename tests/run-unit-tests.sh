@@ -318,6 +318,7 @@ TESTS=(
   shared/lib/native-agent/certification/scenario-runner.test.ts
   shared/lib/native-agent/certification/eligibility-gate.test.ts
   shared/lib/native-agent/certification/live-coding-canary.test.ts
+  shared/lib/native-agent/certification/canary-cohort.test.ts
   shared/lib/native-agent/certification/report.test.ts
   shared/lib/native-agent/certification/rollout-regression.test.ts
   tools/native-agent-certify.test.ts

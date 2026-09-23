@@ -445,9 +445,21 @@ export interface NativePatchCodingConfig {
   enabled?: boolean;
 }
 
+export interface CanaryCohortIdentity {
+  provider: string;
+  model: string;
+}
+
+export interface CanaryCohortConfig {
+  identities: CanaryCohortIdentity[];
+  minimumReady?: number;
+  refreshEnabled?: boolean;
+}
+
 export interface NativeCertificationConfig {
   autoRemediate?: boolean;
   renewalWindowDays?: number;
+  canaryCohort?: CanaryCohortConfig;
 }
 
 export interface NativeContextManagementConfig {

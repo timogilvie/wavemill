@@ -1494,6 +1494,41 @@
                             "minimum": 0,
                             "maximum": 30,
                             "default": 7
+                        },
+                        "canaryCohort": {
+                            "type": "object",
+                            "description": "Bounded cohort of native models that require live coding canary passes for coding eligibility.",
+                            "properties": {
+                                "identities": {
+                                    "type": "array",
+                                    "description": "Canonical provider/model pairs in the canary cohort.",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "provider": { "type": "string" },
+                                            "model": { "type": "string" }
+                                        },
+                                        "required": ["provider", "model"],
+                                        "additionalProperties": false
+                                    },
+                                    "minItems": 1,
+                                    "maxItems": 8
+                                },
+                                "minimumReady": {
+                                    "type": "integer",
+                                    "description": "Minimum number of coding-ready identities before readiness fails.",
+                                    "minimum": 0,
+                                    "maximum": 8,
+                                    "default": 2
+                                },
+                                "refreshEnabled": {
+                                    "type": "boolean",
+                                    "description": "Whether automatic canary refresh is enabled during preflight.",
+                                    "default": true
+                                }
+                            },
+                            "required": ["identities"],
+                            "additionalProperties": false
                         }
                     },
                     "additionalProperties": false

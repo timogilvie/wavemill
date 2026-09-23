@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { certifyAllNativeAgents, certifyNativeAgent, renderCanaryStatusLine } from './native-agent-certify.ts';
+import { certifyAllNativeAgents, certifyNativeAgent, refreshCanaryCohort, renderCanaryStatusLine } from './native-agent-certify.ts';
 import type { HarnessReport, HarnessScenarioResult } from '../shared/lib/native-agent/certification/scenario-runner.ts';
 import { CERTIFICATION_SCHEMA_VERSION, type NativeCertificationArtifact } from '../shared/lib/native-agent/certification/schema.ts';
 import { buildLiveCodingCanaryFixture } from '../shared/lib/native-agent/certification/canary-fixtures.ts';
@@ -1043,5 +1043,48 @@ describe('certifyNativeAgent skipped canary preservation', () => {
     assert.equal(written!.liveCanary?.ranAt, CANARY_RAN_AT);
     assert.equal(result.codingEligible, true);
     assert.equal(result.liveCanary?.carriedForward, true);
+  });
+});
+
+describe('refreshCanaryCohort', () => {
+  it('rejects when no cohort configured', async () => {
+    await assert.rejects(
+      () => refreshCanaryCohort({ repoDir: '/tmp/no-cohort' }),
+      (err: Error & { exitCode?: number }) => {
+        assert.match(err.message, /No canary cohort configured/);
+        assert.equal(err.exitCode, 2);
+        return true;
+      },
+    );
+  });
+
+  it('rejects dry-run', async () => {
+    await assert.rejects(
+      () => refreshCanaryCohort({
+        repoDir: '/tmp/test',
+        dryRun: true,
+        cohort: { identities: [{ provider: 'openai', model: 'gpt-4o' }] },
+        registry: STUB_REGISTRY,
+      }),
+      (err: Error & { exitCode?: number }) => {
+        assert.match(err.message, /cannot be combined with --dry-run/);
+        assert.equal(err.exitCode, 2);
+        return true;
+      },
+    );
+  });
+
+  it('rejects invalid cohort identities', async () => {
+    await assert.rejects(
+      () => refreshCanaryCohort({
+        repoDir: '/tmp/test',
+        cohort: { identities: [{ provider: 'openai', model: 'nonexistent' }] },
+        registry: STUB_REGISTRY,
+      }),
+      (err: Error & { exitCode?: number }) => {
+        assert.match(err.message, /validation failed/);
+        return true;
+      },
+    );
   });
 });

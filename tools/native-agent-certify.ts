@@ -46,6 +46,14 @@ import { writeGlobalCertification } from '../shared/lib/native-agent/certificati
 import { getEffectiveRegistry, type ModelRegistry, type NativeProviderName } from '../shared/lib/model-registry.ts';
 import { resolveWavemillAliasFromOpenRouterId } from '../shared/lib/openrouter-catalog.ts';
 import { runOpenRouterSmoke, type SmokeReport } from '../shared/lib/openrouter-smoke.ts';
+import { loadWavemillConfig, type CanaryCohortConfig } from '../shared/lib/config.ts';
+import {
+  evaluateCohortHealth,
+  selectCohortRefreshTargets,
+  validateCohortConfig,
+  type CohortHealthSummary,
+} from '../shared/lib/native-agent/certification/canary-cohort.ts';
+import { resolveCertificationStorage } from '../shared/lib/native-agent/certification/storage.ts';
 
 const NATIVE_PROVIDERS: NativeProviderName[] = ['openai', 'openrouter'];
 
@@ -476,6 +484,94 @@ export async function certifySelectedNativeAgents(opts: CertifySelectedOptions):
   };
 }
 
+export interface RefreshCohortOptions {
+  repoDir: string;
+  registry?: ModelRegistry;
+  dryRun?: boolean;
+  canaryLimits?: Partial<LiveCodingCanaryLimits>;
+  runScenariosFn?: typeof runScenarios;
+  runOpenRouterSmokeFn?: typeof runOpenRouterSmoke;
+  runLiveCanaryFn?: typeof runLiveCodingCanary;
+  loadPreviousArtifactFn?: CertifyOptions['loadPreviousArtifactFn'];
+  writeCertificationFn?: CertifyOptions['writeCertificationFn'];
+  now?: () => Date;
+  env?: NodeJS.ProcessEnv;
+  cohort?: CanaryCohortConfig;
+  certificationRoot?: string;
+}
+
+export interface RefreshCohortResult {
+  cohortHealth: CohortHealthSummary;
+  certifyResult?: CertifyAllResult;
+  refreshed: boolean;
+}
+
+export async function refreshCanaryCohort(opts: RefreshCohortOptions): Promise<RefreshCohortResult> {
+  const registry = opts.registry ?? getEffectiveRegistry(opts.repoDir);
+  const env = opts.env ?? process.env;
+  const config = opts.cohort ?? loadWavemillConfig(opts.repoDir).nativeAgent?.certification?.canaryCohort;
+
+  if (!config || config.identities.length === 0) {
+    throw Object.assign(
+      new Error('No canary cohort configured. Set nativeAgent.certification.canaryCohort in .wavemill-config.json.'),
+      { exitCode: 2 },
+    );
+  }
+
+  if (opts.dryRun) {
+    throw Object.assign(
+      new Error('--refresh-cohort cannot be combined with --dry-run (canary refresh requires live provider calls).'),
+      { exitCode: 2 },
+    );
+  }
+
+  const validationErrors = validateCohortConfig(config, registry);
+  if (validationErrors.length > 0) {
+    throw Object.assign(
+      new Error(`Canary cohort validation failed:\n  ${validationErrors.join('\n  ')}`),
+      { exitCode: 2 },
+    );
+  }
+
+  const root = opts.certificationRoot
+    ?? resolveCertificationStorage({ scope: 'global' }).root;
+
+  const preHealth = evaluateCohortHealth(config, registry, { root, now: opts.now?.() });
+  const targets = selectCohortRefreshTargets(config, registry, { root, now: opts.now?.() });
+
+  if (targets.length === 0) {
+    return { cohortHealth: preHealth, refreshed: false };
+  }
+
+  const certifyResult = await certifySelectedNativeAgents({
+    targets: targets.map((t) => ({
+      provider: t.provider as NativeProviderName,
+      model: t.model,
+    })),
+    phase: 'workflow',
+    repoDir: opts.repoDir,
+    dryRun: false,
+    liveCodingCanary: true,
+    ...(opts.canaryLimits ? { canaryLimits: opts.canaryLimits } : {}),
+    registry,
+    runScenariosFn: opts.runScenariosFn,
+    runOpenRouterSmokeFn: opts.runOpenRouterSmokeFn,
+    runLiveCanaryFn: opts.runLiveCanaryFn,
+    loadPreviousArtifactFn: opts.loadPreviousArtifactFn,
+    writeCertificationFn: opts.writeCertificationFn,
+    now: opts.now,
+    env,
+  });
+
+  const postHealth = evaluateCohortHealth(config, registry, { root, now: opts.now?.() });
+
+  return {
+    cohortHealth: postHealth,
+    certifyResult,
+    refreshed: true,
+  };
+}
+
 function isPolicySkip(message: string): boolean {
   return message.includes('OPENROUTER_LIVE_SMOKE=1 is required before publishing a provisional OpenRouter certification');
 }
@@ -624,6 +720,10 @@ return runTool({
       type: 'boolean',
       description: 'Certify every native-capable registry model. --provider filters the batch when set.',
     },
+    'refresh-cohort': {
+      type: 'boolean',
+      description: 'Refresh live coding canaries for the configured canary cohort. Requires credentials.',
+    },
     json: {
       type: 'boolean',
       description: 'Emit machine-readable JSON.',
@@ -639,6 +739,7 @@ return runTool({
     'npx tsx tools/native-agent-certify.ts --provider openrouter --model openai/gpt-4o --phase read-only --json',
     'npx tsx tools/native-agent-certify.ts --all --phase workflow',
     'npx tsx tools/native-agent-certify.ts --provider openrouter --model qwen-3-coder --phase workflow --live-coding-canary',
+    'npx tsx tools/native-agent-certify.ts --refresh-cohort',
   ],
   async run({ args }) {
     const repoDir = (args.repo as string | undefined) || process.cwd();
@@ -647,6 +748,7 @@ return runTool({
     const rawPhase = (args.phase as string | undefined) ?? 'workflow';
     const dryRun = args['dry-run'] === true;
     const all = args.all === true;
+    const refreshCohort = args['refresh-cohort'] === true;
     const liveCodingCanary = args['live-coding-canary'] === true;
     const canaryLimits = parseCanaryLimitFlags(args);
     if (!canaryLimits.ok) {
@@ -656,6 +758,37 @@ return runTool({
     if (liveCodingCanary && dryRun) {
       console.error('Error: --live-coding-canary cannot be combined with --dry-run (the canary is a live provider run).');
       process.exit(2);
+    }
+
+    if (refreshCohort) {
+      if (all || rawModel || rawProvider) {
+        console.error('Error: --refresh-cohort cannot be combined with --all, --provider, or --model.');
+        process.exit(2);
+      }
+      if (dryRun) {
+        console.error('Error: --refresh-cohort cannot be combined with --dry-run.');
+        process.exit(2);
+      }
+      try {
+        const result = await refreshCanaryCohort({
+          repoDir,
+          ...(canaryLimits.limits ? { canaryLimits: canaryLimits.limits } : {}),
+        });
+        if (args.json === true) {
+          console.log(JSON.stringify(result, null, 2));
+        } else {
+          renderCohortRefreshSummary(result);
+        }
+        if (result.cohortHealth.belowMinimum) {
+          process.exit(1);
+        }
+      } catch (err: unknown) {
+        const exitCode = (err as { exitCode?: number }).exitCode;
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`Error: ${msg}`);
+        process.exit(exitCode ?? 2);
+      }
+      return;
     }
 
     // Validate required flags
@@ -845,6 +978,34 @@ function renderCertifyAllSummary(result: CertifyAllResult): void {
     for (const entry of entries) {
       console.log(`  ${entry.provider}/${entry.model}${entry.artifactPath ? ` -> ${entry.artifactPath}` : ''}${entry.reason ? ` - ${entry.reason}` : ''}`);
     }
+  }
+}
+
+function renderCohortRefreshSummary(result: RefreshCohortResult): void {
+  const h = result.cohortHealth;
+  console.log(`Canary cohort: ${h.codingReadyCount}/${h.identities.length} coding-ready (minimum: ${h.minimumReady})`);
+  if (h.nearestExpiry) {
+    console.log(`Nearest expiry: ${h.nearestExpiry}`);
+  }
+  console.log('');
+  for (const id of h.identities) {
+    const status = id.codingReady ? 'READY' : 'NOT READY';
+    const detail = [
+      id.reason ? `reason=${id.reason}` : '',
+      id.lastRanAt ? `lastRanAt=${id.lastRanAt}` : '',
+      id.expiresAt ? `expiresAt=${id.expiresAt}` : '',
+      id.failureReason ? `failure=${id.failureReason}` : '',
+    ].filter(Boolean).join(' ');
+    console.log(`  ${status.padEnd(10)} ${id.provider}/${id.model} ${detail}`);
+  }
+  if (result.certifyResult) {
+    console.log('');
+    renderCertifyAllSummary(result.certifyResult);
+  }
+  if (h.belowMinimum) {
+    console.log('');
+    console.log(`WARNING: Coding-ready count (${h.codingReadyCount}) is below minimum (${h.minimumReady}).`);
+    console.log('Run: npx tsx tools/native-agent-certify.ts --refresh-cohort');
   }
 }
 
