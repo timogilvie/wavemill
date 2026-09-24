@@ -27,6 +27,7 @@ import {
 import { createReadOnlyTools, READ_ONLY_PATH_FIELDS } from './tools/read-only.ts';
 import { createGitTools, gitAfterToolCall, gitToolPolicyConfig } from './tools/git.ts';
 import { createToolRegistry } from './tools/registry.ts';
+import { createBrowserTools } from './tools/browser.ts';
 import type { ToolDescriptor } from './tools/types.ts';
 import {
   createLaunchMenuProvider,
@@ -188,6 +189,9 @@ function buildReviewToolRegistry(worktreePath: string) {
   const descriptors: ToolDescriptor[] = [
     ...createReadOnlyTools(worktreePath),
     ...createGitTools(worktreePath),
+    ...createBrowserTools(() => {
+      throw new Error('Browser session management not yet implemented');
+    }),
   ];
   const registry = createToolRegistry(descriptors);
   const phase = 'review' as const;
