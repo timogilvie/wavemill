@@ -26,6 +26,7 @@ import {
 } from './providers.ts';
 import { createReadOnlyTools, READ_ONLY_PATH_FIELDS } from './tools/read-only.ts';
 import { createGitTools, gitAfterToolCall, gitToolPolicyConfig } from './tools/git.ts';
+import { createReviewScoringTools } from './tools/review-scoring.ts';
 import { createToolRegistry } from './tools/registry.ts';
 import type { ToolDescriptor } from './tools/types.ts';
 import {
@@ -33,7 +34,7 @@ import {
   formatMenuDenials,
 } from './tools/menu-resolver.ts';
 import { inferCertificationSnapshotForPhase } from './tools/certification-snapshot.ts';
-import { loadWavemillConfig } from '../config.ts';
+import { loadWavemillConfig, type WavemillConfig } from '../config.ts';
 import { renderNativePhasePrompt, type NativePhasePromptOptions } from './prompts.ts';
 import type { ReviewContext } from '../review-context-gatherer.ts';
 import { logPromptUsage } from '../prompt-registry.ts';
@@ -184,11 +185,18 @@ function nativeReviewNoEvidenceFailure(
   };
 }
 
-function buildReviewToolRegistry(worktreePath: string) {
+function buildReviewToolRegistry(worktreePath: string, config?: WavemillConfig) {
   const descriptors: ToolDescriptor[] = [
     ...createReadOnlyTools(worktreePath),
     ...createGitTools(worktreePath),
   ];
+  // Conditional advanced-family inclusion (HOK-3061 trap #2): only advertise
+  // the eval-scoring descriptors in the prompt catalog when the operator has
+  // opted in via `nativeAgent.advanced.eval.enabled`. `computeEligibility`
+  // remains the authoritative second gate.
+  if (config?.nativeAgent?.advanced?.eval?.enabled === true) {
+    descriptors.push(...createReviewScoringTools(worktreePath));
+  }
   const registry = createToolRegistry(descriptors);
   const phase = 'review' as const;
   const phaseTools = registry.getTools({ phase });
@@ -573,10 +581,14 @@ export async function runNativeReview(
   }
 
   const userPrompt = fillReviewPromptTemplate(template, context, true);
-  const { phaseMetadata, registry, descriptors: reviewDescriptors } = buildReviewToolRegistry(repoDir);
+  const wavemillConfig = loadWavemillConfig(repoDir);
+  const { phaseMetadata, registry, descriptors: reviewDescriptors } = buildReviewToolRegistry(
+    repoDir,
+    wavemillConfig,
+  );
   const menuLaunchProvider = createLaunchMenuProvider({
     phase: 'review',
-    config: loadWavemillConfig(repoDir),
+    config: wavemillConfig,
     certification: inferCertificationSnapshotForPhase({
       phase: 'review',
       readyProviderPresent: true,
