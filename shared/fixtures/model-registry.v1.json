@@ -1383,12 +1383,12 @@
             "model": "devstral-2512",
             "suiteVersion": "v3"
           },
-          "lifecycle": "supported",
+          "lifecycle": "blocked",
           "compatibilityFlags": {
             "thinkingFormat": "openrouter"
           },
-          "launchEligible": true,
-          "routingEligible": true
+          "launchEligible": false,
+          "routingEligible": false
         }
       }
     },
@@ -2585,7 +2585,7 @@
         "pricing": {
           "inputCostPerMTok": 0.15,
           "outputCostPerMTok": 0.5,
-          "cacheReadCostPerMTok": 0.03,
+          "cacheReadCostPerMTok": 0.05,
           "cacheWriteCostPerMTok": 0
         },
         "defaultLadderEligible": true,
@@ -2979,7 +2979,7 @@
       "wavemillAlias": "devstral-medium",
       "openrouterId": "mistralai/devstral-2512",
       "family": "mistral",
-      "status": "watchlist",
+      "status": "deprecated",
       "priorityTier": 2,
       "roleEligibility": [
         "coding"

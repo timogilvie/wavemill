@@ -24,7 +24,6 @@ export const WATCHLIST_SMOKE_MODELS = [
   'qwen-3-235b',
   'kimi-k2-thinking',
   'mistral-medium-3',
-  'devstral-medium',
 ] as const;
 
 function readFixture(name: string): Record<string, unknown> {
@@ -159,7 +158,7 @@ const options = {
   json: { type: 'boolean', description: 'Emit machine-readable JSON.' },
   prompt: { type: 'string', description: 'Override the smoke prompt (default: ping).' },
   models: { type: 'string', description: 'Comma-separated Wavemill aliases or OpenRouter IDs to smoke.' },
-  watchlist: { type: 'boolean', description: 'Smoke the 11 non-deprecated watchlist aliases from HOK-2582.' },
+  watchlist: { type: 'boolean', description: 'Smoke the non-deprecated native watchlist aliases from HOK-2582.' },
   families: { type: 'string', description: 'Comma-separated launch-priority families to smoke.' },
   'repo-dir': { type: 'string', description: 'Repository directory to resolve before running.' },
 } as const;
