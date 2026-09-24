@@ -311,27 +311,33 @@ wavemill_terminal_fresh_hook_state() {
 # HOK-2972: proof that the pane's surviving process is an idle agent REPL.
 # Only the agent's own Stop hook (state=idle, event=Stop) counts, read with
 # the TTL ignored - after stage evidence is terminal, an aged Stop record is
-# exactly the evidence that nothing ran since. The record is accepted either
-# from the live hook file or from the archived payload that
-# wavemill_hook_terminalize preserved in .terminal-history.jsonl before
-# overwriting the file with the controller's terminal state. Controller
-# writes (event=<terminal reason>) never count as agent idleness, so a task
+# evidence of an idle agent until another agent work event. Terminal controller
+# writes and later waiting notifications do not revoke that evidence. A task
 # whose agent died mid-work (last agent state "working") stays protected.
 wavemill_terminal_agent_idle_evidence() {
-  local session="$1" issue="$2" hook_file feature_dir history_file last
+  local session="$1" issue="$2" hook_file feature_dir history_file current_agent_state
   command -v jq >/dev/null 2>&1 || return 1
   hook_file="/tmp/wavemill-${session}-${issue}.hook"
-  if [[ -f "$hook_file" ]] \
-    && [[ "$(jq -r '((.state // "") + ":" + (.event // ""))' "$hook_file" 2>/dev/null)" == "idle:Stop" ]]; then
-    return 0
+  if [[ -f "$hook_file" ]]; then
+    current_agent_state="$(jq -r 'if .agent == "claude" then ((.state // "") + ":" + (.event // "")) else empty end' "$hook_file" 2>/dev/null || true)"
+    case "$current_agent_state" in
+      idle:Stop) return 0 ;;
+      waiting:Notification) ;;
+      "") ;;
+      *) return 1 ;;
+    esac
   fi
   feature_dir="$(wavemill_terminal_feature_dir "$issue" 2>/dev/null || true)"
   [[ -n "$feature_dir" ]] || return 1
   history_file="$feature_dir/.terminal-history.jsonl"
   [[ -f "$history_file" ]] || return 1
-  last="$(tail -n 1 "$history_file" 2>/dev/null || true)"
-  [[ -n "$last" ]] || return 1
-  [[ "$(jq -r '((.payload.state // "") + ":" + (.payload.event // ""))' <<<"$last" 2>/dev/null)" == "idle:Stop" ]]
+  jq -se '
+    reduce (.[] | .payload | select(.agent == "claude")) as $event
+      (false;
+       if $event.state == "idle" and $event.event == "Stop" then true
+       elif $event.state == "waiting" and $event.event == "Notification" then .
+       else false end)
+  ' "$history_file" >/dev/null 2>&1
 }
 
 # wavemill_release_terminal_pane <session> <issue> [slug] [reason] [pr]
