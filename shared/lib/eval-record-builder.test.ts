@@ -11,6 +11,7 @@ import type { EvalRecord } from './eval-schema.ts';
 import {
   attachEligibility,
   attachAgentType,
+  attachCounterfactualLineage,
   attachEvaluatedPrHeadSha,
   attachAttemptedModel,
   attachBudgetMetadata,
@@ -324,6 +325,42 @@ describe('eval-record-builder', () => {
 
       expect('attempted_model' in baseRecord).toBe(false);
       expect('model_alias' in baseRecord).toBe(false);
+    });
+  });
+
+  describe('attachCounterfactualLineage', () => {
+    it('sets every optional counterfactual field when provided', () => {
+      attachCounterfactualLineage(baseRecord, {
+        decisionSource: 'counterfactual',
+        sourceDecisionId: 'live-123',
+        replayFidelity: 0.9,
+        replayNonFidelityReasons: ['WORKING_TREE_MISMATCH'],
+        policySource: 'enumerate-all:tool-B',
+      });
+      expect(baseRecord.decision_source).toBe('counterfactual');
+      expect(baseRecord.source_decision_id).toBe('live-123');
+      expect(baseRecord.replay_fidelity).toBe(0.9);
+      expect(baseRecord.replay_non_fidelity_reasons).toEqual(['WORKING_TREE_MISMATCH']);
+      expect(baseRecord.policy_source).toBe('enumerate-all:tool-B');
+    });
+
+    it('rejects out-of-range replay_fidelity silently', () => {
+      attachCounterfactualLineage(baseRecord, { replayFidelity: 2 });
+      expect(baseRecord.replay_fidelity).toBeUndefined();
+    });
+
+    it('ignores empty policySource and sourceDecisionId', () => {
+      attachCounterfactualLineage(baseRecord, {
+        sourceDecisionId: '   ',
+        policySource: '',
+      });
+      expect(baseRecord.source_decision_id).toBeUndefined();
+      expect(baseRecord.policy_source).toBeUndefined();
+    });
+
+    it('leaves the record untouched when input is null', () => {
+      attachCounterfactualLineage(baseRecord, null);
+      expect(baseRecord.decision_source).toBeUndefined();
     });
   });
 

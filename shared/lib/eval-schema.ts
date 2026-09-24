@@ -194,6 +194,14 @@
  * - **1.41.0**: Added optional `harnessId` attribution to eval records and
  *   route artifacts (HOK-2843), computed from behavior-relevant manifest
  *   resources while excluding environment/tool version churn.
+ * - **1.51.0**: Added optional counterfactual/replay attribution fields for
+ *   HOK-2081 (gated deterministic replay and online tool-selection
+ *   exploration): `decision_source` (`'live' | 'counterfactual'`, absent ≡
+ *   live), `source_decision_id` linking a counterfactual row to its live
+ *   source, `replay_fidelity` in `[0, 1]`, `replay_non_fidelity_reasons`
+ *   (stable machine-readable codes), and `policy_source` (free-form
+ *   exploration-policy provenance tag). Additive; legacy rows without these
+ *   fields still validate.
  *
  * @module eval-schema
  */
@@ -218,7 +226,36 @@ import type { ChallengeStage } from './challenge-mode.ts';
  *
  * @since 1.44.0 added unknown_attribution intervention type (HOK-2894)
  */
-export const SCHEMA_VERSION = '1.50.0';
+export const SCHEMA_VERSION = '1.51.0';
+
+/**
+ * Machine-readable exploration source for an eval row.
+ *
+ * Absent field is equivalent to `'live'` for backwards compatibility with
+ * every EvalRecord produced before HOK-2081.
+ *
+ * @since 1.51.0
+ */
+export type EvalDecisionSource = 'live' | 'counterfactual';
+
+/**
+ * Stable machine-readable reasons a replay did not achieve fidelity 1.0.
+ *
+ * Additive over time: readers must tolerate unknown codes rather than fail.
+ * Weights live in `shared/lib/native-agent/deterministic-replay.ts` under the
+ * `FIDELITY_WEIGHTS` constant.
+ *
+ * @since 1.51.0
+ */
+export type ReplayNonFidelityReason =
+  | 'WORKING_TREE_MISMATCH'
+  | 'EVENT_STREAM_DIVERGENCE'
+  | 'TOOL_RESULT_HASH_MISMATCH'
+  | 'NONDETERMINISTIC_TIME_LEAK'
+  | 'ENV_MISMATCH'
+  | 'NETWORK_ATTEMPT'
+  | 'HERMETICITY_VIOLATION'
+  | 'CHECKPOINT_CORRUPT';
 
 export type RoutingRole = 'planner' | 'coder' | 'reviewer';
 
@@ -2432,6 +2469,51 @@ export interface EvalRecord {
    * @since 1.30.0
    */
   featureOutcomeDiagnostics?: FeatureOutcomeDiagnostics;
+
+  /**
+   * Exploration source for this row. Absent value is equivalent to `'live'`.
+   *
+   * Counterfactual rows are produced by
+   * `shared/lib/native-agent/counterfactual-runner.ts` from a replayed
+   * decision point and must not be consumed by live routing.
+   *
+   * @since 1.51.0
+   */
+  decision_source?: EvalDecisionSource;
+
+  /**
+   * When `decision_source === 'counterfactual'`, the `id` of the live baseline
+   * row this counterfactual branch was forked from.
+   *
+   * @since 1.51.0
+   */
+  source_decision_id?: string;
+
+  /**
+   * Deterministic replay fidelity score in `[0, 1]`. Values below `1.0`
+   * indicate one or more `replay_non_fidelity_reasons` fired during replay.
+   *
+   * @since 1.51.0
+   */
+  replay_fidelity?: number;
+
+  /**
+   * Stable machine-readable reasons the replay failed to reach fidelity `1.0`.
+   * Empty or absent when the replay was perfect. Additive: readers must
+   * tolerate unknown codes.
+   *
+   * @since 1.51.0
+   */
+  replay_non_fidelity_reasons?: ReplayNonFidelityReason[];
+
+  /**
+   * Free-form provenance tag naming the exploration policy that produced this
+   * counterfactual row (e.g. `'deterministic-baseline'`, `'enumerate-all'`,
+   * `'epsilon-greedy:eps=0.1'`).
+   *
+   * @since 1.51.0
+   */
+  policy_source?: string;
 
   /** Optional extensibility bag for additional metadata */
   metadata?: Record<string, unknown>;
