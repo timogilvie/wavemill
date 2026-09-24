@@ -86,6 +86,9 @@ TESTS=(
   shared/lib/native-agent/tools/read-only.test.ts
   shared/lib/native-agent/tools/redaction.test.ts
   shared/lib/native-agent/tools/artifacts.test.ts
+  shared/lib/native-agent/tools/browser.test.ts
+  shared/lib/native-agent/browser-session.test.ts
+  shared/lib/native-agent/tools/review-scoring.test.ts
   shared/lib/native-agent/loop.test.ts
   shared/lib/native-agent/output-limits.test.ts
   shared/lib/native-agent/transcript.test.ts
@@ -137,6 +140,8 @@ TESTS=(
   shared/lib/tend-loop.test.ts
   shared/lib/challenge-comparison.test.ts
   shared/lib/no-comparison-report.test.ts
+  shared/lib/arbiter-r6-report.test.ts
+  tools/arbiter-r6-analysis.test.ts
   shared/lib/challenge-pair-resolver.test.ts
   shared/lib/challenge-pair-resolver.hok2958.test.ts
   shared/lib/reviewer-stage-adjudicator.test.ts
@@ -366,6 +371,7 @@ TESTS=(
   shared/lib/native-agent/tool-decision-labeler.test.ts
   shared/lib/native-agent/tool-decision-report.test.ts
   shared/lib/native-agent/tool-decision-capture.test.ts
+  shared/lib/native-agent/tool-choice-analyzer.test.ts
   shared/lib/native-agent/tools/command.test.ts
   shared/lib/native-agent/tools/intended-files.test.ts
   shared/lib/native-agent/workflow-tools/dedupe-registry.test.ts

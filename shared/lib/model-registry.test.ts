@@ -2572,7 +2572,7 @@ describe('canonical supported-model helpers', () => {
   });
 
   it('retains retired native-openrouter aliases for attribution but excludes them from stages', () => {
-    for (const alias of ['grok-code-fast']) {
+    for (const alias of ['grok-code-fast', 'devstral-medium']) {
       const capabilities = DEFAULT_MODEL_REGISTRY.models[alias];
       assert.ok(capabilities, `${alias} should remain in the registry`);
       assert.equal(capabilities.supportedModel?.lifecycle, 'blocked', `${alias} should be lifecycle-blocked`);
@@ -2657,7 +2657,9 @@ describe('canonical supported-model helpers', () => {
     assert.equal(model.contextWindowTokens, 1_310_720);
     assert.equal(model.pricing?.inputCostPerMTok, 0.15);
     assert.equal(model.pricing?.outputCostPerMTok, 0.5);
-    assert.equal(model.pricing?.cacheReadCostPerMTok, 0.03);
+    // Live OpenRouter catalog raised cache-read to 0.05 per MTok; the registry
+    // must not understate provider cost.
+    assert.equal(model.pricing?.cacheReadCostPerMTok, 0.05);
     assert.equal(model.pricing?.cacheWriteCostPerMTok, 0);
     assert.equal(model.multimodal.text, true);
     assert.equal(model.multimodal.image, true);
@@ -2802,6 +2804,11 @@ describe('canonical supported-model helpers', () => {
 
   it('mistral-large-2 is blocked after its 2512 endpoint disappeared', () => {
     const reason = explainModelSupportExclusion('mistral-large-2', 'coding');
+    assert.equal(reason, 'blocked-lifecycle');
+  });
+
+  it('devstral-medium is blocked after devstral-2512 left the OpenRouter catalog', () => {
+    const reason = explainModelSupportExclusion('devstral-medium', 'coding');
     assert.equal(reason, 'blocked-lifecycle');
   });
 

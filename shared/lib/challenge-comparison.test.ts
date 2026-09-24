@@ -14,6 +14,7 @@ import {
   deriveNoComparisonReason,
   detectJudgeDisagreement,
   listVariedRoutingDimensions,
+  readActiveChallengeComparisons,
   readChallengeComparisons,
   detectVariedDimensions,
   hasAnyVariedDimension,
@@ -97,6 +98,27 @@ test('appendChallengeComparison writes a record that can be read back', () => {
     assert.equal(records[0].winner, 'challenger');
     assert.equal(records[0].primaryHarnessId, 'a'.repeat(64));
     assert.equal(records[0].challengerHarnessId, 'b'.repeat(64));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('active comparisons exclude a voided forfeit while retaining a later comparison', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'challenge-comparison-test-'));
+  try {
+    const forfeited = makeRecord({ timestamp: '2026-03-09T12:00:00Z', winner: 'primary' });
+    appendChallengeComparison(forfeited, tmp);
+    appendChallengeRecordVoid({
+      challengePairId: forfeited.challengePairId,
+      recordTimestamp: forfeited.timestamp,
+      voidedAt: '2026-03-09T12:05:00Z',
+      reason: 'The in-flight reviewer completed successfully',
+    }, tmp);
+    assert.deepEqual(readActiveChallengeComparisons(tmp), []);
+
+    appendChallengeComparison(makeRecord({ timestamp: '2026-03-09T12:10:00Z' }), tmp);
+    assert.equal(readActiveChallengeComparisons(tmp).length, 1);
+    assert.equal(readActiveChallengeComparisons(tmp)[0].winner, 'challenger');
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

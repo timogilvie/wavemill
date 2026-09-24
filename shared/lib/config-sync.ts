@@ -70,7 +70,6 @@ export const CANONICAL_CONFIG_TEMPLATE: WavemillConfig = {
       'llama-4-maverick': { inputCostPerMTok: 0.4, outputCostPerMTok: 1.6 },
       'mistral-large-2': { inputCostPerMTok: 0.5, outputCostPerMTok: 1.5 },
       'mistral-medium-3': { inputCostPerMTok: 1.5, outputCostPerMTok: 7.5 },
-      'devstral-medium': { inputCostPerMTok: 0.4, outputCostPerMTok: 2 },
     },
     interventionPenalties: {
       reviewComment: 0.05,

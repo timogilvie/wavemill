@@ -261,7 +261,7 @@
       "wavemillAlias": "devstral-medium",
       "openrouterId": "mistralai/devstral-2512",
       "family": "mistral",
-      "status": "watchlist",
+      "status": "deprecated",
       "priorityTier": 2,
       "roleEligibility": [
         "coding"

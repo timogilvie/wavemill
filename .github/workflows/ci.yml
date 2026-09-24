@@ -56,13 +56,13 @@ jobs:
         run: npm run test:preflight
 
   shell:
-    name: Shell Tests (shard ${{ matrix.shard }}/4)
+    name: Shell Tests (shard ${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3]
 
     steps:
       - name: Checkout
@@ -72,7 +72,16 @@ jobs:
         uses: ./.github/actions/setup
 
       - name: Run shell test shard
-        run: bash tests/run-shell-suite.sh --shard ${{ matrix.shard }}/4
+        run: bash tests/run-shell-suite.sh --shard ${{ matrix.shard }}/3 --timing-out "timing-shell-shard-${{ matrix.shard }}.json"
+
+      - name: Upload timing artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: timing-shell-shard-${{ matrix.shard }}
+          path: timing-shell-shard-${{ matrix.shard }}.json
+          if-no-files-found: warn
+          retention-days: 7
 
   # Shard-count rule (HOK-2939): the smallest count whose LPT-estimated max
   # shard (per tests/ci-test-weights.json) stays at or below ~240s, leaving

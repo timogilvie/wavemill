@@ -23,6 +23,7 @@ const WATCHLIST_STAGE_MAP = {
 } satisfies Record<string, LaunchabilityStage[]>;
 const RETIRED_MODELS = new Set([
   'grok-code-fast',
+  'devstral-medium',
 ]);
 // Watchlist models whose declared coding-stage context window falls below the
 // built-in coding floor (STAGE_CONTEXT_WINDOW_FLOORS.coding = 144_384). These
@@ -221,10 +222,11 @@ describe('launch-priority watchlist launchability', () => {
           assert.equal(cell.launchable, false);
           assert.equal(cell.blocker, 'role-ineligible');
         } else if (cell.certificationRejection?.reason === 'identity-reidentified') {
-          // The launch catalog currently maps both mistral-medium-3 and
-          // devstral-medium to one provider wire ID. Revision-aware subjects
-          // must fail closed instead of letting the later artifact silently
-          // certify the other registry identity.
+          // Revision-aware subjects must fail closed when the stored artifact
+          // was certified for a different registry identity at the same
+          // provider wire ID, instead of letting the later artifact silently
+          // certify the other identity. Retired aliases such as devstral-medium
+          // take the blocked branch above and never reach this case.
           assert.equal(cell.launchable, false);
           assert.equal(cell.blocker, 'certification');
         } else if (contextWindowInsufficientForStage(modelId, stage)) {

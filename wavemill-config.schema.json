@@ -1694,7 +1694,7 @@
                     "type": "object",
                     "description": "Advanced-tool family opt-ins (Epic 10). Every family defaults off; a family becomes eligible only when explicitly enabled for the target phase. See shared/lib/native-agent/tools/exposure.ts.",
                     "properties": {
-                        "browser": { "$ref": "#/definitions/nativeAgentAdvancedFamily" },
+                        "browser": { "$ref": "#/definitions/nativeAgentAdvancedBrowserFamily" },
                         "screenshot": { "$ref": "#/definitions/nativeAgentAdvancedFamily" },
                         "mcp": { "$ref": "#/definitions/nativeAgentAdvancedFamily" },
                         "code_search": { "$ref": "#/definitions/nativeAgentAdvancedFamily" },
@@ -3463,6 +3463,98 @@
                         "type": "string",
                         "minLength": 1
                     }
+                }
+            },
+            "additionalProperties": false
+        },
+        "nativeAgentAdvancedBrowserFamily": {
+            "type": "object",
+            "description": "Browser family opt-in (HOK-3057). Extends the generic advanced-family shape with an explicit read-only browser session boundary. When `enabled` is true but any `session` field is missing/invalid, the family stays hidden (fail-closed).",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Master toggle for the browser family."
+                },
+                "allowedPhases": {
+                    "type": "array",
+                    "description": "Phases for which the browser family is eligible when enabled. Empty or omitted keeps the family hidden.",
+                    "items": {
+                        "type": "string",
+                        "enum": ["task-expansion", "planning", "coding", "review"]
+                    },
+                    "default": []
+                },
+                "logicalIds": {
+                    "type": "array",
+                    "description": "Optional narrow allowlist of family-scoped logical ids. When present, only listed logical ids become eligible.",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                },
+                "session": {
+                    "type": "object",
+                    "description": "Browser session boundary. Every field is required when the family is enabled; a missing field disables the family.",
+                    "properties": {
+                        "allowedOrigins": {
+                            "type": "array",
+                            "description": "Canonical origin allowlist (scheme+host+port, no path). Any navigation whose canonical origin is not in this list is denied before a request is sent.",
+                            "items": { "type": "string", "minLength": 1 },
+                            "default": []
+                        },
+                        "maxSessionLifetimeMs": {
+                            "type": "integer",
+                            "minimum": 1000,
+                            "maximum": 600000,
+                            "default": 120000,
+                            "description": "Hard wall-clock ceiling on a single browser session. When exceeded, the session is closed and subsequent calls fail."
+                        },
+                        "maxCallsPerSession": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 500,
+                            "default": 40,
+                            "description": "Hard cap on tool calls a single session may consume."
+                        },
+                        "navigateTimeoutMs": {
+                            "type": "integer",
+                            "minimum": 500,
+                            "maximum": 60000,
+                            "default": 15000,
+                            "description": "Per-navigation timeout. Reached timeouts close the session and surface a deterministic error."
+                        },
+                        "maxDomBytes": {
+                            "type": "integer",
+                            "minimum": 1024,
+                            "maximum": 524288,
+                            "default": 65536,
+                            "description": "Cap on the serialized DOM snapshot returned to the model."
+                        },
+                        "maxAxNodes": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 5000,
+                            "default": 500,
+                            "description": "Cap on accessibility snapshot node count."
+                        },
+                        "maxConsoleMessages": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 5000,
+                            "default": 200,
+                            "description": "Cap on console messages returned per drain."
+                        },
+                        "maxRequestSummaries": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 5000,
+                            "default": 200,
+                            "description": "Cap on request summaries returned per drain."
+                        }
+                    },
+                    "required": ["allowedOrigins"],
+                    "additionalProperties": false
                 }
             },
             "additionalProperties": false

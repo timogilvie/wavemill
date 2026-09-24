@@ -240,6 +240,28 @@ check_eq "policy: operator_abort retains" "retain" "$(wavemill_terminal_pane_pol
 check_eq "policy: REQUIRE_CONFIRM holds merged pane open" "metadata-only" "$(REQUIRE_CONFIRM=true wavemill_terminal_pane_policy_for_reason pr_merged)"
 check_eq "policy: env kill-switch downgrades release" "metadata-only" "$(WAVEMILL_TERMINAL_PANE_RELEASE=0 wavemill_terminal_pane_policy_for_reason pr_merged)"
 
+# Controller terminalization archives the agent hook and then writes its own
+# state. A later waiting notification must not hide a recorded Stop, while a
+# later work event must revoke it.
+reset_case "HOK-2618" "idle-agent-history" "118"
+idle_history="$WORKTREE_ROOT/idle-agent-history/features/idle-agent-history/.terminal-history.jsonl"
+idle_hook="/tmp/wavemill-${SESSION}-HOK-2618.hook"
+jq -cn '{payload:{agent:"claude",state:"idle",event:"Stop"}}' > "$idle_history"
+jq -cn '{payload:{agent:"claude",state:"waiting",event:"Notification"}}' >> "$idle_history"
+jq -cn '{payload:{agent:"codex",state:"idle",event:"pr_merged"}}' >> "$idle_history"
+jq -cn '{agent:"codex",state:"idle",event:"pr_merged"}' > "$idle_hook"
+idle_evidence="blocked"
+wavemill_terminal_agent_idle_evidence "$SESSION" "HOK-2618" && idle_evidence="idle"
+check_eq "archived Stop survives waiting and controller events" "idle" "$idle_evidence"
+jq -cn '{payload:{agent:"claude",state:"working",event:"PreToolUse"}}' >> "$idle_history"
+idle_evidence="blocked"
+wavemill_terminal_agent_idle_evidence "$SESSION" "HOK-2618" && idle_evidence="idle"
+check_eq "later agent work revokes archived Stop" "blocked" "$idle_evidence"
+jq -cn '{payload:{agent:"claude",state:"idle",event:"Stop"}}' >> "$idle_history"
+idle_evidence="blocked"
+wavemill_terminal_agent_idle_evidence "$SESSION" "HOK-2618" && idle_evidence="idle"
+check_eq "new Stop restores idle evidence" "idle" "$idle_evidence"
+
 # Release via reconciliation: archive -> record -> kill, exactly once.
 reset_case "HOK-2610" "release-order" "110"
 write_pr_state "110" "CLOSED"

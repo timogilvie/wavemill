@@ -509,8 +509,32 @@ export interface NativeAgentAdvancedFamilyConfig {
   logicalIds?: string[];
 }
 
+/**
+ * Browser session bounds for the read-only browser family (HOK-3057). Every
+ * limit is fail-closed: absent or invalid fields disable the family even when
+ * `enabled` is true.
+ */
+export interface NativeAgentBrowserSessionConfig {
+  /**
+   * Canonical origin allowlist (scheme+host+port, no path). A navigation whose
+   * canonical origin is not in this list is denied before a request is sent.
+   */
+  allowedOrigins?: string[];
+  maxSessionLifetimeMs?: number;
+  maxCallsPerSession?: number;
+  navigateTimeoutMs?: number;
+  maxDomBytes?: number;
+  maxAxNodes?: number;
+  maxConsoleMessages?: number;
+  maxRequestSummaries?: number;
+}
+
+export interface NativeAgentBrowserFamilyConfig extends NativeAgentAdvancedFamilyConfig {
+  session?: NativeAgentBrowserSessionConfig;
+}
+
 export interface NativeAgentAdvancedConfig {
-  browser?: NativeAgentAdvancedFamilyConfig;
+  browser?: NativeAgentBrowserFamilyConfig;
   screenshot?: NativeAgentAdvancedFamilyConfig;
   mcp?: NativeAgentAdvancedFamilyConfig;
   code_search?: NativeAgentAdvancedFamilyConfig;
@@ -2329,6 +2353,97 @@ export function getNativePatchCodingConfig(repoDir?: string): ResolvedNativePatc
   const config = getNativeAgentConfig(repoDir);
   return {
     enabled: config.patchCoding?.enabled === true,
+  };
+}
+
+export interface ResolvedNativeBrowserConfig {
+  enabled: boolean;
+  allowedPhases: NativeAgentAllowedPhase[];
+  logicalIds?: string[];
+  session: {
+    allowedOrigins: string[];
+    maxSessionLifetimeMs: number;
+    maxCallsPerSession: number;
+    navigateTimeoutMs: number;
+    maxDomBytes: number;
+    maxAxNodes: number;
+    maxConsoleMessages: number;
+    maxRequestSummaries: number;
+  };
+  invalidReasons: string[];
+}
+
+const BROWSER_SESSION_DEFAULTS = Object.freeze({
+  maxSessionLifetimeMs: 120_000,
+  maxCallsPerSession: 40,
+  navigateTimeoutMs: 15_000,
+  maxDomBytes: 65_536,
+  maxAxNodes: 500,
+  maxConsoleMessages: 200,
+  maxRequestSummaries: 200,
+});
+
+/**
+ * Canonicalize an origin string down to `scheme://host[:port]`. Returns null
+ * for anything malformed, credential-bearing, or non-http(s).
+ */
+export function canonicalizeBrowserOrigin(candidate: string): string | null {
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    if (parsed.username || parsed.password) return null;
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the browser-family configuration into a normalized, fail-closed
+ * shape. `enabled` in the returned value is true only when the operator
+ * enabled the family AND every session field is valid. `invalidReasons` lists
+ * every fail-closed cause so a preflight can surface them.
+ */
+export function getNativeBrowserConfig(repoDir?: string): ResolvedNativeBrowserConfig {
+  const raw = getNativeAgentConfig(repoDir).advanced?.browser ?? {};
+  const session = raw.session ?? {};
+  const invalidReasons: string[] = [];
+
+  const rawOrigins = session.allowedOrigins ?? [];
+  const allowedOrigins = Array.from(
+    new Set(
+      rawOrigins
+        .map((origin) => canonicalizeBrowserOrigin(origin))
+        .filter((origin): origin is string => origin !== null),
+    ),
+  ).sort();
+
+  if (raw.enabled === true && allowedOrigins.length === 0) {
+    invalidReasons.push('empty_allowed_origins');
+  }
+  if (raw.enabled === true && rawOrigins.some((origin) => canonicalizeBrowserOrigin(origin) === null)) {
+    invalidReasons.push('invalid_allowed_origin');
+  }
+
+  const resolved = {
+    allowedOrigins,
+    maxSessionLifetimeMs: session.maxSessionLifetimeMs ?? BROWSER_SESSION_DEFAULTS.maxSessionLifetimeMs,
+    maxCallsPerSession: session.maxCallsPerSession ?? BROWSER_SESSION_DEFAULTS.maxCallsPerSession,
+    navigateTimeoutMs: session.navigateTimeoutMs ?? BROWSER_SESSION_DEFAULTS.navigateTimeoutMs,
+    maxDomBytes: session.maxDomBytes ?? BROWSER_SESSION_DEFAULTS.maxDomBytes,
+    maxAxNodes: session.maxAxNodes ?? BROWSER_SESSION_DEFAULTS.maxAxNodes,
+    maxConsoleMessages: session.maxConsoleMessages ?? BROWSER_SESSION_DEFAULTS.maxConsoleMessages,
+    maxRequestSummaries: session.maxRequestSummaries ?? BROWSER_SESSION_DEFAULTS.maxRequestSummaries,
+  };
+
+  const enabled = raw.enabled === true && invalidReasons.length === 0;
+
+  return {
+    enabled,
+    allowedPhases: raw.allowedPhases ?? [],
+    ...(raw.logicalIds ? { logicalIds: raw.logicalIds } : {}),
+    session: resolved,
+    invalidReasons,
   };
 }
 
