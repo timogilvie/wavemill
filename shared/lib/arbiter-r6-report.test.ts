@@ -103,6 +103,31 @@ test('buildArbiterR6Report', async (t) => {
     assert.equal(preFork.launchedPairs, 0);
   });
 
+  await t.test('deliveryYieldRate uses launchedPairs denominator, ignoring phantoms', () => {
+    const launchedCompared = record({ challengePairId: 'lc1', comparisonOutcome: 'compared' });
+    const launchedForfeit = record({
+      challengePairId: 'lf1',
+      comparisonOutcome: 'forfeit',
+      terminalReason: 'primary_eval_hard_failed',
+    });
+    const phantom = record({
+      challengePairId: 'ph1',
+      comparisonOutcome: 'forfeit',
+      terminalReason: 'orphan_pair',
+      challengerPrUrl: 'https://github.com/x/y/pull/0',
+      challengerModel: 'unknown',
+      noComparisonReason: 'challenger_never_launched',
+    });
+    const report = buildArbiterR6Report({ comparisons: [launchedCompared, launchedForfeit, phantom] });
+    const preFork = report.cohorts.get('pre-fork');
+    assert.ok(preFork);
+    assert.equal(preFork.launchedPairs, 2);
+    assert.equal(preFork.phantomPairs, 1);
+    assert.equal(preFork.totalPairs, 3);
+    assert.equal(preFork.deliveryComparedPairs, 1);
+    assert.equal(preFork.deliveryYieldRate, 0.5);
+  });
+
   await t.test('counterfactual counts pre-fork primary failures with surviving challenger', () => {
     const primaryFailedNoSurvivor = record({
       challengePairId: 'pf1',

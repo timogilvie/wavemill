@@ -453,7 +453,7 @@ function buildCohortMetrics(cohort: R6CohortId, records: StoredChallengeComparis
   }
 
   const totalPairs = launchedPairs + phantomPairs;
-  const deliveryYieldRate = totalPairs > 0 ? deliveryComparedPairs / totalPairs : 0;
+  const deliveryYieldRate = launchedPairs > 0 ? deliveryComparedPairs / launchedPairs : 0;
   const validLabelDenom = cohort === 'reviewer-fork' ? successfullyForkedPairs : deliveryComparedPairs;
   const validLabelYieldRate = validLabelDenom > 0 ? validLabelPairs / validLabelDenom : 0;
 
