@@ -121,12 +121,13 @@ function challengeIntentReviewContract(input: {
     try {
       const parsed = parseJsonFile(candidate) as Record<string, unknown>;
       const side = parsed[input.challengeSide] as Record<string, unknown> | undefined;
-      const model = clean(side?.expectedStageModel)
-        || clean((side?.reviewer as Record<string, unknown> | undefined)?.model);
+      const reviewer = side?.reviewer as Record<string, unknown> | undefined;
+      const model = clean(reviewer?.model)
+        || (clean(parsed.challengeStage) === 'review' ? clean(side?.expectedStageModel) : '');
       if (!model) continue;
       const resolved = resolveModelAgent({ model, phase: 'review' });
-      const agent = clean(side?.expectedStageAgent)
-        || clean((side?.reviewer as Record<string, unknown> | undefined)?.agent)
+      const agent = clean(reviewer?.agent)
+        || (clean(parsed.challengeStage) === 'review' ? clean(side?.expectedStageAgent) : '')
         || (resolved.ok ? resolved.agent : '');
       if (!agent) continue;
       return {

@@ -1611,14 +1611,17 @@ export function readChallengeComparisons(dir?: string): StoredChallengeCompariso
   return readJsonlFile<StoredChallengeComparison>(filePath);
 }
 
-export function readDecisiveChallengeComparisons(dir?: string): StoredChallengeComparison[] {
+export function readActiveChallengeComparisons(dir?: string): StoredChallengeComparison[] {
   const evalsDir = resolve(dir || DEFAULT_EVALS_DIR);
   const voids = readChallengeRecordVoids(evalsDir);
-  return readChallengeComparisons(evalsDir)
-    .filter((record) => isDecisiveChallengeComparison(record))
-    .filter((record) => !isChallengeRecordVoided({
-      challengePairId: record.challengePairId,
-      recordTimestamp: record.timestamp,
-      voids,
-    }));
+  return readChallengeComparisons(evalsDir).filter((record) => !isChallengeRecordVoided({
+    challengePairId: record.challengePairId,
+    recordTimestamp: record.timestamp,
+    voids,
+  }));
+}
+
+export function readDecisiveChallengeComparisons(dir?: string): StoredChallengeComparison[] {
+  return readActiveChallengeComparisons(dir)
+    .filter((record) => isDecisiveChallengeComparison(record));
 }

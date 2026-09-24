@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { readChallengeComparisons, type StoredChallengeComparison } from './challenge-comparison.ts';
+import { readActiveChallengeComparisons, type StoredChallengeComparison } from './challenge-comparison.ts';
 import { getChallengeConfig, getChallengeEvalHardFailureRetryMaxAttempts, getChallengeGateConfig } from './config.ts';
 import { errorMessage } from './error-utils.ts';
 import { normalizeJobs, type MillJob, type WorkflowStateLike } from './job-tracker.ts';
@@ -621,7 +621,7 @@ export async function applyChallengePairGates<T extends ChallengeEligibleWorkIte
 
   let comparisons: StoredChallengeComparison[];
   try {
-    comparisons = readChallengeComparisons(join(repoDir, '.wavemill', 'evals'));
+    comparisons = readActiveChallengeComparisons(join(repoDir, '.wavemill', 'evals'));
   } catch (error) {
     console.warn(`[tend-challenge-gate] Failed to read challenge comparisons: ${errorMessage(error)}`);
     comparisons = [];
