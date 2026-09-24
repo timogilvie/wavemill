@@ -86,6 +86,7 @@ TESTS=(
   shared/lib/native-agent/tools/read-only.test.ts
   shared/lib/native-agent/tools/redaction.test.ts
   shared/lib/native-agent/tools/artifacts.test.ts
+  shared/lib/native-agent/tools/review-scoring.test.ts
   shared/lib/native-agent/loop.test.ts
   shared/lib/native-agent/output-limits.test.ts
   shared/lib/native-agent/transcript.test.ts
