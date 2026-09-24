@@ -88,6 +88,9 @@ TESTS=(
   shared/lib/native-agent/tools/artifacts.test.ts
   shared/lib/native-agent/tools/browser.test.ts
   shared/lib/native-agent/browser-session.test.ts
+  shared/lib/native-agent/image-artifacts.test.ts
+  shared/lib/native-agent/visual-comparison.test.ts
+  shared/lib/native-agent/tools/screenshot.test.ts
   shared/lib/native-agent/tools/review-scoring.test.ts
   shared/lib/native-agent/loop.test.ts
   shared/lib/native-agent/output-limits.test.ts
