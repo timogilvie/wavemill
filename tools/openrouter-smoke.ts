@@ -24,7 +24,6 @@ export const WATCHLIST_SMOKE_MODELS = [
   'qwen-3-235b',
   'kimi-k2-thinking',
   'mistral-medium-3',
-  'devstral-medium',
 ] as const;
 
 function readFixture(name: string): Record<string, unknown> {

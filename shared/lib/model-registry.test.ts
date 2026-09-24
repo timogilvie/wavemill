@@ -2657,7 +2657,7 @@ describe('canonical supported-model helpers', () => {
     assert.equal(model.contextWindowTokens, 1_310_720);
     assert.equal(model.pricing?.inputCostPerMTok, 0.15);
     assert.equal(model.pricing?.outputCostPerMTok, 0.5);
-    assert.equal(model.pricing?.cacheReadCostPerMTok, 0.03);
+    assert.equal(model.pricing?.cacheReadCostPerMTok, 0.05);
     assert.equal(model.pricing?.cacheWriteCostPerMTok, 0);
     assert.equal(model.multimodal.text, true);
     assert.equal(model.multimodal.image, true);
