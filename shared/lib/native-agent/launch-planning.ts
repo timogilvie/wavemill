@@ -32,6 +32,7 @@ import type { SessionStreamConfig } from './loop.ts';
 import { createReadOnlyTools, READ_ONLY_PATH_FIELDS } from './tools/read-only.ts';
 import { createGitTools, gitAfterToolCall } from './tools/git.ts';
 import { createArtifactTools } from './tools/artifacts.ts';
+import { CODE_SEARCH_PATH_FIELDS, createCodeSearchTools } from './tools/code-search.ts';
 import { createToolRegistry } from './tools/registry.ts';
 import type { AgentTool } from './tools/pi-adapter.ts';
 import type { ToolDescriptor, ToolMetadata, WavemillToolResult } from './tools/types.ts';
@@ -40,7 +41,7 @@ import {
   formatMenuDenials,
 } from './tools/menu-resolver.ts';
 import { inferCertificationSnapshotForPhase } from './tools/certification-snapshot.ts';
-import { loadWavemillConfig } from '../config.ts';
+import { getNativeCodeSearchConfig, loadWavemillConfig } from '../config.ts';
 import { loadNativePhasePrompt, registerAndRecordNativeProvenance } from './prompts.ts';
 import { isTaskPacketContent } from '../task-packet-utils.ts';
 import { createCleanupTracker, runCleanup, type CleanupReason } from './cleanup.ts';
@@ -571,10 +572,25 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
     routeTaskPacket(taskPacketPath, routeOutputPath, options.repoDir, runTsxCommand);
     maybeWriteMigrationMarker(taskPacketPath, migrationMarkerPath);
 
+    const readOnlyDescriptors = createReadOnlyTools(options.wtDir);
+    const searchTextDescriptor = readOnlyDescriptors.find(
+      (d) => d.metadata.name === 'search_text',
+    );
+    const codeSearchConfig = getNativeCodeSearchConfig(options.repoDir);
+    const codeSearchDescriptors = codeSearchConfig.enabled
+      ? createCodeSearchTools({
+          config: codeSearchConfig,
+          worktreePath: options.wtDir,
+          ...(searchTextDescriptor
+            ? { searchTextExecutor: searchTextDescriptor.execute as Parameters<typeof createCodeSearchTools>[0]['searchTextExecutor'] }
+            : {}),
+        })
+      : [];
     const descriptors = [
-      ...createReadOnlyTools(options.wtDir),
+      ...readOnlyDescriptors,
       ...createGitTools(options.wtDir),
       ...createArtifactTools(options.wtDir),
+      ...codeSearchDescriptors,
       ...(options.extraDescriptors ?? []),
     ];
     const registry = createToolRegistry(descriptors);
@@ -724,7 +740,10 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
         worktreePath: options.wtDir,
         registry: registryMetadata,
         config: {
-          pathFieldsByTool: READ_ONLY_PATH_FIELDS,
+          pathFieldsByTool: {
+            ...READ_ONLY_PATH_FIELDS,
+            ...(codeSearchConfig.enabled ? CODE_SEARCH_PATH_FIELDS : {}),
+          },
         },
       },
       onEvent: (event) => {

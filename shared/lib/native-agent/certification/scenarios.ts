@@ -19,6 +19,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   CERTIFICATION_SCHEMA_VERSION,
   PHASE_ORDER,
@@ -58,6 +59,10 @@ import { NATIVE_PATCH_VERSION, type NativePatch } from '../patch-contract.ts';
 import { applyNativePatch } from '../patch-runtime.ts';
 import { createApplyPatchTool } from '../tools/apply-patch-tool.ts';
 import { createRunFormatTool, createRunTestsTool } from '../tools/command-tools.ts';
+import {
+  createCodeSearchTools,
+  type CodeSearchDetails,
+} from '../tools/code-search.ts';
 import { createGitCommitTools } from '../tools/git.ts';
 import { createIntendedFileTracker, intendedFilesAfterToolCall } from '../tools/intended-files.ts';
 import {
@@ -1421,6 +1426,84 @@ async function assertPatchReadyRemediationFixtures(_ctx: ScenarioContext): Promi
 }
 
 // ---------------------------------------------------------------------------
+// code_search substrate (HOK-3059) — offline scenario coverage
+// ---------------------------------------------------------------------------
+
+const CODE_SEARCH_TS_FIXTURE = new URL(
+  '../tools/fixtures/code-search/ts-project/',
+  import.meta.url,
+);
+
+function codeSearchConfig(): {
+  enabled: true;
+  allowedPhases: Array<'planning' | 'coding' | 'review'>;
+  limits: { maxFiles: number; maxBytes: number; maxSymbols: number; maxResults: number };
+  invalidReasons: string[];
+} {
+  return {
+    enabled: true,
+    allowedPhases: ['planning', 'coding', 'review'],
+    limits: {
+      maxFiles: 500,
+      maxBytes: 4 * 1024 * 1024,
+      maxSymbols: 20_000,
+      maxResults: 200,
+    },
+    invalidReasons: [],
+  };
+}
+
+async function invokeCodeSearchDefinition(worktreePath: string): Promise<
+  { kind: 'pass' } | { kind: 'fail'; detail: string }
+> {
+  const descriptors = createCodeSearchTools({
+    config: codeSearchConfig(),
+    worktreePath,
+  });
+  if (descriptors.length !== 4) {
+    return {
+      kind: 'fail',
+      detail: `Expected 4 code_search descriptors, got ${descriptors.length}.`,
+    };
+  }
+  const definition = descriptors.find((d) => d.metadata.name === 'code_search_definition');
+  if (!definition) {
+    return { kind: 'fail', detail: 'code_search_definition descriptor missing.' };
+  }
+  const result = await definition.execute('cert-code-search', { symbol: 'calculateTotal' });
+  const details = result.details as CodeSearchDetails;
+  if (details.status !== 'ok') {
+    return { kind: 'fail', detail: `Expected status ok, got ${details.status}.` };
+  }
+  if (details.matches.length === 0) {
+    return { kind: 'fail', detail: 'Expected calculateTotal to be defined in the TS fixture.' };
+  }
+  if (details.meta.engine !== 'typescript') {
+    return {
+      kind: 'fail',
+      detail: `Expected meta.engine = "typescript", got ${JSON.stringify(details.meta.engine)}.`,
+    };
+  }
+  return { kind: 'pass' };
+}
+
+async function assertCodeSearchPlanningDefinition(_ctx: ScenarioContext): Promise<ScenarioAssertionOutcome> {
+  return invokeCodeSearchDefinition(fileURLPath(CODE_SEARCH_TS_FIXTURE));
+}
+
+async function assertCodeSearchCodingDefinition(_ctx: ScenarioContext): Promise<ScenarioAssertionOutcome> {
+  return invokeCodeSearchDefinition(fileURLPath(CODE_SEARCH_TS_FIXTURE));
+}
+
+async function assertCodeSearchReviewDefinition(_ctx: ScenarioContext): Promise<ScenarioAssertionOutcome> {
+  return invokeCodeSearchDefinition(fileURLPath(CODE_SEARCH_TS_FIXTURE));
+}
+
+function fileURLPath(u: URL): string {
+  return fileURLToPath(u);
+}
+
+// ---------------------------------------------------------------------------
 // Default scenario catalog
 // ---------------------------------------------------------------------------
 
@@ -1643,6 +1726,33 @@ const DEFAULT_SCENARIOS: CertificationScenario[] = [
     description:
       'A persisted phase=workflow artifact satisfies workflow, patch, and read-only eligibility checks.',
     assertion: assertWorkflowPhasePersistenceRoundtrip,
+  },
+  {
+    id: 'code_search.read-only.ts-definition-deterministic',
+    phase: 'read-only',
+    category: 'tool',
+    classification: 'deterministic',
+    description:
+      'code_search_definition against the vendored TS fixture returns a deterministic envelope for read-only phase certification.',
+    assertion: assertCodeSearchPlanningDefinition,
+  },
+  {
+    id: 'code_search.patch.ts-definition-deterministic',
+    phase: 'patch',
+    category: 'tool',
+    classification: 'deterministic',
+    description:
+      'code_search_definition against the vendored TS fixture returns a deterministic envelope for patch phase certification.',
+    assertion: assertCodeSearchCodingDefinition,
+  },
+  {
+    id: 'code_search.workflow.ts-definition-deterministic',
+    phase: 'workflow',
+    category: 'tool',
+    classification: 'deterministic',
+    description:
+      'code_search_definition against the vendored TS fixture returns a deterministic envelope for workflow phase certification.',
+    assertion: assertCodeSearchReviewDefinition,
   },
   {
     id: 'workflow.phase.native-openrouter-launch-matrix',

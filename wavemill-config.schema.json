@@ -1697,7 +1697,7 @@
                         "browser": { "$ref": "#/definitions/nativeAgentAdvancedBrowserFamily" },
                         "screenshot": { "$ref": "#/definitions/nativeAgentAdvancedFamily" },
                         "mcp": { "$ref": "#/definitions/nativeAgentAdvancedFamily" },
-                        "code_search": { "$ref": "#/definitions/nativeAgentAdvancedFamily" },
+                        "code_search": { "$ref": "#/definitions/nativeAgentAdvancedCodeSearchFamily" },
                         "ast": { "$ref": "#/definitions/nativeAgentAdvancedFamily" },
                         "eval": { "$ref": "#/definitions/nativeAgentAdvancedFamily" }
                     },
@@ -3463,6 +3463,70 @@
                         "type": "string",
                         "minLength": 1
                     }
+                }
+            },
+            "additionalProperties": false
+        },
+        "nativeAgentAdvancedCodeSearchFamily": {
+            "type": "object",
+            "description": "code_search family opt-in (HOK-3059). Extends the generic advanced-family shape with optional per-worktree index budgets. When `enabled` is true but any listed field is non-positive or non-numeric, the family stays hidden (fail-closed).",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Master toggle for the code_search family."
+                },
+                "allowedPhases": {
+                    "type": "array",
+                    "description": "Phases for which the family is eligible when enabled. Empty or omitted keeps the family hidden.",
+                    "items": {
+                        "type": "string",
+                        "enum": ["task-expansion", "planning", "coding", "review"]
+                    },
+                    "default": []
+                },
+                "logicalIds": {
+                    "type": "array",
+                    "description": "Optional narrow allowlist of family-scoped logical ids. When present, only listed logical ids become eligible.",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                },
+                "limits": {
+                    "type": "object",
+                    "description": "Per-worktree index bounds. Every field is optional; absent fields fall back to defaults.",
+                    "properties": {
+                        "maxFiles": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100000,
+                            "default": 2000,
+                            "description": "Maximum number of source files indexed per build."
+                        },
+                        "maxBytes": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 536870912,
+                            "default": 33554432,
+                            "description": "Maximum total bytes read across all indexed files per build."
+                        },
+                        "maxSymbols": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 1000000,
+                            "default": 20000,
+                            "description": "Maximum number of symbol records the index will hold before aborting the build."
+                        },
+                        "maxResults": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 200,
+                            "default": 200,
+                            "description": "Hard cap on the number of results a single query may return."
+                        }
+                    },
+                    "additionalProperties": false
                 }
             },
             "additionalProperties": false
