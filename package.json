@@ -52,7 +52,7 @@
   },
   "devDependencies": {
     "@types/pixelmatch": "^5.2.4",
-    "@types/pngjs": "^3.4.4",
+    "@types/pngjs": "^6.0.5",
     "eslint": "^9.39.5",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",

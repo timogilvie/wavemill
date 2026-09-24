@@ -17,6 +17,7 @@
 // fixture adapters cover every test scenario without network or credentials.
 // ---------------------------------------------------------------------------
 
+import PNG from 'pngjs';
 import { canonicalizeBrowserOrigin } from '../config.ts';
 
 // ---------------------------------------------------------------------------
@@ -74,6 +75,14 @@ export interface BrowserAdapter {
   snapshotAccessibility(): Promise<BrowserAxNode[]>;
   drainConsole(): Promise<BrowserConsoleMessage[]>;
   drainRequests(): Promise<BrowserRequestSummary[]>;
+  /** Capture viewport screenshot. Optional method; absence means screenshots not supported. */
+  screenshot?(opts: { timeoutMs: number }): Promise<{
+    data: Buffer;
+    mediaType: 'image/png';
+    viewport?: { width: number; height: number };
+    browserName?: string;
+    browserVersion?: string;
+  }>;
   /** Must be idempotent. Must not leave any child process behind. */
   close(): Promise<void>;
 }
@@ -133,7 +142,10 @@ export type BrowserSessionErrorCode =
   | 'origin_not_allowed'
   | 'navigation_timeout'
   | 'navigation_aborted'
-  | 'adapter_error';
+  | 'adapter_error'
+  | 'screenshot_not_supported'
+  | 'screenshot_no_page'
+  | 'image_too_large';
 
 export class BrowserSessionError extends Error {
   override name = 'BrowserSessionError';
@@ -286,6 +298,106 @@ export class BrowserSession {
     }));
   }
 
+  async captureScreenshot(limits: {
+    maxImageBytes: number;
+    maxWidth: number;
+    maxHeight: number;
+    oversizePolicy: 'reject' | 'downscale';
+  }): Promise<{
+    data: Buffer;
+    mediaType: 'image/png';
+    width: number;
+    height: number;
+    viewport?: { width: number; height: number };
+    browser?: { name?: string; version?: string };
+    downscaled?: boolean;
+    factor?: number;
+    originalWidth?: number;
+    originalHeight?: number;
+  }> {
+    this.assertBudget();
+
+    // Check adapter supports screenshot
+    if (!this.adapter.screenshot) {
+      throw new BrowserSessionError('screenshot_not_supported', 'browser_screenshot_not_supported');
+    }
+
+    // Call adapter to capture screenshot
+    const result = await this.callAdapter(() =>
+      this.adapter.screenshot!({ timeoutMs: 15_000 }),
+    );
+
+    // Decode PNG to check dimensions
+    let png = PNG.sync.read(result.data);
+    let width = png.width;
+    let height = png.height;
+    const originalWidth = width;
+    const originalHeight = height;
+    let downscaled = false;
+    let downscaleFactor: number | undefined;
+
+    // Check byte size
+    if (result.data.length > limits.maxImageBytes) {
+      if (limits.oversizePolicy === 'reject') {
+        throw new BrowserSessionError(
+          'image_too_large',
+          `Screenshot ${result.data.length} bytes exceeds limit ${limits.maxImageBytes}`,
+        );
+      }
+      // Will downscale below after dimension check
+    }
+
+    // Check dimensions and apply downscale policy
+    if (width > limits.maxWidth || height > limits.maxHeight) {
+      if (limits.oversizePolicy === 'reject') {
+        throw new BrowserSessionError(
+          'image_too_large',
+          `Screenshot ${width}x${height} exceeds limits ${limits.maxWidth}x${limits.maxHeight}`,
+        );
+      }
+      // Downscale: find largest integer stride that fits both dimensions
+      const factorX = Math.floor(width / limits.maxWidth);
+      const factorY = Math.floor(height / limits.maxHeight);
+      downscaleFactor = Math.max(factorX, factorY, 1);
+
+      if (downscaleFactor > 1) {
+        png = downscalePngNearestNeighbor(png, downscaleFactor);
+        width = png.width;
+        height = png.height;
+        downscaled = true;
+      }
+    }
+
+    // Re-encode PNG and check byte size again
+    let finalBytes = PNG.sync.write(png);
+    if (finalBytes.length > limits.maxImageBytes) {
+      throw new BrowserSessionError(
+        'image_too_large',
+        `Screenshot ${finalBytes.length} bytes still exceeds limit ${limits.maxImageBytes} after downscaling`,
+      );
+    }
+
+    return {
+      data: finalBytes,
+      mediaType: 'image/png',
+      width,
+      height,
+      viewport: result.viewport,
+      browser: result.browserName || result.browserVersion ? {
+        name: result.browserName,
+        version: result.browserVersion,
+      } : undefined,
+      ...(downscaled && downscaleFactor
+        ? {
+            downscaled: true,
+            factor: downscaleFactor,
+            originalWidth,
+            originalHeight,
+          }
+        : {}),
+    };
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
@@ -386,4 +498,31 @@ function truncateUtf8(text: string, maxBytes: number): string {
 function truncateString(text: string | undefined, maxChars: number): string {
   if (!text) return '';
   return text.length > maxChars ? text.slice(0, maxChars) : text;
+}
+
+/**
+ * Downscale PNG image using deterministic nearest-neighbor subsampling.
+ * Every pixel in the output is sampled from the input at integer multiples.
+ * Produces identical bytes across runs.
+ */
+function downscalePngNearestNeighbor(png: PNG, factor: number): PNG {
+  if (factor <= 1) return png;
+
+  const newWidth = Math.floor(png.width / factor);
+  const newHeight = Math.floor(png.height / factor);
+  const newData = Buffer.alloc(newWidth * newHeight * 4);
+
+  for (let y = 0; y < newHeight; y++) {
+    for (let x = 0; x < newWidth; x++) {
+      // Sample from the original at (x*factor, y*factor)
+      const srcIdx = ((y * factor) * png.width + (x * factor)) * 4;
+      const dstIdx = (y * newWidth + x) * 4;
+      newData[dstIdx] = png.data[srcIdx];
+      newData[dstIdx + 1] = png.data[srcIdx + 1];
+      newData[dstIdx + 2] = png.data[srcIdx + 2];
+      newData[dstIdx + 3] = png.data[srcIdx + 3];
+    }
+  }
+
+  return new PNG({ width: newWidth, height: newHeight, data: newData });
 }
