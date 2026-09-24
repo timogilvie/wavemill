@@ -74,6 +74,11 @@ TESTS=(
   shared/lib/native-agent/command-transcript.test.ts
   shared/lib/native-agent/command-argv.test.ts
   shared/lib/native-agent/command-substrate.test.ts
+  shared/lib/native-agent/hok2081-gate.test.ts
+  shared/lib/native-agent/session-checkpoint.test.ts
+  shared/lib/native-agent/deterministic-replay.test.ts
+  shared/lib/native-agent/counterfactual-runner.test.ts
+  tests/run-counterfactual-exploration.test.ts
   shared/lib/native-agent/tools/policies.test.ts
   shared/lib/native-agent/tools/registry.test.ts
   shared/lib/native-agent/tools/exposure.test.ts

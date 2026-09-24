@@ -2849,6 +2849,35 @@
       "type": "string",
       "pattern": "^[a-f0-9]{64}$",
       "description": "Stable harness content hash for the behavior-relevant manifest resources."
+    },
+    "decision_source": {
+      "type": "string",
+      "enum": [
+        "live",
+        "counterfactual"
+      ],
+      "description": "HOK-2081: Exploration source for this row. Absent value is equivalent to 'live'. Counterfactual rows are produced from a replayed decision point and must not be consumed by live routing."
+    },
+    "source_decision_id": {
+      "type": "string",
+      "description": "HOK-2081: When decision_source is 'counterfactual', the id of the live baseline row this branch was forked from."
+    },
+    "replay_fidelity": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "HOK-2081: Deterministic replay fidelity score in [0, 1]."
+    },
+    "replay_non_fidelity_reasons": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "HOK-2081: Stable machine-readable reasons the replay failed to reach fidelity 1.0. Additive: readers must tolerate unknown codes."
+    },
+    "policy_source": {
+      "type": "string",
+      "description": "HOK-2081: Free-form provenance tag naming the exploration policy that produced this counterfactual row (e.g. 'deterministic-baseline', 'enumerate-all', 'epsilon-greedy:eps=0.1')."
     }
   },
   "$defs": {
