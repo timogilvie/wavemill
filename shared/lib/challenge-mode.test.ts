@@ -149,11 +149,12 @@ test('review-stage pool includes review-eligible models absent from coding proje
 
 test('implementation-stage pool excludes coding-ineligible models', () => {
   const codingPool = getChallengeModelPool('implementation', {}, {});
-  // gpt-4.1 / mistral-medium-3 / devstral-medium are coding-only in the
-  // registry; a plan-stage seed would silently drop them, but implementation
-  // must retain them.
+  // gpt-4.1 / mistral-medium-3 are coding-only in the registry; a plan-stage
+  // seed would silently drop them, but implementation must retain them.
   assert.ok(codingPool.includes('mistral-medium-3'));
-  assert.ok(codingPool.includes('devstral-medium'));
+  // devstral-medium is retired (blocked lifecycle) after its OpenRouter
+  // endpoint disappeared, so it must stay out of the selectable pool.
+  assert.ok(!codingPool.includes('devstral-medium'));
   // And a planning-only model must not leak into implementation.
   assert.ok(!codingPool.includes('kimi-k2'));
 });
