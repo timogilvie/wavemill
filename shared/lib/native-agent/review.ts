@@ -26,6 +26,12 @@ import {
 } from './providers.ts';
 import { createReadOnlyTools, READ_ONLY_PATH_FIELDS } from './tools/read-only.ts';
 import { createGitTools, gitAfterToolCall, gitToolPolicyConfig } from './tools/git.ts';
+import {
+  createBrowserTools,
+  BROWSER_PATH_FIELDS,
+  type BrowserToolsCleanupHandle,
+} from './tools/browser.ts';
+import { createReviewScoringTools } from './tools/review-scoring.ts';
 import { createToolRegistry } from './tools/registry.ts';
 import type { ToolDescriptor } from './tools/types.ts';
 import {
@@ -33,7 +39,7 @@ import {
   formatMenuDenials,
 } from './tools/menu-resolver.ts';
 import { inferCertificationSnapshotForPhase } from './tools/certification-snapshot.ts';
-import { loadWavemillConfig } from '../config.ts';
+import { loadWavemillConfig, getNativeBrowserConfig, type WavemillConfig } from '../config.ts';
 import { renderNativePhasePrompt, type NativePhasePromptOptions } from './prompts.ts';
 import type { ReviewContext } from '../review-context-gatherer.ts';
 import { logPromptUsage } from '../prompt-registry.ts';
@@ -184,11 +190,36 @@ function nativeReviewNoEvidenceFailure(
   };
 }
 
-function buildReviewToolRegistry(worktreePath: string) {
+function buildReviewToolRegistry(
+  worktreePath: string,
+  config?: WavemillConfig,
+  options: {
+    browserConfig?: ReturnType<typeof getNativeBrowserConfig> | null;
+    browserAdapterFactory?: Parameters<typeof createBrowserTools>[0]['adapterFactory'];
+  } = {},
+) {
+  const browserBundle = createBrowserTools({
+    config: options.browserConfig ?? null,
+    adapterFactory:
+      options.browserAdapterFactory ??
+      (() => {
+        throw new Error(
+          'browser_adapter_missing: no browser adapter factory was supplied to the review runtime',
+        );
+      }),
+  });
   const descriptors: ToolDescriptor[] = [
     ...createReadOnlyTools(worktreePath),
     ...createGitTools(worktreePath),
+    ...browserBundle.descriptors,
   ];
+  // Conditional advanced-family inclusion (HOK-3061 trap #2): only advertise
+  // the eval-scoring descriptors in the prompt catalog when the operator has
+  // opted in via `nativeAgent.advanced.eval.enabled`. `computeEligibility`
+  // remains the authoritative second gate.
+  if (config?.nativeAgent?.advanced?.eval?.enabled === true) {
+    descriptors.push(...createReviewScoringTools(worktreePath));
+  }
   const registry = createToolRegistry(descriptors);
   const phase = 'review' as const;
   const phaseTools = registry.getTools({ phase });
@@ -197,6 +228,7 @@ function buildReviewToolRegistry(worktreePath: string) {
     descriptors,
     phaseTools,
     phaseMetadata: registry.list({ phase }),
+    browserCleanup: browserBundle.cleanup as BrowserToolsCleanupHandle,
   };
 }
 
@@ -494,7 +526,16 @@ function reviewInputMetadata(context: ReviewContext): Pick<NonNullable<ReviewRes
   };
 }
 
-const nativeReviewDeps = {
+const nativeReviewDeps: {
+  extractDeniedTools: typeof extractDeniedTools;
+  extractFinalAssistantText: typeof extractFinalAssistantText;
+  getNativeProviderApiKey: typeof getNativeProviderApiKey;
+  loadNativeReviewPrompt: typeof loadNativeReviewPrompt;
+  registerNativeReviewRuntime: typeof registerNativeReviewRuntime;
+  runWavemillLoop: typeof runWavemillLoop;
+  selectReviewProvider: typeof selectReviewProvider;
+  browserAdapterFactory: Parameters<typeof createBrowserTools>[0]['adapterFactory'];
+} = {
   extractDeniedTools,
   extractFinalAssistantText,
   getNativeProviderApiKey,
@@ -502,6 +543,11 @@ const nativeReviewDeps = {
   registerNativeReviewRuntime,
   runWavemillLoop,
   selectReviewProvider,
+  browserAdapterFactory: () => {
+    throw new Error(
+      'browser_adapter_missing: no browser adapter factory was supplied to the review runtime',
+    );
+  },
 };
 
 export async function runNativeReview(
@@ -573,10 +619,23 @@ export async function runNativeReview(
   }
 
   const userPrompt = fillReviewPromptTemplate(template, context, true);
-  const { phaseMetadata, registry, descriptors: reviewDescriptors } = buildReviewToolRegistry(repoDir);
+  const wavemillConfig = loadWavemillConfig(repoDir);
+  const browserConfig = getNativeBrowserConfig(repoDir);
+  const {
+    phaseMetadata,
+    registry,
+    descriptors: reviewDescriptors,
+    browserCleanup,
+  } = buildReviewToolRegistry(repoDir, wavemillConfig, {
+    browserConfig,
+    // The real browser driver is supplied by the review runtime host. When no
+    // driver is available, the descriptor factory returns an empty list, so
+    // the factory here is only invoked when browser tools were built.
+    browserAdapterFactory: nativeReviewDeps.browserAdapterFactory,
+  });
   const menuLaunchProvider = createLaunchMenuProvider({
     phase: 'review',
-    config: loadWavemillConfig(repoDir),
+    config: wavemillConfig,
     certification: inferCertificationSnapshotForPhase({
       phase: 'review',
       readyProviderPresent: true,
@@ -767,6 +826,7 @@ export async function runNativeReview(
           pathFieldsByTool: {
             ...READ_ONLY_PATH_FIELDS,
             ...gitToolPolicyConfig.pathFieldsByTool,
+            ...BROWSER_PATH_FIELDS,
           },
         },
       },
@@ -823,6 +883,14 @@ export async function runNativeReview(
       }
     } catch (error) {
       console.warn(`tool-decision capture failed (review): ${(error as Error).message}`);
+    }
+    // Close the browser session (if one was opened) once the review loop is
+    // done. Idempotent and best-effort so any adapter shutdown noise cannot
+    // mask the underlying review result.
+    try {
+      await browserCleanup.close();
+    } catch (error) {
+      console.warn(`Failed to close browser session: ${(error as Error).message}`);
     }
   }
 

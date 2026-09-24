@@ -802,6 +802,54 @@ describe('native review', () => {
   });
 });
 
+describe('native review — advanced eval-scoring tool integration (HOK-3061)', () => {
+  it('omits eval-scoring descriptors when config does not enable the family', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-review-registry-'));
+    try {
+      const { phaseMetadata, descriptors } = nativeReviewTestUtils.buildReviewToolRegistry(dir);
+      const names = descriptors.map((d) => d.metadata.name);
+      for (const n of [
+        'score_diff_difficulty',
+        'score_task_context',
+        'score_patch_selection',
+        'score_success_rate_under_budget',
+      ]) {
+        assert.ok(!names.includes(n), `expected ${n} to be absent`);
+      }
+      assert.ok(!phaseMetadata.some((m) => m.family === 'eval'));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('includes eval-scoring descriptors when config enables the family', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-review-registry-'));
+    try {
+      const { phaseMetadata, descriptors } = nativeReviewTestUtils.buildReviewToolRegistry(dir, {
+        nativeAgent: { advanced: { eval: { enabled: true, allowedPhases: ['review'] } } },
+      });
+      const names = descriptors.map((d) => d.metadata.name).sort();
+      for (const n of [
+        'score_diff_difficulty',
+        'score_task_context',
+        'score_patch_selection',
+        'score_success_rate_under_budget',
+      ]) {
+        assert.ok(names.includes(n), `expected ${n} to be present`);
+      }
+      const evalMeta = phaseMetadata.filter((m) => m.family === 'eval');
+      assert.equal(evalMeta.length, 4);
+      for (const m of evalMeta) {
+        assert.equal(m.exposure, 'opt-in');
+        assert.equal(m.class, 'read-only');
+        assert.equal(m.certificationRequirement, 'read-only');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 function makeTempRepo(config: Record<string, unknown> = {}): string {
   const repoDir = mkdtempSync(join(tmpdir(), 'native-review-test-'));
   writeFileSync(join(repoDir, '.wavemill-config.json'), JSON.stringify(config), 'utf-8');

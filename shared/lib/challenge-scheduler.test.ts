@@ -642,23 +642,24 @@ test('exploration recommendations skip stages a model cannot serve', () => {
   try {
     const result = evaluateChallenge({
       routingDecision: makeDecision({ confidence: 0.95 }),
-      // devstral-medium is role-ineligible as a planner, so its uncovered plan
+      // mistral-medium-3 is role-ineligible as a planner, so its uncovered plan
       // cell must not be recommended even though it sorts first on count.
       // This model must stay active and coding-only: qwen-3-coder was used here
-      // until it gained planning eligibility, and qwen-2.5-coder-32b until it
-      // was retired, each of which silently broke this assertion.
-      challengeModels: ['devstral-medium'],
+      // until it gained planning eligibility, qwen-2.5-coder-32b until it was
+      // retired, and devstral-medium until it was retired, each of which
+      // silently broke this assertion.
+      challengeModels: ['mistral-medium-3'],
       evalSummary: {
         totalRecords: 20,
-        recordsByModel: { 'devstral-medium': 0 },
+        recordsByModel: { 'mistral-medium-3': 0 },
         recordsByStage: { plan: 20, implementation: 20, review: 20 },
-        recordsByModelStage: { 'devstral-medium': {} },
+        recordsByModelStage: { 'mistral-medium-3': {} },
       },
       config: { enabled: true, confidenceThreshold: 0.5, newModelChallengeCount: 5, minEvalRecordsPerStage: 1 },
       repoDir,
     });
 
-    assert.equal(result.challengerModel, 'devstral-medium');
+    assert.equal(result.challengerModel, 'mistral-medium-3');
     assert.notEqual(result.stage, 'plan');
   } finally {
     cleanup();

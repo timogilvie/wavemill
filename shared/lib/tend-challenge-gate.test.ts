@@ -407,6 +407,42 @@ describe('branch sibling detection in applyChallengePairGates', () => {
     }
   });
 
+  it('does not close a challenger from a voided forfeit', async () => {
+    const { repoDir, cleanup } = setupRepoDir({ challenge: { autoMergeWinner: true } });
+    try {
+      writeWorkflowState(repoDir, {
+        HOK_1: { pr: 101, branch: 'task/foo', challengePairId: 'pair-1', challengeRole: 'primary' },
+        HOK_1_c: { pr: 102, branch: 'task/foo-challenger', challengePairId: 'pair-1', challengeRole: 'challenger' },
+      });
+      writeFileSync(join(repoDir, '.wavemill', 'evals', 'challenge-records.jsonl'), `${JSON.stringify({
+        challengePairId: 'pair-1',
+        primaryPrUrl: 'https://github.com/org/repo/pull/101',
+        challengerPrUrl: 'https://github.com/org/repo/pull/102',
+        winner: 'primary',
+        comparisonOutcome: 'forfeit',
+        timestamp: '2026-04-28T12:00:00Z',
+      })}\n`);
+      writeFileSync(join(repoDir, '.wavemill', 'evals', 'challenge-record-voids.jsonl'), `${JSON.stringify({
+        challengePairId: 'pair-1',
+        recordTimestamp: '2026-04-28T12:00:00Z',
+        voidedAt: '2026-04-28T12:05:00Z',
+        reason: 'review completed after premature timeout',
+      })}\n`);
+
+      const result = await applyChallengePairGates([
+        makeWorkItem({ number: 101, headRefName: 'task/foo', challengePairId: 'pair-1', challenge: true }),
+        makeWorkItem({ number: 102, headRefName: 'task/foo-challenger', challengePairId: 'pair-1', challenge: true }),
+      ], [], repoDir, {
+        remoteBranches: ['task/foo', 'task/foo-challenger'],
+        coolOffSeconds: 0,
+      });
+      assert.deepEqual(result.losers, []);
+      assert.equal(result.blocked.length, 2);
+    } finally {
+      cleanup();
+    }
+  });
+
   it('does not re-block a resolved winner when workflow state stores PR numbers as strings', async () => {
     const { repoDir, cleanup } = setupRepoDir({ challenge: { autoMergeWinner: true } });
     try {

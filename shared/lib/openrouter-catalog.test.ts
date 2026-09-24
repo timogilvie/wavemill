@@ -6,6 +6,7 @@ import { describe, it } from 'node:test';
 import {
   buildCatalogSnapshot,
   CATALOG_SCHEMA_VERSION,
+  defaultLaunchPriorityFixturePath,
   fetchOpenRouterModels,
   hashLaunchPriorityFixture,
   hasTier1ActiveBlockers,
@@ -209,13 +210,20 @@ describe('OpenRouter alias mapping', () => {
     assert.equal(resolveOpenRouterIdFromWavemillAlias('does-not-exist'), null);
   });
 
-  it('drops retired aliases from the fixture while keeping grok-code-fast deprecated', () => {
+  it('drops retired aliases from the fixture while keeping deprecated rows retained', () => {
     const byAlias = new Map(loadLaunchPriorityList().map((model) => [model.wavemillAlias, model]));
     // HOK-2947 removed the stale rows outright.
     for (const alias of ['deepseek-coder-v2', 'gemini-2.0-flash', 'qwen-2.5-coder-32b', 'qwen-2.5-72b', 'llama-3.3-70b', 'llama-4-scout', 'devstral-small']) {
       assert.equal(byAlias.get(alias), undefined, `${alias} should be removed from the fixture`);
     }
     assert.equal(byAlias.get('grok-code-fast')?.status, 'deprecated', 'grok-code-fast should remain as deprecated');
+    // HOK-3081 retired devstral-medium; both the registry launch-priority
+    // projection and the bundled fixture must classify it as deprecated so no
+    // catalog consumer still treats it as a watchlist row.
+    assert.equal(byAlias.get('devstral-medium')?.status, 'deprecated', 'devstral-medium should remain as deprecated');
+    const bundled = new Map(loadLaunchPriorityFixture(defaultLaunchPriorityFixturePath())
+      .models.map((model) => [model.wavemillAlias, model]));
+    assert.equal(bundled.get('devstral-medium')?.status, 'deprecated', 'bundled launch-priority fixture should mark devstral-medium deprecated');
   });
 
   it('resolves Kimi/Qwen/GLM/Ox aliases and ids through one native OpenRouter identity', () => {
