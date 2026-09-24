@@ -5,8 +5,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   cleanupTerminalInbox,
+  defaultCleanupDeps,
   decideTerminalTask,
   type CleanupDeps,
+  type TerminalInboxDecision,
   type WorkflowState,
 } from '../shared/lib/terminal-inbox-cleanup.ts';
 
@@ -73,6 +75,22 @@ test('merged rebased patch-equivalent task is eligible to reap', () => {
   const decision = decideTerminalTask(state({}), 'HOK-3005', process.cwd(), 'auto/integration', deps({ prs: { 101: mergedPr('101') }, cherry: '- abc\n- def\n' }));
   assert.equal(decision.status, 'would-reap');
   assert.equal(decision.git.patchEquivalent, true);
+});
+
+test('default cleanup shell defines logging functions for the terminal reconciler', () => {
+  const root = mkdtempSync(join(tmpdir(), 'cleanup-terminal-logging-'));
+  try {
+    const libDir = join(root, 'shared', 'lib');
+    mkdirSync(libDir, { recursive: true });
+    writeFileSync(join(libDir, 'wavemill-common.sh'), 'cleanup_completed_task() { log debug "starting"; log_warn "done"; }\n');
+    writeFileSync(join(libDir, 'terminal-reconciler.sh'), '');
+    assert.doesNotThrow(() => defaultCleanupDeps.cleanup(
+      { issue: 'HOK-3005', slug: 'demo' } as TerminalInboxDecision,
+      { repoDir: root, stateFile: join(root, 'state.json'), baseBranch: 'auto/integration', session: 'test', abandon: false },
+    ));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('merged task with unique local patch is refused', () => {
