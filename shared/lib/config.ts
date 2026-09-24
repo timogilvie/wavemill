@@ -548,9 +548,41 @@ export interface NativeAgentCodeSearchFamilyConfig extends NativeAgentAdvancedFa
   limits?: NativeAgentCodeSearchLimitsConfig;
 }
 
+/**
+ * Screenshot capture limits for the screenshot family (HOK-3058).
+ * All limits default to documented values when absent or invalid.
+ */
+export interface NativeAgentScreenshotLimitsConfig {
+  maxImageBytes?: number;
+  maxWidth?: number;
+  maxHeight?: number;
+  oversizePolicy?: 'reject' | 'downscale';
+  maxComparePixels?: number;
+  diffThreshold?: number;
+}
+
+export interface NativeAgentScreenshotFamilyConfig extends NativeAgentAdvancedFamilyConfig {
+  limits?: NativeAgentScreenshotLimitsConfig;
+}
+
+export interface ResolvedNativeScreenshotConfig {
+  enabled: boolean;
+  allowedPhases: NativeAgentAllowedPhase[];
+  logicalIds?: string[];
+  limits: {
+    maxImageBytes: number;
+    maxWidth: number;
+    maxHeight: number;
+    oversizePolicy: 'reject' | 'downscale';
+    maxComparePixels: number;
+    diffThreshold: number;
+  };
+  invalidReasons: string[];
+}
+
 export interface NativeAgentAdvancedConfig {
   browser?: NativeAgentBrowserFamilyConfig;
-  screenshot?: NativeAgentAdvancedFamilyConfig;
+  screenshot?: NativeAgentScreenshotFamilyConfig;
   mcp?: NativeAgentAdvancedFamilyConfig;
   code_search?: NativeAgentCodeSearchFamilyConfig;
   ast?: NativeAgentAdvancedFamilyConfig;
@@ -2398,6 +2430,15 @@ const BROWSER_SESSION_DEFAULTS = Object.freeze({
   maxRequestSummaries: 200,
 });
 
+const SCREENSHOT_LIMIT_DEFAULTS = Object.freeze({
+  maxImageBytes: 2 * 1024 * 1024, // 2 MiB
+  maxWidth: 4096,
+  maxHeight: 4096,
+  oversizePolicy: 'reject' as const,
+  maxComparePixels: 16_777_216, // 4096²
+  diffThreshold: 0.1,
+});
+
 /**
  * Canonicalize an origin string down to `scheme://host[:port]`. Returns null
  * for anything malformed, credential-bearing, or non-http(s).
@@ -2532,6 +2573,69 @@ export function getNativeCodeSearchConfig(repoDir?: string): ResolvedNativeCodeS
     allowedPhases: raw.allowedPhases ?? [],
     ...(raw.logicalIds ? { logicalIds: raw.logicalIds } : {}),
     limits,
+    invalidReasons,
+  };
+}
+
+/**
+ * Resolve the screenshot-family configuration into a normalized, fail-closed
+ * shape. `enabled` in the returned value is true only when the operator
+ * enabled the family AND all limit fields are valid. `invalidReasons` lists
+ * every fail-closed cause so a preflight can surface them.
+ */
+export function getNativeScreenshotConfig(repoDir?: string): ResolvedNativeScreenshotConfig {
+  const raw = getNativeAgentConfig(repoDir).advanced?.screenshot ?? {};
+  const limits = raw.limits ?? {};
+  const invalidReasons: string[] = [];
+
+  // Validate numeric limits are within schema bounds (if provided)
+  if (limits.maxImageBytes !== undefined) {
+    if (typeof limits.maxImageBytes !== 'number' || limits.maxImageBytes < 1024 || limits.maxImageBytes > 16 * 1024 * 1024) {
+      invalidReasons.push('invalid_maxImageBytes');
+    }
+  }
+  if (limits.maxWidth !== undefined) {
+    if (typeof limits.maxWidth !== 'number' || limits.maxWidth < 16 || limits.maxWidth > 16384) {
+      invalidReasons.push('invalid_maxWidth');
+    }
+  }
+  if (limits.maxHeight !== undefined) {
+    if (typeof limits.maxHeight !== 'number' || limits.maxHeight < 16 || limits.maxHeight > 16384) {
+      invalidReasons.push('invalid_maxHeight');
+    }
+  }
+  if (limits.maxComparePixels !== undefined) {
+    if (typeof limits.maxComparePixels !== 'number' || limits.maxComparePixels < 1 || limits.maxComparePixels > 268435456) {
+      invalidReasons.push('invalid_maxComparePixels');
+    }
+  }
+  if (limits.diffThreshold !== undefined) {
+    if (typeof limits.diffThreshold !== 'number' || limits.diffThreshold < 0 || limits.diffThreshold > 1) {
+      invalidReasons.push('invalid_diffThreshold');
+    }
+  }
+  if (limits.oversizePolicy !== undefined) {
+    if (limits.oversizePolicy !== 'reject' && limits.oversizePolicy !== 'downscale') {
+      invalidReasons.push('invalid_oversizePolicy');
+    }
+  }
+
+  const resolved = {
+    maxImageBytes: limits.maxImageBytes ?? SCREENSHOT_LIMIT_DEFAULTS.maxImageBytes,
+    maxWidth: limits.maxWidth ?? SCREENSHOT_LIMIT_DEFAULTS.maxWidth,
+    maxHeight: limits.maxHeight ?? SCREENSHOT_LIMIT_DEFAULTS.maxHeight,
+    oversizePolicy: (limits.oversizePolicy ?? SCREENSHOT_LIMIT_DEFAULTS.oversizePolicy) as 'reject' | 'downscale',
+    maxComparePixels: limits.maxComparePixels ?? SCREENSHOT_LIMIT_DEFAULTS.maxComparePixels,
+    diffThreshold: limits.diffThreshold ?? SCREENSHOT_LIMIT_DEFAULTS.diffThreshold,
+  };
+
+  const enabled = raw.enabled === true && invalidReasons.length === 0;
+
+  return {
+    enabled,
+    allowedPhases: raw.allowedPhases ?? [],
+    ...(raw.logicalIds ? { logicalIds: raw.logicalIds } : {}),
+    limits: resolved,
     invalidReasons,
   };
 }
