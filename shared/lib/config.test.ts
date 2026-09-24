@@ -50,6 +50,8 @@ import {
   getNativeContextManagementConfig,
   getNativeExpansionConfig,
   getNativePatchCodingConfig,
+  getNativeBrowserConfig,
+  canonicalizeBrowserOrigin,
   getReadyConfig,
   getReadyFailureClassifierConfig,
   getReadyVerificationConfig,
@@ -3313,6 +3315,83 @@ test('advanced tool config: accepts a well-formed browser block', () => {
         logicalIds: ['browser.navigate'],
       },
     });
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('canonicalizeBrowserOrigin normalizes valid origins and rejects credentials/malformed URLs', () => {
+  assert.equal(canonicalizeBrowserOrigin('http://localhost:3000/some/path'), 'http://localhost:3000');
+  assert.equal(canonicalizeBrowserOrigin('https://app.example.com:8443/'), 'https://app.example.com:8443');
+  assert.equal(canonicalizeBrowserOrigin('http://user:pw@localhost/'), null);
+  assert.equal(canonicalizeBrowserOrigin('file:///etc/passwd'), null);
+  assert.equal(canonicalizeBrowserOrigin('not-a-url'), null);
+});
+
+test('getNativeBrowserConfig: defaults are fail-closed when the family is not enabled', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({}));
+    const resolved = getNativeBrowserConfig(tmp);
+    assert.equal(resolved.enabled, false);
+    assert.deepEqual([...resolved.allowedPhases], []);
+    assert.deepEqual(resolved.invalidReasons, []);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('getNativeBrowserConfig: enabling the family without an allowlist stays disabled and records why', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      nativeAgent: {
+        advanced: {
+          browser: {
+            enabled: true,
+            allowedPhases: ['review'],
+            session: { allowedOrigins: [] },
+          },
+        },
+      },
+    }));
+    const resolved = getNativeBrowserConfig(tmp);
+    assert.equal(resolved.enabled, false);
+    assert.ok(resolved.invalidReasons.includes('empty_allowed_origins'));
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('getNativeBrowserConfig: canonicalizes and dedupes allowlist entries', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      nativeAgent: {
+        advanced: {
+          browser: {
+            enabled: true,
+            allowedPhases: ['review'],
+            session: {
+              allowedOrigins: [
+                'http://localhost:3000/x',
+                'http://localhost:3000/y',
+                'https://app.example.com:8443/',
+              ],
+            },
+          },
+        },
+      },
+    }));
+    const resolved = getNativeBrowserConfig(tmp);
+    assert.equal(resolved.enabled, true);
+    assert.deepEqual(resolved.session.allowedOrigins, [
+      'http://localhost:3000',
+      'https://app.example.com:8443',
+    ]);
   } finally {
     cleanUp(tmp);
   }
