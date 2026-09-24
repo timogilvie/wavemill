@@ -132,7 +132,7 @@ Shell and unit tests are **no longer listed in `package.json`**. All three suite
 
 ```bash
 bash tests/run-shell-suite.sh              # all shell tests
-bash tests/run-shell-suite.sh --shard 2/4  # CI shard 2 of 4
+bash tests/run-shell-suite.sh --shard 2/3  # CI shard 2 of 3
 bash tests/run-unit-tests.sh               # all unit tests
 bash tests/run-unit-tests.sh --shard 2/7   # CI shard 2 of 7
 bash tests/run-unit-tests.sh --list        # print selection without running
@@ -141,7 +141,7 @@ bash tests/run-custom-tests.sh --shard 2/3 # custom harness CI shard 2 of 3
 
 Shell shards are assigned round-robin. Unit and custom shards use **deterministic weighted partitioning**: `tools/partition-tests.ts` (LPT greedy over `shared/lib/test-partitioner.ts`) balances shards using measured per-test medians from the checked-in manifest `tests/ci-test-weights.json`. A newly added test has no manifest entry yet and receives the conservative `defaultMs` weight — adding it to the array is still all that is needed. `tools/check-shard-balance.ts` (preflight) enforces exactly-once assignment, manifest hygiene, and the 130%-of-median balance rule; refresh the manifest with `npx tsx tools/ci-test-timings.ts collect` from ≥3 CI timing artifacts (see `docs/ci-test-timings.md`).
 
-**CI job layout** (`.github/workflows/ci.yml`): `preflight`, `shell` (×4 shards), `unit` (×7 weighted shards), `custom` (×3 weighted shards), `smoke`, and `certification` run in parallel. The `shell-and-unit` job aggregates them into the single status check named **"Shell and Unit Tests"**, which is a required check on `main` — do not rename it without updating branch protection. The unit/custom jobs also upload `timing-*` artifacts used to refresh the weights manifest.
+**CI job layout** (`.github/workflows/ci.yml`): `preflight`, `shell` (×3 shards), `unit` (×7 weighted shards), `custom` (×3 weighted shards), `smoke`, and `certification` run in parallel. The `shell-and-unit` job aggregates them into the single status check named **"Shell and Unit Tests"**, which is a required check on `main` — do not rename it without updating branch protection. The shell/unit/custom jobs all upload `timing-*` artifacts; unit/custom feed the weights manifest, shell timing is diagnostic (round-robin sharding).
 
 ## Prompt Locations
 

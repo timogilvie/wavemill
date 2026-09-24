@@ -115,15 +115,18 @@ discovery-completeness across the unit/custom union and custom-harness hygiene
 The matrix uses the smallest shard count whose LPT-estimated maximum shard is
 at or below ~240 seconds under the checked-in weights, leaving headroom
 against the five-minute aggregator budget. Current counts: **unit 7, custom
-3** (shell stays at 4 — its slowest shard was already ~160s). Two caveats the
-estimates carry: unit file walls are measured under `node --test`'s internal
-parallelism, so a shard's real wall clock is below its estimated sum; and a
-single indivisible test can set a shard's wall-clock floor regardless of
-balance — the cross-repo parity suite was split into five per-mode files for
-exactly that reason. If the estimated max drifts up
-(`npx tsx tools/partition-tests.ts --report`), bump the matrix in `ci.yml`;
-the balance preflight and `run-custom-tests-shard.test.sh` pick the new count
-up automatically.
+3, shell 3** (HOK-3043 dropped shell from 4 → 3 to shave one runner off peak
+fan-out; the shell suite is still round-robin over ~108 files, so per-shard
+runtime is estimated from file count rather than the weights manifest — the
+timing artifact uploaded by each shell shard exists to make an eventual
+weighted-partitioner switch evidence-based). Two caveats the estimates carry:
+unit file walls are measured under `node --test`'s internal parallelism, so a
+shard's real wall clock is below its estimated sum; and a single indivisible
+test can set a shard's wall-clock floor regardless of balance — the cross-repo
+parity suite was split into five per-mode files for exactly that reason. If
+the estimated max drifts up (`npx tsx tools/partition-tests.ts --report`),
+bump the matrix in `ci.yml`; the balance preflight and
+`run-custom-tests-shard.test.sh` pick the new count up automatically.
 
 ### HOK-3042 refresh (2026-09-18)
 
@@ -183,6 +186,31 @@ measurement over ten representative successful post-change PR runs is a
 follow-up step once ten green runs exist on the new topology; the numbers
 above stand in as the three-run interim reading recorded on the HOK-3042
 Linear issue.
+
+### HOK-3043 fan-out reduction (2026-09-23)
+
+Consolidates shell shards from **4 → 3** to remove one runner from the peak
+prerequisite fan-out (17 → 16 with `check-paths`; ~19 → ~18 counting the
+path-dependent audit jobs). Aggregator name and dependency set are unchanged.
+
+Round-robin over 108 registered shell files at 3 shards yields 36 files per
+shard. The pre-change worst shard (4-way split, 27 files) peaked around 160s;
+the projected 3-way worst shard is ~213s, still comfortably under the ≤240s
+per-leg target and the 5:00 aggregator budget. Each shell shard now uploads a
+`timing-shell-shard-N` artifact (7-day retention) so the projection can be
+validated after Phase 1 lands and the Phase-B decision (folding lint +
+`test:preflight` into shell shard 1) can proceed only on real measurements.
+
+Phase-B measurement gate (in-branch, after Phase 1 CI is green):
+
+- Slowest shell shard ≤ ~200s wall clock and aggregator median ≤ 5:00.
+- If lint + preflight (~40–60s) can be added to shell shard 1 without pushing
+  it past ~240s, drop the standalone `Preflight Checks` job and remove
+  `preflight` from the `shell-and-unit` aggregator's `needs`. Otherwise stop
+  after Phase 1 with a one-runner reduction and record the tradeoff here.
+
+Post-change ten-run REQ-F6 measurement is recorded here once the artifacts
+exist for ten representative successful PR runs on the new topology.
 
 ## Setup caching: evaluated, not added
 
