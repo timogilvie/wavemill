@@ -972,6 +972,64 @@ and dashboards. The per-call policy evaluator adds a defense-in-depth
 `not_exposed` reason so that a materialised call for a hidden tool is
 rejected even if exposure and materialisation are ever wired asymmetrically.
 
+#### Advanced-tool family: `eval` (HOK-3061)
+
+The first advanced family to ship real descriptors is `eval`: four bounded,
+read-only scorers exposed only inside the review phase and only when the
+operator enables them via `nativeAgent.advanced.eval`. All four descriptors
+carry `class: 'read-only'`, `allowedPhases: ['review']`,
+`certificationRequirement: 'read-only'` (overriding the advanced default of
+`workflow` so review-phase snapshots satisfy the ladder), and a 32 KB output
+cap with truncation bookkeeping.
+
+Shipped tools:
+
+- `score_diff_difficulty` — wraps `analyzeDiffStats` / `computeDifficultyBand`
+  / `computeStratum` / `detectTechStack(prDiff)` against the workspace diff.
+- `score_task_context` — wraps `analyzeTaskContext` over the task packet and
+  `selected-task.json` (and optional workspace diff).
+- `score_patch_selection` — wraps `scorePatchSelection`
+  (`hokusai.scorers.wavemill.patch_selection_accuracy:v1`) over inline,
+  strict-schema-validated records with a 200-item cap.
+- `score_success_rate_under_budget` — wraps
+  `scoreWavemillSuccessRateUnderBudget`
+  (`hokusai.scorers.wavemill.success_rate_under_budget:v1`) over inline,
+  strict-schema-validated records with a 200-item cap.
+
+Every tool returns a byte-stable canonical-JSON envelope
+`{ scorer, toolVersion, inputDigest, evidence[], eligibility, metrics?,
+rationale, diagnostics, advisory: true }`. Missing / malformed / oversized /
+conflicting evidence yields a structured non-score state (`missing_evidence`,
+`malformed_evidence`, `oversized_evidence`, `conflicting_evidence`) with no
+`metrics` key rather than fabricated zeros. Rationale text is
+template-generated (never raw evidence excerpts); the envelope carries
+per-evidence digests, not evidence bodies.
+
+Non-goals — and hard invariants of the module:
+
+- No recursive `review_changes`; no additional model invocation.
+- No Hokusai submission, routing update, reward mutation, or append to
+  `.wavemill/evals/evals.jsonl`.
+- Scorer output is advisory: it cannot set the final review verdict or Ready
+  state, which remain independently enforced.
+
+Operator enablement (opt-in, default off):
+
+```json
+{
+  "nativeAgent": {
+    "advanced": {
+      "eval": { "enabled": true, "allowedPhases": ["review"] }
+    }
+  }
+}
+```
+
+`buildReviewToolRegistry` only registers the descriptors when the family is
+enabled — so the prompt catalog never advertises tools the model cannot call —
+and `computeEligibility` re-checks the family / phase / certification /
+logical-id allowlist per turn as the authoritative gate.
+
 ## Rollout Plan
 
 ### Phase A: Internal Mock Runtime

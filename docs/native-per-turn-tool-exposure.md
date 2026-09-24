@@ -166,7 +166,10 @@ without touching the event schema.
 
 - No normalized decision corpus. HOK-2076 owns per-turn decisions +
   outcome joins + offline labels.
-- No advanced executor beyond what the HOK-3053 registry already exposes.
+- No advanced executor beyond what the HOK-3053 registry already exposes,
+  except the four review-only `eval` descriptors shipped in HOK-3061, which
+  reuse the same opt-in gate (`nativeAgent.advanced.eval`) without adding new
+  config keys.
 - No new opt-in config keys. `nativeAgent.advanced.*` from HOK-3053 remains
   the only surface. `menuInlineMaxBytes` (default 8 KiB) is a code constant.
 
