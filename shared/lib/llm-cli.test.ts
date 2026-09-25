@@ -373,7 +373,10 @@ describe('quota fallback', () => {
 
   it('uses task-specific ladders from the global registry', async () => {
     const codingCli = createMockCli('coding-ladder', {
+      'claude-opus-5-5': { type: 'quota', message: '429 quota exceeded', code: 1 },
+      'gpt-6-sol': { type: 'quota', message: '429 quota exceeded', code: 1 },
       'claude-fable-5': { type: 'quota', message: '429 quota exceeded', code: 1 },
+      'gpt-5.6-terra': { type: 'quota', message: '429 quota exceeded', code: 1 },
       'deepseek-v4-pro': { type: 'success', text: 'coding winner' },
     });
     const codingResult = await callLLM('coding prompt', {
@@ -389,6 +392,8 @@ describe('quota fallback', () => {
     clearConfigCache(repoDir);
 
     const planningCli = createMockCli('planning-ladder', {
+      'claude-opus-5-5': { type: 'quota', message: '429 quota exceeded', code: 1 },
+      'gpt-6-sol': { type: 'quota', message: '429 quota exceeded', code: 1 },
       'claude-fable-5': { type: 'quota', message: '429 quota exceeded', code: 1 },
       'claude-opus-4-8': { type: 'success', text: 'planning winner' },
     });
@@ -407,6 +412,8 @@ describe('quota fallback', () => {
     // the highest-ranked Claude-compatible planning model.
     const { cliPath, logPath } = createMockCli('provider-filter', {
       'gpt-5.5': { type: 'other', message: 'invalid model for claude cli', code: 1 },
+      'gpt-6-sol': { type: 'other', message: 'invalid model for claude cli', code: 1 },
+      'claude-opus-5-5': { type: 'success', text: 'opus 5.5 planning winner' },
       'claude-opus-4-8': { type: 'success', text: 'anthropic planning winner' },
     });
 
@@ -418,8 +425,8 @@ describe('quota fallback', () => {
       taskType: 'planning',
     });
 
-    assert.equal(result.model, 'claude-fable-5');
-    assert.deepEqual(readInvocations(logPath).map((entry) => entry.model), ['claude-fable-5']);
+    assert.equal(result.model, 'claude-opus-5-5');
+    assert.deepEqual(readInvocations(logPath).map((entry) => entry.model), ['claude-opus-5-5']);
   });
 
   it('excludes globally disabled models from explicit fallback candidates', async () => {
@@ -447,7 +454,10 @@ describe('quota fallback', () => {
 
   it('keeps DeepSeek Claude-compatible models in provider-filtered ladders', async () => {
     const { cliPath, logPath } = createMockCli('deepseek-provider-filter', {
+      'claude-opus-5-5': { type: 'quota', message: '429 quota exceeded', code: 1 },
+      'gpt-6-sol': { type: 'quota', message: '429 quota exceeded', code: 1 },
       'claude-fable-5': { type: 'quota', message: '429 quota exceeded', code: 1 },
+      'gpt-5.6-terra': { type: 'quota', message: '429 quota exceeded', code: 1 },
       'deepseek-v4-pro': { type: 'success', text: 'deepseek coding winner' },
     });
 
@@ -460,7 +470,10 @@ describe('quota fallback', () => {
     });
 
     assert.equal(result.model, 'deepseek-v4-pro');
-    assert.deepEqual(readInvocations(logPath).map((entry) => entry.model), ['claude-fable-5', 'deepseek-v4-pro']);
+    assert.deepEqual(
+      readInvocations(logPath).map((entry) => entry.model),
+      ['claude-opus-5-5', 'claude-fable-5', 'deepseek-v4-pro'],
+    );
   });
 
   it('persists an all_exhausted fallback event when later candidates fail for mixed reasons', async () => {
