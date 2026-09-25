@@ -378,6 +378,7 @@ type ComparisonRetentionInput = {
   sharedPrefix?: boolean;
   primaryInheritedStages?: ChallengeStage[];
   challengerInheritedStages?: ChallengeStage[];
+  forkIdentity?: ForkIdentity;
   primaryDiffIdentity?: ChallengeDiffIdentity;
   challengerDiffIdentity?: ChallengeDiffIdentity;
 };
@@ -389,6 +390,7 @@ function comparisonRetentionFields(input: ComparisonRetentionInput): Pick<
   | 'sharedPrefix'
   | 'primaryInheritedStages'
   | 'challengerInheritedStages'
+  | 'forkIdentity'
   | 'primaryDiffIdentity'
   | 'challengerDiffIdentity'
 > {
@@ -398,6 +400,7 @@ function comparisonRetentionFields(input: ComparisonRetentionInput): Pick<
     sharedPrefix: input.sharedPrefix ?? false,
     primaryInheritedStages: input.primaryInheritedStages ?? [],
     challengerInheritedStages: input.challengerInheritedStages ?? [],
+    ...(input.forkIdentity ? { forkIdentity: input.forkIdentity } : {}),
     ...(input.primaryDiffIdentity ? { primaryDiffIdentity: input.primaryDiffIdentity } : {}),
     ...(input.challengerDiffIdentity ? { challengerDiffIdentity: input.challengerDiffIdentity } : {}),
   };
@@ -458,6 +461,28 @@ export function canonicalizeChallengeModelId(modelId: string, repoDir?: string):
     return registryKey;
   }
   return resolveWavemillAliasFromOpenRouterId(trimmed) ?? trimmed;
+}
+
+/**
+ * True when two model ids name the same model. Canonicalisation alone misses
+ * a provider-native id that is itself a registry key (e.g. the dated
+ * `claude-haiku-4-5-20251001` vs its alias `claude-haiku-4-5`), so also treat
+ * ids as equivalent when a registry entry declares the other as its
+ * `supportedModel.providerNativeId`.
+ */
+export function challengeModelIdsEquivalent(
+  a: string | undefined,
+  b: string | undefined,
+  repoDir?: string,
+): boolean {
+  const ca = canonicalizeChallengeModelId(a ?? '', repoDir);
+  const cb = canonicalizeChallengeModelId(b ?? '', repoDir);
+  if (!ca || !cb) return false;
+  if (ca === cb) return true;
+  const registry = getEffectiveRegistry(repoDir);
+  const nativeA = registry.models[ca]?.supportedModel?.providerNativeId;
+  const nativeB = registry.models[cb]?.supportedModel?.providerNativeId;
+  return nativeA === cb || nativeB === ca || (!!nativeA && nativeA === nativeB);
 }
 
 function variantDiffers(a: string | undefined, b: string | undefined): boolean {
@@ -1043,7 +1068,11 @@ function validateStageForSide(input: {
     addStageValidationIssue(input.issues, input.side, stageProvenance, 'execution-evidence-contradicted', intendedModel);
     return;
   }
-  if (intendedModel && stageProvenance.model && stageProvenance.model !== intendedModel) {
+  if (
+    intendedModel
+    && stageProvenance.model
+    && !challengeModelIdsEquivalent(stageProvenance.model, intendedModel, input.repoDir)
+  ) {
     addStageValidationIssue(input.issues, input.side, stageProvenance, 'executed-model-mismatch', intendedModel);
   }
 }
@@ -1055,10 +1084,13 @@ function isFatalProvenanceIssue(issue: ChallengeProvenanceValidationIssue): bool
 function materiallyDifferentExecution(
   primary: ChallengeExecutedStageProvenance,
   challenger: ChallengeExecutedStageProvenance,
+  repoDir?: string,
 ): boolean {
   if (primary.status === 'missing' || challenger.status === 'missing') return false;
   if (primary.status === 'malformed' || challenger.status === 'malformed') return false;
-  return primary.model !== challenger.model || primary.agent !== challenger.agent;
+  if (primary.agent !== challenger.agent) return true;
+  if (primary.model === challenger.model) return false;
+  return !challengeModelIdsEquivalent(primary.model, challenger.model, repoDir);
 }
 
 export function validateChallengeExecutionProvenance(input: {
@@ -1140,7 +1172,7 @@ export function validateChallengeExecutionProvenance(input: {
     for (const stage of ['planning', 'coding', 'review'] as const) {
       const primaryStage = input.primaryExecution[stage];
       const challengerStage = input.challengerExecution[stage];
-      if (materiallyDifferentExecution(primaryStage, challengerStage)) {
+      if (materiallyDifferentExecution(primaryStage, challengerStage, input.repoDir)) {
         issues.push({
           side: 'pair',
           stage,

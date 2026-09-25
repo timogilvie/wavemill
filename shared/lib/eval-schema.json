@@ -3906,6 +3906,10 @@
         "sharedPrefix": {
           "type": "boolean",
           "description": "Whether the challenger inherited pre-fork execution artifacts. False until challenge.fork() ships (HOK-2794)."
+        },
+        "forkIdentity": {
+          "$ref": "#/$defs/ForkIdentity",
+          "description": "Fork/input identity stamped by the materialiser; proves matched pre-stage inputs."
         }
       },
       "required": [

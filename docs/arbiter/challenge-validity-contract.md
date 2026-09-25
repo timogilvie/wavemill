@@ -125,6 +125,24 @@ Reason codes:
 | `challengerInheritedStages` | Challenger stages inherited from pre-fork execution |
 | `producer`, `producerVersion` | Producer stamp for the identity envelope |
 
+**Producer.** `challenge_materialize_challenger_arm` computes the envelope via
+`tools/compute-fork-identity.ts` (`shared/lib/fork-identity.ts`) after the
+challenger's feature dir and config overlay are copied, and stamps it as
+`forkIdentity` on both arms' intent files and state intents. Eval assembly
+copies it to `EvalRecord.forkIdentity`; forfeit records and `compare-prs`
+carry it onto the comparison row. Each hash is computed from both arms and
+recorded only when they agree; a missing or divergent input is stored as
+`null`, which surfaces as the matching `*_hash_mismatch` code. Hashes cannot be
+reconstructed after the fork, so pairs materialised before the producer existed
+stay `missing_fork_identity`.
+
+| Hash | Inputs |
+|---|---|
+| `taskPacketHash` | Arm feature dir: `task-packet.md`, `task-packet-header.md`, `task-packet-details.md` (at least one required) |
+| `planHash` | Arm feature dir: `plan.md` (required) |
+| `promptHash` | Install: `tools/prompts/`, `shared/lib/agent-adapters.sh`; arm: `selected-task.json` (both arms or neither) |
+| `toolConfigHash` | Install: `shared/lib/agent-adapters.sh`, `shared/hooks/`, `shared/lib/permission-patterns.ts`; repo: `.wavemill-config.json`, `.claude/settings.json`; arm worktree: `.wavemill-config.local.json` (both arms or neither) |
+
 Direct review evidence never compensates for divergent pre-stage inputs. If a
 task-packet, plan, prompt, or tool-config hash does not match, producers set the
 specific mismatch code plus `divergent_pre_stage_inputs`; when direct evidence
