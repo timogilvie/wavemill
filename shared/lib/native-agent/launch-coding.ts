@@ -24,6 +24,7 @@ import { SessionStreamWriter, resolveSessionEventStreamPath } from './session-st
 import { captureToolDecisionsFromStream } from './tool-decision-capture.ts';
 import type { SessionStreamConfig } from './loop.ts';
 import { createReadOnlyTools, READ_ONLY_PATH_FIELDS } from './tools/read-only.ts';
+import { CODE_SEARCH_PATH_FIELDS, createCodeSearchTools } from './tools/code-search.ts';
 import {
   createGitCommitTools,
   createGitTools,
@@ -53,7 +54,7 @@ import {
   formatMenuDenials,
 } from './tools/menu-resolver.ts';
 import { inferCertificationSnapshotForPhase } from './tools/certification-snapshot.ts';
-import { loadWavemillConfig } from '../config.ts';
+import { getNativeCodeSearchConfig, loadWavemillConfig } from '../config.ts';
 import { validateCodingArtifacts, type CodingArtifacts } from './coding-artifacts.ts';
 import {
   buildCompletionArtifactRetryGuidance,
@@ -782,12 +783,27 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
 
   try {
     const tracker = createIntendedFileTracker();
+    const readOnlyDescriptors = createReadOnlyTools(options.wtDir);
+    const searchTextDescriptor = readOnlyDescriptors.find(
+      (d) => d.metadata.name === 'search_text',
+    );
+    const codeSearchConfig = getNativeCodeSearchConfig(options.repoDir);
+    const codeSearchDescriptors = codeSearchConfig.enabled
+      ? createCodeSearchTools({
+          config: codeSearchConfig,
+          worktreePath: options.wtDir,
+          ...(searchTextDescriptor
+            ? { searchTextExecutor: searchTextDescriptor.execute as Parameters<typeof createCodeSearchTools>[0]['searchTextExecutor'] }
+            : {}),
+        })
+      : [];
     const descriptors = [
-      ...createReadOnlyTools(options.wtDir),
+      ...readOnlyDescriptors,
       ...createGitTools(options.wtDir),
       ...createCommandTools(options.wtDir),
       ...createCodingMutationTools(options.wtDir, { phase: 'coding' }),
       ...createGitCommitTools(options.wtDir, { tracker }),
+      ...codeSearchDescriptors,
       ...(options.extraDescriptors ?? []),
     ];
     const registry = createToolRegistry(descriptors);
@@ -1007,6 +1023,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
             ...gitToolPolicyConfig.pathFieldsByTool,
             ...gitMutationToolPolicyConfig.pathFieldsByTool,
             ...codingMutationPolicyConfig.pathFieldsByTool,
+            ...(codeSearchConfig.enabled ? CODE_SEARCH_PATH_FIELDS : {}),
           },
         },
       },

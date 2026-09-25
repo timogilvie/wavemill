@@ -533,11 +533,26 @@ export interface NativeAgentBrowserFamilyConfig extends NativeAgentAdvancedFamil
   session?: NativeAgentBrowserSessionConfig;
 }
 
+/**
+ * Optional per-family limits for the read-only code_search substrate
+ * (HOK-3059). Absent fields fall back to `CODE_SEARCH_LIMIT_DEFAULTS`.
+ */
+export interface NativeAgentCodeSearchLimitsConfig {
+  maxFiles?: number;
+  maxBytes?: number;
+  maxSymbols?: number;
+  maxResults?: number;
+}
+
+export interface NativeAgentCodeSearchFamilyConfig extends NativeAgentAdvancedFamilyConfig {
+  limits?: NativeAgentCodeSearchLimitsConfig;
+}
+
 export interface NativeAgentAdvancedConfig {
   browser?: NativeAgentBrowserFamilyConfig;
   screenshot?: NativeAgentAdvancedFamilyConfig;
   mcp?: NativeAgentAdvancedFamilyConfig;
-  code_search?: NativeAgentAdvancedFamilyConfig;
+  code_search?: NativeAgentCodeSearchFamilyConfig;
   ast?: NativeAgentAdvancedFamilyConfig;
   eval?: NativeAgentAdvancedFamilyConfig;
 }
@@ -2443,6 +2458,80 @@ export function getNativeBrowserConfig(repoDir?: string): ResolvedNativeBrowserC
     allowedPhases: raw.allowedPhases ?? [],
     ...(raw.logicalIds ? { logicalIds: raw.logicalIds } : {}),
     session: resolved,
+    invalidReasons,
+  };
+}
+
+export interface ResolvedNativeCodeSearchConfig {
+  enabled: boolean;
+  allowedPhases: NativeAgentAllowedPhase[];
+  logicalIds?: string[];
+  limits: {
+    maxFiles: number;
+    maxBytes: number;
+    maxSymbols: number;
+    maxResults: number;
+  };
+  invalidReasons: string[];
+}
+
+export const CODE_SEARCH_LIMIT_DEFAULTS = Object.freeze({
+  maxFiles: 2000,
+  maxBytes: 32 * 1024 * 1024,
+  maxSymbols: 20_000,
+  maxResults: 200,
+});
+
+const CODE_SEARCH_LIMIT_MAX = Object.freeze({
+  maxFiles: 100_000,
+  maxBytes: 512 * 1024 * 1024,
+  maxSymbols: 1_000_000,
+  maxResults: 200,
+});
+
+function clampLimit(
+  candidate: number | undefined,
+  fallback: number,
+  ceiling: number,
+): number {
+  if (candidate === undefined) return fallback;
+  const n = Math.floor(candidate);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(n, ceiling);
+}
+
+/**
+ * Resolve the code_search-family configuration into a normalized, fail-closed
+ * shape. `enabled` in the returned value is true only when the operator
+ * enabled the family AND every limit field is valid. `invalidReasons` lists
+ * fail-closed causes so preflight tooling can surface them.
+ */
+export function getNativeCodeSearchConfig(repoDir?: string): ResolvedNativeCodeSearchConfig {
+  const raw = getNativeAgentConfig(repoDir).advanced?.code_search ?? {};
+  const invalidReasons: string[] = [];
+  const rawLimits = raw.limits ?? {};
+
+  const limits = {
+    maxFiles: clampLimit(rawLimits.maxFiles, CODE_SEARCH_LIMIT_DEFAULTS.maxFiles, CODE_SEARCH_LIMIT_MAX.maxFiles),
+    maxBytes: clampLimit(rawLimits.maxBytes, CODE_SEARCH_LIMIT_DEFAULTS.maxBytes, CODE_SEARCH_LIMIT_MAX.maxBytes),
+    maxSymbols: clampLimit(rawLimits.maxSymbols, CODE_SEARCH_LIMIT_DEFAULTS.maxSymbols, CODE_SEARCH_LIMIT_MAX.maxSymbols),
+    maxResults: clampLimit(rawLimits.maxResults, CODE_SEARCH_LIMIT_DEFAULTS.maxResults, CODE_SEARCH_LIMIT_MAX.maxResults),
+  };
+
+  for (const [key, value] of Object.entries(rawLimits)) {
+    if (value === undefined) continue;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+      invalidReasons.push(`invalid_limit:${key}`);
+    }
+  }
+
+  const enabled = raw.enabled === true && invalidReasons.length === 0;
+
+  return {
+    enabled,
+    allowedPhases: raw.allowedPhases ?? [],
+    ...(raw.logicalIds ? { logicalIds: raw.logicalIds } : {}),
+    limits,
     invalidReasons,
   };
 }

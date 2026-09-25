@@ -929,6 +929,12 @@ Acceptance:
 - Each advanced tool family has its own phase policy, output caps, transcript format, and smoke suite.
 - No advanced tool is globally available by default.
 
+**Epic 10.7 status:** `code_search` is now populated — the runtime substrate
+lives in `shared/lib/native-agent/language-index.ts` and the four tool
+descriptors in `shared/lib/native-agent/tools/code-search.ts`, gated by the
+new `nativeAgent.advanced.code_search` config block. Substrate rationale is
+recorded in `docs/decisions/structured-search-substrate.md`.
+
 #### Advanced-tool exposure contract (HOK-3053)
 
 The first Epic 10 landing is the catalog and default-off policy — no advanced

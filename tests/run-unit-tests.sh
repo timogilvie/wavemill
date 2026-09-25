@@ -94,6 +94,8 @@ TESTS=(
   shared/lib/native-agent/tools/browser.test.ts
   shared/lib/native-agent/browser-session.test.ts
   shared/lib/native-agent/tools/review-scoring.test.ts
+  shared/lib/native-agent/tools/code-search.test.ts
+  shared/lib/native-agent/language-index.test.ts
   shared/lib/native-agent/loop.test.ts
   shared/lib/native-agent/output-limits.test.ts
   shared/lib/native-agent/transcript.test.ts
