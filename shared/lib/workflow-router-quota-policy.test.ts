@@ -44,7 +44,10 @@ await test('auto mode uses degraded haiku-only routing in survival mode', async 
     const decision = await routeWorkflowAuto('Build a backend feature with tests and review.', { repoDir });
     const selectedModels = [decision.planner, decision.coder, decision.reviewer];
 
-    assert.ok(selectedModels.every((modelId) => modelId.toLowerCase().includes('haiku')));
+    // Survival mode restricts routing to fast_economy models. Any of Haiku or
+    // Luna satisfy that class gate; the assertion is that no frontier /
+    // strong_generalist model is selected.
+    assert.ok(selectedModels.every((modelId) => /haiku|luna/.test(modelId.toLowerCase())));
     assert.ok(selectedModels.every((modelId) => !modelId.toLowerCase().includes('opus')));
     assert.ok(selectedModels.every((modelId) => !modelId.toLowerCase().includes('sonnet')));
     assert.match(decision.reasoning[0], /Survival mode/);
@@ -184,7 +187,7 @@ await test('policy routing excludes retired frontier from substitution', async (
       ))
     );
     assert.equal(result?.routingMode, 'policy');
-    assert.match(stderr, /\[coder] policy adjustment: claude-fable-5 -> claude-sonnet-5 \(quota=exhausted\)/);
+    assert.match(stderr, /\[coder] policy adjustment: claude-opus-5-5 -> claude-sonnet-5 \(quota=exhausted\)/);
     assert.doesNotMatch(stderr, /gpt-5\.5/);
     assert.doesNotMatch(stderr, /same-class=frontier/);
     assert.doesNotMatch(stderr, /\[router] constrained mode:/);
@@ -398,8 +401,8 @@ await test('emits supported substitutions without selecting the retired frontier
     assert.equal(result.planner, 'gpt-5.6-terra');
     assert.equal(result.coder, 'claude-sonnet-5');
     assert.equal(result.reviewer, 'gpt-5.6-terra');
-    assert.match(stderr, /\[planner] policy adjustment: claude-fable-5 -> gpt-5\.6-terra \(quota=exhausted\)/);
-    assert.match(stderr, /\[coder] policy adjustment: claude-fable-5 -> claude-sonnet-5 \(quota=exhausted\)/);
+    assert.match(stderr, /\[planner] policy adjustment: claude-opus-5-5 -> gpt-5\.6-terra \(quota=exhausted\)/);
+    assert.match(stderr, /\[coder] policy adjustment: claude-opus-5-5 -> claude-sonnet-5 \(quota=exhausted\)/);
     assert.doesNotMatch(stderr, /gpt-5\.5/);
     assert.doesNotMatch(stderr, /\[router] (constrained|survival) mode:/);
     assert.doesNotMatch(result.reasoning[0], /Constrained mode|Survival mode/);
@@ -453,7 +456,9 @@ await test('emits survival-mode banner when every frontier vendor is exhausted (
     );
     assert.match(stderr, /\[router] survival mode: .* quota is exhausted; restricting routing to fast-economy models/);
     assert.ok(result.reasoning[0].includes('Survival mode'));
-    assert.ok([result.planner, result.coder, result.reviewer].every((modelId) => modelId.toLowerCase().includes('haiku')));
+    assert.ok(
+      [result.planner, result.coder, result.reviewer].every((modelId) => /haiku|luna/.test(modelId.toLowerCase())),
+    );
     assert.doesNotMatch(stderr, /same-class=frontier/);
   } finally {
     cleanup();
