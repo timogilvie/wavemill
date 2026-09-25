@@ -87,6 +87,35 @@ test('buildArbiterR6Report', async (t) => {
     assert.equal(report.cohorts.get('reviewer-fork')?.successfullyForkedPairs, 1);
   });
 
+  await t.test('implementation forks form their own cohort and count implementation-stage labels (HOK-3086)', () => {
+    assert.equal(classifyCohort(record({ challengePairId: 'a', sharedPrefix: true, forkStage: 'implementation' })), 'implementation-fork');
+    const implValid = record({
+      challengePairId: 'impl1',
+      sharedPrefix: true,
+      forkStage: 'implementation',
+      forkIdentity: { commit: 'abc', stage: 'implementation', tree: null, taskPacketHash: null, planHash: null, promptHash: null, toolConfigHash: null },
+      stageAttribution: { status: 'valid', outcome: 'challenger', stage: 'implementation', reasonCodes: [], evidenceProvenance: 'inferred' },
+      comparisonOutcome: 'compared',
+    });
+    const implWrongStage = record({
+      challengePairId: 'impl2',
+      sharedPrefix: true,
+      forkStage: 'implementation',
+      forkIdentity: { commit: 'def', stage: 'implementation', tree: null, taskPacketHash: null, planHash: null, promptHash: null, toolConfigHash: null },
+      stageAttribution: { status: 'valid', outcome: 'primary', stage: 'review', reasonCodes: [], evidenceProvenance: 'direct' },
+      comparisonOutcome: 'compared',
+    });
+    const report = buildArbiterR6Report({ comparisons: [implValid, implWrongStage] });
+    const impl = report.cohorts.get('implementation-fork');
+    assert.ok(impl);
+    assert.equal(impl.launchedPairs, 2);
+    assert.equal(impl.successfullyForkedPairs, 2);
+    assert.equal(impl.validLabelPairs, 1);
+    assert.equal(impl.validLabelYieldRate, 0.5);
+    assert.equal(report.totals.excludedByCohort, 0);
+    assert.equal(report.cohorts.get('reviewer-fork'), undefined);
+  });
+
   await t.test('phantom pairs excluded from launched denominator', () => {
     const phantom = record({
       challengePairId: 'ph1',

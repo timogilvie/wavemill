@@ -4721,6 +4721,7 @@
         "divergent_pre_stage_inputs",
         "unverified_fork_commit",
         "missing_fork_identity",
+        "independent_launch_no_stage_label",
         "plan_hash_mismatch",
         "prompt_hash_mismatch",
         "task_packet_hash_mismatch",

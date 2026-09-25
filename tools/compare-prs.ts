@@ -854,6 +854,9 @@ runTool({
           challenger: challengerAttestation,
           evidenceProvenance: stageEvalProvenance,
           forkIdentity: forkAwareDiffApplied ? forkIdentityRecorded : undefined,
+          // No fork descriptor at all means both arms launched independently:
+          // no stage label by design, not a missing-identity defect (HOK-3085).
+          independentLaunch: !forkDescriptor.forkStage && forkDescriptor.sharedPrefix !== true,
           primaryReviewIdentity,
           challengerReviewIdentity,
           judgeWinner: verdict.winner,

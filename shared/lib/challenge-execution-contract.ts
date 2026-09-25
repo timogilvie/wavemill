@@ -60,6 +60,7 @@ export const STAGE_ATTRIBUTION_REASON_CODES = [
   'divergent_pre_stage_inputs',
   'unverified_fork_commit',
   'missing_fork_identity',
+  'independent_launch_no_stage_label',
   'plan_hash_mismatch',
   'prompt_hash_mismatch',
   'task_packet_hash_mismatch',
@@ -812,9 +813,12 @@ export function reviewExecutedIdentityIsFullyPinned(identity: ReviewExecutedIden
 function addForkIdentityReasons(
   reasons: Set<StageAttributionReasonCode>,
   forkIdentity: ForkIdentity | undefined,
+  independentLaunch = false,
 ): void {
   if (!forkIdentity) {
-    reasons.add('missing_fork_identity');
+    // An independently launched pair never shares pre-stage inputs, so it has
+    // no stage label by design (HOK-3085) rather than a missing identity.
+    reasons.add(independentLaunch ? 'independent_launch_no_stage_label' : 'missing_fork_identity');
     return;
   }
   if (!forkIdentity.commit) reasons.add('unverified_fork_commit');
@@ -862,6 +866,13 @@ export function foldAttestationsIntoStageAttribution(input: {
   evidenceProvenance?: 'direct' | 'inferred';
   /** Pair-level fork identity used to prove matched pre-stage inputs. */
   forkIdentity?: ForkIdentity;
+  /**
+   * True when the pair was launched independently (no fork descriptor). A
+   * missing fork identity is then reported as
+   * `independent_launch_no_stage_label` (insufficient evidence) instead of
+   * the `missing_fork_identity` defect.
+   */
+  independentLaunch?: boolean;
   /** Per-arm executed review identities used to detect pinning failures. */
   primaryReviewIdentity?: ReviewExecutedIdentitySet;
   challengerReviewIdentity?: ReviewExecutedIdentitySet;
@@ -877,7 +888,7 @@ export function foldAttestationsIntoStageAttribution(input: {
 }): StageAttribution {
   const reasons = new Set<StageAttributionReasonCode>();
   const details: string[] = [];
-  addForkIdentityReasons(reasons, input.forkIdentity);
+  addForkIdentityReasons(reasons, input.forkIdentity, input.independentLaunch === true);
   addReason(reasons, inheritedStageReason(input.stage, input.forkIdentity));
 
   for (const attestation of [input.primary, input.challenger]) {
@@ -928,6 +939,7 @@ export function foldAttestationsIntoStageAttribution(input: {
   const reasonCodes = [...reasons];
   if (reasonCodes.length > 0) {
     const insufficientOnly = reasonCodes.every((reason) => [
+      'independent_launch_no_stage_label',
       'missing_direct_review_evidence',
       'inferred_evidence_only',
       'insufficient_review_iterations',

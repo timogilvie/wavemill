@@ -2064,6 +2064,324 @@ challenge_materialize_challenger_arm() {
   return 0
 }
 
+# HOK-3086 — record the fork point for every pending implementation-stage arm
+# at the primary's plan→coding handoff, before the primary's coder can commit.
+#
+# The fork commit is the primary's pre-coding HEAD and the planning artifacts
+# are snapshotted beside it, so materialisation (now or on any later retry)
+# forks from exactly the state both coders are meant to share — never from a
+# HEAD the primary's coder has already moved. Idempotent: an arm that already
+# has a fork point keeps it.
+#
+# Usage: challenge_record_implementation_fork_point <primary_issue> \
+#   <primary_feature_dir> <primary_wt_dir>
+challenge_record_implementation_fork_point() {
+  local primary_issue="$1" primary_feature_dir="$2" primary_wt_dir="$3"
+  [[ -n "$primary_issue" && -d "$primary_feature_dir" ]] || return 0
+
+  local pending_json arm_keys arm_key
+  pending_json="$(challenge_arms_list_pending "$primary_issue")"
+  arm_keys="$(jq -r '.[] | select(.variedStage == "implementation" and ((.planForkCommit // "") == "")) | .key' \
+    <<<"$pending_json" 2>/dev/null || true)"
+  [[ -n "$arm_keys" ]] || return 0
+
+  local fork_commit
+  fork_commit="$(git -C "$primary_wt_dir" rev-parse HEAD 2>/dev/null || echo "")"
+  if [[ -z "$fork_commit" ]]; then
+    log_error "  $primary_issue: cannot resolve plan-time HEAD from $primary_wt_dir — implementation fork point not recorded"
+    return 1
+  fi
+  if [[ ! -f "$primary_feature_dir/plan.md" ]]; then
+    log_error "  $primary_issue: no plan.md at the plan→coding handoff — implementation fork point not recorded"
+    return 1
+  fi
+
+  # Planning artifacts the challenger inherits from the single shared plan.
+  # Coding artifacts are deliberately absent: the challenger codes from the
+  # plan, it does not inherit code.
+  local -a fork_artifacts=(
+    plan.md .plan-approved .phase-config.json
+    .routing-complete .initial-route.json .post-expansion-route.json
+    selected-task.json
+    task-packet.md task-packet-header.md task-packet-details.md task-packet.native.json
+    challenge-intent.json .challenge-intent.json
+    .trace-context.json trace.jsonl routing.jsonl
+    .planning-result.json
+  )
+  local snapshot_dir artifact
+  while IFS= read -r arm_key; do
+    [[ -n "$arm_key" ]] || continue
+    snapshot_dir="$primary_feature_dir/.fork-snapshot/$arm_key"
+    rm -rf "$snapshot_dir"
+    mkdir -p "$snapshot_dir" || { log_error "  $arm_key: cannot create fork snapshot $snapshot_dir"; continue; }
+    for artifact in "${fork_artifacts[@]}"; do
+      if [[ -e "$primary_feature_dir/$artifact" ]]; then
+        cp -R "$primary_feature_dir/$artifact" "$snapshot_dir/$artifact" 2>/dev/null || \
+          log_warn "  $arm_key: snapshot of $artifact failed"
+      fi
+    done
+    if challenge_arms_set_state "$primary_issue" "$arm_key" "awaiting_fork" "awaiting_fork" \
+      "$(jq -cn --arg fc "$fork_commit" --arg dir "$snapshot_dir" \
+        '{planForkCommit: $fc, planForkSnapshot: $dir, planForkRecordedAt: (now | todate)}')"; then
+      log "status" "  $primary_issue → implementation fork point recorded for $arm_key at $fork_commit"
+      log_route_lifecycle "challenge_fork_point_recorded" \
+        "issue=$primary_issue" \
+        "arm=$arm_key" \
+        "stage=implementation" \
+        "fork_commit=$fork_commit"
+    fi
+  done <<<"$arm_keys"
+  return 0
+}
+
+# HOK-3086 — materialise a deferred implementation-stage challenger from the
+# fork point recorded at the primary's plan→coding handoff. Sibling of
+# challenge_materialize_challenger_arm (review stage): the challenger branches
+# at the plan-time commit, inherits only the planning artifacts from the
+# snapshot, and launches its own CODING phase with its own coder.
+#
+# Return codes:
+#   0  materialised and coding launched
+#   1  retryable failure (partial worktree left for the next attempt to attach)
+#   2  terminal: challenge intent cannot be attested
+#   3  terminal: the fork point is missing or unusable (it cannot be
+#      reconstructed once the primary's coder has run)
+#
+# Usage: challenge_materialize_implementation_arm <primary_issue> <primary_slug> \
+#   <arm_json> <primary_wt_dir> <primary_feature_dir> [base_branch]
+challenge_materialize_implementation_arm() {
+  local primary_issue="$1" primary_slug="$2" arm_json="$3"
+  local primary_wt_dir="$4" primary_feature_dir="$5"
+  local base_branch="${6:-${BASE_BRANCH:-main}}"
+
+  local arm_key arm_slug arm_branch fork_commit snapshot_dir
+  local coder_model planner_model reviewer_model coder_agent
+  local plan_depth code_depth review_mode
+  arm_key=$(challenge_arm_read_field "$arm_json" '.key')
+  arm_slug=$(challenge_arm_read_field "$arm_json" '.slug')
+  arm_branch=$(challenge_arm_read_field "$arm_json" '.branch')
+  fork_commit=$(challenge_arm_read_field "$arm_json" '.planForkCommit')
+  snapshot_dir=$(challenge_arm_read_field "$arm_json" '.planForkSnapshot')
+  coder_model=$(challenge_arm_read_field "$arm_json" '.models.coder')
+  planner_model=$(challenge_arm_read_field "$arm_json" '.models.planner')
+  reviewer_model=$(challenge_arm_read_field "$arm_json" '.models.reviewer')
+  coder_agent=$(challenge_arm_read_field "$arm_json" '.agents.coder')
+  plan_depth=$(challenge_arm_read_field "$arm_json" '.planDepth')
+  code_depth=$(challenge_arm_read_field "$arm_json" '.codeDepth')
+  review_mode=$(challenge_arm_read_field "$arm_json" '.reviewMode')
+  [[ -z "$review_mode" ]] && review_mode="static"
+  [[ -z "$code_depth" ]] && code_depth="medium"
+
+  if [[ -z "$arm_key" || -z "$arm_slug" || -z "$arm_branch" ]]; then
+    log_error "  $primary_issue: implementation materialise called with malformed arm record"
+    return 1
+  fi
+
+  # Step 1: the recorded plan-time fork point. Without it the shared-plan
+  # guarantee cannot be proven, so this is terminal rather than retryable.
+  if [[ -z "$fork_commit" || -z "$snapshot_dir" || ! -f "$snapshot_dir/plan.md" ]]; then
+    log_error "  $arm_key: implementation fork point missing (commit=${fork_commit:-none} snapshot=${snapshot_dir:-none})"
+    return 3
+  fi
+  if ! git -C "$REPO_DIR" cat-file -e "${fork_commit}^{commit}" 2>/dev/null; then
+    log_error "  $arm_key: implementation fork commit $fork_commit is not available"
+    return 3
+  fi
+
+  # Every role except the coder is shared with the primary. Take those from
+  # the primary's plan-time phase config (post expanded-route), not from the
+  # launch-time arm record, so the non-selected stages cannot diverge.
+  local snapshot_config="$snapshot_dir/.phase-config.json" shared_value
+  if [[ -f "$snapshot_config" ]]; then
+    shared_value="$(jq -r '.planning.model // empty' "$snapshot_config" 2>/dev/null || true)"
+    [[ -n "$shared_value" ]] && planner_model="$shared_value"
+    shared_value="$(jq -r '.planning.depth // empty' "$snapshot_config" 2>/dev/null || true)"
+    [[ -n "$shared_value" ]] && plan_depth="$shared_value"
+    shared_value="$(jq -r '.review.model // empty' "$snapshot_config" 2>/dev/null || true)"
+    [[ -n "$shared_value" ]] && reviewer_model="$shared_value"
+    shared_value="$(jq -r '.review.mode // empty' "$snapshot_config" 2>/dev/null || true)"
+    [[ -n "$shared_value" ]] && review_mode="$shared_value"
+  fi
+
+  local challenger_wt_dir="${WORKTREE_ROOT}/${arm_slug}"
+  local challenger_feature_dir="${challenger_wt_dir}/features/${arm_slug}"
+
+  # Guard: the challenger's coding must not already have run. A `running`
+  # result left by a failed launch below is retryable, not a completed run.
+  local prior_coding_status=""
+  prior_coding_status="$(jq -r '.status // empty' "$challenger_feature_dir/.coding-result.json" 2>/dev/null || true)"
+  if [[ -n "$prior_coding_status" && "$prior_coding_status" != "running" ]]; then
+    log_warn "  $arm_key: refusing to materialise — challenger coding already $prior_coding_status"
+    return 1
+  fi
+
+  # Step 2: branch + worktree at the plan-time fork commit. Tolerate a partial
+  # prior attempt where the branch exists at the fork commit.
+  if git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/$arm_branch" 2>/dev/null; then
+    local existing_sha
+    existing_sha="$(git -C "$REPO_DIR" rev-parse "$arm_branch" 2>/dev/null || echo "")"
+    if [[ "$existing_sha" != "$fork_commit" ]]; then
+      log_error "  $arm_key: branch $arm_branch already exists at $existing_sha, not at fork commit $fork_commit"
+      return 1
+    fi
+    if [[ ! -d "$challenger_wt_dir" ]]; then
+      if ! ensure_worktree "$arm_branch" "$challenger_wt_dir" "$REPO_DIR" >/dev/null 2>>"${MILL_LOG_FILE:-/dev/null}"; then
+        log_error "  $arm_key: ensure_worktree failed for $arm_branch"
+        return 1
+      fi
+    fi
+  else
+    if [[ -d "$challenger_wt_dir" ]]; then
+      log_error "  $arm_key: worktree $challenger_wt_dir exists without branch $arm_branch"
+      return 1
+    fi
+    if ! git -C "$REPO_DIR" worktree add -b "$arm_branch" "$challenger_wt_dir" "$fork_commit" >>"${MILL_LOG_FILE:-/dev/null}" 2>&1; then
+      log_error "  $arm_key: git worktree add failed at fork commit $fork_commit"
+      return 1
+    fi
+  fi
+
+  # Step 2b: post-worktree seeding, as for any task worktree.
+  if [[ -f "$REPO_DIR/.wavemill-config.local.json" ]]; then
+    cp "$REPO_DIR/.wavemill-config.local.json" "$challenger_wt_dir/.wavemill-config.local.json" 2>/dev/null || \
+      log_warn "  $arm_key: copy .wavemill-config.local.json failed"
+  fi
+  if declare -F worktree_deps_ensure >/dev/null 2>&1; then
+    worktree_deps_ensure "$challenger_wt_dir" "$primary_wt_dir" "$arm_key" || \
+      log_warn "  $arm_key: dependency setup returned non-zero — coding may fail when node_modules is required"
+  fi
+
+  # Step 3: inherit the shared plan from the snapshot (never from the live
+  # primary feature dir, which the primary's coder may have touched since).
+  mkdir -p "$challenger_feature_dir" || {
+    log_error "  $arm_key: mkdir $challenger_feature_dir failed"
+    return 1
+  }
+  if ! cp -R "$snapshot_dir/." "$challenger_feature_dir/" 2>/dev/null; then
+    log_error "  $arm_key: copy of fork snapshot $snapshot_dir failed"
+    return 1
+  fi
+
+  if ! challenge_intent_files_valid "$challenger_feature_dir"; then
+    local backfill_intent=""
+    backfill_intent="$(echo "$arm_json" | jq -c '.executionIntent // empty' 2>/dev/null || true)"
+    if ! challenge_intent_json_is_canonical "$backfill_intent" && [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]]; then
+      backfill_intent="$(jq -c --arg issue "$primary_issue" \
+        '.tasks[$issue].challengeExecutionIntent // empty' "$STATE_FILE" 2>/dev/null || true)"
+    fi
+    if challenge_intent_json_is_canonical "$backfill_intent"; then
+      persist_challenge_execution_intent \
+        "$primary_issue" "$arm_key" \
+        "$primary_feature_dir" "$backfill_intent" "$challenger_feature_dir"
+      log "status" "  $arm_key: challenge intent backfilled during implementation materialisation"
+    fi
+  fi
+
+  # Step 4: the plan is inherited; coding is the challenger's own. Point the
+  # challenger's phase config at its own coder so any relaunch keeps it.
+  local tmp
+  if [[ -f "$challenger_feature_dir/.planning-result.json" ]]; then
+    tmp="$(mktemp)" && if jq '.source = "inherited"' "$challenger_feature_dir/.planning-result.json" > "$tmp" 2>/dev/null; then
+      mv "$tmp" "$challenger_feature_dir/.planning-result.json"
+    else
+      rm -f "$tmp"
+      log_warn "  $arm_key: failed to stamp source=inherited on .planning-result.json"
+    fi
+  fi
+  if [[ -f "$challenger_feature_dir/.phase-config.json" && -n "$coder_model" ]]; then
+    local coder_provider=""
+    if declare -F _provider_for_model >/dev/null 2>&1; then
+      coder_provider="$(_provider_for_model "$coder_model" 2>/dev/null || true)"
+    fi
+    tmp="$(mktemp)" && if jq --arg m "$coder_model" --arg a "$coder_agent" --arg d "$code_depth" --arg p "$coder_provider" \
+      '.coding = (((.coding // {}) | del(.agent, .provider)) + {model: $m, depth: $d}
+         + (if $a != "" then {agent: $a} else {} end)
+         + (if $p != "" then {provider: $p} else {} end))' \
+      "$challenger_feature_dir/.phase-config.json" > "$tmp" 2>/dev/null; then
+      mv "$tmp" "$challenger_feature_dir/.phase-config.json"
+    else
+      rm -f "$tmp"
+    fi
+  fi
+
+  # Step 5: fork identity + descriptor. Only the plan is inherited.
+  local fork_identity_json=""
+  fork_identity_json="$(challenge_compute_fork_identity \
+    "$arm_key" "implementation" "$fork_commit" \
+    "$primary_wt_dir" "$challenger_wt_dir" \
+    "$snapshot_dir" "$challenger_feature_dir" \
+    '["plan"]')" || fork_identity_json=""
+  challenge_intent_stamp_fork_descriptor \
+    "$primary_issue" "$arm_key" \
+    "$primary_feature_dir" "$challenger_feature_dir" \
+    "implementation" "$fork_commit" \
+    '["plan"]' \
+    "$fork_identity_json" || \
+    log_warn "  $arm_key: fork-descriptor stamp reported failure"
+
+  # Step 6: refuse to launch an arm whose intent cannot be attested.
+  if ! challenge_intent_files_valid "$primary_feature_dir" || ! challenge_intent_files_valid "$challenger_feature_dir"; then
+    log_error "  $arm_key: refusing to launch - challenge intent missing/invalid (primary=$primary_feature_dir challenger=$challenger_feature_dir)"
+    return 2
+  fi
+
+  # Step 7: save the challenger's task-state entry at phase=coding.
+  local linear_issue
+  linear_issue="$(get_linear_issue_id "$primary_issue" 2>/dev/null || echo "$primary_issue")"
+  save_task_state "$arm_key" "$arm_slug" "$arm_branch" "$challenger_wt_dir" \
+    "" "" "$coder_agent" "$linear_issue" \
+    "true" "$primary_issue" "challenger" "$coder_model" \
+    "$planner_model" "$coder_model" "$reviewer_model" \
+    "$plan_depth" "$code_depth" "$review_mode" \
+    "implementation" "coding"
+  BRANCH_BY_ISSUE["$arm_key"]="$arm_branch"
+  SLUG_BY_ISSUE["$arm_key"]="$arm_slug"
+  state_mutate "$STATE_FILE" \
+    '.tasks[$issue].challengerLaunched = true
+     | .tasks[$issue].updated = (now | todate)' \
+    --arg issue "$primary_issue" >/dev/null 2>&1 || true
+
+  # Step 8: launch the challenger's coding phase with its own coder, through
+  # the same resolution the planning→coding transition uses.
+  local coder_launch_model="$coder_model" resolved_coder_agent=""
+  if declare -F agent_resolve_model >/dev/null 2>&1; then
+    coder_launch_model="$(agent_resolve_model "coder" "$coder_model" "$REPO_DIR" 2>/dev/null || echo "$coder_model")"
+  fi
+  if declare -F agent_resolve_from_model >/dev/null 2>&1; then
+    resolved_coder_agent="$(agent_resolve_from_model "$coder_launch_model" "coding" 2>/dev/null || echo "")"
+  fi
+  [[ -n "$resolved_coder_agent" ]] || resolved_coder_agent="$coder_agent"
+  if [[ -z "$resolved_coder_agent" ]]; then
+    log_error "  $arm_key: cannot resolve a coding agent for $coder_launch_model — arm left for retry"
+    return 1
+  fi
+
+  set_task_phase "$arm_key" "coding"
+  write_stage_result_with_history "$challenger_feature_dir" "coding" "running" \
+    "$resolved_coder_agent" "$coder_launch_model" "" "" "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+  local arm_title
+  arm_title=$(read_state_value "" --arg i "$primary_issue" '.tasks[$i].title // ""')
+  [[ -n "$arm_title" ]] || arm_title="$arm_slug"
+
+  local launch_rc=0
+  _run_phase_launch coding launch_coding_phase "$arm_key" "$arm_slug" "$arm_title" \
+    "$challenger_wt_dir" "$arm_branch" "$base_branch" \
+    "$coder_launch_model" "$resolved_coder_agent" "$code_depth" || launch_rc=$?
+  if (( launch_rc != 0 )); then
+    log_error "  $arm_key: coding launch failed rc=$launch_rc — arm left for retry"
+    return 1
+  fi
+
+  log "status" "  $primary_issue → implementation challenger $arm_key materialised at plan-time commit $fork_commit"
+  log_route_lifecycle "challenge_arm_materialized" \
+    "issue=$primary_issue" \
+    "arm=$arm_key" \
+    "stage=implementation" \
+    "fork_commit=$fork_commit"
+  return 0
+}
+
 # HOK-2811 (Arbiter P2.4a) — fork trigger; re-entrant and guarded.
 #
 # Called from monitor_issue_state on every tick where the primary is at
@@ -2098,17 +2416,18 @@ challenge_maybe_materialize_deferred_arms() {
   [[ "$pending_count" =~ ^[0-9]+$ ]] || pending_count=0
   (( pending_count > 0 )) || return 0
 
-  # Coding must be complete before we fork. The coding result file is the
-  # canonical marker; without a `completed` stage there is nothing worth
-  # inheriting.
+  # Each arm forks at its own stage boundary (HOK-3086):
+  #   review         — after the primary's coding completes; forks at the
+  #                    primary's live HEAD (the coding result is the marker).
+  #   implementation — after the primary's shared plan; forks at the plan-time
+  #                    commit + snapshot recorded at the plan→coding handoff by
+  #                    challenge_record_implementation_fork_point, never at the
+  #                    live HEAD the primary's coder may already have moved.
   local coding_status
   coding_status="$(read_stage_status "$primary_feature_dir" "coding" 2>/dev/null || echo "")"
-  if [[ "$coding_status" != "completed" ]]; then
-    return 0
-  fi
 
-  local head
-  head="$(git -C "$primary_wt_dir" rev-parse HEAD 2>/dev/null || echo "")"
+  local live_head head
+  live_head="$(git -C "$primary_wt_dir" rev-parse HEAD 2>/dev/null || echo "")"
 
   local limit="${WAVEMILL_CHALLENGE_MATERIALIZE_MAX_ATTEMPTS:-4}"
   [[ "$limit" =~ ^[0-9]+$ ]] || limit=4
@@ -2121,6 +2440,33 @@ challenge_maybe_materialize_deferred_arms() {
     arm_key=$(echo "$arm_json" | jq -r '.key // ""')
     i=$((i + 1))
     [[ -n "$arm_key" ]] || continue
+
+    local arm_stage
+    arm_stage=$(echo "$arm_json" | jq -r '.variedStage // ""')
+    if [[ "$arm_stage" == "implementation" ]]; then
+      head=$(echo "$arm_json" | jq -r '.planForkCommit // ""')
+      if [[ -z "$head" ]]; then
+        # Before the plan→coding handoff there is nothing to fork from yet.
+        # Once the primary's coding has started without a recorded fork point
+        # (e.g. an arm deferred before this monitor version), the shared-plan
+        # state is unrecoverable: terminalise rather than fork a moved HEAD.
+        if [[ -n "$coding_status" ]] \
+          && challenge_arms_set_state "$primary_issue" "$arm_key" "awaiting_fork" "exhausted" \
+            "$(jq -cn '{exhaustReason: "missing_fork_point", exhaustedAt: (now | todate)}')" 2>/dev/null; then
+          log_warn "  $primary_issue: implementation arm $arm_key has no fork point after coding started — exhausted"
+          log_route_lifecycle "challenge_arm_invalid_fork_point" \
+            "issue=$primary_issue" \
+            "arm=$arm_key" \
+            "reason=missing_fork_point"
+        fi
+        continue
+      fi
+    else
+      # Coding must be complete before a review fork. Without a `completed`
+      # coding stage there is nothing worth inheriting.
+      [[ "$coding_status" == "completed" ]] || continue
+      head="$live_head"
+    fi
 
     local bucket="challenger-materialize-$arm_key"
     local disposition
@@ -2163,14 +2509,25 @@ challenge_maybe_materialize_deferred_arms() {
     bounded_retry_increment "$primary_feature_dir" "$bucket" "$head" >/dev/null 2>&1 || true
 
     local materialise_rc=0
-    challenge_materialize_challenger_arm \
-      "$primary_issue" "$primary_slug" "$arm_json" \
-      "$primary_wt_dir" "$primary_feature_dir" || materialise_rc=$?
+    if [[ "$arm_stage" == "implementation" ]]; then
+      challenge_materialize_implementation_arm \
+        "$primary_issue" "$primary_slug" "$arm_json" \
+        "$primary_wt_dir" "$primary_feature_dir" || materialise_rc=$?
+    else
+      challenge_materialize_challenger_arm \
+        "$primary_issue" "$primary_slug" "$arm_json" \
+        "$primary_wt_dir" "$primary_feature_dir" || materialise_rc=$?
+    fi
 
     if (( materialise_rc == 0 )); then
-      # Stamp materialisation success + the fork commit.
+      # Stamp materialisation success + the fork commit. An implementation
+      # fork's commit is the recorded plan-time head, not the live HEAD.
       local fork_commit
-      fork_commit="$(git -C "$primary_wt_dir" rev-parse HEAD 2>/dev/null || echo "")"
+      if [[ "$arm_stage" == "implementation" ]]; then
+        fork_commit="$head"
+      else
+        fork_commit="$(git -C "$primary_wt_dir" rev-parse HEAD 2>/dev/null || echo "")"
+      fi
       challenge_arms_set_state "$primary_issue" "$arm_key" "materializing" "materialized" \
         "$(jq -cn --arg fc "$fork_commit" '{materializedAt: (now | todate), forkCommit: $fc}')" 2>/dev/null || true
       bounded_retry_clear "$primary_feature_dir" "$bucket"
@@ -2185,6 +2542,20 @@ challenge_maybe_materialize_deferred_arms() {
         "issue=$primary_issue" \
         "arm=$arm_key" \
         "reason=missing_challenge_intent"
+    elif (( materialise_rc == 3 )); then
+      # HOK-3086: the plan-time fork point is gone or unusable and cannot be
+      # rebuilt once the primary's coder has run — terminal, never re-forked
+      # from a later HEAD.
+      local reason="missing_fork_point: implementation fork commit or plan snapshot unavailable"
+      if bounded_retry_mark_exhausted "$primary_feature_dir" "$bucket" "$reason"; then
+        log "status" "  $primary_issue: challenger arm $arm_key cannot fork ($reason)"
+      fi
+      challenge_arms_set_state "$primary_issue" "$arm_key" "materializing" "exhausted" \
+        "$(jq -cn --arg r "missing_fork_point" '{exhaustReason: $r, exhaustedAt: (now | todate)}')" 2>/dev/null || true
+      log_route_lifecycle "challenge_arm_invalid_fork_point" \
+        "issue=$primary_issue" \
+        "arm=$arm_key" \
+        "reason=missing_fork_point"
     else
       # Retryable failure — reset the arm to awaiting_fork so the next tick
       # re-enters through the gate.
@@ -14127,14 +14498,14 @@ EOF
       challenger_review_mode=$(echo "$challenge_plan" | jq -r '.entries[1].reviewMode // "static"' 2>/dev/null)
       challenge_intent=$(echo "$challenge_plan" | jq -c '.challengeIntent // null' 2>/dev/null || echo "null")
 
-      # HOK-2811: Review-stage challenges defer the challenger to a fork trigger
-      # that fires after the primary's coding completes. Pre-fork the packet
-      # fan-out is skipped — the challenger's feature dir is copied wholesale
-      # from the primary at materialisation time, so /tmp packet mirrors would
-      # be stale by then anyway.
+      # HOK-2811 / HOK-3086: review- and implementation-stage challenges defer the
+      # challenger to a fork of the primary (after coding for review, after the
+      # shared plan for implementation). Pre-fork the /tmp packet mirror is
+      # skipped — materialisation copies the primary's feature artifacts into the
+      # challenger's, so /tmp mirrors would be stale anyway.
       local defer_challenger="false"
       local pending_arm_state="awaiting_fork"
-      if [[ "$challenge_stage" == "review" ]]; then
+      if challenge_stage_defers_to_fork "$challenge_stage"; then
         defer_challenger="true"
       elif [[ "$plan_awaits_expanded_route" == "true" ]]; then
         # HOK-3065: plan-stage challenger sealed pre-expansion; forks at t=0
@@ -16176,6 +16547,16 @@ monitor_issue_state() {
               return 0
             fi
 
+            # HOK-3086: an implementation-stage challenger forks HERE, at the
+            # plan→coding handoff and before the primary's coder can commit, so
+            # both coders start from one shared plan and one commit. Recording
+            # the fork point first makes any later retry fork from this exact
+            # state. Guarded internally; a failure never blocks the primary.
+            if [[ "$(get_task_meta "$ISSUE" "challengeRole" 2>/dev/null || true)" != "challenger" ]]; then
+              challenge_record_implementation_fork_point "$ISSUE" "$FEATURE_DIR" "$WT_DIR" || true
+              challenge_maybe_materialize_deferred_arms "$ISSUE" "$SLUG" "$FEATURE_DIR" "$WT_DIR" || true
+            fi
+
             # Transition to coding phase
             set_task_phase "$ISSUE" "coding"
             coder_launch_model="$coder_model"
@@ -16341,6 +16722,11 @@ monitor_issue_state() {
             set_window_attention_state "$WIN" "needs-user"
             return 0
           fi
+
+          # HOK-3086: re-entrant retry for an implementation-stage arm whose
+          # fork point was recorded at the plan→coding handoff but whose
+          # materialisation failed transiently. Cheap no-op without pending arms.
+          challenge_maybe_materialize_deferred_arms "$ISSUE" "$SLUG" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" || true
 
           # Resume recovery: see matching block in the planning case above.
           _restore_inflight_task_window_if_missing "$ISSUE" "$SLUG" "$BRANCH" "coding"

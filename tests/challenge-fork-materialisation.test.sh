@@ -529,6 +529,63 @@ else
   fail "materialiser no longer computes/stamps the fork identity"
 fi
 
+# ────────────────────────────────────────────────────────────────
+# HOK-3086: implementation-stage fork after the single shared plan.
+# The end-to-end run (real recorder, trigger, materialiser) lives in
+# tests/fixtures/lifecycle/deferred_implementation_challenger_forks_at_plan_handoff.sh;
+# these checks pin the defer policy and the source-level wiring.
+# ────────────────────────────────────────────────────────────────
+echo ""
+echo "=== implementation-stage fork wiring (HOK-3086) ==="
+
+stage_defers() { challenge_stage_defers_to_fork "$1" && echo yes || echo no; }
+check_eq "review defers to a fork" "yes" "$(stage_defers review)"
+check_eq "implementation defers to a fork" "yes" "$(stage_defers implementation)"
+check_eq "plan does not defer to a fork" "no" "$(stage_defers plan)"
+check_eq "kill switch restores independent implementation launches" "no" \
+  "$(WAVEMILL_CHALLENGE_IMPLEMENTATION_FORK=0 stage_defers implementation)"
+check_eq "kill switch leaves review forks alone" "yes" \
+  "$(WAVEMILL_CHALLENGE_IMPLEMENTATION_FORK=0 stage_defers review)"
+
+MILL_SCRIPT_FILE="$REPO_DIR_ROOT/shared/lib/wavemill-mill.sh"
+check_contains "mill defers via challenge_stage_defers_to_fork" \
+  "$(cat "$MILL_SCRIPT_FILE")" 'if challenge_stage_defers_to_fork "$challenge_stage"; then'
+check_contains "monitor defers via challenge_stage_defers_to_fork" \
+  "$(cat "$MONITOR_SCRIPT_FILE")" 'if challenge_stage_defers_to_fork "$challenge_stage"; then'
+
+IMPL_BLOCK=$(awk '
+  /^challenge_materialize_implementation_arm\(\) \{/ { capture=1 }
+  capture { print }
+  /^}/ && capture { exit }
+' "$MONITOR_SCRIPT_FILE")
+check_contains "implementation materialiser launches coding" "$IMPL_BLOCK" '_run_phase_launch coding launch_coding_phase "$arm_key"'
+check_contains "implementation materialiser inherits only the plan" "$IMPL_BLOCK" "'[\"plan\"]'"
+check_contains "implementation materialiser forks at the recorded plan-time commit" "$IMPL_BLOCK" "'.planForkCommit'"
+check_contains "implementation materialiser copies from the snapshot" "$IMPL_BLOCK" 'cp -R "$snapshot_dir/." "$challenger_feature_dir/"'
+check_eq "implementation materialiser never launches review" "absent" \
+  "$([[ "$IMPL_BLOCK" == *"launch_review_phase"* ]] && echo present || echo absent)"
+
+RECORD_BLOCK=$(awk '
+  /^challenge_record_implementation_fork_point\(\) \{/ { capture=1 }
+  capture { print }
+  /^}/ && capture { exit }
+' "$MONITOR_SCRIPT_FILE")
+for artifact in plan.md .plan-approved task-packet.md selected-task.json .planning-result.json challenge-intent.json; do
+  check_contains "fork snapshot includes $artifact" "$RECORD_BLOCK" "$artifact"
+done
+for artifact in .coding-result.json .coding-complete .review-result.json; do
+  check_eq "fork snapshot excludes $artifact" "absent" \
+    "$([[ "$RECORD_BLOCK" == *"$artifact"* ]] && echo present || echo absent)"
+done
+
+HANDOFF_BLOCK=$(awk '
+  /HOK-3086: an implementation-stage challenger forks HERE/ { capture=1 }
+  capture { print }
+  /set_task_phase "\$ISSUE" "coding"/ && capture { exit }
+' "$MONITOR_SCRIPT_FILE")
+check_contains "handoff records the fork point before the primary's coding" "$HANDOFF_BLOCK" 'challenge_record_implementation_fork_point "$ISSUE"'
+check_contains "handoff materialises before the primary's coding" "$HANDOFF_BLOCK" 'challenge_maybe_materialize_deferred_arms "$ISSUE"'
+
 echo ""
 echo "--- Results: $PASS passed, $FAIL failed ---"
 [[ "$FAIL" -eq 0 ]]
