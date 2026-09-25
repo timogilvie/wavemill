@@ -33,6 +33,7 @@ import {
 } from './tools/browser.ts';
 import { createReviewScoringTools } from './tools/review-scoring.ts';
 import { CODE_SEARCH_PATH_FIELDS, createCodeSearchTools } from './tools/code-search.ts';
+import { createScreenshotTools } from './tools/screenshot.ts';
 import { createToolRegistry } from './tools/registry.ts';
 import type { ToolDescriptor } from './tools/types.ts';
 import {
@@ -234,6 +235,7 @@ function buildReviewToolRegistry(
     ...createGitTools(worktreePath),
     ...browserBundle.descriptors,
     ...codeSearchDescriptors,
+    ...createScreenshotTools(browserBundle.getSession, worktreePath).descriptors,
   ];
   // Conditional advanced-family inclusion (HOK-3061 trap #2): only advertise
   // the eval-scoring descriptors in the prompt catalog when the operator has

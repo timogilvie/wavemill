@@ -17,7 +17,7 @@
 // fixture adapters cover every test scenario without network or credentials.
 // ---------------------------------------------------------------------------
 
-import PNG from 'pngjs';
+import { PNG } from 'pngjs';
 import { canonicalizeBrowserOrigin } from '../config.ts';
 
 // ---------------------------------------------------------------------------
@@ -181,6 +181,7 @@ export class BrowserSession {
   private readonly startedAt: number;
   private callsMade = 0;
   private closed = false;
+  private lastNavigation?: BrowserNavigateResult;
 
   constructor(options: BrowserSessionOptions) {
     this.limits = options.limits;
@@ -237,7 +238,7 @@ export class BrowserSession {
       );
     }
 
-    return {
+    const navigation = {
       kind: 'navigate',
       originalUrl: url,
       finalUrl: outcome.finalUrl,
@@ -246,6 +247,8 @@ export class BrowserSession {
       loadTimeMs: outcome.loadTimeMs,
       origin: check.origin,
     };
+    this.lastNavigation = navigation;
+    return navigation;
   }
 
   async snapshotDom(): Promise<BrowserDomObservation> {
@@ -308,6 +311,9 @@ export class BrowserSession {
     mediaType: 'image/png';
     width: number;
     height: number;
+    byteSize: number;
+    url?: string;
+    origin?: string;
     viewport?: { width: number; height: number };
     browser?: { name?: string; version?: string };
     downscaled?: boolean;
@@ -382,6 +388,8 @@ export class BrowserSession {
       mediaType: 'image/png',
       width,
       height,
+      byteSize: finalBytes.length,
+      ...(this.lastNavigation ? { url: this.lastNavigation.finalUrl, origin: this.lastNavigation.origin } : {}),
       viewport: result.viewport,
       browser: result.browserName || result.browserVersion ? {
         name: result.browserName,

@@ -7,7 +7,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import PNG from 'pngjs';
+import { PNG } from 'pngjs';
 import pixelmatch from 'pixelmatch';
 import {
   loadImageArtifact,

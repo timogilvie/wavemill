@@ -37,6 +37,8 @@ export interface ReviewFinding {
   location: string;
   category: string;
   description: string;
+  /** Protected screenshot/diff artifacts supporting this finding. */
+  artifactRefs?: string[];
   /** Personas that flagged this finding */
   reviewers?: ReviewerPersona[];
   /**
@@ -541,6 +543,23 @@ export function parseNativeReviewResponse(
       `First 500 chars of LLM response:\n${preview}`
     );
   }
+
+  // Findings may cite protected screenshot/diff artifacts. Treat model output
+  // as untrusted: malformed refs are omitted without invalidating the review.
+  const sanitizeArtifactRefs = (findings: ReviewFinding[]) => {
+    for (const finding of findings) {
+      if (finding.artifactRefs === undefined) continue;
+      if (!Array.isArray(finding.artifactRefs)) {
+        delete finding.artifactRefs;
+        continue;
+      }
+      finding.artifactRefs = finding.artifactRefs.filter(
+        (ref): ref is string => typeof ref === 'string' && /^artifact:\/\/[a-f0-9]{64}$/.test(ref),
+      );
+    }
+  };
+  sanitizeArtifactRefs(parsed.codeReviewFindings);
+  if (Array.isArray(parsed.uiFindings)) sanitizeArtifactRefs(parsed.uiFindings);
 
   // Reject dismissals lacking a non-blank justification: the finding stays
   // blocking rather than being waved through (HOK-2932, fail closed).

@@ -5,7 +5,7 @@
  * Output is byte-identical across runs for stable assertions.
  */
 
-import PNG from 'pngjs';
+import { PNG } from 'pngjs';
 
 /**
  * Build a baseline PNG with a known fixed pattern.

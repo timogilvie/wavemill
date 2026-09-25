@@ -7,8 +7,9 @@
  */
 
 import { createHash } from 'node:crypto';
-import { NativeToolDescriptor, NativeToolFamilyConfig } from './types.ts';
-import { storeImageArtifact, loadImageArtifact } from '../image-artifacts.ts';
+import { buildTrustMetadata } from '../provenance.ts';
+import type { ToolDescriptor, WavemillToolResult } from './types.ts';
+import { storeImageArtifact } from '../image-artifacts.ts';
 import { compareImageArtifacts } from '../visual-comparison.ts';
 import { BrowserSession, BrowserSessionError } from '../browser-session.ts';
 import { getNativeScreenshotConfig } from '../../config.ts';
@@ -21,55 +22,43 @@ export const SCREENSHOT_PATH_FIELDS: string[] = [];
  */
 export function createScreenshotTools(
   sessionHandle?: () => Promise<BrowserSession | null>,
-): { descriptors: NativeToolDescriptor[] } {
-  const config = getNativeScreenshotConfig();
+  repoDir?: string,
+): { descriptors: ToolDescriptor[] } {
+  const config = getNativeScreenshotConfig(repoDir);
 
   if (!config.enabled) {
     return { descriptors: [] };
   }
 
-  const descriptors: NativeToolDescriptor[] = [];
+  const descriptors: ToolDescriptor[] = [];
 
   // ────────────────────────────────────────────────────────────────
   // browser_screenshot tool
   // ────────────────────────────────────────────────────────────────
 
   descriptors.push({
-    logicalId: 'screenshot.capture',
-    name: 'browser_screenshot',
-    description: 'Capture a screenshot of the current browser viewport as PNG',
-    class: 'read-only',
-    family: 'screenshot',
-    allowedPhases: config.allowedPhases,
-    exposure: 'opt-in',
-    executionMode: 'sequential',
-    certificationRequirement: 'read-only',
-    inputSchema: {
+    metadata: {
+      logicalId: 'screenshot.capture',
+      name: 'browser_screenshot',
+      description: 'Capture a screenshot of the current browser viewport as PNG',
+      class: 'read-only', family: 'screenshot', allowedPhases: config.allowedPhases,
+      exposure: 'opt-in', executionMode: 'sequential', certificationRequirement: 'read-only',
+      outputCapPolicy: { strategy: 'truncate', maxBytes: 4096 },
+    },
+    parameters: {
       type: 'object',
       properties: {},
       required: [],
       additionalProperties: false,
     },
-    outputCapPolicy: {
-      strategy: 'truncate',
-      maxBytes: 4096,
-    },
-    invoke: async () => {
+    execute: async (): Promise<WavemillToolResult> => {
       if (!sessionHandle) {
-        return {
-          success: false,
-          errorCode: 'browser_disabled',
-          details: { reason: 'browser session not available' },
-        };
+        return screenshotError('browser_disabled', 'browser session not available');
       }
 
       const session = await sessionHandle();
       if (!session) {
-        return {
-          success: false,
-          errorCode: 'browser_disabled',
-          details: { reason: 'browser session not available' },
-        };
+        return screenshotError('browser_disabled', 'browser session not available');
       }
 
       try {
@@ -89,6 +78,8 @@ export function createScreenshotTools(
             kind: 'screenshot',
             digest,
             byteSize: result.byteSize,
+            ...(result.url ? { url: result.url } : {}),
+            ...(result.origin ? { origin: result.origin } : {}),
             ...(result.viewport ? { viewport: result.viewport } : {}),
             ...(result.browser ? { browser: result.browser } : {}),
             ...(result.downscaled ? {
@@ -97,18 +88,17 @@ export function createScreenshotTools(
               originalWidth: result.originalWidth,
               originalHeight: result.originalHeight,
             } : {}),
-          },
+          }, repoDir,
         );
-
-        return {
-          success: true,
-          details: {
+        const details = {
             ref: stored.ref,
             digest: stored.digest,
             byteSize: stored.byteSize,
             mediaType: result.mediaType,
             width: result.width,
             height: result.height,
+            ...(result.url ? { url: result.url } : {}),
+            ...(result.origin ? { origin: result.origin } : {}),
             ...(result.viewport ? { viewport: result.viewport } : {}),
             ...(result.browser ? { browser: result.browser } : {}),
             ...(result.downscaled ? {
@@ -123,13 +113,11 @@ export function createScreenshotTools(
               maxWidth: config.limits.maxWidth,
               maxHeight: config.limits.maxHeight,
             },
-          },
-          sourceKind: 'browser',
         };
+        return screenshotSuccess(details, 'browser');
       } catch (err) {
         const error = err instanceof BrowserSessionError ? err : new Error(String(err));
         let errorCode: string;
-        let detail: Record<string, unknown> = {};
 
         if (error instanceof BrowserSessionError) {
           errorCode = error.code;
@@ -139,11 +127,7 @@ export function createScreenshotTools(
           errorCode = 'adapter_error';
         }
 
-        return {
-          success: false,
-          errorCode,
-          details: detail,
-        };
+        return screenshotError(errorCode, error.message);
       }
     },
   });
@@ -153,16 +137,14 @@ export function createScreenshotTools(
   // ────────────────────────────────────────────────────────────────
 
   descriptors.push({
-    logicalId: 'screenshot.compare',
-    name: 'screenshot_compare',
-    description: 'Compare two screenshot artifacts using pixel-level diff detection',
-    class: 'read-only',
-    family: 'screenshot',
-    allowedPhases: config.allowedPhases,
-    exposure: 'opt-in',
-    executionMode: 'sequential',
-    certificationRequirement: 'read-only',
-    inputSchema: {
+    metadata: {
+      logicalId: 'screenshot.compare', name: 'screenshot_compare',
+      description: 'Compare two screenshot artifacts using pixel-level diff detection',
+      class: 'read-only', family: 'screenshot', allowedPhases: config.allowedPhases,
+      exposure: 'opt-in', executionMode: 'sequential', certificationRequirement: 'read-only',
+      outputCapPolicy: { strategy: 'truncate', maxBytes: 4096 },
+    },
+    parameters: {
       type: 'object',
       properties: {
         baselineRef: {
@@ -177,15 +159,12 @@ export function createScreenshotTools(
       required: ['baselineRef', 'currentRef'],
       additionalProperties: false,
     },
-    outputCapPolicy: {
-      strategy: 'truncate',
-      maxBytes: 4096,
-    },
-    invoke: async (params: { baselineRef: string; currentRef: string }) => {
+    execute: async (_id, params: { baselineRef: string; currentRef: string }): Promise<WavemillToolResult> => {
       try {
         const result = await compareImageArtifacts({
           baselineRef: params.baselineRef,
           currentRef: params.currentRef,
+          repoDir,
           options: {
             diffThreshold: config.limits.diffThreshold,
             maxComparePixels: config.limits.maxComparePixels,
@@ -194,22 +173,16 @@ export function createScreenshotTools(
         });
 
         if (!result.comparable) {
-          return {
-            success: true,
-            details: {
+          return screenshotSuccess({
               comparable: false,
               reason: result.reason,
               error: result.error,
               ...(result.baseline ? { baseline: result.baseline } : {}),
               ...(result.current ? { current: result.current } : {}),
-            },
-            sourceKind: 'wavemill_artifact',
-          };
+          }, 'wavemill_artifact');
         }
 
-        return {
-          success: true,
-          details: {
+        return screenshotSuccess({
             comparable: true,
             width: result.width,
             height: result.height,
@@ -218,18 +191,22 @@ export function createScreenshotTools(
             diffRatio: result.diffRatio,
             threshold: result.threshold,
             ...(result.diffRef ? { diffRef: result.diffRef } : {}),
-          },
-          sourceKind: 'wavemill_artifact',
-        };
+        }, 'wavemill_artifact');
       } catch (err) {
-        return {
-          success: false,
-          errorCode: 'comparison_error',
-          details: { error: String(err) },
-        };
+        return screenshotError('comparison_error', String(err));
       }
     },
   });
 
   return { descriptors };
+}
+
+function screenshotSuccess(details: Record<string, unknown>, sourceKind: 'browser' | 'wavemill_artifact'): WavemillToolResult {
+  const text = JSON.stringify(details);
+  return { content: [{ type: 'text', text }], details, metadata: { trust: buildTrustMetadata({ sourceKind, content: [{ type: 'text', text }], details }) } };
+}
+
+function screenshotError(error: string, message: string): WavemillToolResult {
+  const details = { error, message };
+  return { content: [{ type: 'text', text: JSON.stringify(details) }], details, metadata: { trust: buildTrustMetadata({ sourceKind: 'browser', details }) } };
 }
