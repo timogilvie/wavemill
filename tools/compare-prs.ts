@@ -27,6 +27,7 @@ import {
 import {
   routesIdentical,
   foldAttestationsIntoStageAttribution,
+  loadChallengeIntentFromFeatureDir,
   type InvalidChallengeReason,
   type ForkIdentity,
   type StageAttribution,
@@ -56,6 +57,7 @@ import {
 import { writeJobResultFile } from '../shared/lib/job-tracker.ts';
 import type { ChallengeStage } from '../shared/lib/challenge-mode.ts';
 import { loadPromptTemplate } from '../shared/lib/prompt-utils.ts';
+import { applyForkIdentityFallback, readForkIdentity } from '../shared/lib/fork-identity.ts';
 
 type ComparisonForkDescriptor = Pick<
   ChallengeComparison,
@@ -67,6 +69,7 @@ type ComparisonForkDescriptor = Pick<
 >;
 
 type ChallengeIntentForkShape = {
+  forkIdentity?: unknown;
   forkStage?: unknown;
   forkCommit?: unknown;
   sharedPrefix?: unknown;
@@ -119,8 +122,19 @@ function resolveComparisonForkDescriptor(
 function selectRecordedForkIdentity(
   primary: EvalRecordWithForkIdentity | undefined,
   challenger: EvalRecordWithForkIdentity | undefined,
+  primaryDirIntent?: unknown,
+  challengerDirIntent?: unknown,
 ): ForkIdentity | undefined {
-  return primary?.forkIdentity ?? challenger?.forkIdentity ?? undefined;
+  return readForkIdentity(primary?.forkIdentity)
+    ?? readForkIdentity(challenger?.forkIdentity)
+    ?? readForkIdentity(intentObject(primaryDirIntent)?.forkIdentity)
+    ?? readForkIdentity(intentObject(challengerDirIntent)?.forkIdentity);
+}
+
+function loadFeatureDirIntent(featureDir: unknown): unknown {
+  return typeof featureDir === 'string' && featureDir.trim()
+    ? loadChallengeIntentFromFeatureDir(featureDir)
+    : undefined;
 }
 
 type EvalRecordWithForkIdentity = {
@@ -275,15 +289,28 @@ runTool({
       const primaryPrContext = fetchPrContext(primaryNumber, repoDir);
       const challengerPrContext = fetchPrContext(challengerNumber, repoDir);
 
-      const forkDescriptor = resolveComparisonForkDescriptor(
-        primaryEval.challengeIntent,
-        challengerEval.challengeIntent,
-        args['fork-commit'] as string | undefined,
-      );
+      // Eval records persist a projected intent that drops fork fields, so
+      // prefer the arms' on-disk intent files, then the recorded identity.
+      const primaryDirIntent = loadFeatureDirIntent(args['primary-feature-dir']);
+      const challengerDirIntent = loadFeatureDirIntent(args['challenger-feature-dir']);
       const forkIdentityRecorded = selectRecordedForkIdentity(
         primaryEval as EvalRecordWithForkIdentity,
         challengerEval as EvalRecordWithForkIdentity,
+        primaryDirIntent,
+        challengerDirIntent,
       );
+      const forkDescriptor = applyForkIdentityFallback(
+        resolveComparisonForkDescriptor(
+          primaryDirIntent ?? primaryEval.challengeIntent,
+          challengerDirIntent ?? challengerEval.challengeIntent,
+          args['fork-commit'] as string | undefined,
+        ),
+        forkIdentityRecorded,
+      );
+      const forkRetention = {
+        ...forkDescriptor,
+        ...(forkIdentityRecorded ? { forkIdentity: forkIdentityRecorded } : {}),
+      };
       let forkValidation: ForkCommitValidationResult | undefined;
       if (forkDescriptor.forkCommit) {
         forkValidation = verifyForkCommit({
@@ -359,7 +386,7 @@ runTool({
           challengerRouting,
           primaryAttestation,
           challengerAttestation,
-          ...forkDescriptor,
+          ...forkRetention,
           primaryDiffIdentity,
           challengerDiffIdentity,
         });
@@ -431,7 +458,7 @@ runTool({
           variedDimensions,
           challengeType,
           variedStage,
-          ...forkDescriptor,
+          ...forkRetention,
           primaryDiffIdentity,
           challengerDiffIdentity,
         });
@@ -495,7 +522,7 @@ runTool({
           challengerEvalScore: challengerEval.score,
           primaryRouting,
           challengerRouting,
-          ...forkDescriptor,
+          ...forkRetention,
           primaryDiffIdentity,
           challengerDiffIdentity,
         });
@@ -610,7 +637,7 @@ runTool({
           challengeType,
           variedStage,
           diffAvailability,
-          ...forkDescriptor,
+          ...forkRetention,
           primaryDiffIdentity,
           challengerDiffIdentity,
         });
@@ -653,7 +680,7 @@ runTool({
           variedStage,
           diffAvailability,
           unscoredSides,
-          ...forkDescriptor,
+          ...forkRetention,
           primaryDiffIdentity,
           challengerDiffIdentity,
         });
