@@ -549,6 +549,24 @@ export interface NativeAgentCodeSearchFamilyConfig extends NativeAgentAdvancedFa
 }
 
 /**
+ * Optional per-family bounds for the policy-bound AST transform family
+ * (HOK-3060). Absent fields fall back to `AST_TRANSFORM_LIMIT_DEFAULTS`. The
+ * index budgets mirror code_search because the transform reuses the same
+ * language index.
+ */
+export interface NativeAgentAstLimitsConfig {
+  maxFiles?: number;
+  maxBytes?: number;
+  maxSymbols?: number;
+  maxMatches?: number;
+  maxSummaryBytes?: number;
+}
+
+export interface NativeAgentAstFamilyConfig extends NativeAgentAdvancedFamilyConfig {
+  limits?: NativeAgentAstLimitsConfig;
+}
+
+/**
  * Screenshot capture limits for the screenshot family (HOK-3058).
  * All limits default to documented values when absent or invalid.
  */
@@ -585,7 +603,7 @@ export interface NativeAgentAdvancedConfig {
   screenshot?: NativeAgentScreenshotFamilyConfig;
   mcp?: NativeAgentAdvancedFamilyConfig;
   code_search?: NativeAgentCodeSearchFamilyConfig;
-  ast?: NativeAgentAdvancedFamilyConfig;
+  ast?: NativeAgentAstFamilyConfig;
   eval?: NativeAgentAdvancedFamilyConfig;
 }
 
@@ -2557,6 +2575,78 @@ export function getNativeCodeSearchConfig(repoDir?: string): ResolvedNativeCodeS
     maxBytes: clampLimit(rawLimits.maxBytes, CODE_SEARCH_LIMIT_DEFAULTS.maxBytes, CODE_SEARCH_LIMIT_MAX.maxBytes),
     maxSymbols: clampLimit(rawLimits.maxSymbols, CODE_SEARCH_LIMIT_DEFAULTS.maxSymbols, CODE_SEARCH_LIMIT_MAX.maxSymbols),
     maxResults: clampLimit(rawLimits.maxResults, CODE_SEARCH_LIMIT_DEFAULTS.maxResults, CODE_SEARCH_LIMIT_MAX.maxResults),
+  };
+
+  for (const [key, value] of Object.entries(rawLimits)) {
+    if (value === undefined) continue;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+      invalidReasons.push(`invalid_limit:${key}`);
+    }
+  }
+
+  const enabled = raw.enabled === true && invalidReasons.length === 0;
+
+  return {
+    enabled,
+    allowedPhases: raw.allowedPhases ?? [],
+    ...(raw.logicalIds ? { logicalIds: raw.logicalIds } : {}),
+    limits,
+    invalidReasons,
+  };
+}
+
+export interface ResolvedNativeAstConfig {
+  enabled: boolean;
+  allowedPhases: NativeAgentAllowedPhase[];
+  logicalIds?: string[];
+  limits: {
+    maxFiles: number;
+    maxBytes: number;
+    maxSymbols: number;
+    maxMatches: number;
+    maxSummaryBytes: number;
+  };
+  invalidReasons: string[];
+}
+
+export const AST_TRANSFORM_LIMIT_DEFAULTS = Object.freeze({
+  maxFiles: 2000,
+  maxBytes: 32 * 1024 * 1024,
+  maxSymbols: 20_000,
+  maxMatches: 500,
+  maxSummaryBytes: 4096,
+});
+
+const AST_TRANSFORM_LIMIT_MAX = Object.freeze({
+  maxFiles: 100_000,
+  maxBytes: 512 * 1024 * 1024,
+  maxSymbols: 1_000_000,
+  maxMatches: 5_000,
+  maxSummaryBytes: 65_536,
+});
+
+/**
+ * Resolve the ast-family configuration into a normalized, fail-closed shape.
+ * `enabled` is true only when the operator enabled the family AND every limit
+ * field is valid. `invalidReasons` lists fail-closed causes so preflight
+ * tooling can surface them. Bounds mirror `getNativeCodeSearchConfig` because
+ * the transform reuses the same language index.
+ */
+export function getNativeAstConfig(repoDir?: string): ResolvedNativeAstConfig {
+  const raw = getNativeAgentConfig(repoDir).advanced?.ast ?? {};
+  const invalidReasons: string[] = [];
+  const rawLimits = raw.limits ?? {};
+
+  const limits = {
+    maxFiles: clampLimit(rawLimits.maxFiles, AST_TRANSFORM_LIMIT_DEFAULTS.maxFiles, AST_TRANSFORM_LIMIT_MAX.maxFiles),
+    maxBytes: clampLimit(rawLimits.maxBytes, AST_TRANSFORM_LIMIT_DEFAULTS.maxBytes, AST_TRANSFORM_LIMIT_MAX.maxBytes),
+    maxSymbols: clampLimit(rawLimits.maxSymbols, AST_TRANSFORM_LIMIT_DEFAULTS.maxSymbols, AST_TRANSFORM_LIMIT_MAX.maxSymbols),
+    maxMatches: clampLimit(rawLimits.maxMatches, AST_TRANSFORM_LIMIT_DEFAULTS.maxMatches, AST_TRANSFORM_LIMIT_MAX.maxMatches),
+    maxSummaryBytes: clampLimit(
+      rawLimits.maxSummaryBytes,
+      AST_TRANSFORM_LIMIT_DEFAULTS.maxSummaryBytes,
+      AST_TRANSFORM_LIMIT_MAX.maxSummaryBytes,
+    ),
   };
 
   for (const [key, value] of Object.entries(rawLimits)) {

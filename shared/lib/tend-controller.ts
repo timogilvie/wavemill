@@ -14,7 +14,7 @@ import {
   writePrStateMarker,
   WM_LABELS,
 } from './pr-state-labels.ts';
-import { claimReadyHandoff } from './ready-tend-handoff.ts';
+import { claimReadyHandoff, rebindTendHandoff } from './ready-tend-handoff.ts';
 import { buildStaleMarkerFinding, type MarkerPayload, type MarkerValidation } from './transient-marker.ts';
 import { getIntegrationConfig, getIntegrationReadyPolicy } from './config.ts';
 import { readChallengeComparisons } from './challenge-comparison.ts';
@@ -860,6 +860,11 @@ export async function executeMerge(
           });
           pushedHeadSha = rebaseResult.headSha || undefined;
           if (rebaseResult.rebased) {
+            try {
+              await rebindPushedTendHead(candidate.number, candidate.featureDir, candidate.headSha, rebaseResult.headSha, options.repoDir, deps);
+            } catch (error) {
+              return block('handoff', outputFromError(error));
+            }
             await recordLaneProgressSafe(deps, candidate.number, 'rebase', options.repoDir);
             await recordLaneProgressSafe(deps, candidate.number, 'ci-restart', options.repoDir);
           }
@@ -1514,8 +1519,12 @@ async function reconcilePushMarker(
   }
   if (marker.rebasedHeadSha && originSha === marker.rebasedHeadSha) {
     // The rebased head is what origin has → the push landed deterministically.
-    // Clean scratch, return to ready. The head-keyed handoff forces a fresh
-    // ready pass at the new head before any future claim.
+    // Carry Tend's claim to the confirmed pushed head before returning to Ready.
+    try {
+      await rebindPushedTendHead(marker.prNumber, marker.featureDir, marker.prePushSha, originSha, repoDir, deps);
+    } catch (error) {
+      return recordPushUncertain(marker, repoDir, deps, `handoff rebind failed: ${errorMessage(error)}`);
+    }
     await cleanScratchWorktreeBestEffort(marker.prNumber, repoDir, deps);
     try {
       await retryTransient(() => deps.restoreReady(marker.prNumber), {
@@ -1616,6 +1625,11 @@ async function reconcileMergeMarker(
 
   if (marker.rebasedHeadSha && observedHead && observedHead === marker.rebasedHeadSha) {
     // PR still open at the same head we intended to merge — safe retry.
+    try {
+      await rebindPushedTendHead(marker.prNumber, marker.featureDir, marker.prePushSha, observedHead, repoDir, deps);
+    } catch (error) {
+      return recordPushUncertain(marker, repoDir, deps, `handoff rebind failed: ${errorMessage(error)}`);
+    }
     return await recoverSafePhaseMarker({ ...marker, phase: 'ready' }, repoDir, deps);
   }
 
@@ -1645,6 +1659,26 @@ async function listMergingPrs(repoDir: string, deps: MergeExecutionDeps): Promis
     },
     { label: 'gh pr list merging', sleep: deps.retrySleep },
   );
+}
+
+async function rebindPushedTendHead(
+  prNumber: number,
+  featureDir: string | undefined,
+  previousHeadSha: string | undefined,
+  pushedHeadSha: string,
+  repoDir: string,
+  deps: MergeExecutionDeps,
+): Promise<void> {
+  if (!featureDir) return; // Legacy Ready artifacts have no handoff.
+  if (!previousHeadSha || !pushedHeadSha) throw new Error('Tend handoff cannot be rebound without both head SHAs');
+  const liveHead = readPrMergeDiagnostics(prNumber, repoDir, deps.shellRunner).headRefOid;
+  if (liveHead !== pushedHeadSha) {
+    throw new Error(`Tend handoff rebind refused: PR #${prNumber} head does not match the pushed commit`);
+  }
+  const result = await rebindTendHandoff(featureDir, prNumber, previousHeadSha, pushedHeadSha);
+  if (result.outcome !== 'claimed' && result.outcome !== 'already-claimed') {
+    throw new Error(`Tend handoff rebind refused: PR #${prNumber} has no matching Tend claim`);
+  }
 }
 
 /**
@@ -2510,6 +2544,9 @@ async function attemptStrictBaseRecovery(args: {
       },
     });
     refreshedHead = refresh.headSha;
+    if (refresh.rebased) {
+      await rebindPushedTendHead(candidate.number, candidate.featureDir, rejectedHead, refreshedHead, args.repoDir, deps);
+    }
   } catch (error) {
     return {
       blockDetail: `${args.mergeErrorOutput}\n\n${classifierLine}\n`

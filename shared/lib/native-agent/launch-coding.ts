@@ -26,6 +26,11 @@ import type { SessionStreamConfig } from './loop.ts';
 import { createReadOnlyTools, READ_ONLY_PATH_FIELDS } from './tools/read-only.ts';
 import { CODE_SEARCH_PATH_FIELDS, createCodeSearchTools } from './tools/code-search.ts';
 import {
+  AST_TRANSFORM_PATH_FIELDS,
+  astTransformAfterToolCall,
+  createAstTransformTools,
+} from './tools/ast-transform.ts';
+import {
   createGitCommitTools,
   createGitTools,
   gitAfterToolCall,
@@ -54,7 +59,7 @@ import {
   formatMenuDenials,
 } from './tools/menu-resolver.ts';
 import { inferCertificationSnapshotForPhase } from './tools/certification-snapshot.ts';
-import { getNativeCodeSearchConfig, loadWavemillConfig } from '../config.ts';
+import { getNativeAstConfig, getNativeCodeSearchConfig, loadWavemillConfig } from '../config.ts';
 import { validateCodingArtifacts, type CodingArtifacts } from './coding-artifacts.ts';
 import {
   buildCompletionArtifactRetryGuidance,
@@ -797,6 +802,14 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
             : {}),
         })
       : [];
+    const astConfig = getNativeAstConfig(options.repoDir);
+    const astDescriptors = astConfig.enabled
+      ? createAstTransformTools({
+          config: astConfig,
+          worktreePath: options.wtDir,
+          phase: 'coding',
+        })
+      : [];
     const descriptors = [
       ...readOnlyDescriptors,
       ...createGitTools(options.wtDir),
@@ -804,6 +817,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       ...createCodingMutationTools(options.wtDir, { phase: 'coding' }),
       ...createGitCommitTools(options.wtDir, { tracker }),
       ...codeSearchDescriptors,
+      ...astDescriptors,
       ...(options.extraDescriptors ?? []),
     ];
     const registry = createToolRegistry(descriptors);
@@ -1010,8 +1024,14 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
         const codingMutationResult = await codingMutationAfterToolCall(toolContext);
         if (codingMutationResult?.isError) {
           recordMutationFailure(mutationFailureTracker, toolContext);
+          return codingMutationResult;
         }
-        return codingMutationResult;
+
+        const astResult = await astTransformAfterToolCall(toolContext);
+        if (astResult?.isError) {
+          recordMutationFailure(mutationFailureTracker, toolContext);
+        }
+        return astResult ?? codingMutationResult;
       },
       toolPolicy: {
         phase: 'coding',
@@ -1024,6 +1044,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
             ...gitMutationToolPolicyConfig.pathFieldsByTool,
             ...codingMutationPolicyConfig.pathFieldsByTool,
             ...(codeSearchConfig.enabled ? CODE_SEARCH_PATH_FIELDS : {}),
+            ...(astConfig.enabled ? AST_TRANSFORM_PATH_FIELDS : {}),
           },
         },
       },

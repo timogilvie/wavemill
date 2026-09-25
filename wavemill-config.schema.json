@@ -1698,7 +1698,7 @@
                         "screenshot": { "$ref": "#/definitions/nativeAgentAdvancedScreenshotFamily" },
                         "mcp": { "$ref": "#/definitions/nativeAgentAdvancedFamily" },
                         "code_search": { "$ref": "#/definitions/nativeAgentAdvancedCodeSearchFamily" },
-                        "ast": { "$ref": "#/definitions/nativeAgentAdvancedFamily" },
+                        "ast": { "$ref": "#/definitions/nativeAgentAdvancedAstFamily" },
                         "eval": { "$ref": "#/definitions/nativeAgentAdvancedFamily" }
                     },
                     "additionalProperties": false
@@ -3524,6 +3524,77 @@
                             "maximum": 200,
                             "default": 200,
                             "description": "Hard cap on the number of results a single query may return."
+                        }
+                    },
+                    "additionalProperties": false
+                }
+            },
+            "additionalProperties": false
+        },
+        "nativeAgentAdvancedAstFamily": {
+            "type": "object",
+            "description": "ast family opt-in (HOK-3060). Policy-bound, previewable structured source transforms applied only through the atomic NativePatch runtime. Coding-only; every mutation requires a prior digest-sealed preview. When `enabled` is true but any listed limit is non-positive or non-numeric, the family stays hidden (fail-closed).",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Master toggle for the ast transform family."
+                },
+                "allowedPhases": {
+                    "type": "array",
+                    "description": "Phases for which the family is eligible when enabled. Only coding is meaningful; other phases keep the family hidden even when listed.",
+                    "items": {
+                        "type": "string",
+                        "enum": ["task-expansion", "planning", "coding", "review"]
+                    },
+                    "default": []
+                },
+                "logicalIds": {
+                    "type": "array",
+                    "description": "Optional narrow allowlist of family-scoped logical ids (ast.transform_preview, ast.transform_apply). When present, only listed logical ids become eligible.",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                },
+                "limits": {
+                    "type": "object",
+                    "description": "Per-worktree transform bounds. Every field is optional; absent fields fall back to defaults.",
+                    "properties": {
+                        "maxFiles": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100000,
+                            "default": 2000,
+                            "description": "Maximum number of source files indexed per transform build."
+                        },
+                        "maxBytes": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 536870912,
+                            "default": 33554432,
+                            "description": "Maximum total bytes read across all indexed files per transform build."
+                        },
+                        "maxSymbols": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 1000000,
+                            "default": 20000,
+                            "description": "Maximum number of symbol records the index will hold before aborting the build."
+                        },
+                        "maxMatches": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 5000,
+                            "default": 500,
+                            "description": "Hard cap on the number of match records recorded in a preview (the full set still drives the patch)."
+                        },
+                        "maxSummaryBytes": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 65536,
+                            "default": 4096,
+                            "description": "Byte cap on the human-readable preview summary."
                         }
                     },
                     "additionalProperties": false

@@ -85,6 +85,7 @@ import {
   validateEvalRecord,
 } from './eval-validator.ts';
 import { redactText, redactVerificationTelemetry } from './text-redaction.ts';
+import { readForkIdentity } from './fork-identity.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Types
@@ -238,6 +239,12 @@ export function attachChallengeExecutionMetadata(
     record.challengeSide = input.side;
   }
   if (input?.intent) {
+    // The persistence projection drops fork fields, so carry the fork
+    // identity onto the record directly for compare-prs attribution.
+    const forkIdentity = readForkIdentity(input.intent.forkIdentity);
+    if (forkIdentity) {
+      record.forkIdentity = forkIdentity;
+    }
     const challengeStage = stageFromExplicitChallengeIntent(input.intent, input.side);
     const persistedIntent = projectChallengeIntentForPersistence(input.intent);
     if (persistedIntent) {

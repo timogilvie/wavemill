@@ -174,6 +174,37 @@ export async function claimReadyHandoff(featureDir: string, prNumber: number, he
   return { outcome, record };
 }
 
+/** Move Tend's existing claim to a head that Tend itself just pushed. */
+export async function rebindTendHandoff(
+  featureDir: string,
+  prNumber: number,
+  previousHeadSha: string,
+  pushedHeadSha: string,
+): Promise<HandoffOutcome> {
+  let outcome: HandoffOutcome['outcome'] = 'rejected';
+  const record = await mutateJsonState<ReadyTendHandoffRecord>(
+    readyTendHandoffPath(featureDir),
+    (current) => {
+      if (matches(current, prNumber, pushedHeadSha) && current.state === 'tend-claimed' && current.tendOwner === 'tend') {
+        outcome = 'already-claimed';
+        return current;
+      }
+      if (!matches(current, prNumber, previousHeadSha) || current.state !== 'tend-claimed' || current.tendOwner !== 'tend') {
+        return current;
+      }
+      outcome = 'claimed';
+      return {
+        ...newRecord(prNumber, pushedHeadSha, 'tend-claimed'),
+        readyPublishedAt: current.readyPublishedAt,
+        tendOwner: 'tend',
+        tendClaimedAt: current.tendClaimedAt,
+      };
+    },
+    { createIfMissing: true, initial: newRecord(prNumber, previousHeadSha) },
+  );
+  return { outcome, record };
+}
+
 export function isMatchingTendClaim(record: ReadyTendHandoffRecord | null, prNumber: number, headSha: string): boolean {
   return record !== null && matches(record, prNumber, headSha)
     && record.state === 'tend-claimed' && record.tendOwner === 'tend';
