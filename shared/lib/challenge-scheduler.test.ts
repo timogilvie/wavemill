@@ -172,7 +172,7 @@ test('recommends challenge when confidence is below threshold', () => {
 
     assert.equal(result.shouldChallenge, true);
     assert.equal(result.reason, 'new-model');
-    assert.equal(result.defaultModel, 'claude-fable-5');
+    assert.equal(result.defaultModel, 'claude-opus-5-5');
     assert.ok(result.challengerModel);
     assert.notEqual(result.challengerModel, result.defaultModel);
   } finally {
@@ -272,8 +272,8 @@ test('recommends new model challenge when a model has fewer records than thresho
 
     assert.equal(result.shouldChallenge, true);
     assert.equal(result.reason, 'new-model');
-    assert.equal(result.defaultModel, 'claude-fable-5');
-    assert.equal(result.challengerModel, 'claude-haiku-4-5');
+    assert.equal(result.defaultModel, 'claude-opus-5-5');
+    assert.equal(result.challengerModel, 'claude-fable-5');
   } finally {
     cleanup();
   }

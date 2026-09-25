@@ -533,12 +533,128 @@ export interface NativeAgentBrowserFamilyConfig extends NativeAgentAdvancedFamil
   session?: NativeAgentBrowserSessionConfig;
 }
 
+/**
+ * Optional per-family limits for the read-only code_search substrate
+ * (HOK-3059). Absent fields fall back to `CODE_SEARCH_LIMIT_DEFAULTS`.
+ */
+export interface NativeAgentCodeSearchLimitsConfig {
+  maxFiles?: number;
+  maxBytes?: number;
+  maxSymbols?: number;
+  maxResults?: number;
+}
+
+export interface NativeAgentCodeSearchFamilyConfig extends NativeAgentAdvancedFamilyConfig {
+  limits?: NativeAgentCodeSearchLimitsConfig;
+}
+
+/**
+ * Optional per-family bounds for the policy-bound AST transform family
+ * (HOK-3060). Absent fields fall back to `AST_TRANSFORM_LIMIT_DEFAULTS`. The
+ * index budgets mirror code_search because the transform reuses the same
+ * language index.
+ */
+export interface NativeAgentAstLimitsConfig {
+  maxFiles?: number;
+  maxBytes?: number;
+  maxSymbols?: number;
+  maxMatches?: number;
+  maxSummaryBytes?: number;
+}
+
+export interface NativeAgentAstFamilyConfig extends NativeAgentAdvancedFamilyConfig {
+  limits?: NativeAgentAstLimitsConfig;
+}
+
+/**
+ * Screenshot capture limits for the screenshot family (HOK-3058).
+ * All limits default to documented values when absent or invalid.
+ */
+export interface NativeAgentScreenshotLimitsConfig {
+  maxImageBytes?: number;
+  maxWidth?: number;
+  maxHeight?: number;
+  oversizePolicy?: 'reject' | 'downscale';
+  maxComparePixels?: number;
+  diffThreshold?: number;
+}
+
+export interface NativeAgentScreenshotFamilyConfig extends NativeAgentAdvancedFamilyConfig {
+  limits?: NativeAgentScreenshotLimitsConfig;
+}
+
+export interface ResolvedNativeScreenshotConfig {
+  enabled: boolean;
+  allowedPhases: NativeAgentAllowedPhase[];
+  logicalIds?: string[];
+  limits: {
+    maxImageBytes: number;
+    maxWidth: number;
+    maxHeight: number;
+    oversizePolicy: 'reject' | 'downscale';
+    maxComparePixels: number;
+    diffThreshold: number;
+  };
+  invalidReasons: string[];
+}
+
+/**
+ * Timeout and output-cap defaults applied to every configured MCP server
+ * unless the server declaration overrides the field. Every value has a
+ * positive lower bound; `maxOutputBytes` must remain ≥ 4 KiB so redacted
+ * error messages always fit inside the cap.
+ */
+export interface NativeAgentMcpFamilyDefaults {
+  startupTimeoutMs?: number;
+  callTimeoutMs?: number;
+  shutdownTimeoutMs?: number;
+  maxOutputBytes?: number;
+  /**
+   * Number of consecutive failed calls at which the client stops the server
+   * (fail-closed). Zero disables the trip. Defaults to 3.
+   */
+  failureThreshold?: number;
+}
+
+export interface NativeAgentMcpServerConfig {
+  /** Wavemill-side provider proxy identifier (e.g. 'pi-mcp-proxy'). */
+  providerProxy: string;
+  /** Executable to spawn for the MCP server. */
+  command: string;
+  /** Argument vector passed to the server process. Empty is legal. */
+  args: string[];
+  /**
+   * Process-env variables that survive the child spawn allowlist. Empty means
+   * the child receives no env vars beyond the minimal bootstrap set.
+   */
+  envAllowlist: string[];
+  /** Non-empty list of logical tool names exported by this server. */
+  tools: string[];
+  /** Whether this server exposes mutating tools. Defaults to `read-only`. */
+  class?: 'read-only' | 'mutation';
+  /** Per-server override of the family startup timeout. */
+  startupTimeoutMs?: number;
+  /** Per-server override of the family call timeout. */
+  callTimeoutMs?: number;
+  /** Per-server override of the family shutdown timeout. */
+  shutdownTimeoutMs?: number;
+  /** Per-server override of the family output cap. */
+  maxOutputBytes?: number;
+  /** Per-server override of the failure threshold. */
+  failureThreshold?: number;
+}
+
+export interface NativeAgentMcpFamilyConfig extends NativeAgentAdvancedFamilyConfig {
+  defaults?: NativeAgentMcpFamilyDefaults;
+  servers?: Record<string, NativeAgentMcpServerConfig>;
+}
+
 export interface NativeAgentAdvancedConfig {
   browser?: NativeAgentBrowserFamilyConfig;
-  screenshot?: NativeAgentAdvancedFamilyConfig;
-  mcp?: NativeAgentAdvancedFamilyConfig;
-  code_search?: NativeAgentAdvancedFamilyConfig;
-  ast?: NativeAgentAdvancedFamilyConfig;
+  screenshot?: NativeAgentScreenshotFamilyConfig;
+  mcp?: NativeAgentMcpFamilyConfig;
+  code_search?: NativeAgentCodeSearchFamilyConfig;
+  ast?: NativeAgentAstFamilyConfig;
   eval?: NativeAgentAdvancedFamilyConfig;
 }
 
@@ -2383,6 +2499,15 @@ const BROWSER_SESSION_DEFAULTS = Object.freeze({
   maxRequestSummaries: 200,
 });
 
+const SCREENSHOT_LIMIT_DEFAULTS = Object.freeze({
+  maxImageBytes: 2 * 1024 * 1024, // 2 MiB
+  maxWidth: 4096,
+  maxHeight: 4096,
+  oversizePolicy: 'reject' as const,
+  maxComparePixels: 16_777_216, // 4096²
+  diffThreshold: 0.1,
+});
+
 /**
  * Canonicalize an origin string down to `scheme://host[:port]`. Returns null
  * for anything malformed, credential-bearing, or non-http(s).
@@ -2443,6 +2568,215 @@ export function getNativeBrowserConfig(repoDir?: string): ResolvedNativeBrowserC
     allowedPhases: raw.allowedPhases ?? [],
     ...(raw.logicalIds ? { logicalIds: raw.logicalIds } : {}),
     session: resolved,
+    invalidReasons,
+  };
+}
+
+export interface ResolvedNativeCodeSearchConfig {
+  enabled: boolean;
+  allowedPhases: NativeAgentAllowedPhase[];
+  logicalIds?: string[];
+  limits: {
+    maxFiles: number;
+    maxBytes: number;
+    maxSymbols: number;
+    maxResults: number;
+  };
+  invalidReasons: string[];
+}
+
+export const CODE_SEARCH_LIMIT_DEFAULTS = Object.freeze({
+  maxFiles: 2000,
+  maxBytes: 32 * 1024 * 1024,
+  maxSymbols: 20_000,
+  maxResults: 200,
+});
+
+const CODE_SEARCH_LIMIT_MAX = Object.freeze({
+  maxFiles: 100_000,
+  maxBytes: 512 * 1024 * 1024,
+  maxSymbols: 1_000_000,
+  maxResults: 200,
+});
+
+function clampLimit(
+  candidate: number | undefined,
+  fallback: number,
+  ceiling: number,
+): number {
+  if (candidate === undefined) return fallback;
+  const n = Math.floor(candidate);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(n, ceiling);
+}
+
+/**
+ * Resolve the code_search-family configuration into a normalized, fail-closed
+ * shape. `enabled` in the returned value is true only when the operator
+ * enabled the family AND every limit field is valid. `invalidReasons` lists
+ * fail-closed causes so preflight tooling can surface them.
+ */
+export function getNativeCodeSearchConfig(repoDir?: string): ResolvedNativeCodeSearchConfig {
+  const raw = getNativeAgentConfig(repoDir).advanced?.code_search ?? {};
+  const invalidReasons: string[] = [];
+  const rawLimits = raw.limits ?? {};
+
+  const limits = {
+    maxFiles: clampLimit(rawLimits.maxFiles, CODE_SEARCH_LIMIT_DEFAULTS.maxFiles, CODE_SEARCH_LIMIT_MAX.maxFiles),
+    maxBytes: clampLimit(rawLimits.maxBytes, CODE_SEARCH_LIMIT_DEFAULTS.maxBytes, CODE_SEARCH_LIMIT_MAX.maxBytes),
+    maxSymbols: clampLimit(rawLimits.maxSymbols, CODE_SEARCH_LIMIT_DEFAULTS.maxSymbols, CODE_SEARCH_LIMIT_MAX.maxSymbols),
+    maxResults: clampLimit(rawLimits.maxResults, CODE_SEARCH_LIMIT_DEFAULTS.maxResults, CODE_SEARCH_LIMIT_MAX.maxResults),
+  };
+
+  for (const [key, value] of Object.entries(rawLimits)) {
+    if (value === undefined) continue;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+      invalidReasons.push(`invalid_limit:${key}`);
+    }
+  }
+
+  const enabled = raw.enabled === true && invalidReasons.length === 0;
+
+  return {
+    enabled,
+    allowedPhases: raw.allowedPhases ?? [],
+    ...(raw.logicalIds ? { logicalIds: raw.logicalIds } : {}),
+    limits,
+    invalidReasons,
+  };
+}
+
+export interface ResolvedNativeAstConfig {
+  enabled: boolean;
+  allowedPhases: NativeAgentAllowedPhase[];
+  logicalIds?: string[];
+  limits: {
+    maxFiles: number;
+    maxBytes: number;
+    maxSymbols: number;
+    maxMatches: number;
+    maxSummaryBytes: number;
+  };
+  invalidReasons: string[];
+}
+
+export const AST_TRANSFORM_LIMIT_DEFAULTS = Object.freeze({
+  maxFiles: 2000,
+  maxBytes: 32 * 1024 * 1024,
+  maxSymbols: 20_000,
+  maxMatches: 500,
+  maxSummaryBytes: 4096,
+});
+
+const AST_TRANSFORM_LIMIT_MAX = Object.freeze({
+  maxFiles: 100_000,
+  maxBytes: 512 * 1024 * 1024,
+  maxSymbols: 1_000_000,
+  maxMatches: 5_000,
+  maxSummaryBytes: 65_536,
+});
+
+/**
+ * Resolve the ast-family configuration into a normalized, fail-closed shape.
+ * `enabled` is true only when the operator enabled the family AND every limit
+ * field is valid. `invalidReasons` lists fail-closed causes so preflight
+ * tooling can surface them. Bounds mirror `getNativeCodeSearchConfig` because
+ * the transform reuses the same language index.
+ */
+export function getNativeAstConfig(repoDir?: string): ResolvedNativeAstConfig {
+  const raw = getNativeAgentConfig(repoDir).advanced?.ast ?? {};
+  const invalidReasons: string[] = [];
+  const rawLimits = raw.limits ?? {};
+
+  const limits = {
+    maxFiles: clampLimit(rawLimits.maxFiles, AST_TRANSFORM_LIMIT_DEFAULTS.maxFiles, AST_TRANSFORM_LIMIT_MAX.maxFiles),
+    maxBytes: clampLimit(rawLimits.maxBytes, AST_TRANSFORM_LIMIT_DEFAULTS.maxBytes, AST_TRANSFORM_LIMIT_MAX.maxBytes),
+    maxSymbols: clampLimit(rawLimits.maxSymbols, AST_TRANSFORM_LIMIT_DEFAULTS.maxSymbols, AST_TRANSFORM_LIMIT_MAX.maxSymbols),
+    maxMatches: clampLimit(rawLimits.maxMatches, AST_TRANSFORM_LIMIT_DEFAULTS.maxMatches, AST_TRANSFORM_LIMIT_MAX.maxMatches),
+    maxSummaryBytes: clampLimit(
+      rawLimits.maxSummaryBytes,
+      AST_TRANSFORM_LIMIT_DEFAULTS.maxSummaryBytes,
+      AST_TRANSFORM_LIMIT_MAX.maxSummaryBytes,
+    ),
+  };
+
+  for (const [key, value] of Object.entries(rawLimits)) {
+    if (value === undefined) continue;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+      invalidReasons.push(`invalid_limit:${key}`);
+    }
+  }
+
+  const enabled = raw.enabled === true && invalidReasons.length === 0;
+
+  return {
+    enabled,
+    allowedPhases: raw.allowedPhases ?? [],
+    ...(raw.logicalIds ? { logicalIds: raw.logicalIds } : {}),
+    limits,
+    invalidReasons,
+  };
+}
+
+/**
+ * Resolve the screenshot-family configuration into a normalized, fail-closed
+ * shape. `enabled` in the returned value is true only when the operator
+ * enabled the family AND all limit fields are valid. `invalidReasons` lists
+ * every fail-closed cause so a preflight can surface them.
+ */
+export function getNativeScreenshotConfig(repoDir?: string): ResolvedNativeScreenshotConfig {
+  const raw = getNativeAgentConfig(repoDir).advanced?.screenshot ?? {};
+  const limits = raw.limits ?? {};
+  const invalidReasons: string[] = [];
+
+  // Validate numeric limits are within schema bounds (if provided)
+  if (limits.maxImageBytes !== undefined) {
+    if (typeof limits.maxImageBytes !== 'number' || limits.maxImageBytes < 1024 || limits.maxImageBytes > 16 * 1024 * 1024) {
+      invalidReasons.push('invalid_maxImageBytes');
+    }
+  }
+  if (limits.maxWidth !== undefined) {
+    if (typeof limits.maxWidth !== 'number' || limits.maxWidth < 16 || limits.maxWidth > 16384) {
+      invalidReasons.push('invalid_maxWidth');
+    }
+  }
+  if (limits.maxHeight !== undefined) {
+    if (typeof limits.maxHeight !== 'number' || limits.maxHeight < 16 || limits.maxHeight > 16384) {
+      invalidReasons.push('invalid_maxHeight');
+    }
+  }
+  if (limits.maxComparePixels !== undefined) {
+    if (typeof limits.maxComparePixels !== 'number' || limits.maxComparePixels < 1 || limits.maxComparePixels > 268435456) {
+      invalidReasons.push('invalid_maxComparePixels');
+    }
+  }
+  if (limits.diffThreshold !== undefined) {
+    if (typeof limits.diffThreshold !== 'number' || limits.diffThreshold < 0 || limits.diffThreshold > 1) {
+      invalidReasons.push('invalid_diffThreshold');
+    }
+  }
+  if (limits.oversizePolicy !== undefined) {
+    if (limits.oversizePolicy !== 'reject' && limits.oversizePolicy !== 'downscale') {
+      invalidReasons.push('invalid_oversizePolicy');
+    }
+  }
+
+  const resolved = {
+    maxImageBytes: limits.maxImageBytes ?? SCREENSHOT_LIMIT_DEFAULTS.maxImageBytes,
+    maxWidth: limits.maxWidth ?? SCREENSHOT_LIMIT_DEFAULTS.maxWidth,
+    maxHeight: limits.maxHeight ?? SCREENSHOT_LIMIT_DEFAULTS.maxHeight,
+    oversizePolicy: (limits.oversizePolicy ?? SCREENSHOT_LIMIT_DEFAULTS.oversizePolicy) as 'reject' | 'downscale',
+    maxComparePixels: limits.maxComparePixels ?? SCREENSHOT_LIMIT_DEFAULTS.maxComparePixels,
+    diffThreshold: limits.diffThreshold ?? SCREENSHOT_LIMIT_DEFAULTS.diffThreshold,
+  };
+
+  const enabled = raw.enabled === true && invalidReasons.length === 0;
+
+  return {
+    enabled,
+    allowedPhases: raw.allowedPhases ?? [],
+    ...(raw.logicalIds ? { logicalIds: raw.logicalIds } : {}),
+    limits: resolved,
     invalidReasons,
   };
 }

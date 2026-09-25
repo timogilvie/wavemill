@@ -19,6 +19,7 @@ import { BUDGET_MISSING } from './eval-validator.ts';
 import type {
   ChallengeStageEval,
   EvalChallengeRouteContext,
+  EvalDecisionSource,
   EvalExecutedPlanning,
   PlanningExecutionOutcome,
   EvalRouteArtifact,
@@ -28,6 +29,7 @@ import type {
   EvalRecord,
   EligibilityErrorCode,
   PlanCritique,
+  ReplayNonFidelityReason,
   RubricEval,
   TaskContext,
   RepoContext,
@@ -83,6 +85,7 @@ import {
   validateEvalRecord,
 } from './eval-validator.ts';
 import { redactText, redactVerificationTelemetry } from './text-redaction.ts';
+import { readForkIdentity } from './fork-identity.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Types
@@ -236,6 +239,12 @@ export function attachChallengeExecutionMetadata(
     record.challengeSide = input.side;
   }
   if (input?.intent) {
+    // The persistence projection drops fork fields, so carry the fork
+    // identity onto the record directly for compare-prs attribution.
+    const forkIdentity = readForkIdentity(input.intent.forkIdentity);
+    if (forkIdentity) {
+      record.forkIdentity = forkIdentity;
+    }
     const challengeStage = stageFromExplicitChallengeIntent(input.intent, input.side);
     const persistedIntent = projectChallengeIntentForPersistence(input.intent);
     if (persistedIntent) {
@@ -307,6 +316,55 @@ function finiteNonNegative(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0
     ? value
     : 0;
+}
+
+/**
+ * HOK-2081: Attach counterfactual/replay lineage to an eval record.
+ *
+ * All inputs are optional; when a field is absent, undefined, or empty the
+ * corresponding record field is left untouched. This mirrors the null-safe
+ * pattern of every other `attach*` helper here so callers can pass a partial
+ * lineage without preflight checks.
+ *
+ * The record is mutated in place and returned as `void` for consistency with
+ * the rest of this module.
+ */
+export function attachCounterfactualLineage(
+  record: EvalRecord,
+  input?: {
+    decisionSource?: EvalDecisionSource | null;
+    sourceDecisionId?: string | null;
+    replayFidelity?: number | null;
+    replayNonFidelityReasons?: ReplayNonFidelityReason[] | null;
+    policySource?: string | null;
+  } | null,
+): void {
+  if (!input) return;
+
+  if (input.decisionSource === 'live' || input.decisionSource === 'counterfactual') {
+    record.decision_source = input.decisionSource;
+  }
+
+  if (typeof input.sourceDecisionId === 'string' && input.sourceDecisionId.trim()) {
+    record.source_decision_id = input.sourceDecisionId.trim();
+  }
+
+  if (
+    typeof input.replayFidelity === 'number'
+    && Number.isFinite(input.replayFidelity)
+    && input.replayFidelity >= 0
+    && input.replayFidelity <= 1
+  ) {
+    record.replay_fidelity = input.replayFidelity;
+  }
+
+  if (Array.isArray(input.replayNonFidelityReasons) && input.replayNonFidelityReasons.length > 0) {
+    record.replay_non_fidelity_reasons = [...input.replayNonFidelityReasons];
+  }
+
+  if (typeof input.policySource === 'string' && input.policySource.trim()) {
+    record.policy_source = input.policySource.trim();
+  }
 }
 
 export function attachPromptSizeDiagnostic(

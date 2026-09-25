@@ -163,6 +163,11 @@ describe('workflow certification scenarios', () => {
     'workflow.cleanup.tracker-roundtrip-and-summary-event',
     'workflow.phase.workflow-persistence-roundtrip',
     'workflow.phase.native-openrouter-launch-matrix',
+    'mcp.tools.success',
+    'mcp.tools.denial',
+    'mcp.tools.timeout',
+    'mcp.transcript.redaction',
+    'mcp.cleanup.lifecycle',
   ];
 
   for (const id of workflowScenarioIds) {

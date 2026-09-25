@@ -173,12 +173,12 @@ echo "=== launch-site deferral hooks ==="
 # The monitor's launch_task must defer challenger creation on review-stage,
 # and the pre-fork /tmp packet fan-out must be gated on defer_challenger.
 MONITOR_LAUNCH_BLOCK=$(awk '
-  /HOK-2811: Review-stage challenges defer the challenger/ { capture=1 }
+  /HOK-2811 \/ HOK-3086: review- and implementation-stage challenges defer the/ { capture=1 }
   capture { print }
   /should_launch_challenger="false"/ && capture { exit }
 ' "$MONITOR_SCRIPT_FILE")
 check_contains "monitor guards packet mirror on defer_challenger" "$MONITOR_LAUNCH_BLOCK" 'if [[ "$defer_challenger" != "true" ]]; then'
-check_contains "monitor sets defer_challenger for review stage" "$MONITOR_LAUNCH_BLOCK" 'if [[ "$challenge_stage" == "review" ]]; then'
+check_contains "monitor sets defer_challenger for fork stages (review, implementation)" "$MONITOR_LAUNCH_BLOCK" 'if challenge_stage_defers_to_fork "$challenge_stage"; then'
 check_contains "monitor skips recursion by clearing should_launch_challenger" "$MONITOR_LAUNCH_BLOCK" 'should_launch_challenger="false"'
 
 MONITOR_PENDING_BLOCK=$(awk '
@@ -189,9 +189,9 @@ check_contains "monitor calls challenge_arms_record_pending on defer" "$MONITOR_
 # The mill startup Phase 5 must skip challenger from FINAL_LAUNCH_ARGS and
 # record a pending arm.
 MILL_BLOCK=$(awk '
-  /HOK-2811: Review-stage challenges defer the challenger to a fork trigger/,/log "warn" "  \$ISSUE: failed to record pending challenger arm/
+  /HOK-2811 \/ HOK-3086: review- and implementation-stage challenges defer the/,/log "warn" "  \$ISSUE: failed to record pending challenger arm/
 ' "$MILL_SCRIPT")
-check_contains "mill sets defer_challenger for review stage" "$MILL_BLOCK" 'if [[ "$challenge_stage" == "review" ]]; then'
+check_contains "mill sets defer_challenger for fork stages (review, implementation)" "$MILL_BLOCK" 'if challenge_stage_defers_to_fork "$challenge_stage"; then'
 check_contains "mill skips FINAL_LAUNCH_ARGS challenger entry when deferring" "$MILL_BLOCK" 'if [[ "$defer_challenger" != "true" ]]; then'
 check_contains "mill records pending arm on defer" "$MILL_BLOCK" 'challenge_arms_record_pending "$ISSUE"'
 

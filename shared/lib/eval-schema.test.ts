@@ -786,7 +786,7 @@ function validPromptSizeDiagnostic() {
 }
 
 test('SCHEMA_VERSION is bumped for eval schema updates', () => {
-  assert.equal(SCHEMA_VERSION, '1.50.0');
+  assert.equal(SCHEMA_VERSION, '1.51.0');
 });
 
 function validReviewIdentitySet() {
@@ -2471,8 +2471,8 @@ test('Wavemill router fields validate and schema stays in parity', () => {
   assert.equal(properties.wavemill_router_scoring?.$ref, '#/$defs/WavemillRouterScoringMetadata');
 });
 
-test('Schema version constant is 1.50.0', () => {
-  assert.equal(SCHEMA_VERSION, '1.50.0');
+test('Schema version constant is 1.51.0', () => {
+  assert.equal(SCHEMA_VERSION, '1.51.0');
 });
 
 test('Record with an unknown_attribution intervention validates (HOK-2894)', () => {
@@ -3015,6 +3015,67 @@ test('Malformed subagent_model_economics_policy is rejected', () => {
     },
   } as unknown as Record<string, unknown>;
 
+  assert.equal(validateAgainstSchema(record).valid, false);
+});
+
+// ────────────────────────────────────────────────────────────────
+// HOK-2081: Counterfactual/replay lineage fields
+// ────────────────────────────────────────────────────────────────
+
+test('SCHEMA_VERSION bumped to 1.51.0 for HOK-2081 additive fields', () => {
+  assert.equal(SCHEMA_VERSION, '1.51.0');
+});
+
+test('Legacy record without HOK-2081 fields still validates', () => {
+  const record = {
+    ...scenarios[0].record,
+    schemaVersion: SCHEMA_VERSION,
+  };
+  const result = validateAgainstSchema(record);
+  assert.equal(result.valid, true, `Legacy record failed to validate: ${result.errors.join('; ')}`);
+});
+
+test('Counterfactual record with all HOK-2081 fields validates', () => {
+  const record = {
+    ...scenarios[0].record,
+    schemaVersion: SCHEMA_VERSION,
+    decision_source: 'counterfactual',
+    source_decision_id: 'baseline-abc-123',
+    replay_fidelity: 0.75,
+    replay_non_fidelity_reasons: ['WORKING_TREE_MISMATCH', 'ENV_MISMATCH'],
+    policy_source: 'enumerate-all:tool-B',
+  };
+  const result = validateAgainstSchema(record);
+  assert.equal(result.valid, true, `Counterfactual record failed to validate: ${result.errors.join('; ')}`);
+});
+
+test('Partial counterfactual metadata (only decision_source) validates', () => {
+  const record = {
+    ...scenarios[0].record,
+    schemaVersion: SCHEMA_VERSION,
+    decision_source: 'live',
+  };
+  assert.equal(validateAgainstSchema(record).valid, true);
+});
+
+test('Invalid decision_source value fails validation', () => {
+  const record = {
+    ...scenarios[0].record,
+    schemaVersion: SCHEMA_VERSION,
+    decision_source: 'other-value',
+  };
+  const result = validateAgainstSchema(record);
+  assert.equal(result.valid, false, 'Expected validation to reject unknown decision_source');
+});
+
+test('replay_fidelity out of range fails validation', () => {
+  const record = {
+    ...scenarios[0].record,
+    schemaVersion: SCHEMA_VERSION,
+    decision_source: 'counterfactual',
+    source_decision_id: 'src-1',
+    replay_fidelity: 1.5,
+  };
   assert.equal(validateAgainstSchema(record).valid, false);
 });
 

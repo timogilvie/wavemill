@@ -136,6 +136,8 @@ export function frontierSiblingConfig() {
 export function restoredFrontierQuotaState(status: QuotaStatus): Record<string, QuotaStatus> {
   return {
     'claude-fable-5': status,
+    'claude-opus-5-5': status,
+    'gpt-6-sol': status,
     'deepseek-r1': status,
     'gemini-2.5-pro': status,
     'qwen-3-235b': status,

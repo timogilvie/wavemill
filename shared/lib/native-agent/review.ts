@@ -32,6 +32,8 @@ import {
   type BrowserToolsCleanupHandle,
 } from './tools/browser.ts';
 import { createReviewScoringTools } from './tools/review-scoring.ts';
+import { CODE_SEARCH_PATH_FIELDS, createCodeSearchTools } from './tools/code-search.ts';
+import { createScreenshotTools } from './tools/screenshot.ts';
 import { createToolRegistry } from './tools/registry.ts';
 import type { ToolDescriptor } from './tools/types.ts';
 import {
@@ -39,7 +41,12 @@ import {
   formatMenuDenials,
 } from './tools/menu-resolver.ts';
 import { inferCertificationSnapshotForPhase } from './tools/certification-snapshot.ts';
-import { loadWavemillConfig, getNativeBrowserConfig, type WavemillConfig } from '../config.ts';
+import {
+  getNativeBrowserConfig,
+  getNativeCodeSearchConfig,
+  loadWavemillConfig,
+  type WavemillConfig,
+} from '../config.ts';
 import { renderNativePhasePrompt, type NativePhasePromptOptions } from './prompts.ts';
 import type { ReviewContext } from '../review-context-gatherer.ts';
 import { logPromptUsage } from '../prompt-registry.ts';
@@ -196,6 +203,7 @@ function buildReviewToolRegistry(
   options: {
     browserConfig?: ReturnType<typeof getNativeBrowserConfig> | null;
     browserAdapterFactory?: Parameters<typeof createBrowserTools>[0]['adapterFactory'];
+    repoDir?: string;
   } = {},
 ) {
   const browserBundle = createBrowserTools({
@@ -208,10 +216,26 @@ function buildReviewToolRegistry(
         );
       }),
   });
+  const readOnlyDescriptors = createReadOnlyTools(worktreePath);
+  const searchTextDescriptor = readOnlyDescriptors.find(
+    (d) => d.metadata.name === 'search_text',
+  );
+  const codeSearchConfig = getNativeCodeSearchConfig(options.repoDir);
+  const codeSearchDescriptors = codeSearchConfig.enabled
+    ? createCodeSearchTools({
+        config: codeSearchConfig,
+        worktreePath,
+        ...(searchTextDescriptor
+          ? { searchTextExecutor: searchTextDescriptor.execute as Parameters<typeof createCodeSearchTools>[0]['searchTextExecutor'] }
+          : {}),
+      })
+    : [];
   const descriptors: ToolDescriptor[] = [
-    ...createReadOnlyTools(worktreePath),
+    ...readOnlyDescriptors,
     ...createGitTools(worktreePath),
     ...browserBundle.descriptors,
+    ...codeSearchDescriptors,
+    ...createScreenshotTools(browserBundle.getSession, worktreePath).descriptors,
   ];
   // Conditional advanced-family inclusion (HOK-3061 trap #2): only advertise
   // the eval-scoring descriptors in the prompt catalog when the operator has
@@ -632,6 +656,7 @@ export async function runNativeReview(
     // driver is available, the descriptor factory returns an empty list, so
     // the factory here is only invoked when browser tools were built.
     browserAdapterFactory: nativeReviewDeps.browserAdapterFactory,
+    repoDir,
   });
   const menuLaunchProvider = createLaunchMenuProvider({
     phase: 'review',
@@ -827,6 +852,7 @@ export async function runNativeReview(
             ...READ_ONLY_PATH_FIELDS,
             ...gitToolPolicyConfig.pathFieldsByTool,
             ...BROWSER_PATH_FIELDS,
+            ...(getNativeCodeSearchConfig(options.repoDir).enabled ? CODE_SEARCH_PATH_FIELDS : {}),
           },
         },
       },

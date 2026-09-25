@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
+import { computeMcpArgumentsDigest } from './tools/mcp.ts';
 
 import {
   TranscriptWriter,
@@ -163,6 +164,32 @@ describe('deriveTranscriptEvents – event family derivation', () => {
     assert.equal(ended.length, 2);
     assert.equal(ended[0].turnIndex, 0);
     assert.equal(ended[1].turnIndex, 1);
+  });
+
+  it('persists MCP tool-call arguments only as a digest, never raw (HOK-3056)', () => {
+    const msg = {
+      role: 'assistant' as const,
+      content: [
+        { type: 'toolCall' as const, id: 'tc-mcp', name: 'mcp__mock__echo', arguments: { arguments: { customer: 'acme-secret-id' } } },
+        { type: 'toolCall' as const, id: 'tc-read', name: 'read_file', arguments: { path: 'notes.md' } },
+      ],
+      api: 'hokusai-mock',
+      provider: 'hokusai',
+      model: 'hokusai-mini',
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: 'toolUse' as const,
+      timestamp: FIXED_TIME,
+    };
+    const [ev] = deriveTranscriptEvents([{ type: 'message_end', message: msg }], BASE_OPTS) as TranscriptAssistantMessage[];
+    const digest = computeMcpArgumentsDigest({ customer: 'acme-secret-id' });
+    for (const content of [ev.rawContent, ev.replayContent]) {
+      const mcpCall = content[0];
+      assert.equal(mcpCall.type, 'tool_call');
+      assert.deepEqual(mcpCall.type === 'tool_call' && mcpCall.arguments, { argumentsDigest: digest, redacted: 'mcp-arguments' });
+      const readCall = content[1];
+      assert.deepEqual(readCall.type === 'tool_call' && readCall.arguments, { path: 'notes.md' });
+    }
+    assert.ok(!JSON.stringify(ev).includes('acme-secret-id'), 'raw MCP argument value must not be persisted');
   });
 
   it('message_end for assistant emits assistant_message with rawContent and replayContent', () => {

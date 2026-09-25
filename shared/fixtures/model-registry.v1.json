@@ -46,6 +46,61 @@
       }
     },
     {
+      "id": "claude-opus-5-5",
+      "capabilities": {
+        "vendor": "anthropic",
+        "class": "frontier",
+        "strengths": [
+          "long-horizon reasoning",
+          "code review",
+          "architecture",
+          "agentic coding"
+        ],
+        "weaknesses": [
+          "higher cost",
+          "slower"
+        ],
+        "releasedAt": "2026-09-15",
+        "qualityScores": {
+          "routing": 62,
+          "planning": 97,
+          "coding": 88,
+          "review": 96,
+          "classify": 62
+        },
+        "pricing": {
+          "inputCostPerMTok": 4,
+          "outputCostPerMTok": 20,
+          "cacheWriteCostPerMTok": 5,
+          "cacheReadCostPerMTok": 0.2
+        },
+        "contextWindowTokens": 1000000,
+        "toolSupport": "full",
+        "multimodal": {
+          "text": true,
+          "image": true
+        },
+        "latencyTier": "slow",
+        "reasoningTier": "advanced",
+        "costPerMillionInputTokensUsd": 4,
+        "costPerMillionOutputTokensUsd": 20,
+        "agent": "claude",
+        "identity": {
+          "status": "verified",
+          "revision": 1,
+          "fingerprint": "19b3b8d3e1d9a8cead667f5b252116bbf7f3efcde20f10de83aec89c3fc903e6",
+          "displayName": "claude-opus-5-5",
+          "family": "claude",
+          "evidencePolicy": "eligible",
+          "lineage": {
+            "predecessors": [
+              "claude-opus-4-8"
+            ]
+          }
+        }
+      }
+    },
+    {
       "id": "claude-opus-4-8",
       "capabilities": {
         "vendor": "anthropic",
@@ -486,6 +541,62 @@
       }
     },
     {
+      "id": "gpt-6-sol",
+      "capabilities": {
+        "vendor": "openai",
+        "class": "frontier",
+        "strengths": [
+          "frontier professional reasoning",
+          "complex coding",
+          "tool use"
+        ],
+        "weaknesses": [
+          "new routing candidate; evaluation evidence is still accumulating"
+        ],
+        "releasedAt": "2026-09-15",
+        "qualityScores": {
+          "routing": 62,
+          "planning": 94,
+          "coding": 91,
+          "review": 93,
+          "classify": 66
+        },
+        "pricing": {
+          "inputCostPerMTok": 2,
+          "outputCostPerMTok": 10,
+          "cacheWriteCostPerMTok": 2.5,
+          "cacheReadCostPerMTok": 0.2
+        },
+        "contextWindowTokens": 1050000,
+        "toolSupport": "full",
+        "multimodal": {
+          "text": true,
+          "image": true
+        },
+        "latencyTier": "slow",
+        "reasoningTier": "advanced",
+        "costPerMillionInputTokensUsd": 2,
+        "costPerMillionOutputTokensUsd": 10,
+        "agent": "codex",
+        "codexChatgptCapability": {
+          "supported": true
+        },
+        "identity": {
+          "status": "verified",
+          "revision": 1,
+          "fingerprint": "4f2580c0735ce06e04186569833394e6457f69323c01f053b7fc98e1dfb90a3f",
+          "displayName": "gpt-6-sol",
+          "family": "gpt",
+          "evidencePolicy": "eligible",
+          "lineage": {
+            "predecessors": [
+              "gpt-5.6-sol"
+            ]
+          }
+        }
+      }
+    },
+    {
       "id": "gpt-5.6-sol",
       "capabilities": {
         "vendor": "openai",
@@ -580,6 +691,62 @@
           "lineage": {
             "predecessors": [
               "gpt-5.4"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "gpt-6-luna",
+      "capabilities": {
+        "vendor": "openai",
+        "class": "fast_economy",
+        "strengths": [
+          "cost-sensitive high-volume workloads",
+          "tool use",
+          "long context"
+        ],
+        "weaknesses": [
+          "new routing candidate; evaluation evidence is still accumulating"
+        ],
+        "releasedAt": "2026-09-15",
+        "qualityScores": {
+          "routing": 70,
+          "planning": 58,
+          "coding": 65,
+          "review": 60,
+          "classify": 80
+        },
+        "pricing": {
+          "inputCostPerMTok": 0.1,
+          "outputCostPerMTok": 0.5,
+          "cacheWriteCostPerMTok": 0.125,
+          "cacheReadCostPerMTok": 0.01
+        },
+        "contextWindowTokens": 1050000,
+        "toolSupport": "full",
+        "multimodal": {
+          "text": true,
+          "image": true
+        },
+        "latencyTier": "fast",
+        "reasoningTier": "advanced",
+        "costPerMillionInputTokensUsd": 0.1,
+        "costPerMillionOutputTokensUsd": 0.5,
+        "agent": "codex",
+        "codexChatgptCapability": {
+          "supported": true
+        },
+        "identity": {
+          "status": "verified",
+          "revision": 1,
+          "fingerprint": "20d6879015c153103fba0e5e810246598771478f4543554763510a30f009d377",
+          "displayName": "gpt-6-luna",
+          "family": "gpt",
+          "evidencePolicy": "eligible",
+          "lineage": {
+            "predecessors": [
+              "gpt-5.6-luna"
             ]
           }
         }
@@ -2681,6 +2848,8 @@
       "claude-opus-4-7"
     ],
     "planning": [
+      "claude-opus-5-5",
+      "gpt-6-sol",
       "claude-fable-5",
       "claude-opus-4-8",
       "claude-opus-4-7",
@@ -2691,18 +2860,23 @@
       "claude-haiku-4-5-20251001"
     ],
     "coding": [
+      "claude-opus-5-5",
+      "gpt-6-sol",
       "claude-fable-5",
       "gpt-5.6-terra",
       "deepseek-v4-pro",
       "claude-sonnet-5",
       "claude-opus-4-8",
       "claude-opus-4-7",
+      "gpt-6-luna",
       "deepseek-chat",
       "deepseek-v4-flash",
       "claude-haiku-4-5-20251001"
     ],
     "review": [
       "claude-fable-5",
+      "claude-opus-5-5",
+      "gpt-6-sol",
       "claude-opus-4-8",
       "claude-opus-4-7",
       "gpt-5.6-terra",
@@ -2720,6 +2894,18 @@
     ]
   },
   "openrouterMappings": [
+    {
+      "wavemillAlias": "claude-opus-5-5",
+      "openrouterId": "anthropic/claude-opus-5.5",
+      "family": "claude",
+      "status": "active",
+      "priorityTier": 1,
+      "roleEligibility": [
+        "planning",
+        "coding",
+        "review"
+      ]
+    },
     {
       "wavemillAlias": "claude-opus-4-8",
       "openrouterId": "anthropic/claude-opus-4.8",
@@ -2775,6 +2961,30 @@
       "status": "active",
       "priorityTier": 2,
       "roleEligibility": [
+        "coding",
+        "review"
+      ]
+    },
+    {
+      "wavemillAlias": "gpt-6-sol",
+      "openrouterId": "openai/gpt-6-sol",
+      "family": "gpt",
+      "status": "active",
+      "priorityTier": 1,
+      "roleEligibility": [
+        "planning",
+        "coding",
+        "review"
+      ]
+    },
+    {
+      "wavemillAlias": "gpt-6-luna",
+      "openrouterId": "openai/gpt-6-luna",
+      "family": "gpt",
+      "status": "active",
+      "priorityTier": 1,
+      "roleEligibility": [
+        "planning",
         "coding",
         "review"
       ]
