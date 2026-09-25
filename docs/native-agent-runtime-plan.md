@@ -540,6 +540,10 @@ Required invariant: untrusted tool output can inform the model, but it can never
 
 Mutation tools should receive a summary of relevant untrusted context, but the policy engine must evaluate only Wavemill-controlled state: phase, config, approved tool registry, worktree path, command classifier, explicit user approval, and certification metadata.
 
+### MCP client bridge (HOK-3056)
+
+Advanced-family `mcp` tools flow through the same exposure/policy/provenance pipeline. See [docs/native-agent-mcp.md](native-agent-mcp.md) for the shipped contract — schema, defaults, descriptor identity, error taxonomy, and lifecycle guarantees. MCP tool results always carry `sourceKind: mcp_result → untrusted`, and each successful result records the provider proxy, logical server/tool, argument fingerprint, live server identity, and an artifact reference to the raw payload.
+
 ## Provider Adapters
 
 Implement adapters behind the normalized interface:
@@ -928,6 +932,12 @@ Acceptance:
 
 - Each advanced tool family has its own phase policy, output caps, transcript format, and smoke suite.
 - No advanced tool is globally available by default.
+
+**Epic 10.7 status:** `code_search` is now populated — the runtime substrate
+lives in `shared/lib/native-agent/language-index.ts` and the four tool
+descriptors in `shared/lib/native-agent/tools/code-search.ts`, gated by the
+new `nativeAgent.advanced.code_search` config block. Substrate rationale is
+recorded in `docs/decisions/structured-search-substrate.md`.
 
 #### Advanced-tool exposure contract (HOK-3053)
 

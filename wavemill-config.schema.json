@@ -1695,10 +1695,10 @@
                     "description": "Advanced-tool family opt-ins (Epic 10). Every family defaults off; a family becomes eligible only when explicitly enabled for the target phase. See shared/lib/native-agent/tools/exposure.ts.",
                     "properties": {
                         "browser": { "$ref": "#/definitions/nativeAgentAdvancedBrowserFamily" },
-                        "screenshot": { "$ref": "#/definitions/nativeAgentAdvancedFamily" },
-                        "mcp": { "$ref": "#/definitions/nativeAgentAdvancedFamily" },
-                        "code_search": { "$ref": "#/definitions/nativeAgentAdvancedFamily" },
-                        "ast": { "$ref": "#/definitions/nativeAgentAdvancedFamily" },
+                        "screenshot": { "$ref": "#/definitions/nativeAgentAdvancedScreenshotFamily" },
+                        "mcp": { "$ref": "#/definitions/nativeAgentMcpFamily" },
+                        "code_search": { "$ref": "#/definitions/nativeAgentAdvancedCodeSearchFamily" },
+                        "ast": { "$ref": "#/definitions/nativeAgentAdvancedAstFamily" },
                         "eval": { "$ref": "#/definitions/nativeAgentAdvancedFamily" }
                     },
                     "additionalProperties": false
@@ -3467,6 +3467,238 @@
             },
             "additionalProperties": false
         },
+        "nativeAgentMcpFamily": {
+            "type": "object",
+            "description": "Per-family opt-in for the MCP advanced tool family. Extends nativeAgentAdvancedFamily with explicit server and per-server tool declarations.",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Master toggle for the MCP family."
+                },
+                "allowedPhases": {
+                    "type": "array",
+                    "description": "Phases for which MCP is eligible when enabled. Empty or omitted keeps the family hidden even when enabled.",
+                    "items": {
+                        "type": "string",
+                        "enum": ["task-expansion", "planning", "coding", "review"]
+                    },
+                    "default": []
+                },
+                "logicalIds": {
+                    "type": "array",
+                    "description": "Optional narrow allowlist of family-scoped logical ids. When present, only listed logical ids become eligible.",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                },
+                "defaults": {
+                    "type": "object",
+                    "description": "Family-wide defaults for timeouts and output caps. Server-level values override these.",
+                    "properties": {
+                        "startupTimeoutMs": { "type": "integer", "minimum": 1 },
+                        "callTimeoutMs": { "type": "integer", "minimum": 1 },
+                        "shutdownTimeoutMs": { "type": "integer", "minimum": 1 },
+                        "maxOutputBytes": { "type": "integer", "minimum": 4096 },
+                        "failureThreshold": { "type": "integer", "minimum": 0 }
+                    },
+                    "additionalProperties": false
+                },
+                "servers": {
+                    "type": "object",
+                    "description": "Map of logical server name → server declaration. Wildcards are forbidden.",
+                    "additionalProperties": { "$ref": "#/definitions/nativeAgentMcpServer" }
+                }
+            },
+            "additionalProperties": false
+        },
+        "nativeAgentMcpServer": {
+            "type": "object",
+            "description": "Declaration of an MCP server plus the allowlisted tools it exposes.",
+            "required": ["providerProxy", "command", "args", "envAllowlist", "tools"],
+            "properties": {
+                "providerProxy": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Wavemill-side provider proxy identifier."
+                },
+                "command": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Executable to spawn for the server process."
+                },
+                "args": {
+                    "type": "array",
+                    "description": "Argument vector passed to the server process. May be empty.",
+                    "items": { "type": "string" }
+                },
+                "envAllowlist": {
+                    "type": "array",
+                    "description": "Process-env variable names whose values survive the spawn allowlist. Empty is legal.",
+                    "items": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                    }
+                },
+                "tools": {
+                    "type": "array",
+                    "description": "Non-empty list of logical tool names exported by this server. Wildcards forbidden.",
+                    "minItems": 1,
+                    "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "^[A-Za-z0-9_.-]+$"
+                    }
+                },
+                "class": {
+                    "type": "string",
+                    "enum": ["read-only", "mutation"],
+                    "default": "read-only"
+                },
+                "startupTimeoutMs": { "type": "integer", "minimum": 1 },
+                "callTimeoutMs": { "type": "integer", "minimum": 1 },
+                "shutdownTimeoutMs": { "type": "integer", "minimum": 1 },
+                "maxOutputBytes": { "type": "integer", "minimum": 4096 },
+                "failureThreshold": { "type": "integer", "minimum": 0 }
+            },
+            "additionalProperties": false
+        },
+        "nativeAgentAdvancedCodeSearchFamily": {
+            "type": "object",
+            "description": "code_search family opt-in (HOK-3059). Extends the generic advanced-family shape with optional per-worktree index budgets. When `enabled` is true but any listed field is non-positive or non-numeric, the family stays hidden (fail-closed).",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Master toggle for the code_search family."
+                },
+                "allowedPhases": {
+                    "type": "array",
+                    "description": "Phases for which the family is eligible when enabled. Empty or omitted keeps the family hidden.",
+                    "items": {
+                        "type": "string",
+                        "enum": ["task-expansion", "planning", "coding", "review"]
+                    },
+                    "default": []
+                },
+                "logicalIds": {
+                    "type": "array",
+                    "description": "Optional narrow allowlist of family-scoped logical ids. When present, only listed logical ids become eligible.",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                },
+                "limits": {
+                    "type": "object",
+                    "description": "Per-worktree index bounds. Every field is optional; absent fields fall back to defaults.",
+                    "properties": {
+                        "maxFiles": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100000,
+                            "default": 2000,
+                            "description": "Maximum number of source files indexed per build."
+                        },
+                        "maxBytes": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 536870912,
+                            "default": 33554432,
+                            "description": "Maximum total bytes read across all indexed files per build."
+                        },
+                        "maxSymbols": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 1000000,
+                            "default": 20000,
+                            "description": "Maximum number of symbol records the index will hold before aborting the build."
+                        },
+                        "maxResults": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 200,
+                            "default": 200,
+                            "description": "Hard cap on the number of results a single query may return."
+                        }
+                    },
+                    "additionalProperties": false
+                }
+            },
+            "additionalProperties": false
+        },
+        "nativeAgentAdvancedAstFamily": {
+            "type": "object",
+            "description": "ast family opt-in (HOK-3060). Policy-bound, previewable structured source transforms applied only through the atomic NativePatch runtime. Coding-only; every mutation requires a prior digest-sealed preview. When `enabled` is true but any listed limit is non-positive or non-numeric, the family stays hidden (fail-closed).",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Master toggle for the ast transform family."
+                },
+                "allowedPhases": {
+                    "type": "array",
+                    "description": "Phases for which the family is eligible when enabled. Only coding is meaningful; other phases keep the family hidden even when listed.",
+                    "items": {
+                        "type": "string",
+                        "enum": ["task-expansion", "planning", "coding", "review"]
+                    },
+                    "default": []
+                },
+                "logicalIds": {
+                    "type": "array",
+                    "description": "Optional narrow allowlist of family-scoped logical ids (ast.transform_preview, ast.transform_apply). When present, only listed logical ids become eligible.",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                },
+                "limits": {
+                    "type": "object",
+                    "description": "Per-worktree transform bounds. Every field is optional; absent fields fall back to defaults.",
+                    "properties": {
+                        "maxFiles": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100000,
+                            "default": 2000,
+                            "description": "Maximum number of source files indexed per transform build."
+                        },
+                        "maxBytes": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 536870912,
+                            "default": 33554432,
+                            "description": "Maximum total bytes read across all indexed files per transform build."
+                        },
+                        "maxSymbols": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 1000000,
+                            "default": 20000,
+                            "description": "Maximum number of symbol records the index will hold before aborting the build."
+                        },
+                        "maxMatches": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 5000,
+                            "default": 500,
+                            "description": "Hard cap on the number of match records recorded in a preview (the full set still drives the patch)."
+                        },
+                        "maxSummaryBytes": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 65536,
+                            "default": 4096,
+                            "description": "Byte cap on the human-readable preview summary."
+                        }
+                    },
+                    "additionalProperties": false
+                }
+            },
+            "additionalProperties": false
+        },
         "nativeAgentAdvancedBrowserFamily": {
             "type": "object",
             "description": "Browser family opt-in (HOK-3057). Extends the generic advanced-family shape with an explicit read-only browser session boundary. When `enabled` is true but any `session` field is missing/invalid, the family stays hidden (fail-closed).",
@@ -3554,6 +3786,83 @@
                         }
                     },
                     "required": ["allowedOrigins"],
+                    "additionalProperties": false
+                }
+            },
+            "additionalProperties": false
+        },
+        "nativeAgentAdvancedScreenshotFamily": {
+            "type": "object",
+            "description": "Screenshot family opt-in (HOK-3058). Extends the generic advanced-family shape with screenshot-specific capture and comparison limits.",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Master toggle for the screenshot family."
+                },
+                "allowedPhases": {
+                    "type": "array",
+                    "description": "Phases for which the screenshot family is eligible when enabled. Empty or omitted keeps the family hidden.",
+                    "items": {
+                        "type": "string",
+                        "enum": ["task-expansion", "planning", "coding", "review"]
+                    },
+                    "default": []
+                },
+                "logicalIds": {
+                    "type": "array",
+                    "description": "Optional narrow allowlist of family-scoped logical ids. When present, only listed logical ids become eligible.",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                },
+                "limits": {
+                    "type": "object",
+                    "description": "Screenshot capture and comparison limits. All fields have defaults when absent.",
+                    "properties": {
+                        "maxImageBytes": {
+                            "type": "integer",
+                            "minimum": 1024,
+                            "maximum": 16777216,
+                            "default": 2097152,
+                            "description": "Maximum byte size of a screenshot. Oversized captures are rejected or downscaled per oversizePolicy."
+                        },
+                        "maxWidth": {
+                            "type": "integer",
+                            "minimum": 16,
+                            "maximum": 16384,
+                            "default": 4096,
+                            "description": "Maximum width in pixels."
+                        },
+                        "maxHeight": {
+                            "type": "integer",
+                            "minimum": 16,
+                            "maximum": 16384,
+                            "default": 4096,
+                            "description": "Maximum height in pixels."
+                        },
+                        "oversizePolicy": {
+                            "type": "string",
+                            "enum": ["reject", "downscale"],
+                            "default": "reject",
+                            "description": "Action when an image exceeds byte or dimension limits: reject (fail with error) or downscale (deterministically subsample)."
+                        },
+                        "maxComparePixels": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 268435456,
+                            "default": 16777216,
+                            "description": "Maximum total pixels allowed in a visual comparison (both images combined dimensions). Larger comparisons are rejected."
+                        },
+                        "diffThreshold": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 1,
+                            "default": 0.1,
+                            "description": "Pixel-diff threshold (0-1) for pixelmatch. Diffs below this ratio are considered insignificant."
+                        }
+                    },
                     "additionalProperties": false
                 }
             },

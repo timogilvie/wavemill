@@ -255,6 +255,7 @@ describe('model-registry', () => {
     const expectedModels = [
       'claude-fable-5',
       'claude-haiku-4-5',
+      'claude-opus-5-5',
       'claude-opus-4-8',
       'claude-opus-4-7',
       'claude-opus-4-6',
@@ -284,6 +285,8 @@ describe('model-registry', () => {
       'gpt-5.6-sol',
       'gpt-5.6-terra',
       'gpt-5.6-luna',
+      'gpt-6-sol',
+      'gpt-6-luna',
       'kimi-k2',
       'kimi-k2.7-code',
       'kimi-k2-thinking',
@@ -609,6 +612,48 @@ describe('model-registry', () => {
     ]);
   });
 
+  it('admits newly-added Claude Opus 5.5 and GPT-6 models for planning, coding, and review', () => {
+    for (const modelId of ['claude-opus-5-5', 'gpt-6-sol', 'gpt-6-luna']) {
+      const capabilities = DEFAULT_MODEL_REGISTRY.models[modelId];
+      assert.ok(capabilities, `${modelId} should exist in the registry`);
+      assert.equal(capabilities.toolSupport, 'full');
+      assert.ok(
+        capabilities.contextWindowTokens >= 65_536,
+        `${modelId} must clear the 65,536-token stage floor`,
+      );
+      for (const stage of ['planning', 'coding', 'review'] as SupportedModelStage[]) {
+        assert.equal(
+          explainModelSupportExclusion(modelId, stage),
+          undefined,
+          `${modelId} should be admissible for ${stage}`,
+        );
+      }
+    }
+  });
+
+  it('places the new Claude and GPT-6 models near the top of the planning, coding, and review ladders while retaining prior fallbacks', () => {
+    const planning = getLadder(DEFAULT_MODEL_REGISTRY, 'planning');
+    assert.equal(planning[0], 'claude-opus-5-5');
+    assert.equal(planning[1], 'gpt-6-sol');
+    assert.ok(planning.includes('claude-fable-5'));
+    assert.ok(planning.includes('claude-opus-4-8'));
+    assert.ok(planning.includes('gpt-5.6-terra'));
+
+    const coding = getLadder(DEFAULT_MODEL_REGISTRY, 'coding');
+    assert.equal(coding[0], 'claude-opus-5-5');
+    assert.equal(coding[1], 'gpt-6-sol');
+    assert.ok(coding.includes('gpt-6-luna'));
+    assert.ok(coding.includes('claude-fable-5'));
+    assert.ok(coding.includes('claude-sonnet-5'));
+
+    const review = getLadder(DEFAULT_MODEL_REGISTRY, 'review');
+    assert.equal(review[0], 'claude-fable-5');
+    assert.equal(review[1], 'claude-opus-5-5');
+    assert.equal(review[2], 'gpt-6-sol');
+    assert.ok(review.includes('claude-opus-4-8'));
+    assert.ok(review.includes('gpt-5.6-terra'));
+  });
+
   it('keeps DeepSeek models out of derived default ladders', () => {
     const registry: ModelRegistry = {
       models: {
@@ -698,6 +743,8 @@ describe('model-registry', () => {
 
     assert.deepEqual(once, [
       'claude-fable-5',
+      'claude-opus-5-5',
+      'gpt-6-sol',
       'claude-opus-4-8',
       'claude-opus-4-7',
       'gpt-5.6-terra',
@@ -727,12 +774,15 @@ describe('model-registry', () => {
 
   it('rankCandidates returns the full ladder when no exclusions are provided', () => {
     assert.deepEqual(rankCandidates(DEFAULT_MODEL_REGISTRY, 'coding'), [
+      'claude-opus-5-5',
+      'gpt-6-sol',
       'claude-fable-5',
       'gpt-5.6-terra',
       'deepseek-v4-pro',
       'claude-sonnet-5',
       'claude-opus-4-8',
       'claude-opus-4-7',
+      'gpt-6-luna',
       'deepseek-chat',
       'deepseek-v4-flash',
       'claude-haiku-4-5-20251001',

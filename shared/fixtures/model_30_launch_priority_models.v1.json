@@ -3,6 +3,18 @@
   "description": "Launch-priority model list (HOK-2211) for OpenRouter catalog sync. Each entry maps a Wavemill alias to its OpenRouter API id with family/status/priority/role metadata.",
   "models": [
     {
+      "wavemillAlias": "claude-opus-5-5",
+      "openrouterId": "anthropic/claude-opus-5.5",
+      "family": "claude",
+      "status": "active",
+      "priorityTier": 1,
+      "roleEligibility": [
+        "planning",
+        "coding",
+        "review"
+      ]
+    },
+    {
       "wavemillAlias": "claude-opus-4-8",
       "openrouterId": "anthropic/claude-opus-4.8",
       "family": "claude",
@@ -57,6 +69,30 @@
       "status": "active",
       "priorityTier": 2,
       "roleEligibility": [
+        "coding",
+        "review"
+      ]
+    },
+    {
+      "wavemillAlias": "gpt-6-sol",
+      "openrouterId": "openai/gpt-6-sol",
+      "family": "gpt",
+      "status": "active",
+      "priorityTier": 1,
+      "roleEligibility": [
+        "planning",
+        "coding",
+        "review"
+      ]
+    },
+    {
+      "wavemillAlias": "gpt-6-luna",
+      "openrouterId": "openai/gpt-6-luna",
+      "family": "gpt",
+      "status": "active",
+      "priorityTier": 1,
+      "roleEligibility": [
+        "planning",
         "coding",
         "review"
       ]

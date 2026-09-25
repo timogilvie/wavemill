@@ -36,7 +36,7 @@ import {
   type ScratchPrepRunner,
 } from './tend-scratch-prep.ts';
 import { clearConfigCache } from './config.ts';
-import { publishReadyHandoff, readReadyTendHandoff } from './ready-tend-handoff.ts';
+import { claimReadyHandoff, publishReadyHandoff, readReadyTendHandoff } from './ready-tend-handoff.ts';
 
 function metadata(lines: string[] = ['task: HOK-1437']): string {
   return ['<!-- wavemill-meta', ...lines, '-->'].join('\n');
@@ -146,6 +146,7 @@ function buildMergeTestOptions(overrides: {
   healthChecker?: MergeExecutionDeps['healthChecker'];
   prepRunnerFactory?: MergeExecutionDeps['prepRunnerFactory'];
   scratchPrepRetry?: MergeExecutionDeps['scratchPrepRetry'];
+  rebaseHeadSha?: string;
 } = {}): {
   repoDir: string;
   calls: string[];
@@ -161,17 +162,20 @@ function buildMergeTestOptions(overrides: {
 
   const calls: string[] = [];
   const labels: string[] = [];
+  let rebasedPush = false;
   const defaultShellRunner: MergeExecutionDeps['shellRunner'] = (cmd) => {
     calls.push(cmd);
+    if (cmd.includes('git push --force-with-lease') && overrides.rebaseHeadSha) rebasedPush = true;
     if (cmd.includes('gh pr list --label')) return '[]';
     if (cmd.includes('git rev-parse --git-common-dir')) return join(repoDir, '.git');
+    if (cmd === 'git rev-parse HEAD' && overrides.rebaseHeadSha) return overrides.rebaseHeadSha;
     if (cmd.includes('git rev-parse') && cmd.includes('origin/')) return 'abc123def456';
     if (cmd.includes('git merge-base --is-ancestor')) { const e = new Error('Command failed: git merge-base --is-ancestor'); (e as unknown as Record<string, unknown>).status = 1; throw e; }
     if (cmd.includes('gh pr checks')) return JSON.stringify([{ name: 'ci', state: 'COMPLETED', conclusion: 'success' }]);
     if (cmd.includes('gh pr view')) {
       return JSON.stringify({
         mergeStateStatus: 'CLEAN',
-        headRefOid: 'head-sha',
+        headRefOid: rebasedPush ? overrides.rebaseHeadSha : 'head-sha',
         baseRefOid: 'base-sha',
         statusCheckRollup: [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }],
       });
@@ -1876,7 +1880,7 @@ describe('merge transient error classification', () => {
 
 describe('executeMerge', () => {
   it('claims the published Ready handoff before applying wm:merging', async () => {
-    const options = buildMergeTestOptions();
+    const options = buildMergeTestOptions({ rebaseHeadSha: 'head-sha' });
     const featureDir = join(options.repoDir, 'features', 'handoff-pr');
     const claims: string[] = [];
     try {
@@ -1897,6 +1901,23 @@ describe('executeMerge', () => {
       assert.equal(result.status, 'merged');
       assert.deepEqual(claims, ['merging:42']);
       assert.equal(readReadyTendHandoff(featureDir)?.tendOwner, 'tend');
+    } finally {
+      options.cleanup();
+    }
+  });
+
+  it('rebinds the claimed handoff to the commit pushed by Tend rebase', async () => {
+    const options = buildMergeTestOptions({ rebaseHeadSha: 'rebased-head-sha' });
+    const featureDir = join(options.repoDir, 'features', 'rebased-handoff-pr');
+    try {
+      await publishReadyHandoff(featureDir, 42, 'head-sha');
+      const result = await executeMerge(
+        candidate({ headSha: 'head-sha', featureDir }),
+        { repoDir: options.repoDir, deps: options.deps },
+      );
+      assert.equal(result.status, 'merged');
+      assert.equal(readReadyTendHandoff(featureDir)?.headSha, 'rebased-head-sha');
+      assert.equal(readReadyTendHandoff(featureDir)?.state, 'tend-claimed');
     } finally {
       options.cleanup();
     }
@@ -3879,6 +3900,37 @@ describe('reconcileScratchPrepState (HOK-3039)', () => {
       assert.equal(outcomes[0].kind, 'recovered-pushed');
       assert.ok(options.labels.includes('ready:88'));
       assert.ok(!existsSync(scratchPrepMarkerPath(88, options.repoDir)));
+    } finally {
+      options.cleanup();
+    }
+  });
+
+  it('rebinds the Tend handoff when recovering a push that landed before a crash', async () => {
+    const options = buildMergeTestOptions({
+      shellRunner: (cmd) => {
+        if (cmd.includes('git rev-parse') && cmd.includes('origin/')) return 'rebased-sha';
+        if (cmd.includes('gh pr view')) return JSON.stringify({ headRefOid: 'rebased-sha', mergeStateStatus: 'CLEAN' });
+        return '';
+      },
+    });
+    const featureDir = join(options.repoDir, 'features', 'push-recovered');
+    try {
+      await publishReadyHandoff(featureDir, 88, 'pre-sha');
+      await claimReadyHandoff(featureDir, 88, 'pre-sha');
+      await writeScratchPrepMarker(options.repoDir, {
+        prNumber: 88,
+        headBranch: 'task/push-recovered',
+        featureDir,
+        phase: 'push',
+        headSha: 'pre-sha',
+        prePushSha: 'pre-sha',
+        rebasedHeadSha: 'rebased-sha',
+        pid: 999_999,
+      });
+      const outcomes = await reconcileScratchPrepState(options.repoDir, options.deps);
+      assert.equal(outcomes[0]?.kind, 'recovered-pushed');
+      assert.equal(readReadyTendHandoff(featureDir)?.headSha, 'rebased-sha');
+      assert.ok(options.labels.includes('ready:88'));
     } finally {
       options.cleanup();
     }

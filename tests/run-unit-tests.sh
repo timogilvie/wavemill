@@ -74,6 +74,11 @@ TESTS=(
   shared/lib/native-agent/command-transcript.test.ts
   shared/lib/native-agent/command-argv.test.ts
   shared/lib/native-agent/command-substrate.test.ts
+  shared/lib/native-agent/hok2081-gate.test.ts
+  shared/lib/native-agent/session-checkpoint.test.ts
+  shared/lib/native-agent/deterministic-replay.test.ts
+  shared/lib/native-agent/counterfactual-runner.test.ts
+  tests/run-counterfactual-exploration.test.ts
   shared/lib/native-agent/tools/policies.test.ts
   shared/lib/native-agent/tools/registry.test.ts
   shared/lib/native-agent/tools/exposure.test.ts
@@ -88,7 +93,15 @@ TESTS=(
   shared/lib/native-agent/tools/artifacts.test.ts
   shared/lib/native-agent/tools/browser.test.ts
   shared/lib/native-agent/browser-session.test.ts
+  shared/lib/native-agent/image-artifacts.test.ts
+  shared/lib/native-agent/visual-comparison.test.ts
+  shared/lib/native-agent/tools/screenshot.test.ts
   shared/lib/native-agent/tools/review-scoring.test.ts
+  shared/lib/native-agent/tools/code-search.test.ts
+  shared/lib/native-agent/tools/ast-transform.test.ts
+  shared/lib/native-agent/language-index.test.ts
+  shared/lib/native-agent/tools/mcp.test.ts
+  shared/lib/native-agent/mcp-client.test.ts
   shared/lib/native-agent/loop.test.ts
   shared/lib/native-agent/output-limits.test.ts
   shared/lib/native-agent/transcript.test.ts
@@ -141,6 +154,7 @@ TESTS=(
   shared/lib/challenge-comparison.test.ts
   shared/lib/no-comparison-report.test.ts
   shared/lib/arbiter-r6-report.test.ts
+  shared/lib/fork-identity.test.ts
   tools/arbiter-r6-analysis.test.ts
   shared/lib/challenge-pair-resolver.test.ts
   shared/lib/challenge-pair-resolver.hok2958.test.ts

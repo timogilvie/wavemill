@@ -268,6 +268,58 @@ test('foldAttestationsIntoStageAttribution emits valid attribution for matched i
   assert.equal(isStageAttributionEligibleForCoverage(attribution), true);
 });
 
+test('an implementation-stage fork with matched inputs earns a valid stage label (HOK-3086)', () => {
+  const implementationAttestation = (side: 'primary' | 'challenger') => makeAttestation(side, {
+    challengeStage: 'implementation',
+    evidence: [{
+      stage: 'implementation',
+      model: side === 'primary' ? 'claude-opus-4-6' : 'gpt-5.4',
+      source: 'coding-result',
+    }],
+  });
+  const attribution = foldAttestationsIntoStageAttribution({
+    pairId: 'pair-3086',
+    stage: 'implementation',
+    primary: implementationAttestation('primary'),
+    challenger: implementationAttestation('challenger'),
+    forkIdentity: makeForkIdentity({
+      stage: 'implementation',
+      sharedPrefix: true,
+      primaryInheritedStages: [],
+      challengerInheritedStages: ['plan'],
+    }),
+    judgeWinner: 'challenger',
+  });
+  assert.equal(attribution.status, 'valid');
+  assert.deepEqual(attribution.reasonCodes, []);
+  assert.equal(attribution.outcome, 'challenger');
+  assert.equal(attribution.winningStageModel, 'gpt-5.4');
+});
+
+test('an independently launched pair reports no stage label instead of a missing fork identity (HOK-3086)', () => {
+  const independent = foldAttestationsIntoStageAttribution({
+    pairId: 'pair-3086',
+    stage: 'implementation',
+    primary: makeAttestation('primary', { challengeStage: 'implementation' }),
+    challenger: makeAttestation('challenger', { challengeStage: 'implementation' }),
+    independentLaunch: true,
+    judgeWinner: 'primary',
+  });
+  assert.equal(independent.status, 'insufficient_evidence');
+  assert.deepEqual(independent.reasonCodes, ['independent_launch_no_stage_label']);
+  assert.equal(independent.outcome, null);
+
+  const forkedWithoutIdentity = foldAttestationsIntoStageAttribution({
+    pairId: 'pair-3086',
+    stage: 'implementation',
+    primary: makeAttestation('primary', { challengeStage: 'implementation' }),
+    challenger: makeAttestation('challenger', { challengeStage: 'implementation' }),
+    judgeWinner: 'primary',
+  });
+  assert.equal(forkedWithoutIdentity.status, 'invalid');
+  assert.ok(forkedWithoutIdentity.reasonCodes.includes('missing_fork_identity'));
+});
+
 test('foldAttestationsIntoStageAttribution marks incomplete review iteration evidence insufficient (HOK-2969)', () => {
   const attribution = foldAttestationsIntoStageAttribution({
     pairId: 'pair-2968',

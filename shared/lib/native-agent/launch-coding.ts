@@ -24,6 +24,15 @@ import { SessionStreamWriter, resolveSessionEventStreamPath } from './session-st
 import { captureToolDecisionsFromStream } from './tool-decision-capture.ts';
 import type { SessionStreamConfig } from './loop.ts';
 import { createReadOnlyTools, READ_ONLY_PATH_FIELDS } from './tools/read-only.ts';
+import { CODE_SEARCH_PATH_FIELDS, createCodeSearchTools } from './tools/code-search.ts';
+import {
+  AST_TRANSFORM_PATH_FIELDS,
+  astTransformAfterToolCall,
+  createAstTransformTools,
+} from './tools/ast-transform.ts';
+import { createMcpClient, type McpClient } from './mcp-client.ts';
+import { createMcpToolDescriptors } from './tools/mcp.ts';
+import { storeArtifact as storeSessionArtifact } from './session-stream.ts';
 import {
   createGitCommitTools,
   createGitTools,
@@ -53,7 +62,7 @@ import {
   formatMenuDenials,
 } from './tools/menu-resolver.ts';
 import { inferCertificationSnapshotForPhase } from './tools/certification-snapshot.ts';
-import { loadWavemillConfig } from '../config.ts';
+import { getNativeAstConfig, getNativeCodeSearchConfig, loadWavemillConfig } from '../config.ts';
 import { validateCodingArtifacts, type CodingArtifacts } from './coding-artifacts.ts';
 import {
   buildCompletionArtifactRetryGuidance,
@@ -780,14 +789,52 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
     );
   }
 
+  let mcpClient: McpClient | undefined;
   try {
     const tracker = createIntendedFileTracker();
+    const readOnlyDescriptors = createReadOnlyTools(options.wtDir);
+    const searchTextDescriptor = readOnlyDescriptors.find(
+      (d) => d.metadata.name === 'search_text',
+    );
+    const codeSearchConfig = getNativeCodeSearchConfig(options.repoDir);
+    const codeSearchDescriptors = codeSearchConfig.enabled
+      ? createCodeSearchTools({
+          config: codeSearchConfig,
+          worktreePath: options.wtDir,
+          ...(searchTextDescriptor
+            ? { searchTextExecutor: searchTextDescriptor.execute as Parameters<typeof createCodeSearchTools>[0]['searchTextExecutor'] }
+            : {}),
+        })
+      : [];
+    const astConfig = getNativeAstConfig(options.repoDir);
+    const astDescriptors = astConfig.enabled
+      ? createAstTransformTools({
+          config: astConfig,
+          worktreePath: options.wtDir,
+          phase: 'coding',
+        })
+      : [];
+    const wavemillConfig = loadWavemillConfig(options.repoDir);
+    const mcpFamily = wavemillConfig.nativeAgent?.advanced?.mcp;
+    let mcpDescriptors: ToolDescriptor[] = [];
+    if (mcpFamily?.enabled === true) {
+      mcpClient = createMcpClient({ family: mcpFamily });
+      mcpDescriptors = createMcpToolDescriptors({
+        config: wavemillConfig,
+        client: mcpClient,
+        storeArtifact: (bytes) =>
+          storeSessionArtifact(Buffer.from(bytes), options.repoDir, false, bytes.byteLength),
+      });
+    }
     const descriptors = [
-      ...createReadOnlyTools(options.wtDir),
+      ...readOnlyDescriptors,
       ...createGitTools(options.wtDir),
       ...createCommandTools(options.wtDir),
       ...createCodingMutationTools(options.wtDir, { phase: 'coding' }),
       ...createGitCommitTools(options.wtDir, { tracker }),
+      ...codeSearchDescriptors,
+      ...astDescriptors,
+      ...mcpDescriptors,
       ...(options.extraDescriptors ?? []),
     ];
     const registry = createToolRegistry(descriptors);
@@ -994,8 +1041,14 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
         const codingMutationResult = await codingMutationAfterToolCall(toolContext);
         if (codingMutationResult?.isError) {
           recordMutationFailure(mutationFailureTracker, toolContext);
+          return codingMutationResult;
         }
-        return codingMutationResult;
+
+        const astResult = await astTransformAfterToolCall(toolContext);
+        if (astResult?.isError) {
+          recordMutationFailure(mutationFailureTracker, toolContext);
+        }
+        return astResult ?? codingMutationResult;
       },
       toolPolicy: {
         phase: 'coding',
@@ -1007,6 +1060,8 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
             ...gitToolPolicyConfig.pathFieldsByTool,
             ...gitMutationToolPolicyConfig.pathFieldsByTool,
             ...codingMutationPolicyConfig.pathFieldsByTool,
+            ...(codeSearchConfig.enabled ? CODE_SEARCH_PATH_FIELDS : {}),
+            ...(astConfig.enabled ? AST_TRANSFORM_PATH_FIELDS : {}),
           },
         },
       },
@@ -1296,5 +1351,13 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
     writeHookStatus(hookPath, 'error', 'process_exit', message, 'native');
     writeTextStatus(options.session, options.issue, 'native coding error');
     throw error;
+  } finally {
+    if (mcpClient) {
+      try {
+        await mcpClient.stopAll('coding_end');
+      } catch (stopError) {
+        console.warn(`mcp stopAll failed: ${(stopError as Error).message}`);
+      }
+    }
   }
 }

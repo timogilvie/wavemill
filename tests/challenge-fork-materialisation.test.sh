@@ -80,6 +80,7 @@ log_error() { :; }
 # Pull the fork-descriptor helper into this scope (already unit-tested in
 # challenge-deferred-arm.test.sh; we call it here after the copy loop).
 eval "$(extract_function challenge_intent_stamp_fork_descriptor)"
+eval "$(extract_function challenge_compute_fork_identity)"
 
 # The materialiser's copy loop is a straightforward for-loop over a fixed
 # artifact list; encoding it here mirrors what the real function does so
@@ -263,6 +264,49 @@ for dir in "$PRIMARY_FEATURE" "$CHALLENGER_FEATURE"; do
     && pass "fork descriptor on $(basename "$dir")" \
     || fail "fork descriptor on $(basename "$dir") ($fs / $fc / $sp)"
 done
+
+# Step 5b: fork identity stamp — the 8th argument lands as .forkIdentity on
+# both intent files and both arms' state intents; a non-object is ignored.
+challenge_intent_stamp_fork_descriptor \
+  "HOK-1234" "$challenge_arm_key" \
+  "$PRIMARY_FEATURE" "$CHALLENGER_FEATURE" \
+  "review" "$FORK_COMMIT" \
+  '["plan","implementation"]' \
+  'not json'
+check_eq "non-object fork identity is ignored" "null" \
+  "$(jq -c '.forkIdentity' "$PRIMARY_FEATURE/.challenge-intent.json")"
+
+FORK_IDENTITY_JSON="$(jq -cn --arg fc "$FORK_COMMIT" \
+  '{stage:"review", commit:$fc, tree:"t", taskPacketHash:"a", planHash:"b", promptHash:"c", toolConfigHash:"d", sharedPrefix:true}')"
+challenge_intent_stamp_fork_descriptor \
+  "HOK-1234" "$challenge_arm_key" \
+  "$PRIMARY_FEATURE" "$CHALLENGER_FEATURE" \
+  "review" "$FORK_COMMIT" \
+  '["plan","implementation"]' \
+  "$FORK_IDENTITY_JSON"
+# Step 5a: the real producer, run through the shell helper against this
+# scratch fork. Both arms carry identical plan.md copies, so planHash agrees.
+COMPUTED_IDENTITY="$(TOOLS_DIR="$REPO_DIR_ROOT/tools" REPO_DIR="$SCRATCH_REPO" \
+  challenge_compute_fork_identity "$challenge_arm_key" "review" "$FORK_COMMIT" \
+  "$SCRATCH_REPO" "$CHALLENGER_WT_DIR" "$PRIMARY_FEATURE" "$CHALLENGER_FEATURE" \
+  '["plan","implementation"]')"
+check_eq "computed identity commit" "$FORK_COMMIT" "$(jq -r '.commit' <<<"$COMPUTED_IDENTITY")"
+check_eq "computed identity tree" "$(git -C "$SCRATCH_REPO" rev-parse "$FORK_COMMIT^{tree}")" \
+  "$(jq -r '.tree' <<<"$COMPUTED_IDENTITY")"
+if [[ "$(jq -r '.planHash' <<<"$COMPUTED_IDENTITY")" =~ ^[0-9a-f]{64}$ ]]; then
+  pass "computed identity planHash agrees across arms"
+else
+  fail "computed identity planHash missing: $COMPUTED_IDENTITY"
+fi
+
+for dir in "$PRIMARY_FEATURE" "$CHALLENGER_FEATURE"; do
+  check_eq "fork identity on $(basename "$dir")" "$FORK_IDENTITY_JSON" \
+    "$(jq -c '.forkIdentity' "$dir/.challenge-intent.json")"
+done
+check_eq "fork identity mirrored into primary state intent" "$FORK_IDENTITY_JSON" \
+  "$(jq -c '.tasks["HOK-1234"].challengeExecutionIntent.forkIdentity' "$STATE_FILE")"
+check_eq "fork descriptor preserved alongside identity" "$FORK_COMMIT" \
+  "$(jq -r '.tasks["HOK-1234"].challengeExecutionIntent.forkCommit' "$STATE_FILE")"
 
 CH_INHERITED=$(jq -c '.challenger.inheritedStages' "$CHALLENGER_FEATURE/.challenge-intent.json")
 PR_INHERITED=$(jq -c '.primary.inheritedStages' "$CHALLENGER_FEATURE/.challenge-intent.json")
@@ -477,6 +521,70 @@ if [[ -n "$COPY_LOOP" ]] && ! grep -qF ".review-result.json" <<< "$COPY_LOOP"; t
 else
   fail "materialiser copy loop now includes .review-result.json"
 fi
+
+if grep -q 'challenge_compute_fork_identity' <<< "$MATERIALIZE_BLOCK" \
+  && grep -q '"$fork_identity_json"' <<< "$MATERIALIZE_BLOCK"; then
+  pass "materialiser computes and stamps the fork identity"
+else
+  fail "materialiser no longer computes/stamps the fork identity"
+fi
+
+# ────────────────────────────────────────────────────────────────
+# HOK-3086: implementation-stage fork after the single shared plan.
+# The end-to-end run (real recorder, trigger, materialiser) lives in
+# tests/fixtures/lifecycle/deferred_implementation_challenger_forks_at_plan_handoff.sh;
+# these checks pin the defer policy and the source-level wiring.
+# ────────────────────────────────────────────────────────────────
+echo ""
+echo "=== implementation-stage fork wiring (HOK-3086) ==="
+
+stage_defers() { challenge_stage_defers_to_fork "$1" && echo yes || echo no; }
+check_eq "review defers to a fork" "yes" "$(stage_defers review)"
+check_eq "implementation defers to a fork" "yes" "$(stage_defers implementation)"
+check_eq "plan does not defer to a fork" "no" "$(stage_defers plan)"
+check_eq "kill switch restores independent implementation launches" "no" \
+  "$(WAVEMILL_CHALLENGE_IMPLEMENTATION_FORK=0 stage_defers implementation)"
+check_eq "kill switch leaves review forks alone" "yes" \
+  "$(WAVEMILL_CHALLENGE_IMPLEMENTATION_FORK=0 stage_defers review)"
+
+MILL_SCRIPT_FILE="$REPO_DIR_ROOT/shared/lib/wavemill-mill.sh"
+check_contains "mill defers via challenge_stage_defers_to_fork" \
+  "$(cat "$MILL_SCRIPT_FILE")" 'if challenge_stage_defers_to_fork "$challenge_stage"; then'
+check_contains "monitor defers via challenge_stage_defers_to_fork" \
+  "$(cat "$MONITOR_SCRIPT_FILE")" 'if challenge_stage_defers_to_fork "$challenge_stage"; then'
+
+IMPL_BLOCK=$(awk '
+  /^challenge_materialize_implementation_arm\(\) \{/ { capture=1 }
+  capture { print }
+  /^}/ && capture { exit }
+' "$MONITOR_SCRIPT_FILE")
+check_contains "implementation materialiser launches coding" "$IMPL_BLOCK" '_run_phase_launch coding launch_coding_phase "$arm_key"'
+check_contains "implementation materialiser inherits only the plan" "$IMPL_BLOCK" "'[\"plan\"]'"
+check_contains "implementation materialiser forks at the recorded plan-time commit" "$IMPL_BLOCK" "'.planForkCommit'"
+check_contains "implementation materialiser copies from the snapshot" "$IMPL_BLOCK" 'cp -R "$snapshot_dir/." "$challenger_feature_dir/"'
+check_eq "implementation materialiser never launches review" "absent" \
+  "$([[ "$IMPL_BLOCK" == *"launch_review_phase"* ]] && echo present || echo absent)"
+
+RECORD_BLOCK=$(awk '
+  /^challenge_record_implementation_fork_point\(\) \{/ { capture=1 }
+  capture { print }
+  /^}/ && capture { exit }
+' "$MONITOR_SCRIPT_FILE")
+for artifact in plan.md .plan-approved task-packet.md selected-task.json .planning-result.json challenge-intent.json; do
+  check_contains "fork snapshot includes $artifact" "$RECORD_BLOCK" "$artifact"
+done
+for artifact in .coding-result.json .coding-complete .review-result.json; do
+  check_eq "fork snapshot excludes $artifact" "absent" \
+    "$([[ "$RECORD_BLOCK" == *"$artifact"* ]] && echo present || echo absent)"
+done
+
+HANDOFF_BLOCK=$(awk '
+  /HOK-3086: an implementation-stage challenger forks HERE/ { capture=1 }
+  capture { print }
+  /set_task_phase "\$ISSUE" "coding"/ && capture { exit }
+' "$MONITOR_SCRIPT_FILE")
+check_contains "handoff records the fork point before the primary's coding" "$HANDOFF_BLOCK" 'challenge_record_implementation_fork_point "$ISSUE"'
+check_contains "handoff materialises before the primary's coding" "$HANDOFF_BLOCK" 'challenge_maybe_materialize_deferred_arms "$ISSUE"'
 
 echo ""
 echo "--- Results: $PASS passed, $FAIL failed ---"

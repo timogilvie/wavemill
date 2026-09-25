@@ -171,6 +171,7 @@ for f in \
   "$REPO_DIR"/tests/challenge-fork-non-forked-regression.test.sh \
   "$REPO_DIR"/tests/challenge-fork-review-launch-refusal.test.sh \
   "$REPO_DIR"/tests/fixtures/lifecycle/deferred_challenger_materialises_after_coding.sh \
+  "$REPO_DIR"/tests/fixtures/lifecycle/deferred_implementation_challenger_forks_at_plan_handoff.sh \
   "$REPO_DIR"/tests/run-shell-suite.sh \
   "$REPO_DIR"/tests/run-unit-tests.sh \
   "$REPO_DIR"/tests/run-custom-tests.sh \
@@ -3309,7 +3310,8 @@ run_fixtures_parallel \
   "$REPO_DIR/tests/fixtures/lifecycle/tend_surfaces_rebase_conflict.sh" \
   "$REPO_DIR/tests/fixtures/lifecycle/tend_challenge_winner_merges_loser_cleanup.sh" \
   "$REPO_DIR/tests/fixtures/lifecycle/tend_status_line_not_repeated.sh" \
-  "$REPO_DIR/tests/fixtures/lifecycle/deferred_challenger_materialises_after_coding.sh"
+  "$REPO_DIR/tests/fixtures/lifecycle/deferred_challenger_materialises_after_coding.sh" \
+  "$REPO_DIR/tests/fixtures/lifecycle/deferred_implementation_challenger_forks_at_plan_handoff.sh"
 
 # ============================================================================
 # TEST 15: Startup lifecycle fixtures

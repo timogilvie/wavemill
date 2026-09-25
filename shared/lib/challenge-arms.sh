@@ -366,3 +366,19 @@ challenge_arm_read_field() {
   [[ -n "$arm_json" && -n "$jq_path" ]] || return 0
   echo "$arm_json" | jq -r "$jq_path // \"\"" 2>/dev/null || echo ""
 }
+
+# Whether a challenge at <stage> defers its challenger to a fork of the
+# primary instead of launching it at t=0. Review-stage arms fork after the
+# primary's coding (HOK-2811); implementation-stage arms fork after the
+# primary's single shared plan (HOK-3086) so both coders start from one plan
+# and one commit and the pair carries a ForkIdentity.
+#
+# WAVEMILL_CHALLENGE_IMPLEMENTATION_FORK=0 restores independent implementation
+# launches (operator rollback); those pairs then carry delivery verdicts only.
+challenge_stage_defers_to_fork() {
+  case "${1:-}" in
+    review) return 0 ;;
+    implementation) [[ "${WAVEMILL_CHALLENGE_IMPLEMENTATION_FORK:-1}" != "0" ]] ;;
+    *) return 1 ;;
+  esac
+}

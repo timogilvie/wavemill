@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { captureTransitionDiagnostic, claimReadyHandoff, handoffToken, isMatchingTendClaim, publishReadyHandoff, recordReadyChecked } from './ready-tend-handoff.ts';
+import { captureTransitionDiagnostic, claimReadyHandoff, handoffToken, isMatchingTendClaim, publishReadyHandoff, rebindTendHandoff, recordReadyChecked } from './ready-tend-handoff.ts';
 
 test('Ready publication and Tend claim are idempotent and head-bound', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'ready-tend-handoff-'));
@@ -21,6 +21,20 @@ test('Ready publication and Tend claim are idempotent and head-bound', async () 
     assert.equal(rekeyed.outcome, 'published');
     assert.equal(rekeyed.record.headSha, 'head-b');
     assert.equal((await claimReadyHandoff(dir, 1426, 'head-a')).outcome, 'rejected');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('Tend can rebind only its claimed handoff after a rebase', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ready-tend-rebase-'));
+  try {
+    await publishReadyHandoff(dir, 1495, 'old-head');
+    assert.equal((await rebindTendHandoff(dir, 1495, 'old-head', 'new-head')).outcome, 'rejected');
+    await claimReadyHandoff(dir, 1495, 'old-head');
+    const rebound = await rebindTendHandoff(dir, 1495, 'old-head', 'new-head');
+    assert.equal(rebound.outcome, 'claimed');
+    assert.ok(isMatchingTendClaim(rebound.record, 1495, 'new-head'));
+    assert.equal((await rebindTendHandoff(dir, 1495, 'old-head', 'new-head')).outcome, 'already-claimed');
+    assert.equal((await claimReadyHandoff(dir, 1495, 'old-head')).outcome, 'rejected');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

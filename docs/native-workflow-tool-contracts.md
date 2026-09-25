@@ -504,6 +504,40 @@ Compact valid example:
 
 Malformed patch calls are rejected by `validateNativePatch` and return model-visible diagnostics as `<json-path>: <message>` plus the same compact example.
 
+## Native Coding `ast` Transform Contract (HOK-3060)
+
+The `ast` advanced-tool family provides policy-bound, previewable structured source transforms. It is **opt-in**, **coding-only**, and requires `patch` certification. It is disabled by default; enable it under `nativeAgent.advanced.ast` with `allowedPhases: ["coding"]`. The transform reuses the TypeScript language index (HOK-3059) to locate occurrences but performs **no file writes of its own** — every edit is applied through the existing atomic `apply_patch` NativePatch runtime (`shared/lib/native-agent/patch-runtime.ts`), so patch validation, atomicity, snapshot recovery, and dirty-tree completion contracts remain authoritative.
+
+Two tools:
+
+- `ast_transform_preview` (read-only): resolves matches and returns an immutable, versioned, digest-sealed `AstTransformPreview`. It writes nothing.
+- `ast_transform_apply` (mutation): accepts exactly one preview, revalidates live state against the sealed digest, and — only when nothing drifted — applies the bound patch.
+
+Supported transform kinds (deterministic, name-bounded):
+
+- `rename_symbol` — rename a symbol; `replacement` must be a valid identifier.
+- `rewrite_symbol` — replace every occurrence with arbitrary `replacement` text.
+
+Only the TypeScript/JavaScript engine is supported. Any other language, a zero-match symbol, a symbol with more than one definition (unless a `path` scope narrows it to one), or an out-of-worktree/traversal `path` scope fails closed with an explicit error code and no writes.
+
+The preview is a versioned handshake. `AstTransformPreview` carries `version` (currently `1`), `transform`, `symbol`, `replacement`, `language`/`engine`/`engineVersion`, `indexRevision`, `scope`, `sourceRevisions` (per-file SHA-256 of the exact on-disk bytes), the generated `patch` (edit-diff operations — never whole-file replacement), `patchDigest`, `matches` (capped at `limits.maxMatches`), `matchCount`, `truncated`, a `formatter` outcome, a bounded/redacted `summary`, and a `previewDigest` that seals every other field.
+
+Apply revalidation order (each step fails closed, leaving the tree unchanged):
+
+1. `phase_denied` — not the coding phase.
+2. `preview_required` / `invalid_preview` — missing or structurally invalid preview.
+3. `version_mismatch` / `engine_mismatch` — contract or engine version differs.
+4. `preview_tampered` — recomputed `previewDigest` ≠ the sealed value.
+5. `patch_digest_mismatch` — the embedded patch's digest ≠ `patchDigest`.
+6. `path_denied` — a target no longer resolves inside the worktree.
+7. `source_drift` — a target file's current SHA-256 ≠ its captured `sourceRevisions` digest (catches any change, including whitespace).
+8. `index_drift` — the rebuilt whole-worktree `indexRevision` differs (e.g. an unrelated file was added).
+9. Then the sealed patch is handed to `applyNativePatch`; `patch_rejected` surfaces the runtime rejection, `io_error` a write failure.
+
+Formatter interaction: when a deterministic formatter is configured, its output for each transformed file is folded into the **same** NativePatch before the single atomic apply (recorded in `preview.formatter.applied`); there is no separate write path.
+
+Successful applies record `apply_patch`-style mutation and patch-snapshot evidence through the same recorder, and a failed transform is surfaced to the loop as a tool error (`astTransformAfterToolCall`), so mutation-failure tracking and transcript evidence stay uniform with ordinary patch behavior.
+
 ## Coding Failure Handoff
 
 `.coding-failure-handoff.json` is controller-authored diagnostic output for terminal native coding failures where the model either stopped without `.coding-complete` or `.coding-blocked-completion.json`, or kept writing a present-but-invalid completion artifact after bounded retries. It is distinct from `.coding-blocked-completion.json`: blocked-completion is model-authored and can drive review advancement, while failure handoff preserves failure context and the stage result remains failed.
