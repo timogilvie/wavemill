@@ -13,7 +13,8 @@ import {
 } from './challenge-comparison.ts';
 import { readEvalRecords } from './eval-persistence.ts';
 import type { EvalRecord } from './eval-schema.ts';
-import type { InvalidChallengeReason } from './challenge-execution-contract.ts';
+import type { ForkIdentity, InvalidChallengeReason } from './challenge-execution-contract.ts';
+import { readForkIdentity } from './fork-identity.ts';
 import {
   getSiblingBranch,
   classifyPairUnresolvableState,
@@ -391,17 +392,20 @@ function forkDescriptorForPair(
   sharedPrefix?: boolean;
   primaryInheritedStages?: ChallengeStage[];
   challengerInheritedStages?: ChallengeStage[];
+  forkIdentity?: ForkIdentity;
 } {
   const intent = primary?.challengeExecutionIntent ?? challenger?.challengeExecutionIntent;
   if (!intent) return {};
   const forkStage = readIntentString(intent, 'forkStage');
   const forkCommit = readIntentString(intent, 'forkCommit');
+  const forkIdentity = readForkIdentity(intent.forkIdentity);
   return {
     forkStage: forkStage ? normalizeChallengeStage(forkStage) : null,
     forkCommit,
     sharedPrefix: intent.sharedPrefix === true,
     primaryInheritedStages: readInheritedStages(intent, 'primary'),
     challengerInheritedStages: readInheritedStages(intent, 'challenger'),
+    ...(forkIdentity ? { forkIdentity } : {}),
   };
 }
 

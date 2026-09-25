@@ -378,6 +378,7 @@ type ComparisonRetentionInput = {
   sharedPrefix?: boolean;
   primaryInheritedStages?: ChallengeStage[];
   challengerInheritedStages?: ChallengeStage[];
+  forkIdentity?: ForkIdentity;
   primaryDiffIdentity?: ChallengeDiffIdentity;
   challengerDiffIdentity?: ChallengeDiffIdentity;
 };
@@ -389,6 +390,7 @@ function comparisonRetentionFields(input: ComparisonRetentionInput): Pick<
   | 'sharedPrefix'
   | 'primaryInheritedStages'
   | 'challengerInheritedStages'
+  | 'forkIdentity'
   | 'primaryDiffIdentity'
   | 'challengerDiffIdentity'
 > {
@@ -398,6 +400,7 @@ function comparisonRetentionFields(input: ComparisonRetentionInput): Pick<
     sharedPrefix: input.sharedPrefix ?? false,
     primaryInheritedStages: input.primaryInheritedStages ?? [],
     challengerInheritedStages: input.challengerInheritedStages ?? [],
+    ...(input.forkIdentity ? { forkIdentity: input.forkIdentity } : {}),
     ...(input.primaryDiffIdentity ? { primaryDiffIdentity: input.primaryDiffIdentity } : {}),
     ...(input.challengerDiffIdentity ? { challengerDiffIdentity: input.challengerDiffIdentity } : {}),
   };
