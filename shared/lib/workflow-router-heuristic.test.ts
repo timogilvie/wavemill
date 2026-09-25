@@ -35,8 +35,10 @@ await test('routes broad CLI workflow work to deep planning and medium-or-higher
     // coding ladder in model-registry.ts when new frontier models land.
     assert.ok([
       'claude-fable-5',
+      'claude-opus-5-5',
       'gpt-5.5',
       'gpt-5.6-terra',
+      'gpt-6-sol',
       'claude-sonnet-5',
       'claude-sonnet-4-6',
       'claude-sonnet-4-5-20250929',
@@ -275,6 +277,7 @@ await test('policy routing can return DeepSeek when explicitly configured', () =
   try {
     writeQuotaState(repoDir, {
       'claude-fable-5': 'exhausted',
+      'claude-opus-5-5': 'exhausted',
       'claude-opus-4-8': 'exhausted',
       'claude-opus-4-7': 'exhausted',
       'claude-opus-4-6': 'exhausted',
@@ -287,6 +290,8 @@ await test('policy routing can return DeepSeek when explicitly configured', () =
       'gpt-5-mini': 'exhausted',
       'gpt-5.5': 'exhausted',
       'gpt-5.6-terra': 'exhausted',
+      'gpt-6-sol': 'exhausted',
+      'gpt-6-luna': 'exhausted',
       'deepseek-r1': 'exhausted',
       'deepseek-v3': 'exhausted',
       'deepseek-reasoner': 'exhausted',

@@ -36,6 +36,7 @@ await test('auto mode uses degraded haiku-only routing in survival mode', async 
     'claude-opus-4-6': 'exhausted',
     'gpt-5.5': 'exhausted',
     'gpt-5.6-terra': 'exhausted',
+    'gpt-6-luna': 'exhausted',
     ...restoredFrontierQuotaState('exhausted'),
   });
 
@@ -109,7 +110,7 @@ await test('auto mode emits a constrained router transparency line when quota is
     const { result, stderr } = await captureStderr(() =>
       routeWorkflowAuto('Build a backend feature with tests and review.', { repoDir })
     );
-    assert.match(stderr, /\[router] constrained mode: claude-fable-5 quota is degrading; reserving it for high-complexity steps/);
+    assert.match(stderr, /\[router] constrained mode: claude-opus-5-5 quota is degrading; reserving it for high-complexity steps/);
     assert.ok(result.reasoning[0].includes('Constrained mode'));
   } finally {
     cleanup();
@@ -165,11 +166,14 @@ await test('policy routing excludes retired frontier from substitution', async (
 
   writeQuotaState(repoDir, {
     'claude-fable-5': 'exhausted',
+    'claude-opus-5-5': 'exhausted',
     'claude-opus-4-8': 'exhausted',
     'claude-opus-4-7': 'exhausted',
     'claude-opus-4-6': 'exhausted',
     'gpt-5.5': 'healthy',
     'gpt-5.6-terra': 'healthy',
+    'gpt-6-sol': 'exhausted',
+    'gpt-6-luna': 'exhausted',
   });
 
   try {
@@ -266,11 +270,14 @@ await test('auto mode logs frontier substitution without constrained banner when
 
   writeQuotaState(repoDir, {
     'claude-fable-5': 'exhausted',
+    'claude-opus-5-5': 'exhausted',
     'claude-opus-4-8': 'exhausted',
     'claude-opus-4-7': 'exhausted',
     'claude-opus-4-6': 'exhausted',
     'gpt-5.5': 'healthy',
     'gpt-5.6-terra': 'healthy',
+    'gpt-6-sol': 'exhausted',
+    'gpt-6-luna': 'exhausted',
   });
 
   try {
@@ -308,11 +315,14 @@ await test('auto mode excludes retired frontier when anthropic frontier is exhau
 
   writeQuotaState(repoDir, {
     'claude-fable-5': 'exhausted',
+    'claude-opus-5-5': 'exhausted',
     'claude-opus-4-8': 'exhausted',
     'claude-opus-4-7': 'exhausted',
     'claude-opus-4-6': 'exhausted',
     'gpt-5.5': 'healthy',
     'gpt-5.6-terra': 'healthy',
+    'gpt-6-sol': 'exhausted',
+    'gpt-6-luna': 'exhausted',
   });
 
   try {
@@ -336,11 +346,14 @@ await test('tryPolicyResolution pools exclude retired frontier for all three rol
 
   writeQuotaState(repoDir, {
     'claude-fable-5': 'exhausted',
+    'claude-opus-5-5': 'exhausted',
     'claude-opus-4-8': 'exhausted',
     'claude-opus-4-7': 'exhausted',
     'claude-opus-4-6': 'exhausted',
     'gpt-5.5': 'healthy',
     'gpt-5.6-terra': 'healthy',
+    'gpt-6-sol': 'exhausted',
+    'gpt-6-luna': 'exhausted',
   });
 
   try {
@@ -364,11 +377,14 @@ await test('emits supported substitutions without selecting the retired frontier
 
   writeQuotaState(repoDir, {
     'claude-fable-5': 'exhausted',
+    'claude-opus-5-5': 'exhausted',
     'claude-opus-4-8': 'exhausted',
     'claude-opus-4-7': 'exhausted',
     'claude-opus-4-6': 'exhausted',
     'gpt-5.5': 'healthy',
     'gpt-5.6-terra': 'healthy',
+    'gpt-6-sol': 'exhausted',
+    'gpt-6-luna': 'exhausted',
   });
 
   try {
@@ -427,6 +443,7 @@ await test('emits survival-mode banner when every frontier vendor is exhausted (
     'claude-opus-4-6': 'exhausted',
     'gpt-5.5': 'exhausted',
     'gpt-5.6-terra': 'exhausted',
+    'gpt-6-luna': 'exhausted',
     ...restoredFrontierQuotaState('exhausted'),
   });
 
