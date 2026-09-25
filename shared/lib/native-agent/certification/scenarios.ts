@@ -63,6 +63,11 @@ import {
   createCodeSearchTools,
   type CodeSearchDetails,
 } from '../tools/code-search.ts';
+import {
+  createAstTransformTools,
+  type AstTransformApplyDetails,
+  type AstTransformPreviewDetails,
+} from '../tools/ast-transform.ts';
 import { createGitCommitTools } from '../tools/git.ts';
 import { createIntendedFileTracker, intendedFilesAfterToolCall } from '../tools/intended-files.ts';
 import {
@@ -1504,6 +1509,91 @@ function fileURLPath(u: URL): string {
 }
 
 // ---------------------------------------------------------------------------
+// ast transform family (HOK-3060) — offline scenario coverage
+// ---------------------------------------------------------------------------
+
+function astTransformConfig(): {
+  enabled: true;
+  allowedPhases: Array<'coding'>;
+  limits: { maxFiles: number; maxBytes: number; maxSymbols: number; maxMatches: number; maxSummaryBytes: number };
+  invalidReasons: string[];
+} {
+  return {
+    enabled: true,
+    allowedPhases: ['coding'],
+    limits: {
+      maxFiles: 500,
+      maxBytes: 4 * 1024 * 1024,
+      maxSymbols: 20_000,
+      maxMatches: 500,
+      maxSummaryBytes: 4096,
+    },
+    invalidReasons: [],
+  };
+}
+
+/**
+ * Deterministic, coding-only rename: preview then apply through the atomic
+ * NativePatch runtime, proving preview writes nothing and apply mutates the
+ * source. Runs entirely against a throwaway worktree; no provider credentials.
+ */
+async function assertAstTransformCodingRename(_ctx: ScenarioContext): Promise<ScenarioAssertionOutcome> {
+  const worktree = mkdtempSync(join(tmpdir(), 'native-cert-ast-'));
+  try {
+    const relPath = 'src/app.ts';
+    const original = [
+      'export function calculateTotal(a: number, b: number): number {',
+      '  return a + b;',
+      '}',
+      '',
+      'export const total = calculateTotal(1, 2);',
+      '',
+    ].join('\n');
+    writeFixture(worktree, relPath, original);
+
+    const descriptors = createAstTransformTools({ config: astTransformConfig(), worktreePath: worktree, phase: 'coding' });
+    if (descriptors.length !== 2) {
+      return { kind: 'fail', detail: `Expected 2 ast descriptors, got ${descriptors.length}.` };
+    }
+    const preview = descriptors.find((d) => d.metadata.name === 'ast_transform_preview');
+    const apply = descriptors.find((d) => d.metadata.name === 'ast_transform_apply');
+    if (!preview || !apply) {
+      return { kind: 'fail', detail: 'ast_transform preview/apply descriptor missing.' };
+    }
+
+    const previewResult = await preview.execute('cert-ast-preview', {
+      transform: 'rename_symbol',
+      symbol: 'calculateTotal',
+      replacement: 'sumValues',
+    });
+    const previewDetails = previewResult.details as AstTransformPreviewDetails;
+    if (!previewDetails.ok) {
+      return { kind: 'fail', detail: `Expected ast preview to succeed, got ${JSON.stringify(previewDetails)}.` };
+    }
+    // Preview performs zero writes.
+    if (readFileSync(join(worktree, relPath), 'utf8') !== original) {
+      return { kind: 'fail', detail: 'ast preview must not modify any file.' };
+    }
+
+    const applyResult = await apply.execute('cert-ast-apply', { preview: previewDetails.preview });
+    const applyDetails = applyResult.details as AstTransformApplyDetails;
+    if (!applyDetails.ok) {
+      return { kind: 'fail', detail: `Expected ast apply to succeed, got ${JSON.stringify(applyDetails)}.` };
+    }
+    if (!applyDetails.result.atomic || applyDetails.result.changedFiles.join(',') !== relPath) {
+      return { kind: 'fail', detail: `Unexpected ast apply result: ${JSON.stringify(applyDetails.result.changedFiles)}.` };
+    }
+    const after = readFileSync(join(worktree, relPath), 'utf8');
+    if (after.includes('calculateTotal') || !after.includes('function sumValues') || !after.includes('sumValues(1, 2)')) {
+      return { kind: 'fail', detail: 'ast apply did not rename the symbol as expected.' };
+    }
+    return { kind: 'pass' };
+  } finally {
+    rmSync(worktree, { recursive: true, force: true });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Default scenario catalog
 // ---------------------------------------------------------------------------
 
@@ -1753,6 +1843,15 @@ const DEFAULT_SCENARIOS: CertificationScenario[] = [
     description:
       'code_search_definition against the vendored TS fixture returns a deterministic envelope for workflow phase certification.',
     assertion: assertCodeSearchReviewDefinition,
+  },
+  {
+    id: 'ast.patch.rename-preview-apply-deterministic',
+    phase: 'patch',
+    category: 'tool',
+    classification: 'deterministic',
+    description:
+      'ast_transform_preview writes nothing and ast_transform_apply mutates source atomically through the NativePatch runtime for a coding-only rename.',
+    assertion: assertAstTransformCodingRename,
   },
   {
     id: 'workflow.phase.native-openrouter-launch-matrix',
