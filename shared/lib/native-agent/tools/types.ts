@@ -256,12 +256,41 @@ export interface ToolRedactionMetadata {
   categories: string[];
 }
 
+/** Identity reported by an external MCP server during `initialize`. */
+export interface McpServerIdentity {
+  name: string;
+  version: string;
+}
+
+/**
+ * Provenance block attached to results returned by the MCP tool bridge. Every
+ * field is derived deterministically — provider proxy identity is config, the
+ * logical (server, tool) pair is the descriptor coordinate, the argument
+ * digest is the same fingerprint the loop stamps into provenance, and the
+ * artifact reference points at the content-addressed raw payload.
+ */
+export interface McpToolResultMetadata {
+  providerProxy: string;
+  logicalServer: string;
+  logicalTool: string;
+  serverIdentity: McpServerIdentity;
+  argsFingerprint: string;
+  resultArtifactRef?: {
+    digest: string;
+    byteSize: number;
+    path: string;
+    truncated?: boolean;
+    originalByteSize?: number;
+  };
+}
+
 /** Aggregate tool result metadata embedded in details.__wavemill and transcript events. */
 export interface ToolResultMetadata {
   outputCap?: ToolOutputCapMetadata;
   provenance?: ToolProvenanceMetadata;
   redaction?: ToolRedactionMetadata;
   trust?: ToolTrustMetadata;
+  mcp?: McpToolResultMetadata;
 }
 
 /** Minimal result shape returned by a Wavemill tool executor. */

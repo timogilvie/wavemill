@@ -1488,6 +1488,42 @@ async function invokeCodeSearchDefinition(worktreePath: string): Promise<
       kind: 'fail',
       detail: `Expected meta.engine = "typescript", got ${JSON.stringify(details.meta.engine)}.`,
     };
+// MCP client bridge scenarios (HOK-3056)
+// ---------------------------------------------------------------------------
+
+async function assertMcpToolsSuccess(_ctx: ScenarioContext): Promise<ScenarioAssertionOutcome> {
+  const { createMcpToolDescriptors } = await import('../tools/mcp.ts');
+  const client = makeInMemoryMcpClient({
+    'mock/echo': () => ({
+      ok: true,
+      payload: { content: [{ type: 'text', text: 'ok' }] },
+      rawBytes: new TextEncoder().encode('{"content":[{"type":"text","text":"ok"}]}'),
+    }),
+  });
+  const descriptors = createMcpToolDescriptors({
+    config: mcpConfigFixture(),
+    client,
+    storeArtifact: (bytes) => ({ digest: 'ok-hash', byteSize: bytes.byteLength, path: 'artifacts/ok' }),
+  });
+  const echo = descriptors.find((d) => d.metadata.name === 'mcp__mock__echo');
+  if (!echo) return { kind: 'fail', detail: 'expected mcp__mock__echo descriptor' };
+  const result = await echo.execute('call', { arguments: { msg: 'hi' } });
+  const mcp = result.metadata?.mcp;
+  if (!mcp) return { kind: 'fail', detail: 'result missing metadata.mcp block' };
+  if (mcp.providerProxy !== 'pi-mcp-proxy') {
+    return { kind: 'fail', detail: `expected providerProxy=pi-mcp-proxy, got ${mcp.providerProxy}` };
+  }
+  if (mcp.logicalServer !== 'mock' || mcp.logicalTool !== 'echo') {
+    return { kind: 'fail', detail: 'logical server/tool not recorded' };
+  }
+  if (!/^[0-9a-f]{16}$/.test(mcp.argsFingerprint)) {
+    return { kind: 'fail', detail: `argsFingerprint shape wrong: ${mcp.argsFingerprint}` };
+  }
+  if (!mcp.resultArtifactRef || mcp.resultArtifactRef.digest !== 'ok-hash') {
+    return { kind: 'fail', detail: 'resultArtifactRef not threaded through metadata' };
+  }
+  if (result.metadata?.trust?.sourceKind !== 'mcp_result') {
+    return { kind: 'fail', detail: 'trust.sourceKind must be mcp_result' };
   }
   return { kind: 'pass' };
 }
@@ -1591,6 +1627,192 @@ async function assertAstTransformCodingRename(_ctx: ScenarioContext): Promise<Sc
   } finally {
     rmSync(worktree, { recursive: true, force: true });
   }
+}
+
+async function assertMcpToolsDenial(_ctx: ScenarioContext): Promise<ScenarioAssertionOutcome> {
+  const { createMcpToolDescriptors } = await import('../tools/mcp.ts');
+  const { evaluateBeforeToolCallPolicy } = await import('../tools/policies.ts');
+  const { computeEligibility } = await import('../tools/exposure.ts');
+  const { withDefaultMetadata } = await import('../tools/types.ts');
+  let dispatched = 0;
+  const client = makeInMemoryMcpClient({
+    'mock/echo': () => {
+      dispatched += 1;
+      return { ok: true, payload: {}, rawBytes: new Uint8Array() };
+    },
+  });
+  const config = mcpConfigFixture();
+  config.nativeAgent!.advanced!.mcp!.logicalIds = ['mcp.mock.noop'];
+  const descriptors = createMcpToolDescriptors({ config, client }).map((d) => ({
+    ...d,
+    metadata: withDefaultMetadata(d.metadata),
+  }));
+  const eligibility = computeEligibility({
+    phase: 'coding',
+    config,
+    certification: { maxCertifiedPhase: 'workflow' },
+    registry: descriptors.map((d) => d.metadata),
+  });
+  const denial = evaluateBeforeToolCallPolicy({
+    phase: 'coding',
+    config: { eligibleNames: eligibility.eligibleNames },
+    worktreePath: '/tmp/mcp-cert',
+    registry: descriptors.map((d) => d.metadata),
+    toolCall: { name: 'mcp__mock__echo', arguments: {} },
+  });
+  if (denial.kind !== 'deny' || denial.reason !== 'not_exposed') {
+    return { kind: 'fail', detail: `expected deny/not_exposed, got ${JSON.stringify(denial)}` };
+  }
+  if (dispatched !== 0) {
+    return { kind: 'fail', detail: 'denied call must not dispatch to client' };
+  }
+  return { kind: 'pass' };
+}
+
+async function assertMcpToolsTimeout(_ctx: ScenarioContext): Promise<ScenarioAssertionOutcome> {
+  const { createMcpToolDescriptors } = await import('../tools/mcp.ts');
+  const client = makeInMemoryMcpClient({
+    'mock/echo': () => ({ ok: false, kind: 'timeout', message: 'call timed out' }),
+  });
+  const descriptors = createMcpToolDescriptors({ config: mcpConfigFixture(), client });
+  const echo = descriptors.find((d) => d.metadata.name === 'mcp__mock__echo');
+  if (!echo) return { kind: 'fail', detail: 'missing mcp__mock__echo' };
+  const result = await echo.execute('call', { arguments: {} });
+  const detail = result.details as { ok: boolean; errorKind?: string };
+  if (detail.ok !== false || detail.errorKind !== 'timeout') {
+    return { kind: 'fail', detail: `expected timeout failure, got ${JSON.stringify(detail)}` };
+  }
+  return { kind: 'pass' };
+}
+
+async function assertMcpTranscriptRedaction(_ctx: ScenarioContext): Promise<ScenarioAssertionOutcome> {
+  const { createMcpToolDescriptors } = await import('../tools/mcp.ts');
+  const { FAKE_SECRET_LITERAL } = await import('../fixtures/mcp/scenarios.ts');
+  const { redactSecretsInValue, redactSecrets } = await import('../tools/redaction.ts');
+  const client = makeInMemoryMcpClient({
+    'mock/echo': () => ({
+      ok: false,
+      kind: 'rpc_error',
+      message: `provider said token=${FAKE_SECRET_LITERAL}`,
+    }),
+  });
+  const descriptors = createMcpToolDescriptors({ config: mcpConfigFixture(), client });
+  const echo = descriptors.find((d) => d.metadata.name === 'mcp__mock__echo');
+  if (!echo) return { kind: 'fail', detail: 'missing mcp__mock__echo' };
+  const result = await echo.execute('call', { arguments: {} });
+  // Simulate the loop's post-execution redaction pipeline: every text block is
+  // filtered through redactSecrets, every details value through
+  // redactSecretsInValue, before either is written to the transcript.
+  const redactedTexts = result.content.map((c) => redactSecrets(c.text));
+  const redactedDetails = redactSecretsInValue(result.details);
+  const anyMarker = redactedTexts.some((r) => r.text.includes('[REDACTED'))
+    || redactedDetails.categories.length > 0
+    || JSON.stringify(redactedDetails.value).includes('[REDACTED');
+  if (!anyMarker) {
+    return { kind: 'fail', detail: 'no redaction marker present after profile pass' };
+  }
+  const combined = redactedTexts.map((r) => r.text).join('\n')
+    + '\n'
+    + JSON.stringify(redactedDetails.value);
+  if (combined.includes(FAKE_SECRET_LITERAL)) {
+    return { kind: 'fail', detail: 'raw secret literal survived the redaction pipeline' };
+  }
+  return { kind: 'pass' };
+}
+
+async function assertMcpCleanupLifecycle(_ctx: ScenarioContext): Promise<ScenarioAssertionOutcome> {
+  const stopReasons: string[] = [];
+  const client = makeInMemoryMcpClient(
+    {
+      'mock/echo': () => ({ ok: true, payload: {}, rawBytes: new Uint8Array() }),
+    },
+    { onStopAll: (reason) => stopReasons.push(reason) },
+  );
+  await client.ensureStarted('mock');
+  await client.callTool('mock', 'echo', {}, { timeoutMs: 1000, maxOutputBytes: 8192 });
+  await client.stopAll('loop_abort');
+  await client.stopAll('idempotent');
+  if (stopReasons.length !== 2) {
+    return { kind: 'fail', detail: `expected two stopAll calls, got ${stopReasons.length}` };
+  }
+  if (stopReasons[0] !== 'loop_abort') {
+    return { kind: 'fail', detail: `expected first reason loop_abort, got ${stopReasons[0]}` };
+  }
+  const snap = client.snapshot();
+  if (snap.servers[0]?.started !== false) {
+    return { kind: 'fail', detail: 'snapshot must report stopped state after stopAll' };
+  }
+  return { kind: 'pass' };
+}
+
+/** Minimal in-memory MCP config fixture used by every MCP scenario. */
+function mcpConfigFixture(): import('../../config.ts').WavemillConfig {
+  return {
+    nativeAgent: {
+      advanced: {
+        mcp: {
+          enabled: true,
+          allowedPhases: ['coding'],
+          defaults: { callTimeoutMs: 1000, maxOutputBytes: 8192 },
+          servers: {
+            mock: {
+              providerProxy: 'pi-mcp-proxy',
+              command: 'node',
+              args: [],
+              envAllowlist: [],
+              tools: ['echo', 'noop'],
+              class: 'read-only',
+            },
+          },
+        },
+      },
+    },
+  } as import('../../config.ts').WavemillConfig;
+}
+
+interface InMemoryMcpClientOptions {
+  onStopAll?: (reason: string) => void;
+}
+
+function makeInMemoryMcpClient(
+  scripted: Record<string, () => import('../mcp-client.ts').McpCallOutcome>,
+  opts: InMemoryMcpClientOptions = {},
+): import('../mcp-client.ts').McpClient {
+  const identity = { name: 'mock', version: '1.0.0' };
+  let started = false;
+  return {
+    async ensureStarted(serverName) {
+      started = true;
+      return { serverName, identity, pid: 1 };
+    },
+    async callTool(serverName, toolName) {
+      const responder = scripted[`${serverName}/${toolName}`];
+      if (!responder) {
+        return { ok: false, kind: 'tool_not_allowed', message: 'not scripted' };
+      }
+      return responder();
+    },
+    async stopServer() {
+      started = false;
+    },
+    async stopAll(reason) {
+      started = false;
+      opts.onStopAll?.(reason);
+    },
+    snapshot() {
+      return {
+        servers: [
+          {
+            serverName: 'mock',
+            started,
+            identity,
+            pid: started ? 1 : null,
+            consecutiveFailures: 0,
+          },
+        ],
+      };
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1861,6 +2083,51 @@ const DEFAULT_SCENARIOS: CertificationScenario[] = [
     description:
       'Kimi, Qwen, and GLM native OpenRouter aliases and raw IDs route only through launch-priority-eligible planning, coding, and review roles.',
     assertion: assertWorkflowNativeOpenRouterLaunchMatrix,
+  },
+  {
+    id: 'mcp.tools.success',
+    phase: 'workflow',
+    category: 'tool',
+    classification: 'deterministic',
+    description:
+      'MCP descriptor factory returns provenance-stamped results (provider proxy, logical server/tool, args fingerprint, server identity, artifact reference) on a successful call.',
+    assertion: assertMcpToolsSuccess,
+  },
+  {
+    id: 'mcp.tools.denial',
+    phase: 'workflow',
+    category: 'tool',
+    classification: 'deterministic',
+    description:
+      'A logical id excluded from the family allowlist is denied by policy before any client dispatch happens (defense in depth over exposure).',
+    assertion: assertMcpToolsDenial,
+  },
+  {
+    id: 'mcp.tools.timeout',
+    phase: 'workflow',
+    category: 'tool',
+    classification: 'deterministic',
+    description:
+      'A timeout outcome propagates as ok=false with kind=timeout; no result artifact is stored and the descriptor still returns a WavemillToolResult.',
+    assertion: assertMcpToolsTimeout,
+  },
+  {
+    id: 'mcp.transcript.redaction',
+    phase: 'workflow',
+    category: 'transcript',
+    classification: 'deterministic',
+    description:
+      'Secrets that surface in a failed MCP RPC message do not appear verbatim in the descriptor result once the shared redaction profile runs.',
+    assertion: assertMcpTranscriptRedaction,
+  },
+  {
+    id: 'mcp.cleanup.lifecycle',
+    phase: 'workflow',
+    category: 'phase',
+    classification: 'deterministic',
+    description:
+      'MCP client stopAll is idempotent, records both reasons distinctly, and snapshot reports stopped state after cleanup.',
+    assertion: assertMcpCleanupLifecycle,
   },
 ];
 

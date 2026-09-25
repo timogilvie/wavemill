@@ -1696,7 +1696,7 @@
                     "properties": {
                         "browser": { "$ref": "#/definitions/nativeAgentAdvancedBrowserFamily" },
                         "screenshot": { "$ref": "#/definitions/nativeAgentAdvancedScreenshotFamily" },
-                        "mcp": { "$ref": "#/definitions/nativeAgentAdvancedFamily" },
+                        "mcp": { "$ref": "#/definitions/nativeAgentMcpFamily" },
                         "code_search": { "$ref": "#/definitions/nativeAgentAdvancedCodeSearchFamily" },
                         "ast": { "$ref": "#/definitions/nativeAgentAdvancedAstFamily" },
                         "eval": { "$ref": "#/definitions/nativeAgentAdvancedFamily" }
@@ -3464,6 +3464,103 @@
                         "minLength": 1
                     }
                 }
+            },
+            "additionalProperties": false
+        },
+        "nativeAgentMcpFamily": {
+            "type": "object",
+            "description": "Per-family opt-in for the MCP advanced tool family. Extends nativeAgentAdvancedFamily with explicit server and per-server tool declarations.",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Master toggle for the MCP family."
+                },
+                "allowedPhases": {
+                    "type": "array",
+                    "description": "Phases for which MCP is eligible when enabled. Empty or omitted keeps the family hidden even when enabled.",
+                    "items": {
+                        "type": "string",
+                        "enum": ["task-expansion", "planning", "coding", "review"]
+                    },
+                    "default": []
+                },
+                "logicalIds": {
+                    "type": "array",
+                    "description": "Optional narrow allowlist of family-scoped logical ids. When present, only listed logical ids become eligible.",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                },
+                "defaults": {
+                    "type": "object",
+                    "description": "Family-wide defaults for timeouts and output caps. Server-level values override these.",
+                    "properties": {
+                        "startupTimeoutMs": { "type": "integer", "minimum": 1 },
+                        "callTimeoutMs": { "type": "integer", "minimum": 1 },
+                        "shutdownTimeoutMs": { "type": "integer", "minimum": 1 },
+                        "maxOutputBytes": { "type": "integer", "minimum": 4096 },
+                        "failureThreshold": { "type": "integer", "minimum": 0 }
+                    },
+                    "additionalProperties": false
+                },
+                "servers": {
+                    "type": "object",
+                    "description": "Map of logical server name → server declaration. Wildcards are forbidden.",
+                    "additionalProperties": { "$ref": "#/definitions/nativeAgentMcpServer" }
+                }
+            },
+            "additionalProperties": false
+        },
+        "nativeAgentMcpServer": {
+            "type": "object",
+            "description": "Declaration of an MCP server plus the allowlisted tools it exposes.",
+            "required": ["providerProxy", "command", "args", "envAllowlist", "tools"],
+            "properties": {
+                "providerProxy": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Wavemill-side provider proxy identifier."
+                },
+                "command": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Executable to spawn for the server process."
+                },
+                "args": {
+                    "type": "array",
+                    "description": "Argument vector passed to the server process. May be empty.",
+                    "items": { "type": "string" }
+                },
+                "envAllowlist": {
+                    "type": "array",
+                    "description": "Process-env variable names whose values survive the spawn allowlist. Empty is legal.",
+                    "items": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                    }
+                },
+                "tools": {
+                    "type": "array",
+                    "description": "Non-empty list of logical tool names exported by this server. Wildcards forbidden.",
+                    "minItems": 1,
+                    "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "^[A-Za-z0-9_.-]+$"
+                    }
+                },
+                "class": {
+                    "type": "string",
+                    "enum": ["read-only", "mutation"],
+                    "default": "read-only"
+                },
+                "startupTimeoutMs": { "type": "integer", "minimum": 1 },
+                "callTimeoutMs": { "type": "integer", "minimum": 1 },
+                "shutdownTimeoutMs": { "type": "integer", "minimum": 1 },
+                "maxOutputBytes": { "type": "integer", "minimum": 4096 },
+                "failureThreshold": { "type": "integer", "minimum": 0 }
             },
             "additionalProperties": false
         },
