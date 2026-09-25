@@ -2425,13 +2425,14 @@ for t in "${TASKS[@]}"; do
     challenger_entry_review_mode=$(echo "$challenge_plan" | jq -r '.entries[1].reviewMode // empty' 2>/dev/null)
     challenge_intent=$(echo "$challenge_plan" | jq -c '.challengeIntent // null' 2>/dev/null || echo "null")
 
-    # HOK-2811: Review-stage challenges defer the challenger to a fork trigger
-    # that fires after the primary's coding phase. Skip the /tmp packet mirror
-    # for the challenger pre-fork — materialisation copies the primary's whole
-    # feature dir into the challenger's, so /tmp mirrors would be stale anyway.
+    # HOK-2811 / HOK-3086: review- and implementation-stage challenges defer the
+    # challenger to a fork of the primary (after coding for review, after the
+    # shared plan for implementation). Pre-fork the /tmp packet mirror is
+    # skipped — materialisation copies the primary's feature artifacts into the
+    # challenger's, so /tmp mirrors would be stale anyway.
     defer_challenger="false"
     pending_arm_state="awaiting_fork"
-    if [[ "$challenge_stage" == "review" ]]; then
+    if challenge_stage_defers_to_fork "$challenge_stage"; then
       defer_challenger="true"
     elif [[ "$plan_awaits_expanded_route" == "true" ]]; then
       # HOK-3065: plan-stage challenger sealed pre-expansion. Defer it as an

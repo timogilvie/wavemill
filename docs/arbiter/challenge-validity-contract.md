@@ -94,6 +94,7 @@ Reason codes:
 | `divergent_pre_stage_inputs` | One or more pre-stage inputs no longer match | Invalid stage attribution; direct evidence is ignored |
 | `unverified_fork_commit` | The shared fork commit is absent or unverified | Invalid stage attribution |
 | `missing_fork_identity` | Required fork identity is absent | Invalid stage attribution |
+| `independent_launch_no_stage_label` | The pair launched independently (no fork), so it has no stage label by design; it still carries a delivery verdict | Insufficient evidence |
 | `plan_hash_mismatch` | Fork plan hash is missing or divergent | Invalid stage attribution |
 | `prompt_hash_mismatch` | Fork prompt hash is missing or divergent | Invalid stage attribution |
 | `task_packet_hash_mismatch` | Fork task-packet hash is missing or divergent | Invalid stage attribution |
@@ -125,7 +126,32 @@ Reason codes:
 | `challengerInheritedStages` | Challenger stages inherited from pre-fork execution |
 | `producer`, `producerVersion` | Producer stamp for the identity envelope |
 
-**Producer.** `challenge_materialize_challenger_arm` computes the envelope via
+**Which pairs get a stage label (HOK-3085, decided 2026-09-25).** A stage
+label requires a `ForkIdentity`, so only forked pairs can earn one:
+
+| Varied stage | Fork point | Challenger inherits | Challenger runs |
+|---|---|---|---|
+| `review` | Primary's coding completed (live HEAD) | plan + implementation | review |
+| `implementation` | Primary's plan→coding handoff (plan-time HEAD + plan snapshot) | plan | coding, then review |
+
+Implementation-stage pairs fork after the primary's single shared plan
+(HOK-3086), so both coders start from one plan and one commit. This accepts
+that the shared plan was written by one planner, a fixed and recorded
+condition shared by both arms, in exchange for valid coding-stage data.
+Independently launched pairs (the `WAVEMILL_CHALLENGE_IMPLEMENTATION_FORK=0`
+rollback, or rows from before HOK-3086) carry delivery verdicts only and are
+attributed `independent_launch_no_stage_label` rather than
+`missing_fork_identity`.
+
+The implementation fork point is recorded by
+`challenge_record_implementation_fork_point` at the plan→coding transition,
+before the primary's coder launches. Materialisation, including any retry,
+forks from that recorded commit and snapshot, never from the primary's live
+HEAD. An implementation arm that reaches the primary's coding stage without a
+recorded fork point is exhausted as `missing_fork_point`.
+
+**Producer.** `challenge_materialize_challenger_arm` (review) and
+`challenge_materialize_implementation_arm` (implementation) compute the envelope via
 `tools/compute-fork-identity.ts` (`shared/lib/fork-identity.ts`) after the
 challenger's feature dir and config overlay are copied, and stamps it as
 `forkIdentity` on both arms' intent files and state intents. Eval assembly

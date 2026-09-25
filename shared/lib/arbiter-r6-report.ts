@@ -25,7 +25,13 @@ import { deriveNoComparisonReason } from './challenge-comparison.ts';
 import { isChallengeRecordVoided, type ChallengeRecordVoid } from './challenge-record-void.ts';
 import { resolveSelectionHealthKey } from './challenge-selection-health.ts';
 
-export type R6CohortId = 'pre-fork' | 'reviewer-fork' | 'other-fork' | 'ambiguous';
+export type R6CohortId = 'pre-fork' | 'reviewer-fork' | 'implementation-fork' | 'other-fork' | 'ambiguous';
+
+/** Fork cohorts and the stage whose attribution label each one measures. */
+const FORK_COHORT_STAGE: Partial<Record<R6CohortId, 'review' | 'implementation'>> = {
+  'reviewer-fork': 'review',
+  'implementation-fork': 'implementation',
+};
 
 export type R6DeliveryVerdictKind = 'primary' | 'challenger' | 'tie' | 'null' | 'missing';
 
@@ -236,14 +242,18 @@ function deriveReason(record: StoredChallengeComparison): NoComparisonReason | u
 /**
  * Cohort classification per plan.md: pre-fork is `sharedPrefix !== true` or
  * no reviewer fork identity; reviewer-fork post is
- * `sharedPrefix === true` AND `forkStage === 'review'`; other fork stages and
- * incomplete provenance are reported separately.
+ * `sharedPrefix === true` AND `forkStage === 'review'`; implementation-fork
+ * (HOK-3086) is `sharedPrefix === true` AND `forkStage === 'implementation'`;
+ * other fork stages and incomplete provenance are reported separately.
  */
 export function classifyCohort(record: StoredChallengeComparison): R6CohortId {
   const shared = record.sharedPrefix;
   const forkStage = record.forkStage;
   if (shared === true && forkStage === 'review') {
     return 'reviewer-fork';
+  }
+  if (shared === true && forkStage === 'implementation') {
+    return 'implementation-fork';
   }
   if (shared === true && forkStage && forkStage !== 'review') {
     return 'other-fork';
@@ -368,9 +378,10 @@ function successfullyForked(record: StoredChallengeComparison): boolean {
   return !!record.forkIdentity && !!record.forkIdentity.commit;
 }
 
-function isReviewerStageEligible(record: StoredChallengeComparison, cohort: R6CohortId): boolean {
-  if (cohort !== 'reviewer-fork') return false;
-  return successfullyForked(record) && record.stageAttribution?.stage === 'review';
+function isForkStageLabelEligible(record: StoredChallengeComparison, cohort: R6CohortId): boolean {
+  const stage = FORK_COHORT_STAGE[cohort];
+  if (!stage) return false;
+  return successfullyForked(record) && record.stageAttribution?.stage === stage;
 }
 
 function buildCohortMetrics(cohort: R6CohortId, records: StoredChallengeComparison[], evals: R6EvalRow[]): R6CohortMetrics {
@@ -425,7 +436,7 @@ function buildCohortMetrics(cohort: R6CohortId, records: StoredChallengeComparis
       }
     }
     const label = stageLabelStatus(record);
-    if (label === 'valid' && isReviewerStageEligible(record, cohort)) {
+    if (label === 'valid' && isForkStageLabelEligible(record, cohort)) {
       validLabelPairs += 1;
     } else if (label === 'invalid') {
       invalidLabelPairs += 1;
@@ -438,7 +449,7 @@ function buildCohortMetrics(cohort: R6CohortId, records: StoredChallengeComparis
       const { costUsd: rowCost, wallSeconds: rowWall } = evalCostForPair(record.challengePairId, evals);
       if (typeof rowCost === 'number') { costUsd += rowCost; costCount += 1; } else { costUnavailable += 1; }
       if (typeof rowWall === 'number') { wallSeconds += rowWall; wallCount += 1; } else { durationUnavailable += 1; }
-      if (label === 'valid' && isReviewerStageEligible(record, cohort)) {
+      if (label === 'valid' && isForkStageLabelEligible(record, cohort)) {
         if (typeof rowCost === 'number') { validLabelCost += rowCost; validLabelCostCount += 1; }
         if (typeof rowWall === 'number') { validLabelWall += rowWall; validLabelWallCount += 1; }
       }
@@ -448,13 +459,13 @@ function buildCohortMetrics(cohort: R6CohortId, records: StoredChallengeComparis
     const bp = bySharedPrefix.get(bucket) ?? { launchedPairs: 0, deliveryComparedPairs: 0, validLabelPairs: 0 };
     if (!isPhantom) bp.launchedPairs += 1;
     if (record.comparisonOutcome === 'compared') bp.deliveryComparedPairs += 1;
-    if (label === 'valid' && isReviewerStageEligible(record, cohort)) bp.validLabelPairs += 1;
+    if (label === 'valid' && isForkStageLabelEligible(record, cohort)) bp.validLabelPairs += 1;
     bySharedPrefix.set(bucket, bp);
   }
 
   const totalPairs = launchedPairs + phantomPairs;
   const deliveryYieldRate = launchedPairs > 0 ? deliveryComparedPairs / launchedPairs : 0;
-  const validLabelDenom = cohort === 'reviewer-fork' ? successfullyForkedPairs : deliveryComparedPairs;
+  const validLabelDenom = FORK_COHORT_STAGE[cohort] ? successfullyForkedPairs : deliveryComparedPairs;
   const validLabelYieldRate = validLabelDenom > 0 ? validLabelPairs / validLabelDenom : 0;
 
   const causeMap = new Map<NoComparisonReason, R6CauseSummary>();
@@ -467,7 +478,7 @@ function buildCohortMetrics(cohort: R6CohortId, records: StoredChallengeComparis
   }
   const bySharedPrefixMap = new Map<'true' | 'false' | 'unknown', R6SharedPrefixCohortMetrics>();
   for (const [key, value] of bySharedPrefix) {
-    const validDenom = cohort === 'reviewer-fork' ? value.launchedPairs : value.deliveryComparedPairs;
+    const validDenom = FORK_COHORT_STAGE[cohort] ? value.launchedPairs : value.deliveryComparedPairs;
     bySharedPrefixMap.set(key, {
       key,
       launchedPairs: value.launchedPairs,
@@ -914,7 +925,7 @@ export function formatArbiterR6ReportMarkdown(report: R6Report): string {
   lines.push('');
   lines.push('| Cohort | Launched | Fork ok | Delivery compared | Delivery yield | Valid label | Valid-label yield | $/usable pair | s/usable pair |');
   lines.push('|--------|----------|---------|-------------------|----------------|-------------|-------------------|----------------|-----------------|');
-  const cohortOrder: R6CohortId[] = ['pre-fork', 'reviewer-fork', 'other-fork', 'ambiguous'];
+  const cohortOrder: R6CohortId[] = ['pre-fork', 'reviewer-fork', 'implementation-fork', 'other-fork', 'ambiguous'];
   for (const cohortId of cohortOrder) {
     const cohort = report.cohorts.get(cohortId);
     if (!cohort) continue;
