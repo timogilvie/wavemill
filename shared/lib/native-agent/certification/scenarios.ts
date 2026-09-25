@@ -1488,6 +1488,11 @@ async function invokeCodeSearchDefinition(worktreePath: string): Promise<
       kind: 'fail',
       detail: `Expected meta.engine = "typescript", got ${JSON.stringify(details.meta.engine)}.`,
     };
+  }
+  return { kind: 'pass' };
+}
+
+// ---------------------------------------------------------------------------
 // MCP client bridge scenarios (HOK-3056)
 // ---------------------------------------------------------------------------
 

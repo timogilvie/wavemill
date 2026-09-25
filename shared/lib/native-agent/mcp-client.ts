@@ -39,8 +39,12 @@ export type McpErrorKind =
 export interface McpCallSuccess {
   ok: true;
   payload: unknown;
-  /** Raw bytes returned to the caller for artifact storage. */
+  /** Raw bytes returned to the caller for artifact storage (capped at maxOutputBytes). */
   rawBytes: Uint8Array;
+  /** True when the serialized payload exceeded maxOutputBytes and rawBytes was cut. */
+  truncated?: boolean;
+  /** Serialized payload size before truncation; set only when truncated. */
+  originalByteSize?: number;
 }
 
 export interface McpCallFailure {
@@ -160,6 +164,13 @@ function resolveServerConfig(
     failureThreshold,
   };
 }
+
+/**
+ * Payloads larger than `maxOutputBytes * MCP_HARD_PAYLOAD_CEILING_FACTOR` are
+ * refused rather than truncated, bounding what a misbehaving server can make
+ * the client hold.
+ */
+export const MCP_HARD_PAYLOAD_CEILING_FACTOR = 16;
 
 function normalizeErrorMessage(message: string): string {
   const result = redactSecrets(message);
@@ -589,11 +600,24 @@ export function createMcpClient(opts: CreateMcpClientOptions): McpClient {
         resolve: (payload) => {
           const serialized = JSON.stringify(payload ?? null);
           const bytes = encodeUtf8(serialized);
-          if (bytes.byteLength > options.maxOutputBytes) {
+          // Payloads beyond the hard ceiling are refused outright; anything
+          // between the cap and the ceiling is returned truncated to the cap
+          // so the agent still gets a bounded, flagged result (REQ-F5).
+          if (bytes.byteLength > options.maxOutputBytes * MCP_HARD_PAYLOAD_CEILING_FACTOR) {
             finalize({
               ok: false,
               kind: 'over_output_cap',
-              message: `payload exceeded ${options.maxOutputBytes} bytes`,
+              message: `payload exceeded ${options.maxOutputBytes * MCP_HARD_PAYLOAD_CEILING_FACTOR} bytes`,
+            });
+            return;
+          }
+          if (bytes.byteLength > options.maxOutputBytes) {
+            finalize({
+              ok: true,
+              payload,
+              rawBytes: bytes.slice(0, options.maxOutputBytes),
+              truncated: true,
+              originalByteSize: bytes.byteLength,
             });
             return;
           }

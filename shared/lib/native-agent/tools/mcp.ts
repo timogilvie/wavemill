@@ -17,7 +17,7 @@ import type { WavemillConfig } from '../../config.ts';
 import { buildTrustMetadata } from '../provenance.ts';
 import type {
   McpClient,
-  McpCallOutcome,
+  McpCallFailure,
 } from '../mcp-client.ts';
 import type {
   McpToolResultMetadata,
@@ -53,6 +53,7 @@ interface McpDetailPayload {
   resultArtifactRef?: McpArtifactRef;
   errorKind?: string;
   errorMessage?: string;
+  truncated?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,13 +72,52 @@ function stableStringify(value: unknown): string {
   return '{' + pairs.join(',') + '}';
 }
 
-function computeArgsFingerprint(args: unknown): string {
-  const stable = stableStringify(args ?? {});
-  return createHash('sha256').update(stable).digest('hex').slice(0, 16);
+/** Descriptor-name prefix shared by every MCP proxy tool. */
+export const MCP_TOOL_NAME_PREFIX = 'mcp__';
+
+export function isMcpToolName(name: string): boolean {
+  return name.startsWith(MCP_TOOL_NAME_PREFIX);
+}
+
+/**
+ * SHA-256 (hex) over the canonical, key-sorted JSON of an MCP call's
+ * arguments. This digest, never the raw arguments, is what provenance and
+ * transcripts record (HOK-3056 REQ-F4).
+ */
+export function computeMcpArgumentsDigest(args: unknown): string {
+  return createHash('sha256').update(stableStringify(args ?? {})).digest('hex');
+}
+
+/**
+ * Bound the agent-visible payload text to `budgetBytes` (UTF-8), appending a
+ * truncation marker when anything was cut.
+ */
+function capPayloadTexts(texts: string[], budgetBytes: number, originalByteSize?: number): string[] {
+  const encoder = new TextEncoder();
+  const capped: string[] = [];
+  let remaining = Math.max(0, budgetBytes);
+  let cut = false;
+  for (const text of texts) {
+    const bytes = encoder.encode(text);
+    if (bytes.byteLength <= remaining) {
+      capped.push(text);
+      remaining -= bytes.byteLength;
+      continue;
+    }
+    cut = true;
+    if (remaining > 0) {
+      capped.push(new TextDecoder().decode(bytes.slice(0, remaining)).replace(/\uFFFD+$/, ''));
+    }
+    break;
+  }
+  if (cut || originalByteSize !== undefined) {
+    capped.push(`[mcp result truncated to ${budgetBytes} bytes${originalByteSize !== undefined ? ` of ${originalByteSize}` : ''}]`);
+  }
+  return capped;
 }
 
 function descriptorName(serverName: string, toolName: string): string {
-  return `mcp__${serverName}__${toolName}`;
+  return `${MCP_TOOL_NAME_PREFIX}${serverName}__${toolName}`;
 }
 
 function logicalId(serverName: string, toolName: string): string {
@@ -108,7 +148,7 @@ function extractPayloadText(payload: unknown): string[] {
   return texts;
 }
 
-function formatFailureSummary(server: string, tool: string, outcome: Exclude<McpCallOutcome, { ok: true }>): string {
+function formatFailureSummary(server: string, tool: string, outcome: McpCallFailure): string {
   return `mcp:${server}/${tool} failed kind=${outcome.kind} message=${outcome.message}`;
 }
 
@@ -151,7 +191,7 @@ export function createMcpToolDescriptors(input: CreateMcpToolDescriptorsInput): 
             ? (allowedPhases as readonly ('planning' | 'coding' | 'review')[])
             : ['coding'],
           executionMode: 'sequential',
-          outputCapPolicy: { strategy: 'reject', maxBytes: maxOutputBytes },
+          outputCapPolicy: { strategy: 'truncate', maxBytes: maxOutputBytes },
           family: 'mcp',
           logicalId: logicalId(serverName, toolName),
           exposure: 'opt-in',
@@ -183,13 +223,16 @@ export function createMcpToolDescriptors(input: CreateMcpToolDescriptorsInput): 
         async execute(toolCallId, params, signal) {
           const rawArgs = (params as { arguments?: unknown } | undefined)?.arguments;
           const args = rawArgs ?? {};
-          const argsFingerprint = computeArgsFingerprint(args);
+          const argumentsDigest = computeMcpArgumentsDigest(args);
+          const argsFingerprint = argumentsDigest.slice(0, 16);
           const outcome = await input.client.callTool(serverName, toolName, args, {
             signal,
             timeoutMs,
             maxOutputBytes,
           });
-          if (!outcome.ok) {
+          // Explicit discriminant check: the repo's non-strict tsc config does
+          // not narrow the union on `!outcome.ok`.
+          if (outcome.ok === false) {
             const detail: McpDetailPayload = {
               ok: false,
               server: serverName,
@@ -205,6 +248,7 @@ export function createMcpToolDescriptors(input: CreateMcpToolDescriptorsInput): 
               // Identity is unknown after a failed call; report the config name.
               serverIdentity: { name: serverName, version: '0.0.0' },
               argsFingerprint,
+              argumentsDigest,
             };
             const metadata: ToolResultMetadata = {
               mcp: mcpMeta,
@@ -236,6 +280,9 @@ export function createMcpToolDescriptors(input: CreateMcpToolDescriptorsInput): 
               artifactRef = undefined;
             }
           }
+          if (artifactRef && outcome.truncated) {
+            artifactRef = { ...artifactRef, truncated: true, originalByteSize: outcome.originalByteSize };
+          }
 
           const detail: McpDetailPayload = {
             ok: true,
@@ -244,6 +291,7 @@ export function createMcpToolDescriptors(input: CreateMcpToolDescriptorsInput): 
             argsFingerprint,
             serverIdentity: identity,
             resultArtifactRef: artifactRef,
+            ...(outcome.truncated ? { truncated: true } : {}),
           };
 
           const mcpMeta: McpToolResultMetadata = {
@@ -252,11 +300,18 @@ export function createMcpToolDescriptors(input: CreateMcpToolDescriptorsInput): 
             logicalTool: toolName,
             serverIdentity: identity,
             argsFingerprint,
+            argumentsDigest,
             resultArtifactRef: artifactRef,
+            ...(outcome.truncated ? { truncated: true } : {}),
           };
 
           const summary = formatSuccessSummary(serverName, toolName, argsFingerprint);
-          const payloadTexts = extractPayloadText(outcome.payload);
+          const summaryBytes = new TextEncoder().encode(summary).byteLength;
+          const payloadTexts = capPayloadTexts(
+            extractPayloadText(outcome.payload),
+            Math.max(0, maxOutputBytes - summaryBytes - 128),
+            outcome.truncated ? outcome.originalByteSize : undefined,
+          );
           const visibleContent: Array<{ type: 'text'; text: string }> = [
             { type: 'text', text: summary },
             ...payloadTexts.map((text) => ({ type: 'text' as const, text })),

@@ -13,9 +13,13 @@ default.
 2. **Provider proxy identity** and **logical server/tool identity** are
    recorded independently in the transcript so replay is stable even when the
    live server is gone.
-3. **Result payloads** are stored as content-addressed artifacts; only a short
+3. **Raw arguments are never persisted.** The tool result records
+   `metadata.mcp.argumentsDigest` (SHA-256 of the key-sorted JSON arguments)
+   and a 16-char `argsFingerprint`; the transcript replaces an `mcp__*` tool
+   call's arguments with `{ argumentsDigest, redacted: "mcp-arguments" }`.
+4. **Result payloads** are stored as content-addressed artifacts; only a short
    text summary plus the model-visible content blocks appear inline.
-4. **Trust tier**: MCP results carry `sourceKind: mcp_result` → `untrusted`.
+5. **Trust tier**: MCP results carry `sourceKind: mcp_result` → `untrusted`.
    The shared injection scan applies automatically.
 
 ## Configuration
@@ -89,12 +93,27 @@ Failures come back as a normalized `McpCallOutcome`:
 | `timeout` | Call did not respond inside `callTimeoutMs`. Client sends `notifications/cancelled`. |
 | `server_crashed` | Child exited unexpectedly. Next call respawns lazily. |
 | `cancelled` | Caller `AbortSignal` fired, or `stopServer`/`stopAll` ran. |
-| `over_output_cap` | Payload exceeded `maxOutputBytes`. Payload is dropped, not returned. |
+| `over_output_cap` | Payload exceeded the hard ceiling (16 × `maxOutputBytes`). Payload is dropped, not returned. |
 | `tool_not_allowed` | Logical tool is not in the server's `tools` array. |
 | `server_not_allowed` | Server name is not configured. |
 | `invalid_response`, `protocol_mismatch` | Reserved for future MCP protocol enforcement. |
 
 The `message` field is always redacted through the shared secret profile.
+
+## Output caps
+
+A payload larger than `maxOutputBytes` (but within the 16× hard ceiling) is
+**truncated, not failed**: the stored artifact is cut to `maxOutputBytes`
+and flagged `truncated` with its `originalByteSize`, the model-visible text
+is bounded to the cap and ends with a `[mcp result truncated to …]` marker,
+and `metadata.mcp.truncated` is set. The result is still `external-untrusted`.
+
+## Phases
+
+`allowedPhases` gates exposure, but only the native **coding** launcher
+(`launch-coding.ts`) attaches MCP descriptors today. Listing `planning` or
+`review` is accepted by the schema and has no effect until those launchers
+wire the family.
 
 ## Lifecycle
 

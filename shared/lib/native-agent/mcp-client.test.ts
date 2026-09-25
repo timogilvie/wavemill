@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 import { createMcpClient } from './mcp-client.ts';
-import { FAKE_SECRET_LITERAL } from './fixtures/mcp/scenarios.ts';
+import { DEFAULT_OVERSIZE_BYTES, FAKE_SECRET_LITERAL } from './fixtures/mcp/scenarios.ts';
 import type { NativeAgentMcpFamilyConfig } from '../config.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -16,7 +16,7 @@ function buildFamily(scenario: string, overrides: Record<string, unknown> = {}):
     enabled: true,
     allowedPhases: ['coding'],
     defaults: {
-      startupTimeoutMs: 2000,
+      startupTimeoutMs: 15_000, // `node --import tsx` cold start is slow under parallel test load
       callTimeoutMs: 1000,
       shutdownTimeoutMs: 500,
       maxOutputBytes: 8192,
@@ -120,7 +120,7 @@ describe('createMcpClient', () => {
     }
   });
 
-  it('rejects payloads exceeding maxOutputBytes without returning raw bytes', async () => {
+  it('rejects payloads beyond the hard ceiling (16× maxOutputBytes) without returning raw bytes', async () => {
     const client = createMcpClient({ family: buildFamily('oversize') });
     try {
       const outcome = await client.callTool('mock', 'echo', {}, {
@@ -131,6 +131,24 @@ describe('createMcpClient', () => {
       if (!outcome.ok) {
         assert.equal(outcome.kind, 'over_output_cap');
         assert.ok(!outcome.message.includes('xxxx'.repeat(64)));
+      }
+    } finally {
+      await client.stopAll('test');
+    }
+  });
+
+  it('truncates payloads between maxOutputBytes and the hard ceiling and flags them (REQ-F5)', async () => {
+    const client = createMcpClient({ family: buildFamily('oversize') });
+    try {
+      // The oversize fixture emits DEFAULT_OVERSIZE_BYTES of filler; choose a cap
+      // below that size but within the 16x ceiling.
+      const maxOutputBytes = Math.ceil(DEFAULT_OVERSIZE_BYTES / 8);
+      const outcome = await client.callTool('mock', 'echo', {}, { timeoutMs: 2000, maxOutputBytes });
+      assert.equal(outcome.ok, true);
+      if (outcome.ok) {
+        assert.equal(outcome.truncated, true);
+        assert.equal(outcome.rawBytes.byteLength, maxOutputBytes);
+        assert.ok((outcome.originalByteSize ?? 0) > maxOutputBytes);
       }
     } finally {
       await client.stopAll('test');

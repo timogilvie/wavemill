@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createMcpToolDescriptors, type McpArtifactRef } from './mcp.ts';
+import { computeMcpArgumentsDigest, createMcpToolDescriptors, type McpArtifactRef } from './mcp.ts';
 import type { McpCallOutcome, McpClient, McpClientSnapshot } from '../mcp-client.ts';
 import type { WavemillConfig } from '../../config.ts';
 import { withDefaultMetadata } from './types.ts';
@@ -215,6 +215,53 @@ describe('createMcpToolDescriptors', () => {
     // No leaked argument values in the visible text.
     const summaryText = result.content.map((c) => c.text).join('\n');
     assert.ok(!summaryText.includes('hi'));
+  });
+
+  it('records the full SHA-256 argumentsDigest alongside the short fingerprint (REQ-F4)', async () => {
+    const { client } = makeFakeClient({
+      'mock/echo': () => ({ ok: true, payload: { content: [] }, rawBytes: new Uint8Array() }),
+    });
+    const echo = createMcpToolDescriptors({ config: baseConfig(), client })
+      .find((d) => d.metadata.name === 'mcp__mock__echo')!;
+    const result = await echo.execute('call', { arguments: { b: 2, a: 1 } });
+    const digest = computeMcpArgumentsDigest({ a: 1, b: 2 });
+    assert.match(digest, /^[0-9a-f]{64}$/);
+    assert.equal(result.metadata?.mcp?.argumentsDigest, digest, 'digest is key-order independent');
+    assert.equal(result.metadata?.mcp?.argsFingerprint, digest.slice(0, 16));
+    assert.ok(!JSON.stringify(result).includes('"a":1'), 'raw arguments never appear in the result');
+  });
+
+  it('truncates an over-cap result to the cap and flags it instead of failing (REQ-F5)', async () => {
+    const big = 'x'.repeat(20_000);
+    const rawBytes = new TextEncoder().encode(JSON.stringify({ content: [{ type: 'text', text: big }] }));
+    const cap = 8192;
+    const { client } = makeFakeClient({
+      'mock/echo': () => ({
+        ok: true,
+        payload: { content: [{ type: 'text', text: big }] },
+        rawBytes: rawBytes.slice(0, cap),
+        truncated: true,
+        originalByteSize: rawBytes.byteLength,
+      }),
+    });
+    const echo = createMcpToolDescriptors({
+      config: baseConfig(),
+      client,
+      storeArtifact: (bytes) => ({ digest: 'trunc', byteSize: bytes.byteLength, path: 'artifacts/trunc' }),
+    }).find((d) => d.metadata.name === 'mcp__mock__echo')!;
+    assert.equal(echo.metadata.outputCapPolicy.strategy, 'truncate');
+    const result = await echo.execute('call', { arguments: {} });
+    const visibleBytes = new TextEncoder().encode(
+      result.content.map((c) => (c.type === 'text' ? c.text : '')).join(''),
+    ).byteLength;
+    assert.ok(visibleBytes <= cap, `visible content ${visibleBytes} must fit the ${cap}-byte cap`);
+    const last = result.content[result.content.length - 1];
+    assert.ok(last.type === 'text' && last.text.startsWith('[mcp result truncated to'), 'truncation marker present');
+    assert.equal(result.metadata?.mcp?.truncated, true);
+    assert.equal(result.metadata?.mcp?.resultArtifactRef?.truncated, true);
+    assert.equal(result.metadata?.mcp?.resultArtifactRef?.originalByteSize, rawBytes.byteLength);
+    assert.equal(result.metadata?.mcp?.resultArtifactRef?.byteSize, cap);
+    assert.equal(result.metadata?.trust?.sourceKind, 'mcp_result');
   });
 
   it('flags prompt-injection excerpts in payload text via mcp_result trust', async () => {

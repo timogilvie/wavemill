@@ -274,7 +274,12 @@ export interface McpToolResultMetadata {
   logicalServer: string;
   logicalTool: string;
   serverIdentity: McpServerIdentity;
+  /** First 16 hex chars of `argumentsDigest`; stable short id for display. */
   argsFingerprint: string;
+  /** SHA-256 (hex) of the canonical (key-sorted) JSON of the call arguments. */
+  argumentsDigest?: string;
+  /** True when the result was truncated to the configured output cap. */
+  truncated?: boolean;
   resultArtifactRef?: {
     digest: string;
     byteSize: number;
