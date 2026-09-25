@@ -598,10 +598,61 @@ export interface ResolvedNativeScreenshotConfig {
   invalidReasons: string[];
 }
 
+/**
+ * Timeout and output-cap defaults applied to every configured MCP server
+ * unless the server declaration overrides the field. Every value has a
+ * positive lower bound; `maxOutputBytes` must remain ≥ 4 KiB so redacted
+ * error messages always fit inside the cap.
+ */
+export interface NativeAgentMcpFamilyDefaults {
+  startupTimeoutMs?: number;
+  callTimeoutMs?: number;
+  shutdownTimeoutMs?: number;
+  maxOutputBytes?: number;
+  /**
+   * Number of consecutive failed calls at which the client stops the server
+   * (fail-closed). Zero disables the trip. Defaults to 3.
+   */
+  failureThreshold?: number;
+}
+
+export interface NativeAgentMcpServerConfig {
+  /** Wavemill-side provider proxy identifier (e.g. 'pi-mcp-proxy'). */
+  providerProxy: string;
+  /** Executable to spawn for the MCP server. */
+  command: string;
+  /** Argument vector passed to the server process. Empty is legal. */
+  args: string[];
+  /**
+   * Process-env variables that survive the child spawn allowlist. Empty means
+   * the child receives no env vars beyond the minimal bootstrap set.
+   */
+  envAllowlist: string[];
+  /** Non-empty list of logical tool names exported by this server. */
+  tools: string[];
+  /** Whether this server exposes mutating tools. Defaults to `read-only`. */
+  class?: 'read-only' | 'mutation';
+  /** Per-server override of the family startup timeout. */
+  startupTimeoutMs?: number;
+  /** Per-server override of the family call timeout. */
+  callTimeoutMs?: number;
+  /** Per-server override of the family shutdown timeout. */
+  shutdownTimeoutMs?: number;
+  /** Per-server override of the family output cap. */
+  maxOutputBytes?: number;
+  /** Per-server override of the failure threshold. */
+  failureThreshold?: number;
+}
+
+export interface NativeAgentMcpFamilyConfig extends NativeAgentAdvancedFamilyConfig {
+  defaults?: NativeAgentMcpFamilyDefaults;
+  servers?: Record<string, NativeAgentMcpServerConfig>;
+}
+
 export interface NativeAgentAdvancedConfig {
   browser?: NativeAgentBrowserFamilyConfig;
   screenshot?: NativeAgentScreenshotFamilyConfig;
-  mcp?: NativeAgentAdvancedFamilyConfig;
+  mcp?: NativeAgentMcpFamilyConfig;
   code_search?: NativeAgentCodeSearchFamilyConfig;
   ast?: NativeAgentAstFamilyConfig;
   eval?: NativeAgentAdvancedFamilyConfig;
