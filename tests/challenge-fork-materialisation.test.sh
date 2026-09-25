@@ -80,6 +80,7 @@ log_error() { :; }
 # Pull the fork-descriptor helper into this scope (already unit-tested in
 # challenge-deferred-arm.test.sh; we call it here after the copy loop).
 eval "$(extract_function challenge_intent_stamp_fork_descriptor)"
+eval "$(extract_function challenge_compute_fork_identity)"
 
 # The materialiser's copy loop is a straightforward for-loop over a fixed
 # artifact list; encoding it here mirrors what the real function does so
@@ -263,6 +264,49 @@ for dir in "$PRIMARY_FEATURE" "$CHALLENGER_FEATURE"; do
     && pass "fork descriptor on $(basename "$dir")" \
     || fail "fork descriptor on $(basename "$dir") ($fs / $fc / $sp)"
 done
+
+# Step 5b: fork identity stamp — the 8th argument lands as .forkIdentity on
+# both intent files and both arms' state intents; a non-object is ignored.
+challenge_intent_stamp_fork_descriptor \
+  "HOK-1234" "$challenge_arm_key" \
+  "$PRIMARY_FEATURE" "$CHALLENGER_FEATURE" \
+  "review" "$FORK_COMMIT" \
+  '["plan","implementation"]' \
+  'not json'
+check_eq "non-object fork identity is ignored" "null" \
+  "$(jq -c '.forkIdentity' "$PRIMARY_FEATURE/.challenge-intent.json")"
+
+FORK_IDENTITY_JSON="$(jq -cn --arg fc "$FORK_COMMIT" \
+  '{stage:"review", commit:$fc, tree:"t", taskPacketHash:"a", planHash:"b", promptHash:"c", toolConfigHash:"d", sharedPrefix:true}')"
+challenge_intent_stamp_fork_descriptor \
+  "HOK-1234" "$challenge_arm_key" \
+  "$PRIMARY_FEATURE" "$CHALLENGER_FEATURE" \
+  "review" "$FORK_COMMIT" \
+  '["plan","implementation"]' \
+  "$FORK_IDENTITY_JSON"
+# Step 5a: the real producer, run through the shell helper against this
+# scratch fork. Both arms carry identical plan.md copies, so planHash agrees.
+COMPUTED_IDENTITY="$(TOOLS_DIR="$REPO_DIR_ROOT/tools" REPO_DIR="$SCRATCH_REPO" \
+  challenge_compute_fork_identity "$challenge_arm_key" "review" "$FORK_COMMIT" \
+  "$SCRATCH_REPO" "$CHALLENGER_WT_DIR" "$PRIMARY_FEATURE" "$CHALLENGER_FEATURE" \
+  '["plan","implementation"]')"
+check_eq "computed identity commit" "$FORK_COMMIT" "$(jq -r '.commit' <<<"$COMPUTED_IDENTITY")"
+check_eq "computed identity tree" "$(git -C "$SCRATCH_REPO" rev-parse "$FORK_COMMIT^{tree}")" \
+  "$(jq -r '.tree' <<<"$COMPUTED_IDENTITY")"
+if [[ "$(jq -r '.planHash' <<<"$COMPUTED_IDENTITY")" =~ ^[0-9a-f]{64}$ ]]; then
+  pass "computed identity planHash agrees across arms"
+else
+  fail "computed identity planHash missing: $COMPUTED_IDENTITY"
+fi
+
+for dir in "$PRIMARY_FEATURE" "$CHALLENGER_FEATURE"; do
+  check_eq "fork identity on $(basename "$dir")" "$FORK_IDENTITY_JSON" \
+    "$(jq -c '.forkIdentity' "$dir/.challenge-intent.json")"
+done
+check_eq "fork identity mirrored into primary state intent" "$FORK_IDENTITY_JSON" \
+  "$(jq -c '.tasks["HOK-1234"].challengeExecutionIntent.forkIdentity' "$STATE_FILE")"
+check_eq "fork descriptor preserved alongside identity" "$FORK_COMMIT" \
+  "$(jq -r '.tasks["HOK-1234"].challengeExecutionIntent.forkCommit' "$STATE_FILE")"
 
 CH_INHERITED=$(jq -c '.challenger.inheritedStages' "$CHALLENGER_FEATURE/.challenge-intent.json")
 PR_INHERITED=$(jq -c '.primary.inheritedStages' "$CHALLENGER_FEATURE/.challenge-intent.json")
@@ -476,6 +520,13 @@ if [[ -n "$COPY_LOOP" ]] && ! grep -qF ".review-result.json" <<< "$COPY_LOOP"; t
   pass "materialiser copy loop does NOT include .review-result.json"
 else
   fail "materialiser copy loop now includes .review-result.json"
+fi
+
+if grep -q 'challenge_compute_fork_identity' <<< "$MATERIALIZE_BLOCK" \
+  && grep -q '"$fork_identity_json"' <<< "$MATERIALIZE_BLOCK"; then
+  pass "materialiser computes and stamps the fork identity"
+else
+  fail "materialiser no longer computes/stamps the fork identity"
 fi
 
 echo ""
