@@ -51,6 +51,7 @@ import {
   getNativeExpansionConfig,
   getNativePatchCodingConfig,
   getNativeBrowserConfig,
+  getNativeScreenshotConfig,
   canonicalizeBrowserOrigin,
   getReadyConfig,
   getReadyFailureClassifierConfig,
@@ -3392,6 +3393,94 @@ test('getNativeBrowserConfig: canonicalizes and dedupes allowlist entries', () =
       'http://localhost:3000',
       'https://app.example.com:8443',
     ]);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('getNativeScreenshotConfig: defaults are fail-closed when the family is not enabled', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({}));
+    const resolved = getNativeScreenshotConfig(tmp);
+    assert.equal(resolved.enabled, false);
+    assert.deepEqual([...resolved.allowedPhases], []);
+    assert.deepEqual(resolved.invalidReasons, []);
+    // Verify defaults are populated in limits
+    assert.equal(resolved.limits.maxImageBytes, 2 * 1024 * 1024);
+    assert.equal(resolved.limits.maxWidth, 4096);
+    assert.equal(resolved.limits.maxHeight, 4096);
+    assert.equal(resolved.limits.maxComparePixels, 16_777_216);
+    assert.equal(resolved.limits.oversizePolicy, 'reject');
+    assert.equal(resolved.limits.diffThreshold, 0.1);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('getNativeScreenshotConfig: full valid config with all limits', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      nativeAgent: {
+        advanced: {
+          screenshot: {
+            enabled: true,
+            allowedPhases: ['review'],
+            limits: {
+              maxImageBytes: 5_000_000,
+              maxWidth: 2048,
+              maxHeight: 2048,
+              oversizePolicy: 'downscale',
+              maxComparePixels: 8_000_000,
+              diffThreshold: 0.05,
+            },
+          },
+        },
+      },
+    }));
+    const resolved = getNativeScreenshotConfig(tmp);
+    assert.equal(resolved.enabled, true);
+    assert.deepEqual([...resolved.allowedPhases], ['review']);
+    assert.deepEqual(resolved.invalidReasons, []);
+    assert.equal(resolved.limits.maxImageBytes, 5_000_000);
+    assert.equal(resolved.limits.maxWidth, 2048);
+    assert.equal(resolved.limits.maxHeight, 2048);
+    assert.equal(resolved.limits.oversizePolicy, 'downscale');
+    assert.equal(resolved.limits.maxComparePixels, 8_000_000);
+    assert.equal(resolved.limits.diffThreshold, 0.05);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('getNativeScreenshotConfig: out-of-range limits fail schema validation', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      nativeAgent: {
+        advanced: {
+          screenshot: {
+            enabled: true,
+            allowedPhases: ['review'],
+            limits: {
+              maxImageBytes: 0, // Too small
+            },
+          },
+        },
+      },
+    }));
+    if (hasAjv) {
+      assert.throws(() => loadWavemillConfig(tmp), /validation failed/);
+    } else {
+      // Schema validation disabled; resolver should catch it
+      const resolved = getNativeScreenshotConfig(tmp);
+      assert.equal(resolved.enabled, false);
+      assert.ok(resolved.invalidReasons.includes('invalid_maxImageBytes'));
+    }
   } finally {
     cleanUp(tmp);
   }

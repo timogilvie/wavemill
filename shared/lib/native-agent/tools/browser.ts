@@ -49,6 +49,8 @@ export interface BrowserToolsCleanupHandle {
 export interface CreatedBrowserTools {
   descriptors: ToolDescriptor[];
   cleanup: BrowserToolsCleanupHandle;
+  /** Returns the shared session when browser tools have opened one. */
+  getSession(): Promise<BrowserSession | null>;
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +183,7 @@ const EMPTY_SCHEMA = {
  */
 export function createBrowserTools(input: CreateBrowserToolsInput): CreatedBrowserTools {
   if (!input.config || !input.config.enabled) {
-    return { descriptors: [], cleanup: { async close() {} } };
+    return { descriptors: [], cleanup: { async close() {} }, async getSession() { return null; } };
   }
 
   const { config, adapterFactory } = input;
@@ -206,6 +208,8 @@ export function createBrowserTools(input: CreateBrowserToolsInput): CreatedBrows
       }
     },
   };
+  const getSession = async (): Promise<BrowserSession | null> =>
+    state.session && !state.session.isClosed ? state.session : null;
 
   const navigate: ToolDescriptor<BrowserNavigateParams, unknown> = {
     metadata: {
@@ -338,6 +342,7 @@ export function createBrowserTools(input: CreateBrowserToolsInput): CreatedBrows
   return {
     descriptors: [navigate, snapshotDom, snapshotAx, drainConsole, drainRequests],
     cleanup,
+    getSession,
   };
 }
 

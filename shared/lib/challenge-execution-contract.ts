@@ -314,6 +314,8 @@ export interface ChallengeExecutionIntent {
   forkStage?: ChallengeStage | null;
   forkCommit?: string | null;
   sharedPrefix?: boolean;
+  /** Fork/input identity stamped by the materialiser (docs/arbiter/challenge-validity-contract.md §4). */
+  forkIdentity?: ForkIdentity;
 }
 
 export interface ChallengeExecutionIntentProjection {

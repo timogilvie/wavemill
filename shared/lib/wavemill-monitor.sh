@@ -1660,17 +1660,24 @@ challenge_assert_arms_diverge() {
 #
 # Usage: challenge_intent_stamp_fork_descriptor <primary_issue> <challenger_key> \
 #   <primary_feature_dir> <challenger_feature_dir> \
-#   <fork_stage> <fork_commit> <inherited_stages_json>
+#   <fork_stage> <fork_commit> <inherited_stages_json> [fork_identity_json]
 #
 # `inherited_stages_json` is the JSON array of ChallengeStage values that
 # the challenger inherits from the primary (e.g. `["plan","implementation"]`
-# for a review-stage fork).
+# for a review-stage fork). `fork_identity_json` is the ForkIdentity envelope
+# from tools/compute-fork-identity.ts; when present and a JSON object it is
+# stamped as `.forkIdentity` so eval assembly and compare-prs can prove
+# matched pre-stage inputs. Anything else is ignored.
 challenge_intent_stamp_fork_descriptor() {
   local primary_issue="$1" challenger_key="$2"
   local primary_feature_dir="$3" challenger_feature_dir="$4"
   local fork_stage="$5" fork_commit="$6"
   local inherited_stages_json="${7:-[]}"
+  local fork_identity_json="${8:-}"
   [[ -n "$primary_issue" && -n "$fork_stage" && -n "$fork_commit" ]] || return 1
+  if ! jq -e 'type == "object"' <<<"${fork_identity_json:-null}" >/dev/null 2>&1; then
+    fork_identity_json="null"
+  fi
 
   local dir file tmp
   for dir in "$primary_feature_dir" "$challenger_feature_dir"; do
@@ -1683,11 +1690,13 @@ challenge_intent_stamp_fork_descriptor() {
         --arg fc "$fork_commit" \
         --argjson primaryInherited '[]' \
         --argjson challengerInherited "$inherited_stages_json" \
+        --argjson forkIdentity "$fork_identity_json" \
         '.forkStage = $fs
          | .forkCommit = $fc
          | .sharedPrefix = true
          | .primary = ((.primary // {}) + {inheritedStages: $primaryInherited})
-         | .challenger = ((.challenger // {}) + {inheritedStages: $challengerInherited})' \
+         | .challenger = ((.challenger // {}) + {inheritedStages: $challengerInherited})
+         | if $forkIdentity != null then .forkIdentity = $forkIdentity else . end' \
         "$file" > "$tmp" 2>/dev/null; then
         mv "$tmp" "$file"
       else
@@ -1706,22 +1715,60 @@ challenge_intent_stamp_fork_descriptor() {
          forkStage: $fs, forkCommit: $fc, sharedPrefix: true,
          primary: (($existing.primary // {}) + {inheritedStages: []}),
          challenger: (($existing.challenger // {}) + {inheritedStages: $challengerInherited})
-       })
+       } + (if $forkIdentity != null then {forkIdentity: $forkIdentity} else {} end))
      | if $challenger != "" and (.tasks[$challenger] != null) then
          (.tasks[$challenger].challengeExecutionIntent // {}) as $cexist
          | .tasks[$challenger].challengeExecutionIntent = ($cexist + {
              forkStage: $fs, forkCommit: $fc, sharedPrefix: true,
              primary: (($cexist.primary // {}) + {inheritedStages: []}),
              challenger: (($cexist.challenger // {}) + {inheritedStages: $challengerInherited})
-           })
+           } + (if $forkIdentity != null then {forkIdentity: $forkIdentity} else {} end))
        else . end
      | .tasks[$issue].updated = (now | todate)' \
     --arg issue "$primary_issue" \
     --arg challenger "$challenger_key" \
     --arg fs "$fork_stage" \
     --arg fc "$fork_commit" \
-    --argjson challengerInherited "$inherited_stages_json" >/dev/null 2>&1 || true
+    --argjson challengerInherited "$inherited_stages_json" \
+    --argjson forkIdentity "$fork_identity_json" >/dev/null 2>&1 || true
   return 0
+}
+
+# Compute the ForkIdentity envelope for a materialising arm and print it as
+# compact JSON. Logs which pre-stage inputs failed to agree across arms so a
+# null hash is diagnosable from the mill log. Returns non-zero (printing
+# nothing) when the producer fails or emits something that is not an object.
+#
+# Usage: challenge_compute_fork_identity <arm_key> <fork_stage> <fork_commit> \
+#   <primary_wt_dir> <challenger_wt_dir> <primary_feature_dir> \
+#   <challenger_feature_dir> <challenger_inherited_json>
+challenge_compute_fork_identity() {
+  local arm_key="$1" fork_stage="$2" fork_commit="$3"
+  local primary_wt_dir="$4" challenger_wt_dir="$5"
+  local primary_feature_dir="$6" challenger_feature_dir="$7"
+  local challenger_inherited_json="${8:-[]}"
+  local -a cmd=(npx tsx "$TOOLS_DIR/compute-fork-identity.ts"
+    --repo-dir "$REPO_DIR" --fork-stage "$fork_stage" --fork-commit "$fork_commit"
+    --primary-worktree "$primary_wt_dir" --challenger-worktree "$challenger_wt_dir"
+    --primary-feature-dir "$primary_feature_dir" --challenger-feature-dir "$challenger_feature_dir"
+    --challenger-inherited "$challenger_inherited_json" --diagnostics)
+  local out=""
+  if declare -F _with_timeout >/dev/null 2>&1; then
+    out="$(_with_timeout "${API_TIMEOUT:-60}" "${cmd[@]}" 2>>"${MILL_LOG_FILE:-/dev/null}")" || out=""
+  else
+    out="$("${cmd[@]}" 2>>"${MILL_LOG_FILE:-/dev/null}")" || out=""
+  fi
+  if ! jq -e '.identity | type == "object"' <<<"${out:-null}" >/dev/null 2>&1; then
+    log_warn "  $arm_key: fork identity producer failed — attribution will report missing_fork_identity"
+    return 1
+  fi
+  local unmatched
+  unmatched="$(jq -r '.diagnostics | to_entries
+    | map(select(.value != "match" and .value != "ok") | "\(.key)=\(.value)") | join(" ")' <<<"$out" 2>/dev/null || true)"
+  if [[ -n "$unmatched" ]]; then
+    log_warn "  $arm_key: fork identity has unmatched inputs: $unmatched"
+  fi
+  jq -c '.identity' <<<"$out"
 }
 
 challenge_intent_file_json() {
@@ -1927,12 +1974,22 @@ challenge_materialize_challenger_arm() {
     fi
   done
 
-  # Step 5: fork descriptor onto both arms' intent files + state.
+  # Step 5: fork identity + descriptor onto both arms' intent files + state.
+  # The identity hashes each pre-stage input from both arms and must be
+  # captured now — it cannot be reconstructed later. A failure here does not
+  # block the launch; attribution then reports missing_fork_identity honestly.
+  local fork_identity_json=""
+  fork_identity_json="$(challenge_compute_fork_identity \
+    "$arm_key" "$varied_stage" "$fork_commit" \
+    "$primary_wt_dir" "$challenger_wt_dir" \
+    "$primary_feature_dir" "$challenger_feature_dir" \
+    '["plan","implementation"]')" || fork_identity_json=""
   challenge_intent_stamp_fork_descriptor \
     "$primary_issue" "$arm_key" \
     "$primary_feature_dir" "$challenger_feature_dir" \
     "$varied_stage" "$fork_commit" \
-    '["plan","implementation"]' || \
+    '["plan","implementation"]' \
+    "$fork_identity_json" || \
     log_warn "  $arm_key: fork-descriptor stamp reported failure"
 
   # Step 6: refuse to launch an arm whose intent cannot be attested.

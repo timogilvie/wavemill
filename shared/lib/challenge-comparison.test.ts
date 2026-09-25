@@ -29,6 +29,7 @@ import {
   readDecisiveChallengeComparisons,
   resolveChallengeSideExecutionProvenance,
   validateChallengeExecutionProvenance,
+  challengeModelIdsEquivalent,
   type ChallengeComparison,
   type ChallengeDiffIdentity,
   type ChallengeRoutingMeta,
@@ -874,6 +875,46 @@ test('session-derived Claude and Codex coder evidence passes provenance validati
     assert.equal(validation.valid, true);
     assert.equal(validation.modelAttributionEligible, true);
     assert.deepEqual(validation.issues, []);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('challengeModelIdsEquivalent treats a registry alias and its provider-native id as one model', () => {
+  assert.equal(challengeModelIdsEquivalent('claude-haiku-4-5', 'claude-haiku-4-5-20251001'), true);
+  assert.equal(challengeModelIdsEquivalent('claude-haiku-4-5-20251001', 'claude-haiku-4-5'), true);
+  assert.equal(challengeModelIdsEquivalent('qwen-3-coder', 'qwen/qwen3-coder'), true);
+  assert.equal(challengeModelIdsEquivalent('claude-haiku-4-5', 'claude-haiku-4-5'), true);
+  assert.equal(challengeModelIdsEquivalent('claude-haiku-4-5', 'claude-sonnet-5'), false);
+  assert.equal(challengeModelIdsEquivalent('gpt-5.5', 'gpt-5.4'), false);
+  assert.equal(challengeModelIdsEquivalent('', 'claude-haiku-4-5'), false);
+  assert.equal(challengeModelIdsEquivalent(undefined, undefined), false);
+});
+
+test('executing the dated snapshot of the intended alias is not an executed-model mismatch', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'challenge-alias-snapshot-test-'));
+  try {
+    const primaryDir = join(tmp, 'features', 'primary');
+    const challengerDir = join(tmp, 'features', 'challenger');
+    mkdirSync(primaryDir, { recursive: true });
+    mkdirSync(challengerDir, { recursive: true });
+    writeStage(primaryDir, 'coding', 'codex', 'gpt-5.5');
+    writeStage(challengerDir, 'coding', 'claude', 'claude-haiku-4-5-20251001');
+
+    const primaryRouting = makeRouting({ coder: 'gpt-5.5' });
+    const challengerRouting = makeRouting({ coder: 'claude-haiku-4-5' });
+    const validation = validateChallengeExecutionProvenance({
+      primaryExecution: resolveChallengeSideExecutionProvenance({ featureDir: primaryDir }),
+      challengerExecution: resolveChallengeSideExecutionProvenance({ featureDir: challengerDir }),
+      primaryRouting,
+      challengerRouting,
+      primaryModel: primaryRouting.coder,
+      challengerModel: challengerRouting.coder,
+      variedDimensions: detectVariedDimensions(primaryRouting, challengerRouting),
+    });
+
+    assert.deepEqual(validation.issues.map((issue) => issue.reason), []);
+    assert.equal(validation.modelAttributionEligible, true);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

@@ -6,6 +6,7 @@ import {
   type BrowserAdapter,
   type BrowserSessionLimits,
 } from './browser-session.ts';
+import { buildBaselinePng } from './fixtures/images.ts';
 
 // ---------------------------------------------------------------------------
 // Test doubles
@@ -276,6 +277,63 @@ describe('BrowserSession — budgets, aborts, close', () => {
     );
     assert.equal(state.closeCalls, 1);
     assert.equal(session.isClosed, true);
+  });
+});
+
+describe('BrowserSession — screenshot capture', () => {
+  const imageLimits = { maxImageBytes: 1_000_000, maxWidth: 100, maxHeight: 100, oversizePolicy: 'reject' as const };
+
+  function screenshotAdapter(): BrowserAdapter {
+    const { adapter } = makeFakeAdapter();
+    adapter.screenshot = async () => ({
+      data: buildBaselinePng(),
+      mediaType: 'image/png',
+      viewport: { width: 100, height: 100 },
+      browserName: 'fixture',
+    });
+    return adapter;
+  }
+
+  it('captures bounded metadata and consumes a call from the shared session budget', async () => {
+    const session = new BrowserSession({ limits: makeLimits({ maxCallsPerSession: 2 }), adapter: screenshotAdapter() });
+    await session.navigate('http://localhost:3000/page');
+    const captured = await session.captureScreenshot(imageLimits);
+    assert.equal(captured.width, 100);
+    assert.equal(captured.height, 100);
+    assert.equal(captured.byteSize, captured.data.length);
+    assert.equal(captured.origin, 'http://localhost:3000');
+    assert.equal(captured.browser?.name, 'fixture');
+    await assert.rejects(session.captureScreenshot(imageLimits),
+      (error: unknown) => error instanceof BrowserSessionError && error.code === 'call_budget_exhausted');
+    await session.close();
+  });
+
+  it('rejects screenshots from closed or expired sessions', async () => {
+    const closed = new BrowserSession({ limits: makeLimits(), adapter: screenshotAdapter() });
+    await closed.close();
+    await assert.rejects(closed.captureScreenshot(imageLimits),
+      (error: unknown) => error instanceof BrowserSessionError && error.code === 'session_closed');
+
+    let clock = 0;
+    const expired = new BrowserSession({ limits: makeLimits({ maxSessionLifetimeMs: 10 }), adapter: screenshotAdapter(), now: () => clock });
+    clock = 11;
+    await assert.rejects(expired.captureScreenshot(imageLimits),
+      (error: unknown) => error instanceof BrowserSessionError && error.code === 'session_expired');
+    await expired.close();
+  });
+
+  it('rejects oversized bytes or dimensions and downscales a near-limit image', async () => {
+    const session = new BrowserSession({ limits: makeLimits(), adapter: screenshotAdapter() });
+    await assert.rejects(session.captureScreenshot({ ...imageLimits, maxImageBytes: 1 }),
+      (error: unknown) => error instanceof BrowserSessionError && error.code === 'image_too_large');
+    await assert.rejects(session.captureScreenshot({ ...imageLimits, maxWidth: 99 }),
+      (error: unknown) => error instanceof BrowserSessionError && error.code === 'image_too_large');
+    const downscaled = await session.captureScreenshot({ ...imageLimits, maxWidth: 99, oversizePolicy: 'downscale' });
+    assert.equal(downscaled.width, 50);
+    assert.equal(downscaled.height, 50);
+    assert.equal(downscaled.downscaled, true);
+    assert.equal(downscaled.factor, 2);
+    await session.close();
   });
 });
 

@@ -1695,7 +1695,7 @@
                     "description": "Advanced-tool family opt-ins (Epic 10). Every family defaults off; a family becomes eligible only when explicitly enabled for the target phase. See shared/lib/native-agent/tools/exposure.ts.",
                     "properties": {
                         "browser": { "$ref": "#/definitions/nativeAgentAdvancedBrowserFamily" },
-                        "screenshot": { "$ref": "#/definitions/nativeAgentAdvancedFamily" },
+                        "screenshot": { "$ref": "#/definitions/nativeAgentAdvancedScreenshotFamily" },
                         "mcp": { "$ref": "#/definitions/nativeAgentAdvancedFamily" },
                         "code_search": { "$ref": "#/definitions/nativeAgentAdvancedCodeSearchFamily" },
                         "ast": { "$ref": "#/definitions/nativeAgentAdvancedFamily" },
@@ -3618,6 +3618,83 @@
                         }
                     },
                     "required": ["allowedOrigins"],
+                    "additionalProperties": false
+                }
+            },
+            "additionalProperties": false
+        },
+        "nativeAgentAdvancedScreenshotFamily": {
+            "type": "object",
+            "description": "Screenshot family opt-in (HOK-3058). Extends the generic advanced-family shape with screenshot-specific capture and comparison limits.",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Master toggle for the screenshot family."
+                },
+                "allowedPhases": {
+                    "type": "array",
+                    "description": "Phases for which the screenshot family is eligible when enabled. Empty or omitted keeps the family hidden.",
+                    "items": {
+                        "type": "string",
+                        "enum": ["task-expansion", "planning", "coding", "review"]
+                    },
+                    "default": []
+                },
+                "logicalIds": {
+                    "type": "array",
+                    "description": "Optional narrow allowlist of family-scoped logical ids. When present, only listed logical ids become eligible.",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                },
+                "limits": {
+                    "type": "object",
+                    "description": "Screenshot capture and comparison limits. All fields have defaults when absent.",
+                    "properties": {
+                        "maxImageBytes": {
+                            "type": "integer",
+                            "minimum": 1024,
+                            "maximum": 16777216,
+                            "default": 2097152,
+                            "description": "Maximum byte size of a screenshot. Oversized captures are rejected or downscaled per oversizePolicy."
+                        },
+                        "maxWidth": {
+                            "type": "integer",
+                            "minimum": 16,
+                            "maximum": 16384,
+                            "default": 4096,
+                            "description": "Maximum width in pixels."
+                        },
+                        "maxHeight": {
+                            "type": "integer",
+                            "minimum": 16,
+                            "maximum": 16384,
+                            "default": 4096,
+                            "description": "Maximum height in pixels."
+                        },
+                        "oversizePolicy": {
+                            "type": "string",
+                            "enum": ["reject", "downscale"],
+                            "default": "reject",
+                            "description": "Action when an image exceeds byte or dimension limits: reject (fail with error) or downscale (deterministically subsample)."
+                        },
+                        "maxComparePixels": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 268435456,
+                            "default": 16777216,
+                            "description": "Maximum total pixels allowed in a visual comparison (both images combined dimensions). Larger comparisons are rejected."
+                        },
+                        "diffThreshold": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 1,
+                            "default": 0.1,
+                            "description": "Pixel-diff threshold (0-1) for pixelmatch. Diffs below this ratio are considered insignificant."
+                        }
+                    },
                     "additionalProperties": false
                 }
             },
