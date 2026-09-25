@@ -362,8 +362,8 @@ export class BrowserSession {
         );
       }
       // Downscale: find largest integer stride that fits both dimensions
-      const factorX = Math.floor(width / limits.maxWidth);
-      const factorY = Math.floor(height / limits.maxHeight);
+      const factorX = Math.ceil(width / limits.maxWidth);
+      const factorY = Math.ceil(height / limits.maxHeight);
       downscaleFactor = Math.max(factorX, factorY, 1);
 
       if (downscaleFactor > 1) {
