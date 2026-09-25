@@ -30,6 +30,9 @@ import {
   astTransformAfterToolCall,
   createAstTransformTools,
 } from './tools/ast-transform.ts';
+import { createMcpClient, type McpClient } from './mcp-client.ts';
+import { createMcpToolDescriptors } from './tools/mcp.ts';
+import { storeArtifact as storeSessionArtifact } from './session-stream.ts';
 import {
   createGitCommitTools,
   createGitTools,
@@ -786,6 +789,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
     );
   }
 
+  let mcpClient: McpClient | undefined;
   try {
     const tracker = createIntendedFileTracker();
     const readOnlyDescriptors = createReadOnlyTools(options.wtDir);
@@ -810,6 +814,18 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
           phase: 'coding',
         })
       : [];
+    const wavemillConfig = loadWavemillConfig(options.repoDir);
+    const mcpFamily = wavemillConfig.nativeAgent?.advanced?.mcp;
+    let mcpDescriptors: ToolDescriptor[] = [];
+    if (mcpFamily?.enabled === true) {
+      mcpClient = createMcpClient({ family: mcpFamily });
+      mcpDescriptors = createMcpToolDescriptors({
+        config: wavemillConfig,
+        client: mcpClient,
+        storeArtifact: (bytes) =>
+          storeSessionArtifact(Buffer.from(bytes), options.repoDir, false, bytes.byteLength),
+      });
+    }
     const descriptors = [
       ...readOnlyDescriptors,
       ...createGitTools(options.wtDir),
@@ -818,6 +834,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       ...createGitCommitTools(options.wtDir, { tracker }),
       ...codeSearchDescriptors,
       ...astDescriptors,
+      ...mcpDescriptors,
       ...(options.extraDescriptors ?? []),
     ];
     const registry = createToolRegistry(descriptors);
@@ -1334,5 +1351,13 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
     writeHookStatus(hookPath, 'error', 'process_exit', message, 'native');
     writeTextStatus(options.session, options.issue, 'native coding error');
     throw error;
+  } finally {
+    if (mcpClient) {
+      try {
+        await mcpClient.stopAll('coding_end');
+      } catch (stopError) {
+        console.warn(`mcp stopAll failed: ${(stopError as Error).message}`);
+      }
+    }
   }
 }

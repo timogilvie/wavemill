@@ -100,6 +100,8 @@ TESTS=(
   shared/lib/native-agent/tools/code-search.test.ts
   shared/lib/native-agent/tools/ast-transform.test.ts
   shared/lib/native-agent/language-index.test.ts
+  shared/lib/native-agent/tools/mcp.test.ts
+  shared/lib/native-agent/mcp-client.test.ts
   shared/lib/native-agent/loop.test.ts
   shared/lib/native-agent/output-limits.test.ts
   shared/lib/native-agent/transcript.test.ts
