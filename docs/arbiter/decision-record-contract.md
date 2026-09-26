@@ -75,7 +75,9 @@ reference implementation:
 | payload | `features` = `candidate_features/v1` | flat `TechnicalTaskRouterRequest.inputs`, which **mixes in outcome fields** |
 | options / recommended / taken / propensity | n/a (predictor) | options in `technical_task_router_row/v2`; recommended vs. taken in `OutcomeReport`; **no propensity** |
 | outcome label | S2 survival label v1.0.0 (+ `corrective_rework`, HOK-3020) | `completionStatus` snapshot, **no horizon or labeller version** |
-| link to the change | `prUrl`; wavemill PRs carry `executed_route` in `wavemill-meta` (HOK-2945) | `executed_route` records what ran, but **not the route decision ID** |
+| link to the change | `prUrl`; wavemill PRs carry `executed_route` in `wavemill-meta` (HOK-2945) | `executed_route` records what ran; **HOK-3098** adds `route_decision` (`decision_id`, `source`, `policy_version`, `recommended`) to `wavemill-meta` |
 
-The Model Match gaps are out of scope for the Rework Risk work. They are listed
-here so the next Model Match change closes them.
+HOK-3098 is being done now rather than with the next Model Match change,
+because the link can't be backfilled: every PR merged without it is a survival
+label that can never be joined to its route decision. The other Model Match gaps
+are listed here so the next Model Match change closes them.
