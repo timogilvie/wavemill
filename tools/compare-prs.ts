@@ -38,7 +38,7 @@ import {
 import { loadWavemillConfig } from '../shared/lib/config.ts';
 import { resolveEvalsDir } from '../shared/lib/evals-paths.ts';
 import {
-  ARBITER_JUDGE_PROMPT_TEMPLATE_PATH,
+  ARBITER_JUDGE_PROMPT_TEMPLATE_FILE,
   buildChallengeCommentBody,
   ensureLocalComparisonObjects,
   fetchForkAwareDiffs,
@@ -772,7 +772,7 @@ runTool({
       );
 
       const promptLimit = Number.parseInt(process.env.CHALLENGE_COMPARISON_MAX_PROMPT_BYTES || '500000', 10);
-      const judgePromptTemplate = await loadPromptTemplate(join(repoDir, ARBITER_JUDGE_PROMPT_TEMPLATE_PATH), { dir: evalsDir });
+      const judgePromptTemplate = await loadPromptTemplate(ARBITER_JUDGE_PROMPT_TEMPLATE_FILE, { dir: evalsDir });
       const judgeOutcome = await runBlindJudge({
         issuePrompt,
         primaryDiff,
