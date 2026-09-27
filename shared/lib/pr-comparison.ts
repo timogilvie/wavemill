@@ -2,6 +2,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import {
   detectVariedDimensions,
   type ChallengeComparisonDimensions,
@@ -47,6 +48,16 @@ export interface BlindComparisonResult {
 }
 
 export const ARBITER_JUDGE_PROMPT_TEMPLATE_PATH = 'tools/prompts/arbiter-judge.md';
+
+/**
+ * Absolute path to the judge template inside the wavemill installation.
+ * Resolve against this module, never the milled repo's `--repo-dir`: the
+ * template ships with wavemill, so a repo-relative join only works when the
+ * mill is running on wavemill itself.
+ */
+export const ARBITER_JUDGE_PROMPT_TEMPLATE_FILE = fileURLToPath(
+  new URL(`../../${ARBITER_JUDGE_PROMPT_TEMPLATE_PATH}`, import.meta.url),
+);
 
 export const DEFAULT_ARBITER_JUDGE_PROMPT_TEMPLATE = `You are judging two candidate pull requests (Candidate A and Candidate B) for the same task.
 
