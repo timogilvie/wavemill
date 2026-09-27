@@ -75,6 +75,8 @@ cleanup_file="$tmp/operator-abort-cleanup.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_migrate_controller_observer_artifact"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_discard_prompt_registry_artifact"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_fetch_pr_terminal_evidence"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_record_pr_delivery_evidence"

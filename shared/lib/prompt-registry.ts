@@ -54,8 +54,15 @@ export interface PromptRegistryEntry {
 
 /** Options for registry operations. */
 export interface RegistryOptions {
-  /** Override directory for registry storage. Resolved relative to cwd. */
+  /** Override the evals directory the JSONL registry is written to. Resolved relative to cwd. */
   dir?: string;
+  /**
+   * Repository (or task worktree) the prompt is used in. When `dir` is not
+   * given, the registry goes to that repo's configured evals directory
+   * (resolved to the main checkout), never the worktree root. Also scopes the
+   * resource registry and session manifest.
+   */
+  repoDir?: string;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -69,8 +76,8 @@ const REGISTRY_FILENAME = 'prompt-registry.jsonl';
 // ────────────────────────────────────────────────────────────────
 
 /** Resolve the full path to the registry JSONL file. */
-function resolveRegistryFile(dir?: string): string {
-  return join(resolveEvalsDir(dir).dir, REGISTRY_FILENAME);
+function resolveRegistryFile(dir?: string, repoDir?: string): string {
+  return join(resolveEvalsDir(dir, repoDir).dir, REGISTRY_FILENAME);
 }
 
 /**
@@ -142,8 +149,9 @@ export function logPromptUsage(
   promptOptions?: PromptRegistrationOptions,
 ): ResourceRef | null {
   try {
-    const evalsDir = resolveEvalsDir(options?.dir).dir;
-    const registryPath = resolveRegistryFile(options?.dir);
+    const evalsDir = resolveEvalsDir(options?.dir, options?.repoDir).dir;
+    const registryPath = resolveRegistryFile(options?.dir, options?.repoDir);
+    const resourceRepoDir = options?.repoDir ?? options?.dir;
 
     // Ensure directory exists
     mkdirSync(evalsDir, { recursive: true });
@@ -170,10 +178,10 @@ export function logPromptUsage(
     // Append to registry
     appendJsonlRecord(registryPath, entry);
 
-    const promptRef = registerPromptTemplate(templatePath, templateContent, options?.dir, promptOptions);
+    const promptRef = registerPromptTemplate(templatePath, templateContent, resourceRepoDir, promptOptions);
     const sessionId = process.env.WAVEMILL_SESSION;
     if (sessionId && promptRef) {
-      recordUse(sessionId, process.env.WAVEMILL_PHASE || 'unknown', promptRef, options?.dir);
+      recordUse(sessionId, process.env.WAVEMILL_PHASE || 'unknown', promptRef, resourceRepoDir);
     }
     return promptRef;
   } catch (err) {

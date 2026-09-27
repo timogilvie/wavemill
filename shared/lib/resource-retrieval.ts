@@ -250,7 +250,7 @@ function loadRegisteredPrompt(
 
   let ref: ResourceRef | null = null;
   try {
-    ref = logPromptUsage(path, content, { dir: query.repoDir }, promptOptions);
+    ref = logPromptUsage(path, content, { repoDir: query.repoDir }, promptOptions);
   } catch (error) {
     console.warn(`[resource-retrieval] Failed to log prompt usage: ${(error as Error).message}`);
     ref = registerPromptTemplate(path, content, query.repoDir, promptOptions);

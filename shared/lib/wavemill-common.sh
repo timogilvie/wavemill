@@ -1076,13 +1076,38 @@ _wavemill_record_cleanup_decision() {
 # under .wavemill/ - remains a cleanup blocker.
 WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT=".wavemill/observer-findings.jsonl"
 
-# Porcelain status of a worktree with the controller-owned observer artifact
-# excluded. Prints the filtered status; propagates git's failure (non-zero,
-# no output) so callers can keep treating an unreadable status as dirty.
+# Prompt-registry log that older native-agent runs wrote at the worktree root
+# (prompt usage was logged with the repo dir as the evals dir). It is
+# machine-generated telemetry, never task work, so an untracked copy or an
+# unstaged edit of a copy an agent accidentally committed must not retain a
+# terminal worktree. Exact root path and exact porcelain codes only.
+WAVEMILL_PROMPT_REGISTRY_ARTIFACT="prompt-registry.jsonl"
+
+# Porcelain status of a worktree with controller-owned artifacts (observer
+# findings, root prompt-registry log) excluded. Prints the filtered status;
+# propagates git's failure (non-zero, no output) so callers can keep treating
+# an unreadable status as dirty.
 wavemill_worktree_dirty_status() {
-  local wt_dir="${1:-}" raw_status=""
+  local wt_dir="${1:-}" raw_status="" registry="${WAVEMILL_PROMPT_REGISTRY_ARTIFACT:-prompt-registry.jsonl}"
   raw_status="$(git -C "$wt_dir" status --porcelain --untracked-files=all 2>/dev/null)" || return 1
-  printf '%s\n' "$raw_status" | grep -v -x -F "?? ${WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT}" | grep -v -x '' || true
+  printf '%s\n' "$raw_status" \
+    | grep -v -x -F "?? ${WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT}" \
+    | grep -v -x -F "?? ${registry}" \
+    | grep -v -x -F " M ${registry}" \
+    | grep -v -x '' || true
+}
+
+# Discard the root prompt-registry log from a task worktree before it is
+# removed: delete an untracked copy, restore a tracked one. Nothing else in
+# the worktree is touched. Only runs against a valid task worktree.
+wavemill_discard_prompt_registry_artifact() {
+  local wt_dir="${1:-}" registry="${WAVEMILL_PROMPT_REGISTRY_ARTIFACT:-prompt-registry.jsonl}"
+  [[ -n "$wt_dir" && -f "$wt_dir/$registry" ]] || return 0
+  if git -C "$wt_dir" ls-files --error-unmatch -- "$registry" >/dev/null 2>&1; then
+    git -C "$wt_dir" checkout -- "$registry" 2>/dev/null || true
+  else
+    rm -f "$wt_dir/$registry" 2>/dev/null || true
+  fi
 }
 
 # Migrate (or drop) the controller-owned observer artifact out of a task
@@ -1924,6 +1949,7 @@ safe_remove_task_worktree_and_branch() {
       fi
     else
       wavemill_migrate_controller_observer_artifact "$wt_dir"
+      wavemill_discard_prompt_registry_artifact "$wt_dir"
       if wavemill_cleanup_run git -C "$REPO_DIR" worktree remove "$wt_dir" >>"${MILL_LOG_FILE:-/dev/null}" 2>/dev/null; then
         log "debug" "Removed worktree: $wt_dir"
       else

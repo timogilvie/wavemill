@@ -180,7 +180,7 @@ describe('resource-retrieval', () => {
     const manifest = getManifest('session-typed-prompt', repoDir);
     assert.ok(manifest?.phases.review.some((ref) => ref.id === prompt.ref!.id));
 
-    const promptRegistry = readFileSync(join(repoDir, 'prompt-registry.jsonl'), 'utf-8');
+    const promptRegistry = readFileSync(join(repoDir, '.wavemill', 'evals', 'prompt-registry.jsonl'), 'utf-8');
     assert.match(promptRegistry, /review-general-scoped/);
   });
 
