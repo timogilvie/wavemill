@@ -1,7 +1,15 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { mutateJsonState } from './state-mutex.ts';
+
+/**
+ * Wavemill's own shell libraries. These ship with the wavemill install, so
+ * resolve them next to this module, never under the milled repo's dir.
+ */
+export const WAVEMILL_COMMON_SCRIPT = fileURLToPath(new URL('./wavemill-common.sh', import.meta.url));
+export const TERMINAL_RECONCILER_SCRIPT = fileURLToPath(new URL('./terminal-reconciler.sh', import.meta.url));
 
 export type JsonRecord = Record<string, unknown>;
 
@@ -128,6 +136,8 @@ export interface CleanupExecuteContext {
   baseBranch: string;
   session: string;
   abandon: boolean;
+  /** Directory holding wavemill-common.sh / terminal-reconciler.sh. Defaults to the wavemill install; tests inject stubs. */
+  wavemillLibDir?: string;
 }
 
 export interface CleanupOptions {
@@ -162,7 +172,7 @@ export const defaultCleanupDeps: CleanupDeps = {
         STATE_FILE: statePath(repoDir),
         BASE_BRANCH: request.baseBranch,
         WORKTREE_ROOT: request.worktreeDir ? dirname(request.worktreeDir) : dirname(repoDir),
-        WAVEMILL_COMMON_SCRIPT: join(repoDir, 'shared/lib/wavemill-common.sh'),
+        WAVEMILL_COMMON_SCRIPT,
         WAVEMILL_CLASSIFY_WORKTREE: request.worktreeDir || '',
         WAVEMILL_CLASSIFY_BRANCH: request.taskBranch,
         WAVEMILL_CLASSIFY_BASE: request.baseBranch,
@@ -188,8 +198,8 @@ export const defaultCleanupDeps: CleanupDeps = {
       'set -euo pipefail',
       'log() { if [[ "$#" -gt 0 && "$1" == "debug" ]]; then shift; fi; printf "%s\\n" "$*" >&2; }',
       'log_warn() { printf "WARN: %s\\n" "$*" >&2; }',
-      `source "${join(context.repoDir, 'shared/lib/wavemill-common.sh').replace(/"/g, '\\"')}"`,
-      `source "${join(context.repoDir, 'shared/lib/terminal-reconciler.sh').replace(/"/g, '\\"')}"`,
+      `source "${(context.wavemillLibDir ? join(context.wavemillLibDir, 'wavemill-common.sh') : WAVEMILL_COMMON_SCRIPT).replace(/"/g, '\\"')}"`,
+      `source "${(context.wavemillLibDir ? join(context.wavemillLibDir, 'terminal-reconciler.sh') : TERMINAL_RECONCILER_SCRIPT).replace(/"/g, '\\"')}"`,
       `cleanup_completed_task "${decision.issue.replace(/"/g, '\\"')}" "${decision.slug.replace(/"/g, '\\"')}" "operator terminal inbox cleanup"`,
     ].join('\n');
     const env = {

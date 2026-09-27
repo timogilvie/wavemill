@@ -263,7 +263,7 @@ function loadNativeReviewPrompt(
   const template = readFileSync(NATIVE_REVIEW_PHASE_PROMPT_PATH, 'utf-8');
   // Log the unrendered template so the prompt hash tracks the template version
   // rather than the per-phase tool list rendered into it.
-  const promptRef = logPromptUsage(NATIVE_REVIEW_PHASE_PROMPT_PATH, template, { dir: repoDir });
+  const promptRef = logPromptUsage(NATIVE_REVIEW_PHASE_PROMPT_PATH, template, { repoDir });
   return { content: renderNativePhasePrompt(template, options), promptRef };
 }
 

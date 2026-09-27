@@ -405,6 +405,7 @@ TESTS=(
   shared/lib/project-context-generator.test.ts
   shared/lib/prompt-hash.test.ts
   shared/lib/prompt-registry.test.ts
+  shared/lib/wavemill-install-paths.test.ts
   shared/lib/prompt-utils.test.ts
   shared/lib/ready-diagnostics.test.ts
   shared/lib/ready-migration-base.test.ts
