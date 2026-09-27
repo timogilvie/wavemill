@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
 import {
+  ARBITER_JUDGE_PROMPT_TEMPLATE_FILE,
   ARBITER_JUDGE_PROMPT_TEMPLATE_PATH,
   buildDiffIdentity,
   buildChallengeCommentBody,
@@ -353,6 +354,29 @@ test('buildCappedComparisonPrompt truncates oversized diff bodies', () => {
   assert.match(result.prompt, /TRUNCATED candidate B diff/);
   assert.doesNotMatch(result.prompt, /TRUNCATED primary diff/);
   assert.doesNotMatch(result.prompt, /TRUNCATED challenger diff/);
+});
+
+test('judge template resolves inside the wavemill install, independent of cwd', () => {
+  const originalCwd = process.cwd();
+  const foreignRepo = mkdtempSync(join(tmpdir(), 'arbiter-judge-foreign-repo-'));
+  try {
+    // A milled repo other than wavemill has no tools/prompts/arbiter-judge.md.
+    process.chdir(foreignRepo);
+    assert.ok(isAbsolute(ARBITER_JUDGE_PROMPT_TEMPLATE_FILE));
+    assert.ok(ARBITER_JUDGE_PROMPT_TEMPLATE_FILE.endsWith(ARBITER_JUDGE_PROMPT_TEMPLATE_PATH));
+    assert.ok(existsSync(ARBITER_JUDGE_PROMPT_TEMPLATE_FILE));
+  } finally {
+    process.chdir(originalCwd);
+    rmSync(foreignRepo, { recursive: true, force: true });
+  }
+});
+
+test('judge-invoking tools load the template from the wavemill install, not --repo-dir', () => {
+  for (const tool of ['tools/compare-prs.ts', 'tools/swap-test.ts']) {
+    const source = readFileSync(tool, 'utf-8');
+    assert.doesNotMatch(source, /join\(\s*repoDir\s*,\s*ARBITER_JUDGE_PROMPT_TEMPLATE_PATH/, tool);
+    assert.match(source, /loadPromptTemplate\(ARBITER_JUDGE_PROMPT_TEMPLATE_FILE\b/, tool);
+  }
 });
 
 test('rendered judge prompt hash changes when the registered template changes', async () => {
