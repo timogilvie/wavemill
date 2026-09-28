@@ -293,11 +293,28 @@ wavemill_terminal_pane_policy_for_reason() {
   printf '%s\n' "$policy"
 }
 
-# Fresh (TTL < 300s) hook state for an issue. Self-contained equivalent of
-# the monitor's fresh_hook_state_for_issue so the reconciler stays sourceable
-# without wavemill-monitor.sh; prints nothing when the hook is missing/stale.
+# HOK-3101: replaced with a thin wrapper over the shared accessor so the
+# reconciler stops paying the TTL check twice and inherits the writer
+# classification. Kept as a wrapper because callers still expect the
+# `wavemill_terminal_` prefix.
 wavemill_terminal_fresh_hook_state() {
-  local session="$1" issue="$2" hook_file hook_ts now
+  local session="$1" issue="$2"
+  # Try to source the accessor lazily; the reconciler is used both from a
+  # sourced context (wavemill-common.sh already brings task-progress.sh) and
+  # from stand-alone scripts.
+  if ! declare -F wavemill_hook_read >/dev/null 2>&1; then
+    local _sr_dir
+    _sr_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
+    if [[ -n "$_sr_dir" && -f "$_sr_dir/task-progress.sh" ]]; then
+      # shellcheck source=task-progress.sh
+      source "$_sr_dir/task-progress.sh"
+    fi
+  fi
+  if declare -F wavemill_hook_read >/dev/null 2>&1; then
+    wavemill_hook_read "$session" "$issue" state --fresh 2>/dev/null || true
+    return 0
+  fi
+  local hook_file hook_ts now
   hook_file="/tmp/wavemill-${session}-${issue}.hook"
   [[ -f "$hook_file" ]] || return 0
   command -v jq >/dev/null 2>&1 || return 0
@@ -308,35 +325,89 @@ wavemill_terminal_fresh_hook_state() {
   jq -r '.state // empty' "$hook_file" 2>/dev/null || true
 }
 
-# HOK-2972: proof that the pane's surviving process is an idle agent REPL.
-# Only the agent's own Stop hook (state=idle, event=Stop) counts, read with
-# the TTL ignored - after stage evidence is terminal, an aged Stop record is
-# evidence of an idle agent until another agent work event. Terminal controller
-# writes and later waiting notifications do not revoke that evidence. A task
+# HOK-2972 / HOK-3089 pt 3 / HOK-3101: proof that the pane's surviving
+# process is an idle agent REPL. The agent's own settled-idle event (Stop /
+# process_exit / stream_end / process_idle) counts, read from the preserved
+# .agentRecord — never from a monitor-written hook (writer=monitor or a
+# controller event like pr_merged/pr_closed_unmerged/challenge_*). A task
 # whose agent died mid-work (last agent state "working") stays protected.
+#
+# When the top-level hook is a monitor write and there is no .agentRecord
+# (legacy hooks pre-HOK-3101), the archived .terminal-history.jsonl is the
+# fallback: the terminalize path archives the agent's own Stop before it
+# overwrites the top level, so the idle proof is always recoverable.
 wavemill_terminal_agent_idle_evidence() {
-  local session="$1" issue="$2" hook_file feature_dir history_file current_agent_state
+  local session="$1" issue="$2" hook_file feature_dir history_file agent_state agent_event
   command -v jq >/dev/null 2>&1 || return 1
   hook_file="/tmp/wavemill-${session}-${issue}.hook"
   if [[ -f "$hook_file" ]]; then
-    current_agent_state="$(jq -r 'if .agent == "claude" then ((.state // "") + ":" + (.event // "")) else empty end' "$hook_file" 2>/dev/null || true)"
-    case "$current_agent_state" in
-      idle:Stop) return 0 ;;
-      waiting:Notification) ;;
-      "") ;;
-      *) return 1 ;;
-    esac
+    # HOK-3101: read from .agentRecord if present (never from a monitor top
+    # level); fall through when no agent record is available.
+    if jq -e '.agentRecord != null' "$hook_file" >/dev/null 2>&1; then
+      agent_state="$(jq -r '.agentRecord.state // ""' "$hook_file" 2>/dev/null || true)"
+      agent_event="$(jq -r '.agentRecord.event // ""' "$hook_file" 2>/dev/null || true)"
+      case "${agent_state}:${agent_event}" in
+        idle:Stop|idle:process_exit|idle:stream_end|idle:process_idle|idle:) return 0 ;;
+        waiting:Notification|waiting:) ;;
+        working:*) return 1 ;;
+        error:*) return 1 ;;
+        *)
+          # Any other agent record is not proof of idle-REPL; do not return 0.
+          ;;
+      esac
+    else
+      # Legacy hook classification: only trust an agent-written top-level.
+      local top_writer top_event
+      top_writer="$(jq -r '.writer // ""' "$hook_file" 2>/dev/null || echo "")"
+      top_event="$(jq -r '.event // ""' "$hook_file" 2>/dev/null || echo "")"
+      if [[ -z "$top_writer" ]]; then
+        case "$top_event" in
+          pr_merged|pr_closed_unmerged|operator_abort|recovery_failure|review_complete|ready_complete|pr_opened|blocked_completion_liveness|premature_plan_approval|recovery_contract_unavailable|planning_rejection_notify_failed|NoPR|worktree-setup|challenge_resolved_winner|challenge_invalid|challenge_no_comparison|challenge_stale_evidence|challenge_pair_recovery)
+            top_writer="monitor" ;;
+        esac
+      fi
+      if [[ "$top_writer" != "monitor" ]]; then
+        agent_state="$(jq -r '.state // ""' "$hook_file" 2>/dev/null || true)"
+        agent_event="$(jq -r '.event // ""' "$hook_file" 2>/dev/null || true)"
+        case "${agent_state}:${agent_event}" in
+          idle:Stop|idle:process_exit|idle:stream_end|idle:process_idle|idle:) return 0 ;;
+          waiting:Notification|waiting:) ;;
+          working:*) return 1 ;;
+          error:*) return 1 ;;
+          *) ;;
+        esac
+      fi
+    fi
   fi
   feature_dir="$(wavemill_terminal_feature_dir "$issue" 2>/dev/null || true)"
   [[ -n "$feature_dir" ]] || return 1
   history_file="$feature_dir/.terminal-history.jsonl"
   [[ -f "$history_file" ]] || return 1
+  # HOK-3101: drop the .agent=="claude" hard-code (any agent may Stop) and
+  # skip monitor-written archived entries; fold across any settled-idle event.
   jq -se '
-    reduce (.[] | .payload | select(.agent == "claude")) as $event
-      (false;
-       if $event.state == "idle" and $event.event == "Stop" then true
-       elif $event.state == "waiting" and $event.event == "Notification" then .
-       else false end)
+    def controller_events:
+      ["pr_merged","pr_closed_unmerged","operator_abort","recovery_failure",
+       "review_complete","ready_complete","pr_opened","blocked_completion_liveness",
+       "premature_plan_approval","recovery_contract_unavailable",
+       "planning_rejection_notify_failed","NoPR","worktree-setup",
+       "challenge_resolved_winner","challenge_invalid","challenge_no_comparison",
+       "challenge_stale_evidence","challenge_pair_recovery"];
+    def is_controller_event($e): (controller_events | index($e)) != null;
+    reduce (
+      .[]
+      | .payload
+      | select(type == "object")
+      | select((.writer // "") != "monitor")
+      | select(is_controller_event(.event // "") | not)
+    ) as $event (false;
+       if ($event.state == "idle")
+          and (($event.event // "") | IN("Stop","process_exit","stream_end","process_idle","")) then true
+       elif $event.state == "waiting" then .
+       elif $event.state == "working" then false
+       elif $event.state == "error" then false
+       else .
+       end)
   ' "$history_file" >/dev/null 2>&1
 }
 

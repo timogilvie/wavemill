@@ -3986,6 +3986,18 @@ clear_stale_pane_release_blocked_marker() {
 }
 
 fresh_hook_state_for_issue() {
+  # HOK-3101: thin wrapper over the shared accessor. Keeps existing callers
+  # (`pane_release_preflight` :4097) working while sharing the one TTL check
+  # and controller/agent classification. Reads the TOP-LEVEL hook state
+  # regardless of writer, so a monitor `working` still protects here — the
+  # `coding_stage_owner_lost` check below uses `--agent-only` to defeat that.
+  if declare -F wavemill_hook_read >/dev/null 2>&1; then
+    local state
+    state="$(wavemill_hook_read "$SESSION" "$1" state --fresh 2>/dev/null || true)"
+    [[ -n "$state" ]] || return 1
+    printf '%s\n' "$state"
+    return 0
+  fi
   local issue="$1" hook_file="/tmp/wavemill-${SESSION}-${issue}.hook"
   local hook_ts now staleness
   [[ -f "$hook_file" ]] || return 1
@@ -3995,6 +4007,18 @@ fresh_hook_state_for_issue() {
   staleness=$((now - hook_ts))
   (( staleness < 300 )) || return 1
   jq -r '.state // empty' "$hook_file" 2>/dev/null || true
+}
+
+# HOK-3101: agent-only fresh hook state. A monitor `working` or `blocked`
+# does NOT count. Used by `coding_stage_owner_lost` so a monitor recovery
+# replay write cannot mask a lost coding owner.
+fresh_agent_hook_state_for_issue() {
+  local issue="$1"
+  if declare -F wavemill_hook_read >/dev/null 2>&1; then
+    wavemill_hook_read "$SESSION" "$issue" state --fresh --agent-only 2>/dev/null || true
+    return 0
+  fi
+  return 1
 }
 
 # HOK-2972 / HOK-2963: detect a coding stage result stuck at "running" whose
@@ -4019,7 +4043,10 @@ coding_stage_owner_lost() {
   now_epoch="$(date +%s)"
   (( now_epoch - started_epoch >= grace )) || return 1
 
-  hook_state="$(fresh_hook_state_for_issue "$issue" 2>/dev/null || true)"
+  # HOK-3101: read agent-only, so a monitor-written recovery replay
+  # (`working` at :7632, `writer=monitor`) no longer protects a lost coding
+  # owner. The agent's own fresh state still protects.
+  hook_state="$(fresh_agent_hook_state_for_issue "$issue" 2>/dev/null || true)"
   case "$hook_state" in
     working) return 1 ;;
     waiting) return 1 ;;
@@ -4033,7 +4060,98 @@ coding_stage_owner_lost() {
   live_rc=0
   mill_pane_has_live_blocking_process "$pane_pid" || live_rc=$?
   # 0 = live descendant (agent or owned validation), 2 = indeterminate: both protect.
+  # HOK-3101 (a): but an idle REPL sitting in the pane is not "the agent is
+  # doing work" — if the primitive says the agent is idle and not stalled,
+  # let the owner-lost signal fire.
+  if [[ "$live_rc" -eq 0 ]] && declare -F task_progress_json >/dev/null 2>&1; then
+    local progress
+    progress="$(task_progress_json "$issue" --phase coding --max-age 60 2>/dev/null || printf '{}')"
+    if command -v jq >/dev/null 2>&1 \
+      && printf '%s' "$progress" \
+      | jq -e '.agentIdle == true and .stalled == true' >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
   [[ "$live_rc" -eq 1 ]] || return 1
+  return 0
+}
+
+# HOK-3101 / HOK-3069: a coding task with no hook, no commits, no worktree
+# changes, and only the launcher's `working` status write (which the
+# primitive discounts during the launch grace) is stalled. This detector
+# runs after the owner-grace only. It never kills — it warns once per
+# episode, sets needs-user attention, and writes a monitor `waiting` hook.
+coding_stage_stalled() {
+  local issue="$1" feature_dir="$2" win_target="$3"
+  [[ -f "$feature_dir/.coding-result.json" ]] || return 1
+  local started_at started_epoch now_epoch
+  started_at="$(jq -r '.startedAt // empty' "$feature_dir/.coding-result.json" 2>/dev/null || true)"
+  [[ -n "$started_at" ]] || return 1
+  started_epoch="$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$started_at" +%s 2>/dev/null \
+    || date -u -d "$started_at" +%s 2>/dev/null || true)"
+  [[ "$started_epoch" =~ ^[0-9]+$ ]] || return 1
+  now_epoch="$(date +%s)"
+  local owner_grace="${WAVEMILL_CODING_OWNER_GRACE_SECONDS:-300}"
+  (( now_epoch - started_epoch >= owner_grace )) || return 1
+
+  declare -F task_progress_json >/dev/null 2>&1 || return 1
+  local pane_target="$win_target"
+  local progress
+  progress="$(task_progress_json "$issue" \
+    --phase coding \
+    --pane-target "$pane_target" \
+    --max-age 60 \
+    --write-cache 2>/dev/null || printf '{}')"
+  command -v jq >/dev/null 2>&1 || return 1
+  printf '%s' "$progress" | jq -e '.stalled == true' >/dev/null 2>&1 || return 1
+
+  local marker="$feature_dir/.coding-stalled.json"
+  local last_progress_at prompt_id detected_iso
+  last_progress_at="$(printf '%s' "$progress" | jq -r '.lastProgressAt // "never"' 2>/dev/null || echo "never")"
+  prompt_id="$(printf '%s' "$progress" | jq -r '.blockingPrompt.id // ""' 2>/dev/null || true)"
+
+  # Suppress a duplicate warning if we already saw this same lastProgressAt.
+  local previous_last=""
+  if [[ -f "$marker" ]]; then
+    previous_last="$(jq -r '.lastProgressAt // ""' "$marker" 2>/dev/null || true)"
+  fi
+  if [[ "$previous_last" != "$last_progress_at" ]]; then
+    detected_iso="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    local tmp="${marker}.tmp.$$"
+    jq -cn --arg last "$last_progress_at" --arg detected "$detected_iso" --arg prompt "$prompt_id" \
+      '{lastProgressAt:$last, detectedAt:$detected, blockingPrompt:(if $prompt == "" then null else $prompt end)}' \
+      > "$tmp" 2>/dev/null && mv "$tmp" "$marker" 2>/dev/null || rm -f "$tmp"
+
+    local age_minutes progress_sources
+    age_minutes="$(printf '%s' "$progress" | jq -r '.progressAgeMinutes // "?"' 2>/dev/null || echo "?")"
+    progress_sources="$(printf '%s' "$progress" | jq -r '(.sources // []) | map(.kind) | join(",")' 2>/dev/null || echo "")"
+    local suffix=""
+    [[ -n "$prompt_id" ]] && suffix=" (prompt: $prompt_id)"
+    [[ -z "$progress_sources" ]] && progress_sources="none-since-launch"
+    log "warn" "$issue → coding stalled ${age_minutes}m, sources=$progress_sources${suffix}"
+
+    if declare -F set_window_attention_state >/dev/null 2>&1; then
+      local slug win
+      slug="$(basename "$feature_dir")"
+      win="$issue-$slug"
+      set_window_attention_state "$win" "needs-user" >/dev/null 2>&1 || true
+    fi
+
+    # Publish a monitor `waiting` hook so the dashboard shows the attention
+    # state; keep the agent's own record intact via agentRecord preservation.
+    if declare -F wavemill_hook_write >/dev/null 2>&1; then
+      local detail next_action
+      if [[ -n "$prompt_id" ]]; then
+        detail="coding stalled ${age_minutes}m: $prompt_id"
+        next_action="inspect pane $pane_target for the $prompt_id prompt"
+      else
+        detail="coding stalled ${age_minutes}m: no hook/commit/worktree progress since launch"
+        next_action="inspect pane $pane_target — pane/process alone is not agent progress"
+      fi
+      WAVEMILL_SESSION="$SESSION" WAVEMILL_ISSUE="$issue" \
+        wavemill_hook_write "waiting" "coding_stalled" "$detail" "wavemill" "$next_action" "monitor" || true
+    fi
+  fi
   return 0
 }
 
@@ -4631,7 +4749,7 @@ notify_planning_rejection_agent() {
         wavemill_hook_write "blocked" "planning_rejection_notify_failed" \
           "planning rejection notice $status after $attempts attempts" \
           "${current_agent:-unknown}" \
-          "$next_action" || true
+          "$next_action" "monitor" || true
     fi
   fi
 
@@ -4711,7 +4829,7 @@ emit_blocked_completion_liveness_attention() {
   if [[ -f "$hook_protocol" ]]; then
     source "$hook_protocol" || true
     WAVEMILL_SESSION="$SESSION" WAVEMILL_ISSUE="$issue" \
-      wavemill_hook_write "blocked" "blocked_completion_liveness" "$detail" "${current_agent:-unknown}" "$next_action" || true
+      wavemill_hook_write "blocked" "blocked_completion_liveness" "$detail" "${current_agent:-unknown}" "$next_action" "monitor" || true
   fi
 
   set_window_attention_state "$win" "needs-user"
@@ -5754,7 +5872,7 @@ surface_premature_plan_approval() {
   next_action="Create features/$(basename "$feature_dir")/plan.md, then approve again."
   write_stage_result "$feature_dir" "planning" "running" "$current_agent" "" "$detail"
   if declare -F wavemill_hook_write >/dev/null 2>&1; then
-    wavemill_hook_write "blocked" "premature_plan_approval" "$detail" "${current_agent:-unknown}" "$next_action" || true
+    wavemill_hook_write "blocked" "premature_plan_approval" "$detail" "${current_agent:-unknown}" "$next_action" "monitor" || true
   fi
   set_window_attention_state "$win" "needs-user"
 
@@ -7585,7 +7703,7 @@ _stop_task_recovery_contract_unavailable() {
   fi
   write_stage_result "$feature_dir" "$phase" "failed" "" "" "recovery_contract_unavailable: $sub_reason - $detail"
   if declare -F wavemill_hook_write >/dev/null 2>&1; then
-    wavemill_hook_write "blocked" "recovery_contract_unavailable" "$detail" "" "$sub_reason" || true
+    wavemill_hook_write "blocked" "recovery_contract_unavailable" "$detail" "" "$sub_reason" "monitor" || true
   fi
 }
 
@@ -7631,7 +7749,7 @@ _prepare_recovery_phase_launch() {
   fi
 
   if declare -F wavemill_hook_write >/dev/null 2>&1; then
-    wavemill_hook_write "working" "" "" "$agent" || true
+    wavemill_hook_write "working" "" "" "$agent" "" "monitor" || true
   fi
 
   if ! win="$(_ensure_task_window_exists "$SESSION" "$issue" "$slug" "$wt_dir" "$lifecycle_phase")" || [[ -z "$win" ]]; then
@@ -16900,6 +17018,15 @@ monitor_issue_state() {
             if emit_terminal_blocked_completion_attention "$ISSUE" "$SLUG" "$FEATURE_DIR" "$WIN" "$WIN_TARGET"; then
               return 0
             fi
+            # HOK-3101 / HOK-3069: detect a coding task that has gone silent
+            # for 30m+ with no hook, no commits, no worktree changes and only
+            # the launcher's `working` status write. The primitive treats
+            # pane/process existence as separate from progress, so a hookless
+            # interactive Codex parked at a menu is caught here even though
+            # its pane is alive.
+            if declare -F coding_stage_stalled >/dev/null 2>&1; then
+              coding_stage_stalled "$ISSUE" "$FEATURE_DIR" "$WIN_TARGET" || true
+            fi
             log "debug" "$ISSUE → Coding still running: waiting for .coding-complete"
           fi
 
@@ -17311,7 +17438,7 @@ monitor_issue_state() {
         # hook file dashboard readers use for agent-reported failures.
         source "$hook_protocol" || true
         WAVEMILL_SESSION="$SESSION" WAVEMILL_ISSUE="$ISSUE" \
-          wavemill_hook_write "error" "NoPR" "Agent exited without creating PR on branch $BRANCH" "${current_agent:-unknown}" || true
+          wavemill_hook_write "error" "NoPR" "Agent exited without creating PR on branch $BRANCH" "${current_agent:-unknown}" "" "monitor" || true
       fi
 
       set_window_attention_state "$WIN" "needs-user"

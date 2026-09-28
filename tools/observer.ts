@@ -34,6 +34,14 @@ import {
 } from '../shared/lib/config-integrity.ts';
 import { normalizeTaskLifecycle, type CleanupEpisode, type TaskLifecycleState } from '../shared/lib/task-lifecycle.ts';
 import { resolveEffectiveTaskConfig, type EffectiveTaskConfig } from '../shared/lib/effective-task-config.ts';
+import {
+  getTaskProgress,
+  isWavemillControllerProcess,
+  matchInteractivePromptSignature as taskProgressMatchInteractivePromptSignature,
+  normalizeInteractivePromptText as taskProgressNormalizeInteractivePromptText,
+  INTERACTIVE_PROMPT_SIGNATURES as TASK_PROGRESS_INTERACTIVE_PROMPT_SIGNATURES,
+  type TaskProgress,
+} from '../shared/lib/task-progress.ts';
 
 type Severity = 'urgent' | 'high' | 'medium' | 'low';
 type Category = 'stuck' | 'crash' | 'warning' | 'ux' | 'operational';
@@ -53,37 +61,12 @@ const STALLED_ACTIVE_UNPUBLISHED_MINUTES = 120;
 const PR_CREATE_FAILED_PATTERN = /pull request create failed:?\s*(.*)/i;
 
 // HOK-3045: closed catalog of interactive agent lifecycle prompts that block
-// a task pane. Each entry lists multiple stable required tokens so a single
-// mention (source code, chat log, unrelated console output) never matches; the
-// matcher normalizes ANSI/whitespace before comparing. Adding a new signature
-// must include both positive and negative fixtures.
-interface InteractivePromptSignature {
-  id: string;
-  agent: 'codex' | 'claude' | 'generic';
-  /** All required substrings must be present in the normalized capture. */
-  requiredTokens: string[];
-  /** Any of these disqualifies the match (e.g. source-code frames). */
-  exclusionTokens?: string[];
-  /** Human-readable number of choices this prompt offers, for stable evidence. */
-  choiceCount?: number;
-  operatorAction: string;
-}
-
-const INTERACTIVE_PROMPT_SIGNATURES: InteractivePromptSignature[] = [
-  {
-    id: 'codex_model_retirement',
-    agent: 'codex',
-    requiredTokens: ['retires on', 'try new model', 'use existing model'],
-    exclusionTokens: ['function ', 'const ', '@Test', 'describe('],
-    choiceCount: 2,
-    operatorAction:
-      'Codex is parked at its model-retirement chooser. Inspect the task pane and pick either "Try new model" or "Use existing model"; the observer will not press keys on your behalf.',
-  },
-];
-
-// Cap the input the matcher sees so a runaway capture cannot degrade the loop
-// and so injected secrets/paths past the visible chooser never enter the match.
-const INTERACTIVE_PROMPT_MATCH_INPUT_LIMIT = 8_000;
+// a task pane. HOK-3101 moved the catalog into shared/lib/task-progress.ts so
+// the primitive can surface `blockingPrompt` and the observer can re-use it
+// for the incident detector. Adding a new signature must include positive and
+// negative fixtures in both `task-progress.test.ts` and `observer.test.ts`.
+type InteractivePromptSignature = typeof TASK_PROGRESS_INTERACTIVE_PROMPT_SIGNATURES[number];
+const INTERACTIVE_PROMPT_SIGNATURES = TASK_PROGRESS_INTERACTIVE_PROMPT_SIGNATURES;
 
 interface ObserverOptions {
   loop: boolean;
@@ -891,7 +874,7 @@ function cleanupEvidenceKey(task: TaskState, config: EffectiveTaskConfig, residu
   ].join(':');
 }
 
-function detectCleanupIncidentsForRepo(repo: RepoSnapshot, timestamp: string): IncidentRecord[] {
+function detectCleanupIncidentsForRepo(repo: RepoSnapshot, timestamp: string, progressLookup?: (task: TaskState) => TaskProgress | undefined): IncidentRecord[] {
   const incidents: IncidentRecord[] = [];
   const parsedNow = Date.parse(timestamp);
   const now = Number.isFinite(parsedNow) ? parsedNow : Date.now();
@@ -906,7 +889,7 @@ function detectCleanupIncidentsForRepo(repo: RepoSnapshot, timestamp: string): I
     // yet pushed is delivery risk, not cleanup failure (HOK-2972).
     const hasCleanupContext = taskHasTerminalResidueStatus(task) || Boolean(taskCleanupEpisode(task));
     if (rootCauseClass && !hasCleanupContext && classified.disposition === 'unpublished-at-risk') {
-      const ageMinutes = taskAgeMinutes(task, repo, now);
+      const ageMinutes = taskAgeMinutes(task, repo, now, progressLookup);
       if (ageMinutes !== undefined && Number.isFinite(ageMinutes) && ageMinutes > STALLED_ACTIVE_UNPUBLISHED_MINUTES) {
         incidents.push(createIncidentDraft({
           taskId: task.issue,
@@ -1038,6 +1021,7 @@ function detectParkedArmIncidents(
   const incidents: IncidentRecord[] = [];
   const parsedNow = Date.parse(timestamp);
   const now = Number.isFinite(parsedNow) ? parsedNow : Date.now();
+  const progressLookup = makeProgressLookup(repo, now);
 
   for (const task of repo.tasks) {
     if (!task.issue) continue;
@@ -1108,11 +1092,11 @@ function detectParkedArmIncidents(
     }
 
     // Terminal-parked and died-with-unpushed-work (mirrors the residue finding gates).
-    const ageMinutes = taskAgeMinutes(task, repo, now);
+    const ageMinutes = taskAgeMinutes(task, repo, now, progressLookup);
     if (ageMinutes === undefined || !Number.isFinite(ageMinutes) || ageMinutes <= options.staleMinutes) continue;
     const effectiveConfig = resolveObserverTaskConfig(repo, task.issue, task);
     const isTerminal = taskHasTerminalResidueStatus(task);
-    const liveEvidence = taskHasLiveExecutionEvidence(repo, task, snapshot.panes, snapshot.processes);
+    const liveEvidence = taskHasLiveExecutionEvidence(repo, task, snapshot.panes, snapshot.processes, progressLookup);
     if (!isTerminal && liveEvidence) continue;
 
     const branch = taskBranch(task);
@@ -1531,6 +1515,11 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
   }
 
   for (const repo of snapshot.repos) {
+    // HOK-3101: memoized per-repo task-progress lookup shared by every
+    // detector below. `taskAgeMinutes` and `taskHasLiveExecutionEvidence`
+    // read from it so a full task-progress computation happens at most once
+    // per task per observation cycle.
+    const progressLookup = makeProgressLookup(repo, now);
     for (const issue of detectRepoConfigIntegrity(repo.repoDir)) {
       findings.push(configIntegrityFinding(issue, repo.session, repo.repoDir));
     }
@@ -1640,11 +1629,16 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
     for (const task of repo.tasks) {
       if (taskWorkflowIsTerminal(task)) continue;
 
-      const ageMinutes = task.updated ? (now - Date.parse(task.updated)) / 60000 : stateAgeMinutes;
+      // HOK-3101 / HOK-3087: use the primitive's lastProgressAt, not just
+      // `task.updated`, so a healthy task with recent hook/commit evidence
+      // is not falsely flagged as stale.
+      const progressAge = taskAgeMinutes(task, repo, now, progressLookup);
+      const ageMinutes = progressAge ?? (task.updated ? (now - Date.parse(task.updated)) / 60000 : stateAgeMinutes);
       const watchedPhase = task.phase === 'planning' || task.phase === 'coding' || task.phase === 'review' || task.phase === 'ready';
       if (watchedPhase && ageMinutes !== undefined && Number.isFinite(ageMinutes) && ageMinutes > options.staleMinutes) {
         const expectedWindow = task.slug ? `${task.issue}-${task.slug}` : task.issue;
-        const liveEvidence = taskHasLiveExecutionEvidence(repo, task, snapshot.panes, snapshot.processes);
+        const liveEvidence = taskHasLiveExecutionEvidence(repo, task, snapshot.panes, snapshot.processes, progressLookup);
+        const progress = progressLookup(task);
         if (task.worktree && !existsSync(task.worktree)) {
           findings.push({
             id: `stale-active-task-missing-worktree-${repo.session}-${task.issue}`,
@@ -1685,6 +1679,12 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
             recommendation: 'Inspect the task state and quarantine/cleanup path; if the process is gone, terminalize and clean the task instead of leaving it active.',
           });
         } else {
+          const progressEvidence: string[] = [];
+          if (progress?.lastProgressAt) progressEvidence.push(`lastProgressAt=${progress.lastProgressAt}`);
+          if (progress?.sources.length) progressEvidence.push(`sources=${progress.sources.map((s) => s.kind).join(',')}`);
+          if (progress?.agentState) progressEvidence.push(`agentState=${progress.agentState}`);
+          if (progress?.agentIdle) progressEvidence.push('agentIdle=true');
+          if (progress?.blockingPrompt) progressEvidence.push(`blockingPrompt=${progress.blockingPrompt.id}`);
           findings.push({
             id: `stale-active-task-live-process-${repo.session}-${task.issue}`,
             severity: 'high',
@@ -1701,8 +1701,52 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
               `ageMinutes=${Math.round(ageMinutes)}`,
               `expectedWindow=${expectedWindow}`,
               `worktree=${task.worktree ?? 'unknown'}`,
+              ...progressEvidence,
             ],
             recommendation: 'Inspect the task pane and hook state. If the agent is parked at a prompt or waiting after reporting completion, send a narrow recovery instruction; stop a child process only when it is conclusively wedged.',
+          });
+        }
+      }
+
+      // HOK-3101 / HOK-3069: a coding task can go silent for 30m+ with no
+      // hook, no commits, no worktree changes and only the launcher's
+      // `working` status write (which we ignore during the 5s grace after
+      // `startedAt`). The pane is still alive (Codex sits at an interactive
+      // menu), but nothing is progressing. Pane/process existence never
+      // rescues this — it is the whole point of the primitive.
+      if (task.phase === 'coding' && !taskWorkflowIsTerminal(task)) {
+        const progress = progressLookup(task);
+        if (progress?.stalled) {
+          const sourceList = progress.sources.length > 0
+            ? progress.sources.map((s) => s.kind).join(',')
+            : 'none';
+          const noProgressDetail = progress.sources.length === 0
+            ? ' — no hook, commit, worktree or post-launch status progress since coding launched'
+            : '';
+          const blockingDetail = progress.blockingPrompt
+            ? ` blockingPrompt=${progress.blockingPrompt.id}`
+            : '';
+          findings.push({
+            id: `coding-task-stalled-${repo.session}-${task.issue}`,
+            severity: 'high',
+            category: 'stuck',
+            confidence: 'medium',
+            session: repo.session,
+            repoDir: repo.repoDir,
+            issue: task.issue,
+            title: `${task.issue} coding has not progressed for ${progress.progressAgeMinutes ?? '?'} minutes${noProgressDetail}`,
+            evidence: [
+              `phase=${task.phase ?? 'unknown'}`,
+              `progressAgeMinutes=${progress.progressAgeMinutes ?? 'unknown'}`,
+              `lastProgressAt=${progress.lastProgressAt ?? 'never'}`,
+              `sources=${sourceList}`,
+              `agentState=${progress.agentState ?? 'unknown'}`,
+              `worktree=${task.worktree ?? 'unknown'}`,
+              ...(progress.blockingPrompt ? [`blockingPrompt=${progress.blockingPrompt.id}`] : []),
+            ],
+            recommendation: progress.blockingPrompt
+              ? progress.blockingPrompt.detail
+              : `Inspect the ${task.issue} task pane. If the agent is hung or paused at a prompt, resolve or relaunch it; pane/process existence alone is not evidence the agent is making progress.${blockingDetail}`,
           });
         }
       }
@@ -1745,7 +1789,7 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
       const cleanupFinding = cleanupEpisodeFinding(repo, task);
       if (cleanupFinding) findings.push(cleanupFinding);
 
-      const ageMinutes = taskAgeMinutes(task, repo, now);
+      const ageMinutes = taskAgeMinutes(task, repo, now, progressLookup);
       // The stale age gate doubles as protection against phase-handoff false
       // positives: a healthy handoff briefly has no live agent but keeps
       // task.updated fresh.
@@ -1753,7 +1797,7 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
 
       const normalized = normalizedLifecycle(task);
       const isTerminal = taskHasTerminalResidueStatus(task);
-      const liveEvidence = taskHasLiveExecutionEvidence(repo, task, snapshot.panes, snapshot.processes);
+      const liveEvidence = taskHasLiveExecutionEvidence(repo, task, snapshot.panes, snapshot.processes, progressLookup);
       // Active tasks with a live agent are healthy; terminal tasks are inspected
       // even when their window still holds a live (abandoned) agent session.
       if (!isTerminal && liveEvidence) continue;
@@ -2337,13 +2381,29 @@ function taskPaneResidue(repo: RepoSnapshot, task: TaskState, panes: Pane[]): Pa
   };
 }
 
-function taskHasLiveExecutionEvidence(repo: RepoSnapshot, task: TaskState, panes: Pane[], processes: ProcessRow[]): boolean {
-  if (taskPaneResidue(repo, task, panes).live) {
+function taskHasLiveExecutionEvidence(
+  repo: RepoSnapshot,
+  task: TaskState,
+  panes: Pane[],
+  processes: ProcessRow[],
+  progressLookup?: (task: TaskState) => TaskProgress | undefined,
+): boolean {
+  // HOK-3095 (a): an idle agent REPL sitting in a live pane is not "live
+  // execution" — it is the agent's settled state after Stop. Only report
+  // pane residue as live evidence when the agent has not already declared
+  // idle through its own hook / archived history.
+  const paneResidueLive = taskPaneResidue(repo, task, panes).live;
+  const progress = progressLookup ? progressLookup(task) : undefined;
+  if (paneResidueLive && !(progress?.agentIdle)) {
     return true;
   }
 
+  // HOK-3095 (b): the observer's own polling children (pr-ci-status,
+  // tend, monitor, git polls) show the worktree in their argv, but they
+  // are not the task. Skip anything isWavemillControllerProcess accepts.
   return processes.some((row) => {
     const command = row.command;
+    if (isWavemillControllerProcess(command)) return false;
     return command.includes(task.issue)
       || (task.slug ? command.includes(task.slug) : false)
       || (task.worktree ? command.includes(task.worktree) : false);
@@ -2364,7 +2424,55 @@ function taskBranch(task: TaskState): string | undefined {
   return task.slug ? `task/${task.slug}` : undefined;
 }
 
-function taskAgeMinutes(task: TaskState, repo: RepoSnapshot, now: number): number | undefined {
+/**
+ * HOK-3101: memoized per-cycle task-progress cache. `task.updated` only
+ * changes on transitions, so the old `taskAgeMinutes` reported healthy tasks
+ * as stale (HOK-3087). The primitive derives progress from hook, commit,
+ * worktree, status-file and transition evidence, and it treats pane/process
+ * existence as separate from progress.
+ *
+ * Multiple detectors call this per task per cycle; each cycle uses a fresh
+ * WeakMap keyed on the task record so gather IO (git log, git status, stat)
+ * happens at most once per task.
+ */
+function makeProgressLookup(repo: RepoSnapshot, now: number): (task: TaskState) => TaskProgress | undefined {
+  const cache = new WeakMap<TaskState, TaskProgress>();
+  const nowDate = new Date(now);
+  return (task) => {
+    const cached = cache.get(task);
+    if (cached) return cached;
+    if (!task.issue) return undefined;
+    try {
+      const result = getTaskProgress({
+        issue: task.issue,
+        session: repo.session,
+        task: task as never,
+        worktree: task.worktree,
+        phase: task.phase,
+        now: nowDate,
+      });
+      cache.set(task, result);
+      return result;
+    } catch {
+      return undefined;
+    }
+  };
+}
+
+function taskAgeMinutes(
+  task: TaskState,
+  repo: RepoSnapshot,
+  now: number,
+  _progressLookup?: (task: TaskState) => TaskProgress | undefined,
+): number | undefined {
+  // HOK-3101 note: `taskAgeMinutes` intentionally keeps the semantics that
+  // existing residue and stale-active detectors pin — it is the age of the
+  // task record (`task.updated` or the state-file mtime), not of the newest
+  // git evidence. The primitive's `lastProgressAt` is used SEPARATELY by
+  // the coding-stall detector and enriches other findings with source
+  // evidence; it must not shorten the age gate here or terminal-parked and
+  // died-with-unpushed-work findings never fire on fixtures whose git tree
+  // was created moments before the test runs.
   const updatedMs = task.updated ? Date.parse(task.updated) : NaN;
   if (Number.isFinite(updatedMs)) return (now - updatedMs) / 60000;
   const stateMs = repo.stateMtime ? Date.parse(repo.stateMtime) : NaN;
@@ -2520,47 +2628,13 @@ function capturePaneText(pane: Pane): string | undefined {
 }
 
 /**
- * Normalize pane text for interactive-prompt matching (HOK-3045):
- * strip ANSI/control sequences, collapse whitespace and hard-wrap breaks, and
- * lowercase. Bounded by the match-input limit so a runaway capture cannot
- * inflate observer work.
+ * HOK-3101 re-exports normalizeInteractivePromptText and
+ * matchInteractivePromptSignature from shared/lib/task-progress.ts so that
+ * observer.test.ts's existing imports keep working. The single implementation
+ * lives in the primitive; the observer no longer duplicates it.
  */
-export function normalizeInteractivePromptText(input: string | undefined): string {
-  if (!input) return '';
-  const bounded = input.length > INTERACTIVE_PROMPT_MATCH_INPUT_LIMIT
-    ? input.slice(-INTERACTIVE_PROMPT_MATCH_INPUT_LIMIT)
-    : input;
-  return bounded
-    // eslint-disable-next-line no-control-regex
-    .replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '')
-    // eslint-disable-next-line no-control-regex
-    .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase();
-}
-
-/**
- * Attempts to identify a task pane parked on a known interactive lifecycle
- * prompt. Returns the matching signature or undefined. All required tokens
- * must be present after normalization; any exclusion token disqualifies.
- */
-export function matchInteractivePromptSignature(paneText: string | undefined): InteractivePromptSignature | undefined {
-  const normalized = normalizeInteractivePromptText(paneText);
-  if (!normalized) return undefined;
-  for (const signature of INTERACTIVE_PROMPT_SIGNATURES) {
-    const allRequiredPresent = signature.requiredTokens.every((token) =>
-      normalized.includes(token.toLowerCase()),
-    );
-    if (!allRequiredPresent) continue;
-    const hasExclusion = (signature.exclusionTokens ?? []).some((token) =>
-      normalized.includes(token.toLowerCase()),
-    );
-    if (hasExclusion) continue;
-    return signature;
-  }
-  return undefined;
-}
+export const normalizeInteractivePromptText = taskProgressNormalizeInteractivePromptText;
+export const matchInteractivePromptSignature = taskProgressMatchInteractivePromptSignature;
 
 /**
  * HOK-3045: emit an incident when a task-correlated pane is parked at a known
