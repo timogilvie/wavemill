@@ -191,7 +191,7 @@ _wavemill_hook_emit_osc() {
 }
 
 # Atomically write the standardized hook status payload.
-# Args: state, event, detail, agent [next_action]
+# Args: state, event, detail, agent [next_action] [writer]
 #
 # States: working (agent is actively processing), idle (agent stopped normally),
 #         waiting (agent blocked on user input), blocked (agent cannot proceed),
@@ -202,6 +202,9 @@ _wavemill_hook_emit_osc() {
 # action the operator should take). It is additive and does not affect readers that
 # only know the four-state contract.
 #
+# The optional writer field indicates who wrote the hook: 'agent' (default) or 'monitor'.
+# This allows distinguishing between agent-generated evidence and system-generated writes.
+#
 # The hook file uses a 300s TTL - consumers should fall back to other signals
 # (pane liveness, process monitoring) if the timestamp is stale.
 wavemill_hook_write() {
@@ -210,6 +213,7 @@ wavemill_hook_write() {
   local detail="${3:-}"
   local agent="$4"
   local next_action="${5:-}"
+  local writer="${6:-agent}"
 
   # Hooks are a no-op outside a wavemill agent context. wavemill_hook_check()
   # enforces this for adapter scripts by exiting, but wavemill_hook_write() is
@@ -230,6 +234,12 @@ wavemill_hook_write() {
     *) return 0 ;;
   esac
 
+  # Validate writer value
+  case "$writer" in
+    agent|monitor) ;;
+    *) writer="agent" ;;
+  esac
+
   local hook_file="/tmp/wavemill-${WAVEMILL_SESSION}-${WAVEMILL_ISSUE}.hook"
   local tmp_file="${hook_file}.tmp.$$"
   local timestamp
@@ -248,10 +258,16 @@ wavemill_hook_write() {
     --arg detail "$detail" \
     --arg agent "$agent" \
     --arg next_action "$next_action" \
+    --arg writer "$writer" \
     --argjson timestamp "$timestamp" \
-    '$base + {state: $state, event: $event, agent: $agent, timestamp: $timestamp}
+    '$base + {state: $state, event: $event, agent: $agent, timestamp: $timestamp, writer: $writer}
      + (if $detail != "" then {detail: $detail} else {} end)
-     + (if $next_action != "" then {next_action: $next_action} else {} end)' > "$tmp_file" 2>/dev/null; then
+     + (if $next_action != "" then {next_action: $next_action} else {} end)
+     + (if $writer == "agent" then
+          {agentRecord: {state: $state, event: $event, detail: $detail, agent: $agent, timestamp: $timestamp} + (if $next_action != "" then {next_action: $next_action} else {} end)}
+        else
+          {agentRecord: ($base.agentRecord // (if ($base | has("writer")) then null else {state: $base.state, event: $base.event, detail: $base.detail, agent: $base.agent, timestamp: $base.timestamp} + (if ($base | has("next_action")) then {next_action: $base.next_action} else {} end) end))}
+        end)' > "$tmp_file" 2>/dev/null; then
     if mv "$tmp_file" "$hook_file" 2>/dev/null; then
       wavemill_hook_notify
       _wavemill_hook_emit_osc "$state" "$event" "$detail" "$agent" || true
@@ -312,6 +328,7 @@ wavemill_hook_terminalize() {
   local reason="$2"
   local detail="${3:-}"
   local agent="${4:-wavemill}"
+  local writer="${5:-monitor}"
 
   case "$state" in
     idle|error) ;;
@@ -319,7 +336,7 @@ wavemill_hook_terminalize() {
   esac
 
   wavemill_hook_archive_current "${WAVEMILL_SESSION:-}" "${WAVEMILL_ISSUE:-}" "$reason" || true
-  wavemill_hook_write "$state" "$reason" "$detail" "$agent"
+  wavemill_hook_write "$state" "$reason" "$detail" "$agent" "" "$writer"
 }
 
 wavemill_hook_supersede() {
