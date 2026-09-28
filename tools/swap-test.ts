@@ -7,7 +7,7 @@ import { readJsonlFile } from '../shared/lib/jsonl-utils.ts';
 import { resolveEvalsDir } from '../shared/lib/evals-paths.ts';
 import { loadWavemillConfig } from '../shared/lib/config.ts';
 import { loadPromptTemplate } from '../shared/lib/prompt-utils.ts';
-import { ARBITER_JUDGE_PROMPT_TEMPLATE_PATH, type PresentationOrder } from '../shared/lib/pr-comparison.ts';
+import { ARBITER_JUDGE_PROMPT_TEMPLATE_FILE, type PresentationOrder } from '../shared/lib/pr-comparison.ts';
 import { readChallengeRecordVoids } from '../shared/lib/challenge-record-void.ts';
 import type { StoredChallengeComparison } from '../shared/lib/challenge-comparison.ts';
 import { selectAdjudicatedPairs } from '../shared/lib/swap-test/pair-selection.ts';
@@ -85,7 +85,7 @@ runTool({
       ?? config.challenge?.comparisonModel
       ?? 'claude-opus-4-7';
     const maxPromptBytes = Number.parseInt(process.env.CHALLENGE_COMPARISON_MAX_PROMPT_BYTES || '500000', 10);
-    const promptTemplate = await loadPromptTemplate(join(repoDir, ARBITER_JUDGE_PROMPT_TEMPLATE_PATH), { dir: evalsDir });
+    const promptTemplate = await loadPromptTemplate(ARBITER_JUDGE_PROMPT_TEMPLATE_FILE, { dir: evalsDir });
 
     if (args.hydrate) {
       const ledger = hydrateCorpus({ pairs, evalsDir, repoDir });

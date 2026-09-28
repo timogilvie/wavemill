@@ -86,7 +86,7 @@ test('default cleanup shell defines logging functions for the terminal reconcile
     writeFileSync(join(libDir, 'terminal-reconciler.sh'), '');
     assert.doesNotThrow(() => defaultCleanupDeps.cleanup(
       { issue: 'HOK-3005', slug: 'demo' } as TerminalInboxDecision,
-      { repoDir: root, stateFile: join(root, 'state.json'), baseBranch: 'auto/integration', session: 'test', abandon: false },
+      { repoDir: root, stateFile: join(root, 'state.json'), baseBranch: 'auto/integration', session: 'test', abandon: false, wavemillLibDir: libDir },
     ));
   } finally {
     rmSync(root, { recursive: true, force: true });

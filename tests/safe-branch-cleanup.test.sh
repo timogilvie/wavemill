@@ -81,6 +81,8 @@ helper_file="$tmp/safe-cleanup-helper.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_migrate_controller_observer_artifact"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_discard_prompt_registry_artifact"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_fetch_pr_terminal_evidence"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_record_pr_delivery_evidence"
@@ -397,6 +399,60 @@ case_observer_artifact_plus_user_file_retained() {
   branch_exists "$repo" "$branch" || fail "observer-artifact-dirty branch was deleted"
   assert_exists "$wt/.wavemill/notes.md"
   assert_exists "$wt/.wavemill/observer-findings.jsonl"
+}
+
+# The root prompt-registry log written by native-agent runs is telemetry, not
+# task work: an untracked copy never retains a terminal worktree.
+case_prompt_registry_untracked_cleaned() {
+  local repo branch wt out
+  repo="$(setup_repo prompt-registry-untracked)"
+  branch="task/prompt-registry-untracked"
+  wt="$tmp/prompt-registry-untracked/wt"
+  add_task_worktree "$repo" "$branch" "$wt"
+  printf '{"templateName":"native-read-only-phase"}\n' > "$wt/prompt-registry.jsonl"
+
+  out="$(run_helper "$repo" "$wt" "$branch")"
+  assert_contains "$out" "rc=0" "prompt-registry-untracked return"
+  branch_exists "$repo" "$branch" && fail "prompt-registry-untracked branch was retained"
+  assert_absent "$wt"
+}
+
+# A copy an agent accidentally committed to the base, then appended to again,
+# shows as an unstaged modification; that alone must not retain either.
+case_prompt_registry_tracked_modified_cleaned() {
+  local repo branch wt out
+  repo="$(setup_repo prompt-registry-tracked)"
+  printf '{"templateName":"old"}\n' > "$repo/prompt-registry.jsonl"
+  git -C "$repo" add prompt-registry.jsonl
+  git -C "$repo" commit -m "accidental registry commit" >/dev/null
+  git -C "$repo" push origin auto/integration >/dev/null 2>&1
+  branch="task/prompt-registry-tracked"
+  wt="$tmp/prompt-registry-tracked/wt"
+  add_task_worktree "$repo" "$branch" "$wt"
+  printf '{"templateName":"new"}\n' >> "$wt/prompt-registry.jsonl"
+
+  out="$(run_helper "$repo" "$wt" "$branch")"
+  assert_contains "$out" "rc=0" "prompt-registry-tracked return"
+  branch_exists "$repo" "$branch" && fail "prompt-registry-tracked branch was retained"
+  assert_absent "$wt"
+}
+
+# The exclusion is exact: real work next to the registry log still retains.
+case_prompt_registry_plus_user_file_retained() {
+  local repo branch wt out
+  repo="$(setup_repo prompt-registry-dirty)"
+  branch="task/prompt-registry-dirty"
+  wt="$tmp/prompt-registry-dirty/wt"
+  add_task_worktree "$repo" "$branch" "$wt"
+  printf '{"templateName":"native-read-only-phase"}\n' > "$wt/prompt-registry.jsonl"
+  printf 'user work\n' > "$wt/notes.md"
+
+  out="$(run_helper "$repo" "$wt" "$branch")"
+  assert_contains "$out" "rc=10" "prompt-registry-dirty return"
+  assert_contains "$out" "outcome=retain_dirty" "prompt-registry-dirty outcome"
+  branch_exists "$repo" "$branch" || fail "prompt-registry-dirty branch was deleted"
+  assert_exists "$wt/notes.md"
+  assert_exists "$wt/prompt-registry.jsonl"
 }
 
 # Shared topology for the PR-aware cases: a squash-delivered branch. The task
@@ -939,6 +995,9 @@ case_no_new_commits_deleted
 case_dirty_worktree_retained
 case_observer_artifact_only_cleaned
 case_observer_artifact_plus_user_file_retained
+case_prompt_registry_untracked_cleaned
+case_prompt_registry_tracked_modified_cleaned
+case_prompt_registry_plus_user_file_retained
 case_squash_pr_head_deleted
 case_squash_pr_head_shadow_records_decision
 case_pr_head_mismatch_retained

@@ -267,7 +267,7 @@ function loadCodingPrompt(repoDir: string): { content: string; promptRef: Resour
   } catch {
     // Fallback prompt above is sufficient for controlled tests and failure recovery.
   }
-  return { content, promptRef: logPromptUsage(promptPath, content, { dir: repoDir }) };
+  return { content, promptRef: logPromptUsage(promptPath, content, { repoDir }) };
 }
 
 function buildDepthGuidance(codeDepth: string): string {
