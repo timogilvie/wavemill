@@ -18099,6 +18099,51 @@ monitor_issue_state() {
     # the second case, a successful remediation leaves status=running/verdict=fail
     # and the controller never re-evaluates CI.
     if [[ "$ready_status" == "running" ]] && { [[ "$ready_verdict" == "pending" ]] || [[ -n "$launch_head" && "$launch_head" != "$current_head" ]]; }; then
+      # HOK-3106: an infrastructure review failure never consumes the
+      # pending-ready-recheck budget. The review artifact carries no
+      # substantive verdict, and launch_ready_phase will route the attempt
+      # through the bounded `review-infra-recovery` bucket — that bucket alone
+      # is authoritative for how many infra recovery attempts remain. When the
+      # infra recovery bucket has already terminalized, mark pending-ready
+      # terminal in lockstep so the ready budget is not spent poll-by-poll on
+      # a deterministic infra failure.
+      if review_result_infra_failure "$ready_state_dir_path"; then
+        if bounded_retry_is_exhausted "$ready_state_dir_path" "review-infra-recovery"; then
+          if bounded_retry_mark_exhausted "$ready_state_dir_path" "pending-ready-recheck" \
+              "Review infrastructure recovery is exhausted for PR #$PR; pending-ready halted until the review artifact changes"; then
+            write_ready_attention_file "$ready_state_dir_path" \
+              "Review infrastructure recovery is exhausted for PR #$PR. Waiting for operator or a new commit."
+            log "status" "⛔ $ISSUE → Pending-ready halted for PR #$PR because review infrastructure recovery is exhausted"
+          fi
+          set_window_attention_state "$WIN" "needs-user"
+          return 0
+        fi
+
+        title=$(read_state_value "" --arg i "$ISSUE" '.tasks[$i].title // ""')
+        if [[ -z "$title" ]]; then
+          issue_json=$(cat "/tmp/${SESSION}-${ISSUE}-issue.json" 2>/dev/null || echo "{}")
+          title=$(echo "$issue_json" | jq -r '.title // "Task"' 2>/dev/null || echo "Task")
+        fi
+        if launch_ready_phase "$ISSUE" "$SLUG" "$title" "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$PR"; then
+          launch_rc=0
+        else
+          launch_rc=$?
+        fi
+        if [[ "$launch_rc" -eq 2 ]] && check_stage_aborted "$FEATURE_DIR"; then
+          log_task "status" "$ISSUE" "⛔ $ISSUE → Workflow aborted during ready re-check"
+          set_task_phase "$ISSUE" "aborted"
+          set_window_attention_state "$WIN" "needs-user"
+          return 0
+        fi
+        if [[ "$launch_rc" -eq 4 || "$launch_rc" -eq 6 ]]; then
+          set_window_attention_state "$WIN" "clear"
+          active_count=$((active_count + 1))
+          return 0
+        fi
+        set_window_attention_state "$WIN" "needs-user"
+        return 0
+      fi
+
       # Bound the pending-ready re-check loop (HOK-2924): the sibling of the
       # failed-ready budget above. A refused launch preserves exactly the
       # precondition that re-arms this branch, so without a ceiling it retries

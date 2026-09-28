@@ -582,7 +582,11 @@ export async function runNativeReview(
   const requestedAnalysisModel = options.model?.trim() || undefined;
   const provider = nativeReviewDeps.selectReviewProvider(repoDir, process.env, requestedAnalysisModel);
   if (!provider.ok) {
-    return nativeReviewFailure(context, 'native-runtime-unavailable', provider.message);
+    // Provider resolution failed before any analysis ran (HOK-3106): route
+    // through the no-evidence result shape so this infra condition never
+    // masquerades as a substantive `not_ready` review verdict that would
+    // otherwise feed the ready gate and burn its retry budget.
+    return nativeReviewNoEvidenceFailure(context, 'native-runtime-unavailable', provider.message);
   }
 
   // `resolvedModel` must stay in the same bare-model-id namespace as
@@ -687,7 +691,10 @@ export async function runNativeReview(
 
   const apiKey = nativeReviewDeps.getNativeProviderApiKey(provider.entry);
   if (!apiKey) {
-    return nativeReviewFailure(
+    // Absent-credential preflight failure (HOK-3106): same infra shape as the
+    // provider-resolution branch above — no analysis ran, so this must not
+    // ship as a `not_ready` verdict with a synthetic blocker.
+    return nativeReviewNoEvidenceFailure(
       context,
       'native-runtime-unavailable',
       `${provider.entry.apiKeyEnv} resolved to an empty value for native review.`,
