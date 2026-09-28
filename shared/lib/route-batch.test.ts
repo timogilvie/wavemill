@@ -10,6 +10,7 @@ import {
 import { routeBatch, routeExpandedPackets, tasksFromPlan } from './route-batch.ts';
 import { routeWorkflowAuto } from './workflow-router.ts';
 import { withResolvedRouteBudget } from './route-artifact.ts';
+import { readRouteDecisions } from './route-decision.ts';
 
 let passed = 0;
 let failed = 0;
@@ -153,8 +154,15 @@ function makeRepo(mode: 'auto' | 'stage-aware' = 'auto') {
   };
 }
 
-function withoutProvenance<T extends { provenance?: unknown }>(decision: T) {
-  const { provenance: _provenance, ...rest } = decision;
+// Batch routing additionally mints a route decision (HOK-3098) and pins the
+// decided route; serial router calls do neither.
+function withoutProvenance<T extends { provenance?: unknown; routeDecision?: unknown; preEscalationRoute?: unknown }>(decision: T) {
+  const {
+    provenance: _provenance,
+    routeDecision: _routeDecision,
+    preEscalationRoute: _preEscalationRoute,
+    ...rest
+  } = decision;
   return rest;
 }
 
@@ -332,6 +340,112 @@ await test('routeBatch keeps explicit per-task selectors over inherited parent m
     });
 
     assert.equal(result.decision.coder, 'claude-opus-4-8');
+  } finally {
+    cleanup();
+  }
+});
+
+await test('routeBatch embeds a route decision even without a feature dir', async () => {
+  const { repoDir, cleanup } = makeRepo('auto');
+  try {
+    const [result] = await routeBatch([
+      { issueId: 'HOK-3098', prompt: 'Record the route decision for this task' },
+    ], { repoDir, mode: 'auto', additionalEvalsPaths: [] });
+
+    const record = result.decision.routeDecision;
+    assert.ok(record);
+    assert.equal(record.kind, 'route_decision');
+    assert.equal(record.source, 'local');
+    assert.match(record.decision_id, /^[0-9a-f-]{36}$/);
+    assert.deepEqual(record.recommended, {
+      planner: result.decision.planner,
+      coder: result.decision.coder,
+      reviewer: result.decision.reviewer,
+    });
+  } finally {
+    cleanup();
+  }
+});
+
+await test('routeBatch persists the decision to the feature dir keyed off the traceId', async () => {
+  const { repoDir, cleanup } = makeRepo('auto');
+  try {
+    const featureDir = join(repoDir, 'features', 'hok-3098');
+    mkdirSync(featureDir, { recursive: true });
+    writeFileSync(join(featureDir, '.trace-context.json'), JSON.stringify({
+      schemaVersion: '1.0',
+      traceId: 'trace-batch-1',
+      issueId: 'HOK-3098',
+      slug: 'hok-3098',
+      createdAt: '2026-09-28T00:00:00.000Z',
+    }));
+
+    const [result] = await routeBatch([
+      { issueId: 'HOK-3098', prompt: 'Record the route decision for this task', featureDir },
+    ], { repoDir, mode: 'auto', additionalEvalsPaths: [] });
+
+    assert.equal(result.decision.routeDecision?.decision_id, 'trace-batch-1');
+    const recorded = await readRouteDecisions(featureDir);
+    assert.equal(recorded.length, 1);
+    assert.deepEqual(recorded[0], result.decision.routeDecision);
+  } finally {
+    cleanup();
+  }
+});
+
+await test('routeBatch records the recommendation before a workspace selector override', async () => {
+  const { repoDir, cleanup } = makeRepo('auto');
+  try {
+    const [result] = await routeBatch([
+      {
+        issueId: 'HOK-3098',
+        prompt: 'Preserve explicit routing in batch tasks',
+        modelSelector: 'opus',
+      },
+    ], { repoDir, mode: 'auto', additionalEvalsPaths: [] });
+
+    assert.equal(result.decision.coder, 'claude-opus-4-8');
+    assert.notEqual(result.decision.routeDecision?.recommended.coder, 'claude-opus-4-8');
+    assert.equal(result.decision.routeDecision?.recommended.coder, result.decision.preEscalationRoute?.coder);
+  } finally {
+    cleanup();
+  }
+});
+
+await test('expanded reroute records a superseding decision and replays cache hits idempotently', async () => {
+  const { repoDir, cleanup } = makeRepo('auto');
+  try {
+    const featureDir = join(repoDir, 'features', 'hok-3098-expanded');
+    mkdirSync(featureDir, { recursive: true });
+    writeFileSync(join(featureDir, '.trace-context.json'), JSON.stringify({
+      schemaVersion: '1.0',
+      traceId: 'trace-expanded',
+      issueId: 'HOK-3098',
+      slug: 'hok-3098-expanded',
+      createdAt: '2026-09-28T00:00:00.000Z',
+    }));
+    const packetFile = join(featureDir, 'task-packet.md');
+    writeFileSync(packetFile, 'Expanded packet for decision recording\n');
+
+    // Initial launch route, then the post-expansion re-route.
+    await routeBatch([{ issueId: 'HOK-3098', prompt: 'Initial launch route', featureDir }], {
+      repoDir, mode: 'auto', additionalEvalsPaths: [],
+    });
+    const first = await routeExpandedPackets([{ issueId: 'HOK-3098', featureDir, packetFile }], {
+      repoDir, mode: 'auto', additionalEvalsPaths: [],
+    });
+    const second = await routeExpandedPackets([{ issueId: 'HOK-3098', featureDir, packetFile }], {
+      repoDir, mode: 'auto', additionalEvalsPaths: [],
+    });
+
+    assert.equal(first[0]?.cache_hit, false);
+    assert.equal(second[0]?.cache_hit, true);
+    const recorded = await readRouteDecisions(featureDir);
+    assert.equal(recorded.length, 2);
+    assert.equal(recorded[0].decision_id, 'trace-expanded');
+    assert.equal(recorded[1].trace_id, 'trace-expanded');
+    assert.equal(recorded[1].supersedes, 'trace-expanded');
+    assert.equal(first[0]?.decision?.routeDecision?.decision_id, recorded[1].decision_id);
   } finally {
     cleanup();
   }

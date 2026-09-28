@@ -20,6 +20,7 @@ import {
   type RouteInputKind,
   type RouteSource,
 } from './route-artifact.ts';
+import { appendRouteDecision, buildRouteDecision, recordRouteDecision } from './route-decision.ts';
 import { loadStageAwareRouterContext, type StageAwareRouterContext } from './stage-aware-router.ts';
 import {
   readTaskPromptFromFile,
@@ -29,6 +30,7 @@ import {
   routeWorkflowDegradedWithContext,
   routeWorkflowHokusai,
   routeWorkflowStageAwareWithContext,
+  withPreEscalationRoute,
   type RouteWorkflowOptions,
   type WorkflowRouteDecision,
 } from './workflow-router.ts';
@@ -42,7 +44,24 @@ export interface RouteBatchTask {
   modelSelector?: string;
   parentResolvedModel?: string;
   workspaceSelector?: string;
+  /**
+   * Feature artifact directory. When set, the route decision (HOK-3098) is
+   * appended to its routing.jsonl and keyed off its trace context.
+   */
+  featureDir?: string;
 }
+
+type RouteBatchTaskInput = {
+  issueId?: string;
+  prompt?: string;
+  file?: string;
+  source?: RouteSource;
+  inputKind?: RouteInputKind;
+  modelSelector?: string;
+  parentResolvedModel?: string;
+  workspaceSelector?: string;
+  featureDir?: string;
+};
 
 export interface RouteBatchPlanTask {
   issue?: string;
@@ -86,7 +105,7 @@ export interface ExpandedRouteTaskResult {
 
 export interface RouteExpandedPacketsOptions extends RouteBatchOptions {
   routeBatchImpl?: (
-    tasks: Array<{ issueId?: string; prompt?: string; file?: string; source?: RouteSource; inputKind?: RouteInputKind; modelSelector?: string; workspaceSelector?: string }>,
+    tasks: RouteBatchTaskInput[],
     options?: RouteBatchOptions,
   ) => Promise<RouteBatchResult[]>;
 }
@@ -115,16 +134,8 @@ export function getWavemillAdditionalEvalPaths(repoDir: string): string[] {
   return additionalEvalsPaths;
 }
 
-export function resolveRouteBatchTask(task: {
-  issueId?: string;
-  prompt?: string;
-  file?: string;
-  source?: RouteSource;
-  inputKind?: RouteInputKind;
-  modelSelector?: string;
-  parentResolvedModel?: string;
-  workspaceSelector?: string;
-}): RouteBatchTask {
+export function resolveRouteBatchTask(task: RouteBatchTaskInput): RouteBatchTask {
+  const featureDir = task.featureDir ? { featureDir: task.featureDir } : {};
   if (task.file) {
     return {
       issueId: task.issueId,
@@ -135,6 +146,7 @@ export function resolveRouteBatchTask(task: {
       modelSelector: task.modelSelector,
       parentResolvedModel: task.parentResolvedModel,
       workspaceSelector: task.workspaceSelector,
+      ...featureDir,
     };
   }
 
@@ -147,6 +159,7 @@ export function resolveRouteBatchTask(task: {
       modelSelector: task.modelSelector,
       parentResolvedModel: task.parentResolvedModel,
       workspaceSelector: task.workspaceSelector,
+      ...featureDir,
     };
   }
 
@@ -243,8 +256,29 @@ async function routeTaskInBatch(
   });
 }
 
+/**
+ * Mints the route decision for a freshly routed task (HOK-3098). With a
+ * feature dir the decision is keyed off the task traceId and appended to
+ * routing.jsonl; without one a UUID-keyed record is embedded in the route
+ * artifact so the launch path can persist it once the feature dir exists.
+ * Best-effort: never throws and never blocks routing.
+ */
+async function mintRouteDecision(
+  decision: WorkflowRouteDecision,
+  featureDir: string | undefined,
+): Promise<WorkflowRouteDecision> {
+  try {
+    const record = featureDir
+      ? await recordRouteDecision(featureDir, decision)
+      : buildRouteDecision(decision);
+    return record ? { ...decision, routeDecision: record } : decision;
+  } catch {
+    return decision;
+  }
+}
+
 export async function routeBatch(
-  tasks: Array<{ issueId?: string; prompt?: string; file?: string; source?: RouteSource; inputKind?: RouteInputKind; modelSelector?: string; parentResolvedModel?: string; workspaceSelector?: string }>,
+  tasks: RouteBatchTaskInput[],
   options: RouteBatchOptions = {},
 ): Promise<RouteBatchResult[]> {
   const resolvedOptions = buildRouteBatchWorkflowOptions(options);
@@ -264,7 +298,12 @@ export async function routeBatch(
   const results: RouteBatchResult[] = [];
   for (const task of resolvedTasks) {
     const routedDecision = await routeTaskInBatch(task.prompt, resolvedOptions, operatingMode, stageAwareContext);
-    let decision = withResolvedRouteBudget(routedDecision, {
+    // Pin the decided route before workspace selectors override the coder, so
+    // `recommended` never reflects a post-routing override.
+    let decision = withResolvedRouteBudget(await mintRouteDecision(
+      withPreEscalationRoute(routedDecision),
+      task.featureDir,
+    ), {
       explicitMaxCostUsd: resolvedOptions.maxCostUsd,
       repoDir,
     });
@@ -350,6 +389,7 @@ async function routeExpandedTaskSet(
       file: task.provenancePath,
       source: 'expanded',
       inputKind: 'task-packet',
+      ...(task.featureDir ? { featureDir: task.featureDir } : {}),
     })),
     resolvedOptions,
   );
@@ -401,6 +441,11 @@ export async function routeExpandedPackets(
       explicitMaxCostUsd: resolvedOptions.maxCostUsd,
       repoDir,
     }), repoDir);
+    // A cache hit replays an earlier decision rather than making a new one:
+    // carry its record forward (idempotent on decision_id).
+    if (task.featureDir && cachedDecision.routeDecision) {
+      await appendRouteDecision(task.featureDir, cachedDecision.routeDecision);
+    }
     results.set(task.key, {
       input: task,
       outputFile: task.outputFile,

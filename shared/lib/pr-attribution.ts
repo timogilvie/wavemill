@@ -137,6 +137,13 @@ export interface PrAttribution {
   agent: AgentDimension;
   harness: IdentityDimension;
   model: IdentityDimension;
+  /**
+   * The router's decision for this PR (HOK-3098 `route_decision`), when the
+   * wavemill-meta block carries one. Not an identity signal — `recommended`
+   * is what the router chose, not what ran — but it is the join key Model
+   * Match needs between a PR's outcome label and its route decision.
+   */
+  routeDecision?: ExtractedRouteDecision;
   /** Machine-readable notes: malformed routes, stale heads, conflicts. */
   diagnostics: string[];
 }
@@ -652,24 +659,105 @@ export interface ExtractedExecutedRoute {
   raw: string;
 }
 
+/** The HOK-3098 `route_decision` payload, normalized to camelCase. */
+export interface ExtractedRouteDecision {
+  decisionId: string;
+  traceId?: string;
+  /** `hokusai` | `local` | `fallback` (kept as a string for forward compat). */
+  source: string;
+  fallbackReason?: string;
+  policyVersion: string | null;
+  recommended: Partial<Record<RouteRole, string>>;
+  decidedAt: string | null;
+  supersedes?: string;
+}
+
 interface RouteExtraction {
   route: ExtractedExecutedRoute | null;
+  /** Present only for `route_schema: 2` blocks carrying `route_decision`. */
+  decision: ExtractedRouteDecision | null;
   diagnostics: string[];
 }
 
-const SUPPORTED_ROUTE_SCHEMA = '1';
+/** `route_schema` values whose `executed_route` shape the scanner reads. */
+const SUPPORTED_ROUTE_SCHEMAS: ReadonlySet<string> = new Set(['1', '2']);
+/** First `route_schema` that defines `route_decision`. */
+const ROUTE_DECISION_MIN_SCHEMA = 2;
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+/**
+ * Leniently reads a `route_decision` payload. Only `decision_id` and `source`
+ * are required; everything else degrades to null/absent so a partially
+ * populated decision is still joinable.
+ */
+function extractRouteDecision(
+  raw: string,
+  routeSchema: string | null,
+  diagnostics: string[],
+): ExtractedRouteDecision | null {
+  if (routeSchema === null || !/^\d+$/.test(routeSchema) || Number(routeSchema) < ROUTE_DECISION_MIN_SCHEMA) {
+    diagnostics.push(
+      `route-decision-schema-mismatch: route_decision requires route_schema >= ${ROUTE_DECISION_MIN_SCHEMA} (got ${routeSchema ?? 'none'}); ignored`,
+    );
+    return null;
+  }
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    diagnostics.push('malformed-route-decision: route_decision is not valid single-line JSON; ignored');
+    return null;
+  }
+  if (!isPlainObject(payload)) {
+    diagnostics.push('malformed-route-decision: route_decision is not a JSON object; ignored');
+    return null;
+  }
+  const decisionId = optionalString(payload.decision_id);
+  const source = optionalString(payload.source);
+  if (!decisionId || !source) {
+    diagnostics.push('malformed-route-decision: route_decision lacks decision_id or source; ignored');
+    return null;
+  }
+
+  const recommended: Partial<Record<RouteRole, string>> = {};
+  if (isPlainObject(payload.recommended)) {
+    for (const role of ROUTE_ROLES) {
+      const model = optionalString(payload.recommended[role]);
+      if (model) recommended[role] = model;
+    }
+  }
+  const traceId = optionalString(payload.trace_id);
+  const fallbackReason = optionalString(payload.fallback_reason);
+  const supersedes = optionalString(payload.supersedes);
+
+  return {
+    decisionId,
+    ...(traceId ? { traceId } : {}),
+    source,
+    ...(fallbackReason ? { fallbackReason } : {}),
+    policyVersion: optionalString(payload.policy_version) ?? null,
+    recommended,
+    decidedAt: optionalString(payload.decided_at) ?? null,
+    ...(supersedes ? { supersedes } : {}),
+  };
+}
 
 /**
  * Leniently extracts the HOK-2945 `route_schema` / `executed_route` payload
- * from a `wavemill-meta` block. This is deliberately NOT `parsePrMetadata`
- * (which errors on unknown fields and predates `executed_route`): only the two
- * contract lines are read, so unknown sibling fields never break extraction
- * (forward compatibility with HOK-2945 landing).
+ * and the HOK-3098 `route_decision` payload from a `wavemill-meta` block. This
+ * is deliberately NOT `parsePrMetadata` (which errors on unknown fields): only
+ * the contract lines are read, so unknown sibling fields never break
+ * extraction. `route_schema` 1 and 2 share the `executed_route` shape.
  */
 export function extractExecutedRoute(block: string): RouteExtraction {
   const diagnostics: string[] = [];
   let routeSchema: string | null = null;
   let executedRouteRaw: string | null = null;
+  let routeDecisionRaw: string | null = null;
 
   for (const line of block.split('\n')) {
     const match = line.match(/^([a-zA-Z_][a-zA-Z0-9_-]*):\s*(.*)$/);
@@ -679,19 +767,27 @@ export function extractExecutedRoute(block: string): RouteExtraction {
       routeSchema = value.trim();
     } else if (field === 'executed_route') {
       executedRouteRaw = value.trim();
+    } else if (field === 'route_decision') {
+      routeDecisionRaw = value.trim();
     }
   }
 
+  // The decision is independent of executed-route validity: a stale or
+  // malformed executed_route never hides which decision the PR came from.
+  const decision = routeDecisionRaw === null
+    ? null
+    : extractRouteDecision(routeDecisionRaw, routeSchema, diagnostics);
+
   if (executedRouteRaw === null) {
-    return { route: null, diagnostics };
+    return { route: null, decision, diagnostics };
   }
   if (routeSchema === null) {
     diagnostics.push('executed-route-missing-schema: executed_route present without route_schema; ignored');
-    return { route: null, diagnostics };
+    return { route: null, decision, diagnostics };
   }
-  if (routeSchema !== SUPPORTED_ROUTE_SCHEMA) {
+  if (!SUPPORTED_ROUTE_SCHEMAS.has(routeSchema)) {
     diagnostics.push(`unsupported-route-schema: route_schema "${routeSchema}"; executed_route ignored`);
-    return { route: null, diagnostics };
+    return { route: null, decision, diagnostics };
   }
 
   let payload: unknown;
@@ -699,11 +795,11 @@ export function extractExecutedRoute(block: string): RouteExtraction {
     payload = JSON.parse(executedRouteRaw);
   } catch {
     diagnostics.push('malformed-executed-route: executed_route is not valid single-line JSON; ignored');
-    return { route: null, diagnostics };
+    return { route: null, decision, diagnostics };
   }
   if (!isPlainObject(payload)) {
     diagnostics.push('malformed-executed-route: executed_route is not a JSON object; ignored');
-    return { route: null, diagnostics };
+    return { route: null, decision, diagnostics };
   }
 
   const headShaRaw = payload.head_sha ?? payload.headSha ?? payload.head;
@@ -724,6 +820,7 @@ export function extractExecutedRoute(block: string): RouteExtraction {
       roles,
       raw: executedRouteRaw,
     },
+    decision,
     diagnostics,
   };
 }
@@ -830,6 +927,8 @@ export function attributePullRequest(
   const harnesses = [...HARNESS_REGISTRY, ...config.extraHarnesses];
   const modelSignatures = [...MODEL_SIGNATURES, ...config.extraModelSignatures];
 
+  let routeDecision: ExtractedRouteDecision | null = null;
+
   // ── First-party wavemill signals ──
   if (pr.body) {
     const { block } = extractMetadataBlock(pr.body);
@@ -844,8 +943,9 @@ export function attributePullRequest(
         });
       }
       if (enabled('executedRoute')) {
-        const { route, diagnostics: routeDiagnostics } = extractExecutedRoute(block);
+        const { route, decision, diagnostics: routeDiagnostics } = extractExecutedRoute(block);
         diagnostics.push(...routeDiagnostics);
+        routeDecision = decision;
         if (route) {
           if (route.headSha && pr.headSha && route.headSha !== pr.headSha) {
             // Stale evidence describes an older head; it never becomes execution.
@@ -1077,6 +1177,7 @@ export function attributePullRequest(
         : { status: 'unknown', evidence: [] },
     harness: resolveIdentity('harness', evidence, diagnostics),
     model: resolveIdentity('model', evidence, diagnostics),
+    ...(routeDecision ? { routeDecision } : {}),
     diagnostics,
   };
 }
