@@ -1,0 +1,730 @@
+{
+  "schemaVersion": "cost_parity_manifest/v1",
+  "capturedFrom": "wavemill workflow-cost.ts (legacy engine)",
+  "cases": [
+    {
+      "id": "claude-simple-explicit-cache",
+      "description": "Claude Code with simple session and explicit cache tokens",
+      "tags": ["claude-code", "cache-explicit"],
+      "branch": "task/parity-case",
+      "issueId": "HOK-0000",
+      "agentType": "claude",
+      "pricingTable": {
+        "claude-opus-4": {
+          "inputCostPerMTok": 15,
+          "outputCostPerMTok": 75
+        }
+      },
+      "sessions": [
+        {
+          "location": "claude-projects",
+          "fileName": "session.jsonl",
+          "lines": [
+            {
+              "message": {
+                "id": "msg-1",
+                "content": "secret-token-should-not-persist",
+                "role": "assistant"
+              },
+              "usage": {
+                "inputTokens": 1000,
+                "cacheCreationTokens": 500,
+                "cacheReadTokens": 0,
+                "outputTokens": 100
+              },
+              "branch": "task/parity-case"
+            }
+          ]
+        }
+      ],
+      "expectations": {
+        "strictParity": ["sync.outcome.totalCostUsd", "sync.outcome.models"]
+      }
+    },
+    {
+      "id": "claude-cache-derived-multipliers",
+      "description": "Cache rates derived from input rate (1.25x/0.1x)",
+      "tags": ["claude-code", "cache-derived"],
+      "branch": "task/parity-case",
+      "issueId": "HOK-0001",
+      "agentType": "claude",
+      "pricingTable": {
+        "claude-sonnet-5": {
+          "inputCostPerMTok": 3,
+          "outputCostPerMTok": 15
+        }
+      },
+      "sessions": [
+        {
+          "location": "claude-projects",
+          "fileName": "session.jsonl",
+          "lines": [
+            {
+              "message": {
+                "id": "msg-1",
+                "content": "secret-token-should-not-persist",
+                "role": "assistant"
+              },
+              "usage": {
+                "inputTokens": 10000,
+                "cacheCreationTokens": 2000,
+                "cacheReadTokens": 1000,
+                "outputTokens": 500
+              },
+              "branch": "task/parity-case"
+            }
+          ]
+        }
+      ],
+      "expectations": {}
+    },
+    {
+      "id": "claude-branch-filter",
+      "description": "Sessions on other branches are ignored",
+      "tags": ["claude-code"],
+      "branch": "task/parity-case",
+      "issueId": "HOK-0002",
+      "agentType": "claude",
+      "pricingTable": {
+        "claude-opus-4": {
+          "inputCostPerMTok": 15,
+          "outputCostPerMTok": 75
+        }
+      },
+      "sessions": [
+        {
+          "location": "claude-projects",
+          "fileName": "session.jsonl",
+          "lines": [
+            {
+              "message": {
+                "id": "msg-1",
+                "content": "secret-token-should-not-persist",
+                "role": "assistant"
+              },
+              "usage": {
+                "inputTokens": 1000,
+                "cacheCreationTokens": 0,
+                "cacheReadTokens": 0,
+                "outputTokens": 100
+              },
+              "branch": "task/parity-case"
+            },
+            {
+              "message": {
+                "id": "msg-2",
+                "content": "secret-token-should-not-persist",
+                "role": "assistant"
+              },
+              "usage": {
+                "inputTokens": 5000,
+                "cacheCreationTokens": 0,
+                "cacheReadTokens": 0,
+                "outputTokens": 500
+              },
+              "branch": "main"
+            }
+          ]
+        }
+      ],
+      "expectations": {}
+    },
+    {
+      "id": "claude-mixed-one-unpriced",
+      "description": "Mixed models with one unpriced model",
+      "tags": ["claude-code", "mixed-models", "unknown-price"],
+      "branch": "task/parity-case",
+      "issueId": "HOK-0003",
+      "agentType": "claude",
+      "pricingTable": {
+        "claude-opus-4": {
+          "inputCostPerMTok": 15,
+          "outputCostPerMTok": 75
+        }
+      },
+      "sessions": [
+        {
+          "location": "claude-projects",
+          "fileName": "session.jsonl",
+          "lines": [
+            {
+              "message": {
+                "id": "msg-1",
+                "content": "secret-token-should-not-persist",
+                "role": "assistant"
+              },
+              "usage": {
+                "inputTokens": 1000,
+                "cacheCreationTokens": 0,
+                "cacheReadTokens": 0,
+                "outputTokens": 100
+              },
+              "branch": "task/parity-case",
+              "model": "claude-opus-4"
+            },
+            {
+              "message": {
+                "id": "msg-2",
+                "content": "secret-token-should-not-persist",
+                "role": "assistant"
+              },
+              "usage": {
+                "inputTokens": 500,
+                "cacheCreationTokens": 0,
+                "cacheReadTokens": 0,
+                "outputTokens": 50
+              },
+              "branch": "task/parity-case",
+              "model": "synthetic-unpriced"
+            }
+          ]
+        }
+      ],
+      "expectations": {
+        "expectedFixes": [
+          {
+            "id": "EF-1",
+            "path": "sync.outcome.totalCostUsd",
+            "legacy": 2.625,
+            "expected": null,
+            "rationale": "Unpriced model should not contribute to total; partial coverage should be flagged"
+          },
+          {
+            "id": "EF-5",
+            "path": "sync.outcome.attribution.unpricedSessions",
+            "legacy": 1,
+            "expected": null,
+            "rationale": "Count should be sessions, not models; this case has 2 sessions but 1 model is unpriced"
+          }
+        ]
+      }
+    },
+    {
+      "id": "claude-all-unpriced",
+      "description": "All models unpriced",
+      "tags": ["claude-code", "unknown-price"],
+      "branch": "task/parity-case",
+      "issueId": "HOK-0004",
+      "agentType": "claude",
+      "pricingTable": {},
+      "sessions": [
+        {
+          "location": "claude-projects",
+          "fileName": "session.jsonl",
+          "lines": [
+            {
+              "message": {
+                "id": "msg-1",
+                "content": "secret-token-should-not-persist",
+                "role": "assistant"
+              },
+              "usage": {
+                "inputTokens": 1000,
+                "cacheCreationTokens": 0,
+                "cacheReadTokens": 0,
+                "outputTokens": 100
+              },
+              "branch": "task/parity-case"
+            }
+          ]
+        }
+      ],
+      "expectations": {
+        "expectedFixes": [
+          {
+            "id": "EF-1",
+            "path": "sync.outcome.status",
+            "legacy": "no_sessions",
+            "expected": "unavailable",
+            "rationale": "Should indicate missing pricing, not missing sessions"
+          }
+        ]
+      }
+    },
+    {
+      "id": "claude-explicit-zero-pricing",
+      "description": "Model with explicit zero pricing",
+      "tags": ["claude-code", "known-zero"],
+      "branch": "task/parity-case",
+      "issueId": "HOK-0005",
+      "agentType": "claude",
+      "pricingTable": {
+        "claude-free": {
+          "inputCostPerMTok": 0,
+          "outputCostPerMTok": 0
+        }
+      },
+      "sessions": [
+        {
+          "location": "claude-projects",
+          "fileName": "session.jsonl",
+          "lines": [
+            {
+              "message": {
+                "id": "msg-1",
+                "content": "secret-token-should-not-persist",
+                "role": "assistant"
+              },
+              "usage": {
+                "inputTokens": 1000,
+                "cacheCreationTokens": 0,
+                "cacheReadTokens": 0,
+                "outputTokens": 100
+              },
+              "branch": "task/parity-case"
+            }
+          ]
+        }
+      ],
+      "expectations": {}
+    },
+    {
+      "id": "claude-duplicate-message-id",
+      "description": "Three lines with same message id (EF-2: double-counting)",
+      "tags": ["claude-code", "replay/dedupe"],
+      "branch": "task/parity-case",
+      "issueId": "HOK-0006",
+      "agentType": "claude",
+      "pricingTable": {
+        "claude-opus-4": {
+          "inputCostPerMTok": 15,
+          "outputCostPerMTok": 75
+        }
+      },
+      "sessions": [
+        {
+          "location": "claude-projects",
+          "fileName": "session.jsonl",
+          "lines": [
+            {
+              "message": {
+                "id": "msg-1",
+                "requestId": "req-1",
+                "content": "secret-token-should-not-persist",
+                "role": "assistant"
+              },
+              "usage": {
+                "inputTokens": 1000,
+                "cacheCreationTokens": 0,
+                "cacheReadTokens": 0,
+                "outputTokens": 100
+              },
+              "branch": "task/parity-case"
+            },
+            {
+              "message": {
+                "id": "msg-1",
+                "requestId": "req-1",
+                "content": "secret-token-should-not-persist",
+                "role": "assistant"
+              },
+              "usage": {
+                "inputTokens": 1000,
+                "cacheCreationTokens": 0,
+                "cacheReadTokens": 0,
+                "outputTokens": 100
+              },
+              "branch": "task/parity-case"
+            },
+            {
+              "message": {
+                "id": "msg-1",
+                "requestId": "req-1",
+                "content": "secret-token-should-not-persist",
+                "role": "assistant"
+              },
+              "usage": {
+                "inputTokens": 1000,
+                "cacheCreationTokens": 0,
+                "cacheReadTokens": 0,
+                "outputTokens": 100
+              },
+              "branch": "task/parity-case"
+            }
+          ]
+        }
+      ],
+      "expectations": {
+        "expectedFixes": [
+          {
+            "id": "EF-2",
+            "path": "sync.outcome.totalCostUsd",
+            "legacy": 3.15,
+            "expected": 1.05,
+            "rationale": "Duplicates should be deduplicated; legacy sums all 3 lines"
+          }
+        ]
+      }
+    },
+    {
+      "id": "codex-cached-and-reasoning",
+      "description": "Codex with cached and reasoning tokens (EF-3: double-billing)",
+      "tags": ["codex", "cache-read"],
+      "branch": "task/parity-case",
+      "issueId": "HOK-0007",
+      "agentType": "codex",
+      "pricingTable": {
+        "codexa-latest": {
+          "inputCostPerMTok": 3,
+          "outputCostPerMTok": 15
+        }
+      },
+      "sessions": [
+        {
+          "location": "codex-sessions",
+          "fileName": "session.jsonl",
+          "lines": [
+            {
+              "session_meta": {
+                "session_id": "codex-1",
+                "cwd": "${WORKTREE}",
+                "branch": "task/parity-case"
+              },
+              "event_type": "turn_complete",
+              "turn": {
+                "turn_id": "turn-1",
+                "model": "codexa-latest",
+                "input_tokens": 2978251,
+                "cached_input_tokens": 2844672,
+                "output_tokens": 8343,
+                "reasoning_output_tokens": 545,
+                "cache_write_input_tokens": 100000,
+                "total_tokens": 2986594
+              }
+            }
+          ]
+        }
+      ],
+      "expectations": {
+        "expectedFixes": [
+          {
+            "id": "EF-3",
+            "path": "sync.outcome.totalCostUsd",
+            "legacy": 56.67,
+            "expected": 44.92,
+            "rationale": "Cached tokens are subset of input; should not be double-charged"
+          },
+          {
+            "id": "EF-10",
+            "path": "sync.outcome.models.codexa-latest.cacheCreationTokens",
+            "legacy": 0,
+            "expected": 100000,
+            "rationale": "cache_write_input_tokens should be captured"
+          }
+        ]
+      }
+    },
+    {
+      "id": "codex-unpriced",
+      "description": "Codex model without pricing",
+      "tags": ["codex", "unknown-price"],
+      "branch": "task/parity-case",
+      "issueId": "HOK-0008",
+      "agentType": "codex",
+      "pricingTable": {},
+      "sessions": [
+        {
+          "location": "codex-sessions",
+          "fileName": "session.jsonl",
+          "lines": [
+            {
+              "session_meta": {
+                "session_id": "codex-2",
+                "cwd": "${WORKTREE}",
+                "branch": "task/parity-case"
+              },
+              "event_type": "turn_complete",
+              "turn": {
+                "turn_id": "turn-1",
+                "model": "unknown-model",
+                "input_tokens": 1000,
+                "cached_input_tokens": 0,
+                "output_tokens": 100,
+                "reasoning_output_tokens": 0,
+                "cache_write_input_tokens": 0,
+                "total_tokens": 1100
+              }
+            }
+          ]
+        }
+      ],
+      "expectations": {
+        "expectedFixes": [
+          {
+            "id": "EF-1",
+            "path": "sync.outcome.status",
+            "legacy": "no_sessions",
+            "expected": "unavailable",
+            "rationale": "Missing pricing should be indicated"
+          }
+        ]
+      }
+    },
+    {
+      "id": "native-priced-complete",
+      "description": "Native Pi session with complete pricing",
+      "tags": ["native-pi"],
+      "branch": "task/parity-case",
+      "issueId": "HOK-0009",
+      "agentType": "native-pi",
+      "pricingTable": {
+        "gpt-4o": {
+          "inputCostPerMTok": 5,
+          "outputCostPerMTok": 15
+        }
+      },
+      "sessions": [
+        {
+          "location": "native-sessions",
+          "fileName": "session.jsonl",
+          "runId": "run-1",
+          "lines": [
+            {
+              "type": "session_meta",
+              "session_id": "native-1",
+              "provider": "openai",
+              "model": "gpt-4o",
+              "branch": "task/parity-case"
+            },
+            {
+              "type": "turn_complete",
+              "session_id": "native-1",
+              "response_id": "resp-1",
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "cache_creation_tokens": 0,
+              "cache_read_tokens": 0,
+              "cost_usd": 0.0095,
+              "rawContent": "secret-token-should-not-persist"
+            }
+          ]
+        }
+      ],
+      "expectations": {}
+    },
+    {
+      "id": "native-missing-usage-partial",
+      "description": "Native Pi session missing some usage data (partial coverage)",
+      "tags": ["native-pi", "partial"],
+      "branch": "task/parity-case",
+      "issueId": "HOK-0010",
+      "agentType": "native-pi",
+      "pricingTable": {
+        "gpt-4o": {
+          "inputCostPerMTok": 5,
+          "outputCostPerMTok": 15
+        }
+      },
+      "sessions": [
+        {
+          "location": "native-sessions",
+          "fileName": "session.jsonl",
+          "runId": "run-1",
+          "lines": [
+            {
+              "type": "session_meta",
+              "session_id": "native-2",
+              "provider": "openai",
+              "model": "gpt-4o",
+              "branch": "task/parity-case"
+            },
+            {
+              "type": "turn_complete",
+              "session_id": "native-2",
+              "response_id": "resp-2",
+              "input_tokens": null,
+              "output_tokens": 100,
+              "cache_creation_tokens": 0,
+              "cache_read_tokens": 0,
+              "rawContent": "secret-token-should-not-persist"
+            }
+          ]
+        }
+      ],
+      "expectations": {
+        "expectedFixes": [
+          {
+            "id": "EF-1",
+            "path": "sync.outcome.attribution.coverage",
+            "legacy": "partial",
+            "expected": "partial",
+            "rationale": "Missing usage should mark coverage as partial"
+          }
+        ]
+      }
+    },
+    {
+      "id": "native-unpriced",
+      "description": "Native Pi session with unpriced model",
+      "tags": ["native-pi", "unknown-price"],
+      "branch": "task/parity-case",
+      "issueId": "HOK-0011",
+      "agentType": "native-pi",
+      "pricingTable": {},
+      "sessions": [
+        {
+          "location": "native-sessions",
+          "fileName": "session.jsonl",
+          "runId": "run-1",
+          "lines": [
+            {
+              "type": "session_meta",
+              "session_id": "native-3",
+              "provider": "anthropic",
+              "model": "unknown-model",
+              "branch": "task/parity-case"
+            },
+            {
+              "type": "turn_complete",
+              "session_id": "native-3",
+              "response_id": "resp-3",
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "cache_creation_tokens": 0,
+              "cache_read_tokens": 0,
+              "rawContent": "secret-token-should-not-persist"
+            }
+          ]
+        }
+      ],
+      "expectations": {
+        "expectedFixes": [
+          {
+            "id": "EF-1",
+            "path": "sync.outcome.status",
+            "legacy": "no_sessions",
+            "expected": "unavailable",
+            "rationale": "Should indicate missing pricing"
+          }
+        ]
+      }
+    },
+    {
+      "id": "native-explicit-zero",
+      "description": "Native Pi with explicit zero pricing",
+      "tags": ["native-pi", "known-zero"],
+      "branch": "task/parity-case",
+      "issueId": "HOK-0012",
+      "agentType": "native-pi",
+      "pricingTable": {
+        "test-model": {
+          "inputCostPerMTok": 0,
+          "outputCostPerMTok": 0
+        }
+      },
+      "sessions": [
+        {
+          "location": "native-sessions",
+          "fileName": "session.jsonl",
+          "runId": "run-1",
+          "lines": [
+            {
+              "type": "session_meta",
+              "session_id": "native-4",
+              "provider": "test",
+              "model": "test-model",
+              "branch": "task/parity-case"
+            },
+            {
+              "type": "turn_complete",
+              "session_id": "native-4",
+              "response_id": "resp-4",
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "cache_creation_tokens": 0,
+              "cache_read_tokens": 0,
+              "rawContent": "secret-token-should-not-persist"
+            }
+          ]
+        }
+      ],
+      "expectations": {}
+    },
+    {
+      "id": "missing-sessions",
+      "description": "No sessions found for branch",
+      "tags": ["missing-session"],
+      "branch": "task/nonexistent",
+      "issueId": "HOK-0013",
+      "agentType": "claude",
+      "pricingTable": {
+        "claude-opus-4": {
+          "inputCostPerMTok": 15,
+          "outputCostPerMTok": 75
+        }
+      },
+      "sessions": [
+        {
+          "location": "claude-projects",
+          "fileName": "session.jsonl",
+          "lines": [
+            {
+              "message": {
+                "id": "msg-1",
+                "content": "secret-token-should-not-persist",
+                "role": "assistant"
+              },
+              "usage": {
+                "inputTokens": 1000,
+                "cacheCreationTokens": 0,
+                "cacheReadTokens": 0,
+                "outputTokens": 100
+              },
+              "branch": "main"
+            }
+          ]
+        }
+      ],
+      "expectations": {}
+    },
+    {
+      "id": "native-provider-reported-cost",
+      "description": "Native Pi with provider-reported cost (OpenRouter)",
+      "tags": ["native-pi", "openrouter-exact", "partial"],
+      "branch": "task/parity-case",
+      "issueId": "HOK-0014",
+      "agentType": "native-pi",
+      "pricingTable": {
+        "gpt-4o": {
+          "inputCostPerMTok": 5,
+          "outputCostPerMTok": 15
+        }
+      },
+      "sessions": [
+        {
+          "location": "native-sessions",
+          "fileName": "session.jsonl",
+          "runId": "run-1",
+          "lines": [
+            {
+              "type": "session_meta",
+              "session_id": "native-5",
+              "provider": "openai",
+              "model": "gpt-4o",
+              "branch": "task/parity-case"
+            },
+            {
+              "type": "turn_complete",
+              "session_id": "native-5",
+              "response_id": "resp-5",
+              "input_tokens": 1000,
+              "output_tokens": 100,
+              "cache_creation_tokens": 0,
+              "cache_read_tokens": 0,
+              "cost_usd": 0.0095,
+              "rawContent": "secret-token-should-not-persist"
+            }
+          ]
+        }
+      ],
+      "exact": {
+        "responses": {
+          "resp-5": {
+            "totalCostUsd": 0.0095
+          }
+        }
+      },
+      "expectations": {}
+    }
+  ]
+}

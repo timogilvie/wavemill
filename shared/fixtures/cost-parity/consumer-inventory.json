@@ -1,0 +1,321 @@
+{
+  "description": "Inventory of all files that import workflow-cost.ts",
+  "productionConsumers": [
+    {
+      "file": "shared/lib/post-completion-hook.ts",
+      "symbols": [
+        { "name": "computeWorkflowCost", "kind": "value" },
+        { "name": "loadPricingTable", "kind": "value" },
+        { "name": "WorkflowCostOutcome", "kind": "type" }
+      ],
+      "class": "measurement",
+      "production": true,
+      "notes": "Measurement entrypoint: mill/monitor → tools/run-eval-hook.ts",
+      "migrationTarget": "HOK-3075"
+    },
+    {
+      "file": "shared/lib/eval-orchestrator.ts",
+      "symbols": [
+        { "name": "computeWorkflowCostWithExactPricing", "kind": "value" },
+        { "name": "loadPricingTable", "kind": "value" },
+        { "name": "WorkflowCostOutcome", "kind": "type" }
+      ],
+      "class": "measurement",
+      "production": true,
+      "notes": "Measurement entrypoint: wavemill eval → tools/eval-workflow.ts",
+      "migrationTarget": "HOK-3075"
+    },
+    {
+      "file": "shared/lib/eval-record-builder.ts",
+      "symbols": [
+        { "name": "WorkflowCostOutcome", "kind": "type" },
+        { "name": "WorkflowCostResult", "kind": "type" },
+        { "name": "WorkflowCostFailure", "kind": "type" }
+      ],
+      "class": "measurement",
+      "production": true,
+      "notes": "Record writer: attachWorkflowCostMetadata writes cost fields",
+      "migrationTarget": "HOK-3075"
+    },
+    {
+      "file": "shared/lib/execution-economics.ts",
+      "symbols": [
+        { "name": "computeModelCost", "kind": "value" },
+        { "name": "loadPricingTable", "kind": "value" },
+        { "name": "ModelPricing", "kind": "type" },
+        { "name": "PricingTable", "kind": "type" }
+      ],
+      "class": "measurement",
+      "production": true,
+      "notes": "Cost aggregation for evaluation records",
+      "migrationTarget": "HOK-3075"
+    },
+    {
+      "file": "shared/lib/native-agent/loop.ts",
+      "symbols": [
+        { "name": "computeModelCost", "kind": "value" },
+        { "name": "ModelPricing", "kind": "type" }
+      ],
+      "class": "measurement",
+      "production": true,
+      "notes": "Native LoopResult.totalCostUsd computation",
+      "migrationTarget": "HOK-3075"
+    },
+    {
+      "file": "shared/lib/native-agent/launch-planning.ts",
+      "symbols": [
+        { "name": "computeModelCost", "kind": "value" },
+        { "name": "loadPricingTable", "kind": "value" }
+      ],
+      "class": "measurement",
+      "production": true,
+      "notes": "Native cost estimation for launch planning",
+      "migrationTarget": "HOK-3075"
+    },
+    {
+      "file": "shared/lib/session-adapters.ts",
+      "symbols": [
+        { "name": "resolveProjectsDirs", "kind": "value" }
+      ],
+      "class": "wavemill_only_join",
+      "production": true,
+      "notes": "Session file discovery; wavemill-only implementation"
+    },
+    {
+      "file": "shared/lib/intervention-detector.ts",
+      "symbols": [
+        { "name": "resolveProjectsDirs", "kind": "value" }
+      ],
+      "class": "wavemill_only_join",
+      "production": true,
+      "notes": "Session file discovery for intervention detection"
+    },
+    {
+      "file": "shared/lib/outcome-collectors.ts",
+      "symbols": [
+        { "name": "resolveProjectsDirs", "kind": "value" }
+      ],
+      "class": "wavemill_only_join",
+      "production": true,
+      "notes": "Session file discovery for outcome collection"
+    },
+    {
+      "file": "shared/lib/deepseek-smoke.ts",
+      "symbols": [
+        { "name": "encodeProjectDir", "kind": "value" }
+      ],
+      "class": "wavemill_only_join",
+      "production": false,
+      "notes": "Used by smoke tests only"
+    },
+    {
+      "file": "shared/lib/eval.ts",
+      "symbols": [
+        { "name": "loadPricingTable", "kind": "value" }
+      ],
+      "class": "pricing_policy",
+      "production": true,
+      "notes": "Judge-call cost computation for model selection",
+      "migrationTarget": "HOK-3076"
+    },
+    {
+      "file": "shared/lib/stage-aware-router.ts",
+      "symbols": [
+        { "name": "computeModelCost", "kind": "value" },
+        { "name": "loadPricingTable", "kind": "value" }
+      ],
+      "class": "pricing_policy",
+      "production": true,
+      "notes": "Reads historical workflowCost for stage priors",
+      "migrationTarget": "HOK-3076"
+    },
+    {
+      "file": "shared/lib/workflow-router.ts",
+      "symbols": [
+        { "name": "loadPricingTable", "kind": "value" },
+        { "name": "computeModelCost", "kind": "value" },
+        { "name": "loadConfiguredPricingTable", "kind": "value" }
+      ],
+      "class": "pricing_policy",
+      "production": true,
+      "notes": "Router model selection and pool management",
+      "migrationTarget": "HOK-3076"
+    },
+    {
+      "file": "shared/lib/challenge-scheduler.ts",
+      "symbols": [
+        { "name": "loadConfiguredPricingTable", "kind": "value" }
+      ],
+      "class": "pricing_policy",
+      "production": true,
+      "notes": "Challenge model pool configuration",
+      "migrationTarget": "HOK-3076"
+    },
+    {
+      "file": "shared/lib/native-agent/certification/live-coding-canary.ts",
+      "symbols": [
+        { "name": "ModelPricing", "kind": "type" }
+      ],
+      "class": "pricing_policy",
+      "production": false,
+      "notes": "Type reference for canary cost estimation",
+      "migrationTarget": "HOK-3076"
+    },
+    {
+      "file": "shared/lib/eval-schema.ts",
+      "symbols": [
+        { "name": "ModelPricing", "kind": "type" }
+      ],
+      "class": "schema",
+      "production": false,
+      "notes": "Also duplicates attribution types (463-498); schema-only"
+    },
+    {
+      "file": "shared/lib/model-promotion.ts",
+      "symbols": [
+        { "name": "computeNormalizedEvaluationCost", "kind": "value" },
+        { "name": "ModelPricing", "kind": "type" }
+      ],
+      "class": "backfill",
+      "production": false,
+      "notes": "Model promotion backfill tool",
+      "migrationTarget": "HOK-3077"
+    },
+    {
+      "file": "tools/backfill-workflow-cost.ts",
+      "symbols": [
+        { "name": "computeModelCost", "kind": "value" },
+        { "name": "loadPricingTable", "kind": "value" },
+        { "name": "ModelPricing", "kind": "type" },
+        { "name": "ModelTokenUsage", "kind": "type" }
+      ],
+      "class": "backfill",
+      "production": false,
+      "notes": "Cost backfill tool for historical records",
+      "migrationTarget": "HOK-3077"
+    },
+    {
+      "file": "tools/backfill-workflow-cost-status.ts",
+      "symbols": [
+        { "name": "computeWorkflowCost", "kind": "value" },
+        { "name": "loadPricingTable", "kind": "value" }
+      ],
+      "class": "backfill",
+      "production": false,
+      "notes": "Status backfill tool",
+      "migrationTarget": "HOK-3077"
+    },
+    {
+      "file": "tools/recost-opus-4-6.ts",
+      "symbols": [
+        { "name": "computeModelCost", "kind": "value" },
+        { "name": "ModelPricing", "kind": "type" },
+        { "name": "ModelTokenUsage", "kind": "type" }
+      ],
+      "class": "backfill",
+      "production": false,
+      "notes": "One-off recost tool for model pricing changes",
+      "migrationTarget": "HOK-3077"
+    },
+    {
+      "file": "tools/backfill-pricing-snapshot.ts",
+      "symbols": [
+        { "name": "ModelPricing", "kind": "type" }
+      ],
+      "class": "backfill",
+      "production": false,
+      "notes": "Type-only reference for pricing snapshots",
+      "migrationTarget": "HOK-3077"
+    }
+  ],
+  "testOnlyConsumers": [
+    "shared/lib/workflow-cost.test.ts",
+    "shared/lib/session-adapters.test.ts",
+    "shared/lib/intervention-detector.test.ts",
+    "shared/lib/executed-model-resolver.test.ts",
+    "shared/lib/eval-orchestrator.test.ts",
+    "shared/lib/native-agent/pi-usage-cost.test.ts",
+    "tools/backfill-stage-executed-model.test.ts"
+  ],
+  "indirectConsumers": [
+    {
+      "file": "shared/lib/eval-aggregator.ts",
+      "lines": "389-462",
+      "fields": ["workflowCost", "workflowTokenUsage"],
+      "class": "report",
+      "notes": "Reads cost fields for aggregation"
+    },
+    {
+      "file": "shared/lib/eval-export.ts",
+      "lines": "318-370",
+      "fields": ["workflowCost", "workflowTokenUsage"],
+      "class": "report",
+      "notes": "Exports cost fields for external analysis"
+    },
+    {
+      "file": "shared/lib/eval-summary-printer.ts",
+      "lines": "34, 118-160",
+      "fields": ["workflowCost"],
+      "class": "report",
+      "notes": "Production log line formatting",
+      "production": true
+    },
+    {
+      "file": "shared/lib/challenge-analyzer.ts",
+      "lines": "242",
+      "fields": ["workflowCost"],
+      "class": "report",
+      "notes": "Challenge result analysis"
+    },
+    {
+      "file": "shared/lib/arbiter-r6-report.ts",
+      "lines": "348",
+      "fields": ["workflowCost"],
+      "class": "report",
+      "notes": "R6 evaluation report"
+    },
+    {
+      "file": "shared/lib/execution-economics-report.ts",
+      "lines": "all",
+      "fields": ["workflowCost", "workflowTokenUsage"],
+      "class": "report",
+      "notes": "Economics report generation"
+    },
+    {
+      "file": "tools/compare-prs.ts",
+      "lines": "918",
+      "fields": ["workflowCost"],
+      "class": "report",
+      "notes": "PR comparison tool"
+    },
+    {
+      "file": "shared/lib/feature-state.ts",
+      "lines": "268, 703",
+      "fields": ["workflowCost"],
+      "class": "report",
+      "notes": "Feature state tracking"
+    },
+    {
+      "file": "src/evaluation/router-eval-adapter.ts",
+      "lines": "all",
+      "fields": ["workflowCost"],
+      "class": "pricing_policy",
+      "notes": "Historical cost learning for routing"
+    },
+    {
+      "file": "shared/lib/hokusai-schema.ts",
+      "lines": "806-812",
+      "fields": ["workflowCost"],
+      "class": "report",
+      "notes": "Hokusai schema submission; external boundary",
+      "production": true
+    },
+    {
+      "file": "shared/lib/llm-cli.ts",
+      "lines": "456",
+      "fields": ["workflowCost"],
+      "class": "report",
+      "notes": "Separate producer of cost field; CLI-only"
+    }
+  ]
+}

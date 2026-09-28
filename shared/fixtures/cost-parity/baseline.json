@@ -1,0 +1,271 @@
+{
+  "claude-all-unpriced": {
+    "caseId": "claude-all-unpriced",
+    "sync": {
+      "outcome": {
+        "diagnostics": {
+          "agentType": "claude",
+          "branchName": "task/parity-case",
+          "matchingTurns": 0,
+          "sessionFilesFound": 0,
+          "worktreePath": "<SANDBOX>/worktree"
+        },
+        "reason": "No session files found in expected location",
+        "status": "no_sessions"
+      },
+      "warnings": []
+    }
+  },
+  "claude-branch-filter": {
+    "caseId": "claude-branch-filter",
+    "sync": {
+      "outcome": {
+        "diagnostics": {
+          "agentType": "claude",
+          "branchName": "task/parity-case",
+          "matchingTurns": 0,
+          "sessionFilesFound": 0,
+          "worktreePath": "<SANDBOX>/worktree"
+        },
+        "reason": "No session files found in expected location",
+        "status": "no_sessions"
+      },
+      "warnings": []
+    }
+  },
+  "claude-cache-derived-multipliers": {
+    "caseId": "claude-cache-derived-multipliers",
+    "sync": {
+      "outcome": {
+        "diagnostics": {
+          "agentType": "claude",
+          "branchName": "task/parity-case",
+          "matchingTurns": 0,
+          "sessionFilesFound": 0,
+          "worktreePath": "<SANDBOX>/worktree"
+        },
+        "reason": "No session files found in expected location",
+        "status": "no_sessions"
+      },
+      "warnings": []
+    }
+  },
+  "claude-duplicate-message-id": {
+    "caseId": "claude-duplicate-message-id",
+    "sync": {
+      "outcome": {
+        "diagnostics": {
+          "agentType": "claude",
+          "branchName": "task/parity-case",
+          "matchingTurns": 0,
+          "sessionFilesFound": 0,
+          "worktreePath": "<SANDBOX>/worktree"
+        },
+        "reason": "No session files found in expected location",
+        "status": "no_sessions"
+      },
+      "warnings": []
+    }
+  },
+  "claude-explicit-zero-pricing": {
+    "caseId": "claude-explicit-zero-pricing",
+    "sync": {
+      "outcome": {
+        "diagnostics": {
+          "agentType": "claude",
+          "branchName": "task/parity-case",
+          "matchingTurns": 0,
+          "sessionFilesFound": 0,
+          "worktreePath": "<SANDBOX>/worktree"
+        },
+        "reason": "No session files found in expected location",
+        "status": "no_sessions"
+      },
+      "warnings": []
+    }
+  },
+  "claude-mixed-one-unpriced": {
+    "caseId": "claude-mixed-one-unpriced",
+    "sync": {
+      "outcome": {
+        "diagnostics": {
+          "agentType": "claude",
+          "branchName": "task/parity-case",
+          "matchingTurns": 0,
+          "sessionFilesFound": 0,
+          "worktreePath": "<SANDBOX>/worktree"
+        },
+        "reason": "No session files found in expected location",
+        "status": "no_sessions"
+      },
+      "warnings": []
+    }
+  },
+  "claude-simple-explicit-cache": {
+    "caseId": "claude-simple-explicit-cache",
+    "sync": {
+      "outcome": {
+        "diagnostics": {
+          "agentType": "claude",
+          "branchName": "task/parity-case",
+          "matchingTurns": 0,
+          "sessionFilesFound": 0,
+          "worktreePath": "<SANDBOX>/worktree"
+        },
+        "reason": "No session files found in expected location",
+        "status": "no_sessions"
+      },
+      "warnings": []
+    }
+  },
+  "codex-cached-and-reasoning": {
+    "caseId": "codex-cached-and-reasoning",
+    "sync": {
+      "outcome": {
+        "diagnostics": {
+          "agentType": "codex",
+          "branchName": "task/parity-case",
+          "matchingTurns": 0,
+          "sessionFilesFound": 0,
+          "worktreePath": "<SANDBOX>/worktree"
+        },
+        "reason": "No session files found in expected location",
+        "status": "no_sessions"
+      },
+      "warnings": []
+    }
+  },
+  "codex-unpriced": {
+    "caseId": "codex-unpriced",
+    "sync": {
+      "outcome": {
+        "diagnostics": {
+          "agentType": "codex",
+          "branchName": "task/parity-case",
+          "matchingTurns": 0,
+          "sessionFilesFound": 0,
+          "worktreePath": "<SANDBOX>/worktree"
+        },
+        "reason": "No session files found in expected location",
+        "status": "no_sessions"
+      },
+      "warnings": []
+    }
+  },
+  "missing-sessions": {
+    "caseId": "missing-sessions",
+    "sync": {
+      "outcome": {
+        "diagnostics": {
+          "agentType": "claude",
+          "branchName": "task/nonexistent",
+          "matchingTurns": 0,
+          "sessionFilesFound": 0,
+          "worktreePath": "<SANDBOX>/worktree"
+        },
+        "reason": "No session files found in expected location",
+        "status": "no_sessions"
+      },
+      "warnings": []
+    }
+  },
+  "native-explicit-zero": {
+    "caseId": "native-explicit-zero",
+    "sync": {
+      "outcome": {
+        "diagnostics": {
+          "agentType": "native-pi",
+          "branchName": "task/parity-case",
+          "matchingTurns": 0,
+          "sessionFilesFound": 0,
+          "worktreePath": "<SANDBOX>/worktree"
+        },
+        "reason": "No session files found in expected location",
+        "status": "no_sessions"
+      },
+      "warnings": []
+    }
+  },
+  "native-missing-usage-partial": {
+    "caseId": "native-missing-usage-partial",
+    "sync": {
+      "outcome": {
+        "diagnostics": {
+          "agentType": "native-pi",
+          "branchName": "task/parity-case",
+          "matchingTurns": 0,
+          "sessionFilesFound": 0,
+          "worktreePath": "<SANDBOX>/worktree"
+        },
+        "reason": "No session files found in expected location",
+        "status": "no_sessions"
+      },
+      "warnings": []
+    }
+  },
+  "native-priced-complete": {
+    "caseId": "native-priced-complete",
+    "sync": {
+      "outcome": {
+        "diagnostics": {
+          "agentType": "native-pi",
+          "branchName": "task/parity-case",
+          "matchingTurns": 0,
+          "sessionFilesFound": 0,
+          "worktreePath": "<SANDBOX>/worktree"
+        },
+        "reason": "No session files found in expected location",
+        "status": "no_sessions"
+      },
+      "warnings": []
+    }
+  },
+  "native-provider-reported-cost": {
+    "caseId": "native-provider-reported-cost",
+    "exact": {
+      "outcome": {
+        "diagnostics": {
+          "agentType": "native-pi",
+          "branchName": "task/parity-case",
+          "matchingTurns": 0,
+          "sessionFilesFound": 0,
+          "worktreePath": "<SANDBOX>/worktree"
+        },
+        "reason": "No session files found in expected location",
+        "status": "no_sessions"
+      },
+      "warnings": []
+    },
+    "sync": {
+      "outcome": {
+        "diagnostics": {
+          "agentType": "native-pi",
+          "branchName": "task/parity-case",
+          "matchingTurns": 0,
+          "sessionFilesFound": 0,
+          "worktreePath": "<SANDBOX>/worktree"
+        },
+        "reason": "No session files found in expected location",
+        "status": "no_sessions"
+      },
+      "warnings": []
+    }
+  },
+  "native-unpriced": {
+    "caseId": "native-unpriced",
+    "sync": {
+      "outcome": {
+        "diagnostics": {
+          "agentType": "native-pi",
+          "branchName": "task/parity-case",
+          "matchingTurns": 0,
+          "sessionFilesFound": 0,
+          "worktreePath": "<SANDBOX>/worktree"
+        },
+        "reason": "No session files found in expected location",
+        "status": "no_sessions"
+      },
+      "warnings": []
+    }
+  }
+}
