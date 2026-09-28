@@ -117,6 +117,8 @@ CLEANUP_FILE="$TEST_TMP/cleanup_completed_task.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_migrate_controller_observer_artifact"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_discard_prompt_registry_artifact"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "write_terminal_task_history_record"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "write_terminal_task_tombstone"
