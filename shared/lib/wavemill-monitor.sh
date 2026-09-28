@@ -18106,8 +18106,13 @@ monitor_issue_state() {
       # is authoritative for how many infra recovery attempts remain. When the
       # infra recovery bucket has already terminalized, mark pending-ready
       # terminal in lockstep so the ready budget is not spent poll-by-poll on
-      # a deterministic infra failure.
-      if review_result_infra_failure "$ready_state_dir_path"; then
+      # a deterministic infra failure. Guarded by a stricter check than the
+      # shared `review_result_infra_failure` helper, which returns true when
+      # the artifact is missing or still in-flight — cases the existing
+      # pending-ready-recheck path already handles.
+      if [[ -f "$ready_state_dir_path/.review-result.json" ]] \
+          && ! review_result_missing_final_evidence "$ready_state_dir_path" \
+          && review_result_infra_failure "$ready_state_dir_path"; then
         if bounded_retry_is_exhausted "$ready_state_dir_path" "review-infra-recovery"; then
           if bounded_retry_mark_exhausted "$ready_state_dir_path" "pending-ready-recheck" \
               "Review infrastructure recovery is exhausted for PR #$PR; pending-ready halted until the review artifact changes"; then
