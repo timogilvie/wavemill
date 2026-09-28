@@ -1564,7 +1564,44 @@ main() {
   fi
 
   if [[ "$(printf '%s' "$BASE_REF_PREFLIGHT_JSON" | jq -r '.fetchDegraded // false' 2>/dev/null)" == "true" ]]; then
-    startup_log "WARN: Startup fetch for $BASE_BRANCH degraded; continuing with verified local base ref $RESOLVED_BASE_REF"
+    startup_log "WARN: Base fetch for $BASE_BRANCH failed; using local base ref $RESOLVED_BASE_REF (fetchDegraded)"
+  fi
+  local base_resolved_sha base_resolved_sha_short base_local_behind base_local_ahead base_local_ff base_local_checked_out base_local_checkout_path provenance_line
+  base_resolved_sha="$(printf '%s' "$BASE_REF_PREFLIGHT_JSON" | jq -r '.resolvedSha // empty' 2>/dev/null || true)"
+  base_resolved_sha_short=""
+  if [[ -n "$base_resolved_sha" ]]; then
+    base_resolved_sha_short="${base_resolved_sha:0:7}"
+  fi
+  base_local_behind="$(printf '%s' "$BASE_REF_PREFLIGHT_JSON" | jq -r '.localBehindOrigin // empty' 2>/dev/null || true)"
+  base_local_ahead="$(printf '%s' "$BASE_REF_PREFLIGHT_JSON" | jq -r '.localAheadOfOrigin // empty' 2>/dev/null || true)"
+  base_local_ff="$(printf '%s' "$BASE_REF_PREFLIGHT_JSON" | jq -r '.localFastForwarded // false' 2>/dev/null || echo false)"
+  base_local_checked_out="$(printf '%s' "$BASE_REF_PREFLIGHT_JSON" | jq -r '.localCheckedOut // false' 2>/dev/null || echo false)"
+  base_local_checkout_path="$(printf '%s' "$BASE_REF_PREFLIGHT_JSON" | jq -r '.localCheckoutPath // empty' 2>/dev/null || true)"
+
+  provenance_line="Base $BASE_BRANCH → $RESOLVED_BASE_REF"
+  if [[ -n "$base_resolved_sha_short" ]]; then
+    provenance_line="$provenance_line @ $base_resolved_sha_short"
+  fi
+  if [[ -n "$base_local_behind" && "$base_local_behind" != "0" ]]; then
+    if [[ "$base_local_ff" == "true" ]]; then
+      provenance_line="$provenance_line (local $BASE_BRANCH: $base_local_behind behind, fast-forwarded)"
+    else
+      provenance_line="$provenance_line (local $BASE_BRANCH: $base_local_behind behind)"
+    fi
+  fi
+  startup_log "$provenance_line"
+
+  if [[ "$base_local_checked_out" == "true" \
+    && -n "$base_local_behind" && "$base_local_behind" != "0" ]]; then
+    startup_log "WARN: local $BASE_BRANCH is $base_local_behind commits behind origin/$BASE_BRANCH and is checked out at ${base_local_checkout_path:-unknown}; not fast-forwarding. Base-relative comparisons use origin/$BASE_BRANCH."
+  elif [[ -n "$base_local_behind" && "$base_local_behind" != "0" \
+    && -n "$base_local_ahead" && "$base_local_ahead" != "0" ]]; then
+    startup_log "WARN: local $BASE_BRANCH has diverged from origin/$BASE_BRANCH (ahead $base_local_ahead, behind $base_local_behind); not fast-forwarding."
+  fi
+  RESOLVED_BASE_SHA="$base_resolved_sha"
+  export RESOLVED_BASE_SHA
+  if [[ -n "$RESOLVED_BASE_SHA" ]]; then
+    export WAVEMILL_RESOLVED_BASE_SHA="$RESOLVED_BASE_SHA"
   fi
 
   ensure_state_file
