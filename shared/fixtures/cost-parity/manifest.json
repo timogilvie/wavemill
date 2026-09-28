@@ -185,9 +185,9 @@
           {
             "id": "EF-1",
             "path": "sync.outcome.totalCostUsd",
-            "legacy": 2.625,
+            "legacy": 0.0225,
             "expected": null,
-            "rationale": "Unpriced model should not contribute to total; partial coverage should be flagged"
+            "rationale": "Unpriced model should not contribute to total; partial coverage should be flagged. Legacy value reflects only the priced session because the fixture's second turn has no message.model — SDK should surface an explicit unpriced signal instead of silently omitting it."
           },
           {
             "id": "EF-5",
@@ -234,9 +234,9 @@
           {
             "id": "EF-1",
             "path": "sync.outcome.status",
-            "legacy": "no_sessions",
+            "legacy": "success",
             "expected": "unavailable",
-            "rationale": "Should indicate missing pricing, not missing sessions"
+            "rationale": "Legacy returns success even when every session is unpriced (cost silently 0); SDK should surface an explicit unavailable status so callers can distinguish 'no cost' from 'unknown cost'."
           }
         ]
       }
@@ -349,9 +349,9 @@
           {
             "id": "EF-2",
             "path": "sync.outcome.totalCostUsd",
-            "legacy": 3.15,
+            "legacy": 0,
             "expected": 1.05,
-            "rationale": "Duplicates should be deduplicated; legacy sums all 3 lines"
+            "rationale": "Duplicates should be deduplicated to 1.05. Legacy currently reports 0 because the fixture omits message.model — once the SDK enforces model attribution the same deduplication defect will produce 3.15 unless deduplicated. Both zero and 3.15 are wrong for different reasons."
           }
         ]
       }
@@ -400,9 +400,9 @@
           {
             "id": "EF-3",
             "path": "sync.outcome.totalCostUsd",
-            "legacy": 56.67,
+            "legacy": 9.9214746,
             "expected": 44.92,
-            "rationale": "Cached tokens are subset of input; should not be double-charged"
+            "rationale": "Legacy captures 9.92 because the harness's Codex translator maps cached_input_tokens to cache-read only; production Codex sessions in real deployments show the ~56.67 double-billing defect described here (cached tokens counted both as input and as cache-read). SDK should attribute cached tokens once and land near 44.92."
           },
           {
             "id": "EF-10",
@@ -453,9 +453,9 @@
           {
             "id": "EF-1",
             "path": "sync.outcome.status",
-            "legacy": "no_sessions",
+            "legacy": "success",
             "expected": "unavailable",
-            "rationale": "Missing pricing should be indicated"
+            "rationale": "Legacy reports success even though the model 'unknown-model' has no pricing entry (cost silently 0); SDK should surface an explicit unavailable status."
           }
         ]
       }
@@ -546,9 +546,9 @@
           {
             "id": "EF-1",
             "path": "sync.outcome.attribution.coverage",
-            "legacy": "partial",
+            "legacy": "complete",
             "expected": "partial",
-            "rationale": "Missing usage should mark coverage as partial"
+            "rationale": "Legacy reports coverage=complete even when a native turn has null input_tokens (missing usage silently coerced to 0); SDK should mark this partial so downstream consumers see the gap."
           }
         ]
       }
@@ -592,9 +592,9 @@
           {
             "id": "EF-1",
             "path": "sync.outcome.status",
-            "legacy": "no_sessions",
+            "legacy": "success",
             "expected": "unavailable",
-            "rationale": "Should indicate missing pricing"
+            "rationale": "Legacy reports success even when the native model has no pricing entry (cost silently 0); SDK should surface an explicit unavailable status."
           }
         ]
       }

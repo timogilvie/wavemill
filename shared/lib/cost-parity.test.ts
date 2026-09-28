@@ -305,6 +305,45 @@ test('Snapshot keys are sorted for determinism', () => {
   assert(keys.length > 0, 'Should have cases');
 });
 
+test('Expected-fix legacy values match baseline', () => {
+  // Every expectedFix.legacy in the manifest declares "the current engine
+  // produces this value at this path". If it drifts from what baseline.json
+  // actually contains, the migration oracle is lying about the starting
+  // point of the SDK swap and reviewers cannot trust the "expected" side
+  // either. This is the guard the reviewer flagged when we forgot to
+  // refresh the manifest after regenerating the baseline.
+  const { manifest } = loadCostParityManifest(manifestPath);
+  const baselineCases = loadCostParityBaseline(baselinePath);
+
+  const get = (obj: unknown, path: string): unknown =>
+    path.split('.').reduce<unknown>(
+      (acc, key) => (acc != null && typeof acc === 'object' ? (acc as Record<string, unknown>)[key] : undefined),
+      obj
+    );
+
+  const mismatches: string[] = [];
+  for (const caseItem of manifest.cases) {
+    const fixes = caseItem.expectations?.expectedFixes ?? [];
+    if (fixes.length === 0) continue;
+    const baseline = baselineCases[caseItem.id];
+    assert(baseline, `Manifest case ${caseItem.id} missing from baseline`);
+    for (const fix of fixes) {
+      const actual = get(baseline, fix.path);
+      if (JSON.stringify(actual) !== JSON.stringify(fix.legacy)) {
+        mismatches.push(
+          `  ${caseItem.id} ${fix.path} (${fix.id}): manifest.legacy=${JSON.stringify(fix.legacy)} baseline=${JSON.stringify(actual)}`
+        );
+      }
+    }
+  }
+
+  if (mismatches.length > 0) {
+    assert.fail(
+      `expectedFix.legacy values do not match baseline.json (regenerate baseline or refresh manifest):\n${mismatches.join('\n')}`
+    );
+  }
+});
+
 test('Baseline captures models attribution when pricing is known', async () => {
   const baselineCases = loadCostParityBaseline(baselinePath);
   const priced = baselineCases['codex-cached-and-reasoning'];
