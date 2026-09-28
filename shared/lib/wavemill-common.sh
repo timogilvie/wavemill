@@ -3065,7 +3065,8 @@ wavemill_fetch_base_branch() {
 
   local remote_timeout fetch_rc=0
   remote_timeout="$(wavemill_git_remote_timeout_seconds)"
-  wavemill_git_remote_with_timeout "$remote_timeout" -C "$REPO_DIR" fetch origin "$base_branch" || fetch_rc=$?
+  wavemill_git_remote_with_timeout "$remote_timeout" -C "$REPO_DIR" fetch origin \
+    "+refs/heads/${base_branch}:refs/remotes/origin/${base_branch}" || fetch_rc=$?
   if (( fetch_rc != 0 )); then
     wavemill_warn "git fetch origin $base_branch failed for repo=$REPO_DIR timeout=${remote_timeout}s exit=$fetch_rc; continuing without refreshing base-branch cache"
     return "$fetch_rc"
@@ -3094,20 +3095,54 @@ wavemill_fetch_base_branch() {
 
 wavemill_base_ref_checked_refs() {
   local base_branch="${1:-}"
+  shift || true
+  local prefer_local="false"
+  while (( $# > 0 )); do
+    case "$1" in
+      --prefer-local)
+        prefer_local="true"
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+    shift
+  done
   [[ -n "$base_branch" ]] || return 1
-
-  printf 'refs/heads/%s\n' "$base_branch"
-  printf 'refs/remotes/origin/%s\n' "$base_branch"
 
   local upstream
   upstream="$(git -C "${REPO_DIR:-$PWD}" rev-parse --abbrev-ref --symbolic-full-name "refs/heads/$base_branch@{upstream}" 2>/dev/null || true)"
-  if [[ -n "$upstream" && "$upstream" != "origin/$base_branch" ]]; then
-    printf 'refs/remotes/%s\n' "$upstream"
+
+  if [[ "$prefer_local" == "true" ]]; then
+    printf 'refs/heads/%s\n' "$base_branch"
+    printf 'refs/remotes/origin/%s\n' "$base_branch"
+    if [[ -n "$upstream" && "$upstream" != "origin/$base_branch" ]]; then
+      printf 'refs/remotes/%s\n' "$upstream"
+    fi
+  else
+    printf 'refs/remotes/origin/%s\n' "$base_branch"
+    if [[ -n "$upstream" && "$upstream" != "origin/$base_branch" ]]; then
+      printf 'refs/remotes/%s\n' "$upstream"
+    fi
+    printf 'refs/heads/%s\n' "$base_branch"
   fi
 }
 
 wavemill_resolve_base_ref() {
   local base_branch="${1:-}"
+  shift || true
+  local prefer_local_args=()
+  while (( $# > 0 )); do
+    case "$1" in
+      --prefer-local)
+        prefer_local_args+=("--prefer-local")
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+    shift
+  done
   [[ -n "$base_branch" ]] || return 1
 
   local ref
@@ -3117,9 +3152,130 @@ wavemill_resolve_base_ref() {
       printf '%s\n' "$ref"
       return 0
     fi
-  done < <(wavemill_base_ref_checked_refs "$base_branch")
+  done < <(wavemill_base_ref_checked_refs "$base_branch" "${prefer_local_args[@]}")
 
   return 1
+}
+
+# Return the reference to use for base-relative comparisons on the monitor tick.
+# Prefers origin/<b> when it exists (defense against a stale local checkout).
+# Pass-through rules:
+#   - inputs starting with "origin/", "refs/", or a 40-hex SHA are returned unchanged
+#   - otherwise return "origin/<b>" when refs/remotes/origin/<b> verifies,
+#     falling back to the bare name
+# This never fetches; callers relying on freshness must fetch first.
+wavemill_base_compare_ref() {
+  local input="${1:-}"
+  [[ -n "$input" ]] || return 1
+
+  if [[ "$input" == origin/* ]] || [[ "$input" == refs/* ]] \
+    || [[ "$input" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    printf '%s\n' "$input"
+    return 0
+  fi
+
+  if git -C "${REPO_DIR:-$PWD}" show-ref --verify --quiet "refs/remotes/origin/${input}"; then
+    printf 'origin/%s\n' "$input"
+    return 0
+  fi
+  printf '%s\n' "$input"
+}
+
+# Compute local-vs-origin staleness JSON for a base branch. Best-effort: any git
+# failure yields {}. When fetch succeeded and local is strictly behind origin
+# (behind>0, ahead=0) and no worktree has the branch checked out and we are not
+# in dry-run, attempt a compare-and-swap update-ref fast-forward.
+# Emits fields: resolvedSha (of resolvedRef), originSha, localSha,
+# localBehindOrigin, localAheadOfOrigin, localCheckedOut, localCheckoutPath,
+# localFastForwarded.
+wavemill_base_ref_local_staleness_json() {
+  local base_branch="${1:-}"
+  local fetch_ok="${2:-false}"
+  local resolved_ref="${3:-}"
+  local repo="${REPO_DIR:-$PWD}"
+  command -v jq >/dev/null 2>&1 || { printf '{}\n'; return 0; }
+  [[ -n "$base_branch" ]] || { printf '{}\n'; return 0; }
+
+  local local_sha="" origin_sha="" resolved_sha=""
+  local behind="" ahead="" checked_out="false" checkout_path=""
+  local fast_forwarded="false"
+
+  if [[ -n "$resolved_ref" ]]; then
+    resolved_sha="$(git -C "$repo" rev-parse --verify "${resolved_ref}^{commit}" 2>/dev/null || true)"
+  fi
+  local_sha="$(git -C "$repo" rev-parse --verify "refs/heads/${base_branch}^{commit}" 2>/dev/null || true)"
+  origin_sha="$(git -C "$repo" rev-parse --verify "refs/remotes/origin/${base_branch}^{commit}" 2>/dev/null || true)"
+
+  if [[ -n "$local_sha" && -n "$origin_sha" ]]; then
+    local counts
+    counts="$(git -C "$repo" rev-list --left-right --count "refs/heads/${base_branch}...refs/remotes/origin/${base_branch}" 2>/dev/null || true)"
+    if [[ -n "$counts" ]]; then
+      # left is ahead-of-origin, right is behind-origin
+      ahead="${counts%%[[:space:]]*}"
+      behind="${counts##*[[:space:]]}"
+      [[ "$ahead" =~ ^[0-9]+$ ]] || ahead=""
+      [[ "$behind" =~ ^[0-9]+$ ]] || behind=""
+    fi
+  fi
+
+  if [[ -n "$local_sha" ]]; then
+    local wt_out
+    wt_out="$(git -C "$repo" worktree list --porcelain 2>/dev/null || true)"
+    if [[ -n "$wt_out" ]]; then
+      # Parse porcelain: worktree <path> ... branch refs/heads/<name>
+      local current_wt="" wt_line
+      while IFS= read -r wt_line; do
+        case "$wt_line" in
+          "worktree "*)
+            current_wt="${wt_line#worktree }"
+            ;;
+          "branch refs/heads/${base_branch}")
+            checked_out="true"
+            checkout_path="$current_wt"
+            break
+            ;;
+        esac
+      done <<< "$wt_out"
+    fi
+  fi
+
+  local dry_run="false"
+  if [[ "${WAVEMILL_DRY_RUN:-}" == "1" || "${DRY_RUN:-}" == "true" ]]; then
+    dry_run="true"
+  fi
+
+  if [[ "$fetch_ok" == "true" \
+    && "$dry_run" != "true" \
+    && -n "$local_sha" && -n "$origin_sha" \
+    && "$local_sha" != "$origin_sha" \
+    && "$behind" =~ ^[1-9][0-9]*$ \
+    && "$ahead" == "0" \
+    && "$checked_out" != "true" ]]; then
+    if git -C "$repo" update-ref "refs/heads/${base_branch}" "$origin_sha" "$local_sha" 2>/dev/null; then
+      fast_forwarded="true"
+      local_sha="$origin_sha"
+      behind="0"
+    fi
+  fi
+
+  jq -cn \
+    --arg resolvedSha "$resolved_sha" \
+    --arg originSha "$origin_sha" \
+    --arg localSha "$local_sha" \
+    --arg behind "$behind" \
+    --arg ahead "$ahead" \
+    --arg checkedOut "$checked_out" \
+    --arg checkoutPath "$checkout_path" \
+    --arg fastForwarded "$fast_forwarded" \
+    '{}
+    + (if $resolvedSha == "" then {} else {resolvedSha: $resolvedSha} end)
+    + (if $originSha == "" then {} else {originSha: $originSha} end)
+    + (if $localSha == "" then {} else {localSha: $localSha} end)
+    + (if $behind == "" then {} else {localBehindOrigin: ($behind | tonumber)} end)
+    + (if $ahead == "" then {} else {localAheadOfOrigin: ($ahead | tonumber)} end)
+    + {localCheckedOut: ($checkedOut == "true")}
+    + (if $checkoutPath == "" then {} else {localCheckoutPath: $checkoutPath} end)
+    + {localFastForwarded: ($fastForwarded == "true")}'
 }
 
 wavemill_default_remote_branch() {
@@ -3174,11 +3330,19 @@ wavemill_base_ref_preflight() {
     wavemill_fetch_base_branch "$base_branch" || fetch_rc=$?
   fi
 
-  if resolved_ref="$(wavemill_resolve_base_ref "$base_branch" 2>/dev/null)"; then
+  local resolve_args=()
+  local fetch_ok="true"
+  if [[ "$fetch_attempted" == "true" && "$fetch_rc" -ne 0 ]]; then
+    resolve_args+=(--prefer-local)
+    fetch_ok="false"
+  fi
+
+  if resolved_ref="$(wavemill_resolve_base_ref "$base_branch" "${resolve_args[@]}" 2>/dev/null)"; then
     status="ok"
     reason="ok"
     if [[ "$fetch_attempted" == "true" && "$fetch_rc" -ne 0 ]]; then
       fetch_degraded=true
+      wavemill_warn "Base fetch for $base_branch failed (exit $fetch_rc); falling back to $resolved_ref (fetchDegraded)"
     fi
   else
     status="failed"
@@ -3192,7 +3356,13 @@ wavemill_base_ref_preflight() {
   default_branch="$(wavemill_default_remote_branch 2>/dev/null || true)"
 
   local checked_refs_json
-  checked_refs_json="$(wavemill_base_ref_checked_refs "$base_branch" | jq -R . | jq -sc .)"
+  checked_refs_json="$(wavemill_base_ref_checked_refs "$base_branch" "${resolve_args[@]}" | jq -R . | jq -sc .)"
+
+  local staleness_json="{}"
+  if [[ -n "$resolved_ref" ]]; then
+    staleness_json="$(wavemill_base_ref_local_staleness_json "$base_branch" "$fetch_ok" "$resolved_ref" 2>/dev/null)"
+    [[ -n "$staleness_json" ]] || staleness_json="{}"
+  fi
 
   local payload
   payload="$(jq -cn \
@@ -3205,6 +3375,7 @@ wavemill_base_ref_preflight() {
     --argjson fetchAttempted "$fetch_attempted" \
     --argjson fetchDegraded "$fetch_degraded" \
     --argjson checkedRefs "$checked_refs_json" \
+    --argjson staleness "$staleness_json" \
     '{
       status: $status,
       reason: $reason,
@@ -3215,7 +3386,8 @@ wavemill_base_ref_preflight() {
       fetchDegraded: $fetchDegraded
     }
     + (if $resolvedRef == "" then {} else {resolvedRef: $resolvedRef} end)
-    + (if $defaultBranch == "" then {} else {defaultBranch: $defaultBranch} end)')"
+    + (if $defaultBranch == "" then {} else {defaultBranch: $defaultBranch} end)
+    + $staleness')"
 
   if [[ -n "$json_out" ]]; then
     mkdir -p "$(dirname "$json_out")" 2>/dev/null || true
@@ -3275,7 +3447,12 @@ wavemill_record_startup_terminal_reason() {
       configuredBranch: ($p.configuredBranch // null),
       checkedRefs: ($p.checkedRefs // []),
       resolvedRef: ($p.resolvedRef // null),
+      resolvedSha: ($p.resolvedSha // null),
       fetchDegraded: ($p.fetchDegraded // false),
+      localBehindOrigin: ($p.localBehindOrigin // null),
+      localAheadOfOrigin: ($p.localAheadOfOrigin // null),
+      localFastForwarded: ($p.localFastForwarded // false),
+      localCheckedOut: ($p.localCheckedOut // false),
       session: $session,
       repoDir: $repoDir,
       cleanupStatus: $cleanupStatus

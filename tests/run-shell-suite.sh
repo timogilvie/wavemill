@@ -134,6 +134,7 @@ TESTS=(
   challenge-fork-inherited-provenance.test.sh
   challenge-fork-non-forked-regression.test.sh
   challenge-fork-review-launch-refusal.test.sh
+  base-ref-stale-local.test.sh
 )
 
 SHARD_INDEX=1
