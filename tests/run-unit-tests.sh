@@ -452,6 +452,7 @@ TESTS=(
   src/evaluation/scorers/wavemill/patch-selection.test.ts
   shared/lib/challenge-replay-capture.test.ts
   spike/pi-native-agent/mcp-proxy-spike.test.ts
+  shared/lib/cost-parity.test.ts
 )
 
 SHARD_INDEX=1
