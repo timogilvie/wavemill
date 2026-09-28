@@ -878,6 +878,7 @@ function detectCleanupIncidentsForRepo(repo: RepoSnapshot, timestamp: string, pr
   const incidents: IncidentRecord[] = [];
   const parsedNow = Date.parse(timestamp);
   const now = Number.isFinite(parsedNow) ? parsedNow : Date.now();
+  const lookup = progressLookup ?? makeProgressLookup(repo, now);
   for (const task of repo.tasks) {
     const config = resolveObserverTaskConfig(repo, task.issue, task);
     const branch = taskBranch(task);
@@ -889,8 +890,18 @@ function detectCleanupIncidentsForRepo(repo: RepoSnapshot, timestamp: string, pr
     // yet pushed is delivery risk, not cleanup failure (HOK-2972).
     const hasCleanupContext = taskHasTerminalResidueStatus(task) || Boolean(taskCleanupEpisode(task));
     if (rootCauseClass && !hasCleanupContext && classified.disposition === 'unpublished-at-risk') {
-      const ageMinutes = taskAgeMinutes(task, repo, now, progressLookup);
+      // HOK-3087: prefer the shared primitive's progress age so hook/commit
+      // activity on an active task rescues it from the stall incident. The
+      // transition-only `taskAgeMinutes` remains the fallback when the
+      // primitive has no evidence yet.
+      const progress = lookup(task);
+      const primitiveAge = progress?.progressAgeMinutes ?? null;
+      const fallbackAge = taskAgeMinutes(task, repo, now, lookup);
+      const ageMinutes = primitiveAge !== null && Number.isFinite(primitiveAge) ? primitiveAge : fallbackAge;
       if (ageMinutes !== undefined && Number.isFinite(ageMinutes) && ageMinutes > STALLED_ACTIVE_UNPUBLISHED_MINUTES) {
+        const progressEvidence: string[] = [];
+        if (progress?.lastProgressAt) progressEvidence.push(`lastProgressAt=${progress.lastProgressAt}`);
+        if (progress?.sources.length) progressEvidence.push(`progressSources=${progress.sources.map((s) => s.kind).join(',')}`);
         incidents.push(createIncidentDraft({
           taskId: task.issue,
           session: repo.session,
@@ -905,7 +916,7 @@ function detectCleanupIncidentsForRepo(repo: RepoSnapshot, timestamp: string, pr
             type: 'workflow_state',
             source: repo.workflowStatePath ?? join(repo.repoDir, '.wavemill', 'workflow-state.json'),
             timestamp,
-            redactedData: [`ageMinutes=${Math.round(ageMinutes)}`, ...classified.evidence].join(' '),
+            redactedData: [`ageMinutes=${Math.round(ageMinutes)}`, ...progressEvidence, ...classified.evidence].join(' '),
             key: `stalled-active-unpublished:${task.issue}:${branch ?? 'no-branch'}`,
           }],
           metadata: { disposition: classified.disposition, effectiveBaseBranch: config.baseBranch.value },
@@ -1629,16 +1640,19 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
     for (const task of repo.tasks) {
       if (taskWorkflowIsTerminal(task)) continue;
 
-      // HOK-3101 / HOK-3087: use the primitive's lastProgressAt, not just
-      // `task.updated`, so a healthy task with recent hook/commit evidence
-      // is not falsely flagged as stale.
-      const progressAge = taskAgeMinutes(task, repo, now, progressLookup);
-      const ageMinutes = progressAge ?? (task.updated ? (now - Date.parse(task.updated)) / 60000 : stateAgeMinutes);
+      // HOK-3101 / HOK-3087: use the primitive's progressAgeMinutes, which
+      // folds hook/commit/status/worktree/transition evidence together, so a
+      // healthy task with recent activity is not falsely flagged as stale.
+      // `taskAgeMinutes` (transition-only) is the safe fallback when the
+      // primitive has no evidence yet.
+      const progress = progressLookup(task);
+      const primitiveAge = progress?.progressAgeMinutes ?? null;
+      const fallbackAge = task.updated ? (now - Date.parse(task.updated)) / 60000 : stateAgeMinutes;
+      const ageMinutes = primitiveAge !== null && Number.isFinite(primitiveAge) ? primitiveAge : fallbackAge;
       const watchedPhase = task.phase === 'planning' || task.phase === 'coding' || task.phase === 'review' || task.phase === 'ready';
       if (watchedPhase && ageMinutes !== undefined && Number.isFinite(ageMinutes) && ageMinutes > options.staleMinutes) {
         const expectedWindow = task.slug ? `${task.issue}-${task.slug}` : task.issue;
         const liveEvidence = taskHasLiveExecutionEvidence(repo, task, snapshot.panes, snapshot.processes, progressLookup);
-        const progress = progressLookup(task);
         if (task.worktree && !existsSync(task.worktree)) {
           findings.push({
             id: `stale-active-task-missing-worktree-${repo.session}-${task.issue}`,
@@ -1654,6 +1668,7 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
               `phase=${task.phase ?? 'unknown'}`,
               `updated=${task.updated ?? repo.stateMtime ?? 'unknown'}`,
               `ageMinutes=${Math.round(ageMinutes)}`,
+              `lastProgressAt=${progress?.lastProgressAt ?? 'never'}`,
               `worktree=${task.worktree}`,
             ],
             recommendation: 'Treat this as orphaned active state: terminalize or remove the workflow-state entry after confirming no cleanup resources remain.',
@@ -1673,6 +1688,7 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
               `phase=${task.phase ?? 'unknown'}`,
               `updated=${task.updated ?? repo.stateMtime ?? 'unknown'}`,
               `ageMinutes=${Math.round(ageMinutes)}`,
+              `lastProgressAt=${progress?.lastProgressAt ?? 'never'}`,
               `expectedWindow=${expectedWindow}`,
               `worktree=${task.worktree ?? 'unknown'}`,
             ],
