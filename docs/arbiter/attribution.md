@@ -110,6 +110,29 @@ record) whenever it cannot be proven to describe the merged head's execution:
 - `malformed-executed-route` / `unsupported-route-schema` /
   `executed-route-missing-schema` — unparseable or unversioned payloads.
 
+### Route decision (HOK-3098, `route_schema: 2`)
+
+Since HOK-3098 wavemill writes `route_schema: 2` and adds a `route_decision`
+sibling recording what the router **decided** (as opposed to what ran):
+
+```
+route_schema: 2
+executed_route: {...unchanged...}
+route_decision: {"decided_at":"2026-09-28T12:00:00.000Z","decision_id":"<traceId or uuid>","policy_version":"model30-2026.09","recommended":{"coder":"claude-haiku-5","planner":"claude-opus-5","reviewer":"gpt-5.5"},"source":"hokusai"}
+```
+
+`route_schema` 1 and 2 share the `executed_route` shape, so both are credited
+identically. `extractExecutedRoute` also returns the decision (camelCased as
+`ExtractedRouteDecision`), and `attributePullRequest` surfaces it as
+`PrAttribution.routeDecision` — the join key between a PR's survival label and
+its route decision. It is never an identity signal: `recommended` is what the
+router chose, not what ran. Diagnostics:
+
+- `route-decision-schema-mismatch` — `route_decision` on a `route_schema: 1`
+  block (or without `route_schema`); ignored.
+- `malformed-route-decision` — not JSON, not an object, or missing
+  `decision_id` / `source`; ignored. The executed route is still credited.
+
 Recommendations, intended routes and conflicting evidence never become
 execution. A discarded route still leaves the `wavemillMeta` signal (strong,
 harness only) when the block itself parses.

@@ -67,6 +67,7 @@ CUSTOM_TS_TESTS=(
   shared/lib/post-completion-hook.test.ts
   shared/lib/task-packet-validator.test.ts
   shared/lib/openrouter-generation-api.test.ts
+  shared/lib/workflow-router-decision.test.ts
   shared/lib/workflow-router-difficulty-budget.test.ts
   shared/lib/workflow-router-heuristic.test.ts
   shared/lib/workflow-router-hokusai.test.ts

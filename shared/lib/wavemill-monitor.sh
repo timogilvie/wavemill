@@ -12934,6 +12934,18 @@ apply_route_json_for_issue() {
   return 0
 }
 
+# HOK-3098: persist the route decision carried by a cached route artifact
+# (batch-cache / startup-cache were routed before the feature dir existed) into
+# the feature dir's routing.jsonl. Live routes record themselves via
+# route-task.ts --feature-dir. Best-effort; never fails the launch.
+record_cached_route_decision() {
+  local feature_dir="$1" route_file="$2"
+  local record_tool="$TOOLS_DIR/record-route-decision.ts"
+  [[ -n "$feature_dir" && -d "$feature_dir" && -s "$route_file" && -f "$record_tool" ]] || return 0
+  _with_timeout "$API_TIMEOUT" npx tsx "$record_tool" --feature-dir "$feature_dir" --route-file "$route_file" >/dev/null 2>&1 || true
+  return 0
+}
+
 batch_route_selected_tasks() {
   local selected_lines="$1"
   local route_batch_tool="$TOOLS_DIR/route-tasks.ts"
@@ -14232,13 +14244,13 @@ launch_task() {
           printf '\n[attempt %d] live route\n' "$route_attempt" >> "$routing_log_file"
           rm -f "$route_stderr_file"
           if [[ "$route_debug_enabled" == "true" ]]; then
-            if route_json=$(_with_timeout "$API_TIMEOUT" npx tsx "$route_tool" --json --file "$route_input_file" --repo-dir "$REPO_DIR" --source live --input-kind task-packet "${route_max_cost_args[@]}" "${route_mode_args[@]}" 2>"$route_stderr_file"); then
+            if route_json=$(_with_timeout "$API_TIMEOUT" npx tsx "$route_tool" --json --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --source live --input-kind task-packet "${route_max_cost_args[@]}" "${route_mode_args[@]}" 2>"$route_stderr_file"); then
               route_rc=0
             else
               route_rc=$?
             fi
           else
-            if route_json=$(_with_timeout "$API_TIMEOUT" npx tsx "$route_tool" --json --file "$route_input_file" --repo-dir "$REPO_DIR" --source live --input-kind task-packet "${route_max_cost_args[@]}" "${route_mode_args[@]}" 2>"$route_stderr_file"); then
+            if route_json=$(_with_timeout "$API_TIMEOUT" npx tsx "$route_tool" --json --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --source live --input-kind task-packet "${route_max_cost_args[@]}" "${route_mode_args[@]}" 2>"$route_stderr_file"); then
               route_rc=0
             else
               route_rc=$?
@@ -14291,13 +14303,13 @@ launch_task() {
         printf '\n[heuristic fallback]\n' >> "$routing_log_file"
         rm -f "$route_stderr_file"
         if [[ "$route_debug_enabled" == "true" ]]; then
-          if route_json=$(_with_timeout "$API_TIMEOUT" npx tsx "$route_tool" --json --mode heuristic --file "$route_input_file" --repo-dir "$REPO_DIR" --source heuristic-fallback --input-kind heuristic "${route_max_cost_args[@]}" 2>"$route_stderr_file"); then
+          if route_json=$(_with_timeout "$API_TIMEOUT" npx tsx "$route_tool" --json --mode heuristic --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --source heuristic-fallback --input-kind heuristic "${route_max_cost_args[@]}" 2>"$route_stderr_file"); then
             route_rc=0
           else
             route_rc=$?
           fi
         else
-          if route_json=$(_with_timeout "$API_TIMEOUT" npx tsx "$route_tool" --json --mode heuristic --file "$route_input_file" --repo-dir "$REPO_DIR" --source heuristic-fallback --input-kind heuristic "${route_max_cost_args[@]}" 2>"$route_stderr_file"); then
+          if route_json=$(_with_timeout "$API_TIMEOUT" npx tsx "$route_tool" --json --mode heuristic --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --source heuristic-fallback --input-kind heuristic "${route_max_cost_args[@]}" 2>"$route_stderr_file"); then
             route_rc=0
           else
             route_rc=$?
@@ -14328,6 +14340,10 @@ launch_task() {
       fi
 
       if [[ -n "$route_source" ]] && [[ -n "$route_json" ]] && echo "$route_json" | jq -e '.planner and .coder and .reviewer' >/dev/null 2>&1; then
+        if [[ "$route_source" == "batch-cache" || "$route_source" == "startup-cache" ]]; then
+          record_cached_route_decision "$feature_dir" "$saved_route"
+        fi
+
         # Extract stage-specific models from workflow routing decision
         planner_model=$(echo "$route_json" | jq -r '.planner // empty' 2>/dev/null)
         task_model=$(echo "$route_json" | jq -r '.coder // empty' 2>/dev/null)
