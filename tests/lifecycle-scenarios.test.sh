@@ -148,6 +148,9 @@ for fn in \
   reroute_expanded_packets_for_coding_handoff \
   handle_expanded_reroute_handoff_failure \
   recover_missing_expansion_artifact \
+  enforce_plan_packet_binding \
+  _plan_packet_relaunch_planning \
+  _plan_packet_needs_user \
   recover_misplaced_coding_complete_marker \
   seam_artifact_cli_path \
   seam_validate_artifact \

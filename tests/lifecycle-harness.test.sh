@@ -291,7 +291,10 @@ harness_extract_real_functions() {
     _persist_phase \
     expansion_recovery_resolve_issue_id \
     recover_missing_expansion_artifact \
-    handle_expanded_reroute_handoff_failure
+    handle_expanded_reroute_handoff_failure \
+    enforce_plan_packet_binding \
+    _plan_packet_relaunch_planning \
+    _plan_packet_needs_user
   do
     local extracted source_file
     # trim_outer_whitespace is defined only in the parent mill script; every
