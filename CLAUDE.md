@@ -52,6 +52,7 @@ All business logic lives in `shared/lib/` for reusability across CLI tools, comm
 
 #### Utilities
 - `bounded-retry.sh` - The bounded-retry invariant (HOK-2924): every path that relaunches work after a failure must count attempts against a `(state_dir, bucket, head SHA)` key, back off between attempts, terminalize at a ceiling with a greppable recorded reason (`.retry-<bucket>-exhausted` sentinel), and reset on a new head SHA or successful launch. Terminal causes short-circuit via `bounded_retry_mark_exhausted` without consuming the budget. **New relaunch paths must use this helper — never implement a private retry counter.**
+- `task-progress.ts` / `task-progress.sh` - The task progress/liveness invariant (HOK-3101): every liveness decision site (observer, monitor stage-owner check, ready-watchdog, reconciler pane release, dashboard, next-done, pane-message delivery) derives `{ lastProgressAt, sources[], agentState, agentIdle, terminal, terminalIdle, stalled, blockingPrompt }` from a single primitive. The primitive enforces three invariants: **(1) pane or process existence is NEVER progress** (it can only be reported as `agentProcessLive`, never as `lastProgressAt`); **(2) monitor/controller writes are NEVER agent evidence** (monitor-written hooks, launcher `working` status, and wavemill's own `tools/*.ts` / monitor child processes are excluded); **(3) an agent's own `idle`/`Stop` survives later monitor writes** (revoked only by a later agent work event, via the preserved `.agentRecord`). Shell callers use `wavemill_hook_read` (raw hook accessor, replaces the ten copy-paste TTL blocks) or `task_progress_json` (CLI spawn, cached). Dashboard reads only the cache. **New decision sites must go through the primitive — never re-derive liveness from a private TTL check.**
 - `prompt-utils.ts` - Prompt template filling
 - `llm-cli.ts` - Claude CLI integration
 - `string-utils.ts` - String manipulation (kebab-case, etc.)
@@ -197,7 +198,15 @@ Append-only files such as JSONL logs and `.wavemill/registry/` entries remain lo
   "event": "PreToolUse",
   "detail": "Read",
   "agent": "claude",
-  "timestamp": 1712345678
+  "timestamp": 1712345678,
+  "writer": "agent",
+  "agentRecord": {
+    "state": "working",
+    "event": "PreToolUse",
+    "agent": "claude",
+    "timestamp": 1712345678,
+    "detail": "Read"
+  }
 }
 ```
 
@@ -210,7 +219,8 @@ The optional `next_action` field carries a short operator hint for actionable st
   "detail": "waiting for human approval",
   "next_action": "approve HOK-1234 to continue",
   "agent": "claude",
-  "timestamp": 1712345678
+  "timestamp": 1712345678,
+  "writer": "agent"
 }
 ```
 
@@ -228,6 +238,10 @@ Unknown states are silently dropped so readers never see partial or malformed ho
 **TTL**: 300s - dashboard falls back to pane liveness if timestamp is stale
 
 **Atomic Writes**: Uses tmp file + mv to prevent partial reads
+
+**`writer` field (HOK-3101)**: `agent` or `monitor`. Distinguishes controller writes from agent writes. Monitor/controller writes NEVER count as agent liveness evidence and NEVER erase the agent's own record. Legacy hooks (no `writer` field, written before HOK-3101 landed) are classified by event: `pr_merged`, `pr_closed_unmerged`, `operator_abort`, `review_complete`, `ready_complete`, `pr_opened`, `blocked_completion_liveness`, `premature_plan_approval`, `recovery_contract_unavailable`, `planning_rejection_notify_failed`, `NoPR`, `worktree-setup`, `recovery_failure`, `challenge_*` are monitor; everything else is agent.
+
+**`agentRecord` field (HOK-3101)**: preserves the agent's own last record across subsequent monitor writes so a monitor `pr_merged` write cannot erase the agent's `idle:Stop` (HOK-3089 pt 3). Callers that need the agent's true state (dashboard, ready-watchdog, reconciler pane release, monitor stage-owner check) must read from `agentRecord`, not the top level, via the shared shell accessor `wavemill_hook_read --agent-only` or the TS `readHookFile()`.
 
 ### Signal-Driven Dashboard Refresh
 

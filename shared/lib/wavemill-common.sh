@@ -8,6 +8,13 @@
 # runner all inherit the same implementation.
 # shellcheck source=bounded-retry.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bounded-retry.sh"
+# HOK-3101: shared task-progress accessors (wavemill_hook_read,
+# task_progress_json, task_progress_cached_json). Sourced here so the monitor,
+# reconciler, dashboard, next-done and pane-message delivery all inherit the
+# same TTL check and controller/agent classification. New callers must go
+# through these helpers instead of reimplementing a private hook TTL check.
+# shellcheck source=task-progress.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/task-progress.sh"
 if [[ -f "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/effective-task-config.sh" ]]; then
   # shellcheck source=effective-task-config.sh
   source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/effective-task-config.sh"
@@ -3471,9 +3478,19 @@ mill_pane_has_live_blocking_process() {
   if (( ${#blocking_commands[@]} == 0 )); then
     for pid in "${descendant_pids[@]}"; do
       kill -0 "$pid" 2>/dev/null || continue
+      command_line="$(wavemill_process_command_line "$pid" 2>/dev/null || true)"
+      # HOK-3101 / HOK-2882: exclude the pane's root agent process AND
+      # wavemill's own controller processes from the "live blocking"
+      # match. Without this filter, the very first descendant of the pane
+      # (the agent itself) counts as "live", so a completed blocked task
+      # could never advance.
+      if [[ -n "$command_line" ]] \
+        && [[ -n "${WAVEMILL_CONTROLLER_PROCESS_REGEX:-}" ]] \
+        && [[ "$command_line" =~ $WAVEMILL_CONTROLLER_PROCESS_REGEX ]]; then
+        continue
+      fi
       MILL_BLOCKING_PROCESS_PIDS=("$pid")
       MILL_BLOCKING_PROCESS_MATCH_COUNT=1
-      command_line="$(wavemill_process_command_line "$pid" 2>/dev/null || true)"
       MILL_BLOCKING_PROCESS_COMMAND="${command_line:-pid $pid}"
       return 0
     done
@@ -3497,6 +3514,14 @@ mill_pane_has_live_blocking_process() {
       continue
     fi
 
+    # HOK-3101 / HOK-2882: skip wavemill controller processes even in the
+    # command-filtered case — otherwise a blocking command string that
+    # happens to be inside the agent's own argv or a monitor child's argv
+    # would spuriously match.
+    if [[ -n "${WAVEMILL_CONTROLLER_PROCESS_REGEX:-}" ]] \
+      && [[ "$command_line" =~ $WAVEMILL_CONTROLLER_PROCESS_REGEX ]]; then
+      continue
+    fi
     for blocking_command in "${blocking_commands[@]}"; do
       if [[ "$command_line" == *"$blocking_command"* ]]; then
         matched=true
@@ -5645,7 +5670,7 @@ ensure_worktree() {
       fi
       if declare -F wavemill_hook_write >/dev/null 2>&1; then
         agent_name="${AGENT_CMD:-${CURRENT_AGENT:-wavemill}}"
-        wavemill_hook_write "error" "worktree-setup" "worktree-collision" "$agent_name" || true
+        wavemill_hook_write "error" "worktree-setup" "worktree-collision" "$agent_name" "" "monitor" || true
       fi
     fi
     return 1
@@ -5709,7 +5734,7 @@ ensure_worktree() {
     fi
     if declare -F wavemill_hook_write >/dev/null 2>&1; then
       agent_name="${AGENT_CMD:-${CURRENT_AGENT:-wavemill}}"
-      wavemill_hook_write "error" "worktree-setup" "worktree-collision" "$agent_name" || true
+      wavemill_hook_write "error" "worktree-setup" "worktree-collision" "$agent_name" "" "monitor" || true
     fi
   fi
   return 1
