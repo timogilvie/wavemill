@@ -4963,7 +4963,9 @@ clear_coding_uncommitted_output_attention() {
 
 coding_compare_commit_counts() {
   local worktree="$1" base_branch="$2"
-  git -C "$worktree" rev-list --left-right --count "$base_branch...HEAD" 2>/dev/null || printf '0\t0\n'
+  local base_ref
+  base_ref="$(wavemill_base_compare_ref "$base_branch")"
+  git -C "$worktree" rev-list --left-right --count "${base_ref}...HEAD" 2>/dev/null || printf '0\t0\n'
 }
 
 write_coding_uncommitted_output_artifact() {
@@ -8976,7 +8978,11 @@ cross_pr_revert_gate_allows_merge() {
   raw_error=""
   checked_head_sha=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || echo "")
 
-  [[ -n "$base_branch" ]] && extra_args+=(--base-ref "$base_branch" --integration-ref "$base_branch")
+  if [[ -n "$base_branch" ]]; then
+    local compare_base_ref
+    compare_base_ref="$(wavemill_base_compare_ref "$base_branch")"
+    extra_args+=(--base-ref "$compare_base_ref" --integration-ref "$compare_base_ref")
+  fi
   stderr_file=$(mktemp 2>/dev/null) || stderr_file=""
 
   if [[ -n "$stderr_file" ]]; then
@@ -12144,15 +12150,18 @@ task_has_local_commit_evidence() {
   local ref="$branch"
   [[ -z "$ref" ]] && ref=$(read_state_value "" --arg i "$issue" '.tasks[$i].branch // empty')
 
+  local base_ref
+  base_ref="$(wavemill_base_compare_ref "$BASE_BRANCH")"
+
   if [[ -n "$ref" ]] && git -C "$REPO_DIR" rev-parse --verify --quiet "$ref" >/dev/null 2>&1; then
     local count
-    count=$(git -C "$REPO_DIR" rev-list --count "${BASE_BRANCH}..${ref}" 2>/dev/null || echo "0")
+    count=$(git -C "$REPO_DIR" rev-list --count "${base_ref}..${ref}" 2>/dev/null || echo "0")
     [[ "$count" =~ ^[0-9]+$ ]] && (( count > 0 )) && return 0
   fi
 
   if [[ -d "$wt_dir/.git" || -f "$wt_dir/.git" ]]; then
     local wt_count
-    wt_count=$(git -C "$wt_dir" rev-list --count "${BASE_BRANCH}..HEAD" 2>/dev/null || echo "0")
+    wt_count=$(git -C "$wt_dir" rev-list --count "${base_ref}..HEAD" 2>/dev/null || echo "0")
     [[ "$wt_count" =~ ^[0-9]+$ ]] && (( wt_count > 0 )) && return 0
   fi
 

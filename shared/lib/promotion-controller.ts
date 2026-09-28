@@ -989,6 +989,39 @@ export function updateBranchWithBase(
       `git switch ${escapeShellArg(branch)}`,
       { encoding: 'utf-8', cwd: repoDir },
     );
+  } catch (error) {
+    return {
+      status: 'unknown-failed',
+      detail: errorMessage(error),
+    };
+  }
+
+  // Sync the local branch with its remote tip before merging base into it. A
+  // stale local branch would otherwise produce a merge built on an old tip
+  // (which then fails as non-fast-forward on push) or, worse, silently
+  // publish an out-of-date state. When local and origin have diverged, we
+  // stop and let the operator resolve it rather than force any move.
+  try {
+    shellRunner(
+      `git rev-parse --verify --quiet ${escapeShellArg(`${remoteBranchRef(branch)}^{commit}`)}`,
+      { encoding: 'utf-8', cwd: repoDir },
+    );
+    try {
+      shellRunner(
+        `git merge --ff-only ${escapeShellArg(remoteBranchRef(branch))}`,
+        { encoding: 'utf-8', cwd: repoDir },
+      );
+    } catch (ffError) {
+      return {
+        status: 'unknown-failed',
+        detail: `local ${branch} has diverged from ${remoteBranchRef(branch)} and cannot be fast-forwarded: ${errorMessage(ffError)}`,
+      };
+    }
+  } catch {
+    // No remote counterpart yet — proceed without syncing.
+  }
+
+  try {
     shellRunner(
       `git merge-tree --write-tree ${escapeShellArg(branch)} ${escapeShellArg(remoteBranchRef(baseBranch))}`,
       { encoding: 'utf-8', cwd: repoDir },

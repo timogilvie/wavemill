@@ -271,7 +271,7 @@ export function validateReviewScope(options: ReviewScopeGuardOptions): ReviewSco
     let taskPaths: string[] = [];
     let gitScopeFailure: ReviewScopeGuardToolFailure | null = null;
     try {
-      integrationRef = resolveIntegrationRef(repoDir, options.integrationRef);
+      integrationRef = resolveIntegrationBaseRef(repoDir, options.integrationRef, shellRunner).ref;
       mergeBase = runGitChecked(
         shellRunner,
         repoDir,
