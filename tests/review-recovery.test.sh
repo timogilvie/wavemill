@@ -206,6 +206,33 @@ review_recovery_coordinator "HOK-2999_c" "slug" "Task" "$WT_DIR" "task/slug" "au
 review_recovery_coordinator "HOK-2999_c" "slug" "Task" "$WT_DIR" "task/slug" "auto/integration" "1378" "$FEATURE_DIR" "test recovery" "manual" "manual" "" 0 "false" || true
 assert_eq "duplicate recovery launches at most once" "1" "$(wc -l < "$LAUNCH_LOG" | tr -d ' ')"
 
+# HOK-3106: absent-credential / unresolved-provider preflight failures ship as
+# `verdict:error + native-runtime-unavailable + empty findings + reviewToolError`.
+# The monitor's `review_result_infra_failure` gate must recognize this shape so
+# pending-ready never treats it as a substantive review verdict.
+setup_case "runtime-unavailable-shape"
+cat > "$FEATURE_DIR/.review-result.json" <<'EOF'
+{"stage":"review","status":"failed","agent":"native","artifacts":{"type":"review","failureCategory":"native-runtime-unavailable","verdict":"error","reviewToolError":"OPENROUTER_API_KEY resolved to an empty value for native review.","codeReviewFindings":[]}}
+EOF
+if review_result_infra_failure "$FEATURE_DIR"; then
+  pass "native-runtime-unavailable no-evidence shape is an infra review failure"
+else
+  fail "native-runtime-unavailable no-evidence shape is not an infra review failure"
+fi
+
+# A substantive `not_ready` verdict with real blockers must NOT match the infra
+# gate — otherwise real defects would be laundered into the recovery bucket and
+# skip the ready budget.
+setup_case "substantive-not-ready-not-infra"
+cat > "$FEATURE_DIR/.review-result.json" <<'EOF'
+{"stage":"review","status":"completed","agent":"native","artifacts":{"type":"review","verdict":"not_ready","codeReviewFindings":[{"severity":"blocker","location":"foo.ts:1","category":"correctness","description":"bug"}]}}
+EOF
+if review_result_infra_failure "$FEATURE_DIR"; then
+  fail "substantive not_ready leaked into the infra failure gate"
+else
+  pass "substantive not_ready is not an infra review failure"
+fi
+
 setup_case "timeout-classification"
 cat > "$FEATURE_DIR/.review-result.json" <<'EOF'
 {"stage":"review","status":"failed","agent":"native","model":"kimi-k3","artifacts":{"type":"review","failureCategory":"native-review-timeout","verdict":"error","reviewToolError":"Native review exceeded its wall-clock budget before producing a final JSON result.","effectiveNativeTimeoutMs":300000,"nativeTimeoutMaxMs":1200000,"nativeTimeoutMultiplier":2,"reviewInputDiffBytes":9000,"reviewInputTaskPacketBytes":1000,"reviewInputFileCount":4,"reviewExecutedIdentity":{"substantiveAnalysis":{"resolvedModel":"kimi-k3","agent":"native-openrouter"}}}}
