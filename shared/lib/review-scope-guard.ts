@@ -8,6 +8,7 @@ import {
   parseRevertAcknowledgements,
   type CrossPrRevertFinding,
 } from './cross-pr-revert-detector.ts';
+import { resolveBranchDiffBase } from './git-branch-changes.ts';
 import {
   INTEGRATION_DEFAULTS,
   getIntegrationConfig,
@@ -335,7 +336,29 @@ export function validateReviewScope(options: ReviewScopeGuardOptions): ReviewSco
       });
     }
 
-    const baseRef = options.baseRef ?? options.sinceCommit ?? baseline?.sinceCommit ?? mergeBase ?? null;
+    const rawBaseRef = options.baseRef ?? options.sinceCommit ?? baseline?.sinceCommit ?? mergeBase ?? null;
+    // Normalize the base to `merge-base(base, head)` so every downstream diff
+    // reflects the branch's own commits, not files the base has gained since
+    // the branch point. Healthy case (sinceCommit/launch-base SHAs that are
+    // ancestors of head): `merge-base(sha, head) === sha`, so this is a no-op.
+    // (HOK-3091 — detector self-normalizes too, but the scope-guard's
+    // committed-diff and deletion-budget checks share the same base and must
+    // stay consistent with it.)
+    let baseRef: string | null = rawBaseRef;
+    if (rawBaseRef) {
+      try {
+        baseRef = resolveBranchDiffBase({
+          repoDir,
+          baseRef: rawBaseRef,
+          headRef,
+          shellRunner,
+        }).mergeBaseSha;
+      } catch {
+        // Fall back to the raw ref; individual git callers below have their own
+        // ReviewScopeGuardToolFailure handling for a genuinely bad ref.
+        baseRef = rawBaseRef;
+      }
+    }
     const baselineSource = baseline?.source
       ?? (mergeBase ? `git merge-base ${integrationRef} (${mergeBase})` : 'unresolved');
 
@@ -1244,7 +1267,7 @@ function collectCrossPrReverts(input: {
   }
 
   try {
-    const reverts = reviewScopeGuardDeps.detectCrossPrReverts({
+    const { findings: reverts } = reviewScopeGuardDeps.detectCrossPrReverts({
       repoDir: input.repoDir,
       baseRef: input.baseRef,
       headRef: input.headRef,

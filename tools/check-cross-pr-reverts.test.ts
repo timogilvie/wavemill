@@ -53,6 +53,17 @@ function makeRepo(config: Record<string, unknown> = {}): { repoDir: string; clea
   };
 }
 
+function makeStubEvidence(baseRef: string, headRef: string) {
+  const zero = '0000000000000000000000000000000000000000';
+  return {
+    baseRef,
+    headRef,
+    baseSha: zero,
+    headSha: zero,
+    mergeBaseSha: zero,
+  };
+}
+
 function makeRepoWithoutConfig(): { repoDir: string; cleanup: () => void } {
   const repoDir = mkdtempSync(join(tmpdir(), 'cross-pr-revert-cli-'));
   git(repoDir, 'init -b main');
@@ -201,7 +212,7 @@ test('runCrossPrRevertCheck resolves the default base branch when config is abse
   const repoDir = mkdtempSync(join(tmpdir(), 'cross-pr-revert-no-config-'));
   const detectMock = mock.method(crossPrRevertCheckDeps, 'detectCrossPrReverts', (input) => {
     assert.equal(input.integrationRef, 'main');
-    return [];
+    return { findings: [], evidence: makeStubEvidence(input.baseRef, input.headRef) };
   });
   const resolveMock = mock.method(crossPrRevertCheckDeps, 'resolveDefaultBaseRef', () => 'main');
 
@@ -251,7 +262,7 @@ test('runCrossPrRevertCheck prefers configured integration branches over resolve
   });
   const detectMock = mock.method(crossPrRevertCheckDeps, 'detectCrossPrReverts', (input) => {
     assert.equal(input.integrationRef, 'release/integration');
-    return [];
+    return { findings: [], evidence: makeStubEvidence(input.baseRef, input.headRef) };
   });
   const resolveMock = mock.method(crossPrRevertCheckDeps, 'resolveDefaultBaseRef', () => 'main');
 
@@ -289,17 +300,21 @@ test('runCrossPrRevertCheck skips when an explicit integrationRef is missing', (
   }
 });
 
-test('runCrossPrRevertCheck honors an explicit baseRef without calling git merge-base', () => {
+test('runCrossPrRevertCheck honors an explicit baseRef without invoking the tool-level merge-base fallback', () => {
   const { repoDir, cleanup } = makeRepo();
-  const execMock = mock.method(crossPrRevertCheckDeps, 'execShellCommand', (command: string) => {
-    if (command.includes('git merge-base')) {
-      throw new Error('git merge-base should not run when baseRef is provided');
-    }
-    return '';
+  // The tool-level fallback is the merge-base call inside runCrossPrRevertCheck
+  // used to *derive* a base when the caller passes none; when baseRef is
+  // explicit, that fallback must not run. The detector itself is now free to
+  // run its own merge-base internally (HOK-3091 self-normalization), so this
+  // test asserts on the tool-level path only.
+  let toolFallbackRan = false;
+  const execMock = mock.method(crossPrRevertCheckDeps, 'execShellCommand', () => {
+    toolFallbackRan = true;
+    throw new Error('unexpected tool-level shell command when baseRef is explicit');
   });
   const detectMock = mock.method(crossPrRevertCheckDeps, 'detectCrossPrReverts', (input) => {
     assert.equal(input.baseRef, 'explicit-base');
-    return [];
+    return { findings: [], evidence: makeStubEvidence(input.baseRef, input.headRef) };
   });
 
   try {
@@ -310,6 +325,7 @@ test('runCrossPrRevertCheck honors an explicit baseRef without calling git merge
     });
 
     assert.equal(result.blocked, false);
+    assert.equal(toolFallbackRan, false);
   } finally {
     detectMock.mock.restore();
     execMock.mock.restore();
@@ -413,6 +429,104 @@ test('runCrossPrRevertCheck falls back to recent commit messages when gh metadat
     assert.equal(result.unacknowledged.length, 0);
   } finally {
     execMock.mock.restore();
+    cleanup();
+  }
+});
+
+// HOK-3091 acceptance 1: a behind-base branch that adds one file must not be
+// blocked even when the caller passes the base *tip* as `--base-ref` (this is
+// exactly what `wavemill-monitor.sh` does at the ready gate).
+test('runCrossPrRevertCheck does not block a behind-base branch called with the base tip', () => {
+  const { repoDir, cleanup } = makeRepo();
+  try {
+    git(repoDir, 'checkout -b pr-86');
+    commitFile(repoDir, 'recon-a.md', 'a\n', 'Add recon a');
+    commitFile(repoDir, 'recon-b.md', 'b\n', 'Add recon b');
+    git(repoDir, 'checkout auto/integration');
+    mergePrBranch(repoDir, 'pr-86', 86, 'Recon docs');
+    const baseTip = git(repoDir, 'rev-parse auto/integration');
+
+    // Cut the task branch from the pre-merge tip so it is behind base.
+    const behindPoint = git(repoDir, 'rev-parse auto/integration~1');
+    git(repoDir, `checkout -b task/behind-base ${behindPoint}`);
+    commitFile(repoDir, 'my-work.md', 'branch work\n', 'Add one file');
+
+    const result = runCrossPrRevertCheck({
+      repoDir,
+      baseRef: baseTip,
+      integrationRef: 'auto/integration',
+      acknowledgementText: '',
+    });
+
+    assert.equal(result.blocked, false);
+    assert.equal(result.reverts.length, 0);
+    assert.equal(result.unacknowledged.length, 0);
+    assert.ok(result.evidence);
+    assert.match(result.evidence.mergeBaseSha, /^[0-9a-f]{40}$/);
+    assert.equal(result.evidence.mergeBaseSha, behindPoint);
+  } finally {
+    cleanup();
+  }
+});
+
+// HOK-3091 acceptance 2: a branch that really deletes a file a recent PR added
+// is still blocked when called with the base tip.
+test('runCrossPrRevertCheck still blocks a branch that deletes a recently-PR-added file when called with the base tip', () => {
+  const { repoDir, cleanup } = makeRepo();
+  try {
+    git(repoDir, 'checkout -b pr-86');
+    commitFile(repoDir, 'recon-a.md', 'live\n', 'Add recon a');
+    git(repoDir, 'checkout auto/integration');
+    mergePrBranch(repoDir, 'pr-86', 86, 'Recon docs');
+
+    git(repoDir, 'checkout -b pr-87');
+    commitFile(repoDir, 'later.md', 'later\n', 'Add later');
+    git(repoDir, 'checkout auto/integration');
+    mergePrBranch(repoDir, 'pr-87', 87, 'Later work');
+    const baseTip = git(repoDir, 'rev-parse auto/integration');
+
+    // Cut from before PR #87 merged (branch is behind base by one merge) and
+    // have the branch delete recon-a.md itself.
+    const behindPoint = git(repoDir, 'rev-parse auto/integration~1');
+    git(repoDir, `checkout -b task/delete-recon ${behindPoint}`);
+    removeFile(repoDir, 'recon-a.md', 'Drop recon a');
+
+    const result = runCrossPrRevertCheck({
+      repoDir,
+      baseRef: baseTip,
+      integrationRef: 'auto/integration',
+      acknowledgementText: '',
+    });
+
+    assert.equal(result.blocked, true);
+    assert.equal(result.unacknowledged.length, 1);
+    assert.equal(result.unacknowledged[0].prNumber, 86);
+    assert.ok(result.evidence);
+  } finally {
+    cleanup();
+  }
+});
+
+// HOK-3091 REQ-F4: the tool JSON records the concrete SHAs the guard compared
+// so an operator can reproduce a finding without re-deriving them.
+test('runCrossPrRevertCheck records baseSha/headSha/mergeBaseSha evidence in the result', () => {
+  const { repoDir, cleanup } = makeRepo();
+  try {
+    git(repoDir, 'checkout -b task/one auto/integration');
+    commitFile(repoDir, 'thing.txt', 'hi\n', 'Add thing');
+
+    const result = runCrossPrRevertCheck({
+      repoDir,
+      integrationRef: 'auto/integration',
+      acknowledgementText: '',
+    });
+
+    assert.equal(result.blocked, false);
+    assert.ok(result.evidence);
+    assert.match(result.evidence.baseSha, /^[0-9a-f]{40}$/);
+    assert.match(result.evidence.headSha, /^[0-9a-f]{40}$/);
+    assert.match(result.evidence.mergeBaseSha, /^[0-9a-f]{40}$/);
+  } finally {
     cleanup();
   }
 });

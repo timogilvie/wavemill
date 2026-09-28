@@ -172,6 +172,7 @@ TESTS=(
   shared/lib/tend-singleton.test.ts
   shared/lib/promotion-controller.test.ts
   shared/lib/cross-pr-revert-detector.test.ts
+  shared/lib/git-branch-changes.test.ts
   shared/lib/git-base-resolver.test.ts
   shared/lib/llm-cli.test.ts
   shared/lib/headless-llm.test.ts
