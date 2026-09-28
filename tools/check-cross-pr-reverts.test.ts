@@ -416,3 +416,69 @@ test('runCrossPrRevertCheck falls back to recent commit messages when gh metadat
     cleanup();
   }
 });
+
+// HOK-3090 incident-2: the operator checkout's local `auto/integration` is
+// N commits behind `origin/auto/integration`, and the PR under review is based
+// on the origin tip. A guard that used the stale local ref would read the new
+// files on origin as "deleted" by the PR. Origin-first resolution must diff
+// against `origin/auto/integration` and see no reverts.
+test('runCrossPrRevertCheck ignores stale-local base and diffs against origin/<base>', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'cross-pr-revert-stale-local-'));
+  try {
+    // Bare "origin"
+    const originDir = mkdtempSync(join(tmpdir(), 'cross-pr-revert-origin-'));
+    execSync(`git init --bare -q -b main ${shellQuote(originDir)}`, { stdio: 'pipe' });
+
+    // Seed the origin with an auto/integration branch and a merged file.
+    const seedDir = mkdtempSync(join(tmpdir(), 'cross-pr-revert-seed-'));
+    execSync(`git clone -q ${shellQuote(originDir)} ${shellQuote(seedDir)}`, { stdio: 'pipe' });
+    git(seedDir, 'config user.name "t"');
+    git(seedDir, 'config user.email "t@t"');
+    commitFile(seedDir, 'README.md', 'seed\n', 'seed');
+    git(seedDir, 'checkout -b auto/integration');
+    git(seedDir, 'push -q origin main auto/integration');
+
+    // Clone as operator checkout; check out auto/integration.
+    execSync(`git clone -q ${shellQuote(originDir)} ${shellQuote(repoDir)}`, { stdio: 'pipe' });
+    git(repoDir, 'config user.name "t"');
+    git(repoDir, 'config user.email "t@t"');
+    writeFileSync(join(repoDir, '.wavemill-config.json'), '{}');
+    git(repoDir, 'fetch -q origin auto/integration:auto/integration');
+    git(repoDir, 'checkout auto/integration');
+
+    // Advance origin/auto/integration by 1 commit adding a file. The operator's
+    // local auto/integration is now 1 behind.
+    const advDir = mkdtempSync(join(tmpdir(), 'cross-pr-revert-adv-'));
+    execSync(`git clone -q ${shellQuote(originDir)} ${shellQuote(advDir)}`, { stdio: 'pipe' });
+    git(advDir, 'config user.name "t"');
+    git(advDir, 'config user.email "t@t"');
+    git(advDir, 'checkout auto/integration');
+    commitFile(advDir, 'origin-only.txt', 'origin-added\n', 'origin added file');
+    git(advDir, 'push -q origin auto/integration');
+
+    // Refresh the operator's remote-tracking ref so origin/auto/integration is
+    // current, but leave refs/heads/auto/integration stale.
+    git(repoDir, 'fetch -q origin');
+
+    // Cut a task branch from the fresh origin tip. It does NOT delete anything.
+    git(repoDir, 'checkout -q -b task/new-work origin/auto/integration');
+    commitFile(repoDir, 'unrelated.txt', 'unrelated\n', 'unrelated change');
+
+    const result = runCrossPrRevertCheck({
+      repoDir,
+      integrationRef: 'auto/integration',
+      acknowledgementText: '',
+    });
+
+    assert.equal(result.blocked, false, `unexpected block: ${JSON.stringify(result, null, 2)}`);
+    assert.equal(result.unacknowledged.length, 0);
+    assert.equal(result.reverts.length, 0);
+    assert.ok(!result.toolError, `unexpected toolError: ${JSON.stringify(result.toolError)}`);
+
+    rmSync(originDir, { recursive: true, force: true });
+    rmSync(seedDir, { recursive: true, force: true });
+    rmSync(advDir, { recursive: true, force: true });
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});

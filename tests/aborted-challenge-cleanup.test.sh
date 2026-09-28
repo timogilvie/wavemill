@@ -97,6 +97,8 @@ cleanup_file="$tmp/aborted-cleanup.sh"
   printf '\n'
   extract_function "$MONITOR_SCRIPT_FILE" "cleanup_aborted_challenge_arm"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_base_compare_ref"
+  printf '\n'
   extract_function "$MONITOR_SCRIPT_FILE" "task_has_local_commit_evidence"
   printf '\n'
   extract_function "$MONITOR_SCRIPT_FILE" "should_skip_post_completion_eval"
