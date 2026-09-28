@@ -105,19 +105,22 @@ plan_packet_record_binding() {
 
   plan_hash="$(plan_packet_plan_hash "$feature_dir")"
 
+  local recorded_at
+  recorded_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "")"
+
   tmp="$(mktemp "$feature_dir/.plan-packet-hash.tmp.XXXXXX" 2>/dev/null)" || return 0
   if command -v jq >/dev/null 2>&1; then
     jq -cn \
       --arg packetHash "$packet_hash" \
       --arg packetKind "$packet_kind" \
       --arg planHash "$plan_hash" \
-      --arg recordedAt "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+      --arg recordedAt "$recorded_at" \
       --arg source "$source" \
       '{packetHash: $packetHash, packetKind: $packetKind, planHash: $planHash, recordedAt: $recordedAt, source: $source}' \
       > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
   else
-    printf '{"packetHash":"%s","packetKind":"%s","planHash":"%s","source":"%s"}\n' \
-      "$packet_hash" "$packet_kind" "$plan_hash" "$source" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    printf '{"packetHash":"%s","packetKind":"%s","planHash":"%s","recordedAt":"%s","source":"%s"}\n' \
+      "$packet_hash" "$packet_kind" "$plan_hash" "$recorded_at" "$source" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
   fi
   mv "$tmp" "$marker" 2>/dev/null || rm -f "$tmp"
   return 0
