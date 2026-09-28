@@ -226,6 +226,20 @@
       "production": false,
       "notes": "Type-only reference for pricing snapshots",
       "migrationTarget": "HOK-3077"
+    },
+    {
+      "file": "shared/lib/cost-parity.ts",
+      "symbols": [
+        { "name": "computeWorkflowCost", "kind": "value" },
+        { "name": "computeWorkflowCostWithExactPricing", "kind": "value" },
+        { "name": "encodeProjectDir", "kind": "value" },
+        { "name": "WorkflowCostOutcome", "kind": "type" },
+        { "name": "PricingTable", "kind": "type" }
+      ],
+      "class": "measurement",
+      "production": false,
+      "notes": "Migration oracle harness: runs the legacy engine against the parity corpus",
+      "migrationTarget": "HOK-3074"
     }
   ],
   "testOnlyConsumers": [

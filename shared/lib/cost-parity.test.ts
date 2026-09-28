@@ -13,6 +13,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert';
+import { execSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -390,5 +391,68 @@ test('Consumer inventory is well-formed', () => {
     assert(consumer.file, `Consumer missing file: ${JSON.stringify(consumer)}`);
     assert(consumer.class, `Consumer ${consumer.file} missing class`);
     assert(Array.isArray(consumer.symbols), `Consumer ${consumer.file} symbols not an array`);
+  }
+});
+
+test('Consumer inventory covers every workflow-cost importer on disk', () => {
+  // Dynamic guard: scan the repo for files that import workflow-cost.ts and
+  // assert every one is classified in the inventory. Without this the
+  // inventory silently rots the moment someone adds a new importer, and the
+  // downstream SDK migration tickets (HOK-3075/3076/3077) inherit a
+  // hand-maintained list with unknown gaps.
+  const repoRoot = join(fixtureDir, '..', '..', '..');
+  const inventoryPath = join(fixtureDir, 'consumer-inventory.json');
+  const inventory = JSON.parse(readFileSync(inventoryPath, 'utf-8'));
+
+  // git grep is fast and respects .gitignore automatically. Fall back to a
+  // node walk only if git isn't available (never true in CI).
+  let importerList: string[];
+  try {
+    const out = execSync(
+      `git grep -lE "from ['\\"](.*/)?(workflow-cost|workflow-cost\\.ts)['\\"]" -- '*.ts' '*.js'`,
+      { cwd: repoRoot, encoding: 'utf-8' }
+    );
+    importerList = out.split('\n').filter((line) => line.trim().length > 0);
+  } catch {
+    // git grep exits 1 when nothing matches; treat as empty.
+    importerList = [];
+  }
+  const importers = new Set(importerList.filter((f) => f !== 'shared/lib/workflow-cost.ts'));
+
+  const knownFiles = new Set<string>();
+  for (const c of inventory.productionConsumers) knownFiles.add(c.file);
+  for (const t of inventory.testOnlyConsumers) {
+    knownFiles.add(typeof t === 'string' ? t : t.file);
+  }
+  // Indirect consumers don't import workflow-cost.ts directly; they read the
+  // downstream cost fields. Excluding them here means a file that starts as
+  // an indirect consumer and later adds a direct import will surface as
+  // unclassified, which is the failure mode we want.
+
+  const missing: string[] = [];
+  for (const importer of importers) {
+    if (!knownFiles.has(importer)) missing.push(importer);
+  }
+
+  const stale: string[] = [];
+  for (const known of knownFiles) {
+    if (!importers.has(known)) stale.push(known);
+  }
+
+  if (missing.length > 0 || stale.length > 0) {
+    const lines: string[] = [];
+    if (missing.length > 0) {
+      lines.push(
+        `Importers found on disk but missing from consumer-inventory.json (classify them under productionConsumers or testOnlyConsumers):`
+      );
+      lines.push(...missing.map((f) => `  + ${f}`));
+    }
+    if (stale.length > 0) {
+      lines.push(
+        `\nEntries in consumer-inventory.json that no longer import workflow-cost.ts (remove them):`
+      );
+      lines.push(...stale.map((f) => `  - ${f}`));
+    }
+    assert.fail(lines.join('\n'));
   }
 });
