@@ -32,35 +32,44 @@ _plan_packet_sha256() {
   fi
 }
 
-# Hash the task packet in a feature dir. Prefers the split format
-# (header + details concatenated in that order) and falls back to the
-# single task-packet.md when a split is not present. Prints "<hash>\t<kind>"
-# where kind is "split", "single", or "" on failure. Returns 1 when no packet
-# is available or when hashing tools are missing.
+# Hash the task packet in a feature dir. Concatenates every packet file that
+# exists in a fixed order (header, details, single) so a regeneration that
+# only writes one shape still shifts the hash. Prints "<hash>\t<kind>" where
+# kind describes which files contributed ("split", "single", or "mixed").
+# Returns 1 when no packet is available or when hashing tools are missing.
 plan_packet_current_hash() {
   local feature_dir="$1"
   local header="$feature_dir/task-packet-header.md"
   local details="$feature_dir/task-packet-details.md"
   local single="$feature_dir/task-packet.md"
-  local hash=""
+  local -a files=()
+  local has_split=0 has_single=0 hash="" kind=""
 
   plan_packet_hash_available || return 1
 
   if [[ -f "$header" && -f "$details" ]]; then
-    hash="$(cat "$header" "$details" 2>/dev/null | _plan_packet_sha256)"
-    [[ -n "$hash" && "$hash" != *[!0-9a-f]* ]] || return 1
-    printf '%s\t%s\n' "$hash" "split"
-    return 0
+    files+=("$header" "$details")
+    has_split=1
   fi
-
   if [[ -f "$single" ]]; then
-    hash="$(cat "$single" 2>/dev/null | _plan_packet_sha256)"
-    [[ -n "$hash" && "$hash" != *[!0-9a-f]* ]] || return 1
-    printf '%s\t%s\n' "$hash" "single"
-    return 0
+    files+=("$single")
+    has_single=1
   fi
 
-  return 1
+  (( ${#files[@]} > 0 )) || return 1
+
+  hash="$(cat "${files[@]}" 2>/dev/null | _plan_packet_sha256)"
+  [[ -n "$hash" && "$hash" != *[!0-9a-f]* ]] || return 1
+
+  if (( has_split && has_single )); then
+    kind="mixed"
+  elif (( has_split )); then
+    kind="split"
+  else
+    kind="single"
+  fi
+  printf '%s\t%s\n' "$hash" "$kind"
+  return 0
 }
 
 # Hash plan.md (empty when missing or hashing is unavailable).
@@ -211,25 +220,22 @@ _plan_packet_mtime() {
 
 _plan_packet_packet_mtime() {
   local feature_dir="$1"
-  local header="$feature_dir/task-packet-header.md"
-  local details="$feature_dir/task-packet-details.md"
-  local single="$feature_dir/task-packet.md"
-  local h="" d="" s=""
+  local -a candidates=(
+    "$feature_dir/task-packet-header.md"
+    "$feature_dir/task-packet-details.md"
+    "$feature_dir/task-packet.md"
+  )
+  local path m best=""
 
-  if [[ -f "$header" && -f "$details" ]]; then
-    h="$(_plan_packet_mtime "$header")"
-    d="$(_plan_packet_mtime "$details")"
-    if [[ -n "$h" && -n "$d" ]]; then
-      if (( h >= d )); then echo "$h"; else echo "$d"; fi
-      return 0
+  for path in "${candidates[@]}"; do
+    [[ -f "$path" ]] || continue
+    m="$(_plan_packet_mtime "$path")"
+    [[ -n "$m" ]] || continue
+    if [[ -z "$best" ]] || (( m > best )); then
+      best="$m"
     fi
-  fi
-  if [[ -f "$single" ]]; then
-    s="$(_plan_packet_mtime "$single")"
-    echo "$s"
-    return 0
-  fi
-  echo ""
+  done
+  echo "$best"
   return 0
 }
 
