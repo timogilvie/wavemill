@@ -3,15 +3,42 @@
     "caseId": "claude-all-unpriced",
     "sync": {
       "outcome": {
-        "diagnostics": {
-          "agentType": "claude",
-          "branchName": "task/parity-case",
-          "matchingTurns": 0,
-          "sessionFilesFound": 0,
-          "worktreePath": "<SANDBOX>/worktree"
+        "attribution": {
+          "coverage": "unavailable",
+          "models": [
+            {
+              "cacheCreationTokens": 0,
+              "cacheReadTokens": 0,
+              "inputTokens": 1000,
+              "modelId": "unknown",
+              "outputTokens": 100,
+              "priced": false,
+              "provider": "claude",
+              "reason": "unpriced_model",
+              "totalTokens": 1100
+            }
+          ],
+          "pricedSessions": 0,
+          "reason": "unpriced_model",
+          "sessions": 1,
+          "source": "claude",
+          "turns": 1,
+          "unpricedSessions": 1
         },
-        "reason": "No session files found in expected location",
-        "status": "no_sessions"
+        "models": {
+          "unknown": {
+            "cacheCreationTokens": 0,
+            "cacheReadTokens": 0,
+            "costUsd": 0,
+            "inputTokens": 1000,
+            "outputTokens": 100
+          }
+        },
+        "pricingUsed": {},
+        "sessionCount": 1,
+        "status": "success",
+        "totalCostUsd": 0,
+        "turnCount": 1
       },
       "warnings": []
     }
@@ -20,15 +47,42 @@
     "caseId": "claude-branch-filter",
     "sync": {
       "outcome": {
-        "diagnostics": {
-          "agentType": "claude",
-          "branchName": "task/parity-case",
-          "matchingTurns": 0,
-          "sessionFilesFound": 0,
-          "worktreePath": "<SANDBOX>/worktree"
+        "attribution": {
+          "coverage": "unavailable",
+          "models": [
+            {
+              "cacheCreationTokens": 0,
+              "cacheReadTokens": 0,
+              "inputTokens": 1000,
+              "modelId": "unknown",
+              "outputTokens": 100,
+              "priced": false,
+              "provider": "claude",
+              "reason": "unpriced_model",
+              "totalTokens": 1100
+            }
+          ],
+          "pricedSessions": 0,
+          "reason": "unpriced_model",
+          "sessions": 1,
+          "source": "claude",
+          "turns": 1,
+          "unpricedSessions": 1
         },
-        "reason": "No session files found in expected location",
-        "status": "no_sessions"
+        "models": {
+          "unknown": {
+            "cacheCreationTokens": 0,
+            "cacheReadTokens": 0,
+            "costUsd": 0,
+            "inputTokens": 1000,
+            "outputTokens": 100
+          }
+        },
+        "pricingUsed": {},
+        "sessionCount": 1,
+        "status": "success",
+        "totalCostUsd": 0,
+        "turnCount": 1
       },
       "warnings": []
     }
@@ -37,15 +91,42 @@
     "caseId": "claude-cache-derived-multipliers",
     "sync": {
       "outcome": {
-        "diagnostics": {
-          "agentType": "claude",
-          "branchName": "task/parity-case",
-          "matchingTurns": 0,
-          "sessionFilesFound": 0,
-          "worktreePath": "<SANDBOX>/worktree"
+        "attribution": {
+          "coverage": "unavailable",
+          "models": [
+            {
+              "cacheCreationTokens": 2000,
+              "cacheReadTokens": 1000,
+              "inputTokens": 10000,
+              "modelId": "unknown",
+              "outputTokens": 500,
+              "priced": false,
+              "provider": "claude",
+              "reason": "unpriced_model",
+              "totalTokens": 13500
+            }
+          ],
+          "pricedSessions": 0,
+          "reason": "unpriced_model",
+          "sessions": 1,
+          "source": "claude",
+          "turns": 1,
+          "unpricedSessions": 1
         },
-        "reason": "No session files found in expected location",
-        "status": "no_sessions"
+        "models": {
+          "unknown": {
+            "cacheCreationTokens": 2000,
+            "cacheReadTokens": 1000,
+            "costUsd": 0,
+            "inputTokens": 10000,
+            "outputTokens": 500
+          }
+        },
+        "pricingUsed": {},
+        "sessionCount": 1,
+        "status": "success",
+        "totalCostUsd": 0,
+        "turnCount": 1
       },
       "warnings": []
     }
@@ -54,15 +135,42 @@
     "caseId": "claude-duplicate-message-id",
     "sync": {
       "outcome": {
-        "diagnostics": {
-          "agentType": "claude",
-          "branchName": "task/parity-case",
-          "matchingTurns": 0,
-          "sessionFilesFound": 0,
-          "worktreePath": "<SANDBOX>/worktree"
+        "attribution": {
+          "coverage": "unavailable",
+          "models": [
+            {
+              "cacheCreationTokens": 0,
+              "cacheReadTokens": 0,
+              "inputTokens": 3000,
+              "modelId": "unknown",
+              "outputTokens": 300,
+              "priced": false,
+              "provider": "claude",
+              "reason": "unpriced_model",
+              "totalTokens": 3300
+            }
+          ],
+          "pricedSessions": 0,
+          "reason": "unpriced_model",
+          "sessions": 1,
+          "source": "claude",
+          "turns": 3,
+          "unpricedSessions": 1
         },
-        "reason": "No session files found in expected location",
-        "status": "no_sessions"
+        "models": {
+          "unknown": {
+            "cacheCreationTokens": 0,
+            "cacheReadTokens": 0,
+            "costUsd": 0,
+            "inputTokens": 3000,
+            "outputTokens": 300
+          }
+        },
+        "pricingUsed": {},
+        "sessionCount": 1,
+        "status": "success",
+        "totalCostUsd": 0,
+        "turnCount": 3
       },
       "warnings": []
     }
@@ -71,15 +179,42 @@
     "caseId": "claude-explicit-zero-pricing",
     "sync": {
       "outcome": {
-        "diagnostics": {
-          "agentType": "claude",
-          "branchName": "task/parity-case",
-          "matchingTurns": 0,
-          "sessionFilesFound": 0,
-          "worktreePath": "<SANDBOX>/worktree"
+        "attribution": {
+          "coverage": "unavailable",
+          "models": [
+            {
+              "cacheCreationTokens": 0,
+              "cacheReadTokens": 0,
+              "inputTokens": 1000,
+              "modelId": "unknown",
+              "outputTokens": 100,
+              "priced": false,
+              "provider": "claude",
+              "reason": "unpriced_model",
+              "totalTokens": 1100
+            }
+          ],
+          "pricedSessions": 0,
+          "reason": "unpriced_model",
+          "sessions": 1,
+          "source": "claude",
+          "turns": 1,
+          "unpricedSessions": 1
         },
-        "reason": "No session files found in expected location",
-        "status": "no_sessions"
+        "models": {
+          "unknown": {
+            "cacheCreationTokens": 0,
+            "cacheReadTokens": 0,
+            "costUsd": 0,
+            "inputTokens": 1000,
+            "outputTokens": 100
+          }
+        },
+        "pricingUsed": {},
+        "sessionCount": 1,
+        "status": "success",
+        "totalCostUsd": 0,
+        "turnCount": 1
       },
       "warnings": []
     }
@@ -88,15 +223,66 @@
     "caseId": "claude-mixed-one-unpriced",
     "sync": {
       "outcome": {
-        "diagnostics": {
-          "agentType": "claude",
-          "branchName": "task/parity-case",
-          "matchingTurns": 0,
-          "sessionFilesFound": 0,
-          "worktreePath": "<SANDBOX>/worktree"
+        "attribution": {
+          "coverage": "partial",
+          "models": [
+            {
+              "cacheCreationTokens": 0,
+              "cacheReadTokens": 0,
+              "costUsd": 0.0225,
+              "inputTokens": 1000,
+              "modelId": "claude-opus-4",
+              "outputTokens": 100,
+              "priced": true,
+              "pricingSource": "local_estimate",
+              "provider": "claude",
+              "totalTokens": 1100
+            },
+            {
+              "cacheCreationTokens": 0,
+              "cacheReadTokens": 0,
+              "inputTokens": 500,
+              "modelId": "synthetic-unpriced",
+              "outputTokens": 50,
+              "priced": false,
+              "provider": "claude",
+              "reason": "unpriced_model",
+              "totalTokens": 550
+            }
+          ],
+          "pricedSessions": 1,
+          "reason": "unpriced_model",
+          "sessions": 1,
+          "source": "claude",
+          "turns": 2,
+          "unpricedSessions": 1
         },
-        "reason": "No session files found in expected location",
-        "status": "no_sessions"
+        "models": {
+          "claude-opus-4": {
+            "cacheCreationTokens": 0,
+            "cacheReadTokens": 0,
+            "costUsd": 0.0225,
+            "inputTokens": 1000,
+            "outputTokens": 100
+          },
+          "synthetic-unpriced": {
+            "cacheCreationTokens": 0,
+            "cacheReadTokens": 0,
+            "costUsd": 0,
+            "inputTokens": 500,
+            "outputTokens": 50
+          }
+        },
+        "pricingUsed": {
+          "claude-opus-4": {
+            "inputCostPerMTok": 15,
+            "outputCostPerMTok": 75
+          }
+        },
+        "sessionCount": 1,
+        "status": "success",
+        "totalCostUsd": 0.0225,
+        "turnCount": 2
       },
       "warnings": []
     }
@@ -105,15 +291,42 @@
     "caseId": "claude-simple-explicit-cache",
     "sync": {
       "outcome": {
-        "diagnostics": {
-          "agentType": "claude",
-          "branchName": "task/parity-case",
-          "matchingTurns": 0,
-          "sessionFilesFound": 0,
-          "worktreePath": "<SANDBOX>/worktree"
+        "attribution": {
+          "coverage": "unavailable",
+          "models": [
+            {
+              "cacheCreationTokens": 500,
+              "cacheReadTokens": 0,
+              "inputTokens": 1000,
+              "modelId": "unknown",
+              "outputTokens": 100,
+              "priced": false,
+              "provider": "claude",
+              "reason": "unpriced_model",
+              "totalTokens": 1600
+            }
+          ],
+          "pricedSessions": 0,
+          "reason": "unpriced_model",
+          "sessions": 1,
+          "source": "claude",
+          "turns": 1,
+          "unpricedSessions": 1
         },
-        "reason": "No session files found in expected location",
-        "status": "no_sessions"
+        "models": {
+          "unknown": {
+            "cacheCreationTokens": 500,
+            "cacheReadTokens": 0,
+            "costUsd": 0,
+            "inputTokens": 1000,
+            "outputTokens": 100
+          }
+        },
+        "pricingUsed": {},
+        "sessionCount": 1,
+        "status": "success",
+        "totalCostUsd": 0,
+        "turnCount": 1
       },
       "warnings": []
     }
@@ -122,15 +335,47 @@
     "caseId": "codex-cached-and-reasoning",
     "sync": {
       "outcome": {
-        "diagnostics": {
-          "agentType": "codex",
-          "branchName": "task/parity-case",
-          "matchingTurns": 0,
-          "sessionFilesFound": 0,
-          "worktreePath": "<SANDBOX>/worktree"
+        "attribution": {
+          "coverage": "complete",
+          "models": [
+            {
+              "cacheCreationTokens": 0,
+              "cacheReadTokens": 2844672,
+              "costUsd": 9.9214746,
+              "inputTokens": 2978251,
+              "modelId": "codexa-latest",
+              "outputTokens": 8888,
+              "priced": true,
+              "pricingSource": "local_estimate",
+              "provider": "codex",
+              "totalTokens": 5831811
+            }
+          ],
+          "pricedSessions": 1,
+          "sessions": 1,
+          "source": "codex",
+          "turns": 1,
+          "unpricedSessions": 0
         },
-        "reason": "No session files found in expected location",
-        "status": "no_sessions"
+        "models": {
+          "codexa-latest": {
+            "cacheCreationTokens": 0,
+            "cacheReadTokens": 2844672,
+            "costUsd": 9.9214746,
+            "inputTokens": 2978251,
+            "outputTokens": 8888
+          }
+        },
+        "pricingUsed": {
+          "codexa-latest": {
+            "inputCostPerMTok": 3,
+            "outputCostPerMTok": 15
+          }
+        },
+        "sessionCount": 1,
+        "status": "success",
+        "totalCostUsd": 9.9214746,
+        "turnCount": 1
       },
       "warnings": []
     }
@@ -139,15 +384,42 @@
     "caseId": "codex-unpriced",
     "sync": {
       "outcome": {
-        "diagnostics": {
-          "agentType": "codex",
-          "branchName": "task/parity-case",
-          "matchingTurns": 0,
-          "sessionFilesFound": 0,
-          "worktreePath": "<SANDBOX>/worktree"
+        "attribution": {
+          "coverage": "unavailable",
+          "models": [
+            {
+              "cacheCreationTokens": 0,
+              "cacheReadTokens": 0,
+              "inputTokens": 1000,
+              "modelId": "unknown-model",
+              "outputTokens": 100,
+              "priced": false,
+              "provider": "codex",
+              "reason": "unpriced_model",
+              "totalTokens": 1100
+            }
+          ],
+          "pricedSessions": 0,
+          "reason": "unpriced_model",
+          "sessions": 1,
+          "source": "codex",
+          "turns": 1,
+          "unpricedSessions": 1
         },
-        "reason": "No session files found in expected location",
-        "status": "no_sessions"
+        "models": {
+          "unknown-model": {
+            "cacheCreationTokens": 0,
+            "cacheReadTokens": 0,
+            "costUsd": 0,
+            "inputTokens": 1000,
+            "outputTokens": 100
+          }
+        },
+        "pricingUsed": {},
+        "sessionCount": 1,
+        "status": "success",
+        "totalCostUsd": 0,
+        "turnCount": 1
       },
       "warnings": []
     }
@@ -173,15 +445,47 @@
     "caseId": "native-explicit-zero",
     "sync": {
       "outcome": {
-        "diagnostics": {
-          "agentType": "native-pi",
-          "branchName": "task/parity-case",
-          "matchingTurns": 0,
-          "sessionFilesFound": 0,
-          "worktreePath": "<SANDBOX>/worktree"
+        "attribution": {
+          "coverage": "known_zero",
+          "models": [
+            {
+              "cacheCreationTokens": 0,
+              "cacheReadTokens": 0,
+              "costUsd": 0,
+              "inputTokens": 0,
+              "modelId": "test-model",
+              "outputTokens": 0,
+              "priced": true,
+              "pricingSource": "local_estimate",
+              "provider": "test",
+              "totalTokens": 1100
+            }
+          ],
+          "pricedSessions": 1,
+          "sessions": 1,
+          "source": "native",
+          "turns": 1,
+          "unpricedSessions": 0
         },
-        "reason": "No session files found in expected location",
-        "status": "no_sessions"
+        "models": {
+          "test-model": {
+            "cacheCreationTokens": 0,
+            "cacheReadTokens": 0,
+            "costUsd": 0,
+            "inputTokens": 0,
+            "outputTokens": 0
+          }
+        },
+        "pricingUsed": {
+          "test-model": {
+            "inputCostPerMTok": 0,
+            "outputCostPerMTok": 0
+          }
+        },
+        "sessionCount": 1,
+        "status": "success",
+        "totalCostUsd": 0,
+        "turnCount": 1
       },
       "warnings": []
     }
@@ -190,15 +494,47 @@
     "caseId": "native-missing-usage-partial",
     "sync": {
       "outcome": {
-        "diagnostics": {
-          "agentType": "native-pi",
-          "branchName": "task/parity-case",
-          "matchingTurns": 0,
-          "sessionFilesFound": 0,
-          "worktreePath": "<SANDBOX>/worktree"
+        "attribution": {
+          "coverage": "complete",
+          "models": [
+            {
+              "cacheCreationTokens": 0,
+              "cacheReadTokens": 0,
+              "costUsd": 0,
+              "inputTokens": 0,
+              "modelId": "gpt-4o",
+              "outputTokens": 0,
+              "priced": true,
+              "pricingSource": "local_estimate",
+              "provider": "openai",
+              "totalTokens": 100
+            }
+          ],
+          "pricedSessions": 1,
+          "sessions": 1,
+          "source": "native",
+          "turns": 1,
+          "unpricedSessions": 0
         },
-        "reason": "No session files found in expected location",
-        "status": "no_sessions"
+        "models": {
+          "gpt-4o": {
+            "cacheCreationTokens": 0,
+            "cacheReadTokens": 0,
+            "costUsd": 0,
+            "inputTokens": 0,
+            "outputTokens": 0
+          }
+        },
+        "pricingUsed": {
+          "gpt-4o": {
+            "inputCostPerMTok": 5,
+            "outputCostPerMTok": 15
+          }
+        },
+        "sessionCount": 1,
+        "status": "success",
+        "totalCostUsd": 0,
+        "turnCount": 1
       },
       "warnings": []
     }
@@ -207,15 +543,44 @@
     "caseId": "native-priced-complete",
     "sync": {
       "outcome": {
-        "diagnostics": {
-          "agentType": "native-pi",
-          "branchName": "task/parity-case",
-          "matchingTurns": 0,
-          "sessionFilesFound": 0,
-          "worktreePath": "<SANDBOX>/worktree"
+        "attribution": {
+          "coverage": "complete",
+          "models": [
+            {
+              "cacheCreationTokens": 0,
+              "cacheReadTokens": 0,
+              "costUsd": 0.0095,
+              "inputTokens": 0,
+              "modelId": "gpt-4o",
+              "outputTokens": 0,
+              "priced": true,
+              "pricingSource": "openrouter_api",
+              "provider": "openai",
+              "providerReportedCostUsd": 0.0095,
+              "totalTokens": 1100
+            }
+          ],
+          "pricedSessions": 1,
+          "reason": "provider_reported_cost",
+          "sessions": 1,
+          "source": "native",
+          "turns": 1,
+          "unpricedSessions": 0
         },
-        "reason": "No session files found in expected location",
-        "status": "no_sessions"
+        "models": {
+          "gpt-4o": {
+            "cacheCreationTokens": 0,
+            "cacheReadTokens": 0,
+            "costUsd": 0.0095,
+            "inputTokens": 0,
+            "outputTokens": 0
+          }
+        },
+        "pricingUsed": {},
+        "sessionCount": 1,
+        "status": "success",
+        "totalCostUsd": 0.0095,
+        "turnCount": 1
       },
       "warnings": []
     }
@@ -224,29 +589,87 @@
     "caseId": "native-provider-reported-cost",
     "exact": {
       "outcome": {
-        "diagnostics": {
-          "agentType": "native-pi",
-          "branchName": "task/parity-case",
-          "matchingTurns": 0,
-          "sessionFilesFound": 0,
-          "worktreePath": "<SANDBOX>/worktree"
+        "attribution": {
+          "coverage": "complete",
+          "models": [
+            {
+              "cacheCreationTokens": 0,
+              "cacheReadTokens": 0,
+              "costUsd": 0.0095,
+              "inputTokens": 0,
+              "modelId": "gpt-4o",
+              "outputTokens": 0,
+              "priced": true,
+              "pricingSource": "openrouter_api",
+              "provider": "openai",
+              "providerReportedCostUsd": 0.0095,
+              "totalTokens": 1100
+            }
+          ],
+          "pricedSessions": 1,
+          "reason": "provider_reported_cost",
+          "sessions": 1,
+          "source": "native",
+          "turns": 1,
+          "unpricedSessions": 0
         },
-        "reason": "No session files found in expected location",
-        "status": "no_sessions"
+        "models": {
+          "gpt-4o": {
+            "cacheCreationTokens": 0,
+            "cacheReadTokens": 0,
+            "costUsd": 0.0095,
+            "inputTokens": 0,
+            "outputTokens": 0
+          }
+        },
+        "pricingUsed": {},
+        "sessionCount": 1,
+        "status": "success",
+        "totalCostUsd": 0.0095,
+        "turnCount": 1
       },
       "warnings": []
     },
     "sync": {
       "outcome": {
-        "diagnostics": {
-          "agentType": "native-pi",
-          "branchName": "task/parity-case",
-          "matchingTurns": 0,
-          "sessionFilesFound": 0,
-          "worktreePath": "<SANDBOX>/worktree"
+        "attribution": {
+          "coverage": "complete",
+          "models": [
+            {
+              "cacheCreationTokens": 0,
+              "cacheReadTokens": 0,
+              "costUsd": 0.0095,
+              "inputTokens": 0,
+              "modelId": "gpt-4o",
+              "outputTokens": 0,
+              "priced": true,
+              "pricingSource": "openrouter_api",
+              "provider": "openai",
+              "providerReportedCostUsd": 0.0095,
+              "totalTokens": 1100
+            }
+          ],
+          "pricedSessions": 1,
+          "reason": "provider_reported_cost",
+          "sessions": 1,
+          "source": "native",
+          "turns": 1,
+          "unpricedSessions": 0
         },
-        "reason": "No session files found in expected location",
-        "status": "no_sessions"
+        "models": {
+          "gpt-4o": {
+            "cacheCreationTokens": 0,
+            "cacheReadTokens": 0,
+            "costUsd": 0.0095,
+            "inputTokens": 0,
+            "outputTokens": 0
+          }
+        },
+        "pricingUsed": {},
+        "sessionCount": 1,
+        "status": "success",
+        "totalCostUsd": 0.0095,
+        "turnCount": 1
       },
       "warnings": []
     }
@@ -255,15 +678,42 @@
     "caseId": "native-unpriced",
     "sync": {
       "outcome": {
-        "diagnostics": {
-          "agentType": "native-pi",
-          "branchName": "task/parity-case",
-          "matchingTurns": 0,
-          "sessionFilesFound": 0,
-          "worktreePath": "<SANDBOX>/worktree"
+        "attribution": {
+          "coverage": "unavailable",
+          "models": [
+            {
+              "cacheCreationTokens": 0,
+              "cacheReadTokens": 0,
+              "inputTokens": 0,
+              "modelId": "unknown-model",
+              "outputTokens": 0,
+              "priced": false,
+              "provider": "anthropic",
+              "reason": "unpriced_model",
+              "totalTokens": 1100
+            }
+          ],
+          "pricedSessions": 0,
+          "reason": "unpriced_model",
+          "sessions": 1,
+          "source": "native",
+          "turns": 1,
+          "unpricedSessions": 1
         },
-        "reason": "No session files found in expected location",
-        "status": "no_sessions"
+        "models": {
+          "unknown-model": {
+            "cacheCreationTokens": 0,
+            "cacheReadTokens": 0,
+            "costUsd": 0,
+            "inputTokens": 0,
+            "outputTokens": 0
+          }
+        },
+        "pricingUsed": {},
+        "sessionCount": 1,
+        "status": "success",
+        "totalCostUsd": 0,
+        "turnCount": 1
       },
       "warnings": []
     }

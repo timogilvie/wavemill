@@ -20,6 +20,21 @@ All session files in `manifest.json` are **synthetic** and **privacy-safe**:
 - A `"secret-token-should-not-persist"` canary appears in structured fields to catch leaks
 - The baseline stripping sanitizes all paths and canaries before storage
 
+## Fixture Format
+
+Cases in `manifest.json` use a compact **logical** shape (camelCase token names,
+a per-case `branch` alias, a `session_meta` field on Codex turns, etc.). The
+harness's `materializeCase` step translates each line into the **physical**
+session-file layout that `ClaudeSessionAdapter`, `CodexSessionAdapter`, and
+`NativeSessionAdapter` actually parse (assistant entries with `gitBranch` and
+`message.usage.input_tokens` snake_case fields; Codex `session_meta` /
+`turn_context` / `event_msg` entries with the real `type` discriminator; native
+`session_started` / `assistant_message` events). This translation is the single
+boundary between the human-readable fixture and the production parser, so a
+regression in translation would collapse the baseline back to `no_sessions`
+across the corpus — the `Legacy engine reproduces baseline exactly` and mirror-
+shape tests in `shared/lib/cost-parity.test.ts` guard against that.
+
 ## Running the Harness
 
 ### Generate or regenerate the baseline

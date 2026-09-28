@@ -12,6 +12,7 @@ import { homedir, tmpdir } from 'node:os';
 import {
   computeWorkflowCost,
   computeWorkflowCostWithExactPricing,
+  encodeProjectDir,
   type WorkflowCostOutcome,
   type PricingTable,
 } from './workflow-cost.ts';
@@ -104,6 +105,134 @@ interface MaterializationContext {
   savedEnv: Record<string, string | undefined>;
 }
 
+type LogicalLine = Record<string, unknown>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function translateFixtureLine(
+  location: string,
+  line: LogicalLine,
+  ctx: { branch: string; worktree: string }
+): LogicalLine[] {
+  if (location === 'claude-projects' || location === 'claude-deepseek-provider') {
+    if (line.type === 'assistant' || line.type === 'user') {
+      return [line];
+    }
+    const message = isRecord(line.message) ? line.message : {};
+    const usage = isRecord(line.usage) ? line.usage : {};
+    const gitBranch = typeof line.branch === 'string' ? line.branch : ctx.branch;
+    const messageOut: Record<string, unknown> = { ...message };
+    if (usage) {
+      messageOut.usage = {
+        input_tokens: usage.inputTokens ?? usage.input_tokens ?? 0,
+        cache_creation_input_tokens:
+          usage.cacheCreationTokens ?? usage.cache_creation_input_tokens ?? 0,
+        cache_read_input_tokens:
+          usage.cacheReadTokens ?? usage.cache_read_input_tokens ?? 0,
+        output_tokens: usage.outputTokens ?? usage.output_tokens ?? 0,
+      };
+    }
+    if (!messageOut.model && line.model) {
+      messageOut.model = line.model;
+    }
+    const translated: Record<string, unknown> = {
+      type: 'assistant',
+      uuid: line.uuid ?? message.id ?? `t-${Math.random().toString(36).slice(2, 10)}`,
+      gitBranch,
+      timestamp: line.timestamp ?? '2026-01-01T00:00:00.000Z',
+      message: messageOut,
+    };
+    if (line.sessionId !== undefined) translated.sessionId = line.sessionId;
+    if (line.parentUuid !== undefined) translated.parentUuid = line.parentUuid;
+    if (line.isSidechain !== undefined) translated.isSidechain = line.isSidechain;
+    if (line.costUSD !== undefined) translated.costUSD = line.costUSD;
+    return [translated];
+  }
+
+  if (location === 'codex-sessions') {
+    if (line.type) {
+      return [line];
+    }
+    const out: LogicalLine[] = [];
+    if (isRecord(line.session_meta)) {
+      const meta = line.session_meta;
+      out.push({
+        type: 'session_meta',
+        timestamp: line.timestamp ?? '2026-01-01T00:00:00.000Z',
+        payload: {
+          id: meta.session_id ?? meta.id ?? 'codex-session',
+          cwd: meta.cwd ?? ctx.worktree,
+          originator: meta.originator ?? null,
+        },
+      });
+    }
+    if (isRecord(line.turn)) {
+      const turn = line.turn;
+      out.push({
+        type: 'turn_context',
+        payload: { model: turn.model ?? 'unknown' },
+      });
+      out.push({
+        type: 'event_msg',
+        payload: {
+          type: 'token_count',
+          info: {
+            total_token_usage: {
+              input_tokens: turn.input_tokens ?? 0,
+              cached_input_tokens: turn.cached_input_tokens ?? 0,
+              output_tokens: turn.output_tokens ?? 0,
+              reasoning_output_tokens: turn.reasoning_output_tokens ?? 0,
+              total_tokens: turn.total_tokens ?? 0,
+            },
+          },
+        },
+      });
+    }
+    return out;
+  }
+
+  if (location === 'native-sessions') {
+    if (line.type === 'session_meta' || line.type === 'session_started') {
+      return [{
+        type: 'session_started',
+        timestamp: line.timestamp ?? '2026-01-01T00:00:00.000Z',
+        sessionId: line.session_id ?? line.sessionId ?? 'native-session',
+        provider: line.provider ?? 'unknown',
+        model: line.model ?? 'unknown',
+      }];
+    }
+    if (line.type === 'turn_complete' || line.type === 'assistant_message') {
+      const translated: Record<string, unknown> = {
+        type: 'assistant_message',
+        timestamp: line.timestamp ?? '2026-01-01T00:00:00.000Z',
+        sessionId: line.session_id ?? line.sessionId,
+      };
+      if (line.response_id !== undefined) translated.responseId = line.response_id;
+      if (line.model !== undefined) translated.model = line.model;
+      const inputTokens = line.input_tokens ?? null;
+      const outputTokens = line.output_tokens ?? null;
+      translated.usage = {
+        inputTokens,
+        outputTokens,
+        cacheCreationTokens: line.cache_creation_tokens ?? 0,
+        cacheReadTokens: line.cache_read_tokens ?? 0,
+        totalTokens:
+          (typeof inputTokens === 'number' ? inputTokens : 0) +
+          (typeof outputTokens === 'number' ? outputTokens : 0),
+      };
+      if (typeof line.cost_usd === 'number') {
+        (translated.usage as Record<string, unknown>).cost = { total: line.cost_usd };
+      }
+      return [translated];
+    }
+    return [line];
+  }
+
+  return [line];
+}
+
 export function materializeCase(caseItem: CostParityCase): MaterializationContext {
   const savedEnv: Record<string, string | undefined> = {};
   const sandbox = mkdtempSync(join(tmpdir(), 'cost-parity-'));
@@ -117,12 +246,16 @@ export function materializeCase(caseItem: CostParityCase): MaterializationContex
     mkdirSync(worktree, { recursive: true });
     mkdirSync(repoDir, { recursive: true });
 
-    // Write session files to appropriate locations
+    // Write session files to appropriate locations. Claude Code encodes the
+    // worktree absolute path into the projects directory name, so we must
+    // resolve the encoded name from the ephemeral sandbox worktree — not use
+    // a hardcoded placeholder that the legacy engine will never find.
+    const encoded = encodeProjectDir(worktree);
     for (const session of caseItem.sessions) {
       let targetDir: string;
 
       if (session.location === 'claude-projects') {
-        targetDir = join(home, '.claude', 'projects', 'encoded');
+        targetDir = join(home, '.claude', 'projects', encoded);
       } else if (session.location === 'claude-deepseek-provider') {
         targetDir = join(
           worktree,
@@ -134,7 +267,7 @@ export function materializeCase(caseItem: CostParityCase): MaterializationContex
           'home',
           '.claude',
           'projects',
-          'encoded'
+          encoded
         );
       } else if (session.location === 'codex-sessions') {
         targetDir = join(home, '.codex', 'sessions', '2026', '01', '01');
@@ -146,15 +279,22 @@ export function materializeCase(caseItem: CostParityCase): MaterializationContex
 
       mkdirSync(targetDir, { recursive: true });
 
-      // Substitute ${WORKTREE} and write session
-      const sessionContent = session.lines
-        .map((line) => {
-          const jsonStr = JSON.stringify(line);
-          const substituted = jsonStr.replace(/\$\{WORKTREE\}/g, worktree);
-          return JSON.parse(substituted);
-        })
-        .map((line) => JSON.stringify(line))
-        .join('\n');
+      // Substitute ${WORKTREE} and translate fixture lines into the physical
+      // session-file layout each parser actually reads. Fixtures live in a
+      // human-readable "logical" form (camelCase, per-case branch alias, etc);
+      // this step is the sole boundary between that form and the real
+      // ClaudeSessionAdapter / CodexSessionAdapter / NativeSessionAdapter
+      // formats. Without it the legacy engine would silently see zero
+      // discoverable turns and every baseline entry would collapse to
+      // `no_sessions`.
+      const branch = caseItem.branch || 'task/parity';
+      const translated = session.lines.flatMap((line) => {
+        const substituted = JSON.parse(
+          JSON.stringify(line).replace(/\$\{WORKTREE\}/g, worktree)
+        );
+        return translateFixtureLine(session.location, substituted, { branch, worktree });
+      });
+      const sessionContent = translated.map((line) => JSON.stringify(line)).join('\n');
 
       const sessionPath = join(targetDir, session.fileName);
       writeFileSync(sessionPath, sessionContent + '\n');

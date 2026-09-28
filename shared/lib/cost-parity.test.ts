@@ -20,6 +20,7 @@ import {
   loadCostParityManifest,
   loadCostParityBaseline,
   captureCase,
+  captureCorpus,
   sanitizeSnapshot,
   compareSnapshots,
   type CostEngine,
@@ -74,15 +75,36 @@ test('Baseline loads correctly', () => {
 });
 
 test('Legacy engine reproduces baseline exactly', async () => {
-  const baseline = loadCostParityBaseline(baselinePath);
+  const { manifest } = loadCostParityManifest(manifestPath);
+  const baselineCases = loadCostParityBaseline(baselinePath);
+  assert(Object.keys(baselineCases).length > 0, 'Baseline should have cases');
+  assert.strictEqual(
+    Object.keys(baselineCases).length,
+    manifest.cases.length,
+    'Baseline should cover every case in the manifest'
+  );
 
-  // Verify baseline has all cases
-  assert(Object.keys(baseline).length > 0, 'Baseline should have cases');
+  const capturedCorpus = await captureCorpus(manifest, legacyEngine);
+  const sanitized = sanitizeSnapshot(capturedCorpus);
 
-  // Spot-check a case structure
-  const firstCase = Object.values(baseline)[0] as Record<string, unknown>;
-  assert(firstCase.caseId, 'Case should have caseId');
-  assert(firstCase.sync, 'Case should have sync result');
+  const comparison = compareSnapshots(
+    { cases: baselineCases },
+    sanitized,
+    manifest,
+    { mode: 'regression' }
+  );
+
+  if (comparison.exitCode !== 0) {
+    const preview = comparison.differences
+      .slice(0, 10)
+      .map((d) => `  ${d.caseId} @ ${d.path}: ${d.classification}`)
+      .join('\n');
+    assert.fail(
+      `Legacy engine drifted from baseline (${comparison.differences.length} differences):\n${preview}\n` +
+        `\nRegenerate with: npx tsx tools/cost-parity.ts --write`
+    );
+  }
+  assert.strictEqual(comparison.exitCode, 0, comparison.message);
 });
 
 test('Comparator detects mutations (regression mode)', () => {
@@ -281,6 +303,38 @@ test('Snapshot keys are sorted for determinism', () => {
   // Check that object keys are sorted
   const keys = Object.keys(parsed.cases);
   assert(keys.length > 0, 'Should have cases');
+});
+
+test('Baseline captures models attribution when pricing is known', async () => {
+  const baselineCases = loadCostParityBaseline(baselinePath);
+  const priced = baselineCases['codex-cached-and-reasoning'];
+  assert(priced, 'Expected codex-cached-and-reasoning in baseline');
+  const outcome = priced.sync.outcome as Record<string, unknown>;
+  assert.strictEqual(outcome.status, 'success', 'Priced case should reach success');
+  assert(typeof outcome.totalCostUsd === 'number', 'Priced case must record numeric totalCostUsd');
+  assert((outcome.totalCostUsd as number) > 0, 'Priced case must record a positive cost');
+  assert(outcome.models && typeof outcome.models === 'object', 'Priced case must record per-model attribution');
+});
+
+test('Harness mirrors production session-adapter output shape', async () => {
+  // Mirror check: the captured snapshot for at least one representative case
+  // must expose the same top-level economics shape that the production
+  // execution-economics collector consumes downstream (models, sessionCount,
+  // turnCount, totalCostUsd, pricingUsed). If the harness ever drops one of
+  // these dimensions, downstream consumers listed in consumer-inventory.json
+  // would silently see undefined and misreport cost — this catches that drift
+  // without requiring live private transcripts.
+  const { manifest } = loadCostParityManifest(manifestPath);
+  const codexCase = manifest.cases.find((c) => c.id === 'codex-cached-and-reasoning');
+  assert(codexCase, 'Mirror check requires codex-cached-and-reasoning fixture');
+  const snapshot = await captureCase(codexCase, legacyEngine);
+  const outcome = snapshot.sync.outcome as Record<string, unknown>;
+  for (const field of ['status', 'totalCostUsd', 'models', 'sessionCount', 'turnCount', 'pricingUsed']) {
+    assert(field in outcome, `Snapshot missing required field: ${field}`);
+  }
+  assert.strictEqual(outcome.status, 'success', 'Mirror case should reach success');
+  assert((outcome.sessionCount as number) >= 1, 'Mirror case should count at least one session');
+  assert((outcome.turnCount as number) >= 1, 'Mirror case should count at least one turn');
 });
 
 test('Consumer inventory is well-formed', () => {
