@@ -154,6 +154,8 @@ TESTS=(
   shared/lib/tend-challenge-gate.test.ts
   shared/lib/transient-retry.test.ts
   shared/lib/tend-loop.test.ts
+  shared/lib/tool-choice-gate-publisher.test.ts
+  shared/lib/tool-choice-gate-scheduler.test.ts
   shared/lib/challenge-comparison.test.ts
   shared/lib/no-comparison-report.test.ts
   shared/lib/arbiter-r6-report.test.ts

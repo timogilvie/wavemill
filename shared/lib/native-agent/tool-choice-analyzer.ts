@@ -3112,3 +3112,201 @@ export function generateReport(input: ReportInput): string {
   lines.push('');
   return lines.join('\n');
 }
+
+// ---------------------------------------------------------------------------
+// Report-only helpers (HOK-3123)
+//
+// The signed decision report path (generateReport above) requires operator
+// input and overwrites docs/tool-choice-analysis-report.md. These helpers
+// produce the same coverage-gate telemetry as a **non-signed** snapshot so
+// the daily backstage job can surface I-27 progress without asking a human
+// to make a decision. They never call generateReport, never touch the signed
+// report file, and never claim an operator decision.
+// ---------------------------------------------------------------------------
+
+/**
+ * Compact single-line progress summary for grep/dashboard/Slack.
+ *
+ * Format (fixed order; do not reorder fields — downstream watchers grep it):
+ * `tool-choice-gate: rows=<n> joined=<pct>% models=<n> sessions=<n>/20 menu-digest=<pct>% exact=<n>/200 rec=<decision>`
+ *
+ * Values that cannot be computed (empty corpus, no join candidates) print
+ * `n/a` for percentages and `0` for counts so the line always parses.
+ */
+export function buildProgressLine(
+  quality: DataQualityReport,
+  recommendation: Recommendation,
+  gates: GateThresholds = TOOL_CHOICE_GATES,
+): string {
+  const cohort = quality.codingCohort;
+  const joinedPct = cohort.joinedPct === null ? 'n/a' : `${round(cohort.joinedPct, 1)}%`;
+  const menuPct =
+    cohort.menuDigestCoveragePct === null ? 'n/a' : `${round(cohort.menuDigestCoveragePct, 1)}%`;
+  return (
+    `tool-choice-gate: rows=${cohort.toolRows}` +
+    ` joined=${joinedPct}` +
+    ` models=${cohort.distinctModels}` +
+    ` sessions=${cohort.distinctSessions}/${gates.minJoinedSessions}` +
+    ` menu-digest=${menuPct}` +
+    ` exact=${cohort.perTierJoined.exact}/${gates.minTierJoinedRows}` +
+    ` rec=${recommendation.decision}`
+  );
+}
+
+/**
+ * Machine-readable snapshot written to `.wavemill/tool-decisions/latest-gate.json`
+ * by the daily backstage job. Consumers (the weekly cloud routine, the
+ * Linear-publish helper, the dashboard) read this file instead of re-parsing
+ * markdown. `schemaVersion` is bumped when fields are added or removed.
+ */
+export interface LatestGateSnapshot {
+  schemaVersion: 1;
+  updatedAt: string;
+  corpusPath: string;
+  corpusFileMissing: boolean;
+  rows: number;
+  joinedPct: number | null;
+  distinctModels: number;
+  distinctSessions: number;
+  menuDigestCoveragePct: number | null;
+  exactProvenanceRows: number;
+  gates: Array<{ id: GateResult['id']; passed: boolean; observed: string; shortfall?: string }>;
+  computedRecommendation: Recommendation['decision'];
+  progressLine: string;
+}
+
+/**
+ * Build the JSON snapshot for the report-only run. Uses the same
+ * DataQualityReport that drives the signed report, so the two paths cannot
+ * report divergent numbers.
+ */
+export function buildLatestGateSnapshot(input: {
+  quality: DataQualityReport;
+  recommendation: Recommendation;
+  now: string;
+  gates?: GateThresholds;
+}): LatestGateSnapshot {
+  const gates = input.gates ?? TOOL_CHOICE_GATES;
+  const cohort = input.quality.codingCohort;
+  return {
+    schemaVersion: 1,
+    updatedAt: input.now,
+    corpusPath: input.quality.corpusPath,
+    corpusFileMissing: input.quality.corpusFileMissing,
+    rows: cohort.toolRows,
+    joinedPct: cohort.joinedPct === null ? null : round(cohort.joinedPct, 2),
+    distinctModels: cohort.distinctModels,
+    distinctSessions: cohort.distinctSessions,
+    menuDigestCoveragePct:
+      cohort.menuDigestCoveragePct === null ? null : round(cohort.menuDigestCoveragePct, 2),
+    exactProvenanceRows: cohort.perTierJoined.exact,
+    gates: input.quality.gates.map((gate) => ({
+      id: gate.id,
+      passed: gate.passed,
+      observed: gate.observed,
+      ...(gate.shortfall !== undefined ? { shortfall: gate.shortfall } : {}),
+    })),
+    computedRecommendation: input.recommendation.decision,
+    progressLine: buildProgressLine(input.quality, input.recommendation, gates),
+  };
+}
+
+/**
+ * Render the report-only markdown surface. Contains the compact progress
+ * line, the gate table (identical to the signed report's Observed gate
+ * evaluation table), the coding-cohort descriptives, and a copy-paste
+ * status block for the weekly I-27 initiative update. Explicitly labels
+ * itself as non-signed to keep operators from confusing it with the
+ * HOK-2081 decision artifact.
+ */
+export function generateReportOnlyMarkdown(input: {
+  quality: DataQualityReport;
+  recommendation: Recommendation;
+  now: string;
+  corpusPath: string;
+  evalsPath: string;
+  gates?: GateThresholds;
+}): string {
+  const gates = input.gates ?? TOOL_CHOICE_GATES;
+  const { quality, recommendation } = input;
+  const snapshot = buildLatestGateSnapshot({
+    quality,
+    recommendation,
+    now: input.now,
+    gates,
+  });
+  const cohort = quality.codingCohort;
+  const lines: string[] = [];
+
+  lines.push('# Tool-choice gate progress (HOK-3123)');
+  lines.push('');
+  lines.push(`Last updated: ${input.now}`);
+  lines.push('');
+  lines.push(
+    '_Report only — no operator decision recorded. The signed Go/No-go decision remains a HOK-2081 action (`tools/tool-choice-analysis.ts` without `--report-only`)._',
+  );
+  lines.push('');
+  lines.push('## Progress');
+  lines.push('');
+  lines.push('```status');
+  lines.push(snapshot.progressLine);
+  lines.push('```');
+  lines.push('');
+  lines.push(
+    `Computed recommendation from the pre-registered gates: **${DECISION_LABEL[recommendation.decision]}**.`,
+  );
+  lines.push('');
+  lines.push('## Coverage gates');
+  lines.push('');
+  lines.push(
+    mdTable(
+      ['Gate', 'Requirement', 'Observed', 'Result', 'Shortfall'],
+      quality.gates.map((gate) => [
+        gate.id,
+        gate.requirement,
+        gate.observed,
+        gate.passed ? 'pass' : 'fail',
+        gate.shortfall ?? '—',
+      ]),
+    ),
+  );
+  lines.push('');
+  lines.push('## Cohort');
+  lines.push('');
+  lines.push(
+    mdTable(
+      ['Metric', 'Value'],
+      [
+        ['Corpus path', quality.corpusPath],
+        ['Corpus file present', quality.corpusFileMissing ? 'no' : 'yes'],
+        ['Coding tool-call rows', String(cohort.toolRows)],
+        [
+          'Joined rows',
+          `${cohort.joinedToolRows} (${fmtPct(cohort.joinedPct)})`,
+        ],
+        ['Distinct models among joined rows', cohort.models.join(', ') || '—'],
+        ['Distinct sessions among joined rows', String(cohort.distinctSessions)],
+        [
+          'Exact-provenance joined rows',
+          `${cohort.perTierJoined.exact} / ${gates.minTierJoinedRows}`,
+        ],
+        ['Menu digest coverage (joined rows)', fmtPct(cohort.menuDigestCoveragePct)],
+      ],
+    ),
+  );
+  lines.push('');
+  lines.push('## Weekly I-27 status block (copy verbatim)');
+  lines.push('');
+  lines.push('```status');
+  lines.push(snapshot.progressLine);
+  lines.push(`rows/threshold: ${cohort.toolRows}/${gates.minCodingToolRows}`);
+  lines.push(`exact/threshold: ${cohort.perTierJoined.exact}/${gates.minTierJoinedRows}`);
+  lines.push(`recommendation: ${DECISION_LABEL[recommendation.decision]}`);
+  lines.push('```');
+  lines.push('');
+  lines.push(
+    `Sources: corpus \`${input.corpusPath}\`, evals \`${input.evalsPath}\`.`,
+  );
+  lines.push('');
+  return lines.join('\n');
+}
