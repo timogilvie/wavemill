@@ -2631,6 +2631,8 @@ rm -f "$BASE_REF_PREFLIGHT_FILE"
 export WAVEMILL_BASE_REF_PREFLIGHT_JSON
 WAVEMILL_RESOLVED_BASE_REF="$(printf '%s' "$WAVEMILL_BASE_REF_PREFLIGHT_JSON" | jq -r '.resolvedRef // empty' 2>/dev/null || true)"
 export WAVEMILL_RESOLVED_BASE_REF
+WAVEMILL_RESOLVED_BASE_SHA="$(printf '%s' "$WAVEMILL_BASE_REF_PREFLIGHT_JSON" | jq -r '.resolvedSha // empty' 2>/dev/null || true)"
+export WAVEMILL_RESOLVED_BASE_SHA
 if [[ "$BASE_REF_PREFLIGHT_RC" -ne 0 ]]; then
   BASE_REF_FAILURE_REASON="$(printf '%s' "$WAVEMILL_BASE_REF_PREFLIGHT_JSON" | jq -r '.reason // "base_ref_unavailable"' 2>/dev/null || echo "base_ref_unavailable")"
   (
@@ -2662,7 +2664,12 @@ if [[ "$BASE_REF_PREFLIGHT_RC" -ne 0 ]]; then
         configuredBranch: ($p.configuredBranch // null),
         checkedRefs: ($p.checkedRefs // []),
         resolvedRef: ($p.resolvedRef // null),
+        resolvedSha: ($p.resolvedSha // null),
         fetchDegraded: ($p.fetchDegraded // false),
+        localBehindOrigin: ($p.localBehindOrigin // null),
+        localAheadOfOrigin: ($p.localAheadOfOrigin // null),
+        localFastForwarded: ($p.localFastForwarded // false),
+        localCheckedOut: ($p.localCheckedOut // false),
         session: $session,
         repoDir: $repoDir,
         cleanupStatus: $cleanupStatus
@@ -2672,7 +2679,37 @@ if [[ "$BASE_REF_PREFLIGHT_RC" -ne 0 ]]; then
   exit 1
 fi
 if [[ "$(printf '%s' "$WAVEMILL_BASE_REF_PREFLIGHT_JSON" | jq -r '.fetchDegraded // false' 2>/dev/null)" == "true" ]]; then
-  log_warn "Startup fetch for $BASE_BRANCH degraded; continuing with verified local base ref $WAVEMILL_RESOLVED_BASE_REF"
+  log_warn "Base fetch for $BASE_BRANCH failed; using local base ref $WAVEMILL_RESOLVED_BASE_REF (fetchDegraded)"
+fi
+BASE_RESOLVED_SHA_SHORT=""
+if [[ -n "$WAVEMILL_RESOLVED_BASE_SHA" ]]; then
+  BASE_RESOLVED_SHA_SHORT="${WAVEMILL_RESOLVED_BASE_SHA:0:7}"
+fi
+BASE_LOCAL_BEHIND="$(printf '%s' "$WAVEMILL_BASE_REF_PREFLIGHT_JSON" | jq -r '.localBehindOrigin // empty' 2>/dev/null || true)"
+BASE_LOCAL_AHEAD="$(printf '%s' "$WAVEMILL_BASE_REF_PREFLIGHT_JSON" | jq -r '.localAheadOfOrigin // empty' 2>/dev/null || true)"
+BASE_LOCAL_FF="$(printf '%s' "$WAVEMILL_BASE_REF_PREFLIGHT_JSON" | jq -r '.localFastForwarded // false' 2>/dev/null || echo false)"
+BASE_LOCAL_CHECKED_OUT="$(printf '%s' "$WAVEMILL_BASE_REF_PREFLIGHT_JSON" | jq -r '.localCheckedOut // false' 2>/dev/null || echo false)"
+BASE_LOCAL_CHECKOUT_PATH="$(printf '%s' "$WAVEMILL_BASE_REF_PREFLIGHT_JSON" | jq -r '.localCheckoutPath // empty' 2>/dev/null || true)"
+
+BASE_PROVENANCE_LINE="Base $BASE_BRANCH → $WAVEMILL_RESOLVED_BASE_REF"
+if [[ -n "$BASE_RESOLVED_SHA_SHORT" ]]; then
+  BASE_PROVENANCE_LINE="$BASE_PROVENANCE_LINE @ $BASE_RESOLVED_SHA_SHORT"
+fi
+if [[ -n "$BASE_LOCAL_BEHIND" && "$BASE_LOCAL_BEHIND" != "0" ]]; then
+  if [[ "$BASE_LOCAL_FF" == "true" ]]; then
+    BASE_PROVENANCE_LINE="$BASE_PROVENANCE_LINE (local $BASE_BRANCH: $BASE_LOCAL_BEHIND behind, fast-forwarded)"
+  else
+    BASE_PROVENANCE_LINE="$BASE_PROVENANCE_LINE (local $BASE_BRANCH: $BASE_LOCAL_BEHIND behind)"
+  fi
+fi
+log "info" "$BASE_PROVENANCE_LINE"
+
+if [[ "$BASE_LOCAL_CHECKED_OUT" == "true" \
+  && -n "$BASE_LOCAL_BEHIND" && "$BASE_LOCAL_BEHIND" != "0" ]]; then
+  log_warn "local $BASE_BRANCH is $BASE_LOCAL_BEHIND commits behind origin/$BASE_BRANCH and is checked out at ${BASE_LOCAL_CHECKOUT_PATH:-unknown}; not fast-forwarding. Base-relative comparisons use origin/$BASE_BRANCH."
+elif [[ -n "$BASE_LOCAL_BEHIND" && "$BASE_LOCAL_BEHIND" != "0" \
+  && -n "$BASE_LOCAL_AHEAD" && "$BASE_LOCAL_AHEAD" != "0" ]]; then
+  log_warn "local $BASE_BRANCH has diverged from origin/$BASE_BRANCH (ahead $BASE_LOCAL_AHEAD, behind $BASE_LOCAL_BEHIND); not fast-forwarding."
 fi
 
 : > "$STATUS_LOG_FILE"

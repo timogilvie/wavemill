@@ -38,6 +38,7 @@ TESTS=(
   shared/lib/operator-intervention.test.ts
   shared/lib/intervention-detector.test.ts
   shared/lib/stage-result.test.ts
+  shared/lib/task-progress.test.ts
   shared/lib/session-adapters.test.ts
   shared/lib/executed-model-resolver.test.ts
   shared/lib/native-agent/provider.test.ts
@@ -171,6 +172,7 @@ TESTS=(
   shared/lib/tend-singleton.test.ts
   shared/lib/promotion-controller.test.ts
   shared/lib/cross-pr-revert-detector.test.ts
+  shared/lib/git-base-resolver.test.ts
   shared/lib/llm-cli.test.ts
   shared/lib/headless-llm.test.ts
   shared/lib/router-log.test.ts
@@ -410,6 +412,7 @@ TESTS=(
   shared/lib/ready-diagnostics.test.ts
   shared/lib/ready-migration-base.test.ts
   shared/lib/pr-route-provenance.test.ts
+  shared/lib/route-decision.test.ts
   shared/lib/resource-adapters/dspy-adapter.test.ts
   shared/lib/resource-adapters/native-runtime-adapter.test.ts
   shared/lib/resource-adapters/prompt-adapter.test.ts

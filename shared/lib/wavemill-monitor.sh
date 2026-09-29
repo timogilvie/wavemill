@@ -3986,6 +3986,18 @@ clear_stale_pane_release_blocked_marker() {
 }
 
 fresh_hook_state_for_issue() {
+  # HOK-3101: thin wrapper over the shared accessor. Keeps existing callers
+  # (`pane_release_preflight` :4097) working while sharing the one TTL check
+  # and controller/agent classification. Reads the TOP-LEVEL hook state
+  # regardless of writer, so a monitor `working` still protects here — the
+  # `coding_stage_owner_lost` check below uses `--agent-only` to defeat that.
+  if declare -F wavemill_hook_read >/dev/null 2>&1; then
+    local state
+    state="$(wavemill_hook_read "$SESSION" "$1" state --fresh 2>/dev/null || true)"
+    [[ -n "$state" ]] || return 1
+    printf '%s\n' "$state"
+    return 0
+  fi
   local issue="$1" hook_file="/tmp/wavemill-${SESSION}-${issue}.hook"
   local hook_ts now staleness
   [[ -f "$hook_file" ]] || return 1
@@ -3995,6 +4007,18 @@ fresh_hook_state_for_issue() {
   staleness=$((now - hook_ts))
   (( staleness < 300 )) || return 1
   jq -r '.state // empty' "$hook_file" 2>/dev/null || true
+}
+
+# HOK-3101: agent-only fresh hook state. A monitor `working` or `blocked`
+# does NOT count. Used by `coding_stage_owner_lost` so a monitor recovery
+# replay write cannot mask a lost coding owner.
+fresh_agent_hook_state_for_issue() {
+  local issue="$1"
+  if declare -F wavemill_hook_read >/dev/null 2>&1; then
+    wavemill_hook_read "$SESSION" "$issue" state --fresh --agent-only 2>/dev/null || true
+    return 0
+  fi
+  return 1
 }
 
 # HOK-2972 / HOK-2963: detect a coding stage result stuck at "running" whose
@@ -4019,7 +4043,10 @@ coding_stage_owner_lost() {
   now_epoch="$(date +%s)"
   (( now_epoch - started_epoch >= grace )) || return 1
 
-  hook_state="$(fresh_hook_state_for_issue "$issue" 2>/dev/null || true)"
+  # HOK-3101: read agent-only, so a monitor-written recovery replay
+  # (`working` at :7632, `writer=monitor`) no longer protects a lost coding
+  # owner. The agent's own fresh state still protects.
+  hook_state="$(fresh_agent_hook_state_for_issue "$issue" 2>/dev/null || true)"
   case "$hook_state" in
     working) return 1 ;;
     waiting) return 1 ;;
@@ -4033,7 +4060,98 @@ coding_stage_owner_lost() {
   live_rc=0
   mill_pane_has_live_blocking_process "$pane_pid" || live_rc=$?
   # 0 = live descendant (agent or owned validation), 2 = indeterminate: both protect.
+  # HOK-3101 (a): but an idle REPL sitting in the pane is not "the agent is
+  # doing work" — if the primitive says the agent is idle and not stalled,
+  # let the owner-lost signal fire.
+  if [[ "$live_rc" -eq 0 ]] && declare -F task_progress_json >/dev/null 2>&1; then
+    local progress
+    progress="$(task_progress_json "$issue" --phase coding --max-age 60 2>/dev/null || printf '{}')"
+    if command -v jq >/dev/null 2>&1 \
+      && printf '%s' "$progress" \
+      | jq -e '.agentIdle == true and .stalled == true' >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
   [[ "$live_rc" -eq 1 ]] || return 1
+  return 0
+}
+
+# HOK-3101 / HOK-3069: a coding task with no hook, no commits, no worktree
+# changes, and only the launcher's `working` status write (which the
+# primitive discounts during the launch grace) is stalled. This detector
+# runs after the owner-grace only. It never kills — it warns once per
+# episode, sets needs-user attention, and writes a monitor `waiting` hook.
+coding_stage_stalled() {
+  local issue="$1" feature_dir="$2" win_target="$3"
+  [[ -f "$feature_dir/.coding-result.json" ]] || return 1
+  local started_at started_epoch now_epoch
+  started_at="$(jq -r '.startedAt // empty' "$feature_dir/.coding-result.json" 2>/dev/null || true)"
+  [[ -n "$started_at" ]] || return 1
+  started_epoch="$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$started_at" +%s 2>/dev/null \
+    || date -u -d "$started_at" +%s 2>/dev/null || true)"
+  [[ "$started_epoch" =~ ^[0-9]+$ ]] || return 1
+  now_epoch="$(date +%s)"
+  local owner_grace="${WAVEMILL_CODING_OWNER_GRACE_SECONDS:-300}"
+  (( now_epoch - started_epoch >= owner_grace )) || return 1
+
+  declare -F task_progress_json >/dev/null 2>&1 || return 1
+  local pane_target="$win_target"
+  local progress
+  progress="$(task_progress_json "$issue" \
+    --phase coding \
+    --pane-target "$pane_target" \
+    --max-age 60 \
+    --write-cache 2>/dev/null || printf '{}')"
+  command -v jq >/dev/null 2>&1 || return 1
+  printf '%s' "$progress" | jq -e '.stalled == true' >/dev/null 2>&1 || return 1
+
+  local marker="$feature_dir/.coding-stalled.json"
+  local last_progress_at prompt_id detected_iso
+  last_progress_at="$(printf '%s' "$progress" | jq -r '.lastProgressAt // "never"' 2>/dev/null || echo "never")"
+  prompt_id="$(printf '%s' "$progress" | jq -r '.blockingPrompt.id // ""' 2>/dev/null || true)"
+
+  # Suppress a duplicate warning if we already saw this same lastProgressAt.
+  local previous_last=""
+  if [[ -f "$marker" ]]; then
+    previous_last="$(jq -r '.lastProgressAt // ""' "$marker" 2>/dev/null || true)"
+  fi
+  if [[ "$previous_last" != "$last_progress_at" ]]; then
+    detected_iso="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    local tmp="${marker}.tmp.$$"
+    jq -cn --arg last "$last_progress_at" --arg detected "$detected_iso" --arg prompt "$prompt_id" \
+      '{lastProgressAt:$last, detectedAt:$detected, blockingPrompt:(if $prompt == "" then null else $prompt end)}' \
+      > "$tmp" 2>/dev/null && mv "$tmp" "$marker" 2>/dev/null || rm -f "$tmp"
+
+    local age_minutes progress_sources
+    age_minutes="$(printf '%s' "$progress" | jq -r '.progressAgeMinutes // "?"' 2>/dev/null || echo "?")"
+    progress_sources="$(printf '%s' "$progress" | jq -r '(.sources // []) | map(.kind) | join(",")' 2>/dev/null || echo "")"
+    local suffix=""
+    [[ -n "$prompt_id" ]] && suffix=" (prompt: $prompt_id)"
+    [[ -z "$progress_sources" ]] && progress_sources="none-since-launch"
+    log "warn" "$issue → coding stalled ${age_minutes}m, sources=$progress_sources${suffix}"
+
+    if declare -F set_window_attention_state >/dev/null 2>&1; then
+      local slug win
+      slug="$(basename "$feature_dir")"
+      win="$issue-$slug"
+      set_window_attention_state "$win" "needs-user" >/dev/null 2>&1 || true
+    fi
+
+    # Publish a monitor `waiting` hook so the dashboard shows the attention
+    # state; keep the agent's own record intact via agentRecord preservation.
+    if declare -F wavemill_hook_write >/dev/null 2>&1; then
+      local detail next_action
+      if [[ -n "$prompt_id" ]]; then
+        detail="coding stalled ${age_minutes}m: $prompt_id"
+        next_action="inspect pane $pane_target for the $prompt_id prompt"
+      else
+        detail="coding stalled ${age_minutes}m: no hook/commit/worktree progress since launch"
+        next_action="inspect pane $pane_target — pane/process alone is not agent progress"
+      fi
+      WAVEMILL_SESSION="$SESSION" WAVEMILL_ISSUE="$issue" \
+        wavemill_hook_write "waiting" "coding_stalled" "$detail" "wavemill" "$next_action" "monitor" || true
+    fi
+  fi
   return 0
 }
 
@@ -4631,7 +4749,7 @@ notify_planning_rejection_agent() {
         wavemill_hook_write "blocked" "planning_rejection_notify_failed" \
           "planning rejection notice $status after $attempts attempts" \
           "${current_agent:-unknown}" \
-          "$next_action" || true
+          "$next_action" "monitor" || true
     fi
   fi
 
@@ -4711,7 +4829,7 @@ emit_blocked_completion_liveness_attention() {
   if [[ -f "$hook_protocol" ]]; then
     source "$hook_protocol" || true
     WAVEMILL_SESSION="$SESSION" WAVEMILL_ISSUE="$issue" \
-      wavemill_hook_write "blocked" "blocked_completion_liveness" "$detail" "${current_agent:-unknown}" "$next_action" || true
+      wavemill_hook_write "blocked" "blocked_completion_liveness" "$detail" "${current_agent:-unknown}" "$next_action" "monitor" || true
   fi
 
   set_window_attention_state "$win" "needs-user"
@@ -4963,7 +5081,9 @@ clear_coding_uncommitted_output_attention() {
 
 coding_compare_commit_counts() {
   local worktree="$1" base_branch="$2"
-  git -C "$worktree" rev-list --left-right --count "$base_branch...HEAD" 2>/dev/null || printf '0\t0\n'
+  local base_ref
+  base_ref="$(wavemill_base_compare_ref "$base_branch")"
+  git -C "$worktree" rev-list --left-right --count "${base_ref}...HEAD" 2>/dev/null || printf '0\t0\n'
 }
 
 write_coding_uncommitted_output_artifact() {
@@ -5752,7 +5872,7 @@ surface_premature_plan_approval() {
   next_action="Create features/$(basename "$feature_dir")/plan.md, then approve again."
   write_stage_result "$feature_dir" "planning" "running" "$current_agent" "" "$detail"
   if declare -F wavemill_hook_write >/dev/null 2>&1; then
-    wavemill_hook_write "blocked" "premature_plan_approval" "$detail" "${current_agent:-unknown}" "$next_action" || true
+    wavemill_hook_write "blocked" "premature_plan_approval" "$detail" "${current_agent:-unknown}" "$next_action" "monitor" || true
   fi
   set_window_attention_state "$win" "needs-user"
 
@@ -7583,7 +7703,7 @@ _stop_task_recovery_contract_unavailable() {
   fi
   write_stage_result "$feature_dir" "$phase" "failed" "" "" "recovery_contract_unavailable: $sub_reason - $detail"
   if declare -F wavemill_hook_write >/dev/null 2>&1; then
-    wavemill_hook_write "blocked" "recovery_contract_unavailable" "$detail" "" "$sub_reason" || true
+    wavemill_hook_write "blocked" "recovery_contract_unavailable" "$detail" "" "$sub_reason" "monitor" || true
   fi
 }
 
@@ -7629,7 +7749,7 @@ _prepare_recovery_phase_launch() {
   fi
 
   if declare -F wavemill_hook_write >/dev/null 2>&1; then
-    wavemill_hook_write "working" "" "" "$agent" || true
+    wavemill_hook_write "working" "" "" "$agent" "" "monitor" || true
   fi
 
   if ! win="$(_ensure_task_window_exists "$SESSION" "$issue" "$slug" "$wt_dir" "$lifecycle_phase")" || [[ -z "$win" ]]; then
@@ -8976,7 +9096,11 @@ cross_pr_revert_gate_allows_merge() {
   raw_error=""
   checked_head_sha=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || echo "")
 
-  [[ -n "$base_branch" ]] && extra_args+=(--base-ref "$base_branch" --integration-ref "$base_branch")
+  if [[ -n "$base_branch" ]]; then
+    local compare_base_ref
+    compare_base_ref="$(wavemill_base_compare_ref "$base_branch")"
+    extra_args+=(--base-ref "$compare_base_ref" --integration-ref "$compare_base_ref")
+  fi
   stderr_file=$(mktemp 2>/dev/null) || stderr_file=""
 
   if [[ -n "$stderr_file" ]]; then
@@ -12144,15 +12268,18 @@ task_has_local_commit_evidence() {
   local ref="$branch"
   [[ -z "$ref" ]] && ref=$(read_state_value "" --arg i "$issue" '.tasks[$i].branch // empty')
 
+  local base_ref
+  base_ref="$(wavemill_base_compare_ref "$BASE_BRANCH")"
+
   if [[ -n "$ref" ]] && git -C "$REPO_DIR" rev-parse --verify --quiet "$ref" >/dev/null 2>&1; then
     local count
-    count=$(git -C "$REPO_DIR" rev-list --count "${BASE_BRANCH}..${ref}" 2>/dev/null || echo "0")
+    count=$(git -C "$REPO_DIR" rev-list --count "${base_ref}..${ref}" 2>/dev/null || echo "0")
     [[ "$count" =~ ^[0-9]+$ ]] && (( count > 0 )) && return 0
   fi
 
   if [[ -d "$wt_dir/.git" || -f "$wt_dir/.git" ]]; then
     local wt_count
-    wt_count=$(git -C "$wt_dir" rev-list --count "${BASE_BRANCH}..HEAD" 2>/dev/null || echo "0")
+    wt_count=$(git -C "$wt_dir" rev-list --count "${base_ref}..HEAD" 2>/dev/null || echo "0")
     [[ "$wt_count" =~ ^[0-9]+$ ]] && (( wt_count > 0 )) && return 0
   fi
 
@@ -12931,6 +13058,18 @@ apply_route_json_for_issue() {
 
   printf '%s\n' "$route_json" > "$route_file"
   printf '%s\n' "$source" > "$route_source_file"
+  return 0
+}
+
+# HOK-3098: persist the route decision carried by a cached route artifact
+# (batch-cache / startup-cache were routed before the feature dir existed) into
+# the feature dir's routing.jsonl. Live routes record themselves via
+# route-task.ts --feature-dir. Best-effort; never fails the launch.
+record_cached_route_decision() {
+  local feature_dir="$1" route_file="$2"
+  local record_tool="$TOOLS_DIR/record-route-decision.ts"
+  [[ -n "$feature_dir" && -d "$feature_dir" && -s "$route_file" && -f "$record_tool" ]] || return 0
+  _with_timeout "$API_TIMEOUT" npx tsx "$record_tool" --feature-dir "$feature_dir" --route-file "$route_file" >/dev/null 2>&1 || true
   return 0
 }
 
@@ -14232,13 +14371,13 @@ launch_task() {
           printf '\n[attempt %d] live route\n' "$route_attempt" >> "$routing_log_file"
           rm -f "$route_stderr_file"
           if [[ "$route_debug_enabled" == "true" ]]; then
-            if route_json=$(_with_timeout "$API_TIMEOUT" npx tsx "$route_tool" --json --file "$route_input_file" --repo-dir "$REPO_DIR" --source live --input-kind task-packet "${route_max_cost_args[@]}" "${route_mode_args[@]}" 2>"$route_stderr_file"); then
+            if route_json=$(_with_timeout "$API_TIMEOUT" npx tsx "$route_tool" --json --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --source live --input-kind task-packet "${route_max_cost_args[@]}" "${route_mode_args[@]}" 2>"$route_stderr_file"); then
               route_rc=0
             else
               route_rc=$?
             fi
           else
-            if route_json=$(_with_timeout "$API_TIMEOUT" npx tsx "$route_tool" --json --file "$route_input_file" --repo-dir "$REPO_DIR" --source live --input-kind task-packet "${route_max_cost_args[@]}" "${route_mode_args[@]}" 2>"$route_stderr_file"); then
+            if route_json=$(_with_timeout "$API_TIMEOUT" npx tsx "$route_tool" --json --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --source live --input-kind task-packet "${route_max_cost_args[@]}" "${route_mode_args[@]}" 2>"$route_stderr_file"); then
               route_rc=0
             else
               route_rc=$?
@@ -14291,13 +14430,13 @@ launch_task() {
         printf '\n[heuristic fallback]\n' >> "$routing_log_file"
         rm -f "$route_stderr_file"
         if [[ "$route_debug_enabled" == "true" ]]; then
-          if route_json=$(_with_timeout "$API_TIMEOUT" npx tsx "$route_tool" --json --mode heuristic --file "$route_input_file" --repo-dir "$REPO_DIR" --source heuristic-fallback --input-kind heuristic "${route_max_cost_args[@]}" 2>"$route_stderr_file"); then
+          if route_json=$(_with_timeout "$API_TIMEOUT" npx tsx "$route_tool" --json --mode heuristic --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --source heuristic-fallback --input-kind heuristic "${route_max_cost_args[@]}" 2>"$route_stderr_file"); then
             route_rc=0
           else
             route_rc=$?
           fi
         else
-          if route_json=$(_with_timeout "$API_TIMEOUT" npx tsx "$route_tool" --json --mode heuristic --file "$route_input_file" --repo-dir "$REPO_DIR" --source heuristic-fallback --input-kind heuristic "${route_max_cost_args[@]}" 2>"$route_stderr_file"); then
+          if route_json=$(_with_timeout "$API_TIMEOUT" npx tsx "$route_tool" --json --mode heuristic --file "$route_input_file" --repo-dir "$REPO_DIR" --feature-dir "$feature_dir" --source heuristic-fallback --input-kind heuristic "${route_max_cost_args[@]}" 2>"$route_stderr_file"); then
             route_rc=0
           else
             route_rc=$?
@@ -14328,6 +14467,10 @@ launch_task() {
       fi
 
       if [[ -n "$route_source" ]] && [[ -n "$route_json" ]] && echo "$route_json" | jq -e '.planner and .coder and .reviewer' >/dev/null 2>&1; then
+        if [[ "$route_source" == "batch-cache" || "$route_source" == "startup-cache" ]]; then
+          record_cached_route_decision "$feature_dir" "$saved_route"
+        fi
+
         # Extract stage-specific models from workflow routing decision
         planner_model=$(echo "$route_json" | jq -r '.planner // empty' 2>/dev/null)
         task_model=$(echo "$route_json" | jq -r '.coder // empty' 2>/dev/null)
@@ -16891,6 +17034,15 @@ monitor_issue_state() {
             if emit_terminal_blocked_completion_attention "$ISSUE" "$SLUG" "$FEATURE_DIR" "$WIN" "$WIN_TARGET"; then
               return 0
             fi
+            # HOK-3101 / HOK-3069: detect a coding task that has gone silent
+            # for 30m+ with no hook, no commits, no worktree changes and only
+            # the launcher's `working` status write. The primitive treats
+            # pane/process existence as separate from progress, so a hookless
+            # interactive Codex parked at a menu is caught here even though
+            # its pane is alive.
+            if declare -F coding_stage_stalled >/dev/null 2>&1; then
+              coding_stage_stalled "$ISSUE" "$FEATURE_DIR" "$WIN_TARGET" || true
+            fi
             log "debug" "$ISSUE → Coding still running: waiting for .coding-complete"
           fi
 
@@ -17302,7 +17454,7 @@ monitor_issue_state() {
         # hook file dashboard readers use for agent-reported failures.
         source "$hook_protocol" || true
         WAVEMILL_SESSION="$SESSION" WAVEMILL_ISSUE="$ISSUE" \
-          wavemill_hook_write "error" "NoPR" "Agent exited without creating PR on branch $BRANCH" "${current_agent:-unknown}" || true
+          wavemill_hook_write "error" "NoPR" "Agent exited without creating PR on branch $BRANCH" "${current_agent:-unknown}" "" "monitor" || true
       fi
 
       set_window_attention_state "$WIN" "needs-user"
@@ -17947,6 +18099,56 @@ monitor_issue_state() {
     # the second case, a successful remediation leaves status=running/verdict=fail
     # and the controller never re-evaluates CI.
     if [[ "$ready_status" == "running" ]] && { [[ "$ready_verdict" == "pending" ]] || [[ -n "$launch_head" && "$launch_head" != "$current_head" ]]; }; then
+      # HOK-3106: an infrastructure review failure never consumes the
+      # pending-ready-recheck budget. The review artifact carries no
+      # substantive verdict, and launch_ready_phase will route the attempt
+      # through the bounded `review-infra-recovery` bucket — that bucket alone
+      # is authoritative for how many infra recovery attempts remain. When the
+      # infra recovery bucket has already terminalized, mark pending-ready
+      # terminal in lockstep so the ready budget is not spent poll-by-poll on
+      # a deterministic infra failure. Guarded by a stricter check than the
+      # shared `review_result_infra_failure` helper, which returns true when
+      # the artifact is missing or still in-flight — cases the existing
+      # pending-ready-recheck path already handles.
+      if [[ -f "$ready_state_dir_path/.review-result.json" ]] \
+          && ! review_result_missing_final_evidence "$ready_state_dir_path" \
+          && review_result_infra_failure "$ready_state_dir_path"; then
+        if bounded_retry_is_exhausted "$ready_state_dir_path" "review-infra-recovery"; then
+          if bounded_retry_mark_exhausted "$ready_state_dir_path" "pending-ready-recheck" \
+              "Review infrastructure recovery is exhausted for PR #$PR; pending-ready halted until the review artifact changes"; then
+            write_ready_attention_file "$ready_state_dir_path" \
+              "Review infrastructure recovery is exhausted for PR #$PR. Waiting for operator or a new commit."
+            log "status" "⛔ $ISSUE → Pending-ready halted for PR #$PR because review infrastructure recovery is exhausted"
+          fi
+          set_window_attention_state "$WIN" "needs-user"
+          return 0
+        fi
+
+        title=$(read_state_value "" --arg i "$ISSUE" '.tasks[$i].title // ""')
+        if [[ -z "$title" ]]; then
+          issue_json=$(cat "/tmp/${SESSION}-${ISSUE}-issue.json" 2>/dev/null || echo "{}")
+          title=$(echo "$issue_json" | jq -r '.title // "Task"' 2>/dev/null || echo "Task")
+        fi
+        if launch_ready_phase "$ISSUE" "$SLUG" "$title" "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$PR"; then
+          launch_rc=0
+        else
+          launch_rc=$?
+        fi
+        if [[ "$launch_rc" -eq 2 ]] && check_stage_aborted "$FEATURE_DIR"; then
+          log_task "status" "$ISSUE" "⛔ $ISSUE → Workflow aborted during ready re-check"
+          set_task_phase "$ISSUE" "aborted"
+          set_window_attention_state "$WIN" "needs-user"
+          return 0
+        fi
+        if [[ "$launch_rc" -eq 4 || "$launch_rc" -eq 6 ]]; then
+          set_window_attention_state "$WIN" "clear"
+          active_count=$((active_count + 1))
+          return 0
+        fi
+        set_window_attention_state "$WIN" "needs-user"
+        return 0
+      fi
+
       # Bound the pending-ready re-check loop (HOK-2924): the sibling of the
       # failed-ready budget above. A refused launch preserves exactly the
       # precondition that re-arms this branch, so without a ceiling it retries

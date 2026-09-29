@@ -15,12 +15,13 @@ import {
   parseRevertAcknowledgements,
 } from '../shared/lib/cross-pr-revert-detector.ts';
 import { escapeShellArg, execShellCommand } from '../shared/lib/shell-utils.ts';
-import { resolveDefaultBaseRef } from '../shared/lib/git-base-resolver.ts';
+import { resolveDefaultBaseRef, resolveOriginFirstRef } from '../shared/lib/git-base-resolver.ts';
 
 export const crossPrRevertCheckDeps = {
   detectCrossPrReverts,
   execShellCommand,
   resolveDefaultBaseRef,
+  resolveOriginFirstRef,
 };
 
 // Exit-code contract:
@@ -83,12 +84,16 @@ export function runCrossPrRevertCheck(input: {
     && !hasLocalConfigFile) {
     integrationRef = crossPrRevertCheckDeps.resolveDefaultBaseRef(input.repoDir) ?? integrationRef;
   }
+  integrationRef = crossPrRevertCheckDeps.resolveOriginFirstRef(input.repoDir, integrationRef).ref;
   const headRef = input.headRef || 'HEAD';
   let baseRef: string;
   let reverts: ReturnType<typeof detectCrossPrReverts>;
 
   try {
-    baseRef = input.baseRef || String(crossPrRevertCheckDeps.execShellCommand(
+    const providedBaseRef = input.baseRef
+      ? crossPrRevertCheckDeps.resolveOriginFirstRef(input.repoDir, input.baseRef).ref
+      : undefined;
+    baseRef = providedBaseRef || String(crossPrRevertCheckDeps.execShellCommand(
       `git merge-base ${escapeShellArg(integrationRef)} ${escapeShellArg(headRef)}`,
       { cwd: input.repoDir, encoding: 'utf-8' },
     )).trim();

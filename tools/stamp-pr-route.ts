@@ -3,12 +3,14 @@
 import { fileURLToPath } from 'node:url';
 import { githubDeps, type PullRequest, type PullRequestUpdateOptions } from '../shared/lib/github.ts';
 import {
+  extractMetadataBlock,
   parsePrMetadata,
   PR_ROUTE_METADATA_SCHEMA_VERSION,
   stableJsonStringify,
   updatePrMetadata,
   type ExecutedPrRoute,
   type PrMetadata,
+  type PrRouteDecision,
 } from '../shared/lib/pr-metadata.ts';
 import { reconcilePrRoute, type ReconcilePrRouteResult } from '../shared/lib/pr-route-provenance.ts';
 import { runTool } from '../shared/lib/tool-runner.ts';
@@ -34,6 +36,13 @@ export interface StampPrRouteResult {
   complete: boolean;
   diagnostics: string[];
   route: ExecutedPrRoute;
+  /** Route decision published as `route_decision`, when one is known. */
+  decision: PrRouteDecision | null;
+}
+
+interface StampedRoute {
+  route: ExecutedPrRoute;
+  decision: PrRouteDecision | null;
 }
 
 export const stampPrRouteDeps: StampPrRouteDeps = {
@@ -56,19 +65,48 @@ function routeValue(meta: PrMetadata): string {
   return meta.executed_route ? stableJsonStringify(meta.executed_route) : '';
 }
 
-function mergeRouteMetadata(body: string, route: ExecutedPrRoute): string {
+function decisionValue(decision: PrRouteDecision | null | undefined): string {
+  return decision ? stableJsonStringify(decision) : '';
+}
+
+function metadataMatches(meta: PrMetadata, expected: StampedRoute): boolean {
+  return meta.route_schema === PR_ROUTE_METADATA_SCHEMA_VERSION
+    && routeValue(meta) === stableJsonStringify(expected.route)
+    && decisionValue(meta.route_decision) === decisionValue(expected.decision);
+}
+
+const ROUTE_DECISION_LINE = /^route_decision:.*$/m;
+
+/**
+ * Parses the current PR metadata. A malformed `route_decision` alone must not
+ * block stamping (HOK-3098 is best-effort), so when it is the only problem the
+ * line is dropped and the rest of the block is kept.
+ */
+function parseCurrentMetadata(body: string): ReturnType<typeof parsePrMetadata> {
   const parsed = parsePrMetadata(body);
+  if (parsed.ok === true || !parsed.errors.every((error) => error.field === 'route_decision')) {
+    return parsed;
+  }
+  const { block } = extractMetadataBlock(body);
+  if (block === null) return parsed;
+  return parsePrMetadata(body.replace(block, block.replace(ROUTE_DECISION_LINE, '')));
+}
+
+function mergeRouteMetadata(body: string, expected: StampedRoute): string {
+  const parsed = parseCurrentMetadata(body);
   if (parsed.ok === false) {
     throw new Error(`Invalid wavemill-meta block: ${parsed.errors.map((error) => `${error.field}:${error.code}`).join(', ')}`);
   }
+  const { route_decision: _previousDecision, ...rest } = parsed.metadata;
   return updatePrMetadata(body, {
-    ...parsed.metadata,
+    ...rest,
     route_schema: PR_ROUTE_METADATA_SCHEMA_VERSION,
-    executed_route: route,
+    executed_route: expected.route,
+    ...(expected.decision ? { route_decision: expected.decision } : {}),
   });
 }
 
-function assertVerified(body: string, expected: ExecutedPrRoute): void {
+function assertVerified(body: string, expected: StampedRoute): void {
   const parsed = parsePrMetadata(body);
   if (parsed.ok === false) {
     throw new Error(`Post-write wavemill-meta parse failed: ${parsed.errors.map((error) => `${error.field}:${error.code}`).join(', ')}`);
@@ -76,9 +114,25 @@ function assertVerified(body: string, expected: ExecutedPrRoute): void {
   if (parsed.metadata.route_schema !== PR_ROUTE_METADATA_SCHEMA_VERSION) {
     throw new Error('Post-write route_schema verification failed');
   }
-  if (routeValue(parsed.metadata) !== stableJsonStringify(expected)) {
+  if (routeValue(parsed.metadata) !== stableJsonStringify(expected.route)) {
     throw new Error('Post-write executed_route verification mismatch');
   }
+  if (decisionValue(parsed.metadata.route_decision) !== decisionValue(expected.decision)) {
+    throw new Error('Post-write route_decision verification mismatch');
+  }
+}
+
+/**
+ * The decision to publish: the latest one recorded for the task, else the one
+ * the PR already carries. A decision is recorded once and never rewritten, so
+ * re-stamping on a new head (or from a feature dir whose routing.jsonl was
+ * lost) carries the original decision forward instead of dropping it.
+ */
+function resolveStampedDecision(
+  reconciled: PrRouteDecision | null,
+  current: PrMetadata | null,
+): PrRouteDecision | null {
+  return reconciled ?? current?.route_decision ?? null;
 }
 
 export async function stampPrRoute(
@@ -110,27 +164,50 @@ export async function stampPrRoute(
     );
   }
 
-  const nextBody = mergeRouteMetadata(pr.body ?? '', reconciliation.route);
-  const currentParsed = parsePrMetadata(pr.body ?? '');
-  if (currentParsed.ok && routeValue(currentParsed.metadata) === stableJsonStringify(reconciliation.route)) {
-    assertVerified(pr.body ?? '', reconciliation.route);
+  const diagnostics = [...reconciliation.diagnostics];
+  const currentParsed = parseCurrentMetadata(pr.body ?? '');
+  let expected: StampedRoute = {
+    route: reconciliation.route,
+    decision: resolveStampedDecision(
+      reconciliation.decision ?? null,
+      currentParsed.ok ? currentParsed.metadata : null,
+    ),
+  };
+  let nextBody: string;
+  try {
+    nextBody = mergeRouteMetadata(pr.body ?? '', expected);
+  } catch (err) {
+    // The decision is best-effort: if it cannot be rendered, stamp the
+    // executed route alone rather than failing the ready stage.
+    if (!expected.decision) throw err;
+    diagnostics.push(`route_decision: omitted (${redactMessage(err)})`);
+    expected = { ...expected, decision: null };
+    nextBody = mergeRouteMetadata(pr.body ?? '', expected);
+  }
+  // No-op only when the body already parses strictly and matches; a dropped
+  // malformed route_decision line still needs a rewrite.
+  const strictCurrent = parsePrMetadata(pr.body ?? '');
+  if (strictCurrent.ok && metadataMatches(strictCurrent.metadata, expected)) {
+    assertVerified(pr.body ?? '', expected);
     return {
       prNumber: pr.number,
       updated: false,
       complete: reconciliation.complete,
-      diagnostics: reconciliation.diagnostics,
+      diagnostics,
       route: reconciliation.route,
+      decision: expected.decision,
     };
   }
 
   const updated = deps.updatePullRequest(input.prNumber, { repo, body: nextBody });
-  assertVerified(updated.body ?? '', reconciliation.route);
+  assertVerified(updated.body ?? '', expected);
   return {
     prNumber: pr.number,
     updated: true,
     complete: reconciliation.complete,
-    diagnostics: reconciliation.diagnostics,
+    diagnostics,
     route: reconciliation.route,
+    decision: expected.decision,
   };
 }
 
@@ -138,7 +215,7 @@ const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
 
 const config = {
   name: 'stamp-pr-route',
-  description: 'Stamp evidence-backed planner/coder/reviewer route metadata on a Wavemill PR',
+  description: 'Stamp evidence-backed executed route and route decision metadata on a Wavemill PR',
   options: {
     issue: {
       type: 'string',
@@ -182,6 +259,7 @@ const config = {
         prNumber: result.prNumber,
         updated: result.updated,
         complete: result.complete,
+        decisionId: result.decision?.decision_id ?? null,
         diagnostics: result.diagnostics,
       }));
     } catch (err) {
