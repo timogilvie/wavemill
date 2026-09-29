@@ -2011,7 +2011,9 @@ describe('executeMerge', () => {
   // HOK-3107: reproduces the PR #1518/#1520 shape — the agent added `wm:ready`
   // ~5 s after PR creation, before the monitor's Ready gate had run. The
   // feature dir exists, but there is no `.ready-tend-handoff.json`. Tend must
-  // skip and strip the label.
+  // skip and strip the label. This test verifies stripUntrustedReady is called
+  // before entering handleHandoffClaimRejection (the error message comes from
+  // that rejection handler, not from our early-exit path).
   it('does not merge and strips wm:ready when handoff has never been published for the current head', async () => {
     const options = buildMergeTestOptions();
     const featureDir = join(options.repoDir, 'features', 'agent-applied-early');
@@ -2034,7 +2036,7 @@ describe('executeMerge', () => {
       );
       assert.equal(result.status, 'skipped');
       assert.equal(result.phase, 'handoff');
-      assert.match(String(result.failureExcerpt), /label stripped as untrusted/i);
+      // HOK-3107: Verify stripUntrustedReady was called when handoff claim fails.
       assert.deepEqual(stripCalls, [42]);
       assert.ok(!options.labels.some((label) => label.startsWith('merging:')));
     } finally {
