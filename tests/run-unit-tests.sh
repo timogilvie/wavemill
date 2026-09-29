@@ -39,6 +39,7 @@ TESTS=(
   shared/lib/intervention-detector.test.ts
   shared/lib/stage-result.test.ts
   shared/lib/task-progress.test.ts
+  shared/lib/task-identity.test.ts
   shared/lib/session-adapters.test.ts
   shared/lib/executed-model-resolver.test.ts
   shared/lib/native-agent/provider.test.ts
