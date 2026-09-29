@@ -181,20 +181,21 @@ run_launch_case() {
       # ancestor of NEW). The worktree origin/<branch> ref still says OLD.
       export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
       rmdir "$WT_DIR"
-      command git init -q --bare "$CASE_DIR/origin.git"
+      command git init -q --bare --initial-branch=main "$CASE_DIR/origin.git"
+      command git -C "$CASE_DIR/origin.git" symbolic-ref HEAD refs/heads/main
       command git init -q -b main "$CASE_DIR/seed"
       command git -C "$CASE_DIR/seed" commit -q --allow-empty -m base
       # Push HEAD explicitly: runner Git may create the initial branch under a
       # different name despite `-b main`.
       command git -C "$CASE_DIR/seed" push -q "$CASE_DIR/origin.git" HEAD:refs/heads/main
-      command git clone -q "$CASE_DIR/origin.git" "$WT_DIR"
+      command git clone -q -b main "$CASE_DIR/origin.git" "$WT_DIR"
       command git -C "$WT_DIR" checkout -q -b task/fix-failing-ci-tests
       printf "work\n" > "$WT_DIR/feature.txt"
       command git -C "$WT_DIR" add feature.txt
       command git -C "$WT_DIR" commit -q -m work
       command git -C "$WT_DIR" push -q -u origin task/fix-failing-ci-tests
       SHA_OLD=$(command git -C "$WT_DIR" rev-parse HEAD)
-      command git clone -q "$CASE_DIR/origin.git" "$CASE_DIR/tend-scratch"
+      command git clone -q -b main "$CASE_DIR/origin.git" "$CASE_DIR/tend-scratch"
       command git -C "$CASE_DIR/tend-scratch" commit -q --allow-empty -m "integration advanced"
       command git -C "$CASE_DIR/tend-scratch" push -q origin main
       command git -C "$CASE_DIR/tend-scratch" checkout -q -b task/fix-failing-ci-tests
