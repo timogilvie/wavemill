@@ -2,13 +2,15 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ExecutedIdentity, ReviewExecutedIdentitySet, StageResult } from './stage-result.ts';
 import {
-  PR_ROUTE_METADATA_SCHEMA_VERSION,
+  EXECUTED_ROUTE_SCHEMA_VERSION,
   type ExecutedPrRoute,
+  type PrRouteDecision,
   type PrRouteEvidence,
   type PrRouteIdentity,
   type PrRouteReviewerRole,
   type PrRouteRole,
 } from './pr-metadata.ts';
+import { latestRouteDecision, parseRouteDecisions, toPrRouteDecision } from './route-decision.ts';
 
 type RouteStage = 'planning' | 'coding' | 'review';
 type RouteRole = 'planner' | 'coder' | 'reviewer';
@@ -25,6 +27,11 @@ export interface ReconcilePrRouteDeps {
 
 export interface ReconcilePrRouteResult {
   route: ExecutedPrRoute;
+  /**
+   * Latest route decision recorded in routing.jsonl (HOK-3098), or null when
+   * none was recorded. Its `supersedes` links to the decision it replaced.
+   */
+  decision: PrRouteDecision | null;
   diagnostics: string[];
   complete: boolean;
 }
@@ -82,18 +89,23 @@ async function readStageResult(
   }
 }
 
+interface RoutingEvents {
+  requested: Record<RouteRole, string | undefined>;
+  decision: PrRouteDecision | null;
+}
+
 async function readRoutingEvents(
   deps: ReconcilePrRouteDeps,
   featureDir: string,
   diagnostics: string[],
-): Promise<Record<RouteRole, string | undefined>> {
+): Promise<RoutingEvents> {
   const text = await deps.readText(join(featureDir, 'routing.jsonl'));
   const requested: Record<RouteRole, string | undefined> = {
     planner: undefined,
     coder: undefined,
     reviewer: undefined,
   };
-  if (text === null) return requested;
+  if (text === null) return { requested, decision: null };
 
   for (const line of text.split(/\r?\n/)) {
     if (!line.trim()) continue;
@@ -104,14 +116,17 @@ async function readRoutingEvents(
       diagnostics.push('routing: malformed jsonl line ignored');
       continue;
     }
-    if (!isRecord(event)) continue;
+    // Route-decision lines (HOK-3098) carry the recommendation, not a
+    // per-phase requested selector; they are read separately below.
+    if (!isRecord(event) || event.kind === 'route_decision') continue;
     const route = isRecord(event.route) ? event.route : event;
     requested.planner = stringField(route.planner) ?? requested.planner;
     requested.coder = stringField(route.coder) ?? stringField(route.model) ?? requested.coder;
     requested.reviewer = stringField(route.reviewer) ?? requested.reviewer;
   }
 
-  return requested;
+  const latest = latestRouteDecision(parseRouteDecisions(text));
+  return { requested, decision: latest ? toPrRouteDecision(latest) : null };
 }
 
 function stageHeadSha(result: StageResult): string | undefined {
@@ -319,15 +334,16 @@ export async function reconcilePrRoute(
   deps: ReconcilePrRouteDeps = DEFAULT_DEPS,
 ): Promise<ReconcilePrRouteResult> {
   const diagnostics: string[] = [];
-  const [planning, coding, review, requested] = await Promise.all([
+  const [planning, coding, review, routing] = await Promise.all([
     readStageResult(deps, input.featureDir, 'planning', diagnostics),
     readStageResult(deps, input.featureDir, 'coding', diagnostics),
     readStageResult(deps, input.featureDir, 'review', diagnostics),
     readRoutingEvents(deps, input.featureDir, diagnostics),
   ]);
 
+  const { requested } = routing;
   const route: ExecutedPrRoute = {
-    schema: PR_ROUTE_METADATA_SCHEMA_VERSION,
+    schema: EXECUTED_ROUTE_SCHEMA_VERSION,
     issue: input.issue,
     head_sha: input.currentHeadSha,
     planner: reconcileSimpleRole('planner', 'planning', planning, input.currentHeadSha, requested.planner),
@@ -345,8 +361,13 @@ export async function reconcilePrRoute(
     diagnostics.push(`reviewer: ${route.reviewer.evidence.reason ?? route.reviewer.status}`);
   }
 
+  if (!routing.decision) {
+    diagnostics.push('route_decision: no route decision recorded');
+  }
+
   return {
     route,
+    decision: routing.decision,
     diagnostics,
     complete: routeComplete(route),
   };

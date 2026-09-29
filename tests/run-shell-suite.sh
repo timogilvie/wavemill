@@ -64,6 +64,9 @@ TESTS=(
   monitor-ready-transition.test.sh
   launch-ready-phase.test.sh
   bounded-retry.test.sh
+  plan-packet-binding.test.sh
+  task-progress.test.sh
+  task-identity.test.sh
   handle-phase-launch-result.test.sh
   launch-pane-liveness.test.sh
   launch-failure-log-capture.test.sh
@@ -133,6 +136,7 @@ TESTS=(
   challenge-fork-inherited-provenance.test.sh
   challenge-fork-non-forked-regression.test.sh
   challenge-fork-review-launch-refusal.test.sh
+  base-ref-stale-local.test.sh
 )
 
 SHARD_INDEX=1

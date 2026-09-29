@@ -925,6 +925,112 @@ test('stale active task with a surviving pane is surfaced as stalled residue', (
   }
 });
 
+test('HOK-3087: fresh working hook rescues a coding task with stale task.updated', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-hok3087-fresh-hook-'));
+  const worktree = join(repoDir, 'worktrees', 'coding-arm');
+  mkdirSync(worktree, { recursive: true });
+  // Unique session avoids collisions with other tests / real hook files.
+  const session = `observer-hok3087-fresh-${process.pid}-${Date.now()}`;
+  const issue = 'HOK-3084';
+  const hookPath = `/tmp/wavemill-${session}-${issue}.hook`;
+  const nowSec = Math.floor(Date.now() / 1000);
+  writeFileSync(hookPath, JSON.stringify({
+    state: 'working',
+    event: 'PreToolUse',
+    detail: 'Read',
+    agent: 'claude',
+    timestamp: nowSec - 60,
+    writer: 'agent',
+    agentRecord: {
+      state: 'working',
+      event: 'PreToolUse',
+      agent: 'claude',
+      timestamp: nowSec - 60,
+      detail: 'Read',
+    },
+  }));
+  try {
+    const findings = buildFindings({
+      timestamp: new Date().toISOString(),
+      sessions: [session],
+      panes: [{
+        session,
+        windowIndex: '3',
+        paneIndex: '0',
+        windowName: `${issue}-coding-arm`,
+        active: true,
+        pid: 3084,
+        command: 'bash',
+        title: 'coding · claude',
+      }],
+      processes: [],
+      repos: [{
+        session,
+        repoDir,
+        tasks: [{
+          issue,
+          slug: 'coding-arm',
+          phase: 'coding',
+          status: 'active',
+          worktree,
+          updated: new Date(Date.now() - 200 * 60 * 1000).toISOString(),
+        }],
+      }],
+    }, defaultObserverOptions());
+
+    const staleActive = findings.filter((f) => f.id.startsWith('stale-active-task-') && f.issue === issue);
+    assert.equal(staleActive.length, 0, `expected no stale-active-task finding, got: ${staleActive.map((f) => f.id).join(', ')}`);
+    const codingStalled = findings.find((f) => f.id === `coding-task-stalled-${session}-${issue}`);
+    assert.equal(codingStalled, undefined, 'expected no coding-task-stalled finding when hook is fresh');
+  } finally {
+    try { rmSync(hookPath, { force: true }); } catch { /* ignore */ }
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3087: stale hook, no commits, no status file still flags stalled', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-hok3087-all-stale-'));
+  const worktree = join(repoDir, 'worktrees', 'dead-arm');
+  mkdirSync(worktree, { recursive: true });
+  const session = `observer-hok3087-stale-${process.pid}-${Date.now()}`;
+  const issue = 'HOK-3087';
+  try {
+    const findings = buildFindings({
+      timestamp: new Date().toISOString(),
+      sessions: [session],
+      panes: [{
+        session,
+        windowIndex: '4',
+        paneIndex: '0',
+        windowName: `${issue}-dead-arm`,
+        active: true,
+        pid: 3087,
+        command: 'bash',
+        title: 'coding · claude',
+      }],
+      processes: [],
+      repos: [{
+        session,
+        repoDir,
+        tasks: [{
+          issue,
+          slug: 'dead-arm',
+          phase: 'coding',
+          status: 'active',
+          worktree,
+          updated: new Date(Date.now() - 200 * 60 * 1000).toISOString(),
+        }],
+      }],
+    }, defaultObserverOptions());
+
+    const staleActive = findings.find((f) => f.id === `stale-active-task-live-process-${session}-${issue}`);
+    assert.ok(staleActive, `expected stale-active-task-live-process finding, got: ${findings.map((f) => f.id).join(', ')}`);
+    assert.match(staleActive.title, /has not progressed/);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
 test('duplicate observer finding respects pane title override', () => {
   const previous = process.env.WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE;
   process.env.WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE = 'Custom Observer';
@@ -1453,8 +1559,12 @@ test('current ready refusal logs surface a loop and prefer needs-attention conte
 // pr-create-failed
 // ---------------------------------------------------------------------------
 
-function runGit(cwd: string, args: string[]): void {
-  const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+function runGit(cwd: string, args: string[], env?: Record<string, string>): void {
+  const result = spawnSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    env: env ? { ...process.env, ...env } : process.env,
+  });
   assert.equal(result.status, 0, `git ${args.join(' ')} failed: ${result.stderr}`);
 }
 
@@ -1462,7 +1572,8 @@ function createResidueGitFixture({
   commits = 2,
   pushTaskBranch = false,
   slug = 'residue-fixture',
-}: { commits?: number; pushTaskBranch?: boolean; slug?: string } = {}) {
+  commitAgeMinutes,
+}: { commits?: number; pushTaskBranch?: boolean; slug?: string; commitAgeMinutes?: number } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'observer-residue-'));
   const repoDir = join(root, 'repo');
   const originDir = join(root, 'origin.git');
@@ -1475,7 +1586,13 @@ function createResidueGitFixture({
   runGit(repoDir, ['checkout', '-b', 'auto/integration']);
   writeFileSync(join(repoDir, 'base.txt'), 'base\n');
   runGit(repoDir, ['add', '.']);
-  runGit(repoDir, ['commit', '-m', 'base commit']);
+  const commitEnv = commitAgeMinutes !== undefined
+    ? (() => {
+        const iso = new Date(Date.now() - commitAgeMinutes * 60_000).toISOString();
+        return { GIT_AUTHOR_DATE: iso, GIT_COMMITTER_DATE: iso };
+      })()
+    : undefined;
+  runGit(repoDir, ['commit', '-m', 'base commit'], commitEnv);
   runGit(repoDir, ['remote', 'add', 'origin', originDir]);
   runGit(repoDir, ['push', '-u', 'origin', 'auto/integration']);
   const branch = `task/${slug}`;
@@ -1483,13 +1600,23 @@ function createResidueGitFixture({
   for (let i = 1; i <= commits; i += 1) {
     writeFileSync(join(repoDir, `work-${i}.txt`), `work ${i}\n`);
     runGit(repoDir, ['add', '.']);
-    runGit(repoDir, ['commit', '-m', `task commit ${i}`]);
+    runGit(repoDir, ['commit', '-m', `task commit ${i}`], commitEnv);
   }
   if (pushTaskBranch) {
     runGit(repoDir, ['push', '-u', 'origin', branch]);
   }
   runGit(repoDir, ['checkout', 'auto/integration']);
   writePermissiveSchema(repoDir);
+  if (commitAgeMinutes !== undefined) {
+    // HOK-3087: match the config/schema mtimes to the aged commit time so the
+    // shared progress primitive's worktree source does not rescue an aged
+    // fixture from the stall gate. Untracked config files sit in the worktree
+    // and would otherwise report NOW as the newest activity time.
+    const aged = new Date(Date.now() - commitAgeMinutes * 60_000);
+    for (const rel of ['wavemill-config.schema.json', '.wavemill-config.json']) {
+      try { utimesSync(join(repoDir, rel), aged, aged); } catch { /* ignore */ }
+    }
+  }
   return { root, repoDir, slug, branch };
 }
 
@@ -2631,7 +2758,10 @@ test('active coding task with unpublished commits emits no cleanup incident whil
 });
 
 test('stalled active unpublished work surfaces as a delivery-risk condition, not a cleanup incident', async () => {
-  const fixture = createResidueGitFixture({ commits: 5, slug: 'active-unpublished-stalled' });
+  // HOK-3087: the incident now consumes the shared progress primitive, so
+  // the fixture ages its commits along with `task.updated` — otherwise fresh
+  // commits would (correctly) rescue the task from the stall gate.
+  const fixture = createResidueGitFixture({ commits: 5, slug: 'active-unpublished-stalled', commitAgeMinutes: 180 });
   try {
     const task = {
       issue: 'HOK-2963',

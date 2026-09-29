@@ -83,6 +83,9 @@ echo "=== Syntax Check (bash -n) ==="
 for f in \
   "$LIB_DIR"/wavemill-*.sh \
   "$LIB_DIR"/bounded-retry.sh \
+  "$LIB_DIR"/plan-packet-binding.sh \
+  "$LIB_DIR"/task-progress.sh \
+  "$LIB_DIR"/task-identity.sh \
   "$LIB_DIR"/challenge-arms.sh \
   "$LIB_DIR"/transient-marker.sh \
   "$LIB_DIR"/terminal-reconciler.sh \
@@ -103,6 +106,7 @@ for f in \
   "$REPO_DIR"/tests/wavemill-guards.test.sh \
   "$REPO_DIR"/tests/dashboard-incidents-section.test.sh \
   "$REPO_DIR"/tests/review-scope-baseline-handoff.test.sh \
+  "$REPO_DIR"/tests/base-ref-stale-local.test.sh \
   "$REPO_DIR"/tests/wavemill-mill-advance.test.sh \
   "$REPO_DIR"/tests/wavemill-backlog-budget.test.sh \
   "$REPO_DIR"/tests/wavemill-dependency-queue-filter.test.sh \
@@ -154,6 +158,9 @@ for f in \
   "$REPO_DIR"/tests/hokusai-test-registration.test.sh \
   "$REPO_DIR"/tests/monitor-script-byte-identical.test.sh \
   "$REPO_DIR"/tests/bounded-retry.test.sh \
+  "$REPO_DIR"/tests/plan-packet-binding.test.sh \
+  "$REPO_DIR"/tests/task-progress.test.sh \
+  "$REPO_DIR"/tests/task-identity.test.sh \
   "$REPO_DIR"/tests/handle-phase-launch-result.test.sh \
   "$REPO_DIR"/tests/launch-pane-liveness.test.sh \
   "$REPO_DIR"/tests/launch-failure-log-capture.test.sh \
@@ -525,6 +532,12 @@ else
     # Extract function definitions from bounded-retry.sh (sourced by wavemill-common.sh)
     BOUNDED_RETRY_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/bounded-retry.sh" | sed 's/()//' | sort -u)
 
+    # Extract function definitions from plan-packet-binding.sh (sourced by monitor, HOK-3099)
+    PLAN_PACKET_BINDING_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/plan-packet-binding.sh" | sed 's/()//' | sort -u)
+
+    # Extract function definitions from task-progress.sh (sourced by wavemill-common.sh, HOK-3101)
+    TASK_PROGRESS_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/task-progress.sh" | sed 's/()//' | sort -u)
+
     # Extract function definitions from challenge-arms.sh (also sourced by wavemill-common.sh, HOK-2811)
     CHALLENGE_ARMS_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/challenge-arms.sh" | sed 's/()//' | sort -u)
 
@@ -544,7 +557,7 @@ else
     WORKTREE_DEPS_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/wavemill-worktree-deps.sh" | sed 's/()//' | sort -u)
 
     # Combine all available function definitions
-    ALL_DEFINED=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' "$HEREDOC_FUNCS" "$ADAPTER_FUNCS" "$COMMON_FUNCS" "$BOUNDED_RETRY_FUNCS" "$CHALLENGE_ARMS_FUNCS" "$HOOK_FUNCS" "$QUEUE_HEALTH_FUNCS" "$MARKER_FUNCS" "$RECONCILER_FUNCS" "$WORKTREE_DEPS_FUNCS" | sort -u)
+    ALL_DEFINED=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' "$HEREDOC_FUNCS" "$ADAPTER_FUNCS" "$COMMON_FUNCS" "$BOUNDED_RETRY_FUNCS" "$PLAN_PACKET_BINDING_FUNCS" "$TASK_PROGRESS_FUNCS" "$CHALLENGE_ARMS_FUNCS" "$HOOK_FUNCS" "$QUEUE_HEALTH_FUNCS" "$MARKER_FUNCS" "$RECONCILER_FUNCS" "$WORKTREE_DEPS_FUNCS" | sort -u)
 
     # Known external commands and bash builtins that are NOT custom functions
     # This list covers standard utilities, coreutils, and tools used by wavemill
@@ -576,6 +589,7 @@ else
       | grep -vE '^(bad|internal|keeping|marking|monitor|rate|reduce|service|skipping|staying|timed|too|using|wavemill|waiting)$' \
       | grep -vE '^(advance|review)$' \
       | grep -vE '^(not_eligible|routing_error|invalid_challenge)$' \
+      | grep -vE '^(legacy_stale|stale)$' \
       | grep -vE '^(a|aborted|already|available|blocked_by_count|break|coding|cp|debug|elapsed|empty_queue|execute|file|fresh|gtimeout|heartbeat_epoch|i|id|launch|length|main|mapfile|missing|next|not|overloaded|plan|ready|required|reservation|slots|staleness|streak|the|they|timeout|todate|todateiso8601|tonumber|tracked|user)$' \
       | grep -vE '^(capabilities|const|import|throw)$')
 
