@@ -1728,6 +1728,17 @@ function createResidueGitFixture({
       })()
     : undefined;
   runGit(repoDir, ['commit', '-m', 'base commit'], commitEnv);
+  // HOK-3088: commit the wavemill config/schema onto the base branch so the
+  // worktree stays clean while the task branch is checked out. Leaving these
+  // as untracked writes made the observer's dirty-worktree predicate escalate
+  // every terminal-parked fixture to urgent and swap the "unpushed commits"
+  // title for "dirty files". Also gitignore `.wavemill/` so the observer's
+  // own transient writes (incident store, findings log) do not dirty the
+  // worktree between successive reconcile passes within a single test.
+  writePermissiveSchema(repoDir);
+  writeFileSync(join(repoDir, '.gitignore'), '.wavemill/\n');
+  runGit(repoDir, ['add', '.']);
+  runGit(repoDir, ['commit', '-m', 'wavemill config'], commitEnv);
   runGit(repoDir, ['remote', 'add', 'origin', originDir]);
   runGit(repoDir, ['push', '-u', 'origin', 'auto/integration']);
   const branch = `task/${slug}`;
@@ -1741,7 +1752,6 @@ function createResidueGitFixture({
     runGit(repoDir, ['push', '-u', 'origin', branch]);
   }
   runGit(repoDir, ['checkout', 'auto/integration']);
-  writePermissiveSchema(repoDir);
   if (commitAgeMinutes !== undefined) {
     // HOK-3087: match the config/schema mtimes to the aged commit time so the
     // shared progress primitive's worktree source does not rescue an aged
@@ -2074,6 +2084,14 @@ test('terminal-task-parked severity scales with parked age', () => {
   const repoDir = mkdtempSync(join(tmpdir(), 'observer-terminal-severity-'));
   try {
     writePermissiveSchema(repoDir);
+    // HOK-3088: init a minimal repo and commit the config so the worktree
+    // reads as clean instead of unreadable (which would bump medium to high).
+    runGit(repoDir, ['init', '-q']);
+    runGit(repoDir, ['config', 'user.email', 'observer-test@example.com']);
+    runGit(repoDir, ['config', 'user.name', 'Observer Test']);
+    runGit(repoDir, ['config', 'commit.gpgsign', 'false']);
+    runGit(repoDir, ['add', '.']);
+    runGit(repoDir, ['commit', '-q', '-m', 'wavemill config']);
     const severityFor = (minutes: number) => {
       const findings = buildFindings(residueSnapshot(repoDir, [{
         issue: 'HOK-2845',
