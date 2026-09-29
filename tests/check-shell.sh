@@ -85,6 +85,7 @@ for f in \
   "$LIB_DIR"/bounded-retry.sh \
   "$LIB_DIR"/plan-packet-binding.sh \
   "$LIB_DIR"/task-progress.sh \
+  "$LIB_DIR"/task-identity.sh \
   "$LIB_DIR"/challenge-arms.sh \
   "$LIB_DIR"/transient-marker.sh \
   "$LIB_DIR"/terminal-reconciler.sh \
@@ -159,6 +160,7 @@ for f in \
   "$REPO_DIR"/tests/bounded-retry.test.sh \
   "$REPO_DIR"/tests/plan-packet-binding.test.sh \
   "$REPO_DIR"/tests/task-progress.test.sh \
+  "$REPO_DIR"/tests/task-identity.test.sh \
   "$REPO_DIR"/tests/handle-phase-launch-result.test.sh \
   "$REPO_DIR"/tests/launch-pane-liveness.test.sh \
   "$REPO_DIR"/tests/launch-failure-log-capture.test.sh \
