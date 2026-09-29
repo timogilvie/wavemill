@@ -1031,6 +1031,141 @@ test('HOK-3087: stale hook, no commits, no status file still flags stalled', () 
   }
 });
 
+// HOK-3095: liveness is progress, not process existence. Shared fixture for
+// a stale `ready` task whose pane and agent process are still alive.
+function hok3095Fixture(label: string, hook?: { state: string; event: string; ageSeconds: number }) {
+  const repoDir = mkdtempSync(join(tmpdir(), `observer-hok3095-${label}-`));
+  const slug = `${label}-arm`;
+  const worktree = join(repoDir, 'worktrees', slug);
+  mkdirSync(worktree, { recursive: true });
+  const session = `observer-hok3095-${label}-${process.pid}-${Date.now()}`;
+  const issue = 'HOK-3095';
+  const hookPath = `/tmp/wavemill-${session}-${issue}.hook`;
+  if (hook) {
+    const timestamp = Math.floor(Date.now() / 1000) - hook.ageSeconds;
+    const record = { state: hook.state, event: hook.event, agent: 'claude', timestamp, detail: '' };
+    writeFileSync(hookPath, JSON.stringify({ ...record, writer: 'agent', agentRecord: record }));
+  }
+  const task = {
+    issue,
+    slug,
+    phase: 'ready',
+    status: 'active',
+    worktree,
+    updated: new Date(Date.now() - 15 * 60 * 60 * 1000).toISOString(),
+  };
+  const livePane = {
+    session,
+    windowIndex: '5',
+    paneIndex: '0',
+    windowName: `${issue}-${slug}`,
+    active: true,
+    pid: 3095,
+    command: 'bash',
+    title: 'ready · claude',
+  };
+  // The agent's own launch argv embeds the slug and worktree — exactly what
+  // the pre-HOK-3095 process match treated as proof of life.
+  const agentProcess = {
+    pid: 3096,
+    ppid: 3095,
+    stat: 'S+',
+    elapsedSeconds: 15 * 60 * 60,
+    command: `claude --model claude-sonnet-5-5 ${worktree}/features/${slug}/ready-prompt.md`,
+  };
+  const cleanup = () => {
+    try { rmSync(hookPath, { force: true }); } catch { /* ignore */ }
+    rmSync(repoDir, { recursive: true, force: true });
+  };
+  return { repoDir, worktree, session, issue, task, livePane, agentProcess, cleanup };
+}
+
+function hok3095Findings(
+  fx: ReturnType<typeof hok3095Fixture>,
+  panes: ReturnType<typeof hok3095Fixture>['livePane'][],
+  processes: Array<ReturnType<typeof hok3095Fixture>['agentProcess']>,
+) {
+  return buildFindings({
+    timestamp: new Date().toISOString(),
+    sessions: [fx.session],
+    panes,
+    processes,
+    repos: [{ session: fx.session, repoDir: fx.repoDir, tasks: [fx.task] }],
+  }, defaultObserverOptions());
+}
+
+test('HOK-3095: agent idle at its prompt past staleMinutes is flagged despite live pane and process', () => {
+  const fx = hok3095Fixture('idle', { state: 'idle', event: 'Stop', ageSeconds: 15 * 60 * 60 });
+  try {
+    const findings = hok3095Findings(fx, [fx.livePane], [fx.agentProcess]);
+    const stale = findings.find((f) => f.id === `stale-active-task-no-live-process-${fx.session}-${fx.issue}`);
+    assert.ok(stale, `expected stale-active-task-no-live-process, got: ${findings.map((f) => f.id).join(', ')}`);
+    assert.match(stale.title, /agent is idle with no progress/);
+    assert.ok(stale.evidence.includes('agentRecordState=idle'));
+    assert.equal(
+      findings.some((f) => f.id === `stale-active-task-live-process-${fx.session}-${fx.issue}`),
+      false,
+      'an idle REPL is not live-process residue',
+    );
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('HOK-3095: agent waiting on a human for hours (hook past TTL) is flagged despite live process', () => {
+  const fx = hok3095Fixture('waiting', { state: 'waiting', event: 'Notification', ageSeconds: 15 * 60 * 60 });
+  try {
+    const findings = hok3095Findings(fx, [fx.livePane], [fx.agentProcess]);
+    const stale = findings.find((f) => f.id === `stale-active-task-no-live-process-${fx.session}-${fx.issue}`);
+    assert.ok(stale, `expected stale-active-task-no-live-process, got: ${findings.map((f) => f.id).join(', ')}`);
+    assert.match(stale.title, /agent is waiting with no progress/);
+    assert.ok(stale.evidence.includes('agentRecordState=waiting'));
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('HOK-3095: monitor polling subprocesses do not count as live evidence', () => {
+  const fx = hok3095Fixture('polled');
+  try {
+    const findings = hok3095Findings(fx, [], [
+      { pid: 4001, ppid: 1, stat: 'S', elapsedSeconds: 5, command: `node --import tsx /opt/wavemill/tools/pr-ci-status.ts 89 --repo-dir ${fx.worktree}` },
+      { pid: 4002, ppid: 1, stat: 'S', elapsedSeconds: 5, command: `npx tsx /opt/wavemill/tools/ready-watchdog.ts --issue ${fx.issue} --repo-dir ${fx.worktree}` },
+    ]);
+    const stale = findings.find((f) => f.id === `stale-active-task-no-live-process-${fx.session}-${fx.issue}`);
+    assert.ok(stale, `expected stale-active-task-no-live-process, got: ${findings.map((f) => f.id).join(', ')}`);
+    assert.match(stale.title, /no live pane or process evidence/);
+    assert.ok(stale.evidence.includes(`worktree=${fx.worktree}`));
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('HOK-3095: hookless task keeps the pane/process fallback (agent process is residue)', () => {
+  const fx = hok3095Fixture('hookless');
+  try {
+    const findings = hok3095Findings(fx, [], [fx.agentProcess]);
+    assert.ok(
+      findings.some((f) => f.id === `stale-active-task-live-process-${fx.session}-${fx.issue}`),
+      `expected stale-active-task-live-process, got: ${findings.map((f) => f.id).join(', ')}`,
+    );
+    assert.equal(findings.some((f) => f.id === `stale-active-task-no-live-process-${fx.session}-${fx.issue}`), false);
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('HOK-3095: a fresh working hook is still not flagged (consistent with HOK-3087)', () => {
+  const fx = hok3095Fixture('working', { state: 'working', event: 'PreToolUse', ageSeconds: 60 });
+  try {
+    const findings = hok3095Findings(fx, [fx.livePane], [fx.agentProcess]);
+    const staleActive = findings.filter((f) => f.id.startsWith('stale-active-task-') && f.issue === fx.issue);
+    assert.equal(staleActive.length, 0, `expected no stale-active-task finding, got: ${staleActive.map((f) => f.id).join(', ')}`);
+  } finally {
+    fx.cleanup();
+  }
+});
+
 test('duplicate observer finding respects pane title override', () => {
   const previous = process.env.WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE;
   process.env.WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE = 'Custom Observer';
