@@ -1943,21 +1943,130 @@ describe('executeMerge', () => {
     };
     const options = buildMergeTestOptions({ handoffClaimRetry });
     const featureDir = join(options.repoDir, 'features', 'missing-handoff');
+    const stripCalls: number[] = [];
     try {
-      const result = await executeMerge(candidate({ headSha: 'head-sha', featureDir }), { repoDir: options.repoDir, deps: options.deps });
+      const result = await executeMerge(
+        candidate({ headSha: 'head-sha', featureDir }),
+        {
+          repoDir: options.repoDir,
+          deps: {
+            ...options.deps,
+            stripUntrustedReady: (prNumber) => {
+              stripCalls.push(prNumber);
+            },
+          },
+        },
+      );
       assert.equal(result.status, 'skipped');
       assert.equal(result.phase, 'handoff');
-      // Excerpt names the reason so the loop's log line is informative.
+      // HOK-3108: Excerpt names the reason so the loop's log line is informative.
       assert.match(result.failureExcerpt ?? '', /no Ready handoff file/);
       assert.match(result.failureExcerpt ?? '', /\(1\/3\)/);
-      // Budget consulted + incremented, never marked exhausted on the first miss.
+      // HOK-3108: Budget consulted + incremented, never marked exhausted on the first miss.
       assert.deepEqual(events, ['gate:42:head-sha', 'increment:42:head-sha']);
       assert.ok(!options.labels.includes('merging:42'));
-      // Critical HOK-3108 invariant: claim on a missing handoff MUST NOT
+      // HOK-3108: Critical invariant: claim on a missing handoff MUST NOT
       // create the .ready-tend-handoff.json file. A stray `checked` record
       // was what made 950 skips of PR #1519 look like a legitimate "Ready
       // still checking" state.
       assert.equal(existsSync(join(featureDir, '.ready-tend-handoff.json')), false);
+      // HOK-3107: Also verify stripUntrustedReady was called when handoff claim is rejected.
+      assert.deepEqual(stripCalls, [42]);
+    } finally {
+      options.cleanup();
+    }
+  });
+
+  // HOK-3107: reproduces the PR #1513 shape — the agent added `wm:ready` while
+  // the mill had no workflow-state entry for the PR, so `resolveReadyStateDir`
+  // returned null and `featureDir` was undefined. The old fail-open branch let
+  // tend merge such PRs on the strength of an agent-applied label. Under the
+  // new guard, tend must skip and strip the untrusted label.
+  it('does not merge and strips wm:ready when featureDir is missing (agent-applied label)', async () => {
+    const options = buildMergeTestOptions();
+    const stripCalls: number[] = [];
+    try {
+      const result = await executeMerge(
+        candidate({ headSha: 'head-sha' }),
+        {
+          repoDir: options.repoDir,
+          deps: {
+            ...options.deps,
+            stripUntrustedReady: (prNumber) => {
+              stripCalls.push(prNumber);
+            },
+          },
+        },
+      );
+      assert.equal(result.status, 'skipped');
+      assert.equal(result.phase, 'handoff');
+      assert.match(String(result.failureExcerpt), /label stripped as untrusted/i);
+      assert.deepEqual(stripCalls, [42]);
+      assert.ok(!options.labels.some((label) => label.startsWith('merging:')));
+    } finally {
+      options.cleanup();
+    }
+  });
+
+  // HOK-3107: reproduces the PR #1518/#1520 shape — the agent added `wm:ready`
+  // ~5 s after PR creation, before the monitor's Ready gate had run. The
+  // feature dir exists, but there is no `.ready-tend-handoff.json`. Tend must
+  // skip and strip the label. This test verifies stripUntrustedReady is called
+  // before entering handleHandoffClaimRejection (the error message comes from
+  // that rejection handler, not from our early-exit path).
+  it('does not merge and strips wm:ready when handoff has never been published for the current head', async () => {
+    const options = buildMergeTestOptions();
+    const featureDir = join(options.repoDir, 'features', 'agent-applied-early');
+    const stripCalls: number[] = [];
+    // Feature dir exists but has no handoff file yet — mirrors the pre-Ready
+    // window where an agent-applied label alone could have triggered a merge.
+    mkdirSync(featureDir, { recursive: true });
+    try {
+      const result = await executeMerge(
+        candidate({ headSha: 'head-sha', featureDir }),
+        {
+          repoDir: options.repoDir,
+          deps: {
+            ...options.deps,
+            stripUntrustedReady: (prNumber) => {
+              stripCalls.push(prNumber);
+            },
+          },
+        },
+      );
+      assert.equal(result.status, 'skipped');
+      assert.equal(result.phase, 'handoff');
+      // HOK-3107: Verify stripUntrustedReady was called when handoff claim fails.
+      assert.deepEqual(stripCalls, [42]);
+      assert.ok(!options.labels.some((label) => label.startsWith('merging:')));
+    } finally {
+      options.cleanup();
+    }
+  });
+
+  // HOK-3107: happy-path regression — when Ready has published a matching
+  // handoff for the current head, tend still merges. Guards against
+  // over-tightening the check.
+  it('still merges when Ready published the handoff for the current head', async () => {
+    const options = buildMergeTestOptions({ rebaseHeadSha: 'head-sha' });
+    const featureDir = join(options.repoDir, 'features', 'happy-path-handoff');
+    const stripCalls: number[] = [];
+    try {
+      await publishReadyHandoff(featureDir, 42, 'head-sha');
+      const result = await executeMerge(
+        candidate({ headSha: 'head-sha', featureDir }),
+        {
+          repoDir: options.repoDir,
+          deps: {
+            ...options.deps,
+            stripUntrustedReady: (prNumber) => {
+              stripCalls.push(prNumber);
+            },
+          },
+        },
+      );
+      assert.equal(result.status, 'merged');
+      assert.deepEqual(stripCalls, []);
     } finally {
       options.cleanup();
     }
@@ -3931,10 +4040,25 @@ describe('executeMerge worktree-prep timeout (HOK-3039)', () => {
       prepRunnerFactory: makeTimeoutRunner('add'),
       scratchPrepRetry,
     });
+    const featureDir = join(options.repoDir, 'features', 'prep-timeout-first');
+    await publishReadyHandoff(featureDir, 42, 'head-first-timeout');
+    // Handoff guard reads GitHub's live head to validate it matches the
+    // selection's headSha before claiming ownership.
+    const shellRunnerRef: MergeExecutionDeps['shellRunner'] = (cmd, opts) => {
+      if (cmd.includes('gh pr view')) {
+        return JSON.stringify({
+          mergeStateStatus: 'CLEAN',
+          headRefOid: 'head-first-timeout',
+          baseRefOid: 'base-sha',
+          statusCheckRollup: [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }],
+        });
+      }
+      return (options.deps.shellRunner as MergeExecutionDeps['shellRunner'])(cmd, opts);
+    };
     try {
       const result = await executeMerge(
-        candidate({ headSha: 'head-first-timeout' }),
-        { repoDir: options.repoDir, deps: options.deps },
+        candidate({ headSha: 'head-first-timeout', featureDir }),
+        { repoDir: options.repoDir, deps: { ...options.deps, shellRunner: shellRunnerRef } },
       );
       assert.equal(result.status, 'skipped');
       assert.equal(result.phase, 'worktree-timeout');
@@ -3962,10 +4086,23 @@ describe('executeMerge worktree-prep timeout (HOK-3039)', () => {
       prepRunnerFactory: makeTimeoutRunner('add'),
       scratchPrepRetry,
     });
+    const featureDir = join(options.repoDir, 'features', 'prep-timeout-exhausted');
+    await publishReadyHandoff(featureDir, 42, 'head-exhausted');
+    const shellRunnerRef: MergeExecutionDeps['shellRunner'] = (cmd, opts) => {
+      if (cmd.includes('gh pr view')) {
+        return JSON.stringify({
+          mergeStateStatus: 'CLEAN',
+          headRefOid: 'head-exhausted',
+          baseRefOid: 'base-sha',
+          statusCheckRollup: [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }],
+        });
+      }
+      return (options.deps.shellRunner as MergeExecutionDeps['shellRunner'])(cmd, opts);
+    };
     try {
       const result = await executeMerge(
-        candidate({ headSha: 'head-exhausted' }),
-        { repoDir: options.repoDir, deps: options.deps },
+        candidate({ headSha: 'head-exhausted', featureDir }),
+        { repoDir: options.repoDir, deps: { ...options.deps, shellRunner: shellRunnerRef } },
       );
       assert.equal(result.status, 'blocked');
       assert.equal(result.phase, 'worktree-timeout');
