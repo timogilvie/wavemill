@@ -226,6 +226,17 @@ check_eq "monitor does not bind branch-only open PR" "" "$(find_pr_for_branch "t
 write_prs "task/reopened-r2" '[{"number":78,"state":"OPEN","mergedAt":null,"headRefName":"task/reopened-r2","headRefOid":"c1","baseRefName":"auto/integration","title":"HOK-2595 current attempt","body":"","updatedAt":"2026-09-08T00:00:00Z"}]'
 check_eq "monitor binds evidence-backed current open PR" "78" "$(find_pr_for_branch "task/reopened-r2")"
 
+# HOK-3110: evidence-backed merged candidates bind; branch-only merged stays historical.
+write_prs "task/merged-current" '[{"number":79,"state":"MERGED","mergedAt":"2026-09-10T00:00:00Z","headRefName":"task/merged-current","headRefOid":"x1","baseRefName":"auto/integration","title":"HOK-3005 current attempt","body":"","updatedAt":"2026-09-10T00:00:00Z"}]'
+state_mutate "$STATE_FILE" \
+  '.tasks["HOK-3005"] = {slug:"merged-current", branch:"task/merged-current", worktree:"w", attempt:{attemptId:"HOK-3005-a1"}, lifecycle:{launchContract:{baseBranch:"auto/integration"}}}'
+check_eq "monitor binds evidence-backed current merged PR" "79" "$(find_pr_for_branch "task/merged-current")"
+
+write_prs "task/historical-merged" '[{"number":80,"state":"MERGED","mergedAt":"2026-09-01T00:00:00Z","headRefName":"task/historical-merged","headRefOid":"h1","baseRefName":"auto/integration","title":"old historical work","body":"","updatedAt":"2026-09-01T00:00:00Z"}]'
+state_mutate "$STATE_FILE" \
+  '.tasks["HOK-3006"] = {slug:"historical-merged", branch:"task/historical-merged", worktree:"w", attempt:{attemptId:"HOK-3006-a1"}, lifecycle:{launchContract:{baseBranch:"auto/integration"}}}'
+check_eq "monitor ignores branch-only merged candidate" "" "$(find_pr_for_branch "task/historical-merged")"
+
 echo ""
 echo "--- Results: $PASS passed, $FAIL failed ---"
 if (( FAIL > 0 )); then

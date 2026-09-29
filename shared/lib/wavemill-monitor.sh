@@ -13098,7 +13098,7 @@ find_pr_for_branch() {
   resolution="$(wavemill_resolve_pr_attempt "$issue" "$branch" "$base_branch" "$head_sha" "$attempt_id" "$linear_state" "$challenge_pair" "$challenge_role")"
   classification="$(jq -r '.classification // "unverifiable"' <<<"$resolution" 2>/dev/null || echo "unverifiable")"
   wavemill_persist_attempt_reconciliation "$issue" "$attempt_json" "$resolution" "monitor-pr-discovery" >/dev/null 2>&1 || true
-  if [[ "$classification" == "current-open" ]]; then
+  if [[ "$classification" == "current-open" || "$classification" == "current-merged" ]]; then
     pr_number="$(jq -r '.selectedCandidate.number // empty' <<<"$resolution" 2>/dev/null || true)"
     [[ -n "$pr_number" ]] && printf '%s\n' "$pr_number"
     return 0
@@ -16370,6 +16370,19 @@ monitor_issue_state() {
   # and mark the task for attention so committed or uncommitted work is not
   # silently lost.
 
+	# HOK-3110: give the primary an opportunity to discover a pre-merged PR
+	# before the challenge-aborted/no-PR guard can discard the arm. The
+	# lineage-matched "current-merged" classification is trusted because
+	# wavemill_resolve_pr_attempt already verified head branch, base, and
+	# launch evidence.
+	local _hok3110_discovered_pr="" _hok3110_discovered_state=""
+	if [[ -z "$PR" && -n "$BRANCH" ]]; then
+		_hok3110_discovered_pr="$(find_pr_for_branch "$BRANCH")"
+		if [[ -n "$_hok3110_discovered_pr" ]]; then
+			_hok3110_discovered_state="$(pr_state "$_hok3110_discovered_pr" 2>/dev/null || true)"
+		fi
+	fi
+
 	  # If already merged or completed-external (requireConfirm), wait for window close then cleanup
 	  task_status=$(read_state_value "" --arg issue "$ISSUE" '.tasks[$issue].status // empty')
 	  local challenge_aborted pair_id_for_cleanup
@@ -16382,7 +16395,11 @@ monitor_issue_state() {
 	    cleanup_aborted_challenge_arm "$ISSUE" "$SLUG" "aborted challenge retry" || true
 	    return 0
 	  fi
-	  if [[ -n "$challenge_aborted" && -z "$PR" && -n "$pair_id_for_cleanup" ]] \
+	  # HOK-3110: the aborted-challenge/no-PR guard must only fire after the
+	  # arm has had a chance to discover its own PR. If a PR (open or merged)
+	  # was just discovered, skip the guard so the normal binding/merged path
+	  # can run.
+	  if [[ -n "$challenge_aborted" && -z "$PR" && -z "$_hok3110_discovered_pr" && -n "$pair_id_for_cleanup" ]] \
 	    && challenge_pair_record_exists "$pair_id_for_cleanup"; then
 	    if declare -F monitor_cleanup_episode_skip >/dev/null 2>&1 && monitor_cleanup_episode_skip "$ISSUE" "$SLUG" "$PR"; then
 	      return 0
@@ -16390,6 +16407,17 @@ monitor_issue_state() {
 	    cleanup_aborted_challenge_arm "$ISSUE" "$SLUG" "challenge pair resolved" || true
 	    return 0
 	  fi
+
+	# HOK-3110: bind a lineage-matched merged PR now so the existing
+	# merged-task cleanup block fires in the same tick. Open PRs fall through
+	# to the normal discovery block below.
+	if [[ -z "$PR" && -n "$_hok3110_discovered_pr" && "$task_status" != "aborted" && "$task_status" != "error" && "$_hok3110_discovered_state" == "MERGED" ]]; then
+		PR="$_hok3110_discovered_pr"
+		PR_BY_ISSUE["$ISSUE"]="$PR"
+		current_agent=$(read_state_value "" --arg i "$ISSUE" '.tasks[$i].agent // ""')
+		save_task_state "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR" "$PR" "merged" "$current_agent"
+		task_status="merged"
+	fi
 	  if [[ "$task_status" == "merged" || "$task_status" == "completed-external" ]]; then
     if [[ "$task_status" == "merged" ]]; then
       local merged_ready_dir merged_before_ready=false

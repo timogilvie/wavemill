@@ -144,6 +144,8 @@ run_monitor_case() {
     REVIEW_LAUNCH_COUNT=0
     RESTORE_COUNT=0
     CLEANUP_COUNT=0
+    ABORT_CLEANUP_COUNT=0
+    MERGED_RESOLVE_COUNT=0
     INVOKE_COUNT=1
     WRITE_STAGE_CALLS=""
     WRITE_READY_ATTENTION_CALLS=""
@@ -498,6 +500,89 @@ JSON
 {"stage":"ready","status":"completed","artifacts":{"verdict":"pass","readyBaseSha":"old-sha","queueState":"merge-candidate"}}
 JSON
         ;;
+      hok3110_merged_aborted_challenger)
+        CURRENT_PHASE="coding"
+        FOUND_PR="79"
+        PR_STATUS="MERGED"
+        VALIDATE_MERGED="true"
+        CHALLENGE_TASK="true"
+        mkdir -p "$WORKTREE_ROOT/$SLUG/features/$SLUG"
+        cat > "$STATE_FILE" <<JSON
+{
+  "session": "ready-transition-test",
+  "tasks": {
+    "$ISSUE": {
+      "slug": "$SLUG",
+      "branch": "$BRANCH",
+      "worktree": "$WORKTREE_ROOT/$SLUG",
+      "phase": "coding",
+      "status": "active",
+      "agent": "codex",
+      "challenge": true,
+      "challengePairId": "$ISSUE",
+      "challengeRole": "primary",
+      "challengeModel": "gpt-5",
+      "challengeAborted": "planning_aborted",
+      "challengeAbortedStage": "planning"
+    },
+    "${ISSUE}_c": {
+      "slug": "$SLUG-c",
+      "branch": "task/$SLUG-c",
+      "worktree": "$WORKTREE_ROOT/$SLUG-c",
+      "phase": "aborted",
+      "status": "active",
+      "agent": "codex",
+      "challenge": true,
+      "challengePairId": "$ISSUE",
+      "challengeRole": "challenger",
+      "challengeAborted": "planning_aborted"
+    }
+  }
+}
+JSON
+        unset "PR_BY_ISSUE[$ISSUE]"
+        PR=""
+        ;;
+      hok3110_aborted_challenger_no_pr)
+        CURRENT_PHASE="coding"
+        CHALLENGE_TASK="true"
+        mkdir -p "$WORKTREE_ROOT/$SLUG/features/$SLUG"
+        cat > "$STATE_FILE" <<JSON
+{
+  "session": "ready-transition-test",
+  "tasks": {
+    "$ISSUE": {
+      "slug": "$SLUG",
+      "branch": "$BRANCH",
+      "worktree": "$WORKTREE_ROOT/$SLUG",
+      "phase": "coding",
+      "status": "active",
+      "agent": "codex",
+      "challenge": true,
+      "challengePairId": "$ISSUE",
+      "challengeRole": "primary",
+      "challengeModel": "gpt-5",
+      "challengeAborted": "planning_aborted"
+    },
+    "${ISSUE}_c": {
+      "slug": "$SLUG-c",
+      "branch": "task/$SLUG-c",
+      "worktree": "$WORKTREE_ROOT/$SLUG-c",
+      "phase": "aborted",
+      "status": "active",
+      "agent": "codex",
+      "challenge": true,
+      "challengePairId": "$ISSUE",
+      "challengeRole": "challenger",
+      "challengeAborted": "planning_aborted"
+    }
+  }
+}
+JSON
+        unset "PR_BY_ISSUE[$ISSUE]"
+        PR=""
+        FOUND_PR=""
+        ;;
       *)
         echo "unknown case: $CASE_NAME" >&2
         exit 1
@@ -571,9 +656,13 @@ JSON
       [[ "$RESTORE_SHOULD_FAIL" != "true" ]]
     }
     validate_pr_merge() { [[ "$VALIDATE_MERGED" == "true" ]]; }
+    pr_state() { printf "%s\n" "$PR_STATUS"; }
     write_ready_attention_file() {
       printf -v WRITE_READY_ATTENTION_CALLS '%s%s\n' "$WRITE_READY_ATTENTION_CALLS" "$*"
     }
+    resolve_pair_on_primary_merge() { MERGED_RESOLVE_COUNT=$((MERGED_RESOLVE_COUNT + 1)); }
+    cleanup_aborted_challenge_arm() { ABORT_CLEANUP_COUNT=$((ABORT_CLEANUP_COUNT + 1)); }
+    challenge_pair_record_exists() { return 1; }
     ready_state_dir() { printf "%s\n" "$READY_DIR"; }
     ready_conflict_launch_head() {
       if [[ "$CASE_NAME" == "ready_conflict_rerun" ]]; then
@@ -599,6 +688,22 @@ JSON
     transient_error_recovery_pending() { return 1; }
     phase_should_remain_active_without_pr() { return 1; }
     codex_has_pending_approval() { return 1; }
+
+    # HOK-3110 overrides: the generic mocks cannot read challenge state, so
+    # restore real reads for the two challenge-cases and let the pair record
+    # exist.
+    if [[ "$CASE_NAME" == hok3110_* ]]; then
+      read_state_value() {
+        local default="$1"
+        shift
+        jq -r "$@" "$STATE_FILE" 2>/dev/null || printf "%s\n" "$default"
+      }
+      get_task_meta() {
+        local issue="$1" key="$2"
+        jq -r --arg issue "$issue" --arg key "$key" ".tasks[\$issue][\$key] // \"\"" "$STATE_FILE" 2>/dev/null || true
+      }
+      challenge_pair_record_exists() { return 0; }
+    fi
 
     for ((i = 0; i < INVOKE_COUNT; i++)); do
       monitor_issue_state "$ISSUE"
@@ -646,6 +751,8 @@ JSON
     printf "pending_count=%s\npending_sentinel=%s\npending_exhausted_log_count=%s\n" \
       "$pending_count" "$pending_sentinel" "$pending_exhausted_log_count"
     printf "handler_calls=%s\n" "$HANDLER_CALLS"
+    printf "merged_resolve_count=%s\n" "$MERGED_RESOLVE_COUNT"
+    printf "abort_cleanup_count=%s\n" "$ABORT_CLEANUP_COUNT"
   '
 }
 
@@ -861,6 +968,20 @@ ready_merge_candidate_main_advanced_not_selected_output="$(run_monitor_case read
 check_contains "merge-candidate main-advanced not-selected does not re-run ready" "$ready_merge_candidate_main_advanced_not_selected_output" "ready_launches=0"
 check_contains "merge-candidate main-advanced not-selected keeps task active" "$ready_merge_candidate_main_advanced_not_selected_output" "active_count=1"
 check_contains "merge-candidate main-advanced not-selected clears attention" "$ready_merge_candidate_main_advanced_not_selected_output" "attention=clear"
+
+echo "=== HOK-3110 Merged PR + aborted challenger ==="
+
+hok3110_merged_output="$(run_monitor_case hok3110_merged_aborted_challenger)"
+check_contains "merged primary binds PR despite aborted challenger" "$hok3110_merged_output" "save_task_state_status=merged"
+check_contains "merged primary resolves challenge pair" "$hok3110_merged_output" "merged_resolve_count=1"
+check_contains "merged primary runs merged cleanup" "$hok3110_merged_output" "cleanup_count=1"
+check_not_contains "merged primary does not clean up via aborted-arm path" "$hok3110_merged_output" "abort_cleanup_count=1"
+check_contains "merged primary logs merged status" "$hok3110_merged_output" "PR #79 was merged before ready checks passed"
+
+hok3110_no_pr_output="$(run_monitor_case hok3110_aborted_challenger_no_pr)"
+check_contains "aborted no-PR arm still takes cleanup path" "$hok3110_no_pr_output" "abort_cleanup_count=1"
+check_not_contains "aborted no-PR arm not promoted to merged" "$hok3110_no_pr_output" "save_task_state_status=merged"
+check_not_contains "aborted no-PR arm does not resolve pair" "$hok3110_no_pr_output" "merged_resolve_count=1"
 
 echo ""
 echo "--- Results: $PASS passed, $FAIL failed ---"
