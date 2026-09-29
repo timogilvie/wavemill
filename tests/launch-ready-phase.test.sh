@@ -184,6 +184,9 @@ run_launch_case() {
       command git init -q --bare "$CASE_DIR/origin.git"
       command git init -q -b main "$CASE_DIR/seed"
       command git -C "$CASE_DIR/seed" commit -q --allow-empty -m base
+      # Some runner Git configurations ignore init.defaultBranch / `-b` for a
+      # freshly-created fixture; name the source ref explicitly before push.
+      command git -C "$CASE_DIR/seed" branch -M main
       command git -C "$CASE_DIR/seed" push -q "$CASE_DIR/origin.git" main
       command git clone -q "$CASE_DIR/origin.git" "$WT_DIR"
       command git -C "$WT_DIR" checkout -q -b task/fix-failing-ci-tests
