@@ -790,12 +790,32 @@ describe('native review', () => {
 
     try {
       const result = await runNativeReview(makeReviewContext(), repoDir, {});
-      assert.equal(result.verdict, 'not_ready');
+      // HOK-3106: provider-resolution failures are infrastructure, not a
+      // substantive review verdict. They must produce verdict:error with no
+      // synthetic blocker, but keep the actionable diagnostic on
+      // reviewToolError so the operator can still see how to remediate.
+      assert.equal(result.verdict, 'error');
       assert.equal(result.failureCategory, 'native-runtime-unavailable');
-      assert.equal(result.codeReviewFindings[0].category, 'native-runtime-unavailable');
-      assert.match(result.codeReviewFindings[0].description, /no native providers are configured/);
-      assert.match(result.codeReviewFindings[0].description, /wavemill native-agent models report --json/);
-      assert.match(result.codeReviewFindings[0].description, /Configure nativeAgent\.providers/);
+      assert.deepEqual(result.codeReviewFindings, []);
+      assert.match(result.reviewToolError ?? '', /no native providers are configured/);
+      assert.match(result.reviewToolError ?? '', /wavemill native-agent models report --json/);
+      assert.match(result.reviewToolError ?? '', /Configure nativeAgent\.providers/);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('routes an absent provider API key as an infra no-evidence failure (HOK-3106)', async () => {
+    const repoDir = makeTempRepo();
+    setReadyProvider();
+    nativeReviewTestUtils.setGetNativeProviderApiKey(() => '');
+
+    try {
+      const result = await runNativeReview(makeReviewContext(), repoDir, {});
+      assert.equal(result.verdict, 'error');
+      assert.equal(result.failureCategory, 'native-runtime-unavailable');
+      assert.deepEqual(result.codeReviewFindings, []);
+      assert.match(result.reviewToolError ?? '', /OPENAI_API_KEY resolved to an empty value/);
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }

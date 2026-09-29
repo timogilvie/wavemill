@@ -238,6 +238,11 @@ source "$LIB_DIR/wavemill-common.sh"
 if [[ -f "$LIB_DIR/terminal-reconciler.sh" ]]; then
 source "$LIB_DIR/terminal-reconciler.sh"
 fi
+# Plan<->packet binding gate (HOK-3099). Sourced after wavemill-common.sh so
+# the mtime fallback can reuse standard helpers.
+if [[ -f "$LIB_DIR/plan-packet-binding.sh" ]]; then
+source "$LIB_DIR/plan-packet-binding.sh"
+fi
 # Queue-health helpers used by the dependency queue planner path.
 # Sourced after wavemill-common.sh so state_mutate is available.
 if [[ -f "$LIB_DIR/queue-health.sh" ]]; then
@@ -4466,6 +4471,128 @@ approve_plan() {
   local feature_dir="$1"
   local agent="${2:-}" model="${3:-}"
   write_stage_result "$feature_dir" "planning" "completed" "$agent" "$model" "Plan approved by user" '{"type":"planning","planFile":"plan.md"}'
+  # HOK-3099: bind the approved plan to the packet bytes present at approval so
+  # the handoff can detect a packet regenerated in-band (recovery, reroute) and
+  # refuse to launch coding against a stale plan. Best-effort; never blocks
+  # approval.
+  if declare -F plan_packet_record_binding >/dev/null 2>&1; then
+    plan_packet_record_binding "$feature_dir" "approval" || true
+  fi
+}
+
+# HOK-3099: gate the plan->code handoff on the plan<->packet binding.
+# Returns 0 when coding may proceed (match, safe legacy, or hashing
+# unavailable). Returns 1 when the plan is stale relative to the packet; the
+# caller must not launch coding this cycle.
+#
+# On divergence (mismatch or legacy_stale) the stale plan is preserved as
+# plan.stale-<epoch>.md, .plan-approved is cleared, and a bounded-retry gate
+# admits exactly one automatic re-plan. When the re-plan budget is exhausted
+# (or hashing is available but relaunching state cannot advance), the task
+# is transitioned to needs-user via a monitor-owned `plan_packet_divergence`
+# hook.
+#
+# Usage: enforce_plan_packet_binding <issue> <feature_dir> <win> <current_agent>
+enforce_plan_packet_binding() {
+  local issue="$1" feature_dir="$2" win="$3" current_agent="${4:-}"
+  local decision recorded current disposition
+  local -r bucket="plan-packet-replan"
+  local -r ceiling=1
+
+  if ! declare -F plan_packet_check_binding >/dev/null 2>&1; then
+    return 0
+  fi
+
+  decision="$(plan_packet_check_binding "$feature_dir" 2>/dev/null || echo "")"
+  recorded="$(plan_packet_recorded_packet_hash "$feature_dir")"
+  current="$(plan_packet_current_hash "$feature_dir" 2>/dev/null | awk '{print $1}')"
+
+  log "info" "  $issue: plan_packet_check result=$decision recorded=${recorded:-none} current=${current:-none}"
+
+  case "$decision" in
+    match|legacy|no_packet|unavailable|"")
+      # A safe handoff clears any prior re-plan budget so a future,
+      # unrelated divergence gets a fresh ceiling.
+      bounded_retry_clear "$feature_dir" "$bucket" 2>/dev/null || true
+      return 0
+      ;;
+    mismatch|legacy_stale)
+      : # fall through to re-plan
+      ;;
+    *)
+      log_warn "  $issue: plan_packet_check unknown result '$decision' — treating as safe"
+      return 0
+      ;;
+  esac
+
+  # Head input for the bounded-retry bucket: the current packet hash. A fresh
+  # packet regeneration resets the budget (a new head).
+  disposition=$(bounded_retry_gate "$feature_dir" "$bucket" "${current:-none}" "$ceiling")
+
+  case "$disposition" in
+    proceed)
+      bounded_retry_increment "$feature_dir" "$bucket" "${current:-none}" >/dev/null
+      _plan_packet_relaunch_planning "$issue" "$feature_dir" "$win" "$current_agent" "$decision" "$recorded" "$current"
+      return 1
+      ;;
+    backoff)
+      log "debug" "  $issue: plan-packet re-plan held (backoff)"
+      set_window_attention_state "$win" "needs-user"
+      return 1
+      ;;
+    exhausted|exhausted-quiet|*)
+      _plan_packet_needs_user "$issue" "$feature_dir" "$win" "$current_agent" "$decision" "$recorded" "$current"
+      return 1
+      ;;
+  esac
+}
+
+_plan_packet_relaunch_planning() {
+  local issue="$1" feature_dir="$2" win="$3" current_agent="${4:-}"
+  local decision="$5" recorded="$6" current="$7"
+  local note
+
+  if declare -F plan_packet_preserve_stale_plan >/dev/null 2>&1; then
+    plan_packet_preserve_stale_plan "$feature_dir" || true
+  fi
+  rm -f "$feature_dir/.plan-approved" 2>/dev/null || true
+  # Clear the completed planning stage so the routing → planning launcher
+  # re-fires on the next monitor tick. The pre-existing .routing-complete
+  # remains valid; only the plan itself was stale.
+  if declare -F clear_stage_result >/dev/null 2>&1; then
+    clear_stage_result "$feature_dir" "planning" || true
+  fi
+  # Revert task-state phase to routing so the routing case re-launches
+  # planning (with a fresh plan) against the current packet.
+  set_task_phase "$issue" "routing"
+
+  note="Plan/packet divergence ($decision): packet regenerated after approval (recorded=${recorded:-none} current=${current:-none}), preserving stale plan and re-planning"
+  log "status" "$issue → $note"
+  set_window_attention_state "$win" "clear"
+}
+
+_plan_packet_needs_user() {
+  local issue="$1" feature_dir="$2" win="$3" current_agent="${4:-}"
+  local decision="$5" recorded="$6" current="$7"
+  local detail next_action hook_protocol
+
+  detail="Plan/packet divergence ($decision) after re-plan budget exhausted (recorded=${recorded:-none} current=${current:-none})"
+  next_action="Review the regenerated packet in $feature_dir and re-plan manually before approving."
+
+  write_stage_result "$feature_dir" "planning" "awaiting_user" "$current_agent" "" "$detail"
+  set_window_attention_state "$win" "needs-user"
+
+  hook_protocol="$LIB_DIR/../hooks/wavemill-hook-protocol.sh"
+  if [[ -f "$hook_protocol" ]]; then
+    # shellcheck disable=SC1090
+    source "$hook_protocol" || true
+    if declare -F wavemill_hook_write >/dev/null 2>&1; then
+      WAVEMILL_SESSION="$SESSION" WAVEMILL_ISSUE="$issue" \
+        wavemill_hook_write "blocked" "plan_packet_divergence" "$detail" "${current_agent:-unknown}" "$next_action" "monitor" || true
+    fi
+  fi
+
+  log_warn "$issue → $detail"
 }
 
 resolve_stage_result_model() {
@@ -16636,6 +16763,18 @@ monitor_issue_state() {
               return 0
             fi
 
+            # HOK-3099: refuse to launch coding when the packet has diverged
+            # from the plan (recovery/reroute regenerated it after approval).
+            # A first divergence triggers an automatic re-plan; a second
+            # transitions to needs-user via the plan_packet_divergence hook.
+            # Runs after recovery/reroute so any regenerated packet is visible,
+            # and before challenge-fork stamping so a stale plan cannot create
+            # a coding attempt or fork artifacts.
+            if ! enforce_plan_packet_binding "$ISSUE" "$FEATURE_DIR" "$WIN" "$current_agent"; then
+              active_count=$((active_count + 1))
+              return 0
+            fi
+
             # FORCE_MODEL takes priority, then challenge, then state, then default
             if [[ -n "${FORCE_MODEL:-}" ]]; then
               coder_model="$FORCE_MODEL"
@@ -18099,6 +18238,56 @@ monitor_issue_state() {
     # the second case, a successful remediation leaves status=running/verdict=fail
     # and the controller never re-evaluates CI.
     if [[ "$ready_status" == "running" ]] && { [[ "$ready_verdict" == "pending" ]] || [[ -n "$launch_head" && "$launch_head" != "$current_head" ]]; }; then
+      # HOK-3106: an infrastructure review failure never consumes the
+      # pending-ready-recheck budget. The review artifact carries no
+      # substantive verdict, and launch_ready_phase will route the attempt
+      # through the bounded `review-infra-recovery` bucket — that bucket alone
+      # is authoritative for how many infra recovery attempts remain. When the
+      # infra recovery bucket has already terminalized, mark pending-ready
+      # terminal in lockstep so the ready budget is not spent poll-by-poll on
+      # a deterministic infra failure. Guarded by a stricter check than the
+      # shared `review_result_infra_failure` helper, which returns true when
+      # the artifact is missing or still in-flight — cases the existing
+      # pending-ready-recheck path already handles.
+      if [[ -f "$ready_state_dir_path/.review-result.json" ]] \
+          && ! review_result_missing_final_evidence "$ready_state_dir_path" \
+          && review_result_infra_failure "$ready_state_dir_path"; then
+        if bounded_retry_is_exhausted "$ready_state_dir_path" "review-infra-recovery"; then
+          if bounded_retry_mark_exhausted "$ready_state_dir_path" "pending-ready-recheck" \
+              "Review infrastructure recovery is exhausted for PR #$PR; pending-ready halted until the review artifact changes"; then
+            write_ready_attention_file "$ready_state_dir_path" \
+              "Review infrastructure recovery is exhausted for PR #$PR. Waiting for operator or a new commit."
+            log "status" "⛔ $ISSUE → Pending-ready halted for PR #$PR because review infrastructure recovery is exhausted"
+          fi
+          set_window_attention_state "$WIN" "needs-user"
+          return 0
+        fi
+
+        title=$(read_state_value "" --arg i "$ISSUE" '.tasks[$i].title // ""')
+        if [[ -z "$title" ]]; then
+          issue_json=$(cat "/tmp/${SESSION}-${ISSUE}-issue.json" 2>/dev/null || echo "{}")
+          title=$(echo "$issue_json" | jq -r '.title // "Task"' 2>/dev/null || echo "Task")
+        fi
+        if launch_ready_phase "$ISSUE" "$SLUG" "$title" "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH" "$PR"; then
+          launch_rc=0
+        else
+          launch_rc=$?
+        fi
+        if [[ "$launch_rc" -eq 2 ]] && check_stage_aborted "$FEATURE_DIR"; then
+          log_task "status" "$ISSUE" "⛔ $ISSUE → Workflow aborted during ready re-check"
+          set_task_phase "$ISSUE" "aborted"
+          set_window_attention_state "$WIN" "needs-user"
+          return 0
+        fi
+        if [[ "$launch_rc" -eq 4 || "$launch_rc" -eq 6 ]]; then
+          set_window_attention_state "$WIN" "clear"
+          active_count=$((active_count + 1))
+          return 0
+        fi
+        set_window_attention_state "$WIN" "needs-user"
+        return 0
+      fi
+
       # Bound the pending-ready re-check loop (HOK-2924): the sibling of the
       # failed-ready budget above. A refused launch preserves exactly the
       # precondition that re-arms this branch, so without a ceiling it retries

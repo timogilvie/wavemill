@@ -4014,3 +4014,326 @@ describe('reconcileScratchPrepState (HOK-3039)', () => {
     }
   });
 });
+
+describe('executeMerge handoff-rebind lag (HOK-3105)', () => {
+  function tendHandoffBlockSentinelPathForTest(repoDir: string, prNumber: number): string {
+    return join(repoDir, '.wavemill', 'merge-lane', String(prNumber), 'tend-handoff-block.json');
+  }
+
+  /**
+   * Build a shell runner that behaves like the default one but lets the test
+   * control what `gh pr view` returns on the *post-push* poll — the read that
+   * exercises the HOK-3105 convergence loop.
+   */
+  function buildRebindShellRunner(args: {
+    repoDir: string;
+    calls: string[];
+    initialHeadSha: string;
+    pushedSha: string;
+    postPushHeadFor: (callIndex: number) => string;
+  }): MergeExecutionDeps['shellRunner'] {
+    let rebasedPush = false;
+    let postPushViewCalls = 0;
+    return (cmd) => {
+      args.calls.push(cmd);
+      if (cmd.includes('git push --force-with-lease')) rebasedPush = true;
+      if (cmd.includes('gh pr list --label')) return '[]';
+      if (cmd.includes('git rev-parse --git-common-dir')) return join(args.repoDir, '.git');
+      if (cmd === 'git rev-parse HEAD') return args.pushedSha;
+      if (cmd.includes('git rev-parse') && cmd.includes('origin/')) return 'pre-push-sha';
+      if (cmd.includes('git merge-base --is-ancestor')) {
+        const e = new Error('Command failed: git merge-base --is-ancestor');
+        (e as unknown as Record<string, unknown>).status = 1;
+        throw e;
+      }
+      if (cmd.includes('gh pr checks')) {
+        return JSON.stringify([{ name: 'ci', state: 'COMPLETED', conclusion: 'success' }]);
+      }
+      if (cmd.includes('gh pr comment')) return '';
+      if (cmd.includes('gh pr view')) {
+        if (!rebasedPush) {
+          return JSON.stringify({
+            mergeStateStatus: 'CLEAN',
+            headRefOid: args.initialHeadSha,
+            baseRefOid: 'base-sha',
+            statusCheckRollup: [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }],
+          });
+        }
+        postPushViewCalls += 1;
+        return JSON.stringify({
+          mergeStateStatus: 'CLEAN',
+          headRefOid: args.postPushHeadFor(postPushViewCalls),
+          baseRefOid: 'base-sha',
+          statusCheckRollup: [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }],
+        });
+      }
+      return '';
+    };
+  }
+
+  it('succeeds when the pushed head appears after two stale reads (backoff poll converges)', async () => {
+    const pushedSha = 'rebased-head-sha';
+    const initialHeadSha = 'head-sha';
+    const options = buildMergeTestOptions({ rebaseHeadSha: pushedSha });
+    const shellRunner = buildRebindShellRunner({
+      repoDir: options.repoDir,
+      calls: options.calls,
+      initialHeadSha,
+      pushedSha,
+      // rebindPushedTendHead is called with previousHeadSha=candidate.headSha
+      // (= initialHeadSha), so the "still returning the pre-push head" lag we
+      // simulate must return `initialHeadSha` — not any other pre-push SHA.
+      postPushHeadFor: (i) => (i <= 2 ? initialHeadSha : pushedSha),
+    });
+
+    const sleeps: number[] = [];
+    const retrySleep = async (ms: number) => { sleeps.push(ms); };
+
+    const featureDir = join(options.repoDir, 'features', 'lag-converge');
+    try {
+      await publishReadyHandoff(featureDir, 42, initialHeadSha);
+      const result = await executeMerge(
+        candidate({ headSha: initialHeadSha, featureDir }),
+        {
+          repoDir: options.repoDir,
+          deps: { ...options.deps, shellRunner, retrySleep },
+        },
+      );
+
+      assert.equal(result.status, 'merged');
+      assert.equal(readReadyTendHandoff(featureDir)?.headSha, pushedSha);
+      assert.equal(readReadyTendHandoff(featureDir)?.state, 'tend-claimed');
+      // Two backoff sleeps precede convergence — 1s then 2s (schedule 1s,2s,4s,8s).
+      const backoffSleeps = sleeps.filter((ms) => ms === 1000 || ms === 2000 || ms === 4000 || ms === 8000);
+      assert.ok(backoffSleeps.length >= 2, `expected at least 2 backoff sleeps, got ${backoffSleeps.length}`);
+      assert.equal(backoffSleeps[0], 1000);
+      assert.equal(backoffSleeps[1], 2000);
+      assert.ok(!options.labels.includes('blocked:42'), `labels=${options.labels.join(',')}`);
+    } finally {
+      options.cleanup();
+    }
+  });
+
+  it('refuses immediately when a third-party push shows a different head', async () => {
+    const pushedSha = 'rebased-head-sha';
+    const initialHeadSha = 'head-sha';
+    const options = buildMergeTestOptions({ rebaseHeadSha: pushedSha });
+    const shellRunner = buildRebindShellRunner({
+      repoDir: options.repoDir,
+      calls: options.calls,
+      initialHeadSha,
+      pushedSha,
+      postPushHeadFor: () => 'competing-third-party-sha',
+    });
+
+    const sleeps: number[] = [];
+    const retrySleep = async (ms: number) => { sleeps.push(ms); };
+    const featureDir = join(options.repoDir, 'features', 'third-head');
+    try {
+      await publishReadyHandoff(featureDir, 42, initialHeadSha);
+      const result = await executeMerge(
+        candidate({ headSha: initialHeadSha, featureDir }),
+        {
+          repoDir: options.repoDir,
+          deps: { ...options.deps, shellRunner, retrySleep },
+        },
+      );
+
+      assert.equal(result.status, 'blocked');
+      assert.equal(result.phase, 'handoff');
+      assert.match(String(result.failureExcerpt), /diverged/);
+      assert.ok(options.labels.includes('blocked:42'), `labels=${options.labels.join(',')}`);
+      assert.ok(
+        existsSync(tendHandoffBlockSentinelPathForTest(options.repoDir, 42)),
+        'expected tend-handoff-block sentinel to be written on the terminal path',
+      );
+      const sentinel = JSON.parse(readFileSync(tendHandoffBlockSentinelPathForTest(options.repoDir, 42), 'utf-8'));
+      assert.equal(sentinel.headSha, pushedSha);
+      // No convergence backoff sleeps — third-head refusal fires on the first read.
+      const backoffSleeps = sleeps.filter((ms) => ms === 1000 || ms === 2000 || ms === 4000 || ms === 8000);
+      assert.equal(backoffSleeps.length, 0);
+    } finally {
+      options.cleanup();
+    }
+  });
+
+  it('defers a lag-only mismatch through the bounded-retry budget without posting a failure comment', async () => {
+    const pushedSha = 'rebased-head-sha';
+    const initialHeadSha = 'head-sha';
+    const options = buildMergeTestOptions({ rebaseHeadSha: pushedSha });
+    let commentCalls = 0;
+    const baseShellRunner = buildRebindShellRunner({
+      repoDir: options.repoDir,
+      calls: options.calls,
+      initialHeadSha,
+      pushedSha,
+      // Lag returns the previous head (candidate.headSha = initialHeadSha)
+      // for every poll — never converges within the window.
+      postPushHeadFor: () => initialHeadSha,
+    });
+    const shellRunner: MergeExecutionDeps['shellRunner'] = (cmd, opts) => {
+      if (cmd.includes('gh pr comment')) { commentCalls += 1; return ''; }
+      return baseShellRunner(cmd, opts);
+    };
+
+    let incrementCalled = false;
+    const handoffRebindRetry: StrictBaseRetryOps = {
+      gate: () => 'proceed',
+      increment: () => { incrementCalled = true; },
+      markExhausted: () => { throw new Error('markExhausted should not fire while budget remains'); },
+      clear: () => {},
+    };
+
+    const featureDir = join(options.repoDir, 'features', 'lag-defer');
+    const retrySleep = async (_ms: number) => {};
+    try {
+      await publishReadyHandoff(featureDir, 42, initialHeadSha);
+      const result = await executeMerge(
+        candidate({ headSha: initialHeadSha, featureDir }),
+        {
+          repoDir: options.repoDir,
+          deps: { ...options.deps, shellRunner, handoffRebindRetry, retrySleep },
+        },
+      );
+
+      assert.equal(result.status, 'skipped');
+      assert.equal(result.phase, 'handoff-rebind-deferred');
+      assert.ok(incrementCalled, 'expected handoff-rebind budget increment on deferred path');
+      assert.equal(commentCalls, 0, 'no failure comment should be posted on the deferred path');
+      assert.ok(options.labels.includes('ready:42'), `labels=${options.labels.join(',')}`);
+      assert.ok(!options.labels.includes('blocked:42'));
+      assert.ok(!existsSync(tendHandoffBlockSentinelPathForTest(options.repoDir, 42)));
+    } finally {
+      options.cleanup();
+    }
+  });
+
+  it('takes the terminal block path when the handoff-rebind budget is exhausted', async () => {
+    const pushedSha = 'rebased-head-sha';
+    const initialHeadSha = 'head-sha';
+    const options = buildMergeTestOptions({ rebaseHeadSha: pushedSha });
+    const shellRunner = buildRebindShellRunner({
+      repoDir: options.repoDir,
+      calls: options.calls,
+      initialHeadSha,
+      pushedSha,
+      // Lag never converges — head keeps reporting the pre-push (previous) head.
+      postPushHeadFor: () => initialHeadSha,
+    });
+
+    let markExhaustedCalled = false;
+    const handoffRebindRetry: StrictBaseRetryOps = {
+      gate: () => 'exhausted',
+      increment: () => {},
+      markExhausted: () => { markExhaustedCalled = true; },
+      clear: () => {},
+    };
+
+    const featureDir = join(options.repoDir, 'features', 'lag-exhausted');
+    const retrySleep = async (_ms: number) => {};
+    try {
+      await publishReadyHandoff(featureDir, 42, initialHeadSha);
+      const result = await executeMerge(
+        candidate({ headSha: initialHeadSha, featureDir }),
+        {
+          repoDir: options.repoDir,
+          deps: { ...options.deps, shellRunner, handoffRebindRetry, retrySleep },
+        },
+      );
+
+      assert.equal(result.status, 'blocked');
+      assert.equal(result.phase, 'handoff');
+      assert.match(String(result.failureExcerpt), /handoff-rebind budget exhausted/);
+      assert.ok(options.labels.includes('blocked:42'));
+      assert.ok(markExhaustedCalled);
+      assert.ok(existsSync(tendHandoffBlockSentinelPathForTest(options.repoDir, 42)));
+    } finally {
+      options.cleanup();
+    }
+  });
+
+  it('self-heals a tend-set wm:blocked on the second poll of a CLEAN green head', async () => {
+    const options = buildTestOptions([
+      pr({ labels: [label(WM_LABELS.wavemill), label(WM_LABELS.ready), label(WM_LABELS.blocked)] }),
+    ]);
+    const cleared: number[] = [];
+    options.blockedLabelClearer = (prNumber) => { cleared.push(prNumber); };
+    options.blockedPrLiveStateProber = async () => ({
+      available: true,
+      mergeable: 'MERGEABLE',
+      mergeStateStatus: 'CLEAN',
+      failingChecks: [],
+      pendingChecks: [],
+    });
+    writePrStateMarker(1, {
+      headSha: 'head-current',
+      activeLabels: [WM_LABELS.ready, WM_LABELS.blocked],
+      markerRoot: options.repoDir,
+    });
+    // Seed the tend-handoff-block sentinel at the current head.
+    const sentinelDir = join(options.repoDir, '.wavemill', 'merge-lane', '1');
+    mkdirSync(sentinelDir, { recursive: true });
+    writeFileSync(
+      join(sentinelDir, 'tend-handoff-block.json'),
+      JSON.stringify({ headSha: 'head-current', reason: 'handoff-rebind-refused', at: '2026-09-28T00:00:00Z' }),
+    );
+
+    try {
+      // First poll: records the first observation, keeps the block.
+      const first = await selectNextCandidate(options);
+      assert.equal(first.blocked[0]?.reason, 'blocked-label:contradicted-by-live-state');
+      assert.deepEqual(cleared, []);
+      assert.ok(existsSync(join(sentinelDir, 'tend-handoff-contradiction-observed.json')));
+
+      // Second poll: consecutive observation at the same head — self-heal.
+      const second = await selectNextCandidate(options);
+      assert.deepEqual(second.eligible.map((c) => c.number), [1]);
+      assert.deepEqual(second.blocked, []);
+      assert.deepEqual(cleared, [1]);
+      // Both sidecars cleared after self-heal.
+      assert.ok(!existsSync(join(sentinelDir, 'tend-handoff-block.json')));
+      assert.ok(!existsSync(join(sentinelDir, 'tend-handoff-contradiction-observed.json')));
+      // Self-heal finding recorded.
+      const findings = readFileSync(join(options.repoDir, '.wavemill', 'observer-findings.jsonl'), 'utf-8');
+      assert.match(findings, /Tend cleared its own handoff-refusal wm:blocked/);
+    } finally {
+      options.cleanup();
+    }
+  });
+
+  it('does not self-heal a wm:blocked without the tend-handoff sentinel (HOK-2883 preserved)', async () => {
+    const options = buildTestOptions([
+      pr({ labels: [label(WM_LABELS.wavemill), label(WM_LABELS.ready), label(WM_LABELS.blocked)] }),
+    ]);
+    const cleared: number[] = [];
+    options.blockedLabelClearer = (prNumber) => { cleared.push(prNumber); };
+    options.blockedPrLiveStateProber = async () => ({
+      available: true,
+      mergeable: 'MERGEABLE',
+      mergeStateStatus: 'CLEAN',
+      failingChecks: [],
+      pendingChecks: [],
+    });
+    writePrStateMarker(1, {
+      headSha: 'head-current',
+      activeLabels: [WM_LABELS.ready, WM_LABELS.blocked],
+      markerRoot: options.repoDir,
+    });
+    // Deliberately do NOT write the tend-handoff-block sentinel: the block
+    // was set by some other subsystem (cross-PR revert guard, review).
+
+    try {
+      const first = await selectNextCandidate(options);
+      assert.equal(first.blocked[0]?.reason, 'blocked-label:contradicted-by-live-state');
+      const second = await selectNextCandidate(options);
+      assert.equal(second.blocked[0]?.reason, 'blocked-label:contradicted-by-live-state');
+      // Never cleared — HOK-2883 semantics preserved.
+      assert.deepEqual(cleared, []);
+      assert.ok(!existsSync(
+        join(options.repoDir, '.wavemill', 'merge-lane', '1', 'tend-handoff-contradiction-observed.json'),
+      ));
+    } finally {
+      options.cleanup();
+    }
+  });
+});

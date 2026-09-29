@@ -161,6 +161,14 @@ export interface MergeExecutionDeps {
    */
   scratchPrepRetry: StrictBaseRetryOps;
   /**
+   * Handoff-rebind bounded-retry ops (HOK-3105). Records deferrals of a
+   * post-push handoff rebind when GitHub read-after-write lag keeps returning
+   * the pre-push head. Keyed on the pushed head SHA — a fresh push resets the
+   * budget. When the budget is exhausted the terminal handoff block path runs
+   * (posts the failure comment and moves the PR to wm:blocked).
+   */
+  handoffRebindRetry: StrictBaseRetryOps;
+  /**
    * Factory for the process-group prep runner used by `withScratchWorktree`.
    * Called once per merge attempt; each attempt gets a fresh shared deadline.
    * Tests inject a fake to simulate timeouts without spawning processes.
@@ -863,7 +871,15 @@ export async function executeMerge(
             try {
               await rebindPushedTendHead(candidate.number, candidate.featureDir, candidate.headSha, rebaseResult.headSha, options.repoDir, deps);
             } catch (error) {
-              return block('handoff', outputFromError(error));
+              const handoffOutcome = await handleHandoffRebindFailure({
+                candidate,
+                repoDir: options.repoDir,
+                pushedHeadSha: rebaseResult.headSha,
+                error,
+                deps,
+                block,
+              });
+              return handoffOutcome;
             }
             await recordLaneProgressSafe(deps, candidate.number, 'rebase', options.repoDir);
             await recordLaneProgressSafe(deps, candidate.number, 'ci-restart', options.repoDir);
@@ -937,6 +953,13 @@ export async function executeMerge(
         } catch (error) {
           console.warn(`tend: failed to clear scratch-prep-recovery budget for PR #${candidate.number}: ${errorMessage(error)}`);
         }
+        try {
+          deps.handoffRebindRetry.clear(candidate.number, options.repoDir);
+        } catch (error) {
+          console.warn(`tend: failed to clear handoff-rebind retry budget for PR #${candidate.number}: ${errorMessage(error)}`);
+        }
+        clearTendHandoffBlockSentinel(options.repoDir, candidate.number);
+        clearTendHandoffContradictionObserved(options.repoDir, candidate.number);
 
         if (integrationConfig.deleteBranchAfterMerge && taskStateAuthorizesRemoteBranchDeletion(options.repoDir, candidate.headBranch)) {
           try {
@@ -1661,6 +1684,75 @@ async function listMergingPrs(repoDir: string, deps: MergeExecutionDeps): Promis
   );
 }
 
+/**
+ * Backoff schedule (ms) for the read-after-push convergence poll (HOK-3105).
+ * The first read has no sleep — GitHub often returns the pushed head on the
+ * first attempt. If it does not, we sleep for the schedule entries in order,
+ * then re-read. Total wall time ~15s in the worst case.
+ */
+const HANDOFF_HEAD_POLL_BACKOFF_MS: readonly number[] = [1000, 2000, 4000, 8000];
+
+/**
+ * Outcome of the read-after-push convergence poll (HOK-3105). The caller
+ * distinguishes 'timeout' (GitHub lag — safe to retry on the next Tend cycle)
+ * from 'third-head' (a competing push landed — unrecoverable, refuse now).
+ */
+export type HandoffRebindRefusalKind = 'timeout' | 'third-head';
+
+export class HandoffRebindRefusalError extends Error {
+  readonly kind: HandoffRebindRefusalKind;
+  readonly prNumber: number;
+  readonly pushedHeadSha: string;
+  readonly observedHead: string;
+  constructor(args: {
+    kind: HandoffRebindRefusalKind;
+    prNumber: number;
+    pushedHeadSha: string;
+    observedHead: string;
+    message: string;
+  }) {
+    super(args.message);
+    this.name = 'HandoffRebindRefusalError';
+    this.kind = args.kind;
+    this.prNumber = args.prNumber;
+    this.pushedHeadSha = args.pushedHeadSha;
+    this.observedHead = args.observedHead;
+  }
+}
+
+async function pollForPushedHeadConvergence(
+  prNumber: number,
+  previousHeadSha: string,
+  pushedHeadSha: string,
+  repoDir: string,
+  deps: MergeExecutionDeps,
+): Promise<{ outcome: 'converged'; observedHead: string }
+  | { outcome: 'third-head'; observedHead: string }
+  | { outcome: 'timeout'; observedHead: string; totalMs: number }> {
+  let observedHead = '';
+  let totalMs = 0;
+  // One immediate read + one read per backoff entry.
+  for (let attempt = 0; attempt <= HANDOFF_HEAD_POLL_BACKOFF_MS.length; attempt += 1) {
+    if (attempt > 0) {
+      const sleepMs = HANDOFF_HEAD_POLL_BACKOFF_MS[attempt - 1];
+      totalMs += sleepMs;
+      await deps.retrySleep(sleepMs);
+    }
+    const liveHead = readPrMergeDiagnostics(prNumber, repoDir, deps.shellRunner).headRefOid ?? '';
+    observedHead = liveHead;
+    if (liveHead && liveHead === pushedHeadSha) {
+      return { outcome: 'converged', observedHead };
+    }
+    if (liveHead && liveHead !== pushedHeadSha && liveHead !== previousHeadSha) {
+      // A third party pushed — unrecoverable.
+      return { outcome: 'third-head', observedHead };
+    }
+    // Otherwise the lag is still showing the pre-push head (or the read
+    // returned nothing); back off and try again.
+  }
+  return { outcome: 'timeout', observedHead, totalMs };
+}
+
 async function rebindPushedTendHead(
   prNumber: number,
   featureDir: string | undefined,
@@ -1671,9 +1763,26 @@ async function rebindPushedTendHead(
 ): Promise<void> {
   if (!featureDir) return; // Legacy Ready artifacts have no handoff.
   if (!previousHeadSha || !pushedHeadSha) throw new Error('Tend handoff cannot be rebound without both head SHAs');
-  const liveHead = readPrMergeDiagnostics(prNumber, repoDir, deps.shellRunner).headRefOid;
-  if (liveHead !== pushedHeadSha) {
-    throw new Error(`Tend handoff rebind refused: PR #${prNumber} head does not match the pushed commit`);
+  const convergence = await pollForPushedHeadConvergence(prNumber, previousHeadSha, pushedHeadSha, repoDir, deps);
+  if (convergence.outcome === 'third-head') {
+    throw new HandoffRebindRefusalError({
+      kind: 'third-head',
+      prNumber,
+      pushedHeadSha,
+      observedHead: convergence.observedHead,
+      message: `Tend handoff rebind refused: PR #${prNumber} head diverged `
+        + `(observed=${convergence.observedHead || '(missing)'}, pushed=${pushedHeadSha})`,
+    });
+  }
+  if (convergence.outcome === 'timeout') {
+    throw new HandoffRebindRefusalError({
+      kind: 'timeout',
+      prNumber,
+      pushedHeadSha,
+      observedHead: convergence.observedHead,
+      message: `Tend handoff rebind refused: PR #${prNumber} live head still `
+        + `${convergence.observedHead || '(missing)'} after ${convergence.totalMs}ms poll for pushed ${pushedHeadSha}`,
+    });
   }
   const result = await rebindTendHandoff(featureDir, prNumber, previousHeadSha, pushedHeadSha);
   if (result.outcome !== 'claimed' && result.outcome !== 'already-claimed') {
@@ -2176,6 +2285,8 @@ const STRICT_BASE_REFRESH_BUCKET = 'strict-base-refresh';
 const STRICT_BASE_REFRESH_MAX_ATTEMPTS = 4;
 const SCRATCH_PREP_RECOVERY_BUCKET = 'scratch-prep-recovery';
 const SCRATCH_PREP_RECOVERY_MAX_ATTEMPTS = 1;
+const HANDOFF_REBIND_BUCKET = 'handoff-rebind';
+const HANDOFF_REBIND_MAX_ATTEMPTS = 3;
 const SCRATCH_PREP_PROGRESS_HEARTBEAT_MS = 30_000;
 const BOUNDED_RETRY_HELPER_TIMEOUT_MS = 30_000;
 const BOUNDED_RETRY_HELPER_PATH = join(dirname(fileURLToPath(import.meta.url)), 'bounded-retry.sh');
@@ -2220,6 +2331,17 @@ export const defaultStrictBaseRetryOps: StrictBaseRetryOps = createBoundedRetryO
 export const defaultScratchPrepRetryOps: StrictBaseRetryOps = createBoundedRetryOps(
   SCRATCH_PREP_RECOVERY_BUCKET,
   SCRATCH_PREP_RECOVERY_MAX_ATTEMPTS,
+);
+
+/**
+ * Default HOK-3105 bounded-retry wiring for handoff rebind lag deferrals. The
+ * budget is keyed on the pushed head SHA, so a fresh push resets counting.
+ * The helper terminalizes at the ceiling with a greppable
+ * `.retry-handoff-rebind-exhausted` sentinel and clears on a successful merge.
+ */
+export const defaultHandoffRebindRetryOps: StrictBaseRetryOps = createBoundedRetryOps(
+  HANDOFF_REBIND_BUCKET,
+  HANDOFF_REBIND_MAX_ATTEMPTS,
 );
 
 function createBoundedRetryOps(bucket: string, maxAttempts: number): StrictBaseRetryOps {
@@ -2362,6 +2484,123 @@ async function restoreReadyAfterPrepTimeout(candidate: TendCandidate, deps: Merg
   } catch (error) {
     console.warn(
       `tend: failed to restore wm:ready on PR #${candidate.number} after worktree-prep timeout; `
+      + `wm:merging may be leaked until the stale-lock timeout reclaims it: ${errorMessage(error)}`,
+    );
+  }
+}
+
+/**
+ * Handle a `HandoffRebindRefusalError` from `rebindPushedTendHead` (HOK-3105).
+ *
+ * A `third-head` refusal is unrecoverable — someone else pushed on top of us,
+ * so we take the terminal block path (comment + wm:blocked) and record the
+ * handoff sentinel so `resolveBlockedLabelReason` can self-heal later if the
+ * live state contradicts.
+ *
+ * A `timeout` refusal (GitHub read-after-write lag) consults the handoff
+ * rebind bounded-retry budget keyed on (pr, pushedHead). While the budget has
+ * room, tend defers: it restores `wm:ready` in place and returns `skipped`
+ * without posting the failure comment, so the next tend cycle re-enters the
+ * merge-lane and the fresh `gh pr view` almost always converges on the
+ * pushed head. If the budget is exhausted we fall back to the terminal block
+ * path — the operator sees exactly the same evidence they see today.
+ *
+ * A non-refusal error (e.g. `rebindTendHandoff` returned no matching claim)
+ * always takes the terminal block path.
+ */
+async function handleHandoffRebindFailure(args: {
+  candidate: TendCandidate;
+  repoDir: string;
+  pushedHeadSha: string;
+  error: unknown;
+  deps: MergeExecutionDeps;
+  block: (phase: string, output: string) => Promise<MergeExecutionResult>;
+}): Promise<MergeExecutionResult> {
+  const { candidate, repoDir, pushedHeadSha, error, deps, block } = args;
+
+  const terminalBlock = async (output: string): Promise<MergeExecutionResult> => {
+    writeTendHandoffBlockSentinel(repoDir, candidate.number, pushedHeadSha);
+    return block('handoff', output);
+  };
+
+  if (!(error instanceof HandoffRebindRefusalError)) {
+    // The rebindTendHandoff call itself refused (e.g. no matching claim). No
+    // recovery path — take the terminal block path as we did before HOK-3105.
+    return terminalBlock(outputFromError(error));
+  }
+
+  if (error.kind === 'third-head') {
+    return terminalBlock(error.message);
+  }
+
+  // error.kind === 'timeout': consult the handoff-rebind retry budget.
+  let decision: StrictBaseRetryDecision;
+  try {
+    decision = deps.handoffRebindRetry.gate(candidate.number, pushedHeadSha, repoDir);
+  } catch (gateError) {
+    console.warn(
+      `tend: handoff-rebind retry gate failed for PR #${candidate.number}: ${errorMessage(gateError)}`,
+    );
+    return terminalBlock(
+      `${error.message}\n\nhandoff-rebind retry gate failed (fail-closed): ${errorMessage(gateError)}`,
+    );
+  }
+
+  if (decision === 'exhausted' || decision === 'exhausted-quiet') {
+    if (decision === 'exhausted') {
+      try {
+        deps.handoffRebindRetry.markExhausted(
+          candidate.number,
+          `handoff-rebind budget exhausted after ${HANDOFF_REBIND_MAX_ATTEMPTS} attempts at head ${pushedHeadSha}`,
+          repoDir,
+        );
+      } catch (markError) {
+        console.warn(
+          `tend: failed to record handoff-rebind exhaustion for PR #${candidate.number}: ${errorMessage(markError)}`,
+        );
+      }
+    }
+    return terminalBlock(
+      `${error.message}\n\nhandoff-rebind budget exhausted after ${HANDOFF_REBIND_MAX_ATTEMPTS} attempts at ${pushedHeadSha}`,
+    );
+  }
+
+  if (decision === 'proceed') {
+    try {
+      deps.handoffRebindRetry.increment(candidate.number, pushedHeadSha, repoDir);
+    } catch (incError) {
+      console.warn(
+        `tend: failed to record handoff-rebind attempt for PR #${candidate.number}: ${errorMessage(incError)}`,
+      );
+    }
+  }
+  // decision === 'backoff' also falls through to defer without incrementing.
+
+  await restoreReadyAfterHandoffDefer(candidate, deps);
+  console.warn(
+    `tend: handoff-rebind lag on PR #${candidate.number} pushed=${pushedHeadSha} observed=${error.observedHead || '(missing)'} — `
+    + 'deferred to next tend cycle (no wm:blocked, no failure comment)',
+  );
+  return {
+    status: 'skipped',
+    prNumber: candidate.number,
+    phase: 'handoff-rebind-deferred',
+    failureExcerpt: truncateOutput(
+      `${error.message}\ndeferred by handoff-rebind bounded-retry; PR returned to wm:ready`,
+    ),
+    haltLoop: false,
+  };
+}
+
+async function restoreReadyAfterHandoffDefer(candidate: TendCandidate, deps: MergeExecutionDeps): Promise<void> {
+  try {
+    await retryTransient(() => deps.restoreReady(candidate.number), {
+      label: 'restore ready label after handoff-rebind defer',
+      sleep: deps.retrySleep,
+    });
+  } catch (error) {
+    console.warn(
+      `tend: failed to restore wm:ready on PR #${candidate.number} after handoff-rebind defer; `
       + `wm:merging may be leaked until the stale-lock timeout reclaims it: ${errorMessage(error)}`,
     );
   }
@@ -2740,6 +2979,7 @@ function mergeExecutionDeps(deps: Partial<MergeExecutionDeps> | undefined, marke
     },
     strictBaseRetry: defaultStrictBaseRetryOps,
     scratchPrepRetry: defaultScratchPrepRetryOps,
+    handoffRebindRetry: defaultHandoffRebindRetryOps,
     prepRunnerFactory: (_repoDir, factoryOptions) => createProcessGroupPrepRunner({
       deadlineMs: getIntegrationConfig(_repoDir).worktreePrepTimeoutMinutes * 60_000,
       heartbeatIntervalMs: SCRATCH_PREP_PROGRESS_HEARTBEAT_MS,
@@ -3172,6 +3412,15 @@ async function resolveBlockedLabelReason(
     // ready re-check) may legitimately remain, so the block stays fail-closed
     // — but the contradiction is surfaced instead of silently held (REQ-F5).
     if (isLiveStateCleanGreen(liveState)) {
+      // HOK-3105: if tend itself set this wm:blocked via a handoff-rebind
+      // refusal AND the same-head live state confirms the block is a lie for
+      // two consecutive polls, tend clears its own label in-band. Guard-set
+      // blocks (cross-PR revert guard, review) are on a different branch of
+      // this function, so HOK-2883 semantics remain intact.
+      const selfHealed = attemptTendHandoffSelfHeal(pr, labels, currentHeadSha, options);
+      if (selfHealed) {
+        return null;
+      }
       emitBlockedLabelContradictionFinding(options.repoDir, pr, currentHeadSha, liveState);
       return 'blocked-label:contradicted-by-live-state';
     }
@@ -3217,6 +3466,58 @@ async function resolveBlockedLabelReason(
   }
 
   return clearGuardBlockedLabel(pr, labels, currentHeadSha, options, 'blocked-label:clear-failed');
+}
+
+/**
+ * Attempt HOK-3105 self-heal: clear a wm:blocked label that tend itself set
+ * via a handoff-rebind refusal, once two consecutive polls confirm the live
+ * PR state contradicts the block at the same head.
+ *
+ * Returns true when the label was cleared; false when the block should stay.
+ * Only fires when the tend-handoff-block sentinel matches `currentHeadSha`;
+ * blocks set by any other subsystem (cross-PR revert guard, review, missing
+ * sentinel from an old block) are never touched, preserving HOK-2883.
+ */
+function attemptTendHandoffSelfHeal(
+  pr: GhPrListEntry,
+  labels: Set<string>,
+  currentHeadSha: string,
+  options: {
+    repoDir: string;
+    blockedLabelClearer: BlockedLabelClearer;
+    prStateMarkerWriter: PrStateMarkerWriter;
+  },
+): boolean {
+  const sentinel = readTendHandoffBlockSentinel(options.repoDir, pr.number);
+  if (!sentinel || sentinel.headSha !== currentHeadSha) {
+    // Block was not attributed to tend's handoff refusal at this head. Keep
+    // HOK-2883 semantics: no self-heal.
+    return false;
+  }
+
+  const observed = readTendHandoffContradictionObserved(options.repoDir, pr.number);
+  if (!observed || observed.headSha !== currentHeadSha) {
+    // First same-head observation: record it and keep the block for one more
+    // poll before self-healing.
+    writeTendHandoffContradictionObserved(options.repoDir, pr.number, {
+      headSha: currentHeadSha,
+      count: 1,
+      firstObservedAt: new Date().toISOString(),
+    });
+    return false;
+  }
+
+  // observed.count >= 1 and head matches: this is the second consecutive
+  // same-head observation. Clear the label in-band.
+  const clearResult = clearGuardBlockedLabel(pr, labels, currentHeadSha, options, 'blocked-label:clear-failed');
+  if (clearResult !== null) {
+    // Clear failed — leave sidecars in place so the next poll retries.
+    return false;
+  }
+  clearTendHandoffBlockSentinel(options.repoDir, pr.number);
+  clearTendHandoffContradictionObserved(options.repoDir, pr.number);
+  emitTendHandoffSelfHealFinding(options.repoDir, pr, currentHeadSha);
+  return true;
 }
 
 function clearGuardBlockedLabel(
@@ -3381,6 +3682,133 @@ function describeLiveBlockedGate(live: BlockedPrLiveState): string | null {
 }
 
 /**
+ * Sidecar recording that a wm:blocked label was set by this tend process's
+ * handoff-rebind refusal path (HOK-3105). Only that path writes it. Any
+ * subsequent successful merge, self-heal, or fresh handoff attempt clears it.
+ * The presence + matching head SHA is the "block is attributable to tend's
+ * handoff refusal" signal for `resolveBlockedLabelReason`.
+ */
+interface TendHandoffBlockSentinel {
+  headSha: string;
+  reason: string;
+  at: string;
+}
+
+function tendHandoffBlockSentinelPath(repoDir: string, prNumber: number): string {
+  return join(mergeLaneStateDir(prNumber, repoDir), 'tend-handoff-block.json');
+}
+
+function writeTendHandoffBlockSentinel(repoDir: string, prNumber: number, headSha: string): void {
+  const sentinel: TendHandoffBlockSentinel = {
+    headSha,
+    reason: 'handoff-rebind-refused',
+    at: new Date().toISOString(),
+  };
+  try {
+    mkdirSync(mergeLaneStateDir(prNumber, repoDir), { recursive: true });
+    writeFileSync(tendHandoffBlockSentinelPath(repoDir, prNumber), `${JSON.stringify(sentinel)}\n`, 'utf-8');
+  } catch (error) {
+    console.warn(
+      `tend: failed to write handoff-block sentinel for PR #${prNumber}: ${errorMessage(error)}`,
+    );
+  }
+}
+
+function readTendHandoffBlockSentinel(repoDir: string, prNumber: number): TendHandoffBlockSentinel | null {
+  const path = tendHandoffBlockSentinelPath(repoDir, prNumber);
+  if (!existsSync(path)) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as unknown;
+    if (!isRecord(parsed) || typeof parsed.headSha !== 'string') {
+      return null;
+    }
+    return {
+      headSha: parsed.headSha,
+      reason: typeof parsed.reason === 'string' ? parsed.reason : '',
+      at: typeof parsed.at === 'string' ? parsed.at : '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+function clearTendHandoffBlockSentinel(repoDir: string, prNumber: number): void {
+  try {
+    rmSync(tendHandoffBlockSentinelPath(repoDir, prNumber), { force: true });
+  } catch {
+    // Best-effort cleanup.
+  }
+}
+
+/**
+ * Sidecar counting consecutive polls that classified the tend-handoff block
+ * as `contradicted-by-live-state` at the same head. Written and read only by
+ * `resolveBlockedLabelReason`; the count-of-two rule matches the ticket's
+ * "two consecutive polls" self-heal criterion.
+ */
+interface TendHandoffContradictionObserved {
+  headSha: string;
+  count: number;
+  firstObservedAt: string;
+}
+
+function tendHandoffContradictionObservedPath(repoDir: string, prNumber: number): string {
+  return join(mergeLaneStateDir(prNumber, repoDir), 'tend-handoff-contradiction-observed.json');
+}
+
+function readTendHandoffContradictionObserved(
+  repoDir: string,
+  prNumber: number,
+): TendHandoffContradictionObserved | null {
+  const path = tendHandoffContradictionObservedPath(repoDir, prNumber);
+  if (!existsSync(path)) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as unknown;
+    if (!isRecord(parsed) || typeof parsed.headSha !== 'string' || typeof parsed.count !== 'number') {
+      return null;
+    }
+    return {
+      headSha: parsed.headSha,
+      count: parsed.count,
+      firstObservedAt: typeof parsed.firstObservedAt === 'string' ? parsed.firstObservedAt : '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeTendHandoffContradictionObserved(
+  repoDir: string,
+  prNumber: number,
+  record: TendHandoffContradictionObserved,
+): void {
+  try {
+    mkdirSync(mergeLaneStateDir(prNumber, repoDir), { recursive: true });
+    writeFileSync(
+      tendHandoffContradictionObservedPath(repoDir, prNumber),
+      `${JSON.stringify(record)}\n`,
+      'utf-8',
+    );
+  } catch (error) {
+    console.warn(
+      `tend: failed to write handoff-contradiction observation for PR #${prNumber}: ${errorMessage(error)}`,
+    );
+  }
+}
+
+function clearTendHandoffContradictionObserved(repoDir: string, prNumber: number): void {
+  try {
+    rmSync(tendHandoffContradictionObservedPath(repoDir, prNumber), { force: true });
+  } catch {
+    // Best-effort cleanup.
+  }
+}
+
+/**
  * Append a merge-lane finding at most once per (pr, head, reason). The dedup
  * sentinel lives in the PR's merge-lane state dir so a new head or a changed
  * reason re-emits, while steady-state polling stays quiet.
@@ -3434,6 +3862,33 @@ function emitBlockedLabelContradictionFinding(
       labels: [...labelSet(pr)].join(','),
       mergeable: live.mergeable ?? '',
       mergeStateStatus: live.mergeStateStatus ?? '',
+    },
+  });
+}
+
+/**
+ * Surface that tend self-healed its own handoff-refusal `wm:blocked` label
+ * (HOK-3105). The operator gets one entry per (pr, head) so a resolved lag
+ * incident is visible in the observer log without spamming.
+ */
+function emitTendHandoffSelfHealFinding(
+  repoDir: string,
+  pr: GhPrListEntry,
+  currentHeadSha: string,
+): void {
+  emitMergeLaneFindingOnce(repoDir, pr.number, 'tend-handoff-self-heal', currentHeadSha, 'self-healed', {
+    subsystem: 'merge-lane',
+    title: `Tend cleared its own handoff-refusal wm:blocked on PR #${pr.number}`,
+    body: `PR #${pr.number} carried wm:blocked set by tend's own handoff-rebind refusal, but two consecutive `
+      + `polls at head ${currentHeadSha} confirmed the PR is MERGEABLE/CLEAN with green required checks. `
+      + 'Tend cleared the label in-band; the PR will be re-evaluated on the next merge-lane pass.',
+    severity: 'info',
+    context: {
+      markerPath: `merge-lane/${pr.number}/tend-handoff-self-heal`,
+      markerKind: 'merge-lane-tend-handoff-self-heal',
+      prNumber: pr.number,
+      currentHead: currentHeadSha,
+      labels: [...labelSet(pr)].join(','),
     },
   });
 }
