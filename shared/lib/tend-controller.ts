@@ -153,6 +153,12 @@ export interface MergeExecutionDeps {
   /** Best-effort lane-progress telemetry recorder; must never fail the merge. */
   recordLaneProgress: (prNumber: number, event: LaneProgressEvent, repoDir: string) => Promise<void>;
   /**
+   * Strip an untrusted `wm:ready` label off a PR whose Ready → Tend handoff is
+   * missing or does not match the current head (HOK-3107). Best-effort — a
+   * failure must never halt the tend loop. Defaults to `removeLabelFromPullRequest`.
+   */
+  stripUntrustedReady: (prNumber: number, repoDir: string) => void;
+  /**
    * Scratch-prep bounded-retry ops (HOK-3039). Records recovery attempts per
    * (mergeLaneStateDir, `scratch-prep-recovery` bucket, head SHA) and marks
    * the bucket exhausted after the ceiling — retry-exactly-once matches the
@@ -759,9 +765,27 @@ export async function executeMerge(
     return { status: 'blocked', prNumber: candidate.number, phase, failureExcerpt, haltLoop: false };
   };
 
-  // New Ready artifacts use an explicit ownership transfer. Keep the legacy
-  // path tolerant of older artifacts that predate the additive handoff file.
-  if (candidate.headSha && candidate.featureDir) {
+  // Ready → Tend handoff is required before merge. In production, selection
+  // always attaches `headSha` from GitHub's live headRefOid; when it is present
+  // but `featureDir` is missing (PR #1513 shape) the PR carries an agent-applied
+  // `wm:ready` that the mill never validated, so treat the label as untrusted
+  // and strip it (HOK-3107). The `!candidate.headSha` branch remains a legacy
+  // test-only tolerance where selection did not attach live head metadata.
+  if (candidate.headSha) {
+    if (!candidate.featureDir) {
+      try {
+        deps.stripUntrustedReady(candidate.number, options.repoDir);
+      } catch {
+        // stripUntrustedReady is best-effort; a failure must never halt tend.
+      }
+      return {
+        status: 'skipped',
+        prNumber: candidate.number,
+        phase: 'handoff',
+        failureExcerpt: 'PR carried wm:ready without a resolvable feature dir; label stripped as untrusted (no Ready → Tend handoff was ever published for this PR).',
+        haltLoop: false,
+      };
+    }
     // Selection may have happened seconds ago. Re-read GitHub before claiming
     // so a force-push cannot inherit the old Ready token.
     const liveHead = readPrMergeDiagnostics(candidate.number, options.repoDir, deps.shellRunner).headRefOid;
@@ -780,6 +804,11 @@ export async function executeMerge(
     }
     const handoff = await claimReadyHandoff(candidate.featureDir, candidate.number, liveHead);
     if (handoff.outcome !== 'claimed' && handoff.outcome !== 'already-claimed') {
+      try {
+        deps.stripUntrustedReady(candidate.number, options.repoDir);
+      } catch {
+        // stripUntrustedReady is best-effort; a failure must never halt tend.
+      }
       return handleHandoffClaimRejection({
         candidate,
         liveHead,
@@ -3187,6 +3216,7 @@ function mergeExecutionDeps(deps: Partial<MergeExecutionDeps> | undefined, marke
     recordLaneProgress: async (prNumber, event, repoDir) => {
       await recordLaneProgress(prNumber, repoDir, event);
     },
+    stripUntrustedReady: defaultUntrustedReadyLabelStripper,
     ...deps,
   };
 }
@@ -3353,6 +3383,28 @@ function defaultBlockedLabelClearer(prNumber: number, repoDir: string): void {
     repo = undefined;
   }
   removeLabelFromPullRequest(prNumber, WM_LABELS.blocked, repo ? { repo } : {});
+}
+
+/**
+ * Best-effort strip of an untrusted `wm:ready` label (HOK-3107). Failure is
+ * swallowed with a warning so tend never halts the loop when GitHub returns a
+ * transient error while removing an agent-applied label.
+ */
+function defaultUntrustedReadyLabelStripper(prNumber: number, repoDir: string): void {
+  let repo: string | undefined;
+  try {
+    repo = resolveOwnerRepoFromRemote(repoDir) ?? undefined;
+  } catch {
+    repo = undefined;
+  }
+  try {
+    removeLabelFromPullRequest(prNumber, WM_LABELS.ready, repo ? { repo } : {});
+  } catch (error) {
+    console.warn(
+      `tend: failed to strip untrusted wm:ready from PR #${prNumber} `
+      + `(no ready-published handoff for live head): ${errorMessage(error)}`,
+    );
+  }
 }
 
 function parseCrossPrGuardToolOutput(output: string): {
