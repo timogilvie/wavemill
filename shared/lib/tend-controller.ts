@@ -14,7 +14,7 @@ import {
   writePrStateMarker,
   WM_LABELS,
 } from './pr-state-labels.ts';
-import { claimReadyHandoff, rebindTendHandoff } from './ready-tend-handoff.ts';
+import { claimReadyHandoff, describeClaimRejection, rebindTendHandoff, type ClaimHandoffOutcome } from './ready-tend-handoff.ts';
 import { buildStaleMarkerFinding, type MarkerPayload, type MarkerValidation } from './transient-marker.ts';
 import { getIntegrationConfig, getIntegrationReadyPolicy } from './config.ts';
 import { readChallengeComparisons } from './challenge-comparison.ts';
@@ -168,6 +168,16 @@ export interface MergeExecutionDeps {
    * (posts the failure comment and moves the PR to wm:blocked).
    */
   handoffRebindRetry: StrictBaseRetryOps;
+  /**
+   * Handoff-claim bounded-retry ops (HOK-3108). Counts consecutive rejected
+   * pre-lane Tend claims for a `wm:ready` PR whose Ready handoff file is
+   * missing/not-published/mismatched at the live head. Keyed on the live PR
+   * head — a fresh push resets the budget. When the budget is exhausted tend
+   * takes the terminal block path (comment + wm:blocked) so the same PR does
+   * not starve the lane forever. Backoff base is 0 (no starvation from
+   * exponential waits).
+   */
+  handoffClaimRetry: StrictBaseRetryOps;
   /**
    * Factory for the process-group prep runner used by `withScratchWorktree`.
    * Called once per merge attempt; each attempt gets a fresh shared deadline.
@@ -720,6 +730,35 @@ export async function executeMerge(
     // Every holder's lock was stale and reclaimed — the lane is free, proceed.
   }
 
+  // The block closure is hoisted above the handoff check (HOK-3108) so the
+  // handoff-claim rejection path can drive `wm:blocked` when the budget is
+  // exhausted. It depends only on `candidate`, `options`, and `deps`, so
+  // moving it above `acquireMerging` is safe: `releaseToBlocked` (which is
+  // `setWavemillBlocked`) removes both wm:ready and wm:merging, so a block
+  // before wm:merging is applied is valid.
+  const block = async (phase: string, output: string): Promise<MergeExecutionResult> => {
+    const failureExcerpt = truncateOutput(output);
+    try {
+      postFailureComment(candidate.number, buildFailureComment(phase, failureExcerpt), options.repoDir, deps.shellRunner);
+    } catch {
+      // Comment posting failure is non-fatal; always release the PR from merging state.
+    }
+    try {
+      await retryTransient(() => deps.releaseToBlocked(candidate.number), {
+        label: 'set blocked label',
+        sleep: deps.retrySleep,
+      });
+    } catch (error) {
+      // Non-fatal, but never silent: a failed release leaves wm:merging applied,
+      // deadlocking the lane until the stale-lock timeout reclaims it.
+      console.warn(
+        `tend: failed to release PR #${candidate.number} from merging to blocked; `
+        + `wm:merging may be leaked until the stale-lock timeout reclaims it: ${errorMessage(error)}`,
+      );
+    }
+    return { status: 'blocked', prNumber: candidate.number, phase, failureExcerpt, haltLoop: false };
+  };
+
   // New Ready artifacts use an explicit ownership transfer. Keep the legacy
   // path tolerant of older artifacts that predate the additive handoff file.
   if (candidate.headSha && candidate.featureDir) {
@@ -727,23 +766,36 @@ export async function executeMerge(
     // so a force-push cannot inherit the old Ready token.
     const liveHead = readPrMergeDiagnostics(candidate.number, options.repoDir, deps.shellRunner).headRefOid;
     if (!liveHead || liveHead !== candidate.headSha) {
+      // Head-changed skip stays unbudgeted (transient by definition — the next
+      // poll re-reads GitHub). HOK-3108: expose both SHAs so the loop's log
+      // line names the mismatch instead of a generic message.
       return {
         status: 'skipped',
         prNumber: candidate.number,
         phase: 'handoff',
-        failureExcerpt: 'GitHub PR head changed or could not be verified before Tend ownership claim.',
+        failureExcerpt: `GitHub PR head changed or could not be verified before Tend ownership claim `
+          + `(selected=${candidate.headSha}, live=${liveHead || '(unavailable)'})`,
         haltLoop: false,
       };
     }
     const handoff = await claimReadyHandoff(candidate.featureDir, candidate.number, liveHead);
     if (handoff.outcome !== 'claimed' && handoff.outcome !== 'already-claimed') {
-      return {
-        status: 'skipped',
-        prNumber: candidate.number,
-        phase: 'handoff',
-        failureExcerpt: 'Ready completion artifact is missing, stale, or not published for the current PR head.',
-        haltLoop: false,
-      };
+      return handleHandoffClaimRejection({
+        candidate,
+        liveHead,
+        claim: handoff,
+        repoDir: options.repoDir,
+        deps,
+        block,
+      });
+    }
+    // Successful (or already-claimed) claim: clear the handoff-claim budget.
+    // A relabel wm:ready at the same head after a self-heal or a legitimate
+    // re-publish then starts a fresh budget. New heads reset automatically.
+    try {
+      deps.handoffClaimRetry.clear(candidate.number, options.repoDir);
+    } catch (error) {
+      console.warn(`tend: failed to clear handoff-claim retry budget for PR #${candidate.number}: ${errorMessage(error)}`);
     }
   }
 
@@ -775,29 +827,6 @@ export async function executeMerge(
       haltLoop: false,
     };
   }
-
-  const block = async (phase: string, output: string): Promise<MergeExecutionResult> => {
-    const failureExcerpt = truncateOutput(output);
-    try {
-      postFailureComment(candidate.number, buildFailureComment(phase, failureExcerpt), options.repoDir, deps.shellRunner);
-    } catch {
-      // Comment posting failure is non-fatal; always release the PR from merging state.
-    }
-    try {
-      await retryTransient(() => deps.releaseToBlocked(candidate.number), {
-        label: 'set blocked label',
-        sleep: deps.retrySleep,
-      });
-    } catch (error) {
-      // Non-fatal, but never silent: a failed release leaves wm:merging applied,
-      // deadlocking the lane until the stale-lock timeout reclaims it.
-      console.warn(
-        `tend: failed to release PR #${candidate.number} from merging to blocked; `
-        + `wm:merging may be leaked until the stale-lock timeout reclaims it: ${errorMessage(error)}`,
-      );
-    }
-    return { status: 'blocked', prNumber: candidate.number, phase, failureExcerpt, haltLoop: false };
-  };
 
   const emitPhaseProgress = async (phase: ScratchPrepPhase | 'heartbeat'): Promise<void> => {
     if (!options.onPhaseProgress) return;
@@ -2287,6 +2316,12 @@ const SCRATCH_PREP_RECOVERY_BUCKET = 'scratch-prep-recovery';
 const SCRATCH_PREP_RECOVERY_MAX_ATTEMPTS = 1;
 const HANDOFF_REBIND_BUCKET = 'handoff-rebind';
 const HANDOFF_REBIND_MAX_ATTEMPTS = 3;
+// HOK-3108. New bucket name — check that no existing bucket is a prefix of it
+// and vice versa (see bounded-retry.sh:11).
+// - handoff-claim  vs handoff-rebind    (no prefix relationship)
+// - handoff-claim  vs strict-base-refresh, scratch-prep-recovery (no relationship)
+const HANDOFF_CLAIM_BUCKET = 'handoff-claim';
+const HANDOFF_CLAIM_MAX_ATTEMPTS = 3;
 const SCRATCH_PREP_PROGRESS_HEARTBEAT_MS = 30_000;
 const BOUNDED_RETRY_HELPER_TIMEOUT_MS = 30_000;
 const BOUNDED_RETRY_HELPER_PATH = join(dirname(fileURLToPath(import.meta.url)), 'bounded-retry.sh');
@@ -2338,20 +2373,48 @@ export const defaultScratchPrepRetryOps: StrictBaseRetryOps = createBoundedRetry
  * budget is keyed on the pushed head SHA, so a fresh push resets counting.
  * The helper terminalizes at the ceiling with a greppable
  * `.retry-handoff-rebind-exhausted` sentinel and clears on a successful merge.
+ *
+ * Related buckets:
+ *   - `handoff-claim` (HOK-3108): pre-lane claim rejections when a `wm:ready`
+ *     PR has no published Ready handoff at its live head.
+ *   - `strict-base-refresh` (HOK-2924): stale-base rejection recovery.
+ *   - `scratch-prep-recovery` (HOK-3039): worktree-prep timeout recovery.
  */
 export const defaultHandoffRebindRetryOps: StrictBaseRetryOps = createBoundedRetryOps(
   HANDOFF_REBIND_BUCKET,
   HANDOFF_REBIND_MAX_ATTEMPTS,
 );
 
-function createBoundedRetryOps(bucket: string, maxAttempts: number): StrictBaseRetryOps {
+/**
+ * Default HOK-3108 bounded-retry wiring for pre-lane handoff-claim rejections
+ * (agent-applied wm:ready without a published Ready handoff, and similar). The
+ * budget is keyed on the live PR head, so a fresh push resets the counter and
+ * clears the `.retry-handoff-claim-exhausted` sentinel. Backoff base is 0:
+ * Ready publishes the handoff before it labels wm:ready, so there is no race
+ * for backoff to wait out, and the same PR sitting first in `eligible` would
+ * otherwise starve every other eligible PR for the duration of the wait.
+ */
+export const defaultHandoffClaimRetryOps: StrictBaseRetryOps = createBoundedRetryOps(
+  HANDOFF_CLAIM_BUCKET,
+  HANDOFF_CLAIM_MAX_ATTEMPTS,
+  { baseSeconds: 0 },
+);
+
+function createBoundedRetryOps(
+  bucket: string,
+  maxAttempts: number,
+  backoff?: { baseSeconds?: number; capSeconds?: number },
+): StrictBaseRetryOps {
+  const backoffSuffix = backoff !== undefined
+    ? ` ${escapeShellArg(String(backoff.baseSeconds ?? ''))} ${escapeShellArg(String(backoff.capSeconds ?? ''))}`
+    : '';
   return {
     gate: (prNumber, headSha, repoDir) => {
       const stateDir = mergeLaneStateDir(prNumber, repoDir);
       const decision = runBoundedRetryHelper(
         repoDir,
         `bounded_retry_gate ${escapeShellArg(stateDir)} ${escapeShellArg(bucket)} `
-        + `${escapeShellArg(sanitizeHeadShaForRetryKey(headSha))} ${maxAttempts}`,
+        + `${escapeShellArg(sanitizeHeadShaForRetryKey(headSha))} ${maxAttempts}${backoffSuffix}`,
       );
       if (!STRICT_BASE_RETRY_DECISIONS.has(decision as StrictBaseRetryDecision)) {
         throw new Error(`bounded_retry_gate returned unexpected decision: ${truncateReason(decision || '(empty)', 100)}`);
@@ -2590,6 +2653,141 @@ async function handleHandoffRebindFailure(args: {
     ),
     haltLoop: false,
   };
+}
+
+/**
+ * Handle a rejected pre-lane Tend claim on the Ready handoff (HOK-3108).
+ *
+ * Called when `claimReadyHandoff` rejected the claim at the live PR head
+ * (missing / unreadable / head-mismatch / not-published / terminal /
+ * foreign-claim). Consults the `handoff-claim` bounded-retry bucket keyed on
+ * (`mergeLaneStateDir(pr)`, `handoff-claim`, live head):
+ *
+ *  - `proceed`  → increment the counter, return `skipped` with a rich
+ *                 `failureExcerpt` naming the reason. The loop logs and
+ *                 stall-tracks it.
+ *  - `backoff`  → return the same skip without incrementing. With base 0
+ *                 this cannot fire, but the case is handled for completeness.
+ *  - `exhausted`      → mark the sentinel with a recorded reason and block.
+ *  - `exhausted-quiet` → block without re-marking (someone re-applied
+ *                        `wm:ready` at the same head after the block cleared).
+ *
+ * The block excerpt carries the literal phrase
+ *   `wm:ready without a published Ready handoff for head <fullSha>`
+ * so it is greppable across logs, and includes the rejection detail, the
+ * rejected-claim count, and a remedy line pointing to Ready re-run or a
+ * fresh push.
+ *
+ * Crucially, this path does NOT write the `tend-handoff-block` sentinel. If
+ * it did, the HOK-3105 self-heal would clear `wm:blocked` two polls later on
+ * a green PR, the PR would get `wm:ready` again, and the loop would come
+ * back. Without the sentinel, the block follows HOK-2883 semantics: it
+ * stays put and surfaces as `blocked-label:contradicted-by-live-state`
+ * with the operator's contradiction finding until Ready re-runs or a new
+ * head is pushed.
+ *
+ * A gate that throws is fail-closed: we block with the gate error appended,
+ * matching the scratch-prep and handoff-rebind conventions.
+ */
+async function handleHandoffClaimRejection(args: {
+  candidate: TendCandidate;
+  liveHead: string;
+  claim: ClaimHandoffOutcome;
+  repoDir: string;
+  deps: MergeExecutionDeps;
+  block: (phase: string, output: string) => Promise<MergeExecutionResult>;
+}): Promise<MergeExecutionResult> {
+  const { candidate, liveHead, claim, repoDir, deps, block } = args;
+  const detail = describeClaimRejection(claim, candidate.number, liveHead);
+
+  let decision: StrictBaseRetryDecision;
+  try {
+    decision = deps.handoffClaimRetry.gate(candidate.number, liveHead, repoDir);
+  } catch (gateError) {
+    console.warn(
+      `tend: handoff-claim retry gate failed for PR #${candidate.number}: ${errorMessage(gateError)}`,
+    );
+    return block(
+      'handoff',
+      `wm:ready without a published Ready handoff for head ${liveHead}\n${detail}\n\n`
+      + `handoff-claim retry gate failed (fail-closed): ${errorMessage(gateError)}`,
+    );
+  }
+
+  if (decision === 'exhausted' || decision === 'exhausted-quiet') {
+    if (decision === 'exhausted') {
+      try {
+        deps.handoffClaimRetry.markExhausted(
+          candidate.number,
+          `handoff-claim rejected ${HANDOFF_CLAIM_MAX_ATTEMPTS} times at head ${liveHead}: ${detail}`,
+          repoDir,
+        );
+      } catch (markError) {
+        console.warn(
+          `tend: failed to record handoff-claim exhaustion for PR #${candidate.number}: ${errorMessage(markError)}`,
+        );
+      }
+    }
+    const blockOutput = [
+      `wm:ready without a published Ready handoff for head ${liveHead}`,
+      detail,
+      `handoff-claim rejected ${HANDOFF_CLAIM_MAX_ATTEMPTS} consecutive times at this head.`,
+      '',
+      'Remedy: re-run Ready for this head so it publishes the handoff (it will relabel wm:ready), or push a new head.',
+    ].join('\n');
+    return block('handoff', blockOutput);
+  }
+
+  if (decision === 'proceed') {
+    try {
+      deps.handoffClaimRetry.increment(candidate.number, liveHead, repoDir);
+    } catch (incError) {
+      console.warn(
+        `tend: failed to record handoff-claim attempt for PR #${candidate.number}: ${errorMessage(incError)}`,
+      );
+    }
+  }
+  // `backoff` (only reachable with a nonzero base) falls through without
+  // incrementing — the next poll re-runs the gate.
+
+  const attempt = decision === 'proceed'
+    ? (currentHandoffClaimCount(candidate.number, liveHead, repoDir) || 1)
+    : 0;
+  const attemptLabel = decision === 'proceed'
+    ? `Tend claim rejected (${attempt}/${HANDOFF_CLAIM_MAX_ATTEMPTS}) for head ${liveHead.slice(0, 7)}: ${detail}`
+    : `Tend claim deferred by handoff-claim backoff for head ${liveHead.slice(0, 7)}: ${detail}`;
+
+  return {
+    status: 'skipped',
+    prNumber: candidate.number,
+    phase: 'handoff',
+    failureExcerpt: truncateOutput(attemptLabel),
+    haltLoop: false,
+  };
+}
+
+/**
+ * Read the current handoff-claim attempt count directly from the bucket's
+ * counter file, without shelling out. Best-effort — used only to render a
+ * "1/3" style hint into `failureExcerpt`. A missing/unreadable file returns 0.
+ *
+ * Format mirrors `bounded-retry.sh` storage (`.retry-<bucket>-count`) so a
+ * fresh test that injects a fake `handoffClaimRetry` still reads 0 here (no
+ * counter file exists on disk), rather than throwing.
+ */
+function currentHandoffClaimCount(
+  prNumber: number,
+  _headSha: string,
+  repoDir: string,
+): number {
+  try {
+    const path = join(mergeLaneStateDir(prNumber, repoDir), `.retry-${HANDOFF_CLAIM_BUCKET}-count`);
+    if (!existsSync(path)) return 0;
+    const raw = readFileSync(path, 'utf-8').trim();
+    return /^[0-9]+$/.test(raw) ? Number(raw) : 0;
+  } catch {
+    return 0;
+  }
 }
 
 async function restoreReadyAfterHandoffDefer(candidate: TendCandidate, deps: MergeExecutionDeps): Promise<void> {
@@ -2980,6 +3178,7 @@ function mergeExecutionDeps(deps: Partial<MergeExecutionDeps> | undefined, marke
     strictBaseRetry: defaultStrictBaseRetryOps,
     scratchPrepRetry: defaultScratchPrepRetryOps,
     handoffRebindRetry: defaultHandoffRebindRetryOps,
+    handoffClaimRetry: defaultHandoffClaimRetryOps,
     prepRunnerFactory: (_repoDir, factoryOptions) => createProcessGroupPrepRunner({
       deadlineMs: getIntegrationConfig(_repoDir).worktreePrepTimeoutMinutes * 60_000,
       heartbeatIntervalMs: SCRATCH_PREP_PROGRESS_HEARTBEAT_MS,
