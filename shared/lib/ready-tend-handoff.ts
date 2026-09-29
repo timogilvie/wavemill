@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { redactWithStats } from './redaction-profiles.ts';
 import { mutateJsonState } from './state-mutex.ts';
@@ -208,4 +208,86 @@ export async function rebindTendHandoff(
 export function isMatchingTendClaim(record: ReadyTendHandoffRecord | null, prNumber: number, headSha: string): boolean {
   return record !== null && matches(record, prNumber, headSha)
     && record.state === 'tend-claimed' && record.tendOwner === 'tend';
+}
+
+/**
+ * Stale-worktree marker (HOK-3112).
+ *
+ * Tend rebases a PR in its own scratch worktree and force-pushes. The task
+ * worktree that Ready runs in is never touched by that push, so it keeps the
+ * pre-rebase commit. This marker records "the task worktree is behind the PR
+ * head because Tend pushed" so that:
+ *
+ * - the monitor syncs the task worktree to the PR head before its next Ready
+ *   run (a Ready pass at the stale checkout would otherwise publish the handoff
+ *   at a head Tend can never claim), and
+ * - Tend's HOK-3105 self-heal can prove the live head is Tend's own push (the
+ *   recorded `pushedHeadSha`) before republishing the handoff there.
+ *
+ * The monitor clears the marker once the task worktree matches the PR head.
+ */
+export const TEND_PUSHED_HEAD_VERSION = 1;
+
+export interface TendPushedHeadRecord {
+  version: number;
+  prNumber: number;
+  /** PR head before Tend's push (the commit the task worktree still has). */
+  previousHeadSha: string;
+  /** Head Tend force-pushed to the PR branch. */
+  pushedHeadSha: string;
+  pushedAt: string;
+  by: 'tend';
+}
+
+export function tendPushedHeadPath(featureDir: string): string {
+  return join(featureDir, '.tend-pushed-head.json');
+}
+
+/** Record that Tend pushed `pushedHeadSha` over `previousHeadSha` on this PR. */
+export async function recordTendPushedHead(
+  featureDir: string,
+  prNumber: number,
+  previousHeadSha: string,
+  pushedHeadSha: string,
+): Promise<TendPushedHeadRecord> {
+  const next: TendPushedHeadRecord = {
+    version: TEND_PUSHED_HEAD_VERSION,
+    prNumber,
+    previousHeadSha,
+    pushedHeadSha,
+    pushedAt: new Date().toISOString(),
+    by: 'tend',
+  };
+  return mutateJsonState<TendPushedHeadRecord>(
+    tendPushedHeadPath(featureDir),
+    (current) => {
+      // Consecutive Tend pushes without an intervening monitor sync: keep the
+      // oldest previous head, because that is what the task worktree still has.
+      const keepPrevious = current?.version === TEND_PUSHED_HEAD_VERSION
+        && current.prNumber === prNumber
+        && current.pushedHeadSha === previousHeadSha
+        && typeof current.previousHeadSha === 'string'
+        && current.previousHeadSha.length > 0;
+      return keepPrevious ? { ...next, previousHeadSha: current.previousHeadSha } : next;
+    },
+    { createIfMissing: true, initial: next },
+  );
+}
+
+export function readTendPushedHead(featureDir: string): TendPushedHeadRecord | null {
+  const path = tendPushedHeadPath(featureDir);
+  if (!existsSync(path)) return null;
+  try {
+    const value = JSON.parse(readFileSync(path, 'utf8')) as Partial<TendPushedHeadRecord> | null;
+    if (!value || typeof value !== 'object') return null;
+    if (value.version !== TEND_PUSHED_HEAD_VERSION || typeof value.prNumber !== 'number'
+      || typeof value.pushedHeadSha !== 'string' || !value.pushedHeadSha) return null;
+    return value as TendPushedHeadRecord;
+  } catch {
+    return null;
+  }
+}
+
+export function clearTendPushedHead(featureDir: string): void {
+  rmSync(tendPushedHeadPath(featureDir), { force: true });
 }

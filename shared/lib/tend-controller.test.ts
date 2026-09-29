@@ -36,7 +36,13 @@ import {
   type ScratchPrepRunner,
 } from './tend-scratch-prep.ts';
 import { clearConfigCache } from './config.ts';
-import { claimReadyHandoff, publishReadyHandoff, readReadyTendHandoff } from './ready-tend-handoff.ts';
+import {
+  claimReadyHandoff,
+  publishReadyHandoff,
+  readReadyTendHandoff,
+  readTendPushedHead,
+  recordTendPushedHead,
+} from './ready-tend-handoff.ts';
 
 function metadata(lines: string[] = ['task: HOK-1437']): string {
   return ['<!-- wavemill-meta', ...lines, '-->'].join('\n');
@@ -4149,6 +4155,14 @@ describe('executeMerge handoff-rebind lag (HOK-3105)', () => {
       );
       const sentinel = JSON.parse(readFileSync(tendHandoffBlockSentinelPathForTest(options.repoDir, 42), 'utf-8'));
       assert.equal(sentinel.headSha, pushedSha);
+      // HOK-3112: the sentinel carries what the self-heal needs to move the claim.
+      assert.equal(sentinel.previousHeadSha, initialHeadSha);
+      assert.equal(sentinel.featureDir, featureDir);
+      // HOK-3112: the push happened even though the rebind was refused, so the
+      // task worktree is marked stale for the monitor to resync.
+      const pushedMarker = readTendPushedHead(featureDir);
+      assert.equal(pushedMarker?.previousHeadSha, initialHeadSha);
+      assert.equal(pushedMarker?.pushedHeadSha, pushedSha);
       // No convergence backoff sleeps — third-head refusal fires on the first read.
       const backoffSleeps = sleeps.filter((ms) => ms === 1000 || ms === 2000 || ms === 4000 || ms === 8000);
       assert.equal(backoffSleeps.length, 0);
@@ -4203,6 +4217,8 @@ describe('executeMerge handoff-rebind lag (HOK-3105)', () => {
       assert.ok(options.labels.includes('ready:42'), `labels=${options.labels.join(',')}`);
       assert.ok(!options.labels.includes('blocked:42'));
       assert.ok(!existsSync(tendHandoffBlockSentinelPathForTest(options.repoDir, 42)));
+      // HOK-3112: a lag-deferred rebind still marks the task worktree stale.
+      assert.equal(readTendPushedHead(featureDir)?.pushedHeadSha, pushedSha);
     } finally {
       options.cleanup();
     }
@@ -4332,6 +4348,189 @@ describe('executeMerge handoff-rebind lag (HOK-3105)', () => {
       assert.ok(!existsSync(
         join(options.repoDir, '.wavemill', 'merge-lane', '1', 'tend-handoff-contradiction-observed.json'),
       ));
+    } finally {
+      options.cleanup();
+    }
+  });
+
+  /**
+   * HOK-3112 fixture: PR #1 sits at `liveHead` with a tend-set wm:blocked,
+   * a CLEAN/green live state, and a Ready artifact dir (resolved from the
+   * `task: HOK-1437` metadata) whose last Ready pass was at the stale head.
+   */
+  function buildSelfHealFixture(liveHead: string) {
+    const options = buildTestOptions([
+      pr({
+        headRefOid: liveHead,
+        labels: [label(WM_LABELS.wavemill), label(WM_LABELS.ready), label(WM_LABELS.blocked)],
+      }),
+    ]);
+    const cleared: number[] = [];
+    options.blockedLabelClearer = (prNumber) => { cleared.push(prNumber); };
+    options.blockedPrLiveStateProber = async () => ({
+      available: true,
+      mergeable: 'MERGEABLE',
+      mergeStateStatus: 'CLEAN',
+      failingChecks: [],
+      pendingChecks: [],
+    });
+    writePrStateMarker(1, {
+      headSha: liveHead,
+      activeLabels: [WM_LABELS.ready, WM_LABELS.blocked],
+      markerRoot: options.repoDir,
+    });
+    writeReadyResult(options.repoDir, 'HOK-1437', {
+      stage: 'ready',
+      status: 'completed',
+      artifacts: { type: 'ready', verdict: 'pass', readyHeadSha: 'head-prev', readyLabelsUpdated: true },
+    });
+    const featureDir = join(options.repoDir, 'features', 'HOK-1437');
+    const sentinelDir = join(options.repoDir, '.wavemill', 'merge-lane', '1');
+    const writeSentinel = (sentinel: Record<string, unknown>) => {
+      mkdirSync(sentinelDir, { recursive: true });
+      writeFileSync(
+        join(sentinelDir, 'tend-handoff-block.json'),
+        JSON.stringify({ reason: 'handoff-rebind-refused', at: '2026-09-29T12:25:00Z', ...sentinel }),
+      );
+    };
+    return { options, cleared, featureDir, sentinelDir, writeSentinel };
+  }
+
+  /** executeMerge deps where GitHub reports `liveHead` and no rebase is needed. */
+  function buildClaimMergeOptions(liveHead: string) {
+    const merge = buildMergeTestOptions();
+    const shellRunner: MergeExecutionDeps['shellRunner'] = (cmd) => {
+      merge.calls.push(cmd);
+      if (cmd.includes('gh pr list --label')) return '[]';
+      if (cmd.includes('git rev-parse --git-common-dir')) return join(merge.repoDir, '.git');
+      if (cmd.includes('git rev-parse') && cmd.includes('origin/')) return 'abc123def456';
+      if (cmd.includes('git merge-base --is-ancestor')) return '';
+      if (cmd.includes('gh pr checks')) return JSON.stringify([{ name: 'ci', state: 'COMPLETED', conclusion: 'success' }]);
+      if (cmd.includes('gh pr view')) {
+        return JSON.stringify({
+          mergeStateStatus: 'CLEAN',
+          headRefOid: liveHead,
+          baseRefOid: 'base-sha',
+          statusCheckRollup: [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }],
+        });
+      }
+      return '';
+    };
+    return { merge, deps: { ...merge.deps, shellRunner, retrySleep: async () => {} } };
+  }
+
+  for (const shape of [
+    { name: 'tend claim still at the pre-push head', staleState: 'tend-claimed' },
+    { name: 'Ready re-run republished at the stale checkout head (PR #1520)', staleState: 'ready-published' },
+  ] as const) {
+    it(`self-heal moves the handoff to the live head so the next poll claims it — ${shape.name} (HOK-3112)`, async () => {
+      const { options, cleared, featureDir, sentinelDir, writeSentinel } = buildSelfHealFixture('head-current');
+      const claimOptions = buildClaimMergeOptions('head-current');
+      try {
+        // Record left behind by the refused rebind: still at the pre-push head.
+        await publishReadyHandoff(featureDir, 1, 'head-prev');
+        if (shape.staleState === 'tend-claimed') await claimReadyHandoff(featureDir, 1, 'head-prev');
+        await recordTendPushedHead(featureDir, 1, 'head-prev', 'head-current');
+        writeSentinel({ headSha: 'head-current', previousHeadSha: 'head-prev', featureDir });
+
+        const first = await selectNextCandidate(options);
+        assert.equal(first.blocked[0]?.reason, 'blocked-label:contradicted-by-live-state');
+        assert.equal(readReadyTendHandoff(featureDir)?.headSha, 'head-prev', 'first poll must not move the record');
+
+        const second = await selectNextCandidate(options);
+        assert.deepEqual(cleared, [1]);
+        assert.deepEqual(second.eligible.map((c) => c.number), [1]);
+        assert.ok(!existsSync(join(sentinelDir, 'tend-handoff-block.json')));
+
+        const record = readReadyTendHandoff(featureDir);
+        assert.equal(record?.headSha, 'head-current');
+        assert.equal(record?.state, shape.staleState === 'tend-claimed' ? 'tend-claimed' : 'ready-published');
+        // The task worktree stays marked stale so the monitor resyncs it
+        // before any Ready re-run can overwrite the healed record.
+        assert.equal(readTendPushedHead(featureDir)?.pushedHeadSha, 'head-current');
+
+        // Next tend poll: the candidate is claimable at the live head.
+        const next = second.eligible[0]!;
+        assert.equal(next.featureDir, featureDir);
+        assert.equal(next.headSha, 'head-current');
+        const result = await executeMerge(next, { repoDir: claimOptions.merge.repoDir, deps: claimOptions.deps });
+        // Past the ownership claim (later merge phases are out of scope here).
+        assert.notEqual(result.phase, 'handoff', `claim rejected: ${result.failureExcerpt}`);
+        assert.notEqual(result.status, 'skipped');
+        assert.ok(hasCall(claimOptions.merge.calls, /gh pr view/));
+        const claimed = readReadyTendHandoff(featureDir);
+        assert.equal(claimed?.headSha, 'head-current');
+        assert.equal(claimed?.state, 'tend-claimed');
+        assert.equal(claimed?.tendOwner, 'tend');
+      } finally {
+        options.cleanup();
+        claimOptions.merge.cleanup();
+      }
+    });
+  }
+
+  it('self-heal never republishes for a head tend did not push (HOK-3112)', async () => {
+    const { options, cleared, featureDir, sentinelDir, writeSentinel } = buildSelfHealFixture('head-current');
+    try {
+      await publishReadyHandoff(featureDir, 1, 'head-prev');
+      await claimReadyHandoff(featureDir, 1, 'head-prev');
+      // The sentinel says head-current, but tend's own push record says it
+      // pushed head-other: head-current came from someone else.
+      await recordTendPushedHead(featureDir, 1, 'head-prev', 'head-other');
+      writeSentinel({ headSha: 'head-current', previousHeadSha: 'head-prev', featureDir });
+
+      for (let poll = 0; poll < 3; poll += 1) {
+        const decision = await selectNextCandidate(options);
+        assert.equal(decision.blocked[0]?.reason, 'blocked-label:contradicted-by-live-state');
+      }
+      assert.deepEqual(cleared, []);
+      const record = readReadyTendHandoff(featureDir);
+      assert.equal(record?.headSha, 'head-prev');
+      assert.equal(record?.state, 'tend-claimed');
+      assert.ok(existsSync(join(sentinelDir, 'tend-handoff-block.json')), 'block evidence is kept');
+      assert.ok(!existsSync(join(sentinelDir, 'tend-handoff-contradiction-observed.json')));
+    } finally {
+      options.cleanup();
+    }
+  });
+
+  it('self-heal ignores a third-party head on top of tend\'s push (HOK-3112)', async () => {
+    const { options, cleared, featureDir, writeSentinel } = buildSelfHealFixture('head-third-party');
+    try {
+      await publishReadyHandoff(featureDir, 1, 'head-prev');
+      await claimReadyHandoff(featureDir, 1, 'head-prev');
+      await recordTendPushedHead(featureDir, 1, 'head-prev', 'head-tend');
+      writeSentinel({ headSha: 'head-tend', previousHeadSha: 'head-prev', featureDir });
+
+      for (let poll = 0; poll < 3; poll += 1) {
+        const decision = await selectNextCandidate(options);
+        assert.equal(decision.blocked[0]?.reason, 'blocked-label:contradicted-by-live-state');
+      }
+      assert.deepEqual(cleared, []);
+      assert.equal(readReadyTendHandoff(featureDir)?.headSha, 'head-prev');
+      assert.equal(readTendPushedHead(featureDir)?.pushedHeadSha, 'head-tend');
+    } finally {
+      options.cleanup();
+    }
+  });
+
+  it('self-heal keeps the block when the handoff record is terminal at the live head (HOK-3112)', async () => {
+    const { options, cleared, featureDir, sentinelDir, writeSentinel } = buildSelfHealFixture('head-current');
+    try {
+      mkdirSync(featureDir, { recursive: true });
+      writeFileSync(join(featureDir, '.ready-tend-handoff.json'), JSON.stringify({
+        ...(await publishReadyHandoff(featureDir, 1, 'head-current')).record,
+        state: 'terminal',
+        terminalAt: '2026-09-29T12:00:00Z',
+      }));
+      writeSentinel({ headSha: 'head-current', featureDir });
+
+      await selectNextCandidate(options);
+      const second = await selectNextCandidate(options);
+      assert.equal(second.blocked[0]?.reason, 'blocked-label:contradicted-by-live-state');
+      assert.deepEqual(cleared, []);
+      assert.equal(readReadyTendHandoff(featureDir)?.state, 'terminal');
+      assert.ok(existsSync(join(sentinelDir, 'tend-handoff-block.json')));
     } finally {
       options.cleanup();
     }

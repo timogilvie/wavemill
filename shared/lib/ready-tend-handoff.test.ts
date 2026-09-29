@@ -1,9 +1,21 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { captureTransitionDiagnostic, claimReadyHandoff, handoffToken, isMatchingTendClaim, publishReadyHandoff, rebindTendHandoff, recordReadyChecked } from './ready-tend-handoff.ts';
+import {
+  captureTransitionDiagnostic,
+  claimReadyHandoff,
+  clearTendPushedHead,
+  handoffToken,
+  isMatchingTendClaim,
+  publishReadyHandoff,
+  readTendPushedHead,
+  rebindTendHandoff,
+  recordReadyChecked,
+  recordTendPushedHead,
+  tendPushedHeadPath,
+} from './ready-tend-handoff.ts';
 
 test('Ready publication and Tend claim are idempotent and head-bound', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'ready-tend-handoff-'));
@@ -48,4 +60,46 @@ test('transition diagnostics redact and bound command output', () => {
   assert.equal(diagnostic.redacted, true);
   assert.equal(diagnostic.truncated, true);
   assert.ok(!JSON.stringify(diagnostic).includes('ghp_'));
+});
+
+test('Tend pushed-head marker round-trips and clears (HOK-3112)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ready-tend-pushed-head-'));
+  try {
+    assert.equal(readTendPushedHead(dir), null);
+    const recorded = await recordTendPushedHead(dir, 1520, 'pre-rebase', 'rebased');
+    assert.equal(recorded.by, 'tend');
+    assert.equal(recorded.previousHeadSha, 'pre-rebase');
+    assert.equal(recorded.pushedHeadSha, 'rebased');
+    assert.deepEqual(readTendPushedHead(dir), recorded);
+    clearTendPushedHead(dir);
+    assert.ok(!existsSync(tendPushedHeadPath(dir)));
+    assert.equal(readTendPushedHead(dir), null);
+    clearTendPushedHead(dir); // idempotent
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('consecutive Tend pushes keep the head the task worktree still has (HOK-3112)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ready-tend-pushed-chain-'));
+  try {
+    await recordTendPushedHead(dir, 1520, 'worktree-head', 'push-1');
+    // A second push before the monitor synced: the checkout is still at
+    // worktree-head, so that stays the recorded previous head.
+    const chained = await recordTendPushedHead(dir, 1520, 'push-1', 'push-2');
+    assert.equal(chained.previousHeadSha, 'worktree-head');
+    assert.equal(chained.pushedHeadSha, 'push-2');
+    // An unrelated previous head (e.g. marker from another PR head lineage)
+    // replaces the record instead of chaining.
+    const replaced = await recordTendPushedHead(dir, 1520, 'other', 'push-3');
+    assert.equal(replaced.previousHeadSha, 'other');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('malformed Tend pushed-head markers read as absent (HOK-3112)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ready-tend-pushed-bad-'));
+  try {
+    writeFileSync(tendPushedHeadPath(dir), '{not json');
+    assert.equal(readTendPushedHead(dir), null);
+    writeFileSync(tendPushedHeadPath(dir), JSON.stringify({ version: 1, prNumber: 1520 }));
+    assert.equal(readTendPushedHead(dir), null);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

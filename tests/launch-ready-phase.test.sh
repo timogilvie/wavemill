@@ -118,6 +118,7 @@ extract_function "$MONITOR_SCRIPT_FILE" "ready_route_stamp_config_json" >> "$LAU
 extract_function "$MONITOR_SCRIPT_FILE" "ready_route_stamp_enabled" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "ready_route_stamp_requires_complete" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "ready_current_github_head" >> "$LAUNCH_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "ready_sync_worktree_to_github_head" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "set_ready_pass_labels" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "post_pr_reconciliation_config_json" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "post_pr_reconciliation_enabled" >> "$LAUNCH_FUNC_FILE"
@@ -166,6 +167,64 @@ run_launch_case() {
     WT_DIR="$CASE_DIR/worktree"
     mkdir -p "$STATE_DIR" "$WT_DIR"
     HANDOFF_CLAIM_COUNT_FILE="$CASE_DIR/handoff-claim-count"
+    # Every --head the handoff/label tools receive (HOK-3112).
+    HANDOFF_HEADS_FILE="$CASE_DIR/handoff-heads"
+    # Queue of heads the gh stub reports, one per call; the last line sticks,
+    # and a FAIL line makes that read fail.
+    GH_HEADS_FILE="$CASE_DIR/gh-heads"
+    printf "%s\n" "abc123" > "$GH_HEADS_FILE"
+    SHA_OLD="" SHA_NEW="" SHA_LOCAL=""
+    if [[ "$TEST_CASE" == head_sync_* ]]; then
+      # Real git topology for HOK-3112: the PR branch was pushed at OLD and the
+      # task worktree still sits there; Tend then rebased the PR onto a new
+      # base from a scratch clone and force-pushed NEW (OLD is not an
+      # ancestor of NEW). The worktree origin/<branch> ref still says OLD.
+      export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
+      rmdir "$WT_DIR"
+      command git init -q --bare "$CASE_DIR/origin.git"
+      command git init -q -b main "$CASE_DIR/seed"
+      command git -C "$CASE_DIR/seed" commit -q --allow-empty -m base
+      command git -C "$CASE_DIR/seed" push -q "$CASE_DIR/origin.git" main
+      command git clone -q "$CASE_DIR/origin.git" "$WT_DIR"
+      command git -C "$WT_DIR" checkout -q -b task/fix-failing-ci-tests
+      printf "work\n" > "$WT_DIR/feature.txt"
+      command git -C "$WT_DIR" add feature.txt
+      command git -C "$WT_DIR" commit -q -m work
+      command git -C "$WT_DIR" push -q -u origin task/fix-failing-ci-tests
+      SHA_OLD=$(command git -C "$WT_DIR" rev-parse HEAD)
+      command git clone -q "$CASE_DIR/origin.git" "$CASE_DIR/tend-scratch"
+      command git -C "$CASE_DIR/tend-scratch" commit -q --allow-empty -m "integration advanced"
+      command git -C "$CASE_DIR/tend-scratch" push -q origin main
+      command git -C "$CASE_DIR/tend-scratch" checkout -q -b task/fix-failing-ci-tests
+      command git -C "$CASE_DIR/tend-scratch" cherry-pick "$SHA_OLD" >/dev/null
+      command git -C "$CASE_DIR/tend-scratch" push -q -f origin task/fix-failing-ci-tests
+      SHA_NEW=$(command git -C "$CASE_DIR/tend-scratch" rev-parse HEAD)
+      case "$TEST_CASE" in
+        head_sync_stale_worktree)
+          printf "%s\n" "$SHA_NEW" > "$GH_HEADS_FILE"
+          jq -cn --arg prev "$SHA_OLD" --arg pushed "$SHA_NEW" \
+            "{version:1,prNumber:304,previousHeadSha:\$prev,pushedHeadSha:\$pushed,pushedAt:\"t\",by:\"tend\"}" \
+            > "$STATE_DIR/.tend-pushed-head.json"
+          ;;
+        head_sync_github_unavailable)
+          printf "%s\n" "FAIL" > "$GH_HEADS_FILE"
+          ;;
+        head_sync_publish_head_unavailable)
+          # Checkout already matches at preflight; GitHub then stops answering.
+          printf "%s\n%s\n" "$SHA_OLD" "FAIL" > "$GH_HEADS_FILE"
+          ;;
+        head_sync_unpushed_commits)
+          printf "local\n" > "$WT_DIR/local.txt"
+          command git -C "$WT_DIR" add local.txt
+          command git -C "$WT_DIR" commit -q -m "unpushed remediation fix"
+          SHA_LOCAL=$(command git -C "$WT_DIR" rev-parse HEAD)
+          printf "%s\n" "$SHA_NEW" > "$GH_HEADS_FILE"
+          ;;
+        head_sync_head_moved_during_ready)
+          printf "%s\n%s\n" "$SHA_NEW" "newer999" > "$GH_HEADS_FILE"
+          ;;
+      esac
+    fi
     cat > "$STATE_DIR/.review-result.json" <<EOF
 {"stage":"review","status":"completed","artifacts":{"type":"review","prNumber":304,"exitCode":0,"verdict":"ready","iterations":1,"blockerCount":0,"warningCount":0}}
 EOF
@@ -460,7 +519,20 @@ EOF
     }
     review_recovery_window_observable() { return 0; }
     check_stage_aborted() { return 1; }
+    gh() {
+      local head
+      head=$(head -n 1 "$GH_HEADS_FILE")
+      if [[ $(wc -l < "$GH_HEADS_FILE") -gt 1 ]]; then
+        tail -n +2 "$GH_HEADS_FILE" > "$GH_HEADS_FILE.next" && mv "$GH_HEADS_FILE.next" "$GH_HEADS_FILE"
+      fi
+      [[ "$head" != "FAIL" ]] || return 1
+      printf "%s\n" "$head"
+    }
     git() {
+      if [[ "$TEST_CASE" == head_sync_* ]]; then
+        command git "$@"
+        return
+      fi
       if [[ "${1:-}" == "-C" && "${3:-}" == "rev-parse" && "${4:-}" == "--show-toplevel" ]]; then
         printf "%s\n" "$REPO_DIR"
         return 0
@@ -539,6 +611,15 @@ EOF
         esac
       fi
 
+      if [[ "${2:-}" == "$TOOLS_DIR/set-pr-ready-label.ts" || "${2:-}" == "$TOOLS_DIR/ready-tend-handoff.ts" ]]; then
+        local arg prev_arg="" head_arg=""
+        for arg in "$@"; do
+          [[ "$prev_arg" == "--head" ]] && head_arg="$arg"
+          prev_arg="$arg"
+        done
+        printf "%s:%s\n" "$(basename "$2" .ts)${3:+-$3}" "$head_arg" >> "$HANDOFF_HEADS_FILE"
+      fi
+
       if [[ "${2:-}" == "$TOOLS_DIR/set-pr-ready-label.ts" ]]; then
         printf "%s\n" "$(( $(cat "$READY_LABEL_COUNT_FILE") + 1 ))" > "$READY_LABEL_COUNT_FILE"
         case "$TEST_CASE" in
@@ -589,6 +670,11 @@ EOF
         challenge_comparison_pending)
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"pending\",\"pendingReason\":\"challenge-comparison-pending\",\"pendingReasons\":[\"challenge-comparison-pending\"],\"implementationReady\":true,\"headSha\":\"abc123\",\"ciConclusion\":\"pass\",\"challenge\":{\"pairId\":\"HOK-1300\",\"side\":\"primary\",\"outcome\":\"comparison-pending\",\"primaryEval\":{\"ok\":true,\"evalId\":\"eval-1\"},\"challengerEval\":{\"ok\":true,\"evalId\":\"eval-2\"},\"staleComparisons\":0},\"checks\":[{\"name\":\"ci-status\",\"status\":\"pass\",\"message\":\"All CI checks passing\",\"details\":{\"totalChecks\":3}},{\"name\":\"ready-policy\",\"status\":\"pending\",\"message\":\"Challenge pair HOK-1300 has current-head evals but no comparison yet.\",\"details\":{\"pendingReason\":\"challenge-comparison-pending\",\"implementationReady\":true}}],\"timestamp\":\"2026-04-16T14:12:00.431Z\",\"summary\":\"Challenge pair HOK-1300 has current-head evals but no comparison yet.\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"BLOCKED\",\"attempts\":1}}"
           return 2
+          ;;
+        head_sync_*)
+          command git -C "$WT_DIR" rev-parse HEAD > "$CASE_DIR/ready-checked-head"
+          printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"pass\",\"checks\":[{\"name\":\"ready-policy\",\"status\":\"pass\",\"message\":\"Ready policy satisfied\",\"details\":{}}],\"timestamp\":\"2026-09-29T12:26:42.000Z\",\"summary\":\"All checks passed\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"attempts\":1}}"
+          return 0
           ;;
         pass_after_remediation|pass_clears_recheck|dismissed_blockers_pass|route_stamp_failure|tend_claims_during_ready_label)
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"pass\",\"checks\":[{\"name\":\"ci-status\",\"status\":\"pass\",\"message\":\"All CI checks passing\",\"details\":{\"totalChecks\":3}}],\"timestamp\":\"2026-04-16T14:12:00.431Z\",\"summary\":\"All checks passed\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"attempts\":1}}"
@@ -689,6 +775,17 @@ EOF
     printf "handoff_claims=%s\n" "$handoff_claims"
     printf "challenge_orch_calls=%s\n" "$CHALLENGE_ORCH_CALLS"
     printf "prompt_summary=%s\n" "$READY_PROMPT_SUMMARY"
+    handoff_heads=""
+    [[ -f "$HANDOFF_HEADS_FILE" ]] && handoff_heads=$(tr "\n" " " < "$HANDOFF_HEADS_FILE")
+    printf "handoff_heads=[%s]\n" "$handoff_heads"
+    printf "ready_checked_head=%s\n" "$(cat "$CASE_DIR/ready-checked-head" 2>/dev/null || echo none)"
+    if [[ "$TEST_CASE" == head_sync_* ]]; then
+      printf "sha_old=%s\nsha_new=%s\nsha_local=%s\n" "$SHA_OLD" "$SHA_NEW" "$SHA_LOCAL"
+      printf "worktree_head_after=%s\n" "$(command git -C "$WT_DIR" rev-parse HEAD)"
+      tend_marker="absent"
+      [[ -f "$STATE_DIR/.tend-pushed-head.json" ]] && tend_marker="present"
+      printf "tend_marker=%s\n" "$tend_marker"
+    fi
     printf "phase_used=%s\n" "$LAUNCH_AGENT_PHASE"
     remediation_retry_count="$(cat "$STATE_DIR/.retry-ready-remediation-count" 2>/dev/null || echo "")"
     remediation_retry_exhausted="absent"
@@ -1436,6 +1533,57 @@ check_contains "Tend interleave retains one legal claim" "$output" "handoff_clai
 check_contains "Tend interleave persists claimed handoff" "$output" "\"readyTendHandoff\":\"tend-claimed\""
 check_contains "Tend interleave does not charge Ready retry" "$output" "recheck_files=absent,absent,absent,absent,absent"
 check_not_contains "Tend interleave has no false label failure" "$output" "failed to restore PR labels"
+
+echo "=== Stale Worktree Handoff Head (HOK-3112) ==="
+
+field() { printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -n 1; }
+
+# PR #1520 shape: Tend rebased + force-pushed from its scratch worktree, the
+# task worktree still sits at the pre-rebase commit, and Ready's output has no
+# headSha. The handoff must be published at the live PR head, never the
+# checkout HEAD, and Ready must have checked that same head.
+output="$(run_launch_case head_sync_stale_worktree)"
+sha_old="$(field "$output" sha_old)"
+sha_new="$(field "$output" sha_new)"
+check_contains "stale worktree: Ready passes" "$output" "rc=0"
+check_contains "stale worktree: worktree synced to PR head before Ready" "$output" "ready_checked_head=$sha_new"
+check_contains "stale worktree: worktree left at PR head" "$output" "worktree_head_after=$sha_new"
+check_contains "stale worktree: handoff checked at PR head" "$output" "ready-tend-handoff-checked:$sha_new"
+check_contains "stale worktree: handoff published at PR head" "$output" "ready-tend-handoff-publish:$sha_new"
+check_contains "stale worktree: ready label bound to PR head" "$output" "set-pr-ready-label-304:$sha_new"
+check_not_contains "stale worktree: never publishes at stale checkout HEAD" "$output" ":$sha_old"
+check_contains "stale worktree: records the published head" "$output" "\"readyHeadSha\":\"$sha_new\""
+check_contains "stale worktree: sync is logged" "$output" "(tend push) before Ready"
+check_contains "stale worktree: tend stale marker consumed" "$output" "tend_marker=absent"
+
+output="$(run_launch_case head_sync_github_unavailable)"
+check_contains "GitHub head unavailable at preflight: Ready deferred as pending" "$output" "rc=4"
+check_contains "GitHub head unavailable at preflight: typed pending reason" "$output" "\"pendingReason\":\"head-unverified\""
+check_contains "GitHub head unavailable at preflight: Ready not run" "$output" "ready_checked_head=none"
+check_contains "GitHub head unavailable at preflight: nothing published" "$output" "handoff_heads=[]"
+
+output="$(run_launch_case head_sync_publish_head_unavailable)"
+check_contains "GitHub head unavailable at publish: Ready ran" "$output" "ready_checked_head=$(field "$output" sha_old)"
+check_contains "GitHub head unavailable at publish: fails closed" "$output" "rc=1"
+check_contains "GitHub head unavailable at publish: typed ownership-changed" "$output" "\"stage\":\"ownership-changed\""
+check_contains "GitHub head unavailable at publish: no checkout fallback" "$output" "handoff_heads=[]"
+
+output="$(run_launch_case head_sync_unpushed_commits)"
+sha_local="$(field "$output" sha_local)"
+check_contains "unpushed commits: sync refused" "$output" "rc=1"
+check_contains "unpushed commits: attention names the divergence" "$output" "unpushed local work"
+check_contains "unpushed commits: local work kept" "$output" "worktree_head_after=$sha_local"
+check_contains "unpushed commits: Ready not run" "$output" "ready_checked_head=none"
+check_contains "unpushed commits: nothing published" "$output" "handoff_heads=[]"
+
+output="$(run_launch_case head_sync_head_moved_during_ready)"
+sha_new="$(field "$output" sha_new)"
+check_contains "head moved during Ready: Ready checked the synced head" "$output" "ready_checked_head=$sha_new"
+check_contains "head moved during Ready: returns pending" "$output" "rc=4"
+check_contains "head moved during Ready: typed head-changed" "$output" "\"pendingReason\":\"head-changed\""
+check_contains "head moved during Ready: pending names the new head" "$output" "\"readyHeadSha\":\"newer999\""
+check_contains "head moved during Ready: nothing published" "$output" "handoff_heads=[]"
+check_not_contains "head moved during Ready: no needs-user failure" "$output" "|ready|failed|"
 
 output="$(run_launch_case clean_after_unknown)"
 check_contains "clean after unknown returns success" "$output" "rc=0"

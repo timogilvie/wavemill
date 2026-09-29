@@ -42,6 +42,28 @@ State entries track four `lastLogged*` fields (`lastLoggedAt`, `lastLoggedFinger
 
 Failure mode: ready pass with `checksRun: 1` usually means the policy path evaluated only non-CI guards or GitHub returned a partial check set. The shared CI evaluator fixes this by requiring branch-protection or configured contexts before pass.
 
+## Ready → Tend Handoff Head (HOK-3112)
+
+Ready publishes `.ready-tend-handoff.json` at the head it checked. Tend claims it only at the PR's live GitHub head, so a record at any other head is silently skipped on every poll.
+
+| Artifact | Writer | Meaning |
+|---|---|---|
+| `<featureDir>/.ready-tend-handoff.json` | monitor (`set_ready_pass_labels`), tend (claim/rebind/self-heal) | Head-bound ownership record: `checked → ready-published → tend-claimed → terminal` |
+| `<featureDir>/.tend-pushed-head.json` | tend (`rebindPushedTendHead`, self-heal) | Tend pushed `pushedHeadSha` over `previousHeadSha`; the task worktree is stale until the monitor syncs it |
+| `.wavemill/merge-lane/<pr>/tend-handoff-block.json` | tend (refused rebind) | Tend's own `wm:blocked`, with the pushed head, previous head, and featureDir for the self-heal |
+
+- DO sync the task worktree to GitHub's head before Ready runs (`ready_sync_worktree_to_github_head` in `launch_ready_phase`, via `fetch` + `reset --keep`). Ready's checks and the cross-PR guard read the checkout, so a mismatch means Ready did not check the head it would publish.
+- DO publish the handoff only at `ready_current_github_head`, and only when the checkout (and Ready's `headSha`, if reported) still equals it. GitHub unreadable → `ownership-changed`; head moved during Ready → pending `head-changed` (rc 4).
+- DO move the handoff record to the live head (`rebindTendHandoff`, else `publishReadyHandoff`) before a tend self-heal restores `wm:ready`, and only when the live head is tend's own push (sentinel head and `.tend-pushed-head.json` agree).
+- DON'T fall back to `git rev-parse HEAD` of the task worktree for the handoff head.
+- DON'T reset a worktree with unpushed local commits: sync only when local HEAD is an ancestor of the PR head, is the head tend recorded replacing, or was already on `origin/<branch>` before the fetch. Otherwise Ready refuses with a needs-attention reason.
+
+| Symptom | Root Cause | Fix |
+|---|---|---|
+| Tend skips a green `wm:ready` PR every poll with `phase: handoff`; `.ready-tend-handoff.json` head ≠ PR head | Ready re-check ran in a task worktree still at the pre-rebase commit after a tend force-push, and published there (PR #1520, 2026-09-29) | Fixed by the preflight sync + GitHub-only publish head. Manual unstick: sync the worktree, then republish at the live head |
+| Healed PR (HOK-3105) still skipped by tend | Self-heal cleared `wm:blocked` but left the record at the pre-push head | Self-heal now rebinds/republishes at the live head first |
+| Ready refuses with "unpushed local work" | Task worktree has commits not on the PR head (e.g. remediation fix never pushed) | Push or discard the local commits; the next Ready tick syncs |
+
 ## Migration Checks
 
 When a repo has `alembic/versions/` and no explicit `ready.checks`, ready auto-enables:

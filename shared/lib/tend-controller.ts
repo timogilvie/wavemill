@@ -14,7 +14,14 @@ import {
   writePrStateMarker,
   WM_LABELS,
 } from './pr-state-labels.ts';
-import { claimReadyHandoff, rebindTendHandoff } from './ready-tend-handoff.ts';
+import {
+  claimReadyHandoff,
+  publishReadyHandoff,
+  readReadyTendHandoff,
+  readTendPushedHead,
+  rebindTendHandoff,
+  recordTendPushedHead,
+} from './ready-tend-handoff.ts';
 import { buildStaleMarkerFinding, type MarkerPayload, type MarkerValidation } from './transient-marker.ts';
 import { getIntegrationConfig, getIntegrationReadyPolicy } from './config.ts';
 import { readChallengeComparisons } from './challenge-comparison.ts';
@@ -1763,6 +1770,12 @@ async function rebindPushedTendHead(
 ): Promise<void> {
   if (!featureDir) return; // Legacy Ready artifacts have no handoff.
   if (!previousHeadSha || !pushedHeadSha) throw new Error('Tend handoff cannot be rebound without both head SHAs');
+  // HOK-3112: the push already happened, so the task worktree is now behind
+  // the PR head whether or not the rebind below succeeds. Mark it stale first
+  // so the monitor resyncs it before any Ready re-run — otherwise that re-run
+  // republishes the handoff at the stale checkout HEAD and Tend can never
+  // claim it again.
+  await recordTendPushedHeadBestEffort(featureDir, prNumber, previousHeadSha, pushedHeadSha);
   const convergence = await pollForPushedHeadConvergence(prNumber, previousHeadSha, pushedHeadSha, repoDir, deps);
   if (convergence.outcome === 'third-head') {
     throw new HandoffRebindRefusalError({
@@ -1787,6 +1800,22 @@ async function rebindPushedTendHead(
   const result = await rebindTendHandoff(featureDir, prNumber, previousHeadSha, pushedHeadSha);
   if (result.outcome !== 'claimed' && result.outcome !== 'already-claimed') {
     throw new Error(`Tend handoff rebind refused: PR #${prNumber} has no matching Tend claim`);
+  }
+}
+
+async function recordTendPushedHeadBestEffort(
+  featureDir: string,
+  prNumber: number,
+  previousHeadSha: string,
+  pushedHeadSha: string,
+): Promise<void> {
+  try {
+    await recordTendPushedHead(featureDir, prNumber, previousHeadSha, pushedHeadSha);
+  } catch (error) {
+    console.warn(
+      `tend: failed to mark task worktree stale after push on PR #${prNumber} `
+      + `(${previousHeadSha} -> ${pushedHeadSha}): ${errorMessage(error)}`,
+    );
   }
 }
 
@@ -2519,7 +2548,10 @@ async function handleHandoffRebindFailure(args: {
   const { candidate, repoDir, pushedHeadSha, error, deps, block } = args;
 
   const terminalBlock = async (output: string): Promise<MergeExecutionResult> => {
-    writeTendHandoffBlockSentinel(repoDir, candidate.number, pushedHeadSha);
+    writeTendHandoffBlockSentinel(repoDir, candidate.number, pushedHeadSha, {
+      previousHeadSha: candidate.headSha,
+      featureDir: candidate.featureDir,
+    });
     return block('handoff', output);
   };
 
@@ -3417,7 +3449,7 @@ async function resolveBlockedLabelReason(
       // two consecutive polls, tend clears its own label in-band. Guard-set
       // blocks (cross-PR revert guard, review) are on a different branch of
       // this function, so HOK-2883 semantics remain intact.
-      const selfHealed = attemptTendHandoffSelfHeal(pr, labels, currentHeadSha, options);
+      const selfHealed = await attemptTendHandoffSelfHeal(pr, metadata, labels, currentHeadSha, options);
       if (selfHealed) {
         return null;
       }
@@ -3477,9 +3509,17 @@ async function resolveBlockedLabelReason(
  * Only fires when the tend-handoff-block sentinel matches `currentHeadSha`;
  * blocks set by any other subsystem (cross-PR revert guard, review, missing
  * sentinel from an old block) are never touched, preserving HOK-2883.
+ *
+ * HOK-3112: restoring wm:ready alone is not enough. After a refused rebind the
+ * `.ready-tend-handoff.json` record is still at the pre-push head, so the next
+ * claim at the live head is rejected and tend skips the PR every poll. Before
+ * the label is cleared, the handoff record is moved to the live head (which
+ * must be tend's own push) and the task worktree is marked stale so the next
+ * Ready re-run does not overwrite the record at the old checkout HEAD.
  */
-function attemptTendHandoffSelfHeal(
+async function attemptTendHandoffSelfHeal(
   pr: GhPrListEntry,
+  metadata: PrMetadata | null,
   labels: Set<string>,
   currentHeadSha: string,
   options: {
@@ -3487,11 +3527,20 @@ function attemptTendHandoffSelfHeal(
     blockedLabelClearer: BlockedLabelClearer;
     prStateMarkerWriter: PrStateMarkerWriter;
   },
-): boolean {
+): Promise<boolean> {
   const sentinel = readTendHandoffBlockSentinel(options.repoDir, pr.number);
   if (!sentinel || sentinel.headSha !== currentHeadSha) {
     // Block was not attributed to tend's handoff refusal at this head. Keep
     // HOK-2883 semantics: no self-heal.
+    return false;
+  }
+
+  // HOK-3112: the sentinel records the head tend pushed; the stale-worktree
+  // marker (written by the same push) must agree when present. Any other head
+  // is a third-party push and tend must not republish the handoff for it.
+  const featureDir = sentinel.featureDir ?? resolveReadyStateDir(options.repoDir, pr, metadata) ?? undefined;
+  const pushedMarker = featureDir ? readTendPushedHead(featureDir) : null;
+  if (pushedMarker && (pushedMarker.prNumber !== pr.number || pushedMarker.pushedHeadSha !== currentHeadSha)) {
     return false;
   }
 
@@ -3508,7 +3557,22 @@ function attemptTendHandoffSelfHeal(
   }
 
   // observed.count >= 1 and head matches: this is the second consecutive
-  // same-head observation. Clear the label in-band.
+  // same-head observation. Make the handoff claimable at the live head first
+  // so wm:ready is never restored without a record tend can claim. Legacy
+  // Ready artifacts (no featureDir) have no handoff claim check.
+  if (featureDir) {
+    const republished = await republishHandoffAtTendHead(
+      featureDir,
+      pr.number,
+      sentinel.previousHeadSha ?? pushedMarker?.previousHeadSha,
+      currentHeadSha,
+    );
+    if (!republished) {
+      // Keep the block and sidecars; the next poll retries.
+      return false;
+    }
+  }
+
   const clearResult = clearGuardBlockedLabel(pr, labels, currentHeadSha, options, 'blocked-label:clear-failed');
   if (clearResult !== null) {
     // Clear failed — leave sidecars in place so the next poll retries.
@@ -3518,6 +3582,53 @@ function attemptTendHandoffSelfHeal(
   clearTendHandoffContradictionObserved(options.repoDir, pr.number);
   emitTendHandoffSelfHealFinding(options.repoDir, pr, currentHeadSha);
   return true;
+}
+
+/**
+ * Move the Ready→Tend handoff to `liveHeadSha`, a head tend itself pushed
+ * (HOK-3112). Prefers carrying tend's existing claim across with
+ * `rebindTendHandoff`; if the record is no longer tend's claim at the previous
+ * head (e.g. a Ready re-run republished it at the stale checkout HEAD), it
+ * publishes a fresh handoff at the live head for the next poll to claim.
+ *
+ * Also (re)marks the task worktree stale so the monitor syncs it to the live
+ * head before its next Ready run. Returns false when the record could not be
+ * made claimable (terminal record, or an I/O failure).
+ */
+async function republishHandoffAtTendHead(
+  featureDir: string,
+  prNumber: number,
+  previousHeadSha: string | undefined,
+  liveHeadSha: string,
+): Promise<boolean> {
+  try {
+    let claimable = false;
+    if (previousHeadSha && previousHeadSha !== liveHeadSha) {
+      const rebound = await rebindTendHandoff(featureDir, prNumber, previousHeadSha, liveHeadSha);
+      claimable = rebound.outcome === 'claimed' || rebound.outcome === 'already-claimed';
+    }
+    if (!claimable) {
+      const published = await publishReadyHandoff(featureDir, prNumber, liveHeadSha);
+      claimable = published.outcome !== 'rejected';
+    }
+    if (!claimable) {
+      console.warn(
+        `tend: self-heal cannot republish handoff for PR #${prNumber} at ${liveHeadSha}: `
+        + `record is ${readReadyTendHandoff(featureDir)?.state ?? 'missing'}`,
+      );
+      return false;
+    }
+    const marker = readTendPushedHead(featureDir);
+    if (!marker || marker.prNumber !== prNumber || marker.pushedHeadSha !== liveHeadSha) {
+      await recordTendPushedHead(featureDir, prNumber, previousHeadSha ?? '', liveHeadSha);
+    }
+    return true;
+  } catch (error) {
+    console.warn(
+      `tend: self-heal failed to republish handoff for PR #${prNumber} at ${liveHeadSha}: ${errorMessage(error)}`,
+    );
+    return false;
+  }
 }
 
 function clearGuardBlockedLabel(
@@ -3689,20 +3800,35 @@ function describeLiveBlockedGate(live: BlockedPrLiveState): string | null {
  * handoff refusal" signal for `resolveBlockedLabelReason`.
  */
 interface TendHandoffBlockSentinel {
+  /** Head tend pushed (the head the refused rebind targeted). */
   headSha: string;
   reason: string;
   at: string;
+  /**
+   * HOK-3112: head the handoff record was claimed at before tend's push, so
+   * the self-heal can move tend's claim with `rebindTendHandoff`.
+   */
+  previousHeadSha?: string;
+  /** HOK-3112: Ready artifact dir holding `.ready-tend-handoff.json`. */
+  featureDir?: string;
 }
 
 function tendHandoffBlockSentinelPath(repoDir: string, prNumber: number): string {
   return join(mergeLaneStateDir(prNumber, repoDir), 'tend-handoff-block.json');
 }
 
-function writeTendHandoffBlockSentinel(repoDir: string, prNumber: number, headSha: string): void {
+function writeTendHandoffBlockSentinel(
+  repoDir: string,
+  prNumber: number,
+  headSha: string,
+  handoff: { previousHeadSha?: string; featureDir?: string } = {},
+): void {
   const sentinel: TendHandoffBlockSentinel = {
     headSha,
     reason: 'handoff-rebind-refused',
     at: new Date().toISOString(),
+    ...(handoff.previousHeadSha ? { previousHeadSha: handoff.previousHeadSha } : {}),
+    ...(handoff.featureDir ? { featureDir: handoff.featureDir } : {}),
   };
   try {
     mkdirSync(mergeLaneStateDir(prNumber, repoDir), { recursive: true });
@@ -3728,6 +3854,9 @@ function readTendHandoffBlockSentinel(repoDir: string, prNumber: number): TendHa
       headSha: parsed.headSha,
       reason: typeof parsed.reason === 'string' ? parsed.reason : '',
       at: typeof parsed.at === 'string' ? parsed.at : '',
+      ...(typeof parsed.previousHeadSha === 'string' && parsed.previousHeadSha
+        ? { previousHeadSha: parsed.previousHeadSha } : {}),
+      ...(typeof parsed.featureDir === 'string' && parsed.featureDir ? { featureDir: parsed.featureDir } : {}),
     };
   } catch {
     return null;
