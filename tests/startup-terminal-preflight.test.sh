@@ -309,13 +309,22 @@ add_task "HOK-3013" "aborted-primary" "aborted" "aborted" ""
 NPX_CALLS="$TMP_DIR/npx.log"
 STARTUP_LOG_FILE="$TMP_DIR/startup.log"
 rm -f "$NPX_CALLS" "$STARTUP_LOG_FILE"
+NPX_STUB_BIN="$TMP_DIR/aborted-terminal-preflight-bin"
+mkdir -p "$NPX_STUB_BIN"
+cat > "$NPX_STUB_BIN/npx" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "${NPX_CALLS:?}"
+SH
+chmod +x "$NPX_STUB_BIN/npx"
 check_eq "aborted challenger classifies terminal" "terminal:operator_abort" "$(startup_task_eligibility HOK-3012_c)"
 (
   # Recreate the startup-runner scope: canonical common helpers only.
   unset -f log_warn get_linear_issue_id should_update_linear_state linear_set_state
   eval "$(extract_function "$REPO_DIR/shared/lib/wavemill-common.sh" linear_set_state)"
   startup_log() { printf '%s\n' "$*" >> "$STARTUP_LOG_FILE"; }
-  npx() { printf '%s\n' "$*" >> "$NPX_CALLS"; }
+  PATH="$NPX_STUB_BIN:$PATH"
+  export PATH NPX_CALLS
   TOOLS_DIR="$REPO_DIR/tools"
   DRY_RUN="false"
   startup_terminal_preflight "$SESSION"
