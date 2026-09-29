@@ -28,6 +28,7 @@ cat >"$INPUT_FILE" <<'JSON'
       "readyAt": "2026-08-21T19:31:00Z",
       "workflowStatus": "ready",
       "prState": "OPEN",
+      "labels": ["wm:ready"],
       "ci": {
         "conclusion": "pending",
         "headSha": "3e6ae104",

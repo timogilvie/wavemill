@@ -123,6 +123,7 @@ for f in \
   "$REPO_DIR"/tests/global-model-parity.test.sh \
   "$REPO_DIR"/tests/queue-health.test.sh \
   "$REPO_DIR"/tests/merge-queue-live-ci.test.sh \
+  "$REPO_DIR"/tests/merge-queue-blocked-label.test.sh \
   "$REPO_DIR"/tests/merge-lane-progress-artifacts.test.sh \
   "$REPO_DIR"/tests/notification-waiting.test.sh \
   "$REPO_DIR"/tests/hook-osc-emit.test.sh \

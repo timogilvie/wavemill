@@ -8587,6 +8587,155 @@ ready_live_ci_json() {
   printf '%s\n' "$output"
 }
 
+# HOK-3111: authoritative live PR labels for merge-queue eligibility. Returns
+# a compact JSON array of label names, or the sentinel string "null" when the
+# label read fails so the planner can fail closed. Injectable via
+# WAVEMILL_PR_LABELS_JSON_OVERRIDE (JSON object keyed by PR number) for tests.
+pr_live_labels_json() {
+  local wt_dir="$1" pr_number="$2"
+  local output rc=0
+
+  if [[ -n "${WAVEMILL_PR_LABELS_JSON_OVERRIDE:-}" ]]; then
+    local override
+    override="$(printf '%s' "$WAVEMILL_PR_LABELS_JSON_OVERRIDE" \
+      | jq -c --arg pr "$pr_number" '.[$pr] // null' 2>/dev/null)" || override=""
+    if [[ -n "$override" ]]; then
+      printf '%s\n' "$override"
+      return 0
+    fi
+  fi
+
+  output=$(_with_timeout "$API_TIMEOUT" gh -R "$(cd "$wt_dir" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo)" \
+    pr view "$pr_number" --json labels --jq '[.labels[].name]' 2>/dev/null) || rc=$?
+  if (( rc != 0 )) || [[ -z "$output" ]] || ! printf '%s' "$output" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    # Fall back to running gh inside the worktree if the repo lookup above
+    # produced no output or the -R form failed.
+    rc=0
+    output=$(_with_timeout "$API_TIMEOUT" bash -c "cd $(printf '%q' "$wt_dir") && gh pr view $(printf '%q' "$pr_number") --json labels --jq '[.labels[].name]'" 2>/dev/null) || rc=$?
+    if (( rc != 0 )) || [[ -z "$output" ]] || ! printf '%s' "$output" | jq -e 'type == "array"' >/dev/null 2>&1; then
+      printf 'null\n'
+      return 0
+    fi
+  fi
+  printf '%s\n' "$output"
+}
+
+# HOK-3111: head-scoped transition-report recorder. Persists per-PR state at
+# $STATE_DIR/merge-queue-transitions.json so a monitor restart does not
+# reintroduce log spam. Prints "log" to stdout when the caller should emit
+# the ordinary message, "escalate" when the caller should emit the one-shot
+# escalation warning, or "skip" when the message must be suppressed. A fresh
+# head SHA resets the cycle counter for that PR (a real re-push is legitimate
+# reason for fresh status).
+readonly MERGE_QUEUE_ESCALATION_THRESHOLD=3
+
+merge_queue_transition_report() {
+  local pr="$1" head="$2" transition="$3"
+  local state_dir="${STATE_DIR:-}"
+  [[ -n "$state_dir" ]] || { printf 'log\n'; return 0; }
+  [[ -n "$pr" && -n "$transition" ]] || { printf 'log\n'; return 0; }
+  local file="$state_dir/merge-queue-transitions.json"
+  mkdir -p "$state_dir" 2>/dev/null || { printf 'log\n'; return 0; }
+  if [[ ! -f "$file" ]]; then
+    printf '{}\n' > "$file"
+  fi
+  local combined
+  combined=$(jq -c \
+    --arg pr "$pr" \
+    --arg head "${head:-unknown}" \
+    --arg transition "$transition" \
+    --argjson threshold "$MERGE_QUEUE_ESCALATION_THRESHOLD" '
+      def key: $pr + ":" + $head;
+      (.[key] // {}) as $prior
+      | (if ($prior.head // "") != $head then {} else $prior end) as $current
+      | ($current.lastTransition // "") as $lastTransition
+      | ($current.promoteDemoteCycles // 0) as $cycles
+      | ($current.escalated // false) as $escalated
+      | (
+          if $transition == "promoted" then $cycles + 1
+          else $cycles
+          end
+        ) as $newCycles
+      | (
+          if $lastTransition == $transition then "skip"
+          elif $escalated == true and ($transition == "promoted" or $transition == "demoted-stuck") then "skip"
+          elif $transition == "promoted" and $newCycles >= $threshold and $escalated != true then "escalate"
+          else "log"
+          end
+        ) as $decision
+      | {
+          decision: $decision,
+          state: (. + { (key): {
+            head: $head,
+            lastTransition: $transition,
+            promoteDemoteCycles: $newCycles,
+            escalated: (if $decision == "escalate" then true else $escalated end),
+            updatedAt: (now | todateiso8601)
+          } })
+        }
+    ' "$file" 2>/dev/null) || combined=""
+  local decision="log"
+  if [[ -n "$combined" ]]; then
+    decision=$(printf '%s' "$combined" | jq -r '.decision' 2>/dev/null || echo "log")
+    local next_state
+    next_state=$(printf '%s' "$combined" | jq -c '.state' 2>/dev/null || echo "")
+    if [[ -n "$next_state" ]]; then
+      printf '%s\n' "$next_state" > "$file.tmp.$$" 2>/dev/null && mv "$file.tmp.$$" "$file" 2>/dev/null || rm -f "$file.tmp.$$" 2>/dev/null
+    fi
+  fi
+  case "$decision" in
+    log|escalate|skip) printf '%s\n' "$decision" ;;
+    *) printf 'log\n' ;;
+  esac
+}
+
+# HOK-3111: one-shot per-head status for excluded PRs (e.g. wm:blocked). Same
+# sidecar as merge_queue_transition_report but keyed by (pr, head, reason) so a
+# label change or a real push generates fresh status while identical repeats
+# stay silent.
+merge_queue_exclusion_report() {
+  local pr="$1" head="$2" reason="$3"
+  local state_dir="${STATE_DIR:-}"
+  [[ -n "$state_dir" && -n "$pr" ]] || { printf 'log\n'; return 0; }
+  local file="$state_dir/merge-queue-transitions.json"
+  mkdir -p "$state_dir" 2>/dev/null || { printf 'log\n'; return 0; }
+  if [[ ! -f "$file" ]]; then
+    printf '{}\n' > "$file"
+  fi
+  local combined
+  combined=$(jq -c \
+    --arg pr "$pr" \
+    --arg head "${head:-unknown}" \
+    --arg reason "${reason:-excluded}" '
+      def key: "excluded:" + $pr + ":" + $head + ":" + $reason;
+      (.[key] // {}) as $prior
+      | ($prior.notified // false) as $notified
+      | (if $notified == true then "skip" else "log" end) as $decision
+      | {
+          decision: $decision,
+          state: (. + { (key): {
+            head: $head,
+            reason: $reason,
+            notified: true,
+            updatedAt: (now | todateiso8601)
+          } })
+        }
+    ' "$file" 2>/dev/null) || combined=""
+  local decision="log"
+  if [[ -n "$combined" ]]; then
+    decision=$(printf '%s' "$combined" | jq -r '.decision' 2>/dev/null || echo "log")
+    local next_state
+    next_state=$(printf '%s' "$combined" | jq -c '.state' 2>/dev/null || echo "")
+    if [[ -n "$next_state" ]]; then
+      printf '%s\n' "$next_state" > "$file.tmp.$$" 2>/dev/null && mv "$file.tmp.$$" "$file" 2>/dev/null || rm -f "$file.tmp.$$" 2>/dev/null
+    fi
+  fi
+  case "$decision" in
+    log|skip) printf '%s\n' "$decision" ;;
+    *) printf 'log\n' ;;
+  esac
+}
+
 write_ready_queue_artifacts() {
   local state_dir="$1" patch_json="$2"
   local result_file="$state_dir/.ready-result.json"
@@ -8830,12 +8979,12 @@ merge_queue_enrich_ready_artifacts() {
 refresh_ready_merge_queue_tick() {
   local now input_file output_file input_json output_json config_json
   local issue phase slug pr state_dir ready_status ready_verdict stored_base current_main queue_state wt_dir workflow_status pr_state_val
-  local ci_json ci_conclusion ci_head ci_summary stored_head lane_progress_patch
+  local ci_json ci_conclusion ci_head ci_summary stored_head lane_progress_patch labels_json
   local ready_prs='[]'
 
   : > "$MERGE_QUEUE_SELECTION_FILE"
   if ! merge_queue_enabled; then
-    printf '{"selectedIssues":[],"stuckIssues":[],"ciBlockedIssues":[]}\n' > "$MERGE_QUEUE_SELECTION_FILE"
+    printf '{"selectedIssues":[],"stuckIssues":[],"ciBlockedIssues":[],"excludedIssues":[]}\n' > "$MERGE_QUEUE_SELECTION_FILE"
     return 0
   fi
 
@@ -8906,6 +9055,9 @@ refresh_ready_merge_queue_tick() {
     fi
 
     if [[ "$ready_status" == "completed" && ( "$ready_verdict" == "pass" || "$ready_verdict" == "warn" ) ]] || [[ "$queue_state" == "merge-candidate" || "$queue_state" == "ready-stale" ]]; then
+      # HOK-3111: authoritative live labels; the planner fails closed when
+      # this returns "null" so we never promote based on stale/unknown state.
+      labels_json="$(pr_live_labels_json "$wt_dir" "$pr")"
       ready_prs=$(jq -cn \
         --argjson prs "$ready_prs" \
         --arg issue "$issue" \
@@ -8917,6 +9069,7 @@ refresh_ready_merge_queue_tick() {
         --arg workflow_status "$workflow_status" \
         --arg pr_state "$pr_state_val" \
         --argjson ci "$ci_json" \
+        --argjson labels "$labels_json" \
         --arg now "$now" \
         --arg ready_at "$(jq -r '.finishedAt // .startedAt // empty' "$state_dir/.ready-result.json" 2>/dev/null || echo "")" \
         --arg candidate_promoted_at "$(ready_queue_field "$state_dir" candidatePromotedAt)" \
@@ -8942,6 +9095,7 @@ refresh_ready_merge_queue_tick() {
             candidateSkippedAt: (if $candidate_skipped_at == "" then null else $candidate_skipped_at end),
             workflowStatus: (if $workflow_status == "" then null else $workflow_status end),
             prState: (if $pr_state == "" then null else $pr_state end),
+            labels: $labels,
             ci: {
               conclusion: ($ci.conclusion // "unknown"),
               headSha: ($ci.headSha // null),
@@ -8951,7 +9105,9 @@ refresh_ready_merge_queue_tick() {
               observed: ($ci.observed // 0),
               required: (($ci.requiredContexts // []) | length)
             }
-          }]
+          }
+          | if $labels == null then del(.labels) else . end
+          ]
         ')
     fi
   done
@@ -8976,11 +9132,33 @@ refresh_ready_merge_queue_tick() {
   jq -cn --arg now "$now" --argjson prs "$ready_prs" --argjson config "$config_json" '{readyPrs:$prs, now:$now, config:$config}' > "$input_file"
   if ! wavemill_run_tsx_tool "$TOOLS_DIR/merge-queue-select.ts" --input "$input_file" > "$output_file" 2>/dev/null; then
     rm -f "$input_file" "$output_file"
-    printf '{"selectedIssues":[],"stuckIssues":[],"ciBlockedIssues":[]}\n' > "$MERGE_QUEUE_SELECTION_FILE"
+    printf '{"selectedIssues":[],"stuckIssues":[],"ciBlockedIssues":[],"excludedIssues":[]}\n' > "$MERGE_QUEUE_SELECTION_FILE"
     return 0
   fi
   mv "$output_file" "$MERGE_QUEUE_SELECTION_FILE"
   rm -f "$input_file"
+
+  # HOK-3111: report tend-refusal (wm:blocked) and label-read-failure PRs
+  # once per (PR, head, reason). No candidate promotion, no stuck demotion.
+  jq -c '.excludedIssues[]? // empty' "$MERGE_QUEUE_SELECTION_FILE" 2>/dev/null | while IFS= read -r exclusion; do
+    [[ -n "$exclusion" ]] || continue
+    ex_issue=$(printf '%s' "$exclusion" | jq -r '.issue // empty' 2>/dev/null || echo "")
+    ex_pr=$(printf '%s' "$exclusion" | jq -r '.prNumber // empty' 2>/dev/null || echo "")
+    ex_head=$(printf '%s' "$exclusion" | jq -r '.headSha // empty' 2>/dev/null || echo "")
+    ex_reason=$(printf '%s' "$exclusion" | jq -r '.reason // "excluded"' 2>/dev/null || echo "excluded")
+    ex_next=$(printf '%s' "$exclusion" | jq -r '.nextAction // empty' 2>/dev/null || echo "")
+    [[ -n "$ex_issue" ]] || continue
+    decision=$(merge_queue_exclusion_report "${ex_pr:-$ex_issue}" "$ex_head" "$ex_reason")
+    if [[ "$decision" == "log" ]]; then
+      pr_tag=""
+      [[ -n "$ex_pr" ]] && pr_tag=" → PR #${ex_pr}"
+      head_tag=""
+      [[ -n "$ex_head" ]] && head_tag=" @${ex_head:0:7}"
+      action_tag=""
+      [[ -n "$ex_next" ]] && action_tag=" — needs ${ex_next}"
+      log "status" "⏸ ${ex_issue}${pr_tag} blocked${head_tag} (${ex_reason})${action_tag}"
+    fi
+  done
 
   jq -r '.ciBlockedIssues[]?' "$MERGE_QUEUE_SELECTION_FILE" 2>/dev/null | while IFS= read -r issue; do
     [[ -n "$issue" ]] || continue
@@ -8999,6 +9177,19 @@ refresh_ready_merge_queue_tick() {
     wt_dir="${WORKTREE_ROOT}/${slug}"
     state_dir="$(ready_state_dir "$wt_dir" "$slug")"
     demote_merge_candidate "$issue" "$state_dir" "stuck merge candidate"
+    # HOK-3111: dedup per (PR, head); escalate after N cycles on the same head.
+    pr_for_log="${PR_BY_ISSUE[$issue]:-}"
+    stuck_head=$(ready_queue_field "$state_dir" "lastCiHeadSha")
+    decision=$(merge_queue_transition_report "${pr_for_log:-$issue}" "$stuck_head" "demoted-stuck")
+    case "$decision" in
+      log)
+        log "status" "↩ $issue → PR ${pr_for_log:+#$pr_for_log }demoted as stuck merge candidate${stuck_head:+ @${stuck_head:0:7}}"
+        ;;
+      escalate)
+        log_warn "$issue → PR ${pr_for_log:+#$pr_for_log }promote/demote loop escalated at head ${stuck_head:0:7}; suppressing further cycle notices"
+        ;;
+      *) : ;;
+    esac
   done
 
   jq -r '.selectedIssues[]?' "$MERGE_QUEUE_SELECTION_FILE" 2>/dev/null | while IFS= read -r issue; do
@@ -9010,12 +9201,21 @@ refresh_ready_merge_queue_tick() {
     [[ -n "$current_main" ]] || continue
     if [[ "$(ready_queue_state "$state_dir")" != "merge-candidate" ]]; then
       promote_merge_candidate "$issue" "$state_dir" "$current_main"
-      local pr_for_log
       pr_for_log="${PR_BY_ISSUE[$issue]:-}"
       ci_head=$(ready_queue_field "$state_dir" "lastCiHeadSha")
       ci_summary=$(ready_queue_field "$state_dir" "lastCiSummary")
       [[ -n "$ci_summary" ]] || ci_summary="pass"
-      log "status" "✓ $issue → PR ${pr_for_log:+#$pr_for_log }promoted to merge candidate (live CI $ci_summary${ci_head:+ @${ci_head:0:7}}, base current)"
+      # HOK-3111: dedup per (PR, head); escalate after N cycles on the same head.
+      decision=$(merge_queue_transition_report "${pr_for_log:-$issue}" "$ci_head" "promoted")
+      case "$decision" in
+        log)
+          log "status" "✓ $issue → PR ${pr_for_log:+#$pr_for_log }promoted to merge candidate (live CI $ci_summary${ci_head:+ @${ci_head:0:7}}, base current)"
+          ;;
+        escalate)
+          log_warn "$issue → PR ${pr_for_log:+#$pr_for_log }promote/demote loop reached ${MERGE_QUEUE_ESCALATION_THRESHOLD} cycles at head ${ci_head:0:7}; suppressing further promote/demote notices for this head"
+          ;;
+        *) : ;;
+      esac
     fi
   done
 }
