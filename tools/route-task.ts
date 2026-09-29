@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { runTool } from '../shared/lib/tool-runner.ts';
 import { getWavemillAdditionalEvalPaths, routeBatch } from '../shared/lib/route-batch.ts';
+import { inferFeatureDirFromTaskFile } from '../shared/lib/route-decision.ts';
 import { readTaskPromptFromFile, summarizeWorkflowRoute } from '../shared/lib/workflow-router.ts';
 
 runTool({
@@ -41,6 +42,10 @@ runTool({
       type: 'string',
       description: 'Maximum cost budget in USD for routing',
     },
+    'feature-dir': {
+      type: 'string',
+      description: 'Feature directory whose routing.jsonl records the route decision (default: inferred when --file lives under features/<slug>/)',
+    },
   },
   positional: {
     name: 'prompt',
@@ -56,6 +61,9 @@ runTool({
     '',
     '# Return JSON for scripting',
     'npx tsx tools/route-task.ts --json --file features/my-feature/selected-task.json',
+    '',
+    '# Record the route decision in a specific feature directory',
+    'npx tsx tools/route-task.ts --json --file /tmp/packet.md --feature-dir features/my-feature',
   ],
   async run({ args, positional }) {
     let prompt = '';
@@ -84,8 +92,9 @@ runTool({
         throw new Error(`--max-cost must be a non-negative number, got ${args['max-cost']}`);
       }
     }
+    const featureDir = args['feature-dir'] || inferFeatureDirFromTaskFile(file);
     const [result] = await routeBatch([
-      { prompt, file, source: args.source, inputKind: args['input-kind'] },
+      { prompt, file, source: args.source, inputKind: args['input-kind'], ...(featureDir ? { featureDir } : {}) },
     ], {
       repoDir,
       mode: mode as 'auto' | 'stage-aware' | 'heuristic' | 'hokusai',
