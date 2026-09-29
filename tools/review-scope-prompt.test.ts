@@ -111,3 +111,51 @@ test('workflow command Phase 4 requires review scope guard before review-fix com
   );
   assertExitCodeDistinction(followingText, 'workflow.md');
 });
+
+// HOK-3107 prompt-drift regression: agents must never be instructed to add any
+// `wm:*` label. The mill (Ready → Tend) owns the entire `wm:*` label namespace.
+// This test greps every review/PR-creation prompt surface for an `--add-label
+// wm:*` instruction outside of an explicit forbidden-example context and fails
+// if any is found.
+const MILL_LABEL_PROMPT_SURFACES = [
+  'tools/prompts/review-phase.md',
+  'shared/lib/agent-adapters.sh',
+  'commands/bugfix.md',
+  'commands/workflow.md',
+];
+
+const AGENT_ADD_LABEL_WM_STAR = /(?:--add-label\s+["'`]?wm:[a-zA-Z0-9_.:-]+|["'`]?wm:[a-zA-Z0-9_.:-]+["'`]?\s+--add-label)/;
+
+function stripForbiddenExamples(content: string): string {
+  // The prompt surfaces contain examples INSIDE forbidden-context prose to
+  // teach agents what NOT to do (e.g. "MUST NEVER ... `--add-label wm:merging`").
+  // Those must not trigger the drift check. Everything else is instruction.
+  const lines = content.split('\n');
+  let inForbidden = false;
+  return lines
+    .filter((line) => {
+      const heading = line.match(/^#+\s+/);
+      if (heading) {
+        inForbidden = /FORBIDDEN|forbidden|NEVER|Do NOT|Mill Label/i.test(line);
+        return false;
+      }
+      if (inForbidden) return false;
+      // Skip individual bullets that name their own forbidden context inline.
+      return !/MUST NEVER|do not add any wm:|do not run `gh pr edit .* --add-label wm:|Agent-applied|owned by the mill|owns every `wm|owns the entire `wm/i.test(line);
+    })
+    .join('\n');
+}
+
+test('HOK-3107: no agent prompt instructs adding any wm:* label', () => {
+  for (const surface of MILL_LABEL_PROMPT_SURFACES) {
+    const content = readFileSync(surface, 'utf-8');
+    const filtered = stripForbiddenExamples(content);
+    const match = AGENT_ADD_LABEL_WM_STAR.exec(filtered);
+    assert.equal(
+      match,
+      null,
+      `${surface} must not instruct agents to add any wm:* label — the mill (Ready → Tend) owns them. `
+        + `Matched: ${match?.[0] ?? ''}`,
+    );
+  }
+});

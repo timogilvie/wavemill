@@ -85,6 +85,7 @@ for f in \
   "$LIB_DIR"/bounded-retry.sh \
   "$LIB_DIR"/plan-packet-binding.sh \
   "$LIB_DIR"/task-progress.sh \
+  "$LIB_DIR"/task-identity.sh \
   "$LIB_DIR"/challenge-arms.sh \
   "$LIB_DIR"/transient-marker.sh \
   "$LIB_DIR"/terminal-reconciler.sh \
@@ -159,6 +160,7 @@ for f in \
   "$REPO_DIR"/tests/bounded-retry.test.sh \
   "$REPO_DIR"/tests/plan-packet-binding.test.sh \
   "$REPO_DIR"/tests/task-progress.test.sh \
+  "$REPO_DIR"/tests/task-identity.test.sh \
   "$REPO_DIR"/tests/handle-phase-launch-result.test.sh \
   "$REPO_DIR"/tests/launch-pane-liveness.test.sh \
   "$REPO_DIR"/tests/launch-failure-log-capture.test.sh \
@@ -1946,7 +1948,7 @@ agent_verify_launch() {
 
 CODEX_PROMPT_FILE="$PROMPT_RENDER_DIR/interactive-codex-prompt.txt"
 printf 'planning prompt\n' > "$CODEX_PROMPT_FILE"
-agent_launch_interactive "wavemill-test" "planning" "$CODEX_PROMPT_FILE" "codex" "gpt-5.6-terra"
+WAVEMILL_CODEX_NO_DAEMON=1 agent_launch_interactive "wavemill-test" "planning" "$CODEX_PROMPT_FILE" "codex" "gpt-5.6-terra"
 
 CODEX_LAUNCHER_PATH=""
 for captured in "${TMUX_CAPTURE[@]}"; do
@@ -1958,10 +1960,19 @@ for captured in "${TMUX_CAPTURE[@]}"; do
 done
 
 if [[ -f "$CODEX_LAUNCHER_PATH" ]] \
-  && grep -q 'codex --model gpt-5\.6-terra --dangerously-bypass-approvals-and-sandbox --no-alt-screen "\$(cat ' "$CODEX_LAUNCHER_PATH"; then
-  pass "interactive Codex launcher uses interactive codex with bypass flag"
+  && grep -q 'codex --model gpt-5\.6-terra --dangerously-bypass-approvals-and-sandbox --no-daemon --no-alt-screen "\$(cat ' "$CODEX_LAUNCHER_PATH"; then
+  pass "interactive Codex launcher uses interactive codex with bypass and no-daemon flags"
 else
   fail "interactive Codex launcher is missing interactive codex flags"
+fi
+
+# --no-daemon is only passed when the installed codex advertises it; the
+# override pins the probe so this check is independent of the host CLI.
+if (WAVEMILL_CODEX_NO_DAEMON=1 agent_codex_supports_no_daemon) \
+  && ! (WAVEMILL_CODEX_NO_DAEMON=0 agent_codex_supports_no_daemon); then
+  pass "codex --no-daemon support honours WAVEMILL_CODEX_NO_DAEMON"
+else
+  fail "codex --no-daemon support ignores WAVEMILL_CODEX_NO_DAEMON"
 fi
 
 if [[ -f "$CODEX_LAUNCHER_PATH" ]] \

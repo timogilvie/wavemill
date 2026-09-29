@@ -1222,7 +1222,7 @@ This is a REQUIRED step — do not skip it or substitute your own review.
    - Base branch exists: \$(git rev-parse --verify $base_branch 2>&1 || echo "NOT FOUND")
    - STDERR output: [paste the actual stderr from the failed command]
 
-   Proceeding to PR creation without wm:ready per instructions.
+   Proceeding to PR creation. The mill (Ready → Tend) will run its own Ready gate and, if it publishes a handoff, apply wm:ready on your behalf. Do NOT add any wm:* label yourself.
    \`\`\`
    This diagnostic information is CRITICAL for debugging recurring tool failures.
 
@@ -2422,6 +2422,25 @@ agent_resume_after_error() {
 #   $6 = agent flags (optional)
 #   $7 = abort check command (optional)
 #   $8 = issue ID (optional — enables lifecycle status tracking)
+# True when the installed codex CLI accepts --no-daemon (added alongside the
+# shared app-server daemon). Probed once per process; older CLIs reject the
+# unknown flag, so it is only passed when advertised. WAVEMILL_CODEX_NO_DAEMON
+# (1/0) overrides the probe.
+agent_codex_supports_no_daemon() {
+  if [[ -n "${WAVEMILL_CODEX_NO_DAEMON:-}" ]]; then
+    [[ "$WAVEMILL_CODEX_NO_DAEMON" == "1" ]]
+    return
+  fi
+  if [[ -z "${_WAVEMILL_CODEX_NO_DAEMON_PROBE:-}" ]]; then
+    if command -v codex >/dev/null 2>&1 && codex --help 2>/dev/null | grep -q -- '--no-daemon'; then
+      _WAVEMILL_CODEX_NO_DAEMON_PROBE=1
+    else
+      _WAVEMILL_CODEX_NO_DAEMON_PROBE=0
+    fi
+  fi
+  [[ "$_WAVEMILL_CODEX_NO_DAEMON_PROBE" == "1" ]]
+}
+
 agent_launch_interactive() {
   local session="$1"
   local window="$2"
@@ -2519,6 +2538,13 @@ agent_launch_interactive() {
 
   if [[ "$agent_cmd" == "codex" ]] && [[ "$agent_flags" != *" --dangerously-bypass-approvals-and-sandbox"* ]]; then
     agent_flags="${agent_flags} --dangerously-bypass-approvals-and-sandbox"
+  fi
+  # The interactive Codex TUI attaches to the shared app-server daemon (often
+  # started by the desktop app). When the daemon and CLI versions differ it
+  # stops at a "Cannot use the background server" menu and waits forever for
+  # a keypress. Mill launches never want the shared daemon.
+  if [[ "$agent_cmd" == "codex" ]] && [[ "$agent_flags" != *" --no-daemon"* ]] && agent_codex_supports_no_daemon; then
+    agent_flags="${agent_flags} --no-daemon"
   fi
 
   local launcher="/tmp/${session}-$(basename "$prompt_file" .txt)-launcher.sh"

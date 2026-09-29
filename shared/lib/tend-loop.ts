@@ -27,6 +27,10 @@ export const TEND_MAX_CONSECUTIVE_UNKNOWN_FAILURES = 3;
 // deadlock is invisible: the stream keeps reporting health=ok with a
 // merging-#N / skipped-#N pair every poll.
 export const TEND_LANE_STALL_WARN_ITERATIONS = 3;
+// Rate-limit for repeated identical skip-reason log lines (HOK-3108). Every
+// (pr, head, phase, reason) tuple is logged on first occurrence; subsequent
+// identical skips are suppressed until this interval elapses.
+export const TEND_SKIP_LOG_REPEAT_MS = 10 * 60_000;
 // Progress-vs-liveness thresholds (HOK-2919 / consolidated HOK-2910): a lane
 // that reports eligible=0, blocked>0, action=idle for this many consecutive
 // polls is stalled, no matter how healthily it keeps polling. ~30 minutes at
@@ -76,7 +80,10 @@ export interface MergeLaneObserverFinding {
   context?: Record<string, unknown>;
 }
 
-/** 'progressing' | 'idle' (empty lane) | 'stalled' (blocked/unhealthy lane, no movement). */
+/**
+ * 'progressing' | 'idle' (empty lane) | 'stalled' (blocked/unhealthy lane, or
+ * a repeated skip of the same (PR, head), no movement).
+ */
 export type TendProgressState = 'progressing' | 'idle' | 'stalled';
 export type TendLaneCondition =
   | 'progressing'
@@ -84,7 +91,12 @@ export type TendLaneCondition =
   | 'needs-user-hold'
   | 'idle-blocked-stall'
   | 'integration-unhealthy'
-  | 'integration-unhealthy-stall';
+  | 'integration-unhealthy-stall'
+  // HOK-3108. The same (pr, head) has produced a skipped result for
+  // TEND_LANE_STALL_WARN_ITERATIONS+ consecutive polls in some phase (typically
+  // 'handoff'). The dashboard renders it identically to other stalls via the
+  // shared `progress_state == stalled` branch.
+  | 'skip-stall';
 
 export interface TendLoopOptions {
   repoDir: string;
@@ -167,6 +179,97 @@ export function formatIntegrationUnhealthyWarning(options: {
     : 'unknown';
   return `warn=merge-lane-integration-unhealthy severity=${options.severity} `
     + `reason=${quoteLogValue(options.reason)} waiting=${waiting} consecutive=${options.consecutive}`;
+}
+
+/**
+ * Rate-limited per-poll skip-reason log line (HOK-3108). Emitted whenever
+ * `executeMerge` returns `skipped`, including but not limited to
+ * `phase === 'handoff'`. Format is greppable and includes phase + reason so
+ * an operator can spot a stall like PR #1519's 950 handoff-skips without
+ * having to correlate multiple lines.
+ */
+export function formatSkipReasonLine(options: {
+  prNumber: number;
+  headSha: string;
+  phase: string;
+  reason: string;
+  consecutive: number;
+}): string {
+  const shortHead = options.headSha ? options.headSha.slice(0, 7) : 'unknown';
+  return `note=tend-skip pr=#${options.prNumber} head=${shortHead} phase=${options.phase} `
+    + `consecutive=${options.consecutive} reason=${quoteLogValue(options.reason)}`;
+}
+
+/**
+ * Greppable warning line for the generalized skip-stall (HOK-3108). Emitted
+ * for skipped results whose phase is NOT `merge-lane-held` (that phase keeps
+ * its existing `formatLaneStallWarning` for backward compatibility). Fires
+ * once per poll after the streak crosses the threshold.
+ */
+export function formatSkipStallWarning(options: {
+  prNumber: number;
+  headSha: string;
+  phase: string;
+  consecutive: number;
+}): string {
+  const shortHead = options.headSha ? options.headSha.slice(0, 7) : 'unknown';
+  return `warn=merge-lane-skip-stalled pr=#${options.prNumber} head=${shortHead} `
+    + `phase=${options.phase} consecutive=${options.consecutive}`;
+}
+
+/**
+ * Observer finding for a repeated skip of the same (pr, head, phase). Emitted
+ * once at severity `high` when the streak first reaches
+ * TEND_LANE_STALL_WARN_ITERATIONS and once more at `urgent` at
+ * TEND_IDLE_STALL_HIGH_ITERATIONS. This applies to every phase, including
+ * `merge-lane-held` (which today gets no finding at all).
+ */
+export function buildSkipStallFinding(options: {
+  prNumber: number;
+  headSha: string;
+  phase: string;
+  consecutive: number;
+  severity: 'high' | 'urgent';
+  now: string;
+  failureExcerpt?: string;
+  heldBy?: number[];
+}): MergeLaneObserverFinding {
+  const shortHead = options.headSha ? options.headSha.slice(0, 12) : 'unknown';
+  const bodyParts = [
+    `tend reported PR #${options.prNumber} skipped in phase=${options.phase} for ${options.consecutive} consecutive polls at head ${shortHead}; `
+    + 'the loop is alive but the lane is not draining and no other PR can advance while this one is selected.',
+  ];
+  if (options.failureExcerpt) {
+    bodyParts.push(options.failureExcerpt);
+  }
+  if (options.heldBy && options.heldBy.length > 0) {
+    bodyParts.push(`Merge-lane holders: ${options.heldBy.map((n) => `#${n}`).join(',')}`);
+  }
+  const recommendation = options.phase === 'handoff'
+    ? 'wm:ready without a published Ready handoff. Tend will block this PR after the handoff-claim budget '
+      + '(HOK-3108). Re-run Ready for this head or push a new head to publish a fresh handoff.'
+    : options.phase === 'merge-lane-held'
+      ? 'A wm:merging holder is stuck. Inspect the named holder(s); if the holder is idle, run '
+        + 'tools/reclaim-stale-merging.ts, otherwise resolve its block.'
+      : 'Inspect the failure excerpt and the PR to identify why the skip repeats. Push a fix or unblock '
+        + 'the affected phase.';
+  return {
+    subsystem: 'merge-lane',
+    title: `Merge lane stalled: PR #${options.prNumber} skipped (${options.phase}) for ${options.consecutive} consecutive polls`,
+    body: bodyParts.join('\n'),
+    severity: options.severity,
+    recommendation,
+    context: {
+      markerPath: `merge-lane/skip-stall/#${options.prNumber}/${shortHead}`,
+      markerKind: 'merge-lane-skip-stall',
+      prNumber: options.prNumber,
+      headSha: options.headSha,
+      phase: options.phase,
+      consecutivePolls: options.consecutive,
+      heldBy: (options.heldBy ?? []).join(','),
+      observedAt: options.now,
+    },
+  };
 }
 
 function describeBlockedCandidate(candidate: BlockedCandidate): string {
@@ -302,7 +405,23 @@ export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExi
   let lastError: string | null = null;
   let lastErrorAt: string | null = null;
   let iteration = 0;
-  let laneStallStreak = 0;
+  // HOK-3108 generalized skip stall. Increments for every consecutive skipped
+  // result with the same (pr, head) key, regardless of phase. Resets on any
+  // non-skipped result, idle poll, or caught error. `merge-lane-held` still
+  // emits the legacy `formatLaneStallWarning` for backward compatibility;
+  // every other phase emits the new `formatSkipStallWarning` and a
+  // `merge-lane-skip-stall` finding.
+  let skipStall: { key: string | null; count: number; phase: string; headSha: string; heldBy: number[]; failureExcerpt: string } = {
+    key: null,
+    count: 0,
+    phase: '',
+    headSha: '',
+    heldBy: [],
+    failureExcerpt: '',
+  };
+  // Rate-limited log signatures for repeated skips. Key: `pr:head`; each entry
+  // remembers the last emitted (phase, reason) signature and its timestamp.
+  const skipLogState = new Map<string, { signature: string; lastLoggedMs: number }>();
   // Progress-vs-liveness state (HOK-2919): progress is a real state change —
   // a merge, a retry-refresh, or the lane's PR set/gates changing — never a
   // successful poll by itself.
@@ -467,7 +586,8 @@ export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExi
         consecutiveUnknown = 0;
         lastError = null;
         lastErrorAt = null;
-        laneStallStreak = 0;
+        // Idle poll — nothing skipped, reset the skip-stall streak.
+        skipStall = { key: null, count: 0, phase: '', headSha: '', heldBy: [], failureExcerpt: '' };
         await deps.writePollHeartbeat(options.repoDir, {
           failureCount: consecutiveFailures,
           lastError,
@@ -551,17 +671,107 @@ export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExi
         ...pollMetadata,
       }));
 
-      if (result.status === 'skipped' && result.phase === 'merge-lane-held') {
-        laneStallStreak += 1;
-        if (laneStallStreak >= TEND_LANE_STALL_WARN_ITERATIONS) {
-          options.renderer.write(formatLaneStallWarning({
-            holders: result.heldBy ?? [],
-            candidate: result.prNumber,
-            consecutive: laneStallStreak,
+      // HOK-3108: generalized skip-stall tracking. Any consecutive skipped
+      // result at the same (pr, head) increments the streak, not only
+      // `merge-lane-held`. `merge-lane-held` keeps its legacy warning; every
+      // other phase gets `formatSkipStallWarning` and a new observer finding.
+      if (result.status === 'skipped') {
+        const headSha = candidate.headSha ?? '';
+        const key = `${result.prNumber}:${headSha}`;
+        const phase = result.phase ?? 'unknown';
+        const heldBy = result.heldBy ?? [];
+        const failureExcerpt = result.failureExcerpt ?? '';
+        const reason = phase === 'merge-lane-held' && heldBy.length > 0
+          ? `held-by=${heldBy.map((n) => `#${n}`).join(',')}`
+          : failureExcerpt || phase;
+
+        if (skipStall.key === key) {
+          skipStall = { key, count: skipStall.count + 1, phase, headSha, heldBy, failureExcerpt };
+        } else {
+          skipStall = { key, count: 1, phase, headSha, heldBy, failureExcerpt };
+        }
+
+        // Rate-limited skip-reason log. Emitted on first occurrence of a new
+        // (phase, reason) signature and thereafter at most once per
+        // TEND_SKIP_LOG_REPEAT_MS. Normalize the reason by stripping the
+        // attempt counter `(K/N)` and SHA-like tokens so a controller
+        // that embeds a per-attempt count into the excerpt (e.g. HOK-3108's
+        // "Tend claim rejected (1/3) …") does not re-log every poll.
+        const normalizedReason = reason
+          .replace(/\(\d+\/\d+\)/g, '(N/N)')
+          .replace(/[0-9a-f]{7,64}/gi, '<sha>');
+        const signature = `${phase}\0${normalizedReason}`;
+        const nowMs = deps.now().getTime();
+        const previous = skipLogState.get(key);
+        if (!previous || previous.signature !== signature || nowMs - previous.lastLoggedMs >= TEND_SKIP_LOG_REPEAT_MS) {
+          options.renderer.write(formatSkipReasonLine({
+            prNumber: result.prNumber,
+            headSha,
+            phase,
+            reason,
+            consecutive: skipStall.count,
           }));
+          skipLogState.set(key, { signature, lastLoggedMs: nowMs });
+        }
+
+        if (skipStall.count >= TEND_LANE_STALL_WARN_ITERATIONS) {
+          if (phase === 'merge-lane-held') {
+            options.renderer.write(formatLaneStallWarning({
+              holders: heldBy,
+              candidate: result.prNumber,
+              consecutive: skipStall.count,
+            }));
+          } else {
+            options.renderer.write(formatSkipStallWarning({
+              prNumber: result.prNumber,
+              headSha,
+              phase,
+              consecutive: skipStall.count,
+            }));
+          }
+          // Emit an observer finding at severity thresholds (high at 3,
+          // urgent at 30). Every phase gets the finding; `merge-lane-held`
+          // previously had none.
+          if (skipStall.count === TEND_LANE_STALL_WARN_ITERATIONS || skipStall.count === TEND_IDLE_STALL_HIGH_ITERATIONS) {
+            deps.emitObserverFinding(options.repoDir, buildSkipStallFinding({
+              prNumber: result.prNumber,
+              headSha,
+              phase,
+              consecutive: skipStall.count,
+              severity: skipStall.count >= TEND_IDLE_STALL_HIGH_ITERATIONS ? 'urgent' : 'high',
+              now: deps.now().toISOString(),
+              failureExcerpt,
+              heldBy,
+            }));
+          }
+        }
+
+        // Heartbeat: flip to stalled once the streak reaches the threshold so
+        // backstage-health.json reports the skip stall on the poll it hits,
+        // not on the following poll. The main pre-executeMerge heartbeat had
+        // already written `progressing` for this iteration; overwrite it.
+        if (skipStall.count >= TEND_LANE_STALL_WARN_ITERATIONS) {
+          const stallDetail = `backstage tend loop is alive but PR #${result.prNumber} has been skipped (${phase}) `
+            + `for ${skipStall.count} consecutive polls`;
+          await deps.writePollHeartbeat(options.repoDir, {
+            failureCount: consecutiveFailures,
+            lastError,
+            lastErrorAt,
+            timestamp: deps.now().toISOString(),
+            iteration,
+            pollStartedAt,
+            pollCompletedAt: pollCompletedAt ?? deps.now().toISOString(),
+            lastProgressAt,
+            progressState: 'stalled',
+            laneCondition: 'skip-stall',
+            laneEvidenceId: decisionEvidenceId(decision),
+            status: 'healthy',
+            detail: stallDetail,
+            integrationAdvisory: decision.integrationHealth.advisoryFailures ?? [],
+          });
         }
       } else {
-        laneStallStreak = 0;
+        skipStall = { key: null, count: 0, phase: '', headSha: '', heldBy: [], failureExcerpt: '' };
       }
 
       if (result.haltLoop) {
@@ -588,7 +798,10 @@ export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExi
       }
 
       consecutiveFailures += 1;
-      laneStallStreak = 0;
+      // A caught poll error resets the skip-stall streak: the loop did not
+      // produce a skipped result at all, so consecutive skips of the same PR
+      // start over on the next successful poll.
+      skipStall = { key: null, count: 0, phase: '', headSha: '', heldBy: [], failureExcerpt: '' };
       if (classification === 'unknown') {
         consecutiveUnknown += 1;
       } else {
