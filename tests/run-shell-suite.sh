@@ -66,6 +66,7 @@ TESTS=(
   bounded-retry.test.sh
   plan-packet-binding.test.sh
   task-progress.test.sh
+  task-identity.test.sh
   handle-phase-launch-result.test.sh
   launch-pane-liveness.test.sh
   launch-failure-log-capture.test.sh

@@ -47,6 +47,7 @@ setup_env() {
   cp "$REPO_DIR/shared/lib/bounded-retry.sh"           "$repo_dir/shared/lib/"
   cp "$REPO_DIR/shared/lib/task-progress.sh"           "$repo_dir/shared/lib/"
   cp "$REPO_DIR/shared/lib/challenge-arms.sh"          "$repo_dir/shared/lib/"
+  cp "$REPO_DIR/shared/lib/task-identity.sh"           "$repo_dir/shared/lib/"
   cp "$REPO_DIR/shared/lib/wavemill-input-reader.sh"   "$repo_dir/shared/lib/"
   cp "$REPO_DIR/shared/lib/agent-adapters.sh"          "$repo_dir/shared/lib/"
   cp "$REPO_DIR/shared/lib/routing-emitter.sh"         "$repo_dir/shared/lib/"

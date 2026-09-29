@@ -15,6 +15,10 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bounded-retry.sh"
 # through these helpers instead of reimplementing a private hook TTL check.
 # shellcheck source=task-progress.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/task-progress.sh"
+# HOK-3114: task identity invariant (task ID -> Linear ID, challenger role,
+# Linear-writer predicate). Bash twin of shared/lib/task-identity.ts.
+# shellcheck source=task-identity.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/task-identity.sh"
 if [[ -f "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/effective-task-config.sh" ]]; then
   # shellcheck source=effective-task-config.sh
   source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/effective-task-config.sh"
