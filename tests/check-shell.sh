@@ -796,7 +796,7 @@ else
   # With `set -euo pipefail`, this makes the pipeline fail even though the pattern matched.
 
   if grep -qF 'wavemill_resolve_pr_attempt "$issue" "$branch"' <<< "$HEREDOC_CONTENT" \
-    && grep -qF 'classification" == "current-open"' <<< "$HEREDOC_CONTENT"; then
+    && grep -qF 'accept_classifications=(current-open)' <<< "$HEREDOC_CONTENT"; then
     pass "monitor find_pr_for_branch uses attempt resolver"
   else
     fail "monitor find_pr_for_branch is not routed through attempt resolver"
