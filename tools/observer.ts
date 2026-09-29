@@ -40,6 +40,7 @@ import {
   matchInteractivePromptSignature as taskProgressMatchInteractivePromptSignature,
   normalizeInteractivePromptText as taskProgressNormalizeInteractivePromptText,
   INTERACTIVE_PROMPT_SIGNATURES as TASK_PROGRESS_INTERACTIVE_PROMPT_SIGNATURES,
+  type HookState,
   type TaskProgress,
 } from '../shared/lib/task-progress.ts';
 
@@ -1674,6 +1675,11 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
             recommendation: 'Treat this as orphaned active state: terminalize or remove the workflow-state entry after confirming no cleanup resources remain.',
           });
         } else if (!liveEvidence) {
+          // HOK-3095: the agent's own settled hook (idle at its prompt, or
+          // waiting on a human) outranks a surviving pane/process, so name it
+          // rather than claiming the process is gone.
+          const settledState = progress?.agentIdle ? 'idle' : progress?.agentRecord?.state ?? null;
+          const settled = settledState !== null && SETTLED_AGENT_STATES.has(settledState);
           findings.push({
             id: `stale-active-task-no-live-process-${repo.session}-${task.issue}`,
             severity: 'high',
@@ -1682,7 +1688,9 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
             session: repo.session,
             repoDir: repo.repoDir,
             issue: task.issue,
-            title: `${task.issue} is stale in ${task.phase} with no live pane or process evidence`,
+            title: settled
+              ? `${task.issue} is stale in ${task.phase}: agent is ${settledState} with no progress`
+              : `${task.issue} is stale in ${task.phase} with no live pane or process evidence`,
             evidence: [
               `status=${task.status ?? 'unknown'}`,
               `phase=${task.phase ?? 'unknown'}`,
@@ -1691,8 +1699,11 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
               `lastProgressAt=${progress?.lastProgressAt ?? 'never'}`,
               `expectedWindow=${expectedWindow}`,
               `worktree=${task.worktree ?? 'unknown'}`,
+              ...(settled ? [`agentRecordState=${settledState}`] : []),
             ],
-            recommendation: 'Inspect the task state and quarantine/cleanup path; if the process is gone, terminalize and clean the task instead of leaving it active.',
+            recommendation: settled
+              ? 'The agent settled without advancing the task. Inspect its pane and hook: resolve the prompt it is waiting on or send a narrow recovery instruction; if the task is finished or abandoned, terminalize and clean it instead of leaving it active.'
+              : 'Inspect the task state and quarantine/cleanup path; if the process is gone, terminalize and clean the task instead of leaving it active.',
           });
         } else {
           const progressEvidence: string[] = [];
@@ -2397,6 +2408,42 @@ function taskPaneResidue(repo: RepoSnapshot, task: TaskState, panes: Pane[]): Pa
   };
 }
 
+/**
+ * HOK-3095: an agent record in one of these states is the agent's own
+ * settled declaration that it is not working — parked at its prompt
+ * (`idle`) or waiting on a human (`waiting`, `approval-needed`, `blocked`,
+ * `policy-denied`). Its live pane and its own launch process are then an
+ * idle REPL, not execution. The primitive suppresses `stalled` for the
+ * attention states; the observer instead treats them as "not live" so a
+ * prompt parked past `staleMinutes` still surfaces. Kept here because it is
+ * observer policy, not a primitive invariant.
+ */
+const SETTLED_AGENT_STATES: ReadonlySet<HookState> = new Set<HookState>([
+  'idle',
+  'waiting',
+  'approval-needed',
+  'blocked',
+  'policy-denied',
+]);
+
+/**
+ * True when there is evidence that the task is executing right now.
+ *
+ * HOK-3095: progress, not process existence, decides. Callers have already
+ * applied the stale age gate (the primitive's `progressAgeMinutes`, which
+ * folds hook/commit/status-file/transition evidence together); this answers
+ * which stale finding fires and whether residue detectors treat the arm as
+ * still running.
+ *
+ * 1. A fresh (TTL-bound) agent-written `working` hook is live.
+ * 2. The agent's own settled record (idle / attention state, untimed so a
+ *    `waiting` hook from hours ago still counts) is NOT live, whatever pane
+ *    or process still carries the task's name.
+ * 3. With no agent signal at all (fresh launch, hookless agent), fall back to
+ *    pane residue or a matching process — excluding the monitor's own
+ *    polling children (`tools/*.ts`, monitor subprocesses), whose argv names
+ *    the worktree but which are not the task.
+ */
 function taskHasLiveExecutionEvidence(
   repo: RepoSnapshot,
   task: TaskState,
@@ -2404,19 +2451,14 @@ function taskHasLiveExecutionEvidence(
   processes: ProcessRow[],
   progressLookup?: (task: TaskState) => TaskProgress | undefined,
 ): boolean {
-  // HOK-3095 (a): an idle agent REPL sitting in a live pane is not "live
-  // execution" — it is the agent's settled state after Stop. Only report
-  // pane residue as live evidence when the agent has not already declared
-  // idle through its own hook / archived history.
-  const paneResidueLive = taskPaneResidue(repo, task, panes).live;
   const progress = progressLookup ? progressLookup(task) : undefined;
-  if (paneResidueLive && !(progress?.agentIdle)) {
-    return true;
-  }
+  if (progress?.agentState === 'working') return true;
+  if (progress?.agentIdle) return false;
+  const agentRecordState = progress?.agentRecord?.state;
+  if (agentRecordState && SETTLED_AGENT_STATES.has(agentRecordState)) return false;
 
-  // HOK-3095 (b): the observer's own polling children (pr-ci-status,
-  // tend, monitor, git polls) show the worktree in their argv, but they
-  // are not the task. Skip anything isWavemillControllerProcess accepts.
+  if (taskPaneResidue(repo, task, panes).live) return true;
+
   return processes.some((row) => {
     const command = row.command;
     if (isWavemillControllerProcess(command)) return false;
