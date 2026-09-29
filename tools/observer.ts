@@ -43,6 +43,7 @@ import {
   type HookState,
   type TaskProgress,
 } from '../shared/lib/task-progress.ts';
+import { readWorktreeDirtyStatus, type WorktreeDirtyStatus } from '../shared/lib/worktree-dirty-status.ts';
 
 type Severity = 'urgent' | 'high' | 'medium' | 'low';
 type Category = 'stuck' | 'crash' | 'warning' | 'ux' | 'operational';
@@ -713,7 +714,18 @@ function deliveryEvidenceProvesMerged(task: TaskState): boolean {
   return Boolean(evidenceString(evidence.mergeSha) && (!state || state === 'MERGED'));
 }
 
-function renderCleanupRecommendation(disposition: ResidueDisposition, task: TaskState, config: EffectiveTaskConfig, residue?: BranchResidue): string {
+// HOK-3088: cap the number of dirty-status paths inlined into a finding so a
+// very large delta stays readable without hiding the fact that more work exists.
+const DIRTY_WORKTREE_PATH_LIMIT = 8;
+
+function renderDirtyWorktreeRecommendation(task: TaskState, worktreeDirty: WorktreeDirtyStatus): string {
+  if (worktreeDirty.state === 'unreadable') {
+    return `Observer could not read ${task.worktree ?? 'the task worktree'}'s git status. Inspect the worktree by hand before terminalizing cleanup; do not abort or reap while the risk state is unknown.`;
+  }
+  return `The worktree still holds uncommitted or untracked work that is not on any branch. Recover it first: commit and push the task branch and open or update a draft PR, or copy the files off the worktree, before terminalizing cleanup. Never run \`wavemill mill abort ${task.issue}\` while the tree is dirty - the reap deletes these files.`;
+}
+
+function renderCleanupRecommendation(disposition: ResidueDisposition, task: TaskState, config: EffectiveTaskConfig, residue?: BranchResidue, worktreeDirty?: WorktreeDirtyStatus): string {
   const branch = residue?.branch ?? taskBranch(task) ?? task.branch ?? 'the task branch';
   const base = config.baseBranch.value;
   const policy = config.remoteBranchDeletionPolicy?.value;
@@ -725,6 +737,9 @@ function renderCleanupRecommendation(disposition: ResidueDisposition, task: Task
     case 'retained-by-policy':
       return `The recorded cleanup policy does not authorize deleting ${branch}; leave it retained or update the policy through the normal controller path after verification.`;
     case 'dirty-worktree':
+      if (worktreeDirty && (worktreeDirty.state === 'dirty' || worktreeDirty.state === 'unreadable')) {
+        return renderDirtyWorktreeRecommendation(task, worktreeDirty);
+      }
       return taskCleanupEpisode(task)?.requiredOperatorAction ?? `Inspect ${branch}'s worktree, commit or discard local changes, then run wavemill cleanup ${task.issue} --dry-run again.`;
     case 'transient':
       return taskCleanupEpisode(task)?.requiredOperatorAction ?? `Wait for the scheduled cleanup retry, then inspect cleanup evidence if it remains unchanged.`;
@@ -741,7 +756,35 @@ function renderCleanupRecommendation(disposition: ResidueDisposition, task: Task
   }
 }
 
-function classifyResidue(task: TaskState, config: EffectiveTaskConfig, residue?: BranchResidue): ClassifiedResidue {
+/**
+ * HOK-3088: read the worktree's dirty status through the shared predicate.
+ * A missing worktree reports `absent` (safe to treat as clean by callers that
+ * already know the worktree has been reaped). A git failure reports
+ * `unreadable` and callers must not treat that as clean.
+ */
+function inspectTaskWorktreeDirty(worktree: string | undefined): WorktreeDirtyStatus {
+  if (!worktree) return { state: 'absent', lines: [], raw: '' };
+  return readWorktreeDirtyStatus({ worktree });
+}
+
+function dirtyWorktreeEvidence(worktreeDirty: WorktreeDirtyStatus): string[] {
+  if (worktreeDirty.state === 'clean' || worktreeDirty.state === 'absent') return [];
+  if (worktreeDirty.state === 'unreadable') {
+    return ['worktreeDirty=unreadable'];
+  }
+  const shown = worktreeDirty.lines.slice(0, DIRTY_WORKTREE_PATH_LIMIT);
+  const evidence: string[] = [
+    'worktreeDirty=true',
+    `dirtyPathCount=${worktreeDirty.lines.length}`,
+    ...shown.map((line) => `dirtyPath=${line}`),
+  ];
+  if (worktreeDirty.lines.length > shown.length) {
+    evidence.push(`dirtyPathTruncated=${worktreeDirty.lines.length - shown.length}`);
+  }
+  return evidence;
+}
+
+function classifyResidue(task: TaskState, config: EffectiveTaskConfig, residue?: BranchResidue, worktreeDirty?: WorktreeDirtyStatus): ClassifiedResidue {
   const episode = taskCleanupEpisode(task);
   const delivery = taskDeliveryEvidence(task);
   const evidence: string[] = [
@@ -757,12 +800,25 @@ function classifyResidue(task: TaskState, config: EffectiveTaskConfig, residue?:
   if (episode?.disposition) evidence.push(`cleanupDisposition=${episode.disposition}`);
   if (residue?.baseRef) evidence.push(`comparedAgainst=${residue.baseRef}`);
   if (residue?.aheadOfBase !== undefined) evidence.push(`aheadOfEffectiveBase=${residue.aheadOfBase}`);
+  const dirtyEvidence = worktreeDirty ? dirtyWorktreeEvidence(worktreeDirty) : [];
+  evidence.push(...dirtyEvidence);
+
+  // HOK-3088: the branch-only shortcut (aheadOfBase==0 or unpushedCommits==0)
+  // used to fall through to `clean`, so a task at base with a dirty tree got
+  // "nothing at risk" advice. A dirty (or unreadable) tree takes precedence
+  // over every branch-derived disposition except the ones that already prove
+  // the work is safely elsewhere (squash-delivered, already-reaped).
+  const worktreeAtRisk = worktreeDirty?.state === 'dirty' || worktreeDirty?.state === 'unreadable';
 
   let disposition: ResidueDisposition = 'verification-unavailable';
   if (deliveryEvidenceProvesMerged(task)) {
     disposition = 'squash-delivered';
   } else if (episode?.disposition === 'reaped') {
     disposition = 'already-reaped';
+  } else if (worktreeAtRisk) {
+    // Same at-risk verdict as cleanup's `dirty_worktree` refusal in
+    // shared/lib/terminal-inbox-cleanup.ts, via the shared filter helper.
+    disposition = 'dirty-worktree';
   } else if (config.remoteBranchDeletionPolicy?.value.allowed === false) {
     disposition = 'retained-by-policy';
   } else if (episode?.disposition === 'needs-user' && /dirty/i.test(`${episode.failureClass} ${episode.lastOutcome ?? ''} ${episode.requiredOperatorAction ?? ''} ${JSON.stringify(episode.fingerprintInputs ?? {})}`)) {
@@ -789,7 +845,7 @@ function classifyResidue(task: TaskState, config: EffectiveTaskConfig, residue?:
     : disposition === 'verification-unavailable'
       ? 'medium'
       : disposition === 'dirty-worktree'
-        ? 'high'
+        ? (worktreeAtRisk ? 'urgent' : 'high')
         : undefined;
 
   return {
@@ -797,7 +853,7 @@ function classifyResidue(task: TaskState, config: EffectiveTaskConfig, residue?:
     severity,
     suppressResidueFinding,
     evidence: [`residueDisposition=${disposition}`, ...evidence],
-    recommendation: renderCleanupRecommendation(disposition, task, config, residue),
+    recommendation: renderCleanupRecommendation(disposition, task, config, residue, worktreeDirty),
   };
 }
 
@@ -884,7 +940,8 @@ function detectCleanupIncidentsForRepo(repo: RepoSnapshot, timestamp: string, pr
     const config = resolveObserverTaskConfig(repo, task.issue, task);
     const branch = taskBranch(task);
     const residue = branch ? inspectTaskBranchResidue(repo.repoDir, branch, config.baseBranch.value) : undefined;
-    const classified = classifyResidue(task, config, residue);
+    const worktreeDirty = inspectTaskWorktreeDirty(task.worktree);
+    const classified = classifyResidue(task, config, residue, worktreeDirty);
     const rootCauseClass = cleanupRootCause(classified.disposition);
     // Cleanup incidents require terminal lifecycle evidence or a persisted
     // cleanup episode. An ordinary active coding branch that is ahead and not
@@ -1115,11 +1172,13 @@ function detectParkedArmIncidents(
     const baseBranch = effectiveConfig.baseBranch.value;
     const paneResidue = taskPaneResidue(repo, task, snapshot.panes);
     const residue = branch ? inspectTaskBranchResidue(repo.repoDir, branch, baseBranch) : undefined;
-    const classified = classifyResidue(task, effectiveConfig, residue);
+    const worktreeDirty = inspectTaskWorktreeDirty(task.worktree);
+    const classified = classifyResidue(task, effectiveConfig, residue, worktreeDirty);
     if (classified.suppressResidueFinding && !isTerminal) continue;
     const worktreePresent = task.worktree ? existsSync(task.worktree) : false;
     const unpushedCommits = residue?.unpushedCommits;
     const confirmedWorkAtRisk = classified.disposition === 'unpublished-at-risk';
+    const worktreeAtRisk = worktreeDirty.state === 'dirty' || worktreeDirty.state === 'unreadable';
 
     const firesUnpushed = !liveEvidence && residue !== undefined && confirmedWorkAtRisk && !classified.suppressResidueFinding;
     const terminalResiduePresent = worktreePresent || paneResidue.present || (residue?.localBranchExists ?? false);
@@ -1154,18 +1213,25 @@ function detectParkedArmIncidents(
     }
 
     if (firesTerminalParked) {
+      // HOK-3088: never append the abort/reap action when the worktree is
+      // dirty or unreadable - that action deletes the very files at risk.
+      const operatorAction = worktreeAtRisk
+        ? classified.recommendation
+        : (unpushedCommits ?? 0) > 0
+          ? `${classified.recommendation} Then set ${task.issue} phase=aborted (or run \`wavemill mill abort ${task.issue}\`) and let the mill reap the worktree and window.`
+          : `Nothing on the branch is at risk; set ${task.issue} phase=aborted (or run \`wavemill mill abort ${task.issue}\`) and let the mill reap the worktree and window - never remove the worktree manually while the mill loop is live.`;
       incidents.push(createIncidentDraft({
         taskId: task.issue,
         session: repo.session,
         category: 'stale_orphaned_state',
-        severity: findingSeverityToIncidentSeverity(terminalParkedSeverity(ageMinutes, options.staleMinutes, residue)),
+        severity: findingSeverityToIncidentSeverity(terminalParkedSeverity(ageMinutes, options.staleMinutes, residue, worktreeDirty)),
         confidence: 'high',
         lifecycle: 'observed',
         rootCauseClass: 'terminal_arm_parked_with_residue',
-        summary: `${task.issue} terminal task is parked with allocated residue.`,
-        operatorAction: (unpushedCommits ?? 0) > 0
-          ? `${classified.recommendation} Then set ${task.issue} phase=aborted (or run \`wavemill mill abort ${task.issue}\`) and let the mill reap the worktree and window.`
-          : `Nothing on the branch is at risk; set ${task.issue} phase=aborted (or run \`wavemill mill abort ${task.issue}\`) and let the mill reap the worktree and window - never remove the worktree manually while the mill loop is live.`,
+        summary: worktreeAtRisk
+          ? `${task.issue} terminal task is parked with a dirty worktree; recover files before reaping.`
+          : `${task.issue} terminal task is parked with allocated residue.`,
+        operatorAction,
         evidence: [{
           type: 'workflow_state',
           source: repo.workflowStatePath ?? join(repo.repoDir, '.wavemill', 'workflow-state.json'),
@@ -1178,10 +1244,11 @@ function detectParkedArmIncidents(
             `tmuxWindow=${paneResidue.present ? 'present' : 'absent'}`,
             `localBranch=${residue?.localBranchExists ? 'present' : 'absent'}`,
             `unpushedCommits=${unpushedCommits ?? 'unknown'}`,
+            ...dirtyWorktreeEvidence(worktreeDirty),
           ].join(' '),
           key: `terminal-parked:${task.issue}:${branch ?? 'unknown'}`,
         }],
-        metadata: { branch, baseBranch, disposition: classified.disposition },
+        metadata: { branch, baseBranch, disposition: classified.disposition, worktreeDirty: worktreeDirty.state },
       }));
     }
   }
@@ -1833,11 +1900,13 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
       const baseBranch = effectiveConfig.baseBranch.value;
       const paneResidue = taskPaneResidue(repo, task, snapshot.panes);
       const residue = branch ? inspectTaskBranchResidue(repo.repoDir, branch, baseBranch) : undefined;
-      const classified = classifyResidue(task, effectiveConfig, residue);
+      const worktreeDirty = inspectTaskWorktreeDirty(task.worktree);
+      const classified = classifyResidue(task, effectiveConfig, residue, worktreeDirty);
       if (classified.suppressResidueFinding && !isTerminal) continue;
       const worktreePresent = task.worktree ? existsSync(task.worktree) : false;
       const unpushedCommits = residue?.unpushedCommits;
       const confirmedWorkAtRisk = classified.disposition === 'unpublished-at-risk';
+      const worktreeAtRisk = worktreeDirty.state === 'dirty' || worktreeDirty.state === 'unreadable';
 
       const firesUnpushed = !liveEvidence && residue !== undefined && confirmedWorkAtRisk && !classified.suppressResidueFinding;
       const terminalResiduePresent = worktreePresent || paneResidue.present || (residue?.localBranchExists ?? false);
@@ -1883,17 +1952,32 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
         const ageLabel = formatParkedAge(ageMinutes);
         const workLoss = (unpushedCommits ?? 0) > 0;
         const reapAction = `set ${task.issue} phase=aborted (or run \`wavemill mill abort ${task.issue}\`) and let the mill reap the worktree and window - never remove the worktree manually while the mill loop is live`;
+        // HOK-3088: a dirty (or unreadable) worktree escalates the finding
+        // regardless of what the branch says. The reap action is never
+        // appended in that case - it would delete the very files at risk -
+        // and the title/recommendation tell the operator to preserve first.
+        const dirtyPathCount = worktreeDirty.state === 'dirty' ? worktreeDirty.lines.length : 0;
+        const title = worktreeAtRisk
+          ? worktreeDirty.state === 'unreadable'
+            ? `${task.issue} terminal task parked for ${ageLabel} with unreadable worktree status`
+            : `${task.issue} terminal task parked for ${ageLabel} with ${dirtyPathCount} dirty file${dirtyPathCount === 1 ? '' : 's'} at risk`
+          : workLoss
+            ? `${task.issue} terminal task parked for ${ageLabel} with ${unpushedCommits} unpushed commit${unpushedCommits === 1 ? '' : 's'} at risk`
+            : `${task.issue} terminal task parked for ${ageLabel} with allocated residue`;
+        const recommendation = worktreeAtRisk
+          ? classified.recommendation
+          : workLoss
+            ? `${classified.recommendation} Then ${reapAction}.`
+            : `Nothing on the branch is at risk; ${reapAction}.`;
         findings.push({
           id: `terminal-task-parked-${repo.session}-${task.issue}`,
-          severity: terminalParkedSeverity(ageMinutes, options.staleMinutes, residue),
+          severity: terminalParkedSeverity(ageMinutes, options.staleMinutes, residue, worktreeDirty),
           category: 'operational',
           confidence: 'high',
           session: repo.session,
           repoDir: repo.repoDir,
           issue: task.issue,
-          title: workLoss
-            ? `${task.issue} terminal task parked for ${ageLabel} with ${unpushedCommits} unpushed commit${unpushedCommits === 1 ? '' : 's'} at risk`
-            : `${task.issue} terminal task parked for ${ageLabel} with allocated residue`,
+          title,
           evidence: [
             ...stateEvidence,
             ...classified.evidence,
@@ -1908,13 +1992,11 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
             `aheadOfBase=${residue?.aheadOfBase ?? 'unknown'}`,
             `remoteBranch=${residue?.remoteBranch ?? 'unknown'}`,
             `unpushedCommits=${unpushedCommits ?? 'unknown'}`,
-            ...(workLoss ? ['potentialWorkLoss=true'] : []),
+            ...(worktreeAtRisk ? ['potentialWorkLoss=true'] : workLoss ? ['potentialWorkLoss=true'] : []),
             ...(residue?.commitSubjects.map((subject) => `commit=${subject}`) ?? []),
             prEvidence,
           ],
-          recommendation: workLoss
-            ? `${classified.recommendation} Then ${reapAction}.`
-            : `Nothing on the branch is at risk; ${reapAction}.`,
+          recommendation,
         });
       }
     }
@@ -2644,10 +2726,19 @@ function taskPrEvidence(repoDir: string, task: TaskState): string {
   }
 }
 
-function terminalParkedSeverity(ageMinutes: number, staleMinutes: number, residue: BranchResidue | undefined): Severity {
+function terminalParkedSeverity(ageMinutes: number, staleMinutes: number, residue: BranchResidue | undefined, worktreeDirty?: WorktreeDirtyStatus): Severity {
   let severity: Severity = 'medium';
   if (ageMinutes > Math.max(TERMINAL_PARKED_HIGH_FLOOR_MINUTES, staleMinutes * 6)) severity = 'high';
   if (ageMinutes > Math.max(TERMINAL_PARKED_URGENT_FLOOR_MINUTES, staleMinutes * 24)) severity = 'urgent';
+  if (worktreeDirty?.state === 'dirty') {
+    // HOK-3088: uncommitted or untracked work exists only in this worktree;
+    // reaping would delete it. Always urgent.
+    return 'urgent';
+  }
+  if (worktreeDirty?.state === 'unreadable') {
+    // Fail closed: without a status read we cannot say the tree is safe.
+    if (severity === 'medium') return 'high';
+  }
   if ((residue?.unpushedCommits ?? 0) > 0) {
     // Unpushed work turns housekeeping into potential work loss: at least high,
     // urgent when the remote branch is confirmed absent (nothing else holds the commits).
