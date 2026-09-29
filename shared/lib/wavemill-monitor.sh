@@ -8153,9 +8153,7 @@ _launch_agent_in_pane() {
   fi
 
   # Export wavemill context environment variables for hook protocol
-  if declare -F get_linear_issue_id >/dev/null 2>&1; then
-    linear_issue="$(get_linear_issue_id "$issue" 2>/dev/null || true)"
-  fi
+  linear_issue="$(task_identity_linear_id "$issue" 2>/dev/null || true)"
   [[ -n "$linear_issue" ]] || linear_issue="$issue"
   esc_session=${session//\'/\'\\\'\'}
   esc_issue=${issue//\'/\'\\\'\'}
@@ -11584,61 +11582,12 @@ get_task_meta() {
   read_state_value "" --arg issue "$issue" --arg field "$field" '.tasks[$issue][$field] // empty'
 }
 
+# Deprecated alias (HOK-3115), kept for one release so existing read-side
+# callers and test stubs keep working: resolves through task_identity_linear_id
+# (task-identity.sh). Linear writes never use it — they pass the task ID to
+# linear_set_state, which resolves and gates through linear_write_target.
 get_linear_issue_id() {
-  local issue="$1"
-  local linear_issue
-  linear_issue=$(get_task_meta "$issue" "linearIssueId")
-  linear_issue="${linear_issue#"${linear_issue%%[![:space:]]*}"}"
-  linear_issue="${linear_issue%"${linear_issue##*[![:space:]]}"}"
-  if [[ "$linear_issue" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
-    printf '%s\n' "$linear_issue"
-    return 0
-  fi
-  if [[ "$linear_issue" =~ ^https?://linear\.app/[^/]+/issue/[A-Z][A-Z0-9]*-[0-9]+([/?#].*)?$ ]]; then
-    local linear_url_path="${linear_issue#*://linear.app/}"
-    linear_url_path="${linear_url_path#*/issue/}"
-    printf '%s\n' "${linear_url_path%%[/?#]*}"
-    return 0
-  fi
-  if [[ "$issue" =~ ^([A-Z][A-Z0-9]*-[0-9]+)_c$ ]]; then
-    printf '%s\n' "${BASH_REMATCH[1]}"
-    return 0
-  fi
-  printf '%s\n' "$issue"
-}
-
-expansion_recovery_resolve_issue_id() {
-  local issue="$1"
-  local linear_issue=""
-
-  if [[ "$issue" != *_c ]]; then
-    printf '%s\n' "$issue"
-    return 0
-  fi
-
-  linear_issue="$(get_task_meta "$issue" "linearIssueId")"
-  linear_issue="${linear_issue#"${linear_issue%%[![:space:]]*}"}"
-  linear_issue="${linear_issue%"${linear_issue##*[![:space:]]}"}"
-  if [[ "$linear_issue" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
-    printf '%s\n' "$linear_issue"
-    return 0
-  fi
-
-  if [[ "$linear_issue" =~ ^https?://linear\.app/[^/]+/issue/[A-Z][A-Z0-9]*-[0-9]+([/?#].*)?$ ]]; then
-    local linear_url_path="${linear_issue#*://linear.app/}"
-    linear_url_path="${linear_url_path#*/issue/}"
-    printf '%s\n' "${linear_url_path%%[/?#]*}"
-    return 0
-  fi
-
-  return 1
-}
-
-should_update_linear_state() {
-  local issue="$1"
-  local role
-  role=$(get_task_meta "$issue" "challengeRole")
-  [[ "$role" != "challenger" ]]
+  task_identity_linear_id "$1" 2>/dev/null || printf '%s\n' "$1"
 }
 
 # HOK-2952: role-aware resource policy for a closed, unmerged PR (replaces
@@ -13579,15 +13528,19 @@ recover_missing_expansion_artifact() {
     return 1
   fi
 
-  if ! recovery_issue="$(expansion_recovery_resolve_issue_id "$issue")"; then
-    detail="synthetic-challenger-linear-issue-id-missing-or-invalid"
+  if ! recovery_issue="$(task_identity_linear_id "$issue" 2>/dev/null)"; then
+    detail="task-identity-linear-issue-id-unresolvable"
     expansion_recovery_mark_result "$feature_dir" "$issue" "skipped" "$detail" "0" || true
     log "warn" "[expansion-handshake] RECOVERY_SKIPPED issue=$issue detail=$detail"
     return 1
   fi
 
   recovery_timeout="$(get_expansion_handshake_timeout_seconds "$REPO_DIR")"
-  if _with_timeout "$recovery_timeout" npx tsx "$expand_tool" "$recovery_issue" --output "$packet_file" >"$recovery_log_file" 2>&1; then
+  # expand-issue.ts updates the Linear description by default; only the
+  # Linear writer may do that (HOK-3115).
+  local -a expand_write_args=()
+  task_identity_is_linear_writer "$issue" || expand_write_args=(--no-update)
+  if _with_timeout "$recovery_timeout" npx tsx "$expand_tool" "$recovery_issue" --output "$packet_file" "${expand_write_args[@]}" >"$recovery_log_file" 2>&1; then
     :
   else
     rc=$?
@@ -14535,10 +14488,8 @@ launch_task() {
   local _trace_id
   _trace_id=$(trace_get_or_create "$feature_dir" "$issue" "$slug" 2>/dev/null || true)
 
-  # Set Linear state
-  if should_update_linear_state "$issue"; then
-    linear_set_state "$linear_issue" "In Progress"
-  fi
+  # Set Linear state (a no-op for challengers)
+  linear_set_state "$issue" "In Progress"
 
   # Track in monitor arrays
   BRANCH_BY_ISSUE["$issue"]="$branch"
@@ -14844,7 +14795,8 @@ EOF
     reviewer_model="$task_model"
   fi
 
-  if [[ -z "${WAVEMILL_DISABLE_CHALLENGE:-}" ]] && should_update_linear_state "$issue" && (( remaining_slots >= 1 )); then
+  # Only the primary (Linear-writer) arm spawns a challenger.
+  if [[ -z "${WAVEMILL_DISABLE_CHALLENGE:-}" ]] && task_identity_is_linear_writer "$issue" && (( remaining_slots >= 1 )); then
     local challenge_args challenge_plan challenge_mode challenge_reason challenge_stage challenge_intent challenge_execution_intent primary_varied challenger_varied
     # Challengers are free overhead — always pass remaining-slots >= 2
     challenge_mode="single"
@@ -16525,9 +16477,7 @@ monitor_issue_state() {
       challenge_role=$(get_task_meta "$ISSUE" "challengeRole")
       challenge_model=$(get_task_meta "$ISSUE" "challengeModel")
       save_task_state "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR" "$PR" "" "$current_agent" "$linear_issue" "$challenge_flag" "$challenge_pair" "$challenge_role" "$challenge_model"
-      if should_update_linear_state "$ISSUE"; then
-        linear_set_state "$linear_issue" "In Review"
-      fi
+      linear_set_state "$ISSUE" "In Review"
       # Fetch PR details for user-visible summary
       pr_details=$(_with_timeout "$API_TIMEOUT" gh pr view "$PR" --json title,url --jq '"  " + .title + "\n  " + .url' 2>/dev/null || echo "")
       log "status" "$ISSUE → PR #$PR (In Review)"
@@ -16615,7 +16565,7 @@ monitor_issue_state() {
       return 0
     else
 	      # No PR in current repo - check Linear issue state for cross-repo completion
-	      if should_update_linear_state "$ISSUE" && linear_is_completed "$(get_linear_issue_id "$ISSUE")"; then
+	      if task_identity_is_linear_writer "$ISSUE" && linear_is_completed "$(task_identity_linear_id "$ISSUE")"; then
 	        if [[ -n "$challenge_aborted" && -z "$PR" ]]; then
 	          log "debug" "$ISSUE: skipping completed-external reconciliation for challenge-aborted no-PR arm"
 	          active_count=$((active_count + 1))
@@ -16637,9 +16587,7 @@ monitor_issue_state() {
 
         if [[ "$REQUIRE_CONFIRM" == "true" ]]; then
           log "status" "  → Window stays open for review - close it when ready$(wavemill_config_annotation "mill.requireConfirm" "$REQUIRE_CONFIRM")"
-          if should_update_linear_state "$ISSUE"; then
-            linear_set_state "$(get_linear_issue_id "$ISSUE")" "Done"
-          fi
+          linear_set_state "$ISSUE" "Done"
           # Preserve agent when marking as completed-external
           current_agent=$(read_state_value "" --arg i "$ISSUE" '.tasks[$i].agent // ""')
           save_task_state "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR" "" "completed-external" "$current_agent"
@@ -16648,9 +16596,7 @@ monitor_issue_state() {
         fi
 
         # Clean up worktree and state
-        if should_update_linear_state "$ISSUE"; then
-          linear_set_state "$(get_linear_issue_id "$ISSUE")" "Done"
-        fi
+        linear_set_state "$ISSUE" "Done"
         if declare -F monitor_cleanup_episode_skip >/dev/null 2>&1 && monitor_cleanup_episode_skip "$ISSUE" "$SLUG" "$PR"; then
           return 0
         fi
@@ -17798,8 +17744,8 @@ monitor_issue_state() {
       log "status" "  → Window stays open for review - close it when ready$(wavemill_config_annotation "mill.requireConfirm" "$REQUIRE_CONFIRM")"
       if [[ "${WAVEMILL_TERMINAL_RECONCILER_LOADED:-0}" == "1" ]]; then
         wavemill_reconcile_terminal "$SESSION" "$ISSUE" "pr_merged" "$PR" || true
-      elif should_update_linear_state "$ISSUE"; then
-        linear_set_state "$(get_linear_issue_id "$ISSUE")" "Done"
+      else
+        linear_set_state "$ISSUE" "Done"
       fi
       # Preserve agent when marking as merged
       current_agent=$(read_state_value "" --arg i "$ISSUE" '.tasks[$i].agent // ""')
@@ -17810,8 +17756,8 @@ monitor_issue_state() {
 
     if [[ "${WAVEMILL_TERMINAL_RECONCILER_LOADED:-0}" == "1" ]]; then
       wavemill_reconcile_terminal "$SESSION" "$ISSUE" "pr_merged" "$PR" || true
-    elif should_update_linear_state "$ISSUE"; then
-      linear_set_state "$(get_linear_issue_id "$ISSUE")" "Done"
+    else
+      linear_set_state "$ISSUE" "Done"
     fi
     resolve_pair_on_primary_merge "$ISSUE" "$PR" || true
     if declare -F monitor_cleanup_episode_skip >/dev/null 2>&1 && monitor_cleanup_episode_skip "$ISSUE" "$SLUG" "$PR"; then
@@ -17901,8 +17847,8 @@ monitor_issue_state() {
       # merges, Backlog only when both arms are closed, deferred while the
       # sibling is still open) so the shared issue never bounces to Backlog.
       wavemill_reconcile_terminal "$SESSION" "$ISSUE" "pr_closed_unmerged" "$PR" || true
-    elif [[ -n "$linear_status" ]] && should_update_linear_state "$ISSUE"; then
-      linear_set_state "$(get_linear_issue_id "$ISSUE")" "$linear_status"
+    elif [[ -n "$linear_status" ]]; then
+      linear_set_state "$ISSUE" "$linear_status"
     fi
     # HOK-2952: one ownership policy for every closed-PR role. The old
     # in-memory-only `CLEANED=1` branch (which left pane/worktree/state

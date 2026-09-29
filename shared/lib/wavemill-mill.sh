@@ -1319,10 +1319,15 @@ linear_get_issue() {
 }
 
 
+# Replace a task's Linear issue description from a file. $1 is the mill task
+# ID; linear_write_target (wavemill-common.sh, HOK-3115) resolves the Linear
+# issue and turns challenger/refused tasks into a no-op.
 linear_set_description() {
-  local issue="$1"
+  local task_id="$1"
   local file="$2"
+  local issue
 
+  issue="$(linear_write_target "$task_id")" || return 0
 
   if [[ "$DRY_RUN" == "true" ]]; then
     log "[DRY-RUN] Would update $issue description from $file"
@@ -1452,14 +1457,11 @@ cleanup_on_exit() {
     log_warn "Interrupted - resetting Linear state for unfinished tasks..."
     log_warn "Worktrees and branches preserved for resumption on next run."
     for issue in "${ISSUES_IN_PROGRESS[@]}"; do
-      role=$(jq -r --arg issue "$issue" '.tasks[$issue].challengeRole // empty' "$STATE_FILE" 2>/dev/null)
-      linear_issue=$(jq -r --arg issue "$issue" '.tasks[$issue].linearIssueId // .tasks[$issue].challengePairId // $issue' "$STATE_FILE" 2>/dev/null)
-      if [[ "$role" != "challenger" ]]; then
-        linear_set_state "${linear_issue:-$issue}" "Backlog" 2>/dev/null || {
-          [[ -n "${DEBUG_CLEANUP:-}" ]] && log_warn "cleanup_on_exit: Failed to reset Linear state for $issue"
-          true
-        }
-      fi
+      # linear_set_state resolves the Linear issue and skips challengers.
+      linear_set_state "$issue" "Backlog" 2>/dev/null || {
+        [[ -n "${DEBUG_CLEANUP:-}" ]] && log_warn "cleanup_on_exit: Failed to reset Linear state for $issue"
+        true
+      }
       remove_task_state "$issue" 2>/dev/null || {
         [[ -n "${DEBUG_CLEANUP:-}" ]] && log_warn "cleanup_on_exit: Failed to remove task state for $issue"
         true

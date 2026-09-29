@@ -115,6 +115,8 @@ function makeDeps(overrides: Partial<LinearToolsDeps> & { client?: LinearClient 
     clock: overrides.clock ?? (() => 1_000),
     networkPolicy: overrides.networkPolicy ?? ALLOW_LINEAR_NETWORK_POLICY,
     getSecretEnvNames: overrides.getSecretEnvNames,
+    // Pin identity metadata so tests never read a live workflow-state file.
+    taskMeta: overrides.taskMeta !== undefined ? overrides.taskMeta : null,
     transcriptEvents,
     stageArtifactEntries,
   };
@@ -223,6 +225,56 @@ describe('linear_get_issue: ready phase allows reads', () => {
 // ---------------------------------------------------------------------------
 // REQ-F2 / REQ-F3: linear_comment
 // ---------------------------------------------------------------------------
+
+describe('linear_comment: task identity gate (HOK-3115)', () => {
+  it('challenger task ID is a skipped no-op that never touches the Linear client', async () => {
+    const client = makeFakeClient();
+    let getIssueCalls = 0;
+    const countingClient: LinearClient = {
+      ...client,
+      async getIssue(identifier: string) {
+        getIssueCalls++;
+        return client.getIssue(identifier);
+      },
+    };
+    const deps = makeDeps({ client: countingClient, taskMeta: { linearIssueId: 'HOK-1' } });
+    const result = await executeLinearComment(
+      { issue: 'HOK-1_c', body: 'Review summary', sessionId: 'sess-1', phase: 'coding' },
+      deps,
+    );
+    assert.ok(result.ok, `expected ok:true, got ${JSON.stringify(result)}`);
+    assert.equal(result.ok && result.idempotency.outcome, 'skipped');
+    assert.equal(result.ok && result.idempotency.ref, null);
+    assert.equal(getIssueCalls, 0);
+    assert.equal(client.createCallCount, 0);
+    assert.equal(deps.stageArtifactEntries[0]?.idempotency.outcome, 'skipped');
+  });
+
+  it('primary-shaped ID whose metadata records challengeRole=challenger is skipped', async () => {
+    const client = makeFakeClient();
+    const deps = makeDeps({ client, taskMeta: { challengeRole: 'challenger' } });
+    const result = await executeLinearComment(
+      { issue: 'HOK-1', body: 'Review summary', sessionId: 'sess-1', phase: 'coding' },
+      deps,
+    );
+    assert.ok(result.ok && result.idempotency.outcome === 'skipped');
+    assert.equal(client.createCallCount, 0);
+  });
+
+  it('invalid or conflicting task IDs fail closed without a Linear call', async () => {
+    for (const [issue, taskMeta] of [['hok-1', null], ['HOK-1', { linearIssueId: 'HOK-2' }]] as const) {
+      const client = makeFakeClient();
+      const deps = makeDeps({ client, taskMeta });
+      const result = await executeLinearComment(
+        { issue, body: 'Review summary', sessionId: 'sess-1', phase: 'coding' },
+        deps,
+      );
+      assert.equal(result.ok, false, `${issue} should fail closed`);
+      assert.equal(!result.ok && result.error, 'invalid_input');
+      assert.equal(client.createCallCount, 0);
+    }
+  });
+});
 
 describe('linear_comment: created → reused → updated sequence', () => {
   it('REQ-F2: first call creates, second identical call is reused (createComment spy = 1)', async () => {
