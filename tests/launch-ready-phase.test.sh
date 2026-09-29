@@ -61,6 +61,7 @@ extract_function() {
 
 LAUNCH_FUNC_FILE="$TEST_TMP/launch_ready_phase.sh"
 cat "$REPO_DIR/shared/lib/transient-marker.sh" > "$LAUNCH_FUNC_FILE"
+extract_function "$COMMON_SCRIPT" "wavemill_base_compare_ref" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "ready_conflict_attention_head" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "record_ready_conflict_attention" >> "$LAUNCH_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "clear_ready_conflict_attention" >> "$LAUNCH_FUNC_FILE"
@@ -1166,7 +1167,7 @@ run_recheck_case() {
 echo "=== Cross-PR Revert Gate ==="
 
 output="$(run_cross_pr_gate_case passes_base_branch)"
-check_contains "gate includes integration ref flag" "$output" "--integration-ref main"
+check_contains "gate includes remote integration ref flag" "$output" "--integration-ref origin/main"
 check_contains "gate invokes revert checker" "$output" "check-cross-pr-reverts.ts --repo-dir"
 check_contains "gate passes explicit integration ref rc" "$output" "rc=0"
 
