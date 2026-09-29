@@ -41,6 +41,7 @@ import { getHarnessId, recordUse } from './resource-manifest.ts';
 import type { RuntimeResourceSelection } from './resource-selection.ts';
 import type { RouteEscalationProvenance, RouteEscalationTrigger, RouteProvenance } from './route-artifact.ts';
 import { filterDisabledModels, isDisabledModel } from './disabled-models.ts';
+import type { RouteDecisionRecord, RouteFallbackReason } from './route-decision.ts';
 import { filterNativeModels, type RouterCertificationRejection } from './native-agent/certification/router-filter.ts';
 import { applyModelExclusions, type ModelExclusionDiagnostic } from './model-exclusions.ts';
 import { getGlobalModelRegistry, listEffectiveModelsForStage, resolveEffectiveAgent } from './effective-models.ts';
@@ -105,6 +106,28 @@ export interface WorkflowRouteDecision {
   nativeCertificationRejections?: RouterCertificationRejection[];
   modelExclusions?: ModelExclusionDiagnostic[];
   harnessId?: string;
+  /**
+   * The route the policy decided (Hokusai or local), snapshotted before any
+   * router escalation (suspicious-zero floor, confidence/success escalation)
+   * rewrites the stage models or replaces the decision with a retry route.
+   * Absent when no escalation step ran, in which case the final decision is
+   * the decided route (HOK-3098).
+   */
+  preEscalationRoute?: PreEscalationRoute;
+  /** Set when Hokusai was attempted and rejected in favour of local routing. */
+  fallbackReason?: RouteFallbackReason;
+  /** Decision record minted at routing time (see route-decision.ts). */
+  routeDecision?: RouteDecisionRecord;
+}
+
+export interface PreEscalationRoute {
+  planner: string;
+  coder: string;
+  reviewer: string;
+  /** routingMode of the decision that produced this route. */
+  routingMode?: string;
+  /** Hokusai Model 30 version, when that decision came from Hokusai. */
+  hokusaiModelVersion?: string;
 }
 
 export interface RouteWorkflowOptions {
@@ -126,6 +149,28 @@ export interface RouteWorkflowOptions {
   skipDifficultyClassification?: boolean;
   additionalEvalsPaths?: string[];
   randomFn?: () => number;
+}
+
+/**
+ * Records the decided route — and where it came from — before an escalation
+ * step can rewrite it (HOK-3098). The first snapshot wins, so nested
+ * escalation passes and later callers keep the original decision.
+ */
+export function withPreEscalationRoute<T extends WorkflowRouteDecision>(decision: T): T {
+  if (decision.preEscalationRoute) {
+    return decision;
+  }
+  const hokusaiModelVersion = decision.provenance?.hokusai?.modelVersion;
+  return {
+    ...decision,
+    preEscalationRoute: {
+      planner: decision.planner,
+      coder: decision.coder,
+      reviewer: decision.reviewer,
+      ...(decision.routingMode ? { routingMode: decision.routingMode } : {}),
+      ...(hokusaiModelVersion ? { hokusaiModelVersion } : {}),
+    },
+  };
 }
 
 function withSignals(
@@ -275,6 +320,7 @@ function applySuspiciousZeroEscalation<T extends WorkflowRouteDecision>(
   if (!decision.signals.suspiciousZero) {
     return decision;
   }
+  decision = withPreEscalationRoute(decision);
 
   const fallbackPool = getModelPool(repoDir).models;
   const floor: DifficultyFloor = {
@@ -811,6 +857,11 @@ function applyRouteEscalation(
     return initial;
   }
 
+  // Alternatives and retry routes are fresh decisions; they must carry the
+  // route the policy originally decided, not their own.
+  initial = withPreEscalationRoute(initial);
+  const preEscalationRoute = initial.preEscalationRoute;
+
   const budget = resolveEscalationBudget(initial, options);
   const candidates = strongerCoderCandidates(prompt, initial.coder, config, options);
   const baseEscalation = (
@@ -837,7 +888,7 @@ function applyRouteEscalation(
   const alternative = bestAffordableRouteLikeAlternative(initial, config, budget, repoDir);
   if (alternative) {
     const escalation = baseEscalation(alternative, 'escalated', 'selected_affordable_hokusai_alternative');
-    return routeWithEscalationProvenance(alternative, escalation, repoDir);
+    return routeWithEscalationProvenance({ ...alternative, preEscalationRoute }, escalation, repoDir);
   }
 
   if (candidates.length === 0) {
@@ -865,7 +916,7 @@ function applyRouteEscalation(
     (budget === null || totalExpectedCost(retry) <= budget)
   ) {
     const finalDecision = reasonedDecision(
-      retry,
+      { ...retry, preEscalationRoute },
       `Router escalation selected stronger coder ${retry.coder} after ${triggers.map((trigger) => trigger.metric).join(' and ')} trigger.`,
     );
     const escalation = baseEscalation(finalDecision, 'escalated', 'selected_affordable_retry_route');
@@ -2433,11 +2484,11 @@ export async function routeWorkflowHokusai(
     reviewerModels: policyResolution?.policyStagePools.reviewerModels,
   });
   if (!decision) {
-    return routeWorkflowStageAware(prompt, options);
+    return { ...routeWorkflowStageAware(prompt, options), fallbackReason: 'null_response' };
   }
   if (isDisabledModel(decision.planner) || isDisabledModel(decision.coder) || isDisabledModel(decision.reviewer)) {
     routerLog(`hokusai routing returned disabled model; falling back to local routing: planner=${decision.planner} coder=${decision.coder} reviewer=${decision.reviewer}`);
-    return routeWorkflowStageAware(prompt, options);
+    return { ...routeWorkflowStageAware(prompt, options), fallbackReason: 'disabled_model' };
   }
 
   const enriched = withSignals(decision, prompt, taskDifficulty);

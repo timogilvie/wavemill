@@ -186,35 +186,38 @@ agent_reported_status() {
   fi
 }
 
-# Read detail field from hook JSON (e.g., tool name, error message).
-# Only returns detail if hook file is fresh (300s TTL).
+# HOK-3101: `agent_hook_detail` and `agent_hook_next_action` now route
+# through the shared accessor. That centralizes the 300s TTL and shares
+# writer classification with every other consumer.
 agent_hook_detail() {
   local issue="$1"
+  if declare -F wavemill_hook_read >/dev/null 2>&1; then
+    wavemill_hook_read "$SESSION" "$issue" detail --fresh
+    return 0
+  fi
   local hook_file="/tmp/wavemill-${SESSION}-${issue}.hook"
   [[ -f "$hook_file" ]] || return 0
-
   local ts now staleness
   ts=$(jq -r '.timestamp // 0' "$hook_file" 2>/dev/null || echo 0)
   now=$(date +%s)
   staleness=$(( now - ts ))
   (( staleness < 300 )) || return 0
-
   jq -r '.detail // empty' "$hook_file" 2>/dev/null || true
 }
 
-# Read next_action field from hook JSON.
-# Only returns next_action if hook file is fresh (300s TTL).
 agent_hook_next_action() {
   local issue="$1"
+  if declare -F wavemill_hook_read >/dev/null 2>&1; then
+    wavemill_hook_read "$SESSION" "$issue" next_action --fresh
+    return 0
+  fi
   local hook_file="/tmp/wavemill-${SESSION}-${issue}.hook"
   [[ -f "$hook_file" ]] || return 0
-
   local ts now staleness
   ts=$(jq -r '.timestamp // 0' "$hook_file" 2>/dev/null || echo 0)
   now=$(date +%s)
   staleness=$(( now - ts ))
   (( staleness < 300 )) || return 0
-
   jq -r '.next_action // empty' "$hook_file" 2>/dev/null || true
 }
 
@@ -839,9 +842,21 @@ agent_terminal_override() {
   fi
 }
 
+_agent_status_map_state() {
+  case "$1" in
+    working)         echo "running" ;;
+    idle)            echo "exited" ;;
+    waiting)         echo "waiting" ;;
+    blocked)         echo "blocked" ;;
+    approval-needed) echo "approval-needed" ;;
+    policy-denied)   echo "policy-denied" ;;
+    error)           echo "error" ;;
+    *)               echo "$1" ;;
+  esac
+}
+
 agent_status() {
   local issue="$1" target="${2:-}"
-  local hook_file="/tmp/wavemill-${SESSION}-${issue}.hook"
   local terminal_override=""
 
   terminal_override="$(agent_terminal_override "$issue")"
@@ -850,27 +865,37 @@ agent_status() {
     return
   fi
 
-  # Prefer hook-reported state when fresh (300s TTL)
-  if [[ -f "$hook_file" ]]; then
-    local state ts now staleness
-    state=$(jq -r '.state // empty' "$hook_file" 2>/dev/null || true)
-    ts=$(jq -r '.timestamp // 0' "$hook_file" 2>/dev/null || echo 0)
-    now=$(date +%s)
-    staleness=$(( now - ts ))
-
-    if (( staleness < 300 )) && [[ -n "$state" ]]; then
-      # Map hook states to dashboard display states
-      case "$state" in
-        working)         echo "running" ;;
-        idle)            echo "exited" ;;
-        waiting)         echo "waiting" ;;
-        blocked)         echo "blocked" ;;
-        approval-needed) echo "approval-needed" ;;
-        policy-denied)   echo "policy-denied" ;;
-        error)           echo "error" ;;
-        *)               echo "$state" ;;
-      esac
+  # HOK-3101: check the agent's own fresh state first, so a monitor `working`
+  # or `blocked` hook does not shadow the agent's true state or ex-Stop.
+  if declare -F wavemill_hook_read >/dev/null 2>&1; then
+    local agent_state controller_state
+    agent_state="$(wavemill_hook_read "$SESSION" "$issue" state --fresh --agent-only 2>/dev/null || true)"
+    if [[ -n "$agent_state" ]]; then
+      _agent_status_map_state "$agent_state"
       return
+    fi
+    # Fall through to a fresh controller state (blocked/waiting attention)
+    # but ignore a controller-written `working` — that is not the agent
+    # doing work, it is a recovery replay.
+    controller_state="$(wavemill_hook_read "$SESSION" "$issue" state --fresh 2>/dev/null || true)"
+    if [[ -n "$controller_state" && "$controller_state" != "working" ]]; then
+      _agent_status_map_state "$controller_state"
+      return
+    fi
+
+    # HOK-3101 / HOK-3069: consult the cached task-progress snapshot so a
+    # coding task that has fallen out of TTL but is stalled shows as such
+    # rather than "running just because a pane is alive".
+    if declare -F task_progress_cached_json >/dev/null 2>&1; then
+      local cache_json stalled
+      cache_json="$(task_progress_cached_json "$SESSION" "$issue" 120 2>/dev/null || printf '{}')"
+      if command -v jq >/dev/null 2>&1; then
+        stalled="$(printf '%s' "$cache_json" | jq -r '.stalled // false' 2>/dev/null || echo false)"
+        if [[ "$stalled" == "true" ]]; then
+          echo "stalled"
+          return
+        fi
+      fi
     fi
   fi
 

@@ -75,7 +75,7 @@ reference implementation:
 | payload | `features` = `candidate_features/v1` | flat `TechnicalTaskRouterRequest.inputs`, which **mixes in outcome fields** |
 | options / recommended / taken / propensity | n/a (predictor) | options in `technical_task_router_row/v2`; recommended vs. taken in `OutcomeReport`; **no propensity** |
 | outcome label | S2 survival label v1.0.0 (+ `corrective_rework`, HOK-3020) | `completionStatus` snapshot, **no horizon or labeller version** |
-| link to the change | `prUrl`; wavemill PRs carry `executed_route` in `wavemill-meta` (HOK-2945) | `executed_route` records what ran, but **not the route decision ID** |
+| link to the change | `prUrl`; wavemill PRs carry `executed_route` in `wavemill-meta` (HOK-2945) | `wavemill-meta` `route_schema: 2` carries `route_decision` (HOK-3098): `decision_id` (task `trace_id` when unused, else a UUID with `trace_id` alongside), `source` (`hokusai` \| `local` \| `fallback` + typed `fallback_reason`), `policy_version`, `recommended` planner/coder/reviewer before escalation or override, `decided_at`, and `supersedes` on a re-route. `executed_route` still records what ran. Minted at routing time in `features/<slug>/routing.jsonl`; read by the Arbiter scanner as `PrAttribution.routeDecision`. **No propensity yet.** |
 
 The Model Match gaps are out of scope for the Rework Risk work. They are listed
 here so the next Model Match change closes them.

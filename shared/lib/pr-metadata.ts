@@ -1,8 +1,64 @@
 export type RiskLevel = 'low' | 'medium' | 'high';
 
 export const PR_METADATA_SCHEMA_VERSION = '1';
-export const PR_ROUTE_METADATA_SCHEMA_VERSION = 1;
+/**
+ * `route_schema` version written by current wavemill installs.
+ *
+ * - 1 (HOK-2945): `executed_route` only.
+ * - 2 (HOK-3098): adds the optional `route_decision` sibling. `executed_route`
+ *   is unchanged, so its own payload `schema` stays at
+ *   {@link EXECUTED_ROUTE_SCHEMA_VERSION}.
+ */
+export const PR_ROUTE_METADATA_SCHEMA_VERSION = 2;
+/** Every `route_schema` value readers accept; older PR bodies keep parsing. */
+export const SUPPORTED_PR_ROUTE_METADATA_SCHEMA_VERSIONS: readonly PrRouteSchemaVersion[] = [1, 2];
+/** Payload version inside `executed_route` (independent of `route_schema`). */
+export const EXECUTED_ROUTE_SCHEMA_VERSION = 1;
 export const MAX_EXECUTED_ROUTE_BYTES = 6_000;
+/** Independent byte cap for the `route_decision` payload. */
+export const MAX_ROUTE_DECISION_BYTES = 1_500;
+
+export type PrRouteSchemaVersion = 1 | 2;
+
+/**
+ * Where the router's decision came from (HOK-3098).
+ * `fallback` means Hokusai was attempted and rejected; see `fallback_reason`.
+ */
+export type RouteDecisionSource = 'hokusai' | 'local' | 'fallback';
+export const ROUTE_DECISION_SOURCES: readonly RouteDecisionSource[] = ['hokusai', 'local', 'fallback'];
+
+/** Typed reason a Hokusai attempt was rejected in favour of local routing. */
+export type RouteFallbackReason = 'null_response' | 'disabled_model';
+export const ROUTE_FALLBACK_REASONS: readonly RouteFallbackReason[] = ['null_response', 'disabled_model'];
+
+/**
+ * What the router decided for a task (HOK-3098), as published in the
+ * `route_decision` field of the `wavemill-meta` block. Recorded once at
+ * routing time and never rewritten; `executed_route` records what ran.
+ *
+ * Contains ids, model names, versions and enums only — no raw content.
+ */
+export interface PrRouteDecision {
+  /** Stable id for this decision: the task traceId when unused, else a UUID. */
+  decision_id: string;
+  /** Task traceId (HOK-2259) when it differs from `decision_id`. */
+  trace_id?: string;
+  source: RouteDecisionSource;
+  /** Present only when `source === 'fallback'`. */
+  fallback_reason?: RouteFallbackReason;
+  /** Hokusai Model 30 version when exposed, else the local router version. */
+  policy_version: string;
+  /** Route as decided, before any later escalation or override. */
+  recommended: {
+    planner: string;
+    coder: string;
+    reviewer: string;
+  };
+  /** ISO 8601 timestamp of the decision. */
+  decided_at: string;
+  /** Prior `decision_id` when this decision is a genuine re-route. */
+  supersedes?: string;
+}
 
 export type PrRouteStageStatus = 'executed' | 'inherited' | 'not_run' | 'unknown';
 export type PrRouteEvidenceStatus = 'direct' | 'missing' | 'contradicted' | 'inherited';
@@ -45,7 +101,7 @@ export interface PrRouteReviewerRole {
 }
 
 export interface ExecutedPrRoute {
-  schema: typeof PR_ROUTE_METADATA_SCHEMA_VERSION;
+  schema: typeof EXECUTED_ROUTE_SCHEMA_VERSION;
   issue: string;
   head_sha: string;
   planner: PrRouteRole;
@@ -63,8 +119,9 @@ export interface PrMetadata {
   risk?: RiskLevel;
   challenge?: boolean;
   challengePairId?: string;
-  route_schema?: typeof PR_ROUTE_METADATA_SCHEMA_VERSION;
+  route_schema?: PrRouteSchemaVersion;
   executed_route?: ExecutedPrRoute;
+  route_decision?: PrRouteDecision;
 }
 
 export interface PrMetadataError {
@@ -98,6 +155,7 @@ const FIELD_ORDER: Array<keyof PrMetadata> = [
   'challengePairId',
   'route_schema',
   'executed_route',
+  'route_decision',
 ];
 
 function trimBlockAdjacentWhitespace(body: string): string {
@@ -149,26 +207,35 @@ function isSafePublicString(value: string): boolean {
   return true;
 }
 
-function validatePublicStrings(value: unknown, path: string, errors: PrMetadataError[]): void {
+function validatePublicStrings(
+  value: unknown,
+  path: string,
+  errors: PrMetadataError[],
+  field = 'executed_route',
+): void {
   if (typeof value === 'string') {
     if (!isSafePublicString(value)) {
       errors.push({
-        field: 'executed_route',
+        field,
         code: 'wrong-type',
-        message: `Unsafe public value in executed_route at ${path}`,
+        message: `Unsafe public value in ${field} at ${path}`,
       });
     }
     return;
   }
   if (Array.isArray(value)) {
-    value.forEach((item, index) => validatePublicStrings(item, `${path}[${index}]`, errors));
+    value.forEach((item, index) => validatePublicStrings(item, `${path}[${index}]`, errors, field));
     return;
   }
   if (isRecord(value)) {
     for (const [key, item] of Object.entries(value)) {
-      validatePublicStrings(item, `${path}.${key}`, errors);
+      validatePublicStrings(item, `${path}.${key}`, errors, field);
     }
   }
+}
+
+function isSupportedRouteSchema(value: unknown): value is PrRouteSchemaVersion {
+  return (SUPPORTED_PR_ROUTE_METADATA_SCHEMA_VERSIONS as readonly unknown[]).includes(value);
 }
 
 function unknownKeys(value: Record<string, unknown>, allowed: readonly string[]): string[] {
@@ -310,7 +377,7 @@ export function validateExecutedRoute(value: unknown): PrMetadataError[] {
     return [{ field: 'executed_route', code: 'wrong-type', message: 'Expected executed_route JSON object' }];
   }
   pushUnknownKeys(value, ['schema', 'issue', 'head_sha', 'planner', 'coder', 'reviewer'], 'executed_route', errors);
-  if (value.schema !== PR_ROUTE_METADATA_SCHEMA_VERSION) {
+  if (value.schema !== EXECUTED_ROUTE_SCHEMA_VERSION) {
     errors.push({
       field: 'executed_route',
       code: 'unsupported-version',
@@ -334,6 +401,97 @@ export function validateExecutedRoute(value: unknown): PrMetadataError[] {
       code: 'wrong-type',
       message: `executed_route exceeds ${MAX_EXECUTED_ROUTE_BYTES} bytes`,
     });
+  }
+  return errors;
+}
+
+const ROUTE_DECISION_KEYS = [
+  'decision_id',
+  'trace_id',
+  'source',
+  'fallback_reason',
+  'policy_version',
+  'recommended',
+  'decided_at',
+  'supersedes',
+] as const;
+const ROUTE_DECISION_ROLES = ['planner', 'coder', 'reviewer'] as const;
+const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+function routeDecisionError(
+  code: PrMetadataError['code'],
+  message: string,
+): PrMetadataError {
+  return { field: 'route_decision', code, message };
+}
+
+/**
+ * Validates a `route_decision` payload (HOK-3098). Mirrors
+ * {@link validateExecutedRoute}: closed key set, enum checks, public-string
+ * safety (no paths, tokens or free text) and an independent byte budget.
+ * Recommended model ids may be empty strings when the router had no viable
+ * candidate for a stage; every other string must be non-empty.
+ */
+export function validateRouteDecision(value: unknown): PrMetadataError[] {
+  if (!isRecord(value)) {
+    return [routeDecisionError('wrong-type', 'Expected route_decision JSON object')];
+  }
+  const errors: PrMetadataError[] = [];
+  for (const key of unknownKeys(value, ROUTE_DECISION_KEYS)) {
+    errors.push(routeDecisionError('unknown-field', `Unknown route_decision field at route_decision.${key}`));
+  }
+
+  for (const key of ['decision_id', 'policy_version', 'decided_at'] as const) {
+    if (typeof value[key] !== 'string' || !value[key].trim()) {
+      errors.push(routeDecisionError('empty-value', `Expected non-empty route_decision.${key}`));
+    }
+  }
+  for (const key of ['trace_id', 'supersedes'] as const) {
+    if (value[key] !== undefined && (typeof value[key] !== 'string' || !value[key].trim())) {
+      errors.push(routeDecisionError('wrong-type', `Expected non-empty string at route_decision.${key}`));
+    }
+  }
+  if (typeof value.decided_at === 'string' && value.decided_at.trim()
+    && (!ISO_TIMESTAMP_PATTERN.test(value.decided_at) || Number.isNaN(Date.parse(value.decided_at)))) {
+    errors.push(routeDecisionError('wrong-type', 'Expected ISO 8601 timestamp at route_decision.decided_at'));
+  }
+
+  if (!(ROUTE_DECISION_SOURCES as readonly unknown[]).includes(value.source)) {
+    errors.push(routeDecisionError('wrong-type', 'Expected route_decision.source to be one of hokusai, local, fallback'));
+  }
+  if (value.fallback_reason !== undefined
+    && !(ROUTE_FALLBACK_REASONS as readonly unknown[]).includes(value.fallback_reason)) {
+    errors.push(routeDecisionError('wrong-type', 'Expected valid route_decision.fallback_reason'));
+  }
+  if (value.source === 'fallback' && value.fallback_reason === undefined) {
+    errors.push(routeDecisionError('empty-value', 'route_decision.source fallback requires fallback_reason'));
+  }
+  if (value.source !== 'fallback' && value.fallback_reason !== undefined) {
+    errors.push(routeDecisionError('wrong-type', 'route_decision.fallback_reason is only valid for source fallback'));
+  }
+
+  const recommended = value.recommended;
+  if (!isRecord(recommended)) {
+    errors.push(routeDecisionError('wrong-type', 'Expected route_decision.recommended object'));
+  } else {
+    for (const key of unknownKeys(recommended, ROUTE_DECISION_ROLES)) {
+      errors.push(routeDecisionError('unknown-field', `Unknown route_decision field at route_decision.recommended.${key}`));
+    }
+    for (const role of ROUTE_DECISION_ROLES) {
+      if (typeof recommended[role] !== 'string') {
+        errors.push(routeDecisionError('wrong-type', `Expected string at route_decision.recommended.${role}`));
+      }
+    }
+  }
+
+  // Empty recommended roles are legitimate (no viable candidate); every other
+  // string goes through the shared public-value gate.
+  const nonEmptyStrings = JSON.parse(JSON.stringify(value, (_key, item) => (item === '' ? undefined : item))) as unknown;
+  validatePublicStrings(nonEmptyStrings, 'route_decision', errors, 'route_decision');
+
+  const bytes = Buffer.byteLength(stableJsonStringify(value), 'utf-8');
+  if (bytes > MAX_ROUTE_DECISION_BYTES) {
+    errors.push(routeDecisionError('wrong-type', `route_decision exceeds ${MAX_ROUTE_DECISION_BYTES} bytes`));
   }
   return errors;
 }
@@ -422,7 +580,8 @@ export function parsePrMetadata(body: string): ParseResult {
         continue;
       }
 
-      if (rawValue.trim() !== String(PR_ROUTE_METADATA_SCHEMA_VERSION)) {
+      const routeSchema = Number(rawValue.trim());
+      if (!/^\d+$/.test(rawValue.trim()) || !isSupportedRouteSchema(routeSchema)) {
         errors.push({
           field,
           code: 'unsupported-version',
@@ -431,7 +590,7 @@ export function parsePrMetadata(body: string): ParseResult {
         continue;
       }
 
-      metadata.route_schema = PR_ROUTE_METADATA_SCHEMA_VERSION;
+      metadata.route_schema = routeSchema;
       continue;
     }
 
@@ -451,6 +610,27 @@ export function parsePrMetadata(body: string): ParseResult {
           message: `Invalid JSON for ${field}`,
         });
       }
+      continue;
+    }
+
+    if (field === 'route_decision') {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(rawValue) as unknown;
+      } catch {
+        errors.push({
+          field,
+          code: 'wrong-type',
+          message: `Invalid JSON for ${field}`,
+        });
+        continue;
+      }
+      const decisionErrors = validateRouteDecision(parsed);
+      if (decisionErrors.length > 0) {
+        errors.push(...decisionErrors);
+        continue;
+      }
+      metadata.route_decision = parsed as PrRouteDecision;
       continue;
     }
 
@@ -563,7 +743,7 @@ export function validateMetadataFields(meta: PrMetadata): PrMetadataError[] {
   }
   if (
     meta.route_schema !== undefined
-    && meta.route_schema !== PR_ROUTE_METADATA_SCHEMA_VERSION
+    && !isSupportedRouteSchema(meta.route_schema)
   ) {
     errors.push({
       field: 'route_schema',
@@ -588,6 +768,16 @@ export function validateMetadataFields(meta: PrMetadata): PrMetadataError[] {
   if (meta.executed_route !== undefined) {
     errors.push(...validateExecutedRoute(meta.executed_route));
   }
+  if (meta.route_decision !== undefined) {
+    if (meta.route_schema === undefined || meta.route_schema < 2) {
+      errors.push({
+        field: 'route_decision',
+        code: 'unsupported-version',
+        message: 'route_decision requires route_schema 2',
+      });
+    }
+    errors.push(...validateRouteDecision(meta.route_decision));
+  }
   return errors;
 }
 
@@ -611,7 +801,7 @@ export function renderPrMetadata(meta: PrMetadata): string {
       return `${field}: ${value ? 'true' : 'false'}`;
     }
 
-    if (field === 'executed_route') {
+    if (field === 'executed_route' || field === 'route_decision') {
       return `${field}: ${stableJsonStringify(value)}`;
     }
 

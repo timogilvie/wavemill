@@ -13,14 +13,17 @@ import {
   detectCrossPrReverts,
   filterUnacknowledgedReverts,
   parseRevertAcknowledgements,
+  type BranchDiffEvidence,
+  type CrossPrRevertFinding,
 } from '../shared/lib/cross-pr-revert-detector.ts';
 import { escapeShellArg, execShellCommand } from '../shared/lib/shell-utils.ts';
-import { resolveDefaultBaseRef } from '../shared/lib/git-base-resolver.ts';
+import { resolveDefaultBaseRef, resolveOriginFirstRef } from '../shared/lib/git-base-resolver.ts';
 
 export const crossPrRevertCheckDeps = {
   detectCrossPrReverts,
   execShellCommand,
   resolveDefaultBaseRef,
+  resolveOriginFirstRef,
 };
 
 // Exit-code contract:
@@ -40,9 +43,16 @@ export interface ToolFailureDiagnostic {
 export interface CrossPrRevertCheckResult {
   blocked: boolean;
   disabled?: boolean;
-  reverts: ReturnType<typeof detectCrossPrReverts>;
-  acknowledged: ReturnType<typeof detectCrossPrReverts>;
-  unacknowledged: ReturnType<typeof detectCrossPrReverts>;
+  reverts: CrossPrRevertFinding[];
+  acknowledged: CrossPrRevertFinding[];
+  unacknowledged: CrossPrRevertFinding[];
+  /**
+   * Concrete SHAs the detector compared. Absent when the guard was disabled or
+   * exited early with a `toolError` (there is no diff to record). Consumers
+   * that key on `.reverts[]`/`.unacknowledged[]` (the monitor's `jq` paths)
+   * are unaffected — this is a purely additive field (HOK-3091).
+   */
+  evidence?: BranchDiffEvidence;
   toolError?: ToolFailureDiagnostic;
 }
 
@@ -83,12 +93,15 @@ export function runCrossPrRevertCheck(input: {
     && !hasLocalConfigFile) {
     integrationRef = crossPrRevertCheckDeps.resolveDefaultBaseRef(input.repoDir) ?? integrationRef;
   }
+  integrationRef = crossPrRevertCheckDeps.resolveOriginFirstRef(input.repoDir, integrationRef).ref;
   const headRef = input.headRef || 'HEAD';
   let baseRef: string;
-  let reverts: ReturnType<typeof detectCrossPrReverts>;
 
   try {
-    baseRef = input.baseRef || String(crossPrRevertCheckDeps.execShellCommand(
+    const providedBaseRef = input.baseRef
+      ? crossPrRevertCheckDeps.resolveOriginFirstRef(input.repoDir, input.baseRef).ref
+      : undefined;
+    baseRef = providedBaseRef || String(crossPrRevertCheckDeps.execShellCommand(
       `git merge-base ${escapeShellArg(integrationRef)} ${escapeShellArg(headRef)}`,
       { cwd: input.repoDir, encoding: 'utf-8' },
     )).trim();
@@ -108,7 +121,7 @@ export function runCrossPrRevertCheck(input: {
     };
   }
 
-  reverts = crossPrRevertCheckDeps.detectCrossPrReverts({
+  const { findings: reverts, evidence } = crossPrRevertCheckDeps.detectCrossPrReverts({
     repoDir: input.repoDir,
     baseRef,
     headRef,
@@ -127,6 +140,7 @@ export function runCrossPrRevertCheck(input: {
     reverts,
     acknowledged,
     unacknowledged,
+    evidence,
   };
 }
 

@@ -118,4 +118,106 @@ describe('reconcilePrRoute', () => {
     assert.equal(result.route.coder.resolved_model, undefined);
     assert.equal(result.route.coder.evidence.reason, 'stage_result_stale_head');
   });
+
+  describe('route decisions (HOK-3098)', () => {
+    const featureDir = '/workspace/features/hok-3098';
+    const head = 'abc123';
+    const firstDecision = {
+      kind: 'route_decision',
+      schema: 1,
+      decision_id: 'trace-0123',
+      source: 'hokusai',
+      policy_version: 'model30-2026.09',
+      recommended: { planner: 'planner-a', coder: 'cheap-coder', reviewer: 'reviewer-a' },
+      decided_at: '2026-09-28T12:00:00.000Z',
+    };
+    const reroute = {
+      kind: 'route_decision',
+      schema: 1,
+      decision_id: '5b0e7c1e-7c55-4a55-9d6c-0d7a3f4b2e11',
+      trace_id: 'trace-0123',
+      source: 'fallback',
+      fallback_reason: 'null_response',
+      policy_version: 'wavemill-router@1.0.0',
+      recommended: { planner: 'planner-b', coder: 'coder-b', reviewer: 'reviewer-b' },
+      decided_at: '2026-09-28T12:30:00.000Z',
+      supersedes: 'trace-0123',
+    };
+    const phaseLine = JSON.stringify({ role: 'coder', requestedSelector: 'coder-requested', resolvedModelId: 'coder-requested' });
+    const legacyRouteLine = JSON.stringify({ route: { planner: 'planner-intended', coder: 'coder-intended', reviewer: 'reviewer-intended' } });
+    const coding = stageResult({
+      stage: 'coding',
+      agent: 'codex',
+      model: 'strong-coder',
+      headSha: head,
+    } as Partial<StageResult> & Pick<StageResult, 'stage' | 'agent' | 'model'>);
+
+    it('returns the recorded decision and projects it without routing.jsonl-only fields', async () => {
+      const result = await reconcilePrRoute(
+        { issue: 'HOK-3098', featureDir, currentHeadSha: head },
+        depsFor(featureDir, {
+          'routing.jsonl': `${phaseLine}\n${JSON.stringify(firstDecision)}\n`,
+          '.coding-result.json': coding,
+        }),
+      );
+      const { kind: _kind, schema: _schema, ...expected } = firstDecision;
+      assert.deepEqual(result.decision, expected);
+      assert.ok(!result.diagnostics.includes('route_decision: no route decision recorded'));
+    });
+
+    it('recommended coder differs from the executed coder after escalation', async () => {
+      const result = await reconcilePrRoute(
+        { issue: 'HOK-3098', featureDir, currentHeadSha: head },
+        depsFor(featureDir, {
+          'routing.jsonl': `${JSON.stringify(firstDecision)}\n`,
+          '.coding-result.json': coding,
+        }),
+      );
+      assert.equal(result.decision?.recommended.coder, 'cheap-coder');
+      assert.equal(result.route.coder.resolved_model, 'strong-coder');
+    });
+
+    it('a genuine re-route yields the latest decision with supersedes', async () => {
+      const result = await reconcilePrRoute(
+        { issue: 'HOK-3098', featureDir, currentHeadSha: head },
+        depsFor(featureDir, {
+          'routing.jsonl': [JSON.stringify(firstDecision), phaseLine, JSON.stringify(reroute), ''].join('\n'),
+        }),
+      );
+      assert.equal(result.decision?.decision_id, reroute.decision_id);
+      assert.equal(result.decision?.supersedes, 'trace-0123');
+      assert.equal(result.decision?.fallback_reason, 'null_response');
+    });
+
+    it('decision lines never leak into requested selectors; legacy lines still do', async () => {
+      const result = await reconcilePrRoute(
+        { issue: 'HOK-3098', featureDir, currentHeadSha: head },
+        depsFor(featureDir, {
+          'routing.jsonl': [legacyRouteLine, JSON.stringify({ ...firstDecision, planner: 'leak', coder: 'leak' }), ''].join('\n'),
+        }),
+      );
+      assert.equal(result.route.planner.requested_selector, 'planner-intended');
+      assert.equal(result.route.coder.requested_selector, 'coder-intended');
+    });
+
+    it('old routing.jsonl files without decisions yield a null decision and a diagnostic', async () => {
+      const result = await reconcilePrRoute(
+        { issue: 'HOK-3098', featureDir, currentHeadSha: head },
+        depsFor(featureDir, { 'routing.jsonl': `${legacyRouteLine}\n${phaseLine}\n` }),
+      );
+      assert.equal(result.decision, null);
+      assert.ok(result.diagnostics.includes('route_decision: no route decision recorded'));
+    });
+
+    it('invalid decision lines are skipped, never published', async () => {
+      const unsafe = { ...reroute, recommended: { ...reroute.recommended, coder: '/Users/me/model' } };
+      const result = await reconcilePrRoute(
+        { issue: 'HOK-3098', featureDir, currentHeadSha: head },
+        depsFor(featureDir, {
+          'routing.jsonl': [JSON.stringify(firstDecision), JSON.stringify(unsafe), '{broken', ''].join('\n'),
+        }),
+      );
+      assert.equal(result.decision?.decision_id, 'trace-0123');
+    });
+  });
 });

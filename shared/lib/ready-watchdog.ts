@@ -44,6 +44,10 @@ import {
   type ChallengeGate,
   type UnresolvableReason,
 } from './tend-challenge-gate.ts';
+import {
+  getTaskProgress as defaultGetTaskProgress,
+  type TaskProgress,
+} from './task-progress.ts';
 
 const execFileAsync = promisify(execFile);
 const MAX_AUTO_UPDATE_ATTEMPTS = 3;
@@ -252,6 +256,22 @@ export interface ReadyWatchdogDeps {
   getCurrentHead: (worktree: string) => Promise<string | null>;
   getWorktreeMergeState: (worktree: string) => Promise<WorktreeMergeState>;
   isTaskPaneActive: (task: WorkflowTaskRecord) => Promise<boolean | null>;
+  /**
+   * HOK-3101: the shared task-progress primitive. computeLastProgressAt
+   * delegates through this so hook, commit and worktree evidence contribute
+   * to `lastProgressAt` — not only `task.updated` (which is transition-only,
+   * HOK-3087). isTaskPaneActive also consults `agentIdle` so an idle REPL
+   * (HOK-3095 (a)) does not count as active.
+   */
+  getTaskProgress: (task: WorkflowTaskRecord, options: {
+    session: string;
+    repoDir: string;
+    worktree: string;
+    stateDir: string;
+    readyResult: StageResult | null;
+    readyResultFile: string;
+    now: Date;
+  }) => TaskProgress | null;
   resumeResolvedConflictRemediation: (
     snapshot: ReadyTaskSnapshot,
     githubTruth: GitHubPRTruth,
@@ -294,6 +314,12 @@ export interface TickReadyWatchdogOptions {
   forceRecover?: boolean;
   readyWatchdogToolPath?: string;
   deps?: Partial<ReadyWatchdogDeps>;
+  /**
+   * HOK-3101: wavemill session id, used to look up per-task hook and status
+   * files when the primitive gathers evidence. Defaults to
+   * `$WAVEMILL_SESSION` or `wavemill`.
+   */
+  session?: string;
 }
 
 export interface WorkflowTaskRecord extends Record<string, unknown> {
@@ -405,6 +431,15 @@ const defaultDeps: ReadyWatchdogDeps = {
       if (paneDead === '1') {
         return false;
       }
+      // HOK-3101 / HOK-3095 (a): an idle agent REPL sitting in a live pane
+      // is NOT active — it is the agent's own settled Stop state. Consult
+      // the shared primitive before reporting active.
+      const issue = typeof task.slug === 'string' ? String(task.slug) : undefined;
+      // We cannot reach the primitive from here because we do not have the
+      // repo dir / session; the composed classifyReadyTask() path threads it
+      // through and overrides `remediationPaneActive` when agentIdle=true
+      // (see snapshotReadyTask). This default kept its previous semantics
+      // to preserve behaviour for callers that do not supply a session.
       if (command && !['bash', 'zsh', 'fish', 'sh'].includes(command)) {
         return true;
       }
@@ -419,7 +454,34 @@ const defaultDeps: ReadyWatchdogDeps = {
           return false;
         }
       }
+      void issue;
       return false;
+    } catch {
+      return null;
+    }
+  },
+  getTaskProgress(task, { session, worktree, readyResult, readyResultFile, now }) {
+    // HOK-3101: default IO-based composition. Tests stub the whole dep.
+    if (!worktree || !task.slug) return null;
+    try {
+      const issue = typeof (task as { issueId?: string }).issueId === 'string'
+        ? (task as { issueId?: string }).issueId!
+        : String(task.slug ?? '');
+      if (!issue) return null;
+      const extra: TaskProgress['sources'] = [];
+      if (readyResult?.startedAt) extra.push({ kind: 'transition', at: readyResult.startedAt, detail: 'ready.startedAt' });
+      if (readyResult?.finishedAt) extra.push({ kind: 'transition', at: readyResult.finishedAt, detail: 'ready.finishedAt' });
+      const readyMtime = fileMtimeIso(readyResultFile);
+      if (readyMtime) extra.push({ kind: 'transition', at: readyMtime, detail: 'ready-result.mtime' });
+      return defaultGetTaskProgress({
+        issue,
+        session,
+        task: task as never,
+        worktree,
+        phase: typeof task.phase === 'string' ? task.phase : 'ready',
+        extraTransitionSources: extra,
+        now,
+      });
     } catch {
       return null;
     }
@@ -722,14 +784,24 @@ function fileMtimeIso(file: string): string | null {
   }
 }
 
-function computeLastProgressAt(task: WorkflowTaskRecord, readyResult: StageResult | null, readyResultFile: string): string | null {
+function computeLastProgressAt(
+  task: WorkflowTaskRecord,
+  readyResult: StageResult | null,
+  readyResultFile: string,
+  taskProgress: TaskProgress | null,
+): string | null {
+  // HOK-3101: prefer the shared primitive so hook, commit and worktree
+  // evidence contribute — not only transitions. The ready-specific inputs
+  // (ready result mtime, its startedAt/finishedAt) are still folded in
+  // through extraTransitionSources when the caller composes the primitive.
   const candidates = [
+    taskProgress?.lastProgressAt ?? null,
     task.updated,
     readyResult?.finishedAt ?? null,
     readyResult?.startedAt ?? null,
     fileMtimeIso(readyResultFile),
   ]
-    .map(parseIsoDate)
+    .map((v) => (typeof v === 'string' ? parseIsoDate(v) : v))
     .filter((value): value is Date => value !== null)
     .sort((a, b) => b.getTime() - a.getTime());
 
@@ -1353,6 +1425,7 @@ async function buildSnapshot(
   now: Date,
   repoDir: string,
   deps: ReadyWatchdogDeps,
+  session: string,
 ): Promise<ReadyTaskSnapshot | null> {
   const slug = task.slug;
   const branch = task.branch;
@@ -1386,7 +1459,24 @@ async function buildSnapshot(
     return Array.isArray(job.prNumbers) && job.prNumbers.includes(prNumber);
   });
 
-  const lastProgressAt = computeLastProgressAt(task, readyResult, readyResultFile);
+  // HOK-3101: the shared task-progress primitive supplies hook/commit/worktree
+  // evidence and an agentIdle fact that a live pane cannot override.
+  const taskProgress = deps.getTaskProgress(task, {
+    session,
+    repoDir,
+    worktree,
+    stateDir,
+    readyResult,
+    readyResultFile,
+    now,
+  });
+  const lastProgressAt = computeLastProgressAt(task, readyResult, readyResultFile, taskProgress);
+  // HOK-3101 / HOK-3095 (a): if the pane is live but the agent's own record
+  // is idle, the pane is holding an idle REPL — do not report active.
+  let paneActive = await deps.isTaskPaneActive(task);
+  if (paneActive === true && taskProgress?.agentIdle) {
+    paneActive = false;
+  }
 
   return {
     issueId,
@@ -1409,7 +1499,7 @@ async function buildSnapshot(
     hasConflictMarker: existsSync(path.join(stateDir, '.conflict-detected')),
     remediationLaunchHead: readyArtifacts?.remediationLaunchHead ?? readyArtifacts?.launchHead ?? null,
     currentHead: await deps.getCurrentHead(worktree),
-    remediationPaneActive: await deps.isTaskPaneActive(task),
+    remediationPaneActive: paneActive,
     worktreeMergeState: await deps.getWorktreeMergeState(worktree),
     relevantJobs,
     lastProgressAt,
@@ -1800,6 +1890,9 @@ export async function tickReadyWatchdog(options: TickReadyWatchdogOptions): Prom
     ...(options.deps ?? {}),
   };
   const now = deps.now();
+  // HOK-3101: session id used by the shared task-progress primitive to
+  // resolve per-task hook and status file paths.
+  const session = options.session ?? process.env.WAVEMILL_SESSION ?? 'wavemill';
   const config = {
     ...getReadyWatchdogConfig(options.repoDir),
     ...(options.config ?? {}),
@@ -1883,7 +1976,7 @@ export async function tickReadyWatchdog(options: TickReadyWatchdogOptions): Prom
 
     activeReadyIssueIds.add(issueId);
 
-    const snapshot = await buildSnapshot(issueId, task, jobs, now, options.repoDir, deps);
+    const snapshot = await buildSnapshot(issueId, task, jobs, now, options.repoDir, deps, session);
     if (!snapshot) {
       reapTask(issueId, 'invalid-task');
       continue;

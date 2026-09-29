@@ -111,6 +111,12 @@ function shellHarness(overrides: {
         if (overrides.currentBranch === null) throw new Error('detached HEAD');
         return `${overrides.currentBranch ?? 'task/test'}\n`;
       }
+      if (cmd === "git rev-parse --verify --quiet 'origin/auto/integration^{commit}'") {
+        if (overrides.remoteIntegrationTip === '') {
+          throw new Error('no remote ref');
+        }
+        return `${remoteIntegrationTip}\n`;
+      }
       if (cmd === "git merge --ff-only 'origin/auto/integration'") {
         if (overrides.integrationMergeFfError) throw new Error(overrides.integrationMergeFfError);
         integrationTip = remoteIntegrationTip;
@@ -347,7 +353,7 @@ function shellHarness(overrides: {
 }
 
 describe('runPromotion', () => {
-  it('updates a branch with its base in fetch switch merge push order', () => {
+  it('updates a branch with its base in fetch switch ff-only merge push order', () => {
     const repo = makeRepo();
     const shell = shellHarness();
 
@@ -355,16 +361,53 @@ describe('runPromotion', () => {
       const result = updateBranchWithBase('auto/integration', 'main', repo.repoDir, shell.shellRunner);
       assert.equal(result.status, 'success');
       assert.deepEqual(
-        shell.calls.slice(0, 5),
+        shell.calls.slice(0, 7),
         [
           'git status --porcelain --untracked-files=no',
           "git fetch --quiet origin 'main' 'auto/integration'",
           "git switch 'auto/integration'",
+          "git rev-parse --verify --quiet 'origin/auto/integration^{commit}'",
+          "git merge --ff-only 'origin/auto/integration'",
           "git merge-tree --write-tree 'auto/integration' 'origin/main'",
           "git merge --no-edit 'origin/main'",
         ],
       );
       assert(shell.calls.includes("git push origin 'auto/integration'"));
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('fast-forwards local from origin and merges from the origin tip', () => {
+    const repo = makeRepo();
+    const shell = shellHarness({
+      localIntegrationTip: 'stale-integration-sha',
+      remoteIntegrationTip: 'origin-integration-sha',
+      integrationRelation: 'behind',
+    });
+    try {
+      const result = updateBranchWithBase('auto/integration', 'main', repo.repoDir, shell.shellRunner);
+      assert.equal(result.status, 'success', JSON.stringify(result));
+      assert(shell.calls.includes("git merge --ff-only 'origin/auto/integration'"), 'must ff-only from origin');
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('returns unknown-failed when local branch has diverged from origin', () => {
+    const repo = makeRepo();
+    const shell = shellHarness({
+      localIntegrationTip: 'diverged-local-sha',
+      remoteIntegrationTip: 'origin-integration-sha',
+      integrationRelation: 'diverged',
+      integrationMergeFfError: 'fatal: Not possible to fast-forward, aborting.',
+    });
+    try {
+      const result = updateBranchWithBase('auto/integration', 'main', repo.repoDir, shell.shellRunner);
+      assert.equal(result.status, 'unknown-failed');
+      assert.match(result.detail ?? '', /diverged/);
+      assert(!shell.calls.some((cmd) => cmd === "git merge --no-edit 'origin/main'"), 'must not merge base into diverged branch');
+      assert(!shell.calls.some((cmd) => cmd === "git push origin 'auto/integration'"), 'must not push a diverged branch');
     } finally {
       repo.cleanup();
     }

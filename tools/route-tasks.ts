@@ -20,6 +20,7 @@ interface RouteBatchTaskInput {
   file?: string;
   source?: RouteSource;
   inputKind?: RouteInputKind;
+  featureDir?: string;
 }
 
 interface ExpandedRouteTaskInput {
@@ -63,13 +64,14 @@ async function readJsonlTasks(path: string): Promise<RouteBatchTaskInput[]> {
       throw new Error(`Invalid JSONL at line ${index + 1}: expected object`);
     }
 
-    const item = parsed as { issueId?: unknown; prompt?: unknown; file?: unknown; source?: unknown; inputKind?: unknown };
+    const item = parsed as { issueId?: unknown; prompt?: unknown; file?: unknown; source?: unknown; inputKind?: unknown; featureDir?: unknown };
     tasks.push({
       issueId: typeof item.issueId === 'string' ? item.issueId : undefined,
       prompt: typeof item.prompt === 'string' ? item.prompt : undefined,
       file: typeof item.file === 'string' ? item.file : undefined,
       source: typeof item.source === 'string' ? item.source as RouteSource : undefined,
       inputKind: typeof item.inputKind === 'string' ? item.inputKind as RouteInputKind : undefined,
+      featureDir: typeof item.featureDir === 'string' && item.featureDir ? item.featureDir : undefined,
     });
   }
 

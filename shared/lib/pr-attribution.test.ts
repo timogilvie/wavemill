@@ -302,7 +302,7 @@ describe('extractExecutedRoute - lenient HOK-2945 extraction', () => {
 
   it('unsupported route_schema is ignored with a diagnostic', () => {
     const { route, diagnostics } = extractExecutedRoute(
-      ['route_schema: 2', `executed_route: ${EXECUTED_ROUTE}`].join('\n'),
+      ['route_schema: 3', `executed_route: ${EXECUTED_ROUTE}`].join('\n'),
     );
     assert.equal(route, null);
     assert.ok(diagnostics.some((item) => item.startsWith('unsupported-route-schema:')));
@@ -343,6 +343,123 @@ describe('extractExecutedRoute - lenient HOK-2945 extraction', () => {
     const result = attributePullRequest(makePr({ body, headSha: 'abc123' }));
     assert.ok(!result.signals.includes('executedRoute'));
     assert.ok(result.signals.includes('wavemillMeta'));
+  });
+});
+
+const ROUTE_DECISION = JSON.stringify({
+  decision_id: 'trace-0123',
+  source: 'hokusai',
+  policy_version: 'model30-2026.09',
+  recommended: { planner: 'claude-opus-5', coder: 'claude-haiku-5', reviewer: 'gpt-5.5' },
+  decided_at: '2026-09-28T12:00:00.000Z',
+});
+
+describe('extractExecutedRoute - route_decision (HOK-3098)', () => {
+  it('v1 block: executed route extracted, decision null', () => {
+    const { route, decision, diagnostics } = extractExecutedRoute(
+      ['route_schema: 1', `executed_route: ${EXECUTED_ROUTE}`].join('\n'),
+    );
+    assert.equal(route?.roles.coder?.model, 'claude-fable-5');
+    assert.equal(decision, null);
+    assert.deepEqual(diagnostics, []);
+  });
+
+  it('v2 block: executed route and route_decision both extracted', () => {
+    const { route, decision, diagnostics } = extractExecutedRoute(
+      [
+        'schema-version: 1',
+        'route_schema: 2',
+        `executed_route: ${EXECUTED_ROUTE}`,
+        `route_decision: ${ROUTE_DECISION}`,
+        'some_future_field: ignored',
+      ].join('\n'),
+    );
+    assert.equal(route?.roles.coder?.model, 'claude-fable-5');
+    assert.deepEqual(decision, {
+      decisionId: 'trace-0123',
+      source: 'hokusai',
+      policyVersion: 'model30-2026.09',
+      recommended: { planner: 'claude-opus-5', coder: 'claude-haiku-5', reviewer: 'gpt-5.5' },
+      decidedAt: '2026-09-28T12:00:00.000Z',
+    });
+    assert.deepEqual(diagnostics, []);
+  });
+
+  it('v2 block with a fallback re-route decision keeps the optional fields', () => {
+    const payload = JSON.stringify({
+      decision_id: '5b0e7c1e-7c55-4a55-9d6c-0d7a3f4b2e11',
+      trace_id: 'trace-0123',
+      source: 'fallback',
+      fallback_reason: 'disabled_model',
+      policy_version: 'wavemill-router@1.0.0',
+      recommended: { planner: 'a', coder: 'b', reviewer: 'c' },
+      decided_at: '2026-09-28T12:00:00.000Z',
+      supersedes: 'trace-0123',
+    });
+    const { decision } = extractExecutedRoute(
+      ['route_schema: 2', `executed_route: ${EXECUTED_ROUTE}`, `route_decision: ${payload}`].join('\n'),
+    );
+    assert.equal(decision?.traceId, 'trace-0123');
+    assert.equal(decision?.fallbackReason, 'disabled_model');
+    assert.equal(decision?.supersedes, 'trace-0123');
+  });
+
+  it('v2 block without route_decision: decision null, no diagnostic', () => {
+    const { route, decision, diagnostics } = extractExecutedRoute(
+      ['route_schema: 2', `executed_route: ${EXECUTED_ROUTE}`].join('\n'),
+    );
+    assert.ok(route);
+    assert.equal(decision, null);
+    assert.deepEqual(diagnostics, []);
+  });
+
+  it('route_decision on a v1 block is ignored with a schema-mismatch diagnostic', () => {
+    const { route, decision, diagnostics } = extractExecutedRoute(
+      ['route_schema: 1', `executed_route: ${EXECUTED_ROUTE}`, `route_decision: ${ROUTE_DECISION}`].join('\n'),
+    );
+    assert.ok(route);
+    assert.equal(decision, null);
+    assert.ok(diagnostics.some((item) => item.startsWith('route-decision-schema-mismatch:')));
+  });
+
+  it('malformed route_decision never throws and never hides the executed route', () => {
+    for (const raw of ['{not json', '[1,2]', '{"source":"local"}']) {
+      const { route, decision, diagnostics } = extractExecutedRoute(
+        ['route_schema: 2', `executed_route: ${EXECUTED_ROUTE}`, `route_decision: ${raw}`].join('\n'),
+      );
+      assert.ok(route, raw);
+      assert.equal(decision, null, raw);
+      assert.ok(diagnostics.some((item) => item.startsWith('malformed-route-decision:')), raw);
+    }
+  });
+
+  it('route_decision survives a malformed executed_route', () => {
+    const { route, decision } = extractExecutedRoute(
+      ['route_schema: 2', 'executed_route: {not json', `route_decision: ${ROUTE_DECISION}`].join('\n'),
+    );
+    assert.equal(route, null);
+    assert.equal(decision?.decisionId, 'trace-0123');
+  });
+
+  it('attributePullRequest surfaces routeDecision without crediting recommended models', () => {
+    const result = attributePullRequest(
+      makePr({
+        body: metaBody(['route_schema: 2', `executed_route: ${EXECUTED_ROUTE}`, `route_decision: ${ROUTE_DECISION}`]),
+        headSha: 'abc123',
+      }),
+    );
+    assert.equal(result.routeDecision?.decisionId, 'trace-0123');
+    assert.equal(result.routeDecision?.recommended.coder, 'claude-haiku-5');
+    // Identity comes from what ran, never from the recommendation.
+    assert.equal(result.model.value, 'claude-fable-5');
+  });
+
+  it('attributePullRequest omits routeDecision for v1 PRs', () => {
+    const result = attributePullRequest(
+      makePr({ body: metaBody(['route_schema: 1', `executed_route: ${EXECUTED_ROUTE}`]), headSha: 'abc123' }),
+    );
+    assert.equal('routeDecision' in result, false);
+    assert.equal(result.model.value, 'claude-fable-5');
   });
 });
 

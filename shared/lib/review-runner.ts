@@ -36,6 +36,7 @@ import {
   buildExecutedIdentity,
   resolveReviewStageChallengePin,
 } from './challenge-execution-contract.ts';
+import { resolveOriginFirstRef } from './git-base-resolver.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Types
@@ -327,7 +328,8 @@ async function collectCrossPrRevertReviewFindings(input: {
     return [];
   }
 
-  const integrationBranch = getIntegrationConfig(input.repoDir).integrationBranch;
+  const configuredIntegrationBranch = getIntegrationConfig(input.repoDir).integrationBranch;
+  const integrationBranch = resolveOriginFirstRef(input.repoDir, configuredIntegrationBranch).ref;
   let baseRef: string;
   let findings: CrossPrRevertFinding[];
 
@@ -343,7 +345,7 @@ async function collectCrossPrRevertReviewFindings(input: {
       headRef: 'HEAD',
       integrationRef: integrationBranch,
       maxRecentMerges: reviewMergeConfig.crossPrRevertCheck.maxRecentMerges,
-    });
+    }).findings;
   } catch (error) {
     return [buildCrossPrEvidenceUnavailableFinding(error)];
   }
