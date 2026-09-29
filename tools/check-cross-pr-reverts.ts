@@ -13,6 +13,8 @@ import {
   detectCrossPrReverts,
   filterUnacknowledgedReverts,
   parseRevertAcknowledgements,
+  type BranchDiffEvidence,
+  type CrossPrRevertFinding,
 } from '../shared/lib/cross-pr-revert-detector.ts';
 import { escapeShellArg, execShellCommand } from '../shared/lib/shell-utils.ts';
 import { resolveDefaultBaseRef, resolveOriginFirstRef } from '../shared/lib/git-base-resolver.ts';
@@ -41,9 +43,16 @@ export interface ToolFailureDiagnostic {
 export interface CrossPrRevertCheckResult {
   blocked: boolean;
   disabled?: boolean;
-  reverts: ReturnType<typeof detectCrossPrReverts>;
-  acknowledged: ReturnType<typeof detectCrossPrReverts>;
-  unacknowledged: ReturnType<typeof detectCrossPrReverts>;
+  reverts: CrossPrRevertFinding[];
+  acknowledged: CrossPrRevertFinding[];
+  unacknowledged: CrossPrRevertFinding[];
+  /**
+   * Concrete SHAs the detector compared. Absent when the guard was disabled or
+   * exited early with a `toolError` (there is no diff to record). Consumers
+   * that key on `.reverts[]`/`.unacknowledged[]` (the monitor's `jq` paths)
+   * are unaffected — this is a purely additive field (HOK-3091).
+   */
+  evidence?: BranchDiffEvidence;
   toolError?: ToolFailureDiagnostic;
 }
 
@@ -87,7 +96,6 @@ export function runCrossPrRevertCheck(input: {
   integrationRef = crossPrRevertCheckDeps.resolveOriginFirstRef(input.repoDir, integrationRef).ref;
   const headRef = input.headRef || 'HEAD';
   let baseRef: string;
-  let reverts: ReturnType<typeof detectCrossPrReverts>;
 
   try {
     const providedBaseRef = input.baseRef
@@ -113,7 +121,7 @@ export function runCrossPrRevertCheck(input: {
     };
   }
 
-  reverts = crossPrRevertCheckDeps.detectCrossPrReverts({
+  const { findings: reverts, evidence } = crossPrRevertCheckDeps.detectCrossPrReverts({
     repoDir: input.repoDir,
     baseRef,
     headRef,
@@ -132,6 +140,7 @@ export function runCrossPrRevertCheck(input: {
     reverts,
     acknowledged,
     unacknowledged,
+    evidence,
   };
 }
 

@@ -136,7 +136,16 @@ describe('review-runner', () => {
         outOfScopePaths: [],
         findings: [],
       } satisfies ReviewScopeGuardResult));
-      mock.method(reviewRunnerDeps, 'detectCrossPrReverts', () => []);
+      mock.method(reviewRunnerDeps, 'detectCrossPrReverts', () => ({
+        findings: [],
+        evidence: {
+          baseRef: 'auto/integration',
+          headRef: 'HEAD',
+          baseSha: '0'.repeat(40),
+          headSha: '0'.repeat(40),
+          mergeBaseSha: '0'.repeat(40),
+        },
+      }));
       mock.method(reviewRunnerDeps, 'resolveReviewStageChallengePin', () => ({
         pairId: 'HOK-2958',
         unresolvable: true,
@@ -184,13 +193,22 @@ describe('review-runner', () => {
         }
         throw new Error(`unexpected command: ${command}`);
       });
-      mock.method(reviewRunnerDeps, 'detectCrossPrReverts', () => [
-        {
-          prNumber: 437,
-          title: 'Restore strategy explorer (#437)',
-          files: [{ path: 'strategy.txt', status: 'deleted', confidence: 'deleted' }],
+      mock.method(reviewRunnerDeps, 'detectCrossPrReverts', () => ({
+        findings: [
+          {
+            prNumber: 437,
+            title: 'Restore strategy explorer (#437)',
+            files: [{ path: 'strategy.txt', status: 'deleted', confidence: 'deleted' }],
+          },
+        ],
+        evidence: {
+          baseRef: 'auto/integration',
+          headRef: 'HEAD',
+          baseSha: 'b'.repeat(40),
+          headSha: 'h'.repeat(40),
+          mergeBaseSha: 'm'.repeat(40),
         },
-      ]);
+      }));
       mock.method(reviewRunnerDeps, 'runReview', async (context) => {
         assert.match(context.diff, /Cross-PR revert detector findings/);
         return {
@@ -322,7 +340,16 @@ describe('review-runner', () => {
         }
         throw new Error(`unexpected command: ${command}`);
       });
-      mock.method(reviewRunnerDeps, 'detectCrossPrReverts', () => []);
+      mock.method(reviewRunnerDeps, 'detectCrossPrReverts', () => ({
+        findings: [],
+        evidence: {
+          baseRef: 'auto/integration',
+          headRef: 'HEAD',
+          baseSha: '0'.repeat(40),
+          headSha: '0'.repeat(40),
+          mergeBaseSha: '0'.repeat(40),
+        },
+      }));
       mock.method(reviewRunnerDeps, 'runReview', async () => ({
         verdict: 'ready',
         codeReviewFindings: [],

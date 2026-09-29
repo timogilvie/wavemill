@@ -708,6 +708,52 @@ test('write-review-scope-baseline CLI materializes the artifact for the mill han
 });
 
 // ────────────────────────────────────────────────────────────────
+// HOK-3091 — base-tip normalization: a branch behind base must not fail
+// scope, deletion-budget, or committed-entry checks just because the caller
+// passed the base *tip* as baseRef.
+// ────────────────────────────────────────────────────────────────
+
+test('validateReviewScope does not flag base-added files when the branch is behind base and baseRef is the base tip', () => {
+  const { repoDir, cleanup } = makeGitOnlyRepo();
+  try {
+    // Task branch cut BEFORE the base advances.
+    git(repoDir, 'checkout -b task/behind-base auto/integration');
+    const branchPoint = git(repoDir, 'rev-parse HEAD');
+    // Base advances with a bunch of files that the branch will never touch.
+    git(repoDir, 'checkout auto/integration');
+    for (const name of ['a', 'b', 'c', 'd']) {
+      commitFile(repoDir, `docs/${name}.md`, `${name}\n`, `add doc ${name}`);
+    }
+    const baseTip = git(repoDir, 'rev-parse auto/integration');
+
+    // Branch adds a single in-scope file.
+    git(repoDir, `checkout task/behind-base`);
+    commitFile(repoDir, 'tools/one.ts', 'export const x = 1;\n', 'branch work');
+
+    const result = validateReviewScope({
+      repoDir,
+      baseRef: baseTip,
+      writeBaseline: false,
+    });
+
+    // Base-added docs/*.md must not appear in outOfScopePaths, deletion-budget
+    // findings, or committed-entry violations.
+    assert.equal(result.status, 'pass', JSON.stringify(result.findings));
+    assert.deepEqual(result.outOfScopePaths, []);
+    assert.equal(
+      result.findings.filter((f) => f.category === 'deletion-budget').length,
+      0,
+    );
+    assert.deepEqual(result.taskPaths, ['tools/one.ts']);
+    // Guard silences the raw baseRef through merge-base normalization, so the
+    // computed base is the branch point (baseSha at merge-base(baseTip, HEAD)).
+    assert.notEqual(baseTip, branchPoint);
+  } finally {
+    cleanup();
+  }
+});
+
+// ────────────────────────────────────────────────────────────────
 // CLI exit contract: 0 pass / 1 policy violation / 2 tool failure
 // ────────────────────────────────────────────────────────────────
 

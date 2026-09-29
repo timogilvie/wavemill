@@ -345,7 +345,7 @@ async function collectCrossPrRevertReviewFindings(input: {
       headRef: 'HEAD',
       integrationRef: integrationBranch,
       maxRecentMerges: reviewMergeConfig.crossPrRevertCheck.maxRecentMerges,
-    });
+    }).findings;
   } catch (error) {
     return [buildCrossPrEvidenceUnavailableFinding(error)];
   }
