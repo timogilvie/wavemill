@@ -1542,7 +1542,10 @@ field() { printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -n 1; }
 # task worktree still sits at the pre-rebase commit, and Ready's output has no
 # headSha. The handoff must be published at the live PR head, never the
 # checkout HEAD, and Ready must have checked that same head.
-output="$(run_launch_case head_sync_stale_worktree)"
+if ! output="$(run_launch_case head_sync_stale_worktree)"; then
+  printf 'head_sync_stale_worktree fixture failed:\n%s\n' "$output" >&2
+  exit 1
+fi
 sha_old="$(field "$output" sha_old)"
 sha_new="$(field "$output" sha_new)"
 check_contains "stale worktree: Ready passes" "$output" "rc=0"
