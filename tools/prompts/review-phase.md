@@ -82,7 +82,7 @@ The implementation is complete. Your job is to review and create a PR.
      -->
    Do NOT use --fill. Write the PR body as a HEREDOC if needed for formatting.
    After creating the PR, do NOT run `gh pr edit ... --add-label wm:*` at any point. The mill applies `wm:ready` — and every other `wm:*` label — once its Ready gate has published a Ready → Tend handoff for the current PR head. The mill consumes your review artifacts (step 4) to make that decision.
-   Do NOT apply any `wm:*` label yourself, regardless of review outcome. When circumstances prevent the mill from publishing a handoff (e.g., the final self-review run errored [exit code 2] without readiness certification), the mill will handle label management; agent-applied labels are treated as untrusted and stripped.
+   Do NOT apply any `wm:*` label yourself, regardless of review outcome. When circumstances prevent the mill from publishing a handoff (e.g., when the final self-review run errored (exit code 2) without readiness certification), the mill will handle label management; agent-applied labels are treated as untrusted and stripped.
    When your self-review dismissed one or more blockers on the strength of justifications, list each dismissed blocker with its justification and evidence in the PR body's "## Self-review" section so an operator can audit the decision. Record the dismissals themselves in the review artifact (step 4); the mill's Ready gate reads that artifact and either publishes the handoff (which triggers `wm:ready` application) or withholds it.
 
 4. **Record final review evidence** in `{{FEATURE_DIR}}/.review-result.json` after PR creation.
