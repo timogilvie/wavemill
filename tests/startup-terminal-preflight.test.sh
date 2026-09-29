@@ -129,7 +129,6 @@ write_stage_result() {
   printf '%s|%s|%s|%s|%s|%s\n' "$stage" "$status" "$agent" "$model" "$notes" "$artifacts" >> "$STAGE_CALLS"
 }
 linear_set_state() { printf '%s|%s\n' "$1" "$2" >> "$LINEAR_CALLS"; }
-should_update_linear_state() { return 0; }
 cleanup_completed_task() { printf '%s|%s|%s\n' "$1" "$2" "${3:-}" >> "$CLEANUP_CALLS"; }
 read_state_value() {
   local default="$1"
@@ -297,6 +296,36 @@ launch_coding_phase() { fail "monitor restore unexpectedly launched coding"; ret
 launch_review_phase() { fail "monitor restore unexpectedly launched review"; return 1; }
 _restore_inflight_task_window_if_missing "HOK-3011" "monitor-closed" "task/monitor-closed" "coding"
 check_eq "monitor restore skips terminal task" "none" "$_RESTORE_STATE"
+
+# HOK-3115 regression (2026-09-29): the startup runner has no log_warn and no
+# monitor identity helpers, and used to carry its own silent linear_set_state.
+# An aborted HOK-N_c task (linearIssueId=HOK-N, no challengeRole) reconciled
+# by the startup terminal preflight must make no Linear call and emit no
+# warning; the aborted primary still writes through the canonical helper.
+reset_case
+add_task "HOK-3012_c" "aborted-challenger" "aborted" "aborted" "" "true" "HOK-3012" ""
+state_mutate "$STATE_FILE" '.tasks["HOK-3012_c"] |= (del(.challengeRole) | .linearIssueId = "HOK-3012")' >/dev/null
+add_task "HOK-3013" "aborted-primary" "aborted" "aborted" ""
+NPX_CALLS="$TMP_DIR/npx.log"
+STARTUP_LOG_FILE="$TMP_DIR/startup.log"
+rm -f "$NPX_CALLS" "$STARTUP_LOG_FILE"
+check_eq "aborted challenger classifies terminal" "terminal:operator_abort" "$(startup_task_eligibility HOK-3012_c)"
+(
+  # Recreate the startup-runner scope: canonical common helpers only.
+  unset -f log_warn get_linear_issue_id should_update_linear_state linear_set_state
+  eval "$(extract_function "$REPO_DIR/shared/lib/wavemill-common.sh" linear_set_state)"
+  startup_log() { printf '%s\n' "$*" >> "$STARTUP_LOG_FILE"; }
+  npx() { printf '%s\n' "$*" >> "$NPX_CALLS"; }
+  TOOLS_DIR="$REPO_DIR/tools"
+  DRY_RUN="false"
+  startup_terminal_preflight "$SESSION"
+)
+npx_calls="$(cat "$NPX_CALLS" 2>/dev/null || true)"
+check_eq "aborted challenger reconciled terminal" "terminal" "$(jq -r '.tasks["HOK-3012_c"].rehydration.eligibility' "$STATE_FILE")"
+check_eq "aborted challenger makes no Linear call" "0" "$(grep -c 'HOK-3012' <<<"$npx_calls" || true)"
+check_contains "aborted primary still writes Linear" "$npx_calls" "set-issue-state.ts HOK-3013 Backlog"
+check_eq "aborted challenger emits no warning" "0" "$(cat "$STARTUP_LOG_FILE" 2>/dev/null | grep -ci 'warn' || true)"
+check_eq "startup runner defines no linear_set_state" "0" "$(grep -c '^linear_set_state()' "$REPO_DIR/shared/lib/wavemill-startup-runner.sh" || true)"
 
 if (( FAIL > 0 )); then
   echo "--- Results: $PASS passed, $FAIL failed ---"

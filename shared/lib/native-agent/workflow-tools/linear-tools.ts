@@ -26,6 +26,8 @@ import {
 import { getRedactionConfig } from '../../config.ts';
 import { buildProfileFromConfig, redact } from '../../redaction-profiles.ts';
 import { isMutationAllowed } from './mutation-policy.ts';
+import { resolveLinearWriteTarget } from '../../linear-write-gate.ts';
+import type { TaskIdentityMeta } from '../../task-identity.ts';
 import {
   linearCommentKey,
   expandIssueKey,
@@ -116,6 +118,11 @@ export interface LinearToolsDeps {
   clock?: () => number;
   networkPolicy?: NetworkPolicy;
   getSecretEnvNames?: () => string[];
+  /**
+   * Task metadata for the linear_comment identity gate. Omitted: read from
+   * the workflow-state file (see linear-write-gate.ts).
+   */
+  taskMeta?: TaskIdentityMeta | null;
 }
 
 export interface ExpandIssueDeps {
@@ -367,6 +374,39 @@ export async function executeLinearComment(
     return result;
   }
 
+  // Task identity gate (HOK-3115): challengers never write Linear, and an
+  // invalid or conflicting task ID fails closed before any network call.
+  const target = resolveLinearWriteTarget(params.issue, deps.taskMeta !== undefined ? { meta: deps.taskMeta } : {});
+  if (target.action !== 'write') {
+    const skipped = target.action === 'skip';
+    const idempotency = { key: '', outcome: 'skipped' as const, ref: null, reason: target.message };
+    deps.transcript.append({
+      type: 'workflow_tool_call',
+      tool: 'linear_comment',
+      phase,
+      action: 'comment',
+      details: { outcome: skipped ? 'skipped' : 'rejected', reason: target.message },
+      idempotency,
+      at: ts,
+    });
+    deps.stageArtifact.append({ tool: 'linear_comment', phase, idempotency, at: ts });
+    if (skipped) {
+      return {
+        ok: true,
+        tool: 'linear_comment',
+        idempotency,
+        metadata: { trust: buildTrustMetadata({ sourceKind: 'wavemill_artifact', details: target.message }) },
+      };
+    }
+    return {
+      ok: false,
+      tool: 'linear_comment',
+      error: 'invalid_input',
+      message: target.message,
+      metadata: { trust: buildTrustMetadata({ sourceKind: 'wavemill_artifact', details: target.message }) },
+    };
+  }
+
   // Redact secrets before the body is hashed for idempotency and posted externally.
   const profile = buildProfileFromConfig(deps.getSecretEnvNames ?? (() => getRedactionConfig().secretEnvNames));
   const safeBody = redact(params.body, profile);
@@ -418,7 +458,7 @@ export async function executeLinearComment(
   }
 
   try {
-    const issue = await deps.client.getIssue(params.issue);
+    const issue = await deps.client.getIssue(target.linearId);
     const comment = await deps.client.createComment(issue.id, safeBody);
     const ref: LinearCommentRef = { system: 'linear', kind: 'comment', id: comment.id, url: comment.url };
     const rec: DedupeRecord<LinearCommentRef> = { key, outcome: 'created', ref };

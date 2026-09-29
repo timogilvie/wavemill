@@ -26,6 +26,7 @@ import {
   type ReadyNativeProviderEntry,
 } from './providers.ts';
 import { TranscriptWriter } from './transcript.ts';
+import { isLinearWriter } from '../task-identity.ts';
 import { SessionStreamWriter, resolveSessionEventStreamPath } from './session-stream.ts';
 import { captureToolDecisionsFromStream } from './tool-decision-capture.ts';
 import type { SessionStreamConfig } from './loop.ts';
@@ -241,6 +242,9 @@ function ensureTaskPacket(
     taskPacketPath,
     '--repo-path',
     repoDir,
+    // expand-issue.ts updates the Linear description by default; challengers
+    // never write Linear (HOK-3115).
+    ...(isLinearWriter(issue) ? [] : ['--no-update']),
   ]);
 }
 

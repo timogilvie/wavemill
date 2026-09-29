@@ -7,6 +7,8 @@
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "$script_dir/routing-emitter.sh"
+# shellcheck source=task-identity.sh
+source "$script_dir/task-identity.sh"
 
 agent_tmux_target() {
   local session="$1" window="$2"
@@ -70,31 +72,6 @@ agent_send_tmux_guarded_command() {
   local target="$1" command_text="$2" guard_exports="$3"
   tmux send-keys -t "$target" -l -- "$guard_exports $command_text"
   tmux send-keys -t "$target" C-m
-}
-
-agent_normalize_linear_issue_id() {
-  local issue="${1:-}" candidate="${2:-}"
-  candidate="${candidate#"${candidate%%[![:space:]]*}"}"
-  candidate="${candidate%"${candidate##*[![:space:]]}"}"
-
-  if [[ "$issue" =~ ^([A-Z][A-Z0-9]*-[0-9]+)_c$ ]]; then
-    local base_issue="${BASH_REMATCH[1]}"
-    if [[ "$candidate" != "$base_issue" ]]; then
-      printf '%s\n' "$base_issue"
-      return 0
-    fi
-  fi
-  if [[ "$candidate" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
-    printf '%s\n' "$candidate"
-    return 0
-  fi
-  if [[ "$candidate" =~ ^https?://linear\.app/[^/]+/issue/[A-Z][A-Z0-9]*-[0-9]+([/?#].*)?$ ]]; then
-    local linear_url_path="${candidate#*://linear.app/}"
-    linear_url_path="${linear_url_path#*/issue/}"
-    printf '%s\n' "${linear_url_path%%[/?#]*}"
-    return 0
-  fi
-  printf '%s\n' "$issue"
 }
 
 # ============================================================================
@@ -2002,7 +1979,7 @@ agent_launch_autonomous() {
   local native_phase="$launch_phase"
   local native_model=""
   local linear_issue
-  linear_issue="$(agent_normalize_linear_issue_id "$issue" "${WAVEMILL_LINEAR_ISSUE:-}")"
+  linear_issue="$(task_identity_linear_id "$issue" 2>/dev/null || printf '%s\n' "$issue")"
   local worktree_dir="${feature_dir%/features/*}"
   local feature_slug="${WAVEMILL_FEATURE_SLUG:-${WAVEMILL_SLUG:-}}"
   if agent_is_native_cmd "$agent_cmd"; then
@@ -2552,7 +2529,7 @@ agent_launch_interactive() {
   local native_phase="$launch_phase"
   local native_model=""
   local linear_issue
-  linear_issue="$(agent_normalize_linear_issue_id "$issue" "${WAVEMILL_LINEAR_ISSUE:-}")"
+  linear_issue="$(task_identity_linear_id "$issue" 2>/dev/null || printf '%s\n' "$issue")"
   local worktree_dir="${feature_dir%/features/*}"
   local feature_slug="${WAVEMILL_FEATURE_SLUG:-${WAVEMILL_SLUG:-}}"
 

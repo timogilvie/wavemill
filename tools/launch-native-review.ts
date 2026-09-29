@@ -15,6 +15,8 @@ import { resolveOwnerRepo } from '../shared/lib/github.ts';
 import { getMillConfig } from '../shared/lib/config.ts';
 import { createComment, getIssue, updateComment } from '../shared/lib/linear.ts';
 import { renderPrMetadata } from '../shared/lib/pr-metadata.ts';
+import { resolveLinearIssueId } from '../shared/lib/task-identity.ts';
+import { readTaskIdentityMeta } from '../shared/lib/linear-write-gate.ts';
 
 function readOption(name: string): string | undefined {
   const index = process.argv.indexOf(`--${name}`);
@@ -45,18 +47,20 @@ function appendJsonLine(path: string, payload: Record<string, unknown>): void {
   appendFileSync(path, `${JSON.stringify(payload)}\n`, 'utf-8');
 }
 
-function readLinearIdentifier(session: string, issue: string): string {
-  const issuePath = `/tmp/${session}-${issue}-issue.json`;
-  if (!existsSync(issuePath)) {
-    return issue.replace(/_c$/, '');
+/**
+ * Resolve the Linear issue a review task reads from, through the task
+ * identity contract (HOK-3115). Replaces the old `_c` suffix stripping and
+ * issue-JSON fallback so a challenger cannot alias its primary for mutation:
+ * writes are gated separately by linear_comment's identity check.
+ *
+ * @throws Error for an invalid task ID or a conflicting recorded linearIssueId.
+ */
+function readLinearIdentifier(issue: string): string {
+  const resolved = resolveLinearIssueId(issue, readTaskIdentityMeta(issue));
+  if (!resolved.ok) {
+    throw new Error(`Cannot resolve Linear issue for ${issue}: ${resolved.message}`);
   }
-
-  try {
-    const parsed = JSON.parse(readFileSync(issuePath, 'utf-8')) as { identifier?: string };
-    return parsed.identifier?.trim() || issue.replace(/_c$/, '');
-  } catch {
-    return issue.replace(/_c$/, '');
-  }
+  return resolved.linearId;
 }
 
 function readOptional(path: string): string | null {
@@ -204,7 +208,7 @@ async function main(): Promise<void> {
   const headBranch = firstNonEmpty(readOption('branch'), process.env.WAVEMILL_BRANCH) ?? git(['rev-parse', '--abbrev-ref', 'HEAD'], wtDir);
   const headSha = git(['rev-parse', 'HEAD'], wtDir);
   const prTitle = title.includes(issue) ? title : `${issue}: ${title}`;
-  const linearIssue = readLinearIdentifier(session, issue);
+  const linearIssue = readLinearIdentifier(issue);
   const workflowLogPath = join(featureDir, '.native-review-workflow.jsonl');
   const codingHandoff = buildNativeCodingHandoff(featureDir);
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env -S npx tsx
 import { runTool } from '../shared/lib/tool-runner.ts';
 import { getIssueForLabeling, getOrCreateLabel, addLabelsToIssue } from '../shared/lib/linear.ts';
+import { linearWriteTargetOrSkip } from '../shared/lib/linear-write-gate.ts';
 
 runTool({
   name: 'add-issue-label',
@@ -17,11 +18,15 @@ runTool({
     'npx tsx tools/add-issue-label.ts HOK-123 "Feature"',
   ],
   async run({ positional }) {
-    const [identifier, labelName] = positional;
+    const [taskId, labelName] = positional;
 
-    if (!identifier || !labelName) {
+    if (!taskId || !labelName) {
       throw new Error('Both issue identifier and label name are required');
     }
+
+    // Challengers are a logged no-op; invalid/conflicting IDs throw (HOK-3115).
+    const identifier = linearWriteTargetOrSkip(taskId);
+    if (!identifier) return;
 
     // Get the issue to find its team ID
     const issue = await getIssueForLabeling(identifier);
