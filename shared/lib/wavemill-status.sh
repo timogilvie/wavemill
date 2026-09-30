@@ -1545,6 +1545,7 @@ render_task_row() {
             case "$ready_queue_state" in
               ready-stale) phase_str="${Y}ready-stale${N}" ;;
               merge-candidate) phase_str="${G}merge-candidate${N}" ;;
+              merge-needed) phase_str="${Y}⏳ merge needed${N}" ;;
               *)
                 case "$ready_status" in
                   failed|aborted) phase_str="${R}🚦 ready${N}" ;;

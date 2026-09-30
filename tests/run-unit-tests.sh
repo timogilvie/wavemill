@@ -461,6 +461,8 @@ TESTS=(
   shared/lib/challenge-replay-capture.test.ts
   spike/pi-native-agent/mcp-proxy-spike.test.ts
   shared/lib/cost-parity.test.ts
+  shared/lib/observer-findings.test.ts
+  shared/lib/pr-comparison-actions.test.ts
 )
 
 SHARD_INDEX=1

@@ -611,6 +611,12 @@ JSON
     }
     get_main_head_sha() { printf "%s\n" "$MAIN_SHA_RETURN"; }
     merge_queue_enabled() { [[ "$MERGE_QUEUE_ON" == "true" ]]; }
+    # HOK-3102: default the session-capability resolvers to tend for the pre-3102
+    # semantics the existing scenarios rely on.
+    wavemill_session_merge_executor() { printf "tend\n"; }
+    wavemill_session_has() { case "${1:-}" in tend|observer|mergeQueue) return 0 ;; *) return 1 ;; esac; }
+    wavemill_session_capabilities_json() { printf '{"tend":true,"observer":false,"mergeExecutor":"tend","mergeQueue":true}'; }
+    surface_merge_needed() { :; }
     ready_queue_state() { printf "%s\n" "$QUEUE_STATE"; }
     mark_ready_stale() { :; }
     ready_candidate_selected() { return 1; }

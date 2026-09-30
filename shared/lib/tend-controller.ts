@@ -25,7 +25,8 @@ import {
   type ClaimHandoffOutcome,
 } from './ready-tend-handoff.ts';
 import { buildStaleMarkerFinding, type MarkerPayload, type MarkerValidation } from './transient-marker.ts';
-import { getIntegrationConfig, getIntegrationReadyPolicy } from './config.ts';
+import { getIntegrationConfig, getIntegrationReadyPolicy, resolveSessionCapabilities } from './config.ts';
+import { appendObserverFinding as sharedAppendObserverFinding } from './observer-findings.ts';
 import { readChallengeComparisons } from './challenge-comparison.ts';
 import { getPullRequest, removeLabelFromPullRequest } from './github.ts';
 import { getIssueCompletionState } from './linear.ts';
@@ -3951,14 +3952,11 @@ function emitPrStateMarkerFinding(
   appendObserverFinding(repoDir, finding);
 }
 
+// HOK-3102: keep the local name `appendObserverFinding` to avoid churning the
+// two other call sites here, but route through the shared helper so writes
+// are gated on `resolveSessionCapabilities(repoDir).observer`.
 function appendObserverFinding(repoDir: string, finding: object): void {
-  try {
-    const findingsPath = join(repoDir, '.wavemill', 'observer-findings.jsonl');
-    mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
-    appendFileSync(findingsPath, `${JSON.stringify(finding)}\n`, 'utf-8');
-  } catch {
-    // Observer telemetry is best-effort and must not change the merge decision.
-  }
+  sharedAppendObserverFinding(repoDir, finding);
 }
 
 async function defaultBlockedPrLiveStateProber(prNumber: number, repoDir: string): Promise<BlockedPrLiveState> {
@@ -4287,6 +4285,17 @@ function emitMillTendDisagreementFinding(
   metadata: PrMetadata | null,
   blockedCandidate: BlockedCandidate,
 ): void {
+  // HOK-3102: when the mill-side merge-candidate lifecycle is off (no tend
+  // to drain the queue), a stale merge-candidate artifact is not evidence of
+  // disagreement — it is just leftover state. Skip the finding entirely.
+  try {
+    const caps = resolveSessionCapabilities(repoDir, { readHealth: false });
+    if (!caps.mergeQueue) {
+      return;
+    }
+  } catch {
+    // Fail closed if the resolver fails; preserve pre-3102 behavior.
+  }
   let snapshot: ReadyResultSnapshot | null;
   try {
     snapshot = readReadyResultSnapshot(repoDir, pr, metadata);

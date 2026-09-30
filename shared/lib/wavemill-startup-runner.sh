@@ -682,22 +682,34 @@ setup_control_dashboard() {
 
 spawn_integration_window() {
   [[ "${DRY_RUN:-false}" == "true" ]] && return 0
-  local merged enabled use_mill_session observer_enabled observer_interval observer_max_log_lines
+  local merged observer_enabled observer_interval observer_max_log_lines
   local integration_cmd observer_cmd status_script jobs_cmd queue_cmd tend_pane right_top_pane right_bottom_pane observer_pane backstage_health_file
   local backstage_exists=false tend_result jobs_result queue_result observer_result tend_action jobs_action queue_action observer_action
   local tend_killed=0 jobs_killed=0 queue_killed=0 observer_killed=0 created_layout=false observer_instance_count=0
 
   merged="$(wavemill_load_config "$REPO_DIR")"
-  enabled="$(printf '%s' "$merged" | jq -r '.integration.enabled // false' 2>/dev/null || echo false)"
-  use_mill_session="$(printf '%s' "$merged" | jq -r '.integration.useMillSession // true' 2>/dev/null || echo true)"
 
-  if [[ "$enabled" != "true" || "$use_mill_session" != "true" ]]; then
+  # HOK-3102: gate through the single session-capability resolver so we
+  # never publish tend/observer panes when the resolver says no consumer.
+  if ! wavemill_session_has tend "$REPO_DIR"; then
+    _cleanup_stale_observer_findings "$REPO_DIR"
     return 0
   fi
 
   observer_enabled=false
-  if wavemill_observer_config_enabled "$merged"; then
+  if wavemill_session_has observer "$REPO_DIR"; then
     observer_enabled=true
+  else
+    _cleanup_stale_observer_findings "$REPO_DIR"
+  fi
+
+  # Log the resolved capabilities once at startup so the record explains the
+  # gate outcome.
+  local caps_json
+  if caps_json="$(wavemill_session_capabilities_json "$REPO_DIR")" && [[ -n "$caps_json" ]]; then
+    local caps_summary
+    caps_summary="$(printf '%s' "$caps_json" | jq -r '"tend=\(.tend) observer=\(.observer) mergeExecutor=\(.mergeExecutor) mergeQueue=\(.mergeQueue)"' 2>/dev/null || echo "")"
+    [[ -n "$caps_summary" ]] && startup_log "Session capabilities: $caps_summary"
   fi
 
   startup_log "Starting backstage window (tend loop + background status)..."

@@ -138,6 +138,7 @@ TESTS=(
   challenge-fork-non-forked-regression.test.sh
   challenge-fork-review-launch-refusal.test.sh
   base-ref-stale-local.test.sh
+  session-capabilities.test.sh
 )
 
 SHARD_INDEX=1

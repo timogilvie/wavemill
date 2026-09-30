@@ -11,7 +11,7 @@
  */
 
 import { readFileSync, existsSync, statSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { resolve, join as joinPath } from 'node:path';
 import { createRequire } from 'node:module';
 import { errorMessage } from './error-utils.ts';
 import { parseModelSelector } from './model-registry.ts';
@@ -2046,6 +2046,196 @@ export function getMergeQueueConfig(repoDir?: string): Required<MergeQueueConfig
     stuckTimeoutSeconds: config.stuckTimeoutSeconds ?? 900,
     conflictGroupingEnabled: config.conflictGroupingEnabled ?? true,
     skipCooldownSeconds: config.skipCooldownSeconds ?? 60,
+  };
+}
+
+// ── Session capabilities (HOK-3102) ──────────────────────────────────────────
+//
+// A single source of truth for "which consumers are active in this session?"
+// Every producer of consumer-bound work (tend handoffs, wm:ready labels, pane
+// releases to the merge queue, merge-candidate lifecycle, observer findings,
+// merge-lane BEHIND updates) must ask this resolver before producing work,
+// instead of re-deriving the answer from `integration.enabled`,
+// `useMillSession`, `MERGE_QUEUE_ENABLED`, or `observer.enabled` at each site.
+//
+// See features/…/plan.md (HOK-3102) for the full design decisions (D1-D10).
+
+/**
+ * Who will merge a green PR in this session:
+ * - `tend`     — the mill's tend loop is running and will merge (auto).
+ * - `operator` — a human will merge (integration off; the HOK-3093 default).
+ * - `none`     — integration is on but this session runs no tend; nothing
+ *                automatic will merge, but the PR still targets integration.
+ */
+export type MergeExecutor = 'tend' | 'operator' | 'none';
+
+/**
+ * Advisory backstage service health snapshot. Reads
+ * `.wavemill/backstage-health.json` `services.{tend,observer}.status`.
+ * A null value means the file was missing/unreadable/malformed, or the
+ * service entry is missing. Health does NOT flip `tend` / `mergeExecutor`
+ * (see D2 in plan): it is exposed so status/dashboard can annotate
+ * "tend configured but degraded" without stranding PRs during backoff.
+ */
+export interface SessionCapabilitiesHealth {
+  tend: string | null;
+  observer: string | null;
+}
+
+export interface SessionCapabilitiesReasons {
+  tend: string;
+  observer: string;
+  mergeExecutor: string;
+  mergeQueue: string;
+}
+
+export interface SessionCapabilities {
+  /** This mill session runs the tend loop (backstage window). */
+  tend: boolean;
+  /** This mill session runs the observer loop. */
+  observer: boolean;
+  /** Who merges green PRs (see MergeExecutor). */
+  mergeExecutor: MergeExecutor;
+  /** Mill-side merge-candidate lifecycle is live (requires tend + config on). */
+  mergeQueue: boolean;
+  /** Human-readable reasons for each field, for logs and dashboard. */
+  reasons: SessionCapabilitiesReasons;
+  /** Advisory backstage service health, never gating. */
+  health: SessionCapabilitiesHealth;
+}
+
+export interface ResolveSessionCapabilitiesOptions {
+  /**
+   * Environment map to read (defaults to `process.env`). Testing hook so tests
+   * can pin `MERGE_QUEUE_ENABLED` without process-wide mutation.
+   */
+  env?: NodeJS.ProcessEnv;
+  /**
+   * When false, skip the health file read (returns `null` in `health.*`).
+   * Producers that must not touch disk beyond config use `readHealth: false`.
+   */
+  readHealth?: boolean;
+}
+
+function readBackstageHealthStatus(repoDir: string): SessionCapabilitiesHealth {
+  const fallback: SessionCapabilitiesHealth = { tend: null, observer: null };
+  try {
+    const p = joinPath(repoDir, '.wavemill', 'backstage-health.json');
+    if (!existsSync(p)) return fallback;
+    const raw = readFileSync(p, 'utf-8');
+    if (!raw.trim()) return fallback;
+    const parsed = JSON.parse(raw) as {
+      services?: Record<string, { status?: unknown } | undefined>;
+    };
+    const services = parsed?.services ?? {};
+    const readStatus = (name: string): string | null => {
+      const entry = services[name];
+      if (!entry || typeof entry !== 'object') return null;
+      const status = (entry as { status?: unknown }).status;
+      return typeof status === 'string' ? status : null;
+    };
+    return {
+      tend: readStatus('tend'),
+      observer: readStatus('observer'),
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function envMergeQueueOverride(env: NodeJS.ProcessEnv): boolean | undefined {
+  const raw = env.MERGE_QUEUE_ENABLED;
+  if (raw === undefined) return undefined;
+  const v = String(raw).trim().toLowerCase();
+  if (v === '' ) return undefined;
+  if (v === '0' || v === 'false' || v === 'no') return false;
+  if (v === '1' || v === 'true' || v === 'yes') return true;
+  return undefined;
+}
+
+/**
+ * Resolve the session's active-consumer capability set.
+ *
+ * Rules (see plan D1):
+ *   - `backstage`   = integration.enabled === true && useMillSession !== false
+ *   - `tend`        = backstage
+ *   - `observer`    = backstage && observer.enabled === true
+ *   - `mergeExecutor`:
+ *       tend      → 'tend'
+ *       backstage off but integration.enabled === true → 'none'
+ *       integration off → 'operator' (HOK-3093 default)
+ *   - `mergeQueue`  = mergeQueue.enabled AND mergeExecutor === 'tend'
+ *                    (MERGE_QUEUE_ENABLED env override honoured)
+ *
+ * This function is pure apart from reading config and (optionally) the
+ * backstage health file. It has no side effects.
+ */
+export function resolveSessionCapabilities(
+  repoDir?: string,
+  opts: ResolveSessionCapabilitiesOptions = {},
+): SessionCapabilities {
+  const env = opts.env ?? process.env;
+  const readHealth = opts.readHealth !== false;
+  const dir = repoDir ?? process.cwd();
+
+  const integration = getIntegrationConfig(dir);
+  const observer = getObserverConfig(dir);
+  const mergeQueue = getMergeQueueConfig(dir);
+
+  const backstage = integration.enabled === true && integration.useMillSession !== false;
+
+  const tend = backstage;
+  const observerOn = backstage && observer.enabled === true;
+
+  let mergeExecutor: MergeExecutor;
+  let mergeExecutorReason: string;
+  if (tend) {
+    mergeExecutor = 'tend';
+    mergeExecutorReason = 'integration on + useMillSession on → tend merges';
+  } else if (integration.enabled === true) {
+    mergeExecutor = 'none';
+    mergeExecutorReason = "integration on but useMillSession off; run `wavemill tend --loop` or merge manually";
+  } else {
+    mergeExecutor = 'operator';
+    mergeExecutorReason = 'integration off → operator merges (HOK-3093 default)';
+  }
+
+  const envOverride = envMergeQueueOverride(env);
+  const mergeQueueConfigOn = envOverride === undefined ? mergeQueue.enabled : envOverride;
+  const mergeQueueOn = mergeQueueConfigOn && mergeExecutor === 'tend';
+
+  const health: SessionCapabilitiesHealth = readHealth
+    ? readBackstageHealthStatus(dir)
+    : { tend: null, observer: null };
+
+  const reasons: SessionCapabilitiesReasons = {
+    tend: tend
+      ? 'integration.enabled && useMillSession'
+      : (integration.enabled === true
+          ? 'integration.enabled but useMillSession=false'
+          : 'integration.enabled=false'),
+    observer: observerOn
+      ? 'backstage on + observer.enabled=true'
+      : (!backstage
+          ? 'backstage off'
+          : 'observer.enabled=false'),
+    mergeExecutor: mergeExecutorReason,
+    mergeQueue: mergeQueueOn
+      ? 'mergeQueue.enabled && mergeExecutor=tend'
+      : (mergeExecutor !== 'tend'
+          ? 'no tend to drain the queue'
+          : (envOverride === false
+              ? 'MERGE_QUEUE_ENABLED=false override'
+              : 'mergeQueue.enabled=false')),
+  };
+
+  return {
+    tend,
+    observer: observerOn,
+    mergeExecutor,
+    mergeQueue: mergeQueueOn,
+    reasons,
+    health,
   };
 }
 

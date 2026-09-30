@@ -73,6 +73,7 @@ import {
   OBSERVER_LINEAR_ROLLOUT_DEFAULTS,
   getChallengeEvalHardFailureRetryMaxAttempts,
   getNativeReviewTimeoutConfig,
+  resolveSessionCapabilities,
 } from './config.ts';
 
 // ────────────────────────────────────────────────────────────────
@@ -4532,6 +4533,284 @@ test('observer linear config exposes conservative rollout defaults', () => {
     assert.equal(config.rollout.shadowTrialCompleted, false);
     assert.equal(config.rollout.rollbackRehearsed, false);
     assert.equal(config.rollout.maxProposedPerPass, 5);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+// ────────────────────────────────────────────────────────────────
+// resolveSessionCapabilities (HOK-3102)
+// ────────────────────────────────────────────────────────────────
+
+console.log('\n--- resolveSessionCapabilities Tests ---\n');
+
+type IntegrationTri = 'unset' | 'false' | 'true';
+
+function buildConfig(
+  integrationEnabled: IntegrationTri,
+  useMillSession: IntegrationTri,
+  mergeQueueEnabled: IntegrationTri,
+): string {
+  const integration: Record<string, unknown> = {};
+  if (integrationEnabled === 'true') integration.enabled = true;
+  else if (integrationEnabled === 'false') integration.enabled = false;
+  if (useMillSession === 'true') integration.useMillSession = true;
+  else if (useMillSession === 'false') integration.useMillSession = false;
+  const mergeQueue: Record<string, unknown> = {};
+  if (mergeQueueEnabled === 'true') mergeQueue.enabled = true;
+  else if (mergeQueueEnabled === 'false') mergeQueue.enabled = false;
+  const cfg: Record<string, unknown> = {};
+  if (Object.keys(integration).length) cfg.integration = integration;
+  if (Object.keys(mergeQueue).length) cfg.mergeQueue = mergeQueue;
+  return JSON.stringify(cfg);
+}
+
+const TRISTATES: IntegrationTri[] = ['unset', 'false', 'true'];
+
+for (const integ of TRISTATES) {
+  for (const ums of TRISTATES) {
+    for (const mq of TRISTATES) {
+      test(`27-case: integ=${integ} useMillSession=${ums} mergeQueue=${mq}`, () => {
+        const tmp = makeTempRepo();
+        try {
+          clearConfigCache();
+          writeConfig(tmp, buildConfig(integ, ums, mq));
+          const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
+          // backstage means integration.enabled=true AND useMillSession!=false
+          // useMillSession defaults to true (see INTEGRATION_DEFAULTS)
+          const backstage = integ === 'true' && ums !== 'false';
+          assert.equal(caps.tend, backstage, 'tend');
+          const expectedExecutor =
+            backstage ? 'tend' :
+            (integ === 'true' ? 'none' : 'operator');
+          assert.equal(caps.mergeExecutor, expectedExecutor, 'mergeExecutor');
+          // mergeQueue.enabled defaults to true; false only when explicitly set
+          const mqOn = mq !== 'false';
+          assert.equal(caps.mergeQueue, backstage && mqOn, 'mergeQueue');
+        } finally {
+          cleanUp(tmp);
+        }
+      });
+    }
+  }
+}
+
+test('observer=true requires backstage; if backstage off, observer stays off', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      integration: { enabled: false },
+      observer: { enabled: true },
+    }));
+    const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
+    assert.equal(caps.observer, false);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('observer=true and backstage on → observer true', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      integration: { enabled: true, useMillSession: true },
+      observer: { enabled: true },
+    }));
+    const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
+    assert.equal(caps.observer, true);
+    assert.equal(caps.tend, true);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('observer default=false: backstage on, observer.enabled unset → observer=false', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      integration: { enabled: true, useMillSession: true },
+    }));
+    const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
+    assert.equal(caps.observer, false);
+    assert.equal(caps.tend, true);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('MERGE_QUEUE_ENABLED=false env override → mergeQueue false even with tend', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      integration: { enabled: true, useMillSession: true },
+      mergeQueue: { enabled: true },
+    }));
+    const caps = resolveSessionCapabilities(tmp, {
+      env: { MERGE_QUEUE_ENABLED: 'false' },
+      readHealth: false,
+    });
+    assert.equal(caps.mergeQueue, false);
+    assert.equal(caps.tend, true);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('MERGE_QUEUE_ENABLED=0 env override → mergeQueue false', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      integration: { enabled: true, useMillSession: true },
+    }));
+    const caps = resolveSessionCapabilities(tmp, {
+      env: { MERGE_QUEUE_ENABLED: '0' },
+      readHealth: false,
+    });
+    assert.equal(caps.mergeQueue, false);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('MERGE_QUEUE_ENABLED=true env override with config=false → true (env wins)', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      integration: { enabled: true, useMillSession: true },
+      mergeQueue: { enabled: false },
+    }));
+    const caps = resolveSessionCapabilities(tmp, {
+      env: { MERGE_QUEUE_ENABLED: 'true' },
+      readHealth: false,
+    });
+    assert.equal(caps.mergeQueue, true);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('local overlay flips integration on', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ integration: { enabled: false } }));
+    writeFileSync(
+      join(tmp, '.wavemill-config.local.json'),
+      JSON.stringify({ integration: { enabled: true, useMillSession: true } }),
+      'utf-8',
+    );
+    const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
+    assert.equal(caps.tend, true);
+    assert.equal(caps.mergeExecutor, 'tend');
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('health file missing → both null (advisory, not gating)', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ integration: { enabled: true, useMillSession: true } }));
+    const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: true });
+    assert.equal(caps.health.tend, null);
+    assert.equal(caps.health.observer, null);
+    // tend still true — health does NOT gate.
+    assert.equal(caps.tend, true);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('health file malformed → both null, tend stays true (D2 invariant)', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ integration: { enabled: true, useMillSession: true } }));
+    mkdirSync(join(tmp, '.wavemill'), { recursive: true });
+    writeFileSync(join(tmp, '.wavemill', 'backstage-health.json'), '{ not json', 'utf-8');
+    const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: true });
+    assert.equal(caps.health.tend, null);
+    assert.equal(caps.tend, true);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('health.tend.status reported through health, tend stays true (D2)', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      integration: { enabled: true, useMillSession: true },
+      observer: { enabled: true },
+    }));
+    mkdirSync(join(tmp, '.wavemill'), { recursive: true });
+    writeFileSync(join(tmp, '.wavemill', 'backstage-health.json'), JSON.stringify({
+      services: {
+        tend: { status: 'needs-user' },
+        observer: { status: 'healthy' },
+      },
+    }), 'utf-8');
+    const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: true });
+    assert.equal(caps.health.tend, 'needs-user');
+    assert.equal(caps.health.observer, 'healthy');
+    // Health is advisory only.
+    assert.equal(caps.tend, true);
+    assert.equal(caps.observer, true);
+    assert.equal(caps.mergeExecutor, 'tend');
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('readHealth=false skips file read', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ integration: { enabled: true, useMillSession: true } }));
+    mkdirSync(join(tmp, '.wavemill'), { recursive: true });
+    writeFileSync(join(tmp, '.wavemill', 'backstage-health.json'), JSON.stringify({
+      services: { tend: { status: 'unhealthy' } },
+    }), 'utf-8');
+    const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
+    assert.equal(caps.health.tend, null);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('integration on + useMillSession=false → mergeExecutor=none', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      integration: { enabled: true, useMillSession: false },
+    }));
+    const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
+    assert.equal(caps.tend, false);
+    assert.equal(caps.mergeExecutor, 'none');
+    assert.equal(caps.mergeQueue, false);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('integration off → mergeExecutor=operator', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ integration: { enabled: false } }));
+    const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
+    assert.equal(caps.mergeExecutor, 'operator');
+    assert.equal(caps.tend, false);
+    assert.equal(caps.mergeQueue, false);
   } finally {
     cleanUp(tmp);
   }
