@@ -1123,7 +1123,7 @@ describe('challenge-mode gating', () => {
     };
     writeWorkflowState(options.repoDir, {
       HOK_1523: { pr: 497, challengePairId: 'pair-1523', challengeRole: 'primary' },
-      HOK_1523_c: { challengePairId: 'pair-1523', challengeRole: 'challenger' },
+      HOK_1523_c: { challengePairId: 'pair-1523', challengeRole: 'challenger', updated: new Date().toISOString() },
     });
 
     try {
@@ -1243,7 +1243,7 @@ describe('challenge-mode gating', () => {
 
       writeWorkflowState(options.repoDir, {
         HOK_1523: { pr: 497, challengePairId: 'pair-1523', challengeRole: 'primary' },
-        HOK_1523_c: { challengePairId: 'pair-1523', challengeRole: 'challenger' },
+        HOK_1523_c: { challengePairId: 'pair-1523', challengeRole: 'challenger', updated: new Date().toISOString() },
       });
       decision = await selectNextCandidate(options);
       assert.deepEqual(decision.eligible, []);
@@ -1316,7 +1316,7 @@ describe('challenge-gate race prevention', () => {
     };
     writeWorkflowState(options.repoDir, {
       HOK_1523: { pr: 497, challengePairId: 'pair-hok-1523', challengeRole: 'primary' },
-      HOK_1523_c: { challengePairId: 'pair-hok-1523', challengeRole: 'challenger' },
+      HOK_1523_c: { challengePairId: 'pair-hok-1523', challengeRole: 'challenger', updated: new Date().toISOString() },
     });
 
     try {
