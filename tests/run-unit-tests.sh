@@ -437,6 +437,7 @@ TESTS=(
   shared/lib/task-packet-signal-analysis.test.ts
   shared/lib/task-packet-utils.test.ts
   shared/lib/tool-runner.test.ts
+  shared/lib/worktree-dirty-status.test.ts
   shared/lib/worktree-manager.test.ts
   tools/backfill-stage-scores.test.ts
   tools/certify-launch-priority-model.test.ts

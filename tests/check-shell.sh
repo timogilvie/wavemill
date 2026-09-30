@@ -211,6 +211,7 @@ for f in \
   "$REPO_DIR"/tests/fixtures/incidents/hok2595_closed_non_challenge.sh \
   "$REPO_DIR"/tests/fixtures/incidents/hok2913c_superseded_challenger.sh \
   "$REPO_DIR"/tests/fixtures/incidents/squash_delivery_deleted_remote_head.sh \
+  "$REPO_DIR"/tests/fixtures/incidents/hok3056_terminal_dirty_worktree.sh \
   "$REPO_DIR"/tests/fixtures/incidents/control_dirty_worktree.sh \
   "$REPO_DIR"/tests/fixtures/incidents/control_local_head_changed.sh \
   "$REPO_DIR"/tests/fixtures/incidents/control_divergent_local_ahead.sh \

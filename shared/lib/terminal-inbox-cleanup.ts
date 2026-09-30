@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mutateJsonState } from './state-mutex.ts';
+import { filterWorktreeDirtyStatus } from './worktree-dirty-status.ts';
 
 /**
  * Wavemill's own shell libraries. These ship with the wavemill install, so
@@ -337,8 +338,11 @@ function collectGitEvidence(repoDir: string, task: JsonRecord | undefined, branc
     if (status === undefined) {
       worktreeDirty = 'unknown';
     } else {
-      dirtyStatus = status.trim();
-      worktreeDirty = dirtyStatus.length > 0;
+      // Share the shell helper's exact filter (HOK-3088) so cleanup and the
+      // observer never disagree on whether the tree still holds real work.
+      const filtered = filterWorktreeDirtyStatus(status);
+      dirtyStatus = filtered.join('\n');
+      worktreeDirty = filtered.length > 0;
     }
   }
 
