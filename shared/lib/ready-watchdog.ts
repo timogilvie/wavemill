@@ -39,11 +39,13 @@ import {
 import { readChallengeComparisons, type StoredChallengeComparison } from './challenge-comparison.ts';
 import {
   classifyChallengeState,
+  evaluateSiblingLiveness,
   getSiblingBranch,
-  isSiblingLive,
   listRemoteTaskBranches,
   loadWorkflowStateChallengeData,
+  probeSiblingProgress,
   type ChallengeGate,
+  type TaskEvalState,
   type UnresolvableReason,
 } from './tend-challenge-gate.ts';
 import {
@@ -281,6 +283,11 @@ export interface ReadyWatchdogDeps {
     readyResultFile: string;
     now: Date;
   }) => TaskProgress | null;
+  /**
+   * HOK-3128: progress probe for a PR's tracked no-PR challenge sibling, so the
+   * watchdog and the tend gate share the `sibling-stalled` rule.
+   */
+  getSiblingProgress: (repoDir: string, sibling: TaskEvalState, now: Date, session: string) => TaskProgress | null;
   resumeResolvedConflictRemediation: (
     snapshot: ReadyTaskSnapshot,
     githubTruth: GitHubPRTruth,
@@ -494,6 +501,9 @@ const defaultDeps: ReadyWatchdogDeps = {
     } catch {
       return null;
     }
+  },
+  getSiblingProgress(repoDir, sibling, now, session) {
+    return probeSiblingProgress(repoDir, sibling, now, (opts) => defaultGetTaskProgress({ ...opts, session }));
   },
   async resumeResolvedConflictRemediation(snapshot, githubTruth) {
     const baseBranch = githubTruth.baseRefName || 'base branch';
@@ -1399,6 +1409,13 @@ function classifyMergeLaneChallengeBlocker(
       recoveryCommand,
     };
   }
+  if (challengeGate.reason === 'sibling-stalled') {
+    return {
+      kind: 'needs-user',
+      detail: `PR #${snapshot.prNumber} is blocked from merging: challenge pair ${challengeGate.pairId}${pairLabel} cannot produce a comparison because one arm has shown no agent progress for ≥30m without opening a PR (agent exited or stalled).`,
+      recoveryCommand,
+    };
+  }
   if (challengeGate.reason === 'both-challenge-aborted') {
     return {
       kind: 'needs-user',
@@ -2056,6 +2073,19 @@ export async function tickReadyWatchdog(options: TickReadyWatchdogOptions): Prom
     // Compute the challenge gate for this PR if it has a challenge pair. Passes null
     // for PR metadata because workflow-state challenge pairs are sufficient to detect
     // the pair-unresolved:no-comparison case that the watchdog needs to surface.
+    const siblingLiveness = snapshot.challengePairId
+      ? evaluateSiblingLiveness({
+          repoDir: options.repoDir,
+          hasSiblingBranch: Boolean(
+            getSiblingBranch(snapshot.branch) && remoteTaskBranches.has(getSiblingBranch(snapshot.branch) as string),
+          ),
+          openPrNumbers: allReadyPrNumbers,
+          pairState: challengeWorkflowState.taskStateByPair.get(snapshot.challengePairId),
+          side: challengePairMap.get(snapshot.prNumber)?.role ?? 'primary',
+          nowMs: now.getTime(),
+          getSiblingProgress: (repoDir, sibling, probeNow) => deps.getSiblingProgress(repoDir, sibling, probeNow, session),
+        })
+      : undefined;
     const challengeGate: ChallengeGate | undefined = snapshot.challengePairId
       ? classifyChallengeState(
           snapshot.prNumber,
@@ -2068,14 +2098,8 @@ export async function tickReadyWatchdog(options: TickReadyWatchdogOptions): Prom
             activeJobsByPair: challengeWorkflowState.activeJobsByPair,
             taskStateByPair: challengeWorkflowState.taskStateByPair,
             evalHardFailureRetryMax: challengeEvalRetryMax,
-            siblingLive: isSiblingLive({
-              hasSiblingBranch: Boolean(
-                getSiblingBranch(snapshot.branch) && remoteTaskBranches.has(getSiblingBranch(snapshot.branch) as string),
-              ),
-              openPrNumbers: allReadyPrNumbers,
-              pairState: challengeWorkflowState.taskStateByPair.get(snapshot.challengePairId),
-              side: challengePairMap.get(snapshot.prNumber)?.role ?? 'primary',
-            }),
+            siblingLive: siblingLiveness?.live ?? false,
+            siblingStalled: siblingLiveness?.stalled ?? false,
             nowMs: () => now.getTime(),
           },
         )

@@ -120,3 +120,16 @@ test('parses the typed and legacy review-timeout exhaustion reasons (HOK-3064)',
     'provider-fault',
   );
 });
+
+test('classifies the HOK-3128 dirty-handoff and sibling-stalled kinds', () => {
+  // The model finished coding but left its own output uncommitted and did not
+  // repair it when relaunched: completion-protocol failure, model quality.
+  assert.equal(parseAbortFailureKind('terminal_stage_failure:coding-dirty-handoff'), 'coding-dirty-handoff');
+  assert.equal(classifyArmFault({ failureKind: 'coding-dirty-handoff' }), 'model-fault');
+  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'coding-dirty-handoff' })), true);
+
+  // The mill lost track of a no-PR arm; never proof of model quality.
+  assert.equal(parseAbortFailureKind('terminal_stage_failure:sibling-stalled'), 'sibling-stalled');
+  assert.equal(classifyArmFault({ failureKind: 'sibling-stalled' }), 'harness-fault');
+  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'sibling-stalled' })), false);
+});
