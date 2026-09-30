@@ -13,7 +13,9 @@
 #
 # Storage per bucket, under $state_dir:
 #   .retry-<bucket>-count      attempt counter (positive integer)
-#   .retry-<bucket>-head       head SHA the counter is keyed to
+#   .retry-<bucket>-head       head SHA the counter is keyed to; a two-line
+#                              file (head\nbase) when a base SHA is provided,
+#                              a single line otherwise (HOK-3092)
 #   .retry-<bucket>-last-at    epoch seconds of the last increment
 #   .retry-<bucket>-exhausted  terminal sentinel; contents = terminal reason
 #
@@ -114,13 +116,26 @@ bounded_retry_count() {
   echo "$count"
 }
 
-# Head SHA the bucket's counter is keyed to (empty when unset).
+# Head SHA the bucket's counter is keyed to (empty when unset). Reads the
+# first line of the key file, which stores head on line 1 and (optionally)
+# base on line 2.
 bounded_retry_head() {
   local state_dir="$1" bucket="$2"
   local head_file
   head_file="$(_bounded_retry_file "$state_dir" "$bucket" "head")"
   [[ -f "$head_file" ]] || { echo ""; return 0; }
-  cat "$head_file" 2>/dev/null || echo ""
+  head -n 1 "$head_file" 2>/dev/null || echo ""
+  return 0
+}
+
+# Base SHA the bucket's counter is keyed to (empty when unset or when only a
+# head was stored). Reads the second line of the two-line key file (HOK-3092).
+bounded_retry_base() {
+  local state_dir="$1" bucket="$2"
+  local head_file
+  head_file="$(_bounded_retry_file "$state_dir" "$bucket" "head")"
+  [[ -f "$head_file" ]] || { echo ""; return 0; }
+  awk 'NR == 2 { print; exit }' "$head_file" 2>/dev/null || echo ""
   return 0
 }
 
@@ -150,29 +165,51 @@ bounded_retry_clear() {
   return 0
 }
 
-# A new commit is genuine new information: wipe the budget (and any exhausted
-# terminal state) so the fresh head gets a full set of attempts. An empty
-# current head means git failed — never reset on that.
-bounded_retry_reset_if_new_head() {
-  local state_dir="$1" bucket="$2" current_head="$3"
-  local head_file stored_head
+# A new commit — or a new base SHA — is genuine new information: wipe the
+# budget (and any exhausted terminal state) so the fresh key gets a full set
+# of attempts. A new head means new work; a new base means a new merge
+# parent, so the last outcome no longer predicts the next one (HOK-3092).
+# An empty current head means git failed — never reset on that. An empty
+# current base is treated as "no base component" (comparison ignores it),
+# which preserves backward compatibility for callers that only key on head.
+bounded_retry_reset_if_new_key() {
+  local state_dir="$1" bucket="$2" current_head="$3" current_base="${4:-}"
+  local head_file stored_head stored_base
   head_file="$(_bounded_retry_file "$state_dir" "$bucket" "head")"
 
   [[ -n "$current_head" ]] || return 0
   [[ -f "$head_file" ]] || return 0
-  stored_head=$(cat "$head_file" 2>/dev/null || echo "")
+  stored_head=$(bounded_retry_head "$state_dir" "$bucket")
   [[ -n "$stored_head" ]] || return 0
+
   if [[ "$stored_head" != "$current_head" ]]; then
     bounded_retry_clear "$state_dir" "$bucket"
+    return 0
+  fi
+
+  # Base component: only compare when the caller supplied one AND a base was
+  # previously recorded. If the stored key has no base (single-line file) or
+  # the caller passed nothing, treat this as a head-only reset (unchanged).
+  if [[ -n "$current_base" ]]; then
+    stored_base=$(bounded_retry_base "$state_dir" "$bucket")
+    if [[ -n "$stored_base" && "$stored_base" != "$current_base" ]]; then
+      bounded_retry_clear "$state_dir" "$bucket"
+    fi
   fi
   return 0
 }
 
-# Increment the attempt counter, key it to the current head, and stamp the
-# attempt time. Echoes the new count.
+# Backwards-compatible head-only reset. Prefer bounded_retry_reset_if_new_key
+# in new callers so a rebase onto a fresh base can wipe the budget too.
+bounded_retry_reset_if_new_head() {
+  bounded_retry_reset_if_new_key "$1" "$2" "$3" ""
+}
+
+# Increment the attempt counter, key it to the current head (and optionally
+# base — HOK-3092), and stamp the attempt time. Echoes the new count.
 bounded_retry_increment() {
-  local state_dir="$1" bucket="$2" current_head="$3"
-  local count
+  local state_dir="$1" bucket="$2" current_head="$3" current_base="${4:-}"
+  local count key_file existing_base
   count=$(bounded_retry_count "$state_dir" "$bucket")
   count=$((count + 1))
   mkdir -p "$state_dir"
@@ -180,7 +217,20 @@ bounded_retry_increment() {
   # An empty head means git failed; keep any previously recorded head so a
   # later real commit still triggers the budget reset.
   if [[ -n "$current_head" ]]; then
-    printf '%s\n' "$current_head" > "$(_bounded_retry_file "$state_dir" "$bucket" "head")"
+    key_file="$(_bounded_retry_file "$state_dir" "$bucket" "head")"
+    if [[ -n "$current_base" ]]; then
+      printf '%s\n%s\n' "$current_head" "$current_base" > "$key_file"
+    else
+      # Preserve any previously recorded base so an empty base_sha this tick
+      # (e.g. transient ls-remote failure) does not silently downgrade the
+      # composite key to head-only.
+      existing_base=$(bounded_retry_base "$state_dir" "$bucket")
+      if [[ -n "$existing_base" ]]; then
+        printf '%s\n%s\n' "$current_head" "$existing_base" > "$key_file"
+      else
+        printf '%s\n' "$current_head" > "$key_file"
+      fi
+    fi
   fi
   printf '%s\n' "$(date +%s)" > "$(_bounded_retry_file "$state_dir" "$bucket" "last-at")"
   echo "$count"
@@ -263,13 +313,25 @@ bounded_retry_exhaustion_reason() {
 #                     bounded_retry_mark_exhausted with a recorded reason
 #   exhausted-quiet — already terminalized; hold silently until a new commit
 #
-# Usage: bounded_retry_gate <state_dir> <bucket> <current_head> <limit> [<base>] [<cap>]
+# Usage: bounded_retry_gate <state_dir> <bucket> <current_head> <limit>
+#                           [<base_backoff>] [<cap_backoff>] [<current_base>]
+#
+# The trailing <current_base> is optional (HOK-3092): when supplied it feeds
+# the composite-key reset so a rebase onto a new base wipes the budget along
+# with the exhaustion sentinel. Empty or non-SHA base_sha is treated as
+# absent (safe default; behaves like the pre-HOK-3092 head-only key).
 bounded_retry_gate() {
   local state_dir="$1" bucket="$2" current_head="$3" limit="$4"
-  local base="${5:-}" cap="${6:-}"
+  local base="${5:-}" cap="${6:-}" current_base="${7:-}"
   local count
 
-  bounded_retry_reset_if_new_head "$state_dir" "$bucket" "$current_head"
+  # Non-SHA-shaped base is treated as absent (transient ls-remote failure,
+  # etc.): keep the existing single-key semantics rather than silently
+  # forcing a reset from a bogus value.
+  if [[ -n "$current_base" ]] && ! [[ "$current_base" =~ ^[0-9a-fA-F]{7,64}$ ]]; then
+    current_base=""
+  fi
+  bounded_retry_reset_if_new_key "$state_dir" "$bucket" "$current_head" "$current_base"
 
   if bounded_retry_is_exhausted "$state_dir" "$bucket"; then
     echo "exhausted-quiet"

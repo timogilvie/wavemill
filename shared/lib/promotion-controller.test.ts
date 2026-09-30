@@ -453,6 +453,77 @@ describe('runPromotion', () => {
     }
   });
 
+  // HOK-3092: conflictingFiles is captured before `git merge --abort` runs,
+  // so operator-facing surfaces (the ready needs-attention marker) can list
+  // the exact paths that need a hand.
+  it('populates conflictingFiles from the unmerged file list before aborting', () => {
+    const repo = makeRepo();
+    const shell = shellHarness();
+    const observedOrder: string[] = [];
+    const shellRunner = (cmd: string, opts?: { encoding?: string; cwd?: string }) => {
+      if (cmd === "git merge --no-edit 'origin/main'") {
+        shell.calls.push(cmd);
+        observedOrder.push(cmd);
+        throw new Error('CONFLICT (content): merge conflict');
+      }
+      if (cmd === 'git diff --name-only --diff-filter=U') {
+        shell.calls.push(cmd);
+        observedOrder.push(cmd);
+        return 'README.md\nsrc/util.ts\n';
+      }
+      if (cmd === 'git merge --abort') {
+        shell.calls.push(cmd);
+        observedOrder.push(cmd);
+        return '';
+      }
+      return shell.shellRunner(cmd, opts);
+    };
+
+    try {
+      const result = updateBranchWithBase('auto/integration', 'main', repo.repoDir, shellRunner);
+      assert.equal(result.status, 'conflict');
+      assert.deepEqual(result.conflictingFiles, ['README.md', 'src/util.ts']);
+      // Enumerate before aborting — an abort clears the unmerged index.
+      const diffIndex = observedOrder.indexOf('git diff --name-only --diff-filter=U');
+      const abortIndex = observedOrder.indexOf('git merge --abort');
+      assert(diffIndex >= 0 && abortIndex >= 0);
+      assert(diffIndex < abortIndex, 'conflictingFiles must be enumerated before merge --abort');
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  // A failing `git diff --name-only --diff-filter=U` never masks the merge
+  // failure — the caller falls back to `detail` alone.
+  it('returns conflict with an empty file list when enumeration fails', () => {
+    const repo = makeRepo();
+    const shell = shellHarness();
+    const shellRunner = (cmd: string, opts?: { encoding?: string; cwd?: string }) => {
+      if (cmd === "git merge --no-edit 'origin/main'") {
+        shell.calls.push(cmd);
+        throw new Error('CONFLICT (content): merge conflict');
+      }
+      if (cmd === 'git diff --name-only --diff-filter=U') {
+        shell.calls.push(cmd);
+        throw new Error('index unreadable');
+      }
+      if (cmd === 'git merge --abort') {
+        shell.calls.push(cmd);
+        return '';
+      }
+      return shell.shellRunner(cmd, opts);
+    };
+
+    try {
+      const result = updateBranchWithBase('auto/integration', 'main', repo.repoDir, shellRunner);
+      assert.equal(result.status, 'conflict');
+      assert.deepEqual(result.conflictingFiles, []);
+      assert(shell.calls.includes('git merge --abort'));
+    } finally {
+      repo.cleanup();
+    }
+  });
+
   it('returns push-failed with the original push error', () => {
     const repo = makeRepo();
     const shell = shellHarness({ pushError: 'remote rejected push' });

@@ -9688,8 +9688,10 @@ failed_ready_recheck_reset_if_new_head() {
   bounded_retry_reset_if_new_head "$1" "failed-ready-recheck" "$2"
 }
 
+# HOK-3092: accepts an optional trailing base_sha so the composite (head,
+# base) key resets the budget when the branch is rebased onto a fresh base.
 increment_failed_ready_recheck_count() {
-  bounded_retry_increment "$1" "failed-ready-recheck" "$2"
+  bounded_retry_increment "$1" "failed-ready-recheck" "$2" "${3:-}"
 }
 
 # Delay before attempt (count+1): min(base * 2^(count-1), cap).
@@ -9822,7 +9824,7 @@ mark_failed_ready_recheck_exhausted() {
 #                     terminalizes via mark_failed_ready_recheck_exhausted
 #   exhausted-quiet — already terminalized; hold silently until a new commit
 failed_ready_recheck_gate() {
-  local state_dir="$1" current_head="$2"
+  local state_dir="$1" current_head="$2" current_base="${3:-}"
   local disposition limit streak identical_limit base cap
 
   limit="${READY_FAILED_RECHECK_MAX_ATTEMPTS:-4}"
@@ -9831,7 +9833,10 @@ failed_ready_recheck_gate() {
   cap="${READY_FAILED_RECHECK_BACKOFF_CAP_SECONDS:-1800}"
   [[ "$base" =~ ^[0-9]+$ ]] || base=120
   [[ "$cap" =~ ^[0-9]+$ ]] || cap=1800
-  disposition=$(bounded_retry_gate "$state_dir" "failed-ready-recheck" "$current_head" "$limit" "$base" "$cap")
+  # HOK-3092: trailing base_sha feeds the composite (head, base) key so a
+  # rebase onto a fresh base wipes the budget alongside the exhaustion
+  # sentinel. Empty or non-SHA is a safe head-only default.
+  disposition=$(bounded_retry_gate "$state_dir" "failed-ready-recheck" "$current_head" "$limit" "$base" "$cap" "$current_base")
 
   # Path-specific short-circuit: a provably deterministic failure (identical
   # verdicts N times in a row) terminalizes even while a backoff window is
@@ -9849,6 +9854,88 @@ failed_ready_recheck_gate() {
   echo "$disposition"
 }
 # --- end failed-ready re-check budget ----------------------------------------
+
+# Update-from-base wrapper (HOK-3092). A thin shell caller around the
+# `update-branch-with-base` TS CLI, invoked from the failed-ready re-check
+# and conflict-remediation loops before they spend a retry unit. The wrapper
+# never terminalizes on its own — it only reports what happened; the caller
+# decides how to spend (or skip) the bucket's budget.
+#
+# Echoes exactly one of:
+#   not-behind       — origin/<base> has no commits the branch lacks; caller
+#                      falls through to its usual re-check flow
+#   updated          — origin/<base> was merged into the worktree and pushed;
+#                      caller must NOT spend a retry unit (the new head
+#                      resets the budget on the next tick)
+#   conflict:<paths> — merge stopped on conflicts (space-separated file
+#                      list, at most 20); caller terminalizes the bucket
+#                      and writes a needs-attention marker
+#   error:<status>   — CLI reported another failure (fetch/push/etc.); the
+#                      caller lets the tick fall through to the normal path
+#
+# Returns 0 on `not-behind` and `updated`, 1 on `conflict:*` and `error:*`.
+try_update_branch_from_base() {
+  local issue="$1" worktree="$2" branch="$3" base="$4"
+  local compare_counts behind_count ahead_count fetch_rc=0
+  local cli_output cli_status cli_files
+
+  [[ -n "$worktree" && -n "$branch" && -n "$base" ]] || { echo "error:invalid-args"; return 1; }
+  [[ -d "$worktree/.git" || -f "$worktree/.git" ]] || { echo "error:worktree-missing"; return 1; }
+
+  # Defensive fetch — the TS CLI also fetches, but doing it here first keeps
+  # `coding_compare_commit_counts` honest against a stale ref cache.
+  git -C "$worktree" fetch --quiet origin "$base" 2>/dev/null || fetch_rc=$?
+  if (( fetch_rc != 0 )); then
+    echo "error:fetch-failed"
+    return 1
+  fi
+
+  compare_counts="$(coding_compare_commit_counts "$worktree" "$base")"
+  behind_count="${compare_counts%%[[:space:]]*}"
+  ahead_count="${compare_counts##*[[:space:]]}"
+  [[ "$behind_count" =~ ^[0-9]+$ ]] || behind_count=0
+  [[ "$ahead_count" =~ ^[0-9]+$ ]] || ahead_count=0
+  if (( behind_count == 0 )); then
+    echo "not-behind"
+    return 0
+  fi
+
+  cli_output="$(npx tsx "$TOOLS_DIR/update-branch-with-base.ts" \
+    --worktree "$worktree" \
+    --branch "$branch" \
+    --base "$base" 2>/dev/null)" && cli_status=0 || cli_status=$?
+
+  # The CLI always prints one JSON line to stdout even on failure. Parse
+  # `status` and (on conflict) `conflictingFiles`. A missing or unparseable
+  # JSON payload falls through to error:*.
+  local parsed_status
+  parsed_status="$(printf '%s\n' "$cli_output" | jq -r '.status // empty' 2>/dev/null || echo "")"
+
+  case "$parsed_status" in
+    success)
+      # `updateBranchWithBase` merged and pushed on the worktree checkout,
+      # so HEAD is already the merge commit. The monitor's own `git
+      # rev-parse HEAD` on the next tick will see the new SHA and drive the
+      # bounded-retry reset via the composite key.
+      echo "updated"
+      return 0
+      ;;
+    conflict)
+      cli_files="$(printf '%s\n' "$cli_output" \
+        | jq -r '(.conflictingFiles // [])[:20] | join(" ")' 2>/dev/null || echo "")"
+      printf 'conflict:%s\n' "$cli_files"
+      return 1
+      ;;
+    dirty-worktree|fetch-failed|push-failed|unknown-failed)
+      printf 'error:%s\n' "$parsed_status"
+      return 1
+      ;;
+    *)
+      printf 'error:cli-exit-%s\n' "$cli_status"
+      return 1
+      ;;
+  esac
+}
 
 log_ready_failure_result() {
   local issue="$1"
@@ -18394,6 +18481,33 @@ monitor_issue_state() {
           fi
         fi
 
+        # HOK-3092: bound the conflict-remediation relaunch loop on (head,
+        # base). Without this the guard-block → remediation → ready-relaunch
+        # path relaunched forever on identical inputs (2026-09-27 hokusai-sdk
+        # PR #97 relaunched 1,253 times in ~19h). Limit=1 → one attempt per
+        # unique (head, base); a repeated identical result terminalizes.
+        local conflict_base_sha conflict_disp
+        conflict_base_sha=$(get_main_head_sha "${WORKTREE_ROOT}/${SLUG}" "$BASE_BRANCH")
+        conflict_disp=$(bounded_retry_gate "$ready_state_dir_path" "conflict-remediation-relaunch" \
+          "$current_head" 1 "" "" "$conflict_base_sha")
+        case "$conflict_disp" in
+          exhausted)
+            local conflict_reason="Conflict remediation exhausted on identical (head=$current_head, base=$conflict_base_sha) for PR #$PR"
+            if bounded_retry_mark_exhausted "$ready_state_dir_path" "conflict-remediation-relaunch" "$conflict_reason"; then
+              log "status" "⛔ $ISSUE → $conflict_reason"
+              write_ready_attention_file "$ready_state_dir_path" "$conflict_reason"
+            fi
+            set_window_attention_state "$WIN" "needs-user"
+            return 0
+            ;;
+          exhausted-quiet|backoff)
+            set_window_attention_state "$WIN" "needs-user"
+            return 0
+            ;;
+        esac
+        bounded_retry_increment "$ready_state_dir_path" "conflict-remediation-relaunch" \
+          "$current_head" "$conflict_base_sha" >/dev/null
+
         title=$(read_state_value "" --arg i "$ISSUE" '.tasks[$i].title // ""')
         if [[ -z "$title" ]]; then
           issue_json=$(cat "/tmp/${SESSION}-${ISSUE}-issue.json" 2>/dev/null || echo "{}")
@@ -18608,8 +18722,11 @@ monitor_issue_state() {
     ready_verdict=$(ready_stage_pending_verdict "$ready_state_dir_path")
     if [[ "$ready_status" == "failed" ]]; then
       # Bound the re-check loop (HOK-2893): attempt ceiling + backoff + terminal
-      # hold, reset by a new commit or a ready pass.
-      recheck_disposition=$(failed_ready_recheck_gate "$ready_state_dir_path" "$current_head")
+      # hold, reset by a new commit or a ready pass. HOK-3092: composite key
+      # on (head, base) so a rebase onto a fresh base wipes the budget.
+      local recheck_base_sha
+      recheck_base_sha=$(get_main_head_sha "${WORKTREE_ROOT}/${SLUG}" "$BASE_BRANCH")
+      recheck_disposition=$(failed_ready_recheck_gate "$ready_state_dir_path" "$current_head" "$recheck_base_sha")
       recheck_limit="${READY_FAILED_RECHECK_MAX_ATTEMPTS:-4}"
       case "$recheck_disposition" in
         exhausted)
@@ -18630,7 +18747,46 @@ monitor_issue_state() {
           ;;
       esac
 
-      recheck_attempt=$(increment_failed_ready_recheck_count "$ready_state_dir_path" "$current_head")
+      # HOK-3092: before spending a retry unit, if the branch is behind
+      # origin/<base>, merge base into the worktree and push. The next tick
+      # sees a new head and drives the composite-key reset — so an identical
+      # `(head, base)` failure never spins.
+      local upd_result upd_files
+      upd_result="$(try_update_branch_from_base "$ISSUE" "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH")"
+      case "$upd_result" in
+        updated)
+          log "status" "↻ $ISSUE → PR #$PR updated from origin/$BASE_BRANCH; ready re-check will run on the new head"
+          set_window_attention_state "$WIN" "clear"
+          active_count=$((active_count + 1))
+          return 0
+          ;;
+        conflict:*)
+          upd_files="${upd_result#conflict:}"
+          local upd_reason
+          upd_reason="Auto-update from origin/$BASE_BRANCH conflicted"
+          [[ -n "$upd_files" ]] && upd_reason+=": ${upd_files}"
+          if bounded_retry_mark_exhausted "$ready_state_dir_path" "failed-ready-recheck" \
+              "Failed-ready re-checks terminalized on identical (head=$current_head, base=$recheck_base_sha) for PR #$PR: $upd_reason"; then
+            log "status" "⛔ $ISSUE → $upd_reason for PR #$PR"
+            write_ready_attention_file "$ready_state_dir_path" "$upd_reason for PR #$PR"
+          fi
+          set_window_attention_state "$WIN" "needs-user"
+          return 0
+          ;;
+        not-behind)
+          # Fall through — branch is not behind base, so the identical-cause
+          # short-circuit and the counter increment below still apply.
+          :
+          ;;
+        error:*)
+          # Best-effort: fall through to the existing recheck path. The
+          # bucket stays bounded on (head, base), so an unrecoverable
+          # error will still terminalize on the normal ceiling.
+          log "debug" "  $ISSUE: update-from-base wrapper returned ${upd_result}; falling through to re-check"
+          ;;
+      esac
+
+      recheck_attempt=$(increment_failed_ready_recheck_count "$ready_state_dir_path" "$current_head" "$recheck_base_sha")
       log "status" "↻ $ISSUE → Re-running failed ready checks for PR #$PR (attempt ${recheck_attempt}/${recheck_limit})"
       title=$(read_state_value "" --arg i "$ISSUE" '.tasks[$i].title // ""')
       if [[ -z "$title" ]]; then

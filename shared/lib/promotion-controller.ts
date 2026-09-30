@@ -122,6 +122,12 @@ type SquashReconciliationPlan =
 export interface BranchBaseUpdateResult {
   status: 'success' | 'conflict' | 'push-failed' | 'fetch-failed' | 'dirty-worktree' | 'unknown-failed';
   detail: string;
+  /**
+   * On `conflict`, the unmerged file paths reported by `git diff --name-only
+   * --diff-filter=U` immediately before `git merge --abort` (HOK-3092). Empty
+   * when parsing failed. Absent for every non-conflict status.
+   */
+  conflictingFiles?: string[];
 }
 
 const PROMOTION_SECTION_BEGIN = '<!-- wavemill-promote:begin -->';
@@ -1032,14 +1038,39 @@ export function updateBranchWithBase(
     );
   } catch (error) {
     const detail = errorMessage(error);
+    // HOK-3092: capture the unmerged file list before aborting so callers can
+    // surface it in the operator-facing attention file. Best-effort — a
+    // failing enumerate never masks the original merge failure.
+    let conflictingFiles: string[] = [];
+    if (/conflict/i.test(detail)) {
+      try {
+        const raw = String(shellRunner(
+          'git diff --name-only --diff-filter=U',
+          { encoding: 'utf-8', cwd: repoDir },
+        ));
+        conflictingFiles = raw
+          .split('\n')
+          .map((line) => line.trim())
+          .filter((line) => line.length > 0);
+      } catch {
+        // Best-effort: leave the list empty and rely on `detail`.
+      }
+    }
     try {
       shellRunner('git merge --abort', { encoding: 'utf-8', cwd: repoDir });
     } catch {
       // Best-effort cleanup if merge started.
     }
 
+    if (/conflict/i.test(detail)) {
+      return {
+        status: 'conflict',
+        detail,
+        conflictingFiles,
+      };
+    }
     return {
-      status: /conflict/i.test(detail) ? 'conflict' : 'unknown-failed',
+      status: 'unknown-failed',
       detail,
     };
   }
