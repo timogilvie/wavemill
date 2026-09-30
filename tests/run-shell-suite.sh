@@ -46,6 +46,7 @@ TESTS=(
   native-terminal-failure.test.sh
   native-failure-classification.test.sh
   challenger-transient-retry.test.sh
+  coding-dirty-handoff.test.sh
   parent-monitor-function-drift.test.sh
   save-task-state-canonicalization.test.sh
   linear-state-canonicalization.test.sh
