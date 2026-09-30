@@ -113,6 +113,7 @@ TESTS=(
   merge-retry-marker.test.sh
   queue-health.test.sh
   merge-queue-live-ci.test.sh
+  merge-queue-blocked-label.test.sh
   merge-lane-progress-artifacts.test.sh
   queue-planner-stdin-policy.test.sh
   openrouter-warning-surfaces.test.sh

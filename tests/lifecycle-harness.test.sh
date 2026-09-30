@@ -157,6 +157,9 @@ harness_extract_real_functions() {
     merge_retry_marker_until \
     lane_progress_patch_json \
     refresh_ready_merge_queue_tick \
+    pr_live_labels_json \
+    merge_queue_transition_report \
+    merge_queue_exclusion_report \
     wavemill_run_tsx_tool \
     get_main_head_sha \
     ready_stage_allows_merge \
@@ -1711,6 +1714,7 @@ EOF
     get_task_phase() { printf "%s\n" "ready"; }
     get_main_head_sha() { printf "%s\n" "sha-current"; }
     merge_queue_enabled() { return 0; }
+    pr_live_labels_json() { printf "[]\n"; }
     ready_queue_state() {
       local state_dir="$1"
       jq -r ".artifacts.queueState // empty" "$state_dir/.ready-result.json" 2>/dev/null || printf "\n"
@@ -1830,6 +1834,7 @@ EOF
     get_task_phase() { printf "%s\n" "ready"; }
     get_main_head_sha() { printf "%s\n" "sha-current"; }
     merge_queue_enabled() { return 0; }
+    pr_live_labels_json() { printf "[]\n"; }
     pr_state() {
       if [[ "${1:-}" == "838" ]]; then
         printf "%s\n" "CLOSED"
