@@ -9873,21 +9873,29 @@ failed_ready_recheck_gate() {
 #   error:<status>   — CLI reported another failure (fetch/push/etc.); the
 #                      caller lets the tick fall through to the normal path
 #
-# Returns 0 on `not-behind` and `updated`, 1 on `conflict:*` and `error:*`.
+# Always returns 0 (like `bounded_retry_gate`): every disposition is
+# encoded in the echoed string, so a `local x; x="$(try_update_...)"`
+# assignment never trips the parent script's `set -e`.
 try_update_branch_from_base() {
   local issue="$1" worktree="$2" branch="$3" base="$4"
   local compare_counts behind_count ahead_count fetch_rc=0
   local cli_output cli_status cli_files
 
-  [[ -n "$worktree" && -n "$branch" && -n "$base" ]] || { echo "error:invalid-args"; return 1; }
-  [[ -d "$worktree/.git" || -f "$worktree/.git" ]] || { echo "error:worktree-missing"; return 1; }
+  if [[ -z "$worktree" || -z "$branch" || -z "$base" ]]; then
+    echo "error:invalid-args"
+    return 0
+  fi
+  if [[ ! -d "$worktree/.git" && ! -f "$worktree/.git" ]]; then
+    echo "error:worktree-missing"
+    return 0
+  fi
 
   # Defensive fetch — the TS CLI also fetches, but doing it here first keeps
   # `coding_compare_commit_counts` honest against a stale ref cache.
   git -C "$worktree" fetch --quiet origin "$base" 2>/dev/null || fetch_rc=$?
   if (( fetch_rc != 0 )); then
     echo "error:fetch-failed"
-    return 1
+    return 0
   fi
 
   compare_counts="$(coding_compare_commit_counts "$worktree" "$base")"
@@ -9918,23 +9926,20 @@ try_update_branch_from_base() {
       # rev-parse HEAD` on the next tick will see the new SHA and drive the
       # bounded-retry reset via the composite key.
       echo "updated"
-      return 0
       ;;
     conflict)
       cli_files="$(printf '%s\n' "$cli_output" \
         | jq -r '(.conflictingFiles // [])[:20] | join(" ")' 2>/dev/null || echo "")"
       printf 'conflict:%s\n' "$cli_files"
-      return 1
       ;;
     dirty-worktree|fetch-failed|push-failed|unknown-failed)
       printf 'error:%s\n' "$parsed_status"
-      return 1
       ;;
     *)
       printf 'error:cli-exit-%s\n' "$cli_status"
-      return 1
       ;;
   esac
+  return 0
 }
 
 log_ready_failure_result() {

@@ -610,6 +610,11 @@ JSON
       return 1
     }
     get_main_head_sha() { printf "%s\n" "$MAIN_SHA_RETURN"; }
+    # HOK-3092: the failed-ready re-check loop now calls out to a helper
+    # that would fetch and merge origin/<base>. The transition harness
+    # runs against a scratch worktree with no origin, so short-circuit to
+    # "not-behind" — the normal re-check path is what these cases assert.
+    try_update_branch_from_base() { printf "not-behind\n"; return 0; }
     merge_queue_enabled() { [[ "$MERGE_QUEUE_ON" == "true" ]]; }
     # HOK-3102: default the session-capability resolvers to tend for the pre-3102
     # semantics the existing scenarios rely on.

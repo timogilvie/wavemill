@@ -204,7 +204,7 @@ else
   fail "updated invokes the update CLI"
 fi
 
-# 2c) conflict → returns 1, echoes conflict:<paths>.
+# 2c) conflict → returns 0 (disposition in stdout), echoes conflict:<paths>.
 dir="$TEST_TMP/case-conflict"
 setup_repo "$dir" yes
 TOOLS_DIR="$dir/tools"
@@ -218,10 +218,10 @@ npx() {
 }
 export -f npx
 result="$(try_update_branch_from_base HOK-XXXX "$dir/worktree" task/foo main)" && rc=0 || rc=$?
-check_eq "conflict returns 1" "$rc" "1"
+check_eq "conflict returns 0 (disposition in stdout)" "$rc" "0"
 check_contains "conflict echoes marker with paths" "$result" "conflict:README.md src/util.ts"
 
-# 2d) unknown-failed (e.g. bogus push failure) → returns 1, echoes error:*.
+# 2d) unknown-failed (e.g. bogus push failure) → returns 0, echoes error:*.
 dir="$TEST_TMP/case-error"
 setup_repo "$dir" yes
 TOOLS_DIR="$dir/tools"
@@ -235,12 +235,12 @@ npx() {
 }
 export -f npx
 result="$(try_update_branch_from_base HOK-XXXX "$dir/worktree" task/foo main)" && rc=0 || rc=$?
-check_eq "push-failed returns 1" "$rc" "1"
+check_eq "push-failed returns 0" "$rc" "0"
 check_eq "push-failed echoes error marker" "$result" "error:push-failed"
 
-# 2e) missing worktree directory is caller error.
+# 2e) missing worktree directory is caller error, but still returns 0.
 result="$(try_update_branch_from_base HOK-XXXX "$TEST_TMP/does-not-exist" task/foo main)" && rc=0 || rc=$?
-check_eq "missing worktree returns 1" "$rc" "1"
+check_eq "missing worktree returns 0" "$rc" "0"
 check_eq "missing worktree echoes shape hint" "$result" "error:worktree-missing"
 
 unset -f npx
