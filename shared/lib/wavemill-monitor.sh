@@ -11599,7 +11599,7 @@ launch_ready_phase() {
     bounded_retry_clear "$state_dir" "pending-ready-recheck"
     if [[ -n "$merge_needed_executor" ]]; then
       surface_merge_needed "$issue" "$pr_number" "$merge_needed_executor" "$state_dir" "$ready_head_sha" || true
-      log "info" "  $issue: PR #$pr_number ready; merge needed ($merge_needed_executor)"
+      log "info" "  $issue: PR #$pr_number ready, merge needed ($merge_needed_executor)"
     else
       log "debug" "  $issue: Canonicalized ready labels for PR #$pr_number"
       log "debug" "  $issue: Ready checks completed (verdict: ${verdict:-unknown})"
@@ -11836,7 +11836,7 @@ surface_merge_needed() {
   fi
   set_window_attention_state "$win" "needs-user" 2>/dev/null || true
 
-  log "status" "⏳ $issue → PR #$pr green; merge needed ($hint)"
+  log "status" "⏳ $issue → PR #$pr green, merge needed ($hint)"
 
   if declare -F wavemill_hook_write >/dev/null 2>&1; then
     WAVEMILL_SESSION="${SESSION:-}" WAVEMILL_ISSUE="$issue" \

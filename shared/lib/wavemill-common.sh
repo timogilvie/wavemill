@@ -5315,11 +5315,23 @@ _wavemill_session_cache_store() {
 _wavemill_session_mtime() {
   local file="$1"
   [[ -f "$file" ]] || { printf '0'; return; }
-  # macOS/BSD stat vs GNU stat.
-  if stat -f '%m' "$file" 2>/dev/null; then
+  # macOS/BSD stat (`-f FORMAT`) vs GNU stat (`-c FORMAT`). Capture the
+  # candidate output first so a GNU stat that treats `-f` as `--file-system`
+  # (and prints varying filesystem status like free-block counts) never
+  # leaks into the caller's cache key. Only emit a value when it looks
+  # like a plain integer epoch.
+  local out
+  out="$(stat -f '%m' "$file" 2>/dev/null)"
+  if [[ "$out" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$out"
     return
   fi
-  stat -c '%Y' "$file" 2>/dev/null || printf '0'
+  out="$(stat -c '%Y' "$file" 2>/dev/null)"
+  if [[ "$out" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$out"
+    return
+  fi
+  printf '0'
 }
 
 # Returns the session capability JSON to stdout. Prints nothing and returns 2

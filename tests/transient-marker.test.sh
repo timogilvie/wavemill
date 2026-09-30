@@ -6,6 +6,15 @@ set -euo pipefail
 # Source the marker helpers
 source shared/lib/transient-marker.sh
 
+# HOK-3102: marker_emit_finding is gated on `wavemill_session_has observer`
+# and fails closed when the resolver isn't loaded. This test suite doesn't
+# source wavemill-common.sh, so stub the predicate to keep observer emission
+# behavior under test.
+wavemill_session_has() {
+  [[ "${1:-}" == "observer" ]]
+}
+export -f wavemill_session_has
+
 # Test helpers
 pass_count=0
 fail_count=0
