@@ -24,6 +24,24 @@
 /** Canonical Linear issue ID shape: uppercase team key (digits allowed after the first letter), dash, number. */
 export const ISSUE_ID_RE = /^[A-Z][A-Z0-9]*-\d+$/;
 
+const issueIdSource = ISSUE_ID_RE.source.slice(1, -1);
+
+/** Anchored primary or challenger task ID. */
+export const TASK_ID_RE = new RegExp(`^${issueIdSource}(?:_c)?$`);
+/** A task ID followed by the slug in a tmux window name. */
+export const WINDOW_TASK_PREFIX_RE = new RegExp(`^(${issueIdSource}(?:_c)?)-(.+)$`);
+/** Find primary issue IDs throughout prose. */
+export const ISSUE_ID_GLOBAL_RE = new RegExp(`\\b${issueIdSource}\\b`, 'g');
+/** Find a task ID in prose or a log line. */
+export const ISSUE_ID_WORD_RE = new RegExp(`\\b${issueIdSource}(?:_c)?\\b`);
+/** Match a task ID at the end of a session filename. */
+export const TASK_ID_SUFFIX_RE = new RegExp(`-${issueIdSource}(?:_c)?$`);
+
+/** Match a Linear issue URL, optionally allowing lowercase pasted IDs. */
+export function linearIssueUrlRe(flags = ''): RegExp {
+  return new RegExp(`^https?://linear\\.app/[^/]+/issue/(${issueIdSource})(?:[/?#].*)?$`, flags);
+}
+
 /** Task-ID suffix that marks the challenger arm of a challenge pair. */
 export const CHALLENGER_SUFFIX = '_c';
 
@@ -32,9 +50,9 @@ export const CHALLENGER_SUFFIX = '_c';
  * `http(s)://linear.app/<workspace>/issue/<ID>` with an optional `/slug`,
  * `?query` or `#fragment` tail.
  */
-const LINEAR_URL_RE = /^https?:\/\/linear\.app\/[^/]+\/issue\/([A-Z][A-Z0-9]*-\d+)(?:[/?#].*)?$/;
+const LINEAR_URL_RE = linearIssueUrlRe();
 
-const CHALLENGER_TASK_ID_RE = /^([A-Z][A-Z0-9]*-\d+)_c$/;
+const CHALLENGER_TASK_ID_RE = new RegExp(`^(${issueIdSource})_c$`);
 
 export type TaskRole = 'primary' | 'challenger';
 

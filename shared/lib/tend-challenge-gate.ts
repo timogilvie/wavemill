@@ -1,3 +1,4 @@
+import { TASK_ID_RE } from './task-identity.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readActiveChallengeComparisons, type StoredChallengeComparison } from './challenge-comparison.ts';
@@ -41,7 +42,7 @@ export interface ChallengeLoserCleanupCandidate {
 }
 
 const BRANCH_NAME_PATTERN = /^[a-zA-Z0-9._/-]+$/;
-const TASK_IDENTIFIER_PATTERN = /^[A-Z]+-\d+(?:_c)?$/;
+const TASK_IDENTIFIER_PATTERN = TASK_ID_RE;
 const ORPHAN_PAIR_GRACE_MS = 60_000;
 const DEFAULT_HARD_FAILURE_RETRY_MAX = 2;
 const UNRESOLVABLE_REASON_SET = new Set<string>(UNRESOLVABLE_REASONS);

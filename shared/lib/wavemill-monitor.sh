@@ -4805,7 +4805,7 @@ notify_planning_rejection_agent() {
   [[ -z "$notified" ]] || return 0
 
   slug="$(basename "$feature_dir")"
-  if [[ "$win" =~ ^([A-Z]+-[0-9]+(_c)?)-(.+)$ ]]; then
+  if [[ "$win" =~ $TASK_IDENTITY_WINDOW_PREFIX_RE ]]; then
     issue="${BASH_REMATCH[1]}"
     local expected_worktree=""
     [[ -n "${WORKTREE_ROOT:-}" ]] && expected_worktree="${WORKTREE_ROOT}/${slug}"
@@ -11705,7 +11705,7 @@ check_ready_stage() {
 _resolve_window_attention_target() {
   local win="$1"
   local target="$win" issue="" slug=""
-  if [[ "$win" =~ ^([A-Z]+-[0-9]+(_c)?)-(.+)$ ]]; then
+  if [[ "$win" =~ $TASK_IDENTITY_WINDOW_PREFIX_RE ]]; then
     issue="${BASH_REMATCH[1]}"
     slug="${BASH_REMATCH[3]}"
     local expected_worktree=""
@@ -16239,7 +16239,7 @@ handle_advance_command() {
   fi
   issue="$1"
 
-  if [[ ! "$issue" =~ ^[A-Z][A-Z0-9]+-[0-9]+(_c)?$ ]]; then
+  if [[ ! "$issue" =~ ^${TASK_IDENTITY_TASK_ID_RE}$ ]]; then
     log_warn "usage: advance <issue-id>"
     MONITOR_COMMAND_STATUS="invalid"
     return 0
@@ -16358,7 +16358,7 @@ handle_re_review_command() {
   fi
   issue="$1"
 
-  if [[ ! "$issue" =~ ^[A-Z][A-Z0-9]+-[0-9]+(_c)?$ ]]; then
+  if [[ ! "$issue" =~ ^${TASK_IDENTITY_TASK_ID_RE}$ ]]; then
     log_warn "usage: re-review <issue-id>"
     MONITOR_COMMAND_STATUS="invalid"
     return 0

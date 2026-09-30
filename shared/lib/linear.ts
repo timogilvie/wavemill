@@ -1,3 +1,4 @@
+import { ISSUE_ID_RE } from './task-identity.ts';
 /**
  * Shared Linear API client used by both Claude and Codex tooling.
  *
@@ -434,11 +435,11 @@ async function request(query: string, variables?: Record<string, unknown>): Prom
  * Parse "HOK-123" into { teamKey: "HOK", number: 123 }
  */
 function parseIdentifier(identifier: string): ParsedIdentifier {
-  const match = identifier.match(/^([A-Z]+)-(\d+)$/);
-  if (!match) {
+  if (!ISSUE_ID_RE.test(identifier)) {
     throw new Error(`Invalid issue identifier: ${identifier}. Expected format: HOK-123`);
   }
-  return { teamKey: match[1], number: parseInt(match[2], 10) };
+  const [teamKey, number] = identifier.split('-');
+  return { teamKey, number: parseInt(number, 10) };
 }
 
 /**

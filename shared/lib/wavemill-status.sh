@@ -999,7 +999,7 @@ is_active() {
   local win="$2"
   [[ -d "$worktree" ]] && return 0
   local target="" issue="" slug=""
-  if [[ "$win" =~ ^([A-Z]+-[0-9]+(_c)?)-(.+)$ ]]; then
+  if [[ "$win" =~ $TASK_IDENTITY_WINDOW_PREFIX_RE ]]; then
     issue="${BASH_REMATCH[1]}"
     slug="${BASH_REMATCH[3]}"
     target="$(task_window_target "$issue" "$slug" "$worktree" 2>/dev/null || true)"

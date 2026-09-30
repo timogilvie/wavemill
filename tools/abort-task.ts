@@ -1,4 +1,5 @@
 #!/usr/bin/env -S npx tsx
+import { TASK_ID_RE } from '../shared/lib/task-identity.ts';
 
 import { existsSync, readFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
@@ -29,7 +30,7 @@ export interface AbortTaskResult {
   };
 }
 
-const issuePattern = /^[A-Z][A-Z0-9]+-[0-9]+(_c)?$/;
+const issuePattern = TASK_ID_RE;
 
 // Deliberately NOT a `terminal_stage_failure:`/`terminal_launch_failure:` value.
 // parseAbortFailureKind() returns null for this, so classifyArmFault() yields

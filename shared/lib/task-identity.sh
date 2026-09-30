@@ -28,8 +28,10 @@ WAVEMILL_TASK_IDENTITY_SH_LOADED=1
 # Matches ISSUE_ID_RE in task-identity.ts. Explicit letter lists keep the match
 # ASCII-uppercase-only regardless of the regex engine's locale collation.
 _TASK_IDENTITY_UPPER='ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-TASK_IDENTITY_ISSUE_ID_RE="[${_TASK_IDENTITY_UPPER}][${_TASK_IDENTITY_UPPER}0123456789]*-[0123456789]+"
-TASK_IDENTITY_CHALLENGER_SUFFIX="_c"
+readonly TASK_IDENTITY_ISSUE_ID_RE="[${_TASK_IDENTITY_UPPER}][${_TASK_IDENTITY_UPPER}0123456789]*-[0123456789]+"
+readonly TASK_IDENTITY_TASK_ID_RE="${TASK_IDENTITY_ISSUE_ID_RE}(_c)?"
+readonly TASK_IDENTITY_WINDOW_PREFIX_RE="^(${TASK_IDENTITY_TASK_ID_RE})-(.+)$"
+readonly TASK_IDENTITY_CHALLENGER_SUFFIX="_c"
 
 # Normalize a Linear issue ID or linear.app issue URL to a bare ID.
 _task_identity_normalize() {

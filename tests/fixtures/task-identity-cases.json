@@ -212,6 +212,22 @@
       }
     },
     {
+      "name": "short team key with digit",
+      "taskId": "AB2-1",
+      "task": null,
+      "expected": {
+        "parse": {
+          "taskId": "AB2-1",
+          "linearId": "AB2-1",
+          "role": "primary"
+        },
+        "linearId": "AB2-1",
+        "error": null,
+        "isChallenger": false,
+        "isLinearWriter": true
+      }
+    },
+    {
       "name": "team key with digits",
       "taskId": "H2O-42",
       "task": null,

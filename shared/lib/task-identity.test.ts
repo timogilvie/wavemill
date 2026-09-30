@@ -15,6 +15,10 @@ import { fileURLToPath } from 'node:url';
 import {
   CHALLENGER_SUFFIX,
   ISSUE_ID_RE,
+  ISSUE_ID_WORD_RE,
+  TASK_ID_RE,
+  TASK_ID_SUFFIX_RE,
+  WINDOW_TASK_PREFIX_RE,
   challengerTaskId,
   isChallengerTaskId,
   isLinearWriter,
@@ -67,6 +71,15 @@ test('constants', () => {
   assert.equal(CHALLENGER_SUFFIX, '_c');
   assert.ok(ISSUE_ID_RE.test('H2O-1'));
   assert.ok(!ISSUE_ID_RE.test('2HO-1'));
+});
+
+test('derived consumer patterns accept digit-bearing team keys', () => {
+  assert.ok(TASK_ID_RE.test('AB2-1'));
+  assert.ok(TASK_ID_RE.test('AB2-1_c'));
+  assert.ok(!TASK_ID_RE.test('AB2-1_c-extra'));
+  assert.deepEqual(WINDOW_TASK_PREFIX_RE.exec('AB2-1_c-coding')?.slice(1), ['AB2-1_c', 'coding']);
+  assert.ok(TASK_ID_SUFFIX_RE.test('coding-AB2-1_c'));
+  assert.equal('failed AB2-1_c task'.match(ISSUE_ID_WORD_RE)?.[0], 'AB2-1_c');
 });
 
 test('challengerTaskId builds the _c ID and is idempotent', () => {

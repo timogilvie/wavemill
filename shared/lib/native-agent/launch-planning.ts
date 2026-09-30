@@ -26,7 +26,7 @@ import {
   type ReadyNativeProviderEntry,
 } from './providers.ts';
 import { TranscriptWriter } from './transcript.ts';
-import { isLinearWriter } from '../task-identity.ts';
+import { isLinearWriter, parseTaskId } from '../task-identity.ts';
 import { SessionStreamWriter, resolveSessionEventStreamPath } from './session-stream.ts';
 import { captureToolDecisionsFromStream } from './tool-decision-capture.ts';
 import type { SessionStreamConfig } from './loop.ts';
@@ -282,16 +282,7 @@ function normalizeLinearIssueIdentifier(issue: string | undefined): string | nul
   if (!trimmed) {
     return null;
   }
-  const direct = trimmed.match(/^[A-Z][A-Z0-9]*-[0-9]+$/);
-  if (direct) {
-    return trimmed;
-  }
-  const challenger = trimmed.match(/^([A-Z][A-Z0-9]*-[0-9]+)_c$/);
-  if (challenger?.[1]) {
-    return challenger[1];
-  }
-  const url = trimmed.match(/^https?:\/\/linear\.app\/[^/]+\/issue\/([A-Z][A-Z0-9]*-[0-9]+)(?:[/?#].*)?$/);
-  return url?.[1] ?? null;
+  return parseTaskId(trimmed)?.linearId ?? null;
 }
 
 function routeTaskPacket(

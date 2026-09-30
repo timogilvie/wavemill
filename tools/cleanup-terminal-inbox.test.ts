@@ -188,3 +188,21 @@ test('bulk execute skips open and active tasks', async () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('cleanup accepts a digit-bearing team key', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cleanup-terminal-inbox-'));
+  try {
+    const stateFile = join(root, 'workflow-state.json');
+    writeFileSync(stateFile, JSON.stringify({ tasks: { 'AB2-1': state({}).tasks!['HOK-3005'] } }));
+    const decisions = await cleanupTerminalInbox({
+      repoDir: root,
+      stateFile,
+      issue: 'AB2-1',
+      deps: deps({ prs: { 101: mergedPr('101') } }),
+    });
+    assert.equal(decisions.length, 1);
+    assert.equal(decisions[0].issue, 'AB2-1');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

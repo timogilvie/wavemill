@@ -24,12 +24,14 @@ if [[ -n "$_wnd_dir" && -f "$_wnd_dir/task-progress.sh" ]] \
 fi
 unset _wnd_dir
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/task-identity.sh"
+
 HOOK_TTL_SECONDS="${WAVEMILL_HOOK_TTL_SECONDS:-300}"
 
 window_issue_id() {
   local window="$1"
 
-  if [[ "$window" =~ ^([[:alnum:]]+-[0-9]+)- ]]; then
+  if [[ "$window" =~ $TASK_IDENTITY_WINDOW_PREFIX_RE ]]; then
     printf '%s\n' "${BASH_REMATCH[1]}"
     return 0
   fi
@@ -46,7 +48,8 @@ hook_is_fresh_idle() {
   # not just the top level (a monitor pr_merged write hides the agent's
   # idle:Stop otherwise).
   if declare -F wavemill_hook_read >/dev/null 2>&1; then
-    if [[ "$hook_file" =~ /tmp/wavemill-([^/]+)-([A-Z][A-Z0-9]+-[0-9]+[A-Za-z0-9_-]*)\.hook$ ]]; then
+    local hook_re="/tmp/wavemill-([^/]+)-(${TASK_IDENTITY_ISSUE_ID_RE}[A-Za-z0-9_-]*)\.hook$"
+    if [[ "$hook_file" =~ $hook_re ]]; then
       session="${BASH_REMATCH[1]}"
       issue="${BASH_REMATCH[2]}"
       state="$(wavemill_hook_read "$session" "$issue" state --fresh --agent-only 2>/dev/null || true)"
