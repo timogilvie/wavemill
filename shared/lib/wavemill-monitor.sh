@@ -4169,6 +4169,14 @@ pane_release_preflight() {
     printf '%s\n' "flag-off"
     return 1
   fi
+  # HOK-3102: never hand a pane to the queue when no consumer is draining it.
+  # `no-queue-consumer` is deliberately NOT listed in
+  # pane_release_reason_actionable, so no blocked marker is written and any
+  # stale one is cleared next tick.
+  if ! merge_queue_enabled; then
+    printf '%s\n' "no-queue-consumer"
+    return 1
+  fi
   [[ -n "$state_dir" && -d "$state_dir" ]] || { printf '%s\n' "context-missing"; return 1; }
   [[ -n "$wt_dir" && -d "$wt_dir" ]] || { printf '%s\n' "worktree-missing"; return 1; }
   [[ -n "$pr_number" ]] || { printf '%s\n' "pr-missing"; return 1; }
@@ -8536,7 +8544,10 @@ merge_retry_marker_until() {
 }
 
 merge_queue_enabled() {
-  [[ "${MERGE_QUEUE_ENABLED:-true}" == "1" || "${MERGE_QUEUE_ENABLED:-true}" == "true" ]]
+  # HOK-3102: the mill-side merge-candidate lifecycle only makes sense when
+  # tend is running to drain the queue. Route through the single resolver.
+  # The MERGE_QUEUE_ENABLED env override is still honoured by the resolver.
+  wavemill_session_has mergeQueue "$REPO_DIR"
 }
 
 # Mirrors the tend process's per-PR lane-progress record (HOK-2919, written by
@@ -8939,7 +8950,18 @@ merge_queue_enrich_ready_artifacts() {
   local state_dir="$1" base_json="$2" mode="${3:-preserve}"
   local queue_state promoted_at target_base now extra_json
 
+  # HOK-3102: with no tend to drain the queue, mode=completed still needs a
+  # queueState so the dashboard/reader can surface "merge needed" reliably
+  # from .ready-result.json alone.
   if ! merge_queue_enabled; then
+    if [[ "$mode" == "completed" ]]; then
+      local executor
+      executor="$(wavemill_session_merge_executor "$REPO_DIR")"
+      if [[ "$executor" != "tend" ]]; then
+        jq -cn --argjson base "$base_json" --arg executor "$executor" '$base + {queueState:"merge-needed", mergeExecutor:$executor}'
+        return 0
+      fi
+    fi
     printf '%s\n' "$base_json"
     return 0
   fi
@@ -10799,6 +10821,22 @@ set_ready_pass_labels() {
     return 1
   fi
   head_sha="$github_head"
+
+  # HOK-3102: only publish the handoff and stamp wm:ready when tend will drain
+  # it. Otherwise surface merge-needed to the caller so the operator (or
+  # nothing, when useMillSession is off) can take over. The route stamp above
+  # is PR metadata, not queue work; it stays.
+  local _executor
+  _executor="$(wavemill_session_merge_executor "$REPO_DIR")"
+  if [[ "$_executor" == "unknown" ]]; then
+    printf '%s\n' '{"transitionFailure":{"stage":"capabilities-unknown"}}' >&2
+    return 1
+  fi
+  if [[ "$_executor" != "tend" ]]; then
+    printf '{"outcome":"merge-needed","mergeExecutor":"%s"}\n' "$_executor"
+    return 0
+  fi
+
   if ! (cd "$wt_dir" && npx tsx "$TOOLS_DIR/ready-tend-handoff.ts" checked "$pr_number" --feature-dir "$feature_dir" --head "$head_sha"); then
     printf '%s\n' '{"transitionFailure":{"stage":"ownership-changed"}}' >&2
     return 1
@@ -11441,6 +11479,12 @@ launch_ready_phase() {
       # mask the typed failure the helper printed.
       transition_stage=$(printf '%s\n' "$label_output" | jq -Rr 'fromjson? | .transitionFailure.stage? // empty' 2>/dev/null | tail -n 1)
       [[ -n "$transition_stage" ]] || transition_stage="github-api"
+      # HOK-3102: resolver unknown ⇒ transient. Re-check next tick, never
+      # record merge-needed on a resolver failure.
+      if [[ "$transition_stage" == "capabilities-unknown" ]]; then
+        log "info" "  $issue: session capability resolver unavailable - retrying next tick"
+        return 4
+      fi
       # HOK-3112: the PR head moved while Ready ran (or the checkout no longer
       # matches it). Nothing was published; this is transient, so re-check at
       # the new head on the next tick instead of parking the arm in needs-user.
@@ -11499,7 +11543,14 @@ launch_ready_phase() {
     fi
 
     local handoff_outcome=""
+    local merge_needed_executor=""
     [[ "$label_output" == *'"outcome":"tend-owned"'* ]] && handoff_outcome="tend-owned"
+    # HOK-3102: set_ready_pass_labels prints a merge-needed sentinel when the
+    # session merge executor is not tend. Route to the merge-needed surface.
+    if [[ "$label_output" == *'"outcome":"merge-needed"'* ]]; then
+      merge_needed_executor="$(printf '%s' "$label_output" | jq -r 'fromjson? | .mergeExecutor // "operator"' 2>/dev/null | tail -n 1)"
+      [[ -n "$merge_needed_executor" ]] || merge_needed_executor="operator"
+    fi
     # set_ready_pass_labels published at GitHub's head, which it verified equals
     # the checkout synced in the preflight; record that head when Ready's own
     # output omitted it.
@@ -11515,7 +11566,8 @@ launch_ready_phase() {
       --arg ci_conclusion "$ci_conclusion" \
       --arg required_source "$required_source" \
       --argjson required_contexts "$required_contexts_json" \
-      --arg handoff_outcome "$handoff_outcome" '
+      --arg handoff_outcome "$handoff_outcome" \
+      --arg merge_needed_executor "$merge_needed_executor" '
         {
           type:"ready",
           verdict:$verdict,
@@ -11523,14 +11575,20 @@ launch_ready_phase() {
           checksPassed:$checks_passed,
           mergeConflict:$merge_status,
           prNumber:$pr_number,
-          readyLabelsUpdated:true,
+          readyLabelsUpdated: ($merge_needed_executor == ""),
           readyBaseSha:$ready_base_sha,
           readyHeadSha:$ready_head_sha,
           ciConclusion:$ci_conclusion,
           requiredSource:$required_source,
           requiredContexts:$required_contexts,
-          readyTendHandoff: (if $handoff_outcome == "" then "ready-published" else "tend-claimed" end)
-        } | with_entries(select(.value != ""))
+          readyTendHandoff: (
+            if $merge_needed_executor != "" then "merge-needed"
+            elif $handoff_outcome == "" then "ready-published"
+            else "tend-claimed"
+            end
+          ),
+          mergeExecutor: (if $merge_needed_executor != "" then $merge_needed_executor else null end)
+        } | with_entries(select(.value != "" and .value != null))
       ')
     completed_artifacts_json=$(merge_queue_enrich_ready_artifacts "$state_dir" "$completed_artifacts_json" "completed")
     write_stage_result "$state_dir" "ready" "completed" "$current_agent" "$current_model" \
@@ -11539,8 +11597,13 @@ launch_ready_phase() {
     clear_failed_ready_recheck_state "$state_dir"
     bounded_retry_clear "$state_dir" "ready-remediation"
     bounded_retry_clear "$state_dir" "pending-ready-recheck"
-    log "debug" "  $issue: Canonicalized ready labels for PR #$pr_number"
-    log "debug" "  $issue: Ready checks completed (verdict: ${verdict:-unknown})"
+    if [[ -n "$merge_needed_executor" ]]; then
+      surface_merge_needed "$issue" "$pr_number" "$merge_needed_executor" "$state_dir" "$ready_head_sha" || true
+      log "info" "  $issue: PR #$pr_number ready, merge needed ($merge_needed_executor)"
+    else
+      log "debug" "  $issue: Canonicalized ready labels for PR #$pr_number"
+      log "debug" "  $issue: Ready checks completed (verdict: ${verdict:-unknown})"
+    fi
     return 0
   fi
 
@@ -11734,6 +11797,53 @@ set_window_attention_state() {
     clear_window_attention_state "$win"
   fi
   tmux refresh-client -S >/dev/null 2>&1 || true
+}
+
+# HOK-3102: surface a green PR that no automatic merge executor will merge.
+# Idempotent per (PR, head): a small marker in $state_dir dedupes the log line
+# and OSC notification across ticks. The `approval-needed` hook is monitor-
+# written (writer=monitor); it is NEVER treated as agent liveness evidence
+# (HOK-3101). It serves the notification and the operator hint only.
+surface_merge_needed() {
+  local issue="$1" pr="$2" executor="$3" state_dir="$4" head_sha="${5:-}"
+  [[ -n "$issue" && -n "$pr" && -n "$state_dir" ]] || return 0
+
+  local marker="$state_dir/.merge-needed-surfaced"
+  local marker_key="${pr}|${head_sha}|${executor}"
+  if [[ -f "$marker" ]] && [[ "$(cat "$marker" 2>/dev/null)" == "$marker_key" ]]; then
+    return 0
+  fi
+
+  local hint next_action
+  case "$executor" in
+    operator)
+      hint="integration off, so tend never merges"
+      next_action="merge PR #$pr"
+      ;;
+    none)
+      hint="integration on but this session runs no tend"
+      next_action="run \`wavemill tend --loop\` or merge PR #$pr"
+      ;;
+    *)
+      hint="no automatic merge executor"
+      next_action="merge PR #$pr"
+      ;;
+  esac
+
+  local win="$issue"
+  if [[ -n "${SLUG:-}" ]]; then
+    win="${issue}-${SLUG}"
+  fi
+  set_window_attention_state "$win" "needs-user" 2>/dev/null || true
+
+  log "status" "⏳ $issue → PR #$pr green, merge needed ($hint)"
+
+  if declare -F wavemill_hook_write >/dev/null 2>&1; then
+    WAVEMILL_SESSION="${SESSION:-}" WAVEMILL_ISSUE="$issue" \
+      wavemill_hook_write "approval-needed" "merge_needed" "$hint" "wavemill" "$next_action" "monitor" 2>/dev/null || true
+  fi
+
+  printf '%s' "$marker_key" > "$marker" 2>/dev/null || true
 }
 
 codex_has_pending_approval() {
@@ -18357,6 +18467,28 @@ monitor_issue_state() {
       current_main_sha=$(get_main_head_sha "${WORKTREE_ROOT}/${SLUG}" "$BASE_BRANCH")
       queue_state=$(ready_queue_state "$ready_state_dir_path")
 
+      # HOK-3102: with no tend to merge, the ready pass parked as merge-needed.
+      # If integration was later turned on, re-run ready so a fresh handoff can
+      # publish. Otherwise keep the arm parked as needs-user.
+      if [[ "$queue_state" == "merge-needed" ]]; then
+        local _executor_now
+        _executor_now="$(wavemill_session_merge_executor "$REPO_DIR")"
+        if [[ "$_executor_now" == "tend" ]]; then
+          if [[ -n "$current_main_sha" && "$stored_base_sha" != "$current_main_sha" ]]; then
+            mark_ready_stale "$ISSUE" "$ready_state_dir_path" "$stored_base_sha" "$current_main_sha"
+          else
+            mark_ready_stale "$ISSUE" "$ready_state_dir_path" "$stored_base_sha" "$stored_base_sha"
+          fi
+          log "status" "$ISSUE → merge executor is now tend; re-running ready for PR #$PR"
+          # Fall through to the main-advanced re-run path below by continuing.
+          queue_state=""
+        else
+          set_window_attention_state "$WIN" "needs-user"
+          active_count=$((active_count + 1))
+          return 0
+        fi
+      fi
+
       if [[ -n "$current_main_sha" && "$stored_base_sha" != "$current_main_sha" ]]; then
         if merge_queue_enabled; then
           if [[ "$queue_state" != "merge-candidate" ]]; then
@@ -18934,11 +19066,8 @@ LAST_READY_WATCHDOG_FAILURE_DETAIL=""
 LAST_READY_WATCHDOG_FAILURE_AT=0
 
 backstage_health_enabled() {
-  local merged enabled use_mill_session
-  merged="$(wavemill_load_config "$REPO_DIR")"
-  enabled="$(printf '%s' "$merged" | jq -r '.integration.enabled // false' 2>/dev/null || echo false)"
-  use_mill_session="$(printf '%s' "$merged" | jq -r '.integration.useMillSession // true' 2>/dev/null || echo true)"
-  [[ "$enabled" == "true" && "$use_mill_session" == "true" ]]
+  # HOK-3102: single-resolver gate.
+  wavemill_session_has tend "$REPO_DIR"
 }
 
 backstage_restart_backoff_seconds() {
@@ -19181,12 +19310,8 @@ backstage_tend_restart_diagnostic() {
 }
 
 observer_health_enabled() {
-  local merged enabled use_mill_session
-  merged="$(wavemill_load_config "$REPO_DIR")"
-  enabled="$(printf '%s' "$merged" | jq -r '.integration.enabled // false' 2>/dev/null || echo false)"
-  use_mill_session="$(printf '%s' "$merged" | jq -r '.integration.useMillSession // true' 2>/dev/null || echo true)"
-  [[ "$enabled" == "true" && "$use_mill_session" == "true" ]] || return 1
-  wavemill_observer_config_enabled "$merged"
+  # HOK-3102: single-resolver gate.
+  wavemill_session_has observer "$REPO_DIR"
 }
 
 classify_backstage_observer_health() {

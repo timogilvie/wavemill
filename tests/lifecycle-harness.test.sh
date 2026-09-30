@@ -610,6 +610,11 @@ harness_run_tick() {
     _restore_inflight_task_window_if_missing() { _RESTORE_STATE="none"; return 0; }
     check_routing_complete() { return 1; }
     merge_queue_enabled() { return 1; }
+    # HOK-3102: default session-capability stubs (tend); scenarios override.
+    wavemill_session_merge_executor() { printf "tend\n"; }
+    wavemill_session_has() { case "${1:-}" in tend|observer|mergeQueue) return 0 ;; *) return 1 ;; esac; }
+    wavemill_session_capabilities_json() { printf '{"tend":true,"observer":false,"mergeExecutor":"tend","mergeQueue":true}'; }
+    surface_merge_needed() { :; }
     ready_queue_state() { printf "\n"; }
     ready_queue_field() { printf "\n"; }
     ready_live_ci_json() { printf "%s\n" "{\"conclusion\":\"pass\",\"headSha\":\"head\",\"mergeStateStatus\":\"CLEAN\",\"observed\":1,\"requiredContexts\":[],\"checks\":[]}"; }

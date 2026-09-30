@@ -36,6 +36,7 @@ import {
   selectChallengeEvalScore,
 } from '../shared/lib/challenge-score-selector.ts';
 import { loadWavemillConfig } from '../shared/lib/config.ts';
+import { planComparisonPrActions } from '../shared/lib/pr-comparison-actions.ts';
 import { resolveEvalsDir } from '../shared/lib/evals-paths.ts';
 import {
   ARBITER_JUDGE_PROMPT_TEMPLATE_FILE,
@@ -213,7 +214,7 @@ runTool({
     'repo-dir': { type: 'string', description: 'Repository directory' },
     model: { type: 'string', description: 'Comparison judge model override' },
     comment: { type: 'boolean', description: 'Post recommendation comments on both PRs' },
-    'auto-merge': { type: 'boolean', description: 'Merge winner and close loser after comparison' },
+    'auto-merge': { type: 'boolean', description: 'DEPRECATED (HOK-3102): compare-prs never merges. The single merge executor (tend, via challenge.autoMergeWinner) merges winners. Passing this flag now only prints a warning.' },
     'check-only': { type: 'boolean', description: 'Only verify required eval records exist' },
     'presentation-order': { type: 'string', description: 'Judge presentation order: primary-first, challenger-first, or random' },
     'fork-commit': { type: 'string', description: 'Shared fork commit for post-fork delta comparison (override; falls back to challengeIntent)' },
@@ -223,6 +224,11 @@ runTool({
     const resultFile = args['result-file'] as string | undefined;
     let exitCode = 0;
     const repoDir = (args['repo-dir'] as string) || process.cwd();
+    if (args['auto-merge']) {
+      // HOK-3102: `compare-prs` never merges. The single merge executor (tend,
+      // via challenge.autoMergeWinner) is the only path that merges winners.
+      console.warn('compare-prs: --auto-merge is deprecated and ignored (HOK-3102). Winners now reach a merge only through the session merge executor.');
+    }
     const issueId = args.issue as string;
     const pairId = args['pair-id'] as string;
     const primaryPr = args['primary-pr'] as string;
@@ -564,21 +570,28 @@ runTool({
           routingSummary,
         });
 
-        if (args.comment || config.challenge?.autoMergeWinner) {
-          withBodyFile(primaryCommentBody, (bodyFile) => {
-            tryGh(['pr', 'comment', primaryNumber, '--body-file', bodyFile], repoDir, `comment primary PR ${primaryNumber}`);
+        {
+          const skippedActions = planComparisonPrActions({
+            outcome: 'skipped-identical',
+            winner: skippedRecord.winner ?? null,
+            primary: { number: primaryNumber, commentBody: primaryCommentBody },
+            challenger: { number: challengerNumber, commentBody: challengerCommentBody },
+            autoMergeWinner: !!config.challenge?.autoMergeWinner,
+            comment: !!args.comment,
+            winnerModel: skippedRecord.winnerModel,
           });
-          withBodyFile(challengerCommentBody, (bodyFile) => {
-            tryGh(['pr', 'comment', challengerNumber, '--body-file', bodyFile], repoDir, `comment challenger PR ${challengerNumber}`);
-          });
-        }
-
-        if (args['auto-merge'] || config.challenge?.autoMergeWinner) {
-          tryGh(['pr', 'merge', primaryNumber, '--merge', '--delete-branch=false'], repoDir, `merge winner PR ${primaryNumber}`);
-          withBodyFile('Closing after skipped challenge comparison. Routing dimensions were identical.', (bodyFile) => {
-            tryGh(['pr', 'comment', challengerNumber, '--body-file', bodyFile], repoDir, `comment loser PR ${challengerNumber}`);
-          });
-          tryGh(['pr', 'close', challengerNumber], repoDir, `close loser PR ${challengerNumber}`);
+          for (const action of skippedActions) {
+            if (action.kind === 'comment') {
+              withBodyFile(action.body, (bodyFile) => {
+                tryGh(['pr', 'comment', action.pr, '--body-file', bodyFile], repoDir, `comment PR ${action.pr}`);
+              });
+            } else if (action.kind === 'close') {
+              withBodyFile(action.reasonBody, (bodyFile) => {
+                tryGh(['pr', 'comment', action.pr, '--body-file', bodyFile], repoDir, `comment loser PR ${action.pr}`);
+              });
+              tryGh(['pr', 'close', action.pr], repoDir, `close loser PR ${action.pr}`);
+            }
+          }
         }
 
         console.log(JSON.stringify(skippedRecord, null, 2));
@@ -971,26 +984,28 @@ runTool({
         routingSummary,
       });
 
-      if (args.comment || config.challenge?.autoMergeWinner) {
-        withBodyFile(primaryCommentBody, (bodyFile) => {
-          tryGh(['pr', 'comment', primaryNumber, '--body-file', bodyFile], repoDir, `comment primary PR ${primaryNumber}`);
+      {
+        const comparedActions = planComparisonPrActions({
+          outcome: 'compared',
+          winner: (record.winner === 'primary' || record.winner === 'challenger') ? record.winner : null,
+          primary: { number: primaryNumber, commentBody: primaryCommentBody },
+          challenger: { number: challengerNumber, commentBody: challengerCommentBody },
+          autoMergeWinner: !!config.challenge?.autoMergeWinner,
+          comment: !!args.comment,
+          winnerModel: record.winnerModel,
         });
-        withBodyFile(challengerCommentBody, (bodyFile) => {
-          tryGh(['pr', 'comment', challengerNumber, '--body-file', bodyFile], repoDir, `comment challenger PR ${challengerNumber}`);
-        });
-      }
-
-      if (args['auto-merge'] || config.challenge?.autoMergeWinner) {
-        const winnerNumber = record.winner === 'primary' ? primaryNumber : challengerNumber;
-        const loserNumber = record.winner === 'primary' ? challengerNumber : primaryNumber;
-        tryGh(['pr', 'merge', winnerNumber, '--merge', '--delete-branch=false'], repoDir, `merge winner PR ${winnerNumber}`);
-        const closeSummary = record.winnerModel
-          ? `Closing after challenge comparison. Recommended winner: ${record.winnerModel}`
-          : `Closing after challenge comparison. Recommended side: ${record.winner}; model attribution unavailable`;
-        withBodyFile(closeSummary, (bodyFile) => {
-          tryGh(['pr', 'comment', loserNumber, '--body-file', bodyFile], repoDir, `comment loser PR ${loserNumber}`);
-        });
-        tryGh(['pr', 'close', loserNumber], repoDir, `close loser PR ${loserNumber}`);
+        for (const action of comparedActions) {
+          if (action.kind === 'comment') {
+            withBodyFile(action.body, (bodyFile) => {
+              tryGh(['pr', 'comment', action.pr, '--body-file', bodyFile], repoDir, `comment PR ${action.pr}`);
+            });
+          } else if (action.kind === 'close') {
+            withBodyFile(action.reasonBody, (bodyFile) => {
+              tryGh(['pr', 'comment', action.pr, '--body-file', bodyFile], repoDir, `comment loser PR ${action.pr}`);
+            });
+            tryGh(['pr', 'close', action.pr], repoDir, `close loser PR ${action.pr}`);
+          }
+        }
       }
 
       console.log(JSON.stringify(record, null, 2));

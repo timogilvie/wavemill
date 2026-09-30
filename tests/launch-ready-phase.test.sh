@@ -549,6 +549,12 @@ EOF
     get_main_head_sha() { printf "%s\n" "main456"; }
     merge_queue_enabled() { return 1; }
     merge_queue_enrich_ready_artifacts() { printf "%s\n" "$2"; }
+    # HOK-3102: default the session-capability resolvers to tend so extracted
+    # set_ready_pass_labels sees the pre-3102 semantics (handoff is published).
+    wavemill_session_merge_executor() { printf "tend\n"; }
+    wavemill_session_has() { case "${1:-}" in tend|observer|mergeQueue) return 0 ;; *) return 1 ;; esac; }
+    wavemill_session_capabilities_json() { printf '{"tend":true,"observer":false,"mergeExecutor":"tend","mergeQueue":true}'; }
+    surface_merge_needed() { :; }
     write_stage_result() {
       printf -v WRITE_STAGE_CALLS "%s%s|%s|%s|%s|%s|%s|%s\n" \
         "$WRITE_STAGE_CALLS" "${1-}" "${2-}" "${3-}" "${4-}" "${5-}" "${6-}" "${7-}"

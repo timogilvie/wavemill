@@ -1142,7 +1142,16 @@ wavemill_migrate_controller_observer_artifact() {
     fi
   fi
 
-  if [[ -n "${REPO_DIR:-}" && -d "${REPO_DIR:-}" && "$REPO_DIR" != "$wt_dir" ]]; then
+  # HOK-3102 (D7): with the observer off, nothing will ever read the migrated
+  # artifact; deleting the stray file avoids growing dead state on disk.
+  local _observer_on=1
+  if declare -F wavemill_session_has >/dev/null 2>&1; then
+    if ! wavemill_session_has observer "${REPO_DIR:-$PWD}" 2>/dev/null; then
+      _observer_on=0
+    fi
+  fi
+
+  if (( _observer_on == 1 )) && [[ -n "${REPO_DIR:-}" && -d "${REPO_DIR:-}" && "$REPO_DIR" != "$wt_dir" ]]; then
     mkdir -p "$REPO_DIR/.wavemill" 2>/dev/null || true
     cat "$artifact" >> "$REPO_DIR/$WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT" 2>/dev/null || true
   fi
@@ -5249,6 +5258,204 @@ wavemill_observer_max_log_lines() {
   printf '%s\n' "$value"
 }
 
+# ─── Session capabilities (HOK-3102) ─────────────────────────────────────────
+#
+# Shell wrappers around `resolveSessionCapabilities` (shared/lib/config.ts,
+# via `tools/session-capabilities.ts`). Every producer of consumer-bound work
+# must check the matching consumer through these helpers before producing work;
+# private jq re-derivations from `integration.enabled` etc. are forbidden.
+#
+# Caching. Results are cached in a small shell-global map keyed by the tuple
+#   (repo_dir, mtime .wavemill-config.json, mtime .wavemill-config.local.json,
+#    MERGE_QUEUE_ENABLED, WAVEMILL_SESSION_CAPABILITIES_JSON).
+# Any change to the tuple invalidates the entry, so a config edit mid-run is
+# picked up on the next call while the monitor spawns tsx only once per
+# config change per tick (REQ-N1).
+#
+# Failure handling. If the tsx spawn fails and a cached value exists, we use
+# it; otherwise `wavemill_session_capabilities_json` prints nothing and
+# returns rc=2. Predicate `wavemill_session_has` maps unknown → 1 (false)
+# — skipping one tick of queue work is harmless. Producers of irreversible
+# work (the ready-pass handoff) MUST treat unknown as transient and retry.
+
+# Global shell map: key -> JSON. Bash 3 arrays via two parallel arrays.
+if ! declare -p _WAVEMILL_SESSION_CAP_KEYS >/dev/null 2>&1; then
+  # shellcheck disable=SC2034
+  _WAVEMILL_SESSION_CAP_KEYS=()
+  # shellcheck disable=SC2034
+  _WAVEMILL_SESSION_CAP_VALUES=()
+fi
+_WAVEMILL_SESSION_CAP_WARNED=""
+
+_wavemill_session_cache_lookup() {
+  local key="$1"
+  local i
+  for ((i = 0; i < ${#_WAVEMILL_SESSION_CAP_KEYS[@]}; i++)); do
+    if [[ "${_WAVEMILL_SESSION_CAP_KEYS[$i]}" == "$key" ]]; then
+      printf '%s' "${_WAVEMILL_SESSION_CAP_VALUES[$i]}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+_wavemill_session_cache_store() {
+  local key="$1" value="$2"
+  local i
+  for ((i = 0; i < ${#_WAVEMILL_SESSION_CAP_KEYS[@]}; i++)); do
+    if [[ "${_WAVEMILL_SESSION_CAP_KEYS[$i]}" == "$key" ]]; then
+      _WAVEMILL_SESSION_CAP_VALUES[$i]="$value"
+      return 0
+    fi
+  done
+  _WAVEMILL_SESSION_CAP_KEYS+=("$key")
+  _WAVEMILL_SESSION_CAP_VALUES+=("$value")
+}
+
+_wavemill_session_mtime() {
+  local file="$1"
+  [[ -f "$file" ]] || { printf '0'; return; }
+  # macOS/BSD stat (`-f FORMAT`) vs GNU stat (`-c FORMAT`). Capture the
+  # candidate output first so a GNU stat that treats `-f` as `--file-system`
+  # (and prints varying filesystem status like free-block counts) never
+  # leaks into the caller's cache key. Only emit a value when it looks
+  # like a plain integer epoch.
+  local out
+  out="$(stat -f '%m' "$file" 2>/dev/null)"
+  if [[ "$out" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$out"
+    return
+  fi
+  out="$(stat -c '%Y' "$file" 2>/dev/null)"
+  if [[ "$out" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$out"
+    return
+  fi
+  printf '0'
+}
+
+# Returns the session capability JSON to stdout. Prints nothing and returns 2
+# on unrecoverable failure with no cache.
+wavemill_session_capabilities_json() {
+  local repo_dir="${1:-${REPO_DIR:-$PWD}}"
+
+  # Explicit override (tests, emergency operator override).
+  if [[ -n "${WAVEMILL_SESSION_CAPABILITIES_JSON:-}" ]]; then
+    printf '%s' "$WAVEMILL_SESSION_CAPABILITIES_JSON"
+    return 0
+  fi
+
+  local base_mtime lcl_mtime env_key key cached
+  base_mtime="$(_wavemill_session_mtime "$repo_dir/.wavemill-config.json")"
+  lcl_mtime="$(_wavemill_session_mtime "$repo_dir/.wavemill-config.local.json")"
+  env_key="${MERGE_QUEUE_ENABLED:-}"
+  key="${repo_dir}|${base_mtime}|${lcl_mtime}|${env_key}"
+
+  if cached="$(_wavemill_session_cache_lookup "$key")"; then
+    printf '%s' "$cached"
+    return 0
+  fi
+
+  local tools_dir="${TOOLS_DIR:-${repo_dir%/}/tools}"
+  local tool="$tools_dir/session-capabilities.ts"
+  if [[ ! -f "$tool" ]]; then
+    # Fall back to whichever cached value we already have for any key on this repo.
+    local i
+    for ((i = 0; i < ${#_WAVEMILL_SESSION_CAP_KEYS[@]}; i++)); do
+      if [[ "${_WAVEMILL_SESSION_CAP_KEYS[$i]}" == "$repo_dir"* ]]; then
+        printf '%s' "${_WAVEMILL_SESSION_CAP_VALUES[$i]}"
+        return 0
+      fi
+    done
+    if [[ "$_WAVEMILL_SESSION_CAP_WARNED" != "$repo_dir" ]]; then
+      printf 'wavemill_session_capabilities_json: %s missing\n' "$tool" >&2
+      _WAVEMILL_SESSION_CAP_WARNED="$repo_dir"
+    fi
+    return 2
+  fi
+
+  local output rc
+  output="$(npx tsx "$tool" --repo-dir "$repo_dir" 2>/dev/null)"
+  rc=$?
+  if [[ $rc -ne 0 || -z "$output" ]]; then
+    local i
+    for ((i = 0; i < ${#_WAVEMILL_SESSION_CAP_KEYS[@]}; i++)); do
+      if [[ "${_WAVEMILL_SESSION_CAP_KEYS[$i]}" == "$repo_dir"* ]]; then
+        printf '%s' "${_WAVEMILL_SESSION_CAP_VALUES[$i]}"
+        return 0
+      fi
+    done
+    if [[ "$_WAVEMILL_SESSION_CAP_WARNED" != "$repo_dir" ]]; then
+      printf 'wavemill_session_capabilities_json: resolver spawn failed for %s (rc=%d)\n' "$repo_dir" "$rc" >&2
+      _WAVEMILL_SESSION_CAP_WARNED="$repo_dir"
+    fi
+    return 2
+  fi
+
+  _wavemill_session_cache_store "$key" "$output"
+  printf '%s' "$output"
+  return 0
+}
+
+# Predicate: exit 0 (true) if the named capability is on, 1 (false) otherwise.
+# Unknown resolver state ⇒ 1 (false), so hot-path gates fail closed (D3).
+# Accepts: tend | observer | mergeQueue
+wavemill_session_has() {
+  local capability="$1"
+  local json rc
+  json="$(wavemill_session_capabilities_json "${2:-${REPO_DIR:-$PWD}}")"
+  rc=$?
+  [[ $rc -eq 0 && -n "$json" ]] || return 1
+  local value
+  value="$(printf '%s' "$json" | jq -r --arg k "$capability" '.[$k] // false' 2>/dev/null || echo false)"
+  [[ "$value" == "true" ]]
+}
+
+# Print the merge executor: tend | operator | none | unknown
+wavemill_session_merge_executor() {
+  local json rc
+  json="$(wavemill_session_capabilities_json "${1:-${REPO_DIR:-$PWD}}")"
+  rc=$?
+  if [[ $rc -ne 0 || -z "$json" ]]; then
+    printf 'unknown\n'
+    return 0
+  fi
+  local value
+  value="$(printf '%s' "$json" | jq -r '.mergeExecutor // "unknown"' 2>/dev/null || echo unknown)"
+  case "$value" in
+    tend|operator|none) printf '%s\n' "$value" ;;
+    *) printf 'unknown\n' ;;
+  esac
+}
+
+# Testing hook: clear the shell-side cache.
+wavemill_session_cache_reset() {
+  # shellcheck disable=SC2034
+  _WAVEMILL_SESSION_CAP_KEYS=()
+  # shellcheck disable=SC2034
+  _WAVEMILL_SESSION_CAP_VALUES=()
+  _WAVEMILL_SESSION_CAP_WARNED=""
+}
+
+# HOK-3102 (D7): with the observer off, remove the stale findings backlog that
+# nothing will ever read. Idempotent; safe to call from startup.
+_cleanup_stale_observer_findings() {
+  local repo_dir="${1:-${REPO_DIR:-$PWD}}"
+  local findings_file="$repo_dir/.wavemill/observer-findings.jsonl"
+  [[ -f "$findings_file" ]] || return 0
+  if wavemill_session_has observer "$repo_dir"; then
+    return 0
+  fi
+  local warn_marker="$repo_dir/.wavemill/.observer-findings-cleanup-warned"
+  rm -f "$findings_file" 2>/dev/null || true
+  if [[ ! -f "$warn_marker" ]]; then
+    if declare -F startup_log >/dev/null 2>&1; then
+      startup_log "Observer disabled: removed stale .wavemill/observer-findings.jsonl (nothing would ever read it)"
+    fi
+    : > "$warn_marker" 2>/dev/null || true
+  fi
+}
+
 # Report whether a Linear credential is available WITHOUT ever printing its
 # value. Returns 0 (ready) when LINEAR_API_KEY is a non-empty environment
 # variable, or when a non-empty LINEAR_API_KEY assignment exists in the repo's
@@ -6265,7 +6472,7 @@ def wm_retention_required:
 def wm_has_retention:
   ((.lifecycle.retention.reason // "") | type == "string" and length > 0);
 
-def wm_normalized_lifecycle($baseBranch; $baseSha; $integrationMode; $mergeMethod; $remoteDeletionAllowed; $challengeRole; $challengePair; $session; $runEpoch; $windowId; $requireConfirm; $baseBranchSource; $requireConfirmSource; $mergeMethodSource; $actor):
+def wm_normalized_lifecycle($baseBranch; $baseSha; $integrationMode; $mergeExecutor; $mergeMethod; $remoteDeletionAllowed; $challengeRole; $challengePair; $session; $runEpoch; $windowId; $requireConfirm; $baseBranchSource; $requireConfirmSource; $mergeMethodSource; $actor):
   . as $task
   | ($task.lifecycle // {}) as $l
   | ($task | wm_workflow_outcome) as $outcome
@@ -6274,6 +6481,7 @@ def wm_normalized_lifecycle($baseBranch; $baseSha; $integrationMode; $mergeMetho
       baseBranch: $baseBranch,
       baseSha: $baseSha,
       integrationMode: $integrationMode,
+      mergeExecutor: (if ($mergeExecutor // "") | IN("tend","operator","none") then $mergeExecutor else null end),
       mergeMethod: $mergeMethod,
       requireConfirm: ($requireConfirm == "true"),
       remoteBranchDeletionPolicy: {
@@ -6292,7 +6500,7 @@ def wm_normalized_lifecycle($baseBranch; $baseSha; $integrationMode; $mergeMetho
         mergeMethod: $mergeMethodSource,
         remoteBranchDeletionPolicy: "launch-contract"
       }
-    }) as $contract
+    } | with_entries(select(.value != null))) as $contract
   | ($l.deliveryEvidence // {}) as $delivery
   | ($l + {
       schemaVersion: 1,
@@ -6725,8 +6933,22 @@ save_task_state() {
 
   effective_base_branch="$(effective_task_base_branch "$issue" 2>/dev/null || printf '%s\n' "${BASE_BRANCH:-}")"
   effective_base_sha="$(task_lifecycle_effective_base_sha "$effective_base_branch" 2>/dev/null || true)"
-  integration_mode="direct-monitor"
-  [[ "${MERGE_QUEUE_ENABLED:-true}" == "1" || "${MERGE_QUEUE_ENABLED:-true}" == "true" ]] && integration_mode="merge-queue"
+  # HOK-3102: record the real executor. Legacy contracts carrying
+  # "direct-monitor" still parse; this is a free-text field on the wire.
+  local _executor
+  _executor="$(wavemill_session_merge_executor "${REPO_DIR:-$PWD}")"
+  case "$_executor" in
+    tend)
+      if wavemill_session_has mergeQueue "${REPO_DIR:-$PWD}"; then
+        integration_mode="merge-queue"
+      else
+        integration_mode="tend"
+      fi
+      ;;
+    operator) integration_mode="operator-merge" ;;
+    none) integration_mode="no-merge-executor" ;;
+    *)     integration_mode="direct-monitor" ;;
+  esac
   merge_method="${INTEGRATION_MERGE_METHOD:-squash}"
   require_confirm="${REQUIRE_CONFIRM:-true}"
   [[ "$require_confirm" == "1" ]] && require_confirm="true"
@@ -6777,7 +6999,7 @@ save_task_state() {
       | if $phase != "" then .tasks[$issue].phase = $phase else . end
       | if $windowId != "" then .tasks[$issue].windowId = $windowId else . end
       | if $traceId != "" then .tasks[$issue].traceId = $traceId else . end
-      | .tasks[$issue].lifecycle = (.tasks[$issue] | wm_normalized_lifecycle($baseBranch; $baseSha; $integrationMode; $mergeMethod; $remoteDeletionAllowed; $challengeRole; $challengePair; $session; $runEpoch; (.windowId // ""); $requireConfirm; $baseBranchSource; $requireConfirmSource; $mergeMethodSource; "save_task_state"))
+      | .tasks[$issue].lifecycle = (.tasks[$issue] | wm_normalized_lifecycle($baseBranch; $baseSha; $integrationMode; $mergeExecutor; $mergeMethod; $remoteDeletionAllowed; $challengeRole; $challengePair; $session; $runEpoch; (.windowId // ""); $requireConfirm; $baseBranchSource; $requireConfirmSource; $mergeMethodSource; "save_task_state"))
       | if ($existing.attempt // null) != null then .tasks[$issue].lifecycle.attempt = $existing.attempt else . end
       | if ($existing.prReconciliation // null) != null then .tasks[$issue].lifecycle.prReconciliation = $existing.prReconciliation else . end
       | if $pr != "" then .tasks[$issue].lifecycle.deliveryEvidence.prNumber = $pr else . end')" \
@@ -6791,7 +7013,7 @@ save_task_state() {
      --arg phase "$phase" --arg windowId "$window_id" \
      --arg traceId "$_trace_id_for_state" \
      --arg baseBranch "$effective_base_branch" --arg baseSha "$effective_base_sha" \
-     --arg integrationMode "$integration_mode" --arg mergeMethod "$merge_method" \
+     --arg integrationMode "$integration_mode" --arg mergeExecutor "$_executor" --arg mergeMethod "$merge_method" \
      --arg requireConfirm "$require_confirm" \
      --arg baseBranchSource "$base_branch_source" \
      --arg requireConfirmSource "$require_confirm_source" \
