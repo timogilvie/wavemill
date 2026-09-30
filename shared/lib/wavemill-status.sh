@@ -2210,9 +2210,36 @@ backstage_health_dashboard_line() {
   return 0
 }
 
+# HOK-3123: surface the tool-choice-gate progress line beneath the backstage
+# health row so operators see G2 progress toward the I-27 initiative without
+# reading .wavemill/backstage-health.json by hand.
+tool_choice_gate_dashboard_line() {
+  local state_file="${1:-}" state_dir health_file progress_line last_run_status last_run_at
+  [[ -n "$state_file" ]] || return 1
+  state_dir="$(dirname "$state_file" 2>/dev/null || echo '')"
+  [[ -n "$state_dir" ]] || return 1
+  health_file="${state_dir}/backstage-health.json"
+  [[ -r "$health_file" ]] || return 1
+
+  progress_line="$(jq -r '.services.toolChoiceGate.progressLine // empty' "$health_file" 2>/dev/null || true)"
+  [[ -n "$progress_line" ]] || return 1
+  last_run_status="$(jq -r '.services.toolChoiceGate.lastRunStatus // empty' "$health_file" 2>/dev/null || true)"
+  last_run_at="$(jq -r '.services.toolChoiceGate.lastRunAt // empty' "$health_file" 2>/dev/null || true)"
+
+  printf '%s' "$progress_line"
+  if [[ -n "$last_run_status" ]]; then
+    printf ' [%s' "$last_run_status"
+    if [[ -n "$last_run_at" ]]; then
+      printf ' @ %s' "$last_run_at"
+    fi
+    printf ']'
+  fi
+  return 0
+}
+
 render_dashboard() {
   local tasks line issue slug branch worktree task_status task_phase state_pr
-  local win agent_state classification task_data free_slots queue_owned_tasks usage_tip openrouter_warning backstage_health_line malformed_challenge_warning resource_disposition workflow_outcome
+  local win agent_state classification task_data free_slots queue_owned_tasks usage_tip openrouter_warning backstage_health_line tool_choice_gate_line malformed_challenge_warning resource_disposition workflow_outcome
   declare -ga inbox_tasks=()
   declare -ga active_tasks=()
   # HOK-3068: terminal work with retained resources is surfaced only here.
@@ -2246,6 +2273,9 @@ render_dashboard() {
   fi
   if backstage_health_line="$(backstage_health_dashboard_line "$STATE_FILE" 2>/dev/null)"; then
     printf "${D}├─ %b${N}${EL}\n" "$backstage_health_line" >> "$FRAME"
+  fi
+  if tool_choice_gate_line="$(tool_choice_gate_dashboard_line "$STATE_FILE" 2>/dev/null)"; then
+    printf "${D}├─ %s${N}${EL}\n" "$tool_choice_gate_line" >> "$FRAME"
   fi
 
   tasks=$(gather_tasks)

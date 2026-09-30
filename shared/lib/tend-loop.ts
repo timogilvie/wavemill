@@ -15,6 +15,11 @@ import {
 } from './tend-controller.ts';
 import { WM_LABELS } from './pr-state-labels.ts';
 import type { StatusRenderer } from './tend-status-renderer.ts';
+import {
+  maybeRunToolChoiceGate,
+  type MaybeRunToolChoiceGateOptions,
+  type MaybeRunToolChoiceGateResult,
+} from './tool-choice-gate-scheduler.ts';
 import { computeBackoffDelayMs, isTransientError } from './transient-retry.ts';
 
 export const TEND_LOOP_INTERVAL_MS = 60_000;
@@ -64,6 +69,16 @@ export interface TendLoopDeps {
    * and continues; a marker in an uncertain phase stays for the next loop.
    */
   reconcileScratchPrepState: typeof reconcileScratchPrepState;
+  /**
+   * Best-effort daily fire of the tool-choice gate (HOK-3123). Called after
+   * each idle poll's heartbeat, guarded by an in-memory `lastCheckedMs` so
+   * the actual staleness check runs at most once per hour of loop time.
+   * Failures never fail the poll; the scheduler records them in
+   * `services.toolChoiceGate.lastRunStatus`.
+   */
+  maybeRunToolChoiceGate: (
+    options: MaybeRunToolChoiceGateOptions,
+  ) => Promise<MaybeRunToolChoiceGateResult>;
   sleep: (ms: number) => Promise<void>;
   now: () => Date;
   log: (line: string) => void;
@@ -431,6 +446,25 @@ export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExi
   let lastProgressAt = deps.now().toISOString();
   let lastDecisionSignature: string | null = null;
   const readyUnmergedTracker = new Map<number, { firstSeenMs: number; lastEmittedMs: number }>();
+  // HOK-3123: in-memory cache so `maybeRunToolChoiceGate` only touches the
+  // filesystem once per hour of loop time (its own 24h staleness check gates
+  // whether it actually re-runs the analyzer).
+  let toolChoiceGateLastCheckedMs = 0;
+
+  const fireToolChoiceGate = async (): Promise<void> => {
+    try {
+      const result = await deps.maybeRunToolChoiceGate({
+        repoDir: options.repoDir,
+        lastCheckedMs: toolChoiceGateLastCheckedMs,
+      });
+      toolChoiceGateLastCheckedMs = result.nextLastCheckedMs;
+      if (result.ran && result.status !== 'ok') {
+        deps.log(`tool-choice-gate: ${result.status ?? 'unknown'} — ${result.detail ?? ''}`);
+      }
+    } catch (error) {
+      deps.log(`tool-choice-gate: scheduler threw: ${errorMessage(error)}`);
+    }
+  };
 
   // HOK-3039: startup scratch-prep reconciliation. Runs once, before the
   // first poll, so an interrupted merge attempt (crash, watchdog respawn,
@@ -602,6 +636,7 @@ export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExi
           integrationAdvisory: decision.integrationHealth.advisoryFailures ?? [],
           ...pollMetadata,
         });
+        await fireToolChoiceGate();
         await deps.sleep(intervalMs);
         continue;
       }
@@ -1153,6 +1188,7 @@ function tendLoopDeps(overrides: Partial<TendLoopDeps> | undefined): TendLoopDep
     writeFailureState: writeTendFailureStateBestEffort,
     emitObserverFinding: emitObserverFindingBestEffort,
     reconcileScratchPrepState,
+    maybeRunToolChoiceGate,
     sleep,
     now: () => new Date(),
     log: (line) => console.error(line),
