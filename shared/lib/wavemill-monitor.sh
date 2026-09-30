@@ -18505,7 +18505,7 @@ monitor_issue_state() {
             set_window_attention_state "$WIN" "needs-user"
             return 0
             ;;
-          exhausted-quiet|backoff)
+          backoff|exhausted-quiet)
             set_window_attention_state "$WIN" "needs-user"
             return 0
             ;;
