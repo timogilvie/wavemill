@@ -136,7 +136,30 @@ describe('queue-partial-refresh', () => {
 
     it('rejects malformed output envelopes', () => {
       assert.throws(() => parseQueueAnalysisEdges('{"edges":[],"waves":[]}', new Set(['HOK-1']), new Map()), /exactly: edges/);
-      assert.throws(() => parseQueueAnalysisEdges('```json\n{"edges":[]}\n```', new Set(['HOK-1']), new Map()), /markdown fence/);
+    });
+
+    it('unwraps exactly one outer json fence, including the trailing-only shape llm-cli leaves', () => {
+      const fingerprints = new Map([['HOK-1', 'fp-1'], ['HOK-2', 'fp-2']]);
+      const body = '{"edges":[{"from":"HOK-1","to":"HOK-2","type":"depends_on"}]}';
+      for (const raw of ['```json\n' + body + '\n```', '```\n' + body + '\n```', body + '\n```']) {
+        const edges = parseQueueAnalysisEdges(raw, new Set(['HOK-2']), fingerprints);
+        assert.deepEqual(edges.map((edge) => `${edge.from}->${edge.to}`), ['HOK-1->HOK-2']);
+      }
+    });
+
+    it('still rejects multiple fences or prose around a fence', () => {
+      assert.throws(
+        () => parseQueueAnalysisEdges('```json\n{"edges":[]}\n```\n```json\n{"edges":[]}\n```', new Set(['HOK-1']), new Map()),
+        /markdown fence/,
+      );
+      assert.throws(
+        () => parseQueueAnalysisEdges('Here you go:\n```json\n{"edges":[]}\n```', new Set(['HOK-1']), new Map()),
+        /markdown fence/,
+      );
+      assert.throws(
+        () => parseQueueAnalysisEdges('```json\n{"edges":[]}\n```\nHope this helps', new Set(['HOK-1']), new Map()),
+        /markdown fence/,
+      );
     });
   });
 });

@@ -139,6 +139,32 @@ export function buildPartialRefreshPrompt({ changedTaskIds, contextTasks, templa
   });
 }
 
+const FENCE = '```';
+
+/**
+ * Tolerate exactly one outer ```json fence (HOK-3130).
+ *
+ * Claude Haiku answers the queue-analysis prompt as a fenced block, and
+ * `llm-cli` strips everything before the first `{`, which leaves only a
+ * trailing fence. Both shapes are unwrapped. Anything else that contains a
+ * fence (several blocks, prose around the block) is still rejected.
+ */
+function unwrapSingleJsonFence(text: string): string {
+  if (!text.includes(FENCE)) return text;
+
+  const full = text.match(/^```(?:json)?[ \t]*\n([\s\S]*?)\n?```$/i);
+  if (full && !full[1].includes(FENCE)) {
+    return full[1].trim();
+  }
+
+  if (!text.startsWith(FENCE) && text.endsWith(FENCE)) {
+    const body = text.slice(0, -FENCE.length);
+    if (!body.includes(FENCE)) return body.trim();
+  }
+
+  throw new Error('Queue analysis output contains markdown fence');
+}
+
 export function parseQueueAnalysisEdges(
   raw: string,
   changedTaskIds: Set<string>,
@@ -148,10 +174,7 @@ export function parseQueueAnalysisEdges(
     throw new Error('Queue analysis output contains UTF-8 BOM');
   }
 
-  const trimmed = raw.trim();
-  if (trimmed.startsWith('```')) {
-    throw new Error('Queue analysis output contains markdown fence');
-  }
+  const trimmed = unwrapSingleJsonFence(raw.trim());
 
   let parsed: unknown;
   try {
