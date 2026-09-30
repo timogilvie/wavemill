@@ -45,3 +45,11 @@ test('operator aborts are not attributed as model or provider quality signals', 
   assert.equal(faultClass, 'unknown-fault');
   assert.equal(isModelQualitySignal(faultClass), false, 'an operator abort must not count against a model');
 });
+
+test('abort-task accepts a digit-bearing team key', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'abort-task-'));
+  const file = join(dir, 'state.json');
+  writeFileSync(file, JSON.stringify({ tasks: { 'AB2-1_c': { phase: 'coding', status: 'active' } } }));
+  await abortTaskInState(file, 'AB2-1_c', 'operator requested stop');
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).tasks['AB2-1_c'].phase, 'aborted');
+});

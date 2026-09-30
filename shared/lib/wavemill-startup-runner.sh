@@ -1019,7 +1019,7 @@ startup_run_task_phases() {
     progress_update "$startup_id" route running
   fi
 
-  if ! [[ "$issue" =~ ^[A-Z]+-[0-9]+(_c)?$|^[a-z0-9-]+$ ]]; then
+  if ! [[ "$issue" =~ ^${TASK_IDENTITY_TASK_ID_RE}$|^[a-z0-9-]+$ ]]; then
     startup_phase_failed "$startup_id" route "$issue" "invalid issue id"
     return 1
   fi

@@ -1422,7 +1422,7 @@ else
 fi
 
 if [[ -f "$LIB_DIR/wavemill-startup-runner.sh" ]] \
-  && grep -Fq '^[A-Z]+-[0-9]+(_c)?$|^[a-z0-9-]+$' "$LIB_DIR/wavemill-startup-runner.sh"; then
+  && grep -Fq '^${TASK_IDENTITY_TASK_ID_RE}$|^[a-z0-9-]+$' "$LIB_DIR/wavemill-startup-runner.sh"; then
   pass "startup runner accepts challenge task identifiers"
 else
   fail "startup runner rejects challenge task identifiers"

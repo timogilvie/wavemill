@@ -53,6 +53,7 @@ assert_eq "$(wavemill_build_window_title 'HOK-1857' '' '650' 'OPEN' 'coding' 'Ba
 assert_eq "$(wavemill_build_window_title 'HOK-1857' 'task/feat/foo' '650' 'OPEN' '' 'Bash')" "1857 · foo · PR#650 ● · Bash" "missing phase omitted"
 assert_eq "$(wavemill_build_window_title 'HOK-1857' 'task/feat/foo' '650' 'OPEN' 'coding' '')" "1857 · foo · PR#650 ● · code" "missing notification omitted"
 assert_eq "$(wavemill_build_window_title 'HOK-1857' '' '' '' '' '')" "1857" "only issue"
+assert_eq "$(wavemill_build_window_title 'AB2-1_c' '' '' '' '' '')" "1" "digit-bearing team key"
 assert_eq "$(wavemill_build_window_title 'custom-key' 'feat/foo' '' '' '' '')" "custom-key · foo" "non-standard issue key kept"
 
 assert_eq "$(wavemill_build_status_right '3000,5173' 'claude-sonnet-4-6')" "ports: 3000,5173 | model: claude-sonnet-4-6" "status-right both"

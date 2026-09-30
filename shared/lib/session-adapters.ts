@@ -1,3 +1,4 @@
+import { TASK_ID_SUFFIX_RE } from './task-identity.ts';
 /**
  * Session adapters — agent-specific session parsing for workflow cost
  * and intervention detection.
@@ -846,7 +847,7 @@ export function matchesIssue(fileName: string, issueId?: string, branchName?: st
   if (branchName && base.endsWith(`-${sanitize(branchName)}`)) return true;
 
   // Names another issue (`coding-HOK-537_c`) — belongs to a different task.
-  if (issueId && /-[A-Za-z]+-\d+(_c)?$/.test(base)) return false;
+  if (issueId && TASK_ID_SUFFIX_RE.test(base)) return false;
   // Names another branch (`gtm-backend-review-task-some-other-slug`).
   if (branchName && /-(task|feature|bug|bugfix)-/.test(base)) return false;
 

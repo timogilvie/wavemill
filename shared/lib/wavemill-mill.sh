@@ -1161,7 +1161,7 @@ check_routing_complete() {
 _resolve_window_attention_target() {
   local win="$1"
   local target="$win" issue="" slug=""
-  if [[ "$win" =~ ^([A-Z]+-[0-9]+(_c)?)-(.+)$ ]]; then
+  if [[ "$win" =~ $TASK_IDENTITY_WINDOW_PREFIX_RE ]]; then
     issue="${BASH_REMATCH[1]}"
     slug="${BASH_REMATCH[3]}"
     local expected_worktree=""

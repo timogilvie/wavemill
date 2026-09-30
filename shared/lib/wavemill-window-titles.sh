@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Shared helpers for tmux per-issue window title/status metadata.
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/task-identity.sh"
+
 WAVEMILL_WINDOW_TITLE_PR_TTL=30
 
 wavemill_window_branch_suffix() {
@@ -56,8 +58,9 @@ wavemill_window_trim_single_line() {
 
 wavemill_window_issue_display() {
   local issue="${1:-}" num
-  if [[ "$issue" =~ ^[A-Z]+-([0-9]+)(_c)?$ ]]; then
-    num="${BASH_REMATCH[1]}"
+  if [[ "$issue" =~ ^${TASK_IDENTITY_TASK_ID_RE}$ ]]; then
+    num="${issue##*-}"
+    num="${num%_c}"
     printf '%s\n' "$num"
   else
     printf '%s\n' "$issue"

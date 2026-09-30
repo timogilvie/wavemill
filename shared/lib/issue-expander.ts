@@ -11,6 +11,7 @@
  * @module issue-expander
  */
 
+import { linearIssueUrlRe, normalizeIssueId } from './task-identity.ts';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { callClaude, type LLMCallOptions } from './llm-cli.ts';
@@ -51,15 +52,11 @@ import { estimatePromptTokens } from './native-agent/context-window-guard.ts';
 export function parseIssueInput(input: string): string {
   const trimmedInput = input.trim();
 
-  // Handle full Linear URLs
-  const urlMatch = trimmedInput.match(
-    /^https?:\/\/linear\.app\/[^/]+\/issue\/([A-Z]+-\d+)(?:[/?].*)?$/i
-  );
+  // Pasted identifiers and Linear URLs may use lowercase letters.
+  const urlMatch = linearIssueUrlRe('i').exec(trimmedInput);
   if (urlMatch) return urlMatch[1].toUpperCase();
-
-  // Handle direct identifier
-  const idMatch = trimmedInput.match(/^([A-Z]+-\d+)$/i);
-  if (idMatch) return idMatch[1].toUpperCase();
+  const normalized = normalizeIssueId(trimmedInput.toUpperCase());
+  if (normalized) return normalized;
 
   throw new Error(
     `Invalid issue identifier: ${input}. Expected format: TEAM-123 or Linear issue URL`

@@ -147,11 +147,12 @@ test_direct_lowercase_and_url_inputs_canonicalize() {
   local case_dir="$TEST_TMP/direct-canonicalize"
   setup_case "$case_dir"
 
-  run_expand "$case_dir" -- hok-1494 "https://linear.app/hokusai/issue/HOK-1531/fix"
+  run_expand "$case_dir" -- hok-1494 "https://linear.app/hokusai/issue/HOK-1531/fix" ab2-1
 
   check_eq "canonicalized inputs exit 0" "0" "$(cat "$case_dir/status")"
   check_contains "canonicalized direct calls include first issue" "$(cat "$case_dir/npx.log")" "tsx $case_dir/tools/expand-issue.ts HOK-1494 --output /tmp/issue-expander-HOK-1494.md"
   check_contains "canonicalized direct calls include second issue" "$(cat "$case_dir/npx.log")" "tsx $case_dir/tools/expand-issue.ts HOK-1531 --output /tmp/issue-expander-HOK-1531.md"
+  check_contains "canonicalized direct calls include digit-bearing team key" "$(cat "$case_dir/npx.log")" "tsx $case_dir/tools/expand-issue.ts AB2-1 --output /tmp/issue-expander-AB2-1.md"
 }
 
 test_direct_invalid_input_fails_before_expansion() {
