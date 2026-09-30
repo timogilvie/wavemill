@@ -108,4 +108,13 @@ describe('tool-decision corpus writer', () => {
     // Version pinning sanity.
     assert.equal(TOOL_DECISION_SCHEMA_VERSION, '1');
   });
+
+  it('resolveToolDecisionCorpusDir falls back gracefully when not in a git repo', () => {
+    const dir = tempDir(); dirs.push(dir);
+    // When repoDir is not a git repo, resolveFromMainRepo should fall back
+    // to using the repoDir itself, so we should get the expected path
+    const corpusDir = resolveToolDecisionCorpusPath({ repoDir: dir });
+    assert.ok(corpusDir.includes('.wavemill/tool-decisions'));
+    assert.ok(corpusDir.includes(dir));
+  });
 });
