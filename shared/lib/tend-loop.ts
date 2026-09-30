@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
-import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { mutateJsonState } from './state-mutex.ts';
+import { appendObserverFinding } from './observer-findings.ts';
 import {
   executeMerge,
   formatStatusLine,
@@ -399,15 +399,13 @@ export function buildReadyPrUnmergedFinding(options: {
   };
 }
 
-/** Default best-effort JSONL append into .wavemill/observer-findings.jsonl. */
+/**
+ * Default best-effort JSONL append into .wavemill/observer-findings.jsonl.
+ * HOK-3102: routed through the shared `appendObserverFinding` helper so the
+ * write is gated on `resolveSessionCapabilities(repoDir).observer`.
+ */
 export function emitObserverFindingBestEffort(repoDir: string, finding: MergeLaneObserverFinding): void {
-  try {
-    const wavemillDir = join(repoDir, '.wavemill');
-    mkdirSync(wavemillDir, { recursive: true });
-    appendFileSync(join(wavemillDir, 'observer-findings.jsonl'), `${JSON.stringify(finding)}\n`, 'utf-8');
-  } catch (error) {
-    console.error(`tend: failed to emit observer finding: ${errorMessage(error)}`);
-  }
+  appendObserverFinding(repoDir, finding);
 }
 
 export async function runTendLoop(options: TendLoopOptions): Promise<TendLoopExit> {

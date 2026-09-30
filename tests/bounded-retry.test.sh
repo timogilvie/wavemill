@@ -198,6 +198,76 @@ else
   fail "terminal reason is greppable under the state dir"
 fi
 
+# --- composite (head, base) key (HOK-3092) -----------------------------------
+# Use hex-shaped values so bounded_retry_gate's SHA-shape guard (which drops
+# a non-SHA base as "safe default") does not force the head-only path here.
+SHA_HEAD_A="aaaaaaa"
+SHA_BASE_1="bbbbbb1"
+SHA_BASE_2="bbbbbb2"
+
+dir="$(fresh_dir composite-key)"
+bounded_retry_increment "$dir" demo "$SHA_HEAD_A" "$SHA_BASE_1" >/dev/null
+check_eq "composite key head reads back" "$(bounded_retry_head "$dir" demo)" "$SHA_HEAD_A"
+check_eq "composite key base reads back" "$(bounded_retry_base "$dir" demo)" "$SHA_BASE_1"
+# Same head with a different base wipes the budget (fresh merge parent).
+bounded_retry_reset_if_new_key "$dir" demo "$SHA_HEAD_A" "$SHA_BASE_2"
+check_eq "new base clears count" "$(bounded_retry_count "$dir" demo)" "0"
+
+dir="$(fresh_dir composite-key-same)"
+bounded_retry_increment "$dir" demo "$SHA_HEAD_A" "$SHA_BASE_1" >/dev/null
+bounded_retry_increment "$dir" demo "$SHA_HEAD_A" "$SHA_BASE_1" >/dev/null
+bounded_retry_reset_if_new_key "$dir" demo "$SHA_HEAD_A" "$SHA_BASE_1"
+check_eq "identical (head, base) keeps count" "$(bounded_retry_count "$dir" demo)" "2"
+
+dir="$(fresh_dir composite-key-empty-base)"
+bounded_retry_increment "$dir" demo "$SHA_HEAD_A" "$SHA_BASE_1" >/dev/null
+# Empty base_sha (e.g. transient ls-remote failure) is head-only reset:
+# base component is ignored, and stored base is preserved through the tick.
+bounded_retry_reset_if_new_key "$dir" demo "$SHA_HEAD_A" ""
+check_eq "empty base leaves count intact" "$(bounded_retry_count "$dir" demo)" "1"
+check_eq "empty base preserves stored base" "$(bounded_retry_base "$dir" demo)" "$SHA_BASE_1"
+bounded_retry_increment "$dir" demo "$SHA_HEAD_A" "" >/dev/null
+check_eq "increment without base preserves stored base" \
+  "$(bounded_retry_base "$dir" demo)" "$SHA_BASE_1"
+
+# gate accepts the optional trailing base and drives the composite reset.
+dir="$(fresh_dir gate-composite)"
+check_eq "gate proceeds with (head, base)" \
+  "$(bounded_retry_gate "$dir" demo "$SHA_HEAD_A" 2 "" "" "$SHA_BASE_1")" "proceed"
+bounded_retry_increment "$dir" demo "$SHA_HEAD_A" "$SHA_BASE_1" >/dev/null
+printf '%s\n' "$(( $(date +%s) - 7200 ))" > "$dir/.retry-demo-last-at"
+bounded_retry_increment "$dir" demo "$SHA_HEAD_A" "$SHA_BASE_1" >/dev/null
+printf '%s\n' "$(( $(date +%s) - 7200 ))" > "$dir/.retry-demo-last-at"
+check_eq "gate exhausted at ceiling (composite key)" \
+  "$(bounded_retry_gate "$dir" demo "$SHA_HEAD_A" 2 "" "" "$SHA_BASE_1")" "exhausted"
+bounded_retry_mark_exhausted "$dir" demo "budget spent on ($SHA_HEAD_A, $SHA_BASE_1)" || true
+check_eq "gate resets on new base (same head)" \
+  "$(bounded_retry_gate "$dir" demo "$SHA_HEAD_A" 2 "" "" "$SHA_BASE_2")" "proceed"
+check_eq "new-base reset cleared the counter" "$(bounded_retry_count "$dir" demo)" "0"
+if bounded_retry_is_exhausted "$dir" demo; then
+  fail "new base clears exhausted sentinel"
+else
+  pass "new base clears exhausted sentinel"
+fi
+
+# gate ignores a non-SHA base (safe default).
+dir="$(fresh_dir gate-bogus-base)"
+bounded_retry_increment "$dir" demo "$SHA_HEAD_A" "$SHA_BASE_1" >/dev/null
+check_eq "gate ignores non-SHA base" \
+  "$(bounded_retry_gate "$dir" demo "$SHA_HEAD_A" 2 "" "" 'not!a!sha')" "backoff"
+check_eq "bogus base leaves stored base intact" \
+  "$(bounded_retry_base "$dir" demo)" "$SHA_BASE_1"
+
+# Existing head-only callers keep working when they never supply a base.
+dir="$(fresh_dir head-only-legacy)"
+bounded_retry_increment "$dir" demo "$SHA_HEAD_A" >/dev/null
+check_eq "legacy caller writes single-line key" \
+  "$(bounded_retry_head "$dir" demo)" "$SHA_HEAD_A"
+check_eq "legacy caller has no base component" "$(bounded_retry_base "$dir" demo)" ""
+bounded_retry_reset_if_new_head "$dir" demo "$SHA_HEAD_A"
+check_eq "legacy reset with same head keeps count" \
+  "$(bounded_retry_count "$dir" demo)" "1"
+
 echo ""
 echo "bounded-retry: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

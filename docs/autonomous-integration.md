@@ -200,6 +200,80 @@ Challenge-mode PR pairs are not allowed to race into `auto/integration`. Tend wa
 - If a winner exists and challenge auto-merge is enabled, tend keeps the winner eligible and closes the loser.
 - If auto-merge of winners is disabled, the winner is still held for manual action.
 
+## Session Capabilities (HOK-3102)
+
+Every producer that would create work for a consumer (a tend handoff, a
+`wm:ready` label, a pane released to the merge queue, an observer finding,
+a merge-lane BEHIND update) now asks a single resolver — `resolveSessionCapabilities`
+in `shared/lib/config.ts`, wrapped by `wavemill_session_has` in
+`wavemill-common.sh` — whether the matching consumer is active in this
+session.
+
+The resolver returns a small object per session:
+
+| Field | Value | Meaning |
+|---|---|---|
+| `tend` | `boolean` | This mill session runs the backstage tend loop. |
+| `observer` | `boolean` | This mill session runs the observer loop. |
+| `mergeExecutor` | `tend \| operator \| none` | Who will merge a green PR. |
+| `mergeQueue` | `boolean` | Mill-side merge-candidate lifecycle is live. |
+
+The rules:
+
+- `tend` is `integration.enabled && useMillSession !== false`.
+- `observer` is `tend && observer.enabled === true`.
+- `mergeExecutor` is `tend` when tend is running; `none` when `integration.enabled`
+  is true but `useMillSession` is false; `operator` otherwise (integration off —
+  the HOK-3093 default).
+- `mergeQueue` is on only when `mergeExecutor === 'tend'` and `mergeQueue.enabled`
+  is true. The `MERGE_QUEUE_ENABLED` env override is still honoured.
+
+Health data from `.wavemill/backstage-health.json` is exposed under `health.tend`
+and `health.observer` for the dashboard and status log, but is **never** used to
+gate a producer — a handoff published during a transient tend restart still gets
+claimed on recovery.
+
+### What "merge needed" means
+
+When `mergeExecutor` is `operator` or `none` and a PR passes ready:
+
+- `.ready-result.json` records `queueState: "merge-needed"`,
+  `readyTendHandoff: "merge-needed"`, `mergeExecutor` and
+  `readyLabelsUpdated: false`.
+- No `ready-tend-handoff publish` runs, no `wm:ready` label is stamped, no pane
+  is released to the (absent) merge queue.
+- The task window flips to `needs-user`; the status log records one
+  `⏳ HOK-x → PR #N green; merge needed` line per (PR, head); the monitor
+  writes an `approval-needed` / `merge_needed` hook so an OSC notification
+  fires. The hook is written with `writer=monitor`, so it is never treated as
+  agent liveness evidence (HOK-3101).
+- The dashboard renders the PR as `⏳ merge needed`.
+
+Turning integration on later reruns ready at the current head, which
+publishes a fresh handoff — parked PRs are never stranded.
+
+### `compare-prs` never merges
+
+`compare-prs` used to call `gh pr merge` on the winner directly. It no longer
+does; `--auto-merge` is now a deprecated flag that only prints a warning.
+Winners reach a merge through the single merge executor:
+
+- `mergeExecutor=tend`: ready pass → handoff + `wm:ready` →
+  `tend-challenge-gate` (which sees `challenge.autoMergeWinner` and applies
+  `integration.mergeMethod`).
+- `mergeExecutor=operator` / `none`: surface as "merge needed" and a human
+  merges.
+
+The loser is still closed by `compare-prs` when `challenge.autoMergeWinner` is
+on — that's a close, not a merge, and it's idempotent with tend's cleanup and
+the monitor's loser close.
+
+### `requireConfirm` is window retention, not a merge gate
+
+`mill.requireConfirm` controls whether tmux windows and panes are retained
+after the task terminates. It has never gated merging in this codebase; the
+single merge executor decides that.
+
 ## Disabling Autonomous Integration
 
 To turn the feature off, set `integration.enabled: false` in `.wavemill-config.json` (or remove the `integration` block entirely). The next `wavemill mill` start will not spawn the tend window, and task PRs will resume targeting whatever `mill.baseBranch` is set to.

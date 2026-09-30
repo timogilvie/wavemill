@@ -1,4 +1,5 @@
 #!/usr/bin/env npx tsx
+import { normalizeIssueId } from '../shared/lib/task-identity.ts';
 /**
  * Quarantine challenge records that violated the one-variable invariant.
  * Marks records as ineligible for stage-level learning.
@@ -72,8 +73,7 @@ async function quarantineChallenges(repoDir: string, issues: string[], dryRun: b
 
       // Extract issue IDs from challengePairId (e.g., "HOK-2806:HOK-2806_c" -> ["HOK-2806"])
       const pairId = record.challengePairId || '';
-      const issueIdMatch = pairId.match(/^([A-Z]+-\d+)/);
-      const primaryIssue = issueIdMatch ? issueIdMatch[1].toLowerCase() : '';
+      const primaryIssue = (normalizeIssueId(pairId.split(':')[0]) ?? '').toLowerCase();
 
       if (!quarantineSet.has(primaryIssue)) {
         return line;

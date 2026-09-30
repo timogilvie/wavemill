@@ -812,17 +812,21 @@ init_state_ledger() {
 
 mark_challenge_eval_running() {
   local issue="$1" side="$2" pr="$3" phase="${4:-eval}"
-  state_mutate "$STATE_FILE" '
-    .tasks[$issue].evalRunning = {
+  # HOK-3125: refuse to persist a running marker for a reaped task; caller
+  # treats the non-zero return as "launch skipped, entry no longer present".
+  if ! task_state_entry_exists "$issue"; then
+    return 1
+  fi
+  task_state_mutate_existing "$issue" '
+    .evalRunning = {
       issue: $issue,
       side: $side,
       pr: ($pr | tonumber),
       phase: $phase,
       startedAt: (now | todateiso8601)
     } |
-    .tasks[$issue].updated = (now | todateiso8601)
+    .updated = (now | todateiso8601)
   ' \
-    --arg issue "$issue" \
     --arg side "$side" \
     --arg pr "$pr" \
     --arg phase "$phase"
@@ -830,13 +834,7 @@ mark_challenge_eval_running() {
 
 clear_challenge_eval_running() {
   local issue="$1"
-  state_mutate "$STATE_FILE" '
-    if .tasks[$issue]? then
-      .tasks[$issue] |= (del(.evalRunning) | .updated = (now | todateiso8601))
-    else
-      .
-    end
-  ' --arg issue "$issue"
+  task_state_mutate_existing "$issue" 'del(.evalRunning) | .updated = (now | todateiso8601)'
 }
 
 # challenge_eval_retry_max_attempts() and challenge_eval_hard_failure_max_retries()
@@ -1161,7 +1159,7 @@ check_routing_complete() {
 _resolve_window_attention_target() {
   local win="$1"
   local target="$win" issue="" slug=""
-  if [[ "$win" =~ ^([A-Z]+-[0-9]+(_c)?)-(.+)$ ]]; then
+  if [[ "$win" =~ $TASK_IDENTITY_WINDOW_PREFIX_RE ]]; then
     issue="${BASH_REMATCH[1]}"
     slug="${BASH_REMATCH[3]}"
     local expected_worktree=""
@@ -1514,6 +1512,19 @@ cleanup_terminal_missing_worktree_entries() {
 cleanup_stale_tasks() {
   cleanup_terminal_missing_worktree_entries
 
+  # HOK-3125: idempotent self-heal for eval-only stubs left by post-reap raw
+  # writers. The startup preflight normally runs this first; call it here too
+  # in case the preflight is disabled.
+  if declare -F drop_tombstoned_eval_stubs >/dev/null 2>&1; then
+    local _dropped_stubs
+    _dropped_stubs="$(drop_tombstoned_eval_stubs || true)"
+    if [[ -n "$_dropped_stubs" ]]; then
+      local _dropped_list
+      _dropped_list="$(printf '%s' "$_dropped_stubs" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+      log "debug" "  Dropped eval-only stub(s) for reaped tasks: ${_dropped_list}"
+    fi
+  fi
+
   local stale_issues
   stale_issues=$(jq -r '.tasks | to_entries[] | .key' "$STATE_FILE" 2>/dev/null)
   [[ -z "$stale_issues" ]] && return 0
@@ -1581,10 +1592,12 @@ cleanup_stale_tasks() {
                 --debug
               printf 'Eval process exited with code %s\n' "$?"
             } >>"$eval_log" 2>&1 || true
-            # Mark eval completed in state (harmless if task already removed)
-            state_mutate "$STATE_FILE" \
-              '.tasks[$issue].evalCompleted = true | .tasks[$issue].updated = (now | todate)' \
-              --arg issue "$issue" >/dev/null 2>&1 || true
+            # HOK-3125: existing-entry guard so the async completion cannot
+            # recreate the task after the prune below has removed it as a
+            # phase/status-less stub that would count against mill slots.
+            task_state_mutate_existing "$issue" \
+              '.evalCompleted = true | .updated = (now | todate)' \
+              >/dev/null 2>&1 || true
           ) >/dev/null 2>&1 &
     log "debug" "  ↳ Eval running in background; log: $eval_log"
         fi

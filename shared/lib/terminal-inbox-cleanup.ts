@@ -1,3 +1,4 @@
+import { TASK_ID_RE } from './task-identity.ts';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
@@ -155,7 +156,7 @@ export interface CleanupOptions {
 }
 
 const terminalStatuses = new Set(['merged', 'complete', 'completed', 'completed-external', 'closed', 'done', 'aborted', 'error', 'superseded']);
-const issuePattern = /^[A-Z][A-Z0-9]+-[0-9]+(_c)?$/;
+const issuePattern = TASK_ID_RE;
 
 export const defaultCleanupDeps: CleanupDeps = {
   git(args, cwd) {

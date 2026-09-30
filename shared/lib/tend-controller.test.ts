@@ -75,13 +75,20 @@ function buildTestOptions(
 ): SelectNextCandidateOptions & { cleanup: () => void } {
   const repoDir = mkdtempSync(join(tmpdir(), 'wavemill-tend-'));
   mkdirSync(join(repoDir, '.wavemill', 'evals'), { recursive: true });
+  // HOK-3102: observer findings are gated on session capabilities. The tests
+  // in this suite assert the tend controller wrote to observer-findings.jsonl,
+  // so enable integration + observer by default. Individual tests that pass
+  // `configOverride` with their own `integration`/`observer` sections keep
+  // full control.
   writeFileSync(
     join(repoDir, '.wavemill-config.json'),
     JSON.stringify({
-      integration: { integrationBranch: 'auto/integration' },
+      integration: { enabled: true, useMillSession: true, integrationBranch: 'auto/integration' },
+      observer: { enabled: true },
       ...configOverride,
     }),
   );
+  clearConfigCache(repoDir);
 
   return {
     repoDir,

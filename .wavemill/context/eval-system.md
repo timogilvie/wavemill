@@ -45,6 +45,7 @@ Provisional model-identity holds are enforced at read time through `shared/lib/m
 - Do not introduce required fields for new training metadata.
 - Do not create a parallel fallback-event store unless aggregation consumers are intentionally being split.
 - Do not make eval persistence failures fatal to workflow execution or `llm-cli` request handling.
+- Do not raw-write `.tasks[$issue].x = …` from post-reap-capable paths (background eval, job-poll completions, retry bookkeeping). Route them through `task_state_mutate_existing` in `wavemill-common.sh` so a late completion cannot recreate a reaped task as a slot-consuming stub (HOK-3125).
 
 ## RubricEval (1.10.0)
 
@@ -120,6 +121,7 @@ Compatibility and aggregation notes:
 | Older eval readers reject records | A new field was made required or parsing assumed presence | Restore optional semantics and add backward-compat coverage. |
 | Fallback logging changes request behavior | Telemetry exception leaked out of the emitter | Keep `appendEvalRecord()` calls wrapped in local `try/catch`. |
 | Large PRs are scored as empty work | GitHub refuses `gh pr diff` above its file limit or local diff output exceeds the byte cap | Use `fetchPrDiff()` local fallback; if no diff can be obtained, emit `pr_diff_unavailable` / `diff_unavailable` instead of judging placeholder content. |
+| `0 slots available` with few live tasks | Post-reap eval writers re-created reaped tasks as phase/status-less stubs that fell through to `wm_resource_disposition = allocated` | Fixed by HOK-3125: writers must go through `task_state_mutate_existing`; counter classifies orphan stubs as `orphan`; startup preflight drops tombstoned stubs. |
 
 ## Testing Patterns
 

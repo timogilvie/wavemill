@@ -17,6 +17,7 @@ REPO_DIR="${REPO_DIR:-$PWD}"
 # Source common library and load layered config
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/wavemill-common.sh"
+source "$SCRIPT_DIR/task-identity.sh"
 load_config "$REPO_DIR"
 
 # Validate dependencies
@@ -29,14 +30,15 @@ log_error() { local m="$*"; m="${m#"${m%%[![:space:]]*}"}"; echo "$(date '+%H:%M
 log_warn() { local m="$*"; m="${m#"${m%%[![:space:]]*}"}"; echo "$(date '+%H:%M:%S')  WARN: $m" >&2; }
 
 canonicalize_issue_identifier() {
-  local input="$1"
-  if [[ "$input" =~ ^([A-Za-z]+-[0-9]+)$ ]]; then
-    printf '%s\n' "${BASH_REMATCH[1]^^}"
+  local input="${1^^}"
+  if [[ "$input" =~ ^(${TASK_IDENTITY_ISSUE_ID_RE})$ ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
     return 0
   fi
 
-  if [[ "$input" =~ ^https?://linear\.app/[^/]+/issue/([A-Za-z]+-[0-9]+)([/?].*)?$ ]]; then
-    printf '%s\n' "${BASH_REMATCH[1]^^}"
+  local url_re="^HTTPS?://LINEAR\.APP/[^/]+/ISSUE/(${TASK_IDENTITY_ISSUE_ID_RE})([/?#].*)?$"
+  if [[ "$input" =~ $url_re ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
     return 0
   fi
 

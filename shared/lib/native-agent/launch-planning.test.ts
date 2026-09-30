@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
-import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 import { registerScriptedPiProvider, type ScriptedProviderContext } from './provider.ts';
 import { describeNativePlanningHelperFailure, launchNativePlanning } from './launch-planning.ts';
@@ -15,9 +14,6 @@ import {
 } from './planning-approval.ts';
 import type { ToolDescriptor } from './tools/types.ts';
 import type { ReadyNativeProviderEntry } from './providers.ts';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_DIR = resolve(__dirname, '../../..');
 
 let apiSeq = 0;
 function uniqueApi(label: string): string {
@@ -337,7 +333,7 @@ describe('launchNativePlanning', () => {
         issue: 'HOK-2313',
         slug: 'demo',
         wtDir,
-        repoDir: REPO_DIR,
+        repoDir: wtDir,
         title: 'Wire native planning',
         loopModelOverride: scriptedModel(api),
         runTsxCommand: stubRunTsxCommand(),
@@ -411,7 +407,7 @@ describe('launchNativePlanning', () => {
           issue: 'HOK-2772',
           slug: 'demo',
           wtDir,
-          repoDir: REPO_DIR,
+          repoDir: wtDir,
           title: 'Check context window',
           hookPath,
           loopModelOverride: {
@@ -457,7 +453,7 @@ describe('launchNativePlanning', () => {
         issue: 'HOK-2544',
         slug: 'demo',
         wtDir,
-        repoDir: REPO_DIR,
+        repoDir: wtDir,
         title: 'Keep native planning approval gated',
         loopModelOverride: scriptedModel(api),
         runTsxCommand: stubRunTsxCommand(),
@@ -553,7 +549,7 @@ describe('launchNativePlanning', () => {
         issue: 'HOK-2544',
         slug: 'demo',
         wtDir,
-        repoDir: REPO_DIR,
+        repoDir: wtDir,
         title: 'Do not delete explicit approvals',
         loopModelOverride: scriptedModel(api),
         runTsxCommand: stubRunTsxCommand(),
@@ -597,7 +593,7 @@ describe('launchNativePlanning', () => {
         linearIssue: 'HOK-2464',
         slug: 'demo',
         wtDir,
-        repoDir: REPO_DIR,
+        repoDir: wtDir,
         title: 'Plan challenger',
         loopModelOverride: scriptedModel(api),
         runTsxCommand: stubRunTsxCommandWithExpansion(expandedIssues, expandArgs),
@@ -635,7 +631,7 @@ describe('launchNativePlanning', () => {
         issue: 'HOK-2464_c',
         slug: 'demo',
         wtDir,
-        repoDir: REPO_DIR,
+        repoDir: wtDir,
         loopModelOverride: scriptedModel(api),
         runTsxCommand: stubRunTsxCommandWithExpansion(expandedIssues),
       });
@@ -681,7 +677,7 @@ describe('launchNativePlanning', () => {
         linearIssue: 'HOK-2464',
         slug: 'demo',
         wtDir,
-        repoDir: REPO_DIR,
+        repoDir: wtDir,
         loopModelOverride: scriptedModel(api),
         runTsxCommand: (args: string[]) => {
           helperCommands.push(args[0] ?? '');
@@ -759,7 +755,7 @@ describe('launchNativePlanning', () => {
         issue: 'HOK-2464_c',
         slug: 'demo',
         wtDir,
-        repoDir: REPO_DIR,
+        repoDir: wtDir,
         resolvedModel: 'kimi-k2.7-code',
         providerEntries: [
           readyOpenRouterEntry('qwen/qwen3-coder', qwenApi),
@@ -805,7 +801,7 @@ describe('launchNativePlanning', () => {
         issue: 'HOK-2313',
         slug: 'demo',
         wtDir,
-        repoDir: REPO_DIR,
+        repoDir: wtDir,
         loopModelOverride: scriptedModel(api),
         extraDescriptors: [makeMutationTool(executed)],
         runTsxCommand: stubRunTsxCommand(),
@@ -851,7 +847,7 @@ describe('launchNativePlanning', () => {
         issue: 'HOK-2313',
         slug: 'demo',
         wtDir,
-        repoDir: REPO_DIR,
+        repoDir: wtDir,
         loopModelOverride: scriptedModel(api),
         runTsxCommand: stubRunTsxCommand(),
       });
@@ -879,7 +875,7 @@ describe('launchNativePlanning', () => {
           issue: 'HOK-2313',
           slug: 'demo',
           wtDir,
-          repoDir: REPO_DIR,
+          repoDir: wtDir,
           hookPath,
           loopModelOverride: scriptedModel(api),
           runTsxCommand: stubRunTsxCommand(),
@@ -1018,7 +1014,7 @@ describe('launchNativePlanning', () => {
           issue: 'HOK-2577',
           slug: 'demo',
           wtDir,
-          repoDir: REPO_DIR,
+          repoDir: wtDir,
           hookPath,
           loopModelOverride: scriptedModel(api),
           runTsxCommand: stubRunTsxCommand(),
@@ -1078,7 +1074,7 @@ describe('launchNativePlanning', () => {
           issue: 'HOK-2577',
           slug: 'demo',
           wtDir,
-          repoDir: REPO_DIR,
+          repoDir: wtDir,
           loopModelOverride: scriptedModel(api),
           runTsxCommand: stubRunTsxCommand(),
         }),
@@ -1114,7 +1110,7 @@ describe('launchNativePlanning', () => {
           issue: 'HOK-2313',
           slug: 'demo',
           wtDir,
-          repoDir: REPO_DIR,
+          repoDir: wtDir,
           hookPath,
           loopModelOverride: scriptedModel(api),
           runTsxCommand: stubRunTsxCommand(),
@@ -1151,7 +1147,7 @@ describe('launchNativePlanning', () => {
           issue: 'HOK-2313',
           slug: 'demo',
           wtDir,
-          repoDir: REPO_DIR,
+          repoDir: wtDir,
           phase: 'coding',
           loopModelOverride: scriptedModel(api),
         }),
@@ -1199,6 +1195,58 @@ describe('launchNativePlanning', () => {
       } else {
         process.env.OPENAI_API_KEY = originalOpenAiKey;
       }
+      cleanup(wtDir);
+    }
+  });
+
+  it('writes session events and tool decisions under the supplied repoDir only', async () => {
+    const { wtDir } = setupWorktree();
+    const api = uniqueApi('hermetic-repo-dir');
+
+    try {
+      registerScriptedPiProvider({
+        api,
+        turns: [{
+          content: [{
+            type: 'text',
+            text: validPlan('Hermetic Repo Dir Plan'),
+          }],
+          stopReason: 'stop',
+        }],
+      });
+
+      await launchNativePlanning({
+        session: 'hermetic-sess',
+        issue: 'HOK-3121',
+        slug: 'demo',
+        wtDir,
+        repoDir: wtDir,
+        loopModelOverride: scriptedModel(api),
+        runTsxCommand: stubRunTsxCommand(),
+      });
+
+      const sessionEventsDir = join(wtDir, '.wavemill', 'session-events');
+      assert.equal(existsSync(sessionEventsDir), true, 'session events dir should exist under the temp repo');
+      const streams = readdirSync(sessionEventsDir).filter((name) => name.endsWith('.jsonl'));
+      assert.ok(
+        streams.some((name) => name.includes('hermetic-sess') && name.includes('HOK-3121')),
+        `expected planning stream for hermetic-sess/HOK-3121 in ${streams.join(', ')}`,
+      );
+
+      const corpusPath = join(wtDir, '.wavemill', 'tool-decisions', 'corpus.jsonl');
+      if (existsSync(corpusPath)) {
+        const rows = readFileSync(corpusPath, 'utf-8')
+          .split('\n')
+          .filter((line) => line.trim() !== '');
+        for (const line of rows) {
+          const row = JSON.parse(line) as { model?: string; provider?: string };
+          assert.ok(
+            !(row.model?.startsWith('scripted:') || row.provider === 'scripted'),
+            `scripted row leaked into corpus: ${line.slice(0, 120)}`,
+          );
+        }
+      }
+    } finally {
       cleanup(wtDir);
     }
   });

@@ -73,5 +73,13 @@ rc=0
 STATE_FILE="$tmpdir/default.json" task_identity_linear_id "HOK-1" >/dev/null 2>&1 || rc=$?
 check "STATE_FILE default: mismatch detected" "2" "$rc"
 
+matched=false
+[[ 'AB2-1_c' =~ ^${TASK_IDENTITY_TASK_ID_RE}$ ]] && matched=true
+check 'derived task pattern: digit-bearing key' 'true' "$matched"
+matched=false
+[[ 'AB2-1_c-coding' =~ $TASK_IDENTITY_WINDOW_PREFIX_RE ]] && matched=true
+check 'derived window pattern: digit-bearing key' 'true' "$matched"
+check 'derived window pattern: task capture' 'AB2-1_c' "${BASH_REMATCH[1]:-}"
+
 echo "task-identity: $pass passed, $fail failed ($count fixture rows)"
 (( fail == 0 ))

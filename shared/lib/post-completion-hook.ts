@@ -5,6 +5,7 @@
  * Non-blocking: eval failures log a warning but never fail the workflow.
  */
 
+import { ISSUE_ID_RE } from './task-identity.ts';
 import { readFileSync, existsSync, appendFileSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -93,6 +94,8 @@ import {
   resolveChallengeSide,
   type ChallengeExecutionIntent,
 } from './challenge-execution-contract.ts';
+
+const ISSUE_TITLE_RE = new RegExp(`^#\\s*${ISSUE_ID_RE.source.slice(1, -1)}:\\s*(.+)$`, 'm');
 
 function isFiniteNonNegativeBudget(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
@@ -1288,7 +1291,7 @@ async function updateSubsystemSpecs(
   }
 
   // Extract issue title from context
-  const titleMatch = issueContext.match(/^#\s*[A-Z]+-\d+:\s*(.+)$/m);
+  const titleMatch = issueContext.match(ISSUE_TITLE_RE);
   const issueTitle = titleMatch ? titleMatch[1] : 'Unknown';
 
   // Detect affected subsystems before updating
@@ -1345,7 +1348,7 @@ async function generateContextUpdate(opts: {
   const promptTemplate = readFileSync(promptPath, 'utf-8');
 
   // Extract issue title from context
-  const titleMatch = opts.issueContext.match(/^#\s*[A-Z]+-\d+:\s*(.+)$/m);
+  const titleMatch = opts.issueContext.match(ISSUE_TITLE_RE);
   const issueTitle = titleMatch ? titleMatch[1] : 'Unknown';
 
   // Fill in template placeholders

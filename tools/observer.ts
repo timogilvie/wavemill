@@ -1,4 +1,5 @@
 #!/usr/bin/env -S npx tsx
+import { ISSUE_ID_RE } from '../shared/lib/task-identity.ts';
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
@@ -2356,9 +2357,11 @@ function parseReadyWatchdogLine(line: string): ReadyWatchdogLogEntry | null {
   };
 }
 
+const READY_RECHECK_REFUSAL_RE = new RegExp(`\\b(${ISSUE_ID_RE.source.slice(1, -1)}(?:_[A-Za-z0-9]+)?):\\s+refusing ready phase for PR #(\\d+)`, 'i');
+
 function parseReadyRecheckLine(line: string): ReadyRecheckLogEntry | null {
   const match = line.match(/(\S+)\s+\u2192\s+Re-running failed ready checks for PR #(\d+)/)
-    ?? line.match(/\b([A-Z][A-Z0-9]*-\d+(?:_[A-Za-z0-9]+)?):\s+refusing ready phase for PR #(\d+)/i);
+    ?? line.match(READY_RECHECK_REFUSAL_RE);
   if (!match) return null;
   return {
     line,

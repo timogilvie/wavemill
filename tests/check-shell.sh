@@ -159,6 +159,7 @@ for f in \
   "$REPO_DIR"/tests/hokusai-test-registration.test.sh \
   "$REPO_DIR"/tests/monitor-script-byte-identical.test.sh \
   "$REPO_DIR"/tests/bounded-retry.test.sh \
+  "$REPO_DIR"/tests/ready-update-from-base.test.sh \
   "$REPO_DIR"/tests/plan-packet-binding.test.sh \
   "$REPO_DIR"/tests/task-progress.test.sh \
   "$REPO_DIR"/tests/task-identity.test.sh \
@@ -166,6 +167,7 @@ for f in \
   "$REPO_DIR"/tests/launch-pane-liveness.test.sh \
   "$REPO_DIR"/tests/launch-failure-log-capture.test.sh \
   "$REPO_DIR"/tests/challenge-eval-soft-retry.test.sh \
+  "$REPO_DIR"/tests/eval-stub-slot-accounting.test.sh \
   "$REPO_DIR"/tests/challenge-eval-invalid-challenge.test.sh \
   "$REPO_DIR"/tests/challenge-eval-timeout.test.sh \
   "$REPO_DIR"/tests/challenge-provenance.test.sh \
@@ -1422,7 +1424,7 @@ else
 fi
 
 if [[ -f "$LIB_DIR/wavemill-startup-runner.sh" ]] \
-  && grep -Fq '^[A-Z]+-[0-9]+(_c)?$|^[a-z0-9-]+$' "$LIB_DIR/wavemill-startup-runner.sh"; then
+  && grep -Fq '^${TASK_IDENTITY_TASK_ID_RE}$|^[a-z0-9-]+$' "$LIB_DIR/wavemill-startup-runner.sh"; then
   pass "startup runner accepts challenge task identifiers"
 else
   fail "startup runner rejects challenge task identifiers"
