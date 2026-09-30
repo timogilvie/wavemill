@@ -187,12 +187,15 @@ bounded_retry_reset_if_new_key() {
     return 0
   fi
 
-  # Base component: only compare when the caller supplied one AND a base was
-  # previously recorded. If the stored key has no base (single-line file) or
-  # the caller passed nothing, treat this as a head-only reset (unchanged).
+  # Base component: reset when a base is provided (by caller or previously
+  # recorded) and it differs from the current one. When only the caller provides
+  # a base (stored is empty but current is non-empty), or vice versa, or both are
+  # present but differ, this represents a new merge parent and should reset.
+  # If both are empty or both match, no reset is needed (head-only key or
+  # unchanged base).
   if [[ -n "$current_base" ]]; then
     stored_base=$(bounded_retry_base "$state_dir" "$bucket")
-    if [[ -n "$stored_base" && "$stored_base" != "$current_base" ]]; then
+    if [[ "$stored_base" != "$current_base" ]]; then
       bounded_retry_clear "$state_dir" "$bucket"
     fi
   fi
