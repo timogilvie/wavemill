@@ -1,0 +1,374 @@
+{
+  "description": "HOK-3114 task identity parity fixtures. Consumed by shared/lib/task-identity.test.ts and tests/task-identity.test.sh; TS and bash must agree on every row.",
+  "cases": [
+    {
+      "name": "primary, no metadata",
+      "taskId": "HOK-3114",
+      "task": null,
+      "expected": {
+        "parse": {
+          "taskId": "HOK-3114",
+          "linearId": "HOK-3114",
+          "role": "primary"
+        },
+        "linearId": "HOK-3114",
+        "error": null,
+        "isChallenger": false,
+        "isLinearWriter": true
+      }
+    },
+    {
+      "name": "challenger, no metadata",
+      "taskId": "HOK-3114_c",
+      "task": null,
+      "expected": {
+        "parse": {
+          "taskId": "HOK-3114_c",
+          "linearId": "HOK-3114",
+          "role": "challenger"
+        },
+        "linearId": "HOK-3114",
+        "error": null,
+        "isChallenger": true,
+        "isLinearWriter": false
+      }
+    },
+    {
+      "name": "challenger whose metadata claims primary stays challenger",
+      "taskId": "HOK-3114_c",
+      "task": {
+        "challengeRole": "primary"
+      },
+      "expected": {
+        "parse": {
+          "taskId": "HOK-3114_c",
+          "linearId": "HOK-3114",
+          "role": "challenger"
+        },
+        "linearId": "HOK-3114",
+        "error": null,
+        "isChallenger": true,
+        "isLinearWriter": false
+      }
+    },
+    {
+      "name": "challenger, metadata agrees, role missing",
+      "taskId": "HOK-3114_c",
+      "task": {
+        "linearIssueId": "HOK-3114"
+      },
+      "expected": {
+        "parse": {
+          "taskId": "HOK-3114_c",
+          "linearId": "HOK-3114",
+          "role": "challenger"
+        },
+        "linearId": "HOK-3114",
+        "error": null,
+        "isChallenger": true,
+        "isLinearWriter": false
+      }
+    },
+    {
+      "name": "linear.app URL with slug",
+      "taskId": "https://linear.app/hokusai/issue/HOK-3113/task-identity-invariant",
+      "task": null,
+      "expected": {
+        "parse": {
+          "taskId": "HOK-3113",
+          "linearId": "HOK-3113",
+          "role": "primary"
+        },
+        "linearId": "HOK-3113",
+        "error": null,
+        "isChallenger": false,
+        "isLinearWriter": true
+      }
+    },
+    {
+      "name": "http linear.app URL with query",
+      "taskId": "http://linear.app/hokusai/issue/HOK-3113?foo=bar",
+      "task": null,
+      "expected": {
+        "parse": {
+          "taskId": "HOK-3113",
+          "linearId": "HOK-3113",
+          "role": "primary"
+        },
+        "linearId": "HOK-3113",
+        "error": null,
+        "isChallenger": false,
+        "isLinearWriter": true
+      }
+    },
+    {
+      "name": "garbage",
+      "taskId": "not-an-issue",
+      "task": null,
+      "expected": {
+        "parse": null,
+        "linearId": null,
+        "error": "invalid_task_id",
+        "isChallenger": false,
+        "isLinearWriter": false
+      }
+    },
+    {
+      "name": "empty string",
+      "taskId": "",
+      "task": null,
+      "expected": {
+        "parse": null,
+        "linearId": null,
+        "error": "invalid_task_id",
+        "isChallenger": false,
+        "isLinearWriter": false
+      }
+    },
+    {
+      "name": "leading whitespace",
+      "taskId": " HOK-3114",
+      "task": null,
+      "expected": {
+        "parse": null,
+        "linearId": null,
+        "error": "invalid_task_id",
+        "isChallenger": false,
+        "isLinearWriter": false
+      }
+    },
+    {
+      "name": "lowercase primary",
+      "taskId": "hok-3114",
+      "task": null,
+      "expected": {
+        "parse": null,
+        "linearId": null,
+        "error": "invalid_task_id",
+        "isChallenger": false,
+        "isLinearWriter": false
+      }
+    },
+    {
+      "name": "lowercase challenger",
+      "taskId": "hok-3114_c",
+      "task": null,
+      "expected": {
+        "parse": null,
+        "linearId": null,
+        "error": "invalid_task_id",
+        "isChallenger": false,
+        "isLinearWriter": false
+      }
+    },
+    {
+      "name": "uppercase challenger suffix",
+      "taskId": "HOK-3114_C",
+      "task": null,
+      "expected": {
+        "parse": null,
+        "linearId": null,
+        "error": "invalid_task_id",
+        "isChallenger": false,
+        "isLinearWriter": false
+      }
+    },
+    {
+      "name": "double challenger suffix",
+      "taskId": "HOK-3114_c_c",
+      "task": null,
+      "expected": {
+        "parse": null,
+        "linearId": null,
+        "error": "invalid_task_id",
+        "isChallenger": false,
+        "isLinearWriter": false
+      }
+    },
+    {
+      "name": "non-linear URL",
+      "taskId": "https://example.com/hokusai/issue/HOK-3114",
+      "task": null,
+      "expected": {
+        "parse": null,
+        "linearId": null,
+        "error": "invalid_task_id",
+        "isChallenger": false,
+        "isLinearWriter": false
+      }
+    },
+    {
+      "name": "garbage task ID with valid metadata fails closed",
+      "taskId": "not-an-issue",
+      "task": {
+        "linearIssueId": "HOK-3114"
+      },
+      "expected": {
+        "parse": null,
+        "linearId": null,
+        "error": "invalid_task_id",
+        "isChallenger": false,
+        "isLinearWriter": false
+      }
+    },
+    {
+      "name": "team key with digits",
+      "taskId": "H2O-42",
+      "task": null,
+      "expected": {
+        "parse": {
+          "taskId": "H2O-42",
+          "linearId": "H2O-42",
+          "role": "primary"
+        },
+        "linearId": "H2O-42",
+        "error": null,
+        "isChallenger": false,
+        "isLinearWriter": true
+      }
+    },
+    {
+      "name": "team key with digits, challenger",
+      "taskId": "H2O-42_c",
+      "task": null,
+      "expected": {
+        "parse": {
+          "taskId": "H2O-42_c",
+          "linearId": "H2O-42",
+          "role": "challenger"
+        },
+        "linearId": "H2O-42",
+        "error": null,
+        "isChallenger": true,
+        "isLinearWriter": false
+      }
+    },
+    {
+      "name": "metadata agrees",
+      "taskId": "HOK-3114",
+      "task": {
+        "linearIssueId": "HOK-3114",
+        "challengeRole": "primary"
+      },
+      "expected": {
+        "parse": {
+          "taskId": "HOK-3114",
+          "linearId": "HOK-3114",
+          "role": "primary"
+        },
+        "linearId": "HOK-3114",
+        "error": null,
+        "isChallenger": false,
+        "isLinearWriter": true
+      }
+    },
+    {
+      "name": "metadata agrees via padded URL",
+      "taskId": "HOK-3114",
+      "task": {
+        "linearIssueId": "  https://linear.app/hokusai/issue/HOK-3114/slug  "
+      },
+      "expected": {
+        "parse": {
+          "taskId": "HOK-3114",
+          "linearId": "HOK-3114",
+          "role": "primary"
+        },
+        "linearId": "HOK-3114",
+        "error": null,
+        "isChallenger": false,
+        "isLinearWriter": true
+      }
+    },
+    {
+      "name": "metadata record present, linearIssueId missing",
+      "taskId": "HOK-3114",
+      "task": {
+        "phase": "coding"
+      },
+      "expected": {
+        "parse": {
+          "taskId": "HOK-3114",
+          "linearId": "HOK-3114",
+          "role": "primary"
+        },
+        "linearId": "HOK-3114",
+        "error": null,
+        "isChallenger": false,
+        "isLinearWriter": true
+      }
+    },
+    {
+      "name": "unusable recorded linearIssueId is ignored",
+      "taskId": "HOK-3114",
+      "task": {
+        "linearIssueId": "n/a"
+      },
+      "expected": {
+        "parse": {
+          "taskId": "HOK-3114",
+          "linearId": "HOK-3114",
+          "role": "primary"
+        },
+        "linearId": "HOK-3114",
+        "error": null,
+        "isChallenger": false,
+        "isLinearWriter": true
+      }
+    },
+    {
+      "name": "metadata disagrees",
+      "taskId": "HOK-3114",
+      "task": {
+        "linearIssueId": "HOK-9999"
+      },
+      "expected": {
+        "parse": {
+          "taskId": "HOK-3114",
+          "linearId": "HOK-3114",
+          "role": "primary"
+        },
+        "linearId": null,
+        "error": "linear_id_mismatch",
+        "isChallenger": false,
+        "isLinearWriter": false
+      }
+    },
+    {
+      "name": "challenger metadata disagrees",
+      "taskId": "HOK-3114_c",
+      "task": {
+        "linearIssueId": "HOK-9999"
+      },
+      "expected": {
+        "parse": {
+          "taskId": "HOK-3114_c",
+          "linearId": "HOK-3114",
+          "role": "challenger"
+        },
+        "linearId": null,
+        "error": "linear_id_mismatch",
+        "isChallenger": true,
+        "isLinearWriter": false
+      }
+    },
+    {
+      "name": "primary-shaped ID with challenger metadata is not a writer",
+      "taskId": "HOK-3114",
+      "task": {
+        "challengeRole": "challenger"
+      },
+      "expected": {
+        "parse": {
+          "taskId": "HOK-3114",
+          "linearId": "HOK-3114",
+          "role": "primary"
+        },
+        "linearId": "HOK-3114",
+        "error": null,
+        "isChallenger": false,
+        "isLinearWriter": false
+      }
+    }
+  ]
+}

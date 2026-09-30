@@ -141,8 +141,6 @@ linear_set_state() {
   printf '%s|%s\n' "$1" "$2" >> "$LINEAR_CALLS"
 }
 
-should_update_linear_state() { return 0; }
-get_linear_issue_id() { printf '%s\n' "${1%_c}"; }
 is_challenge_task() { [[ "${CHALLENGE_TASK:-false}" == "true" ]]; }
 check_challenge_sibling_merged() { [[ "${CHALLENGE_SIBLING_MERGED:-false}" == "true" ]]; }
 get_challenge_sibling_pr() { printf '%s\n' "${CHALLENGE_SIBLING_PR:-}"; }
@@ -188,16 +186,29 @@ check_eq "merged PR requires resource verification" "verification-required" "$(j
 check_eq "merged PR has explicit retention reason" "terminal-reconciliation-resource-verification-required" "$(jq -r '.tasks["HOK-2600"].lifecycle.retention.reason' "$STATE_FILE")"
 check_eq "pane metadata marker is truthful" "true" "$(jq -r '.tasks["HOK-2600"].terminalReconciliations["pr_merged:102"].paneMetadataApplied' "$STATE_FILE")"
 
-reset_case "HOK-2601_c" "closed-challenge" "103"
+# The sibling-aware Backlog decision now only applies to the primary arm:
+# challengers never write Linear (HOK-3115).
+reset_case "HOK-2601" "closed-challenge" "103"
 write_pr_state "103" "CLOSED"
-CHALLENGE_TASK=true CHALLENGE_SIBLING_PR=104 CHALLENGE_SIBLING_STATE=OPEN wavemill_reconcile_terminal "$SESSION" "HOK-2601_c" "pr_closed_unmerged" "103"
+CHALLENGE_TASK=true CHALLENGE_SIBLING_PR=104 CHALLENGE_SIBLING_STATE=OPEN wavemill_reconcile_terminal "$SESSION" "HOK-2601" "pr_closed_unmerged" "103"
 linear_count=0
 [[ -f "$LINEAR_CALLS" ]] && linear_count="$(wc -l < "$LINEAR_CALLS" | tr -d ' ')"
 check_eq "closed challenge defers Linear while sibling open" "0" "$linear_count"
-check_eq "closed challenge leaves Linear marker retryable" "false" "$(jq -r '.tasks["HOK-2601_c"].terminalReconciliations["pr_closed_unmerged:103"].linearApplied' "$STATE_FILE")"
-CHALLENGE_TASK=true CHALLENGE_SIBLING_PR=104 CHALLENGE_SIBLING_STATE=CLOSED wavemill_reconcile_terminal "$SESSION" "HOK-2601_c" "pr_closed_unmerged" "103"
+check_eq "closed challenge leaves Linear marker retryable" "false" "$(jq -r '.tasks["HOK-2601"].terminalReconciliations["pr_closed_unmerged:103"].linearApplied' "$STATE_FILE")"
+CHALLENGE_TASK=true CHALLENGE_SIBLING_PR=104 CHALLENGE_SIBLING_STATE=CLOSED wavemill_reconcile_terminal "$SESSION" "HOK-2601" "pr_closed_unmerged" "103"
 check_eq "closed challenge updates Linear after sibling closes" "1" "$(wc -l < "$LINEAR_CALLS" | tr -d ' ')"
-check_eq "closed challenge records stable marker" "true" "$(jq -r '.tasks["HOK-2601_c"].terminalReconciliations["pr_closed_unmerged:103"].linearApplied' "$STATE_FILE")"
+check_eq "closed challenge records stable marker" "true" "$(jq -r '.tasks["HOK-2601"].terminalReconciliations["pr_closed_unmerged:103"].linearApplied' "$STATE_FILE")"
+
+# HOK-3115: a challenger with linearIssueId pointing at its primary and no
+# challengeRole never writes the primary's Linear issue.
+reset_case "HOK-2603_c" "closed-challenger" "105"
+state_mutate "$STATE_FILE" '.tasks[$issue].linearIssueId = "HOK-2603" | del(.tasks[$issue].challengeRole)' --arg issue "HOK-2603_c" >/dev/null
+write_pr_state "105" "CLOSED"
+CHALLENGE_TASK=true CHALLENGE_SIBLING_PR=106 CHALLENGE_SIBLING_STATE=CLOSED wavemill_reconcile_terminal "$SESSION" "HOK-2603_c" "pr_closed_unmerged" "105"
+linear_count=0
+[[ -f "$LINEAR_CALLS" ]] && linear_count="$(wc -l < "$LINEAR_CALLS" | tr -d ' ')"
+check_eq "challenger without role never writes primary Linear issue" "0" "$linear_count"
+check_eq "challenger Linear no-op is recorded as settled" "true" "$(jq -r '.tasks["HOK-2603_c"].terminalReconciliations["pr_closed_unmerged:105"].linearApplied' "$STATE_FILE")"
 
 reset_case "HOK-2602" "supersede-hook" ""
 hook_file="/tmp/wavemill-${SESSION}-HOK-2602.hook"

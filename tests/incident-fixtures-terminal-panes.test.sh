@@ -34,6 +34,8 @@ source "$FIXTURES_DIR/hok2595_closed_non_challenge.sh"
 source "$FIXTURES_DIR/hok2913c_superseded_challenger.sh"
 # shellcheck source=fixtures/incidents/squash_delivery_deleted_remote_head.sh
 source "$FIXTURES_DIR/squash_delivery_deleted_remote_head.sh"
+# shellcheck source=fixtures/incidents/hok3056_terminal_dirty_worktree.sh
+source "$FIXTURES_DIR/hok3056_terminal_dirty_worktree.sh"
 
 FAILURES=0
 
@@ -362,6 +364,102 @@ else
 fi
 
 echo "  scenario 3 diagnostics: rc1=$squash_rc1 markers=${marker_count_1}/${marker_count_2}/${marker_count_restart} iteration_ms=${squash_iteration1}/${squash_iteration2}"
+
+# ============================================================================
+# Scenario 4: HOK-3056-style terminal (error) task with a dirty worktree
+# ============================================================================
+# HOK-3088 regression: a terminal (error) task whose branch is at base and
+# whose PR is absent used to get "nothing on the branch is at risk; ...
+# abort/reap" advice from the observer, ignoring the ~500 lines of
+# uncommitted work in the tree. After the fix the observer must instead:
+#   - name the dirty files in evidence,
+#   - mark potentialWorkLoss=true and dirtyPathCount>0,
+#   - recommend commit/push or a draft PR before terminalizing, and
+#   - never append the reap action or the "nothing at risk" assertion.
+echo ""
+echo "=== Scenario 4: incident_hok3056_terminal_dirty_worktree ==="
+
+incident_scenario_new "hok3056"
+incident_scenario_start_tmux
+incident_setup_hok3056_terminal_dirty_worktree
+
+hok3056_observer_json="$(run_observer_pass)"
+
+hok3056_finding_json="$(printf '%s\n' "$hok3056_observer_json" | jq -c \
+  --arg p "terminal-task-parked-${SESSION}-${HOK3056_ISSUE}" \
+  '[.findings[]? // empty | select(.id | startswith($p))] | .[0] // empty')"
+
+if [[ -z "$hok3056_finding_json" || "$hok3056_finding_json" == "null" ]]; then
+  report_fail "hok3056: Observer did not emit a terminal-task-parked finding; observer output: $hok3056_observer_json"
+else
+  report_pass "hok3056: Observer emitted a terminal-task-parked finding for the dirty worktree"
+
+  hok3056_recommendation="$(printf '%s' "$hok3056_finding_json" | jq -r '.recommendation // ""')"
+  hok3056_title="$(printf '%s' "$hok3056_finding_json" | jq -r '.title // ""')"
+  hok3056_severity="$(printf '%s' "$hok3056_finding_json" | jq -r '.severity // ""')"
+  hok3056_evidence="$(printf '%s' "$hok3056_finding_json" | jq -r '.evidence | join(" ")')"
+
+  expect_eq "$hok3056_severity" "urgent" \
+    "hok3056: dirty worktree escalates the finding to urgent"
+
+  if [[ "$hok3056_recommendation" == *"Nothing on the branch is at risk"* ]]; then
+    report_fail "hok3056: recommendation still asserts nothing at risk despite dirty worktree: $hok3056_recommendation"
+  else
+    report_pass "hok3056: recommendation drops the no-risk assertion"
+  fi
+
+  if [[ "$hok3056_recommendation" == *"wavemill mill abort"* && "$hok3056_recommendation" != *"Never run"* ]]; then
+    report_fail "hok3056: recommendation still appends the abort/reap action: $hok3056_recommendation"
+  else
+    report_pass "hok3056: recommendation never appends an unconditional abort/reap action"
+  fi
+
+  if [[ "$hok3056_recommendation" == *"commit"* && "$hok3056_recommendation" == *"push"* ]] \
+    || [[ "$hok3056_recommendation" == *"draft PR"* ]]; then
+    report_pass "hok3056: recommendation asks operator to preserve first"
+  else
+    report_fail "hok3056: recommendation should name commit/push or draft PR preservation; got: $hok3056_recommendation"
+  fi
+
+  if [[ "$hok3056_title" == *"dirty"* ]]; then
+    report_pass "hok3056: finding title names the dirty-tree condition"
+  else
+    report_fail "hok3056: finding title should name the dirty condition; got: $hok3056_title"
+  fi
+
+  if [[ "$hok3056_evidence" == *"dirtyPath= M README.md"* ]] \
+    && [[ "$hok3056_evidence" == *"dirtyPath=?? shared/lib/mcp-client.ts"* ]] \
+    && [[ "$hok3056_evidence" == *"dirtyPath=?? tools/mcp.ts"* ]]; then
+    report_pass "hok3056: evidence names the modified README plus untracked mcp-client.ts and tools/mcp.ts"
+  else
+    report_fail "hok3056: evidence must name the dirty files; got: $hok3056_evidence"
+  fi
+
+  if [[ "$hok3056_evidence" == *"worktreeDirty=true"* ]] \
+    && [[ "$hok3056_evidence" == *"potentialWorkLoss=true"* ]] \
+    && [[ "$hok3056_evidence" == *"residueDisposition=dirty-worktree"* ]]; then
+    report_pass "hok3056: evidence marks dirty worktree, potential work loss, and dirty-worktree disposition"
+  else
+    report_fail "hok3056: evidence must mark dirty worktree state; got: $hok3056_evidence"
+  fi
+fi
+
+# The finding must survive parity with the cleanup dry-run's dirty_worktree
+# refusal: cleanup should refuse to reap the same task for the same reason.
+# We drive the shared TS classifier by running the actual cleanup CLI against
+# the scenario's workflow-state; a refusal with reason "dirty_worktree"
+# proves the two paths agree.
+hok3056_cleanup_json="$(npx tsx "$INCIDENT_REPO_DIR/tools/cleanup-terminal-inbox.ts" \
+  --repo-dir "$REPO_DIR" --state-file "$STATE_FILE" --base-branch auto/integration \
+  --json --dry-run "$HOK3056_ISSUE" 2>"$SCENARIO_DIR/cleanup-stderr.log" || true)"
+hok3056_cleanup_reason="$(printf '%s' "$hok3056_cleanup_json" | jq -r '.decisions[0].refusalReason // ""' 2>/dev/null || echo "")"
+if [[ "$hok3056_cleanup_reason" == "dirty_worktree" ]]; then
+  report_pass "hok3056: cleanup --dry-run refuses with dirty_worktree (shared predicate parity)"
+else
+  report_fail "hok3056: cleanup --dry-run should refuse with dirty_worktree; got '$hok3056_cleanup_reason', json=$hok3056_cleanup_json"
+fi
+
+echo "  scenario 4 diagnostics: cleanup_reason=$hok3056_cleanup_reason"
 
 # ============================================================================
 # Summary

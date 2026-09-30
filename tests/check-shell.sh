@@ -85,6 +85,7 @@ for f in \
   "$LIB_DIR"/bounded-retry.sh \
   "$LIB_DIR"/plan-packet-binding.sh \
   "$LIB_DIR"/task-progress.sh \
+  "$LIB_DIR"/task-identity.sh \
   "$LIB_DIR"/challenge-arms.sh \
   "$LIB_DIR"/transient-marker.sh \
   "$LIB_DIR"/terminal-reconciler.sh \
@@ -122,6 +123,7 @@ for f in \
   "$REPO_DIR"/tests/global-model-parity.test.sh \
   "$REPO_DIR"/tests/queue-health.test.sh \
   "$REPO_DIR"/tests/merge-queue-live-ci.test.sh \
+  "$REPO_DIR"/tests/merge-queue-blocked-label.test.sh \
   "$REPO_DIR"/tests/merge-lane-progress-artifacts.test.sh \
   "$REPO_DIR"/tests/notification-waiting.test.sh \
   "$REPO_DIR"/tests/hook-osc-emit.test.sh \
@@ -159,6 +161,7 @@ for f in \
   "$REPO_DIR"/tests/bounded-retry.test.sh \
   "$REPO_DIR"/tests/plan-packet-binding.test.sh \
   "$REPO_DIR"/tests/task-progress.test.sh \
+  "$REPO_DIR"/tests/task-identity.test.sh \
   "$REPO_DIR"/tests/handle-phase-launch-result.test.sh \
   "$REPO_DIR"/tests/launch-pane-liveness.test.sh \
   "$REPO_DIR"/tests/launch-failure-log-capture.test.sh \
@@ -209,6 +212,7 @@ for f in \
   "$REPO_DIR"/tests/fixtures/incidents/hok2595_closed_non_challenge.sh \
   "$REPO_DIR"/tests/fixtures/incidents/hok2913c_superseded_challenger.sh \
   "$REPO_DIR"/tests/fixtures/incidents/squash_delivery_deleted_remote_head.sh \
+  "$REPO_DIR"/tests/fixtures/incidents/hok3056_terminal_dirty_worktree.sh \
   "$REPO_DIR"/tests/fixtures/incidents/control_dirty_worktree.sh \
   "$REPO_DIR"/tests/fixtures/incidents/control_local_head_changed.sh \
   "$REPO_DIR"/tests/fixtures/incidents/control_divergent_local_ahead.sh \
@@ -536,6 +540,9 @@ else
     # Extract function definitions from task-progress.sh (sourced by wavemill-common.sh, HOK-3101)
     TASK_PROGRESS_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/task-progress.sh" | sed 's/()//' | sort -u)
 
+    # Extract function definitions from task-identity.sh (sourced by wavemill-common.sh, HOK-3114)
+    TASK_IDENTITY_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/task-identity.sh" | sed 's/()//' | sort -u)
+
     # Extract function definitions from challenge-arms.sh (also sourced by wavemill-common.sh, HOK-2811)
     CHALLENGE_ARMS_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/challenge-arms.sh" | sed 's/()//' | sort -u)
 
@@ -555,7 +562,7 @@ else
     WORKTREE_DEPS_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/wavemill-worktree-deps.sh" | sed 's/()//' | sort -u)
 
     # Combine all available function definitions
-    ALL_DEFINED=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' "$HEREDOC_FUNCS" "$ADAPTER_FUNCS" "$COMMON_FUNCS" "$BOUNDED_RETRY_FUNCS" "$PLAN_PACKET_BINDING_FUNCS" "$TASK_PROGRESS_FUNCS" "$CHALLENGE_ARMS_FUNCS" "$HOOK_FUNCS" "$QUEUE_HEALTH_FUNCS" "$MARKER_FUNCS" "$RECONCILER_FUNCS" "$WORKTREE_DEPS_FUNCS" | sort -u)
+    ALL_DEFINED=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' "$HEREDOC_FUNCS" "$ADAPTER_FUNCS" "$COMMON_FUNCS" "$BOUNDED_RETRY_FUNCS" "$PLAN_PACKET_BINDING_FUNCS" "$TASK_PROGRESS_FUNCS" "$TASK_IDENTITY_FUNCS" "$CHALLENGE_ARMS_FUNCS" "$HOOK_FUNCS" "$QUEUE_HEALTH_FUNCS" "$MARKER_FUNCS" "$RECONCILER_FUNCS" "$WORKTREE_DEPS_FUNCS" | sort -u)
 
     # Known external commands and bash builtins that are NOT custom functions
     # This list covers standard utilities, coreutils, and tools used by wavemill
@@ -791,7 +798,7 @@ else
   # With `set -euo pipefail`, this makes the pipeline fail even though the pattern matched.
 
   if grep -qF 'wavemill_resolve_pr_attempt "$issue" "$branch"' <<< "$HEREDOC_CONTENT" \
-    && grep -qF 'classification" == "current-open"' <<< "$HEREDOC_CONTENT"; then
+    && grep -qF 'accept_classifications=(current-open)' <<< "$HEREDOC_CONTENT"; then
     pass "monitor find_pr_for_branch uses attempt resolver"
   else
     fail "monitor find_pr_for_branch is not routed through attempt resolver"
@@ -806,13 +813,14 @@ else
     fail "monitor still risks cleanup when agent exits without PR"
   fi
 
-  if grep -q 'linear_set_state .*"In Review"' <<< "$HEREDOC_CONTENT" && grep -q 'get_linear_issue_id' <<< "$HEREDOC_CONTENT"; then
+  # HOK-3115: writes pass the task ID; linear_set_state resolves and gates it.
+  if grep -qF 'linear_set_state "$ISSUE" "In Review"' <<< "$HEREDOC_CONTENT"; then
     pass "monitor sets Linear issue to In Review when PR is detected"
   else
     fail "monitor does not set Linear issue to In Review on PR detection"
   fi
 
-  if grep -q 'linear_set_state .*"Done"' <<< "$HEREDOC_CONTENT" && grep -q 'get_linear_issue_id' <<< "$HEREDOC_CONTENT"; then
+  if grep -qF 'linear_set_state "$ISSUE" "Done"' <<< "$HEREDOC_CONTENT"; then
     pass "monitor sets Linear issue to Done when work is completed"
   else
     fail "monitor does not set Linear issue to Done on completion"
@@ -1054,7 +1062,7 @@ else
     && grep -Fq 'check_challenge_sibling_merged "$ISSUE"' <<< "$CLOSED_BLOCK" \
     && grep -Fq 'linear_status="Done"' <<< "$CLOSED_BLOCK" \
     && grep -Fq 'Challenge sibling merged → marking Linear as Done' <<< "$CLOSED_BLOCK" \
-    && grep -Fq 'linear_set_state "$(get_linear_issue_id "$ISSUE")" "$linear_status"' <<< "$CLOSED_BLOCK"; then
+    && grep -Fq 'linear_set_state "$ISSUE" "$linear_status"' <<< "$CLOSED_BLOCK"; then
     pass "closed challenge PRs mark Linear Done when the sibling PR was merged"
   else
     fail "closed challenge PRs do not promote Linear to Done when sibling merged"
@@ -1946,7 +1954,7 @@ agent_verify_launch() {
 
 CODEX_PROMPT_FILE="$PROMPT_RENDER_DIR/interactive-codex-prompt.txt"
 printf 'planning prompt\n' > "$CODEX_PROMPT_FILE"
-agent_launch_interactive "wavemill-test" "planning" "$CODEX_PROMPT_FILE" "codex" "gpt-5.6-terra"
+WAVEMILL_CODEX_NO_DAEMON=1 agent_launch_interactive "wavemill-test" "planning" "$CODEX_PROMPT_FILE" "codex" "gpt-5.6-terra"
 
 CODEX_LAUNCHER_PATH=""
 for captured in "${TMUX_CAPTURE[@]}"; do
@@ -1958,10 +1966,19 @@ for captured in "${TMUX_CAPTURE[@]}"; do
 done
 
 if [[ -f "$CODEX_LAUNCHER_PATH" ]] \
-  && grep -q 'codex --model gpt-5\.6-terra --dangerously-bypass-approvals-and-sandbox --no-alt-screen "\$(cat ' "$CODEX_LAUNCHER_PATH"; then
-  pass "interactive Codex launcher uses interactive codex with bypass flag"
+  && grep -q 'codex --model gpt-5\.6-terra --dangerously-bypass-approvals-and-sandbox --no-daemon --no-alt-screen "\$(cat ' "$CODEX_LAUNCHER_PATH"; then
+  pass "interactive Codex launcher uses interactive codex with bypass and no-daemon flags"
 else
   fail "interactive Codex launcher is missing interactive codex flags"
+fi
+
+# --no-daemon is only passed when the installed codex advertises it; the
+# override pins the probe so this check is independent of the host CLI.
+if (WAVEMILL_CODEX_NO_DAEMON=1 agent_codex_supports_no_daemon) \
+  && ! (WAVEMILL_CODEX_NO_DAEMON=0 agent_codex_supports_no_daemon); then
+  pass "codex --no-daemon support honours WAVEMILL_CODEX_NO_DAEMON"
+else
+  fail "codex --no-daemon support ignores WAVEMILL_CODEX_NO_DAEMON"
 fi
 
 if [[ -f "$CODEX_LAUNCHER_PATH" ]] \

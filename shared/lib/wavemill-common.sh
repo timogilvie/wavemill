@@ -15,6 +15,10 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bounded-retry.sh"
 # through these helpers instead of reimplementing a private hook TTL check.
 # shellcheck source=task-progress.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/task-progress.sh"
+# HOK-3114: task identity invariant (task ID -> Linear ID, challenger role,
+# Linear-writer predicate). Bash twin of shared/lib/task-identity.ts.
+# shellcheck source=task-identity.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/task-identity.sh"
 if [[ -f "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/effective-task-config.sh" ]]; then
   # shellcheck source=effective-task-config.sh
   source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/effective-task-config.sh"
@@ -6935,6 +6939,47 @@ validate_pr_merge() {
 # Linear latency in every scope that sources this file.
 API_TIMEOUT="${API_TIMEOUT:-30}"
 
+# Warn through the caller scope's log_warn, falling back to startup_log (the
+# startup runner has no log_warn). Silent when neither is defined.
+_linear_write_warn() {
+  if declare -F log_warn >/dev/null 2>&1; then
+    log_warn "$*"
+  elif declare -F startup_log >/dev/null 2>&1; then
+    startup_log "WARN: $*"
+  fi
+}
+
+# Resolve the Linear issue a task may write to (HOK-3115). Every Linear write
+# helper below goes through this gate; callers pass the mill task ID
+# (HOK-123 or HOK-123_c), never a pre-resolved Linear ID, so the challenger
+# role cannot be lost on the way in.
+#
+# - Writer: prints the Linear issue ID and returns 0.
+# - Challenger (`_c` suffix, or metadata challengeRole=challenger): prints
+#   nothing and returns 1 silently. A challenger write is a no-op, not a
+#   failure, so it must not produce a warning.
+# - Invalid task ID or conflicting recorded linearIssueId: warns once and
+#   returns 2 (fail closed; no Linear call).
+linear_write_target() {
+  local task_id="$1" linear_id rc=0
+  if task_identity_is_linear_writer "$task_id"; then
+    task_identity_linear_id "$task_id"
+    return 0
+  fi
+  task_identity_is_challenger "$task_id" && return 1
+  if ! task_identity_parse "$task_id" >/dev/null; then
+    _linear_write_warn "Refusing Linear write for invalid task ID '$task_id'"
+    return 2
+  fi
+  linear_id="$(task_identity_linear_id "$task_id" 2>/dev/null)" || rc=$?
+  if (( rc != 0 )); then
+    _linear_write_warn "Refusing Linear write for $task_id: recorded linearIssueId conflicts with its task ID"
+    return 2
+  fi
+  # Primary-shaped ID whose metadata records challengeRole=challenger.
+  return 1
+}
+
 # Canonical Linear state writer. Before canonicalization the mill copy went
 # through the generic `retry` helper (up to MAX_RETRIES × RETRY_TIMEOUT plus
 # backoff sleeps — roughly 90 s of blocking work with stderr discarded), while
@@ -6942,9 +6987,12 @@ API_TIMEOUT="${API_TIMEOUT:-30}"
 # code and last stderr line on failure. The canonical helper keeps the monitor
 # semantics: one attempt, hard wall-clock cap, diagnostics retained. Queued
 # retry for transient Linear write failures lives in linear-retry-drain, not
-# here.
+# here. HOK-3115 removed the startup runner's silent copy; this is the only
+# definition.
 #
 # Contract:
+# - $1 is the mill task ID; linear_write_target decides whether and where to
+#   write. Challengers are a silent no-op.
 # - Always non-fatal: returns 0 even when the tool fails (safe under set -e).
 # - Respects DRY_RUN: logs the intended transition and skips the tool call.
 # - Wall-clock: bounded by API_TIMEOUT (default 30 s) via the caller scope's
@@ -6952,7 +7000,8 @@ API_TIMEOUT="${API_TIMEOUT:-30}"
 # - Diagnostics: on failure log_warn carries issue, target state, exit code,
 #   and the last stderr line the tool produced.
 linear_set_state() {
-  local issue="$1" state="$2"
+  local task_id="$1" state="$2" issue
+  issue="$(linear_write_target "$task_id")" || return 0
   if [[ "${DRY_RUN:-false}" == "true" ]]; then
     declare -F log >/dev/null 2>&1 && log "[DRY-RUN] Would set $issue → $state"
     return 0
@@ -6960,7 +7009,7 @@ linear_set_state() {
 
   local stderr_file rc=0
   stderr_file=$(mktemp) || {
-    declare -F log_warn >/dev/null 2>&1 && log_warn "Failed to update Linear state for $issue to $state (mktemp failed)"
+    _linear_write_warn "Failed to update Linear state for $issue to $state (mktemp failed)"
     return 0
   }
 
@@ -6970,16 +7019,83 @@ linear_set_state() {
     return 0
   fi
 
-  if declare -F log_warn >/dev/null 2>&1; then
-    if [[ -s "$stderr_file" ]]; then
-      local err_line
-      err_line=$(tail -n 1 "$stderr_file")
-      log_warn "Failed to update Linear state for $issue to $state (exit $rc): $err_line"
-    else
-      log_warn "Failed to update Linear state for $issue to $state (exit $rc)"
-    fi
+  if [[ -s "$stderr_file" ]]; then
+    local err_line
+    err_line=$(tail -n 1 "$stderr_file")
+    _linear_write_warn "Failed to update Linear state for $issue to $state (exit $rc): $err_line"
+  else
+    _linear_write_warn "Failed to update Linear state for $issue to $state (exit $rc)"
   fi
   rm -f "$stderr_file"
+  return 0
+}
+
+# Resolve a list of task IDs through linear_write_target and print the unique
+# writable Linear IDs, one per line. Challengers and refused IDs are dropped.
+_linear_write_targets() {
+  local task_id linear_id
+  local -A seen=()
+  for task_id in "$@"; do
+    [[ -n "$task_id" ]] || continue
+    linear_id="$(linear_write_target "$task_id")" || continue
+    [[ -n "${seen[$linear_id]:-}" ]] && continue
+    seen["$linear_id"]=1
+    printf '%s\n' "$linear_id"
+  done
+}
+
+# Queue a transient batch failure for background retry (linear-retry-drain).
+# $2 is a comma-separated task-ID list; it is gated like every other write.
+linear_enqueue_retry() {
+  local state="$1"
+  local issues_csv="$2"
+  local category="${3:-unknown}"
+  local http="${4:-none}"
+  local message="${5:-Queued from startup batch retry path}"
+  local -a task_ids=() linear_ids=()
+  [[ "${DRY_RUN:-false}" == "true" ]] && return 0
+  [[ -z "$issues_csv" ]] && return 0
+  IFS=',' read -r -a task_ids <<<"$issues_csv"
+  mapfile -t linear_ids < <(_linear_write_targets "${task_ids[@]}")
+  [[ "${#linear_ids[@]}" -eq 0 ]] && return 0
+  issues_csv="$(IFS=','; printf '%s' "${linear_ids[*]}")"
+  npx tsx "$TOOLS_DIR/linear-retry-drain.ts" enqueue \
+    --state "$state" \
+    --issues "$issues_csv" \
+    --category "$category" \
+    --http "$http" \
+    --message "$message" >/dev/null 2>&1 || true
+}
+
+# Set one Linear state on many tasks in a single set-issues-state.ts call.
+# Per-issue failures are logged with their classification; retryable ones are
+# queued via linear_enqueue_retry. Always returns 0.
+linear_batch_set_state() {
+  local state="$1"
+  shift || true
+  local -a issues=()
+  local output exit_code=0 stderr_tmp stderr_output retryable_issues_csv retry_category retry_http retry_message
+  [[ "${DRY_RUN:-false}" == "true" ]] && return 0
+  mapfile -t issues < <(_linear_write_targets "$@")
+  [[ "${#issues[@]}" -eq 0 ]] && return 0
+
+  stderr_tmp="$(mktemp -t wavemill-linear-batch-stderr.XXXXXX)"
+  output="$(npx tsx "$TOOLS_DIR/set-issues-state.ts" --state "$state" "${issues[@]}" 2>"$stderr_tmp")" || exit_code=$?
+  stderr_output="$(cat "$stderr_tmp" 2>/dev/null || true)"
+
+  if jq -e '.failed | length > 0' >/dev/null 2>&1 <<<"$output"; then
+    while IFS= read -r failure; do
+      _linear_write_warn "Linear state update to '$state' failed for $failure"
+    done < <(jq -r '.failed[] | "\(.issueId): \(.error) [category=\(.category // "unknown"), http=\((.httpStatus // "none") | tostring), retryable=\(.isRetryable // false)]"' <<<"$output")
+    retryable_issues_csv="$(jq -r '[.failed[] | select(.isRetryable == true) | .issueId] | unique | join(",")' <<<"$output")"
+    retry_category="$(jq -r '([.failed[] | select(.isRetryable == true) | .category] | first) // "unknown"' <<<"$output")"
+    retry_http="$(jq -r '([.failed[] | select(.isRetryable == true) | .httpStatus] | map(select(. != null)) | first // "none") | tostring' <<<"$output")"
+    retry_message="$(jq -r '([.failed[] | select(.isRetryable == true) | .error] | first) // "Queued from startup batch retry path"' <<<"$output")"
+    linear_enqueue_retry "$state" "$retryable_issues_csv" "$retry_category" "$retry_http" "$retry_message"
+  elif [[ "$exit_code" -ne 0 ]]; then
+    _linear_write_warn "Batch Linear state update to '$state' failed for ${#issues[@]} issue(s) [category=unknown, http=none, retryable=false, details=${stderr_output:-none}]"
+  fi
+  rm -f "$stderr_tmp"
   return 0
 }
 

@@ -32,6 +32,14 @@ export interface MergeQueuePr {
   workflowStatus?: string;
   prState?: string;
   ci?: MergeQueueCiState;
+  /**
+   * Live GitHub labels observed for the PR at planner input construction. When
+   * the label read succeeded these are authoritative — a saved Ready pass and
+   * green CI never override a current tend-refusal label such as `wm:blocked`
+   * (HOK-3111). Undefined means the label read failed; the planner fails
+   * closed and marks the PR excluded in that case.
+   */
+  labels?: string[];
   /** Progress-only telemetry mirrored from the lane-progress record (HOK-2919). */
   lastProgressAt?: string;
   laneWaitSeconds?: number;
@@ -181,10 +189,61 @@ export interface MergeQueueConfigResolved {
   skipCooldownSeconds: number;
 }
 
+export interface MergeQueueExclusion {
+  issue: string;
+  prNumber?: number;
+  headSha?: string;
+  reason: string;
+  blockingLabel?: string;
+  nextAction?: string;
+}
+
 export interface MergeQueueTickPlan {
   stuckIssues: string[];
   selectedIssues: string[];
   ciBlockedIssues: string[];
+  /**
+   * PRs that are excluded from candidate accounting because tend will refuse
+   * to consume them (e.g. carry `wm:blocked`) or because live label state
+   * could not be read. Excluded PRs never enter `selectedIssues`, and are
+   * ignored for stuck/ciBlocked accounting so a `wm:blocked` PR does not
+   * bounce between promote and demote (HOK-3111).
+   */
+  excludedIssues: MergeQueueExclusion[];
+}
+
+/**
+ * Labels a PR may carry that make it non-consumable by tend. If any of these
+ * are present, the merge queue must not promote the PR to `merge-candidate`.
+ */
+export const TEND_REFUSAL_LABELS = new Set<string>(['wm:blocked']);
+
+/**
+ * Classify whether the merge queue may treat this PR as a candidate. When the
+ * label read failed (labels undefined) we fail closed: the PR is excluded
+ * rather than silently promoted based on stale label knowledge.
+ */
+export function classifyMergeQueueConsumability(
+  pr: Pick<MergeQueuePr, 'labels'>,
+): { consumable: true } | { consumable: false; blockingLabel?: string; reason: string; nextAction?: string } {
+  if (pr.labels === undefined) {
+    return {
+      consumable: false,
+      reason: 'live labels unknown',
+      nextAction: 'retry label fetch',
+    };
+  }
+  for (const label of pr.labels) {
+    if (TEND_REFUSAL_LABELS.has(label)) {
+      return {
+        consumable: false,
+        blockingLabel: label,
+        reason: `carries ${label}`,
+        nextAction: label === 'wm:blocked' ? 'clear wm:blocked (tend resolution)' : `clear ${label}`,
+      };
+    }
+  }
+  return { consumable: true };
 }
 
 function timestampMs(value?: string): number {
@@ -357,28 +416,53 @@ export function planMergeQueueTick(options: {
 }): MergeQueueTickPlan {
   const { readyPrs, now, config } = options;
   const selectablePrs = readyPrs.filter(isSelectableMergeQueuePr);
-  const ciBlockedIssues = selectablePrs
+
+  // HOK-3111: split tend-refusal PRs (e.g. wm:blocked) out before any
+  // candidate/stuck accounting so they never enter promote/demote cycles.
+  const excludedIssues: MergeQueueExclusion[] = [];
+  const excludedIssueSet = new Set<string>();
+  const consumablePrs: MergeQueuePr[] = [];
+  for (const pr of selectablePrs) {
+    const verdict = classifyMergeQueueConsumability(pr);
+    if (verdict.consumable) {
+      consumablePrs.push(pr);
+      continue;
+    }
+    excludedIssueSet.add(pr.issue);
+    excludedIssues.push({
+      issue: pr.issue,
+      prNumber: pr.prNumber,
+      headSha: pr.ci?.headSha,
+      reason: verdict.reason,
+      blockingLabel: verdict.blockingLabel,
+      nextAction: verdict.nextAction,
+    });
+  }
+
+  const ciBlockedIssues = consumablePrs
     .filter((pr) => pr.queueState === 'merge-candidate')
     .filter((pr) => pr.ci?.conclusion === 'fail')
     .map((pr) => pr.issue);
-  const stuckIssues = selectablePrs
+  const stuckIssues = consumablePrs
     .filter((pr) => pr.queueState === 'merge-candidate')
     .filter((pr) => !ciBlockedIssues.includes(pr.issue))
     .filter((pr) => isCandidateStuck(pr, now, config))
     .map((pr) => pr.issue);
 
-  const activeCandidates = selectablePrs
+  const activeCandidates = consumablePrs
     .filter((pr) => pr.queueState === 'merge-candidate')
     .filter((pr) => !ciBlockedIssues.includes(pr.issue))
     .filter((pr) => !stuckIssues.includes(pr.issue));
-  const eligibleReadyPrs = selectablePrs.filter((pr) => !stuckIssues.includes(pr.issue));
+  const eligibleReadyPrs = consumablePrs.filter((pr) => !stuckIssues.includes(pr.issue));
 
   const selectedIssues = selectMergeCandidates({
     readyPrs: eligibleReadyPrs,
     activeCandidates,
     now,
     config,
-  }).map((pr) => pr.issue);
+  })
+    .filter((pr) => !excludedIssueSet.has(pr.issue))
+    .map((pr) => pr.issue);
 
-  return { stuckIssues, selectedIssues, ciBlockedIssues };
+  return { stuckIssues, selectedIssues, ciBlockedIssues, excludedIssues };
 }

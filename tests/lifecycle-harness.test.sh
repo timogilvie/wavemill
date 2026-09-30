@@ -157,6 +157,9 @@ harness_extract_real_functions() {
     merge_retry_marker_until \
     lane_progress_patch_json \
     refresh_ready_merge_queue_tick \
+    pr_live_labels_json \
+    merge_queue_transition_report \
+    merge_queue_exclusion_report \
     wavemill_run_tsx_tool \
     get_main_head_sha \
     ready_stage_allows_merge \
@@ -289,7 +292,6 @@ harness_extract_real_functions() {
     stage_result_is_in_progress \
     ready_conflict_launch_head \
     _persist_phase \
-    expansion_recovery_resolve_issue_id \
     recover_missing_expansion_artifact \
     handle_expanded_reroute_handoff_failure \
     enforce_plan_packet_binding \
@@ -1063,23 +1065,6 @@ EOF
   check_not_contains "challenger recover url id: does not pass Linear URL" "$npx_args" "expand-issue.ts https://linear.app/wavemill/issue/HOK-2265"
 }
 
-test_expansion_recovery_resolve_issue_id_normalizes_linear_issue_url() {
-  local resolved
-  resolved="$(
-    source "$REAL_FUNC_FILE"
-    get_task_meta() {
-      local issue_key="$1" field="$2"
-      case "$issue_key.$field" in
-        HOK-2265_c.linearIssueId) printf '%s\n' 'https://linear.app/hokusai/issue/HOK-2265/native-runtime' ;;
-        *) printf '\n' ;;
-      esac
-    }
-    expansion_recovery_resolve_issue_id HOK-2265_c
-  )"
-
-  check_eq "challenger recover url: resolves Linear issue URL to issue id" "HOK-2265" "$resolved"
-}
-
 test_challenger_missing_expansion_recovery_skips_without_linear_issue_id() {
   local slug="challenger-missing-expansion-recovery-skip"
   local issue="HOK-2265_c"
@@ -1098,12 +1083,16 @@ test_challenger_missing_expansion_recovery_skips_without_linear_issue_id() {
     get_task_meta() {
       local issue_key=\"\$1\" field=\"\$2\"
       case \"\$issue_key.\$field\" in
-        HOK-2265_c.linearIssueId) printf '%s\\n' ' HOK-2265_c ' ;;
         HOK-2265_c.challenge) printf '%s\\n' 'true' ;;
         HOK-2265_c.challengeRole) printf '%s\\n' 'challenger' ;;
         *) printf '\\n' ;;
       esac
     }
+    # HOK-3115: a recorded linearIssueId that conflicts with the task ID is
+    # unresolvable under the task-identity contract, so recovery is skipped.
+    mkdir -p \"\$(dirname \"\$STATE_FILE\")\"
+    [[ -f \"\$STATE_FILE\" ]] || printf '{\"tasks\":{}}\\n' > \"\$STATE_FILE\"
+    state_mutate \"\$STATE_FILE\" '.tasks[\$i].linearIssueId = \"HOK-9999\"' --arg i \"\$ISSUE\" >/dev/null
     npx() {
       printf '%s\\n' \"\$*\" >> \"\$REPO_UNDER_TEST/.wavemill/npx-args.log\"
       return 0
@@ -1114,7 +1103,7 @@ test_challenger_missing_expansion_recovery_skips_without_linear_issue_id() {
   check_eq "challenger recover skip: coding launches" "true" "$(kv_value "$tick" coding_launched)"
   check_eq "challenger recover skip: coding stays bootstrap" "bootstrap-coder" "$(kv_value "$tick" coding_model)"
   check_eq "challenger recover skip: recovery state skipped" "skipped" "$(jq -r '.status' "$repo/features/$slug/.expansion-recovery-state.json")"
-  check_eq "challenger recover skip: skipped detail stable" "synthetic-challenger-linear-issue-id-missing-or-invalid" "$(jq -r '.detail' "$repo/features/$slug/.expansion-recovery-state.json")"
+  check_eq "challenger recover skip: skipped detail stable" "task-identity-linear-issue-id-unresolvable" "$(jq -r '.detail' "$repo/features/$slug/.expansion-recovery-state.json")"
   check_not_contains "challenger recover skip: expand tool not invoked" "$(cat "$repo/.wavemill/npx-args.log")" "expand-issue.ts"
   check_contains "challenger recover skip: warning includes skipped" "$(kv_value "$tick" warn_output)" "RECOVERY_SKIPPED"
   check_contains "challenger recover skip: warning includes bootstrap fallback" "$(kv_value "$tick" warn_output)" "RECOVERY_FALLBACK_BOOTSTRAP"
@@ -1725,6 +1714,7 @@ EOF
     get_task_phase() { printf "%s\n" "ready"; }
     get_main_head_sha() { printf "%s\n" "sha-current"; }
     merge_queue_enabled() { return 0; }
+    pr_live_labels_json() { printf "[]\n"; }
     ready_queue_state() {
       local state_dir="$1"
       jq -r ".artifacts.queueState // empty" "$state_dir/.ready-result.json" 2>/dev/null || printf "\n"
@@ -1844,6 +1834,7 @@ EOF
     get_task_phase() { printf "%s\n" "ready"; }
     get_main_head_sha() { printf "%s\n" "sha-current"; }
     merge_queue_enabled() { return 0; }
+    pr_live_labels_json() { printf "[]\n"; }
     pr_state() {
       if [[ "${1:-}" == "838" ]]; then
         printf "%s\n" "CLOSED"
@@ -3992,7 +3983,6 @@ test_remote_probe_timeout_does_not_block_plan_approval
 test_coding_uses_expanded_route_over_bootstrap
 test_missing_expansion_recovery_success_launches_with_expanded_route
 test_challenger_missing_expansion_recovery_uses_linear_issue_id
-test_expansion_recovery_resolve_issue_id_normalizes_linear_issue_url
 test_challenger_missing_expansion_recovery_extracts_linear_issue_id_from_url
 test_challenger_missing_expansion_recovery_skips_without_linear_issue_id
 test_missing_expansion_recovery_non_challenger_uses_issue_key

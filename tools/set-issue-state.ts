@@ -1,6 +1,7 @@
 #!/usr/bin/env -S npx tsx
 import { runTool } from '../shared/lib/tool-runner.ts';
 import { setIssueState } from '../shared/lib/linear.ts';
+import { linearWriteTargetOrSkip } from '../shared/lib/linear-write-gate.ts';
 
 runTool({
   name: 'set-issue-state',
@@ -23,10 +24,14 @@ runTool({
       throw new Error('Both identifier and state name are required');
     }
 
-    const result = await setIssueState(identifier, stateName);
+    // Challengers are a logged no-op; invalid/conflicting IDs throw (HOK-3115).
+    const linearId = linearWriteTargetOrSkip(identifier);
+    if (!linearId) return;
+
+    const result = await setIssueState(linearId, stateName);
 
     if (result.success) {
-      console.log(`✓ ${identifier} → ${stateName}`);
+      console.log(`✓ ${linearId} → ${stateName}`);
       console.log(`  ${result.issue.url}`);
     } else {
       throw new Error('Failed to update issue state');

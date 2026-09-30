@@ -623,14 +623,15 @@ wavemill_terminal_linear_status() {
   esac
 }
 
+# Challengers never write Linear (HOK-3115): linear_write_target in
+# wavemill-common.sh makes linear_set_state a silent no-op for them, so this
+# is safe to call from every scope (monitor, mill, startup preflight).
 wavemill_reconcile_terminal_linear() {
-  local issue="$1" reason="$2" status="" linear_issue=""
-  declare -F linear_set_state >/dev/null 2>&1 || return 0
-  declare -F should_update_linear_state >/dev/null 2>&1 && ! should_update_linear_state "$issue" && return 0
+  local issue="$1" reason="$2" status=""
+  linear_write_target "$issue" >/dev/null 2>&1 || return 0
   status="$(wavemill_terminal_linear_status "$issue" "$reason" 2>/dev/null || true)"
   [[ -n "$status" ]] || return 3
-  declare -F get_linear_issue_id >/dev/null 2>&1 && linear_issue="$(get_linear_issue_id "$issue")" || linear_issue="$issue"
-  linear_set_state "$linear_issue" "$status"
+  linear_set_state "$issue" "$status"
 }
 
 wavemill_reconcile_terminal() {

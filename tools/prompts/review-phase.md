@@ -31,7 +31,7 @@ The implementation is complete. Your job is to review and create a PR.
    - Base branch exists: $(git rev-parse --verify {{BASE_BRANCH}} 2>&1 || echo "NOT FOUND")
    - STDERR output: [paste the actual stderr from the failed command]
 
-   Proceeding to PR creation without `wm:ready` per instructions.
+   Proceeding to PR creation. The mill (Ready → Tend) will run its own Ready gate and, if it publishes a handoff, apply `wm:ready` on your behalf.
    ```
    This diagnostic information is CRITICAL for debugging recurring tool failures.
 
@@ -81,14 +81,9 @@ The implementation is complete. Your job is to review and create a PR.
      task: {{ISSUE}}
      -->
    Do NOT use --fill. Write the PR body as a HEREDOC if needed for formatting.
-   After creating the PR, add the `wm:ready` label only if there are no *undismissed* blockers — either the final self-review run exited 0 with zero blockers, or every remaining blocker is a disproved false positive you are recording as dismissed with a justification (step 4):
-   `gh pr edit "<PR_URL>" --add-label "wm:ready"`
-   If the `wm:ready` label does not exist in this repository, note it in the PR body and proceed.
-   Do NOT add `wm:ready` if:
-   - The self-review found unresolved blockers (exit code 1) that you have not dismissed with a documented justification
-   - The final self-review run errored (exit code 2) or did not produce a trustworthy verdict
-   - The workflow is in survival/constrained mode and confidence is low
-   When you add `wm:ready` on the strength of dismissals, list each dismissed blocker with its justification and evidence in the PR body's "## Self-review" section so an operator can audit the decision.
+   After creating the PR, do NOT run `gh pr edit ... --add-label wm:*` at any point. The mill applies `wm:ready` — and every other `wm:*` label — once its Ready gate has published a Ready → Tend handoff for the current PR head. The mill consumes your review artifacts (step 4) to make that decision.
+   Do NOT apply any `wm:*` label yourself, regardless of review outcome. When circumstances prevent the mill from publishing a handoff (e.g., when the final self-review run errored (exit code 2) without readiness certification), the mill will handle label management; agent-applied labels are treated as untrusted and stripped.
+   When your self-review dismissed one or more blockers on the strength of justifications, list each dismissed blocker with its justification and evidence in the PR body's "## Self-review" section so an operator can audit the decision. Record the dismissals themselves in the review artifact (step 4); the mill's Ready gate reads that artifact and either publishes the handoff (which triggers `wm:ready` application) or withholds it.
 
 4. **Record final review evidence** in `{{FEATURE_DIR}}/.review-result.json` after PR creation.
    Use `tools/stage-result-cli.ts` to update the review stage with explicit final self-review outcome fields. `status: "completed"` only means the review phase produced the PR artifact; it does not mean the review passed.
@@ -169,15 +164,14 @@ Before creating the PR, determine whether you are the principal author:
 - Make targeted fixes only - no scope creep
 - If review tool fails with exit code 2, document the failure and proceed
 
-### FORBIDDEN: Merge Lifecycle
+### FORBIDDEN: Mill Label Ownership and Merge Lifecycle
 
-You MUST NEVER perform any of the following actions:
-- Add the `wm:merging` label (for example: `gh pr edit ... --add-label wm:merging`)
-- Add the `wm:merged` label (for example: `gh pr edit ... --add-label wm:merged`)
+The mill (Ready → Tend) owns every `wm:*` label. You MUST NEVER perform any of the following actions:
+- Add, remove, or otherwise mutate any `wm:*` label — including `wm:ready`, `wm:blocked`, `wm:merging`, `wm:merged`, `wm:superseded`, or any other label prefixed `wm:` (for example: `gh pr edit ... --add-label wm:ready`, `gh pr edit ... --add-label wm:merging`, `gh pr edit ... --remove-label wm:blocked`)
 - Merge the PR yourself (for example: `gh pr merge ...`)
 - Enable auto-merge (for example: `gh pr merge --auto`)
 
-The Wavemill controller manages all merge operations. Agent interference with the merge lifecycle is explicitly prohibited.
+The Wavemill controller manages Ready gating, label application, and all merge operations. Agent-applied `wm:ready` labels are treated as untrusted by tend and will be stripped. Agent interference with the merge lifecycle or the `wm:*` label namespace is explicitly prohibited.
 
 ### CRITICAL: Phase Boundary Rules
 

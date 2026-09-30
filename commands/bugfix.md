@@ -105,7 +105,7 @@ This is a REQUIRED step — do not skip it or substitute your own review.
    - Base branch exists: $(git rev-parse --verify main 2>&1 || echo "NOT FOUND")
    - STDERR output: [paste the actual stderr from the failed command]
 
-   Proceeding to PR creation without `wm:ready` per instructions.
+   Proceeding to PR creation. The mill (Ready → Tend) will run its own Ready gate and, if it publishes a handoff, apply `wm:ready` on your behalf. Do NOT add any `wm:*` label yourself.
    ```
    This diagnostic information is CRITICAL for debugging recurring tool failures.
 

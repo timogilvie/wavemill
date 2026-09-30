@@ -8153,9 +8153,7 @@ _launch_agent_in_pane() {
   fi
 
   # Export wavemill context environment variables for hook protocol
-  if declare -F get_linear_issue_id >/dev/null 2>&1; then
-    linear_issue="$(get_linear_issue_id "$issue" 2>/dev/null || true)"
-  fi
+  linear_issue="$(task_identity_linear_id "$issue" 2>/dev/null || true)"
   [[ -n "$linear_issue" ]] || linear_issue="$issue"
   esc_session=${session//\'/\'\\\'\'}
   esc_issue=${issue//\'/\'\\\'\'}
@@ -8587,6 +8585,159 @@ ready_live_ci_json() {
   printf '%s\n' "$output"
 }
 
+# HOK-3111: authoritative live PR labels for merge-queue eligibility. Returns
+# a compact JSON array of label names, or the sentinel string "null" when the
+# label read fails so the planner can fail closed. Injectable via
+# WAVEMILL_PR_LABELS_JSON_OVERRIDE (JSON object keyed by PR number) for tests.
+pr_live_labels_json() {
+  local wt_dir="$1" pr_number="$2"
+  local output rc=0
+
+  if [[ -n "${WAVEMILL_PR_LABELS_JSON_OVERRIDE:-}" ]]; then
+    local override
+    override="$(printf '%s' "$WAVEMILL_PR_LABELS_JSON_OVERRIDE" \
+      | jq -c --arg pr "$pr_number" '.[$pr] // null' 2>/dev/null)" || override=""
+    if [[ -n "$override" ]]; then
+      printf '%s\n' "$override"
+      return 0
+    fi
+  fi
+
+  local repo_slug
+  repo_slug="$(cd "$wt_dir" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo)"
+  output=$(_with_timeout "$API_TIMEOUT" gh -R "$repo_slug" pr view "$pr_number" --json labels --jq '[.labels[].name]' 2>/dev/null) || rc=$?
+  if (( rc != 0 )) || [[ -z "$output" ]] || ! printf '%s' "$output" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    # Fall back to running gh inside the worktree if the repo lookup above
+    # produced no output or the -R form failed.
+    rc=0
+    output=$(_with_timeout "$API_TIMEOUT" bash -c "cd $(printf '%q' "$wt_dir") && gh pr view $(printf '%q' "$pr_number") --json labels --jq '[.labels[].name]'" 2>/dev/null) || rc=$?
+    if (( rc != 0 )) || [[ -z "$output" ]] || ! printf '%s' "$output" | jq -e 'type == "array"' >/dev/null 2>&1; then
+      printf 'null\n'
+      return 0
+    fi
+  fi
+  printf '%s\n' "$output"
+}
+
+# HOK-3111: head-scoped transition-report recorder. Persists per-PR state at
+# $STATE_DIR/merge-queue-transitions.json so a monitor restart does not
+# reintroduce log spam. Prints "log" to stdout when the caller should emit
+# the ordinary message, "escalate" when the caller should emit the one-shot
+# escalation warning, or "skip" when the message must be suppressed. A fresh
+# head SHA resets the cycle counter for that PR (a real re-push is legitimate
+# reason for fresh status). The escalation threshold is
+# ${MERGE_QUEUE_ESCALATION_THRESHOLD:-3}; it is read with a default at each
+# use because top-level assignments here are not part of the generated
+# monitor script.
+
+merge_queue_transition_report() {
+  local pr="$1" head="$2" transition="$3"
+  local state_dir="${STATE_DIR:-}"
+  [[ -n "$state_dir" ]] || { printf 'log\n'; return 0; }
+  [[ -n "$pr" && -n "$transition" ]] || { printf 'log\n'; return 0; }
+  local file="$state_dir/merge-queue-transitions.json"
+  mkdir -p "$state_dir" 2>/dev/null || { printf 'log\n'; return 0; }
+  if [[ ! -f "$file" ]]; then
+    printf '{}\n' > "$file"
+  fi
+  local combined
+  combined=$(jq -c \
+    --arg pr "$pr" \
+    --arg head "${head:-unknown}" \
+    --arg transition "$transition" \
+    --argjson threshold "${MERGE_QUEUE_ESCALATION_THRESHOLD:-3}" '
+      def key: $pr + ":" + $head;
+      (.[key] // {}) as $prior
+      | (if ($prior.head // "") != $head then {} else $prior end) as $current
+      | ($current.lastTransition // "") as $lastTransition
+      | ($current.promoteDemoteCycles // 0) as $cycles
+      | ($current.escalated // false) as $escalated
+      | (
+          if $transition == "promoted" then $cycles + 1
+          else $cycles
+          end
+        ) as $newCycles
+      | (
+          if $lastTransition == $transition then "skip"
+          elif $escalated == true and ($transition == "promoted" or $transition == "demoted-stuck") then "skip"
+          elif $transition == "promoted" and $newCycles >= $threshold and $escalated != true then "escalate"
+          else "log"
+          end
+        ) as $decision
+      | {
+          decision: $decision,
+          state: (. + { (key): {
+            head: $head,
+            lastTransition: $transition,
+            promoteDemoteCycles: $newCycles,
+            escalated: (if $decision == "escalate" then true else $escalated end),
+            updatedAt: (now | todateiso8601)
+          } })
+        }
+    ' "$file" 2>/dev/null) || combined=""
+  local decision="log"
+  if [[ -n "$combined" ]]; then
+    decision=$(printf '%s' "$combined" | jq -r '.decision' 2>/dev/null || echo "log")
+    local next_state
+    next_state=$(printf '%s' "$combined" | jq -c '.state' 2>/dev/null || echo "")
+    if [[ -n "$next_state" ]]; then
+      printf '%s\n' "$next_state" > "$file.tmp.$$" 2>/dev/null && mv "$file.tmp.$$" "$file" 2>/dev/null || rm -f "$file.tmp.$$" 2>/dev/null
+    fi
+  fi
+  case "$decision" in
+    escalate) printf 'escalate\n' ;;
+    skip) printf 'skip\n' ;;
+    *) printf 'log\n' ;;
+  esac
+}
+
+# HOK-3111: one-shot per-head status for excluded PRs (e.g. wm:blocked). Same
+# sidecar as merge_queue_transition_report but keyed by (pr, head, reason) so a
+# label change or a real push generates fresh status while identical repeats
+# stay silent.
+merge_queue_exclusion_report() {
+  local pr="$1" head="$2" reason="$3"
+  local state_dir="${STATE_DIR:-}"
+  [[ -n "$state_dir" && -n "$pr" ]] || { printf 'log\n'; return 0; }
+  local file="$state_dir/merge-queue-transitions.json"
+  mkdir -p "$state_dir" 2>/dev/null || { printf 'log\n'; return 0; }
+  if [[ ! -f "$file" ]]; then
+    printf '{}\n' > "$file"
+  fi
+  local combined
+  combined=$(jq -c \
+    --arg pr "$pr" \
+    --arg head "${head:-unknown}" \
+    --arg reason "${reason:-excluded}" '
+      def key: "excluded:" + $pr + ":" + $head + ":" + $reason;
+      (.[key] // {}) as $prior
+      | ($prior.notified // false) as $notified
+      | (if $notified == true then "skip" else "log" end) as $decision
+      | {
+          decision: $decision,
+          state: (. + { (key): {
+            head: $head,
+            reason: $reason,
+            notified: true,
+            updatedAt: (now | todateiso8601)
+          } })
+        }
+    ' "$file" 2>/dev/null) || combined=""
+  local decision="log"
+  if [[ -n "$combined" ]]; then
+    decision=$(printf '%s' "$combined" | jq -r '.decision' 2>/dev/null || echo "log")
+    local next_state
+    next_state=$(printf '%s' "$combined" | jq -c '.state' 2>/dev/null || echo "")
+    if [[ -n "$next_state" ]]; then
+      printf '%s\n' "$next_state" > "$file.tmp.$$" 2>/dev/null && mv "$file.tmp.$$" "$file" 2>/dev/null || rm -f "$file.tmp.$$" 2>/dev/null
+    fi
+  fi
+  case "$decision" in
+    skip) printf 'skip\n' ;;
+    *) printf 'log\n' ;;
+  esac
+}
+
 write_ready_queue_artifacts() {
   local state_dir="$1" patch_json="$2"
   local result_file="$state_dir/.ready-result.json"
@@ -8830,12 +8981,12 @@ merge_queue_enrich_ready_artifacts() {
 refresh_ready_merge_queue_tick() {
   local now input_file output_file input_json output_json config_json
   local issue phase slug pr state_dir ready_status ready_verdict stored_base current_main queue_state wt_dir workflow_status pr_state_val
-  local ci_json ci_conclusion ci_head ci_summary stored_head lane_progress_patch
+  local ci_json ci_conclusion ci_head ci_summary stored_head lane_progress_patch labels_json
   local ready_prs='[]'
 
   : > "$MERGE_QUEUE_SELECTION_FILE"
   if ! merge_queue_enabled; then
-    printf '{"selectedIssues":[],"stuckIssues":[],"ciBlockedIssues":[]}\n' > "$MERGE_QUEUE_SELECTION_FILE"
+    printf '{"selectedIssues":[],"stuckIssues":[],"ciBlockedIssues":[],"excludedIssues":[]}\n' > "$MERGE_QUEUE_SELECTION_FILE"
     return 0
   fi
 
@@ -8906,6 +9057,9 @@ refresh_ready_merge_queue_tick() {
     fi
 
     if [[ "$ready_status" == "completed" && ( "$ready_verdict" == "pass" || "$ready_verdict" == "warn" ) ]] || [[ "$queue_state" == "merge-candidate" || "$queue_state" == "ready-stale" ]]; then
+      # HOK-3111: authoritative live labels; the planner fails closed when
+      # this returns "null" so we never promote based on stale/unknown state.
+      labels_json="$(pr_live_labels_json "$wt_dir" "$pr")"
       ready_prs=$(jq -cn \
         --argjson prs "$ready_prs" \
         --arg issue "$issue" \
@@ -8917,6 +9071,7 @@ refresh_ready_merge_queue_tick() {
         --arg workflow_status "$workflow_status" \
         --arg pr_state "$pr_state_val" \
         --argjson ci "$ci_json" \
+        --argjson labels "$labels_json" \
         --arg now "$now" \
         --arg ready_at "$(jq -r '.finishedAt // .startedAt // empty' "$state_dir/.ready-result.json" 2>/dev/null || echo "")" \
         --arg candidate_promoted_at "$(ready_queue_field "$state_dir" candidatePromotedAt)" \
@@ -8942,6 +9097,7 @@ refresh_ready_merge_queue_tick() {
             candidateSkippedAt: (if $candidate_skipped_at == "" then null else $candidate_skipped_at end),
             workflowStatus: (if $workflow_status == "" then null else $workflow_status end),
             prState: (if $pr_state == "" then null else $pr_state end),
+            labels: $labels,
             ci: {
               conclusion: ($ci.conclusion // "unknown"),
               headSha: ($ci.headSha // null),
@@ -8951,7 +9107,9 @@ refresh_ready_merge_queue_tick() {
               observed: ($ci.observed // 0),
               required: (($ci.requiredContexts // []) | length)
             }
-          }]
+          }
+          | if $labels == null then del(.labels) else . end
+          ]
         ')
     fi
   done
@@ -8976,11 +9134,33 @@ refresh_ready_merge_queue_tick() {
   jq -cn --arg now "$now" --argjson prs "$ready_prs" --argjson config "$config_json" '{readyPrs:$prs, now:$now, config:$config}' > "$input_file"
   if ! wavemill_run_tsx_tool "$TOOLS_DIR/merge-queue-select.ts" --input "$input_file" > "$output_file" 2>/dev/null; then
     rm -f "$input_file" "$output_file"
-    printf '{"selectedIssues":[],"stuckIssues":[],"ciBlockedIssues":[]}\n' > "$MERGE_QUEUE_SELECTION_FILE"
+    printf '{"selectedIssues":[],"stuckIssues":[],"ciBlockedIssues":[],"excludedIssues":[]}\n' > "$MERGE_QUEUE_SELECTION_FILE"
     return 0
   fi
   mv "$output_file" "$MERGE_QUEUE_SELECTION_FILE"
   rm -f "$input_file"
+
+  # HOK-3111: report tend-refusal (wm:blocked) and label-read-failure PRs
+  # once per (PR, head, reason). No candidate promotion, no stuck demotion.
+  jq -c '.excludedIssues[]? // empty' "$MERGE_QUEUE_SELECTION_FILE" 2>/dev/null | while IFS= read -r exclusion; do
+    [[ -n "$exclusion" ]] || continue
+    ex_issue=$(printf '%s' "$exclusion" | jq -r '.issue // empty' 2>/dev/null || echo "")
+    ex_pr=$(printf '%s' "$exclusion" | jq -r '.prNumber // empty' 2>/dev/null || echo "")
+    ex_head=$(printf '%s' "$exclusion" | jq -r '.headSha // empty' 2>/dev/null || echo "")
+    ex_reason=$(printf '%s' "$exclusion" | jq -r '.reason // "excluded"' 2>/dev/null || echo "excluded")
+    ex_next=$(printf '%s' "$exclusion" | jq -r '.nextAction // empty' 2>/dev/null || echo "")
+    [[ -n "$ex_issue" ]] || continue
+    decision=$(merge_queue_exclusion_report "${ex_pr:-$ex_issue}" "$ex_head" "$ex_reason")
+    if [[ "$decision" == "log" ]]; then
+      pr_tag=""
+      [[ -n "$ex_pr" ]] && pr_tag=" → PR #${ex_pr}"
+      head_tag=""
+      [[ -n "$ex_head" ]] && head_tag=" @${ex_head:0:7}"
+      action_tag=""
+      [[ -n "$ex_next" ]] && action_tag=" — needs ${ex_next}"
+      log "status" "⏸ ${ex_issue}${pr_tag} blocked${head_tag} (${ex_reason})${action_tag}"
+    fi
+  done
 
   jq -r '.ciBlockedIssues[]?' "$MERGE_QUEUE_SELECTION_FILE" 2>/dev/null | while IFS= read -r issue; do
     [[ -n "$issue" ]] || continue
@@ -8999,6 +9179,19 @@ refresh_ready_merge_queue_tick() {
     wt_dir="${WORKTREE_ROOT}/${slug}"
     state_dir="$(ready_state_dir "$wt_dir" "$slug")"
     demote_merge_candidate "$issue" "$state_dir" "stuck merge candidate"
+    # HOK-3111: dedup per (PR, head); escalate after N cycles on the same head.
+    pr_for_log="${PR_BY_ISSUE[$issue]:-}"
+    stuck_head=$(ready_queue_field "$state_dir" "lastCiHeadSha")
+    decision=$(merge_queue_transition_report "${pr_for_log:-$issue}" "$stuck_head" "demoted-stuck")
+    case "$decision" in
+      log)
+        log "status" "↩ $issue → PR ${pr_for_log:+#$pr_for_log }demoted as stuck merge candidate${stuck_head:+ @${stuck_head:0:7}}"
+        ;;
+      escalate)
+        log_warn "$issue → PR ${pr_for_log:+#$pr_for_log }promote/demote loop escalated at head ${stuck_head:0:7} (further cycle notices are suppressed)"
+        ;;
+      *) : ;;
+    esac
   done
 
   jq -r '.selectedIssues[]?' "$MERGE_QUEUE_SELECTION_FILE" 2>/dev/null | while IFS= read -r issue; do
@@ -9010,12 +9203,21 @@ refresh_ready_merge_queue_tick() {
     [[ -n "$current_main" ]] || continue
     if [[ "$(ready_queue_state "$state_dir")" != "merge-candidate" ]]; then
       promote_merge_candidate "$issue" "$state_dir" "$current_main"
-      local pr_for_log
       pr_for_log="${PR_BY_ISSUE[$issue]:-}"
       ci_head=$(ready_queue_field "$state_dir" "lastCiHeadSha")
       ci_summary=$(ready_queue_field "$state_dir" "lastCiSummary")
       [[ -n "$ci_summary" ]] || ci_summary="pass"
-      log "status" "✓ $issue → PR ${pr_for_log:+#$pr_for_log }promoted to merge candidate (live CI $ci_summary${ci_head:+ @${ci_head:0:7}}, base current)"
+      # HOK-3111: dedup per (PR, head); escalate after N cycles on the same head.
+      decision=$(merge_queue_transition_report "${pr_for_log:-$issue}" "$ci_head" "promoted")
+      case "$decision" in
+        log)
+          log "status" "✓ $issue → PR ${pr_for_log:+#$pr_for_log }promoted to merge candidate (live CI $ci_summary${ci_head:+ @${ci_head:0:7}}, base current)"
+          ;;
+        escalate)
+          log_warn "$issue → PR ${pr_for_log:+#$pr_for_log }promote/demote loop reached ${MERGE_QUEUE_ESCALATION_THRESHOLD:-3} cycles at head ${ci_head:0:7} (further promote/demote notices for this head are suppressed)"
+          ;;
+        *) : ;;
+      esac
     fi
   done
 }
@@ -10576,16 +10778,27 @@ set_ready_pass_labels() {
     fi
   fi
 
-  if [[ -z "$head_sha" ]]; then
-    # The normal path supplies GitHub's fresh head. This fallback preserves
-    # compatibility for older Ready tool output while still never inventing a
-    # token when even the checkout has no resolvable commit.
-    head_sha=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)
-    if [[ -z "$head_sha" ]]; then
-      printf '%s\n' '{"transitionFailure":{"stage":"ownership-changed","detail":"current GitHub head is unavailable"}}' >&2
-      return 1
-    fi
+  # HOK-3112: the handoff head is always GitHub's live head, never the local
+  # checkout. `head_sha` (Ready's own reading, when its output carries one) is
+  # only a cross-check. After Tend rebases and force-pushes from its scratch
+  # worktree the task checkout keeps the pre-rebase commit; publishing at that
+  # commit leaves a record Tend's claim at the live head always rejects.
+  local github_head worktree_head
+  github_head=$(ready_current_github_head "$wt_dir" "$pr_number")
+  if [[ -z "$github_head" ]]; then
+    printf '%s\n' '{"transitionFailure":{"stage":"ownership-changed","detail":"current GitHub head is unavailable"}}' >&2
+    return 1
   fi
+  # Ready checked the checkout, so the checkout (and Ready's head, if reported)
+  # must still be the head we are about to publish. A mismatch means the PR
+  # moved while Ready ran; the caller re-runs Ready at the new head.
+  worktree_head=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)
+  if [[ "$worktree_head" != "$github_head" || ( -n "$head_sha" && "$head_sha" != "$github_head" ) ]]; then
+    jq -cn --arg ready "$head_sha" --arg github "$github_head" --arg worktree "$worktree_head" \
+      '{transitionFailure:{stage:"ownership-changed",detail:"head-moved",readyHead:$ready,githubHead:$github,worktreeHead:$worktree}}' >&2
+    return 1
+  fi
+  head_sha="$github_head"
   if ! (cd "$wt_dir" && npx tsx "$TOOLS_DIR/ready-tend-handoff.ts" checked "$pr_number" --feature-dir "$feature_dir" --head "$head_sha"); then
     printf '%s\n' '{"transitionFailure":{"stage":"ownership-changed"}}' >&2
     return 1
@@ -10605,6 +10818,97 @@ set_ready_pass_labels() {
 ready_current_github_head() {
   local wt_dir="$1" pr_number="$2"
   (cd "$wt_dir" && gh pr view "$pr_number" --json headRefOid --jq '.headRefOid') 2>/dev/null || true
+}
+
+# Bring the task worktree to the PR's current GitHub head before Ready runs
+# (HOK-3112). Ready's checks run against the checkout, and the Ready->Tend
+# handoff is published at the head Ready checked, so a checkout that lags the
+# PR (Tend rebased + force-pushed from its scratch worktree, or a remote-only
+# `gh pr update-branch`) would publish a handoff Tend can never claim.
+#
+# Sync is `git fetch` + `git reset --keep`, and only when every local commit is
+# already on the remote side:
+#   (a) local HEAD is an ancestor of the GitHub head (fast-forward), or
+#   (b) local HEAD is the head Tend recorded replacing in .tend-pushed-head.json, or
+#   (c) local HEAD is an ancestor-or-equal of the pre-fetch origin/<branch>
+#       (everything local was pushed; the remote was then rewritten).
+# Anything else means unpushed local commits, which must not be discarded.
+#
+# Called without a subshell; results are returned in globals:
+#   READY_SYNC_HEAD   - the GitHub head the worktree now matches (rc 0)
+#   READY_SYNC_DETAIL - "" when already matching, "synced (<reason>)" after a
+#                       reset, or the refusal reason (rc 1/2)
+# rc 0: already matching or synced; rc 1: GitHub head unavailable;
+# rc 2: refused (diverged, wrong branch, fetch/reset failure).
+ready_sync_worktree_to_github_head() {
+  local wt_dir="$1" branch="$2" pr_number="$3" state_dir="$4"
+  local gh_head local_head pre_fetch_origin current_branch tend_marker tend_pushed tend_previous sync_reason
+  READY_SYNC_HEAD=""
+  READY_SYNC_DETAIL=""
+
+  gh_head=$(ready_current_github_head "$wt_dir" "$pr_number")
+  if [[ -z "$gh_head" ]]; then
+    READY_SYNC_DETAIL="current GitHub head for PR #$pr_number is unavailable"
+    return 1
+  fi
+
+  tend_marker="$state_dir/.tend-pushed-head.json"
+  tend_pushed=$(jq -r '.pushedHeadSha // empty' "$tend_marker" 2>/dev/null || true)
+  tend_previous=$(jq -r '.previousHeadSha // empty' "$tend_marker" 2>/dev/null || true)
+
+  local_head=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)
+  if [[ -z "$local_head" ]]; then
+    READY_SYNC_DETAIL="task worktree HEAD is unresolvable"
+    return 2
+  fi
+  if [[ "$local_head" != "$gh_head" ]]; then
+    current_branch=$(git -C "$wt_dir" symbolic-ref --short -q HEAD 2>/dev/null || true)
+    if [[ "$current_branch" != "$branch" ]]; then
+      READY_SYNC_DETAIL="task worktree is on ${current_branch:-a detached HEAD}, expected $branch"
+      return 2
+    fi
+
+    pre_fetch_origin=$(git -C "$wt_dir" rev-parse --verify -q "refs/remotes/origin/$branch" 2>/dev/null || true)
+    if ! git -C "$wt_dir" fetch --quiet origin "$branch" >/dev/null 2>&1; then
+      READY_SYNC_DETAIL="git fetch origin $branch failed"
+      return 2
+    fi
+    if ! git -C "$wt_dir" cat-file -e "${gh_head}^{commit}" >/dev/null 2>&1; then
+      READY_SYNC_DETAIL="PR head ${gh_head:0:7} is not reachable after fetching origin/$branch"
+      return 2
+    fi
+
+    if git -C "$wt_dir" merge-base --is-ancestor "$local_head" "$gh_head" >/dev/null 2>&1; then
+      sync_reason="fast-forward"
+    elif [[ -n "$tend_previous" && "$tend_previous" == "$local_head" ]]; then
+      sync_reason="tend push"
+    elif [[ -n "$pre_fetch_origin" ]] \
+      && git -C "$wt_dir" merge-base --is-ancestor "$local_head" "$pre_fetch_origin" >/dev/null 2>&1; then
+      sync_reason="remote rewrite"
+    else
+      READY_SYNC_DETAIL="task worktree HEAD ${local_head:0:7} has commits that are not on PR head ${gh_head:0:7} (unpushed local work)"
+      return 2
+    fi
+
+    if ! git -C "$wt_dir" reset --quiet --keep "$gh_head" >/dev/null 2>&1; then
+      READY_SYNC_DETAIL="git reset --keep ${gh_head:0:7} refused (conflicting local edits in the task worktree)"
+      return 2
+    fi
+    if [[ "$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)" != "$gh_head" ]]; then
+      READY_SYNC_DETAIL="task worktree did not reach PR head ${gh_head:0:7} after reset"
+      return 2
+    fi
+    READY_SYNC_DETAIL="synced ${local_head:0:7} -> ${gh_head:0:7} ($sync_reason)"
+  fi
+
+  # The marker is satisfied once the checkout holds Tend's pushed head (or a
+  # descendant of it); a marker for a push GitHub has not surfaced yet stays.
+  if [[ -n "$tend_pushed" ]] && { [[ "$tend_pushed" == "$gh_head" ]] \
+    || git -C "$wt_dir" merge-base --is-ancestor "$tend_pushed" "$gh_head" >/dev/null 2>&1; }; then
+    rm -f "$tend_marker"
+  fi
+  READY_SYNC_HEAD="$gh_head"
+  return 0
 }
 
 _launch_ready_remediation_attempt() {
@@ -10926,6 +11230,35 @@ launch_ready_phase() {
   marker_clear "$state_dir/.needs-attention"
   log "$pending_log_level" "  $issue: Launching ready phase (PR #$pr_number)"
 
+  # HOK-3112: Ready checks the checkout and publishes the Tend handoff at the
+  # head it checked, so the checkout must be the PR's GitHub head first. Tend
+  # rebases in its own scratch worktree and never updates this one; running
+  # Ready at the stale checkout would publish a handoff Tend can never claim.
+  # The cross-PR guard below also diffs the checkout, so sync precedes it.
+  local sync_rc=0
+  ready_sync_worktree_to_github_head "$wt_dir" "$branch" "$pr_number" "$state_dir" || sync_rc=$?
+  case "$sync_rc" in
+    0)
+      if [[ -n "$READY_SYNC_DETAIL" ]]; then
+        log "status" "  ↻ $issue: task worktree $READY_SYNC_DETAIL before Ready (PR #$pr_number)"
+      fi
+      ;;
+    1)
+      # A GitHub read blip is transient; hold as pending rather than parking
+      # the arm in needs-user, and never fall back to the checkout's HEAD.
+      write_stage_result "$state_dir" "ready" "running" "$current_agent" "$current_model" \
+        "PR #$pr_number head could not be read from GitHub; Ready deferred" \
+        "$(jq -cn --argjson pr "$pr_number" '{type:"ready",verdict:"pending",prNumber:$pr,pendingReason:"head-unverified"}')"
+      log "info" "  $issue: $READY_SYNC_DETAIL - deferring Ready (PR #$pr_number)"
+      return 4
+      ;;
+    *)
+      write_ready_attention_file "$state_dir" "Task worktree does not match PR #$pr_number head and cannot be synced: $READY_SYNC_DETAIL. Refusing Ready."
+      log_error "  $issue: refusing ready phase for PR #$pr_number; $READY_SYNC_DETAIL"
+      return 1
+      ;;
+  esac
+
   if ! cross_pr_revert_gate_allows_merge "$issue" "$state_dir" "$wt_dir" "$pr_number" "$base_branch"; then
     return 1
   fi
@@ -11104,8 +11437,25 @@ launch_ready_phase() {
     local main_sha completed_artifacts_json label_failed_artifacts_json label_output transition_stage transition_output transition_failure_json
     main_sha=$(get_main_head_sha "$wt_dir" "$base_branch")
     if ! label_output=$(set_ready_pass_labels "$wt_dir" "$pr_number" "$state_dir" "$issue" "$ready_head_sha" 2>&1); then
-      transition_stage=$(printf '%s' "$label_output" | jq -r '.transitionFailure.stage // empty' 2>/dev/null | tail -n 1)
+      # Parse line-by-line: a non-JSON line from any transition tool must not
+      # mask the typed failure the helper printed.
+      transition_stage=$(printf '%s\n' "$label_output" | jq -Rr 'fromjson? | .transitionFailure.stage? // empty' 2>/dev/null | tail -n 1)
       [[ -n "$transition_stage" ]] || transition_stage="github-api"
+      # HOK-3112: the PR head moved while Ready ran (or the checkout no longer
+      # matches it). Nothing was published; this is transient, so re-check at
+      # the new head on the next tick instead of parking the arm in needs-user.
+      local moved_github_head
+      moved_github_head=$(printf '%s\n' "$label_output" \
+        | jq -Rr 'fromjson? | select(.transitionFailure.detail? == "head-moved") | .transitionFailure.githubHead // empty' 2>/dev/null | tail -n 1)
+      if [[ "$transition_stage" == "ownership-changed" && -n "$moved_github_head" ]]; then
+        bounded_retry_reset_if_new_head "$state_dir" "ready-remediation" "$moved_github_head"
+        bounded_retry_reset_if_new_head "$state_dir" "pending-ready-recheck" "$moved_github_head"
+        write_stage_result "$state_dir" "ready" "running" "$current_agent" "$current_model" \
+          "PR #$pr_number changed head while Ready was running, rechecking current GitHub head" \
+          "$(jq -cn --argjson pr "$pr_number" --arg head "$moved_github_head" '{type:"ready",verdict:"pending",prNumber:$pr,readyHeadSha:$head,pendingReason:"head-changed"}')"
+        log "info" "  $issue: PR #$pr_number head moved to ${moved_github_head:0:7} during Ready - handoff not published, re-checking"
+        return 4
+      fi
       transition_output=$(printf '%s' "$label_output" | sed -E \
         -e 's/(gh[pousr]_[[:alnum:]_]{12,}|github_pat_[[:alnum:]_]{12,})/[REDACTED:github-token]/g' \
         -e 's/([Aa][Pp][Ii]_?[Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt])=[^[:space:]]+/\1=[REDACTED]/g' | head -c 2000)
@@ -11150,6 +11500,10 @@ launch_ready_phase() {
 
     local handoff_outcome=""
     [[ "$label_output" == *'"outcome":"tend-owned"'* ]] && handoff_outcome="tend-owned"
+    # set_ready_pass_labels published at GitHub's head, which it verified equals
+    # the checkout synced in the preflight; record that head when Ready's own
+    # output omitted it.
+    [[ -n "$ready_head_sha" ]] || ready_head_sha="$READY_SYNC_HEAD"
     completed_artifacts_json=$(jq -cn \
       --arg verdict "${verdict:-unknown}" \
       --arg merge_status "${merge_status:-UNKNOWN}" \
@@ -11432,61 +11786,12 @@ get_task_meta() {
   read_state_value "" --arg issue "$issue" --arg field "$field" '.tasks[$issue][$field] // empty'
 }
 
+# Deprecated alias (HOK-3115), kept for one release so existing read-side
+# callers and test stubs keep working: resolves through task_identity_linear_id
+# (task-identity.sh). Linear writes never use it — they pass the task ID to
+# linear_set_state, which resolves and gates through linear_write_target.
 get_linear_issue_id() {
-  local issue="$1"
-  local linear_issue
-  linear_issue=$(get_task_meta "$issue" "linearIssueId")
-  linear_issue="${linear_issue#"${linear_issue%%[![:space:]]*}"}"
-  linear_issue="${linear_issue%"${linear_issue##*[![:space:]]}"}"
-  if [[ "$linear_issue" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
-    printf '%s\n' "$linear_issue"
-    return 0
-  fi
-  if [[ "$linear_issue" =~ ^https?://linear\.app/[^/]+/issue/[A-Z][A-Z0-9]*-[0-9]+([/?#].*)?$ ]]; then
-    local linear_url_path="${linear_issue#*://linear.app/}"
-    linear_url_path="${linear_url_path#*/issue/}"
-    printf '%s\n' "${linear_url_path%%[/?#]*}"
-    return 0
-  fi
-  if [[ "$issue" =~ ^([A-Z][A-Z0-9]*-[0-9]+)_c$ ]]; then
-    printf '%s\n' "${BASH_REMATCH[1]}"
-    return 0
-  fi
-  printf '%s\n' "$issue"
-}
-
-expansion_recovery_resolve_issue_id() {
-  local issue="$1"
-  local linear_issue=""
-
-  if [[ "$issue" != *_c ]]; then
-    printf '%s\n' "$issue"
-    return 0
-  fi
-
-  linear_issue="$(get_task_meta "$issue" "linearIssueId")"
-  linear_issue="${linear_issue#"${linear_issue%%[![:space:]]*}"}"
-  linear_issue="${linear_issue%"${linear_issue##*[![:space:]]}"}"
-  if [[ "$linear_issue" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
-    printf '%s\n' "$linear_issue"
-    return 0
-  fi
-
-  if [[ "$linear_issue" =~ ^https?://linear\.app/[^/]+/issue/[A-Z][A-Z0-9]*-[0-9]+([/?#].*)?$ ]]; then
-    local linear_url_path="${linear_issue#*://linear.app/}"
-    linear_url_path="${linear_url_path#*/issue/}"
-    printf '%s\n' "${linear_url_path%%[/?#]*}"
-    return 0
-  fi
-
-  return 1
-}
-
-should_update_linear_state() {
-  local issue="$1"
-  local role
-  role=$(get_task_meta "$issue" "challengeRole")
-  [[ "$role" != "challenger" ]]
+  task_identity_linear_id "$1" 2>/dev/null || printf '%s\n' "$1"
 }
 
 # HOK-2952: role-aware resource policy for a closed, unmerged PR (replaces
@@ -12975,8 +13280,16 @@ wavemill_record_monitor_iteration_timing() {
 
 find_pr_for_branch() {
   local branch="$1"
+  # HOK-3110: callers may opt in to additional lineage-verified classifications
+  # (currently "current-merged") so the primary can bind a PR that tend merged
+  # before monitor first observed it. Default remains "current-open" so open-PR
+  # callers keep their existing behavior.
+  local accept_arg="${2:-current-open}"
   local issue="" worktree="" base_branch="${BASE_BRANCH:-}" head_sha="" attempt_json="" attempt_id="" linear_state="" challenge_pair="" challenge_role=""
   local resolution classification pr_number reason
+  local -a accept_classifications
+  read -r -a accept_classifications <<<"$accept_arg"
+  [[ ${#accept_classifications[@]} -gt 0 ]] || accept_classifications=(current-open)
   [[ -n "$branch" ]] || return 0
 
   if [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]]; then
@@ -12997,7 +13310,11 @@ find_pr_for_branch() {
   resolution="$(wavemill_resolve_pr_attempt "$issue" "$branch" "$base_branch" "$head_sha" "$attempt_id" "$linear_state" "$challenge_pair" "$challenge_role")"
   classification="$(jq -r '.classification // "unverifiable"' <<<"$resolution" 2>/dev/null || echo "unverifiable")"
   wavemill_persist_attempt_reconciliation "$issue" "$attempt_json" "$resolution" "monitor-pr-discovery" >/dev/null 2>&1 || true
-  if [[ "$classification" == "current-open" ]]; then
+  local accepted="false" candidate
+  for candidate in "${accept_classifications[@]}"; do
+    [[ "$classification" == "$candidate" ]] && accepted="true" && break
+  done
+  if [[ "$accepted" == "true" ]]; then
     pr_number="$(jq -r '.selectedCandidate.number // empty' <<<"$resolution" 2>/dev/null || true)"
     [[ -n "$pr_number" ]] && printf '%s\n' "$pr_number"
     return 0
@@ -13427,15 +13744,19 @@ recover_missing_expansion_artifact() {
     return 1
   fi
 
-  if ! recovery_issue="$(expansion_recovery_resolve_issue_id "$issue")"; then
-    detail="synthetic-challenger-linear-issue-id-missing-or-invalid"
+  if ! recovery_issue="$(task_identity_linear_id "$issue" 2>/dev/null)"; then
+    detail="task-identity-linear-issue-id-unresolvable"
     expansion_recovery_mark_result "$feature_dir" "$issue" "skipped" "$detail" "0" || true
     log "warn" "[expansion-handshake] RECOVERY_SKIPPED issue=$issue detail=$detail"
     return 1
   fi
 
   recovery_timeout="$(get_expansion_handshake_timeout_seconds "$REPO_DIR")"
-  if _with_timeout "$recovery_timeout" npx tsx "$expand_tool" "$recovery_issue" --output "$packet_file" >"$recovery_log_file" 2>&1; then
+  # expand-issue.ts updates the Linear description by default; only the
+  # Linear writer may do that (HOK-3115).
+  local -a expand_write_args=()
+  task_identity_is_linear_writer "$issue" || expand_write_args=(--no-update)
+  if _with_timeout "$recovery_timeout" npx tsx "$expand_tool" "$recovery_issue" --output "$packet_file" "${expand_write_args[@]}" >"$recovery_log_file" 2>&1; then
     :
   else
     rc=$?
@@ -14383,10 +14704,8 @@ launch_task() {
   local _trace_id
   _trace_id=$(trace_get_or_create "$feature_dir" "$issue" "$slug" 2>/dev/null || true)
 
-  # Set Linear state
-  if should_update_linear_state "$issue"; then
-    linear_set_state "$linear_issue" "In Progress"
-  fi
+  # Set Linear state (a no-op for challengers)
+  linear_set_state "$issue" "In Progress"
 
   # Track in monitor arrays
   BRANCH_BY_ISSUE["$issue"]="$branch"
@@ -14692,7 +15011,8 @@ EOF
     reviewer_model="$task_model"
   fi
 
-  if [[ -z "${WAVEMILL_DISABLE_CHALLENGE:-}" ]] && should_update_linear_state "$issue" && (( remaining_slots >= 1 )); then
+  # Only the primary (Linear-writer) arm spawns a challenger.
+  if [[ -z "${WAVEMILL_DISABLE_CHALLENGE:-}" ]] && task_identity_is_linear_writer "$issue" && (( remaining_slots >= 1 )); then
     local challenge_args challenge_plan challenge_mode challenge_reason challenge_stage challenge_intent challenge_execution_intent primary_varied challenger_varied
     # Challengers are free overhead — always pass remaining-slots >= 2
     challenge_mode="single"
@@ -16278,6 +16598,27 @@ monitor_issue_state() {
 	    cleanup_aborted_challenge_arm "$ISSUE" "$SLUG" "aborted challenge retry" || true
 	    return 0
 	  fi
+	  # HOK-3110: a merged PR on this task's launch lineage (e.g. tend merged
+	  # before the monitor first observed it) must be bound to the task and
+	  # routed through the normal merged-PR completion flow. Do this before the
+	  # aborted-challenge/no-PR guard so a primary with a merged PR is not
+	  # misclassified as its aborted challenger's PR-less arm and cleaned up.
+	  if [[ -z "$PR" && "$task_status" != "merged" && "$task_status" != "completed-external" ]]; then
+	    local _hok3110_discovered_merged_pr linear_issue challenge_flag challenge_pair challenge_role challenge_model
+	    _hok3110_discovered_merged_pr="$(find_pr_for_branch "$BRANCH" "current-merged" 2>/dev/null || true)"
+	    if [[ -n "$_hok3110_discovered_merged_pr" ]]; then
+	      PR="$_hok3110_discovered_merged_pr"
+	      PR_BY_ISSUE["$ISSUE"]="$PR"
+	      linear_issue=$(get_linear_issue_id "$ISSUE")
+	      challenge_flag=$(get_task_meta "$ISSUE" "challenge")
+	      challenge_pair=$(get_task_meta "$ISSUE" "challengePairId")
+	      challenge_role=$(get_task_meta "$ISSUE" "challengeRole")
+	      challenge_model=$(get_task_meta "$ISSUE" "challengeModel")
+	      save_task_state "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR" "$PR" "merged" "$current_agent" "$linear_issue" "$challenge_flag" "$challenge_pair" "$challenge_role" "$challenge_model" >/dev/null 2>&1 || true
+	      task_status="merged"
+	      log "status" "$ISSUE → PR #$PR discovered as merged (lineage-bound)"
+	    fi
+	  fi
 	  if [[ -n "$challenge_aborted" && -z "$PR" && -n "$pair_id_for_cleanup" ]] \
 	    && challenge_pair_record_exists "$pair_id_for_cleanup"; then
 	    if declare -F monitor_cleanup_episode_skip >/dev/null 2>&1 && monitor_cleanup_episode_skip "$ISSUE" "$SLUG" "$PR"; then
@@ -16373,9 +16714,7 @@ monitor_issue_state() {
       challenge_role=$(get_task_meta "$ISSUE" "challengeRole")
       challenge_model=$(get_task_meta "$ISSUE" "challengeModel")
       save_task_state "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR" "$PR" "" "$current_agent" "$linear_issue" "$challenge_flag" "$challenge_pair" "$challenge_role" "$challenge_model"
-      if should_update_linear_state "$ISSUE"; then
-        linear_set_state "$linear_issue" "In Review"
-      fi
+      linear_set_state "$ISSUE" "In Review"
       # Fetch PR details for user-visible summary
       pr_details=$(_with_timeout "$API_TIMEOUT" gh pr view "$PR" --json title,url --jq '"  " + .title + "\n  " + .url' 2>/dev/null || echo "")
       log "status" "$ISSUE → PR #$PR (In Review)"
@@ -16463,7 +16802,7 @@ monitor_issue_state() {
       return 0
     else
 	      # No PR in current repo - check Linear issue state for cross-repo completion
-	      if should_update_linear_state "$ISSUE" && linear_is_completed "$(get_linear_issue_id "$ISSUE")"; then
+	      if task_identity_is_linear_writer "$ISSUE" && linear_is_completed "$(task_identity_linear_id "$ISSUE")"; then
 	        if [[ -n "$challenge_aborted" && -z "$PR" ]]; then
 	          log "debug" "$ISSUE: skipping completed-external reconciliation for challenge-aborted no-PR arm"
 	          active_count=$((active_count + 1))
@@ -16485,9 +16824,7 @@ monitor_issue_state() {
 
         if [[ "$REQUIRE_CONFIRM" == "true" ]]; then
           log "status" "  → Window stays open for review - close it when ready$(wavemill_config_annotation "mill.requireConfirm" "$REQUIRE_CONFIRM")"
-          if should_update_linear_state "$ISSUE"; then
-            linear_set_state "$(get_linear_issue_id "$ISSUE")" "Done"
-          fi
+          linear_set_state "$ISSUE" "Done"
           # Preserve agent when marking as completed-external
           current_agent=$(read_state_value "" --arg i "$ISSUE" '.tasks[$i].agent // ""')
           save_task_state "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR" "" "completed-external" "$current_agent"
@@ -16496,9 +16833,7 @@ monitor_issue_state() {
         fi
 
         # Clean up worktree and state
-        if should_update_linear_state "$ISSUE"; then
-          linear_set_state "$(get_linear_issue_id "$ISSUE")" "Done"
-        fi
+        linear_set_state "$ISSUE" "Done"
         if declare -F monitor_cleanup_episode_skip >/dev/null 2>&1 && monitor_cleanup_episode_skip "$ISSUE" "$SLUG" "$PR"; then
           return 0
         fi
@@ -17646,8 +17981,8 @@ monitor_issue_state() {
       log "status" "  → Window stays open for review - close it when ready$(wavemill_config_annotation "mill.requireConfirm" "$REQUIRE_CONFIRM")"
       if [[ "${WAVEMILL_TERMINAL_RECONCILER_LOADED:-0}" == "1" ]]; then
         wavemill_reconcile_terminal "$SESSION" "$ISSUE" "pr_merged" "$PR" || true
-      elif should_update_linear_state "$ISSUE"; then
-        linear_set_state "$(get_linear_issue_id "$ISSUE")" "Done"
+      else
+        linear_set_state "$ISSUE" "Done"
       fi
       # Preserve agent when marking as merged
       current_agent=$(read_state_value "" --arg i "$ISSUE" '.tasks[$i].agent // ""')
@@ -17658,8 +17993,8 @@ monitor_issue_state() {
 
     if [[ "${WAVEMILL_TERMINAL_RECONCILER_LOADED:-0}" == "1" ]]; then
       wavemill_reconcile_terminal "$SESSION" "$ISSUE" "pr_merged" "$PR" || true
-    elif should_update_linear_state "$ISSUE"; then
-      linear_set_state "$(get_linear_issue_id "$ISSUE")" "Done"
+    else
+      linear_set_state "$ISSUE" "Done"
     fi
     resolve_pair_on_primary_merge "$ISSUE" "$PR" || true
     if declare -F monitor_cleanup_episode_skip >/dev/null 2>&1 && monitor_cleanup_episode_skip "$ISSUE" "$SLUG" "$PR"; then
@@ -17749,8 +18084,8 @@ monitor_issue_state() {
       # merges, Backlog only when both arms are closed, deferred while the
       # sibling is still open) so the shared issue never bounces to Backlog.
       wavemill_reconcile_terminal "$SESSION" "$ISSUE" "pr_closed_unmerged" "$PR" || true
-    elif [[ -n "$linear_status" ]] && should_update_linear_state "$ISSUE"; then
-      linear_set_state "$(get_linear_issue_id "$ISSUE")" "$linear_status"
+    elif [[ -n "$linear_status" ]]; then
+      linear_set_state "$ISSUE" "$linear_status"
     fi
     # HOK-2952: one ownership policy for every closed-PR role. The old
     # in-memory-only `CLEANED=1` branch (which left pane/worktree/state

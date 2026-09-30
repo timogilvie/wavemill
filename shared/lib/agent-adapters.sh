@@ -7,6 +7,8 @@
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "$script_dir/routing-emitter.sh"
+# shellcheck source=task-identity.sh
+source "$script_dir/task-identity.sh"
 
 agent_tmux_target() {
   local session="$1" window="$2"
@@ -70,31 +72,6 @@ agent_send_tmux_guarded_command() {
   local target="$1" command_text="$2" guard_exports="$3"
   tmux send-keys -t "$target" -l -- "$guard_exports $command_text"
   tmux send-keys -t "$target" C-m
-}
-
-agent_normalize_linear_issue_id() {
-  local issue="${1:-}" candidate="${2:-}"
-  candidate="${candidate#"${candidate%%[![:space:]]*}"}"
-  candidate="${candidate%"${candidate##*[![:space:]]}"}"
-
-  if [[ "$issue" =~ ^([A-Z][A-Z0-9]*-[0-9]+)_c$ ]]; then
-    local base_issue="${BASH_REMATCH[1]}"
-    if [[ "$candidate" != "$base_issue" ]]; then
-      printf '%s\n' "$base_issue"
-      return 0
-    fi
-  fi
-  if [[ "$candidate" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
-    printf '%s\n' "$candidate"
-    return 0
-  fi
-  if [[ "$candidate" =~ ^https?://linear\.app/[^/]+/issue/[A-Z][A-Z0-9]*-[0-9]+([/?#].*)?$ ]]; then
-    local linear_url_path="${candidate#*://linear.app/}"
-    linear_url_path="${linear_url_path#*/issue/}"
-    printf '%s\n' "${linear_url_path%%[/?#]*}"
-    return 0
-  fi
-  printf '%s\n' "$issue"
 }
 
 # ============================================================================
@@ -1222,7 +1199,7 @@ This is a REQUIRED step — do not skip it or substitute your own review.
    - Base branch exists: \$(git rev-parse --verify $base_branch 2>&1 || echo "NOT FOUND")
    - STDERR output: [paste the actual stderr from the failed command]
 
-   Proceeding to PR creation without wm:ready per instructions.
+   Proceeding to PR creation. The mill (Ready → Tend) will run its own Ready gate and, if it publishes a handoff, apply wm:ready on your behalf. Do NOT add any wm:* label yourself.
    \`\`\`
    This diagnostic information is CRITICAL for debugging recurring tool failures.
 
@@ -2002,7 +1979,7 @@ agent_launch_autonomous() {
   local native_phase="$launch_phase"
   local native_model=""
   local linear_issue
-  linear_issue="$(agent_normalize_linear_issue_id "$issue" "${WAVEMILL_LINEAR_ISSUE:-}")"
+  linear_issue="$(task_identity_linear_id "$issue" 2>/dev/null || printf '%s\n' "$issue")"
   local worktree_dir="${feature_dir%/features/*}"
   local feature_slug="${WAVEMILL_FEATURE_SLUG:-${WAVEMILL_SLUG:-}}"
   if agent_is_native_cmd "$agent_cmd"; then
@@ -2422,6 +2399,25 @@ agent_resume_after_error() {
 #   $6 = agent flags (optional)
 #   $7 = abort check command (optional)
 #   $8 = issue ID (optional — enables lifecycle status tracking)
+# True when the installed codex CLI accepts --no-daemon (added alongside the
+# shared app-server daemon). Probed once per process; older CLIs reject the
+# unknown flag, so it is only passed when advertised. WAVEMILL_CODEX_NO_DAEMON
+# (1/0) overrides the probe.
+agent_codex_supports_no_daemon() {
+  if [[ -n "${WAVEMILL_CODEX_NO_DAEMON:-}" ]]; then
+    [[ "$WAVEMILL_CODEX_NO_DAEMON" == "1" ]]
+    return
+  fi
+  if [[ -z "${_WAVEMILL_CODEX_NO_DAEMON_PROBE:-}" ]]; then
+    if command -v codex >/dev/null 2>&1 && codex --help 2>/dev/null | grep -q -- '--no-daemon'; then
+      _WAVEMILL_CODEX_NO_DAEMON_PROBE=1
+    else
+      _WAVEMILL_CODEX_NO_DAEMON_PROBE=0
+    fi
+  fi
+  [[ "$_WAVEMILL_CODEX_NO_DAEMON_PROBE" == "1" ]]
+}
+
 agent_launch_interactive() {
   local session="$1"
   local window="$2"
@@ -2520,13 +2516,20 @@ agent_launch_interactive() {
   if [[ "$agent_cmd" == "codex" ]] && [[ "$agent_flags" != *" --dangerously-bypass-approvals-and-sandbox"* ]]; then
     agent_flags="${agent_flags} --dangerously-bypass-approvals-and-sandbox"
   fi
+  # The interactive Codex TUI attaches to the shared app-server daemon (often
+  # started by the desktop app). When the daemon and CLI versions differ it
+  # stops at a "Cannot use the background server" menu and waits forever for
+  # a keypress. Mill launches never want the shared daemon.
+  if [[ "$agent_cmd" == "codex" ]] && [[ "$agent_flags" != *" --no-daemon"* ]] && agent_codex_supports_no_daemon; then
+    agent_flags="${agent_flags} --no-daemon"
+  fi
 
   local launcher="/tmp/${session}-$(basename "$prompt_file" .txt)-launcher.sh"
   local launcher_cmd=""
   local native_phase="$launch_phase"
   local native_model=""
   local linear_issue
-  linear_issue="$(agent_normalize_linear_issue_id "$issue" "${WAVEMILL_LINEAR_ISSUE:-}")"
+  linear_issue="$(task_identity_linear_id "$issue" 2>/dev/null || printf '%s\n' "$issue")"
   local worktree_dir="${feature_dir%/features/*}"
   local feature_slug="${WAVEMILL_FEATURE_SLUG:-${WAVEMILL_SLUG:-}}"
 
