@@ -392,6 +392,7 @@ TESTS=(
   shared/lib/native-agent/tool-decision-labeler.test.ts
   shared/lib/native-agent/tool-decision-report.test.ts
   shared/lib/native-agent/tool-decision-capture.test.ts
+  shared/lib/native-agent/tool-decision-purge.test.ts
   shared/lib/native-agent/tool-choice-analyzer.test.ts
   shared/lib/native-agent/tools/command.test.ts
   shared/lib/native-agent/tools/intended-files.test.ts
