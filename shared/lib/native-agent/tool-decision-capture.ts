@@ -4,6 +4,10 @@
  * Reads a canonical session-event JSONL, projects it into decision rows,
  * and appends them to the corpus. Non-fatal by design: launch/loop sites
  * call it after a session ends and never propagate its errors.
+ *
+ * NOTE: Rows from scripted models (model starts with 'scripted:' or provider is 'scripted')
+ * are filtered out unless an explicit corpusDir is provided. This prevents test data
+ * from polluting the production corpus.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -12,6 +16,7 @@ import { parseSessionEventJsonl, type SessionEvent } from './session-stream.sche
 import { projectSessionEventsToDecisions } from './tool-decision-projector.ts';
 import {
   appendToolDecisions,
+  isScriptedToolDecisionRow,
   resolveToolDecisionCorpusPath,
   type AppendResult,
 } from './tool-decision-corpus.ts';
@@ -21,7 +26,11 @@ export interface CaptureOptions {
   eventStreamPath: string;
   /** Repo root for resolving the corpus dir. */
   repoDir?: string;
-  /** Optional explicit corpus dir override. */
+  /** 
+   * Optional explicit corpus dir override.
+   * When provided, scripted model rows are allowed (not filtered out).
+   * When omitted, scripted model rows are filtered to prevent test data pollution.
+   */
   corpusDir?: string;
   /** Optional file namespace (default "corpus"). */
   corpusNamespace?: string;
@@ -67,12 +76,33 @@ export function captureToolDecisionsFromStream(opts: CaptureOptions): CaptureRes
       ...(opts.provider ? { provider: opts.provider } : {}),
       ...(opts.runtime ? { runtime: opts.runtime } : {}),
     });
+    
+    // Guard: Filter out scripted rows unless corpusDir is explicitly provided
+    let rowsToAppend = projection.rows;
+    const rejected: AppendResult['rejected'] = [...(projection.rejected ?? [])];
+    
+    if (!opts.corpusDir) {
+      // When no explicit corpusDir is provided, filter out scripted rows
+      const allowedRows = [];
+      for (const row of projection.rows) {
+        if (isScriptedToolDecisionRow(row)) {
+          rejected.push({
+            decisionId: typeof row.decisionId === 'string' ? row.decisionId : undefined,
+            reason: 'scripted_model_requires_explicit_corpus_dir'
+          });
+        } else {
+          allowedRows.push(row);
+        }
+      }
+      rowsToAppend = allowedRows;
+    }
+    
     const corpusPath = resolveToolDecisionCorpusPath({
       repoDir: opts.repoDir,
       ...(opts.corpusDir ? { explicitDir: opts.corpusDir } : {}),
       ...(opts.corpusNamespace ? { namespace: opts.corpusNamespace } : {}),
     });
-    const append = appendToolDecisions(projection.rows, corpusPath);
+    const append = appendToolDecisions(rowsToAppend, corpusPath);
     return {
       ok: true,
       corpusPath,
@@ -80,7 +110,7 @@ export function captureToolDecisionsFromStream(opts: CaptureOptions): CaptureRes
       appended: append.appended,
       skippedDuplicates: append.skippedDuplicates,
       warnings: projection.warnings,
-      rejected: append.rejected,
+      rejected: [...rejected, ...append.rejected],
     };
   } catch (err) {
     return { ok: false, reason: `error:${(err as Error).message.slice(0, 80)}` };

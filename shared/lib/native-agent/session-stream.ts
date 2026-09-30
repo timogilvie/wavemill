@@ -8,7 +8,7 @@
  * under .wavemill/artifacts/ with SHA-256 digests.
  */
 
-import { appendFileSync, mkdirSync, existsSync, rmSync, writeFileSync, readFileSync, openSync, writeSync, fsyncSync, closeSync } from 'node:fs';
+import { appendFileSync, mkdirSync, existsSync, readdirSync, rmSync, writeFileSync, readFileSync, openSync, writeSync, fsyncSync, closeSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import type {
@@ -580,4 +580,47 @@ export class SessionStreamWriter {
       releaseLock();
     }
   }
+}
+
+/**
+ * Find session event streams that are from scripted models.
+ * 
+ * Selects streams where the first line is type:"session_started" 
+ * and initialConfigDigest starts with "model:scripted:".
+ * 
+ * @param dir Directory containing session event streams
+ * @returns Array of paths to scripted session event streams
+ */
+export function findScriptedSessionEventStreams(dir: string): string[] {
+  if (!existsSync(dir)) {
+    return [];
+  }
+  
+  const files = readdirSync(dir);
+  const scriptedStreams: string[] = [];
+  
+  for (const file of files) {
+    if (!file.endsWith('.jsonl')) continue;
+    
+    const fullPath = resolve(dir, file);
+    try {
+      const content = readFileSync(fullPath, 'utf-8');
+      const lines = content.split('\n').filter(line => line.trim() !== '');
+      if (lines.length === 0) continue;
+      
+      const firstLine = lines[0];
+      const firstEvent = JSON.parse(firstLine);
+      
+      if (firstEvent.type === 'session_started' 
+          && typeof firstEvent.initialConfigDigest === 'string' 
+          && firstEvent.initialConfigDigest.startsWith('model:scripted:')) {
+        scriptedStreams.push(fullPath);
+      }
+    } catch {
+      // Skip files that can't be parsed
+      continue;
+    }
+  }
+  
+  return scriptedStreams;
 }

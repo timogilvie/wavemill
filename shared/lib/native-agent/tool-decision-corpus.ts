@@ -15,11 +15,13 @@
 import {
   appendFileSync,
   closeSync,
+  copyFileSync,
   existsSync,
   fsyncSync,
   mkdirSync,
   openSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
   writeSync,
@@ -187,6 +189,100 @@ export function appendRawToolDecisionLine(line: string, path: string): void {
   const release = acquireCorpusLock(path);
   try {
     appendFileSync(path, line.endsWith('\n') ? line : `${line}\n`);
+  } finally {
+    release();
+  }
+}
+
+/**
+ * Check if a tool decision row is from a scripted model.
+ * Used by both the capture guard and the purge tool.
+ */
+export function isScriptedToolDecisionRow(row: unknown): boolean {
+  if (!row || typeof row !== 'object') return false;
+  const obj = row as Record<string, unknown>;
+  return (typeof obj.model === 'string' && obj.model.startsWith('scripted:')) 
+    || obj.provider === 'scripted';
+}
+
+/**
+ * Purge tool decision rows matching a predicate from the corpus.
+ * 
+ * Takes the corpus lock to prevent races with concurrent writers.
+ * Preserves corrupt/unparseable lines verbatim.
+ * 
+ * @param path Path to the corpus file
+ * @param predicate Function that returns true for rows to remove
+ * @param opts Options including dryRun and backupSuffix
+ * @returns Summary of the operation
+ */
+export function purgeToolDecisionRows(
+  path: string, 
+  predicate: (row: unknown) => boolean,
+  opts: { dryRun?: boolean; backupSuffix?: string } = {}
+): { path: string; total: number; removed: number; kept: number; backupPath?: string } {
+  if (!existsSync(path)) {
+    return { path, total: 0, removed: 0, kept: 0 };
+  }
+  
+  const release = acquireCorpusLock(path);
+  try {
+    const raw = readFileSync(path, 'utf-8');
+    const lines = raw.split('\n').filter(line => line.trim() !== '');
+    
+    const keptLines: string[] = [];
+    let removed = 0;
+    
+    for (const line of lines) {
+      try {
+        const parsed = JSON.parse(line);
+        if (predicate(parsed)) {
+          removed += 1;
+          continue;
+        }
+      } catch {
+        // Keep corrupt/unparseable lines verbatim
+      }
+      keptLines.push(line);
+    }
+    
+    const kept = lines.length - removed;
+    
+    // Write backup if we're removing anything and not in dry-run mode
+    let backupPath: string | undefined;
+    if (removed > 0 && !opts.dryRun) {
+      const backupBase = `${path}.bak`;
+      backupPath = backupBase;
+      
+      // If backup already exists, use a timestamped name
+      if (existsSync(backupPath)) {
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        backupPath = `${backupBase}-${timestamp}`;
+      }
+      
+      // Copy original file to backup
+      copyFileSync(path, backupPath);
+    }
+    
+    // Write new file if we're removing anything and not in dry-run mode
+    if (removed > 0 && !opts.dryRun) {
+      const tmpPath = `${path}.tmp.${process.pid}`;
+      try {
+        if (keptLines.length > 0) {
+          writeFileSync(tmpPath, keptLines.join('\n') + '\n');
+          fsyncSync(openSync(tmpPath, 'r')); // Ensure data is written
+          renameSync(tmpPath, path);
+        } else {
+          rmSync(path, { force: true });
+        }
+      } catch (err) {
+        // Clean up temp file if write failed
+        rmSync(tmpPath, { force: true });
+        throw err;
+      }
+    }
+    
+    return { path, total: lines.length, removed, kept, backupPath };
   } finally {
     release();
   }
