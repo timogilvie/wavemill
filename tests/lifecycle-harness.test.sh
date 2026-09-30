@@ -224,6 +224,15 @@ harness_extract_real_functions() {
     coding_compare_commit_counts \
     try_update_branch_from_base \
     write_coding_uncommitted_output_artifact \
+    coding_recovery_instruction_path \
+    coding_dirty_handoff_grace_seconds \
+    coding_dirty_handoff_agent_exited \
+    coding_dirty_handoff_path_is_planned \
+    coding_dirty_handoff_quarantine_scratch \
+    coding_dirty_handoff_write_recovery_instruction \
+    coding_dirty_handoff_relaunch \
+    coding_dirty_handoff_terminalize \
+    _challenge_side_for_issue \
     guard_coding_complete_handoff \
     blocked_completion_validate_for_advance \
     archive_stale_coding_artifacts \
@@ -637,6 +646,9 @@ harness_run_tick() {
     transient_error_recovery_pending() { return 1; }
     codex_has_pending_approval() { return 1; }
     launch_background_post_merge_eval() { :; }
+    # HOK-3101 primitive: no evidence by default, which the dirty-handoff guard
+    # (HOK-3128) treats as a live agent. Scenarios override.
+    task_progress_json() { printf "{}\n"; }
 
     # Scenario-specific function overrides must run after default stubs and
     # extracted real functions are loaded.
@@ -2357,6 +2369,43 @@ test_coding_complete_dirty_worktree_without_commits_needs_attention() {
   check_file_exists "uncommitted output: dedupe marker written" "$feature_dir/.coding-uncommitted-output-announced"
 }
 
+# HOK-3128: once the coding agent has exited, a dirty-tree handoff is relaunched
+# once (bounded-retry bucket coding-dirty-handoff) and then terminalized; a
+# primary stays needs-user with a recorded sentinel.
+test_coding_complete_dirty_tree_agent_exited_relaunches_then_terminalizes() {
+  local slug="coding-complete-dirty-agent-exited"
+  local issue="HOK-3128-EXITED"
+  local repo tick1 tick2 feature_dir setup
+  repo="$(harness_init_repo "$slug")"
+  harness_setup_runtime_artifacts "$repo"
+  harness_setup_coding_state "$repo" "$slug" "running"
+  feature_dir="$repo/features/$slug"
+
+  printf '{"stage":"coding","confidence":"high"}\n' > "$feature_dir/.coding-complete"
+  printf 'uncommitted edit\n' >> "$repo/README.md"
+
+  setup='CURRENT_PHASE="coding"
+task_progress_json() { printf "%s\n" "{\"agentIdle\":true,\"agentState\":null,\"blockingPrompt\":null,\"agentRecord\":{\"state\":\"idle\",\"event\":\"process_exit\",\"timestamp\":1},\"progressAgeMinutes\":90}"; }
+agent_validate_phase_launch() { return 0; }
+_prepare_recovery_phase_launch() { return 0; }'
+
+  tick1="$(harness_run_tick "$repo" "$slug" "$issue" "$setup")"
+  check_eq "agent exited: tick 1 relaunches coding" "true" "$(kv_value "$tick1" coding_launched)"
+  check_eq "agent exited: tick 1 keeps the task active" "1" "$(kv_value "$tick1" active_count)"
+  check_eq "agent exited: tick 1 clears attention" "clear" "$(kv_value "$tick1" attention)"
+  check_contains "agent exited: tick 1 logs the relaunch" "$(kv_value "$tick1" log_output)" "coding-dirty-handoff relaunch"
+  check_file_exists "agent exited: recovery instruction written" "$feature_dir/.coding-recovery-instruction.md"
+  check_not_contains "agent exited: review does not launch" "$(kv_value "$tick1" log_output)" "Launching review phase"
+
+  printf '{"stage":"coding","confidence":"high"}\n' > "$feature_dir/.coding-complete"
+  tick2="$(harness_run_tick "$repo" "$slug" "$issue" "$setup")"
+  check_eq "agent exited: tick 2 does not relaunch again" "false" "$(kv_value "$tick2" coding_launched)"
+  check_eq "agent exited: primary stays needs-user" "needs-user" "$(kv_value "$tick2" attention)"
+  check_eq "agent exited: phase stays coding" "coding" "$(kv_value "$tick2" phase)"
+  check_file_exists "agent exited: exhaustion sentinel recorded" "$feature_dir/.retry-coding-dirty-handoff-exhausted"
+  check_contains "agent exited: sentinel names the reason" "$(cat "$feature_dir/.retry-coding-dirty-handoff-exhausted" 2>/dev/null)" "dirty-handoff relaunch exhausted after 1 attempt(s)"
+}
+
 test_coding_complete_uncommitted_output_dedupes_stable_condition() {
   local slug="coding-complete-uncommitted-output-dedupe"
   local issue="HOK-2405-DEDUP"
@@ -4023,6 +4072,7 @@ test_coding_blocked_completion_dedupes_same_artifact
 test_coding_blocked_completion_reannounces_on_mtime_change
 test_coding_complete_wins_over_blocked_completion
 test_coding_complete_dirty_worktree_without_commits_needs_attention
+test_coding_complete_dirty_tree_agent_exited_relaunches_then_terminalizes
 test_coding_complete_uncommitted_output_dedupes_stable_condition
 test_coding_complete_uncommitted_output_reannounces_on_dirty_path_change
 test_coding_complete_uncommitted_output_reannounces_on_ahead_count_change

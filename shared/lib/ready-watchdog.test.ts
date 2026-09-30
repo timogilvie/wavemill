@@ -2963,6 +2963,31 @@ test('classify challenge PR with aborted sibling as needs-user with recovery com
   assert.match(classification.recoveryCommand ?? '', /--reason 'sibling-challenge-aborted'/);
 });
 
+test('classify challenge PR with a stalled no-PR sibling as needs-user with recovery command (HOK-3128)', () => {
+  const classification = classifyReadyTask(
+    makeSnapshot({
+      idleMinutes: 15,
+      challengePairId: 'HOK-2358',
+      readyArtifacts: { type: 'ready', verdict: 'pass', queueState: 'merge-candidate' },
+    }),
+    makeTruth(),
+    new Date('2026-05-05T12:30:00.000Z'),
+    WATCHDOG_CONFIG,
+    undefined,
+    {
+      kind: 'pair-unresolvable',
+      pairId: 'HOK-2358',
+      otherPr: null,
+      reason: 'sibling-stalled',
+    },
+  );
+
+  assert.equal(classification.kind, 'needs-user');
+  assert.match(classification.detail, /no agent progress for ≥30m without opening a PR/);
+  assert.match(classification.detail, /agent exited or stalled/);
+  assert.match(classification.recoveryCommand ?? '', /--reason 'sibling-stalled'/);
+});
+
 test('classify challenge PR with both arms aborted as needs-user with recovery command', () => {
   const classification = classifyReadyTask(
     makeSnapshot({
@@ -3121,6 +3146,98 @@ test('tick classifies challenge PR in merge lane as waiting-on-eval-comparison w
     assert.notEqual(result.findings[0].classification, 'waiting-on-merge-lane');
     assert.match(result.findings[0].detail, /HOK-2358/);
     assert.match(result.findings[0].detail, /pair-unresolved:no-comparison/);
+  } finally {
+    await rm(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('tick classifies a green challenge PR whose no-PR sibling stalled as sibling-stalled (HOK-3128)', async () => {
+  const { repoDir, stateFile, featureDir } = setupReadyTask('HOK-2358', 893);
+
+  writeFileSync(stateFile, JSON.stringify({
+    tasks: {
+      'HOK-2358': {
+        slug: 'ready-watchdog-task',
+        branch: 'task/ready-watchdog-task',
+        worktree: path.join(repoDir, 'worktrees', 'ready-watchdog-task'),
+        pr: 893,
+        phase: 'ready',
+        updated: '2026-05-05T12:00:00.000Z',
+        agent: 'claude',
+        model: 'claude-sonnet-4-6',
+        challengePairId: 'HOK-2358',
+        challengeRole: 'primary',
+        evalCompleted: true,
+      },
+      'HOK-2358_c': {
+        // Parked on a dirty-tree coding handoff after its agent exited: tracked,
+        // no PR, no agent progress since.
+        slug: 'ready-watchdog-task-challenger',
+        branch: 'task/ready-watchdog-task-challenger',
+        worktree: path.join(repoDir, 'worktrees', 'ready-watchdog-task-challenger'),
+        phase: 'coding',
+        updated: '2026-05-05T12:00:00.000Z',
+        agent: 'native',
+        model: 'qwen-3-coder',
+        challengePairId: 'HOK-2358',
+        challengeRole: 'challenger',
+      },
+    },
+    jobs: {},
+  }, null, 2));
+
+  writeFileSync(path.join(featureDir, '.ready-result.json'), JSON.stringify({
+    stage: 'ready',
+    status: 'completed',
+    startedAt: '2026-05-05T11:55:00.000Z',
+    finishedAt: '2026-05-05T12:00:00.000Z',
+    agent: 'claude',
+    model: 'claude-sonnet-4-6',
+    notes: null,
+    artifacts: { type: 'ready', verdict: 'pass', prNumber: 893, queueState: 'ready-stale' },
+  }, null, 2));
+
+  const probed: string[] = [];
+  try {
+    const result = await tickReadyWatchdog({
+      repoDir,
+      stateFile,
+      config: WATCHDOG_CONFIG,
+      deps: {
+        fetchGitHubTruth: async () => makeTruth({ mergeStateStatus: 'CLEAN' }),
+        getCurrentHead: async () => 'head-1',
+        getWorktreeMergeState: async () => ({
+          mergeHead: null, unmergedPaths: [], stagedPaths: [], unstagedPaths: [], untrackedPaths: [], rawStatus: [],
+        }),
+        isTaskPaneActive: async () => null,
+        getSiblingProgress: (_repoDir, sibling) => {
+          probed.push(sibling.issueId);
+          return {
+            issue: sibling.issueId,
+            computedAt: '2030-05-05T12:30:00.000Z',
+            lastProgressAt: '2026-05-05T12:00:00.000Z',
+            progressAgeMinutes: 99999,
+            sources: [],
+            agentState: null,
+            agentRecord: null,
+            controllerState: null,
+            agentIdle: true,
+            terminal: false,
+            terminalIdle: false,
+            agentProcessLive: null,
+            stalled: true,
+            stallMinutes: 30,
+            blockingPrompt: null,
+          };
+        },
+        now: () => new Date('2030-05-05T12:30:00.000Z'),
+      },
+    });
+
+    assert.deepEqual(probed, ['HOK-2358_c']);
+    assert.equal(result.findings.length, 1);
+    assert.equal(result.findings[0].classification, 'needs-user', result.findings[0].detail);
+    assert.match(result.findings[0].detail, /no agent progress for ≥30m/);
   } finally {
     await rm(repoDir, { recursive: true, force: true });
   }
