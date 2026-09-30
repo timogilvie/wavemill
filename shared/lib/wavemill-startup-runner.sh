@@ -573,6 +573,8 @@ write_monitor_env() {
     write_shell_assignment "LIB_DIR" "$LIB_DIR"
     write_shell_assignment "STATE_DIR" "$STATE_DIR"
     write_shell_assignment "STATE_FILE" "$STATE_FILE"
+    write_shell_assignment "TASK_IDENTITY_TASK_ID_RE" "$TASK_IDENTITY_TASK_ID_RE"
+    write_shell_assignment "TASK_IDENTITY_WINDOW_PREFIX_RE" "$TASK_IDENTITY_WINDOW_PREFIX_RE"
     write_shell_assignment "MERGE_QUEUE_SELECTION_FILE" "$STATE_DIR/merge-queue-selection.json"
     write_shell_assignment "POLL_SECONDS" "$POLL_SECONDS"
     write_shell_assignment "REQUIRE_CONFIRM" "$REQUIRE_CONFIRM"
