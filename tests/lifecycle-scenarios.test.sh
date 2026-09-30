@@ -166,6 +166,7 @@ for fn in \
   wavemill_owned_dirty_path \
   blocked_completion_auto_allowed_dirty_path \
   coding_compare_commit_counts \
+  try_update_branch_from_base \
   coding_uncommitted_output_announce_marker \
   coding_uncommitted_output_should_announce \
   mark_coding_uncommitted_output_announced \

@@ -64,6 +64,7 @@ TESTS=(
   monitor-ready-transition.test.sh
   launch-ready-phase.test.sh
   bounded-retry.test.sh
+  ready-update-from-base.test.sh
   plan-packet-binding.test.sh
   task-progress.test.sh
   task-identity.test.sh

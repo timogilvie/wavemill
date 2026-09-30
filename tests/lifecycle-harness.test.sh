@@ -222,6 +222,7 @@ harness_extract_real_functions() {
     mark_coding_uncommitted_output_announced \
     clear_coding_uncommitted_output_attention \
     coding_compare_commit_counts \
+    try_update_branch_from_base \
     write_coding_uncommitted_output_artifact \
     guard_coding_complete_handoff \
     blocked_completion_validate_for_advance \
