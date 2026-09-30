@@ -4,31 +4,21 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, afterEach } from 'node:test';
 
-import { buildPlanningWithToolCall } from './fixtures/tool-decision/build.ts';
-import { captureToolDecisionsFromStream } from './tool-decision-capture.ts';
-import { readToolDecisionCorpus, resolveToolDecisionCorpusPath } from './tool-decision-corpus.ts';
+import { isScriptedToolDecisionRow, purgeToolDecisionRows } from './tool-decision-corpus.ts';
+import { findScriptedSessionEventStreams } from './session-stream.ts';
 
-function buildScriptedPlanningWithToolCall(): SessionEvent[] {
-  const events = buildPlanningWithToolCall();
-  
-  // Modify the model_request events to use scripted provider
-  return events.map(event => {
-    if (event.type === 'model_request') {
-      return {
-        ...event,
-        provider: 'scripted',
-        modelId: 'scripted:test-model'
-      } as SessionEvent;
-    }
-    if (event.type === 'session_started') {
-      return {
-        ...event,
-        initialConfigDigest: 'model:scripted:test-model'
-      } as SessionEvent;
-    }
-    return event;
-  });
+function tempDir(): string {
+  const dir = join(tmpdir(), `tool-decision-purge-${process.pid}-${Date.now()}-${Math.random()}`);
+  mkdirSync(dir, { recursive: true });
+  return dir;
 }
+
+function cleanup(dir: string): void {
+  try { rmSync(dir, { recursive: true, force: true }); } catch {
+    // best-effort
+  }
+}
+import { buildPlanningWithToolCall as buildScriptedPlanningWithToolCall } from './fixtures/tool-decision/build-scripted.ts';
 
 function tempDir(): string {
   const dir = join(tmpdir(), `tool-decision-capture-${process.pid}-${Date.now()}-${Math.random()}`);
