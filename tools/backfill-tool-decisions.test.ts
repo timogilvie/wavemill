@@ -51,22 +51,11 @@ describe('backfillToolDecisions', () => {
   it('harvests rows from a worktree corpus into the main repo', () => {
     const mainDir = tempDir(); dirs.push(mainDir);
     const worktreeDir = join(mainDir, 'worktrees/test-wt');
-    mkdirSync(worktreeDir, { recursive: true });
+    const worktreeCorpusDir = join(worktreeDir, '.wavemill/tool-decisions');
+    mkdirSync(worktreeCorpusDir, { recursive: true });
 
-    // Create a worktree-local corpus
-    const worktreeCorpusPath = resolveToolDecisionCorpusPath({
-      repoDir: worktreeDir,
-      explicitDir: join(worktreeDir, '.wavemill/tool-decisions'),
-    });
-    const rows = buildPlanningWithToolCall().map((e) => {
-      if (e.type === 'model_response') {
-        return { ...e, stop_reason: 'tool_use' };
-      }
-      return e;
-    });
-    // Project some rows manually
     writeSessionStream(
-      join(worktreeDir, '.wavemill/tool-decisions'),
+      worktreeCorpusDir,
       [
         JSON.parse('{"schemaVersion":"1","decisionId":"d1","sessionId":"s1","traceId":"t1","phase":"planning","turnIndex":0,"stepIndex":0,"sourceEventIds":[],"provider":"claude","model":"claude-3-5-sonnet","runtime":"native","kind":"tool_call","state":{"priorToolCallCount":0,"priorErrorFlag":false,"priorErrorCount":0,"terminalSynthesis":false,"priorPolicyDenials":0},"propensity":{"provenance":"surrogate"},"timestamp":0,"causalEventIds":[]}'),
         JSON.parse('{"schemaVersion":"1","decisionId":"d2","sessionId":"s1","traceId":"t1","phase":"planning","turnIndex":0,"stepIndex":0,"sourceEventIds":[],"provider":"claude","model":"claude-3-5-sonnet","runtime":"native","kind":"tool_call","state":{"priorToolCallCount":0,"priorErrorFlag":false,"priorErrorCount":0,"terminalSynthesis":false,"priorPolicyDenials":0},"propensity":{"provenance":"surrogate"},"timestamp":0,"causalEventIds":[]}'),
@@ -74,15 +63,26 @@ describe('backfillToolDecisions', () => {
       'corpus.jsonl',
     );
 
-    // Run harvest
     const summary = backfillToolDecisions({
       repoDir: mainDir,
-      backfillOnly: true,
+      harvestOnly: true,
       dryRun: false,
     });
 
-    // Verify nothing happened (no session streams to backfill)
-    assert.equal(summary.backfill?.processed ?? 0, 0);
+    assert.equal(summary.harvest?.attempted, 1);
+    assert.equal(summary.harvest?.processed, 1);
+    assert.equal(summary.harvest?.rows, 2);
+
+    // Side effect: rows appended to main corpus
+    const mainCorpusPath = resolveToolDecisionCorpusPath({ repoDir: mainDir });
+    assert.equal(existsSync(mainCorpusPath), true);
+    const mainRows = readToolDecisionCorpus(mainCorpusPath);
+    const harvestedIds = new Set(mainRows.map((r) => r.decisionId));
+    assert.equal(harvestedIds.has('d1'), true);
+    assert.equal(harvestedIds.has('d2'), true);
+
+    // Side effect: worktree-local corpus directory removed
+    assert.equal(existsSync(worktreeCorpusDir), false);
   });
 
   it('skips session streams older than the --since date', () => {
@@ -179,8 +179,6 @@ describe('backfillToolDecisions', () => {
   it('handles harvest-only mode', () => {
     const mainDir = tempDir(); dirs.push(mainDir);
     const worktreeDir = join(mainDir, 'worktrees/harvest-wt');
-    mkdirSync(worktreeDir, { recursive: true });
-
     const worktreeCorpusDir = join(worktreeDir, '.wavemill/tool-decisions');
     mkdirSync(worktreeCorpusDir, { recursive: true });
 
@@ -192,7 +190,16 @@ describe('backfillToolDecisions', () => {
       'corpus.jsonl',
     );
 
-    // Harvest-only should not backfill
+    // Also create a session stream that would be picked up if backfill ran
+    const eventsDir = join(mainDir, '.wavemill/session-events');
+    mkdirSync(eventsDir, { recursive: true });
+    const streamPath = writeSessionStream(
+      eventsDir,
+      buildPlanningWithToolCall(),
+      'wavemill-should-be-ignored.jsonl',
+    );
+    setFileTime(streamPath, new Date('2026-09-23T00:00:00Z'));
+
     const summary = backfillToolDecisions({
       repoDir: mainDir,
       harvestOnly: true,
@@ -201,6 +208,16 @@ describe('backfillToolDecisions', () => {
 
     assert.ok(summary.harvest);
     assert.equal(summary.backfill, undefined);
+
+    // Side effect: harvested row landed in main corpus, and only the harvested row
+    const mainCorpusPath = resolveToolDecisionCorpusPath({ repoDir: mainDir });
+    assert.equal(existsSync(mainCorpusPath), true);
+    const mainRows = readToolDecisionCorpus(mainCorpusPath);
+    const ids = new Set(mainRows.map((r) => r.decisionId));
+    assert.equal(ids.has('hw1'), true);
+
+    // Side effect: worktree-local corpus directory removed
+    assert.equal(existsSync(worktreeCorpusDir), false);
   });
 
   it('handles backfill-only mode', () => {
