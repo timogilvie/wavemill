@@ -19783,7 +19783,7 @@ while :; do
   # but their presence points at a raw post-reap writer that still needs
   # routing through task_state_mutate_existing.
   if declare -F orphan_stub_task_ids >/dev/null 2>&1; then
-    local _orphan_id
+    _orphan_id=""
     while IFS= read -r _orphan_id; do
       [[ -z "$_orphan_id" ]] && continue
       case " ${ORPHAN_STUB_WARNED:-} " in
