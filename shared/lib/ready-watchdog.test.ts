@@ -80,6 +80,10 @@ function setupReadyTask(issueId = 'HOK-1579', prNumber = 528): {
 
   const stateFile = path.join(stateDir, 'workflow-state.json');
   writeFileSync(path.join(repoDir, '.wavemill-config.json'), JSON.stringify({
+    // HOK-3102: keep pre-3102 semantics — with integration on + useMillSession,
+    // the ready-watchdog auto-update path stays live so existing tests that
+    // exercise BEHIND branches still see them classified as `auto-update`.
+    integration: { enabled: true, useMillSession: true },
     ready: {
       transientRetryBudget: 2,
       remediationLogMaxBytes: 200,

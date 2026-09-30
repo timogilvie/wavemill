@@ -64,6 +64,7 @@ TESTS=(
   monitor-ready-transition.test.sh
   launch-ready-phase.test.sh
   bounded-retry.test.sh
+  ready-update-from-base.test.sh
   plan-packet-binding.test.sh
   task-progress.test.sh
   task-identity.test.sh
@@ -71,6 +72,7 @@ TESTS=(
   launch-pane-liveness.test.sh
   launch-failure-log-capture.test.sh
   challenge-eval-soft-retry.test.sh
+  eval-stub-slot-accounting.test.sh
   challenge-deferred-arm.test.sh
   review-scope-baseline-handoff.test.sh
   launch-native-planning-phase.test.sh
@@ -138,6 +140,7 @@ TESTS=(
   challenge-fork-non-forked-regression.test.sh
   challenge-fork-review-launch-refusal.test.sh
   base-ref-stale-local.test.sh
+  session-capabilities.test.sh
 )
 
 SHARD_INDEX=1

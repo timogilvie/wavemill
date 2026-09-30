@@ -1249,6 +1249,8 @@ describe('matchesIssue', () => {
 
   it('does not match a different issue', () => {
     assert.equal(matchesIssue('coding-HOK-537_c.jsonl', 'HOK-2728_c'), false);
+    assert.equal(matchesIssue('coding-AB2-1_c.jsonl', 'HOK-2728_c'), false);
+    assert.equal(matchesIssue('coding-AB2-1_c.jsonl', 'AB2-1_c'), true);
   });
 
   it('does not let a primary issue match its challenger', () => {

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, afterEach } from 'node:test';
@@ -7,6 +7,18 @@ import { describe, it, afterEach } from 'node:test';
 import { buildPlanningWithToolCall } from './fixtures/tool-decision/build.ts';
 import { captureToolDecisionsFromStream } from './tool-decision-capture.ts';
 import { readToolDecisionCorpus, resolveToolDecisionCorpusPath } from './tool-decision-corpus.ts';
+import type { SessionEvent } from './session-stream.schema.ts';
+
+function makeScriptedStream(): SessionEvent[] {
+  const events = buildPlanningWithToolCall();
+  // Retag the model_request events so the projected rows look "scripted:*".
+  return events.map((event) => {
+    if (event.type === 'model_request') {
+      return { ...event, provider: 'scripted', modelId: 'scripted:test-guard' };
+    }
+    return event;
+  });
+}
 
 function tempDir(): string {
   const dir = join(tmpdir(), `tool-decision-capture-${process.pid}-${Date.now()}-${Math.random()}`);
@@ -86,5 +98,63 @@ describe('captureToolDecisionsFromStream', () => {
     const corpusPath = resolveToolDecisionCorpusPath({ explicitDir: dir });
     const content = readFileSync(corpusPath, 'utf-8');
     assert.equal(content.trim().split('\n').length, first.appended);
+  });
+
+  it('rejects scripted rows and writes no corpus when corpusDir is not set', () => {
+    const dir = tempDir(); dirs.push(dir);
+    const streamPath = writeStream(dir, makeScriptedStream());
+
+    const res = captureToolDecisionsFromStream({
+      eventStreamPath: streamPath,
+      repoDir: dir,
+    });
+
+    assert.equal(res.ok, true);
+    assert.equal(res.appended, 0);
+    assert.ok((res.rejected?.length ?? 0) > 0, 'expected at least one rejection');
+    for (const r of res.rejected ?? []) {
+      assert.equal(r.reason, 'scripted_model_requires_explicit_corpus_dir');
+    }
+    const corpusPath = resolveToolDecisionCorpusPath({ repoDir: dir });
+    if (existsSync(corpusPath)) {
+      const raw = readFileSync(corpusPath, 'utf-8').trim();
+      assert.equal(raw, '', 'corpus should be absent or empty when only scripted rows would be written');
+    }
+  });
+
+  it('appends scripted rows when the caller supplies an explicit corpusDir', () => {
+    const dir = tempDir(); dirs.push(dir);
+    const streamPath = writeStream(dir, makeScriptedStream());
+
+    const res = captureToolDecisionsFromStream({
+      eventStreamPath: streamPath,
+      corpusDir: dir,
+    });
+
+    assert.equal(res.ok, true);
+    assert.ok((res.appended ?? 0) >= 1, 'expected scripted rows to be appended under explicit corpusDir');
+    const scriptedRejections = (res.rejected ?? []).filter(
+      (r) => r.reason === 'scripted_model_requires_explicit_corpus_dir',
+    );
+    assert.equal(scriptedRejections.length, 0);
+    const rows = readToolDecisionCorpus(resolveToolDecisionCorpusPath({ explicitDir: dir }));
+    assert.ok(rows.some((row) => row.model.startsWith('scripted:')));
+  });
+
+  it('leaves non-scripted rows unchanged when only repoDir is set', () => {
+    const dir = tempDir(); dirs.push(dir);
+    const streamPath = writeStream(dir, buildPlanningWithToolCall());
+
+    const res = captureToolDecisionsFromStream({
+      eventStreamPath: streamPath,
+      repoDir: dir,
+    });
+
+    assert.equal(res.ok, true);
+    assert.ok((res.appended ?? 0) >= 1);
+    const scriptedRejections = (res.rejected ?? []).filter(
+      (r) => r.reason === 'scripted_model_requires_explicit_corpus_dir',
+    );
+    assert.equal(scriptedRejections.length, 0);
   });
 });

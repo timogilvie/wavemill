@@ -392,6 +392,7 @@ TESTS=(
   shared/lib/native-agent/tool-decision-labeler.test.ts
   shared/lib/native-agent/tool-decision-report.test.ts
   shared/lib/native-agent/tool-decision-capture.test.ts
+  shared/lib/native-agent/tool-decision-purge.test.ts
   shared/lib/native-agent/tool-choice-analyzer.test.ts
   shared/lib/native-agent/tools/command.test.ts
   shared/lib/native-agent/tools/intended-files.test.ts
@@ -461,6 +462,8 @@ TESTS=(
   shared/lib/challenge-replay-capture.test.ts
   spike/pi-native-agent/mcp-proxy-spike.test.ts
   shared/lib/cost-parity.test.ts
+  shared/lib/observer-findings.test.ts
+  shared/lib/pr-comparison-actions.test.ts
 )
 
 SHARD_INDEX=1

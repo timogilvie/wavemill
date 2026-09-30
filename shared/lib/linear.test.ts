@@ -42,7 +42,7 @@ test('setIssueState caches team workflow states across calls', async () => {
 
   const restore = installFetchMock((payload) => {
     if (payload.query.includes('issues(filter: { number: { eq:')) {
-      const number = payload.query.includes('eq: 101') ? 'HOK-101' : 'HOK-102';
+      const number = payload.query.includes('eq: 101') ? 'HOK-101' : payload.query.includes('eq: 102') ? 'HOK-102' : 'AB2-1';
       return { issues: { nodes: [{ id: `issue-${number}`, identifier: number, team: { id: teamId } }] } };
     }
     if (payload.query.includes('query($teamId: String!)')) {
@@ -59,8 +59,9 @@ test('setIssueState caches team workflow states across calls', async () => {
   try {
     await setIssueState('HOK-101', 'In Progress');
     await setIssueState('HOK-102', 'In Progress');
+    await setIssueState('AB2-1', 'In Progress');
     assert.equal(teamQueryCount, 1);
-    assert.equal(updateCount, 2);
+    assert.equal(updateCount, 3);
   } finally {
     restore();
   }

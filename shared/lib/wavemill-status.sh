@@ -999,7 +999,7 @@ is_active() {
   local win="$2"
   [[ -d "$worktree" ]] && return 0
   local target="" issue="" slug=""
-  if [[ "$win" =~ ^([A-Z]+-[0-9]+(_c)?)-(.+)$ ]]; then
+  if [[ "$win" =~ $TASK_IDENTITY_WINDOW_PREFIX_RE ]]; then
     issue="${BASH_REMATCH[1]}"
     slug="${BASH_REMATCH[3]}"
     target="$(task_window_target "$issue" "$slug" "$worktree" 2>/dev/null || true)"
@@ -1545,6 +1545,7 @@ render_task_row() {
             case "$ready_queue_state" in
               ready-stale) phase_str="${Y}ready-stale${N}" ;;
               merge-candidate) phase_str="${G}merge-candidate${N}" ;;
+              merge-needed) phase_str="${Y}⏳ merge needed${N}" ;;
               *)
                 case "$ready_status" in
                   failed|aborted) phase_str="${R}🚦 ready${N}" ;;

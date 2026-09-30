@@ -218,6 +218,20 @@ startup_terminal_preflight() {
   [[ "$(startup_preflight_enabled)" == "true" ]] || return 0
   [[ -n "${STATE_FILE:-}" && -r "$STATE_FILE" ]] || return 0
 
+  # HOK-3125: drop eval-only stubs for reaped tasks BEFORE classifying rows.
+  # If we skip this, the loop below stamps a stub with rehydration+
+  # verification-required:missing_phase and inflates it into a persistent
+  # near-orphan the counter now has to keep flagging every tick.
+  if declare -F drop_tombstoned_eval_stubs >/dev/null 2>&1; then
+    local _dropped_stubs
+    _dropped_stubs="$(drop_tombstoned_eval_stubs || true)"
+    if [[ -n "$_dropped_stubs" ]] && declare -F log >/dev/null 2>&1; then
+      local _dropped_list
+      _dropped_list="$(printf '%s' "$_dropped_stubs" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+      log "status" "Startup preflight: dropped eval-only stub(s) for reaped tasks: ${_dropped_list}"
+    fi
+  fi
+
   local issues issue classification eligibility reason pr slug sibling_pr should_attempt
   local terminal_count=0 eligible_count=0 verification_count=0 deferred_count=0 retained_count=0
   local deferred_issues=()

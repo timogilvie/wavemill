@@ -16,6 +16,8 @@ import {
 import { classifyCiFailure, type CiFailureCategory } from './ci-failure-classifier.ts';
 import { enrichFailingChecks as enrichFailingChecksDefault } from './ci-log-fetcher.ts';
 import { errorMessage } from './error-utils.ts';
+import { appendObserverFinding } from './observer-findings.ts';
+import { resolveSessionCapabilities } from './config.ts';
 import {
   classifyCheckReadError,
   normalizeStatusCheckRollup,
@@ -164,6 +166,13 @@ export interface ReadyWatchdogClassification {
 interface ReadyTaskClassificationConfig extends ReadyWatchdogConfig {
   localCommandMap?: Record<string, string>;
   remediationLogMaxBytes?: number;
+  /**
+   * HOK-3102: whether the tend merge lane is active in this session. When
+   * false, the BEHIND → `auto-update` classification is skipped; the
+   * operator merges (which brings its own base). Defaults to true to
+   * preserve pre-HOK-3102 semantics on legacy callers.
+   */
+  mergeLaneActive?: boolean;
 }
 
 export interface ReadyWatchdogAuditRecord {
@@ -1147,10 +1156,15 @@ export function classifyReadyTask(
   }
 
   if (isBehindMergeState(githubTruth)) {
-    return {
-      kind: 'auto-update',
-      detail: `PR #${snapshot.prNumber} is mergeable but behind ${githubTruth.baseRefName ?? 'its base branch'}.`,
-    };
+    // HOK-3102: without a merge lane (no tend), auto-updating a BEHIND branch
+    // is preparing for a merge nobody will do. Fall through to the checks
+    // below and let the operator update the branch when they merge.
+    if (normalizedConfig.mergeLaneActive !== false) {
+      return {
+        kind: 'auto-update',
+        detail: `PR #${snapshot.prNumber} is mergeable but behind ${githubTruth.baseRefName ?? 'its base branch'}.`,
+      };
+    }
   }
 
   const checkSummary = summarizeChecks(githubTruth.checks);
@@ -1586,19 +1600,16 @@ function appendMarkerLifecycleFinding(repoDir: string, finding: ReturnType<typeo
   if (!finding) {
     return;
   }
-  try {
-    const findingsFile = path.join(repoDir, '.wavemill', 'observer-findings.jsonl');
-    const normalized = {
-      subsystem: finding.subsystem,
-      title: finding.title,
-      body: finding.body,
-      severity: finding.severity ?? 'warning',
-      context: finding.context,
-    };
-    appendFile(findingsFile, `${JSON.stringify(normalized)}\n`, 'utf-8').catch(() => undefined);
-  } catch {
-    // Observer findings are diagnostic; state persistence must continue.
-  }
+  // HOK-3102: gated on `resolveSessionCapabilities(repoDir).observer` via the
+  // shared helper. With the observer off, this is a no-op.
+  const normalized = {
+    subsystem: finding.subsystem,
+    title: finding.title,
+    body: finding.body,
+    severity: finding.severity ?? 'warning',
+    context: finding.context,
+  };
+  appendObserverFinding(repoDir, normalized);
 }
 
 async function filterValidWatchdogEntries(
@@ -1911,6 +1922,14 @@ export async function tickReadyWatchdog(options: TickReadyWatchdogOptions): Prom
   const remediationConfig = getReadyRemediationConfig(options.repoDir);
   const failureClassifierConfig = getReadyFailureClassifierConfig(options.repoDir);
   const verificationConfig = getReadyVerificationConfig(options.repoDir);
+  // HOK-3102: BEHIND → auto-update is merge-lane prep. Skip it when no tend
+  // is running (mergeExecutor !== 'tend').
+  let mergeLaneActive = true;
+  try {
+    mergeLaneActive = resolveSessionCapabilities(options.repoDir, { readHealth: false }).mergeExecutor === 'tend';
+  } catch {
+    // If the resolver fails, keep pre-3102 behavior (mergeLaneActive=true).
+  }
   const readyWatchdogToolPath = options.readyWatchdogToolPath ?? READY_WATCHDOG_TOOL_PATH;
   const workflowState = await deps.readWorkflowState(options.stateFile);
   const tasks = workflowState.tasks ?? {};
@@ -2092,6 +2111,7 @@ export async function tickReadyWatchdog(options: TickReadyWatchdogOptions): Prom
           ...config,
           localCommandMap: failureClassifierConfig.localCommandMap,
           remediationLogMaxBytes: failureClassifierConfig.remediationLogMaxBytes,
+          mergeLaneActive,
         },
         prior,
         challengeGate,

@@ -4,6 +4,13 @@
  * Reads a canonical session-event JSONL, projects it into decision rows,
  * and appends them to the corpus. Non-fatal by design: launch/loop sites
  * call it after a session ends and never propagate its errors.
+ *
+ * Invariant (HOK-3121): scripted rows — where `model` starts with
+ * `scripted:` or `provider === 'scripted'` — are only appended when the
+ * caller supplies an explicit {@link CaptureOptions.corpusDir}. Without
+ * one they are recorded in `rejected` with the reason
+ * `scripted_model_requires_explicit_corpus_dir`, so tests that forget to
+ * point at a temp corpus cannot pollute the real repo corpus.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -12,6 +19,7 @@ import { parseSessionEventJsonl, type SessionEvent } from './session-stream.sche
 import { projectSessionEventsToDecisions } from './tool-decision-projector.ts';
 import {
   appendToolDecisions,
+  isScriptedToolDecisionRow,
   resolveToolDecisionCorpusPath,
   type AppendResult,
 } from './tool-decision-corpus.ts';
@@ -21,7 +29,11 @@ export interface CaptureOptions {
   eventStreamPath: string;
   /** Repo root for resolving the corpus dir. */
   repoDir?: string;
-  /** Optional explicit corpus dir override. */
+  /**
+   * Explicit corpus dir override. REQUIRED for scripted rows
+   * (HOK-3121): rows whose `model` starts with `scripted:` or whose
+   * `provider === 'scripted'` are rejected when this is unset.
+   */
   corpusDir?: string;
   /** Optional file namespace (default "corpus"). */
   corpusNamespace?: string;
@@ -72,7 +84,25 @@ export function captureToolDecisionsFromStream(opts: CaptureOptions): CaptureRes
       ...(opts.corpusDir ? { explicitDir: opts.corpusDir } : {}),
       ...(opts.corpusNamespace ? { namespace: opts.corpusNamespace } : {}),
     });
-    const append = appendToolDecisions(projection.rows, corpusPath);
+
+    // HOK-3121 guard: scripted rows must never land in the real repo
+    // corpus. Without an explicit `corpusDir`, partition them off and
+    // report them as rejected so the caller sees the leak was blocked.
+    const scriptedRejections: AppendResult['rejected'] = [];
+    const allowedRows = opts.corpusDir
+      ? projection.rows
+      : projection.rows.filter((row) => {
+          if (isScriptedToolDecisionRow(row)) {
+            scriptedRejections.push({
+              decisionId: row.decisionId,
+              reason: 'scripted_model_requires_explicit_corpus_dir',
+            });
+            return false;
+          }
+          return true;
+        });
+
+    const append = appendToolDecisions(allowedRows, corpusPath);
     return {
       ok: true,
       corpusPath,
@@ -80,7 +110,7 @@ export function captureToolDecisionsFromStream(opts: CaptureOptions): CaptureRes
       appended: append.appended,
       skippedDuplicates: append.skippedDuplicates,
       warnings: projection.warnings,
-      rejected: append.rejected,
+      rejected: [...scriptedRejections, ...append.rejected],
     };
   } catch (err) {
     return { ok: false, reason: `error:${(err as Error).message.slice(0, 80)}` };

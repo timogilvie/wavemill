@@ -206,12 +206,24 @@ marker_validate() {
 }
 
 # marker_emit_finding <path> <reason> <repo> [task_id]
-# Appends a JSONL finding line to .wavemill/observer-findings.jsonl
+# Appends a JSONL finding line to .wavemill/observer-findings.jsonl.
+# HOK-3102 (D7): gated on `wavemill_session_has observer` when the shared
+# helper is loaded. If the helper isn't sourced (`declare -F` guard fails),
+# this is fail-closed — nothing is written.
 marker_emit_finding() {
   local path="$1"
   local reason="$2"
   local repo="$3"
   local task_id="${4:-}"
+
+  # HOK-3102: only observers read this file. With the observer off, or with
+  # the resolver unavailable in this process, drop silently.
+  if ! declare -F wavemill_session_has >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! wavemill_session_has observer "${REPO_DIR:-$PWD}" 2>/dev/null; then
+    return 0
+  fi
 
   local marker_body
   marker_body=$(marker_read "$path" 2>/dev/null || true)

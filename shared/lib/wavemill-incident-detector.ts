@@ -1,3 +1,4 @@
+import { ISSUE_ID_WORD_RE } from './task-identity.ts';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import {
@@ -954,7 +955,7 @@ function jobSubjectTaskId(job: JobStateWithSource): string | null {
 }
 
 function extractIssueId(value: string | undefined): string | null {
-  const match = value?.match(/\b[A-Z]+-\d+(?:_c)?\b/);
+  const match = value?.match(ISSUE_ID_WORD_RE);
   return match?.[0] ?? null;
 }
 

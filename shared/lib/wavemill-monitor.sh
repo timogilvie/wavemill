@@ -2992,13 +2992,20 @@ save_migration_reservation() {
 mark_eval_completed() {
   local issue="$1"
   local slug
-  if ! state_mutate "$STATE_FILE" \
-     '.tasks[$issue].evalCompleted = true
-      | .tasks[$issue].evalFailed = false
-      | .tasks[$issue].evalHardFailureRetryCount = 0
-      | del(.tasks[$issue].evalRunning)
-      | .tasks[$issue].updated = (now | todateiso8601)' \
-     --arg issue "$issue"; then
+  # HOK-3125: skip write when the task has already been reaped so we do not
+  # recreate the entry as a phase/status-less stub that consumes a mill slot.
+  # Late eval outcome is preserved audit-only in terminalTaskHistory.
+  if ! task_state_entry_exists "$issue"; then
+    record_post_reap_eval_outcome "$issue" completed
+    log "debug" "eval completed for reaped task $issue; not recreating state entry"
+    return 0
+  fi
+  if ! task_state_mutate_existing "$issue" \
+     '.evalCompleted = true
+      | .evalFailed = false
+      | .evalHardFailureRetryCount = 0
+      | del(.evalRunning)
+      | .updated = (now | todateiso8601)'; then
     log_warn "mark_eval_completed: failed to update $issue"
   fi
   # Successful eval wipes the arm's bounded-retry eval budgets (HOK-2924).
@@ -3015,11 +3022,16 @@ mark_eval_completed() {
 
 mark_eval_failed() {
   local issue="$1"
-  if ! state_mutate "$STATE_FILE" \
-     '.tasks[$issue].evalFailed = true
-      | del(.tasks[$issue].evalRunning)
-      | .tasks[$issue].updated = (now | todateiso8601)' \
-     --arg issue "$issue"; then
+  # HOK-3125: guard against recreating a stub entry after reap.
+  if ! task_state_entry_exists "$issue"; then
+    record_post_reap_eval_outcome "$issue" failed
+    log "debug" "eval failed for reaped task $issue; not recreating state entry"
+    return 0
+  fi
+  if ! task_state_mutate_existing "$issue" \
+     '.evalFailed = true
+      | del(.evalRunning)
+      | .updated = (now | todateiso8601)'; then
     log_warn "mark_eval_failed: failed to update $issue"
   fi
 }
@@ -3028,17 +3040,21 @@ mark_eval_failed() {
 # generated monitor script, so challenge launchers need local monitor copies.
 mark_challenge_eval_running() {
   local issue="$1" side="$2" pr="$3" phase="${4:-eval}"
-  state_mutate "$STATE_FILE" '
-    .tasks[$issue].evalRunning = {
+  # HOK-3125: refuse to persist a running marker for a reaped task; caller
+  # treats the non-zero return as "launch skipped, entry no longer present".
+  if ! task_state_entry_exists "$issue"; then
+    return 1
+  fi
+  task_state_mutate_existing "$issue" '
+    .evalRunning = {
       issue: $issue,
       side: $side,
       pr: ($pr | tonumber),
       phase: $phase,
       startedAt: (now | todateiso8601)
     } |
-    .tasks[$issue].updated = (now | todateiso8601)
+    .updated = (now | todateiso8601)
   ' \
-    --arg issue "$issue" \
     --arg side "$side" \
     --arg pr "$pr" \
     --arg phase "$phase"
@@ -4169,6 +4185,14 @@ pane_release_preflight() {
     printf '%s\n' "flag-off"
     return 1
   fi
+  # HOK-3102: never hand a pane to the queue when no consumer is draining it.
+  # `no-queue-consumer` is deliberately NOT listed in
+  # pane_release_reason_actionable, so no blocked marker is written and any
+  # stale one is cleared next tick.
+  if ! merge_queue_enabled; then
+    printf '%s\n' "no-queue-consumer"
+    return 1
+  fi
   [[ -n "$state_dir" && -d "$state_dir" ]] || { printf '%s\n' "context-missing"; return 1; }
   [[ -n "$wt_dir" && -d "$wt_dir" ]] || { printf '%s\n' "worktree-missing"; return 1; }
   [[ -n "$pr_number" ]] || { printf '%s\n' "pr-missing"; return 1; }
@@ -4805,7 +4829,7 @@ notify_planning_rejection_agent() {
   [[ -z "$notified" ]] || return 0
 
   slug="$(basename "$feature_dir")"
-  if [[ "$win" =~ ^([A-Z]+-[0-9]+(_c)?)-(.+)$ ]]; then
+  if [[ "$win" =~ $TASK_IDENTITY_WINDOW_PREFIX_RE ]]; then
     issue="${BASH_REMATCH[1]}"
     local expected_worktree=""
     [[ -n "${WORKTREE_ROOT:-}" ]] && expected_worktree="${WORKTREE_ROOT}/${slug}"
@@ -8536,7 +8560,10 @@ merge_retry_marker_until() {
 }
 
 merge_queue_enabled() {
-  [[ "${MERGE_QUEUE_ENABLED:-true}" == "1" || "${MERGE_QUEUE_ENABLED:-true}" == "true" ]]
+  # HOK-3102: the mill-side merge-candidate lifecycle only makes sense when
+  # tend is running to drain the queue. Route through the single resolver.
+  # The MERGE_QUEUE_ENABLED env override is still honoured by the resolver.
+  wavemill_session_has mergeQueue "$REPO_DIR"
 }
 
 # Mirrors the tend process's per-PR lane-progress record (HOK-2919, written by
@@ -8939,7 +8966,18 @@ merge_queue_enrich_ready_artifacts() {
   local state_dir="$1" base_json="$2" mode="${3:-preserve}"
   local queue_state promoted_at target_base now extra_json
 
+  # HOK-3102: with no tend to drain the queue, mode=completed still needs a
+  # queueState so the dashboard/reader can surface "merge needed" reliably
+  # from .ready-result.json alone.
   if ! merge_queue_enabled; then
+    if [[ "$mode" == "completed" ]]; then
+      local executor
+      executor="$(wavemill_session_merge_executor "$REPO_DIR")"
+      if [[ "$executor" != "tend" ]]; then
+        jq -cn --argjson base "$base_json" --arg executor "$executor" '$base + {queueState:"merge-needed", mergeExecutor:$executor}'
+        return 0
+      fi
+    fi
     printf '%s\n' "$base_json"
     return 0
   fi
@@ -9650,8 +9688,10 @@ failed_ready_recheck_reset_if_new_head() {
   bounded_retry_reset_if_new_head "$1" "failed-ready-recheck" "$2"
 }
 
+# HOK-3092: accepts an optional trailing base_sha so the composite (head,
+# base) key resets the budget when the branch is rebased onto a fresh base.
 increment_failed_ready_recheck_count() {
-  bounded_retry_increment "$1" "failed-ready-recheck" "$2"
+  bounded_retry_increment "$1" "failed-ready-recheck" "$2" "${3:-}"
 }
 
 # Delay before attempt (count+1): min(base * 2^(count-1), cap).
@@ -9784,7 +9824,7 @@ mark_failed_ready_recheck_exhausted() {
 #                     terminalizes via mark_failed_ready_recheck_exhausted
 #   exhausted-quiet — already terminalized; hold silently until a new commit
 failed_ready_recheck_gate() {
-  local state_dir="$1" current_head="$2"
+  local state_dir="$1" current_head="$2" current_base="${3:-}"
   local disposition limit streak identical_limit base cap
 
   limit="${READY_FAILED_RECHECK_MAX_ATTEMPTS:-4}"
@@ -9793,7 +9833,10 @@ failed_ready_recheck_gate() {
   cap="${READY_FAILED_RECHECK_BACKOFF_CAP_SECONDS:-1800}"
   [[ "$base" =~ ^[0-9]+$ ]] || base=120
   [[ "$cap" =~ ^[0-9]+$ ]] || cap=1800
-  disposition=$(bounded_retry_gate "$state_dir" "failed-ready-recheck" "$current_head" "$limit" "$base" "$cap")
+  # HOK-3092: trailing base_sha feeds the composite (head, base) key so a
+  # rebase onto a fresh base wipes the budget alongside the exhaustion
+  # sentinel. Empty or non-SHA is a safe head-only default.
+  disposition=$(bounded_retry_gate "$state_dir" "failed-ready-recheck" "$current_head" "$limit" "$base" "$cap" "$current_base")
 
   # Path-specific short-circuit: a provably deterministic failure (identical
   # verdicts N times in a row) terminalizes even while a backoff window is
@@ -9811,6 +9854,93 @@ failed_ready_recheck_gate() {
   echo "$disposition"
 }
 # --- end failed-ready re-check budget ----------------------------------------
+
+# Update-from-base wrapper (HOK-3092). A thin shell caller around the
+# `update-branch-with-base` TS CLI, invoked from the failed-ready re-check
+# and conflict-remediation loops before they spend a retry unit. The wrapper
+# never terminalizes on its own — it only reports what happened; the caller
+# decides how to spend (or skip) the bucket's budget.
+#
+# Echoes exactly one of:
+#   not-behind       — origin/<base> has no commits the branch lacks; caller
+#                      falls through to its usual re-check flow
+#   updated          — origin/<base> was merged into the worktree and pushed;
+#                      caller must NOT spend a retry unit (the new head
+#                      resets the budget on the next tick)
+#   conflict:<paths> — merge stopped on conflicts (space-separated file
+#                      list, at most 20); caller terminalizes the bucket
+#                      and writes a needs-attention marker
+#   error:<status>   — CLI reported another failure (fetch/push/etc.); the
+#                      caller lets the tick fall through to the normal path
+#
+# Always returns 0 (like `bounded_retry_gate`): every disposition is
+# encoded in the echoed string, so a `local x; x="$(try_update_...)"`
+# assignment never trips the parent script's `set -e`.
+try_update_branch_from_base() {
+  local issue="$1" worktree="$2" branch="$3" base="$4"
+  local compare_counts behind_count ahead_count fetch_rc=0
+  local cli_output cli_status cli_files
+
+  if [[ -z "$worktree" || -z "$branch" || -z "$base" ]]; then
+    echo "error:invalid-args"
+    return 0
+  fi
+  if [[ ! -d "$worktree/.git" && ! -f "$worktree/.git" ]]; then
+    echo "error:worktree-missing"
+    return 0
+  fi
+
+  # Defensive fetch — the TS CLI also fetches, but doing it here first keeps
+  # `coding_compare_commit_counts` honest against a stale ref cache.
+  git -C "$worktree" fetch --quiet origin "$base" 2>/dev/null || fetch_rc=$?
+  if (( fetch_rc != 0 )); then
+    echo "error:fetch-failed"
+    return 0
+  fi
+
+  compare_counts="$(coding_compare_commit_counts "$worktree" "$base")"
+  behind_count="${compare_counts%%[[:space:]]*}"
+  ahead_count="${compare_counts##*[[:space:]]}"
+  [[ "$behind_count" =~ ^[0-9]+$ ]] || behind_count=0
+  [[ "$ahead_count" =~ ^[0-9]+$ ]] || ahead_count=0
+  if (( behind_count == 0 )); then
+    echo "not-behind"
+    return 0
+  fi
+
+  cli_output="$(npx tsx "$TOOLS_DIR/update-branch-with-base.ts" \
+    --worktree "$worktree" \
+    --branch "$branch" \
+    --base "$base" 2>/dev/null)" && cli_status=0 || cli_status=$?
+
+  # The CLI always prints one JSON line to stdout even on failure. Parse
+  # `status` and (on conflict) `conflictingFiles`. A missing or unparseable
+  # JSON payload falls through to error:*.
+  local parsed_status
+  parsed_status="$(printf '%s\n' "$cli_output" | jq -r '.status // empty' 2>/dev/null || echo "")"
+
+  case "$parsed_status" in
+    success)
+      # `updateBranchWithBase` merged and pushed on the worktree checkout,
+      # so HEAD is already the merge commit. The monitor's own `git
+      # rev-parse HEAD` on the next tick will see the new SHA and drive the
+      # bounded-retry reset via the composite key.
+      echo "updated"
+      ;;
+    conflict)
+      cli_files="$(printf '%s\n' "$cli_output" \
+        | jq -r '(.conflictingFiles // [])[:20] | join(" ")' 2>/dev/null || echo "")"
+      printf 'conflict:%s\n' "$cli_files"
+      ;;
+    dirty-worktree|fetch-failed|push-failed|unknown-failed)
+      printf 'error:%s\n' "$parsed_status"
+      ;;
+    *)
+      printf 'error:cli-exit-%s\n' "$cli_status"
+      ;;
+  esac
+  return 0
+}
 
 log_ready_failure_result() {
   local issue="$1"
@@ -10799,6 +10929,22 @@ set_ready_pass_labels() {
     return 1
   fi
   head_sha="$github_head"
+
+  # HOK-3102: only publish the handoff and stamp wm:ready when tend will drain
+  # it. Otherwise surface merge-needed to the caller so the operator (or
+  # nothing, when useMillSession is off) can take over. The route stamp above
+  # is PR metadata, not queue work; it stays.
+  local _executor
+  _executor="$(wavemill_session_merge_executor "$REPO_DIR")"
+  if [[ "$_executor" == "unknown" ]]; then
+    printf '%s\n' '{"transitionFailure":{"stage":"capabilities-unknown"}}' >&2
+    return 1
+  fi
+  if [[ "$_executor" != "tend" ]]; then
+    printf '{"outcome":"merge-needed","mergeExecutor":"%s"}\n' "$_executor"
+    return 0
+  fi
+
   if ! (cd "$wt_dir" && npx tsx "$TOOLS_DIR/ready-tend-handoff.ts" checked "$pr_number" --feature-dir "$feature_dir" --head "$head_sha"); then
     printf '%s\n' '{"transitionFailure":{"stage":"ownership-changed"}}' >&2
     return 1
@@ -11441,6 +11587,12 @@ launch_ready_phase() {
       # mask the typed failure the helper printed.
       transition_stage=$(printf '%s\n' "$label_output" | jq -Rr 'fromjson? | .transitionFailure.stage? // empty' 2>/dev/null | tail -n 1)
       [[ -n "$transition_stage" ]] || transition_stage="github-api"
+      # HOK-3102: resolver unknown ⇒ transient. Re-check next tick, never
+      # record merge-needed on a resolver failure.
+      if [[ "$transition_stage" == "capabilities-unknown" ]]; then
+        log "info" "  $issue: session capability resolver unavailable - retrying next tick"
+        return 4
+      fi
       # HOK-3112: the PR head moved while Ready ran (or the checkout no longer
       # matches it). Nothing was published; this is transient, so re-check at
       # the new head on the next tick instead of parking the arm in needs-user.
@@ -11499,7 +11651,14 @@ launch_ready_phase() {
     fi
 
     local handoff_outcome=""
+    local merge_needed_executor=""
     [[ "$label_output" == *'"outcome":"tend-owned"'* ]] && handoff_outcome="tend-owned"
+    # HOK-3102: set_ready_pass_labels prints a merge-needed sentinel when the
+    # session merge executor is not tend. Route to the merge-needed surface.
+    if [[ "$label_output" == *'"outcome":"merge-needed"'* ]]; then
+      merge_needed_executor="$(printf '%s' "$label_output" | jq -r 'fromjson? | .mergeExecutor // "operator"' 2>/dev/null | tail -n 1)"
+      [[ -n "$merge_needed_executor" ]] || merge_needed_executor="operator"
+    fi
     # set_ready_pass_labels published at GitHub's head, which it verified equals
     # the checkout synced in the preflight; record that head when Ready's own
     # output omitted it.
@@ -11515,7 +11674,8 @@ launch_ready_phase() {
       --arg ci_conclusion "$ci_conclusion" \
       --arg required_source "$required_source" \
       --argjson required_contexts "$required_contexts_json" \
-      --arg handoff_outcome "$handoff_outcome" '
+      --arg handoff_outcome "$handoff_outcome" \
+      --arg merge_needed_executor "$merge_needed_executor" '
         {
           type:"ready",
           verdict:$verdict,
@@ -11523,14 +11683,20 @@ launch_ready_phase() {
           checksPassed:$checks_passed,
           mergeConflict:$merge_status,
           prNumber:$pr_number,
-          readyLabelsUpdated:true,
+          readyLabelsUpdated: ($merge_needed_executor == ""),
           readyBaseSha:$ready_base_sha,
           readyHeadSha:$ready_head_sha,
           ciConclusion:$ci_conclusion,
           requiredSource:$required_source,
           requiredContexts:$required_contexts,
-          readyTendHandoff: (if $handoff_outcome == "" then "ready-published" else "tend-claimed" end)
-        } | with_entries(select(.value != ""))
+          readyTendHandoff: (
+            if $merge_needed_executor != "" then "merge-needed"
+            elif $handoff_outcome == "" then "ready-published"
+            else "tend-claimed"
+            end
+          ),
+          mergeExecutor: (if $merge_needed_executor != "" then $merge_needed_executor else null end)
+        } | with_entries(select(.value != "" and .value != null))
       ')
     completed_artifacts_json=$(merge_queue_enrich_ready_artifacts "$state_dir" "$completed_artifacts_json" "completed")
     write_stage_result "$state_dir" "ready" "completed" "$current_agent" "$current_model" \
@@ -11539,8 +11705,13 @@ launch_ready_phase() {
     clear_failed_ready_recheck_state "$state_dir"
     bounded_retry_clear "$state_dir" "ready-remediation"
     bounded_retry_clear "$state_dir" "pending-ready-recheck"
-    log "debug" "  $issue: Canonicalized ready labels for PR #$pr_number"
-    log "debug" "  $issue: Ready checks completed (verdict: ${verdict:-unknown})"
+    if [[ -n "$merge_needed_executor" ]]; then
+      surface_merge_needed "$issue" "$pr_number" "$merge_needed_executor" "$state_dir" "$ready_head_sha" || true
+      log "info" "  $issue: PR #$pr_number ready, merge needed ($merge_needed_executor)"
+    else
+      log "debug" "  $issue: Canonicalized ready labels for PR #$pr_number"
+      log "debug" "  $issue: Ready checks completed (verdict: ${verdict:-unknown})"
+    fi
     return 0
   fi
 
@@ -11705,7 +11876,7 @@ check_ready_stage() {
 _resolve_window_attention_target() {
   local win="$1"
   local target="$win" issue="" slug=""
-  if [[ "$win" =~ ^([A-Z]+-[0-9]+(_c)?)-(.+)$ ]]; then
+  if [[ "$win" =~ $TASK_IDENTITY_WINDOW_PREFIX_RE ]]; then
     issue="${BASH_REMATCH[1]}"
     slug="${BASH_REMATCH[3]}"
     local expected_worktree=""
@@ -11734,6 +11905,53 @@ set_window_attention_state() {
     clear_window_attention_state "$win"
   fi
   tmux refresh-client -S >/dev/null 2>&1 || true
+}
+
+# HOK-3102: surface a green PR that no automatic merge executor will merge.
+# Idempotent per (PR, head): a small marker in $state_dir dedupes the log line
+# and OSC notification across ticks. The `approval-needed` hook is monitor-
+# written (writer=monitor); it is NEVER treated as agent liveness evidence
+# (HOK-3101). It serves the notification and the operator hint only.
+surface_merge_needed() {
+  local issue="$1" pr="$2" executor="$3" state_dir="$4" head_sha="${5:-}"
+  [[ -n "$issue" && -n "$pr" && -n "$state_dir" ]] || return 0
+
+  local marker="$state_dir/.merge-needed-surfaced"
+  local marker_key="${pr}|${head_sha}|${executor}"
+  if [[ -f "$marker" ]] && [[ "$(cat "$marker" 2>/dev/null)" == "$marker_key" ]]; then
+    return 0
+  fi
+
+  local hint next_action
+  case "$executor" in
+    operator)
+      hint="integration off, so tend never merges"
+      next_action="merge PR #$pr"
+      ;;
+    none)
+      hint="integration on but this session runs no tend"
+      next_action="run \`wavemill tend --loop\` or merge PR #$pr"
+      ;;
+    *)
+      hint="no automatic merge executor"
+      next_action="merge PR #$pr"
+      ;;
+  esac
+
+  local win="$issue"
+  if [[ -n "${SLUG:-}" ]]; then
+    win="${issue}-${SLUG}"
+  fi
+  set_window_attention_state "$win" "needs-user" 2>/dev/null || true
+
+  log "status" "⏳ $issue → PR #$pr green, merge needed ($hint)"
+
+  if declare -F wavemill_hook_write >/dev/null 2>&1; then
+    WAVEMILL_SESSION="${SESSION:-}" WAVEMILL_ISSUE="$issue" \
+      wavemill_hook_write "approval-needed" "merge_needed" "$hint" "wavemill" "$next_action" "monitor" 2>/dev/null || true
+  fi
+
+  printf '%s' "$marker_key" > "$marker" 2>/dev/null || true
 }
 
 codex_has_pending_approval() {
@@ -12174,10 +12392,10 @@ poll_challenge_jobs() {
         soft_retry_prior_head=$(bounded_retry_head "$soft_retry_state_dir" "challenge-eval-soft")
         bounded_retry_reset_if_new_head "$soft_retry_state_dir" "challenge-eval-soft" "$soft_retry_head"
         if [[ -n "$soft_retry_prior_head" && -n "$soft_retry_head" && "$soft_retry_prior_head" != "$soft_retry_head" ]]; then
-          state_mutate "$STATE_FILE" '
-            .tasks[$issue].comparisonRetryCount = 0
-            | .tasks[$issue].updated = (now | todateiso8601)
-          ' --arg issue "$primary_key" >/dev/null || true
+          task_state_mutate_existing "$primary_key" '
+            .comparisonRetryCount = 0
+            | .updated = (now | todateiso8601)
+          ' >/dev/null || true
         fi
         retry_count=$(bounded_retry_count "$soft_retry_state_dir" "challenge-eval-soft")
       else
@@ -12204,11 +12422,11 @@ poll_challenge_jobs() {
         fi
         retry_count=$((retry_count + 1))
         write_challenge_pair_state "$pair_id" "retrying_eval" "$timeout_reason" "$retry_count" "$retry_max" "$issue_id" "$timed_out_sides_csv" ""
-        state_mutate "$STATE_FILE" '
-          .tasks[$issue].evalFailed = false
-          | .tasks[$issue].evalCompleted = false
-          | .tasks[$issue].updated = (now | todateiso8601)
-        ' --arg issue "$issue_id" >/dev/null || true
+        task_state_mutate_existing "$issue_id" '
+          .evalFailed = false
+          | .evalCompleted = false
+          | .updated = (now | todateiso8601)
+        ' >/dev/null || true
         log "status" "challenge comparison retrying for $pair_id: $side eval timed out (attempt $retry_count/$retry_max)"
         if [[ -n "$issue_pr" && -n "$issue_branch" && -n "$issue_slug" ]]; then
           maybe_run_challenge_eval "$issue_id" "$issue_pr" "$issue_branch" "$issue_slug"
@@ -12493,10 +12711,10 @@ maybe_run_challenge_eval() {
         ;;
     esac
     log "status" "  📊 challenge eval for $issue is stale for the current PR head - relaunching (HOK-2963)"
-    state_mutate "$STATE_FILE" '
-      .tasks[$issue].evalCompleted = false
-      | .tasks[$issue].updated = (now | todateiso8601)
-    ' --arg issue "$issue" >/dev/null || true
+    task_state_mutate_existing "$issue" '
+      .evalCompleted = false
+      | .updated = (now | todateiso8601)
+    ' >/dev/null || true
   fi
 
   pair_id=$(get_task_meta "$issue" "challengePairId")
@@ -12521,10 +12739,10 @@ maybe_run_challenge_eval() {
     hard_retry_prior_head=$(bounded_retry_head "$hard_retry_state_dir" "challenge-eval-hard")
     bounded_retry_reset_if_new_head "$hard_retry_state_dir" "challenge-eval-hard" "$hard_retry_head"
     if [[ -n "$hard_retry_prior_head" && -n "$hard_retry_head" && "$hard_retry_prior_head" != "$hard_retry_head" ]]; then
-      state_mutate "$STATE_FILE" '
-        .tasks[$issue].evalHardFailureRetryCount = 0
-        | .tasks[$issue].updated = (now | todateiso8601)
-      ' --arg issue "$issue" >/dev/null || true
+      task_state_mutate_existing "$issue" '
+        .evalHardFailureRetryCount = 0
+        | .updated = (now | todateiso8601)
+      ' >/dev/null || true
     fi
     eval_hard_retry_count=$(bounded_retry_count "$hard_retry_state_dir" "challenge-eval-hard")
     hard_retry_mirror=$(read_state_value "0" --arg i "$issue" '.tasks[$i].evalHardFailureRetryCount // 0')
@@ -12540,12 +12758,12 @@ maybe_run_challenge_eval() {
       fi
       bounded_retry_increment "$hard_retry_state_dir" "challenge-eval-hard" "$hard_retry_head" >/dev/null
       eval_hard_retry_count=$((eval_hard_retry_count + 1))
-      state_mutate "$STATE_FILE" '
-        .tasks[$issue].evalFailed = false
-        | .tasks[$issue].evalCompleted = false
-        | .tasks[$issue].evalHardFailureRetryCount = $retryCount
-        | .tasks[$issue].updated = (now | todateiso8601)
-      ' --arg issue "$issue" --argjson retryCount "$eval_hard_retry_count" >/dev/null || true
+      task_state_mutate_existing "$issue" '
+        .evalFailed = false
+        | .evalCompleted = false
+        | .evalHardFailureRetryCount = $retryCount
+        | .updated = (now | todateiso8601)
+      ' --argjson retryCount "$eval_hard_retry_count" >/dev/null || true
       log "status" "challenge eval retrying for $issue: hard failure (attempt $eval_hard_retry_count/$eval_hard_retry_max)"
     else
       bounded_retry_mark_exhausted "$hard_retry_state_dir" "challenge-eval-hard" \
@@ -16239,7 +16457,7 @@ handle_advance_command() {
   fi
   issue="$1"
 
-  if [[ ! "$issue" =~ ^[A-Z][A-Z0-9]+-[0-9]+(_c)?$ ]]; then
+  if [[ ! "$issue" =~ ^${TASK_IDENTITY_TASK_ID_RE}$ ]]; then
     log_warn "usage: advance <issue-id>"
     MONITOR_COMMAND_STATUS="invalid"
     return 0
@@ -16358,7 +16576,7 @@ handle_re_review_command() {
   fi
   issue="$1"
 
-  if [[ ! "$issue" =~ ^[A-Z][A-Z0-9]+-[0-9]+(_c)?$ ]]; then
+  if [[ ! "$issue" =~ ^${TASK_IDENTITY_TASK_ID_RE}$ ]]; then
     log_warn "usage: re-review <issue-id>"
     MONITOR_COMMAND_STATUS="invalid"
     return 0
@@ -18268,6 +18486,33 @@ monitor_issue_state() {
           fi
         fi
 
+        # HOK-3092: bound the conflict-remediation relaunch loop on (head,
+        # base). Without this the guard-block → remediation → ready-relaunch
+        # path relaunched forever on identical inputs (2026-09-27 hokusai-sdk
+        # PR #97 relaunched 1,253 times in ~19h). Limit=1 → one attempt per
+        # unique (head, base); a repeated identical result terminalizes.
+        local conflict_base_sha conflict_disp
+        conflict_base_sha=$(get_main_head_sha "${WORKTREE_ROOT}/${SLUG}" "$BASE_BRANCH")
+        conflict_disp=$(bounded_retry_gate "$ready_state_dir_path" "conflict-remediation-relaunch" \
+          "$current_head" 1 "" "" "$conflict_base_sha")
+        case "$conflict_disp" in
+          exhausted)
+            local conflict_reason="Conflict remediation exhausted on identical (head=$current_head, base=$conflict_base_sha) for PR #$PR"
+            if bounded_retry_mark_exhausted "$ready_state_dir_path" "conflict-remediation-relaunch" "$conflict_reason"; then
+              log "status" "⛔ $ISSUE → $conflict_reason"
+              write_ready_attention_file "$ready_state_dir_path" "$conflict_reason"
+            fi
+            set_window_attention_state "$WIN" "needs-user"
+            return 0
+            ;;
+          backoff|exhausted-quiet)
+            set_window_attention_state "$WIN" "needs-user"
+            return 0
+            ;;
+        esac
+        bounded_retry_increment "$ready_state_dir_path" "conflict-remediation-relaunch" \
+          "$current_head" "$conflict_base_sha" >/dev/null
+
         title=$(read_state_value "" --arg i "$ISSUE" '.tasks[$i].title // ""')
         if [[ -z "$title" ]]; then
           issue_json=$(cat "/tmp/${SESSION}-${ISSUE}-issue.json" 2>/dev/null || echo "{}")
@@ -18356,6 +18601,28 @@ monitor_issue_state() {
       stored_base_sha=$(ready_base_sha "$ready_state_dir_path")
       current_main_sha=$(get_main_head_sha "${WORKTREE_ROOT}/${SLUG}" "$BASE_BRANCH")
       queue_state=$(ready_queue_state "$ready_state_dir_path")
+
+      # HOK-3102: with no tend to merge, the ready pass parked as merge-needed.
+      # If integration was later turned on, re-run ready so a fresh handoff can
+      # publish. Otherwise keep the arm parked as needs-user.
+      if [[ "$queue_state" == "merge-needed" ]]; then
+        local _executor_now
+        _executor_now="$(wavemill_session_merge_executor "$REPO_DIR")"
+        if [[ "$_executor_now" == "tend" ]]; then
+          if [[ -n "$current_main_sha" && "$stored_base_sha" != "$current_main_sha" ]]; then
+            mark_ready_stale "$ISSUE" "$ready_state_dir_path" "$stored_base_sha" "$current_main_sha"
+          else
+            mark_ready_stale "$ISSUE" "$ready_state_dir_path" "$stored_base_sha" "$stored_base_sha"
+          fi
+          log "status" "$ISSUE → merge executor is now tend; re-running ready for PR #$PR"
+          # Fall through to the main-advanced re-run path below by continuing.
+          queue_state=""
+        else
+          set_window_attention_state "$WIN" "needs-user"
+          active_count=$((active_count + 1))
+          return 0
+        fi
+      fi
 
       if [[ -n "$current_main_sha" && "$stored_base_sha" != "$current_main_sha" ]]; then
         if merge_queue_enabled; then
@@ -18460,8 +18727,11 @@ monitor_issue_state() {
     ready_verdict=$(ready_stage_pending_verdict "$ready_state_dir_path")
     if [[ "$ready_status" == "failed" ]]; then
       # Bound the re-check loop (HOK-2893): attempt ceiling + backoff + terminal
-      # hold, reset by a new commit or a ready pass.
-      recheck_disposition=$(failed_ready_recheck_gate "$ready_state_dir_path" "$current_head")
+      # hold, reset by a new commit or a ready pass. HOK-3092: composite key
+      # on (head, base) so a rebase onto a fresh base wipes the budget.
+      local recheck_base_sha
+      recheck_base_sha=$(get_main_head_sha "${WORKTREE_ROOT}/${SLUG}" "$BASE_BRANCH")
+      recheck_disposition=$(failed_ready_recheck_gate "$ready_state_dir_path" "$current_head" "$recheck_base_sha")
       recheck_limit="${READY_FAILED_RECHECK_MAX_ATTEMPTS:-4}"
       case "$recheck_disposition" in
         exhausted)
@@ -18482,7 +18752,46 @@ monitor_issue_state() {
           ;;
       esac
 
-      recheck_attempt=$(increment_failed_ready_recheck_count "$ready_state_dir_path" "$current_head")
+      # HOK-3092: before spending a retry unit, if the branch is behind
+      # origin/<base>, merge base into the worktree and push. The next tick
+      # sees a new head and drives the composite-key reset — so an identical
+      # `(head, base)` failure never spins.
+      local upd_result upd_files
+      upd_result="$(try_update_branch_from_base "$ISSUE" "${WORKTREE_ROOT}/${SLUG}" "$BRANCH" "$BASE_BRANCH")"
+      case "$upd_result" in
+        updated)
+          log "status" "↻ $ISSUE → PR #$PR updated from origin/$BASE_BRANCH; ready re-check will run on the new head"
+          set_window_attention_state "$WIN" "clear"
+          active_count=$((active_count + 1))
+          return 0
+          ;;
+        conflict:*)
+          upd_files="${upd_result#conflict:}"
+          local upd_reason
+          upd_reason="Auto-update from origin/$BASE_BRANCH conflicted"
+          [[ -n "$upd_files" ]] && upd_reason+=": ${upd_files}"
+          if bounded_retry_mark_exhausted "$ready_state_dir_path" "failed-ready-recheck" \
+              "Failed-ready re-checks terminalized on identical (head=$current_head, base=$recheck_base_sha) for PR #$PR: $upd_reason"; then
+            log "status" "⛔ $ISSUE → $upd_reason for PR #$PR"
+            write_ready_attention_file "$ready_state_dir_path" "$upd_reason for PR #$PR"
+          fi
+          set_window_attention_state "$WIN" "needs-user"
+          return 0
+          ;;
+        not-behind)
+          # Fall through — branch is not behind base, so the identical-cause
+          # short-circuit and the counter increment below still apply.
+          :
+          ;;
+        error:*)
+          # Best-effort: fall through to the existing recheck path. The
+          # bucket stays bounded on (head, base), so an unrecoverable
+          # error will still terminalize on the normal ceiling.
+          log "debug" "  $ISSUE: update-from-base wrapper returned ${upd_result}; falling through to re-check"
+          ;;
+      esac
+
+      recheck_attempt=$(increment_failed_ready_recheck_count "$ready_state_dir_path" "$current_head" "$recheck_base_sha")
       log "status" "↻ $ISSUE → Re-running failed ready checks for PR #$PR (attempt ${recheck_attempt}/${recheck_limit})"
       title=$(read_state_value "" --arg i "$ISSUE" '.tasks[$i].title // ""')
       if [[ -z "$title" ]]; then
@@ -18934,11 +19243,8 @@ LAST_READY_WATCHDOG_FAILURE_DETAIL=""
 LAST_READY_WATCHDOG_FAILURE_AT=0
 
 backstage_health_enabled() {
-  local merged enabled use_mill_session
-  merged="$(wavemill_load_config "$REPO_DIR")"
-  enabled="$(printf '%s' "$merged" | jq -r '.integration.enabled // false' 2>/dev/null || echo false)"
-  use_mill_session="$(printf '%s' "$merged" | jq -r '.integration.useMillSession // true' 2>/dev/null || echo true)"
-  [[ "$enabled" == "true" && "$use_mill_session" == "true" ]]
+  # HOK-3102: single-resolver gate.
+  wavemill_session_has tend "$REPO_DIR"
 }
 
 backstage_restart_backoff_seconds() {
@@ -19181,12 +19487,8 @@ backstage_tend_restart_diagnostic() {
 }
 
 observer_health_enabled() {
-  local merged enabled use_mill_session
-  merged="$(wavemill_load_config "$REPO_DIR")"
-  enabled="$(printf '%s' "$merged" | jq -r '.integration.enabled // false' 2>/dev/null || echo false)"
-  use_mill_session="$(printf '%s' "$merged" | jq -r '.integration.useMillSession // true' 2>/dev/null || echo true)"
-  [[ "$enabled" == "true" && "$use_mill_session" == "true" ]] || return 1
-  wavemill_observer_config_enabled "$merged"
+  # HOK-3102: single-resolver gate.
+  wavemill_session_has observer "$REPO_DIR"
 }
 
 classify_backstage_observer_health() {
@@ -19636,6 +19938,23 @@ while :; do
   if declare -F slot_consuming_task_count >/dev/null 2>&1; then
     active_count="$(slot_consuming_task_count)"
     active_challenger_count="$(slot_consuming_challenger_task_count)"
+  fi
+  # HOK-3125: surface orphan stub entries once per issue per process. These
+  # rows have no phase/status/slug/lifecycle and no longer consume a slot,
+  # but their presence points at a raw post-reap writer that still needs
+  # routing through task_state_mutate_existing.
+  if declare -F orphan_stub_task_ids >/dev/null 2>&1; then
+    _orphan_id=""
+    while IFS= read -r _orphan_id; do
+      [[ -z "$_orphan_id" ]] && continue
+      case " ${ORPHAN_STUB_WARNED:-} " in
+        *" $_orphan_id "*) ;;
+        *)
+          log_warn "HOK-3125: ignoring orphan stub state entry for $_orphan_id (no phase/status/slug/lifecycle); not counted as a slot"
+          ORPHAN_STUB_WARNED="${ORPHAN_STUB_WARNED:+$ORPHAN_STUB_WARNED }$_orphan_id"
+          ;;
+      esac
+    done < <(orphan_stub_task_ids 2>/dev/null || true)
   fi
   _active_count_prev=$active_count
   monitor_iteration_end_ms="$(wavemill_monitor_now_ms 2>/dev/null || printf '0')"
