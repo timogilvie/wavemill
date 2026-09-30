@@ -298,6 +298,7 @@ TESTS=(
   tools/add-pr-label.test.ts
   tools/backfill-challenge-stage.test.ts
   tools/backfill-stage-executed-model.test.ts
+  tools/backfill-tool-decisions.test.ts
   tools/backfill-hokusai-submissions.test.ts
   tools/certify-patch-coding.test.ts
   tools/promote-provisional-model.test.ts
