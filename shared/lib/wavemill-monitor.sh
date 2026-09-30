@@ -8605,8 +8605,9 @@ pr_live_labels_json() {
     fi
   fi
 
-  output=$(_with_timeout "$API_TIMEOUT" gh -R "$(cd "$wt_dir" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo)" \
-    pr view "$pr_number" --json labels --jq '[.labels[].name]' 2>/dev/null) || rc=$?
+  local repo_slug
+  repo_slug="$(cd "$wt_dir" && gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || echo)"
+  output=$(_with_timeout "$API_TIMEOUT" gh -R "$repo_slug" pr view "$pr_number" --json labels --jq '[.labels[].name]' 2>/dev/null) || rc=$?
   if (( rc != 0 )) || [[ -z "$output" ]] || ! printf '%s' "$output" | jq -e 'type == "array"' >/dev/null 2>&1; then
     # Fall back to running gh inside the worktree if the repo lookup above
     # produced no output or the -R form failed.
@@ -8626,8 +8627,10 @@ pr_live_labels_json() {
 # the ordinary message, "escalate" when the caller should emit the one-shot
 # escalation warning, or "skip" when the message must be suppressed. A fresh
 # head SHA resets the cycle counter for that PR (a real re-push is legitimate
-# reason for fresh status).
-readonly MERGE_QUEUE_ESCALATION_THRESHOLD=3
+# reason for fresh status). The escalation threshold is
+# ${MERGE_QUEUE_ESCALATION_THRESHOLD:-3}; it is read with a default at each
+# use because top-level assignments here are not part of the generated
+# monitor script.
 
 merge_queue_transition_report() {
   local pr="$1" head="$2" transition="$3"
@@ -8644,7 +8647,7 @@ merge_queue_transition_report() {
     --arg pr "$pr" \
     --arg head "${head:-unknown}" \
     --arg transition "$transition" \
-    --argjson threshold "$MERGE_QUEUE_ESCALATION_THRESHOLD" '
+    --argjson threshold "${MERGE_QUEUE_ESCALATION_THRESHOLD:-3}" '
       def key: $pr + ":" + $head;
       (.[key] // {}) as $prior
       | (if ($prior.head // "") != $head then {} else $prior end) as $current
@@ -8684,7 +8687,8 @@ merge_queue_transition_report() {
     fi
   fi
   case "$decision" in
-    log|escalate|skip) printf '%s\n' "$decision" ;;
+    escalate) printf 'escalate\n' ;;
+    skip) printf 'skip\n' ;;
     *) printf 'log\n' ;;
   esac
 }
@@ -8731,7 +8735,7 @@ merge_queue_exclusion_report() {
     fi
   fi
   case "$decision" in
-    log|skip) printf '%s\n' "$decision" ;;
+    skip) printf 'skip\n' ;;
     *) printf 'log\n' ;;
   esac
 }
@@ -9186,7 +9190,7 @@ refresh_ready_merge_queue_tick() {
         log "status" "↩ $issue → PR ${pr_for_log:+#$pr_for_log }demoted as stuck merge candidate${stuck_head:+ @${stuck_head:0:7}}"
         ;;
       escalate)
-        log_warn "$issue → PR ${pr_for_log:+#$pr_for_log }promote/demote loop escalated at head ${stuck_head:0:7}; suppressing further cycle notices"
+        log_warn "$issue → PR ${pr_for_log:+#$pr_for_log }promote/demote loop escalated at head ${stuck_head:0:7} (further cycle notices are suppressed)"
         ;;
       *) : ;;
     esac
@@ -9212,7 +9216,7 @@ refresh_ready_merge_queue_tick() {
           log "status" "✓ $issue → PR ${pr_for_log:+#$pr_for_log }promoted to merge candidate (live CI $ci_summary${ci_head:+ @${ci_head:0:7}}, base current)"
           ;;
         escalate)
-          log_warn "$issue → PR ${pr_for_log:+#$pr_for_log }promote/demote loop reached ${MERGE_QUEUE_ESCALATION_THRESHOLD} cycles at head ${ci_head:0:7}; suppressing further promote/demote notices for this head"
+          log_warn "$issue → PR ${pr_for_log:+#$pr_for_log }promote/demote loop reached ${MERGE_QUEUE_ESCALATION_THRESHOLD:-3} cycles at head ${ci_head:0:7} (further promote/demote notices for this head are suppressed)"
           ;;
         *) : ;;
       esac
