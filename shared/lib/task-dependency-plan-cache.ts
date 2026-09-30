@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { DependencyEdge } from './task-dependency-planner.ts';
 import { mutateJsonState, StateLockTimeoutError } from './state-mutex.ts';
+import { normalizeInferenceState, type QueueInferenceState } from './queue-inference-status.ts';
 
 export const CACHE_SCHEMA_VERSION = 1;
 const CACHE_WRITE_TIMEOUT_MS = 5000;
@@ -25,6 +26,11 @@ export interface CacheFile {
   updatedAt: string;
   fingerprints: Record<string, string>;
   edges: CachedEdge[];
+  /**
+   * Classifier bookkeeping (HOK-3130). Optional and additive: caches written
+   * before it existed load without it and derive to inference status `never`.
+   */
+  inference?: QueueInferenceState;
 }
 
 export interface FingerprintableTask {
@@ -140,6 +146,22 @@ function isCacheFile(value: unknown): value is CacheFile {
   return value.edges.every(isCachedEdge);
 }
 
+/**
+ * Validate the optional `inference` block on its own: a malformed block is
+ * dropped (status falls back to `never`) instead of discarding the whole
+ * cache and its edges.
+ */
+function withNormalizedInference(cache: CacheFile): CacheFile {
+  const { inference: rawInference, ...rest } = cache as CacheFile & { inference?: unknown };
+  if (rawInference === undefined) return rest;
+  const inference = normalizeInferenceState(rawInference);
+  if (!inference) {
+    console.warn('[task-dep-cache] dropping malformed inference block');
+    return rest;
+  }
+  return { ...rest, inference };
+}
+
 function validateProjectSlug(projectSlug: string): void {
   if (projectSlug.includes('/') || projectSlug.includes('\\') || projectSlug.includes('..')) {
     throw new Error(`Invalid project slug for task dependency cache: ${projectSlug}`);
@@ -168,7 +190,7 @@ export function loadCache(rawRepoDir: string, projectSlug: string): CacheFile {
       console.warn(`[task-dep-cache] dropping unreadable cache: project slug mismatch in ${cachePath}`);
       return emptyCache(projectSlug);
     }
-    return raw;
+    return withNormalizedInference(raw);
   } catch (error) {
     const errno = (error as NodeJS.ErrnoException).code;
     if (errno === 'ENOENT') return emptyCache(projectSlug);
@@ -193,7 +215,29 @@ export function pruneCache(cache: CacheFile, currentBacklog: FingerprintableTask
     updatedAt: cache.updatedAt,
     fingerprints,
     edges,
+    ...(cache.inference ? { inference: cache.inference } : {}),
   };
+}
+
+/**
+ * Previous fingerprints restricted to tasks still in the backlog.
+ *
+ * Used whenever tasks are pending but were not analyzed (classifier failure
+ * or cooldown): keeping the old fingerprint — or none, for a new task — keeps
+ * them in the next run's diff so they are retried instead of silently being
+ * marked analyzed (HOK-3130).
+ */
+export function retainPreviousFingerprints(
+  previous: Record<string, string>,
+  currentTaskIds: Iterable<string>,
+): Record<string, string> {
+  const retained: Record<string, string> = {};
+  for (const taskId of currentTaskIds) {
+    if (Object.prototype.hasOwnProperty.call(previous, taskId)) {
+      retained[taskId] = previous[taskId];
+    }
+  }
+  return retained;
 }
 
 export function getCacheStats(before: CacheFile, after: CacheFile): CacheStats {

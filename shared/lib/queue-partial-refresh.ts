@@ -13,6 +13,20 @@ export interface QueueRefreshTask {
   dependsOn?: string[];
 }
 
+/**
+ * Per-task description budget in the queue-analysis prompt (HOK-3130).
+ * Wavemill descriptions are full task packets; dependency cues live in the
+ * title and the top of the packet, and whole packets pushed the classifier
+ * past its per-attempt timeout.
+ */
+export const QUEUE_ANALYSIS_DESCRIPTION_MAX_CHARS = 1_500;
+const DESCRIPTION_TRUNCATION_SUFFIX = '…[truncated]';
+
+function truncateDescription(description: string): string {
+  if (description.length <= QUEUE_ANALYSIS_DESCRIPTION_MAX_CHARS) return description;
+  return `${description.slice(0, QUEUE_ANALYSIS_DESCRIPTION_MAX_CHARS).trimEnd()}${DESCRIPTION_TRUNCATION_SUFFIX}`;
+}
+
 interface AssembleNearbyContextInput {
   changedTaskIds: Iterable<string>;
   allBacklog: QueueRefreshTask[];
@@ -48,7 +62,7 @@ function normalizeStateName(state: QueueRefreshTask['state']): string {
 }
 
 function formatTask(task: QueueRefreshTask): string {
-  const description = typeof task.description === 'string' ? task.description.trim() : '';
+  const description = typeof task.description === 'string' ? truncateDescription(task.description.trim()) : '';
   const milestone = task.projectMilestone?.name
     ? `${task.projectMilestone.name}${task.projectMilestone.targetDate ? ` (${task.projectMilestone.targetDate})` : ''}`
     : 'null';

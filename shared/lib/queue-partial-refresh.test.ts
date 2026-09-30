@@ -4,9 +4,30 @@ import {
   assembleNearbyContext,
   buildPartialRefreshPrompt,
   parseQueueAnalysisEdges,
+  QUEUE_ANALYSIS_DESCRIPTION_MAX_CHARS,
 } from './queue-partial-refresh.ts';
 
 describe('queue-partial-refresh', () => {
+  describe('buildPartialRefreshPrompt description budget', () => {
+    it('truncates long task descriptions and leaves short ones intact', () => {
+      const longDescription = `Top of packet. ${'x'.repeat(QUEUE_ANALYSIS_DESCRIPTION_MAX_CHARS * 2)} TAIL-MARKER`;
+      const prompt = buildPartialRefreshPrompt({
+        changedTaskIds: ['HOK-1'],
+        contextTasks: [
+          { id: 'HOK-1', title: 'Long', description: longDescription },
+          { id: 'HOK-2', title: 'Short', description: 'short description' },
+        ],
+        template: '{{CONTEXT_TASKS}}',
+      });
+
+      assert.match(prompt, /Top of packet\./);
+      assert.match(prompt, /…\[truncated]/);
+      assert.doesNotMatch(prompt, /TAIL-MARKER/);
+      assert.match(prompt, /description: "short description"/);
+      assert.ok(prompt.length < QUEUE_ANALYSIS_DESCRIPTION_MAX_CHARS + 600);
+    });
+  });
+
   describe('assembleNearbyContext', () => {
     it('includes changed tasks, shared labels, blockers, top priority tasks, and in-flight tasks', () => {
       const ids = assembleNearbyContext({

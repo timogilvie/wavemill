@@ -14,6 +14,7 @@ import {
   mergeEdges,
   pruneCache,
   recordEdge,
+  retainPreviousFingerprints,
   saveCache,
   type CacheFile,
 } from './task-dependency-plan-cache.ts';
@@ -112,6 +113,41 @@ describe('task-dependency-plan-cache', () => {
 
     assert.deepEqual(cache, createCache());
     assert.equal(warn.mock.callCount(), 1);
+  });
+
+  it('keeps edges but drops a malformed inference block with a warning', () => {
+    const cachePath = getTaskDependencyCachePath(repoDir, 'sample-project');
+    mkdirSync(join(repoDir, '.wavemill', 'cache', 'task-dependency-plans'), { recursive: true });
+    const fingerprints = { 'HOK-1': 'fp-1' };
+    writeFileSync(cachePath, `${JSON.stringify({ ...createCache({ fingerprints }), inference: 'broken' })}\n`, 'utf8');
+    const warn = mock.method(console, 'warn', () => undefined);
+
+    const cache = loadCache(repoDir, 'sample-project');
+
+    assert.deepEqual(cache, createCache({ fingerprints }));
+    assert.equal(warn.mock.callCount(), 1);
+  });
+
+  it('preserves the inference block through pruneCache', () => {
+    const inference = {
+      lastAttemptAt: '2026-09-30T00:00:00.000Z',
+      lastSuccessAt: '2026-09-30T00:00:00.000Z',
+      lastOutcome: 'ok' as const,
+      lastModel: 'claude-haiku-4-5-20251001',
+      lastError: null,
+      consecutiveFailures: 0,
+    };
+    const pruned = pruneCache(createCache({ inference }), [{ id: 'HOK-1', title: 'One' }]);
+
+    assert.deepEqual(pruned.inference, inference);
+    assert.equal(pruneCache(createCache(), [{ id: 'HOK-1' }]).inference, undefined);
+  });
+
+  it('retains previous fingerprints only for tasks still in the backlog', () => {
+    assert.deepEqual(
+      retainPreviousFingerprints({ 'HOK-1': 'a', 'HOK-2': 'b', 'HOK-9': 'z' }, ['HOK-1', 'HOK-2', 'HOK-3']),
+      { 'HOK-1': 'a', 'HOK-2': 'b' },
+    );
   });
 
   it('drops schema mismatches with a warning', () => {
