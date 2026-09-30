@@ -2992,13 +2992,20 @@ save_migration_reservation() {
 mark_eval_completed() {
   local issue="$1"
   local slug
-  if ! state_mutate "$STATE_FILE" \
-     '.tasks[$issue].evalCompleted = true
-      | .tasks[$issue].evalFailed = false
-      | .tasks[$issue].evalHardFailureRetryCount = 0
-      | del(.tasks[$issue].evalRunning)
-      | .tasks[$issue].updated = (now | todateiso8601)' \
-     --arg issue "$issue"; then
+  # HOK-3125: skip write when the task has already been reaped so we do not
+  # recreate the entry as a phase/status-less stub that consumes a mill slot.
+  # Late eval outcome is preserved audit-only in terminalTaskHistory.
+  if ! task_state_entry_exists "$issue"; then
+    record_post_reap_eval_outcome "$issue" completed
+    log "debug" "eval completed for reaped task $issue; not recreating state entry"
+    return 0
+  fi
+  if ! task_state_mutate_existing "$issue" \
+     '.evalCompleted = true
+      | .evalFailed = false
+      | .evalHardFailureRetryCount = 0
+      | del(.evalRunning)
+      | .updated = (now | todateiso8601)'; then
     log_warn "mark_eval_completed: failed to update $issue"
   fi
   # Successful eval wipes the arm's bounded-retry eval budgets (HOK-2924).
@@ -3015,11 +3022,16 @@ mark_eval_completed() {
 
 mark_eval_failed() {
   local issue="$1"
-  if ! state_mutate "$STATE_FILE" \
-     '.tasks[$issue].evalFailed = true
-      | del(.tasks[$issue].evalRunning)
-      | .tasks[$issue].updated = (now | todateiso8601)' \
-     --arg issue "$issue"; then
+  # HOK-3125: guard against recreating a stub entry after reap.
+  if ! task_state_entry_exists "$issue"; then
+    record_post_reap_eval_outcome "$issue" failed
+    log "debug" "eval failed for reaped task $issue; not recreating state entry"
+    return 0
+  fi
+  if ! task_state_mutate_existing "$issue" \
+     '.evalFailed = true
+      | del(.evalRunning)
+      | .updated = (now | todateiso8601)'; then
     log_warn "mark_eval_failed: failed to update $issue"
   fi
 }
@@ -3028,17 +3040,21 @@ mark_eval_failed() {
 # generated monitor script, so challenge launchers need local monitor copies.
 mark_challenge_eval_running() {
   local issue="$1" side="$2" pr="$3" phase="${4:-eval}"
-  state_mutate "$STATE_FILE" '
-    .tasks[$issue].evalRunning = {
+  # HOK-3125: refuse to persist a running marker for a reaped task; caller
+  # treats the non-zero return as "launch skipped, entry no longer present".
+  if ! task_state_entry_exists "$issue"; then
+    return 1
+  fi
+  task_state_mutate_existing "$issue" '
+    .evalRunning = {
       issue: $issue,
       side: $side,
       pr: ($pr | tonumber),
       phase: $phase,
       startedAt: (now | todateiso8601)
     } |
-    .tasks[$issue].updated = (now | todateiso8601)
+    .updated = (now | todateiso8601)
   ' \
-    --arg issue "$issue" \
     --arg side "$side" \
     --arg pr "$pr" \
     --arg phase "$phase"
@@ -12284,10 +12300,10 @@ poll_challenge_jobs() {
         soft_retry_prior_head=$(bounded_retry_head "$soft_retry_state_dir" "challenge-eval-soft")
         bounded_retry_reset_if_new_head "$soft_retry_state_dir" "challenge-eval-soft" "$soft_retry_head"
         if [[ -n "$soft_retry_prior_head" && -n "$soft_retry_head" && "$soft_retry_prior_head" != "$soft_retry_head" ]]; then
-          state_mutate "$STATE_FILE" '
-            .tasks[$issue].comparisonRetryCount = 0
-            | .tasks[$issue].updated = (now | todateiso8601)
-          ' --arg issue "$primary_key" >/dev/null || true
+          task_state_mutate_existing "$primary_key" '
+            .comparisonRetryCount = 0
+            | .updated = (now | todateiso8601)
+          ' >/dev/null || true
         fi
         retry_count=$(bounded_retry_count "$soft_retry_state_dir" "challenge-eval-soft")
       else
@@ -12314,11 +12330,11 @@ poll_challenge_jobs() {
         fi
         retry_count=$((retry_count + 1))
         write_challenge_pair_state "$pair_id" "retrying_eval" "$timeout_reason" "$retry_count" "$retry_max" "$issue_id" "$timed_out_sides_csv" ""
-        state_mutate "$STATE_FILE" '
-          .tasks[$issue].evalFailed = false
-          | .tasks[$issue].evalCompleted = false
-          | .tasks[$issue].updated = (now | todateiso8601)
-        ' --arg issue "$issue_id" >/dev/null || true
+        task_state_mutate_existing "$issue_id" '
+          .evalFailed = false
+          | .evalCompleted = false
+          | .updated = (now | todateiso8601)
+        ' >/dev/null || true
         log "status" "challenge comparison retrying for $pair_id: $side eval timed out (attempt $retry_count/$retry_max)"
         if [[ -n "$issue_pr" && -n "$issue_branch" && -n "$issue_slug" ]]; then
           maybe_run_challenge_eval "$issue_id" "$issue_pr" "$issue_branch" "$issue_slug"
@@ -12603,10 +12619,10 @@ maybe_run_challenge_eval() {
         ;;
     esac
     log "status" "  📊 challenge eval for $issue is stale for the current PR head - relaunching (HOK-2963)"
-    state_mutate "$STATE_FILE" '
-      .tasks[$issue].evalCompleted = false
-      | .tasks[$issue].updated = (now | todateiso8601)
-    ' --arg issue "$issue" >/dev/null || true
+    task_state_mutate_existing "$issue" '
+      .evalCompleted = false
+      | .updated = (now | todateiso8601)
+    ' >/dev/null || true
   fi
 
   pair_id=$(get_task_meta "$issue" "challengePairId")
@@ -12631,10 +12647,10 @@ maybe_run_challenge_eval() {
     hard_retry_prior_head=$(bounded_retry_head "$hard_retry_state_dir" "challenge-eval-hard")
     bounded_retry_reset_if_new_head "$hard_retry_state_dir" "challenge-eval-hard" "$hard_retry_head"
     if [[ -n "$hard_retry_prior_head" && -n "$hard_retry_head" && "$hard_retry_prior_head" != "$hard_retry_head" ]]; then
-      state_mutate "$STATE_FILE" '
-        .tasks[$issue].evalHardFailureRetryCount = 0
-        | .tasks[$issue].updated = (now | todateiso8601)
-      ' --arg issue "$issue" >/dev/null || true
+      task_state_mutate_existing "$issue" '
+        .evalHardFailureRetryCount = 0
+        | .updated = (now | todateiso8601)
+      ' >/dev/null || true
     fi
     eval_hard_retry_count=$(bounded_retry_count "$hard_retry_state_dir" "challenge-eval-hard")
     hard_retry_mirror=$(read_state_value "0" --arg i "$issue" '.tasks[$i].evalHardFailureRetryCount // 0')
@@ -12650,12 +12666,12 @@ maybe_run_challenge_eval() {
       fi
       bounded_retry_increment "$hard_retry_state_dir" "challenge-eval-hard" "$hard_retry_head" >/dev/null
       eval_hard_retry_count=$((eval_hard_retry_count + 1))
-      state_mutate "$STATE_FILE" '
-        .tasks[$issue].evalFailed = false
-        | .tasks[$issue].evalCompleted = false
-        | .tasks[$issue].evalHardFailureRetryCount = $retryCount
-        | .tasks[$issue].updated = (now | todateiso8601)
-      ' --arg issue "$issue" --argjson retryCount "$eval_hard_retry_count" >/dev/null || true
+      task_state_mutate_existing "$issue" '
+        .evalFailed = false
+        | .evalCompleted = false
+        | .evalHardFailureRetryCount = $retryCount
+        | .updated = (now | todateiso8601)
+      ' --argjson retryCount "$eval_hard_retry_count" >/dev/null || true
       log "status" "challenge eval retrying for $issue: hard failure (attempt $eval_hard_retry_count/$eval_hard_retry_max)"
     else
       bounded_retry_mark_exhausted "$hard_retry_state_dir" "challenge-eval-hard" \
@@ -19761,6 +19777,23 @@ while :; do
   if declare -F slot_consuming_task_count >/dev/null 2>&1; then
     active_count="$(slot_consuming_task_count)"
     active_challenger_count="$(slot_consuming_challenger_task_count)"
+  fi
+  # HOK-3125: surface orphan stub entries once per issue per process. These
+  # rows have no phase/status/slug/lifecycle and no longer consume a slot,
+  # but their presence points at a raw post-reap writer that still needs
+  # routing through task_state_mutate_existing.
+  if declare -F orphan_stub_task_ids >/dev/null 2>&1; then
+    _orphan_id=""
+    while IFS= read -r _orphan_id; do
+      [[ -z "$_orphan_id" ]] && continue
+      case " ${ORPHAN_STUB_WARNED:-} " in
+        *" $_orphan_id "*) ;;
+        *)
+          log_warn "HOK-3125: ignoring orphan stub state entry for $_orphan_id (no phase/status/slug/lifecycle); not counted as a slot"
+          ORPHAN_STUB_WARNED="${ORPHAN_STUB_WARNED:+$ORPHAN_STUB_WARNED }$_orphan_id"
+          ;;
+      esac
+    done < <(orphan_stub_task_ids 2>/dev/null || true)
   fi
   _active_count_prev=$active_count
   monitor_iteration_end_ms="$(wavemill_monitor_now_ms 2>/dev/null || printf '0')"

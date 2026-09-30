@@ -294,3 +294,24 @@ test('JSON schema rejects closed allocated state without retention', () => {
     },
   }), true);
 });
+
+test('HOK-3125: eval-only stub does not consume a slot', () => {
+  const normalized = normalizeTaskLifecycle({
+    evalCompleted: true,
+    updated: '2026-09-30T00:00:00Z',
+  });
+  assert.equal(normalized.slotConsumes, false);
+  assert.ok(
+    (normalized.lifecycle.verificationRequiredReason ?? '').includes('orphan-stub'),
+    'orphan-stub reason should be recorded',
+  );
+});
+
+test('HOK-3125: live active row still consumes a slot', () => {
+  const normalized = normalizeTaskLifecycle({
+    slug: 'hok-live',
+    phase: 'executing',
+    status: 'active',
+  });
+  assert.equal(normalized.slotConsumes, true);
+});

@@ -6458,11 +6458,16 @@ def wm_workflow_outcome:
     else "active"
     end;
 
+def wm_orphan_stub:
+  ((.phase // "") == "") and ((.status // "") == "") and ((.slug // "") == "")
+  and ((.lifecycle // null) == null);
+
 def wm_resource_disposition:
   (.lifecycle.resourceDisposition // "") as $disposition
   | if $disposition | IN("allocated","released","retained","reaping","reaped","verification-required") then $disposition
     elif ((.executionOwner // "task") == "queue" and (.paneState // "active") == "released") or (.paneState // "") == "released" then "released"
     elif wm_terminal_status then "verification-required"
+    elif wm_orphan_stub then "orphan"
     else "allocated"
     end;
 
@@ -6597,6 +6602,111 @@ slot_consuming_task_count() {
 slot_consuming_challenger_task_count() {
   [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || { printf '0\n'; return 0; }
   jq -r "$(task_lifecycle_jq_filter '(.tasks // {}) | to_entries | map(select((.value.challengeRole // "") == "challenger") | select(.value | wm_slot_consumes)) | length')" "$STATE_FILE" 2>/dev/null || printf '0\n'
+}
+
+# List task issue keys whose entries are orphan stubs (HOK-3125): no phase,
+# status, slug or lifecycle. These are typically created by a raw post-reap
+# .tasks[$issue].x = ... write; the counter now treats them as non-consuming,
+# and the monitor warns once per issue so operators can trace the source.
+orphan_stub_task_ids() {
+  [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 0
+  jq -r "$(task_lifecycle_jq_filter '(.tasks // {}) | to_entries | map(select(.value | wm_orphan_stub) | .key) | .[]')" "$STATE_FILE" 2>/dev/null || true
+}
+
+# task_state_entry_exists <issue>
+# Returns 0 when .tasks[$issue] exists in STATE_FILE, non-zero otherwise.
+task_state_entry_exists() {
+  local issue="$1"
+  [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
+  jq -e --arg issue "$issue" '.tasks[$issue] != null' "$STATE_FILE" >/dev/null 2>&1
+}
+
+# task_state_mutate_existing <issue> <task-filter> [jq args...]
+# Applies <task-filter> to .tasks[$issue] ONLY if the entry exists (HOK-3125).
+# Writers that can run after a task has been reaped (background eval,
+# job-poll completions, retry bookkeeping) must use this helper instead of raw
+# `.tasks[$issue].x = ...` writes. A raw write re-creates a phase/status-less
+# stub that counts against mill slots. Returns state_mutate's status. Inside
+# <task-filter>, `.` is the task object, not the state root; the caller does
+# not need to pre-declare `--arg issue`.
+task_state_mutate_existing() {
+  local issue="$1" filter="$2"
+  shift 2
+  [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
+  state_mutate "$STATE_FILE" \
+    "if .tasks[\$issue] then .tasks[\$issue] |= ($filter) else . end" \
+    --arg issue "$issue" "$@"
+}
+
+# record_post_reap_eval_outcome <issue> <completed|failed>
+# Audit-only annotation for late eval completions that arrived after the
+# task was reaped (HOK-3125). Writes into terminalTaskHistory.tasks[$issue]
+# (and the pair mirror when challengePairId/challengeRole are set) without
+# ever creating an entry. Nothing currently reads postReapEval; it exists so
+# operators can trace why a merged/aborted task saw a late eval race.
+record_post_reap_eval_outcome() {
+  local issue="$1" outcome="${2:-completed}"
+  [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 0
+  case "$outcome" in completed|failed) ;; *) return 0 ;; esac
+  state_mutate "$STATE_FILE" '
+    if .terminalTaskHistory.tasks[$issue] then
+      .terminalTaskHistory.tasks[$issue].postReapEval = {
+        outcome: $outcome,
+        recordedAt: (now | todateiso8601)
+      }
+      | (.terminalTaskHistory.tasks[$issue].challengePairId // "") as $pair
+      | (.terminalTaskHistory.tasks[$issue].challengeRole // "") as $role
+      | if $pair != "" and $role != "" and .terminalTaskHistory.challengePairs[$pair][$role] then
+          .terminalTaskHistory.challengePairs[$pair][$role].postReapEval = {
+            outcome: $outcome,
+            recordedAt: (now | todateiso8601)
+          }
+        else . end
+    else . end
+  ' --arg issue "$issue" --arg outcome "$outcome" >/dev/null 2>&1 || true
+  return 0
+}
+
+# drop_tombstoned_eval_stubs
+# Remove .tasks[k] entries that are pure eval/bookkeeping stubs recreated by
+# a post-reap raw writer AND whose k has a matching tombstone or terminal
+# history record (HOK-3125). Two safety gates:
+#   1. every key in the entry must be in the eval/bookkeeping allowlist, and
+#   2. terminal history or a tombstone must exist for that issue.
+# Prints the dropped issue ids (one per line), or nothing on no-op.
+drop_tombstoned_eval_stubs() {
+  [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 0
+  local candidates candidate keep dropped=""
+  candidates="$(jq -r "$(task_lifecycle_jq_filter '
+    (.tasks // {}) | to_entries
+    | map(select(
+        (.value | wm_orphan_stub)
+        and ((.value | keys) - ["evalCompleted","evalFailed","evalHardFailureRetryCount","evalRunning","updated","rehydration"] | length == 0)
+      ))
+    | .[].key
+  ')" "$STATE_FILE" 2>/dev/null || true)"
+  [[ -n "$candidates" ]] || return 0
+  while IFS= read -r candidate; do
+    [[ -n "$candidate" ]] || continue
+    keep=1
+    if jq -e --arg k "$candidate" '.terminalTaskHistory.tasks[$k] != null' "$STATE_FILE" >/dev/null 2>&1; then
+      keep=0
+    elif jq -e --arg k "$candidate" '(.terminalTaskTombstones // {}) | to_entries | any(.value.issue == $k)' "$STATE_FILE" >/dev/null 2>&1; then
+      keep=0
+    fi
+    if (( keep == 0 )); then
+      dropped+="$candidate"$'\n'
+    fi
+  done <<<"$candidates"
+  [[ -n "$dropped" ]] || return 0
+  local dropped_json
+  dropped_json="$(printf '%s' "$dropped" | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+  state_mutate "$STATE_FILE" '
+    reduce ($ids[]) as $k (.; del(.tasks[$k]))
+    | .updated = (now | todateiso8601)
+  ' --argjson ids "$dropped_json" >/dev/null 2>&1 || true
+  printf '%s' "$dropped"
+  return 0
 }
 
 get_task_meta() {

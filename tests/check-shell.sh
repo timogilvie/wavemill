@@ -166,6 +166,7 @@ for f in \
   "$REPO_DIR"/tests/launch-pane-liveness.test.sh \
   "$REPO_DIR"/tests/launch-failure-log-capture.test.sh \
   "$REPO_DIR"/tests/challenge-eval-soft-retry.test.sh \
+  "$REPO_DIR"/tests/eval-stub-slot-accounting.test.sh \
   "$REPO_DIR"/tests/challenge-eval-invalid-challenge.test.sh \
   "$REPO_DIR"/tests/challenge-eval-timeout.test.sh \
   "$REPO_DIR"/tests/challenge-provenance.test.sh \
