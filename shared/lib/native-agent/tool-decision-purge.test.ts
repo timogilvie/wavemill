@@ -26,30 +26,37 @@ describe('tool-decision-purge', () => {
   });
 
   describe('isScriptedToolDecisionRow', () => {
-    it('identifies rows with scripted models', () => {
+    it('identifies rows with scripted model prefix', () => {
       const scriptedRow = {
-        modelId: 'claude-opus-4-1',
-        isScripted: true,
+        model: 'scripted:claude-opus-4-1',
         timestamp: Date.now(),
       };
       assert.equal(isScriptedToolDecisionRow(scriptedRow), true);
     });
 
-    it('identifies rows without scripted flag as non-scripted', () => {
+    it('identifies rows with scripted provider', () => {
+      const scriptedRow = {
+        model: 'claude-opus-4-1',
+        provider: 'scripted',
+        timestamp: Date.now(),
+      };
+      assert.equal(isScriptedToolDecisionRow(scriptedRow), true);
+    });
+
+    it('identifies rows without scripted markers as non-scripted', () => {
       const nonScriptedRow = {
-        modelId: 'claude-opus-4-1',
+        model: 'claude-opus-4-1',
+        provider: 'openrouter',
         timestamp: Date.now(),
       };
       assert.equal(isScriptedToolDecisionRow(nonScriptedRow), false);
     });
 
-    it('identifies rows with isScripted false', () => {
-      const nonScriptedRow = {
-        modelId: 'claude-opus-4-1',
-        isScripted: false,
-        timestamp: Date.now(),
-      };
-      assert.equal(isScriptedToolDecisionRow(nonScriptedRow), false);
+    it('returns false for invalid input', () => {
+      assert.equal(isScriptedToolDecisionRow(null), false);
+      assert.equal(isScriptedToolDecisionRow(undefined), false);
+      assert.equal(isScriptedToolDecisionRow('string'), false);
+      assert.equal(isScriptedToolDecisionRow(123), false);
     });
   });
 
@@ -58,10 +65,10 @@ describe('tool-decision-purge', () => {
       const dir = tempDir(); dirs.push(dir);
 
       const rows = [
-        { modelId: 'claude-opus-4-1', isScripted: true, timestamp: Date.now() },
-        { modelId: 'claude-opus-4-1', isScripted: false, timestamp: Date.now() },
-        { modelId: 'gpt-4', isScripted: true, timestamp: Date.now() },
-        { modelId: 'gpt-4', isScripted: false, timestamp: Date.now() },
+        { model: 'scripted:claude-opus-4-1', timestamp: Date.now() },
+        { model: 'claude-opus-4-1', provider: 'openrouter', timestamp: Date.now() },
+        { model: 'gpt-4', provider: 'scripted', timestamp: Date.now() },
+        { model: 'gpt-4', provider: 'openrouter', timestamp: Date.now() },
       ];
 
       const corpusPath = join(dir, 'corpus.jsonl');
@@ -85,15 +92,15 @@ describe('tool-decision-purge', () => {
         .map(line => JSON.parse(line));
 
       assert.equal(kept.length, 2);
-      assert.equal(kept.every(r => !r.isScripted), true);
+      assert.equal(kept.every(r => !isScriptedToolDecisionRow(r)), true);
     });
 
     it('preserves original file when dry-run is true', () => {
       const dir = tempDir(); dirs.push(dir);
 
       const rows = [
-        { modelId: 'claude-opus-4-1', isScripted: true },
-        { modelId: 'gpt-4', isScripted: false },
+        { model: 'scripted:claude-opus-4-1', timestamp: Date.now() },
+        { model: 'gpt-4', provider: 'openrouter', timestamp: Date.now() },
       ];
 
       const corpusPath = join(dir, 'corpus.jsonl');
@@ -136,7 +143,7 @@ describe('tool-decision-purge', () => {
       const dir = tempDir(); dirs.push(dir);
 
       const corpusPath = join(dir, 'malformed.jsonl');
-      writeFileSync(corpusPath, '{malformed json\n{ "modelId": "claude-opus-4-1", "isScripted": false }\n');
+      writeFileSync(corpusPath, '{malformed json\n{ "model": "claude-opus-4-1", "provider": "openrouter" }\n');
 
       const result = purgeToolDecisionRows(
         corpusPath,
@@ -144,26 +151,53 @@ describe('tool-decision-purge', () => {
         { dryRun: false, backupSuffix: 'test' }
       );
 
-      assert.equal(result.total, 1);
+      // 2 lines total: 1 malformed (kept as-is) + 1 valid non-scripted (kept)
+      assert.equal(result.total, 2);
       assert.equal(result.removed, 0);
-      assert.equal(result.kept, 1);
+      assert.equal(result.kept, 2);
+    });
+
+    it('returns empty result when corpus file does not exist', () => {
+      const result = purgeToolDecisionRows(
+        '/nonexistent/corpus.jsonl',
+        isScriptedToolDecisionRow,
+        { dryRun: false }
+      );
+
+      assert.equal(result.total, 0);
+      assert.equal(result.removed, 0);
+      assert.equal(result.kept, 0);
     });
   });
 
   describe('findScriptedSessionEventStreams', () => {
-    it('finds scripted session event stream files', () => {
+    it('finds scripted session event streams', () => {
       const dir = tempDir(); dirs.push(dir);
 
-      // Create some stream files
-      writeFileSync(join(dir, 'session-abc.jsonl'), '{"event": "test"}\n');
-      writeFileSync(join(dir, 'session-def.jsonl'), '{"event": "test"}\n');
-      writeFileSync(join(dir, 'README.md'), 'not a stream\n');
+      // Create a scripted session stream
+      const scriptedSession = [
+        { type: 'session_started', initialConfigDigest: 'model:scripted:claude-opus-4-1', sessionId: 'session-1' },
+        { type: 'model_request', modelId: 'claude-opus-4-1' },
+      ];
+      writeFileSync(
+        join(dir, 'scripted-session.jsonl'),
+        scriptedSession.map(e => JSON.stringify(e)).join('\n') + '\n'
+      );
+
+      // Create a non-scripted session stream
+      const nonScriptedSession = [
+        { type: 'session_started', initialConfigDigest: 'model:claude-opus-4-1', sessionId: 'session-2' },
+        { type: 'model_request', modelId: 'claude-opus-4-1' },
+      ];
+      writeFileSync(
+        join(dir, 'normal-session.jsonl'),
+        nonScriptedSession.map(e => JSON.stringify(e)).join('\n') + '\n'
+      );
 
       const streams = findScriptedSessionEventStreams(dir);
 
-      assert.ok(streams.length >= 2);
-      assert.ok(streams.some(s => s.includes('session-abc.jsonl')));
-      assert.ok(streams.some(s => s.includes('session-def.jsonl')));
+      assert.equal(streams.length, 1);
+      assert.ok(streams[0].includes('scripted-session.jsonl'));
     });
 
     it('returns empty list when directory is empty', () => {
@@ -175,29 +209,82 @@ describe('tool-decision-purge', () => {
     });
 
     it('returns empty list when directory does not exist', () => {
-      const dir = join(tempdir(), 'nonexistent-' + Date.now());
+      const dir = join(tmpdir(), 'nonexistent-' + Date.now());
 
       const streams = findScriptedSessionEventStreams(dir);
 
       assert.equal(streams.length, 0);
     });
 
-    it('ignores backup directories', () => {
+    it('skips non-.jsonl files', () => {
       const dir = tempDir(); dirs.push(dir);
 
-      // Create backup directory
-      const backupDir = join(dir, '.bak-hok-3121-2026-01-01T00-00-00-000Z');
-      mkdirSync(backupDir, { recursive: true });
-      writeFileSync(join(backupDir, 'session-backup.jsonl'), '{"event": "test"}\n');
+      // Create a non-.jsonl file
+      writeFileSync(join(dir, 'README.md'), 'not a stream\n');
 
-      // Create normal stream
-      writeFileSync(join(dir, 'session-current.jsonl'), '{"event": "test"}\n');
+      // Create a .jsonl file with scripted session
+      const scriptedSession = [
+        { type: 'session_started', initialConfigDigest: 'model:scripted:claude-opus-4-1', sessionId: 'session-1' },
+      ];
+      writeFileSync(
+        join(dir, 'session.jsonl'),
+        scriptedSession.map(e => JSON.stringify(e)).join('\n') + '\n'
+      );
 
       const streams = findScriptedSessionEventStreams(dir);
 
-      assert.ok(streams.length >= 1);
-      assert.ok(streams.some(s => s.includes('session-current.jsonl')));
-      assert.equal(streams.some(s => s.includes('.bak-')), false);
+      assert.equal(streams.length, 1);
+      assert.ok(streams[0].includes('session.jsonl'));
+    });
+
+    it('skips files with invalid JSON', () => {
+      const dir = tempDir(); dirs.push(dir);
+
+      // Create a .jsonl file with invalid JSON
+      writeFileSync(join(dir, 'invalid.jsonl'), '{not valid json\n');
+
+      // Create a valid scripted session
+      const scriptedSession = [
+        { type: 'session_started', initialConfigDigest: 'model:scripted:claude-opus-4-1', sessionId: 'session-1' },
+      ];
+      writeFileSync(
+        join(dir, 'valid.jsonl'),
+        scriptedSession.map(e => JSON.stringify(e)).join('\n') + '\n'
+      );
+
+      const streams = findScriptedSessionEventStreams(dir);
+
+      assert.equal(streams.length, 1);
+      assert.ok(streams[0].includes('valid.jsonl'));
+    });
+
+    it('requires initialConfigDigest to start with model:scripted:', () => {
+      const dir = tempDir(); dirs.push(dir);
+
+      // Create streams with different initialConfigDigest patterns
+      const testCases = [
+        { digest: 'model:scripted:claude', expected: true },
+        { digest: 'model:claude', expected: false },
+        { digest: 'scripted:claude', expected: false },
+        { digest: 'other:prefix', expected: false },
+      ];
+
+      for (let i = 0; i < testCases.length; i++) {
+        const tc = testCases[i];
+        const session = [
+          { type: 'session_started', initialConfigDigest: tc.digest, sessionId: `session-${i}` },
+        ];
+        writeFileSync(
+          join(dir, `session-${i}.jsonl`),
+          session.map(e => JSON.stringify(e)).join('\n') + '\n'
+        );
+      }
+
+      const streams = findScriptedSessionEventStreams(dir);
+
+      // Only the first one should match (model:scripted:claude)
+      assert.equal(streams.length, 1);
+      assert.ok(streams[0].includes('session-0.jsonl'));
     });
   });
 });
