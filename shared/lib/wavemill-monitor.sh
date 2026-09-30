@@ -8153,9 +8153,7 @@ _launch_agent_in_pane() {
   fi
 
   # Export wavemill context environment variables for hook protocol
-  if declare -F get_linear_issue_id >/dev/null 2>&1; then
-    linear_issue="$(get_linear_issue_id "$issue" 2>/dev/null || true)"
-  fi
+  linear_issue="$(task_identity_linear_id "$issue" 2>/dev/null || true)"
   [[ -n "$linear_issue" ]] || linear_issue="$issue"
   esc_session=${session//\'/\'\\\'\'}
   esc_issue=${issue//\'/\'\\\'\'}
@@ -10780,16 +10778,27 @@ set_ready_pass_labels() {
     fi
   fi
 
-  if [[ -z "$head_sha" ]]; then
-    # The normal path supplies GitHub's fresh head. This fallback preserves
-    # compatibility for older Ready tool output while still never inventing a
-    # token when even the checkout has no resolvable commit.
-    head_sha=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)
-    if [[ -z "$head_sha" ]]; then
-      printf '%s\n' '{"transitionFailure":{"stage":"ownership-changed","detail":"current GitHub head is unavailable"}}' >&2
-      return 1
-    fi
+  # HOK-3112: the handoff head is always GitHub's live head, never the local
+  # checkout. `head_sha` (Ready's own reading, when its output carries one) is
+  # only a cross-check. After Tend rebases and force-pushes from its scratch
+  # worktree the task checkout keeps the pre-rebase commit; publishing at that
+  # commit leaves a record Tend's claim at the live head always rejects.
+  local github_head worktree_head
+  github_head=$(ready_current_github_head "$wt_dir" "$pr_number")
+  if [[ -z "$github_head" ]]; then
+    printf '%s\n' '{"transitionFailure":{"stage":"ownership-changed","detail":"current GitHub head is unavailable"}}' >&2
+    return 1
   fi
+  # Ready checked the checkout, so the checkout (and Ready's head, if reported)
+  # must still be the head we are about to publish. A mismatch means the PR
+  # moved while Ready ran; the caller re-runs Ready at the new head.
+  worktree_head=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)
+  if [[ "$worktree_head" != "$github_head" || ( -n "$head_sha" && "$head_sha" != "$github_head" ) ]]; then
+    jq -cn --arg ready "$head_sha" --arg github "$github_head" --arg worktree "$worktree_head" \
+      '{transitionFailure:{stage:"ownership-changed",detail:"head-moved",readyHead:$ready,githubHead:$github,worktreeHead:$worktree}}' >&2
+    return 1
+  fi
+  head_sha="$github_head"
   if ! (cd "$wt_dir" && npx tsx "$TOOLS_DIR/ready-tend-handoff.ts" checked "$pr_number" --feature-dir "$feature_dir" --head "$head_sha"); then
     printf '%s\n' '{"transitionFailure":{"stage":"ownership-changed"}}' >&2
     return 1
@@ -10809,6 +10818,97 @@ set_ready_pass_labels() {
 ready_current_github_head() {
   local wt_dir="$1" pr_number="$2"
   (cd "$wt_dir" && gh pr view "$pr_number" --json headRefOid --jq '.headRefOid') 2>/dev/null || true
+}
+
+# Bring the task worktree to the PR's current GitHub head before Ready runs
+# (HOK-3112). Ready's checks run against the checkout, and the Ready->Tend
+# handoff is published at the head Ready checked, so a checkout that lags the
+# PR (Tend rebased + force-pushed from its scratch worktree, or a remote-only
+# `gh pr update-branch`) would publish a handoff Tend can never claim.
+#
+# Sync is `git fetch` + `git reset --keep`, and only when every local commit is
+# already on the remote side:
+#   (a) local HEAD is an ancestor of the GitHub head (fast-forward), or
+#   (b) local HEAD is the head Tend recorded replacing in .tend-pushed-head.json, or
+#   (c) local HEAD is an ancestor-or-equal of the pre-fetch origin/<branch>
+#       (everything local was pushed; the remote was then rewritten).
+# Anything else means unpushed local commits, which must not be discarded.
+#
+# Called without a subshell; results are returned in globals:
+#   READY_SYNC_HEAD   - the GitHub head the worktree now matches (rc 0)
+#   READY_SYNC_DETAIL - "" when already matching, "synced (<reason>)" after a
+#                       reset, or the refusal reason (rc 1/2)
+# rc 0: already matching or synced; rc 1: GitHub head unavailable;
+# rc 2: refused (diverged, wrong branch, fetch/reset failure).
+ready_sync_worktree_to_github_head() {
+  local wt_dir="$1" branch="$2" pr_number="$3" state_dir="$4"
+  local gh_head local_head pre_fetch_origin current_branch tend_marker tend_pushed tend_previous sync_reason
+  READY_SYNC_HEAD=""
+  READY_SYNC_DETAIL=""
+
+  gh_head=$(ready_current_github_head "$wt_dir" "$pr_number")
+  if [[ -z "$gh_head" ]]; then
+    READY_SYNC_DETAIL="current GitHub head for PR #$pr_number is unavailable"
+    return 1
+  fi
+
+  tend_marker="$state_dir/.tend-pushed-head.json"
+  tend_pushed=$(jq -r '.pushedHeadSha // empty' "$tend_marker" 2>/dev/null || true)
+  tend_previous=$(jq -r '.previousHeadSha // empty' "$tend_marker" 2>/dev/null || true)
+
+  local_head=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)
+  if [[ -z "$local_head" ]]; then
+    READY_SYNC_DETAIL="task worktree HEAD is unresolvable"
+    return 2
+  fi
+  if [[ "$local_head" != "$gh_head" ]]; then
+    current_branch=$(git -C "$wt_dir" symbolic-ref --short -q HEAD 2>/dev/null || true)
+    if [[ "$current_branch" != "$branch" ]]; then
+      READY_SYNC_DETAIL="task worktree is on ${current_branch:-a detached HEAD}, expected $branch"
+      return 2
+    fi
+
+    pre_fetch_origin=$(git -C "$wt_dir" rev-parse --verify -q "refs/remotes/origin/$branch" 2>/dev/null || true)
+    if ! git -C "$wt_dir" fetch --quiet origin "$branch" >/dev/null 2>&1; then
+      READY_SYNC_DETAIL="git fetch origin $branch failed"
+      return 2
+    fi
+    if ! git -C "$wt_dir" cat-file -e "${gh_head}^{commit}" >/dev/null 2>&1; then
+      READY_SYNC_DETAIL="PR head ${gh_head:0:7} is not reachable after fetching origin/$branch"
+      return 2
+    fi
+
+    if git -C "$wt_dir" merge-base --is-ancestor "$local_head" "$gh_head" >/dev/null 2>&1; then
+      sync_reason="fast-forward"
+    elif [[ -n "$tend_previous" && "$tend_previous" == "$local_head" ]]; then
+      sync_reason="tend push"
+    elif [[ -n "$pre_fetch_origin" ]] \
+      && git -C "$wt_dir" merge-base --is-ancestor "$local_head" "$pre_fetch_origin" >/dev/null 2>&1; then
+      sync_reason="remote rewrite"
+    else
+      READY_SYNC_DETAIL="task worktree HEAD ${local_head:0:7} has commits that are not on PR head ${gh_head:0:7} (unpushed local work)"
+      return 2
+    fi
+
+    if ! git -C "$wt_dir" reset --quiet --keep "$gh_head" >/dev/null 2>&1; then
+      READY_SYNC_DETAIL="git reset --keep ${gh_head:0:7} refused (conflicting local edits in the task worktree)"
+      return 2
+    fi
+    if [[ "$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)" != "$gh_head" ]]; then
+      READY_SYNC_DETAIL="task worktree did not reach PR head ${gh_head:0:7} after reset"
+      return 2
+    fi
+    READY_SYNC_DETAIL="synced ${local_head:0:7} -> ${gh_head:0:7} ($sync_reason)"
+  fi
+
+  # The marker is satisfied once the checkout holds Tend's pushed head (or a
+  # descendant of it); a marker for a push GitHub has not surfaced yet stays.
+  if [[ -n "$tend_pushed" ]] && { [[ "$tend_pushed" == "$gh_head" ]] \
+    || git -C "$wt_dir" merge-base --is-ancestor "$tend_pushed" "$gh_head" >/dev/null 2>&1; }; then
+    rm -f "$tend_marker"
+  fi
+  READY_SYNC_HEAD="$gh_head"
+  return 0
 }
 
 _launch_ready_remediation_attempt() {
@@ -11130,6 +11230,35 @@ launch_ready_phase() {
   marker_clear "$state_dir/.needs-attention"
   log "$pending_log_level" "  $issue: Launching ready phase (PR #$pr_number)"
 
+  # HOK-3112: Ready checks the checkout and publishes the Tend handoff at the
+  # head it checked, so the checkout must be the PR's GitHub head first. Tend
+  # rebases in its own scratch worktree and never updates this one; running
+  # Ready at the stale checkout would publish a handoff Tend can never claim.
+  # The cross-PR guard below also diffs the checkout, so sync precedes it.
+  local sync_rc=0
+  ready_sync_worktree_to_github_head "$wt_dir" "$branch" "$pr_number" "$state_dir" || sync_rc=$?
+  case "$sync_rc" in
+    0)
+      if [[ -n "$READY_SYNC_DETAIL" ]]; then
+        log "status" "  ↻ $issue: task worktree $READY_SYNC_DETAIL before Ready (PR #$pr_number)"
+      fi
+      ;;
+    1)
+      # A GitHub read blip is transient; hold as pending rather than parking
+      # the arm in needs-user, and never fall back to the checkout's HEAD.
+      write_stage_result "$state_dir" "ready" "running" "$current_agent" "$current_model" \
+        "PR #$pr_number head could not be read from GitHub; Ready deferred" \
+        "$(jq -cn --argjson pr "$pr_number" '{type:"ready",verdict:"pending",prNumber:$pr,pendingReason:"head-unverified"}')"
+      log "info" "  $issue: $READY_SYNC_DETAIL - deferring Ready (PR #$pr_number)"
+      return 4
+      ;;
+    *)
+      write_ready_attention_file "$state_dir" "Task worktree does not match PR #$pr_number head and cannot be synced: $READY_SYNC_DETAIL. Refusing Ready."
+      log_error "  $issue: refusing ready phase for PR #$pr_number; $READY_SYNC_DETAIL"
+      return 1
+      ;;
+  esac
+
   if ! cross_pr_revert_gate_allows_merge "$issue" "$state_dir" "$wt_dir" "$pr_number" "$base_branch"; then
     return 1
   fi
@@ -11308,8 +11437,25 @@ launch_ready_phase() {
     local main_sha completed_artifacts_json label_failed_artifacts_json label_output transition_stage transition_output transition_failure_json
     main_sha=$(get_main_head_sha "$wt_dir" "$base_branch")
     if ! label_output=$(set_ready_pass_labels "$wt_dir" "$pr_number" "$state_dir" "$issue" "$ready_head_sha" 2>&1); then
-      transition_stage=$(printf '%s' "$label_output" | jq -r '.transitionFailure.stage // empty' 2>/dev/null | tail -n 1)
+      # Parse line-by-line: a non-JSON line from any transition tool must not
+      # mask the typed failure the helper printed.
+      transition_stage=$(printf '%s\n' "$label_output" | jq -Rr 'fromjson? | .transitionFailure.stage? // empty' 2>/dev/null | tail -n 1)
       [[ -n "$transition_stage" ]] || transition_stage="github-api"
+      # HOK-3112: the PR head moved while Ready ran (or the checkout no longer
+      # matches it). Nothing was published; this is transient, so re-check at
+      # the new head on the next tick instead of parking the arm in needs-user.
+      local moved_github_head
+      moved_github_head=$(printf '%s\n' "$label_output" \
+        | jq -Rr 'fromjson? | select(.transitionFailure.detail? == "head-moved") | .transitionFailure.githubHead // empty' 2>/dev/null | tail -n 1)
+      if [[ "$transition_stage" == "ownership-changed" && -n "$moved_github_head" ]]; then
+        bounded_retry_reset_if_new_head "$state_dir" "ready-remediation" "$moved_github_head"
+        bounded_retry_reset_if_new_head "$state_dir" "pending-ready-recheck" "$moved_github_head"
+        write_stage_result "$state_dir" "ready" "running" "$current_agent" "$current_model" \
+          "PR #$pr_number changed head while Ready was running, rechecking current GitHub head" \
+          "$(jq -cn --argjson pr "$pr_number" --arg head "$moved_github_head" '{type:"ready",verdict:"pending",prNumber:$pr,readyHeadSha:$head,pendingReason:"head-changed"}')"
+        log "info" "  $issue: PR #$pr_number head moved to ${moved_github_head:0:7} during Ready - handoff not published, re-checking"
+        return 4
+      fi
       transition_output=$(printf '%s' "$label_output" | sed -E \
         -e 's/(gh[pousr]_[[:alnum:]_]{12,}|github_pat_[[:alnum:]_]{12,})/[REDACTED:github-token]/g' \
         -e 's/([Aa][Pp][Ii]_?[Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt])=[^[:space:]]+/\1=[REDACTED]/g' | head -c 2000)
@@ -11354,6 +11500,10 @@ launch_ready_phase() {
 
     local handoff_outcome=""
     [[ "$label_output" == *'"outcome":"tend-owned"'* ]] && handoff_outcome="tend-owned"
+    # set_ready_pass_labels published at GitHub's head, which it verified equals
+    # the checkout synced in the preflight; record that head when Ready's own
+    # output omitted it.
+    [[ -n "$ready_head_sha" ]] || ready_head_sha="$READY_SYNC_HEAD"
     completed_artifacts_json=$(jq -cn \
       --arg verdict "${verdict:-unknown}" \
       --arg merge_status "${merge_status:-UNKNOWN}" \
@@ -11636,61 +11786,12 @@ get_task_meta() {
   read_state_value "" --arg issue "$issue" --arg field "$field" '.tasks[$issue][$field] // empty'
 }
 
+# Deprecated alias (HOK-3115), kept for one release so existing read-side
+# callers and test stubs keep working: resolves through task_identity_linear_id
+# (task-identity.sh). Linear writes never use it — they pass the task ID to
+# linear_set_state, which resolves and gates through linear_write_target.
 get_linear_issue_id() {
-  local issue="$1"
-  local linear_issue
-  linear_issue=$(get_task_meta "$issue" "linearIssueId")
-  linear_issue="${linear_issue#"${linear_issue%%[![:space:]]*}"}"
-  linear_issue="${linear_issue%"${linear_issue##*[![:space:]]}"}"
-  if [[ "$linear_issue" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
-    printf '%s\n' "$linear_issue"
-    return 0
-  fi
-  if [[ "$linear_issue" =~ ^https?://linear\.app/[^/]+/issue/[A-Z][A-Z0-9]*-[0-9]+([/?#].*)?$ ]]; then
-    local linear_url_path="${linear_issue#*://linear.app/}"
-    linear_url_path="${linear_url_path#*/issue/}"
-    printf '%s\n' "${linear_url_path%%[/?#]*}"
-    return 0
-  fi
-  if [[ "$issue" =~ ^([A-Z][A-Z0-9]*-[0-9]+)_c$ ]]; then
-    printf '%s\n' "${BASH_REMATCH[1]}"
-    return 0
-  fi
-  printf '%s\n' "$issue"
-}
-
-expansion_recovery_resolve_issue_id() {
-  local issue="$1"
-  local linear_issue=""
-
-  if [[ "$issue" != *_c ]]; then
-    printf '%s\n' "$issue"
-    return 0
-  fi
-
-  linear_issue="$(get_task_meta "$issue" "linearIssueId")"
-  linear_issue="${linear_issue#"${linear_issue%%[![:space:]]*}"}"
-  linear_issue="${linear_issue%"${linear_issue##*[![:space:]]}"}"
-  if [[ "$linear_issue" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
-    printf '%s\n' "$linear_issue"
-    return 0
-  fi
-
-  if [[ "$linear_issue" =~ ^https?://linear\.app/[^/]+/issue/[A-Z][A-Z0-9]*-[0-9]+([/?#].*)?$ ]]; then
-    local linear_url_path="${linear_issue#*://linear.app/}"
-    linear_url_path="${linear_url_path#*/issue/}"
-    printf '%s\n' "${linear_url_path%%[/?#]*}"
-    return 0
-  fi
-
-  return 1
-}
-
-should_update_linear_state() {
-  local issue="$1"
-  local role
-  role=$(get_task_meta "$issue" "challengeRole")
-  [[ "$role" != "challenger" ]]
+  task_identity_linear_id "$1" 2>/dev/null || printf '%s\n' "$1"
 }
 
 # HOK-2952: role-aware resource policy for a closed, unmerged PR (replaces
@@ -13631,15 +13732,19 @@ recover_missing_expansion_artifact() {
     return 1
   fi
 
-  if ! recovery_issue="$(expansion_recovery_resolve_issue_id "$issue")"; then
-    detail="synthetic-challenger-linear-issue-id-missing-or-invalid"
+  if ! recovery_issue="$(task_identity_linear_id "$issue" 2>/dev/null)"; then
+    detail="task-identity-linear-issue-id-unresolvable"
     expansion_recovery_mark_result "$feature_dir" "$issue" "skipped" "$detail" "0" || true
     log "warn" "[expansion-handshake] RECOVERY_SKIPPED issue=$issue detail=$detail"
     return 1
   fi
 
   recovery_timeout="$(get_expansion_handshake_timeout_seconds "$REPO_DIR")"
-  if _with_timeout "$recovery_timeout" npx tsx "$expand_tool" "$recovery_issue" --output "$packet_file" >"$recovery_log_file" 2>&1; then
+  # expand-issue.ts updates the Linear description by default; only the
+  # Linear writer may do that (HOK-3115).
+  local -a expand_write_args=()
+  task_identity_is_linear_writer "$issue" || expand_write_args=(--no-update)
+  if _with_timeout "$recovery_timeout" npx tsx "$expand_tool" "$recovery_issue" --output "$packet_file" "${expand_write_args[@]}" >"$recovery_log_file" 2>&1; then
     :
   else
     rc=$?
@@ -14587,10 +14692,8 @@ launch_task() {
   local _trace_id
   _trace_id=$(trace_get_or_create "$feature_dir" "$issue" "$slug" 2>/dev/null || true)
 
-  # Set Linear state
-  if should_update_linear_state "$issue"; then
-    linear_set_state "$linear_issue" "In Progress"
-  fi
+  # Set Linear state (a no-op for challengers)
+  linear_set_state "$issue" "In Progress"
 
   # Track in monitor arrays
   BRANCH_BY_ISSUE["$issue"]="$branch"
@@ -14896,7 +14999,8 @@ EOF
     reviewer_model="$task_model"
   fi
 
-  if [[ -z "${WAVEMILL_DISABLE_CHALLENGE:-}" ]] && should_update_linear_state "$issue" && (( remaining_slots >= 1 )); then
+  # Only the primary (Linear-writer) arm spawns a challenger.
+  if [[ -z "${WAVEMILL_DISABLE_CHALLENGE:-}" ]] && task_identity_is_linear_writer "$issue" && (( remaining_slots >= 1 )); then
     local challenge_args challenge_plan challenge_mode challenge_reason challenge_stage challenge_intent challenge_execution_intent primary_varied challenger_varied
     # Challengers are free overhead — always pass remaining-slots >= 2
     challenge_mode="single"
@@ -16577,9 +16681,7 @@ monitor_issue_state() {
       challenge_role=$(get_task_meta "$ISSUE" "challengeRole")
       challenge_model=$(get_task_meta "$ISSUE" "challengeModel")
       save_task_state "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR" "$PR" "" "$current_agent" "$linear_issue" "$challenge_flag" "$challenge_pair" "$challenge_role" "$challenge_model"
-      if should_update_linear_state "$ISSUE"; then
-        linear_set_state "$linear_issue" "In Review"
-      fi
+      linear_set_state "$ISSUE" "In Review"
       # Fetch PR details for user-visible summary
       pr_details=$(_with_timeout "$API_TIMEOUT" gh pr view "$PR" --json title,url --jq '"  " + .title + "\n  " + .url' 2>/dev/null || echo "")
       log "status" "$ISSUE → PR #$PR (In Review)"
@@ -16667,7 +16769,7 @@ monitor_issue_state() {
       return 0
     else
 	      # No PR in current repo - check Linear issue state for cross-repo completion
-	      if should_update_linear_state "$ISSUE" && linear_is_completed "$(get_linear_issue_id "$ISSUE")"; then
+	      if task_identity_is_linear_writer "$ISSUE" && linear_is_completed "$(task_identity_linear_id "$ISSUE")"; then
 	        if [[ -n "$challenge_aborted" && -z "$PR" ]]; then
 	          log "debug" "$ISSUE: skipping completed-external reconciliation for challenge-aborted no-PR arm"
 	          active_count=$((active_count + 1))
@@ -16689,9 +16791,7 @@ monitor_issue_state() {
 
         if [[ "$REQUIRE_CONFIRM" == "true" ]]; then
           log "status" "  → Window stays open for review - close it when ready$(wavemill_config_annotation "mill.requireConfirm" "$REQUIRE_CONFIRM")"
-          if should_update_linear_state "$ISSUE"; then
-            linear_set_state "$(get_linear_issue_id "$ISSUE")" "Done"
-          fi
+          linear_set_state "$ISSUE" "Done"
           # Preserve agent when marking as completed-external
           current_agent=$(read_state_value "" --arg i "$ISSUE" '.tasks[$i].agent // ""')
           save_task_state "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR" "" "completed-external" "$current_agent"
@@ -16700,9 +16800,7 @@ monitor_issue_state() {
         fi
 
         # Clean up worktree and state
-        if should_update_linear_state "$ISSUE"; then
-          linear_set_state "$(get_linear_issue_id "$ISSUE")" "Done"
-        fi
+        linear_set_state "$ISSUE" "Done"
         if declare -F monitor_cleanup_episode_skip >/dev/null 2>&1 && monitor_cleanup_episode_skip "$ISSUE" "$SLUG" "$PR"; then
           return 0
         fi
@@ -17850,8 +17948,8 @@ monitor_issue_state() {
       log "status" "  → Window stays open for review - close it when ready$(wavemill_config_annotation "mill.requireConfirm" "$REQUIRE_CONFIRM")"
       if [[ "${WAVEMILL_TERMINAL_RECONCILER_LOADED:-0}" == "1" ]]; then
         wavemill_reconcile_terminal "$SESSION" "$ISSUE" "pr_merged" "$PR" || true
-      elif should_update_linear_state "$ISSUE"; then
-        linear_set_state "$(get_linear_issue_id "$ISSUE")" "Done"
+      else
+        linear_set_state "$ISSUE" "Done"
       fi
       # Preserve agent when marking as merged
       current_agent=$(read_state_value "" --arg i "$ISSUE" '.tasks[$i].agent // ""')
@@ -17862,8 +17960,8 @@ monitor_issue_state() {
 
     if [[ "${WAVEMILL_TERMINAL_RECONCILER_LOADED:-0}" == "1" ]]; then
       wavemill_reconcile_terminal "$SESSION" "$ISSUE" "pr_merged" "$PR" || true
-    elif should_update_linear_state "$ISSUE"; then
-      linear_set_state "$(get_linear_issue_id "$ISSUE")" "Done"
+    else
+      linear_set_state "$ISSUE" "Done"
     fi
     resolve_pair_on_primary_merge "$ISSUE" "$PR" || true
     if declare -F monitor_cleanup_episode_skip >/dev/null 2>&1 && monitor_cleanup_episode_skip "$ISSUE" "$SLUG" "$PR"; then
@@ -17953,8 +18051,8 @@ monitor_issue_state() {
       # merges, Backlog only when both arms are closed, deferred while the
       # sibling is still open) so the shared issue never bounces to Backlog.
       wavemill_reconcile_terminal "$SESSION" "$ISSUE" "pr_closed_unmerged" "$PR" || true
-    elif [[ -n "$linear_status" ]] && should_update_linear_state "$ISSUE"; then
-      linear_set_state "$(get_linear_issue_id "$ISSUE")" "$linear_status"
+    elif [[ -n "$linear_status" ]]; then
+      linear_set_state "$ISSUE" "$linear_status"
     fi
     # HOK-2952: one ownership policy for every closed-PR role. The old
     # in-memory-only `CLEANED=1` branch (which left pane/worktree/state

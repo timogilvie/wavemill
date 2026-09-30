@@ -323,55 +323,10 @@ set_task_phase_local() {
     --arg issue "$issue" --arg phase "$phase"
 }
 
-linear_set_state() {
-  local issue="$1" state="$2"
-  [[ "$DRY_RUN" == "true" ]] && return 0
-  npx tsx "$TOOLS_DIR/set-issue-state.ts" "$issue" "$state" >/dev/null 2>&1
-}
-
-linear_enqueue_retry() {
-  local state="$1"
-  local issues_csv="$2"
-  local category="${3:-unknown}"
-  local http="${4:-none}"
-  local message="${5:-Queued from startup batch retry path}"
-  [[ "$DRY_RUN" == "true" ]] && return 0
-  [[ -z "$issues_csv" ]] && return 0
-  npx tsx "$TOOLS_DIR/linear-retry-drain.ts" enqueue \
-    --state "$state" \
-    --issues "$issues_csv" \
-    --category "$category" \
-    --http "$http" \
-    --message "$message" >/dev/null 2>&1 || true
-}
-
-linear_batch_set_state() {
-  local state="$1"
-  shift || true
-  local -a issues=("$@")
-  local output exit_code=0 stderr_tmp stderr_output retryable_issues_csv retry_category retry_http retry_message
-  [[ "$DRY_RUN" == "true" ]] && return 0
-  [[ "${#issues[@]}" -eq 0 ]] && return 0
-
-  stderr_tmp="$(mktemp -t wavemill-linear-batch-stderr.XXXXXX)"
-  output="$(npx tsx "$TOOLS_DIR/set-issues-state.ts" --state "$state" "${issues[@]}" 2>"$stderr_tmp")" || exit_code=$?
-  stderr_output="$(cat "$stderr_tmp" 2>/dev/null || true)"
-
-  if jq -e '.failed | length > 0' >/dev/null 2>&1 <<<"$output"; then
-    while IFS= read -r failure; do
-      startup_log "WARN: Linear state update to '$state' failed for $failure"
-    done < <(jq -r '.failed[] | "\(.issueId): \(.error) [category=\(.category // "unknown"), http=\((.httpStatus // "none") | tostring), retryable=\(.isRetryable // false)]"' <<<"$output")
-    retryable_issues_csv="$(jq -r '[.failed[] | select(.isRetryable == true) | .issueId] | unique | join(",")' <<<"$output")"
-    retry_category="$(jq -r '([.failed[] | select(.isRetryable == true) | .category] | first) // "unknown"' <<<"$output")"
-    retry_http="$(jq -r '([.failed[] | select(.isRetryable == true) | .httpStatus] | map(select(. != null)) | first // "none") | tostring' <<<"$output")"
-    retry_message="$(jq -r '([.failed[] | select(.isRetryable == true) | .error] | first) // "Queued from startup batch retry path"' <<<"$output")"
-    linear_enqueue_retry "$state" "$retryable_issues_csv" "$retry_category" "$retry_http" "$retry_message"
-  elif [[ "$exit_code" -ne 0 ]]; then
-    startup_log "WARN: Batch Linear state update to '$state' failed for ${#issues[@]} issue(s) [category=unknown, http=none, retryable=false, details=${stderr_output:-none}]"
-  fi
-  rm -f "$stderr_tmp"
-  return 0
-}
+# linear_set_state, linear_batch_set_state and linear_enqueue_retry are
+# provided by wavemill-common.sh (HOK-3115). This scope's former copies wrote
+# whatever ID they were handed, including challenger task IDs, and the silent
+# linear_set_state shadowed the canonical one's timeout and diagnostics.
 
 ensure_state_file() {
   mkdir -p "$STATE_DIR"
@@ -445,7 +400,7 @@ startup_preflight_fresh_launch_plan() {
     slug="$(jq -r '.slug // empty' <<<"$task_json")"
     branch="$(jq -r '.branch // empty' <<<"$task_json")"
     worktree="$(jq -r '.worktreeDir // empty' <<<"$task_json")"
-    linear_issue="$(jq -r '.linearIssueId // .issue // empty' <<<"$task_json")"
+    linear_issue="$(task_identity_linear_id "$issue" 2>/dev/null || true)"
     challenge_pair="$(jq -r '.challengePairId // empty' <<<"$task_json")"
     challenge_role="$(jq -r '.challengeRole // empty' <<<"$task_json")"
     linear_state="$(startup_issue_state_from_task "$task_json")"
@@ -482,7 +437,7 @@ startup_preflight_fresh_launch_plan() {
     slug="$(jq -r '.slug // empty' <<<"$task_json")"
     branch="$(jq -r '.branch // empty' <<<"$task_json")"
     worktree="$(jq -r '.worktreeDir // empty' <<<"$task_json")"
-    linear_issue="$(jq -r '.linearIssueId // .issue // empty' <<<"$task_json")"
+    linear_issue="$(task_identity_linear_id "$issue" 2>/dev/null || true)"
     challenge_pair="$(jq -r '.challengePairId // empty' <<<"$task_json")"
     classification="$(jq -r '.classification // "unverifiable"' <<<"$resolution" 2>/dev/null || echo "unverifiable")"
 
@@ -838,11 +793,6 @@ spawn_integration_window() {
   startup_log "✓ Backstage window running."
 }
 
-should_update_linear_for_task() {
-  local challenge_role="$1"
-  [[ "$challenge_role" != "challenger" ]]
-}
-
 startup_mark_remaining_skipped() {
   local task_id="$1" current_col="$2"
   local cols=(route worktree deps agent linear)
@@ -1037,7 +987,7 @@ startup_run_task_phases() {
   title="$(echo "$task_json" | jq -r '.title')"
   branch="$(echo "$task_json" | jq -r '.branch')"
   wt_dir="$(echo "$task_json" | jq -r '.worktreeDir')"
-  linear_issue="$(echo "$task_json" | jq -r '.linearIssueId // .issue')"
+  linear_issue="$(task_identity_linear_id "$issue" 2>/dev/null || true)"
   task_packet_file="$(echo "$task_json" | jq -r '.taskPacketFile')"
   details_file="$(echo "$task_json" | jq -r '.taskPacketDetailsFile')"
   issue_json_file="$(echo "$task_json" | jq -r '.issueJsonFile')"
@@ -1656,13 +1606,12 @@ main() {
   if [[ "$DRY_RUN" != "true" && "$launched_count" -gt 0 ]]; then
     while IFS= read -r launched_issue; do
       [[ -z "$launched_issue" ]] && continue
-      linear_id="$(jq -r --arg issue "$launched_issue" '.tasks[]
-        | select(.issue == $issue and ((.challengeRole // "") != "challenger"))
-        | (.linearIssueId // .issue)' "$PLAN_FILE" | head -n 1)"
-      [[ -n "$linear_id" && "$linear_id" != "null" ]] && linear_batch_ids+=("$linear_id")
+      # Task IDs go in as-is; linear_batch_set_state resolves each through
+      # linear_write_target and drops challengers.
+      linear_batch_ids+=("$launched_issue")
     done < "$LAUNCHED_ISSUES_FILE"
     if [[ "${#linear_batch_ids[@]}" -gt 0 ]]; then
-      startup_log "Setting Linear state for ${#linear_batch_ids[@]} launched issue(s) in one batch call..."
+      startup_log "Setting Linear state for ${#linear_batch_ids[@]} launched task(s) in one batch call..."
       linear_batch_set_state "In Progress" "${linear_batch_ids[@]}"
     fi
   fi

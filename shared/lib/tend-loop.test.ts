@@ -38,16 +38,24 @@ function idleDecision(): TendDecision {
   return { integrationHealth: { state: 'healthy' }, eligible: [], blocked: [], nextPR: null };
 }
 
-function deps(overrides: Partial<TendLoopDeps> = {}): Partial<TendLoopDeps> & { sleeps: number[]; heartbeats: unknown[] } {
+function deps(overrides: Partial<TendLoopDeps> = {}): Partial<TendLoopDeps> & { sleeps: number[]; heartbeats: unknown[]; gateCalls: unknown[] } {
   const sleeps: number[] = [];
   const heartbeats: unknown[] = [];
+  const gateCalls: unknown[] = [];
   return {
     sleeps,
     heartbeats,
+    gateCalls,
     selectNextCandidate: async () => idleDecision(),
     executeMerge: async () => ({ status: 'merged', prNumber: 1, haltLoop: false }),
     writePollHeartbeat: async (_repoDir, health) => { heartbeats.push({ kind: 'success', ...health }); },
     writeFailureState: async (_repoDir, health) => { heartbeats.push({ kind: 'failure', ...health }); },
+    // HOK-3123: default the scheduler seam to a no-op stub so existing tests
+    // that only exercise tend behavior are not surprised by a real file spawn.
+    maybeRunToolChoiceGate: async (options) => {
+      gateCalls.push(options);
+      return { ran: false, skipped: 'fresh', nextLastCheckedMs: 0 };
+    },
     sleep: async (ms) => {
       sleeps.push(ms);
       if (ms === 60_000) {
@@ -177,6 +185,34 @@ describe('runTendLoop', () => {
     assert.equal(heartbeat.laneCondition, 'no-eligible');
     assert.match(heartbeat.laneEvidenceId, /^[0-9a-f]{12}$/);
     assert.match(r.lines[0], /^iter=1 poll_started=2026-08-18T12:00:00.000Z poll_completed=2026-08-18T12:00:00.000Z /);
+  });
+
+  it('fires maybeRunToolChoiceGate after each idle poll heartbeat (HOK-3123)', async () => {
+    const d = deps();
+    await assert.rejects(
+      runTendLoop({ repoDir: '/tmp/repo', renderer: renderer(), deps: d }),
+      TypeError,
+    );
+    assert.equal(d.gateCalls.length, 1);
+    const call = d.gateCalls[0] as { repoDir: string };
+    assert.equal(call.repoDir, '/tmp/repo');
+  });
+
+  it('a scheduler error never fails the tend loop (HOK-3123)', async () => {
+    let logged = '';
+    const d = deps({
+      maybeRunToolChoiceGate: async () => {
+        throw new Error('scheduler blew up');
+      },
+      log: (line) => {
+        logged += line;
+      },
+    });
+    await assert.rejects(
+      runTendLoop({ repoDir: '/tmp/repo', renderer: renderer(), deps: d }),
+      TypeError,
+    );
+    assert.match(logged, /tool-choice-gate: scheduler threw/);
   });
 
   it('continues after a transient selection error and clears failure heartbeat on success', async () => {

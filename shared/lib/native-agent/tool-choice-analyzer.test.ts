@@ -16,10 +16,13 @@ import { describe, it } from 'node:test';
 import {
   TOOL_CHOICE_GATES,
   analyzeSignal,
+  buildLatestGateSnapshot,
+  buildProgressLine,
   computeMinimumCapture,
   createSeededRandom,
   deriveRecommendation,
   generateReport,
+  generateReportOnlyMarkdown,
   joinOutcomes,
   loadCorpusTolerant,
   loadEvalOutcomes,
@@ -994,5 +997,117 @@ describe('generateReport', () => {
     assert.ok(report.includes('- S1:'));
     assert.ok(report.includes('- S4:'));
     assert.ok(report.includes('Kill condition'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Report-only helpers (HOK-3123)
+// ---------------------------------------------------------------------------
+
+describe('buildProgressLine (HOK-3123)', () => {
+  it('emits fixed field order with n/a for empty corpus so grep stays cheap', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tool-choice-progress-'));
+    const evalsPath = evalsFrom([]);
+    const { quality, recommendation } = runPipeline(join(dir, 'absent.jsonl'), evalsPath);
+    const line = buildProgressLine(quality, recommendation);
+    assert.match(
+      line,
+      /^tool-choice-gate: rows=0 joined=n\/a models=0 sessions=0\/\d+ menu-digest=n\/a exact=0\/\d+ rec=inconclusive$/,
+    );
+  });
+
+  it('reports rows, joined %, distinct models/sessions, menu-digest %, and exact/200', () => {
+    // Two sessions × two models × 4 rows = 8 joined rows, all with menu digest,
+    // provenance mixed.
+    const { quality, recommendation } = plantedPipeline(
+      [
+        { model: 'model-a', issue: 'HOK-1', tool: 'ReadFile', score: 0.9, provenance: 'exact' },
+        { model: 'model-b', issue: 'HOK-2', tool: 'SearchText', score: 0.9, provenance: 'surrogate' },
+      ],
+      4,
+    );
+    const line = buildProgressLine(quality, recommendation);
+    assert.match(line, /^tool-choice-gate: rows=8 joined=100%/);
+    assert.match(line, /models=2 sessions=2\/\d+/);
+    assert.match(line, /menu-digest=100%/);
+    assert.match(line, /exact=4\/\d+/);
+    assert.match(line, /rec=(go|no-go|inconclusive)$/);
+  });
+});
+
+describe('buildLatestGateSnapshot (HOK-3123)', () => {
+  it('shape matches the schema documented in the plan', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tool-choice-snap-'));
+    const evalsPath = evalsFrom([]);
+    const { quality, recommendation } = runPipeline(join(dir, 'absent.jsonl'), evalsPath);
+    const snapshot = buildLatestGateSnapshot({
+      quality,
+      recommendation,
+      now: '2026-09-29T00:00:00.000Z',
+    });
+    assert.equal(snapshot.schemaVersion, 1);
+    assert.equal(snapshot.updatedAt, '2026-09-29T00:00:00.000Z');
+    assert.equal(snapshot.corpusFileMissing, true);
+    assert.equal(snapshot.rows, 0);
+    assert.equal(snapshot.joinedPct, null);
+    assert.equal(snapshot.distinctModels, 0);
+    assert.equal(snapshot.distinctSessions, 0);
+    assert.equal(snapshot.menuDigestCoveragePct, null);
+    assert.equal(snapshot.exactProvenanceRows, 0);
+    assert.equal(snapshot.computedRecommendation, 'inconclusive');
+    assert.equal(snapshot.gates.length, 4);
+    for (const gate of snapshot.gates) {
+      assert.ok(['G1', 'G2', 'G3', 'G4'].includes(gate.id));
+      assert.equal(typeof gate.passed, 'boolean');
+      assert.equal(typeof gate.observed, 'string');
+    }
+    assert.equal(snapshot.progressLine, buildProgressLine(quality, recommendation));
+  });
+
+  it('populates joinedPct/distinctModels from a non-empty corpus', () => {
+    const { quality, recommendation } = plantedPipeline(
+      [
+        { model: 'model-a', issue: 'HOK-1', tool: 'ReadFile', score: 0.9, provenance: 'exact' },
+        { model: 'model-b', issue: 'HOK-2', tool: 'SearchText', score: 0.9, provenance: 'surrogate' },
+      ],
+      4,
+    );
+    const snapshot = buildLatestGateSnapshot({
+      quality,
+      recommendation,
+      now: '2026-09-29T00:00:00.000Z',
+    });
+    assert.equal(snapshot.rows, 8);
+    assert.equal(snapshot.distinctModels, 2);
+    assert.equal(snapshot.distinctSessions, 2);
+    assert.equal(snapshot.joinedPct, 100);
+  });
+});
+
+describe('generateReportOnlyMarkdown (HOK-3123)', () => {
+  it('labels itself as report-only and includes the progress + gate table', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tool-choice-md-'));
+    const evalsPath = evalsFrom([]);
+    const corpusPath = join(dir, 'absent.jsonl');
+    const { quality, recommendation } = runPipeline(corpusPath, evalsPath);
+    const md = generateReportOnlyMarkdown({
+      quality,
+      recommendation,
+      now: '2026-09-29T00:00:00.000Z',
+      corpusPath,
+      evalsPath,
+    });
+    assert.ok(md.includes('# Tool-choice gate progress (HOK-3123)'));
+    assert.ok(md.includes('Last updated: 2026-09-29T00:00:00.000Z'));
+    assert.ok(md.includes('Report only'));
+    assert.ok(md.includes('```status'));
+    assert.ok(md.includes('tool-choice-gate: rows=0'));
+    assert.ok(md.includes('| G1 |'));
+    assert.ok(md.includes('| G4 |'));
+    assert.ok(md.includes('Weekly I-27 status block'));
+    assert.ok(md.includes(corpusPath));
+    // Never claims an operator decision.
+    assert.ok(!md.includes('Operator decision:'));
+    assert.ok(!/^Decision:/m.test(md));
   });
 });

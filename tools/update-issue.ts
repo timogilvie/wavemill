@@ -1,6 +1,7 @@
 #!/usr/bin/env -S npx tsx
 import { runTool } from '../shared/lib/tool-runner.ts';
 import { getIssueBasic, updateIssue } from '../shared/lib/linear.ts';
+import { linearWriteTargetOrSkip } from '../shared/lib/linear-write-gate.ts';
 import fs from "node:fs/promises";
 
 runTool({
@@ -18,12 +19,15 @@ runTool({
     'npx tsx tools/update-issue.ts HOK-356 --file /tmp/expanded.md',
   ],
   async run({ args, positional }) {
-    const identifier = positional[0];
     const filePath = args.file;
 
     if (!filePath) {
       throw new Error('--file is required');
     }
+
+    // Challengers are a logged no-op; invalid/conflicting IDs throw (HOK-3115).
+    const identifier = linearWriteTargetOrSkip(positional[0]);
+    if (!identifier) return;
 
     // Read description from file
     const description = await fs.readFile(filePath, 'utf-8');

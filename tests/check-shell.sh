@@ -212,6 +212,7 @@ for f in \
   "$REPO_DIR"/tests/fixtures/incidents/hok2595_closed_non_challenge.sh \
   "$REPO_DIR"/tests/fixtures/incidents/hok2913c_superseded_challenger.sh \
   "$REPO_DIR"/tests/fixtures/incidents/squash_delivery_deleted_remote_head.sh \
+  "$REPO_DIR"/tests/fixtures/incidents/hok3056_terminal_dirty_worktree.sh \
   "$REPO_DIR"/tests/fixtures/incidents/control_dirty_worktree.sh \
   "$REPO_DIR"/tests/fixtures/incidents/control_local_head_changed.sh \
   "$REPO_DIR"/tests/fixtures/incidents/control_divergent_local_ahead.sh \
@@ -539,6 +540,9 @@ else
     # Extract function definitions from task-progress.sh (sourced by wavemill-common.sh, HOK-3101)
     TASK_PROGRESS_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/task-progress.sh" | sed 's/()//' | sort -u)
 
+    # Extract function definitions from task-identity.sh (sourced by wavemill-common.sh, HOK-3114)
+    TASK_IDENTITY_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/task-identity.sh" | sed 's/()//' | sort -u)
+
     # Extract function definitions from challenge-arms.sh (also sourced by wavemill-common.sh, HOK-2811)
     CHALLENGE_ARMS_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/challenge-arms.sh" | sed 's/()//' | sort -u)
 
@@ -558,7 +562,7 @@ else
     WORKTREE_DEPS_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/wavemill-worktree-deps.sh" | sed 's/()//' | sort -u)
 
     # Combine all available function definitions
-    ALL_DEFINED=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' "$HEREDOC_FUNCS" "$ADAPTER_FUNCS" "$COMMON_FUNCS" "$BOUNDED_RETRY_FUNCS" "$PLAN_PACKET_BINDING_FUNCS" "$TASK_PROGRESS_FUNCS" "$CHALLENGE_ARMS_FUNCS" "$HOOK_FUNCS" "$QUEUE_HEALTH_FUNCS" "$MARKER_FUNCS" "$RECONCILER_FUNCS" "$WORKTREE_DEPS_FUNCS" | sort -u)
+    ALL_DEFINED=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' "$HEREDOC_FUNCS" "$ADAPTER_FUNCS" "$COMMON_FUNCS" "$BOUNDED_RETRY_FUNCS" "$PLAN_PACKET_BINDING_FUNCS" "$TASK_PROGRESS_FUNCS" "$TASK_IDENTITY_FUNCS" "$CHALLENGE_ARMS_FUNCS" "$HOOK_FUNCS" "$QUEUE_HEALTH_FUNCS" "$MARKER_FUNCS" "$RECONCILER_FUNCS" "$WORKTREE_DEPS_FUNCS" | sort -u)
 
     # Known external commands and bash builtins that are NOT custom functions
     # This list covers standard utilities, coreutils, and tools used by wavemill
@@ -809,13 +813,14 @@ else
     fail "monitor still risks cleanup when agent exits without PR"
   fi
 
-  if grep -q 'linear_set_state .*"In Review"' <<< "$HEREDOC_CONTENT" && grep -q 'get_linear_issue_id' <<< "$HEREDOC_CONTENT"; then
+  # HOK-3115: writes pass the task ID; linear_set_state resolves and gates it.
+  if grep -qF 'linear_set_state "$ISSUE" "In Review"' <<< "$HEREDOC_CONTENT"; then
     pass "monitor sets Linear issue to In Review when PR is detected"
   else
     fail "monitor does not set Linear issue to In Review on PR detection"
   fi
 
-  if grep -q 'linear_set_state .*"Done"' <<< "$HEREDOC_CONTENT" && grep -q 'get_linear_issue_id' <<< "$HEREDOC_CONTENT"; then
+  if grep -qF 'linear_set_state "$ISSUE" "Done"' <<< "$HEREDOC_CONTENT"; then
     pass "monitor sets Linear issue to Done when work is completed"
   else
     fail "monitor does not set Linear issue to Done on completion"
@@ -1057,7 +1062,7 @@ else
     && grep -Fq 'check_challenge_sibling_merged "$ISSUE"' <<< "$CLOSED_BLOCK" \
     && grep -Fq 'linear_status="Done"' <<< "$CLOSED_BLOCK" \
     && grep -Fq 'Challenge sibling merged → marking Linear as Done' <<< "$CLOSED_BLOCK" \
-    && grep -Fq 'linear_set_state "$(get_linear_issue_id "$ISSUE")" "$linear_status"' <<< "$CLOSED_BLOCK"; then
+    && grep -Fq 'linear_set_state "$ISSUE" "$linear_status"' <<< "$CLOSED_BLOCK"; then
     pass "closed challenge PRs mark Linear Done when the sibling PR was merged"
   else
     fail "closed challenge PRs do not promote Linear to Done when sibling merged"

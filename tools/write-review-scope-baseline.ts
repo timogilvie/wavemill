@@ -10,7 +10,7 @@ runTool({
   description:
     'Materialize the .review-scope-baseline.json artifact recording the committed coding '
     + 'path set at the coding→review handoff. Create-if-absent: an existing baseline is '
-    + 'never regenerated. Exit codes: 0 baseline present (created or pre-existing), '
+    + 'never regenerated unless --refresh advances it past a base merge. Exit codes: 0 baseline present (created or pre-existing), '
     + '1 baseline could not be materialized.',
   options: {
     'repo-dir': { type: 'string', description: 'Repository directory (worktree)' },
@@ -19,11 +19,13 @@ runTool({
     'since-commit-source': { type: 'string', description: 'Source for --since-commit: launch-base or explicit (default: explicit)' },
     'head-ref': { type: 'string', description: 'Head ref for the baseline diff (default: HEAD)' },
     'integration-ref': { type: 'string', description: 'Integration ref for merge-base derivation (default: configured integration branch)' },
+    refresh: { type: 'boolean', description: 'Advance an existing merge-base-derived baseline to the remote merge-base after a base merge (old artifact kept in .review-scope-baseline.history.jsonl)' },
     json: { type: 'boolean', description: 'Emit machine-readable JSON' },
   },
   examples: [
     'npx tsx tools/write-review-scope-baseline.ts --repo-dir .',
     'npx tsx tools/write-review-scope-baseline.ts --repo-dir . --feature-dir features/my-task',
+    'npx tsx tools/write-review-scope-baseline.ts --repo-dir . --refresh',
   ],
   async run({ args }) {
     const repoDir = resolveRepoDir(args['repo-dir'] as string | undefined);
@@ -42,12 +44,13 @@ runTool({
         sinceCommitSource: parseSinceCommitSource(args['since-commit-source'] as string | undefined),
         headRef: args['head-ref'] as string | undefined,
         integrationRef: args['integration-ref'] as string | undefined,
+        refresh: Boolean(args.refresh),
       });
       if (args.json) {
         console.log(JSON.stringify(result, null, 2));
       } else {
         console.log(
-          `${result.created ? 'Created' : 'Kept existing'} review-scope baseline at ${result.baselinePath} `
+          `${result.created ? 'Created' : result.refreshed ? 'Refreshed' : 'Kept existing'} review-scope baseline at ${result.baselinePath} `
           + `(${result.baseline.paths.length} path(s), since ${result.baseline.sinceCommit})`,
         );
         console.log(

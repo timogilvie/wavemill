@@ -114,12 +114,16 @@ function stubRunTsxCommand(): (args: string[]) => string {
   };
 }
 
-function stubRunTsxCommandWithExpansion(expandedIssues: string[]): (args: string[]) => string {
+function stubRunTsxCommandWithExpansion(
+  expandedIssues: string[],
+  expandArgs: string[][] = [],
+): (args: string[]) => string {
   return (args: string[]) => {
     const command = args[0];
     const outputIndex = args.indexOf('--output');
     if (command === 'tools/expand-issue.ts') {
       expandedIssues.push(args[1] ?? '');
+      expandArgs.push(args);
       assert.ok(outputIndex >= 0, 'expand-issue must receive --output');
       writeFileSync(args[outputIndex + 1]!, [
         '# Task Packet',
@@ -572,6 +576,7 @@ describe('launchNativePlanning', () => {
     const { wtDir, featureDir, packetPath } = setupWorktree();
     const api = uniqueApi('challenger-linear-issue');
     const expandedIssues: string[] = [];
+    const expandArgs: string[][] = [];
     writeFileSync(packetPath, 'raw challenger context without task packet sections\n');
 
     try {
@@ -595,10 +600,12 @@ describe('launchNativePlanning', () => {
         repoDir: REPO_DIR,
         title: 'Plan challenger',
         loopModelOverride: scriptedModel(api),
-        runTsxCommand: stubRunTsxCommandWithExpansion(expandedIssues),
+        runTsxCommand: stubRunTsxCommandWithExpansion(expandedIssues, expandArgs),
       });
 
       assert.deepEqual(expandedIssues, ['HOK-2464']);
+      // HOK-3115: a challenger expansion must never write the primary's Linear issue.
+      assert.ok(expandArgs[0]?.includes('--no-update'), 'challenger expansion must pass --no-update');
       assert.match(readFileSync(join(featureDir, 'plan.md'), 'utf-8'), /# Challenger Plan/);
     } finally {
       cleanup(wtDir);
