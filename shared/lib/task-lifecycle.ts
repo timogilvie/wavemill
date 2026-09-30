@@ -281,6 +281,15 @@ export function validateTaskLifecycleState(lifecycleInput: unknown): string[] {
   return errors;
 }
 
+function isOrphanStub(task: Record<string, unknown>): boolean {
+  const phase = text(task.phase);
+  const status = text(task.status);
+  const slug = text(task.slug);
+  const lifecycle = task.lifecycle;
+  return phase === undefined && status === undefined && slug === undefined
+    && (lifecycle === undefined || lifecycle === null);
+}
+
 export function normalizeTaskLifecycle(taskInput: unknown): NormalizedTaskLifecycle {
   const task = record(taskInput);
   const existing = record(task.lifecycle);
@@ -291,6 +300,7 @@ export function normalizeTaskLifecycle(taskInput: unknown): NormalizedTaskLifecy
   const retention = record(existing.retention);
   const launchContract = normalizeLaunchContract(existing.launchContract);
   const reasons: string[] = [];
+  const orphanStub = !disposition && isOrphanStub(task);
 
   if (!disposition) {
     if ((task.executionOwner === 'queue' && task.paneState === 'released') || task.paneState === 'released') {
@@ -298,6 +308,12 @@ export function normalizeTaskLifecycle(taskInput: unknown): NormalizedTaskLifecy
     } else if (legacyIsTerminal(task)) {
       disposition = 'verification-required';
       reasons.push('legacy-terminal-resource-state');
+    } else if (orphanStub) {
+      // HOK-3125: a phase/status/slug/lifecycle-less row is a stub recreated by
+      // a raw post-reap write. Persist a valid disposition (released) but mark
+      // it non-slot-consuming so the TS counter agrees with the shell one.
+      disposition = 'released';
+      reasons.push('orphan-stub');
     } else {
       disposition = 'allocated';
     }

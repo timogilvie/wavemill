@@ -167,6 +167,8 @@ All JSON state read-modify-write updates must use `state_mutate` from `shared/li
 
 Append-only files such as JSONL logs and `.wavemill/registry/` entries remain lock-free. Hook status files at `/tmp/wavemill-*.hook` also keep their existing single-writer temporary-file pattern.
 
+Per-task writes that may run after the task has been reaped (background eval completion, job-poll settlement, retry bookkeeping) must go through `task_state_mutate_existing` in `shared/lib/wavemill-common.sh`. A raw `.tasks[$issue].x = …` state_mutate recreates the reaped entry as a phase/status/slug/lifecycle-less stub that consumes a mill slot (HOK-3125). The counter also classifies such stubs as `orphan` as defense in depth, but the writer guard is the primary fix.
+
 ### Architecture
 
 **Shared Protocol** ([wavemill-hook-protocol.sh](shared/hooks/wavemill-hook-protocol.sh)):
