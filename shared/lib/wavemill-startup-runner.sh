@@ -680,21 +680,25 @@ setup_control_dashboard() {
   tmux select-pane -t "$SESSION:$WAVEMILL_WINDOW_MILL.0"
 }
 
+# Spawns the backstage window for any backstage consumer: tend (integration
+# sessions only) and/or the observer (every mill session, HOK-3094).
 spawn_integration_window() {
   [[ "${DRY_RUN:-false}" == "true" ]] && return 0
-  local merged observer_enabled observer_interval observer_max_log_lines
+  local merged tend_enabled observer_enabled observer_interval observer_max_log_lines observer_service_mode
   local integration_cmd observer_cmd status_script jobs_cmd queue_cmd tend_pane right_top_pane right_bottom_pane observer_pane backstage_health_file
   local backstage_exists=false tend_result jobs_result queue_result observer_result tend_action jobs_action queue_action observer_action
   local tend_killed=0 jobs_killed=0 queue_killed=0 observer_killed=0 created_layout=false observer_instance_count=0
+  local tend_off_reason="" stale_tend_pane _dead
+  tend_pane="" tend_action="" observer_pane=""
 
   merged="$(wavemill_load_config "$REPO_DIR")"
 
   # HOK-3102: gate through the single session-capability resolver so we
   # never publish tend/observer panes when the resolver says no consumer.
-  if ! wavemill_session_has tend "$REPO_DIR"; then
-    _cleanup_stale_observer_findings "$REPO_DIR"
-    return 0
-  fi
+  # HOK-3094: tend follows integration; the observer runs in every mill
+  # session unless explicitly disabled, so either one opens the window.
+  tend_enabled=false
+  wavemill_session_has tend "$REPO_DIR" && tend_enabled=true
 
   observer_enabled=false
   if wavemill_session_has observer "$REPO_DIR"; then
@@ -703,36 +707,60 @@ spawn_integration_window() {
     _cleanup_stale_observer_findings "$REPO_DIR"
   fi
 
+  if [[ "$tend_enabled" != "true" && "$observer_enabled" != "true" ]]; then
+    return 0
+  fi
+
   # Log the resolved capabilities once at startup so the record explains the
   # gate outcome.
-  local caps_json
+  local caps_json=""
   if caps_json="$(wavemill_session_capabilities_json "$REPO_DIR")" && [[ -n "$caps_json" ]]; then
     local caps_summary
     caps_summary="$(printf '%s' "$caps_json" | jq -r '"tend=\(.tend) observer=\(.observer) mergeExecutor=\(.mergeExecutor) mergeQueue=\(.mergeQueue)"' 2>/dev/null || echo "")"
     [[ -n "$caps_summary" ]] && startup_log "Session capabilities: $caps_summary"
   fi
 
-  startup_log "Starting backstage window (tend loop + background status)..."
+  if [[ "$tend_enabled" == "true" ]]; then
+    startup_log "Starting backstage window (tend loop + background status)..."
+  else
+    tend_off_reason="$(printf '%s' "$caps_json" | jq -r '.reasons.tend // empty' 2>/dev/null || true)"
+    startup_log "Starting backstage window (observer only; tend off: ${tend_off_reason:-no tend consumer})..."
+  fi
   if [[ "$observer_enabled" == "true" ]]; then
     observer_interval="$(wavemill_observer_interval_seconds "$merged")"
+    observer_max_log_lines="$(wavemill_observer_max_log_lines "$merged")"
     startup_log "Observer: enabled (interval=${observer_interval}s)"
+    observer_service_mode="$(wavemill_observer_linear_service_mode "$merged" "$REPO_DIR")"
+    if [[ "$observer_service_mode" != "off" ]]; then
+      wavemill_observer_ensure_linear_key "$REPO_DIR"
+      startup_log "Observer: managed Linear filing mode=${observer_service_mode}"
+    fi
+    observer_cmd="$(wavemill_build_observer_loop_command "$SESSION" "$REPO_DIR" "$TOOLS_DIR" "$observer_interval" "$observer_max_log_lines" "$observer_service_mode")"
   else
-    startup_log "Observer: disabled (opt-in; enable via .observer.enabled in .wavemill-config.json; see HOK-2594)"
+    startup_log "Observer: disabled by .observer.enabled=false"
   fi
   WORKTREE_ROOT="${WORKTREE_ROOT:-$REPO_DIR}"
-  integration_cmd="$(wavemill_build_tend_loop_command "$SESSION" "$REPO_DIR" "$TOOLS_DIR" "integration")"
   if tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -Fxq "$WAVEMILL_WINDOW_BACKSTAGE"; then
     backstage_exists=true
     startup_log "Backstage window already exists; reconciling panes"
   fi
 
-  if [[ "$backstage_exists" == "true" ]]; then
-    tend_result="$(wavemill_reconcile_backstage_service_pane "$SESSION" "$WAVEMILL_WINDOW_BACKSTAGE" "$WAVEMILL_BACKSTAGE_TEND_PANE_TITLE" "$integration_cmd" "reuse" "$SESSION:$WAVEMILL_WINDOW_BACKSTAGE.0" -h -b -p 60 -c "$REPO_DIR" || true)"
-    IFS=$'\t' read -r tend_pane tend_action tend_killed <<< "$tend_result"
-  else
-    tmux new-window -d -t "$SESSION" -n "$WAVEMILL_WINDOW_BACKSTAGE" -c "$REPO_DIR" "$integration_cmd" >/dev/null
-    tend_pane="$(tmux display-message -p -t "$SESSION:$WAVEMILL_WINDOW_BACKSTAGE.0" '#{pane_id}' 2>/dev/null || true)"
-    tend_action="created"
+  if [[ "$tend_enabled" == "true" ]]; then
+    integration_cmd="$(wavemill_build_tend_loop_command "$SESSION" "$REPO_DIR" "$TOOLS_DIR" "integration")"
+    if [[ "$backstage_exists" == "true" ]]; then
+      tend_result="$(wavemill_reconcile_backstage_service_pane "$SESSION" "$WAVEMILL_WINDOW_BACKSTAGE" "$WAVEMILL_BACKSTAGE_TEND_PANE_TITLE" "$integration_cmd" "reuse" "$SESSION:$WAVEMILL_WINDOW_BACKSTAGE.0" -h -b -p 60 -c "$REPO_DIR" || true)"
+      IFS=$'\t' read -r tend_pane tend_action tend_killed <<< "$tend_result"
+    else
+      tmux new-window -d -t "$SESSION" -n "$WAVEMILL_WINDOW_BACKSTAGE" -c "$REPO_DIR" "$integration_cmd" >/dev/null
+      tend_pane="$(tmux display-message -p -t "$SESSION:$WAVEMILL_WINDOW_BACKSTAGE.0" '#{pane_id}' 2>/dev/null || true)"
+      tend_action="created"
+    fi
+  elif [[ "$backstage_exists" != "true" ]]; then
+    # Observer-only session: the observer opens the window as its first pane.
+    # The reconcile below finds it by title and reuses it.
+    tmux new-window -d -t "$SESSION" -n "$WAVEMILL_WINDOW_BACKSTAGE" -c "$REPO_DIR" "$observer_cmd" >/dev/null
+    observer_pane="$(tmux display-message -p -t "$SESSION:$WAVEMILL_WINDOW_BACKSTAGE.0" '#{pane_id}' 2>/dev/null || true)"
+    [[ -n "$observer_pane" ]] && wavemill_set_tmux_pane_title "$observer_pane" "$WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE"
   fi
 
   if [[ -n "$tend_pane" ]]; then
@@ -742,28 +770,21 @@ spawn_integration_window() {
     fi
   fi
 
+  local first_pane="${tend_pane:-${observer_pane:-$SESSION:$WAVEMILL_WINDOW_BACKSTAGE.0}}"
   status_script="${LIB_DIR:-$REPO_DIR/shared/lib}/wavemill-status.sh"
   printf -v jobs_cmd "'%s' --pane=jobs '%s' '%s' '%s'" "$status_script" "$SESSION" "$WORKTREE_ROOT" "$STATE_FILE"
   printf -v queue_cmd "'%s' --pane=queued-pending '%s' '%s' '%s'" "$status_script" "$SESSION" "$WORKTREE_ROOT" "$STATE_FILE"
 
-  jobs_result="$(wavemill_reconcile_backstage_service_pane "$SESSION" "$WAVEMILL_WINDOW_BACKSTAGE" "$WAVEMILL_BACKSTAGE_JOBS_PANE_TITLE" "$jobs_cmd" "restart" "${tend_pane:-$SESSION:$WAVEMILL_WINDOW_BACKSTAGE.0}" -h -p 40 || true)"
+  jobs_result="$(wavemill_reconcile_backstage_service_pane "$SESSION" "$WAVEMILL_WINDOW_BACKSTAGE" "$WAVEMILL_BACKSTAGE_JOBS_PANE_TITLE" "$jobs_cmd" "restart" "$first_pane" -h -p 40 || true)"
   IFS=$'\t' read -r right_top_pane jobs_action jobs_killed <<< "$jobs_result"
   [[ "$jobs_action" == "created" ]] && created_layout=true
 
-  queue_result="$(wavemill_reconcile_backstage_service_pane "$SESSION" "$WAVEMILL_WINDOW_BACKSTAGE" "$WAVEMILL_BACKSTAGE_QUEUE_PANE_TITLE" "$queue_cmd" "restart" "${right_top_pane:-$tend_pane}" -v -p 50 || true)"
+  queue_result="$(wavemill_reconcile_backstage_service_pane "$SESSION" "$WAVEMILL_WINDOW_BACKSTAGE" "$WAVEMILL_BACKSTAGE_QUEUE_PANE_TITLE" "$queue_cmd" "restart" "${right_top_pane:-$first_pane}" -v -p 50 || true)"
   IFS=$'\t' read -r right_bottom_pane queue_action queue_killed <<< "$queue_result"
   [[ "$queue_action" == "created" ]] && created_layout=true
 
   if [[ "$observer_enabled" == "true" ]]; then
-    observer_max_log_lines="$(wavemill_observer_max_log_lines "$merged")"
-    local observer_service_mode
-    observer_service_mode="$(wavemill_observer_linear_service_mode "$merged" "$REPO_DIR")"
-    if [[ "$observer_service_mode" != "off" ]]; then
-      wavemill_observer_ensure_linear_key "$REPO_DIR"
-      startup_log "Observer: managed Linear filing mode=${observer_service_mode}"
-    fi
-    observer_cmd="$(wavemill_build_observer_loop_command "$SESSION" "$REPO_DIR" "$TOOLS_DIR" "$observer_interval" "$observer_max_log_lines" "$observer_service_mode")"
-    local observer_split_target="${right_bottom_pane:-${right_top_pane:-$tend_pane}}"
+    local observer_split_target="${right_bottom_pane:-${right_top_pane:-$first_pane}}"
     observer_result="$(wavemill_reconcile_backstage_service_pane "$SESSION" "$WAVEMILL_WINDOW_BACKSTAGE" "$WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE" "$observer_cmd" "reuse" "$observer_split_target" -v -p 50 -c "$REPO_DIR" || true)"
     IFS=$'\t' read -r observer_pane observer_action observer_killed <<< "$observer_result"
     [[ "$observer_killed" =~ ^[0-9]+$ ]] || observer_killed=0
@@ -778,6 +799,16 @@ spawn_integration_window() {
       [[ -n "$observer_pane" ]] || continue
       tmux kill-pane -t "$observer_pane" >/dev/null 2>&1 || true
     done < <(wavemill_list_backstage_panes_by_title "$SESSION" "$WAVEMILL_WINDOW_BACKSTAGE" "$WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE" 2>/dev/null || true)
+    observer_pane=""
+  fi
+
+  # Tend off: retire a tend pane left over from an earlier integration session.
+  # Done after the other panes exist so killing it never closes the window.
+  if [[ "$tend_enabled" != "true" ]]; then
+    while IFS=$'\t' read -r stale_tend_pane _dead; do
+      [[ -n "$stale_tend_pane" ]] || continue
+      tmux kill-pane -t "$stale_tend_pane" >/dev/null 2>&1 || true
+    done < <(wavemill_list_backstage_panes_by_title "$SESSION" "$WAVEMILL_WINDOW_BACKSTAGE" "$WAVEMILL_BACKSTAGE_TEND_PANE_TITLE" 2>/dev/null || true)
   fi
 
   tmux set-window-option -u -t "$SESSION:$WAVEMILL_WINDOW_BACKSTAGE" window-status-style >/dev/null 2>&1 || true
@@ -793,7 +824,12 @@ spawn_integration_window() {
   fi
   backstage_health_file="$(wavemill_backstage_health_file "$STATE_DIR" 2>/dev/null || true)"
   if [[ -n "$backstage_health_file" ]]; then
-    wavemill_write_backstage_health "$backstage_health_file" "healthy" "backstage tend loop is running" 0 "" "$tend_pane" 1
+    if [[ "$tend_enabled" == "true" ]]; then
+      wavemill_write_backstage_health "$backstage_health_file" "healthy" "backstage tend loop is running" 0 "" "$tend_pane" 1
+    else
+      # Overwrite any "healthy" tend entry left by an earlier integration session.
+      wavemill_write_backstage_health "$backstage_health_file" "disabled" "tend is off: ${tend_off_reason:-no tend consumer}" 0 "" "" 0
+    fi
     if [[ "$observer_enabled" == "true" && -n "${observer_pane:-}" ]]; then
       local observer_detail="backstage observer loop is running"
       if (( observer_killed > 0 )); then
