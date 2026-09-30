@@ -13076,8 +13076,16 @@ wavemill_record_monitor_iteration_timing() {
 
 find_pr_for_branch() {
   local branch="$1"
+  # HOK-3110: callers may opt in to additional lineage-verified classifications
+  # (currently "current-merged") so the primary can bind a PR that tend merged
+  # before monitor first observed it. Default remains "current-open" so open-PR
+  # callers keep their existing behavior.
+  local accept_arg="${2:-current-open}"
   local issue="" worktree="" base_branch="${BASE_BRANCH:-}" head_sha="" attempt_json="" attempt_id="" linear_state="" challenge_pair="" challenge_role=""
   local resolution classification pr_number reason
+  local -a accept_classifications
+  read -r -a accept_classifications <<<"$accept_arg"
+  [[ ${#accept_classifications[@]} -gt 0 ]] || accept_classifications=(current-open)
   [[ -n "$branch" ]] || return 0
 
   if [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]]; then
@@ -13098,7 +13106,11 @@ find_pr_for_branch() {
   resolution="$(wavemill_resolve_pr_attempt "$issue" "$branch" "$base_branch" "$head_sha" "$attempt_id" "$linear_state" "$challenge_pair" "$challenge_role")"
   classification="$(jq -r '.classification // "unverifiable"' <<<"$resolution" 2>/dev/null || echo "unverifiable")"
   wavemill_persist_attempt_reconciliation "$issue" "$attempt_json" "$resolution" "monitor-pr-discovery" >/dev/null 2>&1 || true
-  if [[ "$classification" == "current-open" ]]; then
+  local accepted="false" candidate
+  for candidate in "${accept_classifications[@]}"; do
+    [[ "$classification" == "$candidate" ]] && accepted="true" && break
+  done
+  if [[ "$accepted" == "true" ]]; then
     pr_number="$(jq -r '.selectedCandidate.number // empty' <<<"$resolution" 2>/dev/null || true)"
     [[ -n "$pr_number" ]] && printf '%s\n' "$pr_number"
     return 0
@@ -16381,6 +16393,27 @@ monitor_issue_state() {
 	    fi
 	    cleanup_aborted_challenge_arm "$ISSUE" "$SLUG" "aborted challenge retry" || true
 	    return 0
+	  fi
+	  # HOK-3110: a merged PR on this task's launch lineage (e.g. tend merged
+	  # before the monitor first observed it) must be bound to the task and
+	  # routed through the normal merged-PR completion flow. Do this before the
+	  # aborted-challenge/no-PR guard so a primary with a merged PR is not
+	  # misclassified as its aborted challenger's PR-less arm and cleaned up.
+	  if [[ -z "$PR" && "$task_status" != "merged" && "$task_status" != "completed-external" ]]; then
+	    local _hok3110_discovered_merged_pr linear_issue challenge_flag challenge_pair challenge_role challenge_model
+	    _hok3110_discovered_merged_pr="$(find_pr_for_branch "$BRANCH" "current-merged" 2>/dev/null || true)"
+	    if [[ -n "$_hok3110_discovered_merged_pr" ]]; then
+	      PR="$_hok3110_discovered_merged_pr"
+	      PR_BY_ISSUE["$ISSUE"]="$PR"
+	      linear_issue=$(get_linear_issue_id "$ISSUE")
+	      challenge_flag=$(get_task_meta "$ISSUE" "challenge")
+	      challenge_pair=$(get_task_meta "$ISSUE" "challengePairId")
+	      challenge_role=$(get_task_meta "$ISSUE" "challengeRole")
+	      challenge_model=$(get_task_meta "$ISSUE" "challengeModel")
+	      save_task_state "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR" "$PR" "merged" "$current_agent" "$linear_issue" "$challenge_flag" "$challenge_pair" "$challenge_role" "$challenge_model" >/dev/null 2>&1 || true
+	      task_status="merged"
+	      log "status" "$ISSUE → PR #$PR discovered as merged (lineage-bound)"
+	    fi
 	  fi
 	  if [[ -n "$challenge_aborted" && -z "$PR" && -n "$pair_id_for_cleanup" ]] \
 	    && challenge_pair_record_exists "$pair_id_for_cleanup"; then

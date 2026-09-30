@@ -177,7 +177,16 @@ marker_reason() {
 marker_clear() { rm -f "$1"; }
 read_phase_config() { printf "\n"; }
 resolve_phase_model() { printf "%s\n" "${2:-$3}"; }
-find_pr_for_branch() { printf "%s\n" "${FOUND_PR:-}"; }
+find_pr_for_branch() {
+  # HOK-3110: differentiate the accepted classification list so an advance
+  # command's open-PR mock is not mistaken for a merged-PR discovery.
+  local wanted="${2:-current-open}"
+  if [[ "$wanted" == "current-merged" ]]; then
+    printf "%s\n" "${FOUND_MERGED_PR:-}"
+  else
+    printf "%s\n" "${FOUND_PR:-}"
+  fi
+}
 pr_state() { printf "%s\n" "${PR_STATUS:-OPEN}"; }
 launch_review_calls=0
 launch_review_phase() {

@@ -410,7 +410,18 @@ run_lifecycle_scenario() {
       fi
       return 1
     }
-    find_pr_for_branch() { printf "%s\n" "${FOUND_PR:-$PR}"; }
+    # HOK-3110: the monitor now calls find_pr_for_branch with an accepted
+    # classification list. Only the "current-merged" lookup should hit the
+    # merged-PR path — otherwise the existing open-PR discovery tests would
+    # falsely bind their FOUND_PR as merged.
+    find_pr_for_branch() {
+      local wanted="${2:-current-open}"
+      if [[ "$wanted" == "current-merged" ]]; then
+        printf "%s\n" "${FOUND_MERGED_PR:-}"
+      else
+        printf "%s\n" "${FOUND_PR:-$PR}"
+      fi
+    }
     get_task_phase() { printf "%s\n" "$CURRENT_PHASE"; }
     pr_state() {
       if [[ -n "$CHALLENGE_SIBLING_PR" && "${1:-}" == "$CHALLENGE_SIBLING_PR" ]]; then
