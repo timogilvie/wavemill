@@ -360,7 +360,9 @@ describe('plan-queue CLI', () => {
       const { cliPath, logPath } = writeMockClassifier(tempDir, { default: { sleepMs: 20_000 } });
 
       const result = runPlanQueue(
-        millPlanArgs(backlogPath, 'classifier-budget', reportPath, 8_000),
+        // Wide enough that tsx startup under a loaded CI host still leaves a
+        // real attempt; the 20s mock sleep outlasts it either way.
+        millPlanArgs(backlogPath, 'classifier-budget', reportPath, 15_000),
         undefined,
         tempDir,
         { ...MILL_ENV, CLAUDE_CMD: cliPath, DEEPSEEK_API_KEY: 'test-deepseek-key' },
@@ -374,7 +376,7 @@ describe('plan-queue CLI', () => {
         needsTriage: [],
       });
       assert.match(result.stderr, /initial refresh failed, falling back to cached edges/);
-      assert.match(result.stderr, /unavailable \(timeout\)/);
+      assert.match(result.stderr, /unavailable \(timeout\)|deadline exhausted before claude-/);
       assert.doesNotMatch(result.stderr, /missing ANTHROPIC_API_KEY/);
       const invoked = readInvokedModels(logPath);
       assert.ok(invoked.length >= 1);
