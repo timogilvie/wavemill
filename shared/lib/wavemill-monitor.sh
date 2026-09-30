@@ -14496,12 +14496,15 @@ fetch_candidates() {
 #   $1 = planner command (as single string: "npx tsx tools/plan-queue.ts --stdin --json ...")
 #   $2 = timeout seconds
 #   $3 = input snapshot JSON (e.g., {"taskCount":12,"explicitDependencyCount":4})
+#   $4 = inference report path (optional; the planner writes it via
+#        --inference-report-file and it is merged into queue health on
+#        success). The caller owns the file and removes it.
 #   stdin = plan input
 #
 # Output: queue plan JSON on success, nothing on failure
 # Exit: 0 = success, 1 = failure
 run_queue_planner_with_policy() {
-  local planner_cmd="$1" timeout_secs="$2" input_snapshot="${3:-}"
+  local planner_cmd="$1" timeout_secs="$2" input_snapshot="${3:-}" inference_report_file="${4:-}"
   local tmp_stderr tmp_stdout tmp_stdin exit_code signal_num pid pgid
   # step stays set: the timeout path never assigns it, and the monitor runs
   # under `set -u`, where reading it unset would abort the diagnostics write.
@@ -14660,7 +14663,12 @@ run_queue_planner_with_policy() {
       return 1
     fi
 
-    queue_health_record_success "$pid" "$pgid" "$duration_ms" "$planner_cmd" 2>/dev/null || true
+    local inference_report=""
+    if [[ -n "$inference_report_file" && -s "$inference_report_file" ]]; then
+      inference_report="$(jq -c '.' "$inference_report_file" 2>/dev/null || true)"
+    fi
+    queue_health_record_success "$pid" "$pgid" "$duration_ms" "$planner_cmd" "$inference_report" 2>/dev/null || true
+    queue_health_warn_inference_transition 2>/dev/null || true
     cat "$tmp_stdout"
     rm -f "$tmp_stderr" "$tmp_stdout" "$tmp_stdin" "$watchdog_pipe"
     return 0
@@ -14782,6 +14790,7 @@ get_queue_failure_reason() {
 build_queue_plan_once() {
   local backlog_json="$1"
   local plan_input queue_plan tmp_stderr stderr_text cache_key timeout_secs input_snapshot
+  local inference_report_file=""
 
   # Massage backlog into plan input format
   tmp_stderr="$(mktemp -t wavemill-fqp-stderr.XXXXXX)" || {
@@ -14845,6 +14854,12 @@ build_queue_plan_once() {
     [[ "$now_ms" =~ ^[0-9]+$ ]] || now_ms="$(date +%s)000"
     classifier_deadline_ms=$(( now_ms + ((timeout_secs - classifier_grace_secs) * 1000) ))
     planner_cmd="npx tsx \"$TOOLS_DIR/plan-queue.ts\" --stdin --json --cache-key \"$cache_key\" --refresh-missing-cache --queue-classifier-deadline-ms \"$classifier_deadline_ms\""
+    # HOK-3130: exiting 0 does not prove inference ran; the planner reports
+    # the inference outcome here so queue health can degrade on it.
+    inference_report_file="$(mktemp -t wavemill-queue-inference.XXXXXX 2>/dev/null || true)"
+    if [[ -n "$inference_report_file" ]]; then
+      planner_cmd+=" --inference-report-file \"$inference_report_file\""
+    fi
   else
     timeout_secs=15
     planner_cmd="npx tsx \"$TOOLS_DIR/plan-queue.ts\" --stdin --json"
@@ -14855,7 +14870,12 @@ build_queue_plan_once() {
 
   # Run planner with policy wrapper (handles timeout, process group, diagnostics)
   rm -f "$tmp_stderr"
-  queue_plan=$(printf '%s' "$plan_input" | run_queue_planner_with_policy "$planner_cmd" "$timeout_secs" "$input_snapshot") || {
+  local planner_status=0
+  queue_plan=$(printf '%s' "$plan_input" | run_queue_planner_with_policy "$planner_cmd" "$timeout_secs" "$input_snapshot" "$inference_report_file") || planner_status=$?
+  if [[ -n "$inference_report_file" ]]; then
+    rm -f "$inference_report_file"
+  fi
+  (( planner_status == 0 )) || {
     # The planner records the specific step/stderr/exit itself. Only fill in a
     # generic record when it left nothing behind, so we never overwrite the
     # detailed diagnostics with a placeholder.

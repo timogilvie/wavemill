@@ -166,6 +166,37 @@ test('queue detector falls back to bounded queue_planner_degraded class for unkn
   }
 });
 
+test('queue detector escalates repeated inference_unavailable by consecutive inference failures (HOK-3130)', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'incident-deps-inference-'));
+  try {
+    mkdirSync(join(repo, '.wavemill'), { recursive: true });
+    const writeHealth = (consecutiveFailures: number) => writeFileSync(join(repo, '.wavemill', 'queue-health.json'), JSON.stringify({
+      status: 'degraded',
+      degradationReason: 'inference_unavailable',
+      failureStep: 'queue_inference',
+      failureCount: 0,
+      inferenceStatus: 'failed',
+      inference: { consecutiveFailures, error: 'LLM fallback deadline exhausted before claude-sonnet-5' },
+      diagnostics: { inputSnapshot: {}, stdoutExcerpt: '', stderrExcerpt: '' },
+      lastAttemptAt: now.toISOString(),
+    }));
+
+    writeHealth(3);
+    const repeated = new DependencyHealthDetector({ thresholdConsecutiveFailures: 3 }).detectRepo(repo, { repoDir: repo, now });
+    assert.equal(repeated.length, 1);
+    assert.equal(repeated[0].severity, 'medium');
+    assert.match(repeated[0].summary, /inference_unavailable/);
+    assert.match(repeated[0].operatorAction, /explicit Linear relations only/);
+    assert.equal(repeated[0].metadata?.failureCount, 3);
+
+    writeHealth(1);
+    const first = new DependencyHealthDetector({ thresholdConsecutiveFailures: 3 }).detectRepo(repo, { repoDir: repo, now });
+    assert.equal(first[0].severity, 'low');
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 test('job detector keeps a stable terminal event timestamp for un-reaped failures', () => {
   const repo = mkdtempSync(join(tmpdir(), 'incident-jobs-stable-'));
   try {

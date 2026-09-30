@@ -2228,8 +2228,16 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
     // Analyze queue-health degradation
     if (queueHealthDegraded) {
       const reason = repo.queueHealth.degradationReason || 'unknown';
-      const episodeStartedAt = repo.queueHealth.episodeStartedAt || 'unknown';
-      const failureCount = repo.queueHealth.failureCount || 1;
+      // HOK-3130: inference_unavailable is recorded on a successful planner
+      // run (no planner episode or failure count); the dependency queue is
+      // still in use, just with explicit Linear relations only.
+      const inferenceUnavailable = reason === 'inference_unavailable';
+      const episodeStartedAt = inferenceUnavailable
+        ? `inference:${repo.queueHealth.inference?.lastSuccessAt || 'never'}`
+        : repo.queueHealth.episodeStartedAt || 'unknown';
+      const failureCount = inferenceUnavailable
+        ? repo.queueHealth.inference?.consecutiveFailures || 1
+        : repo.queueHealth.failureCount || 1;
       const severity = failureCount >= 5 ? 'high' : failureCount >= 3 ? 'medium' : 'low';
 
       findings.push({
@@ -2253,8 +2261,15 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
           ...(repo.queueHealth.diagnostics?.stderrExcerpt ? [
             `stderr=${repo.queueHealth.diagnostics.stderrExcerpt}`,
           ] : []),
+          ...(inferenceUnavailable ? [
+            `inferenceStatus=${repo.queueHealth.inferenceStatus || 'unknown'}`,
+            `inferredEdgeCount=${repo.queueHealth.inferredEdgeCount ?? 'unknown'}`,
+            ...(repo.queueHealth.inference?.error ? [`inferenceError=${repo.queueHealth.inference.error}`] : []),
+          ] : []),
         ],
-        recommendation: `Dependency-aware queue planning is unavailable. Flat fallback is active. Inspect the queue planner lifecycle and dependency graph. If this persists, file a diagnostic ticket with the queue-health snapshot.`,
+        recommendation: inferenceUnavailable
+          ? `Queue dependency inference is unavailable; the wave is planned from explicit Linear relations only, so inferred dependencies are missing. Check the [classifier] lines in the mill log and the Claude CLI login.`
+          : `Dependency-aware queue planning is unavailable. Flat fallback is active. Inspect the queue planner lifecycle and dependency graph. If this persists, file a diagnostic ticket with the queue-health snapshot.`,
       });
     }
 
