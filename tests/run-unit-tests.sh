@@ -39,6 +39,8 @@ TESTS=(
   shared/lib/intervention-detector.test.ts
   shared/lib/stage-result.test.ts
   shared/lib/task-progress.test.ts
+  shared/lib/task-identity.test.ts
+  shared/lib/linear-write-gate.test.ts
   shared/lib/session-adapters.test.ts
   shared/lib/executed-model-resolver.test.ts
   shared/lib/native-agent/provider.test.ts
@@ -152,6 +154,8 @@ TESTS=(
   shared/lib/tend-challenge-gate.test.ts
   shared/lib/transient-retry.test.ts
   shared/lib/tend-loop.test.ts
+  shared/lib/tool-choice-gate-publisher.test.ts
+  shared/lib/tool-choice-gate-scheduler.test.ts
   shared/lib/challenge-comparison.test.ts
   shared/lib/no-comparison-report.test.ts
   shared/lib/arbiter-r6-report.test.ts
@@ -433,6 +437,7 @@ TESTS=(
   shared/lib/task-packet-signal-analysis.test.ts
   shared/lib/task-packet-utils.test.ts
   shared/lib/tool-runner.test.ts
+  shared/lib/worktree-dirty-status.test.ts
   shared/lib/worktree-manager.test.ts
   tools/backfill-stage-scores.test.ts
   tools/certify-launch-priority-model.test.ts

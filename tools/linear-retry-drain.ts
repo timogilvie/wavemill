@@ -2,6 +2,7 @@
 
 import { runTool } from '../shared/lib/tool-runner.ts';
 import { compact, drain, enqueue } from '../shared/lib/linear-retry-queue.ts';
+import { partitionLinearWriteTargets, setTaskIssuesState } from '../shared/lib/linear-write-gate.ts';
 
 runTool({
   name: 'linear-retry-drain',
@@ -32,7 +33,17 @@ runTool({
         throw new Error('enqueue requires --state and --issues');
       }
       const httpStatus = !args.http || args.http === 'none' ? null : Number(args.http);
-      const issueIds = args.issues.split(',').map((value) => value.trim()).filter(Boolean);
+      const requested = args.issues.split(',').map((value) => value.trim()).filter(Boolean);
+      // Only Linear writers are queued; challengers are skipped and invalid
+      // IDs are dropped (HOK-3115).
+      const { linearIds: issueIds, skipped, rejected } = partitionLinearWriteTargets(requested);
+      for (const decision of [...skipped, ...rejected]) {
+        console.error(`↷ not queued: ${decision.message}`);
+      }
+      if (issueIds.length === 0) {
+        console.log(JSON.stringify({ queued: false, issues: [] }, null, 2));
+        return;
+      }
       const record = enqueue({
         issueIds,
         targetState: args.state,
@@ -52,6 +63,9 @@ runTool({
     if (command === 'drain') {
       const summary = await drain({
         maxEntries: Number.parseInt(args['max-entries'] || '10', 10),
+        // Entries queued before HOK-3115 may hold challenger or invalid IDs;
+        // re-gate every drain attempt.
+        setIssuesStateImpl: (issueIds, stateName) => setTaskIssuesState(issueIds, stateName),
       });
       console.log(JSON.stringify(summary, null, 2));
       return;

@@ -1,7 +1,7 @@
 #!/usr/bin/env -S npx tsx
 
 import { runTool } from '../shared/lib/tool-runner.ts';
-import { setIssuesState } from '../shared/lib/linear.ts';
+import { setTaskIssuesState } from '../shared/lib/linear-write-gate.ts';
 
 runTool({
   name: 'set-issues-state',
@@ -28,7 +28,9 @@ runTool({
     }
 
     const stateName = args.state || 'In Progress';
-    const result = await setIssuesState(positional, stateName);
+    // Challengers are skipped; invalid/conflicting IDs are reported in
+    // `failed` as non-retryable client errors (HOK-3115).
+    const result = await setTaskIssuesState(positional, stateName);
     console.log(JSON.stringify(result, null, 2));
     if (result.failed.length > 0) {
       process.exit(1);

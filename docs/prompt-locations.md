@@ -55,6 +55,10 @@ Runtime code should prefer typed lookup through `shared/lib/resource-retrieval.t
 - Remaining direct path-backed surface: `shared/lib/agent-adapters.sh` phase prompt loading still reads `tools/prompts/*.md` directly.
 - Stability and versioning: `resource-retrieval.ts` accepts `stability` and `version` fields, but phase one only supports `stable` and rejects explicit version selection until HOK-1379 lands.
 
+## Mill Label Ownership
+
+Every `wm:*` label (including `wm:ready`, `wm:blocked`, `wm:merging`, `wm:merged`, `wm:superseded`, and any future `wm:*` label) is owned exclusively by the mill: the Ready gate publishes a `.ready-tend-handoff.json` for the current PR head, and only then does the mill apply `wm:ready` (see `shared/lib/wavemill-monitor.sh`'s "publish before exposing wm:ready" invariant). Agents MUST NOT run `gh pr edit ... --add-label wm:*` or `--remove-label wm:*` at any point. This rule is enforced consistently across the review/PR-creation prompt surfaces — `tools/prompts/review-phase.md` (FORBIDDEN section), `shared/lib/agent-adapters.sh` (`build_review_prompt` heredoc), `commands/bugfix.md` (self-review diagnostic block), and `commands/workflow.md` (Phase 4 review verdict guidance). Defense in depth: `shared/lib/tend-controller.ts` `executeMerge` treats `wm:ready` on a PR without a published Ready → Tend handoff for the live head as untrusted and strips it (HOK-3107).
+
 ## Update Rule
 
 If you change agent launch instructions, workflow phase ownership, self-review behavior, or degraded-mode scoped review behavior, update this registry and the corresponding Claude/Codex-facing entrypoint docs so future editors can find the full instruction surface quickly.

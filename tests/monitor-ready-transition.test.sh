@@ -498,6 +498,17 @@ JSON
 {"stage":"ready","status":"completed","artifacts":{"verdict":"pass","readyBaseSha":"old-sha","queueState":"merge-candidate"}}
 JSON
         ;;
+      # HOK-3110: primary whose merged PR was landed by tend before monitor
+      # discovered it must bind the PR via lineage and cleanup, even if its
+      # challenger was aborted. This exercises the early merged-PR discovery
+      # inserted before the aborted-challenge/no-PR guard.
+      primary_merged_pr_discovered_via_lineage)
+        unset "PR_BY_ISSUE[$ISSUE]"
+        PR=""
+        FOUND_MERGED_PR="4242"
+        CURRENT_PHASE="review"
+        VALIDATE_MERGED="true"
+        ;;
       *)
         echo "unknown case: $CASE_NAME" >&2
         exit 1
@@ -530,7 +541,18 @@ JSON
     maybe_run_challenge_eval() { :; }
     maybe_run_challenge_comparison() { :; }
     dispatch_queued_children_for_parent() { :; }
-    find_pr_for_branch() { printf "%s\n" "${FOUND_PR:-$PR}"; }
+    # HOK-3110: the monitor now calls find_pr_for_branch with an accepted
+    # classification list. Only the "current-merged" lookup should hit the
+    # merged-PR path — otherwise the existing open-PR discovery tests would
+    # falsely bind their FOUND_PR as merged.
+    find_pr_for_branch() {
+      local wanted="${2:-current-open}"
+      if [[ "$wanted" == "current-merged" ]]; then
+        printf "%s\n" "${FOUND_MERGED_PR:-}"
+      else
+        printf "%s\n" "${FOUND_PR:-$PR}"
+      fi
+    }
     get_task_phase() { printf "%s\n" "$CURRENT_PHASE"; }
     pr_state() { printf "%s\n" "$PR_STATUS"; }
     resolve_phase() { printf "%s\n" "$RESOLVED_PHASE"; }
@@ -861,6 +883,19 @@ ready_merge_candidate_main_advanced_not_selected_output="$(run_monitor_case read
 check_contains "merge-candidate main-advanced not-selected does not re-run ready" "$ready_merge_candidate_main_advanced_not_selected_output" "ready_launches=0"
 check_contains "merge-candidate main-advanced not-selected keeps task active" "$ready_merge_candidate_main_advanced_not_selected_output" "active_count=1"
 check_contains "merge-candidate main-advanced not-selected clears attention" "$ready_merge_candidate_main_advanced_not_selected_output" "attention=clear"
+
+echo ""
+echo "=== HOK-3110 merged-PR lineage discovery ==="
+
+# HOK-3110: when tend merged a PR before monitor first observed it, the
+# primary must bind the merged PR via launch lineage and take the merged
+# cleanup path — even when its challenger aborted with no PR.
+primary_merged_pr_discovered_via_lineage_output="$(run_monitor_case primary_merged_pr_discovered_via_lineage)"
+check_contains "lineage-bound merged PR is discovered and bound" "$primary_merged_pr_discovered_via_lineage_output" "lineage-bound"
+check_contains "lineage-bound merged PR persists merged state" "$primary_merged_pr_discovered_via_lineage_output" "save_task_state_status=merged"
+check_contains "lineage-bound merged PR runs cleanup once" "$primary_merged_pr_discovered_via_lineage_output" "cleanup_count=1"
+check_contains "lineage-bound merged PR clears attention" "$primary_merged_pr_discovered_via_lineage_output" "attention=clear"
+check_not_contains "lineage-bound merged PR does not skip completed-external reconciliation" "$primary_merged_pr_discovered_via_lineage_output" "skipping completed-external reconciliation"
 
 echo ""
 echo "--- Results: $PASS passed, $FAIL failed ---"

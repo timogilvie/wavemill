@@ -1,6 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { listOpenIssuesByIdentifierPrefix, setIssueState, setIssuesState, updateIssue, createComment, updateComment } from './linear.ts';
+import {
+  createComment,
+  createInitiativeDocument,
+  getInitiativeDocuments,
+  listOpenIssuesByIdentifierPrefix,
+  setIssueState,
+  setIssuesState,
+  updateComment,
+  updateDocument,
+  updateIssue,
+} from './linear.ts';
 
 type GraphQLPayload = {
   query: string;
@@ -445,6 +455,145 @@ test('updateComment throws LinearApiError when API returns success:false', async
       (err: unknown) => {
         assert.ok(err instanceof Error);
         assert.ok(err.message.includes('commentUpdate'));
+        return true;
+      },
+    );
+  } finally {
+    restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Initiative document helpers (HOK-3123)
+// ---------------------------------------------------------------------------
+
+test('getInitiativeDocuments returns document nodes attached to the initiative', async () => {
+  process.env.LINEAR_API_KEY = 'test';
+  let captured: GraphQLPayload | null = null;
+  const restore = installFetchMock((payload) => {
+    captured = payload;
+    return {
+      initiative: {
+        documents: {
+          nodes: [
+            { id: 'doc-1', title: 'I-27 tool-choice gate progress', content: 'body', updatedAt: '2026-09-29T00:00:00Z', url: 'https://linear.app/d/doc-1' },
+            { id: 'doc-2', title: 'something else' },
+          ],
+        },
+      },
+    };
+  });
+  try {
+    const docs = await getInitiativeDocuments('init-uuid');
+    assert.ok(captured, 'fetch must have been called');
+    assert.ok(captured!.query.includes('initiative(id: $id)'));
+    assert.ok(captured!.query.includes('documents'));
+    assert.deepEqual(captured!.variables, { id: 'init-uuid' });
+    assert.equal(docs.length, 2);
+    assert.equal(docs[0].id, 'doc-1');
+    assert.equal(docs[0].title, 'I-27 tool-choice gate progress');
+  } finally {
+    restore();
+  }
+});
+
+test('getInitiativeDocuments returns an empty array when initiative has no documents', async () => {
+  process.env.LINEAR_API_KEY = 'test';
+  const restore = installFetchMock(() => ({ initiative: { documents: { nodes: [] } } }));
+  try {
+    const docs = await getInitiativeDocuments('init-uuid');
+    assert.deepEqual(docs, []);
+  } finally {
+    restore();
+  }
+});
+
+test('createInitiativeDocument sends DocumentCreateInput with initiativeId, title, content', async () => {
+  process.env.LINEAR_API_KEY = 'test';
+  let captured: GraphQLPayload | null = null;
+  const restore = installFetchMock((payload) => {
+    captured = payload;
+    return {
+      documentCreate: {
+        success: true,
+        document: { id: 'doc-new', url: 'https://linear.app/d/doc-new' },
+      },
+    };
+  });
+  try {
+    const result = await createInitiativeDocument('init-uuid', {
+      title: 'I-27 tool-choice gate progress',
+      content: 'body markdown',
+    });
+    assert.ok(captured, 'fetch must have been called');
+    assert.ok(captured!.query.includes('documentCreate'));
+    assert.deepEqual(captured!.variables, {
+      input: {
+        initiativeId: 'init-uuid',
+        title: 'I-27 tool-choice gate progress',
+        content: 'body markdown',
+      },
+    });
+    assert.equal(result.id, 'doc-new');
+    assert.equal(result.url, 'https://linear.app/d/doc-new');
+  } finally {
+    restore();
+  }
+});
+
+test('createInitiativeDocument throws LinearApiError when API returns success:false', async () => {
+  process.env.LINEAR_API_KEY = 'test';
+  const restore = installFetchMock(() => ({
+    documentCreate: { success: false, document: null },
+  }));
+  try {
+    await assert.rejects(
+      () => createInitiativeDocument('init-uuid', { title: 't', content: 'c' }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.ok(err.message.includes('documentCreate'));
+        return true;
+      },
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('updateDocument omits unset fields from the input', async () => {
+  process.env.LINEAR_API_KEY = 'test';
+  let captured: GraphQLPayload | null = null;
+  const restore = installFetchMock((payload) => {
+    captured = payload;
+    return {
+      documentUpdate: {
+        success: true,
+        document: { id: 'doc-1', url: 'https://linear.app/d/doc-1' },
+      },
+    };
+  });
+  try {
+    await updateDocument('doc-1', { content: 'new body' });
+    assert.ok(captured, 'fetch must have been called');
+    assert.ok(captured!.query.includes('documentUpdate'));
+    // Title omitted; content passed through.
+    assert.deepEqual(captured!.variables, { id: 'doc-1', input: { content: 'new body' } });
+  } finally {
+    restore();
+  }
+});
+
+test('updateDocument throws LinearApiError when API returns success:false', async () => {
+  process.env.LINEAR_API_KEY = 'test';
+  const restore = installFetchMock(() => ({
+    documentUpdate: { success: false, document: null },
+  }));
+  try {
+    await assert.rejects(
+      () => updateDocument('doc-1', { content: 'x' }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.ok(err.message.includes('documentUpdate'));
         return true;
       },
     );

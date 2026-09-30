@@ -5,12 +5,16 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   TEND_READY_UNMERGED_WARN_MS,
+  TEND_SKIP_LOG_REPEAT_MS,
   buildIntegrationUnhealthyFinding,
   buildReadyPrUnmergedFinding,
+  buildSkipStallFinding,
   classifyTendLoopError,
   formatIdleStallWarning,
   formatIntegrationUnhealthyWarning,
   formatLaneStallWarning,
+  formatSkipReasonLine,
+  formatSkipStallWarning,
   runTendLoop,
   tendLoopBackoffMs,
   writeTendFailureState,
@@ -34,16 +38,24 @@ function idleDecision(): TendDecision {
   return { integrationHealth: { state: 'healthy' }, eligible: [], blocked: [], nextPR: null };
 }
 
-function deps(overrides: Partial<TendLoopDeps> = {}): Partial<TendLoopDeps> & { sleeps: number[]; heartbeats: unknown[] } {
+function deps(overrides: Partial<TendLoopDeps> = {}): Partial<TendLoopDeps> & { sleeps: number[]; heartbeats: unknown[]; gateCalls: unknown[] } {
   const sleeps: number[] = [];
   const heartbeats: unknown[] = [];
+  const gateCalls: unknown[] = [];
   return {
     sleeps,
     heartbeats,
+    gateCalls,
     selectNextCandidate: async () => idleDecision(),
     executeMerge: async () => ({ status: 'merged', prNumber: 1, haltLoop: false }),
     writePollHeartbeat: async (_repoDir, health) => { heartbeats.push({ kind: 'success', ...health }); },
     writeFailureState: async (_repoDir, health) => { heartbeats.push({ kind: 'failure', ...health }); },
+    // HOK-3123: default the scheduler seam to a no-op stub so existing tests
+    // that only exercise tend behavior are not surprised by a real file spawn.
+    maybeRunToolChoiceGate: async (options) => {
+      gateCalls.push(options);
+      return { ran: false, skipped: 'fresh', nextLastCheckedMs: 0 };
+    },
     sleep: async (ms) => {
       sleeps.push(ms);
       if (ms === 60_000) {
@@ -173,6 +185,34 @@ describe('runTendLoop', () => {
     assert.equal(heartbeat.laneCondition, 'no-eligible');
     assert.match(heartbeat.laneEvidenceId, /^[0-9a-f]{12}$/);
     assert.match(r.lines[0], /^iter=1 poll_started=2026-08-18T12:00:00.000Z poll_completed=2026-08-18T12:00:00.000Z /);
+  });
+
+  it('fires maybeRunToolChoiceGate after each idle poll heartbeat (HOK-3123)', async () => {
+    const d = deps();
+    await assert.rejects(
+      runTendLoop({ repoDir: '/tmp/repo', renderer: renderer(), deps: d }),
+      TypeError,
+    );
+    assert.equal(d.gateCalls.length, 1);
+    const call = d.gateCalls[0] as { repoDir: string };
+    assert.equal(call.repoDir, '/tmp/repo');
+  });
+
+  it('a scheduler error never fails the tend loop (HOK-3123)', async () => {
+    let logged = '';
+    const d = deps({
+      maybeRunToolChoiceGate: async () => {
+        throw new Error('scheduler blew up');
+      },
+      log: (line) => {
+        logged += line;
+      },
+    });
+    await assert.rejects(
+      runTendLoop({ repoDir: '/tmp/repo', renderer: renderer(), deps: d }),
+      TypeError,
+    );
+    assert.match(logged, /tool-choice-gate: scheduler threw/);
   });
 
   it('continues after a transient selection error and clears failure heartbeat on success', async () => {
@@ -810,3 +850,258 @@ describe('merge-lane finding builders', () => {
     );
   });
 });
+
+describe('HOK-3108 skip-stall formatters', () => {
+  it('formatSkipReasonLine names phase, reason, and consecutive count', () => {
+    assert.equal(
+      formatSkipReasonLine({ prNumber: 1519, headSha: 'abc1234deadbeef', phase: 'handoff', reason: 'no Ready handoff file', consecutive: 3 }),
+      'note=tend-skip pr=#1519 head=abc1234 phase=handoff consecutive=3 reason="no Ready handoff file"',
+    );
+  });
+
+  it('formatSkipReasonLine tolerates a missing head', () => {
+    assert.equal(
+      formatSkipReasonLine({ prNumber: 42, headSha: '', phase: 'merge-lane-held', reason: 'held-by=#3', consecutive: 5 }),
+      'note=tend-skip pr=#42 head=unknown phase=merge-lane-held consecutive=5 reason="held-by=#3"',
+    );
+  });
+
+  it('formatSkipStallWarning names PR, head, phase, and streak', () => {
+    assert.equal(
+      formatSkipStallWarning({ prNumber: 1519, headSha: 'abc1234deadbeef', phase: 'handoff', consecutive: 3 }),
+      'warn=merge-lane-skip-stalled pr=#1519 head=abc1234 phase=handoff consecutive=3',
+    );
+  });
+
+  it('buildSkipStallFinding includes a phase-specific recommendation and marker context', () => {
+    const finding = buildSkipStallFinding({
+      prNumber: 1519,
+      headSha: 'abc1234deadbeef56789',
+      phase: 'handoff',
+      consecutive: 3,
+      severity: 'high',
+      now: '2026-09-29T12:14:00Z',
+      failureExcerpt: 'Tend claim rejected (3/3) for head abc1234',
+    });
+    assert.equal(finding.subsystem, 'merge-lane');
+    assert.match(finding.title, /PR #1519 skipped \(handoff\) for 3 consecutive polls/);
+    assert.match(finding.recommendation ?? '', /Re-run Ready|push a new head/i);
+    assert.equal(finding.context?.markerKind, 'merge-lane-skip-stall');
+    assert.equal(finding.context?.prNumber, 1519);
+    assert.equal(finding.context?.phase, 'handoff');
+    assert.equal(finding.context?.consecutivePolls, 3);
+    assert.match(String(finding.context?.markerPath), /merge-lane\/skip-stall\/#1519/);
+  });
+});
+
+describe('HOK-3108 skip-stall loop integration', () => {
+  function eligibleDecision(prNumber: number, headSha = ''): TendDecision {
+    return {
+      integrationHealth: { state: 'healthy' },
+      eligible: [{
+        number: prNumber,
+        title: 'PR',
+        headBranch: 'task/pr',
+        createdAt: '2026-09-29T00:00:00Z',
+        dependencyDepth: 0,
+        ...(headSha ? { headSha } : {}),
+      }],
+      blocked: [],
+      nextPR: prNumber,
+    };
+  }
+  function handoffSkip(prNumber: number, excerpt: string): MergeExecutionResult {
+    return {
+      status: 'skipped',
+      prNumber,
+      phase: 'handoff',
+      failureExcerpt: excerpt,
+      haltLoop: false,
+    };
+  }
+
+  it('logs the skip reason once, then warns and emits a finding + stalled heartbeat once the streak hits 3', async () => {
+    const r = renderer();
+    const findings: MergeLaneObserverFinding[] = [];
+    const heartbeats: Array<Record<string, unknown>> = [];
+    let poll = 0;
+    let clockMs = Date.parse('2026-09-29T12:00:00Z');
+    // Poll 5 returns a merged result (heartbeat 'progressing'), simulating
+    // the block+recovery path from a follow-up eligible PR.
+    const executeResults: MergeExecutionResult[] = [
+      handoffSkip(1519, 'Tend claim rejected (1/3) for head abc1234: no Ready handoff file'),
+      handoffSkip(1519, 'Tend claim rejected (2/3) for head abc1234: no Ready handoff file'),
+      handoffSkip(1519, 'Tend claim rejected (3/3) for head abc1234: no Ready handoff file'),
+      { status: 'blocked', prNumber: 1519, phase: 'handoff', failureExcerpt: 'wm:ready without a published Ready handoff for head head-a', haltLoop: false },
+      { status: 'merged', prNumber: 1520, haltLoop: false },
+    ];
+    const d: Partial<TendLoopDeps> = {
+      selectNextCandidate: async () => eligibleDecision(poll >= 4 ? 1520 : 1519, poll >= 4 ? '' : 'head-a'),
+      executeMerge: async () => executeResults[poll] ?? { status: 'merged', prNumber: 1520, haltLoop: false },
+      writePollHeartbeat: async (_repoDir, health) => { heartbeats.push({ ...health }); },
+      writeFailureState: async () => {},
+      emitObserverFinding: (_repoDir, finding) => { findings.push(finding); },
+      sleep: async () => {
+        poll += 1;
+        clockMs += 60_000;
+        if (poll >= executeResults.length) {
+          throw new TypeError('stop');
+        }
+      },
+      now: () => new Date(clockMs),
+      log: () => undefined,
+      random: () => 0.5,
+    };
+    await assert.rejects(runTendLoop({ repoDir: '/tmp/repo', renderer: r, deps: d, intervalMs: 60_000 }), TypeError);
+
+    // Skip-reason log: exactly one occurrence on poll 1; subsequent identical
+    // signatures on polls 2 and 3 are suppressed by the rate-limit.
+    const skipLines = r.lines.filter((line) => line.startsWith('note=tend-skip pr=#1519'));
+    assert.equal(skipLines.length, 1, `expected exactly 1 skip-reason log, got ${skipLines.length}: ${skipLines.join(' | ')}`);
+    assert.match(skipLines[0], /phase=handoff/);
+    assert.match(skipLines[0], /no Ready handoff file/);
+
+    // Stall warning fires on poll 3 (streak 3) and again on later skips.
+    const stallWarns = r.lines.filter((line) => line.startsWith('warn=merge-lane-skip-stalled'));
+    assert.ok(stallWarns.length >= 1, `expected a skip-stall warning, got: ${r.lines.join(' | ')}`);
+    assert.match(stallWarns[0], /pr=#1519/);
+    assert.match(stallWarns[0], /phase=handoff/);
+    assert.match(stallWarns[0], /consecutive=3/);
+
+    // Observer finding emitted exactly once at count===3 (high severity).
+    const skipFindings = findings.filter((f) => f.context?.markerKind === 'merge-lane-skip-stall');
+    assert.equal(skipFindings.length, 1);
+    assert.equal(skipFindings[0].severity, 'high');
+    assert.equal(skipFindings[0].context?.consecutivePolls, 3);
+
+    // Heartbeat: at least one 'stalled' with laneCondition 'skip-stall'.
+    const stalled = heartbeats.find((h) => h.progressState === 'stalled' && h.laneCondition === 'skip-stall');
+    assert.ok(stalled, `expected a stalled skip-stall heartbeat, heartbeats=${JSON.stringify(heartbeats)}`);
+    assert.match(String(stalled?.detail), /PR #1519 has been skipped/);
+
+    // After the merge on poll 5, the heartbeat is 'progressing' (or 'idle')
+    // and no stall warning fires for #1520.
+    const post = heartbeats[heartbeats.length - 1];
+    assert.notEqual(post?.laneCondition, 'skip-stall');
+  });
+
+  it('a new head at the same PR resets the streak and re-logs the reason', async () => {
+    const r = renderer();
+    let poll = 0;
+    let clockMs = Date.parse('2026-09-29T12:00:00Z');
+    const heads = ['head-a', 'head-b'];
+    const d: Partial<TendLoopDeps> = {
+      // Poll 1 uses head-a, poll 2 uses head-b (a fresh push at the same PR).
+      selectNextCandidate: async () => eligibleDecision(1519, heads[poll] ?? 'head-b'),
+      executeMerge: async () => handoffSkip(1519, `Tend claim rejected (1/3) for head ${heads[poll] ?? 'head-b'}`),
+      writePollHeartbeat: async () => {},
+      writeFailureState: async () => {},
+      emitObserverFinding: () => {},
+      sleep: async () => {
+        poll += 1;
+        clockMs += 60_000;
+        if (poll >= 3) {
+          throw new TypeError('stop');
+        }
+      },
+      now: () => new Date(clockMs),
+      log: () => undefined,
+      random: () => 0.5,
+    };
+    await assert.rejects(runTendLoop({ repoDir: '/tmp/repo', renderer: r, deps: d, intervalMs: 60_000 }), TypeError);
+
+    // Two distinct (pr, head) keys → two skip-reason logs, streak never
+    // crosses the threshold, no warning fires.
+    const skipLines = r.lines.filter((line) => line.startsWith('note=tend-skip pr=#1519'));
+    assert.equal(skipLines.length, 2, `expected 2 skip-reason logs (one per head), got: ${skipLines.join(' | ')}`);
+    assert.equal(r.lines.filter((line) => line.startsWith('warn=merge-lane-skip-stalled')).length, 0);
+  });
+
+  it('a rate-limited skip re-logs after TEND_SKIP_LOG_REPEAT_MS elapses', async () => {
+    const r = renderer();
+    let poll = 0;
+    let clockMs = Date.parse('2026-09-29T12:00:00Z');
+    // Two polls: poll 1 (t=0), poll 2 (t = TEND_SKIP_LOG_REPEAT_MS + 1s).
+    // Both produce the same (phase, reason) — the second should re-log.
+    const d: Partial<TendLoopDeps> = {
+      selectNextCandidate: async () => eligibleDecision(1519, 'head-a'),
+      executeMerge: async () => handoffSkip(1519, 'Tend claim rejected (1/3) for head head-a: no Ready handoff file'),
+      writePollHeartbeat: async () => {},
+      writeFailureState: async () => {},
+      emitObserverFinding: () => {},
+      sleep: async () => {
+        poll += 1;
+        clockMs += poll === 1 ? TEND_SKIP_LOG_REPEAT_MS + 1000 : 60_000;
+        if (poll >= 2) {
+          throw new TypeError('stop');
+        }
+      },
+      now: () => new Date(clockMs),
+      log: () => undefined,
+      random: () => 0.5,
+    };
+    await assert.rejects(runTendLoop({ repoDir: '/tmp/repo', renderer: r, deps: d, intervalMs: 60_000 }), TypeError);
+
+    const skipLines = r.lines.filter((line) => line.startsWith('note=tend-skip pr=#1519'));
+    assert.equal(skipLines.length, 2, `expected 2 skip-reason logs after 10min elapse, got: ${skipLines.join(' | ')}`);
+  });
+
+  it('alternating PRs never cross the stall threshold', async () => {
+    const r = renderer();
+    let poll = 0;
+    let clockMs = Date.parse('2026-09-29T12:00:00Z');
+    const d: Partial<TendLoopDeps> = {
+      selectNextCandidate: async () => eligibleDecision(poll % 2 === 0 ? 1519 : 1520, 'head-a'),
+      executeMerge: async () => handoffSkip(poll % 2 === 0 ? 1519 : 1520, `Tend claim rejected (1/3) for head head-a`),
+      writePollHeartbeat: async () => {},
+      writeFailureState: async () => {},
+      emitObserverFinding: () => {},
+      sleep: async () => {
+        poll += 1;
+        clockMs += 60_000;
+        if (poll >= 6) {
+          throw new TypeError('stop');
+        }
+      },
+      now: () => new Date(clockMs),
+      log: () => undefined,
+      random: () => 0.5,
+    };
+    await assert.rejects(runTendLoop({ repoDir: '/tmp/repo', renderer: r, deps: d, intervalMs: 60_000 }), TypeError);
+
+    assert.equal(r.lines.filter((line) => line.startsWith('warn=merge-lane-skip-stalled')).length, 0);
+  });
+
+  it('merge-lane-held keeps its legacy warn format and now also emits a skip-stall finding', async () => {
+    const r = renderer();
+    const findings: MergeLaneObserverFinding[] = [];
+    let poll = 0;
+    let clockMs = Date.parse('2026-09-29T12:00:00Z');
+    const d: Partial<TendLoopDeps> = {
+      selectNextCandidate: async () => eligibleDecision(1245),
+      executeMerge: async () => ({ status: 'skipped', prNumber: 1245, phase: 'merge-lane-held', heldBy: [1243], haltLoop: false }),
+      writePollHeartbeat: async () => {},
+      writeFailureState: async () => {},
+      emitObserverFinding: (_repoDir, finding) => { findings.push(finding); },
+      sleep: async () => {
+        poll += 1;
+        clockMs += 60_000;
+        if (poll >= 3) {
+          throw new TypeError('stop');
+        }
+      },
+      now: () => new Date(clockMs),
+      log: () => undefined,
+      random: () => 0.5,
+    };
+    await assert.rejects(runTendLoop({ repoDir: '/tmp/repo', renderer: r, deps: d, intervalMs: 60_000 }), TypeError);
+
+    // Legacy warning still emitted for merge-lane-held.
+    assert.ok(r.lines.some((line) => line.startsWith('warn=merge-lane-stalled')));
+    // But NOT the new one — merge-lane-held keeps only the legacy format.
+    assert.equal(r.lines.filter((line) => line.startsWith('warn=merge-lane-skip-stalled')).length, 0);
+    // And now emits a skip-stall finding (previously merge-lane-held had none).
+    assert.ok(findings.some((f) => f.context?.markerKind === 'merge-lane-skip-stall' && f.context?.phase === 'merge-lane-held'));
+  });
+});
+

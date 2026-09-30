@@ -14,7 +14,16 @@ import {
   writePrStateMarker,
   WM_LABELS,
 } from './pr-state-labels.ts';
-import { claimReadyHandoff, rebindTendHandoff } from './ready-tend-handoff.ts';
+import {
+  claimReadyHandoff,
+  describeClaimRejection,
+  publishReadyHandoff,
+  readReadyTendHandoff,
+  readTendPushedHead,
+  rebindTendHandoff,
+  recordTendPushedHead,
+  type ClaimHandoffOutcome,
+} from './ready-tend-handoff.ts';
 import { buildStaleMarkerFinding, type MarkerPayload, type MarkerValidation } from './transient-marker.ts';
 import { getIntegrationConfig, getIntegrationReadyPolicy } from './config.ts';
 import { readChallengeComparisons } from './challenge-comparison.ts';
@@ -153,6 +162,12 @@ export interface MergeExecutionDeps {
   /** Best-effort lane-progress telemetry recorder; must never fail the merge. */
   recordLaneProgress: (prNumber: number, event: LaneProgressEvent, repoDir: string) => Promise<void>;
   /**
+   * Strip an untrusted `wm:ready` label off a PR whose Ready → Tend handoff is
+   * missing or does not match the current head (HOK-3107). Best-effort — a
+   * failure must never halt the tend loop. Defaults to `removeLabelFromPullRequest`.
+   */
+  stripUntrustedReady: (prNumber: number, repoDir: string) => void;
+  /**
    * Scratch-prep bounded-retry ops (HOK-3039). Records recovery attempts per
    * (mergeLaneStateDir, `scratch-prep-recovery` bucket, head SHA) and marks
    * the bucket exhausted after the ceiling — retry-exactly-once matches the
@@ -168,6 +183,16 @@ export interface MergeExecutionDeps {
    * (posts the failure comment and moves the PR to wm:blocked).
    */
   handoffRebindRetry: StrictBaseRetryOps;
+  /**
+   * Handoff-claim bounded-retry ops (HOK-3108). Counts consecutive rejected
+   * pre-lane Tend claims for a `wm:ready` PR whose Ready handoff file is
+   * missing/not-published/mismatched at the live head. Keyed on the live PR
+   * head — a fresh push resets the budget. When the budget is exhausted tend
+   * takes the terminal block path (comment + wm:blocked) so the same PR does
+   * not starve the lane forever. Backoff base is 0 (no starvation from
+   * exponential waits).
+   */
+  handoffClaimRetry: StrictBaseRetryOps;
   /**
    * Factory for the process-group prep runner used by `withScratchWorktree`.
    * Called once per merge attempt; each attempt gets a fresh shared deadline.
@@ -720,30 +745,95 @@ export async function executeMerge(
     // Every holder's lock was stale and reclaimed — the lane is free, proceed.
   }
 
-  // New Ready artifacts use an explicit ownership transfer. Keep the legacy
-  // path tolerant of older artifacts that predate the additive handoff file.
-  if (candidate.headSha && candidate.featureDir) {
-    // Selection may have happened seconds ago. Re-read GitHub before claiming
-    // so a force-push cannot inherit the old Ready token.
-    const liveHead = readPrMergeDiagnostics(candidate.number, options.repoDir, deps.shellRunner).headRefOid;
-    if (!liveHead || liveHead !== candidate.headSha) {
+  // The block closure is hoisted above the handoff check (HOK-3108) so the
+  // handoff-claim rejection path can drive `wm:blocked` when the budget is
+  // exhausted. It depends only on `candidate`, `options`, and `deps`, so
+  // moving it above `acquireMerging` is safe: `releaseToBlocked` (which is
+  // `setWavemillBlocked`) removes both wm:ready and wm:merging, so a block
+  // before wm:merging is applied is valid.
+  const block = async (phase: string, output: string): Promise<MergeExecutionResult> => {
+    const failureExcerpt = truncateOutput(output);
+    try {
+      postFailureComment(candidate.number, buildFailureComment(phase, failureExcerpt), options.repoDir, deps.shellRunner);
+    } catch {
+      // Comment posting failure is non-fatal; always release the PR from merging state.
+    }
+    try {
+      await retryTransient(() => deps.releaseToBlocked(candidate.number), {
+        label: 'set blocked label',
+        sleep: deps.retrySleep,
+      });
+    } catch (error) {
+      // Non-fatal, but never silent: a failed release leaves wm:merging applied,
+      // deadlocking the lane until the stale-lock timeout reclaims it.
+      console.warn(
+        `tend: failed to release PR #${candidate.number} from merging to blocked; `
+        + `wm:merging may be leaked until the stale-lock timeout reclaims it: ${errorMessage(error)}`,
+      );
+    }
+    return { status: 'blocked', prNumber: candidate.number, phase, failureExcerpt, haltLoop: false };
+  };
+
+  // Ready → Tend handoff is required before merge. In production, selection
+  // always attaches `headSha` from GitHub's live headRefOid; when it is present
+  // but `featureDir` is missing (PR #1513 shape) the PR carries an agent-applied
+  // `wm:ready` that the mill never validated, so treat the label as untrusted
+  // and strip it (HOK-3107). The `!candidate.headSha` branch remains a legacy
+  // test-only tolerance where selection did not attach live head metadata.
+  if (candidate.headSha) {
+    if (!candidate.featureDir) {
+      try {
+        deps.stripUntrustedReady(candidate.number, options.repoDir);
+      } catch {
+        // stripUntrustedReady is best-effort; a failure must never halt tend.
+      }
       return {
         status: 'skipped',
         prNumber: candidate.number,
         phase: 'handoff',
-        failureExcerpt: 'GitHub PR head changed or could not be verified before Tend ownership claim.',
+        failureExcerpt: 'PR carried wm:ready without a resolvable feature dir; label stripped as untrusted (no Ready → Tend handoff was ever published for this PR).',
+        haltLoop: false,
+      };
+    }
+    // Selection may have happened seconds ago. Re-read GitHub before claiming
+    // so a force-push cannot inherit the old Ready token.
+    const liveHead = readPrMergeDiagnostics(candidate.number, options.repoDir, deps.shellRunner).headRefOid;
+    if (!liveHead || liveHead !== candidate.headSha) {
+      // Head-changed skip stays unbudgeted (transient by definition — the next
+      // poll re-reads GitHub). HOK-3108: expose both SHAs so the loop's log
+      // line names the mismatch instead of a generic message.
+      return {
+        status: 'skipped',
+        prNumber: candidate.number,
+        phase: 'handoff',
+        failureExcerpt: `GitHub PR head changed or could not be verified before Tend ownership claim `
+          + `(selected=${candidate.headSha}, live=${liveHead || '(unavailable)'})`,
         haltLoop: false,
       };
     }
     const handoff = await claimReadyHandoff(candidate.featureDir, candidate.number, liveHead);
     if (handoff.outcome !== 'claimed' && handoff.outcome !== 'already-claimed') {
-      return {
-        status: 'skipped',
-        prNumber: candidate.number,
-        phase: 'handoff',
-        failureExcerpt: 'Ready completion artifact is missing, stale, or not published for the current PR head.',
-        haltLoop: false,
-      };
+      try {
+        deps.stripUntrustedReady(candidate.number, options.repoDir);
+      } catch {
+        // stripUntrustedReady is best-effort; a failure must never halt tend.
+      }
+      return handleHandoffClaimRejection({
+        candidate,
+        liveHead,
+        claim: handoff,
+        repoDir: options.repoDir,
+        deps,
+        block,
+      });
+    }
+    // Successful (or already-claimed) claim: clear the handoff-claim budget.
+    // A relabel wm:ready at the same head after a self-heal or a legitimate
+    // re-publish then starts a fresh budget. New heads reset automatically.
+    try {
+      deps.handoffClaimRetry.clear(candidate.number, options.repoDir);
+    } catch (error) {
+      console.warn(`tend: failed to clear handoff-claim retry budget for PR #${candidate.number}: ${errorMessage(error)}`);
     }
   }
 
@@ -775,29 +865,6 @@ export async function executeMerge(
       haltLoop: false,
     };
   }
-
-  const block = async (phase: string, output: string): Promise<MergeExecutionResult> => {
-    const failureExcerpt = truncateOutput(output);
-    try {
-      postFailureComment(candidate.number, buildFailureComment(phase, failureExcerpt), options.repoDir, deps.shellRunner);
-    } catch {
-      // Comment posting failure is non-fatal; always release the PR from merging state.
-    }
-    try {
-      await retryTransient(() => deps.releaseToBlocked(candidate.number), {
-        label: 'set blocked label',
-        sleep: deps.retrySleep,
-      });
-    } catch (error) {
-      // Non-fatal, but never silent: a failed release leaves wm:merging applied,
-      // deadlocking the lane until the stale-lock timeout reclaims it.
-      console.warn(
-        `tend: failed to release PR #${candidate.number} from merging to blocked; `
-        + `wm:merging may be leaked until the stale-lock timeout reclaims it: ${errorMessage(error)}`,
-      );
-    }
-    return { status: 'blocked', prNumber: candidate.number, phase, failureExcerpt, haltLoop: false };
-  };
 
   const emitPhaseProgress = async (phase: ScratchPrepPhase | 'heartbeat'): Promise<void> => {
     if (!options.onPhaseProgress) return;
@@ -1763,6 +1830,12 @@ async function rebindPushedTendHead(
 ): Promise<void> {
   if (!featureDir) return; // Legacy Ready artifacts have no handoff.
   if (!previousHeadSha || !pushedHeadSha) throw new Error('Tend handoff cannot be rebound without both head SHAs');
+  // HOK-3112: the push already happened, so the task worktree is now behind
+  // the PR head whether or not the rebind below succeeds. Mark it stale first
+  // so the monitor resyncs it before any Ready re-run — otherwise that re-run
+  // republishes the handoff at the stale checkout HEAD and Tend can never
+  // claim it again.
+  await recordTendPushedHeadBestEffort(featureDir, prNumber, previousHeadSha, pushedHeadSha);
   const convergence = await pollForPushedHeadConvergence(prNumber, previousHeadSha, pushedHeadSha, repoDir, deps);
   if (convergence.outcome === 'third-head') {
     throw new HandoffRebindRefusalError({
@@ -1787,6 +1860,22 @@ async function rebindPushedTendHead(
   const result = await rebindTendHandoff(featureDir, prNumber, previousHeadSha, pushedHeadSha);
   if (result.outcome !== 'claimed' && result.outcome !== 'already-claimed') {
     throw new Error(`Tend handoff rebind refused: PR #${prNumber} has no matching Tend claim`);
+  }
+}
+
+async function recordTendPushedHeadBestEffort(
+  featureDir: string,
+  prNumber: number,
+  previousHeadSha: string,
+  pushedHeadSha: string,
+): Promise<void> {
+  try {
+    await recordTendPushedHead(featureDir, prNumber, previousHeadSha, pushedHeadSha);
+  } catch (error) {
+    console.warn(
+      `tend: failed to mark task worktree stale after push on PR #${prNumber} `
+      + `(${previousHeadSha} -> ${pushedHeadSha}): ${errorMessage(error)}`,
+    );
   }
 }
 
@@ -2287,6 +2376,12 @@ const SCRATCH_PREP_RECOVERY_BUCKET = 'scratch-prep-recovery';
 const SCRATCH_PREP_RECOVERY_MAX_ATTEMPTS = 1;
 const HANDOFF_REBIND_BUCKET = 'handoff-rebind';
 const HANDOFF_REBIND_MAX_ATTEMPTS = 3;
+// HOK-3108. New bucket name — check that no existing bucket is a prefix of it
+// and vice versa (see bounded-retry.sh:11).
+// - handoff-claim  vs handoff-rebind    (no prefix relationship)
+// - handoff-claim  vs strict-base-refresh, scratch-prep-recovery (no relationship)
+const HANDOFF_CLAIM_BUCKET = 'handoff-claim';
+const HANDOFF_CLAIM_MAX_ATTEMPTS = 3;
 const SCRATCH_PREP_PROGRESS_HEARTBEAT_MS = 30_000;
 const BOUNDED_RETRY_HELPER_TIMEOUT_MS = 30_000;
 const BOUNDED_RETRY_HELPER_PATH = join(dirname(fileURLToPath(import.meta.url)), 'bounded-retry.sh');
@@ -2338,20 +2433,48 @@ export const defaultScratchPrepRetryOps: StrictBaseRetryOps = createBoundedRetry
  * budget is keyed on the pushed head SHA, so a fresh push resets counting.
  * The helper terminalizes at the ceiling with a greppable
  * `.retry-handoff-rebind-exhausted` sentinel and clears on a successful merge.
+ *
+ * Related buckets:
+ *   - `handoff-claim` (HOK-3108): pre-lane claim rejections when a `wm:ready`
+ *     PR has no published Ready handoff at its live head.
+ *   - `strict-base-refresh` (HOK-2924): stale-base rejection recovery.
+ *   - `scratch-prep-recovery` (HOK-3039): worktree-prep timeout recovery.
  */
 export const defaultHandoffRebindRetryOps: StrictBaseRetryOps = createBoundedRetryOps(
   HANDOFF_REBIND_BUCKET,
   HANDOFF_REBIND_MAX_ATTEMPTS,
 );
 
-function createBoundedRetryOps(bucket: string, maxAttempts: number): StrictBaseRetryOps {
+/**
+ * Default HOK-3108 bounded-retry wiring for pre-lane handoff-claim rejections
+ * (agent-applied wm:ready without a published Ready handoff, and similar). The
+ * budget is keyed on the live PR head, so a fresh push resets the counter and
+ * clears the `.retry-handoff-claim-exhausted` sentinel. Backoff base is 0:
+ * Ready publishes the handoff before it labels wm:ready, so there is no race
+ * for backoff to wait out, and the same PR sitting first in `eligible` would
+ * otherwise starve every other eligible PR for the duration of the wait.
+ */
+export const defaultHandoffClaimRetryOps: StrictBaseRetryOps = createBoundedRetryOps(
+  HANDOFF_CLAIM_BUCKET,
+  HANDOFF_CLAIM_MAX_ATTEMPTS,
+  { baseSeconds: 0 },
+);
+
+function createBoundedRetryOps(
+  bucket: string,
+  maxAttempts: number,
+  backoff?: { baseSeconds?: number; capSeconds?: number },
+): StrictBaseRetryOps {
+  const backoffSuffix = backoff !== undefined
+    ? ` ${escapeShellArg(String(backoff.baseSeconds ?? ''))} ${escapeShellArg(String(backoff.capSeconds ?? ''))}`
+    : '';
   return {
     gate: (prNumber, headSha, repoDir) => {
       const stateDir = mergeLaneStateDir(prNumber, repoDir);
       const decision = runBoundedRetryHelper(
         repoDir,
         `bounded_retry_gate ${escapeShellArg(stateDir)} ${escapeShellArg(bucket)} `
-        + `${escapeShellArg(sanitizeHeadShaForRetryKey(headSha))} ${maxAttempts}`,
+        + `${escapeShellArg(sanitizeHeadShaForRetryKey(headSha))} ${maxAttempts}${backoffSuffix}`,
       );
       if (!STRICT_BASE_RETRY_DECISIONS.has(decision as StrictBaseRetryDecision)) {
         throw new Error(`bounded_retry_gate returned unexpected decision: ${truncateReason(decision || '(empty)', 100)}`);
@@ -2519,7 +2642,10 @@ async function handleHandoffRebindFailure(args: {
   const { candidate, repoDir, pushedHeadSha, error, deps, block } = args;
 
   const terminalBlock = async (output: string): Promise<MergeExecutionResult> => {
-    writeTendHandoffBlockSentinel(repoDir, candidate.number, pushedHeadSha);
+    writeTendHandoffBlockSentinel(repoDir, candidate.number, pushedHeadSha, {
+      previousHeadSha: candidate.headSha,
+      featureDir: candidate.featureDir,
+    });
     return block('handoff', output);
   };
 
@@ -2590,6 +2716,141 @@ async function handleHandoffRebindFailure(args: {
     ),
     haltLoop: false,
   };
+}
+
+/**
+ * Handle a rejected pre-lane Tend claim on the Ready handoff (HOK-3108).
+ *
+ * Called when `claimReadyHandoff` rejected the claim at the live PR head
+ * (missing / unreadable / head-mismatch / not-published / terminal /
+ * foreign-claim). Consults the `handoff-claim` bounded-retry bucket keyed on
+ * (`mergeLaneStateDir(pr)`, `handoff-claim`, live head):
+ *
+ *  - `proceed`  → increment the counter, return `skipped` with a rich
+ *                 `failureExcerpt` naming the reason. The loop logs and
+ *                 stall-tracks it.
+ *  - `backoff`  → return the same skip without incrementing. With base 0
+ *                 this cannot fire, but the case is handled for completeness.
+ *  - `exhausted`      → mark the sentinel with a recorded reason and block.
+ *  - `exhausted-quiet` → block without re-marking (someone re-applied
+ *                        `wm:ready` at the same head after the block cleared).
+ *
+ * The block excerpt carries the literal phrase
+ *   `wm:ready without a published Ready handoff for head <fullSha>`
+ * so it is greppable across logs, and includes the rejection detail, the
+ * rejected-claim count, and a remedy line pointing to Ready re-run or a
+ * fresh push.
+ *
+ * Crucially, this path does NOT write the `tend-handoff-block` sentinel. If
+ * it did, the HOK-3105 self-heal would clear `wm:blocked` two polls later on
+ * a green PR, the PR would get `wm:ready` again, and the loop would come
+ * back. Without the sentinel, the block follows HOK-2883 semantics: it
+ * stays put and surfaces as `blocked-label:contradicted-by-live-state`
+ * with the operator's contradiction finding until Ready re-runs or a new
+ * head is pushed.
+ *
+ * A gate that throws is fail-closed: we block with the gate error appended,
+ * matching the scratch-prep and handoff-rebind conventions.
+ */
+async function handleHandoffClaimRejection(args: {
+  candidate: TendCandidate;
+  liveHead: string;
+  claim: ClaimHandoffOutcome;
+  repoDir: string;
+  deps: MergeExecutionDeps;
+  block: (phase: string, output: string) => Promise<MergeExecutionResult>;
+}): Promise<MergeExecutionResult> {
+  const { candidate, liveHead, claim, repoDir, deps, block } = args;
+  const detail = describeClaimRejection(claim, candidate.number, liveHead);
+
+  let decision: StrictBaseRetryDecision;
+  try {
+    decision = deps.handoffClaimRetry.gate(candidate.number, liveHead, repoDir);
+  } catch (gateError) {
+    console.warn(
+      `tend: handoff-claim retry gate failed for PR #${candidate.number}: ${errorMessage(gateError)}`,
+    );
+    return block(
+      'handoff',
+      `wm:ready without a published Ready handoff for head ${liveHead}\n${detail}\n\n`
+      + `handoff-claim retry gate failed (fail-closed): ${errorMessage(gateError)}`,
+    );
+  }
+
+  if (decision === 'exhausted' || decision === 'exhausted-quiet') {
+    if (decision === 'exhausted') {
+      try {
+        deps.handoffClaimRetry.markExhausted(
+          candidate.number,
+          `handoff-claim rejected ${HANDOFF_CLAIM_MAX_ATTEMPTS} times at head ${liveHead}: ${detail}`,
+          repoDir,
+        );
+      } catch (markError) {
+        console.warn(
+          `tend: failed to record handoff-claim exhaustion for PR #${candidate.number}: ${errorMessage(markError)}`,
+        );
+      }
+    }
+    const blockOutput = [
+      `wm:ready without a published Ready handoff for head ${liveHead}`,
+      detail,
+      `handoff-claim rejected ${HANDOFF_CLAIM_MAX_ATTEMPTS} consecutive times at this head.`,
+      '',
+      'Remedy: re-run Ready for this head so it publishes the handoff (it will relabel wm:ready), or push a new head.',
+    ].join('\n');
+    return block('handoff', blockOutput);
+  }
+
+  if (decision === 'proceed') {
+    try {
+      deps.handoffClaimRetry.increment(candidate.number, liveHead, repoDir);
+    } catch (incError) {
+      console.warn(
+        `tend: failed to record handoff-claim attempt for PR #${candidate.number}: ${errorMessage(incError)}`,
+      );
+    }
+  }
+  // `backoff` (only reachable with a nonzero base) falls through without
+  // incrementing — the next poll re-runs the gate.
+
+  const attempt = decision === 'proceed'
+    ? (currentHandoffClaimCount(candidate.number, liveHead, repoDir) || 1)
+    : 0;
+  const attemptLabel = decision === 'proceed'
+    ? `Tend claim rejected (${attempt}/${HANDOFF_CLAIM_MAX_ATTEMPTS}) for head ${liveHead.slice(0, 7)}: ${detail}`
+    : `Tend claim deferred by handoff-claim backoff for head ${liveHead.slice(0, 7)}: ${detail}`;
+
+  return {
+    status: 'skipped',
+    prNumber: candidate.number,
+    phase: 'handoff',
+    failureExcerpt: truncateOutput(attemptLabel),
+    haltLoop: false,
+  };
+}
+
+/**
+ * Read the current handoff-claim attempt count directly from the bucket's
+ * counter file, without shelling out. Best-effort — used only to render a
+ * "1/3" style hint into `failureExcerpt`. A missing/unreadable file returns 0.
+ *
+ * Format mirrors `bounded-retry.sh` storage (`.retry-<bucket>-count`) so a
+ * fresh test that injects a fake `handoffClaimRetry` still reads 0 here (no
+ * counter file exists on disk), rather than throwing.
+ */
+function currentHandoffClaimCount(
+  prNumber: number,
+  _headSha: string,
+  repoDir: string,
+): number {
+  try {
+    const path = join(mergeLaneStateDir(prNumber, repoDir), `.retry-${HANDOFF_CLAIM_BUCKET}-count`);
+    if (!existsSync(path)) return 0;
+    const raw = readFileSync(path, 'utf-8').trim();
+    return /^[0-9]+$/.test(raw) ? Number(raw) : 0;
+  } catch {
+    return 0;
+  }
 }
 
 async function restoreReadyAfterHandoffDefer(candidate: TendCandidate, deps: MergeExecutionDeps): Promise<void> {
@@ -2980,6 +3241,7 @@ function mergeExecutionDeps(deps: Partial<MergeExecutionDeps> | undefined, marke
     strictBaseRetry: defaultStrictBaseRetryOps,
     scratchPrepRetry: defaultScratchPrepRetryOps,
     handoffRebindRetry: defaultHandoffRebindRetryOps,
+    handoffClaimRetry: defaultHandoffClaimRetryOps,
     prepRunnerFactory: (_repoDir, factoryOptions) => createProcessGroupPrepRunner({
       deadlineMs: getIntegrationConfig(_repoDir).worktreePrepTimeoutMinutes * 60_000,
       heartbeatIntervalMs: SCRATCH_PREP_PROGRESS_HEARTBEAT_MS,
@@ -2988,6 +3250,7 @@ function mergeExecutionDeps(deps: Partial<MergeExecutionDeps> | undefined, marke
     recordLaneProgress: async (prNumber, event, repoDir) => {
       await recordLaneProgress(prNumber, repoDir, event);
     },
+    stripUntrustedReady: defaultUntrustedReadyLabelStripper,
     ...deps,
   };
 }
@@ -3154,6 +3417,28 @@ function defaultBlockedLabelClearer(prNumber: number, repoDir: string): void {
     repo = undefined;
   }
   removeLabelFromPullRequest(prNumber, WM_LABELS.blocked, repo ? { repo } : {});
+}
+
+/**
+ * Best-effort strip of an untrusted `wm:ready` label (HOK-3107). Failure is
+ * swallowed with a warning so tend never halts the loop when GitHub returns a
+ * transient error while removing an agent-applied label.
+ */
+function defaultUntrustedReadyLabelStripper(prNumber: number, repoDir: string): void {
+  let repo: string | undefined;
+  try {
+    repo = resolveOwnerRepoFromRemote(repoDir) ?? undefined;
+  } catch {
+    repo = undefined;
+  }
+  try {
+    removeLabelFromPullRequest(prNumber, WM_LABELS.ready, repo ? { repo } : {});
+  } catch (error) {
+    console.warn(
+      `tend: failed to strip untrusted wm:ready from PR #${prNumber} `
+      + `(no ready-published handoff for live head): ${errorMessage(error)}`,
+    );
+  }
 }
 
 function parseCrossPrGuardToolOutput(output: string): {
@@ -3417,7 +3702,7 @@ async function resolveBlockedLabelReason(
       // two consecutive polls, tend clears its own label in-band. Guard-set
       // blocks (cross-PR revert guard, review) are on a different branch of
       // this function, so HOK-2883 semantics remain intact.
-      const selfHealed = attemptTendHandoffSelfHeal(pr, labels, currentHeadSha, options);
+      const selfHealed = await attemptTendHandoffSelfHeal(pr, metadata, labels, currentHeadSha, options);
       if (selfHealed) {
         return null;
       }
@@ -3477,9 +3762,17 @@ async function resolveBlockedLabelReason(
  * Only fires when the tend-handoff-block sentinel matches `currentHeadSha`;
  * blocks set by any other subsystem (cross-PR revert guard, review, missing
  * sentinel from an old block) are never touched, preserving HOK-2883.
+ *
+ * HOK-3112: restoring wm:ready alone is not enough. After a refused rebind the
+ * `.ready-tend-handoff.json` record is still at the pre-push head, so the next
+ * claim at the live head is rejected and tend skips the PR every poll. Before
+ * the label is cleared, the handoff record is moved to the live head (which
+ * must be tend's own push) and the task worktree is marked stale so the next
+ * Ready re-run does not overwrite the record at the old checkout HEAD.
  */
-function attemptTendHandoffSelfHeal(
+async function attemptTendHandoffSelfHeal(
   pr: GhPrListEntry,
+  metadata: PrMetadata | null,
   labels: Set<string>,
   currentHeadSha: string,
   options: {
@@ -3487,11 +3780,20 @@ function attemptTendHandoffSelfHeal(
     blockedLabelClearer: BlockedLabelClearer;
     prStateMarkerWriter: PrStateMarkerWriter;
   },
-): boolean {
+): Promise<boolean> {
   const sentinel = readTendHandoffBlockSentinel(options.repoDir, pr.number);
   if (!sentinel || sentinel.headSha !== currentHeadSha) {
     // Block was not attributed to tend's handoff refusal at this head. Keep
     // HOK-2883 semantics: no self-heal.
+    return false;
+  }
+
+  // HOK-3112: the sentinel records the head tend pushed; the stale-worktree
+  // marker (written by the same push) must agree when present. Any other head
+  // is a third-party push and tend must not republish the handoff for it.
+  const featureDir = sentinel.featureDir ?? resolveReadyStateDir(options.repoDir, pr, metadata) ?? undefined;
+  const pushedMarker = featureDir ? readTendPushedHead(featureDir) : null;
+  if (pushedMarker && (pushedMarker.prNumber !== pr.number || pushedMarker.pushedHeadSha !== currentHeadSha)) {
     return false;
   }
 
@@ -3508,7 +3810,22 @@ function attemptTendHandoffSelfHeal(
   }
 
   // observed.count >= 1 and head matches: this is the second consecutive
-  // same-head observation. Clear the label in-band.
+  // same-head observation. Make the handoff claimable at the live head first
+  // so wm:ready is never restored without a record tend can claim. Legacy
+  // Ready artifacts (no featureDir) have no handoff claim check.
+  if (featureDir) {
+    const republished = await republishHandoffAtTendHead(
+      featureDir,
+      pr.number,
+      sentinel.previousHeadSha ?? pushedMarker?.previousHeadSha,
+      currentHeadSha,
+    );
+    if (!republished) {
+      // Keep the block and sidecars; the next poll retries.
+      return false;
+    }
+  }
+
   const clearResult = clearGuardBlockedLabel(pr, labels, currentHeadSha, options, 'blocked-label:clear-failed');
   if (clearResult !== null) {
     // Clear failed — leave sidecars in place so the next poll retries.
@@ -3518,6 +3835,53 @@ function attemptTendHandoffSelfHeal(
   clearTendHandoffContradictionObserved(options.repoDir, pr.number);
   emitTendHandoffSelfHealFinding(options.repoDir, pr, currentHeadSha);
   return true;
+}
+
+/**
+ * Move the Ready→Tend handoff to `liveHeadSha`, a head tend itself pushed
+ * (HOK-3112). Prefers carrying tend's existing claim across with
+ * `rebindTendHandoff`; if the record is no longer tend's claim at the previous
+ * head (e.g. a Ready re-run republished it at the stale checkout HEAD), it
+ * publishes a fresh handoff at the live head for the next poll to claim.
+ *
+ * Also (re)marks the task worktree stale so the monitor syncs it to the live
+ * head before its next Ready run. Returns false when the record could not be
+ * made claimable (terminal record, or an I/O failure).
+ */
+async function republishHandoffAtTendHead(
+  featureDir: string,
+  prNumber: number,
+  previousHeadSha: string | undefined,
+  liveHeadSha: string,
+): Promise<boolean> {
+  try {
+    let claimable = false;
+    if (previousHeadSha && previousHeadSha !== liveHeadSha) {
+      const rebound = await rebindTendHandoff(featureDir, prNumber, previousHeadSha, liveHeadSha);
+      claimable = rebound.outcome === 'claimed' || rebound.outcome === 'already-claimed';
+    }
+    if (!claimable) {
+      const published = await publishReadyHandoff(featureDir, prNumber, liveHeadSha);
+      claimable = published.outcome !== 'rejected';
+    }
+    if (!claimable) {
+      console.warn(
+        `tend: self-heal cannot republish handoff for PR #${prNumber} at ${liveHeadSha}: `
+        + `record is ${readReadyTendHandoff(featureDir)?.state ?? 'missing'}`,
+      );
+      return false;
+    }
+    const marker = readTendPushedHead(featureDir);
+    if (!marker || marker.prNumber !== prNumber || marker.pushedHeadSha !== liveHeadSha) {
+      await recordTendPushedHead(featureDir, prNumber, previousHeadSha ?? '', liveHeadSha);
+    }
+    return true;
+  } catch (error) {
+    console.warn(
+      `tend: self-heal failed to republish handoff for PR #${prNumber} at ${liveHeadSha}: ${errorMessage(error)}`,
+    );
+    return false;
+  }
 }
 
 function clearGuardBlockedLabel(
@@ -3689,20 +4053,35 @@ function describeLiveBlockedGate(live: BlockedPrLiveState): string | null {
  * handoff refusal" signal for `resolveBlockedLabelReason`.
  */
 interface TendHandoffBlockSentinel {
+  /** Head tend pushed (the head the refused rebind targeted). */
   headSha: string;
   reason: string;
   at: string;
+  /**
+   * HOK-3112: head the handoff record was claimed at before tend's push, so
+   * the self-heal can move tend's claim with `rebindTendHandoff`.
+   */
+  previousHeadSha?: string;
+  /** HOK-3112: Ready artifact dir holding `.ready-tend-handoff.json`. */
+  featureDir?: string;
 }
 
 function tendHandoffBlockSentinelPath(repoDir: string, prNumber: number): string {
   return join(mergeLaneStateDir(prNumber, repoDir), 'tend-handoff-block.json');
 }
 
-function writeTendHandoffBlockSentinel(repoDir: string, prNumber: number, headSha: string): void {
+function writeTendHandoffBlockSentinel(
+  repoDir: string,
+  prNumber: number,
+  headSha: string,
+  handoff: { previousHeadSha?: string; featureDir?: string } = {},
+): void {
   const sentinel: TendHandoffBlockSentinel = {
     headSha,
     reason: 'handoff-rebind-refused',
     at: new Date().toISOString(),
+    ...(handoff.previousHeadSha ? { previousHeadSha: handoff.previousHeadSha } : {}),
+    ...(handoff.featureDir ? { featureDir: handoff.featureDir } : {}),
   };
   try {
     mkdirSync(mergeLaneStateDir(prNumber, repoDir), { recursive: true });
@@ -3728,6 +4107,9 @@ function readTendHandoffBlockSentinel(repoDir: string, prNumber: number): TendHa
       headSha: parsed.headSha,
       reason: typeof parsed.reason === 'string' ? parsed.reason : '',
       at: typeof parsed.at === 'string' ? parsed.at : '',
+      ...(typeof parsed.previousHeadSha === 'string' && parsed.previousHeadSha
+        ? { previousHeadSha: parsed.previousHeadSha } : {}),
+      ...(typeof parsed.featureDir === 'string' && parsed.featureDir ? { featureDir: parsed.featureDir } : {}),
     };
   } catch {
     return null;

@@ -226,6 +226,19 @@ check_eq "monitor does not bind branch-only open PR" "" "$(find_pr_for_branch "t
 write_prs "task/reopened-r2" '[{"number":78,"state":"OPEN","mergedAt":null,"headRefName":"task/reopened-r2","headRefOid":"c1","baseRefName":"auto/integration","title":"HOK-2595 current attempt","body":"","updatedAt":"2026-09-08T00:00:00Z"}]'
 check_eq "monitor binds evidence-backed current open PR" "78" "$(find_pr_for_branch "task/reopened-r2")"
 
+# HOK-3110: a lineage-verified merged PR is discoverable when the caller opts
+# in to current-merged classification (e.g. so the primary can bind a PR that
+# tend merged before monitor first observed it). A branch-only historical
+# merged PR must still be ignored regardless of classification opt-in.
+write_prs "task/reopened-r2" '[{"number":91,"state":"MERGED","mergedAt":"2026-09-09T00:00:00Z","headRefName":"task/reopened-r2","headRefOid":"c1","baseRefName":"auto/integration","title":"unrelated old work","body":"","updatedAt":"2026-09-09T00:00:00Z"}]'
+check_eq "monitor still ignores branch-only merged PR even when opting into current-merged" "" "$(find_pr_for_branch "task/reopened-r2" "current-merged")"
+check_eq "monitor still ignores merged PR when caller only opts in to current-open" "" "$(find_pr_for_branch "task/reopened-r2")"
+
+write_prs "task/reopened-r2" '[{"number":92,"state":"MERGED","mergedAt":"2026-09-09T00:00:00Z","headRefName":"task/reopened-r2","headRefOid":"c1","baseRefName":"auto/integration","title":"HOK-2595 current attempt","body":"","updatedAt":"2026-09-09T00:00:00Z"}]'
+check_eq "monitor binds lineage-verified current-merged PR when opting in" "92" "$(find_pr_for_branch "task/reopened-r2" "current-merged")"
+check_eq "monitor default (current-open only) still ignores lineage-verified merged PR" "" "$(find_pr_for_branch "task/reopened-r2")"
+check_eq "monitor binds lineage-verified merged PR when caller opts in to open+merged" "92" "$(find_pr_for_branch "task/reopened-r2" "current-open current-merged")"
+
 echo ""
 echo "--- Results: $PASS passed, $FAIL failed ---"
 if (( FAIL > 0 )); then
