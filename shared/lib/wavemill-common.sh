@@ -5231,7 +5231,7 @@ wavemill_load_config() {
 wavemill_observer_config_enabled() {
   local merged="${1:-}"
   [[ -n "$merged" ]] || merged="$(wavemill_load_config "${REPO_DIR:-$PWD}")"
-  [[ "$(printf '%s' "$merged" | jq -r '.observer.enabled // false' 2>/dev/null || echo false)" == "true" ]]
+  [[ "$(printf '%s' "$merged" | jq -r '.observer.enabled != false' 2>/dev/null || echo false)" == "true" ]]
 }
 
 wavemill_observer_interval_seconds() {

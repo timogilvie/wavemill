@@ -5206,7 +5206,7 @@ mark_coding_uncommitted_output_announced() {
 
 clear_coding_uncommitted_output_attention() {
   local feature_dir="$1"
-  local artifact resolved_log coding_complete_epoch coding_complete_iso_arg
+  local artifact resolved_log coding_complete_epoch coding_complete_iso_arg recovery_instruction_arg
 
   artifact="$(coding_uncommitted_output_artifact_path "$feature_dir")"
 
@@ -5222,12 +5222,19 @@ clear_coding_uncommitted_output_attention() {
     if [[ "$coding_complete_epoch" =~ ^[0-9]+$ ]]; then
       coding_complete_iso_arg="$(jq -n --argjson e "$coding_complete_epoch" '$e | todate' 2>/dev/null || echo "null")"
     fi
+    recovery_instruction_arg="false"
+    [[ -f "$(coding_recovery_instruction_path "$feature_dir")" ]] && recovery_instruction_arg="true"
     jq -c --arg resolvedAt "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" --argjson codingCompleteAt "$coding_complete_iso_arg" \
-      '. + {resolvedAt: $resolvedAt, codingCompleteAt: $codingCompleteAt}' \
+      --argjson recoveryInstruction "$recovery_instruction_arg" \
+      '. + {resolvedAt: $resolvedAt, codingCompleteAt: $codingCompleteAt}
+       + (if $recoveryInstruction then {recoveryInstruction: true} else {} end)' \
       "$artifact" >> "$resolved_log" 2>/dev/null || true
   fi
 
-  rm -f "$artifact" "$(coding_uncommitted_output_announce_marker "$feature_dir")"
+  # HOK-3128: the dirty-handoff recovery instruction only lives until the tree
+  # is clean again.
+  rm -f "$artifact" "$(coding_uncommitted_output_announce_marker "$feature_dir")" \
+    "$(coding_recovery_instruction_path "$feature_dir")"
 }
 
 coding_compare_commit_counts() {
@@ -5291,16 +5298,273 @@ write_coding_uncommitted_output_artifact() {
   }
 }
 
+# ── Agent-exited dirty-tree coding handoff (HOK-3128) ─────────────────────────
+#
+# `.coding-complete` + uncommitted output parks an arm at needs-user. While the
+# agent is alive that is right — it may still commit. Once the agent has
+# exited nobody will ever clean the tree, so an unguarded park is a permanent
+# hold (and, for a challenger, blocks its primary's green PR at the tend gate).
+# After the agent exits the guard:
+#   1. quarantines safe scratch residue (untracked, repo-root, unplanned files);
+#   2. relaunches the coding agent once per head with a targeted "commit or
+#      discard these paths" instruction, counted through bounded-retry.sh
+#      (bucket coding-dirty-handoff, keyed on head);
+#   3. on exhaustion writes the .retry-coding-dirty-handoff-exhausted sentinel
+#      and, for a challenger, aborts the arm (single scope) so the pair
+#      resolves as a forfeit and the primary is released. A primary stays
+#      needs-user with the recorded reason.
+# Liveness comes only from the HOK-3101 task-progress primitive.
+
+coding_recovery_instruction_path() {
+  printf '%s\n' "$1/.coding-recovery-instruction.md"
+}
+
+coding_dirty_handoff_grace_seconds() {
+  local grace="${WAVEMILL_CODING_DIRTY_HANDOFF_GRACE_SECONDS:-120}"
+  [[ "$grace" =~ ^[0-9]+$ ]] || grace=120
+  printf '%s\n' "$grace"
+}
+
+# coding_dirty_handoff_agent_exited <issue> <feature_dir> [worktree]
+# Exit 0 only when the progress primitive shows the coding agent's own idle /
+# Stop / process_exit record (or terminal-history idle event), no fresh live or
+# human-owned agent state, no blocking prompt, and the idle record is older
+# than the grace (so an agent that writes .coding-complete, then commits, then
+# stops is never raced). Any missing evidence or probe failure returns 1
+# ("live / unknown"), which keeps the legacy needs-user hold; the tend gate's
+# sibling-stalled rule is the backstop for arms with no evidence at all.
+coding_dirty_handoff_agent_exited() {
+  local issue="$1" feature_dir="$2" worktree="${3:-}"
+  local progress grace now
+  local -a progress_args=(--phase coding --max-age 60 --feature-dir "$feature_dir")
+
+  declare -F task_progress_json >/dev/null 2>&1 || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  [[ -n "$worktree" ]] && progress_args+=(--worktree "$worktree")
+
+  progress="$(task_progress_json "$issue" "${progress_args[@]}" 2>/dev/null || printf '{}')"
+  grace="$(coding_dirty_handoff_grace_seconds)"
+  now="$(date +%s)"
+
+  # Hook timestamps are epoch seconds; tolerate a millisecond writer.
+  printf '%s' "$progress" | jq -e --argjson now "$now" --argjson grace "$grace" '
+    (.agentIdle == true or .terminalIdle == true) and
+    ((.agentState // "") as $s | ["working", "waiting", "approval-needed", "blocked", "policy-denied"] | any(.[]; . == $s) == false) and
+    (.blockingPrompt == null) and
+    (if ((.agentRecord.state // "") == "idle") and ((.agentRecord.timestamp | type) == "number") and (.agentRecord.timestamp > 0)
+     then ($now - (if .agentRecord.timestamp > 1000000000000 then (.agentRecord.timestamp / 1000) else .agentRecord.timestamp end)) >= $grace
+     else ((.progressAgeMinutes // 0) * 60) >= $grace
+     end)
+  ' >/dev/null 2>&1
+}
+
+# coding_dirty_handoff_path_is_planned <feature_dir> <path>
+# A path is "planned" when the task contract allows it or the plan / task
+# packet mentions it anywhere. Planned paths are never auto-cleaned.
+coding_dirty_handoff_path_is_planned() {
+  local feature_dir="$1" path="$2" doc
+
+  if [[ -f "$feature_dir/task-contract.json" ]] \
+    && jq -e --arg p "$path" '(.fields.allowedPaths.value // []) | any(.[]; . == $p)' \
+      "$feature_dir/task-contract.json" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  for doc in "$feature_dir/plan.md" "$feature_dir"/task-packet*.md; do
+    [[ -f "$doc" ]] || continue
+    if grep -Fq -- "$path" "$doc" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# coding_dirty_handoff_quarantine_scratch <issue> <worktree> <feature_dir> <slug>
+# Move safe scratch residue out of the tree: untracked (`??`) regular files at
+# the repo root that are not dotfiles, not Wavemill-owned, and not planned.
+# Files are moved (not deleted) into features/<slug>/.stale-artifacts/, which
+# is Wavemill-owned and therefore excluded from the dirty set. Exit 0 when
+# anything moved.
+coding_dirty_handoff_quarantine_scratch() {
+  local issue="$1" worktree="$2" feature_dir="$3" slug="$4"
+  local status_lines line code path archive_dir="" moved=0
+
+  status_lines="$(git -C "$worktree" status --porcelain --untracked-files=all 2>/dev/null || true)"
+  [[ -n "$status_lines" ]] || return 1
+
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    code="${line:0:2}"
+    path="${line:3}"
+    [[ "$code" == "??" ]] || continue
+    # Root-level, non-dotfile, unquoted (git quotes unusual names) only.
+    [[ "$path" != */* && "$path" != .* && "$path" != \"* ]] || continue
+    if wavemill_owned_dirty_path "$path" "$slug"; then
+      continue
+    fi
+    if coding_dirty_handoff_path_is_planned "$feature_dir" "$path"; then
+      continue
+    fi
+    [[ -f "$worktree/$path" && ! -L "$worktree/$path" ]] || continue
+
+    if [[ -z "$archive_dir" ]]; then
+      archive_dir="$feature_dir/.stale-artifacts/dirty-handoff-$(date -u +%Y%m%dT%H%M%SZ)"
+      mkdir -p "$archive_dir" 2>/dev/null || return 1
+    fi
+    if mv "$worktree/$path" "$archive_dir/$path" 2>/dev/null; then
+      moved=1
+      log "status" "♻ $issue → quarantined scratch residue $path (moved to ${archive_dir#"$worktree"/})"
+    fi
+  done <<< "$status_lines"
+
+  (( moved == 1 ))
+}
+
+coding_dirty_handoff_write_recovery_instruction() {
+  local feature_dir="$1" dirty_paths="$2"
+  local file tmp dirty_path
+
+  file="$(coding_recovery_instruction_path "$feature_dir")"
+  tmp="$(mktemp "$file.tmp.XXXXXX" 2>/dev/null)" || return 1
+  {
+    printf 'Your previous coding run wrote `.coding-complete` but left these paths uncommitted:\n\n'
+    while IFS= read -r dirty_path; do
+      [[ -n "$dirty_path" ]] && printf -- '- `%s`\n' "$dirty_path"
+    done <<< "$dirty_paths"
+    printf '\nFor each path, either commit it (when it belongs to the task) or discard it (`git checkout -- <path>` for a tracked file, or remove untracked scratch files). Do not make any other changes. Then re-write `.coding-complete`.\n'
+  } > "$tmp" && mv "$tmp" "$file" 2>/dev/null && return 0
+  rm -f "$tmp"
+  return 1
+}
+
+# coding_dirty_handoff_relaunch <issue> <feature_dir> <worktree> <win> <dirty_paths>
+# Relaunch the coding agent once with the recovery instruction. Launch identity
+# follows the challenger transient-retry recipe for a challenger (provider-aware
+# adapter from immutable intent) and the plan→coding launch resolution for a
+# primary. Returns 0 when launched, 1 when the identity cannot be resolved or
+# the launch failed (the caller then terminalizes).
+coding_dirty_handoff_relaunch() {
+  local issue="$1" feature_dir="$2" worktree="$3" win="$4" dirty_paths="$5"
+  local slug role is_challenge launch_identity agent="" model="" branch title issue_json depth
+  local contract_payload path_count rc=0
+
+  slug="$(basename "$feature_dir")"
+  role="$(_challenge_side_for_issue "$issue" 2>/dev/null || true)"
+  is_challenge="$(get_task_meta "$issue" "challenge" 2>/dev/null || true)"
+
+  if [[ "$is_challenge" == "true" && "$role" == "challenger" ]]; then
+    # No current head: the arm committed since launch by design, so the
+    # result-head staleness check of the transient-retry path does not apply.
+    launch_identity="$(resolve_challenger_transient_retry_launch_intent "$issue" "$feature_dir" "coding" "")"
+    if ! printf '%s' "$launch_identity" | jq -e '.ok == true' >/dev/null 2>&1; then
+      log_warn "$issue → coding-dirty-handoff relaunch: challenger launch identity unavailable ($(printf '%s' "$launch_identity" | jq -r '.reason // "unknown"' 2>/dev/null || echo unknown))"
+      return 1
+    fi
+    agent="$(printf '%s' "$launch_identity" | jq -r '.agent // ""' 2>/dev/null || echo "")"
+    model="$(printf '%s' "$launch_identity" | jq -r '.model // ""' 2>/dev/null || echo "")"
+  else
+    model="$(stage_result_field "$feature_dir" "coding" "model")"
+    if [[ -z "$model" ]]; then
+      model="$(read_phase_config "$feature_dir" "coding" "model")"
+      [[ -n "$model" ]] || model="$(get_task_meta "$issue" "coderModel" 2>/dev/null || true)"
+      model="$(resolve_phase_model "coding" "$model" "claude-opus-4-7")"
+    fi
+    if ! agent="$(agent_resolve_from_model "$model" "coding")"; then
+      log_warn "$issue → coding-dirty-handoff relaunch: ${AGENT_RESOLVE_LAST_DIAGNOSTIC:-agent resolution failed for $model}"
+      return 1
+    fi
+  fi
+  if [[ -z "$agent" || -z "$model" ]] || ! agent_validate_phase_launch "$agent" "coding" "$model" "$REPO_DIR"; then
+    log_warn "$issue → coding-dirty-handoff relaunch: launch identity not launchable (adapter=${agent:-?} model=${model:-?})"
+    return 1
+  fi
+
+  branch="$(read_state_value "" --arg i "$issue" '.tasks[$i].branch // empty')"
+  [[ -n "$branch" ]] || branch="task/${slug}"
+  title="$(read_state_value "" --arg i "$issue" '.tasks[$i].title // ""')"
+  if [[ -z "$title" ]]; then
+    issue_json="$(cat "/tmp/${SESSION}-${issue}-issue.json" 2>/dev/null || echo "{}")"
+    title="$(printf '%s' "$issue_json" | jq -r '.title // "Task"' 2>/dev/null || echo "Task")"
+  fi
+  depth="$(read_phase_config "$feature_dir" "coding" "depth")"
+  [[ -n "$depth" ]] || depth="$(get_task_meta "$issue" "codeDepth" 2>/dev/null || true)"
+  [[ -n "$depth" ]] || depth="medium"
+
+  coding_dirty_handoff_write_recovery_instruction "$feature_dir" "$dirty_paths" || {
+    log_warn "$issue → coding-dirty-handoff relaunch: could not write recovery instruction"
+    return 1
+  }
+  # Move .coding-complete aside so the next tick does not re-enter the guard
+  # before the relaunched agent re-writes it.
+  archive_stale_coding_artifacts "$issue" "$feature_dir"
+  # The stale process_exit hook would make the new agent look exited.
+  rm -f "/tmp/wavemill-${SESSION}-${issue}.hook" 2>/dev/null || true
+
+  contract_payload="$(jq -cn --arg agent "$agent" --arg model "$model" \
+    '{stageRole:"coding",agent:$agent,model:$model,recovery:"coding-dirty-handoff"}' 2>/dev/null || printf '{}')"
+  if ! _prepare_recovery_phase_launch "$issue" "$slug" "coding" "$feature_dir" "$worktree" "$agent" "$model" "$contract_payload"; then
+    return 1
+  fi
+  launch_coding_phase "$issue" "$slug" "$title" "$worktree" "$branch" "$BASE_BRANCH" \
+    "$model" "$agent" "$depth" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    log_warn "$issue → coding-dirty-handoff relaunch failed (rc=$rc)"
+    return 1
+  fi
+
+  path_count="$(printf '%s\n' "$dirty_paths" | grep -c . || true)"
+  set_window_attention_state "$win" "clear"
+  log "status" "♻ $issue → coding-dirty-handoff relaunch (agent exited with ${path_count} dirty path(s); adapter=${agent} model=${model})"
+  return 0
+}
+
+# coding_dirty_handoff_terminalize <issue> <feature_dir> <win> <head> <dirty_paths> [detail]
+# Record the greppable exhaustion sentinel for both roles. A challenger is
+# additionally aborted (scope single) so the pair classifies as
+# sibling-challenge-aborted and resolves as a forfeit to the primary; returns 0
+# in that case. Returns 1 for a primary (or an already-aborted challenger), which
+# stays on the needs-user hold.
+coding_dirty_handoff_terminalize() {
+  local issue="$1" feature_dir="$2" win="$3" head="$4" dirty_paths="$5" detail="${6:-}"
+  local attempts path_count first_paths reason role is_challenge existing model next_action
+
+  attempts="$(bounded_retry_count "$feature_dir" coding-dirty-handoff)"
+  path_count="$(printf '%s\n' "$dirty_paths" | grep -c . || true)"
+  first_paths="$(printf '%s\n' "$dirty_paths" | grep . | head -3 | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
+  reason="Coding handoff left ${path_count} uncommitted path(s) after the agent exited; dirty-handoff relaunch exhausted after ${attempts} attempt(s) at head ${head:-unknown}${detail:+ (${detail})}: ${first_paths}"
+
+  if bounded_retry_mark_exhausted "$feature_dir" coding-dirty-handoff "$reason"; then
+    log "status" "⛔ $issue → $reason"
+  fi
+
+  role="$(_challenge_side_for_issue "$issue" 2>/dev/null || true)"
+  is_challenge="$(get_task_meta "$issue" "challenge" 2>/dev/null || true)"
+  existing="$(get_task_meta "$issue" "challengeAborted" 2>/dev/null || true)"
+  if [[ "$is_challenge" != "true" || "$role" != "challenger" || -n "$existing" ]]; then
+    return 1
+  fi
+
+  model="$(stage_result_field "$feature_dir" "coding" "model")"
+  next_action="$(native_terminal_failure_next_action "coding-dirty-handoff")"
+  challenge_abort_pair "$issue" "$feature_dir" "$win" "coding" "$model" \
+    "terminal_stage_failure:coding-dirty-handoff" "$reason" "$next_action" "single" || return 1
+  log_warn "$issue → coding-dirty-handoff exhausted: challenger quarantined, primary released"
+  cleanup_quarantined_no_pr_challenge_arm "$issue" "$feature_dir" "coding" "terminal_stage_failure:coding-dirty-handoff" || true
+  return 0
+}
+
 guard_coding_complete_handoff() {
   local issue="$1" feature_dir="$2" worktree="$3" base_branch="$4"
   local slug dirty_paths compare_counts behind_count ahead_count artifact_record summary reason action artifact_mtime
   local handoff_summary handoff_action handoff_reason
-  local win
+  local win head disposition
 
   slug="$(basename "$feature_dir")"
+  win="$issue-$slug"
   dirty_paths="$(coding_output_dirty_paths "$worktree" "$slug")"
   if [[ -z "$dirty_paths" ]]; then
     clear_coding_uncommitted_output_attention "$feature_dir"
+    bounded_retry_clear "$feature_dir" coding-dirty-handoff
     return 1
   fi
 
@@ -5321,9 +5585,64 @@ guard_coding_complete_handoff() {
   fi
 
   write_coding_uncommitted_output_artifact "$issue" "$feature_dir" "$base_branch" "$ahead_count" "$behind_count" "$dirty_paths" "$handoff_summary" "$handoff_action" "$handoff_reason" || true
+
+  # HOK-3128: once the agent has exited nobody will clean the tree — resolve
+  # the handoff instead of holding at needs-user forever. While the agent is
+  # still live (or evidence is missing) the legacy hold below applies.
+  if coding_dirty_handoff_agent_exited "$issue" "$feature_dir" "$worktree"; then
+    if coding_dirty_handoff_quarantine_scratch "$issue" "$worktree" "$feature_dir" "$slug"; then
+      dirty_paths="$(coding_output_dirty_paths "$worktree" "$slug")"
+      if [[ -z "$dirty_paths" ]]; then
+        clear_coding_uncommitted_output_attention "$feature_dir"
+        bounded_retry_clear "$feature_dir" coding-dirty-handoff
+        return 1
+      fi
+    fi
+
+    head="$(git -C "$worktree" rev-parse HEAD 2>/dev/null || true)"
+    # Ceiling 1 ("relaunch once"), keyed on head: a relaunched agent that makes
+    # a new commit but still leaves dirt earns one more attempt, so every extra
+    # attempt requires real forward progress.
+    disposition="$(bounded_retry_gate "$feature_dir" coding-dirty-handoff "${head:-none}" 1)"
+    case "$disposition" in
+      proceed)
+        bounded_retry_increment "$feature_dir" coding-dirty-handoff "${head:-none}" >/dev/null
+        if coding_dirty_handoff_relaunch "$issue" "$feature_dir" "$worktree" "$win" "$dirty_paths"; then
+          active_count=$((active_count + 1))
+          return 0
+        fi
+        if coding_dirty_handoff_terminalize "$issue" "$feature_dir" "$win" "${head:-}" "$dirty_paths" "relaunch failed"; then
+          active_count=$((active_count + 1))
+          return 0
+        fi
+        ;;
+      exhausted)
+        if coding_dirty_handoff_terminalize "$issue" "$feature_dir" "$win" "${head:-}" "$dirty_paths"; then
+          active_count=$((active_count + 1))
+          return 0
+        fi
+        ;;
+      exhausted-quiet)
+        # Already terminal. An aborted challenger's stage is failed and its
+        # arm is being reaped; never re-mark it running/needs-user.
+        if [[ -n "$(get_task_meta "$issue" "challengeAborted" 2>/dev/null || true)" ]]; then
+          active_count=$((active_count + 1))
+          return 0
+        fi
+        ;;
+      *)
+        # backoff: hold below until the next attempt is due.
+        ;;
+    esac
+
+    if bounded_retry_is_exhausted "$feature_dir" coding-dirty-handoff; then
+      handoff_action="${handoff_action} Automatic dirty-handoff relaunch exhausted (see .retry-coding-dirty-handoff-exhausted)."
+      write_coding_uncommitted_output_artifact "$issue" "$feature_dir" "$base_branch" "$ahead_count" "$behind_count" "$dirty_paths" "$handoff_summary" "$handoff_action" "$handoff_reason" || true
+    fi
+  fi
+
   artifact_record="$(read_coding_uncommitted_output "$feature_dir")"
   IFS=$'\001' read -r summary reason action artifact_mtime <<< "$artifact_record"
-  win="$issue-$slug"
 
   if coding_uncommitted_output_should_announce "$feature_dir" "$artifact_mtime"; then
     log "status" "$issue needs attention: $summary. $action"
@@ -6432,6 +6751,29 @@ native_terminal_failure_kind() {
       printf 'empty-model-turn\n'; return 0 ;;
     *"finish_reason: error"*|*"finish reason"*"error"*|*"idle timeout"*|*"stream ended without"*|*"without finish_reason"*|*"truncated stream"*|*"server error"*|*"bad gateway"*|*"service unavailable"*|*"gateway timeout"*|*"overloaded"*|*"upstream"*)
       printf 'provider-transient-error\n'; return 0 ;;
+    # HOK-3129: four recurring native arm-failure signatures that used to fall
+    # through to native-unclassified. Each is model-attributable (the provider
+    # delivered output; the model failed to produce usable content). These sit
+    # AFTER the provider-config/credit/rate-limit arms so a stacked message
+    # like "Native planning final artifact rejected: ... (402 Payment Required)"
+    # still classifies as the provider fault, not the model fault.
+    *"interrupted: coding agent exited without recording a result"*)
+      printf 'coding-exited-without-result\n'; return 0 ;;
+    *"native review flow failed after"*"findings"*)
+      printf 'review-no-output\n'; return 0 ;;
+    *"native planning rejected before approval: turn_limit"*)
+      printf 'planning-turn-limit\n'; return 0 ;;
+    *"native planning final artifact rejected:"*)
+      # Preserve the structural reason suffix for selection-health attribution.
+      local reason
+      reason="$(printf '%s' "$detail" \
+        | sed -nE 's/.*[Nn]ative planning final artifact rejected:[[:space:]]*([A-Za-z0-9_:-]+).*/\1/p')"
+      if [[ -n "$reason" ]]; then
+        printf 'planning-artifact-invalid:%s\n' "$reason"
+      else
+        printf 'planning-artifact-invalid\n'
+      fi
+      return 0 ;;
   esac
   if [[ "$handoff_reason" == "provider_error" ]]; then
     printf 'native-provider-error\n'
@@ -6466,6 +6808,16 @@ native_terminal_failure_next_action() {
       printf 'inspect the native provider error, then relaunch the phase\n' ;;
     native-completion-protocol)
       printf "model ended the phase without a valid completion artifact (protocol violation, not a provider fault) - check the model's structured tool-call compatibility before relaunching\n" ;;
+    coding-dirty-handoff)
+      printf 'the coding agent exited after writing .coding-complete with uncommitted output and did not repair it when relaunched (completion-protocol failure); the challenger is forfeited so the primary proceeds\n' ;;
+    planning-turn-limit)
+      printf 'the model exhausted its planning turn budget without emitting a final plan. Relaunch the phase on a stronger planner or increase maxTurns\n' ;;
+    planning-artifact-invalid|planning-artifact-invalid:*)
+      printf 'the plan artifact failed structural validation after one repair turn. Inspect the recorded validationError and relaunch on a stronger planner\n' ;;
+    review-no-output)
+      printf 'the review model finished without emitting findings or a terminal verdict. Relaunch the review phase on a stronger reviewer\n' ;;
+    coding-exited-without-result)
+      printf 'the coding agent exited without recording a terminal result (durable commits preserved). Relaunch coding to resume from the last durable commit\n' ;;
     native-unclassified)
       printf 'inspect the terminal failure detail and classify it manually - unrecognized failure signature, extend the classifier when this shape recurs\n' ;;
     *)
@@ -8264,6 +8616,16 @@ launch_coding_phase() {
   issue_context="Issue Description:
 $issue_desc
 "
+  # HOK-3128: a dirty-handoff relaunch carries a targeted "commit or discard
+  # these paths" instruction ahead of the issue context.
+  local recovery_instruction_file
+  recovery_instruction_file="$(coding_recovery_instruction_path "$wt_dir/features/$slug")"
+  if [[ -s "$recovery_instruction_file" ]]; then
+    issue_context="## Recovery instruction
+$(cat "$recovery_instruction_file" 2>/dev/null)
+
+$issue_context"
+  fi
   operating_mode="$(get_model_operating_mode "$coder_model" "$REPO_DIR")"
 
   # Build coding prompt
@@ -9814,6 +10176,33 @@ mark_failed_ready_recheck_exhausted() {
   write_ready_attention_file "$state_dir" \
     "Failed-ready re-checks exhausted after ${attempts} attempt(s) for PR #$pr_number: $reason"
   log_error "  Failed-ready re-checks exhausted for $issue after ${attempts} attempt(s) (PR #$pr_number): $reason"
+  return 0
+}
+
+# HOK-3109: demote a PR to wm:blocked on any failed-head Ready result so tend
+# stops treating it as a merge candidate. The $state_dir/.ready-blocked-label-head
+# marker is a bash-side efficiency guard only; the TS tool enforces real
+# idempotency independently by inspecting the live PR labels, so a missing or
+# stale marker (e.g. after a monitor restart) can never produce a duplicate
+# comment -- it just costs one extra GitHub read.
+ensure_ready_failure_blocks_pr() {
+  local wt_dir="$1" pr_number="$2" state_dir="$3" head_sha="$4"
+  local marker="$state_dir/.ready-blocked-label-head"
+  local reason
+
+  [[ -n "$head_sha" ]] || return 0
+  if [[ -f "$marker" ]] && [[ "$(cat "$marker" 2>/dev/null || true)" == "$head_sha" ]]; then
+    return 0
+  fi
+
+  reason=$(ready_failure_reason "$state_dir")
+  [[ -n "$reason" ]] || reason="Ready checks failed for PR #$pr_number"
+
+  if (cd "$wt_dir" && npx tsx "$TOOLS_DIR/set-pr-blocked-label.ts" "$pr_number" \
+      --reason "$reason" --head "$head_sha" --marker-root "$REPO_DIR"); then
+    mkdir -p "$state_dir"
+    printf '%s' "$head_sha" > "$marker"
+  fi
   return 0
 }
 
@@ -13138,7 +13527,10 @@ maybe_resolve_unresolvable_challenge_pair() {
       resolve_reason=$(jq -r '.reason // "unknown"' <<<"$resolve_output" 2>/dev/null || echo "unknown")
       mark_challenge_compared "$pair_id" >/dev/null || true
       log_warn "challenge pair $pair_id resolved automatically via $resolve_reason"
-      if [[ "$resolve_reason" == "sibling-challenge-aborted" || "$resolve_reason" == "both-challenge-aborted" ]]; then
+      # sibling-stalled (HOK-3128): the resolver stamped the stalled no-PR
+      # arm challengeAborted before forfeiting, so it is reaped the same way.
+      if [[ "$resolve_reason" == "sibling-challenge-aborted" || "$resolve_reason" == "both-challenge-aborted" \
+        || "$resolve_reason" == "sibling-stalled" ]]; then
         cleanup_pair_aborted_no_pr_arms "$pair_id" "$resolve_reason"
       fi
       ;;
@@ -14104,12 +14496,15 @@ fetch_candidates() {
 #   $1 = planner command (as single string: "npx tsx tools/plan-queue.ts --stdin --json ...")
 #   $2 = timeout seconds
 #   $3 = input snapshot JSON (e.g., {"taskCount":12,"explicitDependencyCount":4})
+#   $4 = inference report path (optional; the planner writes it via
+#        --inference-report-file and it is merged into queue health on
+#        success). The caller owns the file and removes it.
 #   stdin = plan input
 #
 # Output: queue plan JSON on success, nothing on failure
 # Exit: 0 = success, 1 = failure
 run_queue_planner_with_policy() {
-  local planner_cmd="$1" timeout_secs="$2" input_snapshot="${3:-}"
+  local planner_cmd="$1" timeout_secs="$2" input_snapshot="${3:-}" inference_report_file="${4:-}"
   local tmp_stderr tmp_stdout tmp_stdin exit_code signal_num pid pgid
   # step stays set: the timeout path never assigns it, and the monitor runs
   # under `set -u`, where reading it unset would abort the diagnostics write.
@@ -14268,7 +14663,12 @@ run_queue_planner_with_policy() {
       return 1
     fi
 
-    queue_health_record_success "$pid" "$pgid" "$duration_ms" "$planner_cmd" 2>/dev/null || true
+    local inference_report=""
+    if [[ -n "$inference_report_file" && -s "$inference_report_file" ]]; then
+      inference_report="$(jq -c '.' "$inference_report_file" 2>/dev/null || true)"
+    fi
+    queue_health_record_success "$pid" "$pgid" "$duration_ms" "$planner_cmd" "$inference_report" 2>/dev/null || true
+    queue_health_warn_inference_transition 2>/dev/null || true
     cat "$tmp_stdout"
     rm -f "$tmp_stderr" "$tmp_stdout" "$tmp_stdin" "$watchdog_pipe"
     return 0
@@ -14390,6 +14790,7 @@ get_queue_failure_reason() {
 build_queue_plan_once() {
   local backlog_json="$1"
   local plan_input queue_plan tmp_stderr stderr_text cache_key timeout_secs input_snapshot
+  local inference_report_file=""
 
   # Massage backlog into plan input format
   tmp_stderr="$(mktemp -t wavemill-fqp-stderr.XXXXXX)" || {
@@ -14453,6 +14854,12 @@ build_queue_plan_once() {
     [[ "$now_ms" =~ ^[0-9]+$ ]] || now_ms="$(date +%s)000"
     classifier_deadline_ms=$(( now_ms + ((timeout_secs - classifier_grace_secs) * 1000) ))
     planner_cmd="npx tsx \"$TOOLS_DIR/plan-queue.ts\" --stdin --json --cache-key \"$cache_key\" --refresh-missing-cache --queue-classifier-deadline-ms \"$classifier_deadline_ms\""
+    # HOK-3130: exiting 0 does not prove inference ran; the planner reports
+    # the inference outcome here so queue health can degrade on it.
+    inference_report_file="$(mktemp -t wavemill-queue-inference.XXXXXX 2>/dev/null || true)"
+    if [[ -n "$inference_report_file" ]]; then
+      planner_cmd+=" --inference-report-file \"$inference_report_file\""
+    fi
   else
     timeout_secs=15
     planner_cmd="npx tsx \"$TOOLS_DIR/plan-queue.ts\" --stdin --json"
@@ -14463,7 +14870,12 @@ build_queue_plan_once() {
 
   # Run planner with policy wrapper (handles timeout, process group, diagnostics)
   rm -f "$tmp_stderr"
-  queue_plan=$(printf '%s' "$plan_input" | run_queue_planner_with_policy "$planner_cmd" "$timeout_secs" "$input_snapshot") || {
+  local planner_status=0
+  queue_plan=$(printf '%s' "$plan_input" | run_queue_planner_with_policy "$planner_cmd" "$timeout_secs" "$input_snapshot" "$inference_report_file") || planner_status=$?
+  if [[ -n "$inference_report_file" ]]; then
+    rm -f "$inference_report_file"
+  fi
+  (( planner_status == 0 )) || {
     # The planner records the specific step/stderr/exit itself. Only fill in a
     # generic record when it left nothing behind, so we never overwrite the
     # detailed diagnostics with a placeholder.
@@ -18726,6 +19138,13 @@ monitor_issue_state() {
 
     ready_verdict=$(ready_stage_pending_verdict "$ready_state_dir_path")
     if [[ "$ready_status" == "failed" ]]; then
+      # HOK-3109: demote the PR to wm:blocked for the current head on every
+      # entry into this branch so tend stops treating a failed-ready PR as a
+      # merge candidate. The helper is idempotent per head (both bash-side
+      # marker and live-label check in the TS tool), so this is a no-op after
+      # the first demotion until a new commit changes $current_head.
+      ensure_ready_failure_blocks_pr "${WORKTREE_ROOT}/${SLUG}" "$PR" "$ready_state_dir_path" "$current_head"
+
       # Bound the re-check loop (HOK-2893): attempt ceiling + backoff + terminal
       # hold, reset by a new commit or a ready pass. HOK-3092: composite key
       # on (head, base) so a rebase onto a fresh base wipes the budget.
@@ -19538,6 +19957,16 @@ restart_backstage_observer_loop() {
   observer_service_mode="$(wavemill_observer_linear_service_mode "$merged" "$REPO_DIR")"
   [[ "$observer_service_mode" == "off" ]] || wavemill_observer_ensure_linear_key "$REPO_DIR"
   observer_cmd="$(wavemill_build_observer_loop_command "$SESSION" "$REPO_DIR" "$TOOLS_DIR" "$observer_interval" "$observer_max_log_lines" "$observer_service_mode")"
+  # HOK-3094: in an observer-only session (tend off) nothing else keeps the
+  # backstage window alive, so recreate it with the observer as its first pane.
+  if ! tmux list-panes -t "$SESSION:$WAVEMILL_WINDOW_BACKSTAGE" -F '#{pane_id}' >/dev/null 2>&1; then
+    tmux new-window -d -t "$SESSION" -n "$WAVEMILL_WINDOW_BACKSTAGE" -c "$REPO_DIR" "$observer_cmd" >/dev/null 2>&1 || return 1
+    new_pane="$(tmux display-message -p -t "$SESSION:$WAVEMILL_WINDOW_BACKSTAGE.0" '#{pane_id}' 2>/dev/null || true)"
+    [[ -n "$new_pane" ]] || return 1
+    wavemill_set_tmux_pane_title "$new_pane" "$WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE"
+    printf '%s\n' "$new_pane"
+    return 0
+  fi
   result="$(wavemill_reconcile_backstage_service_pane "$SESSION" "$WAVEMILL_WINDOW_BACKSTAGE" "$WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE" "$observer_cmd" "restart" "$SESSION:$WAVEMILL_WINDOW_BACKSTAGE.0" -d -v -p 25 -c "$REPO_DIR" || true)"
   IFS=$'\t' read -r new_pane action _killed <<< "$result"
   [[ -n "$new_pane" ]] || return 1
@@ -19593,9 +20022,14 @@ check_backstage_observer_health() {
       return 0
       ;;
     'backstage-missing')
-      [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "observer" "backstage-missing" "$detail" 0 "" "" "" 0
-      LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS="backstage-missing"
-      return 0
+      # HOK-3094: with tend on, tend's own health check owns window recovery.
+      # With tend off the observer owns the window, so it goes through the
+      # normal one-restart / cooldown / needs-user flow, which recreates it.
+      if backstage_health_enabled; then
+        [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "observer" "backstage-missing" "$detail" 0 "" "" "" 0
+        LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS="backstage-missing"
+        return 0
+      fi
       ;;
   esac
 
@@ -19661,7 +20095,7 @@ check_backstage_health() {
 
   health_file="$(wavemill_backstage_health_file "$STATE_DIR" 2>/dev/null || true)"
   if ! backstage_health_enabled; then
-    [[ -n "$health_file" ]] && wavemill_write_backstage_health "$health_file" "disabled" "integration mill-session backstage health checks are disabled"
+    [[ -n "$health_file" ]] && wavemill_write_backstage_health "$health_file" "disabled" "tend is off (integration mill session disabled)"
     LAST_BACKSTAGE_HEALTH_STATUS="disabled"
     LAST_BACKSTAGE_TEND_ALIVE_IDENTITY=""
     return 0

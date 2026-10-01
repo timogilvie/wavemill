@@ -1706,8 +1706,15 @@ render_inbox_section() {
   done
 }
 
+# HOK-3094: incidents belong to the milled repo, whose state dir is the one
+# holding STATE_FILE — never the wavemill install dir (WAVEMILL_REPO_DIR).
 wavemill_incident_index_path() {
-  printf '%s\n' "${WAVEMILL_INCIDENT_INDEX_OVERRIDE:-$WAVEMILL_REPO_DIR/.wavemill/incidents/index.json}"
+  if [[ -n "${WAVEMILL_INCIDENT_INDEX_OVERRIDE:-}" ]]; then
+    printf '%s\n' "$WAVEMILL_INCIDENT_INDEX_OVERRIDE"
+    return 0
+  fi
+  [[ -n "${STATE_FILE:-}" ]] || return 1
+  printf '%s\n' "$(dirname "$STATE_FILE")/incidents/index.json"
 }
 
 format_incident_since() {
@@ -1730,7 +1737,7 @@ incident_severity_color() {
 
 render_incidents_section() {
   local index incident_lines jq_status had_errexit=0 cap=5
-  index="$(wavemill_incident_index_path)"
+  index="$(wavemill_incident_index_path)" || return 0
   [[ -r "$index" && -s "$index" ]] || return 0
 
   [[ $- == *e* ]] && had_errexit=1
@@ -2066,6 +2073,17 @@ queue_health_dashboard_warning() {
   backoff_secs="$(jq -r '.retryBackoffSeconds // 0' "$health_file" 2>/dev/null || echo '0')"
   next_action="$(jq -r '.nextAction // "retry"' "$health_file" 2>/dev/null || echo 'retry')"
 
+  # HOK-3130: the planner ran, but dependency inference did not; the queue is
+  # usable with explicit Linear relations only.
+  if [[ "$reason" == "inference_unavailable" ]]; then
+    local inference_status inference_error
+    inference_status="$(jq -r '.inferenceStatus // "unknown"' "$health_file" 2>/dev/null || echo 'unknown')"
+    inference_error="$(jq -r '.inference.error // empty' "$health_file" 2>/dev/null | head -c 120 || true)"
+    printf 'queue inference unavailable (%s); planning with explicit edges only' "$inference_status"
+    [[ -n "$inference_error" ]] && printf '; last error: %s' "$inference_error"
+    return 0
+  fi
+
   if [[ "$backoff_secs" -gt 0 ]]; then
     printf 'queue planning degraded: %s; flat fallback active; retry in %ds' "$reason" "$backoff_secs"
   else
@@ -2078,6 +2096,7 @@ format_backstage_service_status() {
   local status="${1:-unknown}"
   case "$status" in
     healthy) printf '%b' "${G}healthy${N}" ;;
+    degraded) printf '%b' "${Y}degraded${N}" ;;
     disabled) printf '%b' "${D}disabled${N}" ;;
     needs-user) printf '%b' "${R}needs-user${N}" ;;
     stalled) printf '%b' "${R}${status}${N}" ;;
@@ -2150,7 +2169,16 @@ queue_health_dashboard_status() {
   printf 'Queue: %b' "$(format_backstage_service_status "$status")"
   if [[ "$status" != "healthy" ]]; then
     reason="$(jq -r '.degradationReason // .failureStep // empty' "$health_file" 2>/dev/null || true)"
-    [[ -n "$reason" ]] && printf ' (%s)' "$reason"
+    if [[ "$reason" == "inference_unavailable" ]]; then
+      printf ' (%s: %s)' "$reason" "$(jq -r '.inferenceStatus // "unknown"' "$health_file" 2>/dev/null || echo unknown)"
+    elif [[ -n "$reason" ]]; then
+      printf ' (%s)' "$reason"
+    fi
+  else
+    # HOK-3130: show that inference actually produced the edges in use.
+    local inferred_edge_count
+    inferred_edge_count="$(jq -r '.inferredEdgeCount // empty' "$health_file" 2>/dev/null || true)"
+    [[ "$inferred_edge_count" =~ ^[0-9]+$ ]] && printf ' (inferred %s)' "$inferred_edge_count"
   fi
   return 0
 }

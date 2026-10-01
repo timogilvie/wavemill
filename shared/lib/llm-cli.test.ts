@@ -7,7 +7,8 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import { clearConfigCache } from './config.ts';
 import { readEvalRecords } from './eval-persistence.ts';
 import { SCHEMA_VERSION } from './eval-schema.ts';
-import { callLLM, LLMQuotaError, parseJsonFromLLM } from './llm-cli.ts';
+import { callLLM, claudeCliServableVendor, LLMQuotaError, parseJsonFromLLM } from './llm-cli.ts';
+import { DEEPSEEK_BASE_URL } from './deepseek-provider.ts';
 import { markExhausted, readQuotaSnapshot } from './quota-state.ts';
 
 let tempRoot: string;
@@ -377,7 +378,8 @@ describe('quota fallback', () => {
       'gpt-6-sol': { type: 'quota', message: '429 quota exceeded', code: 1 },
       'claude-fable-5': { type: 'quota', message: '429 quota exceeded', code: 1 },
       'gpt-5.6-terra': { type: 'quota', message: '429 quota exceeded', code: 1 },
-      'deepseek-v4-pro': { type: 'success', text: 'coding winner' },
+      'deepseek-v4-pro': { type: 'success', text: 'unservable via the default claude cli' },
+      'claude-sonnet-5': { type: 'success', text: 'coding winner' },
     });
     const codingResult = await callLLM('coding prompt', {
       provider: 'claude',
@@ -386,7 +388,7 @@ describe('quota fallback', () => {
       repoDir,
       taskType: 'coding',
     });
-    assert.equal(codingResult.model, 'deepseek-v4-pro');
+    assert.equal(codingResult.model, 'claude-sonnet-5');
 
     repoDir = createRepoDir('planning-repo');
     clearConfigCache(repoDir);
@@ -452,28 +454,32 @@ describe('quota fallback', () => {
     assert.ok(!invoked.includes('gpt-5.3-codex'), 'disabled model must not be invoked');
   });
 
-  it('keeps DeepSeek Claude-compatible models in provider-filtered ladders', async () => {
-    const { cliPath, logPath } = createMockCli('deepseek-provider-filter', {
-      'claude-opus-5-5': { type: 'quota', message: '429 quota exceeded', code: 1 },
-      'gpt-6-sol': { type: 'quota', message: '429 quota exceeded', code: 1 },
-      'claude-fable-5': { type: 'quota', message: '429 quota exceeded', code: 1 },
-      'gpt-5.6-terra': { type: 'quota', message: '429 quota exceeded', code: 1 },
-      'deepseek-v4-pro': { type: 'success', text: 'deepseek coding winner' },
-    });
+  it('keeps DeepSeek models in claude ladders only when the CLI points at the DeepSeek endpoint', async () => {
+    const originalBaseUrl = process.env.ANTHROPIC_BASE_URL;
+    try {
+      process.env.ANTHROPIC_BASE_URL = DEEPSEEK_BASE_URL;
+      const { cliPath, logPath } = createMockCli('deepseek-provider-filter', {
+        'claude-opus-5-5': { type: 'quota', message: '429 quota exceeded', code: 1 },
+        'gpt-6-sol': { type: 'quota', message: '429 quota exceeded', code: 1 },
+        'claude-fable-5': { type: 'quota', message: '429 quota exceeded', code: 1 },
+        'gpt-5.6-terra': { type: 'quota', message: '429 quota exceeded', code: 1 },
+        'deepseek-v4-pro': { type: 'success', text: 'deepseek coding winner' },
+      });
 
-    const result = await callLLM('coding prompt', {
-      provider: 'claude',
-      mode: 'stream',
-      cliCmd: cliPath,
-      repoDir,
-      taskType: 'coding',
-    });
+      const result = await callLLM('coding prompt', {
+        provider: 'claude',
+        mode: 'stream',
+        cliCmd: cliPath,
+        repoDir,
+        taskType: 'coding',
+      });
 
-    assert.equal(result.model, 'deepseek-v4-pro');
-    assert.deepEqual(
-      readInvocations(logPath).map((entry) => entry.model),
-      ['claude-opus-5-5', 'claude-fable-5', 'deepseek-v4-pro'],
-    );
+      assert.equal(result.model, 'deepseek-v4-pro');
+      assert.deepEqual(readInvocations(logPath).map((entry) => entry.model), ['deepseek-v4-pro']);
+    } finally {
+      if (originalBaseUrl === undefined) delete process.env.ANTHROPIC_BASE_URL;
+      else process.env.ANTHROPIC_BASE_URL = originalBaseUrl;
+    }
   });
 
   it('persists an all_exhausted fallback event when later candidates fail for mixed reasons', async () => {
@@ -655,16 +661,30 @@ describe('quota fallback', () => {
     assert.ok(!readInvocations(logPath).map((entry) => entry.model).includes('model-b'));
   });
 
-  it('skips classifier candidates whose provider credential is missing', async () => {
-    const originalAnthropic = process.env.ANTHROPIC_API_KEY;
-    const originalDeepSeek = process.env.DEEPSEEK_API_KEY;
+  async function withEnv<T>(
+    overrides: Record<string, string | undefined>,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const originals = Object.fromEntries(Object.keys(overrides).map((key) => [key, process.env[key]]));
     try {
-      delete process.env.ANTHROPIC_API_KEY;
-      process.env.DEEPSEEK_API_KEY = 'test-deepseek-key';
+      for (const [key, value] of Object.entries(overrides)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      return await fn();
+    } finally {
+      for (const [key, value] of Object.entries(originals)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  }
 
-      const { cliPath, logPath } = createMockCli('credential-skip', {
-        'claude-haiku-4-5-20251001': { type: 'success', text: 'should not run' },
-        'deepseek-v4-flash': { type: 'success', text: 'deepseek ok' },
+  it('does not require ANTHROPIC_API_KEY for the claude-cli transport (HOK-3130)', async () => {
+    await withEnv({ ANTHROPIC_API_KEY: undefined, ANTHROPIC_BASE_URL: undefined }, async () => {
+      const { cliPath, logPath } = createMockCli('claude-cli-no-key', {
+        'claude-haiku-4-5-20251001': { type: 'success', text: 'haiku ok' },
+        'deepseek-v4-flash': { type: 'success', text: 'should not run' },
       });
 
       const { result, stderr } = await captureStderr(() => callLLM('credential prompt', {
@@ -679,50 +699,166 @@ describe('quota fallback', () => {
         logFallbackEvents: false,
       }));
 
-      assert.match(stderr, /\[classifier] claude-haiku-4-5-20251001 skipped \(missing ANTHROPIC_API_KEY\)/);
-      assert.equal(result.model, 'deepseek-v4-flash');
-      assert.deepEqual(readInvocations(logPath).map((entry) => entry.model), ['deepseek-v4-flash']);
-    } finally {
-      if (originalAnthropic === undefined) delete process.env.ANTHROPIC_API_KEY;
-      else process.env.ANTHROPIC_API_KEY = originalAnthropic;
-      if (originalDeepSeek === undefined) delete process.env.DEEPSEEK_API_KEY;
-      else process.env.DEEPSEEK_API_KEY = originalDeepSeek;
-    }
+      assert.equal(result.model, 'claude-haiku-4-5-20251001');
+      assert.doesNotMatch(stderr, /missing ANTHROPIC_API_KEY/);
+      assert.deepEqual(readInvocations(logPath).map((entry) => entry.model), ['claude-haiku-4-5-20251001']);
+    });
   });
 
-  it('does not fall through to an unbudgeted classifier call when every credential is missing', async () => {
-    const originalAnthropic = process.env.ANTHROPIC_API_KEY;
-    const originalDeepSeek = process.env.DEEPSEEK_API_KEY;
-    try {
-      delete process.env.ANTHROPIC_API_KEY;
-      delete process.env.DEEPSEEK_API_KEY;
+  it('never attempts a model its transport cannot serve (explicit fallbackModels)', async () => {
+    await withEnv({ ANTHROPIC_BASE_URL: undefined }, async () => {
+      const { cliPath, logPath } = createMockCli('transport-skip-explicit', {
+        'claude-haiku-4-5-20251001': { type: 'quota', message: '429 quota exceeded', code: 1 },
+        'deepseek-v4-flash': { type: 'success', text: 'should not run' },
+        'claude-sonnet-5': { type: 'success', text: 'sonnet ok' },
+      });
 
-      const { cliPath, logPath } = createMockCli('credential-skip-empty', {
+      const { result, stderr } = await captureStderr(() => callLLM('transport prompt', {
+        provider: 'claude',
+        mode: 'stream',
+        cliCmd: cliPath,
+        repoDir,
+        taskType: 'classify',
+        fallbackModels: ['claude-haiku-4-5-20251001', 'deepseek-v4-flash', 'claude-sonnet-5'],
+        fallbackDeadlineMs: Date.now() + 15_000,
+        fallbackPerAttemptTimeoutMs: 10_000,
+        logFallbackEvents: false,
+      }));
+
+      const invoked = readInvocations(logPath).map((entry) => entry.model);
+      assert.equal(result.model, 'claude-sonnet-5');
+      assert.deepEqual(invoked, ['claude-haiku-4-5-20251001', 'claude-sonnet-5']);
+      assert.ok(!invoked.includes('deepseek-v4-flash'));
+      assert.match(
+        stderr,
+        /\[classifier] deepseek-v4-flash skipped \(transport claude-cli cannot serve vendor deepseek\)/,
+      );
+    });
+  });
+
+  it('never attempts a model its transport cannot serve (registry classify ladder)', async () => {
+    await withEnv({ ANTHROPIC_BASE_URL: undefined }, async () => {
+      const { cliPath, logPath } = createMockCli('transport-skip-ladder', {
+        default: { type: 'quota', message: '429 quota exceeded', code: 1 },
+      });
+
+      const { error, stderr } = await captureStderrError(() => callLLM('ladder prompt', {
+        provider: 'claude',
+        mode: 'stream',
+        cliCmd: cliPath,
+        repoDir,
+        taskType: 'classify',
+        fallbackDeadlineMs: Date.now() + 15_000,
+        fallbackPerAttemptTimeoutMs: 10_000,
+        logFallbackEvents: false,
+      }));
+
+      assert.ok(error instanceof Error);
+      const invoked = readInvocations(logPath).map((entry) => entry.model);
+      assert.ok(invoked.length > 0, 'expected at least one anthropic rung to be attempted');
+      assert.ok(invoked.every((model) => model.startsWith('claude-')), `unexpected invocations: ${invoked.join(',')}`);
+      assert.match(stderr, /deepseek-v4-flash skipped \(transport claude-cli cannot serve vendor deepseek\)/);
+      assert.match(stderr, /gpt-5\.6-terra skipped \(transport claude-cli cannot serve vendor openai\)/);
+    });
+  });
+
+  it('keeps unbudgeted ladders quiet about transport skips', async () => {
+    await withEnv({ ANTHROPIC_BASE_URL: undefined }, async () => {
+      const { cliPath } = createMockCli('transport-skip-quiet', {
+        default: { type: 'success', text: 'ok' },
+      });
+
+      const { result, stderr } = await captureStderr(() => callLLM('quiet prompt', {
+        provider: 'claude',
+        mode: 'stream',
+        cliCmd: cliPath,
+        repoDir,
+        taskType: 'classify',
+        fallbackModels: ['deepseek-v4-flash', 'claude-haiku-4-5-20251001'],
+        logFallbackEvents: false,
+      }));
+
+      assert.equal(result.model, 'claude-haiku-4-5-20251001');
+      assert.doesNotMatch(stderr, /skipped \(transport/);
+    });
+  });
+
+  it('serves deepseek and skips anthropic when the claude cli points at the DeepSeek endpoint', async () => {
+    await withEnv({ ANTHROPIC_BASE_URL: `${DEEPSEEK_BASE_URL}/` }, async () => {
+      assert.equal(claudeCliServableVendor(), 'deepseek');
+
+      const { cliPath, logPath } = createMockCli('transport-deepseek-env', {
+        default: { type: 'success', text: 'deepseek ok' },
+      });
+
+      const { result, stderr } = await captureStderr(() => callLLM('deepseek env prompt', {
+        provider: 'claude',
+        mode: 'stream',
+        cliCmd: cliPath,
+        repoDir,
+        taskType: 'classify',
+        fallbackModels: ['claude-haiku-4-5-20251001', 'deepseek-v4-flash'],
+        fallbackDeadlineMs: Date.now() + 15_000,
+        fallbackPerAttemptTimeoutMs: 10_000,
+        logFallbackEvents: false,
+      }));
+
+      assert.equal(result.model, 'deepseek-v4-flash');
+      assert.deepEqual(readInvocations(logPath).map((entry) => entry.model), ['deepseek-v4-flash']);
+      assert.match(stderr, /claude-haiku-4-5-20251001 skipped \(transport claude-cli cannot serve vendor anthropic\)/);
+    });
+    await withEnv({ ANTHROPIC_BASE_URL: 'https://proxy.example.com' }, async () => {
+      assert.equal(claudeCliServableVendor(), 'anthropic');
+    });
+  });
+
+  it('does not fall through to an unbudgeted classifier call when no candidate is servable', async () => {
+    await withEnv({ ANTHROPIC_BASE_URL: undefined }, async () => {
+      const { cliPath, logPath } = createMockCli('transport-skip-empty', {
         default: { type: 'success', text: 'should not run' },
       });
 
       await assert.rejects(
-        () => callLLM('credential prompt', {
+        () => captureStderr(() => callLLM('unservable prompt', {
           provider: 'claude',
           mode: 'stream',
           cliCmd: cliPath,
           repoDir,
           taskType: 'classify',
-          fallbackModels: ['claude-haiku-4-5-20251001', 'deepseek-v4-flash'],
+          fallbackModels: ['deepseek-v4-flash', 'gpt-5.6-terra'],
           fallbackDeadlineMs: Date.now() + 5_000,
           fallbackPerAttemptTimeoutMs: 1_000,
           logFallbackEvents: false,
-        }),
+        })),
         /No eligible classify fallback candidates/,
       );
 
       assert.deepEqual(readInvocations(logPath), []);
-    } finally {
-      if (originalAnthropic === undefined) delete process.env.ANTHROPIC_API_KEY;
-      else process.env.ANTHROPIC_API_KEY = originalAnthropic;
-      if (originalDeepSeek === undefined) delete process.env.DEEPSEEK_API_KEY;
-      else process.env.DEEPSEEK_API_KEY = originalDeepSeek;
-    }
+    });
+  });
+
+  it('still enforces OPENAI_API_KEY for the openai provider under a classifier budget', async () => {
+    await withEnv({ OPENAI_API_KEY: undefined }, async () => {
+      const { cliPath, logPath } = createMockCli('openai-key-required', {
+        default: { type: 'success', text: 'should not run' },
+      });
+
+      const { error, stderr } = await captureStderrError(() => callLLM('openai prompt', {
+        provider: 'openai',
+        mode: 'stream',
+        cliCmd: cliPath,
+        repoDir,
+        taskType: 'classify',
+        fallbackModels: ['gpt-5.6-terra'],
+        fallbackDeadlineMs: Date.now() + 5_000,
+        fallbackPerAttemptTimeoutMs: 1_000,
+        logFallbackEvents: false,
+      }));
+
+      assert.match((error as Error).message, /No eligible classify fallback candidates/);
+      assert.match(stderr, /\[classifier] gpt-5\.6-terra skipped \(missing OPENAI_API_KEY\)/);
+      assert.deepEqual(readInvocations(logPath), []);
+    });
   });
 
   it('bypasses exponential backoff for quota fallbacks', async () => {
@@ -749,50 +885,64 @@ describe('quota fallback', () => {
   });
 
   it('treats DeepSeek 401 auth failures as non-quota and does not exhaust the model', async () => {
-    const { cliPath } = createMockCli('deepseek-auth', {
-      'deepseek-v4-pro': { type: 'other', message: '401 authentication_error invalid_api_key', code: 1 },
-      'claude-sonnet-4-6': { type: 'success', text: 'should not be used' },
-    });
+    const originalBaseUrl = process.env.ANTHROPIC_BASE_URL;
+    try {
+      process.env.ANTHROPIC_BASE_URL = DEEPSEEK_BASE_URL;
+      const { cliPath } = createMockCli('deepseek-auth', {
+        'deepseek-v4-pro': { type: 'other', message: '401 authentication_error invalid_api_key', code: 1 },
+        'claude-sonnet-4-6': { type: 'success', text: 'should not be used' },
+      });
 
-    await assert.rejects(
-      () => callLLM('auth prompt', {
+      await assert.rejects(
+        () => callLLM('auth prompt', {
+          provider: 'claude',
+          mode: 'stream',
+          cliCmd: cliPath,
+          repoDir,
+          taskType: 'coding',
+          fallbackModels: ['deepseek-v4-pro', 'claude-sonnet-4-6'],
+        }),
+        /authentication_error|authentication failed/i,
+      );
+
+      const snapshot = readQuotaSnapshot(repoDir);
+      assert.equal(snapshot.models['deepseek-v4-pro']?.status, undefined);
+      assert.deepEqual(readFallbackRecords(), []);
+    } finally {
+      if (originalBaseUrl === undefined) delete process.env.ANTHROPIC_BASE_URL;
+      else process.env.ANTHROPIC_BASE_URL = originalBaseUrl;
+    }
+  });
+
+  it('retries DeepSeek transient server errors without marking quota exhaustion', async () => {
+    const originalBaseUrl = process.env.ANTHROPIC_BASE_URL;
+    try {
+      process.env.ANTHROPIC_BASE_URL = DEEPSEEK_BASE_URL;
+      const { cliPath } = createMockCli('deepseek-server-error', {
+        'deepseek-v4-pro': [
+          { type: 'other', message: '500 server_error temporarily unavailable', code: 1 },
+          { type: 'success', text: 'recovered from server error' },
+        ],
+      });
+
+      const result = await callLLM('transient prompt', {
         provider: 'claude',
         mode: 'stream',
         cliCmd: cliPath,
         repoDir,
+        retry: true,
+        maxRetries: 1,
         taskType: 'coding',
-        fallbackModels: ['deepseek-v4-pro', 'claude-sonnet-4-6'],
-      }),
-      /authentication_error|authentication failed/i,
-    );
+        fallbackModels: ['deepseek-v4-pro'],
+      });
 
-    const snapshot = readQuotaSnapshot(repoDir);
-    assert.equal(snapshot.models['deepseek-v4-pro']?.status, undefined);
-    assert.deepEqual(readFallbackRecords(), []);
-  });
-
-  it('retries DeepSeek transient server errors without marking quota exhaustion', async () => {
-    const { cliPath } = createMockCli('deepseek-server-error', {
-      'deepseek-v4-pro': [
-        { type: 'other', message: '500 server_error temporarily unavailable', code: 1 },
-        { type: 'success', text: 'recovered from server error' },
-      ],
-    });
-
-    const result = await callLLM('transient prompt', {
-      provider: 'claude',
-      mode: 'stream',
-      cliCmd: cliPath,
-      repoDir,
-      retry: true,
-      maxRetries: 1,
-      taskType: 'coding',
-      fallbackModels: ['deepseek-v4-pro'],
-    });
-
-    assert.equal(result.model, 'deepseek-v4-pro');
-    const snapshot = readQuotaSnapshot(repoDir);
-    assert.notEqual(snapshot.models['deepseek-v4-pro']?.status, 'exhausted');
+      assert.equal(result.model, 'deepseek-v4-pro');
+      const snapshot = readQuotaSnapshot(repoDir);
+      assert.notEqual(snapshot.models['deepseek-v4-pro']?.status, 'exhausted');
+    } finally {
+      if (originalBaseUrl === undefined) delete process.env.ANTHROPIC_BASE_URL;
+      else process.env.ANTHROPIC_BASE_URL = originalBaseUrl;
+    }
   });
 
   it('keeps exponential backoff for transient errors on the same model', async () => {

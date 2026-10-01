@@ -160,3 +160,27 @@ if [[ ! -s "$malformed_err" ]]; then
   echo "malformed incident index should leave jq parse detail on stderr" >&2
   exit 1
 fi
+
+# HOK-3094: without an override, the index comes from the milled repo's state
+# dir (the one holding STATE_FILE), never the wavemill install dir.
+WAVEMILL_REPO_DIR="$TMP_DIR/install"
+MILL_STATE_DIR="$TMP_DIR/milled-repo/.wavemill"
+mkdir -p "$WAVEMILL_REPO_DIR/.wavemill/incidents" "$MILL_STATE_DIR/incidents"
+cp "$FIXTURE_DIR/no_task_id.json" "$WAVEMILL_REPO_DIR/.wavemill/incidents/index.json"
+cp "$FIXTURE_DIR/active_only.json" "$MILL_STATE_DIR/incidents/index.json"
+unset WAVEMILL_INCIDENT_INDEX_OVERRIDE
+
+: > "$FRAME"
+STATE_FILE="$MILL_STATE_DIR/workflow-state.json" render_incidents_section
+repo_out="$(frame_text)"
+assert_contains "$repo_out" "eval job eval-HOK-2893-primary-1265 ended failed" "milled repo incident"
+assert_not_contains "$repo_out" "remote dependency probe failure" "install dir incident"
+
+: > "$FRAME"
+STATE_FILE="" render_incidents_section
+no_state_out="$(frame_text)"
+if [[ -n "$no_state_out" ]]; then
+  echo "no STATE_FILE should render no incident panel (never the install dir)" >&2
+  printf '%s\n' "$no_state_out" >&2
+  exit 1
+fi

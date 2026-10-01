@@ -59,9 +59,10 @@ If the resolved integration ref does not exist in the repo, the checker skips gr
 
 ### Backstage Observer Service
 
-The dedicated Backstage Observer pane is opt-in and only runs when both
-`integration.enabled` and `integration.useMillSession` are true. Enable it in
-`.wavemill-config.json` or `.wavemill-config.local.json`:
+The dedicated Backstage Observer pane runs in every mill session by default,
+whatever the integration setting (HOK-3094); tend alone stays gated on
+integration. Configure or opt out in `.wavemill-config.json` or
+`.wavemill-config.local.json`:
 
 ```json
 {
@@ -77,8 +78,10 @@ The dedicated Backstage Observer pane is opt-in and only runs when both
 }
 ```
 
-- `enabled` defaults to `false`; when false, Wavemill creates no Observer pane
-  or Observer health state.
+- `enabled` defaults to `true`; set it to `false` to opt out, and Wavemill
+  creates no Observer pane and marks any prior Observer health as disabled.
+  The observer is detection-only; Linear filing stays off unless
+  `observer.linear` is configured.
 - `intervalSeconds` controls the `wavemill observer --loop` cadence.
 - `heartbeatStaleSeconds` controls when the mill monitor treats the service as
   stale and attempts its single bounded restart.

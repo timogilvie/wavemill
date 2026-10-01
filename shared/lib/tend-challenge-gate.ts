@@ -10,6 +10,7 @@ import type { PrMetadata } from './pr-metadata.ts';
 import { WM_LABELS } from './pr-state-labels.ts';
 import { escapeShellArg, execShellCommand } from './shell-utils.ts';
 import { resolveEffectiveChallengeRole } from './challenge-role-utils.ts';
+import { getTaskProgress, type TaskProgress, type TaskProgressGatherOptions } from './task-progress.ts';
 
 export type ChallengeRole = 'primary' | 'challenger';
 export const UNRESOLVABLE_REASONS = [
@@ -18,6 +19,9 @@ export const UNRESOLVABLE_REASONS = [
   'both-eval-hard-failed',
   'sibling-challenge-aborted',
   'both-challenge-aborted',
+  // HOK-3128: a tracked no-PR arm has shown no agent progress past the stall
+  // grace (agent exited / lost), so it will never supply a comparison.
+  'sibling-stalled',
 ] as const;
 export type UnresolvableReason = typeof UNRESOLVABLE_REASONS[number];
 export type AutoCloseRefusalReason =
@@ -44,6 +48,22 @@ export interface ChallengeLoserCleanupCandidate {
 const BRANCH_NAME_PATTERN = /^[a-zA-Z0-9._/-]+$/;
 const TASK_IDENTIFIER_PATTERN = TASK_ID_RE;
 const ORPHAN_PAIR_GRACE_MS = 60_000;
+/**
+ * HOK-3128: how long a tracked, no-PR sibling may go without agent progress
+ * before the gate stops treating it as work in flight. Matches the
+ * task-progress primitive's default stall threshold (30m) so the gate and the
+ * observer agree on "stalled", and comfortably exceeds the monitor's own
+ * dirty-handoff relaunch window so the monitor terminalizes first when it can.
+ */
+export const SIBLING_PROGRESS_GRACE_MS = 30 * 60_000;
+/** Fresh agent states that mean the arm is working or owned by a human. */
+const LIVE_AGENT_STATES: ReadonlySet<string> = new Set([
+  'working',
+  'waiting',
+  'approval-needed',
+  'blocked',
+  'policy-denied',
+]);
 const DEFAULT_HARD_FAILURE_RETRY_MAX = 2;
 const UNRESOLVABLE_REASON_SET = new Set<string>(UNRESOLVABLE_REASONS);
 const warnedInvalidChallengeRoleKeys = new Set<string>();
@@ -88,7 +108,17 @@ export interface TaskEvalState {
    * and must not be treated as a missing/orphaned side.
    */
   hasPendingChallengeArm?: boolean;
+  /**
+   * Inputs for the shared task-progress primitive (HOK-3128). Optional so
+   * hand-built fixtures keep compiling; populated from workflow state.
+   */
+  phase?: string | null;
+  slug?: string | null;
+  worktree?: string | null;
+  lifecycle?: TaskProgressLifecycle;
 }
+
+type TaskProgressLifecycle = NonNullable<NonNullable<TaskProgressGatherOptions['task']>['lifecycle']>;
 
 export interface PairTaskState {
   primary?: TaskEvalState;
@@ -120,6 +150,10 @@ interface WorkflowStateTask {
   challengeExecutionIntent?: unknown;
   challengerLaunched?: unknown;
   challengeArms?: unknown;
+  phase?: unknown;
+  slug?: unknown;
+  worktree?: unknown;
+  lifecycle?: unknown;
 }
 
 type WorkflowStateFile = WorkflowStateLike & {
@@ -177,13 +211,29 @@ export interface ChallengeGateOptions extends ChallengeGateDeps {
   remoteBranches?: string[];
   /** Custom remote-branch lister; replaces the default git ls-remote call. */
   listRemoteBranches?: (repoDir: string) => string[];
+  /**
+   * HOK-3128: progress probe for a tracked no-PR sibling. Defaults to
+   * `probeSiblingProgress` (the shared task-progress primitive).
+   */
+  getSiblingProgress?: SiblingProgressProbe;
 }
+
+export type SiblingProgressProbe = (
+  repoDir: string,
+  sibling: TaskEvalState,
+  now: Date,
+) => TaskProgress | null;
 
 export interface ChallengeClassificationOptions {
   activeJobsByPair?: Map<string, MillJob[]>;
   taskStateByPair?: Map<string, PairTaskState>;
   evalHardFailureRetryMax?: number;
   siblingLive?: boolean;
+  /**
+   * HOK-3128: the tracked no-PR sibling has shown no agent progress past the
+   * grace (see `isNoPrSiblingStalled`), so the pair can never compare.
+   */
+  siblingStalled?: boolean;
   nowMs?: number;
   orphanGraceMs?: number;
 }
@@ -321,6 +371,12 @@ export function loadWorkflowStateChallengeData(repoDir: string): WorkflowStateCh
             : undefined,
           challengerLaunched: task.challengerLaunched === true,
           hasPendingChallengeArm: taskHasPendingChallengeArm(task),
+          phase: typeof task.phase === 'string' && task.phase ? task.phase : null,
+          slug: typeof task.slug === 'string' && task.slug ? task.slug : null,
+          worktree: typeof task.worktree === 'string' && task.worktree ? task.worktree : null,
+          ...(typeof task.lifecycle === 'object' && task.lifecycle !== null && !Array.isArray(task.lifecycle)
+            ? { lifecycle: task.lifecycle as TaskProgressLifecycle }
+            : {}),
         };
         taskStateByPair.set(pairId, pairTaskState);
       }
@@ -481,6 +537,19 @@ export function classifyChallengeState(
         pairId,
         otherPr,
         reason: 'pair-unresolved:challenger-awaiting-fork',
+      };
+    }
+
+    if (options.siblingStalled) {
+      // HOK-3128: both arms are tracked, but the no-PR one has shown no agent
+      // progress past the grace. Without this exit a dead arm (e.g. a
+      // challenger parked on a dirty-tree coding handoff after its agent
+      // exited) holds a green primary at `no-comparison` forever.
+      return {
+        kind: 'pair-unresolvable',
+        pairId,
+        otherPr,
+        reason: 'sibling-stalled',
       };
     }
 
@@ -650,11 +719,14 @@ export async function applyChallengePairGates<T extends ChallengeEligibleWorkIte
     const siblingBranch = getSiblingBranch(item.pr.headRefName);
     const hasSiblingBranch = Boolean(siblingBranch && remoteBranchSet.has(siblingBranch));
     const pairInfo = challengePairMap.get(item.pr.number);
-    const siblingLive = isSiblingLive({
+    const { live: siblingLive, stalled: siblingStalled } = evaluateSiblingLiveness({
+      repoDir,
       hasSiblingBranch,
       openPrNumbers: allPrNumbers,
       pairState: pairInfo ? taskStateByPair.get(pairInfo.pairId) : undefined,
       side: pairInfo?.role ?? 'primary',
+      nowMs: nowMs(),
+      getSiblingProgress: options.getSiblingProgress ?? probeSiblingProgress,
     });
     const state = classifyChallengeState(
       item.pr.number,
@@ -668,6 +740,7 @@ export async function applyChallengePairGates<T extends ChallengeEligibleWorkIte
         taskStateByPair,
         evalHardFailureRetryMax,
         siblingLive,
+        siblingStalled,
         nowMs,
       },
     );
@@ -875,12 +948,20 @@ function isHardFailureExhausted(task: TaskEvalState | undefined, retryMax: numbe
  * Keyed on PR numbers rather than branch names so every caller can supply the
  * same evidence. Only meaningful for a known pair, where workflow state is the
  * authority on that pair's arms.
+ *
+ * A tracked sibling with no PR is live only while the shared task-progress
+ * primitive shows agent evidence (HOK-3101/HOK-3128) — see
+ * `isNoPrSiblingStalled`. Pane or window existence never counts. When the
+ * caller supplies no progress evidence (`siblingProgress` undefined), the
+ * legacy "tracked without a PR is in flight" answer stands.
  */
 export function isSiblingLive(input: {
   hasSiblingBranch: boolean;
   openPrNumbers: ReadonlySet<number>;
   pairState: PairTaskState | undefined;
   side: ChallengeRole;
+  siblingProgress?: TaskProgress | null;
+  nowMs?: number;
 }): boolean {
   const { hasSiblingBranch, openPrNumbers, pairState, side } = input;
 
@@ -888,7 +969,7 @@ export function isSiblingLive(input: {
     return false;
   }
 
-  const sibling = side === 'primary' ? pairState?.challenger : pairState?.primary;
+  const sibling = siblingOf(pairState, side);
   if (!sibling) {
     // Workflow state no longer tracks the sibling: it completed and was cleaned
     // up. The remote ref is a leftover, not a live arm.
@@ -898,11 +979,144 @@ export function isSiblingLive(input: {
     return false;
   }
   if (sibling.prNumber === null) {
-    // Tracked but no PR yet — work in flight.
-    return true;
+    // Tracked but no PR yet: in flight only while the agent shows progress.
+    return !isNoPrSiblingStalled({
+      sibling,
+      progress: input.siblingProgress,
+      nowMs: input.nowMs ?? Date.now(),
+    });
   }
   // Live only while its PR is still in play; a merged or closed one is settled.
   return openPrNumbers.has(sibling.prNumber);
+}
+
+function siblingOf(pairState: PairTaskState | undefined, side: ChallengeRole): TaskEvalState | undefined {
+  return side === 'primary' ? pairState?.challenger : pairState?.primary;
+}
+
+/**
+ * HOK-3128: the one stall rule for a tracked sibling that has not opened a PR.
+ *
+ * - `progress === undefined` means "not probed": never stalled, so callers
+ *   that gather no evidence keep the legacy behaviour.
+ * - A terminal task (PR merged/closed, lifecycle aborted) is stalled.
+ * - A fresh working or human-owned agent state, or a blocking prompt, is not.
+ * - Otherwise the last evidence is `progress.lastProgressAt` (hook, commit,
+ *   worktree, status-file and transition sources — including `task.updated`),
+ *   falling back to `sibling.updatedAt` when the probe failed (`null`). No
+ *   evidence at all counts as stale.
+ *
+ * Stalled requires both the progress grace (default 30m) and the orphan grace
+ * on `sibling.updatedAt`, so a freshly relaunched arm is never forfeited.
+ */
+export function isNoPrSiblingStalled(input: {
+  sibling: TaskEvalState;
+  progress: TaskProgress | null | undefined;
+  nowMs: number;
+  progressGraceMs?: number;
+  orphanGraceMs?: number;
+}): boolean {
+  const { sibling, progress, nowMs } = input;
+  if (progress === undefined) {
+    return false;
+  }
+  const orphanGraceMs = input.orphanGraceMs ?? ORPHAN_PAIR_GRACE_MS;
+  const pastOrphanGrace = nowMs - (sibling.updatedAt ?? 0) >= orphanGraceMs;
+
+  if (progress?.terminal) {
+    return pastOrphanGrace;
+  }
+  if (progress?.blockingPrompt) {
+    return false;
+  }
+  if (progress?.agentState && LIVE_AGENT_STATES.has(progress.agentState)) {
+    return false;
+  }
+
+  const progressMs = progress?.lastProgressAt ? Date.parse(progress.lastProgressAt) : Number.NaN;
+  const lastEvidenceMs = Number.isFinite(progressMs)
+    ? Math.max(progressMs, sibling.updatedAt ?? 0)
+    : sibling.updatedAt;
+  const progressGraceMs = input.progressGraceMs ?? SIBLING_PROGRESS_GRACE_MS;
+  const pastProgressGrace = lastEvidenceMs === null || lastEvidenceMs === undefined
+    || nowMs - lastEvidenceMs >= progressGraceMs;
+  return pastProgressGrace && pastOrphanGrace;
+}
+
+/**
+ * HOK-3128: probe a tracked sibling through the shared task-progress primitive.
+ * Returns `null` when the probe cannot run or throws; `isNoPrSiblingStalled`
+ * then falls back to the bounded `updatedAt` age rather than failing open.
+ */
+export function probeSiblingProgress(
+  repoDir: string,
+  sibling: TaskEvalState,
+  now: Date,
+  getProgress: typeof getTaskProgress = getTaskProgress,
+): TaskProgress | null {
+  try {
+    const worktreeCandidate = sibling.worktree
+      ?? (sibling.slug ? join(repoDir, 'worktrees', sibling.slug) : null);
+    const worktree = worktreeCandidate && existsSync(worktreeCandidate) ? worktreeCandidate : undefined;
+    return getProgress({
+      issue: sibling.issueId,
+      task: {
+        ...(sibling.updatedAt !== null ? { updated: new Date(sibling.updatedAt).toISOString() } : {}),
+        ...(sibling.branch ? { branch: sibling.branch } : {}),
+        ...(sibling.slug ? { slug: sibling.slug } : {}),
+        ...(worktree ? { worktree } : {}),
+        ...(sibling.phase ? { phase: sibling.phase } : {}),
+        ...(sibling.lifecycle ? { lifecycle: sibling.lifecycle } : {}),
+      },
+      ...(worktree ? { worktree } : {}),
+      ...(sibling.phase ? { phase: sibling.phase } : {}),
+      now,
+    });
+  } catch (error) {
+    console.warn(`[tend-challenge-gate] Progress probe failed for ${sibling.issueId}: ${errorMessage(error)}`);
+    return null;
+  }
+}
+
+/**
+ * HOK-3128: one call shared by the tend gate, ready-watchdog and the pair
+ * resolver. `live` is the `isSiblingLive` answer; `stalled` is true when the
+ * sibling is tracked, has no PR, is not already aborted, and has shown no
+ * agent progress past the grace. Probes at most once, and only for that case.
+ */
+export function evaluateSiblingLiveness(input: {
+  repoDir: string;
+  hasSiblingBranch: boolean;
+  openPrNumbers: ReadonlySet<number>;
+  pairState: PairTaskState | undefined;
+  side: ChallengeRole;
+  nowMs: number;
+  getSiblingProgress?: SiblingProgressProbe;
+}): { live: boolean; stalled: boolean; sibling?: TaskEvalState } {
+  const sibling = siblingOf(input.pairState, input.side);
+  const probe = input.getSiblingProgress ?? probeSiblingProgress;
+  const needsProbe = Boolean(
+    sibling
+    && input.pairState?.primary
+    && input.pairState?.challenger
+    && sibling.prNumber === null
+    && !sibling.challengeAborted,
+  );
+  const siblingProgress = needsProbe && sibling
+    ? probe(input.repoDir, sibling, new Date(input.nowMs))
+    : undefined;
+  const stalled = needsProbe && sibling
+    ? isNoPrSiblingStalled({ sibling, progress: siblingProgress, nowMs: input.nowMs })
+    : false;
+  const live = isSiblingLive({
+    hasSiblingBranch: input.hasSiblingBranch,
+    openPrNumbers: input.openPrNumbers,
+    pairState: input.pairState,
+    side: input.side,
+    siblingProgress,
+    nowMs: input.nowMs,
+  });
+  return { live, stalled, ...(stalled && sibling ? { sibling } : {}) };
 }
 
 function isOrphanedPair(

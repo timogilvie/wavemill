@@ -157,4 +157,52 @@ describe('captureToolDecisionsFromStream', () => {
     );
     assert.equal(scriptedRejections.length, 0);
   });
+
+  it('warns when a stream has tool_call events but projects zero rows', () => {
+    const dir = tempDir(); dirs.push(dir);
+    // Create a stream with a tool_call event but no matching model_response with stop_reason:tool_use
+    const events: SessionEvent[] = [
+      {
+        type: 'session_started',
+        timestamp: Date.now(),
+        eventId: 'ev1',
+        sessionId: 'test-session',
+        sequenceNum: 1,
+        userId: 'test-user',
+        phase: 'planning',
+      },
+      {
+        type: 'tool_call',
+        timestamp: Date.now(),
+        eventId: 'ev2',
+        sessionId: 'test-session',
+        sequenceNum: 2,
+        toolName: 'test_tool',
+        input: { key: 'value' },
+      },
+      {
+        type: 'session_ended',
+        timestamp: Date.now(),
+        eventId: 'ev3',
+        sessionId: 'test-session',
+        sequenceNum: 3,
+        status: 'completed',
+      },
+    ];
+
+    const streamPath = writeStream(dir, events);
+
+    // Capture without matching stop_reason:tool_use → should warn
+    const res = captureToolDecisionsFromStream({
+      eventStreamPath: streamPath,
+      corpusDir: dir,
+    });
+
+    assert.equal(res.ok, true);
+    assert.ok(res.warnings && res.warnings.length > 0, 'expected at least one warning');
+    assert.ok(
+      res.warnings.some((w) => w.includes('0 rows projected')),
+      'expected warning about zero rows',
+    );
+  });
 });

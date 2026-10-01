@@ -77,6 +77,7 @@ extract_function "$MONITOR_SCRIPT_FILE" "ready_failure_reason" >> "$MONITOR_FUNC
 extract_function "$MONITOR_SCRIPT_FILE" "record_failed_ready_recheck_observation" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "failed_ready_recheck_identical_streak" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "mark_failed_ready_recheck_exhausted" >> "$MONITOR_FUNC_FILE"
+extract_function "$MONITOR_SCRIPT_FILE" "ensure_ready_failure_blocks_pr" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "failed_ready_recheck_gate" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_result_passes_ready_gate" >> "$MONITOR_FUNC_FILE"
 extract_function "$MONITOR_SCRIPT_FILE" "review_result_has_final_evidence" >> "$MONITOR_FUNC_FILE"
@@ -533,6 +534,9 @@ JSON
     }
     _with_timeout() { shift; "$@"; }
     gh() { return 1; }
+    # HOK-3109: ensure_ready_failure_blocks_pr spawns npx tsx; silence it so
+    # the extracted helper is callable here without pulling in the real tool.
+    npx() { return 0; }
     is_challenge_task() { [[ "${CHALLENGE_TASK:-false}" == "true" ]]; }
     handle_challenge_pending_ready() {
       HANDLER_CALLS=$((HANDLER_CALLS + 1))

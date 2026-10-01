@@ -10,6 +10,15 @@
  * carries anything the source stream does not already have permission to
  * store. Redaction/hash/artifact-ref conventions live in the projector
  * (which reads only sanitized fields from the source stream).
+ *
+ * Backfill-only exception (HOK-3122): {@link appendToolDecisions} accepts
+ * `{ replace: true }`. When set, a row whose `decisionId` already exists
+ * in the corpus is rewritten in place (preserving original line order)
+ * rather than skipped; genuinely-new rows are still appended at the end.
+ * This is the only sanctioned per-row rewrite of the corpus and takes the
+ * same file lock live writers use. Live single-session capture keeps the
+ * default `replace: false` append/skip-duplicate behavior so concurrent
+ * sessions never clobber each other's rows.
  */
 
 import {
@@ -26,7 +35,9 @@ import {
   writeSync,
 } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { pid } from 'node:process';
 
+import { resolveFromMainRepo } from '../git-utils.ts';
 import {
   parseToolDecisionJsonl,
   validateToolDecisionRow,
@@ -61,7 +72,7 @@ const LOCK_TIMEOUT_MS = 5_000;
 
 export function resolveToolDecisionCorpusDir(repoDir?: string, explicitDir?: string): string {
   if (explicitDir) return resolve(explicitDir);
-  return resolve(repoDir || process.cwd(), DEFAULT_CORPUS_DIR);
+  return resolveFromMainRepo(DEFAULT_CORPUS_DIR, repoDir);
 }
 
 export function resolveToolDecisionCorpusPath(opts: {
@@ -132,7 +143,19 @@ export interface AppendResult {
   path: string;
   appended: number;
   skippedDuplicates: number;
+  /** Rows that overwrote an existing decisionId (replace mode only). */
+  replaced: number;
   rejected: Array<{ decisionId?: string; reason: string }>;
+}
+
+export interface AppendOptions {
+  /**
+   * Backfill-only. When true, rows whose `decisionId` already exists in the
+   * corpus overwrite the existing line in place (preserving original line
+   * order); genuinely-new rows are still appended at the end. Default
+   * (false) keeps the append/skip-duplicate behavior live capture needs.
+   */
+  replace?: boolean;
 }
 
 /**
@@ -144,49 +167,171 @@ export interface AppendResult {
 export function appendToolDecisions(
   rows: ToolDecisionRow[],
   path: string,
+  options: AppendOptions = {},
 ): AppendResult {
   mkdirSync(dirname(path), { recursive: true });
   const release = acquireCorpusLock(path);
   try {
-    const existing = readExistingDecisionIds(path);
-    const pending: string[] = [];
-    let appended = 0;
-    let skipped = 0;
-    const rejected: AppendResult['rejected'] = [];
-    for (const row of rows) {
-      const check = validateToolDecisionRow(row);
-      if (!check.ok) {
-        rejected.push({
-          ...(typeof (row as { decisionId?: unknown }).decisionId === 'string'
-            ? { decisionId: (row as { decisionId: string }).decisionId }
-            : {}),
-          reason: check.reason,
-        });
-        continue;
-      }
-      if (existing.has(row.decisionId)) {
-        skipped += 1;
-        continue;
-      }
-      pending.push(JSON.stringify(row));
-      existing.add(row.decisionId);
-      appended += 1;
+    if (options.replace) {
+      return appendInReplaceMode(rows, path);
     }
-    if (pending.length > 0) {
-      const content = pending.join('\n') + '\n';
-      // 'a' both creates the file if absent and appends when present.
-      const fd = openSync(path, 'a');
-      try {
-        writeSync(fd, content, undefined, 'utf-8');
-        fsyncSync(fd);
-      } finally {
-        closeSync(fd);
-      }
-    }
-    return { path, appended, skippedDuplicates: skipped, rejected };
+    return appendInSkipMode(rows, path);
   } finally {
     release();
   }
+}
+
+function appendInSkipMode(rows: ToolDecisionRow[], path: string): AppendResult {
+  const existing = readExistingDecisionIds(path);
+  const pending: string[] = [];
+  let appended = 0;
+  let skipped = 0;
+  const rejected: AppendResult['rejected'] = [];
+  for (const row of rows) {
+    const check = validateToolDecisionRow(row);
+    if (!check.ok) {
+      rejected.push({
+        ...(typeof (row as { decisionId?: unknown }).decisionId === 'string'
+          ? { decisionId: (row as { decisionId: string }).decisionId }
+          : {}),
+        reason: check.reason,
+      });
+      continue;
+    }
+    if (existing.has(row.decisionId)) {
+      skipped += 1;
+      continue;
+    }
+    pending.push(JSON.stringify(row));
+    existing.add(row.decisionId);
+    appended += 1;
+  }
+  if (pending.length > 0) {
+    const content = pending.join('\n') + '\n';
+    // 'a' both creates the file if absent and appends when present.
+    const fd = openSync(path, 'a');
+    try {
+      writeSync(fd, content, undefined, 'utf-8');
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+  }
+  return { path, appended, skippedDuplicates: skipped, replaced: 0, rejected };
+}
+
+/**
+ * Backfill-only: overwrite rows whose decisionId already exists in-place,
+ * append genuinely-new rows at the end, preserve existing line order and
+ * any corrupt lines verbatim. Atomic rewrite via temp file + rename, same
+ * lock live writers use so concurrent appenders queue behind us.
+ */
+function appendInReplaceMode(rows: ToolDecisionRow[], path: string): AppendResult {
+  const rejected: AppendResult['rejected'] = [];
+  const validRows: ToolDecisionRow[] = [];
+  for (const row of rows) {
+    const check = validateToolDecisionRow(row);
+    if (!check.ok) {
+      rejected.push({
+        ...(typeof (row as { decisionId?: unknown }).decisionId === 'string'
+          ? { decisionId: (row as { decisionId: string }).decisionId }
+          : {}),
+        reason: check.reason,
+      });
+      continue;
+    }
+    validRows.push(check.row);
+  }
+
+  // Collapse duplicate decisionIds in the input batch — last one wins so
+  // callers can re-project a stream and get the most-recent projection of
+  // each decision.
+  const incomingById = new Map<string, ToolDecisionRow>();
+  for (const row of validRows) {
+    incomingById.set(row.decisionId, row);
+  }
+
+  if (incomingById.size === 0) {
+    return { path, appended: 0, skippedDuplicates: 0, replaced: 0, rejected };
+  }
+
+  if (!existsSync(path)) {
+    const content = [...incomingById.values()]
+      .map((r) => JSON.stringify(r))
+      .join('\n') + '\n';
+    const fd = openSync(path, 'a');
+    try {
+      writeSync(fd, content, undefined, 'utf-8');
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    return {
+      path,
+      appended: incomingById.size,
+      skippedDuplicates: 0,
+      replaced: 0,
+      rejected,
+    };
+  }
+
+  const raw = readFileSync(path, 'utf-8');
+  const lines = raw.split('\n');
+  const trailingEmpty = lines.length > 0 && lines[lines.length - 1] === '';
+  const outLines: string[] = [];
+  const seenIds = new Set<string>();
+  let replaced = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (i === lines.length - 1 && line === '') continue;
+    if (line.trim() === '') {
+      outLines.push(line);
+      continue;
+    }
+    let parsed: { decisionId?: unknown };
+    try {
+      parsed = JSON.parse(line) as { decisionId?: unknown };
+    } catch {
+      // Corrupt line — preserve verbatim.
+      outLines.push(line);
+      continue;
+    }
+    const id = typeof parsed.decisionId === 'string' ? parsed.decisionId : undefined;
+    if (id && incomingById.has(id)) {
+      outLines.push(JSON.stringify(incomingById.get(id)!));
+      seenIds.add(id);
+      replaced += 1;
+    } else {
+      outLines.push(line);
+    }
+  }
+
+  let appended = 0;
+  for (const [id, row] of incomingById) {
+    if (seenIds.has(id)) continue;
+    outLines.push(JSON.stringify(row));
+    appended += 1;
+  }
+
+  const content = outLines.join('\n') + (trailingEmpty || outLines.length > 0 ? '\n' : '');
+  const tmpPath = `${path}.tmp.${pid}.${Date.now()}`;
+  const fd = openSync(tmpPath, 'w');
+  try {
+    writeSync(fd, content, undefined, 'utf-8');
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(tmpPath, path);
+
+  return {
+    path,
+    appended,
+    skippedDuplicates: 0,
+    replaced,
+    rejected,
+  };
 }
 
 /**

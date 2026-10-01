@@ -46,6 +46,7 @@ TESTS=(
   native-terminal-failure.test.sh
   native-failure-classification.test.sh
   challenger-transient-retry.test.sh
+  coding-dirty-handoff.test.sh
   parent-monitor-function-drift.test.sh
   save-task-state-canonicalization.test.sh
   linear-state-canonicalization.test.sh
@@ -62,6 +63,7 @@ TESTS=(
   expansion-handshake.test.sh
   config-version-prompt.test.sh
   monitor-ready-transition.test.sh
+  ready-failure-blocks-pr-label.test.sh
   launch-ready-phase.test.sh
   bounded-retry.test.sh
   ready-update-from-base.test.sh

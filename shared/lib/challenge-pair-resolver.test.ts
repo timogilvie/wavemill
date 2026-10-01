@@ -1166,3 +1166,237 @@ test('resolver defers a pair whose challenger is an awaiting_fork arm (HOK-2813)
     cleanup();
   }
 });
+
+// ── HOK-3128: a no-PR arm that stops progressing must release its sibling ──
+
+function stalledPairTasks(challengerOverrides: Record<string, unknown> = {}, primaryOverrides: Record<string, unknown> = {}) {
+  return {
+    'HOK-3121': {
+      pr: 1537,
+      branch: 'task/pollution',
+      updated: '2026-09-30T10:00:00Z',
+      challengePairId: 'HOK-3121',
+      challengeRole: 'primary',
+      challengeModel: 'claude-opus-5-5',
+      evalCompleted: true,
+      ...primaryOverrides,
+    },
+    'HOK-3121_c': {
+      branch: 'task/pollution-challenger',
+      updated: '2026-09-30T10:22:00Z',
+      challengePairId: 'HOK-3121',
+      challengeRole: 'challenger',
+      challengeModel: 'qwen-3-coder',
+      phase: 'coding',
+      slug: 'pollution-challenger',
+      ...challengerOverrides,
+    },
+  };
+}
+
+const exitedAgentProbe = () => ({
+  issue: 'HOK-3121_c',
+  computedAt: '2026-09-30T13:00:00.000Z',
+  lastProgressAt: '2026-09-30T10:22:00.000Z',
+  progressAgeMinutes: 158,
+  sources: [],
+  agentState: null,
+  agentRecord: null,
+  controllerState: null,
+  agentIdle: true,
+  terminal: false,
+  terminalIdle: false,
+  agentProcessLive: null,
+  stalled: true,
+  stallMinutes: 30,
+  blockingPrompt: null,
+});
+
+function readTasks(repoDir: string): Record<string, Record<string, unknown>> {
+  return JSON.parse(readFileSync(join(repoDir, '.wavemill', 'workflow-state.json'), 'utf-8')).tasks;
+}
+
+test('resolver auto-detects a stalled no-PR challenger, stamps it and forfeits to the primary (HOK-3128)', async () => {
+  const { repoDir, cleanup } = setupRepoDir();
+  try {
+    writeWorkflowState(repoDir, stalledPairTasks());
+
+    const result = await resolveUnresolvablePair({
+      pairId: 'HOK-3121',
+      repoDir,
+      remoteBranches: ['task/pollution', 'task/pollution-challenger'],
+      now: () => new Date('2026-09-30T13:00:00Z'),
+      getSiblingProgress: exitedAgentProbe,
+    });
+
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.reason, 'sibling-stalled');
+    assert.equal(result.outcome, 'forfeit');
+    assert.equal(result.record.winner, 'primary');
+    assert.equal(result.record.terminalReason, 'challenger_challenge_aborted');
+    assert.equal(result.record.armFailures?.[0].failureKind, 'sibling-stalled');
+    assert.equal(result.record.armFailures?.[0].faultClass, 'harness-fault');
+    assert.equal(result.record.armFailures?.[0].stage, 'coding');
+    assert.equal(readChallengeComparisons(join(repoDir, '.wavemill', 'evals')).length, 1);
+
+    const tasks = readTasks(repoDir);
+    assert.equal(tasks['HOK-3121_c'].challengeAborted, 'terminal_stage_failure:sibling-stalled');
+    assert.match(String(tasks['HOK-3121_c'].challengeAbortedDetail), /no agent progress in phase coding/);
+    assert.equal(tasks['HOK-3121_c'].challengeAbortedStage, 'coding');
+    assert.equal(tasks['HOK-3121'].challengeAborted, undefined);
+  } finally {
+    cleanup();
+  }
+});
+
+test('resolver leaves a progressing no-PR challenger alone (HOK-3128)', async () => {
+  const { repoDir, cleanup } = setupRepoDir();
+  try {
+    writeWorkflowState(repoDir, stalledPairTasks());
+    const result = await resolveUnresolvablePair({
+      pairId: 'HOK-3121',
+      repoDir,
+      remoteBranches: [],
+      now: () => new Date('2026-09-30T13:00:00Z'),
+      getSiblingProgress: () => ({ ...exitedAgentProbe(), agentIdle: false, agentState: 'working', lastProgressAt: '2026-09-30T12:59:00.000Z' }),
+    });
+    assert.equal(result.status, 'skipped');
+    assert.match(result.reason, /not currently unresolvable/);
+    assert.equal(readTasks(repoDir)['HOK-3121_c'].challengeAborted, undefined);
+  } finally {
+    cleanup();
+  }
+});
+
+test('resolver dry run for sibling-stalled neither stamps nor appends (HOK-3128)', async () => {
+  const { repoDir, cleanup } = setupRepoDir();
+  try {
+    writeWorkflowState(repoDir, stalledPairTasks());
+    const result = await resolveUnresolvablePair({
+      pairId: 'HOK-3121',
+      repoDir,
+      dryRun: true,
+      remoteBranches: [],
+      now: () => new Date('2026-09-30T13:00:00Z'),
+      getSiblingProgress: exitedAgentProbe,
+    });
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.dryRun, true);
+    assert.equal(result.record.winner, 'primary');
+    assert.equal(readChallengeComparisons(join(repoDir, '.wavemill', 'evals')).length, 0);
+    assert.equal(readTasks(repoDir)['HOK-3121_c'].challengeAborted, undefined);
+  } finally {
+    cleanup();
+  }
+});
+
+test('resolver skips sibling-stalled while the survivor has no eval yet (HOK-3128)', async () => {
+  const { repoDir, cleanup } = setupRepoDir();
+  try {
+    writeWorkflowState(repoDir, stalledPairTasks({}, { evalCompleted: false }));
+    const result = await resolveUnresolvablePair({
+      pairId: 'HOK-3121',
+      repoDir,
+      remoteBranches: [],
+      now: () => new Date('2026-09-30T13:00:00Z'),
+      getSiblingProgress: exitedAgentProbe,
+    });
+    assert.equal(result.status, 'skipped');
+    assert.match(result.reason, /stalled arm but the surviving arm has not persisted an eval/);
+    assert.equal(readTasks(repoDir)['HOK-3121_c'].challengeAborted, undefined);
+  } finally {
+    cleanup();
+  }
+});
+
+test('resolver never double-stamps an arm the monitor already aborted (HOK-3128)', async () => {
+  const { repoDir, cleanup } = setupRepoDir();
+  try {
+    writeWorkflowState(repoDir, stalledPairTasks({
+      challengeAborted: 'terminal_stage_failure:coding-dirty-handoff',
+      challengeAbortedDetail: 'dirty-handoff relaunch exhausted',
+      challengeAbortedStage: 'coding',
+    }));
+    let probed = false;
+    const result = await resolveUnresolvablePair({
+      pairId: 'HOK-3121',
+      repoDir,
+      remoteBranches: [],
+      now: () => new Date('2026-09-30T13:00:00Z'),
+      getSiblingProgress: () => { probed = true; return exitedAgentProbe(); },
+    });
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.reason, 'sibling-challenge-aborted');
+    assert.equal(probed, false);
+    assert.equal(result.record.armFailures?.[0].failureKind, 'coding-dirty-handoff');
+    assert.equal(result.record.armFailures?.[0].faultClass, 'model-fault');
+    assert.equal(readTasks(repoDir)['HOK-3121_c'].challengeAborted, 'terminal_stage_failure:coding-dirty-handoff');
+  } finally {
+    cleanup();
+  }
+});
+
+// Acceptance (HOK-3128): after the monitor terminalizes a dirty-handoff
+// challenger, the pair resolves as a forfeit and the green primary becomes
+// merge-eligible.
+test('dirty-handoff abort resolves the pair and releases the primary PR (HOK-3128)', async () => {
+  const { repoDir, cleanup } = setupRepoDir({ challenge: { autoMergeWinner: true } });
+  try {
+    writeWorkflowState(repoDir, stalledPairTasks({
+      challengeAborted: 'terminal_stage_failure:coding-dirty-handoff',
+      challengeAbortedDetail: 'Coding handoff left 3 uncommitted path(s) after the agent exited',
+      challengeAbortedStage: 'coding',
+    }));
+    const items = [makeWorkItem(1537, 'task/pollution', 'HOK-3121')];
+    const gateOptions = {
+      remoteBranches: ['task/pollution', 'task/pollution-challenger'],
+      coolOffSeconds: 0,
+      nowMs: () => Date.parse('2026-09-30T13:00:00Z'),
+      getSiblingProgress: exitedAgentProbe,
+    };
+
+    const before = await applyChallengePairGates(items, [], repoDir, gateOptions);
+    assert.equal(before.blocked[0]?.reason, 'challenge:pair-unresolvable:sibling-challenge-aborted');
+
+    const resolution = await resolveUnresolvablePair({ pairId: 'HOK-3121', repoDir, remoteBranches: [] });
+    assert.equal(resolution.status, 'resolved');
+    assert.equal(resolution.record.winner, 'primary');
+
+    const after = await applyChallengePairGates(items, [], repoDir, gateOptions);
+    assert.equal(after.blocked.length, 0);
+    assert.deepEqual(after.eligible.map((item) => item.pr.number), [1537]);
+  } finally {
+    cleanup();
+  }
+});
+
+test('tend backstop: a stalled challenger with no abort stamp still releases the primary (HOK-3128)', async () => {
+  const { repoDir, cleanup } = setupRepoDir({ challenge: { autoMergeWinner: true } });
+  try {
+    writeWorkflowState(repoDir, stalledPairTasks());
+    const items = [makeWorkItem(1537, 'task/pollution', 'HOK-3121')];
+    const gateOptions = {
+      remoteBranches: ['task/pollution', 'task/pollution-challenger'],
+      coolOffSeconds: 0,
+      nowMs: () => Date.parse('2026-09-30T13:00:00Z'),
+      getSiblingProgress: exitedAgentProbe,
+    };
+
+    const before = await applyChallengePairGates(items, [], repoDir, gateOptions);
+    assert.equal(before.blocked[0]?.reason, 'challenge:pair-unresolvable:sibling-stalled');
+
+    const resolution = await resolveUnresolvablePair({
+      pairId: 'HOK-3121',
+      repoDir,
+      remoteBranches: [],
+      now: () => new Date('2026-09-30T13:00:00Z'),
+      getSiblingProgress: exitedAgentProbe,
+    });
+    assert.equal(resolution.status, 'resolved');
+
+    const after = await applyChallengePairGates(items, [], repoDir, gateOptions);
+    assert.deepEqual(after.eligible.map((item) => item.pr.number), [1537]);
+  } finally {
+    cleanup();
+  }
+});

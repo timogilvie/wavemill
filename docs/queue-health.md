@@ -4,6 +4,8 @@
 
 Queue-health tracks the reliability and state of the dependency-aware queue planner subprocess. When the planner fails or times out, queue-health records the failure with semantic cause, process metadata, bounded diagnostics, and a backoff policy to prevent repeated planner attempts during degradation.
 
+Since HOK-3130 it also tracks whether **dependency inference** (the LLM queue classifier behind inferred edges) actually answered. A planner exit of 0 alone is not enough: before HOK-3130 the classifier could fail on every run while health still said `healthy` with zero inferred edges.
+
 ## File Location
 
 Queue-health state is persisted at:
@@ -53,6 +55,17 @@ The queue-health file is a JSON object with additive compatibility. Fields can b
     },
     "stdoutExcerpt": "",
     "stderrExcerpt": ""
+  },
+  "inferenceStatus": "ok",
+  "inferredEdgeCount": 3,
+  "inference": {
+    "model": "claude-haiku-4-5-20251001",
+    "lastAttemptAt": "2026-09-30T12:00:00.000Z",
+    "lastSuccessAt": "2026-09-30T12:00:00.000Z",
+    "consecutiveFailures": 0,
+    "error": null,
+    "refreshKind": "partial",
+    "skipReason": null
   }
 }
 ```
@@ -95,6 +108,16 @@ The queue-health file is a JSON object with additive compatibility. Fields can b
 - **diagnostics.stdoutExcerpt**: First 512 characters of planner stdout (redacted).
 - **diagnostics.stderrExcerpt**: First 512 characters of planner stderr (redacted).
 
+#### Dependency Inference (HOK-3130)
+
+- **inferenceStatus**: `ok` | `failed` | `stale` | `never`, or null when the planner ran without a cache (no report). `failed` is sticky until the next success; `never` means no recorded success (including caches written before HOK-3130); `stale` means the last success is older than 24h.
+- **inferredEdgeCount**: Inferred (cache-sourced) edges used by the last plan. Explicit Linear relations are not counted.
+- **inference.model**: Model that actually answered on the last success.
+- **inference.consecutiveFailures**, **inference.error**: Repeated-failure count and the first line of the last classifier error.
+- **inference.refreshKind** / **inference.skipReason**: `full` | `partial` | `none`, and why a run skipped inference (`cooldown`, `no_changes`, `cache_disabled`).
+
+These fields come from the report `tools/plan-queue.ts --inference-report-file <path>` writes; the monitor merges it through `queue_health_record_success`. The planner persists the underlying state in the `inference` block of `.wavemill/cache/task-dependency-plans/<project>.json`.
+
 ## Degradation Reason Taxonomy
 
 Failure classifications:
@@ -106,6 +129,13 @@ Failure classifications:
 - **invalid_input**: Input massaging (jq) or dependency extraction failed.
 - **empty_queue**: No tasks in backlog.
 - **diagnostics_setup_failed**: Could not allocate temp files for capturing diagnostics.
+- **inference_unavailable**: The planner succeeded, but `inferenceStatus` is `failed`, `stale`, or `never`. `failureStep` is `queue_inference` and `nextAction` is `use_explicit_edges_only`. The plan (explicit edges only) is still used; no planner backoff is set, `failureCount` stays 0, and `lastSuccessfulPlanAt` still advances.
+
+### Inference refresh and cooldown
+
+- The mill runs `plan-queue --refresh-missing-cache`. A **full** refresh classifies the whole backlog when the cache has no fingerprints, every task changed, or the status is `never`/`stale` (or `failed` with nothing pending). A **partial** refresh covers only new or changed tasks.
+- A failed refresh keeps the *previous* fingerprints, so unclassified tasks are retried instead of being marked as analyzed. It also starts a 10-minute cooldown, during which inference is skipped (`skipReason: cooldown`) and the status stays `failed`.
+- The classifier ladder only attempts models the Claude CLI transport can serve. It uses the CLI's own login, not `ANTHROPIC_API_KEY`. Skipped rungs are logged as `[classifier] <model> skipped (transport claude-cli cannot serve vendor deepseek)`.
 
 ## Backoff Policy
 
@@ -130,6 +160,14 @@ When queue-health status is `"degraded"`, the dashboard renders a single-line wa
 ```
 
 The warning is produced by `queue_health_dashboard_warning()` in `wavemill-status.sh` and deduplicates naturally by rendering current state (not by appending logs).
+
+For `inference_unavailable` the backstage line reads `Queue: degraded (inference_unavailable: failed)` and the warning reads:
+
+```
+├─ WARN: queue inference unavailable (failed); planning with explicit edges only; last error: …
+```
+
+When healthy with a report, the backstage line shows the edges in use: `Queue: healthy (inferred 3)`. The monitor also logs one `queue inference unavailable (<status>)` warning per status transition (deduplicated with `$STATE_DIR/.queue-inference-warn`).
 
 ## Dependency-Safety Fallback
 
@@ -181,8 +219,8 @@ if queue_health_should_skip_attempt; then
   # Skip attempt, return degraded
 fi
 
-# Record successful plan
-queue_health_record_success "$pid" "$pgid" "$duration_ms" "$command"
+# Record successful plan (optional 5th arg: plan-queue inference report JSON)
+queue_health_record_success "$pid" "$pgid" "$duration_ms" "$command" "$inference_report_json"
 
 # Record failed plan
 queue_health_record_failure "$reason" "$step" "$pid" "$pgid" \
@@ -217,6 +255,10 @@ If the queue-health file does not exist, the monitor treats it as healthy and in
 Missing fields are interpreted as defaults (e.g., missing `status` = `"healthy"`).
 
 ## Troubleshooting
+
+### Zero inferred edges while healthy
+
+Check `jq '.inferenceStatus, .inferredEdgeCount, .inference' .wavemill/queue-health.json`. `ok` with 0 edges is an explicit empty answer from the model. Anything else is `inference_unavailable`: look for `[classifier]` lines in the mill log (a skipped or unavailable model, a timeout) and confirm the Claude CLI is logged in on the mill host.
 
 ### High Failure Count
 

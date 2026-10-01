@@ -32,6 +32,7 @@ import { filterDisabledModels } from './disabled-models.ts';
 import { fallbackLog } from './router-log.ts';
 import { buildTaskDescriptor } from './task-descriptor-builder.ts';
 import { resolveEnvValue } from './env-file.ts';
+import { DEEPSEEK_BASE_URL } from './deepseek-provider.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Types
@@ -293,20 +294,18 @@ function shouldEnforceClassifierProviderCredentials(options: LLMCallOptions): bo
   return options.taskType === 'classify' && hasFallbackDeadline(options);
 }
 
-function credentialEnvForCandidate(
-  registry: ReturnType<typeof getEffectiveRegistry>,
-  modelId: string,
-  provider: LLMProvider,
-): string | null {
-  const model = getModel(registry, modelId);
-  const vendor = model?.vendor?.toLowerCase() ?? '';
-
-  if (provider === 'claude') {
-    if (vendor === 'anthropic') return 'ANTHROPIC_API_KEY';
-    if (vendor === 'deepseek') return 'DEEPSEEK_API_KEY';
-    return null;
-  }
-
+/**
+ * Credential env var a fallback candidate needs before it is worth attempting
+ * under a classifier budget.
+ *
+ * The `claude` provider spawns the Claude CLI, which owns its own auth (the
+ * operator's subscription login or whatever key the CLI itself is configured
+ * with). Requiring `ANTHROPIC_API_KEY` here skipped every Anthropic candidate
+ * in the mill, where no such key exists (HOK-3130), so the claude transport
+ * never gates on a credential. Transport/vendor mismatches are handled by
+ * {@link transportIncompatibilityReason} instead.
+ */
+function credentialEnvForCandidate(provider: LLMProvider): string | null {
   if (provider === 'openai') {
     return 'OPENAI_API_KEY';
   }
@@ -325,21 +324,23 @@ function filterCandidatesWithCredentials(
   }
 
   const repoDir = repoDirForOptions(options);
-  const registry = getEffectiveRegistry(repoDir);
   const eligible: string[] = [];
 
   for (const candidate of candidates) {
-    const envVar = credentialEnvForCandidate(registry, candidate, provider);
+    const envVar = credentialEnvForCandidate(provider);
     if (!envVar || resolveEnvValue([envVar], repoDir)) {
       eligible.push(candidate);
       continue;
     }
 
-    const label = taskType === 'classify' ? 'classifier' : taskType;
-    console.warn(`[${label}] ${candidate} skipped (missing ${envVar})`);
+    console.warn(`[${fallbackLogLabel(taskType)}] ${candidate} skipped (missing ${envVar})`);
   }
 
   return eligible;
+}
+
+function fallbackLogLabel(taskType: RegistryTaskType): string {
+  return taskType === 'classify' ? 'classifier' : taskType;
 }
 
 function fallbackAttemptTimeout(options: LLMCallOptions): number | null | undefined {
@@ -495,71 +496,124 @@ function emitFallbackEvent(
   }
 }
 
+/** A ladder candidate removed before any attempt, with a human-readable reason. */
+interface SkippedCandidate {
+  model: string;
+  reason: string;
+}
+
 function resolveCandidateModels(
   provider: LLMProvider,
   options: LLMCallOptions,
-): { taskType: RegistryTaskType; candidates: string[] } {
+): { taskType: RegistryTaskType; candidates: string[]; skipped: SkippedCandidate[] } {
   const repoDir = repoDirForOptions(options);
   const registry = getEffectiveRegistry(repoDir);
-  const isCompatible = (modelId: string): boolean => isModelCompatibleWithProvider(provider, registry, modelId);
+  const servableVendor = provider === 'claude' ? claudeCliServableVendor() : null;
+  const skipped: SkippedCandidate[] = [];
+  const isServable = (modelId: string): boolean => {
+    const reason = transportIncompatibilityReason(provider, registry, modelId, servableVendor);
+    if (reason) {
+      skipped.push({ model: modelId, reason });
+      return false;
+    }
+    return true;
+  };
 
+  let taskType: RegistryTaskType;
+  let initial: string[];
   if (options.fallbackModels && options.fallbackModels.length > 0) {
-    const initial = options.model ? [options.model, ...options.fallbackModels] : options.fallbackModels;
-    // Exclude globally disabled models (e.g. access-restricted upstream) — same
-    // lever every other routing path honors via filterDisabledModels.
-    const deduped = filterDisabledModels(uniqueModels(initial).filter(isCompatible));
-    const available = deduped.filter((modelId) => getModelStatus(modelId, repoDir) !== 'exhausted');
-    return {
-      taskType: options.taskType ?? FALLBACK_DEFAULT_TASK_TYPE,
-      candidates: available.length > 0 ? available : deduped,
-    };
+    taskType = options.taskType ?? FALLBACK_DEFAULT_TASK_TYPE;
+    initial = options.model ? [options.model, ...options.fallbackModels] : options.fallbackModels;
+  } else {
+    taskType = options.taskType ?? FALLBACK_DEFAULT_TASK_TYPE;
+    if (!options.taskType) {
+      warnMissingTaskType(provider);
+    }
+
+    let ladder = getLadder(registry, taskType);
+    if (ladder.length === 0) {
+      ladder = rankCandidates(registry, taskType);
+    }
+    initial = options.model ? [options.model, ...ladder] : ladder;
   }
 
-  const taskType = options.taskType ?? FALLBACK_DEFAULT_TASK_TYPE;
-  if (!options.taskType) {
-    warnMissingTaskType(provider);
-  }
-
-  let ladder = getLadder(registry, taskType);
-  if (ladder.length === 0) {
-    ladder = rankCandidates(registry, taskType);
-  }
-
-  const deduped = filterDisabledModels(
-    uniqueModels(options.model ? [options.model, ...ladder] : ladder).filter(isCompatible),
-  );
+  // Exclude globally disabled models (e.g. access-restricted upstream) — same
+  // lever every other routing path honors via filterDisabledModels.
+  const deduped = filterDisabledModels(uniqueModels(initial).filter(isServable));
   const available = deduped.filter((modelId) => getModelStatus(modelId, repoDir) !== 'exhausted');
   return {
     taskType,
     candidates: available.length > 0 ? available : deduped,
+    skipped,
   };
 }
 
-function isModelCompatibleWithProvider(
+/** Transport label used in skip reasons (`transport claude-cli cannot serve vendor deepseek`). */
+function transportLabel(provider: LLMProvider): string {
+  return provider === 'claude' ? 'claude-cli' : `${provider}-cli`;
+}
+
+function normalizeBaseUrl(value: string | undefined): string {
+  return (value ?? '').trim().replace(/\/+$/, '');
+}
+
+/**
+ * Which registry vendor the Claude CLI transport can actually serve from the
+ * current environment.
+ *
+ * `llm-cli` spawns `claude -p` with the inherited env and injects no endpoint
+ * of its own. By default that reaches Anthropic, so only `vendor: anthropic`
+ * models answer; a DeepSeek id such as `deepseek-v4-flash` is rejected as an
+ * unrecognized model and hangs until the attempt timeout (HOK-3130). Only
+ * when the process already runs inside a claude-deepseek agent env
+ * (`ANTHROPIC_BASE_URL` pointing at the DeepSeek Anthropic-compatible
+ * endpoint) is the relationship inverted.
+ */
+export function claudeCliServableVendor(env: NodeJS.ProcessEnv = process.env): 'anthropic' | 'deepseek' {
+  const baseUrl = normalizeBaseUrl(env.ANTHROPIC_BASE_URL);
+  return baseUrl !== '' && baseUrl === normalizeBaseUrl(DEEPSEEK_BASE_URL) ? 'deepseek' : 'anthropic';
+}
+
+/**
+ * Explain why `provider`'s transport cannot serve `modelId`, or return `null`
+ * when it can. Unknown ids and `vendor: custom` models are always permitted
+ * (the operator opted into them explicitly).
+ *
+ * @param servableVendor - For the `claude` provider, the vendor the CLI can
+ *   reach (see {@link claudeCliServableVendor}); ignored for other providers.
+ */
+function transportIncompatibilityReason(
   provider: LLMProvider,
   registry: ReturnType<typeof getEffectiveRegistry>,
   modelId: string,
-): boolean {
+  servableVendor: 'anthropic' | 'deepseek' | null,
+): string | null {
   const model = getModel(registry, modelId);
   if (!model || model.vendor === 'custom') {
-    return true;
+    return null;
   }
 
   if (provider === 'claude') {
-    return model.vendor === 'anthropic' || model.vendor === 'deepseek' || model.agent === 'claude';
+    const vendor = servableVendor ?? 'anthropic';
+    return model.vendor === vendor
+      ? null
+      : `transport ${transportLabel(provider)} cannot serve vendor ${model.vendor}`;
   }
 
   if (provider === 'codex' || provider === 'openai') {
-    return model.vendor === 'openai';
+    return model.vendor === 'openai'
+      ? null
+      : `transport ${transportLabel(provider)} cannot serve vendor ${model.vendor}`;
   }
 
-  return true;
+  return null;
 }
 
 /**
  * Resolve which CLI/provider should run a given model id, based on the model
  * registry. Codex runs OpenAI/`gpt-*` models (or anything tagged `agent: 'codex'`);
- * Claude runs everything else (anthropic, deepseek-via-claude, etc.).
+ * Claude runs everything else (anthropic, plus deepseek ids when the caller
+ * already runs inside a claude-deepseek env — see {@link claudeCliServableVendor}).
  *
  * This is the seam that lets headless utility call sites follow their configured
  * model to the right CLI instead of hardcoding `provider: 'claude'`. An unknown
@@ -1728,6 +1782,14 @@ async function callLLMWithFallback(
   const repoDir = repoDirForOptions(options);
   const resolved = resolveCandidateModels(provider, options);
   const taskType = resolved.taskType;
+  if (hasFallbackDeadline(options)) {
+    // Budgeted (classifier) ladders surface every pre-attempt skip so a mill
+    // log shows why a candidate never ran. Unbudgeted calls stay quiet: every
+    // ordinary claude call would otherwise log that the gpt-* rungs were filtered.
+    for (const { model, reason } of resolved.skipped) {
+      console.warn(`[${fallbackLogLabel(taskType)}] ${model} skipped (${reason})`);
+    }
+  }
   const candidates = filterCandidatesWithCredentials(resolved.candidates, provider, options, taskType);
   const retry = options.retry ?? false;
   const shouldLogFallbackEvents = options.logFallbackEvents !== false;

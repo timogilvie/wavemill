@@ -351,6 +351,27 @@ function buildUserPrompt(options: {
   ].filter(Boolean).join('\n');
 }
 
+/**
+ * HOK-3128: monitor-owned instruction written before a dirty-handoff relaunch
+ * ("commit or discard these paths"). Kept out of the stale-artifact archive so
+ * the relaunched run sees it; the monitor removes it once the tree is clean.
+ */
+export const CODING_RECOVERY_INSTRUCTION_FILE = '.coding-recovery-instruction.md';
+
+/**
+ * Prepend the dirty-handoff recovery instruction, when present, to the issue
+ * context as a `## Recovery instruction` block — the same shape the shell
+ * coding prompt uses, so every coding agent gets the same targeted ask.
+ */
+export function withCodingRecoveryInstruction(featureDir: string, issueContext?: string): string | undefined {
+  const instruction = readOptional(join(featureDir, CODING_RECOVERY_INSTRUCTION_FILE))?.trim();
+  if (!instruction) {
+    return issueContext;
+  }
+  const block = `## Recovery instruction\n${instruction}\n`;
+  return issueContext?.trim() ? `${block}\n${issueContext}` : block;
+}
+
 function readOptional(path: string): string | undefined {
   try {
     return existsSync(path) ? readFileSync(path, 'utf-8') : undefined;
@@ -975,7 +996,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
           title: options.title,
           branch: options.branch,
           baseBranch: options.baseBranch,
-          issueContext: options.issueContext,
+          issueContext: withCodingRecoveryInstruction(featureDir, options.issueContext),
           planPath,
           taskPacketPath,
           planText: readOptional(planPath),

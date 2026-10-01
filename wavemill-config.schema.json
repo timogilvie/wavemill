@@ -315,12 +315,12 @@
         },
         "observer": {
             "type": "object",
-            "description": "Controls the dedicated Backstage Wavemill Observer service. The service is default-disabled and only runs when integration mill-session monitoring is active.",
+            "description": "Controls the dedicated Backstage Wavemill Observer service. Runs in every mill session unless `enabled` is false; independent of integration mode.",
             "properties": {
                 "enabled": {
                     "type": "boolean",
-                    "default": false,
-                    "description": "When true, eligible mill sessions launch a dedicated Backstage pane running wavemill observer --loop in detection-only mode."
+                    "default": true,
+                    "description": "When true (the default), every mill session launches a dedicated Backstage pane running wavemill observer --loop in detection-only mode, whatever the integration setting. Set false to opt out."
                 },
                 "intervalSeconds": {
                     "type": "integer",

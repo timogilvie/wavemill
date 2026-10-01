@@ -2666,6 +2666,32 @@ else
   fail "backstage health did not render disabled observer status and retry count"
 fi
 
+# HOK-3094: observer-only session (integration off) shows tend disabled and
+# the observer's own health.
+cat > "$TMP_DIR/backstage-health.json" <<JSON
+{
+  "status": "disabled",
+  "services": {
+    "tend": {
+      "status": "disabled",
+      "detail": "tend is off: integration.enabled=false"
+    },
+    "observer": {
+      "status": "healthy",
+      "heartbeatAt": "$(iso_at_offset -10)",
+      "instanceCount": 1
+    }
+  }
+}
+JSON
+run_render "$backstage_state" "$WORKTREES_DIR" "$backstage_behavior" "$backstage_output"
+backstage_observer_only_render="$(cat "$backstage_output")"
+if [[ "$backstage_observer_only_render" == *"Tend: disabled"* && "$backstage_observer_only_render" == *"Observer: healthy"* ]]; then
+  pass "backstage health renders observer health when tend is disabled"
+else
+  fail "backstage health did not render observer health with tend disabled"
+fi
+
 cat > "$TMP_DIR/queue-health.json" <<'JSON'
 {
   "status": "degraded",
@@ -2681,6 +2707,54 @@ if [[ "$queue_backstage_render" == *"Queue: degraded"* && "$queue_backstage_rend
   pass "backstage health summary renders degraded queue health"
 else
   fail "backstage health summary did not render degraded queue health"
+fi
+
+# HOK-3130: a successful planner run whose inference failed must not read as
+# healthy; a healthy run surfaces how many inferred edges are in use.
+cat > "$TMP_DIR/queue-health.json" <<'JSON'
+{
+  "status": "degraded",
+  "degradationReason": "inference_unavailable",
+  "failureStep": "queue_inference",
+  "retryBackoffSeconds": 0,
+  "nextAction": "use_explicit_edges_only",
+  "inferenceStatus": "failed",
+  "inferredEdgeCount": 0,
+  "inference": { "error": "LLM fallback deadline exhausted before claude-sonnet-5" }
+}
+JSON
+run_render "$backstage_state" "$WORKTREES_DIR" "$backstage_behavior" "$backstage_output"
+queue_inference_render="$(cat "$backstage_output")"
+if [[ "$queue_inference_render" == *"Queue: degraded (inference_unavailable: failed)"* ]]; then
+  pass "backstage health summary renders inference_unavailable with its status"
+else
+  fail "backstage health summary did not render inference_unavailable status"
+fi
+if [[ "$queue_inference_render" == *"queue inference unavailable (failed); planning with explicit edges only; last error: LLM fallback deadline exhausted"* ]]; then
+  pass "queue inference warning renders status and last error"
+else
+  fail "queue inference warning missing from dashboard"
+fi
+
+cat > "$TMP_DIR/queue-health.json" <<'JSON'
+{
+  "status": "healthy",
+  "nextAction": "use_dependency_queue",
+  "inferenceStatus": "ok",
+  "inferredEdgeCount": 3
+}
+JSON
+run_render "$backstage_state" "$WORKTREES_DIR" "$backstage_behavior" "$backstage_output"
+queue_inferred_render="$(cat "$backstage_output")"
+if [[ "$queue_inferred_render" == *"Queue: healthy (inferred 3)"* ]]; then
+  pass "backstage health summary renders inferred edge count"
+else
+  fail "backstage health summary did not render inferred edge count"
+fi
+if [[ "$queue_inferred_render" != *"queue inference unavailable"* ]]; then
+  pass "healthy inference renders no queue warning"
+else
+  fail "healthy inference rendered a queue warning"
 fi
 
 # ── Malformed challenge-pair state stubs (HOK-2926) ──────────────────────
