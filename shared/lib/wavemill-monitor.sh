@@ -52,7 +52,8 @@ _log_level_num() {
     error) echo 0 ;;
     # warn shares status's visibility so warnings always reach the dashboard
     # at the default verbosity (HOK-3142).
-    warn|status) echo 1 ;;
+    warn) echo 1 ;;
+    status) echo 1 ;;
     info) echo 2 ;;
     debug) echo 3 ;;
     *) echo 2 ;;
@@ -7815,8 +7816,8 @@ handle_phase_launch_result() {
 #
 # Both terminal states hold quietly (no relaunch, no re-log) until the head
 # moves or the operator removes the sentinel after certifying the model.
-CODING_LAUNCH_REFUSED_BUCKET="coding-launch-refused"
-CODING_LAUNCH_RESOLVER_BUCKET="coding-launch-resolver"
+# Bucket names are literals inside each function (not globals) so the
+# functions stay self-contained for the extraction-based test harnesses.
 
 coding_launch_refusal_limit() {
   local limit="${WAVEMILL_CODING_LAUNCH_REFUSAL_MAX_ATTEMPTS:-3}"
@@ -7858,15 +7859,15 @@ coding_launch_refusal_hold() {
   local issue="$1" feature_dir="$2" win="$3"
   local head bucket
   head="$(phase_launch_head "$feature_dir")"
-  for bucket in "$CODING_LAUNCH_REFUSED_BUCKET" "$CODING_LAUNCH_RESOLVER_BUCKET"; do
+  for bucket in coding-launch-refused coding-launch-resolver; do
     bounded_retry_reset_if_new_key "$feature_dir" "$bucket" "$head"
     if bounded_retry_is_exhausted "$feature_dir" "$bucket"; then
       set_window_attention_state "$win" "needs-user"
       return 0
     fi
   done
-  if [[ "$(bounded_retry_count "$feature_dir" "$CODING_LAUNCH_RESOLVER_BUCKET")" -gt 0 ]] \
-    && ! bounded_retry_due "$feature_dir" "$CODING_LAUNCH_RESOLVER_BUCKET"; then
+  if [[ "$(bounded_retry_count "$feature_dir" coding-launch-resolver)" -gt 0 ]] \
+    && ! bounded_retry_due "$feature_dir" coding-launch-resolver; then
     log "debug" "  $issue: holding coding launch retry after resolver failure (backoff)"
     return 0
   fi
@@ -7877,8 +7878,8 @@ coding_launch_refusal_hold() {
 # budgets reset on a successful launch).
 coding_launch_refusal_clear() {
   local feature_dir="$1"
-  bounded_retry_clear "$feature_dir" "$CODING_LAUNCH_REFUSED_BUCKET"
-  bounded_retry_clear "$feature_dir" "$CODING_LAUNCH_RESOLVER_BUCKET"
+  bounded_retry_clear "$feature_dir" coding-launch-refused
+  bounded_retry_clear "$feature_dir" coding-launch-resolver
 }
 
 # Terminalize a refused coding launch: record the reason (with the certify
@@ -7931,9 +7932,9 @@ handle_coding_launch_refusal() {
   set_task_phase "$issue" "planning"
 
   if coding_launch_refusal_is_transient "$reason" "$certification"; then
-    attempts="$(bounded_retry_increment "$feature_dir" "$CODING_LAUNCH_RESOLVER_BUCKET" "$head")"
+    attempts="$(bounded_retry_increment "$feature_dir" coding-launch-resolver "$head")"
     if (( attempts > limit )); then
-      coding_launch_refusal_terminalize "$issue" "$feature_dir" "$win" "$CODING_LAUNCH_RESOLVER_BUCKET" \
+      coding_launch_refusal_terminalize "$issue" "$feature_dir" "$win" coding-launch-resolver \
         "$launch_model" "$provider" "$reason" "$certification" "$certify" \
         "resolver failed on all ${attempts} attempt(s)"
       return 0
@@ -7946,7 +7947,7 @@ handle_coding_launch_refusal() {
 
   # Deterministic refusal: the identical relaunch can never succeed.
   if [[ -n "${FORCE_MODEL:-}" || -n "${WAVEMILL_CODER_MODEL:-}" ]]; then
-    coding_launch_refusal_terminalize "$issue" "$feature_dir" "$win" "$CODING_LAUNCH_REFUSED_BUCKET" \
+    coding_launch_refusal_terminalize "$issue" "$feature_dir" "$win" coding-launch-refused \
       "$launch_model" "$provider" "$reason" "$certification" "$certify" "coder pinned by operator"
     return 0
   fi
@@ -7954,7 +7955,7 @@ handle_coding_launch_refusal() {
   role="$(_challenge_side_for_issue "$issue" 2>/dev/null || true)"
   varied="$(challenge_varied_stage_model "$issue" "coding" 2>/dev/null || true)"
   if [[ "$role" == "challenger" && -n "$varied" && ( "$varied" == "$route_model" || "$varied" == "$launch_model" ) ]]; then
-    coding_launch_refusal_terminalize "$issue" "$feature_dir" "$win" "$CODING_LAUNCH_REFUSED_BUCKET" \
+    coding_launch_refusal_terminalize "$issue" "$feature_dir" "$win" coding-launch-refused \
       "$launch_model" "$provider" "$reason" "$certification" "$certify" "challenger varied coder is not launchable"
     if [[ -z "$(get_task_meta "$issue" "challengeAborted" 2>/dev/null || true)" ]]; then
       challenge_abort_pair "$issue" "$feature_dir" "$win" "coding" "$launch_model" \
@@ -7966,9 +7967,9 @@ handle_coding_launch_refusal() {
     return 0
   fi
 
-  attempts="$(bounded_retry_increment "$feature_dir" "$CODING_LAUNCH_REFUSED_BUCKET" "$head")"
+  attempts="$(bounded_retry_increment "$feature_dir" coding-launch-refused "$head")"
   if (( attempts > limit )); then
-    coding_launch_refusal_terminalize "$issue" "$feature_dir" "$win" "$CODING_LAUNCH_REFUSED_BUCKET" \
+    coding_launch_refusal_terminalize "$issue" "$feature_dir" "$win" coding-launch-refused \
       "$launch_model" "$provider" "$reason" "$certification" "$certify" \
       "coder reroute budget of ${limit} exhausted"
     return 0
@@ -7993,7 +7994,7 @@ handle_coding_launch_refusal() {
     clear_stage_result "$feature_dir" "coding"
     set_window_attention_state "$win" "clear"
     log_coding_launch_refusal "$issue" "$launch_model" "$provider" "$reason" "$certification" "rerouted" "$substitute" "$certify"
-    log "status" "↪ $issue → coder substitution: $launch_model → $substitute (${reason:-refused}${certification:+:$certification}); launching on next tick"
+    log "status" "↪ $issue → coder substitution: $launch_model → $substitute (${reason:-refused}${certification:+:$certification}), next tick launches the substitute"
     return 0
   fi
 
@@ -8001,7 +8002,7 @@ handle_coding_launch_refusal() {
     log_warn "$issue → coder reroute failed: $(tail -n 3 "$reroute_stderr" | tr '\n' ' ')"
   fi
   [[ "$reroute_stderr" != /dev/null ]] && rm -f "$reroute_stderr"
-  coding_launch_refusal_terminalize "$issue" "$feature_dir" "$win" "$CODING_LAUNCH_REFUSED_BUCKET" \
+  coding_launch_refusal_terminalize "$issue" "$feature_dir" "$win" coding-launch-refused \
     "$launch_model" "$provider" "$reason" "$certification" "$certify" \
     "$([[ "$reroute_status" == "no-eligible" ]] && echo "no launchable coder remains" || echo "coder reroute failed")"
   return 0
