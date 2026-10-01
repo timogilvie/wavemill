@@ -270,7 +270,23 @@ describe('runGroundedPlanning — failure handling', () => {
     assert.equal(result.stats.pairsScored, 55);
     assert.equal(result.stats.pairsSentToLlm, MAX_PAIRS_PER_LLM_CALL);
     assert.equal(result.cache.groundedVerdicts.length, MAX_PAIRS_PER_LLM_CALL);
-    assert.match(warnings.join('\n'), /15 low-score pair/);
+    assert.match(warnings.join('\n'), /15 low-score pair\(s\) over the 40-pair cap/);
+  });
+
+  it('judges pairs in chunks when more calls are allowed, failing only the broken chunk', async () => {
+    const many = Array.from({ length: 11 }, (_, index) => task(`HOK-${index + 1}`, `T${index}`, 'Edit `tools/plan-queue.ts`'));
+    let call = 0;
+    const llm: GroundedLlm = async () => {
+      call++;
+      if (call === 2) throw new Error('chunk 2 timed out');
+      return { text: '{"verdicts":[]}', model: 'mock-model' };
+    };
+    const result = await runGroundedPlanning(many, { ...BASE_OPTS, llm, maxLlmCalls: 3, warn: () => {} });
+    assert.equal(call, 2, '55 pairs need two 40-pair chunks');
+    assert.equal(result.stats.pairsSentToLlm, 55);
+    assert.equal(result.cache.groundedVerdicts.length, 40, 'only the successful chunk is cached');
+    assert.equal(result.llm.orderingOk, false);
+    assert.equal(result.llm.error, 'chunk 2 timed out');
   });
 
   it('pairs already linked in Linear are not sent to the judge', async () => {

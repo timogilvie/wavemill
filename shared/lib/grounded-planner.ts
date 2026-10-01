@@ -65,8 +65,8 @@ export const TOUCH_SET_PREDICTION_PROMPT_PATH = fileURLToPath(new URL('../../too
 export const MAX_PAIRS_PER_LLM_CALL = 40;
 /** Evidence shorter than this is not "specific" and the verdict is discarded. */
 export const MIN_EVIDENCE_CHARS = 10;
-const PROMPT_DESCRIPTION_MAX_CHARS = 800;
-const PROMPT_TOUCH_ENTRIES_MAX = 15;
+const PROMPT_DESCRIPTION_MAX_CHARS = 500;
+const PROMPT_TOUCH_ENTRIES_MAX = 10;
 
 export interface GroundedTask extends TouchSetTask, ScorableTask {
   id: string;
@@ -448,6 +448,13 @@ export interface GroundedPlannerOptions {
   scoreOptions?: Omit<ScoreOptions, 'coChange'>;
   /** LLM transport. Omit to run fully deterministic (no prediction, all unjudged pairs independent). */
   llm?: GroundedLlm;
+  /**
+   * Ordering calls allowed this run, each judging up to {@link MAX_PAIRS_PER_LLM_CALL}
+   * pairs (default 1: the monitor's planner deadline fits one call). The backtest raises it.
+   */
+  maxLlmCalls?: number;
+  /** Restrict which scored pairs get verdicts (the backtest judges only concurrent pairs). */
+  pairFilter?: (taskA: string, taskB: string) => boolean;
   /** Prompt templates; omit to load them with `loadPromptTemplate` (registry-attributed). */
   orderingTemplate?: string;
   touchSetTemplate?: string;
@@ -473,7 +480,7 @@ export interface GroundedPlanResult {
   edges: DependencyEdge[];
   touchSets: TouchSet[];
   scores: PairScore[];
-  /** One verdict per scored, non-explicit pair. */
+  /** One verdict per scored, non-explicit pair (that passes `pairFilter`). */
   verdicts: GroundedVerdict[];
   waves: GroundedWavePlan;
   /** Cache blocks to persist (pruned + fresh entries). */
@@ -580,7 +587,9 @@ export async function runGroundedPlanning(tasks: GroundedTask[], opts: GroundedP
   }
   const scores = scorePairConflicts(tasks, touchSets, { ...opts.scoreOptions, coChange });
   // Pairs Linear already links are explicit edges; the judge has nothing to add.
-  const judgeable = scores.filter((pair) => !pair.signals.includes('explicit_dependency'));
+  const judgeable = scores.filter(
+    (pair) => !pair.signals.includes('explicit_dependency') && (opts.pairFilter?.(pair.taskA, pair.taskB) ?? true),
+  );
 
   // 3. Verdicts: cache first, one batched LLM call for the rest.
   const verdictByPair = new Map<string, GroundedVerdict>();
@@ -605,34 +614,39 @@ export async function runGroundedPlanning(tasks: GroundedTask[], opts: GroundedP
     }
   }
 
-  const sent = toJudge.slice(0, MAX_PAIRS_PER_LLM_CALL);
+  const maxLlmCalls = Math.max(1, opts.maxLlmCalls ?? 1);
+  const sent = toJudge.slice(0, MAX_PAIRS_PER_LLM_CALL * maxLlmCalls);
   if (toJudge.length > sent.length) {
-    warn(`[grounded-planner] ${toJudge.length - sent.length} low-score pair(s) over the ${MAX_PAIRS_PER_LLM_CALL}-pair cap default to independent this run`);
+    warn(`[grounded-planner] ${toJudge.length - sent.length} low-score pair(s) over the ${sent.length}-pair cap default to independent this run`);
   }
   if (sent.length > 0 && opts.llm) {
     llmOutcome.orderingAttempted = true;
-    try {
-      const template = opts.orderingTemplate ?? await loadTemplate(GROUNDED_ORDERING_PROMPT_PATH);
-      const prompt = buildOrderingPrompt(template, sent, tasks, touchSets);
-      const llm = opts.llm;
-      const result = await timed(() => llm(prompt, 'ordering'));
-      llmOutcome.model = result.model ?? null;
-      for (const verdict of parseOrderingVerdicts(result.text, sent, warn)) {
-        verdictByPair.set(pairKey(verdict.a, verdict.b), verdict);
-        freshCachedVerdicts.push({
-          a: verdict.a,
-          b: verdict.b,
-          aFingerprint: fingerprintById.get(verdict.a)!,
-          bFingerprint: fingerprintById.get(verdict.b)!,
-          verdict: verdict.verdict,
-          ...(verdict.evidence ? { evidence: verdict.evidence } : {}),
-          classifiedAt: nowIso,
-        });
+    const llm = opts.llm;
+    let template: string | undefined = opts.orderingTemplate;
+    for (let offset = 0; offset < sent.length; offset += MAX_PAIRS_PER_LLM_CALL) {
+      const chunk = sent.slice(offset, offset + MAX_PAIRS_PER_LLM_CALL);
+      try {
+        template ??= await loadTemplate(GROUNDED_ORDERING_PROMPT_PATH);
+        const prompt = buildOrderingPrompt(template, chunk, tasks, touchSets);
+        const result = await timed(() => llm(prompt, 'ordering'));
+        llmOutcome.model = result.model ?? llmOutcome.model;
+        for (const verdict of parseOrderingVerdicts(result.text, chunk, warn)) {
+          verdictByPair.set(pairKey(verdict.a, verdict.b), verdict);
+          freshCachedVerdicts.push({
+            a: verdict.a,
+            b: verdict.b,
+            aFingerprint: fingerprintById.get(verdict.a)!,
+            bFingerprint: fingerprintById.get(verdict.b)!,
+            verdict: verdict.verdict,
+            ...(verdict.evidence ? { evidence: verdict.evidence } : {}),
+            classifiedAt: nowIso,
+          });
+        }
+      } catch (error) {
+        llmOutcome.orderingOk = false;
+        llmOutcome.error = (error as Error).message;
+        warn(`[grounded-planner] ordering judge failed; ${chunk.length} pair(s) default to independent: ${(error as Error).message}`);
       }
-    } catch (error) {
-      llmOutcome.orderingOk = false;
-      llmOutcome.error = (error as Error).message;
-      warn(`[grounded-planner] ordering judge failed; ${sent.length} pair(s) default to independent: ${(error as Error).message}`);
     }
   }
 
@@ -677,11 +691,14 @@ export async function runGroundedPlanning(tasks: GroundedTask[], opts: GroundedP
 /** Commits mined for co-change statistics. */
 export const CO_CHANGE_HISTORY_COMMITS = 400;
 
-/** Build a {@link CoChangeIndex} from recent non-merge history of `repoDir`. */
-export function loadCoChangeIndex(repoDir: string, commits = CO_CHANGE_HISTORY_COMMITS): CoChangeIndex {
+/**
+ * Build a {@link CoChangeIndex} from recent non-merge history of `repoDir`,
+ * ending at `ref` (default `HEAD`; the backtest passes a historical commit).
+ */
+export function loadCoChangeIndex(repoDir: string, opts: { commits?: number; ref?: string } = {}): CoChangeIndex {
   const result = execArgvCommand(
     'git',
-    ['log', '--no-merges', '--name-only', '--format=%x00', '-n', String(commits)],
+    ['log', '--no-merges', '--name-only', '--format=%x00', '-n', String(opts.commits ?? CO_CHANGE_HISTORY_COMMITS), opts.ref ?? 'HEAD', '--'],
     { cwd: repoDir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] },
   );
   if (result.exitCode !== 0) throw new Error(`git log exited ${result.exitCode}`);
@@ -698,8 +715,20 @@ async function defaultKeywordHits(repoDir: string, task: TouchSetTask): Promise<
   return findRelevantFiles(repoDir, text(task.title));
 }
 
+/**
+ * The judge must answer from the prompt alone. Without this the Claude CLI
+ * loads its tool set and, seeing file paths, reasons about reading them:
+ * a 3 KB ordering prompt measured 68 s with tools vs 26 s without. Every
+ * `classify` ladder candidate runs through the Claude CLI transport.
+ * Requires `mode: 'stream'`: the sync path joins args into a shell string and
+ * drops the empty `''` value (same convention as issue-expander / plan-decomposer).
+ */
+export const GROUNDED_LLM_CLI_FLAGS: readonly string[] = ['--tools', ''];
+
 export interface GroundedLlmOptions {
   repoDir: string;
+  /** Per-call timeout when no deadline is set (llm-cli default otherwise). */
+  timeoutMs?: number;
   /** Absolute epoch-ms deadline shared by every call in this run. */
   deadlineMs?: number;
   perAttemptTimeoutMs?: number;
@@ -716,6 +745,9 @@ export function createGroundedLlm(opts: GroundedLlmOptions): GroundedLlm {
     const result = await callLLM(prompt, {
       taskType: 'classify',
       repoDir: opts.repoDir,
+      mode: 'stream',
+      cliFlags: [...GROUNDED_LLM_CLI_FLAGS],
+      ...(opts.timeoutMs === undefined ? {} : { timeout: opts.timeoutMs }),
       ...(opts.deadlineMs === undefined
         ? {}
         : {

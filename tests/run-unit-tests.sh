@@ -279,6 +279,7 @@ TESTS=(
   shared/lib/touch-set-predictor.test.ts
   shared/lib/conflict-scorer.test.ts
   shared/lib/grounded-planner.test.ts
+  shared/lib/planner-backtest.test.ts
   shared/lib/scaffold-migrate-dryrun.test.ts
   shared/lib/deepseek-smoke.test.ts
   shared/lib/seam-artifacts.test.ts

@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import { dirname, resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 import {
@@ -277,5 +280,37 @@ describe('createGitRepoProbe (this repository)', () => {
     assert.ok(probe.grepFiles('planTaskDependencies').includes('shared/lib/task-dependency-planner.ts'));
     assert.deepEqual(probe.definitionFiles!('planTaskDependencies'), ['shared/lib/task-dependency-planner.ts']);
     assert.deepEqual(probe.grepFiles('not an identifier'), []);
+  });
+
+  it('reads a historical commit when given a ref', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'touch-set-ref-probe-'));
+    const git = (...args: string[]) =>
+      execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', ...args], { cwd: tmp, encoding: 'utf8' }).trim();
+    try {
+      git('init', '-q');
+      mkdirSync(join(tmp, 'lib'));
+      writeFileSync(join(tmp, 'lib', 'old.ts'), 'export function oldHelper() {}\n');
+      git('add', '.');
+      git('commit', '-q', '-m', 'one');
+      const first = git('rev-parse', 'HEAD');
+      writeFileSync(join(tmp, 'lib', 'new.ts'), 'export function newHelper() { oldHelper(); }\n');
+      git('add', '.');
+      git('commit', '-q', '-m', 'two');
+
+      const before = createGitRepoProbe(tmp, { ref: first });
+      assert.equal(before.fileExists('lib/old.ts'), true);
+      assert.equal(before.fileExists('lib/new.ts'), false, 'a file created later is invisible at the earlier ref');
+      assert.deepEqual(before.findByBasename('new.ts'), []);
+      assert.deepEqual(before.grepFiles('newHelper'), []);
+      assert.deepEqual(before.grepFiles('oldHelper'), ['lib/old.ts']);
+      assert.deepEqual(before.definitionFiles!('oldHelper'), ['lib/old.ts']);
+
+      const now = createGitRepoProbe(tmp);
+      assert.equal(now.fileExists('lib/new.ts'), true);
+      assert.deepEqual(now.grepFiles('oldHelper').sort(), ['lib/new.ts', 'lib/old.ts']);
+      assert.deepEqual(now.definitionFiles!('oldHelper'), ['lib/old.ts']);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

@@ -396,19 +396,57 @@ function runGit(repoDir: string, args: string[]): string[] {
 }
 
 /**
- * Production {@link RepoProbe} backed by the working tree and git.
- * `git ls-files` runs once lazily; `git grep` results are memoized.
+ * Production {@link RepoProbe} backed by git.
+ *
+ * Without `ref` it reads the working tree (`git ls-files`, `git grep`). With
+ * `ref` it reads that commit instead (`git ls-tree`, `git grep <ref>`), which
+ * the backtest uses so a task never "finds" a file its own PR created.
+ * File listings run once lazily; grep results are memoized.
  */
-export function createGitRepoProbe(repoDir: string): RepoProbe {
+export function createGitRepoProbe(repoDir: string, opts: { ref?: string } = {}): RepoProbe {
+  const { ref } = opts;
   let tracked: string[] | undefined;
-  const trackedFiles = () => (tracked ??= runGit(repoDir, ['ls-files']));
+  let trackedSet: Set<string> | undefined;
+  const trackedFiles = () =>
+    (tracked ??= ref ? runGit(repoDir, ['ls-tree', '-r', '--name-only', ref]) : runGit(repoDir, ['ls-files']));
   const grepCache = new Map<string, string[]>();
   const definitionCache = new Map<string, string[]>();
+  // `git grep <ref>` prefixes every hit with `<ref>:`.
+  const grep = (args: string[], paths: string[]): string[] => {
+    const lines = runGit(repoDir, ['grep', ...args, ...(ref ? [ref] : []), '--', ...paths]);
+    return ref ? lines.map((line) => (line.startsWith(`${ref}:`) ? line.slice(ref.length + 1) : line)) : lines;
+  };
+
+  const grepFiles = (identifier: string): string[] => {
+    if (!IDENTIFIER.test(identifier)) return [];
+    const cached = grepCache.get(identifier);
+    if (cached) return cached;
+    const files = grep(['-l', '-w', '-F', '-I', '-e', identifier], ['.']);
+    grepCache.set(identifier, files);
+    return files;
+  };
+
+  const definitionFiles = (identifier: string): string[] => {
+    if (!IDENTIFIER.test(identifier)) return [];
+    const cached = definitionCache.get(identifier);
+    if (cached) return cached;
+    const name = identifier.replace(/\$/g, '\\$');
+    const pattern = [
+      `(function|class|interface|type|enum|const|let|var|def|fn)[[:space:]]+${name}([^A-Za-z0-9_$]|$)`,
+      `^[[:space:]]*${name}[[:space:]]*\\(\\)`,
+    ].join('|');
+    // Restrict the (slower) regex search to files that mention the identifier.
+    const mentions = grepFiles(identifier);
+    const files = mentions.length === 0 ? [] : grep(['-l', '-I', '-E', '-e', pattern], mentions);
+    definitionCache.set(identifier, files);
+    return files;
+  };
 
   return {
     fileExists(path) {
       const normalized = normalizeRepoPath(path);
       if (!normalized) return false;
+      if (ref) return (trackedSet ??= new Set(trackedFiles())).has(normalized);
       const absolute = join(repoDir, normalize(normalized));
       try {
         return existsSync(absolute) && statSync(absolute).isFile();
@@ -422,30 +460,7 @@ export function createGitRepoProbe(repoDir: string): RepoProbe {
     findBySuffix(suffix) {
       return trackedFiles().filter((path) => path.endsWith(`/${suffix}`));
     },
-    grepFiles(identifier) {
-      if (!IDENTIFIER.test(identifier)) return [];
-      const cached = grepCache.get(identifier);
-      if (cached) return cached;
-      const files = runGit(repoDir, ['grep', '-l', '-w', '-F', '-I', '-e', identifier, '--', '.']);
-      grepCache.set(identifier, files);
-      return files;
-    },
-    definitionFiles(identifier) {
-      if (!IDENTIFIER.test(identifier)) return [];
-      const cached = definitionCache.get(identifier);
-      if (cached) return cached;
-      const name = identifier.replace(/\$/g, '\\$');
-      const pattern = [
-        `(function|class|interface|type|enum|const|let|var|def|fn)[[:space:]]+${name}([^A-Za-z0-9_$]|$)`,
-        `^[[:space:]]*${name}[[:space:]]*\\(\\)`,
-      ].join('|');
-      // Restrict the (slower) regex search to files that mention the identifier.
-      const mentions = this.grepFiles(identifier);
-      const files = mentions.length === 0
-        ? []
-        : runGit(repoDir, ['grep', '-l', '-I', '-E', '-e', pattern, '--', ...mentions]);
-      definitionCache.set(identifier, files);
-      return files;
-    },
+    grepFiles,
+    definitionFiles,
   };
 }
