@@ -4050,10 +4050,18 @@ fresh_agent_hook_state_for_issue() {
 # controller-owned validation job), or an indeterminate probe. A minimum
 # stage age guards launch wrappers that briefly show only a shell.
 # Returns 0 only when the owner is affirmatively lost.
+#
+# HOK-3137: on every `return 0`, populates CODING_OWNER_LOST_EVIDENCE_JSON
+# (reset to "" at entry) with the factual evidence behind the decision —
+# consumed by coding_stage_mark_interrupted so the stamped `exitEvidence` is
+# dynamic, never the old hard-coded string.
+CODING_OWNER_LOST_EVIDENCE_JSON=""
+
 coding_stage_owner_lost() {
   local issue="$1" feature_dir="$2" win_target="$3"
   local started_at started_epoch now_epoch hook_state pane_pid live_rc
   local grace="${WAVEMILL_CODING_OWNER_GRACE_SECONDS:-300}"
+  CODING_OWNER_LOST_EVIDENCE_JSON=""
 
   [[ -f "$feature_dir/.coding-result.json" ]] || return 1
   started_at="$(jq -r '.startedAt // empty' "$feature_dir/.coding-result.json" 2>/dev/null || true)"
@@ -4080,20 +4088,179 @@ coding_stage_owner_lost() {
   [[ -n "$pane_pid" ]] || return 1
   live_rc=0
   mill_pane_has_live_blocking_process "$pane_pid" || live_rc=$?
-  # 0 = live descendant (agent or owned validation), 2 = indeterminate: both protect.
-  # HOK-3101 (a): but an idle REPL sitting in the pane is not "the agent is
-  # doing work" — if the primitive says the agent is idle and not stalled,
-  # let the owner-lost signal fire.
-  if [[ "$live_rc" -eq 0 ]] && declare -F task_progress_json >/dev/null 2>&1; then
-    local progress
-    progress="$(task_progress_json "$issue" --phase coding --max-age 60 2>/dev/null || printf '{}')"
+
+  # HOK-3137: feed the pane pid to the primitive on every probe (not just the
+  # idle-REPL branch below) so the evidence payload always carries the
+  # background-work fact, even on a genuine (live_rc==1) loss.
+  local progress="{}"
+  if declare -F task_progress_json >/dev/null 2>&1; then
+    progress="$(task_progress_json "$issue" --phase coding --pane-pid "$pane_pid" --max-age 60 2>/dev/null || printf '{}')"
+  fi
+
+  # 0 = live descendant (agent or owned validation), 2 = indeterminate: both
+  # protect by default. HOK-3101 (a): but an idle REPL sitting in the pane is
+  # not "the agent is doing work" — if the primitive says the agent is idle
+  # and stalled, let the owner-lost signal fire UNLESS HOK-3137's background-
+  # work probe found a live descendant (the agent is waiting on its own
+  # backgrounded task, not abandoned).
+  local probe_label=""
+  if [[ "$live_rc" -eq 0 ]]; then
     if command -v jq >/dev/null 2>&1 \
       && printf '%s' "$progress" \
-      | jq -e '.agentIdle == true and .stalled == true' >/dev/null 2>&1; then
-      return 0
+      | jq -e '.agentIdle == true and .stalled == true and ((.agentBackgroundLive // false) != true)' >/dev/null 2>&1; then
+      probe_label="live-idle-repl"
+    fi
+  elif [[ "$live_rc" -eq 1 ]]; then
+    probe_label="none-live"
+  fi
+
+  [[ -n "$probe_label" ]] || return 1
+
+  if command -v jq >/dev/null 2>&1; then
+    CODING_OWNER_LOST_EVIDENCE_JSON="$(jq -cn \
+      --argjson progress "$progress" \
+      --arg probe "$probe_label" \
+      --arg paneTarget "$win_target" \
+      --arg observedAt "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+      '{
+        lastAgentState: ($progress.agentRecord.state // null),
+        lastAgentEvent: ($progress.agentRecord.event // null),
+        lastAgentTimestamp: ($progress.agentRecord.timestamp // null),
+        lastProgressAt: ($progress.lastProgressAt // null),
+        progressAgeMinutes: ($progress.progressAgeMinutes // null),
+        sources: ([($progress.sources // [])[] | .kind]),
+        agentBackgroundLive: (if ($progress | has("agentBackgroundLive")) then $progress.agentBackgroundLive else null end),
+        backgroundProcessCount: (($progress.backgroundProcesses // []) | length),
+        paneDescendantProbe: $probe,
+        paneTarget: $paneTarget,
+        observedAt: $observedAt
+      }' 2>/dev/null || true)"
+  fi
+  return 0
+}
+
+# HOK-3137: extracted from the monitor loop so the stamp is independently
+# testable. Writes the `failed`/`interrupted` stage result with dynamic,
+# factual `exitEvidence` built from CODING_OWNER_LOST_EVIDENCE_JSON (set by
+# the immediately preceding coding_stage_owner_lost call). Falls back to a
+# minimal dynamic string — never the old hard-coded
+# "agent process exited ... (pane at shell prompt)" — when no evidence is
+# available (e.g. jq missing).
+#
+# The `notes` detail string below is pattern-matched by the native-failure
+# classifier (monitor:6760, `*"interrupted: coding agent exited without
+# recording a result"*` → `coding-exited-without-result`) and MUST stay
+# stable; only the `exitEvidence` artifact field becomes dynamic.
+coding_stage_mark_interrupted() {
+  local issue="$1" feature_dir="$2" worktree="$3" win="$4" agent="${5:-}"
+  local interrupted_head evidence_json interrupted_artifacts
+
+  interrupted_head="$(git -C "$worktree" rev-parse HEAD 2>/dev/null || true)"
+  evidence_json="${CODING_OWNER_LOST_EVIDENCE_JSON:-}"
+  if [[ -z "$evidence_json" ]] || ! jq -e . >/dev/null 2>&1 <<<"$evidence_json"; then
+    evidence_json="$(jq -cn --arg msg "owner lost - no probe evidence available (pane ${win:-unknown})" '{detail: $msg}' 2>/dev/null)"
+    [[ -n "$evidence_json" ]] || evidence_json='{"detail":"owner lost - no probe evidence available"}'
+  fi
+
+  interrupted_artifacts="$(jq -cn --arg head "$interrupted_head" --argjson evidence "$evidence_json" \
+    '{type: "coding",
+      terminationClass: "interrupted",
+      exitEvidence: $evidence,
+      lastDurableCommit: (if $head == "" then null else $head end),
+      validationState: "unknown",
+      recoveryAction: "Relaunch the coding phase to resume from the last durable commit, or push the branch and open a PR manually if the work is already complete."}')"
+  write_stage_result "$feature_dir" "coding" "failed" "$agent" \
+    "$(resolve_stage_result_model "$feature_dir" "coding" "claude-opus-4-7")" \
+    "Interrupted: coding agent exited without recording a result - durable commits preserved${interrupted_head:+ at ${interrupted_head:0:7}}" \
+    "$interrupted_artifacts"
+  log_warn "$issue → Coding agent exited without a terminal result - marked interrupted (work preserved${interrupted_head:+ at ${interrupted_head:0:7}})"
+  set_window_attention_state "$win" "needs-user"
+}
+
+# HOK-3137: a coding stage stamped failed/interrupted by
+# coding_stage_owner_lost can still receive a genuine .coding-complete minutes
+# later, once the agent's background task finishes and it wakes up. Without
+# this, the `failed` branch (transient retry / quarantine) never looks at
+# `.coding-complete` again and the task parks at needs-user forever even
+# though the agent actually finished.
+#
+# Reconciling here flips the stage back to "running" so the existing
+# running+marker machinery (seam validation, dirty-handoff guard, completed
+# transition) advances it on the next tick — no duplicated handoff logic.
+# Returns 0 when reconciled (caller should count the task active and
+# return), 1 to fall through to the existing failed handling.
+coding_interrupted_late_completion_reconcile() {
+  local issue="$1" feature_dir="$2" worktree="$3" win="$4"
+  local result_file="$feature_dir/.coding-result.json"
+  local slug status termination_class finished_at finished_epoch marker_epoch
+  local marker_commit head dirty_paths verdict_cache cached_mtime seam_rc
+  local result_agent result_model
+
+  [[ -f "$result_file" ]] || return 1
+  status="$(jq -r '.status // empty' "$result_file" 2>/dev/null || true)"
+  [[ "$status" == "failed" ]] || return 1
+  termination_class="$(jq -r '.artifacts.terminationClass // empty' "$result_file" 2>/dev/null || true)"
+  [[ "$termination_class" == "interrupted" ]] || return 1
+
+  slug="$(basename "$feature_dir")"
+  recover_misplaced_coding_complete_marker "$issue" "$worktree" "$feature_dir" "$slug" || true
+  [[ -f "$feature_dir/.coding-complete" ]] || return 1
+
+  # [REQ-F2 edge] marker must be strictly newer than the interrupted stamp.
+  finished_at="$(jq -r '.finishedAt // empty' "$result_file" 2>/dev/null || true)"
+  [[ -n "$finished_at" ]] || return 1
+  finished_epoch="$(wavemill_iso8601_to_epoch "$finished_at" 2>/dev/null || true)"
+  [[ "$finished_epoch" =~ ^[0-9]+$ ]] || return 1
+  marker_epoch="$(portable_file_mtime_epoch "$feature_dir/.coding-complete" 2>/dev/null || true)"
+  [[ "$marker_epoch" =~ ^[0-9]+$ ]] || return 1
+  (( marker_epoch > finished_epoch )) || return 1
+
+  # [REQ-F2 edge] a dirty tree stays interrupted — HOK-3128's dirty-handoff
+  # machinery applies only to live/relaunched arms, not a reconciled one.
+  dirty_paths="$(coding_output_dirty_paths "$worktree" "$slug")"
+  [[ -z "$dirty_paths" ]] || return 1
+
+  # [REQ-F2 edge] an optional `commit` field must match HEAD (prefix match).
+  head="$(git -C "$worktree" rev-parse HEAD 2>/dev/null || true)"
+  marker_commit="$(jq -r '.commit // empty' "$feature_dir/.coding-complete" 2>/dev/null || true)"
+  if [[ -n "$marker_commit" ]]; then
+    blocked_completion_commit_matches_head "$marker_commit" "$head" || return 1
+  fi
+
+  # Seam validation spawns tsx; cache the verdict keyed by marker mtime so a
+  # permanently-invalid marker does not re-spawn the validator every tick.
+  verdict_cache="$feature_dir/.late-completion-reconcile.json"
+  cached_mtime=""
+  if [[ -f "$verdict_cache" ]]; then
+    cached_mtime="$(jq -r '.markerMtime // empty' "$verdict_cache" 2>/dev/null || true)"
+    if [[ "$cached_mtime" == "$marker_epoch" ]]; then
+      [[ "$(jq -r '.valid // false' "$verdict_cache" 2>/dev/null || echo false)" == "true" ]] || return 1
+    else
+      cached_mtime=""
     fi
   fi
-  [[ "$live_rc" -eq 1 ]] || return 1
+  if [[ -z "$cached_mtime" ]]; then
+    seam_rc=0
+    seam_validate_artifact coding-complete "$feature_dir/.coding-complete" --canonicalize || seam_rc=$?
+    local verdict_tmp
+    verdict_tmp="$(mktemp "$verdict_cache.tmp.XXXXXX" 2>/dev/null)" && {
+      jq -cn --arg mtime "$marker_epoch" --argjson valid "$([[ "$seam_rc" -eq 0 ]] && echo true || echo false)" \
+        '{markerMtime: $mtime, valid: $valid}' > "$verdict_tmp" 2>/dev/null \
+        && mv "$verdict_tmp" "$verdict_cache" 2>/dev/null || rm -f "$verdict_tmp"
+    }
+    [[ "$seam_rc" -eq 0 ]] || return 1
+  fi
+
+  result_agent="$(jq -r '.agent // empty' "$result_file" 2>/dev/null || true)"
+  result_model="$(jq -r '.model // empty' "$result_file" 2>/dev/null || true)"
+  log "status" "$issue → late_completion_reconciled: valid .coding-complete found after interrupted stamp (marker newer than finishedAt, tree clean)"
+  if declare -F wavemill_hook_write >/dev/null 2>&1; then
+    WAVEMILL_SESSION="$SESSION" WAVEMILL_ISSUE="$issue" \
+      wavemill_hook_write "working" "late_completion_reconciled" "late .coding-complete accepted after interrupted stamp" "wavemill" "" "monitor" || true
+  fi
+  write_stage_result "$feature_dir" "coding" "running" "$result_agent" "$result_model" \
+    "Reconciled: late .coding-complete accepted after interrupted stamp"
+  set_window_attention_state "$win" "clear"
   return 0
 }
 
@@ -18160,21 +18327,7 @@ monitor_issue_state() {
           # preserves the durable commits and names the recovery action.
           if [[ "$coding_status" == "running" ]] \
             && coding_stage_owner_lost "$ISSUE" "$FEATURE_DIR" "$WIN_TARGET"; then
-            local interrupted_head interrupted_artifacts
-            interrupted_head="$(git -C "${WORKTREE_ROOT}/${SLUG}" rev-parse HEAD 2>/dev/null || true)"
-            interrupted_artifacts="$(jq -cn --arg head "$interrupted_head" \
-              '{type: "coding",
-                terminationClass: "interrupted",
-                exitEvidence: "agent process exited without a terminal stage result (pane at shell prompt)",
-                lastDurableCommit: (if $head == "" then null else $head end),
-                validationState: "unknown",
-                recoveryAction: "Relaunch the coding phase to resume from the last durable commit, or push the branch and open a PR manually if the work is already complete."}')"
-            write_stage_result "$FEATURE_DIR" "coding" "failed" "$current_agent" \
-              "$(resolve_stage_result_model "$FEATURE_DIR" "coding" "claude-opus-4-7")" \
-              "Interrupted: coding agent exited without recording a result - durable commits preserved${interrupted_head:+ at ${interrupted_head:0:7}}" \
-              "$interrupted_artifacts"
-            log_warn "$ISSUE → Coding agent exited without a terminal result - marked interrupted (work preserved${interrupted_head:+ at ${interrupted_head:0:7}})"
-            set_window_attention_state "$WIN" "needs-user"
+            coding_stage_mark_interrupted "$ISSUE" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" "$WIN" "$current_agent"
             active_count=$((active_count + 1))
             return 0
           fi
@@ -18188,6 +18341,14 @@ monitor_issue_state() {
           fi
 
           if [[ "$coding_status" == "failed" ]]; then
+            # HOK-3137: a task stamped interrupted by coding_stage_owner_lost
+            # can still have written a genuine .coding-complete minutes later
+            # (its background task finished). Reconcile before falling into
+            # challenger retry/quarantine, which never looks at the marker.
+            if coding_interrupted_late_completion_reconcile "$ISSUE" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" "$WIN"; then
+              active_count=$((active_count + 1))
+              return 0
+            fi
             local coding_transient_rc=0
             maybe_retry_challenger_transient_phase "$ISSUE" "$FEATURE_DIR" "coding" "$WIN" || coding_transient_rc=$?
             if [[ "$coding_transient_rc" -eq 0 || "$coding_transient_rc" -eq 2 ]]; then
