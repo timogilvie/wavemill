@@ -158,6 +158,15 @@ export interface TaskProgress {
   terminalIdle: boolean;
   /** Non-progress liveness fact. `null` means "not probed". */
   agentProcessLive: boolean | null;
+  /**
+   * HOK-3137: whether a live substantive descendant of the agent (a
+   * background task) was found in the pane subtree. `null` means "not
+   * probed" (no `panePid` was supplied). NEVER a progress source
+   * (invariant 1) — it only suppresses `stalled` while the agent is idle.
+   */
+  agentBackgroundLive: boolean | null;
+  /** Bounded, log-safe evidence backing `agentBackgroundLive`. */
+  backgroundProcesses: { pid: number; command: string }[];
   stalled: boolean;
   stallMinutes: number;
   blockingPrompt?: BlockingPrompt | null;
@@ -199,6 +208,14 @@ export interface TaskProgressGatherOptions {
   paneText?: string;
   /** Optional pane-process liveness fact; not a progress source. */
   agentProcessLive?: boolean | null;
+  /**
+   * HOK-3137: optional pane-shell pid. When supplied, `gatherTaskProgressInputs`
+   * probes it for live background descendants (see `collectPaneBackgroundWork`).
+   * Absent → `agentBackgroundLive` is `null` ("not probed").
+   */
+  panePid?: number | null;
+  /** HOK-3137: override for the background-work start-lag threshold (seconds). */
+  backgroundWorkLagSeconds?: number;
   /** For gather IO: override the default `/tmp` hook path. */
   hookFilePath?: string;
   /** For gather IO: override the default status file path. */
@@ -234,6 +251,8 @@ export interface TaskProgressInputs {
     at?: string | null;
   };
   agentProcessLive: boolean | null;
+  /** HOK-3137: background-work probe result, or `null` when not probed. */
+  backgroundWork: AgentBackgroundWorkResult | null;
   blockingPrompt: BlockingPrompt | null;
 }
 
@@ -482,6 +501,212 @@ export function isWavemillControllerProcess(command: string): boolean {
   return WAVEMILL_CONTROLLER_PROCESS_REGEX.test(command);
 }
 
+// ── Background-work detection (HOK-3137) ─────────────────────────────────────
+//
+// An agent that launches a long-running background task (a test suite via
+// `run_in_background`, `sleep 30 &`, …) writes its Stop hook and goes idle
+// while that child is still running. Invariant 1 (pane/process existence is
+// never progress) still holds: a live descendant never becomes a progress
+// `source` or moves `lastProgressAt`. It only suppresses `stalled` while the
+// agent is idle (see `deriveTaskProgress`), so `coding_stage_owner_lost` stops
+// firing on a healthy agent that is waiting on its own work.
+//
+// The heuristic: build the pane-pid process subtree from one `ps` snapshot,
+// classify each process as controller / neutral (plain shells, tmux) /
+// substantive, and require a substantive descendant of a substantive ancestor
+// (the pane root counts as an ancestor) that started at least
+// `minChildLagSeconds` after that ancestor. The lag filter excludes
+// session-startup services (stdio MCP servers, IDE helpers) that start within
+// seconds of the agent; a background task is spawned mid-session. Controller
+// processes are never agent evidence (HOK-3101 invariant 2) and their
+// subtrees are excluded entirely. If the agent itself died, its children
+// reparent out of the pane subtree (or lose their substantive ancestor), so a
+// genuinely abandoned agent is still owner-lost-able.
+
+export interface PaneProcess {
+  pid: number;
+  ppid: number;
+  /** Seconds since the process started, or null if `ps` output was unparsable. */
+  etimeSeconds: number | null;
+  command: string;
+}
+
+export interface AgentBackgroundWorkResult {
+  live: boolean;
+  /** Bounded, log-safe evidence of the live substantive descendants found. */
+  processes: { pid: number; command: string }[];
+}
+
+const DEFAULT_BG_CHILD_LAG_SECONDS = 30;
+const BACKGROUND_EVIDENCE_LIMIT = 5;
+const BACKGROUND_COMMAND_TRUNCATE_LENGTH = 200;
+
+/** `ps etime` shapes: `ss`, `mm:ss`, `hh:mm:ss`, `dd-hh:mm:ss`. */
+function parseEtimeToSeconds(etime: string): number | null {
+  const trimmed = etime.trim();
+  const withDays = trimmed.match(/^(\d+)-(\d+):(\d+):(\d+)$/);
+  if (withDays) {
+    const [, d, h, m, s] = withDays.map(Number);
+    return ((d * 24 + h) * 60 + m) * 60 + s;
+  }
+  const parts = trimmed.split(':');
+  if (parts.length === 3 || parts.length === 2 || parts.length === 1) {
+    const nums = parts.map((p) => Number(p));
+    if (nums.some((n) => !Number.isFinite(n))) return null;
+    return nums.reduce((acc, n) => acc * 60 + n, 0);
+  }
+  return null;
+}
+
+/**
+ * Parse `ps -axo pid=,ppid=,etime=,command=` output. Pure; tolerant of
+ * unparsable rows (skipped, never thrown).
+ */
+export function parsePsSnapshot(psOutput: string): PaneProcess[] {
+  const result: PaneProcess[] = [];
+  for (const rawLine of psOutput.split('\n')) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const match = line.match(/^(\d+)\s+(\d+)\s+(\S+)\s*(.*)$/);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    const ppid = Number(match[2]);
+    if (!Number.isFinite(pid) || !Number.isFinite(ppid)) continue;
+    result.push({
+      pid,
+      ppid,
+      etimeSeconds: parseEtimeToSeconds(match[3]),
+      command: match[4].trim(),
+    });
+  }
+  return result;
+}
+
+const NEUTRAL_PROCESS_BASENAME_REGEX = /^-?(sh|bash|zsh|dash|fish|tmux)$/;
+
+function isNeutralProcessCommand(command: string): boolean {
+  const firstToken = command.trim().split(/\s+/)[0] ?? '';
+  const basename = firstToken.split('/').pop() ?? '';
+  return NEUTRAL_PROCESS_BASENAME_REGEX.test(basename);
+}
+
+type PaneProcessClass = 'controller' | 'neutral' | 'substantive';
+
+function classifyPaneProcess(command: string): PaneProcessClass {
+  if (isWavemillControllerProcess(command)) return 'controller';
+  if (isNeutralProcessCommand(command)) return 'neutral';
+  return 'substantive';
+}
+
+/**
+ * Pure derivation of D2 (process-tree heuristic) over one `ps` snapshot.
+ * `panePid` is the root of the subtree to inspect (the pane's shell, or the
+ * agent itself when it is the pane root).
+ */
+export function deriveAgentBackgroundWork(
+  processes: PaneProcess[],
+  panePid: number,
+  opts: { minChildLagSeconds?: number } = {},
+): AgentBackgroundWorkResult {
+  const minChildLagSeconds = opts.minChildLagSeconds ?? DEFAULT_BG_CHILD_LAG_SECONDS;
+
+  const byPid = new Map<number, PaneProcess>();
+  for (const p of processes) byPid.set(p.pid, p);
+  const childrenByPpid = new Map<number, PaneProcess[]>();
+  for (const p of processes) {
+    const list = childrenByPpid.get(p.ppid) ?? [];
+    list.push(p);
+    childrenByPpid.set(p.ppid, list);
+  }
+
+  const root = byPid.get(panePid);
+  if (!root) return { live: false, processes: [] };
+
+  // BFS the subtree reachable from panePid (inclusive).
+  const visited = new Set<number>();
+  const subtree: PaneProcess[] = [];
+  const queue: number[] = [panePid];
+  while (queue.length > 0) {
+    const pid = queue.shift()!;
+    if (visited.has(pid)) continue;
+    visited.add(pid);
+    const proc = byPid.get(pid);
+    if (!proc) continue;
+    subtree.push(proc);
+    for (const child of childrenByPpid.get(pid) ?? []) {
+      if (!visited.has(child.pid)) queue.push(child.pid);
+    }
+  }
+
+  const classOf = new Map<number, PaneProcessClass>();
+  for (const p of subtree) classOf.set(p.pid, classifyPaneProcess(p.command));
+
+  // Walk up from `proc`'s parent, skipping neutral processes, looking for a
+  // substantive ancestor within the subtree. A controller ancestor halts the
+  // walk (invariant 2: controller writes/processes are never agent evidence).
+  function findSubstantiveAncestor(proc: PaneProcess): PaneProcess | null {
+    let cur = byPid.get(proc.ppid);
+    while (cur && visited.has(cur.pid)) {
+      const cls = classOf.get(cur.pid);
+      if (cls === 'controller') return null;
+      if (cls === 'substantive') return cur;
+      if (cur.pid === cur.ppid) break;
+      cur = byPid.get(cur.ppid);
+    }
+    return null;
+  }
+
+  const evidence: { pid: number; command: string }[] = [];
+  let live = false;
+  for (const proc of subtree) {
+    if (proc.pid === panePid) continue; // the pane root is never "P" itself
+    if (classOf.get(proc.pid) !== 'substantive') continue;
+    const ancestor = findSubstantiveAncestor(proc);
+    if (!ancestor) continue;
+    if (ancestor.etimeSeconds === null || proc.etimeSeconds === null) continue;
+    const lagSeconds = ancestor.etimeSeconds - proc.etimeSeconds;
+    if (lagSeconds < minChildLagSeconds) continue;
+    live = true;
+    if (evidence.length < BACKGROUND_EVIDENCE_LIMIT) {
+      evidence.push({ pid: proc.pid, command: proc.command.slice(0, BACKGROUND_COMMAND_TRUNCATE_LENGTH) });
+    }
+  }
+
+  return { live, processes: evidence };
+}
+
+function resolveMinChildLagSeconds(override?: number): number {
+  if (typeof override === 'number' && Number.isFinite(override) && override >= 0) return override;
+  const envVal = process.env.WAVEMILL_BG_CHILD_LAG_SECONDS;
+  if (envVal !== undefined) {
+    const parsed = Number.parseFloat(envVal);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return DEFAULT_BG_CHILD_LAG_SECONDS;
+}
+
+/**
+ * IO: snapshot `ps` once and derive background-work evidence for `panePid`.
+ * Fail-safe: any error (missing `ps`, unparsable output) returns `null`
+ * ("not probed"), never throws.
+ */
+export function collectPaneBackgroundWork(
+  panePid: number,
+  opts: { minChildLagSeconds?: number } = {},
+): AgentBackgroundWorkResult | null {
+  if (!Number.isFinite(panePid) || panePid <= 0) return null;
+  const psOutput = safeExecFile('ps', ['-axo', 'pid=,ppid=,etime=,command=']);
+  if (psOutput === null) return null;
+  try {
+    const processes = parsePsSnapshot(psOutput);
+    return deriveAgentBackgroundWork(processes, panePid, {
+      minChildLagSeconds: resolveMinChildLagSeconds(opts.minChildLagSeconds),
+    });
+  } catch {
+    return null;
+  }
+}
+
 // ── Pure derivation ──────────────────────────────────────────────────────────
 
 const DEFAULT_STALL_MINUTES = 30;
@@ -603,7 +828,15 @@ export function deriveTaskProgress(
     && ['waiting', 'approval-needed', 'blocked', 'policy-denied'].includes(agentStateFresh);
   const overThreshold = progressAgeMinutes !== null && progressAgeMinutes > stallMinutes;
 
-  const stalled = !terminal && overThreshold && !suppressedState;
+  // HOK-3137: an idle agent with a live background task is not stalled — it
+  // is waiting on its own work, not abandoned. Scoped to `agentIdle` so
+  // non-idle stall detection (HOK-3069) is unaffected, and process existence
+  // still never becomes a progress source (invariant 1: no new source kind,
+  // no lastProgressAt contribution above).
+  const agentBackgroundLive = inputs.backgroundWork ? inputs.backgroundWork.live : null;
+  const backgroundWorkSuppresses = agentIdle && agentBackgroundLive === true;
+
+  const stalled = !terminal && overThreshold && !suppressedState && !backgroundWorkSuppresses;
 
   return {
     issue: inputs.issue,
@@ -618,6 +851,8 @@ export function deriveTaskProgress(
     terminal,
     terminalIdle,
     agentProcessLive: inputs.agentProcessLive,
+    agentBackgroundLive,
+    backgroundProcesses: inputs.backgroundWork?.processes ?? [],
     stalled,
     stallMinutes,
     blockingPrompt: inputs.blockingPrompt,
@@ -859,6 +1094,10 @@ export function gatherTaskProgressInputs(opts: TaskProgressGatherOptions): TaskP
 
   const blockingPrompt = matchBlockingPromptFromPaneText(opts.paneText);
 
+  const backgroundWork = opts.panePid != null
+    ? collectPaneBackgroundWork(opts.panePid, { minChildLagSeconds: opts.backgroundWorkLagSeconds })
+    : null;
+
   return {
     issue: opts.issue,
     hookFile,
@@ -876,6 +1115,7 @@ export function gatherTaskProgressInputs(opts: TaskProgressGatherOptions): TaskP
       at: terminalAt,
     },
     agentProcessLive: opts.agentProcessLive ?? null,
+    backgroundWork,
     blockingPrompt,
   };
 }
