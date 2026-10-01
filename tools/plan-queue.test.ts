@@ -29,6 +29,98 @@ function parseJson(stdout: string) {
   };
 }
 
+type MockClassifierAction = { text: string } | { fail: string } | { sleepMs: number };
+
+/**
+ * Write a mock `claude` CLI that logs each `--model` it is invoked with and
+ * answers per model (falling back to `default`) with the CLI's JSON envelope.
+ */
+function writeMockClassifier(
+  tempDir: string,
+  actions: Record<string, MockClassifierAction>,
+): { cliPath: string; logPath: string } {
+  const cliPath = join(tempDir, 'mock-classifier.mjs');
+  const logPath = join(tempDir, 'classifier.log');
+  writeFileSync(
+    cliPath,
+    `#!/usr/bin/env node
+import { appendFileSync } from 'node:fs';
+const actions = ${JSON.stringify(actions)};
+const args = process.argv.slice(2);
+const modelIndex = args.indexOf('--model');
+const model = modelIndex >= 0 ? args[modelIndex + 1] : '(default)';
+appendFileSync(${JSON.stringify(logPath)}, model + '\\n');
+process.stdin.resume();
+process.stdin.on('end', () => {
+  const action = actions[model] ?? actions.default ?? { fail: 'no mock action' };
+  if ('sleepMs' in action) {
+    setTimeout(() => { process.stderr.write('too slow\\n'); process.exit(1); }, action.sleepMs);
+    return;
+  }
+  if ('fail' in action) {
+    process.stderr.write(action.fail + '\\n');
+    process.exit(1);
+  }
+  process.stdout.write(JSON.stringify({ result: action.text }));
+});
+`,
+    'utf8',
+  );
+  chmodSync(cliPath, 0o755);
+  return { cliPath, logPath };
+}
+
+function readInvokedModels(logPath: string): string[] {
+  return existsSync(logPath) ? readFileSync(logPath, 'utf8').split('\n').filter(Boolean) : [];
+}
+
+function readCache(tempDir: string, cacheKey: string) {
+  return JSON.parse(
+    readFileSync(join(tempDir, '.wavemill', 'cache', 'task-dependency-plans', `${cacheKey}.json`), 'utf8'),
+  ) as {
+    fingerprints: Record<string, string>;
+    edges: Array<{ from: string; to: string }>;
+    inference?: {
+      lastAttemptAt: string | null;
+      lastSuccessAt: string | null;
+      lastOutcome: 'ok' | 'failed' | null;
+      lastModel: string | null;
+      consecutiveFailures: number;
+    };
+  };
+}
+
+function readReport(path: string) {
+  return JSON.parse(readFileSync(path, 'utf8')) as {
+    inferenceStatus: string;
+    inferredEdgeCount: number;
+    attempted: boolean;
+    refreshKind: string;
+    skipReason: string | null;
+    model: string | null;
+    error: string | null;
+  };
+}
+
+/** An obvious producer/consumer pair with no explicit Linear relation. */
+const obviousPairBacklog = [
+  { id: 'HOK-1', title: 'Add queue API', state: 'Todo', labels: ['queue'], blocks: [] },
+  { id: 'HOK-2', title: 'Consume queue API in dashboard', state: 'Todo', labels: ['queue'], blocks: [] },
+];
+
+const MILL_ENV = { ANTHROPIC_API_KEY: '', ANTHROPIC_BASE_URL: '' };
+
+function millPlanArgs(backlogPath: string, cacheKey: string, reportPath: string, deadlineOffsetMs = 30_000): string[] {
+  return [
+    '--backlog-file', backlogPath,
+    '--cache-key', cacheKey,
+    '--refresh-missing-cache',
+    '--queue-classifier-deadline-ms', String(Date.now() + deadlineOffsetMs),
+    '--inference-report-file', reportPath,
+    '--json',
+  ];
+}
+
 describe('plan-queue CLI', () => {
   it('emits queuePlan JSON from a backlog file', () => {
     const stdout = execFileSync('npx', ['tsx', planQueueTool, '--backlog-file', fixture, '--json'], {
@@ -263,37 +355,17 @@ describe('plan-queue CLI', () => {
         { id: 'HOK-2', title: 'Dependent', state: 'Todo', labels: [], blocks: [], dependsOn: ['HOK-1'] },
       ];
       const backlogPath = join(tempDir, 'backlog.json');
+      const reportPath = join(tempDir, 'report.json');
       writeFileSync(backlogPath, `${JSON.stringify(backlog, null, 2)}\n`, 'utf8');
-
-      const cliLog = join(tempDir, 'classifier.log');
-      const cliPath = join(tempDir, 'slow-classifier.sh');
-      writeFileSync(
-        cliPath,
-        `#!/usr/bin/env bash
-printf '%s\\n' "$*" >> "${cliLog}"
-sleep 10
-printf 'too slow\\n' >&2
-exit 1
-`,
-        'utf8',
-      );
-      chmodSync(cliPath, 0o755);
+      const { cliPath, logPath } = writeMockClassifier(tempDir, { default: { sleepMs: 20_000 } });
 
       const result = runPlanQueue(
-        [
-          '--backlog-file', backlogPath,
-          '--cache-key', 'classifier-budget',
-          '--refresh-missing-cache',
-          '--queue-classifier-deadline-ms', String(Date.now() + 30_000),
-          '--json',
-        ],
+        // Wide enough that tsx startup under a loaded CI host still leaves a
+        // real attempt; the 20s mock sleep outlasts it either way.
+        millPlanArgs(backlogPath, 'classifier-budget', reportPath, 15_000),
         undefined,
         tempDir,
-        {
-          CLAUDE_CMD: cliPath,
-          ANTHROPIC_API_KEY: '',
-          DEEPSEEK_API_KEY: 'test-deepseek-key',
-        },
+        { ...MILL_ENV, CLAUDE_CMD: cliPath, DEEPSEEK_API_KEY: 'test-deepseek-key' },
       );
 
       assert.equal(result.status, 0);
@@ -304,8 +376,249 @@ exit 1
         needsTriage: [],
       });
       assert.match(result.stderr, /initial refresh failed, falling back to cached edges/);
-      assert.match(result.stderr, /unavailable \(timeout\)/);
-      assert.deepEqual(readFileSync(cliLog, 'utf8').trim().split('\n').filter(Boolean).length, 1);
+      assert.match(result.stderr, /unavailable \(timeout\)|deadline exhausted before claude-/);
+      assert.doesNotMatch(result.stderr, /missing ANTHROPIC_API_KEY/);
+      const invoked = readInvokedModels(logPath);
+      assert.ok(invoked.length >= 1);
+      assert.ok(invoked.every((model) => model.startsWith('claude-')), `unexpected invocations: ${invoked.join(',')}`);
+      assert.ok(!invoked.includes('deepseek-v4-flash'));
+
+      const report = readReport(reportPath);
+      assert.equal(report.inferenceStatus, 'failed');
+      assert.equal(report.inferredEdgeCount, 0);
+      assert.equal(report.attempted, true);
+      assert.equal(report.refreshKind, 'full');
+      assert.ok(report.error);
+      assert.equal(readCache(tempDir, 'classifier-budget').inference?.lastOutcome, 'failed');
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('infers an obvious dependency pair under mill conditions without ANTHROPIC_API_KEY (HOK-3130)', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'plan-queue-obvious-pair-test-'));
+    try {
+      const backlogPath = join(tempDir, 'backlog.json');
+      const reportPath = join(tempDir, 'report.json');
+      writeFileSync(backlogPath, `${JSON.stringify(obviousPairBacklog, null, 2)}\n`, 'utf8');
+      const { cliPath, logPath } = writeMockClassifier(tempDir, {
+        default: {
+          text: JSON.stringify({
+            edges: [{ from: 'HOK-1', to: 'HOK-2', type: 'depends_on', reason: 'dashboard consumes the new queue API' }],
+          }),
+        },
+      });
+
+      const result = runPlanQueue(
+        millPlanArgs(backlogPath, 'obvious-pair', reportPath),
+        undefined,
+        tempDir,
+        { ...MILL_ENV, CLAUDE_CMD: cliPath },
+      );
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(parseJson(result.stdout).queuedAfterDependencies, [{ taskId: 'HOK-2', ancestors: ['HOK-1'] }]);
+      assert.deepEqual(readInvokedModels(logPath), ['claude-haiku-4-5-20251001']);
+
+      const cache = readCache(tempDir, 'obvious-pair');
+      assert.equal(cache.edges.length, 1);
+      assert.equal(cache.inference?.lastOutcome, 'ok');
+      assert.equal(cache.inference?.lastModel, 'claude-haiku-4-5-20251001');
+      assert.deepEqual(Object.keys(cache.fingerprints).sort(), ['HOK-1', 'HOK-2']);
+
+      const report = readReport(reportPath);
+      assert.equal(report.inferenceStatus, 'ok');
+      assert.equal(report.inferredEdgeCount, 1);
+      assert.equal(report.model, 'claude-haiku-4-5-20251001');
+      assert.equal(report.refreshKind, 'full');
+      assert.equal(report.error, null);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('treats an explicit empty edge list as a successful inference', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'plan-queue-empty-edges-test-'));
+    try {
+      const backlogPath = join(tempDir, 'backlog.json');
+      const reportPath = join(tempDir, 'report.json');
+      writeFileSync(backlogPath, `${JSON.stringify(obviousPairBacklog, null, 2)}\n`, 'utf8');
+      const { cliPath } = writeMockClassifier(tempDir, { default: { text: '{"edges":[]}' } });
+
+      const result = runPlanQueue(
+        millPlanArgs(backlogPath, 'empty-edges', reportPath),
+        undefined,
+        tempDir,
+        { ...MILL_ENV, CLAUDE_CMD: cliPath },
+      );
+
+      assert.equal(result.status, 0, result.stderr);
+      const report = readReport(reportPath);
+      assert.equal(report.inferenceStatus, 'ok');
+      assert.equal(report.inferredEdgeCount, 0);
+      assert.equal(report.attempted, true);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not advance fingerprints for tasks a failed refresh never classified, and retries after cooldown', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'plan-queue-failed-partial-test-'));
+    try {
+      const { computeTaskFingerprint } = await import('../shared/lib/task-dependency-plan-cache.ts');
+      const backlog = [
+        ...obviousPairBacklog,
+        { id: 'HOK-3', title: 'Unrelated docs', state: 'Todo', labels: ['docs'], blocks: [] },
+      ];
+      const previousFingerprints = Object.fromEntries(backlog.map((task) => [task.id, computeTaskFingerprint(task)]));
+      const changedBacklog = backlog.map((task) => (
+        task.id === 'HOK-2' ? { ...task, title: 'Consume queue API in dashboard and CLI' } : task
+      ));
+      const backlogPath = join(tempDir, 'backlog.json');
+      const reportPath = join(tempDir, 'report.json');
+      writeFileSync(backlogPath, `${JSON.stringify(changedBacklog, null, 2)}\n`, 'utf8');
+
+      const cacheDir = join(tempDir, '.wavemill', 'cache', 'task-dependency-plans');
+      mkdirSync(cacheDir, { recursive: true });
+      const recentSuccess = new Date(Date.now() - 60_000).toISOString();
+      writeFileSync(join(cacheDir, 'failed-partial.json'), `${JSON.stringify({
+        schemaVersion: 1,
+        projectSlug: 'failed-partial',
+        updatedAt: recentSuccess,
+        fingerprints: previousFingerprints,
+        edges: [],
+        inference: {
+          lastAttemptAt: recentSuccess,
+          lastSuccessAt: recentSuccess,
+          lastOutcome: 'ok',
+          lastModel: 'claude-haiku-4-5-20251001',
+          lastError: null,
+          consecutiveFailures: 0,
+        },
+      })}\n`, 'utf8');
+
+      const failing = writeMockClassifier(tempDir, { default: { fail: '500 server_error overloaded' } });
+      const failed = runPlanQueue(
+        millPlanArgs(backlogPath, 'failed-partial', reportPath),
+        undefined,
+        tempDir,
+        { ...MILL_ENV, CLAUDE_CMD: failing.cliPath },
+      );
+      assert.equal(failed.status, 0, failed.stderr);
+      assert.match(failed.stderr, /partial refresh failed, falling back to cached edges/);
+
+      const afterFailure = readCache(tempDir, 'failed-partial');
+      assert.equal(afterFailure.fingerprints['HOK-2'], previousFingerprints['HOK-2']);
+      assert.equal(afterFailure.inference?.lastOutcome, 'failed');
+      assert.equal(afterFailure.inference?.consecutiveFailures, 1);
+      assert.equal(readReport(reportPath).inferenceStatus, 'failed');
+      assert.equal(readReport(reportPath).refreshKind, 'partial');
+
+      // Within the cooldown: no classifier call, fingerprints still held back.
+      rmSync(failing.logPath, { force: true });
+      const cooling = runPlanQueue(
+        millPlanArgs(backlogPath, 'failed-partial', reportPath),
+        undefined,
+        tempDir,
+        { ...MILL_ENV, CLAUDE_CMD: failing.cliPath },
+      );
+      assert.equal(cooling.status, 0, cooling.stderr);
+      assert.deepEqual(readInvokedModels(failing.logPath), []);
+      const coolingReport = readReport(reportPath);
+      assert.equal(coolingReport.inferenceStatus, 'failed');
+      assert.equal(coolingReport.skipReason, 'cooldown');
+      assert.equal(coolingReport.attempted, false);
+      assert.equal(readCache(tempDir, 'failed-partial').fingerprints['HOK-2'], previousFingerprints['HOK-2']);
+
+      // Backdate the failed attempt past the cooldown, then succeed.
+      const cachePath = join(cacheDir, 'failed-partial.json');
+      const stored = JSON.parse(readFileSync(cachePath, 'utf8'));
+      stored.inference.lastAttemptAt = new Date(Date.now() - 11 * 60_000).toISOString();
+      writeFileSync(cachePath, `${JSON.stringify(stored)}\n`, 'utf8');
+
+      const succeeding = writeMockClassifier(tempDir, {
+        default: { text: JSON.stringify({ edges: [{ from: 'HOK-1', to: 'HOK-2', type: 'depends_on' }] }) },
+      });
+      const retried = runPlanQueue(
+        millPlanArgs(backlogPath, 'failed-partial', reportPath),
+        undefined,
+        tempDir,
+        { ...MILL_ENV, CLAUDE_CMD: succeeding.cliPath },
+      );
+      assert.equal(retried.status, 0, retried.stderr);
+      assert.deepEqual(readInvokedModels(succeeding.logPath), ['claude-haiku-4-5-20251001']);
+      const afterRetry = readCache(tempDir, 'failed-partial');
+      assert.equal(afterRetry.fingerprints['HOK-2'], computeTaskFingerprint(changedBacklog[1]));
+      assert.equal(afterRetry.inference?.lastOutcome, 'ok');
+      assert.equal(afterRetry.inference?.consecutiveFailures, 0);
+      assert.deepEqual(parseJson(retried.stdout).queuedAfterDependencies, [{ taskId: 'HOK-2', ancestors: ['HOK-1'] }]);
+      assert.equal(readReport(reportPath).inferenceStatus, 'ok');
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('self-heals a cache whose fingerprints advanced without inference ever succeeding', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'plan-queue-poisoned-cache-test-'));
+    try {
+      const { computeTaskFingerprint } = await import('../shared/lib/task-dependency-plan-cache.ts');
+      const backlogPath = join(tempDir, 'backlog.json');
+      const reportPath = join(tempDir, 'report.json');
+      writeFileSync(backlogPath, `${JSON.stringify(obviousPairBacklog, null, 2)}\n`, 'utf8');
+      const cacheDir = join(tempDir, '.wavemill', 'cache', 'task-dependency-plans');
+      mkdirSync(cacheDir, { recursive: true });
+      // Shape of the pre-HOK-3130 poisoned cache: every task fingerprinted, no edges, no inference block.
+      writeFileSync(join(cacheDir, 'poisoned.json'), `${JSON.stringify({
+        schemaVersion: 1,
+        projectSlug: 'poisoned',
+        updatedAt: '2026-09-30T00:00:00.000Z',
+        fingerprints: Object.fromEntries(obviousPairBacklog.map((task) => [task.id, computeTaskFingerprint(task)])),
+        edges: [],
+      })}\n`, 'utf8');
+      const { cliPath, logPath } = writeMockClassifier(tempDir, {
+        default: { text: JSON.stringify({ edges: [{ from: 'HOK-1', to: 'HOK-2', type: 'depends_on' }] }) },
+      });
+
+      const result = runPlanQueue(
+        millPlanArgs(backlogPath, 'poisoned', reportPath),
+        undefined,
+        tempDir,
+        { ...MILL_ENV, CLAUDE_CMD: cliPath },
+      );
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(readInvokedModels(logPath), ['claude-haiku-4-5-20251001']);
+      const report = readReport(reportPath);
+      assert.equal(report.refreshKind, 'full');
+      assert.equal(report.inferenceStatus, 'ok');
+      assert.equal(report.inferredEdgeCount, 1);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('persists an initial-refresh failure so the next poll is held by the cooldown', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'plan-queue-initial-failure-test-'));
+    try {
+      const backlogPath = join(tempDir, 'backlog.json');
+      const reportPath = join(tempDir, 'report.json');
+      writeFileSync(backlogPath, `${JSON.stringify(obviousPairBacklog, null, 2)}\n`, 'utf8');
+      const { cliPath, logPath } = writeMockClassifier(tempDir, { default: { fail: '500 server_error overloaded' } });
+      const env = { ...MILL_ENV, CLAUDE_CMD: cliPath };
+
+      const first = runPlanQueue(millPlanArgs(backlogPath, 'initial-failure', reportPath), undefined, tempDir, env);
+      assert.equal(first.status, 0, first.stderr);
+      assert.ok(readInvokedModels(logPath).length > 0);
+      const cache = readCache(tempDir, 'initial-failure');
+      assert.deepEqual(cache.fingerprints, {});
+      assert.equal(cache.inference?.lastOutcome, 'failed');
+
+      rmSync(logPath, { force: true });
+      const second = runPlanQueue(millPlanArgs(backlogPath, 'initial-failure', reportPath), undefined, tempDir, env);
+      assert.equal(second.status, 0, second.stderr);
+      assert.deepEqual(readInvokedModels(logPath), []);
+      assert.equal(readReport(reportPath).skipReason, 'cooldown');
+      assert.equal(readReport(reportPath).inferenceStatus, 'failed');
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }

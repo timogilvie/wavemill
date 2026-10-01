@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Stay hermetic inside a mill session: an inherited PROJECT_NAME switches
+# build_queue_plan_once to the cached/classifier path (HOK-3130), which would
+# call a real LLM and write the repo's task-dependency cache.
+unset PROJECT_NAME
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MILL_SCRIPT="$REPO_DIR/shared/lib/wavemill-mill.sh"
@@ -207,10 +212,15 @@ test_fetch_queue_plan_transforms_linear_backlog() {
 
 test_backlog_refresh_persists_cache_in_parent_shell() {
   local output
-  output=$(FUNCTIONS_FILE="$FUNCTIONS_FILE" REPO_DIR="$REPO_DIR" LINEAR_BACKLOG_JSON="$LINEAR_BACKLOG_JSON" bash -lc '
+  # PROJECT_NAME below selects the cached/classifier planner path. Run it from a
+  # scratch cwd with a stubbed classifier so the test never calls a real LLM or
+  # writes the repo's .wavemill task-dependency cache (HOK-3130).
+  output=$(FUNCTIONS_FILE="$FUNCTIONS_FILE" REPO_DIR="$REPO_DIR" LINEAR_BACKLOG_JSON="$LINEAR_BACKLOG_JSON" \
+    SCRATCH_DIR="$TEST_TMP" CLAUDE_CMD=false bash -lc '
     set -euo pipefail
     # shellcheck source=/dev/null
     source "$FUNCTIONS_FILE"
+    cd "$SCRATCH_DIR"
     BACKLOG_CACHE_TTL=60
     BACKLOG_CACHE=""
     BACKLOG_JSON_CACHE=""

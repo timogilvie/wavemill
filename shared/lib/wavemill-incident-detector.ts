@@ -298,8 +298,17 @@ export class DependencyHealthDetector {
     const queueHealth = readObjectFile(queueHealthPath);
     if (queueHealth?.status === 'degraded') {
       const reason = stringField(queueHealth.degradationReason) ?? 'dependency_planning_failed';
-      const diagnostic = diagnosticReason(queueHealth) ?? reason;
-      const failureCount = numberField(queueHealth.failureCount) ?? 1;
+      // HOK-3130: inference_unavailable is recorded on a *successful* planner
+      // run, so the planner failureCount stays 0; repetition lives in the
+      // inference block instead.
+      const inferenceUnavailable = reason === 'inference_unavailable';
+      const inference = objectField(queueHealth.inference);
+      const diagnostic = inferenceUnavailable
+        ? stringField(inference?.error) ?? `inference_${stringField(queueHealth.inferenceStatus) ?? 'unknown'}`
+        : diagnosticReason(queueHealth) ?? reason;
+      const failureCount = inferenceUnavailable
+        ? Math.max(1, numberField(inference?.consecutiveFailures) ?? 1)
+        : numberField(queueHealth.failureCount) ?? 1;
       const classified = canonicalizeRootCauseClass(diagnostic);
       // An unclassifiable degradation diagnostic is still a known local
       // condition of the queue planner, not free text.
@@ -313,7 +322,9 @@ export class DependencyHealthDetector {
         lifecycle: 'observed',
         rootCauseClass,
         summary: `Queue planner fallback is active: ${reason}.`,
-        operatorAction: 'Inspect queue-health diagnostics and dependency planner inputs; fallback is acceptable briefly but should not persist.',
+        operatorAction: inferenceUnavailable
+          ? 'Queue dependency inference is not answering; the wave uses explicit Linear relations only. Check the [classifier] lines in the mill log and the Claude CLI login, then the inference block in queue-health.json.'
+          : 'Inspect queue-health diagnostics and dependency planner inputs; fallback is acceptable briefly but should not persist.',
         evidence: [{
           type: 'backstage_health',
           source: queueHealthPath,

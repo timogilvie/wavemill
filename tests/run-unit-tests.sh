@@ -273,6 +273,7 @@ TESTS=(
   shared/lib/eval-validator.test.ts
   shared/lib/eval-rejected-store.test.ts
   shared/lib/task-dependency-plan-cache.test.ts
+  shared/lib/queue-inference-status.test.ts
   shared/lib/task-dependency-planner.test.ts
   shared/lib/plan-queue-utils.test.ts
   shared/lib/scaffold-migrate-dryrun.test.ts
