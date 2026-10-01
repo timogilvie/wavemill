@@ -221,7 +221,11 @@ The resolver returns a small object per session:
 The rules:
 
 - `tend` is `integration.enabled && useMillSession !== false`.
-- `observer` is `tend && observer.enabled === true`.
+- `observer` is `observer.enabled !== false`: on by default in every mill
+  session, independent of tend and integration (HOK-3094). An observer-only
+  session still gets a backstage window (observer + status panes, no tend pane),
+  and the monitor restarts the observer — recreating the window if needed —
+  without tend.
 - `mergeExecutor` is `tend` when tend is running; `none` when `integration.enabled`
   is true but `useMillSession` is false; `operator` otherwise (integration off —
   the HOK-3093 default).

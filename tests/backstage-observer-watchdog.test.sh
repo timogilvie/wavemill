@@ -83,11 +83,26 @@ LAST_BACKSTAGE_OBSERVER_HEALTH_CHECK=0
 LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS=""
 
 observer_health_enabled() { return 0; }
+TEND_ENABLED=true
+backstage_health_enabled() { [[ "$TEND_ENABLED" == "true" ]]; }
 wavemill_load_config() { printf '{"observer":{"enabled":true,"intervalSeconds":5,"heartbeatStaleSeconds":30,"maxLogLines":25}}\n'; }
 probe_backstage_panes() { cat "$PANE_FILE"; }
 log() { printf 'LOG %s\n' "$*" >> "$LOG_FILE"; }
 log_warn() { printf 'WARN %s\n' "$*" >> "$LOG_FILE"; }
-tmux() { return 0; }
+TMUX_LOG="$TMP_DIR/tmux.txt"
+: > "$TMUX_LOG"
+tmux() {
+  printf '%s\n' "$*" >> "$TMUX_LOG"
+  case "$1" in
+    list-panes) [[ -s "$PANE_FILE" ]] ;;
+    new-window)
+      printf '%%9\tWavemill Observer\t0\tnode\tnpx tsx tools/observer.ts --loop\n' > "$PANE_FILE"
+      ;;
+    display-message) printf '%%9\n' ;;
+    *) return 0 ;;
+  esac
+}
+wavemill_set_tmux_pane_title() { return 0; }
 
 wavemill_reconcile_backstage_service_pane() {
   local session="$1" window="$2" title="$3" _command="$4" mode="$5" target="$6"
@@ -138,5 +153,22 @@ LAST_BACKSTAGE_OBSERVER_HEALTH_CHECK=0
 check_backstage_observer_health
 assert_eq "missing status" "backstage-missing" "$(jq -r '.services.observer.status' "$HEALTH_FILE")"
 assert_eq "missing instance count" "0" "$(jq -r '.services.observer.instanceCount' "$HEALTH_FILE")"
+assert_eq "missing window with tend on is not recreated by observer" "0" "$(grep -c '^new-window' "$TMUX_LOG" || true)"
+
+# HOK-3094: with tend off the observer owns the backstage window, so a missing
+# window goes through the restart flow, which recreates it with the observer.
+TEND_ENABLED=false
+LAST_BACKSTAGE_OBSERVER_HEALTH_CHECK=0
+LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS=""
+rm -f "$HEALTH_FILE"
+: > "$PANE_FILE"
+: > "$TMUX_LOG"
+: > "$RECONCILE_LOG"
+check_backstage_observer_health
+assert_eq "tend-off missing window recreated" "1" "$(grep -c '^new-window' "$TMUX_LOG" || true)"
+assert_contains "tend-off new window runs observer" "$(cat "$TMUX_LOG")" "tools/observer.ts"
+assert_eq "tend-off restart does not split" "0" "$(wc -l < "$RECONCILE_LOG" | tr -d ' ')"
+assert_eq "tend-off observer healthy after restart" "healthy" "$(jq -r '.services.observer.status' "$HEALTH_FILE")"
+assert_eq "tend-off observer pane recorded" "%9" "$(jq -r '.services.observer.paneId' "$HEALTH_FILE")"
 
 echo "backstage observer watchdog tests passed"

@@ -98,6 +98,10 @@ cat > "$TEST_REPO/.wavemill-config.json" <<'EOF'
 }
 EOF
 
+# The fake npx cannot run the real resolver; pin the capabilities this
+# config resolves to (HOK-3102 test override).
+export WAVEMILL_SESSION_CAPABILITIES_JSON='{"tend":true,"observer":true,"mergeExecutor":"tend","mergeQueue":true}'
+
 startup_log() { printf '%s\n' "$*" >> "$STATUS_LOG_FILE"; }
 log_warn() { printf 'WARN %s\n' "$*" >> "$STATUS_LOG_FILE"; }
 log() { shift || true; printf '%s\n' "$*" >> "$STATUS_LOG_FILE"; }

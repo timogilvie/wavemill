@@ -1706,8 +1706,15 @@ render_inbox_section() {
   done
 }
 
+# HOK-3094: incidents belong to the milled repo, whose state dir is the one
+# holding STATE_FILE — never the wavemill install dir (WAVEMILL_REPO_DIR).
 wavemill_incident_index_path() {
-  printf '%s\n' "${WAVEMILL_INCIDENT_INDEX_OVERRIDE:-$WAVEMILL_REPO_DIR/.wavemill/incidents/index.json}"
+  if [[ -n "${WAVEMILL_INCIDENT_INDEX_OVERRIDE:-}" ]]; then
+    printf '%s\n' "$WAVEMILL_INCIDENT_INDEX_OVERRIDE"
+    return 0
+  fi
+  [[ -n "${STATE_FILE:-}" ]] || return 1
+  printf '%s\n' "$(dirname "$STATE_FILE")/incidents/index.json"
 }
 
 format_incident_since() {
@@ -1730,7 +1737,7 @@ incident_severity_color() {
 
 render_incidents_section() {
   local index incident_lines jq_status had_errexit=0 cap=5
-  index="$(wavemill_incident_index_path)"
+  index="$(wavemill_incident_index_path)" || return 0
   [[ -r "$index" && -s "$index" ]] || return 0
 
   [[ $- == *e* ]] && had_errexit=1

@@ -200,6 +200,7 @@ for f in \
   "$REPO_DIR"/tests/fixtures/lifecycle/closed_primary_pr_cleanup.sh \
   "$REPO_DIR"/tests/fixtures/lifecycle/closed_primary_sibling_merged_marks_done.sh \
   "$REPO_DIR"/tests/fixtures/lifecycle/coding_agent_exit_interrupted.sh \
+  "$REPO_DIR"/tests/fixtures/lifecycle/integration_window_observer_only.sh \
   "$REPO_DIR"/tests/incident-fixtures-terminal-panes.test.sh \
   "$REPO_DIR"/tests/incident-fixtures-safety-controls.test.sh \
   "$REPO_DIR"/tests/lib/incident-fixture-harness.sh \
@@ -3304,6 +3305,7 @@ echo "=== Integration Window Lifecycle Fixtures ==="
 for fixture in \
   "$REPO_DIR/tests/fixtures/lifecycle/integration_window_created.sh" \
   "$REPO_DIR/tests/fixtures/lifecycle/integration_window_observer_enabled.sh" \
+  "$REPO_DIR/tests/fixtures/lifecycle/integration_window_observer_only.sh" \
   "$REPO_DIR/tests/fixtures/lifecycle/integration_window_clean_shutdown.sh" \
   "$REPO_DIR/tests/fixtures/lifecycle/integration_window_disabled.sh" \
   "$REPO_DIR/tests/fixtures/lifecycle/integration_window_recovers_missing_tend.sh" \
