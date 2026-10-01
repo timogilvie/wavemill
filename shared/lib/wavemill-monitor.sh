@@ -10148,6 +10148,33 @@ mark_failed_ready_recheck_exhausted() {
   return 0
 }
 
+# HOK-3109: demote a PR to wm:blocked on any failed-head Ready result so tend
+# stops treating it as a merge candidate. The $state_dir/.ready-blocked-label-head
+# marker is a bash-side efficiency guard only; the TS tool enforces real
+# idempotency independently by inspecting the live PR labels, so a missing or
+# stale marker (e.g. after a monitor restart) can never produce a duplicate
+# comment -- it just costs one extra GitHub read.
+ensure_ready_failure_blocks_pr() {
+  local wt_dir="$1" pr_number="$2" state_dir="$3" head_sha="$4"
+  local marker="$state_dir/.ready-blocked-label-head"
+  local reason
+
+  [[ -n "$head_sha" ]] || return 0
+  if [[ -f "$marker" ]] && [[ "$(cat "$marker" 2>/dev/null || true)" == "$head_sha" ]]; then
+    return 0
+  fi
+
+  reason=$(ready_failure_reason "$state_dir")
+  [[ -n "$reason" ]] || reason="Ready checks failed for PR #$pr_number"
+
+  if (cd "$wt_dir" && npx tsx "$TOOLS_DIR/set-pr-blocked-label.ts" "$pr_number" \
+      --reason "$reason" --head "$head_sha" --marker-root "$REPO_DIR"); then
+    mkdir -p "$state_dir"
+    printf '%s' "$head_sha" > "$marker"
+  fi
+  return 0
+}
+
 # The composed decision for the failed-status poll site. Echoes exactly one of:
 #   proceed         — launch a re-check now (caller increments the counter)
 #   backoff         — a retry is scheduled but its delay has not elapsed
@@ -19060,6 +19087,13 @@ monitor_issue_state() {
 
     ready_verdict=$(ready_stage_pending_verdict "$ready_state_dir_path")
     if [[ "$ready_status" == "failed" ]]; then
+      # HOK-3109: demote the PR to wm:blocked for the current head on every
+      # entry into this branch so tend stops treating a failed-ready PR as a
+      # merge candidate. The helper is idempotent per head (both bash-side
+      # marker and live-label check in the TS tool), so this is a no-op after
+      # the first demotion until a new commit changes $current_head.
+      ensure_ready_failure_blocks_pr "${WORKTREE_ROOT}/${SLUG}" "$PR" "$ready_state_dir_path" "$current_head"
+
       # Bound the re-check loop (HOK-2893): attempt ceiling + backoff + terminal
       # hold, reset by a new commit or a ready pass. HOK-3092: composite key
       # on (head, base) so a rebase onto a fresh base wipes the budget.

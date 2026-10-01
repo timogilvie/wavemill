@@ -106,6 +106,7 @@ for f in \
   "$REPO_DIR"/tests/wavemill-guards.test.sh \
   "$REPO_DIR"/tests/dashboard-incidents-section.test.sh \
   "$REPO_DIR"/tests/review-scope-baseline-handoff.test.sh \
+  "$REPO_DIR"/tests/ready-failure-blocks-pr-label.test.sh \
   "$REPO_DIR"/tests/base-ref-stale-local.test.sh \
   "$REPO_DIR"/tests/wavemill-mill-advance.test.sh \
   "$REPO_DIR"/tests/wavemill-backlog-budget.test.sh \
