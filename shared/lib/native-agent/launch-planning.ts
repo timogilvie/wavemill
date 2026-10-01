@@ -53,6 +53,7 @@ import {
 } from '../openrouter-catalog.ts';
 import { getNativeAgentConfig, getNativeContextManagementConfig } from '../config.ts';
 import {
+  isRepairablePlanValidationReason,
   resolveNativePlanningLimits,
   toLoopBudget,
   validateFinalPlanningArtifact,
@@ -525,6 +526,36 @@ function buildPlanningOutcomeArtifacts(input: {
   };
 }
 
+// HOK-3129: structural guidance for a bounded repair turn. Each entry is a
+// one-sentence instruction that quotes the validator reason verbatim; nothing
+// here steers plan *content* — only the surface shape the validator rejected.
+const PLAN_REPAIR_INSTRUCTIONS: Record<string, string> = {
+  missing_title:
+    'Re-emit the full plan, unchanged in content, with exactly one top-level `# <title>` heading on the first non-empty line.',
+  missing_release_readiness:
+    'Re-emit the full plan, unchanged in content, with a `## Release Readiness` section that lists `**database_change_risk**`, `**env_changes**`, `**config_changes**`, and `**manual_steps**` as bulleted items.',
+  missing_release_readiness_database_change_risk:
+    'Re-emit the full plan, unchanged in content, and add a `- **database_change_risk**: <value>` bullet under the `## Release Readiness` section.',
+  missing_release_readiness_env_changes:
+    'Re-emit the full plan, unchanged in content, and add a `- **env_changes**: <value>` bullet under the `## Release Readiness` section.',
+  missing_release_readiness_config_changes:
+    'Re-emit the full plan, unchanged in content, and add a `- **config_changes**: <value>` bullet under the `## Release Readiness` section.',
+  missing_release_readiness_manual_steps:
+    'Re-emit the full plan, unchanged in content, and add a `- **manual_steps**: <value>` bullet under the `## Release Readiness` section.',
+  missing_actionable_structure:
+    'Re-emit the full plan, unchanged in content, with at least one `## Phase` / `## Plan` / `## Steps` section and at least one bulleted list item under it.',
+};
+
+function buildRepairPrompt(reason: string): string {
+  const guidance = PLAN_REPAIR_INSTRUCTIONS[reason]
+    ?? 'Re-emit the full plan, unchanged in content, with the structural requirement above satisfied.';
+  return [
+    `Your previous plan was rejected by the planning-artifact validator for the reason: "${reason}".`,
+    guidance,
+    'Return only the corrected plan text. Do not include any apology, commentary, or control tokens.',
+  ].join('\n');
+}
+
 function makeTranscriptPath(repoDir: string, session: string, issue: string): string {
   const safeIssue = issue.replace(/[^A-Za-z0-9._-]+/g, '-');
   const baseDir = process.env.WAVEMILL_RUN_DIR
@@ -716,6 +747,18 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
       });
     }
 
+    const planningToolPolicy = {
+      phase: 'planning' as const,
+      worktreePath: options.wtDir,
+      registry: registryMetadata,
+      config: {
+        pathFieldsByTool: {
+          ...READ_ONLY_PATH_FIELDS,
+          ...(codeSearchConfig.enabled ? CODE_SEARCH_PATH_FIELDS : {}),
+        },
+      },
+    };
+
     const result = await runWavemillLoop({
       model,
       context,
@@ -730,17 +773,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
         session: options.session,
         issue: options.issue,
       } : undefined,
-      toolPolicy: {
-        phase: 'planning',
-        worktreePath: options.wtDir,
-        registry: registryMetadata,
-        config: {
-          pathFieldsByTool: {
-            ...READ_ONLY_PATH_FIELDS,
-            ...(codeSearchConfig.enabled ? CODE_SEARCH_PATH_FIELDS : {}),
-          },
-        },
-      },
+      toolPolicy: planningToolPolicy,
       onEvent: (event) => {
         transcriptWriter.handleEvent(event);
       },
@@ -755,6 +788,11 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
       result,
       promptRef,
     });
+    // HOK-3129: a plan written in one assistant turn with zero tool calls is a
+    // quality signal — the model never read the repo. Observed on HOK-3125_c
+    // (Gemini returned 8.6 KB in one turn and only lacked an H1). Carry this
+    // on both success and failure artifacts so eval attribution can see it.
+    const zeroToolCallPlan = result.turnsCompleted <= 1 && result.toolCallsExecuted === 0;
 
     const cleanupReason = cleanupReasonForStopReason(result.stopReason);
     let cleanupPatch: Record<string, unknown> = {};
@@ -802,6 +840,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
           ...planningOutcomeArtifacts,
           planArtifactValid: false,
           approvalReady: false,
+          zeroToolCallPlan,
         },
         failureReason: providerFailureReason || stopFailureReason,
         ...cleanupPatch,
@@ -840,6 +879,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
           ...planningOutcomeArtifacts,
           planArtifactValid: false,
           approvalReady: false,
+          zeroToolCallPlan,
         },
         failureReason: providerError ? 'error' : 'empty_final_plan',
       });
@@ -847,7 +887,62 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
         ? `Native planning failed: ${providerErrorPrefix(result, providerError)}: ${providerError}`
         : `Native planning completed without a final plan (stopReason=${result.stopReason})`);
     }
-    const validation = validateFinalPlanningArtifact(rawFinalText);
+    let validation = validateFinalPlanningArtifact(rawFinalText);
+    let finalText = rawFinalText;
+    let repairAttempted = false;
+
+    // HOK-3129: format-only validator rejections get exactly one bounded
+    // repair turn that quotes the validator reason verbatim. HOK-3125_c lost
+    // its plan comparison because an 8.6 KB Gemini plan opened with `##`
+    // instead of `#`; a mechanical repair prompt would have rescued it.
+    if (!validation.valid && isRepairablePlanValidationReason(validation.reason)) {
+      repairAttempted = true;
+      writeHookStatus(hookPath, 'working', 'repair_native_plan', validation.reason ?? 'invalid', 'native');
+      // Thread one bounded repair user turn onto the existing context. The
+      // prompt quotes the model's previous output verbatim so the model has
+      // the content to re-emit without re-running the loop's full history
+      // or forging an AgentTurn envelope the loop would reject.
+      const repairPrompt = [
+        buildRepairPrompt(validation.reason!),
+        '',
+        'Previous plan (to re-emit with the structural requirement satisfied):',
+        '```',
+        rawFinalText,
+        '```',
+      ].join('\n');
+      const repairMessages = [
+        ...context.messages,
+        { role: 'user' as const, content: repairPrompt, timestamp: 0 },
+      ];
+      const repairContext: AgentContext = { ...context, messages: repairMessages };
+      const repairResult = await runWavemillLoop({
+        model,
+        context: repairContext,
+        maxTokens: effectiveMaxTokens,
+        contextManagement: getNativeContextManagementConfig(options.repoDir),
+        convertToLlm: (messages) => messages as unknown as Message[],
+        afterToolCall: gitAfterToolCall,
+        signal: options.signal,
+        toolPolicy: planningToolPolicy,
+        onEvent: (event) => {
+          transcriptWriter.handleEvent(event);
+        },
+        sessionStreamConfig,
+        menuProvider: menuLaunchProvider.menuProvider,
+        // Reuses the configured planning budget. Wall-clock already consumed by
+        // the initial run leaves repair headroom under the same ceiling.
+        budget: toLoopBudget(planningLimits),
+      });
+      const repairText = findFinalAssistantText(repairResult.messages);
+      if (repairText.trim() !== '') {
+        const repairValidation = validateFinalPlanningArtifact(repairText);
+        validation = repairValidation;
+        if (repairValidation.valid) {
+          finalText = repairText;
+        }
+      }
+    }
+
     if (!validation.valid) {
       clearRejectedPlanningArtifacts(planPath, approvalMarkerPath);
       await updateStageResult(featureDir, 'planning', {
@@ -874,12 +969,13 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
           ...planningOutcomeArtifacts,
           planArtifactValid: false,
           approvalReady: false,
+          repairAttempted,
+          zeroToolCallPlan,
         },
         failureReason: 'invalid_final_plan',
       });
       throw new Error(`Native planning final artifact rejected: ${validation.reason ?? 'invalid'}`);
     }
-    const finalText = rawFinalText;
 
     clearApprovalMarkerCreatedDuringPlanning(approvalMarkerPath);
     atomicWriteText(planPath, finalText);
@@ -905,6 +1001,8 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
         ...planningOutcomeArtifacts,
         planArtifactValid: true,
         approvalReady: true,
+        repairAttempted,
+        zeroToolCallPlan,
       },
       failureReason: null,
     });

@@ -49,6 +49,28 @@ export interface FinalPlanValidationResult {
   reason?: string;
 }
 
+/**
+ * HOK-3129: structural reasons that reflect how the model formatted its
+ * output, not what the plan says. A single bounded repair turn that quotes
+ * the validator reason has a reasonable chance of rescuing an otherwise
+ * substantive plan (the HOK-3125 Gemini plan was 8.6 KB and only lacked an
+ * H1). `too_short`, `empty`, and `control_text_leakage` stay off the set:
+ * they signal substantive failure, not a format slip.
+ */
+export const REPAIRABLE_PLAN_VALIDATION_REASONS: ReadonlySet<string> = new Set([
+  'missing_title',
+  'missing_release_readiness',
+  'missing_release_readiness_database_change_risk',
+  'missing_release_readiness_env_changes',
+  'missing_release_readiness_config_changes',
+  'missing_release_readiness_manual_steps',
+  'missing_actionable_structure',
+]);
+
+export function isRepairablePlanValidationReason(reason: string | undefined | null): boolean {
+  return typeof reason === 'string' && REPAIRABLE_PLAN_VALIDATION_REASONS.has(reason);
+}
+
 interface ToolCallObservation {
   toolCall: {
     name: string;
