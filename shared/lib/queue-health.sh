@@ -7,6 +7,21 @@
 #
 # Uses state_mutate for atomic JSON updates (requires caller to initialize file).
 # Uses wavemill_iso8601_to_epoch from wavemill-common.sh, sourced by callers.
+#
+# Schema (additive, schemaVersion 1):
+#   status                healthy | degraded
+#   degradationReason     planner failure class, or "inference_unavailable"
+#                         when the planner succeeded but dependency inference
+#                         did not (HOK-3130)
+#   failureStep / failureCount / retryBackoffSeconds / nextRetryAt / nextAction
+#   lastSuccessfulPlanAt / lastAttemptAt / lastFailureAt / episodeStartedAt
+#   planner {pid,pgid,timeoutSeconds,startedAt,endedAt,durationMs,exitCode,
+#            signal,cancellationOwner}
+#   diagnostics {inputSnapshot,stdoutExcerpt,stderrExcerpt}
+#   inferenceStatus       ok | failed | stale | never | null (no report)
+#   inferredEdgeCount     inferred edges used by the last plan, or null
+#   inference {model,lastAttemptAt,lastSuccessAt,consecutiveFailures,error,
+#              refreshKind,skipReason} or null
 
 # Derive the queue-health file path from STATE_DIR or STATE_FILE.
 # Caller must ensure STATE_DIR or STATE_FILE is set.
@@ -135,15 +150,41 @@ queue_health_redact_excerpt() {
   printf '%s' "${REPLY:-}$([ $? -eq 0 ] && echo '' || echo '(output redacted)')"
 }
 
-# Record a successful queue plan, clearing degradation state.
+# Validate a plan-queue inference report (tools/plan-queue.ts
+# --inference-report-file). Prints the compact object, or "null" when the
+# report is missing or malformed so callers can pass it to --argjson.
+queue_health_normalize_inference_report() {
+  local raw="${1:-}" normalized
+  if [[ -n "$raw" ]]; then
+    normalized="$(printf '%s' "$raw" | jq -ce '
+      if type == "object" and (.inferenceStatus | type) == "string" then . else empty end
+    ' 2>/dev/null || true)"
+    if [[ -n "$normalized" ]]; then
+      printf '%s' "$normalized"
+      return 0
+    fi
+  fi
+  printf 'null'
+}
+
+# Record a successful queue plan, clearing planner degradation state.
 # Uses state_mutate if available, otherwise writes directly.
+#
+# The planner exiting 0 does not prove dependency inference ran (HOK-3130):
+# when the inference report says failed/stale/never, the plan is still used
+# (explicit edges only) but health is degraded with reason
+# "inference_unavailable". That path never sets a retry backoff, so
+# queue_health_should_skip_attempt keeps running the planner.
 # Arguments:
 #   $1 = planner PID
 #   $2 = planner PGID (or "unknown")
 #   $3 = duration in milliseconds
 #   $4 = command (for logging, not stored)
+#   $5 = inference report JSON (optional; missing/invalid => healthy, fields null)
 queue_health_record_success() {
   local pid="$1" pgid="$2" duration_ms="$3" _cmd="${4:-}"
+  local inference_json
+  inference_json="$(queue_health_normalize_inference_report "${5:-}")"
   local health_file
   health_file="$(queue_health_file_path)" || return 1
   queue_health_init || return 1
@@ -151,20 +192,34 @@ queue_health_record_success() {
   local now timestamp
   timestamp="$(date -u +'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo '')"
 
-  # Build update filter: reset failure state, mark success
+  # Build update filter: reset planner failure state, mark success, then
+  # degrade on inference_unavailable when the report says so.
   local filter='
+    (($inference // {}).inferenceStatus // null) as $inference_status |
+    ($inference_status == "failed" or $inference_status == "stale" or $inference_status == "never") as $inference_degraded |
     .schemaVersion = 1 |
-    .status = "healthy" |
+    .status = (if $inference_degraded then "degraded" else "healthy" end) |
     .lastSuccessfulPlanAt = $now |
     .lastAttemptAt = $now |
     .lastFailureAt = null |
     .episodeStartedAt = null |
-    .degradationReason = null |
-    .failureStep = null |
+    .degradationReason = (if $inference_degraded then "inference_unavailable" else null end) |
+    .failureStep = (if $inference_degraded then "queue_inference" else null end) |
     .failureCount = 0 |
     .retryBackoffSeconds = 0 |
     .nextRetryAt = null |
-    .nextAction = "use_dependency_queue" |
+    .nextAction = (if $inference_degraded then "use_explicit_edges_only" else "use_dependency_queue" end) |
+    .inferenceStatus = $inference_status |
+    .inferredEdgeCount = (($inference // {}).inferredEdgeCount // null) |
+    .inference = (if $inference == null then null else {
+      model: ($inference.model // null),
+      lastAttemptAt: ($inference.lastAttemptAt // null),
+      lastSuccessAt: ($inference.lastSuccessAt // null),
+      consecutiveFailures: ($inference.consecutiveFailures // 0),
+      error: ($inference.error // null),
+      refreshKind: ($inference.refreshKind // null),
+      skipReason: ($inference.skipReason // null)
+    } end) |
     .planner = {
       pid: ($pid | tonumber),
       pgid: (if $pgid == "unknown" then null else ($pgid | tonumber) end),
@@ -190,6 +245,7 @@ queue_health_record_success() {
       --arg pid "$pid" \
       --arg pgid "$pgid" \
       --arg duration_ms "$duration_ms" \
+      --argjson inference "$inference_json" \
       2>/dev/null || return 1
   else
     # Fallback: direct jq update (not atomic, but rare path)
@@ -198,11 +254,46 @@ queue_health_record_success() {
       --arg pid "$pid" \
       --arg pgid "$pgid" \
       --arg duration_ms "$duration_ms" \
+      --argjson inference "$inference_json" \
       "$health_file" > "${health_file}.tmp" 2>/dev/null || return 1
     mv -f "${health_file}.tmp" "$health_file" || return 1
   fi
 
   return 0
+}
+
+# Log once per inference-status transition (HOK-3130). The planner runs every
+# ~60s, so a persistent inference_unavailable must not warn on every poll.
+# The last warned status lives in $STATE_DIR/.queue-inference-warn; a return
+# to ok clears it so the next degradation warns again.
+queue_health_warn_inference_transition() {
+  local state_dir="${STATE_DIR:-}" health inference_status reason warn_file previous error_text
+  if [[ -z "$state_dir" && -n "${STATE_FILE:-}" ]]; then
+    state_dir="$(dirname "$STATE_FILE")"
+  fi
+  [[ -n "$state_dir" ]] || return 0
+  warn_file="${state_dir}/.queue-inference-warn"
+
+  health="$(queue_health_read 2>/dev/null || echo '{}')"
+  reason="$(printf '%s' "$health" | jq -r '.degradationReason // ""' 2>/dev/null || echo '')"
+  inference_status="$(printf '%s' "$health" | jq -r '.inferenceStatus // ""' 2>/dev/null || echo '')"
+
+  if [[ "$reason" != "inference_unavailable" ]]; then
+    rm -f "$warn_file" 2>/dev/null || true
+    return 0
+  fi
+
+  previous="$(cat "$warn_file" 2>/dev/null || echo '')"
+  [[ "$previous" == "$inference_status" ]] && return 0
+
+  error_text="$(printf '%s' "$health" | jq -r '.inference.error // ""' 2>/dev/null | head -c 200 || echo '')"
+  local message="queue inference unavailable (${inference_status:-unknown}); planning with explicit edges only${error_text:+ (last error: ${error_text})}"
+  if declare -f log_warn &>/dev/null; then
+    log_warn "$message"
+  else
+    printf 'WARN: %s\n' "$message" >&2
+  fi
+  printf '%s' "$inference_status" > "$warn_file" 2>/dev/null || true
 }
 
 # Record a failed queue planner attempt, entering or continuing degradation.
@@ -398,7 +489,11 @@ queue_health_status_summary() {
   backoff="$(printf '%s' "$health" | jq -r '.retryBackoffSeconds // 0' 2>/dev/null || echo '0')"
   next_action="$(printf '%s' "$health" | jq -r '.nextAction // ""' 2>/dev/null || echo '')"
 
-  if [[ "$backoff" -gt 0 ]]; then
+  if [[ "$reason" == "inference_unavailable" ]]; then
+    local inference_status
+    inference_status="$(printf '%s' "$health" | jq -r '.inferenceStatus // "unknown"' 2>/dev/null || echo 'unknown')"
+    printf 'degraded (%s: %s); %s' "$reason" "$inference_status" "$next_action"
+  elif [[ "$backoff" -gt 0 ]]; then
     printf 'degraded (%s); backoff %ds' "$reason" "$backoff"
   else
     printf 'degraded (%s); %s' "$reason" "$next_action"

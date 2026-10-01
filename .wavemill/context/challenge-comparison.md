@@ -38,6 +38,8 @@ Challenge coverage and performance consumers enforce provisional evidence holds 
 - Skipped identical pairs deterministically declare the primary as winner and the challenger as the cleanup target. This keeps the merge lane moving and prevents watchdog retry spam.
 - `pair-unresolvable` is terminal once the resolver writes a forfeit or double-forfeit comparison record. Orphaned siblings can be resolved by the mill automatically or with `tools/resolve-orphan-challenge-pair.ts`.
 - Post-review cleanup deletes remote `task/*` refs only after GitHub reports the PR as `MERGED`; stale merged leftovers can be audited with `tools/cleanup-stale-branches.ts`.
+- A tracked sibling with no PR is live only while the HOK-3101 task-progress primitive shows agent progress (HOK-3128). Past `SIBLING_PROGRESS_GRACE_MS` (30m, plus `ORPHAN_PAIR_GRACE_MS` on `updated`) the gate reports `pair-unresolvable:sibling-stalled`; the resolver stamps the stalled arm `terminal_stage_failure:sibling-stalled` (harness-fault) and forfeits to the survivor. Pane/window existence never counts as liveness.
+- A coding arm whose agent exits after `.coding-complete` with a dirty tree is relaunched once per head (bounded-retry bucket `coding-dirty-handoff`); on exhaustion a challenger is aborted `terminal_stage_failure:coding-dirty-handoff` (model-fault, scope `single`) so the pair forfeits to the primary. A primary stays `needs-user` with `.retry-coding-dirty-handoff-exhausted`.
 
 ## Stage-Specific Score Selection (HOK-2373)
 
@@ -137,6 +139,10 @@ Rules of the road:
 - **Reviewer-stage adjudicator:** `shared/lib/reviewer-stage-adjudicator.ts` is a thin façade over `foldAttestationsIntoStageAttribution` that fails closed to `insufficient_evidence` when the pair did not fork at `review` or lacks a shared implementation prefix. Delivery selection (`deliveryVerdict`) remains the generic arbiter's job; reviewer-stage adjudication is independent.
 
 ## Recent Changes
+
+### 2026-09-30T00:00:00.000Z - HOK-3128: Dead no-PR arms no longer hold a green primary
+
+`guard_coding_complete_handoff` consults `task_progress_json`: after the agent exits it quarantines unplanned root scratch into `features/<slug>/.stale-artifacts/dirty-handoff-*`, relaunches the coder once with `.coding-recovery-instruction.md`, then terminalizes (challenger → `challengeAborted`, primary → sentinel). `isSiblingLive` / `evaluateSiblingLiveness` gate a no-PR sibling on the progress primitive and add the `sibling-stalled` unresolvable reason, shared by tend, ready-watchdog and the pair resolver.
 
 ### 2026-09-18T00:00:00.000Z - HOK-2970: Reviewer-stage adjudication, delivery/stage split, legacy quarantine
 

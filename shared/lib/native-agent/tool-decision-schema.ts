@@ -60,8 +60,24 @@ export type PropensityProvenance =
   | 'surrogate'
   | 'unavailable';
 
-/** Result of executing the chosen tool. `n/a` for `respond`, `think`, and denials. */
-export type ToolResultStatus = 'success' | 'error' | 'skipped' | 'n/a';
+/**
+ * Result of executing the chosen tool.
+ * - `success`  — tool returned without `isError`.
+ * - `error`    — tool returned `isError`.
+ * - `denied`   — policy denied the call (executed or orphaned).
+ * - `timeout`  — session wall-clock or abort tore the turn down before a
+ *                trailing call could be paired with a result.
+ * - `skipped`  — direct and positional pairing both failed for a historical
+ *                stream captured before HOK-3122 fixed the callId.
+ * - `n/a`      — respond/think only (no tool decision at all).
+ */
+export type ToolResultStatus =
+  | 'success'
+  | 'error'
+  | 'denied'
+  | 'timeout'
+  | 'skipped'
+  | 'n/a';
 
 /** How the outcome join was resolved. */
 export type OutcomeJoinStatus = 'joined' | 'unjoinable' | 'pending';
@@ -145,6 +161,8 @@ export interface StateFeatures {
   turnBudgetRemaining?: number;
   /** Tool-call budget remaining, when known. */
   toolCallBudgetRemaining?: number;
+  /** Cumulative tokens (input + output) consumed on this trace so far. */
+  tokensUsedSoFar?: number;
 }
 
 /**

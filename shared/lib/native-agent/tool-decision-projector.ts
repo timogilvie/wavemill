@@ -13,6 +13,16 @@
  *
  * Rows for missing menus, unknown models/tools, missing propensity, and
  * unjoinable outcomes are kept and tagged; they are never dropped.
+ *
+ * HOK-3122 pairing fallback: historical streams captured before the
+ * `tool_call.callId` capture bug was fixed carry a random UUID on every
+ * `tool_call` event, so a direct callId join against the matching
+ * `tool_policy_decision` / `tool_result` events (which did use the real
+ * SDK call id) finds nothing. The projector reconciles that by falling
+ * back to positional pairing within the turn: unmatched `tool_call`s and
+ * unmatched self-consistent decision/result pairs are zipped in `seq`
+ * order and surface a `fallback_positional_pairing:<decisionId>` warning
+ * on the projection result.
  */
 
 import { createHash } from 'node:crypto';
@@ -21,6 +31,7 @@ import type {
   SessionEvent,
   ModelRequestEvent,
   ModelResponseEvent,
+  SessionEndedEvent,
   ToolCallEvent,
   ToolResultEvent,
   ToolPolicyDecisionEvent,
@@ -35,6 +46,7 @@ import {
   type MenuSnapshot,
   type ProviderMenuSnapshot,
   type PropensityEvidence,
+  type ResultEvidence,
   type StateFeatures,
 } from './tool-decision-schema.ts';
 
@@ -71,6 +83,15 @@ interface TurnState {
   mutationOutcomesByCallId: Map<string, MutationOutcomeEvent[]>;
 }
 
+// Resolved pairing for one orderedCalls entry.
+interface PairedCall {
+  call: ToolCallEvent;
+  decision?: ToolPolicyDecisionEvent;
+  result?: ToolResultEvent;
+  /** True when the decision/result was recovered via the positional fallback. */
+  recoveredByFallback: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Projector
 // ---------------------------------------------------------------------------
@@ -81,7 +102,7 @@ export function projectSessionEventsToDecisions(input: ProjectionInput): Project
   const rows: ToolDecisionRow[] = [];
 
   // Group events by turn. A turn is scoped by (traceId, turnIndex).
-  const turns = groupIntoTurns(input.events, warnings);
+  const { turns, sessionEnded } = groupIntoTurns(input.events, warnings);
   if (turns.length === 0) {
     return { rows, warnings };
   }
@@ -91,6 +112,9 @@ export function projectSessionEventsToDecisions(input: ProjectionInput): Project
   let priorErrorCount = 0;
   let priorPolicyDenials = 0;
   let priorErrorFlag = false;
+
+  const timeoutActive = isTimeoutTermination(sessionEnded);
+  const finalTurn = turns[turns.length - 1];
 
   for (const turn of turns) {
     const provider = input.provider ?? turn.requestEvent.provider;
@@ -104,18 +128,25 @@ export function projectSessionEventsToDecisions(input: ProjectionInput): Project
 
     // Order calls/denials by seq for stable stepIndex.
     const orderedCalls = [...turn.toolCalls.values()].sort((a, b) => a.seq - b.seq);
-    const explicitlyExecutedCallIds = new Set(orderedCalls.map((c) => c.callId));
+    const paired = pairCalls(turn, orderedCalls, warnings);
+    const claimedDecisionIds = new Set<string>();
+    for (const p of paired) {
+      if (p.decision) claimedDecisionIds.add(p.decision.callId);
+    }
     const orphanedDenials = [...turn.policyDecisions.values()]
-      .filter((d) => d.decision === 'deny' && !explicitlyExecutedCallIds.has(d.callId))
+      .filter((d) => d.decision === 'deny' && !claimedDecisionIds.has(d.callId))
       .sort((a, b) => a.seq - b.seq);
+
+    const turnBudget = pickBudgetFields(turn.requestEvent);
+    const isFinalTurn = turn === finalTurn;
 
     let stepIndex = 0;
     const emittedThisTurn: ToolDecisionRow[] = [];
+    const pendingWarnings: string[] = [];
 
     // 1) Tool-call rows (allowed by policy, executed by the runtime).
-    for (const call of orderedCalls) {
-      const decision = turn.policyDecisions.get(call.callId);
-      const result = turn.toolResults.get(call.callId);
+    for (let callIdx = 0; callIdx < paired.length; callIdx++) {
+      const { call, decision, result, recoveredByFallback } = paired[callIdx];
       const mutationOutcomes = turn.mutationOutcomesByCallId.get(call.callId) ?? [];
 
       const kind: DecisionKind = deriveExecutedKind(
@@ -131,6 +162,7 @@ export function projectSessionEventsToDecisions(input: ProjectionInput): Project
         priorErrorCount,
         terminalSynthesis,
         priorPolicyDenials,
+        ...turnBudget,
       };
 
       const propensity = derivePropensity({
@@ -139,12 +171,23 @@ export function projectSessionEventsToDecisions(input: ProjectionInput): Project
         providerMenu,
       });
 
+      const resultEvidence = buildResultEvidence({
+        kind,
+        result,
+        call,
+        timeoutActive,
+        isFinalTurn,
+        isTrailingCallInTurn: callIdx === paired.length - 1,
+      });
+
+      const stepIndexCaptured = stepIndex++;
+
       const row = buildRow({
         sessionId: turn.requestEvent.sessionId,
         traceId: turn.requestEvent.traceId,
         phase: turn.requestEvent.phase,
         turnIndex: turn.requestEvent.turnIndex,
-        stepIndex: stepIndex++,
+        stepIndex: stepIndexCaptured,
         sourceEventIds: dedupe([
           turn.requestEvent.eventId,
           call.eventId,
@@ -175,18 +218,7 @@ export function projectSessionEventsToDecisions(input: ProjectionInput): Project
               ...(call.argumentsSummary ? { summary: call.argumentsSummary } : {}),
             }
           : undefined,
-        result: result
-          ? {
-              status: result.isError ? 'error' : 'success',
-              ...(result.byteSize !== undefined ? { byteSize: result.byteSize } : {}),
-              ...(result.artifactRef?.digest
-                ? { artifactDigest: result.artifactRef.digest }
-                : {}),
-              ...(result.contentSummary
-                ? { contentSummary: result.contentSummary }
-                : {}),
-            }
-          : { status: 'skipped' },
+        result: resultEvidence,
         cost: deriveCost(turn.responseEvent),
         state,
         propensity,
@@ -210,6 +242,9 @@ export function projectSessionEventsToDecisions(input: ProjectionInput): Project
         ]),
       });
       emittedThisTurn.push(row);
+      if (recoveredByFallback) {
+        pendingWarnings.push(`fallback_positional_pairing:${row.decisionId}`);
+      }
 
       // Advance running counters.
       priorToolCallCount += 1;
@@ -245,7 +280,7 @@ export function projectSessionEventsToDecisions(input: ProjectionInput): Project
             ? { policyConfigDigest: decision.policyConfigDigest }
             : {}),
         },
-        result: { status: 'n/a' },
+        result: { status: 'denied' },
         cost: deriveCost(turn.responseEvent),
         state: {
           priorToolCallCount,
@@ -253,6 +288,7 @@ export function projectSessionEventsToDecisions(input: ProjectionInput): Project
           priorErrorCount,
           terminalSynthesis,
           priorPolicyDenials,
+          ...turnBudget,
         },
         propensity: derivePropensity({
           chosenTool: decision.toolName,
@@ -302,6 +338,7 @@ export function projectSessionEventsToDecisions(input: ProjectionInput): Project
           priorErrorCount,
           terminalSynthesis,
           priorPolicyDenials,
+          ...turnBudget,
         },
         propensity: derivePropensity({ toolMenu, providerMenu }),
         timestamp: turn.requestEvent.timestamp,
@@ -316,19 +353,201 @@ export function projectSessionEventsToDecisions(input: ProjectionInput): Project
     }
 
     rows.push(...emittedThisTurn);
+    for (const w of pendingWarnings) warnings.push(w);
   }
 
   return { rows, warnings };
 }
 
 // ---------------------------------------------------------------------------
+// Pairing
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve, per-turn, which decision + result each `tool_call` row owns.
+ *
+ * Primary path: direct lookup by SDK-assigned callId (shared by all three
+ * event kinds since HOK-3122).
+ *
+ * Historical-bug fallback: if the `tool_call` events were written with
+ * random UUIDs (pre-HOK-3122 streams), a direct lookup for a call finds
+ * neither a decision nor a result. For those cases, zip unmatched calls
+ * with unmatched self-consistent `(policyDecision, result)` pairs in
+ * `seq` order. Only kicks in when direct matching found nothing at all
+ * for a call — a partially matched call (decision but no result, say) is
+ * kept as-is so we don't mask real data gaps.
+ */
+function pairCalls(
+  turn: TurnState,
+  orderedCalls: ToolCallEvent[],
+  warnings: string[],
+): PairedCall[] {
+  const paired: PairedCall[] = [];
+  const unmatchedCallIndices: number[] = [];
+
+  for (let i = 0; i < orderedCalls.length; i++) {
+    const call = orderedCalls[i];
+    const decision = turn.policyDecisions.get(call.callId);
+    const result = turn.toolResults.get(call.callId);
+    paired.push({ call, decision, result, recoveredByFallback: false });
+    if (!decision && !result) {
+      unmatchedCallIndices.push(i);
+    }
+  }
+
+  if (unmatchedCallIndices.length === 0) return paired;
+
+  // Collect self-consistent (decision, result) pairs that no primary call has
+  // already claimed by direct callId. A pair is self-consistent iff a decision
+  // and a result share the same callId. These are the pairs that *would* have
+  // been joined directly if the tool_call event hadn't carried a wrong id.
+  const claimedByDirect = new Set<string>();
+  for (const p of paired) {
+    if (p.decision) claimedByDirect.add(p.decision.callId);
+    if (p.result) claimedByDirect.add(p.result.callId);
+  }
+  const unmatchedPairs: Array<{ decision: ToolPolicyDecisionEvent; result: ToolResultEvent }> = [];
+  for (const decision of turn.policyDecisions.values()) {
+    if (claimedByDirect.has(decision.callId)) continue;
+    const result = turn.toolResults.get(decision.callId);
+    if (!result) continue;
+    // Allowed decisions only — a deny with no execution is an orphaned
+    // denial, not a positional pairing candidate.
+    if (decision.decision !== 'allow') continue;
+    unmatchedPairs.push({ decision, result });
+  }
+  if (unmatchedPairs.length === 0) {
+    warnings.push(
+      `fallback_pairing_unavailable:turn=${turn.requestEvent.turnIndex} unmatched_calls=${unmatchedCallIndices.length}`,
+    );
+    return paired;
+  }
+
+  unmatchedPairs.sort(
+    (a, b) =>
+      (a.decision.seq ?? 0) - (b.decision.seq ?? 0) ||
+      (a.result.seq ?? 0) - (b.result.seq ?? 0),
+  );
+
+  const zipCount = Math.min(unmatchedCallIndices.length, unmatchedPairs.length);
+  for (let z = 0; z < zipCount; z++) {
+    const idx = unmatchedCallIndices[z];
+    const pair = unmatchedPairs[z];
+    paired[idx] = {
+      call: paired[idx].call,
+      decision: pair.decision,
+      result: pair.result,
+      recoveredByFallback: true,
+    };
+  }
+
+  if (zipCount < unmatchedCallIndices.length) {
+    warnings.push(
+      `fallback_pairing_partial:turn=${turn.requestEvent.turnIndex} unmatched_calls=${unmatchedCallIndices.length - zipCount}`,
+    );
+  }
+  return paired;
+}
+
+// ---------------------------------------------------------------------------
+// Result evidence (status, latency, byte size, artifact digest, summary)
+// ---------------------------------------------------------------------------
+
+interface BuildResultOpts {
+  kind: DecisionKind;
+  result: ToolResultEvent | undefined;
+  call: ToolCallEvent;
+  timeoutActive: boolean;
+  isFinalTurn: boolean;
+  isTrailingCallInTurn: boolean;
+}
+
+function buildResultEvidence(opts: BuildResultOpts): ResultEvidence {
+  const { kind, result, call, timeoutActive, isFinalTurn, isTrailingCallInTurn } = opts;
+
+  if (kind === 'policy_denied') {
+    // Policy denied this call before (or regardless of) execution. Even when
+    // the stream carries a result event (some runtimes record a surrogate),
+    // the operational outcome of the agent's decision was a denial.
+    return { status: 'denied' };
+  }
+
+  if (result) {
+    const latencyMs = computeLatencyMs(call.timestamp, result.timestamp);
+    return {
+      status: result.isError ? 'error' : 'success',
+      ...(latencyMs !== undefined ? { latencyMs } : {}),
+      ...(result.byteSize !== undefined ? { byteSize: result.byteSize } : {}),
+      ...(result.artifactRef?.digest ? { artifactDigest: result.artifactRef.digest } : {}),
+      ...(result.contentSummary ? { contentSummary: result.contentSummary } : {}),
+    };
+  }
+
+  // Trailing unmatched call in the final turn of a torn-down session is best
+  // explained by a wall-clock/abort cutoff that killed the executor mid-call.
+  if (timeoutActive && isFinalTurn && isTrailingCallInTurn) {
+    return { status: 'timeout' };
+  }
+
+  return { status: 'skipped' };
+}
+
+function computeLatencyMs(start: string | number, end: string | number): number | undefined {
+  const s = parseEventTimestamp(start);
+  const e = parseEventTimestamp(end);
+  if (s === undefined || e === undefined) return undefined;
+  const diff = e - s;
+  if (!Number.isFinite(diff) || diff < 0) return undefined;
+  return diff;
+}
+
+function parseEventTimestamp(value: string | number): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+function isTimeoutTermination(sessionEnded: SessionEndedEvent | undefined): boolean {
+  if (!sessionEnded) return false;
+  const reason = sessionEnded.stopReason;
+  return reason === 'wall_clock_limit' || reason === 'aborted';
+}
+
+function pickBudgetFields(
+  request: ModelRequestEvent,
+): Pick<StateFeatures, 'turnBudgetRemaining' | 'toolCallBudgetRemaining' | 'tokensUsedSoFar'> {
+  const out: Partial<StateFeatures> = {};
+  if (typeof request.turnBudgetRemaining === 'number') {
+    out.turnBudgetRemaining = request.turnBudgetRemaining;
+  }
+  if (typeof request.toolCallBudgetRemaining === 'number') {
+    out.toolCallBudgetRemaining = request.toolCallBudgetRemaining;
+  }
+  if (typeof request.tokensUsedSoFar === 'number') {
+    out.tokensUsedSoFar = request.tokensUsedSoFar;
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Turn grouping
 // ---------------------------------------------------------------------------
 
-function groupIntoTurns(events: SessionEvent[], warnings: string[]): TurnState[] {
+interface GroupResult {
+  turns: TurnState[];
+  sessionEnded?: SessionEndedEvent;
+}
+
+function groupIntoTurns(events: SessionEvent[], warnings: string[]): GroupResult {
   const modelRequests = events.filter((e): e is ModelRequestEvent => e.type === 'model_request');
+  const sessionEnded = events
+    .filter((e): e is SessionEndedEvent => e.type === 'session_ended')
+    .at(-1);
   if (modelRequests.length === 0) {
-    return [];
+    return { turns: [], ...(sessionEnded ? { sessionEnded } : {}) };
   }
   const turns: TurnState[] = [];
   const byRequest = new Map<string, TurnState>();
@@ -439,7 +658,7 @@ function groupIntoTurns(events: SessionEvent[], warnings: string[]): TurnState[]
     }
   }
 
-  return sortedTurns;
+  return { turns: sortedTurns, ...(sessionEnded ? { sessionEnded } : {}) };
 }
 
 // ---------------------------------------------------------------------------
@@ -536,6 +755,18 @@ function buildRow(partial: Omit<ToolDecisionRow, 'schemaVersion' | 'decisionId'>
   };
 }
 
+/**
+ * Deterministic decisionId derived from the stable identity tuple of a
+ * decision: (session, trace, phase, turn, step, kind, chosenTool).
+ *
+ * HOK-3122: this intentionally OMITS `sourceEventIds`. The ids themselves
+ * are stable per event, but which events pair into a row changes between
+ * projection runs — a historical stream re-projected after Phase 1 of
+ * HOK-3122 gains a `tool_result` eventId it did not have before, which
+ * would otherwise change the row's `decisionId` and defeat
+ * `appendToolDecisions`' "dedup by decisionId" contract that the backfill
+ * replace path depends on.
+ */
 function deterministicDecisionId(
   partial: Omit<ToolDecisionRow, 'schemaVersion' | 'decisionId'>,
 ): string {
@@ -547,7 +778,6 @@ function deterministicDecisionId(
     step: partial.stepIndex,
     kind: partial.kind,
     chosen: partial.chosenTool ?? '',
-    sources: partial.sourceEventIds,
   });
   return createHash('sha256').update(seed).digest('hex').slice(0, 24);
 }

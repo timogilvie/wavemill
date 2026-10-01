@@ -18,11 +18,13 @@ import { readForkIdentity } from './fork-identity.ts';
 import {
   getSiblingBranch,
   classifyPairUnresolvableState,
+  evaluateSiblingLiveness,
   isSiblingLive,
   listRemoteTaskBranches,
   loadWorkflowStateChallengeData,
   pairHasPendingChallengeArm,
   type PairTaskState,
+  type SiblingProgressProbe,
   type TaskEvalState,
   type UnresolvableReason,
 } from './tend-challenge-gate.ts';
@@ -43,6 +45,8 @@ const ORPHAN_PAIR_GRACE_MS = 60_000;
 const UNKNOWN_PR_NUMBER = 0;
 const UNKNOWN_MODEL = 'unknown';
 const PRIMARY_MERGED_REASON = 'Primary already merged as PR';
+/** HOK-3128: abort stamp for a no-PR arm retired because it stopped progressing. */
+const SIBLING_STALLED_ABORT_REASON = 'terminal_stage_failure:sibling-stalled';
 
 type PrimaryMergedReason = 'primary_merged';
 
@@ -54,6 +58,8 @@ export interface UnresolvablePairInput {
   now?: () => Date;
   remoteBranches?: string[];
   listRemoteBranches?: (repoDir: string) => string[];
+  /** HOK-3128: progress probe for a tracked no-PR arm (tests inject this). */
+  getSiblingProgress?: SiblingProgressProbe;
 }
 
 export interface PrimaryMergedInput {
@@ -116,16 +122,46 @@ export async function resolveUnresolvablePair(input: UnresolvablePairInput): Pro
     input.now ?? (() => new Date()),
     retryMax,
     input.remoteBranches ?? input.listRemoteBranches?.(input.repoDir),
+    input.getSiblingProgress,
   );
   if (!resolvedReason) {
     return { status: 'skipped', reason: `Pair ${input.pairId} is not currently unresolvable.` };
   }
 
+  // HOK-3128: a stalled no-PR arm is retired exactly like a quarantined one.
+  // Stamp it (in memory now, durably below) and reuse the
+  // `sibling-challenge-aborted` forfeit path so no new terminal reason or
+  // comparison schema is needed.
+  let resolutionPairState = pairState;
+  let stalledArm: TaskEvalState | undefined;
+  if (resolvedReason === 'sibling-stalled') {
+    stalledArm = findStalledNoPrArm(pairState);
+    if (!stalledArm) {
+      return { status: 'skipped', reason: `Pair ${input.pairId} has no tracked no-PR arm to retire as stalled.` };
+    }
+    const survivor = stalledArm.role === 'primary' ? pairState.challenger : pairState.primary;
+    if (!survivor?.evalCompleted) {
+      return {
+        status: 'skipped',
+        reason: `Pair ${input.pairId} has a stalled arm but the surviving arm has not persisted an eval yet; rerun after eval completes.`,
+      };
+    }
+    resolutionPairState = {
+      ...pairState,
+      [stalledArm.role]: {
+        ...stalledArm,
+        challengeAborted: SIBLING_STALLED_ABORT_REASON,
+        challengeAbortedDetail: describeStalledArm(stalledArm),
+        challengeAbortedStage: stalledArm.phase ?? stalledArm.challengeStage ?? null,
+      },
+    };
+  }
+
   const resolution = buildResolutionRecord({
     pairId: input.pairId,
-    pairState,
+    pairState: resolutionPairState,
     challengePairMap: workflow.challengePairMap,
-    reason: resolvedReason,
+    reason: resolvedReason === 'sibling-stalled' ? 'sibling-challenge-aborted' : resolvedReason,
     timestamp: (input.now ?? (() => new Date()))().toISOString(),
     retryMax,
     evalsDir,
@@ -154,6 +190,9 @@ export async function resolveUnresolvablePair(input: UnresolvablePairInput): Pro
   }
 
   if (!input.dryRun) {
+    if (stalledArm) {
+      await stampStalledArm(input.repoDir, stalledArm, input.now);
+    }
     appendChallengeComparison(resolution.record, evalsDir);
     await safelyReleasePairSelectionHealth(input.repoDir, input.pairId, pairState, resolution.outcome);
   }
@@ -417,6 +456,7 @@ function detectUnresolvableReason(
   now: () => Date,
   retryMax: number,
   remoteBranchesInput?: string[],
+  getSiblingProgress?: SiblingProgressProbe,
 ): UnresolvableReason | null {
   const sharedReason = classifyPairUnresolvableState(pairState, retryMax);
   if (sharedReason) {
@@ -424,7 +464,22 @@ function detectUnresolvableReason(
   }
 
   if (pairState.primary && pairState.challenger) {
-    return null;
+    // HOK-3128: both arms tracked, one with a PR and one without. The no-PR
+    // arm holds the pair only while the progress primitive shows it working.
+    const stalledArm = findStalledNoPrArm(pairState);
+    if (!stalledArm) {
+      return null;
+    }
+    const { stalled } = evaluateSiblingLiveness({
+      repoDir,
+      hasSiblingBranch: true,
+      openPrNumbers: new Set(challengePairMap.keys()),
+      pairState,
+      side: stalledArm.role === 'primary' ? 'challenger' : 'primary',
+      nowMs: now().getTime(),
+      getSiblingProgress,
+    });
+    return stalled ? 'sibling-stalled' : null;
   }
 
   const representative = pairState.primary ?? pairState.challenger;
@@ -453,6 +508,44 @@ function detectUnresolvableReason(
   }
 
   return 'orphan-sibling';
+}
+
+/**
+ * HOK-3128: the candidate arm for `sibling-stalled` — the only tracked,
+ * non-aborted arm without a PR while its sibling has one. Returns undefined
+ * when the shape does not match (both or neither have PRs).
+ */
+function findStalledNoPrArm(pairState: PairTaskState): TaskEvalState | undefined {
+  const { primary, challenger } = pairState;
+  if (!primary || !challenger) return undefined;
+  if (primary.prNumber === null && challenger.prNumber !== null && !primary.challengeAborted) return primary;
+  if (challenger.prNumber === null && primary.prNumber !== null && !challenger.challengeAborted) return challenger;
+  return undefined;
+}
+
+function describeStalledArm(task: TaskEvalState): string {
+  const phase = task.phase ? ` in phase ${task.phase}` : '';
+  return `The ${task.role} arm (${getTaskModel(task)}) showed no agent progress${phase} past the stall grace and never opened a PR; retired so its sibling is released.`;
+}
+
+/**
+ * Durably stamp a stalled arm so every other consumer (monitor, dashboard,
+ * gate) sees it as aborted. Never overwrites an existing abort stamp.
+ */
+async function stampStalledArm(repoDir: string, task: TaskEvalState, now?: () => Date): Promise<void> {
+  const statePath = join(repoDir, '.wavemill', 'workflow-state.json');
+  const timestamp = (now ?? (() => new Date()))().toISOString();
+  await mutateJsonState<WorkflowStateFile>(statePath, (current) => {
+    const entry = current.tasks?.[task.issueId];
+    if (!entry || (typeof entry.challengeAborted === 'string' && entry.challengeAborted)) {
+      return current;
+    }
+    entry.challengeAborted = SIBLING_STALLED_ABORT_REASON;
+    entry.challengeAbortedDetail = describeStalledArm(task);
+    entry.challengeAbortedStage = task.phase ?? task.challengeStage ?? null;
+    entry.updated = timestamp;
+    return current;
+  });
 }
 
 function isPastOrphanGrace(task: TaskEvalState, now: () => Date): boolean {

@@ -552,6 +552,45 @@ test('degraded queue health returns structured finding without throwing', () => 
   }
 });
 
+test('inference_unavailable queue health reports missing inference, not a flat fallback (HOK-3130)', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-queue-inference-'));
+  try {
+    const findings = buildFindings({
+      timestamp: '2026-09-30T12:00:00.000Z',
+      sessions: ['wavemill'],
+      panes: [],
+      processes: [],
+      repos: [{
+        session: 'wavemill',
+        repoDir,
+        queueHealth: {
+          status: 'degraded',
+          degradationReason: 'inference_unavailable',
+          episodeStartedAt: null,
+          failureCount: 0,
+          retryBackoffSeconds: 0,
+          inferenceStatus: 'failed',
+          inferredEdgeCount: 0,
+          inference: { consecutiveFailures: 3, lastSuccessAt: null, error: 'classifier timeout' },
+        },
+        tasks: [],
+      }],
+    }, defaultObserverOptions());
+
+    const degraded = findings.find((finding) => finding.id.startsWith('queue-health-degraded-'));
+    assert.ok(degraded);
+    assert.equal(degraded.severity, 'medium');
+    assert.match(degraded.title, /inference_unavailable/);
+    assert.ok(degraded.evidence.includes('failureCount=3'));
+    assert.ok(degraded.evidence.includes('inferenceStatus=failed'));
+    assert.ok(degraded.evidence.includes('inferenceError=classifier timeout'));
+    assert.match(degraded.recommendation, /explicit Linear relations only/);
+    assert.doesNotMatch(degraded.recommendation, /Flat fallback/);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
 test('structured log scanning aggregates repeated errors and ignores prose false positives', () => {
   const repoDir = mkdtempSync(join(tmpdir(), 'observer-log-scanner-'));
   const fixtureLogPath = join(process.cwd(), 'tests', 'fixtures', 'observer', 'test-log.txt');

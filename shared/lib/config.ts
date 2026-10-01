@@ -1173,7 +1173,7 @@ export const INTEGRATION_DEFAULTS: IntegrationConfig = {
 };
 
 export const OBSERVER_DEFAULTS: ObserverConfig = {
-  enabled: false,
+  enabled: true,
   intervalSeconds: 120,
   heartbeatStaleSeconds: 300,
   maxLogLines: 240,
@@ -2159,7 +2159,8 @@ function envMergeQueueOverride(env: NodeJS.ProcessEnv): boolean | undefined {
  * Rules (see plan D1):
  *   - `backstage`   = integration.enabled === true && useMillSession !== false
  *   - `tend`        = backstage
- *   - `observer`    = backstage && observer.enabled === true
+ *   - `observer`    = observer.enabled !== false (HOK-3094: default on in
+ *                    every mill session, independent of backstage/integration)
  *   - `mergeExecutor`:
  *       tend      → 'tend'
  *       backstage off but integration.enabled === true → 'none'
@@ -2185,7 +2186,7 @@ export function resolveSessionCapabilities(
   const backstage = integration.enabled === true && integration.useMillSession !== false;
 
   const tend = backstage;
-  const observerOn = backstage && observer.enabled === true;
+  const observerOn = observer.enabled !== false;
 
   let mergeExecutor: MergeExecutor;
   let mergeExecutorReason: string;
@@ -2215,10 +2216,8 @@ export function resolveSessionCapabilities(
           ? 'integration.enabled but useMillSession=false'
           : 'integration.enabled=false'),
     observer: observerOn
-      ? 'backstage on + observer.enabled=true'
-      : (!backstage
-          ? 'backstage off'
-          : 'observer.enabled=false'),
+      ? 'observer on (default; independent of integration)'
+      : 'observer.enabled=false',
     mergeExecutor: mergeExecutorReason,
     mergeQueue: mergeQueueOn
       ? 'mergeQueue.enabled && mergeExecutor=tend'

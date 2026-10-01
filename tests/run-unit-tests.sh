@@ -121,6 +121,7 @@ TESTS=(
   shared/lib/native-agent/workflow-tools/approval-gate.test.ts
   shared/lib/native-agent/workflow-tools/ready-remediation-integration.test.ts
   shared/lib/native-agent/launch-planning.test.ts
+  shared/lib/native-agent/launch-planning-repair.test.ts
   shared/lib/native-agent/planning-canary.test.ts
   shared/lib/feature-outcome-consumer.test.ts
   shared/lib/outcome-collectors.test.ts
@@ -272,6 +273,7 @@ TESTS=(
   shared/lib/eval-validator.test.ts
   shared/lib/eval-rejected-store.test.ts
   shared/lib/task-dependency-plan-cache.test.ts
+  shared/lib/queue-inference-status.test.ts
   shared/lib/task-dependency-planner.test.ts
   shared/lib/plan-queue-utils.test.ts
   shared/lib/scaffold-migrate-dryrun.test.ts
@@ -298,6 +300,7 @@ TESTS=(
   tools/add-pr-label.test.ts
   tools/backfill-challenge-stage.test.ts
   tools/backfill-stage-executed-model.test.ts
+  tools/backfill-tool-decisions.test.ts
   tools/backfill-hokusai-submissions.test.ts
   tools/certify-patch-coding.test.ts
   tools/promote-provisional-model.test.ts
@@ -322,6 +325,7 @@ TESTS=(
   tools/plan-queue.test.ts
   tools/select-wave.test.ts
   tools/set-pr-ready-label.test.ts
+  tools/set-pr-blocked-label.test.ts
   tools/smoke-deepseek.test.ts
   tools/openrouter-doctor.test.ts
   tools/review-scope-prompt.test.ts

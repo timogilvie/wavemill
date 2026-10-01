@@ -159,6 +159,14 @@ for fn in \
   write_coding_complete_marker \
   wavemill_run_tsx_tool \
   guard_coding_complete_handoff \
+  coding_recovery_instruction_path \
+  coding_dirty_handoff_grace_seconds \
+  coding_dirty_handoff_agent_exited \
+  coding_dirty_handoff_path_is_planned \
+  coding_dirty_handoff_quarantine_scratch \
+  coding_dirty_handoff_write_recovery_instruction \
+  coding_dirty_handoff_relaunch \
+  coding_dirty_handoff_terminalize \
   archive_stale_coding_artifacts \
   clear_coding_uncommitted_output_attention \
   coding_output_dirty_paths \
@@ -487,6 +495,9 @@ JSON
       esac
     }
     validate_coding_phase_output() { return 0; }
+    # HOK-3101 primitive: no evidence, which the HOK-3128 dirty-handoff guard
+    # treats as a live agent (legacy needs-user hold).
+    task_progress_json() { printf "{}\n"; }
     codex_capacity_idle_confirmed() { return 1; }
     auto_advance_blocked_completion() { return 1; }
     emit_pane_divergence_attention() { return 1; }

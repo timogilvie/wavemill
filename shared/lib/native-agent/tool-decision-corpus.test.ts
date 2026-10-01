@@ -108,4 +108,75 @@ describe('tool-decision corpus writer', () => {
     // Version pinning sanity.
     assert.equal(TOOL_DECISION_SCHEMA_VERSION, '1');
   });
+
+  it('resolveToolDecisionCorpusDir falls back gracefully when not in a git repo', () => {
+    const dir = tempDir(); dirs.push(dir);
+    // When repoDir is not a git repo, resolveFromMainRepo should fall back
+    // to using the repoDir itself, so we should get the expected path
+    const corpusDir = resolveToolDecisionCorpusPath({ repoDir: dir });
+    assert.ok(corpusDir.includes('.wavemill/tool-decisions'));
+    assert.ok(corpusDir.includes(dir));
+  });
+
+  it('replace mode overwrites existing decisionIds in place and preserves line order', () => {
+    const dir = tempDir(); dirs.push(dir);
+    const path = resolveToolDecisionCorpusPath({ explicitDir: dir });
+    const { rows } = projectSessionEventsToDecisions({
+      events: buildPlanningWithToolCall(),
+    });
+
+    // Prime the corpus with the row carrying a skipped status (what the
+    // historical, pre-HOK-3122 projection would have written).
+    const original: ToolDecisionRow = {
+      ...rows[0],
+      result: { status: 'skipped' },
+    };
+    const neighborBefore: ToolDecisionRow = {
+      ...rows[0],
+      decisionId: 'neighbor-before',
+      stepIndex: 100,
+    };
+    const neighborAfter: ToolDecisionRow = {
+      ...rows[0],
+      decisionId: 'neighbor-after',
+      stepIndex: 101,
+    };
+    const first = appendToolDecisions([neighborBefore, original, neighborAfter], path);
+    assert.equal(first.appended, 3);
+
+    // Now replay with the real projector output (success) — replace mode
+    // should overwrite the existing decisionId's row with the new content
+    // without disturbing the neighbors.
+    const replaced = appendToolDecisions(rows, path, { replace: true });
+    assert.equal(replaced.replaced, 1);
+    assert.equal(replaced.appended, 0);
+
+    const readBack = readToolDecisionCorpus(path);
+    assert.equal(readBack.length, 3);
+    // Order preserved.
+    assert.equal(readBack[0].decisionId, 'neighbor-before');
+    assert.equal(readBack[1].decisionId, rows[0].decisionId);
+    assert.equal(readBack[2].decisionId, 'neighbor-after');
+    // Content actually replaced.
+    assert.equal(readBack[1].result?.status, 'success');
+  });
+
+  it('replace mode appends genuinely-new decisionIds at the end', () => {
+    const dir = tempDir(); dirs.push(dir);
+    const path = resolveToolDecisionCorpusPath({ explicitDir: dir });
+    const { rows } = projectSessionEventsToDecisions({
+      events: buildPlanningWithToolCall(),
+    });
+    appendToolDecisions(rows, path);
+    const brandNew: ToolDecisionRow = {
+      ...rows[0],
+      decisionId: 'brand-new-id',
+      stepIndex: 999,
+    };
+    const res = appendToolDecisions([brandNew], path, { replace: true });
+    assert.equal(res.appended, 1);
+    assert.equal(res.replaced, 0);
+    const readBack = readToolDecisionCorpus(path);
+    assert.equal(readBack.at(-1)?.decisionId, 'brand-new-id');
+  });
 });

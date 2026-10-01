@@ -2704,7 +2704,7 @@ describe('canonical supported-model helpers', () => {
       routing: 58, planning: 82, coding: 83, review: 80, classify: 56,
     });
     assert.equal(model.defaultLadderEligible, true);
-    assert.equal(model.contextWindowTokens, 1_310_720);
+    assert.equal(model.contextWindowTokens, 1_048_576);
     assert.equal(model.pricing?.inputCostPerMTok, 0.15);
     assert.equal(model.pricing?.outputCostPerMTok, 0.5);
     // Live OpenRouter catalog raised cache-read to 0.05 per MTok; the registry

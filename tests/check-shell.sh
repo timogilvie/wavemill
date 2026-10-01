@@ -106,6 +106,7 @@ for f in \
   "$REPO_DIR"/tests/wavemill-guards.test.sh \
   "$REPO_DIR"/tests/dashboard-incidents-section.test.sh \
   "$REPO_DIR"/tests/review-scope-baseline-handoff.test.sh \
+  "$REPO_DIR"/tests/ready-failure-blocks-pr-label.test.sh \
   "$REPO_DIR"/tests/base-ref-stale-local.test.sh \
   "$REPO_DIR"/tests/wavemill-mill-advance.test.sh \
   "$REPO_DIR"/tests/wavemill-backlog-budget.test.sh \
@@ -141,6 +142,7 @@ for f in \
   "$REPO_DIR"/tests/native-terminal-failure.test.sh \
   "$REPO_DIR"/tests/native-failure-classification.test.sh \
   "$REPO_DIR"/tests/challenger-transient-retry.test.sh \
+  "$REPO_DIR"/tests/coding-dirty-handoff.test.sh \
   "$REPO_DIR"/tests/challenge-deferred-arm.test.sh \
   "$REPO_DIR"/tests/parent-monitor-function-drift.test.sh \
   "$REPO_DIR"/tests/linear-state-canonicalization.test.sh \
@@ -198,6 +200,7 @@ for f in \
   "$REPO_DIR"/tests/fixtures/lifecycle/closed_primary_pr_cleanup.sh \
   "$REPO_DIR"/tests/fixtures/lifecycle/closed_primary_sibling_merged_marks_done.sh \
   "$REPO_DIR"/tests/fixtures/lifecycle/coding_agent_exit_interrupted.sh \
+  "$REPO_DIR"/tests/fixtures/lifecycle/integration_window_observer_only.sh \
   "$REPO_DIR"/tests/incident-fixtures-terminal-panes.test.sh \
   "$REPO_DIR"/tests/incident-fixtures-safety-controls.test.sh \
   "$REPO_DIR"/tests/lib/incident-fixture-harness.sh \
@@ -3302,6 +3305,7 @@ echo "=== Integration Window Lifecycle Fixtures ==="
 for fixture in \
   "$REPO_DIR/tests/fixtures/lifecycle/integration_window_created.sh" \
   "$REPO_DIR/tests/fixtures/lifecycle/integration_window_observer_enabled.sh" \
+  "$REPO_DIR/tests/fixtures/lifecycle/integration_window_observer_only.sh" \
   "$REPO_DIR/tests/fixtures/lifecycle/integration_window_clean_shutdown.sh" \
   "$REPO_DIR/tests/fixtures/lifecycle/integration_window_disabled.sh" \
   "$REPO_DIR/tests/fixtures/lifecycle/integration_window_recovers_missing_tend.sh" \
