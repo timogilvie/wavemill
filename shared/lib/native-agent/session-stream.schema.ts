@@ -163,6 +163,12 @@ export interface ModelRequestEvent extends EventBase {
   providerToolsDigest?: string;
   /** Policy config version/digest. */
   policyConfigDigest?: string;
+  /** Turns remaining in the loop budget before this request fired. */
+  turnBudgetRemaining?: number;
+  /** Tool calls remaining in the loop budget before this request fired. */
+  toolCallBudgetRemaining?: number;
+  /** Cumulative tokens (input + output) spent on the trace before this request fired. */
+  tokensUsedSoFar?: number;
 }
 
 /** Response event: after model call, captures assistant message. */

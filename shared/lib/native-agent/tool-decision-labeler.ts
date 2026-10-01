@@ -83,7 +83,7 @@ export interface ToolDecisionLabelRow {
   stepIndex: number;
 
   /** Universal local signal — result status from the row. */
-  toolStatusLocal: 'success' | 'error' | 'skipped' | 'n/a';
+  toolStatusLocal: 'success' | 'error' | 'denied' | 'timeout' | 'skipped' | 'n/a';
 
   /** True when a later commit reverted the mutation this decision produced. */
   exactReversion: boolean;
