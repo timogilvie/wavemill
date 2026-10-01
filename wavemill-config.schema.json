@@ -1993,6 +1993,19 @@
             },
             "additionalProperties": false
         },
+        "queuePlanner": {
+            "type": "object",
+            "description": "Wave planning strategy for tools/plan-queue.ts (HOK-3131). Default is 'legacy' (the LLM classifies every dependency edge).",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["legacy", "grounded"],
+                    "default": "legacy",
+                    "description": "'grounded' predicts each task's touch set, scores pair conflicts deterministically, and only asks the LLM to judge ordering for overlapping pairs."
+                }
+            },
+            "additionalProperties": false
+        },
         "monitor": {
             "type": "object",
             "description": "Legacy monitor-specific settings kept for backwards-compatible aliases.",

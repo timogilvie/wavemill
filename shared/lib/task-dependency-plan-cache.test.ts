@@ -11,12 +11,17 @@ import {
   getTaskDependencyCachePath,
   loadCache,
   lookupEdge,
+  lookupGroundedVerdict,
+  lookupTouchSet,
+  TOUCH_SET_TTL_MS,
   mergeEdges,
   pruneCache,
   recordEdge,
   retainPreviousFingerprints,
   saveCache,
   type CacheFile,
+  type CachedGroundedVerdict,
+  type CachedTouchSet,
 } from './task-dependency-plan-cache.ts';
 
 let repoDir: string;
@@ -126,6 +131,101 @@ describe('task-dependency-plan-cache', () => {
 
     assert.deepEqual(cache, createCache({ fingerprints }));
     assert.equal(warn.mock.callCount(), 1);
+  });
+
+  describe('grounded planner blocks (HOK-3131)', () => {
+    const touchSet = (fingerprint: string, computedAt = '2026-10-01T00:00:00.000Z'): CachedTouchSet => ({
+      fingerprint,
+      computedAt,
+      entries: [{ path: 'shared/lib/wavemill-monitor.sh', source: 'explicit', symbols: ['poll_loop'] }],
+    });
+    const verdict = (a: string, b: string, aFingerprint: string, bFingerprint: string): CachedGroundedVerdict => ({
+      a,
+      b,
+      aFingerprint,
+      bFingerprint,
+      verdict: 'conflict',
+      evidence: 'Both modify shared/lib/wavemill-monitor.sh',
+      classifiedAt: '2026-10-01T00:00:00.000Z',
+    });
+
+    it('round-trips touchSets and groundedVerdicts through save and load', async () => {
+      const cache = createCache({
+        touchSets: { 'HOK-1': touchSet('fp-1') },
+        groundedVerdicts: [verdict('HOK-1', 'HOK-2', 'fp-1', 'fp-2')],
+      });
+      await saveCache(repoDir, 'sample-project', cache);
+      const loaded = loadCache(repoDir, 'sample-project');
+      assert.deepEqual(loaded.touchSets, cache.touchSets);
+      assert.deepEqual(loaded.groundedVerdicts, cache.groundedVerdicts);
+    });
+
+    it('loads legacy caches without the grounded blocks unchanged', async () => {
+      await saveCache(repoDir, 'sample-project', createCache({ fingerprints: { 'HOK-1': 'fp-1' } }));
+      const loaded = loadCache(repoDir, 'sample-project');
+      assert.equal(loaded.touchSets, undefined);
+      assert.equal(loaded.groundedVerdicts, undefined);
+    });
+
+    it('drops malformed grounded entries individually and keeps edges', () => {
+      const cachePath = getTaskDependencyCachePath(repoDir, 'sample-project');
+      mkdirSync(join(repoDir, '.wavemill', 'cache', 'task-dependency-plans'), { recursive: true });
+      const fingerprints = { 'HOK-1': 'fp-1' };
+      writeFileSync(cachePath, `${JSON.stringify({
+        ...createCache({ fingerprints }),
+        touchSets: { 'HOK-1': touchSet('fp-1'), 'HOK-2': { fingerprint: 'fp-2', entries: [{ path: 'x', source: 'guess' }] } },
+        groundedVerdicts: [verdict('HOK-1', 'HOK-2', 'fp-1', 'fp-2'), { a: 'HOK-1', b: 'HOK-2', verdict: 'maybe' }],
+      })}\n`, 'utf8');
+      const warn = mock.method(console, 'warn', () => undefined);
+
+      const cache = loadCache(repoDir, 'sample-project');
+
+      assert.deepEqual(Object.keys(cache.touchSets ?? {}), ['HOK-1']);
+      assert.equal(cache.groundedVerdicts?.length, 1);
+      assert.deepEqual(cache.fingerprints, fingerprints);
+      assert.equal(warn.mock.callCount(), 2);
+    });
+
+    it('drops a malformed grounded container without discarding the cache', () => {
+      const cachePath = getTaskDependencyCachePath(repoDir, 'sample-project');
+      mkdirSync(join(repoDir, '.wavemill', 'cache', 'task-dependency-plans'), { recursive: true });
+      writeFileSync(cachePath, `${JSON.stringify({ ...createCache(), touchSets: [], groundedVerdicts: {} })}\n`, 'utf8');
+      mock.method(console, 'warn', () => undefined);
+
+      const cache = loadCache(repoDir, 'sample-project');
+
+      assert.deepEqual(cache, createCache());
+    });
+
+    it('pruneCache keeps only grounded entries whose fingerprints still match', () => {
+      const tasks = [{ id: 'HOK-1', title: 'One' }, { id: 'HOK-2', title: 'Two' }];
+      const fp1 = computeTaskFingerprint(tasks[0]);
+      const fp2 = computeTaskFingerprint(tasks[1]);
+      const pruned = pruneCache(createCache({
+        touchSets: { 'HOK-1': touchSet(fp1), 'HOK-2': touchSet('stale'), 'HOK-9': touchSet('gone') },
+        groundedVerdicts: [verdict('HOK-1', 'HOK-2', fp1, fp2), verdict('HOK-1', 'HOK-2', fp1, 'stale'), verdict('HOK-1', 'HOK-9', fp1, 'gone')],
+      }), tasks);
+      assert.deepEqual(Object.keys(pruned.touchSets ?? {}), ['HOK-1']);
+      assert.deepEqual(pruned.groundedVerdicts, [verdict('HOK-1', 'HOK-2', fp1, fp2)]);
+      assert.equal(pruneCache(createCache(), tasks).touchSets, undefined);
+    });
+
+    it('lookupTouchSet honors fingerprint and TTL', () => {
+      const nowMs = Date.parse('2026-10-01T00:00:00.000Z');
+      const cache = { touchSets: { 'HOK-1': touchSet('fp-1') } };
+      assert.ok(lookupTouchSet(cache, 'HOK-1', 'fp-1', nowMs));
+      assert.equal(lookupTouchSet(cache, 'HOK-1', 'fp-other', nowMs), undefined);
+      assert.equal(lookupTouchSet(cache, 'HOK-1', 'fp-1', nowMs + TOUCH_SET_TTL_MS + 1), undefined);
+      assert.equal(lookupTouchSet({ touchSets: { 'HOK-1': touchSet('fp-1', 'not-a-date') } }, 'HOK-1', 'fp-1', nowMs), undefined);
+      assert.equal(lookupTouchSet({}, 'HOK-1', 'fp-1', nowMs), undefined);
+    });
+
+    it('lookupGroundedVerdict matches either orientation with matching fingerprints', () => {
+      const cache = { groundedVerdicts: [verdict('HOK-1', 'HOK-2', 'fp-1', 'fp-2')] };
+      assert.ok(lookupGroundedVerdict(cache, 'HOK-1', 'HOK-2', 'fp-1', 'fp-2'));
+      assert.ok(lookupGroundedVerdict(cache, 'HOK-2', 'HOK-1', 'fp-2', 'fp-1'));
+      assert.equal(lookupGroundedVerdict(cache, 'HOK-1', 'HOK-2', 'fp-1', 'fp-changed'), undefined);
+    });
   });
 
   it('preserves the inference block through pruneCache', () => {
