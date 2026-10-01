@@ -6811,13 +6811,13 @@ native_terminal_failure_next_action() {
     coding-dirty-handoff)
       printf 'the coding agent exited after writing .coding-complete with uncommitted output and did not repair it when relaunched (completion-protocol failure); the challenger is forfeited so the primary proceeds\n' ;;
     planning-turn-limit)
-      printf 'the model exhausted its planning turn budget without emitting a final plan; relaunch the phase on a stronger planner or increase maxTurns\n' ;;
+      printf 'the model exhausted its planning turn budget without emitting a final plan. Relaunch the phase on a stronger planner or increase maxTurns\n' ;;
     planning-artifact-invalid|planning-artifact-invalid:*)
-      printf 'the plan artifact failed structural validation after one repair turn; inspect the recorded validationError and relaunch on a stronger planner\n' ;;
+      printf 'the plan artifact failed structural validation after one repair turn. Inspect the recorded validationError and relaunch on a stronger planner\n' ;;
     review-no-output)
-      printf 'the review model finished without emitting findings or a terminal verdict; relaunch the review phase on a stronger reviewer\n' ;;
+      printf 'the review model finished without emitting findings or a terminal verdict. Relaunch the review phase on a stronger reviewer\n' ;;
     coding-exited-without-result)
-      printf 'the coding agent exited without recording a terminal result (durable commits preserved); relaunch coding to resume from the last durable commit\n' ;;
+      printf 'the coding agent exited without recording a terminal result (durable commits preserved). Relaunch coding to resume from the last durable commit\n' ;;
     native-unclassified)
       printf 'inspect the terminal failure detail and classify it manually - unrecognized failure signature, extend the classifier when this shape recurs\n' ;;
     *)
