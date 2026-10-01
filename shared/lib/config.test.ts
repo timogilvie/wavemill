@@ -4587,6 +4587,8 @@ for (const integ of TRISTATES) {
           // mergeQueue.enabled defaults to true; false only when explicitly set
           const mqOn = mq !== 'false';
           assert.equal(caps.mergeQueue, backstage && mqOn, 'mergeQueue');
+          // HOK-3094: observer is on by default whatever the integration setting
+          assert.equal(caps.observer, true, 'observer');
         } finally {
           cleanUp(tmp);
         }
@@ -4595,7 +4597,7 @@ for (const integ of TRISTATES) {
   }
 }
 
-test('observer=true requires backstage; if backstage off, observer stays off', () => {
+test('HOK-3094: integration off + observer.enabled=true → observer on, tend off, operator merges', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
@@ -4604,7 +4606,10 @@ test('observer=true requires backstage; if backstage off, observer stays off', (
       observer: { enabled: true },
     }));
     const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
-    assert.equal(caps.observer, false);
+    assert.equal(caps.observer, true);
+    assert.equal(caps.tend, false);
+    assert.equal(caps.mergeExecutor, 'operator');
+    assert.equal(caps.reasons.observer, 'observer on (default; independent of integration)');
   } finally {
     cleanUp(tmp);
   }
@@ -4626,16 +4631,35 @@ test('observer=true and backstage on → observer true', () => {
   }
 });
 
-test('observer default=false: backstage on, observer.enabled unset → observer=false', () => {
+for (const integrationEnabled of [true, false]) {
+  test(`HOK-3094: observer defaults on (integration.enabled=${integrationEnabled}, observer key unset)`, () => {
+    const tmp = makeTempRepo();
+    try {
+      clearConfigCache();
+      writeConfig(tmp, JSON.stringify({
+        integration: { enabled: integrationEnabled, useMillSession: true },
+      }));
+      const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
+      assert.equal(caps.observer, true);
+      assert.equal(caps.tend, integrationEnabled);
+    } finally {
+      cleanUp(tmp);
+    }
+  });
+}
+
+test('HOK-3094: observer.enabled=false opts out even with integration on', () => {
   const tmp = makeTempRepo();
   try {
     clearConfigCache();
     writeConfig(tmp, JSON.stringify({
       integration: { enabled: true, useMillSession: true },
+      observer: { enabled: false },
     }));
     const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
     assert.equal(caps.observer, false);
     assert.equal(caps.tend, true);
+    assert.equal(caps.reasons.observer, 'observer.enabled=false');
   } finally {
     cleanUp(tmp);
   }

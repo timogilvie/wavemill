@@ -2666,6 +2666,32 @@ else
   fail "backstage health did not render disabled observer status and retry count"
 fi
 
+# HOK-3094: observer-only session (integration off) shows tend disabled and
+# the observer's own health.
+cat > "$TMP_DIR/backstage-health.json" <<JSON
+{
+  "status": "disabled",
+  "services": {
+    "tend": {
+      "status": "disabled",
+      "detail": "tend is off: integration.enabled=false"
+    },
+    "observer": {
+      "status": "healthy",
+      "heartbeatAt": "$(iso_at_offset -10)",
+      "instanceCount": 1
+    }
+  }
+}
+JSON
+run_render "$backstage_state" "$WORKTREES_DIR" "$backstage_behavior" "$backstage_output"
+backstage_observer_only_render="$(cat "$backstage_output")"
+if [[ "$backstage_observer_only_render" == *"Tend: disabled"* && "$backstage_observer_only_render" == *"Observer: healthy"* ]]; then
+  pass "backstage health renders observer health when tend is disabled"
+else
+  fail "backstage health did not render observer health with tend disabled"
+fi
+
 cat > "$TMP_DIR/queue-health.json" <<'JSON'
 {
   "status": "degraded",

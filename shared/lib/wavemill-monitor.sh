@@ -19906,6 +19906,16 @@ restart_backstage_observer_loop() {
   observer_service_mode="$(wavemill_observer_linear_service_mode "$merged" "$REPO_DIR")"
   [[ "$observer_service_mode" == "off" ]] || wavemill_observer_ensure_linear_key "$REPO_DIR"
   observer_cmd="$(wavemill_build_observer_loop_command "$SESSION" "$REPO_DIR" "$TOOLS_DIR" "$observer_interval" "$observer_max_log_lines" "$observer_service_mode")"
+  # HOK-3094: in an observer-only session (tend off) nothing else keeps the
+  # backstage window alive, so recreate it with the observer as its first pane.
+  if ! tmux list-panes -t "$SESSION:$WAVEMILL_WINDOW_BACKSTAGE" -F '#{pane_id}' >/dev/null 2>&1; then
+    tmux new-window -d -t "$SESSION" -n "$WAVEMILL_WINDOW_BACKSTAGE" -c "$REPO_DIR" "$observer_cmd" >/dev/null 2>&1 || return 1
+    new_pane="$(tmux display-message -p -t "$SESSION:$WAVEMILL_WINDOW_BACKSTAGE.0" '#{pane_id}' 2>/dev/null || true)"
+    [[ -n "$new_pane" ]] || return 1
+    wavemill_set_tmux_pane_title "$new_pane" "$WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE"
+    printf '%s\n' "$new_pane"
+    return 0
+  fi
   result="$(wavemill_reconcile_backstage_service_pane "$SESSION" "$WAVEMILL_WINDOW_BACKSTAGE" "$WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE" "$observer_cmd" "restart" "$SESSION:$WAVEMILL_WINDOW_BACKSTAGE.0" -d -v -p 25 -c "$REPO_DIR" || true)"
   IFS=$'\t' read -r new_pane action _killed <<< "$result"
   [[ -n "$new_pane" ]] || return 1
@@ -19961,9 +19971,14 @@ check_backstage_observer_health() {
       return 0
       ;;
     'backstage-missing')
-      [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "observer" "backstage-missing" "$detail" 0 "" "" "" 0
-      LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS="backstage-missing"
-      return 0
+      # HOK-3094: with tend on, tend's own health check owns window recovery.
+      # With tend off the observer owns the window, so it goes through the
+      # normal one-restart / cooldown / needs-user flow, which recreates it.
+      if backstage_health_enabled; then
+        [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "observer" "backstage-missing" "$detail" 0 "" "" "" 0
+        LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS="backstage-missing"
+        return 0
+      fi
       ;;
   esac
 
@@ -20029,7 +20044,7 @@ check_backstage_health() {
 
   health_file="$(wavemill_backstage_health_file "$STATE_DIR" 2>/dev/null || true)"
   if ! backstage_health_enabled; then
-    [[ -n "$health_file" ]] && wavemill_write_backstage_health "$health_file" "disabled" "integration mill-session backstage health checks are disabled"
+    [[ -n "$health_file" ]] && wavemill_write_backstage_health "$health_file" "disabled" "tend is off (integration mill session disabled)"
     LAST_BACKSTAGE_HEALTH_STATUS="disabled"
     LAST_BACKSTAGE_TEND_ALIVE_IDENTITY=""
     return 0

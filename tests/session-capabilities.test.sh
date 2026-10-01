@@ -137,4 +137,20 @@ EOF
   fi
 ) || exit 1
 
-printf 'session-capabilities.test.sh: all 6 checks passed\n'
+# ─── Test 7: HOK-3094 real resolver: integration off → observer on, tend off ─
+repo7="$tmp/repo7"
+mkdir -p "$repo7"
+printf '%s\n' '{"integration":{"enabled":false}}' > "$repo7/.wavemill-config.json"
+(
+  # shellcheck disable=SC1090
+  source "$tmp/lib.sh"
+  unset WAVEMILL_SESSION_CAPABILITIES_JSON
+  wavemill_session_cache_reset
+  TOOLS_DIR="$REPO_DIR/tools" wavemill_session_has observer "$repo7" \
+    || fail "expected observer=true with integration off (HOK-3094)"
+  if TOOLS_DIR="$REPO_DIR/tools" wavemill_session_has tend "$repo7"; then
+    fail "expected tend=false with integration off"
+  fi
+) || exit 1
+
+printf 'session-capabilities.test.sh: all 7 checks passed\n'
