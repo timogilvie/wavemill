@@ -2736,7 +2736,7 @@ load_config() {
       "_CFG_PLAN_MODEL=\($c.plan.model // "claude-opus-4-8" | @sh)",
       "_CFG_DASHBOARD_VERBOSITY=\($c.dashboard.verbosity // "info" | @sh)",
       "_CFG_DASHBOARD_LOG_TO_FILE=\(if ($c.dashboard | has("logToFile")) then $c.dashboard.logToFile else true end)",
-      "_CFG_ENTER_LAUNCHES_WAVE=\(if ($c.taskSelection | has("enterLaunchesWave")) then $c.taskSelection.enterLaunchesWave else true end)",
+      "_CFG_ENTER_ACTION=\((($c.taskSelection // {}) as $ts | if ($ts.enterAction // null) != null then $ts.enterAction elif ($ts | has("enterLaunchesWave")) then (if $ts.enterLaunchesWave then "wave" else "top-scored" end) else "none" end) | @sh)",
       "_CFG_CHALLENGE_ENABLED=\($c.challenge.enabled // false)",
       "_CFG_CHALLENGE_RATE=\($c.challenge.rate // 0.10)",
       "_CFG_CHALLENGE_AUTO_MERGE=\($c.challenge.autoMergeWinner // false)",
@@ -2806,7 +2806,12 @@ load_config() {
   PLAN_MODEL="${PLAN_MODEL:-$_CFG_PLAN_MODEL}"
   DASHBOARD_VERBOSITY="${DASHBOARD_VERBOSITY:-$_CFG_DASHBOARD_VERBOSITY}"
   DASHBOARD_LOG_TO_FILE="${DASHBOARD_LOG_TO_FILE:-$_CFG_DASHBOARD_LOG_TO_FILE}"
-  ENTER_LAUNCHES_WAVE="${ENTER_LAUNCHES_WAVE:-$_CFG_ENTER_LAUNCHES_WAVE}"
+  # What a bare Enter does at the task picker: none (default), wave, or
+  # top-scored. The legacy taskSelection.enterLaunchesWave maps true -> wave,
+  # false -> top-scored; ENTER_LAUNCHES_WAVE is kept as a derived alias.
+  ENTER_ACTION="${ENTER_ACTION:-$_CFG_ENTER_ACTION}"
+  case "$ENTER_ACTION" in none|wave|top-scored) ;; *) ENTER_ACTION="none" ;; esac
+  if [[ "$ENTER_ACTION" == "wave" ]]; then ENTER_LAUNCHES_WAVE="true"; else ENTER_LAUNCHES_WAVE="false"; fi
   CHALLENGE_ENABLED="${CHALLENGE_ENABLED:-$_CFG_CHALLENGE_ENABLED}"
   CHALLENGE_RATE="${CHALLENGE_RATE:-$_CFG_CHALLENGE_RATE}"
   CHALLENGE_MODELS_JSON="${CHALLENGE_MODELS_JSON:-null}"
@@ -2845,7 +2850,7 @@ load_config() {
   export PROJECT_NAME MAX_SELECT MAX_DISPLAY PLAN_MAX_DISPLAY PLAN_RESEARCH PLAN_MODEL
   export PROJECT_CONTEXT_COMPACTION_THRESHOLD_KB PROJECT_CONTEXT_RECENT_WORK_KEEP
   export DASHBOARD_VERBOSITY DASHBOARD_LOG_TO_FILE
-  export ENTER_LAUNCHES_WAVE
+  export ENTER_ACTION ENTER_LAUNCHES_WAVE
   export CHALLENGE_ENABLED CHALLENGE_RATE CHALLENGE_MODELS_JSON
   export CHALLENGE_COMPARISON_MODEL CHALLENGE_AUTO_MERGE
   export INTEGRATION_MERGE_METHOD INTEGRATION_DELETE_BRANCH_AFTER_MERGE
@@ -2860,7 +2865,7 @@ load_config() {
   unset _CFG_PLANNING_MODE _CFG_MAX_RETRIES _CFG_RETRY_DELAY _CFG_MAX_SELECT _CFG_MAX_DISPLAY
   unset _CFG_PLAN_MAX_DISPLAY _CFG_PLAN_RESEARCH _CFG_PLAN_MODEL
   unset _CFG_PROJECT_CONTEXT_COMPACTION_THRESHOLD_KB _CFG_PROJECT_CONTEXT_RECENT_WORK_KEEP
-  unset _CFG_DASHBOARD_VERBOSITY _CFG_DASHBOARD_LOG_TO_FILE _CFG_ENTER_LAUNCHES_WAVE
+  unset _CFG_DASHBOARD_VERBOSITY _CFG_DASHBOARD_LOG_TO_FILE _CFG_ENTER_ACTION
   unset _CFG_CHALLENGE_ENABLED _CFG_CHALLENGE_RATE _CFG_CHALLENGE_AUTO_MERGE
   unset _CFG_INTEGRATION_MERGE_METHOD _CFG_INTEGRATION_DELETE_BRANCH_AFTER_MERGE
   unset _CFG_MERGE_QUEUE_ENABLED _CFG_MERGE_QUEUE_MAX_CONCURRENT

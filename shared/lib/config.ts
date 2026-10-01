@@ -81,6 +81,9 @@ export interface DashboardConfig {
 }
 
 export interface TaskSelectionConfig {
+  /** What a bare Enter does at the task pickers; defaults to 'none'. */
+  enterAction?: 'none' | 'wave' | 'top-scored';
+  /** @deprecated Use enterAction. true maps to 'wave', false to 'top-scored'. */
   enterLaunchesWave?: boolean;
 }
 
