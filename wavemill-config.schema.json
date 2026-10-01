@@ -1534,6 +1534,11 @@
                         "enabled": {
                             "type": "boolean",
                             "default": false
+                        },
+                        "allowFullSuiteTests": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "HOK-3145: when true, native coding agents may run full-suite test commands (npm test, pnpm test, yarn test, unsharded tests/run-*.sh). Defaults to false so a coding agent cannot loop on a multi-minute composite chain; CI runs the full suite anyway."
                         }
                     },
                     "additionalProperties": false

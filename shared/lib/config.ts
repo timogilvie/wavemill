@@ -451,6 +451,13 @@ export interface NativeAgentProvidersConfig {
 
 export interface NativePatchCodingConfig {
   enabled?: boolean;
+  /**
+   * HOK-3145: when true, native coding agents may run full-suite test commands
+   * (`npm test`, `pnpm test`, `yarn test`, unsharded `tests/run-*.sh`). Defaults
+   * to false so a coding agent cannot loop on a multi-minute composite chain —
+   * CI runs the full suite anyway.
+   */
+  allowFullSuiteTests?: boolean;
 }
 
 export interface CanaryCohortMemberConfig {
@@ -688,6 +695,7 @@ export interface NativeExpansionConfig {
 
 export interface ResolvedNativePatchCodingConfig {
   enabled: boolean;
+  allowFullSuiteTests: boolean;
 }
 
 export interface IntegrationConfig {
@@ -2678,6 +2686,7 @@ export function getNativePatchCodingConfig(repoDir?: string): ResolvedNativePatc
   const config = getNativeAgentConfig(repoDir);
   return {
     enabled: config.patchCoding?.enabled === true,
+    allowFullSuiteTests: config.patchCoding?.allowFullSuiteTests === true,
   };
 }
 
