@@ -40,6 +40,7 @@ interface BackfillSummary {
     skipped: number;
     processed: number;
     appended: number;
+    replaced: number;
   };
   dryRun: boolean;
 }
@@ -141,7 +142,13 @@ export function backfillToolDecisions(opts: BackfillOptions): BackfillSummary {
   if (!opts.harvestOnly) {
     const mainRepo = resolve(opts.repoDir);
     const eventsDir = resolveSessionEventsDir(mainRepo);
-    const backfillSummary = { since: since.toISOString(), skipped: 0, processed: 0, appended: 0 };
+    const backfillSummary = {
+      since: since.toISOString(),
+      skipped: 0,
+      processed: 0,
+      appended: 0,
+      replaced: 0,
+    };
 
     if (existsSync(eventsDir)) {
       let entries: string[];
@@ -175,11 +182,16 @@ export function backfillToolDecisions(opts: BackfillOptions): BackfillSummary {
         const res = captureToolDecisionsFromStream({
           eventStreamPath: streamPath,
           repoDir: mainRepo,
+          // HOK-3122: backfill must overwrite existing decisionId rows in
+          // place so historical streams gain real `result.status` values
+          // from the projector's positional fallback pairing.
+          replace: true,
         });
 
         if (res.ok) {
           backfillSummary.processed += 1;
           backfillSummary.appended += res.appended ?? 0;
+          backfillSummary.replaced += res.replaced ?? 0;
         }
       }
     }
@@ -211,6 +223,7 @@ function formatSummary(summary: BackfillSummary): string {
     lines.push(`  skipped:    ${summary.backfill.skipped}`);
     lines.push(`  processed:  ${summary.backfill.processed}`);
     lines.push(`  appended:   ${summary.backfill.appended}`);
+    lines.push(`  replaced:   ${summary.backfill.replaced}`);
     lines.push('');
   }
 

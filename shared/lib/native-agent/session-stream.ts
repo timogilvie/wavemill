@@ -323,6 +323,9 @@ export class SessionStreamWriter {
     toolMenuDigest?: string;
     providerToolsDigest?: string;
     policyConfigDigest?: string;
+    turnBudgetRemaining?: number;
+    toolCallBudgetRemaining?: number;
+    tokensUsedSoFar?: number;
   }): SessionEvent {
     const event = this.createEvent({
       type: 'model_request',
@@ -338,6 +341,9 @@ export class SessionStreamWriter {
       ...(opts.toolMenuDigest && { toolMenuDigest: opts.toolMenuDigest }),
       ...(opts.providerToolsDigest && { providerToolsDigest: opts.providerToolsDigest }),
       ...(opts.policyConfigDigest && { policyConfigDigest: opts.policyConfigDigest }),
+      ...(opts.turnBudgetRemaining !== undefined && { turnBudgetRemaining: opts.turnBudgetRemaining }),
+      ...(opts.toolCallBudgetRemaining !== undefined && { toolCallBudgetRemaining: opts.toolCallBudgetRemaining }),
+      ...(opts.tokensUsedSoFar !== undefined && { tokensUsedSoFar: opts.tokensUsedSoFar }),
     });
     this.append(event);
     return event;

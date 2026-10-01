@@ -42,6 +42,13 @@ export interface CaptureOptions {
   provider?: string;
   /** Optional runtime label ("native" by default). */
   runtime?: string;
+  /**
+   * Backfill-only. When true, rows whose `decisionId` already exists in
+   * the corpus overwrite the existing line in place rather than skipping.
+   * Live single-session capture must leave this false (the default) so
+   * concurrent sessions never clobber each other's rows.
+   */
+  replace?: boolean;
 }
 
 export interface CaptureResult {
@@ -51,6 +58,7 @@ export interface CaptureResult {
   eventCount?: number;
   appended?: number;
   skippedDuplicates?: number;
+  replaced?: number;
   warnings?: string[];
   rejected?: AppendResult['rejected'];
 }
@@ -115,13 +123,16 @@ export function captureToolDecisionsFromStream(opts: CaptureOptions): CaptureRes
           return true;
         });
 
-    const append = appendToolDecisions(allowedRows, corpusPath);
+    const append = appendToolDecisions(allowedRows, corpusPath, {
+      ...(opts.replace ? { replace: true } : {}),
+    });
     return {
       ok: true,
       corpusPath,
       eventCount: events.length,
       appended: append.appended,
       skippedDuplicates: append.skippedDuplicates,
+      replaced: append.replaced,
       warnings: projection.warnings,
       rejected: [...scriptedRejections, ...append.rejected],
     };
