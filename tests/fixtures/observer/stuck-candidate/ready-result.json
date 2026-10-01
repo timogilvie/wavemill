@@ -1,0 +1,19 @@
+{
+  "stage": "ready",
+  "status": "completed",
+  "startedAt": "{{READY_STARTED_AT}}",
+  "finishedAt": "{{READY_FINISHED_AT}}",
+  "agent": "claude",
+  "model": "claude-test",
+  "notes": "HOK-3096 stuck-candidate fixture: a merge candidate that has been sitting in the lane long enough to be flagged stuck when no merge consumer is active.",
+  "artifacts": {
+    "type": "ready",
+    "verdict": "pass",
+    "queueState": "merge-candidate",
+    "readyHeadSha": "{{HEAD_SHA}}",
+    "targetBaseSha": "{{BASE_SHA}}",
+    "candidatePromotedAt": "{{CANDIDATE_PROMOTED_AT}}",
+    "candidateLastProgressAt": "{{CANDIDATE_LAST_PROGRESS_AT}}",
+    "candidateSkipReason": null
+  }
+}
