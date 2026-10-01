@@ -9,6 +9,8 @@ import {
   createCommandTools,
   createRunFormatTool,
   createRunTestsTool,
+  CommandRunHistory,
+  MAX_FORMAT_TIMEOUT_MS,
   runScopedCommand,
   type RunCommandDetails,
 } from './command-tools.ts';
@@ -70,7 +72,11 @@ describe('native-agent command tool registry and substrate facade', () => {
           command: `node -e "setTimeout(function(){},90000)"`,
           worktreePath: repo,
           defaultTimeoutMs: 60_000,
+          maxTimeoutMs: MAX_FORMAT_TIMEOUT_MS,
           timeoutMs: 200,
+          allowFullSuite: true,
+          history: new CommandRunHistory(),
+          fingerprintFn: () => 'fixed',
         }),
         new Promise<never>((_, reject) => {
           setTimeout(() => reject(new Error('override timeout test hung')), 10_000);
