@@ -27,6 +27,7 @@ import {
 } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
+import { resolveFromMainRepo } from '../git-utils.ts';
 import {
   parseToolDecisionJsonl,
   validateToolDecisionRow,
@@ -61,7 +62,7 @@ const LOCK_TIMEOUT_MS = 5_000;
 
 export function resolveToolDecisionCorpusDir(repoDir?: string, explicitDir?: string): string {
   if (explicitDir) return resolve(explicitDir);
-  return resolve(repoDir || process.cwd(), DEFAULT_CORPUS_DIR);
+  return resolveFromMainRepo(DEFAULT_CORPUS_DIR, repoDir);
 }
 
 export function resolveToolDecisionCorpusPath(opts: {

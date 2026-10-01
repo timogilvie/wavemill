@@ -17,7 +17,13 @@ export type TerminalFailureKind =
   | 'native-stage-timeout'
   | 'policy-denied'
   | 'cancelled'
-  | 'native-unclassified';
+  | 'native-unclassified'
+  // HOK-3128: the coding agent wrote `.coding-complete` but exited leaving
+  // uncommitted output, and the bounded dirty-handoff relaunch was exhausted.
+  | 'coding-dirty-handoff'
+  // HOK-3128: a tracked no-PR arm showed no agent progress past the stall
+  // grace, so the tend gate / resolver retired it to release its sibling.
+  | 'sibling-stalled';
 
 export type ArmFaultClass =
   | 'harness-fault'
@@ -93,6 +99,16 @@ export function classifyArmFault(input: { failureKind?: string | null; detail?: 
     // provider delivered output, so this is model quality signal.
     case 'native-completion-protocol':
       return 'model-fault';
+    // HOK-3128: the model finished coding but left its own output uncommitted
+    // and did not repair it when relaunched with a targeted instruction — the
+    // same completion-protocol failure, detected by the monitor instead.
+    case 'coding-dirty-handoff':
+      return 'model-fault';
+    // HOK-3128: the mill lost track of a no-PR arm (no agent evidence past the
+    // stall grace). Nothing proves the model was at fault, so keep it out of
+    // quality signal.
+    case 'sibling-stalled':
+      return 'harness-fault';
     // Unattributed failures stay excluded from quality signal so routing
     // never learns from evidence-free classifications.
     case 'native-unclassified':

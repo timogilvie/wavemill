@@ -14,6 +14,7 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
+import * as path from 'node:path';
 
 import { parseSessionEventJsonl, type SessionEvent } from './session-stream.schema.ts';
 import { projectSessionEventsToDecisions } from './tool-decision-projector.ts';
@@ -79,6 +80,18 @@ export function captureToolDecisionsFromStream(opts: CaptureOptions): CaptureRes
       ...(opts.provider ? { provider: opts.provider } : {}),
       ...(opts.runtime ? { runtime: opts.runtime } : {}),
     });
+
+    // Zero-row warning: if the stream had tool_call events but the projector
+    // produced zero rows, that's a regression or schema drift worth flagging.
+    const hadToolCalls = events.some((e) => e.type === 'tool_call');
+    const projectedZeroRows = projection.rows.length === 0;
+    if (hadToolCalls && projectedZeroRows) {
+      const streamLabel = path.basename(opts.eventStreamPath);
+      const msg = `tool-decision capture: 0 rows projected from stream ${streamLabel} that had tool_call events`;
+      console.warn(msg);
+      projection.warnings = [...(projection.warnings ?? []), msg];
+    }
+
     const corpusPath = resolveToolDecisionCorpusPath({
       repoDir: opts.repoDir,
       ...(opts.corpusDir ? { explicitDir: opts.corpusDir } : {}),
