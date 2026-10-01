@@ -43,7 +43,7 @@ UNSET_VARS="SESSION MAX_PARALLEL POLL_SECONDS BASE_BRANCH AGENT_CMD WORKTREE_ROO
   REQUIRE_CONFIRM PLANNING_MODE MAX_RETRIES RETRY_DELAY MAX_SELECT MAX_DISPLAY
   PROJECT_NAME LINEAR_PROJECT PLAN_MAX_DISPLAY PLAN_RESEARCH PLAN_MODEL ROUTER_ENABLED
   ROUTER_DEFAULT_MODEL AUTO_EVAL SETUP_CMD DASHBOARD_VERBOSITY DASHBOARD_LOG_TO_FILE
-  GIT_FETCH_TTL_SECONDS ENTER_LAUNCHES_WAVE
+  GIT_FETCH_TTL_SECONDS ENTER_LAUNCHES_WAVE ENTER_ACTION
   _WAVEMILL_CONFIG_LOADED"
 
 # ============================================================================
@@ -68,6 +68,7 @@ eval "$(
   echo "D_DASHBOARD_VERBOSITY='$DASHBOARD_VERBOSITY'"
   echo "D_DASHBOARD_LOG_TO_FILE='$DASHBOARD_LOG_TO_FILE'"
   echo "D_ENTER_LAUNCHES_WAVE='$ENTER_LAUNCHES_WAVE'"
+  echo "D_ENTER_ACTION='$ENTER_ACTION'"
 )"
 
 check_matches "default SESSION" '^wavemill-' "$D_SESSION"
@@ -81,7 +82,8 @@ check "default MAX_SELECT" "3" "$D_MAX_SELECT"
 check "default MAX_DISPLAY" "9" "$D_MAX_DISPLAY"
 check "default DASHBOARD_VERBOSITY" "info" "$D_DASHBOARD_VERBOSITY"
 check "default DASHBOARD_LOG_TO_FILE" "true" "$D_DASHBOARD_LOG_TO_FILE"
-check "default ENTER_LAUNCHES_WAVE" "true" "$D_ENTER_LAUNCHES_WAVE"
+check "default ENTER_LAUNCHES_WAVE" "false" "$D_ENTER_LAUNCHES_WAVE"
+check "default ENTER_ACTION is none (Enter never launches)" "none" "$D_ENTER_ACTION"
 
 # ============================================================================
 # Test 2: Repo config overrides defaults
@@ -133,6 +135,7 @@ eval "$(
   echo "R_DASHBOARD_VERBOSITY='$DASHBOARD_VERBOSITY'"
   echo "R_DASHBOARD_LOG_TO_FILE='$DASHBOARD_LOG_TO_FILE'"
   echo "R_ENTER_LAUNCHES_WAVE='$ENTER_LAUNCHES_WAVE'"
+  echo "R_ENTER_ACTION='$ENTER_ACTION'"
 )"
 
 check "repo SESSION override" "custom-session" "$R_SESSION"
@@ -146,6 +149,29 @@ check "repo PROJECT_NAME override" "Repo Project" "$R_PROJECT_NAME"
 check "repo DASHBOARD_VERBOSITY override" "status" "$R_DASHBOARD_VERBOSITY"
 check "repo DASHBOARD_LOG_TO_FILE override" "false" "$R_DASHBOARD_LOG_TO_FILE"
 check "repo ENTER_LAUNCHES_WAVE override" "false" "$R_ENTER_LAUNCHES_WAVE"
+check "legacy enterLaunchesWave=false maps to top-scored" "top-scored" "$R_ENTER_ACTION"
+
+# taskSelection.enterAction: explicit values, precedence over the legacy key,
+# and fallback to none for an unknown value.
+for case_spec in 'wave|{"enterAction":"wave"}|wave|true' \
+                 'precedence|{"enterAction":"none","enterLaunchesWave":true}|none|false' \
+                 'legacy-true|{"enterLaunchesWave":true}|wave|true' \
+                 'invalid|{"enterAction":"bogus"}|none|false'; do
+  IFS='|' read -r case_name case_ts want_action want_wave <<<"$case_spec"
+  case_dir="$TMP/enter-action-$case_name"
+  mkdir -p "$case_dir"
+  printf '{"taskSelection": %s}\n' "$case_ts" > "$case_dir/.wavemill-config.json"
+  eval "$(
+    export HOME="$FAKE_HOME"
+    unset $UNSET_VARS 2>/dev/null || true
+    source "$COMMON"
+    load_config "$case_dir"
+    echo "E_ENTER_ACTION='$ENTER_ACTION'"
+    echo "E_ENTER_LAUNCHES_WAVE='$ENTER_LAUNCHES_WAVE'"
+  )"
+  check "enterAction $case_name -> ENTER_ACTION" "$want_action" "$E_ENTER_ACTION"
+  check "enterAction $case_name -> ENTER_LAUNCHES_WAVE" "$want_wave" "$E_ENTER_LAUNCHES_WAVE"
+done
 
 write_repo_override_config() {
   cat > "$TMP/.wavemill-config.json" << 'EOF'

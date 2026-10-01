@@ -660,6 +660,7 @@ write_launch_plan() {
     --arg projectName "$PROJECT_NAME" \
     --arg autoEval "$AUTO_EVAL" \
     --arg enterLaunchesWave "${ENTER_LAUNCHES_WAVE:-true}" \
+    --arg enterAction "${ENTER_ACTION:-none}" \
     --arg dashboardVerbosity "$DASHBOARD_VERBOSITY" \
     --arg dashboardLogToFile "$DASHBOARD_LOG_TO_FILE" \
     --arg millLogFile "$MILL_LOG_FILE" \
@@ -702,6 +703,7 @@ write_launch_plan() {
         projectName: $projectName,
         autoEval: ($autoEval == "true"),
         enterLaunchesWave: ($enterLaunchesWave == "true"),
+        enterAction: $enterAction,
         dashboardVerbosity: $dashboardVerbosity,
         dashboardLogToFile: ($dashboardLogToFile == "true")
       }
@@ -1905,36 +1907,42 @@ if [[ "$SKIP_BACKLOG_SELECTION" != "true" ]]; then
     if (( STARTUP_SLOT_LIMIT < MAX_PARALLEL )); then
       log "info" "Startup launch capacity: $STARTUP_SLOT_LIMIT new task(s) (max parallel $MAX_PARALLEL, accounting for resumed work)"
     fi
+    case "${ENTER_ACTION:-none}" in
+      wave) ENTER_PROMPT_SUFFIX=", or Enter to launch recommended wave:" ;;
+      top-scored) ENTER_PROMPT_SUFFIX=", or Enter to launch the top-scored tasks:" ;;
+      *) ENTER_PROMPT_SUFFIX=":" ;;
+    esac
     if [[ -n "$DRIFT_SUBSYSTEMS" ]]; then
       if (( BLOCKED_COUNT > 0 )) && [[ "$SHOW_BLOCKED_TASKS" != "true" ]]; then
         if [[ -n "${PROJECT_CONTEXT_OVERSIZED:-}" ]]; then
-          echo "Enter numbers to run (e.g. 1 3 5), d to refresh docs, m for more, c to compact context, q to quit, or Enter to launch recommended wave:"
+          echo "Enter numbers to run (e.g. 1 3 5), d to refresh docs, m for more, c to compact context, q to quit${ENTER_PROMPT_SUFFIX}"
         else
-          echo "Enter numbers to run (e.g. 1 3 5), d to refresh docs, m for more, q to quit, or Enter to launch recommended wave:"
+          echo "Enter numbers to run (e.g. 1 3 5), d to refresh docs, m for more, q to quit${ENTER_PROMPT_SUFFIX}"
         fi
       else
         if [[ -n "${PROJECT_CONTEXT_OVERSIZED:-}" ]]; then
-          echo "Enter numbers to run (e.g. 1 3 5), d to refresh docs, c to compact context, q to quit, or Enter to launch recommended wave:"
+          echo "Enter numbers to run (e.g. 1 3 5), d to refresh docs, c to compact context, q to quit${ENTER_PROMPT_SUFFIX}"
         else
-          echo "Enter numbers to run (e.g. 1 3 5), d to refresh docs, q to quit, or Enter to launch recommended wave:"
+          echo "Enter numbers to run (e.g. 1 3 5), d to refresh docs, q to quit${ENTER_PROMPT_SUFFIX}"
         fi
       fi
     else
       if (( BLOCKED_COUNT > 0 )) && [[ "$SHOW_BLOCKED_TASKS" != "true" ]]; then
         if [[ -n "${PROJECT_CONTEXT_OVERSIZED:-}" ]]; then
-          echo "Enter numbers to run (e.g. 1 3 5), m for more, c to compact context, q to quit, or Enter to launch recommended wave:"
+          echo "Enter numbers to run (e.g. 1 3 5), m for more, c to compact context, q to quit${ENTER_PROMPT_SUFFIX}"
         else
-          echo "Enter numbers to run (e.g. 1 3 5), m for more, q to quit, or Enter to launch recommended wave:"
+          echo "Enter numbers to run (e.g. 1 3 5), m for more, q to quit${ENTER_PROMPT_SUFFIX}"
         fi
       else
         if [[ -n "${PROJECT_CONTEXT_OVERSIZED:-}" ]]; then
-          echo "Enter numbers to run (e.g. 1 3 5), c to compact context, q to quit, or Enter to launch recommended wave:"
+          echo "Enter numbers to run (e.g. 1 3 5), c to compact context, q to quit${ENTER_PROMPT_SUFFIX}"
         else
-          echo "Enter numbers to run (e.g. 1 3 5), q to quit, or Enter to launch recommended wave:"
+          echo "Enter numbers to run (e.g. 1 3 5), q to quit${ENTER_PROMPT_SUFFIX}"
         fi
       fi
     fi
-    read -r SELECTED
+    SELECTED_EOF=false
+    read -r SELECTED || SELECTED_EOF=true
 
     if [[ "$SELECTED" =~ ^[cC](ompact)?$ ]] && [[ -n "${PROJECT_CONTEXT_OVERSIZED:-}" ]]; then
       echo ""
@@ -1972,8 +1980,21 @@ if [[ "$SKIP_BACKLOG_SELECTION" != "true" ]]; then
       exit 0
     fi
 
+    if [[ -z "$SELECTED" && "${ENTER_ACTION:-none}" == "none" ]]; then
+      # taskSelection.enterAction=none: a bare Enter never launches work.
+      # Closed stdin (non-interactive restart) launches nothing and lets the
+      # monitor resume in-flight tasks; an interactive Enter re-prompts.
+      if [[ "$SELECTED_EOF" == "true" ]]; then
+        log "info" "No selection on stdin; launching no new tasks (taskSelection.enterAction=none)."
+        CANDIDATES=""
+        break
+      fi
+      log "info" "Enter does not launch tasks (taskSelection.enterAction=none). Type task numbers, or q to quit."
+      continue
+    fi
+
     if [[ -z "$SELECTED" ]]; then
-      if [[ "${ENTER_LAUNCHES_WAVE:-true}" == "true" ]]; then
+      if [[ "${ENTER_ACTION:-none}" == "wave" ]]; then
         WAVE_LAUNCH_USED=true
         startup_queue_plan=$(build_queue_plan_once "$BACKLOG" 2>/dev/null) || startup_queue_plan=""
         LAUNCH_QUEUE_PLAN="$startup_queue_plan"

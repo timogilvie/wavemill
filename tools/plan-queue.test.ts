@@ -678,4 +678,119 @@ describe('plan-queue CLI', () => {
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  describe('grounded mode (HOK-3131)', () => {
+    const groundedBacklog = [
+      { id: 'HOK-1', title: 'Monitor reap loop', description: 'Edit `shared/lib/wavemill-monitor.sh` reap loop.', state: 'Todo', priority: 1, blocks: [] },
+      { id: 'HOK-2', title: 'Monitor merge lane', description: 'Edit `shared/lib/wavemill-monitor.sh` merge lane.', state: 'Todo', priority: 2, blocks: [] },
+      { id: 'HOK-3', title: 'Observer docs', description: 'Document `docs/observer.md`.', state: 'Todo', priority: 3, blocks: [] },
+    ];
+    const conflictVerdicts = JSON.stringify({
+      verdicts: [{ a: 'HOK-1', b: 'HOK-2', verdict: 'conflict', evidence: 'Both modify shared/lib/wavemill-monitor.sh' }],
+    });
+
+    function setupGroundedRepo(mode: 'grounded' | 'legacy' = 'grounded'): { tempDir: string; backlogPath: string; reportPath: string } {
+      const tempDir = mkdtempSync(join(tmpdir(), 'plan-queue-grounded-test-'));
+      mkdirSync(join(tempDir, 'shared', 'lib'), { recursive: true });
+      mkdirSync(join(tempDir, 'docs'), { recursive: true });
+      writeFileSync(join(tempDir, 'shared', 'lib', 'wavemill-monitor.sh'), '#!/bin/bash\n', 'utf8');
+      writeFileSync(join(tempDir, 'docs', 'observer.md'), '# Observer\n', 'utf8');
+      writeFileSync(join(tempDir, '.wavemill-config.json'), `${JSON.stringify({ queuePlanner: { mode } })}\n`, 'utf8');
+      const backlogPath = join(tempDir, 'backlog.json');
+      writeFileSync(backlogPath, `${JSON.stringify(groundedBacklog, null, 2)}\n`, 'utf8');
+      return { tempDir, backlogPath, reportPath: join(tempDir, 'report.json') };
+    }
+
+    function readGroundedCache(tempDir: string, cacheKey: string) {
+      return JSON.parse(
+        readFileSync(join(tempDir, '.wavemill', 'cache', 'task-dependency-plans', `${cacheKey}.json`), 'utf8'),
+      ) as {
+        fingerprints: Record<string, string>;
+        edges: unknown[];
+        touchSets?: Record<string, { entries: Array<{ path: string; source: string }> }>;
+        groundedVerdicts?: Array<{ a: string; b: string; verdict: string; evidence?: string }>;
+        inference?: { lastOutcome: string | null };
+      };
+    }
+
+    it('plans from touch sets and the ordering judge, then serves the next run from cache', () => {
+      const { tempDir, backlogPath, reportPath } = setupGroundedRepo();
+      try {
+        const { cliPath, logPath } = writeMockClassifier(tempDir, { default: { text: conflictVerdicts } });
+        const env = { ...MILL_ENV, CLAUDE_CMD: cliPath };
+
+        const first = runPlanQueue([...millPlanArgs(backlogPath, 'grounded', reportPath), '--preview'], undefined, tempDir, env);
+
+        assert.equal(first.status, 0, first.stderr);
+        assert.deepEqual(parseJson(first.stdout), {
+          availableNow: ['HOK-1', 'HOK-2', 'HOK-3'],
+          queuedAfterDependencies: [],
+          avoidRunningTogether: [['HOK-1', 'HOK-2']],
+          needsTriage: [],
+        });
+        assert.match(first.stderr, /plan-queue: grounded planner: tasks=3 pairsScored=1 pairsSentToLlm=1 edges=1 waves=2/);
+        assert.match(first.stderr, /Grounded Waves\n- wave 0: HOK-1, HOK-3\n- wave 1: HOK-2/);
+        assert.match(first.stderr, /- HOK-2 → wave 1 \(conflicts with HOK-1: Both modify shared\/lib\/wavemill-monitor\.sh\)/);
+        assert.equal(readInvokedModels(logPath).length, 1, 'one ordering call, no touch-set prediction call');
+
+        const cache = readGroundedCache(tempDir, 'grounded');
+        assert.deepEqual(cache.touchSets?.['HOK-1'].entries, [{ path: 'shared/lib/wavemill-monitor.sh', source: 'explicit' }]);
+        assert.deepEqual(cache.groundedVerdicts?.map((v) => [v.a, v.b, v.verdict]), [['HOK-1', 'HOK-2', 'conflict']]);
+        assert.deepEqual(cache.fingerprints, {}, 'legacy fingerprints are not advanced by grounded runs');
+        assert.deepEqual(cache.edges, []);
+        assert.equal(cache.inference?.lastOutcome, 'ok');
+
+        const report = readReport(reportPath);
+        assert.equal(report.inferenceStatus, 'ok');
+        assert.equal(report.inferredEdgeCount, 1);
+        assert.equal(report.refreshKind, 'full');
+
+        const second = runPlanQueue(millPlanArgs(backlogPath, 'grounded', reportPath), undefined, tempDir, env);
+        assert.equal(second.status, 0, second.stderr);
+        assert.deepEqual(parseJson(second.stdout).avoidRunningTogether, [['HOK-1', 'HOK-2']]);
+        assert.equal(readInvokedModels(logPath).length, 1, 'second run is served from cache');
+        assert.equal(readReport(reportPath).refreshKind, 'none');
+        assert.equal(readReport(reportPath).inferenceStatus, 'ok');
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('treats malformed judge output as independent and reports the failure', () => {
+      const { tempDir, backlogPath, reportPath } = setupGroundedRepo();
+      try {
+        const { cliPath } = writeMockClassifier(tempDir, { default: { text: 'I think they conflict.' } });
+
+        const result = runPlanQueue(millPlanArgs(backlogPath, 'grounded', reportPath), undefined, tempDir, { ...MILL_ENV, CLAUDE_CMD: cliPath });
+
+        assert.equal(result.status, 0, result.stderr);
+        assert.deepEqual(parseJson(result.stdout).avoidRunningTogether, []);
+        assert.match(result.stderr, /ordering judge failed/);
+        const cache = readGroundedCache(tempDir, 'grounded');
+        assert.deepEqual(cache.groundedVerdicts, [], 'failed verdicts are not cached');
+        assert.equal(cache.inference?.lastOutcome, 'failed');
+        assert.equal(readReport(reportPath).inferenceStatus, 'failed');
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('legacy mode never touches the grounded planner', () => {
+      const { tempDir, backlogPath, reportPath } = setupGroundedRepo('legacy');
+      try {
+        const { cliPath } = writeMockClassifier(tempDir, { default: { text: JSON.stringify({ edges: [] }) } });
+
+        const result = runPlanQueue(millPlanArgs(backlogPath, 'legacy', reportPath), undefined, tempDir, { ...MILL_ENV, CLAUDE_CMD: cliPath });
+
+        assert.equal(result.status, 0, result.stderr);
+        assert.doesNotMatch(result.stderr, /grounded/);
+        const cache = readGroundedCache(tempDir, 'legacy');
+        assert.equal(cache.touchSets, undefined);
+        assert.equal(cache.groundedVerdicts, undefined);
+        assert.deepEqual(Object.keys(cache.fingerprints).sort(), ['HOK-1', 'HOK-2', 'HOK-3']);
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+  });
 });

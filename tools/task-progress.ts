@@ -64,6 +64,21 @@ function capturePaneText(target: string): string | undefined {
   }
 }
 
+/** HOK-3137: resolve a tmux pane target to its pid for the background-work probe. */
+function resolvePanePid(target: string): number | undefined {
+  try {
+    const stdout = execFileSync('tmux', ['list-panes', '-t', target, '-F', '#{pane_pid}'], {
+      encoding: 'utf-8',
+      timeout: 3000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const pid = Number.parseInt(stdout.trim().split('\n')[0] ?? '', 10);
+    return Number.isFinite(pid) && pid > 0 ? pid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function atomicWrite(destPath: string, contents: string): boolean {
   try {
     const tmp = `${destPath}.tmp.${process.pid}`;
@@ -101,6 +116,7 @@ runTool({
     'feature-dir': { type: 'string', description: 'features/<slug> directory' },
     phase: { type: 'string', description: 'Active phase (planning|coding|review|ready) for launch anchoring' },
     'pane-target': { type: 'string', description: 'tmux pane target for the blocking-prompt matcher' },
+    'pane-pid': { type: 'string', description: 'Pane shell pid for the HOK-3137 background-work probe; resolved from --pane-target when absent' },
     'stall-minutes': { type: 'string', description: 'Stall threshold in minutes (default 30)' },
     'write-cache': { type: 'boolean', description: 'Atomically write /tmp/wavemill-<session>-<issue>.progress.json' },
     'max-age': { type: 'string', description: 'When set, return the cache if it is younger than this (seconds)' },
@@ -136,6 +152,14 @@ runTool({
     const worktree = args.worktree ?? task?.worktree;
     const paneText = args['pane-target'] ? capturePaneText(args['pane-target']) : undefined;
 
+    let panePid: number | undefined;
+    if (args['pane-pid']) {
+      const parsed = Number.parseInt(args['pane-pid'], 10);
+      panePid = Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+    } else if (args['pane-target']) {
+      panePid = resolvePanePid(args['pane-target']);
+    }
+
     let agentProcessLive: boolean | null | undefined;
     if (args['agent-process-live']) {
       switch (args['agent-process-live'].toLowerCase()) {
@@ -168,6 +192,7 @@ runTool({
         featureDir: args['feature-dir'],
         phase: args.phase,
         paneText,
+        panePid,
         agentProcessLive,
         stallMinutes,
       });
