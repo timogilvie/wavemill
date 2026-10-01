@@ -1231,6 +1231,13 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
         if (sessionStreamWriter) {
           try {
             currentTurnRequestCallId = randomUUID();
+            const turnBudgetRemaining = budget?.maxTurns !== undefined
+              ? budget.maxTurns - turnsCompleted
+              : undefined;
+            const toolCallBudgetRemaining = budget?.maxToolCalls !== undefined
+              ? budget.maxToolCalls - toolCallsExecuted
+              : undefined;
+            const tokensUsedSoFar = totalInputTokens + totalOutputTokens;
             const modelRequestEvent = sessionStreamWriter.writeModelRequest({
               callId: currentTurnRequestCallId,
               turnIndex: turnsCompleted,
@@ -1245,6 +1252,9 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
               injectedContextRefs: config.sessionStreamConfig?.injectedContextRefs,
               ...(toolMenuDigest ? { toolMenuDigest } : {}),
               ...(providerToolsDigest ? { providerToolsDigest } : {}),
+              ...(turnBudgetRemaining !== undefined ? { turnBudgetRemaining } : {}),
+              ...(toolCallBudgetRemaining !== undefined ? { toolCallBudgetRemaining } : {}),
+              tokensUsedSoFar,
             });
             currentTurnRequestEventId = modelRequestEvent.eventId;
           } catch (error) {
@@ -1263,11 +1273,16 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
           detail: event.toolName,
           agent: HEARTBEAT_AGENT,
         });
-        // Log tool call event when tool execution starts
+        // Log tool call event when tool execution starts.
+        // HOK-3122: `event.toolCallId` is the real SDK call id; the earlier
+        // `event.callId ?? randomUUID()` bug minted a fresh UUID for every
+        // row because `AgentEvent.tool_execution_start` has no `callId`
+        // field, so the projector could never match the tool_call back to
+        // its policy decision or result.
         if (sessionStreamWriter) {
           try {
             sessionStreamWriter.writeToolCall({
-              callId: event.callId ?? randomUUID(),
+              callId: event.toolCallId,
               toolName: event.toolName,
             });
           } catch (error) {

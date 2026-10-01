@@ -1967,3 +1967,185 @@ describe('loop — per-turn menu provenance', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tool-call event callId capture (HOK-3122)
+// ---------------------------------------------------------------------------
+
+describe('loop — tool_call event callId capture (HOK-3122)', () => {
+  async function runCaptureCase(opts: {
+    toolBehavior: 'success' | 'error';
+    toolClass: ToolMetadata['class'];
+    scriptedCallId: string;
+  }) {
+    const tempDir = makeMenuTempDir();
+    const api = uniqueApi(`capture-${opts.toolBehavior}-${opts.toolClass}`);
+    const tool = makeTool('read_notes', 'sequential', async () => 'contents');
+
+    registerScriptedPiProvider({
+      api,
+      turns: [
+        {
+          content: [{
+            type: 'tool_call',
+            id: opts.scriptedCallId,
+            name: 'read_notes',
+            arguments: {},
+          }],
+          stopReason: 'tool_calls',
+        },
+        { content: [{ type: 'text', text: 'done' }], stopReason: 'stop' },
+      ],
+    });
+
+    const sessionId = `capture-session-${opts.toolBehavior}-${opts.toolClass}`;
+    const eventStreamPath = join(tempDir, `${sessionId}.jsonl`);
+    const writer = new SessionStreamWriter(
+      { sessionId, traceId: sessionId, phase: 'planning', path: eventStreamPath },
+      tempDir,
+    );
+    writer.writeSessionStarted({ initialConfigDigest: 'test' });
+
+    try {
+      await runWavemillLoop({
+        ...baseConfig(api, [tool]),
+        budget: { maxTurns: 3 },
+        toolPolicy: {
+          phase: 'planning',
+          worktreePath: tempDir,
+          registry: [makeToolMetadata('read_notes', opts.toolClass)],
+          config: { readOnlyPhases: opts.toolClass === 'read-only' ? ['planning'] : [] },
+        },
+        // Force isError on the caller side so the stream writer records it;
+        // runWavemillLoop only propagates isError when the caller override
+        // provides one, which is the real production code path.
+        ...(opts.toolBehavior === 'error' ? {
+          afterToolCall: async () => ({ isError: true }),
+        } : {}),
+        sessionStreamConfig: {
+          sessionId,
+          traceId: sessionId,
+          phase: 'planning',
+          eventStreamPath,
+          repoDir: tempDir,
+          writerInstance: writer,
+          externalWriterManagesSessionBoundaries: true,
+        },
+      });
+      const events = readEventStream(eventStreamPath);
+      return { tempDir, events };
+    } catch (err) {
+      rmSync(tempDir, { recursive: true, force: true });
+      throw err;
+    }
+  }
+
+  it('writes tool_call with the SDK callId so policy_decision/call/result all join', async () => {
+    const { tempDir, events } = await runCaptureCase({
+      toolBehavior: 'success',
+      toolClass: 'read-only',
+      scriptedCallId: 'sdk-call-success-1',
+    });
+    try {
+      const policy = events.find((e) => e.type === 'tool_policy_decision') as any;
+      const call = events.find((e) => e.type === 'tool_call') as any;
+      const result = events.find((e) => e.type === 'tool_result') as any;
+      assert.ok(policy, 'tool_policy_decision missing');
+      assert.ok(call, 'tool_call missing');
+      assert.ok(result, 'tool_result missing');
+      assert.equal(call.callId, 'sdk-call-success-1');
+      assert.equal(policy.callId, 'sdk-call-success-1');
+      assert.equal(result.callId, 'sdk-call-success-1');
+      assert.equal(result.isError, false);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('shares the same SDK callId for an erroring tool call', async () => {
+    const { tempDir, events } = await runCaptureCase({
+      toolBehavior: 'error',
+      toolClass: 'read-only',
+      scriptedCallId: 'sdk-call-error-2',
+    });
+    try {
+      const policy = events.find((e) => e.type === 'tool_policy_decision') as any;
+      const call = events.find((e) => e.type === 'tool_call') as any;
+      const result = events.find((e) => e.type === 'tool_result') as any;
+      assert.equal(call.callId, 'sdk-call-error-2');
+      assert.equal(policy.callId, 'sdk-call-error-2');
+      assert.equal(result.callId, 'sdk-call-error-2');
+      assert.equal(result.isError, true);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('records policy_denied with the SDK callId when the tool is phase-denied', async () => {
+    const tempDir = makeMenuTempDir();
+    const api = uniqueApi('capture-denied');
+    const tool = makeTool('write_notes', 'sequential', async () => 'should-not-run');
+    registerScriptedPiProvider({
+      api,
+      turns: [
+        {
+          content: [{
+            type: 'tool_call',
+            id: 'sdk-call-denied-3',
+            name: 'write_notes',
+            arguments: {},
+          }],
+          stopReason: 'tool_calls',
+        },
+        { content: [{ type: 'text', text: 'done' }], stopReason: 'stop' },
+      ],
+    });
+
+    const sessionId = 'capture-session-denied';
+    const eventStreamPath = join(tempDir, `${sessionId}.jsonl`);
+    const writer = new SessionStreamWriter(
+      { sessionId, traceId: sessionId, phase: 'planning', path: eventStreamPath },
+      tempDir,
+    );
+    writer.writeSessionStarted({ initialConfigDigest: 'test' });
+
+    try {
+      await runWavemillLoop({
+        ...baseConfig(api, [tool]),
+        budget: { maxTurns: 3 },
+        toolPolicy: {
+          phase: 'planning',
+          worktreePath: tempDir,
+          // Classify write_notes as a mutation → read-only phase 'planning'
+          // denies it, which is the condition we want to exercise.
+          registry: [makeToolMetadata('write_notes', 'mutation')],
+          config: { readOnlyPhases: ['planning'] },
+        },
+        sessionStreamConfig: {
+          sessionId,
+          traceId: sessionId,
+          phase: 'planning',
+          eventStreamPath,
+          repoDir: tempDir,
+          writerInstance: writer,
+          externalWriterManagesSessionBoundaries: true,
+        },
+      });
+
+      const events = readEventStream(eventStreamPath);
+      const policy = events.find((e) => e.type === 'tool_policy_decision') as any;
+      assert.ok(policy, 'tool_policy_decision missing');
+      assert.equal(policy.decision, 'deny');
+      assert.equal(policy.callId, 'sdk-call-denied-3');
+      // A denied call does not execute, so no tool_result is expected, but a
+      // tool_call event is still written when Pi dispatches the invocation
+      // through the agent loop. When present, its callId must match too.
+      const call = events.find((e) => e.type === 'tool_call') as any;
+      if (call) {
+        assert.equal(call.callId, 'sdk-call-denied-3');
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});
