@@ -23,7 +23,17 @@ export type TerminalFailureKind =
   | 'coding-dirty-handoff'
   // HOK-3128: a tracked no-PR arm showed no agent progress past the stall
   // grace, so the tend gate / resolver retired it to release its sibling.
-  | 'sibling-stalled';
+  | 'sibling-stalled'
+  // HOK-3129: four recurring native arm-failure signatures the classifier
+  // used to default into `native-unclassified`. All four are model-attributable
+  // (the provider delivered output; the model failed to produce usable
+  // content). The suffixed `planning-artifact-invalid:<reason>` form is
+  // emitted by the shell classifier and matched via a startsWith guard —
+  // the taxonomy itself only holds the base variant.
+  | 'planning-turn-limit'
+  | 'planning-artifact-invalid'
+  | 'review-no-output'
+  | 'coding-exited-without-result';
 
 export type ArmFaultClass =
   | 'harness-fault'
@@ -55,6 +65,13 @@ export interface ChallengeArmFailure {
 export function classifyArmFault(input: { failureKind?: string | null; detail?: string | null }): ArmFaultClass {
   const failureKind = input.failureKind ?? '';
   const detail = (input.detail ?? '').toLowerCase();
+
+  // HOK-3129: the shell classifier emits `planning-artifact-invalid:<reason>`
+  // with the structural reason suffix preserved for selection-health. Match the
+  // base variant without enumerating every suffix.
+  if (failureKind.startsWith('planning-artifact-invalid')) {
+    return 'model-fault';
+  }
 
   switch (failureKind) {
     case 'context-exhausted':
@@ -109,6 +126,20 @@ export function classifyArmFault(input: { failureKind?: string | null; detail?: 
     // quality signal.
     case 'sibling-stalled':
       return 'harness-fault';
+    // HOK-3129: the planner exhausted its turn budget without emitting a final
+    // plan; the reviewer finished without findings or a terminal verdict; the
+    // coding agent exited leaving a durable-commit-preserved interruption. All
+    // three are model-attributable (the provider delivered output; the model
+    // failed to produce usable content).
+    case 'planning-turn-limit':
+    case 'review-no-output':
+    case 'coding-exited-without-result':
+      return 'model-fault';
+    // HOK-3129: the planning artifact failed structural validation (both the
+    // base variant and the pre-suffix startsWith branch above). Model-fault
+    // only reaches this arm when the suffixed form was not emitted.
+    case 'planning-artifact-invalid':
+      return 'model-fault';
     // Unattributed failures stay excluded from quality signal so routing
     // never learns from evidence-free classifications.
     case 'native-unclassified':

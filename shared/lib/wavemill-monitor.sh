@@ -6751,6 +6751,29 @@ native_terminal_failure_kind() {
       printf 'empty-model-turn\n'; return 0 ;;
     *"finish_reason: error"*|*"finish reason"*"error"*|*"idle timeout"*|*"stream ended without"*|*"without finish_reason"*|*"truncated stream"*|*"server error"*|*"bad gateway"*|*"service unavailable"*|*"gateway timeout"*|*"overloaded"*|*"upstream"*)
       printf 'provider-transient-error\n'; return 0 ;;
+    # HOK-3129: four recurring native arm-failure signatures that used to fall
+    # through to native-unclassified. Each is model-attributable (the provider
+    # delivered output; the model failed to produce usable content). These sit
+    # AFTER the provider-config/credit/rate-limit arms so a stacked message
+    # like "Native planning final artifact rejected: ... (402 Payment Required)"
+    # still classifies as the provider fault, not the model fault.
+    *"interrupted: coding agent exited without recording a result"*)
+      printf 'coding-exited-without-result\n'; return 0 ;;
+    *"native review flow failed after"*"findings"*)
+      printf 'review-no-output\n'; return 0 ;;
+    *"native planning rejected before approval: turn_limit"*)
+      printf 'planning-turn-limit\n'; return 0 ;;
+    *"native planning final artifact rejected:"*)
+      # Preserve the structural reason suffix for selection-health attribution.
+      local reason
+      reason="$(printf '%s' "$detail" \
+        | sed -nE 's/.*[Nn]ative planning final artifact rejected:[[:space:]]*([A-Za-z0-9_:-]+).*/\1/p')"
+      if [[ -n "$reason" ]]; then
+        printf 'planning-artifact-invalid:%s\n' "$reason"
+      else
+        printf 'planning-artifact-invalid\n'
+      fi
+      return 0 ;;
   esac
   if [[ "$handoff_reason" == "provider_error" ]]; then
     printf 'native-provider-error\n'
@@ -6787,6 +6810,14 @@ native_terminal_failure_next_action() {
       printf "model ended the phase without a valid completion artifact (protocol violation, not a provider fault) - check the model's structured tool-call compatibility before relaunching\n" ;;
     coding-dirty-handoff)
       printf 'the coding agent exited after writing .coding-complete with uncommitted output and did not repair it when relaunched (completion-protocol failure); the challenger is forfeited so the primary proceeds\n' ;;
+    planning-turn-limit)
+      printf 'the model exhausted its planning turn budget without emitting a final plan; relaunch the phase on a stronger planner or increase maxTurns\n' ;;
+    planning-artifact-invalid|planning-artifact-invalid:*)
+      printf 'the plan artifact failed structural validation after one repair turn; inspect the recorded validationError and relaunch on a stronger planner\n' ;;
+    review-no-output)
+      printf 'the review model finished without emitting findings or a terminal verdict; relaunch the review phase on a stronger reviewer\n' ;;
+    coding-exited-without-result)
+      printf 'the coding agent exited without recording a terminal result (durable commits preserved); relaunch coding to resume from the last durable commit\n' ;;
     native-unclassified)
       printf 'inspect the terminal failure detail and classify it manually - unrecognized failure signature, extend the classifier when this shape recurs\n' ;;
     *)

@@ -121,6 +121,39 @@ test('parses the typed and legacy review-timeout exhaustion reasons (HOK-3064)',
   );
 });
 
+test('classifies the HOK-3129 recurring native arm-failure kinds', () => {
+  // All four shapes are model-attributable: the provider delivered output but
+  // the model failed to produce usable content. They used to default into
+  // native-unclassified before HOK-3129 made them typed.
+  assert.equal(classifyArmFault({ failureKind: 'planning-turn-limit' }), 'model-fault');
+  assert.equal(classifyArmFault({ failureKind: 'planning-artifact-invalid' }), 'model-fault');
+  assert.equal(classifyArmFault({ failureKind: 'review-no-output' }), 'model-fault');
+  assert.equal(classifyArmFault({ failureKind: 'coding-exited-without-result' }), 'model-fault');
+  for (const kind of [
+    'planning-turn-limit',
+    'planning-artifact-invalid',
+    'review-no-output',
+    'coding-exited-without-result',
+  ]) {
+    assert.equal(
+      isModelQualitySignal(classifyArmFault({ failureKind: kind })),
+      true,
+      `expected ${kind} to be a model quality signal`,
+    );
+  }
+
+  // The shell classifier emits a suffixed `planning-artifact-invalid:<reason>`
+  // string so selection-health can attribute the structural reason without
+  // enumerating every variant in the taxonomy.
+  assert.equal(classifyArmFault({ failureKind: 'planning-artifact-invalid:missing_title' }), 'model-fault');
+  assert.equal(classifyArmFault({ failureKind: 'planning-artifact-invalid:missing_release_readiness_env_changes' }), 'model-fault');
+
+  // Parsed from the typical terminal_stage_failure prefix (post-HOK-3064).
+  assert.equal(parseAbortFailureKind('terminal_stage_failure:planning-turn-limit'), 'planning-turn-limit');
+  assert.equal(parseAbortFailureKind('terminal_stage_failure:review-no-output'), 'review-no-output');
+  assert.equal(parseAbortFailureKind('terminal_stage_failure:planning-artifact-invalid:missing_title'), 'planning-artifact-invalid:missing_title');
+});
+
 test('classifies the HOK-3128 dirty-handoff and sibling-stalled kinds', () => {
   // The model finished coding but left its own output uncommitted and did not
   // repair it when relaunched: completion-protocol failure, model quality.

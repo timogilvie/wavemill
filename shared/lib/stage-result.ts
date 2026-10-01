@@ -107,6 +107,19 @@ export interface PlanningArtifacts {
   approvalReady?: boolean;
   /** Prompt registry/provenance reference for the planning prompt. */
   promptRef?: PlanningPromptRef;
+  /**
+   * HOK-3129: true when launchNativePlanning executed exactly one bounded
+   * repair turn after a format-only validation reason (missing_title,
+   * missing_release_readiness, etc). Absent on legacy artifacts and on
+   * runs that short-circuited before the validator.
+   */
+  repairAttempted?: boolean;
+  /**
+   * HOK-3129: true when the initial plan was emitted in a single assistant
+   * turn with zero tool calls — a quality signal (the plan was written
+   * without reading the repo). Absent on legacy artifacts.
+   */
+  zeroToolCallPlan?: boolean;
 }
 
 /** Artifacts produced during the review stage. */
