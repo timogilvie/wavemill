@@ -12,10 +12,17 @@
 #      that decides "is the record fresh"; every other decision goes through
 #      the TS CLI or the cache.
 #
-#   2. `task_progress_json <issue> [--phase p] [--pane-target t]
+#   2. `task_progress_json <issue> [--phase p] [--pane-target t] [--pane-pid p]
 #      [--max-age s] [--write-cache]` — spawns `tools/task-progress.ts`
 #      under `_with_timeout` and prints its JSON. Fail-safe: `{}` on any
-#      failure so downstream `jq` never crashes.
+#      failure so downstream `jq` never crashes. `--pane-pid` (or
+#      `--pane-target`, resolved to a pid by the CLI) feeds the HOK-3137
+#      background-work probe: `.agentBackgroundLive` is `true` when the agent
+#      has a live substantive descendant (a backgrounded task), which
+#      suppresses `.stalled` while the agent is idle. Process/pane existence
+#      is still NEVER progress — it never moves `.lastProgressAt` or adds a
+#      `.sources[]` entry (HOK-3101 invariant 1); omitting both pane options
+#      leaves `.agentBackgroundLive` as `null` ("not probed").
 #
 #   3. `task_progress_cached_json <session> <issue> [max_age_seconds=300]`
 #      — reads only the pre-written cache. No tsx spawn. The dashboard uses
@@ -137,7 +144,7 @@ task_progress_json() {
   shift
   [[ -n "$issue" ]] || { printf '{}\n'; return 0; }
 
-  local phase="" pane_target="" max_age="" stall_minutes="" write_cache=0
+  local phase="" pane_target="" pane_pid="" max_age="" stall_minutes="" write_cache=0
   local session="${WAVEMILL_SESSION:-${SESSION:-wavemill}}"
   local state_file="${STATE_FILE:-${WAVEMILL_STATE_FILE:-}}"
   local worktree="" feature_dir=""
@@ -146,6 +153,7 @@ task_progress_json() {
     case "$1" in
       --phase) phase="$2"; shift 2 ;;
       --pane-target) pane_target="$2"; shift 2 ;;
+      --pane-pid) pane_pid="$2"; shift 2 ;;
       --max-age) max_age="$2"; shift 2 ;;
       --stall-minutes) stall_minutes="$2"; shift 2 ;;
       --write-cache) write_cache=1; shift ;;
@@ -168,6 +176,7 @@ task_progress_json() {
   [[ -n "$state_file" ]] && cli_args+=(--state-file "$state_file")
   [[ -n "$phase" ]] && cli_args+=(--phase "$phase")
   [[ -n "$pane_target" ]] && cli_args+=(--pane-target "$pane_target")
+  [[ -n "$pane_pid" ]] && cli_args+=(--pane-pid "$pane_pid")
   [[ -n "$max_age" ]] && cli_args+=(--max-age "$max_age")
   [[ -n "$stall_minutes" ]] && cli_args+=(--stall-minutes "$stall_minutes")
   [[ -n "$worktree" ]] && cli_args+=(--worktree "$worktree")

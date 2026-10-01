@@ -1,0 +1,15 @@
+{
+  "stage": "ready",
+  "status": "completed",
+  "startedAt": "{{READY_STARTED_AT}}",
+  "finishedAt": "{{READY_FINISHED_AT}}",
+  "agent": "claude",
+  "model": "claude-test",
+  "notes": "HOK-3096 healthy fixture: a normally progressing ready-stage task with no candidate churn, no exhausted retries, and a branch at parity with its base.",
+  "artifacts": {
+    "type": "ready",
+    "verdict": "pass",
+    "queueState": "ready",
+    "readyHeadSha": "{{HEAD_SHA}}"
+  }
+}

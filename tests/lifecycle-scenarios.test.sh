@@ -209,6 +209,9 @@ for fn in \
   cleanup_merged_primary_challenge_task \
   closed_pr_resource_policy \
   coding_stage_owner_lost \
+  coding_stage_mark_interrupted \
+  coding_interrupted_late_completion_reconcile \
+  blocked_completion_commit_matches_head \
   monitor_issue_state
 do
   extract_function "$MONITOR_SCRIPT_FILE" "$fn" >> "$MONITOR_FUNC_FILE"

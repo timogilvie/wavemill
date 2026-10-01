@@ -12,6 +12,10 @@ import {
 import { dirname } from 'node:path';
 import { errorMessage } from './error-utils.ts';
 
+function blockingSleep(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 export interface MutateJsonStateOptions<T> {
   timeoutMs?: number;
   createIfMissing?: boolean;
@@ -95,6 +99,73 @@ export async function mutateJsonState<T>(
     mkdirSync(dirname(statePath), { recursive: true });
   }
   const lock = await acquireLock(statePath, timeoutMs);
+  const tmpPath = `${statePath}.tmp.${process.pid}.${randomUUID()}`;
+
+  try {
+    const current = readJsonState(statePath, opts);
+    const next = transform(current);
+
+    mkdirSync(dirname(statePath), { recursive: true });
+    writeFileSync(tmpPath, `${JSON.stringify(next, null, 2)}\n`, 'utf-8');
+    renameSync(tmpPath, statePath);
+
+    return next;
+  } finally {
+    try {
+      unlinkSync(tmpPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw error;
+      }
+    } finally {
+      closeSync(lock.fd);
+      unlinkSync(lock.lockPath);
+    }
+  }
+}
+
+function acquireLockSync(statePath: string, timeoutMs: number): { fd: number; lockPath: string } {
+  const lockPath = `${statePath}.lock`;
+  const startedAt = Date.now();
+  let delayMs = 10;
+
+  while (true) {
+    try {
+      const fd = openSync(lockPath, 'wx');
+      return { fd, lockPath };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+        throw error;
+      }
+
+      if (Date.now() - startedAt >= timeoutMs) {
+        throw new StateLockTimeoutError(statePath, timeoutMs);
+      }
+
+      blockingSleep(delayMs);
+      delayMs = Math.min(Math.ceil(delayMs * 1.5), 100);
+    }
+  }
+}
+
+/**
+ * Synchronous counterpart to {@link mutateJsonState}, for callers that
+ * cannot be async (e.g. `buildFindings` in `tools/observer.ts`, which has
+ * hundreds of synchronous call sites). Uses the same lock-file + temp-file +
+ * atomic-rename protocol; lock-wait backoff blocks via `Atomics.wait` instead
+ * of `setTimeout`, which is safe on Node's main thread and keeps contention
+ * windows short for callers that only hold the lock for a JSON read + write.
+ */
+export function mutateJsonStateSync<T>(
+  statePath: string,
+  transform: (current: T) => T,
+  opts: MutateJsonStateOptions<T> = {},
+): T {
+  const timeoutMs = opts.timeoutMs ?? 5_000;
+  if (opts.createIfMissing) {
+    mkdirSync(dirname(statePath), { recursive: true });
+  }
+  const lock = acquireLockSync(statePath, timeoutMs);
   const tmpPath = `${statePath}.tmp.${process.pid}.${randomUUID()}`;
 
   try {
