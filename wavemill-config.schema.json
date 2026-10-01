@@ -637,10 +637,15 @@
             "type": "object",
             "description": "Controls default task selection behavior in wavemill mill.",
             "properties": {
+                "enterAction": {
+                    "type": "string",
+                    "enum": ["none", "wave", "top-scored"],
+                    "default": "none",
+                    "description": "What a bare Enter does at the startup and monitor task pickers. 'none' (default) never launches work: tasks start only when selected by number. 'wave' launches the planner's first dependency-safe parallel wave; 'top-scored' launches the top scored tasks (startup picker only). Takes precedence over enterLaunchesWave."
+                },
                 "enterLaunchesWave": {
                     "type": "boolean",
-                    "default": true,
-                    "description": "When true, pressing Enter launches the planner's first dependency-safe parallel wave instead of the top scored tasks."
+                    "description": "Deprecated: use enterAction. Used only when enterAction is unset: true maps to 'wave', false to 'top-scored'. When neither key is set, Enter launches nothing."
                 }
             },
             "additionalProperties": false

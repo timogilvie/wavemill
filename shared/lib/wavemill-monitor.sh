@@ -16687,15 +16687,18 @@ handle_enter_command() {
   MONITOR_COMMAND_DEFER_EVENT=""
   MONITOR_COMMAND_DEFER_REASON=""
 
+  # A bare Enter launches work only when taskSelection.enterAction=wave.
+  # Check this before slot deferral so a stray Enter pressed while every slot
+  # is busy is never queued to launch a wave hours later.
+  if [[ "${ENTER_ACTION:-none}" != "wave" ]]; then
+    MONITOR_COMMAND_STATUS="invalid"
+    return 0
+  fi
+
   if (( free_slots <= 0 )); then
     MONITOR_COMMAND_STATUS="deferred"
     MONITOR_COMMAND_DEFER_EVENT="$event"
     MONITOR_COMMAND_DEFER_REASON="no_slots_available"
-    return 0
-  fi
-
-  if [[ "${ENTER_LAUNCHES_WAVE:-true}" != "true" ]]; then
-    MONITOR_COMMAND_STATUS="invalid"
     return 0
   fi
 
@@ -20542,12 +20545,14 @@ while :; do
             fi
           fi
           _task_frame+=$'\n'
+          _enter_hint=""
+          [[ "${ENTER_ACTION:-none}" == "wave" ]] && _enter_hint="press Enter to launch recommended wave, "
           if [[ "$USING_GROUPED_VIEW" == "true" ]]; then
-            _task_frame+="Enter number(s) to start (e.g. 1 3), press Enter to launch recommended wave, 'm' for more, 'd' for deps, 'q' to quit, or wait ${POLL_SECONDS}s to refresh:"$'\n'
+            _task_frame+="Enter number(s) to start (e.g. 1 3), ${_enter_hint}'m' for more, 'd' for deps, 'q' to quit, or wait ${POLL_SECONDS}s to refresh:"$'\n'
           elif (( avail_blocked_count > 0 )); then
-            _task_frame+="Enter number(s) to start (e.g. 1 3), press Enter to launch recommended wave, 'm' for more, 'q' to quit, or wait ${POLL_SECONDS}s to refresh:"$'\n'
+            _task_frame+="Enter number(s) to start (e.g. 1 3), ${_enter_hint}'m' for more, 'q' to quit, or wait ${POLL_SECONDS}s to refresh:"$'\n'
           else
-            _task_frame+="Enter number(s) to start (e.g. 1 3), press Enter to launch recommended wave, 'q' to quit, or wait ${POLL_SECONDS}s to refresh:"$'\n'
+            _task_frame+="Enter number(s) to start (e.g. 1 3), ${_enter_hint}'q' to quit, or wait ${POLL_SECONDS}s to refresh:"$'\n'
           fi
 
           paint_task_list_frame "$_task_frame"
@@ -20609,7 +20614,7 @@ while :; do
         elif [[ "$REPLY" =~ ^unknown\  ]]; then
           log_warn "Unknown input: $(render_unknown_input_for_log "${REPLY#unknown }")"
         elif [[ "$REPLY" == "enter" ]]; then
-          if [[ "${ENTER_LAUNCHES_WAVE:-true}" == "true" ]]; then
+          if [[ "${ENTER_ACTION:-none}" == "wave" ]]; then
             wave_plan_json="${queue_plan_json:-$QUEUE_PLAN_CACHE}"
             if [[ -n "$wave_plan_json" ]]; then
               wave_result=$(invoke_first_wave_helper "$wave_plan_json" "$avail_unblocked" "$free_slots" 2>/dev/null) || wave_result=""
