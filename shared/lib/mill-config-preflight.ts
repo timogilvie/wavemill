@@ -1,5 +1,6 @@
 import { resolve } from 'node:path';
 import { loadWavemillConfig } from './config.ts';
+import { listCoderCanaryGaps, type CoderCanaryGap } from './launchable-models.ts';
 import type { ModelRegistry } from './model-registry.ts';
 import {
   type RemovedModelSettingInventoryItem,
@@ -45,6 +46,11 @@ export interface MillConfigPreflightReport {
     outcomes: CohortRefreshMemberOutcome[];
     refreshLog: string[];
   };
+  /**
+   * Advisory only (HOK-3142): router-eligible native coders the coding launch
+   * gate refuses for a live-canary reason. Never affects `ok`.
+   */
+  coderCanaryGaps?: CoderCanaryGap[];
 }
 
 export interface MillConfigPreflightResult {
@@ -203,6 +209,21 @@ export async function runMillConfigPreflight(
     }
   }
 
+  // Advisory: never gating, and a failure to compute it never blocks startup.
+  let coderCanaryGaps: CoderCanaryGap[] = [];
+  if (validationError === null && env.WAVEMILL_SKIP_CERTIFICATION_COVERAGE_GUARD !== '1') {
+    try {
+      coderCanaryGaps = listCoderCanaryGaps({
+        repoDir: absRepoDir,
+        registry: options.registry,
+        certificationRoot: options.certificationRoot,
+        now: options.now?.(),
+      });
+    } catch {
+      coderCanaryGaps = [];
+    }
+  }
+
   const certificationCoverageBlocked = certificationCoverage?.status === 'bump-without-publish'
     || certificationCoverage?.status === 'identity-drift';
   const certificationStaleBlocked = certificationCoverage?.status === 'stale';
@@ -218,6 +239,7 @@ export async function runMillConfigPreflight(
     ...(certificationRemediation ? { certificationRemediation } : {}),
     ...(canaryCohortHealth ? { canaryCohortHealth } : {}),
     ...(canaryCohortRefresh ? { canaryCohortRefresh } : {}),
+    ...(coderCanaryGaps.length > 0 ? { coderCanaryGaps } : {}),
   };
 
   return {
@@ -324,6 +346,10 @@ export function formatMillConfigPreflightReport(report: MillConfigPreflightRepor
     lines.push('', formatCanaryCohortReport(report));
   }
 
+  if (report.coderCanaryGaps?.length) {
+    lines.push('', formatCoderCanaryGapReport(report));
+  }
+
   if (report.removedFields.length > 0 || report.validationError) {
     lines.push(
       '',
@@ -387,6 +413,21 @@ export function formatCanaryCohortReport(report: MillConfigPreflightReport): str
     }
   }
   return lines.join('\n');
+}
+
+/**
+ * Format the router-eligible coders that lack a passing live coding canary
+ * (HOK-3142). Empty string when there are none.
+ */
+export function formatCoderCanaryGapReport(report: MillConfigPreflightReport): string {
+  const gaps = report.coderCanaryGaps ?? [];
+  if (gaps.length === 0) {
+    return '';
+  }
+  return [
+    `Coder live-canary gaps (advisory): ${gaps.length} router-eligible coder(s) cannot launch for coding and are skipped by routing:`,
+    ...gaps.map((gap) => `  ${gap.modelId}: ${gap.certification}${gap.certifyCommand ? ` — run: ${gap.certifyCommand}` : ''}`),
+  ].join('\n');
 }
 
 function normalizeRenewalWindowDays(value: number | undefined): number {

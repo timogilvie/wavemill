@@ -114,6 +114,13 @@ for fn in \
   check_stage_awaiting_user \
   phase_launch_head \
   phase_launch_gate \
+  coding_launch_refusal_limit \
+  coding_launch_refusal_is_transient \
+  log_coding_launch_refusal \
+  coding_launch_refusal_hold \
+  coding_launch_refusal_clear \
+  coding_launch_refusal_terminalize \
+  handle_coding_launch_refusal \
   _run_phase_launch \
   reap_completed_planning_pane \
   persist_challenge_execution_intent \
@@ -209,6 +216,9 @@ for fn in \
   cleanup_merged_primary_challenge_task \
   closed_pr_resource_policy \
   coding_stage_owner_lost \
+  coding_stage_mark_interrupted \
+  coding_interrupted_late_completion_reconcile \
+  blocked_completion_commit_matches_head \
   monitor_issue_state
 do
   extract_function "$MONITOR_SCRIPT_FILE" "$fn" >> "$MONITOR_FUNC_FILE"

@@ -1074,6 +1074,178 @@
       }
     },
     {
+      "id": "gemini-3.1-pro-preview",
+      "capabilities": {
+        "vendor": "google",
+        "class": "frontier",
+        "strengths": [
+          "planning",
+          "coding",
+          "code review",
+          "long context"
+        ],
+        "weaknesses": [
+          "preview model",
+          "OpenRouter dependency"
+        ],
+        "qualityScores": {
+          "routing": 68,
+          "planning": 90,
+          "coding": 88,
+          "review": 89,
+          "classify": 66
+        },
+        "pricing": {
+          "inputCostPerMTok": 2,
+          "outputCostPerMTok": 12,
+          "cacheReadCostPerMTok": 0.2,
+          "cacheWriteCostPerMTok": 0.375
+        },
+        "defaultLadderEligible": false,
+        "contextWindowTokens": 1048576,
+        "toolSupport": "full",
+        "multimodal": {
+          "text": true,
+          "image": true,
+          "audio": true,
+          "video": true
+        },
+        "latencyTier": "standard",
+        "reasoningTier": "advanced",
+        "costPerMillionInputTokensUsd": 2,
+        "costPerMillionOutputTokensUsd": 12,
+        "agent": "native-openrouter",
+        "nativeCapability": {
+          "nativeProvider": "openrouter",
+          "piTransportKind": "openai-completions",
+          "readOnlyNative": "certified",
+          "compatFlags": {
+            "thinkingFormat": "openrouter"
+          },
+          "certification": {
+            "maxCertifiedPhase": "workflow",
+            "certifiedAt": "2026-10-01T19:09:55.912Z",
+            "certificationSuiteVersion": "v3"
+          }
+        },
+        "supportedModel": {
+          "wavemillAlias": "gemini-3.1-pro-preview",
+          "providerNativeId": "google/gemini-3.1-pro-preview",
+          "provider": "openrouter",
+          "transport": "openai-completions",
+          "stages": [
+            "planning",
+            "coding",
+            "review"
+          ],
+          "requiredCertificationPhaseByStage": {
+            "planning": "workflow",
+            "coding": "patch",
+            "review": "read-only"
+          },
+          "certificationSuiteVersion": "v3",
+          "certificationFreshnessDays": 60,
+          "canonicalArtifactIdentity": {
+            "provider": "google",
+            "model": "gemini-3.1-pro-preview",
+            "suiteVersion": "v3"
+          },
+          "lifecycle": "supported",
+          "compatibilityFlags": {
+            "thinkingFormat": "openrouter"
+          },
+          "launchEligible": true,
+          "routingEligible": true
+        }
+      }
+    },
+    {
+      "id": "gemini-3.1-pro-preview-customtools",
+      "capabilities": {
+        "vendor": "google",
+        "class": "frontier",
+        "strengths": [
+          "coding",
+          "tool selection",
+          "long context"
+        ],
+        "weaknesses": [
+          "preview model",
+          "OpenRouter dependency",
+          "variant tuned for custom tools"
+        ],
+        "qualityScores": {
+          "routing": 68,
+          "planning": 90,
+          "coding": 88,
+          "review": 89,
+          "classify": 66
+        },
+        "pricing": {
+          "inputCostPerMTok": 2,
+          "outputCostPerMTok": 12,
+          "cacheReadCostPerMTok": 0.2,
+          "cacheWriteCostPerMTok": 0.375
+        },
+        "defaultLadderEligible": false,
+        "contextWindowTokens": 1048576,
+        "toolSupport": "full",
+        "multimodal": {
+          "text": true,
+          "image": true,
+          "audio": true,
+          "video": true
+        },
+        "latencyTier": "standard",
+        "reasoningTier": "advanced",
+        "costPerMillionInputTokensUsd": 2,
+        "costPerMillionOutputTokensUsd": 12,
+        "agent": "native-openrouter",
+        "nativeCapability": {
+          "nativeProvider": "openrouter",
+          "piTransportKind": "openai-completions",
+          "readOnlyNative": "certified",
+          "compatFlags": {
+            "thinkingFormat": "openrouter"
+          },
+          "certification": {
+            "maxCertifiedPhase": "workflow",
+            "certifiedAt": "2026-10-01T19:10:37.261Z",
+            "certificationSuiteVersion": "v3"
+          }
+        },
+        "supportedModel": {
+          "wavemillAlias": "gemini-3.1-pro-preview-customtools",
+          "providerNativeId": "google/gemini-3.1-pro-preview-customtools",
+          "provider": "openrouter",
+          "transport": "openai-completions",
+          "stages": [
+            "planning",
+            "coding",
+            "review"
+          ],
+          "requiredCertificationPhaseByStage": {
+            "planning": "workflow",
+            "coding": "patch",
+            "review": "read-only"
+          },
+          "certificationSuiteVersion": "v3",
+          "certificationFreshnessDays": 60,
+          "canonicalArtifactIdentity": {
+            "provider": "google",
+            "model": "gemini-3.1-pro-preview-customtools",
+            "suiteVersion": "v3"
+          },
+          "lifecycle": "supported",
+          "compatibilityFlags": {
+            "thinkingFormat": "openrouter"
+          },
+          "launchEligible": true,
+          "routingEligible": true
+        }
+      }
+    },
+    {
       "id": "gemini-2.5-flash",
       "capabilities": {
         "vendor": "google",
@@ -3132,6 +3304,30 @@
     {
       "wavemillAlias": "gemini-2.5-pro",
       "openrouterId": "google/gemini-2.5-pro",
+      "family": "gemini",
+      "status": "active",
+      "priorityTier": 1,
+      "roleEligibility": [
+        "planning",
+        "coding",
+        "review"
+      ]
+    },
+    {
+      "wavemillAlias": "gemini-3.1-pro-preview",
+      "openrouterId": "google/gemini-3.1-pro-preview",
+      "family": "gemini",
+      "status": "active",
+      "priorityTier": 1,
+      "roleEligibility": [
+        "planning",
+        "coding",
+        "review"
+      ]
+    },
+    {
+      "wavemillAlias": "gemini-3.1-pro-preview-customtools",
+      "openrouterId": "google/gemini-3.1-pro-preview-customtools",
       "family": "gemini",
       "status": "active",
       "priorityTier": 1,

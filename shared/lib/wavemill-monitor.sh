@@ -50,6 +50,9 @@ classify_for_reconciliation() {
 _log_level_num() {
   case "$1" in
     error) echo 0 ;;
+    # warn shares status's visibility so warnings always reach the dashboard
+    # at the default verbosity (HOK-3142).
+    warn) echo 1 ;;
     status) echo 1 ;;
     info) echo 2 ;;
     debug) echo 3 ;;
@@ -71,8 +74,11 @@ append_status_log() {
 log() {
   local level="info"
   local msg
+  # `warn` must be a recognised level: before HOK-3142 `log "warn" "…"` fell
+  # through, was written as `[info] warn …`, and was invisible to the
+  # observer's warn/error scan.
   case "${1:-}" in
-    error|status|info|debug)
+    error|warn|status|info|debug)
       level="$1"
       shift
       ;;
@@ -4050,10 +4056,18 @@ fresh_agent_hook_state_for_issue() {
 # controller-owned validation job), or an indeterminate probe. A minimum
 # stage age guards launch wrappers that briefly show only a shell.
 # Returns 0 only when the owner is affirmatively lost.
+#
+# HOK-3137: on every `return 0`, populates CODING_OWNER_LOST_EVIDENCE_JSON
+# (reset to "" at entry) with the factual evidence behind the decision —
+# consumed by coding_stage_mark_interrupted so the stamped `exitEvidence` is
+# dynamic, never the old hard-coded string.
+CODING_OWNER_LOST_EVIDENCE_JSON=""
+
 coding_stage_owner_lost() {
   local issue="$1" feature_dir="$2" win_target="$3"
   local started_at started_epoch now_epoch hook_state pane_pid live_rc
   local grace="${WAVEMILL_CODING_OWNER_GRACE_SECONDS:-300}"
+  CODING_OWNER_LOST_EVIDENCE_JSON=""
 
   [[ -f "$feature_dir/.coding-result.json" ]] || return 1
   started_at="$(jq -r '.startedAt // empty' "$feature_dir/.coding-result.json" 2>/dev/null || true)"
@@ -4080,20 +4094,179 @@ coding_stage_owner_lost() {
   [[ -n "$pane_pid" ]] || return 1
   live_rc=0
   mill_pane_has_live_blocking_process "$pane_pid" || live_rc=$?
-  # 0 = live descendant (agent or owned validation), 2 = indeterminate: both protect.
-  # HOK-3101 (a): but an idle REPL sitting in the pane is not "the agent is
-  # doing work" — if the primitive says the agent is idle and not stalled,
-  # let the owner-lost signal fire.
-  if [[ "$live_rc" -eq 0 ]] && declare -F task_progress_json >/dev/null 2>&1; then
-    local progress
-    progress="$(task_progress_json "$issue" --phase coding --max-age 60 2>/dev/null || printf '{}')"
+
+  # HOK-3137: feed the pane pid to the primitive on every probe (not just the
+  # idle-REPL branch below) so the evidence payload always carries the
+  # background-work fact, even on a genuine (live_rc==1) loss.
+  local progress="{}"
+  if declare -F task_progress_json >/dev/null 2>&1; then
+    progress="$(task_progress_json "$issue" --phase coding --pane-pid "$pane_pid" --max-age 60 2>/dev/null || printf '{}')"
+  fi
+
+  # 0 = live descendant (agent or owned validation), 2 = indeterminate: both
+  # protect by default. HOK-3101 (a): but an idle REPL sitting in the pane is
+  # not "the agent is doing work" — if the primitive says the agent is idle
+  # and stalled, let the owner-lost signal fire UNLESS HOK-3137's background-
+  # work probe found a live descendant (the agent is waiting on its own
+  # backgrounded task, not abandoned).
+  local probe_label=""
+  if [[ "$live_rc" -eq 0 ]]; then
     if command -v jq >/dev/null 2>&1 \
       && printf '%s' "$progress" \
-      | jq -e '.agentIdle == true and .stalled == true' >/dev/null 2>&1; then
-      return 0
+      | jq -e '.agentIdle == true and .stalled == true and ((.agentBackgroundLive // false) != true)' >/dev/null 2>&1; then
+      probe_label="live-idle-repl"
+    fi
+  elif [[ "$live_rc" -eq 1 ]]; then
+    probe_label="none-live"
+  fi
+
+  [[ -n "$probe_label" ]] || return 1
+
+  if command -v jq >/dev/null 2>&1; then
+    CODING_OWNER_LOST_EVIDENCE_JSON="$(jq -cn \
+      --argjson progress "$progress" \
+      --arg probe "$probe_label" \
+      --arg paneTarget "$win_target" \
+      --arg observedAt "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+      '{
+        lastAgentState: ($progress.agentRecord.state // null),
+        lastAgentEvent: ($progress.agentRecord.event // null),
+        lastAgentTimestamp: ($progress.agentRecord.timestamp // null),
+        lastProgressAt: ($progress.lastProgressAt // null),
+        progressAgeMinutes: ($progress.progressAgeMinutes // null),
+        sources: ([($progress.sources // [])[] | .kind]),
+        agentBackgroundLive: (if ($progress | has("agentBackgroundLive")) then $progress.agentBackgroundLive else null end),
+        backgroundProcessCount: (($progress.backgroundProcesses // []) | length),
+        paneDescendantProbe: $probe,
+        paneTarget: $paneTarget,
+        observedAt: $observedAt
+      }' 2>/dev/null || true)"
+  fi
+  return 0
+}
+
+# HOK-3137: extracted from the monitor loop so the stamp is independently
+# testable. Writes the `failed`/`interrupted` stage result with dynamic,
+# factual `exitEvidence` built from CODING_OWNER_LOST_EVIDENCE_JSON (set by
+# the immediately preceding coding_stage_owner_lost call). Falls back to a
+# minimal dynamic string — never the old hard-coded
+# "agent process exited ... (pane at shell prompt)" — when no evidence is
+# available (e.g. jq missing).
+#
+# The `notes` detail string below is pattern-matched by the native-failure
+# classifier (monitor:6760, `*"interrupted: coding agent exited without
+# recording a result"*` → `coding-exited-without-result`) and MUST stay
+# stable; only the `exitEvidence` artifact field becomes dynamic.
+coding_stage_mark_interrupted() {
+  local issue="$1" feature_dir="$2" worktree="$3" win="$4" agent="${5:-}"
+  local interrupted_head evidence_json interrupted_artifacts
+
+  interrupted_head="$(git -C "$worktree" rev-parse HEAD 2>/dev/null || true)"
+  evidence_json="${CODING_OWNER_LOST_EVIDENCE_JSON:-}"
+  if [[ -z "$evidence_json" ]] || ! jq -e . >/dev/null 2>&1 <<<"$evidence_json"; then
+    evidence_json="$(jq -cn --arg msg "owner lost - no probe evidence available (pane ${win:-unknown})" '{detail: $msg}' 2>/dev/null)"
+    [[ -n "$evidence_json" ]] || evidence_json='{"detail":"owner lost - no probe evidence available"}'
+  fi
+
+  interrupted_artifacts="$(jq -cn --arg head "$interrupted_head" --argjson evidence "$evidence_json" \
+    '{type: "coding",
+      terminationClass: "interrupted",
+      exitEvidence: $evidence,
+      lastDurableCommit: (if $head == "" then null else $head end),
+      validationState: "unknown",
+      recoveryAction: "Relaunch the coding phase to resume from the last durable commit, or push the branch and open a PR manually if the work is already complete."}')"
+  write_stage_result "$feature_dir" "coding" "failed" "$agent" \
+    "$(resolve_stage_result_model "$feature_dir" "coding" "claude-opus-4-7")" \
+    "Interrupted: coding agent exited without recording a result - durable commits preserved${interrupted_head:+ at ${interrupted_head:0:7}}" \
+    "$interrupted_artifacts"
+  log_warn "$issue → Coding agent exited without a terminal result - marked interrupted (work preserved${interrupted_head:+ at ${interrupted_head:0:7}})"
+  set_window_attention_state "$win" "needs-user"
+}
+
+# HOK-3137: a coding stage stamped failed/interrupted by
+# coding_stage_owner_lost can still receive a genuine .coding-complete minutes
+# later, once the agent's background task finishes and it wakes up. Without
+# this, the `failed` branch (transient retry / quarantine) never looks at
+# `.coding-complete` again and the task parks at needs-user forever even
+# though the agent actually finished.
+#
+# Reconciling here flips the stage back to "running" so the existing
+# running+marker machinery (seam validation, dirty-handoff guard, completed
+# transition) advances it on the next tick — no duplicated handoff logic.
+# Returns 0 when reconciled (caller should count the task active and
+# return), 1 to fall through to the existing failed handling.
+coding_interrupted_late_completion_reconcile() {
+  local issue="$1" feature_dir="$2" worktree="$3" win="$4"
+  local result_file="$feature_dir/.coding-result.json"
+  local slug status termination_class finished_at finished_epoch marker_epoch
+  local marker_commit head dirty_paths verdict_cache cached_mtime seam_rc
+  local result_agent result_model
+
+  [[ -f "$result_file" ]] || return 1
+  status="$(jq -r '.status // empty' "$result_file" 2>/dev/null || true)"
+  [[ "$status" == "failed" ]] || return 1
+  termination_class="$(jq -r '.artifacts.terminationClass // empty' "$result_file" 2>/dev/null || true)"
+  [[ "$termination_class" == "interrupted" ]] || return 1
+
+  slug="$(basename "$feature_dir")"
+  recover_misplaced_coding_complete_marker "$issue" "$worktree" "$feature_dir" "$slug" || true
+  [[ -f "$feature_dir/.coding-complete" ]] || return 1
+
+  # [REQ-F2 edge] marker must be strictly newer than the interrupted stamp.
+  finished_at="$(jq -r '.finishedAt // empty' "$result_file" 2>/dev/null || true)"
+  [[ -n "$finished_at" ]] || return 1
+  finished_epoch="$(wavemill_iso8601_to_epoch "$finished_at" 2>/dev/null || true)"
+  [[ "$finished_epoch" =~ ^[0-9]+$ ]] || return 1
+  marker_epoch="$(portable_file_mtime_epoch "$feature_dir/.coding-complete" 2>/dev/null || true)"
+  [[ "$marker_epoch" =~ ^[0-9]+$ ]] || return 1
+  (( marker_epoch > finished_epoch )) || return 1
+
+  # [REQ-F2 edge] a dirty tree stays interrupted — HOK-3128's dirty-handoff
+  # machinery applies only to live/relaunched arms, not a reconciled one.
+  dirty_paths="$(coding_output_dirty_paths "$worktree" "$slug")"
+  [[ -z "$dirty_paths" ]] || return 1
+
+  # [REQ-F2 edge] an optional `commit` field must match HEAD (prefix match).
+  head="$(git -C "$worktree" rev-parse HEAD 2>/dev/null || true)"
+  marker_commit="$(jq -r '.commit // empty' "$feature_dir/.coding-complete" 2>/dev/null || true)"
+  if [[ -n "$marker_commit" ]]; then
+    blocked_completion_commit_matches_head "$marker_commit" "$head" || return 1
+  fi
+
+  # Seam validation spawns tsx; cache the verdict keyed by marker mtime so a
+  # permanently-invalid marker does not re-spawn the validator every tick.
+  verdict_cache="$feature_dir/.late-completion-reconcile.json"
+  cached_mtime=""
+  if [[ -f "$verdict_cache" ]]; then
+    cached_mtime="$(jq -r '.markerMtime // empty' "$verdict_cache" 2>/dev/null || true)"
+    if [[ "$cached_mtime" == "$marker_epoch" ]]; then
+      [[ "$(jq -r '.valid // false' "$verdict_cache" 2>/dev/null || echo false)" == "true" ]] || return 1
+    else
+      cached_mtime=""
     fi
   fi
-  [[ "$live_rc" -eq 1 ]] || return 1
+  if [[ -z "$cached_mtime" ]]; then
+    seam_rc=0
+    seam_validate_artifact coding-complete "$feature_dir/.coding-complete" --canonicalize || seam_rc=$?
+    local verdict_tmp
+    verdict_tmp="$(mktemp "$verdict_cache.tmp.XXXXXX" 2>/dev/null)" && {
+      jq -cn --arg mtime "$marker_epoch" --argjson valid "$([[ "$seam_rc" -eq 0 ]] && echo true || echo false)" \
+        '{markerMtime: $mtime, valid: $valid}' > "$verdict_tmp" 2>/dev/null \
+        && mv "$verdict_tmp" "$verdict_cache" 2>/dev/null || rm -f "$verdict_tmp"
+    }
+    [[ "$seam_rc" -eq 0 ]] || return 1
+  fi
+
+  result_agent="$(jq -r '.agent // empty' "$result_file" 2>/dev/null || true)"
+  result_model="$(jq -r '.model // empty' "$result_file" 2>/dev/null || true)"
+  log "status" "$issue → late_completion_reconciled: valid .coding-complete found after interrupted stamp (marker newer than finishedAt, tree clean)"
+  if declare -F wavemill_hook_write >/dev/null 2>&1; then
+    WAVEMILL_SESSION="$SESSION" WAVEMILL_ISSUE="$issue" \
+      wavemill_hook_write "working" "late_completion_reconciled" "late .coding-complete accepted after interrupted stamp" "wavemill" "" "monitor" || true
+  fi
+  write_stage_result "$feature_dir" "coding" "running" "$result_agent" "$result_model" \
+    "Reconciled: late .coding-complete accepted after interrupted stamp"
+  set_window_attention_state "$win" "clear"
   return 0
 }
 
@@ -7614,6 +7787,224 @@ handle_phase_launch_result() {
   fi
 
   bounded_retry_clear "$feature_dir" "phase-launch-$launched_phase"
+  return 0
+}
+
+# ----------------------------------------------------------------------------
+# Typed coding launch refusals (HOK-3142)
+# ----------------------------------------------------------------------------
+# When agent resolution refuses the routed coder, the previous code reverted to
+# planning and the next poll tick re-derived the identical refused launch —
+# HOK-3138 sat at .plan-approved for 2.5h. Two bounded-retry buckets (HOK-2924)
+# now own this path:
+#
+#   coding-launch-refused  — deterministic refusals (uncertified, lifecycle,
+#                            role-ineligible, ...). Each refusal re-routes the
+#                            coder with the refused model(s) excluded
+#                            (tools/reroute-refused-coder.ts), so the next tick
+#                            launches the substitute. Terminalizes to needs-user
+#                            with the certify command when no launchable coder
+#                            remains, the coder is pinned (FORCE_MODEL /
+#                            WAVEMILL_CODER_MODEL), or the reroute budget is
+#                            spent. An implementation-stage challenger is never
+#                            re-routed: its varied coder is the experiment, so
+#                            the arm is quarantined and the pair forfeits to the
+#                            primary (coding-dirty-handoff precedent, HOK-3128).
+#   coding-launch-resolver — transient resolver failures (missing tsx, mktemp,
+#                            resolver crash, malformed JSON). Same revert-and-
+#                            retry as before, now with backoff and a ceiling.
+#
+# Both terminal states hold quietly (no relaunch, no re-log) until the head
+# moves or the operator removes the sentinel after certifying the model.
+# Bucket names are literals inside each function (not globals) so the
+# functions stay self-contained for the extraction-based test harnesses.
+
+coding_launch_refusal_limit() {
+  local limit="${WAVEMILL_CODING_LAUNCH_REFUSAL_MAX_ATTEMPTS:-3}"
+  [[ "$limit" =~ ^[0-9]+$ ]] || limit=3
+  printf '%s\n' "$limit"
+}
+
+# Exit 0 when the refusal comes from the resolver plumbing rather than the
+# model, i.e. retrying the identical launch can succeed. Mirrors
+# isDeterministicLaunchRefusal() in shared/lib/stage-launchability.ts; the
+# shell-side resolver failures carry generic reasons, so classify them by
+# their certification tag first.
+coding_launch_refusal_is_transient() {
+  local reason="${1:-}" certification="${2:-}"
+  local transient_certifications=" missing-tsx missing-jq mktemp-failed resolver-failed malformed-json "
+  local deterministic_reasons=" uncertified no-native-capability native-unsupported lifecycle-blocked role-ineligible tool-support-insufficient context-window-insufficient codex-chatgpt-ineligible unknown-model "
+  [[ -n "$certification" && "$transient_certifications" == *" $certification "* ]] && return 0
+  [[ -n "$reason" && "$deterministic_reasons" == *" $reason "* ]] && return 1
+  return 0
+}
+
+# Structured, greppable refusal line for the observer (parseLaunchRefusalLine
+# in tools/observer.ts). Logged at warn so the observer's warn/error scan sees
+# it — the HOK-3138 refusal was written as `[info] warn ⚠ …` and never surfaced.
+# Usage: log_coding_launch_refusal <issue> <model> <provider> <reason> <certification> <action> <substitute> <certify>
+log_coding_launch_refusal() {
+  local issue="$1" model="$2" provider="$3" reason="$4" certification="$5" action="$6" substitute="$7" certify="$8"
+  local line
+  line="[launch-refusal] issue=$issue phase=coding model=${model:-unknown} provider=${provider:-unknown} reason=${reason:-unknown} certification=${certification:-unknown} action=$action"
+  [[ -n "$substitute" ]] && line+=" substitute=$substitute"
+  line+=" certify=\"${certify:-unavailable}\""
+  log "warn" "$line"
+}
+
+# Pre-launch hold for the coding launch: exit 0 (caller holds this tick) while
+# either refusal bucket is terminalized or a transient retry is backing off.
+# Usage: coding_launch_refusal_hold <issue> <feature_dir> <win>
+coding_launch_refusal_hold() {
+  local issue="$1" feature_dir="$2" win="$3"
+  local head bucket
+  head="$(phase_launch_head "$feature_dir")"
+  for bucket in coding-launch-refused coding-launch-resolver; do
+    bounded_retry_reset_if_new_key "$feature_dir" "$bucket" "$head"
+    if bounded_retry_is_exhausted "$feature_dir" "$bucket"; then
+      set_window_attention_state "$win" "needs-user"
+      return 0
+    fi
+  done
+  if [[ "$(bounded_retry_count "$feature_dir" coding-launch-resolver)" -gt 0 ]] \
+    && ! bounded_retry_due "$feature_dir" coding-launch-resolver; then
+    log "debug" "  $issue: holding coding launch retry after resolver failure (backoff)"
+    return 0
+  fi
+  return 1
+}
+
+# Clear both refusal buckets after a successful coding launch (HOK-2924:
+# budgets reset on a successful launch).
+coding_launch_refusal_clear() {
+  local feature_dir="$1"
+  bounded_retry_clear "$feature_dir" coding-launch-refused
+  bounded_retry_clear "$feature_dir" coding-launch-resolver
+}
+
+# Terminalize a refused coding launch: record the reason (with the certify
+# command) in the bucket's exhausted sentinel, park the task at needs-user,
+# and surface the certify command as the hook next_action. The task stays at
+# planning — certifying the model is the fix, so it is never aborted here.
+# Usage: coding_launch_refusal_terminalize <issue> <feature_dir> <win> <bucket> <model> <provider> <reason> <certification> <certify> <why>
+coding_launch_refusal_terminalize() {
+  local issue="$1" feature_dir="$2" win="$3" bucket="$4" model="$5" provider="$6"
+  local reason="$7" certification="$8" certify="$9" why="${10}"
+  local recorded next_action hook_protocol
+
+  next_action="${certify:+run: $certify; then }rm $feature_dir/.retry-${bucket}-* to release the coding launch"
+  recorded="Coding launch refused ($why): model=${model:-unknown} reason=${reason:-unknown} certification=${certification:-unknown} certify=\"${certify:-unavailable}\" — $next_action"
+  if bounded_retry_mark_exhausted "$feature_dir" "$bucket" "$recorded"; then
+    log_coding_launch_refusal "$issue" "$model" "$provider" "$reason" "$certification" "needs-user" "" "$certify"
+    log "status" "⛔ $issue → coding launch refused ($why): $model needs operator action${certify:+ — $certify}"
+    hook_protocol="$LIB_DIR/../hooks/wavemill-hook-protocol.sh"
+    if [[ -f "$hook_protocol" ]]; then
+      # shellcheck disable=SC1090
+      source "$hook_protocol" || true
+      if declare -F wavemill_hook_write >/dev/null 2>&1; then
+        WAVEMILL_SESSION="$SESSION" WAVEMILL_ISSUE="$issue" \
+          wavemill_hook_write "blocked" "coding_launch_refused" "$recorded" "wavemill" "$next_action" "monitor" || true
+      fi
+    fi
+  fi
+  write_stage_result "$feature_dir" "coding" "failed" "" "$model" "$recorded"
+  set_task_phase "$issue" "planning"
+  set_window_attention_state "$win" "needs-user"
+}
+
+# Handle a coding launch that agent resolution refused. Reads the typed
+# refusal from AGENT_RESOLVE_LAST_{REASON,CERTIFICATION,CERTIFY,DIAGNOSTIC},
+# so agent_resolve_from_model must have run in this shell (not inside $(...)).
+# Always leaves the task at planning; the caller holds the slot and returns.
+# Usage: handle_coding_launch_refusal <issue> <feature_dir> <win> <route_model> <launch_model>
+handle_coding_launch_refusal() {
+  local issue="$1" feature_dir="$2" win="$3" route_model="$4" launch_model="${5:-$4}"
+  local reason="${AGENT_RESOLVE_LAST_REASON:-}" certification="${AGENT_RESOLVE_LAST_CERTIFICATION:-}"
+  local certify="${AGENT_RESOLVE_LAST_CERTIFY:-}"
+  local diagnostic="${AGENT_RESOLVE_LAST_DIAGNOSTIC:-[agent-resolution] model=$launch_model phase=coding reason=${reason:-unknown}}"
+  local provider="" head limit attempts varied role reroute_json reroute_status substitute reroute_stderr
+  local provider_re='(^|[[:space:]])provider=([^[:space:]]+)'
+
+  [[ "$diagnostic" =~ $provider_re ]] && provider="${BASH_REMATCH[2]}"
+  head="$(phase_launch_head "$feature_dir")"
+  limit="$(coding_launch_refusal_limit)"
+  write_stage_result "$feature_dir" "coding" "failed" "" "$launch_model" "$diagnostic"
+  set_task_phase "$issue" "planning"
+
+  if coding_launch_refusal_is_transient "$reason" "$certification"; then
+    attempts="$(bounded_retry_increment "$feature_dir" coding-launch-resolver "$head")"
+    if (( attempts > limit )); then
+      coding_launch_refusal_terminalize "$issue" "$feature_dir" "$win" coding-launch-resolver \
+        "$launch_model" "$provider" "$reason" "$certification" "$certify" \
+        "resolver failed on all ${attempts} attempt(s)"
+      return 0
+    fi
+    set_window_attention_state "$win" "needs-user"
+    log_coding_launch_refusal "$issue" "$launch_model" "$provider" "$reason" "$certification" "retry" "" "$certify"
+    log "warn" "⚠ $issue → coding launch resolver failure (attempt ${attempts}/${limit}), retrying after backoff: $diagnostic"
+    return 0
+  fi
+
+  # Deterministic refusal: the identical relaunch can never succeed.
+  if [[ -n "${FORCE_MODEL:-}" || -n "${WAVEMILL_CODER_MODEL:-}" ]]; then
+    coding_launch_refusal_terminalize "$issue" "$feature_dir" "$win" coding-launch-refused \
+      "$launch_model" "$provider" "$reason" "$certification" "$certify" "coder pinned by operator"
+    return 0
+  fi
+
+  role="$(_challenge_side_for_issue "$issue" 2>/dev/null || true)"
+  varied="$(challenge_varied_stage_model "$issue" "coding" 2>/dev/null || true)"
+  if [[ "$role" == "challenger" && -n "$varied" && ( "$varied" == "$route_model" || "$varied" == "$launch_model" ) ]]; then
+    coding_launch_refusal_terminalize "$issue" "$feature_dir" "$win" coding-launch-refused \
+      "$launch_model" "$provider" "$reason" "$certification" "$certify" "challenger varied coder is not launchable"
+    if [[ -z "$(get_task_meta "$issue" "challengeAborted" 2>/dev/null || true)" ]]; then
+      challenge_abort_pair "$issue" "$feature_dir" "$win" "coding" "$launch_model" \
+        "varied_model_unlaunchable" "Challenge arm aborted: varied coder $launch_model refused at launch ($diagnostic)" \
+        "${certify:+run: $certify}" "single" || true
+      log_warn "$issue → challenger varied coder $launch_model is not launchable: challenger quarantined, primary released"
+      cleanup_quarantined_no_pr_challenge_arm "$issue" "$feature_dir" "coding" "varied_model_unlaunchable" || true
+    fi
+    return 0
+  fi
+
+  attempts="$(bounded_retry_increment "$feature_dir" coding-launch-refused "$head")"
+  if (( attempts > limit )); then
+    coding_launch_refusal_terminalize "$issue" "$feature_dir" "$win" coding-launch-refused \
+      "$launch_model" "$provider" "$reason" "$certification" "$certify" \
+      "coder reroute budget of ${limit} exhausted"
+    return 0
+  fi
+
+  reroute_stderr="$(mktemp "${TMPDIR:-/tmp}/coder-reroute-stderr.XXXXXX" 2>/dev/null || echo /dev/null)"
+  local -a reroute_args=(
+    --issue "$issue" --feature-dir "$feature_dir" --repo-dir "$REPO_DIR"
+    --model "$route_model" --reason "${reason:-unknown}" --json
+  )
+  [[ -n "$launch_model" && "$launch_model" != "$route_model" ]] && reroute_args+=(--launch-model "$launch_model")
+  [[ -n "$certification" ]] && reroute_args+=(--certification "$certification")
+  [[ -n "$certify" ]] && reroute_args+=(--certify "$certify")
+  reroute_json="$(cd "$REPO_DIR" 2>/dev/null && npx tsx "$TOOLS_DIR/reroute-refused-coder.ts" "${reroute_args[@]}" 2>"$reroute_stderr")" || reroute_json=""
+  reroute_status="$(printf '%s' "$reroute_json" | jq -r '.status // empty' 2>/dev/null || true)"
+  substitute="$(printf '%s' "$reroute_json" | jq -r '.to // empty' 2>/dev/null || true)"
+
+  if [[ "$reroute_status" == "rerouted" && -n "$substitute" ]]; then
+    [[ "$reroute_stderr" != /dev/null ]] && rm -f "$reroute_stderr"
+    task_state_mutate_existing "$issue" '.coderModel = $coder | .updated = (now | todate)' \
+      --arg coder "$substitute" >/dev/null 2>&1 || true
+    clear_stage_result "$feature_dir" "coding"
+    set_window_attention_state "$win" "clear"
+    log_coding_launch_refusal "$issue" "$launch_model" "$provider" "$reason" "$certification" "rerouted" "$substitute" "$certify"
+    log "status" "↪ $issue → coder substitution: $launch_model → $substitute (${reason:-refused}${certification:+:$certification}), next tick launches the substitute"
+    return 0
+  fi
+
+  if [[ "$reroute_status" != "no-eligible" && "$reroute_stderr" != /dev/null && -s "$reroute_stderr" ]]; then
+    log_warn "$issue → coder reroute failed: $(tail -n 3 "$reroute_stderr" | tr '\n' ' ')"
+  fi
+  [[ "$reroute_stderr" != /dev/null ]] && rm -f "$reroute_stderr"
+  coding_launch_refusal_terminalize "$issue" "$feature_dir" "$win" coding-launch-refused \
+    "$launch_model" "$provider" "$reason" "$certification" "$certify" \
+    "$([[ "$reroute_status" == "no-eligible" ]] && echo "no launchable coder remains" || echo "coder reroute failed")"
   return 0
 }
 
@@ -16687,15 +17078,18 @@ handle_enter_command() {
   MONITOR_COMMAND_DEFER_EVENT=""
   MONITOR_COMMAND_DEFER_REASON=""
 
+  # A bare Enter launches work only when taskSelection.enterAction=wave.
+  # Check this before slot deferral so a stray Enter pressed while every slot
+  # is busy is never queued to launch a wave hours later.
+  if [[ "${ENTER_ACTION:-none}" != "wave" ]]; then
+    MONITOR_COMMAND_STATUS="invalid"
+    return 0
+  fi
+
   if (( free_slots <= 0 )); then
     MONITOR_COMMAND_STATUS="deferred"
     MONITOR_COMMAND_DEFER_EVENT="$event"
     MONITOR_COMMAND_DEFER_REASON="no_slots_available"
-    return 0
-  fi
-
-  if [[ "${ENTER_LAUNCHES_WAVE:-true}" != "true" ]]; then
-    MONITOR_COMMAND_STATUS="invalid"
     return 0
   fi
 
@@ -17793,6 +18187,13 @@ monitor_issue_state() {
               active_count=$((active_count + 1))
               return 0
             fi
+            # HOK-3142: a refused coder launch that terminalized (or is backing
+            # off a resolver failure) holds quietly instead of re-deriving the
+            # identical refused launch every tick.
+            if coding_launch_refusal_hold "$ISSUE" "$FEATURE_DIR" "$WIN"; then
+              active_count=$((active_count + 1))
+              return 0
+            fi
 
             # HOK-3086: an implementation-stage challenger forks HERE, at the
             # plan→coding handoff and before the primary's coder can commit, so
@@ -17810,11 +18211,16 @@ monitor_issue_state() {
             if declare -F agent_resolve_model >/dev/null 2>&1; then
               coder_launch_model="$(agent_resolve_model "coder" "$coder_model" "$REPO_DIR")" || return 1
             fi
-            if ! coder_agent="$(agent_resolve_from_model "$coder_launch_model" "coding")"; then
-              write_stage_result "$FEATURE_DIR" "coding" "failed" "" "$coder_launch_model" "${AGENT_RESOLVE_LAST_DIAGNOSTIC:-Coding launch blocked by agent resolution failure.}"
-              set_task_phase "$ISSUE" "planning"
-              set_window_attention_state "$WIN" "needs-user"
-              log "warn" "⚠ $ISSUE → Coding launch blocked: ${AGENT_RESOLVE_LAST_DIAGNOSTIC:-agent resolution failed}"
+            # Resolve in this shell (stdout to a file, not $(...)) so the typed
+            # refusal fields reach handle_coding_launch_refusal (HOK-3142).
+            local coder_resolve_out
+            coder_resolve_out="$(mktemp "${TMPDIR:-/tmp}/coder-resolve.XXXXXX")" || coder_resolve_out=""
+            if [[ -n "$coder_resolve_out" ]] && agent_resolve_from_model "$coder_launch_model" "coding" >"$coder_resolve_out"; then
+              coder_agent="$(head -n 1 "$coder_resolve_out")"
+              rm -f "$coder_resolve_out"
+            else
+              [[ -n "$coder_resolve_out" ]] && rm -f "$coder_resolve_out"
+              handle_coding_launch_refusal "$ISSUE" "$FEATURE_DIR" "$WIN" "$coder_model" "$coder_launch_model"
               active_count=$((active_count + 1))
               return 0
             fi
@@ -17846,6 +18252,7 @@ monitor_issue_state() {
             if ! handle_phase_launch_result "$ISSUE" "$FEATURE_DIR" "coding" "planning" "$launch_rc" "$WIN" "$coder_agent" "$coder_launch_model"; then
                 return 0
             fi
+            coding_launch_refusal_clear "$FEATURE_DIR"
             set_window_attention_state "$WIN" "clear"
             log "status" "$ISSUE → Plan approved, launching coding phase"
             active_count=$((active_count + 1))
@@ -18157,21 +18564,7 @@ monitor_issue_state() {
           # preserves the durable commits and names the recovery action.
           if [[ "$coding_status" == "running" ]] \
             && coding_stage_owner_lost "$ISSUE" "$FEATURE_DIR" "$WIN_TARGET"; then
-            local interrupted_head interrupted_artifacts
-            interrupted_head="$(git -C "${WORKTREE_ROOT}/${SLUG}" rev-parse HEAD 2>/dev/null || true)"
-            interrupted_artifacts="$(jq -cn --arg head "$interrupted_head" \
-              '{type: "coding",
-                terminationClass: "interrupted",
-                exitEvidence: "agent process exited without a terminal stage result (pane at shell prompt)",
-                lastDurableCommit: (if $head == "" then null else $head end),
-                validationState: "unknown",
-                recoveryAction: "Relaunch the coding phase to resume from the last durable commit, or push the branch and open a PR manually if the work is already complete."}')"
-            write_stage_result "$FEATURE_DIR" "coding" "failed" "$current_agent" \
-              "$(resolve_stage_result_model "$FEATURE_DIR" "coding" "claude-opus-4-7")" \
-              "Interrupted: coding agent exited without recording a result - durable commits preserved${interrupted_head:+ at ${interrupted_head:0:7}}" \
-              "$interrupted_artifacts"
-            log_warn "$ISSUE → Coding agent exited without a terminal result - marked interrupted (work preserved${interrupted_head:+ at ${interrupted_head:0:7}})"
-            set_window_attention_state "$WIN" "needs-user"
+            coding_stage_mark_interrupted "$ISSUE" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" "$WIN" "$current_agent"
             active_count=$((active_count + 1))
             return 0
           fi
@@ -18185,6 +18578,14 @@ monitor_issue_state() {
           fi
 
           if [[ "$coding_status" == "failed" ]]; then
+            # HOK-3137: a task stamped interrupted by coding_stage_owner_lost
+            # can still have written a genuine .coding-complete minutes later
+            # (its background task finished). Reconcile before falling into
+            # challenger retry/quarantine, which never looks at the marker.
+            if coding_interrupted_late_completion_reconcile "$ISSUE" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" "$WIN"; then
+              active_count=$((active_count + 1))
+              return 0
+            fi
             local coding_transient_rc=0
             maybe_retry_challenger_transient_phase "$ISSUE" "$FEATURE_DIR" "coding" "$WIN" || coding_transient_rc=$?
             if [[ "$coding_transient_rc" -eq 0 || "$coding_transient_rc" -eq 2 ]]; then
@@ -20542,12 +20943,14 @@ while :; do
             fi
           fi
           _task_frame+=$'\n'
+          _enter_hint=""
+          [[ "${ENTER_ACTION:-none}" == "wave" ]] && _enter_hint="press Enter to launch recommended wave, "
           if [[ "$USING_GROUPED_VIEW" == "true" ]]; then
-            _task_frame+="Enter number(s) to start (e.g. 1 3), press Enter to launch recommended wave, 'm' for more, 'd' for deps, 'q' to quit, or wait ${POLL_SECONDS}s to refresh:"$'\n'
+            _task_frame+="Enter number(s) to start (e.g. 1 3), ${_enter_hint}'m' for more, 'd' for deps, 'q' to quit, or wait ${POLL_SECONDS}s to refresh:"$'\n'
           elif (( avail_blocked_count > 0 )); then
-            _task_frame+="Enter number(s) to start (e.g. 1 3), press Enter to launch recommended wave, 'm' for more, 'q' to quit, or wait ${POLL_SECONDS}s to refresh:"$'\n'
+            _task_frame+="Enter number(s) to start (e.g. 1 3), ${_enter_hint}'m' for more, 'q' to quit, or wait ${POLL_SECONDS}s to refresh:"$'\n'
           else
-            _task_frame+="Enter number(s) to start (e.g. 1 3), press Enter to launch recommended wave, 'q' to quit, or wait ${POLL_SECONDS}s to refresh:"$'\n'
+            _task_frame+="Enter number(s) to start (e.g. 1 3), ${_enter_hint}'q' to quit, or wait ${POLL_SECONDS}s to refresh:"$'\n'
           fi
 
           paint_task_list_frame "$_task_frame"
@@ -20609,7 +21012,7 @@ while :; do
         elif [[ "$REPLY" =~ ^unknown\  ]]; then
           log_warn "Unknown input: $(render_unknown_input_for_log "${REPLY#unknown }")"
         elif [[ "$REPLY" == "enter" ]]; then
-          if [[ "${ENTER_LAUNCHES_WAVE:-true}" == "true" ]]; then
+          if [[ "${ENTER_ACTION:-none}" == "wave" ]]; then
             wave_plan_json="${queue_plan_json:-$QUEUE_PLAN_CACHE}"
             if [[ -n "$wave_plan_json" ]]; then
               wave_result=$(invoke_first_wave_helper "$wave_plan_json" "$avail_unblocked" "$free_slots" 2>/dev/null) || wave_result=""

@@ -1,16 +1,21 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  behindBaseSeverity,
   buildFindings,
   compactSnapshotForRender,
+  detectBranchBehindBase,
+  detectExhaustedRetries,
+  detectStuckMergeCandidates,
   matchInteractivePromptSignature,
   normalizeInteractivePromptText,
   parseArgs,
+  parseLaunchRefusalLine,
   reconcileIncidents,
   redactObserverText,
   syncIncidentsToLinear,
@@ -3368,3 +3373,680 @@ test('two blocked task panes get independent task-scoped incident fingerprints',
     rmSync(fixture.repoDir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// HOK-3096: state-based detectors — stuck merge candidates, abandoned
+// exhausted retries, branches behind base
+// ---------------------------------------------------------------------------
+
+const OBSERVER_FIXTURES_DIR = join(process.cwd(), 'tests', 'fixtures', 'observer');
+
+function renderFixtureTemplate(raw: string, vars: Record<string, string>): string {
+  return raw.replace(/\{\{(\w+)\}\}/g, (_match, key: string) => {
+    if (!(key in vars)) throw new Error(`materializeObserverFixture: missing template var ${key}`);
+    return vars[key];
+  });
+}
+
+function materializeTemplateFile(templatePath: string, destPath: string, vars: Record<string, string>, mtime?: Date): void {
+  const rendered = renderFixtureTemplate(readFileSync(templatePath, 'utf8'), vars);
+  mkdirSync(dirname(destPath), { recursive: true });
+  writeFileSync(destPath, rendered);
+  if (mtime) utimesSync(destPath, mtime, mtime);
+}
+
+function fakeCaps(overrides: Record<string, unknown> = {}) {
+  return {
+    tend: false,
+    observer: true,
+    mergeExecutor: 'operator',
+    mergeQueue: false,
+    reasons: {
+      tend: 'test', observer: 'test', mergeExecutor: 'test', mergeQueue: 'test',
+    },
+    health: { tend: null, observer: null },
+    ...overrides,
+  };
+}
+
+function materializeStuckCandidateReadyResult(
+  featureDir: string,
+  vars: { headSha: string; baseSha?: string; candidatePromotedAt: string; candidateLastProgressAt?: string },
+): void {
+  materializeTemplateFile(
+    join(OBSERVER_FIXTURES_DIR, 'stuck-candidate', 'ready-result.json'),
+    join(featureDir, '.ready-result.json'),
+    {
+      READY_STARTED_AT: agoIso(60),
+      READY_FINISHED_AT: agoIso(55),
+      HEAD_SHA: vars.headSha,
+      BASE_SHA: vars.baseSha ?? 'base-sha',
+      CANDIDATE_PROMOTED_AT: vars.candidatePromotedAt,
+      CANDIDATE_LAST_PROGRESS_AT: vars.candidateLastProgressAt ?? vars.candidatePromotedAt,
+    },
+  );
+}
+
+function materializeHealthyReadyResult(featureDir: string, headSha: string): void {
+  materializeTemplateFile(
+    join(OBSERVER_FIXTURES_DIR, 'healthy', 'ready-result.json'),
+    join(featureDir, '.ready-result.json'),
+    {
+      READY_STARTED_AT: agoIso(10),
+      READY_FINISHED_AT: agoIso(5),
+      HEAD_SHA: headSha,
+    },
+  );
+}
+
+function stuckCandidateRepo(repoDir: string, overrides: Record<string, unknown> = {}) {
+  return {
+    session: 'wavemill',
+    repoDir,
+    tasks: [{
+      issue: 'HOK-9100',
+      slug: 'stuck-candidate-fixture',
+      phase: 'ready',
+      status: 'active',
+      worktree: repoDir,
+      ...overrides,
+    }],
+  };
+}
+
+test('HOK-3096 Detector 1 (REQ-F1): stuck merge candidate fires high severity with no merge consumer', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-stuck-candidate-'));
+  const featureDir = join(repoDir, 'features', 'stuck-candidate-fixture');
+  mkdirSync(featureDir, { recursive: true });
+  materializeStuckCandidateReadyResult(featureDir, { headSha: 'head-sha-1', candidatePromotedAt: agoIso(20) });
+
+  try {
+    const repo = stuckCandidateRepo(repoDir);
+    const findings = detectStuckMergeCandidates(repo as never, Date.now(), fakeCaps() as never);
+    const finding = findings.find((f) => f.id === 'stuck-merge-candidate-wavemill-HOK-9100');
+    assert.ok(finding, `expected a stuck-merge-candidate finding, got: ${findings.map((f) => f.id).join(', ')}`);
+    assert.equal(finding?.severity, 'high');
+    assert.match(finding!.title, /stuck in merge-candidate with no active merge consumer/);
+    assert.match(finding!.recommendation, /no active merge consumer/);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3096 Detector 1 (REQ-F1): stuck merge candidate is suppressed when a merge consumer is active', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-stuck-candidate-consumer-'));
+  const featureDir = join(repoDir, 'features', 'stuck-candidate-fixture');
+  mkdirSync(featureDir, { recursive: true });
+  materializeStuckCandidateReadyResult(featureDir, { headSha: 'head-sha-1', candidatePromotedAt: agoIso(20) });
+
+  try {
+    const repo = stuckCandidateRepo(repoDir);
+    const caps = fakeCaps({ tend: true, mergeExecutor: 'tend', mergeQueue: true });
+    const findings = detectStuckMergeCandidates(repo as never, Date.now(), caps as never);
+    assert.equal(findings.find((f) => f.id === 'stuck-merge-candidate-wavemill-HOK-9100'), undefined);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3096 Detector 1 (REQ-F1): a freshly promoted candidate (< 15m) is not yet stuck', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-stuck-candidate-fresh-'));
+  const featureDir = join(repoDir, 'features', 'stuck-candidate-fixture');
+  mkdirSync(featureDir, { recursive: true });
+  materializeStuckCandidateReadyResult(featureDir, { headSha: 'head-sha-1', candidatePromotedAt: agoIso(5) });
+
+  try {
+    const repo = stuckCandidateRepo(repoDir);
+    const findings = detectStuckMergeCandidates(repo as never, Date.now(), fakeCaps() as never);
+    assert.equal(findings.find((f) => f.id === 'stuck-merge-candidate-wavemill-HOK-9100'), undefined);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3096 Detector 1 (REQ-F2): three promotions on the same head within the churn window fire a churn finding', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-candidate-churn-'));
+  const featureDir = join(repoDir, 'features', 'stuck-candidate-fixture');
+  mkdirSync(featureDir, { recursive: true });
+  const repo = stuckCandidateRepo(repoDir);
+  const caps = fakeCaps();
+
+  try {
+    let findings: ReturnType<typeof detectStuckMergeCandidates> = [];
+    for (const minutesAgo of [25, 15, 5]) {
+      materializeStuckCandidateReadyResult(featureDir, { headSha: 'churn-head', candidatePromotedAt: agoIso(minutesAgo) });
+      findings = detectStuckMergeCandidates(repo as never, Date.now(), caps as never);
+    }
+    const churn = findings.find((f) => f.id === 'merge-candidate-churn-wavemill-HOK-9100');
+    assert.ok(churn, `expected a churn finding, got: ${findings.map((f) => f.id).join(', ')}`);
+    assert.equal(churn?.severity, 'high');
+    assert.ok(churn!.evidence.includes('promotions=3'));
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3096 Detector 1 (REQ-F2): churn count resets when the head SHA changes', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-candidate-churn-reset-'));
+  const featureDir = join(repoDir, 'features', 'stuck-candidate-fixture');
+  mkdirSync(featureDir, { recursive: true });
+  const repo = stuckCandidateRepo(repoDir);
+  const caps = fakeCaps();
+
+  try {
+    materializeStuckCandidateReadyResult(featureDir, { headSha: 'head-A', candidatePromotedAt: agoIso(25) });
+    detectStuckMergeCandidates(repo as never, Date.now(), caps as never);
+    materializeStuckCandidateReadyResult(featureDir, { headSha: 'head-A', candidatePromotedAt: agoIso(15) });
+    detectStuckMergeCandidates(repo as never, Date.now(), caps as never);
+    // New head: a real commit superseded the churn, so the count must reset
+    // rather than keep accumulating toward the threshold.
+    materializeStuckCandidateReadyResult(featureDir, { headSha: 'head-B', candidatePromotedAt: agoIso(5) });
+    const findings = detectStuckMergeCandidates(repo as never, Date.now(), caps as never);
+    assert.equal(findings.find((f) => f.id === 'merge-candidate-churn-wavemill-HOK-9100'), undefined);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3096 Detector 1: a malformed .ready-result.json is skipped without throwing', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-stuck-candidate-malformed-'));
+  const featureDir = join(repoDir, 'features', 'stuck-candidate-fixture');
+  mkdirSync(featureDir, { recursive: true });
+  writeFileSync(join(featureDir, '.ready-result.json'), 'not valid json {{{');
+
+  try {
+    const repo = stuckCandidateRepo(repoDir);
+    assert.doesNotThrow(() => {
+      const findings = detectStuckMergeCandidates(repo as never, Date.now(), fakeCaps() as never);
+      assert.equal(findings.length, 0);
+    });
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Detector 2: exhausted retries (REQ-F3)
+// ---------------------------------------------------------------------------
+
+function exhaustedRetryRepo(repoDir: string, branch: string, overrides: Record<string, unknown> = {}) {
+  return {
+    session: 'wavemill',
+    repoDir,
+    tasks: [{
+      issue: 'HOK-9200',
+      slug: 'exhausted-retry-fixture',
+      phase: 'coding',
+      status: 'active',
+      worktree: repoDir,
+      branch,
+      ...overrides,
+    }],
+  };
+}
+
+function writeExhaustedRetrySentinel(
+  featureDir: string,
+  bucket: string,
+  { mtime, reason = 'Failed to become ready after 3 attempts.\n', headSha }: { mtime: Date; reason?: string; headSha?: string },
+): void {
+  const sentinelPath = join(featureDir, `.retry-${bucket}-exhausted`);
+  writeFileSync(sentinelPath, reason);
+  utimesSync(sentinelPath, mtime, mtime);
+  if (headSha !== undefined) {
+    materializeTemplateFile(
+      join(OBSERVER_FIXTURES_DIR, 'exhausted-retry', 'retry-head.txt'),
+      join(featureDir, `.retry-${bucket}-head`),
+      { HEAD_SHA: headSha },
+    );
+  }
+}
+
+const noProgress = () => undefined;
+
+test('HOK-3096 Detector 2 (REQ-F3): exhausted sentinel with no newer commit or progress fires high severity', () => {
+  const fixture = createResidueGitFixture({ commits: 1, slug: 'exhausted-retry-fixture', commitAgeMinutes: 20 });
+  const featureDir = join(fixture.repoDir, 'features', fixture.slug);
+  mkdirSync(featureDir, { recursive: true });
+  writeExhaustedRetrySentinel(featureDir, 'failed-ready-recheck', { mtime: new Date(Date.now() - 15 * 60_000) });
+
+  try {
+    const repo = exhaustedRetryRepo(fixture.repoDir, fixture.branch);
+    const findings = detectExhaustedRetries(repo as never, Date.now(), noProgress as never);
+    const finding = findings.find((f) => f.id === 'exhausted-retry-abandoned-wavemill-HOK-9200-failed-ready-recheck');
+    assert.ok(finding, `expected an exhausted-retry finding, got: ${findings.map((f) => f.id).join(', ')}`);
+    assert.equal(finding?.severity, 'high');
+    assert.match(finding!.title, /Exhausted retries: Failed to become ready after 3 attempts\./);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3096 Detector 2 (REQ-F3): suppressed when a newer commit exists on the branch', () => {
+  const fixture = createResidueGitFixture({ commits: 1, slug: 'exhausted-retry-fixture', commitAgeMinutes: 2 });
+  const featureDir = join(fixture.repoDir, 'features', fixture.slug);
+  mkdirSync(featureDir, { recursive: true });
+  writeExhaustedRetrySentinel(featureDir, 'failed-ready-recheck', { mtime: new Date(Date.now() - 15 * 60_000) });
+
+  try {
+    const repo = exhaustedRetryRepo(fixture.repoDir, fixture.branch);
+    const findings = detectExhaustedRetries(repo as never, Date.now(), noProgress as never);
+    assert.equal(findings.find((f) => f.id === 'exhausted-retry-abandoned-wavemill-HOK-9200-failed-ready-recheck'), undefined);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3096 Detector 2 (REQ-F3): suppressed when the retry head key no longer matches the branch tip', () => {
+  const fixture = createResidueGitFixture({ commits: 1, slug: 'exhausted-retry-fixture', commitAgeMinutes: 20 });
+  const featureDir = join(fixture.repoDir, 'features', fixture.slug);
+  mkdirSync(featureDir, { recursive: true });
+  writeExhaustedRetrySentinel(featureDir, 'failed-ready-recheck', {
+    mtime: new Date(Date.now() - 15 * 60_000),
+    headSha: '0000000000000000000000000000000000dead',
+  });
+
+  try {
+    const repo = exhaustedRetryRepo(fixture.repoDir, fixture.branch);
+    const findings = detectExhaustedRetries(repo as never, Date.now(), noProgress as never);
+    assert.equal(findings.find((f) => f.id === 'exhausted-retry-abandoned-wavemill-HOK-9200-failed-ready-recheck'), undefined);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3096 Detector 2 (REQ-F3): suppressed when the task-progress primitive shows later activity', () => {
+  const fixture = createResidueGitFixture({ commits: 1, slug: 'exhausted-retry-fixture', commitAgeMinutes: 20 });
+  const featureDir = join(fixture.repoDir, 'features', fixture.slug);
+  mkdirSync(featureDir, { recursive: true });
+  writeExhaustedRetrySentinel(featureDir, 'failed-ready-recheck', { mtime: new Date(Date.now() - 15 * 60_000) });
+  const laterProgress = () => ({ lastProgressAt: agoIso(5) }) as never;
+
+  try {
+    const repo = exhaustedRetryRepo(fixture.repoDir, fixture.branch);
+    const findings = detectExhaustedRetries(repo as never, Date.now(), laterProgress as never);
+    assert.equal(findings.find((f) => f.id === 'exhausted-retry-abandoned-wavemill-HOK-9200-failed-ready-recheck'), undefined);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3096 Detector 2 (REQ-F3): multiple exhausted buckets each produce their own finding', () => {
+  const fixture = createResidueGitFixture({ commits: 1, slug: 'exhausted-retry-fixture', commitAgeMinutes: 20 });
+  const featureDir = join(fixture.repoDir, 'features', fixture.slug);
+  mkdirSync(featureDir, { recursive: true });
+  const mtime = new Date(Date.now() - 15 * 60_000);
+  writeExhaustedRetrySentinel(featureDir, 'failed-ready-recheck', { mtime });
+  writeExhaustedRetrySentinel(featureDir, 'coding-dirty-handoff', { mtime, reason: 'Dirty tree after coding exit.\n' });
+
+  try {
+    const repo = exhaustedRetryRepo(fixture.repoDir, fixture.branch);
+    const findings = detectExhaustedRetries(repo as never, Date.now(), noProgress as never);
+    assert.ok(findings.some((f) => f.id === 'exhausted-retry-abandoned-wavemill-HOK-9200-failed-ready-recheck'));
+    assert.ok(findings.some((f) => f.id === 'exhausted-retry-abandoned-wavemill-HOK-9200-coding-dirty-handoff'));
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Detector 3: branch behind base (REQ-F4, REQ-F5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds a local-only git repo (no bare origin / push) with a task branch
+ * left `behindCommits` commits behind its base. `measureBranchBaseDistance`
+ * tries `origin/<base>` first and falls back to the local `<base>` ref when
+ * no remote-tracking ref exists (same fallback `inspectTaskBranchResidue`
+ * uses), so skipping the origin plumbing here is representative of the real
+ * fallback path and keeps this fixture fast — no bare repo, no pushes.
+ */
+function createStaleBaseGitFixture({
+  behindCommits = 10,
+  slug = 'stale-base-fixture',
+}: { behindCommits?: number; slug?: string } = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'observer-stale-base-'));
+  const repoDir = join(root, 'repo');
+  mkdirSync(repoDir, { recursive: true });
+  runGit(repoDir, ['init']);
+  runGit(repoDir, ['config', 'user.email', 'observer-test@example.com']);
+  runGit(repoDir, ['config', 'user.name', 'Observer Test']);
+  runGit(repoDir, ['config', 'commit.gpgsign', 'false']);
+  runGit(repoDir, ['checkout', '-b', 'auto/integration']);
+  writeFileSync(join(repoDir, 'base.txt'), 'base\n');
+  writePermissiveSchema(repoDir);
+  writeFileSync(join(repoDir, '.gitignore'), '.wavemill/\n');
+  runGit(repoDir, ['add', '.']);
+  runGit(repoDir, ['commit', '-m', 'base commit']);
+
+  const branch = `task/${slug}`;
+  runGit(repoDir, ['checkout', '-b', branch]);
+  writeFileSync(join(repoDir, 'work.txt'), 'work\n');
+  runGit(repoDir, ['add', '.']);
+  runGit(repoDir, ['commit', '-m', 'task commit']);
+
+  runGit(repoDir, ['checkout', 'auto/integration']);
+  for (let i = 1; i <= behindCommits; i += 1) {
+    writeFileSync(join(repoDir, `base-${i}.txt`), `base ${i}\n`);
+    runGit(repoDir, ['add', '.']);
+    runGit(repoDir, ['commit', '-m', `base commit ${i}`]);
+  }
+  runGit(repoDir, ['checkout', branch]);
+
+  return { root, repoDir, slug, branch };
+}
+
+function behindBaseRepo(repoDir: string, branch: string, overrides: Record<string, unknown> = {}) {
+  return {
+    session: 'wavemill',
+    repoDir,
+    tasks: [{
+      issue: 'HOK-9300',
+      slug: 'stale-base-fixture',
+      phase: 'ready',
+      status: 'active',
+      worktree: repoDir,
+      branch,
+      ...overrides,
+    }],
+  };
+}
+
+test('HOK-3096 Detector 3 (REQ-F4): a branch more than 5 commits behind its base fires medium severity', () => {
+  const fixture = createStaleBaseGitFixture({ behindCommits: 10 });
+  try {
+    const repo = behindBaseRepo(fixture.repoDir, fixture.branch);
+    const findings = detectBranchBehindBase(repo as never, Date.now());
+    const finding = findings.find((f) => f.id === 'branch-behind-base-wavemill-HOK-9300');
+    assert.ok(finding, `expected a branch-behind-base finding, got: ${findings.map((f) => f.id).join(', ')}`);
+    assert.equal(finding?.severity, 'medium');
+    assert.ok(finding!.evidence.includes('behindBase=10'));
+    assert.match(finding!.recommendation, /update-branch-with-base\.ts/);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3096 Detector 3 (REQ-F4): a branch only 2 commits behind its base produces no finding', () => {
+  const fixture = createStaleBaseGitFixture({ behindCommits: 2 });
+  try {
+    const repo = behindBaseRepo(fixture.repoDir, fixture.branch);
+    const findings = detectBranchBehindBase(repo as never, Date.now());
+    assert.equal(findings.find((f) => f.id === 'branch-behind-base-wavemill-HOK-9300'), undefined);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3096 Detector 3 (REQ-F5): severity is elevated to high when the PR carries wm:ready', () => {
+  const fixture = createStaleBaseGitFixture({ behindCommits: 10 });
+  try {
+    const repo = behindBaseRepo(fixture.repoDir, fixture.branch, { pr: '4242' });
+    const findings = detectBranchBehindBase(repo as never, Date.now(), { readPrLabels: () => ['wm:ready'] });
+    const finding = findings.find((f) => f.id === 'branch-behind-base-wavemill-HOK-9300');
+    assert.ok(finding);
+    assert.equal(finding?.severity, 'high');
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3096 Detector 3 (REQ-F5): severity falls back to queueState when PR labels are unknown', () => {
+  const fixture = createStaleBaseGitFixture({ behindCommits: 10 });
+  const featureDir = join(fixture.repoDir, 'features', fixture.slug);
+  mkdirSync(featureDir, { recursive: true });
+  materializeStuckCandidateReadyResult(featureDir, { headSha: 'any-head', candidatePromotedAt: agoIso(1) });
+
+  try {
+    const repo = behindBaseRepo(fixture.repoDir, fixture.branch);
+    const findings = detectBranchBehindBase(repo as never, Date.now());
+    const finding = findings.find((f) => f.id === 'branch-behind-base-wavemill-HOK-9300');
+    assert.ok(finding);
+    assert.equal(finding?.severity, 'high');
+    assert.ok(finding!.evidence.includes('queueState=merge-candidate'));
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3096 Detector 3: terminal tasks never produce a branch-behind-base finding', () => {
+  const fixture = createStaleBaseGitFixture({ behindCommits: 10 });
+  try {
+    const repo = behindBaseRepo(fixture.repoDir, fixture.branch, { status: 'merged' });
+    const findings = detectBranchBehindBase(repo as never, Date.now());
+    assert.equal(findings.find((f) => f.id === 'branch-behind-base-wavemill-HOK-9300'), undefined);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3096 Detector 3: an unresolvable branch never produces a finding', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-behind-base-unknown-'));
+  try {
+    const repo = behindBaseRepo(repoDir, 'task/does-not-exist');
+    assert.doesNotThrow(() => {
+      const findings = detectBranchBehindBase(repo as never, Date.now());
+      assert.equal(findings.find((f) => f.id === 'branch-behind-base-wavemill-HOK-9300'), undefined);
+    });
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3096 behindBaseSeverity: pure severity rule', () => {
+  assert.equal(behindBaseSeverity({ hasReadyLabel: true }), 'high');
+  assert.equal(behindBaseSeverity({ hasReadyLabel: false }), 'medium');
+  assert.equal(behindBaseSeverity({ hasReadyLabel: undefined, queueState: 'ready' }), 'high');
+  assert.equal(behindBaseSeverity({ hasReadyLabel: undefined, queueState: 'ready-stale' }), 'high');
+  assert.equal(behindBaseSeverity({ hasReadyLabel: undefined, queueState: 'merge-candidate' }), 'high');
+  assert.equal(behindBaseSeverity({ hasReadyLabel: undefined, queueState: undefined }), 'medium');
+});
+
+// ---------------------------------------------------------------------------
+// Integration: all three detectors wired through buildFindings
+// ---------------------------------------------------------------------------
+
+test('HOK-3096 integration (REQ-F1): buildFindings reports a stuck candidate via resolveSessionCapabilities', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-stuck-candidate-integration-'));
+  const slug = 'stuck-candidate-fixture';
+  const featureDir = join(repoDir, 'features', slug);
+  mkdirSync(featureDir, { recursive: true });
+  materializeStuckCandidateReadyResult(featureDir, { headSha: 'head-sha-1', candidatePromotedAt: agoIso(20) });
+  writePermissiveSchema(repoDir);
+  writeFileSync(join(repoDir, '.wavemill-config.json'), JSON.stringify({
+    configVersion: '1.5.0',
+    mill: { baseBranch: 'auto/integration', requireConfirm: false },
+    integration: { enabled: false },
+  }, null, 2));
+
+  try {
+    const findings = buildFindings({
+      timestamp: new Date().toISOString(),
+      sessions: ['wavemill'],
+      panes: [],
+      processes: [],
+      repos: [{
+        session: 'wavemill',
+        repoDir,
+        tasks: [{ issue: 'HOK-9101', slug, phase: 'ready', status: 'active', worktree: repoDir }],
+      }],
+    }, defaultObserverOptions());
+
+    const finding = findings.find((f) => f.id === 'stuck-merge-candidate-wavemill-HOK-9101');
+    assert.ok(finding, `expected a stuck-merge-candidate finding, got: ${findings.map((f) => f.id).join(', ')}`);
+    assert.equal(finding?.severity, 'high');
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3096 integration (REQ-F7): a healthy task produces none of the new detector findings', () => {
+  const fixture = createStaleBaseGitFixture({ behindCommits: 0, slug: 'healthy-fixture' });
+  const featureDir = join(fixture.repoDir, 'features', fixture.slug);
+  mkdirSync(featureDir, { recursive: true });
+  materializeHealthyReadyResult(featureDir, 'healthy-head-sha');
+  writeFileSync(join(fixture.repoDir, '.wavemill-config.json'), JSON.stringify({
+    configVersion: '1.5.0',
+    mill: { baseBranch: 'auto/integration', requireConfirm: false },
+    integration: { enabled: true, useMillSession: true },
+  }, null, 2));
+
+  try {
+    const findings = buildFindings({
+      timestamp: new Date().toISOString(),
+      sessions: ['wavemill'],
+      panes: [],
+      processes: [],
+      repos: [{
+        session: 'wavemill',
+        repoDir: fixture.repoDir,
+        tasks: [{
+          issue: 'HOK-9400',
+          slug: fixture.slug,
+          phase: 'ready',
+          status: 'active',
+          worktree: fixture.repoDir,
+          branch: fixture.branch,
+        }],
+      }],
+    }, defaultObserverOptions());
+
+    const newDetectorFindings = findings.filter((f) => f.issue === 'HOK-9400' && (
+      f.id.startsWith('stuck-merge-candidate-')
+      || f.id.startsWith('merge-candidate-churn-')
+      || f.id.startsWith('exhausted-retry-abandoned-')
+      || f.id.startsWith('branch-behind-base-')
+    ));
+    assert.deepEqual(newDetectorFindings, []);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+// ── HOK-3142: typed coding launch refusals ───────────────────────────────────
+
+const HOK3142_CERTIFY = 'npx tsx tools/native-agent-certify.ts --provider openrouter --model gemini-2.5-pro --phase patch --live-coding-canary';
+
+test('HOK-3142: warn-level [launch-refusal] lines yield one launch-refused finding naming the model, reason, and certify command', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-launch-refusal-'));
+  const logPath = join(repoDir, 'mill-wavemill.log');
+  try {
+    writePermissiveSchema(repoDir);
+    const refusal = `[warn] [launch-refusal] issue=HOK-3138 phase=coding model=gemini-2.5-pro provider=openrouter reason=uncertified certification=missing_live_canary`;
+    writeFileSync(logPath, [
+      `12:39:00 ${refusal} action=rerouted substitute=claude-sonnet-5 certify="${HOK3142_CERTIFY}"`,
+      `12:44:00 ${refusal} action=needs-user certify="${HOK3142_CERTIFY}"`,
+    ].join('\n'));
+
+    const findings = buildFindings(basicSnapshot(repoDir, logPath), defaultObserverOptions());
+    const refusals = findings.filter((finding) => finding.id.startsWith('launch-refused-'));
+    assert.equal(refusals.length, 1);
+    const [finding] = refusals;
+    assert.equal(finding.issue, 'HOK-3138');
+    assert.equal(finding.severity, 'urgent');
+    assert.equal(finding.category, 'stuck');
+    assert.match(finding.title, /gemini-2\.5-pro/);
+    assert.match(finding.title, /uncertified:missing_live_canary/);
+    assert.ok(finding.evidence.includes('reason=uncertified'));
+    assert.ok(finding.evidence.includes('certification=missing_live_canary'));
+    assert.ok(finding.evidence.includes(`certify=${HOK3142_CERTIFY}`));
+    assert.ok(finding.recommendation.includes(HOK3142_CERTIFY));
+    assert.equal(
+      findings.filter((candidate) => candidate.id.startsWith('log-warning-')).length,
+      0,
+      'refusal lines must not also produce a generic log-warning finding',
+    );
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3142: legacy [info] "Coding launch blocked" retry loop is classified with its certify command', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-launch-refusal-legacy-'));
+  const logPath = join(repoDir, 'mill-wavemill.log');
+  try {
+    writePermissiveSchema(repoDir);
+    const legacy = (ts: string) => `${ts} [info] warn ⚠ HOK-3138 → Coding launch blocked: [agent-resolution] model=gemini-2.5-pro phase=coding provider=openrouter reason=uncertified certification=missing_live_canary certify="npx tsx tools/native-agent-certify.ts --provider openrouter --model gemini-2.5-pro --phase patch"`;
+    writeFileSync(logPath, ['12:39:00', '12:44:00', '12:49:00'].map(legacy).join('\n'));
+
+    const finding = buildFindings(basicSnapshot(repoDir, logPath), defaultObserverOptions())
+      .find((candidate) => candidate.id.startsWith('launch-refused-'));
+    assert.ok(finding, 'legacy refusal lines are classified');
+    assert.equal(finding.severity, 'urgent', 'three identical refused relaunches is a retry loop');
+    assert.equal(finding.occurrenceCount, 3);
+    assert.ok(finding.evidence.includes('action=retry-loop'));
+    assert.ok(finding.recommendation.includes('--model gemini-2.5-pro --phase patch'));
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3142: a refusal that only ever re-routed is reported as low-severity information', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-launch-refusal-rerouted-'));
+  const logPath = join(repoDir, 'mill-wavemill.log');
+  try {
+    writePermissiveSchema(repoDir);
+    writeFileSync(logPath, `12:39:00 [warn] [launch-refusal] issue=HOK-1 phase=coding model=qwen-3-coder provider=openrouter reason=uncertified certification=stale_live_canary action=rerouted substitute=claude-sonnet-5 certify="unavailable"\n`);
+    const finding = buildFindings(basicSnapshot(repoDir, logPath), defaultObserverOptions())
+      .find((candidate) => candidate.id.startsWith('launch-refused-'));
+    assert.ok(finding);
+    assert.equal(finding.severity, 'low');
+    assert.match(finding.title, /re-routed to claude-sonnet-5/);
+    assert.ok(finding.evidence.includes('certify=unavailable'));
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3142: parseLaunchRefusalLine ignores unrelated warnings', () => {
+  assert.equal(parseLaunchRefusalLine('12:00:00 [warn] ready watchdog tick failed'), null);
+  assert.equal(parseLaunchRefusalLine('12:00:00 [warn] [launch-refusal] phase=coding reason=uncertified'), null, 'issue and model are required');
+  const parsed = parseLaunchRefusalLine('12:00:00 [warn] [launch-refusal] issue=HOK-9_c phase=coding model=openai/gpt-x provider=openrouter reason=role-ineligible certification=eligible-roles:review action=needs-user certify="unavailable"');
+  assert.equal(parsed?.issue, 'HOK-9_c');
+  assert.equal(parsed?.model, 'openai/gpt-x');
+  assert.equal(parsed?.certification, 'eligible-roles:review');
+  assert.equal(parsed?.certify, undefined);
+});
+
+test('HOK-3142: plan-approved arm parked by a coding launch refusal names the cause, not the monitor', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-launch-refusal-parked-'));
+  const slug = 'launch-refused-fixture';
+  const featureDir = join(repoDir, 'features', slug);
+  const issue = 'HOK-3138';
+  try {
+    mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
+    mkdirSync(featureDir, { recursive: true });
+    writePermissiveSchema(repoDir);
+    const markerPath = join(featureDir, '.plan-approved');
+    writeFileSync(markerPath, '');
+    const markerMtime = new Date(Date.now() - 30 * 60_000);
+    utimesSync(markerPath, markerMtime, markerMtime);
+    const reason = `Coding launch refused (no launchable coder remains): model=gemini-2.5-pro reason=uncertified certification=missing_live_canary certify="${HOK3142_CERTIFY}"`;
+    writeFileSync(join(featureDir, '.retry-coding-launch-refused-exhausted'), `${reason}\n`);
+    writeFileSync(join(repoDir, '.wavemill', 'workflow-state.json'), JSON.stringify({
+      tasks: { [issue]: { issue, slug, worktree: repoDir, phase: 'planning', status: 'running' } },
+    }));
+    await reconcileIncidents({
+      timestamp: new Date().toISOString(),
+      sessions: ['wavemill'],
+      panes: [],
+      processes: [],
+      repos: [{
+        session: 'wavemill',
+        repoDir,
+        workflowStatePath: join(repoDir, '.wavemill', 'workflow-state.json'),
+        tasks: [{ issue, phase: 'planning', status: 'running', slug, worktree: repoDir, updated: agoIso(30) }],
+      }],
+      findings: [],
+    }, defaultObserverOptions());
+
+    assert.equal((await parkedIncidents(repoDir, 'stage_marker_not_advanced')).length, 0);
+    const refused = await parkedIncidents(repoDir, 'coding_launch_refused');
+    assert.equal(refused.length, 1);
+    assert.ok(refused[0].operatorAction.includes(HOK3142_CERTIFY));
+    assert.match(refused[0].summary, /gemini-2\.5-pro/);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+

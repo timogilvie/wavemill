@@ -62,7 +62,17 @@ import {
   formatMenuDenials,
 } from './tools/menu-resolver.ts';
 import { inferCertificationSnapshotForPhase } from './tools/certification-snapshot.ts';
-import { getNativeAstConfig, getNativeCodeSearchConfig, loadWavemillConfig } from '../config.ts';
+import {
+  getNativeAstConfig,
+  getNativeCodeSearchConfig,
+  getNativePatchCodingConfig,
+  loadWavemillConfig,
+} from '../config.ts';
+import {
+  readCodingRecoveryGuard,
+  RECOVERY_MODE_ALLOWED_TOOLS,
+  type CodingRecoveryGuard,
+} from './coding-recovery-guard.ts';
 import { validateCodingArtifacts, type CodingArtifacts } from './coding-artifacts.ts';
 import {
   buildCompletionArtifactRetryGuidance,
@@ -298,6 +308,7 @@ export function renderCodingSystemPrompt(input: {
   planPath: string;
   slug: string;
   blockedCompletionPath: string;
+  recoveryMode?: { dirtyPaths: readonly string[] };
 }): string {
   const rendered = input.template
     .replace(/\{\{CODE_DEPTH\}\}/g, input.codeDepth)
@@ -307,7 +318,7 @@ export function renderCodingSystemPrompt(input: {
     .replace(/\{\{DEPTH_GUIDANCE\}\}/g, buildDepthGuidance(input.codeDepth))
     .replace(/\{\{MODE_GUIDANCE\}\}/g, buildModeGuidance(input.operatingMode));
 
-  return [
+  const sections: string[] = [
     rendered,
     '',
     '### Native Coding Tool Rules',
@@ -318,9 +329,27 @@ export function renderCodingSystemPrompt(input: {
     '',
     '- Use write_artifact/create_marker only for Wavemill-owned artifacts under the feature directory.',
     '- Use run_tests/run_format for verification and formatting commands inside the worktree. Commands run without a shell: use one program per call, pass cwd instead of cd ... &&, and avoid pipes, redirects, &&/;, $VAR, and backticks; POSIX-style quoting is honored.',
+    '- run_tests runs focused tests on the changed code (`node --test <files>`, `npx tsx --test <files>`, `bash tests/<one>.test.sh`). Full-suite commands (`npm test`, `pnpm test`, `yarn test`, and unsharded `tests/run-*.sh`) are refused — CI runs the full suite. A command identical to one that just timed out is refused on the next attempt until the worktree changes.',
     '- Use git_add/git_commit to commit intended changed files before completion.',
-    `- Prefer .coding-complete when full verification passes; otherwise write ${input.blockedCompletionPath} only when implementation is complete, scoped checks passed, changes are committed, and remaining blockers are unrelated or environmental.`,
-  ].join('\n');
+    `- Prefer .coding-complete when focused verification of the changed code passes; otherwise write ${input.blockedCompletionPath} only when implementation is complete, scoped checks passed, changes are committed, and remaining blockers are unrelated or environmental.`,
+  ];
+
+  if (input.recoveryMode) {
+    sections.push(
+      '',
+      '### Recovery Mode Tool Restrictions',
+      'Your previous run left the tree dirty. For this turn, tools are restricted to:',
+      `- Allowed: ${RECOVERY_MODE_ALLOWED_TOOLS.join(', ')}.`,
+      input.recoveryMode.dirtyPaths.length > 0
+        ? `- Dirty paths: ${input.recoveryMode.dirtyPaths.join(', ')}.`
+        : '- Dirty paths: (see the recovery instruction above).',
+      '- For each listed path, either commit it (git_add + git_commit) or discard it (run_tests "git checkout -- <path>" or "git restore [--staged] [--] <path>").',
+      '- apply_patch, run_format, and any other mutation tool will be refused with recovery_mode_denied. Do not make any other changes.',
+      '- When the tree is clean, write .coding-complete and stop.',
+    );
+  }
+
+  return sections.join('\n');
 }
 
 function buildUserPrompt(options: {
@@ -847,10 +876,11 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
           storeSessionArtifact(Buffer.from(bytes), options.repoDir, false, bytes.byteLength),
       });
     }
+    const patchCodingConfig = getNativePatchCodingConfig(options.repoDir);
     const descriptors = [
       ...readOnlyDescriptors,
       ...createGitTools(options.wtDir),
-      ...createCommandTools(options.wtDir),
+      ...createCommandTools(options.wtDir, { allowFullSuite: patchCodingConfig.allowFullSuiteTests }),
       ...createCodingMutationTools(options.wtDir, { phase: 'coding' }),
       ...createGitCommitTools(options.wtDir, { tracker }),
       ...codeSearchDescriptors,
@@ -858,6 +888,14 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       ...mcpDescriptors,
       ...(options.extraDescriptors ?? []),
     ];
+
+    // HOK-3128 dirty-handoff recovery guard (HOK-3145): computed once at
+    // launch. The monitor removes the instruction only when the tree is
+    // clean, so no mid-session re-read is needed.
+    const recoveryGuard: CodingRecoveryGuard | null = readCodingRecoveryGuard(featureDir, options.wtDir);
+    if (recoveryGuard) {
+      writeTextStatus(options.session, options.issue, 'dirty-handoff recovery: tools restricted');
+    }
     const registry = createToolRegistry(descriptors);
     const registryMetadata = options.registryMetadataOverride ?? registry.list();
 
@@ -987,6 +1025,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
         planPath,
         slug: options.slug,
         blockedCompletionPath: relative(options.wtDir, getBlockedCompletionPath(featureDir)),
+        ...(recoveryGuard ? { recoveryMode: { dirtyPaths: recoveryGuard.dirtyPaths } } : {}),
       }),
       messages: [{
         role: 'user',
@@ -1041,6 +1080,17 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       } : undefined,
       sessionStreamConfig,
       menuProvider: menuLaunchProvider.menuProvider,
+      ...(recoveryGuard
+        ? {
+          beforeToolCall: async (ctx) => {
+            const decision = recoveryGuard.evaluate({
+              name: ctx.toolCall.name,
+              args: (ctx.args as Record<string, unknown>) ?? {},
+            });
+            return decision.allow ? undefined : { block: true, reason: decision.reason };
+          },
+        }
+        : {}),
       afterToolCall: async (toolContext, signal) => {
         await intendedFilesAfterToolCall(toolContext, tracker);
 

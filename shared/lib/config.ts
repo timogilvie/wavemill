@@ -81,6 +81,9 @@ export interface DashboardConfig {
 }
 
 export interface TaskSelectionConfig {
+  /** What a bare Enter does at the task pickers; defaults to 'none'. */
+  enterAction?: 'none' | 'wave' | 'top-scored';
+  /** @deprecated Use enterAction. true maps to 'wave', false to 'top-scored'. */
   enterLaunchesWave?: boolean;
 }
 
@@ -448,6 +451,13 @@ export interface NativeAgentProvidersConfig {
 
 export interface NativePatchCodingConfig {
   enabled?: boolean;
+  /**
+   * HOK-3145: when true, native coding agents may run full-suite test commands
+   * (`npm test`, `pnpm test`, `yarn test`, unsharded `tests/run-*.sh`). Defaults
+   * to false so a coding agent cannot loop on a multi-minute composite chain —
+   * CI runs the full suite anyway.
+   */
+  allowFullSuiteTests?: boolean;
 }
 
 export interface CanaryCohortMemberConfig {
@@ -685,6 +695,7 @@ export interface NativeExpansionConfig {
 
 export interface ResolvedNativePatchCodingConfig {
   enabled: boolean;
+  allowFullSuiteTests: boolean;
 }
 
 export interface IntegrationConfig {
@@ -985,6 +996,13 @@ export interface MergeQueueConfig {
   skipCooldownSeconds?: number;
 }
 
+/** Wave planning strategy for tools/plan-queue.ts (HOK-3131). */
+export type QueuePlannerMode = 'legacy' | 'grounded';
+
+export interface QueuePlannerConfig {
+  mode?: QueuePlannerMode;
+}
+
 export interface MonitorConfig {
   readyWatchdog?: ReadyWatchdogConfig;
 }
@@ -1148,6 +1166,7 @@ export interface WavemillConfig {
   ready?: ReadyConfig;
   mergeQueue?: MergeQueueConfig;
   monitor?: MonitorConfig;
+  queuePlanner?: QueuePlannerConfig;
   permissions?: PermissionsConfig;
   quota?: QuotaConfig;
   verification?: VerificationConfig;
@@ -2366,6 +2385,15 @@ export function getMaxCostUsd(repoDir?: string): number | undefined {
 }
 
 /**
+ * Get the queue planner config section (HOK-3131).
+ * `mode` resolves to 'legacy' unless explicitly set to 'grounded'.
+ */
+export function getQueuePlannerConfig(repoDir?: string): Required<QueuePlannerConfig> {
+  const mode = loadWavemillConfig(repoDir).queuePlanner?.mode;
+  return { mode: mode === 'grounded' ? 'grounded' : 'legacy' };
+}
+
+/**
  * Get the UI config section.
  * Returns empty object if not configured.
  */
@@ -2658,6 +2686,7 @@ export function getNativePatchCodingConfig(repoDir?: string): ResolvedNativePatc
   const config = getNativeAgentConfig(repoDir);
   return {
     enabled: config.patchCoding?.enabled === true,
+    allowFullSuiteTests: config.patchCoding?.allowFullSuiteTests === true,
   };
 }
 

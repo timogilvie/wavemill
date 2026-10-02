@@ -218,5 +218,21 @@ if consume_next_command; then
 fi
 assert_eq "malformed command queue is cleared without set -u crash" "0" "${#COMMAND_QUEUE[@]}"
 
+# A bare Enter must never launch work unless taskSelection.enterAction=wave,
+# and must not be deferred to fire later when slots free up.
+for enter_action in none top-scored ""; do
+  ENTER_ACTION="$enter_action"
+  [[ -z "$enter_action" ]] && unset ENTER_ACTION
+  for slots in 0 3; do
+    handle_enter_command "enter" "$slots" '{"availableNow":["HOK-1"]}' "HOK-1|slug|title" ""
+    assert_eq "enter (action=${enter_action:-unset}, slots=$slots) is refused" "invalid" "$MONITOR_COMMAND_STATUS"
+    assert_eq "enter (action=${enter_action:-unset}, slots=$slots) is not deferred" "" "$MONITOR_COMMAND_DEFER_EVENT"
+  done
+done
+ENTER_ACTION=wave
+handle_enter_command "enter" 0 '{"availableNow":["HOK-1"]}' "HOK-1|slug|title" ""
+assert_eq "enter with action=wave still defers while slots are full" "deferred" "$MONITOR_COMMAND_STATUS"
+unset ENTER_ACTION
+
 rm -f "$COMMAND_FILE"
 echo "PASS: monitor drains and persists commands independently of long-running lifecycle work"
