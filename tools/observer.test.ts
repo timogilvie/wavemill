@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  applyAutoFixes,
   behindBaseSeverity,
   buildFindings,
   compactSnapshotForRender,
@@ -15,8 +16,10 @@ import {
   matchInteractivePromptSignature,
   normalizeInteractivePromptText,
   parseArgs,
+  parseLaunchRefusalLine,
   reconcileIncidents,
   redactObserverText,
+  sendAlerts,
   syncIncidentsToLinear,
   writeServiceHeartbeat,
 } from './observer.ts';
@@ -3919,5 +3922,162 @@ test('HOK-3096 integration (REQ-F7): a healthy task produces none of the new det
     assert.deepEqual(newDetectorFindings, []);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+// ── HOK-3142: typed coding launch refusals ───────────────────────────────────
+
+const HOK3142_CERTIFY = 'npx tsx tools/native-agent-certify.ts --provider openrouter --model gemini-2.5-pro --phase patch --live-coding-canary';
+
+test('HOK-3142: warn-level [launch-refusal] lines yield one launch-refused finding naming the model, reason, and certify command', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-launch-refusal-'));
+  const logPath = join(repoDir, 'mill-wavemill.log');
+  try {
+    writePermissiveSchema(repoDir);
+    const refusal = `[warn] [launch-refusal] issue=HOK-3138 phase=coding model=gemini-2.5-pro provider=openrouter reason=uncertified certification=missing_live_canary`;
+    writeFileSync(logPath, [
+      `12:39:00 ${refusal} action=rerouted substitute=claude-sonnet-5 certify="${HOK3142_CERTIFY}"`,
+      `12:44:00 ${refusal} action=needs-user certify="${HOK3142_CERTIFY}"`,
+    ].join('\n'));
+
+    const findings = buildFindings(basicSnapshot(repoDir, logPath), defaultObserverOptions());
+    const refusals = findings.filter((finding) => finding.id.startsWith('launch-refused-'));
+    assert.equal(refusals.length, 1);
+    const [finding] = refusals;
+    assert.equal(finding.issue, 'HOK-3138');
+    assert.equal(finding.severity, 'urgent');
+    assert.equal(finding.category, 'stuck');
+    assert.match(finding.title, /gemini-2\.5-pro/);
+    assert.match(finding.title, /uncertified:missing_live_canary/);
+    assert.ok(finding.evidence.includes('reason=uncertified'));
+    assert.ok(finding.evidence.includes('certification=missing_live_canary'));
+    assert.ok(finding.evidence.includes(`certify=${HOK3142_CERTIFY}`));
+    assert.ok(finding.recommendation.includes(HOK3142_CERTIFY));
+    assert.equal(
+      findings.filter((candidate) => candidate.id.startsWith('log-warning-')).length,
+      0,
+      'refusal lines must not also produce a generic log-warning finding',
+    );
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3142: legacy [info] "Coding launch blocked" retry loop is classified with its certify command', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-launch-refusal-legacy-'));
+  const logPath = join(repoDir, 'mill-wavemill.log');
+  try {
+    writePermissiveSchema(repoDir);
+    const legacy = (ts: string) => `${ts} [info] warn ⚠ HOK-3138 → Coding launch blocked: [agent-resolution] model=gemini-2.5-pro phase=coding provider=openrouter reason=uncertified certification=missing_live_canary certify="npx tsx tools/native-agent-certify.ts --provider openrouter --model gemini-2.5-pro --phase patch"`;
+    writeFileSync(logPath, ['12:39:00', '12:44:00', '12:49:00'].map(legacy).join('\n'));
+
+    const finding = buildFindings(basicSnapshot(repoDir, logPath), defaultObserverOptions())
+      .find((candidate) => candidate.id.startsWith('launch-refused-'));
+    assert.ok(finding, 'legacy refusal lines are classified');
+    assert.equal(finding.severity, 'urgent', 'three identical refused relaunches is a retry loop');
+    assert.equal(finding.occurrenceCount, 3);
+    assert.ok(finding.evidence.includes('action=retry-loop'));
+    assert.ok(finding.recommendation.includes('--model gemini-2.5-pro --phase patch'));
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3142: a refusal that only ever re-routed is reported as low-severity information', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-launch-refusal-rerouted-'));
+  const logPath = join(repoDir, 'mill-wavemill.log');
+  try {
+    writePermissiveSchema(repoDir);
+    writeFileSync(logPath, `12:39:00 [warn] [launch-refusal] issue=HOK-1 phase=coding model=qwen-3-coder provider=openrouter reason=uncertified certification=stale_live_canary action=rerouted substitute=claude-sonnet-5 certify="unavailable"\n`);
+    const finding = buildFindings(basicSnapshot(repoDir, logPath), defaultObserverOptions())
+      .find((candidate) => candidate.id.startsWith('launch-refused-'));
+    assert.ok(finding);
+    assert.equal(finding.severity, 'low');
+    assert.match(finding.title, /re-routed to claude-sonnet-5/);
+    assert.ok(finding.evidence.includes('certify=unavailable'));
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('HOK-3142: parseLaunchRefusalLine ignores unrelated warnings', () => {
+  assert.equal(parseLaunchRefusalLine('12:00:00 [warn] ready watchdog tick failed'), null);
+  assert.equal(parseLaunchRefusalLine('12:00:00 [warn] [launch-refusal] phase=coding reason=uncertified'), null, 'issue and model are required');
+  const parsed = parseLaunchRefusalLine('12:00:00 [warn] [launch-refusal] issue=HOK-9_c phase=coding model=openai/gpt-x provider=openrouter reason=role-ineligible certification=eligible-roles:review action=needs-user certify="unavailable"');
+  assert.equal(parsed?.issue, 'HOK-9_c');
+  assert.equal(parsed?.model, 'openai/gpt-x');
+  assert.equal(parsed?.certification, 'eligible-roles:review');
+  assert.equal(parsed?.certify, undefined);
+});
+
+test('HOK-3142: plan-approved arm parked by a coding launch refusal names the cause, not the monitor', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-launch-refusal-parked-'));
+  const slug = 'launch-refused-fixture';
+  const featureDir = join(repoDir, 'features', slug);
+  const issue = 'HOK-3138';
+  try {
+    mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
+    mkdirSync(featureDir, { recursive: true });
+    writePermissiveSchema(repoDir);
+    const markerPath = join(featureDir, '.plan-approved');
+    writeFileSync(markerPath, '');
+    const markerMtime = new Date(Date.now() - 30 * 60_000);
+    utimesSync(markerPath, markerMtime, markerMtime);
+    const reason = `Coding launch refused (no launchable coder remains): model=gemini-2.5-pro reason=uncertified certification=missing_live_canary certify="${HOK3142_CERTIFY}"`;
+    writeFileSync(join(featureDir, '.retry-coding-launch-refused-exhausted'), `${reason}\n`);
+    writeFileSync(join(repoDir, '.wavemill', 'workflow-state.json'), JSON.stringify({
+      tasks: { [issue]: { issue, slug, worktree: repoDir, phase: 'planning', status: 'running' } },
+    }));
+    await reconcileIncidents({
+      timestamp: new Date().toISOString(),
+      sessions: ['wavemill'],
+      panes: [],
+      processes: [],
+      repos: [{
+        session: 'wavemill',
+        repoDir,
+        workflowStatePath: join(repoDir, '.wavemill', 'workflow-state.json'),
+        tasks: [{ issue, phase: 'planning', status: 'running', slug, worktree: repoDir, updated: agoIso(30) }],
+      }],
+      findings: [],
+    }, defaultObserverOptions());
+
+    assert.equal((await parkedIncidents(repoDir, 'stage_marker_not_advanced')).length, 0);
+    const refused = await parkedIncidents(repoDir, 'coding_launch_refused');
+    assert.equal(refused.length, 1);
+    assert.ok(refused[0].operatorAction.includes(HOK3142_CERTIFY));
+    assert.match(refused[0].summary, /gemini-2\.5-pro/);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+
+// HOK-3097: wiring regression. With the default (disabled) config, applyAutoFixes
+// and sendAlerts leave the snapshot unchanged and touch no files on disk.
+test('applyAutoFixes + sendAlerts are byte-identical no-ops when disabled', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-autofix-noop-'));
+  try {
+    const snapshot = {
+      timestamp: new Date().toISOString(),
+      sessions: ['wavemill'],
+      panes: [],
+      processes: [],
+      repos: [{
+        session: 'wavemill',
+        repoDir,
+        workflowStatePath: join(repoDir, '.wavemill', 'workflow-state.json'),
+        tasks: [{ issue: 'HOK-1', phase: 'ready', slug: 'noop', worktree: repoDir, branch: 'task/noop', baseBranch: 'main' }],
+      }],
+      findings: [],
+    };
+    const beforeFindings = snapshot.findings.length;
+    const fixed = await applyAutoFixes(snapshot as any, defaultObserverOptions() as any);
+    const alerted = await sendAlerts(fixed, defaultObserverOptions() as any);
+    assert.equal(alerted.findings.length, beforeFindings, 'no findings added');
+    assert.ok(!existsSync(join(repoDir, '.wavemill', 'incidents', 'actions.jsonl')), 'no action log written');
+    assert.ok(!existsSync(join(repoDir, '.wavemill', 'observer', 'alert-state.json')), 'no alert journal written');
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
   }
 });

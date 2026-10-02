@@ -47,6 +47,7 @@ TESTS=(
   native-failure-classification.test.sh
   challenger-transient-retry.test.sh
   coding-dirty-handoff.test.sh
+  ready-exhausted-challenge.test.sh
   monitor-late-completion.test.sh
   parent-monitor-function-drift.test.sh
   save-task-state-canonicalization.test.sh
@@ -72,6 +73,7 @@ TESTS=(
   task-progress.test.sh
   task-identity.test.sh
   handle-phase-launch-result.test.sh
+  coding-launch-refusal.test.sh
   launch-pane-liveness.test.sh
   launch-failure-log-capture.test.sh
   challenge-eval-soft-retry.test.sh
@@ -144,6 +146,9 @@ TESTS=(
   challenge-fork-review-launch-refusal.test.sh
   base-ref-stale-local.test.sh
   session-capabilities.test.sh
+  review-capacity-detection.test.sh
+  review-missing-window-relaunch.test.sh
+  re-review-no-pr.test.sh
 )
 
 SHARD_INDEX=1

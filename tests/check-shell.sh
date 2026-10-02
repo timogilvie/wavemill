@@ -143,6 +143,7 @@ for f in \
   "$REPO_DIR"/tests/native-failure-classification.test.sh \
   "$REPO_DIR"/tests/challenger-transient-retry.test.sh \
   "$REPO_DIR"/tests/coding-dirty-handoff.test.sh \
+  "$REPO_DIR"/tests/ready-exhausted-challenge.test.sh \
   "$REPO_DIR"/tests/monitor-late-completion.test.sh \
   "$REPO_DIR"/tests/challenge-deferred-arm.test.sh \
   "$REPO_DIR"/tests/parent-monitor-function-drift.test.sh \
@@ -167,6 +168,10 @@ for f in \
   "$REPO_DIR"/tests/task-progress.test.sh \
   "$REPO_DIR"/tests/task-identity.test.sh \
   "$REPO_DIR"/tests/handle-phase-launch-result.test.sh \
+  "$REPO_DIR"/tests/coding-launch-refusal.test.sh \
+  "$REPO_DIR"/tests/review-capacity-detection.test.sh \
+  "$REPO_DIR"/tests/review-missing-window-relaunch.test.sh \
+  "$REPO_DIR"/tests/re-review-no-pr.test.sh \
   "$REPO_DIR"/tests/launch-pane-liveness.test.sh \
   "$REPO_DIR"/tests/launch-failure-log-capture.test.sh \
   "$REPO_DIR"/tests/challenge-eval-soft-retry.test.sh \
@@ -602,7 +607,8 @@ else
       | grep -vE '^(not_eligible|routing_error|invalid_challenge)$' \
       | grep -vE '^(legacy_stale|stale)$' \
       | grep -vE '^(a|aborted|already|available|blocked_by_count|break|coding|cp|debug|elapsed|empty_queue|execute|file|fresh|gtimeout|heartbeat_epoch|i|id|launch|length|main|mapfile|missing|next|not|overloaded|plan|ready|required|reservation|slots|staleness|streak|the|they|timeout|todate|todateiso8601|tonumber|tracked|user)$' \
-      | grep -vE '^(capabilities|const|import|throw)$')
+      | grep -vE '^(capabilities|const|import|throw)$' \
+      | grep -vE '^(ascii_upcase|first|it|num|retrying|sibling)$')
 
     # Check which called names look like they could be custom functions
     # and verify they're defined

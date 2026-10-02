@@ -2,6 +2,7 @@
 import { resolve } from 'node:path';
 import {
   formatCanaryCohortReport,
+  formatCoderCanaryGapReport,
   formatCertificationRemediationReport,
   formatMillConfigPreflightReport,
   runMillConfigPreflight,
@@ -56,6 +57,9 @@ async function main(): Promise<void> {
       // zero, so it prints even when preflight succeeds.
       if (result.report.canaryCohortRefresh || result.report.canaryCohortHealth?.belowMinimum) {
         console.error(formatCanaryCohortReport(result.report));
+      }
+      if (result.report.coderCanaryGaps?.length) {
+        console.error(formatCoderCanaryGapReport(result.report));
       }
     }
     process.exit(result.ok ? 0 : 2);
