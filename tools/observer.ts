@@ -207,6 +207,25 @@ interface ModelDowngradeLogEntry {
   fallback: string;
 }
 
+/**
+ * A typed coding launch refusal (HOK-3142). `action` is what the monitor did:
+ * `rerouted` (coder substituted), `needs-user` (terminalized with the certify
+ * command), `retry` (transient resolver failure), or `retry-loop` for the
+ * pre-HOK-3142 `Coding launch blocked: [agent-resolution] …` form, which the
+ * monitor relaunched on every tick.
+ */
+interface LaunchRefusalLogEntry {
+  line: string;
+  issue: string;
+  model: string;
+  provider: string;
+  reason: string;
+  certification: string;
+  action: string;
+  substitute?: string;
+  certify?: string;
+}
+
 interface RepoSnapshot {
   session: string;
   repoDir: string;
@@ -1127,7 +1146,30 @@ function detectParkedArmIncidents(
         if (!marker || marker.ageMs / 60000 <= options.staleMinutes) continue;
 
         const uncommitted = stage.phase === 'coding' ? readCodingUncommittedOutput(featureDir) : null;
-        if (uncommitted) {
+        const launchRefusal = stage.phase === 'planning' ? readCodingLaunchRefusalSentinel(featureDir) : null;
+        if (launchRefusal) {
+          // HOK-3142: the monitor terminalized a refused coding launch; the
+          // recorded reason names the model and the certify command.
+          incidents.push(createIncidentDraft({
+            taskId: task.issue,
+            session: repo.session,
+            category: 'stale_orphaned_state',
+            severity: 'high',
+            confidence: 'high',
+            lifecycle: 'observed',
+            rootCauseClass: 'coding_launch_refused',
+            summary: `${task.issue} is parked at ${stage.markerName}: ${truncate(launchRefusal.reason, 240)}`,
+            operatorAction: launchRefusal.reason,
+            evidence: [{
+              type: 'workflow_state',
+              source: launchRefusal.path,
+              timestamp,
+              redactedData: `bucket=${launchRefusal.bucket} marker=${stage.markerName} markerAgeMinutes=${Math.round(marker.ageMs / 60000)}`,
+              key: `coding-launch-refused:${task.issue}:${launchRefusal.bucket}`,
+            }],
+            metadata: { markerPath, markerMtime: marker.mtimeIso, stage: stage.phase, bucket: launchRefusal.bucket },
+          }));
+        } else if (uncommitted) {
           // The mill parked this arm on purpose (dirty tree); the missing piece
           // is an operator commit, not a monitor repair.
           incidents.push(createIncidentDraft({
@@ -2103,6 +2145,21 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
       });
     }
 
+    const launchRefusalLines = new Set<string>();
+    const launchRefusalGroups = new Map<string, LaunchRefusalLogEntry[]>();
+    for (const line of logLines) {
+      const entry = parseLaunchRefusalLine(line);
+      if (!entry) continue;
+      const key = `${entry.issue}\0${entry.model}`;
+      const group = launchRefusalGroups.get(key) ?? [];
+      group.push(entry);
+      launchRefusalGroups.set(key, group);
+    }
+    for (const group of launchRefusalGroups.values()) {
+      for (const entry of group) launchRefusalLines.add(entry.line);
+      findings.push(launchRefusalFinding(repo, group));
+    }
+
     const modelDowngradeGroups = new Map<string, ModelDowngradeLogEntry[]>();
     for (const line of logLines) {
       const entry = parseModelDowngradeLine(line);
@@ -2196,6 +2253,7 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
       const parsed = parseMillLogLine(line);
       if (!parsed) continue;
       if (prCreateFailedLines.has(line)) continue;
+      if (launchRefusalLines.has(line)) continue;
       if (isAgentBoxOutputMessage(parsed.message)) continue;
       if (parsed.level !== 'error' && parsed.level !== 'warn') continue;
       if (parsed.level === 'warn') {
@@ -2413,6 +2471,119 @@ function parseReadyRecheckLine(line: string): ReadyRecheckLogEntry | null {
     line,
     issue: match[1],
     pr: match[2],
+  };
+}
+
+const CODING_LAUNCH_REFUSAL_BUCKETS = ['coding-launch-refused', 'coding-launch-resolver'] as const;
+
+/** First terminalized coding-launch refusal sentinel in a feature dir (HOK-3142). */
+function readCodingLaunchRefusalSentinel(featureDir: string): { bucket: string; path: string; reason: string } | null {
+  for (const bucket of CODING_LAUNCH_REFUSAL_BUCKETS) {
+    const path = join(featureDir, `.retry-${bucket}-exhausted`);
+    if (!existsSync(path)) continue;
+    try {
+      const reason = readFileSync(path, 'utf-8').trim();
+      return { bucket, path, reason: reason || `coding launch refused (${bucket})` };
+    } catch {
+      return { bucket, path, reason: `coding launch refused (${bucket})` };
+    }
+  }
+  return null;
+}
+
+const LAUNCH_REFUSAL_TAG = '[launch-refusal]';
+const LEGACY_LAUNCH_REFUSAL_RE = /(\S+)\s+\u2192\s+Coding launch blocked:\s+\[agent-resolution\]/;
+
+function launchRefusalField(message: string, key: string): string | undefined {
+  if (key === 'certify') {
+    const quoted = message.match(/\bcertify="([^"]*)"/);
+    const value = quoted?.[1]?.trim();
+    return value && value !== 'unavailable' ? value : undefined;
+  }
+  const match = message.match(new RegExp(`(?:^|\\s)${key}=(\\S+)`));
+  return match?.[1];
+}
+
+/**
+ * Parse a coding launch refusal from the mill log: the structured
+ * `[launch-refusal] issue=… model=… reason=… certification=… action=… certify="…"`
+ * line (HOK-3142, logged at warn), or the legacy
+ * `<issue> → Coding launch blocked: [agent-resolution] model=… certify="…"`
+ * line, which pre-HOK-3142 monitors wrote at `[info]` on every retry tick.
+ */
+export function parseLaunchRefusalLine(line: string): LaunchRefusalLogEntry | null {
+  const parsed = parseMillLogLine(line);
+  const message = parsed?.message ?? line;
+  let issue: string | undefined;
+  let action: string | undefined;
+  if (message.includes(LAUNCH_REFUSAL_TAG)) {
+    issue = launchRefusalField(message, 'issue');
+    action = launchRefusalField(message, 'action');
+  } else {
+    const legacy = message.match(LEGACY_LAUNCH_REFUSAL_RE);
+    if (!legacy) return null;
+    issue = legacy[1];
+    action = 'retry-loop';
+  }
+  const model = launchRefusalField(message, 'model');
+  if (!issue || !model) return null;
+  const substitute = launchRefusalField(message, 'substitute');
+  const certify = launchRefusalField(message, 'certify');
+  return {
+    line,
+    issue,
+    model,
+    provider: launchRefusalField(message, 'provider') ?? 'unknown',
+    reason: launchRefusalField(message, 'reason') ?? 'unknown',
+    certification: launchRefusalField(message, 'certification') ?? 'unknown',
+    action: action ?? 'unknown',
+    ...(substitute ? { substitute } : {}),
+    ...(certify ? { certify } : {}),
+  };
+}
+
+function launchRefusalFinding(repo: RepoSnapshot, group: LaunchRefusalLogEntry[]): Finding {
+  const latest = group[group.length - 1];
+  const certify = [...group].reverse().find((entry) => entry.certify)?.certify;
+  const terminal = group.some((entry) => entry.action === 'needs-user');
+  const looping = group.some((entry) => entry.action === 'retry-loop' || entry.action === 'retry');
+  const allRerouted = group.every((entry) => entry.action === 'rerouted');
+  const severity: Finding['severity'] = terminal
+    ? 'urgent'
+    : allRerouted
+      ? 'low'
+      : looping && group.length >= MODEL_DOWNGRADE_THRESHOLD ? 'urgent' : 'high';
+  const cause = `${latest.reason}${latest.certification !== 'unknown' ? `:${latest.certification}` : ''}`;
+  const title = allRerouted
+    ? `${latest.issue} coder ${latest.model} was refused at launch (${cause}) and re-routed to ${latest.substitute ?? 'a substitute'}`
+    : `${latest.issue} coding launch refused: ${latest.model} is not launchable for coding (${cause})`;
+  const recommendation = allRerouted
+    ? `Informational: the router guard or launch-refusal reroute substituted the coder. Certify ${latest.model} for coding if it should stay routable${certify ? `: ${certify}` : '.'}`
+    : certify
+      ? `Run: ${certify}. Then clear the refusal sentinel (rm <feature_dir>/.retry-coding-launch-refused-*) so the task relaunches coding. A refusal for this reason never clears on retry.`
+      : `The launch gate refuses ${latest.model} for coding (${cause}) and no certify command was recorded. Re-route the coder or fix the model's registry entry, then clear the refusal sentinel.`;
+  return {
+    id: `launch-refused-${repo.session}-${latest.issue}-${latest.model.replace(/[^A-Za-z0-9._-]/g, '_')}`,
+    severity,
+    category: 'stuck',
+    confidence: 'high',
+    session: repo.session,
+    repoDir: repo.repoDir,
+    issue: latest.issue,
+    title,
+    evidence: [
+      `occurrences=${group.length}`,
+      `model=${latest.model}`,
+      `provider=${latest.provider}`,
+      `reason=${latest.reason}`,
+      `certification=${latest.certification}`,
+      `action=${latest.action}`,
+      ...(latest.substitute ? [`substitute=${latest.substitute}`] : []),
+      `certify=${certify ?? 'unavailable'}`,
+      ...group.slice(-4).map((entry) => entry.line),
+    ],
+    recommendation,
+    occurrenceCount: group.length,
   };
 }
 

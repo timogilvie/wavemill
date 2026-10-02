@@ -72,6 +72,7 @@ TESTS=(
   task-progress.test.sh
   task-identity.test.sh
   handle-phase-launch-result.test.sh
+  coding-launch-refusal.test.sh
   launch-pane-liveness.test.sh
   launch-failure-log-capture.test.sh
   challenge-eval-soft-retry.test.sh

@@ -50,6 +50,9 @@ classify_for_reconciliation() {
 _log_level_num() {
   case "$1" in
     error) echo 0 ;;
+    # warn shares status's visibility so warnings always reach the dashboard
+    # at the default verbosity (HOK-3142).
+    warn) echo 1 ;;
     status) echo 1 ;;
     info) echo 2 ;;
     debug) echo 3 ;;
@@ -71,8 +74,11 @@ append_status_log() {
 log() {
   local level="info"
   local msg
+  # `warn` must be a recognised level: before HOK-3142 `log "warn" "…"` fell
+  # through, was written as `[info] warn …`, and was invisible to the
+  # observer's warn/error scan.
   case "${1:-}" in
-    error|status|info|debug)
+    error|warn|status|info|debug)
       level="$1"
       shift
       ;;
@@ -7781,6 +7787,224 @@ handle_phase_launch_result() {
   fi
 
   bounded_retry_clear "$feature_dir" "phase-launch-$launched_phase"
+  return 0
+}
+
+# ----------------------------------------------------------------------------
+# Typed coding launch refusals (HOK-3142)
+# ----------------------------------------------------------------------------
+# When agent resolution refuses the routed coder, the previous code reverted to
+# planning and the next poll tick re-derived the identical refused launch —
+# HOK-3138 sat at .plan-approved for 2.5h. Two bounded-retry buckets (HOK-2924)
+# now own this path:
+#
+#   coding-launch-refused  — deterministic refusals (uncertified, lifecycle,
+#                            role-ineligible, ...). Each refusal re-routes the
+#                            coder with the refused model(s) excluded
+#                            (tools/reroute-refused-coder.ts), so the next tick
+#                            launches the substitute. Terminalizes to needs-user
+#                            with the certify command when no launchable coder
+#                            remains, the coder is pinned (FORCE_MODEL /
+#                            WAVEMILL_CODER_MODEL), or the reroute budget is
+#                            spent. An implementation-stage challenger is never
+#                            re-routed: its varied coder is the experiment, so
+#                            the arm is quarantined and the pair forfeits to the
+#                            primary (coding-dirty-handoff precedent, HOK-3128).
+#   coding-launch-resolver — transient resolver failures (missing tsx, mktemp,
+#                            resolver crash, malformed JSON). Same revert-and-
+#                            retry as before, now with backoff and a ceiling.
+#
+# Both terminal states hold quietly (no relaunch, no re-log) until the head
+# moves or the operator removes the sentinel after certifying the model.
+# Bucket names are literals inside each function (not globals) so the
+# functions stay self-contained for the extraction-based test harnesses.
+
+coding_launch_refusal_limit() {
+  local limit="${WAVEMILL_CODING_LAUNCH_REFUSAL_MAX_ATTEMPTS:-3}"
+  [[ "$limit" =~ ^[0-9]+$ ]] || limit=3
+  printf '%s\n' "$limit"
+}
+
+# Exit 0 when the refusal comes from the resolver plumbing rather than the
+# model, i.e. retrying the identical launch can succeed. Mirrors
+# isDeterministicLaunchRefusal() in shared/lib/stage-launchability.ts; the
+# shell-side resolver failures carry generic reasons, so classify them by
+# their certification tag first.
+coding_launch_refusal_is_transient() {
+  local reason="${1:-}" certification="${2:-}"
+  local transient_certifications=" missing-tsx missing-jq mktemp-failed resolver-failed malformed-json "
+  local deterministic_reasons=" uncertified no-native-capability native-unsupported lifecycle-blocked role-ineligible tool-support-insufficient context-window-insufficient codex-chatgpt-ineligible unknown-model "
+  [[ -n "$certification" && "$transient_certifications" == *" $certification "* ]] && return 0
+  [[ -n "$reason" && "$deterministic_reasons" == *" $reason "* ]] && return 1
+  return 0
+}
+
+# Structured, greppable refusal line for the observer (parseLaunchRefusalLine
+# in tools/observer.ts). Logged at warn so the observer's warn/error scan sees
+# it — the HOK-3138 refusal was written as `[info] warn ⚠ …` and never surfaced.
+# Usage: log_coding_launch_refusal <issue> <model> <provider> <reason> <certification> <action> <substitute> <certify>
+log_coding_launch_refusal() {
+  local issue="$1" model="$2" provider="$3" reason="$4" certification="$5" action="$6" substitute="$7" certify="$8"
+  local line
+  line="[launch-refusal] issue=$issue phase=coding model=${model:-unknown} provider=${provider:-unknown} reason=${reason:-unknown} certification=${certification:-unknown} action=$action"
+  [[ -n "$substitute" ]] && line+=" substitute=$substitute"
+  line+=" certify=\"${certify:-unavailable}\""
+  log "warn" "$line"
+}
+
+# Pre-launch hold for the coding launch: exit 0 (caller holds this tick) while
+# either refusal bucket is terminalized or a transient retry is backing off.
+# Usage: coding_launch_refusal_hold <issue> <feature_dir> <win>
+coding_launch_refusal_hold() {
+  local issue="$1" feature_dir="$2" win="$3"
+  local head bucket
+  head="$(phase_launch_head "$feature_dir")"
+  for bucket in coding-launch-refused coding-launch-resolver; do
+    bounded_retry_reset_if_new_key "$feature_dir" "$bucket" "$head"
+    if bounded_retry_is_exhausted "$feature_dir" "$bucket"; then
+      set_window_attention_state "$win" "needs-user"
+      return 0
+    fi
+  done
+  if [[ "$(bounded_retry_count "$feature_dir" coding-launch-resolver)" -gt 0 ]] \
+    && ! bounded_retry_due "$feature_dir" coding-launch-resolver; then
+    log "debug" "  $issue: holding coding launch retry after resolver failure (backoff)"
+    return 0
+  fi
+  return 1
+}
+
+# Clear both refusal buckets after a successful coding launch (HOK-2924:
+# budgets reset on a successful launch).
+coding_launch_refusal_clear() {
+  local feature_dir="$1"
+  bounded_retry_clear "$feature_dir" coding-launch-refused
+  bounded_retry_clear "$feature_dir" coding-launch-resolver
+}
+
+# Terminalize a refused coding launch: record the reason (with the certify
+# command) in the bucket's exhausted sentinel, park the task at needs-user,
+# and surface the certify command as the hook next_action. The task stays at
+# planning — certifying the model is the fix, so it is never aborted here.
+# Usage: coding_launch_refusal_terminalize <issue> <feature_dir> <win> <bucket> <model> <provider> <reason> <certification> <certify> <why>
+coding_launch_refusal_terminalize() {
+  local issue="$1" feature_dir="$2" win="$3" bucket="$4" model="$5" provider="$6"
+  local reason="$7" certification="$8" certify="$9" why="${10}"
+  local recorded next_action hook_protocol
+
+  next_action="${certify:+run: $certify; then }rm $feature_dir/.retry-${bucket}-* to release the coding launch"
+  recorded="Coding launch refused ($why): model=${model:-unknown} reason=${reason:-unknown} certification=${certification:-unknown} certify=\"${certify:-unavailable}\" — $next_action"
+  if bounded_retry_mark_exhausted "$feature_dir" "$bucket" "$recorded"; then
+    log_coding_launch_refusal "$issue" "$model" "$provider" "$reason" "$certification" "needs-user" "" "$certify"
+    log "status" "⛔ $issue → coding launch refused ($why): $model needs operator action${certify:+ — $certify}"
+    hook_protocol="$LIB_DIR/../hooks/wavemill-hook-protocol.sh"
+    if [[ -f "$hook_protocol" ]]; then
+      # shellcheck disable=SC1090
+      source "$hook_protocol" || true
+      if declare -F wavemill_hook_write >/dev/null 2>&1; then
+        WAVEMILL_SESSION="$SESSION" WAVEMILL_ISSUE="$issue" \
+          wavemill_hook_write "blocked" "coding_launch_refused" "$recorded" "wavemill" "$next_action" "monitor" || true
+      fi
+    fi
+  fi
+  write_stage_result "$feature_dir" "coding" "failed" "" "$model" "$recorded"
+  set_task_phase "$issue" "planning"
+  set_window_attention_state "$win" "needs-user"
+}
+
+# Handle a coding launch that agent resolution refused. Reads the typed
+# refusal from AGENT_RESOLVE_LAST_{REASON,CERTIFICATION,CERTIFY,DIAGNOSTIC},
+# so agent_resolve_from_model must have run in this shell (not inside $(...)).
+# Always leaves the task at planning; the caller holds the slot and returns.
+# Usage: handle_coding_launch_refusal <issue> <feature_dir> <win> <route_model> <launch_model>
+handle_coding_launch_refusal() {
+  local issue="$1" feature_dir="$2" win="$3" route_model="$4" launch_model="${5:-$4}"
+  local reason="${AGENT_RESOLVE_LAST_REASON:-}" certification="${AGENT_RESOLVE_LAST_CERTIFICATION:-}"
+  local certify="${AGENT_RESOLVE_LAST_CERTIFY:-}"
+  local diagnostic="${AGENT_RESOLVE_LAST_DIAGNOSTIC:-[agent-resolution] model=$launch_model phase=coding reason=${reason:-unknown}}"
+  local provider="" head limit attempts varied role reroute_json reroute_status substitute reroute_stderr
+  local provider_re='(^|[[:space:]])provider=([^[:space:]]+)'
+
+  [[ "$diagnostic" =~ $provider_re ]] && provider="${BASH_REMATCH[2]}"
+  head="$(phase_launch_head "$feature_dir")"
+  limit="$(coding_launch_refusal_limit)"
+  write_stage_result "$feature_dir" "coding" "failed" "" "$launch_model" "$diagnostic"
+  set_task_phase "$issue" "planning"
+
+  if coding_launch_refusal_is_transient "$reason" "$certification"; then
+    attempts="$(bounded_retry_increment "$feature_dir" coding-launch-resolver "$head")"
+    if (( attempts > limit )); then
+      coding_launch_refusal_terminalize "$issue" "$feature_dir" "$win" coding-launch-resolver \
+        "$launch_model" "$provider" "$reason" "$certification" "$certify" \
+        "resolver failed on all ${attempts} attempt(s)"
+      return 0
+    fi
+    set_window_attention_state "$win" "needs-user"
+    log_coding_launch_refusal "$issue" "$launch_model" "$provider" "$reason" "$certification" "retry" "" "$certify"
+    log "warn" "⚠ $issue → coding launch resolver failure (attempt ${attempts}/${limit}), retrying after backoff: $diagnostic"
+    return 0
+  fi
+
+  # Deterministic refusal: the identical relaunch can never succeed.
+  if [[ -n "${FORCE_MODEL:-}" || -n "${WAVEMILL_CODER_MODEL:-}" ]]; then
+    coding_launch_refusal_terminalize "$issue" "$feature_dir" "$win" coding-launch-refused \
+      "$launch_model" "$provider" "$reason" "$certification" "$certify" "coder pinned by operator"
+    return 0
+  fi
+
+  role="$(_challenge_side_for_issue "$issue" 2>/dev/null || true)"
+  varied="$(challenge_varied_stage_model "$issue" "coding" 2>/dev/null || true)"
+  if [[ "$role" == "challenger" && -n "$varied" && ( "$varied" == "$route_model" || "$varied" == "$launch_model" ) ]]; then
+    coding_launch_refusal_terminalize "$issue" "$feature_dir" "$win" coding-launch-refused \
+      "$launch_model" "$provider" "$reason" "$certification" "$certify" "challenger varied coder is not launchable"
+    if [[ -z "$(get_task_meta "$issue" "challengeAborted" 2>/dev/null || true)" ]]; then
+      challenge_abort_pair "$issue" "$feature_dir" "$win" "coding" "$launch_model" \
+        "varied_model_unlaunchable" "Challenge arm aborted: varied coder $launch_model refused at launch ($diagnostic)" \
+        "${certify:+run: $certify}" "single" || true
+      log_warn "$issue → challenger varied coder $launch_model is not launchable: challenger quarantined, primary released"
+      cleanup_quarantined_no_pr_challenge_arm "$issue" "$feature_dir" "coding" "varied_model_unlaunchable" || true
+    fi
+    return 0
+  fi
+
+  attempts="$(bounded_retry_increment "$feature_dir" coding-launch-refused "$head")"
+  if (( attempts > limit )); then
+    coding_launch_refusal_terminalize "$issue" "$feature_dir" "$win" coding-launch-refused \
+      "$launch_model" "$provider" "$reason" "$certification" "$certify" \
+      "coder reroute budget of ${limit} exhausted"
+    return 0
+  fi
+
+  reroute_stderr="$(mktemp "${TMPDIR:-/tmp}/coder-reroute-stderr.XXXXXX" 2>/dev/null || echo /dev/null)"
+  local -a reroute_args=(
+    --issue "$issue" --feature-dir "$feature_dir" --repo-dir "$REPO_DIR"
+    --model "$route_model" --reason "${reason:-unknown}" --json
+  )
+  [[ -n "$launch_model" && "$launch_model" != "$route_model" ]] && reroute_args+=(--launch-model "$launch_model")
+  [[ -n "$certification" ]] && reroute_args+=(--certification "$certification")
+  [[ -n "$certify" ]] && reroute_args+=(--certify "$certify")
+  reroute_json="$(cd "$REPO_DIR" 2>/dev/null && npx tsx "$TOOLS_DIR/reroute-refused-coder.ts" "${reroute_args[@]}" 2>"$reroute_stderr")" || reroute_json=""
+  reroute_status="$(printf '%s' "$reroute_json" | jq -r '.status // empty' 2>/dev/null || true)"
+  substitute="$(printf '%s' "$reroute_json" | jq -r '.to // empty' 2>/dev/null || true)"
+
+  if [[ "$reroute_status" == "rerouted" && -n "$substitute" ]]; then
+    [[ "$reroute_stderr" != /dev/null ]] && rm -f "$reroute_stderr"
+    task_state_mutate_existing "$issue" '.coderModel = $coder | .updated = (now | todate)' \
+      --arg coder "$substitute" >/dev/null 2>&1 || true
+    clear_stage_result "$feature_dir" "coding"
+    set_window_attention_state "$win" "clear"
+    log_coding_launch_refusal "$issue" "$launch_model" "$provider" "$reason" "$certification" "rerouted" "$substitute" "$certify"
+    log "status" "↪ $issue → coder substitution: $launch_model → $substitute (${reason:-refused}${certification:+:$certification}), next tick launches the substitute"
+    return 0
+  fi
+
+  if [[ "$reroute_status" != "no-eligible" && "$reroute_stderr" != /dev/null && -s "$reroute_stderr" ]]; then
+    log_warn "$issue → coder reroute failed: $(tail -n 3 "$reroute_stderr" | tr '\n' ' ')"
+  fi
+  [[ "$reroute_stderr" != /dev/null ]] && rm -f "$reroute_stderr"
+  coding_launch_refusal_terminalize "$issue" "$feature_dir" "$win" coding-launch-refused \
+    "$launch_model" "$provider" "$reason" "$certification" "$certify" \
+    "$([[ "$reroute_status" == "no-eligible" ]] && echo "no launchable coder remains" || echo "coder reroute failed")"
   return 0
 }
 
@@ -17963,6 +18187,13 @@ monitor_issue_state() {
               active_count=$((active_count + 1))
               return 0
             fi
+            # HOK-3142: a refused coder launch that terminalized (or is backing
+            # off a resolver failure) holds quietly instead of re-deriving the
+            # identical refused launch every tick.
+            if coding_launch_refusal_hold "$ISSUE" "$FEATURE_DIR" "$WIN"; then
+              active_count=$((active_count + 1))
+              return 0
+            fi
 
             # HOK-3086: an implementation-stage challenger forks HERE, at the
             # plan→coding handoff and before the primary's coder can commit, so
@@ -17980,11 +18211,16 @@ monitor_issue_state() {
             if declare -F agent_resolve_model >/dev/null 2>&1; then
               coder_launch_model="$(agent_resolve_model "coder" "$coder_model" "$REPO_DIR")" || return 1
             fi
-            if ! coder_agent="$(agent_resolve_from_model "$coder_launch_model" "coding")"; then
-              write_stage_result "$FEATURE_DIR" "coding" "failed" "" "$coder_launch_model" "${AGENT_RESOLVE_LAST_DIAGNOSTIC:-Coding launch blocked by agent resolution failure.}"
-              set_task_phase "$ISSUE" "planning"
-              set_window_attention_state "$WIN" "needs-user"
-              log "warn" "⚠ $ISSUE → Coding launch blocked: ${AGENT_RESOLVE_LAST_DIAGNOSTIC:-agent resolution failed}"
+            # Resolve in this shell (stdout to a file, not $(...)) so the typed
+            # refusal fields reach handle_coding_launch_refusal (HOK-3142).
+            local coder_resolve_out
+            coder_resolve_out="$(mktemp "${TMPDIR:-/tmp}/coder-resolve.XXXXXX")" || coder_resolve_out=""
+            if [[ -n "$coder_resolve_out" ]] && agent_resolve_from_model "$coder_launch_model" "coding" >"$coder_resolve_out"; then
+              coder_agent="$(head -n 1 "$coder_resolve_out")"
+              rm -f "$coder_resolve_out"
+            else
+              [[ -n "$coder_resolve_out" ]] && rm -f "$coder_resolve_out"
+              handle_coding_launch_refusal "$ISSUE" "$FEATURE_DIR" "$WIN" "$coder_model" "$coder_launch_model"
               active_count=$((active_count + 1))
               return 0
             fi
@@ -18016,6 +18252,7 @@ monitor_issue_state() {
             if ! handle_phase_launch_result "$ISSUE" "$FEATURE_DIR" "coding" "planning" "$launch_rc" "$WIN" "$coder_agent" "$coder_launch_model"; then
                 return 0
             fi
+            coding_launch_refusal_clear "$FEATURE_DIR"
             set_window_attention_state "$WIN" "clear"
             log "status" "$ISSUE → Plan approved, launching coding phase"
             active_count=$((active_count + 1))
