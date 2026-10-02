@@ -4,6 +4,7 @@ import {
   classifyArmFault,
   isModelQualitySignal,
   parseAbortFailureKind,
+  isInvalidChallengeAbort,
 } from './arm-failure-taxonomy.ts';
 
 test('classifies the incident failure kinds into the intended fault classes', () => {
@@ -165,4 +166,28 @@ test('classifies the HOK-3128 dirty-handoff and sibling-stalled kinds', () => {
   assert.equal(parseAbortFailureKind('terminal_stage_failure:sibling-stalled'), 'sibling-stalled');
   assert.equal(classifyArmFault({ failureKind: 'sibling-stalled' }), 'harness-fault');
   assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'sibling-stalled' })), false);
+});
+
+test('classifies the HOK-3147 ready-exhausted kinds and the invalid_challenge prefix', () => {
+  // Real checks stayed red after remediation: model-attributable forfeit.
+  assert.equal(parseAbortFailureKind('terminal_stage_failure:ready-exhausted'), 'ready-exhausted');
+  assert.equal(classifyArmFault({ failureKind: 'ready-exhausted' }), 'model-fault');
+  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'ready-exhausted' })), true);
+  assert.equal(isInvalidChallengeAbort('terminal_stage_failure:ready-exhausted'), false);
+
+  // Checks passed but a transition (route-stamp/identity) failed: invalid
+  // challenge, never model signal.
+  assert.equal(parseAbortFailureKind('invalid_challenge:ready-transition-failed'), 'ready-transition-failed');
+  assert.equal(classifyArmFault({ failureKind: 'ready-transition-failed' }), 'harness-fault');
+  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'ready-transition-failed' })), false);
+  assert.equal(isInvalidChallengeAbort('invalid_challenge:ready-transition-failed'), true);
+
+  // No typed cause (conflict / missing result): invalid challenge too.
+  assert.equal(parseAbortFailureKind('invalid_challenge:ready-unattributed'), 'ready-unattributed');
+  assert.equal(classifyArmFault({ failureKind: 'ready-unattributed' }), 'harness-fault');
+  assert.equal(isInvalidChallengeAbort('  invalid_challenge:ready-unattributed '), true);
+
+  assert.equal(isInvalidChallengeAbort(null), false);
+  assert.equal(isInvalidChallengeAbort(undefined), false);
+  assert.equal(isInvalidChallengeAbort('operator_abort'), false);
 });
