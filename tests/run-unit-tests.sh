@@ -214,6 +214,8 @@ TESTS=(
   shared/lib/disabled-models.test.ts
   shared/lib/effective-models.test.ts
   shared/lib/model-agent-resolution.test.ts
+  shared/lib/stage-launchability.test.ts
+  shared/lib/coder-launch-reroute.test.ts
   shared/lib/model-resolution.test.ts
   shared/lib/model-resolution-display.test.ts
   shared/lib/mill-config-preflight.test.ts

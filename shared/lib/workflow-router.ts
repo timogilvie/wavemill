@@ -46,6 +46,15 @@ import { filterNativeModels, type RouterCertificationRejection } from './native-
 import { applyModelExclusions, type ModelExclusionDiagnostic } from './model-exclusions.ts';
 import { getGlobalModelRegistry, listEffectiveModelsForStage, resolveEffectiveAgent } from './effective-models.ts';
 import { classifyTaskPacket, type TaskPacketClassification } from './task-packet-classifier.ts';
+import {
+  createLaunchabilityChecker,
+  isStageLaunchRefusal,
+  ROLE_TO_LAUNCH_STAGE,
+  type LaunchRole,
+  type LaunchStage,
+  type StageLaunchability,
+  type StageLaunchRefusal,
+} from './stage-launchability.ts';
 
 export type { RouterCertificationRejection } from './native-agent/certification/router-filter.ts';
 export { STAGE_PHASE_REQUIREMENT } from './native-agent/certification/router-filter.ts';
@@ -118,6 +127,35 @@ export interface WorkflowRouteDecision {
   fallbackReason?: RouteFallbackReason;
   /** Decision record minted at routing time (see route-decision.ts). */
   routeDecision?: RouteDecisionRecord;
+  /**
+   * Stage models the launchability guard replaced because the phase launcher
+   * would refuse them (HOK-3142). The pre-guard route is kept in
+   * `preEscalationRoute`.
+   */
+  launchabilitySubstitutions?: LaunchabilitySubstitution[];
+  /**
+   * Stage models the launcher will refuse and for which no launchable
+   * substitute exists. The route still names the model so the monitor's typed
+   * refusal path can terminalize the task with the certify command.
+   */
+  launchabilityBlocked?: LaunchabilityBlocked[];
+}
+
+export interface LaunchabilitySubstitution {
+  role: LaunchRole;
+  from: string;
+  to: string;
+  reason: string;
+  certification?: string;
+}
+
+export interface LaunchabilityBlocked {
+  role: LaunchRole;
+  model: string;
+  reason: string;
+  certification?: string;
+  certifyCommand?: string;
+  diagnostic: string;
 }
 
 export interface PreEscalationRoute {
@@ -149,6 +187,11 @@ export interface RouteWorkflowOptions {
   skipDifficultyClassification?: boolean;
   additionalEvalsPaths?: string[];
   randomFn?: () => number;
+  /**
+   * Models that must not be selected for any stage, e.g. a coder the launch
+   * gate already refused for this task (HOK-3142 typed-refusal reroute).
+   */
+  excludeModels?: string[];
 }
 
 /**
@@ -214,6 +257,207 @@ const STAGE_ROLE_TASK_TYPE: Record<'planner' | 'coder' | 'reviewer', RegistryTas
   coder: 'coding',
   reviewer: 'review',
 };
+
+function withoutExcludedModels(models: string[], options?: RouteWorkflowOptions): string[] {
+  const excluded = options?.excludeModels;
+  if (!excluded || excluded.length === 0) {
+    return models;
+  }
+  return models.filter((modelId) => !excluded.includes(modelId));
+}
+
+function describeRefusal(refusal: StageLaunchRefusal | null): string {
+  if (!refusal) {
+    return 'excluded';
+  }
+  return refusal.certification ? `${refusal.reason}:${refusal.certification}` : refusal.reason;
+}
+
+/**
+ * Orders substitution candidates for a refused stage model: same model class
+ * as the refused pick first (keeps the cost/quality tier the route chose),
+ * then the stage ladder order, then pool order for unladdered models.
+ */
+function rankSubstitutionCandidates(
+  role: LaunchRole,
+  refusedModel: string,
+  pool: string[],
+  repoDir: string,
+): string[] {
+  const registry = getEffectiveRegistry(repoDir);
+  const ladder = getLadder(registry, STAGE_ROLE_TASK_TYPE[role]);
+  const refusedClass = registry.models[refusedModel]?.class;
+  const ladderIndex = (modelId: string): number => {
+    const index = ladder.indexOf(modelId);
+    return index === -1 ? Number.MAX_SAFE_INTEGER : index;
+  };
+  return pool
+    .map((modelId, poolIndex) => ({ modelId, poolIndex }))
+    .sort((a, b) => {
+      const classDelta = Number(registry.models[a.modelId]?.class !== refusedClass)
+        - Number(registry.models[b.modelId]?.class !== refusedClass);
+      if (classDelta !== 0) return classDelta;
+      const ladderDelta = ladderIndex(a.modelId) - ladderIndex(b.modelId);
+      return ladderDelta !== 0 ? ladderDelta : a.poolIndex - b.poolIndex;
+    })
+    .map(({ modelId }) => modelId);
+}
+
+function recomputeStageCosts<T extends WorkflowRouteDecision>(decision: T, repoDir: string): T {
+  const expectedCostPlan = estimateStageCost(decision.planner, PLAN_TOKENS[decision.planDepth], repoDir);
+  const expectedCostCode = estimateStageCost(decision.coder, CODE_TOKENS[decision.codeDepth], repoDir);
+  const expectedCostReview = decision.reviewRecommended === 'none'
+    ? 0
+    : estimateStageCost(decision.reviewer, REVIEW_TOKENS[decision.reviewRecommended], repoDir);
+  return {
+    ...decision,
+    expectedCostPlan,
+    expectedCostCode,
+    expectedCostReview,
+    ...('expectedCost' in decision
+      ? { expectedCost: Number((expectedCostPlan + expectedCostCode + expectedCostReview).toFixed(2)) }
+      : {}),
+  };
+}
+
+/**
+ * Best launchable replacement for a refused stage model: the stage's resolved
+ * pool (provider/exclusion/native filtered, minus `excludeModels`) ranked by
+ * `rankSubstitutionCandidates`, first entry passing `isLaunchableForStage`.
+ * Returns null when nothing launchable remains. Deterministic and offline, so
+ * the coder reroute can fall back to it when remote routing is unavailable.
+ */
+export function findLaunchableSubstitute(
+  role: LaunchRole,
+  refusedModel: string,
+  options: RouteWorkflowOptions & { repoDir: string },
+  launchable: (modelId: string, stage: LaunchStage) => StageLaunchability
+    = createLaunchabilityChecker({ repoDir: options.repoDir }),
+): string | null {
+  const stage = ROLE_TO_LAUNCH_STAGE[role];
+  const excluded = new Set(options.excludeModels ?? []);
+  const stagePool = resolveStagePool(
+    role,
+    getEffectiveModelPool(options).models,
+    getRouterConfig(options.repoDir),
+    options,
+  ).models;
+  return rankSubstitutionCandidates(role, refusedModel, stagePool, options.repoDir)
+    .find((candidate) => candidate !== refusedModel
+      && !excluded.has(candidate)
+      && launchable(candidate, stage).ok) ?? null;
+}
+
+/**
+ * Terminal launchability guard (HOK-3142).
+ *
+ * Every exported routing exit runs this after escalation, so no selection path
+ * (heuristic, stage-aware, policy, Hokusai, difficulty floor, suspicious-zero
+ * or confidence escalation) can hand the launcher a model it will refuse. Each
+ * stage model is checked with `isLaunchableForStage` — the launcher's own
+ * resolver — and replaced by the best launchable model from that stage's pool
+ * when it fails or is in `excludeModels`. When nothing launchable remains the
+ * model is kept and recorded in `launchabilityBlocked`, so the monitor's typed
+ * refusal path terminalizes with the certify command instead of looping.
+ *
+ * No-op without `repoDir`, matching the native certification filter.
+ */
+export function enforceLaunchableRoute<T extends WorkflowRouteDecision>(
+  decision: T,
+  options?: RouteWorkflowOptions,
+): T {
+  const repoDir = options?.repoDir;
+  if (!repoDir) {
+    return decision;
+  }
+  const excluded = new Set(options?.excludeModels ?? []);
+  const launchable = createLaunchabilityChecker({ repoDir });
+  const substitutions: LaunchabilitySubstitution[] = [];
+  const blocked: LaunchabilityBlocked[] = [];
+  const reasoning: string[] = [];
+  let next: T = decision;
+
+  for (const role of ['planner', 'coder', 'reviewer'] as const) {
+    const model = next[role];
+    if (!model) {
+      continue;
+    }
+    if (role === 'reviewer' && next.reviewRecommended === 'none') {
+      continue;
+    }
+    const stage = ROLE_TO_LAUNCH_STAGE[role];
+    const check = launchable(model, stage);
+    if (check.ok && !excluded.has(model)) {
+      continue;
+    }
+    const refusal = isStageLaunchRefusal(check) ? check : null;
+    const reason = describeRefusal(refusal);
+
+    const substitute = findLaunchableSubstitute(role, model, { ...options, repoDir }, launchable);
+
+    if (substitute) {
+      if (substitutions.length === 0) {
+        next = withPreEscalationRoute(next);
+      }
+      next = { ...next, [role]: substitute };
+      substitutions.push({
+        role,
+        from: model,
+        to: substitute,
+        reason: refusal?.reason ?? 'excluded',
+        ...(refusal?.certification ? { certification: refusal.certification } : {}),
+      });
+      const line = `Launchability guard: ${role} ${model} → ${substitute} (${reason})`;
+      reasoning.push(line);
+      routerLog(line, 'status');
+      continue;
+    }
+
+    blocked.push({
+      role,
+      model,
+      reason: refusal?.reason ?? 'excluded',
+      ...(refusal?.certification ? { certification: refusal.certification } : {}),
+      ...(refusal?.certifyCommand ? { certifyCommand: refusal.certifyCommand } : {}),
+      diagnostic: refusal?.diagnostic ?? `[agent-resolution] model=${model} phase=${stage} reason=excluded`,
+    });
+    const line = `No launchable ${role} remains (${model}: ${reason}); launch will be refused`
+      + (refusal?.certifyCommand ? ` — certify with: ${refusal.certifyCommand}` : '');
+    reasoning.push(line);
+    routerLog(line, 'error');
+  }
+
+  if (substitutions.length === 0 && blocked.length === 0) {
+    return decision;
+  }
+  if (substitutions.length > 0) {
+    next = recomputeStageCosts(next, repoDir);
+  }
+  return {
+    ...next,
+    reasoning: [...next.reasoning, ...reasoning],
+    ...(substitutions.length > 0
+      ? { launchabilitySubstitutions: [...(next.launchabilitySubstitutions ?? []), ...substitutions] }
+      : {}),
+    ...(blocked.length > 0 ? { launchabilityBlocked: blocked } : {}),
+  };
+}
+
+/**
+ * Shared tail for every exported routing exit: launchability guard, then
+ * challenge evaluation (so the challenge sees the route that will actually
+ * launch), then resource registration.
+ */
+function finalizeDecision<T extends WorkflowRouteDecision>(
+  decision: T,
+  options: RouteWorkflowOptions | undefined,
+  { challenge }: { challenge: boolean },
+): T {
+  const guarded = enforceLaunchableRoute(decision, options);
+  const finalDecision = challenge ? withChallengeRecommendation(guarded, options?.repoDir) : guarded;
+  registerWorkflowDecisionResources(finalDecision, options?.repoDir);
+  return finalDecision;
+}
 
 function registryModelPool(repoDir?: string): string[] {
   return Object.entries(getGlobalModelRegistry().models)
@@ -1179,7 +1423,11 @@ function resolveStagePool(
     role,
     options?.repoDir,
   );
-  const providerFiltered = filterProviderPool(exclusionFiltered.models, options?.repoDir, role);
+  const providerFiltered = filterProviderPool(
+    withoutExcludedModels(exclusionFiltered.models, options),
+    options?.repoDir,
+    role,
+  );
 
   // Apply native certification filter when we have a repo directory.
   // Native models only appear in repo-specific registry configs, so this is
@@ -1304,7 +1552,7 @@ function resolvePolicyStagePools(
     return null;
   }
 
-  const pool = getModelPool(repoDir).models;
+  const pool = withoutExcludedModels(getModelPool(repoDir).models, options);
   const signalContext = buildRoutingSignalContext(prompt, taskDifficulty);
   const characteristics = signalContext.characteristics;
   const riskScore = signalContext.riskScore;
@@ -2001,8 +2249,7 @@ export function routeWorkflow(prompt: string, options?: RouteWorkflowOptions): W
     ...(modelExclusions.length > 0 ? { modelExclusions } : {}),
   }, signalContext.classification), { plannerPool, coderPool, reviewerPool }, repoDir);
   logRoutingSignalVector(decision);
-  registerWorkflowDecisionResources(decision, repoDir);
-  return decision;
+  return finalizeDecision(decision, options, { challenge: false });
 }
 
 function routeWorkflowStageAwareInternal(
@@ -2155,9 +2402,8 @@ function routeWorkflowStageAwareInternal(
   const escalatedDecision = skipEscalation
     ? signalDecision
     : applyRouteEscalation(prompt, signalDecision, options, { stageAwareContext });
-  const finalDecision = withChallengeRecommendation(escalatedDecision, repoDir);
+  const finalDecision = finalizeDecision(escalatedDecision, options, { challenge: true });
   logRoutingSignalVector(finalDecision);
-  registerWorkflowDecisionResources(finalDecision, repoDir);
   return finalDecision;
 }
 
@@ -2324,7 +2570,14 @@ export function tryPolicyResolution(
     return null;
   }
 
-  const pool = getModelPool(repoDir).models;
+  const pool = withoutExcludedModels(getModelPool(repoDir).models, options);
+  // Pre-filter each role's candidates through the launcher predicate so the
+  // policy ranking chooses among models that can actually launch (HOK-3142).
+  // The terminal guard in finalizeDecision remains the structural backstop.
+  const launchable = repoDir ? createLaunchabilityChecker({ repoDir }) : null;
+  const launchablePool = (role: LaunchRole): string[] => launchable
+    ? pool.filter((modelId) => launchable(modelId, ROLE_TO_LAUNCH_STAGE[role]).ok)
+    : pool;
   const signalContext = buildRoutingSignalContext(prompt, taskDifficulty);
   const characteristics = signalContext.characteristics;
   const riskScore = signalContext.riskScore;
@@ -2347,17 +2600,17 @@ export function tryPolicyResolution(
     ...basePolicy,
     taskType: 'planning',
     capabilityConstraints: stageCapabilityConstraints.planner,
-  }, pool);
+  }, launchablePool('planner'));
   const coderCandidates = viableCandidatesInPool({
     ...basePolicy,
     taskType: 'coding',
     capabilityConstraints: stageCapabilityConstraints.coder,
-  }, pool);
+  }, launchablePool('coder'));
   const reviewerCandidates = viableCandidatesInPool({
     ...basePolicy,
     taskType: 'review',
     capabilityConstraints: stageCapabilityConstraints.reviewer,
-  }, pool);
+  }, launchablePool('reviewer'));
   // Exploration sampling: pick from the ranked viable candidates instead of
   // always taking the argmax. Scores come from registry quality for the task
   // type, matching the ordering produced by the policy resolver.
@@ -2526,9 +2779,8 @@ export async function routeWorkflowHokusai(
     repoDir,
   );
   const escalatedDecision = applyRouteEscalation(prompt, signalDecision, options);
-  const finalDecision = withChallengeRecommendation(escalatedDecision, repoDir);
+  const finalDecision = finalizeDecision(escalatedDecision, options, { challenge: true });
   logRoutingSignalVector(finalDecision);
-  registerWorkflowDecisionResources(finalDecision, repoDir);
   return finalDecision;
 }
 
@@ -2569,9 +2821,7 @@ export async function routeWorkflowAutoWithContext(
   const policyDecision = tryPolicyResolution(prompt, options);
   if (policyDecision) {
     const escalatedDecision = applyRouteEscalation(prompt, policyDecision, options, context);
-    const finalDecision = withChallengeRecommendation(escalatedDecision, options?.repoDir);
-    registerWorkflowDecisionResources(finalDecision, options?.repoDir);
-    return finalDecision;
+    return finalizeDecision(escalatedDecision, options, { challenge: true });
   }
 
   const decision = context?.stageAwareContext

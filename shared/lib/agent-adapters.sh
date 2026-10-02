@@ -84,6 +84,43 @@ agent_send_tmux_guarded_command() {
 # Prints: agent command name (e.g. "claude", "codex")
 AGENT_RESOLVE_LAST_DIAGNOSTIC=""
 AGENT_RESOLVE_LAST_BATCH_JSON=""
+# Typed refusal fields from the last agent_resolve_from_model failure
+# (HOK-3142): the resolver reason (e.g. uncertified), the certification status
+# (e.g. missing_live_canary), and the certify command ("" when unavailable).
+# Like AGENT_RESOLVE_LAST_DIAGNOSTIC they only reach the caller when the
+# function runs in the caller's shell — redirect stdout to a file instead of
+# capturing it with $(...) when the caller needs them.
+AGENT_RESOLVE_LAST_REASON=""
+AGENT_RESOLVE_LAST_CERTIFICATION=""
+AGENT_RESOLVE_LAST_CERTIFY=""
+
+# Populate the AGENT_RESOLVE_LAST_{REASON,CERTIFICATION,CERTIFY} fields.
+# Prefers the resolver's structured JSON; falls back to the stable key=value
+# diagnostic format for shell-side failures (missing tsx, mktemp, ...).
+# Args: $1 = resolver JSON (may be empty), $2 = diagnostic line
+_agent_resolve_capture_refusal() {
+  local json="${1:-}" diagnostic="${2:-}"
+  local certify_re='certify="([^"]*)"'
+  AGENT_RESOLVE_LAST_REASON=""
+  AGENT_RESOLVE_LAST_CERTIFICATION=""
+  AGENT_RESOLVE_LAST_CERTIFY=""
+  if [[ -n "$json" ]] && command -v jq >/dev/null 2>&1; then
+    AGENT_RESOLVE_LAST_REASON="$(printf '%s' "$json" | jq -r 'if type == "object" and .ok == false then (.reason // empty) else empty end' 2>/dev/null || true)"
+    AGENT_RESOLVE_LAST_CERTIFICATION="$(printf '%s' "$json" | jq -r 'if type == "object" and .ok == false then (.certificationStatus // empty) else empty end' 2>/dev/null || true)"
+    AGENT_RESOLVE_LAST_CERTIFY="$(printf '%s' "$json" | jq -r 'if type == "object" and .ok == false then (.certifyCommand // empty) else empty end' 2>/dev/null || true)"
+  fi
+  if [[ -z "$AGENT_RESOLVE_LAST_REASON" && "$diagnostic" =~ (^|[[:space:]])reason=([^[:space:]]+) ]]; then
+    AGENT_RESOLVE_LAST_REASON="${BASH_REMATCH[2]}"
+  fi
+  if [[ -z "$AGENT_RESOLVE_LAST_CERTIFICATION" && "$diagnostic" =~ (^|[[:space:]])certification=([^[:space:]]+) ]]; then
+    AGENT_RESOLVE_LAST_CERTIFICATION="${BASH_REMATCH[2]}"
+  fi
+  if [[ -z "$AGENT_RESOLVE_LAST_CERTIFY" && "$diagnostic" =~ $certify_re ]]; then
+    AGENT_RESOLVE_LAST_CERTIFY="${BASH_REMATCH[1]}"
+  fi
+  [[ "$AGENT_RESOLVE_LAST_CERTIFY" == "unavailable" ]] && AGENT_RESOLVE_LAST_CERTIFY=""
+  return 0
+}
 
 agent_resolve_from_model() {
   local model="$1"
@@ -93,15 +130,18 @@ agent_resolve_from_model() {
   local resolver_tool="$tools_dir/resolve-model-agent.ts"
   local stderr_file="" json_output="" agent="" diagnostic=""
   AGENT_RESOLVE_LAST_DIAGNOSTIC=""
+  _agent_resolve_capture_refusal "" ""
 
   if [[ -z "$model" ]]; then
     AGENT_RESOLVE_LAST_DIAGNOSTIC="[agent-resolution] model=(empty) phase=${phase:-unknown} provider=unknown reason=invalid-model-id certification=invalid-model-id certify=\"unavailable\""
     echo "$AGENT_RESOLVE_LAST_DIAGNOSTIC" >&2
+    _agent_resolve_capture_refusal "" "$AGENT_RESOLVE_LAST_DIAGNOSTIC"
     return 1
   fi
   if [[ ! "$model" =~ ^[A-Za-z0-9._/-]+(\[[A-Za-z0-9._-]+\])?$ ]]; then
     AGENT_RESOLVE_LAST_DIAGNOSTIC="[agent-resolution] model=$model phase=${phase:-unknown} provider=unknown reason=invalid-model-id certification=invalid-model-id certify=\"unavailable\""
     echo "$AGENT_RESOLVE_LAST_DIAGNOSTIC" >&2
+    _agent_resolve_capture_refusal "" "$AGENT_RESOLVE_LAST_DIAGNOSTIC"
     return 1
   fi
   case "$phase" in
@@ -109,23 +149,27 @@ agent_resolve_from_model() {
     *)
       AGENT_RESOLVE_LAST_DIAGNOSTIC="[agent-resolution] model=$model phase=${phase:-unknown} provider=unknown reason=invalid-model-id certification=invalid-phase certify=\"unavailable\""
       echo "$AGENT_RESOLVE_LAST_DIAGNOSTIC" >&2
+      _agent_resolve_capture_refusal "" "$AGENT_RESOLVE_LAST_DIAGNOSTIC"
       return 1
       ;;
   esac
   if ! command -v jq >/dev/null 2>&1; then
     AGENT_RESOLVE_LAST_DIAGNOSTIC="[agent-resolution] model=$model phase=$phase provider=unknown reason=invalid-model-id certification=missing-jq certify=\"unavailable\""
     echo "$AGENT_RESOLVE_LAST_DIAGNOSTIC" >&2
+    _agent_resolve_capture_refusal "" "$AGENT_RESOLVE_LAST_DIAGNOSTIC"
     return 1
   fi
   if ! agent_model_helper_available; then
     AGENT_RESOLVE_LAST_DIAGNOSTIC="[agent-resolution] model=$model phase=$phase provider=unknown reason=invalid-model-id certification=missing-tsx certify=\"unavailable\""
     echo "$AGENT_RESOLVE_LAST_DIAGNOSTIC" >&2
+    _agent_resolve_capture_refusal "" "$AGENT_RESOLVE_LAST_DIAGNOSTIC"
     return 1
   fi
 
   stderr_file="$(mktemp "${TMPDIR:-/tmp}/agent-resolve-stderr.XXXXXX")" || {
     AGENT_RESOLVE_LAST_DIAGNOSTIC="[agent-resolution] model=$model phase=$phase provider=unknown reason=invalid-model-id certification=mktemp-failed certify=\"unavailable\""
     echo "$AGENT_RESOLVE_LAST_DIAGNOSTIC" >&2
+    _agent_resolve_capture_refusal "" "$AGENT_RESOLVE_LAST_DIAGNOSTIC"
     return 1
   }
 
@@ -140,6 +184,7 @@ agent_resolve_from_model() {
     AGENT_RESOLVE_LAST_DIAGNOSTIC="${diagnostic:-[agent-resolution] model=$model phase=$phase provider=unknown reason=unknown-model certification=resolver-failed certify=\"unavailable\"}"
     [[ -n "$diagnostic" ]] || echo "$AGENT_RESOLVE_LAST_DIAGNOSTIC" >&2
     [[ -n "$diagnostic" ]] && echo "$diagnostic" >&2
+    _agent_resolve_capture_refusal "$json_output" "$AGENT_RESOLVE_LAST_DIAGNOSTIC"
     return 1
   fi
 
@@ -147,6 +192,7 @@ agent_resolve_from_model() {
     diagnostic="$(printf '%s' "$json_output" | jq -r '.diagnostic // empty' 2>/dev/null || true)"
     AGENT_RESOLVE_LAST_DIAGNOSTIC="${diagnostic:-[agent-resolution] model=$model phase=$phase provider=unknown reason=unknown-model certification=malformed-json certify=\"unavailable\"}"
     echo "$AGENT_RESOLVE_LAST_DIAGNOSTIC" >&2
+    _agent_resolve_capture_refusal "" "$AGENT_RESOLVE_LAST_DIAGNOSTIC"
     return 1
   fi
 

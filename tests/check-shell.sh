@@ -167,6 +167,7 @@ for f in \
   "$REPO_DIR"/tests/task-progress.test.sh \
   "$REPO_DIR"/tests/task-identity.test.sh \
   "$REPO_DIR"/tests/handle-phase-launch-result.test.sh \
+  "$REPO_DIR"/tests/coding-launch-refusal.test.sh \
   "$REPO_DIR"/tests/launch-pane-liveness.test.sh \
   "$REPO_DIR"/tests/launch-failure-log-capture.test.sh \
   "$REPO_DIR"/tests/challenge-eval-soft-retry.test.sh \

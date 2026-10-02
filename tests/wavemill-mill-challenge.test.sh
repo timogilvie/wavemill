@@ -208,7 +208,7 @@ else
 fi
 
 CODING_HANDOFF_BLOCK="$(awk '
-  /if ! coder_agent="\$\(agent_resolve_from_model "\$coder_launch_model" "coding"\)"; then/ { capture=1 }
+  /agent_resolve_from_model "\$coder_launch_model" "coding" >"\$coder_resolve_out"; then/ { capture=1 }
   capture { print }
   /launch_coding_phase "\$ISSUE"/ && capture { exit }
 ' "$MONITOR_SCRIPT_FILE")"
