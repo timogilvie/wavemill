@@ -344,6 +344,14 @@ Keep native provider secrets such as `OPENAI_API_KEY` and `OPENROUTER_API_KEY` i
 
 `nativeAgent.patchCoding.enabled` is fail-closed and defaults to `false`. Setting it to `true` does not enable native patch coding by itself; Wavemill also requires a current certification artifact at `.wavemill/native-agent/patch-coding-certification.json`.
 
+`nativeAgent.patchCoding.allowFullSuiteTests` (HOK-3145) also defaults to
+`false`. When `false`, the native `run_tests` tool refuses full-suite commands
+(`npm test`, `pnpm test`, `yarn test`, and unsharded `tests/run-*.sh`) and
+instructs the coding agent to use focused commands (`node --test <files>`,
+`bash tests/run-unit-tests.sh --shard i/n`). CI runs the full suite anyway;
+set this to `true` only in environments where the mill is expected to run
+composite test chains.
+
 Coder routing has a third gate after repo opt-in and the smoke artifact: the
 chosen provider/model pair must also have a current global phase certification
 artifact whose phase satisfies `patch`. `WAVEMILL_NATIVE_CERTIFICATION_ROOT`

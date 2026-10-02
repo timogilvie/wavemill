@@ -14,6 +14,7 @@ export const INVALID_CHALLENGE_REASONS = [
   'operator_reroute',
   'missing_challenge_intent',
   'multiple-varied-roles',
+  'arm_infrastructure_failure',
 ] as const;
 export type InvalidChallengeReason =
   | 'stage_override_lost'
@@ -33,7 +34,13 @@ export type InvalidChallengeReason =
    * (planner/coder/reviewer), or a role differs alongside a non-role dimension
    * (depth, mode, variant). This invalidates the challenge at launch time.
    */
-  | 'multiple-varied-roles';
+  | 'multiple-varied-roles'
+  /**
+   * HOK-3147: one arm was retired for a harness/infrastructure failure (e.g.
+   * Ready passed its checks but failed at route-stamp) before it could be
+   * evaluated. There is no valid opponent, so no winner and no model forfeit.
+   */
+  | 'arm_infrastructure_failure';
 
 export type DeliveryVerdictOutcome = 'primary' | 'challenger' | 'tie' | null;
 

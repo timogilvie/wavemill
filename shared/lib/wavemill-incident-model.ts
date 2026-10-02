@@ -60,6 +60,9 @@ export const INCIDENT_ROOT_CAUSE_CLASSES = [
   // Parked/terminal-arm delivery gaps (HOK-2927; stale_orphaned_state)
   'arm_parked_awaiting_operator_commit',
   'stage_marker_not_advanced',
+  // A refused coding launch terminalized by the monitor (HOK-3142); the
+  // operator action carries the model and its certify command.
+  'coding_launch_refused',
   'terminal_arm_parked_with_residue',
   'arm_died_with_unpushed_work',
   'pr_create_failed',

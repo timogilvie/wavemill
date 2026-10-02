@@ -7,15 +7,23 @@
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { routeWorkflow, STAGE_PHASE_REQUIREMENT } from './workflow-router.ts';
+import {
+  enforceLaunchableRoute,
+  routeWorkflow,
+  routeWorkflowHokusai,
+  STAGE_PHASE_REQUIREMENT,
+} from './workflow-router.ts';
 import {
   DEFAULT_CERTIFICATION_SUITE_VERSION,
   buildGlobalCertificationPath,
 } from './native-agent/certification/index.ts';
 import {
   FRESH_CERTIFIED_AT,
+  baseConfig,
   makeOpenRouterReadyRepo,
   makeRepo,
+  mockHokusaiFetch,
+  originalFetch,
   printBanner,
   reportResults,
   test,
@@ -417,6 +425,138 @@ await test('routeWorkflow records shared packet signals in route provenance', ()
     assert.ok(decision.signals.riskFlags?.includes('greenfield'));
     assert.equal(decision.provenance?.signalVector?.taskType, 'feature');
     assert.equal(decision.provenance?.signalVector?.complexityScore, 5);
+  } finally {
+    cleanup();
+  }
+});
+
+// ── HOK-3142: router ↔ launch-gate launchability parity ──────────────────────
+// qwen-3-coder holds a workflow certificate but no live coding canary — the
+// HOK-3138 shape (gemini-2.5-pro). The launcher refuses it for coding with
+// uncertified/missing_live_canary, so no routing exit may select it as coder.
+
+function writeWorkflowCertWithoutCanary(repoDir: string): void {
+  writeCertArtifact(repoDir, 'qwen', 'qwen3-coder', DEFAULT_CERTIFICATION_SUITE_VERSION, {
+    phase: 'workflow',
+    liveCanary: undefined,
+  });
+}
+
+await test('HOK-3142: Hokusai-selected coder without a live canary is substituted by the launchability guard', async () => {
+  const { repoDir, cleanup } = makeOpenRouterReadyRepo({
+    router: {
+      ...baseConfig().router,
+      mode: 'auto',
+      hokusai: { endpoint: 'http://localhost:8080/predict', apiKey: 'test-token', timeout: 1000 },
+    },
+  });
+  mockHokusaiFetch({
+    coder_model: 'qwen-3-coder',
+    estimated_success_under_budget: 0.95,
+    confidence: 0.95,
+  });
+  try {
+    writeWorkflowCertWithoutCanary(repoDir);
+    const decision = await routeWorkflowHokusai('Implement a small router feature with tests.', {
+      repoDir,
+      skipDifficultyClassification: true,
+    });
+
+    assert.equal(decision.routingMode, 'hokusai');
+    assert.notEqual(decision.coder, 'qwen-3-coder', 'routing must never select an unlaunchable coder');
+    assert.ok(decision.coder, 'a launchable substitute coder is selected');
+    const substitution = decision.launchabilitySubstitutions?.find((entry) => entry.role === 'coder');
+    assert.ok(substitution, 'substitution is recorded on the decision');
+    assert.equal(substitution?.from, 'qwen-3-coder');
+    assert.equal(substitution?.to, decision.coder);
+    assert.equal(substitution?.reason, 'uncertified');
+    assert.equal(substitution?.certification, 'missing_live_canary');
+    assert.equal(decision.preEscalationRoute?.coder, 'qwen-3-coder', 'the original pick is preserved');
+    assert.ok(decision.reasoning.some((line) => line.includes('Launchability guard: coder qwen-3-coder')));
+  } finally {
+    globalThis.fetch = originalFetch;
+    cleanup();
+  }
+});
+
+await test('HOK-3142: enforceLaunchableRoute replaces an unlaunchable coder and recomputes cost', () => {
+  const { repoDir, cleanup } = makeOpenRouterReadyRepo();
+  try {
+    writeWorkflowCertWithoutCanary(repoDir);
+    const options = {
+      repoDir,
+      modelsAvailable: ['qwen-3-coder', 'claude-haiku-4-5-20251001', 'claude-sonnet-4-5-20250929'],
+      skipDifficultyClassification: true,
+    };
+    const base = routeWorkflow('Fix a small bug in the router.', options);
+    const decision = enforceLaunchableRoute({ ...base, coder: 'qwen-3-coder', expectedCostCode: 0 }, options);
+
+    assert.notEqual(decision.coder, 'qwen-3-coder');
+    assert.ok(['claude-haiku-4-5-20251001', 'claude-sonnet-4-5-20250929'].includes(decision.coder));
+    assert.equal(decision.launchabilitySubstitutions?.[0]?.certification, 'missing_live_canary');
+    assert.equal(decision.launchabilityBlocked, undefined);
+  } finally {
+    cleanup();
+  }
+});
+
+await test('HOK-3142: enforceLaunchableRoute is a no-op for launchable routes and without repoDir', () => {
+  const { repoDir, cleanup } = makeRepo();
+  try {
+    const options = {
+      repoDir,
+      modelsAvailable: ['claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'],
+      skipDifficultyClassification: true,
+    };
+    const decision = routeWorkflow('Implement a new feature with tests.', options);
+    assert.equal(decision.launchabilitySubstitutions, undefined);
+    assert.equal(enforceLaunchableRoute(decision, options), decision);
+    const unlaunchable = { ...decision, coder: 'qwen-3-coder' };
+    assert.equal(enforceLaunchableRoute(unlaunchable, {}), unlaunchable, 'repo-less routing is untouched');
+  } finally {
+    cleanup();
+  }
+});
+
+await test('HOK-3142: excludeModels removes a refused coder from every routing pool', () => {
+  const { repoDir, cleanup } = makeRepo();
+  try {
+    const options = {
+      repoDir,
+      modelsAvailable: ['claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'],
+      skipDifficultyClassification: true,
+    };
+    const first = routeWorkflow('Implement a new feature with tests.', options);
+    const rerouted = routeWorkflow('Implement a new feature with tests.', { ...options, excludeModels: [first.coder] });
+    assert.notEqual(rerouted.coder, first.coder);
+    assert.ok(rerouted.coder, 'the remaining pool model is selected');
+  } finally {
+    cleanup();
+  }
+});
+
+await test('HOK-3142: no launchable coder left → launchabilityBlocked carries the canary certify command', () => {
+  const { repoDir, cleanup } = makeOpenRouterReadyRepo();
+  try {
+    writeWorkflowCertWithoutCanary(repoDir);
+    const options = {
+      repoDir,
+      modelsAvailable: ['qwen-3-coder', 'claude-haiku-4-5-20251001'],
+      skipDifficultyClassification: true,
+    };
+    const base = routeWorkflow('Fix a small bug in the router.', options);
+    const decision = enforceLaunchableRoute(
+      { ...base, coder: 'qwen-3-coder' },
+      { ...options, excludeModels: ['claude-haiku-4-5-20251001'] },
+    );
+
+    assert.equal(decision.coder, 'qwen-3-coder', 'the refused model stays so the monitor can terminalize');
+    const blocked = decision.launchabilityBlocked?.find((entry) => entry.role === 'coder');
+    assert.ok(blocked, 'expected a blocked coder record');
+    assert.equal(blocked?.reason, 'uncertified');
+    assert.equal(blocked?.certification, 'missing_live_canary');
+    assert.match(blocked?.certifyCommand ?? '', /--live-coding-canary/);
+    assert.ok(decision.reasoning.some((line) => line.startsWith('No launchable coder remains')));
   } finally {
     cleanup();
   }

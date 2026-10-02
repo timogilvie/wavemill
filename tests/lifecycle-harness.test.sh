@@ -294,6 +294,13 @@ harness_extract_real_functions() {
     check_stage_aborted \
     phase_launch_head \
     phase_launch_gate \
+    coding_launch_refusal_limit \
+    coding_launch_refusal_is_transient \
+    log_coding_launch_refusal \
+    coding_launch_refusal_hold \
+    coding_launch_refusal_clear \
+    coding_launch_refusal_terminalize \
+    handle_coding_launch_refusal \
     _run_phase_launch \
     reap_completed_planning_pane \
     persist_challenge_execution_intent \

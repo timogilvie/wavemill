@@ -77,6 +77,8 @@ TESTS=(
   shared/lib/native-agent/command-transcript.test.ts
   shared/lib/native-agent/command-argv.test.ts
   shared/lib/native-agent/command-substrate.test.ts
+  shared/lib/native-agent/test-command-scope.test.ts
+  shared/lib/native-agent/coding-recovery-guard.test.ts
   shared/lib/native-agent/hok2081-gate.test.ts
   shared/lib/native-agent/session-checkpoint.test.ts
   shared/lib/native-agent/deterministic-replay.test.ts
@@ -212,6 +214,8 @@ TESTS=(
   shared/lib/disabled-models.test.ts
   shared/lib/effective-models.test.ts
   shared/lib/model-agent-resolution.test.ts
+  shared/lib/stage-launchability.test.ts
+  shared/lib/coder-launch-reroute.test.ts
   shared/lib/model-resolution.test.ts
   shared/lib/model-resolution-display.test.ts
   shared/lib/mill-config-preflight.test.ts
@@ -448,6 +452,9 @@ TESTS=(
   shared/lib/tool-runner.test.ts
   shared/lib/worktree-dirty-status.test.ts
   shared/lib/worktree-manager.test.ts
+  shared/lib/bounded-retry.test.ts
+  shared/lib/observer-auto-fix.test.ts
+  shared/lib/observer-alerts.test.ts
   tools/backfill-stage-scores.test.ts
   tools/certify-launch-priority-model.test.ts
   tools/check-native-agent-launch.test.ts

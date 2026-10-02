@@ -120,6 +120,7 @@ export type NoComparisonReason =
   | 'state_vs_derived_side_mismatch'
   | 'missing_challenge_intent'
   | 'multiple-varied-roles'
+  | 'arm_infrastructure_failure'
   // legacy skip reason
   | 'identical_routing_dimensions'
   // provenance validation outcomes
@@ -151,6 +152,7 @@ export const NO_COMPARISON_REASONS = [
   'state_vs_derived_side_mismatch',
   'missing_challenge_intent',
   'multiple-varied-roles',
+  'arm_infrastructure_failure',
   'identical_routing_dimensions',
   'provenance_invalid',
   'provenance_inconclusive',
