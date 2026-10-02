@@ -52,6 +52,7 @@ for fn in \
   review_result_native_timeout_identity \
   review_recovery_timeout_state_path \
   review_recovery_write_timeout_state \
+  review_recovery_native_timeout_repeat \
   review_recovery_clear_ready_handoff_state \
   review_recovery_publish_running \
   native_terminal_failure_kind \
