@@ -237,7 +237,8 @@ _log_level_num() {
     error) echo 0 ;;
     # warn shares status's visibility so warnings always reach the dashboard
     # at the default verbosity (HOK-3142).
-    warn|status) echo 1 ;;
+    warn) echo 1 ;;
+    status) echo 1 ;;
     info) echo 2 ;;
     debug) echo 3 ;;
     *) echo 2 ;;
