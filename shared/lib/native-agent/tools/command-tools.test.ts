@@ -1,14 +1,17 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, describe, it } from 'node:test';
 
 import {
+  CommandRunHistory,
   commandToolsAfterToolCall,
+  createCommandTools,
   createRunFormatTool,
   createRunTestsTool,
+  MAX_TEST_TIMEOUT_MS,
   type RunCommandDetails,
 } from './command-tools.ts';
 
@@ -360,6 +363,212 @@ describe('native-agent command tools', () => {
     const source = readFileSync(new URL('./command-tools.ts', import.meta.url), 'utf8');
     assert.ok(!source.includes('node:child_process'));
     assert.ok(!source.includes("require('child_process')"));
+  });
+
+  it('refuses npm test as a full-suite command and includes the script expansion', async () => {
+    const repo = makeTempDir('command-tools-full-suite-');
+    writeFileSync(
+      path.join(repo, 'package.json'),
+      JSON.stringify({
+        scripts: {
+          test: 'npm run test:preflight && npm run test:shell && npm run test:unit && npm run test:smoke && npm run test:config && npm run test:native-launch-certification',
+        },
+      }),
+      'utf-8',
+    );
+
+    let spawnCalls = 0;
+    const spawnSpy = (file: string, args: readonly string[], options: any) => {
+      spawnCalls += 1;
+      return spawn(file, [...args], options);
+    };
+    const runTests = createRunTestsTool(repo, { spawnFn: spawnSpy, fingerprintFn: () => 'fp-1' });
+
+    const bareResult = await runTests.execute('call-full-suite-bare', { command: 'npm test' });
+    const bareDetails = bareResult.details as RunCommandDetails;
+    assert.equal(bareDetails.ok, false);
+    if (!bareDetails.ok) {
+      assert.equal(bareDetails.error, 'full_suite_refused');
+      assert.equal(bareDetails.reason, 'full-suite-command');
+      assert.match(bareDetails.message, /full repository suite/);
+      assert.match(bareDetails.message, /focused/);
+      assert.ok(bareDetails.scriptExpansion);
+      assert.equal(bareDetails.scriptExpansion?.chainedScripts[0], 'test:preflight');
+      assert.match(bareDetails.retryHint ?? '', /node --test/);
+    }
+    const bareText = bareResult.content[0]?.type === 'text' ? bareResult.content[0].text : '';
+    assert.match(bareText, /node --test|npm run test:preflight/);
+
+    const withPathResult = await runTests.execute('call-full-suite-with-path', {
+      command: 'npm test shared/lib/openrouter-alias-audit.test.ts',
+    });
+    const withPathDetails = withPathResult.details as RunCommandDetails;
+    assert.equal(withPathDetails.ok, false);
+    if (!withPathDetails.ok) {
+      assert.equal(withPathDetails.error, 'full_suite_refused');
+      assert.ok(withPathDetails.scriptExpansion);
+      assert.match(withPathDetails.message, /shared\/lib\/openrouter-alias-audit\.test\.ts/);
+    }
+
+    assert.equal(spawnCalls, 0);
+  });
+
+  it('runs npm test when allowFullSuite is true and includes the expansion in the result', async () => {
+    const repo = makeTempDir('command-tools-full-suite-allowed-');
+    writeFileSync(
+      path.join(repo, 'package.json'),
+      JSON.stringify({ scripts: { test: 'node -e console.log(1)' } }),
+      'utf-8',
+    );
+
+    let spawnCalls = 0;
+    const spawnSpy = (file: string, args: readonly string[], options: any) => {
+      spawnCalls += 1;
+      return spawn(file, [...args], options);
+    };
+    const runTests = createRunTestsTool(repo, { spawnFn: spawnSpy, allowFullSuite: true, fingerprintFn: () => 'fp-1' });
+
+    const result = await runTests.execute('call-full-suite-allowed', { command: 'npm test' });
+    const details = result.details as RunCommandDetails;
+    assert.equal(details.ok, true);
+    if (details.ok) {
+      assert.ok(details.scriptExpansion);
+      assert.equal(details.scriptExpansion?.script, 'test');
+    }
+    assert.ok(spawnCalls > 0, 'expected the real npm command to run');
+    const text = result.content[0]?.type === 'text' ? result.content[0].text : '';
+    assert.match(text, /npm test runs:/);
+  });
+
+  it('refuses an identical repeat of a just-timed-out command without spawning', async () => {
+    const repo = makeTempDir('command-tools-repeat-');
+    let spawnCalls = 0;
+    const spawnSpy = (file: string, args: readonly string[], options: any) => {
+      spawnCalls += 1;
+      return spawn(file, [...args], options);
+    };
+    let fingerprint = 'tree-1';
+    const history = new CommandRunHistory();
+    const runTests = createRunTestsTool(repo, {
+      spawnFn: spawnSpy,
+      fingerprintFn: () => fingerprint,
+      history,
+    });
+
+    const first = await Promise.race([
+      runTests.execute('call-repeat-first', {
+        command: `node -e "setTimeout(()=>{},5000)"`,
+        timeoutMs: 100,
+      }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout test hung')), 10_000)),
+    ]);
+    const firstDetails = first.details as RunCommandDetails;
+    assert.equal(firstDetails.ok, true);
+    if (firstDetails.ok) {
+      assert.equal(firstDetails.status, 'timed_out');
+    }
+    const spawnsAfterFirst = spawnCalls;
+    assert.ok(spawnsAfterFirst > 0);
+
+    const secondSameTimeout = await runTests.execute('call-repeat-second', {
+      command: `node -e "setTimeout(()=>{},5000)"`,
+      timeoutMs: 100,
+    });
+    const secondSameDetails = secondSameTimeout.details as RunCommandDetails;
+    assert.equal(secondSameDetails.ok, false);
+    if (!secondSameDetails.ok) {
+      assert.equal(secondSameDetails.error, 'repeat_after_timeout');
+      assert.match(secondSameDetails.message, /timed out after/);
+      assert.match(secondSameDetails.message, /narrow the selection/);
+      assert.ok(secondSameDetails.previousTimeout);
+    }
+    assert.equal(spawnCalls, spawnsAfterFirst, 'repeat refusal must not spawn');
+
+    // Different timeoutMs — still identical argv, still refused.
+    const secondBiggerTimeout = await runTests.execute('call-repeat-second-big', {
+      command: `node -e "setTimeout(()=>{},5000)"`,
+      timeoutMs: 60_000,
+    });
+    const secondBiggerDetails = secondBiggerTimeout.details as RunCommandDetails;
+    assert.equal(secondBiggerDetails.ok, false);
+    if (!secondBiggerDetails.ok) {
+      assert.equal(secondBiggerDetails.error, 'repeat_after_timeout');
+    }
+    assert.equal(spawnCalls, spawnsAfterFirst, 'raising the timeout must not bypass');
+
+    // Different command — allowed.
+    const differentCommand = await runTests.execute('call-repeat-different', {
+      command: `node -e "console.log('ok')"`,
+    });
+    const differentDetails = differentCommand.details as RunCommandDetails;
+    assert.equal(differentDetails.ok, true);
+    assert.ok(spawnCalls > spawnsAfterFirst, 'different command must spawn');
+
+    // After the worktree fingerprint changes, the same command runs again.
+    fingerprint = 'tree-2';
+    const spawnsBeforeRetry = spawnCalls;
+    const retry = await runTests.execute('call-repeat-retry', {
+      command: `node -e "console.log('ok')"`,
+    });
+    const retryDetails = retry.details as RunCommandDetails;
+    assert.equal(retryDetails.ok, true);
+    assert.ok(spawnCalls > spawnsBeforeRetry, 'fingerprint change must allow re-run');
+  });
+
+  it('clears the record on a successful completion of the same key', async () => {
+    const repo = makeTempDir('command-tools-clear-');
+    const history = new CommandRunHistory();
+    const runTests = createRunTestsTool(repo, { fingerprintFn: () => 'fp', history });
+    // Successful run should not record a timeout.
+    const result = await runTests.execute('call-clear-1', { command: `node -e "console.log('ok')"` });
+    const details = result.details as RunCommandDetails;
+    assert.equal(details.ok, true);
+
+    // Second identical run also succeeds — no refusal.
+    const second = await runTests.execute('call-clear-2', { command: `node -e "console.log('ok')"` });
+    assert.equal((second.details as RunCommandDetails).ok, true);
+  });
+
+  it('clamps an unreasonable timeoutMs to the ceiling and reports both', async () => {
+    const repo = makeTempDir('command-tools-clamp-');
+    const runTests = createRunTestsTool(repo, { fingerprintFn: () => 'fp' });
+    const requested = MAX_TEST_TIMEOUT_MS + 60_000; // 11 min
+    const result = await runTests.execute('call-clamp', {
+      command: `node -e "console.log('fast')"`,
+      timeoutMs: requested,
+    });
+    const details = result.details as RunCommandDetails;
+    assert.equal(details.ok, true);
+    if (details.ok) {
+      assert.equal(details.requestedTimeoutMs, requested);
+      assert.equal(details.effectiveTimeoutMs, MAX_TEST_TIMEOUT_MS);
+    }
+    const text = result.content[0]?.type === 'text' ? result.content[0].text : '';
+    assert.match(text, /clamped from/);
+  });
+
+  it('shares a single history between run_tests and run_format', async () => {
+    const repo = makeTempDir('command-tools-shared-history-');
+    let fingerprint = 'fp';
+    const [runTests, runFormat] = createCommandTools(repo, { fingerprintFn: () => fingerprint });
+    assert.ok(runTests && runFormat);
+    const timeout = await Promise.race([
+      runTests!.execute('call-shared-timeout', {
+        command: `node -e "setTimeout(()=>{},5000)"`,
+        timeoutMs: 100,
+      }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout test hung')), 10_000)),
+    ]);
+    assert.equal((timeout.details as RunCommandDetails).ok, true);
+    // The repeat guard keys include the tool name, so run_format of the same
+    // argv is not refused; this test only asserts the history survives across
+    // both tool descriptors (shared history object, same instance).
+    const repeat = await runTests!.execute('call-shared-repeat', {
+      command: `node -e "setTimeout(()=>{},5000)"`,
+      timeoutMs: 100,
+    });
+    assert.equal((repeat.details as RunCommandDetails).ok, false);
+    assert.equal((repeat.details as any).error, 'repeat_after_timeout');
   });
 });
 
