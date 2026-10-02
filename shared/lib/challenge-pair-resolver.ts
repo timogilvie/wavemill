@@ -945,11 +945,17 @@ function buildResolutionRecord(input: {
  * arm's PR is closed (`challenge-void`).
  */
 function buildInfrastructureAbortResolution(
-  input: { pairId: string; pairState: PairTaskState; timestamp: string },
+  input: { pairId: string; pairState: PairTaskState; timestamp: string; evalsDir?: string },
   aborted: TaskEvalState,
   forkDescriptor: ReturnType<typeof forkDescriptorForPair>,
 ): { record: ChallengeComparison; outcome: 'invalid_challenge' } {
   const { primary, challenger } = input.pairState;
+  // HOK-2970 precedent: when the retired arm's latest eval already carries a
+  // typed invalid-challenge reason, keep it rather than the generic one.
+  const invalidArm = input.evalsDir
+    ? invalidArmSnapshot(input.evalsDir, input.pairId, aborted.role)
+    : null;
+  const details = invalidArm?.details ?? aborted.challengeAbortedDetail;
   return {
     outcome: 'invalid_challenge',
     record: buildInvalidChallengeArmComparison({
@@ -963,8 +969,8 @@ function buildInfrastructureAbortResolution(
       armFailures: buildArmFailures(primary, challenger),
       abortedSide: aborted.role,
       terminalReason: aborted.role === 'primary' ? 'primary_challenge_aborted' : 'challenger_challenge_aborted',
-      invalidChallengeReason: 'arm_infrastructure_failure',
-      ...(aborted.challengeAbortedDetail ? { invalidChallengeDetails: aborted.challengeAbortedDetail } : {}),
+      invalidChallengeReason: invalidArm?.reason ?? 'arm_infrastructure_failure',
+      ...(details ? { invalidChallengeDetails: details } : {}),
       rationale: `${describeTaskFailure(aborted)} The ${aborted.role} arm was retired for an infrastructure failure before it could be evaluated; no winner can be decided.`,
       timestamp: input.timestamp,
       ...forkDescriptor,
