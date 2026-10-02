@@ -452,6 +452,9 @@ TESTS=(
   shared/lib/tool-runner.test.ts
   shared/lib/worktree-dirty-status.test.ts
   shared/lib/worktree-manager.test.ts
+  shared/lib/bounded-retry.test.ts
+  shared/lib/observer-auto-fix.test.ts
+  shared/lib/observer-alerts.test.ts
   tools/backfill-stage-scores.test.ts
   tools/certify-launch-priority-model.test.ts
   tools/check-native-agent-launch.test.ts
