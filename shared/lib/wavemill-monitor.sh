@@ -6992,6 +6992,12 @@ native_terminal_failure_next_action() {
       printf 'inspect the native provider error, then relaunch the phase\n' ;;
     native-completion-protocol)
       printf "model ended the phase without a valid completion artifact (protocol violation, not a provider fault) - check the model's structured tool-call compatibility before relaunching\n" ;;
+    ready-exhausted)
+      printf 'the arm stayed red after Ready remediation and re-checks were exhausted; it was retired (forfeit) so its green sibling proceeds. Inspect the failed checks on the closed PR\n' ;;
+    ready-transition-failed)
+      printf "Ready's checks passed but a handoff transition (route-stamp, review identity, label, GitHub API) kept failing; the arm was retired as an invalid challenge (no model forfeit) so its green sibling proceeds. Inspect .ready-result.json transitionFailure\n" ;;
+    ready-unattributed)
+      printf 'Ready was exhausted without a typed red-check or transition cause (base conflict, missing ready result); the arm was retired as an invalid challenge so its green sibling proceeds. Inspect the ready attention file\n' ;;
     coding-dirty-handoff)
       printf 'the coding agent exited after writing .coding-complete with uncommitted output and did not repair it when relaunched (completion-protocol failure); the challenger is forfeited so the primary proceeds\n' ;;
     planning-turn-limit)
@@ -10772,6 +10778,162 @@ failed_ready_recheck_gate() {
   echo "$disposition"
 }
 # --- end failed-ready re-check budget ----------------------------------------
+
+# --- Ready-exhausted challenge arm retirement (HOK-3147) ---------------------
+# A challenge arm whose Ready is terminally exhausted never reaches the
+# completed-Ready block that runs its eval/comparison, so nothing used to
+# resolve its pair and the green sibling sat at
+# `challenge:pair-unresolved:no-comparison` until an operator forfeited it by
+# hand. When the sibling's Ready is green, these helpers retire the exhausted
+# arm instead (scope single) and close its PR, so the pair resolver and the
+# tend gate release the sibling on their next pass. When the sibling is not
+# green (both arms failing, or still running) the legacy needs-user hold
+# stays: never close both PRs of an issue. Each function is self-contained so
+# shell tests can extract them one by one.
+
+# ready_exhausted_challenge_cause <state_dir>
+# Classify why Ready terminally failed, from .ready-result.json. Echoes one of:
+#   terminal_stage_failure:ready-exhausted   — real checks stayed red (model fault)
+#   invalid_challenge:ready-transition-failed — checks passed, but a handoff
+#                                               transition (route-stamp, review
+#                                               identity, label, GitHub API) failed
+#   invalid_challenge:ready-unattributed     — no typed cause: merge conflict,
+#                                               missing or unparseable result
+ready_exhausted_challenge_cause() {
+  local state_dir="$1"
+  local result_file="$state_dir/.ready-result.json"
+  local cause=""
+
+  if [[ -f "$result_file" ]]; then
+    cause=$(jq -r '
+      def num: if type == "number" then . elif type == "string" then (tonumber? // 0) else 0 end;
+      (.artifacts // {}) as $a
+      | ($a.transitionFailure | if type == "object" then (.stage // "" | tostring) else "" end) as $transition
+      | ($a.remediationFailures | if type == "array" then length else 0 end) as $red_checks
+      | ($a.checksRun | num) as $run
+      | ($a.checksPassed | num) as $passed
+      | ($a.mergeConflict // "" | tostring | ascii_upcase) as $conflict
+      | if $transition != "" then "invalid_challenge:ready-transition-failed"
+        elif ($conflict | startswith("CONFLICT")) then "invalid_challenge:ready-unattributed"
+        elif $red_checks > 0 or ($run > 0 and $passed < $run) then "terminal_stage_failure:ready-exhausted"
+        else "invalid_challenge:ready-unattributed"
+        end
+    ' "$result_file" 2>/dev/null || true)
+  fi
+  [[ -n "$cause" ]] || cause="invalid_challenge:ready-unattributed"
+  printf '%s\n' "$cause"
+}
+
+# ready_exhausted_challenge_sibling_green <issue>
+# Exit 0 when the arm's pair sibling is tracked, not itself retired, and its
+# Ready stage completed. This is the symmetry rule: the challenger retires
+# only when the primary is green, and the primary only when the challenger is.
+ready_exhausted_challenge_sibling_green() {
+  local issue="$1"
+  local pair_id sibling sibling_slug sibling_state_dir
+
+  pair_id="$(get_task_meta "$issue" "challengePairId" 2>/dev/null || true)"
+  [[ -n "$pair_id" ]] || return 1
+  sibling="$(read_state_value "" --arg i "$issue" --arg p "$pair_id" \
+    '[.tasks // {} | to_entries[] | select(.key != $i and (.value.challengePairId // "") == $p) | .key] | first // empty' \
+    | head -n 1)"
+  [[ -n "$sibling" ]] || return 1
+  [[ -z "$(get_task_meta "$sibling" "challengeAborted" 2>/dev/null || true)" ]] || return 1
+  sibling_slug="$(get_task_meta "$sibling" "slug" 2>/dev/null || true)"
+  [[ -n "$sibling_slug" ]] || return 1
+  sibling_state_dir="$(ready_state_dir "${WORKTREE_ROOT}/${sibling_slug}" "$sibling_slug")"
+  [[ "$(read_stage_status "$sibling_state_dir" "ready")" == "completed" ]]
+}
+
+# ready_exhausted_challenge_terminalize <issue> <pr> <state_dir> <win> [cause]
+# Retire a challenge arm whose Ready re-checks/remediation are exhausted while
+# its sibling is green: stamp challengeAborted (scope single) with the cause
+# from ready_exhausted_challenge_cause (or the explicit [cause]), then close
+# the arm's PR. Returns 0 when the arm is (now or already) retired — the
+# caller stops holding it at needs-user — and 1 to keep the legacy hold
+# (not a challenge arm, sibling not green, or aborted for an unrelated reason).
+# Idempotent: a later tick only retries a PR close that failed.
+ready_exhausted_challenge_terminalize() {
+  local issue="$1" pr="$2" state_dir="$3" win="$4" cause="${5:-}"
+  local result_file="$state_dir/.ready-result.json"
+  local role existing existing_stage kind exhausted_reason cause_detail detail model next_action
+  local saved_result="" tmp
+
+  [[ "$(get_task_meta "$issue" "challenge" 2>/dev/null || true)" == "true" ]] || return 1
+  role="$(_challenge_side_for_issue "$issue" 2>/dev/null || true)"
+  [[ "$role" == "primary" || "$role" == "challenger" ]] || return 1
+
+  existing="$(get_task_meta "$issue" "challengeAborted" 2>/dev/null || true)"
+  if [[ -n "$existing" ]]; then
+    # Only a retirement this helper recorded is resumed. Any other stamp
+    # (e.g. a pair-scope quarantine mirrored from the sibling) keeps the hold
+    # so a healthy arm's PR is never closed here.
+    existing_stage="$(get_task_meta "$issue" "challengeAbortedStage" 2>/dev/null || true)"
+    case "$existing" in
+      terminal_stage_failure:ready-exhausted|invalid_challenge:ready-transition-failed|invalid_challenge:ready-unattributed) ;;
+      *) return 1 ;;
+    esac
+    [[ "$existing_stage" == "ready" ]] || return 1
+    cause="$existing"
+  else
+    ready_exhausted_challenge_sibling_green "$issue" || return 1
+
+    [[ -n "$cause" ]] || cause="$(ready_exhausted_challenge_cause "$state_dir")"
+    kind="${cause#*:}"
+
+    exhausted_reason="$(bounded_retry_exhaustion_reason "$state_dir" "failed-ready-recheck")"
+    [[ -n "$exhausted_reason" ]] || exhausted_reason="$(bounded_retry_exhaustion_reason "$state_dir" "ready-remediation")"
+    [[ -n "$exhausted_reason" ]] || exhausted_reason="Ready re-checks exhausted for PR #$pr"
+    cause_detail=""
+    if [[ -f "$result_file" ]]; then
+      cause_detail="$(jq -r '
+        (.artifacts // {}) as $a
+        | if ($a.transitionFailure | type) == "object" and (($a.transitionFailure.stage // "") != "")
+          then "transition " + ($a.transitionFailure.stage | tostring)
+               + (if ($a.transitionFailure.detail // "") != "" then " (" + ($a.transitionFailure.detail | tostring) + ")" else "" end)
+          elif (($a.remediationFailures | type) == "array") and (($a.remediationFailures | length) > 0)
+          then "failed checks: " + ($a.remediationFailures | map(tostring) | join(", "))
+          else empty
+          end
+      ' "$result_file" 2>/dev/null || true)"
+      saved_result="$(cat "$result_file" 2>/dev/null || true)"
+    fi
+    detail="$exhausted_reason${cause_detail:+; ${cause_detail}}"
+
+    model="$(stage_result_field "$state_dir" "ready" "model")"
+    [[ -n "$model" ]] || model="$(get_task_meta "$issue" "coderModel" 2>/dev/null || true)"
+    next_action="$(native_terminal_failure_next_action "$kind")"
+
+    challenge_abort_pair "$issue" "$state_dir" "$win" "ready" "$model" "$cause" "$detail" "$next_action" "single" || return 1
+
+    # challenge_abort_pair rewrites .ready-result.json without its artifacts;
+    # restore them (failedReadyRecheck, transitionFailure, remediationFailures)
+    # for the observer/watchdog and record the retirement alongside.
+    if [[ -n "$saved_result" ]] && tmp="$(mktemp "$state_dir/.ready-result.XXXXXX" 2>/dev/null)"; then
+      if jq -c --argjson saved "$saved_result" --arg cause "$cause" --arg detail "$detail" '
+          .artifacts = (($saved.artifacts // {}) + {challengeArmRetired: {cause: $cause, detail: $detail}})
+          | (if ($saved.failureReason // "") != "" then .failureReason = $saved.failureReason else . end)
+        ' "$result_file" > "$tmp" 2>/dev/null; then
+        mv "$tmp" "$result_file"
+      fi
+      rm -f "$tmp"
+    fi
+
+    log_warn "$issue → Ready exhausted: challenge ${role} arm retired (${cause}); sibling released"
+  fi
+
+  if [[ -n "$pr" && "$(pr_state "$pr")" == "OPEN" ]]; then
+    if _with_timeout "${API_TIMEOUT:-30}" gh pr close "$pr" \
+        --comment "Closing: challenge ${role} arm retired after Ready was exhausted (${cause}). The sibling PR proceeds without a comparison (HOK-3147)." \
+        >/dev/null 2>&1; then
+      log "status" "Closed retired challenge arm PR #$pr ($issue)"
+    else
+      log_warn "$issue → could not close retired challenge arm PR #$pr; retrying next poll"
+    fi
+  fi
+  return 0
+}
+# --- end Ready-exhausted challenge arm retirement ----------------------------
 
 # Update-from-base wrapper (HOK-3092). A thin shell caller around the
 # `update-branch-with-base` TS CLI, invoked from the failed-ready re-check
@@ -19893,14 +20055,19 @@ monitor_issue_state() {
       recheck_disposition=$(failed_ready_recheck_gate "$ready_state_dir_path" "$current_head" "$recheck_base_sha")
       recheck_limit="${READY_FAILED_RECHECK_MAX_ATTEMPTS:-4}"
       case "$recheck_disposition" in
-        exhausted)
-          if mark_failed_ready_recheck_exhausted "$ISSUE" "$PR" "$ready_state_dir_path"; then
+        exhausted|exhausted-quiet)
+          if [[ "$recheck_disposition" == "exhausted" ]] \
+              && mark_failed_ready_recheck_exhausted "$ISSUE" "$PR" "$ready_state_dir_path"; then
             log "status" "⛔ $ISSUE → Failed-ready re-checks exhausted for PR #$PR; waiting for a new commit or operator"
           fi
-          set_window_attention_state "$WIN" "needs-user"
-          return 0
-          ;;
-        exhausted-quiet)
+          # HOK-3147: a challenge arm with a green sibling is retired instead
+          # of held, so the sibling is not parked at no-comparison forever.
+          # Re-evaluated every quiet tick: the sibling may turn green later.
+          if ready_exhausted_challenge_terminalize "$ISSUE" "$PR" "$ready_state_dir_path" "$WIN"; then
+            set_window_attention_state "$WIN" "clear"
+            active_count=$((active_count + 1))
+            return 0
+          fi
           set_window_attention_state "$WIN" "needs-user"
           return 0
           ;;
@@ -19933,6 +20100,14 @@ monitor_issue_state() {
               "Failed-ready re-checks terminalized on identical (head=$current_head, base=$recheck_base_sha) for PR #$PR: $upd_reason"; then
             log "status" "⛔ $ISSUE → $upd_reason for PR #$PR"
             write_ready_attention_file "$ready_state_dir_path" "$upd_reason for PR #$PR"
+          fi
+          # HOK-3147: a base conflict is not a typed model failure, so a
+          # challenge arm with a green sibling is retired as unattributed.
+          if ready_exhausted_challenge_terminalize "$ISSUE" "$PR" "$ready_state_dir_path" "$WIN" \
+              "invalid_challenge:ready-unattributed"; then
+            set_window_attention_state "$WIN" "clear"
+            active_count=$((active_count + 1))
+            return 0
           fi
           set_window_attention_state "$WIN" "needs-user"
           return 0
