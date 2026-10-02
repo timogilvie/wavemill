@@ -145,6 +145,9 @@ TESTS=(
   challenge-fork-review-launch-refusal.test.sh
   base-ref-stale-local.test.sh
   session-capabilities.test.sh
+  review-capacity-detection.test.sh
+  review-missing-window-relaunch.test.sh
+  re-review-no-pr.test.sh
 )
 
 SHARD_INDEX=1
