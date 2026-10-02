@@ -24,6 +24,15 @@ export type TerminalFailureKind =
   // HOK-3128: a tracked no-PR arm showed no agent progress past the stall
   // grace, so the tend gate / resolver retired it to release its sibling.
   | 'sibling-stalled'
+  // HOK-3147: a challenge arm's Ready was terminally exhausted while its
+  // sibling was green. `ready-exhausted` means real checks stayed red after
+  // remediation/rechecks ran out (model-attributable); `ready-transition-failed`
+  // means checks passed but a handoff transition (route-stamp, review identity,
+  // label, GitHub API) failed; `ready-unattributed` means no typed cause was
+  // recorded (update-from-base conflict, missing/unparseable ready result).
+  | 'ready-exhausted'
+  | 'ready-transition-failed'
+  | 'ready-unattributed'
   // HOK-3129: four recurring native arm-failure signatures the classifier
   // used to default into `native-unclassified`. All four are model-attributable
   // (the provider delivered output; the model failed to produce usable
@@ -126,6 +135,17 @@ export function classifyArmFault(input: { failureKind?: string | null; detail?: 
     // quality signal.
     case 'sibling-stalled':
       return 'harness-fault';
+    // HOK-3147: the arm's PR stayed red after Ready remediation and rechecks
+    // were exhausted — the model's own output failed CI, the same precedent
+    // as `coding-dirty-handoff`.
+    case 'ready-exhausted':
+      return 'model-fault';
+    // HOK-3147: Ready's checks passed (or no typed red-check cause exists) but
+    // the arm could not be handed off. These are retired as invalid challenges
+    // and never become model signal.
+    case 'ready-transition-failed':
+    case 'ready-unattributed':
+      return 'harness-fault';
     // HOK-3129: the planner exhausted its turn budget without emitting a final
     // plan; the reviewer finished without findings or a terminal verdict; the
     // coding agent exited leaving a durable-commit-preserved interruption. All
@@ -163,8 +183,17 @@ export function parseAbortFailureKind(abortReason?: string | null): string | nul
   if (trimmed === 'review_timeout_exhausted') {
     return 'native-review-timeout';
   }
-  const match = /^(?:terminal_stage_failure|terminal_launch_failure|retry_exhausted):(.+)$/.exec(trimmed);
+  const match = /^(?:terminal_stage_failure|terminal_launch_failure|retry_exhausted|invalid_challenge):(.+)$/.exec(trimmed);
   return match?.[1]?.trim() || null;
+}
+
+/**
+ * True when an arm's `challengeAborted` reason retires it as an invalid
+ * challenge (`invalid_challenge:<kind>`, HOK-3147): an infrastructure/identity
+ * failure that must resolve the pair without a winner or a model forfeit.
+ */
+export function isInvalidChallengeAbort(abortReason?: string | null): boolean {
+  return (abortReason ?? '').trim().startsWith('invalid_challenge:');
 }
 
 export function isModelQualitySignal(faultClass: ArmFaultClass): boolean {

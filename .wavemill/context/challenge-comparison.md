@@ -40,6 +40,7 @@ Challenge coverage and performance consumers enforce provisional evidence holds 
 - Post-review cleanup deletes remote `task/*` refs only after GitHub reports the PR as `MERGED`; stale merged leftovers can be audited with `tools/cleanup-stale-branches.ts`.
 - A tracked sibling with no PR is live only while the HOK-3101 task-progress primitive shows agent progress (HOK-3128). Past `SIBLING_PROGRESS_GRACE_MS` (30m, plus `ORPHAN_PAIR_GRACE_MS` on `updated`) the gate reports `pair-unresolvable:sibling-stalled`; the resolver stamps the stalled arm `terminal_stage_failure:sibling-stalled` (harness-fault) and forfeits to the survivor. Pane/window existence never counts as liveness.
 - A coding arm whose agent exits after `.coding-complete` with a dirty tree is relaunched once per head (bounded-retry bucket `coding-dirty-handoff`); on exhaustion a challenger is aborted `terminal_stage_failure:coding-dirty-handoff` (model-fault, scope `single`) so the pair forfeits to the primary. A primary stays `needs-user` with `.retry-coding-dirty-handoff-exhausted`.
+- A challenge arm whose Ready is terminally exhausted (`failed-ready-recheck` / `ready-remediation` buckets, or an update-from-base conflict) never reaches the completed-Ready eval/compare block (HOK-3147). When its sibling's Ready is `completed`, the monitor's `ready_exhausted_challenge_terminalize` retires it (scope `single`) and closes its PR: red checks → `terminal_stage_failure:ready-exhausted` (model-fault, forfeit to the sibling); a passed-checks transition failure (route-stamp, identity, label, GitHub API) → `invalid_challenge:ready-transition-failed`; no typed cause → `invalid_challenge:ready-unattributed` (both harness-fault). If the sibling is not green, both arms keep the `needs-user` hold — never close both PRs.
 
 ## Stage-Specific Score Selection (HOK-2373)
 
@@ -136,9 +137,14 @@ Rules of the road:
 - **New records use `invalid_challenge` directly.** Producers must never mint a `forfeit` row where the losing arm's eval was `invalidChallenge: true`.
 - **`isDecisiveChallengeComparison` is a belt-and-braces guard.** Any row carrying `invalidChallenge: true` OR a `quarantined` marker is non-decisive regardless of `comparisonOutcome`. Legacy pre-fix rows on disk therefore stop counting even before the quarantine sweep runs.
 - **Legacy rewrite tool:** `tools/quarantine-legacy-reviewer-forfeits.ts` sweeps historical `forfeit` rows whose aborted arm's latest eval was invalid and rewrites them to `invalid_challenge` with a `quarantined: {reason: 'aborted-arm-was-invalid', ticket: 'HOK-2970'}` marker. `--dry-run` prints the diff; `--apply` writes atomically after a `.bak.<ISO>` backup and is idempotent.
+- **Infrastructure-retired arms (HOK-3147):** an arm stamped `invalid_challenge:<kind>` resolves the pair as `invalid_challenge` with `invalidChallengeReason: 'arm_infrastructure_failure'`, no winner, and without waiting on the survivor's eval. tend's gate returns `challenge-void` for the survivor (eligible regardless of `autoMergeWinner`) only when exactly one arm was retired (`primary_/challenger_challenge_aborted`) and that arm's PR is no longer open; every other `invalid_challenge` record keeps the `pair-unresolved:invalid-challenge:*` hold.
 - **Reviewer-stage adjudicator:** `shared/lib/reviewer-stage-adjudicator.ts` is a thin façade over `foldAttestationsIntoStageAttribution` that fails closed to `insufficient_evidence` when the pair did not fork at `review` or lacks a shared implementation prefix. Delivery selection (`deliveryVerdict`) remains the generic arbiter's job; reviewer-stage adjudication is independent.
 
 ## Recent Changes
+
+### 2026-10-02T00:00:00.000Z - HOK-3147: Ready-exhausted arms no longer hold a green sibling
+
+The monitor's failed-Ready branch (`exhausted` / `exhausted-quiet` / `conflict:*`) calls `ready_exhausted_challenge_terminalize` before the `needs-user` hold. New taxonomy kinds `ready-exhausted` (model-fault), `ready-transition-failed` and `ready-unattributed` (harness-fault); `parseAbortFailureKind` accepts the `invalid_challenge:` prefix (`isInvalidChallengeAbort`). New `InvalidChallengeReason` `arm_infrastructure_failure`. Gate kind `challenge-void`. Running the eval for a red-check arm before retiring it (HOK-2778) is a follow-up.
 
 ### 2026-09-30T00:00:00.000Z - HOK-3128: Dead no-PR arms no longer hold a green primary
 

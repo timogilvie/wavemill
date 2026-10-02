@@ -313,18 +313,18 @@ wavemill_capacity_stall_seconds() {
 }
 
 codex_capacity_recovery_marker() {
-  local feature_dir="$1"
-  printf '%s\n' "$feature_dir/.coding-capacity-recovery.json"
+  local feature_dir="$1" stage="${2:-coding}"
+  printf '%s\n' "$feature_dir/.${stage}-capacity-recovery.json"
 }
 
 codex_capacity_dwell_marker() {
-  local feature_dir="$1"
-  printf '%s\n' "$feature_dir/.coding-capacity-dwell.json"
+  local feature_dir="$1" stage="${2:-coding}"
+  printf '%s\n' "$feature_dir/.${stage}-capacity-dwell.json"
 }
 
 codex_capacity_clear_dwell_marker() {
-  local feature_dir="$1"
-  rm -f "$(codex_capacity_dwell_marker "$feature_dir")" 2>/dev/null || true
+  local feature_dir="$1" stage="${2:-coding}"
+  rm -f "$(codex_capacity_dwell_marker "$feature_dir" "$stage")" 2>/dev/null || true
 }
 
 codex_capacity_pane_tail() {
@@ -390,10 +390,10 @@ codex_capacity_hook_status() {
 }
 
 codex_capacity_record_dwell() {
-  local feature_dir="$1" source="$2"
+  local feature_dir="$1" source="$2" stage="${3:-coding}"
   local marker tmp_file now existing_first_seen existing_source first_seen
 
-  marker="$(codex_capacity_dwell_marker "$feature_dir")"
+  marker="$(codex_capacity_dwell_marker "$feature_dir" "$stage")"
   tmp_file="$(mktemp "$marker.tmp.XXXXXX" 2>/dev/null)" || return 1
   now="$(date +%s)"
   existing_first_seen="$(jq -r '.firstSeen // empty' "$marker" 2>/dev/null || echo "")"
@@ -423,7 +423,7 @@ codex_capacity_record_dwell() {
 }
 
 codex_capacity_idle_confirmed() {
-  local issue="$1" slug="$2" feature_dir="$3" worktree="$4"
+  local issue="$1" slug="$2" feature_dir="$3" worktree="$4" stage="${5:-coding}"
   local source="" first_seen="" now dwell_seconds tail=""
 
   if codex_capacity_hook_status "$issue"; then
@@ -433,12 +433,12 @@ codex_capacity_idle_confirmed() {
     if codex_capacity_tail_has_terminal_prompt "$tail"; then
       source="pane"
     else
-      codex_capacity_clear_dwell_marker "$feature_dir"
+      codex_capacity_clear_dwell_marker "$feature_dir" "$stage"
       return 1
     fi
   fi
 
-  first_seen="$(codex_capacity_record_dwell "$feature_dir" "$source" 2>/dev/null || true)"
+  first_seen="$(codex_capacity_record_dwell "$feature_dir" "$source" "$stage" 2>/dev/null || true)"
   [[ "$first_seen" =~ ^[0-9]+$ ]] || return 1
 
   now="$(date +%s)"
@@ -5163,13 +5163,21 @@ emit_blocked_completion_liveness_attention() {
 }
 
 write_codex_capacity_blocked_completion() {
-  local issue="$1" feature_dir="$2" model="${3:-}" source="${4:-unknown}"
-  local artifact recovery_marker artifact_tmp recovery_tmp slug timestamp
+  local issue="$1" feature_dir="$2" model="${3:-}" source="${4:-unknown}" stage="${5:-coding}"
+  local artifact recovery_marker artifact_tmp recovery_tmp slug timestamp recommended summary_text
   local capacity_message="${CODEX_CAPACITY_MESSAGE:-Selected model is at capacity. Please try a different model.}"
   local capacity_reason="${CODEX_CAPACITY_REASON:-model_at_capacity}"
 
-  artifact="$(blocked_completion_artifact_path "$feature_dir")"
-  recovery_marker="$(codex_capacity_recovery_marker "$feature_dir")"
+  if [[ "$stage" == "coding" ]]; then
+    artifact="$(blocked_completion_artifact_path "$feature_dir")"
+    recommended="relaunch_coding"
+    summary_text="coding blocked: Codex model at capacity"
+  else
+    artifact="$feature_dir/.${stage}-blocked-completion.json"
+    recommended="relaunch_${stage}"
+    summary_text="${stage} blocked: Codex model at capacity"
+  fi
+  recovery_marker="$(codex_capacity_recovery_marker "$feature_dir" "$stage")"
   slug="$(basename "$feature_dir")"
   timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
@@ -5178,11 +5186,12 @@ write_codex_capacity_blocked_completion() {
 
   artifact_tmp="$(mktemp "$artifact.tmp.XXXXXX" 2>/dev/null)" || return 1
   if ! jq -n \
+    --arg stage "$stage" \
     --arg reason "$capacity_reason" \
     --arg blockingReason "model_at_capacity" \
     --arg evidence "Codex pane was idle at the terminal capacity prompt after confirmation dwell." \
-    --arg recommendedAction "relaunch_coding" \
-    --arg summary "coding blocked: Codex model at capacity" \
+    --arg recommendedAction "$recommended" \
+    --arg summary "$summary_text" \
     --arg humanReason "$capacity_message" \
     --arg detectedAt "$timestamp" \
     --arg issue "$issue" \
@@ -5190,7 +5199,7 @@ write_codex_capacity_blocked_completion() {
     --arg model "$model" \
     --arg source "$source" \
     '{
-      stage: "coding",
+      stage: $stage,
       implementationComplete: false,
       committed: false,
       passingChecks: [],
@@ -5220,6 +5229,7 @@ write_codex_capacity_blocked_completion() {
   if ! jq -n \
     --arg issue "$issue" \
     --arg slug "$slug" \
+    --arg stage "$stage" \
     --arg model "$model" \
     --arg source "$source" \
     --arg action "wrote_blocked_completion" \
@@ -5228,6 +5238,7 @@ write_codex_capacity_blocked_completion() {
     '{
       issue: $issue,
       slug: $slug,
+      stage: $stage,
       model: (if ($model | length) > 0 then $model else null end),
       source: $source,
       action: $action,
@@ -5243,7 +5254,7 @@ write_codex_capacity_blocked_completion() {
     return 1
   }
 
-  codex_capacity_clear_dwell_marker "$feature_dir"
+  codex_capacity_clear_dwell_marker "$feature_dir" "$stage"
 }
 
 blocked_completion_current_head() {
@@ -6981,6 +6992,12 @@ native_terminal_failure_next_action() {
       printf 'inspect the native provider error, then relaunch the phase\n' ;;
     native-completion-protocol)
       printf "model ended the phase without a valid completion artifact (protocol violation, not a provider fault) - check the model's structured tool-call compatibility before relaunching\n" ;;
+    ready-exhausted)
+      printf 'the arm stayed red after Ready remediation and re-checks were exhausted; it was retired (forfeit) so its green sibling proceeds. Inspect the failed checks on the closed PR\n' ;;
+    ready-transition-failed)
+      printf "Ready's checks passed but a handoff transition (route-stamp, review identity, label, GitHub API) kept failing; the arm was retired as an invalid challenge (no model forfeit) so its green sibling proceeds. Inspect .ready-result.json transitionFailure\n" ;;
+    ready-unattributed)
+      printf 'Ready was exhausted without a typed red-check or transition cause (base conflict, missing ready result); the arm was retired as an invalid challenge so its green sibling proceeds. Inspect the ready attention file\n' ;;
     coding-dirty-handoff)
       printf 'the coding agent exited after writing .coding-complete with uncommitted output and did not repair it when relaunched (completion-protocol failure); the challenger is forfeited so the primary proceeds\n' ;;
     planning-turn-limit)
@@ -8005,6 +8022,133 @@ handle_coding_launch_refusal() {
   coding_launch_refusal_terminalize "$issue" "$feature_dir" "$win" coding-launch-refused \
     "$launch_model" "$provider" "$reason" "$certification" "$certify" \
     "$([[ "$reroute_status" == "no-eligible" ]] && echo "no launchable coder remains" || echo "coder reroute failed")"
+  return 0
+}
+
+# ----------------------------------------------------------------------------
+# Review-agent capacity stop (HOK-3146)
+# ----------------------------------------------------------------------------
+# Mirrors the coding-side `codex_capacity_idle_confirmed` →
+# `write_codex_capacity_blocked_completion` path (HOK-2318) for the review
+# phase: when the reviewer sits at Codex's "model at capacity" prompt we
+# reroute to the next launchable reviewer, release the stale window, and let
+# the normal review relaunch pick up the fresh contract on the next tick.
+#
+# The `review-capacity` bounded-retry bucket caps the number of reroutes per
+# review head; exhaustion terminalizes to needs-user with the operator hint.
+
+review_capacity_relaunch_limit() {
+  local limit="${WAVEMILL_REVIEW_CAPACITY_MAX_ATTEMPTS:-3}"
+  [[ "$limit" =~ ^[0-9]+$ ]] || limit=3
+  printf '%s\n' "$limit"
+}
+
+# Terminalize a review capacity reroute budget: record the exhaustion reason
+# in the bucket's sentinel, park the task at needs-user, and surface the hint
+# via the hook `next_action`. The task stays at review — the fix is to either
+# certify another reviewer or wait for capacity, so it is never aborted here.
+review_capacity_terminalize() {
+  local issue="$1" feature_dir="$2" win="$3" model="$4" why="$5"
+  local recorded next_action hook_protocol
+  next_action="rm $feature_dir/.retry-review-capacity-* to release the review relaunch, or certify a different reviewer"
+  recorded="Review relaunch refused ($why): model=${model:-unknown} reason=model_at_capacity — $next_action"
+  if bounded_retry_mark_exhausted "$feature_dir" "review-capacity" "$recorded"; then
+    log "status" "⛔ $issue → review capacity recovery exhausted (${model:-unknown}): $why"
+    hook_protocol="$LIB_DIR/../hooks/wavemill-hook-protocol.sh"
+    if [[ -f "$hook_protocol" ]]; then
+      # shellcheck disable=SC1090
+      source "$hook_protocol" || true
+      if declare -F wavemill_hook_write >/dev/null 2>&1; then
+        WAVEMILL_SESSION="$SESSION" WAVEMILL_ISSUE="$issue" \
+          wavemill_hook_write "blocked" "review_capacity_exhausted" "$recorded" "wavemill" "$next_action" "monitor" || true
+      fi
+    fi
+  fi
+  write_ready_attention_file "$feature_dir" "$recorded"
+  set_window_attention_state "$win" "needs-user"
+}
+
+# Close the stale review window after a reroute so the next tick's
+# window-missing recovery path binds a fresh launch to a clean window.
+# Best-effort — tmux failures never abort the reroute.
+review_capacity_release_window() {
+  local issue="$1" slug="$2" wt_dir="$3"
+  local target
+  target="$(_tmux_task_window_target "$SESSION" "$issue" "$slug" "${STATE_FILE:-}" "$wt_dir" 2>/dev/null || true)"
+  [[ -n "$target" ]] || return 0
+  tmux kill-window -t "$target" 2>/dev/null || true
+}
+
+# Handle a confirmed review-agent capacity stop. Writes the stage-aware
+# blocked-completion marker, routes to a bounded-retry bucket, reroutes the
+# reviewer contract, and releases the stale window so the next tick launches
+# the substitute. Returns 0 on all paths (the caller holds the slot and
+# returns).
+# Usage: handle_review_capacity_stop <issue> <slug> <feature_dir> <wt_dir> <win> <reviewer_model>
+handle_review_capacity_stop() {
+  local issue="$1" slug="$2" feature_dir="$3" wt_dir="$4" win="$5" reviewer_model="${6:-}"
+  local head limit disposition attempts reroute_json reroute_status substitute capacity_source
+  local reroute_stderr new_agent
+
+  head="$(phase_launch_head "$feature_dir")"
+  limit="$(review_capacity_relaunch_limit)"
+  bounded_retry_reset_if_new_key "$feature_dir" "review-capacity" "$head"
+
+  if bounded_retry_is_exhausted "$feature_dir" "review-capacity"; then
+    set_window_attention_state "$win" "needs-user"
+    return 0
+  fi
+
+  disposition="$(bounded_retry_gate "$feature_dir" "review-capacity" "$head" "$limit")"
+  case "$disposition" in
+    backoff|exhausted-quiet)
+      set_window_attention_state "$win" "clear"
+      return 0
+      ;;
+    exhausted)
+      review_capacity_terminalize "$issue" "$feature_dir" "$win" "$reviewer_model" \
+        "review capacity reroute budget of ${limit} exhausted"
+      return 0
+      ;;
+  esac
+
+  capacity_source="$(jq -r '.source // "unknown"' "$(codex_capacity_dwell_marker "$feature_dir" "review")" 2>/dev/null || echo "unknown")"
+  write_codex_capacity_blocked_completion "$issue" "$feature_dir" "$reviewer_model" "$capacity_source" "review" || true
+
+  attempts="$(bounded_retry_increment "$feature_dir" "review-capacity" "$head")"
+
+  reroute_stderr="$(mktemp "${TMPDIR:-/tmp}/reviewer-reroute-stderr.XXXXXX" 2>/dev/null || echo /dev/null)"
+  local -a reroute_args=(
+    --issue "$issue" --feature-dir "$feature_dir" --repo-dir "$REPO_DIR"
+    --model "${reviewer_model:-unknown}" --reason "model_at_capacity" --json
+  )
+  reroute_json="$(cd "$REPO_DIR" 2>/dev/null && npx tsx "$TOOLS_DIR/reroute-refused-reviewer.ts" "${reroute_args[@]}" 2>"$reroute_stderr")" || reroute_json=""
+  reroute_status="$(printf '%s' "$reroute_json" | jq -r '.status // empty' 2>/dev/null || true)"
+  substitute="$(printf '%s' "$reroute_json" | jq -r '.to // empty' 2>/dev/null || true)"
+  new_agent="$(printf '%s' "$reroute_json" | jq -r '.agent // empty' 2>/dev/null || true)"
+
+  if [[ "$reroute_status" == "rerouted" && -n "$substitute" ]]; then
+    [[ "$reroute_stderr" != /dev/null ]] && rm -f "$reroute_stderr"
+    task_state_mutate_existing "$issue" \
+      '.model = $model | (if ($agent | length) > 0 then .agent = $agent else . end) | .updated = (now | todate)' \
+      --arg model "$substitute" --arg agent "${new_agent:-}" >/dev/null 2>&1 || true
+    # Return review to a relaunch-ready state so the next tick re-reads the
+    # recovery contract and launches the substitute.
+    write_stage_result "$feature_dir" "review" "running" "${new_agent:-codex}" "$substitute" \
+      "Reviewer rerouted: $reviewer_model → $substitute (model_at_capacity)"
+    review_capacity_release_window "$issue" "$slug" "$wt_dir"
+    set_window_attention_state "$win" "clear"
+    log "status" "↪ $issue → reviewer substitution: ${reviewer_model:-unknown} → $substitute (model_at_capacity, attempt $attempts/$limit), next tick launches the substitute"
+    return 0
+  fi
+
+  if [[ "$reroute_stderr" != /dev/null && -s "$reroute_stderr" ]]; then
+    log_warn "$issue → reviewer reroute failed: $(tail -n 3 "$reroute_stderr" | tr '\n' ' ')"
+  fi
+  [[ "$reroute_stderr" != /dev/null ]] && rm -f "$reroute_stderr"
+
+  review_capacity_terminalize "$issue" "$feature_dir" "$win" "$reviewer_model" \
+    "$([[ "$reroute_status" == "no-eligible" ]] && echo "no launchable reviewer remains" || echo "reviewer reroute failed")"
   return 0
 }
 
@@ -10635,6 +10779,162 @@ failed_ready_recheck_gate() {
 }
 # --- end failed-ready re-check budget ----------------------------------------
 
+# --- Ready-exhausted challenge arm retirement (HOK-3147) ---------------------
+# A challenge arm whose Ready is terminally exhausted never reaches the
+# completed-Ready block that runs its eval/comparison, so nothing used to
+# resolve its pair and the green sibling sat at
+# `challenge:pair-unresolved:no-comparison` until an operator forfeited it by
+# hand. When the sibling's Ready is green, these helpers retire the exhausted
+# arm instead (scope single) and close its PR, so the pair resolver and the
+# tend gate release the sibling on their next pass. When the sibling is not
+# green (both arms failing, or still running) the legacy needs-user hold
+# stays: never close both PRs of an issue. Each function is self-contained so
+# shell tests can extract them one by one.
+
+# ready_exhausted_challenge_cause <state_dir>
+# Classify why Ready terminally failed, from .ready-result.json. Echoes one of:
+#   terminal_stage_failure:ready-exhausted   — real checks stayed red (model fault)
+#   invalid_challenge:ready-transition-failed — checks passed, but a handoff
+#                                               transition (route-stamp, review
+#                                               identity, label, GitHub API) failed
+#   invalid_challenge:ready-unattributed     — no typed cause: merge conflict,
+#                                               missing or unparseable result
+ready_exhausted_challenge_cause() {
+  local state_dir="$1"
+  local result_file="$state_dir/.ready-result.json"
+  local cause=""
+
+  if [[ -f "$result_file" ]]; then
+    cause=$(jq -r '
+      def num: if type == "number" then . elif type == "string" then (tonumber? // 0) else 0 end;
+      (.artifacts // {}) as $a
+      | ($a.transitionFailure | if type == "object" then (.stage // "" | tostring) else "" end) as $transition
+      | ($a.remediationFailures | if type == "array" then length else 0 end) as $red_checks
+      | ($a.checksRun | num) as $run
+      | ($a.checksPassed | num) as $passed
+      | ($a.mergeConflict // "" | tostring | ascii_upcase) as $conflict
+      | if $transition != "" then "invalid_challenge:ready-transition-failed"
+        elif ($conflict | startswith("CONFLICT")) then "invalid_challenge:ready-unattributed"
+        elif $red_checks > 0 or ($run > 0 and $passed < $run) then "terminal_stage_failure:ready-exhausted"
+        else "invalid_challenge:ready-unattributed"
+        end
+    ' "$result_file" 2>/dev/null || true)
+  fi
+  [[ -n "$cause" ]] || cause="invalid_challenge:ready-unattributed"
+  printf '%s\n' "$cause"
+}
+
+# ready_exhausted_challenge_sibling_green <issue>
+# Exit 0 when the arm's pair sibling is tracked, not itself retired, and its
+# Ready stage completed. This is the symmetry rule: the challenger retires
+# only when the primary is green, and the primary only when the challenger is.
+ready_exhausted_challenge_sibling_green() {
+  local issue="$1"
+  local pair_id sibling sibling_slug sibling_state_dir
+
+  pair_id="$(get_task_meta "$issue" "challengePairId" 2>/dev/null || true)"
+  [[ -n "$pair_id" ]] || return 1
+  sibling="$(read_state_value "" --arg i "$issue" --arg p "$pair_id" \
+    '[.tasks // {} | to_entries[] | select(.key != $i and (.value.challengePairId // "") == $p) | .key] | first // empty' \
+    | head -n 1)"
+  [[ -n "$sibling" ]] || return 1
+  [[ -z "$(get_task_meta "$sibling" "challengeAborted" 2>/dev/null || true)" ]] || return 1
+  sibling_slug="$(get_task_meta "$sibling" "slug" 2>/dev/null || true)"
+  [[ -n "$sibling_slug" ]] || return 1
+  sibling_state_dir="$(ready_state_dir "${WORKTREE_ROOT}/${sibling_slug}" "$sibling_slug")"
+  [[ "$(read_stage_status "$sibling_state_dir" "ready")" == "completed" ]]
+}
+
+# ready_exhausted_challenge_terminalize <issue> <pr> <state_dir> <win> [cause]
+# Retire a challenge arm whose Ready re-checks/remediation are exhausted while
+# its sibling is green: stamp challengeAborted (scope single) with the cause
+# from ready_exhausted_challenge_cause (or the explicit [cause]), then close
+# the arm's PR. Returns 0 when the arm is (now or already) retired — the
+# caller stops holding it at needs-user — and 1 to keep the legacy hold
+# (not a challenge arm, sibling not green, or aborted for an unrelated reason).
+# Idempotent: a later tick only retries a PR close that failed.
+ready_exhausted_challenge_terminalize() {
+  local issue="$1" pr="$2" state_dir="$3" win="$4" cause="${5:-}"
+  local result_file="$state_dir/.ready-result.json"
+  local role existing existing_stage kind exhausted_reason cause_detail detail model next_action
+  local saved_result="" tmp
+
+  [[ "$(get_task_meta "$issue" "challenge" 2>/dev/null || true)" == "true" ]] || return 1
+  role="$(_challenge_side_for_issue "$issue" 2>/dev/null || true)"
+  [[ "$role" == "primary" || "$role" == "challenger" ]] || return 1
+
+  existing="$(get_task_meta "$issue" "challengeAborted" 2>/dev/null || true)"
+  if [[ -n "$existing" ]]; then
+    # Only a retirement this helper recorded is resumed. Any other stamp
+    # (e.g. a pair-scope quarantine mirrored from the sibling) keeps the hold
+    # so a healthy arm's PR is never closed here.
+    existing_stage="$(get_task_meta "$issue" "challengeAbortedStage" 2>/dev/null || true)"
+    case "$existing" in
+      terminal_stage_failure:ready-exhausted|invalid_challenge:ready-transition-failed|invalid_challenge:ready-unattributed) ;;
+      *) return 1 ;;
+    esac
+    [[ "$existing_stage" == "ready" ]] || return 1
+    cause="$existing"
+  else
+    ready_exhausted_challenge_sibling_green "$issue" || return 1
+
+    [[ -n "$cause" ]] || cause="$(ready_exhausted_challenge_cause "$state_dir")"
+    kind="${cause#*:}"
+
+    exhausted_reason="$(bounded_retry_exhaustion_reason "$state_dir" "failed-ready-recheck")"
+    [[ -n "$exhausted_reason" ]] || exhausted_reason="$(bounded_retry_exhaustion_reason "$state_dir" "ready-remediation")"
+    [[ -n "$exhausted_reason" ]] || exhausted_reason="Ready re-checks exhausted for PR #$pr"
+    cause_detail=""
+    if [[ -f "$result_file" ]]; then
+      cause_detail="$(jq -r '
+        (.artifacts // {}) as $a
+        | if ($a.transitionFailure | type) == "object" and (($a.transitionFailure.stage // "") != "")
+          then "transition " + ($a.transitionFailure.stage | tostring)
+               + (if ($a.transitionFailure.detail // "") != "" then " (" + ($a.transitionFailure.detail | tostring) + ")" else "" end)
+          elif (($a.remediationFailures | type) == "array") and (($a.remediationFailures | length) > 0)
+          then "failed checks: " + ($a.remediationFailures | map(tostring) | join(", "))
+          else empty
+          end
+      ' "$result_file" 2>/dev/null || true)"
+      saved_result="$(cat "$result_file" 2>/dev/null || true)"
+    fi
+    detail="$exhausted_reason${cause_detail:+; ${cause_detail}}"
+
+    model="$(stage_result_field "$state_dir" "ready" "model")"
+    [[ -n "$model" ]] || model="$(get_task_meta "$issue" "coderModel" 2>/dev/null || true)"
+    next_action="$(native_terminal_failure_next_action "$kind")"
+
+    challenge_abort_pair "$issue" "$state_dir" "$win" "ready" "$model" "$cause" "$detail" "$next_action" "single" || return 1
+
+    # challenge_abort_pair rewrites .ready-result.json without its artifacts;
+    # restore them (failedReadyRecheck, transitionFailure, remediationFailures)
+    # for the observer/watchdog and record the retirement alongside.
+    if [[ -n "$saved_result" ]] && tmp="$(mktemp "$state_dir/.ready-result.XXXXXX" 2>/dev/null)"; then
+      if jq -c --argjson saved "$saved_result" --arg cause "$cause" --arg detail "$detail" '
+          .artifacts = (($saved.artifacts // {}) + {challengeArmRetired: {cause: $cause, detail: $detail}})
+          | (if ($saved.failureReason // "") != "" then .failureReason = $saved.failureReason else . end)
+        ' "$result_file" > "$tmp" 2>/dev/null; then
+        mv "$tmp" "$result_file"
+      fi
+      rm -f "$tmp"
+    fi
+
+    log_warn "$issue → Ready exhausted: challenge ${role} arm retired (${cause}); sibling released"
+  fi
+
+  if [[ -n "$pr" && "$(pr_state "$pr")" == "OPEN" ]]; then
+    if _with_timeout "${API_TIMEOUT:-30}" gh pr close "$pr" \
+        --comment "Closing: challenge ${role} arm retired after Ready was exhausted (${cause}). The sibling PR proceeds without a comparison (HOK-3147)." \
+        >/dev/null 2>&1; then
+      log "status" "Closed retired challenge arm PR #$pr ($issue)"
+    else
+      log_warn "$issue → could not close retired challenge arm PR #$pr; retrying next poll"
+    fi
+  fi
+  return 0
+}
+# --- end Ready-exhausted challenge arm retirement ----------------------------
+
 # Update-from-base wrapper (HOK-3092). A thin shell caller around the
 # `update-branch-with-base` TS CLI, invoked from the failed-ready re-check
 # and conflict-remediation loops before they spend a retry unit. The wrapper
@@ -11011,12 +11311,13 @@ review_recovery_timeout_state_path() {
 review_recovery_write_timeout_state() {
   local feature_dir="$1" attempt="$2" category="$3"
   local review_file="$feature_dir/.review-result.json"
-  local prior base max multiplier next timeout_path
+  local prior base max multiplier next timeout_path review_head
   [[ "$category" == "native-review-timeout" ]] || return 0
   prior="$(jq -r '(.artifacts // {}) as $a | (if ($a.type // "") == "review" then $a else ($a.review // {}) end).effectiveNativeTimeoutMs // 300000' "$review_file" 2>/dev/null || echo 300000)"
   base="$(jq -r '(.artifacts // {}) as $a | (if ($a.type // "") == "review" then $a else ($a.review // {}) end).nativeTimeoutBaseMs // 300000' "$review_file" 2>/dev/null || echo 300000)"
   max="$(jq -r '(.artifacts // {}) as $a | (if ($a.type // "") == "review" then $a else ($a.review // {}) end).nativeTimeoutMaxMs // 1200000' "$review_file" 2>/dev/null || echo 1200000)"
   multiplier="$(jq -r '(.artifacts // {}) as $a | (if ($a.type // "") == "review" then $a else ($a.review // {}) end).nativeTimeoutMultiplier // 2' "$review_file" 2>/dev/null || echo 2)"
+  review_head="$(review_result_review_head_sha "$feature_dir")"
   [[ "$prior" =~ ^[0-9]+$ ]] || prior=300000
   [[ "$base" =~ ^[0-9]+$ ]] || base=300000
   [[ "$max" =~ ^[0-9]+$ ]] || max=1200000
@@ -11030,8 +11331,30 @@ review_recovery_write_timeout_state() {
     --argjson nativeTimeoutBaseMs "$base" \
     --argjson nativeTimeoutMaxMs "$max" \
     --argjson nativeTimeoutMultiplier "$multiplier" \
-    '{schemaVersion:1, category:"native-review-timeout", nativeTimeoutAttempt:$attempt, effectiveNativeTimeoutMs:$effectiveNativeTimeoutMs, nativeTimeoutBaseMs:$nativeTimeoutBaseMs, nativeTimeoutMaxMs:$nativeTimeoutMaxMs, nativeTimeoutMultiplier:$nativeTimeoutMultiplier, recordedAt:(now|todateiso8601)}' \
+    --arg reviewHeadSha "$review_head" \
+    '{schemaVersion:1, category:"native-review-timeout", nativeTimeoutAttempt:$attempt, effectiveNativeTimeoutMs:$effectiveNativeTimeoutMs, nativeTimeoutBaseMs:$nativeTimeoutBaseMs, nativeTimeoutMaxMs:$nativeTimeoutMaxMs, nativeTimeoutMultiplier:$nativeTimeoutMultiplier, reviewHeadSha:$reviewHeadSha, recordedAt:(now|todateiso8601)}' \
     > "$timeout_path" 2>/dev/null || true
+}
+
+# HOK-3146 / HOK-3103: a second native-review-timeout at the same reviewHeadSha
+# is deterministic — the first retry already escalated the wall-clock budget,
+# so a repeat at the same head cannot succeed on a third attempt. Exit 0 when
+# the current review result records native-review-timeout AND a prior
+# .review-infra-recovery.json records native-review-timeout at the same head.
+review_recovery_native_timeout_repeat() {
+  local feature_dir="$1"
+  local timeout_path current_category current_head prior_category prior_head
+  timeout_path="$(review_recovery_timeout_state_path "$feature_dir")"
+  [[ -f "$timeout_path" ]] || return 1
+  current_category="$(review_result_failure_category "$feature_dir")"
+  [[ "$current_category" == "native-review-timeout" ]] || return 1
+  current_head="$(review_result_review_head_sha "$feature_dir")"
+  [[ -n "$current_head" ]] || return 1
+  prior_category="$(jq -r '.category // ""' "$timeout_path" 2>/dev/null || echo "")"
+  prior_head="$(jq -r '.reviewHeadSha // ""' "$timeout_path" 2>/dev/null || echo "")"
+  [[ "$prior_category" == "native-review-timeout" ]] || return 1
+  [[ -n "$prior_head" && "$prior_head" == "$current_head" ]] || return 1
+  return 0
 }
 
 select_context_window_recovery_reviewer() {
@@ -11304,6 +11627,35 @@ review_recovery_coordinator_locked() {
   fi
 
   if [[ "$retry_limit" =~ ^[0-9]+$ && "$retry_limit" -gt 0 ]]; then
+    # HOK-3146 / HOK-3103: a repeat native-review-timeout at the same head is
+    # deterministic; the prior attempt already escalated the wall-clock
+    # budget, so another retry at the same head cannot succeed. Short-circuit
+    # to exhausted without consuming a third attempt.
+    if [[ "$category" == "native-review-timeout" ]] \
+      && review_recovery_native_timeout_repeat "$feature_dir"; then
+      local _repeat_head
+      _repeat_head="$(review_result_review_head_sha "$feature_dir")"
+      failure_reason="Review infrastructure recovery exhausted: native-review-timeout repeated at head ${_repeat_head:-unknown} for PR #$pr_number; $(review_infra_recovery_next_action "$category")"
+      bounded_retry_mark_exhausted "$feature_dir" "review-infra-recovery" "$failure_reason" || true
+      write_ready_attention_file "$feature_dir" "Review failed on infrastructure (native-review-timeout) for PR #$pr_number, $(review_infra_recovery_next_action "$category")."
+      if [[ -n "$(_challenge_side_for_issue "$issue" 2>/dev/null || true)" ]]; then
+        local _repeat_side
+        _repeat_side="$(_challenge_side_for_issue "$issue" 2>/dev/null || true)"
+        if [[ "$_repeat_side" == "challenger" ]]; then
+          challenge_abort_pair "$issue" "$feature_dir" "" "review" "$reviewer_model" \
+            "retry_exhausted:native-review-timeout" \
+            "Challenger review timed out deterministically on repeat at head ${_repeat_head:-unknown} for model ${reviewer_model}" \
+            "the challenger forfeits this reviewer-stage challenge, sibling may proceed" \
+            "single" || true
+        else
+          challenge_selection_health_record_review_timeout \
+            "$(get_task_meta "$issue" "challengePairId" 2>/dev/null || printf '%s' "$issue")" \
+            "$reviewer_model" || true
+        fi
+      fi
+      review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
+      return 1
+    fi
     disposition=$(bounded_retry_gate "$feature_dir" "review-infra-recovery" "$retry_identity" "$retry_limit")
     case "$disposition" in
       backoff)
@@ -17434,17 +17786,6 @@ handle_re_review_command() {
   if [[ ! "$pr" =~ ^[0-9]+$ ]]; then
     pr="$(find_pr_for_branch "$branch" 2>/dev/null || true)"
   fi
-  if [[ ! "$pr" =~ ^[0-9]+$ ]]; then
-    log_warn "$issue has no open PR to re-review"
-    MONITOR_COMMAND_STATUS="invalid"
-    return 0
-  fi
-  pr_state_value="$(pr_state "$pr" 2>/dev/null || true)"
-  if [[ "$pr_state_value" != "OPEN" ]]; then
-    log_warn "$issue PR #$pr is not open; re-review skipped"
-    MONITOR_COMMAND_STATUS="invalid"
-    return 0
-  fi
 
   title=$(read_state_value "" --arg i "$issue" '.tasks[$i].title // ""')
   if [[ -z "$title" ]]; then
@@ -17454,6 +17795,71 @@ handle_re_review_command() {
 
   base_branch="$(effective_task_base_branch "$issue" 2>/dev/null || read_state_value "" --arg i "$issue" '.tasks[$i].baseBranch // empty')"
   [[ -n "$base_branch" ]] || base_branch="${BASE_BRANCH:-main}"
+
+  # HOK-3146: when the review phase was interrupted before the agent opened a
+  # PR (e.g. the window was lost during a Codex capacity reroute), re-review
+  # must still work — the fresh review will open the PR as part of its normal
+  # flow. Require that coding was actually committed and the branch has new
+  # commits over the base; otherwise this is a planning crash with no work to
+  # review and the historical "no open PR" error still fires.
+  if [[ ! "$pr" =~ ^[0-9]+$ ]]; then
+    local branch_head base_head commit_count=""
+    if [[ -f "$feature_dir/.coding-complete" ]]; then
+      branch_head="$(git -C "$worktree" rev-parse HEAD 2>/dev/null || echo "")"
+      base_head="$(get_main_head_sha "$worktree" "$base_branch" 2>/dev/null || echo "")"
+      if [[ -z "$base_head" ]]; then
+        base_head="$(git -C "$worktree" rev-parse "$base_branch" 2>/dev/null || echo "")"
+      fi
+      if [[ -n "$branch_head" && -n "$base_head" ]]; then
+        commit_count="$(git -C "$worktree" rev-list --count "${base_head}..${branch_head}" 2>/dev/null || echo "")"
+      fi
+    fi
+
+    if [[ -f "$feature_dir/.coding-complete" ]] && [[ "$commit_count" =~ ^[0-9]+$ ]] && (( commit_count > 0 )); then
+      log "status" "$issue -> re-review will open PR for $commit_count commit(s) over $base_branch"
+      clear_stage_result "$feature_dir" "review" 2>/dev/null || true
+      set_task_phase "$issue" "review"
+      write_stage_result "$feature_dir" "review" "running" \
+        "$(read_state_value "" --arg i "$issue" '.tasks[$i].agent // ""')" \
+        "$(read_state_value "" --arg i "$issue" '.tasks[$i].model // ""')" \
+        "Manual re-review re-opens PR after review interruption"
+      local reviewer_model reviewer_agent review_mode
+      reviewer_model="$(read_state_value "" --arg i "$issue" '.tasks[$i].model // ""')"
+      reviewer_agent="$(read_state_value "" --arg i "$issue" '.tasks[$i].agent // ""')"
+      review_mode="$(read_phase_config "$feature_dir" "review" "mode" 2>/dev/null || true)"
+      [[ -n "$review_mode" ]] || review_mode="static"
+      if _run_phase_launch review launch_review_phase "$issue" "$slug" "$title" "$worktree" "$branch" "$base_branch" \
+          "$reviewer_model" "$reviewer_agent" "$review_mode"; then
+        log "status" "$issue -> re-review launched (will open PR)"
+        MONITOR_COMMAND_STATUS="handled"
+        return 0
+      fi
+      rc=$?
+      if [[ "$rc" -eq 2 ]] && check_stage_aborted "$feature_dir"; then
+        set_task_phase "$issue" "aborted"
+        MONITOR_COMMAND_STATUS="handled"
+        return 0
+      fi
+      write_ready_attention_file "$feature_dir" "Could not launch manual re-review that would create the PR (rc=$rc)."
+      log_warn "$issue re-review launch failed before PR creation (rc=$rc)"
+      MONITOR_COMMAND_STATUS="invalid"
+      return 0
+    fi
+
+    if [[ ! -f "$feature_dir/.coding-complete" ]]; then
+      log_warn "$issue has no open PR to re-review (coding not committed: .coding-complete missing)"
+    else
+      log_warn "$issue has no open PR to re-review (no new commits over $base_branch)"
+    fi
+    MONITOR_COMMAND_STATUS="invalid"
+    return 0
+  fi
+  pr_state_value="$(pr_state "$pr" 2>/dev/null || true)"
+  if [[ "$pr_state_value" != "OPEN" ]]; then
+    log_warn "$issue PR #$pr is not open; re-review skipped"
+    MONITOR_COMMAND_STATUS="invalid"
+    return 0
+  fi
 
   review_recovery_coordinator "$issue" "$slug" "$title" "$worktree" "$branch" "$base_branch" "$pr" "$feature_dir" \
     "manual re-review via mill input" "manual" "manual-rereview" "" 0 "false" || rc=$?
@@ -18638,6 +19044,22 @@ monitor_issue_state() {
             fi
           fi
 
+          # HOK-3146: a Codex "model at capacity" stop in the reviewer leaves
+          # the agent at idle/Stop forever. Same two-signal confirmation as
+          # the coding branch (HOK-2318), gated on current_agent, before the
+          # normal review-running fall-throughs claim the slot.
+          if [[ "$review_status" == "running" ]] \
+            && [[ ! -f "$FEATURE_DIR/.review-capacity-recovery.json" ]] \
+            && [[ "${current_agent:-}" == "codex" || "${AGENT_CMD:-}" == "codex" ]] \
+            && codex_capacity_idle_confirmed "$ISSUE" "$SLUG" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" "review"; then
+            local review_capacity_model
+            review_capacity_model="$(resolve_stage_result_model "$FEATURE_DIR" "review" "" 2>/dev/null || echo "")"
+            [[ -n "$review_capacity_model" ]] || review_capacity_model="$(read_state_value "" --arg i "$ISSUE" '.tasks[$i].model // ""')"
+            handle_review_capacity_stop "$ISSUE" "$SLUG" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" "$WIN" "$review_capacity_model"
+            active_count=$((active_count + 1))
+            return 0
+          fi
+
           # Reconcile legacy/stale review state: once a PR exists, review is effectively complete
           # and the controller can move into ready even if the stage file is still "running".
           if [[ "$review_status" == "running" ]]; then
@@ -18920,6 +19342,36 @@ monitor_issue_state() {
       # handle gracefully). Flag for attention instead of cleaning up
       # immediately — the worktree and branch still have value.
       if ! _tmux_task_window_target "$SESSION" "$ISSUE" "$SLUG" "${STATE_FILE:-}" "$WT_DIR" >/dev/null 2>&1; then
+        # HOK-3146: when the window goes missing during review with coding
+        # already complete and the review stage still in-flight, relaunch
+        # review through the normal recovery contract rather than spawning an
+        # empty tmux window and parking the task at needs-user (which the
+        # next tick then terminalizes as "no PR"). Mirrors the resume-missing-
+        # window path at line ~8739 so the review phase picks up any rerouted
+        # reviewer contract (e.g. from the HOK-3146 capacity reroute).
+        local _review_status_missing_window
+        _review_status_missing_window="$(read_stage_status "$FEATURE_DIR" "review" 2>/dev/null || true)"
+        if [[ "$current_phase" == "review" ]] \
+          && [[ -f "$FEATURE_DIR/.coding-complete" ]] \
+          && [[ "$_review_status_missing_window" != "completed" \
+             && "$_review_status_missing_window" != "aborted" ]]; then
+          _restore_inflight_task_window_if_missing "$ISSUE" "$SLUG" "$BRANCH" "review"
+          if [[ "$_RESTORE_STATE" == "restored" ]]; then
+            log "status" "⚡ $ISSUE → review window missing, relaunching review phase"
+            set_window_attention_state "$WIN" "clear"
+            active_count=$((active_count + 1))
+            return 0
+          fi
+          # Fall through to needs-user without terminalizing as "no PR":
+          # the review stage was interrupted, not finished. Preserve commits
+          # and keep the phase at review so operator recovery (/re-review or
+          # a window restart) still works.
+          write_ready_attention_file "$FEATURE_DIR" "Review window disappeared and could not be relaunched automatically. Coding commits preserved; re-review or operator restart required."
+          set_task_phase "$ISSUE" "review"
+          set_window_attention_state "$WIN" "needs-user"
+          active_count=$((active_count + 1))
+          return 0
+        fi
         log "status" "⚠ $ISSUE → Window disappeared during $current_phase phase, recreating..."
         tmux new-window -d -t "$SESSION" -n "$WIN" -c "${WORKTREE_ROOT}/${SLUG}" 2>/dev/null || true
         WIN_TARGET="$(tmux display-message -p -t "$SESSION:$WIN" '#{window_id}' 2>/dev/null || true)"
@@ -18947,6 +19399,39 @@ monitor_issue_state() {
           active_count=$((active_count + 1))
           return 0
         fi
+      fi
+
+      # HOK-3146 defense in depth: a review-stage interruption with coding
+      # already complete is not a terminal "no PR" failure, even if Phase 2's
+      # window-missing branch above did not reach it. Preserve the review
+      # phase; operator recovery (/re-review or a window relaunch) can still
+      # pick it up. A genuine planning or coding failure without
+      # .coding-complete still falls through to the error path.
+      local _review_status_no_pr
+      _review_status_no_pr="$(read_stage_status "$FEATURE_DIR" "review" 2>/dev/null || true)"
+      if [[ "$current_phase" == "review" ]] \
+        && [[ -f "$FEATURE_DIR/.coding-complete" ]] \
+        && [[ "$_review_status_no_pr" != "completed" \
+           && "$_review_status_no_pr" != "aborted" ]]; then
+        local hook_protocol_review="$LIB_DIR/../hooks/wavemill-hook-protocol.sh"
+        if [[ -f "$hook_protocol_review" ]]; then
+          # shellcheck disable=SC1090
+          source "$hook_protocol_review" || true
+          if declare -F wavemill_hook_write >/dev/null 2>&1; then
+            WAVEMILL_SESSION="$SESSION" WAVEMILL_ISSUE="$ISSUE" \
+              wavemill_hook_write "waiting" "review_interrupted_no_pr" \
+                "Review interrupted on branch $BRANCH; coding commits preserved" \
+                "${current_agent:-unknown}" \
+                "run /re-review $ISSUE to relaunch the review (it will open the PR)" \
+                "monitor" || true
+          fi
+        fi
+        write_ready_attention_file "$FEATURE_DIR" "Review interrupted on branch $BRANCH before PR creation; coding commits preserved. Run /re-review $ISSUE to relaunch."
+        set_task_phase "$ISSUE" "review"
+        set_window_attention_state "$WIN" "needs-user"
+        active_count=$((active_count + 1))
+        log "status" "⚠ $ISSUE → Review interrupted before PR creation (worktree preserved; re-review available)"
+        return 0
       fi
 
       log_error "⚠ $ISSUE → Agent exited without creating PR on branch $BRANCH"
@@ -19179,6 +19664,22 @@ monitor_issue_state() {
         if [[ -z "$title" ]]; then
           issue_json=$(cat "/tmp/${SESSION}-${ISSUE}-issue.json" 2>/dev/null || echo "{}")
           title=$(echo "$issue_json" | jq -r '.title // "Task"' 2>/dev/null || echo "Task")
+        fi
+
+        # HOK-3146: a Codex "model at capacity" stop in the review agent sits at
+        # idle/Stop forever without this detection. Same two-signal confirmation
+        # as the coding path (HOK-2318), gated on current_agent and only while
+        # the reviewer is still in the running stage.
+        if [[ "$review_status" == "running" ]] \
+          && [[ ! -f "$FEATURE_DIR/.review-capacity-recovery.json" ]] \
+          && [[ "${current_agent:-}" == "codex" || "${AGENT_CMD:-}" == "codex" ]] \
+          && codex_capacity_idle_confirmed "$ISSUE" "$SLUG" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" "review"; then
+          local review_capacity_model
+          review_capacity_model="$(resolve_stage_result_model "$FEATURE_DIR" "review" "" 2>/dev/null || echo "")"
+          [[ -n "$review_capacity_model" ]] || review_capacity_model="$(read_state_value "" --arg i "$ISSUE" '.tasks[$i].model // ""')"
+          handle_review_capacity_stop "$ISSUE" "$SLUG" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}" "$WIN" "$review_capacity_model"
+          active_count=$((active_count + 1))
+          return 0
         fi
 
         if record_review_pr_reconciliation "$FEATURE_DIR" "$PR" "$current_agent" ""; then
@@ -19554,14 +20055,19 @@ monitor_issue_state() {
       recheck_disposition=$(failed_ready_recheck_gate "$ready_state_dir_path" "$current_head" "$recheck_base_sha")
       recheck_limit="${READY_FAILED_RECHECK_MAX_ATTEMPTS:-4}"
       case "$recheck_disposition" in
-        exhausted)
-          if mark_failed_ready_recheck_exhausted "$ISSUE" "$PR" "$ready_state_dir_path"; then
+        exhausted|exhausted-quiet)
+          if [[ "$recheck_disposition" == "exhausted" ]] \
+              && mark_failed_ready_recheck_exhausted "$ISSUE" "$PR" "$ready_state_dir_path"; then
             log "status" "⛔ $ISSUE → Failed-ready re-checks exhausted for PR #$PR; waiting for a new commit or operator"
           fi
-          set_window_attention_state "$WIN" "needs-user"
-          return 0
-          ;;
-        exhausted-quiet)
+          # HOK-3147: a challenge arm with a green sibling is retired instead
+          # of held, so the sibling is not parked at no-comparison forever.
+          # Re-evaluated every quiet tick: the sibling may turn green later.
+          if ready_exhausted_challenge_terminalize "$ISSUE" "$PR" "$ready_state_dir_path" "$WIN"; then
+            set_window_attention_state "$WIN" "clear"
+            active_count=$((active_count + 1))
+            return 0
+          fi
           set_window_attention_state "$WIN" "needs-user"
           return 0
           ;;
@@ -19594,6 +20100,14 @@ monitor_issue_state() {
               "Failed-ready re-checks terminalized on identical (head=$current_head, base=$recheck_base_sha) for PR #$PR: $upd_reason"; then
             log "status" "⛔ $ISSUE → $upd_reason for PR #$PR"
             write_ready_attention_file "$ready_state_dir_path" "$upd_reason for PR #$PR"
+          fi
+          # HOK-3147: a base conflict is not a typed model failure, so a
+          # challenge arm with a green sibling is retired as unattributed.
+          if ready_exhausted_challenge_terminalize "$ISSUE" "$PR" "$ready_state_dir_path" "$WIN" \
+              "invalid_challenge:ready-unattributed"; then
+            set_window_attention_state "$WIN" "clear"
+            active_count=$((active_count + 1))
+            return 0
           fi
           set_window_attention_state "$WIN" "needs-user"
           return 0
