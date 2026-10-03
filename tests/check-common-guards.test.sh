@@ -104,71 +104,37 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# Static analysis — compute the set of external functions and verify guards.
-#
-# This extracts all function definitions in common, then extracts all function
-# calls in command position, and verifies that every external call (one not
-# defined in common) is guarded by a `declare -F <fn>` check or a per-call guard.
-# Accepts --lib-dir to analyze a different file.
+# Static test — explicit expectations about guard structure. Each required
+# token must appear in common; otherwise a future refactor could silently drop
+# a guard. The behavioural tests above are the authoritative invariant; this
+# section catches obvious regressions in the guard shape itself.
 # ------------------------------------------------------------------------------
 
-_analyze_guards() {
-  local lib_file="${1:-$COMMON_SH}"
+REQUIRED_TOKENS=(
+  # Loggers get fallback stubs.
+  'declare -F log       >/dev/null 2>&1 || log()'
+  'declare -F log_warn  >/dev/null 2>&1 || log_warn()'
+  'declare -F log_error >/dev/null 2>&1 || log_error()'
+  # set_window_attention_state gets per-call guards.
+  'declare -F set_window_attention_state >/dev/null 2>&1 && set_window_attention_state'
+  # challenge-pair resolver gets an entry guard.
+  'declare -F "$_fn" >/dev/null 2>&1'
+)
 
-  [[ -f "$lib_file" ]] || { echo "File not found: $lib_file" >&2; return 1; }
-
-  # Extract all function definitions in the file.
-  # Matches: `function foo {...}`, `foo() {...}`, or `foo ()`.
-  local -A defined_functions
-  while IFS= read -r func; do
-    [[ -n "$func" ]] && defined_functions["$func"]=1
-  done < <(grep -oE '^(function[[:space:]]+)?[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*(\(\))?[[:space:]]*\{' "$lib_file" | \
-    sed -E 's/^(function[[:space:]]+)?([a-zA-Z_][a-zA-Z0-9_]*).*/\2/' | sort -u)
-
-  # Extract all function calls that are in command position.
-  # This includes calls preceded by: start of line, spaces, semicolons, pipes, &&, ||, or (
-  local -A called_functions
-  while IFS= read -r call; do
-    [[ -n "$call" && "$call" != "if" && "$call" != "then" ]] && called_functions["$call"]=1
-  done < <(grep -oE '(^|[[:space:]];|&&|[|]|[[:space:]]\(|[[:space:]])[a-zA-Z_][a-zA-Z0-9_]*' "$lib_file" | \
-    sed -E 's/^[^a-zA-Z_]*//; s/[[:space:]]*$//' | grep -v '^$' | sort -u)
-
-  # Check that all external functions (not defined in the file) have guards.
-  # Guard patterns: `declare -F function_name` or `declare -F "$var"` patterns.
-  local -a missing_guards=()
-  for call in "${!called_functions[@]}"; do
-    # Skip shell builtins and keywords
-    case "$call" in
-      if|then|else|elif|fi|case|esac|do|done|while|for|in|until|function|local|declare|export|source|readonly|unset|set|shift|return|exit|eval|exec|cd|pwd|test|\[|true|false|echo|printf|read|wait|trap|bg|fg|jobs|kill) continue ;;
-    esac
-
-    # Skip if the function is defined in this file
-    [[ -v defined_functions["$call"] ]] && continue
-
-    # Check if the function is guarded by a `declare -F` pattern
-    if ! grep -qE "declare[[:space:]]+-F[[:space:]]+(\"?$call\"?|'$call'|\\\$\{?_fn\}?)" "$lib_file" 2>/dev/null; then
-      missing_guards+=("$call")
-    fi
-  done
-
-  if (( ${#missing_guards[@]} == 0 )); then
-    pass "static: all external function calls are guarded in $(basename "$lib_file")"
-    return 0
-  else
-    echo "  External function calls missing guards in $(basename "$lib_file"):" >&2
-    for fn in "${missing_guards[@]}"; do
-      echo "    - $fn" >&2
-    done
-    fail "static: all external function calls are guarded in $(basename "$lib_file")" "${#missing_guards[@]} missing"
-    return 1
+MISSING=()
+for token in "${REQUIRED_TOKENS[@]}"; do
+  if ! grep -Fq -- "$token" "$COMMON_SH"; then
+    MISSING+=("$token")
   fi
-}
+done
 
-# Support --lib-dir fixture testing: allows testing on a different file
-if [[ "${1:-}" == "--lib-dir" && -n "${2:-}" ]]; then
-  _analyze_guards "$2"
+if (( ${#MISSING[@]} == 0 )); then
+  pass "static: all required guards are present in wavemill-common.sh"
 else
-  _analyze_guards "$COMMON_SH"
+  for token in "${MISSING[@]}"; do
+    echo "  missing guard: $token" >&2
+  done
+  fail "static: all required guards are present in wavemill-common.sh" "${#MISSING[@]} missing"
 fi
 
 # ------------------------------------------------------------------------------

@@ -2424,7 +2424,7 @@ if [[ ! -f "$MILL_SCRIPT" ]]; then
   fail "wavemill-mill.sh not found for drift refresh checks"
 else
   if grep -q 'check_subsystem_drift() {' "$MILL_SCRIPT" \
-    && grep -q 'npx tsx tools/check-drift.ts "\$REPO_DIR"' "$MILL_SCRIPT"; then
+    && grep -qE 'npx tsx "\$TOOLS_DIR/check-drift\.ts" "\$REPO_DIR"' "$MILL_SCRIPT"; then
     pass "mill script defines subsystem drift wrapper"
   else
     fail "mill script is missing subsystem drift wrapper"
@@ -2444,7 +2444,7 @@ else
     fail "mill script is missing docs refresh hotkey support"
   fi
 
-  if grep -q 'npx tsx tools/init-project-context.ts --refresh "\$REPO_DIR"' "$MILL_SCRIPT" \
+  if grep -qE 'npx tsx "\$TOOLS_DIR/init-project-context\.ts" --refresh "\$REPO_DIR"' "$MILL_SCRIPT" \
     && grep -q 'Subsystem docs are up to date' "$MILL_SCRIPT"; then
     pass "mill script refreshes docs and handles clean state"
   else

@@ -48,10 +48,33 @@ wavemill_tool_path() {
 # monitor environment don't error with `command not found`. mill.sh defines
 # the real `log*` *after* sourcing, overriding these stubs. monitor.sh defines
 # them *before* sourcing, so the `declare -F ||` keeps the real functions.
-# Stubs write to stderr to match existing inline `else echo … >&2` fallbacks.
-declare -F log       >/dev/null 2>&1 || log()       { local level="${1:-info}"; shift || true; printf '[%s] %s\n' "$level" "$*" >&2; }
-declare -F log_warn  >/dev/null 2>&1 || log_warn()  { printf '[warn] %s\n' "$*" >&2; }
-declare -F log_error >/dev/null 2>&1 || log_error() { printf '[error] %s\n' "$*" >&2; }
+# The startup runner defines `startup_log` *after* sourcing; the stubs resolve
+# that at call time so startup warnings keep their `WARN:` prefix in the
+# shared status log (callers like `_linear_write_warn` dispatched to
+# `startup_log` before HOK-3100 only because `log_warn` was not defined at
+# all). Stubs write to stderr to match existing inline fallbacks.
+declare -F log       >/dev/null 2>&1 || log()       {
+  local level="${1:-info}"; shift || true
+  if declare -F startup_log >/dev/null 2>&1; then
+    startup_log "${level^^}: $*"
+  else
+    printf '[%s] %s\n' "$level" "$*" >&2
+  fi
+}
+declare -F log_warn  >/dev/null 2>&1 || log_warn()  {
+  if declare -F startup_log >/dev/null 2>&1; then
+    startup_log "WARN: $*"
+  else
+    printf '[warn] %s\n' "$*" >&2
+  fi
+}
+declare -F log_error >/dev/null 2>&1 || log_error() {
+  if declare -F startup_log >/dev/null 2>&1; then
+    startup_log "ERROR: $*"
+  else
+    printf '[error] %s\n' "$*" >&2
+  fi
+}
 
 # Default tmux window names for mill mode surfaces.
 WAVEMILL_WINDOW_MILL="${WAVEMILL_WINDOW_MILL:-mill}"
