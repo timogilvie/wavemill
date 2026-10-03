@@ -300,6 +300,7 @@ TESTS=(
   shared/lib/openrouter-alias-audit.test.ts
   shared/lib/openrouter-doctor.test.ts
   shared/lib/native-agent/openrouter-credits-guard.test.ts
+  shared/lib/native-agent/openrouter-balance-filter.test.ts
   shared/lib/launchable-models.test.ts
   shared/lib/openrouter-zero-traffic.test.ts
   shared/lib/parity-report.test.ts

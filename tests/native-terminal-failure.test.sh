@@ -119,6 +119,9 @@ preflight_ctx_detail="Native coding pre-flight rejected the launch: estimated pr
 bad_model_detail="Native coding failed: 400 qwen-2.5-coder-32b is not a valid model ID"
 tool_use_detail="Native coding failed: 404 No endpoints found that support tool use"
 credits_detail="Native coding failed: HTTP 402 Payment Required: This request requires more credits, or fewer max_tokens. You requested up to 32768 tokens, but can only afford 1123."
+# HOK-3155: OpenRouter's current wording for a drained account; the key limit is
+# not binding and the balance alone forbids the request.
+credits_detail_exceed="Native coding failed: HTTP 402 This request would exceed your available credits given your current in-flight requests. Retry after in-flight requests settle, or add credits."
 empty_turn_detail="Native coding failed: empty-model-turn: model returned reasoning-only or otherwise empty assistant turns after a continuation prompt"
 context_exhausted_detail="Native coding failed: context-exhausted: compacted native coding context to the floor and still exceeded the model context window"
 transient_detail="Native coding failed: Provider finish_reason: error"
@@ -157,6 +160,13 @@ if [[ "$(native_terminal_failure_kind "$credits_detail")" == "provider-credit-ex
   pass "OpenRouter credit exhaustion is classified"
 else
   fail "OpenRouter credit exhaustion misclassified as $(native_terminal_failure_kind "$credits_detail")"
+fi
+
+# HOK-3155: the "exceed your available credits" wording also classifies.
+if [[ "$(native_terminal_failure_kind "$credits_detail_exceed")" == "provider-credit-exhausted" ]]; then
+  pass "exceed-your-available-credits 402 is classified as provider-credit-exhausted"
+else
+  fail "exceed-your-available-credits 402 misclassified as $(native_terminal_failure_kind "$credits_detail_exceed")"
 fi
 
 if [[ "$(native_terminal_failure_kind "$transient_detail")" == "provider-transient-error" ]]; then
@@ -251,25 +261,40 @@ else
   fail "unsupported tool use was not detected"
 fi
 
-# Credit failures across multiple challenge arms should surface aggregate loss
-# of challenge coverage in the OpenRouter warning cache.
+# HOK-3155: the first classified credit abort trips the warning cache, so the
+# dashboard surfaces the loss of challenge coverage immediately rather than
+# after a count. The abort-count file is still bumped for diagnostic grep
+# attribution, and repeat aborts remain idempotent.
 rm -f "/tmp/${SESSION}-openrouter-warning.txt" "$WAVEMILL_STATE_DIR/openrouter-credits-abort-count"
 seed "PAIR-1_c"
 fd="$TMP_ROOT/f-credits-1"
 challenge_abort_pair "PAIR-1_c" "$fd" "win-credits-1" "coding" "glm-5.2" "terminal_launch_failure:openrouter-credits-exhausted" "$credits_detail" "top up OpenRouter credits" || true
-if [[ ! -f "/tmp/${SESSION}-openrouter-warning.txt" ]]; then
-  pass "first OpenRouter credit abort increments without aggregate warning"
+if [[ "$(cat "/tmp/${SESSION}-openrouter-warning.txt" 2>/dev/null)" == *"challenge coverage disabled"* ]]; then
+  pass "first OpenRouter credit abort writes aggregate warning (HOK-3155)"
 else
-  fail "first OpenRouter credit abort wrote aggregate warning too early"
+  fail "first OpenRouter credit abort did not write aggregate warning"
 fi
 
 seed "PAIR-1_c"
 fd="$TMP_ROOT/f-credits-2"
 challenge_abort_pair "PAIR-1_c" "$fd" "win-credits-2" "coding" "gemini-2.5-pro" "terminal_launch_failure:openrouter-credits-exhausted" "$credits_detail" "top up OpenRouter credits" || true
 if [[ "$(cat "/tmp/${SESSION}-openrouter-warning.txt" 2>/dev/null)" == *"challenge coverage disabled"* ]]; then
-  pass "repeated OpenRouter credit aborts write aggregate warning"
+  pass "repeated OpenRouter credit aborts keep aggregate warning (idempotent)"
 else
-  fail "repeated OpenRouter credit aborts did not write aggregate warning"
+  fail "repeated OpenRouter credit aborts cleared aggregate warning"
+fi
+
+# HOK-3155: provider-credit-exhausted (today's canonical reason spelling) must
+# also trip the circuit — the dispatcher used to match only the legacy
+# openrouter-credits-exhausted substring.
+rm -f "/tmp/${SESSION}-openrouter-warning.txt" "$WAVEMILL_STATE_DIR/openrouter-credits-abort-count"
+seed "PAIR-1_c"
+fd="$TMP_ROOT/f-credits-provider-exhausted"
+challenge_abort_pair "PAIR-1_c" "$fd" "win-credits-provider" "coding" "qwen-3-coder" "terminal_launch_failure:provider-credit-exhausted" "$credits_detail_exceed" "top up OpenRouter credits" || true
+if [[ "$(cat "/tmp/${SESSION}-openrouter-warning.txt" 2>/dev/null)" == *"challenge coverage disabled"* ]]; then
+  pass "provider-credit-exhausted reason trips the warning cache"
+else
+  fail "provider-credit-exhausted reason did not trip the warning cache"
 fi
 
 # ── Invalid model ID end-to-end ───────────────────────────────────────
