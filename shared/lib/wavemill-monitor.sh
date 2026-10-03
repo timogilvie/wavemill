@@ -6998,6 +6998,14 @@ native_terminal_failure_next_action() {
       printf "Ready's checks passed but a handoff transition (route-stamp, review identity, label, GitHub API) kept failing; the arm was retired as an invalid challenge (no model forfeit) so its green sibling proceeds. Inspect .ready-result.json transitionFailure\n" ;;
     ready-unattributed)
       printf 'Ready was exhausted without a typed red-check or transition cause (base conflict, missing ready result); the arm was retired as an invalid challenge so its green sibling proceeds. Inspect the ready attention file\n' ;;
+    review-malformed-response)
+      printf 'the reviewer emitted a malformed response and Ready kept refusing to launch; the arm was retired (forfeit) so its green sibling proceeds. Inspect the review-result.json failureCategory on the closed PR\n' ;;
+    review-not-ready)
+      printf 'the reviewer returned a genuine not_ready verdict with undismissed blockers and Ready kept refusing to launch; the arm was retired (forfeit) so its green sibling proceeds. Inspect the review-result.json blockers on the closed PR\n' ;;
+    review-identity-mismatch)
+      printf "the review artifact's reviewer identity disagreed with the arm's assignment (or execution evidence was contradicted); the arm was retired as an invalid challenge (no model forfeit) so its green sibling proceeds. Inspect the review-result.json intendedModel/executedModel on the closed PR\n" ;;
+    review-unattributed)
+      printf "Ready was refused by the review gate but the reviewer identity could not be proven; the arm was retired as an invalid challenge (no model forfeit) so its green sibling proceeds. Inspect the review-result.json executionEvidence on the closed PR\n" ;;
     coding-dirty-handoff)
       printf 'the coding agent exited after writing .coding-complete with uncommitted output and did not repair it when relaunched (completion-protocol failure); the challenger is forfeited so the primary proceeds\n' ;;
     planning-turn-limit)
@@ -10922,15 +10930,200 @@ ready_exhausted_challenge_terminalize() {
     log_warn "$issue → Ready exhausted: challenge ${role} arm retired (${cause}); sibling released"
   fi
 
-  if [[ -n "$pr" && "$(pr_state "$pr")" == "OPEN" ]]; then
-    if _with_timeout "${API_TIMEOUT:-30}" gh pr close "$pr" \
-        --comment "Closing: challenge ${role} arm retired after Ready was exhausted (${cause}). The sibling PR proceeds without a comparison (HOK-3147)." \
-        >/dev/null 2>&1; then
-      log "status" "Closed retired challenge arm PR #$pr ($issue)"
-    else
-      log_warn "$issue → could not close retired challenge arm PR #$pr; retrying next poll"
+  _retired_challenge_arm_close_pr "$issue" "$pr" "$role" "$cause" "Ready was exhausted"
+  return 0
+}
+
+# _retired_challenge_arm_close_pr <issue> <pr> <role> <cause> <why>
+# Shared tail used by `ready_exhausted_challenge_terminalize` (HOK-3147) and
+# `review_refused_challenge_terminalize` (HOK-3154). Closes the arm's PR with a
+# comment that names the retirement cause and why Ready did not proceed; a
+# transient `gh pr close` failure is logged so the next poll's idempotent-resume
+# path retries only the close.
+_retired_challenge_arm_close_pr() {
+  local issue="$1" pr="$2" role="$3" cause="$4" why="$5"
+  [[ -n "$pr" && "$(pr_state "$pr")" == "OPEN" ]] || return 0
+  if _with_timeout "${API_TIMEOUT:-30}" gh pr close "$pr" \
+      --comment "Closing: challenge ${role} arm retired after ${why} (${cause}). The sibling PR proceeds without a comparison (HOK-3147)." \
+      >/dev/null 2>&1; then
+    log "status" "Closed retired challenge arm PR #$pr ($issue)"
+  else
+    log_warn "$issue → could not close retired challenge arm PR #$pr; retrying next poll"
+  fi
+}
+
+# review_gate_refusal_is_terminal <state_dir>
+# True when a Ready launch refusal is terminal because the review artifact can
+# never pass the readiness gate. Shared by the first-refusal and later-tick
+# branches in the pending-ready-recheck path (HOK-3154).
+review_gate_refusal_is_terminal() {
+  local state_dir="$1"
+  ! review_result_passes_ready_gate "$state_dir" && ! review_result_infra_failure "$state_dir"
+}
+
+# review_refused_challenge_cause <state_dir> <issue>
+# Classify why the review gate refused Ready (HOK-3154). Prints
+# "<cause>\t<model>" where cause is one of:
+#   invalid_challenge:review-identity-mismatch        (harness-fault, no winner)
+#   invalid_challenge:review-unattributed             (harness-fault, no winner)
+# HOK-2891 has not yet made reviewer identity reliable enough to attribute a
+# review-gate refusal to a model. A contradiction is recorded distinctly;
+# every other refusal is unattributed, even if its execution evidence appears
+# internally consistent. Both paths void the challenge and release the sibling.
+review_refused_challenge_cause() {
+  local state_dir="$1" issue="$2"
+  local review_file="$state_dir/.review-result.json"
+  local kind="" assigned="" recorded="" executed="" evidence_status="" attribution_eligible=""
+  local cause="" model=""
+
+  if [[ -f "$review_file" ]]; then
+    # Review kind, read from the artifacts (same unwrapping as
+    # review_result_failure_category).
+    kind="$(jq -r '
+      def num: if type == "number" then . elif type == "string" then (tonumber? // null) else null end;
+      (.artifacts // {}) as $a
+      | (if ($a.type // "") == "review" then $a else ($a.review // {}) end) as $r
+      | ($r.failureCategory // "") as $cat
+      | ($r.verdict // "") as $v
+      | (($r.blockerCount // $r.blockingIssues // $r.blockingCount) | num) as $raw
+      | ($r.dismissedBlockers // []) as $d
+      | ($d | if type == "array" then
+          ([.[] | select((type == "object") and ((.justification? | type) == "string") and (.justification | test("\\S")))] | length)
+          else 0 end) as $dismissed
+      | if $cat == "native-review-malformed-response" then "review-malformed-response"
+        elif $cat == "review-no-output" then "review-no-output"
+        elif ($cat == "" and $v == "not_ready" and ($raw != null) and $raw >= 1 and $dismissed < $raw) then "review-not-ready"
+        else ""
+        end
+    ' "$review_file" 2>/dev/null || true)"
+    # Reviewer identity fields live at the top level of .review-result.json
+    # (written by write_stage_result's intendedModel/executedModel block).
+    recorded="$(jq -r '(.intendedModel // .model // "") | tostring' "$review_file" 2>/dev/null || true)"
+    executed="$(jq -r '(.executedModel // "") | tostring' "$review_file" 2>/dev/null || true)"
+    evidence_status="$(jq -r '(.executionEvidence.status // "") | tostring' "$review_file" 2>/dev/null || true)"
+    attribution_eligible="$(jq -r '(.modelAttributionEligible // false) | tostring' "$review_file" 2>/dev/null || true)"
+    [[ "$recorded" == "null" ]] && recorded=""
+    [[ "$executed" == "null" ]] && executed=""
+  fi
+
+  assigned="$(challenge_varied_stage_model "$issue" "review" 2>/dev/null || true)"
+  [[ -n "$assigned" ]] || assigned="$(get_task_meta "$issue" "reviewerModel" 2>/dev/null || true)"
+
+  # Identity drift: any two non-empty of {assigned, recorded, executed} disagree,
+  # or executionEvidence.status == "contradicted".
+  local mismatch=0 ids_total=0
+  if [[ "$evidence_status" == "contradicted" ]]; then
+    mismatch=1
+  else
+    local a1 a2 a3
+    a1="$assigned" a2="$recorded" a3="$executed"
+    [[ -n "$a1" ]] && ids_total=$((ids_total + 1))
+    [[ -n "$a2" ]] && ids_total=$((ids_total + 1))
+    [[ -n "$a3" ]] && ids_total=$((ids_total + 1))
+    if (( ids_total >= 2 )); then
+      if [[ -n "$a1" && -n "$a2" && "$a1" != "$a2" ]]; then mismatch=1; fi
+      if [[ -n "$a1" && -n "$a3" && "$a1" != "$a3" ]]; then mismatch=1; fi
+      if [[ -n "$a2" && -n "$a3" && "$a2" != "$a3" ]]; then mismatch=1; fi
     fi
   fi
+
+  if (( mismatch == 1 )); then
+    cause="invalid_challenge:review-identity-mismatch"
+    model="$executed"
+    [[ -n "$model" ]] || model="$recorded"
+    [[ -n "$model" ]] || model="$assigned"
+  else
+    cause="invalid_challenge:review-unattributed"
+    model="$executed"
+    [[ -n "$model" ]] || model="$recorded"
+    [[ -n "$model" ]] || model="$assigned"
+    [[ -n "$model" ]] || model="unknown"
+  fi
+
+  printf '%s\t%s\n' "$cause" "$model"
+}
+
+# review_refused_challenge_terminalize <issue> <pr> <state_dir> <win>
+# Retire a challenge arm whose Ready launch was refused by the review gate
+# (HOK-3154) while its sibling is green: stamp challengeAborted (scope single)
+# with the cause from review_refused_challenge_cause, then close the arm's PR.
+# Returns 0 when the arm is (now or already) retired, 1 to keep the legacy hold.
+# Idempotent: only this helper's own stamps resume, and only to retry a failed
+# PR close.
+review_refused_challenge_terminalize() {
+  local issue="$1" pr="$2" state_dir="$3" win="$4"
+  local review_file="$state_dir/.review-result.json"
+  local role existing existing_stage cause model kind
+  local exhausted_reason review_summary review_category detail next_action
+  local saved_review_json="" tmp
+  local cause_model
+
+  [[ "$(get_task_meta "$issue" "challenge" 2>/dev/null || true)" == "true" ]] || return 1
+  role="$(_challenge_side_for_issue "$issue" 2>/dev/null || true)"
+  [[ "$role" == "primary" || "$role" == "challenger" ]] || return 1
+
+  existing="$(get_task_meta "$issue" "challengeAborted" 2>/dev/null || true)"
+  if [[ -n "$existing" ]]; then
+    # Only a review-gate retirement this helper recorded is resumed. Any other
+    # stamp (ready-exhausted retirement, pair-scope quarantine mirrored from
+    # the sibling, etc.) keeps the hold so a healthy arm's PR is never closed.
+    existing_stage="$(get_task_meta "$issue" "challengeAbortedStage" 2>/dev/null || true)"
+    case "$existing" in
+      invalid_challenge:review-identity-mismatch\
+      |invalid_challenge:review-unattributed) ;;
+      *) return 1 ;;
+    esac
+    [[ "$existing_stage" == "review" ]] || return 1
+    cause="$existing"
+    _retired_challenge_arm_close_pr "$issue" "$pr" "$role" "$cause" "the review gate refused Ready"
+    return 0
+  fi
+
+  ready_exhausted_challenge_sibling_green "$issue" || return 1
+
+  cause_model="$(review_refused_challenge_cause "$state_dir" "$issue")"
+  cause="${cause_model%%$'\t'*}"
+  model="${cause_model##*$'\t'}"
+  [[ -n "$cause" ]] || return 1
+  kind="${cause#*:}"
+
+  exhausted_reason="$(bounded_retry_exhaustion_reason "$state_dir" "pending-ready-recheck")"
+  [[ -n "$exhausted_reason" ]] || exhausted_reason="Ready launch refused by the review gate for PR #$pr"
+  review_summary="$(review_result_summary "$state_dir" 2>/dev/null || true)"
+  review_category="$(review_result_failure_category "$state_dir" 2>/dev/null || true)"
+  detail="$exhausted_reason"
+  [[ -n "$review_summary" ]] && detail="${detail}; ${review_summary}"
+  [[ -n "$review_category" ]] && detail="${detail}; failureCategory=${review_category}"
+
+  if [[ -f "$review_file" ]]; then
+    saved_review_json="$(cat "$review_file" 2>/dev/null || true)"
+  fi
+
+  next_action="$(native_terminal_failure_next_action "$kind")"
+
+  challenge_abort_pair "$issue" "$state_dir" "$win" "review" "$model" "$cause" "$detail" "$next_action" "single" || return 1
+
+  # challenge_abort_pair rewrites .review-result.json without its artifacts;
+  # restore them (+ challengeArmRetired for the observer/watchdog), keep the
+  # identity fields auditable, and preserve failureReason.
+  if [[ -n "$saved_review_json" ]] && tmp="$(mktemp "$state_dir/.review-result.XXXXXX" 2>/dev/null)"; then
+    if jq -c --argjson saved "$saved_review_json" --arg cause "$cause" --arg detail "$detail" '
+        .artifacts = (($saved.artifacts // {}) + {challengeArmRetired: {cause: $cause, detail: $detail}})
+        | (if ($saved.failureReason // "") != "" then .failureReason = $saved.failureReason else . end)
+        | (if ($saved.intendedModel // "") != "" then .intendedModel = $saved.intendedModel else . end)
+        | (if ($saved.executedModel // "") != "" then .executedModel = $saved.executedModel else . end)
+        | (if ($saved.executionEvidence // null) != null then .executionEvidence = $saved.executionEvidence else . end)
+        | (if ($saved.modelAttributionEligible // null) != null then .modelAttributionEligible = $saved.modelAttributionEligible else . end)
+        | (if ($saved.modelAttributionIneligibleReason // "") != "" then .modelAttributionIneligibleReason = $saved.modelAttributionIneligibleReason else . end)
+      ' "$review_file" > "$tmp" 2>/dev/null; then
+      mv "$tmp" "$review_file"
+    fi
+    rm -f "$tmp"
+  fi
+
+  log_warn "$issue → Ready refused by review gate: challenge ${role} arm retired (${cause}); sibling released"
+
+  _retired_challenge_arm_close_pr "$issue" "$pr" "$role" "$cause" "the review gate refused Ready"
   return 0
 }
 # --- end Ready-exhausted challenge arm retirement ----------------------------
@@ -20284,10 +20477,28 @@ monitor_issue_state() {
               "Pending-ready re-checks exhausted for PR #$PR: $pending_recheck_reason. Waiting for a new commit or operator."
             log "status" "⛔ $ISSUE → Pending-ready re-checks exhausted for PR #$PR; waiting for a new commit or operator"
           fi
+          # HOK-3154: a challenge arm whose review-gate refusal is terminal is
+          # retired with a green sibling instead of held — same rule as the
+          # failed-ready-recheck branches above. A passing review that burned
+          # the generic budget never retires through this path.
+          if review_gate_refusal_is_terminal "$ready_state_dir_path" \
+              && review_refused_challenge_terminalize "$ISSUE" "$PR" "$ready_state_dir_path" "$WIN"; then
+            set_window_attention_state "$WIN" "clear"
+            active_count=$((active_count + 1))
+            return 0
+          fi
           set_window_attention_state "$WIN" "needs-user"
           return 0
           ;;
         exhausted-quiet)
+          # HOK-3154: re-evaluated every quiet tick — a sibling that turns green
+          # after the first refusal still retires the arm here.
+          if review_gate_refusal_is_terminal "$ready_state_dir_path" \
+              && review_refused_challenge_terminalize "$ISSUE" "$PR" "$ready_state_dir_path" "$WIN"; then
+            set_window_attention_state "$WIN" "clear"
+            active_count=$((active_count + 1))
+            return 0
+          fi
           set_window_attention_state "$WIN" "needs-user"
           return 0
           ;;
@@ -20339,11 +20550,19 @@ monitor_issue_state() {
         # gate can never accept cannot become passing by relaunching ready —
         # unless it is an infra failure, which launch_ready_phase recovers by
         # relaunching review. Abort on the first refusal instead of retrying.
-        if ! review_result_passes_ready_gate "$ready_state_dir_path" \
-            && ! review_result_infra_failure "$ready_state_dir_path"; then
+        if review_gate_refusal_is_terminal "$ready_state_dir_path"; then
           if bounded_retry_mark_exhausted "$ready_state_dir_path" "pending-ready-recheck" \
               "Ready launch refused for PR #$PR: review verdict does not pass the readiness gate (terminal until the review artifact changes)"; then
             log "status" "⛔ $ISSUE → Ready launch refused by review gate for PR #$PR; not retrying (terminal cause)"
+          fi
+          # HOK-3154: a challenge arm with a green sibling is retired instead
+          # of held, so the green sibling is not parked at no-comparison
+          # forever. Non-challenge tasks and arms without a green sibling fall
+          # through to the legacy needs-user hold.
+          if review_refused_challenge_terminalize "$ISSUE" "$PR" "$ready_state_dir_path" "$WIN"; then
+            set_window_attention_state "$WIN" "clear"
+            active_count=$((active_count + 1))
+            return 0
           fi
         fi
         log "status" "⚠ $ISSUE → Ready checks failed (PR #$PR)"
