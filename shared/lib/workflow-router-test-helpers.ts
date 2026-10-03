@@ -139,7 +139,7 @@ export function restoredFrontierQuotaState(status: QuotaStatus): Record<string, 
     'claude-opus-5-5': status,
     'gpt-6-sol': status,
     'deepseek-r1': status,
-    'gemini-2.5-pro': status,
+    'gemini-3.1-pro-preview': status,
     'qwen-3-235b': status,
     'kimi-k2-thinking': status,
   };

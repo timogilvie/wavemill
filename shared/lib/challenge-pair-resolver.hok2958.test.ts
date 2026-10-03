@@ -84,14 +84,14 @@ test('HOK-2958: sibling-aborted with invalidChallenge eval emits invalid_challen
         updated: '2026-09-16T00:00:00Z',
         challengePairId: 'HOK-2958',
         challengeRole: 'challenger',
-        challengeModel: 'gemini-2.5-pro',
+        challengeModel: 'gemini-3.1-pro-preview',
         challengeAborted: 'invalid_challenge:missing_challenge_intent',
         challengeAbortedStage: 'review',
       },
     });
     appendEvalJsonl(repoDir, makeEval({
       id: '550e8400-e29b-41d4-a716-446655440701',
-      modelId: 'gemini-2.5-pro',
+      modelId: 'gemini-3.1-pro-preview',
       challengePairId: 'HOK-2958',
       challengeSide: 'challenger',
       invalidChallenge: true,
@@ -182,14 +182,14 @@ test('HOK-2958: legitimate abort (no invalidChallenge eval) still yields forfeit
         updated: '2026-09-16T00:00:00Z',
         challengePairId: 'HOK-2958-clean',
         challengeRole: 'challenger',
-        challengeModel: 'gemini-2.5-pro',
+        challengeModel: 'gemini-3.1-pro-preview',
         challengeAborted: 'terminal_stage_failure:tool-use-unsupported',
         challengeAbortedStage: 'coding',
       },
     });
     appendEvalJsonl(repoDir, makeEval({
       id: '550e8400-e29b-41d4-a716-446655440703',
-      modelId: 'gemini-2.5-pro',
+      modelId: 'gemini-3.1-pro-preview',
       challengePairId: 'HOK-2958-clean',
       challengeSide: 'challenger',
       invalidChallenge: false,

@@ -67,7 +67,6 @@ export const CANONICAL_CONFIG_TEMPLATE: WavemillConfig = {
       'kimi-k3': { inputCostPerMTok: 3, outputCostPerMTok: 15 },
       'kimi-k2.7-code': { inputCostPerMTok: 1.2, outputCostPerMTok: 3.6 },
       'kimi-k2-thinking': { inputCostPerMTok: 1.5, outputCostPerMTok: 4.5 },
-      'gemini-2.5-pro': { inputCostPerMTok: 1.25, outputCostPerMTok: 10 },
       'gemini-3.1-pro-preview': { inputCostPerMTok: 2, outputCostPerMTok: 12 },
       'gemini-3.1-pro-preview-customtools': { inputCostPerMTok: 2, outputCostPerMTok: 12 },
       'gemini-2.5-flash': { inputCostPerMTok: 0.3, outputCostPerMTok: 2.5 },

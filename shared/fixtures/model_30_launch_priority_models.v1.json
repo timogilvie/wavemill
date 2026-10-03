@@ -241,7 +241,7 @@
       "wavemillAlias": "gemini-2.5-pro",
       "openrouterId": "google/gemini-2.5-pro",
       "family": "gemini",
-      "status": "active",
+      "status": "deprecated",
       "priorityTier": 1,
       "roleEligibility": [
         "planning",
