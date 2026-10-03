@@ -7,6 +7,7 @@ import {
   buildCatalogSnapshot,
   CATALOG_SCHEMA_VERSION,
   defaultLaunchPriorityFixturePath,
+  fetchOpenRouterModelEndpoints,
   fetchOpenRouterModels,
   hashLaunchPriorityFixture,
   hasTier1ActiveBlockers,
@@ -193,6 +194,57 @@ describe('fetchOpenRouterModels', () => {
       json: async () => ({ wrong: 'shape' }),
     })) as unknown as typeof fetch;
     await assert.rejects(() => fetchOpenRouterModels(fakeFetch), /missing "data" array/);
+  });
+});
+
+describe('fetchOpenRouterModelEndpoints', () => {
+  it('fetches the per-model endpoints URL and returns the endpoint list', async () => {
+    const fakeFetch = (async (url: string) => {
+      assert.equal(url, `${OPENROUTER_MODELS_URL}/z-ai/glm-5.2/endpoints`);
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          data: {
+            endpoints: [
+              { provider_name: 'Z.AI', tag: 'z-ai/fp8', pricing: { prompt: '0.0000014' } },
+              { provider_name: 'Wafer', tag: 'wafer', pricing: { prompt: '0.00000041' } },
+            ],
+          },
+        }),
+      } as unknown as Response;
+    }) as typeof fetch;
+
+    const endpoints = await fetchOpenRouterModelEndpoints('z-ai/glm-5.2', fakeFetch);
+    assert.equal(endpoints.length, 2);
+    assert.equal(endpoints[0]?.tag, 'z-ai/fp8');
+  });
+
+  it('throws on non-OK HTTP response', async () => {
+    const fakeFetch = (async () => ({
+      ok: false,
+      status: 503,
+      statusText: 'Service Unavailable',
+      json: async () => ({}),
+    })) as unknown as typeof fetch;
+    await assert.rejects(
+      () => fetchOpenRouterModelEndpoints('z-ai/glm-5.2', fakeFetch),
+      /z-ai\/glm-5\.2 failed: HTTP 503/,
+    );
+  });
+
+  it('throws when the response body has no endpoints array', async () => {
+    const fakeFetch = (async () => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => ({ data: {} }),
+    })) as unknown as typeof fetch;
+    await assert.rejects(
+      () => fetchOpenRouterModelEndpoints('z-ai/glm-5.2', fakeFetch),
+      /missing "data\.endpoints" array/,
+    );
   });
 });
 

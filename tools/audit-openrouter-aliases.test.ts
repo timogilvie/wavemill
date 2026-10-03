@@ -67,6 +67,7 @@ describe('audit-openrouter-aliases command', () => {
     try {
       const code = await runOpenRouterAliasAuditCommand({
         'catalog-json': undefined,
+        'endpoints-json': undefined,
         fixture: false,
         output: undefined,
         'repo-dir': repoDir,
@@ -74,6 +75,7 @@ describe('audit-openrouter-aliases command', () => {
         'no-write': false,
       }, {
         fetchCatalog: async () => new Map<string, OpenRouterModel>(),
+        fetchEndpoints: async () => [],
         registry: { models: { 'deepseek-coder-v2': makeModel('blocked') }, ladders: {} },
         now: () => new Date('2026-08-18T00:00:00.000Z'),
       });
@@ -94,6 +96,7 @@ describe('audit-openrouter-aliases command', () => {
     const repoDir = makeTempRepo();
     const code = await runOpenRouterAliasAuditCommand({
       'catalog-json': undefined,
+      'endpoints-json': undefined,
       fixture: false,
       output: undefined,
       'repo-dir': repoDir,
@@ -101,6 +104,7 @@ describe('audit-openrouter-aliases command', () => {
       'no-write': true,
     }, {
       fetchCatalog: async () => new Map<string, OpenRouterModel>(),
+      fetchEndpoints: async () => [],
       registry: { models: { 'qwen-3-coder': makeModel('supported') }, ladders: {} },
       now: () => new Date('2026-08-18T00:00:00.000Z'),
     });
@@ -114,6 +118,7 @@ describe('audit-openrouter-aliases command', () => {
     try {
       const code = await runOpenRouterAliasAuditCommand({
         'catalog-json': undefined,
+        'endpoints-json': undefined,
         fixture: false,
         output: undefined,
         'repo-dir': repoDir,
@@ -128,6 +133,7 @@ describe('audit-openrouter-aliases command', () => {
             pricing: { prompt: '0.000001', completion: '0.000003' },
           }],
         ]),
+        fetchEndpoints: async () => [],
         registry: { models: { 'qwen-3-coder': makeModel('supported') }, ladders: {} },
         now: () => new Date('2026-08-18T00:00:00.000Z'),
       });
@@ -135,7 +141,7 @@ describe('audit-openrouter-aliases command', () => {
       assert.equal(code, 1);
       assert.match(output.stdout.join('\n'), /pricing-drift/);
       assert.match(output.stdout.join('\n'), /outputPerMTok drift/);
-      assert.match(output.stdout.join('\n'), /provider price 3 exceeds registry 2/);
+      assert.match(output.stdout.join('\n'), /registry 2 understates OpenRouter top-level price 3/);
     } finally {
       output.restore();
     }
@@ -147,6 +153,7 @@ describe('audit-openrouter-aliases command', () => {
     writeFileSync(catalogPath, JSON.stringify({ data: [{ id: 'qwen/qwen3-coder' }] }), 'utf-8');
     const code = await runOpenRouterAliasAuditCommand({
       'catalog-json': catalogPath,
+      'endpoints-json': undefined,
       fixture: false,
       output: undefined,
       'repo-dir': repoDir,
@@ -155,6 +162,9 @@ describe('audit-openrouter-aliases command', () => {
     }, {
       fetchCatalog: async () => {
         throw new Error('should not fetch');
+      },
+      fetchEndpoints: async () => {
+        throw new Error('should not fetch endpoints');
       },
       registry: { models: { 'qwen-3-coder': makeModel('supported') }, ladders: {} },
       now: () => new Date('2026-08-18T00:00:00.000Z'),
@@ -167,6 +177,7 @@ describe('audit-openrouter-aliases command', () => {
     const repoDir = makeTempRepo();
     const code = await runOpenRouterAliasAuditCommand({
       'catalog-json': undefined,
+      'endpoints-json': undefined,
       fixture: false,
       output: undefined,
       'repo-dir': repoDir,
@@ -176,11 +187,136 @@ describe('audit-openrouter-aliases command', () => {
       fetchCatalog: async () => {
         throw new Error('network down');
       },
+      fetchEndpoints: async () => [],
       registry: { models: { 'qwen-3-coder': makeModel('supported') }, ladders: {} },
       now: () => new Date('2026-08-18T00:00:00.000Z'),
     });
 
     assert.equal(code, 2);
     assert.equal(existsSync(join(repoDir, '.wavemill', 'audits', 'openrouter-alias-drift.json')), false);
+  });
+  it('compares against the first-party endpoint reference in live mode', async () => {
+    const repoDir = makeTempRepo();
+    const output = captureOutput();
+    try {
+      const code = await runOpenRouterAliasAuditCommand({
+        'catalog-json': undefined,
+        'endpoints-json': undefined,
+        fixture: false,
+        output: undefined,
+        'repo-dir': repoDir,
+        json: false,
+        'no-write': true,
+      }, {
+        // Top-level block is a cheap third-party host whose cache price would
+        // flag the registry; the first-party endpoint matches the registry.
+        fetchCatalog: async () => new Map<string, OpenRouterModel>([
+          ['qwen/qwen3-coder', {
+            id: 'qwen/qwen3-coder',
+            context_length: 200_000,
+            supported_parameters: ['tools'],
+            pricing: { prompt: '0.0000006', completion: '0.000001', input_cache_read: '0.0000006' },
+          }],
+        ]),
+        fetchEndpoints: async (modelId) => {
+          assert.equal(modelId, 'qwen/qwen3-coder');
+          return [
+            { provider_name: 'CheapHost', tag: 'cheap-host', pricing: { prompt: '0.0000006', completion: '0.000001', input_cache_read: '0.0000006' } },
+            { provider_name: 'Alibaba', tag: 'alibaba/opensource', pricing: { prompt: '0.000001', completion: '0.000002' } },
+          ];
+        },
+        registry: { models: { 'qwen-3-coder': makeModel('supported') }, ladders: {} },
+        now: () => new Date('2026-10-01T00:00:00.000Z'),
+      });
+
+      assert.equal(code, 0);
+      assert.match(output.stdout.join('\n'), /Selectable findings: 0/);
+    } finally {
+      output.restore();
+    }
+  });
+
+  it('returns two when an endpoint fetch fails in live mode', async () => {
+    const repoDir = makeTempRepo();
+    const output = captureOutput();
+    try {
+      const code = await runOpenRouterAliasAuditCommand({
+        'catalog-json': undefined,
+        'endpoints-json': undefined,
+        fixture: false,
+        output: undefined,
+        'repo-dir': repoDir,
+        json: false,
+        'no-write': true,
+      }, {
+        fetchCatalog: async () => new Map<string, OpenRouterModel>([
+          ['qwen/qwen3-coder', { id: 'qwen/qwen3-coder', context_length: 200_000 }],
+        ]),
+        fetchEndpoints: async () => {
+          throw new Error('endpoints unavailable');
+        },
+        registry: { models: { 'qwen-3-coder': makeModel('supported') }, ladders: {} },
+        now: () => new Date('2026-10-01T00:00:00.000Z'),
+      });
+
+      assert.equal(code, 2);
+      assert.match(output.stderr.join('\n'), /could not load endpoints/);
+      assert.match(output.stderr.join('\n'), /endpoints unavailable/);
+    } finally {
+      output.restore();
+    }
+  });
+
+  it('drives the reference from an offline endpoints fixture with --endpoints-json', async () => {
+    const repoDir = makeTempRepo();
+    const catalogPath = join(repoDir, 'catalog.json');
+    writeFileSync(catalogPath, JSON.stringify({
+      data: [{
+        id: 'qwen/qwen3-coder',
+        context_length: 200_000,
+        supported_parameters: ['tools'],
+        pricing: { prompt: '0.000001', completion: '0.000002' },
+      }],
+    }), 'utf-8');
+    const endpointsPath = join(repoDir, 'endpoints.json');
+    writeFileSync(endpointsPath, JSON.stringify({
+      'qwen/qwen3-coder': {
+        data: {
+          endpoints: [
+            { provider_name: 'Alibaba', tag: 'alibaba/opensource', pricing: { prompt: '0.000002', completion: '0.000004' } },
+          ],
+        },
+      },
+    }), 'utf-8');
+    const output = captureOutput();
+    try {
+      const code = await runOpenRouterAliasAuditCommand({
+        'catalog-json': catalogPath,
+        'endpoints-json': endpointsPath,
+        fixture: false,
+        output: undefined,
+        'repo-dir': repoDir,
+        json: false,
+        'no-write': true,
+      }, {
+        fetchCatalog: async () => {
+          throw new Error('should not fetch');
+        },
+        fetchEndpoints: async () => {
+          throw new Error('should not fetch endpoints');
+        },
+        registry: { models: { 'qwen-3-coder': makeModel('supported') }, ladders: {} },
+        now: () => new Date('2026-10-01T00:00:00.000Z'),
+      });
+
+      // Registry input 1 understates the first-party reference 2 even though
+      // the top-level catalog block matches the registry exactly.
+      assert.equal(code, 1);
+      const stdout = output.stdout.join('\n');
+      assert.match(stdout, /pricing-drift/);
+      assert.match(stdout, /first-party reference Alibaba \(alibaba\/opensource\) 2/);
+    } finally {
+      output.restore();
+    }
   });
 });

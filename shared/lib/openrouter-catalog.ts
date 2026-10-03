@@ -95,6 +95,28 @@ export interface OpenRouterModel {
   };
 }
 
+/**
+ * Raw per-endpoint record from `/api/v1/models/<id>/endpoints` (subset of
+ * fields we consume). One model is typically served by many endpoints with
+ * independent pricing; the top-level catalog `pricing` block mirrors only
+ * whichever endpoint OpenRouter currently ranks first.
+ */
+export interface OpenRouterEndpoint {
+  name?: string;
+  provider_name?: string;
+  /** `<provider-slug>[/<variant>]`, e.g. `z-ai/fp8`, `google-ai-studio/flex`. */
+  tag?: string;
+  context_length?: number;
+  pricing?: {
+    prompt?: string | number;
+    completion?: string | number;
+    input_cache_read?: string | number;
+    input_cache_write?: string | number;
+  };
+  status?: number | string;
+  quantization?: string | null;
+}
+
 export interface NormalizedPricing {
   inputPerMTok: number | null;
   outputPerMTok: number | null;
@@ -403,6 +425,45 @@ export async function fetchOpenRouterModels(
     }
   }
   return map;
+}
+
+/** URL of the per-endpoint listing for one model. The model id contains a `/`
+ * which the endpoint path takes literally (e.g. `…/models/z-ai/glm-5.2/endpoints`). */
+export function openRouterEndpointsUrl(modelId: string): string {
+  return `${OPENROUTER_MODELS_URL}/${modelId}/endpoints`;
+}
+
+export interface OpenRouterEndpointsApiResponse {
+  data?: {
+    endpoints?: OpenRouterEndpoint[];
+  };
+}
+
+/**
+ * Fetch the per-endpoint listing for one OpenRouter model.
+ *
+ * Accepts an injectable `fetchFn` so unit tests can supply canned responses
+ * without making network calls. Throws on non-OK HTTP or a malformed body,
+ * matching `fetchOpenRouterModels` semantics.
+ */
+export async function fetchOpenRouterModelEndpoints(
+  modelId: string,
+  fetchFn: FetchLike = fetch,
+): Promise<OpenRouterEndpoint[]> {
+  const response = await fetchFn(openRouterEndpointsUrl(modelId), {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+  });
+  if (!response.ok) {
+    throw new Error(
+      `OpenRouter endpoints fetch for ${modelId} failed: HTTP ${response.status} ${response.statusText}`,
+    );
+  }
+  const body = (await response.json()) as OpenRouterEndpointsApiResponse;
+  if (!body || typeof body !== 'object' || !body.data || !Array.isArray(body.data.endpoints)) {
+    throw new Error(`OpenRouter endpoints response for ${modelId} missing "data.endpoints" array`);
+  }
+  return body.data.endpoints;
 }
 
 // ── Normalization ────────────────────────────────────────────────────────────

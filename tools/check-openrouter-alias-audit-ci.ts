@@ -8,6 +8,8 @@ const defaultRepoRoot = join(dirname(__filename), '..');
 const REQUIRED_FILTER_PATHS = [
   'shared/fixtures/model-registry.v1.json',
   'shared/lib/disabled-models.ts',
+  'shared/lib/openrouter-alias-audit.ts',
+  'shared/lib/openrouter-catalog.ts',
   'tools/audit-openrouter-aliases.ts',
   'tools/check-openrouter-alias-audit-ci.ts',
   'tools/check-openrouter-alias-audit-ci.test.ts',
