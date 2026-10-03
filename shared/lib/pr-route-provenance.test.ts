@@ -73,7 +73,7 @@ describe('reconcilePrRoute', () => {
               substantiveAnalysis: {
                 role: 'substantive_analysis',
                 requestedModel: 'gemini',
-                resolvedModel: 'google/gemini-2.5-pro',
+                resolvedModel: 'google/gemini-3.1-pro-preview',
                 agent: 'openrouter',
                 source: 'derived',
                 pinned: true,
@@ -93,7 +93,7 @@ describe('reconcilePrRoute', () => {
     assert.equal(result.route.coder.resolved_model, 'coder-executed');
     assert.equal(result.route.reviewer.status, 'executed');
     assert.equal(result.route.reviewer.orchestrator?.resolved_model, 'claude-haiku-4-5');
-    assert.equal(result.route.reviewer.substantiveAnalysis?.resolved_model, 'google/gemini-2.5-pro');
+    assert.equal(result.route.reviewer.substantiveAnalysis?.resolved_model, 'google/gemini-3.1-pro-preview');
     assert.equal(result.route.reviewer.substantiveAnalysis?.pinned, false);
   });
 

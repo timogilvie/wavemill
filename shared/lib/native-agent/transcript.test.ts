@@ -671,7 +671,7 @@ describe('extractRawHistory / extractReplayHistory', () => {
       ],
       api: 'openai-completions',
       provider: 'openrouter',
-      model: 'google/gemini-2.5-pro',
+      model: 'google/gemini-3.1-pro-preview',
       usage: { input: 10871, output: 423, cacheRead: 0, cacheWrite: 0, totalTokens: 11294, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
       stopReason: 'stop' as const,
       timestamp: FIXED_TIME,
