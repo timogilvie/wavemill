@@ -8,7 +8,7 @@
 # set needs-user — nothing stamped challengeAborted, so the pair resolver never
 # released the green sibling. The monitor now retires the refused arm when its
 # sibling is green:
-#   proven reviewer identity + typed kind → terminal_stage_failure:review-<kind>
+#   typed review failure with any non-contradictory identity → invalid_challenge:review-unattributed
 #   identity drift                        → invalid_challenge:review-identity-mismatch
 #   no evidence                           → invalid_challenge:review-unattributed
 # and closes the arm's PR so tend releases the sibling.
@@ -256,23 +256,23 @@ else
   fail "record-arm-failure argv missing or wrong: $(cat "$ARG_LOG" 2>/dev/null || echo '<none>')"
 fi
 
-# ── 2. Attributed forfeit: malformed + proven identity (kimi-k2) ───────────
+# ── 2. Proven reviewer identity remains unattributed until HOK-2891 ────────
 seed "HOK-3097_c" "completed"
 dir="$(state_dir_for HOK-3097_c)"
 write_review_result "$dir" "$MALFORMED_ARTIFACTS" \
   '{"intendedModel":"kimi-k2","model":"kimi-k2","executedModel":"kimi-k2","executionEvidence":{"status":"consistent","source":"native-reviewer"},"modelAttributionEligible":true}'
 run_terminalize "HOK-3097_c"
 if [[ "$rc" == "0" ]] \
-  && [[ "$(get_task_meta HOK-3097_c challengeAborted)" == "terminal_stage_failure:review-malformed-response" ]] \
+  && [[ "$(get_task_meta HOK-3097_c challengeAborted)" == "invalid_challenge:review-unattributed" ]] \
   && [[ "$(get_task_meta HOK-3097_c challengeAbortedStage)" == "review" ]] \
   && [[ "$(jq -r '.model' "$dir/.challenge-aborted.json")" == "kimi-k2" ]] \
   && [[ "$(jq -r '.stage' "$dir/.challenge-aborted.json")" == "review" ]]; then
-  pass "proven reviewer identity on a malformed-response forfeits the pair to the primary (model=kimi-k2)"
+  pass "proven reviewer identity on a malformed-response remains unattributed until HOK-2891 (model=kimi-k2)"
 else
   fail "attributed forfeit wrong (aborted=$(get_task_meta HOK-3097_c challengeAborted) model=$(jq -r '.model' "$dir/.challenge-aborted.json"))"
 fi
 if grep -q -- '--model kimi-k2' "$ARG_LOG" \
-  && grep -q -- '--abort-reason terminal_stage_failure:review-malformed-response' "$ARG_LOG"; then
+  && grep -q -- '--abort-reason invalid_challenge:review-unattributed' "$ARG_LOG"; then
   pass "selection-health records the reviewer (kimi-k2), not the coder"
 else
   fail "record-arm-failure did not attribute the reviewer: $(cat "$ARG_LOG")"
@@ -285,7 +285,7 @@ write_review_result "$dir" "$MALFORMED_ARTIFACTS" \
   '{"intendedModel":"gpt-5.6-terra","model":"gpt-5.6-terra","executedModel":"gpt-5.6-terra","executionEvidence":{"status":"consistent"},"modelAttributionEligible":true}'
 run_terminalize "HOK-3097"
 if [[ "$rc" == "0" ]] \
-  && [[ "$(get_task_meta HOK-3097 challengeAborted)" == "terminal_stage_failure:review-malformed-response" ]] \
+  && [[ "$(get_task_meta HOK-3097 challengeAborted)" == "invalid_challenge:review-unattributed" ]] \
   && [[ "$(get_task_meta HOK-3097 challengeAbortedStage)" == "review" ]] \
   && [[ -z "$(get_task_meta HOK-3097_c challengeAborted)" ]] \
   && grep -q '^pr close 1563 ' "$GH_LOG"; then
@@ -315,10 +315,10 @@ write_review_result "$dir" "$NOT_READY_ARTIFACTS" \
   '{"intendedModel":"kimi-k2","model":"kimi-k2","executedModel":"kimi-k2","executionEvidence":{"status":"consistent"},"modelAttributionEligible":true}'
 run_terminalize "HOK-3097_c"
 if [[ "$rc" == "0" ]] \
-  && [[ "$(get_task_meta HOK-3097_c challengeAborted)" == "terminal_stage_failure:review-not-ready" ]]; then
-  pass "a genuine not_ready with 2 undismissed blockers and proven identity forfeits the pair"
+  && [[ "$(get_task_meta HOK-3097_c challengeAborted)" == "invalid_challenge:review-unattributed" ]]; then
+  pass "a genuine not_ready with 2 undismissed blockers remains unattributed until HOK-2891"
 else
-  fail "review-not-ready forfeit wrong (aborted=$(get_task_meta HOK-3097_c challengeAborted))"
+  fail "review-not-ready attribution wrong (aborted=$(get_task_meta HOK-3097_c challengeAborted))"
 fi
 
 # ── 6. Attribution ineligible even with executedModel → unattributed ──────

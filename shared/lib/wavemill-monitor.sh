@@ -10964,15 +10964,12 @@ review_gate_refusal_is_terminal() {
 # review_refused_challenge_cause <state_dir> <issue>
 # Classify why the review gate refused Ready (HOK-3154). Prints
 # "<cause>\t<model>" where cause is one of:
-#   terminal_stage_failure:review-malformed-response  (model-fault, forfeit)
-#   terminal_stage_failure:review-no-output           (model-fault, forfeit)
-#   terminal_stage_failure:review-not-ready           (model-fault, forfeit)
 #   invalid_challenge:review-identity-mismatch        (harness-fault, no winner)
 #   invalid_challenge:review-unattributed             (harness-fault, no winner)
-# A forfeit is only emitted when the artifact proves which reviewer ran and
-# that it matches the arm's assignment. Everything else (missing evidence,
-# `modelAttributionEligible=false`, unparseable or malformed-dismissal artifact)
-# is unattributed. Identity drift / contradicted evidence voids the pair.
+# HOK-2891 has not yet made reviewer identity reliable enough to attribute a
+# review-gate refusal to a model. A contradiction is recorded distinctly;
+# every other refusal is unattributed, even if its execution evidence appears
+# internally consistent. Both paths void the challenge and release the sibling.
 review_refused_challenge_cause() {
   local state_dir="$1" issue="$2"
   local review_file="$state_dir/.review-result.json"
@@ -11035,9 +11032,6 @@ review_refused_challenge_cause() {
     model="$executed"
     [[ -n "$model" ]] || model="$recorded"
     [[ -n "$model" ]] || model="$assigned"
-  elif [[ -n "$kind" && -n "$executed" && "$attribution_eligible" == "true" ]]; then
-    cause="terminal_stage_failure:${kind}"
-    model="$executed"
   else
     cause="invalid_challenge:review-unattributed"
     model="$executed"
