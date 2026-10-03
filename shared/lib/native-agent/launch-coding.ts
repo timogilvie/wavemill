@@ -11,6 +11,12 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AgentContext, LoopResult, WavemillLoopConfig } from './loop.ts';
 import { runWavemillLoop } from './loop.ts';
+import {
+  ProviderIdentityMismatchError,
+  ProviderIdentityTracker,
+  type ProviderIdentitySummary,
+} from './provider-identity.ts';
+import { invalidateCertificationIdentity } from './certification/identity-invalidation.ts';
 import { CODING_MAX_OUTPUT_TOKENS } from './output-limits.ts';
 import type { AgentMessage, AgentTurn, Message } from './messages.ts';
 import {
@@ -96,7 +102,7 @@ import {
   assertOpenRouterBalanceSufficient,
   capOpenRouterMaxTokensForBalance,
 } from './openrouter-credits-guard.ts';
-import { updateStageResult } from '../stage-result.ts';
+import { updateStageResult, type ModelAttributionIneligibleReason } from '../stage-result.ts';
 import { getNativeContextManagementConfig } from '../config.ts';
 import { equivalentOpenRouterModelIds, type NormalizedPricing } from '../openrouter-catalog.ts';
 import { logPromptUsage } from '../prompt-registry.ts';
@@ -687,6 +693,73 @@ function removeAgentCodingArtifactBeforeStageResult(featureDir: string): void {
   }
 }
 
+/**
+ * Build the stage result's `executedModel` and `executionEvidence` block
+ * (HOK-3143). When provider-response evidence is available and the identity
+ * verdict is `match` / `alias-resolved`, record the provider-reported model
+ * as the executed model. Otherwise fall back to the legacy native-runtime
+ * behaviour (requested id, source `native-runtime`).
+ */
+function buildCompletionAttribution(input: {
+  intendedModel: string;
+  model: string;
+  providerIdentity?: ProviderIdentitySummary;
+  providerExpectation?: { expectedModel: string; requestedWireId: string; isAlias: boolean };
+  stageCompleted: boolean;
+}): {
+  executedModel: string | null;
+  executionEvidence: NonNullable<Parameters<typeof updateStageResult>[2]['executionEvidence']>;
+  modelAttributionEligible: boolean;
+  modelAttributionIneligibleReason?: ModelAttributionIneligibleReason;
+} {
+  const nowIso = new Date().toISOString();
+  const summary = input.providerIdentity;
+
+  if (summary && input.providerExpectation
+    && (summary.identityVerdict === 'match' || summary.identityVerdict === 'alias-resolved')) {
+    const executedModel = summary.executedModel ?? summary.providerReportedModel;
+    const evidence: NonNullable<Parameters<typeof updateStageResult>[2]['executionEvidence']> = {
+      status: 'direct',
+      source: 'provider-response',
+      detail: `verified ${summary.identityVerdict} after ${summary.turnsVerified} turn(s)`,
+      recordedAt: nowIso,
+      ...(summary.providerReportedModel ? { providerReportedModel: summary.providerReportedModel } : {}),
+      requestedWireId: input.providerExpectation.requestedWireId,
+      certifiedTarget: input.providerExpectation.expectedModel,
+      identityVerdict: summary.identityVerdict,
+      transportProvider: 'openrouter',
+      ...(summary.lastResponseId ? { responseId: summary.lastResponseId } : {}),
+    };
+    const attributionEligible = input.stageCompleted;
+    return {
+      executedModel: executedModel ?? null,
+      executionEvidence: evidence,
+      modelAttributionEligible: attributionEligible,
+      ...(attributionEligible ? {} : { modelAttributionIneligibleReason: 'stage_not_completed' as const }),
+    };
+  }
+
+  // Fallback: scripted/test runs or loop-model-override — keep legacy behaviour.
+  const executedModel = input.model;
+  const attributionEligible = input.stageCompleted && input.intendedModel === input.model;
+  return {
+    executedModel,
+    executionEvidence: {
+      status: 'direct',
+      source: 'native-runtime',
+      recordedAt: nowIso,
+    },
+    modelAttributionEligible: attributionEligible,
+    ...(attributionEligible
+      ? {}
+      : {
+        modelAttributionIneligibleReason: !input.stageCompleted
+          ? ('stage_not_completed' as const)
+          : ('runtime_fallback' as const),
+      }),
+  };
+}
+
 async function inspectCompletion(input: {
   featureDir: string;
   intendedModel: string;
@@ -696,6 +769,8 @@ async function inspectCompletion(input: {
   mutationFailureTracker: MutationFailureTracker;
   recoveryAttempted: boolean;
   coerceUnverifiedCompletionClaim: boolean;
+  providerIdentity?: ProviderIdentitySummary;
+  providerExpectation?: { expectedModel: string; requestedWireId: string; isAlias: boolean };
 }): Promise<CompletionInspectionResult> {
   const markerPath = join(input.featureDir, '.coding-complete');
   if (existsSync(markerPath)) {
@@ -714,20 +789,25 @@ async function inspectCompletion(input: {
     }
     const artifacts = loadCodingArtifacts(input.featureDir, input.trackerCommitCount);
     removeAgentCodingArtifactBeforeStageResult(input.featureDir);
+    const attribution = buildCompletionAttribution({
+      intendedModel: input.intendedModel,
+      model: input.model,
+      providerIdentity: input.providerIdentity,
+      providerExpectation: input.providerExpectation,
+      stageCompleted: true,
+    });
     await updateStageResult(input.featureDir, 'coding', {
       status: 'completed',
       finishedAt: new Date().toISOString(),
       agent: 'native',
       model: input.model,
       intendedModel: input.intendedModel,
-      executedModel: input.model,
-      executionEvidence: {
-        status: 'direct',
-        source: 'native-runtime',
-        recordedAt: new Date().toISOString(),
-      },
-      modelAttributionEligible: input.intendedModel === input.model,
-      ...(input.intendedModel === input.model ? {} : { modelAttributionIneligibleReason: 'runtime_fallback' as const }),
+      executedModel: attribution.executedModel,
+      executionEvidence: attribution.executionEvidence,
+      modelAttributionEligible: attribution.modelAttributionEligible,
+      ...(attribution.modelAttributionIneligibleReason
+        ? { modelAttributionIneligibleReason: attribution.modelAttributionIneligibleReason }
+        : {}),
       notes: [
         `Native coding completed with ${normalized.value.confidence} confidence`,
         ...normalized.warnings,
@@ -763,20 +843,23 @@ async function inspectCompletion(input: {
     }
     const artifacts = loadCodingArtifacts(input.featureDir, input.trackerCommitCount);
     removeAgentCodingArtifactBeforeStageResult(input.featureDir);
+    const attribution = buildCompletionAttribution({
+      intendedModel: input.intendedModel,
+      model: input.model,
+      providerIdentity: input.providerIdentity,
+      providerExpectation: input.providerExpectation,
+      stageCompleted: false,
+    });
     await updateStageResult(input.featureDir, 'coding', {
       status: 'running',
       finishedAt: null,
       agent: 'native',
       model: input.model,
       intendedModel: input.intendedModel,
-      executedModel: input.model,
-      executionEvidence: {
-        status: 'direct',
-        source: 'native-runtime',
-        recordedAt: new Date().toISOString(),
-      },
+      executedModel: attribution.executedModel,
+      executionEvidence: attribution.executionEvidence,
       modelAttributionEligible: false,
-      modelAttributionIneligibleReason: 'stage_not_completed',
+      modelAttributionIneligibleReason: attribution.modelAttributionIneligibleReason ?? 'stage_not_completed',
       notes: [
         'Native coding produced a blocked-completion handoff for monitor recovery',
         ...normalized.warnings,
@@ -927,6 +1010,14 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
     };
     const modelName = model.name ?? model.id;
     const requestedModelName = options.resolvedModel?.trim() || modelName;
+    // HOK-3143: build a provider-identity expectation from the certified
+    // artifact when launching through the gate (not an operator loopModelOverride).
+    // The tracker is shared across the main run and any recovery/artifact-retry
+    // continuations so distinctReportedModels aggregates across runs.
+    const providerIdentityTracker = new ProviderIdentityTracker();
+    const providerIdentityExpectation = options.loopModelOverride
+      ? undefined
+      : readyProvider?.certifiedIdentity;
     const transcriptPath = makeTranscriptPath(options.repoDir, options.session, options.issue);
     const transcriptWriter = new TranscriptWriter({
       sessionId: `${options.session}-coding-${options.issue}`,
@@ -988,10 +1079,14 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       agent: 'native',
       model: modelName,
       intendedModel: requestedModelName,
-      executedModel: modelName,
+      // HOK-3143: do not claim the requested model executed before any provider
+      // turn has returned. The stage result flips to the provider-reported id on
+      // completion.
+      executedModel: null,
       executionEvidence: {
-        status: 'direct',
-        source: 'native-runtime',
+        status: 'missing',
+        source: providerIdentityExpectation ? 'provider-response' : 'native-runtime',
+        detail: 'awaiting first provider turn',
         recordedAt: new Date().toISOString(),
       },
       modelAttributionEligible: false,
@@ -1080,6 +1175,27 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       } : undefined,
       sessionStreamConfig,
       menuProvider: menuLaunchProvider.menuProvider,
+      ...(providerIdentityExpectation
+        ? {
+          providerIdentity: {
+            expectation: providerIdentityExpectation,
+            tracker: providerIdentityTracker,
+            onMismatch: async (error) => {
+              if (!providerIdentityExpectation.certificationPath) return;
+              invalidateCertificationIdentity({
+                artifactPath: providerIdentityExpectation.certificationPath,
+                expectedModel: error.expectedModel,
+                observedModel: error.reportedModel ?? '(absent)',
+                requestedWireId: error.requestedWireId,
+                source: 'runtime',
+                phase: 'coding',
+                session: options.session,
+                issue: options.issue,
+              });
+            },
+          },
+        }
+        : {}),
       ...(recoveryGuard
         ? {
           beforeToolCall: async (ctx) => {
@@ -1222,6 +1338,15 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       }
     }
 
+    const providerIdentitySummarySnapshot = (): ProviderIdentitySummary | undefined =>
+      providerIdentityExpectation ? providerIdentityTracker.summary() : undefined;
+    const providerExpectationSnapshot = providerIdentityExpectation
+      ? {
+        expectedModel: providerIdentityExpectation.expectedModel,
+        requestedWireId: providerIdentityExpectation.requestedWireId,
+        isAlias: providerIdentityExpectation.isAlias,
+      }
+      : undefined;
     let inspection = await inspectCompletion({
       featureDir,
       intendedModel: requestedModelName,
@@ -1231,6 +1356,8 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       mutationFailureTracker,
       recoveryAttempted,
       coerceUnverifiedCompletionClaim: false,
+      providerIdentity: providerIdentitySummarySnapshot(),
+      providerExpectation: providerExpectationSnapshot,
     });
     let artifactRetryAttempt = 0;
     const quarantinedArtifacts: string[] = [];
@@ -1292,6 +1419,8 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
         mutationFailureTracker,
         recoveryAttempted,
         coerceUnverifiedCompletionClaim: false,
+        providerIdentity: providerIdentitySummarySnapshot(),
+        providerExpectation: providerExpectationSnapshot,
       });
     }
 
@@ -1312,6 +1441,8 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
           mutationFailureTracker,
           recoveryAttempted,
           coerceUnverifiedCompletionClaim: true,
+          providerIdentity: providerIdentitySummarySnapshot(),
+          providerExpectation: providerExpectationSnapshot,
         });
       }
       if (inspection.kind === 'invalid') {
@@ -1340,24 +1471,25 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
     const resultPath = join(featureDir, '.coding-result.json');
     if (!existsSync(resultPath)) {
       const stageStatus = completion === 'complete' ? 'completed' : 'running';
+      const attribution = buildCompletionAttribution({
+        intendedModel: requestedModelName,
+        model: modelName,
+        providerIdentity: providerIdentitySummarySnapshot(),
+        providerExpectation: providerExpectationSnapshot,
+        stageCompleted: stageStatus === 'completed',
+      });
       atomicWriteText(resultPath, JSON.stringify({
         stage: 'coding',
         status: stageStatus,
         agent: 'native',
         model: modelName,
         intendedModel: requestedModelName,
-        executedModel: modelName,
-        executionEvidence: {
-          status: 'direct',
-          source: 'native-runtime',
-          recordedAt: new Date().toISOString(),
-        },
-        modelAttributionEligible: stageStatus === 'completed' && requestedModelName === modelName,
-        ...(stageStatus !== 'completed'
-          ? { modelAttributionIneligibleReason: 'stage_not_completed' }
-          : requestedModelName === modelName
-            ? {}
-            : { modelAttributionIneligibleReason: 'runtime_fallback' }),
+        executedModel: attribution.executedModel,
+        executionEvidence: attribution.executionEvidence,
+        modelAttributionEligible: attribution.modelAttributionEligible,
+        ...(attribution.modelAttributionIneligibleReason
+          ? { modelAttributionIneligibleReason: attribution.modelAttributionIneligibleReason }
+          : {}),
       }, null, 2));
     }
 
@@ -1401,6 +1533,49 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
     };
   } catch (error) {
     const message = (error as Error).message;
+    // HOK-3143: a provider-identity failure gets its own failure reason and
+    // ineligibility code so the monitor's reroute (via HOK-3142) can route the
+    // next launch around the certificate while the re-cert runs.
+    if (error instanceof ProviderIdentityMismatchError) {
+      await updateStageResult(featureDir, 'coding', {
+        status: 'failed',
+        finishedAt: new Date().toISOString(),
+        agent: 'native',
+        model: options.loopModelOverride?.name ?? options.resolvedModel ?? '',
+        intendedModel: options.resolvedModel ?? options.loopModelOverride?.name ?? null,
+        executedModel: error.reportedModel,
+        executionEvidence: {
+          status: 'contradicted',
+          source: 'provider-response',
+          detail: `${error.reason}: expected=${error.expectedModel} reported=${error.reportedModel ?? '(none)'} turn=${error.turnIndex}`,
+          recordedAt: new Date().toISOString(),
+          ...(error.reportedModel ? { providerReportedModel: error.reportedModel } : {}),
+          requestedWireId: error.requestedWireId,
+          certifiedTarget: error.expectedModel,
+          identityVerdict: 'mismatch',
+          transportProvider: 'openrouter',
+          ...(error.responseId ? { responseId: error.responseId } : {}),
+        },
+        modelAttributionEligible: false,
+        modelAttributionIneligibleReason: 'provider_substitution',
+        notes: `Native coding failed: ${message}`,
+        failureReason: error.reason,
+      });
+      // Write a coding failure handoff so the monitor's reroute reaches the
+      // typed HOK-3142 refusal path on the next tick.
+      try {
+        writeCodingFailureHandoff(featureDir, buildFailureHandoffInput({
+          stopReason: 'identity_mismatch',
+          tracker: { count: 0, last: null },
+          recoveryAttempted: false,
+        }));
+      } catch (handoffError) {
+        console.warn(`Failed to write identity handoff: ${(handoffError as Error).message}`);
+      }
+      writeHookStatus(hookPath, 'error', 'process_exit', message, 'native');
+      writeTextStatus(options.session, options.issue, 'native coding identity_mismatch');
+      throw error;
+    }
     await updateStageResult(featureDir, 'coding', {
       status: 'failed',
       finishedAt: new Date().toISOString(),

@@ -13,7 +13,7 @@ import type { SessionModelUsage } from '../session-adapters.ts';
 
 // Re-export raw Pi message content types through the messages seam so callers
 // can reference them without importing Pi vendor packages directly.
-export type { Message, TextContent } from '@earendil-works/pi-ai';
+export type { AssistantMessage, Message, TextContent } from '@earendil-works/pi-ai';
 
 // ---------------------------------------------------------------------------
 // Helpers

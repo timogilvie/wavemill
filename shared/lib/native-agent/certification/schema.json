@@ -78,6 +78,12 @@
         },
         "liveCanary": {
           "$ref": "#/$defs/LiveCodingCanaryResult"
+        },
+        "resolvedTarget": {
+          "$ref": "#/$defs/ResolvedCertificationTarget"
+        },
+        "identityInvalidation": {
+          "$ref": "#/$defs/IdentityInvalidation"
         }
       }
     },
@@ -447,6 +453,80 @@
         "completionArtifactHash": {
           "type": "string",
           "minLength": 1
+        }
+      }
+    },
+    "ResolvedCertificationTarget": {
+      "type": "object",
+      "required": ["requestedWireId", "model", "observedAt", "source"],
+      "additionalProperties": false,
+      "properties": {
+        "requestedWireId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "source": {
+          "type": "string",
+          "const": "provider-response"
+        },
+        "responseId": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "IdentityInvalidation": {
+      "type": "object",
+      "required": [
+        "invalidatedAt",
+        "reason",
+        "expectedModel",
+        "observedModel",
+        "requestedWireId",
+        "source"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "invalidatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "reason": {
+          "type": "string",
+          "const": "identity_mismatch"
+        },
+        "expectedModel": {
+          "type": "string",
+          "minLength": 1
+        },
+        "observedModel": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requestedWireId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "type": "string",
+          "enum": ["runtime", "certification"]
+        },
+        "phase": {
+          "type": "string"
+        },
+        "session": {
+          "type": "string"
+        },
+        "issue": {
+          "type": "string"
         }
       }
     },

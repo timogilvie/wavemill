@@ -21,6 +21,7 @@ export type NativeGateRejectReason =
   | 'stale_artifact'
   | 'wrong_suite'
   | 'identity_reidentified'
+  | 'identity_mismatch'
   | 'insufficient_phase'
   | 'missing_live_canary'
   | 'stale_live_canary'
@@ -81,6 +82,10 @@ export interface NativeGateReject {
   liveCanaryStatus?: LiveCodingCanaryStatus;
   /** ISO 8601 timestamp of the live coding canary run, when one was found. */
   liveCanaryRanAt?: string;
+  /** Pinned alias target (if any), for identity_mismatch diagnostics (HOK-3143). */
+  expectedModel?: string;
+  /** Provider-reported model id recorded at invalidation time (HOK-3143). */
+  observedModel?: string;
 }
 
 export type NativeGateDecision = NativeGateReady | NativeGateReject;
@@ -151,6 +156,9 @@ export function evaluateNativeProviderGate(input: NativeGateInput): NativeGateDe
 
   if (!eligibility.eligible) {
     const artifact = eligibility.artifact;
+    const invalidation = artifact && 'identityInvalidation' in artifact
+      ? artifact.identityInvalidation
+      : undefined;
     return rejectDecision({
       modelId: input.modelId,
       reason: mapEligibilityReason(eligibility.reason),
@@ -163,6 +171,7 @@ export function evaluateNativeProviderGate(input: NativeGateInput): NativeGateDe
       artifactPath: eligibility.artifactPath ?? artifactPath,
       artifactScope: eligibility.storageScope,
       subject: eligibility.reason === 'identity-reidentified' ? subject.subject : undefined,
+      ...(invalidation ? { expectedModel: invalidation.expectedModel, observedModel: invalidation.observedModel } : {}),
     });
   }
 
@@ -233,7 +242,7 @@ function mapCanaryReason(reason: LiveCodingCanaryIneligibilityReason): NativeGat
   }
 }
 
-function mapEligibilityReason(reason: 'missing' | 'malformed' | 'identity-reidentified' | 'wrong-version' | 'stale' | 'phase-insufficient' | 'scenario-failure'): NativeGateRejectReason {
+function mapEligibilityReason(reason: 'missing' | 'malformed' | 'identity-reidentified' | 'identity-invalidated' | 'wrong-version' | 'stale' | 'phase-insufficient' | 'scenario-failure'): NativeGateRejectReason {
   switch (reason) {
     case 'missing':
       return 'missing_artifact';
@@ -243,6 +252,8 @@ function mapEligibilityReason(reason: 'missing' | 'malformed' | 'identity-reiden
       return 'wrong_suite';
     case 'identity-reidentified':
       return 'identity_reidentified';
+    case 'identity-invalidated':
+      return 'identity_mismatch';
     case 'stale':
       return 'stale_artifact';
     case 'phase-insufficient':
@@ -277,6 +288,8 @@ function formatRejectMessage(input: Omit<NativeGateReject, 'ok' | 'message'>): s
   if (input.subject) parts.push('subject=current-registry');
   if (input.liveCanaryStatus) parts.push(`liveCanaryStatus=${input.liveCanaryStatus}`);
   if (input.liveCanaryRanAt) parts.push(`liveCanaryRanAt=${input.liveCanaryRanAt}`);
+  if (input.expectedModel) parts.push(`expectedModel=${input.expectedModel}`);
+  if (input.observedModel) parts.push(`observedModel=${input.observedModel}`);
 
   return parts.join('; ');
 }

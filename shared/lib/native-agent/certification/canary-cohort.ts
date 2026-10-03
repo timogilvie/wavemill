@@ -332,6 +332,17 @@ function evaluateMemberStatus(input: {
     return { ...base, state: 'missing', codingEligible: false };
   }
 
+  // HOK-3143: a durable identity invalidation on the artifact short-circuits
+  // the canary check — this member needs re-certification before any live run.
+  if (loaded.artifact.identityInvalidation) {
+    return {
+      ...base,
+      state: 'identity-invalidated',
+      codingEligible: false,
+      failureReason: 'identity_mismatch',
+    };
+  }
+
   const eligibility = evaluateLiveCodingCanaryEligibility(
     loaded.artifact,
     suiteVersion,

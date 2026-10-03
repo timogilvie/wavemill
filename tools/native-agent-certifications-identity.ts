@@ -1,16 +1,6 @@
 #!/usr/bin/env -S npx tsx
 
-import {
-  closeSync,
-  fsyncSync,
-  mkdirSync,
-  openSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
-} from 'node:fs';
-import { randomBytes } from 'node:crypto';
-import { dirname, join, relative } from 'node:path';
+import { relative } from 'node:path';
 import { runTool } from '../shared/lib/tool-runner.ts';
 import {
   listGlobalCertifications,
@@ -20,25 +10,15 @@ import {
   type AnyNativeCertificationArtifact,
   type CertificationSubject,
 } from '../shared/lib/native-agent/certification/index.ts';
+import {
+  writeIdentityAudit,
+  type IdentityAuditArtifact,
+  type IdentityAuditOperation,
+} from '../shared/lib/native-agent/certification/identity-invalidation.ts';
 import { getEffectiveRegistry, type ModelRegistry } from '../shared/lib/model-registry.ts';
 
-export type IdentityAuditOperation = 'reidentify' | 'invalidate';
-
-export interface IdentityAuditArtifact {
-  schemaVersion: 1;
-  operation: IdentityAuditOperation;
-  dryRun: boolean;
-  reason: string;
-  createdAt: string;
-  requested: {
-    provider: string;
-    model: string;
-  };
-  oldSubjects: unknown[];
-  newSubject?: CertificationSubject;
-  affectedArtifactPaths: string[];
-  recertificationCommands: string[];
-}
+export type { IdentityAuditOperation, IdentityAuditArtifact } from '../shared/lib/native-agent/certification/identity-invalidation.ts';
+export { writeIdentityAudit } from '../shared/lib/native-agent/certification/identity-invalidation.ts';
 
 export interface IdentityCommandResult extends IdentityAuditArtifact {
   auditPath?: string;
@@ -93,47 +73,6 @@ export function planIdentityAudit(opts: {
       `wavemill native-agent certifications re-certify --provider ${resolved.subject.nativeProvider} --model ${resolved.subject.registryKey} --phase ${read.artifact.phase}`,
     ),
   };
-}
-
-export function writeIdentityAudit(
-  root: string,
-  audit: IdentityAuditArtifact,
-): string {
-  const finalPath = join(
-    root,
-    '.audits',
-    `${audit.createdAt.replace(/[:.]/g, '-')}-${audit.operation}-${randomBytes(4).toString('hex')}.json`,
-  );
-  mkdirSync(dirname(finalPath), { recursive: true });
-  const tmpPath = `${finalPath}.tmp-${process.pid}-${randomBytes(8).toString('hex')}`;
-  writeFileSync(tmpPath, JSON.stringify(sortKeys(audit), null, 2) + '\n', 'utf8');
-  try {
-    const fd = openSync(tmpPath, 'r');
-    try {
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-  } catch {
-    // Best effort; rename is the atomicity boundary.
-  }
-  try {
-    renameSync(tmpPath, finalPath);
-  } catch (error) {
-    try { unlinkSync(tmpPath); } catch { /* best-effort cleanup */ }
-    throw error;
-  }
-  try {
-    const dirFd = openSync(dirname(finalPath), 'r');
-    try {
-      fsyncSync(dirFd);
-    } finally {
-      closeSync(dirFd);
-    }
-  } catch {
-    // Best effort.
-  }
-  return finalPath;
 }
 
 export function runReidentifyCommand(argv = process.argv.slice(2)): Promise<void> {
@@ -209,16 +148,4 @@ function uniqueJson(values: unknown[]): unknown[] {
     out.push(value);
   }
   return out;
-}
-
-function sortKeys(v: unknown): unknown {
-  if (Array.isArray(v)) return v.map(sortKeys);
-  if (v !== null && typeof v === 'object') {
-    const sorted: Record<string, unknown> = {};
-    for (const key of Object.keys(v as Record<string, unknown>).sort()) {
-      sorted[key] = sortKeys((v as Record<string, unknown>)[key]);
-    }
-    return sorted;
-  }
-  return v;
 }

@@ -234,6 +234,55 @@ export interface LiveSmokeEvidence {
   succeededAt: string;
 }
 
+/**
+ * Pinned alias target recorded by `wavemill native-agent certify` for a
+ * rolling provider alias (e.g. OpenRouter `~google/gemini-pro-latest`). The
+ * runtime verifies every assistant turn's `response.model` against
+ * {@link resolvedTarget.model}; a different reported model invalidates the
+ * certificate and blocks the launch. Required for alias subjects (the write
+ * validator rejects an alias artifact without it); legacy non-alias
+ * artifacts parse without it (HOK-3143).
+ */
+export interface ResolvedCertificationTarget {
+  /** The wire id originally sent to the provider (e.g. `~google/gemini-pro-latest`). */
+  requestedWireId: string;
+  /** The concrete model id the provider pinned at certify time. */
+  model: string;
+  /** ISO 8601 timestamp when the resolution was observed. */
+  observedAt: string;
+  /** Source of this resolution — only `provider-response` is accepted today. */
+  source: 'provider-response';
+  /** Optional provider response id corroborating the resolution. */
+  responseId?: string;
+}
+
+export type IdentityInvalidationSource = 'runtime' | 'certification';
+
+/**
+ * Durable identity-invalidation record on a certification artifact.
+ *
+ * Written when the runtime (or a certify-time live canary) observes a
+ * provider-reported model that disagrees with the pinned identity. Fail-closed:
+ * once present, {@link evaluateEligibility} returns `identity-invalidated` and
+ * the launch gate refuses the certificate until re-certification writes a new
+ * artifact.
+ *
+ * Idempotent: the first writer wins. A concurrent challenge arm observing
+ * the same mismatch will leave the record untouched.
+ */
+export interface IdentityInvalidation {
+  invalidatedAt: string;
+  reason: 'identity_mismatch';
+  expectedModel: string;
+  /** The provider-reported model id when invalidation was recorded. */
+  observedModel: string;
+  requestedWireId: string;
+  source: IdentityInvalidationSource;
+  phase?: string;
+  session?: string;
+  issue?: string;
+}
+
 export interface HistoricalNativeCertificationArtifact {
   schemaVersion: typeof HISTORICAL_CERTIFICATION_SCHEMA_VERSION;
   provider: string;
@@ -288,6 +337,20 @@ export interface NativeCertificationArtifact {
    * fresh, live, identity-matching pass is present.
    */
   liveCanary?: LiveCodingCanaryResult;
+  /**
+   * For rolling provider aliases (e.g. OpenRouter `~x/y`), the concrete
+   * model id resolved at certify time. The runtime verifies each turn's
+   * `response.model` against this and invalidates on drift (HOK-3143).
+   * Required for alias subjects via `validateCertificationForWrite`; absent
+   * for non-alias subjects.
+   */
+  resolvedTarget?: ResolvedCertificationTarget;
+  /**
+   * Durable identity-invalidation record. When present, the gate fails
+   * closed with `identity-invalidated` until a fresh certification writes a
+   * new artifact. Idempotent: first-writer-wins (HOK-3143).
+   */
+  identityInvalidation?: IdentityInvalidation;
 }
 
 export type AnyNativeCertificationArtifact =
