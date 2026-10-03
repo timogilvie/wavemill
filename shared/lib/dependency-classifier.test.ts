@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import {
   classifyDependencies,
+  DEFAULT_CLASSIFIER_TEMPLATE_PATH,
   dedupEdges,
   filterInvalidIdEdges,
   filterLowConfidenceEdges,
@@ -294,22 +295,34 @@ describe('classifyDependencies', () => {
 
   it('uses default dependency-classifier template path when templatePath is omitted', async () => {
     writeResponse('{"edges":[],"triage":[]}');
-    const uniqueMarker = `DEFAULT_TEMPLATE_MARKER_${Date.now()}`;
 
-    const original = readFileSync('tools/prompts/dependency-classifier.md', 'utf-8');
-    try {
-      writeFileSync('tools/prompts/dependency-classifier.md', `${uniqueMarker}\n{{ISSUES}}\n{{AUTHORITATIVE_EDGES}}\n{{CONFIDENCE_THRESHOLD}}`, 'utf-8');
+    // Read-only hermetic check: load the real default template, extract a
+    // distinctive non-placeholder line, and assert the CLI received a stdin
+    // rendered from it. The test must never write to the tracked template —
+    // a killed run otherwise leaves the worktree dirty (HOK-3157).
+    const defaultTemplate = readFileSync(DEFAULT_CLASSIFIER_TEMPLATE_PATH, 'utf-8');
+    const defaultSignature = defaultTemplate
+      .split(/\r?\n/)
+      .find((line) => line.trim().length > 0 && !line.includes('{{'));
+    assert.ok(defaultSignature, 'default classifier template has no non-placeholder line');
 
-      await classifyDependencies(baseInput(), {
-        cliCmd: cliPath,
-      });
+    await classifyDependencies(baseInput(), {
+      cliCmd: cliPath,
+    });
 
-      const invocations = readInvocations();
-      assert.ok(invocations.length > 0);
-      assert.ok(invocations[0].stdin.includes(uniqueMarker));
-    } finally {
-      writeFileSync('tools/prompts/dependency-classifier.md', original, 'utf-8');
-    }
+    const invocations = readInvocations();
+    assert.ok(invocations.length > 0);
+    assert.ok(
+      invocations[0].stdin.includes(defaultSignature),
+      'stdin should include a line from the default template',
+    );
+    // The beforeEach temp template renders "ISSUES=...": its presence would
+    // mean classifyDependencies picked up the temp templatePath instead of
+    // the default. Prove the default — not the beforeEach fixture — was used.
+    assert.ok(
+      !invocations[0].stdin.startsWith('ISSUES='),
+      'stdin should not come from the beforeEach temp template',
+    );
   });
 
   it('throws when modelsAvailable is empty', async () => {
