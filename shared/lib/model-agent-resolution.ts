@@ -119,6 +119,9 @@ const LIVE_CANARY_GATE_REASONS: ReadonlySet<string> = new Set([
   'inconclusive_live_canary',
   'non_live_canary',
   'live_canary_identity_mismatch',
+  // HOK-3143: a durable identity invalidation requires a fresh canary against
+  // the current alias target; the deterministic suite alone cannot clear it.
+  'identity_mismatch',
 ]);
 
 export function isLiveCanaryCertificationStatus(status: string | undefined): boolean {
