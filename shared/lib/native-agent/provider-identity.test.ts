@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { AssistantMessage } from '@earendil-works/pi-ai';
+import type { AssistantMessage } from './messages.ts';
 import {
   extractProviderReportedIdentity,
   isRollingProviderAlias,

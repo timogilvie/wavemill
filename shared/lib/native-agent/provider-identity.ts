@@ -12,7 +12,7 @@
  *
  * See plan.md Phase 1.
  */
-import type { AssistantMessage } from '@earendil-works/pi-ai';
+import type { AssistantMessage } from './messages.ts';
 
 /**
  * What the loop (via the launcher) expects to see on each assistant turn.
