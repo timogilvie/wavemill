@@ -11069,10 +11069,7 @@ review_refused_challenge_terminalize() {
     # the sibling, etc.) keeps the hold so a healthy arm's PR is never closed.
     existing_stage="$(get_task_meta "$issue" "challengeAbortedStage" 2>/dev/null || true)"
     case "$existing" in
-      terminal_stage_failure:review-malformed-response\
-      |terminal_stage_failure:review-no-output\
-      |terminal_stage_failure:review-not-ready\
-      |invalid_challenge:review-identity-mismatch\
+      invalid_challenge:review-identity-mismatch\
       |invalid_challenge:review-unattributed) ;;
       *) return 1 ;;
     esac
