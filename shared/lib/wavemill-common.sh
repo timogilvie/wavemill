@@ -28,6 +28,31 @@ fi
 # shellcheck source=challenge-arms.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/challenge-arms.sh"
 
+# HOK-3100: install root resolved from BASH_SOURCE, never inherited. The
+# monitor runs from `main` while worker launchers run from worktrees, so
+# inheriting from the environment would mix versions; each process must use
+# its own install copy. The milled repo (the repo wavemill is operating on)
+# is the separate `WAVEMILL_MILLED_REPO_DIR` / `REPO_DIR`.
+WAVEMILL_INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+export WAVEMILL_INSTALL_DIR
+
+# Resolve an install-relative tool path. Honours a caller-set TOOLS_DIR so
+# test harnesses can inject fakes without disturbing the install.
+wavemill_tool_path() {
+  local tool="${1:?wavemill_tool_path requires a tool name}"
+  printf '%s/%s\n' "${TOOLS_DIR:-$WAVEMILL_INSTALL_DIR/tools}" "$tool"
+}
+
+# HOK-3100: fallback logger stubs so standalone CLI tools (such as
+# `wavemill cleanup`) that source wavemill-common.sh without the mill or
+# monitor environment don't error with `command not found`. mill.sh defines
+# the real `log*` *after* sourcing, overriding these stubs. monitor.sh defines
+# them *before* sourcing, so the `declare -F ||` keeps the real functions.
+# Stubs write to stderr to match existing inline `else echo … >&2` fallbacks.
+declare -F log       >/dev/null 2>&1 || log()       { local level="${1:-info}"; shift || true; printf '[%s] %s\n' "$level" "$*" >&2; }
+declare -F log_warn  >/dev/null 2>&1 || log_warn()  { printf '[warn] %s\n' "$*" >&2; }
+declare -F log_error >/dev/null 2>&1 || log_error() { printf '[error] %s\n' "$*" >&2; }
+
 # Default tmux window names for mill mode surfaces.
 WAVEMILL_WINDOW_MILL="${WAVEMILL_WINDOW_MILL:-mill}"
 WAVEMILL_WINDOW_BACKSTAGE="${WAVEMILL_WINDOW_BACKSTAGE:-backstage}"
@@ -2093,7 +2118,9 @@ cleanup_completed_task() {
       cleanup_episode_record_outcome "$issue" "transient" "operational" "$release_reason" "$cleanup_candidate_json" "" 2>/dev/null || true
     fi
     set_task_lifecycle_disposition "$issue" "" "retained" "$release_reason" "cleanup_completed_task" 2>/dev/null || true
-    set_window_attention_state "$win" "needs-user"
+    # HOK-3100: set_window_attention_state lives in terminal-reconciler.sh; it
+    # may not be sourced for standalone CLI tools like `wavemill cleanup`.
+    declare -F set_window_attention_state >/dev/null 2>&1 && set_window_attention_state "$win" "needs-user"
     log_warn "  $issue cleanup could not close tmux window; keeping task state"
     return 1
   fi
@@ -2145,7 +2172,8 @@ cleanup_completed_task() {
       cleanup_episode_record_outcome "$issue" "$episode_disposition" "$episode_failure_class" "$episode_outcome" "$cleanup_candidate_json" "" 2>/dev/null || true
     fi
     set_task_lifecycle_disposition "$issue" "" "$lifecycle_resource_disposition" "${cleanup_outcome:-local-work-preserved}" "cleanup_completed_task" 2>/dev/null || true
-    set_window_attention_state "$win" "needs-user"
+    # HOK-3100: see note above re: set_window_attention_state availability.
+    declare -F set_window_attention_state >/dev/null 2>&1 && set_window_attention_state "$win" "needs-user"
     log_warn "  $issue cleanup preserved local work (${cleanup_outcome:-unclassified}); keeping task state"
     return 1
   fi
@@ -2230,6 +2258,21 @@ resolve_challenge_pair_hard_failure() {
   local winner winner_model rationale timestamp record_json
 
   [[ -n "$pair_id" ]] || return 1
+
+  # HOK-3100: this function depends on functions defined in the mill/monitor
+  # context (read_state_value, challenge_pair_record_exists,
+  # mark_challenge_compared, challenge_pair_hard_failure_reason,
+  # challenge_pr_url_from_number). A standalone CLI tool that sources common
+  # without the monitor can't resolve pairs anyway; fail soft so loggers and
+  # unrelated flows keep working.
+  local _fn
+  for _fn in read_state_value challenge_pair_record_exists mark_challenge_compared \
+             challenge_pair_hard_failure_reason challenge_pr_url_from_number; do
+    if ! declare -F "$_fn" >/dev/null 2>&1; then
+      log_warn "resolve_challenge_pair_hard_failure: $_fn is undefined; skipping"
+      return 0
+    fi
+  done
 
   if challenge_pair_record_exists "$pair_id"; then
     mark_challenge_compared "$pair_id" "record"
@@ -4974,7 +5017,12 @@ apply_expanded_route_if_present() {
 
   ensure_phase_config_state_file "$feature_dir"
 
-  if declare -F agent_resolve_models_for_roles >/dev/null 2>&1; then
+  # HOK-3100: `agent_resolve_batch_agent_for_role` lives in agent-adapters.sh
+  # alongside `agent_resolve_models_for_roles`, but the two are independent
+  # functions. Guard both explicitly so a build that defines only one does
+  # not silently call the undefined sibling.
+  if declare -F agent_resolve_models_for_roles >/dev/null 2>&1 \
+     && declare -F agent_resolve_batch_agent_for_role >/dev/null 2>&1; then
     if agent_resolve_models_for_roles "$planner_model" "$coder_model" "$reviewer_model"; then
       :
     fi

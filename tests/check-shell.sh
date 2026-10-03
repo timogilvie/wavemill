@@ -94,6 +94,8 @@ for f in \
   "$LIB_DIR"/agent-adapters.sh \
   "$REPO_DIR"/shared/hooks/*.sh \
   "$REPO_DIR"/shared/agent-bin/tmux \
+  "$REPO_DIR"/tests/check-install-paths.test.sh \
+  "$REPO_DIR"/tests/check-common-guards.test.sh \
   "$REPO_DIR"/tests/control-pane-recovery.test.sh \
   "$REPO_DIR"/tests/dashboard-refresh.test.sh \
   "$REPO_DIR"/tests/state-mutex.test.sh \
@@ -1232,12 +1234,14 @@ else
   fail "agent adapters are missing static prompt fallback warning"
 fi
 
-if grep -q 'agent_runtime_resource_repo_dir' "$LIB_DIR/agent-adapters.sh" \
-  && grep -q -- '--repo-dir "$resource_repo_dir"' "$LIB_DIR/agent-adapters.sh" \
-  && ! grep -q -- '--repo-dir "$wt_dir" --json' "$LIB_DIR/agent-adapters.sh"; then
-  pass "runtime prompt resolver uses Wavemill resource root instead of task worktree"
+if grep -qF 'agent_runtime_resource_repo_dir' "$LIB_DIR/agent-adapters.sh" \
+  && grep -qF -- '--repo-dir "$resource_repo_dir"' "$LIB_DIR/agent-adapters.sh" \
+  && grep -qF 'agent_runtime_resource_repo_dir "$wt_dir"' "$LIB_DIR/agent-adapters.sh" \
+  && grep -qF 'REPO_DIR:-$wt_dir' "$LIB_DIR/agent-adapters.sh" \
+  && ! grep -qF -- '--repo-dir "$wt_dir" --json' "$LIB_DIR/agent-adapters.sh"; then
+  pass "runtime prompt resolver uses the milled repo (REPO_DIR), not the install root or the task worktree"
 else
-  fail "runtime prompt resolver should not resolve prompt resources from task worktrees"
+  fail "runtime prompt resolver should resolve runtime resources from the milled repo (REPO_DIR) and keep prompt templates install-relative"
 fi
 
 # ============================================================================

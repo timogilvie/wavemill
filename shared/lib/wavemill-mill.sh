@@ -1012,7 +1012,7 @@ Cause: eval evidence repeatedly refused as stale at the current PR head (relaunc
 Retry count: $retry_count/$retry_max
 
 Next action:
-1. Inspect \`npx tsx tools/challenge-eval-evidence.ts --pair-id $pair_id --side <side> --pr <pr> --repo-dir .\` and re-run the eval manually if the refusal is transient.
+1. Inspect \`npx tsx $TOOLS_DIR/challenge-eval-evidence.ts --pair-id $pair_id --side <side> --pr <pr> --repo-dir .\` and re-run the eval manually if the refusal is transient.
 2. If eval cannot be recovered quickly, compare PRs #${primary_pr:-?} and #${challenger_pr:-?} manually.
 3. Close the losing PR and proceed with the winner.
 EOF
@@ -1059,7 +1059,7 @@ The eval ran at the current PR head. Its record is invalid. Re-running evals wil
 
 Next action:
 1. Retire the invalid arm: close its PR, mark the arm aborted, then ship the surviving PR.
-2. Or assess/supersede the pair with \`npx tsx tools/challenge-pair-recovery.ts --pair $pair_id\`. Add \`--apply\` after reviewing the dry run.
+2. Or assess/supersede the pair with \`npx tsx $TOOLS_DIR/challenge-pair-recovery.ts --pair $pair_id\`. Add \`--apply\` after reviewing the dry run.
 EOF
   printf '%s\n' "$artifact_path"
 }
@@ -1819,7 +1819,7 @@ fi
 
 check_subsystem_drift() {
   local drift_output
-  drift_output="$(npx tsx tools/check-drift.ts "$REPO_DIR" 2>/dev/null)" || return 1
+  drift_output="$(npx tsx "$TOOLS_DIR/check-drift.ts" "$REPO_DIR" 2>/dev/null)" || return 1
   printf '%s\n' "$drift_output"
 }
 
@@ -1966,7 +1966,7 @@ if [[ "$SKIP_BACKLOG_SELECTION" != "true" ]]; then
       echo ""
       if [[ -n "$DRIFT_SUBSYSTEMS" ]]; then
         log "info" "Refreshing subsystem docs..."
-        npx tsx tools/init-project-context.ts --refresh "$REPO_DIR"
+        npx tsx "$TOOLS_DIR/init-project-context.ts" --refresh "$REPO_DIR"
         echo ""
         log "info" "Refresh complete. Re-displaying task list..."
       else

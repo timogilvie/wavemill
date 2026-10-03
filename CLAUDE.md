@@ -15,7 +15,7 @@ This repository provides shared tooling for both Claude and Codex AI workflows:
 - **`.wavemill/manifests/`** - Per-session resource manifests
 
 ### Key Principles
-1. **Single Source of Truth**: This repo is canonical. `shared/lib/` contains all API logic; `tools/` contains all CLI tools. `wavemill` runs tools directly from the repo — never from `~/.claude/tools/`.
+1. **Single Source of Truth**: This repo is canonical. `shared/lib/` contains all API logic; `tools/` contains all CLI tools. `wavemill` runs tools directly from the repo — never from `~/.claude/tools/`. Install assets resolve via `shared/lib/native-agent/install-paths.ts` (TS) / `WAVEMILL_INSTALL_DIR` + `wavemill_tool_path` (shell); the milled repo is `WAVEMILL_MILLED_REPO_DIR`/`REPO_DIR`. Enforced by `tests/check-install-paths.test.sh` and `tests/check-common-guards.test.sh`.
 2. **Config Schema**: Both `claude/config.json` and `codex/config.json` follow `claude/config.schema.json`; wavemill runtime config follows `wavemill-config.schema.json`
 3. **Shared Templates**: `tools/prompts/` templates are consumed by both toolchains
 4. **State Separation**: Claude uses `features/`, `bugs/`, `epics/`; Codex uses `.codex/state/`

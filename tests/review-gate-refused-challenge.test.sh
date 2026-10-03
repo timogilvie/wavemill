@@ -93,10 +93,18 @@ GH_LOG="$TMP_ROOT/gh.txt"
 ARG_LOG="$TMP_ROOT/record-arm-failure.argv.txt"
 WORKTREE_ROOT="$TMP_ROOT/worktrees"
 REPO_DIR="$TMP_ROOT/repo"
-mkdir -p "$WORKTREE_ROOT" "$REPO_DIR/tools"
+TOOLS_DIR="$TMP_ROOT/install-tools"  # HOK-3100: wavemill_tool_path reads from TOOLS_DIR
+export TOOLS_DIR
+mkdir -p "$WORKTREE_ROOT" "$REPO_DIR" "$TOOLS_DIR"
+
+# This test extracts isolated functions from the monitor without sourcing
+# wavemill-common.sh, so provide the helper locally.
+wavemill_tool_path() {
+  printf '%s/%s\n' "${TOOLS_DIR:-$TMP_ROOT/install-tools}" "$1"
+}
 
 # Stub record-arm-failure.ts so the HOK-3064 bridge argv is captured.
-cat > "$REPO_DIR/tools/record-arm-failure.ts" <<'EOT'
+cat > "$TOOLS_DIR/record-arm-failure.ts" <<'EOT'
 #!/usr/bin/env node
 // Test stub: write argv to a file so the test can assert the bridge arguments.
 import { writeFileSync } from 'node:fs';

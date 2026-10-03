@@ -808,7 +808,7 @@ spawn_integration_window() {
   fi
 
   local first_pane="${tend_pane:-${observer_pane:-$SESSION:$WAVEMILL_WINDOW_BACKSTAGE.0}}"
-  status_script="${LIB_DIR:-$REPO_DIR/shared/lib}/wavemill-status.sh"
+  status_script="${LIB_DIR:-$WAVEMILL_INSTALL_DIR/shared/lib}/wavemill-status.sh"
   printf -v jobs_cmd "'%s' --pane=jobs '%s' '%s' '%s'" "$status_script" "$SESSION" "$WORKTREE_ROOT" "$STATE_FILE"
   printf -v queue_cmd "'%s' --pane=queued-pending '%s' '%s' '%s'" "$status_script" "$SESSION" "$WORKTREE_ROOT" "$STATE_FILE"
 
@@ -1028,9 +1028,11 @@ challenge_selection_health_varied_model() {
 challenge_selection_health_ack_launch() {
   local pair_id="${1:-}" stage="${2:-}" model="${3:-}"
   [[ -n "$pair_id" && -n "$stage" && -n "$model" && -n "${REPO_DIR:-}" ]] || return 0
-  [[ -f "$REPO_DIR/tools/challenge-selection-health.ts" ]] || return 0
+  local tool
+  tool="$(wavemill_tool_path challenge-selection-health.ts)"
+  [[ -f "$tool" ]] || return 0
   (
-    cd "$REPO_DIR" && npx tsx tools/challenge-selection-health.ts ack-launch \
+    cd "$REPO_DIR" && npx tsx "$tool" ack-launch \
       --repo-dir "$REPO_DIR" \
       --pair-id "$pair_id" \
       --stage "$(challenge_selection_health_stage "$stage")" \
@@ -1041,9 +1043,11 @@ challenge_selection_health_ack_launch() {
 challenge_selection_health_release() {
   local pair_id="${1:-}" stage="${2:-}" model="${3:-}"
   [[ -n "$pair_id" && -n "$stage" && -n "$model" && -n "${REPO_DIR:-}" ]] || return 0
-  [[ -f "$REPO_DIR/tools/challenge-selection-health.ts" ]] || return 0
+  local tool
+  tool="$(wavemill_tool_path challenge-selection-health.ts)"
+  [[ -f "$tool" ]] || return 0
   (
-    cd "$REPO_DIR" && npx tsx tools/challenge-selection-health.ts release \
+    cd "$REPO_DIR" && npx tsx "$tool" release \
       --repo-dir "$REPO_DIR" \
       --pair-id "$pair_id" \
       --stage "$(challenge_selection_health_stage "$stage")" \

@@ -15,9 +15,10 @@ import { loadStageAwareEvalRecords } from './stage-aware-router.ts';
 import { routeWorkflow, routeWorkflowStageAware, summarizeWorkflowRoute, type WorkflowRouteDecision } from './workflow-router.ts';
 import { resolveFromMainRepo } from './git-utils.ts';
 import { resolveGlobalAggregatedEvalsPath } from './evals-paths.ts';
+import { resolveWavemillToolPath } from './native-agent/install-paths.ts';
 
 const DEFAULT_SAMPLE_PROMPT = 'Fix a workflow routing failure, add diagnostics, and cover the edge cases with tests.';
-const MILL_ROUTE_TOOL = 'tools/route-task.ts';
+const MILL_ROUTE_TOOL = resolveWavemillToolPath('route-task.ts');
 const LOCAL_EVALS_PATH = '.wavemill/evals/evals.jsonl';
 const BACKFILLED_EVALS_PATH = '.wavemill/evals/aggregated-evals.backfilled.jsonl';
 const AGGREGATED_EVALS_PATH = '.wavemill/evals/aggregated-evals.jsonl';
@@ -116,7 +117,7 @@ function collectWarnings(params: {
   }
 
   if (!params.routeToolPresent) {
-    warnings.push(`Route tool missing at ${resolve(params.repoDir, MILL_ROUTE_TOOL)}.`);
+    warnings.push(`Route tool missing at ${MILL_ROUTE_TOOL}.`);
   }
 
   if (!params.stageAwareReady) {
@@ -174,7 +175,7 @@ export async function checkRoutingHealth(
   const mergedRecordCount = mergedRecords.length;
   const stageAwareReady = mergedRecordCount >= minRecords && mergedModelCount >= minModels;
   const effectiveMode = stageAwareReady ? 'stage-aware' : 'heuristic';
-  const routeToolPresent = existsSync(resolve(resolvedRepoDir, MILL_ROUTE_TOOL));
+  const routeToolPresent = existsSync(MILL_ROUTE_TOOL);
 
   const sampleDecision = withRepoCwd(
     resolvedRepoDir,
