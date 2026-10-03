@@ -226,7 +226,7 @@ import type { ChallengeStage } from './challenge-mode.ts';
  *
  * @since 1.44.0 added unknown_attribution intervention type (HOK-2894)
  */
-export const SCHEMA_VERSION = '1.51.0';
+export const SCHEMA_VERSION = '1.52.0';
 
 /**
  * Machine-readable exploration source for an eval row.
@@ -822,7 +822,13 @@ export type EligibilityErrorCode =
   | 'failed_feature_outcome'
   | 'missing_challenge_stage'
   | 'eval_fast_failed'
-  | 'provisional_model_identity';
+  | 'provisional_model_identity'
+  /**
+   * HOK-3143: the provider substituted a different concrete model than the
+   * one certified for a stage of this run. Attribution would mis-credit the
+   * certified identity, so the record is ineligible for training.
+   */
+  | 'provider_model_substitution';
 
 // ────────────────────────────────────────────────────────────────
 // Feature Outcome Diagnostics (HOK-2262)
@@ -1969,6 +1975,38 @@ export interface EvalSubagentModelEconomicsPolicyReport {
 }
 
 // ────────────────────────────────────────────────────────────────
+// Stage Execution Identity (HOK-3143)
+// ────────────────────────────────────────────────────────────────
+
+/**
+ * Per-stage provider-identity attribution, derived from the matching
+ * stage result's `executionEvidence` block. Lets the eval record expose
+ * what the provider actually served vs. what the launcher requested, so
+ * attribution and challenge comparison can detect alias retargets and
+ * silent model substitutions.
+ *
+ * @since 1.52.0
+ */
+export interface StageExecutionIdentity {
+  /** Model requested by routing/launch for this stage. */
+  intendedModel: string | null;
+  /**
+   * Model proven to have served the stage. For alias runs this is the
+   * concrete target the provider reported. `null` when direct provider
+   * evidence was not captured (scripted/test transports).
+   */
+  executedModel: string | null;
+  executionEvidence?: {
+    status: 'direct' | 'missing' | 'contradicted' | 'inherited';
+    source?: string;
+    providerReportedModel?: string;
+    requestedWireId?: string;
+    certifiedTarget?: string;
+    identityVerdict?: 'match' | 'alias-resolved' | 'mismatch' | 'unverifiable' | 'absent';
+  };
+}
+
+// ────────────────────────────────────────────────────────────────
 // Eval Record
 // ────────────────────────────────────────────────────────────────
 
@@ -2111,6 +2149,16 @@ export interface EvalRecord {
    * @since 1.47.0
    */
   executionEconomics?: EvalExecutionEconomics[];
+
+  /**
+   * HOK-3143: per-stage provider-identity attribution assembled from stage
+   * results. When a stage's provider-reported model differed from the
+   * certified identity (`identityVerdict === 'mismatch'`), the record is
+   * flagged with `provider_model_substitution` and ineligible for training.
+   *
+   * @since 1.52.0
+   */
+  stageExecution?: Partial<Record<'planning' | 'coding' | 'review', StageExecutionIdentity>>;
 
   /** Whether the record includes the fields required for training export. */
   trainingEligible?: boolean;

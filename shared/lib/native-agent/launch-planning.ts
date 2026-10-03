@@ -13,6 +13,12 @@ import { dirname, join, relative, resolve } from 'node:path';
 import type { AgentMessage, AgentTurn, Message } from './messages.ts';
 import type { AgentContext, WavemillLoopConfig } from './loop.ts';
 import { runWavemillLoop } from './loop.ts';
+import {
+  ProviderIdentityMismatchError,
+  ProviderIdentityTracker,
+  type ProviderIdentitySummary,
+} from './provider-identity.ts';
+import { invalidateCertificationIdentity } from './certification/identity-invalidation.ts';
 import { classifyProviderError } from './provider-error-classifier.ts';
 import { DEFAULT_MAX_OUTPUT_TOKENS } from './output-limits.ts';
 import {
@@ -657,6 +663,31 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
     };
     const modelName = model.name ?? model.id;
     const requestedModelName = options.resolvedModel?.trim() || modelName;
+    // HOK-3143: shared across the main planning run and the one bounded repair
+    // continuation, so distinctReportedModels covers both.
+    const providerIdentityTracker = new ProviderIdentityTracker();
+    const providerIdentityExpectation = options.loopModelOverride
+      ? undefined
+      : readyProvider?.certifiedIdentity;
+    const providerIdentityConfig = providerIdentityExpectation
+      ? {
+        expectation: providerIdentityExpectation,
+        tracker: providerIdentityTracker,
+        onMismatch: async (error: ProviderIdentityMismatchError) => {
+          if (!providerIdentityExpectation.certificationPath) return;
+          invalidateCertificationIdentity({
+            artifactPath: providerIdentityExpectation.certificationPath,
+            expectedModel: error.expectedModel,
+            observedModel: error.reportedModel ?? '(absent)',
+            requestedWireId: error.requestedWireId,
+            source: 'runtime',
+            phase: 'planning',
+            session: options.session,
+            issue: options.issue,
+          });
+        },
+      }
+      : undefined;
     const transcriptPath = makeTranscriptPath(options.repoDir, options.session, options.issue);
     const transcriptWriter = new TranscriptWriter({
       sessionId: `${options.session}-planning-${options.issue}`,
@@ -780,6 +811,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
       sessionStreamConfig,
       menuProvider: menuLaunchProvider.menuProvider,
       budget: toLoopBudget(planningLimits),
+      ...(providerIdentityConfig ? { providerIdentity: providerIdentityConfig } : {}),
     });
     const planningOutcomeArtifacts = buildPlanningOutcomeArtifacts({
       repoDir: options.repoDir,
@@ -932,6 +964,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
         // Reuses the configured planning budget. Wall-clock already consumed by
         // the initial run leaves repair headroom under the same ceiling.
         budget: toLoopBudget(planningLimits),
+        ...(providerIdentityConfig ? { providerIdentity: providerIdentityConfig } : {}),
       });
       const repairText = findFinalAssistantText(repairResult.messages);
       if (repairText.trim() !== '') {
@@ -979,18 +1012,47 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
 
     clearApprovalMarkerCreatedDuringPlanning(approvalMarkerPath);
     atomicWriteText(planPath, finalText);
+    // HOK-3143: record the provider-reported model when it is verified, so
+    // planning stage attribution does not blindly trust the requested id.
+    const planningIdentitySummary: ProviderIdentitySummary | undefined =
+      providerIdentityConfig ? providerIdentityTracker.summary() : undefined;
+    const planningExecutedModel = planningIdentitySummary
+      && (planningIdentitySummary.identityVerdict === 'match'
+        || planningIdentitySummary.identityVerdict === 'alias-resolved')
+      ? planningIdentitySummary.executedModel ?? modelName
+      : modelName;
+    const planningExecutionEvidence = planningIdentitySummary
+      && (planningIdentitySummary.identityVerdict === 'match'
+        || planningIdentitySummary.identityVerdict === 'alias-resolved')
+      ? {
+        status: 'direct' as const,
+        source: 'provider-response',
+        detail: `verified ${planningIdentitySummary.identityVerdict} after ${planningIdentitySummary.turnsVerified} turn(s)`,
+        recordedAt: new Date().toISOString(),
+        ...(planningIdentitySummary.providerReportedModel
+          ? { providerReportedModel: planningIdentitySummary.providerReportedModel }
+          : {}),
+        requestedWireId: providerIdentityExpectation!.requestedWireId,
+        certifiedTarget: providerIdentityExpectation!.expectedModel,
+        identityVerdict: planningIdentitySummary.identityVerdict,
+        transportProvider: 'openrouter',
+        ...(planningIdentitySummary.lastResponseId
+          ? { responseId: planningIdentitySummary.lastResponseId }
+          : {}),
+      }
+      : {
+        status: 'direct' as const,
+        source: 'native-runtime',
+        recordedAt: new Date().toISOString(),
+      };
     await updateStageResult(featureDir, 'planning', {
       status: 'awaiting_user',
       finishedAt: null,
       agent: 'native',
       model: modelName,
       intendedModel: requestedModelName,
-      executedModel: modelName,
-      executionEvidence: {
-        status: 'direct',
-        source: 'native-runtime',
-        recordedAt: new Date().toISOString(),
-      },
+      executedModel: planningExecutedModel,
+      executionEvidence: planningExecutionEvidence,
       modelAttributionEligible: false,
       modelAttributionIneligibleReason: 'stage_not_completed',
       notes: 'Native planning ready for approval',
@@ -1035,6 +1097,41 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
       transcriptPath,
     };
   } catch (err) {
+    if (err instanceof ProviderIdentityMismatchError) {
+      // HOK-3143: record provider_substitution so eval attribution and the
+      // monitor can route the next launch around the invalidated certificate.
+      try {
+        await updateStageResult(featureDir, 'planning', {
+          status: 'failed',
+          finishedAt: new Date().toISOString(),
+          agent: 'native',
+          model: options.loopModelOverride?.name ?? options.resolvedModel ?? '',
+          intendedModel: options.resolvedModel ?? options.loopModelOverride?.name ?? null,
+          executedModel: err.reportedModel,
+          executionEvidence: {
+            status: 'contradicted',
+            source: 'provider-response',
+            detail: `${err.reason}: expected=${err.expectedModel} reported=${err.reportedModel ?? '(none)'} turn=${err.turnIndex}`,
+            recordedAt: new Date().toISOString(),
+            ...(err.reportedModel ? { providerReportedModel: err.reportedModel } : {}),
+            requestedWireId: err.requestedWireId,
+            certifiedTarget: err.expectedModel,
+            identityVerdict: 'mismatch',
+            transportProvider: 'openrouter',
+            ...(err.responseId ? { responseId: err.responseId } : {}),
+          },
+          modelAttributionEligible: false,
+          modelAttributionIneligibleReason: 'provider_substitution',
+          notes: `Native planning failed: ${err.message}`,
+          failureReason: err.reason,
+        });
+      } catch (updateError) {
+        console.warn(`Failed to update planning stage result on identity mismatch: ${(updateError as Error).message}`);
+      }
+      writeHookStatus(hookPath, 'error', 'process_exit', err.message, 'native');
+      writeTextStatus(options.session, options.issue, 'native planning identity_mismatch');
+      throw err;
+    }
     writeHookStatus(hookPath, 'error', 'process_exit', (err as Error).message, 'native');
     writeTextStatus(options.session, options.issue, 'planning error');
     throw err;

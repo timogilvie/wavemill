@@ -45,6 +45,7 @@ TESTS=(
   shared/lib/executed-model-resolver.test.ts
   shared/lib/native-agent/provider.test.ts
   shared/lib/native-agent/provider-error-classifier.test.ts
+  shared/lib/native-agent/provider-identity.test.ts
   shared/lib/native-agent/providers.test.ts
   shared/lib/native-agent/messages.test.ts
   shared/lib/native-agent/compaction.test.ts
@@ -347,6 +348,7 @@ TESTS=(
   tests/ready-stage-transient-mergeability.test.ts
   tools/sync-config.test.ts
   shared/lib/native-agent/certification/identity.test.ts
+  shared/lib/native-agent/certification/identity-invalidation.test.ts
   shared/lib/native-agent/certification/schema.test.ts
   shared/lib/native-agent/certification/store.test.ts
   shared/lib/native-agent/certification/coverage.test.ts

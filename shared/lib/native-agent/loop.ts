@@ -47,6 +47,14 @@ import {
 import { evaluateBeforeToolCallPolicy, type ToolPolicyConfig } from './tools/policies.ts';
 import { redactSecrets, redactSecretsInValue } from './tools/redaction.ts';
 import { ToolStagnationTracker, type ToolStagnationPolicy } from './planning-guards.ts';
+import {
+  extractProviderReportedIdentity,
+  ProviderIdentityMismatchError,
+  ProviderIdentityTracker,
+  verifyProviderIdentity,
+  type ProviderIdentityExpectation,
+  type ProviderIdentitySummary,
+} from './provider-identity.ts';
 import type {
   OutputCapPolicy,
   ToolMetadata,
@@ -267,6 +275,30 @@ export interface WavemillLoopConfig {
    * canonical content to the artifact store. Defaults to 8 KiB.
    */
   menuInlineMaxBytes?: number;
+  /**
+   * Per-turn provider identity verification (HOK-3143). When provided, the
+   * loop extracts `responseModel`/`responseId` from each assistant turn and
+   * verifies against the certified pinned identity. On `mismatch` or an
+   * `unverifiable` alias turn, the loop:
+   *   1. latches an identity failure (no tool from that turn is allowed to run),
+   *   2. awaits `onMismatch` (so the launcher can rewrite the certificate),
+   *   3. throws `ProviderIdentityMismatchError`.
+   *
+   * When omitted, behaviour is unchanged — this keeps scripted and test
+   * runs untouched.
+   */
+  providerIdentity?: {
+    expectation: ProviderIdentityExpectation;
+    /**
+     * Invoked exactly once per loop run on a hard identity failure. Awaited
+     * inside the loop's finally block before the error is thrown so the
+     * launcher's invalidation write completes before the stage result is
+     * assembled.
+     */
+    onMismatch?: (error: ProviderIdentityMismatchError) => Promise<void> | void;
+    /** Caller-owned tracker; the loop creates one when omitted. */
+    tracker?: ProviderIdentityTracker;
+  };
 }
 
 export interface NativeContextManagementConfig {
@@ -299,6 +331,12 @@ export interface LoopResult {
     errorMessage: string;
     turnsAtFailure: number;
   };
+  /**
+   * Provider-reported identity summary (HOK-3143). Present when
+   * `providerIdentity` was configured. Launchers persist this on the stage
+   * result so `executedModel` reflects what the provider actually served.
+   */
+  providerIdentity?: ProviderIdentitySummary;
 }
 
 // ---------------------------------------------------------------------------
@@ -508,6 +546,8 @@ interface ComposedSignal {
   signal: AbortSignal;
   cleanup: () => void;
   isWallClockExpiry: () => boolean;
+  /** Abort the composed signal (not treated as a wall-clock expiry). */
+  abort: () => void;
 }
 
 function composeAbortSignal(
@@ -544,7 +584,7 @@ function composeAbortSignal(
     }, maxWallClockMs);
   }
 
-  return { signal: controller.signal, cleanup, isWallClockExpiry: () => wallClockExpired };
+  return { signal: controller.signal, cleanup, isWallClockExpiry: () => wallClockExpired, abort };
 }
 
 // ---------------------------------------------------------------------------
@@ -645,6 +685,13 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
   const batchFailed = new WeakMap<AssistantMessage, boolean>();
   // Tool call ids that were skipped by beforeToolCall (not real failures).
   const skippedCallIds = new Set<string>();
+  // Provider-identity state (HOK-3143).
+  const identityTracker = config.providerIdentity?.tracker ?? new ProviderIdentityTracker();
+  // Latched when a turn fails identity verification. All subsequent
+  // beforeToolCall calls on that turn's AssistantMessage are blocked, and the
+  // loop throws ProviderIdentityMismatchError once the current turn drains.
+  const identityFailureByMessage = new WeakMap<AssistantMessage, true>();
+  let identityFailureError: ProviderIdentityMismatchError | undefined;
   // Track current turn's model request event ID and callId for linking response
   let currentTurnRequestEventId: string | undefined;
   let currentTurnRequestCallId: string | undefined;
@@ -816,6 +863,12 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
     },
 
     beforeToolCall: async (ctx: BeforeToolCallContext, signal?: AbortSignal) => {
+      // Identity gate: once a turn fails provider-identity verification, none
+      // of its tool calls are permitted to run. HOK-3143.
+      if (identityFailureByMessage.get(ctx.assistantMessage)) {
+        skippedCallIds.add(ctx.toolCall.id);
+        return { block: true, reason: 'provider_identity_mismatch' };
+      }
       // Fail-fast: skip subsequent calls once the batch has a failure.
       if (batchFailed.get(ctx.assistantMessage)) {
         skippedCallIds.add(ctx.toolCall.id);
@@ -1266,6 +1319,55 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
       case 'message_update':
         onHeartbeat?.({ state: 'working', event: 'message_update', agent: HEARTBEAT_AGENT });
         break;
+      case 'message_end': {
+        // Provider-identity verification (HOK-3143). We check every assistant
+        // turn whose stopReason is non-error, before any of its tools run.
+        // User and tool-result messages reach this branch too (pi-agent-core
+        // emits message_end for them; see agent-loop.js:52,98,508), so we
+        // narrow on role === 'assistant' and skip provider-error turns.
+        if (!config.providerIdentity) break;
+        const message = event.message as AssistantMessage;
+        if (!message || message.role !== 'assistant') break;
+        if (message.stopReason === 'error' || message.stopReason === 'aborted') break;
+        // Already-latched failure on this message: nothing to record.
+        if (identityFailureByMessage.get(message)) break;
+        const expectation = config.providerIdentity.expectation;
+        const reported = extractProviderReportedIdentity(message, expectation.requestedWireId);
+        const decision = verifyProviderIdentity(expectation, reported);
+        identityTracker.record({ turnIndex: turnsCompleted, decision, reported });
+        if (decision.verdict === 'mismatch'
+          || (decision.verdict === 'unverifiable' && expectation.isAlias)) {
+          const reason = decision.verdict === 'mismatch'
+            ? 'identity_mismatch'
+            : 'identity_unverifiable';
+          identityFailureError = new ProviderIdentityMismatchError({
+            reason,
+            expectedModel: expectation.expectedModel,
+            reportedModel: reported.reportedModel,
+            requestedWireId: expectation.requestedWireId,
+            turnIndex: turnsCompleted,
+            isAlias: expectation.isAlias,
+            responseId: reported.responseId,
+          });
+          identityFailureByMessage.set(message, true);
+          // Mark this turn's tool batch as failed so Pi's own fail-fast kicks in
+          // and the loop's next shouldStopAfterTurn observes the abort.
+          batchFailed.set(message, true);
+          composed.abort();
+          // Best-effort session-stream warning. Does not advance any step.
+          try {
+            sessionStreamWriter?.writeToolPolicyDecision({
+              callId: `provider-identity-${turnsCompleted}`,
+              toolName: '__provider_identity__',
+              decision: 'deny',
+              denialReason: `${reason}: expected=${expectation.expectedModel} reported=${reported.reportedModel ?? '(none)'} requested=${expectation.requestedWireId}`,
+            });
+          } catch (error) {
+            console.warn(`Failed to log provider-identity denial: ${(error as Error).message}`);
+          }
+        }
+        break;
+      }
       case 'tool_execution_start':
         onHeartbeat?.({
           state: 'working',
@@ -1491,6 +1593,23 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
     throw loopError;
   }
 
+  // Build the provider-identity summary once per run (HOK-3143).
+  const providerIdentitySummary = config.providerIdentity ? identityTracker.summary() : undefined;
+
+  // On a hard identity failure, run the caller's onMismatch (certificate
+  // invalidation) BEFORE throwing, so the invalidation is durable before
+  // the launcher's catch block assembles the failure stage result.
+  if (identityFailureError) {
+    if (config.providerIdentity?.onMismatch) {
+      try {
+        await config.providerIdentity.onMismatch(identityFailureError);
+      } catch (error) {
+        console.warn(`providerIdentity.onMismatch failed: ${(error as Error).message}`);
+      }
+    }
+    throw identityFailureError;
+  }
+
   return {
     messages: finalMessages,
     stopReason,
@@ -1501,6 +1620,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
     totalCostUsd,
     wallClockMs,
     ...(finalProviderError ? { providerError: finalProviderError } : {}),
+    ...(providerIdentitySummary ? { providerIdentity: providerIdentitySummary } : {}),
   };
 }
 

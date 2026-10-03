@@ -197,6 +197,12 @@ export interface ChallengeExecutedStageProvenance {
   executionEvidenceStatus?: StageExecutionEvidenceStatus;
   modelAttributionEligible?: boolean;
   modelAttributionIneligibleReason?: StageResult['modelAttributionIneligibleReason'];
+  /**
+   * HOK-3143: provider-identity verdict carried from the stage result's
+   * executionEvidence. `alias-resolved` means the provider served a concrete
+   * target of a certified rolling alias, which is not an executed-model mismatch.
+   */
+  identityVerdict?: 'match' | 'alias-resolved' | 'mismatch' | 'unverifiable' | 'absent';
 }
 
 export interface ChallengeSideExecutionProvenance {
@@ -819,6 +825,11 @@ function parseStageArtifact(
     executionEvidenceStatus: parsed.executionEvidence?.status ?? (reviewIdentity ? 'direct' : 'missing'),
     modelAttributionEligible: parsed.modelAttributionEligible ?? (reviewIdentity ? parsed.status === 'completed' : false),
     modelAttributionIneligibleReason: parsed.modelAttributionIneligibleReason,
+    // HOK-3143: carry the provider-identity verdict so attribution can tell
+    // an alias-resolved stage apart from an executed-model mismatch.
+    ...(typeof parsed.executionEvidence?.identityVerdict === 'string'
+      ? { identityVerdict: parsed.executionEvidence.identityVerdict as ChallengeExecutedStageProvenance['identityVerdict'] }
+      : {}),
   };
 }
 
@@ -1066,8 +1077,22 @@ function validateStageForSide(input: {
   if (
     stageProvenance.executionEvidenceStatus === 'contradicted'
     || stageProvenance.modelAttributionIneligibleReason === 'execution_contradicted'
+    // HOK-3143: a provider substitution reaches the same comparison outcome
+    // as an execution contradiction — the attributed model did not run.
+    || stageProvenance.modelAttributionIneligibleReason === 'provider_substitution'
+    || stageProvenance.identityVerdict === 'mismatch'
   ) {
     addStageValidationIssue(input.issues, input.side, stageProvenance, 'execution-evidence-contradicted', intendedModel);
+    return;
+  }
+  // HOK-3143: a correctly resolved alias is not an executed-model mismatch,
+  // even though the executed concrete id differs from the alias we intended.
+  if (
+    stageProvenance.identityVerdict === 'alias-resolved'
+    && intendedModel
+    && stageProvenance.rawModel
+    && challengeModelIdsEquivalent(stageProvenance.rawModel, intendedModel, input.repoDir)
+  ) {
     return;
   }
   if (

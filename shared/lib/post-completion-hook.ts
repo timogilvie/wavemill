@@ -36,7 +36,12 @@ import {
   buildVerificationTelemetryFromArtifact,
   isEvalTaskScorerResult,
 } from './eval-record-builder.ts';
-import { buildChallengeStageEval, extractReviewExecutedIdentity } from './stage-eval-evidence.ts';
+import {
+  buildChallengeStageEval,
+  buildStageExecutionIdentity,
+  extractReviewExecutedIdentity,
+  hasProviderModelSubstitution,
+} from './stage-eval-evidence.ts';
 import { buildTaskDescriptor } from './task-descriptor-builder.ts';
 import { getEvalContextUpdatesConfig, getMaxCostUsd } from './config.ts';
 import { runConfiguredHarnessRetentionReplay } from './harness-replay.ts';
@@ -473,6 +478,8 @@ interface PostCompletionEnrichmentInput {
   planContent?: string;
   selfReviewSummary?: string;
   taskScorerResult?: EvalTaskScorerResult | null;
+  /** HOK-3143: absolute path to the directory holding `.<stage>-result.json`. */
+  stageResultsDir?: string | null;
 }
 
 function resolveRouteArtifactDirs(
@@ -690,6 +697,25 @@ export function enrichPostCompletionRecord(
       return typeof maxCostUsd === 'number' ? { maxCostUsd } : undefined;
     })(),
   });
+  // HOK-3143: attach per-stage provider-identity attribution, fail-soft.
+  if (input.stageResultsDir) {
+    try {
+      const stageExecution = buildStageExecutionIdentity({
+        stageResultsDir: input.stageResultsDir,
+      });
+      if (stageExecution) {
+        record.stageExecution = stageExecution;
+        if (hasProviderModelSubstitution(stageExecution)) {
+          const existing = record.eligibilityErrors ?? [];
+          if (!existing.includes('provider_model_substitution')) {
+            record.eligibilityErrors = [...existing, 'provider_model_substitution'];
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(`Post-completion eval: stage execution identity failed — ${errorMessage(err)}`);
+    }
+  }
   const attestation = attestEvalRecordChallengeExecution(record);
   attachChallengeExecutionMetadata(record, {
     side: record.challengeSide,
@@ -1002,6 +1028,7 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
       phaseDurations,
       planContent: stageArtifacts.planContent,
       selfReviewSummary: stageArtifacts.selfReviewSummary,
+      stageResultsDir: stageArtifacts.stageResultsDir ?? null,
     });
 
     if (record.challengeStageEval) {
