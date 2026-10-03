@@ -168,6 +168,30 @@ test('classifies the HOK-3128 dirty-handoff and sibling-stalled kinds', () => {
   assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'sibling-stalled' })), false);
 });
 
+test('classifies the HOK-3154 review-gate refusal kinds and prefixes', () => {
+  // A malformed-response and genuine not_ready that cannot pass the readiness
+  // gate are model-attributable (the reviewer delivered output but the model
+  // failed to produce a usable verdict), parallel to review-no-output.
+  assert.equal(parseAbortFailureKind('terminal_stage_failure:review-malformed-response'), 'review-malformed-response');
+  assert.equal(parseAbortFailureKind('terminal_stage_failure:review-not-ready'), 'review-not-ready');
+  assert.equal(classifyArmFault({ failureKind: 'review-malformed-response' }), 'model-fault');
+  assert.equal(classifyArmFault({ failureKind: 'review-not-ready' }), 'model-fault');
+  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'review-malformed-response' })), true);
+  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'review-not-ready' })), true);
+  // These are terminal forfeits, not invalid-challenge voids.
+  assert.equal(isInvalidChallengeAbort('terminal_stage_failure:review-malformed-response'), false);
+
+  // Identity mismatch and missing attribution are harness/identity failures:
+  // retire as invalid_challenge, no winner, never model signal.
+  assert.equal(parseAbortFailureKind('invalid_challenge:review-identity-mismatch'), 'review-identity-mismatch');
+  assert.equal(parseAbortFailureKind('invalid_challenge:review-unattributed'), 'review-unattributed');
+  assert.equal(classifyArmFault({ failureKind: 'review-identity-mismatch' }), 'harness-fault');
+  assert.equal(classifyArmFault({ failureKind: 'review-unattributed' }), 'harness-fault');
+  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'review-identity-mismatch' })), false);
+  assert.equal(isInvalidChallengeAbort('invalid_challenge:review-identity-mismatch'), true);
+  assert.equal(isInvalidChallengeAbort(' invalid_challenge:review-unattributed '), true);
+});
+
 test('classifies the HOK-3147 ready-exhausted kinds and the invalid_challenge prefix', () => {
   // Real checks stayed red after remediation: model-attributable forfeit.
   assert.equal(parseAbortFailureKind('terminal_stage_failure:ready-exhausted'), 'ready-exhausted');

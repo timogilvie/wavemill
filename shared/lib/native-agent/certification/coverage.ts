@@ -96,8 +96,13 @@ export function evaluateSuiteCoverage(options: SuiteCoverageOptions = {}): Suite
     renewalWindowDays,
   );
 
+  // HOK-3143: a durable identity invalidation counts as drift so the mill's
+  // preflight auto-remediation re-certifies and re-pins the alias target.
   const identityDriftCount = ineligibleModels
-    .filter((entry) => entry.reason === 'identity-reidentified').length;
+    .filter((entry) => (
+      entry.reason === 'identity-reidentified'
+      || entry.reason === 'identity-invalidated'
+    )).length;
   const staleModels = ineligibleModels
     .filter((entry) => entry.reason === 'stale')
     .map(({ registryKey }) => ({ registryKey }));
