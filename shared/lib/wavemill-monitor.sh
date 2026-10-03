@@ -1016,7 +1016,9 @@ record_openrouter_credits_challenge_abort() {
   printf '%s\n' "$count" > "$count_file" 2>/dev/null || true
   rm -rf "$lock_dir" 2>/dev/null || true
 
-  if [[ "$count" -ge 2 ]]; then
+  # HOK-3155: trip the warning cache on the first classified credit abort, not
+  # after a count. The count file is kept for diagnostic grep attribution.
+  if [[ "$count" -ge 1 ]]; then
     write_openrouter_warning_cache "OpenRouter credits exhausted - challenge coverage disabled, top up at https://openrouter.ai/credits"
   fi
 }
@@ -1139,9 +1141,14 @@ challenge_abort_pair() {
     ) >/dev/null 2> >(while IFS= read -r line; do log_warn "$line"; done) || true
   fi
 
-  if [[ "$reason" == *"openrouter-credits-exhausted"* ]]; then
-    record_openrouter_credits_challenge_abort || true
-  fi
+  # HOK-3155: trip the credit circuit for both canonical reason spellings. The
+  # terminal_launch_failure prefix wraps `provider-credit-exhausted` today;
+  # `openrouter-credits-exhausted` is the legacy wording and still appears in
+  # some stage envelopes.
+  case "$reason" in
+    *"openrouter-credits-exhausted"*|*"provider-credit-exhausted"*)
+      record_openrouter_credits_challenge_abort || true ;;
+  esac
 
   set_window_attention_state "$win" "needs-user"
   return 0
@@ -6927,7 +6934,7 @@ native_terminal_failure_kind() {
       printf 'provider-config-error\n'; return 0 ;;
     *"rate limit"*|*"429"*)
       printf 'provider-transient-error\n'; return 0 ;;
-    *"can only afford"*|*"requires more credits"*|*"http 402"*|*"402 payment required"*|*"openrouter-credits-exhausted"*)
+    *"can only afford"*|*"requires more credits"*|*"http 402"*|*"402 payment required"*|*"openrouter-credits-exhausted"*|*"exceed your available credits"*|*"402 this request would"*)
       printf 'provider-credit-exhausted\n'; return 0 ;;
     *"insufficient"*"credit"*|*"quota"*)
       printf 'provider-credit-exhausted\n'; return 0 ;;
