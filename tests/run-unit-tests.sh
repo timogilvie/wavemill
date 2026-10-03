@@ -247,6 +247,7 @@ TESTS=(
   shared/lib/harness-diff.test.ts
   shared/lib/quota-state.test.ts
   shared/lib/template-curly-checker.test.ts
+  shared/lib/test-tracked-write-checker.test.ts
   shared/lib/transient-marker.test.ts
   shared/lib/wavemill-incident-artifact-diagnostics.test.ts
   shared/lib/wavemill-incident-detector.test.ts
@@ -578,6 +579,16 @@ fi
 
 cd "$REPO_DIR"
 
+# HOK-3157: snapshot the tracked-file state before running tests. The guard
+# below compares a post-run snapshot and fails if any tracked file was left
+# modified. Untracked artifacts (CI timing JSON, etc.) are ignored. We drop
+# `exec` so node --test runs as a child and this script can run the check
+# after it exits.
+# shellcheck source=lib/tracked-tree-guard.sh
+source "$SCRIPT_DIR/lib/tracked-tree-guard.sh"
+TREE_BEFORE="$(tracked_tree_snapshot "$REPO_DIR")"
+
+status=0
 if [[ -n "$TIMING_OUT" ]]; then
   # Second reporter writes the bounded per-file timing JSON to $TIMING_OUT
   # while the spec reporter keeps human-readable output on stdout. The shard
@@ -591,11 +602,21 @@ if [[ -n "$TIMING_OUT" ]]; then
   # tend-scratch-prep child kept a stdio pipe alive; --test-force-exit hid
   # that at the cost of racing subprocess-spawning shards to exit, which
   # then stalled shard 3 for its full 20m — see HOK-3039.
-  exec node --test --test-timeout=300000 \
+  node --test --test-timeout=300000 \
     --test-reporter spec --test-reporter-destination stdout \
     --test-reporter "$REPO_DIR/tests/lib/unit-timing-reporter.mjs" \
     --test-reporter-destination "$TIMING_OUT" \
-    "${SELECTED[@]}"
+    "${SELECTED[@]}" || status=$?
+else
+  node --test --test-timeout=300000 "${SELECTED[@]}" || status=$?
 fi
 
-exec node --test --test-timeout=300000 "${SELECTED[@]}"
+# Only promote a passing status to failure on guard failure; preserve a
+# non-zero node --test exit code either way.
+if ! tracked_tree_check "$REPO_DIR" "$TREE_BEFORE" run-unit-tests.sh; then
+  if (( status == 0 )); then
+    status=1
+  fi
+fi
+
+exit "$status"
