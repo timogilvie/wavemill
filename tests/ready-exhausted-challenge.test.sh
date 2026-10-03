@@ -84,9 +84,18 @@ WARN_FILE="$TMP_ROOT/warn.txt"
 STATUS_LOG="$TMP_ROOT/status.txt"
 GH_LOG="$TMP_ROOT/gh.txt"
 WORKTREE_ROOT="$TMP_ROOT/worktrees"
-# No tools/record-arm-failure.ts here, so challenge_abort_pair skips it.
+# HOK-3100: point TOOLS_DIR at an empty dir so wavemill_tool_path returns
+# a path that doesn't exist; challenge_abort_pair then skips the bridge.
 REPO_DIR="$TMP_ROOT/no-repo"
-mkdir -p "$WORKTREE_ROOT" "$REPO_DIR"
+TOOLS_DIR="$TMP_ROOT/empty-tools"
+export TOOLS_DIR
+mkdir -p "$WORKTREE_ROOT" "$REPO_DIR" "$TOOLS_DIR"
+
+# This test extracts isolated functions from the monitor without sourcing
+# wavemill-common.sh, so provide the helper locally.
+wavemill_tool_path() {
+  printf '%s/%s\n' "${TOOLS_DIR:-$TMP_ROOT/empty-tools}" "$1"
+}
 PR_STATE="OPEN"
 GH_CLOSE_RC=0
 

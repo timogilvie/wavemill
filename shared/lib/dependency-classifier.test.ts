@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import {
   classifyDependencies,
-  DEFAULT_CLASSIFIER_TEMPLATE_PATH,
   dedupEdges,
   filterInvalidIdEdges,
   filterLowConfidenceEdges,
@@ -16,6 +15,7 @@ import {
   type ClassifierOptions,
   type ClassifierOutput,
 } from './dependency-classifier.ts';
+import { resolveWavemillPromptPath } from './native-agent/install-paths.ts';
 
 let tempRoot: string;
 let responsePath: string;
@@ -300,7 +300,7 @@ describe('classifyDependencies', () => {
     // distinctive non-placeholder line, and assert the CLI received a stdin
     // rendered from it. The test must never write to the tracked template —
     // a killed run otherwise leaves the worktree dirty (HOK-3157).
-    const defaultTemplate = readFileSync(DEFAULT_CLASSIFIER_TEMPLATE_PATH, 'utf-8');
+    const defaultTemplate = readFileSync(resolveWavemillPromptPath('dependency-classifier.md'), 'utf-8');
     const defaultSignature = defaultTemplate
       .split(/\r?\n/)
       .find((line) => line.trim().length > 0 && !line.includes('{{'));

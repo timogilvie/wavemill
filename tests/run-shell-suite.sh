@@ -69,6 +69,8 @@ TESTS=(
   ready-failure-blocks-pr-label.test.sh
   launch-ready-phase.test.sh
   bounded-retry.test.sh
+  check-install-paths.test.sh
+  check-common-guards.test.sh
   ready-update-from-base.test.sh
   plan-packet-binding.test.sh
   task-progress.test.sh

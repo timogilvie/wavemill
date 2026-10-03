@@ -1581,7 +1581,7 @@ export function attachResourceSelections(record: EvalRecord): void {
           continue;
         }
 
-        if (resource.type === 'prompt' && resource.uri === 'tools/prompts/planning-phase.md') {
+        if (resource.type === 'prompt' && resource.uri === 'tools/prompts/planning-phase.md') { // install-paths: allow resource URI identifier
           manifestSelections.push({
             surface: 'planner',
             variant: 'baseline',
@@ -1590,7 +1590,7 @@ export function attachResourceSelections(record: EvalRecord): void {
             uri: resource.uri,
             fallbackApplied: false,
           });
-        } else if (resource.type === 'prompt' && resource.uri === 'tools/prompts/review-phase.md') {
+        } else if (resource.type === 'prompt' && resource.uri === 'tools/prompts/review-phase.md') { // install-paths: allow resource URI identifier
           manifestSelections.push({
             surface: 'reviewer',
             variant: 'baseline',

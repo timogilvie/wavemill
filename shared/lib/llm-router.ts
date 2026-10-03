@@ -11,6 +11,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve, basename } from 'node:path';
 import { execShellCommand } from './shell-utils.ts';
+import { resolveWavemillAssetPath } from './native-agent/install-paths.ts';
 import type { PromptCharacteristics, TaskType, ModelRecommendation } from './model-router.ts';
 import { resolveAgent } from './model-router.ts';
 import {
@@ -112,8 +113,7 @@ export function loadArtifactWithSelection(
         fallbackApplied: false,
       }
     : resolveRuntimeResource('router', { repoDir });
-  const path = resolve(
-    repoDir || '.',
+  const path = resolveWavemillAssetPath(
     artifactPath || selection.uri || DEFAULT_ARTIFACT_PATH,
   );
   if (!existsSync(path)) return null;

@@ -58,6 +58,10 @@ export WAVEMILL_RELIABILITY_REPO_DIR="$TMP_ROOT/reliability-repo"
 CLEANUP_CALLS=""
 
 log_warn() { printf '%s\n' "$1" >> "$WARN_FILE"; }
+# HOK-3100: monitor helpers now resolve tool paths through this install-rooted
+# helper (wavemill-common.sh), which the extracted monitor functions call but
+# this test does not source. Stub mirrors the real helper's semantics.
+wavemill_tool_path() { printf '%s/%s\n' "${TOOLS_DIR:-$REPO_DIR/tools}" "$1"; }
 set_window_attention_state() { printf '%s=%s\n' "$1" "$2" >> "$ATTENTION_FILE"; }
 challenge_result_stage_for_launch() { printf '%s\n' "${1/#coding/coding}"; }
 challenge_stage_for_launch_env() { printf '%s\n' "$1"; }

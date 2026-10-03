@@ -43,11 +43,10 @@ fetch_prs() {
   local author="${2:-}"
   local branch="${3:-}"
 
-  # Determine list-prs tool path (use local if exists, otherwise use TOOLS_DIR)
+  # HOK-3100: resolve list-prs from the wavemill install, never from the
+  # milled repo. A repo with its own tools/list-prs.ts would otherwise shadow
+  # ours and run entirely different code.
   local list_prs_tool="$TOOLS_DIR/list-prs.ts"
-  if [[ -f "$REPO_DIR/tools/list-prs.ts" ]]; then
-    list_prs_tool="$REPO_DIR/tools/list-prs.ts"
-  fi
 
   local args=("$list_prs_tool" "--state" "$state")
 
@@ -71,9 +70,6 @@ main() {
   if [[ "$1" == "--stats" ]]; then
     shift
     local stats_tool="$TOOLS_DIR/review-stats.ts"
-    if [[ -f "$REPO_DIR/tools/review-stats.ts" ]]; then
-      stats_tool="$REPO_DIR/tools/review-stats.ts"
-    fi
     exec npx tsx "$stats_tool" "$@"
   fi
 
@@ -114,11 +110,8 @@ main() {
     exit 1
   fi
 
-  # Determine review tool path (use local if exists, otherwise use TOOLS_DIR)
+  # HOK-3100: always use the install's review-pr.ts (never the milled repo's).
   local review_tool="$TOOLS_DIR/review-pr.ts"
-  if [[ -f "$REPO_DIR/tools/review-pr.ts" ]]; then
-    review_tool="$REPO_DIR/tools/review-pr.ts"
-  fi
 
   # If PR number provided, skip selection
   if [[ -n "$pr_number" ]]; then
