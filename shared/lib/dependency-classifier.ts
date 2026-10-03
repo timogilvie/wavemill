@@ -53,6 +53,9 @@ export interface ClassifierOptions {
 
 const FORBIDDEN_FIELDS = new Set(['waves', 'queues', 'order', 'schedule', 'sequence']);
 
+/** Default classifier prompt, resolved relative to the caller's cwd. */
+export const DEFAULT_CLASSIFIER_TEMPLATE_PATH = 'tools/prompts/dependency-classifier.md';
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
@@ -239,7 +242,7 @@ export async function classifyDependencies(
     throw new Error('No models available for dependency classification');
   }
 
-  const templatePath = options.templatePath ?? 'tools/prompts/dependency-classifier.md';
+  const templatePath = options.templatePath ?? DEFAULT_CLASSIFIER_TEMPLATE_PATH;
   const template = await loadPromptTemplate(templatePath);
   const renderedPrompt = fillPromptTemplate(template, {
     ISSUES: JSON.stringify(input.issues),
