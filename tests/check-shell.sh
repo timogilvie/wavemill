@@ -212,6 +212,8 @@ for f in \
   "$REPO_DIR"/tests/incident-fixtures-safety-controls.test.sh \
   "$REPO_DIR"/tests/lib/incident-fixture-harness.sh \
   "$REPO_DIR"/tests/lib/terminal-lifecycle-cert-harness.sh \
+  "$REPO_DIR"/tests/lib/tracked-tree-guard.sh \
+  "$REPO_DIR"/tests/tracked-tree-guard.test.sh \
   "$REPO_DIR"/tests/terminal-lifecycle-cert-matrix.test.sh \
   "$REPO_DIR"/tests/terminal-lifecycle-cert-restart.test.sh \
   "$REPO_DIR"/tests/terminal-lifecycle-cert-budgets.test.sh \

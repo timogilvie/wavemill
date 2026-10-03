@@ -73,6 +73,7 @@ TESTS=(
   plan-packet-binding.test.sh
   task-progress.test.sh
   task-identity.test.sh
+  tracked-tree-guard.test.sh
   handle-phase-launch-result.test.sh
   coding-launch-refusal.test.sh
   launch-pane-liveness.test.sh

@@ -76,6 +76,7 @@ describe('checkSourceText', () => {
   });
 
   it('does not flag template literals with substitutions', () => {
+    // allow-template-curly: fixture source analyzed by the checker, not interpolated here
     const source = 'writeFileSync(`tools/prompts/${name}.md`, `hi`);\n';
     assert.deepEqual(checkSourceText('a.test.ts', source, tracked), []);
   });
