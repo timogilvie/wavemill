@@ -57,6 +57,7 @@ for fn in \
   ready_exhausted_challenge_cause \
   ready_exhausted_challenge_sibling_green \
   ready_exhausted_challenge_terminalize \
+  _retired_challenge_arm_close_pr \
   challenge_abort_pair \
   _challenge_side_for_issue \
   native_terminal_failure_next_action \

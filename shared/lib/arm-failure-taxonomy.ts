@@ -33,6 +33,20 @@ export type TerminalFailureKind =
   | 'ready-exhausted'
   | 'ready-transition-failed'
   | 'ready-unattributed'
+  // HOK-3154: a challenge arm's Ready launch was refused by the review gate
+  // (`pending-ready-recheck`) while its sibling was green. The review artifact
+  // can never pass the readiness gate, so retiring the arm releases the sibling
+  // the same way HOK-3147's ready-exhausted kinds do. `review-malformed-response`
+  // and `review-not-ready` are model-attributable (the reviewer delivered output
+  // but failed to produce a usable verdict). `review-identity-mismatch` and
+  // `review-unattributed` are harness/identity failures that retire the arm as
+  // an invalid challenge (no winner; tend's `challenge-void` releases the
+  // survivor once the retired PR is closed). `review-no-output` already exists
+  // above.
+  | 'review-malformed-response'
+  | 'review-not-ready'
+  | 'review-identity-mismatch'
+  | 'review-unattributed'
   // HOK-3129: four recurring native arm-failure signatures the classifier
   // used to default into `native-unclassified`. All four are model-attributable
   // (the provider delivered output; the model failed to produce usable
@@ -145,6 +159,18 @@ export function classifyArmFault(input: { failureKind?: string | null; detail?: 
     // and never become model signal.
     case 'ready-transition-failed':
     case 'ready-unattributed':
+      return 'harness-fault';
+    // HOK-3154: Ready launch was refused by the review gate while the sibling
+    // was green. `review-malformed-response` and `review-not-ready` are
+    // model-attributable (the reviewer delivered output but failed to produce a
+    // usable verdict), parallel to `review-no-output`. `review-identity-mismatch`
+    // and `review-unattributed` are harness/identity failures (the reviewer
+    // identity could not be proven, so no winner can be forfeited).
+    case 'review-malformed-response':
+    case 'review-not-ready':
+      return 'model-fault';
+    case 'review-identity-mismatch':
+    case 'review-unattributed':
       return 'harness-fault';
     // HOK-3129: the planner exhausted its turn budget without emitting a final
     // plan; the reviewer finished without findings or a terminal verdict; the
