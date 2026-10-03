@@ -80,6 +80,12 @@ export const STAGE_ATTRIBUTION_REASON_CODES = [
   'presentation_order_bias_unresolved',
   'insufficient_review_iterations',
   'insufficient_evidence_other',
+  /**
+   * HOK-3143: the provider substituted a different concrete model than the
+   * certified identity for this stage. Attribution would mis-credit the
+   * certified identity, so the stage result is attribution-invalid.
+   */
+  'provider_model_substitution',
 ] as const;
 
 export type StageAttributionReasonCode = typeof STAGE_ATTRIBUTION_REASON_CODES[number];

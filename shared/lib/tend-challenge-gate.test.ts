@@ -2109,6 +2109,45 @@ describe('challenge-void: a sibling retired as an invalid challenge (HOK-3147)',
     assert.deepEqual(result.eligible.map((item) => item.pr.number), [102]);
   });
 
+  it('releases the primary once a review-identity-mismatch retired challenger PR is closed (HOK-3154)', async () => {
+    const { repoDir, cleanup } = setupRepoDir({ challenge: { autoMergeWinner: true } });
+    try {
+      writeWorkflowState(repoDir, {
+        HOK_1: { pr: 101, challengePairId: 'pair-1', challengeRole: 'primary', evalCompleted: true },
+        HOK_1_c: {
+          pr: 102,
+          challengePairId: 'pair-1',
+          challengeRole: 'challenger',
+          challengeAborted: 'invalid_challenge:review-identity-mismatch',
+          challengeAbortedStage: 'review',
+        },
+      });
+      writeFileSync(
+        join(repoDir, '.wavemill', 'evals', 'challenge-records.jsonl'),
+        `${JSON.stringify({
+          challengePairId: 'pair-1',
+          primaryPrUrl: 'https://github.com/org/repo/pull/101',
+          challengerPrUrl: 'https://github.com/org/repo/pull/102',
+          comparisonOutcome: 'invalid_challenge',
+          invalidChallenge: true,
+          invalidChallengeReason: 'arm_infrastructure_failure',
+          terminalReason: 'challenger_challenge_aborted',
+          timestamp: '2026-10-02T12:00:00Z',
+          armFailures: [{ side: 'challenger', model: 'kimi-k2', stage: 'review', failureKind: 'review-identity-mismatch', faultClass: 'harness-fault' }],
+        })}\n`,
+      );
+      // Only the primary PR is still open (the monitor closed the retired challenger).
+      const items = [101].map((number) =>
+        makeWorkItem({ number, challengePairId: 'pair-1', challenge: true }),
+      );
+      const result = await applyChallengePairGates(items, [], repoDir, { remoteBranches: [], coolOffSeconds: 0 });
+      assert.deepEqual(result.eligible.map((item) => item.pr.number), [101]);
+      assert.equal(result.blocked.length, 0);
+    } finally {
+      cleanup();
+    }
+  });
+
   it('a ready-exhausted forfeit makes the primary the winner and the open challenger a loser', async () => {
     const result = await gate(voidRecord({
       comparisonOutcome: 'forfeit',

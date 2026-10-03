@@ -5,6 +5,12 @@ import type { AgentMessage, Message } from './messages.ts';
 import type { AgentContext, LoopStopReason, WavemillLoopConfig } from './loop.ts';
 import { runWavemillLoop } from './loop.ts';
 import {
+  ProviderIdentityMismatchError,
+  ProviderIdentityTracker,
+  type ProviderIdentitySummary,
+} from './provider-identity.ts';
+import { invalidateCertificationIdentity } from './certification/identity-invalidation.ts';
+import {
   ContextExhaustedError,
   ContextWindowExceededError,
   ContextWindowUnverifiableError,
@@ -833,6 +839,28 @@ export async function runNativeReview(
   // guaranteeing enough analysis turns for repository-scale reviews.
   const analysisTurnLimit = Math.max(REVIEW_ANALYSIS_TURN_LIMIT, (options.maxRetries ?? 1) + 1);
   const cleanupTracker = createCleanupTracker();
+  // HOK-3143: provider-identity verification for native review.
+  const reviewIdentityTracker = new ProviderIdentityTracker();
+  const reviewIdentityExpectation = provider.entry.certifiedIdentity;
+  const reviewIdentityConfig = reviewIdentityExpectation
+    ? {
+      expectation: reviewIdentityExpectation,
+      tracker: reviewIdentityTracker,
+      onMismatch: async (error: ProviderIdentityMismatchError) => {
+        if (!reviewIdentityExpectation.certificationPath) return;
+        invalidateCertificationIdentity({
+          artifactPath: reviewIdentityExpectation.certificationPath,
+          expectedModel: error.expectedModel,
+          observedModel: error.reportedModel ?? '(absent)',
+          requestedWireId: error.requestedWireId,
+          source: 'runtime',
+          phase: 'review',
+          session: options.session,
+          issue: options.issue,
+        });
+      },
+    }
+    : undefined;
   let loopResult;
   try {
     loopResult = await nativeReviewDeps.runWavemillLoop({
@@ -850,6 +878,7 @@ export async function runNativeReview(
       // exports diverged nominal types so a direct cast is required.
       convertToLlm: (messages) => messages as unknown as Message[],
       afterToolCall: gitAfterToolCall,
+      ...(reviewIdentityConfig ? { providerIdentity: reviewIdentityConfig } : {}),
       toolPolicy: {
         phase: 'review',
         worktreePath: repoDir,
@@ -889,6 +918,16 @@ export async function runNativeReview(
     if (error instanceof ContextWindowExceededError || error instanceof ContextWindowUnverifiableError) {
       recordReviewFailureEnvelope('context-window-exceeded', error.message);
       return nativeReviewFailure(context, 'native-context-window-exceeded', error.message, [], substantiveAnalysisIdentity);
+    }
+    if (error instanceof ProviderIdentityMismatchError) {
+      recordReviewFailureEnvelope('provider-identity-mismatch', error.message);
+      return nativeReviewFailure(
+        context,
+        'native-provider-identity-mismatch',
+        error.message,
+        [],
+        substantiveAnalysisIdentity,
+      );
     }
     throw error;
   } finally {

@@ -604,3 +604,127 @@ export function buildChallengeStageEval(input: BuildChallengeStageEvalInput): Ch
     ? buildPlannerStageEval(input, slug)
     : buildReviewerStageEval(input, slug);
 }
+
+// ────────────────────────────────────────────────────────────────
+// Provider-identity attribution (HOK-3143)
+// ────────────────────────────────────────────────────────────────
+
+const PROVIDER_IDENTITY_STAGES = ['planning', 'coding', 'review'] as const;
+type ProviderIdentityStage = (typeof PROVIDER_IDENTITY_STAGES)[number];
+
+type StageResultWithIdentity = StageResultShape & {
+  executedModel?: string | null;
+  intendedModel?: string | null;
+  executionEvidence?: {
+    status?: string;
+    source?: string;
+    providerReportedModel?: string;
+    requestedWireId?: string;
+    certifiedTarget?: string;
+    identityVerdict?: string;
+  };
+  modelAttributionIneligibleReason?: string;
+};
+
+/**
+ * Read `<stageResultsDir>/.{planning|coding|review}-result.json` and build a
+ * per-stage `stageExecution` block for the eval record (HOK-3143).
+ *
+ * Fail-soft: a missing or malformed stage result is skipped. An unknown
+ * `identityVerdict` is dropped from the record rather than persisted.
+ *
+ * The returned object may be empty, in which case callers should not set
+ * `record.stageExecution`.
+ */
+export function buildStageExecutionIdentity(input: {
+  stageResultsDir: string;
+}): import('./eval-schema.ts').EvalRecord['stageExecution'] | undefined {
+  const result: NonNullable<import('./eval-schema.ts').EvalRecord['stageExecution']> = {};
+  for (const stage of PROVIDER_IDENTITY_STAGES) {
+    const stageResult = readStageResultWithIdentity(input.stageResultsDir, stage);
+    if (!stageResult) continue;
+    const entry = toStageExecutionIdentity(stageResult);
+    if (entry) {
+      result[stage] = entry;
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+/**
+ * True when any stage recorded a provider substitution — alias target drift
+ * or a non-alias model being replaced. Used to add
+ * `provider_model_substitution` to the record's `eligibilityErrors` so the
+ * record is excluded from training and budget-eval exports.
+ */
+export function hasProviderModelSubstitution(
+  stageExecution: import('./eval-schema.ts').EvalRecord['stageExecution'] | undefined,
+): boolean {
+  if (!stageExecution) return false;
+  for (const stage of PROVIDER_IDENTITY_STAGES) {
+    const entry = stageExecution[stage];
+    if (!entry) continue;
+    if (entry.executionEvidence?.identityVerdict === 'mismatch') return true;
+  }
+  return false;
+}
+
+function readStageResultWithIdentity(
+  stageResultsDir: string,
+  stage: ProviderIdentityStage,
+): StageResultWithIdentity | undefined {
+  const candidate = path.join(stageResultsDir, `.${stage}-result.json`);
+  if (!existsSync(candidate)) return undefined;
+  try {
+    return JSON.parse(readFileSync(candidate, 'utf8')) as StageResultWithIdentity;
+  } catch {
+    return undefined;
+  }
+}
+
+const KNOWN_IDENTITY_VERDICTS = new Set([
+  'match',
+  'alias-resolved',
+  'mismatch',
+  'unverifiable',
+  'absent',
+]);
+
+function toStageExecutionIdentity(
+  stageResult: StageResultWithIdentity,
+): import('./eval-schema.ts').StageExecutionIdentity | undefined {
+  const intendedModel = typeof stageResult.intendedModel === 'string'
+    ? stageResult.intendedModel
+    : stageResult.intendedModel === null
+      ? null
+      : null;
+  const executedModel = typeof stageResult.executedModel === 'string'
+    ? stageResult.executedModel
+    : stageResult.executedModel === null
+      ? null
+      : null;
+  if (intendedModel === null && executedModel === null && !stageResult.executionEvidence) {
+    return undefined;
+  }
+  const evidence = stageResult.executionEvidence;
+  const entry: import('./eval-schema.ts').StageExecutionIdentity = {
+    intendedModel,
+    executedModel,
+  };
+  if (evidence && evidence.status) {
+    const status = evidence.status as 'direct' | 'missing' | 'contradicted' | 'inherited';
+    const verdict = typeof evidence.identityVerdict === 'string'
+      && KNOWN_IDENTITY_VERDICTS.has(evidence.identityVerdict)
+      ? (evidence.identityVerdict as 'match' | 'alias-resolved' | 'mismatch' | 'unverifiable' | 'absent')
+      : undefined;
+    entry.executionEvidence = {
+      status,
+      ...(evidence.source ? { source: evidence.source } : {}),
+      ...(evidence.providerReportedModel ? { providerReportedModel: evidence.providerReportedModel } : {}),
+      ...(evidence.requestedWireId ? { requestedWireId: evidence.requestedWireId } : {}),
+      ...(evidence.certifiedTarget ? { certifiedTarget: evidence.certifiedTarget } : {}),
+      ...(verdict ? { identityVerdict: verdict } : {}),
+    };
+  }
+  return entry;
+}

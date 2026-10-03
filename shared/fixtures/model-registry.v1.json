@@ -1064,12 +1064,23 @@
             "model": "gemini-2.5-pro",
             "suiteVersion": "v2"
           },
-          "lifecycle": "supported",
+          "lifecycle": "blocked",
           "compatibilityFlags": {
             "thinkingFormat": "openrouter"
           },
-          "launchEligible": true,
-          "routingEligible": true
+          "launchEligible": false,
+          "routingEligible": false
+        },
+        "identity": {
+          "status": "verified",
+          "revision": 1,
+          "fingerprint": "c509f2f3f561948bf37c7c9e38ec8864324cf2584bee813d05a8d1addc520431",
+          "displayName": "gemini-2.5-pro",
+          "family": "gemini",
+          "evidencePolicy": "eligible",
+          "lineage": {
+            "successor": "gemini-3.1-pro-preview"
+          }
         }
       }
     },
@@ -1089,11 +1100,11 @@
           "OpenRouter dependency"
         ],
         "qualityScores": {
-          "routing": 68,
-          "planning": 90,
-          "coding": 88,
-          "review": 89,
-          "classify": 66
+          "routing": 50,
+          "planning": 70,
+          "coding": 70,
+          "review": 70,
+          "classify": 50
         },
         "pricing": {
           "inputCostPerMTok": 2,
@@ -1156,6 +1167,17 @@
           },
           "launchEligible": true,
           "routingEligible": true
+        },
+        "identity": {
+          "status": "verified",
+          "revision": 1,
+          "fingerprint": "f77d30fe1ede221917fe00384a9d688477e113f7ae3a9d0ad581e4ce1af80df9",
+          "displayName": "gemini-3.1-pro-preview",
+          "family": "gemini",
+          "evidencePolicy": "eligible",
+          "lineage": {
+            "predecessors": ["gemini-2.5-pro"]
+          }
         }
       }
     },
@@ -3305,7 +3327,7 @@
       "wavemillAlias": "gemini-2.5-pro",
       "openrouterId": "google/gemini-2.5-pro",
       "family": "gemini",
-      "status": "active",
+      "status": "deprecated",
       "priorityTier": 1,
       "roleEligibility": [
         "planning",

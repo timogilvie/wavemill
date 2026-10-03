@@ -21,6 +21,15 @@ test('llama-4-maverick is held out of automatic selection (HOK-2885)', () => {
   assert.equal(filterDisabledModels(['llama-4-maverick']).length, 0);
 });
 
+test('gemini-3.1-pro-preview variants are held out pending HOK-3158 data retention', () => {
+  assert.equal(isDisabledModel('gemini-3.1-pro-preview'), true);
+  assert.equal(isDisabledModel('gemini-3.1-pro-preview-customtools'), true);
+  assert.deepEqual(
+    filterDisabledModels(['gemini-3.1-pro-preview', 'gemini-3.1-pro-preview-customtools', 'gemini-2.5-pro']),
+    ['gemini-2.5-pro'],
+  );
+});
+
 test('llama-4-scout is held out after live coding challenge failures', () => {
   assert.equal(isDisabledModel('llama-4-scout'), true);
   assert.deepEqual(

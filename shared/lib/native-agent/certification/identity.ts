@@ -9,7 +9,11 @@ import {
   type ModelRegistry,
   type NativeProviderName,
 } from '../../model-registry.ts';
-import type { CertificationSubject } from './schema.ts';
+import type {
+  CertificationSubject,
+  LiveSmokeEvidence,
+  ResolvedCertificationTarget,
+} from './schema.ts';
 
 export interface CertificationStorageIdentity {
   provider: string;
@@ -22,6 +26,16 @@ export interface ResolvedCertificationSubject {
 }
 
 const UNSAFE_SEGMENT = /[/\\\0]/;
+
+/**
+ * OpenRouter's documented convention: a rolling alias id begins with `~`
+ * (e.g. `~google/gemini-pro-latest`). Centralized here so a future
+ * registry flag can replace it in exactly one spot. See HOK-3143 Plan D1.
+ */
+export function isRollingProviderAlias(providerNativeId: string): boolean {
+  return providerNativeId.startsWith('~');
+}
+
 const PROVIDER_ALIASES = new Map<string, string>([
   ['qwen', 'qwen'],
   ['alibaba', 'qwen'],
@@ -165,4 +179,32 @@ function normalizeStorageSegment(value: string): string {
 
 function canonicalProviderSegment(provider: string): string {
   return PROVIDER_ALIASES.get(provider) ?? provider;
+}
+
+/**
+ * Pin a rolling alias to the concrete model the provider returned on live
+ * smoke (HOK-3143). The returned `resolvedTarget` is written into the
+ * certification artifact; the runtime verifies every assistant turn against
+ * `resolvedTarget.model`.
+ *
+ * Fails closed:
+ * - Smoke evidence missing a `providerReturnedModel` cannot pin a target.
+ * - If OpenRouter returned another `~` alias as the pinned target (unexpected
+ *   but defensive), we refuse — pinning to an alias would just re-hoist the
+ *   same problem.
+ */
+export function resolveAliasTargetFromSmoke(input: {
+  requestedWireId: string;
+  evidence: LiveSmokeEvidence;
+  now: () => Date;
+}): ResolvedCertificationTarget | undefined {
+  const reported = input.evidence.providerReturnedModel?.trim();
+  if (!reported) return undefined;
+  if (isRollingProviderAlias(reported)) return undefined;
+  return {
+    requestedWireId: input.requestedWireId,
+    model: reported,
+    observedAt: input.now().toISOString(),
+    source: 'provider-response',
+  };
 }

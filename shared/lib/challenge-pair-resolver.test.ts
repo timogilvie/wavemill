@@ -1528,6 +1528,76 @@ test('resolver voids the pair symmetrically when the primary was retired (HOK-31
   }
 });
 
+// HOK-3154: a challenge arm refused by the review gate is retired through the
+// pending-ready-recheck path. The resolver treats the resulting stamp exactly
+// like HOK-3147's ready-exhausted shapes (prefix-driven), so a dedicated
+// resolver test ensures the new causes flow through the right outcome.
+const REVIEW_MALFORMED_FORFEIT = {
+  challengeAborted: 'terminal_stage_failure:review-malformed-response',
+  challengeAbortedDetail: 'Ready launch refused: review verdict does not pass; failureCategory=native-review-malformed-response',
+  challengeAbortedStage: 'review',
+};
+
+const REVIEW_IDENTITY_MISMATCH = {
+  challengeAborted: 'invalid_challenge:review-identity-mismatch',
+  challengeAbortedDetail: 'Ready launch refused: reviewer identity disagreed with assignment',
+  challengeAbortedStage: 'review',
+};
+
+test('resolver voids the pair when the challenger was retired for review-identity-mismatch (HOK-3154)', async () => {
+  const { repoDir, cleanup } = setupRepoDir();
+  try {
+    writeWorkflowState(repoDir, readyExhaustedPairTasks(REVIEW_IDENTITY_MISMATCH));
+    const result = await resolveUnresolvablePair({ pairId: 'HOK-3145', repoDir });
+
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.reason, 'sibling-challenge-aborted');
+    assert.equal(result.outcome, 'invalid_challenge');
+    assert.equal(result.record.comparisonOutcome, 'invalid_challenge');
+    assert.equal(result.record.invalidChallenge, true);
+    assert.equal(result.record.invalidChallengeReason, 'arm_infrastructure_failure');
+    assert.equal(result.record.terminalReason, 'challenger_challenge_aborted');
+    assert.equal(result.record.winner, undefined);
+    assert.equal(result.record.armFailures?.[0].failureKind, 'review-identity-mismatch');
+    assert.equal(result.record.armFailures?.[0].faultClass, 'harness-fault');
+  } finally {
+    cleanup();
+  }
+});
+
+test('resolver forfeits to the primary when the challenger was retired for a proven review-malformed-response (HOK-3154)', async () => {
+  const { repoDir, cleanup } = setupRepoDir();
+  try {
+    writeWorkflowState(repoDir, readyExhaustedPairTasks(REVIEW_MALFORMED_FORFEIT));
+    const result = await resolveUnresolvablePair({ pairId: 'HOK-3145', repoDir });
+
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.outcome, 'forfeit');
+    assert.equal(result.record.winner, 'primary');
+    assert.equal(result.record.terminalReason, 'challenger_challenge_aborted');
+    assert.equal(result.record.armFailures?.[0].failureKind, 'review-malformed-response');
+    assert.equal(result.record.armFailures?.[0].faultClass, 'model-fault');
+    assert.equal(result.record.armFailures?.[0].stage, 'review');
+  } finally {
+    cleanup();
+  }
+});
+
+test('resolver voids the pair symmetrically when the primary was retired for review-identity-mismatch (HOK-3154)', async () => {
+  const { repoDir, cleanup } = setupRepoDir();
+  try {
+    writeWorkflowState(repoDir, readyExhaustedPairTasks({ evalCompleted: true }, { ...REVIEW_IDENTITY_MISMATCH, evalCompleted: false }));
+    const result = await resolveUnresolvablePair({ pairId: 'HOK-3145', repoDir });
+
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.outcome, 'invalid_challenge');
+    assert.equal(result.record.terminalReason, 'primary_challenge_aborted');
+    assert.equal(result.record.armFailures?.[0].side, 'primary');
+  } finally {
+    cleanup();
+  }
+});
+
 for (const [label, abort, expectedOutcome] of [
   ['red check', RED_CHECK_ABORT, 'forfeit'],
   ['route-stamp', ROUTE_STAMP_ABORT, 'invalid_challenge'],
