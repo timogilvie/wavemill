@@ -1085,14 +1085,13 @@ function validateStageForSide(input: {
     addStageValidationIssue(input.issues, input.side, stageProvenance, 'execution-evidence-contradicted', intendedModel);
     return;
   }
-  // HOK-3143: a correctly resolved alias is not an executed-model mismatch,
-  // even though the executed concrete id differs from the alias we intended.
-  if (
-    stageProvenance.identityVerdict === 'alias-resolved'
-    && intendedModel
-    && stageProvenance.rawModel
-    && challengeModelIdsEquivalent(stageProvenance.rawModel, intendedModel, input.repoDir)
-  ) {
+  // HOK-3143: a correctly resolved alias is not an executed-model mismatch.
+  // The provider-identity gate has already verified the executed concrete
+  // matches the certificate's pinned `resolvedTarget.model`, so the executed
+  // id is expected to differ from the intended alias — don't re-compare them
+  // via the registry (which would fail for an alias whose target is not a
+  // registry key, e.g. `~google/gemini-pro-latest` → `google/gemini-3.1-pro-preview`).
+  if (stageProvenance.identityVerdict === 'alias-resolved') {
     return;
   }
   if (
