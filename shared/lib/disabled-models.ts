@@ -38,6 +38,18 @@ export const DISABLED_MODEL_IDS = new Set<string>([
   // mutation tool call plus completion artifact and a completion-rate review
   // shows the upstream throttle has cleared.
   'llama-4-scout',
+  // Disabled 2026-10-03 for HOK-3158. Three gemini-3.1-pro-preview challenger
+  // arms cost ~$57 (token-derived) and yielded no usable Hokusai training data:
+  // none finished (provider 400 INVALID_ARGUMENT after 329 turns; an account
+  // 402 after a 1,620-turn / ~$40 runaway coding loop; superseded after 80
+  // turns), their tool decisions were not captured on abnormal exit (recovered
+  // by backfill), native cost recorded as $0, and the infra failures were
+  // filed as model forfeits. This is a data-retention and spend hold, not a
+  // quality judgement. Re-enable only after HOK-3158 lands (capture on
+  // abnormal exit, recorded cost, per-arm budget ceiling, infra failures kept
+  // out of model attribution). Both variants are paused together.
+  'gemini-3.1-pro-preview',
+  'gemini-3.1-pro-preview-customtools',
 ]);
 
 export function isDisabledModel(modelId: string | undefined | null): boolean {
