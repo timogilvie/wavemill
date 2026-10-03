@@ -156,6 +156,9 @@ test('terminalFailureKindForEnvelope covers the full cause table', () => {
     'context-window-exceeded': 'context-window-exceeded',
     'policy-denied': 'policy-denied',
     'cancelled': 'cancelled',
+    // HOK-3143: identity mismatch routes through provider-config-error so the
+    // HOK-3142 coder reroute handles the invalidated certificate.
+    'provider-identity-mismatch': 'provider-config-error',
     'unknown': 'native-unclassified',
   };
 
