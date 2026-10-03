@@ -164,6 +164,9 @@ SHELL_FILES=()
 if [[ -f wavemill ]]; then
   SHELL_FILES+=("wavemill")
 fi
+if [[ -f install.sh ]]; then
+  SHELL_FILES+=("install.sh")
+fi
 while IFS= read -r f; do
   SHELL_FILES+=("$f")
 done < <(
