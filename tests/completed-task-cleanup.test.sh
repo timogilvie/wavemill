@@ -217,6 +217,9 @@ run_cleanup_case() {
 
   CASE_DIR="$case_dir" HELPERS_FILE="$HELPERS_FILE" CLEANUP_FILE="$CLEANUP_FILE" REMOTE_CLEANUP_FILE="$REMOTE_CLEANUP_FILE" RELEASE_FILE="$RELEASE_FILE" TEST_CASE="$test_case" bash -lc '
     set -euo pipefail
+    # Each case opts into archive-and-abandon explicitly below. Do not inherit
+    # the process environment into the no-abandon control case.
+    unset WAVEMILL_CLEANUP_ABANDON_ISSUE
     source "$HELPERS_FILE"
     source "$REMOTE_CLEANUP_FILE"
     source "$RELEASE_FILE"
@@ -370,7 +373,7 @@ EOF
           return 0
           ;;
         "merge-base --is-ancestor")
-          [[ "$TEST_CASE" != "preserved-local-work" && "$TEST_CASE" != "patch-equivalent-rebased" && "$TEST_CASE" != "closed-unmerged-retained" && "$TEST_CASE" != "closed-loser-abandoned" && "$TEST_CASE" != "aborted-pr-less-abandoned" && "$TEST_CASE" != "aborted-pr-less-archive-push-fails" && "$TEST_CASE" != "aborted-pr-less-dirty" ]]
+          [[ "$TEST_CASE" != "preserved-local-work" && "$TEST_CASE" != "patch-equivalent-rebased" && "$TEST_CASE" != "closed-unmerged-retained" && "$TEST_CASE" != "closed-loser-abandoned" && "$TEST_CASE" != "aborted-pr-less-abandoned" && "$TEST_CASE" != "aborted-pr-less-archive-push-fails" && "$TEST_CASE" != "aborted-pr-less-dirty" && "$TEST_CASE" != "aborted-pr-less-no-abandon" ]]
           return $?
           ;;
         "cat-file -e")
@@ -706,7 +709,7 @@ check_contains "aborted PR-less abandon returns zero" "$output" "rc=0"
 check_contains "aborted PR-less abandon classifies safe" "$output" "outcome=safe_abandoned_pr_less_arm"
 check_contains "aborted PR-less abandon removes state" "$output" "remove_state_calls=1"
 check_contains "aborted PR-less abandon pushes to archive ref" "$output" "push origin aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:refs/archive/wavemill/HOK-2348"
-check_contains "aborted PR-less abandon includes archive in order" "$output" "archive;tmux-kill;worktree-remove;branch-delete;push origin aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:refs/archive/wavemill/HOK-2348;ls-remote;push-delete;prune;reset;remove-state;"
+check_contains "aborted PR-less abandon includes archive in order" "$output" "order=archive;tmux-kill;archive-push;worktree-remove;branch-delete;prune;reset;remove-state;"
 
 output="$(run_cleanup_case aborted-pr-less-archive-push-fails)"
 check_contains "aborted PR-less archive push failure returns non-zero" "$output" "rc=1"
