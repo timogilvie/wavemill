@@ -166,20 +166,36 @@ function legacyConfigWithEveryRemovedField(): Record<string, unknown> {
   };
 }
 
+/**
+ * Never let a preflight test reach the operator's real certification store or
+ * run real certification: an un-isolated `runMillConfigPreflight(repoDir)` once
+ * evaluated ~/.wavemill and auto-remediated the whole native fleet (HOK-3159).
+ */
+const refuseRealCertification = async (): Promise<never> => {
+  throw new Error('test must not run real certification');
+};
+
 test('runMillConfigPreflight rejects every removed HOK-2587 model field', async () => {
-  const repoDir = makeRepo(legacyConfigWithEveryRemovedField());
-  try {
-    const result = await runMillConfigPreflight(repoDir);
-    assert.equal(result.ok, false);
-    assert.equal(result.report.removedFields.length, REMOVED_MODEL_SETTING_PATHS.length);
-    assert.deepEqual(
-      result.report.removedFields.map((entry) => entry.path).sort(),
-      [...REMOVED_MODEL_SETTING_PATHS].sort(),
-    );
-    assert.match(result.report.validationError ?? '', /wavemill config migrate-model-settings/);
-  } finally {
-    cleanup(repoDir);
-  }
+  await withCertificationRoot(async (root) => {
+    const repoDir = makeRepo(legacyConfigWithEveryRemovedField());
+    try {
+      const result = await runMillConfigPreflight(repoDir, {
+        certificationRoot: root,
+        attemptCachePath: join(root, 'attempts.json'),
+        certifyFn: refuseRealCertification,
+        canaryCertifyFn: refuseRealCertification,
+      });
+      assert.equal(result.ok, false);
+      assert.equal(result.report.removedFields.length, REMOVED_MODEL_SETTING_PATHS.length);
+      assert.deepEqual(
+        result.report.removedFields.map((entry) => entry.path).sort(),
+        [...REMOVED_MODEL_SETTING_PATHS].sort(),
+      );
+      assert.match(result.report.validationError ?? '', /wavemill config migrate-model-settings/);
+    } finally {
+      cleanup(repoDir);
+    }
+  });
 });
 
 test('runMillConfigPreflight accepts clean config', async () => {
@@ -216,9 +232,16 @@ test('runMillConfigPreflight reports only present legacy fields', async () => {
     },
   });
   try {
-    const result = await runMillConfigPreflight(repoDir);
-    assert.equal(result.ok, false);
-    assert.deepEqual(result.report.removedFields.map((entry) => entry.path), ['router.defaultModel']);
+    await withCertificationRoot(async (root) => {
+      const result = await runMillConfigPreflight(repoDir, {
+        certificationRoot: root,
+        attemptCachePath: join(root, 'attempts.json'),
+        certifyFn: refuseRealCertification,
+        canaryCertifyFn: refuseRealCertification,
+      });
+      assert.equal(result.ok, false);
+      assert.deepEqual(result.report.removedFields.map((entry) => entry.path), ['router.defaultModel']);
+    });
   } finally {
     cleanup(repoDir);
   }
