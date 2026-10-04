@@ -249,3 +249,27 @@ describe('review-engine dismissal parsing (HOK-2932)', () => {
     assert.equal(isBlockingFinding(unjustified), true);
   });
 });
+
+describe('review-engine artifact citations (HOK-3058)', () => {
+  it('keeps protected refs and drops invalid citations without failing the review parse', () => {
+    const validRef = `artifact://${'a'.repeat(64)}`;
+    const result = reviewEngineTestUtils.parseNativeReviewResponse(JSON.stringify({
+      verdict: 'ready',
+      codeReviewFindings: [{
+        severity: 'warning', location: 'src/app.ts:1', category: 'logic', description: 'Visual difference',
+        artifactRefs: [validRef, '/tmp/screenshot.png', `artifact://${'A'.repeat(64)}`, 42],
+      }, {
+        severity: 'warning', location: 'src/app.ts:2', category: 'logic', description: 'Malformed citations',
+        artifactRefs: 'artifact://not-an-array',
+      }],
+      uiFindings: [{
+        severity: 'warning', location: 'page', category: 'ui', description: 'Changed layout',
+        artifactRefs: [validRef, 'artifact://short'],
+      }],
+    }), makeReviewContext());
+
+    assert.deepEqual(result.codeReviewFindings[0].artifactRefs, [validRef]);
+    assert.equal(result.codeReviewFindings[1].artifactRefs, undefined);
+    assert.deepEqual(result.uiFindings?.[0].artifactRefs, [validRef]);
+  });
+});

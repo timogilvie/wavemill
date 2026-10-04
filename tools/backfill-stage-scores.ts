@@ -129,7 +129,7 @@ runTool({
     input: { type: 'string', description: 'Input JSONL file (default: aggregated-evals.jsonl)' },
     output: { type: 'string', description: 'Output JSONL file (default: <input>.backfilled.jsonl)' },
     limit: { type: 'string', description: 'Max records to process (number)' },
-    model: { type: 'string', description: 'Judge model (default: gpt-5.5; use claude-sonnet-5 to route via Claude)' },
+    model: { type: 'string', description: 'Judge model (default: gpt-5.6-terra; use claude-sonnet-5 to route via Claude)' },
     'dry-run': { type: 'boolean', description: 'Show what would be processed without making LLM calls' },
     'skip-has-impl': { type: 'boolean', description: 'Skip records that already have implementation stageScores (only backfill records with no stage scores at all)' },
   },
@@ -137,7 +137,7 @@ runTool({
     const inputPath = args.input || join(process.cwd(), '.wavemill/evals/aggregated-evals.jsonl');
     const outputPath = args.output || inputPath.replace('.jsonl', '.backfilled.jsonl');
     const limit = args.limit ? Number(args.limit) : Infinity;
-    const model = (args.model as string) || 'gpt-5.5';
+    const model = (args.model as string) || 'gpt-5.6-terra';
     const provider = getBackfillProvider(model, process.cwd());
     const dryRun = !!args['dry-run'];
     const skipHasImpl = !!args['skip-has-impl'];

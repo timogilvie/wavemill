@@ -1,5 +1,5 @@
 #!/usr/bin/env -S npx tsx
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import {
@@ -23,6 +23,7 @@ import {
   loadCache,
   mergeEdges,
   pruneCache,
+  retainPreviousFingerprints,
   saveCache,
   type CacheFile,
   type FingerprintableTask,
@@ -36,9 +37,22 @@ import {
   type QueuePlan,
 } from '../shared/lib/plan-queue-utils.ts';
 import { toKebabCase } from '../shared/lib/string-utils.ts';
+import { getQueuePlannerConfig } from '../shared/lib/config.ts';
+import type { GroundedPlanResult } from '../shared/lib/grounded-planner.ts';
+import {
+  buildInferenceReport,
+  isInCooldown,
+  planInferenceRefresh,
+  recordInferenceFailure,
+  recordInferenceSuccess,
+  type InferenceRefreshPlan,
+  type QueueInferenceState,
+} from '../shared/lib/queue-inference-status.ts';
 
 const queueAnalysisPromptPath = fileURLToPath(new URL('./prompts/queue-analysis.md', import.meta.url));
-const QUEUE_CLASSIFIER_PER_ATTEMPT_TIMEOUT_MS = 8_000;
+// One attempt must fit a Claude CLI cold start plus a whole-backlog prompt;
+// the absolute deadline (monitor watchdog minus grace) still bounds the ladder.
+const QUEUE_CLASSIFIER_PER_ATTEMPT_TIMEOUT_MS = 25_000;
 const QUEUE_CLASSIFIER_DEADLINE_GRACE_MS = 1_500;
 
 function renderPreview(queuePlan: QueuePlan, records: BacklogRecord[]): string {
@@ -53,6 +67,24 @@ function renderPreview(queuePlan: QueuePlan, records: BacklogRecord[]): string {
     section('Avoid Running Together', queuePlan.avoidRunningTogether, (group) => `- ${group.join(', ')}`),
     section('Needs Triage', queuePlan.needsTriage, (record) => `- ${record.edge.to} (${record.reason}: ${record.detail ?? `${record.edge.from}->${record.edge.to}`})`),
   ].join('\n\n');
+}
+
+function renderGroundedPreview(grounded: GroundedPlanResult): string {
+  const { waves, stats } = grounded;
+  const reason = (r: GroundedPlanResult['waves']['deferrals'][number]['reasons'][number]) =>
+    `${r.kind === 'after' ? 'after' : 'conflicts with'} ${r.taskId}${r.verdict && r.verdict !== 'conflict' ? ` [${r.verdict}]` : ''}${r.evidence ? `: ${r.evidence}` : ''}`;
+  return [
+    'Grounded Waves',
+    ...(waves.waves.length === 0 ? ['(none)'] : waves.waves.map((wave) => `- wave ${wave.index}: ${wave.taskIds.join(', ')}`)),
+    '',
+    'Grounded Deferrals',
+    ...(waves.deferrals.length === 0
+      ? ['(none)']
+      : waves.deferrals.map((deferral) => `- ${deferral.taskId} → wave ${deferral.wave} (${deferral.reasons.map(reason).join('; ')})`)),
+    '',
+    `grounded: tasks=${stats.tasks} touchSetCacheHits=${stats.touchSetCacheHits} pairsScored=${stats.pairsScored} ` +
+      `pairsSentToLlm=${stats.pairsSentToLlm} verdictCacheHits=${stats.verdictCacheHits} llmMs=${stats.llmCallMs} totalMs=${stats.totalMs}`,
+  ].join('\n');
 }
 
 async function loadBacklogFromLinear(projectName?: string): Promise<BacklogRecord[]> {
@@ -186,6 +218,14 @@ function parseQueueClassifierDeadline(value: string | undefined): number | undef
   return deadlineMs;
 }
 
+function writeInferenceReport(path: string, report: ReturnType<typeof buildInferenceReport>): void {
+  try {
+    writeFileSync(path, `${JSON.stringify(report)}\n`, 'utf8');
+  } catch (error) {
+    process.stderr.write(`plan-queue: failed to write inference report ${path}: ${(error as Error).message}\n`);
+  }
+}
+
 runTool({
   name: 'plan-queue',
   description: 'Plan read-only task dependency queues from backlog JSON',
@@ -197,6 +237,7 @@ runTool({
     'no-cache': { type: 'boolean', description: 'Disable task dependency cache reads and writes' },
     'refresh-missing-cache': { type: 'boolean', description: 'Run queue analysis when the cache has no fingerprints yet' },
     'queue-classifier-deadline-ms': { type: 'string', description: 'Internal: absolute classifier deadline in epoch milliseconds' },
+    'inference-report-file': { type: 'string', description: 'Internal: write a queue inference status JSON report to this path' },
     json: { type: 'boolean', description: 'Emit queuePlan JSON' },
     preview: { type: 'boolean', description: 'Emit human-readable preview' },
   },
@@ -234,30 +275,103 @@ runTool({
     const cacheAfterPrune = cacheBeforePrune ? pruneCache(cacheBeforePrune, fingerprintTasks) : undefined;
     const explicitEdges = extractEdgesFromBacklog(records);
     const backlogDiff = cacheBeforePrune ? computeBacklogDiff(cacheBeforePrune.fingerprints, fingerprintTasks) : undefined;
-    const shouldRunInitialRefresh =
-      args['refresh-missing-cache'] === true &&
-      cacheBeforePrune !== undefined &&
-      Object.keys(cacheBeforePrune.fingerprints).length === 0 &&
-      records.length > 0;
-    const shouldRunPartialRefresh =
-      cacheBeforePrune !== undefined &&
-      Object.keys(cacheBeforePrune.fingerprints).length > 0 &&
-      backlogDiff !== undefined &&
-      backlogDiff.added.length + backlogDiff.changed.length > 0 &&
-      backlogDiff.added.length + backlogDiff.changed.length < records.length;
+    const nowMs = Date.now();
+    const previousFingerprints = cacheBeforePrune?.fingerprints ?? {};
+    const pendingCount = backlogDiff ? backlogDiff.added.length + backlogDiff.changed.length : 0;
+    const inferencePlan: InferenceRefreshPlan = cacheBeforePrune
+      ? planInferenceRefresh({
+        state: cacheBeforePrune.inference,
+        previousFingerprintCount: Object.keys(previousFingerprints).length,
+        pendingCount,
+        recordCount: records.length,
+        refreshMissing: args['refresh-missing-cache'] === true,
+        nowMs,
+      })
+      : { kind: 'none', skipReason: 'cache_disabled' };
+    let inferenceState: QueueInferenceState | undefined = cacheBeforePrune?.inference;
+    const recordIds = records.map((record) => record.id);
 
     let cacheToSave = cacheAfterPrune;
     let inferredEdges: DependencyEdge[] = cacheAfterPrune ? cachedEdgesToDependencyEdges(cacheAfterPrune.edges) : [];
 
-    if ((shouldRunInitialRefresh || shouldRunPartialRefresh) && cacheAfterPrune && backlogDiff) {
-      const changedTaskIds = shouldRunInitialRefresh
-        ? new Set(records.map((record) => record.id))
+    if (cacheAfterPrune && inferencePlan.kind === 'none' && pendingCount > 0) {
+      // Pending tasks were not analyzed (cooldown, or no refresh requested):
+      // keep their old fingerprints so a later run still sees them as pending.
+      cacheToSave = { ...cacheAfterPrune, fingerprints: retainPreviousFingerprints(previousFingerprints, recordIds) };
+    }
+
+    const plannerMode = getQueuePlannerConfig(process.cwd()).mode;
+    let grounded: GroundedPlanResult | undefined;
+    let reportPlan: InferenceRefreshPlan = inferencePlan;
+
+    if (plannerMode === 'grounded') {
+      // HOK-3131: grounded mode replaces legacy whole-backlog classification.
+      // Legacy fingerprints are not advanced, so switching back to legacy
+      // still sees every task as pending.
+      const { createGroundedLlm, runGroundedPlanning } = await import('../shared/lib/grounded-planner.ts');
+      const coolingDown = isInCooldown(cacheBeforePrune?.inference, nowMs);
+      grounded = await runGroundedPlanning(
+        records.map((record, index) => ({
+          ...record,
+          priority: typeof record.priority === 'number' ? record.priority : null,
+          fingerprint: computeTaskFingerprint(fingerprintTasks[index]),
+        })),
+        {
+          repoDir: process.cwd(),
+          cache: cacheAfterPrune ?? {},
+          explicitEdges,
+          ...(coolingDown
+            ? {}
+            : {
+              llm: createGroundedLlm({
+                repoDir: process.cwd(),
+                ...(queueClassifierDeadlineMs === undefined
+                  ? {}
+                  : {
+                    deadlineMs: queueClassifierDeadlineMs,
+                    perAttemptTimeoutMs: QUEUE_CLASSIFIER_PER_ATTEMPT_TIMEOUT_MS,
+                    deadlineGraceMs: QUEUE_CLASSIFIER_DEADLINE_GRACE_MS,
+                  }),
+              }),
+            }),
+          warn: (message) => process.stderr.write(`plan-queue: ${message}\n`),
+        },
+      );
+      inferredEdges = grounded.edges;
+      const nowIso = new Date().toISOString();
+      if (coolingDown) {
+        reportPlan = { kind: 'none', skipReason: 'cooldown' };
+      } else if (!grounded.llm.orderingOk) {
+        inferenceState = recordInferenceFailure(inferenceState, { error: new Error(grounded.llm.error ?? 'grounded ordering failed'), nowIso });
+        reportPlan = { kind: 'full', skipReason: null };
+      } else {
+        inferenceState = recordInferenceSuccess({ model: grounded.llm.model ?? inferenceState?.lastModel ?? null, nowIso });
+        reportPlan = grounded.llm.orderingAttempted ? { kind: 'full', skipReason: null } : { kind: 'none', skipReason: 'no_changes' };
+      }
+      if (cacheAfterPrune) {
+        cacheToSave = {
+          ...cacheAfterPrune,
+          fingerprints: retainPreviousFingerprints(previousFingerprints, recordIds),
+          touchSets: grounded.cache.touchSets,
+          groundedVerdicts: grounded.cache.groundedVerdicts,
+          ...(inferenceState ? { inference: inferenceState } : {}),
+        };
+      }
+      const { stats } = grounded;
+      process.stderr.write(
+        `plan-queue: grounded planner: tasks=${stats.tasks} pairsScored=${stats.pairsScored} ` +
+          `pairsSentToLlm=${stats.pairsSentToLlm} edges=${grounded.edges.length} waves=${grounded.waves.waves.length}\n`,
+      );
+    } else if (inferencePlan.kind !== 'none' && cacheAfterPrune && backlogDiff) {
+      const isFullRefresh = inferencePlan.kind === 'full';
+      const changedTaskIds = isFullRefresh
+        ? new Set(recordIds)
         : new Set([...backlogDiff.added, ...backlogDiff.changed]);
-      const removedTaskIds = shouldRunInitialRefresh
+      const removedTaskIds = isFullRefresh
         ? new Set<string>()
         : new Set([...backlogDiff.completed, ...backlogDiff.removed]);
-      const contextTaskIds = shouldRunInitialRefresh
-        ? records.map((record) => record.id).sort(compareTaskIds)
+      const contextTaskIds = isFullRefresh
+        ? [...recordIds].sort(compareTaskIds)
         : assembleNearbyContext({ changedTaskIds, allBacklog: records });
       const taskById = new Map(records.map((record) => [record.id, record]));
       const contextTasks = contextTaskIds
@@ -290,17 +404,24 @@ runTool({
         const freshEdges = parseQueueAnalysisEdges(llmResult.text, changedTaskIds, fingerprintMap);
         const mergedCachedEdges = mergeEdges(cacheAfterPrune.edges, freshEdges, { changedTaskIds, removedTaskIds });
         inferredEdges = cachedEdgesToDependencyEdges(mergedCachedEdges);
+        inferenceState = recordInferenceSuccess({ model: llmResult.model ?? null, nowIso: new Date().toISOString() });
         cacheToSave = {
           ...cacheAfterPrune,
           edges: mergedCachedEdges,
           fingerprints: currentFingerprints,
+          inference: inferenceState,
         };
       } catch (error) {
-        const refreshKind = shouldRunInitialRefresh ? 'initial refresh' : 'partial refresh';
+        const refreshKind = isFullRefresh ? 'initial refresh' : 'partial refresh';
         process.stderr.write(`plan-queue: ${refreshKind} failed, falling back to cached edges: ${(error as Error).message}\n`);
-        if (shouldRunInitialRefresh) {
-          cacheToSave = undefined;
-        }
+        inferenceState = recordInferenceFailure(inferenceState, { error, nowIso: new Date().toISOString() });
+        // Persist the failure (and its cooldown) without advancing fingerprints,
+        // so the tasks that were never classified are retried.
+        cacheToSave = {
+          ...cacheAfterPrune,
+          fingerprints: retainPreviousFingerprints(previousFingerprints, recordIds),
+          inference: inferenceState,
+        };
       }
     }
 
@@ -318,6 +439,9 @@ runTool({
     if (emitJson) process.stdout.write(`${JSON.stringify(queuePlan, null, 2)}\n`);
     if (args.preview) {
       (emitJson ? process.stderr : process.stdout).write(`${renderPreview(queuePlan, records)}\n`);
+      if (grounded) {
+        (emitJson ? process.stderr : process.stdout).write(`\n${renderGroundedPreview(grounded)}\n`);
+      }
       if (cacheBeforePrune && cacheAfterPrune) {
         const cacheStats = getCacheStats(cacheBeforePrune, cacheAfterPrune);
         process.stderr.write(`cache: hits=0 misses=0 pruned=${cacheStats.totalEdges - cacheStats.retainedEdges}\n`);
@@ -325,6 +449,14 @@ runTool({
     }
     if (cacheToSave && cacheKey) {
       await saveCache(process.cwd(), cacheKey, cacheToSave);
+    }
+    if (typeof args['inference-report-file'] === 'string' && args['inference-report-file'].length > 0) {
+      writeInferenceReport(args['inference-report-file'], buildInferenceReport({
+        state: inferenceState,
+        inferredEdgeCount: edges.filter((edge) => edge.source === 'inferred').length,
+        plan: reportPlan,
+        nowMs: Date.now(),
+      }));
     }
   },
 });

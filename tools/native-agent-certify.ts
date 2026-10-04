@@ -28,6 +28,7 @@ import {
   type LiveCodingCanaryStatus,
   type LiveSmokeEvidence,
   type NativeCertificationArtifact,
+  type ResolvedCertificationTarget,
 } from '../shared/lib/native-agent/certification/schema.ts';
 import { runLiveCodingCanary } from '../shared/lib/native-agent/certification/live-coding-canary.ts';
 import { loadGlobalCertification } from '../shared/lib/native-agent/certification/loader.ts';
@@ -41,8 +42,16 @@ import {
   toArtifactScenario,
   type RunScenariosOptions,
 } from '../shared/lib/native-agent/certification/scenario-runner.ts';
-import { resolveCertificationSubject } from '../shared/lib/native-agent/certification/identity.ts';
+import {
+  isRollingProviderAlias,
+  resolveAliasTargetFromSmoke,
+  resolveCertificationSubject,
+} from '../shared/lib/native-agent/certification/identity.ts';
 import { writeGlobalCertification } from '../shared/lib/native-agent/certification/store.ts';
+import {
+  refreshCanaryCohort,
+  renderCanaryCohortHealth,
+} from '../shared/lib/native-agent/certification/canary-cohort.ts';
 import { getEffectiveRegistry, type ModelRegistry, type NativeProviderName } from '../shared/lib/model-registry.ts';
 import { resolveWavemillAliasFromOpenRouterId } from '../shared/lib/openrouter-catalog.ts';
 import { runOpenRouterSmoke, type SmokeReport } from '../shared/lib/openrouter-smoke.ts';
@@ -229,8 +238,14 @@ export async function certifyNativeAgent(opts: CertifyOptions): Promise<CertifyR
   // coding (`patch` or `workflow`). It never runs during dry-run.
   const canaryApplicable = phaseSatisfies(opts.phase, 'patch');
 
+  let resolvedTarget: ResolvedCertificationTarget | undefined;
+  const subjectIsAlias = isRollingProviderAlias(resolvedSubject.subject.providerNativeId);
+
   if (liveCertifiable && !dryRun) {
-    if (opts.provider === 'openrouter' && modelEntry?.identity?.status === 'provisional') {
+    const needsLiveSmokeForAlias = opts.provider === 'openrouter' && subjectIsAlias;
+    const needsLiveSmokeForProvisional = opts.provider === 'openrouter'
+      && modelEntry?.identity?.status === 'provisional';
+    if (needsLiveSmokeForAlias || needsLiveSmokeForProvisional) {
       liveSmokeEvidence = await requireFreshOpenRouterSmokeEvidence({
         subject: resolvedSubject.subject,
         registryKey: registryModelId,
@@ -239,6 +254,24 @@ export async function certifyNativeAgent(opts: CertifyOptions): Promise<CertifyR
         now,
         runOpenRouterSmokeFn,
       });
+      if (needsLiveSmokeForAlias) {
+        resolvedTarget = resolveAliasTargetFromSmoke({
+          requestedWireId: resolvedSubject.subject.providerNativeId,
+          evidence: liveSmokeEvidence,
+          now,
+        });
+      }
+    }
+    // Fail closed: an alias certification without a pinned concrete target is
+    // not launchable. This mirrors the write-side validator (store.ts).
+    if (subjectIsAlias && !resolvedTarget) {
+      throw Object.assign(
+        new Error(
+          `OpenRouter alias ${resolvedSubject.subject.providerNativeId} cannot be certified without a pinned resolvedTarget. `
+          + `A fresh live smoke must return response.model as a concrete model id (not another "~" alias).`,
+        ),
+        { exitCode: 1 },
+      );
     }
 
     if (canaryApplicable) {
@@ -249,6 +282,7 @@ export async function certifyNativeAgent(opts: CertifyOptions): Promise<CertifyR
         suiteVersion,
         subject: resolvedSubject.subject,
         now,
+        ...(resolvedTarget ? { resolvedTarget } : {}),
       });
 
       if (opts.liveCodingCanary) {
@@ -310,6 +344,7 @@ export async function certifyNativeAgent(opts: CertifyOptions): Promise<CertifyR
       ...(knownLimitations.length > 0 ? { knownLimitations } : {}),
       ...(liveSmokeEvidence ? { liveSmokeEvidence } : {}),
       ...(liveCanary ? { liveCanary } : {}),
+      ...(resolvedTarget ? { resolvedTarget } : {}),
     };
     artifactPath = writeCertificationFn.length >= 2
       ? (writeCertificationFn as (repoDir: string, record: NativeCertificationArtifact) => string)(opts.repoDir, artifact)
@@ -368,6 +403,7 @@ function loadPreviousEligibleCanary(input: {
   suiteVersion: string;
   subject: CertificationSubject;
   now: () => Date;
+  resolvedTarget?: ResolvedCertificationTarget;
 }): LiveCodingCanaryResult | undefined {
   const load = input.loadPreviousArtifactFn ?? defaultLoadPreviousArtifact;
   let previous: NativeCertificationArtifact | undefined;
@@ -377,6 +413,18 @@ function loadPreviousEligibleCanary(input: {
     return undefined;
   }
   if (!previous) return undefined;
+  // HOK-3143: never carry forward from an invalidated artifact; the canary
+  // ran against the old target and the identity on disk is in a failure state.
+  if (previous.identityInvalidation) return undefined;
+  // HOK-3143: an alias retarget invalidates all prior canaries — the canary
+  // ran against the previous target even though the suite version matches.
+  if (
+    input.resolvedTarget
+    && previous.resolvedTarget
+    && previous.resolvedTarget.model !== input.resolvedTarget.model
+  ) {
+    return undefined;
+  }
   const eligibility = evaluateLiveCodingCanaryEligibility(previous, input.suiteVersion, input.now(), input.subject);
   return eligibility.eligible ? eligibility.canary : undefined;
 }
@@ -624,6 +672,10 @@ return runTool({
       type: 'boolean',
       description: 'Certify every native-capable registry model. --provider filters the batch when set.',
     },
+    'refresh-canary-cohort': {
+      type: 'boolean',
+      description: 'Refresh live coding canaries for the configured bounded cohort (credentialed; targets only missing/stale/renewal-due/identity-invalidated members).',
+    },
     json: {
       type: 'boolean',
       description: 'Emit machine-readable JSON.',
@@ -639,6 +691,7 @@ return runTool({
     'npx tsx tools/native-agent-certify.ts --provider openrouter --model openai/gpt-4o --phase read-only --json',
     'npx tsx tools/native-agent-certify.ts --all --phase workflow',
     'npx tsx tools/native-agent-certify.ts --provider openrouter --model qwen-3-coder --phase workflow --live-coding-canary',
+    'npx tsx tools/native-agent-certify.ts --refresh-canary-cohort',
   ],
   async run({ args }) {
     const repoDir = (args.repo as string | undefined) || process.cwd();
@@ -656,6 +709,41 @@ return runTool({
     if (liveCodingCanary && dryRun) {
       console.error('Error: --live-coding-canary cannot be combined with --dry-run (the canary is a live provider run).');
       process.exit(2);
+    }
+
+    const refreshCohort = args['refresh-canary-cohort'] === true;
+    if (refreshCohort) {
+      const conflictError = refreshCohortFlagError(args);
+      if (conflictError) {
+        console.error(`Error: ${conflictError}`);
+        process.exit(2);
+      }
+      const refresh = await refreshCanaryCohort({
+        repoDir,
+        certifyFn: certifyNativeAgent,
+        respectAttemptGuard: false,
+        ...(canaryLimits.limits ? { canaryLimits: canaryLimits.limits } : {}),
+        log: (line) => console.error(line),
+      });
+      if (args.json === true) {
+        console.log(JSON.stringify(refresh, null, 2));
+      } else {
+        for (const outcome of refresh.outcomes) {
+          console.log(
+            `${outcome.provider}/${outcome.model}: ${outcome.action}`
+            + (outcome.result ? ` result=${outcome.result}` : ` state=${outcome.state}`)
+            + ` eligible=${outcome.codingEligible ? 'yes' : 'no'}`
+            + (outcome.reason ? ` - ${outcome.reason}` : ''),
+          );
+        }
+        console.log('');
+        console.log(renderCanaryCohortHealth(refresh.health));
+      }
+      const hadError = refresh.outcomes.some((outcome) => outcome.result === 'error');
+      if (hadError || refresh.health.belowMinimum) {
+        process.exit(1);
+      }
+      return;
     }
 
     // Validate required flags
@@ -768,6 +856,27 @@ return runTool({
     }
   },
 }, argv);
+}
+
+/**
+ * Flag-combination validation for `--refresh-canary-cohort`. The cohort path
+ * is exclusively live and exclusively cohort-scoped: dry-run and any explicit
+ * target selection are rejected up front.
+ */
+export function refreshCohortFlagError(args: Record<string, unknown>): string | undefined {
+  if (args['dry-run'] === true) {
+    return '--refresh-canary-cohort cannot be combined with --dry-run (the canary is a live provider run).';
+  }
+  if (args.all === true) {
+    return '--refresh-canary-cohort cannot be combined with --all (the refresh is bounded to the configured cohort).';
+  }
+  if (args.model !== undefined || args.provider !== undefined) {
+    return '--refresh-canary-cohort targets the configured cohort; --provider/--model cannot be combined with it.';
+  }
+  if (args['live-coding-canary'] === true) {
+    return '--refresh-canary-cohort already implies the live coding canary; drop --live-coding-canary.';
+  }
+  return undefined;
 }
 
 /**

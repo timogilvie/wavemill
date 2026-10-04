@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# HOK-2814: post-fork shape audit — this file exercises the comparison ledger
+# after both arms already have PRs, which is still the correct shape post-fork
+# (by the time comparison happens, both arms exist). The fork itself is covered
+# by challenge-deferred-arm.test.sh and challenge-fork-*.test.sh. Do not add
+# fork assumptions here; this is the "two arms with PRs" regression backstop.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

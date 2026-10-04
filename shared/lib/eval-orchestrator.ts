@@ -71,6 +71,11 @@ import { getMaxCostUsd } from './config.ts';
 import { formatHokusaiSubmissionTriggerResult, triggerHokusaiSubmission } from './hokusai-submission-trigger.ts';
 import { getConfiguredModelsForDescriptor } from './model-registry.ts';
 import { computeWorkflowCostWithExactPricing, loadPricingTable, type WorkflowCostOutcome } from './workflow-cost.ts';
+import { collectExecutionEconomics } from './execution-economics.ts';
+import {
+  buildStageExecutionIdentity,
+  hasProviderModelSubstitution,
+} from './stage-eval-evidence.ts';
 import type {
   EvalRecord,
   EvalRouteProvenance,
@@ -104,6 +109,7 @@ export const evalOrchestratorDeps = {
   appendEvalRecord,
   triggerHokusaiSubmission,
   computeWorkflowCost: computeWorkflowCostWithExactPricing,
+  collectExecutionEconomics,
   loadPricingTable,
   execShellCommand,
 };
@@ -533,6 +539,37 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
     };
   }
 
+  // 9c. Collect normalized execution economics (HOK-2958): fail-soft,
+  // observation-only, mirroring the post-completion hook.
+  let executionEconomics: Awaited<ReturnType<typeof collectExecutionEconomics>> | null = null;
+  if (worktreePath && branch) {
+    try {
+      executionEconomics = await evalOrchestratorDeps.collectExecutionEconomics({
+        worktreePath,
+        branchName: branch,
+        repoDir,
+        issueId,
+        routing: stageArtifacts.routing ?? null,
+        stageResultsDir: stageArtifacts.stageResultsDir ?? null,
+      });
+    } catch (err) {
+      console.warn(`Warning: failed to collect execution economics: ${errorMessage(err)}`);
+    }
+  }
+
+  // 9c-identity. HOK-3143: per-stage provider identity. Fail-soft; a missing or
+  // malformed stage result leaves `stageExecution` unset.
+  let stageExecution: ReturnType<typeof buildStageExecutionIdentity> | undefined;
+  if (stageArtifacts.stageResultsDir) {
+    try {
+      stageExecution = buildStageExecutionIdentity({
+        stageResultsDir: stageArtifacts.stageResultsDir,
+      });
+    } catch (err) {
+      console.warn(`Warning: failed to build stage execution identity: ${errorMessage(err)}`);
+    }
+  }
+
   const resolvedWorkflowCost = workflowCostOutcome?.status === 'success'
     ? workflowCostOutcome.totalCostUsd
     : undefined;
@@ -718,10 +755,23 @@ export async function runEvaluation(options: EvalOptions): Promise<EvalRecord> {
     taskContext: taskContextData,
     repoContext: repoContextData,
     workflowCost: workflowCostOutcome,
+    executionEconomics,
     taskDescriptor,
     constraints: evalConstraints,
     featureOutcomeDiagnostics,
   });
+  // HOK-3143: attach provider-identity attribution and mark the record
+  // provider_model_substitution if any stage was identity-mismatched. Done
+  // here so the eligibility pass below sees the new error code.
+  if (stageExecution) {
+    record.stageExecution = stageExecution;
+    if (hasProviderModelSubstitution(stageExecution)) {
+      const existing = record.eligibilityErrors ?? [];
+      if (!existing.includes('provider_model_substitution')) {
+        record.eligibilityErrors = [...existing, 'provider_model_substitution'];
+      }
+    }
+  }
   const attestation = attestEvalRecordChallengeExecution(record);
   if (attestation && challengeEvidenceInvalid) {
     attestation.validity = 'invalid_challenge';

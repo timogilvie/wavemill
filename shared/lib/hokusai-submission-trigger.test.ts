@@ -6,6 +6,10 @@ import { after, beforeEach, describe, it, mock } from 'node:test';
 import { clearConfigCache } from './config.ts';
 import { saveUserConfig } from './hokusai-consent.ts';
 import type { EvalRecord, RoutingDecision } from './eval-schema.ts';
+import {
+  PROTECTED_EGRESS_FIELD_FIXTURE,
+  protectedEgressSentinelValues,
+} from './hokusai-redaction.ts';
 import { summarizeTriggerLog } from './hokusai-trigger-log.ts';
 import {
   formatHokusaiSubmissionTriggerResult,
@@ -204,6 +208,47 @@ describe('hokusai-submission-trigger', () => {
     assert.equal(entry.row.inputs?.launch_priority_fixture_hash, 'fixture-hash');
     assert.equal(entry.row.inputs?.rubric_version, undefined);
     assert.equal(readFileSync(pendingPath, 'utf-8').includes('HOK-1243'), false);
+  });
+
+  it('keeps protected vendor-telemetry and reviewer-evidence strings out of the queued row (HOK-2787)', async () => {
+    const { repoDir, configDir } = makeRepo(true);
+
+    const pollutedRecord = {
+      ...makeEligibleRecord({
+        originalPrompt: `Fix the bug reported by ${PROTECTED_EGRESS_FIELD_FIXTURE.user.email}`,
+        rationale: `Transcript at ${PROTECTED_EGRESS_FIELD_FIXTURE.transcript_path}`,
+        interventionDetails: [PROTECTED_EGRESS_FIELD_FIXTURE.review_findings],
+      }),
+      // Raw vendor telemetry spread onto the record must never reach the row:
+      // the projection is an explicit allowlisted safe-field builder.
+      ...structuredClone(PROTECTED_EGRESS_FIELD_FIXTURE),
+    } as EvalRecord;
+
+    const result = await triggerHokusaiSubmission(pollutedRecord, {
+      repoDir,
+      configDir,
+      redactionSalt: 'd'.repeat(64),
+    });
+    assert.equal(result.status, 'enqueued');
+
+    const pendingPath = join(repoDir, '.wavemill', 'hokusai', 'queue', 'pending.jsonl');
+    const [line] = readFileSync(pendingPath, 'utf-8').trim().split('\n');
+    const entry = JSON.parse(line) as { row: Record<string, unknown>; provenance?: { evalId?: string } };
+    const serializedRow = JSON.stringify(entry.row);
+
+    for (const sentinel of protectedEgressSentinelValues()) {
+      const needle = JSON.stringify(sentinel).slice(1, -1);
+      assert.ok(
+        !serializedRow.includes(needle),
+        `protected value must not reach the queued contribution row: ${sentinel}`,
+      );
+    }
+
+    // Queue provenance (evalId) is local-only bookkeeping: it may live in the
+    // envelope but must never leak into the uploadable row payload.
+    assert.equal(entry.provenance?.evalId, 'eval-123');
+    assert.ok(!serializedRow.includes('eval-123'));
+    assert.ok(!serializedRow.includes('HOK-1243'));
   });
 
   it('enqueues missing cost as null without counting it under budget', async () => {

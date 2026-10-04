@@ -4,12 +4,62 @@ import {
   extractMetadataBlock,
   parsePrMetadata,
   PR_METADATA_SCHEMA_VERSION,
+  EXECUTED_ROUTE_SCHEMA_VERSION,
+  MAX_ROUTE_DECISION_BYTES,
+  PR_ROUTE_METADATA_SCHEMA_VERSION,
   renderPrMetadata,
+  stableJsonStringify,
   updatePrMetadata,
   validatePrMetadata,
   validateMetadataFields,
+  validateRouteDecision,
+  type ExecutedPrRoute,
   type PrMetadata,
+  type PrRouteDecision,
 } from './pr-metadata.ts';
+
+const EXECUTED_ROUTE_FIXTURE: ExecutedPrRoute = {
+  schema: EXECUTED_ROUTE_SCHEMA_VERSION,
+  issue: 'HOK-2945',
+  head_sha: 'abc123',
+  planner: {
+    status: 'executed',
+    requested_selector: 'planner-a',
+    resolved_model: 'planner-a',
+    adapter: 'claude',
+    source: 'artifact',
+    pinned: true,
+    evidence: { source: 'stage-result', status: 'direct', stage: 'planning', head_sha: 'abc123' },
+  },
+  coder: {
+    status: 'executed',
+    requested_selector: 'coder-a',
+    resolved_model: 'coder-b',
+    adapter: 'codex',
+    source: 'artifact',
+    pinned: false,
+    fallback_reason: 'runtime_fallback',
+    evidence: { source: 'stage-result', status: 'direct', stage: 'coding', head_sha: 'abc123' },
+  },
+  reviewer: {
+    status: 'executed',
+    evidence: { source: 'native-runtime', status: 'direct', stage: 'review', head_sha: 'abc123' },
+    orchestrator: {
+      requested_selector: 'claude-haiku-4-5',
+      resolved_model: 'claude-haiku-4-5',
+      adapter: 'native',
+      source: 'artifact',
+      pinned: true,
+    },
+    substantiveAnalysis: {
+      requested_selector: 'gemini',
+      resolved_model: 'google/gemini-3.1-pro-preview',
+      adapter: 'openrouter',
+      source: 'derived',
+      pinned: false,
+    },
+  },
+};
 
 describe('extractMetadataBlock', () => {
   it('returns the original body when no block is present', () => {
@@ -66,6 +116,8 @@ describe('parsePrMetadata', () => {
       risk: 'medium',
       challenge: false,
       challengePairId: 'pair-1',
+      route_schema: PR_ROUTE_METADATA_SCHEMA_VERSION,
+      executed_route: EXECUTED_ROUTE_FIXTURE,
     };
 
     const parsed = parsePrMetadata(renderPrMetadata(metadata));
@@ -256,6 +308,8 @@ describe('renderPrMetadata', () => {
       'schema-version': PR_METADATA_SCHEMA_VERSION,
       challenge: true,
       challengePairId: 'pair-9',
+      route_schema: PR_ROUTE_METADATA_SCHEMA_VERSION,
+      executed_route: EXECUTED_ROUTE_FIXTURE,
       risk: 'high',
       requires: ['qa'],
       task: 'HOK-1432',
@@ -277,8 +331,49 @@ describe('renderPrMetadata', () => {
         'risk: high',
         'challenge: true',
         'challengePairId: pair-9',
+        `route_schema: ${PR_ROUTE_METADATA_SCHEMA_VERSION}`,
+        `executed_route: ${stableJsonStringify(EXECUTED_ROUTE_FIXTURE)}`,
         '-->',
       ].join('\n'),
+    );
+  });
+
+  it('rejects route metadata without the paired schema fields', () => {
+    assert.throws(
+      () => renderPrMetadata({ task: 'HOK-2945', executed_route: EXECUTED_ROUTE_FIXTURE }),
+      /executed_route requires route_schema/,
+    );
+
+    const parsed = parsePrMetadata([
+      '<!-- wavemill-meta',
+      'task: HOK-2945',
+      'route_schema: 1',
+      '-->',
+    ].join('\n'));
+    assert.equal(parsed.ok, false);
+    if (!parsed.ok) {
+      assert.equal(parsed.errors[0].message, 'route_schema requires executed_route');
+    }
+  });
+
+  it('rejects derived identities that are falsely pinned', () => {
+    const route: ExecutedPrRoute = {
+      ...EXECUTED_ROUTE_FIXTURE,
+      reviewer: {
+        ...EXECUTED_ROUTE_FIXTURE.reviewer,
+        substantiveAnalysis: {
+          ...EXECUTED_ROUTE_FIXTURE.reviewer.substantiveAnalysis,
+          pinned: true,
+        },
+      },
+    };
+
+    assert.throws(
+      () => renderPrMetadata({
+        route_schema: PR_ROUTE_METADATA_SCHEMA_VERSION,
+        executed_route: route,
+      }),
+      /Derived identity cannot be pinned/,
     );
   });
 
@@ -458,5 +553,175 @@ describe('validateMetadataFields', () => {
     assert.equal(errors.length, 1);
     assert.equal(errors[0].code, 'unsupported-version');
     assert.equal(errors[0].field, 'schema-version');
+  });
+});
+
+const ROUTE_DECISION_FIXTURE: PrRouteDecision = {
+  decision_id: 'trace-0123',
+  source: 'fallback',
+  fallback_reason: 'null_response',
+  policy_version: 'wavemill-router@1.0.0',
+  recommended: { planner: 'planner-a', coder: 'coder-a', reviewer: 'reviewer-a' },
+  decided_at: '2026-09-28T12:00:00.000Z',
+};
+
+function metaBlock(lines: string[]): string {
+  return ['<!-- wavemill-meta', ...lines, '-->'].join('\n');
+}
+
+describe('route_decision (HOK-3098)', () => {
+  it('writes route_schema 2 and keeps the executed_route payload at schema 1', () => {
+    assert.equal(PR_ROUTE_METADATA_SCHEMA_VERSION, 2);
+    assert.equal(EXECUTED_ROUTE_SCHEMA_VERSION, 1);
+  });
+
+  it('round-trips a v2 block with route_decision after executed_route', () => {
+    const metadata: PrMetadata = {
+      task: 'HOK-3098',
+      route_schema: 2,
+      executed_route: EXECUTED_ROUTE_FIXTURE,
+      route_decision: ROUTE_DECISION_FIXTURE,
+    };
+    const rendered = renderPrMetadata(metadata);
+    const lines = rendered.split('\n');
+    assert.equal(lines[lines.length - 2], `route_decision: ${stableJsonStringify(ROUTE_DECISION_FIXTURE)}`);
+    assert.equal(lines[lines.length - 3].startsWith('executed_route: '), true);
+
+    const parsed = parsePrMetadata(rendered);
+    assert.equal(parsed.ok, true);
+    if (parsed.ok) {
+      assert.deepEqual(parsed.metadata, metadata);
+    }
+  });
+
+  it('keeps parsing v1 blocks (no route_decision)', () => {
+    const parsed = parsePrMetadata(metaBlock([
+      'route_schema: 1',
+      `executed_route: ${stableJsonStringify(EXECUTED_ROUTE_FIXTURE)}`,
+    ]));
+    assert.equal(parsed.ok, true);
+    if (parsed.ok) {
+      assert.equal(parsed.metadata.route_schema, 1);
+      assert.equal(parsed.metadata.route_decision, undefined);
+      assert.deepEqual(parsed.metadata.executed_route, EXECUTED_ROUTE_FIXTURE);
+    }
+  });
+
+  it('parses a v2 block without route_decision', () => {
+    const parsed = parsePrMetadata(metaBlock([
+      'route_schema: 2',
+      `executed_route: ${stableJsonStringify(EXECUTED_ROUTE_FIXTURE)}`,
+    ]));
+    assert.equal(parsed.ok, true);
+  });
+
+  it('rejects unsupported route_schema values', () => {
+    for (const value of ['3', '0', '2.0', 'two']) {
+      const parsed = parsePrMetadata(metaBlock([
+        `route_schema: ${value}`,
+        `executed_route: ${stableJsonStringify(EXECUTED_ROUTE_FIXTURE)}`,
+      ]));
+      assert.equal(parsed.ok, false, value);
+      if (!parsed.ok) {
+        assert.ok(parsed.errors.some((error) => error.code === 'unsupported-version'), value);
+      }
+    }
+  });
+
+  it('rejects route_decision on a v1 block', () => {
+    const parsed = parsePrMetadata(metaBlock([
+      'route_schema: 1',
+      `executed_route: ${stableJsonStringify(EXECUTED_ROUTE_FIXTURE)}`,
+      `route_decision: ${stableJsonStringify(ROUTE_DECISION_FIXTURE)}`,
+    ]));
+    assert.equal(parsed.ok, false);
+    if (!parsed.ok) {
+      assert.deepEqual(parsed.errors.map((error) => error.message), ['route_decision requires route_schema 2']);
+    }
+    assert.throws(
+      () => renderPrMetadata({ route_schema: 1, executed_route: EXECUTED_ROUTE_FIXTURE, route_decision: ROUTE_DECISION_FIXTURE }),
+      /route_decision requires route_schema 2/,
+    );
+  });
+
+  it('rejects invalid JSON for route_decision', () => {
+    const parsed = parsePrMetadata(metaBlock([
+      'route_schema: 2',
+      `executed_route: ${stableJsonStringify(EXECUTED_ROUTE_FIXTURE)}`,
+      'route_decision: {not json',
+    ]));
+    assert.equal(parsed.ok, false);
+    if (!parsed.ok) {
+      assert.equal(parsed.errors[0].field, 'route_decision');
+    }
+  });
+
+  it('accepts every source and a hokusai decision without fallback_reason', () => {
+    const { fallback_reason: _reason, ...base } = ROUTE_DECISION_FIXTURE;
+    assert.deepEqual(validateRouteDecision({ ...base, source: 'hokusai', policy_version: 'model30-2026.09' }), []);
+    assert.deepEqual(validateRouteDecision({ ...base, source: 'local' }), []);
+    assert.deepEqual(validateRouteDecision(ROUTE_DECISION_FIXTURE), []);
+    assert.deepEqual(validateRouteDecision({
+      ...base,
+      source: 'local',
+      decision_id: '5b0e7c1e-7c55-4a55-9d6c-0d7a3f4b2e11',
+      trace_id: 'trace-0123',
+      supersedes: 'trace-0123',
+    }), []);
+  });
+
+  it('allows empty recommended roles (no viable candidate) but not missing ones', () => {
+    assert.deepEqual(validateRouteDecision({
+      ...ROUTE_DECISION_FIXTURE,
+      recommended: { planner: '', coder: 'coder-a', reviewer: '' },
+    }), []);
+    const errors = validateRouteDecision({
+      ...ROUTE_DECISION_FIXTURE,
+      recommended: { planner: 'planner-a', coder: 'coder-a' },
+    });
+    assert.ok(errors.some((error) => error.message.includes('recommended.reviewer')));
+  });
+
+  it('rejects unknown enum values and inconsistent fallback fields', () => {
+    const messages = (value: unknown): string[] => validateRouteDecision(value).map((error) => error.message);
+    assert.ok(messages({ ...ROUTE_DECISION_FIXTURE, source: 'oracle' }).some((m) => m.includes('route_decision.source')));
+    assert.ok(messages({ ...ROUTE_DECISION_FIXTURE, fallback_reason: 'timeout' }).some((m) => m.includes('fallback_reason')));
+    const { fallback_reason: _reason, ...withoutReason } = ROUTE_DECISION_FIXTURE;
+    assert.ok(messages(withoutReason).some((m) => m.includes('requires fallback_reason')));
+    assert.ok(messages({ ...ROUTE_DECISION_FIXTURE, source: 'hokusai' }).some((m) => m.includes('only valid for source fallback')));
+  });
+
+  it('rejects unknown fields, bad timestamps and empty ids', () => {
+    const messages = (value: unknown): string[] => validateRouteDecision(value).map((error) => error.message);
+    assert.ok(messages({ ...ROUTE_DECISION_FIXTURE, propensity: 0.5 }).some((m) => m.includes('route_decision.propensity')));
+    assert.ok(messages({
+      ...ROUTE_DECISION_FIXTURE,
+      recommended: { ...ROUTE_DECISION_FIXTURE.recommended, orchestrator: 'x' },
+    }).some((m) => m.includes('recommended.orchestrator')));
+    assert.ok(messages({ ...ROUTE_DECISION_FIXTURE, decided_at: 'yesterday' }).some((m) => m.includes('decided_at')));
+    assert.ok(messages({ ...ROUTE_DECISION_FIXTURE, decision_id: '' }).some((m) => m.includes('decision_id')));
+    assert.ok(messages([ROUTE_DECISION_FIXTURE]).some((m) => m.includes('JSON object')));
+  });
+
+  it('enforces the no-raw-content rule', () => {
+    const errors = validateRouteDecision({
+      ...ROUTE_DECISION_FIXTURE,
+      recommended: { ...ROUTE_DECISION_FIXTURE.recommended, coder: '/Users/someone/secret-model' },
+    });
+    assert.ok(errors.some((error) => error.message === 'Unsafe public value in route_decision at route_decision.recommended.coder'));
+    assert.ok(validateRouteDecision({ ...ROUTE_DECISION_FIXTURE, policy_version: 'api_key=abc' }).length > 0);
+  });
+
+  it('enforces the route_decision byte budget independently', () => {
+    const long = 'm'.repeat(250);
+    const errors = validateRouteDecision({
+      ...ROUTE_DECISION_FIXTURE,
+      decision_id: long,
+      trace_id: long,
+      supersedes: long,
+      policy_version: long,
+      recommended: { planner: long, coder: long, reviewer: long },
+    });
+    assert.ok(errors.some((error) => error.message === `route_decision exceeds ${MAX_ROUTE_DECISION_BYTES} bytes`));
   });
 });

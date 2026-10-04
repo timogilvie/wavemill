@@ -30,6 +30,7 @@
  * anchor at `merge^1`, new coordinates at `merge_sha`.
  */
 
+import { ISSUE_ID_GLOBAL_RE } from './task-identity.ts';
 import { execArgvCommand } from './shell-utils.ts';
 import { extractPrNumber, parseNameStatusOutput } from './cross-pr-revert-detector.ts';
 import {
@@ -592,7 +593,7 @@ export interface LabelMergedPrOptions {
   allMergedPrs?: readonly MergedPrRef[];
 }
 
-const ISSUE_KEY_PATTERN = /\b[A-Z][A-Z0-9]+-\d+\b/g;
+const ISSUE_KEY_PATTERN = ISSUE_ID_GLOBAL_RE;
 
 function extractIssueKeys(text: string): Set<string> {
   return new Set(text.match(ISSUE_KEY_PATTERN) ?? []);

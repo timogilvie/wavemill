@@ -111,6 +111,14 @@ export interface ExportRow {
   planning_outcome_output_tokens: number | null;
   planning_outcome_cost_usd: number | null;
 
+  // S1 Static feature group (HOK-2806)
+  static_type_errors: number | null;
+  static_lint_errors: number | null;
+  static_build_ok: boolean | null;
+  static_complexity_delta: number | null;
+  static_build_evidence: string;
+  static_complexity_metric: string;
+
   // Verification telemetry (HOK-2607)
   verification_local_duration_ms: number | null;
   verification_local_failure_category: string;
@@ -196,6 +204,12 @@ const COLUMNS: (keyof ExportRow)[] = [
   'planning_outcome_input_tokens',
   'planning_outcome_output_tokens',
   'planning_outcome_cost_usd',
+  'static_type_errors',
+  'static_lint_errors',
+  'static_build_ok',
+  'static_complexity_delta',
+  'static_build_evidence',
+  'static_complexity_metric',
   'verification_local_duration_ms',
   'verification_local_failure_category',
   'verification_local_passed',
@@ -354,6 +368,13 @@ export function flattenRecord(
     planning_outcome_input_tokens: planningOutcome?.usage?.totalInputTokens ?? null,
     planning_outcome_output_tokens: planningOutcome?.usage?.totalOutputTokens ?? null,
     planning_outcome_cost_usd: planningOutcome?.usage?.totalCostUsd ?? null,
+
+    static_type_errors: record.outcomes?.staticAnalysis?.type_errors ?? null,
+    static_lint_errors: record.outcomes?.staticAnalysis?.lint_errors ?? null,
+    static_build_ok: record.outcomes?.staticAnalysis?.build_ok ?? null,
+    static_complexity_delta: record.outcomes?.staticAnalysis?.complexity_delta ?? null,
+    static_build_evidence: record.outcomes?.staticAnalysis?.build_evidence ?? '',
+    static_complexity_metric: record.outcomes?.staticAnalysis?.complexity_metric ?? '',
 
     verification_local_duration_ms: verificationTelemetry?.local_verification?.total_duration_ms ?? null,
     verification_local_failure_category: verificationTelemetry?.local_verification?.first_failure_category ?? '',

@@ -2,16 +2,11 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-RUNNER="$REPO_DIR/shared/lib/wavemill-startup-runner.sh"
-
-extract_linear_batch_set_state() {
-  awk '
-    /^linear_enqueue_retry\(\) \{/ { capture=1 }
-    /^linear_batch_set_state\(\) \{/ { capture=1; in_batch=1 }
-    capture { print }
-    in_batch && /^}/ { exit }
-  ' "$RUNNER"
-}
+# linear_batch_set_state and linear_enqueue_retry live in wavemill-common.sh
+# (HOK-3115). The startup runner has no log_warn, so warnings fall back to
+# the startup_log fake below.
+# shellcheck source=/dev/null
+source "$REPO_DIR/shared/lib/wavemill-common.sh"
 
 LOG_FILE="$(mktemp /tmp/wavemill-startup-linear-malformed.XXXXXX)"
 trap 'rm -f "$LOG_FILE"' EXIT
@@ -44,7 +39,7 @@ EOF
 TOOLS_DIR="$REPO_DIR/tools"
 DRY_RUN="false"
 
-eval "$(extract_linear_batch_set_state)"
+STATE_FILE=""
 
 linear_batch_set_state "In Progress" "HOK-503"
 

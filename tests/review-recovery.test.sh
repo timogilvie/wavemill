@@ -5,6 +5,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MONITOR_SCRIPT="$REPO_DIR/shared/lib/wavemill-monitor.sh"
 COMMON_SCRIPT="$REPO_DIR/shared/lib/wavemill-common.sh"
+# Real tools dir for exercising the envelope reader tool before REPO_DIR/TOOLS_DIR
+# are reassigned to temp fixtures below.
+REAL_TOOLS_DIR="$REPO_DIR/tools"
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
@@ -39,8 +42,21 @@ for fn in \
   review_recovery_terminal_artifacts_json \
   review_recovery_restore_terminal_result \
   review_recovery_running_artifacts_json \
+  review_result_has_final_evidence \
+  review_result_missing_final_evidence \
+  review_result_infra_failure \
+  review_result_failure_category \
+  review_result_review_head_sha \
+  review_infra_recovery_category_label \
+  review_infra_recovery_next_action \
+  review_result_native_timeout_identity \
+  review_recovery_timeout_state_path \
+  review_recovery_write_timeout_state \
+  review_recovery_native_timeout_repeat \
   review_recovery_clear_ready_handoff_state \
   review_recovery_publish_running \
+  native_terminal_failure_kind \
+  native_stage_failure_envelope_json \
   review_recovery_coordinator \
   review_recovery_coordinator_locked
 do
@@ -78,6 +94,29 @@ review_recovery_window_observable() { return 0; }
 clear_review_gate_attention() { rm -f "$1/.needs-attention"; }
 write_ready_attention_file() { printf '%s\n' "$2" > "$1/.needs-attention"; }
 check_stage_aborted() { return 1; }
+_challenge_side_for_issue() {
+  if [[ "$1" == *_c ]]; then
+    printf 'challenger\n'
+  elif [[ -n "${PRIMARY_CHALLENGE_ISSUE:-}" && "$1" == "$PRIMARY_CHALLENGE_ISSUE" ]]; then
+    printf 'primary\n'
+  else
+    printf '\n'
+  fi
+}
+get_task_meta() {
+  # $1 issue, $2 key. Only challengePairId is consulted by the code under test.
+  if [[ "$2" == "challengePairId" ]]; then
+    printf '%s\n' "${TASK_PAIR_ID:-}"
+  else
+    printf '\n'
+  fi
+}
+challenge_abort_pair() {
+  printf '%s|%s|%s|%s|%s\n' "$1" "$4" "$5" "$6" "${9:-pair}" >> "$CHALLENGE_ABORT_LOG"
+}
+challenge_selection_health_record_review_timeout() {
+  printf '%s|%s\n' "$1" "$2" >> "$RECORD_OUTCOME_LOG"
+}
 read_stage_status() {
   local feature_dir="$1" stage="$2"
   jq -r '.status // empty' "$feature_dir/.${stage}-result.json" 2>/dev/null || true
@@ -112,8 +151,12 @@ setup_case() {
   WT_DIR="$CASE_DIR/worktree"
   FEATURE_DIR="$WT_DIR/features/slug"
   LAUNCH_LOG="$CASE_DIR/launch.log"
+  CHALLENGE_ABORT_LOG="$CASE_DIR/challenge-abort.log"
+  RECORD_OUTCOME_LOG="$CASE_DIR/record-outcome.log"
   mkdir -p "$FEATURE_DIR"
   : > "$LAUNCH_LOG"
+  : > "$CHALLENGE_ABORT_LOG"
+  : > "$RECORD_OUTCOME_LOG"
   cat > "$STATE_FILE" <<EOF
 {"tasks":{"HOK-2999_c":{"phase":"ready","slug":"slug","worktree":"$WT_DIR","branch":"task/slug","provider":"openai","agent":"codex","model":"gpt-5","executionOwner":"queue","paneState":"released","lifecycle":{"resourceDisposition":"released"}}}}
 EOF
@@ -163,6 +206,107 @@ EOF
 review_recovery_coordinator "HOK-2999_c" "slug" "Task" "$WT_DIR" "task/slug" "auto/integration" "1378" "$FEATURE_DIR" "test recovery" "manual" "manual" "" 0 "false"
 review_recovery_coordinator "HOK-2999_c" "slug" "Task" "$WT_DIR" "task/slug" "auto/integration" "1378" "$FEATURE_DIR" "test recovery" "manual" "manual" "" 0 "false" || true
 assert_eq "duplicate recovery launches at most once" "1" "$(wc -l < "$LAUNCH_LOG" | tr -d ' ')"
+
+# HOK-3106: absent-credential / unresolved-provider preflight failures ship as
+# `verdict:error + native-runtime-unavailable + empty findings + reviewToolError`.
+# The monitor's `review_result_infra_failure` gate must recognize this shape so
+# pending-ready never treats it as a substantive review verdict.
+setup_case "runtime-unavailable-shape"
+cat > "$FEATURE_DIR/.review-result.json" <<'EOF'
+{"stage":"review","status":"failed","agent":"native","artifacts":{"type":"review","failureCategory":"native-runtime-unavailable","verdict":"error","reviewToolError":"OPENROUTER_API_KEY resolved to an empty value for native review.","codeReviewFindings":[]}}
+EOF
+if review_result_infra_failure "$FEATURE_DIR"; then
+  pass "native-runtime-unavailable no-evidence shape is an infra review failure"
+else
+  fail "native-runtime-unavailable no-evidence shape is not an infra review failure"
+fi
+
+# A substantive `not_ready` verdict with real blockers must NOT match the infra
+# gate — otherwise real defects would be laundered into the recovery bucket and
+# skip the ready budget.
+setup_case "substantive-not-ready-not-infra"
+cat > "$FEATURE_DIR/.review-result.json" <<'EOF'
+{"stage":"review","status":"completed","agent":"native","artifacts":{"type":"review","verdict":"not_ready","codeReviewFindings":[{"severity":"blocker","location":"foo.ts:1","category":"correctness","description":"bug"}]}}
+EOF
+if review_result_infra_failure "$FEATURE_DIR"; then
+  fail "substantive not_ready leaked into the infra failure gate"
+else
+  pass "substantive not_ready is not an infra review failure"
+fi
+
+setup_case "timeout-classification"
+cat > "$FEATURE_DIR/.review-result.json" <<'EOF'
+{"stage":"review","status":"failed","agent":"native","model":"kimi-k3","artifacts":{"type":"review","failureCategory":"native-review-timeout","verdict":"error","reviewToolError":"Native review exceeded its wall-clock budget before producing a final JSON result.","effectiveNativeTimeoutMs":300000,"nativeTimeoutMaxMs":1200000,"nativeTimeoutMultiplier":2,"reviewInputDiffBytes":9000,"reviewInputTaskPacketBytes":1000,"reviewInputFileCount":4,"reviewExecutedIdentity":{"substantiveAnalysis":{"resolvedModel":"kimi-k3","agent":"native-openrouter"}}}}
+EOF
+if review_result_infra_failure "$FEATURE_DIR"; then
+  pass "native-review-timeout is an infra review failure"
+else
+  fail "native-review-timeout is not an infra review failure"
+fi
+review_recovery_write_timeout_state "$FEATURE_DIR" "1" "native-review-timeout"
+assert_eq "timeout retry writes doubled budget" "600000" "$(jq -r '.effectiveNativeTimeoutMs' "$FEATURE_DIR/.review-infra-recovery.json")"
+identity="$(review_result_native_timeout_identity "$FEATURE_DIR")"
+if [[ "$identity" == *"9000"* && "$identity" == *"kimi-k3"* ]]; then
+  pass "timeout retry identity includes input size and reviewer"
+else
+  fail "timeout retry identity omits input size or reviewer"
+fi
+
+setup_case "timeout-exhaustion"
+cat > "$FEATURE_DIR/.review-result.json" <<'EOF'
+{"stage":"review","status":"failed","agent":"native","model":"kimi-k3","artifacts":{"type":"review","failureCategory":"native-review-timeout","verdict":"error","reviewToolError":"Native review exceeded its wall-clock budget before producing a final JSON result.","effectiveNativeTimeoutMs":1200000,"nativeTimeoutMaxMs":1200000,"nativeTimeoutMultiplier":2}}
+EOF
+bounded_retry_increment "$FEATURE_DIR" "review-infra-recovery" "same-head:native-review-timeout" >/dev/null
+if review_recovery_coordinator "HOK-2999_c" "slug" "Task" "$WT_DIR" "task/slug" "auto/integration" "1378" "$FEATURE_DIR" "test recovery" "infra" "native-review-timeout" "same-head:native-review-timeout" 1 "false"; then
+  fail "timeout exhaustion returns failure"
+else
+  pass "timeout exhaustion returns failure"
+fi
+assert_eq "timeout exhaustion aborts only challenger with typed reason" "HOK-2999_c|review|claude-sonnet-5|retry_exhausted:native-review-timeout|single" "$(cat "$CHALLENGE_ABORT_LOG")"
+assert_eq "challenger exhaustion does not double-record selection outcome" "" "$(cat "$RECORD_OUTCOME_LOG")"
+
+# Primary-side review-timeout exhaustion never aborts the pair, so it must feed
+# the terminal outcome to selection health directly (HOK-3064).
+setup_case "timeout-exhaustion-primary"
+PRIMARY_CHALLENGE_ISSUE="HOK-2999"
+TASK_PAIR_ID="HOK-2999"
+cat > "$STATE_FILE" <<EOF
+{"tasks":{"HOK-2999":{"phase":"ready","slug":"slug","worktree":"$WT_DIR","branch":"task/slug","provider":"openrouter","agent":"native-openrouter","model":"kimi-k2"}}}
+EOF
+cat > "$FEATURE_DIR/.review-result.json" <<'EOF'
+{"stage":"review","status":"failed","agent":"native","model":"kimi-k2","artifacts":{"type":"review","failureCategory":"native-review-timeout","verdict":"error","reviewToolError":"Native review exceeded its wall-clock budget before producing a final JSON result.","effectiveNativeTimeoutMs":1200000,"nativeTimeoutMaxMs":1200000,"nativeTimeoutMultiplier":2}}
+EOF
+CONTRACT_AGENT="native-openrouter"
+CONTRACT_MODEL="kimi-k2"
+CONTRACT_PROVIDER="openrouter"
+bounded_retry_increment "$FEATURE_DIR" "review-infra-recovery" "same-head:native-review-timeout" >/dev/null
+if review_recovery_coordinator "HOK-2999" "slug" "Task" "$WT_DIR" "task/slug" "auto/integration" "1378" "$FEATURE_DIR" "test recovery" "infra" "native-review-timeout" "same-head:native-review-timeout" 1 "false"; then
+  fail "primary timeout exhaustion returns failure"
+else
+  pass "primary timeout exhaustion returns failure"
+fi
+assert_eq "primary exhaustion records selection outcome with pair/reviewer" "HOK-2999|kimi-k2" "$(cat "$RECORD_OUTCOME_LOG")"
+assert_eq "primary exhaustion does not abort the pair" "" "$(cat "$CHALLENGE_ABORT_LOG")"
+unset PRIMARY_CHALLENGE_ISSUE TASK_PAIR_ID
+CONTRACT_AGENT="claude"
+CONTRACT_MODEL="claude-sonnet-5"
+CONTRACT_PROVIDER="anthropic"
+
+echo ""
+echo "=== Native stage-failure envelope precedence (HOK-3064) ==="
+ENV_CASE_DIR="$TMP_DIR/envelope-precedence"
+mkdir -p "$ENV_CASE_DIR"
+KIMI_DETAIL="Native review exceeded its wall-clock budget before producing a final JSON result."
+# Without typed evidence, the Kimi wall-clock message matches no substring — the
+# exact shape that previously degraded to native-unclassified (HOK-3052).
+assert_eq "kimi timeout detail is unclassified without typed evidence" "native-unclassified" "$(native_terminal_failure_kind "$KIMI_DETAIL" "")"
+cat > "$ENV_CASE_DIR/.review-failure-envelope.json" <<'EOF'
+{"schemaVersion":"1.0","stage":"review","cause":"stage-timeout","stopReason":"wall_clock_limit","provider":"openrouter","model":"kimi-k2","agent":"native-openrouter","evidence":{"source":"native-runtime","detail":"Native review exceeded its wall-clock budget before producing a final JSON result."},"createdAt":"2026-09-22T00:00:00Z"}
+EOF
+ENVELOPE_JSON="$(TOOLS_DIR="$REAL_TOOLS_DIR" native_stage_failure_envelope_json "$ENV_CASE_DIR" "review")"
+assert_eq "review envelope yields typed native-stage-timeout kind" "native-stage-timeout" "$(printf '%s' "$ENVELOPE_JSON" | jq -r '.failureKind')"
+assert_eq "review envelope carries canonical provider identity" "openrouter" "$(printf '%s' "$ENVELOPE_JSON" | jq -r '.provider')"
+assert_eq "review envelope carries canonical model identity" "kimi-k2" "$(printf '%s' "$ENVELOPE_JSON" | jq -r '.model')"
 
 echo ""
 echo "Passed: $PASS"

@@ -16,6 +16,58 @@ export interface RedactionOptions {
   configDir?: string;
 }
 
+/**
+ * Explicit default-deny audit fixture for the Arbiter privacy boundary
+ * (HOK-2787). These are the protected values that must never transit any
+ * Hokusai egress path: vendor telemetry identity fields (user email,
+ * organization id, account UUID, raw session/account identifiers, transcript
+ * paths, prompts, provider payloads) and reviewer evidence (raw review
+ * prompts, source/diffs, structured findings, reproduction evidence,
+ * remediation patches).
+ *
+ * Redaction is default-deny by construction — unlisted strings are blanked —
+ * so this fixture exists to keep the September 2026 requirements pinned as
+ * named regression tests rather than relying on the mechanism alone. Tests in
+ * this repo assert none of these sentinel values survive redaction or appear
+ * in queued contribution rows.
+ */
+export const PROTECTED_EGRESS_FIELD_FIXTURE = Object.freeze({
+  user: Object.freeze({
+    email: 'protected-user@example.com',
+    account_uuid: 'protected-account-uuid-0000',
+  }),
+  organization: Object.freeze({ id: 'protected-org-id-0000' }),
+  session_id: 'protected-session-id-0000',
+  account_id: 'protected-raw-account-id-0000',
+  transcript_path: '/Users/protected/.claude/projects/transcript.jsonl',
+  prompt: 'protected raw prompt text',
+  provider_payload: '{"messages":[{"role":"user","content":"protected"}]}',
+  source_diff: 'diff --git a/protected.ts b/protected.ts',
+  review_prompt: 'protected raw review prompt',
+  review_findings: 'protected structured finding evidence',
+  reproduction_evidence: 'protected reproduction transcript',
+  remediation_patch: '--- a/protected.ts\n+++ b/protected.ts',
+});
+
+/**
+ * Every protected sentinel string from {@link PROTECTED_EGRESS_FIELD_FIXTURE},
+ * flattened for "does not transit" assertions against serialized payloads.
+ */
+export function protectedEgressSentinelValues(): string[] {
+  const values: string[] = [];
+  const visit = (value: unknown): void => {
+    if (typeof value === 'string') {
+      values.push(value);
+    } else if (value && typeof value === 'object') {
+      for (const child of Object.values(value)) {
+        visit(child);
+      }
+    }
+  };
+  visit(PROTECTED_EGRESS_FIELD_FIXTURE);
+  return values;
+}
+
 const HASHED_IDENTIFIER_PATHS = new Set(['run_id', 'task_id']);
 const PRESERVED_STRING_PATHS = new Set([
   'schema_version',

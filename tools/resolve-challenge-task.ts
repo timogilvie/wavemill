@@ -11,6 +11,7 @@ import {
   chooseChallengeStage,
   decideChallengeLaunch,
   extractChallengeRecommendation,
+  insufficientStagePoolReason,
   variedModelForStage,
   buildChallengeExecutionIntent,
   type ChallengeNativeRejection,
@@ -21,16 +22,26 @@ import { buildEvalSummary, modelStageCount } from '../shared/lib/challenge-sched
 import { resolveAgent, tryResolveAgent } from '../shared/lib/model-router.ts';
 import { readBothRouteArtifacts } from '../shared/lib/route-artifact.ts';
 import { readTaskPromptFromFile } from '../shared/lib/workflow-router.ts';
+import {
+  sealChallengeDecision,
+  resolveSealedDecisionAgainstExpandedRoute,
+  type ChallengeExecutionIntent,
+} from '../shared/lib/challenge-execution-contract.ts';
+import type { ChallengeRoutingMeta } from '../shared/lib/challenge-comparison.ts';
+import type { AgentType } from '../shared/lib/model-registry.ts';
+import type { AgentResolutionPhase } from '../shared/lib/model-agent-resolution.ts';
 import { buildChallengeUnavailable } from '../shared/lib/challenge-unavailable.ts';
 import {
   buildSelectionHealthDiagnostic,
   buildSelectionHealthEvidence,
   claimReservation,
+  computeAttemptEvidence,
   computeSelectionExclusions,
   normalizeSelectionHealthConfig,
   readSelectionHealth,
   type CircuitExclusion,
   type ReservationExclusion,
+  type SelectionAttemptEvidence,
   type SelectionHealthDiagnostic,
 } from '../shared/lib/challenge-selection-health.ts';
 
@@ -51,9 +62,34 @@ runTool({
       type: 'string',
       description: 'Stage already chosen for this pair (plan|implementation|review); suppresses stage re-sampling',
     },
+    'resolve-sealed': {
+      type: 'boolean',
+      description: 'HOK-3065: resolve a sealed decision against the expanded route instead of running the lottery',
+    },
+    'sealed-intent': {
+      type: 'string',
+      description: 'Sealed challenge execution intent JSON (with --resolve-sealed)',
+    },
   },
   async run({ args }) {
     const repoDir = (args['repo-dir'] as string) || process.cwd();
+
+    // HOK-3065: sealed-decision resolution. Given an intent whose selection was
+    // sealed at launch and a feature dir that now carries the expanded route,
+    // enrich the non-varied fields and preserve the varied challenger, or
+    // collapse with a typed reason. The challenge lottery is never re-run here:
+    // finalization must not turn a single into a challenge, reroll the stage, or
+    // substitute the sealed challenger.
+    if (args['resolve-sealed']) {
+      resolveSealedAndPrint({
+        repoDir,
+        sealedIntentRaw: args['sealed-intent'] as string | undefined,
+        featureDir: args['feature-dir'] as string | undefined,
+        defaultAgent: (loadWavemillConfig(repoDir).router?.defaultAgent) || 'claude',
+      });
+      return;
+    }
+
     const issue = args.issue as string;
     const slug = args.slug as string;
     const title = args.title as string;
@@ -77,6 +113,14 @@ runTool({
     let selectionHealthReservationExclusions: ReservationExclusion[] = [];
     let selectionHealthCircuitExclusions: CircuitExclusion[] = [];
     let selectionHealthProbeGranted: { model: string; provider: string; canonicalModel: string } | null = null;
+    // Per-candidate attempt/cooldown evidence for the varied stage, refreshed
+    // with each health snapshot read (HOK-3066). Null when attempt ranking is
+    // disabled, which restores the pure coverage/priority selector.
+    const attemptRankingEnabled = selectionHealthEnabled && selectionHealthConfig.attemptRanking.enabled;
+    let selectionHealthAttemptEvidence: Map<string, SelectionAttemptEvidence> | null = null;
+    const attemptEvidenceFor = attemptRankingEnabled
+      ? (model: string) => selectionHealthAttemptEvidence?.get(model)
+      : undefined;
     const selectionHealthOutput = () => selectionHealthEnabled
       ? {
           selectionHealth: buildSelectionHealthEvidence({
@@ -84,12 +128,27 @@ runTool({
             excludedByReservation: selectionHealthReservationExclusions,
             excludedByCircuit: selectionHealthCircuitExclusions,
             probeGranted: selectionHealthProbeGranted,
+            ...(selectionHealthAttemptEvidence
+              ? { attemptEvidence: [...selectionHealthAttemptEvidence.values()] }
+              : {}),
           }),
           ...(selectionHealthDiagnostic ? { selectionHealthDiagnostic } : {}),
         }
       : {};
     const defaultAgent = router.defaultAgent || 'claude';
-    const pool = getChallengeModelPool(challenge, router);
+    // The challenge stage is resolved before pool construction (HOK-3063): the
+    // pool must reflect the varied stage's effective-model projection, not a
+    // silent 'coding' default. Route artifacts are read here so a pinned stage
+    // or scheduler recommendation can drive stage choice before any pool work.
+    const routeArtifacts = featureDir
+      ? readBothRouteArtifacts(featureDir)
+      : { bootstrap: null, expanded: null };
+    const recommendation = extractChallengeRecommendation(routeArtifacts);
+    const challengeStage = pinnedStage ?? chooseChallengeStage({
+      weights: challenge.stageWeights,
+      recommendedStage: recommendation?.stage,
+    });
+    const pool = getChallengeModelPool(challengeStage, challenge, router);
     const requestedRate = challenge.rate ?? 0.10;
     const strictWhenRequired = challenge.enabled === true && requestedRate >= 1;
 
@@ -183,17 +242,16 @@ runTool({
           }),
           slotsRequired: 0,
           reason: 'challenge_unavailable',
+          challengeStage,
         }));
         return;
       }
-      console.log(JSON.stringify(buildSingle('insufficient_models')));
+      console.log(JSON.stringify(buildSingle(
+        insufficientStagePoolReason(challengeStage),
+        { challengeStage },
+      )));
       return;
     }
-
-    const routeArtifacts = featureDir
-      ? readBothRouteArtifacts(featureDir)
-      : { bootstrap: null, expanded: null };
-    const recommendation = extractChallengeRecommendation(routeArtifacts);
 
     const launchDecision = decideChallengeLaunch({
       pool,
@@ -213,16 +271,10 @@ runTool({
 
     const forcedChallengerModel = launchDecision.forcedChallengerModel;
 
-    // A stage pinned by the caller wins outright. Re-sampling the stage on a
-    // refresh is how an already-selected implementation-stage challenge (e.g.
-    // a Qwen or Kimi coder arm) turned into an unrelated plan-stage pair: the
-    // second roll is independent, so an open-weight coder had to win twice.
-    // Otherwise a recommendation carrying a stage pins it, and failing that we
-    // sample from the configured weights.
-    const challengeStage = pinnedStage ?? chooseChallengeStage({
-      weights: challenge.stageWeights,
-      recommendedStage: launchDecision.recommendation?.stage,
-    });
+    // `challengeStage` was resolved above so the pool reflects the varied
+    // stage's effective-model projection. A stage pinned by the caller wins
+    // outright; otherwise a recommendation stage was preferred, and failing
+    // that the weighted sampler drove the choice.
     const summary = buildEvalSummary(repoDir);
     const coverage = (model: string, stage: 'plan' | 'implementation' | 'review') =>
       modelStageCount(summary, model, stage);
@@ -262,6 +314,7 @@ runTool({
           defaultAgent,
           repoDir,
           coverage,
+          attemptEvidence: attemptEvidenceFor,
           rotationSeed,
           recommendedChallengerModel,
         }, routeArtifacts);
@@ -286,6 +339,7 @@ runTool({
             defaultAgent,
             repoDir,
             coverage,
+            attemptEvidence: attemptEvidenceFor,
             rotationSeed,
             recommendedChallengerModel,
           });
@@ -305,6 +359,7 @@ runTool({
             defaultAgent,
             repoDir,
             coverage,
+            attemptEvidence: attemptEvidenceFor,
             rotationSeed,
             recommendedChallengerModel,
             strictWhenRequired,
@@ -326,6 +381,7 @@ runTool({
           defaultAgent,
           repoDir,
           coverage,
+          attemptEvidence: attemptEvidenceFor,
           rotationSeed,
           recommendedChallengerModel,
           strictWhenRequired,
@@ -393,6 +449,14 @@ runTool({
               circuits: exclusions.excludedByCircuit,
             });
             candidatePool = exclusions.eligible;
+            if (attemptRankingEnabled) {
+              selectionHealthAttemptEvidence = computeAttemptEvidence({
+                stage: challengeStage,
+                candidates: pool,
+                snapshot,
+                config: selectionHealthConfig,
+              });
+            }
           } catch (error) {
             selectionHealthDiagnostic = buildSelectionHealthDiagnostic(error, {
               repoDir,
@@ -551,6 +615,20 @@ runTool({
           stage: launchDecision.recommendation.stage,
         }
       : undefined;
+    const selectionEvidence = {
+      ...(typeof pair.challengerCoverageCount === 'number'
+        ? { coverageCount: pair.challengerCoverageCount }
+        : {}),
+      ...(typeof pair.challengerAttemptCount === 'number'
+        ? { attemptCount: pair.challengerAttemptCount }
+        : {}),
+      ...(pair.challengerLastAttemptAt ? { lastAttemptAt: pair.challengerLastAttemptAt } : {}),
+      ...(typeof pair.challengerCooldownActive === 'boolean'
+        ? { cooldownActive: pair.challengerCooldownActive }
+        : {}),
+      ...(pair.challengerPriorityTier !== undefined ? { priorityTier: pair.challengerPriorityTier } : {}),
+    };
+    const hasSelectionEvidence = Object.keys(selectionEvidence).length > 0;
     const intent = buildChallengeExecutionIntent({
       pairId: pair.pairId,
       issueId: issue,
@@ -559,6 +637,7 @@ runTool({
       selectionPath: launchDecision.selectionPath,
       challengerSource,
       selectionReason: pair.selectionReason,
+      ...(hasSelectionEvidence ? { selectionEvidence } : {}),
       challengeRecommendation,
       routeContext: pair.routeContext,
       primary: pair.primary,
@@ -588,6 +667,14 @@ runTool({
       challengerSource,
       selectionReason: pair.selectionReason,
       coverageCount: pair.challengerCoverageCount,
+      ...(typeof pair.challengerAttemptCount === 'number'
+        ? { attemptCount: pair.challengerAttemptCount }
+        : {}),
+      ...(pair.challengerLastAttemptAt ? { lastAttemptAt: pair.challengerLastAttemptAt } : {}),
+      ...(typeof pair.challengerCooldownActive === 'boolean'
+        ? { cooldownActive: pair.challengerCooldownActive }
+        : {}),
+      ...(pair.challengerPriorityTier !== undefined ? { priorityTier: pair.challengerPriorityTier } : {}),
       challengeStage: effectiveStage,
       ...(challengeRecommendation ? { challengeRecommendation } : {}),
       challengeIntent,
@@ -620,6 +707,87 @@ function normalizeChallengeStage(value: string | undefined): ChallengeStage | un
   if (raw === 'review' || raw === 'reviewer') return 'review';
   if (raw === 'implementation' || raw === 'coding' || raw === 'coder') return 'implementation';
   return undefined;
+}
+
+function stageToAgentPhase(stage: 'plan' | 'implementation' | 'review'): AgentResolutionPhase {
+  if (stage === 'plan') return 'planning';
+  if (stage === 'review') return 'review';
+  return 'coding';
+}
+
+/**
+ * HOK-3065 sealed-decision resolution.
+ *
+ * Reads a sealed intent and the expanded route, then enriches the non-varied
+ * route fields while preserving the sealed challenger byte-for-byte. Eligibility
+ * is a direct launchability check of the sealed challenger's varied model for
+ * its stage — if that model can no longer run, the pair collapses with a typed
+ * reason instead of substituting a different challenger. Prints one JSON object:
+ * `{status:'materialize', variedStage, challengerVariedModel, intent}` or
+ * `{status:'collapse', reason, detail}`.
+ */
+function resolveSealedAndPrint(input: {
+  repoDir: string;
+  sealedIntentRaw?: string;
+  featureDir?: string;
+  defaultAgent: AgentType;
+}): void {
+  let sealed: ChallengeExecutionIntent | undefined;
+  try {
+    sealed = input.sealedIntentRaw
+      ? JSON.parse(input.sealedIntentRaw) as ChallengeExecutionIntent
+      : undefined;
+  } catch {
+    sealed = undefined;
+  }
+
+  const decision = sealChallengeDecision(sealed);
+  if (!sealed || !decision) {
+    console.log(JSON.stringify({
+      status: 'collapse',
+      reason: 'sealed_intent_incomplete',
+      detail: '--sealed-intent was missing or not a well-formed two-sided challenge intent.',
+    }));
+    return;
+  }
+
+  const artifacts = input.featureDir
+    ? readBothRouteArtifacts(input.featureDir)
+    : { bootstrap: null, expanded: null };
+  const expanded = artifacts.expanded;
+  if (!expanded) {
+    console.log(JSON.stringify({
+      status: 'collapse',
+      reason: 'expanded_route_missing',
+      detail: 'No expanded route (.post-expansion-route.json) in the feature dir.',
+    }));
+    return;
+  }
+
+  const expandedRoute: ChallengeRoutingMeta = {
+    planner: expanded.planner ?? '',
+    coder: expanded.coder ?? '',
+    reviewer: expanded.reviewer ?? '',
+    planDepth: expanded.planDepth ?? '',
+    codeDepth: expanded.codeDepth ?? '',
+    reviewMode: expanded.reviewMode ?? '',
+  };
+
+  const launchable = tryResolveAgent(
+    decision.challengerVariedModel,
+    {},
+    input.defaultAgent,
+    input.repoDir,
+    stageToAgentPhase(decision.selectedStage),
+  );
+  const eligibleVariedModels = launchable.ok ? [decision.challengerVariedModel] : [];
+
+  const result = resolveSealedDecisionAgainstExpandedRoute({
+    sealed,
+    expandedRoute,
+    eligibleVariedModels,
+  });
+  console.log(JSON.stringify(result));
 }
 
 function recommendationForIntent(value: unknown) {

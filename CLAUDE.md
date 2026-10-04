@@ -15,7 +15,7 @@ This repository provides shared tooling for both Claude and Codex AI workflows:
 - **`.wavemill/manifests/`** - Per-session resource manifests
 
 ### Key Principles
-1. **Single Source of Truth**: This repo is canonical. `shared/lib/` contains all API logic; `tools/` contains all CLI tools. `wavemill` runs tools directly from the repo — never from `~/.claude/tools/`.
+1. **Single Source of Truth**: This repo is canonical. `shared/lib/` contains all API logic; `tools/` contains all CLI tools. `wavemill` runs tools directly from the repo — never from `~/.claude/tools/`. Install assets resolve via `shared/lib/native-agent/install-paths.ts` (TS) / `WAVEMILL_INSTALL_DIR` + `wavemill_tool_path` (shell); the milled repo is `WAVEMILL_MILLED_REPO_DIR`/`REPO_DIR`. Enforced by `tests/check-install-paths.test.sh` and `tests/check-common-guards.test.sh`.
 2. **Config Schema**: Both `claude/config.json` and `codex/config.json` follow `claude/config.schema.json`; wavemill runtime config follows `wavemill-config.schema.json`
 3. **Shared Templates**: `tools/prompts/` templates are consumed by both toolchains
 4. **State Separation**: Claude uses `features/`, `bugs/`, `epics/`; Codex uses `.codex/state/`
@@ -51,7 +51,11 @@ All business logic lives in `shared/lib/` for reusability across CLI tools, comm
 - `outcome-collectors.ts` - Collect CI, test, review outcomes
 
 #### Utilities
-- `bounded-retry.sh` - The bounded-retry invariant (HOK-2924): every path that relaunches work after a failure must count attempts against a `(state_dir, bucket, head SHA)` key, back off between attempts, terminalize at a ceiling with a greppable recorded reason (`.retry-<bucket>-exhausted` sentinel), and reset on a new head SHA or successful launch. Terminal causes short-circuit via `bounded_retry_mark_exhausted` without consuming the budget. **New relaunch paths must use this helper — never implement a private retry counter.**
+- `bounded-retry.sh` - The bounded-retry invariant (HOK-2924): every path that relaunches work after a failure must count attempts against a `(state_dir, bucket, head SHA)` key, back off between attempts, terminalize at a ceiling with a greppable recorded reason (`.retry-<bucket>-exhausted` sentinel), and reset on a new head SHA or successful launch. Terminal causes short-circuit via `bounded_retry_mark_exhausted` without consuming the budget. **New relaunch paths must use this helper — never implement a private retry counter.** Example bucket: `coding-dirty-handoff` (HOK-3128) — relaunch once per head after a coding agent exits with `.coding-complete` and a dirty tree; a challenger that exhausts it is aborted so its pair forfeits to the primary. Example buckets: `coding-launch-refused` / `coding-launch-resolver` (HOK-3142) — a typed deterministic coding launch refusal re-routes the coder with the refused model excluded (`tools/reroute-refused-coder.ts`), and terminalizes to needs-user with the certify command when no launchable coder remains, the coder is pinned, or the budget (`WAVEMILL_CODING_LAUNCH_REFUSAL_MAX_ATTEMPTS`, default 3) is spent; transient resolver failures back off in their own bucket. Example buckets: `failed-ready-recheck` / `ready-remediation` (HOK-3147) — a challenge arm that exhausts them while its sibling's Ready is green is retired and its PR closed (`ready_exhausted_challenge_terminalize`): `terminal_stage_failure:ready-exhausted` for red checks (forfeit) or `invalid_challenge:ready-transition-failed|ready-unattributed` for infrastructure (no winner; tend's `challenge-void` releases the survivor once the retired PR is closed). Example bucket: `pending-ready-recheck` (HOK-3154) — the HOK-3147 third terminal path: when a Ready launch is refused because the review verdict can never pass the readiness gate (same green-sibling precondition), `review_refused_challenge_terminalize` retires the arm with cause `terminal_stage_failure:review-{malformed-response,no-output,not-ready}` (model-fault forfeit; only emitted when execution evidence proves which reviewer ran) or `invalid_challenge:review-{identity-mismatch,unattributed}` (harness-fault; survivor released through `challenge-void`). Attribution runs against the **reviewer actually used**, not the coder. Infra review categories (`native-review-timeout` etc.) route through the HOK-3106 bucket instead. TypeScript callers should use `shared/lib/bounded-retry.ts` (`createStateDirRetry`), which is the typed bridge to the shell helper. Example buckets: `observer-update-branch` / `observer-ready-budget-reset` / `observer-forfeit-arm` (HOK-3097) — opt-in observer self-repair actions, each gated by `observer.autoFix.*`, keyed on the task's state dir.
+- `config.ts` `resolveSessionCapabilities()` / `wavemill_session_has` (`wavemill-common.sh`) - The single session-capability resolver (HOK-3102): every producer of consumer-bound work (tend handoffs, `wm:ready` labels, pane releases to the merge queue, merge-candidate lifecycle, observer findings, merge-lane BEHIND updates) checks the matching consumer through this helper before producing work. `mergeExecutor` is `tend | operator | none`; `mergeQueue` is on only when `mergeExecutor === 'tend'` and `mergeQueue.enabled`. **Never re-derive from `integration.enabled` / `useMillSession` / `MERGE_QUEUE_ENABLED` / `observer.enabled` at a producer site.** Health is advisory only, never gating.
+- `task-progress.ts` / `task-progress.sh` - The task progress/liveness invariant (HOK-3101): every liveness decision site (observer, monitor stage-owner check, ready-watchdog, reconciler pane release, dashboard, next-done, pane-message delivery) derives `{ lastProgressAt, sources[], agentState, agentIdle, terminal, terminalIdle, stalled, blockingPrompt }` from a single primitive. The primitive enforces three invariants: **(1) pane or process existence is NEVER progress** (it can only be reported as `agentProcessLive`, never as `lastProgressAt`); **(2) monitor/controller writes are NEVER agent evidence** (monitor-written hooks, launcher `working` status, and wavemill's own `tools/*.ts` / monitor child processes are excluded); **(3) an agent's own `idle`/`Stop` survives later monitor writes** (revoked only by a later agent work event, via the preserved `.agentRecord`). Shell callers use `wavemill_hook_read` (raw hook accessor, replaces the ten copy-paste TTL blocks) or `task_progress_json` (CLI spawn, cached). Dashboard reads only the cache. **New decision sites must go through the primitive — never re-derive liveness from a private TTL check.** The tend challenge gate follows the same rule (HOK-3128): a tracked no-PR challenge sibling is live only while the primitive shows progress; otherwise `pair-unresolvable:sibling-stalled` (`isNoPrSiblingStalled` / `evaluateSiblingLiveness` in `tend-challenge-gate.ts`).
+- `stage-launchability.ts` `isLaunchableForStage()` - The router ↔ launcher parity invariant (HOK-3142): the predicate *is* the launcher's resolver (`resolveModelAgent` with the effective registry), and every routing exit runs it through `enforceLaunchableRoute` (`workflow-router.ts` `finalizeDecision`), substituting a launchable model or recording `launchabilityBlocked`. **Every router-selected model must pass this predicate — never add a routing path that returns without `finalizeDecision`.** Canary refusals carry a certify command with `--live-coding-canary`.
+- `shared/lib/native-agent/provider-identity.ts` - The provider-identity invariant (HOK-3143): every native loop turn's provider-reported `response.model` is verified against the certified identity via `extractProviderReportedIdentity` / `verifyProviderIdentity`. Alias certificates pin a concrete `resolvedTarget.model`; a mismatch (or an unverifiable alias turn) is caught in the loop's `message_end` handler, invalidates the certificate via `invalidateCertificationIdentity` (`certification/identity-invalidation.ts`), and throws `ProviderIdentityMismatchError` so the launcher writes `failureReason: 'identity_mismatch'` and `modelAttributionIneligibleReason: 'provider_substitution'`. The gate (`eligibility-gate.ts`) refuses invalidated certificates with reason `identity_mismatch`, which routes through the HOK-3142 `coding-launch-refused` reroute. **Never trust the requested wire id as `executedModel` — stage results must carry the provider-reported id and `executionEvidence.source: 'provider-response'`.**
 - `prompt-utils.ts` - Prompt template filling
 - `llm-cli.ts` - Claude CLI integration
 - `string-utils.ts` - String manipulation (kebab-case, etc.)
@@ -115,7 +119,7 @@ Available in `~/.claude/commands/`:
 ### Native Certification CLI
 `wavemill native-agent certifications` subcommands: `list`, `inspect`, `verify`, `report`, `certify`, `re-certify`, `reidentify`, `invalidate`, `migrate`, `prune`.
 
-Use `wavemill native-agent certify --provider <provider> --model <model> --phase <phase>` for one model, or `wavemill native-agent certify --all --phase workflow` to publish the full current-suite matrix. The mill startup preflight auto-remediates deterministic current-suite gaps, identity drift, stale artifacts, and near-TTL renewal by default. Set `WAVEMILL_SKIP_CERTIFICATION_AUTO_REMEDIATE=1` to keep the guard active but require manual certification; set `WAVEMILL_SKIP_CERTIFICATION_COVERAGE_GUARD=1` only for a targeted operator override. Use `wavemill native-agent certifications prune` to report orphan artifacts and `--yes` to remove them.
+Use `wavemill native-agent certify --provider <provider> --model <model> --phase <phase>` for one model, or `wavemill native-agent certify --all --phase workflow` to publish the full current-suite matrix. Use `npx tsx tools/native-agent-certify.ts --refresh-canary-cohort` on the credentialed mill host to refresh live coding canaries for the bounded cohort configured under `nativeAgent.certification.canaryCohort` (HOK-3062); mill preflight runs the same refresh automatically with a one-attempt-per-episode guard, disabled via `canaryAutoRefresh: false` or `WAVEMILL_SKIP_CANARY_AUTO_REFRESH=1`. The mill startup preflight auto-remediates deterministic current-suite gaps, identity drift, stale artifacts, and near-TTL renewal by default. Set `WAVEMILL_SKIP_CERTIFICATION_AUTO_REMEDIATE=1` to keep the guard active but require manual certification; set `WAVEMILL_SKIP_CERTIFICATION_COVERAGE_GUARD=1` only for a targeted operator override. Use `wavemill native-agent certifications prune` to report orphan artifacts and `--yes` to remove them.
 
 ## Test Registration
 
@@ -132,7 +136,7 @@ Shell and unit tests are **no longer listed in `package.json`**. All three suite
 
 ```bash
 bash tests/run-shell-suite.sh              # all shell tests
-bash tests/run-shell-suite.sh --shard 2/4  # CI shard 2 of 4
+bash tests/run-shell-suite.sh --shard 2/3  # CI shard 2 of 3
 bash tests/run-unit-tests.sh               # all unit tests
 bash tests/run-unit-tests.sh --shard 2/7   # CI shard 2 of 7
 bash tests/run-unit-tests.sh --list        # print selection without running
@@ -141,7 +145,11 @@ bash tests/run-custom-tests.sh --shard 2/3 # custom harness CI shard 2 of 3
 
 Shell shards are assigned round-robin. Unit and custom shards use **deterministic weighted partitioning**: `tools/partition-tests.ts` (LPT greedy over `shared/lib/test-partitioner.ts`) balances shards using measured per-test medians from the checked-in manifest `tests/ci-test-weights.json`. A newly added test has no manifest entry yet and receives the conservative `defaultMs` weight — adding it to the array is still all that is needed. `tools/check-shard-balance.ts` (preflight) enforces exactly-once assignment, manifest hygiene, and the 130%-of-median balance rule; refresh the manifest with `npx tsx tools/ci-test-timings.ts collect` from ≥3 CI timing artifacts (see `docs/ci-test-timings.md`).
 
-**CI job layout** (`.github/workflows/ci.yml`): `preflight`, `shell` (×4 shards), `unit` (×7 weighted shards), `custom` (×3 weighted shards), `smoke`, and `certification` run in parallel. The `shell-and-unit` job aggregates them into the single status check named **"Shell and Unit Tests"**, which is a required check on `main` — do not rename it without updating branch protection. The unit/custom jobs also upload `timing-*` artifacts used to refresh the weights manifest.
+**CI job layout** (`.github/workflows/ci.yml`): `preflight`, `shell` (×3 shards), `unit` (×7 weighted shards), `custom` (×3 weighted shards), `smoke`, and `certification` run in parallel. The `shell-and-unit` job aggregates them into the single status check named **"Shell and Unit Tests"**, which is a required check on `main` — do not rename it without updating branch protection. The shell/unit/custom jobs all upload `timing-*` artifacts; unit/custom feed the weights manifest, shell timing is diagnostic (round-robin sharding).
+
+**Tests must not write tracked repo paths** (HOK-3157, extends [HOK-3121](https://linear.app/hokusai/issue/HOK-3121)): a killed test run (SIGKILL, `run_tests` timeout, suite-level kill) skips `finally` blocks and leaves tracked files modified, which parks the task's coding handoff on a dirty tree. Tests must write only to `mkdtemp` directories and inject the path (e.g. `templatePath`). Two guards enforce this:
+- Static preflight: `tools/check-test-tracked-writes.ts` (in `test:preflight`) scans tracked `*.test.{ts,tsx,js,jsx,mjs,cjs}` for literal fs mutator writes to tracked repo paths. Suppress with `// allow-tracked-write: <reason>`.
+- Runtime: `tests/lib/tracked-tree-guard.sh`, wired into `tests/run-unit-tests.sh` and `tests/run-custom-tests.sh`, snapshots tracked-file status before each run and fails if any tracked file was modified during the run (untracked artifacts and pre-existing dirt are ignored).
 
 ## Prompt Locations
 
@@ -164,6 +172,8 @@ Wavemill tracks agent lifecycle using a JSON status file contract at `/tmp/wavem
 All JSON state read-modify-write updates must use `state_mutate` from `shared/lib/wavemill-common.sh` in shell or `mutateJsonState` from `shared/lib/state-mutex.ts` in TypeScript. These helpers serialize concurrent writers with a file lock before writing a temporary file and atomically renaming it into place.
 
 Append-only files such as JSONL logs and `.wavemill/registry/` entries remain lock-free. Hook status files at `/tmp/wavemill-*.hook` also keep their existing single-writer temporary-file pattern.
+
+Per-task writes that may run after the task has been reaped (background eval completion, job-poll settlement, retry bookkeeping) must go through `task_state_mutate_existing` in `shared/lib/wavemill-common.sh`. A raw `.tasks[$issue].x = …` state_mutate recreates the reaped entry as a phase/status/slug/lifecycle-less stub that consumes a mill slot (HOK-3125). The counter also classifies such stubs as `orphan` as defense in depth, but the writer guard is the primary fix.
 
 ### Architecture
 
@@ -197,7 +207,15 @@ Append-only files such as JSONL logs and `.wavemill/registry/` entries remain lo
   "event": "PreToolUse",
   "detail": "Read",
   "agent": "claude",
-  "timestamp": 1712345678
+  "timestamp": 1712345678,
+  "writer": "agent",
+  "agentRecord": {
+    "state": "working",
+    "event": "PreToolUse",
+    "agent": "claude",
+    "timestamp": 1712345678,
+    "detail": "Read"
+  }
 }
 ```
 
@@ -210,7 +228,8 @@ The optional `next_action` field carries a short operator hint for actionable st
   "detail": "waiting for human approval",
   "next_action": "approve HOK-1234 to continue",
   "agent": "claude",
-  "timestamp": 1712345678
+  "timestamp": 1712345678,
+  "writer": "agent"
 }
 ```
 
@@ -228,6 +247,10 @@ Unknown states are silently dropped so readers never see partial or malformed ho
 **TTL**: 300s - dashboard falls back to pane liveness if timestamp is stale
 
 **Atomic Writes**: Uses tmp file + mv to prevent partial reads
+
+**`writer` field (HOK-3101)**: `agent` or `monitor`. Distinguishes controller writes from agent writes. Monitor/controller writes NEVER count as agent liveness evidence and NEVER erase the agent's own record. Legacy hooks (no `writer` field, written before HOK-3101 landed) are classified by event: `pr_merged`, `pr_closed_unmerged`, `operator_abort`, `review_complete`, `ready_complete`, `pr_opened`, `blocked_completion_liveness`, `premature_plan_approval`, `recovery_contract_unavailable`, `planning_rejection_notify_failed`, `NoPR`, `worktree-setup`, `recovery_failure`, `challenge_*` are monitor; everything else is agent.
+
+**`agentRecord` field (HOK-3101)**: preserves the agent's own last record across subsequent monitor writes so a monitor `pr_merged` write cannot erase the agent's `idle:Stop` (HOK-3089 pt 3). Callers that need the agent's true state (dashboard, ready-watchdog, reconciler pane release, monitor stage-owner check) must read from `agentRecord`, not the top level, via the shared shell accessor `wavemill_hook_read --agent-only` or the TS `readHookFile()`.
 
 ### Signal-Driven Dashboard Refresh
 

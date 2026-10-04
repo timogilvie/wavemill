@@ -5,8 +5,9 @@
  * Non-blocking: eval failures log a warning but never fail the workflow.
  */
 
+import { ISSUE_ID_RE } from './task-identity.ts';
 import { readFileSync, existsSync, appendFileSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { randomUUID } from 'node:crypto';
@@ -17,6 +18,7 @@ import { resolveEvalsDir, resolveRouteArtifactArchiveDir } from './evals-paths.t
 import { execShellCommand } from './shell-utils.ts';
 import { detectAndFormatInterventions } from './intervention-detector.ts';
 import { computeWorkflowCost, loadPricingTable } from './workflow-cost.ts';
+import { collectExecutionEconomics } from './execution-economics.ts';
 import { getDeepSeekProviderMetadata } from './deepseek-provider.ts';
 import { runEvalAnalysis } from './eval-analysis.ts';
 import { callHeadlessLLM } from './headless-llm.ts';
@@ -32,8 +34,14 @@ import {
   attachStageOutcomes,
   enrichTrainingMetadata,
   buildVerificationTelemetryFromArtifact,
+  isEvalTaskScorerResult,
 } from './eval-record-builder.ts';
-import { buildChallengeStageEval, extractReviewExecutedIdentity } from './stage-eval-evidence.ts';
+import {
+  buildChallengeStageEval,
+  buildStageExecutionIdentity,
+  extractReviewExecutedIdentity,
+  hasProviderModelSubstitution,
+} from './stage-eval-evidence.ts';
 import { buildTaskDescriptor } from './task-descriptor-builder.ts';
 import { getEvalContextUpdatesConfig, getMaxCostUsd } from './config.ts';
 import { runConfiguredHarnessRetentionReplay } from './harness-replay.ts';
@@ -51,7 +59,9 @@ import {
   collectReviewOutcome,
   collectReworkOutcome,
   collectDeliveryOutcome,
+  clearCandidateFeaturesCache,
 } from './outcome-collectors.ts';
+import type { CandidateFeatureContract } from './candidate-features.ts';
 import {
   buildRouteLifecycleProvenance,
   deriveRouteDecisionSource,
@@ -62,10 +72,12 @@ import { errorMessage } from './error-utils.ts';
 import { resolvePrIdentityMetadata } from './pr-comparison.ts';
 import type {
   EvalExecutedPlanning,
+  EvalExecutionEconomics,
   EvalPhaseDurations,
   EvalRecord,
   EvalRouteProvenance,
   EvalRouting,
+  EvalTaskScorerResult,
   InterventionRecord,
   PlanningExecutionOutcome,
   RoutePrediction,
@@ -87,6 +99,8 @@ import {
   resolveChallengeSide,
   type ChallengeExecutionIntent,
 } from './challenge-execution-contract.ts';
+
+const ISSUE_TITLE_RE = new RegExp(`^#\\s*${ISSUE_ID_RE.source.slice(1, -1)}:\\s*(.+)$`, 'm');
 
 function isFiniteNonNegativeBudget(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
@@ -241,6 +255,7 @@ function persistJudgeFailureArtifact(
 export const postCompletionHookDeps = {
   gatherEvalContext,
   gatherStageArtifacts,
+  collectExecutionEconomics,
   execShellCommand,
   detectAndFormatInterventions,
   runEvalAnalysis,
@@ -270,6 +285,99 @@ async function triggerHokusaiSubmissionAfterPersistence(record: EvalRecord, repo
   }
 }
 
+/**
+ * Wavemill enrichment layer for `candidate_features/v1`.
+ *
+ * The extractor in `candidate-features.ts` intentionally knows nothing about
+ * wavemill state so it can run against a bare checkout. Inside wavemill,
+ * this local helper translates the selected-task record and available
+ * workflow artifacts into a `CandidateFeatureContract`, so Intent (via the
+ * `deriveTaskDescriptor` bridge on the task text) and bounded Provenance
+ * fields (`self_review_iterations`, `human_intervention_count`,
+ * `agent_iterations`) are populated when collectors run in-workflow.
+ *
+ * Kept inside the wavemill-only post-completion module so `Arbiter S4` can
+ * lift `candidate-features.ts` into `@hokusai/scan` without pulling any
+ * workflow state through with it.
+ */
+export function buildWavemillCandidateContract(inputs: {
+  featureDir?: string;
+  selectedTask?: { title?: string; description?: string };
+  reviewResult?: { artifacts?: { iterations?: unknown } };
+  humanInterventionCount?: number;
+  agentIterations?: number;
+}): CandidateFeatureContract | undefined {
+  const selectedTask = inputs.selectedTask ?? readWavemillJson(inputs.featureDir, 'selected-task.json') as
+    | { title?: string; description?: string } | undefined;
+  const reviewResult = inputs.reviewResult ?? readWavemillJson(inputs.featureDir, '.review-result.json') as
+    | { artifacts?: { iterations?: unknown } } | undefined;
+
+  const parts: string[] = [];
+  if (typeof selectedTask?.title === 'string' && selectedTask.title.trim()) parts.push(selectedTask.title.trim());
+  if (typeof selectedTask?.description === 'string' && selectedTask.description.trim()) {
+    parts.push(selectedTask.description.trim());
+  }
+  const taskText = parts.length > 0 ? parts.join('\n\n') : undefined;
+
+  const iterationsRaw = reviewResult?.artifacts?.iterations;
+  const selfReviewIterations = typeof iterationsRaw === 'number' && Number.isInteger(iterationsRaw) && iterationsRaw >= 0
+    ? iterationsRaw
+    : null;
+
+  const contract: CandidateFeatureContract = {};
+  if (taskText) contract.taskText = taskText;
+
+  const provenance: NonNullable<CandidateFeatureContract['provenance']> = {};
+  if (selfReviewIterations !== null) provenance.self_review_iterations = selfReviewIterations;
+  if (typeof inputs.agentIterations === 'number' && inputs.agentIterations >= 0) {
+    provenance.agent_iterations = inputs.agentIterations;
+  }
+  if (typeof inputs.humanInterventionCount === 'number' && inputs.humanInterventionCount >= 0) {
+    provenance.human_intervention_count = inputs.humanInterventionCount;
+  }
+  if (Object.keys(provenance).length > 0) contract.provenance = provenance;
+
+  return Object.keys(contract).length > 0 ? contract : undefined;
+}
+
+/**
+ * Resolve `features/<slug>/` for a wavemill worktree, matching
+ * `basename(worktreePath)` against a directory under `repoDir/features/`.
+ */
+export function resolveWavemillFeatureDir(
+  worktreePath: string | undefined,
+  repoDir: string,
+): string | undefined {
+  if (!worktreePath) return undefined;
+  const slug = basename(worktreePath);
+  if (!slug) return undefined;
+  const candidate = join(repoDir, 'features', slug);
+  return existsSync(candidate) ? candidate : undefined;
+}
+
+function readWavemillJson(featureDir: string | undefined, name: string): unknown {
+  if (!featureDir) return undefined;
+  const path = join(featureDir, name);
+  if (!existsSync(path)) return undefined;
+  try {
+    return JSON.parse(readFileSync(path, 'utf-8'));
+  } catch (err: unknown) {
+    console.warn(`[wavemill-adapter] Failed to read ${name}: ${errorMessage(err)}`);
+    return undefined;
+  }
+}
+
+function loadTaskScorerResult(repoDir: string, worktreePath: string | undefined): EvalTaskScorerResult | null {
+  const featureDir = resolveWavemillFeatureDir(worktreePath, repoDir);
+  const raw = readWavemillJson(featureDir, '.task-scorer-result.json');
+  if (!raw) return null;
+  if (isEvalTaskScorerResult(raw)) {
+    return raw;
+  }
+  console.warn('[wavemill-adapter] Ignoring malformed .task-scorer-result.json');
+  return null;
+}
+
 export function collectPostCompletionOutcomes(input: PostCompletionOutcomeInput): Outcomes {
   const {
     prNumber,
@@ -281,41 +389,64 @@ export function collectPostCompletionOutcomes(input: PostCompletionOutcomeInput)
     interventionSummary,
   } = input;
   const reviewFallback = defaultReviewOutcome(interventionSummary);
+  // Build the wavemill enrichment contract once so both Tests and Static
+  // paths share the same Intent + Provenance signals (Intent via
+  // `deriveTaskDescriptor` on the selected-task text, self-review iterations
+  // from `.review-result.json`, and the intervention summary's totals).
+  const featureDir = resolveWavemillFeatureDir(worktreePath, repoDir);
+  const contract = featureDir
+    ? buildWavemillCandidateContract({
+        featureDir,
+        humanInterventionCount: interventionSummary?.interventions?.length ?? 0,
+      })
+    : undefined;
 
-  return {
-    success: false,
-    ci: prNumber
-      ? safeCollectOutcome('ci', { ran: false, passed: true, checks: [] }, () =>
-          postCompletionHookDeps.collectCiOutcome(prNumber, repoDir))
-      : undefined,
-    tests: prNumber && branchName
-      ? safeCollectOutcome('tests', { added: false }, () =>
-          postCompletionHookDeps.collectTestsOutcome(prNumber, branchName, 'main', repoDir))
-      : undefined,
-    staticAnalysis: prNumber && branchName
-      ? safeCollectOutcome('static analysis', {}, () =>
-          postCompletionHookDeps.collectStaticAnalysisOutcome(prNumber, branchName, 'main', repoDir))
-      : undefined,
-    review: prNumber
-      ? safeCollectOutcome('review', reviewFallback, () =>
-          postCompletionHookDeps.collectReviewOutcome(
-            prNumber,
-            interventionSummary,
-            repoDir,
-            undefined,
-            issueId,
-            branchName,
-          ))
-      : reviewFallback,
-    rework: branchName
-      ? safeCollectOutcome('rework', { agentIterations: 0 }, () =>
-          postCompletionHookDeps.collectReworkOutcome(worktreePath || repoDir, branchName, agentType, repoDir))
-      : { agentIterations: 0 },
-    delivery: prNumber
-      ? safeCollectOutcome('delivery', { prCreated: false, merged: false }, () =>
-          postCompletionHookDeps.collectDeliveryOutcome(prNumber, repoDir))
-      : { prCreated: false, merged: false },
-  };
+  try {
+    return {
+      success: false,
+      ci: prNumber
+        ? safeCollectOutcome('ci', { ran: false, passed: true, checks: [] }, () =>
+            postCompletionHookDeps.collectCiOutcome(prNumber, repoDir))
+        : undefined,
+      tests: prNumber && branchName
+        ? safeCollectOutcome('tests', { added: false }, () =>
+            postCompletionHookDeps.collectTestsOutcome(
+              prNumber, branchName, 'main', repoDir, worktreePath, contract,
+            ))
+        : undefined,
+      staticAnalysis: prNumber && branchName
+        ? safeCollectOutcome('static analysis', {}, () =>
+            postCompletionHookDeps.collectStaticAnalysisOutcome(
+              prNumber, branchName, 'main', repoDir, worktreePath, contract,
+            ))
+        : undefined,
+      review: prNumber
+        ? safeCollectOutcome('review', reviewFallback, () =>
+            postCompletionHookDeps.collectReviewOutcome(
+              prNumber,
+              interventionSummary,
+              repoDir,
+              undefined,
+              issueId,
+              branchName,
+            ))
+        : reviewFallback,
+      rework: branchName
+        ? safeCollectOutcome('rework', { agentIterations: 0 }, () =>
+            postCompletionHookDeps.collectReworkOutcome(worktreePath || repoDir, branchName, agentType, repoDir))
+        : { agentIterations: 0 },
+      delivery: prNumber
+        ? safeCollectOutcome('delivery', { prCreated: false, merged: false }, () =>
+            postCompletionHookDeps.collectDeliveryOutcome(prNumber, repoDir))
+        : { prCreated: false, merged: false },
+    };
+  } finally {
+    // Runs each cached entry's cleanup callback, which removes any disposable
+    // `.static-collect-worktrees/pr-<N>-<pid>/` worktree created during head
+    // resolution. Guarantees no worktree survives a normal or exceptional
+    // collection exit (previously the callback was cached but never invoked).
+    clearCandidateFeaturesCache();
+  }
 }
 
 interface PostCompletionEnrichmentInput {
@@ -335,6 +466,8 @@ interface PostCompletionEnrichmentInput {
   taskContextData: TaskContext | null;
   repoContextData: RepoContext | null;
   costOutcome: WorkflowCostOutcome | null;
+  /** Normalized external-harness execution economics (HOK-2958). */
+  executionEconomics?: EvalExecutionEconomics[] | null;
   interventionRecords: InterventionRecord[];
   routingDecision?: RoutingDecision;
   routing?: EvalRouting | null;
@@ -344,6 +477,9 @@ interface PostCompletionEnrichmentInput {
   phaseDurations?: EvalPhaseDurations | null;
   planContent?: string;
   selfReviewSummary?: string;
+  taskScorerResult?: EvalTaskScorerResult | null;
+  /** HOK-3143: absolute path to the directory holding `.<stage>-result.json`. */
+  stageResultsDir?: string | null;
 }
 
 function resolveRouteArtifactDirs(
@@ -540,6 +676,7 @@ export function enrichPostCompletionRecord(
       input.branchName,
       input.worktreePath,
     ),
+    taskScorerResult: input.taskScorerResult ?? loadTaskScorerResult(input.repoDir, input.worktreePath),
     executedPlanning: input.executedPlanning,
     planningExecutionOutcome: input.planningExecutionOutcome,
     verificationTelemetry,
@@ -553,12 +690,32 @@ export function enrichPostCompletionRecord(
     taskContext: input.taskContextData,
     repoContext: input.repoContextData,
     workflowCost: input.costOutcome,
+    executionEconomics: input.executionEconomics,
     taskDescriptor,
     constraints: (() => {
       const maxCostUsd = resolvePostCompletionBudget(input);
       return typeof maxCostUsd === 'number' ? { maxCostUsd } : undefined;
     })(),
   });
+  // HOK-3143: attach per-stage provider-identity attribution, fail-soft.
+  if (input.stageResultsDir) {
+    try {
+      const stageExecution = buildStageExecutionIdentity({
+        stageResultsDir: input.stageResultsDir,
+      });
+      if (stageExecution) {
+        record.stageExecution = stageExecution;
+        if (hasProviderModelSubstitution(stageExecution)) {
+          const existing = record.eligibilityErrors ?? [];
+          if (!existing.includes('provider_model_substitution')) {
+            record.eligibilityErrors = [...existing, 'provider_model_substitution'];
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(`Post-completion eval: stage execution identity failed — ${errorMessage(err)}`);
+    }
+  }
   const attestation = attestEvalRecordChallengeExecution(record);
   attachChallengeExecutionMetadata(record, {
     side: record.challengeSide,
@@ -753,6 +910,7 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
 
     // 5. Compute workflow cost
     let costOutcome: ReturnType<typeof computeWorkflowCost> | null = null;
+    let executionEconomics: EvalExecutionEconomics[] | null = null;
     if (ctx.worktreePath && branchName) {
       console.log('Post-completion eval: computing workflow cost...');
 
@@ -795,6 +953,27 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
           if (!debug) {
             console.log('Post-completion eval: run with DEBUG_COST=1 for detailed diagnostics');
           }
+        }
+        // Normalized execution-economics collection (HOK-2958): fail-soft,
+        // observation-only — never influences routing or the workflow.
+        try {
+          executionEconomics = await postCompletionHookDeps.collectExecutionEconomics({
+            worktreePath: ctx.worktreePath,
+            branchName,
+            repoDir,
+            issueId: ctx.issueId,
+            routing: stageArtifacts.routing ?? null,
+            stageResultsDir: stageArtifacts.stageResultsDir ?? null,
+            pricingTable,
+          });
+          if (executionEconomics.length > 0) {
+            const summary = executionEconomics
+              .map((block) => `${block.harness}: ${block.sessionCount} session(s), ${block.turnCount} turn(s), coverage ${block.coverage}`)
+              .join('; ');
+            console.log(`Post-completion eval: execution economics — ${summary}`);
+          }
+        } catch (economicsErr: unknown) {
+          console.warn(`Post-completion eval: execution economics collection failed — ${errorMessage(economicsErr)}`);
         }
       } catch (costErr: unknown) {
         const costMsg = errorMessage(costErr);
@@ -839,6 +1018,7 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
       taskContextData,
       repoContextData,
       costOutcome,
+      executionEconomics,
       interventionRecords: interventionData.records,
       routingDecision: stageArtifacts.routingDecision,
       routing: stageArtifacts.routing,
@@ -848,6 +1028,7 @@ export async function runPostCompletionEval(ctx: PostCompletionContext): Promise
       phaseDurations,
       planContent: stageArtifacts.planContent,
       selfReviewSummary: stageArtifacts.selfReviewSummary,
+      stageResultsDir: stageArtifacts.stageResultsDir ?? null,
     });
 
     if (record.challengeStageEval) {
@@ -1137,7 +1318,7 @@ async function updateSubsystemSpecs(
   }
 
   // Extract issue title from context
-  const titleMatch = issueContext.match(/^#\s*[A-Z]+-\d+:\s*(.+)$/m);
+  const titleMatch = issueContext.match(ISSUE_TITLE_RE);
   const issueTitle = titleMatch ? titleMatch[1] : 'Unknown';
 
   // Detect affected subsystems before updating
@@ -1194,7 +1375,7 @@ async function generateContextUpdate(opts: {
   const promptTemplate = readFileSync(promptPath, 'utf-8');
 
   // Extract issue title from context
-  const titleMatch = opts.issueContext.match(/^#\s*[A-Z]+-\d+:\s*(.+)$/m);
+  const titleMatch = opts.issueContext.match(ISSUE_TITLE_RE);
   const issueTitle = titleMatch ? titleMatch[1] : 'Unknown';
 
   // Fill in template placeholders

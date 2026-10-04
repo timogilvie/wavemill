@@ -13,7 +13,10 @@ export interface TestRegistrationResult {
   registered: string[];
   unregistered: string[];
   stale: string[];
+  staleCustom: string[];
   duplicates: string[];
+  /** Scoped TypeScript tests registered in both the unit and custom-harness suites. */
+  overlap: string[];
   /** Custom-harness registrations listed more than once across the runner's arrays. */
   customDuplicates: string[];
   /** Custom-harness registrations whose files do not exist. */
@@ -22,37 +25,44 @@ export interface TestRegistrationResult {
 
 export function checkTestRegistration(repoDir = defaultRepoRoot): TestRegistrationResult {
   const discovered = TEST_ROOTS.flatMap((root) => discoverTests(join(repoDir, root), root)).sort();
-  const registered = parseUnitTestRegistry(readFileSync(join(repoDir, 'tests', 'run-unit-tests.sh'), 'utf8'))
+  const unitRegistered = parseUnitTestRegistry(readFileSync(join(repoDir, 'tests', 'run-unit-tests.sh'), 'utf8'))
     .filter(isScopedTest)
     .sort();
-  const registeredSet = new Set(registered);
   const discoveredSet = new Set(discovered);
-  const duplicates = [...new Set(registered.filter((testFile, index) => registered.indexOf(testFile) !== index))];
+  const duplicates = [...new Set(unitRegistered.filter((testFile, index) => unitRegistered.indexOf(testFile) !== index))]
+    .sort();
 
-  // Custom-harness membership stays curated (not discovery-complete), but the
-  // registered entries must be unique and must exist so the weighted
-  // partitioner can never drop or double-run a test.
   const customScript = readFileSync(join(repoDir, 'tests', 'run-custom-tests.sh'), 'utf8');
-  const customRegistered = [
-    ...parseShellArray(customScript, 'CUSTOM_TS_TESTS'),
-    ...parseShellArray(customScript, 'CUSTOM_SH_TESTS'),
-  ];
+  const rawCustomTsRegistered = parseShellArray(customScript, 'CUSTOM_TS_TESTS');
+  const customTsRegistered = rawCustomTsRegistered.filter(isScopedTest).sort();
+  const customShRegistered = parseShellArray(customScript, 'CUSTOM_SH_TESTS');
+  const registered = [...new Set([...unitRegistered, ...customTsRegistered])].sort();
+  const registeredSet = new Set(registered);
+  const unitRegisteredSet = new Set(unitRegistered);
+  const customRegistered = [...rawCustomTsRegistered, ...customShRegistered];
   const customDuplicates = [
     ...new Set(customRegistered.filter((testFile, index) => customRegistered.indexOf(testFile) !== index)),
-  ];
+  ].sort();
   const customMissing = customRegistered.filter((testFile) => !existsSync(join(repoDir, testFile))).sort();
+  const stale = unitRegistered.filter((testFile) => !discoveredSet.has(testFile));
+  const staleCustom = rawCustomTsRegistered.filter((testFile) => !discoveredSet.has(testFile)).sort();
+  const overlap = customTsRegistered.filter((testFile) => unitRegisteredSet.has(testFile));
 
   return {
     ok: discovered.every((testFile) => registeredSet.has(testFile))
-      && registered.every((testFile) => discoveredSet.has(testFile))
+      && stale.length === 0
+      && staleCustom.length === 0
       && duplicates.length === 0
+      && overlap.length === 0
       && customDuplicates.length === 0
       && customMissing.length === 0,
     discovered,
     registered,
     unregistered: discovered.filter((testFile) => !registeredSet.has(testFile)),
-    stale: registered.filter((testFile) => !discoveredSet.has(testFile)),
+    stale,
+    staleCustom,
     duplicates,
+    overlap,
     customDuplicates,
     customMissing,
   };
@@ -66,13 +76,15 @@ export function formatTestRegistration(result: TestRegistrationResult): string {
   const lines = ['test-registration: test registry drift found:'];
   appendSection(lines, 'Unregistered test files:', result.unregistered);
   appendSection(lines, 'Stale unit test registrations:', result.stale);
+  appendSection(lines, 'Stale custom TS registrations:', result.staleCustom);
   appendSection(lines, 'Duplicate unit test registrations:', result.duplicates);
+  appendSection(lines, 'Cross-suite overlap (registered in both TESTS and CUSTOM_TS_TESTS):', result.overlap);
   appendSection(lines, 'Duplicate custom harness registrations:', result.customDuplicates);
   appendSection(lines, 'Missing custom harness test files:', result.customMissing);
   lines.push(
     '',
-    'Update tests/run-unit-tests.sh so every *.test.ts under shared/, tools/, and src/ is registered exactly once,',
-    'and tests/run-custom-tests.sh so every custom harness entry is unique and its file exists.'
+    'Update tests/run-unit-tests.sh and tests/run-custom-tests.sh so every scoped *.test.ts is registered in exactly one of TESTS or CUSTOM_TS_TESTS,',
+    'and so every custom harness entry is unique and its file exists.'
   );
   return lines.join('\n');
 }

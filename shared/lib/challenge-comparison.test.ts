@@ -7,23 +7,33 @@ import {
   buildDiffUnavailableComparison,
   buildDoubleForfeitComparison,
   buildForfeitComparison,
+  buildInvalidChallengeArmComparison,
   buildInvalidChallengeComparison,
   buildSkippedIdenticalComparison,
   buildInvalidProvenanceComparison,
+  deriveNoComparisonReason,
   detectJudgeDisagreement,
   listVariedRoutingDimensions,
+  readActiveChallengeComparisons,
   readChallengeComparisons,
   detectVariedDimensions,
   hasAnyVariedDimension,
+  hasMultiRoleVariation,
+  hasRoleAndNonRoleVariation,
+  listVariedRoles,
+  getVariedDimensionNames,
+  detectChallengerRouteNonSelectedDivergence,
   isDecisiveChallengeComparison,
   classifyChallengeType,
   modelForChallengeVariedStage,
   readDecisiveChallengeComparisons,
   resolveChallengeSideExecutionProvenance,
   validateChallengeExecutionProvenance,
+  challengeModelIdsEquivalent,
   type ChallengeComparison,
   type ChallengeDiffIdentity,
   type ChallengeRoutingMeta,
+  type StoredChallengeComparison,
 } from './challenge-comparison.ts';
 import { appendChallengeRecordVoid } from './challenge-record-void.ts';
 
@@ -89,6 +99,27 @@ test('appendChallengeComparison writes a record that can be read back', () => {
     assert.equal(records[0].winner, 'challenger');
     assert.equal(records[0].primaryHarnessId, 'a'.repeat(64));
     assert.equal(records[0].challengerHarnessId, 'b'.repeat(64));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('active comparisons exclude a voided forfeit while retaining a later comparison', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'challenge-comparison-test-'));
+  try {
+    const forfeited = makeRecord({ timestamp: '2026-03-09T12:00:00Z', winner: 'primary' });
+    appendChallengeComparison(forfeited, tmp);
+    appendChallengeRecordVoid({
+      challengePairId: forfeited.challengePairId,
+      recordTimestamp: forfeited.timestamp,
+      voidedAt: '2026-03-09T12:05:00Z',
+      reason: 'The in-flight reviewer completed successfully',
+    }, tmp);
+    assert.deepEqual(readActiveChallengeComparisons(tmp), []);
+
+    appendChallengeComparison(makeRecord({ timestamp: '2026-03-09T12:10:00Z' }), tmp);
+    assert.equal(readActiveChallengeComparisons(tmp).length, 1);
+    assert.equal(readActiveChallengeComparisons(tmp)[0].winner, 'challenger');
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -810,6 +841,129 @@ test('matching intended and executed varied-stage models are attribution eligibl
   }
 });
 
+test('session-derived Claude and Codex coder evidence passes provenance validation', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'challenge-cli-session-stage-test-'));
+  try {
+    const primaryDir = join(tmp, 'features', 'primary');
+    const challengerDir = join(tmp, 'features', 'challenger');
+    mkdirSync(primaryDir, { recursive: true });
+    mkdirSync(challengerDir, { recursive: true });
+    writeStage(primaryDir, 'coding', 'codex', 'gpt-5.5');
+    writeStage(challengerDir, 'coding', 'claude', 'claude-haiku-4-5');
+    for (const [filePath, source] of [
+      [join(primaryDir, '.coding-result.json'), 'codex-session'],
+      [join(challengerDir, '.coding-result.json'), 'claude-session'],
+    ] as const) {
+      const json = JSON.parse(readFileSync(filePath, 'utf8')) as Record<string, unknown>;
+      json.executionEvidence = { status: 'direct', source, detail: 'models=1; sessions=1' };
+      writeFileSync(filePath, JSON.stringify(json));
+    }
+
+    const primaryRouting = makeRouting({ coder: 'gpt-5.5' });
+    const challengerRouting = makeRouting({ coder: 'claude-haiku-4-5' });
+    const variedDimensions = detectVariedDimensions(primaryRouting, challengerRouting);
+    const validation = validateChallengeExecutionProvenance({
+      primaryExecution: resolveChallengeSideExecutionProvenance({ featureDir: primaryDir }),
+      challengerExecution: resolveChallengeSideExecutionProvenance({ featureDir: challengerDir }),
+      primaryRouting,
+      challengerRouting,
+      primaryModel: primaryRouting.coder,
+      challengerModel: challengerRouting.coder,
+      variedDimensions,
+    });
+
+    assert.equal(validation.valid, true);
+    assert.equal(validation.modelAttributionEligible, true);
+    assert.deepEqual(validation.issues, []);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('challengeModelIdsEquivalent treats a registry alias and its provider-native id as one model', () => {
+  assert.equal(challengeModelIdsEquivalent('claude-haiku-4-5', 'claude-haiku-4-5-20251001'), true);
+  assert.equal(challengeModelIdsEquivalent('claude-haiku-4-5-20251001', 'claude-haiku-4-5'), true);
+  assert.equal(challengeModelIdsEquivalent('qwen-3-coder', 'qwen/qwen3-coder'), true);
+  assert.equal(challengeModelIdsEquivalent('claude-haiku-4-5', 'claude-haiku-4-5'), true);
+  assert.equal(challengeModelIdsEquivalent('claude-haiku-4-5', 'claude-sonnet-5'), false);
+  assert.equal(challengeModelIdsEquivalent('gpt-5.5', 'gpt-5.4'), false);
+  assert.equal(challengeModelIdsEquivalent('', 'claude-haiku-4-5'), false);
+  assert.equal(challengeModelIdsEquivalent(undefined, undefined), false);
+});
+
+test('executing the dated snapshot of the intended alias is not an executed-model mismatch', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'challenge-alias-snapshot-test-'));
+  try {
+    const primaryDir = join(tmp, 'features', 'primary');
+    const challengerDir = join(tmp, 'features', 'challenger');
+    mkdirSync(primaryDir, { recursive: true });
+    mkdirSync(challengerDir, { recursive: true });
+    writeStage(primaryDir, 'coding', 'codex', 'gpt-5.5');
+    writeStage(challengerDir, 'coding', 'claude', 'claude-haiku-4-5-20251001');
+
+    const primaryRouting = makeRouting({ coder: 'gpt-5.5' });
+    const challengerRouting = makeRouting({ coder: 'claude-haiku-4-5' });
+    const validation = validateChallengeExecutionProvenance({
+      primaryExecution: resolveChallengeSideExecutionProvenance({ featureDir: primaryDir }),
+      challengerExecution: resolveChallengeSideExecutionProvenance({ featureDir: challengerDir }),
+      primaryRouting,
+      challengerRouting,
+      primaryModel: primaryRouting.coder,
+      challengerModel: challengerRouting.coder,
+      variedDimensions: detectVariedDimensions(primaryRouting, challengerRouting),
+    });
+
+    assert.deepEqual(validation.issues.map((issue) => issue.reason), []);
+    assert.equal(validation.modelAttributionEligible, true);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('session-observed coder model switch is a valid runtime-fallback downgrade', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'challenge-cli-runtime-fallback-test-'));
+  try {
+    const primaryDir = join(tmp, 'features', 'primary');
+    const challengerDir = join(tmp, 'features', 'challenger');
+    mkdirSync(primaryDir, { recursive: true });
+    mkdirSync(challengerDir, { recursive: true });
+    writeStage(primaryDir, 'coding', 'codex', 'gpt-5.5');
+    writeStage(challengerDir, 'coding', 'claude', 'claude-haiku-4-5');
+    const primaryCoding = join(primaryDir, '.coding-result.json');
+    const primaryJson = JSON.parse(readFileSync(primaryCoding, 'utf8')) as Record<string, unknown>;
+    primaryJson.executedModel = 'gpt-5.4';
+    primaryJson.executionEvidence = {
+      status: 'direct',
+      source: 'codex-session',
+      detail: 'models=gpt-5.5:1,gpt-5.4:4; sessions=1',
+    };
+    primaryJson.modelAttributionEligible = false;
+    primaryJson.modelAttributionIneligibleReason = 'runtime_fallback';
+    writeFileSync(primaryCoding, JSON.stringify(primaryJson));
+
+    const primaryRouting = makeRouting({ coder: 'gpt-5.5' });
+    const challengerRouting = makeRouting({ coder: 'claude-haiku-4-5' });
+    const variedDimensions = detectVariedDimensions(primaryRouting, challengerRouting);
+    const validation = validateChallengeExecutionProvenance({
+      primaryExecution: resolveChallengeSideExecutionProvenance({ featureDir: primaryDir }),
+      challengerExecution: resolveChallengeSideExecutionProvenance({ featureDir: challengerDir }),
+      primaryRouting,
+      challengerRouting,
+      primaryModel: primaryRouting.coder,
+      challengerModel: challengerRouting.coder,
+      variedDimensions,
+    });
+
+    assert.equal(validation.valid, true);
+    assert.equal(validation.modelAttributionEligible, false);
+    assert.equal(validation.issues[0].reason, 'executed-model-mismatch');
+    assert.equal(validation.issues[0].intendedModel, 'gpt-5.5');
+    assert.equal(validation.issues[0].executedModel, 'gpt-5.4');
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test('planner verified runtime fallback is compared but model-attribution ineligible', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'challenge-provenance-test-'));
   try {
@@ -903,6 +1057,62 @@ test('missing executed model and contradictory evidence fail closed', () => {
       'executed-model-missing',
       'execution-evidence-contradicted',
     ]);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('alias-resolved identity verdict is not an executed-model mismatch', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'challenge-alias-resolved-test-'));
+  try {
+    const primaryDir = join(tmp, 'features', 'primary');
+    const challengerDir = join(tmp, 'features', 'challenger');
+    mkdirSync(primaryDir, { recursive: true });
+    mkdirSync(challengerDir, { recursive: true });
+    // Primary ran against an unregistered rolling alias (`~google/gemini-pro-latest`)
+    // whose certified target is a concrete model id OpenRouter actually served.
+    // The provider-identity gate stamps `identityVerdict: 'alias-resolved'` on the
+    // stage evidence; comparison must trust that verdict rather than re-comparing
+    // the executed concrete to the alias via the registry.
+    writeFileSync(
+      join(primaryDir, '.coding-result.json'),
+      JSON.stringify({
+        stage: 'coding',
+        status: 'completed',
+        agent: 'native-openrouter',
+        model: 'google/gemini-3.1-pro-preview',
+        intendedModel: '~google/gemini-pro-latest',
+        executedModel: 'google/gemini-3.1-pro-preview',
+        executionEvidence: {
+          status: 'direct',
+          source: 'provider-response',
+          identityVerdict: 'alias-resolved',
+          providerReportedModel: 'google/gemini-3.1-pro-preview',
+          requestedWireId: '~google/gemini-pro-latest',
+          certifiedTarget: 'google/gemini-3.1-pro-preview',
+        },
+        modelAttributionEligible: true,
+        notes: '',
+      }),
+    );
+    writeStage(challengerDir, 'coding', 'claude', 'claude-haiku-4-5');
+
+    const primaryRouting = makeRouting({ coder: '~google/gemini-pro-latest' });
+    const challengerRouting = makeRouting({ coder: 'claude-haiku-4-5' });
+    const variedDimensions = detectVariedDimensions(primaryRouting, challengerRouting);
+    const validation = validateChallengeExecutionProvenance({
+      primaryExecution: resolveChallengeSideExecutionProvenance({ featureDir: primaryDir }),
+      challengerExecution: resolveChallengeSideExecutionProvenance({ featureDir: challengerDir }),
+      primaryRouting,
+      challengerRouting,
+      primaryModel: primaryRouting.coder,
+      challengerModel: challengerRouting.coder,
+      variedDimensions,
+    });
+
+    assert.equal(validation.valid, true);
+    assert.equal(validation.modelAttributionEligible, true);
+    assert.deepEqual(validation.issues, []);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -1170,6 +1380,276 @@ test('historical record without fork descriptor fields parses cleanly', () => {
   assert.equal(historicalRecord.challengerInheritedStages, undefined);
   assert.equal(historicalRecord.primaryDiffIdentity, undefined);
   assert.equal(historicalRecord.challengerDiffIdentity, undefined);
+});
+
+test('hasMultiRoleVariation: detects when more than one role varies', () => {
+  const varied = {
+    planner: true,
+    coder: true,
+    reviewer: false,
+    planDepth: false,
+    codeDepth: false,
+    reviewMode: false,
+    routerVariant: false,
+    plannerPromptVariant: false,
+    reviewerPromptVariant: false,
+  };
+  assert.equal(hasMultiRoleVariation(varied), true);
+});
+
+test('hasMultiRoleVariation: returns false for single role variation', () => {
+  const varied = {
+    planner: false,
+    coder: true,
+    reviewer: false,
+    planDepth: false,
+    codeDepth: false,
+    reviewMode: false,
+    routerVariant: false,
+    plannerPromptVariant: false,
+    reviewerPromptVariant: false,
+  };
+  assert.equal(hasMultiRoleVariation(varied), false);
+});
+
+test('hasRoleAndNonRoleVariation: detects role + non-role variation', () => {
+  const varied = {
+    planner: false,
+    coder: true,
+    reviewer: false,
+    planDepth: false,
+    codeDepth: true,
+    reviewMode: false,
+    routerVariant: false,
+    plannerPromptVariant: false,
+    reviewerPromptVariant: false,
+  };
+  assert.equal(hasRoleAndNonRoleVariation(varied), true);
+});
+
+test('hasRoleAndNonRoleVariation: returns false when only role varies', () => {
+  const varied = {
+    planner: false,
+    coder: true,
+    reviewer: false,
+    planDepth: false,
+    codeDepth: false,
+    reviewMode: false,
+    routerVariant: false,
+    plannerPromptVariant: false,
+    reviewerPromptVariant: false,
+  };
+  assert.equal(hasRoleAndNonRoleVariation(varied), false);
+});
+
+test('getVariedDimensionNames: lists all varied dimensions', () => {
+  const varied = {
+    planner: true,
+    coder: false,
+    reviewer: true,
+    planDepth: true,
+    codeDepth: false,
+    reviewMode: false,
+    routerVariant: false,
+    plannerPromptVariant: false,
+    reviewerPromptVariant: false,
+  };
+  const names = getVariedDimensionNames(varied);
+  assert.deepEqual(names.sort(), ['planDepth', 'planner', 'reviewer'].sort());
+});
+
+test('validateChallengeExecutionProvenance: detects multi-role violation', () => {
+  const primaryRouting: ChallengeRoutingMeta = {
+    planner: 'claude-opus-4-7',
+    coder: 'gpt-5.5',
+    reviewer: 'claude-opus-4-7',
+    planDepth: 'medium',
+    codeDepth: 'medium',
+    reviewMode: 'llm',
+  };
+  const challengerRouting: ChallengeRoutingMeta = {
+    planner: 'gpt-5.5',
+    coder: 'claude-opus-4-7',
+    reviewer: 'gpt-5.5',
+    planDepth: 'medium',
+    codeDepth: 'medium',
+    reviewMode: 'llm',
+  };
+  const execution = {
+    planning: { stage: 'planning', role: 'planner', model: '', agent: '', status: 'missing' as const, source: 'missing' as const, consultedArtifactPaths: [] },
+    coding: { stage: 'coding', role: 'coder', model: '', agent: '', status: 'missing' as const, source: 'missing' as const, consultedArtifactPaths: [] },
+    review: { stage: 'review', role: 'reviewer', model: '', agent: '', status: 'missing' as const, source: 'missing' as const, consultedArtifactPaths: [] },
+  };
+  const variedDimensions = detectVariedDimensions(primaryRouting, challengerRouting);
+
+  const result = validateChallengeExecutionProvenance({
+    primaryExecution: execution,
+    challengerExecution: execution,
+    primaryRouting,
+    challengerRouting,
+    primaryModel: 'gpt-5.5',
+    challengerModel: 'claude-opus-4-7',
+    variedDimensions,
+    variedStage: 'implementation',
+  });
+
+  assert.equal(result.valid, false);
+  assert.equal(result.outcome, 'invalid_challenge');
+  assert.equal(result.modelAttributionEligible, false);
+  assert.ok(result.invalidChallengeDetails?.includes('Multiple varied dimensions'));
+});
+
+test('detectChallengerRouteNonSelectedDivergence: detects planner divergence in implementation challenge', () => {
+  const primaryRouting: ChallengeRoutingMeta = {
+    planner: 'claude-opus-4-7',
+    coder: 'gpt-5.5',
+    reviewer: 'claude-opus-4-7',
+    planDepth: 'medium',
+    codeDepth: 'medium',
+    reviewMode: 'llm',
+  };
+  const challengerRouting: ChallengeRoutingMeta = {
+    planner: 'gpt-5.5',
+    coder: 'gpt-5.5',
+    reviewer: 'gpt-5.5',
+    planDepth: 'medium',
+    codeDepth: 'medium',
+    reviewMode: 'llm',
+  };
+
+  const diverged = detectChallengerRouteNonSelectedDivergence(primaryRouting, challengerRouting, 'implementation');
+
+  assert.ok(diverged.includes('planner'));
+  assert.ok(diverged.includes('reviewer'));
+  assert.equal(diverged.includes('coder'), false);
+});
+
+test('buildInvalidProvenanceComparison: produces no winner for invalid_challenge', () => {
+  const provenanceValidation = {
+    valid: false,
+    modelAttributionEligible: false,
+    outcome: 'invalid_challenge' as const,
+    invalidChallengeDetails: 'Multiple varied dimensions: planner, coder, reviewer',
+    issues: [],
+  };
+
+  const comparison = buildInvalidProvenanceComparison({
+    challengePairId: 'HOK-2806:HOK-2806_c',
+    primaryModel: 'claude-opus-4-7',
+    challengerModel: 'gpt-5.5',
+    primaryPrUrl: 'https://github.com/org/repo/pull/1',
+    challengerPrUrl: 'https://github.com/org/repo/pull/2',
+    primaryEvalScore: 0.75,
+    challengerEvalScore: 0.80,
+    primaryExecution: {
+      planning: { stage: 'planning', role: 'planner', model: '', agent: '', status: 'missing' as const, source: 'missing' as const, consultedArtifactPaths: [] },
+      coding: { stage: 'coding', role: 'coder', model: '', agent: '', status: 'missing' as const, source: 'missing' as const, consultedArtifactPaths: [] },
+      review: { stage: 'review', role: 'reviewer', model: '', agent: '', status: 'missing' as const, source: 'missing' as const, consultedArtifactPaths: [] },
+    },
+    challengerExecution: {
+      planning: { stage: 'planning', role: 'planner', model: '', agent: '', status: 'missing' as const, source: 'missing' as const, consultedArtifactPaths: [] },
+      coding: { stage: 'coding', role: 'coder', model: '', agent: '', status: 'missing' as const, source: 'missing' as const, consultedArtifactPaths: [] },
+      review: { stage: 'review', role: 'reviewer', model: '', agent: '', status: 'missing' as const, source: 'missing' as const, consultedArtifactPaths: [] },
+    },
+    provenanceValidation,
+  });
+
+  assert.equal(comparison.comparisonOutcome, 'invalid_challenge');
+  assert.equal(comparison.invalidChallenge, true);
+  assert.equal(comparison.invalidChallengeReason, 'multiple-varied-roles');
+  assert.equal(comparison.noComparisonReason, 'multiple-varied-roles');
+  assert.equal(comparison.winner, undefined);
+});
+
+// ────────────────────────────────────────────────────────────────
+// HOK-2970 — invalid-challenge-arm builder and decisiveness guard
+// ────────────────────────────────────────────────────────────────
+
+console.log('\n--- HOK-2970 Invalid Challenge Arm Tests ---\n');
+
+test('buildInvalidChallengeArmComparison produces invalid_challenge with no winner and preserves forkStage', () => {
+  const record = buildInvalidChallengeArmComparison({
+    challengePairId: 'HOK-2958',
+    primaryModel: 'gpt-5.5',
+    challengerModel: 'kimi-k3',
+    primaryPrUrl: 'https://github.com/org/repo/pull/100',
+    challengerPrUrl: 'https://github.com/org/repo/pull/101',
+    primaryCompleted: true,
+    challengerCompleted: false,
+    abortedSide: 'challenger',
+    terminalReason: 'challenger_challenge_aborted',
+    invalidChallengeReason: 'missing_challenge_intent',
+    forkStage: 'review',
+    forkCommit: 'abc1234',
+    sharedPrefix: true,
+    primaryInheritedStages: ['plan', 'implementation'],
+    challengerInheritedStages: ['plan', 'implementation'],
+  });
+  assert.equal(record.comparisonOutcome, 'invalid_challenge');
+  assert.equal(record.invalidChallenge, true);
+  assert.equal(record.winner, undefined);
+  assert.equal(record.winnerModel, undefined);
+  assert.equal(record.forkStage, 'review');
+  assert.equal(record.sharedPrefix, true);
+  assert.equal(record.terminalReason, 'challenger_challenge_aborted');
+  assert.equal(record.invalidChallengeReason, 'missing_challenge_intent');
+  assert.equal(record.noComparisonReason, 'missing_challenge_intent');
+});
+
+test('buildInvalidChallengeArmComparison labels rationale for both-arms case', () => {
+  const record = buildInvalidChallengeArmComparison({
+    challengePairId: 'HOK-2958',
+    primaryModel: 'gpt-5.5',
+    challengerModel: 'kimi-k3',
+    primaryPrUrl: 'https://github.com/org/repo/pull/100',
+    challengerPrUrl: 'https://github.com/org/repo/pull/101',
+    abortedSide: 'both',
+    terminalReason: 'both_challenge_aborted',
+    invalidChallengeReason: 'missing_challenge_intent',
+  });
+  assert.match(record.rationale, /both arms/);
+  assert.equal(record.comparisonOutcome, 'invalid_challenge');
+  assert.equal(record.terminalReason, 'both_challenge_aborted');
+});
+
+test('isDecisiveChallengeComparison excludes forfeit + invalidChallenge=true', () => {
+  const legacyPhantom = makeRecord({
+    comparisonOutcome: 'forfeit',
+    winner: 'primary',
+    terminalReason: 'challenger_challenge_aborted',
+    invalidChallenge: true,
+    primaryCompleted: true,
+    challengerCompleted: false,
+  });
+  assert.equal(isDecisiveChallengeComparison(legacyPhantom), false);
+});
+
+test('isDecisiveChallengeComparison excludes quarantined rows', () => {
+  const quarantined = makeRecord({
+    comparisonOutcome: 'forfeit',
+    winner: 'primary',
+    terminalReason: 'challenger_challenge_aborted',
+    primaryCompleted: true,
+    challengerCompleted: false,
+    quarantined: {
+      reason: 'aborted-arm-was-invalid',
+      ticket: 'HOK-2970',
+      at: '2026-09-16T00:00:00Z',
+    },
+  });
+  assert.equal(isDecisiveChallengeComparison(quarantined), false);
+});
+
+test('deriveNoComparisonReason maps invalid_challenge to missing_challenge_intent', () => {
+  const row: StoredChallengeComparison = {
+    ...makeRecord(),
+    comparisonOutcome: 'invalid_challenge',
+    invalidChallenge: true,
+    terminalReason: 'challenger_challenge_aborted',
+    winner: undefined,
+  };
+  const reason = deriveNoComparisonReason(row);
+  assert.equal(reason, 'missing_challenge_intent');
 });
 
 process.on('exit', () => {

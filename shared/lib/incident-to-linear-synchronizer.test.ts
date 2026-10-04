@@ -6,13 +6,20 @@ import test from 'node:test';
 
 import {
   DEFAULT_INCIDENT_LINEAR_CONFIG,
+  ShadowMutationBlockedError,
+  createLookupBudget,
   generateIssueBody,
   generateIssueTitle,
+  planShadowSync,
   redactLinearIssueContent,
   syncIncident,
+  syncIncidentLifecycle,
+  wrapReadOnlyIncidentLinearClient,
   type IncidentLinearClient,
   type ObserverLinearConfig,
 } from './incident-to-linear-synchronizer.ts';
+import type { IncidentFilingReconciliation } from './incident-filing-reconciler.ts';
+import { redactIncidentData } from './artifact-diagnostics.ts';
 import { IncidentStore } from './wavemill-incident-store.ts';
 import { createIncidentDraft, type IncidentCategory, type IncidentRecord } from './wavemill-incident-model.ts';
 import { LinearApiError, type LinearIssueSummary } from './linear.ts';
@@ -107,6 +114,60 @@ test('redaction removes secrets, emails, paths, and truncates transcript-like co
   assert.match(redacted, /\[REDACTED: secret\]/);
   assert.match(redacted, /\[REDACTED: email\]/);
   assert.match(redacted, /\[TRUNCATED\]/);
+});
+
+test('ticket body renders both observed symptom and diagnosed root cause with outbound redaction', () => {
+  const enriched = incident({
+    rootCauseClass: 'module_export_contract_mismatch',
+    summary: "eval job failed: SyntaxError: does not provide an export named 'foo'",
+    metadata: {
+      thresholdTriggered: true,
+      escalatedAt: '2026-08-04T12:10:00.000Z',
+      observedSymptom: 'failed_job_no_result',
+      diagnosedClass: 'module_export_contract_mismatch',
+      logExcerptSource: 'log_head_tail',
+    },
+    evidence: [{
+      type: 'log_excerpt',
+      source: 'HOK-2845_c.log',
+      timestamp: '2026-08-04T12:10:00.000Z',
+      redactedData: "Authorization: Bearer eyJabc user=person@example.com file=/Users/tim/project/logs SyntaxError: does not provide an export named 'foo'",
+      key: 'diag:module_export_contract_mismatch',
+    }],
+  });
+  const body = generateIssueBody(enriched, config(), 'revision-2', new Date('2026-08-04T12:15:00.000Z'));
+  assert.match(body, /Root Cause.*module_export_contract_mismatch/);
+  assert.match(body, /Observed Symptom.*failed_job_no_result/);
+  assert.doesNotMatch(body, /eyJabc|person@example\.com|\/Users\/tim\/project/);
+});
+
+test('inbound 500-char redactor bounds an inflated log_excerpt before it reaches the rendered body', () => {
+  // The detector runs `redactIncidentData` on the excerpt text before writing
+  // evidence to disk; simulate that pass here to prove the rendered body cannot
+  // leak the raw 2 KB payload.
+  const raw = 'x'.repeat(2048) + " SyntaxError: does not provide an export named 'foo'";
+  const preRedacted = redactIncidentData(raw);
+  assert.match(preRedacted, /\[TRUNCATED \d+ chars\]/,
+    'redactIncidentData must truncate oversized text at 500 chars');
+
+  const oversized = incident({
+    rootCauseClass: 'module_export_contract_mismatch',
+    metadata: {
+      thresholdTriggered: true,
+      escalatedAt: '2026-08-04T12:10:00.000Z',
+      observedSymptom: 'failed_job_no_result',
+    },
+    evidence: [{
+      type: 'log_excerpt',
+      source: 'HOK.log',
+      timestamp: '2026-08-04T12:10:00.000Z',
+      redactedData: preRedacted,
+      key: 'diag:module_export_contract_mismatch',
+    }],
+  });
+  const body = generateIssueBody(oversized, config(), 'revision-3', new Date('2026-08-04T12:15:00.000Z'));
+  assert.doesNotMatch(body, /x{600}/, 'raw 2 KB blob must not appear in rendered body');
+  assert.match(body, /\[TRUNCATED \d+ chars\]/, 'rendered body must retain the inbound truncation marker');
 });
 
 test('ticket template includes required incident sections and redacted evidence', () => {
@@ -339,6 +400,29 @@ test('dry-run returns offline unknown plan without Linear API calls', async () =
   assert.match(result.plannedTitle ?? '', /Observer crashed/);
 });
 
+test('recovered unlinked incident is skipped before every Linear client call and dry-run reports evidence', async () => {
+  let calls = 0;
+  const recovered = () => ({ outcome: 'recovered' as const, evidence: { jobId: 'job-1', resultExists: true } });
+  const result = await syncIncident({
+    incident: incident({ rootCauseClass: 'failed_job_no_result', metadata: { jobId: 'job-1', jobKind: 'eval', thresholdTriggered: true } }),
+    config: config(),
+    reconciler: recovered,
+    client: mockClient({ searchIssues: async () => { calls += 1; return []; }, getTeams: async () => { calls += 1; return []; } }),
+  });
+  assert.equal(result.status, 'skipped');
+  assert.equal(result.reconciliation?.outcome, 'recovered');
+  assert.equal(calls, 0);
+
+  const dry = await syncIncident({
+    incident: incident({ rootCauseClass: 'failed_job_no_result', metadata: { jobId: 'job-1', jobKind: 'eval', thresholdTriggered: true } }),
+    config: config({ detectionOnly: true }),
+    reconciler: recovered,
+    client: mockClient({ searchIssues: async () => { calls += 1; return []; } }),
+  });
+  assert.equal(dry.reconciliation?.evidence.resultExists, true);
+  assert.equal(calls, 0);
+});
+
 test('detectionOnly returns local update plan without Linear API calls', async () => {
   let linearCalls = 0;
   const result = await syncIncident({
@@ -410,6 +494,135 @@ test('retryable Linear failure is queued and stored as sync error', async () => 
   }
 });
 
+test('wrapReadOnlyIncidentLinearClient blocks every mutation method with an incremented counter', async () => {
+  const base = mockClient();
+  const wrapped = wrapReadOnlyIncidentLinearClient(base);
+  await assert.rejects(() => wrapped.client.createIssue({} as any), ShadowMutationBlockedError);
+  await assert.rejects(() => wrapped.client.createComment('x', 'y'), ShadowMutationBlockedError);
+  await assert.rejects(() => wrapped.client.getOrCreateLabel('l', 't'), ShadowMutationBlockedError);
+  await assert.rejects(() => wrapped.client.addLabelsToIssue('id', ['l']), ShadowMutationBlockedError);
+  assert.equal(wrapped.mutationAttempts, 4);
+  assert.deepEqual(wrapped.mutationCallLog, ['createIssue', 'createComment', 'getOrCreateLabel', 'addLabelsToIssue']);
+
+  // Read methods pass through unchanged.
+  assert.equal((await wrapped.client.getTeams()).length, 1);
+});
+
+test('shadow mode produces deterministic decision, exact redacted payload, and zero mutation attempts', async () => {
+  const item = incident({
+    metadata: {
+      thresholdTriggered: true,
+      escalatedAt: '2026-08-04T12:10:00.000Z',
+      linkedLinearId: 'HOK-500',
+      lastSyncedEvidenceRevision: 'old',
+      syncCooldownUntil: '2026-08-04T12:00:00.000Z',
+    },
+  });
+  let mutationCalls = 0;
+  const spyClient = mockClient({
+    getIssue: async () => issueSummary('HOK-500') as any,
+    createIssue: async (params) => {
+      mutationCalls += 1;
+      return mockClient().createIssue(params);
+    },
+    createComment: async () => {
+      mutationCalls += 1;
+      return { id: 'x', url: 'y' };
+    },
+    getOrCreateLabel: async () => {
+      mutationCalls += 1;
+      return { id: 'l', name: 'x' };
+    },
+    addLabelsToIssue: async () => {
+      mutationCalls += 1;
+      return { success: true, issue: {} as any };
+    },
+  });
+  const result = await syncIncident({
+    incident: item,
+    config: config({ mode: 'shadow' }),
+    now: new Date('2026-08-04T12:30:00.000Z'),
+    client: spyClient,
+  });
+  assert.equal(mutationCalls, 0);
+  assert.equal(result.dryRun, true);
+  assert.equal(result.action, 'update_comment');
+  assert.ok(result.shadowPlan);
+  assert.equal(result.shadowPlan!.correlationTarget.matchedBy, 'linked_metadata');
+  assert.equal(result.shadowPlan!.correlationTarget.identifier, 'HOK-500');
+  assert.ok(result.shadowPlan!.plannedCommentBody);
+  assert.match(result.shadowPlan!.plannedCommentBody!, /Wavemill Incident Evidence Update/);
+  // Redaction summary should mark that redaction is enabled and describe the profile.
+  assert.equal(result.shadowPlan!.redactionSummary.redactionEnabled, true);
+  assert.equal(result.shadowPlan!.redactionSummary.patternsApplied > 0, true);
+});
+
+test('shadow mode never emits unknown_needs_lookup even without correlation', async () => {
+  const result = await syncIncident({
+    incident: incident({
+      metadata: {
+        thresholdTriggered: true,
+        escalatedAt: '2026-08-04T12:10:00.000Z',
+      },
+    }),
+    config: config({ mode: 'shadow' }),
+    client: mockClient(),
+  });
+  assert.notEqual(result.action, 'unknown_needs_lookup');
+  assert.ok(['create', 'skip', 'skip_recovered', 'update_comment', 'no_op', 'failed'].includes(result.action));
+});
+
+test('shadow mode reports skip_recovered when reconciliation says the candidate is superseded', async () => {
+  const superseded = () => ({ outcome: 'superseded' as const, evidence: { jobId: 'job-1' } });
+  const result = await syncIncident({
+    incident: incident({
+      rootCauseClass: 'failed_job_no_result',
+      metadata: { jobId: 'job-1', jobKind: 'eval', thresholdTriggered: true },
+    }),
+    config: config({ mode: 'shadow' }),
+    reconciler: superseded,
+    client: mockClient(),
+  });
+  assert.equal(result.action, 'skip_recovered');
+  assert.equal(result.status, 'skipped');
+  assert.ok(result.shadowPlan);
+  assert.equal(result.shadowPlan!.action, 'skip_recovered');
+});
+
+test('shadow lookup budget stops correlation once exhausted and surfaces an actionable failure', async () => {
+  const budget = createLookupBudget(1);
+  const spyClient = mockClient({
+    searchIssues: async () => [],
+    getTeams: async () => [{ id: 't', key: 'HOK', name: 'H' }],
+  });
+  const result = await syncIncident({
+    incident: incident({
+      metadata: { thresholdTriggered: true, escalatedAt: '2026-08-04T12:10:00.000Z' },
+    }),
+    config: config({ mode: 'shadow' }),
+    lookupBudget: budget,
+    client: spyClient,
+  });
+  // At least one search call was budgeted; a follow-up call would have thrown.
+  assert.ok(budget.used >= 1);
+  // Any failure path must not be unknown_needs_lookup.
+  assert.notEqual(result.action, 'unknown_needs_lookup');
+});
+
+test('planShadowSync assembles the exact rendered title and body', () => {
+  const item = incident();
+  const plan = planShadowSync({
+    incident: item,
+    config: config(),
+    evidenceRevision: 'rev-1',
+    now: new Date('2026-08-04T12:15:00.000Z'),
+    reconciliation: { outcome: 'confirmed_active', evidence: {} },
+    correlation: { matchedBy: 'none', candidateCount: 0 },
+  });
+  assert.equal(plan.plannedTitle, generateIssueTitle(item));
+  assert.match(plan.plannedBody ?? '', /## Incident Summary/);
+});
+
 function issueSummary(identifier: string): LinearIssueSummary {
   return {
     id: `uuid-${identifier}`,
@@ -424,3 +637,250 @@ function issueSummary(identifier: string): LinearIssueSummary {
     canceledAt: null,
   };
 }
+
+// ── Lifecycle transition sync (HOK-3035) ──────────────────────────
+
+interface LifecycleClientState {
+  comments: Array<{ issueId: string; body: string }>;
+  stateChanges: Array<{ issueId: string; stateId: string }>;
+}
+
+function lifecycleClient(
+  state: LifecycleClientState,
+  issue: { open: boolean; teamId?: string } = { open: true },
+): IncidentLinearClient {
+  return {
+    ...mockClient(),
+    getIssue: async (identifier) => ({
+      id: `uuid-${identifier}`,
+      identifier,
+      title: 'linked incident issue',
+      state: { name: issue.open ? 'Todo' : 'Done' },
+      labels: { nodes: [] },
+      team: { id: issue.teamId ?? 'team-1', key: 'HOK', name: 'Hokusai' },
+      url: `https://linear.app/hokusai/issue/${identifier}/x`,
+      completedAt: issue.open ? null : '2026-08-05T00:00:00.000Z',
+      canceledAt: null,
+    }),
+    getTeamStates: async () => [
+      { id: 'state-done', name: 'done' },
+      { id: 'state-todo', name: 'todo' },
+    ],
+    createComment: async (issueId, body) => {
+      state.comments.push({ issueId, body });
+      return { id: `comment-${state.comments.length}`, url: 'https://linear.app/comment' };
+    },
+    updateIssue: async (issueId, input) => {
+      state.stateChanges.push({ issueId, stateId: input.stateId ?? '' });
+      return { success: true, issue: { id: issueId, identifier: 'HOK-100', url: 'u' } } as never;
+    },
+  };
+}
+
+const recovered: (i: IncidentRecord) => IncidentFilingReconciliation =
+  () => ({ outcome: 'recovered', evidence: {} });
+const stillActive: (i: IncidentRecord) => IncidentFilingReconciliation =
+  () => ({ outcome: 'confirmed_active', evidence: {} });
+
+function lifecycleConfig(overrides: Partial<ObserverLinearConfig['lifecycle']> = {}): ObserverLinearConfig {
+  return config({ lifecycle: { ...DEFAULT_INCIDENT_LINEAR_CONFIG.lifecycle, enabled: true, ...overrides } });
+}
+
+async function linkedResolvedStore(action: 'operator' | 'auto', dir: string): Promise<{ store: IncidentStore; fingerprint: string }> {
+  const store = new IncidentStore(dir, { escalationThreshold: 1, resolutionAfterCycles: 1 });
+  const rec = await store.upsert(incident({ lifecycle: 'observed', metadata: {} }));
+  await store.recordLinearSync(rec.fingerprint, { linearIssueId: 'HOK-100', linearIssueUrl: 'u', evidenceRevision: 'r1' });
+  if (action === 'operator') {
+    await store.resolve(rec.fingerprint, { reason: 'fixed' });
+  } else {
+    // absence-driven auto resolution
+    await store.runResolutionSweep([]);
+  }
+  return { store, fingerprint: rec.fingerprint };
+}
+
+test('resolved linked incident gets exactly one comment across repeated loops and restart, no close by default', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifecycle-onceonly-'));
+  try {
+    const { store, fingerprint } = await linkedResolvedStore('operator', dir);
+    const state: LifecycleClientState = { comments: [], stateChanges: [] };
+    const client = lifecycleClient(state);
+    const cfg = lifecycleConfig();
+
+    const first = await syncIncidentLifecycle({
+      incident: (await store.getIncident(fingerprint))!, store, config: cfg, client, reconciler: recovered, cycleComplete: true,
+    });
+    assert.equal(first.status, 'synced');
+    assert.equal(first.action, 'comment_only');
+    // Simulate a restart: reload the record and sync again.
+    const second = await syncIncidentLifecycle({
+      incident: (await store.getIncident(fingerprint))!, store, config: cfg, client, reconciler: recovered, cycleComplete: true,
+    });
+    assert.equal(second.status, 'no_op');
+    assert.equal(state.comments.length, 1, 'exactly one resolution comment');
+    assert.equal(state.stateChanges.length, 0, 'default policy never closes the Linear issue');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('explicit operator resolution closes only when configured and records Observer ownership', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifecycle-close-'));
+  try {
+    const { store, fingerprint } = await linkedResolvedStore('operator', dir);
+    const state: LifecycleClientState = { comments: [], stateChanges: [] };
+    const cfg = lifecycleConfig({ commentOnly: false, closeOnOperatorResolved: true, resolvedStateName: 'Done' });
+    const result = await syncIncidentLifecycle({
+      incident: (await store.getIncident(fingerprint))!, store, config: cfg, client: lifecycleClient(state), reconciler: recovered, cycleComplete: true,
+    });
+    assert.equal(result.status, 'synced');
+    assert.equal(result.action, 'comment_and_close');
+    assert.equal(state.comments.length, 1);
+    assert.deepEqual(state.stateChanges, [{ issueId: 'uuid-HOK-100', stateId: 'state-done' }]);
+    const reloaded = await store.getIncident(fingerprint);
+    assert.equal(reloaded?.metadata.lifecycleSync?.observerClosedIssue, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('absence-based auto resolution never closes the Linear issue', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifecycle-auto-'));
+  try {
+    const { store, fingerprint } = await linkedResolvedStore('auto', dir);
+    const state: LifecycleClientState = { comments: [], stateChanges: [] };
+    // Even with closing enabled, an auto_resolved transition is comment-only.
+    const cfg = lifecycleConfig({ commentOnly: false, closeOnOperatorResolved: true, resolvedStateName: 'Done' });
+    const result = await syncIncidentLifecycle({
+      incident: (await store.getIncident(fingerprint))!, store, config: cfg, client: lifecycleClient(state), reconciler: recovered, cycleComplete: true,
+    });
+    assert.equal(result.action, 'comment_only');
+    assert.equal(state.stateChanges.length, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('degraded detection cycle cannot trigger resolution or closure', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifecycle-degraded-'));
+  try {
+    const { store, fingerprint } = await linkedResolvedStore('operator', dir);
+    const state: LifecycleClientState = { comments: [], stateChanges: [] };
+    const result = await syncIncidentLifecycle({
+      incident: (await store.getIncident(fingerprint))!, store, config: lifecycleConfig(), client: lifecycleClient(state), reconciler: recovered, cycleComplete: false,
+    });
+    assert.equal(result.status, 'skipped');
+    assert.equal(state.comments.length, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('reconciliation confirming the incident is still active suppresses resolution', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifecycle-active-'));
+  try {
+    const { store, fingerprint } = await linkedResolvedStore('operator', dir);
+    const state: LifecycleClientState = { comments: [], stateChanges: [] };
+    const result = await syncIncidentLifecycle({
+      incident: (await store.getIncident(fingerprint))!, store, config: lifecycleConfig(), client: lifecycleClient(state), reconciler: stillActive, cycleComplete: true,
+    });
+    assert.equal(result.status, 'skipped');
+    assert.equal(state.comments.length, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('recurrence reopens only an Observer-owned auto-closed issue and comments once', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifecycle-recur-owned-'));
+  try {
+    const store = new IncidentStore(dir, { escalationThreshold: 1, resolutionAfterCycles: 1 });
+    const rec = await store.upsert(incident({ lifecycle: 'observed', metadata: {} }));
+    await store.recordLinearSync(rec.fingerprint, { linearIssueId: 'HOK-100', evidenceRevision: 'r1' });
+    await store.resolve(rec.fingerprint);
+    // Observer owns the auto-close.
+    await store.recordLifecycleSync(rec.fingerprint, { transitionRevision: 'prev', stateApplied: true, observerClosedIssue: true, observerSetStateName: 'done' });
+    // A new distinct event reopens the record (recurrence).
+    await store.upsert(incident({ lifecycle: 'observed', metadata: {}, evidence: [{
+      type: 'log_excerpt', source: '/Users/timothy/project/.wavemill/logs/mill.log', timestamp: '2026-09-01T00:00:00.000Z', redactedData: 'crash again', key: 'crash',
+    }] }));
+    const record = (await store.getIncident(rec.fingerprint))!;
+    assert.ok(record.metadata.recurrence, 'record was reopened by recurrence');
+
+    const state: LifecycleClientState = { comments: [], stateChanges: [] };
+    const cfg = lifecycleConfig({ commentOnly: false, reopenOnRecurrence: true, reopenStateName: 'Todo' });
+    const result = await syncIncidentLifecycle({
+      incident: record, store, config: cfg, client: lifecycleClient(state, { open: false }), cycleComplete: true,
+    });
+    assert.equal(result.action, 'reopen_and_comment');
+    assert.deepEqual(state.stateChanges, [{ issueId: 'uuid-HOK-100', stateId: 'state-todo' }]);
+    assert.equal(state.comments.length, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a manually closed issue the Observer never closed is not reopened on recurrence', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifecycle-recur-manual-'));
+  try {
+    const store = new IncidentStore(dir, { escalationThreshold: 1, resolutionAfterCycles: 1 });
+    const rec = await store.upsert(incident({ lifecycle: 'observed', metadata: {} }));
+    await store.recordLinearSync(rec.fingerprint, { linearIssueId: 'HOK-100', evidenceRevision: 'r1' });
+    await store.resolve(rec.fingerprint);
+    // No observerClosedIssue ownership: a human closed the Linear issue.
+    await store.upsert(incident({ lifecycle: 'observed', metadata: {}, evidence: [{
+      type: 'log_excerpt', source: '/Users/timothy/project/.wavemill/logs/mill.log', timestamp: '2026-09-01T00:00:00.000Z', redactedData: 'crash again', key: 'crash',
+    }] }));
+    const state: LifecycleClientState = { comments: [], stateChanges: [] };
+    const cfg = lifecycleConfig({ commentOnly: false, reopenOnRecurrence: true, reopenStateName: 'Todo' });
+    const result = await syncIncidentLifecycle({
+      incident: (await store.getIncident(rec.fingerprint))!, store, config: cfg, client: lifecycleClient(state, { open: false }), cycleComplete: true,
+    });
+    assert.equal(result.action, 'comment_only');
+    assert.equal(state.stateChanges.length, 0, 'a human-closed issue is never reopened');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('replay skips a delivered comment and retries only the failed state transition', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifecycle-partial-'));
+  try {
+    const { store, fingerprint } = await linkedResolvedStore('operator', dir);
+    const cfg = lifecycleConfig({ commentOnly: false, closeOnOperatorResolved: true, resolvedStateName: 'Done' });
+    const record = (await store.getIncident(fingerprint))!;
+    const transition = record.lifecycle; // resolved
+    assert.equal(transition, 'resolved');
+    // Pre-seed: comment already delivered for this revision, state not yet applied.
+    const rev = record.metadata.resolution;
+    const revision = ['resolved', rev?.action, rev?.at].map((p) => String(p ?? '')).join('|');
+    await store.recordLifecycleSync(fingerprint, { transitionRevision: revision, kind: 'resolved', commentDelivered: true });
+    const state: LifecycleClientState = { comments: [], stateChanges: [] };
+    const result = await syncIncidentLifecycle({
+      incident: (await store.getIncident(fingerprint))!, store, config: cfg, client: lifecycleClient(state), reconciler: recovered, cycleComplete: true,
+    });
+    assert.equal(result.status, 'synced');
+    assert.equal(state.comments.length, 0, 'comment is not repeated');
+    assert.equal(state.stateChanges.length, 1, 'only the state transition is applied on replay');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('shadow mode renders the proposed lifecycle action without mutation', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lifecycle-shadow-'));
+  try {
+    const { store, fingerprint } = await linkedResolvedStore('operator', dir);
+    const state: LifecycleClientState = { comments: [], stateChanges: [] };
+    const result = await syncIncidentLifecycle({
+      incident: (await store.getIncident(fingerprint))!, store, config: lifecycleConfig(), client: lifecycleClient(state), reconciler: recovered, cycleComplete: true, shadow: true,
+    });
+    assert.ok(result.shadowPlan);
+    assert.equal(result.shadowPlan?.action, 'comment_only');
+    assert.match(result.shadowPlan?.plannedCommentBody ?? '', /Incident Resolved/);
+    assert.equal(state.comments.length, 0);
+    assert.equal(state.stateChanges.length, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

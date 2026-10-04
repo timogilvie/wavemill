@@ -1,7 +1,7 @@
 #!/usr/bin/env -S npx tsx
 
 import { getEffectiveRegistry } from '../shared/lib/model-registry.ts';
-import { resolveModelAgent, type AgentResolutionPhase } from '../shared/lib/model-agent-resolution.ts';
+import { resolveModelAgent, resolveLaunchPreflight, type AgentResolutionPhase } from '../shared/lib/model-agent-resolution.ts';
 import { runTool } from '../shared/lib/tool-runner.ts';
 
 type BatchRole = 'planner' | 'coder' | 'reviewer';
@@ -40,6 +40,10 @@ runTool({
       type: 'string',
       description: 'Repository directory. Defaults to current directory.',
     },
+    preflight: {
+      type: 'boolean',
+      description: 'Use launch preflight (resolves successors, handles retirement).',
+    },
     json: {
       type: 'boolean',
       description: 'Emit machine-readable JSON.',
@@ -48,7 +52,7 @@ runTool({
   examples: [
     'npx tsx tools/resolve-model-agent.ts --model claude-sonnet-5 --phase coding',
     'npx tsx tools/resolve-model-agent.ts --model mistral-large-2 --phase planning',
-    'npx tsx tools/resolve-model-agent.ts --planner claude-sonnet-5 --coder gpt-5.5 --reviewer mistral-large-2',
+    'npx tsx tools/resolve-model-agent.ts --planner claude-sonnet-5 --coder gpt-5.6-terra --reviewer mistral-large-2',
   ],
   async run({ args }) {
     const model = (args.model as string | undefined)?.trim();
@@ -57,6 +61,7 @@ runTool({
     const coder = (args.coder as string | undefined)?.trim();
     const reviewer = (args.reviewer as string | undefined)?.trim();
     const repoDir = (args.repo as string | undefined) || process.cwd();
+    const usePreflight = args.preflight === true;
     const registry = getEffectiveRegistry(repoDir);
 
     const requestedRoles = ([
@@ -70,16 +75,23 @@ runTool({
     }
 
     if (requestedRoles.length > 0) {
-      const results: Partial<Record<BatchRole, ReturnType<typeof resolveModelAgent>>> = {};
+      const results: Partial<Record<BatchRole, ReturnType<typeof resolveModelAgent> | ReturnType<typeof resolveLaunchPreflight>>> = {};
       const diagnostics: string[] = [];
 
       for (const [role, requestedModel] of requestedRoles) {
-        const result = resolveModelAgent({
-          model: requestedModel,
-          phase: PHASE_BY_ROLE[role],
-          repoDir,
-          registry,
-        });
+        const result = usePreflight
+          ? resolveLaunchPreflight({
+            requestedModel,
+            phase: PHASE_BY_ROLE[role],
+            repoDir,
+            registry,
+          })
+          : resolveModelAgent({
+            model: requestedModel,
+            phase: PHASE_BY_ROLE[role],
+            repoDir,
+            registry,
+          });
         results[role] = result;
         if (!result.ok) {
           diagnostics.push(result.diagnostic);
@@ -104,12 +116,19 @@ runTool({
       throw new Error(`invalid --phase "${rawPhase}". Must be one of: planning, coding, review`);
     }
 
-    const result = resolveModelAgent({
-      model,
-      phase: rawPhase as AgentResolutionPhase,
-      repoDir,
-      registry,
-    });
+    const result = usePreflight
+      ? resolveLaunchPreflight({
+        requestedModel: model,
+        phase: rawPhase as AgentResolutionPhase,
+        repoDir,
+        registry,
+      })
+      : resolveModelAgent({
+        model,
+        phase: rawPhase as AgentResolutionPhase,
+        repoDir,
+        registry,
+      });
 
     console.log(JSON.stringify(result));
     if (!result.ok) {

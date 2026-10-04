@@ -271,6 +271,7 @@ async function withMockedPostCompletionDeps(fn: () => Promise<void> | void): Pro
   } finally {
     postCompletionHookDeps.gatherEvalContext = evalContextGatherer.gatherEvalContext;
     postCompletionHookDeps.gatherStageArtifacts = evalContextGatherer.gatherStageArtifacts;
+    postCompletionHookDeps.collectExecutionEconomics = defaultPostCompletionHookDeps.collectExecutionEconomics;
     postCompletionHookDeps.execShellCommand = shellUtils.execShellCommand;
     postCompletionHookDeps.detectAndFormatInterventions = interventionDetector.detectAndFormatInterventions;
     postCompletionHookDeps.runEvalAnalysis = evalAnalysis.runEvalAnalysis;
@@ -399,7 +400,8 @@ await test('enrichPostCompletionRecord attaches taskDescriptor for persisted rec
     assert.equal(record.taskDescriptor?.outcome?.total_cost_usd, 4.25);
     assert.equal(record.taskDescriptor?.outcome?.interventions, 1);
     assert.ok((record.taskDescriptor?.constraints.models_available.length || 0) > 0);
-    assert.ok(record.taskDescriptor?.constraints.models_available.includes('gpt-5.5'));
+    assert.ok(record.taskDescriptor?.constraints.models_available.includes('gpt-5.6-terra'));
+    assert.ok(!record.taskDescriptor?.constraints.models_available.includes('gpt-5.5'));
     assert.ok(!record.taskDescriptor?.constraints.models_available.includes('gpt-5.3-codex'));
     assert.equal(record.workflowCostStatus, 'success');
     assert.equal(record.enrichmentDiagnostics, undefined);
@@ -534,6 +536,93 @@ await test('runPostCompletionEval passes and persists phase durations', async ()
       total: 660,
     });
     assert.equal(persistedRecord?.timeSeconds, 660);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+await test('runPostCompletionEval collects and persists execution economics (HOK-2958)', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'post-completion-hook-economics-'));
+  let persistedRecord: EvalRecord | undefined;
+  let capturedCollectInput: Record<string, unknown> | undefined;
+  const block = {
+    schemaVersion: '1.0.0',
+    providerContractVersion: 'claude-code/1',
+    harness: 'claude-code' as const,
+    joinEvidence: { issueId: 'HOK-2958', branch: 'task/economics' },
+    sessions: [],
+    sessionCount: 1,
+    turnCount: 3,
+    coverage: 'partial' as const,
+    collectedAt: '2026-09-01T10:00:00Z',
+  };
+
+  try {
+    await withMockedPostCompletionDeps(async () => {
+      stubBaseEvalDeps();
+      postCompletionHookDeps.collectExecutionEconomics = async (input) => {
+        capturedCollectInput = input as unknown as Record<string, unknown>;
+        return [block];
+      };
+      postCompletionHookDeps.appendEvalRecord = (record) => {
+        persistedRecord = record;
+      };
+      postCompletionHookDeps.runContextUpdateWork = async () => {};
+
+      const ok = await runPostCompletionEval({
+        issueId: 'HOK-2958',
+        prNumber: '2958',
+        prUrl: 'https://example.test/pr/2958',
+        workflowType: 'mill',
+        repoDir,
+        branchName: 'task/economics',
+        worktreePath: repoDir,
+        agentType: 'claude',
+      });
+
+      assert.equal(ok, true);
+    });
+
+    assert.equal(capturedCollectInput?.worktreePath, repoDir);
+    assert.equal(capturedCollectInput?.branchName, 'task/economics');
+    assert.equal(capturedCollectInput?.issueId, 'HOK-2958');
+    assert.deepEqual(persistedRecord?.executionEconomics, [block]);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+await test('runPostCompletionEval stays fail-soft when execution economics collection throws', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'post-completion-hook-economics-fail-'));
+  let persistedRecord: EvalRecord | undefined;
+
+  try {
+    await withMockedPostCompletionDeps(async () => {
+      stubBaseEvalDeps();
+      postCompletionHookDeps.collectExecutionEconomics = async () => {
+        throw new Error('economics collector exploded');
+      };
+      postCompletionHookDeps.appendEvalRecord = (record) => {
+        persistedRecord = record;
+      };
+      postCompletionHookDeps.runContextUpdateWork = async () => {};
+
+      const ok = await runPostCompletionEval({
+        issueId: 'HOK-2958',
+        prNumber: '2958',
+        prUrl: 'https://example.test/pr/2958',
+        workflowType: 'mill',
+        repoDir,
+        branchName: 'task/economics',
+        worktreePath: repoDir,
+        agentType: 'claude',
+      });
+
+      assert.equal(ok, true);
+    });
+
+    assert.ok(persistedRecord);
+    assert.equal(persistedRecord?.executionEconomics, undefined);
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
   }

@@ -1,15 +1,54 @@
 #!/usr/bin/env -S npx tsx
+import { ISSUE_ID_RE } from '../shared/lib/task-identity.ts';
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { mutateJsonState } from '../shared/lib/state-mutex.ts';
-import { getIncidentConfig, getMillConfig, getObserverLinearConfig, type ObserverLinearConfig } from '../shared/lib/config.ts';
+import { mutateJsonState, mutateJsonStateSync } from '../shared/lib/state-mutex.ts';
+import {
+  getIncidentConfig,
+  getMillConfig,
+  getObserverAlertsConfig,
+  getObserverAutoFixConfig,
+  getObserverLinearConfig,
+  loadWavemillConfig,
+  resolveObserverLinearModeSource,
+  resolveSessionCapabilities,
+  type ObserverAlertsConfig,
+  type ObserverAutoFixConfig,
+  type ObserverLinearConfig,
+  type SessionCapabilities,
+} from '../shared/lib/config.ts';
+import { measureBranchBaseDistance, updateBranchWithBase } from '../shared/lib/promotion-controller.ts';
+import {
+  appendAutoFixActionRecords,
+  runObserverAutoFixes,
+  type AutoFixCandidateFinding,
+  type AutoFixDeps,
+  type AutoFixRepoContext,
+  type AutoFixTask,
+} from '../shared/lib/observer-auto-fix.ts';
+import {
+  detectDesktopPlatform,
+  runObserverAlerts,
+  sendDesktopNotification,
+  sendPushNotification,
+  type AlertFinding,
+  type AlertJournal,
+} from '../shared/lib/observer-alerts.ts';
+import { abortTaskInState } from '../shared/lib/task-abort.ts';
+import { getResultFilePath, type ReadyArtifacts, type StageResult } from '../shared/lib/stage-result.ts';
 import { detectIncidentsForRepo, detectIncidentsForTask, type TendCandidateDiagnostic } from '../shared/lib/wavemill-incident-detector.ts';
 import { IncidentStore } from '../shared/lib/wavemill-incident-store.ts';
 import { createIncidentDraft, type IncidentRecord, type IncidentRootCauseClass } from '../shared/lib/wavemill-incident-model.ts';
-import { syncIncident, type SyncResult } from '../shared/lib/incident-to-linear-synchronizer.ts';
+import { createLookupBudget, syncIncident, syncIncidentLifecycle, type LifecycleSyncResult, type SyncResult } from '../shared/lib/incident-to-linear-synchronizer.ts';
+import {
+  appendShadowRecord,
+  buildShadowAuditRecord,
+  updateShadowCounters,
+  type ShadowAuditRecord,
+} from '../shared/lib/observer-shadow-audit.ts';
 import { drainIncidentQueue, enqueueIncidentSync } from '../shared/lib/incident-linear-retry-queue.ts';
 import { acquireObserverLock } from '../shared/lib/tend-singleton.ts';
 import { countRejectedEvalRecords, listRejectedEvalRecords } from '../shared/lib/eval-rejected-store.ts';
@@ -21,6 +60,16 @@ import {
 } from '../shared/lib/config-integrity.ts';
 import { normalizeTaskLifecycle, type CleanupEpisode, type TaskLifecycleState } from '../shared/lib/task-lifecycle.ts';
 import { resolveEffectiveTaskConfig, type EffectiveTaskConfig } from '../shared/lib/effective-task-config.ts';
+import {
+  getTaskProgress,
+  isWavemillControllerProcess,
+  matchInteractivePromptSignature as taskProgressMatchInteractivePromptSignature,
+  normalizeInteractivePromptText as taskProgressNormalizeInteractivePromptText,
+  INTERACTIVE_PROMPT_SIGNATURES as TASK_PROGRESS_INTERACTIVE_PROMPT_SIGNATURES,
+  type HookState,
+  type TaskProgress,
+} from '../shared/lib/task-progress.ts';
+import { readWorktreeDirtyStatus, type WorktreeDirtyStatus } from '../shared/lib/worktree-dirty-status.ts';
 
 type Severity = 'urgent' | 'high' | 'medium' | 'low';
 type Category = 'stuck' | 'crash' | 'warning' | 'ux' | 'operational';
@@ -39,6 +88,27 @@ const RESIDUE_COMMIT_SUBJECT_LIMIT = 5;
 const STALLED_ACTIVE_UNPUBLISHED_MINUTES = 120;
 const PR_CREATE_FAILED_PATTERN = /pull request create failed:?\s*(.*)/i;
 
+// HOK-3096: state-based detector thresholds. These read git/filesystem/config
+// state directly rather than mill log lines, so they catch stalls that never
+// produce an error/warn log message.
+/** A merge-candidate older than this with no active merge consumer is stuck. */
+const CANDIDATE_STUCK_MINUTES = 15;
+/** Promotions to merge-candidate on the same head within the window below this many times is churn. */
+const CANDIDATE_CHURN_THRESHOLD = 3;
+const CANDIDATE_CHURN_WINDOW_MINUTES = 30;
+/** An exhausted retry sentinel quiet for this long with no newer commit/progress is abandoned. */
+const EXHAUSTED_RETRY_QUIET_MINUTES = 10;
+/** An active branch more than this many commits behind its base has drifted. */
+const BEHIND_BASE_THRESHOLD_COMMITS = 5;
+
+// HOK-3045: closed catalog of interactive agent lifecycle prompts that block
+// a task pane. HOK-3101 moved the catalog into shared/lib/task-progress.ts so
+// the primitive can surface `blockingPrompt` and the observer can re-use it
+// for the incident detector. Adding a new signature must include positive and
+// negative fixtures in both `task-progress.test.ts` and `observer.test.ts`.
+type InteractivePromptSignature = typeof TASK_PROGRESS_INTERACTIVE_PROMPT_SIGNATURES[number];
+const INTERACTIVE_PROMPT_SIGNATURES = TASK_PROGRESS_INTERACTIVE_PROMPT_SIGNATURES;
+
 interface ObserverOptions {
   loop: boolean;
   once: boolean;
@@ -51,6 +121,8 @@ interface ObserverOptions {
   fileIncidents: boolean;
   dryRun: boolean;
   incidentsDryRun: boolean;
+  incidentsShadow?: boolean;
+  incidentsMode?: 'off' | 'offline' | 'shadow' | 'live';
   incidentsReplay?: string;
   incidentsPolicy?: string;
   linearTeam?: string;
@@ -99,6 +171,8 @@ interface TaskState {
   agent?: string;
   challengeRole?: string;
   challengePairId?: string;
+  challengeAborted?: string;
+  evalCompleted?: boolean;
   executionOwner?: string;
   paneState?: string;
   lifecycle?: TaskLifecycleState | Record<string, unknown>;
@@ -156,6 +230,25 @@ interface ModelDowngradeLogEntry {
   fallback: string;
 }
 
+/**
+ * A typed coding launch refusal (HOK-3142). `action` is what the monitor did:
+ * `rerouted` (coder substituted), `needs-user` (terminalized with the certify
+ * command), `retry` (transient resolver failure), or `retry-loop` for the
+ * pre-HOK-3142 `Coding launch blocked: [agent-resolution] …` form, which the
+ * monitor relaunched on every tick.
+ */
+interface LaunchRefusalLogEntry {
+  line: string;
+  issue: string;
+  model: string;
+  provider: string;
+  reason: string;
+  certification: string;
+  action: string;
+  substitute?: string;
+  certify?: string;
+}
+
 interface RepoSnapshot {
   session: string;
   repoDir: string;
@@ -179,7 +272,25 @@ interface ObserverSnapshot {
   incidentSync?: IncidentSyncSnapshot;
 }
 
+interface IncidentSyncShadowSnapshot {
+  eligible: number;
+  proposedCreate: number;
+  proposedUpdate: number;
+  noOp: number;
+  skipRecovered: number;
+  ambiguous: number;
+  redactionFailures: number;
+  correlationCollisions: number;
+  mutationAttempts: number;
+  auditPath?: string;
+  countersPath?: string;
+  lookupBudgetUsed?: number;
+  lookupBudgetMax?: number;
+  lookupBudgetExhausted?: boolean;
+}
+
 interface IncidentSyncSnapshot {
+  mode?: 'off' | 'offline' | 'shadow' | 'live';
   totalProcessed: number;
   created: number;
   updated: number;
@@ -189,8 +300,14 @@ interface IncidentSyncSnapshot {
   retryProcessed: number;
   retrySucceeded: number;
   retryFailed: number;
+  /** Lifecycle transition sync counters (HOK-3035). */
+  lifecycleSynced: number;
+  lifecycleFailed: number;
+  lifecycleRetried: number;
+  lifecycleResults: LifecycleSyncResult[];
   results: SyncResult[];
   errors: Array<{ fingerprint: string; action: string; reason: string; nextRetry?: string }>;
+  shadow?: IncidentSyncShadowSnapshot;
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -212,7 +329,10 @@ Options:
   --compact              One line per actionable finding; rolls up log-scrape noise
   --file-linear          Create Linear issues for high-confidence findings
   --file-incidents       Create/update Linear issues for confirmed deduplicated incidents
-  --incidents-dry-run    Preview incident Linear actions without writes
+  --incidents-dry-run    Preview incident Linear actions without writes (alias for --incidents-mode=offline)
+  --incidents-shadow     Shadow-audit incident Linear actions (bounded reads, zero mutations)
+  --incidents-mode <off|offline|shadow|live>
+                         Explicit incident sync mode. Overrides legacy dry-run/enabled flags.
   --incidents-replay <fingerprint>
                          Re-sync one incident fingerprint and bypass update cooldown
   --incidents-policy <json>
@@ -283,6 +403,15 @@ export function parseArgs(argv: string[]): ObserverOptions {
       options.fileIncidents = true;
     } else if (arg === '--incidents-dry-run') {
       options.incidentsDryRun = true;
+      options.fileIncidents = true;
+    } else if (arg === '--incidents-shadow') {
+      options.incidentsShadow = true;
+      options.fileIncidents = true;
+    } else if (arg === '--incidents-mode') {
+      options.incidentsMode = parseIncidentsMode(next());
+      options.fileIncidents = true;
+    } else if (arg.startsWith('--incidents-mode=')) {
+      options.incidentsMode = parseIncidentsMode(arg.slice('--incidents-mode='.length));
       options.fileIncidents = true;
     } else if (arg === '--incidents-replay') {
       options.incidentsReplay = next();
@@ -360,6 +489,14 @@ function parsePositiveInt(value: string, flag: string): number {
     throw new Error(`${flag} must be a positive integer`);
   }
   return parsed;
+}
+
+function parseIncidentsMode(value: string): 'off' | 'offline' | 'shadow' | 'live' {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'off' || normalized === 'offline' || normalized === 'shadow' || normalized === 'live') {
+    return normalized;
+  }
+  throw new Error(`--incidents-mode must be off|offline|shadow|live, got ${JSON.stringify(value)}`);
 }
 
 function run(command: string, args: string[], timeoutMs = 10_000, cwd?: string): { ok: boolean; stdout: string; stderr: string } {
@@ -533,6 +670,8 @@ function readWorkflowTasks(stateFile: string): TaskState[] {
         agent: stringValue(task.agent),
         challengeRole: stringValue(task.challengeRole),
         challengePairId: stringValue(task.challengePairId),
+        challengeAborted: stringValue(task.challengeAborted),
+        evalCompleted: task.evalCompleted === true,
         executionOwner: stringValue(task.executionOwner),
         paneState: stringValue(task.paneState),
         lifecycle: task.lifecycle && typeof task.lifecycle === 'object' && !Array.isArray(task.lifecycle)
@@ -568,7 +707,7 @@ function cleanupEpisodeFinding(repo: RepoSnapshot, task: TaskState): Finding | u
   const nextRetry = episode.nextRetryAt ? `nextRetryAt=${episode.nextRetryAt}` : 'nextRetryAt=none';
   const action = typeof episode.requiredOperatorAction === 'string' && episode.requiredOperatorAction.length > 0
     ? episode.requiredOperatorAction
-    : 'Inspect cleanup evidence and acknowledge recovery when resolved.';
+    : `Inspect cleanup evidence with wavemill cleanup ${task.issue} --dry-run; finalize with --execute only after the decision is safe.`;
   const titleDisposition = episode.disposition === 'transient'
     ? 'waiting for cleanup retry'
     : `cleanup ${episode.disposition}`;
@@ -637,7 +776,18 @@ function deliveryEvidenceProvesMerged(task: TaskState): boolean {
   return Boolean(evidenceString(evidence.mergeSha) && (!state || state === 'MERGED'));
 }
 
-function renderCleanupRecommendation(disposition: ResidueDisposition, task: TaskState, config: EffectiveTaskConfig, residue?: BranchResidue): string {
+// HOK-3088: cap the number of dirty-status paths inlined into a finding so a
+// very large delta stays readable without hiding the fact that more work exists.
+const DIRTY_WORKTREE_PATH_LIMIT = 8;
+
+function renderDirtyWorktreeRecommendation(task: TaskState, worktreeDirty: WorktreeDirtyStatus): string {
+  if (worktreeDirty.state === 'unreadable') {
+    return `Observer could not read ${task.worktree ?? 'the task worktree'}'s git status. Inspect the worktree by hand before terminalizing cleanup; do not abort or reap while the risk state is unknown.`;
+  }
+  return `The worktree still holds uncommitted or untracked work that is not on any branch. Recover it first: commit and push the task branch and open or update a draft PR, or copy the files off the worktree, before terminalizing cleanup. Never run \`wavemill mill abort ${task.issue}\` while the tree is dirty - the reap deletes these files.`;
+}
+
+function renderCleanupRecommendation(disposition: ResidueDisposition, task: TaskState, config: EffectiveTaskConfig, residue?: BranchResidue, worktreeDirty?: WorktreeDirtyStatus): string {
   const branch = residue?.branch ?? taskBranch(task) ?? task.branch ?? 'the task branch';
   const base = config.baseBranch.value;
   const policy = config.remoteBranchDeletionPolicy?.value;
@@ -649,7 +799,10 @@ function renderCleanupRecommendation(disposition: ResidueDisposition, task: Task
     case 'retained-by-policy':
       return `The recorded cleanup policy does not authorize deleting ${branch}; leave it retained or update the policy through the normal controller path after verification.`;
     case 'dirty-worktree':
-      return taskCleanupEpisode(task)?.requiredOperatorAction ?? `Inspect ${branch}'s worktree, commit or discard local changes, then acknowledge recovery in workflow state.`;
+      if (worktreeDirty && (worktreeDirty.state === 'dirty' || worktreeDirty.state === 'unreadable')) {
+        return renderDirtyWorktreeRecommendation(task, worktreeDirty);
+      }
+      return taskCleanupEpisode(task)?.requiredOperatorAction ?? `Inspect ${branch}'s worktree, commit or discard local changes, then run wavemill cleanup ${task.issue} --dry-run again.`;
     case 'transient':
       return taskCleanupEpisode(task)?.requiredOperatorAction ?? `Wait for the scheduled cleanup retry, then inspect cleanup evidence if it remains unchanged.`;
     case 'verification-unavailable':
@@ -657,7 +810,7 @@ function renderCleanupRecommendation(disposition: ResidueDisposition, task: Task
     case 'unpublished-at-risk':
       return `Recover the work first: push ${branch} to origin and open or update a PR against ${base}, or explicitly abandon the branch, before terminalizing cleanup.`;
     case 'residue-retained':
-      return taskCleanupEpisode(task)?.requiredOperatorAction ?? `Follow the recorded cleanup disposition for ${branch}; do not recreate a branch unless delivery evidence is absent and recovery requires it.`;
+      return taskCleanupEpisode(task)?.requiredOperatorAction ?? `Run wavemill cleanup ${task.issue} --dry-run and follow the recorded cleanup disposition for ${branch}; do not recreate a branch unless delivery evidence is absent and recovery requires it.`;
     case 'clean':
     default:
       if (policy?.allowed === false) return `No work is ahead of ${base}; keep retained resources only if the recorded policy requires it.`;
@@ -665,7 +818,35 @@ function renderCleanupRecommendation(disposition: ResidueDisposition, task: Task
   }
 }
 
-function classifyResidue(task: TaskState, config: EffectiveTaskConfig, residue?: BranchResidue): ClassifiedResidue {
+/**
+ * HOK-3088: read the worktree's dirty status through the shared predicate.
+ * A missing worktree reports `absent` (safe to treat as clean by callers that
+ * already know the worktree has been reaped). A git failure reports
+ * `unreadable` and callers must not treat that as clean.
+ */
+function inspectTaskWorktreeDirty(worktree: string | undefined): WorktreeDirtyStatus {
+  if (!worktree) return { state: 'absent', lines: [], raw: '' };
+  return readWorktreeDirtyStatus({ worktree });
+}
+
+function dirtyWorktreeEvidence(worktreeDirty: WorktreeDirtyStatus): string[] {
+  if (worktreeDirty.state === 'clean' || worktreeDirty.state === 'absent') return [];
+  if (worktreeDirty.state === 'unreadable') {
+    return ['worktreeDirty=unreadable'];
+  }
+  const shown = worktreeDirty.lines.slice(0, DIRTY_WORKTREE_PATH_LIMIT);
+  const evidence: string[] = [
+    'worktreeDirty=true',
+    `dirtyPathCount=${worktreeDirty.lines.length}`,
+    ...shown.map((line) => `dirtyPath=${line}`),
+  ];
+  if (worktreeDirty.lines.length > shown.length) {
+    evidence.push(`dirtyPathTruncated=${worktreeDirty.lines.length - shown.length}`);
+  }
+  return evidence;
+}
+
+function classifyResidue(task: TaskState, config: EffectiveTaskConfig, residue?: BranchResidue, worktreeDirty?: WorktreeDirtyStatus): ClassifiedResidue {
   const episode = taskCleanupEpisode(task);
   const delivery = taskDeliveryEvidence(task);
   const evidence: string[] = [
@@ -681,12 +862,25 @@ function classifyResidue(task: TaskState, config: EffectiveTaskConfig, residue?:
   if (episode?.disposition) evidence.push(`cleanupDisposition=${episode.disposition}`);
   if (residue?.baseRef) evidence.push(`comparedAgainst=${residue.baseRef}`);
   if (residue?.aheadOfBase !== undefined) evidence.push(`aheadOfEffectiveBase=${residue.aheadOfBase}`);
+  const dirtyEvidence = worktreeDirty ? dirtyWorktreeEvidence(worktreeDirty) : [];
+  evidence.push(...dirtyEvidence);
+
+  // HOK-3088: the branch-only shortcut (aheadOfBase==0 or unpushedCommits==0)
+  // used to fall through to `clean`, so a task at base with a dirty tree got
+  // "nothing at risk" advice. A dirty (or unreadable) tree takes precedence
+  // over every branch-derived disposition except the ones that already prove
+  // the work is safely elsewhere (squash-delivered, already-reaped).
+  const worktreeAtRisk = worktreeDirty?.state === 'dirty' || worktreeDirty?.state === 'unreadable';
 
   let disposition: ResidueDisposition = 'verification-unavailable';
   if (deliveryEvidenceProvesMerged(task)) {
     disposition = 'squash-delivered';
   } else if (episode?.disposition === 'reaped') {
     disposition = 'already-reaped';
+  } else if (worktreeAtRisk) {
+    // Same at-risk verdict as cleanup's `dirty_worktree` refusal in
+    // shared/lib/terminal-inbox-cleanup.ts, via the shared filter helper.
+    disposition = 'dirty-worktree';
   } else if (config.remoteBranchDeletionPolicy?.value.allowed === false) {
     disposition = 'retained-by-policy';
   } else if (episode?.disposition === 'needs-user' && /dirty/i.test(`${episode.failureClass} ${episode.lastOutcome ?? ''} ${episode.requiredOperatorAction ?? ''} ${JSON.stringify(episode.fingerprintInputs ?? {})}`)) {
@@ -713,7 +907,7 @@ function classifyResidue(task: TaskState, config: EffectiveTaskConfig, residue?:
     : disposition === 'verification-unavailable'
       ? 'medium'
       : disposition === 'dirty-worktree'
-        ? 'high'
+        ? (worktreeAtRisk ? 'urgent' : 'high')
         : undefined;
 
   return {
@@ -721,7 +915,7 @@ function classifyResidue(task: TaskState, config: EffectiveTaskConfig, residue?:
     severity,
     suppressResidueFinding,
     evidence: [`residueDisposition=${disposition}`, ...evidence],
-    recommendation: renderCleanupRecommendation(disposition, task, config, residue),
+    recommendation: renderCleanupRecommendation(disposition, task, config, residue, worktreeDirty),
   };
 }
 
@@ -799,23 +993,35 @@ function cleanupEvidenceKey(task: TaskState, config: EffectiveTaskConfig, residu
   ].join(':');
 }
 
-function detectCleanupIncidentsForRepo(repo: RepoSnapshot, timestamp: string): IncidentRecord[] {
+function detectCleanupIncidentsForRepo(repo: RepoSnapshot, timestamp: string, progressLookup?: (task: TaskState) => TaskProgress | undefined): IncidentRecord[] {
   const incidents: IncidentRecord[] = [];
   const parsedNow = Date.parse(timestamp);
   const now = Number.isFinite(parsedNow) ? parsedNow : Date.now();
+  const lookup = progressLookup ?? makeProgressLookup(repo, now);
   for (const task of repo.tasks) {
     const config = resolveObserverTaskConfig(repo, task.issue, task);
     const branch = taskBranch(task);
     const residue = branch ? inspectTaskBranchResidue(repo.repoDir, branch, config.baseBranch.value) : undefined;
-    const classified = classifyResidue(task, config, residue);
+    const worktreeDirty = inspectTaskWorktreeDirty(task.worktree);
+    const classified = classifyResidue(task, config, residue, worktreeDirty);
     const rootCauseClass = cleanupRootCause(classified.disposition);
     // Cleanup incidents require terminal lifecycle evidence or a persisted
     // cleanup episode. An ordinary active coding branch that is ahead and not
     // yet pushed is delivery risk, not cleanup failure (HOK-2972).
     const hasCleanupContext = taskHasTerminalResidueStatus(task) || Boolean(taskCleanupEpisode(task));
     if (rootCauseClass && !hasCleanupContext && classified.disposition === 'unpublished-at-risk') {
-      const ageMinutes = taskAgeMinutes(task, repo, now);
+      // HOK-3087: prefer the shared primitive's progress age so hook/commit
+      // activity on an active task rescues it from the stall incident. The
+      // transition-only `taskAgeMinutes` remains the fallback when the
+      // primitive has no evidence yet.
+      const progress = lookup(task);
+      const primitiveAge = progress?.progressAgeMinutes ?? null;
+      const fallbackAge = taskAgeMinutes(task, repo, now, lookup);
+      const ageMinutes = primitiveAge !== null && Number.isFinite(primitiveAge) ? primitiveAge : fallbackAge;
       if (ageMinutes !== undefined && Number.isFinite(ageMinutes) && ageMinutes > STALLED_ACTIVE_UNPUBLISHED_MINUTES) {
+        const progressEvidence: string[] = [];
+        if (progress?.lastProgressAt) progressEvidence.push(`lastProgressAt=${progress.lastProgressAt}`);
+        if (progress?.sources.length) progressEvidence.push(`progressSources=${progress.sources.map((s) => s.kind).join(',')}`);
         incidents.push(createIncidentDraft({
           taskId: task.issue,
           session: repo.session,
@@ -830,7 +1036,7 @@ function detectCleanupIncidentsForRepo(repo: RepoSnapshot, timestamp: string): I
             type: 'workflow_state',
             source: repo.workflowStatePath ?? join(repo.repoDir, '.wavemill', 'workflow-state.json'),
             timestamp,
-            redactedData: [`ageMinutes=${Math.round(ageMinutes)}`, ...classified.evidence].join(' '),
+            redactedData: [`ageMinutes=${Math.round(ageMinutes)}`, ...progressEvidence, ...classified.evidence].join(' '),
             key: `stalled-active-unpublished:${task.issue}:${branch ?? 'no-branch'}`,
           }],
           metadata: { disposition: classified.disposition, effectiveBaseBranch: config.baseBranch.value },
@@ -946,6 +1152,7 @@ function detectParkedArmIncidents(
   const incidents: IncidentRecord[] = [];
   const parsedNow = Date.parse(timestamp);
   const now = Number.isFinite(parsedNow) ? parsedNow : Date.now();
+  const progressLookup = makeProgressLookup(repo, now);
 
   for (const task of repo.tasks) {
     if (!task.issue) continue;
@@ -964,7 +1171,30 @@ function detectParkedArmIncidents(
         if (!marker || marker.ageMs / 60000 <= options.staleMinutes) continue;
 
         const uncommitted = stage.phase === 'coding' ? readCodingUncommittedOutput(featureDir) : null;
-        if (uncommitted) {
+        const launchRefusal = stage.phase === 'planning' ? readCodingLaunchRefusalSentinel(featureDir) : null;
+        if (launchRefusal) {
+          // HOK-3142: the monitor terminalized a refused coding launch; the
+          // recorded reason names the model and the certify command.
+          incidents.push(createIncidentDraft({
+            taskId: task.issue,
+            session: repo.session,
+            category: 'stale_orphaned_state',
+            severity: 'high',
+            confidence: 'high',
+            lifecycle: 'observed',
+            rootCauseClass: 'coding_launch_refused',
+            summary: `${task.issue} is parked at ${stage.markerName}: ${truncate(launchRefusal.reason, 240)}`,
+            operatorAction: launchRefusal.reason,
+            evidence: [{
+              type: 'workflow_state',
+              source: launchRefusal.path,
+              timestamp,
+              redactedData: `bucket=${launchRefusal.bucket} marker=${stage.markerName} markerAgeMinutes=${Math.round(marker.ageMs / 60000)}`,
+              key: `coding-launch-refused:${task.issue}:${launchRefusal.bucket}`,
+            }],
+            metadata: { markerPath, markerMtime: marker.mtimeIso, stage: stage.phase, bucket: launchRefusal.bucket },
+          }));
+        } else if (uncommitted) {
           // The mill parked this arm on purpose (dirty tree); the missing piece
           // is an operator commit, not a monitor repair.
           incidents.push(createIncidentDraft({
@@ -1016,22 +1246,24 @@ function detectParkedArmIncidents(
     }
 
     // Terminal-parked and died-with-unpushed-work (mirrors the residue finding gates).
-    const ageMinutes = taskAgeMinutes(task, repo, now);
+    const ageMinutes = taskAgeMinutes(task, repo, now, progressLookup);
     if (ageMinutes === undefined || !Number.isFinite(ageMinutes) || ageMinutes <= options.staleMinutes) continue;
     const effectiveConfig = resolveObserverTaskConfig(repo, task.issue, task);
     const isTerminal = taskHasTerminalResidueStatus(task);
-    const liveEvidence = taskHasLiveExecutionEvidence(repo, task, snapshot.panes, snapshot.processes);
+    const liveEvidence = taskHasLiveExecutionEvidence(repo, task, snapshot.panes, snapshot.processes, progressLookup);
     if (!isTerminal && liveEvidence) continue;
 
     const branch = taskBranch(task);
     const baseBranch = effectiveConfig.baseBranch.value;
     const paneResidue = taskPaneResidue(repo, task, snapshot.panes);
     const residue = branch ? inspectTaskBranchResidue(repo.repoDir, branch, baseBranch) : undefined;
-    const classified = classifyResidue(task, effectiveConfig, residue);
+    const worktreeDirty = inspectTaskWorktreeDirty(task.worktree);
+    const classified = classifyResidue(task, effectiveConfig, residue, worktreeDirty);
     if (classified.suppressResidueFinding && !isTerminal) continue;
     const worktreePresent = task.worktree ? existsSync(task.worktree) : false;
     const unpushedCommits = residue?.unpushedCommits;
     const confirmedWorkAtRisk = classified.disposition === 'unpublished-at-risk';
+    const worktreeAtRisk = worktreeDirty.state === 'dirty' || worktreeDirty.state === 'unreadable';
 
     const firesUnpushed = !liveEvidence && residue !== undefined && confirmedWorkAtRisk && !classified.suppressResidueFinding;
     const terminalResiduePresent = worktreePresent || paneResidue.present || (residue?.localBranchExists ?? false);
@@ -1066,18 +1298,25 @@ function detectParkedArmIncidents(
     }
 
     if (firesTerminalParked) {
+      // HOK-3088: never append the abort/reap action when the worktree is
+      // dirty or unreadable - that action deletes the very files at risk.
+      const operatorAction = worktreeAtRisk
+        ? classified.recommendation
+        : (unpushedCommits ?? 0) > 0
+          ? `${classified.recommendation} Then set ${task.issue} phase=aborted (or run \`wavemill mill abort ${task.issue}\`) and let the mill reap the worktree and window.`
+          : `Nothing on the branch is at risk; set ${task.issue} phase=aborted (or run \`wavemill mill abort ${task.issue}\`) and let the mill reap the worktree and window - never remove the worktree manually while the mill loop is live.`;
       incidents.push(createIncidentDraft({
         taskId: task.issue,
         session: repo.session,
         category: 'stale_orphaned_state',
-        severity: findingSeverityToIncidentSeverity(terminalParkedSeverity(ageMinutes, options.staleMinutes, residue)),
+        severity: findingSeverityToIncidentSeverity(terminalParkedSeverity(ageMinutes, options.staleMinutes, residue, worktreeDirty)),
         confidence: 'high',
         lifecycle: 'observed',
         rootCauseClass: 'terminal_arm_parked_with_residue',
-        summary: `${task.issue} terminal task is parked with allocated residue.`,
-        operatorAction: (unpushedCommits ?? 0) > 0
-          ? `${classified.recommendation} Then set ${task.issue} phase=aborted (or run \`wavemill mill abort ${task.issue}\`) and let the mill reap the worktree and window.`
-          : `Nothing on the branch is at risk; set ${task.issue} phase=aborted (or run \`wavemill mill abort ${task.issue}\`) and let the mill reap the worktree and window - never remove the worktree manually while the mill loop is live.`,
+        summary: worktreeAtRisk
+          ? `${task.issue} terminal task is parked with a dirty worktree; recover files before reaping.`
+          : `${task.issue} terminal task is parked with allocated residue.`,
+        operatorAction,
         evidence: [{
           type: 'workflow_state',
           source: repo.workflowStatePath ?? join(repo.repoDir, '.wavemill', 'workflow-state.json'),
@@ -1090,10 +1329,11 @@ function detectParkedArmIncidents(
             `tmuxWindow=${paneResidue.present ? 'present' : 'absent'}`,
             `localBranch=${residue?.localBranchExists ? 'present' : 'absent'}`,
             `unpushedCommits=${unpushedCommits ?? 'unknown'}`,
+            ...dirtyWorktreeEvidence(worktreeDirty),
           ].join(' '),
           key: `terminal-parked:${task.issue}:${branch ?? 'unknown'}`,
         }],
-        metadata: { branch, baseBranch, disposition: classified.disposition },
+        metadata: { branch, baseBranch, disposition: classified.disposition, worktreeDirty: worktreeDirty.state },
       }));
     }
   }
@@ -1439,9 +1679,28 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
   }
 
   for (const repo of snapshot.repos) {
+    // HOK-3101: memoized per-repo task-progress lookup shared by every
+    // detector below. `taskAgeMinutes` and `taskHasLiveExecutionEvidence`
+    // read from it so a full task-progress computation happens at most once
+    // per task per observation cycle.
+    const progressLookup = makeProgressLookup(repo, now);
     for (const issue of detectRepoConfigIntegrity(repo.repoDir)) {
       findings.push(configIntegrityFinding(issue, repo.session, repo.repoDir));
     }
+
+    // HOK-3096: state-based detectors. Each is independently best-effort —
+    // one throwing (e.g. a git/gh call blowing up in an unexpected way) must
+    // never drop findings from the other detectors or the rest of the pass.
+    try {
+      const sessionCapabilities = resolveSessionCapabilities(repo.repoDir);
+      findings.push(...detectStuckMergeCandidates(repo, now, sessionCapabilities));
+    } catch { /* best-effort: advisory detector, never blocks the pass */ }
+    try {
+      findings.push(...detectExhaustedRetries(repo, now, progressLookup));
+    } catch { /* best-effort: advisory detector, never blocks the pass */ }
+    try {
+      findings.push(...detectBranchBehindBase(repo, now));
+    } catch { /* best-effort: advisory detector, never blocks the pass */ }
 
     const rejectedEvalCount = countRejectedEvalRecords(repo.repoDir);
     if (rejectedEvalCount > 0) {
@@ -1548,11 +1807,19 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
     for (const task of repo.tasks) {
       if (taskWorkflowIsTerminal(task)) continue;
 
-      const ageMinutes = task.updated ? (now - Date.parse(task.updated)) / 60000 : stateAgeMinutes;
+      // HOK-3101 / HOK-3087: use the primitive's progressAgeMinutes, which
+      // folds hook/commit/status/worktree/transition evidence together, so a
+      // healthy task with recent activity is not falsely flagged as stale.
+      // `taskAgeMinutes` (transition-only) is the safe fallback when the
+      // primitive has no evidence yet.
+      const progress = progressLookup(task);
+      const primitiveAge = progress?.progressAgeMinutes ?? null;
+      const fallbackAge = task.updated ? (now - Date.parse(task.updated)) / 60000 : stateAgeMinutes;
+      const ageMinutes = primitiveAge !== null && Number.isFinite(primitiveAge) ? primitiveAge : fallbackAge;
       const watchedPhase = task.phase === 'planning' || task.phase === 'coding' || task.phase === 'review' || task.phase === 'ready';
       if (watchedPhase && ageMinutes !== undefined && Number.isFinite(ageMinutes) && ageMinutes > options.staleMinutes) {
         const expectedWindow = task.slug ? `${task.issue}-${task.slug}` : task.issue;
-        const liveEvidence = taskHasLiveExecutionEvidence(repo, task, snapshot.panes, snapshot.processes);
+        const liveEvidence = taskHasLiveExecutionEvidence(repo, task, snapshot.panes, snapshot.processes, progressLookup);
         if (task.worktree && !existsSync(task.worktree)) {
           findings.push({
             id: `stale-active-task-missing-worktree-${repo.session}-${task.issue}`,
@@ -1568,11 +1835,17 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
               `phase=${task.phase ?? 'unknown'}`,
               `updated=${task.updated ?? repo.stateMtime ?? 'unknown'}`,
               `ageMinutes=${Math.round(ageMinutes)}`,
+              `lastProgressAt=${progress?.lastProgressAt ?? 'never'}`,
               `worktree=${task.worktree}`,
             ],
             recommendation: 'Treat this as orphaned active state: terminalize or remove the workflow-state entry after confirming no cleanup resources remain.',
           });
         } else if (!liveEvidence) {
+          // HOK-3095: the agent's own settled hook (idle at its prompt, or
+          // waiting on a human) outranks a surviving pane/process, so name it
+          // rather than claiming the process is gone.
+          const settledState = progress?.agentIdle ? 'idle' : progress?.agentRecord?.state ?? null;
+          const settled = settledState !== null && SETTLED_AGENT_STATES.has(settledState);
           findings.push({
             id: `stale-active-task-no-live-process-${repo.session}-${task.issue}`,
             severity: 'high',
@@ -1581,18 +1854,30 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
             session: repo.session,
             repoDir: repo.repoDir,
             issue: task.issue,
-            title: `${task.issue} is stale in ${task.phase} with no live pane or process evidence`,
+            title: settled
+              ? `${task.issue} is stale in ${task.phase}: agent is ${settledState} with no progress`
+              : `${task.issue} is stale in ${task.phase} with no live pane or process evidence`,
             evidence: [
               `status=${task.status ?? 'unknown'}`,
               `phase=${task.phase ?? 'unknown'}`,
               `updated=${task.updated ?? repo.stateMtime ?? 'unknown'}`,
               `ageMinutes=${Math.round(ageMinutes)}`,
+              `lastProgressAt=${progress?.lastProgressAt ?? 'never'}`,
               `expectedWindow=${expectedWindow}`,
               `worktree=${task.worktree ?? 'unknown'}`,
+              ...(settled ? [`agentRecordState=${settledState}`] : []),
             ],
-            recommendation: 'Inspect the task state and quarantine/cleanup path; if the process is gone, terminalize and clean the task instead of leaving it active.',
+            recommendation: settled
+              ? 'The agent settled without advancing the task. Inspect its pane and hook: resolve the prompt it is waiting on or send a narrow recovery instruction; if the task is finished or abandoned, terminalize and clean it instead of leaving it active.'
+              : 'Inspect the task state and quarantine/cleanup path; if the process is gone, terminalize and clean the task instead of leaving it active.',
           });
         } else {
+          const progressEvidence: string[] = [];
+          if (progress?.lastProgressAt) progressEvidence.push(`lastProgressAt=${progress.lastProgressAt}`);
+          if (progress?.sources.length) progressEvidence.push(`sources=${progress.sources.map((s) => s.kind).join(',')}`);
+          if (progress?.agentState) progressEvidence.push(`agentState=${progress.agentState}`);
+          if (progress?.agentIdle) progressEvidence.push('agentIdle=true');
+          if (progress?.blockingPrompt) progressEvidence.push(`blockingPrompt=${progress.blockingPrompt.id}`);
           findings.push({
             id: `stale-active-task-live-process-${repo.session}-${task.issue}`,
             severity: 'high',
@@ -1609,8 +1894,52 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
               `ageMinutes=${Math.round(ageMinutes)}`,
               `expectedWindow=${expectedWindow}`,
               `worktree=${task.worktree ?? 'unknown'}`,
+              ...progressEvidence,
             ],
             recommendation: 'Inspect the task pane and hook state. If the agent is parked at a prompt or waiting after reporting completion, send a narrow recovery instruction; stop a child process only when it is conclusively wedged.',
+          });
+        }
+      }
+
+      // HOK-3101 / HOK-3069: a coding task can go silent for 30m+ with no
+      // hook, no commits, no worktree changes and only the launcher's
+      // `working` status write (which we ignore during the 5s grace after
+      // `startedAt`). The pane is still alive (Codex sits at an interactive
+      // menu), but nothing is progressing. Pane/process existence never
+      // rescues this — it is the whole point of the primitive.
+      if (task.phase === 'coding' && !taskWorkflowIsTerminal(task)) {
+        const progress = progressLookup(task);
+        if (progress?.stalled) {
+          const sourceList = progress.sources.length > 0
+            ? progress.sources.map((s) => s.kind).join(',')
+            : 'none';
+          const noProgressDetail = progress.sources.length === 0
+            ? ' — no hook, commit, worktree or post-launch status progress since coding launched'
+            : '';
+          const blockingDetail = progress.blockingPrompt
+            ? ` blockingPrompt=${progress.blockingPrompt.id}`
+            : '';
+          findings.push({
+            id: `coding-task-stalled-${repo.session}-${task.issue}`,
+            severity: 'high',
+            category: 'stuck',
+            confidence: 'medium',
+            session: repo.session,
+            repoDir: repo.repoDir,
+            issue: task.issue,
+            title: `${task.issue} coding has not progressed for ${progress.progressAgeMinutes ?? '?'} minutes${noProgressDetail}`,
+            evidence: [
+              `phase=${task.phase ?? 'unknown'}`,
+              `progressAgeMinutes=${progress.progressAgeMinutes ?? 'unknown'}`,
+              `lastProgressAt=${progress.lastProgressAt ?? 'never'}`,
+              `sources=${sourceList}`,
+              `agentState=${progress.agentState ?? 'unknown'}`,
+              `worktree=${task.worktree ?? 'unknown'}`,
+              ...(progress.blockingPrompt ? [`blockingPrompt=${progress.blockingPrompt.id}`] : []),
+            ],
+            recommendation: progress.blockingPrompt
+              ? progress.blockingPrompt.detail
+              : `Inspect the ${task.issue} task pane. If the agent is hung or paused at a prompt, resolve or relaunch it; pane/process existence alone is not evidence the agent is making progress.${blockingDetail}`,
           });
         }
       }
@@ -1653,7 +1982,7 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
       const cleanupFinding = cleanupEpisodeFinding(repo, task);
       if (cleanupFinding) findings.push(cleanupFinding);
 
-      const ageMinutes = taskAgeMinutes(task, repo, now);
+      const ageMinutes = taskAgeMinutes(task, repo, now, progressLookup);
       // The stale age gate doubles as protection against phase-handoff false
       // positives: a healthy handoff briefly has no live agent but keeps
       // task.updated fresh.
@@ -1661,7 +1990,7 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
 
       const normalized = normalizedLifecycle(task);
       const isTerminal = taskHasTerminalResidueStatus(task);
-      const liveEvidence = taskHasLiveExecutionEvidence(repo, task, snapshot.panes, snapshot.processes);
+      const liveEvidence = taskHasLiveExecutionEvidence(repo, task, snapshot.panes, snapshot.processes, progressLookup);
       // Active tasks with a live agent are healthy; terminal tasks are inspected
       // even when their window still holds a live (abandoned) agent session.
       if (!isTerminal && liveEvidence) continue;
@@ -1670,11 +1999,13 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
       const baseBranch = effectiveConfig.baseBranch.value;
       const paneResidue = taskPaneResidue(repo, task, snapshot.panes);
       const residue = branch ? inspectTaskBranchResidue(repo.repoDir, branch, baseBranch) : undefined;
-      const classified = classifyResidue(task, effectiveConfig, residue);
+      const worktreeDirty = inspectTaskWorktreeDirty(task.worktree);
+      const classified = classifyResidue(task, effectiveConfig, residue, worktreeDirty);
       if (classified.suppressResidueFinding && !isTerminal) continue;
       const worktreePresent = task.worktree ? existsSync(task.worktree) : false;
       const unpushedCommits = residue?.unpushedCommits;
       const confirmedWorkAtRisk = classified.disposition === 'unpublished-at-risk';
+      const worktreeAtRisk = worktreeDirty.state === 'dirty' || worktreeDirty.state === 'unreadable';
 
       const firesUnpushed = !liveEvidence && residue !== undefined && confirmedWorkAtRisk && !classified.suppressResidueFinding;
       const terminalResiduePresent = worktreePresent || paneResidue.present || (residue?.localBranchExists ?? false);
@@ -1720,17 +2051,32 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
         const ageLabel = formatParkedAge(ageMinutes);
         const workLoss = (unpushedCommits ?? 0) > 0;
         const reapAction = `set ${task.issue} phase=aborted (or run \`wavemill mill abort ${task.issue}\`) and let the mill reap the worktree and window - never remove the worktree manually while the mill loop is live`;
+        // HOK-3088: a dirty (or unreadable) worktree escalates the finding
+        // regardless of what the branch says. The reap action is never
+        // appended in that case - it would delete the very files at risk -
+        // and the title/recommendation tell the operator to preserve first.
+        const dirtyPathCount = worktreeDirty.state === 'dirty' ? worktreeDirty.lines.length : 0;
+        const title = worktreeAtRisk
+          ? worktreeDirty.state === 'unreadable'
+            ? `${task.issue} terminal task parked for ${ageLabel} with unreadable worktree status`
+            : `${task.issue} terminal task parked for ${ageLabel} with ${dirtyPathCount} dirty file${dirtyPathCount === 1 ? '' : 's'} at risk`
+          : workLoss
+            ? `${task.issue} terminal task parked for ${ageLabel} with ${unpushedCommits} unpushed commit${unpushedCommits === 1 ? '' : 's'} at risk`
+            : `${task.issue} terminal task parked for ${ageLabel} with allocated residue`;
+        const recommendation = worktreeAtRisk
+          ? classified.recommendation
+          : workLoss
+            ? `${classified.recommendation} Then ${reapAction}.`
+            : `Nothing on the branch is at risk; ${reapAction}.`;
         findings.push({
           id: `terminal-task-parked-${repo.session}-${task.issue}`,
-          severity: terminalParkedSeverity(ageMinutes, options.staleMinutes, residue),
+          severity: terminalParkedSeverity(ageMinutes, options.staleMinutes, residue, worktreeDirty),
           category: 'operational',
           confidence: 'high',
           session: repo.session,
           repoDir: repo.repoDir,
           issue: task.issue,
-          title: workLoss
-            ? `${task.issue} terminal task parked for ${ageLabel} with ${unpushedCommits} unpushed commit${unpushedCommits === 1 ? '' : 's'} at risk`
-            : `${task.issue} terminal task parked for ${ageLabel} with allocated residue`,
+          title,
           evidence: [
             ...stateEvidence,
             ...classified.evidence,
@@ -1745,13 +2091,11 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
             `aheadOfBase=${residue?.aheadOfBase ?? 'unknown'}`,
             `remoteBranch=${residue?.remoteBranch ?? 'unknown'}`,
             `unpushedCommits=${unpushedCommits ?? 'unknown'}`,
-            ...(workLoss ? ['potentialWorkLoss=true'] : []),
+            ...(worktreeAtRisk ? ['potentialWorkLoss=true'] : workLoss ? ['potentialWorkLoss=true'] : []),
             ...(residue?.commitSubjects.map((subject) => `commit=${subject}`) ?? []),
             prEvidence,
           ],
-          recommendation: workLoss
-            ? `${classified.recommendation} Then ${reapAction}.`
-            : `Nothing on the branch is at risk; ${reapAction}.`,
+          recommendation,
         });
       }
     }
@@ -1824,6 +2168,21 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
         recommendation: 'The failed-ready re-check has no retry ceiling or backoff, so a deterministic gate failure loops forever and the PR never reaches the merge lane. Resolve the gate named in failureReason, or terminalize the task. An identical reason repeating every cycle is a Wavemill defect, not a transient failure.',
         occurrenceCount: group.length,
       });
+    }
+
+    const launchRefusalLines = new Set<string>();
+    const launchRefusalGroups = new Map<string, LaunchRefusalLogEntry[]>();
+    for (const line of logLines) {
+      const entry = parseLaunchRefusalLine(line);
+      if (!entry) continue;
+      const key = `${entry.issue}\0${entry.model}`;
+      const group = launchRefusalGroups.get(key) ?? [];
+      group.push(entry);
+      launchRefusalGroups.set(key, group);
+    }
+    for (const group of launchRefusalGroups.values()) {
+      for (const entry of group) launchRefusalLines.add(entry.line);
+      findings.push(launchRefusalFinding(repo, group));
     }
 
     const modelDowngradeGroups = new Map<string, ModelDowngradeLogEntry[]>();
@@ -1919,6 +2278,7 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
       const parsed = parseMillLogLine(line);
       if (!parsed) continue;
       if (prCreateFailedLines.has(line)) continue;
+      if (launchRefusalLines.has(line)) continue;
       if (isAgentBoxOutputMessage(parsed.message)) continue;
       if (parsed.level !== 'error' && parsed.level !== 'warn') continue;
       if (parsed.level === 'warn') {
@@ -1982,8 +2342,16 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
     // Analyze queue-health degradation
     if (queueHealthDegraded) {
       const reason = repo.queueHealth.degradationReason || 'unknown';
-      const episodeStartedAt = repo.queueHealth.episodeStartedAt || 'unknown';
-      const failureCount = repo.queueHealth.failureCount || 1;
+      // HOK-3130: inference_unavailable is recorded on a successful planner
+      // run (no planner episode or failure count); the dependency queue is
+      // still in use, just with explicit Linear relations only.
+      const inferenceUnavailable = reason === 'inference_unavailable';
+      const episodeStartedAt = inferenceUnavailable
+        ? `inference:${repo.queueHealth.inference?.lastSuccessAt || 'never'}`
+        : repo.queueHealth.episodeStartedAt || 'unknown';
+      const failureCount = inferenceUnavailable
+        ? repo.queueHealth.inference?.consecutiveFailures || 1
+        : repo.queueHealth.failureCount || 1;
       const severity = failureCount >= 5 ? 'high' : failureCount >= 3 ? 'medium' : 'low';
 
       findings.push({
@@ -2007,8 +2375,15 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
           ...(repo.queueHealth.diagnostics?.stderrExcerpt ? [
             `stderr=${repo.queueHealth.diagnostics.stderrExcerpt}`,
           ] : []),
+          ...(inferenceUnavailable ? [
+            `inferenceStatus=${repo.queueHealth.inferenceStatus || 'unknown'}`,
+            `inferredEdgeCount=${repo.queueHealth.inferredEdgeCount ?? 'unknown'}`,
+            ...(repo.queueHealth.inference?.error ? [`inferenceError=${repo.queueHealth.inference.error}`] : []),
+          ] : []),
         ],
-        recommendation: `Dependency-aware queue planning is unavailable. Flat fallback is active. Inspect the queue planner lifecycle and dependency graph. If this persists, file a diagnostic ticket with the queue-health snapshot.`,
+        recommendation: inferenceUnavailable
+          ? `Queue dependency inference is unavailable; the wave is planned from explicit Linear relations only, so inferred dependencies are missing. Check the [classifier] lines in the mill log and the Claude CLI login.`
+          : `Dependency-aware queue planning is unavailable. Flat fallback is active. Inspect the queue planner lifecycle and dependency graph. If this persists, file a diagnostic ticket with the queue-health snapshot.`,
       });
     }
 
@@ -2111,14 +2486,129 @@ function parseReadyWatchdogLine(line: string): ReadyWatchdogLogEntry | null {
   };
 }
 
+const READY_RECHECK_REFUSAL_RE = new RegExp(`\\b(${ISSUE_ID_RE.source.slice(1, -1)}(?:_[A-Za-z0-9]+)?):\\s+refusing ready phase for PR #(\\d+)`, 'i');
+
 function parseReadyRecheckLine(line: string): ReadyRecheckLogEntry | null {
   const match = line.match(/(\S+)\s+\u2192\s+Re-running failed ready checks for PR #(\d+)/)
-    ?? line.match(/\b([A-Z][A-Z0-9]*-\d+(?:_[A-Za-z0-9]+)?):\s+refusing ready phase for PR #(\d+)/i);
+    ?? line.match(READY_RECHECK_REFUSAL_RE);
   if (!match) return null;
   return {
     line,
     issue: match[1],
     pr: match[2],
+  };
+}
+
+const CODING_LAUNCH_REFUSAL_BUCKETS = ['coding-launch-refused', 'coding-launch-resolver'] as const;
+
+/** First terminalized coding-launch refusal sentinel in a feature dir (HOK-3142). */
+function readCodingLaunchRefusalSentinel(featureDir: string): { bucket: string; path: string; reason: string } | null {
+  for (const bucket of CODING_LAUNCH_REFUSAL_BUCKETS) {
+    const path = join(featureDir, `.retry-${bucket}-exhausted`);
+    if (!existsSync(path)) continue;
+    try {
+      const reason = readFileSync(path, 'utf-8').trim();
+      return { bucket, path, reason: reason || `coding launch refused (${bucket})` };
+    } catch {
+      return { bucket, path, reason: `coding launch refused (${bucket})` };
+    }
+  }
+  return null;
+}
+
+const LAUNCH_REFUSAL_TAG = '[launch-refusal]';
+const LEGACY_LAUNCH_REFUSAL_RE = /(\S+)\s+\u2192\s+Coding launch blocked:\s+\[agent-resolution\]/;
+
+function launchRefusalField(message: string, key: string): string | undefined {
+  if (key === 'certify') {
+    const quoted = message.match(/\bcertify="([^"]*)"/);
+    const value = quoted?.[1]?.trim();
+    return value && value !== 'unavailable' ? value : undefined;
+  }
+  const match = message.match(new RegExp(`(?:^|\\s)${key}=(\\S+)`));
+  return match?.[1];
+}
+
+/**
+ * Parse a coding launch refusal from the mill log: the structured
+ * `[launch-refusal] issue=… model=… reason=… certification=… action=… certify="…"`
+ * line (HOK-3142, logged at warn), or the legacy
+ * `<issue> → Coding launch blocked: [agent-resolution] model=… certify="…"`
+ * line, which pre-HOK-3142 monitors wrote at `[info]` on every retry tick.
+ */
+export function parseLaunchRefusalLine(line: string): LaunchRefusalLogEntry | null {
+  const parsed = parseMillLogLine(line);
+  const message = parsed?.message ?? line;
+  let issue: string | undefined;
+  let action: string | undefined;
+  if (message.includes(LAUNCH_REFUSAL_TAG)) {
+    issue = launchRefusalField(message, 'issue');
+    action = launchRefusalField(message, 'action');
+  } else {
+    const legacy = message.match(LEGACY_LAUNCH_REFUSAL_RE);
+    if (!legacy) return null;
+    issue = legacy[1];
+    action = 'retry-loop';
+  }
+  const model = launchRefusalField(message, 'model');
+  if (!issue || !model) return null;
+  const substitute = launchRefusalField(message, 'substitute');
+  const certify = launchRefusalField(message, 'certify');
+  return {
+    line,
+    issue,
+    model,
+    provider: launchRefusalField(message, 'provider') ?? 'unknown',
+    reason: launchRefusalField(message, 'reason') ?? 'unknown',
+    certification: launchRefusalField(message, 'certification') ?? 'unknown',
+    action: action ?? 'unknown',
+    ...(substitute ? { substitute } : {}),
+    ...(certify ? { certify } : {}),
+  };
+}
+
+function launchRefusalFinding(repo: RepoSnapshot, group: LaunchRefusalLogEntry[]): Finding {
+  const latest = group[group.length - 1];
+  const certify = [...group].reverse().find((entry) => entry.certify)?.certify;
+  const terminal = group.some((entry) => entry.action === 'needs-user');
+  const looping = group.some((entry) => entry.action === 'retry-loop' || entry.action === 'retry');
+  const allRerouted = group.every((entry) => entry.action === 'rerouted');
+  const severity: Finding['severity'] = terminal
+    ? 'urgent'
+    : allRerouted
+      ? 'low'
+      : looping && group.length >= MODEL_DOWNGRADE_THRESHOLD ? 'urgent' : 'high';
+  const cause = `${latest.reason}${latest.certification !== 'unknown' ? `:${latest.certification}` : ''}`;
+  const title = allRerouted
+    ? `${latest.issue} coder ${latest.model} was refused at launch (${cause}) and re-routed to ${latest.substitute ?? 'a substitute'}`
+    : `${latest.issue} coding launch refused: ${latest.model} is not launchable for coding (${cause})`;
+  const recommendation = allRerouted
+    ? `Informational: the router guard or launch-refusal reroute substituted the coder. Certify ${latest.model} for coding if it should stay routable${certify ? `: ${certify}` : '.'}`
+    : certify
+      ? `Run: ${certify}. Then clear the refusal sentinel (rm <feature_dir>/.retry-coding-launch-refused-*) so the task relaunches coding. A refusal for this reason never clears on retry.`
+      : `The launch gate refuses ${latest.model} for coding (${cause}) and no certify command was recorded. Re-route the coder or fix the model's registry entry, then clear the refusal sentinel.`;
+  return {
+    id: `launch-refused-${repo.session}-${latest.issue}-${latest.model.replace(/[^A-Za-z0-9._-]/g, '_')}`,
+    severity,
+    category: 'stuck',
+    confidence: 'high',
+    session: repo.session,
+    repoDir: repo.repoDir,
+    issue: latest.issue,
+    title,
+    evidence: [
+      `occurrences=${group.length}`,
+      `model=${latest.model}`,
+      `provider=${latest.provider}`,
+      `reason=${latest.reason}`,
+      `certification=${latest.certification}`,
+      `action=${latest.action}`,
+      ...(latest.substitute ? [`substitute=${latest.substitute}`] : []),
+      `certify=${certify ?? 'unavailable'}`,
+      ...group.slice(-4).map((entry) => entry.line),
+    ],
+    recommendation,
+    occurrenceCount: group.length,
   };
 }
 
@@ -2245,13 +2735,60 @@ function taskPaneResidue(repo: RepoSnapshot, task: TaskState, panes: Pane[]): Pa
   };
 }
 
-function taskHasLiveExecutionEvidence(repo: RepoSnapshot, task: TaskState, panes: Pane[], processes: ProcessRow[]): boolean {
-  if (taskPaneResidue(repo, task, panes).live) {
-    return true;
-  }
+/**
+ * HOK-3095: an agent record in one of these states is the agent's own
+ * settled declaration that it is not working — parked at its prompt
+ * (`idle`) or waiting on a human (`waiting`, `approval-needed`, `blocked`,
+ * `policy-denied`). Its live pane and its own launch process are then an
+ * idle REPL, not execution. The primitive suppresses `stalled` for the
+ * attention states; the observer instead treats them as "not live" so a
+ * prompt parked past `staleMinutes` still surfaces. Kept here because it is
+ * observer policy, not a primitive invariant.
+ */
+const SETTLED_AGENT_STATES: ReadonlySet<HookState> = new Set<HookState>([
+  'idle',
+  'waiting',
+  'approval-needed',
+  'blocked',
+  'policy-denied',
+]);
+
+/**
+ * True when there is evidence that the task is executing right now.
+ *
+ * HOK-3095: progress, not process existence, decides. Callers have already
+ * applied the stale age gate (the primitive's `progressAgeMinutes`, which
+ * folds hook/commit/status-file/transition evidence together); this answers
+ * which stale finding fires and whether residue detectors treat the arm as
+ * still running.
+ *
+ * 1. A fresh (TTL-bound) agent-written `working` hook is live.
+ * 2. The agent's own settled record (idle / attention state, untimed so a
+ *    `waiting` hook from hours ago still counts) is NOT live, whatever pane
+ *    or process still carries the task's name.
+ * 3. With no agent signal at all (fresh launch, hookless agent), fall back to
+ *    pane residue or a matching process — excluding the monitor's own
+ *    polling children (`tools/*.ts`, monitor subprocesses), whose argv names
+ *    the worktree but which are not the task.
+ */
+function taskHasLiveExecutionEvidence(
+  repo: RepoSnapshot,
+  task: TaskState,
+  panes: Pane[],
+  processes: ProcessRow[],
+  progressLookup?: (task: TaskState) => TaskProgress | undefined,
+): boolean {
+  const progress = progressLookup ? progressLookup(task) : undefined;
+  if (progress?.agentState === 'working') return true;
+  if (progress?.agentIdle) return false;
+  const agentRecordState = progress?.agentRecord?.state;
+  if (agentRecordState && SETTLED_AGENT_STATES.has(agentRecordState)) return false;
+
+  if (taskPaneResidue(repo, task, panes).live) return true;
 
   return processes.some((row) => {
     const command = row.command;
+    if (isWavemillControllerProcess(command)) return false;
     return command.includes(task.issue)
       || (task.slug ? command.includes(task.slug) : false)
       || (task.worktree ? command.includes(task.worktree) : false);
@@ -2272,7 +2809,55 @@ function taskBranch(task: TaskState): string | undefined {
   return task.slug ? `task/${task.slug}` : undefined;
 }
 
-function taskAgeMinutes(task: TaskState, repo: RepoSnapshot, now: number): number | undefined {
+/**
+ * HOK-3101: memoized per-cycle task-progress cache. `task.updated` only
+ * changes on transitions, so the old `taskAgeMinutes` reported healthy tasks
+ * as stale (HOK-3087). The primitive derives progress from hook, commit,
+ * worktree, status-file and transition evidence, and it treats pane/process
+ * existence as separate from progress.
+ *
+ * Multiple detectors call this per task per cycle; each cycle uses a fresh
+ * WeakMap keyed on the task record so gather IO (git log, git status, stat)
+ * happens at most once per task.
+ */
+function makeProgressLookup(repo: RepoSnapshot, now: number): (task: TaskState) => TaskProgress | undefined {
+  const cache = new WeakMap<TaskState, TaskProgress>();
+  const nowDate = new Date(now);
+  return (task) => {
+    const cached = cache.get(task);
+    if (cached) return cached;
+    if (!task.issue) return undefined;
+    try {
+      const result = getTaskProgress({
+        issue: task.issue,
+        session: repo.session,
+        task: task as never,
+        worktree: task.worktree,
+        phase: task.phase,
+        now: nowDate,
+      });
+      cache.set(task, result);
+      return result;
+    } catch {
+      return undefined;
+    }
+  };
+}
+
+function taskAgeMinutes(
+  task: TaskState,
+  repo: RepoSnapshot,
+  now: number,
+  _progressLookup?: (task: TaskState) => TaskProgress | undefined,
+): number | undefined {
+  // HOK-3101 note: `taskAgeMinutes` intentionally keeps the semantics that
+  // existing residue and stale-active detectors pin — it is the age of the
+  // task record (`task.updated` or the state-file mtime), not of the newest
+  // git evidence. The primitive's `lastProgressAt` is used SEPARATELY by
+  // the coding-stall detector and enriches other findings with source
+  // evidence; it must not shorten the age gate here or terminal-parked and
+  // died-with-unpushed-work findings never fire on fixtures whose git tree
+  // was created moments before the test runs.
   const updatedMs = task.updated ? Date.parse(task.updated) : NaN;
   if (Number.isFinite(updatedMs)) return (now - updatedMs) / 60000;
   const stateMs = repo.stateMtime ? Date.parse(repo.stateMtime) : NaN;
@@ -2386,10 +2971,427 @@ function taskPrEvidence(repoDir: string, task: TaskState): string {
   }
 }
 
-function terminalParkedSeverity(ageMinutes: number, staleMinutes: number, residue: BranchResidue | undefined): Severity {
+// ---------------------------------------------------------------------------
+// HOK-3096: state-based detectors — stuck merge candidates, abandoned
+// exhausted retries, and branches that have drifted far behind their base.
+// Every input here is git/filesystem/config state, never a log line, so
+// these catch stalls the log-based detectors above cannot see.
+// ---------------------------------------------------------------------------
+
+function gitRevParse(repoDir: string, ref: string): string | undefined {
+  const result = run('git', ['-C', repoDir, 'rev-parse', ref], 8_000);
+  return result.ok ? result.stdout.trim() : undefined;
+}
+
+/**
+ * Resolve a task's ready-stage state directory, mirroring `ready_state_dir`
+ * in `wavemill-monitor.sh`: prefer an existing `features/<slug>` or
+ * `bugs/<slug>` directory under the task's worktree, then under the repo
+ * checkout (tests often run with `worktree === repoDir`), falling back to
+ * `features/<slug>` under the worktree when neither exists yet.
+ */
+function resolveTaskStateDir(repoDir: string, task: TaskState): string | undefined {
+  if (!task.slug) return undefined;
+  const bases = [task.worktree, repoDir].filter((base): base is string => Boolean(base));
+  for (const base of bases) {
+    for (const kind of ['features', 'bugs'] as const) {
+      const candidate = join(base, kind, task.slug);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  const fallbackBase = task.worktree ?? repoDir;
+  return join(fallbackBase, 'features', task.slug);
+}
+
+/** Best-effort sync read of `.ready-result.json`'s artifacts. Never throws. */
+function readReadyArtifacts(stateDir: string): { artifacts: ReadyArtifacts; mtimeMs: number } | undefined {
+  const resultPath = getResultFilePath(stateDir, 'ready');
+  try {
+    const stat = statSync(resultPath);
+    const parsed = JSON.parse(readFileSync(resultPath, 'utf8')) as Partial<StageResult> | null;
+    if (!parsed || typeof parsed !== 'object' || parsed.stage !== 'ready') return undefined;
+    const artifacts = parsed.artifacts as ReadyArtifacts | undefined;
+    if (!artifacts || typeof artifacts !== 'object' || artifacts.type !== 'ready') return undefined;
+    return { artifacts, mtimeMs: stat.mtimeMs };
+  } catch {
+    return undefined;
+  }
+}
+
+interface CandidateChurnEntry {
+  at: string;
+}
+
+interface CandidateChurnRecord {
+  headSha: string;
+  entries: CandidateChurnEntry[];
+}
+
+type CandidateChurnJournal = Record<string, CandidateChurnRecord>;
+
+function candidateChurnJournalPath(repoDir: string): string {
+  return join(repoDir, '.wavemill', 'observer-candidate-churn.json');
+}
+
+/**
+ * Record a merge-candidate promotion event and return the number of distinct
+ * promotions recorded for `issue` on `headSha` within the churn window.
+ *
+ * `demote_merge_candidate` nulls out `candidatePromotedAt` in
+ * `.ready-result.json`, so a fresh non-null value appearing while
+ * `queueState` is `merge-candidate` means the lane promoted this issue again
+ * — i.e. it was demoted and re-promoted since the last distinct value was
+ * seen. Counting distinct `candidatePromotedAt` values on the same head is
+ * therefore a direct measure of promote/demote churn (REQ-F2).
+ *
+ * Entries older than the churn window, and the whole record when the head
+ * SHA changed (new work superseded the churn), are pruned. The journal is
+ * observer-private bookkeeping: a write failure is swallowed and simply
+ * costs this cycle's churn count, never the rest of the pass (D4).
+ */
+function recordCandidateChurnPromotion(
+  repoDir: string,
+  issue: string,
+  headSha: string,
+  promotedAt: string,
+  now: number,
+): number {
+  try {
+    const path = candidateChurnJournalPath(repoDir);
+    const cutoffMs = now - CANDIDATE_CHURN_WINDOW_MINUTES * 60_000;
+    const next = mutateJsonStateSync<CandidateChurnJournal>(
+      path,
+      (current) => {
+        const journal: CandidateChurnJournal = current && typeof current === 'object' ? current : {};
+        const existing = journal[issue];
+        const record: CandidateChurnRecord = existing && existing.headSha === headSha
+          ? { headSha, entries: [...existing.entries] }
+          : { headSha, entries: [] };
+        if (!record.entries.some((entry) => entry.at === promotedAt)) {
+          record.entries.push({ at: promotedAt });
+        }
+        record.entries = record.entries.filter((entry) => {
+          const ms = Date.parse(entry.at);
+          return Number.isFinite(ms) && ms >= cutoffMs;
+        });
+        return { ...journal, [issue]: record };
+      },
+      { createIfMissing: true, initial: {} },
+    );
+    return next[issue]?.entries.length ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Detector 1 (REQ-F1, REQ-F2): a task sitting in `queueState:
+ * 'merge-candidate'` with no active merge consumer, or one that keeps
+ * churning promote/demote on the same head without ever landing.
+ */
+export function detectStuckMergeCandidates(
+  repo: RepoSnapshot,
+  now: number,
+  caps: SessionCapabilities,
+): Finding[] {
+  const findings: Finding[] = [];
+  for (const task of repo.tasks) {
+    if (taskWorkflowIsTerminal(task)) continue;
+    const stateDir = resolveTaskStateDir(repo.repoDir, task);
+    if (!stateDir) continue;
+    const ready = readReadyArtifacts(stateDir);
+    if (!ready || ready.artifacts.queueState !== 'merge-candidate') continue;
+    const artifacts = ready.artifacts;
+    const headSha = artifacts.readyHeadSha ?? artifacts.launchHead ?? 'unknown';
+
+    if (artifacts.candidatePromotedAt) {
+      const promotions = recordCandidateChurnPromotion(repo.repoDir, task.issue, headSha, artifacts.candidatePromotedAt, now);
+      if (promotions >= CANDIDATE_CHURN_THRESHOLD) {
+        findings.push({
+          id: `merge-candidate-churn-${repo.session}-${task.issue}`,
+          severity: 'high',
+          category: 'stuck',
+          confidence: 'high',
+          session: repo.session,
+          repoDir: repo.repoDir,
+          issue: task.issue,
+          title: `${task.issue} merge candidate has been promoted ${promotions} times on the same head in ${CANDIDATE_CHURN_WINDOW_MINUTES} minutes`,
+          evidence: [
+            `promotions=${promotions}`,
+            `windowMinutes=${CANDIDATE_CHURN_WINDOW_MINUTES}`,
+            `headSha=${headSha}`,
+            `candidatePromotedAt=${artifacts.candidatePromotedAt}`,
+            `lastSkipReason=${artifacts.candidateSkipReason ?? 'unknown'}`,
+            taskPrEvidence(repo.repoDir, task),
+          ],
+          recommendation: 'The merge lane keeps promoting and demoting this candidate on the same head without it ever landing. Inspect why it keeps getting demoted (flaky CI, base churn, a stuck health check) instead of letting the lane spin indefinitely.',
+        });
+      }
+    }
+
+    const candidateSinceIso = artifacts.candidateLastProgressAt ?? artifacts.candidatePromotedAt;
+    const candidateSinceMs = candidateSinceIso ? Date.parse(candidateSinceIso) : NaN;
+    const ageMinutes = Number.isFinite(candidateSinceMs)
+      ? (now - candidateSinceMs) / 60_000
+      : (now - ready.mtimeMs) / 60_000;
+    // D2: mergeExecutor/mergeQueue gate the finding; health is advisory
+    // evidence only, never gating (HOK-3102).
+    const hasConsumer = caps.mergeExecutor === 'tend' && caps.mergeQueue;
+    if (ageMinutes > CANDIDATE_STUCK_MINUTES && !hasConsumer) {
+      findings.push({
+        id: `stuck-merge-candidate-${repo.session}-${task.issue}`,
+        severity: 'high',
+        category: 'stuck',
+        confidence: 'high',
+        session: repo.session,
+        repoDir: repo.repoDir,
+        issue: task.issue,
+        title: `${task.issue} is stuck in merge-candidate with no active merge consumer`,
+        evidence: [
+          `queueState=${artifacts.queueState}`,
+          `candidatePromotedAt=${artifacts.candidatePromotedAt ?? 'unknown'}`,
+          `ageMinutes=${Math.round(ageMinutes)}`,
+          `mergeExecutor=${caps.mergeExecutor} (${caps.reasons.mergeExecutor})`,
+          `mergeQueue=${caps.mergeQueue}`,
+          `tendHealth=${caps.health.tend ?? 'unknown'} (advisory)`,
+          `headSha=${headSha}`,
+          `targetBaseSha=${artifacts.targetBaseSha ?? 'unknown'}`,
+          taskPrEvidence(repo.repoDir, task),
+        ],
+        recommendation: task.pr
+          ? `Task is stuck in merge-candidate with no active merge consumer. Consider enabling integration (integration.enabled + useMillSession) or merging PR #${task.pr} manually.`
+          : 'Task is stuck in merge-candidate with no active merge consumer. Consider enabling integration (integration.enabled + useMillSession) or merging manually.',
+      });
+    }
+  }
+  return findings;
+}
+
+interface RetryExhaustionSentinel {
+  bucket: string;
+  path: string;
+  mtimeMs: number;
+  reason: string;
+}
+
+/** Scan a task state directory for `.retry-<bucket>-exhausted` sentinels (HOK-2924). Never throws. */
+function listExhaustedRetrySentinels(stateDir: string): RetryExhaustionSentinel[] {
+  let entries: string[];
+  try {
+    entries = readdirSync(stateDir);
+  } catch {
+    return [];
+  }
+  const sentinels: RetryExhaustionSentinel[] = [];
+  for (const name of entries) {
+    const match = /^\.retry-(.+)-exhausted$/.exec(name);
+    if (!match) continue;
+    const path = join(stateDir, name);
+    try {
+      const stat = statSync(path);
+      const reason = readFileSync(path, 'utf8').trim();
+      sentinels.push({ bucket: match[1], path, mtimeMs: stat.mtimeMs, reason });
+    } catch {
+      // Unreadable sentinel: skip rather than report on data we cannot verify.
+    }
+  }
+  return sentinels;
+}
+
+/**
+ * True when the bucket's retry budget is still keyed to the branch's current
+ * tip — i.e. the exhaustion sentinel is still relevant. `bounded-retry.sh`
+ * resets the whole bucket (including the exhausted sentinel) on a new head
+ * SHA, so a mismatched key means the budget is already about to clear itself
+ * and firing here would be a false positive. Absent key file or an
+ * unresolvable tip is treated as "still relevant" — the detector never
+ * suppresses on information it cannot verify.
+ */
+function exhaustedRetryStillKeyed(stateDir: string, bucket: string, repoDir: string, branch: string | undefined): boolean {
+  const headFile = join(stateDir, `.retry-${bucket}-head`);
+  if (!existsSync(headFile)) return true;
+  let storedHead: string | undefined;
+  try {
+    storedHead = readFileSync(headFile, 'utf8').split('\n')[0]?.trim();
+  } catch {
+    return true;
+  }
+  if (!storedHead || !branch) return true;
+  const tip = gitRevParse(repoDir, branch);
+  if (!tip) return true;
+  return storedHead === tip;
+}
+
+function lastCommitEpochMs(repoDir: string, branch: string): number | undefined {
+  const result = run('git', ['-C', repoDir, 'log', '-1', '--format=%ct', branch], 8_000);
+  if (!result.ok) return undefined;
+  const seconds = Number.parseInt(result.stdout.trim(), 10);
+  return Number.isFinite(seconds) ? seconds * 1000 : undefined;
+}
+
+/**
+ * Detector 2 (REQ-F3): a bounded-retry bucket (HOK-2924) has terminalized
+ * with an `.retry-<bucket>-exhausted` sentinel, and nothing — a new commit,
+ * or agent/operator progress per the HOK-3101 primitive — has happened since.
+ */
+export function detectExhaustedRetries(
+  repo: RepoSnapshot,
+  now: number,
+  progressLookup: (task: TaskState) => TaskProgress | undefined,
+): Finding[] {
+  const findings: Finding[] = [];
+  for (const task of repo.tasks) {
+    if (taskWorkflowIsTerminal(task)) continue;
+    const stateDir = resolveTaskStateDir(repo.repoDir, task);
+    if (!stateDir) continue;
+    const sentinels = listExhaustedRetrySentinels(stateDir);
+    if (sentinels.length === 0) continue;
+
+    const branch = taskBranch(task);
+    const progress = progressLookup(task);
+    const lastProgressMs = progress?.lastProgressAt ? Date.parse(progress.lastProgressAt) : NaN;
+    const lastCommitMs = branch ? lastCommitEpochMs(repo.repoDir, branch) : undefined;
+
+    for (const sentinel of sentinels) {
+      const ageMinutes = (now - sentinel.mtimeMs) / 60_000;
+      if (ageMinutes < EXHAUSTED_RETRY_QUIET_MINUTES) continue;
+      if (!exhaustedRetryStillKeyed(stateDir, sentinel.bucket, repo.repoDir, branch)) continue;
+      if (lastCommitMs !== undefined && lastCommitMs > sentinel.mtimeMs) continue;
+      if (Number.isFinite(lastProgressMs) && lastProgressMs > sentinel.mtimeMs) continue;
+
+      findings.push({
+        id: `exhausted-retry-abandoned-${repo.session}-${task.issue}-${sentinel.bucket}`,
+        severity: 'high',
+        category: 'stuck',
+        confidence: 'high',
+        session: repo.session,
+        repoDir: repo.repoDir,
+        issue: task.issue,
+        title: `${task.issue} abandoned: Exhausted retries: ${truncate(sentinel.reason, 160)}`,
+        evidence: [
+          `bucket=${sentinel.bucket}`,
+          `sentinel=${sentinel.path}`,
+          `sentinelReason=${sentinel.reason}`,
+          `sentinelAgeMinutes=${Math.round(ageMinutes)}`,
+          `lastCommitAt=${lastCommitMs !== undefined ? new Date(lastCommitMs).toISOString() : 'unknown'}`,
+          `lastProgressAt=${progress?.lastProgressAt ?? 'never'}`,
+          branch ? `branch=${branch}` : 'branch=unknown',
+          taskPrEvidence(repo.repoDir, task),
+        ],
+        recommendation: `Fix the recorded cause (${truncate(sentinel.reason, 160)}), then push a new commit to ${branch ?? 'the task branch'} to reset the ${sentinel.bucket} retry budget, or abort the task. Never just delete the sentinel — the underlying cause is still unresolved. observer.autoFix.resetReadyRecheckBudget (HOK-3097) can reset the budget once the head or base SHA has changed.`,
+      });
+    }
+  }
+  return findings;
+}
+
+/**
+ * Pure severity rule for Detector 3 (REQ-F5, D6): `medium` by default, raised
+ * to `high` when the PR is ready to merge. Labels win when known; when they
+ * are unknown (no PR, or the `gh` call failed), the ready-stage `queueState`
+ * is a state-based fallback with the same meaning — `ready`, `ready-stale`,
+ * and `merge-candidate` all mean the PR has cleared the ready gate.
+ */
+export function behindBaseSeverity(context: { hasReadyLabel?: boolean; queueState?: string }): Severity {
+  const elevated = context.hasReadyLabel === true
+    || (context.hasReadyLabel === undefined
+      && (context.queueState === 'ready' || context.queueState === 'ready-stale' || context.queueState === 'merge-candidate'));
+  return elevated ? 'high' : 'medium';
+}
+
+/** Best-effort PR label read; a failed/missing gh call reports unknown (undefined), never throws. */
+function defaultReadPrLabels(repoDir: string, pr: string): string[] | undefined {
+  const result = run('gh', ['pr', 'view', pr, '--json', 'labels'], 8_000, repoDir);
+  if (!result.ok) return undefined;
+  try {
+    const parsed = JSON.parse(result.stdout) as { labels?: Array<{ name?: unknown }> };
+    if (!Array.isArray(parsed.labels)) return undefined;
+    return parsed.labels
+      .map((label) => (typeof label?.name === 'string' ? label.name : undefined))
+      .filter((name): name is string => Boolean(name));
+  } catch {
+    return undefined;
+  }
+}
+
+interface BranchBehindBaseDeps {
+  readPrLabels?: (repoDir: string, pr: string) => string[] | undefined;
+}
+
+/**
+ * Detector 3 (REQ-F4, REQ-F5): an active task branch has drifted more than
+ * `BEHIND_BASE_THRESHOLD_COMMITS` commits behind its effective base branch.
+ * Reuses the HOK-3092 behind-base predicate (`measureBranchBaseDistance`);
+ * never fetches (D5), so this reads whatever `origin/<base>` the mill's own
+ * fetch cadence has already made current.
+ */
+export function detectBranchBehindBase(
+  repo: RepoSnapshot,
+  now: number,
+  deps: BranchBehindBaseDeps = {},
+): Finding[] {
+  const readPrLabels = deps.readPrLabels ?? defaultReadPrLabels;
+  const findings: Finding[] = [];
+  for (const task of repo.tasks) {
+    if (taskWorkflowIsTerminal(task)) continue;
+    const watchedPhase = task.phase === 'coding' || task.phase === 'review' || task.phase === 'ready';
+    if (!watchedPhase) continue;
+    const branch = taskBranch(task);
+    if (!branch || !gitRefExists(repo.repoDir, `refs/heads/${branch}`)) continue;
+
+    const effectiveConfig = resolveObserverTaskConfig(repo, task.issue, task);
+    const baseBranch = effectiveConfig.baseBranch.value;
+    const distance = measureBranchBaseDistance(branch, baseBranch, repo.repoDir);
+    if (distance.behindBase === undefined || distance.behindBase <= BEHIND_BASE_THRESHOLD_COMMITS) continue;
+
+    const stateDir = resolveTaskStateDir(repo.repoDir, task);
+    const ready = stateDir ? readReadyArtifacts(stateDir) : undefined;
+    const queueState = ready?.artifacts.queueState;
+
+    let hasReadyLabel: boolean | undefined;
+    if (task.pr) {
+      const labels = readPrLabels(repo.repoDir, task.pr);
+      if (labels) hasReadyLabel = labels.includes('wm:ready');
+    }
+
+    const severity = behindBaseSeverity({ hasReadyLabel, queueState });
+    findings.push({
+      id: `branch-behind-base-${repo.session}-${task.issue}`,
+      severity,
+      category: 'operational',
+      confidence: 'high',
+      session: repo.session,
+      repoDir: repo.repoDir,
+      issue: task.issue,
+      title: `${task.issue} branch ${branch} is ${distance.behindBase} commits behind ${baseBranch}`,
+      evidence: [
+        `behindBase=${distance.behindBase}`,
+        `aheadOfBase=${distance.aheadOfBase ?? 'unknown'}`,
+        `baseRef=${distance.baseRef ?? 'unknown'}`,
+        `threshold=${BEHIND_BASE_THRESHOLD_COMMITS}`,
+        `queueState=${queueState ?? 'unknown'}`,
+        `wmReadyLabel=${hasReadyLabel === undefined ? 'unknown' : hasReadyLabel}`,
+        taskPrEvidence(repo.repoDir, task),
+      ],
+      recommendation: `Update ${branch} from ${baseBranch} (\`npx tsx tools/update-branch-with-base.ts --worktree ${task.worktree ?? '<worktree>'} --branch ${branch} --base ${baseBranch}\`) before it drifts further; merge conflicts only get worse with distance. observer.autoFix.updateBranchFromBase (HOK-3097) can apply this fix automatically.`,
+    });
+  }
+  return findings;
+}
+
+function terminalParkedSeverity(ageMinutes: number, staleMinutes: number, residue: BranchResidue | undefined, worktreeDirty?: WorktreeDirtyStatus): Severity {
   let severity: Severity = 'medium';
   if (ageMinutes > Math.max(TERMINAL_PARKED_HIGH_FLOOR_MINUTES, staleMinutes * 6)) severity = 'high';
   if (ageMinutes > Math.max(TERMINAL_PARKED_URGENT_FLOOR_MINUTES, staleMinutes * 24)) severity = 'urgent';
+  if (worktreeDirty?.state === 'dirty') {
+    // HOK-3088: uncommitted or untracked work exists only in this worktree;
+    // reaping would delete it. Always urgent.
+    return 'urgent';
+  }
+  if (worktreeDirty?.state === 'unreadable') {
+    // Fail closed: without a status read we cannot say the tree is safe.
+    if (severity === 'medium') return 'high';
+  }
   if ((residue?.unpushedCommits ?? 0) > 0) {
     // Unpushed work turns housekeeping into potential work loss: at least high,
     // urgent when the remote branch is confirmed absent (nothing else holds the commits).
@@ -2425,6 +3427,100 @@ function capturePaneText(pane: Pane): string | undefined {
   const target = `${pane.session}:${pane.windowIndex}.${pane.paneIndex}`;
   const result = run('tmux', ['capture-pane', '-p', '-S', '-200', '-t', target], 5_000);
   return result.ok ? result.stdout : undefined;
+}
+
+/**
+ * HOK-3101 re-exports normalizeInteractivePromptText and
+ * matchInteractivePromptSignature from shared/lib/task-progress.ts so that
+ * observer.test.ts's existing imports keep working. The single implementation
+ * lives in the primitive; the observer no longer duplicates it.
+ */
+export const normalizeInteractivePromptText = taskProgressNormalizeInteractivePromptText;
+export const matchInteractivePromptSignature = taskProgressMatchInteractivePromptSignature;
+
+/**
+ * HOK-3045: emit an incident when a task-correlated pane is parked at a known
+ * interactive agent lifecycle prompt. Only nonterminal task panes are
+ * inspected, and each pane's text is captured at most once per cycle.
+ * Evidence carries only the signature id and choice count — never the raw
+ * capture — so persisted incidents cannot leak prompt content, transcripts,
+ * paths, tokens, or user identifiers.
+ */
+function detectInteractivePromptBlockedIncidents(
+  repo: RepoSnapshot,
+  snapshot: Pick<ObserverSnapshot, 'panes'>,
+  timestamp: string,
+): IncidentRecord[] {
+  const incidents: IncidentRecord[] = [];
+  for (const task of repo.tasks) {
+    if (!task.issue) continue;
+    if (taskWorkflowIsTerminal(task)) continue;
+    const residue = taskPaneResidue(repo, task, snapshot.panes);
+    if (!residue.present) continue;
+    // Inspect each correlated pane at most once per observation cycle.
+    for (const pane of residue.panes) {
+      const paneText = capturePaneText(pane);
+      const signature = matchInteractivePromptSignature(paneText);
+      if (!signature) continue;
+      const paneTarget = `${pane.session}:${pane.windowIndex}.${pane.paneIndex}`;
+      const evidenceKey = `interactive-prompt:${task.issue}:${signature.id}`;
+      incidents.push(createIncidentDraft({
+        taskId: task.issue,
+        session: repo.session,
+        category: 'configuration_operator_condition',
+        severity: 'high',
+        confidence: 'high',
+        lifecycle: 'observed',
+        rootCauseClass: 'agent_interactive_prompt_blocked',
+        summary: `${task.issue} task pane is parked at an interactive ${signature.agent} prompt (${signature.id}).`,
+        operatorAction: signature.operatorAction,
+        evidence: [{
+          type: 'hook_status',
+          source: `pane:${paneTarget}`,
+          timestamp,
+          redactedData: `agent=${signature.agent} prompt=${signature.id}${signature.choiceCount ? ` choices=${signature.choiceCount}` : ''}`,
+          key: evidenceKey,
+        }],
+        metadata: {
+          promptSignatureId: signature.id,
+          promptAgent: signature.agent,
+          paneTarget,
+          // Captured for the current-truth resolution gate — the incident may
+          // not auto-resolve until this task advances past this timestamp or
+          // becomes terminal (HOK-3045).
+          observedTaskUpdatedAt: task.updated ?? null,
+        },
+      }));
+      // A task pane's signature only matches once per pane per cycle; a second
+      // match on the same pane would produce a duplicate fingerprint anyway.
+      break;
+    }
+  }
+  return incidents;
+}
+
+/**
+ * Gate for the incident-store resolution sweep (HOK-3045): interactive-prompt
+ * incidents must not auto-resolve on absence while their correlated task is
+ * still nonterminal and has not advanced past the last observation. This
+ * mirrors the current-truth reconciliation contract from HOK-3032.
+ */
+function canResolveInteractivePromptByAbsence(
+  record: IncidentRecord,
+  repo: RepoSnapshot,
+): boolean {
+  if (record.rootCauseClass !== 'agent_interactive_prompt_blocked') return true;
+  const taskId = record.taskId;
+  if (!taskId) return true;
+  const task = repo.tasks.find((candidate) => candidate.issue === taskId);
+  if (!task) return true; // task went away → nothing to protect
+  if (taskWorkflowIsTerminal(task) || taskHasTerminalResidueStatus(task)) return true;
+  const observedAt = typeof record.metadata?.observedTaskUpdatedAt === 'string'
+    ? Date.parse(record.metadata.observedTaskUpdatedAt)
+    : NaN;
+  const currentAt = task.updated ? Date.parse(task.updated) : NaN;
+  if (!Number.isFinite(observedAt) || !Number.isFinite(currentAt)) return false;
+  return currentAt > observedAt;
 }
 
 function readTaskReviewArtifactText(task: TaskState): string | undefined {
@@ -2672,6 +3768,7 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
 
       candidates.push(...detectParkedArmIncidents(repo, snapshot, options, snapshot.timestamp));
       candidates.push(...detectCleanupIncidentsForRepo(repo, snapshot.timestamp));
+      candidates.push(...detectInteractivePromptBlockedIncidents(repo, snapshot, snapshot.timestamp));
     } catch (error) {
       cycleComplete = false;
       addConfigDegradedFindingIfMissing(snapshot.findings, repo, error, 'incident detection');
@@ -2680,8 +3777,8 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
     const freshFingerprints: string[] = [];
     for (const incident of dedupeIncidentCandidates(candidates, store)) {
       try {
-        const { record: stored } = await store.upsertDetailed(incident);
-        freshFingerprints.push(stored.fingerprint);
+        const { record: stored, freshEvent } = await store.upsertDetailed(incident);
+        if (freshEvent) freshFingerprints.push(stored.fingerprint);
         incidents.push(stored);
       } catch (error) {
         cycleComplete = false;
@@ -2702,7 +3799,10 @@ export async function reconcileIncidents(snapshot: ObserverSnapshot, options: Ob
 
     if (cycleComplete) {
       try {
-        await store.runResolutionSweep(freshFingerprints);
+        await store.runResolutionSweep(
+          freshFingerprints,
+          (record) => canResolveInteractivePromptByAbsence(record, repo),
+        );
       } catch (error) {
         snapshot.findings.push({
           id: `incident-sweep-error-${repo.session}-${hashText(repo.repoDir)}`,
@@ -2902,10 +4002,48 @@ function mergeObserverLinearConfig(config: ObserverLinearConfig, options: Observ
       stale_orphaned_state: { ...policies.stale_orphaned_state, ...(parsed.stale_orphaned_state ?? {}) },
     };
   }
+  // Resolve effective mode: explicit CLI mode wins; --incidents-shadow forces
+  // shadow; --incidents-dry-run remains an alias for offline; otherwise the
+  // config-derived mode stands. CLI live still requires enabled=true in
+  // config so this task cannot accidentally flip live filing on.
+  let mode = config.mode;
+  if (options.incidentsMode) {
+    mode = options.incidentsMode;
+  } else if (options.incidentsShadow) {
+    mode = 'shadow';
+  } else if (options.incidentsDryRun) {
+    mode = 'offline';
+  }
+  if (options.serviceMode) {
+    // Fail-closed enforcement for the managed Backstage service. These guards
+    // are defense-in-depth behind the deterministic command builder: even if an
+    // unsafe invocation reaches the process it can never mutate Linear.
+    //
+    // A generic --dry-run protects only the legacy --file-linear path; it is
+    // never the incident-sync safety control. Live filing in the service must
+    // be requested explicitly via --incidents-mode=live — a bare
+    // --file-incidents can never silently select live.
+    if (mode === 'live' && options.incidentsMode !== 'live') {
+      mode = 'shadow';
+    }
+    // Live still requires the legacy enabled interlock; downgrade rather than
+    // throw so the managed pane never enters a crash/respawn loop.
+    if (mode === 'live' && !config.enabled) {
+      mode = 'shadow';
+    }
+    // A missing credential fails closed to off (no reads, no restart storm)
+    // without ever exposing the key itself.
+    if ((mode === 'live' || mode === 'shadow') && !process.env.LINEAR_API_KEY) {
+      mode = 'off';
+    }
+  } else if (mode === 'live' && !config.enabled) {
+    throw new Error('observer: incidents-mode=live requires observer.linear.enabled=true in config');
+  }
   return {
     ...config,
     enabled: config.enabled,
-    detectionOnly: config.detectionOnly || options.incidentsDryRun,
+    detectionOnly: config.detectionOnly || options.incidentsDryRun || mode === 'offline',
+    mode,
     project: options.linearProject ?? config.project,
     team: options.linearTeam ?? config.team,
     label: options.linearLabel ?? config.label,
@@ -2913,8 +4051,9 @@ function mergeObserverLinearConfig(config: ObserverLinearConfig, options: Observ
   };
 }
 
-function emptyIncidentSyncSnapshot(): IncidentSyncSnapshot {
+function emptyIncidentSyncSnapshot(mode?: IncidentSyncSnapshot['mode']): IncidentSyncSnapshot {
   return {
+    mode,
     totalProcessed: 0,
     created: 0,
     updated: 0,
@@ -2924,8 +4063,26 @@ function emptyIncidentSyncSnapshot(): IncidentSyncSnapshot {
     retryProcessed: 0,
     retrySucceeded: 0,
     retryFailed: 0,
+    lifecycleSynced: 0,
+    lifecycleFailed: 0,
+    lifecycleRetried: 0,
+    lifecycleResults: [],
     results: [],
     errors: [],
+  };
+}
+
+function emptyShadowSnapshot(): IncidentSyncShadowSnapshot {
+  return {
+    eligible: 0,
+    proposedCreate: 0,
+    proposedUpdate: 0,
+    noOp: 0,
+    skipRecovered: 0,
+    ambiguous: 0,
+    redactionFailures: 0,
+    correlationCollisions: 0,
+    mutationAttempts: 0,
   };
 }
 
@@ -2944,6 +4101,42 @@ function collectSyncResult(summary: IncidentSyncSnapshot, result: SyncResult): v
       reason: result.reason ?? 'unknown',
       nextRetry: result.nextRetryAt,
     });
+  }
+  if (summary.shadow && result.shadowPlan) {
+    summary.shadow.eligible += 1;
+    switch (result.action) {
+      case 'create':
+        summary.shadow.proposedCreate += 1;
+        break;
+      case 'update_comment':
+        summary.shadow.proposedUpdate += 1;
+        break;
+      case 'no_op':
+        summary.shadow.noOp += 1;
+        break;
+      case 'skip_recovered':
+        summary.shadow.skipRecovered += 1;
+        break;
+      case 'unknown_needs_lookup':
+        summary.shadow.ambiguous += 1;
+        break;
+    }
+    const summary_ = result.shadowPlan.redactionSummary;
+    if (summary_.redactionEnabled && summary_.markersFound.length === 0
+        && (result.shadowPlan.plannedBody || result.shadowPlan.plannedCommentBody)) {
+      // A shadow record with redaction enabled but no markers means either
+      // there was nothing to redact (normal) or the redactor silently failed.
+      // We only surface this when redaction is enabled and there is a body
+      // that contains a suspicious raw pattern; a naive check follows.
+      const combined = `${result.shadowPlan.plannedBody ?? ''}\n${result.shadowPlan.plannedCommentBody ?? ''}`;
+      if (/(api[_-]?key|token|secret|password|credential|private[_-]?key)\s*[=:]\s*\S+/i.test(combined)
+          || /Bearer\s+[A-Za-z0-9._~+/=-]+/i.test(combined)) {
+        summary.shadow.redactionFailures += 1;
+      }
+    }
+    if (result.shadowPlan.correlationTarget.candidateCount > 1) {
+      summary.shadow.correlationCollisions += 1;
+    }
   }
 }
 
@@ -2980,8 +4173,22 @@ export async function syncIncidentsToLinear(snapshot: ObserverSnapshot, options:
       addConfigDegradedFindingIfMissing(snapshot.findings, repo, error, 'incident Linear sync');
       continue;
     }
+    // Record the strictest mode encountered across repos on the snapshot.
+    summary.mode = summary.mode ? maxObserverLinearMode(summary.mode, config.mode) : config.mode;
+    // Fail-closed: in the managed service an `off` mode (including one
+    // downgraded from live/shadow by the enforcement above, e.g. a missing
+    // credential) performs neither Linear reads nor mutations — even if
+    // --file-incidents was supplied. Nothing below this point may run for an
+    // off managed repo. (CLI off retains its legacy dry accounting.)
+    if (options.serviceMode && config.mode === 'off') {
+      continue;
+    }
+    const shadowMode = config.mode === 'shadow';
+    if (shadowMode && !summary.shadow) {
+      summary.shadow = emptyShadowSnapshot();
+    }
     try {
-      if (!config.detectionOnly) {
+      if (!config.detectionOnly && !shadowMode) {
         const retry = await drainIncidentQueue({
           repoDir: repo.repoDir,
           queuePath: config.retryQueuePath,
@@ -3006,21 +4213,35 @@ export async function syncIncidentsToLinear(snapshot: ObserverSnapshot, options:
     const incidents = options.incidentsReplay
       ? [await store.getIncident(options.incidentsReplay)].filter((incident): incident is IncidentRecord => incident !== null)
       : await store.getIncidents();
-    const incidentsForPass = config.detectionOnly || options.incidentsReplay
+    // Per-pass cap fix: only the fully offline mode bypasses the cap; shadow
+    // and live both honour maxIncidentsPerPass so a shadow trial cannot make
+    // an unbounded number of correlation searches per pass.
+    const bypassCap = (config.mode === 'offline' || (config.detectionOnly && config.mode !== 'shadow')) || Boolean(options.incidentsReplay);
+    const incidentsForPass = bypassCap
       ? incidents
       : incidents.slice(0, config.maxIncidentsPerPass);
-    if (!config.detectionOnly && !options.incidentsReplay && incidentsForPass.length < incidents.length) {
+    if (!bypassCap && incidentsForPass.length < incidents.length) {
       summary.skipped += incidents.length - incidentsForPass.length;
     }
+    const lookupBudget = shadowMode
+      ? createLookupBudget(config.shadow.maxLookupsPerPass)
+      : undefined;
+    // Mutation attempts always resolve to zero in a healthy shadow pass —
+    // the read-only wrapper's counter is checked in-process and syncIncident
+    // throws on the first attempt. The counter is kept here so any future
+    // path that swallows the throw still surfaces a non-zero value.
+    const mutationAttemptsThisPass = 0;
+    const shadowRecords: ShadowAuditRecord[] = [];
     for (const incident of incidentsForPass) {
       const result = await syncIncident({
         incident,
         store,
         config,
-        dryRun: options.incidentsDryRun,
+        dryRun: options.incidentsDryRun || shadowMode,
+        shadow: shadowMode,
         replay: options.incidentsReplay === incident.fingerprint,
         now: new Date(snapshot.timestamp),
-        retryQueue: {
+        retryQueue: shadowMode ? undefined : {
           enqueueIncidentSync: (input) => enqueueIncidentSync({
             repoDir: repo.repoDir,
             queuePath: config.retryQueuePath,
@@ -3031,11 +4252,334 @@ export async function syncIncidentsToLinear(snapshot: ObserverSnapshot, options:
             now: input.now,
           }),
         },
+        repoDir: repo.repoDir,
+        lookupBudget,
       });
       collectSyncResult(summary, result);
+      if (shadowMode && result.shadowPlan) {
+        const record = buildShadowAuditRecord(result.shadowPlan, {
+          recordedAt: snapshot.timestamp,
+          repoDir: repo.repoDir,
+          session: repo.session,
+          mutationAttempts: 0,
+        });
+        shadowRecords.push(record);
+        try {
+          appendShadowRecord(
+            config.shadow.auditPath,
+            record,
+            { maxEntries: config.shadow.maxEntries, maxAgeDays: config.shadow.maxAgeDays, now: new Date(snapshot.timestamp) },
+            repo.repoDir,
+          );
+        } catch (error) {
+          summary.errors.push({
+            fingerprint: result.fingerprint,
+            action: 'shadow-audit',
+            reason: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    }
+
+    // Lifecycle transition sync (HOK-3035): resolved/archived/recurrent linked
+    // records are excluded from getIncidents(), so fetch them separately. A
+    // degraded detection cycle (config load failure) must not resolve or close.
+    const cycleComplete = !snapshot.findings.some(
+      (finding) => finding.repoDir === repo.repoDir && finding.id.startsWith('config-integrity-'),
+    );
+    try {
+      const lifecyclePending = await store.getLifecyclePendingIncidents();
+      const lifecycleForPass = bypassCap ? lifecyclePending : lifecyclePending.slice(0, config.maxIncidentsPerPass);
+      for (const incident of lifecycleForPass) {
+        const lifecycleResult = await syncIncidentLifecycle({
+          incident,
+          store,
+          config,
+          dryRun: options.incidentsDryRun || shadowMode,
+          shadow: shadowMode,
+          cycleComplete,
+          now: new Date(snapshot.timestamp),
+          repoDir: repo.repoDir,
+          retryQueue: shadowMode ? undefined : {
+            enqueueLifecycleSync: (input) => enqueueIncidentSync({
+              repoDir: repo.repoDir,
+              queuePath: config.retryQueuePath,
+              incidentFingerprint: input.incidentFingerprint,
+              linearAction: 'lifecycle',
+              linearIssueId: input.linearIssueId,
+              lifecycleKind: input.lifecycleKind,
+              transitionRevision: input.transitionRevision,
+              lastError: input.lastError,
+              now: input.now,
+            }),
+          },
+        });
+        summary.lifecycleResults.push(lifecycleResult);
+        if (lifecycleResult.status === 'synced') summary.lifecycleSynced += 1;
+        else if (lifecycleResult.status === 'failed') summary.lifecycleFailed += 1;
+        else if (lifecycleResult.status === 'queued') summary.lifecycleRetried += 1;
+      }
+    } catch (error) {
+      summary.errors.push({
+        fingerprint: 'lifecycle-sync',
+        action: 'failed',
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    if (shadowMode) {
+      if (summary.shadow) {
+        summary.shadow.mutationAttempts += mutationAttemptsThisPass;
+        summary.shadow.auditPath = config.shadow.auditPath;
+        summary.shadow.countersPath = config.shadow.countersPath;
+        if (lookupBudget) {
+          summary.shadow.lookupBudgetUsed = lookupBudget.used;
+          summary.shadow.lookupBudgetMax = lookupBudget.max;
+          summary.shadow.lookupBudgetExhausted = lookupBudget.exhausted;
+        }
+      }
+      try {
+        await updateShadowCounters(
+          config.shadow.countersPath,
+          {
+            eligible: shadowRecords.length,
+            proposedCreate: shadowRecords.filter((r) => r.action === 'create').length,
+            proposedUpdate: shadowRecords.filter((r) => r.action === 'update_comment').length,
+            noOp: shadowRecords.filter((r) => r.action === 'no_op').length,
+            skipRecovered: shadowRecords.filter((r) => r.action === 'skip_recovered').length,
+            skip: shadowRecords.filter((r) => r.action === 'skip').length,
+            failed: shadowRecords.filter((r) => r.action === 'failed').length,
+            correlationCollisions: shadowRecords.filter((r) => r.correlationTarget.candidateCount > 1).length,
+            mutationAttempts: mutationAttemptsThisPass,
+          },
+          { lastRunAt: snapshot.timestamp, lastAuditPath: config.shadow.auditPath },
+          repo.repoDir,
+        );
+      } catch (error) {
+        summary.errors.push({
+          fingerprint: 'shadow-counters',
+          action: 'shadow-audit',
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
   }
   return { ...snapshot, incidentSync: summary };
+}
+
+function maxObserverLinearMode(a: IncidentSyncSnapshot['mode'], b: IncidentSyncSnapshot['mode']): IncidentSyncSnapshot['mode'] {
+  const order = ['off', 'offline', 'shadow', 'live'] as const;
+  const ai = order.indexOf(a ?? 'off');
+  const bi = order.indexOf(b ?? 'off');
+  return order[Math.max(ai, bi)];
+}
+
+/**
+ * HOK-3097: apply opt-in observer self-repair actions. Returns the snapshot
+ * unchanged when the master switch is off (byte-identical no-op). Appends
+ * action records to `<incidentStoreDir>/actions.jsonl` and `low`/`medium`
+ * findings to the snapshot for the dashboard.
+ */
+export async function applyAutoFixes(
+  snapshot: ObserverSnapshot,
+  options: ObserverOptions,
+): Promise<ObserverSnapshot> {
+  const now = new Date(snapshot.timestamp);
+  for (const repo of snapshot.repos) {
+    let config: ObserverAutoFixConfig;
+    try {
+      config = getObserverAutoFixConfig(repo.repoDir);
+    } catch (error) {
+      addConfigDegradedFindingIfMissing(snapshot.findings, repo, error, 'observer auto-fix');
+      continue;
+    }
+    if (!config.enabled) continue;
+
+    let incidentStoreDir: string;
+    try {
+      const incidentConfig = getIncidentConfig(repo.repoDir);
+      const storeDir = incidentConfig.store?.directory ?? '.wavemill/incidents';
+      incidentStoreDir = isAbsolute(storeDir) ? storeDir : join(repo.repoDir, storeDir);
+    } catch {
+      incidentStoreDir = join(repo.repoDir, '.wavemill', 'incidents');
+    }
+
+    const progressByIssue = new Map<string, TaskProgress>();
+    const progressLookup = makeProgressLookup(repo, now.getTime());
+    for (const task of repo.tasks) {
+      const progress = progressLookup(task);
+      if (progress) progressByIssue.set(task.issue, progress);
+    }
+
+    const context: AutoFixRepoContext = {
+      repoDir: repo.repoDir,
+      session: repo.session,
+      workflowStatePath: repo.workflowStatePath,
+      effectiveBaseBranch: (task) => observerBaseBranchForIssue(repo, task.issue),
+      resolveTaskStateDir: (task) => resolveTaskStateDir(repo.repoDir, task as TaskState),
+      incidentStoreDir,
+    };
+
+    const deps: AutoFixDeps = {
+      git: (args, cwd) => {
+        const result = execFileSync('git', args, { cwd, encoding: 'utf-8', timeout: 15_000, stdio: ['ignore', 'pipe', 'pipe'] });
+        return typeof result === 'string' ? result : String(result);
+      },
+      gh: (args, cwd) => {
+        const result = run('gh', args, 20_000, cwd);
+        return result;
+      },
+      updateBranchWithBase: (branch, baseBranch, worktree) => updateBranchWithBase(branch, baseBranch, worktree),
+      readWorktreeDirtyStatus: (worktree) => readWorktreeDirtyStatus({ worktree }),
+      getProgress: (task) => progressByIssue.get(task.issue),
+      abortTaskInState: (stateFile, issue, reason) => abortTaskInState(stateFile, issue, reason).then(() => undefined),
+    };
+
+    const candidateFindings: AutoFixCandidateFinding[] = snapshot.findings
+      .filter((f) => f.repoDir === repo.repoDir)
+      .map((f) => ({ id: f.id, issue: f.issue, severity: f.severity }));
+
+    const tasks = repo.tasks.map((task): AutoFixTask => ({
+      issue: task.issue,
+      slug: task.slug,
+      phase: task.phase,
+      status: task.status,
+      pr: task.pr,
+      worktree: task.worktree,
+      branch: task.branch,
+      baseBranch: task.baseBranch,
+      challengeRole: task.challengeRole,
+      challengePairId: task.challengePairId,
+      challengeAborted: task.challengeAborted,
+      evalCompleted: task.evalCompleted,
+    }));
+
+    try {
+      const { records, findings } = await runObserverAutoFixes({
+        repo: context,
+        tasks,
+        findings: candidateFindings,
+        config,
+        deps,
+        now,
+        dryRun: options.dryRun,
+      });
+      if (records.length > 0 && !options.dryRun) {
+        appendAutoFixActionRecords(incidentStoreDir, records);
+      } else if (records.length > 0) {
+        // Still log planned records in dry-run mode so operators can preview.
+        appendAutoFixActionRecords(incidentStoreDir, records);
+      }
+      snapshot.findings.push(...findings);
+    } catch (error) {
+      snapshot.findings.push({
+        id: `observer-auto-fix-error-${repo.session}-${hashText(repo.repoDir)}`,
+        severity: 'medium',
+        category: 'operational',
+        confidence: 'high',
+        session: repo.session,
+        repoDir: repo.repoDir,
+        title: 'Observer auto-fix pass failed',
+        evidence: [`error=${error instanceof Error ? error.message : String(error)}`],
+        recommendation: 'Inspect the observer log; auto-fix is off until the error clears.',
+      });
+    }
+  }
+  return snapshot;
+}
+
+/**
+ * HOK-3097: send desktop/push notifications for urgent/high findings that
+ * persist past the configured threshold. Journal persisted at
+ * `.wavemill/observer/alert-state.json`.
+ */
+export async function sendAlerts(
+  snapshot: ObserverSnapshot,
+  _options: ObserverOptions,
+): Promise<ObserverSnapshot> {
+  const now = new Date(snapshot.timestamp);
+  for (const repo of snapshot.repos) {
+    let config: ObserverAlertsConfig;
+    try {
+      config = getObserverAlertsConfig(repo.repoDir);
+    } catch (error) {
+      addConfigDegradedFindingIfMissing(snapshot.findings, repo, error, 'observer alerts');
+      continue;
+    }
+    if (!config.enabled) continue;
+
+    const journalPath = join(repo.repoDir, '.wavemill', 'observer', 'alert-state.json');
+    const findings: AlertFinding[] = snapshot.findings
+      .filter((f) => f.repoDir === repo.repoDir)
+      .map((f) => ({
+        id: f.id,
+        severity: f.severity,
+        title: f.title,
+        recommendation: f.recommendation,
+        issue: f.issue,
+        repoDir: f.repoDir,
+        session: f.session,
+      }));
+
+    try {
+      const result = await runObserverAlerts({
+        findings,
+        config,
+        now,
+        deps: {
+          loadJournal: () => {
+            if (!existsSync(journalPath)) return { findings: {} };
+            try {
+              const parsed = JSON.parse(readFileSync(journalPath, 'utf8')) as AlertJournal;
+              return parsed && typeof parsed === 'object' ? parsed : { findings: {} };
+            } catch {
+              return { findings: {} };
+            }
+          },
+          writeJournal: (next) => {
+            try {
+              mutateJsonStateSync<AlertJournal>(
+                journalPath,
+                () => next,
+                { createIfMissing: true, initial: { findings: {} } },
+              );
+            } catch {
+              // non-fatal
+            }
+          },
+          sendDesktop: (title, body) => sendDesktopNotification(title, body, detectDesktopPlatform(process.platform)),
+          sendPush: (url, format, payload) => sendPushNotification(url, format, payload),
+          redact: (text) => redactObserverText(text),
+        },
+      });
+      for (const failure of result.sendFailures) {
+        snapshot.findings.push({
+          id: `observer-alert-send-failed-${repo.session}-${hashText(failure.findingId + failure.detail)}`,
+          severity: 'low',
+          category: 'operational',
+          confidence: 'high',
+          session: repo.session,
+          repoDir: repo.repoDir,
+          title: `Observer alert send failed for ${failure.findingId}`,
+          evidence: [`findingId=${failure.findingId}`, `detail=${failure.detail}`],
+          recommendation: 'Verify the push URL and desktop notification tooling; alerts are best-effort.',
+        });
+      }
+    } catch (error) {
+      snapshot.findings.push({
+        id: `observer-alert-error-${repo.session}-${hashText(repo.repoDir)}`,
+        severity: 'low',
+        category: 'operational',
+        confidence: 'high',
+        session: repo.session,
+        repoDir: repo.repoDir,
+        title: 'Observer alerts pass failed',
+        evidence: [`error=${error instanceof Error ? error.message : String(error)}`],
+        recommendation: 'Inspect the observer log; alerts are off until the error clears.',
+      });
+    }
+  }
+  return snapshot;
 }
 
 function addConfigDegradedFindingIfMissing(findings: Finding[], repo: RepoSnapshot, error: unknown, operation: string): void {
@@ -3100,6 +4644,53 @@ export async function writeServiceHeartbeat(snapshot: ObserverSnapshot, options:
       const next = { ...(current ?? {}) };
       const services = { ...(next.services ?? {}) };
       const existing = { ...(services.observer ?? {}) };
+      // Surface config source and credential readiness (boolean only — the key
+      // itself is never read into or written from this health file).
+      let configSource: string | undefined;
+      try {
+        const linear = loadWavemillConfig(options.repoDir).observer?.linear;
+        configSource = resolveObserverLinearModeSource(linear);
+      } catch {
+        configSource = undefined;
+      }
+      const credentialReady = Boolean(process.env.LINEAR_API_KEY);
+      const lastError = snapshot.incidentSync?.errors?.[snapshot.incidentSync.errors.length - 1];
+      const incidentSyncSummary = snapshot.incidentSync ? {
+        mode: snapshot.incidentSync.mode ?? 'off',
+        configSource,
+        credentialReady,
+        lastRunAt: snapshot.timestamp,
+        totalProcessed: snapshot.incidentSync.totalProcessed,
+        created: snapshot.incidentSync.created,
+        updated: snapshot.incidentSync.updated,
+        skipped: snapshot.incidentSync.skipped,
+        failed: snapshot.incidentSync.failed,
+        queued: snapshot.incidentSync.queued,
+        retryProcessed: snapshot.incidentSync.retryProcessed,
+        retryFailed: snapshot.incidentSync.retryFailed,
+        lastFailure: lastError
+          ? { action: lastError.action, reason: redactObserverText(lastError.reason) }
+          : undefined,
+        lifecycleSynced: snapshot.incidentSync.lifecycleSynced,
+        lifecycleFailed: snapshot.incidentSync.lifecycleFailed,
+        lifecycleRetried: snapshot.incidentSync.lifecycleRetried,
+        shadow: snapshot.incidentSync.shadow ? {
+          eligible: snapshot.incidentSync.shadow.eligible,
+          proposedCreate: snapshot.incidentSync.shadow.proposedCreate,
+          proposedUpdate: snapshot.incidentSync.shadow.proposedUpdate,
+          noOp: snapshot.incidentSync.shadow.noOp,
+          skipRecovered: snapshot.incidentSync.shadow.skipRecovered,
+          ambiguous: snapshot.incidentSync.shadow.ambiguous,
+          redactionFailures: snapshot.incidentSync.shadow.redactionFailures,
+          correlationCollisions: snapshot.incidentSync.shadow.correlationCollisions,
+          mutationAttempts: snapshot.incidentSync.shadow.mutationAttempts,
+          auditPath: snapshot.incidentSync.shadow.auditPath,
+          countersPath: snapshot.incidentSync.shadow.countersPath,
+          lookupBudgetUsed: snapshot.incidentSync.shadow.lookupBudgetUsed,
+          lookupBudgetMax: snapshot.incidentSync.shadow.lookupBudgetMax,
+          lookupBudgetExhausted: snapshot.incidentSync.shadow.lookupBudgetExhausted,
+        } : undefined,
+      } : undefined;
       services.observer = {
         ...existing,
         status: 'healthy',
@@ -3111,6 +4702,7 @@ export async function writeServiceHeartbeat(snapshot: ObserverSnapshot, options:
         session: options.session ?? snapshot.sessions[0] ?? null,
         repoDir: options.repoDir,
         findingCounts: counts,
+        incidentSync: incidentSyncSummary,
       };
       next.updatedAt = snapshot.timestamp;
       next.services = services;
@@ -3178,9 +4770,13 @@ function renderSummary(snapshot: ObserverSnapshot): string {
   if (snapshot.incidentSync) {
     const sync = snapshot.incidentSync;
     lines.push('');
-    lines.push(`Incident Linear sync: processed=${sync.totalProcessed} created=${sync.created} updated=${sync.updated} queued=${sync.queued} skipped=${sync.skipped} failed=${sync.failed}`);
+    lines.push(`Incident Linear sync${sync.mode ? ` (mode=${sync.mode})` : ''}: processed=${sync.totalProcessed} created=${sync.created} updated=${sync.updated} queued=${sync.queued} skipped=${sync.skipped} failed=${sync.failed}`);
     if (sync.retryProcessed > 0) {
       lines.push(`Incident retry queue: processed=${sync.retryProcessed} succeeded=${sync.retrySucceeded} failed=${sync.retryFailed}`);
+    }
+    if (sync.shadow) {
+      const s = sync.shadow;
+      lines.push(`Incident Linear shadow: eligible=${s.eligible} proposedCreate=${s.proposedCreate} proposedUpdate=${s.proposedUpdate} noOp=${s.noOp} skipRecovered=${s.skipRecovered} ambiguous=${s.ambiguous} redactionFailures=${s.redactionFailures} correlationCollisions=${s.correlationCollisions} mutationAttempts=${s.mutationAttempts}`);
     }
     for (const result of sync.results.slice(0, 8)) {
       lines.push(`  ${result.action}: ${result.fingerprint.slice(0, 16)} ${result.issueId ?? ''} ${result.reason ?? ''}`.trimEnd());
@@ -3343,6 +4939,8 @@ Act conservatively:
 - Otherwise create a Linear issue with the evidence from the observer output.
 - Never kill a whole tmux session, reset worktrees, or modify active task work unless explicitly instructed.
 
+Detection-only unless observer.autoFix is enabled; the observer's own fixes are logged in .wavemill/incidents/actions.jsonl.
+
 Report after each loop: sessions inspected, active tasks, findings by severity, action taken, and next check time.
 `;
 }
@@ -3375,7 +4973,10 @@ async function main(): Promise<void> {
 
   try {
     do {
-      const observed = await syncIncidentsToLinear(await reconcileIncidents(observe(options), options), options);
+      const reconciled = await reconcileIncidents(observe(options), options);
+      const fixed = await applyAutoFixes(reconciled, options);
+      const alerted = await sendAlerts(fixed, options);
+      const observed = await syncIncidentsToLinear(alerted, options);
       const snapshot = options.serviceMode ? redactSnapshot(observed) : observed;
       await writeServiceHeartbeat(snapshot, options);
       await fileLinearIssues(snapshot, options);

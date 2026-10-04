@@ -4,9 +4,30 @@ import {
   assembleNearbyContext,
   buildPartialRefreshPrompt,
   parseQueueAnalysisEdges,
+  QUEUE_ANALYSIS_DESCRIPTION_MAX_CHARS,
 } from './queue-partial-refresh.ts';
 
 describe('queue-partial-refresh', () => {
+  describe('buildPartialRefreshPrompt description budget', () => {
+    it('truncates long task descriptions and leaves short ones intact', () => {
+      const longDescription = `Top of packet. ${'x'.repeat(QUEUE_ANALYSIS_DESCRIPTION_MAX_CHARS * 2)} TAIL-MARKER`;
+      const prompt = buildPartialRefreshPrompt({
+        changedTaskIds: ['HOK-1'],
+        contextTasks: [
+          { id: 'HOK-1', title: 'Long', description: longDescription },
+          { id: 'HOK-2', title: 'Short', description: 'short description' },
+        ],
+        template: '{{CONTEXT_TASKS}}',
+      });
+
+      assert.match(prompt, /Top of packet\./);
+      assert.match(prompt, /…\[truncated]/);
+      assert.doesNotMatch(prompt, /TAIL-MARKER/);
+      assert.match(prompt, /description: "short description"/);
+      assert.ok(prompt.length < QUEUE_ANALYSIS_DESCRIPTION_MAX_CHARS + 600);
+    });
+  });
+
   describe('assembleNearbyContext', () => {
     it('includes changed tasks, shared labels, blockers, top priority tasks, and in-flight tasks', () => {
       const ids = assembleNearbyContext({
@@ -115,7 +136,30 @@ describe('queue-partial-refresh', () => {
 
     it('rejects malformed output envelopes', () => {
       assert.throws(() => parseQueueAnalysisEdges('{"edges":[],"waves":[]}', new Set(['HOK-1']), new Map()), /exactly: edges/);
-      assert.throws(() => parseQueueAnalysisEdges('```json\n{"edges":[]}\n```', new Set(['HOK-1']), new Map()), /markdown fence/);
+    });
+
+    it('unwraps exactly one outer json fence, including the trailing-only shape llm-cli leaves', () => {
+      const fingerprints = new Map([['HOK-1', 'fp-1'], ['HOK-2', 'fp-2']]);
+      const body = '{"edges":[{"from":"HOK-1","to":"HOK-2","type":"depends_on"}]}';
+      for (const raw of ['```json\n' + body + '\n```', '```\n' + body + '\n```', body + '\n```']) {
+        const edges = parseQueueAnalysisEdges(raw, new Set(['HOK-2']), fingerprints);
+        assert.deepEqual(edges.map((edge) => `${edge.from}->${edge.to}`), ['HOK-1->HOK-2']);
+      }
+    });
+
+    it('still rejects multiple fences or prose around a fence', () => {
+      assert.throws(
+        () => parseQueueAnalysisEdges('```json\n{"edges":[]}\n```\n```json\n{"edges":[]}\n```', new Set(['HOK-1']), new Map()),
+        /markdown fence/,
+      );
+      assert.throws(
+        () => parseQueueAnalysisEdges('Here you go:\n```json\n{"edges":[]}\n```', new Set(['HOK-1']), new Map()),
+        /markdown fence/,
+      );
+      assert.throws(
+        () => parseQueueAnalysisEdges('```json\n{"edges":[]}\n```\nHope this helps', new Set(['HOK-1']), new Map()),
+        /markdown fence/,
+      );
     });
   });
 });

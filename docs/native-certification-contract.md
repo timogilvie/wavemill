@@ -214,6 +214,54 @@ The equivalent environment override is `WAVEMILL_SKIP_CERTIFICATION_AUTO_REMEDIA
 
 ---
 
+## Live Canary Cohort (HOK-3062)
+
+Deterministic remediation never grants coding eligibility — that requires a live, credentialed mutation canary pass (HOK-2943). The canary cohort turns that gate into an operational supply of coding-ready models: a bounded, reviewed set of 2–4 canonical identities whose live canaries are kept fresh on the machine and certification store the mill actually uses.
+
+### Configuration
+
+```json
+{
+  "nativeAgent": {
+    "certification": {
+      "canaryCohort": [
+        { "provider": "openrouter", "model": "qwen-3-coder" },
+        { "provider": "openrouter", "model": "kimi-k2.7-code" }
+      ],
+      "minCodingReady": 2,
+      "canaryRenewalWindowDays": 3,
+      "canaryAutoRefresh": true
+    }
+  }
+}
+```
+
+Cohort entries are validated fail-closed against the effective registry: only verified, native-capable, non-disabled, non-coding-excluded canonical identities qualify. Invalid or duplicate entries are reported and skipped, never silently certified. The cohort is capped at 8 entries by schema; keep it at the reviewed 2–4.
+
+### Automatic refresh
+
+During mill certification preflight (when `autoRemediate` and `canaryAutoRefresh` are enabled and `WAVEMILL_SKIP_CANARY_AUTO_REFRESH` is not set), members whose canary is **missing, stale, inside the renewal window, identity-invalidated, or transiently inconclusive** get at most **one** live refresh attempt per remediation episode. An episode is keyed by identity fingerprint, catalog hash, suite version, and the expiry that triggered remediation; a second preflight inside the same episode reports the manual command instead of spending another provider call. Members without resolvable credentials are skipped with the missing env var named (never its value).
+
+A definitive `fail` or `not-live` verdict is **never** auto-retried — it revokes eligibility and requires operator review (see the re-enable procedure above). A transient or skipped refresh never overwrites a still-valid unexpired pass; the existing revocation contract is unchanged. Refresh goes through the standard certify pipeline and atomic store writes, so no credential, raw transcript, or unbounded tool result is ever persisted; attempt records carry only redacted, bounded metadata under `<root>/.canary-refresh-attempts.json`.
+
+### Manual refresh (credentialed mill host)
+
+```bash
+npx tsx tools/native-agent-certify.ts --refresh-canary-cohort
+```
+
+The command is idempotent, cohort-scoped (it rejects `--all`, `--provider`, `--model`, and `--dry-run`), bypasses the one-attempt episode guard, and exits non-zero when the coding-ready count stays below `minCodingReady`. Ephemeral credentialless CI artifacts are not production certification: run this on the mill host against the durable store (`WAVEMILL_NATIVE_CERTIFICATION_ROOT` or the default `~/.wavemill/native-agent-certifications`).
+
+### Health and alerting
+
+Preflight output and `tools/native-agent-models-report.ts` surface the cohort summary: configured count, coding-ready count, configured minimum, nearest canary expiry, and per-member state/last attempt/failure reason. When the coding-ready count drops below `minCodingReady`, an `ALERT` block with the remediation command is emitted before supply reaches zero. The alert never blocks preflight — HOK-2943's fail-closed eligibility gate remains the enforcement point.
+
+### Rollback
+
+Set `"canaryAutoRefresh": false` (or `WAVEMILL_SKIP_CANARY_AUTO_REFRESH=1`) to disable automatic refresh while retaining the eligibility gate. Existing valid passes remain usable until expiry; nothing synthesizes or bypasses a live pass.
+
+---
+
 ## Orphan Pruning
 
 Coverage reports artifacts whose storage identity no longer maps to any native-certifiable registry model as orphan artifacts. Orphans do not count against fleet health.

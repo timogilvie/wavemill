@@ -135,7 +135,19 @@ describe('route-tasks CLI', () => {
       assert.equal(batchDecision.provenance.inputKind, single.provenance.inputKind);
       const { routedAt: _batchRoutedAt, ...batchProvenanceRest } = batchDecision.provenance;
       const { routedAt: _singleRoutedAt, ...singleProvenanceRest } = single.provenance;
-      assert.deepEqual({ ...batchDecision, provenance: batchProvenanceRest }, { ...single, provenance: singleProvenanceRest });
+      // Each run mints its own route decision (HOK-3098): ids and timestamps
+      // differ, everything the router decided must not.
+      const stableDecision = (record: Record<string, unknown>) => {
+        const { decision_id: decisionId, decided_at: decidedAt, ...rest } = record;
+        assert.equal(typeof decisionId, 'string');
+        assert.equal(typeof decidedAt, 'string');
+        return rest;
+      };
+      assert.deepEqual(stableDecision(batchDecision.routeDecision), stableDecision(single.routeDecision));
+      assert.deepEqual(
+        { ...batchDecision, provenance: batchProvenanceRest, routeDecision: undefined },
+        { ...single, provenance: singleProvenanceRest, routeDecision: undefined },
+      );
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }

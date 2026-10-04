@@ -1,0 +1,138 @@
+{
+  "phase": "coding",
+  "toolMenu": {
+    "digest": "aa4f9549f02ce27fec595f31cd38a5d60894bbf5858e9ff0865a0350477562cc",
+    "toolNames": [
+      "read_file",
+      "list_files",
+      "run_tests"
+    ],
+    "canonical": [
+      {
+        "allowedPhases": [
+          "planning",
+          "coding",
+          "review"
+        ],
+        "certificationRequirement": "none",
+        "class": "read-only",
+        "exposure": "always",
+        "family": "core",
+        "logicalId": "core.read_file",
+        "name": "read_file",
+        "provenance": "repo-trusted"
+      },
+      {
+        "allowedPhases": [
+          "planning",
+          "coding",
+          "review"
+        ],
+        "certificationRequirement": "none",
+        "class": "read-only",
+        "exposure": "always",
+        "family": "core",
+        "logicalId": "core.list_files",
+        "name": "list_files",
+        "provenance": "repo-trusted"
+      },
+      {
+        "allowedPhases": [
+          "coding"
+        ],
+        "certificationRequirement": "none",
+        "class": "read-only",
+        "exposure": "always",
+        "family": "core",
+        "logicalId": "core.run_tests",
+        "name": "run_tests",
+        "provenance": "repo-trusted"
+      }
+    ]
+  },
+  "providerTools": {
+    "digest": "da07272e425e8db5075d91918ea938a30c10248c66c0b7a5aa9f0f157eec4635",
+    "toolCount": 3,
+    "toolNames": [
+      "read_file",
+      "list_files",
+      "run_tests"
+    ],
+    "canonical": [
+      {
+        "description": "read_file description",
+        "executionMode": "parallel",
+        "label": "read_file",
+        "name": "read_file",
+        "parameters": {
+          "properties": {
+            "limit": {
+              "type": "number"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        }
+      },
+      {
+        "description": "list_files description",
+        "executionMode": "parallel",
+        "label": "list_files",
+        "name": "list_files",
+        "parameters": {
+          "properties": {
+            "limit": {
+              "type": "number"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        }
+      },
+      {
+        "description": "run_tests description",
+        "executionMode": "parallel",
+        "label": "run_tests",
+        "name": "run_tests",
+        "parameters": {
+          "properties": {
+            "limit": {
+              "type": "number"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        }
+      }
+    ]
+  },
+  "denials": [
+    {
+      "reason": "family_not_enabled",
+      "family": "browser",
+      "toolName": "browser_navigate",
+      "logicalId": "browser.navigate"
+    },
+    {
+      "reason": "family_not_enabled",
+      "family": "mcp",
+      "toolName": "mcp_call",
+      "logicalId": "mcp.call"
+    }
+  ]
+}

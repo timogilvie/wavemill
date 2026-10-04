@@ -76,6 +76,33 @@
         },
         "recordedAt": {
           "type": "string"
+        },
+        "providerReportedModel": {
+          "type": "string"
+        },
+        "requestedWireId": {
+          "type": "string"
+        },
+        "certifiedTarget": {
+          "type": "string"
+        },
+        "identityVerdict": {
+          "enum": [
+            "match",
+            "alias-resolved",
+            "mismatch",
+            "unverifiable",
+            "absent"
+          ]
+        },
+        "transportProvider": {
+          "type": "string"
+        },
+        "upstreamProvider": {
+          "type": "string"
+        },
+        "responseId": {
+          "type": "string"
         }
       }
     },
@@ -88,7 +115,8 @@
         "stage_not_completed",
         "missing_execution_evidence",
         "execution_contradicted",
-        "runtime_fallback"
+        "runtime_fallback",
+        "provider_substitution"
       ]
     },
     "notes": {

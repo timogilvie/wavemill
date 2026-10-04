@@ -540,6 +540,10 @@ Required invariant: untrusted tool output can inform the model, but it can never
 
 Mutation tools should receive a summary of relevant untrusted context, but the policy engine must evaluate only Wavemill-controlled state: phase, config, approved tool registry, worktree path, command classifier, explicit user approval, and certification metadata.
 
+### MCP client bridge (HOK-3056)
+
+Advanced-family `mcp` tools flow through the same exposure/policy/provenance pipeline. See [docs/native-agent-mcp.md](native-agent-mcp.md) for the shipped contract — schema, defaults, descriptor identity, error taxonomy, and lifecycle guarantees. MCP tool results always carry `sourceKind: mcp_result → untrusted`, and each successful result records the provider proxy, logical server/tool, argument fingerprint, live server identity, and an artifact reference to the raw payload.
+
 ## Provider Adapters
 
 Implement adapters behind the normalized interface:
@@ -928,6 +932,113 @@ Acceptance:
 
 - Each advanced tool family has its own phase policy, output caps, transcript format, and smoke suite.
 - No advanced tool is globally available by default.
+
+**Epic 10.7 status:** `code_search` is now populated — the runtime substrate
+lives in `shared/lib/native-agent/language-index.ts` and the four tool
+descriptors in `shared/lib/native-agent/tools/code-search.ts`, gated by the
+new `nativeAgent.advanced.code_search` config block. Substrate rationale is
+recorded in `docs/decisions/structured-search-substrate.md`.
+
+#### Advanced-tool exposure contract (HOK-3053)
+
+The first Epic 10 landing is the catalog and default-off policy — no advanced
+executor ships with it. Descriptors declare `family` (`browser` / `screenshot`
+/ `mcp` / `code_search` / `ast` / `eval`), a family-scoped `logicalId`,
+`exposure: 'opt-in'`, a full `ToolPolicyMetadata` shape (pathMode, network,
+mutation surfaces, approval, timeout, byte/token caps, redaction profile), a
+`ToolProvenanceClass`, and a `NativeCertificationRequirement`. Legacy Tier
+1–4 descriptors inflate to `family: 'core'` / `exposure: 'always'` /
+`certificationRequirement: 'none'` at registration time; no descriptor site
+had to change.
+
+Eligibility is calculated once per phase launch by `computeEligibility()` in
+`shared/lib/native-agent/tools/exposure.ts`. It is a pure function; the only
+inputs are the requested phase, the resolved wavemill config, the native
+certification snapshot, and the registry metadata. No tool output, prompt
+content, or environment lookup can enable a family. Advanced families remain
+denied (`family_not_enabled`) until an operator opts in via
+`nativeAgent.advanced` in `.wavemill-config.json`, e.g.:
+
+```json
+{
+  "nativeAgent": {
+    "advanced": {
+      "browser": {
+        "enabled": true,
+        "allowedPhases": ["coding"],
+        "logicalIds": ["browser.navigate"]
+      }
+    }
+  }
+}
+```
+
+Enabled → `allowedPhases` must contain the requested phase; the descriptor's
+own `allowedPhases` must also permit it; the model's `maxCertifiedPhase` must
+satisfy the descriptor's requirement (default `workflow` for advanced
+families); if a `logicalIds` allowlist is present, the logical id must appear
+in it. Every failure surfaces as a structured `EligibilityDenial` for logs
+and dashboards. The per-call policy evaluator adds a defense-in-depth
+`not_exposed` reason so that a materialised call for a hidden tool is
+rejected even if exposure and materialisation are ever wired asymmetrically.
+
+#### Advanced-tool family: `eval` (HOK-3061)
+
+The first advanced family to ship real descriptors is `eval`: four bounded,
+read-only scorers exposed only inside the review phase and only when the
+operator enables them via `nativeAgent.advanced.eval`. All four descriptors
+carry `class: 'read-only'`, `allowedPhases: ['review']`,
+`certificationRequirement: 'read-only'` (overriding the advanced default of
+`workflow` so review-phase snapshots satisfy the ladder), and a 32 KB output
+cap with truncation bookkeeping.
+
+Shipped tools:
+
+- `score_diff_difficulty` — wraps `analyzeDiffStats` / `computeDifficultyBand`
+  / `computeStratum` / `detectTechStack(prDiff)` against the workspace diff.
+- `score_task_context` — wraps `analyzeTaskContext` over the task packet and
+  `selected-task.json` (and optional workspace diff).
+- `score_patch_selection` — wraps `scorePatchSelection`
+  (`hokusai.scorers.wavemill.patch_selection_accuracy:v1`) over inline,
+  strict-schema-validated records with a 200-item cap.
+- `score_success_rate_under_budget` — wraps
+  `scoreWavemillSuccessRateUnderBudget`
+  (`hokusai.scorers.wavemill.success_rate_under_budget:v1`) over inline,
+  strict-schema-validated records with a 200-item cap.
+
+Every tool returns a byte-stable canonical-JSON envelope
+`{ scorer, toolVersion, inputDigest, evidence[], eligibility, metrics?,
+rationale, diagnostics, advisory: true }`. Missing / malformed / oversized /
+conflicting evidence yields a structured non-score state (`missing_evidence`,
+`malformed_evidence`, `oversized_evidence`, `conflicting_evidence`) with no
+`metrics` key rather than fabricated zeros. Rationale text is
+template-generated (never raw evidence excerpts); the envelope carries
+per-evidence digests, not evidence bodies.
+
+Non-goals — and hard invariants of the module:
+
+- No recursive `review_changes`; no additional model invocation.
+- No Hokusai submission, routing update, reward mutation, or append to
+  `.wavemill/evals/evals.jsonl`.
+- Scorer output is advisory: it cannot set the final review verdict or Ready
+  state, which remain independently enforced.
+
+Operator enablement (opt-in, default off):
+
+```json
+{
+  "nativeAgent": {
+    "advanced": {
+      "eval": { "enabled": true, "allowedPhases": ["review"] }
+    }
+  }
+}
+```
+
+`buildReviewToolRegistry` only registers the descriptors when the family is
+enabled — so the prompt catalog never advertises tools the model cannot call —
+and `computeEligibility` re-checks the family / phase / certification /
+logical-id allowlist per turn as the authoritative gate.
 
 ## Rollout Plan
 

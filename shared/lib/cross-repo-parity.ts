@@ -43,7 +43,10 @@ const CERTIFIED_MODELS = [
   { provider: 'openrouter', model: 'kimi-k2.7-code', phase: 'workflow' as const },
 ];
 
-const CERTIFIED_AT = '2026-07-20T00:00:00.000Z';
+// Valid fixtures must stay fresh relative to the wall clock used by launch
+// eligibility. A fixed certification date makes the suite expire every time
+// the production freshness window advances.
+const CERTIFIED_AT = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 const STALE_CERTIFIED_AT = '2024-01-01T00:00:00.000Z';
 
 function writeGlobalArtifact(

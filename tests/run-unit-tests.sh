@@ -38,9 +38,14 @@ TESTS=(
   shared/lib/operator-intervention.test.ts
   shared/lib/intervention-detector.test.ts
   shared/lib/stage-result.test.ts
+  shared/lib/task-progress.test.ts
+  shared/lib/task-identity.test.ts
+  shared/lib/linear-write-gate.test.ts
   shared/lib/session-adapters.test.ts
+  shared/lib/executed-model-resolver.test.ts
   shared/lib/native-agent/provider.test.ts
   shared/lib/native-agent/provider-error-classifier.test.ts
+  shared/lib/native-agent/provider-identity.test.ts
   shared/lib/native-agent/providers.test.ts
   shared/lib/native-agent/messages.test.ts
   shared/lib/native-agent/compaction.test.ts
@@ -58,6 +63,7 @@ TESTS=(
   shared/lib/native-agent/patch-runtime.test.ts
   shared/lib/native-agent/patch-matcher.test.ts
   shared/lib/native-agent/coding-failure-handoff.test.ts
+  shared/lib/native-agent/stage-failure-envelope.test.ts
   shared/lib/native-agent/coding-artifacts.test.ts
   shared/lib/native-agent/completion-normalizer.test.ts
   shared/lib/native-agent/mutation-policy.test.ts
@@ -72,8 +78,17 @@ TESTS=(
   shared/lib/native-agent/command-transcript.test.ts
   shared/lib/native-agent/command-argv.test.ts
   shared/lib/native-agent/command-substrate.test.ts
+  shared/lib/native-agent/test-command-scope.test.ts
+  shared/lib/native-agent/coding-recovery-guard.test.ts
+  shared/lib/native-agent/hok2081-gate.test.ts
+  shared/lib/native-agent/session-checkpoint.test.ts
+  shared/lib/native-agent/deterministic-replay.test.ts
+  shared/lib/native-agent/counterfactual-runner.test.ts
+  tests/run-counterfactual-exploration.test.ts
   shared/lib/native-agent/tools/policies.test.ts
   shared/lib/native-agent/tools/registry.test.ts
+  shared/lib/native-agent/tools/exposure.test.ts
+  shared/lib/native-agent/tools/menu-resolver.test.ts
   shared/lib/native-agent/tools/git.test.ts
   shared/lib/native-agent/tools/apply-patch-tool.test.ts
   shared/lib/native-agent/tools/command-tools.test.ts
@@ -82,6 +97,17 @@ TESTS=(
   shared/lib/native-agent/tools/read-only.test.ts
   shared/lib/native-agent/tools/redaction.test.ts
   shared/lib/native-agent/tools/artifacts.test.ts
+  shared/lib/native-agent/tools/browser.test.ts
+  shared/lib/native-agent/browser-session.test.ts
+  shared/lib/native-agent/image-artifacts.test.ts
+  shared/lib/native-agent/visual-comparison.test.ts
+  shared/lib/native-agent/tools/screenshot.test.ts
+  shared/lib/native-agent/tools/review-scoring.test.ts
+  shared/lib/native-agent/tools/code-search.test.ts
+  shared/lib/native-agent/tools/ast-transform.test.ts
+  shared/lib/native-agent/language-index.test.ts
+  shared/lib/native-agent/tools/mcp.test.ts
+  shared/lib/native-agent/mcp-client.test.ts
   shared/lib/native-agent/loop.test.ts
   shared/lib/native-agent/output-limits.test.ts
   shared/lib/native-agent/transcript.test.ts
@@ -97,11 +123,14 @@ TESTS=(
   shared/lib/native-agent/workflow-tools/retry-idempotency.test.ts
   shared/lib/native-agent/workflow-tools/approval-gate.test.ts
   shared/lib/native-agent/workflow-tools/ready-remediation-integration.test.ts
-  shared/lib/issue-expander.test.ts
   shared/lib/native-agent/launch-planning.test.ts
+  shared/lib/native-agent/launch-planning-repair.test.ts
   shared/lib/native-agent/planning-canary.test.ts
   shared/lib/feature-outcome-consumer.test.ts
   shared/lib/outcome-collectors.test.ts
+  shared/lib/static-features.test.ts
+  shared/lib/static-features-contract.test.ts
+  shared/lib/candidate-features.test.ts
   shared/lib/context-analyzer.test.ts
   shared/lib/review-engine.test.ts
   shared/lib/review-runner.test.ts
@@ -116,12 +145,12 @@ TESTS=(
   shared/lib/arbiter-probes/survival-agreement.test.ts
   shared/lib/arbiter-probes/eval-disagreement.test.ts
   tools/arbiter-probe-p1-2.test.ts
+  tools/cleanup-terminal-inbox.test.ts
   shared/lib/pr-diff-provider.test.ts
   shared/lib/pr-metadata.test.ts
   shared/lib/pr-attribution.test.ts
   shared/lib/pr-ci-status.test.ts
   shared/lib/ready-engine.test.ts
-  shared/lib/ready-stage.test.ts
   shared/lib/ci-failure-classifier.test.ts
   shared/lib/ci-log-fetcher.test.ts
   shared/lib/ready-watchdog.test.ts
@@ -129,19 +158,30 @@ TESTS=(
   shared/lib/tend-challenge-gate.test.ts
   shared/lib/transient-retry.test.ts
   shared/lib/tend-loop.test.ts
+  shared/lib/tool-choice-gate-publisher.test.ts
+  shared/lib/tool-choice-gate-scheduler.test.ts
   shared/lib/challenge-comparison.test.ts
   shared/lib/no-comparison-report.test.ts
+  shared/lib/arbiter-r6-report.test.ts
+  shared/lib/fork-identity.test.ts
+  tools/arbiter-r6-analysis.test.ts
   shared/lib/challenge-pair-resolver.test.ts
+  shared/lib/challenge-pair-resolver.hok2958.test.ts
+  shared/lib/reviewer-stage-adjudicator.test.ts
+  tools/quarantine-legacy-reviewer-forfeits.test.ts
   shared/lib/arm-failure-taxonomy.test.ts
   shared/lib/arm-reliability.test.ts
-  shared/lib/challenge-selection-health.test.ts
   shared/lib/stale-task-branches.test.ts
   shared/lib/tend-controller.test.ts
+  shared/lib/tend-scratch-prep.test.ts
+  shared/lib/ready-tend-handoff.test.ts
   shared/lib/observer-status-renderer.test.ts
   shared/lib/tend-status-renderer.test.ts
   shared/lib/tend-singleton.test.ts
   shared/lib/promotion-controller.test.ts
   shared/lib/cross-pr-revert-detector.test.ts
+  shared/lib/git-branch-changes.test.ts
+  shared/lib/git-base-resolver.test.ts
   shared/lib/llm-cli.test.ts
   shared/lib/headless-llm.test.ts
   shared/lib/router-log.test.ts
@@ -169,20 +209,21 @@ TESTS=(
   shared/lib/manual-edit-attribution-audit.test.ts
   shared/lib/merge-queue.test.ts
   shared/lib/model-registry.test.ts
+  shared/lib/model-registry-gpt55-inventory.test.ts
   shared/lib/model-promotion.test.ts
   shared/lib/model-evidence-policy.test.ts
   shared/lib/disabled-models.test.ts
   shared/lib/effective-models.test.ts
   shared/lib/model-agent-resolution.test.ts
+  shared/lib/stage-launchability.test.ts
+  shared/lib/coder-launch-reroute.test.ts
   shared/lib/model-resolution.test.ts
   shared/lib/model-resolution-display.test.ts
   shared/lib/mill-config-preflight.test.ts
   shared/lib/effective-task-config.test.ts
   shared/lib/routing-policy.test.ts
-  shared/lib/hokusai-adapter.test.ts
   shared/lib/hokusai-consent.test.ts
   shared/lib/hokusai-redaction.test.ts
-  shared/lib/hokusai-router.test.ts
   shared/lib/hokusai-schema.test.ts
   shared/lib/hokusai-router-audit.test.ts
   shared/lib/hokusai-contribution-schema.test.ts
@@ -206,6 +247,7 @@ TESTS=(
   shared/lib/harness-diff.test.ts
   shared/lib/quota-state.test.ts
   shared/lib/template-curly-checker.test.ts
+  shared/lib/test-tracked-write-checker.test.ts
   shared/lib/transient-marker.test.ts
   shared/lib/wavemill-incident-artifact-diagnostics.test.ts
   shared/lib/wavemill-incident-detector.test.ts
@@ -227,21 +269,23 @@ TESTS=(
   shared/lib/dependency-classifier.test.ts
   shared/lib/queue-partial-refresh.test.ts
   shared/lib/route-artifact.test.ts
-  shared/lib/route-batch.test.ts
   shared/lib/model-router.test.ts
-  shared/lib/eval-aggregator.test.ts
   shared/lib/eval-corpus-migrator.test.ts
   shared/lib/eval-record-builder.test.ts
   shared/lib/eval-orchestrator.test.ts
   shared/lib/stage-eval-evidence.test.ts
-  shared/lib/eval-schema.test.ts
   shared/lib/trace-event.test.ts
   shared/lib/eval-success-policy.test.ts
   shared/lib/eval-validator.test.ts
   shared/lib/eval-rejected-store.test.ts
   shared/lib/task-dependency-plan-cache.test.ts
+  shared/lib/queue-inference-status.test.ts
   shared/lib/task-dependency-planner.test.ts
   shared/lib/plan-queue-utils.test.ts
+  shared/lib/touch-set-predictor.test.ts
+  shared/lib/conflict-scorer.test.ts
+  shared/lib/grounded-planner.test.ts
+  shared/lib/planner-backtest.test.ts
   shared/lib/scaffold-migrate-dryrun.test.ts
   shared/lib/deepseek-smoke.test.ts
   shared/lib/seam-artifacts.test.ts
@@ -257,6 +301,7 @@ TESTS=(
   shared/lib/openrouter-alias-audit.test.ts
   shared/lib/openrouter-doctor.test.ts
   shared/lib/native-agent/openrouter-credits-guard.test.ts
+  shared/lib/native-agent/openrouter-balance-filter.test.ts
   shared/lib/launchable-models.test.ts
   shared/lib/openrouter-zero-traffic.test.ts
   shared/lib/parity-report.test.ts
@@ -265,6 +310,8 @@ TESTS=(
   tools/abort-task.test.ts
   tools/add-pr-label.test.ts
   tools/backfill-challenge-stage.test.ts
+  tools/backfill-stage-executed-model.test.ts
+  tools/backfill-tool-decisions.test.ts
   tools/backfill-hokusai-submissions.test.ts
   tools/certify-patch-coding.test.ts
   tools/promote-provisional-model.test.ts
@@ -289,6 +336,7 @@ TESTS=(
   tools/plan-queue.test.ts
   tools/select-wave.test.ts
   tools/set-pr-ready-label.test.ts
+  tools/set-pr-blocked-label.test.ts
   tools/smoke-deepseek.test.ts
   tools/openrouter-doctor.test.ts
   tools/review-scope-prompt.test.ts
@@ -302,10 +350,12 @@ TESTS=(
   tests/ready-stage-transient-mergeability.test.ts
   tools/sync-config.test.ts
   shared/lib/native-agent/certification/identity.test.ts
+  shared/lib/native-agent/certification/identity-invalidation.test.ts
   shared/lib/native-agent/certification/schema.test.ts
   shared/lib/native-agent/certification/store.test.ts
   shared/lib/native-agent/certification/coverage.test.ts
   shared/lib/native-agent/certification/auto-remediate.test.ts
+  shared/lib/native-agent/certification/canary-cohort.test.ts
   shared/lib/native-agent/certification/validator.test.ts
   shared/lib/native-agent/certification/scenarios.test.ts
   shared/lib/native-agent/certification/scenario-runner.test.ts
@@ -319,6 +369,9 @@ TESTS=(
   tools/native-agent-certifications.test.ts
   shared/lib/incident-linear-retry-queue.test.ts
   shared/lib/incident-to-linear-synchronizer.test.ts
+  shared/lib/observer-shadow-audit.test.ts
+  shared/lib/incident-filing-reconciler.test.ts
+  shared/lib/incident-log-excerpt-reader.test.ts
   shared/lib/verification-metrics.test.ts
   shared/lib/ci-verification-drift-detector.test.ts
   shared/lib/pre-pr-verification-drift-validator.test.ts
@@ -327,25 +380,15 @@ TESTS=(
   tests/fork-aware-comparison.test.ts
   # Registration-complete shared and tool tests.
   shared/lib/artifact-diagnostics.test.ts
-  shared/lib/challenge-coverage-selector.test.ts
   shared/lib/challenge-mode.test.ts
   shared/lib/challenge-recovery.test.ts
-  shared/lib/challenge-scheduler.test.ts
-  shared/lib/challenge-score-selector.test.ts
-  shared/lib/check-routing.test.ts
   shared/lib/codebase-context-gatherer.test.ts
-  shared/lib/config-sync.test.ts
-  shared/lib/constraint-parser.test.ts
-  shared/lib/constraint-storage.test.ts
   shared/lib/constraint-validator.test.ts
-  shared/lib/context-linter.test.ts
   shared/lib/deepseek-launcher.test.ts
-  shared/lib/difficulty-analyzer.test.ts
-  shared/lib/eval-backfill.test.ts
   shared/lib/eval-context-gatherer.test.ts
   shared/lib/eval-deduplication.test.ts
-  shared/lib/eval-export.test.ts
-  shared/lib/eval-persistence.test.ts
+  shared/lib/execution-economics.test.ts
+  shared/lib/execution-economics-report.test.ts
   shared/lib/eval-summary-printer.test.ts
   shared/lib/evals-paths.test.ts
   shared/lib/execution-contract.test.ts
@@ -354,27 +397,31 @@ TESTS=(
   shared/lib/launch-priority-audit.consistency.test.ts
   shared/lib/launch-priority-audit.test.ts
   shared/lib/linear.test.ts
-  shared/lib/llm-router.test.ts
   shared/lib/model-validator.test.ts
-  shared/lib/native-agent/certification/router-filter.test.ts
   shared/lib/native-agent/launch-coding.test.ts
   shared/lib/native-agent/review.test.ts
   shared/lib/native-agent/session-stream.test.ts
   shared/lib/native-agent/smoke.test.ts
+  shared/lib/native-agent/tool-decision-schema.test.ts
+  shared/lib/native-agent/tool-decision-projector.test.ts
+  shared/lib/native-agent/tool-decision-corpus.test.ts
+  shared/lib/native-agent/tool-decision-labeler.test.ts
+  shared/lib/native-agent/tool-decision-report.test.ts
+  shared/lib/native-agent/tool-decision-capture.test.ts
+  shared/lib/native-agent/tool-decision-purge.test.ts
+  shared/lib/native-agent/tool-choice-analyzer.test.ts
   shared/lib/native-agent/tools/command.test.ts
   shared/lib/native-agent/tools/intended-files.test.ts
   shared/lib/native-agent/workflow-tools/dedupe-registry.test.ts
   shared/lib/native-agent/workflow-tools/ready-remediation.test.ts
   shared/lib/native-agent/workflow-tools/review-flow.test.ts
   shared/lib/native-openrouter-config-validation.test.ts
-  shared/lib/openrouter-generation-api.test.ts
   shared/lib/openrouter-launcher.test.ts
   shared/lib/openrouter-runtime.test.ts
   shared/lib/openrouter-smoke.test.ts
   shared/lib/permission-patterns.test.ts
   shared/lib/permissions-verifier.test.ts
   shared/lib/plan-validator.test.ts
-  shared/lib/post-completion-hook.test.ts
   shared/lib/branch-publication.test.ts
   shared/lib/pre-pr-verification-gate.test.ts
   shared/lib/pre-pr-verification.test.ts
@@ -382,38 +429,36 @@ TESTS=(
   shared/lib/project-context-generator.test.ts
   shared/lib/prompt-hash.test.ts
   shared/lib/prompt-registry.test.ts
+  shared/lib/wavemill-install-paths.test.ts
   shared/lib/prompt-utils.test.ts
   shared/lib/ready-diagnostics.test.ts
   shared/lib/ready-migration-base.test.ts
-  shared/lib/repo-context-analyzer.test.ts
+  shared/lib/pr-route-provenance.test.ts
+  shared/lib/route-decision.test.ts
   shared/lib/resource-adapters/dspy-adapter.test.ts
   shared/lib/resource-adapters/native-runtime-adapter.test.ts
   shared/lib/resource-adapters/prompt-adapter.test.ts
   shared/lib/resource-registry.test.ts
   shared/lib/resource-retrieval.test.ts
   shared/lib/resource-selection.test.ts
-  shared/lib/review-context-gatherer.test.ts
   shared/lib/review-stats.test.ts
   shared/lib/route-model-successors.test.ts
-  shared/lib/router-diversity.test.ts
-  shared/lib/router-exploration.test.ts
   shared/lib/rubric.test.ts
-  shared/lib/rule-generator.test.ts
-  shared/lib/stage-aware-router.test.ts
   shared/lib/subsystem-cross-reference.test.ts
   shared/lib/subsystem-search.test.ts
-  shared/lib/sync-config-classifier.test.ts
-  shared/lib/task-context-analyzer.test.ts
-  shared/lib/task-descriptor-backfill.test.ts
   shared/lib/task-descriptor-builder.test.ts
   shared/lib/task-difficulty-classifier.test.ts
+  shared/lib/task-packet-feature-extractor.test.ts
   shared/lib/task-packet-classifier.test.ts
+  shared/lib/task-packet-scorer.test.ts
+  shared/lib/task-packet-signal-analysis.test.ts
   shared/lib/task-packet-utils.test.ts
-  shared/lib/task-packet-validator.test.ts
   shared/lib/tool-runner.test.ts
-  shared/lib/workflow-cost.test.ts
-  shared/lib/workflow-router.test.ts
+  shared/lib/worktree-dirty-status.test.ts
   shared/lib/worktree-manager.test.ts
+  shared/lib/bounded-retry.test.ts
+  shared/lib/observer-auto-fix.test.ts
+  shared/lib/observer-alerts.test.ts
   tools/backfill-stage-scores.test.ts
   tools/certify-launch-priority-model.test.ts
   tools/check-native-agent-launch.test.ts
@@ -427,9 +472,17 @@ TESTS=(
   tools/openrouter-smoke.test.ts
   tools/plan-launch-priority-certifications.test.ts
   tools/reap-stale-challengers.test.ts
+  tools/stamp-pr-route.test.ts
   shared/lib/test-partitioner.test.ts
   shared/lib/shard-balance.test.ts
   shared/lib/ci-test-timings.test.ts
+  shared/fixtures/harness-replay/patch-selection-v1/schema.test.ts
+  src/evaluation/scorers/wavemill/patch-selection.test.ts
+  shared/lib/challenge-replay-capture.test.ts
+  spike/pi-native-agent/mcp-proxy-spike.test.ts
+  shared/lib/cost-parity.test.ts
+  shared/lib/observer-findings.test.ts
+  shared/lib/pr-comparison-actions.test.ts
 )
 
 SHARD_INDEX=1
@@ -526,16 +579,44 @@ fi
 
 cd "$REPO_DIR"
 
+# HOK-3157: snapshot the tracked-file state before running tests. The guard
+# below compares a post-run snapshot and fails if any tracked file was left
+# modified. Untracked artifacts (CI timing JSON, etc.) are ignored. We drop
+# `exec` so node --test runs as a child and this script can run the check
+# after it exits.
+# shellcheck source=lib/tracked-tree-guard.sh
+source "$SCRIPT_DIR/lib/tracked-tree-guard.sh"
+TREE_BEFORE="$(tracked_tree_snapshot "$REPO_DIR")"
+
+status=0
 if [[ -n "$TIMING_OUT" ]]; then
   # Second reporter writes the bounded per-file timing JSON to $TIMING_OUT
   # while the spec reporter keeps human-readable output on stdout. The shard
   # label reaches the reporter through the environment.
   export WAVEMILL_TIMING_SHARD="${SHARD_INDEX}/${SHARD_TOTAL}"
-  exec node --test \
+  # --test-timeout: bound any single test at 5 minutes so a hung child or
+  # never-resolving await cannot burn the shard's whole 20-minute CI budget.
+  # Route-tasks's slowest subtest runs ~14s and tend-scratch-prep's process-
+  # group tests carry explicit 15s timeouts, so 300000ms is a wide safety net.
+  # Without this, shard 7 was hanging in CI for the full 20m timeout when a
+  # tend-scratch-prep child kept a stdio pipe alive; --test-force-exit hid
+  # that at the cost of racing subprocess-spawning shards to exit, which
+  # then stalled shard 3 for its full 20m — see HOK-3039.
+  node --test --test-timeout=300000 \
     --test-reporter spec --test-reporter-destination stdout \
     --test-reporter "$REPO_DIR/tests/lib/unit-timing-reporter.mjs" \
     --test-reporter-destination "$TIMING_OUT" \
-    "${SELECTED[@]}"
+    "${SELECTED[@]}" || status=$?
+else
+  node --test --test-timeout=300000 "${SELECTED[@]}" || status=$?
 fi
 
-exec node --test "${SELECTED[@]}"
+# Only promote a passing status to failure on guard failure; preserve a
+# non-zero node --test exit code either way.
+if ! tracked_tree_check "$REPO_DIR" "$TREE_BEFORE" run-unit-tests.sh; then
+  if (( status == 0 )); then
+    status=1
+  fi
+fi
+
+exit "$status"

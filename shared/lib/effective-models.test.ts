@@ -57,9 +57,8 @@ describe('effective-models', () => {
       assert.equal(availability.reason, 'context-window-insufficient');
     }
 
-    // HOK-2947 repointed mistral-large-2 to the 262k mistral-large-2512
-    // endpoint, so it now clears the coding floor.
-    assert.ok(models.includes('mistral-large-2'), 'mistral-large-2 should be effective for coding after the repoint');
+    assert.ok(!models.includes('mistral-large-2'), 'blocked mistral-large-2 should not be effective for coding');
+    assert.equal(explainEffectiveModelAvailability('mistral-large-2', 'coding').reason, 'blocked-lifecycle');
 
     // But kimi-k2 should still be available for planning
     const { models: planningModels } = listEffectiveModelsForStage('planning');

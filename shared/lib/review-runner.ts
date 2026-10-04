@@ -32,7 +32,11 @@ import {
   type ReviewScopeGuardToolError,
 } from './review-scope-guard.ts';
 import { REVIEW_SCOPE_UNVERIFIABLE_FAILURE_CATEGORY } from './stage-result.ts';
-import { resolveChallengedStageIntent } from './challenge-execution-contract.ts';
+import {
+  buildExecutedIdentity,
+  resolveReviewStageChallengePin,
+} from './challenge-execution-contract.ts';
+import { resolveOriginFirstRef } from './git-base-resolver.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Types
@@ -82,7 +86,7 @@ export const reviewRunnerDeps = {
   gatherReviewContextAsync,
   getCurrentBranch,
   getGitDiff,
-  resolveChallengedStageIntent,
+  resolveReviewStageChallengePin,
   runReview,
   validateReviewScope,
 };
@@ -183,15 +187,41 @@ export async function reviewChanges(
   // explicit override (HOK-2969). Every `review_changes` invocation in a
   // reviewer-stage challenge — coding-phase self-review included — must use
   // the same pinned model so all collected evidence attributes consistently.
-  const requestedModel = options.requestedModel
-    ?? (options.featureDir
-      ? reviewRunnerDeps.resolveChallengedStageIntent({
-        repoDir,
-        featureDir: options.featureDir,
-        branchName: branch,
-        stage: 'review',
-      })?.model
-      : undefined);
+  let requestedModel = options.requestedModel?.trim() || undefined;
+  if (!requestedModel && options.featureDir) {
+    const challengePin = reviewRunnerDeps.resolveReviewStageChallengePin({
+      repoDir,
+      featureDir: options.featureDir,
+      branchName: branch,
+    });
+    if (challengePin && 'unresolvable' in challengePin) {
+      const failedResult: ReviewResult = {
+        verdict: 'not_ready',
+        failureCategory: 'challenge-review-pin-unresolvable',
+        codeReviewFindings: [{
+          severity: 'blocker',
+          location: options.featureDir,
+          category: 'challenge-review-pin',
+          description: `Reviewer-stage challenge pair ${challengePin.pairId} has no resolvable canonical challenge intent; refusing to launch an unpinned review.`,
+        }],
+        substantiveAnalysisIdentity: buildExecutedIdentity({
+          role: 'substantive_analysis',
+          resolvedModel: 'unresolved',
+          source: 'derived',
+          fallbackReason: 'challenge_intent_unresolvable',
+        }),
+        metadata: {
+          branch,
+          files: context.metadata.files,
+          hasUiChanges: context.metadata.hasUiChanges,
+          designContextAvailable: context.designContext !== null,
+          uiVerificationRun: false,
+        },
+      };
+      return mergeDeterministicFindings(failedResult, deterministic);
+    }
+    requestedModel = challengePin?.model;
+  }
 
   // Delegate to review engine
   const result = await reviewRunnerDeps.runReview(reviewContext, repoDir, {
@@ -202,6 +232,7 @@ export async function reviewChanges(
     skipClaudePreflight: true,
     operatingMode: options.operatingMode,
     featureDir: options.featureDir,
+    repoDir,
     ...(requestedModel ? { model: requestedModel } : {}),
   });
 
@@ -297,7 +328,8 @@ async function collectCrossPrRevertReviewFindings(input: {
     return [];
   }
 
-  const integrationBranch = getIntegrationConfig(input.repoDir).integrationBranch;
+  const configuredIntegrationBranch = getIntegrationConfig(input.repoDir).integrationBranch;
+  const integrationBranch = resolveOriginFirstRef(input.repoDir, configuredIntegrationBranch).ref;
   let baseRef: string;
   let findings: CrossPrRevertFinding[];
 
@@ -313,7 +345,7 @@ async function collectCrossPrRevertReviewFindings(input: {
       headRef: 'HEAD',
       integrationRef: integrationBranch,
       maxRecentMerges: reviewMergeConfig.crossPrRevertCheck.maxRecentMerges,
-    });
+    }).findings;
   } catch (error) {
     return [buildCrossPrEvidenceUnavailableFinding(error)];
   }

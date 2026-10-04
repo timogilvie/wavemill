@@ -8,7 +8,7 @@
  * under .wavemill/artifacts/ with SHA-256 digests.
  */
 
-import { appendFileSync, mkdirSync, existsSync, rmSync, writeFileSync, readFileSync, openSync, writeSync, fsyncSync, closeSync } from 'node:fs';
+import { appendFileSync, mkdirSync, existsSync, readdirSync, rmSync, writeFileSync, readFileSync, openSync, writeSync, fsyncSync, closeSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import type {
@@ -53,6 +53,57 @@ export function resolveSessionEventStreamPath(sessionId: string, repoDir?: strin
  */
 export function resolveArtifactsDir(repoDir?: string): string {
   return resolve(repoDir || process.cwd(), ARTIFACTS_DIR);
+}
+
+/**
+ * Find `*.jsonl` streams in a session-events dir whose `session_started`
+ * event carries a scripted-model config digest (HOK-3121).
+ *
+ * Detection is content-based: the first non-blank line must be a JSON
+ * object with `type === 'session_started'` and an `initialConfigDigest`
+ * that starts with `model:scripted:`. This matches the fixtures the
+ * scripted planning tests produced without hard-coding filenames.
+ *
+ * Missing dir → empty result. Unreadable files → skipped, not thrown.
+ */
+export function findScriptedSessionEventStreams(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const matches: string[] = [];
+  for (const entry of entries) {
+    if (!entry.endsWith('.jsonl')) continue;
+    const streamPath = resolve(dir, entry);
+    let firstLine = '';
+    try {
+      const raw = readFileSync(streamPath, 'utf-8');
+      for (const line of raw.split('\n')) {
+        if (line.trim() !== '') {
+          firstLine = line;
+          break;
+        }
+      }
+    } catch {
+      continue;
+    }
+    if (!firstLine) continue;
+    let parsed: { type?: unknown; initialConfigDigest?: unknown };
+    try {
+      parsed = JSON.parse(firstLine);
+    } catch {
+      continue;
+    }
+    if (parsed.type !== 'session_started') continue;
+    const digest = parsed.initialConfigDigest;
+    if (typeof digest !== 'string') continue;
+    if (!digest.startsWith('model:scripted:')) continue;
+    matches.push(streamPath);
+  }
+  return matches;
 }
 
 /**
@@ -272,6 +323,9 @@ export class SessionStreamWriter {
     toolMenuDigest?: string;
     providerToolsDigest?: string;
     policyConfigDigest?: string;
+    turnBudgetRemaining?: number;
+    toolCallBudgetRemaining?: number;
+    tokensUsedSoFar?: number;
   }): SessionEvent {
     const event = this.createEvent({
       type: 'model_request',
@@ -287,6 +341,9 @@ export class SessionStreamWriter {
       ...(opts.toolMenuDigest && { toolMenuDigest: opts.toolMenuDigest }),
       ...(opts.providerToolsDigest && { providerToolsDigest: opts.providerToolsDigest }),
       ...(opts.policyConfigDigest && { policyConfigDigest: opts.policyConfigDigest }),
+      ...(opts.turnBudgetRemaining !== undefined && { turnBudgetRemaining: opts.turnBudgetRemaining }),
+      ...(opts.toolCallBudgetRemaining !== undefined && { toolCallBudgetRemaining: opts.toolCallBudgetRemaining }),
+      ...(opts.tokensUsedSoFar !== undefined && { tokensUsedSoFar: opts.tokensUsedSoFar }),
     });
     this.append(event);
     return event;

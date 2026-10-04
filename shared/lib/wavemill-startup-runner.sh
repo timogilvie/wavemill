@@ -58,7 +58,8 @@ else
 fi
 PROJECT_NAME="$(jq -r '.monitorConfig.projectName // empty' "$PLAN_FILE")"
 AUTO_EVAL="$(jq -r '.monitorConfig.autoEval // true' "$PLAN_FILE")"
-ENTER_LAUNCHES_WAVE="$(jq -r '.monitorConfig.enterLaunchesWave // true' "$PLAN_FILE")"
+ENTER_ACTION="$(jq -r '.monitorConfig.enterAction // (if .monitorConfig.enterLaunchesWave == true then "wave" elif .monitorConfig.enterLaunchesWave == false then "top-scored" else "none" end)' "$PLAN_FILE")"
+if [[ "$ENTER_ACTION" == "wave" ]]; then ENTER_LAUNCHES_WAVE="true"; else ENTER_LAUNCHES_WAVE="false"; fi
 DASHBOARD_VERBOSITY="$(jq -r '.monitorConfig.dashboardVerbosity // "info"' "$PLAN_FILE")"
 DASHBOARD_LOG_TO_FILE="$(jq -r '.monitorConfig.dashboardLogToFile // true' "$PLAN_FILE")"
 # Parsed but intentionally unused; behavior change ships in follow-up.
@@ -72,7 +73,7 @@ export SESSION REPO_DIR BASE_BRANCH RESOLVED_BASE_REF WORKTREE_ROOT PLANNING_MOD
 export WAVEMILL_RUN_EPOCH
 export WAVEMILL_BASE_BRANCH_SOURCE WAVEMILL_REQUIRE_CONFIRM_SOURCE WAVEMILL_MERGE_METHOD_SOURCE
 export FORCE_MODEL ROUTER_ENABLED MAX_PARALLEL STATE_DIR STATE_FILE TOOLS_DIR LIB_DIR
-export POLL_SECONDS REQUIRE_CONFIRM INTEGRATION_MERGE_METHOD DRY_RUN PROJECT_NAME AUTO_EVAL ENTER_LAUNCHES_WAVE DASHBOARD_VERBOSITY
+export POLL_SECONDS REQUIRE_CONFIRM INTEGRATION_MERGE_METHOD DRY_RUN PROJECT_NAME AUTO_EVAL ENTER_ACTION ENTER_LAUNCHES_WAVE DASHBOARD_VERBOSITY
 export DASHBOARD_LOG_TO_FILE MILL_LOG_FILE
 
 source "$LIB_DIR/wavemill-common.sh"
@@ -202,6 +203,36 @@ startup_openrouter_credit_warning() {
   return 1
 }
 
+# HOK-3155: clear the credit circuit when a balance refresh confirms the
+# account is above min_credits. Two sentinels must go together: the warning
+# cache (dashboard WARN band) and the abort-count file written by
+# record_openrouter_credits_challenge_abort. The abort-count path mirrors the
+# writer's resolution: WAVEMILL_STATE_DIR → dirname(STATE_FILE) → /tmp.
+startup_clear_openrouter_credit_circuit() {
+  [[ -n "${REPO_DIR:-}" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+
+  local quota_file="$REPO_DIR/.wavemill/quota-state.json"
+  [[ -f "$quota_file" ]] || return 0
+
+  local balance min_credits
+  balance="$(jq -r '.providers.openrouter.balanceUsd // empty' "$quota_file" 2>/dev/null || true)"
+  [[ -n "$balance" ]] || return 0
+  min_credits="$(jq -r '.nativeAgent.providers.openrouter.minCreditsUsd // 0.02' "$REPO_DIR/.wavemill-config.json" 2>/dev/null || echo "0.02")"
+  [[ -n "$min_credits" ]] || min_credits="0.02"
+
+  awk -v balance="$balance" -v min="$min_credits" 'BEGIN { exit !(balance >= min) }' || return 0
+
+  write_openrouter_warning_cache ""
+  local state_dir
+  state_dir="${WAVEMILL_STATE_DIR:-}"
+  if [[ -z "$state_dir" && -n "${STATE_FILE:-}" ]]; then
+    state_dir="$(dirname "$STATE_FILE")"
+  fi
+  [[ -n "$state_dir" ]] || state_dir="/tmp"
+  rm -f "$state_dir/openrouter-credits-abort-count" 2>/dev/null || true
+}
+
 startup_warn_openrouter_status() {
   [[ -n "${REPO_DIR:-}" && -n "${TOOLS_DIR:-}" ]] || return 0
   command -v jq >/dev/null 2>&1 || return 0
@@ -213,6 +244,11 @@ startup_warn_openrouter_status() {
     startup_log "WARN: $credit_warning"
     return 0
   fi
+
+  # HOK-3155: no credit warning means the balance refresh succeeded and
+  # cleared the drained condition. Clear both the warning cache and the
+  # abort-count sentinel so a later credit abort trips cleanly on the first hit.
+  startup_clear_openrouter_credit_circuit
 
   local doctor_json doctor_rc warning_text status_line line
   doctor_json="$(npx tsx "$TOOLS_DIR/openrouter-doctor.ts" --json --repo-dir "$REPO_DIR" --lookback 20 2>/dev/null)" || doctor_rc=$?
@@ -323,55 +359,10 @@ set_task_phase_local() {
     --arg issue "$issue" --arg phase "$phase"
 }
 
-linear_set_state() {
-  local issue="$1" state="$2"
-  [[ "$DRY_RUN" == "true" ]] && return 0
-  npx tsx "$TOOLS_DIR/set-issue-state.ts" "$issue" "$state" >/dev/null 2>&1
-}
-
-linear_enqueue_retry() {
-  local state="$1"
-  local issues_csv="$2"
-  local category="${3:-unknown}"
-  local http="${4:-none}"
-  local message="${5:-Queued from startup batch retry path}"
-  [[ "$DRY_RUN" == "true" ]] && return 0
-  [[ -z "$issues_csv" ]] && return 0
-  npx tsx "$TOOLS_DIR/linear-retry-drain.ts" enqueue \
-    --state "$state" \
-    --issues "$issues_csv" \
-    --category "$category" \
-    --http "$http" \
-    --message "$message" >/dev/null 2>&1 || true
-}
-
-linear_batch_set_state() {
-  local state="$1"
-  shift || true
-  local -a issues=("$@")
-  local output exit_code=0 stderr_tmp stderr_output retryable_issues_csv retry_category retry_http retry_message
-  [[ "$DRY_RUN" == "true" ]] && return 0
-  [[ "${#issues[@]}" -eq 0 ]] && return 0
-
-  stderr_tmp="$(mktemp -t wavemill-linear-batch-stderr.XXXXXX)"
-  output="$(npx tsx "$TOOLS_DIR/set-issues-state.ts" --state "$state" "${issues[@]}" 2>"$stderr_tmp")" || exit_code=$?
-  stderr_output="$(cat "$stderr_tmp" 2>/dev/null || true)"
-
-  if jq -e '.failed | length > 0' >/dev/null 2>&1 <<<"$output"; then
-    while IFS= read -r failure; do
-      startup_log "WARN: Linear state update to '$state' failed for $failure"
-    done < <(jq -r '.failed[] | "\(.issueId): \(.error) [category=\(.category // "unknown"), http=\((.httpStatus // "none") | tostring), retryable=\(.isRetryable // false)]"' <<<"$output")
-    retryable_issues_csv="$(jq -r '[.failed[] | select(.isRetryable == true) | .issueId] | unique | join(",")' <<<"$output")"
-    retry_category="$(jq -r '([.failed[] | select(.isRetryable == true) | .category] | first) // "unknown"' <<<"$output")"
-    retry_http="$(jq -r '([.failed[] | select(.isRetryable == true) | .httpStatus] | map(select(. != null)) | first // "none") | tostring' <<<"$output")"
-    retry_message="$(jq -r '([.failed[] | select(.isRetryable == true) | .error] | first) // "Queued from startup batch retry path"' <<<"$output")"
-    linear_enqueue_retry "$state" "$retryable_issues_csv" "$retry_category" "$retry_http" "$retry_message"
-  elif [[ "$exit_code" -ne 0 ]]; then
-    startup_log "WARN: Batch Linear state update to '$state' failed for ${#issues[@]} issue(s) [category=unknown, http=none, retryable=false, details=${stderr_output:-none}]"
-  fi
-  rm -f "$stderr_tmp"
-  return 0
-}
+# linear_set_state, linear_batch_set_state and linear_enqueue_retry are
+# provided by wavemill-common.sh (HOK-3115). This scope's former copies wrote
+# whatever ID they were handed, including challenger task IDs, and the silent
+# linear_set_state shadowed the canonical one's timeout and diagnostics.
 
 ensure_state_file() {
   mkdir -p "$STATE_DIR"
@@ -445,7 +436,7 @@ startup_preflight_fresh_launch_plan() {
     slug="$(jq -r '.slug // empty' <<<"$task_json")"
     branch="$(jq -r '.branch // empty' <<<"$task_json")"
     worktree="$(jq -r '.worktreeDir // empty' <<<"$task_json")"
-    linear_issue="$(jq -r '.linearIssueId // .issue // empty' <<<"$task_json")"
+    linear_issue="$(task_identity_linear_id "$issue" 2>/dev/null || true)"
     challenge_pair="$(jq -r '.challengePairId // empty' <<<"$task_json")"
     challenge_role="$(jq -r '.challengeRole // empty' <<<"$task_json")"
     linear_state="$(startup_issue_state_from_task "$task_json")"
@@ -482,7 +473,7 @@ startup_preflight_fresh_launch_plan() {
     slug="$(jq -r '.slug // empty' <<<"$task_json")"
     branch="$(jq -r '.branch // empty' <<<"$task_json")"
     worktree="$(jq -r '.worktreeDir // empty' <<<"$task_json")"
-    linear_issue="$(jq -r '.linearIssueId // .issue // empty' <<<"$task_json")"
+    linear_issue="$(task_identity_linear_id "$issue" 2>/dev/null || true)"
     challenge_pair="$(jq -r '.challengePairId // empty' <<<"$task_json")"
     classification="$(jq -r '.classification // "unverifiable"' <<<"$resolution" 2>/dev/null || echo "unverifiable")"
 
@@ -618,6 +609,8 @@ write_monitor_env() {
     write_shell_assignment "LIB_DIR" "$LIB_DIR"
     write_shell_assignment "STATE_DIR" "$STATE_DIR"
     write_shell_assignment "STATE_FILE" "$STATE_FILE"
+    write_shell_assignment "TASK_IDENTITY_TASK_ID_RE" "$TASK_IDENTITY_TASK_ID_RE"
+    write_shell_assignment "TASK_IDENTITY_WINDOW_PREFIX_RE" "$TASK_IDENTITY_WINDOW_PREFIX_RE"
     write_shell_assignment "MERGE_QUEUE_SELECTION_FILE" "$STATE_DIR/merge-queue-selection.json"
     write_shell_assignment "POLL_SECONDS" "$POLL_SECONDS"
     write_shell_assignment "REQUIRE_CONFIRM" "$REQUIRE_CONFIRM"
@@ -633,6 +626,7 @@ write_monitor_env() {
     write_shell_assignment "ROUTER_ENABLED" "$ROUTER_ENABLED"
     write_shell_assignment "MAX_PARALLEL" "$MAX_PARALLEL"
     write_shell_assignment "AUTO_EVAL" "$AUTO_EVAL"
+    write_shell_assignment "ENTER_ACTION" "$ENTER_ACTION"
     write_shell_assignment "ENTER_LAUNCHES_WAVE" "$ENTER_LAUNCHES_WAVE"
     write_shell_assignment "DASHBOARD_VERBOSITY" "$DASHBOARD_VERBOSITY"
     write_shell_assignment "DASHBOARD_LOG_TO_FILE" "$DASHBOARD_LOG_TO_FILE"
@@ -723,47 +717,87 @@ setup_control_dashboard() {
   tmux select-pane -t "$SESSION:$WAVEMILL_WINDOW_MILL.0"
 }
 
+# Spawns the backstage window for any backstage consumer: tend (integration
+# sessions only) and/or the observer (every mill session, HOK-3094).
 spawn_integration_window() {
   [[ "${DRY_RUN:-false}" == "true" ]] && return 0
-  local merged enabled use_mill_session observer_enabled observer_interval observer_max_log_lines
+  local merged tend_enabled observer_enabled observer_interval observer_max_log_lines observer_service_mode
   local integration_cmd observer_cmd status_script jobs_cmd queue_cmd tend_pane right_top_pane right_bottom_pane observer_pane backstage_health_file
   local backstage_exists=false tend_result jobs_result queue_result observer_result tend_action jobs_action queue_action observer_action
   local tend_killed=0 jobs_killed=0 queue_killed=0 observer_killed=0 created_layout=false observer_instance_count=0
+  local tend_off_reason="" stale_tend_pane _dead
+  tend_pane="" tend_action="" observer_pane=""
 
   merged="$(wavemill_load_config "$REPO_DIR")"
-  enabled="$(printf '%s' "$merged" | jq -r '.integration.enabled // false' 2>/dev/null || echo false)"
-  use_mill_session="$(printf '%s' "$merged" | jq -r '.integration.useMillSession // true' 2>/dev/null || echo true)"
 
-  if [[ "$enabled" != "true" || "$use_mill_session" != "true" ]]; then
+  # HOK-3102: gate through the single session-capability resolver so we
+  # never publish tend/observer panes when the resolver says no consumer.
+  # HOK-3094: tend follows integration; the observer runs in every mill
+  # session unless explicitly disabled, so either one opens the window.
+  tend_enabled=false
+  wavemill_session_has tend "$REPO_DIR" && tend_enabled=true
+
+  observer_enabled=false
+  if wavemill_session_has observer "$REPO_DIR"; then
+    observer_enabled=true
+  else
+    _cleanup_stale_observer_findings "$REPO_DIR"
+  fi
+
+  if [[ "$tend_enabled" != "true" && "$observer_enabled" != "true" ]]; then
     return 0
   fi
 
-  observer_enabled=false
-  if wavemill_observer_config_enabled "$merged"; then
-    observer_enabled=true
+  # Log the resolved capabilities once at startup so the record explains the
+  # gate outcome.
+  local caps_json=""
+  if caps_json="$(wavemill_session_capabilities_json "$REPO_DIR")" && [[ -n "$caps_json" ]]; then
+    local caps_summary
+    caps_summary="$(printf '%s' "$caps_json" | jq -r '"tend=\(.tend) observer=\(.observer) mergeExecutor=\(.mergeExecutor) mergeQueue=\(.mergeQueue)"' 2>/dev/null || echo "")"
+    [[ -n "$caps_summary" ]] && startup_log "Session capabilities: $caps_summary"
   fi
 
-  startup_log "Starting backstage window (tend loop + background status)..."
+  if [[ "$tend_enabled" == "true" ]]; then
+    startup_log "Starting backstage window (tend loop + background status)..."
+  else
+    tend_off_reason="$(printf '%s' "$caps_json" | jq -r '.reasons.tend // empty' 2>/dev/null || true)"
+    startup_log "Starting backstage window (observer only; tend off: ${tend_off_reason:-no tend consumer})..."
+  fi
   if [[ "$observer_enabled" == "true" ]]; then
     observer_interval="$(wavemill_observer_interval_seconds "$merged")"
+    observer_max_log_lines="$(wavemill_observer_max_log_lines "$merged")"
     startup_log "Observer: enabled (interval=${observer_interval}s)"
+    observer_service_mode="$(wavemill_observer_linear_service_mode "$merged" "$REPO_DIR")"
+    if [[ "$observer_service_mode" != "off" ]]; then
+      wavemill_observer_ensure_linear_key "$REPO_DIR"
+      startup_log "Observer: managed Linear filing mode=${observer_service_mode}"
+    fi
+    observer_cmd="$(wavemill_build_observer_loop_command "$SESSION" "$REPO_DIR" "$TOOLS_DIR" "$observer_interval" "$observer_max_log_lines" "$observer_service_mode")"
   else
-    startup_log "Observer: disabled (opt-in; enable via .observer.enabled in .wavemill-config.json; see HOK-2594)"
+    startup_log "Observer: disabled by .observer.enabled=false"
   fi
   WORKTREE_ROOT="${WORKTREE_ROOT:-$REPO_DIR}"
-  integration_cmd="$(wavemill_build_tend_loop_command "$SESSION" "$REPO_DIR" "$TOOLS_DIR" "integration")"
   if tmux list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -Fxq "$WAVEMILL_WINDOW_BACKSTAGE"; then
     backstage_exists=true
     startup_log "Backstage window already exists; reconciling panes"
   fi
 
-  if [[ "$backstage_exists" == "true" ]]; then
-    tend_result="$(wavemill_reconcile_backstage_service_pane "$SESSION" "$WAVEMILL_WINDOW_BACKSTAGE" "$WAVEMILL_BACKSTAGE_TEND_PANE_TITLE" "$integration_cmd" "reuse" "$SESSION:$WAVEMILL_WINDOW_BACKSTAGE.0" -h -b -p 60 -c "$REPO_DIR" || true)"
-    IFS=$'\t' read -r tend_pane tend_action tend_killed <<< "$tend_result"
-  else
-    tmux new-window -d -t "$SESSION" -n "$WAVEMILL_WINDOW_BACKSTAGE" -c "$REPO_DIR" "$integration_cmd" >/dev/null
-    tend_pane="$(tmux display-message -p -t "$SESSION:$WAVEMILL_WINDOW_BACKSTAGE.0" '#{pane_id}' 2>/dev/null || true)"
-    tend_action="created"
+  if [[ "$tend_enabled" == "true" ]]; then
+    integration_cmd="$(wavemill_build_tend_loop_command "$SESSION" "$REPO_DIR" "$TOOLS_DIR" "integration")"
+    if [[ "$backstage_exists" == "true" ]]; then
+      tend_result="$(wavemill_reconcile_backstage_service_pane "$SESSION" "$WAVEMILL_WINDOW_BACKSTAGE" "$WAVEMILL_BACKSTAGE_TEND_PANE_TITLE" "$integration_cmd" "reuse" "$SESSION:$WAVEMILL_WINDOW_BACKSTAGE.0" -h -b -p 60 -c "$REPO_DIR" || true)"
+      IFS=$'\t' read -r tend_pane tend_action tend_killed <<< "$tend_result"
+    else
+      tmux new-window -d -t "$SESSION" -n "$WAVEMILL_WINDOW_BACKSTAGE" -c "$REPO_DIR" "$integration_cmd" >/dev/null
+      tend_pane="$(tmux display-message -p -t "$SESSION:$WAVEMILL_WINDOW_BACKSTAGE.0" '#{pane_id}' 2>/dev/null || true)"
+      tend_action="created"
+    fi
+  elif [[ "$backstage_exists" != "true" ]]; then
+    # Observer-only session: the observer opens the window as its first pane.
+    # The reconcile below finds it by title and reuses it.
+    tmux new-window -d -t "$SESSION" -n "$WAVEMILL_WINDOW_BACKSTAGE" -c "$REPO_DIR" "$observer_cmd" >/dev/null
+    observer_pane="$(tmux display-message -p -t "$SESSION:$WAVEMILL_WINDOW_BACKSTAGE.0" '#{pane_id}' 2>/dev/null || true)"
+    [[ -n "$observer_pane" ]] && wavemill_set_tmux_pane_title "$observer_pane" "$WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE"
   fi
 
   if [[ -n "$tend_pane" ]]; then
@@ -773,22 +807,21 @@ spawn_integration_window() {
     fi
   fi
 
-  status_script="${LIB_DIR:-$REPO_DIR/shared/lib}/wavemill-status.sh"
+  local first_pane="${tend_pane:-${observer_pane:-$SESSION:$WAVEMILL_WINDOW_BACKSTAGE.0}}"
+  status_script="${LIB_DIR:-$WAVEMILL_INSTALL_DIR/shared/lib}/wavemill-status.sh"
   printf -v jobs_cmd "'%s' --pane=jobs '%s' '%s' '%s'" "$status_script" "$SESSION" "$WORKTREE_ROOT" "$STATE_FILE"
   printf -v queue_cmd "'%s' --pane=queued-pending '%s' '%s' '%s'" "$status_script" "$SESSION" "$WORKTREE_ROOT" "$STATE_FILE"
 
-  jobs_result="$(wavemill_reconcile_backstage_service_pane "$SESSION" "$WAVEMILL_WINDOW_BACKSTAGE" "$WAVEMILL_BACKSTAGE_JOBS_PANE_TITLE" "$jobs_cmd" "restart" "${tend_pane:-$SESSION:$WAVEMILL_WINDOW_BACKSTAGE.0}" -h -p 40 || true)"
+  jobs_result="$(wavemill_reconcile_backstage_service_pane "$SESSION" "$WAVEMILL_WINDOW_BACKSTAGE" "$WAVEMILL_BACKSTAGE_JOBS_PANE_TITLE" "$jobs_cmd" "restart" "$first_pane" -h -p 40 || true)"
   IFS=$'\t' read -r right_top_pane jobs_action jobs_killed <<< "$jobs_result"
   [[ "$jobs_action" == "created" ]] && created_layout=true
 
-  queue_result="$(wavemill_reconcile_backstage_service_pane "$SESSION" "$WAVEMILL_WINDOW_BACKSTAGE" "$WAVEMILL_BACKSTAGE_QUEUE_PANE_TITLE" "$queue_cmd" "restart" "${right_top_pane:-$tend_pane}" -v -p 50 || true)"
+  queue_result="$(wavemill_reconcile_backstage_service_pane "$SESSION" "$WAVEMILL_WINDOW_BACKSTAGE" "$WAVEMILL_BACKSTAGE_QUEUE_PANE_TITLE" "$queue_cmd" "restart" "${right_top_pane:-$first_pane}" -v -p 50 || true)"
   IFS=$'\t' read -r right_bottom_pane queue_action queue_killed <<< "$queue_result"
   [[ "$queue_action" == "created" ]] && created_layout=true
 
   if [[ "$observer_enabled" == "true" ]]; then
-    observer_max_log_lines="$(wavemill_observer_max_log_lines "$merged")"
-    observer_cmd="$(wavemill_build_observer_loop_command "$SESSION" "$REPO_DIR" "$TOOLS_DIR" "$observer_interval" "$observer_max_log_lines")"
-    local observer_split_target="${right_bottom_pane:-${right_top_pane:-$tend_pane}}"
+    local observer_split_target="${right_bottom_pane:-${right_top_pane:-$first_pane}}"
     observer_result="$(wavemill_reconcile_backstage_service_pane "$SESSION" "$WAVEMILL_WINDOW_BACKSTAGE" "$WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE" "$observer_cmd" "reuse" "$observer_split_target" -v -p 50 -c "$REPO_DIR" || true)"
     IFS=$'\t' read -r observer_pane observer_action observer_killed <<< "$observer_result"
     [[ "$observer_killed" =~ ^[0-9]+$ ]] || observer_killed=0
@@ -803,6 +836,16 @@ spawn_integration_window() {
       [[ -n "$observer_pane" ]] || continue
       tmux kill-pane -t "$observer_pane" >/dev/null 2>&1 || true
     done < <(wavemill_list_backstage_panes_by_title "$SESSION" "$WAVEMILL_WINDOW_BACKSTAGE" "$WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE" 2>/dev/null || true)
+    observer_pane=""
+  fi
+
+  # Tend off: retire a tend pane left over from an earlier integration session.
+  # Done after the other panes exist so killing it never closes the window.
+  if [[ "$tend_enabled" != "true" ]]; then
+    while IFS=$'\t' read -r stale_tend_pane _dead; do
+      [[ -n "$stale_tend_pane" ]] || continue
+      tmux kill-pane -t "$stale_tend_pane" >/dev/null 2>&1 || true
+    done < <(wavemill_list_backstage_panes_by_title "$SESSION" "$WAVEMILL_WINDOW_BACKSTAGE" "$WAVEMILL_BACKSTAGE_TEND_PANE_TITLE" 2>/dev/null || true)
   fi
 
   tmux set-window-option -u -t "$SESSION:$WAVEMILL_WINDOW_BACKSTAGE" window-status-style >/dev/null 2>&1 || true
@@ -818,7 +861,12 @@ spawn_integration_window() {
   fi
   backstage_health_file="$(wavemill_backstage_health_file "$STATE_DIR" 2>/dev/null || true)"
   if [[ -n "$backstage_health_file" ]]; then
-    wavemill_write_backstage_health "$backstage_health_file" "healthy" "backstage tend loop is running" 0 "" "$tend_pane" 1
+    if [[ "$tend_enabled" == "true" ]]; then
+      wavemill_write_backstage_health "$backstage_health_file" "healthy" "backstage tend loop is running" 0 "" "$tend_pane" 1
+    else
+      # Overwrite any "healthy" tend entry left by an earlier integration session.
+      wavemill_write_backstage_health "$backstage_health_file" "disabled" "tend is off: ${tend_off_reason:-no tend consumer}" 0 "" "" 0
+    fi
     if [[ "$observer_enabled" == "true" && -n "${observer_pane:-}" ]]; then
       local observer_detail="backstage observer loop is running"
       if (( observer_killed > 0 )); then
@@ -830,11 +878,6 @@ spawn_integration_window() {
     fi
   fi
   startup_log "✓ Backstage window running."
-}
-
-should_update_linear_for_task() {
-  local challenge_role="$1"
-  [[ "$challenge_role" != "challenger" ]]
 }
 
 startup_mark_remaining_skipped() {
@@ -985,9 +1028,11 @@ challenge_selection_health_varied_model() {
 challenge_selection_health_ack_launch() {
   local pair_id="${1:-}" stage="${2:-}" model="${3:-}"
   [[ -n "$pair_id" && -n "$stage" && -n "$model" && -n "${REPO_DIR:-}" ]] || return 0
-  [[ -f "$REPO_DIR/tools/challenge-selection-health.ts" ]] || return 0
+  local tool
+  tool="$(wavemill_tool_path challenge-selection-health.ts)"
+  [[ -f "$tool" ]] || return 0
   (
-    cd "$REPO_DIR" && npx tsx tools/challenge-selection-health.ts ack-launch \
+    cd "$REPO_DIR" && npx tsx "$tool" ack-launch \
       --repo-dir "$REPO_DIR" \
       --pair-id "$pair_id" \
       --stage "$(challenge_selection_health_stage "$stage")" \
@@ -998,9 +1043,11 @@ challenge_selection_health_ack_launch() {
 challenge_selection_health_release() {
   local pair_id="${1:-}" stage="${2:-}" model="${3:-}"
   [[ -n "$pair_id" && -n "$stage" && -n "$model" && -n "${REPO_DIR:-}" ]] || return 0
-  [[ -f "$REPO_DIR/tools/challenge-selection-health.ts" ]] || return 0
+  local tool
+  tool="$(wavemill_tool_path challenge-selection-health.ts)"
+  [[ -f "$tool" ]] || return 0
   (
-    cd "$REPO_DIR" && npx tsx tools/challenge-selection-health.ts release \
+    cd "$REPO_DIR" && npx tsx "$tool" release \
       --repo-dir "$REPO_DIR" \
       --pair-id "$pair_id" \
       --stage "$(challenge_selection_health_stage "$stage")" \
@@ -1010,7 +1057,7 @@ challenge_selection_health_release() {
 
 startup_run_task_phases() {
   local task_json="$1" ordinal="${2:-}" total="${3:-}"
-  local issue slug title branch wt_dir linear_issue task_packet_file details_file issue_json_file
+  local issue slug title branch wt_dir linear_issue task_packet_file details_file issue_json_file task_scorer_result_file
   local planner_model coder_model reviewer_model plan_depth code_depth review_mode route_max_cost_usd
   local challenge challenge_pair challenge_role challenge_model challenge_stage task_agent win
   local depends_on base_from_task
@@ -1031,10 +1078,11 @@ startup_run_task_phases() {
   title="$(echo "$task_json" | jq -r '.title')"
   branch="$(echo "$task_json" | jq -r '.branch')"
   wt_dir="$(echo "$task_json" | jq -r '.worktreeDir')"
-  linear_issue="$(echo "$task_json" | jq -r '.linearIssueId // .issue')"
+  linear_issue="$(task_identity_linear_id "$issue" 2>/dev/null || true)"
   task_packet_file="$(echo "$task_json" | jq -r '.taskPacketFile')"
   details_file="$(echo "$task_json" | jq -r '.taskPacketDetailsFile')"
   issue_json_file="$(echo "$task_json" | jq -r '.issueJsonFile')"
+  task_scorer_result_file="$(echo "$task_json" | jq -r '.taskScorerResultFile // empty')"
   planner_model="$(echo "$task_json" | jq -r '.route.planner // empty')"
   coder_model="$(echo "$task_json" | jq -r '.route.coder // empty')"
   reviewer_model="$(echo "$task_json" | jq -r '.route.reviewer // empty')"
@@ -1062,7 +1110,7 @@ startup_run_task_phases() {
     progress_update "$startup_id" route running
   fi
 
-  if ! [[ "$issue" =~ ^[A-Z]+-[0-9]+(_c)?$|^[a-z0-9-]+$ ]]; then
+  if ! [[ "$issue" =~ ^${TASK_IDENTITY_TASK_ID_RE}$|^[a-z0-9-]+$ ]]; then
     startup_phase_failed "$startup_id" route "$issue" "invalid issue id"
     return 1
   fi
@@ -1221,6 +1269,20 @@ startup_run_task_phases() {
   mkdir -p "$feature_dir"
   reset_startup_phase_artifacts "$feature_dir"
 
+  if [[ -n "$task_scorer_result_file" && -f "$task_scorer_result_file" ]]; then
+    if jq -e '
+      type == "object"
+      and (.decision | IN("run","expand","split","return"))
+      and (.confidence | type == "number" and . >= 0 and . <= 1)
+      and (.explanation | type == "string" and length > 0)
+      and (.model_version | type == "string" and length > 0)
+    ' "$task_scorer_result_file" >/dev/null 2>&1; then
+      cp "$task_scorer_result_file" "$feature_dir/.task-scorer-result.json" 2>/dev/null || true
+    else
+      startup_task_log "$issue" "WARN: ignoring malformed task scorer result"
+    fi
+  fi
+
   if [[ -f "$details_file" ]]; then
     if [[ "$PLANNING_MODE" == "interactive" ]]; then
       cp "$details_file" "$feature_dir/task-packet-details.md"
@@ -1267,7 +1329,7 @@ $details_context"
   if [[ -f "$startup_route_file" ]] && jq -e '.planner and .coder and .reviewer' "$startup_route_file" >/dev/null 2>&1; then
     jq \
       --arg planner "${planner_model:-gpt-5.6-terra}" \
-      --arg coder "${coder_model:-gpt-5.5}" \
+      --arg coder "${coder_model:-gpt-5.6-terra}" \
       --arg reviewer "${reviewer_model:-gpt-5.6-terra}" \
       --arg planDepth "$plan_depth" \
       --arg codeDepth "$code_depth" \
@@ -1301,7 +1363,7 @@ $details_context"
   else
     jq -n \
       --arg planner "${planner_model:-gpt-5.6-terra}" \
-      --arg coder "${coder_model:-gpt-5.5}" \
+      --arg coder "${coder_model:-gpt-5.6-terra}" \
       --arg reviewer "${reviewer_model:-gpt-5.6-terra}" \
       --arg planDepth "$plan_depth" \
       --arg codeDepth "$code_depth" \
@@ -1543,7 +1605,44 @@ main() {
   fi
 
   if [[ "$(printf '%s' "$BASE_REF_PREFLIGHT_JSON" | jq -r '.fetchDegraded // false' 2>/dev/null)" == "true" ]]; then
-    startup_log "WARN: Startup fetch for $BASE_BRANCH degraded; continuing with verified local base ref $RESOLVED_BASE_REF"
+    startup_log "WARN: Base fetch for $BASE_BRANCH failed; using local base ref $RESOLVED_BASE_REF (fetchDegraded)"
+  fi
+  local base_resolved_sha base_resolved_sha_short base_local_behind base_local_ahead base_local_ff base_local_checked_out base_local_checkout_path provenance_line
+  base_resolved_sha="$(printf '%s' "$BASE_REF_PREFLIGHT_JSON" | jq -r '.resolvedSha // empty' 2>/dev/null || true)"
+  base_resolved_sha_short=""
+  if [[ -n "$base_resolved_sha" ]]; then
+    base_resolved_sha_short="${base_resolved_sha:0:7}"
+  fi
+  base_local_behind="$(printf '%s' "$BASE_REF_PREFLIGHT_JSON" | jq -r '.localBehindOrigin // empty' 2>/dev/null || true)"
+  base_local_ahead="$(printf '%s' "$BASE_REF_PREFLIGHT_JSON" | jq -r '.localAheadOfOrigin // empty' 2>/dev/null || true)"
+  base_local_ff="$(printf '%s' "$BASE_REF_PREFLIGHT_JSON" | jq -r '.localFastForwarded // false' 2>/dev/null || echo false)"
+  base_local_checked_out="$(printf '%s' "$BASE_REF_PREFLIGHT_JSON" | jq -r '.localCheckedOut // false' 2>/dev/null || echo false)"
+  base_local_checkout_path="$(printf '%s' "$BASE_REF_PREFLIGHT_JSON" | jq -r '.localCheckoutPath // empty' 2>/dev/null || true)"
+
+  provenance_line="Base $BASE_BRANCH → $RESOLVED_BASE_REF"
+  if [[ -n "$base_resolved_sha_short" ]]; then
+    provenance_line="$provenance_line @ $base_resolved_sha_short"
+  fi
+  if [[ -n "$base_local_behind" && "$base_local_behind" != "0" ]]; then
+    if [[ "$base_local_ff" == "true" ]]; then
+      provenance_line="$provenance_line (local $BASE_BRANCH: $base_local_behind behind, fast-forwarded)"
+    else
+      provenance_line="$provenance_line (local $BASE_BRANCH: $base_local_behind behind)"
+    fi
+  fi
+  startup_log "$provenance_line"
+
+  if [[ "$base_local_checked_out" == "true" \
+    && -n "$base_local_behind" && "$base_local_behind" != "0" ]]; then
+    startup_log "WARN: local $BASE_BRANCH is $base_local_behind commits behind origin/$BASE_BRANCH and is checked out at ${base_local_checkout_path:-unknown}; not fast-forwarding. Base-relative comparisons use origin/$BASE_BRANCH."
+  elif [[ -n "$base_local_behind" && "$base_local_behind" != "0" \
+    && -n "$base_local_ahead" && "$base_local_ahead" != "0" ]]; then
+    startup_log "WARN: local $BASE_BRANCH has diverged from origin/$BASE_BRANCH (ahead $base_local_ahead, behind $base_local_behind); not fast-forwarding."
+  fi
+  RESOLVED_BASE_SHA="$base_resolved_sha"
+  export RESOLVED_BASE_SHA
+  if [[ -n "$RESOLVED_BASE_SHA" ]]; then
+    export WAVEMILL_RESOLVED_BASE_SHA="$RESOLVED_BASE_SHA"
   fi
 
   ensure_state_file
@@ -1598,13 +1697,12 @@ main() {
   if [[ "$DRY_RUN" != "true" && "$launched_count" -gt 0 ]]; then
     while IFS= read -r launched_issue; do
       [[ -z "$launched_issue" ]] && continue
-      linear_id="$(jq -r --arg issue "$launched_issue" '.tasks[]
-        | select(.issue == $issue and ((.challengeRole // "") != "challenger"))
-        | (.linearIssueId // .issue)' "$PLAN_FILE" | head -n 1)"
-      [[ -n "$linear_id" && "$linear_id" != "null" ]] && linear_batch_ids+=("$linear_id")
+      # Task IDs go in as-is; linear_batch_set_state resolves each through
+      # linear_write_target and drops challengers.
+      linear_batch_ids+=("$launched_issue")
     done < "$LAUNCHED_ISSUES_FILE"
     if [[ "${#linear_batch_ids[@]}" -gt 0 ]]; then
-      startup_log "Setting Linear state for ${#linear_batch_ids[@]} launched issue(s) in one batch call..."
+      startup_log "Setting Linear state for ${#linear_batch_ids[@]} launched task(s) in one batch call..."
       linear_batch_set_state "In Progress" "${linear_batch_ids[@]}"
     fi
   fi

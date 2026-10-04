@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# HOK-2814: wired for fork — this file already carries an HOK-2811 section
+# grepping the defer + materialise seams. The end-to-end fork lifecycle is
+# covered by challenge-deferred-arm.test.sh + challenge-fork-*.test.sh; keep
+# this file focused on the mill startup and monitor script-text guards.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -35,13 +39,13 @@ fi
 STARTUP_BLOCK="$(awk '
   /challenge_args=\(--issue "\$ISSUE"/ { capture=1 }
   capture { print }
-  /log_warn "  \$ISSUE: Planner challenge deferred until expanded route is available"/ && capture { capture=0; exit }
+  /Planner challenge sealed/ && capture { capture=0; exit }
 ' "$MILL_SCRIPT")"
 
 RUNTIME_BLOCK="$(awk '
   /challenge_args=\(--issue "\$issue"/ { capture=1 }
   capture { print }
-  /log_warn "  \$issue: Planner challenge deferred until expanded route is available"/ && capture { capture=0; exit }
+  /Planner challenge sealed/ && capture { capture=0; exit }
 ' "$MONITOR_SCRIPT_FILE")"
 
 if [[ -n "$STARTUP_BLOCK" ]]; then
@@ -204,7 +208,7 @@ else
 fi
 
 CODING_HANDOFF_BLOCK="$(awk '
-  /if ! coder_agent="\$\(agent_resolve_from_model "\$coder_launch_model" "coding"\)"; then/ { capture=1 }
+  /agent_resolve_from_model "\$coder_launch_model" "coding" >"\$coder_resolve_out"; then/ { capture=1 }
   capture { print }
   /launch_coding_phase "\$ISSUE"/ && capture { exit }
 ' "$MONITOR_SCRIPT_FILE")"
@@ -252,7 +256,7 @@ if [[ -n "$FINALIZATION_HELPER" ]]; then
   check_contains "finalizer cancels collapsed identical challenger" "$FINALIZATION_HELPER" 'challenge_cancel_challenger_arm "$issue" "$slug" "$new_challenger_key"'
   check_contains "finalizer exposes in-memory coder" "$FINALIZATION_HELPER" 'FINALIZED_CHALLENGE_CODER="$new_primary"'
   # Printing the coders made every plan/review pair look degenerate in the log
-  # ("gpt-5.5 vs gpt-5.5") because those stages share a coder by design.
+  # ("gpt-5.6-terra vs gpt-5.6-terra") because those stages share a coder by design.
   check_contains "finalizer logs the varied models and stage" "$FINALIZATION_HELPER" 'stage=$new_challenge_stage): $new_primary_varied vs $new_challenger_varied'
   check_contains "finalizer checks the arms actually diverge" "$FINALIZATION_HELPER" 'challenge_assert_arms_diverge "$issue" "$new_challenge_stage"'
 else
@@ -394,9 +398,9 @@ if [[ -n "$DIVERGE_HELPER" ]]; then
     log_error() { printf 'ERROR %s\n' "$*" >> "$DIVERGE_TMP/out"; }
     log_route_lifecycle() { printf 'LIFECYCLE %s\n' "$*" >> "$DIVERGE_TMP/out"; }
     : > "$DIVERGE_TMP/out"
-    challenge_assert_arms_diverge "HOK-1" "implementation" "kimi-k2" "gpt-5.5" ""
-    challenge_assert_arms_diverge "HOK-2" "review" "gpt-5.5" "gpt-5.5" ""
-    challenge_assert_arms_diverge "HOK-3" "plan" "gpt-5.5" "gpt-5.5" '{"intentionallyIdentical":true}'
+    challenge_assert_arms_diverge "HOK-1" "implementation" "kimi-k2" "gpt-5.6-terra" ""
+    challenge_assert_arms_diverge "HOK-2" "review" "gpt-5.6-terra" "gpt-5.6-terra" ""
+    challenge_assert_arms_diverge "HOK-3" "plan" "gpt-5.6-terra" "gpt-5.6-terra" '{"intentionallyIdentical":true}'
     challenge_assert_arms_diverge "HOK-4" "plan" "" "" ""
   )
   DIVERGE_OUT="$(cat "$DIVERGE_TMP/out" 2>/dev/null || true)"
@@ -432,13 +436,17 @@ else
 fi
 
 check_contains "startup planner challenge defers without effective route" "$STARTUP_BLOCK" 'challenge_plan_stage_requires_effective_route "$challenge_plan"'
-check_contains "startup planner challenge records defer reason" "$STARTUP_BLOCK" 'plan_stage_expanded_route_unavailable'
+# HOK-3065: a plan-stage challenge whose non-varied route is not yet resolvable
+# is sealed and its challenger deferred as an awaiting_expanded_route arm that
+# materialises at t=0 — not retargeted to a different stage and not dropped to
+# single. The prior retarget silently changed the varied stage; dropping to
+# single is how an already-selected open-weight coder arm vanished. Sealing
+# preserves the actual plan-stage selection.
+check_contains "startup planner challenge records seal reason" "$STARTUP_BLOCK" 'challenge_reason="awaiting_expanded_route"'
+check_contains "startup planner challenge seals rather than dropping the pair" "$STARTUP_BLOCK" 'plan_awaits_expanded_route="true"'
 check_contains "runtime planner challenge defers without effective route" "$RUNTIME_BLOCK" 'challenge_plan_stage_requires_effective_route "$challenge_plan"'
-check_contains "runtime planner challenge records defer reason" "$RUNTIME_BLOCK" 'plan_stage_expanded_route_unavailable'
-# A plan-stage challenge that cannot form yet must be retargeted, not deleted:
-# dropping to single is how an already-selected open-weight coder arm vanished.
-check_contains "runtime planner challenge retargets to implementation before dropping" "$RUNTIME_BLOCK" '--pinned-stage implementation'
-check_contains "runtime planner challenge keeps the pair when retargeting works" "$RUNTIME_BLOCK" 'retargeted to implementation stage'
+check_contains "runtime planner challenge records seal reason" "$RUNTIME_BLOCK" 'challenge_reason="awaiting_expanded_route"'
+check_contains "runtime planner challenge seals rather than dropping the pair" "$RUNTIME_BLOCK" 'plan_awaits_expanded_route="true"'
 
 if [[ -n "$CODING_FINALIZATION_BLOCK" ]]; then
   check_contains "coding handoff calls finalizer" "$CODING_FINALIZATION_BLOCK" 'finalize_challenge_execution_intent_before_coding "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR" "$FEATURE_DIR" "$coder_model"'
@@ -504,7 +512,7 @@ cat > "$STATE_FILE" <<'JSON'
 JSON
 
 REFRESHED_PLAN='{"decisionSource":"expanded","entries":[
-  {"model":"gpt-5.4","planner":"gpt-5.5","reviewer":"gpt-5.5","planDepth":"deep","codeDepth":"deep","reviewMode":"static","key":"HOK-9999"},
+  {"model":"gpt-5.4","planner":"gpt-5.6-terra","reviewer":"gpt-5.6-terra","planDepth":"deep","codeDepth":"deep","reviewMode":"static","key":"HOK-9999"},
   {"model":"claude-sonnet-4-6","planner":"claude-sonnet-4-6","reviewer":"claude-sonnet-4-6","planDepth":"deep","codeDepth":"deep","reviewMode":"static+llm","key":"HOK-9999_c"}
 ]}'
 
@@ -634,8 +642,8 @@ challenger_challenge_stage=$(jq -r '.tasks["HOK-9999_c"].challengeStage // empty
 
 check_eq "primary challengeModel set to refreshed primary model" "gpt-5.4" "$primary_challenge_model"
 check_eq "primary coderModel aligned with refreshed primary model" "gpt-5.4" "$primary_coder_model"
-check_eq "primary plannerModel set from refreshed entry" "gpt-5.5" "$primary_planner_model"
-check_eq "primary reviewerModel set from refreshed entry" "gpt-5.5" "$primary_reviewer_model"
+check_eq "primary plannerModel set from refreshed entry" "gpt-5.6-terra" "$primary_planner_model"
+check_eq "primary reviewerModel set from refreshed entry" "gpt-5.6-terra" "$primary_reviewer_model"
 check_eq "primary planDepth set from refreshed entry" "deep" "$primary_plan_depth"
 check_eq "primary codeDepth set from refreshed entry" "deep" "$primary_code_depth"
 check_eq "primary reviewMode set from refreshed entry" "static" "$primary_review_mode"
@@ -663,7 +671,7 @@ STATE_FILE_GUARD="$TEST_TMP/state-guard.json"
 cp "$STATE_FILE" "$STATE_FILE_GUARD"
 
 MISSING_MODEL_PLAN='{"decisionSource":"expanded","entries":[
-  {"model":"gpt-5.4","planner":"gpt-5.5","reviewer":"gpt-5.5","planDepth":"deep","codeDepth":"deep","reviewMode":"static","key":"HOK-9999"},
+  {"model":"gpt-5.4","planner":"gpt-5.6-terra","reviewer":"gpt-5.6-terra","planDepth":"deep","codeDepth":"deep","reviewMode":"static","key":"HOK-9999"},
   {"planner":"claude-sonnet-4-6","key":"HOK-9999_c"}
 ]}'
 
@@ -693,24 +701,26 @@ echo "=== HOK-2811: Review-stage deferral (Arbiter P2.4a) ==="
 # The startup Phase 5 block must gate FINAL_LAUNCH_ARGS challenger append on
 # defer_challenger, and record the pending arm when deferring.
 MILL_REVIEW_BLOCK="$(awk '
-  /HOK-2811: Review-stage challenges defer the challenger to a fork trigger/ { capture=1 }
+  /HOK-2811 \/ HOK-3086: review- and implementation-stage challenges defer the/ { capture=1 }
   capture { print }
-  /challenge_arms_record_pending "\$ISSUE"/ && capture { print; exit }
+  /has no canonical execution intent at deferred selection/ && capture { exit }
 ' "$MILL_SCRIPT")"
 
 check_contains "startup gates FINAL_LAUNCH_ARGS challenger on defer" "$MILL_REVIEW_BLOCK" 'if [[ "$defer_challenger" != "true" ]]; then
       FINAL_LAUNCH_ARGS+=("$challenger_key|$challenger_slug|$TITLE")'
 check_contains "startup records pending arm when deferring" "$MILL_REVIEW_BLOCK" 'challenge_arms_record_pending "$ISSUE"'
 check_contains "startup uses challenge_arm_json_build" "$MILL_REVIEW_BLOCK" 'challenge_arm_json_build'
+check_contains "startup persists deferred challenge intent to state" "$MILL_REVIEW_BLOCK" 'challenge_intent_record_selection "$ISSUE" "$challenger_key" "$challenge_execution_intent"'
+check_contains "startup stores deferred challenge intent on arm record" "$MILL_REVIEW_BLOCK" '"$challenge_execution_intent"'
 
 # The monitor's launch_task defers on review-stage as well.
 MONITOR_LAUNCH_BLOCK="$(awk '
-  /HOK-2811: Review-stage challenges defer the challenger to a fork trigger/ { capture=1 }
+  /HOK-2811 \/ HOK-3086: review- and implementation-stage challenges defer the/ { capture=1 }
   capture { print }
   /should_launch_challenger="false"/ && capture { exit }
 ' "$MONITOR_SCRIPT_FILE")"
 
-check_contains "monitor sets defer_challenger for review stage" "$MONITOR_LAUNCH_BLOCK" 'if [[ "$challenge_stage" == "review" ]]; then'
+check_contains "monitor sets defer_challenger for fork stages (review, implementation)" "$MONITOR_LAUNCH_BLOCK" 'if challenge_stage_defers_to_fork "$challenge_stage"; then'
 
 MONITOR_STATE_BLOCK="$(awk '
   /HOK-2811: Review-stage — record the challenger as a pending arm/ { capture=1 }

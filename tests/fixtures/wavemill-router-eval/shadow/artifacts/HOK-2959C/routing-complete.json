@@ -1,0 +1,12 @@
+{
+  "issueId": "HOK-2959C",
+  "planner": "gpt-5.4",
+  "coder": "gpt-5.4",
+  "reviewer": "gpt-5.4",
+  "maxCostUsd": 5,
+  "routingMode": "stage-aware",
+  "task": {
+    "issueId": "HOK-2959C",
+    "prompt": "Implement the challenger side of a paired model economics fixture."
+  }
+}

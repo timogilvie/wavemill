@@ -4,7 +4,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { runPromotion, updateBranchWithBase } from './promotion-controller.ts';
+import { measureBranchBaseDistance, runPromotion, updateBranchWithBase } from './promotion-controller.ts';
 
 function makeRepo(config: Record<string, unknown> = {}): { repoDir: string; cleanup: () => void } {
   const repoDir = mkdtempSync(join(tmpdir(), 'wavemill-promote-'));
@@ -110,6 +110,12 @@ function shellHarness(overrides: {
       if (cmd === 'git symbolic-ref --quiet --short HEAD') {
         if (overrides.currentBranch === null) throw new Error('detached HEAD');
         return `${overrides.currentBranch ?? 'task/test'}\n`;
+      }
+      if (cmd === "git rev-parse --verify --quiet 'origin/auto/integration^{commit}'") {
+        if (overrides.remoteIntegrationTip === '') {
+          throw new Error('no remote ref');
+        }
+        return `${remoteIntegrationTip}\n`;
       }
       if (cmd === "git merge --ff-only 'origin/auto/integration'") {
         if (overrides.integrationMergeFfError) throw new Error(overrides.integrationMergeFfError);
@@ -347,7 +353,7 @@ function shellHarness(overrides: {
 }
 
 describe('runPromotion', () => {
-  it('updates a branch with its base in fetch switch merge push order', () => {
+  it('updates a branch with its base in fetch switch ff-only merge push order', () => {
     const repo = makeRepo();
     const shell = shellHarness();
 
@@ -355,16 +361,53 @@ describe('runPromotion', () => {
       const result = updateBranchWithBase('auto/integration', 'main', repo.repoDir, shell.shellRunner);
       assert.equal(result.status, 'success');
       assert.deepEqual(
-        shell.calls.slice(0, 5),
+        shell.calls.slice(0, 7),
         [
           'git status --porcelain --untracked-files=no',
           "git fetch --quiet origin 'main' 'auto/integration'",
           "git switch 'auto/integration'",
+          "git rev-parse --verify --quiet 'origin/auto/integration^{commit}'",
+          "git merge --ff-only 'origin/auto/integration'",
           "git merge-tree --write-tree 'auto/integration' 'origin/main'",
           "git merge --no-edit 'origin/main'",
         ],
       );
       assert(shell.calls.includes("git push origin 'auto/integration'"));
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('fast-forwards local from origin and merges from the origin tip', () => {
+    const repo = makeRepo();
+    const shell = shellHarness({
+      localIntegrationTip: 'stale-integration-sha',
+      remoteIntegrationTip: 'origin-integration-sha',
+      integrationRelation: 'behind',
+    });
+    try {
+      const result = updateBranchWithBase('auto/integration', 'main', repo.repoDir, shell.shellRunner);
+      assert.equal(result.status, 'success', JSON.stringify(result));
+      assert(shell.calls.includes("git merge --ff-only 'origin/auto/integration'"), 'must ff-only from origin');
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('returns unknown-failed when local branch has diverged from origin', () => {
+    const repo = makeRepo();
+    const shell = shellHarness({
+      localIntegrationTip: 'diverged-local-sha',
+      remoteIntegrationTip: 'origin-integration-sha',
+      integrationRelation: 'diverged',
+      integrationMergeFfError: 'fatal: Not possible to fast-forward, aborting.',
+    });
+    try {
+      const result = updateBranchWithBase('auto/integration', 'main', repo.repoDir, shell.shellRunner);
+      assert.equal(result.status, 'unknown-failed');
+      assert.match(result.detail ?? '', /diverged/);
+      assert(!shell.calls.some((cmd) => cmd === "git merge --no-edit 'origin/main'"), 'must not merge base into diverged branch');
+      assert(!shell.calls.some((cmd) => cmd === "git push origin 'auto/integration'"), 'must not push a diverged branch');
     } finally {
       repo.cleanup();
     }
@@ -405,6 +448,77 @@ describe('runPromotion', () => {
       assert.equal(result.status, 'conflict');
       assert(shell.calls.includes('git merge --abort'));
       assert(!shell.calls.some((cmd) => cmd === "git push origin 'auto/integration'"));
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  // HOK-3092: conflictingFiles is captured before `git merge --abort` runs,
+  // so operator-facing surfaces (the ready needs-attention marker) can list
+  // the exact paths that need a hand.
+  it('populates conflictingFiles from the unmerged file list before aborting', () => {
+    const repo = makeRepo();
+    const shell = shellHarness();
+    const observedOrder: string[] = [];
+    const shellRunner = (cmd: string, opts?: { encoding?: string; cwd?: string }) => {
+      if (cmd === "git merge --no-edit 'origin/main'") {
+        shell.calls.push(cmd);
+        observedOrder.push(cmd);
+        throw new Error('CONFLICT (content): merge conflict');
+      }
+      if (cmd === 'git diff --name-only --diff-filter=U') {
+        shell.calls.push(cmd);
+        observedOrder.push(cmd);
+        return 'README.md\nsrc/util.ts\n';
+      }
+      if (cmd === 'git merge --abort') {
+        shell.calls.push(cmd);
+        observedOrder.push(cmd);
+        return '';
+      }
+      return shell.shellRunner(cmd, opts);
+    };
+
+    try {
+      const result = updateBranchWithBase('auto/integration', 'main', repo.repoDir, shellRunner);
+      assert.equal(result.status, 'conflict');
+      assert.deepEqual(result.conflictingFiles, ['README.md', 'src/util.ts']);
+      // Enumerate before aborting — an abort clears the unmerged index.
+      const diffIndex = observedOrder.indexOf('git diff --name-only --diff-filter=U');
+      const abortIndex = observedOrder.indexOf('git merge --abort');
+      assert(diffIndex >= 0 && abortIndex >= 0);
+      assert(diffIndex < abortIndex, 'conflictingFiles must be enumerated before merge --abort');
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  // A failing `git diff --name-only --diff-filter=U` never masks the merge
+  // failure — the caller falls back to `detail` alone.
+  it('returns conflict with an empty file list when enumeration fails', () => {
+    const repo = makeRepo();
+    const shell = shellHarness();
+    const shellRunner = (cmd: string, opts?: { encoding?: string; cwd?: string }) => {
+      if (cmd === "git merge --no-edit 'origin/main'") {
+        shell.calls.push(cmd);
+        throw new Error('CONFLICT (content): merge conflict');
+      }
+      if (cmd === 'git diff --name-only --diff-filter=U') {
+        shell.calls.push(cmd);
+        throw new Error('index unreadable');
+      }
+      if (cmd === 'git merge --abort') {
+        shell.calls.push(cmd);
+        return '';
+      }
+      return shell.shellRunner(cmd, opts);
+    };
+
+    try {
+      const result = updateBranchWithBase('auto/integration', 'main', repo.repoDir, shellRunner);
+      assert.equal(result.status, 'conflict');
+      assert.deepEqual(result.conflictingFiles, []);
+      assert(shell.calls.includes('git merge --abort'));
     } finally {
       repo.cleanup();
     }
@@ -1279,5 +1393,70 @@ describe('runPromotion', () => {
   it('does not contain auto-merge logic', () => {
     const source = readFileSync(new URL('./promotion-controller.ts', import.meta.url), 'utf-8');
     assert(!source.includes('gh pr merge'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HOK-3096: measureBranchBaseDistance (the HOK-3092 behind-base predicate,
+// reused by the observer's stale-base detector)
+// ---------------------------------------------------------------------------
+
+type CountingShellRunner = (cmd: string, opts?: { encoding?: string; cwd?: string }) => string;
+
+function countingShellRunner(counts: {
+  originBehind?: string;
+  originAhead?: string;
+  localBehind?: string;
+  localAhead?: string;
+}): CountingShellRunner {
+  return (cmd: string) => {
+    if (cmd === "git rev-list --count 'task/foo'..'origin/main'") {
+      if (counts.originBehind === undefined) throw new Error("fatal: ambiguous argument 'origin/main': unknown revision");
+      return counts.originBehind;
+    }
+    if (cmd === "git rev-list --count 'origin/main'..'task/foo'") {
+      if (counts.originAhead === undefined) throw new Error("fatal: ambiguous argument 'origin/main': unknown revision");
+      return counts.originAhead;
+    }
+    if (cmd === "git rev-list --count 'task/foo'..'main'") {
+      if (counts.localBehind === undefined) throw new Error("fatal: ambiguous argument 'main': unknown revision");
+      return counts.localBehind;
+    }
+    if (cmd === "git rev-list --count 'main'..'task/foo'") {
+      if (counts.localAhead === undefined) throw new Error("fatal: ambiguous argument 'main': unknown revision");
+      return counts.localAhead;
+    }
+    throw new Error(`Unhandled command: ${cmd}`);
+  };
+}
+
+describe('measureBranchBaseDistance', () => {
+  it('reports counts against origin/<base> when the remote-tracking ref resolves', () => {
+    const shellRunner = countingShellRunner({ originBehind: '7\n', originAhead: '2\n' });
+    const distance = measureBranchBaseDistance('task/foo', 'main', '/repo', shellRunner);
+    assert.deepEqual(distance, { behindBase: 7, aheadOfBase: 2, baseRef: 'origin/main' });
+  });
+
+  it('falls back to the local base ref when origin/<base> cannot be resolved', () => {
+    const shellRunner = countingShellRunner({ localBehind: '3\n', localAhead: '0\n' });
+    const distance = measureBranchBaseDistance('task/foo', 'main', '/repo', shellRunner);
+    assert.deepEqual(distance, { behindBase: 3, aheadOfBase: 0, baseRef: 'main' });
+  });
+
+  it('degrades to an empty result when neither ref resolves, never throwing', () => {
+    const shellRunner = countingShellRunner({});
+    assert.doesNotThrow(() => {
+      const distance = measureBranchBaseDistance('task/foo', 'main', '/repo', shellRunner);
+      assert.deepEqual(distance, {});
+    });
+  });
+
+  it('never fetches', () => {
+    const source = readFileSync(new URL('./promotion-controller.ts', import.meta.url), 'utf-8');
+    const start = source.indexOf('export function measureBranchBaseDistance');
+    const end = source.indexOf('\nconst PROMOTION_SECTION_BEGIN', start);
+    assert(start >= 0 && end > start, 'could not locate measureBranchBaseDistance body');
+    const fnSource = source.slice(start, end);
+    assert(!fnSource.includes('git fetch'));
   });
 });

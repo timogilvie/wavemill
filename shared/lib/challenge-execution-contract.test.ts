@@ -12,9 +12,16 @@ import {
   isStageAttributionEligibleForCoverage,
   STAGE_ATTRIBUTION_REASON_CODES,
   resolveChallengeSide,
+  resolveReviewStageChallengePin,
   buildChallengeExecutionIntent,
   enforceChallengeIntentPresence,
   projectChallengeIntentForPersistence,
+  CHALLENGE_ARM_LIFECYCLE_STATES,
+  CHALLENGE_ARM_PENDING_STATES,
+  isChallengeArmPendingState,
+  sealChallengeDecision,
+  sealedSelectionViolations,
+  resolveSealedDecisionAgainstExpandedRoute,
   type ChallengeExecutionAttestation,
   type ChallengeExecutionIntent,
   type ForkIdentity,
@@ -96,6 +103,39 @@ function makeRuntimeIntent(overrides: Partial<ChallengeExecutionIntent> = {}): C
     },
     ...overrides,
   };
+}
+
+function makeReviewIntent(overrides: Partial<ChallengeExecutionIntent> = {}): ChallengeExecutionIntent {
+  const pairId = overrides.pairId ?? 'pair-2604';
+  const issueId = overrides.issueId ?? 'HOK-2604';
+  return makeRuntimeIntent({
+    pairId,
+    issueId,
+    selectedStage: 'review',
+    challengeStage: 'review',
+    primary: {
+      pairId,
+      side: 'primary',
+      challengeStage: 'review',
+      expectedStageModel: 'gpt-5.6-terra',
+      expectedStageAgent: 'codex',
+      expectedRoute: { planner: '', coder: '', reviewer: 'gpt-5.6-terra', planDepth: '', codeDepth: '', reviewMode: '' },
+    },
+    challenger: {
+      pairId,
+      side: 'challenger',
+      challengeStage: 'review',
+      expectedStageModel: 'kimi-k3',
+      expectedStageAgent: 'native-openrouter',
+      expectedRoute: { planner: '', coder: '', reviewer: 'kimi-k3', planDepth: '', codeDepth: '', reviewMode: '' },
+    },
+    ...overrides,
+  });
+}
+
+function writeWorkflowState(repoDir: string, state: unknown): void {
+  mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
+  writeFileSync(join(repoDir, '.wavemill', 'workflow-state.json'), JSON.stringify(state));
 }
 
 function makeRecord(overrides: Partial<EvalRecord> = {}): EvalRecord {
@@ -228,6 +268,58 @@ test('foldAttestationsIntoStageAttribution emits valid attribution for matched i
   assert.equal(isStageAttributionEligibleForCoverage(attribution), true);
 });
 
+test('an implementation-stage fork with matched inputs earns a valid stage label (HOK-3086)', () => {
+  const implementationAttestation = (side: 'primary' | 'challenger') => makeAttestation(side, {
+    challengeStage: 'implementation',
+    evidence: [{
+      stage: 'implementation',
+      model: side === 'primary' ? 'claude-opus-4-6' : 'gpt-5.4',
+      source: 'coding-result',
+    }],
+  });
+  const attribution = foldAttestationsIntoStageAttribution({
+    pairId: 'pair-3086',
+    stage: 'implementation',
+    primary: implementationAttestation('primary'),
+    challenger: implementationAttestation('challenger'),
+    forkIdentity: makeForkIdentity({
+      stage: 'implementation',
+      sharedPrefix: true,
+      primaryInheritedStages: [],
+      challengerInheritedStages: ['plan'],
+    }),
+    judgeWinner: 'challenger',
+  });
+  assert.equal(attribution.status, 'valid');
+  assert.deepEqual(attribution.reasonCodes, []);
+  assert.equal(attribution.outcome, 'challenger');
+  assert.equal(attribution.winningStageModel, 'gpt-5.4');
+});
+
+test('an independently launched pair reports no stage label instead of a missing fork identity (HOK-3086)', () => {
+  const independent = foldAttestationsIntoStageAttribution({
+    pairId: 'pair-3086',
+    stage: 'implementation',
+    primary: makeAttestation('primary', { challengeStage: 'implementation' }),
+    challenger: makeAttestation('challenger', { challengeStage: 'implementation' }),
+    independentLaunch: true,
+    judgeWinner: 'primary',
+  });
+  assert.equal(independent.status, 'insufficient_evidence');
+  assert.deepEqual(independent.reasonCodes, ['independent_launch_no_stage_label']);
+  assert.equal(independent.outcome, null);
+
+  const forkedWithoutIdentity = foldAttestationsIntoStageAttribution({
+    pairId: 'pair-3086',
+    stage: 'implementation',
+    primary: makeAttestation('primary', { challengeStage: 'implementation' }),
+    challenger: makeAttestation('challenger', { challengeStage: 'implementation' }),
+    judgeWinner: 'primary',
+  });
+  assert.equal(forkedWithoutIdentity.status, 'invalid');
+  assert.ok(forkedWithoutIdentity.reasonCodes.includes('missing_fork_identity'));
+});
+
 test('foldAttestationsIntoStageAttribution marks incomplete review iteration evidence insufficient (HOK-2969)', () => {
   const attribution = foldAttestationsIntoStageAttribution({
     pairId: 'pair-2968',
@@ -286,6 +378,68 @@ test('foldAttestationsIntoStageAttribution marks missing reviewer evidence insuf
   assert.equal(attribution.status, 'insufficient_evidence');
   assert.deepEqual(attribution.reasonCodes, ['missing_direct_review_evidence']);
   assert.equal(attribution.evidenceProvenance, 'insufficient');
+});
+
+// ────────────────────────────────────────────────────────────────
+// HOK-2970 — reviewer-stage tie/insufficient/presentation-order-swap
+// ────────────────────────────────────────────────────────────────
+
+test('reviewer-stage adjudication returns tie when judge decides tie (HOK-2970)', () => {
+  const attribution = foldAttestationsIntoStageAttribution({
+    pairId: 'pair-2970',
+    stage: 'review',
+    primary: makeAttestation('primary'),
+    challenger: makeAttestation('challenger'),
+    evidenceProvenance: 'direct',
+    forkIdentity: makeForkIdentity(),
+    primaryReviewIdentity: makeReviewIdentitySet(),
+    challengerReviewIdentity: makeReviewIdentitySet(),
+    reviewIterationsComplete: true,
+    judgeWinner: 'tie',
+  });
+  assert.equal(attribution.status, 'valid');
+  assert.equal(attribution.outcome, 'tie');
+});
+
+test('reviewer-stage adjudication returns insufficient_evidence for missing direct review evidence (HOK-2970)', () => {
+  const attribution = foldAttestationsIntoStageAttribution({
+    pairId: 'pair-2970',
+    stage: 'review',
+    primary: makeAttestation('primary'),
+    challenger: makeAttestation('challenger'),
+    // no evidenceProvenance → missing
+    forkIdentity: makeForkIdentity(),
+    primaryReviewIdentity: makeReviewIdentitySet(),
+    challengerReviewIdentity: makeReviewIdentitySet(),
+    reviewIterationsComplete: true,
+    judgeWinner: 'primary',
+  });
+  assert.equal(attribution.status, 'insufficient_evidence');
+  assert.equal(attribution.outcome, null);
+  assert.ok(attribution.reasonCodes.includes('missing_direct_review_evidence'));
+});
+
+test('reviewer-stage adjudication is symmetric under presentation order swap (HOK-2970)', () => {
+  // foldAttestationsIntoStageAttribution never reads presentationOrder;
+  // the reviewer-stage adjudicator façade also passes it through opaquely.
+  // Running the same input twice produces byte-identical output.
+  const base = {
+    pairId: 'pair-2970' as const,
+    stage: 'review' as const,
+    primary: makeAttestation('primary'),
+    challenger: makeAttestation('challenger'),
+    evidenceProvenance: 'direct' as const,
+    forkIdentity: makeForkIdentity(),
+    primaryReviewIdentity: makeReviewIdentitySet(),
+    challengerReviewIdentity: makeReviewIdentitySet(),
+    reviewIterationsComplete: true,
+    judgeWinner: 'challenger' as const,
+  };
+  const a = foldAttestationsIntoStageAttribution(base);
+  const b = foldAttestationsIntoStageAttribution(base);
+  assert.deepEqual(a, b);
+  assert.equal(a.status, 'valid');
+  assert.equal(a.outcome, 'challenger');
 });
 
 test('foldAttestationsIntoStageAttribution suppresses direct evidence on divergent hashes', () => {
@@ -547,6 +701,8 @@ test('every TypeScript divergence reason is accepted by the eval JSON schema', (
     'state_vs_derived_side_mismatch',
     'operator_reroute',
     'missing_challenge_intent',
+    'multiple-varied-roles',
+    'arm_infrastructure_failure',
   ];
   for (const reason of reasons) {
     assert.equal(validateReason(reason), true, `schema rejects divergence reason ${reason}`);
@@ -628,6 +784,328 @@ test('resolveChallengeSide: inference still applies when no explicit side is giv
     });
     assert.equal(res.side, 'challenger');
     assert.equal(res.invalidReason, undefined);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('resolveReviewStageChallengePin prefers the feature-dir intent when present', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'review-pin-file-'));
+  try {
+    const featureDir = join(repoDir, 'features', 'review-pin-challenger');
+    mkdirSync(featureDir, { recursive: true });
+    writeWorkflowState(repoDir, {
+      tasks: {
+        'HOK-2958_c': {
+          slug: 'review-pin-challenger',
+          branch: 'task/review-pin-challenger',
+          challengePairId: 'HOK-2958',
+          challengeRole: 'challenger',
+          challengeStage: 'review',
+          challengeExecutionIntent: makeReviewIntent({
+            pairId: 'HOK-2958',
+            issueId: 'HOK-2958',
+            challenger: {
+              pairId: 'HOK-2958',
+              side: 'challenger',
+              challengeStage: 'review',
+              expectedStageModel: 'state-reviewer',
+              expectedRoute: { planner: '', coder: '', reviewer: 'state-reviewer', planDepth: '', codeDepth: '', reviewMode: '' },
+            },
+          }),
+        },
+      },
+    });
+    writeFileSync(join(featureDir, 'challenge-intent.json'), JSON.stringify(makeReviewIntent({
+      pairId: 'HOK-2958',
+      issueId: 'HOK-2958',
+      challenger: {
+        pairId: 'HOK-2958',
+        side: 'challenger',
+        challengeStage: 'review',
+        expectedStageModel: 'file-reviewer',
+        expectedStageAgent: 'native-openrouter',
+        expectedRoute: { planner: '', coder: '', reviewer: 'file-reviewer', planDepth: '', codeDepth: '', reviewMode: '' },
+      },
+    })));
+
+    const pin = resolveReviewStageChallengePin({
+      repoDir,
+      featureDir,
+      branchName: 'task/review-pin-challenger',
+    });
+    assert.deepEqual(pin, { pairId: 'HOK-2958', model: 'file-reviewer', agent: 'native-openrouter' });
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('resolveReviewStageChallengePin falls back to canonical state intent for _c task keys', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'review-pin-state-'));
+  try {
+    const featureDir = join(repoDir, 'features', 'external-harness-challenger');
+    mkdirSync(featureDir, { recursive: true });
+    writeWorkflowState(repoDir, {
+      tasks: {
+        'HOK-2958_c': {
+          slug: 'external-harness-challenger',
+          branch: 'task/external-harness-challenger',
+          challengePairId: 'HOK-2958',
+          challengeRole: 'challenger',
+          challengeStage: 'review',
+          challengeExecutionIntent: makeReviewIntent({ pairId: 'HOK-2958', issueId: 'HOK-2958' }),
+        },
+      },
+    });
+
+    const pin = resolveReviewStageChallengePin({
+      repoDir,
+      featureDir,
+      branchName: 'task/external-harness-challenger',
+    });
+    assert.deepEqual(pin, { pairId: 'HOK-2958', model: 'kimi-k3', agent: 'native-openrouter' });
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('resolveReviewStageChallengePin resolves a -challenger arm record before task materialisation', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'review-pin-arm-'));
+  try {
+    const featureDir = join(repoDir, 'features', 'external-harness-challenger');
+    mkdirSync(featureDir, { recursive: true });
+    writeWorkflowState(repoDir, {
+      tasks: {
+        'HOK-2958': {
+          slug: 'external-harness',
+          branch: 'task/external-harness',
+          challengePairId: 'HOK-2958',
+          challengeRole: 'primary',
+          challengeArms: [{
+            key: 'HOK-2958-challenger',
+            slug: 'external-harness-challenger',
+            branch: 'task/external-harness-challenger',
+            role: 'challenger',
+            variedStage: 'review',
+            executionIntent: makeReviewIntent({ pairId: 'HOK-2958', issueId: 'HOK-2958' }),
+          }],
+        },
+      },
+    });
+
+    const pin = resolveReviewStageChallengePin({
+      repoDir,
+      featureDir,
+      branchName: 'task/external-harness-challenger',
+    });
+    assert.deepEqual(pin, { pairId: 'HOK-2958', model: 'kimi-k3', agent: 'native-openrouter' });
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('resolveReviewStageChallengePin returns unresolvable for known review challenge with no canonical intent', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'review-pin-missing-'));
+  try {
+    const featureDir = join(repoDir, 'features', 'external-harness-challenger');
+    mkdirSync(featureDir, { recursive: true });
+    writeWorkflowState(repoDir, {
+      tasks: {
+        'HOK-2958_c': {
+          slug: 'external-harness-challenger',
+          branch: 'task/external-harness-challenger',
+          challengePairId: 'HOK-2958',
+          challengeRole: 'challenger',
+          challengeStage: 'review',
+          challengeExecutionIntent: { forkStage: 'review', forkCommit: 'c8c0f018', challenger: { inheritedStages: ['plan', 'implementation'] } },
+        },
+      },
+    });
+
+    const pin = resolveReviewStageChallengePin({
+      repoDir,
+      featureDir,
+      branchName: 'task/external-harness-challenger',
+    });
+    assert.deepEqual(pin, { pairId: 'HOK-2958', unresolvable: true });
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+// ────────────────────────────────────────────────────────────────
+// HOK-3065 — sealed decision envelope + expanded-route resolution
+// ────────────────────────────────────────────────────────────────
+
+// A plan-stage challenge sealed at launch: the challenger's planner is the
+// experiment; the primary's planner and every non-varied stage are still
+// bootstrap placeholders waiting on the expanded route.
+function makeSealedPlanIntent(overrides: Partial<ChallengeExecutionIntent> = {}): ChallengeExecutionIntent {
+  return {
+    schemaVersion: 1,
+    pairId: 'HOK-3065',
+    issueId: 'HOK-3065',
+    createdAt: '2026-09-23T00:00:00Z',
+    selectedStage: 'plan',
+    challengeStage: 'plan',
+    decisionSource: 'bootstrap',
+    selectionPath: 'random-roll',
+    primary: {
+      key: 'HOK-3065',
+      role: 'primary',
+      planner: { model: 'bootstrap-planner', agent: 'claude' },
+      coder: { model: 'bootstrap-coder', agent: 'claude' },
+      reviewer: { model: 'bootstrap-reviewer', agent: 'claude' },
+    },
+    challenger: {
+      key: 'HOK-3065_c',
+      role: 'challenger',
+      planner: { model: 'glm-5.2', agent: 'native-openrouter' },
+      coder: { model: 'bootstrap-coder', agent: 'claude' },
+      reviewer: { model: 'bootstrap-reviewer', agent: 'claude' },
+    },
+    forkStage: null,
+    forkCommit: null,
+    sharedPrefix: false,
+    ...overrides,
+  };
+}
+
+const EXPANDED_PLAN_ROUTE = {
+  planner: 'expanded-planner',
+  coder: 'expanded-coder',
+  reviewer: 'expanded-reviewer',
+  planDepth: 'deep',
+  codeDepth: 'deep',
+  reviewMode: 'llm',
+};
+
+test('lifecycle states include the HOK-3065 awaiting_expanded_route pending state', () => {
+  assert.ok(CHALLENGE_ARM_LIFECYCLE_STATES.includes('awaiting_expanded_route'));
+  assert.ok(CHALLENGE_ARM_PENDING_STATES.includes('awaiting_expanded_route'));
+  assert.ok(CHALLENGE_ARM_PENDING_STATES.includes('awaiting_fork'));
+  assert.equal(isChallengeArmPendingState('awaiting_expanded_route'), true);
+  assert.equal(isChallengeArmPendingState('materialized'), false);
+});
+
+test('sealChallengeDecision extracts the immutable selection for a plan-stage intent', () => {
+  const sealed = sealChallengeDecision(makeSealedPlanIntent());
+  assert.ok(sealed);
+  assert.equal(sealed!.pairId, 'HOK-3065');
+  assert.equal(sealed!.selectedStage, 'plan');
+  assert.equal(sealed!.primaryVariedModel, 'bootstrap-planner');
+  assert.equal(sealed!.challengerVariedModel, 'glm-5.2');
+  assert.equal(sealed!.challengerVariedAgent, 'native-openrouter');
+});
+
+test('sealChallengeDecision returns undefined for a one-sided or malformed intent', () => {
+  assert.equal(sealChallengeDecision(undefined), undefined);
+  assert.equal(sealChallengeDecision(makeSealedPlanIntent({ challenger: undefined })), undefined);
+});
+
+test('resolveSealedDecisionAgainstExpandedRoute enriches non-varied fields and preserves the challenger', () => {
+  const result = resolveSealedDecisionAgainstExpandedRoute({
+    sealed: makeSealedPlanIntent(),
+    expandedRoute: EXPANDED_PLAN_ROUTE,
+  });
+  assert.equal(result.status, 'materialize');
+  if (result.status !== 'materialize') return;
+  assert.equal(result.variedStage, 'plan');
+  assert.equal(result.challengerVariedModel, 'glm-5.2');
+  assert.equal(result.intent.decisionSource, 'preserved');
+  const primary = result.intent.primary as { planner: { model: string }; coder: { model: string } };
+  const challenger = result.intent.challenger as { planner: { model: string; agent: string }; coder: { model: string } };
+  // Primary incumbent planner is enriched from the expanded route.
+  assert.equal(primary.planner.model, 'expanded-planner');
+  // Non-varied stages come from the expanded route on both sides.
+  assert.equal(primary.coder.model, 'expanded-coder');
+  assert.equal(challenger.coder.model, 'expanded-coder');
+  // The challenger's varied planner is preserved byte-for-byte.
+  assert.equal(challenger.planner.model, 'glm-5.2');
+  assert.equal(challenger.planner.agent, 'native-openrouter');
+});
+
+test('resolveSealedDecisionAgainstExpandedRoute collapses when the sealed challenger is no longer eligible', () => {
+  const result = resolveSealedDecisionAgainstExpandedRoute({
+    sealed: makeSealedPlanIntent(),
+    expandedRoute: EXPANDED_PLAN_ROUTE,
+    eligibleVariedModels: ['some-other-model', 'and-another'],
+  });
+  assert.equal(result.status, 'collapse');
+  if (result.status !== 'collapse') return;
+  assert.equal(result.reason, 'sealed_challenger_ineligible');
+});
+
+test('resolveSealedDecisionAgainstExpandedRoute keeps the challenger when it is still eligible', () => {
+  const result = resolveSealedDecisionAgainstExpandedRoute({
+    sealed: makeSealedPlanIntent(),
+    expandedRoute: EXPANDED_PLAN_ROUTE,
+    eligibleVariedModels: ['glm-5.2', 'some-other-model'],
+  });
+  assert.equal(result.status, 'materialize');
+});
+
+test('resolveSealedDecisionAgainstExpandedRoute collapses when the expanded route lacks the varied stage', () => {
+  const result = resolveSealedDecisionAgainstExpandedRoute({
+    sealed: makeSealedPlanIntent(),
+    expandedRoute: { planner: '', coder: 'expanded-coder', reviewer: 'expanded-reviewer', planDepth: '', codeDepth: '', reviewMode: '' },
+  });
+  assert.equal(result.status, 'collapse');
+  if (result.status !== 'collapse') return;
+  assert.equal(result.reason, 'expanded_route_missing');
+});
+
+test('resolveSealedDecisionAgainstExpandedRoute never rerolls the sealed choice (idempotent)', () => {
+  const a = resolveSealedDecisionAgainstExpandedRoute({ sealed: makeSealedPlanIntent(), expandedRoute: EXPANDED_PLAN_ROUTE });
+  const b = resolveSealedDecisionAgainstExpandedRoute({ sealed: makeSealedPlanIntent(), expandedRoute: EXPANDED_PLAN_ROUTE });
+  assert.deepEqual(a, b);
+});
+
+test('sealedSelectionViolations reports a changed challenger, stage, or pair', () => {
+  const sealed = sealChallengeDecision(makeSealedPlanIntent());
+  assert.ok(sealed);
+  // An enriched intent that preserved the seal has no violations.
+  const enriched = resolveSealedDecisionAgainstExpandedRoute({ sealed: makeSealedPlanIntent(), expandedRoute: EXPANDED_PLAN_ROUTE });
+  assert.equal(enriched.status, 'materialize');
+  if (enriched.status === 'materialize') {
+    assert.deepEqual(sealedSelectionViolations(sealed!, enriched.intent), []);
+  }
+  // A rerolled challenger is a violation.
+  const rerolled = makeSealedPlanIntent({
+    challenger: {
+      key: 'HOK-3065_c',
+      role: 'challenger',
+      planner: { model: 'a-different-planner', agent: 'claude' },
+      coder: { model: 'bootstrap-coder', agent: 'claude' },
+      reviewer: { model: 'bootstrap-reviewer', agent: 'claude' },
+    },
+  });
+  assert.deepEqual(sealedSelectionViolations(sealed!, rerolled), ['challengerVariedModel']);
+  // A re-sampled stage is a violation.
+  const restaged = makeSealedPlanIntent({ selectedStage: 'implementation', challengeStage: 'implementation' });
+  assert.ok(sealedSelectionViolations(sealed!, restaged).includes('selectedStage'));
+});
+
+test('resolveReviewStageChallengePin ignores non-challenge directories', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'review-pin-none-'));
+  try {
+    const featureDir = join(repoDir, 'features', 'solo-task');
+    mkdirSync(featureDir, { recursive: true });
+    writeWorkflowState(repoDir, {
+      tasks: {
+        'HOK-3000': {
+          slug: 'solo-task',
+          branch: 'task/solo-task',
+        },
+      },
+    });
+
+    const pin = resolveReviewStageChallengePin({
+      repoDir,
+      featureDir,
+      branchName: 'task/solo-task',
+    });
+    assert.equal(pin, undefined);
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
   }

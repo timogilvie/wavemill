@@ -105,6 +105,27 @@ describe('execution contract persistence', () => {
     assert.equal(read.ok ? read.contract.model : '', 'glm-5.2');
   });
 
+  it('recovers the reviewer for an implementation challenge', async () => {
+    await fs.writeFile(path.join(testDir, '.phase-config.json'), JSON.stringify({
+      review: {
+        model: 'claude-haiku-4-5-20251001', provider: 'anthropic', agent: 'claude',
+        stageRole: 'review', selectedAt: '2026-07-30T12:00:00.000Z',
+      },
+    }));
+    await fs.writeFile(path.join(testDir, 'challenge-intent.json'), JSON.stringify({
+      challengeStage: 'implementation', createdAt: '2026-07-30T12:00:00.000Z',
+      challenger: {
+        expectedStageModel: 'glm-5.3', expectedStageAgent: 'native-openrouter',
+        reviewer: { model: 'claude-haiku-4-5-20251001', agent: 'claude' },
+      },
+    }));
+
+    const read = readPersistedContract({ featureDir: testDir, stageRole: 'review', challengeSide: 'challenger' });
+    assert.equal(read.ok, true);
+    assert.equal(read.ok ? read.contract.model : '', 'claude-haiku-4-5-20251001');
+    assert.equal(read.ok ? read.contract.agent : '', 'claude');
+  });
+
   it('serializes as stable one-line JSON', () => {
     const serialized = serializeContract(contract());
     assert.equal(serialized.includes('\n'), false);

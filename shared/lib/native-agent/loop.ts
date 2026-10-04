@@ -47,6 +47,14 @@ import {
 import { evaluateBeforeToolCallPolicy, type ToolPolicyConfig } from './tools/policies.ts';
 import { redactSecrets, redactSecretsInValue } from './tools/redaction.ts';
 import { ToolStagnationTracker, type ToolStagnationPolicy } from './planning-guards.ts';
+import {
+  extractProviderReportedIdentity,
+  ProviderIdentityMismatchError,
+  ProviderIdentityTracker,
+  verifyProviderIdentity,
+  type ProviderIdentityExpectation,
+  type ProviderIdentitySummary,
+} from './provider-identity.ts';
 import type {
   OutputCapPolicy,
   ToolMetadata,
@@ -56,6 +64,27 @@ import type {
   ToolRedactionMetadata,
   ToolResultMetadata,
 } from './tools/types.ts';
+
+/**
+ * Thrown when the resolved provider menu diverges from the schemas Pi will
+ * actually send this turn. Never silently logged — a wrong-menu record is
+ * worse than no record because it lies about what the model saw (HOK-3054).
+ */
+export class ProviderToolMenuDriftError extends Error {
+  readonly turnIndex: number;
+  readonly expected: readonly string[];
+  readonly resolved: readonly string[];
+
+  constructor(turnIndex: number, expected: readonly string[], resolved: readonly string[]) {
+    super(
+      `provider-tool-menu drift: turn=${turnIndex} expected=[${[...expected].sort().join(',')}] resolved=[${[...resolved].sort().join(',')}]`,
+    );
+    this.name = 'ProviderToolMenuDriftError';
+    this.turnIndex = turnIndex;
+    this.expected = expected;
+    this.resolved = resolved;
+  }
+}
 
 const EMPTY_ASSISTANT_CONTINUATION_LIMIT = 1;
 const EMPTY_ASSISTANT_CONTINUATION_PROMPT = [
@@ -210,6 +239,66 @@ export interface WavemillLoopConfig {
     backoffDelaysMs?: number[];
     sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   };
+  /**
+   * Per-turn tool exposure hook (HOK-3054). When provided, the loop emits
+   * `tool_menu` and `provider_tools` events at each turn boundary, attaches
+   * both digests to the corresponding `model_request` event, and asserts that
+   * the resolved provider tool names match the schemas actually sent this
+   * turn. A mismatch is a hard failure — silent divergence would defeat the
+   * point of recording the menu.
+   *
+   * Backward compatible: when omitted, the loop behaves exactly as before
+   * (no menu events, no digest fields on `model_request`).
+   */
+  menuProvider?: {
+    resolveForTurn(input: {
+      turnIndex: number;
+      terminalSynthesis: boolean;
+    }): {
+      toolMenu: {
+        canonical: string;
+        digest: string;
+        toolNames: readonly string[];
+        byteSize: number;
+      };
+      providerTools: {
+        canonical: string;
+        digest: string;
+        toolCount: number;
+        toolNames: readonly string[];
+        byteSize: number;
+      };
+    };
+  };
+  /**
+   * Maximum canonical byte size to inline in a menu event before spilling the
+   * canonical content to the artifact store. Defaults to 8 KiB.
+   */
+  menuInlineMaxBytes?: number;
+  /**
+   * Per-turn provider identity verification (HOK-3143). When provided, the
+   * loop extracts `responseModel`/`responseId` from each assistant turn and
+   * verifies against the certified pinned identity. On `mismatch` or an
+   * `unverifiable` alias turn, the loop:
+   *   1. latches an identity failure (no tool from that turn is allowed to run),
+   *   2. awaits `onMismatch` (so the launcher can rewrite the certificate),
+   *   3. throws `ProviderIdentityMismatchError`.
+   *
+   * When omitted, behaviour is unchanged — this keeps scripted and test
+   * runs untouched.
+   */
+  providerIdentity?: {
+    expectation: ProviderIdentityExpectation;
+    /**
+     * Invoked exactly once per loop run on a hard identity failure. Awaited
+     * inside the loop's finally block before the error is thrown so the
+     * launcher's invalidation write completes before the stage result is
+     * assembled.
+     */
+    onMismatch?: (error: ProviderIdentityMismatchError) => Promise<void> | void;
+    /** Caller-owned tracker; the loop creates one when omitted. */
+    tracker?: ProviderIdentityTracker;
+  };
 }
 
 export interface NativeContextManagementConfig {
@@ -242,6 +331,12 @@ export interface LoopResult {
     errorMessage: string;
     turnsAtFailure: number;
   };
+  /**
+   * Provider-reported identity summary (HOK-3143). Present when
+   * `providerIdentity` was configured. Launchers persist this on the stage
+   * result so `executedModel` reflects what the provider actually served.
+   */
+  providerIdentity?: ProviderIdentitySummary;
 }
 
 // ---------------------------------------------------------------------------
@@ -451,6 +546,8 @@ interface ComposedSignal {
   signal: AbortSignal;
   cleanup: () => void;
   isWallClockExpiry: () => boolean;
+  /** Abort the composed signal (not treated as a wall-clock expiry). */
+  abort: () => void;
 }
 
 function composeAbortSignal(
@@ -487,7 +584,7 @@ function composeAbortSignal(
     }, maxWallClockMs);
   }
 
-  return { signal: controller.signal, cleanup, isWallClockExpiry: () => wallClockExpired };
+  return { signal: controller.signal, cleanup, isWallClockExpiry: () => wallClockExpired, abort };
 }
 
 // ---------------------------------------------------------------------------
@@ -588,9 +685,26 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
   const batchFailed = new WeakMap<AssistantMessage, boolean>();
   // Tool call ids that were skipped by beforeToolCall (not real failures).
   const skippedCallIds = new Set<string>();
+  // Provider-identity state (HOK-3143).
+  const identityTracker = config.providerIdentity?.tracker ?? new ProviderIdentityTracker();
+  // Latched when a turn fails identity verification. All subsequent
+  // beforeToolCall calls on that turn's AssistantMessage are blocked, and the
+  // loop throws ProviderIdentityMismatchError once the current turn drains.
+  const identityFailureByMessage = new WeakMap<AssistantMessage, true>();
+  let identityFailureError: ProviderIdentityMismatchError | undefined;
   // Track current turn's model request event ID and callId for linking response
   let currentTurnRequestEventId: string | undefined;
   let currentTurnRequestCallId: string | undefined;
+
+  // Track the provider-visible tool names Pi will send for the next request.
+  // Seeded from the launch-supplied context.tools; mutated to [] when
+  // terminal synthesis rewrites the next-turn tool list. Used by the
+  // menu-drift assertion in the turn_start handler (HOK-3054).
+  const initialProviderToolNames: readonly string[] = (context.tools ?? []).map(
+    (tool) => String((tool as { name: unknown }).name),
+  );
+  let currentTurnProviderToolNames: readonly string[] = initialProviderToolNames;
+  const menuInlineMaxBytes = config.menuInlineMaxBytes ?? 8192;
 
   const toolsForCompat = config.toolPolicy?.registry.length
     ? config.toolPolicy.registry
@@ -749,6 +863,12 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
     },
 
     beforeToolCall: async (ctx: BeforeToolCallContext, signal?: AbortSignal) => {
+      // Identity gate: once a turn fails provider-identity verification, none
+      // of its tool calls are permitted to run. HOK-3143.
+      if (identityFailureByMessage.get(ctx.assistantMessage)) {
+        skippedCallIds.add(ctx.toolCall.id);
+        return { block: true, reason: 'provider_identity_mismatch' };
+      }
       // Fail-fast: skip subsequent calls once the batch has a failure.
       if (batchFailed.get(ctx.assistantMessage)) {
         skippedCallIds.add(ctx.toolCall.id);
@@ -984,6 +1104,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
       ) {
         terminalSynthesisActive = true;
         terminalSynthesisPromptPending = true;
+        currentTurnProviderToolNames = [];
         return {
           ...(nextModel ? { model: nextModel } : {}),
           context: {
@@ -1100,12 +1221,76 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
       config.onEvent?.(event);
     }
     switch (event.type) {
-      case 'turn_start':
+      case 'turn_start': {
         onHeartbeat?.({ state: 'working', event: 'turn_start', agent: HEARTBEAT_AGENT });
+
+        // Resolve the per-turn menu (HOK-3054). Do the drift check before
+        // emitting any events so a mismatch fails the run rather than
+        // silently persisting a wrong-menu record.
+        let toolMenuDigest: string | undefined;
+        let providerToolsDigest: string | undefined;
+        if (config.menuProvider) {
+          const resolved = config.menuProvider.resolveForTurn({
+            turnIndex: turnsCompleted,
+            terminalSynthesis: terminalSynthesisActive,
+          });
+          const expected = [...currentTurnProviderToolNames].sort().join(',');
+          const actual = [...resolved.providerTools.toolNames].sort().join(',');
+          if (expected !== actual) {
+            throw new ProviderToolMenuDriftError(
+              turnsCompleted,
+              currentTurnProviderToolNames,
+              resolved.providerTools.toolNames,
+            );
+          }
+          toolMenuDigest = resolved.toolMenu.digest;
+          providerToolsDigest = resolved.providerTools.digest;
+
+          if (sessionStreamWriter) {
+            try {
+              const menuArtifactRef = resolved.toolMenu.byteSize > menuInlineMaxBytes
+                ? storeArtifact(
+                  resolved.toolMenu.canonical,
+                  config.sessionStreamConfig?.repoDir,
+                )
+                : undefined;
+              sessionStreamWriter.writeToolMenu({
+                toolNames: [...resolved.toolMenu.toolNames],
+                digest: resolved.toolMenu.digest,
+                ...(menuArtifactRef ? { artifactRef: menuArtifactRef } : {}),
+              });
+            } catch (error) {
+              console.warn(`Failed to log tool_menu event: ${(error as Error).message}`);
+            }
+            try {
+              const providerArtifactRef = resolved.providerTools.byteSize > menuInlineMaxBytes
+                ? storeArtifact(
+                  resolved.providerTools.canonical,
+                  config.sessionStreamConfig?.repoDir,
+                )
+                : undefined;
+              sessionStreamWriter.writeProviderTools({
+                toolCount: resolved.providerTools.toolCount,
+                digest: resolved.providerTools.digest,
+                ...(providerArtifactRef ? { artifactRef: providerArtifactRef } : {}),
+              });
+            } catch (error) {
+              console.warn(`Failed to log provider_tools event: ${(error as Error).message}`);
+            }
+          }
+        }
+
         // Log model request event when turn starts
         if (sessionStreamWriter) {
           try {
             currentTurnRequestCallId = randomUUID();
+            const turnBudgetRemaining = budget?.maxTurns !== undefined
+              ? budget.maxTurns - turnsCompleted
+              : undefined;
+            const toolCallBudgetRemaining = budget?.maxToolCalls !== undefined
+              ? budget.maxToolCalls - toolCallsExecuted
+              : undefined;
+            const tokensUsedSoFar = totalInputTokens + totalOutputTokens;
             const modelRequestEvent = sessionStreamWriter.writeModelRequest({
               callId: currentTurnRequestCallId,
               turnIndex: turnsCompleted,
@@ -1118,6 +1303,11 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
               contextDigest: computeArgsFingerprint(context),
               promptRefs: config.sessionStreamConfig?.promptRefs ?? [],
               injectedContextRefs: config.sessionStreamConfig?.injectedContextRefs,
+              ...(toolMenuDigest ? { toolMenuDigest } : {}),
+              ...(providerToolsDigest ? { providerToolsDigest } : {}),
+              ...(turnBudgetRemaining !== undefined ? { turnBudgetRemaining } : {}),
+              ...(toolCallBudgetRemaining !== undefined ? { toolCallBudgetRemaining } : {}),
+              tokensUsedSoFar,
             });
             currentTurnRequestEventId = modelRequestEvent.eventId;
           } catch (error) {
@@ -1125,9 +1315,59 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
           }
         }
         break;
+      }
       case 'message_update':
         onHeartbeat?.({ state: 'working', event: 'message_update', agent: HEARTBEAT_AGENT });
         break;
+      case 'message_end': {
+        // Provider-identity verification (HOK-3143). We check every assistant
+        // turn whose stopReason is non-error, before any of its tools run.
+        // User and tool-result messages reach this branch too (pi-agent-core
+        // emits message_end for them; see agent-loop.js:52,98,508), so we
+        // narrow on role === 'assistant' and skip provider-error turns.
+        if (!config.providerIdentity) break;
+        const message = event.message as AssistantMessage;
+        if (!message || message.role !== 'assistant') break;
+        if (message.stopReason === 'error' || message.stopReason === 'aborted') break;
+        // Already-latched failure on this message: nothing to record.
+        if (identityFailureByMessage.get(message)) break;
+        const expectation = config.providerIdentity.expectation;
+        const reported = extractProviderReportedIdentity(message, expectation.requestedWireId);
+        const decision = verifyProviderIdentity(expectation, reported);
+        identityTracker.record({ turnIndex: turnsCompleted, decision, reported });
+        if (decision.verdict === 'mismatch'
+          || (decision.verdict === 'unverifiable' && expectation.isAlias)) {
+          const reason = decision.verdict === 'mismatch'
+            ? 'identity_mismatch'
+            : 'identity_unverifiable';
+          identityFailureError = new ProviderIdentityMismatchError({
+            reason,
+            expectedModel: expectation.expectedModel,
+            reportedModel: reported.reportedModel,
+            requestedWireId: expectation.requestedWireId,
+            turnIndex: turnsCompleted,
+            isAlias: expectation.isAlias,
+            responseId: reported.responseId,
+          });
+          identityFailureByMessage.set(message, true);
+          // Mark this turn's tool batch as failed so Pi's own fail-fast kicks in
+          // and the loop's next shouldStopAfterTurn observes the abort.
+          batchFailed.set(message, true);
+          composed.abort();
+          // Best-effort session-stream warning. Does not advance any step.
+          try {
+            sessionStreamWriter?.writeToolPolicyDecision({
+              callId: `provider-identity-${turnsCompleted}`,
+              toolName: '__provider_identity__',
+              decision: 'deny',
+              denialReason: `${reason}: expected=${expectation.expectedModel} reported=${reported.reportedModel ?? '(none)'} requested=${expectation.requestedWireId}`,
+            });
+          } catch (error) {
+            console.warn(`Failed to log provider-identity denial: ${(error as Error).message}`);
+          }
+        }
+        break;
+      }
       case 'tool_execution_start':
         onHeartbeat?.({
           state: 'working',
@@ -1135,11 +1375,16 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
           detail: event.toolName,
           agent: HEARTBEAT_AGENT,
         });
-        // Log tool call event when tool execution starts
+        // Log tool call event when tool execution starts.
+        // HOK-3122: `event.toolCallId` is the real SDK call id; the earlier
+        // `event.callId ?? randomUUID()` bug minted a fresh UUID for every
+        // row because `AgentEvent.tool_execution_start` has no `callId`
+        // field, so the projector could never match the tool_call back to
+        // its policy decision or result.
         if (sessionStreamWriter) {
           try {
             sessionStreamWriter.writeToolCall({
-              callId: event.callId ?? randomUUID(),
+              callId: event.toolCallId,
               toolName: event.toolName,
             });
           } catch (error) {
@@ -1344,6 +1589,26 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
   if (loopError instanceof ContextExhaustedError) {
     throw loopError;
   }
+  if (loopError instanceof ProviderToolMenuDriftError) {
+    throw loopError;
+  }
+
+  // Build the provider-identity summary once per run (HOK-3143).
+  const providerIdentitySummary = config.providerIdentity ? identityTracker.summary() : undefined;
+
+  // On a hard identity failure, run the caller's onMismatch (certificate
+  // invalidation) BEFORE throwing, so the invalidation is durable before
+  // the launcher's catch block assembles the failure stage result.
+  if (identityFailureError) {
+    if (config.providerIdentity?.onMismatch) {
+      try {
+        await config.providerIdentity.onMismatch(identityFailureError);
+      } catch (error) {
+        console.warn(`providerIdentity.onMismatch failed: ${(error as Error).message}`);
+      }
+    }
+    throw identityFailureError;
+  }
 
   return {
     messages: finalMessages,
@@ -1355,6 +1620,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
     totalCostUsd,
     wallClockMs,
     ...(finalProviderError ? { providerError: finalProviderError } : {}),
+    ...(providerIdentitySummary ? { providerIdentity: providerIdentitySummary } : {}),
   };
 }
 

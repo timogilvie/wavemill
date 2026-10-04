@@ -8,6 +8,7 @@ import {
   readSelectionHealth,
   recordSelectionOutcome,
   releaseReservation,
+  type SelectionAttemptStatus,
   type SelectionHealthOwner,
 } from '../shared/lib/challenge-selection-health.ts';
 import type { ChallengeStage } from '../shared/lib/challenge-scheduler.ts';
@@ -24,6 +25,7 @@ runTool({
     stage: { type: 'string', description: 'Challenge stage (plan|implementation|review)' },
     'failure-kind': { type: 'string', description: 'Typed terminal failure kind' },
     'fault-class': { type: 'string', description: 'Typed fault class' },
+    'terminal-status': { type: 'string', description: 'Explicit terminal attempt status (success|failure|forfeit|invalid)' },
     success: { type: 'boolean', description: 'Record a successful terminal outcome' },
     json: { type: 'boolean', description: 'Emit JSON status' },
     all: { type: 'boolean', description: 'Clear all health state' },
@@ -73,6 +75,7 @@ runTool({
         stage: requireStage(stage),
         owner: ownerFromArgs(args),
         success: args.success === true,
+        terminalStatus: normalizeTerminalStatus(args['terminal-status']),
         failureKind: args['failure-kind'] || undefined,
         faultClass: args['fault-class'] as never,
       });
@@ -122,4 +125,11 @@ function normalizeStage(value: string | undefined): ChallengeStage | undefined {
   if (raw === 'review' || raw === 'reviewer') return 'review';
   if (raw === 'implementation' || raw === 'coding' || raw === 'coder') return 'implementation';
   throw new Error(`Invalid --stage: ${value}`);
+}
+
+function normalizeTerminalStatus(value: string | undefined): SelectionAttemptStatus | undefined {
+  const raw = value?.trim().toLowerCase();
+  if (!raw) return undefined;
+  if (raw === 'success' || raw === 'failure' || raw === 'forfeit' || raw === 'invalid') return raw;
+  throw new Error(`Invalid --terminal-status: ${value}`);
 }

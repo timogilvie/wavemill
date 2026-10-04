@@ -15,7 +15,12 @@ import { afterEach, describe, it } from 'node:test';
 import { readStageResult } from '../stage-result.ts';
 import { registerScriptedPiProvider, type ScriptedPiProviderTurn, type ScriptedProviderContext } from './provider.ts';
 import { getCodingFailureHandoffPath, readCodingFailureHandoff } from './coding-failure-handoff.ts';
-import { launchNativeCoding, renderCodingSystemPrompt } from './launch-coding.ts';
+import {
+  CODING_RECOVERY_INSTRUCTION_FILE,
+  launchNativeCoding,
+  renderCodingSystemPrompt,
+  withCodingRecoveryInstruction,
+} from './launch-coding.ts';
 import type { ToolDescriptor } from './tools/types.ts';
 
 const repos: string[] = [];
@@ -156,6 +161,42 @@ describe('launchNativeCoding', () => {
     assert.match(prompt, /operations/);
     assert.match(prompt, /edit-diff/);
     assert.match(prompt, /"version": 1/);
+  });
+
+  it('contains focused-test guidance and no longer promises .coding-complete on full verification (HOK-3145)', () => {
+    const prompt = renderCodingSystemPrompt({
+      template: 'Implement {{SLUG}}.',
+      codeDepth: 'medium',
+      operatingMode: 'normal',
+      featureDir: '/repo/features/demo',
+      planPath: '/repo/features/demo/plan.md',
+      slug: 'demo',
+      blockedCompletionPath: 'features/demo/.coding-blocked-completion.json',
+    });
+
+    assert.match(prompt, /node --test <files>/);
+    assert.match(prompt, /npx tsx --test <files>/);
+    assert.match(prompt, /unsharded `tests\/run-\*\.sh`/);
+    assert.match(prompt, /focused verification of the changed code passes/);
+    assert.doesNotMatch(prompt, /full verification passes/);
+  });
+
+  it('appends a Recovery Mode section when recoveryMode is set (HOK-3145)', () => {
+    const prompt = renderCodingSystemPrompt({
+      template: 'Implement {{SLUG}}.',
+      codeDepth: 'medium',
+      operatingMode: 'normal',
+      featureDir: '/repo/features/demo',
+      planPath: '/repo/features/demo/plan.md',
+      slug: 'demo',
+      blockedCompletionPath: 'features/demo/.coding-blocked-completion.json',
+      recoveryMode: { dirtyPaths: ['src/a.ts', 'scratch.txt'] },
+    });
+
+    assert.match(prompt, /Recovery Mode Tool Restrictions/);
+    assert.match(prompt, /src\/a\.ts/);
+    assert.match(prompt, /scratch\.txt/);
+    assert.match(prompt, /recovery_mode_denied/);
   });
 
   it('runs a scripted native coding loop, commits a scoped patch, and records completion', async () => {
@@ -742,6 +783,90 @@ describe('launchNativeCoding', () => {
     assert.match(stageResult?.failureReason ?? '', /last tool error \(apply_patch\/invalid_patch\)/);
   });
 
+  it('denies apply_patch during dirty-handoff recovery and allows git_commit (HOK-3145)', async () => {
+    const { repoDir, featureDir, slug } = makeRepo();
+    writeFileSync(
+      join(featureDir, CODING_RECOVERY_INSTRUCTION_FILE),
+      'Your previous coding run wrote `.coding-complete` but left these paths uncommitted:\n\n- `src/app.ts`\n',
+      'utf-8',
+    );
+
+    const beforeContent = readFileSync(join(repoDir, 'src', 'app.ts'), 'utf-8');
+    const model = scriptedModel([
+      toolTurn('patch-1', 'apply_patch', {
+        patch: {
+          version: 1,
+          atomic: true,
+          operations: [{
+            op: 'edit',
+            path: 'src/app.ts',
+            oldText: beforeContent,
+            newText: "export const message = 'patched-during-recovery';\n",
+          }],
+        },
+      }),
+      finalTurn('Stopped without re-writing .coding-complete.'),
+    ], 'recovery-apply-patch-denied');
+
+    await assert.rejects(
+      () => launchNativeCoding({
+        session: 'sess',
+        issue: 'HOK-3128-recovery-denies',
+        slug,
+        wtDir: repoDir,
+        repoDir,
+        loopModelOverride: model,
+      }),
+      /without \.coding-complete or \.coding-blocked-completion\.json/,
+    );
+
+    const afterContent = readFileSync(join(repoDir, 'src', 'app.ts'), 'utf-8');
+    assert.equal(afterContent, beforeContent, 'apply_patch must not mutate the file during recovery');
+  });
+
+  it('surfaces the dirty-handoff recovery instruction and never archives it (HOK-3128)', async () => {
+    const { repoDir, featureDir, slug } = makeRepo();
+    writeFileSync(join(featureDir, '.coding-complete'), '{"stage":"coding","confidence":"high"}\n', 'utf-8');
+    writeFileSync(
+      join(featureDir, CODING_RECOVERY_INSTRUCTION_FILE),
+      'Your previous run left these paths uncommitted:\n- test-simple.ts\n',
+      'utf-8',
+    );
+    const seen: ScriptedProviderContext[] = [];
+    const api = `native-coding-recovery-${process.pid}-${Date.now()}`;
+    registerScriptedPiProvider({
+      api,
+      provider: 'scripted',
+      turns: (context) => {
+        seen.push(context);
+        return finalTurn('Stopped without writing a fresh marker.');
+      },
+    });
+
+    await assert.rejects(
+      () => launchNativeCoding({
+        session: 'sess',
+        issue: 'HOK-3128',
+        slug,
+        wtDir: repoDir,
+        repoDir,
+        issueContext: 'Issue Description:\nfix it',
+        loopModelOverride: { id: `scripted:${api}`, name: `scripted:${api}`, api, provider: 'scripted' },
+      }),
+      /without \.coding-complete or \.coding-blocked-completion\.json/,
+    );
+
+    assert.ok(seen.length > 0);
+    const firstUser = JSON.stringify(seen[0].messages);
+    assert.match(firstUser, /## Recovery instruction/);
+    assert.match(firstUser, /test-simple\.ts/);
+    assert.ok(firstUser.indexOf('Recovery instruction') < firstUser.indexOf('Issue Description'));
+    // The stale marker is archived; the monitor-owned instruction is not.
+    assert.ok(archivedArtifactPath(featureDir, '.coding-complete'));
+    assert.ok(existsSync(join(featureDir, CODING_RECOVERY_INSTRUCTION_FILE)));
+    assert.equal(archivedArtifactPath(featureDir, CODING_RECOVERY_INSTRUCTION_FILE), undefined);
+  });
+
   it('sweeps a pre-existing .coding-complete before classifying native completion', async () => {
     const { repoDir, featureDir, slug } = makeRepo();
     writeFileSync(join(featureDir, '.coding-complete'), '{"stage":"coding","confidence":"high","producer":"stale"}\n', 'utf-8');
@@ -803,5 +928,32 @@ describe('launchNativeCoding', () => {
     assert.ok(existsSync(join(featureDir, '.coding-complete')));
     const stageResult = await readStageResult(featureDir, 'coding');
     assert.equal(stageResult?.status, 'completed');
+  });
+});
+
+describe('withCodingRecoveryInstruction (HOK-3128)', () => {
+  it('returns the issue context unchanged when no recovery instruction exists', () => {
+    const featureDir = mkdtempSync(join(tmpdir(), 'wm-recovery-'));
+    try {
+      assert.equal(withCodingRecoveryInstruction(featureDir, 'Issue Description:\nfix it'), 'Issue Description:\nfix it');
+      assert.equal(withCodingRecoveryInstruction(featureDir, undefined), undefined);
+    } finally {
+      rmSync(featureDir, { recursive: true, force: true });
+    }
+  });
+
+  it('prepends the monitor-written recovery instruction as a heading block', () => {
+    const featureDir = mkdtempSync(join(tmpdir(), 'wm-recovery-'));
+    try {
+      writeFileSync(join(featureDir, CODING_RECOVERY_INSTRUCTION_FILE), 'Commit or discard:\n- test-simple.ts\n');
+      const context = withCodingRecoveryInstruction(featureDir, 'Issue Description:\nfix it');
+      assert.equal(context, '## Recovery instruction\nCommit or discard:\n- test-simple.ts\n\nIssue Description:\nfix it');
+      assert.equal(
+        withCodingRecoveryInstruction(featureDir, ''),
+        '## Recovery instruction\nCommit or discard:\n- test-simple.ts\n',
+      );
+    } finally {
+      rmSync(featureDir, { recursive: true, force: true });
+    }
   });
 });

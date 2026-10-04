@@ -355,7 +355,7 @@ EOF
 {
   "planner": "bootstrap-planner",
   "coder": "bootstrap-coder",
-  "reviewer": "gpt-5.5",
+  "reviewer": "gpt-5.6-terra",
   "planDepth": "light",
   "codeDepth": "medium",
   "reviewMode": "llm"
@@ -370,10 +370,107 @@ EOF
     && [[ "$(jq -r '.review.model' "$feature_dir/.phase-config.json")" == "glm-5.2" ]] \
     && [[ "$(jq -r '.tasks["HOK-1512_c"].reviewerModel' "$state_file")" == "glm-5.2" ]] \
     && [[ "$(jq -r '.challengeIntentApplied' "$feature_dir/.routing-complete")" == "true" ]] \
-    && [[ "$(jq -r '.rawExpandedRoute.reviewer' "$feature_dir/.routing-complete")" == "gpt-5.5" ]]; then
+    && [[ "$(jq -r '.rawExpandedRoute.reviewer' "$feature_dir/.routing-complete")" == "gpt-5.6-terra" ]]; then
     pass "challenger review intent survives expanded route overwrite"
   else
     fail "challenger review intent was not preserved during expanded route promotion"
+  fi
+  rm -rf "$root"
+}
+
+{
+  mapfile -t fixture < <(new_fixture "expanded-route-challenger-shared-stages")
+  root="${fixture[0]}"
+  wt_dir="${fixture[1]}"
+  state_file="${fixture[2]}"
+  feature_dir="$wt_dir/features/test-slug"
+  real_challenge_intent --stage implementation \
+    --primary-coder gpt-5.6-terra \
+    --challenger-coder claude-opus-4-7 --challenger-coder-agent claude \
+    > "$feature_dir/challenge-intent.json"
+  cat > "$feature_dir/.post-expansion-route.json" <<'EOF'
+{
+  "planner": "challenger-expanded-planner",
+  "coder": "challenger-expanded-coder",
+  "reviewer": "challenger-expanded-reviewer",
+  "planDepth": "deep",
+  "codeDepth": "deep",
+  "reviewMode": "llm"
+}
+EOF
+
+  jq '.tasks["HOK-1512"] += {
+        plannerModel:"primary-expanded-planner",
+        coderModel:"gpt-5.6-terra",
+        reviewerModel:"primary-expanded-reviewer",
+        planDepth:"medium",
+        codeDepth:"medium",
+        reviewMode:"static"
+      }
+      | .tasks["HOK-1512_c"] = (.tasks["HOK-1512"] + {
+        challengePairId:"HOK-1512",
+        challengeRole:"challenger",
+        challengeStage:"implementation"
+      })' "$state_file" > "$root/state.tmp"
+  mv "$root/state.tmp" "$state_file"
+
+  if run_apply "$feature_dir" "$state_file" "HOK-1512_c" \
+    && [[ "$(jq -r '.planner' "$feature_dir/.routing-complete")" == "primary-expanded-planner" ]] \
+    && [[ "$(jq -r '.reviewer' "$feature_dir/.routing-complete")" == "primary-expanded-reviewer" ]] \
+    && [[ "$(jq -r '.coder' "$feature_dir/.routing-complete")" == "claude-opus-4-7" ]] \
+    && [[ "$(jq -r '.challengeSharedRouteApplied' "$feature_dir/.routing-complete")" == "true" ]] \
+    && [[ "$(jq -r '.planning.model' "$feature_dir/.phase-config.json")" == "primary-expanded-planner" ]] \
+    && [[ "$(jq -r '.review.model' "$feature_dir/.phase-config.json")" == "primary-expanded-reviewer" ]] \
+    && [[ "$(jq -r '.coding.model' "$feature_dir/.phase-config.json")" == "claude-opus-4-7" ]] \
+    && [[ "$(jq -r '.tasks["HOK-1512_c"].plannerModel' "$state_file")" == "primary-expanded-planner" ]] \
+    && [[ "$(jq -r '.tasks["HOK-1512_c"].reviewerModel' "$state_file")" == "primary-expanded-reviewer" ]]; then
+    pass "challenger implementation route copies primary shared stages after independent expansion"
+  else
+    fail "challenger implementation route did not copy primary shared stages"
+  fi
+  rm -rf "$root"
+}
+
+{
+  mapfile -t fixture < <(new_fixture "expanded-route-challenger-missing-primary-route")
+  root="${fixture[0]}"
+  wt_dir="${fixture[1]}"
+  state_file="${fixture[2]}"
+  feature_dir="$wt_dir/features/test-slug"
+  real_challenge_intent --stage implementation \
+    --primary-coder gpt-5.6-terra \
+    --challenger-coder claude-opus-4-7 --challenger-coder-agent claude \
+    > "$feature_dir/challenge-intent.json"
+  cat > "$feature_dir/.post-expansion-route.json" <<'EOF'
+{
+  "planner": "challenger-expanded-planner",
+  "coder": "challenger-expanded-coder",
+  "reviewer": "challenger-expanded-reviewer",
+  "planDepth": "deep",
+  "codeDepth": "deep",
+  "reviewMode": "llm"
+}
+EOF
+
+  jq '.tasks["HOK-1512"] |= del(.plannerModel, .coderModel, .reviewerModel, .planDepth, .codeDepth, .reviewMode)
+      | .tasks["HOK-1512_c"] = (.tasks["HOK-1512"] + {
+          challengePairId:"HOK-1512",
+          challengeRole:"challenger",
+          challengeStage:"implementation"
+        })' "$state_file" > "$root/state.tmp"
+  mv "$root/state.tmp" "$state_file"
+
+  set +e
+  output="$(run_apply "$feature_dir" "$state_file" "HOK-1512_c" 2>&1)"
+  status=$?
+  set -e
+
+  if [[ "$status" -ne 0 ]] \
+    && grep -q 'primary planning/review route unavailable' <<< "$output" \
+    && [[ "$(jq -r '.challengeSharedRouteApplied // false' "$feature_dir/.routing-complete")" == "false" ]]; then
+    pass "real challenger fails closed when the primary finalized route is unavailable"
+  else
+    fail "challenger did not fail closed without a primary finalized route: status=$status output=$output"
   fi
   rm -rf "$root"
 }
@@ -405,7 +502,7 @@ EOF
 {
   "planner": "bootstrap-planner",
   "coder": "bootstrap-coder",
-  "reviewer": "gpt-5.5",
+  "reviewer": "gpt-5.6-terra",
   "planDepth": "light",
   "codeDepth": "medium",
   "reviewMode": "llm"
@@ -506,7 +603,7 @@ EOF
       primary: {
         key: "HOK-1512", role: "primary",
         planner:  {model: "bootstrap-planner", agent: "claude"},
-        coder:    {model: "gpt-5.5",           agent: "codex"},
+        coder:    {model: "gpt-5.6-terra",           agent: "codex"},
         reviewer: {model: "bootstrap-reviewer", agent: "claude"}
       },
       challenger: {
@@ -522,7 +619,7 @@ EOF
   cat > "$feature_dir/.post-expansion-route.json" <<'EOF'
 {
   "planner": "bootstrap-planner",
-  "coder": "gpt-5.5",
+  "coder": "gpt-5.6-terra",
   "reviewer": "bootstrap-reviewer",
   "planDepth": "light",
   "codeDepth": "deep",
@@ -561,7 +658,7 @@ EOF
   cat > "$feature_dir/.post-expansion-route.json" <<'EOF'
 {
   "planner": "expanded-planner",
-  "coder": "gpt-5.5",
+  "coder": "gpt-5.6-terra",
   "reviewer": "claude-opus-4-7",
   "planDepth": "deep",
   "codeDepth": "deep",

@@ -260,6 +260,169 @@ test('signals no eligible candidate after primary removal and dedupe', () => {
   assert.equal(result.selectionReason, 'no-eligible-candidate');
 });
 
+function makeAttempts(evidence: Record<string, {
+  attemptCount: number;
+  lastAttemptAt?: string;
+  cooldownActive?: boolean;
+}>) {
+  return (model: string) => evidence[model];
+}
+
+test('failed zero-coverage challenger yields to a zero-attempt peer (HOK-3066)', () => {
+  const result = selectLeastUsedChallenger({
+    stage: 'review',
+    primaryModel: 'claude-sonnet-4-6',
+    candidates: ['claude-sonnet-4-6', 'kimi-k2.7-code', 'qwen3-coder', 'glm-5.2'],
+    coverage: makeCoverage({}),
+    attemptEvidence: makeAttempts({
+      'kimi-k2.7-code': { attemptCount: 1, lastAttemptAt: '2026-09-23T10:00:00.000Z' },
+    }),
+    rotationSeed: 'HOK-3066|review',
+    launchPriorityByAlias,
+  });
+
+  assert.notEqual(result.model, 'kimi-k2.7-code');
+  assert.equal(result.coverageCount, 0);
+  assert.equal(result.attemptCount, 0);
+});
+
+test('fewest recent terminal attempts breaks equal successful coverage', () => {
+  const result = selectLeastUsedChallenger({
+    stage: 'implementation',
+    primaryModel: 'claude-sonnet-4-6',
+    candidates: ['qwen3-coder', 'glm-5.2'],
+    coverage: makeCoverage({
+      implementation: { 'qwen3-coder': 2, 'glm-5.2': 2 },
+    }),
+    attemptEvidence: makeAttempts({
+      'qwen3-coder': { attemptCount: 3, lastAttemptAt: '2026-09-23T10:00:00.000Z' },
+      'glm-5.2': { attemptCount: 1, lastAttemptAt: '2026-09-23T11:00:00.000Z' },
+    }),
+    rotationSeed: 'HOK-3066|implementation',
+    launchPriorityByAlias,
+  });
+
+  assert.equal(result.model, 'glm-5.2');
+  assert.equal(result.selectionReason, 'least-attempted');
+  assert.equal(result.attemptCount, 1);
+  assert.equal(result.lastAttemptAt, '2026-09-23T11:00:00.000Z');
+});
+
+test('oldest last attempt breaks equal attempt counts', () => {
+  const result = selectLeastUsedChallenger({
+    stage: 'implementation',
+    primaryModel: 'claude-sonnet-4-6',
+    candidates: ['qwen3-coder', 'glm-5.2'],
+    coverage: makeCoverage({}),
+    attemptEvidence: makeAttempts({
+      'qwen3-coder': { attemptCount: 1, lastAttemptAt: '2026-09-23T08:00:00.000Z' },
+      'glm-5.2': { attemptCount: 1, lastAttemptAt: '2026-09-23T11:00:00.000Z' },
+    }),
+    rotationSeed: 'HOK-3066|implementation',
+    launchPriorityByAlias,
+  });
+
+  assert.equal(result.model, 'qwen3-coder');
+  assert.equal(result.selectionReason, 'least-attempted');
+});
+
+test('active cooldowns are excluded while a non-cooled candidate exists', () => {
+  const result = selectLeastUsedChallenger({
+    stage: 'implementation',
+    primaryModel: 'claude-sonnet-4-6',
+    candidates: ['kimi-k2.7-code', 'mistral-large'],
+    coverage: makeCoverage({
+      implementation: { 'mistral-large': 9 },
+    }),
+    attemptEvidence: makeAttempts({
+      'kimi-k2.7-code': { attemptCount: 1, lastAttemptAt: '2026-09-23T12:00:00.000Z', cooldownActive: true },
+    }),
+    rotationSeed: 'HOK-3066|implementation',
+    launchPriorityByAlias,
+  });
+
+  // Even a much-better-covered candidate wins over one in an active cooldown.
+  assert.equal(result.model, 'mistral-large');
+  assert.equal(result.cooldownActive, false);
+});
+
+test('cooldown fallback is explicit when every candidate is cooled', () => {
+  const result = selectLeastUsedChallenger({
+    stage: 'implementation',
+    primaryModel: 'claude-sonnet-4-6',
+    candidates: ['kimi-k2.7-code', 'qwen3-coder'],
+    coverage: makeCoverage({}),
+    attemptEvidence: makeAttempts({
+      'kimi-k2.7-code': { attemptCount: 2, lastAttemptAt: '2026-09-23T12:00:00.000Z', cooldownActive: true },
+      'qwen3-coder': { attemptCount: 1, lastAttemptAt: '2026-09-23T12:30:00.000Z', cooldownActive: true },
+    }),
+    rotationSeed: 'HOK-3066|implementation',
+    launchPriorityByAlias,
+  });
+
+  assert.equal(result.model, 'qwen3-coder');
+  assert.equal(result.selectionReason, 'cooldown-fallback');
+  assert.equal(result.cooldownActive, true);
+});
+
+test('a recommendation cannot override a lower-attempt candidate outside its bucket', () => {
+  const result = selectLeastUsedChallenger({
+    stage: 'implementation',
+    primaryModel: 'claude-sonnet-4-6',
+    candidates: ['qwen3-coder', 'glm-5.2'],
+    coverage: makeCoverage({
+      implementation: { 'qwen3-coder': 1, 'glm-5.2': 1 },
+    }),
+    attemptEvidence: makeAttempts({
+      'qwen3-coder': { attemptCount: 4, lastAttemptAt: '2026-09-23T12:00:00.000Z' },
+    }),
+    recommendedChallenger: 'qwen3-coder',
+    rotationSeed: 'HOK-3066|implementation',
+    launchPriorityByAlias,
+  });
+
+  assert.equal(result.model, 'glm-5.2');
+  assert.notEqual(result.selectionReason, 'recommendation-honored');
+});
+
+test('attempt evidence and priority tier are reported for the selected challenger', () => {
+  const result = selectLeastUsedChallenger({
+    stage: 'implementation',
+    primaryModel: 'claude-sonnet-4-6',
+    candidates: ['mistral-large'],
+    coverage: makeCoverage({ implementation: { 'mistral-large': 1 } }),
+    attemptEvidence: makeAttempts({
+      'mistral-large': { attemptCount: 2, lastAttemptAt: '2026-09-23T09:00:00.000Z' },
+    }),
+    rotationSeed: 'HOK-3066|implementation',
+    launchPriorityByAlias,
+  });
+
+  assert.equal(result.model, 'mistral-large');
+  assert.equal(result.attemptCount, 2);
+  assert.equal(result.lastAttemptAt, '2026-09-23T09:00:00.000Z');
+  assert.equal(result.cooldownActive, false);
+  assert.equal(result.priorityTier, 2);
+});
+
+test('ranking without attempt evidence matches the legacy coverage selector', () => {
+  const base = {
+    stage: 'implementation' as ChallengeStage,
+    primaryModel: 'claude-sonnet-4-6',
+    candidates: ['qwen3-coder', 'glm-5.2', 'kimi-k2.7-code'],
+    coverage: makeCoverage({
+      implementation: { 'qwen3-coder': 4, 'glm-5.2': 2, 'kimi-k2.7-code': 7 },
+    }),
+    rotationSeed: 'HOK-2500|implementation',
+    launchPriorityByAlias,
+  };
+  const legacy = selectLeastUsedChallenger(base);
+  const withEmptyEvidence = selectLeastUsedChallenger({ ...base, attemptEvidence: () => undefined });
+
+  assert.equal(legacy.model, withEmptyEvidence.model);
+  assert.equal(legacy.selectionReason, withEmptyEvidence.selectionReason);
+});
+
 if (failed > 0) {
   console.error(`\n${failed} challenge coverage selector test(s) failed.`);
   process.exit(1);

@@ -173,17 +173,33 @@ export function formatEvalRecord(record: EvalRecord): string {
 
     if (o.staticAnalysis && Object.keys(o.staticAnalysis).length > 0) {
       const parts: string[] = [];
-      if (o.staticAnalysis.typecheckPassed !== undefined) {
+      const sa = o.staticAnalysis;
+      const fmt = (v: number | null | undefined) =>
+        v === null || v === undefined ? '–' : String(v);
+      // S1 fields first (HOK-2806).
+      if (sa.type_errors !== undefined) parts.push(`types:${fmt(sa.type_errors)}`);
+      if (sa.lint_errors !== undefined) parts.push(`lint:${fmt(sa.lint_errors)}`);
+      if (sa.build_ok !== undefined) {
         parts.push(
-          o.staticAnalysis.typecheckPassed ? 'typecheck ✓' : 'typecheck ✗'
+          sa.build_ok === null ? 'build:–' : sa.build_ok ? 'build:✓' : 'build:✗',
         );
       }
-      if (o.staticAnalysis.lintDelta !== undefined) {
-        const lintStatus =
-          o.staticAnalysis.lintDelta === 0
-            ? '✓'
-            : `+${o.staticAnalysis.lintDelta}`;
-        parts.push(`lint ${lintStatus}`);
+      if (sa.complexity_delta !== undefined) {
+        const cd = sa.complexity_delta;
+        const cdStr = cd === null
+          ? '–'
+          : cd > 0
+            ? `+${cd}`
+            : String(cd);
+        parts.push(`Δcx:${cdStr}`);
+      }
+      // Legacy fields.
+      if (sa.typecheckPassed !== undefined) {
+        parts.push(sa.typecheckPassed ? 'typecheck ✓' : 'typecheck ✗');
+      }
+      if (sa.lintDelta !== undefined) {
+        const lintStatus = sa.lintDelta === 0 ? '✓' : `+${sa.lintDelta}`;
+        parts.push(`lint(legacy) ${lintStatus}`);
       }
       if (parts.length > 0) {
         lines.push(`    ${BOLD}Analysis:${NC}  ${parts.join(', ')}`);

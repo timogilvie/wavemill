@@ -18,12 +18,15 @@ import {
   collectReworkOutcome,
   collectDeliveryOutcome,
   clearPrChecksCache,
+  clearCandidateFeaturesCache,
+  sharedCandidateCacheKey,
 } from './outcome-collectors.ts';
 import type { InterventionSummary } from './intervention-detector.ts';
 
-// Clear cache before each test to ensure test isolation
+// Clear caches before each test to ensure test isolation
 beforeEach(() => {
   clearPrChecksCache();
+  clearCandidateFeaturesCache();
 });
 
 function withFakeGh(checks: unknown[], run: (repoDir: string) => void): void {
@@ -142,6 +145,33 @@ describe('collectStaticAnalysisOutcome', () => {
     assert.ok(typeof outcome === 'object');
     assert.ok(!Array.isArray(outcome));
   });
+
+  it('accepts an optional checkoutDir without throwing (HOK-2806)', () => {
+    assert.doesNotThrow(() =>
+      collectStaticAnalysisOutcome(
+        '999',
+        'feature-branch',
+        'main',
+        '/nonexistent',
+        '/nonexistent-checkout',
+      ),
+    );
+  });
+
+  it('does not populate S1 fields with 0/false on collector failure (HOK-2806 null discipline)', () => {
+    // With a nonexistent repoDir + checkoutDir, no tool can complete, so any
+    // S1 fields that appear must be null, never coerced to 0/false.
+    const outcome = collectStaticAnalysisOutcome(
+      '999',
+      'feature-branch',
+      'main',
+      '/nonexistent',
+      '/nonexistent-checkout',
+    );
+    if ('type_errors' in outcome) assert.equal(outcome.type_errors, null);
+    if ('lint_errors' in outcome) assert.equal(outcome.lint_errors, null);
+    if ('build_ok' in outcome) assert.equal(outcome.build_ok, null);
+  });
 });
 
 describe('collectReviewOutcome', () => {
@@ -223,6 +253,34 @@ describe('Outcome collectors error handling', () => {
     assert.doesNotThrow(() => collectStaticAnalysisOutcome('', '', '', ''));
     assert.doesNotThrow(() => collectReworkOutcome('', '', undefined, ''));
     assert.doesNotThrow(() => collectDeliveryOutcome('', ''));
+  });
+});
+
+describe('Shared candidate cache key', () => {
+  it('changes when baseRef changes', () => {
+    const a = sharedCandidateCacheKey('42', '/repo', { baseRef: 'main' });
+    const b = sharedCandidateCacheKey('42', '/repo', { baseRef: 'auto/integration' });
+    assert.notEqual(a, b);
+  });
+
+  it('changes when the contract changes (order-independent)', () => {
+    const a = sharedCandidateCacheKey('42', '/repo', {
+      contract: { taskText: 'add feature', provenance: { agent_iterations: 1 } },
+    });
+    const b = sharedCandidateCacheKey('42', '/repo', {
+      contract: { provenance: { agent_iterations: 1 }, taskText: 'add feature' },
+    });
+    const c = sharedCandidateCacheKey('42', '/repo', {
+      contract: { taskText: 'add feature', provenance: { agent_iterations: 2 } },
+    });
+    assert.equal(a, b, 'same contract in different key order should hash equal');
+    assert.notEqual(a, c, 'different contract should hash different');
+  });
+
+  it('is stable for identical inputs', () => {
+    const a = sharedCandidateCacheKey('42', '/repo', { baseRef: 'main' });
+    const b = sharedCandidateCacheKey('42', '/repo', { baseRef: 'main' });
+    assert.equal(a, b);
   });
 });
 

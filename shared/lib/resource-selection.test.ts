@@ -24,8 +24,14 @@ function test(name: string, fn: () => void) {
   }
 }
 
+// HOK-3100: tests set WAVEMILL_DIR to the repoDir so the install resolver
+// picks up the fake prompts/artifacts written here instead of the real
+// install's. The milled repo (`repoDir`) and the install happen to be the
+// same directory for the test's convenience; the production split is enforced
+// in `tests/check-install-paths.test.sh`.
 function makeRepo(): string {
   const repoDir = mkdtempSync(join(tmpdir(), 'resource-selection-test-'));
+  process.env.WAVEMILL_DIR = repoDir;
   mkdirSync(join(repoDir, 'tools', 'prompts'), { recursive: true });
   mkdirSync(join(repoDir, 'dspy', 'artifacts'), { recursive: true });
   writeFileSync(join(repoDir, 'tools', 'prompts', 'planning-phase.md'), 'baseline planner prompt', 'utf-8');
@@ -34,7 +40,7 @@ function makeRepo(): string {
     version: '1.0.0',
     created_at: '2026-04-01T00:00:00Z',
     optimizer: 'MIPROv2',
-    teacher_model: 'gpt-5.5',
+    teacher_model: 'gpt-5.6-terra',
     runtime_model: 'gpt-4o-mini',
     system_prompt: 'route well',
     few_shot_examples: [],
@@ -45,7 +51,7 @@ function makeRepo(): string {
     version: '1.1.0-canary',
     created_at: '2026-04-04T00:00:00Z',
     optimizer: 'MIPROv2',
-    teacher_model: 'gpt-5.5',
+    teacher_model: 'gpt-5.6-terra',
     runtime_model: 'gpt-4o-mini',
     system_prompt: 'canary route',
     few_shot_examples: [],
@@ -57,7 +63,7 @@ function makeRepo(): string {
     stage: 'planner',
     created_at: '2026-04-01T00:00:00Z',
     optimizer: 'DSPy',
-    teacher_model: 'gpt-5.5',
+    teacher_model: 'gpt-5.6-terra',
     optimized_instruction: 'optimized planner prompt',
     metadata: {},
   }), 'utf-8');
@@ -66,7 +72,7 @@ function makeRepo(): string {
     stage: 'reviewer',
     created_at: '2026-04-01T00:00:00Z',
     optimizer: 'DSPy',
-    teacher_model: 'gpt-5.5',
+    teacher_model: 'gpt-5.6-terra',
     optimized_instruction: 'optimized reviewer prompt',
     metadata: {},
   }), 'utf-8');
@@ -76,6 +82,11 @@ function makeRepo(): string {
 function writeConfig(repoDir: string, config: unknown): void {
   writeFileSync(join(repoDir, '.wavemill-config.json'), JSON.stringify(config, null, 2), 'utf-8');
   clearConfigCache(repoDir);
+}
+
+function tearDown(repoDir: string): void {
+  rmSync(repoDir, { recursive: true, force: true });
+  delete process.env.WAVEMILL_DIR;
 }
 
 console.log('\n--- Resource Selection Tests ---\n');
@@ -89,7 +100,7 @@ test('disabled runtime selection returns baseline prompt content', () => {
     assert.equal(result.selection.resourceRef?.id.startsWith('prompt:'), true);
     assert.equal(result.content, 'baseline planner prompt');
   } finally {
-    rmSync(repoDir, { recursive: true, force: true });
+    tearDown(repoDir);
   }
 });
 
@@ -113,7 +124,7 @@ test('enabled surface selects optimized planner prompt', () => {
     assert.equal(result.selection.variant, 'optimized');
     assert.equal(result.content, 'optimized planner prompt');
   } finally {
-    rmSync(repoDir, { recursive: true, force: true });
+    tearDown(repoDir);
   }
 });
 
@@ -137,7 +148,7 @@ test('surface disabled falls back to baseline even when optimized is default', (
     assert.equal(selection.variant, 'baseline');
     assert.equal(selection.fallbackApplied, true);
   } finally {
-    rmSync(repoDir, { recursive: true, force: true });
+    tearDown(repoDir);
   }
 });
 
@@ -164,7 +175,7 @@ test('missing candidate falls back with rejection reason', () => {
     assert.equal(result.selection.fallbackApplied, true);
     assert.match(result.selection.rejectionReason || '', /candidate file not found/);
   } finally {
-    rmSync(repoDir, { recursive: true, force: true });
+    tearDown(repoDir);
   }
 });
 
@@ -190,7 +201,7 @@ test('canary bucketing is deterministic by session id', () => {
     assert.deepEqual(first, second);
     assert.equal(first.variant, 'canary');
   } finally {
-    rmSync(repoDir, { recursive: true, force: true });
+    tearDown(repoDir);
   }
 });
 
@@ -215,7 +226,7 @@ test('registry disabled does not throw', () => {
     assert.equal(result.selection.resourceRef, null);
     assert.equal(result.content, 'optimized planner prompt');
   } finally {
-    rmSync(repoDir, { recursive: true, force: true });
+    tearDown(repoDir);
   }
 });
 
@@ -243,7 +254,7 @@ test('fallback disabled returns unresolved error result', () => {
     assert.match(result.error || '', /candidate file not found/);
     assert.equal(result.selection.fallbackApplied, false);
   } finally {
-    rmSync(repoDir, { recursive: true, force: true });
+    tearDown(repoDir);
   }
 });
 
@@ -262,13 +273,14 @@ test('resolver CLI emits parseable JSON with content and selection metadata', ()
     ], {
       cwd: process.cwd(),
       encoding: 'utf-8',
+      env: { ...process.env, WAVEMILL_DIR: repoDir },
     });
     const parsed = JSON.parse(raw);
     assert.equal(parsed.content, 'baseline planner prompt');
     assert.equal(parsed.selection.surface, 'planner');
     assert.equal(parsed.selection.variant, 'baseline');
   } finally {
-    rmSync(repoDir, { recursive: true, force: true });
+    tearDown(repoDir);
   }
 });
 

@@ -672,11 +672,67 @@ EOF
 OUTPUT_CLEANUP_EPISODE="$TMP_DIR/output-cleanup-episode.txt"
 run_render "$STATE_FILE_CLEANUP_EPISODE" "$WORKTREES_DIR" "$BEHAVIOR_SKIPPED" "$OUTPUT_CLEANUP_EPISODE"
 
-if grep -q 'cleanup: retained attempts=1 outcome=local-work-preserved fp=abc1' "$OUTPUT_CLEANUP_EPISODE" \
-  && grep -q 'lifecycle: outcome=merged disposition=retained reason=local-work-' "$OUTPUT_CLEANUP_EPISODE"; then
-  pass "dashboard renders retained cleanup episode detail"
+# HOK-3068: a terminal (merged) task with retained resources must leave the
+# Active/Inbox surface entirely and appear only in the compact Backstage
+# recovery section, with disposition/reason and the stored operator action.
+if grep -q 'BACKSTAGE (retained)' "$OUTPUT_CLEANUP_EPISODE" \
+  && grep -q 'HOK-2955.*merged.*retained (local-work-preserved)' "$OUTPUT_CLEANUP_EPISODE" \
+  && grep -q 'Push task/cleanup-episode-task to origin' "$OUTPUT_CLEANUP_EPISODE" \
+  && ! grep -q 'cleanup: retained attempts=1' "$OUTPUT_CLEANUP_EPISODE"; then
+  pass "merged retained task surfaces in Backstage, not Active/Inbox"
 else
-  fail "dashboard cleanup episode detail is missing"
+  fail "Backstage retained cleanup episode detail is missing"
+fi
+
+# HOK-3068: superseded challengers and aborted tasks are terminal by canonical
+# lifecycle outcome. They must leave Active/Inbox and the active-slot count for
+# Backstage, while a genuinely active task alongside them stays in Active.
+STATE_FILE_TERMINAL_LANES="$TMP_DIR/state-terminal-lanes.json"
+cat > "$STATE_FILE_TERMINAL_LANES" <<EOF
+{
+  "tasks": {
+    "HOK-3300": {
+      "slug": "superseded-challenger",
+      "branch": "task/superseded-challenger",
+      "worktree": "$WORKTREES_DIR/active-task",
+      "status": "superseded",
+      "phase": "review",
+      "challengeRole": "challenger",
+      "pr": "tracked"
+    },
+    "HOK-3301": {
+      "slug": "aborted-task",
+      "branch": "task/aborted-task",
+      "worktree": "$WORKTREES_DIR/active-task",
+      "status": "aborted",
+      "phase": "aborted"
+    },
+    "HOK-3302": {
+      "slug": "live-active-task",
+      "branch": "task/live-active-task",
+      "worktree": "$WORKTREES_DIR/active-task",
+      "status": "",
+      "phase": "executing",
+      "pr": "tracked"
+    }
+  }
+}
+EOF
+
+OUTPUT_TERMINAL_LANES="$TMP_DIR/output-terminal-lanes.txt"
+run_render "$STATE_FILE_TERMINAL_LANES" "$WORKTREES_DIR" "$BEHAVIOR_SKIPPED" "$OUTPUT_TERMINAL_LANES"
+
+CLEAN_TERMINAL_LANES="$TMP_DIR/output-terminal-lanes-clean.txt"
+strip_ansi < "$OUTPUT_TERMINAL_LANES" > "$CLEAN_TERMINAL_LANES"
+
+if grep -q 'BACKSTAGE (retained)' "$CLEAN_TERMINAL_LANES" \
+  && grep -q 'HOK-3300.*closed' "$CLEAN_TERMINAL_LANES" \
+  && grep -q 'HOK-3301.*aborted' "$CLEAN_TERMINAL_LANES" \
+  && grep -q 'ACTIVE (1)' "$CLEAN_TERMINAL_LANES" \
+  && grep -q 'HOK-3302' "$CLEAN_TERMINAL_LANES"; then
+  pass "terminal superseded/aborted rows route to Backstage; active row stays Active"
+else
+  fail "terminal rows leaked into Active or Backstage routing is missing"
 fi
 
 STATE_FILE_MONITOR_QUEUE="$TMP_DIR/state-monitor-queue.json"
@@ -1329,9 +1385,13 @@ else
   fail "ready queue state labels are missing"
 fi
 
-if grep -q 'HOK-1313.*✓ done.*✓ merged.*#424 MERGED' "$OUTPUT_READY_QUEUE" \
+# HOK-3068: a merged task (terminal outcome) leaves the ready/Active surface
+# entirely and appears only in Backstage, never with a ready queue label.
+if grep -q 'BACKSTAGE (retained)' "$OUTPUT_READY_QUEUE" \
+  && grep -q 'HOK-1313.*merged' "$OUTPUT_READY_QUEUE" \
+  && ! grep -q 'HOK-1313.*🚦 ready' "$OUTPUT_READY_QUEUE" \
   && ! grep -q 'HOK-1313.*ready-stale' "$OUTPUT_READY_QUEUE"; then
-  pass "merged tasks override stale ready queue labels"
+  pass "merged task leaves ready/Active surface for Backstage"
 else
   fail "merged task should not display stale ready queue label"
 fi
@@ -2606,6 +2666,32 @@ else
   fail "backstage health did not render disabled observer status and retry count"
 fi
 
+# HOK-3094: observer-only session (integration off) shows tend disabled and
+# the observer's own health.
+cat > "$TMP_DIR/backstage-health.json" <<JSON
+{
+  "status": "disabled",
+  "services": {
+    "tend": {
+      "status": "disabled",
+      "detail": "tend is off: integration.enabled=false"
+    },
+    "observer": {
+      "status": "healthy",
+      "heartbeatAt": "$(iso_at_offset -10)",
+      "instanceCount": 1
+    }
+  }
+}
+JSON
+run_render "$backstage_state" "$WORKTREES_DIR" "$backstage_behavior" "$backstage_output"
+backstage_observer_only_render="$(cat "$backstage_output")"
+if [[ "$backstage_observer_only_render" == *"Tend: disabled"* && "$backstage_observer_only_render" == *"Observer: healthy"* ]]; then
+  pass "backstage health renders observer health when tend is disabled"
+else
+  fail "backstage health did not render observer health with tend disabled"
+fi
+
 cat > "$TMP_DIR/queue-health.json" <<'JSON'
 {
   "status": "degraded",
@@ -2621,6 +2707,54 @@ if [[ "$queue_backstage_render" == *"Queue: degraded"* && "$queue_backstage_rend
   pass "backstage health summary renders degraded queue health"
 else
   fail "backstage health summary did not render degraded queue health"
+fi
+
+# HOK-3130: a successful planner run whose inference failed must not read as
+# healthy; a healthy run surfaces how many inferred edges are in use.
+cat > "$TMP_DIR/queue-health.json" <<'JSON'
+{
+  "status": "degraded",
+  "degradationReason": "inference_unavailable",
+  "failureStep": "queue_inference",
+  "retryBackoffSeconds": 0,
+  "nextAction": "use_explicit_edges_only",
+  "inferenceStatus": "failed",
+  "inferredEdgeCount": 0,
+  "inference": { "error": "LLM fallback deadline exhausted before claude-sonnet-5" }
+}
+JSON
+run_render "$backstage_state" "$WORKTREES_DIR" "$backstage_behavior" "$backstage_output"
+queue_inference_render="$(cat "$backstage_output")"
+if [[ "$queue_inference_render" == *"Queue: degraded (inference_unavailable: failed)"* ]]; then
+  pass "backstage health summary renders inference_unavailable with its status"
+else
+  fail "backstage health summary did not render inference_unavailable status"
+fi
+if [[ "$queue_inference_render" == *"queue inference unavailable (failed); planning with explicit edges only; last error: LLM fallback deadline exhausted"* ]]; then
+  pass "queue inference warning renders status and last error"
+else
+  fail "queue inference warning missing from dashboard"
+fi
+
+cat > "$TMP_DIR/queue-health.json" <<'JSON'
+{
+  "status": "healthy",
+  "nextAction": "use_dependency_queue",
+  "inferenceStatus": "ok",
+  "inferredEdgeCount": 3
+}
+JSON
+run_render "$backstage_state" "$WORKTREES_DIR" "$backstage_behavior" "$backstage_output"
+queue_inferred_render="$(cat "$backstage_output")"
+if [[ "$queue_inferred_render" == *"Queue: healthy (inferred 3)"* ]]; then
+  pass "backstage health summary renders inferred edge count"
+else
+  fail "backstage health summary did not render inferred edge count"
+fi
+if [[ "$queue_inferred_render" != *"queue inference unavailable"* ]]; then
+  pass "healthy inference renders no queue warning"
+else
+  fail "healthy inference rendered a queue warning"
 fi
 
 # ── Malformed challenge-pair state stubs (HOK-2926) ──────────────────────

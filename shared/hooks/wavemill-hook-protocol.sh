@@ -47,7 +47,7 @@ _wavemill_hook_osc_allowed_context() {
 }
 
 _wavemill_hook_config_file() {
-  local repo_dir="${WAVEMILL_REPO_DIR:-}"
+  local repo_dir="${WAVEMILL_MILLED_REPO_DIR:-}"
   local config_file=""
   local git_root=""
 
@@ -191,7 +191,7 @@ _wavemill_hook_emit_osc() {
 }
 
 # Atomically write the standardized hook status payload.
-# Args: state, event, detail, agent [next_action]
+# Args: state, event, detail, agent [next_action] [writer]
 #
 # States: working (agent is actively processing), idle (agent stopped normally),
 #         waiting (agent blocked on user input), blocked (agent cannot proceed),
@@ -202,6 +202,13 @@ _wavemill_hook_emit_osc() {
 # action the operator should take). It is additive and does not affect readers that
 # only know the four-state contract.
 #
+# HOK-3101: The optional writer field (agent|monitor, default agent) distinguishes
+# controller writes from agent writes. Monitor writes never count as agent liveness
+# evidence, and they preserve the previous agent's record in .agentRecord so a
+# monitor pr_merged/blocked/waiting write cannot erase the agent's own Stop/idle
+# evidence (HOK-3089 pt 3). Callers in wavemill-monitor.sh, terminal-reconciler.sh
+# and wavemill-common.sh worktree setup pass writer=monitor.
+#
 # The hook file uses a 300s TTL - consumers should fall back to other signals
 # (pane liveness, process monitoring) if the timestamp is stale.
 wavemill_hook_write() {
@@ -210,6 +217,12 @@ wavemill_hook_write() {
   local detail="${3:-}"
   local agent="$4"
   local next_action="${5:-}"
+  local writer="${6:-agent}"
+
+  case "$writer" in
+    agent|monitor) ;;
+    *) writer="agent" ;;
+  esac
 
   # Hooks are a no-op outside a wavemill agent context. wavemill_hook_check()
   # enforces this for adapter scripts by exiting, but wavemill_hook_write() is
@@ -240,7 +253,31 @@ wavemill_hook_write() {
     base_json="$(cat "$hook_file")"
   fi
 
-  # Atomic write: build JSON in tmp, then mv (prevents partial reads)
+  # HOK-3101: legacy hooks (no writer field, written before this ships) are
+  # classified by event. Controller events must stay in sync with
+  # CONTROLLER_HOOK_EVENTS in shared/lib/task-progress.ts and
+  # shared/lib/task-progress.sh — the parity tests pin all three.
+  local controller_events_filter='
+    def controller_events:
+      [
+        "pr_merged","pr_closed_unmerged","operator_abort","recovery_failure",
+        "review_complete","ready_complete","pr_opened","blocked_completion_liveness",
+        "premature_plan_approval","recovery_contract_unavailable",
+        "planning_rejection_notify_failed","NoPR","worktree-setup",
+        "challenge_resolved_winner","challenge_invalid","challenge_no_comparison",
+        "challenge_stale_evidence","challenge_pair_recovery"
+      ];
+    def is_controller_event($event): (controller_events | index($event)) != null;
+    def base_writer($base): (
+      ($base.writer // (if ($base.event // "" | length) > 0 and is_controller_event($base.event // "") then "monitor"
+                        elif ($base.event // "") == "" and ($base.state // "") == "working" then "monitor"
+                        else "agent" end))
+    );'
+
+  # Atomic write: build JSON in tmp, then mv (prevents partial reads).
+  # HOK-3101: also carries the writer field and preserves the previous
+  # agentRecord across monitor writes (see comment above), so monitor writes
+  # never overwrite the agent's last own record.
   if jq -n \
     --argjson base "$base_json" \
     --arg state "$state" \
@@ -248,10 +285,31 @@ wavemill_hook_write() {
     --arg detail "$detail" \
     --arg agent "$agent" \
     --arg next_action "$next_action" \
+    --arg writer "$writer" \
     --argjson timestamp "$timestamp" \
-    '$base + {state: $state, event: $event, agent: $agent, timestamp: $timestamp}
+    "$controller_events_filter"'
+    def new_agent_record:
+      {state: $state, event: $event, agent: $agent, timestamp: $timestamp}
+      + (if $detail != "" then {detail: $detail} else {} end);
+    def preserved_agent_record($base):
+      if ($base.agentRecord? // null) != null then $base.agentRecord
+      elif base_writer($base) == "agent"
+        and ($base.state? // "" | length) > 0
+        and ($base.timestamp? // 0) > 0 then
+        {state: ($base.state // ""), event: ($base.event // ""), agent: ($base.agent // ""), timestamp: ($base.timestamp // 0)}
+        + (if ($base.detail? // "" | length) > 0 then {detail: $base.detail} else {} end)
+      else null
+      end;
+    $base
+     + {state: $state, event: $event, agent: $agent, timestamp: $timestamp, writer: $writer}
      + (if $detail != "" then {detail: $detail} else {} end)
-     + (if $next_action != "" then {next_action: $next_action} else {} end)' > "$tmp_file" 2>/dev/null; then
+     + (if $next_action != "" then {next_action: $next_action} else {} end)
+     + (if $writer == "agent" then {agentRecord: new_agent_record}
+        else
+          (preserved_agent_record($base) as $rec
+           | if $rec != null then {agentRecord: $rec} else {} end)
+        end)
+    ' > "$tmp_file" 2>/dev/null; then
     if mv "$tmp_file" "$hook_file" 2>/dev/null; then
       wavemill_hook_notify
       _wavemill_hook_emit_osc "$state" "$event" "$detail" "$agent" || true
@@ -312,6 +370,7 @@ wavemill_hook_terminalize() {
   local reason="$2"
   local detail="${3:-}"
   local agent="${4:-wavemill}"
+  local writer="${5:-monitor}"
 
   case "$state" in
     idle|error) ;;
@@ -319,7 +378,10 @@ wavemill_hook_terminalize() {
   esac
 
   wavemill_hook_archive_current "${WAVEMILL_SESSION:-}" "${WAVEMILL_ISSUE:-}" "$reason" || true
-  wavemill_hook_write "$state" "$reason" "$detail" "$agent"
+  # HOK-3101: terminal writes are controller writes. They preserve the agent's
+  # own record in .agentRecord so the reconciler's idle-evidence check keeps
+  # seeing the agent's Stop event (HOK-3089 pt 3).
+  wavemill_hook_write "$state" "$reason" "$detail" "$agent" "" "$writer"
 }
 
 wavemill_hook_supersede() {

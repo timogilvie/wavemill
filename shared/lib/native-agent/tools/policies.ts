@@ -1,11 +1,18 @@
 import path from 'node:path';
 import type { ToolMetadata, ToolPhase } from './types.ts';
 
-export type ToolPolicyReason = 'phase_denied' | 'path_denied';
+export type ToolPolicyReason = 'phase_denied' | 'path_denied' | 'not_exposed';
 
 export interface ToolPolicyConfig {
   readOnlyPhases?: readonly ToolPhase[];
   pathFieldsByTool?: Readonly<Record<string, readonly string[]>>;
+  /**
+   * Optional defense-in-depth allowlist: the exact set of tool names that
+   * exposure has resolved as eligible for the current phase. When present,
+   * any tool call whose name is not in the set is denied with
+   * `not_exposed`. Absent → no additional filtering (Tier 1–4 behavior).
+   */
+  eligibleNames?: readonly string[];
 }
 
 export interface ToolPolicyCall {
@@ -45,6 +52,16 @@ const DEFAULT_READ_ONLY_PHASES: readonly ToolPhase[] = ['planning', 'review'];
 
 export function evaluateBeforeToolCallPolicy(input: ToolPolicyInput): ToolPolicyDecision {
   const worktreeRoot = normalizeWorktreeRoot(input.worktreePath);
+
+  if (input.config?.eligibleNames !== undefined) {
+    const eligible = new Set(input.config.eligibleNames);
+    if (!eligible.has(input.toolCall.name)) {
+      return deny(
+        'not_exposed',
+        `not_exposed: tool "${input.toolCall.name}" is not exposed for ${input.phase}`,
+      );
+    }
+  }
 
   if (isReadOnlyPhase(input.phase, input.config)) {
     const metadata = input.registry.find((tool) => tool.name === input.toolCall.name);

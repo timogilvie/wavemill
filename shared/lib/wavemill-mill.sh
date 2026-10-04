@@ -235,6 +235,9 @@ fi
 _log_level_num() {
   case "$1" in
     error) echo 0 ;;
+    # warn shares status's visibility so warnings always reach the dashboard
+    # at the default verbosity (HOK-3142).
+    warn) echo 1 ;;
     status) echo 1 ;;
     info) echo 2 ;;
     debug) echo 3 ;;
@@ -256,8 +259,11 @@ append_status_log() {
 log() {
   local level="info"
   local msg
+  # `warn` must be a recognised level: before HOK-3142 `log "warn" "…"` fell
+  # through, was written as `[info] warn …`, and was invisible to the
+  # observer's warn/error scan.
   case "${1:-}" in
-    error|status|info|debug)
+    error|warn|status|info|debug)
       level="$1"
       shift
       ;;
@@ -497,7 +503,7 @@ write_launch_plan() {
   fi
 
   local tasks_json='[]'
-  local t issue slug title branch wt_dir linear_issue task_packet_file details_file issue_json_file route_file
+  local t issue slug title branch wt_dir linear_issue task_packet_file details_file issue_json_file route_file scorer_file
   local route_json route_planner route_coder route_reviewer route_plan_depth route_code_depth route_review_mode route_max_cost_usd
   local route_payload challenge_flag challenge_pair challenge_role challenge_model migration_number task_agent
   local depends_on base_from_task attempt_id attempt_json
@@ -513,6 +519,7 @@ write_launch_plan() {
     details_file="/tmp/${SESSION}-${issue}-taskpacket-details.md"
     issue_json_file="/tmp/${SESSION}-${issue}-issue.json"
     route_file="/tmp/${SESSION}-${issue}-route.json"
+    scorer_file="/tmp/${SESSION}-${issue}-task-scorer-result.json"
     route_json='{}'
     [[ -f "$route_file" ]] && route_json="$(cat "$route_file" 2>/dev/null || echo '{}')"
 
@@ -587,6 +594,7 @@ write_launch_plan() {
       --arg taskPacketDetailsFile "$details_file" \
       --arg issueJsonFile "$issue_json_file" \
       --arg routeFile "$route_file" \
+      --arg taskScorerResultFile "$scorer_file" \
       --argjson route "$route_payload" \
       --arg challenge "$challenge_flag" \
       --arg challengePairId "$challenge_pair" \
@@ -611,6 +619,7 @@ write_launch_plan() {
         taskPacketDetailsFile: $taskPacketDetailsFile,
         issueJsonFile: $issueJsonFile,
         routeFile: $routeFile,
+        taskScorerResultFile: $taskScorerResultFile,
         route: $route,
         challenge: ($challenge == "true"),
         challengePairId: (if $challengePairId == "" then null else $challengePairId end),
@@ -657,6 +666,7 @@ write_launch_plan() {
     --arg projectName "$PROJECT_NAME" \
     --arg autoEval "$AUTO_EVAL" \
     --arg enterLaunchesWave "${ENTER_LAUNCHES_WAVE:-true}" \
+    --arg enterAction "${ENTER_ACTION:-none}" \
     --arg dashboardVerbosity "$DASHBOARD_VERBOSITY" \
     --arg dashboardLogToFile "$DASHBOARD_LOG_TO_FILE" \
     --arg millLogFile "$MILL_LOG_FILE" \
@@ -699,6 +709,7 @@ write_launch_plan() {
         projectName: $projectName,
         autoEval: ($autoEval == "true"),
         enterLaunchesWave: ($enterLaunchesWave == "true"),
+        enterAction: $enterAction,
         dashboardVerbosity: $dashboardVerbosity,
         dashboardLogToFile: ($dashboardLogToFile == "true")
       }
@@ -714,6 +725,37 @@ execute() {
   else
     "$@"
   fi
+}
+
+score_task_packets_shadow() {
+  local t issue slug title packet_file result_file stdout_file stderr_file
+  for t in "${LAUNCH_ARGS[@]}"; do
+    IFS='|' read -r issue slug title <<<"$t"
+    packet_file="/tmp/${SESSION}-${issue}-taskpacket.md"
+    result_file="/tmp/${SESSION}-${issue}-task-scorer-result.json"
+    rm -f "$result_file" 2>/dev/null || true
+    if [[ ! -f "$packet_file" ]]; then
+      log_warn "  $issue: task scorer skipped (missing packet); dispatch continuing"
+      continue
+    fi
+    stdout_file="$(mktemp "/tmp/${SESSION}-${issue}-task-scorer.XXXXXX.out")"
+    stderr_file="$(mktemp "/tmp/${SESSION}-${issue}-task-scorer.XXXXXX.err")"
+    if _with_timeout 5 npx tsx "$TOOLS_DIR/score-task-packet.ts" "$packet_file" >"$stdout_file" 2>"$stderr_file" \
+      && jq -e '
+        type == "object"
+        and (.decision | IN("run","expand","split","return"))
+        and (.confidence | type == "number" and . >= 0 and . <= 1)
+        and (.explanation | type == "string" and length > 0)
+        and (.model_version | type == "string" and length > 0)
+      ' "$stdout_file" >/dev/null 2>&1; then
+      mv "$stdout_file" "$result_file"
+      log "debug" "  $issue: task scorer result staged"
+    else
+      log_warn "  $issue: task scorer failed; dispatch continuing"
+      rm -f "$stdout_file" 2>/dev/null || true
+    fi
+    rm -f "$stderr_file" 2>/dev/null || true
+  done
 }
 
 
@@ -778,17 +820,21 @@ init_state_ledger() {
 
 mark_challenge_eval_running() {
   local issue="$1" side="$2" pr="$3" phase="${4:-eval}"
-  state_mutate "$STATE_FILE" '
-    .tasks[$issue].evalRunning = {
+  # HOK-3125: refuse to persist a running marker for a reaped task; caller
+  # treats the non-zero return as "launch skipped, entry no longer present".
+  if ! task_state_entry_exists "$issue"; then
+    return 1
+  fi
+  task_state_mutate_existing "$issue" '
+    .evalRunning = {
       issue: $issue,
       side: $side,
       pr: ($pr | tonumber),
       phase: $phase,
       startedAt: (now | todateiso8601)
     } |
-    .tasks[$issue].updated = (now | todateiso8601)
+    .updated = (now | todateiso8601)
   ' \
-    --arg issue "$issue" \
     --arg side "$side" \
     --arg pr "$pr" \
     --arg phase "$phase"
@@ -796,13 +842,7 @@ mark_challenge_eval_running() {
 
 clear_challenge_eval_running() {
   local issue="$1"
-  state_mutate "$STATE_FILE" '
-    if .tasks[$issue]? then
-      .tasks[$issue] |= (del(.evalRunning) | .updated = (now | todateiso8601))
-    else
-      .
-    end
-  ' --arg issue "$issue"
+  task_state_mutate_existing "$issue" 'del(.evalRunning) | .updated = (now | todateiso8601)'
 }
 
 # challenge_eval_retry_max_attempts() and challenge_eval_hard_failure_max_retries()
@@ -953,13 +993,31 @@ challenge_pair_manual_artifact_path() {
 }
 
 write_manual_challenge_comparison_artifact() {
-  local pair_id="$1" primary_key="$2" challenger_key="$3" timed_out_sides_csv="$4" retry_count="$5" retry_max="$6"
+  local pair_id="$1" primary_key="$2" challenger_key="$3" timed_out_sides_csv="$4" retry_count="$5" retry_max="$6" cause="${7:-eval_timeout}"
   local artifact_path primary_pr challenger_pr
   artifact_path=$(challenge_pair_manual_artifact_path "$primary_key") || return 1
   primary_pr=$(read_state_value "" --arg i "$primary_key" '.tasks[$i].pr // empty')
   challenger_pr=$(read_state_value "" --arg i "$challenger_key" '.tasks[$i].pr // empty')
   mkdir -p "$(dirname "$artifact_path")"
-  cat > "$artifact_path" <<EOF
+  if [[ "$cause" == "stale_eval_evidence" ]]; then
+    cat > "$artifact_path" <<EOF
+# Challenge Comparison Needs Manual Action
+
+Pair ID: $pair_id
+Primary issue: $primary_key
+Challenger issue: $challenger_key
+Primary PR: ${primary_pr:-unknown}
+Challenger PR: ${challenger_pr:-unknown}
+Cause: eval evidence repeatedly refused as stale at the current PR head (relaunches exhausted)
+Retry count: $retry_count/$retry_max
+
+Next action:
+1. Inspect \`npx tsx $TOOLS_DIR/challenge-eval-evidence.ts --pair-id $pair_id --side <side> --pr <pr> --repo-dir .\` and re-run the eval manually if the refusal is transient.
+2. If eval cannot be recovered quickly, compare PRs #${primary_pr:-?} and #${challenger_pr:-?} manually.
+3. Close the losing PR and proceed with the winner.
+EOF
+  else
+    cat > "$artifact_path" <<EOF
 # Challenge Comparison Needs Manual Action
 
 Pair ID: $pair_id
@@ -974,6 +1032,34 @@ Next action:
 1. Re-run the timed-out eval job(s) manually when infrastructure is healthy.
 2. If eval cannot be recovered quickly, compare PRs #${primary_pr:-?} and #${challenger_pr:-?} manually.
 3. Close the losing PR and proceed with the winner.
+EOF
+  fi
+  printf '%s\n' "$artifact_path"
+}
+
+write_invalid_challenge_artifact() {
+  local pair_id="$1" primary_key="$2" challenger_key="$3" divergence_reason="$4" eval_ids_csv="$5"
+  local artifact_path primary_pr challenger_pr
+  artifact_path=$(challenge_pair_manual_artifact_path "$primary_key") || return 1
+  primary_pr=$(read_state_value "" --arg i "$primary_key" '.tasks[$i].pr // empty')
+  challenger_pr=$(read_state_value "" --arg i "$challenger_key" '.tasks[$i].pr // empty')
+  mkdir -p "$(dirname "$artifact_path")"
+  cat > "$artifact_path" <<EOF
+# Challenge Pair Invalid - Manual Action
+
+Pair ID: $pair_id
+Primary issue: $primary_key
+Challenger issue: $challenger_key
+Primary PR: ${primary_pr:-unknown}
+Challenger PR: ${challenger_pr:-unknown}
+Cause: invalid_challenge (${divergence_reason:-unknown})
+Eval ID(s): ${eval_ids_csv:-unknown}
+
+The eval ran at the current PR head. Its record is invalid. Re-running evals will reproduce this result - do not re-run them.
+
+Next action:
+1. Retire the invalid arm: close its PR, mark the arm aborted, then ship the surviving PR.
+2. Or assess/supersede the pair with \`npx tsx $TOOLS_DIR/challenge-pair-recovery.ts --pair $pair_id\`. Add \`--apply\` after reviewing the dry run.
 EOF
   printf '%s\n' "$artifact_path"
 }
@@ -1081,7 +1167,7 @@ check_routing_complete() {
 _resolve_window_attention_target() {
   local win="$1"
   local target="$win" issue="" slug=""
-  if [[ "$win" =~ ^([A-Z]+-[0-9]+(_c)?)-(.+)$ ]]; then
+  if [[ "$win" =~ $TASK_IDENTITY_WINDOW_PREFIX_RE ]]; then
     issue="${BASH_REMATCH[1]}"
     slug="${BASH_REMATCH[3]}"
     local expected_worktree=""
@@ -1239,10 +1325,15 @@ linear_get_issue() {
 }
 
 
+# Replace a task's Linear issue description from a file. $1 is the mill task
+# ID; linear_write_target (wavemill-common.sh, HOK-3115) resolves the Linear
+# issue and turns challenger/refused tasks into a no-op.
 linear_set_description() {
-  local issue="$1"
+  local task_id="$1"
   local file="$2"
+  local issue
 
+  issue="$(linear_write_target "$task_id")" || return 0
 
   if [[ "$DRY_RUN" == "true" ]]; then
     log "[DRY-RUN] Would update $issue description from $file"
@@ -1372,14 +1463,11 @@ cleanup_on_exit() {
     log_warn "Interrupted - resetting Linear state for unfinished tasks..."
     log_warn "Worktrees and branches preserved for resumption on next run."
     for issue in "${ISSUES_IN_PROGRESS[@]}"; do
-      role=$(jq -r --arg issue "$issue" '.tasks[$issue].challengeRole // empty' "$STATE_FILE" 2>/dev/null)
-      linear_issue=$(jq -r --arg issue "$issue" '.tasks[$issue].linearIssueId // .tasks[$issue].challengePairId // $issue' "$STATE_FILE" 2>/dev/null)
-      if [[ "$role" != "challenger" ]]; then
-        linear_set_state "${linear_issue:-$issue}" "Backlog" 2>/dev/null || {
-          [[ -n "${DEBUG_CLEANUP:-}" ]] && log_warn "cleanup_on_exit: Failed to reset Linear state for $issue"
-          true
-        }
-      fi
+      # linear_set_state resolves the Linear issue and skips challengers.
+      linear_set_state "$issue" "Backlog" 2>/dev/null || {
+        [[ -n "${DEBUG_CLEANUP:-}" ]] && log_warn "cleanup_on_exit: Failed to reset Linear state for $issue"
+        true
+      }
       remove_task_state "$issue" 2>/dev/null || {
         [[ -n "${DEBUG_CLEANUP:-}" ]] && log_warn "cleanup_on_exit: Failed to remove task state for $issue"
         true
@@ -1432,6 +1520,19 @@ cleanup_terminal_missing_worktree_entries() {
 cleanup_stale_tasks() {
   cleanup_terminal_missing_worktree_entries
 
+  # HOK-3125: idempotent self-heal for eval-only stubs left by post-reap raw
+  # writers. The startup preflight normally runs this first; call it here too
+  # in case the preflight is disabled.
+  if declare -F drop_tombstoned_eval_stubs >/dev/null 2>&1; then
+    local _dropped_stubs
+    _dropped_stubs="$(drop_tombstoned_eval_stubs || true)"
+    if [[ -n "$_dropped_stubs" ]]; then
+      local _dropped_list
+      _dropped_list="$(printf '%s' "$_dropped_stubs" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+      log "debug" "  Dropped eval-only stub(s) for reaped tasks: ${_dropped_list}"
+    fi
+  fi
+
   local stale_issues
   stale_issues=$(jq -r '.tasks | to_entries[] | .key' "$STATE_FILE" 2>/dev/null)
   [[ -z "$stale_issues" ]] && return 0
@@ -1439,6 +1540,14 @@ cleanup_stale_tasks() {
   local cleaned=0
   while IFS= read -r issue; do
     [[ -z "$issue" ]] && continue
+    # HOK-3068: the startup terminal preflight is the single owner of terminal
+    # cleanup for this run epoch. Skip rows it already classified as terminal so
+    # the stale-task pass does not re-run remote PR/Git/Linear checks or retry
+    # cleanup a second time on the same issue in one startup.
+    if declare -F startup_preflight_owns_terminal_row >/dev/null 2>&1 \
+       && startup_preflight_owns_terminal_row "$issue"; then
+      continue
+    fi
     local task_json
     task_json=$(jq -r --arg i "$issue" '.tasks[$i]' "$STATE_FILE")
     local slug branch worktree pr linear_issue eval_completed
@@ -1491,10 +1600,12 @@ cleanup_stale_tasks() {
                 --debug
               printf 'Eval process exited with code %s\n' "$?"
             } >>"$eval_log" 2>&1 || true
-            # Mark eval completed in state (harmless if task already removed)
-            state_mutate "$STATE_FILE" \
-              '.tasks[$issue].evalCompleted = true | .tasks[$issue].updated = (now | todate)' \
-              --arg issue "$issue" >/dev/null 2>&1 || true
+            # HOK-3125: existing-entry guard so the async completion cannot
+            # recreate the task after the prune below has removed it as a
+            # phase/status-less stub that would count against mill slots.
+            task_state_mutate_existing "$issue" \
+              '.evalCompleted = true | .updated = (now | todate)' \
+              >/dev/null 2>&1 || true
           ) >/dev/null 2>&1 &
     log "debug" "  ↳ Eval running in background; log: $eval_log"
         fi
@@ -1708,7 +1819,7 @@ fi
 
 check_subsystem_drift() {
   local drift_output
-  drift_output="$(npx tsx tools/check-drift.ts "$REPO_DIR" 2>/dev/null)" || return 1
+  drift_output="$(npx tsx "$TOOLS_DIR/check-drift.ts" "$REPO_DIR" 2>/dev/null)" || return 1
   printf '%s\n' "$drift_output"
 }
 
@@ -1802,36 +1913,42 @@ if [[ "$SKIP_BACKLOG_SELECTION" != "true" ]]; then
     if (( STARTUP_SLOT_LIMIT < MAX_PARALLEL )); then
       log "info" "Startup launch capacity: $STARTUP_SLOT_LIMIT new task(s) (max parallel $MAX_PARALLEL, accounting for resumed work)"
     fi
+    case "${ENTER_ACTION:-none}" in
+      wave) ENTER_PROMPT_SUFFIX=", or Enter to launch recommended wave:" ;;
+      top-scored) ENTER_PROMPT_SUFFIX=", or Enter to launch the top-scored tasks:" ;;
+      *) ENTER_PROMPT_SUFFIX=":" ;;
+    esac
     if [[ -n "$DRIFT_SUBSYSTEMS" ]]; then
       if (( BLOCKED_COUNT > 0 )) && [[ "$SHOW_BLOCKED_TASKS" != "true" ]]; then
         if [[ -n "${PROJECT_CONTEXT_OVERSIZED:-}" ]]; then
-          echo "Enter numbers to run (e.g. 1 3 5), d to refresh docs, m for more, c to compact context, q to quit, or Enter to launch recommended wave:"
+          echo "Enter numbers to run (e.g. 1 3 5), d to refresh docs, m for more, c to compact context, q to quit${ENTER_PROMPT_SUFFIX}"
         else
-          echo "Enter numbers to run (e.g. 1 3 5), d to refresh docs, m for more, q to quit, or Enter to launch recommended wave:"
+          echo "Enter numbers to run (e.g. 1 3 5), d to refresh docs, m for more, q to quit${ENTER_PROMPT_SUFFIX}"
         fi
       else
         if [[ -n "${PROJECT_CONTEXT_OVERSIZED:-}" ]]; then
-          echo "Enter numbers to run (e.g. 1 3 5), d to refresh docs, c to compact context, q to quit, or Enter to launch recommended wave:"
+          echo "Enter numbers to run (e.g. 1 3 5), d to refresh docs, c to compact context, q to quit${ENTER_PROMPT_SUFFIX}"
         else
-          echo "Enter numbers to run (e.g. 1 3 5), d to refresh docs, q to quit, or Enter to launch recommended wave:"
+          echo "Enter numbers to run (e.g. 1 3 5), d to refresh docs, q to quit${ENTER_PROMPT_SUFFIX}"
         fi
       fi
     else
       if (( BLOCKED_COUNT > 0 )) && [[ "$SHOW_BLOCKED_TASKS" != "true" ]]; then
         if [[ -n "${PROJECT_CONTEXT_OVERSIZED:-}" ]]; then
-          echo "Enter numbers to run (e.g. 1 3 5), m for more, c to compact context, q to quit, or Enter to launch recommended wave:"
+          echo "Enter numbers to run (e.g. 1 3 5), m for more, c to compact context, q to quit${ENTER_PROMPT_SUFFIX}"
         else
-          echo "Enter numbers to run (e.g. 1 3 5), m for more, q to quit, or Enter to launch recommended wave:"
+          echo "Enter numbers to run (e.g. 1 3 5), m for more, q to quit${ENTER_PROMPT_SUFFIX}"
         fi
       else
         if [[ -n "${PROJECT_CONTEXT_OVERSIZED:-}" ]]; then
-          echo "Enter numbers to run (e.g. 1 3 5), c to compact context, q to quit, or Enter to launch recommended wave:"
+          echo "Enter numbers to run (e.g. 1 3 5), c to compact context, q to quit${ENTER_PROMPT_SUFFIX}"
         else
-          echo "Enter numbers to run (e.g. 1 3 5), q to quit, or Enter to launch recommended wave:"
+          echo "Enter numbers to run (e.g. 1 3 5), q to quit${ENTER_PROMPT_SUFFIX}"
         fi
       fi
     fi
-    read -r SELECTED
+    SELECTED_EOF=false
+    read -r SELECTED || SELECTED_EOF=true
 
     if [[ "$SELECTED" =~ ^[cC](ompact)?$ ]] && [[ -n "${PROJECT_CONTEXT_OVERSIZED:-}" ]]; then
       echo ""
@@ -1849,7 +1966,7 @@ if [[ "$SKIP_BACKLOG_SELECTION" != "true" ]]; then
       echo ""
       if [[ -n "$DRIFT_SUBSYSTEMS" ]]; then
         log "info" "Refreshing subsystem docs..."
-        npx tsx tools/init-project-context.ts --refresh "$REPO_DIR"
+        npx tsx "$TOOLS_DIR/init-project-context.ts" --refresh "$REPO_DIR"
         echo ""
         log "info" "Refresh complete. Re-displaying task list..."
       else
@@ -1869,8 +1986,21 @@ if [[ "$SKIP_BACKLOG_SELECTION" != "true" ]]; then
       exit 0
     fi
 
+    if [[ -z "$SELECTED" && "${ENTER_ACTION:-none}" == "none" ]]; then
+      # taskSelection.enterAction=none: a bare Enter never launches work.
+      # Closed stdin (non-interactive restart) launches nothing and lets the
+      # monitor resume in-flight tasks; an interactive Enter re-prompts.
+      if [[ "$SELECTED_EOF" == "true" ]]; then
+        log "info" "No selection on stdin; launching no new tasks (taskSelection.enterAction=none)."
+        CANDIDATES=""
+        break
+      fi
+      log "info" "Enter does not launch tasks (taskSelection.enterAction=none). Type task numbers, or q to quit."
+      continue
+    fi
+
     if [[ -z "$SELECTED" ]]; then
-      if [[ "${ENTER_LAUNCHES_WAVE:-true}" == "true" ]]; then
+      if [[ "${ENTER_ACTION:-none}" == "wave" ]]; then
         WAVE_LAUNCH_USED=true
         startup_queue_plan=$(build_queue_plan_once "$BACKLOG" 2>/dev/null) || startup_queue_plan=""
         LAUNCH_QUEUE_PLAN="$startup_queue_plan"
@@ -2235,22 +2365,6 @@ log_challenge_selection_health_plan() {
   fi
 }
 
-release_challenge_selection_health_plan() {
-  local issue="$1" challenge_plan="$2"
-  local stage model
-  stage=$(echo "$challenge_plan" | jq -r '.challengeStage // empty' 2>/dev/null || echo "")
-  model=$(echo "$challenge_plan" | jq -r '.entries[1].variedModel // .entries[1].model // empty' 2>/dev/null || echo "")
-  [[ -n "$stage" && -n "$model" && -n "${REPO_DIR:-}" ]] || return 0
-  [[ -f "$REPO_DIR/tools/challenge-selection-health.ts" ]] || return 0
-  (
-    cd "$REPO_DIR" && npx tsx tools/challenge-selection-health.ts release \
-      --repo-dir "$REPO_DIR" \
-      --pair-id "$issue" \
-      --stage "$stage" \
-      --model "$model"
-  ) >/dev/null 2>&1 || true
-}
-
 # ── Phase 5: Challenge-mode launch planning ──────────────────────────────
 FINAL_LAUNCH_ARGS=()
 slots_used=0
@@ -2293,6 +2407,7 @@ for t in "${TASKS[@]}"; do
   # remaining-slots >= 2 as long as the primary slot is available.
   challenge_mode="single"
   challenge_reason=""
+  plan_awaits_expanded_route="false"
   if [[ -n "${FORCE_MODEL:-}" ]]; then
     challenge_reason="forced_model"
     log "debug" "  $ISSUE: Challenge skipped because FORCE_MODEL is set ($FORCE_MODEL)"
@@ -2314,10 +2429,17 @@ for t in "${TASKS[@]}"; do
       continue
     fi
     if challenge_plan_stage_requires_effective_route "$challenge_plan"; then
-      release_challenge_selection_health_plan "$ISSUE" "$challenge_plan"
-      challenge_mode="single"
-      challenge_reason="plan_stage_expanded_route_unavailable"
-      log_warn "  $ISSUE: Planner challenge deferred until expanded route is available"
+      # HOK-3065: a plan-stage challenge cannot resolve its non-varied route
+      # before the expanded task packet exists, but the *selection* (stage,
+      # pair, challenger identity) is already decided. Coercing to single here
+      # is what later produced `challenger_never_launched`: the system deferred
+      # and prohibited the same action. Instead, seal the decision now and defer
+      # the challenger as an awaiting_expanded_route arm that materialises at t=0
+      # once the expanded route is available. Keep challenge_mode=challenge and
+      # the selection-health reservation so the sealed challenger is preserved.
+      plan_awaits_expanded_route="true"
+      challenge_reason="awaiting_expanded_route"
+      log "status" "  $ISSUE: Planner challenge sealed (challenger deferred until expanded route, awaiting_expanded_route)"
     fi
   fi
 
@@ -2345,13 +2467,21 @@ for t in "${TASKS[@]}"; do
     challenger_entry_review_mode=$(echo "$challenge_plan" | jq -r '.entries[1].reviewMode // empty' 2>/dev/null)
     challenge_intent=$(echo "$challenge_plan" | jq -c '.challengeIntent // null' 2>/dev/null || echo "null")
 
-    # HOK-2811: Review-stage challenges defer the challenger to a fork trigger
-    # that fires after the primary's coding phase. Skip the /tmp packet mirror
-    # for the challenger pre-fork — materialisation copies the primary's whole
-    # feature dir into the challenger's, so /tmp mirrors would be stale anyway.
+    # HOK-2811 / HOK-3086: review- and implementation-stage challenges defer the
+    # challenger to a fork of the primary (after coding for review, after the
+    # shared plan for implementation). Pre-fork the /tmp packet mirror is
+    # skipped — materialisation copies the primary's feature artifacts into the
+    # challenger's, so /tmp mirrors would be stale anyway.
     defer_challenger="false"
-    if [[ "$challenge_stage" == "review" ]]; then
+    pending_arm_state="awaiting_fork"
+    if challenge_stage_defers_to_fork "$challenge_stage"; then
       defer_challenger="true"
+    elif [[ "$plan_awaits_expanded_route" == "true" ]]; then
+      # HOK-3065: plan-stage challenger sealed pre-expansion. Defer it as an
+      # awaiting_expanded_route arm; it forks at t=0 once the expanded route
+      # is available (distinct from the reviewer-stage awaiting_fork arm).
+      defer_challenger="true"
+      pending_arm_state="awaiting_expanded_route"
     fi
     if [[ "$defer_challenger" != "true" ]]; then
       cp "/tmp/${SESSION}-${ISSUE}-taskpacket.md" "/tmp/${SESSION}-${challenger_key}-taskpacket.md" 2>/dev/null || true
@@ -2393,6 +2523,7 @@ for t in "${TASKS[@]}"; do
     fi
 
     FINAL_LAUNCH_ARGS+=("$ISSUE|$SLUG|$TITLE")
+    challenge_execution_intent="$(jq -c '.challengeExecutionIntent // empty' <<<"$challenge_plan" 2>/dev/null || true)"
     if [[ "$defer_challenger" != "true" ]]; then
       FINAL_LAUNCH_ARGS+=("$challenger_key|$challenger_slug|$TITLE")
     else
@@ -2414,14 +2545,23 @@ for t in "${TASKS[@]}"; do
         "${challenger_entry_reviewer_agent:-${challenger_agent:-$AGENT_CMD}}" \
         "${challenger_entry_plan_depth:-$route_plan_depth}" \
         "${challenger_entry_code_depth:-$route_code_depth}" \
-        "${challenger_entry_review_mode:-$route_review_mode}")"
+        "${challenger_entry_review_mode:-$route_review_mode}" \
+        "$challenge_execution_intent" \
+        "$pending_arm_state")"
       challenge_arms_record_pending "$ISSUE" "$pending_arm_json" || \
         log "warn" "  $ISSUE: failed to record pending challenger arm $challenger_key"
+      if challenge_intent_json_is_canonical "$challenge_execution_intent"; then
+        challenge_intent_record_selection "$ISSUE" "$challenger_key" "$challenge_execution_intent"
+      else
+        log "warn" "  $ISSUE: challenge pair $challenge_pair has no canonical execution intent at deferred selection"
+      fi
     fi
     slots_used=$((slots_used + 1))  # Challenger is free overhead
     primary_varied=$(echo "$challenge_plan" | jq -r '.entries[0].variedModel // .entries[0].model // empty' 2>/dev/null)
     challenger_varied=$(echo "$challenge_plan" | jq -r '.entries[1].variedModel // .entries[1].model // empty' 2>/dev/null)
-    if [[ "$defer_challenger" == "true" ]]; then
+    if [[ "$defer_challenger" == "true" && "$pending_arm_state" == "awaiting_expanded_route" ]]; then
+      log "status" "  $ISSUE: Challenge selected (stage=${challenge_stage}: ${primary_varied} vs ${challenger_varied}) [challenger deferred until expanded route]"
+    elif [[ "$defer_challenger" == "true" ]]; then
       log "status" "  $ISSUE: Challenge selected (stage=${challenge_stage}: ${primary_varied} vs ${challenger_varied}) [challenger deferred until fork]"
     else
       log "status" "  $ISSUE: Challenge selected (stage=${challenge_stage}: ${primary_varied} vs ${challenger_varied}) [challenger is extra pane]"
@@ -2450,6 +2590,7 @@ for t in "${TASKS[@]}"; do
 done
 
 LAUNCH_ARGS=("${FINAL_LAUNCH_ARGS[@]}")
+score_task_packets_shadow
 # Create monitoring script that will run in tmux
 STATUS_LOG_FILE="/tmp/${SESSION}-mill-status.log"
 MONITOR_ENV="/tmp/${SESSION}-monitor.env"
@@ -2532,6 +2673,8 @@ rm -f "$BASE_REF_PREFLIGHT_FILE"
 export WAVEMILL_BASE_REF_PREFLIGHT_JSON
 WAVEMILL_RESOLVED_BASE_REF="$(printf '%s' "$WAVEMILL_BASE_REF_PREFLIGHT_JSON" | jq -r '.resolvedRef // empty' 2>/dev/null || true)"
 export WAVEMILL_RESOLVED_BASE_REF
+WAVEMILL_RESOLVED_BASE_SHA="$(printf '%s' "$WAVEMILL_BASE_REF_PREFLIGHT_JSON" | jq -r '.resolvedSha // empty' 2>/dev/null || true)"
+export WAVEMILL_RESOLVED_BASE_SHA
 if [[ "$BASE_REF_PREFLIGHT_RC" -ne 0 ]]; then
   BASE_REF_FAILURE_REASON="$(printf '%s' "$WAVEMILL_BASE_REF_PREFLIGHT_JSON" | jq -r '.reason // "base_ref_unavailable"' 2>/dev/null || echo "base_ref_unavailable")"
   (
@@ -2563,7 +2706,12 @@ if [[ "$BASE_REF_PREFLIGHT_RC" -ne 0 ]]; then
         configuredBranch: ($p.configuredBranch // null),
         checkedRefs: ($p.checkedRefs // []),
         resolvedRef: ($p.resolvedRef // null),
+        resolvedSha: ($p.resolvedSha // null),
         fetchDegraded: ($p.fetchDegraded // false),
+        localBehindOrigin: ($p.localBehindOrigin // null),
+        localAheadOfOrigin: ($p.localAheadOfOrigin // null),
+        localFastForwarded: ($p.localFastForwarded // false),
+        localCheckedOut: ($p.localCheckedOut // false),
         session: $session,
         repoDir: $repoDir,
         cleanupStatus: $cleanupStatus
@@ -2573,7 +2721,37 @@ if [[ "$BASE_REF_PREFLIGHT_RC" -ne 0 ]]; then
   exit 1
 fi
 if [[ "$(printf '%s' "$WAVEMILL_BASE_REF_PREFLIGHT_JSON" | jq -r '.fetchDegraded // false' 2>/dev/null)" == "true" ]]; then
-  log_warn "Startup fetch for $BASE_BRANCH degraded; continuing with verified local base ref $WAVEMILL_RESOLVED_BASE_REF"
+  log_warn "Base fetch for $BASE_BRANCH failed; using local base ref $WAVEMILL_RESOLVED_BASE_REF (fetchDegraded)"
+fi
+BASE_RESOLVED_SHA_SHORT=""
+if [[ -n "$WAVEMILL_RESOLVED_BASE_SHA" ]]; then
+  BASE_RESOLVED_SHA_SHORT="${WAVEMILL_RESOLVED_BASE_SHA:0:7}"
+fi
+BASE_LOCAL_BEHIND="$(printf '%s' "$WAVEMILL_BASE_REF_PREFLIGHT_JSON" | jq -r '.localBehindOrigin // empty' 2>/dev/null || true)"
+BASE_LOCAL_AHEAD="$(printf '%s' "$WAVEMILL_BASE_REF_PREFLIGHT_JSON" | jq -r '.localAheadOfOrigin // empty' 2>/dev/null || true)"
+BASE_LOCAL_FF="$(printf '%s' "$WAVEMILL_BASE_REF_PREFLIGHT_JSON" | jq -r '.localFastForwarded // false' 2>/dev/null || echo false)"
+BASE_LOCAL_CHECKED_OUT="$(printf '%s' "$WAVEMILL_BASE_REF_PREFLIGHT_JSON" | jq -r '.localCheckedOut // false' 2>/dev/null || echo false)"
+BASE_LOCAL_CHECKOUT_PATH="$(printf '%s' "$WAVEMILL_BASE_REF_PREFLIGHT_JSON" | jq -r '.localCheckoutPath // empty' 2>/dev/null || true)"
+
+BASE_PROVENANCE_LINE="Base $BASE_BRANCH → $WAVEMILL_RESOLVED_BASE_REF"
+if [[ -n "$BASE_RESOLVED_SHA_SHORT" ]]; then
+  BASE_PROVENANCE_LINE="$BASE_PROVENANCE_LINE @ $BASE_RESOLVED_SHA_SHORT"
+fi
+if [[ -n "$BASE_LOCAL_BEHIND" && "$BASE_LOCAL_BEHIND" != "0" ]]; then
+  if [[ "$BASE_LOCAL_FF" == "true" ]]; then
+    BASE_PROVENANCE_LINE="$BASE_PROVENANCE_LINE (local $BASE_BRANCH: $BASE_LOCAL_BEHIND behind, fast-forwarded)"
+  else
+    BASE_PROVENANCE_LINE="$BASE_PROVENANCE_LINE (local $BASE_BRANCH: $BASE_LOCAL_BEHIND behind)"
+  fi
+fi
+log "info" "$BASE_PROVENANCE_LINE"
+
+if [[ "$BASE_LOCAL_CHECKED_OUT" == "true" \
+  && -n "$BASE_LOCAL_BEHIND" && "$BASE_LOCAL_BEHIND" != "0" ]]; then
+  log_warn "local $BASE_BRANCH is $BASE_LOCAL_BEHIND commits behind origin/$BASE_BRANCH and is checked out at ${BASE_LOCAL_CHECKOUT_PATH:-unknown}; not fast-forwarding. Base-relative comparisons use origin/$BASE_BRANCH."
+elif [[ -n "$BASE_LOCAL_BEHIND" && "$BASE_LOCAL_BEHIND" != "0" \
+  && -n "$BASE_LOCAL_AHEAD" && "$BASE_LOCAL_AHEAD" != "0" ]]; then
+  log_warn "local $BASE_BRANCH has diverged from origin/$BASE_BRANCH (ahead $BASE_LOCAL_AHEAD, behind $BASE_LOCAL_BEHIND); not fast-forwarding."
 fi
 
 : > "$STATUS_LOG_FILE"

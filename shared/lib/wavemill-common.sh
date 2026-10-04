@@ -8,6 +8,17 @@
 # runner all inherit the same implementation.
 # shellcheck source=bounded-retry.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bounded-retry.sh"
+# HOK-3101: shared task-progress accessors (wavemill_hook_read,
+# task_progress_json, task_progress_cached_json). Sourced here so the monitor,
+# reconciler, dashboard, next-done and pane-message delivery all inherit the
+# same TTL check and controller/agent classification. New callers must go
+# through these helpers instead of reimplementing a private hook TTL check.
+# shellcheck source=task-progress.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/task-progress.sh"
+# HOK-3114: task identity invariant (task ID -> Linear ID, challenger role,
+# Linear-writer predicate). Bash twin of shared/lib/task-identity.ts.
+# shellcheck source=task-identity.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/task-identity.sh"
 if [[ -f "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/effective-task-config.sh" ]]; then
   # shellcheck source=effective-task-config.sh
   source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/effective-task-config.sh"
@@ -16,6 +27,54 @@ fi
 # lives as a nested arm record on the primary until the fork trigger fires.
 # shellcheck source=challenge-arms.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/challenge-arms.sh"
+
+# HOK-3100: install root resolved from BASH_SOURCE, never inherited. The
+# monitor runs from `main` while worker launchers run from worktrees, so
+# inheriting from the environment would mix versions; each process must use
+# its own install copy. The milled repo (the repo wavemill is operating on)
+# is the separate `WAVEMILL_MILLED_REPO_DIR` / `REPO_DIR`.
+WAVEMILL_INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+export WAVEMILL_INSTALL_DIR
+
+# Resolve an install-relative tool path. Honours a caller-set TOOLS_DIR so
+# test harnesses can inject fakes without disturbing the install.
+wavemill_tool_path() {
+  local tool="${1:?wavemill_tool_path requires a tool name}"
+  printf '%s/%s\n' "${TOOLS_DIR:-$WAVEMILL_INSTALL_DIR/tools}" "$tool"
+}
+
+# HOK-3100: fallback logger stubs so standalone CLI tools (such as
+# `wavemill cleanup`) that source wavemill-common.sh without the mill or
+# monitor environment don't error with `command not found`. mill.sh defines
+# the real `log*` *after* sourcing, overriding these stubs. monitor.sh defines
+# them *before* sourcing, so the `declare -F ||` keeps the real functions.
+# The startup runner defines `startup_log` *after* sourcing; the stubs resolve
+# that at call time so startup warnings keep their `WARN:` prefix in the
+# shared status log (callers like `_linear_write_warn` dispatched to
+# `startup_log` before HOK-3100 only because `log_warn` was not defined at
+# all). Stubs write to stderr to match existing inline fallbacks.
+declare -F log       >/dev/null 2>&1 || log()       {
+  local level="${1:-info}"; shift || true
+  if declare -F startup_log >/dev/null 2>&1; then
+    startup_log "${level^^}: $*"
+  else
+    printf '[%s] %s\n' "$level" "$*" >&2
+  fi
+}
+declare -F log_warn  >/dev/null 2>&1 || log_warn()  {
+  if declare -F startup_log >/dev/null 2>&1; then
+    startup_log "WARN: $*"
+  else
+    printf '[warn] %s\n' "$*" >&2
+  fi
+}
+declare -F log_error >/dev/null 2>&1 || log_error() {
+  if declare -F startup_log >/dev/null 2>&1; then
+    startup_log "ERROR: $*"
+  else
+    printf '[error] %s\n' "$*" >&2
+  fi
+}
 
 # Default tmux window names for mill mode surfaces.
 WAVEMILL_WINDOW_MILL="${WAVEMILL_WINDOW_MILL:-mill}"
@@ -80,16 +139,37 @@ wavemill_capture_tend_pane_output() {
   tmux pipe-pane -o -t "$pane_id" "$pipe_command" >/dev/null 2>&1 || true
 }
 
+# Build the managed Backstage Observer service command.
+#
+# The generic --dry-run flag protects the legacy --file-linear path ONLY; it is
+# never the incident-synchronizer safety control. The incident sync mode is
+# selected deterministically here via an explicit --incidents-mode flag so that
+# neither a bare --file-incidents nor --dry-run can ever silently select live:
+#   off    → no incident-sync flag at all
+#   shadow → --file-incidents --incidents-mode=shadow  (bounded reads, zero mutations)
+#   live   → --file-incidents --incidents-mode=live    (only after full validation)
+#
+# The Linear credential is NEVER placed in the command text. The Observer
+# process inherits LINEAR_API_KEY from the launching environment instead (see
+# wavemill_observer_ensure_linear_key), so it never appears in pane commands,
+# ps output, logs, or health files.
 wavemill_build_observer_loop_command() {
   local session_name="${1:?session required}"
   local repo_dir="${2:?repo dir required}"
   local tools_dir="${3:?tools dir required}"
   local interval_seconds="${4:-120}"
   local max_log_lines="${5:-240}"
-  local command
+  local service_mode="${6:-off}"
+  local command incident_flags=''
 
-  printf -v command 'exec env WAVEMILL_SESSION=%q WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE=%q WAVEMILL_OBSERVER_SERVICE=1 npx tsx %q --loop --compact --dry-run --repo-dir %q --session %q --interval %q --max-log-lines %q' \
-    "$session_name" "$WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE" "$tools_dir/observer.ts" "$repo_dir" "$session_name" "$interval_seconds" "$max_log_lines"
+  case "$service_mode" in
+    shadow) incident_flags=' --file-incidents --incidents-mode=shadow' ;;
+    live)   incident_flags=' --file-incidents --incidents-mode=live' ;;
+    off|*)  incident_flags='' ;;
+  esac
+
+  printf -v command 'exec env WAVEMILL_SESSION=%q WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE=%q WAVEMILL_OBSERVER_SERVICE=1 npx tsx %q --loop --compact --dry-run --repo-dir %q --session %q --interval %q --max-log-lines %q%s' \
+    "$session_name" "$WAVEMILL_BACKSTAGE_OBSERVER_PANE_TITLE" "$tools_dir/observer.ts" "$repo_dir" "$session_name" "$interval_seconds" "$max_log_lines" "$incident_flags"
   printf '%s\n' "$command"
 }
 
@@ -480,10 +560,16 @@ cleanup_episode_collect_inputs() {
   local issue="$1" slug="$2" wt_dir="$3" task_branch="$4" base_branch="${5:-${BASE_BRANCH:-main}}" pr="${6:-}" verification_reason="${7:-}"
   local dirty_status="" dirty_status_hash="" worktree_exists="false" local_branch_exists="false"
   local local_head_sha="" base_sha="" remote_tracking_head_sha="" pr_state_value="" pr_head_ref_oid="" pr_base_branch=""
+  local worktree_identity=""
 
   if [[ -n "$wt_dir" && -d "$wt_dir" ]]; then
     worktree_exists="true"
-    dirty_status="$(git -C "$wt_dir" status --porcelain --untracked-files=all 2>/dev/null || printf '__wavemill_status_failed__')"
+    worktree_identity="$(wavemill_task_worktree_identity "$wt_dir" "$REPO_DIR")"
+    if [[ "$worktree_identity" == "valid" ]]; then
+      dirty_status="$(git -C "$wt_dir" status --porcelain --untracked-files=all 2>/dev/null || printf '__wavemill_status_failed__')"
+    else
+      dirty_status="orphan:${worktree_identity}:$(wavemill_orphan_dir_scan "$wt_dir" 2>/dev/null || printf '__wavemill_orphan_scan_failed__')"
+    fi
     dirty_status_hash="$(printf '%s' "$dirty_status" | cleanup_episode_sha256)"
   fi
   if [[ -n "${REPO_DIR:-}" && -n "$task_branch" ]] && git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/$task_branch" 2>/dev/null; then
@@ -512,6 +598,7 @@ cleanup_episode_collect_inputs() {
     --arg remoteTrackingHeadSha "$remote_tracking_head_sha" \
     --arg dirtyStatusHash "$dirty_status_hash" \
     --arg dirtyStatus "$dirty_status" \
+    --arg worktreeIdentity "$worktree_identity" \
     --arg prNumber "$pr" \
     --arg prState "$pr_state_value" \
     --arg prHeadRefOid "$pr_head_ref_oid" \
@@ -531,6 +618,7 @@ cleanup_episode_collect_inputs() {
       remoteTrackingHeadSha: $remoteTrackingHeadSha,
       dirtyStatusHash: $dirtyStatusHash,
       dirtyStatus: $dirtyStatus,
+      worktreeIdentity: $worktreeIdentity,
       prNumber: $prNumber,
       prState: $prState,
       prHeadRefOid: $prHeadRefOid,
@@ -582,19 +670,19 @@ cleanup_episode_required_action() {
   local failure_class="$1" outcome="$2" branch="$3"
   case "$failure_class:$outcome" in
     expected-preservation:dirty_worktree|expected-preservation:local-work-preserved)
-      printf 'Commit, stash, or discard the retained worktree changes, then acknowledge cleanup recovery.'
+      printf 'Commit, stash, or discard the retained worktree changes, then run wavemill cleanup <issue> --dry-run.'
       ;;
     expected-preservation:*)
-      printf 'Push %s to origin or explicitly abandon it, then acknowledge cleanup recovery.' "$branch"
+      printf 'Push %s to origin or explicitly abandon it, then run wavemill cleanup <issue> --dry-run.' "$branch"
       ;;
     transient:*)
       printf 'Restore remote/GitHub connectivity or credentials; cleanup will retry with backoff.'
       ;;
     operational:*)
-      printf 'Inspect local worktree, branch, and tmux cleanup failure, then acknowledge cleanup recovery.'
+      printf 'Inspect local worktree, branch, and tmux cleanup failure, then run wavemill cleanup <issue> --dry-run.'
       ;;
     *)
-      printf 'Inspect cleanup evidence and acknowledge recovery when resolved.'
+      printf 'Inspect cleanup evidence with wavemill cleanup <issue> --dry-run; finalize with --execute only after the decision is safe.'
       ;;
   esac
 }
@@ -653,7 +741,7 @@ cleanup_episode_record_outcome() {
       if (( next_attempt >= max_attempts )); then
         disposition="needs-user"
         resource_disposition="verification-required"
-        required_action="Cleanup retry budget exhausted. Inspect evidence and acknowledge recovery."
+        required_action="Cleanup retry budget exhausted. Inspect evidence with wavemill cleanup ${issue} --dry-run; finalize with --execute only after the decision is safe."
         next_retry_at=""
       else
         delay="$(cleanup_episode_backoff_delay_seconds "$next_attempt" "$(printf '%s' "$candidate_json" | jq -r '.fingerprint')")"
@@ -726,6 +814,7 @@ cleanup_episode_record_outcome() {
 
 cleanup_episode_should_attempt() {
   local issue="$1" slug="$2" reason="${3:-}" pr="${4:-}" candidate_json stored_json disposition fingerprint stored_fingerprint next_retry_at next_retry_epoch now_epoch
+  [[ "${WAVEMILL_TERMINAL_INBOX_CLEANUP:-0}" == "1" ]] && { printf 'attempt\n'; return 0; }
   cleanup_episode_enabled || { printf 'attempt\n'; return 0; }
   [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || { printf 'attempt\n'; return 0; }
   stored_json="$(cleanup_episode_get "$issue" || true)"
@@ -836,28 +925,32 @@ _wavemill_write_preserved_branch_incident() {
   return 1
 }
 
-# Structured cleanup outcome vocabulary (HOK-2953). The cleanup helper
+# Structured cleanup outcome vocabulary (HOK-2953, HOK-3067). The cleanup helper
 # publishes exactly one of these through WAVEMILL_CLEANUP_OUTCOME:
 #   safe_ancestor        local head is an ancestor of the effective base
 #   safe_exact_remote    remote task branch exists and carries the local head
 #   safe_terminal_pr_head terminal merged PR headRefOid equals the local head
+#   safe_patch_equivalent_pr merged PR/base contains the same patch IDs
+#   safe_content_equivalent_pr merging the branch into the delivered base leaves its tree unchanged
+#   safe_abandoned_closed_loser closed losing challenge arm explicitly abandoned
 #   safe_noop            nothing deletable (protected/non-task/absent branch)
 #   shadow_would_delete  deletion authority exists, but branch deletion mode is shadow
 #   retain_dirty         worktree dirty or unreadable
+#   retain_orphan_dir    worktree not registered or contains unexpected files
 #   retain_unpublished   local head not proven on base, remote, or PR head
 #   retain_closed_unmerged PR closed without merge and no abandon authority
 #   retain_unverifiable  required evidence missing, contradictory, or unfetchable
 #   operation_failed     deletion was authorized but removal failed
 cleanup_outcome_is_safe() {
   case "${1:-${WAVEMILL_CLEANUP_OUTCOME:-}}" in
-    safe_ancestor|safe_exact_remote|safe_terminal_pr_head|safe_noop|shadow_would_delete) return 0 ;;
+    safe_ancestor|safe_exact_remote|safe_terminal_pr_head|safe_patch_equivalent_pr|safe_content_equivalent_pr|safe_abandoned_closed_loser|safe_noop|shadow_would_delete) return 0 ;;
     *) return 1 ;;
   esac
 }
 
 cleanup_outcome_is_retain() {
   case "${1:-${WAVEMILL_CLEANUP_OUTCOME:-}}" in
-    retain_dirty|retain_unpublished|retain_closed_unmerged|retain_unverifiable) return 0 ;;
+    retain_dirty|retain_orphan_dir|retain_unpublished|retain_closed_unmerged|retain_unverifiable) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -873,9 +966,14 @@ _wavemill_cleanup_operator_guidance() {
     retain_dirty)
       printf 'Worktree has uncommitted or unreadable changes; inspect them, then commit, stash, or discard before retrying cleanup.'
       ;;
+    retain_orphan_dir)
+      printf 'Worktree is not registered or contains files not generated by wavemill: %s; move/inspect them, then re-run cleanup, or delete the directory manually.' "$detail"
+      ;;
     retain_unpublished)
       if [[ "$detail" == "changed_after_pr_head" ]]; then
         printf 'Local head of %s moved past the recorded PR head; inspect the extra commits (git log %s) and open a follow-up PR if they matter before deleting.' "$branch" "$branch"
+      elif [[ "$detail" == "unique_local_patch" ]]; then
+        printf 'Local patches on %s are not patch-equivalent to the merged PR/base; inspect or publish the unique commits before retrying cleanup.' "$branch"
       else
         printf 'Branch %s has commits not proven on the base, the remote, or a merged PR; push the branch or explicitly abandon it. Do not recreate deleted remote branches automatically.' "$branch"
       fi
@@ -987,6 +1085,10 @@ _wavemill_record_cleanup_decision() {
     --arg finalHeadSha "${final_head_sha:-}" \
     --arg finalDirtyStatus "${final_dirty:-}" \
     --arg finalCheckPassed "${final_check_passed:-}" \
+    --arg patchCherryStatus "${patch_cherry_status:-}" \
+    --arg patchUniqueCount "${patch_unique_count:-}" \
+    --arg patchEquivalentCount "${patch_equivalent_count:-}" \
+    --arg patchTotalCount "${patch_total_count:-}" \
     --arg authority "${cleanup_authority:-}" \
     --arg decisionMode "${cleanup_decision_mode:-}" \
     --arg wouldDelete "${cleanup_decision_would_delete:-}" \
@@ -1010,6 +1112,12 @@ _wavemill_record_cleanup_decision() {
     | if $finalHeadSha != "" then . + {finalHeadSha: $finalHeadSha} else . end
     | if $finalDirtyStatus != "" then . + {finalDirtyStatus: $finalDirtyStatus} else . end
     | if $finalCheckPassed != "" then . + {finalCheckPassed: ($finalCheckPassed == "true")} else . end
+    | if $patchCherryStatus != "" then . + {patchEquivalence: {
+        status: $patchCherryStatus,
+        uniqueCount: (if ($patchUniqueCount | test("^[0-9]+$")) then ($patchUniqueCount | tonumber) else null end),
+        equivalentCount: (if ($patchEquivalentCount | test("^[0-9]+$")) then ($patchEquivalentCount | tonumber) else null end),
+        totalCount: (if ($patchTotalCount | test("^[0-9]+$")) then ($patchTotalCount | tonumber) else null end)
+      }} else . end
     | if $authority != "" then . + {authority: $authority} else . end
     | if $decisionMode != "" then . + {mode: $decisionMode} else . end
     | if $wouldDelete != "" then . + {wouldDelete: ($wouldDelete == "true")} else . end
@@ -1027,34 +1135,267 @@ _wavemill_record_cleanup_decision() {
 # under .wavemill/ - remains a cleanup blocker.
 WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT=".wavemill/observer-findings.jsonl"
 
-# Porcelain status of a worktree with the controller-owned observer artifact
-# excluded. Prints the filtered status; propagates git's failure (non-zero,
-# no output) so callers can keep treating an unreadable status as dirty.
+# Prompt-registry log that older native-agent runs wrote at the worktree root
+# (prompt usage was logged with the repo dir as the evals dir). It is
+# machine-generated telemetry, never task work, so an untracked copy or an
+# unstaged edit of a copy an agent accidentally committed must not retain a
+# terminal worktree. Exact root path and exact porcelain codes only.
+WAVEMILL_PROMPT_REGISTRY_ARTIFACT="prompt-registry.jsonl"
+
+# Porcelain status of a worktree with controller-owned artifacts (observer
+# findings, root prompt-registry log) excluded. Prints the filtered status;
+# propagates git's failure (non-zero, no output) so callers can keep treating
+# an unreadable status as dirty.
 wavemill_worktree_dirty_status() {
-  local wt_dir="${1:-}" raw_status=""
+  local wt_dir="${1:-}" raw_status="" registry="${WAVEMILL_PROMPT_REGISTRY_ARTIFACT:-prompt-registry.jsonl}"
   raw_status="$(git -C "$wt_dir" status --porcelain --untracked-files=all 2>/dev/null)" || return 1
-  printf '%s\n' "$raw_status" | grep -v -x -F "?? ${WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT}" | grep -v -x '' || true
+  printf '%s\n' "$raw_status" \
+    | grep -v -x -F "?? ${WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT}" \
+    | grep -v -x -F "?? ${registry}" \
+    | grep -v -x -F " M ${registry}" \
+    | grep -v -x '' || true
+}
+
+# Discard the root prompt-registry log from a task worktree before it is
+# removed: delete an untracked copy, restore a tracked one. Nothing else in
+# the worktree is touched. Only runs against a valid task worktree.
+wavemill_discard_prompt_registry_artifact() {
+  local wt_dir="${1:-}" registry="${WAVEMILL_PROMPT_REGISTRY_ARTIFACT:-prompt-registry.jsonl}"
+  [[ -n "$wt_dir" && -f "$wt_dir/$registry" ]] || return 0
+  if git -C "$wt_dir" ls-files --error-unmatch -- "$registry" >/dev/null 2>&1; then
+    git -C "$wt_dir" checkout -- "$registry" 2>/dev/null || true
+  else
+    rm -f "$wt_dir/$registry" 2>/dev/null || true
+  fi
 }
 
 # Migrate (or drop) the controller-owned observer artifact out of a task
 # worktree before that worktree is reaped. Appends its content to the
 # repository-level findings file when REPO_DIR is a different checkout so no
 # recorded findings are lost. Only removes the exact untracked artifact.
+# For orphan worktrees (no valid .git), copies the artifact directly without
+# git tracking checks.
 wavemill_migrate_controller_observer_artifact() {
   local wt_dir="${1:-}" artifact
   [[ -n "$wt_dir" && -d "$wt_dir" ]] || return 0
   artifact="$wt_dir/$WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT"
   [[ -f "$artifact" ]] || return 0
-  # Never touch a tracked file of the same name; the exclusion covers only the
-  # untracked controller artifact.
-  if git -C "$wt_dir" ls-files --error-unmatch "$WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT" >/dev/null 2>&1; then
-    return 0
+
+  local identity_check
+  identity_check="$(wavemill_task_worktree_identity "$wt_dir")" || true
+
+  if [[ "$identity_check" == "valid" ]]; then
+    if git -C "$wt_dir" ls-files --error-unmatch "$WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT" >/dev/null 2>&1; then
+      return 0
+    fi
   fi
-  if [[ -n "${REPO_DIR:-}" && -d "${REPO_DIR:-}" && "$REPO_DIR" != "$wt_dir" ]]; then
+
+  # HOK-3102 (D7): with the observer off, nothing will ever read the migrated
+  # artifact; deleting the stray file avoids growing dead state on disk.
+  local _observer_on=1
+  if declare -F wavemill_session_has >/dev/null 2>&1; then
+    if ! wavemill_session_has observer "${REPO_DIR:-$PWD}" 2>/dev/null; then
+      _observer_on=0
+    fi
+  fi
+
+  if (( _observer_on == 1 )) && [[ -n "${REPO_DIR:-}" && -d "${REPO_DIR:-}" && "$REPO_DIR" != "$wt_dir" ]]; then
     mkdir -p "$REPO_DIR/.wavemill" 2>/dev/null || true
     cat "$artifact" >> "$REPO_DIR/$WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT" 2>/dev/null || true
   fi
   rm -f "$artifact" 2>/dev/null || true
+}
+
+# Validate that a directory is registered as a task worktree with correct identity.
+# Returns one of: valid, no_git_metadata, toplevel_mismatch:<resolved>,
+# unregistered_worktree, or identity_unverifiable. Only 'valid' authorizes
+# git commands against the directory. Resolves symlinks for comparison.
+wavemill_task_worktree_identity() {
+  local wt_dir="${1:-}" repo_dir="${2:-${REPO_DIR:-}}"
+  local toplevel resolved_wt resolved_toplevel repo_worktrees
+
+  [[ -n "$wt_dir" ]] || { printf 'identity_unverifiable'; return 1; }
+  [[ -d "$wt_dir" ]] || { printf 'no_git_metadata'; return 1; }
+  [[ -L "$wt_dir" ]] && { printf 'identity_unverifiable'; return 1; }
+
+  resolved_wt="$(cd "$wt_dir" && pwd -P 2>/dev/null)" || { printf 'identity_unverifiable'; return 1; }
+  # Use resolved_wt (canonical form via pwd -P) for all subsequent comparisons.
+  # We cannot require resolved_wt == wt_dir because callers routinely pass paths
+  # through symlinks (e.g. /tmp -> /private/tmp on macOS). The real safety check
+  # is that git rev-parse --show-toplevel below resolves back to the same
+  # canonical path, proving the directory holds its own task-local git metadata.
+
+  if ! toplevel="$(git -C "$wt_dir" rev-parse --show-toplevel 2>/dev/null)"; then
+    printf 'no_git_metadata'
+    return 1
+  fi
+
+  resolved_toplevel="$(cd "$toplevel" && pwd -P 2>/dev/null)" || { printf 'identity_unverifiable'; return 1; }
+  if [[ "$resolved_toplevel" != "$resolved_wt" ]]; then
+    printf 'toplevel_mismatch:%s' "$resolved_toplevel"
+    return 1
+  fi
+
+  [[ -n "$repo_dir" ]] || repo_dir="$resolved_toplevel"
+
+  if repo_worktrees="$(git -C "$repo_dir" worktree list --porcelain 2>/dev/null)"; then
+    if printf '%s\n' "$repo_worktrees" | while IFS= read -r line; do
+      [[ "$line" == worktree\ * ]] || continue
+      local wt_path="${line#worktree }"
+      [[ -z "$wt_path" ]] && continue
+      local resolved_registered_path
+      resolved_registered_path="$(cd "$wt_path" 2>/dev/null && pwd -P 2>/dev/null)" || continue
+      [[ "$resolved_registered_path" == "$resolved_wt" ]] && exit 0
+    done; then
+      printf 'valid'
+      return 0
+    fi
+  fi
+
+  if [[ "$resolved_toplevel" == "$resolved_wt" ]]; then
+    printf 'valid'
+    return 0
+  fi
+
+  printf 'unregistered_worktree'
+  return 1
+}
+
+# Scan an orphan task directory for files unexpected in wavemill-created resources.
+# Only exact, disposable terminal markers are allowed. In particular, a task
+# packet or other file under features/ is recoverable work, not cleanup debris.
+# Returns 1 if unexpected files found; prints the offending paths (max 20) and total count to stdout.
+#
+# Dotfiles ARE walked (the previous `-not -path "*/\.*"` exclusion made every
+# .git/.claude/.wavemill/.env path invisible, silently allowing unknown dotfiles).
+# The walk is recursive and rejects symlinks, including links to paths outside
+# the worktree root.
+wavemill_orphan_dir_scan() {
+  local wt_dir="${1:-}"
+  local found_unexpected="false" file_count=0 printed_count=0 file rel_path
+
+  [[ -n "$wt_dir" && -d "$wt_dir" ]] || return 0
+  find "$wt_dir" -mindepth 1 -print >/dev/null 2>&1 || return 1
+
+  while IFS= read -r -d '' file; do
+    ((file_count+=1))
+    [[ "$file" == "$wt_dir" ]] && continue
+
+    local rel_path="${file#${wt_dir}/}"
+    [[ -z "$rel_path" ]] && rel_path="$file"
+
+    if [[ ! -L "$file" ]]; then
+      if [[ -d "$file" ]]; then
+        case "$rel_path" in
+          features|features/*|.wavemill) continue ;;
+        esac
+      elif [[ -f "$file" ]]; then
+        case "$rel_path" in
+          features/*/.needs-attention|features/*/.terminal-history.jsonl|features/*/.ready-bypass-warned|.wavemill/observer-findings.jsonl) continue ;;
+        esac
+      fi
+    fi
+
+    found_unexpected="true"
+    if (( printed_count < 20 )); then
+      printf '%s\n' "$rel_path"
+      ((printed_count+=1))
+    fi
+  done < <(find "$wt_dir" -mindepth 1 -print0 2>/dev/null)
+
+  if [[ "$found_unexpected" == "true" ]]; then
+    printf 'total_unexpected=%d\n' "$file_count"
+    return 1
+  fi
+  return 0
+}
+
+# A squash merge changes commit IDs and often patch IDs. A clean three-way
+# merge that produces exactly the current base tree proves that this branch
+# contributes no remaining file content. Conflicts and missing merge evidence
+# are deliberately inconclusive. The PR's merge commit must be on the base.
+wavemill_branch_content_matches_base() {
+  local base_ref="${1:-}" task_branch="${2:-}" pr_merge_sha="${3:-}"
+  local base_tree merged_tree
+  [[ -n "$base_ref" && -n "$task_branch" && -n "$pr_merge_sha" ]] || return 1
+  git -C "$REPO_DIR" merge-base --is-ancestor "$pr_merge_sha" "$base_ref" 2>/dev/null || return 1
+  base_tree="$(git -C "$REPO_DIR" rev-parse --verify "${base_ref}^{tree}" 2>/dev/null)" || return 1
+  merged_tree="$(git -C "$REPO_DIR" merge-tree --write-tree "$base_ref" "$task_branch" 2>/dev/null)" || return 1
+  [[ "$merged_tree" == "$base_tree" ]]
+}
+
+wavemill_orphan_dir_in_bounds() {
+  local wt_dir="${1:-}" slug="${2:-}" worktree_root="${WORKTREE_ROOT:-}"
+  local resolved_wt resolved_root
+  [[ -n "$wt_dir" && -d "$wt_dir" && ! -L "$wt_dir" ]] || return 1
+  [[ -n "$worktree_root" && -d "$worktree_root" ]] || return 1
+  resolved_wt="$(cd "$wt_dir" && pwd -P 2>/dev/null)" || return 1
+  resolved_root="$(cd "$worktree_root" && pwd -P 2>/dev/null)" || return 1
+  [[ "$resolved_wt" == "$resolved_root/"* ]] || return 1
+  [[ -z "$slug" || "$(basename "$resolved_wt")" == "$slug" ]]
+}
+
+# Safely remove an orphan task directory after bounded-path and file-content verification.
+# Safety checks (all must pass):
+# 1. WORKTREE_ROOT is set and directory exists; wt_dir physically inside it; not a parent.
+# 2. All files in directory match wavemill-generated allowlist (via wavemill_orphan_dir_scan).
+# 3. Re-verify immediately before `rm -rf` (TOCTOU guard).
+# Returns 0 if removal succeeds; 1 if safety checks fail or removal fails.
+wavemill_remove_orphan_task_dir() {
+  local wt_dir="${1:-}" slug="${2:-}"
+  local worktree_root="${WORKTREE_ROOT:-}"
+  local resolved_wt resolved_root
+  local scan_result scan_rc
+
+  [[ -n "$wt_dir" && -d "$wt_dir" ]] || return 1
+
+  if [[ -z "$worktree_root" || ! -d "$worktree_root" ]]; then
+    log_warn "  WORKTREE_ROOT unset or missing; cannot verify bounded path for orphan removal"
+    return 1
+  fi
+
+  resolved_wt="$(cd "$wt_dir" && pwd -P 2>/dev/null)" || return 1
+  resolved_root="$(cd "$worktree_root" && pwd -P 2>/dev/null)" || return 1
+
+  if [[ "$resolved_wt" == "$resolved_root" ]]; then
+    log_warn "  Refusing to remove WORKTREE_ROOT itself: $wt_dir"
+    return 1
+  fi
+
+  if [[ ! "$resolved_wt/" =~ ^"$resolved_root"/ ]]; then
+    log_warn "  Worktree $resolved_wt is outside WORKTREE_ROOT $resolved_root; refusing removal"
+    return 1
+  fi
+
+  if [[ -n "$slug" && "$(basename "$resolved_wt")" != "$slug" ]]; then
+    log_warn "  Worktree basename mismatch (expected $slug, got $(basename "$resolved_wt")); refusing removal"
+    return 1
+  fi
+  wavemill_orphan_dir_in_bounds "$wt_dir" "$slug" || return 1
+
+  scan_result="$(wavemill_orphan_dir_scan "$wt_dir")" || {
+    log_warn "  Orphan directory contains unexpected files; retained: $wt_dir"
+    log_debug "  Unexpected files: $scan_result"
+    return 1
+  }
+
+  if ! scan_result="$(wavemill_orphan_dir_scan "$wt_dir")" 2>&1; then
+    log_warn "  Re-scan before deletion failed; aborting removal"
+    return 1
+  fi
+
+  if ! wavemill_cleanup_run rm -rf "$wt_dir" 2>&1 | grep -q '.' >/dev/null 2>&1; then
+    log "debug" "Removed orphan worktree directory: $wt_dir"
+  else
+    log_warn "  Failed to remove orphan directory: $wt_dir"
+    return 1
+  fi
+
+  if [[ -n "${REPO_DIR:-}" && -d "${REPO_DIR:-}" ]]; then
+    wavemill_cleanup_run git -C "$REPO_DIR" worktree prune >/dev/null 2>&1 || true
+  fi
+
+  return 0
 }
 
 # Rollback gate for PR-aware deletion authority (HOK-2953). Disabling it
@@ -1084,6 +1425,80 @@ wavemill_branch_deletion_mode() {
     enforce|shadow) printf '%s\n' "$mode" ;;
     *) printf 'shadow\n' ;;
   esac
+}
+
+# Build the canonical cleanup evidence JSON from the destructive classifier's
+# in-scope locals (bash dynamic scoping). Publishes WAVEMILL_CLEANUP_EVIDENCE_JSON
+# and echoes it. Called by safe_remove_task_worktree_and_branch at each exit and
+# by wavemill_classify_task_cleanup after delegating to the destructive path in
+# classify-only mode. This is the single canonical evidence shape.
+_wavemill_build_cleanup_evidence_json() {
+  WAVEMILL_CLEANUP_EVIDENCE_JSON="$(jq -cn \
+    --arg classification "${classification:-safe_noop}" \
+    --arg verificationReason "${verification_reason:-}" \
+    --arg worktreeIdentity "${worktree_identity:-}" \
+    --arg verifiedTopLevel "${verified_toplevel:-}" \
+    --arg cleanupAuthority "${cleanup_authority:-}" \
+    --arg patchEquivalenceScope "${patch_equivalence_scope:-}" \
+    --arg orphanReason "${orphan_reason:-}" \
+    --arg orphanIndependentPaths "${orphan_independent_paths:-}" \
+    --arg localHeadSha "${local_head_sha:-}" \
+    --arg remoteHeadSha "${remote_head_sha:-}" \
+    --arg prHeadOid "${pr_head_oid:-}" \
+    --arg prState "${pr_state_evidence:-}" \
+    --arg prMergedAt "${pr_merged_at:-}" \
+    --arg mergeSha "${pr_merge_sha:-}" \
+    --arg baseSha "${base_sha:-}" \
+    --arg dirtyStatus "${dirty_status:-}" \
+    --arg patchUniqueShas "${patch_unique_shas:-}" \
+    --arg patchEquivalentShas "${patch_equivalent_shas:-}" \
+    --arg patchPublishedUndeliveredShas "${patch_published_undelivered_shas:-}" \
+    '{classification: $classification, verificationReason: $verificationReason,
+      worktreeIdentity: $worktreeIdentity, verifiedTopLevel: $verifiedTopLevel,
+      cleanupAuthority: $cleanupAuthority, patchEquivalenceScope: $patchEquivalenceScope,
+      orphanReason: $orphanReason, orphanIndependentPaths: $orphanIndependentPaths,
+      localHeadSha: $localHeadSha, remoteHeadSha: $remoteHeadSha,
+      prHeadOid: $prHeadOid, prState: $prState, prMergedAt: $prMergedAt,
+      mergeSha: $mergeSha, baseSha: $baseSha, dirtyStatus: $dirtyStatus,
+      patchUniqueShas: $patchUniqueShas, patchEquivalentShas: $patchEquivalentShas,
+      patchPublishedUndeliveredShas: $patchPublishedUndeliveredShas}')"
+}
+
+# Perform read-only classification of a completed task worktree/branch and
+# emit structured evidence JSON on stdout (WAVEMILL_CLEANUP_EVIDENCE_JSON).
+#
+# This is the canonical classifier consumed by both destructive cleanup and
+# dry-run Terminal Inbox analysis. Internally it delegates to
+# safe_remove_task_worktree_and_branch with WAVEMILL_CLASSIFY_ONLY=1, which
+# suppresses all side effects (recording, warning, PR delivery evidence writes,
+# TOCTOU revalidation, worktree/branch removal) while producing the same
+# classification. This guarantees the dry-run and destructive paths cannot
+# diverge.
+#
+# Returns 0 on successful classification, 1 on unrecoverable delegation error.
+wavemill_classify_task_cleanup() {
+  local wt_dir="${1:-}"
+  local task_branch="${2:-}"
+  local base_branch="${3:-${BASE_BRANCH:-main}}"
+  local caller="${4:-classify}"
+  local issue="${5:-}"
+  local pr="${6:-}"
+
+  WAVEMILL_CLEANUP_EVIDENCE_JSON=""
+  WAVEMILL_CLEANUP_OUTCOME=""
+
+  WAVEMILL_CLASSIFY_ONLY=1 safe_remove_task_worktree_and_branch \
+    "$wt_dir" "$task_branch" "$base_branch" "$caller" "$issue" "$pr" >/dev/null 2>&1 \
+    || true
+
+  if [[ -z "$WAVEMILL_CLEANUP_EVIDENCE_JSON" ]]; then
+    local classification="${WAVEMILL_CLEANUP_OUTCOME:-retain_unverifiable}"
+    local verification_reason="${SAFE_CLEANUP_VERIFICATION_REASON:-classify_delegation_missing_evidence}"
+    _wavemill_build_cleanup_evidence_json
+  fi
+
+  printf '%s\n' "$WAVEMILL_CLEANUP_EVIDENCE_JSON"
+  return 0
 }
 
 # Classify a completed task branch/worktree into a structured cleanup outcome
@@ -1131,6 +1546,7 @@ safe_remove_task_worktree_and_branch() {
   local pr_head_oid=""
   local pr_head_ref=""
   local pr_base_ref=""
+  local pr_merge_sha=""
   local configured_merge_method=""
   local cleanup_decision_mode=""
   local cleanup_decision_would_delete=""
@@ -1138,6 +1554,21 @@ safe_remove_task_worktree_and_branch() {
   local final_head_sha=""
   local final_dirty=""
   local final_check_passed=""
+  local patch_cherry_output=""
+  local patch_cherry_status=""
+  local patch_unique_count=""
+  local patch_equivalent_count=""
+  local patch_total_count=""
+  local abandon_issue="${WAVEMILL_CLEANUP_ABANDON_ISSUE:-}"
+  local worktree_identity=""
+  local verified_toplevel=""
+  local orphan_reason=""
+  local orphan_independent_paths=""
+  local patch_unique_shas=""
+  local patch_equivalent_shas=""
+  local patch_published_undelivered_shas=""
+  local patch_equivalence_scope=""
+  local orphan_cleanup_candidate="false"
 
   WAVEMILL_CLEANUP_OUTCOME=""
 
@@ -1145,8 +1576,10 @@ safe_remove_task_worktree_and_branch() {
   SAFE_CLEANUP_VERIFICATION_REASON=""
 
   if [[ "$task_branch" == "main" || "$task_branch" == "master" ]]; then
-    log_warn "  Refusing to delete protected branch: $task_branch"
+    [[ "${WAVEMILL_CLASSIFY_ONLY:-0}" != "1" ]] && log_warn "  Refusing to delete protected branch: $task_branch"
+    classification="safe_noop"
     WAVEMILL_CLEANUP_OUTCOME="safe_noop"
+    _wavemill_build_cleanup_evidence_json
     return 0
   fi
 
@@ -1175,25 +1608,63 @@ safe_remove_task_worktree_and_branch() {
   fi
 
   if [[ -n "$wt_dir" && -d "$wt_dir" ]]; then
-    if ! dirty_status="$(wavemill_worktree_dirty_status "$wt_dir")"; then
-      SAFE_CLEANUP_PRESERVATION_REASON="dirty_worktree"
-      SAFE_CLEANUP_VERIFICATION_REASON="dirty_status_failed"
-      if ! _wavemill_record_cleanup_decision "retain_dirty" "dirty_worktree" "worktree_status_unreadable" "false"; then
-        log_warn "  Failed to write preserved-branch incident marker for $task_branch"
+    worktree_identity="$(wavemill_task_worktree_identity "$wt_dir" "$REPO_DIR")"
+    if [[ "$worktree_identity" != "valid" ]]; then
+      orphan_reason="$worktree_identity"
+      orphan_independent_paths="$(wavemill_orphan_dir_scan "$wt_dir" 2>/dev/null | head -20 | tr '\n' ' ')"
+      if [[ ! -e "$wt_dir/.git" && ! -L "$wt_dir/.git" ]] \
+        && wavemill_orphan_dir_in_bounds "$wt_dir" "${task_branch#task/}" \
+        && wavemill_orphan_dir_scan "$wt_dir" >/dev/null 2>&1; then
+        orphan_cleanup_candidate="true"
+      else
+        classification="retain_orphan_dir"
+        verification_reason="$orphan_reason"
+        SAFE_CLEANUP_PRESERVATION_REASON="orphan_worktree"
+        SAFE_CLEANUP_VERIFICATION_REASON="$orphan_reason"
+        if [[ "${WAVEMILL_CLASSIFY_ONLY:-0}" != "1" ]]; then
+          if ! _wavemill_record_cleanup_decision "retain_orphan_dir" "orphan_worktree" "$orphan_reason" "false"; then
+            log_warn "  Failed to write preserved-branch incident marker for $task_branch"
+          fi
+          log_warn "  PRESERVED_ORPHAN_DIR: ${wt_dir} is not a registered task worktree ($orphan_reason); retained (branch=${task_branch}). $(_wavemill_cleanup_operator_guidance retain_orphan_dir "$task_branch" "$orphan_independent_paths")"
+        fi
+        WAVEMILL_CLEANUP_OUTCOME="retain_orphan_dir"
+        _wavemill_build_cleanup_evidence_json
+        return 10
       fi
-      log_warn "  PRESERVED_DIRTY_WORKTREE: ${wt_dir} status could not be inspected; retained (branch=${task_branch}). $(_wavemill_cleanup_operator_guidance retain_dirty "$task_branch")"
-      WAVEMILL_CLEANUP_OUTCOME="retain_dirty"
-      return 10
     fi
-    if [[ -n "$dirty_status" ]]; then
-      SAFE_CLEANUP_PRESERVATION_REASON="dirty_worktree"
-      SAFE_CLEANUP_VERIFICATION_REASON=""
-      if ! _wavemill_record_cleanup_decision "retain_dirty" "dirty_worktree" "uncommitted_changes" "false"; then
-        log_warn "  Failed to write preserved-branch incident marker for $task_branch"
+    if [[ "$orphan_cleanup_candidate" != "true" ]]; then
+      verified_toplevel="$(git -C "$wt_dir" rev-parse --show-toplevel 2>/dev/null)" || true
+
+      if ! dirty_status="$(wavemill_worktree_dirty_status "$wt_dir")"; then
+        classification="retain_dirty"
+        verification_reason="dirty_status_failed"
+        SAFE_CLEANUP_PRESERVATION_REASON="dirty_worktree"
+        SAFE_CLEANUP_VERIFICATION_REASON="dirty_status_failed"
+        if [[ "${WAVEMILL_CLASSIFY_ONLY:-0}" != "1" ]]; then
+          if ! _wavemill_record_cleanup_decision "retain_dirty" "dirty_worktree" "worktree_status_unreadable" "false"; then
+            log_warn "  Failed to write preserved-branch incident marker for $task_branch"
+          fi
+          log_warn "  PRESERVED_DIRTY_WORKTREE: ${wt_dir} status could not be inspected; retained (branch=${task_branch}). $(_wavemill_cleanup_operator_guidance retain_dirty "$task_branch")"
+        fi
+        WAVEMILL_CLEANUP_OUTCOME="retain_dirty"
+        _wavemill_build_cleanup_evidence_json
+        return 10
       fi
-      log_warn "  PRESERVED_DIRTY_WORKTREE: ${wt_dir} has uncommitted changes; retained (branch=${task_branch}). $(_wavemill_cleanup_operator_guidance retain_dirty "$task_branch")"
-      WAVEMILL_CLEANUP_OUTCOME="retain_dirty"
-      return 10
+      if [[ -n "$dirty_status" ]]; then
+        classification="retain_dirty"
+        verification_reason="uncommitted_changes"
+        SAFE_CLEANUP_PRESERVATION_REASON="dirty_worktree"
+        SAFE_CLEANUP_VERIFICATION_REASON=""
+        if [[ "${WAVEMILL_CLASSIFY_ONLY:-0}" != "1" ]]; then
+          if ! _wavemill_record_cleanup_decision "retain_dirty" "dirty_worktree" "uncommitted_changes" "false"; then
+            log_warn "  Failed to write preserved-branch incident marker for $task_branch"
+          fi
+          log_warn "  PRESERVED_DIRTY_WORKTREE: ${wt_dir} has uncommitted changes; retained (branch=${task_branch}). $(_wavemill_cleanup_operator_guidance retain_dirty "$task_branch")"
+        fi
+        WAVEMILL_CLEANUP_OUTCOME="retain_dirty"
+        _wavemill_build_cleanup_evidence_json
+        return 10
+      fi
     fi
   fi
 
@@ -1277,49 +1748,124 @@ safe_remove_task_worktree_and_branch() {
           fi
         fi
 
-        if [[ -z "$verification_reason" && "$remote_contains_head" != "true" ]]; then
-          if wavemill_pr_aware_cleanup_enabled && [[ -n "$pr" ]]; then
-            pr_lookup_status="attempted"
-            if wavemill_fetch_pr_terminal_evidence "$pr"; then
-              pr_lookup_status="ok"
-              pr_state_evidence="$WAVEMILL_PR_EVIDENCE_STATE"
-              pr_merged_at="$WAVEMILL_PR_EVIDENCE_MERGED_AT"
-              pr_head_oid="$WAVEMILL_PR_EVIDENCE_HEAD_OID"
-              pr_head_ref="$WAVEMILL_PR_EVIDENCE_HEAD_REF"
-              pr_base_ref="$WAVEMILL_PR_EVIDENCE_BASE_REF"
-              wavemill_record_pr_delivery_evidence "$issue" "$pr"
-              if [[ "$pr_state_evidence" == "MERGED" ]]; then
-                if [[ "$pr_base_ref" != "$base_branch" ]]; then
-                  classification="retain_unverifiable"
-                  verification_reason="pr_base_mismatch:${pr_base_ref:-unknown}"
-                elif [[ -z "$pr_head_oid" ]]; then
-                  classification="retain_unverifiable"
-                  verification_reason="pr_head_oid_missing"
-                elif [[ "$pr_head_oid" == "$local_head_sha" ]]; then
-                  classification="safe_terminal_pr_head"
-                  cleanup_authority="PR #${pr} merged into ${base_branch} with headRefOid exactly equal to local head ${local_head_sha}"
+        if [[ -z "$verification_reason" ]] && wavemill_pr_aware_cleanup_enabled && [[ -n "$pr" ]]; then
+          pr_lookup_status="attempted"
+          if wavemill_fetch_pr_terminal_evidence "$pr"; then
+            pr_lookup_status="ok"
+            pr_state_evidence="$WAVEMILL_PR_EVIDENCE_STATE"
+            pr_merged_at="$WAVEMILL_PR_EVIDENCE_MERGED_AT"
+            pr_head_oid="$WAVEMILL_PR_EVIDENCE_HEAD_OID"
+            pr_head_ref="$WAVEMILL_PR_EVIDENCE_HEAD_REF"
+            pr_base_ref="$WAVEMILL_PR_EVIDENCE_BASE_REF"
+            pr_merge_sha="$WAVEMILL_PR_EVIDENCE_MERGE_SHA"
+            [[ "${WAVEMILL_CLASSIFY_ONLY:-0}" != "1" ]] && wavemill_record_pr_delivery_evidence "$issue" "$pr"
+            if [[ "$pr_state_evidence" == "MERGED" ]]; then
+              if [[ "$pr_base_ref" != "$base_branch" ]]; then
+                classification="retain_unverifiable"
+                verification_reason="pr_base_mismatch:${pr_base_ref:-unknown}"
+              elif [[ -z "$pr_head_oid" ]]; then
+                classification="retain_unverifiable"
+                verification_reason="pr_head_oid_missing"
+              elif [[ "$pr_head_oid" == "$local_head_sha" ]]; then
+                classification="safe_terminal_pr_head"
+                cleanup_authority="PR #${pr} merged into ${base_branch} with headRefOid exactly equal to local head ${local_head_sha}"
+              elif git -C "$REPO_DIR" merge-base --is-ancestor "$pr_head_oid" "$local_head_sha" 2>/dev/null; then
+                if patch_cherry_output="$(git -C "$REPO_DIR" cherry "$base_ref" "$task_branch" "$pr_head_oid" 2>/dev/null)"; then
+                  patch_unique_count="$(printf '%s\n' "$patch_cherry_output" | awk '/^\+/ { count++ } END { print count + 0 }')"
+                  patch_equivalent_count="$(printf '%s\n' "$patch_cherry_output" | awk '/^-/ { count++ } END { print count + 0 }')"
+                  patch_total_count="$(printf '%s\n' "$patch_cherry_output" | awk '/^[+-]/ { count++ } END { print count + 0 }')"
+                  patch_equivalence_scope="post_pr_head"
+                  if [[ "$patch_unique_count" == "0" ]]; then
+                    patch_cherry_status="equivalent"
+                    if [[ -n "$pr_merge_sha" ]]; then
+                      classification="safe_patch_equivalent_pr"
+                      cleanup_authority="PR #${pr} merged into ${base_branch}; post-PR commits are patch-equivalent to base"
+                      patch_equivalent_shas="$(printf '%s\n' "$patch_cherry_output" | awk '/^-/ { print $2 }' | tr '\n' ' ')"
+                    else
+                      classification="retain_unpublished"
+                      verification_reason="changed_after_pr_head"
+                    fi
+                  else
+                    patch_cherry_status="unique"
+                    classification="retain_unpublished"
+                    verification_reason="unique_local_patch"
+                    patch_unique_shas="$(printf '%s\n' "$patch_cherry_output" | awk '/^\+/ { print $2 }' | tr '\n' ' ')"
+                  fi
                 else
-                  classification="retain_unpublished"
-                  verification_reason="changed_after_pr_head"
+                  patch_cherry_status="failed"
+                  classification="retain_unverifiable"
+                  verification_reason="patch_equivalence_failed"
                 fi
-              elif [[ "$pr_state_evidence" == "CLOSED" && -z "$pr_merged_at" ]]; then
-                classification="retain_closed_unmerged"
-                verification_reason="pr_closed_unmerged"
+              elif patch_cherry_output="$(git -C "$REPO_DIR" cherry "$base_ref" "$task_branch" 2>/dev/null)"; then
+                patch_unique_count="$(printf '%s\n' "$patch_cherry_output" | awk '/^\+/ { count++ } END { print count + 0 }')"
+                patch_equivalent_count="$(printf '%s\n' "$patch_cherry_output" | awk '/^-/ { count++ } END { print count + 0 }')"
+                patch_total_count="$(printf '%s\n' "$patch_cherry_output" | awk '/^[+-]/ { count++ } END { print count + 0 }')"
+                patch_equivalence_scope="whole_branch"
+                if [[ "$patch_unique_count" == "0" ]]; then
+                  patch_cherry_status="equivalent"
+                  if [[ -n "$pr_merge_sha" ]]; then
+                    classification="safe_patch_equivalent_pr"
+                    cleanup_authority="PR #${pr} merged into ${base_branch}; git cherry found no unique local patch IDs on ${task_branch}"
+                    patch_equivalent_shas="$(printf '%s\n' "$patch_cherry_output" | awk '/^-/ { print $2 }' | tr '\n' ' ')"
+                  else
+                    classification="retain_unpublished"
+                    verification_reason="changed_after_pr_head"
+                  fi
+                else
+                  patch_cherry_status="unique"
+                  classification="retain_unpublished"
+                  verification_reason="unique_local_patch"
+                  patch_unique_shas="$(printf '%s\n' "$patch_cherry_output" | awk '/^\+/ { print $2 }' | tr '\n' ' ')"
+                fi
               else
-                classification="retain_unpublished"
-                verification_reason="pr_not_terminal:${pr_state_evidence}"
+                patch_cherry_status="failed"
+                classification="retain_unverifiable"
+                verification_reason="patch_equivalence_failed"
+              fi
+            elif [[ "$pr_state_evidence" == "CLOSED" && -z "$pr_merged_at" ]]; then
+              if [[ "$abandon_issue" == "$issue" ]] \
+                && [[ "$remote_contains_head" == "true" || "$pr_head_oid" == "$local_head_sha" ]]; then
+                classification="safe_abandoned_closed_loser"
+                cleanup_authority="operator abandoned closed PR #${pr}; head is recoverably published"
+              else
+                classification="retain_closed_unmerged"
+                if [[ "$abandon_issue" != "$issue" ]]; then
+                  verification_reason="closed_loser_requires_abandon"
+                elif [[ "$remote_contains_head" != "true" && "$pr_head_oid" != "$local_head_sha" ]]; then
+                  verification_reason="closed_loser_head_unpublished"
+                else
+                  verification_reason="closed_loser_sibling_not_merged"
+                fi
               fi
             else
-              pr_lookup_status="failed"
-              classification="retain_unverifiable"
-              verification_reason="pr_lookup_failed"
+              classification="retain_unpublished"
+              verification_reason="pr_not_terminal:${pr_state_evidence}"
             fi
+          else
+            pr_lookup_status="failed"
+            classification="retain_unverifiable"
+            verification_reason="pr_lookup_failed"
+          fi
+        fi
+
+        if [[ -z "$verification_reason" && "$remote_contains_head" != "true" && -z "$classification" ]]; then
+          if wavemill_pr_aware_cleanup_enabled && [[ -n "$pr" ]]; then
+            classification="retain_unverifiable"
+            verification_reason="pr_cleanup_unclassified"
           fi
           if [[ -z "$classification" ]]; then
             verification_reason="remote_missing_local_head"
           fi
         fi
       fi
+    fi
+
+    if [[ "$pr_state_evidence" == "MERGED" && "$classification" == "retain_unpublished" \
+      && "$verification_reason" == "unique_local_patch" ]] \
+      && wavemill_branch_content_matches_base "$base_ref" "$task_branch" "$pr_merge_sha"; then
+      classification="safe_content_equivalent_pr"
+      cleanup_authority="PR #${pr} merged into ${base_branch}; clean merge of ${task_branch} leaves the verified base tree unchanged"
+      verification_reason=""
     fi
 
     if [[ -z "$classification" ]]; then
@@ -1340,6 +1886,16 @@ safe_remove_task_worktree_and_branch() {
       fi
     fi
 
+    # An orphan directory cannot supply its own Git dirt check. Only a
+    # delivered branch proof can authorize removing its generated markers.
+    if [[ "$orphan_cleanup_candidate" == "true" ]]; then
+      case "$classification" in
+        safe_ancestor|safe_terminal_pr_head|safe_patch_equivalent_pr|safe_content_equivalent_pr) ;;
+        retain_*) ;;
+        *) classification="retain_unverifiable"; verification_reason="orphan_delivery_unverified" ;;
+      esac
+    fi
+
     if cleanup_outcome_is_retain "$classification"; then
       SAFE_CLEANUP_PRESERVATION_REASON="$preservation_reason"
       SAFE_CLEANUP_VERIFICATION_REASON="$verification_reason"
@@ -1352,23 +1908,52 @@ safe_remove_task_worktree_and_branch() {
           commits_ahead=""
           ;;
       esac
-      if ! _wavemill_record_cleanup_decision "$classification" "unpushed_commits" "$verification_reason" "false"; then
-        log_warn "  Failed to write preserved-branch incident marker for $task_branch"
+      if [[ "${WAVEMILL_CLASSIFY_ONLY:-0}" != "1" ]]; then
+        if ! _wavemill_record_cleanup_decision "$classification" "unpushed_commits" "$verification_reason" "false"; then
+          log_warn "  Failed to write preserved-branch incident marker for $task_branch"
+        fi
+        log_warn "  PRESERVED_UNPUSHED_WORK: $task_branch cleanup lacked authoritative delivery evidence (${classification}: ${verification_reason}); retained. $(_wavemill_cleanup_operator_guidance "$classification" "$task_branch" "$verification_reason")"
       fi
-      log_warn "  PRESERVED_UNPUSHED_WORK: $task_branch cleanup lacked authoritative delivery evidence (${classification}: ${verification_reason}); retained. $(_wavemill_cleanup_operator_guidance "$classification" "$task_branch" "$verification_reason")"
       WAVEMILL_CLEANUP_OUTCOME="$classification"
+      _wavemill_build_cleanup_evidence_json
       return 10
     fi
   fi
 
   [[ -z "$classification" ]] && classification="safe_noop"
 
+  # Classify-only mode: destructive path (TOCTOU + deletion) is suppressed.
+  # Publish evidence for the safe classification and return.
+  if [[ "${WAVEMILL_CLASSIFY_ONLY:-0}" == "1" ]]; then
+    WAVEMILL_CLEANUP_OUTCOME="$classification"
+    _wavemill_build_cleanup_evidence_json
+    return 0
+  fi
+
   # TOCTOU guard: re-verify the worktree and branch head immediately before
   # deletion so a commit or edit landing after classification retains the
   # work instead of losing it.
   if [[ "$local_branch_exists" == "true" ]]; then
     if [[ -n "$wt_dir" && -d "$wt_dir" ]]; then
-      if ! final_dirty="$(wavemill_worktree_dirty_status "$wt_dir")" || [[ -n "$final_dirty" ]]; then
+      local final_worktree_identity
+      final_worktree_identity="$(wavemill_task_worktree_identity "$wt_dir" "$REPO_DIR")"
+      if { [[ "$orphan_cleanup_candidate" == "true" ]] \
+          && { [[ "$final_worktree_identity" != "$worktree_identity" ]] \
+            || [[ -e "$wt_dir/.git" || -L "$wt_dir/.git" ]] \
+            || ! wavemill_orphan_dir_scan "$wt_dir" >/dev/null 2>&1; }; } \
+        || { [[ "$orphan_cleanup_candidate" != "true" ]] \
+          && [[ "$final_worktree_identity" != "valid" ]]; }; then
+        final_check_passed="false"
+        if ! _wavemill_record_cleanup_decision "retain_orphan_dir" "orphan_worktree" "$final_worktree_identity" "false"; then
+          log_warn "  Failed to write preserved-branch incident marker for $task_branch"
+        fi
+        log_warn "  PRESERVED_ORPHAN_DIR: ${wt_dir} became invalid worktree before deletion ($final_worktree_identity); retained (branch=${task_branch})."
+        WAVEMILL_CLEANUP_OUTCOME="retain_orphan_dir"
+        return 10
+      fi
+
+      if [[ "$orphan_cleanup_candidate" != "true" ]] \
+        && { ! final_dirty="$(wavemill_worktree_dirty_status "$wt_dir")" || [[ -n "$final_dirty" ]]; }; then
         final_check_passed="false"
         if ! _wavemill_record_cleanup_decision "retain_dirty" "dirty_worktree" "worktree_dirty_before_deletion" "false"; then
           log_warn "  Failed to write preserved-branch incident marker for $task_branch"
@@ -1394,6 +1979,15 @@ safe_remove_task_worktree_and_branch() {
       WAVEMILL_CLEANUP_OUTCOME="retain_unverifiable"
       return 10
     fi
+    if [[ "$classification" == "safe_content_equivalent_pr" ]] \
+      && { [[ "$(git -C "$REPO_DIR" rev-parse --verify "${base_ref}^{commit}" 2>/dev/null)" != "$base_sha" ]] \
+        || ! wavemill_branch_content_matches_base "$base_ref" "$task_branch" "$pr_merge_sha"; }; then
+      final_check_passed="false"
+      SAFE_CLEANUP_VERIFICATION_REASON="content_proof_changed"
+      _wavemill_record_cleanup_decision "retain_unverifiable" "delivery_unverified" "content_proof_changed" "false" 2>/dev/null || true
+      WAVEMILL_CLEANUP_OUTCOME="retain_unverifiable"
+      return 10
+    fi
     final_check_passed="true"
 
     # Deletion requires a durable authority record. If the record cannot be
@@ -1408,17 +2002,30 @@ safe_remove_task_worktree_and_branch() {
   fi
 
   if [[ -n "$wt_dir" && -d "$wt_dir" ]]; then
-    # The controller-owned observer artifact is excluded from dirtiness above,
-    # but `git worktree remove` still refuses untracked content: migrate it to
-    # the repository-level findings file before removal.
-    wavemill_migrate_controller_observer_artifact "$wt_dir"
-    if wavemill_cleanup_run git -C "$REPO_DIR" worktree remove "$wt_dir" >>"${MILL_LOG_FILE:-/dev/null}" 2>/dev/null; then
-      log "debug" "Removed worktree: $wt_dir"
+    local wt_removal_rc=0
+    local final_identity_check
+    final_identity_check="$(wavemill_task_worktree_identity "$wt_dir" "$REPO_DIR")"
+
+    if [[ "$final_identity_check" != "valid" ]]; then
+      if wavemill_remove_orphan_task_dir "$wt_dir" "${task_branch#task/}"; then
+        log "debug" "Removed orphan worktree directory: $wt_dir"
+      else
+        log_warn "  Orphan worktree cleanup failed: $wt_dir (identity=$final_identity_check)"
+        WAVEMILL_CLEANUP_OUTCOME="operation_failed"
+        _wavemill_record_cleanup_decision "operation_failed" "operation_failed" "orphan_worktree_removal_failed" "false" "cleanup-decisions" 2>/dev/null || true
+        return 20
+      fi
     else
-      log_warn "  Worktree cleanup failed: $wt_dir"
-      WAVEMILL_CLEANUP_OUTCOME="operation_failed"
-      _wavemill_record_cleanup_decision "operation_failed" "operation_failed" "worktree_remove_failed" "false" "cleanup-decisions" 2>/dev/null || true
-      return 20
+      wavemill_migrate_controller_observer_artifact "$wt_dir"
+      wavemill_discard_prompt_registry_artifact "$wt_dir"
+      if wavemill_cleanup_run git -C "$REPO_DIR" worktree remove "$wt_dir" >>"${MILL_LOG_FILE:-/dev/null}" 2>/dev/null; then
+        log "debug" "Removed worktree: $wt_dir"
+      else
+        log_warn "  Worktree cleanup failed: $wt_dir"
+        WAVEMILL_CLEANUP_OUTCOME="operation_failed"
+        _wavemill_record_cleanup_decision "operation_failed" "operation_failed" "worktree_remove_failed" "false" "cleanup-decisions" 2>/dev/null || true
+        return 20
+      fi
     fi
   fi
 
@@ -1534,7 +2141,9 @@ cleanup_completed_task() {
       cleanup_episode_record_outcome "$issue" "transient" "operational" "$release_reason" "$cleanup_candidate_json" "" 2>/dev/null || true
     fi
     set_task_lifecycle_disposition "$issue" "" "retained" "$release_reason" "cleanup_completed_task" 2>/dev/null || true
-    set_window_attention_state "$win" "needs-user"
+    # HOK-3100: set_window_attention_state lives in terminal-reconciler.sh; it
+    # may not be sourced for standalone CLI tools like `wavemill cleanup`.
+    declare -F set_window_attention_state >/dev/null 2>&1 && set_window_attention_state "$win" "needs-user"
     log_warn "  $issue cleanup could not close tmux window; keeping task state"
     return 1
   fi
@@ -1586,7 +2195,8 @@ cleanup_completed_task() {
       cleanup_episode_record_outcome "$issue" "$episode_disposition" "$episode_failure_class" "$episode_outcome" "$cleanup_candidate_json" "" 2>/dev/null || true
     fi
     set_task_lifecycle_disposition "$issue" "" "$lifecycle_resource_disposition" "${cleanup_outcome:-local-work-preserved}" "cleanup_completed_task" 2>/dev/null || true
-    set_window_attention_state "$win" "needs-user"
+    # HOK-3100: see note above re: set_window_attention_state availability.
+    declare -F set_window_attention_state >/dev/null 2>&1 && set_window_attention_state "$win" "needs-user"
     log_warn "  $issue cleanup preserved local work (${cleanup_outcome:-unclassified}); keeping task state"
     return 1
   fi
@@ -1617,6 +2227,11 @@ cleanup_completed_task() {
     cleanup_episode_record_outcome "$issue" "reaped" "none" "cleanup-complete" "$cleanup_candidate_json" "" 2>/dev/null || true
   fi
   set_task_lifecycle_disposition "$issue" "" "reaped" "" "cleanup_completed_task" 2>/dev/null || true
+  if ! write_terminal_task_tombstone "$issue" "cleanup_completed_task" "${completion_reason:-cleanup_completed_task}" "${cleanup_outcome:-reaped}" ""; then
+    set_task_lifecycle_disposition "$issue" "" "verification-required" "terminal-tombstone-write-failed" "cleanup_completed_task" 2>/dev/null || true
+    log_warn "  $issue cleanup could not write terminal tombstone; keeping task state"
+    return 1
+  fi
   remove_task_state "$issue"
   monitor_deregister_terminal_task "$issue"
 
@@ -1666,6 +2281,21 @@ resolve_challenge_pair_hard_failure() {
   local winner winner_model rationale timestamp record_json
 
   [[ -n "$pair_id" ]] || return 1
+
+  # HOK-3100: this function depends on functions defined in the mill/monitor
+  # context (read_state_value, challenge_pair_record_exists,
+  # mark_challenge_compared, challenge_pair_hard_failure_reason,
+  # challenge_pr_url_from_number). A standalone CLI tool that sources common
+  # without the monitor can't resolve pairs anyway; fail soft so loggers and
+  # unrelated flows keep working.
+  local _fn
+  for _fn in read_state_value challenge_pair_record_exists mark_challenge_compared \
+             challenge_pair_hard_failure_reason challenge_pr_url_from_number; do
+    if ! declare -F "$_fn" >/dev/null 2>&1; then
+      log_warn "resolve_challenge_pair_hard_failure: $_fn is undefined; skipping"
+      return 0
+    fi
+  done
 
   if challenge_pair_record_exists "$pair_id"; then
     mark_challenge_compared "$pair_id" "record"
@@ -2172,7 +2802,7 @@ load_config() {
       "_CFG_PLAN_MODEL=\($c.plan.model // "claude-opus-4-8" | @sh)",
       "_CFG_DASHBOARD_VERBOSITY=\($c.dashboard.verbosity // "info" | @sh)",
       "_CFG_DASHBOARD_LOG_TO_FILE=\(if ($c.dashboard | has("logToFile")) then $c.dashboard.logToFile else true end)",
-      "_CFG_ENTER_LAUNCHES_WAVE=\(if ($c.taskSelection | has("enterLaunchesWave")) then $c.taskSelection.enterLaunchesWave else true end)",
+      "_CFG_ENTER_ACTION=\((($c.taskSelection // {}) as $ts | if ($ts.enterAction // null) != null then $ts.enterAction elif ($ts | has("enterLaunchesWave")) then (if $ts.enterLaunchesWave then "wave" else "top-scored" end) else "none" end) | @sh)",
       "_CFG_CHALLENGE_ENABLED=\($c.challenge.enabled // false)",
       "_CFG_CHALLENGE_RATE=\($c.challenge.rate // 0.10)",
       "_CFG_CHALLENGE_AUTO_MERGE=\($c.challenge.autoMergeWinner // false)",
@@ -2242,7 +2872,12 @@ load_config() {
   PLAN_MODEL="${PLAN_MODEL:-$_CFG_PLAN_MODEL}"
   DASHBOARD_VERBOSITY="${DASHBOARD_VERBOSITY:-$_CFG_DASHBOARD_VERBOSITY}"
   DASHBOARD_LOG_TO_FILE="${DASHBOARD_LOG_TO_FILE:-$_CFG_DASHBOARD_LOG_TO_FILE}"
-  ENTER_LAUNCHES_WAVE="${ENTER_LAUNCHES_WAVE:-$_CFG_ENTER_LAUNCHES_WAVE}"
+  # What a bare Enter does at the task picker: none (default), wave, or
+  # top-scored. The legacy taskSelection.enterLaunchesWave maps true -> wave,
+  # false -> top-scored; ENTER_LAUNCHES_WAVE is kept as a derived alias.
+  ENTER_ACTION="${ENTER_ACTION:-$_CFG_ENTER_ACTION}"
+  case "$ENTER_ACTION" in none|wave|top-scored) ;; *) ENTER_ACTION="none" ;; esac
+  if [[ "$ENTER_ACTION" == "wave" ]]; then ENTER_LAUNCHES_WAVE="true"; else ENTER_LAUNCHES_WAVE="false"; fi
   CHALLENGE_ENABLED="${CHALLENGE_ENABLED:-$_CFG_CHALLENGE_ENABLED}"
   CHALLENGE_RATE="${CHALLENGE_RATE:-$_CFG_CHALLENGE_RATE}"
   CHALLENGE_MODELS_JSON="${CHALLENGE_MODELS_JSON:-null}"
@@ -2281,7 +2916,7 @@ load_config() {
   export PROJECT_NAME MAX_SELECT MAX_DISPLAY PLAN_MAX_DISPLAY PLAN_RESEARCH PLAN_MODEL
   export PROJECT_CONTEXT_COMPACTION_THRESHOLD_KB PROJECT_CONTEXT_RECENT_WORK_KEEP
   export DASHBOARD_VERBOSITY DASHBOARD_LOG_TO_FILE
-  export ENTER_LAUNCHES_WAVE
+  export ENTER_ACTION ENTER_LAUNCHES_WAVE
   export CHALLENGE_ENABLED CHALLENGE_RATE CHALLENGE_MODELS_JSON
   export CHALLENGE_COMPARISON_MODEL CHALLENGE_AUTO_MERGE
   export INTEGRATION_MERGE_METHOD INTEGRATION_DELETE_BRANCH_AFTER_MERGE
@@ -2296,7 +2931,7 @@ load_config() {
   unset _CFG_PLANNING_MODE _CFG_MAX_RETRIES _CFG_RETRY_DELAY _CFG_MAX_SELECT _CFG_MAX_DISPLAY
   unset _CFG_PLAN_MAX_DISPLAY _CFG_PLAN_RESEARCH _CFG_PLAN_MODEL
   unset _CFG_PROJECT_CONTEXT_COMPACTION_THRESHOLD_KB _CFG_PROJECT_CONTEXT_RECENT_WORK_KEEP
-  unset _CFG_DASHBOARD_VERBOSITY _CFG_DASHBOARD_LOG_TO_FILE _CFG_ENTER_LAUNCHES_WAVE
+  unset _CFG_DASHBOARD_VERBOSITY _CFG_DASHBOARD_LOG_TO_FILE _CFG_ENTER_ACTION
   unset _CFG_CHALLENGE_ENABLED _CFG_CHALLENGE_RATE _CFG_CHALLENGE_AUTO_MERGE
   unset _CFG_INTEGRATION_MERGE_METHOD _CFG_INTEGRATION_DELETE_BRANCH_AFTER_MERGE
   unset _CFG_MERGE_QUEUE_ENABLED _CFG_MERGE_QUEUE_MAX_CONCURRENT
@@ -2514,7 +3149,8 @@ wavemill_fetch_base_branch() {
 
   local remote_timeout fetch_rc=0
   remote_timeout="$(wavemill_git_remote_timeout_seconds)"
-  wavemill_git_remote_with_timeout "$remote_timeout" -C "$REPO_DIR" fetch origin "$base_branch" || fetch_rc=$?
+  wavemill_git_remote_with_timeout "$remote_timeout" -C "$REPO_DIR" fetch origin \
+    "+refs/heads/${base_branch}:refs/remotes/origin/${base_branch}" || fetch_rc=$?
   if (( fetch_rc != 0 )); then
     wavemill_warn "git fetch origin $base_branch failed for repo=$REPO_DIR timeout=${remote_timeout}s exit=$fetch_rc; continuing without refreshing base-branch cache"
     return "$fetch_rc"
@@ -2543,20 +3179,54 @@ wavemill_fetch_base_branch() {
 
 wavemill_base_ref_checked_refs() {
   local base_branch="${1:-}"
+  shift || true
+  local prefer_local="false"
+  while (( $# > 0 )); do
+    case "$1" in
+      --prefer-local)
+        prefer_local="true"
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+    shift
+  done
   [[ -n "$base_branch" ]] || return 1
-
-  printf 'refs/heads/%s\n' "$base_branch"
-  printf 'refs/remotes/origin/%s\n' "$base_branch"
 
   local upstream
   upstream="$(git -C "${REPO_DIR:-$PWD}" rev-parse --abbrev-ref --symbolic-full-name "refs/heads/$base_branch@{upstream}" 2>/dev/null || true)"
-  if [[ -n "$upstream" && "$upstream" != "origin/$base_branch" ]]; then
-    printf 'refs/remotes/%s\n' "$upstream"
+
+  if [[ "$prefer_local" == "true" ]]; then
+    printf 'refs/heads/%s\n' "$base_branch"
+    printf 'refs/remotes/origin/%s\n' "$base_branch"
+    if [[ -n "$upstream" && "$upstream" != "origin/$base_branch" ]]; then
+      printf 'refs/remotes/%s\n' "$upstream"
+    fi
+  else
+    printf 'refs/remotes/origin/%s\n' "$base_branch"
+    if [[ -n "$upstream" && "$upstream" != "origin/$base_branch" ]]; then
+      printf 'refs/remotes/%s\n' "$upstream"
+    fi
+    printf 'refs/heads/%s\n' "$base_branch"
   fi
 }
 
 wavemill_resolve_base_ref() {
   local base_branch="${1:-}"
+  shift || true
+  local prefer_local_args=()
+  while (( $# > 0 )); do
+    case "$1" in
+      --prefer-local)
+        prefer_local_args+=("--prefer-local")
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+    shift
+  done
   [[ -n "$base_branch" ]] || return 1
 
   local ref
@@ -2566,9 +3236,130 @@ wavemill_resolve_base_ref() {
       printf '%s\n' "$ref"
       return 0
     fi
-  done < <(wavemill_base_ref_checked_refs "$base_branch")
+  done < <(wavemill_base_ref_checked_refs "$base_branch" "${prefer_local_args[@]}")
 
   return 1
+}
+
+# Return the reference to use for base-relative comparisons on the monitor tick.
+# Prefers origin/<b> when it exists (defense against a stale local checkout).
+# Pass-through rules:
+#   - inputs starting with "origin/", "refs/", or a 40-hex SHA are returned unchanged
+#   - otherwise return "origin/<b>" when refs/remotes/origin/<b> verifies,
+#     falling back to the bare name
+# This never fetches; callers relying on freshness must fetch first.
+wavemill_base_compare_ref() {
+  local input="${1:-}"
+  [[ -n "$input" ]] || return 1
+
+  if [[ "$input" == origin/* ]] || [[ "$input" == refs/* ]] \
+    || [[ "$input" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    printf '%s\n' "$input"
+    return 0
+  fi
+
+  if git -C "${REPO_DIR:-$PWD}" show-ref --verify --quiet "refs/remotes/origin/${input}"; then
+    printf 'origin/%s\n' "$input"
+    return 0
+  fi
+  printf '%s\n' "$input"
+}
+
+# Compute local-vs-origin staleness JSON for a base branch. Best-effort: any git
+# failure yields {}. When fetch succeeded and local is strictly behind origin
+# (behind>0, ahead=0) and no worktree has the branch checked out and we are not
+# in dry-run, attempt a compare-and-swap update-ref fast-forward.
+# Emits fields: resolvedSha (of resolvedRef), originSha, localSha,
+# localBehindOrigin, localAheadOfOrigin, localCheckedOut, localCheckoutPath,
+# localFastForwarded.
+wavemill_base_ref_local_staleness_json() {
+  local base_branch="${1:-}"
+  local fetch_ok="${2:-false}"
+  local resolved_ref="${3:-}"
+  local repo="${REPO_DIR:-$PWD}"
+  command -v jq >/dev/null 2>&1 || { printf '{}\n'; return 0; }
+  [[ -n "$base_branch" ]] || { printf '{}\n'; return 0; }
+
+  local local_sha="" origin_sha="" resolved_sha=""
+  local behind="" ahead="" checked_out="false" checkout_path=""
+  local fast_forwarded="false"
+
+  if [[ -n "$resolved_ref" ]]; then
+    resolved_sha="$(git -C "$repo" rev-parse --verify "${resolved_ref}^{commit}" 2>/dev/null || true)"
+  fi
+  local_sha="$(git -C "$repo" rev-parse --verify "refs/heads/${base_branch}^{commit}" 2>/dev/null || true)"
+  origin_sha="$(git -C "$repo" rev-parse --verify "refs/remotes/origin/${base_branch}^{commit}" 2>/dev/null || true)"
+
+  if [[ -n "$local_sha" && -n "$origin_sha" ]]; then
+    local counts
+    counts="$(git -C "$repo" rev-list --left-right --count "refs/heads/${base_branch}...refs/remotes/origin/${base_branch}" 2>/dev/null || true)"
+    if [[ -n "$counts" ]]; then
+      # left is ahead-of-origin, right is behind-origin
+      ahead="${counts%%[[:space:]]*}"
+      behind="${counts##*[[:space:]]}"
+      [[ "$ahead" =~ ^[0-9]+$ ]] || ahead=""
+      [[ "$behind" =~ ^[0-9]+$ ]] || behind=""
+    fi
+  fi
+
+  if [[ -n "$local_sha" ]]; then
+    local wt_out
+    wt_out="$(git -C "$repo" worktree list --porcelain 2>/dev/null || true)"
+    if [[ -n "$wt_out" ]]; then
+      # Parse porcelain: worktree <path> ... branch refs/heads/<name>
+      local current_wt="" wt_line
+      while IFS= read -r wt_line; do
+        case "$wt_line" in
+          "worktree "*)
+            current_wt="${wt_line#worktree }"
+            ;;
+          "branch refs/heads/${base_branch}")
+            checked_out="true"
+            checkout_path="$current_wt"
+            break
+            ;;
+        esac
+      done <<< "$wt_out"
+    fi
+  fi
+
+  local dry_run="false"
+  if [[ "${WAVEMILL_DRY_RUN:-}" == "1" || "${DRY_RUN:-}" == "true" ]]; then
+    dry_run="true"
+  fi
+
+  if [[ "$fetch_ok" == "true" \
+    && "$dry_run" != "true" \
+    && -n "$local_sha" && -n "$origin_sha" \
+    && "$local_sha" != "$origin_sha" \
+    && "$behind" =~ ^[1-9][0-9]*$ \
+    && "$ahead" == "0" \
+    && "$checked_out" != "true" ]]; then
+    if git -C "$repo" update-ref "refs/heads/${base_branch}" "$origin_sha" "$local_sha" 2>/dev/null; then
+      fast_forwarded="true"
+      local_sha="$origin_sha"
+      behind="0"
+    fi
+  fi
+
+  jq -cn \
+    --arg resolvedSha "$resolved_sha" \
+    --arg originSha "$origin_sha" \
+    --arg localSha "$local_sha" \
+    --arg behind "$behind" \
+    --arg ahead "$ahead" \
+    --arg checkedOut "$checked_out" \
+    --arg checkoutPath "$checkout_path" \
+    --arg fastForwarded "$fast_forwarded" \
+    '{}
+    + (if $resolvedSha == "" then {} else {resolvedSha: $resolvedSha} end)
+    + (if $originSha == "" then {} else {originSha: $originSha} end)
+    + (if $localSha == "" then {} else {localSha: $localSha} end)
+    + (if $behind == "" then {} else {localBehindOrigin: ($behind | tonumber)} end)
+    + (if $ahead == "" then {} else {localAheadOfOrigin: ($ahead | tonumber)} end)
+    + {localCheckedOut: ($checkedOut == "true")}
+    + (if $checkoutPath == "" then {} else {localCheckoutPath: $checkoutPath} end)
+    + {localFastForwarded: ($fastForwarded == "true")}'
 }
 
 wavemill_default_remote_branch() {
@@ -2623,11 +3414,19 @@ wavemill_base_ref_preflight() {
     wavemill_fetch_base_branch "$base_branch" || fetch_rc=$?
   fi
 
-  if resolved_ref="$(wavemill_resolve_base_ref "$base_branch" 2>/dev/null)"; then
+  local resolve_args=()
+  local fetch_ok="true"
+  if [[ "$fetch_attempted" == "true" && "$fetch_rc" -ne 0 ]]; then
+    resolve_args+=(--prefer-local)
+    fetch_ok="false"
+  fi
+
+  if resolved_ref="$(wavemill_resolve_base_ref "$base_branch" "${resolve_args[@]}" 2>/dev/null)"; then
     status="ok"
     reason="ok"
     if [[ "$fetch_attempted" == "true" && "$fetch_rc" -ne 0 ]]; then
       fetch_degraded=true
+      wavemill_warn "Base fetch for $base_branch failed (exit $fetch_rc); falling back to $resolved_ref (fetchDegraded)"
     fi
   else
     status="failed"
@@ -2641,7 +3440,13 @@ wavemill_base_ref_preflight() {
   default_branch="$(wavemill_default_remote_branch 2>/dev/null || true)"
 
   local checked_refs_json
-  checked_refs_json="$(wavemill_base_ref_checked_refs "$base_branch" | jq -R . | jq -sc .)"
+  checked_refs_json="$(wavemill_base_ref_checked_refs "$base_branch" "${resolve_args[@]}" | jq -R . | jq -sc .)"
+
+  local staleness_json="{}"
+  if [[ -n "$resolved_ref" ]]; then
+    staleness_json="$(wavemill_base_ref_local_staleness_json "$base_branch" "$fetch_ok" "$resolved_ref" 2>/dev/null)"
+    [[ -n "$staleness_json" ]] || staleness_json="{}"
+  fi
 
   local payload
   payload="$(jq -cn \
@@ -2654,6 +3459,7 @@ wavemill_base_ref_preflight() {
     --argjson fetchAttempted "$fetch_attempted" \
     --argjson fetchDegraded "$fetch_degraded" \
     --argjson checkedRefs "$checked_refs_json" \
+    --argjson staleness "$staleness_json" \
     '{
       status: $status,
       reason: $reason,
@@ -2664,7 +3470,8 @@ wavemill_base_ref_preflight() {
       fetchDegraded: $fetchDegraded
     }
     + (if $resolvedRef == "" then {} else {resolvedRef: $resolvedRef} end)
-    + (if $defaultBranch == "" then {} else {defaultBranch: $defaultBranch} end)')"
+    + (if $defaultBranch == "" then {} else {defaultBranch: $defaultBranch} end)
+    + $staleness')"
 
   if [[ -n "$json_out" ]]; then
     mkdir -p "$(dirname "$json_out")" 2>/dev/null || true
@@ -2724,7 +3531,12 @@ wavemill_record_startup_terminal_reason() {
       configuredBranch: ($p.configuredBranch // null),
       checkedRefs: ($p.checkedRefs // []),
       resolvedRef: ($p.resolvedRef // null),
+      resolvedSha: ($p.resolvedSha // null),
       fetchDegraded: ($p.fetchDegraded // false),
+      localBehindOrigin: ($p.localBehindOrigin // null),
+      localAheadOfOrigin: ($p.localAheadOfOrigin // null),
+      localFastForwarded: ($p.localFastForwarded // false),
+      localCheckedOut: ($p.localCheckedOut // false),
       session: $session,
       repoDir: $repoDir,
       cleanupStatus: $cleanupStatus
@@ -2775,7 +3587,7 @@ wavemill_cleanup_launch_attempt() {
           rm -f "$path" 2>/dev/null || cleanup_status="partial"
           ;;
       esac
-    done < <(jq -r '.tasks[]? | .taskPacketFile, .taskPacketDetailsFile, .issueJsonFile, .routeFile | select(type == "string" and length > 0)' "$launch_plan_file" 2>/dev/null || true)
+    done < <(jq -r '.tasks[]? | .taskPacketFile, .taskPacketDetailsFile, .issueJsonFile, .routeFile, .taskScorerResultFile | select(type == "string" and length > 0)' "$launch_plan_file" 2>/dev/null || true)
   fi
 
   local path
@@ -2927,9 +3739,19 @@ mill_pane_has_live_blocking_process() {
   if (( ${#blocking_commands[@]} == 0 )); then
     for pid in "${descendant_pids[@]}"; do
       kill -0 "$pid" 2>/dev/null || continue
+      command_line="$(wavemill_process_command_line "$pid" 2>/dev/null || true)"
+      # HOK-3101 / HOK-2882: exclude the pane's root agent process AND
+      # wavemill's own controller processes from the "live blocking"
+      # match. Without this filter, the very first descendant of the pane
+      # (the agent itself) counts as "live", so a completed blocked task
+      # could never advance.
+      if [[ -n "$command_line" ]] \
+        && [[ -n "${WAVEMILL_CONTROLLER_PROCESS_REGEX:-}" ]] \
+        && [[ "$command_line" =~ $WAVEMILL_CONTROLLER_PROCESS_REGEX ]]; then
+        continue
+      fi
       MILL_BLOCKING_PROCESS_PIDS=("$pid")
       MILL_BLOCKING_PROCESS_MATCH_COUNT=1
-      command_line="$(wavemill_process_command_line "$pid" 2>/dev/null || true)"
       MILL_BLOCKING_PROCESS_COMMAND="${command_line:-pid $pid}"
       return 0
     done
@@ -2953,6 +3775,14 @@ mill_pane_has_live_blocking_process() {
       continue
     fi
 
+    # HOK-3101 / HOK-2882: skip wavemill controller processes even in the
+    # command-filtered case — otherwise a blocking command string that
+    # happens to be inside the agent's own argv or a monitor child's argv
+    # would spuriously match.
+    if [[ -n "${WAVEMILL_CONTROLLER_PROCESS_REGEX:-}" ]] \
+      && [[ "$command_line" =~ $WAVEMILL_CONTROLLER_PROCESS_REGEX ]]; then
+      continue
+    fi
     for blocking_command in "${blocking_commands[@]}"; do
       if [[ "$command_line" == *"$blocking_command"* ]]; then
         matched=true
@@ -3891,6 +4721,143 @@ ensure_phase_config_state_file() {
 EOF
 }
 
+sync_challenger_shared_route_from_primary() {
+  local routing_file="$1" issue="$2" state_file="$3" challenge_intent_file="$4" challenge_side="$5"
+  [[ "$challenge_side" == "challenger" ]] || return 0
+  [[ -n "$routing_file" && -f "$routing_file" && -n "$state_file" && -f "$state_file" ]] || return 0
+  [[ -n "$challenge_intent_file" && -f "$challenge_intent_file" ]] || return 0
+
+  local selected_stage primary_issue
+  selected_stage="$(jq -r --arg side "$challenge_side" '
+    def nz(a; b): if ((a // "") == "") then b else a end;
+    (.[$side] // {}) as $sideObj
+    | (nz(.selectedStage; nz(.challengeStage; $sideObj.challengeStage)) | tostring | ascii_downcase) as $raw
+    | if   $raw == "plan" or $raw == "planning" or $raw == "planner" then "plan"
+      elif $raw == "review" or $raw == "reviewer" then "review"
+      elif $raw == "implementation" or $raw == "coding" or $raw == "coder" then "implementation"
+      else "" end
+  ' "$challenge_intent_file" 2>/dev/null || true)"
+  case "$selected_stage" in
+    plan|implementation|review) ;;
+    *) return 0 ;;
+  esac
+
+  primary_issue="$(jq -r --arg issue "$issue" '
+    (.tasks[$issue].challengePairId // "") as $pair
+    | if ($pair != "" and $pair != $issue and (.tasks[$pair]? != null)) then $pair
+      elif ($issue | endswith("_c")) and (.tasks[($issue | sub("_c$"; ""))]? != null) then ($issue | sub("_c$"; ""))
+      else "" end
+  ' "$state_file" 2>/dev/null || true)"
+  if [[ -z "$primary_issue" || "$primary_issue" == "null" ]]; then
+    log "warn" "challenger expanded route invalid: primary finalized route unavailable for $issue"
+    return 1
+  fi
+
+  local primary_planner primary_coder primary_reviewer primary_plan_depth primary_code_depth primary_review_mode
+  primary_planner="$(jq -r --arg issue "$primary_issue" '.tasks[$issue].plannerModel // ""' "$state_file" 2>/dev/null || true)"
+  primary_coder="$(jq -r --arg issue "$primary_issue" '.tasks[$issue].coderModel // ""' "$state_file" 2>/dev/null || true)"
+  primary_reviewer="$(jq -r --arg issue "$primary_issue" '.tasks[$issue].reviewerModel // ""' "$state_file" 2>/dev/null || true)"
+  primary_plan_depth="$(jq -r --arg issue "$primary_issue" '.tasks[$issue].planDepth // ""' "$state_file" 2>/dev/null || true)"
+  primary_code_depth="$(jq -r --arg issue "$primary_issue" '.tasks[$issue].codeDepth // ""' "$state_file" 2>/dev/null || true)"
+  primary_review_mode="$(jq -r --arg issue "$primary_issue" '.tasks[$issue].reviewMode // ""' "$state_file" 2>/dev/null || true)"
+
+  case "$selected_stage" in
+    plan)
+      if [[ -z "$primary_coder" || -z "$primary_reviewer" ]]; then
+        log "warn" "challenger expanded route invalid: primary coding/review route unavailable for $issue"
+        return 1
+      fi
+      ;;
+    implementation)
+      if [[ -z "$primary_planner" || -z "$primary_reviewer" ]]; then
+        log "warn" "challenger expanded route invalid: primary planning/review route unavailable for $issue"
+        return 1
+      fi
+      ;;
+    review)
+      if [[ -z "$primary_planner" || -z "$primary_coder" ]]; then
+        log "warn" "challenger expanded route invalid: primary planning/coding route unavailable for $issue"
+        return 1
+      fi
+      ;;
+  esac
+
+  if ! state_mutate "$routing_file" \
+    'def nz(a; b): if ((a // "") == "") then b else a end;
+     if $stage == "plan" then
+       .coder = $coder
+       | .codeDepth = nz($codeDepth; .codeDepth)
+       | .reviewer = $reviewer
+       | .reviewMode = nz($reviewMode; nz(.reviewMode; .reviewRecommended))
+       | .reviewRecommended = .reviewMode
+     elif $stage == "implementation" then
+       .planner = $planner
+       | .planDepth = nz($planDepth; .planDepth)
+       | .reviewer = $reviewer
+       | .reviewMode = nz($reviewMode; nz(.reviewMode; .reviewRecommended))
+       | .reviewRecommended = .reviewMode
+     elif $stage == "review" then
+       .planner = $planner
+       | .planDepth = nz($planDepth; .planDepth)
+       | .coder = $coder
+       | .codeDepth = nz($codeDepth; .codeDepth)
+     else . end
+     | .challengeSharedRouteApplied = true
+     | .challengeSharedRouteSource = {
+         primaryIssue: $primaryIssue,
+         selectedStage: $stage,
+         appliedAt: (now | todateiso8601)
+       }' \
+    --arg stage "$selected_stage" \
+    --arg primaryIssue "$primary_issue" \
+    --arg planner "$primary_planner" \
+    --arg coder "$primary_coder" \
+    --arg reviewer "$primary_reviewer" \
+    --arg planDepth "$primary_plan_depth" \
+    --arg codeDepth "$primary_code_depth" \
+    --arg reviewMode "$primary_review_mode"; then
+    log "warn" "challenger expanded route invalid: failed to sync primary shared route for $issue"
+    return 1
+  fi
+
+  local divergence
+  divergence="$(jq -r \
+    --arg stage "$selected_stage" \
+    --arg planner "$primary_planner" \
+    --arg coder "$primary_coder" \
+    --arg reviewer "$primary_reviewer" \
+    --arg planDepth "$primary_plan_depth" \
+    --arg codeDepth "$primary_code_depth" \
+    --arg reviewMode "$primary_review_mode" \
+    'def mismatch(name; actual; expected):
+       if expected != "" and ((actual // "") != expected) then name else empty end;
+     [
+       if $stage == "plan" then
+         mismatch("coder"; .coder; $coder),
+         mismatch("codeDepth"; .codeDepth; $codeDepth),
+         mismatch("reviewer"; .reviewer; $reviewer),
+         mismatch("reviewMode"; (.reviewMode // .reviewRecommended // ""); $reviewMode)
+       elif $stage == "implementation" then
+         mismatch("planner"; .planner; $planner),
+         mismatch("planDepth"; .planDepth; $planDepth),
+         mismatch("reviewer"; .reviewer; $reviewer),
+         mismatch("reviewMode"; (.reviewMode // .reviewRecommended // ""); $reviewMode)
+       elif $stage == "review" then
+         mismatch("planner"; .planner; $planner),
+         mismatch("planDepth"; .planDepth; $planDepth),
+         mismatch("coder"; .coder; $coder),
+         mismatch("codeDepth"; .codeDepth; $codeDepth)
+       else empty end
+     ] | join(",")' "$routing_file" 2>/dev/null || true)"
+  if [[ -n "$divergence" && "$divergence" != "null" ]]; then
+    log "warn" "challenger expanded route invalid: shared route still diverges for $issue ($divergence)"
+    return 1
+  fi
+
+  log_route_lifecycle "challenge_shared_route_synced" "issue=$issue" "primary=$primary_issue" "stage=$selected_stage"
+  return 0
+}
+
 apply_expanded_route_if_present() {
   local feature_dir="$1" issue="$2" slug="$3" worktree_dir="$4" state_file="${5:-${STATE_FILE:-}}"
   local route_file routing_file phase_config_file planner_model plan_depth coder_model code_depth reviewer_model review_mode
@@ -4053,6 +5020,12 @@ apply_expanded_route_if_present() {
   if [[ -n "$challenge_intent_file" && ! -f "$feature_dir/challenge-intent.json" ]]; then
     cp "$challenge_intent_file" "$feature_dir/challenge-intent.json" 2>/dev/null || true
   fi
+
+  if ! sync_challenger_shared_route_from_primary "$routing_file" "$issue" "$state_file" "$challenge_intent_file" "$challenge_side"; then
+    active_route="$(route_lifecycle_route_id "$routing_file" 2>/dev/null || true)"
+    log_route_lifecycle "expansion_failed" "issue=$issue" "reason=challenger_shared_route_diverged" "active_route=\"${active_route}\""
+    return 1
+  fi
   if [[ -n "$challenge_intent_tmp" ]]; then
     rm -f "$challenge_intent_tmp" 2>/dev/null || true
     challenge_intent_tmp=""
@@ -4067,7 +5040,12 @@ apply_expanded_route_if_present() {
 
   ensure_phase_config_state_file "$feature_dir"
 
-  if declare -F agent_resolve_models_for_roles >/dev/null 2>&1; then
+  # HOK-3100: `agent_resolve_batch_agent_for_role` lives in agent-adapters.sh
+  # alongside `agent_resolve_models_for_roles`, but the two are independent
+  # functions. Guard both explicitly so a build that defines only one does
+  # not silently call the undefined sibling.
+  if declare -F agent_resolve_models_for_roles >/dev/null 2>&1 \
+     && declare -F agent_resolve_batch_agent_for_role >/dev/null 2>&1; then
     if agent_resolve_models_for_roles "$planner_model" "$coder_model" "$reviewer_model"; then
       :
     fi
@@ -4329,7 +5307,7 @@ wavemill_load_config() {
 wavemill_observer_config_enabled() {
   local merged="${1:-}"
   [[ -n "$merged" ]] || merged="$(wavemill_load_config "${REPO_DIR:-$PWD}")"
-  [[ "$(printf '%s' "$merged" | jq -r '.observer.enabled // false' 2>/dev/null || echo false)" == "true" ]]
+  [[ "$(printf '%s' "$merged" | jq -r '.observer.enabled != false' 2>/dev/null || echo false)" == "true" ]]
 }
 
 wavemill_observer_interval_seconds() {
@@ -4354,6 +5332,299 @@ wavemill_observer_max_log_lines() {
   value="$(printf '%s' "$merged" | jq -r '.observer.maxLogLines // 240' 2>/dev/null || echo 240)"
   [[ "$value" =~ ^[0-9]+$ && "$value" -gt 0 ]] || value=240
   printf '%s\n' "$value"
+}
+
+# ─── Session capabilities (HOK-3102) ─────────────────────────────────────────
+#
+# Shell wrappers around `resolveSessionCapabilities` (shared/lib/config.ts,
+# via `tools/session-capabilities.ts`). Every producer of consumer-bound work
+# must check the matching consumer through these helpers before producing work;
+# private jq re-derivations from `integration.enabled` etc. are forbidden.
+#
+# Caching. Results are cached in a small shell-global map keyed by the tuple
+#   (repo_dir, mtime .wavemill-config.json, mtime .wavemill-config.local.json,
+#    MERGE_QUEUE_ENABLED, WAVEMILL_SESSION_CAPABILITIES_JSON).
+# Any change to the tuple invalidates the entry, so a config edit mid-run is
+# picked up on the next call while the monitor spawns tsx only once per
+# config change per tick (REQ-N1).
+#
+# Failure handling. If the tsx spawn fails and a cached value exists, we use
+# it; otherwise `wavemill_session_capabilities_json` prints nothing and
+# returns rc=2. Predicate `wavemill_session_has` maps unknown → 1 (false)
+# — skipping one tick of queue work is harmless. Producers of irreversible
+# work (the ready-pass handoff) MUST treat unknown as transient and retry.
+
+# Global shell map: key -> JSON. Bash 3 arrays via two parallel arrays.
+if ! declare -p _WAVEMILL_SESSION_CAP_KEYS >/dev/null 2>&1; then
+  # shellcheck disable=SC2034
+  _WAVEMILL_SESSION_CAP_KEYS=()
+  # shellcheck disable=SC2034
+  _WAVEMILL_SESSION_CAP_VALUES=()
+fi
+_WAVEMILL_SESSION_CAP_WARNED=""
+
+_wavemill_session_cache_lookup() {
+  local key="$1"
+  local i
+  for ((i = 0; i < ${#_WAVEMILL_SESSION_CAP_KEYS[@]}; i++)); do
+    if [[ "${_WAVEMILL_SESSION_CAP_KEYS[$i]}" == "$key" ]]; then
+      printf '%s' "${_WAVEMILL_SESSION_CAP_VALUES[$i]}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+_wavemill_session_cache_store() {
+  local key="$1" value="$2"
+  local i
+  for ((i = 0; i < ${#_WAVEMILL_SESSION_CAP_KEYS[@]}; i++)); do
+    if [[ "${_WAVEMILL_SESSION_CAP_KEYS[$i]}" == "$key" ]]; then
+      _WAVEMILL_SESSION_CAP_VALUES[$i]="$value"
+      return 0
+    fi
+  done
+  _WAVEMILL_SESSION_CAP_KEYS+=("$key")
+  _WAVEMILL_SESSION_CAP_VALUES+=("$value")
+}
+
+_wavemill_session_mtime() {
+  local file="$1"
+  [[ -f "$file" ]] || { printf '0'; return; }
+  # macOS/BSD stat (`-f FORMAT`) vs GNU stat (`-c FORMAT`). Capture the
+  # candidate output first so a GNU stat that treats `-f` as `--file-system`
+  # (and prints varying filesystem status like free-block counts) never
+  # leaks into the caller's cache key. Only emit a value when it looks
+  # like a plain integer epoch.
+  local out
+  out="$(stat -f '%m' "$file" 2>/dev/null)"
+  if [[ "$out" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$out"
+    return
+  fi
+  out="$(stat -c '%Y' "$file" 2>/dev/null)"
+  if [[ "$out" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$out"
+    return
+  fi
+  printf '0'
+}
+
+# Returns the session capability JSON to stdout. Prints nothing and returns 2
+# on unrecoverable failure with no cache.
+wavemill_session_capabilities_json() {
+  local repo_dir="${1:-${REPO_DIR:-$PWD}}"
+
+  # Explicit override (tests, emergency operator override).
+  if [[ -n "${WAVEMILL_SESSION_CAPABILITIES_JSON:-}" ]]; then
+    printf '%s' "$WAVEMILL_SESSION_CAPABILITIES_JSON"
+    return 0
+  fi
+
+  local base_mtime lcl_mtime env_key key cached
+  base_mtime="$(_wavemill_session_mtime "$repo_dir/.wavemill-config.json")"
+  lcl_mtime="$(_wavemill_session_mtime "$repo_dir/.wavemill-config.local.json")"
+  env_key="${MERGE_QUEUE_ENABLED:-}"
+  key="${repo_dir}|${base_mtime}|${lcl_mtime}|${env_key}"
+
+  if cached="$(_wavemill_session_cache_lookup "$key")"; then
+    printf '%s' "$cached"
+    return 0
+  fi
+
+  local tools_dir="${TOOLS_DIR:-${repo_dir%/}/tools}"
+  local tool="$tools_dir/session-capabilities.ts"
+  if [[ ! -f "$tool" ]]; then
+    # Fall back to whichever cached value we already have for any key on this repo.
+    local i
+    for ((i = 0; i < ${#_WAVEMILL_SESSION_CAP_KEYS[@]}; i++)); do
+      if [[ "${_WAVEMILL_SESSION_CAP_KEYS[$i]}" == "$repo_dir"* ]]; then
+        printf '%s' "${_WAVEMILL_SESSION_CAP_VALUES[$i]}"
+        return 0
+      fi
+    done
+    if [[ "$_WAVEMILL_SESSION_CAP_WARNED" != "$repo_dir" ]]; then
+      printf 'wavemill_session_capabilities_json: %s missing\n' "$tool" >&2
+      _WAVEMILL_SESSION_CAP_WARNED="$repo_dir"
+    fi
+    return 2
+  fi
+
+  local output rc
+  output="$(npx tsx "$tool" --repo-dir "$repo_dir" 2>/dev/null)"
+  rc=$?
+  if [[ $rc -ne 0 || -z "$output" ]]; then
+    local i
+    for ((i = 0; i < ${#_WAVEMILL_SESSION_CAP_KEYS[@]}; i++)); do
+      if [[ "${_WAVEMILL_SESSION_CAP_KEYS[$i]}" == "$repo_dir"* ]]; then
+        printf '%s' "${_WAVEMILL_SESSION_CAP_VALUES[$i]}"
+        return 0
+      fi
+    done
+    if [[ "$_WAVEMILL_SESSION_CAP_WARNED" != "$repo_dir" ]]; then
+      printf 'wavemill_session_capabilities_json: resolver spawn failed for %s (rc=%d)\n' "$repo_dir" "$rc" >&2
+      _WAVEMILL_SESSION_CAP_WARNED="$repo_dir"
+    fi
+    return 2
+  fi
+
+  _wavemill_session_cache_store "$key" "$output"
+  printf '%s' "$output"
+  return 0
+}
+
+# Predicate: exit 0 (true) if the named capability is on, 1 (false) otherwise.
+# Unknown resolver state ⇒ 1 (false), so hot-path gates fail closed (D3).
+# Accepts: tend | observer | mergeQueue
+wavemill_session_has() {
+  local capability="$1"
+  local json rc
+  json="$(wavemill_session_capabilities_json "${2:-${REPO_DIR:-$PWD}}")"
+  rc=$?
+  [[ $rc -eq 0 && -n "$json" ]] || return 1
+  local value
+  value="$(printf '%s' "$json" | jq -r --arg k "$capability" '.[$k] // false' 2>/dev/null || echo false)"
+  [[ "$value" == "true" ]]
+}
+
+# Print the merge executor: tend | operator | none | unknown
+wavemill_session_merge_executor() {
+  local json rc
+  json="$(wavemill_session_capabilities_json "${1:-${REPO_DIR:-$PWD}}")"
+  rc=$?
+  if [[ $rc -ne 0 || -z "$json" ]]; then
+    printf 'unknown\n'
+    return 0
+  fi
+  local value
+  value="$(printf '%s' "$json" | jq -r '.mergeExecutor // "unknown"' 2>/dev/null || echo unknown)"
+  case "$value" in
+    tend|operator|none) printf '%s\n' "$value" ;;
+    *) printf 'unknown\n' ;;
+  esac
+}
+
+# Testing hook: clear the shell-side cache.
+wavemill_session_cache_reset() {
+  # shellcheck disable=SC2034
+  _WAVEMILL_SESSION_CAP_KEYS=()
+  # shellcheck disable=SC2034
+  _WAVEMILL_SESSION_CAP_VALUES=()
+  _WAVEMILL_SESSION_CAP_WARNED=""
+}
+
+# HOK-3102 (D7): with the observer off, remove the stale findings backlog that
+# nothing will ever read. Idempotent; safe to call from startup.
+_cleanup_stale_observer_findings() {
+  local repo_dir="${1:-${REPO_DIR:-$PWD}}"
+  local findings_file="$repo_dir/.wavemill/observer-findings.jsonl"
+  [[ -f "$findings_file" ]] || return 0
+  if wavemill_session_has observer "$repo_dir"; then
+    return 0
+  fi
+  local warn_marker="$repo_dir/.wavemill/.observer-findings-cleanup-warned"
+  rm -f "$findings_file" 2>/dev/null || true
+  if [[ ! -f "$warn_marker" ]]; then
+    if declare -F startup_log >/dev/null 2>&1; then
+      startup_log "Observer disabled: removed stale .wavemill/observer-findings.jsonl (nothing would ever read it)"
+    fi
+    : > "$warn_marker" 2>/dev/null || true
+  fi
+}
+
+# Report whether a Linear credential is available WITHOUT ever printing its
+# value. Returns 0 (ready) when LINEAR_API_KEY is a non-empty environment
+# variable, or when a non-empty LINEAR_API_KEY assignment exists in the repo's
+# .env file. Emits nothing but the exit status.
+wavemill_observer_linear_credential_ready() {
+  local repo_dir="${1:-${REPO_DIR:-$PWD}}"
+  [[ -n "${LINEAR_API_KEY:-}" ]] && return 0
+  local env_file="$repo_dir/.env"
+  if [[ -f "$env_file" ]] && grep -Eq '^[[:space:]]*(export[[:space:]]+)?LINEAR_API_KEY[[:space:]]*=[[:space:]]*.+' "$env_file"; then
+    return 0
+  fi
+  return 1
+}
+
+# Ensure LINEAR_API_KEY is exported into the current environment (so a spawned
+# Observer pane inherits it) without echoing, logging, or persisting the value.
+# No-op when already set or when the repo has no .env credential.
+wavemill_observer_ensure_linear_key() {
+  local repo_dir="${1:-${REPO_DIR:-$PWD}}"
+  [[ -z "${LINEAR_API_KEY:-}" ]] || return 0
+  local env_file="$repo_dir/.env" line value
+  [[ -f "$env_file" ]] || return 0
+  line="$(grep -E '^[[:space:]]*(export[[:space:]]+)?LINEAR_API_KEY[[:space:]]*=' "$env_file" 2>/dev/null | tail -n 1 || true)"
+  [[ -n "$line" ]] || return 0
+  value="${line#*=}"
+  # Strip surrounding whitespace and matching quotes.
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  value="${value%\"}"; value="${value#\"}"
+  value="${value%\'}"; value="${value#\'}"
+  [[ -n "$value" ]] || return 0
+  export LINEAR_API_KEY="$value"
+}
+
+# Resolve the managed Observer service mode (off|shadow|live), failing closed.
+# Mirrors resolveObserverLinearServiceMode() in shared/lib/config.ts: offline and
+# unknown modes resolve to off, a missing credential downgrades to off, and live
+# requires full routing plus attested rollout gates or it downgrades to shadow.
+wavemill_observer_linear_service_mode() {
+  local merged="${1:-}" repo_dir="${2:-${REPO_DIR:-$PWD}}"
+  [[ -n "$merged" ]] || merged="$(wavemill_load_config "$repo_dir")"
+
+  local linear mode enabled detection_only
+  linear="$(printf '%s' "$merged" | jq -c '.observer.linear // {}' 2>/dev/null || echo '{}')"
+  mode="$(printf '%s' "$linear" | jq -r '.mode // empty' 2>/dev/null || true)"
+  enabled="$(printf '%s' "$linear" | jq -r '.enabled // false' 2>/dev/null || echo false)"
+  detection_only="$(printf '%s' "$linear" | jq -r '.detectionOnly // false' 2>/dev/null || echo false)"
+
+  # Derive the requested mode from legacy fields when no explicit mode is set.
+  if [[ -z "$mode" ]]; then
+    if [[ "$enabled" != "true" ]]; then
+      mode="off"
+    elif [[ "$detection_only" == "true" ]]; then
+      mode="offline"
+    else
+      mode="live"
+    fi
+  fi
+
+  case "$mode" in
+    off|offline) printf 'off\n'; return 0 ;;
+    shadow|live) ;;
+    *) printf 'off\n'; return 0 ;;
+  esac
+
+  # Both shadow and live read Linear; without a credential, fail closed to off.
+  if ! wavemill_observer_linear_credential_ready "$repo_dir"; then
+    printf 'off\n'
+    return 0
+  fi
+
+  if [[ "$mode" == "shadow" ]]; then
+    printf 'shadow\n'
+    return 0
+  fi
+
+  # live: require full routing and every attested rollout gate.
+  local team project label gates trial rollback max_proposed
+  team="$(printf '%s' "$linear" | jq -r '.team // empty' 2>/dev/null || true)"
+  project="$(printf '%s' "$linear" | jq -r '.project // empty' 2>/dev/null || true)"
+  label="$(printf '%s' "$linear" | jq -r '.label // empty' 2>/dev/null || true)"
+  gates="$(printf '%s' "$linear" | jq -r '.rollout.gatesPassed // false' 2>/dev/null || echo false)"
+  trial="$(printf '%s' "$linear" | jq -r '.rollout.shadowTrialCompleted // false' 2>/dev/null || echo false)"
+  rollback="$(printf '%s' "$linear" | jq -r '.rollout.rollbackRehearsed // false' 2>/dev/null || echo false)"
+  max_proposed="$(printf '%s' "$linear" | jq -r '.rollout.maxProposedPerPass // 5' 2>/dev/null || echo 5)"
+
+  if [[ -n "$team" && -n "$project" && -n "$label" \
+        && "$gates" == "true" && "$trial" == "true" && "$rollback" == "true" \
+        && "$max_proposed" =~ ^[0-9]+$ && "$max_proposed" -gt 0 ]]; then
+    printf 'live\n'
+  else
+    printf 'shadow\n'
+  fi
 }
 
 wavemill_command_offset_path() {
@@ -4863,7 +6134,7 @@ ensure_worktree() {
       fi
       if declare -F wavemill_hook_write >/dev/null 2>&1; then
         agent_name="${AGENT_CMD:-${CURRENT_AGENT:-wavemill}}"
-        wavemill_hook_write "error" "worktree-setup" "worktree-collision" "$agent_name" || true
+        wavemill_hook_write "error" "worktree-setup" "worktree-collision" "$agent_name" "" "monitor" || true
       fi
     fi
     return 1
@@ -4927,7 +6198,7 @@ ensure_worktree() {
     fi
     if declare -F wavemill_hook_write >/dev/null 2>&1; then
       agent_name="${AGENT_CMD:-${CURRENT_AGENT:-wavemill}}"
-      wavemill_hook_write "error" "worktree-setup" "worktree-collision" "$agent_name" || true
+      wavemill_hook_write "error" "worktree-setup" "worktree-collision" "$agent_name" "" "monitor" || true
     fi
   fi
   return 1
@@ -5150,6 +6421,96 @@ state_mutate() {
   return "$mutate_status"
 }
 
+terminal_task_tombstone_matches() {
+  local issue="${1:-}" pr="${2:-}" branch="${3:-}" worktree="${4:-}" run_epoch="${5:-}"
+  [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
+  jq -e \
+    --arg issue "$issue" \
+    --arg pr "$pr" \
+    --arg branch "$branch" \
+    --arg worktree "$worktree" \
+    --arg runEpoch "$run_epoch" '
+    (.tasks[$issue] == null) and
+    (((.terminalTaskTombstones // {}) | to_entries
+      | map(select(
+          (.value.issue // "") == $issue
+          and (
+            ($pr != "" and ((.value.prNumber // "") | tostring) == $pr)
+            or ($branch != "" and (.value.branch // "") == $branch)
+            or ($worktree != "" and (.value.worktree // "") == $worktree)
+          )
+          and (((.value.runEpoch // "") == "") or ($runEpoch == "") or ((.value.runEpoch // "") == $runEpoch))
+        ))
+      | length) > 0)' "$STATE_FILE" >/dev/null 2>&1
+}
+
+write_terminal_task_history_record() {
+  local issue="$1" record_json="$2"
+  [[ -n "$issue" && -n "$record_json" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
+  state_mutate "$STATE_FILE" '
+    .terminalTaskHistory.tasks[$issue] = $record
+    | if (($record.challengePairId // "") != "" and ($record.challengeRole // "") != "") then
+        .terminalTaskHistory.challengePairs[$record.challengePairId][$record.challengeRole] = $record
+      else .
+      end
+    | .updated = (now | todateiso8601)' \
+    --arg issue "$issue" \
+    --argjson record "$record_json"
+}
+
+write_terminal_task_tombstone() {
+  local issue="$1" actor="${2:-wavemill}" command="${3:-cleanup_completed_task}" decision_status="${4:-reaped}" decision_reason="${5:-}"
+  local task_json tombstone key
+  [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
+  task_json="$(jq -c --arg issue "$issue" '.tasks[$issue] // empty' "$STATE_FILE" 2>/dev/null)" || return 1
+  [[ -n "$task_json" ]] || return 1
+  tombstone="$(jq -cn \
+    --arg issue "$issue" \
+    --arg actor "$actor" \
+    --arg command "$command" \
+    --arg decisionStatus "$decision_status" \
+    --arg decisionReason "$decision_reason" \
+    --arg now "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+    --argjson task "$task_json" '
+    ($task.lifecycle // {}) as $l
+    | ($l.launchContract // {}) as $contract
+    | ($l.deliveryEvidence // {}) as $delivery
+    | {
+        schemaVersion: 1,
+        issue: $issue,
+        slug: ($task.slug // ""),
+        branch: ($task.branch // ""),
+        worktree: ($task.worktree // ""),
+        prNumber: (($task.pr // $task.prNumber // $delivery.prNumber // "") | tostring),
+        workflowOutcome: ($l.workflowOutcome // $task.status // ""),
+        resourceDisposition: ($l.resourceDisposition // ""),
+        challengePairId: ($task.challengePairId // ""),
+        challengeRole: ($task.challengeRole // ""),
+        runEpoch: ($contract.runEpoch // ""),
+        attempt: (($task.attempt // $l.attempt // "") | tostring),
+        actor: $actor,
+        command: $command,
+        createdAt: $now,
+        decisionStatus: $decisionStatus,
+        decisionReason: $decisionReason,
+        cleanupDecision: ($l.cleanupEpisode // null),
+        deliveryEvidence: $delivery,
+        task: $task
+      }')" || return 1
+  key="$(jq -r '[.issue, (if .prNumber != "" then .prNumber else .branch end), (if .runEpoch != "" then .runEpoch else "no-epoch" end), (if .attempt != "" then .attempt else "no-attempt" end)] | join("|")' <<<"$tombstone" 2>/dev/null)" || return 1
+  state_mutate "$STATE_FILE" '
+    .terminalTaskTombstones[$key] = $tombstone
+    | .terminalTaskHistory.tasks[$issue] = $tombstone
+    | if (($tombstone.challengePairId // "") != "" and ($tombstone.challengeRole // "") != "") then
+        .terminalTaskHistory.challengePairs[$tombstone.challengePairId][$tombstone.challengeRole] = $tombstone
+      else .
+      end
+    | .updated = (now | todateiso8601)' \
+    --arg key "$key" \
+    --arg issue "$issue" \
+    --argjson tombstone "$tombstone"
+}
+
 # ============================================================================
 # TASK STATE LEDGER
 # ============================================================================
@@ -5173,11 +6534,16 @@ def wm_workflow_outcome:
     else "active"
     end;
 
+def wm_orphan_stub:
+  ((.phase // "") == "") and ((.status // "") == "") and ((.slug // "") == "")
+  and ((.lifecycle // null) == null);
+
 def wm_resource_disposition:
   (.lifecycle.resourceDisposition // "") as $disposition
   | if $disposition | IN("allocated","released","retained","reaping","reaped","verification-required") then $disposition
     elif ((.executionOwner // "task") == "queue" and (.paneState // "active") == "released") or (.paneState // "") == "released" then "released"
     elif wm_terminal_status then "verification-required"
+    elif wm_orphan_stub then "orphan"
     else "allocated"
     end;
 
@@ -5187,7 +6553,7 @@ def wm_retention_required:
 def wm_has_retention:
   ((.lifecycle.retention.reason // "") | type == "string" and length > 0);
 
-def wm_normalized_lifecycle($baseBranch; $baseSha; $integrationMode; $mergeMethod; $remoteDeletionAllowed; $challengeRole; $challengePair; $session; $runEpoch; $windowId; $requireConfirm; $baseBranchSource; $requireConfirmSource; $mergeMethodSource; $actor):
+def wm_normalized_lifecycle($baseBranch; $baseSha; $integrationMode; $mergeExecutor; $mergeMethod; $remoteDeletionAllowed; $challengeRole; $challengePair; $session; $runEpoch; $windowId; $requireConfirm; $baseBranchSource; $requireConfirmSource; $mergeMethodSource; $actor):
   . as $task
   | ($task.lifecycle // {}) as $l
   | ($task | wm_workflow_outcome) as $outcome
@@ -5196,6 +6562,7 @@ def wm_normalized_lifecycle($baseBranch; $baseSha; $integrationMode; $mergeMetho
       baseBranch: $baseBranch,
       baseSha: $baseSha,
       integrationMode: $integrationMode,
+      mergeExecutor: (if ($mergeExecutor // "") | IN("tend","operator","none") then $mergeExecutor else null end),
       mergeMethod: $mergeMethod,
       requireConfirm: ($requireConfirm == "true"),
       remoteBranchDeletionPolicy: {
@@ -5214,7 +6581,7 @@ def wm_normalized_lifecycle($baseBranch; $baseSha; $integrationMode; $mergeMetho
         mergeMethod: $mergeMethodSource,
         remoteBranchDeletionPolicy: "launch-contract"
       }
-    }) as $contract
+    } | with_entries(select(.value != null))) as $contract
   | ($l.deliveryEvidence // {}) as $delivery
   | ($l + {
       schemaVersion: 1,
@@ -5313,6 +6680,111 @@ slot_consuming_challenger_task_count() {
   jq -r "$(task_lifecycle_jq_filter '(.tasks // {}) | to_entries | map(select((.value.challengeRole // "") == "challenger") | select(.value | wm_slot_consumes)) | length')" "$STATE_FILE" 2>/dev/null || printf '0\n'
 }
 
+# List task issue keys whose entries are orphan stubs (HOK-3125): no phase,
+# status, slug or lifecycle. These are typically created by a raw post-reap
+# .tasks[$issue].x = ... write; the counter now treats them as non-consuming,
+# and the monitor warns once per issue so operators can trace the source.
+orphan_stub_task_ids() {
+  [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 0
+  jq -r "$(task_lifecycle_jq_filter '(.tasks // {}) | to_entries | map(select(.value | wm_orphan_stub) | .key) | .[]')" "$STATE_FILE" 2>/dev/null || true
+}
+
+# task_state_entry_exists <issue>
+# Returns 0 when .tasks[$issue] exists in STATE_FILE, non-zero otherwise.
+task_state_entry_exists() {
+  local issue="$1"
+  [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
+  jq -e --arg issue "$issue" '.tasks[$issue] != null' "$STATE_FILE" >/dev/null 2>&1
+}
+
+# task_state_mutate_existing <issue> <task-filter> [jq args...]
+# Applies <task-filter> to .tasks[$issue] ONLY if the entry exists (HOK-3125).
+# Writers that can run after a task has been reaped (background eval,
+# job-poll completions, retry bookkeeping) must use this helper instead of raw
+# `.tasks[$issue].x = ...` writes. A raw write re-creates a phase/status-less
+# stub that counts against mill slots. Returns state_mutate's status. Inside
+# <task-filter>, `.` is the task object, not the state root; the caller does
+# not need to pre-declare `--arg issue`.
+task_state_mutate_existing() {
+  local issue="$1" filter="$2"
+  shift 2
+  [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
+  state_mutate "$STATE_FILE" \
+    "if .tasks[\$issue] then .tasks[\$issue] |= ($filter) else . end" \
+    --arg issue "$issue" "$@"
+}
+
+# record_post_reap_eval_outcome <issue> <completed|failed>
+# Audit-only annotation for late eval completions that arrived after the
+# task was reaped (HOK-3125). Writes into terminalTaskHistory.tasks[$issue]
+# (and the pair mirror when challengePairId/challengeRole are set) without
+# ever creating an entry. Nothing currently reads postReapEval; it exists so
+# operators can trace why a merged/aborted task saw a late eval race.
+record_post_reap_eval_outcome() {
+  local issue="$1" outcome="${2:-completed}"
+  [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 0
+  case "$outcome" in completed|failed) ;; *) return 0 ;; esac
+  state_mutate "$STATE_FILE" '
+    if .terminalTaskHistory.tasks[$issue] then
+      .terminalTaskHistory.tasks[$issue].postReapEval = {
+        outcome: $outcome,
+        recordedAt: (now | todateiso8601)
+      }
+      | (.terminalTaskHistory.tasks[$issue].challengePairId // "") as $pair
+      | (.terminalTaskHistory.tasks[$issue].challengeRole // "") as $role
+      | if $pair != "" and $role != "" and .terminalTaskHistory.challengePairs[$pair][$role] then
+          .terminalTaskHistory.challengePairs[$pair][$role].postReapEval = {
+            outcome: $outcome,
+            recordedAt: (now | todateiso8601)
+          }
+        else . end
+    else . end
+  ' --arg issue "$issue" --arg outcome "$outcome" >/dev/null 2>&1 || true
+  return 0
+}
+
+# drop_tombstoned_eval_stubs
+# Remove .tasks[k] entries that are pure eval/bookkeeping stubs recreated by
+# a post-reap raw writer AND whose k has a matching tombstone or terminal
+# history record (HOK-3125). Two safety gates:
+#   1. every key in the entry must be in the eval/bookkeeping allowlist, and
+#   2. terminal history or a tombstone must exist for that issue.
+# Prints the dropped issue ids (one per line), or nothing on no-op.
+drop_tombstoned_eval_stubs() {
+  [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 0
+  local candidates candidate keep dropped=""
+  candidates="$(jq -r "$(task_lifecycle_jq_filter '
+    (.tasks // {}) | to_entries
+    | map(select(
+        (.value | wm_orphan_stub)
+        and ((.value | keys) - ["evalCompleted","evalFailed","evalHardFailureRetryCount","evalRunning","updated","rehydration"] | length == 0)
+      ))
+    | .[].key
+  ')" "$STATE_FILE" 2>/dev/null || true)"
+  [[ -n "$candidates" ]] || return 0
+  while IFS= read -r candidate; do
+    [[ -n "$candidate" ]] || continue
+    keep=1
+    if jq -e --arg k "$candidate" '.terminalTaskHistory.tasks[$k] != null' "$STATE_FILE" >/dev/null 2>&1; then
+      keep=0
+    elif jq -e --arg k "$candidate" '(.terminalTaskTombstones // {}) | to_entries | any(.value.issue == $k)' "$STATE_FILE" >/dev/null 2>&1; then
+      keep=0
+    fi
+    if (( keep == 0 )); then
+      dropped+="$candidate"$'\n'
+    fi
+  done <<<"$candidates"
+  [[ -n "$dropped" ]] || return 0
+  local dropped_json
+  dropped_json="$(printf '%s' "$dropped" | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+  state_mutate "$STATE_FILE" '
+    reduce ($ids[]) as $k (.; del(.tasks[$k]))
+    | .updated = (now | todateiso8601)
+  ' --argjson ids "$dropped_json" >/dev/null 2>&1 || true
+  printf '%s' "$dropped"
+  return 0
+}
+
 get_task_meta() {
   local issue="$1" field="$2"
   [[ -n "${STATE_FILE:-}" && -r "$STATE_FILE" ]] || return 0
@@ -5341,7 +6813,23 @@ get_challenge_sibling_pr() {
     return 1
   fi
 
-  jq -r --arg issue "$sibling_key" '.tasks[$issue].pr // empty' "$STATE_FILE" 2>/dev/null || true
+  jq -r --arg issue "$sibling_key" --arg pair "$pair_id" --arg role "$role" '
+    (.tasks[$issue].pr // empty) as $activePr
+    | if $activePr != "" then
+        $activePr
+      elif $role == "primary" then
+        .terminalTaskHistory.challengePairs[$pair].challenger.prNumber
+          // .terminalTaskHistory.challengePairs[$pair].challenger.pr
+          // .terminalTaskHistory.tasks[$issue].prNumber
+          // .terminalTaskHistory.tasks[$issue].pr
+          // empty
+      else
+        .terminalTaskHistory.challengePairs[$pair].primary.prNumber
+          // .terminalTaskHistory.challengePairs[$pair].primary.pr
+          // .terminalTaskHistory.tasks[$issue].prNumber
+          // .terminalTaskHistory.tasks[$issue].pr
+          // empty
+      end' "$STATE_FILE" 2>/dev/null || true
 }
 
 # Check if a challenge task's sibling PR was merged.
@@ -5441,12 +6929,19 @@ set_task_task_owned() {
 
 task_worktree_release_safety() {
   local wt_dir="${1:-}" task_branch="${2:-}" base_branch="${3:-${BASE_BRANCH:-main}}"
-  local dirty_status="" commits_ahead=""
+  local dirty_status="" commits_ahead="" identity_check=""
 
   if [[ -z "$wt_dir" || ! -d "$wt_dir" ]]; then
     printf '%s\n' "git-error"
     return 1
   fi
+
+  identity_check="$(wavemill_task_worktree_identity "$wt_dir")"
+  if [[ "$identity_check" != "valid" ]]; then
+    printf '%s\n' "orphan-worktree"
+    return 1
+  fi
+
   if [[ -z "$task_branch" ]]; then
     task_branch="$(git -C "$wt_dir" branch --show-current 2>/dev/null || true)"
   fi
@@ -5624,8 +7119,22 @@ save_task_state() {
 
   effective_base_branch="$(effective_task_base_branch "$issue" 2>/dev/null || printf '%s\n' "${BASE_BRANCH:-}")"
   effective_base_sha="$(task_lifecycle_effective_base_sha "$effective_base_branch" 2>/dev/null || true)"
-  integration_mode="direct-monitor"
-  [[ "${MERGE_QUEUE_ENABLED:-true}" == "1" || "${MERGE_QUEUE_ENABLED:-true}" == "true" ]] && integration_mode="merge-queue"
+  # HOK-3102: record the real executor. Legacy contracts carrying
+  # "direct-monitor" still parse; this is a free-text field on the wire.
+  local _executor
+  _executor="$(wavemill_session_merge_executor "${REPO_DIR:-$PWD}")"
+  case "$_executor" in
+    tend)
+      if wavemill_session_has mergeQueue "${REPO_DIR:-$PWD}"; then
+        integration_mode="merge-queue"
+      else
+        integration_mode="tend"
+      fi
+      ;;
+    operator) integration_mode="operator-merge" ;;
+    none) integration_mode="no-merge-executor" ;;
+    *)     integration_mode="direct-monitor" ;;
+  esac
   merge_method="${INTEGRATION_MERGE_METHOD:-squash}"
   require_confirm="${REQUIRE_CONFIRM:-true}"
   [[ "$require_confirm" == "1" ]] && require_confirm="true"
@@ -5639,6 +7148,13 @@ save_task_state() {
   [[ "$remote_deletion_allowed" == "0" ]] && remote_deletion_allowed="false"
   [[ "$remote_deletion_allowed" == "true" ]] || remote_deletion_allowed="false"
   run_epoch="${WAVEMILL_RUN_EPOCH:-${RUN_EPOCH:-}}"
+
+  if terminal_task_tombstone_matches "$issue" "$pr" "$branch" "$worktree" "$run_epoch"; then
+    if declare -F log_warn >/dev/null 2>&1; then
+      log_warn "save_task_state: refusing to recreate terminal task $issue from tombstone history"
+    fi
+    return 1
+  fi
 
   if ! state_mutate "$STATE_FILE" \
      "$(task_lifecycle_jq_filter '(.tasks[$issue] // {}) as $existing |
@@ -5669,7 +7185,7 @@ save_task_state() {
       | if $phase != "" then .tasks[$issue].phase = $phase else . end
       | if $windowId != "" then .tasks[$issue].windowId = $windowId else . end
       | if $traceId != "" then .tasks[$issue].traceId = $traceId else . end
-      | .tasks[$issue].lifecycle = (.tasks[$issue] | wm_normalized_lifecycle($baseBranch; $baseSha; $integrationMode; $mergeMethod; $remoteDeletionAllowed; $challengeRole; $challengePair; $session; $runEpoch; (.windowId // ""); $requireConfirm; $baseBranchSource; $requireConfirmSource; $mergeMethodSource; "save_task_state"))
+      | .tasks[$issue].lifecycle = (.tasks[$issue] | wm_normalized_lifecycle($baseBranch; $baseSha; $integrationMode; $mergeExecutor; $mergeMethod; $remoteDeletionAllowed; $challengeRole; $challengePair; $session; $runEpoch; (.windowId // ""); $requireConfirm; $baseBranchSource; $requireConfirmSource; $mergeMethodSource; "save_task_state"))
       | if ($existing.attempt // null) != null then .tasks[$issue].lifecycle.attempt = $existing.attempt else . end
       | if ($existing.prReconciliation // null) != null then .tasks[$issue].lifecycle.prReconciliation = $existing.prReconciliation else . end
       | if $pr != "" then .tasks[$issue].lifecycle.deliveryEvidence.prNumber = $pr else . end')" \
@@ -5683,7 +7199,7 @@ save_task_state() {
      --arg phase "$phase" --arg windowId "$window_id" \
      --arg traceId "$_trace_id_for_state" \
      --arg baseBranch "$effective_base_branch" --arg baseSha "$effective_base_sha" \
-     --arg integrationMode "$integration_mode" --arg mergeMethod "$merge_method" \
+     --arg integrationMode "$integration_mode" --arg mergeExecutor "$_executor" --arg mergeMethod "$merge_method" \
      --arg requireConfirm "$require_confirm" \
      --arg baseBranchSource "$base_branch_source" \
      --arg requireConfirmSource "$require_confirm_source" \
@@ -5831,6 +7347,47 @@ validate_pr_merge() {
 # Linear latency in every scope that sources this file.
 API_TIMEOUT="${API_TIMEOUT:-30}"
 
+# Warn through the caller scope's log_warn, falling back to startup_log (the
+# startup runner has no log_warn). Silent when neither is defined.
+_linear_write_warn() {
+  if declare -F log_warn >/dev/null 2>&1; then
+    log_warn "$*"
+  elif declare -F startup_log >/dev/null 2>&1; then
+    startup_log "WARN: $*"
+  fi
+}
+
+# Resolve the Linear issue a task may write to (HOK-3115). Every Linear write
+# helper below goes through this gate; callers pass the mill task ID
+# (HOK-123 or HOK-123_c), never a pre-resolved Linear ID, so the challenger
+# role cannot be lost on the way in.
+#
+# - Writer: prints the Linear issue ID and returns 0.
+# - Challenger (`_c` suffix, or metadata challengeRole=challenger): prints
+#   nothing and returns 1 silently. A challenger write is a no-op, not a
+#   failure, so it must not produce a warning.
+# - Invalid task ID or conflicting recorded linearIssueId: warns once and
+#   returns 2 (fail closed; no Linear call).
+linear_write_target() {
+  local task_id="$1" linear_id rc=0
+  if task_identity_is_linear_writer "$task_id"; then
+    task_identity_linear_id "$task_id"
+    return 0
+  fi
+  task_identity_is_challenger "$task_id" && return 1
+  if ! task_identity_parse "$task_id" >/dev/null; then
+    _linear_write_warn "Refusing Linear write for invalid task ID '$task_id'"
+    return 2
+  fi
+  linear_id="$(task_identity_linear_id "$task_id" 2>/dev/null)" || rc=$?
+  if (( rc != 0 )); then
+    _linear_write_warn "Refusing Linear write for $task_id: recorded linearIssueId conflicts with its task ID"
+    return 2
+  fi
+  # Primary-shaped ID whose metadata records challengeRole=challenger.
+  return 1
+}
+
 # Canonical Linear state writer. Before canonicalization the mill copy went
 # through the generic `retry` helper (up to MAX_RETRIES × RETRY_TIMEOUT plus
 # backoff sleeps — roughly 90 s of blocking work with stderr discarded), while
@@ -5838,9 +7395,12 @@ API_TIMEOUT="${API_TIMEOUT:-30}"
 # code and last stderr line on failure. The canonical helper keeps the monitor
 # semantics: one attempt, hard wall-clock cap, diagnostics retained. Queued
 # retry for transient Linear write failures lives in linear-retry-drain, not
-# here.
+# here. HOK-3115 removed the startup runner's silent copy; this is the only
+# definition.
 #
 # Contract:
+# - $1 is the mill task ID; linear_write_target decides whether and where to
+#   write. Challengers are a silent no-op.
 # - Always non-fatal: returns 0 even when the tool fails (safe under set -e).
 # - Respects DRY_RUN: logs the intended transition and skips the tool call.
 # - Wall-clock: bounded by API_TIMEOUT (default 30 s) via the caller scope's
@@ -5848,7 +7408,8 @@ API_TIMEOUT="${API_TIMEOUT:-30}"
 # - Diagnostics: on failure log_warn carries issue, target state, exit code,
 #   and the last stderr line the tool produced.
 linear_set_state() {
-  local issue="$1" state="$2"
+  local task_id="$1" state="$2" issue
+  issue="$(linear_write_target "$task_id")" || return 0
   if [[ "${DRY_RUN:-false}" == "true" ]]; then
     declare -F log >/dev/null 2>&1 && log "[DRY-RUN] Would set $issue → $state"
     return 0
@@ -5856,7 +7417,7 @@ linear_set_state() {
 
   local stderr_file rc=0
   stderr_file=$(mktemp) || {
-    declare -F log_warn >/dev/null 2>&1 && log_warn "Failed to update Linear state for $issue to $state (mktemp failed)"
+    _linear_write_warn "Failed to update Linear state for $issue to $state (mktemp failed)"
     return 0
   }
 
@@ -5866,16 +7427,83 @@ linear_set_state() {
     return 0
   fi
 
-  if declare -F log_warn >/dev/null 2>&1; then
-    if [[ -s "$stderr_file" ]]; then
-      local err_line
-      err_line=$(tail -n 1 "$stderr_file")
-      log_warn "Failed to update Linear state for $issue to $state (exit $rc): $err_line"
-    else
-      log_warn "Failed to update Linear state for $issue to $state (exit $rc)"
-    fi
+  if [[ -s "$stderr_file" ]]; then
+    local err_line
+    err_line=$(tail -n 1 "$stderr_file")
+    _linear_write_warn "Failed to update Linear state for $issue to $state (exit $rc): $err_line"
+  else
+    _linear_write_warn "Failed to update Linear state for $issue to $state (exit $rc)"
   fi
   rm -f "$stderr_file"
+  return 0
+}
+
+# Resolve a list of task IDs through linear_write_target and print the unique
+# writable Linear IDs, one per line. Challengers and refused IDs are dropped.
+_linear_write_targets() {
+  local task_id linear_id
+  local -A seen=()
+  for task_id in "$@"; do
+    [[ -n "$task_id" ]] || continue
+    linear_id="$(linear_write_target "$task_id")" || continue
+    [[ -n "${seen[$linear_id]:-}" ]] && continue
+    seen["$linear_id"]=1
+    printf '%s\n' "$linear_id"
+  done
+}
+
+# Queue a transient batch failure for background retry (linear-retry-drain).
+# $2 is a comma-separated task-ID list; it is gated like every other write.
+linear_enqueue_retry() {
+  local state="$1"
+  local issues_csv="$2"
+  local category="${3:-unknown}"
+  local http="${4:-none}"
+  local message="${5:-Queued from startup batch retry path}"
+  local -a task_ids=() linear_ids=()
+  [[ "${DRY_RUN:-false}" == "true" ]] && return 0
+  [[ -z "$issues_csv" ]] && return 0
+  IFS=',' read -r -a task_ids <<<"$issues_csv"
+  mapfile -t linear_ids < <(_linear_write_targets "${task_ids[@]}")
+  [[ "${#linear_ids[@]}" -eq 0 ]] && return 0
+  issues_csv="$(IFS=','; printf '%s' "${linear_ids[*]}")"
+  npx tsx "$TOOLS_DIR/linear-retry-drain.ts" enqueue \
+    --state "$state" \
+    --issues "$issues_csv" \
+    --category "$category" \
+    --http "$http" \
+    --message "$message" >/dev/null 2>&1 || true
+}
+
+# Set one Linear state on many tasks in a single set-issues-state.ts call.
+# Per-issue failures are logged with their classification; retryable ones are
+# queued via linear_enqueue_retry. Always returns 0.
+linear_batch_set_state() {
+  local state="$1"
+  shift || true
+  local -a issues=()
+  local output exit_code=0 stderr_tmp stderr_output retryable_issues_csv retry_category retry_http retry_message
+  [[ "${DRY_RUN:-false}" == "true" ]] && return 0
+  mapfile -t issues < <(_linear_write_targets "$@")
+  [[ "${#issues[@]}" -eq 0 ]] && return 0
+
+  stderr_tmp="$(mktemp -t wavemill-linear-batch-stderr.XXXXXX)"
+  output="$(npx tsx "$TOOLS_DIR/set-issues-state.ts" --state "$state" "${issues[@]}" 2>"$stderr_tmp")" || exit_code=$?
+  stderr_output="$(cat "$stderr_tmp" 2>/dev/null || true)"
+
+  if jq -e '.failed | length > 0' >/dev/null 2>&1 <<<"$output"; then
+    while IFS= read -r failure; do
+      _linear_write_warn "Linear state update to '$state' failed for $failure"
+    done < <(jq -r '.failed[] | "\(.issueId): \(.error) [category=\(.category // "unknown"), http=\((.httpStatus // "none") | tostring), retryable=\(.isRetryable // false)]"' <<<"$output")
+    retryable_issues_csv="$(jq -r '[.failed[] | select(.isRetryable == true) | .issueId] | unique | join(",")' <<<"$output")"
+    retry_category="$(jq -r '([.failed[] | select(.isRetryable == true) | .category] | first) // "unknown"' <<<"$output")"
+    retry_http="$(jq -r '([.failed[] | select(.isRetryable == true) | .httpStatus] | map(select(. != null)) | first // "none") | tostring' <<<"$output")"
+    retry_message="$(jq -r '([.failed[] | select(.isRetryable == true) | .error] | first) // "Queued from startup batch retry path"' <<<"$output")"
+    linear_enqueue_retry "$state" "$retryable_issues_csv" "$retry_category" "$retry_http" "$retry_message"
+  elif [[ "$exit_code" -ne 0 ]]; then
+    _linear_write_warn "Batch Linear state update to '$state' failed for ${#issues[@]} issue(s) [category=unknown, http=none, retryable=false, details=${stderr_output:-none}]"
+  fi
+  rm -f "$stderr_tmp"
   return 0
 }
 

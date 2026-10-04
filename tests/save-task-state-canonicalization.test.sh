@@ -148,7 +148,7 @@ cat > "$STATE_FILE" <<JSON
       "comparisonTimedOutSides": [],
       "manualComparisonArtifact": "/tmp/manual-comparison.md",
       "launchFailure": {"reason": "routing", "detail": "No PR created"},
-      "routing": {"planner": "gpt-5.6-terra", "coder": "gpt-5.5"},
+      "routing": {"planner": "gpt-5.6-terra", "coder": "gpt-5.6-terra"},
       "retry": {"count": 1},
       "execution": {"attempt": 2},
       "unknownFutureField": {"nested": {"deep": true}},
@@ -382,6 +382,27 @@ check_state "explicit role is not replaced by derivation" "challenger" \
   "$VALIDATION_STATE_FILE" '.tasks["HOK-2934"].challengeRole'
 check_state "explicit challenger role writes are unaffected" "challenger" \
   "$VALIDATION_STATE_FILE" '.tasks["HOK-2931_c"].challengeRole'
+
+printf '%s\n' '{"session":"canonicalization-validation","tasks":{},"terminalTaskTombstones":{"HOK-3005|4242|epoch-test|no-attempt":{"issue":"HOK-3005","slug":"reaped","branch":"task/reaped","worktree":"'"$WORKTREE"'","prNumber":"4242","runEpoch":"epoch-test"}}}' \
+  > "$VALIDATION_STATE_FILE"
+TOMBSTONE_RESULT="$(bash -c '
+  set -euo pipefail
+  STATE_FILE="$1"; WORKTREE="$2"; REPO_DIR="$3"
+  source "$REPO_DIR/shared/lib/wavemill-common.sh"
+  WARN_OUTPUT=""
+  log_warn() { WARN_OUTPUT+="$*"; }
+  WAVEMILL_RUN_EPOCH="epoch-test"
+  export WAVEMILL_RUN_EPOCH
+  if save_task_state "HOK-3005" "reaped" "task/reaped" "$WORKTREE" "4242" "merged" "codex"; then
+    printf "saved|%s\n" "$WARN_OUTPUT"
+  else
+    printf "blocked|%s\n" "$WARN_OUTPUT"
+  fi
+' bash "$VALIDATION_STATE_FILE" "$WORKTREE" "$REPO_DIR")"
+
+check_contains "terminal tombstone blocks active row recreation" "$TOMBSTONE_RESULT" "blocked|save_task_state: refusing to recreate terminal task HOK-3005"
+check_state "terminal tombstone leaves task absent" "false" \
+  "$VALIDATION_STATE_FILE" '.tasks["HOK-3005"] != null'
 
 echo ""
 echo "Passed: $PASS"

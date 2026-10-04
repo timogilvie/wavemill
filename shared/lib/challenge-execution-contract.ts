@@ -13,6 +13,8 @@ export const INVALID_CHALLENGE_REASONS = [
   'state_vs_derived_side_mismatch',
   'operator_reroute',
   'missing_challenge_intent',
+  'multiple-varied-roles',
+  'arm_infrastructure_failure',
 ] as const;
 export type InvalidChallengeReason =
   | 'stage_override_lost'
@@ -26,7 +28,19 @@ export type InvalidChallengeReason =
    * stayed training-eligible with no verdict at all, which is how an arm whose
    * selected model had been replaced still counted as clean evidence.
    */
-  | 'missing_challenge_intent';
+  | 'missing_challenge_intent'
+  /**
+   * The pair violates the one-variable invariant: more than one role differs
+   * (planner/coder/reviewer), or a role differs alongside a non-role dimension
+   * (depth, mode, variant). This invalidates the challenge at launch time.
+   */
+  | 'multiple-varied-roles'
+  /**
+   * HOK-3147: one arm was retired for a harness/infrastructure failure (e.g.
+   * Ready passed its checks but failed at route-stamp) before it could be
+   * evaluated. There is no valid opponent, so no winner and no model forfeit.
+   */
+  | 'arm_infrastructure_failure';
 
 export type DeliveryVerdictOutcome = 'primary' | 'challenger' | 'tie' | null;
 
@@ -53,6 +67,7 @@ export const STAGE_ATTRIBUTION_REASON_CODES = [
   'divergent_pre_stage_inputs',
   'unverified_fork_commit',
   'missing_fork_identity',
+  'independent_launch_no_stage_label',
   'plan_hash_mismatch',
   'prompt_hash_mismatch',
   'task_packet_hash_mismatch',
@@ -65,6 +80,12 @@ export const STAGE_ATTRIBUTION_REASON_CODES = [
   'presentation_order_bias_unresolved',
   'insufficient_review_iterations',
   'insufficient_evidence_other',
+  /**
+   * HOK-3143: the provider substituted a different concrete model than the
+   * certified identity for this stage. Attribution would mis-credit the
+   * certified identity, so the stage result is attribution-invalid.
+   */
+  'provider_model_substitution',
 ] as const;
 
 export type StageAttributionReasonCode = typeof STAGE_ATTRIBUTION_REASON_CODES[number];
@@ -168,6 +189,67 @@ export interface ChallengeSideIntent {
 export type ChallengeDecisionSource = 'bootstrap' | 'expanded' | 'preserved';
 export type ChallengeSelectionPath = 'recommendation-driven' | 'random-roll' | string;
 
+/**
+ * The pending-arm lifecycle (HOK-2811, HOK-3065).
+ *
+ * `challengeArms[]` records advance through this machine before a deferred
+ * challenger becomes a live task. Two states can hold a *pending* arm:
+ *
+ *   - `awaiting_fork` — a reviewer-stage challenger waiting for the primary's
+ *     coding to finish so it can fork at the coding-complete commit (HOK-2811).
+ *   - `awaiting_expanded_route` — a planner-stage challenger whose selection was
+ *     sealed at launch but whose non-varied route cannot be resolved until the
+ *     expanded task packet exists (HOK-3065). It materialises at t=0 once the
+ *     expanded route is available.
+ *
+ * The two must never be conflated: a reviewer arm forks off completed work,
+ * while a planner arm forks off the base so both sides plan independently.
+ */
+export const CHALLENGE_ARM_LIFECYCLE_STATES = [
+  'awaiting_fork',
+  'awaiting_expanded_route',
+  'materializing',
+  'materialized',
+  'cancelled',
+  'exhausted',
+] as const;
+export type ChallengeArmLifecycleState = typeof CHALLENGE_ARM_LIFECYCLE_STATES[number];
+
+/** The subset of lifecycle states that hold an un-materialised, pending arm. */
+export const CHALLENGE_ARM_PENDING_STATES = ['awaiting_fork', 'awaiting_expanded_route'] as const;
+export type ChallengeArmPendingState = typeof CHALLENGE_ARM_PENDING_STATES[number];
+
+export function isChallengeArmLifecycleState(value: unknown): value is ChallengeArmLifecycleState {
+  return typeof value === 'string'
+    && (CHALLENGE_ARM_LIFECYCLE_STATES as readonly string[]).includes(value);
+}
+
+export function isChallengeArmPendingState(value: unknown): value is ChallengeArmPendingState {
+  return typeof value === 'string'
+    && (CHALLENGE_ARM_PENDING_STATES as readonly string[]).includes(value);
+}
+
+/**
+ * Immutable selection fields sealed at the moment the challenge lottery fires.
+ *
+ * These are the fields finalization/materialisation must preserve byte-for-byte
+ * when it later enriches the sealed decision with the expanded route. Rerolling
+ * any of them turns a sealed exploration run into an unrelated pair (or a
+ * phantom one) — the exact failure HOK-3065 closes.
+ */
+export const SEALED_CHALLENGE_SELECTION_FIELDS = [
+  'pairId',
+  'selectedStage',
+  'challengerVariedModel',
+] as const;
+
+/** Which routing key a stage varies. plan→planner, implementation→coder, review→reviewer. */
+export const STAGE_TO_ROUTE_KEY: Record<ChallengeStage, keyof ChallengeRoutingMeta> = {
+  plan: 'planner',
+  implementation: 'coder',
+  review: 'reviewer',
+};
+
 export interface ChallengeRuntimeStageRoute {
   model?: string;
   agent?: string;
@@ -206,6 +288,20 @@ export interface ChallengeModelExclusionDiagnostic {
   reason?: string;
 }
 
+/**
+ * Ranking evidence for the selected challenger at seal time (HOK-3066):
+ * successful coverage, recent terminal attempts, cooldown state, and launch
+ * priority. Persisted so any selection can be reproduced from the intent plus
+ * the health snapshot diagnostics.
+ */
+export interface ChallengeSelectionEvidence {
+  coverageCount?: number;
+  attemptCount?: number;
+  lastAttemptAt?: string;
+  cooldownActive?: boolean;
+  priorityTier?: number | null;
+}
+
 export interface ChallengeExecutionIntent {
   pairId: string;
   challengeStage?: ChallengeStage;
@@ -219,6 +315,7 @@ export interface ChallengeExecutionIntent {
   intentionallyIdentical?: boolean;
   routeContext?: unknown;
   selectionReason?: string;
+  selectionEvidence?: ChallengeSelectionEvidence;
   challengeRecommendation?: unknown;
   nativeCertificationRejections?: ChallengeNativeCertificationRejection[];
   modelExclusions?: ChallengeModelExclusionDiagnostic[];
@@ -231,6 +328,8 @@ export interface ChallengeExecutionIntent {
   forkStage?: ChallengeStage | null;
   forkCommit?: string | null;
   sharedPrefix?: boolean;
+  /** Fork/input identity stamped by the materialiser (docs/arbiter/challenge-validity-contract.md §4). */
+  forkIdentity?: ForkIdentity;
 }
 
 export interface ChallengeExecutionIntentProjection {
@@ -279,9 +378,24 @@ export interface ChallengeSideResolution {
 }
 
 type WorkflowChallengeTaskState = {
+  slug?: unknown;
+  branch?: unknown;
+  challengePairId?: unknown;
+  challengeStage?: unknown;
+  challengeVariedStage?: unknown;
   challengeRole?: unknown;
   challengeExecutionIntent?: ChallengeExecutionIntent;
   challengeIntent?: ChallengeExecutionIntent;
+  challengeArms?: WorkflowChallengeArmState[];
+};
+
+type WorkflowChallengeArmState = {
+  key?: unknown;
+  slug?: unknown;
+  branch?: unknown;
+  role?: unknown;
+  variedStage?: unknown;
+  executionIntent?: ChallengeExecutionIntent;
 };
 
 type WorkflowChallengeState = {
@@ -712,9 +826,12 @@ export function reviewExecutedIdentityIsFullyPinned(identity: ReviewExecutedIden
 function addForkIdentityReasons(
   reasons: Set<StageAttributionReasonCode>,
   forkIdentity: ForkIdentity | undefined,
+  independentLaunch = false,
 ): void {
   if (!forkIdentity) {
-    reasons.add('missing_fork_identity');
+    // An independently launched pair never shares pre-stage inputs, so it has
+    // no stage label by design (HOK-3085) rather than a missing identity.
+    reasons.add(independentLaunch ? 'independent_launch_no_stage_label' : 'missing_fork_identity');
     return;
   }
   if (!forkIdentity.commit) reasons.add('unverified_fork_commit');
@@ -762,6 +879,13 @@ export function foldAttestationsIntoStageAttribution(input: {
   evidenceProvenance?: 'direct' | 'inferred';
   /** Pair-level fork identity used to prove matched pre-stage inputs. */
   forkIdentity?: ForkIdentity;
+  /**
+   * True when the pair was launched independently (no fork descriptor). A
+   * missing fork identity is then reported as
+   * `independent_launch_no_stage_label` (insufficient evidence) instead of
+   * the `missing_fork_identity` defect.
+   */
+  independentLaunch?: boolean;
   /** Per-arm executed review identities used to detect pinning failures. */
   primaryReviewIdentity?: ReviewExecutedIdentitySet;
   challengerReviewIdentity?: ReviewExecutedIdentitySet;
@@ -777,7 +901,7 @@ export function foldAttestationsIntoStageAttribution(input: {
 }): StageAttribution {
   const reasons = new Set<StageAttributionReasonCode>();
   const details: string[] = [];
-  addForkIdentityReasons(reasons, input.forkIdentity);
+  addForkIdentityReasons(reasons, input.forkIdentity, input.independentLaunch === true);
   addReason(reasons, inheritedStageReason(input.stage, input.forkIdentity));
 
   for (const attestation of [input.primary, input.challenger]) {
@@ -828,6 +952,7 @@ export function foldAttestationsIntoStageAttribution(input: {
   const reasonCodes = [...reasons];
   if (reasonCodes.length > 0) {
     const insufficientOnly = reasonCodes.every((reason) => [
+      'independent_launch_no_stage_label',
       'missing_direct_review_evidence',
       'inferred_evidence_only',
       'insufficient_review_iterations',
@@ -1052,6 +1177,10 @@ export interface ChallengedStageIntent {
   agent?: string;
 }
 
+export type ReviewStageChallengePinResolution =
+  | ChallengedStageIntent
+  | { pairId: string; unresolvable: true };
+
 /**
  * Extract a side's expected model/agent for one stage, tolerating both the
  * persisted projection shape (`ChallengeSideIntent`, `expectedStageModel`)
@@ -1111,4 +1240,363 @@ export function resolveChallengedStageIntent(input: {
   const extracted = extractExpectedStage(side, input.stage);
   if (!extracted.model) return undefined;
   return { pairId: intent.pairId, model: extracted.model, agent: extracted.agent };
+}
+
+function challengeIntentIsCanonical(intent: ChallengeExecutionIntent | undefined): intent is ChallengeExecutionIntent {
+  return Boolean(
+    intent
+    && Number(intent.schemaVersion) === 1
+    && clean(intent.pairId)
+    && clean(intent.issueId),
+  );
+}
+
+function taskOrArmMatchesRun(input: {
+  key: string;
+  task: WorkflowChallengeTaskState;
+  featureSlug?: string;
+  branchName?: string;
+}): { taskMatched: boolean; arm?: WorkflowChallengeArmState } {
+  const branch = clean(input.branchName);
+  const branchSlug = branch.replace(/^(task|bug)\//, '');
+  const featureSlug = clean(input.featureSlug);
+  const taskSlug = clean(input.task.slug);
+  const taskBranch = clean(input.task.branch);
+  const taskMatched = Boolean(
+    (featureSlug && (input.key === featureSlug || taskSlug === featureSlug))
+    || (branch && (input.key === branch || taskBranch === branch))
+    || (branchSlug && (input.key === branchSlug || taskSlug === branchSlug))
+  );
+
+  const arm = (input.task.challengeArms ?? []).find((candidate) => {
+    const armKey = clean(candidate.key);
+    const armSlug = clean(candidate.slug);
+    const armBranch = clean(candidate.branch);
+    return Boolean(
+      (featureSlug && (armKey === featureSlug || armSlug === featureSlug))
+      || (branch && (armKey === branch || armBranch === branch))
+      || (branchSlug && (armKey === branchSlug || armSlug === branchSlug))
+    );
+  });
+
+  return { taskMatched, arm };
+}
+
+function taskHasReviewChallengeArm(task: WorkflowChallengeTaskState): boolean {
+  return (task.challengeArms ?? []).some((arm) => clean(arm.variedStage) === 'review');
+}
+
+function taskIsReviewStageChallengeMember(
+  task: WorkflowChallengeTaskState,
+  arm?: WorkflowChallengeArmState,
+): boolean {
+  if (arm) return clean(arm.variedStage) === 'review';
+  const taskStage = clean(task.challengeStage) || clean(task.challengeVariedStage);
+  if (taskStage === 'review') return true;
+  if (task.challengeExecutionIntent && stageFromIntent(task.challengeExecutionIntent) === 'review') return true;
+  return taskHasReviewChallengeArm(task);
+}
+
+/**
+ * Resolve the mandatory reviewer-stage challenge pin. Unlike
+ * resolveChallengedStageIntent, this function treats known review-stage
+ * challenge membership with no resolvable canonical intent as terminally
+ * unresolvable so callers can fail closed instead of launching unpinned.
+ */
+export function resolveReviewStageChallengePin(input: {
+  repoDir: string;
+  featureDir?: string;
+  branchName?: string;
+}): ReviewStageChallengePinResolution | undefined {
+  const filePin = resolveChallengedStageIntent({
+    repoDir: input.repoDir,
+    featureDir: input.featureDir,
+    branchName: input.branchName,
+    stage: 'review',
+  });
+  if (filePin) return filePin;
+
+  const state = loadWorkflowChallengeState(input.repoDir);
+  const featureSlug = input.featureDir ? path.basename(input.featureDir) : undefined;
+  const tasks = state?.tasks ?? {};
+  for (const [key, task] of Object.entries(tasks)) {
+    const match = taskOrArmMatchesRun({
+      key,
+      task,
+      featureSlug,
+      branchName: input.branchName,
+    });
+    if (!match.taskMatched && !match.arm) continue;
+    if (!taskIsReviewStageChallengeMember(task, match.arm)) continue;
+
+    const pairId = clean(task.challengePairId)
+      || clean(task.challengeExecutionIntent?.pairId)
+      || clean(match.arm?.executionIntent?.pairId);
+    if (!pairId) continue;
+
+    const stateIntent = loadChallengeIntentFromState(input.repoDir, key, pairId);
+    const armIntent = match.arm?.executionIntent;
+    const intent = challengeIntentIsCanonical(stateIntent)
+      ? stateIntent
+      : challengeIntentIsCanonical(armIntent)
+        ? armIntent
+        : undefined;
+    if (intent && stageFromIntent(intent) === 'review') {
+      const explicitSide = asChallengeSide(match.arm?.role) ?? asChallengeSide(task.challengeRole);
+      const resolution = resolveChallengeSide({
+        repoDir: input.repoDir,
+        slug: featureSlug,
+        branchName: input.branchName,
+        issueId: key,
+        challengePairId: pairId,
+        explicitSide,
+      });
+      const sideIntent = resolution.side === 'challenger' ? intent.challenger : intent.primary;
+      const extracted = extractExpectedStage(sideIntent, 'review');
+      if (extracted.model) {
+        return { pairId, model: extracted.model, agent: extracted.agent };
+      }
+    }
+
+    return { pairId, unresolvable: true };
+  }
+
+  return undefined;
+}
+
+// ────────────────────────────────────────────────────────────────
+// HOK-3065 — sealed decision envelope + expanded-route resolution.
+//
+// A planner-stage challenge is decided by the launch lottery before the
+// expanded task packet exists. The selection (stage, pair, challenger
+// identity) is sealed at that moment; only the non-varied route fields wait on
+// expansion. These helpers make the two halves explicit: `sealChallengeDecision`
+// extracts the immutable selection, and `resolveSealedDecisionAgainstExpandedRoute`
+// enriches it with the expanded route without ever rerolling the sealed choice.
+// ────────────────────────────────────────────────────────────────
+
+export interface SealedChallengeDecision {
+  pairId: string;
+  issueId?: string;
+  /** The single stage this pair varies; sealed at selection, never re-sampled. */
+  selectedStage: ChallengeStage;
+  decisionSource?: ChallengeDecisionSource;
+  selectionPath?: ChallengeSelectionPath | readonly string[];
+  intentionallyIdentical?: boolean;
+  /** The incumbent's varied-stage model as known at seal time (may be enriched later). */
+  primaryVariedModel: string;
+  primaryVariedAgent?: string;
+  /** The challenger's varied-stage model — the experiment. This is immutable. */
+  challengerVariedModel: string;
+  challengerVariedAgent?: string;
+}
+
+export type ExpandedRouteCollapseReason =
+  | 'sealed_intent_incomplete'
+  | 'expanded_route_missing'
+  | 'sealed_challenger_ineligible';
+
+export interface ExpandedRouteMaterializeResult {
+  status: 'materialize';
+  variedStage: ChallengeStage;
+  challengerVariedModel: string;
+  intent: ChallengeExecutionIntent;
+}
+
+export interface ExpandedRouteCollapseResult {
+  status: 'collapse';
+  reason: ExpandedRouteCollapseReason;
+  detail: string;
+}
+
+export type ExpandedRouteResolution = ExpandedRouteMaterializeResult | ExpandedRouteCollapseResult;
+
+/**
+ * Read one stage's {model, agent} from either side shape.
+ *
+ * The launcher persists the runtime envelope shape (`planner|coder|reviewer:
+ * {model, agent}`); the eval/projection shape (`expectedStageModel` +
+ * `expectedRoute`) also occurs on disk across launcher versions. Both are
+ * tolerated so a sealed intent written by any version resolves.
+ */
+function readSideStageRoute(
+  side: ChallengeSideIntent | ChallengeRuntimeSideIntent | undefined,
+  stage: ChallengeStage,
+): { model: string; agent: string } {
+  if (!side) return { model: '', agent: '' };
+  const runtime = stageRouteFromRuntimeSide(side as ChallengeRuntimeSideIntent, stage);
+  if (runtime && clean(runtime.model)) {
+    return { model: clean(runtime.model), agent: clean(runtime.agent) };
+  }
+  const projected = side as Partial<ChallengeSideIntent>;
+  if (projected.challengeStage === stage && clean(projected.expectedStageModel)) {
+    return { model: clean(projected.expectedStageModel), agent: clean(projected.expectedStageAgent) };
+  }
+  const routeModel = modelForChallengeStage(projected.expectedRoute, stage);
+  return routeModel ? { model: routeModel, agent: '' } : { model: '', agent: '' };
+}
+
+function sideKey(side: ChallengeSideIntent | ChallengeRuntimeSideIntent | undefined): string {
+  const value = (side as { key?: unknown } | undefined)?.key;
+  return typeof value === 'string' ? value : '';
+}
+
+/**
+ * Extract the immutable selection from a sealed intent, or undefined when the
+ * intent is not a well-formed two-sided challenge.
+ */
+export function sealChallengeDecision(
+  intent: ChallengeExecutionIntent | null | undefined,
+): SealedChallengeDecision | undefined {
+  if (!intent || !clean(intent.pairId) || !intent.primary || !intent.challenger) return undefined;
+  const stage = stageFromIntent(intent);
+  const primaryVaried = readSideStageRoute(intent.primary, stage);
+  const challengerVaried = readSideStageRoute(intent.challenger, stage);
+  if (!challengerVaried.model) return undefined;
+  return {
+    pairId: clean(intent.pairId),
+    ...(clean(intent.issueId) ? { issueId: clean(intent.issueId) } : {}),
+    selectedStage: stage,
+    ...(intent.decisionSource ? { decisionSource: intent.decisionSource } : {}),
+    ...(intent.selectionPath ? { selectionPath: intent.selectionPath } : {}),
+    ...(intent.intentionallyIdentical ? { intentionallyIdentical: true } : {}),
+    primaryVariedModel: primaryVaried.model,
+    ...(primaryVaried.agent ? { primaryVariedAgent: primaryVaried.agent } : {}),
+    challengerVariedModel: challengerVaried.model,
+    ...(challengerVaried.agent ? { challengerVariedAgent: challengerVaried.agent } : {}),
+  };
+}
+
+/**
+ * Report which immutable selection fields differ between a sealed decision and
+ * a candidate intent. An empty array means the candidate preserved the seal;
+ * finalization must fail closed on any non-empty result rather than adopt the
+ * candidate (HOK-3065 immutability invariant).
+ */
+export function sealedSelectionViolations(
+  sealed: SealedChallengeDecision,
+  candidate: ChallengeExecutionIntent | null | undefined,
+): string[] {
+  const candidateSeal = sealChallengeDecision(candidate);
+  if (!candidateSeal) return ['sealed_intent_incomplete'];
+  const violations: string[] = [];
+  if (candidateSeal.pairId !== sealed.pairId) violations.push('pairId');
+  if (candidateSeal.selectedStage !== sealed.selectedStage) violations.push('selectedStage');
+  if (candidateSeal.challengerVariedModel !== sealed.challengerVariedModel) {
+    violations.push('challengerVariedModel');
+  }
+  return violations;
+}
+
+/**
+ * Enrich a sealed challenge decision with the expanded route.
+ *
+ * The varied stage's *challenger* model is preserved byte-for-byte (the sealed
+ * experiment); the *primary* incumbent and every non-varied stage on both sides
+ * are filled from the expanded route. The sealed stage, pair id, and challenger
+ * identity are never re-sampled. When the sealed challenger is no longer
+ * eligible the result is a typed `collapse` — the caller fails closed and aborts
+ * the pair; a substitute challenger is never selected here (that decision
+ * belongs to a fresh lottery, not to finalization).
+ */
+export function resolveSealedDecisionAgainstExpandedRoute(input: {
+  sealed: ChallengeExecutionIntent | null | undefined;
+  expandedRoute: ChallengeRoutingMeta | null | undefined;
+  /** Current eligibility for the varied stage; when supplied the sealed challenger must be a member. */
+  eligibleVariedModels?: Iterable<string>;
+}): ExpandedRouteResolution {
+  const sealedDecision = sealChallengeDecision(input.sealed);
+  const intent = input.sealed;
+  if (!sealedDecision || !intent || !intent.primary || !intent.challenger) {
+    return {
+      status: 'collapse',
+      reason: 'sealed_intent_incomplete',
+      detail: 'Sealed intent is missing a pair id or one of its two sides.',
+    };
+  }
+  const stage = sealedDecision.selectedStage;
+  const route = input.expandedRoute;
+  const routeModel = (s: ChallengeStage): string => modelForChallengeStage(route ?? undefined, s);
+  if (!routeModel(stage)) {
+    return {
+      status: 'collapse',
+      reason: 'expanded_route_missing',
+      detail: `Expanded route has no ${stage}-stage model to enrich the primary incumbent.`,
+    };
+  }
+
+  if (input.eligibleVariedModels) {
+    const eligible = new Set<string>();
+    for (const model of input.eligibleVariedModels) eligible.add(clean(model));
+    if (!eligible.has(sealedDecision.challengerVariedModel)) {
+      return {
+        status: 'collapse',
+        reason: 'sealed_challenger_ineligible',
+        detail: `Sealed ${stage}-stage challenger ${sealedDecision.challengerVariedModel} is no longer eligible; aborting rather than substituting.`,
+      };
+    }
+  }
+
+  const primarySealed = intent.primary;
+  const challengerSealed = intent.challenger;
+  const enrichStage = (s: ChallengeStage, sealedSide: typeof primarySealed): { model: string; agent: string } => ({
+    model: routeModel(s),
+    agent: readSideStageRoute(sealedSide, s).agent,
+  });
+
+  const primary: ChallengeRuntimeSideIntent = {
+    ...(sideKey(primarySealed) ? { key: sideKey(primarySealed) } : {}),
+    role: 'primary',
+    planner: enrichStage('plan', primarySealed),
+    coder: enrichStage('implementation', primarySealed),
+    reviewer: enrichStage('review', primarySealed),
+    inheritedStages: [],
+  };
+
+  const challengerStage = (s: ChallengeStage): { model: string; agent: string } => {
+    if (s === stage) {
+      return {
+        model: sealedDecision.challengerVariedModel,
+        agent: sealedDecision.challengerVariedAgent ?? readSideStageRoute(challengerSealed, s).agent,
+      };
+    }
+    return enrichStage(s, challengerSealed);
+  };
+  const challenger: ChallengeRuntimeSideIntent = {
+    ...(sideKey(challengerSealed) ? { key: sideKey(challengerSealed) } : {}),
+    role: 'challenger',
+    planner: challengerStage('plan'),
+    coder: challengerStage('implementation'),
+    reviewer: challengerStage('review'),
+    inheritedStages: [],
+  };
+
+  const enriched: ChallengeExecutionIntent = {
+    ...intent,
+    schemaVersion: 1,
+    decisionSource: 'preserved',
+    selectedStage: stage,
+    challengeStage: stage,
+    primary,
+    challenger,
+  };
+
+  // Self-check: enrichment must never touch the sealed selection. This catches a
+  // future regression where filling non-varied fields accidentally rewrites the
+  // stage, pair, or challenger identity — the exact class of bug HOK-3065 closes.
+  const violations = sealedSelectionViolations(sealedDecision, enriched);
+  if (violations.length > 0) {
+    return {
+      status: 'collapse',
+      reason: 'sealed_intent_incomplete',
+      detail: `Enrichment would have changed sealed selection field(s): ${violations.join(', ')}.`,
+    };
+  }
+
+  return {
+    status: 'materialize',
+    variedStage: stage,
+    challengerVariedModel: sealedDecision.challengerVariedModel,
+    intent: enriched,
+  };
 }

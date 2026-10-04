@@ -5,11 +5,14 @@ import { join } from 'node:path';
 import {
   ackLaunch,
   claimReservation,
+  computeAttemptEvidence,
   computeSelectionExclusions,
   emptySelectionHealthState,
+  circuitKeyFor,
   readSelectionHealth,
   recordSelectionOutcome,
   releaseReservation,
+  resolveSelectionHealthKey,
   resolveSelectionHealthPath,
   type SelectionHealthOwner,
 } from './challenge-selection-health.ts';
@@ -264,6 +267,204 @@ test('missing file reads empty and corrupt JSON fails closed without repair', ()
     writeFileSync(path, '{bad json', 'utf-8');
     assert.throws(() => readSelectionHealth({ repoDir, config }), /corrupt/);
     assert.equal(readFileSync(path, 'utf-8'), '{bad json');
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('typed review-timeout provider faults open the model circuit (HOK-3064)', async () => {
+  const repoDir = repo();
+  const circuitConfig = { ...config, circuit: { transientFailureThreshold: 3, windowSeconds: 300, cooldownSeconds: 60 } };
+  try {
+    let now = Date.parse('2026-09-22T00:00:00.000Z');
+    // Three terminal review-timeout attempts, recorded as provider-fault via
+    // the typed native-review-timeout kind, must open the circuit.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await recordSelectionOutcome({
+        repoDir,
+        model: 'kimi-k2',
+        stage: 'review',
+        owner: owner(`HOK-${attempt}`),
+        failureKind: 'native-review-timeout',
+        faultClass: 'provider-fault',
+        now: () => now,
+        config: circuitConfig,
+      });
+      now += 1000;
+    }
+    const exclusions = computeSelectionExclusions({
+      stage: 'review',
+      candidates: ['kimi-k2'],
+      snapshot: readSelectionHealth({ repoDir, now: () => now, config: circuitConfig }),
+      owner: owner('HOK-new'),
+      now,
+      config: circuitConfig,
+    });
+    assert.equal(exclusions.eligible.length, 0);
+    assert.equal(exclusions.excludedByCircuit.length, 1);
+    assert.equal(exclusions.excludedByCircuit[0]?.reason, 'circuit-open');
+    assert.equal(exclusions.excludedByCircuit[0]?.provider, 'openrouter');
+    assert.equal(exclusions.excludedByCircuit[0]?.canonicalModel, 'kimi-k2');
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('provider identity normalizes across native/native-openrouter/bare forms (HOK-3064)', async () => {
+  // A single OpenRouter execution can surface under bare, provider/model, and
+  // native-provider/model forms across intent, stage result, and abort marker.
+  // All three must key to one circuit rather than diluting across health rows.
+  assert.deepEqual(resolveSelectionHealthKey('kimi-k2'), { provider: 'openrouter', canonicalModel: 'kimi-k2' });
+  assert.deepEqual(resolveSelectionHealthKey('openrouter/kimi-k2'), { provider: 'openrouter', canonicalModel: 'kimi-k2' });
+  assert.deepEqual(resolveSelectionHealthKey('native-openrouter/kimi-k2'), { provider: 'openrouter', canonicalModel: 'kimi-k2' });
+  assert.equal(circuitKeyFor('native-openrouter/kimi-k2'), circuitKeyFor('kimi-k2'));
+
+  const repoDir = repo();
+  const circuitConfig = { ...config, circuit: { transientFailureThreshold: 3, windowSeconds: 300, cooldownSeconds: 60 } };
+  try {
+    let now = Date.parse('2026-09-22T00:00:00.000Z');
+    for (const model of ['native-openrouter/kimi-k2', 'openrouter/kimi-k2', 'kimi-k2']) {
+      await recordSelectionOutcome({
+        repoDir,
+        model,
+        stage: 'review',
+        owner: owner('HOK-shared'),
+        failureKind: 'native-review-timeout',
+        faultClass: 'provider-fault',
+        now: () => now,
+        config: circuitConfig,
+      });
+      now += 1000;
+    }
+    const state = readSelectionHealth({ repoDir, now: () => now, config: circuitConfig });
+    assert.deepEqual(Object.keys(state.circuits), ['openrouter|kimi-k2']);
+    assert.equal(state.circuits['openrouter|kimi-k2']?.recentTransientAt.length, 3);
+    assert.equal(state.circuits['openrouter|kimi-k2']?.state, 'open');
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('terminal attempts record truthfully per status and drive cooldown from failures only (HOK-3066)', async () => {
+  const repoDir = repo();
+  const attemptConfig = {
+    ...config,
+    attemptRanking: { enabled: true, lookbackSeconds: 600, failedAttemptCooldownSeconds: 120 },
+  };
+  const base = Date.parse('2026-09-23T10:00:00.000Z');
+  let clock = base;
+  const now = () => clock;
+  try {
+    const record = async (model: string, extra: Record<string, unknown>) => recordSelectionOutcome({
+      repoDir,
+      now,
+      config: attemptConfig,
+      owner: owner('HOK-1'),
+      model,
+      stage: 'review',
+      ...extra,
+    });
+
+    await record('kimi-k2', { terminalStatus: 'failure', failureKind: 'native-completion-protocol', faultClass: 'model-fault' });
+    await record('qwen3-coder', { success: true });
+    await record('glm-4.7', { terminalStatus: 'forfeit' });
+    await record('mistral-large', { terminalStatus: 'invalid' });
+
+    clock = base + 60_000;
+    const snapshot = readSelectionHealth({ repoDir, now, config: attemptConfig });
+    const evidence = computeAttemptEvidence({
+      stage: 'review',
+      candidates: ['kimi-k2', 'qwen3-coder', 'glm-4.7', 'mistral-large', 'untried-model'],
+      snapshot,
+      now: now(),
+      config: attemptConfig,
+    });
+
+    // Every terminal status is exactly one attempt; success adds coverage
+    // elsewhere but still counts as an attempt here.
+    assert.equal(evidence.get('kimi-k2')?.attemptCount, 1);
+    assert.equal(evidence.get('qwen3-coder')?.attemptCount, 1);
+    assert.equal(evidence.get('glm-4.7')?.attemptCount, 1);
+    assert.equal(evidence.get('mistral-large')?.attemptCount, 1);
+    assert.equal(evidence.get('untried-model')?.attemptCount, 0);
+
+    // Only the failed attempt cools; forfeit/invalid/success never do.
+    assert.equal(evidence.get('kimi-k2')?.cooldownActive, true);
+    assert.equal(evidence.get('kimi-k2')?.cooldownUntil, new Date(base + 120_000).toISOString());
+    assert.equal(evidence.get('qwen3-coder')?.cooldownActive, false);
+    assert.equal(evidence.get('glm-4.7')?.cooldownActive, false);
+    assert.equal(evidence.get('mistral-large')?.cooldownActive, false);
+
+    // Attempts are stage-scoped: nothing recorded for the implementation stage.
+    const otherStage = computeAttemptEvidence({
+      stage: 'implementation',
+      candidates: ['kimi-k2'],
+      snapshot,
+      now: now(),
+      config: attemptConfig,
+    });
+    assert.equal(otherStage.get('kimi-k2')?.attemptCount, 0);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('cooldowns expire deterministically and lookback prunes attempt evidence (HOK-3066)', async () => {
+  const repoDir = repo();
+  const attemptConfig = {
+    ...config,
+    attemptRanking: { enabled: true, lookbackSeconds: 600, failedAttemptCooldownSeconds: 120 },
+  };
+  const base = Date.parse('2026-09-23T10:00:00.000Z');
+  let clock = base;
+  const now = () => clock;
+  try {
+    await recordSelectionOutcome({
+      repoDir,
+      now,
+      config: attemptConfig,
+      owner: owner('HOK-2'),
+      model: 'kimi-k2',
+      stage: 'review',
+      terminalStatus: 'failure',
+      failureKind: 'native-completion-protocol',
+      faultClass: 'model-fault',
+    });
+
+    // One millisecond past the cooldown boundary the model is warm again.
+    clock = base + 120_001;
+    const warm = computeAttemptEvidence({
+      stage: 'review',
+      candidates: ['kimi-k2'],
+      snapshot: readSelectionHealth({ repoDir, now, config: attemptConfig }),
+      now: now(),
+      config: attemptConfig,
+    });
+    assert.equal(warm.get('kimi-k2')?.cooldownActive, false);
+    assert.equal(warm.get('kimi-k2')?.attemptCount, 1);
+    assert.equal(warm.get('kimi-k2')?.lastAttemptAt, new Date(base).toISOString());
+
+    // Beyond the lookback the attempt record is pruned from the store itself.
+    clock = base + 601_000;
+    await recordSelectionOutcome({
+      repoDir,
+      now,
+      config: attemptConfig,
+      owner: owner('HOK-2'),
+      model: 'qwen3-coder',
+      stage: 'review',
+      success: true,
+    });
+    const pruned = readSelectionHealth({ repoDir, now, config: attemptConfig });
+    assert.equal(pruned.attempts[`${circuitKeyFor('kimi-k2')}|review`], undefined);
+    const evidence = computeAttemptEvidence({
+      stage: 'review',
+      candidates: ['kimi-k2'],
+      snapshot: pruned,
+      now: now(),
+      config: attemptConfig,
+    });
+    assert.equal(evidence.get('kimi-k2')?.attemptCount, 0);
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
   }

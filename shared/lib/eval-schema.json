@@ -423,6 +423,13 @@
         }
       }
     },
+    "executionEconomics": {
+      "type": "array",
+      "description": "Normalized external-harness execution-economics records (HOK-2958), one entry per harness that produced sessions. Local-only; excluded from Hokusai submissions.",
+      "items": {
+        "$ref": "#/$defs/EvalExecutionEconomics"
+      }
+    },
     "trainingEligible": {
       "type": "boolean",
       "description": "Whether the record includes the fields required for training export."
@@ -446,7 +453,8 @@
         "failed_feature_outcome",
         "missing_challenge_stage",
         "eval_fast_failed",
-        "provisional_model_identity"
+        "provisional_model_identity",
+        "provider_model_substitution"
       ],
       "description": "Primary stable reason why the record is ineligible for budget-eval export."
     },
@@ -467,10 +475,21 @@
           "failed_feature_outcome",
           "missing_challenge_stage",
           "eval_fast_failed",
-          "provisional_model_identity"
+          "provisional_model_identity",
+          "provider_model_substitution"
         ]
       },
       "description": "Stable machine-readable reasons why the record is ineligible for exports."
+    },
+    "stageExecution": {
+      "type": "object",
+      "description": "HOK-3143: per-stage provider-identity attribution.",
+      "additionalProperties": false,
+      "properties": {
+        "planning": { "$ref": "#/$defs/stageExecutionIdentity" },
+        "coding": { "$ref": "#/$defs/stageExecutionIdentity" },
+        "review": { "$ref": "#/$defs/stageExecutionIdentity" }
+      }
     },
     "nonRewardReason": {
       "type": "object",
@@ -500,6 +519,46 @@
         "pr_diff_unavailable"
       ],
       "description": "Stable machine-readable eval failure reason for fast-fail records."
+    },
+    "task_scorer_result": {
+      "anyOf": [
+        {
+          "type": "object",
+          "description": "Shadow-mode task packet readiness prediction captured before dispatch.",
+          "required": [
+            "decision",
+            "confidence",
+            "explanation",
+            "model_version"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "decision": {
+              "type": "string",
+              "enum": [
+                "run",
+                "expand",
+                "split",
+                "return"
+              ]
+            },
+            "confidence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "explanation": {
+              "type": "string"
+            },
+            "model_version": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "promptSizeDiagnostic": {
       "type": "object",
@@ -1405,19 +1464,48 @@
         },
         "staticAnalysis": {
           "type": "object",
-          "description": "Static analysis results.",
+          "description": "Static analysis results. Includes both the S1 Static feature group (type_errors/lint_errors/build_ok/complexity_delta plus provenance) collected per HOK-2806, and legacy CI-check-name fields (lintDelta/typecheckPassed/securityFindingsDelta) preserved for backward compat.",
           "properties": {
+            "type_errors": {
+              "type": ["integer", "null"],
+              "minimum": 0,
+              "description": "S1: Type-check errors reported for the candidate. Null when no supported type checker completed successfully. Zero is an observed value, never a default."
+            },
+            "lint_errors": {
+              "type": ["integer", "null"],
+              "minimum": 0,
+              "description": "S1: Lint errors reported for the candidate. Null when no supported linter completed successfully."
+            },
+            "build_ok": {
+              "type": ["boolean", "null"],
+              "description": "S1: Whether the configured build completed successfully. Null when no build ran to a terminal result; CiOutcome.ran=false maps to null."
+            },
+            "complexity_delta": {
+              "type": ["number", "null"],
+              "description": "S1: Candidate-minus-base change in the configured code-complexity metric. Null when the analyzer could not run on both revisions."
+            },
+            "build_evidence": {
+              "anyOf": [
+                { "type": "string", "enum": ["local-build", "ci-build-check", "ci-pipeline"] },
+                { "type": "null" }
+              ],
+              "description": "Provenance for build_ok: which rung of the build ladder produced the value."
+            },
+            "complexity_metric": {
+              "type": ["string", "null"],
+              "description": "Metric id used to compute complexity_delta (e.g. wavemill-cyclomatic/v1)."
+            },
             "lintDelta": {
               "type": "number",
-              "description": "Change in lint errors (negative = improvement, positive = regression)."
+              "description": "Legacy: change in lint errors (negative = improvement, positive = regression). Pre-HOK-2806; distinct from lint_errors."
             },
             "typecheckPassed": {
               "type": "boolean",
-              "description": "Whether typecheck passed."
+              "description": "Legacy: whether typecheck passed. Pre-HOK-2806; distinct from type_errors."
             },
             "securityFindingsDelta": {
               "type": "number",
-              "description": "Change in security findings (negative = improvement)."
+              "description": "Legacy: change in security findings (negative = improvement)."
             }
           },
           "additionalProperties": false
@@ -2591,6 +2679,10 @@
     "wavemill_router_scoring": {
       "$ref": "#/$defs/WavemillRouterScoringMetadata"
     },
+    "subagent_model_economics_policy": {
+      "$ref": "#/$defs/EvalSubagentModelEconomicsPolicyReport",
+      "description": "Shadow-only subagent model economics policy report. Evaluator diagnostic only; routers and launchers must not consume it to force model selection."
+    },
     "featureOutcomeDiagnostics": {
       "type": "object",
       "description": "Diagnostics for the feature-outcome artifact consumption path (HOK-2262).",
@@ -2769,9 +2861,532 @@
       "type": "string",
       "pattern": "^[a-f0-9]{64}$",
       "description": "Stable harness content hash for the behavior-relevant manifest resources."
+    },
+    "decision_source": {
+      "type": "string",
+      "enum": [
+        "live",
+        "counterfactual"
+      ],
+      "description": "HOK-2081: Exploration source for this row. Absent value is equivalent to 'live'. Counterfactual rows are produced from a replayed decision point and must not be consumed by live routing."
+    },
+    "source_decision_id": {
+      "type": "string",
+      "description": "HOK-2081: When decision_source is 'counterfactual', the id of the live baseline row this branch was forked from."
+    },
+    "replay_fidelity": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "HOK-2081: Deterministic replay fidelity score in [0, 1]."
+    },
+    "replay_non_fidelity_reasons": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "HOK-2081: Stable machine-readable reasons the replay failed to reach fidelity 1.0. Additive: readers must tolerate unknown codes."
+    },
+    "policy_source": {
+      "type": "string",
+      "description": "HOK-2081: Free-form provenance tag naming the exploration policy that produced this counterfactual row (e.g. 'deterministic-baseline', 'enumerate-all', 'epsilon-greedy:eps=0.1')."
     }
   },
   "$defs": {
+    "stageExecutionIdentity": {
+      "type": "object",
+      "description": "HOK-3143: provider-identity attribution for one stage.",
+      "additionalProperties": false,
+      "required": ["intendedModel", "executedModel"],
+      "properties": {
+        "intendedModel": { "type": ["string", "null"] },
+        "executedModel": { "type": ["string", "null"] },
+        "executionEvidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": ["direct", "missing", "contradicted", "inherited"]
+            },
+            "source": { "type": "string" },
+            "providerReportedModel": { "type": "string" },
+            "requestedWireId": { "type": "string" },
+            "certifiedTarget": { "type": "string" },
+            "identityVerdict": {
+              "type": "string",
+              "enum": ["match", "alias-resolved", "mismatch", "unverifiable", "absent"]
+            }
+          }
+        }
+      }
+    },
+    "ExecutionEconomicsFieldAvailability": {
+      "type": "string",
+      "enum": [
+        "available",
+        "partial",
+        "unavailable",
+        "known_zero"
+      ]
+    },
+    "ExecutionEconomicsCoverage": {
+      "type": "string",
+      "enum": [
+        "complete",
+        "partial",
+        "unavailable",
+        "known_zero"
+      ]
+    },
+    "ExecutionEconomicsTokenUsage": {
+      "type": "object",
+      "description": "Token usage where every unavailable dimension is null, never 0.",
+      "required": [
+        "inputTokens",
+        "outputTokens",
+        "cacheReadTokens",
+        "cacheWriteTokens",
+        "reasoningTokens"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "inputTokens": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "outputTokens": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "cacheReadTokens": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "cacheWriteTokens": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "reasoningTokens": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    },
+    "ExecutionEconomicsModelIdentity": {
+      "type": "object",
+      "description": "Requested/forced/resolved/executed model identity with per-field provenance; disagreements surface via conflict, never coerced.",
+      "required": [
+        "requested",
+        "forced",
+        "resolved",
+        "executed",
+        "provenance"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "requested": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "forced": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resolved": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "executed": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "requested": {
+              "type": "string"
+            },
+            "forced": {
+              "type": "string"
+            },
+            "resolved": {
+              "type": "string"
+            },
+            "executed": {
+              "type": "string"
+            }
+          }
+        },
+        "conflict": {
+          "type": "object",
+          "required": [
+            "otherSource",
+            "detail"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "otherSource": {
+              "type": "string"
+            },
+            "otherResolvedModel": {
+              "type": "string"
+            },
+            "detail": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "ExecutionEconomicsTurn": {
+      "type": "object",
+      "required": [
+        "turnId",
+        "parentId",
+        "isSubagent",
+        "model",
+        "timestamp",
+        "usage",
+        "usageCoverage",
+        "actualCostUsd"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "turnId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parentId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "isSubagent": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timestamp": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "usage": {
+          "$ref": "#/$defs/ExecutionEconomicsTokenUsage"
+        },
+        "usageCoverage": {
+          "$ref": "#/$defs/ExecutionEconomicsFieldAvailability"
+        },
+        "actualCostUsd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    },
+    "ExecutionEconomicsSession": {
+      "type": "object",
+      "required": [
+        "sessionId",
+        "rootSessionId",
+        "harnessVersion",
+        "triggerSource",
+        "stageRole",
+        "models",
+        "turnCount",
+        "turns",
+        "turnsTruncated",
+        "modelSegments",
+        "usage",
+        "actualCostUsd",
+        "estimatedCostUsd",
+        "costSource",
+        "pricingRevision",
+        "pricingTimestamp",
+        "coverage",
+        "fieldAvailability",
+        "diagnostics"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "rootSessionId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "harnessVersion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "triggerSource": {
+          "type": "object",
+          "required": [
+            "value",
+            "provenance",
+            "availability"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "value": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "provenance": {
+              "type": "string"
+            },
+            "availability": {
+              "$ref": "#/$defs/ExecutionEconomicsFieldAvailability"
+            }
+          }
+        },
+        "stageRole": {
+          "type": "object",
+          "required": [
+            "value",
+            "confidence",
+            "evidence"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "value": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "enum": [
+                "planning",
+                "coding",
+                "review",
+                null
+              ]
+            },
+            "confidence": {
+              "type": "string",
+              "enum": [
+                "branch_worktree",
+                "timestamp_window",
+                "unattributed"
+              ]
+            },
+            "evidence": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "models": {
+          "$ref": "#/$defs/ExecutionEconomicsModelIdentity"
+        },
+        "turnCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "turns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExecutionEconomicsTurn"
+          }
+        },
+        "turnsTruncated": {
+          "type": "boolean"
+        },
+        "modelSegments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "model",
+              "turnCount"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "model": {
+                "type": "string"
+              },
+              "turnCount": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "usage": {
+          "$ref": "#/$defs/ExecutionEconomicsTokenUsage"
+        },
+        "actualCostUsd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "estimatedCostUsd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "costSource": {
+          "type": "string",
+          "enum": [
+            "provider_reported",
+            "local_estimate",
+            "none"
+          ]
+        },
+        "pricingRevision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pricingTimestamp": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "coverage": {
+          "$ref": "#/$defs/ExecutionEconomicsCoverage"
+        },
+        "fieldAvailability": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/ExecutionEconomicsFieldAvailability"
+          }
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "EvalExecutionEconomics": {
+      "type": "object",
+      "description": "Versioned, provider-independent execution-economics record for one external harness (HOK-2958).",
+      "required": [
+        "schemaVersion",
+        "providerContractVersion",
+        "harness",
+        "joinEvidence",
+        "sessions",
+        "sessionCount",
+        "turnCount",
+        "coverage",
+        "collectedAt"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        },
+        "providerContractVersion": {
+          "type": "string"
+        },
+        "harness": {
+          "type": "string",
+          "enum": [
+            "claude-code",
+            "codex"
+          ]
+        },
+        "joinEvidence": {
+          "type": "object",
+          "required": [
+            "issueId",
+            "branch"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "issueId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "branch": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExecutionEconomicsSession"
+          }
+        },
+        "sessionCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "turnCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "coverage": {
+          "$ref": "#/$defs/ExecutionEconomicsCoverage"
+        },
+        "collectedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
     "modelIdentityObservation": {
       "type": "object",
       "properties": {
@@ -2968,7 +3583,9 @@
         "identical_effective_route",
         "state_vs_derived_side_mismatch",
         "operator_reroute",
-        "missing_challenge_intent"
+        "missing_challenge_intent",
+        "multiple-varied-roles",
+        "arm_infrastructure_failure"
       ]
     },
     "ChallengeRoutingMeta": {
@@ -3179,6 +3796,30 @@
       ],
       "additionalProperties": false
     },
+    "ChallengeSelectionEvidence": {
+      "type": "object",
+      "properties": {
+        "coverageCount": {
+          "type": "number"
+        },
+        "attemptCount": {
+          "type": "number"
+        },
+        "lastAttemptAt": {
+          "type": "string"
+        },
+        "cooldownActive": {
+          "type": "boolean"
+        },
+        "priorityTier": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "ChallengeExecutionIntent": {
       "type": "object",
       "properties": {
@@ -3236,6 +3877,9 @@
         },
         "selectionReason": {
           "type": "string"
+        },
+        "selectionEvidence": {
+          "$ref": "#/$defs/ChallengeSelectionEvidence"
         },
         "challengeRecommendation": {
           "description": "Free-form router recommendation that selected or skipped a challenge."
@@ -3303,6 +3947,10 @@
         "sharedPrefix": {
           "type": "boolean",
           "description": "Whether the challenger inherited pre-fork execution artifacts. False until challenge.fork() ships (HOK-2794)."
+        },
+        "forkIdentity": {
+          "$ref": "#/$defs/ForkIdentity",
+          "description": "Fork/input identity stamped by the materialiser; proves matched pre-stage inputs."
         }
       },
       "required": [
@@ -3718,7 +4366,8 @@
           "type": "string",
           "enum": [
             "replay_exact_match",
-            "challenge_prospective"
+            "challenge_prospective",
+            "subagent_model_economics_shadow"
           ]
         }
       },
@@ -3727,6 +4376,68 @@
         "measurement_policy"
       ],
       "additionalProperties": false
+    },
+    "EvalSubagentModelEconomicsPolicyReport": {
+      "type": "object",
+      "required": [
+        "schemaVersion",
+        "policy"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": {
+          "type": "string"
+        },
+        "policy": {
+          "type": "string",
+          "const": "subagent_model_economics_shadow"
+        },
+        "generatedAt": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "workflows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "evidenceKind": {
+          "type": "string",
+          "enum": [
+            "observational",
+            "paired_replay"
+          ]
+        },
+        "recommendation": {
+          "type": "object",
+          "required": [
+            "gate",
+            "reasons"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "gate": {
+              "type": "string",
+              "enum": [
+                "proceed",
+                "collect_more_data",
+                "stop"
+              ]
+            },
+            "reasons": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
     },
     "RubricCriterion": {
       "type": "object",
@@ -3959,6 +4670,7 @@
         "operator_reroute",
         "state_vs_derived_side_mismatch",
         "missing_challenge_intent",
+        "arm_infrastructure_failure",
         "identical_routing_dimensions",
         "provenance_invalid",
         "provenance_inconclusive",
@@ -4047,9 +4759,12 @@
         "state_vs_derived_side_mismatch",
         "operator_reroute",
         "missing_challenge_intent",
+        "multiple-varied-roles",
+        "arm_infrastructure_failure",
         "divergent_pre_stage_inputs",
         "unverified_fork_commit",
         "missing_fork_identity",
+        "independent_launch_no_stage_label",
         "plan_hash_mismatch",
         "prompt_hash_mismatch",
         "task_packet_hash_mismatch",
@@ -4061,7 +4776,8 @@
         "inherited_stage_evidence_only",
         "presentation_order_bias_unresolved",
         "insufficient_review_iterations",
-        "insufficient_evidence_other"
+        "insufficient_evidence_other",
+        "provider_model_substitution"
       ]
     },
     "StageAttribution": {

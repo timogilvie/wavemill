@@ -267,7 +267,7 @@ These issues will be surfaced in the validation phase.
 Proceeding to validation to document all findings...
 ```
 
-If the final review run is non-zero, any later PR creation must leave `wm:ready` off — unless every remaining blocker has been investigated, disproved, and recorded as dismissed with a non-empty justification (HOK-2932). `wm:ready` is valid only when at least one iteration is recorded and the effective (undismissed) blocker count is zero: either the final self-review run exited 0 with verdict `ready`, or every raw blocker carries an auditable dismissal (`dismissedBlockers` entries with justification and, ideally, verification evidence) in the review result artifacts.
+The mill (Ready → Tend) owns every `wm:*` label — never add `wm:ready` yourself. When the final self-review run is non-zero, the review result artifact MUST truthfully record the raw blocker count so the mill's Ready gate can withhold `wm:ready` (HOK-2932). Every raw blocker must either be fixed or carry an auditable dismissal in `dismissedBlockers` (each entry needs a non-empty justification and, ideally, verification evidence). The mill's Ready gate reads that artifact and only publishes the Ready → Tend handoff — which triggers `wm:ready` application — when the effective (undismissed) blocker count is zero.
 
 ### 4E. Context Handoff
 All review logs saved to:

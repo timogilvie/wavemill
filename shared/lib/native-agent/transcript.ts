@@ -39,6 +39,7 @@ import type { CommandTranscriptEventData } from './command-transcript.ts';
 import { writeCleanupSummaryEvent, type CleanupDecision, type CleanupReason, type CleanupReport, type TreeState } from './cleanup.ts';
 import type { ToolResultMetadata } from './tools/types.ts';
 import { redactSecrets, redactSecretsInValue } from './tools/redaction.ts';
+import { computeMcpArgumentsDigest, isMcpToolName } from './tools/mcp.ts';
 import type { ApprovalLifecycleEntry } from './workflow-tools/approval-gate.ts';
 
 // ---------------------------------------------------------------------------
@@ -188,6 +189,20 @@ export function defaultRedact(value: unknown): unknown {
 // Content extraction
 // ---------------------------------------------------------------------------
 
+/**
+ * Tool-call arguments as persisted in the transcript. MCP proxy calls never
+ * persist their raw arguments (HOK-3056): they are replaced by the canonical
+ * SHA-256 digest recorded in the tool result's `metadata.mcp`, so replay can
+ * still match calls to results without the raw values.
+ */
+function persistedToolCallArguments(name: string, args: unknown): Record<string, unknown> {
+  if (isMcpToolName(name)) {
+    const inner = (args as { arguments?: unknown } | undefined)?.arguments;
+    return { argumentsDigest: computeMcpArgumentsDigest(inner ?? {}), redacted: 'mcp-arguments' };
+  }
+  return redactSecretsInValue(args as Record<string, unknown>).value as Record<string, unknown>;
+}
+
 function extractRawContent(message: AssistantMessage): TranscriptRawContentBlock[] {
   const blocks: TranscriptRawContentBlock[] = [];
   for (const block of message.content) {
@@ -206,7 +221,7 @@ function extractRawContent(message: AssistantMessage): TranscriptRawContentBlock
         type: 'tool_call',
         id: block.id,
         name: block.name,
-        arguments: redactSecretsInValue(block.arguments as Record<string, unknown>).value as Record<string, unknown>,
+        arguments: persistedToolCallArguments(block.name, block.arguments),
       });
     }
   }
@@ -231,7 +246,7 @@ function extractReplayContent(message: AssistantMessage): TranscriptReplayConten
         type: 'tool_call',
         id: block.id,
         name: block.name,
-        arguments: redactSecretsInValue(block.arguments as Record<string, unknown>).value as Record<string, unknown>,
+        arguments: persistedToolCallArguments(block.name, block.arguments),
       });
     }
   }

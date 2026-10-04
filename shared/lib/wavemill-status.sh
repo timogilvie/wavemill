@@ -65,7 +65,9 @@ PR_CACHE="/tmp/${SESSION}-pr-cache.json"
 OPENROUTER_WARNING_CACHE="/tmp/${SESSION}-openrouter-warning.txt"
 PR_TTL=15
 WAVEMILL_STATUS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WAVEMILL_REPO_DIR="$(cd "$WAVEMILL_STATUS_DIR/../.." && pwd)"
+# HOK-3100: this is the wavemill install, not the milled repo. Derived from
+# BASH_SOURCE so standalone invocations work without common pre-sourced.
+WAVEMILL_INSTALL_DIR="$(cd "$WAVEMILL_STATUS_DIR/../.." && pwd)"
 declare -Ag WAVEMILL_ROUTING_DISPLAY_CACHE=()
 declare -Ag WAVEMILL_ARTIFACT_STATUS_CACHE=()
 
@@ -186,35 +188,38 @@ agent_reported_status() {
   fi
 }
 
-# Read detail field from hook JSON (e.g., tool name, error message).
-# Only returns detail if hook file is fresh (300s TTL).
+# HOK-3101: `agent_hook_detail` and `agent_hook_next_action` now route
+# through the shared accessor. That centralizes the 300s TTL and shares
+# writer classification with every other consumer.
 agent_hook_detail() {
   local issue="$1"
+  if declare -F wavemill_hook_read >/dev/null 2>&1; then
+    wavemill_hook_read "$SESSION" "$issue" detail --fresh
+    return 0
+  fi
   local hook_file="/tmp/wavemill-${SESSION}-${issue}.hook"
   [[ -f "$hook_file" ]] || return 0
-
   local ts now staleness
   ts=$(jq -r '.timestamp // 0' "$hook_file" 2>/dev/null || echo 0)
   now=$(date +%s)
   staleness=$(( now - ts ))
   (( staleness < 300 )) || return 0
-
   jq -r '.detail // empty' "$hook_file" 2>/dev/null || true
 }
 
-# Read next_action field from hook JSON.
-# Only returns next_action if hook file is fresh (300s TTL).
 agent_hook_next_action() {
   local issue="$1"
+  if declare -F wavemill_hook_read >/dev/null 2>&1; then
+    wavemill_hook_read "$SESSION" "$issue" next_action --fresh
+    return 0
+  fi
   local hook_file="/tmp/wavemill-${SESSION}-${issue}.hook"
   [[ -f "$hook_file" ]] || return 0
-
   local ts now staleness
   ts=$(jq -r '.timestamp // 0' "$hook_file" 2>/dev/null || echo 0)
   now=$(date +%s)
   staleness=$(( now - ts ))
   (( staleness < 300 )) || return 0
-
   jq -r '.next_action // empty' "$hook_file" 2>/dev/null || true
 }
 
@@ -592,7 +597,7 @@ render_plan_model_routing() {
     MODEL_RESOLUTION_DISPLAY_ROUTING_COMPLETE_PATH="$routing_complete_file" \
     MODEL_RESOLUTION_DISPLAY_PHASE_CONFIG_PATH="$phase_config_file" \
     MODEL_RESOLUTION_DISPLAY_ROUTING_JSONL_PATH="$routing_jsonl_file" \
-    MODEL_RESOLUTION_DISPLAY_MODULE="$WAVEMILL_REPO_DIR/shared/lib/model-resolution-display.ts" \
+    MODEL_RESOLUTION_DISPLAY_MODULE="$WAVEMILL_INSTALL_DIR/shared/lib/model-resolution-display.ts" \
     NO_UPDATE_NOTIFIER=1 \
     npm_config_update_notifier=false \
     node --import tsx -e '
@@ -839,9 +844,21 @@ agent_terminal_override() {
   fi
 }
 
+_agent_status_map_state() {
+  case "$1" in
+    working)         echo "running" ;;
+    idle)            echo "exited" ;;
+    waiting)         echo "waiting" ;;
+    blocked)         echo "blocked" ;;
+    approval-needed) echo "approval-needed" ;;
+    policy-denied)   echo "policy-denied" ;;
+    error)           echo "error" ;;
+    *)               echo "$1" ;;
+  esac
+}
+
 agent_status() {
   local issue="$1" target="${2:-}"
-  local hook_file="/tmp/wavemill-${SESSION}-${issue}.hook"
   local terminal_override=""
 
   terminal_override="$(agent_terminal_override "$issue")"
@@ -850,27 +867,37 @@ agent_status() {
     return
   fi
 
-  # Prefer hook-reported state when fresh (300s TTL)
-  if [[ -f "$hook_file" ]]; then
-    local state ts now staleness
-    state=$(jq -r '.state // empty' "$hook_file" 2>/dev/null || true)
-    ts=$(jq -r '.timestamp // 0' "$hook_file" 2>/dev/null || echo 0)
-    now=$(date +%s)
-    staleness=$(( now - ts ))
-
-    if (( staleness < 300 )) && [[ -n "$state" ]]; then
-      # Map hook states to dashboard display states
-      case "$state" in
-        working)         echo "running" ;;
-        idle)            echo "exited" ;;
-        waiting)         echo "waiting" ;;
-        blocked)         echo "blocked" ;;
-        approval-needed) echo "approval-needed" ;;
-        policy-denied)   echo "policy-denied" ;;
-        error)           echo "error" ;;
-        *)               echo "$state" ;;
-      esac
+  # HOK-3101: check the agent's own fresh state first, so a monitor `working`
+  # or `blocked` hook does not shadow the agent's true state or ex-Stop.
+  if declare -F wavemill_hook_read >/dev/null 2>&1; then
+    local agent_state controller_state
+    agent_state="$(wavemill_hook_read "$SESSION" "$issue" state --fresh --agent-only 2>/dev/null || true)"
+    if [[ -n "$agent_state" ]]; then
+      _agent_status_map_state "$agent_state"
       return
+    fi
+    # Fall through to a fresh controller state (blocked/waiting attention)
+    # but ignore a controller-written `working` — that is not the agent
+    # doing work, it is a recovery replay.
+    controller_state="$(wavemill_hook_read "$SESSION" "$issue" state --fresh 2>/dev/null || true)"
+    if [[ -n "$controller_state" && "$controller_state" != "working" ]]; then
+      _agent_status_map_state "$controller_state"
+      return
+    fi
+
+    # HOK-3101 / HOK-3069: consult the cached task-progress snapshot so a
+    # coding task that has fallen out of TTL but is stalled shows as such
+    # rather than "running just because a pane is alive".
+    if declare -F task_progress_cached_json >/dev/null 2>&1; then
+      local cache_json stalled
+      cache_json="$(task_progress_cached_json "$SESSION" "$issue" 120 2>/dev/null || printf '{}')"
+      if command -v jq >/dev/null 2>&1; then
+        stalled="$(printf '%s' "$cache_json" | jq -r '.stalled // false' 2>/dev/null || echo false)"
+        if [[ "$stalled" == "true" ]]; then
+          echo "stalled"
+          return
+        fi
+      fi
     fi
   fi
 
@@ -903,6 +930,28 @@ gather_tasks() {
   fi
 }
 
+# HOK-3068: canonical lifecycle outcome for a task, read from the state file.
+# Terminal outcomes (merged/closed/aborted/error) must never occupy the Active
+# section, Inbox, or active-slot accounting regardless of retained worktrees,
+# branches, or tmux panes. Retained resources belong only in Backstage.
+task_workflow_outcome() {
+  local issue="$1"
+  [[ -n "$issue" && "$issue" != "—" ]] || { printf 'active\n'; return 0; }
+  [[ -n "$STATE_FILE" && -f "$STATE_FILE" ]] || { printf 'active\n'; return 0; }
+  declare -F task_lifecycle_jq_filter >/dev/null 2>&1 || { printf 'active\n'; return 0; }
+  local outcome
+  outcome="$(jq -r --arg issue "$issue" \
+    "$(task_lifecycle_jq_filter '(.tasks[$issue] // {}) | wm_workflow_outcome')" \
+    "$STATE_FILE" 2>/dev/null || true)"
+  [[ -n "$outcome" ]] || outcome="active"
+  printf '%s\n' "$outcome"
+}
+
+task_outcome_is_terminal() {
+  local outcome="$1"
+  [[ -n "$outcome" && "$outcome" != "active" ]]
+}
+
 refresh_window_metadata_for_active_tasks() {
   declare -F wavemill_apply_window_metadata >/dev/null 2>&1 || return 0
   [[ -n "$STATE_FILE" && -f "$STATE_FILE" ]] || return 0
@@ -913,6 +962,8 @@ refresh_window_metadata_for_active_tasks() {
 
   while IFS='|' read -r issue slug branch worktree status phase pr; do
     [[ -n "$issue" && -n "$slug" ]] || continue
+    # HOK-3068: never refresh window metadata for terminal work.
+    task_outcome_is_terminal "$(task_workflow_outcome "$issue")" && continue
     if ! is_active "$worktree" "$issue-$slug"; then
       continue
     fi
@@ -950,7 +1001,7 @@ is_active() {
   local win="$2"
   [[ -d "$worktree" ]] && return 0
   local target="" issue="" slug=""
-  if [[ "$win" =~ ^([A-Z]+-[0-9]+(_c)?)-(.+)$ ]]; then
+  if [[ "$win" =~ $TASK_IDENTITY_WINDOW_PREFIX_RE ]]; then
     issue="${BASH_REMATCH[1]}"
     slug="${BASH_REMATCH[3]}"
     target="$(task_window_target "$issue" "$slug" "$worktree" 2>/dev/null || true)"
@@ -1496,6 +1547,7 @@ render_task_row() {
             case "$ready_queue_state" in
               ready-stale) phase_str="${Y}ready-stale${N}" ;;
               merge-candidate) phase_str="${G}merge-candidate${N}" ;;
+              merge-needed) phase_str="${Y}⏳ merge needed${N}" ;;
               *)
                 case "$ready_status" in
                   failed|aborted) phase_str="${R}🚦 ready${N}" ;;
@@ -1656,8 +1708,15 @@ render_inbox_section() {
   done
 }
 
+# HOK-3094: incidents belong to the milled repo, whose state dir is the one
+# holding STATE_FILE — never the wavemill install dir (WAVEMILL_INSTALL_DIR).
 wavemill_incident_index_path() {
-  printf '%s\n' "${WAVEMILL_INCIDENT_INDEX_OVERRIDE:-$WAVEMILL_REPO_DIR/.wavemill/incidents/index.json}"
+  if [[ -n "${WAVEMILL_INCIDENT_INDEX_OVERRIDE:-}" ]]; then
+    printf '%s\n' "$WAVEMILL_INCIDENT_INDEX_OVERRIDE"
+    return 0
+  fi
+  [[ -n "${STATE_FILE:-}" ]] || return 1
+  printf '%s\n' "$(dirname "$STATE_FILE")/incidents/index.json"
 }
 
 format_incident_since() {
@@ -1680,7 +1739,7 @@ incident_severity_color() {
 
 render_incidents_section() {
   local index incident_lines jq_status had_errexit=0 cap=5
-  index="$(wavemill_incident_index_path)"
+  index="$(wavemill_incident_index_path)" || return 0
   [[ -r "$index" && -s "$index" ]] || return 0
 
   [[ $- == *e* ]] && had_errexit=1
@@ -1747,6 +1806,70 @@ render_incidents_section() {
     printf "    ${D}└─ fingerprint %s…  (wavemill observer --once --json to inspect)${N}${EL}\n" \
       "$short_fp" >> "$FRAME"
   done <<<"$incident_lines"
+}
+
+# HOK-3068: extract compact Backstage fields for one terminal retained task.
+# Emits a tab-separated "disposition\treason\twhen\taction" record, degrading
+# gracefully on missing metadata. Used only by the Backstage recovery section.
+backstage_retained_detail() {
+  local issue="$1"
+  [[ -n "$STATE_FILE" && -f "$STATE_FILE" ]] || return 0
+  jq -r --arg issue "$issue" '
+    (.tasks[$issue] // {}) as $t
+    | ($t.lifecycle // {}) as $l
+    | ($l.cleanupEpisode // {}) as $ep
+    | (($l.resourceDisposition // $ep.disposition // "retained")) as $disp
+    | (($l.retention.reason // $ep.lastOutcome // $ep.failureClass // "")) as $reason
+    | (($ep.lastAttemptAt // $ep.updatedAt // $t.updated // "")) as $when
+    | (($ep.requiredOperatorAction // $l.retention.requiredAction // "")) as $action
+    | [$disp, $reason, $when, $action] | @tsv
+  ' "$STATE_FILE" 2>/dev/null || true
+}
+
+# Format an ISO-8601 timestamp as a compact "Nm"/"Nh"/"Nd" age, or "-".
+format_backstage_age() {
+  local ts="$1" epoch now age
+  [[ -n "$ts" ]] || { printf '-'; return 0; }
+  epoch="$(parse_iso_timestamp_epoch "$ts")"
+  (( epoch > 0 )) || { printf '-'; return 0; }
+  now="$(date +%s)"
+  (( now >= epoch )) || { printf '0m'; return 0; }
+  age=$(( (now - epoch) / 60 ))
+  if (( age < 60 )); then
+    printf '%dm' "$age"
+  elif (( age < 1440 )); then
+    printf '%dh' $(( age / 60 ))
+  else
+    printf '%dd' $(( age / 1440 ))
+  fi
+}
+
+# HOK-3068: compact Backstage recovery section for terminal retained resources.
+# Shows issue, disposition/reason, age, and one explicit operator action when
+# stored — never a per-task warning stream and never full completed-task rows.
+render_backstage_retained_section() {
+  local count="${#backstage_terminal_rows[@]}"
+  (( count == 0 )) && return 0
+
+  local row issue slug branch worktree outcome detail disp reason when action age
+  printf "${EL}\n${B}%s${N} ${D}(%s)${N}${EL}\n" "🗄️  BACKSTAGE (retained)" "$count" >> "$FRAME"
+  printf "${D}%s${N}${EL}\n" "terminal resources retained for recovery — not active" >> "$FRAME"
+  for row in "${backstage_terminal_rows[@]}"; do
+    IFS='|' read -r issue slug branch worktree outcome <<<"$row"
+    detail="$(backstage_retained_detail "$issue")"
+    IFS=$'\t' read -r disp reason when action <<<"$detail"
+    [[ -n "$disp" ]] || disp="retained"
+    age="$(format_backstage_age "$when")"
+    if [[ -n "$reason" ]]; then
+      printf "${D}%-10s  %s  %s (%s)${N}${EL}\n" "$issue" "$outcome" "$disp" "$reason" >> "$FRAME"
+    else
+      printf "${D}%-10s  %s  %s${N}${EL}\n" "$issue" "$outcome" "$disp" >> "$FRAME"
+    fi
+    printf "${D}%10s  └─ age %s${N}${EL}\n" "" "$age" >> "$FRAME"
+    if [[ -n "$action" ]]; then
+      printf "${Y}%10s  └─ %s${N}${EL}\n" "" "$(truncate_detail "$action")" >> "$FRAME"
+    fi
+  done
 }
 
 render_active_section() {
@@ -1952,6 +2075,17 @@ queue_health_dashboard_warning() {
   backoff_secs="$(jq -r '.retryBackoffSeconds // 0' "$health_file" 2>/dev/null || echo '0')"
   next_action="$(jq -r '.nextAction // "retry"' "$health_file" 2>/dev/null || echo 'retry')"
 
+  # HOK-3130: the planner ran, but dependency inference did not; the queue is
+  # usable with explicit Linear relations only.
+  if [[ "$reason" == "inference_unavailable" ]]; then
+    local inference_status inference_error
+    inference_status="$(jq -r '.inferenceStatus // "unknown"' "$health_file" 2>/dev/null || echo 'unknown')"
+    inference_error="$(jq -r '.inference.error // empty' "$health_file" 2>/dev/null | head -c 120 || true)"
+    printf 'queue inference unavailable (%s); planning with explicit edges only' "$inference_status"
+    [[ -n "$inference_error" ]] && printf '; last error: %s' "$inference_error"
+    return 0
+  fi
+
   if [[ "$backoff_secs" -gt 0 ]]; then
     printf 'queue planning degraded: %s; flat fallback active; retry in %ds' "$reason" "$backoff_secs"
   else
@@ -1964,6 +2098,7 @@ format_backstage_service_status() {
   local status="${1:-unknown}"
   case "$status" in
     healthy) printf '%b' "${G}healthy${N}" ;;
+    degraded) printf '%b' "${Y}degraded${N}" ;;
     disabled) printf '%b' "${D}disabled${N}" ;;
     needs-user) printf '%b' "${R}needs-user${N}" ;;
     stalled) printf '%b' "${R}${status}${N}" ;;
@@ -2036,7 +2171,16 @@ queue_health_dashboard_status() {
   printf 'Queue: %b' "$(format_backstage_service_status "$status")"
   if [[ "$status" != "healthy" ]]; then
     reason="$(jq -r '.degradationReason // .failureStep // empty' "$health_file" 2>/dev/null || true)"
-    [[ -n "$reason" ]] && printf ' (%s)' "$reason"
+    if [[ "$reason" == "inference_unavailable" ]]; then
+      printf ' (%s: %s)' "$reason" "$(jq -r '.inferenceStatus // "unknown"' "$health_file" 2>/dev/null || echo unknown)"
+    elif [[ -n "$reason" ]]; then
+      printf ' (%s)' "$reason"
+    fi
+  else
+    # HOK-3130: show that inference actually produced the edges in use.
+    local inferred_edge_count
+    inferred_edge_count="$(jq -r '.inferredEdgeCount // empty' "$health_file" 2>/dev/null || true)"
+    [[ "$inferred_edge_count" =~ ^[0-9]+$ ]] && printf ' (inferred %s)' "$inferred_edge_count"
   fi
   return 0
 }
@@ -2097,11 +2241,40 @@ backstage_health_dashboard_line() {
   return 0
 }
 
+# HOK-3123: surface the tool-choice-gate progress line beneath the backstage
+# health row so operators see G2 progress toward the I-27 initiative without
+# reading .wavemill/backstage-health.json by hand.
+tool_choice_gate_dashboard_line() {
+  local state_file="${1:-}" state_dir health_file progress_line last_run_status last_run_at
+  [[ -n "$state_file" ]] || return 1
+  state_dir="$(dirname "$state_file" 2>/dev/null || echo '')"
+  [[ -n "$state_dir" ]] || return 1
+  health_file="${state_dir}/backstage-health.json"
+  [[ -r "$health_file" ]] || return 1
+
+  progress_line="$(jq -r '.services.toolChoiceGate.progressLine // empty' "$health_file" 2>/dev/null || true)"
+  [[ -n "$progress_line" ]] || return 1
+  last_run_status="$(jq -r '.services.toolChoiceGate.lastRunStatus // empty' "$health_file" 2>/dev/null || true)"
+  last_run_at="$(jq -r '.services.toolChoiceGate.lastRunAt // empty' "$health_file" 2>/dev/null || true)"
+
+  printf '%s' "$progress_line"
+  if [[ -n "$last_run_status" ]]; then
+    printf ' [%s' "$last_run_status"
+    if [[ -n "$last_run_at" ]]; then
+      printf ' @ %s' "$last_run_at"
+    fi
+    printf ']'
+  fi
+  return 0
+}
+
 render_dashboard() {
   local tasks line issue slug branch worktree task_status task_phase state_pr
-  local win agent_state classification task_data free_slots queue_owned_tasks usage_tip openrouter_warning backstage_health_line malformed_challenge_warning resource_disposition
+  local win agent_state classification task_data free_slots queue_owned_tasks usage_tip openrouter_warning backstage_health_line tool_choice_gate_line malformed_challenge_warning resource_disposition workflow_outcome
   declare -ga inbox_tasks=()
   declare -ga active_tasks=()
+  # HOK-3068: terminal work with retained resources is surfaced only here.
+  declare -ga backstage_terminal_rows=()
 
   # Build entire frame into a temp file (avoids $() stripping newlines)
   : > "$FRAME"
@@ -2132,6 +2305,9 @@ render_dashboard() {
   if backstage_health_line="$(backstage_health_dashboard_line "$STATE_FILE" 2>/dev/null)"; then
     printf "${D}├─ %b${N}${EL}\n" "$backstage_health_line" >> "$FRAME"
   fi
+  if tool_choice_gate_line="$(tool_choice_gate_dashboard_line "$STATE_FILE" 2>/dev/null)"; then
+    printf "${D}├─ %s${N}${EL}\n" "$tool_choice_gate_line" >> "$FRAME"
+  fi
 
   tasks=$(gather_tasks)
   if [[ -z "$tasks" ]]; then
@@ -2144,6 +2320,16 @@ render_dashboard() {
 
       win="${issue}-${slug}"
       [[ "$issue" == "—" ]] && win="$slug"
+
+      # HOK-3068: a task whose canonical lifecycle outcome is terminal never
+      # occupies Active/Inbox even when a worktree, branch, or tmux pane is
+      # retained. Route it to Backstage so retained resources stay discoverable
+      # without making completed work look active or consuming an active slot.
+      workflow_outcome="$(task_workflow_outcome "$issue")"
+      if task_outcome_is_terminal "$workflow_outcome"; then
+        backstage_terminal_rows+=("$issue|$slug|$branch|$worktree|$workflow_outcome")
+        continue
+      fi
 
       is_active "$worktree" "$win" || continue
 
@@ -2182,6 +2368,7 @@ render_dashboard() {
   fi
   render_inbox_section
   render_active_section
+  render_backstage_retained_section
   render_project_context_suggestion
 
   local now_ts

@@ -98,6 +98,8 @@ CLEANUP_FILE="$TEST_TMP/cleanup_completed_task.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_load_config"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "cleanup_episode_enabled"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "cleanup_episode_config_value"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_pr_aware_cleanup_enabled"
@@ -115,9 +117,21 @@ CLEANUP_FILE="$TEST_TMP/cleanup_completed_task.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_migrate_controller_observer_artifact"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_discard_prompt_registry_artifact"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "write_terminal_task_history_record"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "write_terminal_task_tombstone"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "monitor_deregister_terminal_task"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "safe_remove_task_worktree_and_branch"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_task_worktree_identity"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "_wavemill_build_cleanup_evidence_json"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_orphan_dir_scan"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "cleanup_completed_task"
 } > "$CLEANUP_FILE"
@@ -267,10 +281,11 @@ EOF
     set_window_attention_state() { ATTENTION="$2"; }
     reset_retry_count() { RESET_RETRY_CALLS=$((RESET_RETRY_CALLS + 1)); ORDER+="reset;"; }
     remove_task_state() { REMOVE_STATE_CALLS=$((REMOVE_STATE_CALLS + 1)); ORDER+="remove-state;"; }
+    check_challenge_sibling_merged() { [[ "$TEST_CASE" == "closed-loser-abandoned" ]]; }
     _with_timeout() { shift; "$@"; }
     pr_state() {
       case "$TEST_CASE" in
-        closed-unmerged) printf "%s\n" "CLOSED" ;;
+        closed-unmerged|closed-loser-abandoned) printf "%s\n" "CLOSED" ;;
         *) printf "%s\n" "MERGED" ;;
       esac
     }
@@ -279,7 +294,13 @@ EOF
         preserved-local-work)
           printf "%s\n" "{\"number\":4242,\"state\":\"MERGED\",\"mergedAt\":\"2026-09-04T12:00:00Z\",\"headRefOid\":\"dddddddddddddddddddddddddddddddddddddddd\",\"headRefName\":\"task/task-slug\",\"baseRefName\":\"auto/integration\",\"mergeCommit\":null}"
           ;;
+        patch-equivalent-rebased)
+          printf "%s\n" "{\"number\":4242,\"state\":\"MERGED\",\"mergedAt\":\"2026-09-04T12:00:00Z\",\"headRefOid\":\"dddddddddddddddddddddddddddddddddddddddd\",\"headRefName\":\"task/task-slug\",\"baseRefName\":\"auto/integration\",\"mergeCommit\":{\"oid\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"}}"
+          ;;
         closed-unmerged-retained)
+          printf "%s\n" "{\"number\":4242,\"state\":\"CLOSED\",\"mergedAt\":null,\"headRefOid\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"headRefName\":\"task/task-slug\",\"baseRefName\":\"auto/integration\",\"mergeCommit\":null}"
+          ;;
+        closed-loser-abandoned)
           printf "%s\n" "{\"number\":4242,\"state\":\"CLOSED\",\"mergedAt\":null,\"headRefOid\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"headRefName\":\"task/task-slug\",\"baseRefName\":\"auto/integration\",\"mergeCommit\":null}"
           ;;
         *)
@@ -318,6 +339,14 @@ EOF
         "fetch origin")
           return 0
           ;;
+        "rev-parse --show-toplevel")
+          printf "%s\n" "$WORKTREE_ROOT/$SLUG"
+          return 0
+          ;;
+        "worktree list")
+          printf "worktree %s\n" "$WORKTREE_ROOT/$SLUG"
+          return 0
+          ;;
         "rev-parse --verify")
           case "${3:-}" in
             *task-slug*) printf "%s\n" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ;;
@@ -327,14 +356,14 @@ EOF
           return 0
           ;;
         "merge-base --is-ancestor")
-          [[ "$TEST_CASE" != "preserved-local-work" && "$TEST_CASE" != "closed-unmerged-retained" ]]
+          [[ "$TEST_CASE" != "preserved-local-work" && "$TEST_CASE" != "patch-equivalent-rebased" && "$TEST_CASE" != "closed-unmerged-retained" && "$TEST_CASE" != "closed-loser-abandoned" ]]
           return $?
           ;;
         "cat-file -e")
           return 0
           ;;
         "rev-list --count")
-          if [[ "$TEST_CASE" == "preserved-local-work" || "$TEST_CASE" == "closed-unmerged-retained" ]]; then
+          if [[ "$TEST_CASE" == "preserved-local-work" || "$TEST_CASE" == "patch-equivalent-rebased" || "$TEST_CASE" == "closed-unmerged-retained" || "$TEST_CASE" == "closed-loser-abandoned" ]]; then
             printf "1\n"
             return 0
           fi
@@ -342,10 +371,21 @@ EOF
           return 0
           ;;
         "rev-list "*)
-          if [[ "$TEST_CASE" == "preserved-local-work" || "$TEST_CASE" == "closed-unmerged-retained" ]]; then
+          if [[ "$TEST_CASE" == "preserved-local-work" || "$TEST_CASE" == "patch-equivalent-rebased" || "$TEST_CASE" == "closed-unmerged-retained" || "$TEST_CASE" == "closed-loser-abandoned" ]]; then
             printf "%s\n" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
           fi
           return 0
+          ;;
+        "cherry "*)
+          if [[ "$TEST_CASE" == "patch-equivalent-rebased" ]]; then
+            printf "%s\n" "- aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            return 0
+          fi
+          if [[ "$TEST_CASE" == "preserved-local-work" ]]; then
+            printf "%s\n" "+ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            return 0
+          fi
+          return 1
           ;;
         "ls-remote --heads")
           return 0
@@ -408,6 +448,12 @@ EOF
       esac
     }
 
+    if [[ "$TEST_CASE" == "closed-loser-abandoned" ]]; then
+      WAVEMILL_CLEANUP_ABANDON_ISSUE="$ISSUE"
+      export WAVEMILL_CLEANUP_ABANDON_ISSUE
+      state_mutate "$STATE_FILE" ".tasks[\$issue].challenge = true | .tasks[\$issue].challengeRole = \"challenger\" | .tasks[\$issue].challengePairId = \"HOK-2348\"" --arg issue "$ISSUE" >/dev/null
+    fi
+
     set +e
     cleanup_completed_task "$ISSUE" "$SLUG" "test cleanup"
     rc=$?
@@ -420,6 +466,7 @@ EOF
     printf "cleaned=%s\n" "${CLEANED[$ISSUE]:-}"
     printf "attention=%s\n" "$ATTENTION"
     printf "record=%s\n" "$([[ -f "$REPO_DIR/.wavemill/evals/artifacts/$ISSUE/terminal-record.json" ]] && echo present || echo absent)"
+    printf "tombstone=%s\n" "$(jq -r "if ((.terminalTaskTombstones // {}) | length) > 0 then \"present\" else \"absent\" end" "$STATE_FILE" 2>/dev/null || echo absent)"
     printf "dispositions=%s\n" "$DISPOSITIONS"
     printf "git_calls=%s\n" "$GIT_CALLS"
     printf "order=%s\n" "$ORDER"
@@ -520,6 +567,12 @@ EOF
     reset_retry_count() { :; }
     remove_task_state() { REMOVE_STATE_CALLS=$((REMOVE_STATE_CALLS + 1)); }
     pr_state() { printf "%s\n" "MERGED"; }
+    cleanup_episode_should_attempt() { printf "%s\n" "attempt"; return 0; }
+    cleanup_episode_candidate_json() { return 0; }
+    cleanup_episode_record_outcome() { return 0; }
+    set_task_lifecycle_disposition() { :; }
+    wavemill_remove_orphan_task_dir() { return 0; }
+    reconciliation_lease_release() { return 0; }
     _with_timeout() { shift; "$@"; }
     git() {
       if [[ "${1:-}" == "-C" ]]; then
@@ -527,6 +580,8 @@ EOF
       fi
       case "${1:-} ${2:-}" in
         "rev-list --count") printf "0\n" ;;
+        "rev-parse --show-toplevel") printf "%s\n" "$WORKTREE_ROOT/$SLUG" ;;
+        "worktree list") printf "worktree %s\n" "$WORKTREE_ROOT/$SLUG" ;;
       esac
       return 0
     }
@@ -587,7 +642,7 @@ check_contains "legacy state logs lifecycle deletion-policy retention" "$output"
 output="$(run_cleanup_case preserved-local-work)"
 check_contains "preserved local work returns non-zero" "$output" "rc=1"
 check_contains "preserved local work classifies changed-after-PR-head as retained" "$output" "outcome=retain_unpublished"
-check_contains "preserved local work records changed_after_pr_head evidence" "$output" "changed_after_pr_head"
+check_contains "preserved local work records unique patch evidence" "$output" "unique_local_patch"
 check_contains "preserved local work keeps state" "$output" "remove_state_calls=0"
 check_contains "preserved local work preserves retry state" "$output" "reset_retry_calls=0"
 check_contains "preserved local work requests attention" "$output" "attention=needs-user"
@@ -597,6 +652,12 @@ check_contains "preserved local work still released the pane" "$output" "order=a
 check_contains "preserved local work keeps terminal record for recovery" "$output" "record=present"
 check_contains "preserved local work records retained disposition" "$output" "retained:retain_unpublished;"
 
+output="$(run_cleanup_case patch-equivalent-rebased)"
+check_contains "patch-equivalent cleanup returns zero" "$output" "rc=0"
+check_contains "patch-equivalent cleanup classifies safe" "$output" "outcome=safe_patch_equivalent_pr"
+check_contains "patch-equivalent cleanup removes state" "$output" "remove_state_calls=1"
+check_contains "patch-equivalent cleanup writes tombstone before removal" "$output" "tombstone=present"
+
 output="$(run_cleanup_case closed-unmerged-retained)"
 check_contains "closed unmerged work returns non-zero" "$output" "rc=1"
 check_contains "closed unmerged work is classified retain_closed_unmerged" "$output" "outcome=retain_closed_unmerged"
@@ -605,6 +666,13 @@ check_contains "closed unmerged work requests attention" "$output" "attention=ne
 check_contains "closed unmerged work guidance is scenario-specific" "$output" "closed without merging"
 check_not_contains "closed unmerged work guidance does not suggest blind push" "$output" "Recover with: git"
 check_not_contains "closed unmerged work skips remote cleanup" "$output" "push origin --delete"
+
+output="$(run_cleanup_case closed-loser-abandoned)"
+check_contains "closed loser abandon returns zero" "$output" "rc=0"
+check_contains "closed loser abandon classifies safe" "$output" "outcome=safe_abandoned_closed_loser"
+check_contains "closed loser abandon removes state" "$output" "remove_state_calls=1"
+check_contains "closed loser abandon retains remote branch" "$output" "retaining remote branch task/task-slug (PR #4242 state=CLOSED"
+check_not_contains "closed loser abandon does not delete remote" "$output" "push origin --delete"
 
 output="$(run_cleanup_case archive-fails)"
 check_contains "archive failure returns non-zero" "$output" "rc=1"

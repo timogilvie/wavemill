@@ -26,3 +26,29 @@ test('parked-arm patterns do not swallow the typed completion-protocol classes',
   assert.equal(canonicalizeRootCauseClass('blocked-completion refused'), 'harness_liveness_deadlock');
   assert.equal(canonicalizeRootCauseClass('cleanup-unpublished-at-risk'), 'cleanup_unpublished_at_risk');
 });
+
+test('interactive-prompt legacy slugs canonicalize to the HOK-3045 class', () => {
+  assert.equal(canonicalizeRootCauseClass('agent_interactive_prompt_blocked'), 'agent_interactive_prompt_blocked');
+  assert.equal(canonicalizeRootCauseClass('agent-interactive-prompt-blocked'), 'agent_interactive_prompt_blocked');
+  assert.equal(canonicalizeRootCauseClass('interactive prompt blocked'), 'agent_interactive_prompt_blocked');
+});
+
+test('module-export contract mismatches map to the bounded product-defect class before generic parse-error fallback', () => {
+  assert.equal(
+    canonicalizeRootCauseClass("SyntaxError: The requested module '@hokusai/core' does not provide an export named 'deriveTaskDescriptor'"),
+    'module_export_contract_mismatch',
+  );
+  assert.equal(
+    canonicalizeRootCauseClass("does not provide an export named 'foo'"),
+    'module_export_contract_mismatch',
+  );
+  assert.equal(
+    canonicalizeRootCauseClass('module_export_contract'),
+    'module_export_contract_mismatch',
+  );
+  // Bare SyntaxError without the export-contract signature stays on local_parse_failure.
+  assert.equal(
+    canonicalizeRootCauseClass('SyntaxError: Unexpected token }'),
+    'local_parse_failure',
+  );
+});

@@ -99,6 +99,77 @@ exceed the provider catalog and declared tool support when the provider catalog
 omits tool support. The CI workflow runs this audit daily and on demand. Retired
 aliases may appear in the report as expected non-selectable findings.
 
+## OpenRouter Catalog Maintenance Runbook
+
+Repeatable operator loop for reconciling the registry with the live OpenRouter
+catalog whenever the OpenRouter Alias Audit fails or a provider-side change
+lands (HOK-3081 is the worked example: a `glm-5.3-flash` cache-read price move
+and the removal of `mistralai/devstral-2512`).
+
+1. **Run the live alias audit.**
+
+   ```bash
+   npx tsx tools/audit-openrouter-aliases.ts          # human summary + report artifact
+   npx tsx tools/audit-openrouter-aliases.ts --json    # full JSON report
+   ```
+
+   The command fails only when `selectableFindings > 0`. Findings against
+   retained-but-blocked aliases print as non-selectable ("retired - expected").
+
+2. **Classify each finding before touching the registry.** `pricing-drift`
+   means the alias still exists upstream but a registry price is missing or
+   below the provider's — the audit deliberately flags only the unsafe
+   direction (understating cost) — so correct the `capabilities.pricing`
+   fields in `shared/fixtures/model-registry.v1.json` and keep the mirrored
+   `costPerMillionInputTokensUsd` / `costPerMillionOutputTokensUsd` scalars
+   consistent. `not-found-in-openrouter` means the OpenRouter ID vanished;
+   confirm the removal against the live catalog before retiring the alias with
+   the blocked/deprecated shape above. Treat `unresolved-openrouter-id`,
+   `provider-native-id-mismatch`, `context-window-overstated`,
+   `tool-support-mismatch`, and `invalid-pricing` as mapping or metadata
+   defects to fix in place rather than retirements.
+
+3. **Sweep every remaining reference.** Search the repository for the alias
+   (for example `rg -n "devstral-medium"`) and update tests, comments, and
+   projections so nothing still assumes it is selectable: remove it from
+   `WATCHLIST_SMOKE_MODELS` in `tools/openrouter-smoke.ts` and from active
+   candidate projections such as `eval.pricing` in
+   `shared/lib/config-sync.ts`, whose keys feed the default routing and
+   exploration pools (historical cost attribution keeps working through the
+   retained registry pricing). Tests may keep the alias only to assert that it
+   now fails closed; when a test needs the old shape — for example a
+   coding-only alias for role-ineligible scheduling — substitute an existing
+   active model with that shape and revise comments that still describe the
+   retired alias as active.
+
+4. **Validate against a saved catalog snapshot when repeated live calls are
+   impractical.**
+
+   ```bash
+   curl -s https://openrouter.ai/api/v1/models > /tmp/openrouter-models.json
+   npx tsx tools/audit-openrouter-aliases.ts --catalog-json /tmp/openrouter-models.json --no-write
+   npx tsx tools/sync-openrouter-catalog.ts --dry-run
+   ```
+
+   `--fixture` audits against the bundled launch-priority fixture instead of
+   the live catalog. That suits structural checks, but it cannot catch upstream
+   removals or price moves — only the live or captured catalog can.
+
+5. **Re-run the audit and the targeted tests** (`model-registry`,
+   `openrouter-catalog`, `openrouter-alias-audit`, `challenge-mode`,
+   `challenge-scheduler`, `launchable-models`, `tools/openrouter-smoke`,
+   `tools/audit-openrouter-aliases`, `config-sync`). Accept when
+   `selectableFindings` is zero: a blocked alias that is still absent upstream
+   may remain in the report, but only as a non-selectable row, while every
+   selectable alias's pricing must match the provider.
+
+Never fix a failing audit by editing the `.github/workflows/ci.yml` path
+filters — the audit step and its watched paths are contract-checked by
+`tools/check-openrouter-alias-audit-ci.ts` during `test:preflight` — and do not
+add a parallel audit or sync script. The workflow above only uses the existing
+`tools/audit-openrouter-aliases.ts` and `tools/sync-openrouter-catalog.ts`
+commands.
+
 ## Provisional Explicit-Native OpenRouter Models
 
 Use a provisional identity when OpenRouter exposes a useful native model whose

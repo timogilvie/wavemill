@@ -303,7 +303,9 @@ function resolveNextChallengeModel(
   report: OpenRouterDoctorReport,
   observed: readonly RecentSelection[],
 ): ZeroTrafficNextChallengeModel | null {
-  const challengePool = getChallengeModelPoolFromConfig(repoDir);
+  // Zero-traffic coverage tracks coding-stage identities only; the pool is
+  // built explicitly for 'implementation' so no silent coding default remains.
+  const challengePool = getChallengeModelPoolFromConfig('implementation', repoDir);
   const primaryModel = observed.find((selection) => selection.stage === 'coder')?.model ?? null;
   if (!primaryModel) {
     return {

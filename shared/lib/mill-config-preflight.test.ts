@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { clearConfigCache } from './config.ts';
-import { formatMillConfigPreflightReport, runMillConfigPreflight } from './mill-config-preflight.ts';
+import { formatCanaryCohortReport, formatMillConfigPreflightReport, runMillConfigPreflight } from './mill-config-preflight.ts';
 import { REMOVED_MODEL_SETTING_PATHS } from './model-settings-migrator.ts';
 import { buildGlobalCertificationPath } from './native-agent/certification/loader.ts';
 import { resolveCertificationSubject } from './native-agent/certification/identity.ts';
@@ -475,6 +475,70 @@ test('runMillConfigPreflight loop guard prevents repeated failing remediation', 
       assert.equal(second.ok, false);
       assert.equal(calls, 1);
       assert.equal(second.report.certificationRemediation?.mode, 'blocked-by-loop-guard');
+    } finally {
+      cleanup(repoDir);
+    }
+  });
+});
+
+test('runMillConfigPreflight runs one bounded canary-cohort refresh and surfaces health', async () => {
+  const registry = makeRegistry();
+  await withCertificationRoot(async (root) => {
+    // Deterministic coverage is healthy; only the live canary is missing.
+    writeArtifact(root, makeArtifact(registry, {
+      certifiedAt: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+    }));
+    const repoDir = makeRepo({
+      nativeAgent: {
+        certification: {
+          canaryCohort: [{ provider: 'openai', model: 'gpt-4o' }],
+          minCodingReady: 1,
+        },
+        providers: { openai: { apiKeyEnv: 'COHORT_PREFLIGHT_TEST_KEY' } },
+      },
+    });
+    const canaryAttemptCachePath = join(root, 'canary-attempts.json');
+    try {
+      let canaryCalls = 0;
+      const canaryCertifyFn = (async (opts: { liveCodingCanary?: boolean }) => {
+        canaryCalls += 1;
+        assert.equal(opts.liveCodingCanary, true);
+        return {
+          harnessPassed: true,
+          codingEligible: false,
+          liveCanary: { status: 'inconclusive' as const, reason: 'provider_transient_error' },
+        };
+      }) as never;
+
+      const first = await runMillConfigPreflight(repoDir, {
+        registry,
+        certificationRoot: root,
+        canaryAttemptCachePath,
+        canaryCertifyFn,
+        env: { COHORT_PREFLIGHT_TEST_KEY: 'test-key' },
+      });
+      assert.equal(first.ok, true, 'below-minimum cohort alerts but never blocks preflight');
+      assert.equal(canaryCalls, 1);
+      assert.equal(first.report.canaryCohortRefresh?.attempted, 1);
+      assert.equal(first.report.canaryCohortHealth?.belowMinimum, true);
+      assert.equal(first.report.canaryCohortHealth?.codingReadyCount, 0);
+      assert.match(
+        formatCanaryCohortReport(first.report),
+        /ALERT: coding-ready cohort \(0\) is below the configured minimum \(1\)/,
+      );
+
+      // Same remediation episode: no second provider spend.
+      const second = await runMillConfigPreflight(repoDir, {
+        registry,
+        certificationRoot: root,
+        canaryAttemptCachePath,
+        canaryCertifyFn,
+        env: { COHORT_PREFLIGHT_TEST_KEY: 'test-key' },
+      });
+      assert.equal(canaryCalls, 1);
+      assert.equal(second.report.canaryCohortRefresh?.attempted, 0);
+      const skipReason = second.report.canaryCohortRefresh?.outcomes[0]?.reason ?? '';
+      assert.match(skipReason, /already attempted this episode/);
     } finally {
       cleanup(repoDir);
     }

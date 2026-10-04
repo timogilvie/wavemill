@@ -1,6 +1,8 @@
 export type {
   CertificationPhase,
   CertificationSubject,
+  IdentityInvalidation,
+  IdentityInvalidationSource,
   LiveSmokeEvidence,
   LiveCodingCanaryAttemptNote,
   LiveCodingCanaryEligibility,
@@ -14,6 +16,7 @@ export type {
   LiveCodingCanaryUsage,
   NativeCertificationArtifact,
   AnyNativeCertificationArtifact,
+  ResolvedCertificationTarget,
   ScenarioResult,
 } from './schema.ts';
 
@@ -69,13 +72,43 @@ export {
   resolveLegacyCertificationRoot,
 } from './storage.ts';
 export {
+  isRollingProviderAlias,
   isValidCertificationPathSegment,
+  resolveAliasTargetFromSmoke,
   resolveCertificationStorageIdentity,
   resolveCertificationSubject,
   subjectsEqual,
 } from './identity.ts';
+export {
+  invalidateCertificationIdentity,
+  writeIdentityAudit,
+} from './identity-invalidation.ts';
+export type {
+  IdentityAuditArtifact,
+  IdentityAuditOperation,
+  IdentityInvalidationResult,
+  IdentityInvalidationStatus,
+  InvalidateCertificationIdentityInput,
+} from './identity-invalidation.ts';
 export { evaluateNativeProviderGate } from './eligibility-gate.ts';
 export { evaluateSuiteCoverage } from './coverage.ts';
+export {
+  CANARY_COHORT_REFRESH_COMMAND,
+  evaluateCanaryCohortHealth,
+  refreshCanaryCohort,
+  renderCanaryCohortHealth,
+  resolveCanaryCohort,
+} from './canary-cohort.ts';
+export type {
+  CanaryCohortHealth,
+  CanaryCohortMember,
+  CohortCertifyFn,
+  CohortMemberCanaryState,
+  CohortMemberStatus,
+  CohortRefreshMemberOutcome,
+  CohortRefreshResult,
+  ResolvedCanaryCohort,
+} from './canary-cohort.ts';
 
 export type { ReadResult, StoreError, StoreErrorCode } from './store.ts';
 
@@ -90,6 +123,7 @@ export {
   serializeCertification,
   validateCertificationForWrite,
   writeCertification,
+  writeCertificationToAbsolutePath,
   writeGlobalCertification,
   writeScopedCertification,
 } from './store.ts';

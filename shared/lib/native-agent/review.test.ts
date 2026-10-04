@@ -8,6 +8,11 @@ import { ContextExhaustedError, ContextWindowExceededError } from './context-win
 import type { ReviewContext } from '../review-context-gatherer.ts';
 import { parseTranscriptJsonl } from './transcript.ts';
 import type { ReadyNativeProviderEntry } from './providers.ts';
+import {
+  getStageFailureEnvelopePath,
+  readStageFailureEnvelope,
+  type StageFailureEnvelope,
+} from './stage-failure-envelope.ts';
 
 describe('native review', () => {
   const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
@@ -154,7 +159,7 @@ describe('native review', () => {
     }
   });
 
-  it('treats an unrequested review as self-consistently pinned when no challenge names a model (HOK-2969)', async () => {
+  it('records an unrequested review as derived and unpinned', async () => {
     const repoDir = makeTempRepo();
     setReadyProvider();
 
@@ -177,7 +182,7 @@ describe('native review', () => {
       const result = await runNativeReview(makeReviewContext(), repoDir, {});
       assert.equal(result.substantiveAnalysisIdentity?.requestedModel, 'gpt-4o');
       assert.equal(result.substantiveAnalysisIdentity?.resolvedModel, 'gpt-4o');
-      assert.equal(result.substantiveAnalysisIdentity?.pinned, true);
+      assert.equal(result.substantiveAnalysisIdentity?.pinned, false);
       assert.equal(result.substantiveAnalysisIdentity?.source, 'derived');
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
@@ -275,7 +280,7 @@ describe('native review', () => {
     }
   });
 
-  it('maps turn-limit exits to a blocker finding', async () => {
+  it('maps turn-limit exits to the no-evidence timeout category', async () => {
     const repoDir = makeTempRepo();
     setReadyProvider();
 
@@ -296,9 +301,48 @@ describe('native review', () => {
 
     try {
       const result = await runNativeReview(makeReviewContext(), repoDir, {});
-      assert.equal(result.verdict, 'not_ready');
-      assert.equal(result.codeReviewFindings[0].category, 'native-review-failed');
-      assert.match(result.codeReviewFindings[0].description, /iteration limit/i);
+      assert.equal(result.verdict, 'error');
+      assert.equal(result.failureCategory, 'native-review-timeout');
+      assert.equal(result.codeReviewFindings.length, 0);
+      assert.match(result.reviewToolError ?? '', /iteration limit/i);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('maps wall-clock exits to native-review-timeout without a synthetic not_ready finding', async () => {
+    const repoDir = makeTempRepo({
+      review: {
+        nativeTimeoutMs: 1234,
+        nativeTimeoutMaxMs: 5000,
+        nativeTimeoutMultiplier: 2,
+      },
+    });
+    setReadyProvider();
+
+    nativeReviewTestUtils.setRunWavemillLoop(async (config) => {
+      assert.equal(config.budget?.maxWallClockMs, 1234);
+      return {
+        messages: [],
+        stopReason: 'wall_clock_limit',
+        turnsCompleted: 2,
+        toolCallsExecuted: 1,
+        totalInputTokens: 10,
+        totalOutputTokens: 10,
+        totalCostUsd: 0,
+        wallClockMs: 1234,
+      };
+    });
+
+    try {
+      const result = await runNativeReview(makeReviewContext(), repoDir, {});
+      assert.equal(result.verdict, 'error');
+      assert.equal(result.failureCategory, 'native-review-timeout');
+      assert.equal(result.codeReviewFindings.length, 0);
+      assert.match(result.reviewToolError ?? '', /wall-clock budget/i);
+      assert.equal(result.metadata?.effectiveNativeTimeoutMs, 1234);
+      assert.equal(result.metadata?.nativeTimeoutMaxMs, 5000);
+      assert.equal(result.metadata?.reviewInputFileCount, 1);
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }
@@ -401,8 +445,9 @@ describe('native review', () => {
 
     try {
       const result = await runNativeReview(makeReviewContext(), repoDir, { featureDir });
-      assert.equal(result.verdict, 'not_ready');
-      assert.match(result.codeReviewFindings[0].description, /wall-clock budget/i);
+      assert.equal(result.verdict, 'error');
+      assert.equal(result.failureCategory, 'native-review-timeout');
+      assert.equal(result.codeReviewFindings.length, 0);
 
       const transcript = loadTranscript(repoDir);
       const cleanup = transcript.find((event) => event.type === 'cleanup_report');
@@ -417,9 +462,231 @@ describe('native review', () => {
         readFileSync(join(featureDir, '.review-result.json'), 'utf-8'),
       ) as Record<string, unknown>;
       assert.equal(stageResult.status, 'failed');
+      assert.equal((stageResult.artifacts as Record<string, unknown>).failureCategory, 'native-review-timeout');
+      assert.equal((stageResult.artifacts as Record<string, unknown>).missingReviewEvidence, true);
+      assert.equal((stageResult.artifacts as Record<string, unknown>).effectiveNativeTimeoutMs, 300_000);
       assert.equal(stageResult.finalTreeState, 'clean');
       assert.equal(stageResult.cleanupDecision, 'no-action-needed');
       assert.equal((stageResult.cleanupReport as Record<string, unknown>).reason, 'timeout');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(featureDir, { recursive: true, force: true });
+    }
+  });
+
+  it('records a typed stage-timeout envelope for the HOK-3052 Kimi wall-clock incident', async () => {
+    const repoDir = makeTempRepo();
+    const featureDir = mkdtempSync(join(tmpdir(), 'native-review-feature-'));
+    setOpenRouterKimiProvider({ requestedModel: 'openrouter/kimi-k2' });
+
+    nativeReviewTestUtils.setRunWavemillLoop(async (config) => {
+      config.onEvent?.({ type: 'agent_start' });
+      config.onEvent?.({ type: 'agent_end', messages: [] });
+      return {
+        messages: [],
+        stopReason: 'wall_clock_limit',
+        turnsCompleted: 1,
+        toolCallsExecuted: 0,
+        totalInputTokens: 10,
+        totalOutputTokens: 10,
+        totalCostUsd: 0,
+        wallClockMs: 300_000,
+      };
+    });
+
+    try {
+      const result = await runNativeReview(makeReviewContext(), repoDir, { featureDir });
+      assert.equal(result.failureCategory, 'native-review-timeout');
+
+      const envelope = await readEnvelope(featureDir);
+      assert.equal(envelope.cause, 'stage-timeout');
+      assert.equal(envelope.stage, 'review');
+      assert.equal(envelope.stopReason, 'wall_clock_limit');
+      // Canonical identity: one OpenRouter execution keys under openrouter, not
+      // a split native/native-openrouter row.
+      assert.equal(envelope.provider, 'openrouter');
+      assert.equal(envelope.model, 'kimi-k2');
+      assert.equal(envelope.agent, 'native-openrouter');
+      assert.equal(envelope.requestedModel, 'openrouter/kimi-k2');
+      // Configured budget is preserved and matches the effective review budget.
+      assert.equal(envelope.configuredTimeoutMs, result.metadata?.effectiveNativeTimeoutMs);
+      assert.equal(typeof envelope.retryAttempt, 'number');
+      assert.equal(envelope.evidence.source, 'native-runtime');
+      // Write-before-cleanup: the envelope survives even though the timeout
+      // cleanup + stage-result write both ran (the stage result is written
+      // after cleanup, so both files being present proves ordering held).
+      const stageResult = JSON.parse(
+        readFileSync(join(featureDir, '.review-result.json'), 'utf-8'),
+      ) as Record<string, unknown>;
+      assert.equal(stageResult.status, 'failed');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(featureDir, { recursive: true, force: true });
+    }
+  });
+
+  it('maps classified provider-error stops to their typed envelope causes', async () => {
+    for (const [providerErrorKind, cause] of [
+      ['provider-credit-exhausted', 'provider-credit-exhausted'],
+      ['provider-transient-error', 'provider-outage'],
+      ['provider-config-error', 'provider-config-error'],
+    ] as const) {
+      const repoDir = makeTempRepo();
+      const featureDir = mkdtempSync(join(tmpdir(), 'native-review-feature-'));
+      setReadyProvider();
+
+      nativeReviewTestUtils.setRunWavemillLoop(async (config) => {
+        config.onEvent?.({ type: 'agent_start' });
+        config.onEvent?.({ type: 'agent_end', messages: [] });
+        return {
+          messages: [],
+          stopReason: 'error',
+          providerError: { kind: providerErrorKind, errorMessage: `${providerErrorKind} occurred`, turnsCompleted: 1, toolCallsExecuted: 0, attempts: 1 },
+          turnsCompleted: 1,
+          toolCallsExecuted: 0,
+          totalInputTokens: 10,
+          totalOutputTokens: 10,
+          totalCostUsd: 0,
+          wallClockMs: 5,
+        };
+      });
+
+      try {
+        await runNativeReview(makeReviewContext(), repoDir, { featureDir });
+        const envelope = await readEnvelope(featureDir);
+        assert.equal(envelope.cause, cause, `providerErrorKind ${providerErrorKind}`);
+        assert.equal(envelope.providerErrorKind, providerErrorKind);
+        assert.equal(envelope.stopReason, 'error');
+      } finally {
+        rmSync(repoDir, { recursive: true, force: true });
+        rmSync(featureDir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('records a context-exhausted envelope for a thrown context error', async () => {
+    const repoDir = makeTempRepo();
+    const featureDir = mkdtempSync(join(tmpdir(), 'native-review-feature-'));
+    setReadyProvider();
+
+    nativeReviewTestUtils.setRunWavemillLoop(async () => {
+      throw new ContextExhaustedError('context-exhausted: compacted native review context to the floor', {
+        phase: 'review',
+        model: 'gpt-4o',
+        provider: 'openai',
+        limit: 100_000,
+        limitSource: 'registry',
+        reservedOutputTokens: 1_024,
+        safetyMargin: 0.05,
+        estimate: { systemPromptTokens: 1_000, messageTokens: 120_000, toolTokens: 0, inputTokens: 121_000 },
+        projectedInputTokens: 127_050,
+        projectedTotalTokens: 128_074,
+        headroomTokens: -28_074,
+      });
+    });
+
+    try {
+      await runNativeReview(makeReviewContext(), repoDir, { featureDir });
+      const envelope = await readEnvelope(featureDir);
+      assert.equal(envelope.cause, 'context-exhausted');
+      assert.match(envelope.evidence.detail, /context-exhausted/);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(featureDir, { recursive: true, force: true });
+    }
+  });
+
+  it('records a model-protocol envelope for an empty final response', async () => {
+    const repoDir = makeTempRepo();
+    const featureDir = mkdtempSync(join(tmpdir(), 'native-review-feature-'));
+    setReadyProvider();
+
+    nativeReviewTestUtils.setRunWavemillLoop(async (config) => {
+      const message = assistantMessage('   ');
+      emitCommonEvents(config, message);
+      return {
+        messages: [message],
+        stopReason: 'stop',
+        turnsCompleted: 1,
+        toolCallsExecuted: 0,
+        totalInputTokens: 10,
+        totalOutputTokens: 10,
+        totalCostUsd: 0,
+        wallClockMs: 5,
+      };
+    });
+
+    try {
+      const result = await runNativeReview(makeReviewContext(), repoDir, { featureDir });
+      assert.equal(result.failureCategory, 'native-review-malformed-response');
+      const envelope = await readEnvelope(featureDir);
+      assert.equal(envelope.cause, 'model-protocol');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(featureDir, { recursive: true, force: true });
+    }
+  });
+
+  it('deletes a stale envelope when the review later succeeds', async () => {
+    const repoDir = makeTempRepo();
+    const featureDir = mkdtempSync(join(tmpdir(), 'native-review-feature-'));
+    setReadyProvider();
+
+    nativeReviewTestUtils.setRunWavemillLoop(async (config) => {
+      const message = assistantMessage(JSON.stringify({ verdict: 'ready', codeReviewFindings: [] }));
+      emitCommonEvents(config, message);
+      return {
+        messages: [message],
+        stopReason: 'stop',
+        turnsCompleted: 1,
+        toolCallsExecuted: 0,
+        totalInputTokens: 10,
+        totalOutputTokens: 10,
+        totalCostUsd: 0,
+        wallClockMs: 5,
+      };
+    });
+
+    try {
+      // Pre-seed a stale envelope from a hypothetical earlier terminal attempt.
+      writeFileSync(
+        getStageFailureEnvelopePath(featureDir, 'review'),
+        JSON.stringify({ schemaVersion: '1.0', stage: 'review', cause: 'stage-timeout', provider: 'openrouter', model: 'kimi-k2', agent: 'native-openrouter', evidence: { source: 'native-runtime', detail: 'stale' }, createdAt: new Date().toISOString() }),
+        'utf-8',
+      );
+      const result = await runNativeReview(makeReviewContext(), repoDir, { featureDir });
+      assert.equal(result.verdict, 'ready');
+      await assert.rejects(readEnvelope(featureDir), /ENOENT/);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(featureDir, { recursive: true, force: true });
+    }
+  });
+
+  it('writes no envelope when no featureDir is provided', async () => {
+    const repoDir = makeTempRepo();
+    const featureDir = mkdtempSync(join(tmpdir(), 'native-review-feature-'));
+    setReadyProvider();
+
+    nativeReviewTestUtils.setRunWavemillLoop(async (config) => {
+      config.onEvent?.({ type: 'agent_start' });
+      config.onEvent?.({ type: 'agent_end', messages: [] });
+      return {
+        messages: [],
+        stopReason: 'wall_clock_limit',
+        turnsCompleted: 1,
+        toolCallsExecuted: 0,
+        totalInputTokens: 10,
+        totalOutputTokens: 10,
+        totalCostUsd: 0,
+        wallClockMs: 300_000,
+      };
+    });
+
+    try {
+      // featureDir intentionally omitted from options — the gate must hold.
+      await runNativeReview(makeReviewContext(), repoDir, {});
+      assert.equal(readdirSync(featureDir).length, 0);
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
       rmSync(featureDir, { recursive: true, force: true });
@@ -523,14 +790,82 @@ describe('native review', () => {
 
     try {
       const result = await runNativeReview(makeReviewContext(), repoDir, {});
-      assert.equal(result.verdict, 'not_ready');
+      // HOK-3106: provider-resolution failures are infrastructure, not a
+      // substantive review verdict. They must produce verdict:error with no
+      // synthetic blocker, but keep the actionable diagnostic on
+      // reviewToolError so the operator can still see how to remediate.
+      assert.equal(result.verdict, 'error');
       assert.equal(result.failureCategory, 'native-runtime-unavailable');
-      assert.equal(result.codeReviewFindings[0].category, 'native-runtime-unavailable');
-      assert.match(result.codeReviewFindings[0].description, /no native providers are configured/);
-      assert.match(result.codeReviewFindings[0].description, /wavemill native-agent models report --json/);
-      assert.match(result.codeReviewFindings[0].description, /Configure nativeAgent\.providers/);
+      assert.deepEqual(result.codeReviewFindings, []);
+      assert.match(result.reviewToolError ?? '', /no native providers are configured/);
+      assert.match(result.reviewToolError ?? '', /wavemill native-agent models report --json/);
+      assert.match(result.reviewToolError ?? '', /Configure nativeAgent\.providers/);
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('routes an absent provider API key as an infra no-evidence failure (HOK-3106)', async () => {
+    const repoDir = makeTempRepo();
+    setReadyProvider();
+    nativeReviewTestUtils.setGetNativeProviderApiKey(() => '');
+
+    try {
+      const result = await runNativeReview(makeReviewContext(), repoDir, {});
+      assert.equal(result.verdict, 'error');
+      assert.equal(result.failureCategory, 'native-runtime-unavailable');
+      assert.deepEqual(result.codeReviewFindings, []);
+      assert.match(result.reviewToolError ?? '', /OPENAI_API_KEY resolved to an empty value/);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('native review — advanced eval-scoring tool integration (HOK-3061)', () => {
+  it('omits eval-scoring descriptors when config does not enable the family', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-review-registry-'));
+    try {
+      const { phaseMetadata, descriptors } = nativeReviewTestUtils.buildReviewToolRegistry(dir);
+      const names = descriptors.map((d) => d.metadata.name);
+      for (const n of [
+        'score_diff_difficulty',
+        'score_task_context',
+        'score_patch_selection',
+        'score_success_rate_under_budget',
+      ]) {
+        assert.ok(!names.includes(n), `expected ${n} to be absent`);
+      }
+      assert.ok(!phaseMetadata.some((m) => m.family === 'eval'));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('includes eval-scoring descriptors when config enables the family', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-review-registry-'));
+    try {
+      const { phaseMetadata, descriptors } = nativeReviewTestUtils.buildReviewToolRegistry(dir, {
+        nativeAgent: { advanced: { eval: { enabled: true, allowedPhases: ['review'] } } },
+      });
+      const names = descriptors.map((d) => d.metadata.name).sort();
+      for (const n of [
+        'score_diff_difficulty',
+        'score_task_context',
+        'score_patch_selection',
+        'score_success_rate_under_budget',
+      ]) {
+        assert.ok(names.includes(n), `expected ${n} to be present`);
+      }
+      const evalMeta = phaseMetadata.filter((m) => m.family === 'eval');
+      assert.equal(evalMeta.length, 4);
+      for (const m of evalMeta) {
+        assert.equal(m.exposure, 'opt-in');
+        assert.equal(m.class, 'read-only');
+        assert.equal(m.certificationRequirement, 'read-only');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
@@ -595,6 +930,42 @@ function setReadyProvider() {
 
   nativeReviewTestUtils.setSelectReviewProvider(() => ({ ok: true, entry: provider }));
   nativeReviewTestUtils.setGetNativeProviderApiKey(() => 'test-key');
+}
+
+/** An OpenRouter-hosted Kimi reviewer, matching the HOK-3052 incident identity. */
+function setOpenRouterKimiProvider(input: { requestedModel?: string } = {}) {
+  const provider: ReadyNativeProviderEntry = {
+    providerName: 'openrouter',
+    modelId: 'kimi-k2',
+    status: 'ready',
+    apiKeyEnv: 'OPENROUTER_API_KEY',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    headers: {},
+    model: {
+      id: 'openrouter:kimi-k2',
+      name: 'kimi-k2',
+      api: 'openai-completions',
+      provider: 'openrouter',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      headers: {},
+    } as ReadyNativeProviderEntry['model'],
+  };
+
+  nativeReviewTestUtils.setSelectReviewProvider(() => ({
+    ok: true,
+    entry: provider,
+    ...(input.requestedModel ? { requestedModel: input.requestedModel } : {}),
+  }));
+  nativeReviewTestUtils.setGetNativeProviderApiKey(() => 'test-key');
+}
+
+async function readEnvelope(featureDir: string): Promise<StageFailureEnvelope> {
+  const result = await readStageFailureEnvelope(getStageFailureEnvelopePath(featureDir, 'review'));
+  assert.ok(result.ok, `expected a valid review failure envelope: ${result.ok ? '' : result.message}`);
+  if (!result.ok) {
+    throw new Error(result.message);
+  }
+  return result.value;
 }
 
 /** Like setReadyProvider, but lets a test control the requested/fallback fields (HOK-2969). */

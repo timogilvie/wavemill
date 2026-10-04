@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# HOK-2814: post-fork shape audit — this file assumes both arms present with
+# PRs, which is the state after materialisation, and is still the correct shape
+# post-fork. The fork itself is covered by challenge-deferred-arm.test.sh and
+# challenge-fork-*.test.sh. Do not add fork assumptions here.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

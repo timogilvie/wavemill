@@ -90,6 +90,7 @@ export interface JobStateDiagnostic {
   resultPath?: string;
   logPath?: string;
   pairId?: string;
+  side?: string;
 }
 
 export interface HookStatusDiagnostic {
@@ -228,6 +229,7 @@ export function readJobState(jobPath: string): JobStateDiagnostic | null {
     resultPath: stringField(value.resultPath),
     logPath: stringField(value.logPath),
     pairId: stringField(value.pairId),
+    side: stringField(value.side) ?? stringField(value.challengeRole) ?? stringField(value.role),
   };
 }
 

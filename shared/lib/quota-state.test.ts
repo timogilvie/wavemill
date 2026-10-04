@@ -578,6 +578,10 @@ describe('quota-state', () => {
             status: 'degrading',
             reason: 'aggregate frontier capacity check',
           },
+          'claude-opus-5-5': {
+            status: 'degrading',
+            reason: 'aggregate frontier capacity check',
+          },
           'claude-opus-4-8': {
             status: 'degrading',
             reason: 'aggregate frontier capacity check',
@@ -591,6 +595,10 @@ describe('quota-state', () => {
             reason: 'aggregate frontier capacity check',
           },
           'gpt-5.5': {
+            status: 'degrading',
+            reason: 'aggregate frontier capacity check',
+          },
+          'gpt-6-sol': {
             status: 'degrading',
             reason: 'aggregate frontier capacity check',
           },
@@ -658,6 +666,10 @@ describe('quota-state', () => {
       reason: '429 rate_limit',
     }, repoDir);
     recordLimitError({
+      modelId: 'claude-opus-5-5',
+      reason: '429 rate_limit',
+    }, repoDir);
+    recordLimitError({
       modelId: 'claude-opus-4-8',
       reason: '429 rate_limit',
     }, repoDir);
@@ -673,6 +685,10 @@ describe('quota-state', () => {
       modelId: 'gpt-5.5',
       reason: '429 rate_limit',
     }, repoDir);
+    recordLimitError({
+      modelId: 'gpt-6-sol',
+      reason: '429 rate_limit',
+    }, repoDir);
 
     assert.equal(getCurrentOperatingMode(repoDir), 'constrained');
   });
@@ -681,10 +697,12 @@ describe('quota-state', () => {
     writeMultiFrontierConfig(repoDir);
 
     markExhausted({ modelId: 'claude-fable-5', reason: 'quota_exhausted' }, repoDir);
+    markExhausted({ modelId: 'claude-opus-5-5', reason: 'quota_exhausted' }, repoDir);
     markExhausted({ modelId: 'claude-opus-4-8', reason: 'quota_exhausted' }, repoDir);
     markExhausted({ modelId: 'claude-opus-4-7', reason: 'quota_exhausted' }, repoDir);
     markExhausted({ modelId: 'claude-opus-4-6', reason: 'quota_exhausted' }, repoDir);
     markExhausted({ modelId: 'gpt-5.5', reason: 'quota_exhausted' }, repoDir);
+    markExhausted({ modelId: 'gpt-6-sol', reason: 'quota_exhausted' }, repoDir);
 
     assert.equal(getCurrentOperatingMode(repoDir), 'survival');
   });

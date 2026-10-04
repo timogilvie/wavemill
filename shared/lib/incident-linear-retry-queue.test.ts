@@ -143,6 +143,36 @@ test('drainIncidentQueue replays queued incident and tombstones success', async 
   }
 });
 
+test('drainIncidentQueue tombstones a recovered queued create without Linear calls', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'incident-queue-recovered-'));
+  const originalRandom = Math.random;
+  Math.random = () => 0;
+  try {
+    const store = new IncidentStore(join(repoDir, '.wavemill', 'incidents'));
+    const stored = await store.upsert(createIncidentDraft({
+      taskId: 'HOK-1', category: 'stale_orphaned_state', severity: 'medium', confidence: 'definite', lifecycle: 'active',
+      rootCauseClass: 'failed_job_no_result', summary: 'job failed', operatorAction: 'retry',
+      evidence: [{ type: 'job_state', source: 'state', timestamp: '2026-08-04T12:00:00.000Z', redactedData: 'failed', key: 'failed' }],
+      metadata: { jobId: 'job-1', jobKind: 'eval' },
+    }));
+    enqueueIncidentSync({ repoDir, incidentFingerprint: stored.fingerprint, linearAction: 'create', lastError: {
+      category: 'rate_limit', httpStatus: 429, graphqlErrors: [], isRetryable: true, message: 'rate limited',
+    }, now: new Date('2026-08-04T12:00:00.000Z') });
+    const result = await drainIncidentQueue({
+      repoDir, store, config: { ...DEFAULT_INCIDENT_LINEAR_CONFIG, enabled: true, requestDelayMs: 0, rateLimitBackoffMs: 0 },
+      now: new Date('2026-08-04T12:01:00.000Z'),
+      reconciler: () => ({ outcome: 'recovered', evidence: { jobId: 'job-1' } }),
+      client: successClient({ searchIssues: async () => { throw new Error('Linear must not be called'); } }),
+    });
+    const rows = readFileSync(queuePath(repoDir), 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
+    assert.equal(result.succeeded, 1);
+    assert.equal(rows.at(-1).recordType, 'tombstone');
+  } finally {
+    Math.random = originalRandom;
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
 test('drainIncidentQueue marks nonretryable replay failure permanent', async () => {
   const repoDir = mkdtempSync(join(tmpdir(), 'incident-queue-permanent-'));
   const originalRandom = Math.random;
@@ -307,3 +337,83 @@ function successClient(overrides: Partial<IncidentLinearClient> = {}): IncidentL
     ...overrides,
   };
 }
+
+test('enqueueIncidentSync dedupes lifecycle entries by transition revision', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'incident-queue-lifecycle-dedupe-'));
+  try {
+    const base = {
+      repoDir,
+      incidentFingerprint: 'fp1',
+      linearAction: 'lifecycle' as const,
+      linearIssueId: 'HOK-9',
+      lifecycleKind: 'resolved' as const,
+      lastError: { category: 'rate_limit' as const, httpStatus: 429, graphqlErrors: [], isRetryable: true, message: 'x' },
+      now: new Date('2026-08-04T12:00:00.000Z'),
+    };
+    enqueueIncidentSync({ ...base, transitionRevision: 'rev-a' });
+    enqueueIncidentSync({ ...base, transitionRevision: 'rev-a' });
+    enqueueIncidentSync({ ...base, transitionRevision: 'rev-b' });
+    const rows = readFileSync(queuePath(repoDir), 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
+    const ids = new Set(rows.map((r) => r.id));
+    // Same revision reuses one id; a different revision gets its own.
+    assert.equal(ids.size, 2);
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('drainIncidentQueue replays a lifecycle entry and tombstones on success', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'incident-queue-lifecycle-drain-'));
+  const originalRandom = Math.random;
+  Math.random = () => 0;
+  try {
+    const store = new IncidentStore(join(repoDir, '.wavemill', 'incidents'), { escalationThreshold: 1, resolutionAfterCycles: 1 });
+    const stored = await store.upsert(createIncidentDraft({
+      taskId: 'HOK-1', category: 'product_defect', severity: 'high', confidence: 'definite', lifecycle: 'observed',
+      rootCauseClass: 'observer_crash', summary: 'crash', operatorAction: 'fix',
+      evidence: [{ type: 'log_excerpt', source: 'mill.log', timestamp: '2026-08-04T12:00:00.000Z', redactedData: 'ERROR', key: 'error' }],
+      metadata: {},
+    }));
+    await store.recordLinearSync(stored.fingerprint, { linearIssueId: 'HOK-9', evidenceRevision: 'r1' });
+    await store.resolve(stored.fingerprint);
+    enqueueIncidentSync({
+      repoDir,
+      incidentFingerprint: stored.fingerprint,
+      linearAction: 'lifecycle',
+      linearIssueId: 'HOK-9',
+      lifecycleKind: 'resolved',
+      transitionRevision: 'rev-a',
+      lastError: { category: 'rate_limit', httpStatus: 429, graphqlErrors: [], isRetryable: true, message: 'x' },
+      now: new Date('2026-08-04T12:00:00.000Z'),
+    });
+    let comments = 0;
+    const result = await drainIncidentQueue({
+      repoDir,
+      store,
+      config: {
+        ...DEFAULT_INCIDENT_LINEAR_CONFIG,
+        enabled: true,
+        team: 'HOK',
+        requestDelayMs: 0,
+        rateLimitBackoffMs: 0,
+        lifecycle: { ...DEFAULT_INCIDENT_LINEAR_CONFIG.lifecycle, enabled: true },
+      },
+      now: new Date('2026-08-04T12:01:00.000Z'),
+      reconciler: () => ({ outcome: 'recovered', evidence: {} }),
+      client: successClient({
+        getIssue: async (identifier) => ({
+          id: `uuid-${identifier}`, identifier, title: 't', state: { name: 'Todo' }, labels: { nodes: [] },
+          team: { id: 'team-1', key: 'HOK', name: 'Hokusai' }, url: 'u', completedAt: null, canceledAt: null,
+        }),
+        createComment: async () => { comments += 1; return { id: 'c', url: 'u' }; },
+      }),
+    });
+    const rows = readFileSync(queuePath(repoDir), 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
+    assert.equal(result.succeeded, 1);
+    assert.equal(comments, 1);
+    assert.equal(rows.at(-1).recordType, 'tombstone');
+  } finally {
+    Math.random = originalRandom;
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});

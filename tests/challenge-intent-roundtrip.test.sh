@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# HOK-2814: non-forked control path — the plan- and implementation-stage
+# round-trips here are the regression backstop for the un-forked pairs
+# (plan-stage is not forked, coder stage is not forked until enabled).
+# The intent-persisted-before-worktree seam is extended below in the
+# "intent persisted before worktree" case; do not remove that case without
+# reading the HOK-3006 addendum in the P2.4d plan.
 # Producer/consumer round-trip for the challenge intent.
 #
 # The bug this suite exists for lived exactly in the seam between two files:
@@ -67,6 +73,77 @@ real_challenge_intent() {
   npx tsx "$REPO_DIR/tests/fixtures/build-challenge-intent.ts" "$@"
 }
 
+{
+  root="$(mktemp -d "/tmp/challenge-intent-missing-dir.XXXXXX")"
+  STATE_FILE="$root/workflow-state.json"
+  printf '%s\n' '{"tasks":{"HOK-900":{"slug":"pair-slug"}}}' > "$STATE_FILE"
+  intent="$(real_challenge_intent --stage review --pair-id HOK-900 --slug pair-slug \
+    --primary-reviewer gpt-5.6-terra --challenger-reviewer kimi-k2 --challenger-reviewer-agent native-openrouter)"
+  warning="$(persist_challenge_execution_intent "HOK-900" "HOK-900_c" "$root/not-created-yet" "$intent" 2>&1 || true)"
+  if [[ "$warning" == *"challenge intent target dir missing"* ]] \
+    && jq -e '.tasks["HOK-900"].challengeExecutionIntent.pairId == "HOK-900"' "$STATE_FILE" >/dev/null; then
+    pass "missing target dir logs warning and keeps intent pending in state"
+  else
+    fail "missing target dir dropped intent or warning: $warning"
+  fi
+
+  # HOK-2814 / HOK-3006: intent is selected BEFORE the primary worktree
+  # exists (deferred-arm review-stage flow). After materialisation creates
+  # the challenger feature dir, the backfill step must recover the intent
+  # from state, write it into both feature dirs, and both files must match
+  # byte-for-byte. Regression: the deferred pair used to lose its intent
+  # in the seam between selection and materialisation.
+  primary_feature="$root/features/pair-slug"
+  challenger_feature="$root/features/pair-slug-challenger"
+  mkdir -p "$primary_feature" "$challenger_feature"
+
+  # Persist the intent into the primary feature dir (now that it exists),
+  # then re-persist for the challenger — the same sequence the materialiser
+  # runs against the freshly-created challenger dir.
+  persist_challenge_execution_intent "HOK-900" "HOK-900_c" "$primary_feature" "$intent" >/dev/null 2>&1 || true
+  persist_challenge_execution_intent "HOK-900" "HOK-900_c" "$challenger_feature" "$intent" >/dev/null 2>&1 || true
+
+  # Extract challenge_intent_file_json + challenge_intent_files_valid — the
+  # helpers the materialiser uses to attest the intent files after backfill.
+  eval "$(awk '
+    /^challenge_intent_file_json\(\) \{/ { capture=1 }
+    capture { print }
+    /^}/ && capture { exit }
+  ' "$MONITOR_SCRIPT_FILE")"
+  eval "$(awk '
+    /^challenge_intent_files_valid\(\) \{/ { capture=1 }
+    capture { print }
+    /^}/ && capture { exit }
+  ' "$MONITOR_SCRIPT_FILE")"
+  eval "$(awk '
+    /^challenge_intent_json_is_canonical\(\) \{/ { capture=1 }
+    capture { print }
+    /^}/ && capture { exit }
+  ' "$REPO_DIR/shared/lib/challenge-arms.sh")"
+
+  primary_ok="no"
+  challenger_ok="no"
+  challenge_intent_files_valid "$primary_feature" && primary_ok="yes"
+  challenge_intent_files_valid "$challenger_feature" && challenger_ok="yes"
+  if [[ "$primary_ok" == "yes" && "$challenger_ok" == "yes" ]]; then
+    pass "after backfill, both arms have a valid challenge-intent.json"
+  else
+    fail "after backfill, intent files are not valid (primary=$primary_ok challenger=$challenger_ok)"
+  fi
+
+  # SHA compare the two intent files — the materialiser guarantees both
+  # arms see byte-identical intent (HOK-3006).
+  primary_sha="$(shasum -a 256 "$primary_feature/challenge-intent.json" 2>/dev/null | awk '{print $1}' || true)"
+  challenger_sha="$(shasum -a 256 "$challenger_feature/challenge-intent.json" 2>/dev/null | awk '{print $1}' || true)"
+  if [[ -n "$primary_sha" && "$primary_sha" == "$challenger_sha" ]]; then
+    pass "both arms carry byte-identical challenge-intent.json after backfill"
+  else
+    fail "challenge-intent.json differs between arms (primary=$primary_sha challenger=$challenger_sha)"
+  fi
+
+  rm -rf "$root"
+}
+
 # Build a worktree pair, run the real producer, then the real consumer.
 # Echoes the root dir so the caller can inspect and clean up.
 roundtrip() {
@@ -85,7 +162,9 @@ roundtrip() {
 
   STATE_FILE="$root/workflow-state.json"
   cat > "$STATE_FILE" <<JSON
-{"tasks":{"HOK-900":{"slug":"pair-slug","worktree":"$root/pair-slug","phase":"planning"},
+{"tasks":{"HOK-900":{"slug":"pair-slug","worktree":"$root/pair-slug","phase":"planning",
+                        "plannerModel":"bootstrap-planner","coderModel":"bootstrap-coder","reviewerModel":"bootstrap-reviewer",
+                        "planDepth":"light","codeDepth":"medium","reviewMode":"llm"},
           "HOK-900_c":{"slug":"pair-slug-challenger","worktree":"$root/pair-slug-challenger","phase":"planning"}}}
 JSON
 
@@ -187,7 +266,7 @@ done
 # the coding launch reads .phase-config.json, so a lost agent silently
 # downgrades the arm to the incumbent CLI.
 {
-  mapfile -t out < <(roundtrip "implementation" "challenger" "gpt-5.6-terra" "qwen-3-coder" "gpt-5.5")
+  mapfile -t out < <(roundtrip "implementation" "challenger" "gpt-5.6-terra" "qwen-3-coder" "gpt-5.6-terra")
   root="${out[0]}"
   feature_dir="${out[1]}"
   coding_model="$(jq -r '.coding.model' "$feature_dir/.phase-config.json")"

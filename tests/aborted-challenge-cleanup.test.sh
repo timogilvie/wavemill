@@ -73,6 +73,8 @@ cleanup_file="$tmp/aborted-cleanup.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_migrate_controller_observer_artifact"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_discard_prompt_registry_artifact"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_fetch_pr_terminal_evidence"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_record_pr_delivery_evidence"
@@ -85,9 +87,17 @@ cleanup_file="$tmp/aborted-cleanup.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "remove_task_state"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_task_worktree_identity"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "_wavemill_build_cleanup_evidence_json"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_orphan_dir_scan"
+  printf '\n'
   extract_function "$MONITOR_SCRIPT_FILE" "mark_task_aborted_for_cleanup"
   printf '\n'
   extract_function "$MONITOR_SCRIPT_FILE" "cleanup_aborted_challenge_arm"
+  printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_base_compare_ref"
   printf '\n'
   extract_function "$MONITOR_SCRIPT_FILE" "task_has_local_commit_evidence"
   printf '\n'
@@ -176,6 +186,14 @@ EOF
         "worktree remove") ORDER+="git-worktree;" ; return 0 ;;
         "fetch origin") return 0 ;;
         "show-ref --verify") return 0 ;;
+        "rev-parse --show-toplevel")
+          printf "%s\n" "$WORKTREE_ROOT/$SLUG"
+          return 0
+          ;;
+        "worktree list")
+          printf "worktree %s\n" "$WORKTREE_ROOT/$SLUG"
+          return 0
+          ;;
         "rev-parse --verify")
           case "${3:-}" in
             *demo-challenger*) printf "%s\n" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ;;

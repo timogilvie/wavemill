@@ -11,7 +11,7 @@
  */
 
 import { readFileSync, existsSync, statSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { resolve, join as joinPath } from 'node:path';
 import { createRequire } from 'node:module';
 import { errorMessage } from './error-utils.ts';
 import { parseModelSelector } from './model-registry.ts';
@@ -81,6 +81,9 @@ export interface DashboardConfig {
 }
 
 export interface TaskSelectionConfig {
+  /** What a bare Enter does at the task pickers; defaults to 'none'. */
+  enterAction?: 'none' | 'wave' | 'top-scored';
+  /** @deprecated Use enterAction. true maps to 'wave', false to 'top-scored'. */
   enterLaunchesWave?: boolean;
 }
 
@@ -291,6 +294,11 @@ export interface ChallengeSelectionHealthConfig {
     windowSeconds?: number;
     cooldownSeconds?: number;
   };
+  attemptRanking?: {
+    enabled?: boolean;
+    lookbackSeconds?: number;
+    failedAttemptCooldownSeconds?: number;
+  };
 }
 
 export interface ChallengeConfig {
@@ -367,6 +375,23 @@ export interface UiConfig {
 export interface ReviewConfig {
   maxIterations?: number;
   enabled?: boolean;
+  nativeTimeoutMs?: number;
+  nativeTimeoutMaxMs?: number;
+  nativeTimeoutMultiplier?: number;
+  nativeTimeoutModelOverrides?: Record<string, number | {
+    timeoutMs?: number;
+    maxMs?: number;
+    multiplier?: number;
+  }>;
+}
+
+export interface ResolvedNativeReviewTimeoutConfig {
+  timeoutMs: number;
+  maxMs: number;
+  multiplier: number;
+  attempt: number;
+  baseTimeoutMs: number;
+  model?: string;
 }
 
 export interface CrossPrRevertCheckConfig {
@@ -426,11 +451,38 @@ export interface NativeAgentProvidersConfig {
 
 export interface NativePatchCodingConfig {
   enabled?: boolean;
+  /**
+   * HOK-3145: when true, native coding agents may run full-suite test commands
+   * (`npm test`, `pnpm test`, `yarn test`, unsharded `tests/run-*.sh`). Defaults
+   * to false so a coding agent cannot loop on a multi-minute composite chain —
+   * CI runs the full suite anyway.
+   */
+  allowFullSuiteTests?: boolean;
+}
+
+export interface CanaryCohortMemberConfig {
+  provider: 'openai' | 'openrouter';
+  model: string;
 }
 
 export interface NativeCertificationConfig {
   autoRemediate?: boolean;
   renewalWindowDays?: number;
+  /**
+   * Bounded, reviewed cohort of native coding candidates whose live coding
+   * canaries are kept fresh (HOK-3062). Only listed identities are ever
+   * auto-refreshed; the fleet at large is never canaried automatically.
+   */
+  canaryCohort?: CanaryCohortMemberConfig[];
+  /** Minimum coding-ready cohort members before readiness alerts fire. */
+  minCodingReady?: number;
+  /**
+   * Days before live-canary expiry at which a still-valid pass becomes a
+   * refresh target. Must stay below the 14-day canary TTL.
+   */
+  canaryRenewalWindowDays?: number;
+  /** Master switch for automatic cohort canary refresh during preflight. */
+  canaryAutoRefresh?: boolean;
 }
 
 export interface NativeContextManagementConfig {
@@ -451,6 +503,171 @@ export interface NativePlanningConfig {
   };
 }
 
+export interface NativeAgentAdvancedFamilyConfig {
+  /** Master toggle for this advanced family. Defaults to false. */
+  enabled?: boolean;
+  /**
+   * Phases for which this family is eligible when enabled. Empty or omitted
+   * → family stays hidden even when `enabled` is true (fail-closed).
+   */
+  allowedPhases?: NativeAgentAllowedPhase[];
+  /**
+   * Optional narrow allowlist of family-scoped logical ids. When present, only
+   * listed logical ids become eligible. Unknown logical ids surface as a
+   * deterministic diagnostic during eligibility computation.
+   */
+  logicalIds?: string[];
+}
+
+/**
+ * Browser session bounds for the read-only browser family (HOK-3057). Every
+ * limit is fail-closed: absent or invalid fields disable the family even when
+ * `enabled` is true.
+ */
+export interface NativeAgentBrowserSessionConfig {
+  /**
+   * Canonical origin allowlist (scheme+host+port, no path). A navigation whose
+   * canonical origin is not in this list is denied before a request is sent.
+   */
+  allowedOrigins?: string[];
+  maxSessionLifetimeMs?: number;
+  maxCallsPerSession?: number;
+  navigateTimeoutMs?: number;
+  maxDomBytes?: number;
+  maxAxNodes?: number;
+  maxConsoleMessages?: number;
+  maxRequestSummaries?: number;
+}
+
+export interface NativeAgentBrowserFamilyConfig extends NativeAgentAdvancedFamilyConfig {
+  session?: NativeAgentBrowserSessionConfig;
+}
+
+/**
+ * Optional per-family limits for the read-only code_search substrate
+ * (HOK-3059). Absent fields fall back to `CODE_SEARCH_LIMIT_DEFAULTS`.
+ */
+export interface NativeAgentCodeSearchLimitsConfig {
+  maxFiles?: number;
+  maxBytes?: number;
+  maxSymbols?: number;
+  maxResults?: number;
+}
+
+export interface NativeAgentCodeSearchFamilyConfig extends NativeAgentAdvancedFamilyConfig {
+  limits?: NativeAgentCodeSearchLimitsConfig;
+}
+
+/**
+ * Optional per-family bounds for the policy-bound AST transform family
+ * (HOK-3060). Absent fields fall back to `AST_TRANSFORM_LIMIT_DEFAULTS`. The
+ * index budgets mirror code_search because the transform reuses the same
+ * language index.
+ */
+export interface NativeAgentAstLimitsConfig {
+  maxFiles?: number;
+  maxBytes?: number;
+  maxSymbols?: number;
+  maxMatches?: number;
+  maxSummaryBytes?: number;
+}
+
+export interface NativeAgentAstFamilyConfig extends NativeAgentAdvancedFamilyConfig {
+  limits?: NativeAgentAstLimitsConfig;
+}
+
+/**
+ * Screenshot capture limits for the screenshot family (HOK-3058).
+ * All limits default to documented values when absent or invalid.
+ */
+export interface NativeAgentScreenshotLimitsConfig {
+  maxImageBytes?: number;
+  maxWidth?: number;
+  maxHeight?: number;
+  oversizePolicy?: 'reject' | 'downscale';
+  maxComparePixels?: number;
+  diffThreshold?: number;
+}
+
+export interface NativeAgentScreenshotFamilyConfig extends NativeAgentAdvancedFamilyConfig {
+  limits?: NativeAgentScreenshotLimitsConfig;
+}
+
+export interface ResolvedNativeScreenshotConfig {
+  enabled: boolean;
+  allowedPhases: NativeAgentAllowedPhase[];
+  logicalIds?: string[];
+  limits: {
+    maxImageBytes: number;
+    maxWidth: number;
+    maxHeight: number;
+    oversizePolicy: 'reject' | 'downscale';
+    maxComparePixels: number;
+    diffThreshold: number;
+  };
+  invalidReasons: string[];
+}
+
+/**
+ * Timeout and output-cap defaults applied to every configured MCP server
+ * unless the server declaration overrides the field. Every value has a
+ * positive lower bound; `maxOutputBytes` must remain ≥ 4 KiB so redacted
+ * error messages always fit inside the cap.
+ */
+export interface NativeAgentMcpFamilyDefaults {
+  startupTimeoutMs?: number;
+  callTimeoutMs?: number;
+  shutdownTimeoutMs?: number;
+  maxOutputBytes?: number;
+  /**
+   * Number of consecutive failed calls at which the client stops the server
+   * (fail-closed). Zero disables the trip. Defaults to 3.
+   */
+  failureThreshold?: number;
+}
+
+export interface NativeAgentMcpServerConfig {
+  /** Wavemill-side provider proxy identifier (e.g. 'pi-mcp-proxy'). */
+  providerProxy: string;
+  /** Executable to spawn for the MCP server. */
+  command: string;
+  /** Argument vector passed to the server process. Empty is legal. */
+  args: string[];
+  /**
+   * Process-env variables that survive the child spawn allowlist. Empty means
+   * the child receives no env vars beyond the minimal bootstrap set.
+   */
+  envAllowlist: string[];
+  /** Non-empty list of logical tool names exported by this server. */
+  tools: string[];
+  /** Whether this server exposes mutating tools. Defaults to `read-only`. */
+  class?: 'read-only' | 'mutation';
+  /** Per-server override of the family startup timeout. */
+  startupTimeoutMs?: number;
+  /** Per-server override of the family call timeout. */
+  callTimeoutMs?: number;
+  /** Per-server override of the family shutdown timeout. */
+  shutdownTimeoutMs?: number;
+  /** Per-server override of the family output cap. */
+  maxOutputBytes?: number;
+  /** Per-server override of the failure threshold. */
+  failureThreshold?: number;
+}
+
+export interface NativeAgentMcpFamilyConfig extends NativeAgentAdvancedFamilyConfig {
+  defaults?: NativeAgentMcpFamilyDefaults;
+  servers?: Record<string, NativeAgentMcpServerConfig>;
+}
+
+export interface NativeAgentAdvancedConfig {
+  browser?: NativeAgentBrowserFamilyConfig;
+  screenshot?: NativeAgentScreenshotFamilyConfig;
+  mcp?: NativeAgentMcpFamilyConfig;
+  code_search?: NativeAgentCodeSearchFamilyConfig;
+  ast?: NativeAgentAstFamilyConfig;
+  eval?: NativeAgentAdvancedFamilyConfig;
+}
+
 export interface NativeAgentConfig {
   enabled?: boolean;
   allowedPhases?: NativeAgentAllowedPhase[];
@@ -462,6 +679,12 @@ export interface NativeAgentConfig {
   certification?: NativeCertificationConfig;
   contextManagement?: NativeContextManagementConfig;
   providers?: NativeAgentProvidersConfig;
+  /**
+   * Advanced-tool family opt-ins (Epic 10). Every family defaults off; a
+   * family becomes eligible only when explicitly enabled for the target
+   * phase. See `shared/lib/native-agent/tools/exposure.ts`.
+   */
+  advanced?: NativeAgentAdvancedConfig;
 }
 
 export interface NativeExpansionConfig {
@@ -472,6 +695,7 @@ export interface NativeExpansionConfig {
 
 export interface ResolvedNativePatchCodingConfig {
   enabled: boolean;
+  allowFullSuiteTests: boolean;
 }
 
 export interface IntegrationConfig {
@@ -483,9 +707,27 @@ export interface IntegrationConfig {
   deleteBranchAfterMerge: boolean;
   haltOnRed: boolean;
   requiredChecks: string[];
+  /**
+   * Check-run names on the integration tip whose failure is recorded but never
+   * makes integration unhealthy. Applies only to the merge-lane tip health
+   * gate, never to the PR-level ready gate — a PR whose own head SHA reports
+   * one of these checks as failed is still blocked by the standard rollup.
+   * Exact name matching (no glob/regex) to avoid accidentally demoting real
+   * checks; a renamed CI job must update this list.
+   */
+  advisoryChecks: string[];
   highRiskPolicy: 'block' | 'manual' | 'allow';
   useMillSession: boolean;
   mergeLockTimeoutMinutes: number;
+  /**
+   * End-to-end scratch-worktree preparation deadline (minutes). Bounds the
+   * combined reap + fetch + `git worktree add` cost, killing the whole process
+   * group on expiry so leaked git descendants (ssh, git-remote-https, hooks)
+   * do not keep mutating state after the timeout. Kept above the individual
+   * git command timeouts but well below `mergeLockTimeoutMinutes`, so prep
+   * stalls surface long before the generic stale-lock reclaim (HOK-3039).
+   */
+  worktreePrepTimeoutMinutes: number;
   readyPolicy?: IntegrationReadyPolicyConfig;
 }
 
@@ -498,6 +740,41 @@ export interface ObserverConfig {
     maxSnapshots: number;
   };
   linear?: Partial<ObserverLinearConfig>;
+  autoFix?: Partial<ObserverAutoFixConfig>;
+  alerts?: Partial<ObserverAlertsConfig>;
+}
+
+/** HOK-3097: opt-in observer self-repair actions. */
+export interface ObserverAutoFixConfig {
+  enabled: boolean;
+  quietMinutes: number;
+  updateBranchFromBase: {
+    enabled: boolean;
+    maxAttempts: number;
+  };
+  resetReadyRecheckBudget: {
+    enabled: boolean;
+  };
+  forfeitStuckChallengeArm: {
+    enabled: boolean;
+    stuckHours: number;
+  };
+}
+
+export type ObserverAlertMinSeverity = 'urgent' | 'high';
+export type ObserverAlertPushFormat = 'ntfy' | 'json';
+
+/** HOK-3097: opt-in desktop/push alerts for persistent urgent/high findings. */
+export interface ObserverAlertsConfig {
+  enabled: boolean;
+  minSeverity: ObserverAlertMinSeverity;
+  persistMinutes: number;
+  repeatMinutes: number;
+  desktop: boolean;
+  push: {
+    url?: string;
+    format: ObserverAlertPushFormat;
+  };
 }
 
 export type ObserverLinearPolicyStrategy = 'create' | 'no_create' | 'threshold' | 'create_if_persistent';
@@ -519,9 +796,58 @@ export interface ObserverLinearRedactionConfig {
   markFormat: string;
 }
 
+export type ObserverLinearMode = 'off' | 'offline' | 'shadow' | 'live';
+
+export interface ObserverLinearShadowConfig {
+  auditPath: string;
+  countersPath: string;
+  maxEntries: number;
+  maxAgeDays: number;
+  maxLookupsPerPass: number;
+}
+
+export interface ObserverLinearLifecycleConfig {
+  enabled: boolean;
+  commentOnly: boolean;
+  closeOnOperatorResolved: boolean;
+  resolvedStateName?: string;
+  closeOnOperatorArchived: boolean;
+  archivedStateName?: string;
+  reopenOnRecurrence: boolean;
+  reopenStateName?: string;
+}
+
+/**
+ * The mode the managed Backstage Observer service actually runs in. This is a
+ * deliberately narrower set than {@link ObserverLinearMode}: `offline` is a
+ * CLI/legacy no-network compatibility mode and is never a route to managed
+ * filing, so the managed service only ever resolves to one of these three.
+ */
+export type ObserverLinearManagedServiceMode = 'off' | 'shadow' | 'live';
+
+/** How the effective observer.linear mode was chosen. */
+export type ObserverLinearModeSource = 'explicit' | 'legacy' | 'default';
+
+/**
+ * Rollout / promotion gate evidence for managed incident-to-Linear filing.
+ * Every field defaults to the safe value so `live` cannot start until an
+ * operator has explicitly recorded that each promotion gate has passed.
+ */
+export interface ObserverLinearRolloutConfig {
+  /** Operator attestation that HOK-3031..HOK-3035 and go/no-go review passed. */
+  gatesPassed: boolean;
+  /** Operator attestation that the configured shadow trial completed cleanly. */
+  shadowTrialCompleted: boolean;
+  /** Operator attestation that live→shadow/off rollback was rehearsed. */
+  rollbackRehearsed: boolean;
+  /** Hard ceiling on proposed create/update actions per pass for the canary. */
+  maxProposedPerPass: number;
+}
+
 export interface ObserverLinearConfig {
   enabled: boolean;
   detectionOnly: boolean;
+  mode: ObserverLinearMode;
   project?: string;
   team?: string;
   label?: string;
@@ -539,6 +865,29 @@ export interface ObserverLinearConfig {
     stale_orphaned_state: ObserverLinearPolicyConfig;
   };
   redaction: ObserverLinearRedactionConfig;
+  shadow: ObserverLinearShadowConfig;
+  lifecycle: ObserverLinearLifecycleConfig;
+  rollout: ObserverLinearRolloutConfig;
+}
+
+/** Runtime inputs the service-mode resolver validates against, beyond config. */
+export interface ObserverLinearServiceContext {
+  /** Whether a Linear API credential is available (boolean only — never the value). */
+  credentialReady: boolean;
+}
+
+/** Fail-closed resolution of the managed Backstage Observer service mode. */
+export interface ObserverLinearServiceModeResolution {
+  /** The mode the managed service will actually run in. */
+  mode: ObserverLinearManagedServiceMode;
+  /** The mode the configuration requested (before any downgrade). */
+  requested: ObserverLinearMode;
+  /** How `requested` was chosen (explicit field vs. legacy vs. default). */
+  source: ObserverLinearModeSource;
+  /** True when the service mode was downgraded from what config requested. */
+  downgraded: boolean;
+  /** Human-readable, secret-free reasons for any downgrade. */
+  reasons: string[];
 }
 
 export interface IncidentConfig {
@@ -627,8 +976,14 @@ export interface ReadyConfig {
   remediationLogMaxBytes?: number;
   verificationGatingEnabled?: boolean;
   localCommandMap?: Record<string, string>;
+  routeStamp?: ReadyRouteStampConfig;
   remediation?: ReadyRemediationConfig;
   watchdog?: ReadyWatchdogConfig;
+}
+
+export interface ReadyRouteStampConfig {
+  enabled?: boolean;
+  requireComplete?: boolean;
 }
 
 export interface ReadyMigrationBaseRefreshConfig {
@@ -674,6 +1029,13 @@ export interface MergeQueueConfig {
   stuckTimeoutSeconds?: number;
   conflictGroupingEnabled?: boolean;
   skipCooldownSeconds?: number;
+}
+
+/** Wave planning strategy for tools/plan-queue.ts (HOK-3131). */
+export type QueuePlannerMode = 'legacy' | 'grounded';
+
+export interface QueuePlannerConfig {
+  mode?: QueuePlannerMode;
 }
 
 export interface MonitorConfig {
@@ -839,6 +1201,7 @@ export interface WavemillConfig {
   ready?: ReadyConfig;
   mergeQueue?: MergeQueueConfig;
   monitor?: MonitorConfig;
+  queuePlanner?: QueuePlannerConfig;
   permissions?: PermissionsConfig;
   quota?: QuotaConfig;
   verification?: VerificationConfig;
@@ -856,13 +1219,15 @@ export const INTEGRATION_DEFAULTS: IntegrationConfig = {
   deleteBranchAfterMerge: true,
   haltOnRed: true,
   requiredChecks: [],
+  advisoryChecks: ['OpenRouter Alias Audit'],
   highRiskPolicy: 'manual',
   useMillSession: true,
   mergeLockTimeoutMinutes: 45,
+  worktreePrepTimeoutMinutes: 10,
 };
 
 export const OBSERVER_DEFAULTS: ObserverConfig = {
-  enabled: false,
+  enabled: true,
   intervalSeconds: 120,
   heartbeatStaleSeconds: 300,
   maxLogLines: 240,
@@ -871,9 +1236,60 @@ export const OBSERVER_DEFAULTS: ObserverConfig = {
   },
 };
 
+export const OBSERVER_AUTO_FIX_DEFAULTS: ObserverAutoFixConfig = {
+  enabled: false,
+  quietMinutes: 10,
+  updateBranchFromBase: {
+    enabled: false,
+    maxAttempts: 2,
+  },
+  resetReadyRecheckBudget: {
+    enabled: false,
+  },
+  forfeitStuckChallengeArm: {
+    enabled: false,
+    stuckHours: 2,
+  },
+};
+
+export const OBSERVER_ALERTS_DEFAULTS: ObserverAlertsConfig = {
+  enabled: false,
+  minSeverity: 'high',
+  persistMinutes: 15,
+  repeatMinutes: 240,
+  desktop: true,
+  push: {
+    format: 'ntfy',
+  },
+};
+
+export const OBSERVER_LINEAR_SHADOW_DEFAULTS: ObserverLinearShadowConfig = {
+  auditPath: '.wavemill/observer/shadow-audit.jsonl',
+  countersPath: '.wavemill/observer/shadow-counters.json',
+  maxEntries: 500,
+  maxAgeDays: 14,
+  maxLookupsPerPass: 40,
+};
+
+export const OBSERVER_LINEAR_LIFECYCLE_DEFAULTS: ObserverLinearLifecycleConfig = {
+  enabled: false,
+  commentOnly: true,
+  closeOnOperatorResolved: false,
+  closeOnOperatorArchived: false,
+  reopenOnRecurrence: true,
+};
+
+export const OBSERVER_LINEAR_ROLLOUT_DEFAULTS: ObserverLinearRolloutConfig = {
+  gatesPassed: false,
+  shadowTrialCompleted: false,
+  rollbackRehearsed: false,
+  maxProposedPerPass: 5,
+};
+
 export const OBSERVER_LINEAR_DEFAULTS: ObserverLinearConfig = {
   enabled: false,
   detectionOnly: false,
+  mode: 'off',
   retryQueuePath: '.wavemill/registry/linear-incident-queue.jsonl',
   updateCooldownMinutes: 5,
   maxIncidentsPerPass: 10,
@@ -896,6 +1312,9 @@ export const OBSERVER_LINEAR_DEFAULTS: ObserverLinearConfig = {
     truncateLength: 200,
     markFormat: '[REDACTED: {type}]',
   },
+  shadow: OBSERVER_LINEAR_SHADOW_DEFAULTS,
+  lifecycle: OBSERVER_LINEAR_LIFECYCLE_DEFAULTS,
+  rollout: OBSERVER_LINEAR_ROLLOUT_DEFAULTS,
 };
 
 export const PROMOTION_DEFAULTS: PromotionConfig = {
@@ -922,6 +1341,9 @@ export const DEFAULT_READY_MIGRATION_DANGER_LABELS = {
 } as const;
 
 const DEFAULT_CHALLENGE_EVAL_HARD_FAILURE_RETRY_MAX_ATTEMPTS = 2;
+const DEFAULT_NATIVE_REVIEW_TIMEOUT_MS = 300_000;
+const DEFAULT_NATIVE_REVIEW_TIMEOUT_MAX_MS = 1_200_000;
+const DEFAULT_NATIVE_REVIEW_TIMEOUT_MULTIPLIER = 2;
 
 // ────────────────────────────────────────────────────────────────
 // Schema Validation
@@ -1708,6 +2130,195 @@ export function getMergeQueueConfig(repoDir?: string): Required<MergeQueueConfig
   };
 }
 
+// ── Session capabilities (HOK-3102) ──────────────────────────────────────────
+//
+// A single source of truth for "which consumers are active in this session?"
+// Every producer of consumer-bound work (tend handoffs, wm:ready labels, pane
+// releases to the merge queue, merge-candidate lifecycle, observer findings,
+// merge-lane BEHIND updates) must ask this resolver before producing work,
+// instead of re-deriving the answer from `integration.enabled`,
+// `useMillSession`, `MERGE_QUEUE_ENABLED`, or `observer.enabled` at each site.
+//
+// See features/…/plan.md (HOK-3102) for the full design decisions (D1-D10).
+
+/**
+ * Who will merge a green PR in this session:
+ * - `tend`     — the mill's tend loop is running and will merge (auto).
+ * - `operator` — a human will merge (integration off; the HOK-3093 default).
+ * - `none`     — integration is on but this session runs no tend; nothing
+ *                automatic will merge, but the PR still targets integration.
+ */
+export type MergeExecutor = 'tend' | 'operator' | 'none';
+
+/**
+ * Advisory backstage service health snapshot. Reads
+ * `.wavemill/backstage-health.json` `services.{tend,observer}.status`.
+ * A null value means the file was missing/unreadable/malformed, or the
+ * service entry is missing. Health does NOT flip `tend` / `mergeExecutor`
+ * (see D2 in plan): it is exposed so status/dashboard can annotate
+ * "tend configured but degraded" without stranding PRs during backoff.
+ */
+export interface SessionCapabilitiesHealth {
+  tend: string | null;
+  observer: string | null;
+}
+
+export interface SessionCapabilitiesReasons {
+  tend: string;
+  observer: string;
+  mergeExecutor: string;
+  mergeQueue: string;
+}
+
+export interface SessionCapabilities {
+  /** This mill session runs the tend loop (backstage window). */
+  tend: boolean;
+  /** This mill session runs the observer loop. */
+  observer: boolean;
+  /** Who merges green PRs (see MergeExecutor). */
+  mergeExecutor: MergeExecutor;
+  /** Mill-side merge-candidate lifecycle is live (requires tend + config on). */
+  mergeQueue: boolean;
+  /** Human-readable reasons for each field, for logs and dashboard. */
+  reasons: SessionCapabilitiesReasons;
+  /** Advisory backstage service health, never gating. */
+  health: SessionCapabilitiesHealth;
+}
+
+export interface ResolveSessionCapabilitiesOptions {
+  /**
+   * Environment map to read (defaults to `process.env`). Testing hook so tests
+   * can pin `MERGE_QUEUE_ENABLED` without process-wide mutation.
+   */
+  env?: NodeJS.ProcessEnv;
+  /**
+   * When false, skip the health file read (returns `null` in `health.*`).
+   * Producers that must not touch disk beyond config use `readHealth: false`.
+   */
+  readHealth?: boolean;
+}
+
+function readBackstageHealthStatus(repoDir: string): SessionCapabilitiesHealth {
+  const fallback: SessionCapabilitiesHealth = { tend: null, observer: null };
+  try {
+    const p = joinPath(repoDir, '.wavemill', 'backstage-health.json');
+    if (!existsSync(p)) return fallback;
+    const raw = readFileSync(p, 'utf-8');
+    if (!raw.trim()) return fallback;
+    const parsed = JSON.parse(raw) as {
+      services?: Record<string, { status?: unknown } | undefined>;
+    };
+    const services = parsed?.services ?? {};
+    const readStatus = (name: string): string | null => {
+      const entry = services[name];
+      if (!entry || typeof entry !== 'object') return null;
+      const status = (entry as { status?: unknown }).status;
+      return typeof status === 'string' ? status : null;
+    };
+    return {
+      tend: readStatus('tend'),
+      observer: readStatus('observer'),
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function envMergeQueueOverride(env: NodeJS.ProcessEnv): boolean | undefined {
+  const raw = env.MERGE_QUEUE_ENABLED;
+  if (raw === undefined) return undefined;
+  const v = String(raw).trim().toLowerCase();
+  if (v === '' ) return undefined;
+  if (v === '0' || v === 'false' || v === 'no') return false;
+  if (v === '1' || v === 'true' || v === 'yes') return true;
+  return undefined;
+}
+
+/**
+ * Resolve the session's active-consumer capability set.
+ *
+ * Rules (see plan D1):
+ *   - `backstage`   = integration.enabled === true && useMillSession !== false
+ *   - `tend`        = backstage
+ *   - `observer`    = observer.enabled !== false (HOK-3094: default on in
+ *                    every mill session, independent of backstage/integration)
+ *   - `mergeExecutor`:
+ *       tend      → 'tend'
+ *       backstage off but integration.enabled === true → 'none'
+ *       integration off → 'operator' (HOK-3093 default)
+ *   - `mergeQueue`  = mergeQueue.enabled AND mergeExecutor === 'tend'
+ *                    (MERGE_QUEUE_ENABLED env override honoured)
+ *
+ * This function is pure apart from reading config and (optionally) the
+ * backstage health file. It has no side effects.
+ */
+export function resolveSessionCapabilities(
+  repoDir?: string,
+  opts: ResolveSessionCapabilitiesOptions = {},
+): SessionCapabilities {
+  const env = opts.env ?? process.env;
+  const readHealth = opts.readHealth !== false;
+  const dir = repoDir ?? process.cwd();
+
+  const integration = getIntegrationConfig(dir);
+  const observer = getObserverConfig(dir);
+  const mergeQueue = getMergeQueueConfig(dir);
+
+  const backstage = integration.enabled === true && integration.useMillSession !== false;
+
+  const tend = backstage;
+  const observerOn = observer.enabled !== false;
+
+  let mergeExecutor: MergeExecutor;
+  let mergeExecutorReason: string;
+  if (tend) {
+    mergeExecutor = 'tend';
+    mergeExecutorReason = 'integration on + useMillSession on → tend merges';
+  } else if (integration.enabled === true) {
+    mergeExecutor = 'none';
+    mergeExecutorReason = "integration on but useMillSession off; run `wavemill tend --loop` or merge manually";
+  } else {
+    mergeExecutor = 'operator';
+    mergeExecutorReason = 'integration off → operator merges (HOK-3093 default)';
+  }
+
+  const envOverride = envMergeQueueOverride(env);
+  const mergeQueueConfigOn = envOverride === undefined ? mergeQueue.enabled : envOverride;
+  const mergeQueueOn = mergeQueueConfigOn && mergeExecutor === 'tend';
+
+  const health: SessionCapabilitiesHealth = readHealth
+    ? readBackstageHealthStatus(dir)
+    : { tend: null, observer: null };
+
+  const reasons: SessionCapabilitiesReasons = {
+    tend: tend
+      ? 'integration.enabled && useMillSession'
+      : (integration.enabled === true
+          ? 'integration.enabled but useMillSession=false'
+          : 'integration.enabled=false'),
+    observer: observerOn
+      ? 'observer on (default; independent of integration)'
+      : 'observer.enabled=false',
+    mergeExecutor: mergeExecutorReason,
+    mergeQueue: mergeQueueOn
+      ? 'mergeQueue.enabled && mergeExecutor=tend'
+      : (mergeExecutor !== 'tend'
+          ? 'no tend to drain the queue'
+          : (envOverride === false
+              ? 'MERGE_QUEUE_ENABLED=false override'
+              : 'mergeQueue.enabled=false')),
+  };
+
+  return {
+    tend,
+    observer: observerOn,
+    mergeExecutor,
+    mergeQueue: mergeQueueOn,
+    reasons,
+    health,
+  };
+}
+
 /**
  * Get the integration mode config section.
  * Returns defaults when not configured.
@@ -1742,6 +2353,49 @@ export function getReviewMergeConfig(repoDir?: string): ResolvedReviewMergeConfi
       maxRecentMerges:
         crossPrRevertCheck.maxRecentMerges ?? REVIEW_MERGE_DEFAULTS.crossPrRevertCheck.maxRecentMerges,
     },
+  };
+}
+
+function positiveInteger(value: unknown): number | undefined {
+  return Number.isInteger(value) && (value as number) > 0 ? value as number : undefined;
+}
+
+function nativeReviewOverrideForModel(
+  overrides: ReviewConfig['nativeTimeoutModelOverrides'],
+  model?: string,
+): number | { timeoutMs?: number; maxMs?: number; multiplier?: number } | undefined {
+  const cleanModel = model?.trim();
+  if (!cleanModel || !overrides) return undefined;
+  return overrides[cleanModel] ?? overrides[cleanModel.replace(/^native-[^/]+\//, '')] ?? overrides[cleanModel.replace(/^[^/]+\//, '')];
+}
+
+export function getNativeReviewTimeoutConfig(
+  repoDir?: string,
+  model?: string,
+  retryAttempt = 0,
+): ResolvedNativeReviewTimeoutConfig {
+  const review = loadWavemillConfig(repoDir).review ?? {};
+  const override = nativeReviewOverrideForModel(review.nativeTimeoutModelOverrides, model);
+  const overrideObject = typeof override === 'object' && override !== null ? override : undefined;
+  const configuredBase = positiveInteger(typeof override === 'number' ? override : overrideObject?.timeoutMs)
+    ?? positiveInteger(review.nativeTimeoutMs)
+    ?? DEFAULT_NATIVE_REVIEW_TIMEOUT_MS;
+  const configuredMax = positiveInteger(overrideObject?.maxMs)
+    ?? positiveInteger(review.nativeTimeoutMaxMs)
+    ?? DEFAULT_NATIVE_REVIEW_TIMEOUT_MAX_MS;
+  const configuredMultiplier = positiveInteger(overrideObject?.multiplier)
+    ?? positiveInteger(review.nativeTimeoutMultiplier)
+    ?? DEFAULT_NATIVE_REVIEW_TIMEOUT_MULTIPLIER;
+  const maxMs = Math.max(configuredBase, configuredMax);
+  const attempt = Math.max(0, Math.floor(retryAttempt));
+  const scaled = configuredBase * Math.pow(configuredMultiplier, attempt);
+  return {
+    timeoutMs: Math.min(maxMs, Math.round(scaled)),
+    maxMs,
+    multiplier: configuredMultiplier,
+    attempt,
+    baseTimeoutMs: configuredBase,
+    ...(model ? { model } : {}),
   };
 }
 
@@ -1793,6 +2447,15 @@ export function getMaxCostUsd(repoDir?: string): number | undefined {
 }
 
 /**
+ * Get the queue planner config section (HOK-3131).
+ * `mode` resolves to 'legacy' unless explicitly set to 'grounded'.
+ */
+export function getQueuePlannerConfig(repoDir?: string): Required<QueuePlannerConfig> {
+  const mode = loadWavemillConfig(repoDir).queuePlanner?.mode;
+  return { mode: mode === 'grounded' ? 'grounded' : 'legacy' };
+}
+
+/**
  * Get the UI config section.
  * Returns empty object if not configured.
  */
@@ -1840,15 +2503,75 @@ export function getObserverConfig(repoDir?: string): ObserverConfig {
   };
 }
 
+/**
+ * HOK-3097: resolved observer auto-fix config with env overrides.
+ *
+ * `WAVEMILL_OBSERVER_AUTOFIX=0` forces the master switch off; the per-fix
+ * flags still default to false, so an explicit `0` only overrides an on-disk
+ * opt-in. Any other value leaves the switch alone.
+ */
+export function getObserverAutoFixConfig(repoDir?: string): ObserverAutoFixConfig {
+  const observer = loadWavemillConfig(repoDir).observer ?? {};
+  const autoFix = observer.autoFix ?? {};
+  const envKill = process.env.WAVEMILL_OBSERVER_AUTOFIX;
+  const envDisabled = envKill === '0';
+  return {
+    enabled: envDisabled ? false : (autoFix.enabled ?? OBSERVER_AUTO_FIX_DEFAULTS.enabled),
+    quietMinutes: autoFix.quietMinutes ?? OBSERVER_AUTO_FIX_DEFAULTS.quietMinutes,
+    updateBranchFromBase: {
+      ...OBSERVER_AUTO_FIX_DEFAULTS.updateBranchFromBase,
+      ...(autoFix.updateBranchFromBase ?? {}),
+    },
+    resetReadyRecheckBudget: {
+      ...OBSERVER_AUTO_FIX_DEFAULTS.resetReadyRecheckBudget,
+      ...(autoFix.resetReadyRecheckBudget ?? {}),
+    },
+    forfeitStuckChallengeArm: {
+      ...OBSERVER_AUTO_FIX_DEFAULTS.forfeitStuckChallengeArm,
+      ...(autoFix.forfeitStuckChallengeArm ?? {}),
+    },
+  };
+}
+
+/**
+ * HOK-3097: resolved observer alerts config. `WAVEMILL_OBSERVER_PUSH_URL`
+ * overrides `push.url` so secrets can live outside the repo config.
+ */
+export function getObserverAlertsConfig(repoDir?: string): ObserverAlertsConfig {
+  const observer = loadWavemillConfig(repoDir).observer ?? {};
+  const alerts = observer.alerts ?? {};
+  const envPush = process.env.WAVEMILL_OBSERVER_PUSH_URL;
+  const push = {
+    ...OBSERVER_ALERTS_DEFAULTS.push,
+    ...(alerts.push ?? {}),
+  };
+  if (envPush && envPush.length > 0) push.url = envPush;
+  return {
+    enabled: alerts.enabled ?? OBSERVER_ALERTS_DEFAULTS.enabled,
+    minSeverity: alerts.minSeverity ?? OBSERVER_ALERTS_DEFAULTS.minSeverity,
+    persistMinutes: alerts.persistMinutes ?? OBSERVER_ALERTS_DEFAULTS.persistMinutes,
+    repeatMinutes: alerts.repeatMinutes ?? OBSERVER_ALERTS_DEFAULTS.repeatMinutes,
+    desktop: alerts.desktop ?? OBSERVER_ALERTS_DEFAULTS.desktop,
+    push,
+  };
+}
+
 export function getObserverLinearConfig(repoDir?: string): ObserverLinearConfig {
   const observer = loadWavemillConfig(repoDir).observer ?? {};
   const linear = observer.linear ?? {};
   const envEnabled = process.env.WAVEMILL_OBSERVER_LINEAR_ENABLED;
   const envProject = process.env.WAVEMILL_OBSERVER_LINEAR_PROJECT;
+  const enabled = envEnabled === undefined
+    ? linear.enabled ?? OBSERVER_LINEAR_DEFAULTS.enabled
+    : envEnabled === '1' || envEnabled.toLowerCase() === 'true';
+  const detectionOnly = linear.detectionOnly ?? OBSERVER_LINEAR_DEFAULTS.detectionOnly;
+  const mode = resolveObserverLinearMode(linear.mode, enabled, detectionOnly);
   return {
     ...OBSERVER_LINEAR_DEFAULTS,
     ...linear,
-    enabled: envEnabled === undefined ? linear.enabled ?? OBSERVER_LINEAR_DEFAULTS.enabled : envEnabled === '1' || envEnabled.toLowerCase() === 'true',
+    mode,
+    enabled,
+    detectionOnly,
     project: envProject ?? linear.project,
     policies: {
       product_defect: {
@@ -1877,7 +2600,133 @@ export function getObserverLinearConfig(repoDir?: string): ObserverLinearConfig 
       ...(linear.redaction ?? {}),
       patterns: linear.redaction?.patterns ?? OBSERVER_LINEAR_DEFAULTS.redaction.patterns,
     },
+    shadow: {
+      ...OBSERVER_LINEAR_SHADOW_DEFAULTS,
+      ...(linear.shadow ?? {}),
+    },
+    lifecycle: {
+      ...OBSERVER_LINEAR_LIFECYCLE_DEFAULTS,
+      ...(linear.lifecycle ?? {}),
+    },
+    rollout: {
+      ...OBSERVER_LINEAR_ROLLOUT_DEFAULTS,
+      ...(linear.rollout ?? {}),
+    },
   };
+}
+
+/**
+ * Determine how the effective observer.linear mode was chosen, so operators can
+ * see whether an explicit `mode` field, the legacy `enabled`/`detectionOnly`
+ * fields, or the built-in default is driving managed filing.
+ */
+export function resolveObserverLinearModeSource(
+  linear: Partial<ObserverLinearConfig> | undefined,
+): ObserverLinearModeSource {
+  if (linear?.mode !== undefined) return 'explicit';
+  if (linear?.enabled !== undefined || linear?.detectionOnly !== undefined) return 'legacy';
+  return 'default';
+}
+
+/**
+ * Resolve the managed Backstage Observer service mode, failing closed.
+ *
+ * The managed service only ever runs `off`, `shadow`, or `live`. `offline` is a
+ * CLI/legacy no-network compatibility mode and never routes to managed filing,
+ * so it resolves to `off` here. `live` is the most privileged mode and can only
+ * be selected when every promotion gate holds:
+ *   - a Linear credential is ready,
+ *   - team, project, and label routing are all configured,
+ *   - the rollout gates, shadow trial, and rollback rehearsal are attested, and
+ *   - the per-pass proposed-volume ceiling is a sane positive bound.
+ *
+ * Any unmet requirement downgrades `live` to `shadow` (still a safe read-only
+ * mode) when reads are possible, or to `off` when no credential is available.
+ * A missing credential always downgrades to `off` so a shadow trial cannot spin
+ * without the ability to read. Invalid/unknown modes fail closed to `off`.
+ */
+export function resolveObserverLinearServiceMode(
+  config: Pick<ObserverLinearConfig, 'mode' | 'team' | 'project' | 'label' | 'rollout'>,
+  context: ObserverLinearServiceContext,
+  source: ObserverLinearModeSource = 'default',
+): ObserverLinearServiceModeResolution {
+  const requested = config.mode;
+  const reasons: string[] = [];
+
+  const done = (mode: ObserverLinearManagedServiceMode): ObserverLinearServiceModeResolution => {
+    // `offline` maps to `off` for the managed service but is not a "downgrade".
+    const requestedManaged: ObserverLinearManagedServiceMode =
+      requested === 'shadow' || requested === 'live' ? requested : 'off';
+    return { mode, requested, source, downgraded: mode !== requestedManaged, reasons };
+  };
+
+  if (requested === 'off' || requested === 'offline') {
+    return done('off');
+  }
+
+  if (requested !== 'shadow' && requested !== 'live') {
+    reasons.push(`unknown mode ${JSON.stringify(requested)} — failing closed to off`);
+    return done('off');
+  }
+
+  // Both shadow and live perform Linear reads, so a missing credential is fatal
+  // to either and must fail closed all the way to off (never a restart loop).
+  if (!context.credentialReady) {
+    reasons.push('Linear credential is not ready');
+    return done('off');
+  }
+
+  if (requested === 'shadow') {
+    return done('shadow');
+  }
+
+  // requested === 'live' — validate every promotion gate before allowing it.
+  const routingOk = Boolean(config.team && config.project && config.label);
+  if (!routingOk) {
+    reasons.push('routing (team, project, label) is not fully configured');
+  }
+  const { rollout } = config;
+  if (!rollout.gatesPassed) reasons.push('rollout gates are not marked passed');
+  if (!rollout.shadowTrialCompleted) reasons.push('shadow trial is not marked completed');
+  if (!rollout.rollbackRehearsed) reasons.push('rollback has not been rehearsed');
+  if (!(rollout.maxProposedPerPass > 0)) {
+    reasons.push('maxProposedPerPass must be a positive bound');
+  }
+
+  if (reasons.length > 0) {
+    // Credential is present (checked above) so reads are safe: downgrade to
+    // shadow rather than off, preserving observability of what live would do.
+    return done('shadow');
+  }
+
+  return done('live');
+}
+
+const VALID_OBSERVER_LINEAR_MODES: readonly ObserverLinearMode[] = ['off', 'offline', 'shadow', 'live'];
+
+/**
+ * Resolve the effective observer.linear mode.
+ *
+ * Precedence:
+ *   1. Explicit `mode` field wins (shadow can only be requested this way).
+ *   2. Otherwise derive from legacy fields so existing configs behave unchanged:
+ *      - `enabled=false` → `off`
+ *      - `enabled=true && detectionOnly=true` → `offline`
+ *      - `enabled=true && detectionOnly=false` → `live`
+ */
+export function resolveObserverLinearMode(
+  explicit: ObserverLinearMode | undefined,
+  enabled: boolean,
+  detectionOnly: boolean,
+): ObserverLinearMode {
+  if (explicit !== undefined) {
+    if (!VALID_OBSERVER_LINEAR_MODES.includes(explicit)) {
+      throw new Error(`observer.linear.mode must be one of ${VALID_OBSERVER_LINEAR_MODES.join('/')}, got ${JSON.stringify(explicit)}`);
+    }
+    return explicit;
+  }
+  if (!enabled) return 'off';
+  return detectionOnly ? 'offline' : 'live';
 }
 
 export function getIncidentConfig(repoDir?: string): Required<Pick<IncidentConfig, 'enabled'>> & IncidentConfig {
@@ -1952,6 +2801,316 @@ export function getNativePatchCodingConfig(repoDir?: string): ResolvedNativePatc
   const config = getNativeAgentConfig(repoDir);
   return {
     enabled: config.patchCoding?.enabled === true,
+    allowFullSuiteTests: config.patchCoding?.allowFullSuiteTests === true,
+  };
+}
+
+export interface ResolvedNativeBrowserConfig {
+  enabled: boolean;
+  allowedPhases: NativeAgentAllowedPhase[];
+  logicalIds?: string[];
+  session: {
+    allowedOrigins: string[];
+    maxSessionLifetimeMs: number;
+    maxCallsPerSession: number;
+    navigateTimeoutMs: number;
+    maxDomBytes: number;
+    maxAxNodes: number;
+    maxConsoleMessages: number;
+    maxRequestSummaries: number;
+  };
+  invalidReasons: string[];
+}
+
+const BROWSER_SESSION_DEFAULTS = Object.freeze({
+  maxSessionLifetimeMs: 120_000,
+  maxCallsPerSession: 40,
+  navigateTimeoutMs: 15_000,
+  maxDomBytes: 65_536,
+  maxAxNodes: 500,
+  maxConsoleMessages: 200,
+  maxRequestSummaries: 200,
+});
+
+const SCREENSHOT_LIMIT_DEFAULTS = Object.freeze({
+  maxImageBytes: 2 * 1024 * 1024, // 2 MiB
+  maxWidth: 4096,
+  maxHeight: 4096,
+  oversizePolicy: 'reject' as const,
+  maxComparePixels: 16_777_216, // 4096²
+  diffThreshold: 0.1,
+});
+
+/**
+ * Canonicalize an origin string down to `scheme://host[:port]`. Returns null
+ * for anything malformed, credential-bearing, or non-http(s).
+ */
+export function canonicalizeBrowserOrigin(candidate: string): string | null {
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    if (parsed.username || parsed.password) return null;
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the browser-family configuration into a normalized, fail-closed
+ * shape. `enabled` in the returned value is true only when the operator
+ * enabled the family AND every session field is valid. `invalidReasons` lists
+ * every fail-closed cause so a preflight can surface them.
+ */
+export function getNativeBrowserConfig(repoDir?: string): ResolvedNativeBrowserConfig {
+  const raw = getNativeAgentConfig(repoDir).advanced?.browser ?? {};
+  const session = raw.session ?? {};
+  const invalidReasons: string[] = [];
+
+  const rawOrigins = session.allowedOrigins ?? [];
+  const allowedOrigins = Array.from(
+    new Set(
+      rawOrigins
+        .map((origin) => canonicalizeBrowserOrigin(origin))
+        .filter((origin): origin is string => origin !== null),
+    ),
+  ).sort();
+
+  if (raw.enabled === true && allowedOrigins.length === 0) {
+    invalidReasons.push('empty_allowed_origins');
+  }
+  if (raw.enabled === true && rawOrigins.some((origin) => canonicalizeBrowserOrigin(origin) === null)) {
+    invalidReasons.push('invalid_allowed_origin');
+  }
+
+  const resolved = {
+    allowedOrigins,
+    maxSessionLifetimeMs: session.maxSessionLifetimeMs ?? BROWSER_SESSION_DEFAULTS.maxSessionLifetimeMs,
+    maxCallsPerSession: session.maxCallsPerSession ?? BROWSER_SESSION_DEFAULTS.maxCallsPerSession,
+    navigateTimeoutMs: session.navigateTimeoutMs ?? BROWSER_SESSION_DEFAULTS.navigateTimeoutMs,
+    maxDomBytes: session.maxDomBytes ?? BROWSER_SESSION_DEFAULTS.maxDomBytes,
+    maxAxNodes: session.maxAxNodes ?? BROWSER_SESSION_DEFAULTS.maxAxNodes,
+    maxConsoleMessages: session.maxConsoleMessages ?? BROWSER_SESSION_DEFAULTS.maxConsoleMessages,
+    maxRequestSummaries: session.maxRequestSummaries ?? BROWSER_SESSION_DEFAULTS.maxRequestSummaries,
+  };
+
+  const enabled = raw.enabled === true && invalidReasons.length === 0;
+
+  return {
+    enabled,
+    allowedPhases: raw.allowedPhases ?? [],
+    ...(raw.logicalIds ? { logicalIds: raw.logicalIds } : {}),
+    session: resolved,
+    invalidReasons,
+  };
+}
+
+export interface ResolvedNativeCodeSearchConfig {
+  enabled: boolean;
+  allowedPhases: NativeAgentAllowedPhase[];
+  logicalIds?: string[];
+  limits: {
+    maxFiles: number;
+    maxBytes: number;
+    maxSymbols: number;
+    maxResults: number;
+  };
+  invalidReasons: string[];
+}
+
+export const CODE_SEARCH_LIMIT_DEFAULTS = Object.freeze({
+  maxFiles: 2000,
+  maxBytes: 32 * 1024 * 1024,
+  maxSymbols: 20_000,
+  maxResults: 200,
+});
+
+const CODE_SEARCH_LIMIT_MAX = Object.freeze({
+  maxFiles: 100_000,
+  maxBytes: 512 * 1024 * 1024,
+  maxSymbols: 1_000_000,
+  maxResults: 200,
+});
+
+function clampLimit(
+  candidate: number | undefined,
+  fallback: number,
+  ceiling: number,
+): number {
+  if (candidate === undefined) return fallback;
+  const n = Math.floor(candidate);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(n, ceiling);
+}
+
+/**
+ * Resolve the code_search-family configuration into a normalized, fail-closed
+ * shape. `enabled` in the returned value is true only when the operator
+ * enabled the family AND every limit field is valid. `invalidReasons` lists
+ * fail-closed causes so preflight tooling can surface them.
+ */
+export function getNativeCodeSearchConfig(repoDir?: string): ResolvedNativeCodeSearchConfig {
+  const raw = getNativeAgentConfig(repoDir).advanced?.code_search ?? {};
+  const invalidReasons: string[] = [];
+  const rawLimits = raw.limits ?? {};
+
+  const limits = {
+    maxFiles: clampLimit(rawLimits.maxFiles, CODE_SEARCH_LIMIT_DEFAULTS.maxFiles, CODE_SEARCH_LIMIT_MAX.maxFiles),
+    maxBytes: clampLimit(rawLimits.maxBytes, CODE_SEARCH_LIMIT_DEFAULTS.maxBytes, CODE_SEARCH_LIMIT_MAX.maxBytes),
+    maxSymbols: clampLimit(rawLimits.maxSymbols, CODE_SEARCH_LIMIT_DEFAULTS.maxSymbols, CODE_SEARCH_LIMIT_MAX.maxSymbols),
+    maxResults: clampLimit(rawLimits.maxResults, CODE_SEARCH_LIMIT_DEFAULTS.maxResults, CODE_SEARCH_LIMIT_MAX.maxResults),
+  };
+
+  for (const [key, value] of Object.entries(rawLimits)) {
+    if (value === undefined) continue;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+      invalidReasons.push(`invalid_limit:${key}`);
+    }
+  }
+
+  const enabled = raw.enabled === true && invalidReasons.length === 0;
+
+  return {
+    enabled,
+    allowedPhases: raw.allowedPhases ?? [],
+    ...(raw.logicalIds ? { logicalIds: raw.logicalIds } : {}),
+    limits,
+    invalidReasons,
+  };
+}
+
+export interface ResolvedNativeAstConfig {
+  enabled: boolean;
+  allowedPhases: NativeAgentAllowedPhase[];
+  logicalIds?: string[];
+  limits: {
+    maxFiles: number;
+    maxBytes: number;
+    maxSymbols: number;
+    maxMatches: number;
+    maxSummaryBytes: number;
+  };
+  invalidReasons: string[];
+}
+
+export const AST_TRANSFORM_LIMIT_DEFAULTS = Object.freeze({
+  maxFiles: 2000,
+  maxBytes: 32 * 1024 * 1024,
+  maxSymbols: 20_000,
+  maxMatches: 500,
+  maxSummaryBytes: 4096,
+});
+
+const AST_TRANSFORM_LIMIT_MAX = Object.freeze({
+  maxFiles: 100_000,
+  maxBytes: 512 * 1024 * 1024,
+  maxSymbols: 1_000_000,
+  maxMatches: 5_000,
+  maxSummaryBytes: 65_536,
+});
+
+/**
+ * Resolve the ast-family configuration into a normalized, fail-closed shape.
+ * `enabled` is true only when the operator enabled the family AND every limit
+ * field is valid. `invalidReasons` lists fail-closed causes so preflight
+ * tooling can surface them. Bounds mirror `getNativeCodeSearchConfig` because
+ * the transform reuses the same language index.
+ */
+export function getNativeAstConfig(repoDir?: string): ResolvedNativeAstConfig {
+  const raw = getNativeAgentConfig(repoDir).advanced?.ast ?? {};
+  const invalidReasons: string[] = [];
+  const rawLimits = raw.limits ?? {};
+
+  const limits = {
+    maxFiles: clampLimit(rawLimits.maxFiles, AST_TRANSFORM_LIMIT_DEFAULTS.maxFiles, AST_TRANSFORM_LIMIT_MAX.maxFiles),
+    maxBytes: clampLimit(rawLimits.maxBytes, AST_TRANSFORM_LIMIT_DEFAULTS.maxBytes, AST_TRANSFORM_LIMIT_MAX.maxBytes),
+    maxSymbols: clampLimit(rawLimits.maxSymbols, AST_TRANSFORM_LIMIT_DEFAULTS.maxSymbols, AST_TRANSFORM_LIMIT_MAX.maxSymbols),
+    maxMatches: clampLimit(rawLimits.maxMatches, AST_TRANSFORM_LIMIT_DEFAULTS.maxMatches, AST_TRANSFORM_LIMIT_MAX.maxMatches),
+    maxSummaryBytes: clampLimit(
+      rawLimits.maxSummaryBytes,
+      AST_TRANSFORM_LIMIT_DEFAULTS.maxSummaryBytes,
+      AST_TRANSFORM_LIMIT_MAX.maxSummaryBytes,
+    ),
+  };
+
+  for (const [key, value] of Object.entries(rawLimits)) {
+    if (value === undefined) continue;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+      invalidReasons.push(`invalid_limit:${key}`);
+    }
+  }
+
+  const enabled = raw.enabled === true && invalidReasons.length === 0;
+
+  return {
+    enabled,
+    allowedPhases: raw.allowedPhases ?? [],
+    ...(raw.logicalIds ? { logicalIds: raw.logicalIds } : {}),
+    limits,
+    invalidReasons,
+  };
+}
+
+/**
+ * Resolve the screenshot-family configuration into a normalized, fail-closed
+ * shape. `enabled` in the returned value is true only when the operator
+ * enabled the family AND all limit fields are valid. `invalidReasons` lists
+ * every fail-closed cause so a preflight can surface them.
+ */
+export function getNativeScreenshotConfig(repoDir?: string): ResolvedNativeScreenshotConfig {
+  const raw = getNativeAgentConfig(repoDir).advanced?.screenshot ?? {};
+  const limits = raw.limits ?? {};
+  const invalidReasons: string[] = [];
+
+  // Validate numeric limits are within schema bounds (if provided)
+  if (limits.maxImageBytes !== undefined) {
+    if (typeof limits.maxImageBytes !== 'number' || limits.maxImageBytes < 1024 || limits.maxImageBytes > 16 * 1024 * 1024) {
+      invalidReasons.push('invalid_maxImageBytes');
+    }
+  }
+  if (limits.maxWidth !== undefined) {
+    if (typeof limits.maxWidth !== 'number' || limits.maxWidth < 16 || limits.maxWidth > 16384) {
+      invalidReasons.push('invalid_maxWidth');
+    }
+  }
+  if (limits.maxHeight !== undefined) {
+    if (typeof limits.maxHeight !== 'number' || limits.maxHeight < 16 || limits.maxHeight > 16384) {
+      invalidReasons.push('invalid_maxHeight');
+    }
+  }
+  if (limits.maxComparePixels !== undefined) {
+    if (typeof limits.maxComparePixels !== 'number' || limits.maxComparePixels < 1 || limits.maxComparePixels > 268435456) {
+      invalidReasons.push('invalid_maxComparePixels');
+    }
+  }
+  if (limits.diffThreshold !== undefined) {
+    if (typeof limits.diffThreshold !== 'number' || limits.diffThreshold < 0 || limits.diffThreshold > 1) {
+      invalidReasons.push('invalid_diffThreshold');
+    }
+  }
+  if (limits.oversizePolicy !== undefined) {
+    if (limits.oversizePolicy !== 'reject' && limits.oversizePolicy !== 'downscale') {
+      invalidReasons.push('invalid_oversizePolicy');
+    }
+  }
+
+  const resolved = {
+    maxImageBytes: limits.maxImageBytes ?? SCREENSHOT_LIMIT_DEFAULTS.maxImageBytes,
+    maxWidth: limits.maxWidth ?? SCREENSHOT_LIMIT_DEFAULTS.maxWidth,
+    maxHeight: limits.maxHeight ?? SCREENSHOT_LIMIT_DEFAULTS.maxHeight,
+    oversizePolicy: (limits.oversizePolicy ?? SCREENSHOT_LIMIT_DEFAULTS.oversizePolicy) as 'reject' | 'downscale',
+    maxComparePixels: limits.maxComparePixels ?? SCREENSHOT_LIMIT_DEFAULTS.maxComparePixels,
+    diffThreshold: limits.diffThreshold ?? SCREENSHOT_LIMIT_DEFAULTS.diffThreshold,
+  };
+
+  const enabled = raw.enabled === true && invalidReasons.length === 0;
+
+  return {
+    enabled,
+    allowedPhases: raw.allowedPhases ?? [],
+    ...(raw.logicalIds ? { logicalIds: raw.logicalIds } : {}),
+    limits: resolved,
+    invalidReasons,
   };
 }
 

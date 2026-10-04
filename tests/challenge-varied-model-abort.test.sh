@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# HOK-2814: non-forked control path — exercises the live-challenger collapse
+# via challenge_cancel_challenger_arm, which is the collapse shape for a
+# challenger that has already been launched (non-review stages, or a
+# review-stage arm that already materialised). The pre-fork collapse of a
+# pending arm is covered by challenge-fork-pre-fork-collapse.test.sh.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -1,4 +1,15 @@
 import { escapeShellArg, execShellCommand } from './shell-utils.ts';
+import {
+  getBranchOwnChanges,
+  parseNameStatusOutput,
+  type BranchDiffEvidence,
+  type NameStatusEntry,
+} from './git-branch-changes.ts';
+
+// Re-export the parser + entry type so existing importers keep working while
+// the canonical definitions live in `git-branch-changes.ts`.
+export { parseNameStatusOutput, type NameStatusEntry } from './git-branch-changes.ts';
+export type { BranchDiffEvidence } from './git-branch-changes.ts';
 
 type ShellRunner = (cmd: string, opts?: { encoding?: string; cwd?: string }) => string;
 
@@ -24,17 +35,22 @@ export interface CrossPrRevertFinding {
   title?: string;
 }
 
+/**
+ * Result of `detectCrossPrReverts`. The branch-diff evidence is exposed so an
+ * operator can reproduce (or verify) a finding from the exact SHAs the guard
+ * compared — the same evidence lands in `.ready-result.json` via the tool
+ * wrapper.
+ */
+export interface CrossPrRevertDetection {
+  findings: CrossPrRevertFinding[];
+  evidence: BranchDiffEvidence;
+}
+
 interface RecentPrCommit {
   commit: string;
   parent: string;
   prNumber: number;
   title: string;
-}
-
-export interface NameStatusEntry {
-  status: string;
-  path: string;
-  previousPath?: string;
 }
 
 const DEFAULT_MAX_RECENT_MERGES = 50;
@@ -59,23 +75,49 @@ export function filterUnacknowledgedReverts(
   return findings.filter((finding) => !acknowledgements.has(finding.prNumber));
 }
 
+/**
+ * Detect cross-PR reverts, gating every classification on the branch's own
+ * commits.
+ *
+ * The detector self-normalizes: `baseRef` may be the caller-provided branch
+ * point *or* a plain integration tip. Both work, because the classification
+ * facts are derived from `merge-base(baseRef, headRef)..headRef` — i.e. only
+ * changes the branch itself introduced. This protects every caller (the ready
+ * gate in `wavemill-monitor.sh`, `review-runner`, `review-scope-guard`, and
+ * the CLI wrapper) from the "branch behind base is treated as reverting"
+ * failure mode (HOK-3091, HOK-2788).
+ *
+ * The returned `evidence` records the concrete SHAs used so a finding can be
+ * reproduced without re-deriving them from mutable refs.
+ */
 export function detectCrossPrReverts(
   options: CrossPrRevertDetectionOptions,
-): CrossPrRevertFinding[] {
+): CrossPrRevertDetection {
   const shellRunner = options.shellRunner ?? defaultShellRunner;
-  const deletedPaths = new Set(
-    parseNameStatusOutput(
-      runGit(
-        shellRunner,
-        options.repoDir,
-        `git diff --name-status ${escapeShellArg(options.baseRef)} ${escapeShellArg(options.headRef)}`,
-      ),
-    )
-      .filter((entry) => entry.status === 'D')
-      .map((entry) => entry.path),
-  );
+  const { entries: branchOwnEntries, evidence } = getBranchOwnChanges({
+    repoDir: options.repoDir,
+    baseRef: options.baseRef,
+    headRef: options.headRef,
+    shellRunner,
+  });
 
-  return collectRecentPrCommits(shellRunner, options.repoDir, options.integrationRef, options.maxRecentMerges)
+  const deletedPaths = new Set(
+    branchOwnEntries.filter((entry) => entry.status === 'D').map((entry) => entry.path),
+  );
+  const branchTouchedPaths = new Set<string>();
+  for (const entry of branchOwnEntries) {
+    branchTouchedPaths.add(entry.path);
+    if (entry.previousPath) {
+      branchTouchedPaths.add(entry.previousPath);
+    }
+  }
+
+  const findings = collectRecentPrCommits(
+    shellRunner,
+    options.repoDir,
+    options.integrationRef,
+    options.maxRecentMerges,
+  )
     .map((commit) => {
       const revertedFiles = parseNameStatusOutput(
         runGit(
@@ -84,7 +126,16 @@ export function detectCrossPrReverts(
           `git diff --name-status ${escapeShellArg(commit.parent)} ${escapeShellArg(commit.commit)}`,
         ),
       )
-        .map((entry) => classifyRevertedPrFile(shellRunner, options.repoDir, options.integrationRef, options.headRef, commit, entry, deletedPaths))
+        .map((entry) => classifyRevertedPrFile(
+          shellRunner,
+          options.repoDir,
+          options.integrationRef,
+          options.headRef,
+          commit,
+          entry,
+          deletedPaths,
+          branchTouchedPaths,
+        ))
         .filter((entry): entry is CrossPrRevertFile => entry !== null);
 
       if (revertedFiles.length === 0) {
@@ -99,6 +150,8 @@ export function detectCrossPrReverts(
       } satisfies CrossPrRevertFinding;
     })
     .filter((finding): finding is CrossPrRevertFinding => finding !== null);
+
+  return { findings, evidence };
 }
 
 export function detectSurvivingChangeWarnings(
@@ -204,31 +257,6 @@ export function extractPrNumber(subject: string): number | null {
   return Number.isInteger(prNumber) ? prNumber : null;
 }
 
-export function parseNameStatusOutput(output: string): NameStatusEntry[] {
-  if (!output.trim()) {
-    return [];
-  }
-
-  return output
-    .trim()
-    .split(/\r?\n/)
-    .map((line) => {
-      const [statusToken, firstPath = '', secondPath = ''] = line.split('\t');
-      const status = statusToken?.trim() ?? '';
-      const normalizedStatus = status[0] ?? '';
-      const path = normalizedStatus === 'R' || normalizedStatus === 'C'
-        ? secondPath
-        : firstPath;
-
-      return {
-        status: normalizedStatus,
-        path,
-        previousPath: normalizedStatus === 'R' || normalizedStatus === 'C' ? firstPath : undefined,
-      };
-    })
-    .filter((entry) => entry.status && entry.path);
-}
-
 function fileExistsAtRef(
   shellRunner: ShellRunner,
   repoDir: string,
@@ -255,6 +283,7 @@ function classifyRevertedPrFile(
   commit: RecentPrCommit,
   entry: NameStatusEntry,
   deletedPaths: ReadonlySet<string>,
+  branchTouchedPaths: ReadonlySet<string>,
 ): CrossPrRevertFile | null {
   const headBlob = blobIdAtRef(shellRunner, repoDir, headRef, entry.path);
 
@@ -277,13 +306,27 @@ function classifyRevertedPrFile(
 
   const prBlob = blobIdAtRef(shellRunner, repoDir, commit.commit, entry.path);
   if (!headBlob) {
-    if (entry.status === 'A' || entry.status === 'M' || entry.status === 'R') {
+    // A missing head blob is not proof the branch deleted this path — a branch
+    // that is simply behind base never had the file. Only flag it when the
+    // branch's own merge-base..head diff records a matching delete (HOK-3091).
+    if (
+      (entry.status === 'A' || entry.status === 'M' || entry.status === 'R')
+      && deletedPaths.has(entry.path)
+    ) {
       return {
         path: entry.path,
         status: 'deleted',
         confidence: 'deleted',
       };
     }
+    return null;
+  }
+
+  // The blob-equality "reverted" case is only meaningful when the branch's own
+  // commits touched this path — a behind-base branch that never modified the
+  // file still has the pre-PR blob at head, and that is inherited staleness,
+  // not a revert (HOK-3091).
+  if (!branchTouchedPaths.has(entry.path)) {
     return null;
   }
 

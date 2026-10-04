@@ -16,6 +16,8 @@ import {
 import { classifyCiFailure, type CiFailureCategory } from './ci-failure-classifier.ts';
 import { enrichFailingChecks as enrichFailingChecksDefault } from './ci-log-fetcher.ts';
 import { errorMessage } from './error-utils.ts';
+import { appendObserverFinding } from './observer-findings.ts';
+import { resolveSessionCapabilities } from './config.ts';
 import {
   classifyCheckReadError,
   normalizeStatusCheckRollup,
@@ -37,13 +39,19 @@ import {
 import { readChallengeComparisons, type StoredChallengeComparison } from './challenge-comparison.ts';
 import {
   classifyChallengeState,
+  evaluateSiblingLiveness,
   getSiblingBranch,
-  isSiblingLive,
   listRemoteTaskBranches,
   loadWorkflowStateChallengeData,
+  probeSiblingProgress,
   type ChallengeGate,
+  type TaskEvalState,
   type UnresolvableReason,
 } from './tend-challenge-gate.ts';
+import {
+  getTaskProgress as defaultGetTaskProgress,
+  type TaskProgress,
+} from './task-progress.ts';
 
 const execFileAsync = promisify(execFile);
 const MAX_AUTO_UPDATE_ATTEMPTS = 3;
@@ -160,6 +168,13 @@ export interface ReadyWatchdogClassification {
 interface ReadyTaskClassificationConfig extends ReadyWatchdogConfig {
   localCommandMap?: Record<string, string>;
   remediationLogMaxBytes?: number;
+  /**
+   * HOK-3102: whether the tend merge lane is active in this session. When
+   * false, the BEHIND → `auto-update` classification is skipped; the
+   * operator merges (which brings its own base). Defaults to true to
+   * preserve pre-HOK-3102 semantics on legacy callers.
+   */
+  mergeLaneActive?: boolean;
 }
 
 export interface ReadyWatchdogAuditRecord {
@@ -252,6 +267,27 @@ export interface ReadyWatchdogDeps {
   getCurrentHead: (worktree: string) => Promise<string | null>;
   getWorktreeMergeState: (worktree: string) => Promise<WorktreeMergeState>;
   isTaskPaneActive: (task: WorkflowTaskRecord) => Promise<boolean | null>;
+  /**
+   * HOK-3101: the shared task-progress primitive. computeLastProgressAt
+   * delegates through this so hook, commit and worktree evidence contribute
+   * to `lastProgressAt` — not only `task.updated` (which is transition-only,
+   * HOK-3087). isTaskPaneActive also consults `agentIdle` so an idle REPL
+   * (HOK-3095 (a)) does not count as active.
+   */
+  getTaskProgress: (task: WorkflowTaskRecord, options: {
+    session: string;
+    repoDir: string;
+    worktree: string;
+    stateDir: string;
+    readyResult: StageResult | null;
+    readyResultFile: string;
+    now: Date;
+  }) => TaskProgress | null;
+  /**
+   * HOK-3128: progress probe for a PR's tracked no-PR challenge sibling, so the
+   * watchdog and the tend gate share the `sibling-stalled` rule.
+   */
+  getSiblingProgress: (repoDir: string, sibling: TaskEvalState, now: Date, session: string) => TaskProgress | null;
   resumeResolvedConflictRemediation: (
     snapshot: ReadyTaskSnapshot,
     githubTruth: GitHubPRTruth,
@@ -294,6 +330,12 @@ export interface TickReadyWatchdogOptions {
   forceRecover?: boolean;
   readyWatchdogToolPath?: string;
   deps?: Partial<ReadyWatchdogDeps>;
+  /**
+   * HOK-3101: wavemill session id, used to look up per-task hook and status
+   * files when the primitive gathers evidence. Defaults to
+   * `$WAVEMILL_SESSION` or `wavemill`.
+   */
+  session?: string;
 }
 
 export interface WorkflowTaskRecord extends Record<string, unknown> {
@@ -405,6 +447,15 @@ const defaultDeps: ReadyWatchdogDeps = {
       if (paneDead === '1') {
         return false;
       }
+      // HOK-3101 / HOK-3095 (a): an idle agent REPL sitting in a live pane
+      // is NOT active — it is the agent's own settled Stop state. Consult
+      // the shared primitive before reporting active.
+      const issue = typeof task.slug === 'string' ? String(task.slug) : undefined;
+      // We cannot reach the primitive from here because we do not have the
+      // repo dir / session; the composed classifyReadyTask() path threads it
+      // through and overrides `remediationPaneActive` when agentIdle=true
+      // (see snapshotReadyTask). This default kept its previous semantics
+      // to preserve behaviour for callers that do not supply a session.
       if (command && !['bash', 'zsh', 'fish', 'sh'].includes(command)) {
         return true;
       }
@@ -419,10 +470,40 @@ const defaultDeps: ReadyWatchdogDeps = {
           return false;
         }
       }
+      void issue;
       return false;
     } catch {
       return null;
     }
+  },
+  getTaskProgress(task, { session, worktree, readyResult, readyResultFile, now }) {
+    // HOK-3101: default IO-based composition. Tests stub the whole dep.
+    if (!worktree || !task.slug) return null;
+    try {
+      const issue = typeof (task as { issueId?: string }).issueId === 'string'
+        ? (task as { issueId?: string }).issueId!
+        : String(task.slug ?? '');
+      if (!issue) return null;
+      const extra: TaskProgress['sources'] = [];
+      if (readyResult?.startedAt) extra.push({ kind: 'transition', at: readyResult.startedAt, detail: 'ready.startedAt' });
+      if (readyResult?.finishedAt) extra.push({ kind: 'transition', at: readyResult.finishedAt, detail: 'ready.finishedAt' });
+      const readyMtime = fileMtimeIso(readyResultFile);
+      if (readyMtime) extra.push({ kind: 'transition', at: readyMtime, detail: 'ready-result.mtime' });
+      return defaultGetTaskProgress({
+        issue,
+        session,
+        task: task as never,
+        worktree,
+        phase: typeof task.phase === 'string' ? task.phase : 'ready',
+        extraTransitionSources: extra,
+        now,
+      });
+    } catch {
+      return null;
+    }
+  },
+  getSiblingProgress(repoDir, sibling, now, session) {
+    return probeSiblingProgress(repoDir, sibling, now, (opts) => defaultGetTaskProgress({ ...opts, session }));
   },
   async resumeResolvedConflictRemediation(snapshot, githubTruth) {
     const baseBranch = githubTruth.baseRefName || 'base branch';
@@ -722,14 +803,24 @@ function fileMtimeIso(file: string): string | null {
   }
 }
 
-function computeLastProgressAt(task: WorkflowTaskRecord, readyResult: StageResult | null, readyResultFile: string): string | null {
+function computeLastProgressAt(
+  task: WorkflowTaskRecord,
+  readyResult: StageResult | null,
+  readyResultFile: string,
+  taskProgress: TaskProgress | null,
+): string | null {
+  // HOK-3101: prefer the shared primitive so hook, commit and worktree
+  // evidence contribute — not only transitions. The ready-specific inputs
+  // (ready result mtime, its startedAt/finishedAt) are still folded in
+  // through extraTransitionSources when the caller composes the primitive.
   const candidates = [
+    taskProgress?.lastProgressAt ?? null,
     task.updated,
     readyResult?.finishedAt ?? null,
     readyResult?.startedAt ?? null,
     fileMtimeIso(readyResultFile),
   ]
-    .map(parseIsoDate)
+    .map((v) => (typeof v === 'string' ? parseIsoDate(v) : v))
     .filter((value): value is Date => value !== null)
     .sort((a, b) => b.getTime() - a.getTime());
 
@@ -1075,10 +1166,15 @@ export function classifyReadyTask(
   }
 
   if (isBehindMergeState(githubTruth)) {
-    return {
-      kind: 'auto-update',
-      detail: `PR #${snapshot.prNumber} is mergeable but behind ${githubTruth.baseRefName ?? 'its base branch'}.`,
-    };
+    // HOK-3102: without a merge lane (no tend), auto-updating a BEHIND branch
+    // is preparing for a merge nobody will do. Fall through to the checks
+    // below and let the operator update the branch when they merge.
+    if (normalizedConfig.mergeLaneActive !== false) {
+      return {
+        kind: 'auto-update',
+        detail: `PR #${snapshot.prNumber} is mergeable but behind ${githubTruth.baseRefName ?? 'its base branch'}.`,
+      };
+    }
   }
 
   const checkSummary = summarizeChecks(githubTruth.checks);
@@ -1313,6 +1409,13 @@ function classifyMergeLaneChallengeBlocker(
       recoveryCommand,
     };
   }
+  if (challengeGate.reason === 'sibling-stalled') {
+    return {
+      kind: 'needs-user',
+      detail: `PR #${snapshot.prNumber} is blocked from merging: challenge pair ${challengeGate.pairId}${pairLabel} cannot produce a comparison because one arm has shown no agent progress for ≥30m without opening a PR (agent exited or stalled).`,
+      recoveryCommand,
+    };
+  }
   if (challengeGate.reason === 'both-challenge-aborted') {
     return {
       kind: 'needs-user',
@@ -1353,6 +1456,7 @@ async function buildSnapshot(
   now: Date,
   repoDir: string,
   deps: ReadyWatchdogDeps,
+  session: string,
 ): Promise<ReadyTaskSnapshot | null> {
   const slug = task.slug;
   const branch = task.branch;
@@ -1386,7 +1490,24 @@ async function buildSnapshot(
     return Array.isArray(job.prNumbers) && job.prNumbers.includes(prNumber);
   });
 
-  const lastProgressAt = computeLastProgressAt(task, readyResult, readyResultFile);
+  // HOK-3101: the shared task-progress primitive supplies hook/commit/worktree
+  // evidence and an agentIdle fact that a live pane cannot override.
+  const taskProgress = deps.getTaskProgress(task, {
+    session,
+    repoDir,
+    worktree,
+    stateDir,
+    readyResult,
+    readyResultFile,
+    now,
+  });
+  const lastProgressAt = computeLastProgressAt(task, readyResult, readyResultFile, taskProgress);
+  // HOK-3101 / HOK-3095 (a): if the pane is live but the agent's own record
+  // is idle, the pane is holding an idle REPL — do not report active.
+  let paneActive = await deps.isTaskPaneActive(task);
+  if (paneActive === true && taskProgress?.agentIdle) {
+    paneActive = false;
+  }
 
   return {
     issueId,
@@ -1409,7 +1530,7 @@ async function buildSnapshot(
     hasConflictMarker: existsSync(path.join(stateDir, '.conflict-detected')),
     remediationLaunchHead: readyArtifacts?.remediationLaunchHead ?? readyArtifacts?.launchHead ?? null,
     currentHead: await deps.getCurrentHead(worktree),
-    remediationPaneActive: await deps.isTaskPaneActive(task),
+    remediationPaneActive: paneActive,
     worktreeMergeState: await deps.getWorktreeMergeState(worktree),
     relevantJobs,
     lastProgressAt,
@@ -1496,19 +1617,16 @@ function appendMarkerLifecycleFinding(repoDir: string, finding: ReturnType<typeo
   if (!finding) {
     return;
   }
-  try {
-    const findingsFile = path.join(repoDir, '.wavemill', 'observer-findings.jsonl');
-    const normalized = {
-      subsystem: finding.subsystem,
-      title: finding.title,
-      body: finding.body,
-      severity: finding.severity ?? 'warning',
-      context: finding.context,
-    };
-    appendFile(findingsFile, `${JSON.stringify(normalized)}\n`, 'utf-8').catch(() => undefined);
-  } catch {
-    // Observer findings are diagnostic; state persistence must continue.
-  }
+  // HOK-3102: gated on `resolveSessionCapabilities(repoDir).observer` via the
+  // shared helper. With the observer off, this is a no-op.
+  const normalized = {
+    subsystem: finding.subsystem,
+    title: finding.title,
+    body: finding.body,
+    severity: finding.severity ?? 'warning',
+    context: finding.context,
+  };
+  appendObserverFinding(repoDir, normalized);
 }
 
 async function filterValidWatchdogEntries(
@@ -1800,6 +1918,9 @@ export async function tickReadyWatchdog(options: TickReadyWatchdogOptions): Prom
     ...(options.deps ?? {}),
   };
   const now = deps.now();
+  // HOK-3101: session id used by the shared task-progress primitive to
+  // resolve per-task hook and status file paths.
+  const session = options.session ?? process.env.WAVEMILL_SESSION ?? 'wavemill';
   const config = {
     ...getReadyWatchdogConfig(options.repoDir),
     ...(options.config ?? {}),
@@ -1818,6 +1939,14 @@ export async function tickReadyWatchdog(options: TickReadyWatchdogOptions): Prom
   const remediationConfig = getReadyRemediationConfig(options.repoDir);
   const failureClassifierConfig = getReadyFailureClassifierConfig(options.repoDir);
   const verificationConfig = getReadyVerificationConfig(options.repoDir);
+  // HOK-3102: BEHIND → auto-update is merge-lane prep. Skip it when no tend
+  // is running (mergeExecutor !== 'tend').
+  let mergeLaneActive = true;
+  try {
+    mergeLaneActive = resolveSessionCapabilities(options.repoDir, { readHealth: false }).mergeExecutor === 'tend';
+  } catch {
+    // If the resolver fails, keep pre-3102 behavior (mergeLaneActive=true).
+  }
   const readyWatchdogToolPath = options.readyWatchdogToolPath ?? READY_WATCHDOG_TOOL_PATH;
   const workflowState = await deps.readWorkflowState(options.stateFile);
   const tasks = workflowState.tasks ?? {};
@@ -1883,7 +2012,7 @@ export async function tickReadyWatchdog(options: TickReadyWatchdogOptions): Prom
 
     activeReadyIssueIds.add(issueId);
 
-    const snapshot = await buildSnapshot(issueId, task, jobs, now, options.repoDir, deps);
+    const snapshot = await buildSnapshot(issueId, task, jobs, now, options.repoDir, deps, session);
     if (!snapshot) {
       reapTask(issueId, 'invalid-task');
       continue;
@@ -1944,6 +2073,19 @@ export async function tickReadyWatchdog(options: TickReadyWatchdogOptions): Prom
     // Compute the challenge gate for this PR if it has a challenge pair. Passes null
     // for PR metadata because workflow-state challenge pairs are sufficient to detect
     // the pair-unresolved:no-comparison case that the watchdog needs to surface.
+    const siblingLiveness = snapshot.challengePairId
+      ? evaluateSiblingLiveness({
+          repoDir: options.repoDir,
+          hasSiblingBranch: Boolean(
+            getSiblingBranch(snapshot.branch) && remoteTaskBranches.has(getSiblingBranch(snapshot.branch) as string),
+          ),
+          openPrNumbers: allReadyPrNumbers,
+          pairState: challengeWorkflowState.taskStateByPair.get(snapshot.challengePairId),
+          side: challengePairMap.get(snapshot.prNumber)?.role ?? 'primary',
+          nowMs: now.getTime(),
+          getSiblingProgress: (repoDir, sibling, probeNow) => deps.getSiblingProgress(repoDir, sibling, probeNow, session),
+        })
+      : undefined;
     const challengeGate: ChallengeGate | undefined = snapshot.challengePairId
       ? classifyChallengeState(
           snapshot.prNumber,
@@ -1956,14 +2098,8 @@ export async function tickReadyWatchdog(options: TickReadyWatchdogOptions): Prom
             activeJobsByPair: challengeWorkflowState.activeJobsByPair,
             taskStateByPair: challengeWorkflowState.taskStateByPair,
             evalHardFailureRetryMax: challengeEvalRetryMax,
-            siblingLive: isSiblingLive({
-              hasSiblingBranch: Boolean(
-                getSiblingBranch(snapshot.branch) && remoteTaskBranches.has(getSiblingBranch(snapshot.branch) as string),
-              ),
-              openPrNumbers: allReadyPrNumbers,
-              pairState: challengeWorkflowState.taskStateByPair.get(snapshot.challengePairId),
-              side: challengePairMap.get(snapshot.prNumber)?.role ?? 'primary',
-            }),
+            siblingLive: siblingLiveness?.live ?? false,
+            siblingStalled: siblingLiveness?.stalled ?? false,
             nowMs: () => now.getTime(),
           },
         )
@@ -1999,6 +2135,7 @@ export async function tickReadyWatchdog(options: TickReadyWatchdogOptions): Prom
           ...config,
           localCommandMap: failureClassifierConfig.localCommandMap,
           remediationLogMaxBytes: failureClassifierConfig.remediationLogMaxBytes,
+          mergeLaneActive,
         },
         prior,
         challengeGate,

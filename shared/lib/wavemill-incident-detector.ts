@@ -1,3 +1,4 @@
+import { ISSUE_ID_WORD_RE } from './task-identity.ts';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import {
@@ -26,6 +27,7 @@ import {
   type RemediationForbiddenAction,
   type RemediationProposal,
 } from './wavemill-incident-model.ts';
+import { readIncidentLogExcerpt } from './incident-log-excerpt-reader.ts';
 
 const PLANNING_TERMINAL_REASONS = new Set([
   'turn_limit',
@@ -155,29 +157,75 @@ export class JobFailureDetector {
 
       const missingResult = job.resultPath ? !existsSync(job.resultPath) : /no_result|missing/i.test(job.reason ?? '');
       const missingEvalEvidence = job.kind === 'comparison' && /eval|record|no_result|missing/i.test(`${job.reason ?? ''} ${job.error ?? ''}`);
-      const rootCauseClass = missingEvalEvidence ? 'missing_eval_records_for_comparison' : missingResult ? 'failed_job_no_result' : 'failed_background_job';
+      const observedSymptom: IncidentRootCauseClass = missingEvalEvidence
+        ? 'missing_eval_records_for_comparison'
+        : missingResult
+          ? 'failed_job_no_result'
+          : 'failed_background_job';
+
+      const terminalTimestamp = job.finishedAt ?? job.startedAt ?? timestamp;
+      const excerpt = readIncidentLogExcerpt(job, repoDir, observedSymptom);
+      const diagnosed = excerpt.diagnosedClass;
+      const rootCauseClass: IncidentRootCauseClass = diagnosed ?? observedSymptom;
+      const category = diagnosed
+        ? categoryForDiagnosedClass(diagnosed)
+        : (observedSymptom === 'failed_background_job' ? 'product_defect' : 'stale_orphaned_state');
+
+      const summary = diagnosed
+        ? `${job.kind ?? 'background'} job ${job.id ?? '(unknown)'} ended ${job.status}: ${diagnosed}.`
+        : `${job.kind ?? 'background'} job ${job.id ?? '(unknown)'} ended ${job.status}.`;
+      const operatorAction = diagnosed
+        ? operatorActionForDiagnosedClass(diagnosed)
+        : (missingEvalEvidence
+          ? 'Inspect eval-record production for the compared pair and retry comparison only after records exist.'
+          : 'Review the managed job result/log evidence and retry or settle the orphaned job through the controller.');
+
+      const jobEvidence: IncidentEvidence = {
+        type: 'job_state',
+        source: job.source,
+        // Terminal event time, not poll time: an un-reaped historical failure
+        // must not register a fresh occurrence every observer cycle.
+        timestamp: terminalTimestamp,
+        redactedData: redactIncidentData(`id=${job.id ?? 'unknown'} kind=${job.kind ?? 'unknown'} status=${job.status} reason=${job.reason ?? 'unknown'} resultMissing=${missingResult}`),
+        key: `observed:${observedSymptom}`,
+      };
+      const evidence: IncidentEvidence[] = [jobEvidence];
+      if (excerpt.source !== 'unavailable') {
+        evidence.push({
+          type: 'log_excerpt',
+          source: excerpt.logFileBasename ?? excerpt.source,
+          timestamp: terminalTimestamp,
+          redactedData: redactIncidentData(excerpt.redactedText),
+          key: excerpt.key,
+        });
+      }
+
       incidents.push(createIncidentDraft({
         taskId: subjectTaskId,
         session: context.session ?? null,
-        category: rootCauseClass === 'failed_background_job' ? 'product_defect' : 'stale_orphaned_state',
+        category,
         severity: 'medium',
         confidence: 'definite',
         lifecycle: 'observed',
         rootCauseClass,
-        summary: `${job.kind ?? 'background'} job ${job.id ?? '(unknown)'} ended ${job.status}.`,
-        operatorAction: missingEvalEvidence
-          ? 'Inspect eval-record production for the compared pair and retry comparison only after records exist.'
-          : 'Review the managed job result/log evidence and retry or settle the orphaned job through the controller.',
-        evidence: [{
-          type: 'job_state',
-          source: job.source,
-          // Terminal event time, not poll time: an un-reaped historical failure
-          // must not register a fresh occurrence every observer cycle.
-          timestamp: job.finishedAt ?? job.startedAt ?? timestamp,
-          redactedData: redactIncidentData(`id=${job.id ?? 'unknown'} kind=${job.kind ?? 'unknown'} status=${job.status} reason=${job.reason ?? 'unknown'} resultMissing=${missingResult}`),
-          key: rootCauseClass,
-        }],
-        metadata: { jobId: job.id, jobKind: job.kind, resultPath: job.resultPath, logPath: job.logPath },
+        summary,
+        operatorAction,
+        evidence,
+        metadata: {
+          jobId: job.id,
+          jobKind: job.kind,
+          pairId: job.pairId,
+          side: job.side,
+          resultPath: job.resultPath,
+          logPath: job.logPath,
+          observedSymptom,
+          diagnosedClass: diagnosed ?? null,
+          logExcerptSource: excerpt.source,
+          // Preserve the terminal event time used for this incident. Filing
+          // reconciliation compares later successes against this value rather
+          // than against observer poll time.
+          authoritativeFailureAt: terminalTimestamp,
+        },
       }));
     }
 
@@ -250,8 +298,17 @@ export class DependencyHealthDetector {
     const queueHealth = readObjectFile(queueHealthPath);
     if (queueHealth?.status === 'degraded') {
       const reason = stringField(queueHealth.degradationReason) ?? 'dependency_planning_failed';
-      const diagnostic = diagnosticReason(queueHealth) ?? reason;
-      const failureCount = numberField(queueHealth.failureCount) ?? 1;
+      // HOK-3130: inference_unavailable is recorded on a *successful* planner
+      // run, so the planner failureCount stays 0; repetition lives in the
+      // inference block instead.
+      const inferenceUnavailable = reason === 'inference_unavailable';
+      const inference = objectField(queueHealth.inference);
+      const diagnostic = inferenceUnavailable
+        ? stringField(inference?.error) ?? `inference_${stringField(queueHealth.inferenceStatus) ?? 'unknown'}`
+        : diagnosticReason(queueHealth) ?? reason;
+      const failureCount = inferenceUnavailable
+        ? Math.max(1, numberField(inference?.consecutiveFailures) ?? 1)
+        : numberField(queueHealth.failureCount) ?? 1;
       const classified = canonicalizeRootCauseClass(diagnostic);
       // An unclassifiable degradation diagnostic is still a known local
       // condition of the queue planner, not free text.
@@ -265,7 +322,9 @@ export class DependencyHealthDetector {
         lifecycle: 'observed',
         rootCauseClass,
         summary: `Queue planner fallback is active: ${reason}.`,
-        operatorAction: 'Inspect queue-health diagnostics and dependency planner inputs; fallback is acceptable briefly but should not persist.',
+        operatorAction: inferenceUnavailable
+          ? 'Queue dependency inference is not answering; the wave uses explicit Linear relations only. Check the [classifier] lines in the mill log and the Claude CLI login, then the inference block in queue-health.json.'
+          : 'Inspect queue-health diagnostics and dependency planner inputs; fallback is acceptable briefly but should not persist.',
         evidence: [{
           type: 'backstage_health',
           source: queueHealthPath,
@@ -826,6 +885,31 @@ function readPairStateForTask(repoDir: string, taskDir: string | null, taskId: s
 }
 
 /**
+ * Category routing for a diagnosed job-log root cause. Product/API contract
+ * mismatches are always a product defect; parse errors are operator-owned
+ * configuration. Anything else keeps the caller's observed-symptom category.
+ */
+function categoryForDiagnosedClass(rootCauseClass: IncidentRootCauseClass): IncidentCategory {
+  if (rootCauseClass === 'module_export_contract_mismatch') return 'product_defect';
+  if (rootCauseClass === 'local_parse_failure') return 'configuration_operator_condition';
+  return 'product_defect';
+}
+
+/**
+ * Fixed operator-action strings for the diagnosed classes we can currently
+ * detect from job logs. Kept small on purpose so the taxonomy stays bounded.
+ */
+function operatorActionForDiagnosedClass(rootCauseClass: IncidentRootCauseClass): string {
+  if (rootCauseClass === 'module_export_contract_mismatch') {
+    return 'Fix the missing module/API export or downgrade the caller to a compatible version before retrying the job.';
+  }
+  if (rootCauseClass === 'local_parse_failure') {
+    return 'Repair the malformed input feeding the job (JSON/YAML/config parse) before retrying; do not retry blindly.';
+  }
+  return 'Review the diagnosed failure evidence and address it before retrying the job.';
+}
+
+/**
  * Category routing for classified dependency signals. Only affirmatively
  * remote failures stay external; auth/credential probes are operator-owned
  * configuration, and everything else is a local harness/config condition.
@@ -882,7 +966,7 @@ function jobSubjectTaskId(job: JobStateWithSource): string | null {
 }
 
 function extractIssueId(value: string | undefined): string | null {
-  const match = value?.match(/\b[A-Z]+-\d+(?:_c)?\b/);
+  const match = value?.match(ISSUE_ID_WORD_RE);
   return match?.[0] ?? null;
 }
 
@@ -915,6 +999,7 @@ function readJobs(repoDir: string): JobStateWithSource[] {
       resultPath: stringField(job.resultPath),
       logPath: stringField(job.logPath),
       pairId: stringField(job.pairId),
+      side: stringField(job.side) ?? stringField(job.challengeRole) ?? stringField(job.role),
       source: workflowStatePath,
     });
   }

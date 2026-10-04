@@ -9,6 +9,7 @@ import {
   isTerminalWorkflowStatus,
   isClosedOrMergedPrState,
   isSelectableMergeQueuePr,
+  classifyMergeQueueConsumability,
   type MergeQueueConfigResolved,
   type MergeQueuePr,
 } from './merge-queue.ts';
@@ -32,6 +33,7 @@ function pr(overrides: Partial<MergeQueuePr>): MergeQueuePr {
     unblocksCount: 0,
     changedFiles: ['a.ts'],
     ci: { conclusion: 'pass' },
+    labels: [],
     ...overrides,
   };
 }
@@ -540,6 +542,101 @@ test('lane progress telemetry (HOK-2919)', async (t) => {
       rmSync(repoDir, { recursive: true, force: true });
     }
   });
+});
+
+// --- HOK-3111: tend-refusal labels exclude PRs from the merge lane ---
+
+test('classifyMergeQueueConsumability: empty labels are consumable', () => {
+  const verdict = classifyMergeQueueConsumability({ labels: [] });
+  assert.equal(verdict.consumable, true);
+});
+
+test('classifyMergeQueueConsumability: wm:blocked is not consumable', () => {
+  const verdict = classifyMergeQueueConsumability({ labels: ['wm:blocked'] });
+  assert.equal(verdict.consumable, false);
+  if (!verdict.consumable) {
+    assert.equal(verdict.blockingLabel, 'wm:blocked');
+    assert.match(verdict.reason, /wm:blocked/);
+  }
+});
+
+test('classifyMergeQueueConsumability: undefined labels fail closed', () => {
+  const verdict = classifyMergeQueueConsumability({ labels: undefined });
+  assert.equal(verdict.consumable, false);
+  if (!verdict.consumable) {
+    assert.match(verdict.reason, /live labels unknown/);
+  }
+});
+
+test('wm:blocked green PR is excluded, not promoted, not selected', () => {
+  const plan = planMergeQueueTick({
+    readyPrs: [
+      pr({
+        issue: 'HOK-3106',
+        prNumber: 1518,
+        queueState: 'ready-stale',
+        labels: ['wavemill', 'wm:blocked'],
+        ci: { conclusion: 'pass', headSha: 'aaaaaaa', mergeStateStatus: 'CLEAN' },
+      }),
+      pr({
+        issue: 'HOK-OK',
+        prNumber: 2,
+        branch: 'task/ok',
+        queueState: 'ready-stale',
+        labels: ['wm:ready'],
+        changedFiles: ['b.ts'],
+        ci: { conclusion: 'pass' },
+      }),
+    ],
+    now: '2026-09-29T12:00:00.000Z',
+    config,
+  });
+  assert.deepEqual(plan.selectedIssues, ['HOK-OK']);
+  assert.deepEqual(plan.stuckIssues, []);
+  assert.deepEqual(plan.ciBlockedIssues, []);
+  assert.equal(plan.excludedIssues.length, 1);
+  assert.equal(plan.excludedIssues[0].issue, 'HOK-3106');
+  assert.equal(plan.excludedIssues[0].blockingLabel, 'wm:blocked');
+  assert.equal(plan.excludedIssues[0].prNumber, 1518);
+  assert.equal(plan.excludedIssues[0].headSha, 'aaaaaaa');
+});
+
+test('wm:blocked candidate does not enter stuckIssues after timeout', () => {
+  const plan = planMergeQueueTick({
+    readyPrs: [
+      pr({
+        issue: 'HOK-3106',
+        queueState: 'merge-candidate',
+        candidatePromotedAt: '2026-09-29T11:00:00.000Z',
+        labels: ['wm:blocked'],
+        changedFiles: ['a.ts'],
+      }),
+    ],
+    now: '2026-09-29T12:00:00.000Z',
+    config,
+  });
+  assert.deepEqual(plan.stuckIssues, []);
+  assert.deepEqual(plan.selectedIssues, []);
+  assert.deepEqual(plan.ciBlockedIssues, []);
+  assert.equal(plan.excludedIssues.length, 1);
+  assert.equal(plan.excludedIssues[0].blockingLabel, 'wm:blocked');
+});
+
+test('unknown live labels fail closed (excluded, not promoted)', () => {
+  const plan = planMergeQueueTick({
+    readyPrs: [
+      pr({
+        issue: 'HOK-NOLABELS',
+        queueState: 'ready-stale',
+        labels: undefined,
+      }),
+    ],
+    now: '2026-09-29T12:00:00.000Z',
+    config,
+  });
+  assert.deepEqual(plan.selectedIssues, []);
+  assert.equal(plan.excludedIssues.length, 1);
+  assert.match(plan.excludedIssues[0].reason, /live labels unknown/);
 });
 
 test('isCandidateStuck honors tend lane progress (HOK-2919)', () => {

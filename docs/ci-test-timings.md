@@ -29,6 +29,24 @@ partitioner, and how to refresh or extend any of them.
 invoking the partitioner, so plain `bash tests/run-unit-tests.sh` has no new
 dependencies.
 
+## Unit/custom registration coverage
+
+Scoped TypeScript tests (`*.test.ts` under `shared/`, `tools/`, and `src/`) are
+covered by the union of the unit runner's `TESTS` array and the custom runner's
+`CUSTOM_TS_TESTS` array. Each scoped TypeScript test must appear in exactly one
+of those two arrays: unit for normal `node --test` execution, or custom for the
+separate-process TSX harness.
+
+`tools/check-test-registration.ts` enforces that union coverage during
+preflight. It reports missing registrations, stale paths, within-suite
+duplicates, and an explicit cross-suite overlap diagnostic naming any file that
+appears in both `TESTS` and `CUSTOM_TS_TESTS`.
+
+Shell tests follow the same exclusivity principle between the shell suite and
+custom shell registry. `tests/agent-resolve-from-model.test.sh` belongs to the
+shell suite only; `CUSTOM_SH_TESTS` remains checked for duplicate and missing
+files when populated.
+
 ## Timing artifacts
 
 Both runners accept `--timing-out FILE` (or the `TIMING_OUTPUT` env var) and
@@ -88,25 +106,54 @@ registered lists from the runners, and the manifest, then fails when:
   unless a single named indivisible test alone exceeds the bound (REQ-F3) —
   that exception is printed and allowed.
 
-`tools/check-test-registration.ts` additionally enforces unit
-discovery-completeness (every `*.test.ts` under `shared/`, `tools/`, `src/`
-registered exactly once) and custom-harness hygiene (no duplicate entries, no
-entries whose files are missing).
+`tools/check-test-registration.ts` additionally enforces scoped TypeScript
+discovery-completeness across the unit/custom union and custom-harness hygiene
+(no duplicate entries, no entries whose files are missing).
 
 ## Shard-count decision rule
 
 The matrix uses the smallest shard count whose LPT-estimated maximum shard is
 at or below ~240 seconds under the checked-in weights, leaving headroom
 against the five-minute aggregator budget. Current counts: **unit 7, custom
-3** (shell stays at 4 — its slowest shard was already ~160s). Two caveats the
-estimates carry: unit file walls are measured under `node --test`'s internal
-parallelism, so a shard's real wall clock is below its estimated sum; and a
-single indivisible test can set a shard's wall-clock floor regardless of
-balance — the cross-repo parity suite was split into five per-mode files for
-exactly that reason. If the estimated max drifts up
-(`npx tsx tools/partition-tests.ts --report`), bump the matrix in `ci.yml`;
-the balance preflight and `run-custom-tests-shard.test.sh` pick the new count
-up automatically.
+3, shell 3** (HOK-3043 dropped shell from 4 → 3 to shave one runner off peak
+fan-out; the shell suite is still round-robin over ~108 files, so per-shard
+runtime is estimated from file count rather than the weights manifest — the
+timing artifact uploaded by each shell shard exists to make an eventual
+weighted-partitioner switch evidence-based). Two caveats the estimates carry:
+unit file walls are measured under `node --test`'s internal parallelism, so a
+shard's real wall clock is below its estimated sum; and a single indivisible
+test can set a shard's wall-clock floor regardless of balance — the cross-repo
+parity suite was split into five per-mode files for exactly that reason. If
+the estimated max drifts up (`npx tsx tools/partition-tests.ts --report`),
+bump the matrix in `ci.yml`; the balance preflight and
+`run-custom-tests-shard.test.sh` pick the new count up automatically.
+
+### HOK-3042 refresh (2026-09-18)
+
+The manifest was regenerated from three post-change successful CI runs
+(`35353831868`, `35354100546`, `35354660120`) after HOK-3040 made suite
+membership exclusive and HOK-3041 split `workflow-router` tests into
+shardable files. Every registered test (382 unit, 41 custom) now carries a
+measured median; no test falls back to `defaultMs`.
+
+Candidate matrix sizes evaluated with `tools/partition-tests.ts --report`
+against the refreshed manifest:
+
+| Suite  | Shards | LPT-estimated max shard | Decision                  |
+|--------|-------:|-------------------------:|---------------------------|
+| unit   |      5 | 342s                     | rejected (> 240s)         |
+| unit   |      6 | 285s                     | rejected (> 240s)         |
+| unit   |      7 | 244s                     | **kept** (at 240s target) |
+| custom |      2 | 267s                     | rejected (> 240s, serial) |
+| custom |      3 | 184s                     | **kept**                  |
+
+`unit=7 / custom=3` remained the smallest counts satisfying the ≤ ~240s LPT
+target under the refreshed weights, so the workflow matrix, the required
+check list in `.wavemill-config.json`, and the runner `--shard` denominators
+were left untouched. The heaviest single custom test
+(`shared/lib/stage-aware-router.test.ts`, 184.5s) still sets the wall-clock
+floor for custom, but stays below the 240s target — no `indivisibleHotspots`
+exception was needed.
 
 ## Measuring the aggregator (REQ-F6)
 
@@ -117,6 +164,53 @@ npx tsx tools/ci-test-timings.ts report <run-id> <run-id> …
 prints per-run workflow-created → `Shell and Unit Tests`-completed durations,
 the slowest jobs per run, and median/p90 across the given runs. Requirement:
 median ≤ 5:00 and p90 ≤ 7:00 over ten representative successful PR runs.
+
+### HOK-3042 measurement
+
+Baseline (three representative pre-change runs on the September-2 weights and
+the pre-split `workflow-router` suite — `35097572922`, `34973530214`,
+`34867039948`):
+
+- created → aggregator **median 4:38 (278s)**, **p90 4:45 (285s)**
+- slowest jobs were all unit shards (≈ 4:07–4:32).
+
+After the refresh and prerequisite merges (three representative post-change
+runs — `35353831868`, `35354100546`, `35354660120`):
+
+- created → aggregator **median 3:31 (211s)**, **p90 4:04 (244s)**
+- slowest jobs are custom shards (≈ 3:05–3:55); unit shards drop to
+  ~2:50–3:11 despite the shard count remaining at 7.
+
+Both are within the ≤ 5:00 median / ≤ 7:00 p90 budget. The full REQ-F6
+measurement over ten representative successful post-change PR runs is a
+follow-up step once ten green runs exist on the new topology; the numbers
+above stand in as the three-run interim reading recorded on the HOK-3042
+Linear issue.
+
+### HOK-3043 fan-out reduction (2026-09-23)
+
+Consolidates shell shards from **4 → 3** to remove one runner from the peak
+prerequisite fan-out (17 → 16 with `check-paths`; ~19 → ~18 counting the
+path-dependent audit jobs). Aggregator name and dependency set are unchanged.
+
+Round-robin over 108 registered shell files at 3 shards yields 36 files per
+shard. The pre-change worst shard (4-way split, 27 files) peaked around 160s;
+the projected 3-way worst shard is ~213s, still comfortably under the ≤240s
+per-leg target and the 5:00 aggregator budget. Each shell shard now uploads a
+`timing-shell-shard-N` artifact (7-day retention) so the projection can be
+validated after Phase 1 lands and the Phase-B decision (folding lint +
+`test:preflight` into shell shard 1) can proceed only on real measurements.
+
+Phase-B measurement gate (in-branch, after Phase 1 CI is green):
+
+- Slowest shell shard ≤ ~200s wall clock and aggregator median ≤ 5:00.
+- If lint + preflight (~40–60s) can be added to shell shard 1 without pushing
+  it past ~240s, drop the standalone `Preflight Checks` job and remove
+  `preflight` from the `shell-and-unit` aggregator's `needs`. Otherwise stop
+  after Phase 1 with a one-runner reduction and record the tradeoff here.
+
+Post-change ten-run REQ-F6 measurement is recorded here once the artifacts
+exist for ten representative successful PR runs on the new topology.
 
 ## Setup caching: evaluated, not added
 

@@ -255,6 +255,7 @@ describe('model-registry', () => {
     const expectedModels = [
       'claude-fable-5',
       'claude-haiku-4-5',
+      'claude-opus-5-5',
       'claude-opus-4-8',
       'claude-opus-4-7',
       'claude-opus-4-6',
@@ -272,6 +273,8 @@ describe('model-registry', () => {
       'devstral-medium',
       'gemini-2.5-flash',
       'gemini-2.5-pro',
+      'gemini-3.1-pro-preview',
+      'gemini-3.1-pro-preview-customtools',
       'gemini-3.8-flash',
       'glm-5.2',
       'glm-5.3',
@@ -284,6 +287,8 @@ describe('model-registry', () => {
       'gpt-5.6-sol',
       'gpt-5.6-terra',
       'gpt-5.6-luna',
+      'gpt-6-sol',
+      'gpt-6-luna',
       'kimi-k2',
       'kimi-k2.7-code',
       'kimi-k2-thinking',
@@ -461,8 +466,8 @@ describe('model-registry', () => {
 
   it('resolves generic successors from declared lineage', () => {
     assert.equal(resolveModelSuccessor('gpt-5.4', DEFAULT_MODEL_REGISTRY, { stage: 'planning' }), 'gpt-5.6-terra');
-    assert.equal(resolveModelSuccessor('gpt-5-mini', DEFAULT_MODEL_REGISTRY, { stage: 'review' }), 'gpt-5.5');
-    assert.equal(resolveModelSuccessor('gpt-5.5', DEFAULT_MODEL_REGISTRY, { stage: 'coding' }), null);
+    assert.equal(resolveModelSuccessor('gpt-5-mini', DEFAULT_MODEL_REGISTRY, { stage: 'review' }), 'gpt-5.6-terra');
+    assert.equal(resolveModelSuccessor('gpt-5.5', DEFAULT_MODEL_REGISTRY, { stage: 'coding' }), 'gpt-5.6-terra');
   });
 
   describe('registry admission criteria', () => {
@@ -599,15 +604,56 @@ describe('model-registry', () => {
   });
 
   it('getLadder returns configured default ladders', () => {
-    assert.equal(getLadder(DEFAULT_MODEL_REGISTRY, 'review')[0], 'gpt-5.5');
+    assert.equal(getLadder(DEFAULT_MODEL_REGISTRY, 'review')[0], 'claude-fable-5');
     assert.deepEqual(getLadder(DEFAULT_MODEL_REGISTRY, 'classify'), [
       'claude-haiku-4-5-20251001',
       'deepseek-v4-flash',
       'claude-sonnet-5',
-      'gpt-5.5',
       'gpt-5.6-terra',
       'claude-fable-5',
     ]);
+  });
+
+  it('admits newly-added Claude Opus 5.5 and GPT-6 models for planning, coding, and review', () => {
+    for (const modelId of ['claude-opus-5-5', 'gpt-6-sol', 'gpt-6-luna']) {
+      const capabilities = DEFAULT_MODEL_REGISTRY.models[modelId];
+      assert.ok(capabilities, `${modelId} should exist in the registry`);
+      assert.equal(capabilities.toolSupport, 'full');
+      assert.ok(
+        capabilities.contextWindowTokens >= 65_536,
+        `${modelId} must clear the 65,536-token stage floor`,
+      );
+      for (const stage of ['planning', 'coding', 'review'] as SupportedModelStage[]) {
+        assert.equal(
+          explainModelSupportExclusion(modelId, stage),
+          undefined,
+          `${modelId} should be admissible for ${stage}`,
+        );
+      }
+    }
+  });
+
+  it('places the new Claude and GPT-6 models near the top of the planning, coding, and review ladders while retaining prior fallbacks', () => {
+    const planning = getLadder(DEFAULT_MODEL_REGISTRY, 'planning');
+    assert.equal(planning[0], 'claude-opus-5-5');
+    assert.equal(planning[1], 'gpt-6-sol');
+    assert.ok(planning.includes('claude-fable-5'));
+    assert.ok(planning.includes('claude-opus-4-8'));
+    assert.ok(planning.includes('gpt-5.6-terra'));
+
+    const coding = getLadder(DEFAULT_MODEL_REGISTRY, 'coding');
+    assert.equal(coding[0], 'claude-opus-5-5');
+    assert.equal(coding[1], 'gpt-6-sol');
+    assert.ok(coding.includes('gpt-6-luna'));
+    assert.ok(coding.includes('claude-fable-5'));
+    assert.ok(coding.includes('claude-sonnet-5'));
+
+    const review = getLadder(DEFAULT_MODEL_REGISTRY, 'review');
+    assert.equal(review[0], 'claude-fable-5');
+    assert.equal(review[1], 'claude-opus-5-5');
+    assert.equal(review[2], 'gpt-6-sol');
+    assert.ok(review.includes('claude-opus-4-8'));
+    assert.ok(review.includes('gpt-5.6-terra'));
   });
 
   it('keeps DeepSeek models out of derived default ladders', () => {
@@ -698,8 +744,9 @@ describe('model-registry', () => {
     });
 
     assert.deepEqual(once, [
-      'gpt-5.5',
       'claude-fable-5',
+      'claude-opus-5-5',
+      'gpt-6-sol',
       'claude-opus-4-8',
       'claude-opus-4-7',
       'gpt-5.6-terra',
@@ -729,13 +776,15 @@ describe('model-registry', () => {
 
   it('rankCandidates returns the full ladder when no exclusions are provided', () => {
     assert.deepEqual(rankCandidates(DEFAULT_MODEL_REGISTRY, 'coding'), [
+      'claude-opus-5-5',
+      'gpt-6-sol',
       'claude-fable-5',
-      'gpt-5.5',
       'gpt-5.6-terra',
       'deepseek-v4-pro',
       'claude-sonnet-5',
       'claude-opus-4-8',
       'claude-opus-4-7',
+      'gpt-6-luna',
       'deepseek-chat',
       'deepseek-v4-flash',
       'claude-haiku-4-5-20251001',
@@ -1102,7 +1151,7 @@ describe('model-registry', () => {
 
       const descriptorModels = getConfiguredModelsForDescriptor(repoDir);
       assert.ok(descriptorModels.length > 0);
-      assert.ok(descriptorModels.includes('gpt-5.5'));
+      assert.ok(!descriptorModels.includes('gpt-5.5'));
       assert.ok(descriptorModels.includes('gpt-5.6-terra'));
       assert.notDeepEqual(descriptorModels, [
         'claude-sonnet-5',
@@ -2575,7 +2624,7 @@ describe('canonical supported-model helpers', () => {
   });
 
   it('retains retired native-openrouter aliases for attribution but excludes them from stages', () => {
-    for (const alias of ['grok-code-fast']) {
+    for (const alias of ['grok-code-fast', 'devstral-medium']) {
       const capabilities = DEFAULT_MODEL_REGISTRY.models[alias];
       assert.ok(capabilities, `${alias} should remain in the registry`);
       assert.equal(capabilities.supportedModel?.lifecycle, 'blocked', `${alias} should be lifecycle-blocked`);
@@ -2657,10 +2706,12 @@ describe('canonical supported-model helpers', () => {
       routing: 58, planning: 82, coding: 83, review: 80, classify: 56,
     });
     assert.equal(model.defaultLadderEligible, true);
-    assert.equal(model.contextWindowTokens, 1_310_720);
+    assert.equal(model.contextWindowTokens, 1_048_576);
     assert.equal(model.pricing?.inputCostPerMTok, 0.15);
     assert.equal(model.pricing?.outputCostPerMTok, 0.5);
-    assert.equal(model.pricing?.cacheReadCostPerMTok, 0.03);
+    // Live OpenRouter catalog raised cache-read to 0.05 per MTok; the registry
+    // must not understate provider cost.
+    assert.equal(model.pricing?.cacheReadCostPerMTok, 0.05);
     assert.equal(model.pricing?.cacheWriteCostPerMTok, 0);
     assert.equal(model.multimodal.text, true);
     assert.equal(model.multimodal.image, true);
@@ -2744,6 +2795,8 @@ describe('canonical supported-model helpers', () => {
       'llama-4-maverick': 1_048_576,
       'qwen-3-coder': 262_144,
       'gemini-2.5-pro': 1_048_576,
+      'gemini-3.1-pro-preview': 1_048_576,
+      'gemini-3.1-pro-preview-customtools': 1_048_576,
       'gemini-2.5-flash': 1_048_576,
       'gemini-3.8-flash': 1_048_576,
       'glm-5.3': 1_310_720,
@@ -2803,11 +2856,14 @@ describe('canonical supported-model helpers', () => {
     assert.notEqual(planningReason, 'context-window-insufficient', 'kimi-k2 should be eligible for planning');
   });
 
-  it('mistral-large-2 clears the coding floor after the 2512 repoint', () => {
-    // HOK-2947 repointed mistral-large-2 to mistralai/mistral-large-2512
-    // (262,144 tokens), which clears the 144,384 coding floor.
+  it('mistral-large-2 is blocked after its 2512 endpoint disappeared', () => {
     const reason = explainModelSupportExclusion('mistral-large-2', 'coding');
-    assert.equal(reason, undefined, 'mistral-large-2 should be codeable after the repoint');
+    assert.equal(reason, 'blocked-lifecycle');
+  });
+
+  it('devstral-medium is blocked after devstral-2512 left the OpenRouter catalog', () => {
+    const reason = explainModelSupportExclusion('devstral-medium', 'coding');
+    assert.equal(reason, 'blocked-lifecycle');
   });
 
   // The long-blocked/stale aliases were removed outright by HOK-2947;
@@ -2830,7 +2886,7 @@ describe('canonical supported-model helpers', () => {
     // But kimi-k2 should still be eligible for planning
     const planningModels = listSupportedModelsForStage('planning');
     assert.ok(planningModels.includes('kimi-k2'), 'kimi-k2 should be in planning models');
-    assert.ok(planningModels.includes('mistral-large-2'), 'mistral-large-2 should be in planning models');
+    assert.ok(!planningModels.includes('mistral-large-2'), 'blocked mistral-large-2 should not be in planning models');
   });
 
   // REQ-F2: floors are configurable via .wavemill-config.json. A configured

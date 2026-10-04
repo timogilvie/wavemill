@@ -708,8 +708,10 @@ export function computeWorkflowCost(opts: {
   const modelsWithCost: Record<string, ModelTokenUsage> = {};
   const pricingUsed: Record<string, ModelPricing> = {};
   const attributionModels: WorkflowCostAttributionModel[] = [];
+  const attributionModelsById = new Map<string, WorkflowCostAttributionModel>();
   let pricedSessions = 0;
   let unpricedSessions = 0;
+  let allPricedAreExplicitZero = true;
 
   for (const [modelId, usage] of Object.entries(scanResult.models)) {
     const pricing = pricingTable[modelId];
@@ -720,14 +722,19 @@ export function computeWorkflowCost(opts: {
       // Capture pricing snapshot for models that were actually used
       pricingUsed[modelId] = pricing;
       pricedSessions++;
+      if (!isExplicitZeroPricing(pricing)) {
+        allPricedAreExplicitZero = false;
+      }
     } else {
       unpricedSessions++;
     }
-    // If model not in pricing table, cost stays 0 (best-effort)
+    // Legacy numeric view: an unpriced model still contributes costUsd 0 to
+    // modelsWithCost/totalCostUsd for old readers. The attribution below is
+    // the truthful view — an unpriced model row carries no costUsd at all.
 
     modelsWithCost[modelId] = { ...usage, costUsd };
     totalCostUsd += costUsd;
-    attributionModels.push({
+    const attributionModel: WorkflowCostAttributionModel = {
       provider: scanResult.source ?? 'claude',
       modelId,
       inputTokens: usage.inputTokens,
@@ -735,24 +742,59 @@ export function computeWorkflowCost(opts: {
       cacheReadTokens: usage.cacheReadTokens,
       cacheCreationTokens: usage.cacheCreationTokens,
       totalTokens: usage.inputTokens + usage.cacheCreationTokens + usage.cacheReadTokens + usage.outputTokens,
-      costUsd,
       priced: !!pricing,
-      ...(pricing ? { pricingSource: 'local_estimate' as const } : { reason: 'unpriced_model' as const }),
-    });
+      ...(pricing
+        ? { costUsd, pricingSource: 'local_estimate' as const }
+        : { reason: 'unpriced_model' as const }),
+    };
+    attributionModels.push(attributionModel);
+    attributionModelsById.set(modelId, attributionModel);
   }
 
-  const attribution = (scanResult.source === 'codex' || unpricedSessions > 0)
-    ? {
-        source: (scanResult.source === 'codex' ? 'codex' : 'claude') as 'codex' | 'claude',
-        coverage: unpricedSessions > 0 ? 'partial' as const : 'complete' as const,
-        ...(unpricedSessions > 0 ? { reason: 'unpriced_model' as const } : {}),
-        sessions: scanResult.sessionCount,
-        turns: scanResult.turnCount,
-        pricedSessions,
-        unpricedSessions,
-        models: attributionModels,
-      }
-    : undefined;
+  // Provider-reported actual cost (HOK-2958): retained alongside the local
+  // estimate when a session carries it, so the two stay distinguishable.
+  // Today's Claude Code / Codex telemetry reports no cost, so this yields
+  // nothing for current sources.
+  const externalSessions = scanResult.externalSessions ?? [];
+  let usedProviderReportedCost = false;
+  for (const session of externalSessions) {
+    if (!isFiniteNonNegative(session.actualCostUsd ?? undefined)) continue;
+    const sessionModels = new Set(
+      session.turns.map((turn) => turn.model).filter((model): model is string => !!model),
+    );
+    const target = sessionModels.size === 1
+      ? attributionModelsById.get([...sessionModels][0])
+      : attributionModelsById.size === 1
+        ? [...attributionModelsById.values()][0]
+        : undefined;
+    if (target) {
+      target.providerReportedCostUsd = (target.providerReportedCostUsd ?? 0) + session.actualCostUsd!;
+      usedProviderReportedCost = true;
+    }
+  }
+
+  // Real session/turn counts when per-session detail exists. A session whose
+  // turn structure the source did not expose still executed at least once.
+  const attributionSessions = externalSessions.length > 0
+    ? externalSessions.length
+    : scanResult.sessionCount;
+  const attributionTurns = externalSessions.length > 0
+    ? externalSessions.reduce((sum, session) => sum + Math.max(session.turnCount, 1), 0)
+    : scanResult.turnCount;
+
+  const coverage: WorkflowCostAttributionCoverage = pricedSessions === 0
+    ? 'unavailable'
+    : unpricedSessions > 0
+      ? 'partial'
+      : totalCostUsd === 0 && allPricedAreExplicitZero
+        ? 'known_zero'
+        : 'complete';
+  const reason: WorkflowCostAttributionReason | undefined =
+    coverage === 'unavailable' || coverage === 'partial'
+      ? 'unpriced_model'
+      : coverage === 'complete' && usedProviderReportedCost
+        ? 'provider_reported_cost'
+        : undefined;
 
   return {
     totalCostUsd,
@@ -761,7 +803,16 @@ export function computeWorkflowCost(opts: {
     turnCount: scanResult.turnCount,
     status: 'success',
     pricingUsed,
-    ...(attribution ? { attribution } : {}),
+    attribution: {
+      source: (scanResult.source === 'codex' ? 'codex' : 'claude') as 'codex' | 'claude',
+      coverage,
+      ...(reason ? { reason } : {}),
+      sessions: attributionSessions,
+      turns: attributionTurns,
+      pricedSessions,
+      unpricedSessions,
+      models: attributionModels,
+    },
   };
 }
 

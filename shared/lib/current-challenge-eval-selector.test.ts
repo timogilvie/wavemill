@@ -113,6 +113,29 @@ describe('current challenge eval selector', () => {
     assert.equal(allowed.ok, true);
   });
 
+  it('passes invalid challenge divergence reasons through diagnostics', () => {
+    const result = select([
+      evalRow({
+        id: 'invalid-current',
+        invalidChallenge: true,
+        challengeDivergenceReason: 'missing_challenge_intent',
+      }),
+    ], { requireScore: false });
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.reason, 'ineligible_evidence');
+      assert.deepEqual(result.diagnostics.candidates.map((candidate) => ({
+        evalId: candidate.evalId,
+        rejection: candidate.rejection,
+        challengeDivergenceReason: candidate.challengeDivergenceReason,
+      })), [{
+        evalId: 'invalid-current',
+        rejection: 'invalid_challenge',
+        challengeDivergenceReason: 'missing_challenge_intent',
+      }]);
+    }
+  });
+
   it('refuses duplicate decisive timestamps and IDs as ambiguous', () => {
     const result = select([evalRow({ id: 'duplicate' }), evalRow({ id: 'duplicate' })]);
     assert.equal(result.ok, false);

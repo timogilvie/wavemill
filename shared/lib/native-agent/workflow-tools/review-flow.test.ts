@@ -780,6 +780,89 @@ describe('runReviewFlow', () => {
     assertNoMergeOperations(recorder.transcriptEvents, recorder.stageArtifactEntries);
   });
 
+  it('writes failed missing-evidence artifact and skips publication on native review timeout', async () => {
+    const featureDir = mkdtempSync(path.join(os.tmpdir(), 'review-flow-'));
+    tempDirs.push(featureDir);
+    const state: FixtureState = {
+      pullRequests: [],
+      labelsByTarget: new Map(),
+      linearComments: [],
+      calls: {
+        linearCreateComment: 0,
+        linearUpdateComment: 0,
+        listOpenPullRequests: 0,
+        createPullRequest: 0,
+        updatePullRequest: 0,
+        getLabels: 0,
+        addLabel: 0,
+      },
+    };
+    const recorder = makeRecorder();
+
+    const result = await runReviewFlow({
+      issueId: 'HOK-3019',
+      featureDir,
+      repo: 'acme/widgets',
+      base: 'auto/integration',
+      head: 'task/native-review-timeout',
+      headSha: 'abc123',
+      title: 'Native review timeout',
+      body: 'Timeout regression.',
+      labels: ['wm:ready', 'wavemill'],
+      sessionId: 'sess-timeout',
+      registry: createInMemoryDedupeRegistry({ clock: () => 1_000 }),
+      transcript: recorder.transcript,
+      stageArtifact: recorder.stageArtifact,
+      clock: () => 1_000,
+      linearClient: createLinearClient(state),
+      githubDeps: createGitHubDeps(state),
+      networkPolicy: ALLOW_REVIEW_FLOW_NETWORK_POLICY,
+      publishBranchImpl: stubPublishBranch,
+      reviewChangesImpl: async () => ({
+        verdict: 'error',
+        codeReviewFindings: [],
+        failureCategory: 'native-review-timeout',
+        reviewToolError: 'Native review exceeded its wall-clock budget before producing a final JSON result.',
+        metadata: {
+          branch: 'task/native-review-timeout',
+          files: ['src/app.ts'],
+          hasUiChanges: false,
+          designContextAvailable: false,
+          uiVerificationRun: false,
+          effectiveNativeTimeoutMs: 300_000,
+        },
+      }),
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.review.verdict, 'error');
+    assert.equal(result.review.failureCategory, 'native-review-timeout');
+    assert.equal(result.fixes.attempted, 0);
+    assert.equal(result.linearComment, undefined);
+    assert.equal(result.pullRequest, undefined);
+    assert.equal(state.calls.linearCreateComment, 0);
+    assert.equal(state.calls.createPullRequest, 0);
+    assert.equal(state.calls.addLabel, 0);
+
+    const stored = JSON.parse(readFileSync(path.join(featureDir, '.review-result.json'), 'utf8')) as {
+      status: string;
+      artifacts: {
+        verdict: string;
+        failureCategory: string;
+        missingReviewEvidence: boolean;
+        evidence: string;
+        diagnostics?: { metadata?: { effectiveNativeTimeoutMs?: number } };
+      };
+    };
+    assert.equal(stored.status, 'failed');
+    assert.equal(stored.artifacts.verdict, 'error');
+    assert.equal(stored.artifacts.failureCategory, 'native-review-timeout');
+    assert.equal(stored.artifacts.missingReviewEvidence, true);
+    assert.equal(stored.artifacts.evidence, 'missing-review-verdict');
+    assert.equal(stored.artifacts.diagnostics?.metadata?.effectiveNativeTimeoutMs, 300_000);
+    assertNoMergeOperations(recorder.transcriptEvents, recorder.stageArtifactEntries);
+  });
+
   it('writes a failed stage result when GitHub PR creation fails', async () => {
     const featureDir = mkdtempSync(path.join(os.tmpdir(), 'review-flow-'));
     tempDirs.push(featureDir);

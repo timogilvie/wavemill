@@ -119,6 +119,8 @@ export type NoComparisonReason =
   | 'operator_reroute'
   | 'state_vs_derived_side_mismatch'
   | 'missing_challenge_intent'
+  | 'multiple-varied-roles'
+  | 'arm_infrastructure_failure'
   // legacy skip reason
   | 'identical_routing_dimensions'
   // provenance validation outcomes
@@ -149,6 +151,8 @@ export const NO_COMPARISON_REASONS = [
   'operator_reroute',
   'state_vs_derived_side_mismatch',
   'missing_challenge_intent',
+  'multiple-varied-roles',
+  'arm_infrastructure_failure',
   'identical_routing_dimensions',
   'provenance_invalid',
   'provenance_inconclusive',
@@ -193,6 +197,12 @@ export interface ChallengeExecutedStageProvenance {
   executionEvidenceStatus?: StageExecutionEvidenceStatus;
   modelAttributionEligible?: boolean;
   modelAttributionIneligibleReason?: StageResult['modelAttributionIneligibleReason'];
+  /**
+   * HOK-3143: provider-identity verdict carried from the stage result's
+   * executionEvidence. `alias-resolved` means the provider served a concrete
+   * target of a certified rolling alias, which is not an executed-model mismatch.
+   */
+  identityVerdict?: 'match' | 'alias-resolved' | 'mismatch' | 'unverifiable' | 'absent';
 }
 
 export interface ChallengeSideExecutionProvenance {
@@ -217,10 +227,12 @@ export interface ChallengeProvenanceValidationIssue {
 export interface ChallengeProvenanceValidation {
   valid: boolean;
   modelAttributionEligible?: boolean;
-  outcome?: 'invalid' | 'inconclusive';
+  outcome?: 'invalid' | 'inconclusive' | 'invalid_challenge';
   challengedStage?: StageName;
   challengedRole?: ChallengeStageRole;
   issues: ChallengeProvenanceValidationIssue[];
+  /** Details about why the challenge was invalid, e.g. which dimensions varied. */
+  invalidChallengeDetails?: string;
 }
 
 export interface ChallengeComparison {
@@ -316,6 +328,18 @@ export interface ChallengeComparison {
   primaryReviewExecutedIdentity?: ReviewExecutedIdentitySet;
   /** Executed review identities observed for the challenger arm. */
   challengerReviewExecutedIdentity?: ReviewExecutedIdentitySet;
+
+  /**
+   * Corrective marker written by legacy sweeps (HOK-2970) and other quarantine
+   * tools. Additive — historical rows without this key remain valid; rows
+   * carrying it must be excluded from stage-attribution training and coverage.
+   */
+  quarantined?: {
+    reason: string;
+    ticket: string;
+    at: string;
+    evidence?: Record<string, unknown>;
+  };
 }
 
 export interface ChallengeComparisonDimensions {
@@ -362,6 +386,7 @@ type ComparisonRetentionInput = {
   sharedPrefix?: boolean;
   primaryInheritedStages?: ChallengeStage[];
   challengerInheritedStages?: ChallengeStage[];
+  forkIdentity?: ForkIdentity;
   primaryDiffIdentity?: ChallengeDiffIdentity;
   challengerDiffIdentity?: ChallengeDiffIdentity;
 };
@@ -373,6 +398,7 @@ function comparisonRetentionFields(input: ComparisonRetentionInput): Pick<
   | 'sharedPrefix'
   | 'primaryInheritedStages'
   | 'challengerInheritedStages'
+  | 'forkIdentity'
   | 'primaryDiffIdentity'
   | 'challengerDiffIdentity'
 > {
@@ -382,6 +408,7 @@ function comparisonRetentionFields(input: ComparisonRetentionInput): Pick<
     sharedPrefix: input.sharedPrefix ?? false,
     primaryInheritedStages: input.primaryInheritedStages ?? [],
     challengerInheritedStages: input.challengerInheritedStages ?? [],
+    ...(input.forkIdentity ? { forkIdentity: input.forkIdentity } : {}),
     ...(input.primaryDiffIdentity ? { primaryDiffIdentity: input.primaryDiffIdentity } : {}),
     ...(input.challengerDiffIdentity ? { challengerDiffIdentity: input.challengerDiffIdentity } : {}),
   };
@@ -442,6 +469,28 @@ export function canonicalizeChallengeModelId(modelId: string, repoDir?: string):
     return registryKey;
   }
   return resolveWavemillAliasFromOpenRouterId(trimmed) ?? trimmed;
+}
+
+/**
+ * True when two model ids name the same model. Canonicalisation alone misses
+ * a provider-native id that is itself a registry key (e.g. the dated
+ * `claude-haiku-4-5-20251001` vs its alias `claude-haiku-4-5`), so also treat
+ * ids as equivalent when a registry entry declares the other as its
+ * `supportedModel.providerNativeId`.
+ */
+export function challengeModelIdsEquivalent(
+  a: string | undefined,
+  b: string | undefined,
+  repoDir?: string,
+): boolean {
+  const ca = canonicalizeChallengeModelId(a ?? '', repoDir);
+  const cb = canonicalizeChallengeModelId(b ?? '', repoDir);
+  if (!ca || !cb) return false;
+  if (ca === cb) return true;
+  const registry = getEffectiveRegistry(repoDir);
+  const nativeA = registry.models[ca]?.supportedModel?.providerNativeId;
+  const nativeB = registry.models[cb]?.supportedModel?.providerNativeId;
+  return nativeA === cb || nativeB === ca || (!!nativeA && nativeA === nativeB);
 }
 
 function variantDiffers(a: string | undefined, b: string | undefined): boolean {
@@ -589,6 +638,13 @@ export function deriveNoComparisonReason(
     return 'provenance_inconclusive';
   }
 
+  // HOK-2970: invalid_challenge records that came from the auto-resolve path
+  // (aborted-arm-was-invalid) carry the aborted eval's invalidChallengeReason
+  // as their no-comparison reason.
+  if (record.comparisonOutcome === 'invalid_challenge') {
+    return 'missing_challenge_intent';
+  }
+
   // Forfeit and double-forfeit use terminalReason
   if (record.terminalReason) {
     return record.terminalReason as NoComparisonReason;
@@ -621,8 +677,20 @@ export function appendChallengeComparison(record: ChallengeComparison, dir?: str
   appendJsonlRecord(resolveRecordsFile(dir), recordToAppend);
 }
 
-export function isDecisiveChallengeComparison(record: Pick<ChallengeComparison, 'comparisonOutcome' | 'primaryCompleted' | 'challengerCompleted' | 'armFailures' | 'terminalReason'>): boolean {
+export function isDecisiveChallengeComparison(record: Pick<ChallengeComparison, 'comparisonOutcome' | 'primaryCompleted' | 'challengerCompleted' | 'armFailures' | 'terminalReason' | 'invalidChallenge' | 'quarantined'>): boolean {
   const outcome = record.comparisonOutcome;
+  // HOK-2970: a `forfeit` whose losing arm was actually `invalid_challenge`
+  // must never be treated as decisive by the merge lane or by stage-attribution
+  // training. New records use `invalid_challenge` directly (see
+  // `buildInvalidChallengeArmComparison`); this guard catches legacy pre-fix
+  // rows still on disk before the quarantine sweep has been applied, and any
+  // row corrected by that sweep.
+  if (record.invalidChallenge === true) {
+    return false;
+  }
+  if (record.quarantined) {
+    return false;
+  }
   if (
     record.terminalReason === 'eval_hard_failed'
     || record.terminalReason === 'primary_eval_hard_failed'
@@ -757,6 +825,11 @@ function parseStageArtifact(
     executionEvidenceStatus: parsed.executionEvidence?.status ?? (reviewIdentity ? 'direct' : 'missing'),
     modelAttributionEligible: parsed.modelAttributionEligible ?? (reviewIdentity ? parsed.status === 'completed' : false),
     modelAttributionIneligibleReason: parsed.modelAttributionIneligibleReason,
+    // HOK-3143: carry the provider-identity verdict so attribution can tell
+    // an alias-resolved stage apart from an executed-model mismatch.
+    ...(typeof parsed.executionEvidence?.identityVerdict === 'string'
+      ? { identityVerdict: parsed.executionEvidence.identityVerdict as ChallengeExecutedStageProvenance['identityVerdict'] }
+      : {}),
   };
 }
 
@@ -820,6 +893,105 @@ export function challengeRoleForVariedDimensions(varied: VariedDimensions | unde
   if (varied.coder) roles.push('coder');
   if (varied.reviewer) roles.push('reviewer');
   return roles.length === 1 ? roles[0] : undefined;
+}
+
+/**
+ * List all roles that differ between primary and challenger.
+ */
+export function listVariedRoles(varied: VariedDimensions | undefined): ChallengeStageRole[] {
+  if (!varied) return [];
+  const roles: ChallengeStageRole[] = [];
+  if (varied.planner) roles.push('planner');
+  if (varied.coder) roles.push('coder');
+  if (varied.reviewer) roles.push('reviewer');
+  return roles;
+}
+
+/**
+ * List all varied dimension names (roles and non-roles).
+ */
+export function getVariedDimensionNames(varied: VariedDimensions | undefined): string[] {
+  if (!varied) return [];
+  const dims: string[] = [];
+  if (varied.planner) dims.push('planner');
+  if (varied.coder) dims.push('coder');
+  if (varied.reviewer) dims.push('reviewer');
+  if (varied.planDepth) dims.push('planDepth');
+  if (varied.codeDepth) dims.push('codeDepth');
+  if (varied.reviewMode) dims.push('reviewMode');
+  if (varied.routerVariant) dims.push('routerVariant');
+  if (varied.plannerPromptVariant) dims.push('plannerPromptVariant');
+  if (varied.reviewerPromptVariant) dims.push('reviewerPromptVariant');
+  return dims;
+}
+
+/**
+ * Check if more than one role varies, violating the one-variable invariant.
+ */
+export function hasMultiRoleVariation(varied: VariedDimensions | undefined): boolean {
+  const roles = listVariedRoles(varied);
+  return roles.length > 1;
+}
+
+/**
+ * Check if a role varies alongside a non-role dimension (e.g., role + depth or role + mode).
+ * This also violates the one-variable invariant.
+ */
+export function hasRoleAndNonRoleVariation(varied: VariedDimensions | undefined): boolean {
+  if (!varied) return false;
+  const roles = listVariedRoles(varied);
+  if (roles.length === 0) return false;
+  const nonRoles = [
+    varied.planDepth,
+    varied.codeDepth,
+    varied.reviewMode,
+    varied.routerVariant,
+    varied.plannerPromptVariant,
+    varied.reviewerPromptVariant,
+  ];
+  return nonRoles.some(Boolean);
+}
+
+/**
+ * Check if the challenger's non-selected stages diverge from the primary's finalized route.
+ * For an implementation-stage challenge, checks that planner and reviewer match.
+ * Returns diverged dimensions if any are found.
+ */
+export function detectChallengerRouteNonSelectedDivergence(
+  primaryRouting: ChallengeRoutingMeta | undefined,
+  challengerRouting: ChallengeRoutingMeta | undefined,
+  variedStage?: 'plan' | 'implementation' | 'review',
+): string[] {
+  if (!primaryRouting || !challengerRouting) return [];
+
+  const diverged: string[] = [];
+
+  // For each stage, check non-selected dimensions
+  if (variedStage === 'plan') {
+    // Coding and review are non-selected
+    if (primaryRouting.coder !== challengerRouting.coder) diverged.push('coder');
+    if (primaryRouting.codeDepth !== challengerRouting.codeDepth) diverged.push('codeDepth');
+    if (primaryRouting.reviewer !== challengerRouting.reviewer) diverged.push('reviewer');
+    if ((primaryRouting.reviewMode || primaryRouting.reviewRecommended) !== (challengerRouting.reviewMode || challengerRouting.reviewRecommended)) {
+      diverged.push('reviewMode');
+    }
+  } else if (variedStage === 'implementation') {
+    // Planning and review are non-selected
+    if (primaryRouting.planner !== challengerRouting.planner) diverged.push('planner');
+    if (primaryRouting.planDepth !== challengerRouting.planDepth) diverged.push('planDepth');
+    if (primaryRouting.reviewer !== challengerRouting.reviewer) diverged.push('reviewer');
+    if ((primaryRouting.reviewMode || primaryRouting.reviewRecommended) !== (challengerRouting.reviewMode || challengerRouting.reviewRecommended)) {
+      diverged.push('reviewMode');
+    }
+  } else if (variedStage === 'review') {
+    // Planning and coding are non-selected
+    if (primaryRouting.planner !== challengerRouting.planner) diverged.push('planner');
+    if (primaryRouting.planDepth !== challengerRouting.planDepth) diverged.push('planDepth');
+    if (primaryRouting.coder !== challengerRouting.coder) diverged.push('coder');
+    if (primaryRouting.codeDepth !== challengerRouting.codeDepth) diverged.push('codeDepth');
+  }
+
+  return diverged;
 }
 
 function stageForRole(role: ChallengeStageRole): StageName {
@@ -905,11 +1077,28 @@ function validateStageForSide(input: {
   if (
     stageProvenance.executionEvidenceStatus === 'contradicted'
     || stageProvenance.modelAttributionIneligibleReason === 'execution_contradicted'
+    // HOK-3143: a provider substitution reaches the same comparison outcome
+    // as an execution contradiction — the attributed model did not run.
+    || stageProvenance.modelAttributionIneligibleReason === 'provider_substitution'
+    || stageProvenance.identityVerdict === 'mismatch'
   ) {
     addStageValidationIssue(input.issues, input.side, stageProvenance, 'execution-evidence-contradicted', intendedModel);
     return;
   }
-  if (intendedModel && stageProvenance.model && stageProvenance.model !== intendedModel) {
+  // HOK-3143: a correctly resolved alias is not an executed-model mismatch.
+  // The provider-identity gate has already verified the executed concrete
+  // matches the certificate's pinned `resolvedTarget.model`, so the executed
+  // id is expected to differ from the intended alias — don't re-compare them
+  // via the registry (which would fail for an alias whose target is not a
+  // registry key, e.g. `~google/gemini-pro-latest` → `google/gemini-3.1-pro-preview`).
+  if (stageProvenance.identityVerdict === 'alias-resolved') {
+    return;
+  }
+  if (
+    intendedModel
+    && stageProvenance.model
+    && !challengeModelIdsEquivalent(stageProvenance.model, intendedModel, input.repoDir)
+  ) {
     addStageValidationIssue(input.issues, input.side, stageProvenance, 'executed-model-mismatch', intendedModel);
   }
 }
@@ -921,10 +1110,13 @@ function isFatalProvenanceIssue(issue: ChallengeProvenanceValidationIssue): bool
 function materiallyDifferentExecution(
   primary: ChallengeExecutedStageProvenance,
   challenger: ChallengeExecutedStageProvenance,
+  repoDir?: string,
 ): boolean {
   if (primary.status === 'missing' || challenger.status === 'missing') return false;
   if (primary.status === 'malformed' || challenger.status === 'malformed') return false;
-  return primary.model !== challenger.model || primary.agent !== challenger.agent;
+  if (primary.agent !== challenger.agent) return true;
+  if (primary.model === challenger.model) return false;
+  return !challengeModelIdsEquivalent(primary.model, challenger.model, repoDir);
 }
 
 export function validateChallengeExecutionProvenance(input: {
@@ -935,9 +1127,41 @@ export function validateChallengeExecutionProvenance(input: {
   primaryModel: string;
   challengerModel: string;
   variedDimensions?: VariedDimensions;
+  variedStage?: 'plan' | 'implementation' | 'review';
   repoDir?: string;
 }): ChallengeProvenanceValidation {
   const issues: ChallengeProvenanceValidationIssue[] = [];
+
+  // Detect multi-role variation or role-plus-non-role variation (invariant violation)
+  if (hasMultiRoleVariation(input.variedDimensions) || hasRoleAndNonRoleVariation(input.variedDimensions)) {
+    const variedDims = getVariedDimensionNames(input.variedDimensions);
+    const details = `Multiple varied dimensions: ${variedDims.join(', ')}`;
+    return {
+      valid: false,
+      modelAttributionEligible: false,
+      outcome: 'invalid_challenge',
+      invalidChallengeDetails: details,
+      issues,
+    };
+  }
+
+  // Detect challenger's non-selected stage route divergence (phase 2 violation)
+  const divergedDims = detectChallengerRouteNonSelectedDivergence(
+    input.primaryRouting,
+    input.challengerRouting,
+    input.variedStage,
+  );
+  if (divergedDims.length > 0) {
+    const details = `Challenger non-selected stages diverged from primary: ${divergedDims.join(', ')}`;
+    return {
+      valid: false,
+      modelAttributionEligible: false,
+      outcome: 'invalid_challenge',
+      invalidChallengeDetails: details,
+      issues,
+    };
+  }
+
   const role = challengeRoleForVariedDimensions(input.variedDimensions);
 
   if (role) {
@@ -974,7 +1198,7 @@ export function validateChallengeExecutionProvenance(input: {
     for (const stage of ['planning', 'coding', 'review'] as const) {
       const primaryStage = input.primaryExecution[stage];
       const challengerStage = input.challengerExecution[stage];
-      if (materiallyDifferentExecution(primaryStage, challengerStage)) {
+      if (materiallyDifferentExecution(primaryStage, challengerStage, input.repoDir)) {
         issues.push({
           side: 'pair',
           stage,
@@ -1020,17 +1244,28 @@ export function buildInvalidProvenanceComparison(input: {
   variedStage?: 'plan' | 'implementation' | 'review';
   timestamp?: string;
 } & ComparisonRetentionInput): ChallengeComparison {
-  const reason = input.provenanceValidation.issues
-    .map((issue) => {
-      const side = issue.side === 'pair' ? 'pair' : `${issue.side} ${issue.role}`;
-      const path = issue.artifactPath ? ` (${issue.artifactPath})` : '';
-      const intended = issue.intendedModel ? ` intended=${issue.intendedModel}` : '';
-      const executed = issue.executedModel ? ` executed=${issue.executedModel}` : '';
-      return `${side}: ${issue.reason}${intended}${executed}${path}`;
-    })
-    .join('; ');
   const outcome = input.provenanceValidation.outcome ?? 'invalid';
-  const noComparisonReason = outcome === 'invalid' ? 'provenance_invalid' : 'provenance_inconclusive';
+  const reason = outcome === 'invalid_challenge'
+    ? input.provenanceValidation.invalidChallengeDetails || 'multiple varied dimensions'
+    : input.provenanceValidation.issues
+      .map((issue) => {
+        const side = issue.side === 'pair' ? 'pair' : `${issue.side} ${issue.role}`;
+        const path = issue.artifactPath ? ` (${issue.artifactPath})` : '';
+        const intended = issue.intendedModel ? ` intended=${issue.intendedModel}` : '';
+        const executed = issue.executedModel ? ` executed=${issue.executedModel}` : '';
+        return `${side}: ${issue.reason}${intended}${executed}${path}`;
+      })
+      .join('; ');
+
+  let noComparisonReason: NoComparisonReason;
+  let invalidChallengeReason: InvalidChallengeReason | undefined;
+  if (outcome === 'invalid_challenge') {
+    noComparisonReason = 'multiple-varied-roles';
+    invalidChallengeReason = 'multiple-varied-roles';
+  } else {
+    noComparisonReason = outcome === 'invalid' ? 'provenance_invalid' : 'provenance_inconclusive';
+  }
+
   return {
     challengePairId: input.challengePairId,
     primaryModel: input.primaryModel,
@@ -1053,6 +1288,9 @@ export function buildInvalidProvenanceComparison(input: {
     challengeType: input.challengeType,
     variedStage: input.variedStage,
     comparisonOutcome: outcome,
+    invalidChallengeReason,
+    invalidChallenge: outcome === 'invalid_challenge',
+    invalidChallengeDetails: input.provenanceValidation.invalidChallengeDetails,
     terminalReason: 'provenance_validation_failed',
     noComparisonReason,
     ...comparisonRetentionFields(input),
@@ -1311,6 +1549,87 @@ export function buildDoubleForfeitComparison(input: {
   };
 }
 
+/**
+ * Auto-resolution stamp for a pair where one arm aborted after its eval was
+ * already marked `invalidChallenge: true` (HOK-2970 / HOK-2958). Unlike
+ * {@link buildForfeitComparison}, this records no winner: the surviving arm
+ * cannot "win" a challenge that never had a valid opponent, so the pair is
+ * an `invalid_challenge` and must not count as reviewer-stage evidence.
+ *
+ * `terminalReason` is preserved so debugging keeps the abort context.
+ * `forkStage` and related retention fields propagate via
+ * {@link comparisonRetentionFields}.
+ */
+export type InvalidChallengeArmReason =
+  | 'primary_challenge_aborted_invalid'
+  | 'challenger_challenge_aborted_invalid'
+  | 'both_challenge_aborted_invalid';
+
+export function buildInvalidChallengeArmComparison(input: {
+  challengePairId: string;
+  primaryModel: string;
+  challengerModel: string;
+  primaryPrUrl: string;
+  challengerPrUrl: string;
+  primaryHarnessId?: string;
+  challengerHarnessId?: string;
+  primaryCompleted?: boolean;
+  challengerCompleted?: boolean;
+  armFailures?: ChallengeArmFailure[];
+  /** Which arm carried the invalid_challenge eval when it aborted. */
+  abortedSide: 'primary' | 'challenger' | 'both';
+  /** Preserved terminal reason from the original abort. */
+  terminalReason:
+    | 'primary_challenge_aborted'
+    | 'challenger_challenge_aborted'
+    | 'both_challenge_aborted';
+  /**
+   * Reason drawn from the aborted eval (e.g. `missing_challenge_intent`); when
+   * absent the builder falls back to `missing_challenge_intent`, matching the
+   * root cause named by HOK-3006.
+   */
+  invalidChallengeReason?: InvalidChallengeReason;
+  invalidChallengeDetails?: string;
+  rationale?: string;
+  timestamp?: string;
+  primaryRouting?: ChallengeRoutingMeta;
+  challengerRouting?: ChallengeRoutingMeta;
+} & ComparisonRetentionInput): ChallengeComparison {
+  const reason: InvalidChallengeReason = input.invalidChallengeReason ?? 'missing_challenge_intent';
+  const sideLabel = input.abortedSide === 'both'
+    ? 'both arms'
+    : `the ${input.abortedSide} arm`;
+  const rationale = input.rationale
+    ?? `Challenge arm ${sideLabel} was aborted after its eval was marked invalid (${reason}); pair cannot decide a reviewer-stage winner.`;
+  return {
+    challengePairId: input.challengePairId,
+    primaryModel: input.primaryModel,
+    challengerModel: input.challengerModel,
+    primaryPrUrl: input.primaryPrUrl,
+    challengerPrUrl: input.challengerPrUrl,
+    primaryHarnessId: input.primaryHarnessId,
+    challengerHarnessId: input.challengerHarnessId,
+    primaryEvalScore: null,
+    challengerEvalScore: null,
+    primaryCompleted: input.primaryCompleted,
+    challengerCompleted: input.challengerCompleted,
+    ...(input.armFailures?.length ? { armFailures: input.armFailures } : {}),
+    rationale,
+    dimensions: EMPTY_DIMENSIONS,
+    timestamp: input.timestamp || new Date().toISOString(),
+    primaryRouting: input.primaryRouting,
+    challengerRouting: input.challengerRouting,
+    comparisonOutcome: 'invalid_challenge',
+    invalidChallenge: true,
+    invalidChallengeReason: reason,
+    ...(input.invalidChallengeDetails ? { invalidChallengeDetails: input.invalidChallengeDetails } : {}),
+    terminalReason: input.terminalReason,
+    noComparisonReason: reason as NoComparisonReason,
+    workflowInsight: 'No reviewer-stage winner was decided because one or both arms aborted after their eval was marked invalid.',
+    ...comparisonRetentionFields(input),
+  };
+}
+
 function meanSideDimensionScore(
   dimensions: ChallengeComparisonDimensions,
   side: 'primary' | 'challenger',
@@ -1350,14 +1669,17 @@ export function readChallengeComparisons(dir?: string): StoredChallengeCompariso
   return readJsonlFile<StoredChallengeComparison>(filePath);
 }
 
-export function readDecisiveChallengeComparisons(dir?: string): StoredChallengeComparison[] {
+export function readActiveChallengeComparisons(dir?: string): StoredChallengeComparison[] {
   const evalsDir = resolve(dir || DEFAULT_EVALS_DIR);
   const voids = readChallengeRecordVoids(evalsDir);
-  return readChallengeComparisons(evalsDir)
-    .filter((record) => isDecisiveChallengeComparison(record))
-    .filter((record) => !isChallengeRecordVoided({
-      challengePairId: record.challengePairId,
-      recordTimestamp: record.timestamp,
-      voids,
-    }));
+  return readChallengeComparisons(evalsDir).filter((record) => !isChallengeRecordVoided({
+    challengePairId: record.challengePairId,
+    recordTimestamp: record.timestamp,
+    voids,
+  }));
+}
+
+export function readDecisiveChallengeComparisons(dir?: string): StoredChallengeComparison[] {
+  return readActiveChallengeComparisons(dir)
+    .filter((record) => isDecisiveChallengeComparison(record));
 }

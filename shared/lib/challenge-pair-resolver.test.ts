@@ -1166,3 +1166,469 @@ test('resolver defers a pair whose challenger is an awaiting_fork arm (HOK-2813)
     cleanup();
   }
 });
+
+// ── HOK-3128: a no-PR arm that stops progressing must release its sibling ──
+
+function stalledPairTasks(challengerOverrides: Record<string, unknown> = {}, primaryOverrides: Record<string, unknown> = {}) {
+  return {
+    'HOK-3121': {
+      pr: 1537,
+      branch: 'task/pollution',
+      updated: '2026-09-30T10:00:00Z',
+      challengePairId: 'HOK-3121',
+      challengeRole: 'primary',
+      challengeModel: 'claude-opus-5-5',
+      evalCompleted: true,
+      ...primaryOverrides,
+    },
+    'HOK-3121_c': {
+      branch: 'task/pollution-challenger',
+      updated: '2026-09-30T10:22:00Z',
+      challengePairId: 'HOK-3121',
+      challengeRole: 'challenger',
+      challengeModel: 'qwen-3-coder',
+      phase: 'coding',
+      slug: 'pollution-challenger',
+      ...challengerOverrides,
+    },
+  };
+}
+
+const exitedAgentProbe = () => ({
+  issue: 'HOK-3121_c',
+  computedAt: '2026-09-30T13:00:00.000Z',
+  lastProgressAt: '2026-09-30T10:22:00.000Z',
+  progressAgeMinutes: 158,
+  sources: [],
+  agentState: null,
+  agentRecord: null,
+  controllerState: null,
+  agentIdle: true,
+  terminal: false,
+  terminalIdle: false,
+  agentProcessLive: null,
+  stalled: true,
+  stallMinutes: 30,
+  blockingPrompt: null,
+});
+
+function readTasks(repoDir: string): Record<string, Record<string, unknown>> {
+  return JSON.parse(readFileSync(join(repoDir, '.wavemill', 'workflow-state.json'), 'utf-8')).tasks;
+}
+
+test('resolver auto-detects a stalled no-PR challenger, stamps it and forfeits to the primary (HOK-3128)', async () => {
+  const { repoDir, cleanup } = setupRepoDir();
+  try {
+    writeWorkflowState(repoDir, stalledPairTasks());
+
+    const result = await resolveUnresolvablePair({
+      pairId: 'HOK-3121',
+      repoDir,
+      remoteBranches: ['task/pollution', 'task/pollution-challenger'],
+      now: () => new Date('2026-09-30T13:00:00Z'),
+      getSiblingProgress: exitedAgentProbe,
+    });
+
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.reason, 'sibling-stalled');
+    assert.equal(result.outcome, 'forfeit');
+    assert.equal(result.record.winner, 'primary');
+    assert.equal(result.record.terminalReason, 'challenger_challenge_aborted');
+    assert.equal(result.record.armFailures?.[0].failureKind, 'sibling-stalled');
+    assert.equal(result.record.armFailures?.[0].faultClass, 'harness-fault');
+    assert.equal(result.record.armFailures?.[0].stage, 'coding');
+    assert.equal(readChallengeComparisons(join(repoDir, '.wavemill', 'evals')).length, 1);
+
+    const tasks = readTasks(repoDir);
+    assert.equal(tasks['HOK-3121_c'].challengeAborted, 'terminal_stage_failure:sibling-stalled');
+    assert.match(String(tasks['HOK-3121_c'].challengeAbortedDetail), /no agent progress in phase coding/);
+    assert.equal(tasks['HOK-3121_c'].challengeAbortedStage, 'coding');
+    assert.equal(tasks['HOK-3121'].challengeAborted, undefined);
+  } finally {
+    cleanup();
+  }
+});
+
+test('resolver leaves a progressing no-PR challenger alone (HOK-3128)', async () => {
+  const { repoDir, cleanup } = setupRepoDir();
+  try {
+    writeWorkflowState(repoDir, stalledPairTasks());
+    const result = await resolveUnresolvablePair({
+      pairId: 'HOK-3121',
+      repoDir,
+      remoteBranches: [],
+      now: () => new Date('2026-09-30T13:00:00Z'),
+      getSiblingProgress: () => ({ ...exitedAgentProbe(), agentIdle: false, agentState: 'working', lastProgressAt: '2026-09-30T12:59:00.000Z' }),
+    });
+    assert.equal(result.status, 'skipped');
+    assert.match(result.reason, /not currently unresolvable/);
+    assert.equal(readTasks(repoDir)['HOK-3121_c'].challengeAborted, undefined);
+  } finally {
+    cleanup();
+  }
+});
+
+test('resolver dry run for sibling-stalled neither stamps nor appends (HOK-3128)', async () => {
+  const { repoDir, cleanup } = setupRepoDir();
+  try {
+    writeWorkflowState(repoDir, stalledPairTasks());
+    const result = await resolveUnresolvablePair({
+      pairId: 'HOK-3121',
+      repoDir,
+      dryRun: true,
+      remoteBranches: [],
+      now: () => new Date('2026-09-30T13:00:00Z'),
+      getSiblingProgress: exitedAgentProbe,
+    });
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.dryRun, true);
+    assert.equal(result.record.winner, 'primary');
+    assert.equal(readChallengeComparisons(join(repoDir, '.wavemill', 'evals')).length, 0);
+    assert.equal(readTasks(repoDir)['HOK-3121_c'].challengeAborted, undefined);
+  } finally {
+    cleanup();
+  }
+});
+
+test('resolver skips sibling-stalled while the survivor has no eval yet (HOK-3128)', async () => {
+  const { repoDir, cleanup } = setupRepoDir();
+  try {
+    writeWorkflowState(repoDir, stalledPairTasks({}, { evalCompleted: false }));
+    const result = await resolveUnresolvablePair({
+      pairId: 'HOK-3121',
+      repoDir,
+      remoteBranches: [],
+      now: () => new Date('2026-09-30T13:00:00Z'),
+      getSiblingProgress: exitedAgentProbe,
+    });
+    assert.equal(result.status, 'skipped');
+    assert.match(result.reason, /stalled arm but the surviving arm has not persisted an eval/);
+    assert.equal(readTasks(repoDir)['HOK-3121_c'].challengeAborted, undefined);
+  } finally {
+    cleanup();
+  }
+});
+
+test('resolver never double-stamps an arm the monitor already aborted (HOK-3128)', async () => {
+  const { repoDir, cleanup } = setupRepoDir();
+  try {
+    writeWorkflowState(repoDir, stalledPairTasks({
+      challengeAborted: 'terminal_stage_failure:coding-dirty-handoff',
+      challengeAbortedDetail: 'dirty-handoff relaunch exhausted',
+      challengeAbortedStage: 'coding',
+    }));
+    let probed = false;
+    const result = await resolveUnresolvablePair({
+      pairId: 'HOK-3121',
+      repoDir,
+      remoteBranches: [],
+      now: () => new Date('2026-09-30T13:00:00Z'),
+      getSiblingProgress: () => { probed = true; return exitedAgentProbe(); },
+    });
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.reason, 'sibling-challenge-aborted');
+    assert.equal(probed, false);
+    assert.equal(result.record.armFailures?.[0].failureKind, 'coding-dirty-handoff');
+    assert.equal(result.record.armFailures?.[0].faultClass, 'model-fault');
+    assert.equal(readTasks(repoDir)['HOK-3121_c'].challengeAborted, 'terminal_stage_failure:coding-dirty-handoff');
+  } finally {
+    cleanup();
+  }
+});
+
+// Acceptance (HOK-3128): after the monitor terminalizes a dirty-handoff
+// challenger, the pair resolves as a forfeit and the green primary becomes
+// merge-eligible.
+test('dirty-handoff abort resolves the pair and releases the primary PR (HOK-3128)', async () => {
+  const { repoDir, cleanup } = setupRepoDir({ challenge: { autoMergeWinner: true } });
+  try {
+    writeWorkflowState(repoDir, stalledPairTasks({
+      challengeAborted: 'terminal_stage_failure:coding-dirty-handoff',
+      challengeAbortedDetail: 'Coding handoff left 3 uncommitted path(s) after the agent exited',
+      challengeAbortedStage: 'coding',
+    }));
+    const items = [makeWorkItem(1537, 'task/pollution', 'HOK-3121')];
+    const gateOptions = {
+      remoteBranches: ['task/pollution', 'task/pollution-challenger'],
+      coolOffSeconds: 0,
+      nowMs: () => Date.parse('2026-09-30T13:00:00Z'),
+      getSiblingProgress: exitedAgentProbe,
+    };
+
+    const before = await applyChallengePairGates(items, [], repoDir, gateOptions);
+    assert.equal(before.blocked[0]?.reason, 'challenge:pair-unresolvable:sibling-challenge-aborted');
+
+    const resolution = await resolveUnresolvablePair({ pairId: 'HOK-3121', repoDir, remoteBranches: [] });
+    assert.equal(resolution.status, 'resolved');
+    assert.equal(resolution.record.winner, 'primary');
+
+    const after = await applyChallengePairGates(items, [], repoDir, gateOptions);
+    assert.equal(after.blocked.length, 0);
+    assert.deepEqual(after.eligible.map((item) => item.pr.number), [1537]);
+  } finally {
+    cleanup();
+  }
+});
+
+test('tend backstop: a stalled challenger with no abort stamp still releases the primary (HOK-3128)', async () => {
+  const { repoDir, cleanup } = setupRepoDir({ challenge: { autoMergeWinner: true } });
+  try {
+    writeWorkflowState(repoDir, stalledPairTasks());
+    const items = [makeWorkItem(1537, 'task/pollution', 'HOK-3121')];
+    const gateOptions = {
+      remoteBranches: ['task/pollution', 'task/pollution-challenger'],
+      coolOffSeconds: 0,
+      nowMs: () => Date.parse('2026-09-30T13:00:00Z'),
+      getSiblingProgress: exitedAgentProbe,
+    };
+
+    const before = await applyChallengePairGates(items, [], repoDir, gateOptions);
+    assert.equal(before.blocked[0]?.reason, 'challenge:pair-unresolvable:sibling-stalled');
+
+    const resolution = await resolveUnresolvablePair({
+      pairId: 'HOK-3121',
+      repoDir,
+      remoteBranches: [],
+      now: () => new Date('2026-09-30T13:00:00Z'),
+      getSiblingProgress: exitedAgentProbe,
+    });
+    assert.equal(resolution.status, 'resolved');
+
+    const after = await applyChallengePairGates(items, [], repoDir, gateOptions);
+    assert.deepEqual(after.eligible.map((item) => item.pr.number), [1537]);
+  } finally {
+    cleanup();
+  }
+});
+
+/**
+ * HOK-3147: a challenge pair whose challenger exhausted Ready while the
+ * primary is green. The monitor stamps the challenger and closes its PR; the
+ * resolver writes the terminal record; tend releases the primary.
+ */
+function readyExhaustedPairTasks(
+  challengerOverrides: Record<string, unknown> = {},
+  primaryOverrides: Record<string, unknown> = {},
+) {
+  return {
+    'HOK-3145': {
+      pr: 1560,
+      branch: 'task/guard-native-tests',
+      updated: '2026-10-01T20:12:00Z',
+      challengePairId: 'HOK-3145',
+      challengeRole: 'primary',
+      challengeModel: 'claude-opus-5-5',
+      evalCompleted: true,
+      ...primaryOverrides,
+    },
+    'HOK-3145_c': {
+      pr: 1559,
+      branch: 'task/guard-native-tests-challenger',
+      updated: '2026-10-01T21:32:00Z',
+      challengePairId: 'HOK-3145',
+      challengeRole: 'challenger',
+      challengeModel: 'gpt-5.5',
+      ...challengerOverrides,
+    },
+  };
+}
+
+const ROUTE_STAMP_ABORT = {
+  challengeAborted: 'invalid_challenge:ready-transition-failed',
+  challengeAbortedDetail: 'Ready passed but failed at route-stamp (review identity mismatch); re-checks exhausted 4/4',
+  challengeAbortedStage: 'ready',
+};
+
+const RED_CHECK_ABORT = {
+  challengeAborted: 'terminal_stage_failure:ready-exhausted',
+  challengeAbortedDetail: 'Ready remediation exhausted: failed checks: unit (REPO_DIR is not defined)',
+  challengeAbortedStage: 'ready',
+};
+
+test('resolver voids the pair when the challenger was retired for a route-stamp failure (HOK-3147)', async () => {
+  const { repoDir, cleanup } = setupRepoDir();
+  try {
+    writeWorkflowState(repoDir, readyExhaustedPairTasks(ROUTE_STAMP_ABORT));
+    const result = await resolveUnresolvablePair({ pairId: 'HOK-3145', repoDir });
+
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.reason, 'sibling-challenge-aborted');
+    assert.equal(result.outcome, 'invalid_challenge');
+    assert.equal(result.record.comparisonOutcome, 'invalid_challenge');
+    assert.equal(result.record.invalidChallenge, true);
+    assert.equal(result.record.invalidChallengeReason, 'arm_infrastructure_failure');
+    assert.equal(result.record.noComparisonReason, 'arm_infrastructure_failure');
+    assert.equal(result.record.terminalReason, 'challenger_challenge_aborted');
+    assert.equal(result.record.winner, undefined);
+    assert.equal(result.record.armFailures?.[0].failureKind, 'ready-transition-failed');
+    assert.equal(result.record.armFailures?.[0].faultClass, 'harness-fault');
+    assert.match(result.record.invalidChallengeDetails ?? '', /route-stamp/);
+    // Persisted, so the monitor's challenge_pair_record_exists short-circuits.
+    assert.equal(readChallengeComparisons(join(repoDir, '.wavemill', 'evals')).length, 1);
+  } finally {
+    cleanup();
+  }
+});
+
+test('resolver voids an infrastructure-retired pair without waiting on the survivor eval (HOK-3147)', async () => {
+  const { repoDir, cleanup } = setupRepoDir();
+  try {
+    writeWorkflowState(repoDir, readyExhaustedPairTasks(ROUTE_STAMP_ABORT, { evalCompleted: false }));
+    const result = await resolveUnresolvablePair({ pairId: 'HOK-3145', repoDir });
+
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.outcome, 'invalid_challenge');
+    assert.equal(result.record.primaryCompleted, false);
+  } finally {
+    cleanup();
+  }
+});
+
+test('resolver forfeits to the primary when the challenger exhausted Ready on red checks (HOK-3147)', async () => {
+  const { repoDir, cleanup } = setupRepoDir();
+  try {
+    writeWorkflowState(repoDir, readyExhaustedPairTasks(RED_CHECK_ABORT));
+    const result = await resolveUnresolvablePair({ pairId: 'HOK-3145', repoDir });
+
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.outcome, 'forfeit');
+    assert.equal(result.record.winner, 'primary');
+    assert.equal(result.record.terminalReason, 'challenger_challenge_aborted');
+    assert.equal(result.record.armFailures?.[0].failureKind, 'ready-exhausted');
+    assert.equal(result.record.armFailures?.[0].faultClass, 'model-fault');
+    assert.equal(result.record.armFailures?.[0].stage, 'ready');
+  } finally {
+    cleanup();
+  }
+});
+
+test('resolver still waits for the survivor eval before a ready-exhausted forfeit (HOK-3147)', async () => {
+  const { repoDir, cleanup } = setupRepoDir();
+  try {
+    writeWorkflowState(repoDir, readyExhaustedPairTasks(RED_CHECK_ABORT, { evalCompleted: false }));
+    const result = await resolveUnresolvablePair({ pairId: 'HOK-3145', repoDir });
+    assert.equal(result.status, 'skipped');
+  } finally {
+    cleanup();
+  }
+});
+
+test('resolver voids the pair symmetrically when the primary was retired (HOK-3147)', async () => {
+  const { repoDir, cleanup } = setupRepoDir();
+  try {
+    writeWorkflowState(repoDir, readyExhaustedPairTasks({ evalCompleted: true }, { ...ROUTE_STAMP_ABORT, evalCompleted: false }));
+    const result = await resolveUnresolvablePair({ pairId: 'HOK-3145', repoDir });
+
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.outcome, 'invalid_challenge');
+    assert.equal(result.record.terminalReason, 'primary_challenge_aborted');
+    assert.equal(result.record.armFailures?.[0].side, 'primary');
+  } finally {
+    cleanup();
+  }
+});
+
+// HOK-3154: a challenge arm refused by the review gate is retired through the
+// pending-ready-recheck path. The resolver treats the resulting stamp exactly
+// like HOK-3147's ready-exhausted shapes (prefix-driven), so a dedicated
+// resolver test ensures the new causes flow through the right outcome.
+const REVIEW_MALFORMED_FORFEIT = {
+  challengeAborted: 'terminal_stage_failure:review-malformed-response',
+  challengeAbortedDetail: 'Ready launch refused: review verdict does not pass; failureCategory=native-review-malformed-response',
+  challengeAbortedStage: 'review',
+};
+
+const REVIEW_IDENTITY_MISMATCH = {
+  challengeAborted: 'invalid_challenge:review-identity-mismatch',
+  challengeAbortedDetail: 'Ready launch refused: reviewer identity disagreed with assignment',
+  challengeAbortedStage: 'review',
+};
+
+test('resolver voids the pair when the challenger was retired for review-identity-mismatch (HOK-3154)', async () => {
+  const { repoDir, cleanup } = setupRepoDir();
+  try {
+    writeWorkflowState(repoDir, readyExhaustedPairTasks(REVIEW_IDENTITY_MISMATCH));
+    const result = await resolveUnresolvablePair({ pairId: 'HOK-3145', repoDir });
+
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.reason, 'sibling-challenge-aborted');
+    assert.equal(result.outcome, 'invalid_challenge');
+    assert.equal(result.record.comparisonOutcome, 'invalid_challenge');
+    assert.equal(result.record.invalidChallenge, true);
+    assert.equal(result.record.invalidChallengeReason, 'arm_infrastructure_failure');
+    assert.equal(result.record.terminalReason, 'challenger_challenge_aborted');
+    assert.equal(result.record.winner, undefined);
+    assert.equal(result.record.armFailures?.[0].failureKind, 'review-identity-mismatch');
+    assert.equal(result.record.armFailures?.[0].faultClass, 'harness-fault');
+  } finally {
+    cleanup();
+  }
+});
+
+test('resolver forfeits to the primary when the challenger was retired for a proven review-malformed-response (HOK-3154)', async () => {
+  const { repoDir, cleanup } = setupRepoDir();
+  try {
+    writeWorkflowState(repoDir, readyExhaustedPairTasks(REVIEW_MALFORMED_FORFEIT));
+    const result = await resolveUnresolvablePair({ pairId: 'HOK-3145', repoDir });
+
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.outcome, 'forfeit');
+    assert.equal(result.record.winner, 'primary');
+    assert.equal(result.record.terminalReason, 'challenger_challenge_aborted');
+    assert.equal(result.record.armFailures?.[0].failureKind, 'review-malformed-response');
+    assert.equal(result.record.armFailures?.[0].faultClass, 'model-fault');
+    assert.equal(result.record.armFailures?.[0].stage, 'review');
+  } finally {
+    cleanup();
+  }
+});
+
+test('resolver voids the pair symmetrically when the primary was retired for review-identity-mismatch (HOK-3154)', async () => {
+  const { repoDir, cleanup } = setupRepoDir();
+  try {
+    writeWorkflowState(repoDir, readyExhaustedPairTasks({ evalCompleted: true }, { ...REVIEW_IDENTITY_MISMATCH, evalCompleted: false }));
+    const result = await resolveUnresolvablePair({ pairId: 'HOK-3145', repoDir });
+
+    assert.equal(result.status, 'resolved');
+    assert.equal(result.outcome, 'invalid_challenge');
+    assert.equal(result.record.terminalReason, 'primary_challenge_aborted');
+    assert.equal(result.record.armFailures?.[0].side, 'primary');
+  } finally {
+    cleanup();
+  }
+});
+
+for (const [label, abort, expectedOutcome] of [
+  ['red check', RED_CHECK_ABORT, 'forfeit'],
+  ['route-stamp', ROUTE_STAMP_ABORT, 'invalid_challenge'],
+] as const) {
+  test(`acceptance: challenger Ready exhausted on ${label} → primary merge-eligible on the next tend poll (HOK-3147)`, async () => {
+    const { repoDir, cleanup } = setupRepoDir({ challenge: { autoMergeWinner: true } });
+    try {
+      writeWorkflowState(repoDir, readyExhaustedPairTasks(abort));
+      const primaryItem = makeWorkItem(1560, 'task/guard-native-tests', 'HOK-3145');
+      const challengerItem = makeWorkItem(1559, 'task/guard-native-tests-challenger', 'HOK-3145');
+      const gateOptions = { remoteBranches: [], coolOffSeconds: 0 };
+
+      // Before the resolver runs, the stamp alone makes the pair unresolvable
+      // rather than `no-comparison`.
+      const before = await applyChallengePairGates([primaryItem], [], repoDir, gateOptions);
+      assert.equal(before.blocked[0]?.reason, 'challenge:pair-unresolvable:sibling-challenge-aborted');
+
+      const resolution = await resolveUnresolvablePair({ pairId: 'HOK-3145', repoDir });
+      assert.equal(resolution.status, 'resolved');
+      assert.equal(resolution.outcome, expectedOutcome);
+
+      // The monitor closed the challenger PR, so only the primary is open.
+      const after = await applyChallengePairGates([primaryItem], [], repoDir, gateOptions);
+      assert.equal(after.blocked.length, 0);
+      assert.deepEqual(after.eligible.map((item) => item.pr.number), [1560]);
+
+      // The retired challenger never becomes merge-eligible.
+      const both = await applyChallengePairGates([primaryItem, challengerItem], [], repoDir, gateOptions);
+      assert.equal(both.eligible.some((item) => item.pr.number === 1559), false);
+    } finally {
+      cleanup();
+    }
+  });
+}

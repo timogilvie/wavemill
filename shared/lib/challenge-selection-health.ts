@@ -14,6 +14,8 @@ const DEFAULT_INFLIGHT_TTL_SECONDS = 7200;
 const DEFAULT_TRANSIENT_FAILURE_THRESHOLD = 3;
 const DEFAULT_WINDOW_SECONDS = 1800;
 const DEFAULT_COOLDOWN_SECONDS = 900;
+const DEFAULT_ATTEMPT_LOOKBACK_SECONDS = 21600;
+const DEFAULT_FAILED_ATTEMPT_COOLDOWN_SECONDS = 1800;
 
 export interface SelectionHealthOwner {
   issueId: string;
@@ -40,10 +42,26 @@ export interface SelectionCircuitRecord {
   updatedAt: string;
 }
 
+/**
+ * Terminal status of one selected/varied challenge arm. `success` is the only
+ * status that also produces usable coverage; the rest consume an attempt slot
+ * without ever converting into coverage.
+ */
+export type SelectionAttemptStatus = 'success' | 'failure' | 'forfeit' | 'invalid';
+
+export interface SelectionAttemptRecord {
+  status: SelectionAttemptStatus;
+  failureKind?: string;
+  faultClass?: string;
+  at: string;
+}
+
 export interface SelectionHealthState {
   schemaVersion: 1;
   reservations: Record<string, SelectionReservationRecord>;
   circuits: Record<string, SelectionCircuitRecord>;
+  /** Terminal attempts keyed `provider|canonicalModel|stage`, pruned by lookback. */
+  attempts: Record<string, SelectionAttemptRecord[]>;
 }
 
 export interface SelectionHealthConfig {
@@ -56,6 +74,11 @@ export interface SelectionHealthConfig {
     transientFailureThreshold: number;
     windowSeconds: number;
     cooldownSeconds: number;
+  };
+  attemptRanking: {
+    enabled: boolean;
+    lookbackSeconds: number;
+    failedAttemptCooldownSeconds: number;
   };
 }
 
@@ -91,12 +114,17 @@ export interface SelectionHealthEvidence {
   excludedByReservation: ReservationExclusion[];
   excludedByCircuit: CircuitExclusion[];
   probeGranted: { model: string; provider: string; canonicalModel: string } | null;
+  /** Per-candidate attempt/cooldown evidence for the varied stage (HOK-3066). */
+  attemptEvidence?: SelectionAttemptEvidence[];
   thresholds: {
     selectionTtlSeconds: number;
     inflightTtlSeconds: number;
     transientFailureThreshold: number;
     windowSeconds: number;
     cooldownSeconds: number;
+    attemptRankingEnabled: boolean;
+    attemptLookbackSeconds: number;
+    failedAttemptCooldownSeconds: number;
   };
 }
 
@@ -161,6 +189,28 @@ export function normalizeSelectionHealthConfig(
       windowSeconds: normalizePositiveInteger(input?.circuit?.windowSeconds, DEFAULT_WINDOW_SECONDS, 60),
       cooldownSeconds: normalizePositiveInteger(input?.circuit?.cooldownSeconds, DEFAULT_COOLDOWN_SECONDS, 60),
     },
+    attemptRanking: normalizeAttemptRankingConfig(input?.attemptRanking),
+  };
+}
+
+function normalizeAttemptRankingConfig(
+  input?: Partial<SelectionHealthConfig['attemptRanking']>,
+): SelectionHealthConfig['attemptRanking'] {
+  const failedAttemptCooldownSeconds = normalizeNonNegativeInteger(
+    input?.failedAttemptCooldownSeconds,
+    DEFAULT_FAILED_ATTEMPT_COOLDOWN_SECONDS,
+  );
+  const lookbackSeconds = normalizePositiveInteger(
+    input?.lookbackSeconds,
+    DEFAULT_ATTEMPT_LOOKBACK_SECONDS,
+    60,
+  );
+  return {
+    enabled: input?.enabled !== false,
+    // A lookback shorter than the cooldown would prune the failure record that
+    // anchors an active cooldown, so the lookback always covers the cooldown.
+    lookbackSeconds: Math.max(lookbackSeconds, failedAttemptCooldownSeconds),
+    failedAttemptCooldownSeconds,
   };
 }
 
@@ -171,12 +221,41 @@ export function resolveSelectionHealthPath(opts: SelectionHealthOptions = {}): s
   return join(resolve(opts.repoDir ?? process.cwd()), '.wavemill', CHALLENGE_SELECTION_HEALTH_FILENAME);
 }
 
+/**
+ * Split a model selector into an optional provider hint and the bare model id,
+ * tolerating the `provider/model`, `native-provider/model`, and bare `model`
+ * forms observed across challenge routing, stage results, and abort markers
+ * (HOK-3064). Mirrors `parseRequestedNativeModel` in native-agent/review.ts so
+ * both sides normalize identity the same way.
+ */
+function parseModelSelector(model: string): { providerHint?: string; bareModel: string } {
+  const trimmed = model.trim();
+  const separatorIndex = trimmed.indexOf('/');
+  if (separatorIndex <= 0) {
+    return { bareModel: trimmed };
+  }
+  const rawProvider = trimmed.slice(0, separatorIndex);
+  const bareModel = trimmed.slice(separatorIndex + 1) || trimmed;
+  const providerHint = rawProvider.startsWith('native-') ? rawProvider.slice('native-'.length) : rawProvider;
+  return { providerHint: providerHint || undefined, bareModel };
+}
+
+/**
+ * Resolve a model selector to its canonical `{provider, canonicalModel}` health
+ * key. The registry is tried on the full selector first, then on the parsed
+ * bare id, so `kimi-k2`, `openrouter/kimi-k2`, and `native-openrouter/kimi-k2`
+ * all key to `openrouter|<alias>` — one OpenRouter execution never splits
+ * across `native` and `native-openrouter` health rows (HOK-3064). When the
+ * registry cannot resolve but the selector carried a provider hint, that hint
+ * (stripped of any `native-` prefix) is used instead of `'unknown'`.
+ */
 export function resolveSelectionHealthKey(model: string): SelectionHealthKey {
   const trimmed = model.trim();
-  const resolved = resolveProviderNativeModelId(trimmed);
+  const { providerHint, bareModel } = parseModelSelector(trimmed);
+  const resolved = resolveProviderNativeModelId(trimmed) ?? resolveProviderNativeModelId(bareModel);
   return {
-    provider: resolved?.provider ?? 'unknown',
-    canonicalModel: resolved?.wavemillAlias ?? trimmed,
+    provider: resolved?.provider ?? providerHint ?? 'unknown',
+    canonicalModel: resolved?.wavemillAlias ?? bareModel,
   };
 }
 
@@ -190,11 +269,16 @@ export function circuitKeyFor(model: string): string {
   return `${key.provider}|${key.canonicalModel}`;
 }
 
+export function attemptKeyFor(model: string, stage: ChallengeStage): string {
+  return reservationKeyFor(model, stage);
+}
+
 export function emptySelectionHealthState(): SelectionHealthState {
   return {
     schemaVersion: SCHEMA_VERSION,
     reservations: {},
     circuits: {},
+    attempts: {},
   };
 }
 
@@ -402,6 +486,8 @@ export async function recordSelectionOutcome(input: SelectionHealthOptions & {
   model: string;
   stage: ChallengeStage;
   success?: boolean;
+  /** Explicit terminal status; defaults to `success`/`failure` from `success`. */
+  terminalStatus?: SelectionAttemptStatus;
   failureKind?: TerminalFailureKind | string | null;
   faultClass?: ArmFaultClass | null;
 }): Promise<void> {
@@ -411,6 +497,9 @@ export async function recordSelectionOutcome(input: SelectionHealthOptions & {
   const modelKey = resolveSelectionHealthKey(input.model);
   const reservationKey = `${modelKey.provider}|${modelKey.canonicalModel}|${input.stage}`;
   const circuitKey = `${modelKey.provider}|${modelKey.canonicalModel}`;
+  const terminalStatus: SelectionAttemptStatus = input.terminalStatus
+    ?? (input.success ? 'success' : 'failure');
+  const succeeded = terminalStatus === 'success';
 
   await mutateHealthState(statePath, (current) => {
     const state = pruneSelectionHealthState(current, now, config);
@@ -419,9 +508,21 @@ export async function recordSelectionOutcome(input: SelectionHealthOptions & {
       delete state.reservations[reservationKey];
     }
 
+    // Every terminal outcome for the selected/varied arm is exactly one
+    // attempt record; only ranking consumption is gated by attemptRanking.
+    state.attempts[reservationKey] = [
+      ...(state.attempts[reservationKey] ?? []),
+      {
+        status: terminalStatus,
+        ...(input.failureKind ? { failureKind: input.failureKind } : {}),
+        ...(input.faultClass ? { faultClass: input.faultClass } : {}),
+        at: isoAt(now),
+      },
+    ];
+
     const circuit = state.circuits[circuitKey];
     const probeOwned = Boolean(circuit?.probeOwner && sameProbeOwner(circuit.probeOwner, input.owner));
-    if (input.success) {
+    if (succeeded) {
       if (circuit && probeOwned) {
         delete state.circuits[circuitKey];
       }
@@ -458,11 +559,81 @@ export async function recordSelectionOutcome(input: SelectionHealthOptions & {
   });
 }
 
+export interface SelectionAttemptEvidence {
+  model: string;
+  provider: string;
+  canonicalModel: string;
+  stage: ChallengeStage;
+  attemptCount: number;
+  lastAttemptAt?: string;
+  cooldownActive: boolean;
+  cooldownUntil?: string;
+}
+
+/**
+ * Derive per-candidate terminal-attempt evidence for one varied stage from a
+ * health snapshot (HOK-3066). Counts every terminal attempt inside the
+ * configured lookback; an active cooldown anchors to the most recent `failure`
+ * record only, so forfeits and invalid attempts deprioritize a candidate
+ * without ever cooling it. Purely a read-time projection: expiry is
+ * deterministic in `now` and nothing is mutated.
+ */
+export function computeAttemptEvidence(input: {
+  stage: ChallengeStage;
+  candidates: string[];
+  snapshot: SelectionHealthState;
+  now?: number;
+  config?: ChallengeConfig['selectionHealth'] | SelectionHealthConfig;
+}): Map<string, SelectionAttemptEvidence> {
+  const now = input.now ?? Date.now();
+  const config = normalizeSelectionHealthConfig(input.config);
+  const cutoff = now - config.attemptRanking.lookbackSeconds * 1000;
+  const evidence = new Map<string, SelectionAttemptEvidence>();
+
+  for (const rawModel of input.candidates) {
+    const model = rawModel.trim();
+    if (!model || evidence.has(model)) {
+      continue;
+    }
+    const modelKey = resolveSelectionHealthKey(model);
+    const records = (input.snapshot.attempts?.[`${modelKey.provider}|${modelKey.canonicalModel}|${input.stage}`] ?? [])
+      .filter((record) => {
+        const parsed = parseMs(record.at);
+        return parsed > cutoff && parsed <= now;
+      });
+    const lastAttemptAt = records.reduce<string | undefined>(
+      (latest, record) => (!latest || record.at > latest ? record.at : latest),
+      undefined,
+    );
+    const lastFailureAt = records.reduce<string | undefined>(
+      (latest, record) => (record.status === 'failure' && (!latest || record.at > latest) ? record.at : latest),
+      undefined,
+    );
+    const cooldownUntilMs = lastFailureAt && config.attemptRanking.failedAttemptCooldownSeconds > 0
+      ? parseMs(lastFailureAt) + config.attemptRanking.failedAttemptCooldownSeconds * 1000
+      : 0;
+    const cooldownActive = cooldownUntilMs > now;
+    evidence.set(model, {
+      model,
+      provider: modelKey.provider,
+      canonicalModel: modelKey.canonicalModel,
+      stage: input.stage,
+      attemptCount: records.length,
+      ...(lastAttemptAt ? { lastAttemptAt } : {}),
+      cooldownActive,
+      ...(cooldownActive ? { cooldownUntil: isoAt(cooldownUntilMs) } : {}),
+    });
+  }
+
+  return evidence;
+}
+
 export function buildSelectionHealthEvidence(input: {
   config?: ChallengeConfig['selectionHealth'] | SelectionHealthConfig;
   excludedByReservation?: ReservationExclusion[];
   excludedByCircuit?: CircuitExclusion[];
   probeGranted?: { model: string; provider: string; canonicalModel: string } | null;
+  attemptEvidence?: SelectionAttemptEvidence[];
 }): SelectionHealthEvidence {
   const config = normalizeSelectionHealthConfig(input.config);
   return {
@@ -470,12 +641,16 @@ export function buildSelectionHealthEvidence(input: {
     excludedByReservation: input.excludedByReservation ?? [],
     excludedByCircuit: input.excludedByCircuit ?? [],
     probeGranted: input.probeGranted ?? null,
+    ...(input.attemptEvidence ? { attemptEvidence: input.attemptEvidence } : {}),
     thresholds: {
       selectionTtlSeconds: config.reservation.selectionTtlSeconds,
       inflightTtlSeconds: config.reservation.inflightTtlSeconds,
       transientFailureThreshold: config.circuit.transientFailureThreshold,
       windowSeconds: config.circuit.windowSeconds,
       cooldownSeconds: config.circuit.cooldownSeconds,
+      attemptRankingEnabled: config.attemptRanking.enabled,
+      attemptLookbackSeconds: config.attemptRanking.lookbackSeconds,
+      failedAttemptCooldownSeconds: config.attemptRanking.failedAttemptCooldownSeconds,
     },
   };
 }
@@ -534,6 +709,15 @@ export async function clearSelectionHealth(input: SelectionHealthOptions & {
       }
       delete state.reservations[key];
     }
+    for (const key of Object.keys(state.attempts)) {
+      if (!key.startsWith(reservationPrefix)) {
+        continue;
+      }
+      if (input.stage && key !== `${reservationPrefix}${input.stage}`) {
+        continue;
+      }
+      delete state.attempts[key];
+    }
     return state;
   });
 }
@@ -548,6 +732,10 @@ export function formatSelectionHealthStatus(state: SelectionHealthState): Record
     circuits: Object.entries(state.circuits).map(([key, value]) => {
       const [provider, model] = key.split('|');
       return { key, provider, model, ...value, recentTransientCount: value.recentTransientAt.length };
+    }),
+    attempts: Object.entries(state.attempts).map(([key, records]) => {
+      const [provider, model, stage] = key.split('|');
+      return { key, provider, model, stage, attemptCount: records.length, records };
     }),
   };
 }
@@ -572,6 +760,20 @@ export function pruneSelectionHealthState(
     }
     if (circuit.state === 'closed' && circuit.recentTransientAt.length === 0 && !circuit.probeOwner) {
       delete next.circuits[key];
+    }
+  }
+  const attemptCutoff = now - config.attemptRanking.lookbackSeconds * 1000;
+  for (const [key, records] of Object.entries(next.attempts)) {
+    const kept = records
+      .filter((record) => {
+        const parsed = parseMs(record.at);
+        return parsed > attemptCutoff && parsed <= now + 1000;
+      })
+      .sort((left, right) => left.at.localeCompare(right.at));
+    if (kept.length === 0) {
+      delete next.attempts[key];
+    } else {
+      next.attempts[key] = kept;
     }
   }
   return next;
@@ -609,7 +811,20 @@ function normalizeState(value: unknown): SelectionHealthState {
     schemaVersion: SCHEMA_VERSION,
     reservations: sanitizeRecord(input.reservations),
     circuits: sanitizeRecord(input.circuits),
+    attempts: sanitizeAttempts(input.attempts),
   };
+}
+
+function sanitizeAttempts(value: unknown): Record<string, SelectionAttemptRecord[]> {
+  const record = sanitizeRecord<unknown>(value);
+  const attempts: Record<string, SelectionAttemptRecord[]> = {};
+  for (const [key, entries] of Object.entries(record)) {
+    if (Array.isArray(entries)) {
+      attempts[key] = entries.filter((entry): entry is SelectionAttemptRecord =>
+        Boolean(entry && typeof entry === 'object' && typeof (entry as SelectionAttemptRecord).at === 'string'));
+    }
+  }
+  return attempts;
 }
 
 function sanitizeRecord<T>(value: unknown): Record<string, T> {

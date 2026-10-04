@@ -7,6 +7,8 @@
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "$script_dir/routing-emitter.sh"
+# shellcheck source=task-identity.sh
+source "$script_dir/task-identity.sh"
 
 agent_tmux_target() {
   local session="$1" window="$2"
@@ -72,31 +74,6 @@ agent_send_tmux_guarded_command() {
   tmux send-keys -t "$target" C-m
 }
 
-agent_normalize_linear_issue_id() {
-  local issue="${1:-}" candidate="${2:-}"
-  candidate="${candidate#"${candidate%%[![:space:]]*}"}"
-  candidate="${candidate%"${candidate##*[![:space:]]}"}"
-
-  if [[ "$issue" =~ ^([A-Z][A-Z0-9]*-[0-9]+)_c$ ]]; then
-    local base_issue="${BASH_REMATCH[1]}"
-    if [[ "$candidate" != "$base_issue" ]]; then
-      printf '%s\n' "$base_issue"
-      return 0
-    fi
-  fi
-  if [[ "$candidate" =~ ^[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
-    printf '%s\n' "$candidate"
-    return 0
-  fi
-  if [[ "$candidate" =~ ^https?://linear\.app/[^/]+/issue/[A-Z][A-Z0-9]*-[0-9]+([/?#].*)?$ ]]; then
-    local linear_url_path="${candidate#*://linear.app/}"
-    linear_url_path="${linear_url_path#*/issue/}"
-    printf '%s\n' "${linear_url_path%%[/?#]*}"
-    return 0
-  fi
-  printf '%s\n' "$issue"
-}
-
 # ============================================================================
 # AGENT RESOLUTION
 # ============================================================================
@@ -107,6 +84,43 @@ agent_normalize_linear_issue_id() {
 # Prints: agent command name (e.g. "claude", "codex")
 AGENT_RESOLVE_LAST_DIAGNOSTIC=""
 AGENT_RESOLVE_LAST_BATCH_JSON=""
+# Typed refusal fields from the last agent_resolve_from_model failure
+# (HOK-3142): the resolver reason (e.g. uncertified), the certification status
+# (e.g. missing_live_canary), and the certify command ("" when unavailable).
+# Like AGENT_RESOLVE_LAST_DIAGNOSTIC they only reach the caller when the
+# function runs in the caller's shell — redirect stdout to a file instead of
+# capturing it with $(...) when the caller needs them.
+AGENT_RESOLVE_LAST_REASON=""
+AGENT_RESOLVE_LAST_CERTIFICATION=""
+AGENT_RESOLVE_LAST_CERTIFY=""
+
+# Populate the AGENT_RESOLVE_LAST_{REASON,CERTIFICATION,CERTIFY} fields.
+# Prefers the resolver's structured JSON; falls back to the stable key=value
+# diagnostic format for shell-side failures (missing tsx, mktemp, ...).
+# Args: $1 = resolver JSON (may be empty), $2 = diagnostic line
+_agent_resolve_capture_refusal() {
+  local json="${1:-}" diagnostic="${2:-}"
+  local certify_re='certify="([^"]*)"'
+  AGENT_RESOLVE_LAST_REASON=""
+  AGENT_RESOLVE_LAST_CERTIFICATION=""
+  AGENT_RESOLVE_LAST_CERTIFY=""
+  if [[ -n "$json" ]] && command -v jq >/dev/null 2>&1; then
+    AGENT_RESOLVE_LAST_REASON="$(printf '%s' "$json" | jq -r 'if type == "object" and .ok == false then (.reason // empty) else empty end' 2>/dev/null || true)"
+    AGENT_RESOLVE_LAST_CERTIFICATION="$(printf '%s' "$json" | jq -r 'if type == "object" and .ok == false then (.certificationStatus // empty) else empty end' 2>/dev/null || true)"
+    AGENT_RESOLVE_LAST_CERTIFY="$(printf '%s' "$json" | jq -r 'if type == "object" and .ok == false then (.certifyCommand // empty) else empty end' 2>/dev/null || true)"
+  fi
+  if [[ -z "$AGENT_RESOLVE_LAST_REASON" && "$diagnostic" =~ (^|[[:space:]])reason=([^[:space:]]+) ]]; then
+    AGENT_RESOLVE_LAST_REASON="${BASH_REMATCH[2]}"
+  fi
+  if [[ -z "$AGENT_RESOLVE_LAST_CERTIFICATION" && "$diagnostic" =~ (^|[[:space:]])certification=([^[:space:]]+) ]]; then
+    AGENT_RESOLVE_LAST_CERTIFICATION="${BASH_REMATCH[2]}"
+  fi
+  if [[ -z "$AGENT_RESOLVE_LAST_CERTIFY" && "$diagnostic" =~ $certify_re ]]; then
+    AGENT_RESOLVE_LAST_CERTIFY="${BASH_REMATCH[1]}"
+  fi
+  [[ "$AGENT_RESOLVE_LAST_CERTIFY" == "unavailable" ]] && AGENT_RESOLVE_LAST_CERTIFY=""
+  return 0
+}
 
 agent_resolve_from_model() {
   local model="$1"
@@ -116,15 +130,18 @@ agent_resolve_from_model() {
   local resolver_tool="$tools_dir/resolve-model-agent.ts"
   local stderr_file="" json_output="" agent="" diagnostic=""
   AGENT_RESOLVE_LAST_DIAGNOSTIC=""
+  _agent_resolve_capture_refusal "" ""
 
   if [[ -z "$model" ]]; then
     AGENT_RESOLVE_LAST_DIAGNOSTIC="[agent-resolution] model=(empty) phase=${phase:-unknown} provider=unknown reason=invalid-model-id certification=invalid-model-id certify=\"unavailable\""
     echo "$AGENT_RESOLVE_LAST_DIAGNOSTIC" >&2
+    _agent_resolve_capture_refusal "" "$AGENT_RESOLVE_LAST_DIAGNOSTIC"
     return 1
   fi
   if [[ ! "$model" =~ ^[A-Za-z0-9._/-]+(\[[A-Za-z0-9._-]+\])?$ ]]; then
     AGENT_RESOLVE_LAST_DIAGNOSTIC="[agent-resolution] model=$model phase=${phase:-unknown} provider=unknown reason=invalid-model-id certification=invalid-model-id certify=\"unavailable\""
     echo "$AGENT_RESOLVE_LAST_DIAGNOSTIC" >&2
+    _agent_resolve_capture_refusal "" "$AGENT_RESOLVE_LAST_DIAGNOSTIC"
     return 1
   fi
   case "$phase" in
@@ -132,23 +149,27 @@ agent_resolve_from_model() {
     *)
       AGENT_RESOLVE_LAST_DIAGNOSTIC="[agent-resolution] model=$model phase=${phase:-unknown} provider=unknown reason=invalid-model-id certification=invalid-phase certify=\"unavailable\""
       echo "$AGENT_RESOLVE_LAST_DIAGNOSTIC" >&2
+      _agent_resolve_capture_refusal "" "$AGENT_RESOLVE_LAST_DIAGNOSTIC"
       return 1
       ;;
   esac
   if ! command -v jq >/dev/null 2>&1; then
     AGENT_RESOLVE_LAST_DIAGNOSTIC="[agent-resolution] model=$model phase=$phase provider=unknown reason=invalid-model-id certification=missing-jq certify=\"unavailable\""
     echo "$AGENT_RESOLVE_LAST_DIAGNOSTIC" >&2
+    _agent_resolve_capture_refusal "" "$AGENT_RESOLVE_LAST_DIAGNOSTIC"
     return 1
   fi
   if ! agent_model_helper_available; then
     AGENT_RESOLVE_LAST_DIAGNOSTIC="[agent-resolution] model=$model phase=$phase provider=unknown reason=invalid-model-id certification=missing-tsx certify=\"unavailable\""
     echo "$AGENT_RESOLVE_LAST_DIAGNOSTIC" >&2
+    _agent_resolve_capture_refusal "" "$AGENT_RESOLVE_LAST_DIAGNOSTIC"
     return 1
   fi
 
   stderr_file="$(mktemp "${TMPDIR:-/tmp}/agent-resolve-stderr.XXXXXX")" || {
     AGENT_RESOLVE_LAST_DIAGNOSTIC="[agent-resolution] model=$model phase=$phase provider=unknown reason=invalid-model-id certification=mktemp-failed certify=\"unavailable\""
     echo "$AGENT_RESOLVE_LAST_DIAGNOSTIC" >&2
+    _agent_resolve_capture_refusal "" "$AGENT_RESOLVE_LAST_DIAGNOSTIC"
     return 1
   }
 
@@ -163,6 +184,7 @@ agent_resolve_from_model() {
     AGENT_RESOLVE_LAST_DIAGNOSTIC="${diagnostic:-[agent-resolution] model=$model phase=$phase provider=unknown reason=unknown-model certification=resolver-failed certify=\"unavailable\"}"
     [[ -n "$diagnostic" ]] || echo "$AGENT_RESOLVE_LAST_DIAGNOSTIC" >&2
     [[ -n "$diagnostic" ]] && echo "$diagnostic" >&2
+    _agent_resolve_capture_refusal "$json_output" "$AGENT_RESOLVE_LAST_DIAGNOSTIC"
     return 1
   fi
 
@@ -170,6 +192,7 @@ agent_resolve_from_model() {
     diagnostic="$(printf '%s' "$json_output" | jq -r '.diagnostic // empty' 2>/dev/null || true)"
     AGENT_RESOLVE_LAST_DIAGNOSTIC="${diagnostic:-[agent-resolution] model=$model phase=$phase provider=unknown reason=unknown-model certification=malformed-json certify=\"unavailable\"}"
     echo "$AGENT_RESOLVE_LAST_DIAGNOSTIC" >&2
+    _agent_resolve_capture_refusal "" "$AGENT_RESOLVE_LAST_DIAGNOSTIC"
     return 1
   fi
 
@@ -688,6 +711,62 @@ agent_model_is_openrouter() {
   esac
 }
 
+# Validate that a model can be launched for a given phase using registry-backed
+# preflight resolution. This handles retired models with successors and rejects
+# retired models without successors before pane/process creation.
+# Args: $1 = model ID, $2 = phase, $3 = repo_dir (optional)
+# Output: resolved model on stdout if ok, error message on stderr if rejected
+AGENT_MODEL_PREFLIGHT_LAST_JSON=""
+
+agent_model_launch_preflight() {
+  local model="${1:-}"
+  local phase="${2:-}"
+  local repo_dir="${3:-${REPO_DIR:-$(pwd)}}"
+  local tool="${TOOLS_DIR:-$(agent_wavemill_tools_dir)}/resolve-model-agent.ts"
+  local output=""
+
+  AGENT_MODEL_PREFLIGHT_LAST_JSON=""
+
+  if [[ -z "$model" ]] || [[ -z "$phase" ]]; then
+    echo "Error: agent_model_launch_preflight requires model and phase" >&2
+    return 1
+  fi
+
+  if [[ ! -f "$tool" ]]; then
+    echo "Error: launch preflight tool not found at $tool" >&2
+    return 1
+  fi
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "Error: jq is required for model launch preflight" >&2
+    return 1
+  fi
+
+  output="$(cd "$repo_dir" 2>/dev/null && agent_run_tsx_tool "$tool" --model "$model" --phase "$phase" --repo "$repo_dir" --preflight --json 2>/dev/null)" || {
+    if [[ -n "$output" ]]; then
+      AGENT_MODEL_PREFLIGHT_LAST_JSON="$output"
+      local detail
+      detail="$(printf '%s' "$output" | jq -r '.diagnostic // .reason // "unknown error"' 2>/dev/null)"
+      echo "Error: model launch preflight failed for $model/$phase: $detail" >&2
+    else
+      echo "Error: model launch preflight tool failed for $model/$phase" >&2
+    fi
+    return 1
+  }
+
+  AGENT_MODEL_PREFLIGHT_LAST_JSON="$output"
+
+  if ! printf '%s' "$output" | jq -e '.ok == true' >/dev/null 2>&1; then
+    local detail
+    detail="$(printf '%s' "$output" | jq -r '.diagnostic // .reason // "model not launchable"' 2>/dev/null)"
+    echo "Error: model launch preflight rejected $model for $phase: $detail" >&2
+    return 1
+  fi
+
+  # Return the resolved model
+  printf '%s' "$output" | jq -r '.resolvedModel // .requestedModel' 2>/dev/null
+}
+
 agent_json_get() {
   local json_input="$1"
   local field="$2"
@@ -1072,8 +1151,13 @@ agent_rubric_snippet() {
 }
 
 agent_runtime_resource_repo_dir() {
-  local tools_dir="$1"
-  local root="${tools_dir%/tools}"
+  # HOK-3100: must return the MILLED repo, not the install. Runtime resource
+  # selection reads config from the repo being worked on and writes registry
+  # entries into its `.wavemill/`; keying off the install path hid the milled
+  # repo's own configuration. Mirrors `routing_repo_dir` in
+  # `build_planning_prompt` / `build_review_prompt`.
+  local wt_dir="$1"
+  local root="${REPO_DIR:-$wt_dir}"
 
   if [[ -d "$root" ]]; then
     (cd "$root" && pwd)
@@ -1166,7 +1250,7 @@ This is a REQUIRED step — do not skip it or substitute your own review.
    - Base branch exists: \$(git rev-parse --verify $base_branch 2>&1 || echo "NOT FOUND")
    - STDERR output: [paste the actual stderr from the failed command]
 
-   Proceeding to PR creation without wm:ready per instructions.
+   Proceeding to PR creation. The mill (Ready → Tend) will run its own Ready gate and, if it publishes a handoff, apply wm:ready on your behalf. Do NOT add any wm:* label yourself.
    \`\`\`
    This diagnostic information is CRITICAL for debugging recurring tool failures.
 
@@ -1266,7 +1350,7 @@ You are in the **ROUTING PHASE** of a multi-phase workflow. Your job is to:
 3. Save the routing results to $routing_path as JSON:
    {
      "planner": "gpt-5.6-terra",
-     "coder": "gpt-5.5",
+     "coder": "gpt-5.6-terra",
      "reviewer": "gpt-5.6-terra",
      "planDepth": "light",
      "codeDepth": "medium",
@@ -1284,7 +1368,7 @@ You are in the **ROUTING PHASE** of a multi-phase workflow. Your job is to:
 - Use the routing tool's recommendations directly - don't override them
 - If the routing tool fails, use sensible defaults:
   - planner: gpt-5.6-terra
-  - coder: gpt-5.5
+  - coder: gpt-5.6-terra
   - reviewer: gpt-5.6-terra
   - planDepth: light
   - codeDepth: medium
@@ -1367,7 +1451,7 @@ Scope the plan to the minimum viable change:
   local template_content
   local resolver_tool="$tools_dir/resolve-runtime-resource.ts"
   local resource_repo_dir
-  resource_repo_dir="$(agent_runtime_resource_repo_dir "$tools_dir")"
+  resource_repo_dir="$(agent_runtime_resource_repo_dir "$wt_dir")"
   if [[ -f "$resolver_tool" ]] && agent_runtime_resource_selection_enabled "$resource_repo_dir" "planner"; then
     local resolved_json
     if resolved_json="$(agent_run_tsx_tool "$resolver_tool" --surface planner --repo-dir "$resource_repo_dir" --json 2>/dev/null)" \
@@ -1812,7 +1896,7 @@ The reviewer is operating in degraded scoped-review mode.
   local template_content
   local resolver_tool="$tools_dir/resolve-runtime-resource.ts"
   local resource_repo_dir
-  resource_repo_dir="$(agent_runtime_resource_repo_dir "$tools_dir")"
+  resource_repo_dir="$(agent_runtime_resource_repo_dir "$wt_dir")"
   if [[ -f "$resolver_tool" ]] && agent_runtime_resource_selection_enabled "$resource_repo_dir" "reviewer"; then
     local resolved_json
     if resolved_json="$(agent_run_tsx_tool "$resolver_tool" --surface reviewer --repo-dir "$resource_repo_dir" --json 2>/dev/null)" \
@@ -1921,6 +2005,13 @@ agent_launch_autonomous() {
 
   if [[ -n "$model" ]]; then
     model="$(agent_resolve_model "${role:-coder}" "$model" "$repo_dir")"
+
+    # Preflight check: ensure the model is launchable (handles retired models with successors)
+    if ! resolved_model="$(agent_model_launch_preflight "$model" "${launch_phase:-coding}" "$repo_dir")"; then
+      return 1
+    fi
+    model="$resolved_model"
+
     local resolved_agent
     if ! resolved_agent="$(agent_resolve_from_model "$model" "${launch_phase:-coding}")"; then
       return 1
@@ -1939,7 +2030,7 @@ agent_launch_autonomous() {
   local native_phase="$launch_phase"
   local native_model=""
   local linear_issue
-  linear_issue="$(agent_normalize_linear_issue_id "$issue" "${WAVEMILL_LINEAR_ISSUE:-}")"
+  linear_issue="$(task_identity_linear_id "$issue" 2>/dev/null || printf '%s\n' "$issue")"
   local worktree_dir="${feature_dir%/features/*}"
   local feature_slug="${WAVEMILL_FEATURE_SLUG:-${WAVEMILL_SLUG:-}}"
   if agent_is_native_cmd "$agent_cmd"; then
@@ -1979,7 +2070,7 @@ export WAVEMILL_LINEAR_ISSUE='$linear_issue'
 export WAVEMILL_DASHBOARD_PID='$dashboard_pid'
 export WAVEMILL_PHASE='planning'
 export WAVEMILL_RESOLVED_MODEL='${native_model:-$model}'
-export WAVEMILL_REPO_DIR='$repo_dir'
+export WAVEMILL_MILLED_REPO_DIR='$repo_dir'
 export WAVEMILL_WT_DIR='$worktree_dir'
 export WAVEMILL_FEATURE_SLUG='$feature_slug'
 export WAVEMILL_SLUG='$feature_slug'
@@ -2012,7 +2103,7 @@ export WAVEMILL_LINEAR_ISSUE='$linear_issue'
 export WAVEMILL_DASHBOARD_PID='$dashboard_pid'
 export WAVEMILL_PHASE='review'
 export WAVEMILL_RESOLVED_MODEL='${native_model:-$model}'
-export WAVEMILL_REPO_DIR='$repo_dir'
+export WAVEMILL_MILLED_REPO_DIR='$repo_dir'
 export WAVEMILL_WT_DIR='$worktree_dir'
 export WAVEMILL_FEATURE_SLUG='$feature_slug'
 export WAVEMILL_SLUG='$feature_slug'
@@ -2043,7 +2134,7 @@ export WAVEMILL_LINEAR_ISSUE='$linear_issue'
 export WAVEMILL_DASHBOARD_PID='$dashboard_pid'
 export WAVEMILL_PHASE='coding'
 export WAVEMILL_RESOLVED_MODEL='${native_model:-$model}'
-export WAVEMILL_REPO_DIR='$repo_dir'
+export WAVEMILL_MILLED_REPO_DIR='$repo_dir'
 export WAVEMILL_WT_DIR='$worktree_dir'
 export WAVEMILL_FEATURE_SLUG='$feature_slug'
 export WAVEMILL_SLUG='$feature_slug'
@@ -2359,6 +2450,25 @@ agent_resume_after_error() {
 #   $6 = agent flags (optional)
 #   $7 = abort check command (optional)
 #   $8 = issue ID (optional — enables lifecycle status tracking)
+# True when the installed codex CLI accepts --no-daemon (added alongside the
+# shared app-server daemon). Probed once per process; older CLIs reject the
+# unknown flag, so it is only passed when advertised. WAVEMILL_CODEX_NO_DAEMON
+# (1/0) overrides the probe.
+agent_codex_supports_no_daemon() {
+  if [[ -n "${WAVEMILL_CODEX_NO_DAEMON:-}" ]]; then
+    [[ "$WAVEMILL_CODEX_NO_DAEMON" == "1" ]]
+    return
+  fi
+  if [[ -z "${_WAVEMILL_CODEX_NO_DAEMON_PROBE:-}" ]]; then
+    if command -v codex >/dev/null 2>&1 && codex --help 2>/dev/null | grep -q -- '--no-daemon'; then
+      _WAVEMILL_CODEX_NO_DAEMON_PROBE=1
+    else
+      _WAVEMILL_CODEX_NO_DAEMON_PROBE=0
+    fi
+  fi
+  [[ "$_WAVEMILL_CODEX_NO_DAEMON_PROBE" == "1" ]]
+}
+
 agent_launch_interactive() {
   local session="$1"
   local window="$2"
@@ -2423,7 +2533,12 @@ agent_launch_interactive() {
       _agent_log_warn "Failed to resolve model selector '$requested_model' for $agent_cmd"
       return 1
     fi
-    model="$resolved_model"
+
+    # Preflight check: ensure the model is launchable (handles retired models with successors)
+    if ! model="$(agent_model_launch_preflight "$resolved_model" "${launch_phase:-coding}" "$repo_dir")"; then
+      return 1
+    fi
+
     local resolved_agent
     if ! resolved_agent="$(agent_resolve_from_model "$model" "${launch_phase:-coding}")"; then
       return 1
@@ -2452,13 +2567,20 @@ agent_launch_interactive() {
   if [[ "$agent_cmd" == "codex" ]] && [[ "$agent_flags" != *" --dangerously-bypass-approvals-and-sandbox"* ]]; then
     agent_flags="${agent_flags} --dangerously-bypass-approvals-and-sandbox"
   fi
+  # The interactive Codex TUI attaches to the shared app-server daemon (often
+  # started by the desktop app). When the daemon and CLI versions differ it
+  # stops at a "Cannot use the background server" menu and waits forever for
+  # a keypress. Mill launches never want the shared daemon.
+  if [[ "$agent_cmd" == "codex" ]] && [[ "$agent_flags" != *" --no-daemon"* ]] && agent_codex_supports_no_daemon; then
+    agent_flags="${agent_flags} --no-daemon"
+  fi
 
   local launcher="/tmp/${session}-$(basename "$prompt_file" .txt)-launcher.sh"
   local launcher_cmd=""
   local native_phase="$launch_phase"
   local native_model=""
   local linear_issue
-  linear_issue="$(agent_normalize_linear_issue_id "$issue" "${WAVEMILL_LINEAR_ISSUE:-}")"
+  linear_issue="$(task_identity_linear_id "$issue" 2>/dev/null || printf '%s\n' "$issue")"
   local worktree_dir="${feature_dir%/features/*}"
   local feature_slug="${WAVEMILL_FEATURE_SLUG:-${WAVEMILL_SLUG:-}}"
 
@@ -2505,7 +2627,7 @@ export WAVEMILL_LINEAR_ISSUE='$linear_issue'
 export WAVEMILL_DASHBOARD_PID='$dashboard_pid'
 export WAVEMILL_PHASE='planning'
 export WAVEMILL_RESOLVED_MODEL='${native_model:-$model}'
-export WAVEMILL_REPO_DIR='$repo_dir'
+export WAVEMILL_MILLED_REPO_DIR='$repo_dir'
 export WAVEMILL_WT_DIR='$worktree_dir'
 export WAVEMILL_FEATURE_SLUG='$feature_slug'
 export WAVEMILL_SLUG='$feature_slug'
@@ -2538,7 +2660,7 @@ export WAVEMILL_LINEAR_ISSUE='$linear_issue'
 export WAVEMILL_DASHBOARD_PID='$dashboard_pid'
 export WAVEMILL_PHASE='review'
 export WAVEMILL_RESOLVED_MODEL='${native_model:-$model}'
-export WAVEMILL_REPO_DIR='$repo_dir'
+export WAVEMILL_MILLED_REPO_DIR='$repo_dir'
 export WAVEMILL_WT_DIR='$worktree_dir'
 export WAVEMILL_FEATURE_SLUG='$feature_slug'
 export WAVEMILL_SLUG='$feature_slug'
@@ -2569,7 +2691,7 @@ export WAVEMILL_LINEAR_ISSUE='$linear_issue'
 export WAVEMILL_DASHBOARD_PID='$dashboard_pid'
 export WAVEMILL_PHASE='coding'
 export WAVEMILL_RESOLVED_MODEL='${native_model:-$model}'
-export WAVEMILL_REPO_DIR='$repo_dir'
+export WAVEMILL_MILLED_REPO_DIR='$repo_dir'
 export WAVEMILL_WT_DIR='$worktree_dir'
 export WAVEMILL_FEATURE_SLUG='$feature_slug'
 export WAVEMILL_SLUG='$feature_slug'

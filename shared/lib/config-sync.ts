@@ -45,6 +45,7 @@ export const CANONICAL_CONFIG_TEMPLATE: WavemillConfig = {
     },
     pricing: {
       'claude-fable-5': { inputCostPerMTok: 10, outputCostPerMTok: 50, cacheWriteCostPerMTok: 12.5, cacheReadCostPerMTok: 1 },
+      'claude-opus-5-5': { inputCostPerMTok: 4, outputCostPerMTok: 20, cacheWriteCostPerMTok: 5, cacheReadCostPerMTok: 0.2 },
       'claude-opus-4-6': { inputCostPerMTok: 5, outputCostPerMTok: 25, cacheWriteCostPerMTok: 6.25, cacheReadCostPerMTok: 0.5 },
       'claude-opus-4-8': { inputCostPerMTok: 5, outputCostPerMTok: 25, cacheWriteCostPerMTok: 6.25, cacheReadCostPerMTok: 0.5 },
       'claude-opus-4-7': { inputCostPerMTok: 5, outputCostPerMTok: 25, cacheWriteCostPerMTok: 6.25, cacheReadCostPerMTok: 0.5 },
@@ -54,7 +55,8 @@ export const CANONICAL_CONFIG_TEMPLATE: WavemillConfig = {
       'claude-haiku-4-5-20251001': { inputCostPerMTok: 0.8, outputCostPerMTok: 4, cacheWriteCostPerMTok: 1, cacheReadCostPerMTok: 0.08 },
       'gpt-5.3-codex': { inputCostPerMTok: 1.75, outputCostPerMTok: 14, cacheReadCostPerMTok: 0.44 },
       'gpt-5.6-terra': { inputCostPerMTok: 2.5, outputCostPerMTok: 15, cacheWriteCostPerMTok: 3.125, cacheReadCostPerMTok: 0.25 },
-      'gpt-5.5': { inputCostPerMTok: 5, outputCostPerMTok: 30 },
+      'gpt-6-sol': { inputCostPerMTok: 2, outputCostPerMTok: 10, cacheWriteCostPerMTok: 2.5, cacheReadCostPerMTok: 0.2 },
+      'gpt-6-luna': { inputCostPerMTok: 0.1, outputCostPerMTok: 0.5, cacheWriteCostPerMTok: 0.125, cacheReadCostPerMTok: 0.01 },
       'gpt-4.1': { inputCostPerMTok: 2, outputCostPerMTok: 8 },
       'qwen-3-coder': { inputCostPerMTok: 0.35, outputCostPerMTok: 1.05 },
       'qwen-3-235b': { inputCostPerMTok: 0.09, outputCostPerMTok: 0.55 },
@@ -65,13 +67,13 @@ export const CANONICAL_CONFIG_TEMPLATE: WavemillConfig = {
       'kimi-k3': { inputCostPerMTok: 3, outputCostPerMTok: 15 },
       'kimi-k2.7-code': { inputCostPerMTok: 1.2, outputCostPerMTok: 3.6 },
       'kimi-k2-thinking': { inputCostPerMTok: 1.5, outputCostPerMTok: 4.5 },
-      'gemini-2.5-pro': { inputCostPerMTok: 1.25, outputCostPerMTok: 10 },
+      'gemini-3.1-pro-preview': { inputCostPerMTok: 2, outputCostPerMTok: 12 },
+      'gemini-3.1-pro-preview-customtools': { inputCostPerMTok: 2, outputCostPerMTok: 12 },
       'gemini-2.5-flash': { inputCostPerMTok: 0.3, outputCostPerMTok: 2.5 },
       'gemini-3.8-flash': { inputCostPerMTok: 0.75, outputCostPerMTok: 3.75 },
       'llama-4-maverick': { inputCostPerMTok: 0.4, outputCostPerMTok: 1.6 },
       'mistral-large-2': { inputCostPerMTok: 0.5, outputCostPerMTok: 1.5 },
       'mistral-medium-3': { inputCostPerMTok: 1.5, outputCostPerMTok: 7.5 },
-      'devstral-medium': { inputCostPerMTok: 0.4, outputCostPerMTok: 2 },
     },
     interventionPenalties: {
       reviewComment: 0.05,
@@ -87,7 +89,7 @@ export const CANONICAL_CONFIG_TEMPLATE: WavemillConfig = {
   hokusai: {
     dataSubmission: {
       enabled: false,
-      consentVersion: '1.0',
+      consentVersion: '1.1',
     },
   },
   providers: {

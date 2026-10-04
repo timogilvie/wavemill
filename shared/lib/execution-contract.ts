@@ -94,12 +94,55 @@ function challengeSidePath(featureDir: string): string {
   return path.join(featureDir, '.challenge-side.json');
 }
 
+function challengeIntentCandidates(featureDir: string): string[] {
+  return [
+    path.join(featureDir, 'challenge-intent.json'),
+    path.join(featureDir, '.challenge-intent.json'),
+  ];
+}
+
 function unavailableDetail(model: string, reason: string): string {
   return `Recovery contract for model ${model || '(unknown)'} is unavailable: ${reason}. Run wavemill reroute <task-id> --phase <planning|coding|review> to choose an audited replacement.`;
 }
 
 function parseJsonFile(file: string): unknown {
   return JSON.parse(readFileSync(file, 'utf-8'));
+}
+
+function challengeIntentReviewContract(input: {
+  featureDir: string;
+  stageRole: StageRole;
+  challengeSide?: ChallengeSide;
+  fallbackSelectedAt?: string;
+}): ExecutionContract | null {
+  if (input.stageRole !== 'review' || !input.challengeSide) return null;
+  for (const candidate of challengeIntentCandidates(input.featureDir)) {
+    if (!existsSync(candidate)) continue;
+    try {
+      const parsed = parseJsonFile(candidate) as Record<string, unknown>;
+      const side = parsed[input.challengeSide] as Record<string, unknown> | undefined;
+      const reviewer = side?.reviewer as Record<string, unknown> | undefined;
+      const model = clean(reviewer?.model)
+        || (clean(parsed.challengeStage) === 'review' ? clean(side?.expectedStageModel) : '');
+      if (!model) continue;
+      const resolved = resolveModelAgent({ model, phase: 'review' });
+      const agent = clean(reviewer?.agent)
+        || (clean(parsed.challengeStage) === 'review' ? clean(side?.expectedStageAgent) : '')
+        || (resolved.ok ? resolved.agent : '');
+      if (!agent) continue;
+      return {
+        model,
+        provider: providerForModel(model),
+        agent,
+        stageRole: 'review',
+        challengeSide: input.challengeSide,
+        selectedAt: clean(parsed.createdAt) || input.fallbackSelectedAt || new Date(0).toISOString(),
+      };
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 export function providerForModel(modelId: string, registry: ModelRegistry = DEFAULT_MODEL_REGISTRY): string {
@@ -168,6 +211,16 @@ export function readPersistedContract(input: {
   const stageRole = clean(stageData.stageRole) || input.stageRole;
   const challengeSide = input.challengeSide ?? siblingSide ?? normalizeChallengeSide(stageData.challengeSide);
   const certificationRef = clean(stageData.certificationRef) || undefined;
+
+  const challengeContract = challengeIntentReviewContract({
+    featureDir: input.featureDir,
+    stageRole: input.stageRole,
+    challengeSide,
+    fallbackSelectedAt: selectedAt,
+  });
+  if (challengeContract) {
+    return { ok: true, contract: challengeContract };
+  }
 
   if (!model || !provider || !agent || !selectedAt) {
     return {

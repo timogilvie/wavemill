@@ -1,23 +1,61 @@
 #!/usr/bin/env -S npx tsx
 
 import { fileURLToPath } from 'node:url';
-import { WM_LABELS, setWavemillReady } from '../shared/lib/pr-state-labels.ts';
+import { getPullRequest, type PullRequest } from '../shared/lib/github.ts';
+import { WM_LABELS, setWavemillMerging, setWavemillReady } from '../shared/lib/pr-state-labels.ts';
+import { isMatchingTendClaim, readReadyTendHandoff } from '../shared/lib/ready-tend-handoff.ts';
 import { runTool } from '../shared/lib/tool-runner.ts';
 
 export const setPrReadyLabelDeps = {
+  getPullRequest,
   setWavemillReady,
+  setWavemillMerging,
   log: console.log,
 };
 
-export function setPrReadyLabel(prNumber: string, repo?: string, markerRoot?: string): void {
+export interface SetPrReadyLabelOutcome {
+  outcome: 'ready' | 'tend-owned';
+  pr: PullRequest;
+}
+
+export function setPrReadyLabel(
+  prNumber: string,
+  repo?: string,
+  markerRoot?: string,
+  featureDir?: string,
+  headSha?: string,
+): SetPrReadyLabelOutcome {
   if (!prNumber) {
     throw new Error('PR number is required');
   }
 
-  const pr = setPrReadyLabelDeps.setWavemillReady(prNumber, {
+  const options = {
     ...(repo ? { repo } : {}),
     ...(markerRoot ? { markerRoot } : {}),
-  });
+  };
+  const matchingTendClaim = (): boolean => Boolean(featureDir && headSha
+    && isMatchingTendClaim(readReadyTendHandoff(featureDir), Number(prNumber), headSha));
+
+  // A Tend claim is durable ownership. Do not undo its merge-lane label just
+  // because Ready's earlier label write is completing late.
+  if (featureDir && headSha) {
+    const observed = setPrReadyLabelDeps.getPullRequest(prNumber, options);
+    if (new Set(observed.labels.map((label) => label.name)).has(WM_LABELS.merging) && matchingTendClaim()) {
+      setPrReadyLabelDeps.log(`Tend already owns PR #${observed.number}; retaining ${WM_LABELS.merging}`);
+      return { outcome: 'tend-owned', pr: observed };
+    }
+  }
+
+  let pr = setPrReadyLabelDeps.setWavemillReady(prNumber, options);
+
+  // Tend can claim after the pre-write observation. Restore its lane lock
+  // rather than reporting Ready as failed; the matching token proves this is
+  // the same head, not an unrelated concurrent mutation.
+  if (matchingTendClaim()) {
+    pr = setPrReadyLabelDeps.setWavemillMerging(prNumber, options);
+    setPrReadyLabelDeps.log(`Tend claimed PR #${pr.number} during Ready finalization; retaining ${WM_LABELS.merging}`);
+    return { outcome: 'tend-owned', pr };
+  }
 
   // Verify the write actually landed before claiming success.
   //
@@ -44,6 +82,7 @@ export function setPrReadyLabel(prNumber: string, repo?: string, markerRoot?: st
   }
 
   setPrReadyLabelDeps.log(`Canonicalized ready labels for PR #${pr.number}`);
+  return { outcome: 'ready', pr };
 }
 
 const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
@@ -60,6 +99,14 @@ const config = {
       type: 'string',
       description: 'Shared repository root for the PR-state marker sidecar',
     },
+    'feature-dir': {
+      type: 'string',
+      description: 'Ready artifact directory used to recognize a matching Tend claim',
+    },
+    head: {
+      type: 'string',
+      description: 'Current GitHub PR head SHA for the handoff token',
+    },
   },
   positional: {
     name: 'pr-number',
@@ -71,7 +118,8 @@ const config = {
     'npx tsx tools/set-pr-ready-label.ts 229 --repo owner/repo',
   ],
   async run({ args, positional }) {
-    setPrReadyLabel(positional[0], args.repo, args['marker-root']);
+    const result = setPrReadyLabel(positional[0], args.repo, args['marker-root'], args['feature-dir'], args.head);
+    console.log(JSON.stringify({ outcome: result.outcome, prNumber: result.pr.number }));
   },
 } as const;
 

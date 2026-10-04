@@ -105,10 +105,6 @@
         "cacheWriteCostPerMTok": 3.125,
         "cacheReadCostPerMTok": 0.25
       },
-      "gpt-5.5": {
-        "inputCostPerMTok": 5,
-        "outputCostPerMTok": 30
-      },
       "qwen-3-coder": {
         "inputCostPerMTok": 0.35,
         "outputCostPerMTok": 1.05
@@ -138,12 +134,18 @@
       "kimi-k2.7-code": {
         "inputCostPerMTok": 0.71,
         "outputCostPerMTok": 3.5,
-        "cacheReadCostPerMTok": 0.15
+        "cacheReadCostPerMTok": 0.18
       },
-      "gemini-2.5-pro": {
-        "inputCostPerMTok": 1.25,
-        "outputCostPerMTok": 10,
-        "cacheReadCostPerMTok": 0.125,
+      "gemini-3.1-pro-preview": {
+        "inputCostPerMTok": 2,
+        "outputCostPerMTok": 12,
+        "cacheReadCostPerMTok": 0.2,
+        "cacheWriteCostPerMTok": 0.375
+      },
+      "gemini-3.1-pro-preview-customtools": {
+        "inputCostPerMTok": 2,
+        "outputCostPerMTok": 12,
+        "cacheReadCostPerMTok": 0.2,
         "cacheWriteCostPerMTok": 0.375
       },
       "gemini-2.5-flash": {
@@ -203,7 +205,7 @@
   "hokusai": {
     "dataSubmission": {
       "enabled": false,
-      "consentVersion": "1.0",
+      "consentVersion": "1.1",
       "endpoint": "https://api.hokusai.dev/v1/submit"
     }
   },
@@ -224,6 +226,14 @@
     ],
     "patchCoding": {
       "enabled": true
+    },
+    "certification": {
+      "canaryCohort": [
+        { "provider": "openrouter", "model": "qwen-3-coder" },
+        { "provider": "openrouter", "model": "kimi-k2.7-code" },
+        { "provider": "openrouter", "model": "glm-5.3" }
+      ],
+      "minCodingReady": 2
     },
     "expansion": {
       "fallbackOnUnavailable": true
@@ -386,10 +396,9 @@
     "source": "explicit",
     "requiredChecks": [
       "Preflight Checks",
-      "Shell Tests (shard 1/4)",
-      "Shell Tests (shard 2/4)",
-      "Shell Tests (shard 3/4)",
-      "Shell Tests (shard 4/4)",
+      "Shell Tests (shard 1/3)",
+      "Shell Tests (shard 2/3)",
+      "Shell Tests (shard 3/3)",
       "Unit Tests (shard 1/7)",
       "Unit Tests (shard 2/7)",
       "Unit Tests (shard 3/7)",
@@ -418,32 +427,27 @@
     },
     "mappingAcknowledgements": {
       "acknowledgedBy": "wavemill-maintainers",
-      "acknowledgedAt": "2026-09-02T22:15:00Z",
+      "acknowledgedAt": "2026-09-23T00:00:00Z",
       "checks": {
         "Preflight Checks": {
           "localCommand": "npm run test:preflight",
           "workflowPath": ".github/workflows/ci.yml",
           "jobName": "Preflight Checks"
         },
-        "Shell Tests (shard 1/4)": {
+        "Shell Tests (shard 1/3)": {
           "localCommand": "bash tests/run-shell-suite.sh",
           "workflowPath": ".github/workflows/ci.yml",
-          "jobName": "Shell Tests (shard 1/4)"
+          "jobName": "Shell Tests (shard 1/3)"
         },
-        "Shell Tests (shard 2/4)": {
+        "Shell Tests (shard 2/3)": {
           "localCommand": "bash tests/run-shell-suite.sh",
           "workflowPath": ".github/workflows/ci.yml",
-          "jobName": "Shell Tests (shard 2/4)"
+          "jobName": "Shell Tests (shard 2/3)"
         },
-        "Shell Tests (shard 3/4)": {
+        "Shell Tests (shard 3/3)": {
           "localCommand": "bash tests/run-shell-suite.sh",
           "workflowPath": ".github/workflows/ci.yml",
-          "jobName": "Shell Tests (shard 3/4)"
-        },
-        "Shell Tests (shard 4/4)": {
-          "localCommand": "bash tests/run-shell-suite.sh",
-          "workflowPath": ".github/workflows/ci.yml",
-          "jobName": "Shell Tests (shard 4/4)"
+          "jobName": "Shell Tests (shard 3/3)"
         },
         "Unit Tests (shard 1/7)": {
           "localCommand": "bash tests/run-unit-tests.sh",
@@ -549,5 +553,14 @@
   "promotion": {
     "protectedIntegrationStrategy": "use-promotion-head",
     "promotionHeadBranch": "auto/promotion"
+  },
+  "staticAnalysis": {
+    "typecheckCommand": "npx --no-install tsc --noEmit -p tsconfig.static.json",
+    "lintCommand": "npx --no-install eslint 'shared/**/*.{ts,tsx,js,mjs,cjs}' 'tools/**/*.{ts,tsx,js,mjs,cjs}' 'codex/src/**/*.{ts,tsx,js,mjs,cjs}' --format json",
+    "timeoutSeconds": {
+      "typecheck": 600,
+      "lint": 900,
+      "complexity": 120
+    }
   }
 }

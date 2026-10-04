@@ -1153,7 +1153,10 @@ test('Native sessions without usable usage do not suppress non-native fallback',
     assert.equal(result.status, 'success');
     if (result.status === 'success') {
       assert.equal(result.totalCostUsd, 3);
-      assert.equal(result.attribution, undefined);
+      // HOK-2958: attribution is now always emitted for Claude/Codex runs.
+      assert.equal(result.attribution?.source, 'claude');
+      assert.equal(result.attribution?.coverage, 'complete');
+      assert.equal(result.attribution?.models[0].costUsd, 3);
       assert.equal(result.sessionCount, 1);
       assert.equal(result.turnCount, 1);
     }
@@ -1363,7 +1366,7 @@ test('computeWorkflowCost attaches complete codex attribution for priced model',
   }
 });
 
-test('computeWorkflowCost attaches partial codex attribution for unpriced model', () => {
+test('computeWorkflowCost reports unavailable codex attribution for unpriced model', () => {
   const tmpHome = join(tmpdir(), `wavemill-codex-cost-${randomUUID()}`);
   const originalHome = process.env.HOME;
   try {
@@ -1384,13 +1387,142 @@ test('computeWorkflowCost attaches partial codex attribution for unpriced model'
     if (result.status === 'success') {
       assert.equal(result.totalCostUsd, 0);
       assert.equal(result.attribution?.source, 'codex');
-      assert.equal(result.attribution?.coverage, 'partial');
+      // HOK-2958: nothing priced means the cost is unavailable, not partial —
+      // and the attribution row carries no fabricated zero costUsd.
+      assert.equal(result.attribution?.coverage, 'unavailable');
       assert.equal(result.attribution?.reason, 'unpriced_model');
       assert.equal(result.attribution?.models[0].priced, false);
       assert.equal(result.attribution?.models[0].reason, 'unpriced_model');
+      assert.equal('costUsd' in (result.attribution?.models[0] ?? {}), false);
     }
   } finally {
     process.env.HOME = originalHome;
+    rmSync(tmpHome, { recursive: true, force: true });
+  }
+});
+
+function writeMultiTurnCodexSession(tmpHome: string, worktreePath: string, branch: string, modelId: string): void {
+  const sessionsDir = join(tmpHome, '.codex', 'sessions', '2026', '08', '18');
+  mkdirSync(sessionsDir, { recursive: true });
+  writeFileSync(join(sessionsDir, `${randomUUID()}.jsonl`), [
+    JSON.stringify({
+      type: 'session_meta',
+      payload: { id: 'codex-real-turns', cwd: worktreePath, cli_version: '0.154.0', originator: 'codex_exec', git: { branch } },
+    }),
+    JSON.stringify({ type: 'turn_context', payload: { model: modelId, turn_id: 't1', root_turn_id: 't1' } }),
+    JSON.stringify({
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        info: {
+          total_token_usage: { input_tokens: 500_000, cached_input_tokens: 0, output_tokens: 100_000, reasoning_output_tokens: 0 },
+          last_token_usage: { input_tokens: 500_000, cached_input_tokens: 0, output_tokens: 100_000, reasoning_output_tokens: 0 },
+        },
+      },
+    }),
+    JSON.stringify({ type: 'turn_context', payload: { model: modelId, turn_id: 't2', root_turn_id: 't1' } }),
+    JSON.stringify({ type: 'turn_context', payload: { model: modelId, turn_id: 't3', root_turn_id: 't1' } }),
+    JSON.stringify({
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        info: {
+          total_token_usage: { input_tokens: 1_000_000, cached_input_tokens: 0, output_tokens: 250_000, reasoning_output_tokens: 0 },
+          last_token_usage: { input_tokens: 500_000, cached_input_tokens: 0, output_tokens: 150_000, reasoning_output_tokens: 0 },
+        },
+      },
+    }),
+  ].join('\n'));
+}
+
+test('computeWorkflowCost codex attribution reports real observed turn counts (HOK-2958)', () => {
+  const tmpHome = join(tmpdir(), `wavemill-codex-turns-${randomUUID()}`);
+  const originalHome = process.env.HOME;
+  try {
+    process.env.HOME = tmpHome;
+    const worktreePath = join(tmpHome, 'worktree');
+    const branch = 'task/codex-turns';
+    mkdirSync(worktreePath, { recursive: true });
+    writeMultiTurnCodexSession(tmpHome, worktreePath, branch, 'gpt-test');
+
+    const result = computeWorkflowCost({
+      worktreePath,
+      branchName: branch,
+      agentType: 'codex',
+      pricingTable: {
+        'gpt-test': { inputCostPerMTok: 2, outputCostPerMTok: 10 },
+      },
+    });
+
+    assert.equal(result.status, 'success');
+    if (result.status === 'success') {
+      // Legacy aggregate keeps 1 turn/session for compatibility…
+      assert.equal(result.turnCount, 1);
+      // …while attribution now reports real records from the session detail.
+      assert.equal(result.attribution?.sessions, 1);
+      assert.equal(result.attribution?.turns, 3);
+      assert.equal(result.attribution?.coverage, 'complete');
+    }
+  } finally {
+    process.env.HOME = originalHome;
+    rmSync(tmpHome, { recursive: true, force: true });
+  }
+});
+
+test('computeWorkflowCost never fabricates zero cost for unpriced Claude models (HOK-2958)', () => {
+  const tmpHome = join(tmpdir(), `wavemill-claude-unpriced-${randomUUID()}`);
+  const worktreePath = join(tmpHome, 'worktree');
+  const encoded = encodeProjectDir(worktreePath);
+  const projectsDir = join(tmpHome, '.claude', 'projects', encoded);
+  const origHome = process.env.HOME;
+  try {
+    process.env.HOME = tmpHome;
+    mkdirSync(projectsDir, { recursive: true });
+    writeFileSync(join(projectsDir, 'claude.jsonl'), [
+      assistantTurn({
+        branch: 'task/mixed',
+        model: 'claude-priced',
+        inputTokens: 1_000_000,
+        outputTokens: 0,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+      }),
+      assistantTurn({
+        branch: 'task/mixed',
+        model: 'mystery-model',
+        inputTokens: 2_000_000,
+        outputTokens: 0,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+      }),
+    ].join('\n'));
+
+    const result = computeWorkflowCost({
+      worktreePath,
+      branchName: 'task/mixed',
+      agentType: 'claude',
+      pricingTable: {
+        'claude-priced': { inputCostPerMTok: 3, outputCostPerMTok: 10 },
+      },
+    });
+
+    assert.equal(result.status, 'success');
+    if (result.status === 'success') {
+      // Attribution is always emitted, coverage reflects the unpriced model.
+      assert.equal(result.attribution?.coverage, 'partial');
+      assert.equal(result.attribution?.reason, 'unpriced_model');
+      const unpriced = result.attribution?.models.find((m) => m.modelId === 'mystery-model');
+      assert.ok(unpriced);
+      assert.equal(unpriced.priced, false);
+      assert.equal('costUsd' in unpriced, false);
+      const priced = result.attribution?.models.find((m) => m.modelId === 'claude-priced');
+      assert.equal(priced?.costUsd, 3);
+      // Legacy numeric view is preserved for old readers.
+      assert.equal(result.models['mystery-model'].costUsd, 0);
+      assert.equal(result.totalCostUsd, 3);
+    }
+  } finally {
+    process.env.HOME = origHome;
     rmSync(tmpHome, { recursive: true, force: true });
   }
 });

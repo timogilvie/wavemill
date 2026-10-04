@@ -111,7 +111,7 @@ function validateNode(
     return;
   }
 
-  if (expectedTypes.includes('integer')) {
+  if (expectedTypes.includes('integer') && value !== null) {
     if (typeof value !== 'number' || !Number.isInteger(value)) {
       errors.push(`${path}: expected integer, got ${value}`);
     }
@@ -786,7 +786,7 @@ function validPromptSizeDiagnostic() {
 }
 
 test('SCHEMA_VERSION is bumped for eval schema updates', () => {
-  assert.equal(SCHEMA_VERSION, '1.46.0');
+  assert.equal(SCHEMA_VERSION, '1.52.0');
 });
 
 function validReviewIdentitySet() {
@@ -1583,6 +1583,104 @@ test('Record with outcomes field validates', () => {
   assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
 });
 
+test('Record with S1 static-group fields (HOK-2806) validates', () => {
+  const record = {
+    ...scenarios[0].record,
+    outcomes: {
+      success: true,
+      staticAnalysis: {
+        type_errors: 3,
+        lint_errors: 0,
+        build_ok: true,
+        complexity_delta: 4,
+        build_evidence: 'ci-pipeline',
+        complexity_metric: 'wavemill-cyclomatic/v1',
+      },
+      review: { humanReviewRequired: false, rounds: 0, approvals: 1, changeRequests: 0 },
+      rework: { agentIterations: 1 },
+      delivery: { prCreated: true, merged: true },
+    },
+  } as unknown as Record<string, unknown>;
+  const result = validateAgainstSchema(record);
+  assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
+});
+
+test('Record with all-null S1 static-group fields validates (evidence unavailable)', () => {
+  const record = {
+    ...scenarios[0].record,
+    outcomes: {
+      success: true,
+      staticAnalysis: {
+        type_errors: null,
+        lint_errors: null,
+        build_ok: null,
+        complexity_delta: null,
+        build_evidence: null,
+        complexity_metric: null,
+      },
+      review: { humanReviewRequired: false, rounds: 0, approvals: 1, changeRequests: 0 },
+      rework: { agentIterations: 1 },
+      delivery: { prCreated: true, merged: true },
+    },
+  } as unknown as Record<string, unknown>;
+  const result = validateAgainstSchema(record);
+  assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
+});
+
+test('Record with negative S1 type_errors fails schema (counts must be ≥0)', () => {
+  const record = {
+    ...scenarios[0].record,
+    outcomes: {
+      success: true,
+      staticAnalysis: {
+        type_errors: -1,
+      },
+      review: { humanReviewRequired: false, rounds: 0, approvals: 1, changeRequests: 0 },
+      rework: { agentIterations: 1 },
+      delivery: { prCreated: true, merged: true },
+    },
+  } as unknown as Record<string, unknown>;
+  const result = validateAgainstSchema(record);
+  assert.equal(result.valid, false);
+});
+
+test('Record with unknown extra key in staticAnalysis fails schema', () => {
+  const record = {
+    ...scenarios[0].record,
+    outcomes: {
+      success: true,
+      staticAnalysis: {
+        type_errors: 0,
+        // @ts-expect-error deliberate unknown key
+        not_a_real_field: 'oops',
+      },
+      review: { humanReviewRequired: false, rounds: 0, approvals: 1, changeRequests: 0 },
+      rework: { agentIterations: 1 },
+      delivery: { prCreated: true, merged: true },
+    },
+  } as unknown as Record<string, unknown>;
+  const result = validateAgainstSchema(record);
+  assert.equal(result.valid, false);
+});
+
+test('Record with invalid build_evidence enum fails schema', () => {
+  const record = {
+    ...scenarios[0].record,
+    outcomes: {
+      success: true,
+      staticAnalysis: {
+        build_ok: true,
+        build_evidence: 'nowhere',
+      },
+      review: { humanReviewRequired: false, rounds: 0, approvals: 1, changeRequests: 0 },
+      rework: { agentIterations: 1 },
+      delivery: { prCreated: true, merged: true },
+    },
+  } as unknown as Record<string, unknown>;
+  const result = validateAgainstSchema(record);
+  assert.equal(result.valid, false);
+});
+
 test('Record with negative CI durationSeconds fails schema', () => {
   const record = {
     ...scenarios[0].record,
@@ -1939,6 +2037,7 @@ test('Eligibility fields validate and schema stays in parity', () => {
     'missing_challenge_stage',
     'eval_fast_failed',
     'provisional_model_identity',
+    'provider_model_substitution',
   ]);
   assert.equal(properties.enrichmentDiagnostics?.type, 'array');
   assert.equal(properties.enrichmentDiagnostics?.items?.type, 'string');
@@ -2373,8 +2472,8 @@ test('Wavemill router fields validate and schema stays in parity', () => {
   assert.equal(properties.wavemill_router_scoring?.$ref, '#/$defs/WavemillRouterScoringMetadata');
 });
 
-test('Schema version constant is 1.46.0', () => {
-  assert.equal(SCHEMA_VERSION, '1.46.0');
+test('Schema version constant is 1.52.0', () => {
+  assert.equal(SCHEMA_VERSION, '1.52.0');
 });
 
 test('Record with an unknown_attribution intervention validates (HOK-2894)', () => {
@@ -2631,6 +2730,354 @@ test('challengeIntent side with inheritedStages validates', () => {
 
   const result = validateAgainstSchema(record);
   assert.ok(result.valid, `challengeIntent with inheritedStages should validate: ${result.errors.join('; ')}`);
+});
+
+// ────────────────────────────────────────────────────────────────
+// Execution Economics (HOK-2958)
+// ────────────────────────────────────────────────────────────────
+
+function validExecutionEconomicsSession(overrides: Record<string, unknown> = {}) {
+  return {
+    sessionId: '3f6a1a3e-3b57-4e9a-8f7c-2b1d9c0e5a11',
+    rootSessionId: null,
+    harnessVersion: '2.1.270',
+    triggerSource: { value: 'sdk', provenance: 'claude_code.promptSource', availability: 'available' },
+    stageRole: { value: 'coding', confidence: 'timestamp_window', evidence: '.coding-result.json window overlap' },
+    models: {
+      requested: 'coder:balanced',
+      forced: null,
+      resolved: 'claude-opus-4-6',
+      executed: 'claude-opus-4-6',
+      provenance: { requested: 'routing.jsonl', resolved: 'routing.jsonl', executed: 'session_telemetry' },
+    },
+    turnCount: 2,
+    turns: [
+      {
+        turnId: 'a1',
+        parentId: null,
+        isSubagent: false,
+        model: 'claude-opus-4-6',
+        timestamp: '2026-09-01T10:00:00Z',
+        usage: { inputTokens: 100, outputTokens: 30, cacheReadTokens: 200, cacheWriteTokens: 50, reasoningTokens: 12 },
+        usageCoverage: 'available',
+        actualCostUsd: null,
+      },
+      {
+        turnId: 'a2',
+        parentId: 'a1',
+        isSubagent: true,
+        model: 'claude-haiku-4-5-20251001',
+        timestamp: '2026-09-01T10:01:00Z',
+        usage: { inputTokens: 40, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: null },
+        usageCoverage: 'partial',
+        actualCostUsd: null,
+      },
+    ],
+    turnsTruncated: false,
+    modelSegments: [
+      { model: 'claude-opus-4-6', turnCount: 1 },
+      { model: 'claude-haiku-4-5-20251001', turnCount: 1 },
+    ],
+    usage: { inputTokens: 140, outputTokens: 40, cacheReadTokens: 200, cacheWriteTokens: 50, reasoningTokens: 12 },
+    actualCostUsd: null,
+    estimatedCostUsd: 0.0123,
+    costSource: 'local_estimate',
+    pricingRevision: null,
+    pricingTimestamp: '2026-09-01T10:05:00Z',
+    coverage: 'partial',
+    fieldAvailability: { actualCost: 'unavailable', reasoningTokens: 'partial' },
+    diagnostics: ['actual cost not reported by this harness version'],
+    ...overrides,
+  };
+}
+
+function validExecutionEconomicsBlock(overrides: Record<string, unknown> = {}) {
+  return {
+    schemaVersion: '1.0.0',
+    providerContractVersion: 'claude-code/1',
+    harness: 'claude-code',
+    joinEvidence: { issueId: 'HOK-2958', branch: 'task/some-slug' },
+    sessions: [validExecutionEconomicsSession()],
+    sessionCount: 1,
+    turnCount: 2,
+    coverage: 'partial',
+    collectedAt: '2026-09-01T10:05:00Z',
+    ...overrides,
+  };
+}
+
+test('Record with Claude Code executionEconomics validates', () => {
+  const record = {
+    ...scenarios[0].record,
+    schemaVersion: '1.48.0',
+    executionEconomics: [validExecutionEconomicsBlock()],
+  } as unknown as Record<string, unknown>;
+  const result = validateAgainstSchema(record);
+  assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
+});
+
+test('Record with Codex executionEconomics (degraded coverage) validates', () => {
+  const record = {
+    ...scenarios[0].record,
+    schemaVersion: '1.48.0',
+    executionEconomics: [
+      validExecutionEconomicsBlock({
+        providerContractVersion: 'codex/1',
+        harness: 'codex',
+        sessions: [
+          validExecutionEconomicsSession({
+            harnessVersion: '0.154.0',
+            triggerSource: { value: 'codex_exec', provenance: 'codex.session_meta.originator', availability: 'available' },
+            stageRole: { value: null, confidence: 'unattributed', evidence: null },
+            models: {
+              requested: null,
+              forced: null,
+              resolved: null,
+              executed: 'gpt-5.3-codex',
+              provenance: { executed: 'session_telemetry' },
+              conflict: {
+                otherSource: 'routing.jsonl',
+                otherResolvedModel: 'claude-opus-4-6',
+                detail: 'resolved model never observed in session telemetry',
+              },
+            },
+            turns: [],
+            turnCount: 0,
+            turnsTruncated: false,
+            modelSegments: [],
+            usage: { inputTokens: 500, outputTokens: 80, cacheReadTokens: 100, cacheWriteTokens: null, reasoningTokens: null },
+            estimatedCostUsd: null,
+            costSource: 'none',
+            pricingTimestamp: null,
+            coverage: 'unavailable',
+            fieldAvailability: { cacheWriteTokens: 'unavailable', reasoningTokens: 'unavailable' },
+            diagnostics: ['per-turn usage unavailable; only cumulative totals present'],
+          }),
+        ],
+        turnCount: 0,
+        coverage: 'unavailable',
+      }),
+    ],
+  } as unknown as Record<string, unknown>;
+  const result = validateAgainstSchema(record);
+  assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
+});
+
+test('Record without executionEconomics still validates (additive)', () => {
+  const record = scenarios[0].record as unknown as Record<string, unknown>;
+  assert.equal('executionEconomics' in record, false);
+  const result = validateAgainstSchema(record);
+  assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
+});
+
+test('Malformed executionEconomics is rejected', () => {
+  const missingRequired = {
+    ...scenarios[0].record,
+    executionEconomics: [{ harness: 'claude-code' }],
+  } as unknown as Record<string, unknown>;
+  assert.equal(validateAgainstSchema(missingRequired).valid, false);
+
+  const badHarness = {
+    ...scenarios[0].record,
+    executionEconomics: [validExecutionEconomicsBlock({ harness: 'cursor' })],
+  } as unknown as Record<string, unknown>;
+  assert.equal(validateAgainstSchema(badHarness).valid, false);
+
+  const unknownField = {
+    ...scenarios[0].record,
+    executionEconomics: [validExecutionEconomicsBlock({ rawPayload: {} })],
+  } as unknown as Record<string, unknown>;
+  assert.equal(validateAgainstSchema(unknownField).valid, false);
+});
+
+test('Execution economics enums match the schema definitions', () => {
+  const defs = schema.$defs as Record<string, Record<string, unknown>>;
+  assert.deepEqual(defs.ExecutionEconomicsFieldAvailability?.enum, [
+    'available',
+    'partial',
+    'unavailable',
+    'known_zero',
+  ]);
+  assert.deepEqual(defs.ExecutionEconomicsCoverage?.enum, [
+    'complete',
+    'partial',
+    'unavailable',
+    'known_zero',
+  ]);
+  const block = defs.EvalExecutionEconomics as { properties?: Record<string, { enum?: unknown[] }> };
+  assert.deepEqual(block.properties?.harness?.enum, ['claude-code', 'codex']);
+  const session = defs.ExecutionEconomicsSession as { properties?: Record<string, { enum?: unknown[] }> };
+  assert.deepEqual(session.properties?.costSource?.enum, [
+    'provider_reported',
+    'local_estimate',
+    'none',
+  ]);
+});
+
+test('Record without task_scorer_result still validates (additive)', () => {
+  const record = {
+    ...scenarios[0].record,
+    schemaVersion: SCHEMA_VERSION,
+  } as unknown as Record<string, unknown>;
+  assert.equal('task_scorer_result' in record, false);
+  const result = validateAgainstSchema(record);
+  assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
+});
+
+test('Record with task_scorer_result validates', () => {
+  const record = {
+    ...scenarios[0].record,
+    schemaVersion: SCHEMA_VERSION,
+    task_scorer_result: {
+      decision: 'expand',
+      confidence: 0.72,
+      explanation: 'Shadow prediction based on sparse validation detail.',
+      model_version: 'task-packet-scorer-v1-test',
+    },
+  } as unknown as Record<string, unknown>;
+  const result = validateAgainstSchema(record);
+  assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
+});
+
+test('Null task_scorer_result validates', () => {
+  const record = {
+    ...scenarios[0].record,
+    schemaVersion: SCHEMA_VERSION,
+    task_scorer_result: null,
+  } as unknown as Record<string, unknown>;
+  const result = validateAgainstSchema(record);
+  assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
+});
+
+test('Malformed task_scorer_result is rejected', () => {
+  const badConfidence = {
+    ...scenarios[0].record,
+    task_scorer_result: {
+      decision: 'expand',
+      confidence: 'high',
+      explanation: 'bad',
+      model_version: 'test',
+    },
+  } as unknown as Record<string, unknown>;
+  assert.equal(validateAgainstSchema(badConfidence).valid, false);
+
+  const unknownNested = {
+    ...scenarios[0].record,
+    task_scorer_result: {
+      decision: 'expand',
+      confidence: 0.5,
+      explanation: 'bad',
+      model_version: 'test',
+      extra: true,
+    },
+  } as unknown as Record<string, unknown>;
+  assert.equal(validateAgainstSchema(unknownNested).valid, false);
+});
+
+test('Record with subagent_model_economics_policy validates', () => {
+  const record = {
+    ...scenarios[0].record,
+    schemaVersion: SCHEMA_VERSION,
+    wavemill_router_scoring: {
+      scorer_id: 'hokusai.scorers.wavemill.success_rate_under_budget:v1',
+      measurement_policy: 'subagent_model_economics_shadow',
+    },
+    subagent_model_economics_policy: {
+      schemaVersion: '1.0.0',
+      policy: 'subagent_model_economics_shadow',
+      generatedAt: '2026-09-01T00:00:00.000Z',
+      summary: {
+        totalWorkflows: 1,
+        eligibleWorkflows: 1,
+      },
+      workflows: [
+        {
+          evidenceKind: 'observational',
+          abstentionReasons: [],
+        },
+      ],
+      recommendation: {
+        gate: 'collect_more_data',
+        reasons: ['No paired replay evidence is available.'],
+      },
+    },
+  } as unknown as Record<string, unknown>;
+  const result = validateAgainstSchema(record);
+  assert.ok(result.valid, `Should validate: ${result.errors.join('; ')}`);
+});
+
+test('Malformed subagent_model_economics_policy is rejected', () => {
+  const record = {
+    ...scenarios[0].record,
+    schemaVersion: SCHEMA_VERSION,
+    subagent_model_economics_policy: {
+      schemaVersion: '1.0.0',
+      policy: 'enforced_model_policy',
+    },
+  } as unknown as Record<string, unknown>;
+
+  assert.equal(validateAgainstSchema(record).valid, false);
+});
+
+// ────────────────────────────────────────────────────────────────
+// HOK-2081: Counterfactual/replay lineage fields
+// ────────────────────────────────────────────────────────────────
+
+test('SCHEMA_VERSION bumped to 1.52.0 for HOK-3143 stageExecution', () => {
+  assert.equal(SCHEMA_VERSION, '1.52.0');
+});
+
+test('Legacy record without HOK-2081 fields still validates', () => {
+  const record = {
+    ...scenarios[0].record,
+    schemaVersion: SCHEMA_VERSION,
+  };
+  const result = validateAgainstSchema(record);
+  assert.equal(result.valid, true, `Legacy record failed to validate: ${result.errors.join('; ')}`);
+});
+
+test('Counterfactual record with all HOK-2081 fields validates', () => {
+  const record = {
+    ...scenarios[0].record,
+    schemaVersion: SCHEMA_VERSION,
+    decision_source: 'counterfactual',
+    source_decision_id: 'baseline-abc-123',
+    replay_fidelity: 0.75,
+    replay_non_fidelity_reasons: ['WORKING_TREE_MISMATCH', 'ENV_MISMATCH'],
+    policy_source: 'enumerate-all:tool-B',
+  };
+  const result = validateAgainstSchema(record);
+  assert.equal(result.valid, true, `Counterfactual record failed to validate: ${result.errors.join('; ')}`);
+});
+
+test('Partial counterfactual metadata (only decision_source) validates', () => {
+  const record = {
+    ...scenarios[0].record,
+    schemaVersion: SCHEMA_VERSION,
+    decision_source: 'live',
+  };
+  assert.equal(validateAgainstSchema(record).valid, true);
+});
+
+test('Invalid decision_source value fails validation', () => {
+  const record = {
+    ...scenarios[0].record,
+    schemaVersion: SCHEMA_VERSION,
+    decision_source: 'other-value',
+  };
+  const result = validateAgainstSchema(record);
+  assert.equal(result.valid, false, 'Expected validation to reject unknown decision_source');
+});
+
+test('replay_fidelity out of range fails validation', () => {
+  const record = {
+    ...scenarios[0].record,
+    schemaVersion: SCHEMA_VERSION,
+    decision_source: 'counterfactual',
+    source_decision_id: 'src-1',
+    replay_fidelity: 1.5,
+  };
+  assert.equal(validateAgainstSchema(record).valid, false);
 });
 
 // ────────────────────────────────────────────────────────────────

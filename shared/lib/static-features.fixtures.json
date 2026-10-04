@@ -1,0 +1,49 @@
+{
+  "$comment": "HOK-2806 contract drift guard. This fixture is the Static-group slice of the frozen candidate_features/v1 contract (Arbiter S1, frozen 2026-09-14 in the Arbiter Program Brief). It captures the field names and type shapes wavemill's collector MUST emit. When @hokusai/core publishes candidate-features.ts with a matching fixture, replace this file with a straight copy from hokusai-sdk/fixtures/arbiter/candidate_features.v1.json — HOK-2807 tracks that hand-off.",
+  "schema": "candidate_features/v1",
+  "group": "static",
+  "fields": {
+    "type_errors": {
+      "types": ["integer", "null"],
+      "minimum": 0,
+      "nullMeans": "no supported type checker completed successfully",
+      "source": "HOK-2806 static collector"
+    },
+    "lint_errors": {
+      "types": ["integer", "null"],
+      "minimum": 0,
+      "nullMeans": "no supported linter completed successfully",
+      "source": "HOK-2806 static collector"
+    },
+    "build_ok": {
+      "types": ["boolean", "null"],
+      "nullMeans": "no build ran to a terminal result; CiOutcome.ran=false maps to null",
+      "source": "Wavemill CI/build checks; CiOutcome.ran must be true"
+    },
+    "complexity_delta": {
+      "types": ["number", "null"],
+      "nullMeans": "no supported complexity analyzer completed on both revisions",
+      "source": "HOK-2806 static collector"
+    }
+  },
+  "examples": {
+    "fully_populated": {
+      "type_errors": 3,
+      "lint_errors": 0,
+      "build_ok": true,
+      "complexity_delta": 4
+    },
+    "evidence_unavailable": {
+      "type_errors": null,
+      "lint_errors": null,
+      "build_ok": null,
+      "complexity_delta": null
+    },
+    "docs_only_change": {
+      "type_errors": 0,
+      "lint_errors": 0,
+      "build_ok": true,
+      "complexity_delta": 0
+    }
+  }
+}

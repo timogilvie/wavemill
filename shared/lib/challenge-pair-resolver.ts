@@ -6,24 +6,32 @@ import {
   appendChallengeComparison,
   buildDoubleForfeitComparison,
   buildForfeitComparison,
+  buildInvalidChallengeArmComparison,
   isDecisiveChallengeComparison,
   readDecisiveChallengeComparisons,
   type ChallengeComparison,
 } from './challenge-comparison.ts';
+import { readEvalRecords } from './eval-persistence.ts';
+import type { EvalRecord } from './eval-schema.ts';
+import type { ForkIdentity, InvalidChallengeReason } from './challenge-execution-contract.ts';
+import { readForkIdentity } from './fork-identity.ts';
 import {
   getSiblingBranch,
   classifyPairUnresolvableState,
+  evaluateSiblingLiveness,
   isSiblingLive,
   listRemoteTaskBranches,
   loadWorkflowStateChallengeData,
   pairHasPendingChallengeArm,
   type PairTaskState,
+  type SiblingProgressProbe,
   type TaskEvalState,
   type UnresolvableReason,
 } from './tend-challenge-gate.ts';
 import {
   classifyArmFault,
   describeArmFailure,
+  isInvalidChallengeAbort,
   parseAbortFailureKind,
   type ChallengeArmFailure,
 } from './arm-failure-taxonomy.ts';
@@ -38,6 +46,8 @@ const ORPHAN_PAIR_GRACE_MS = 60_000;
 const UNKNOWN_PR_NUMBER = 0;
 const UNKNOWN_MODEL = 'unknown';
 const PRIMARY_MERGED_REASON = 'Primary already merged as PR';
+/** HOK-3128: abort stamp for a no-PR arm retired because it stopped progressing. */
+const SIBLING_STALLED_ABORT_REASON = 'terminal_stage_failure:sibling-stalled';
 
 type PrimaryMergedReason = 'primary_merged';
 
@@ -49,6 +59,8 @@ export interface UnresolvablePairInput {
   now?: () => Date;
   remoteBranches?: string[];
   listRemoteBranches?: (repoDir: string) => string[];
+  /** HOK-3128: progress probe for a tracked no-PR arm (tests inject this). */
+  getSiblingProgress?: SiblingProgressProbe;
 }
 
 export interface PrimaryMergedInput {
@@ -64,7 +76,7 @@ export type ResolveOutcome =
   | {
     status: 'resolved';
     record: ChallengeComparison;
-    outcome: 'forfeit' | 'double-forfeit';
+    outcome: 'forfeit' | 'double-forfeit' | 'invalid_challenge';
     reason: UnresolvableReason | PrimaryMergedReason;
     dryRun: boolean;
   }
@@ -111,18 +123,49 @@ export async function resolveUnresolvablePair(input: UnresolvablePairInput): Pro
     input.now ?? (() => new Date()),
     retryMax,
     input.remoteBranches ?? input.listRemoteBranches?.(input.repoDir),
+    input.getSiblingProgress,
   );
   if (!resolvedReason) {
     return { status: 'skipped', reason: `Pair ${input.pairId} is not currently unresolvable.` };
   }
 
+  // HOK-3128: a stalled no-PR arm is retired exactly like a quarantined one.
+  // Stamp it (in memory now, durably below) and reuse the
+  // `sibling-challenge-aborted` forfeit path so no new terminal reason or
+  // comparison schema is needed.
+  let resolutionPairState = pairState;
+  let stalledArm: TaskEvalState | undefined;
+  if (resolvedReason === 'sibling-stalled') {
+    stalledArm = findStalledNoPrArm(pairState);
+    if (!stalledArm) {
+      return { status: 'skipped', reason: `Pair ${input.pairId} has no tracked no-PR arm to retire as stalled.` };
+    }
+    const survivor = stalledArm.role === 'primary' ? pairState.challenger : pairState.primary;
+    if (!survivor?.evalCompleted) {
+      return {
+        status: 'skipped',
+        reason: `Pair ${input.pairId} has a stalled arm but the surviving arm has not persisted an eval yet; rerun after eval completes.`,
+      };
+    }
+    resolutionPairState = {
+      ...pairState,
+      [stalledArm.role]: {
+        ...stalledArm,
+        challengeAborted: SIBLING_STALLED_ABORT_REASON,
+        challengeAbortedDetail: describeStalledArm(stalledArm),
+        challengeAbortedStage: stalledArm.phase ?? stalledArm.challengeStage ?? null,
+      },
+    };
+  }
+
   const resolution = buildResolutionRecord({
     pairId: input.pairId,
-    pairState,
+    pairState: resolutionPairState,
     challengePairMap: workflow.challengePairMap,
-    reason: resolvedReason,
+    reason: resolvedReason === 'sibling-stalled' ? 'sibling-challenge-aborted' : resolvedReason,
     timestamp: (input.now ?? (() => new Date()))().toISOString(),
     retryMax,
+    evalsDir,
   });
   if (!resolution) {
     if (resolvedReason === 'sibling-challenge-aborted' || resolvedReason === 'both-challenge-aborted') {
@@ -134,13 +177,25 @@ export async function resolveUnresolvablePair(input: UnresolvablePairInput): Pro
     return { status: 'skipped', reason: `Pair ${input.pairId} requires manual repair before a terminal record can be written.` };
   }
 
-  if (!isDecisiveChallengeComparison(resolution.record)) {
+  // HOK-2970: `invalid_challenge` is the correct terminal outcome for an
+  // aborted arm whose eval was already invalid. It is deliberately not
+  // "decisive" for merge-lane routing (see `isDecisiveChallengeComparison`),
+  // but it still must land on disk so tend-challenge-gate treats the pair as
+  // resolved and stops re-checking it. Only non-decisive stall records
+  // (empty-forfeits with no arm failures) are suppressed for retry.
+  if (
+    resolution.outcome !== 'invalid_challenge'
+    && !isDecisiveChallengeComparison(resolution.record)
+  ) {
     return { status: 'skipped', reason: 'non-decisive stall record suppressed; pair left open for retry' };
   }
 
   if (!input.dryRun) {
+    if (stalledArm) {
+      await stampStalledArm(input.repoDir, stalledArm, input.now);
+    }
     appendChallengeComparison(resolution.record, evalsDir);
-    await safelyReleasePairSelectionHealth(input.repoDir, input.pairId, pairState);
+    await safelyReleasePairSelectionHealth(input.repoDir, input.pairId, pairState, resolution.outcome);
   }
 
   return {
@@ -270,7 +325,7 @@ export async function resolvePrimaryMergedPair(input: PrimaryMergedInput): Promi
 
   if (!input.dryRun) {
     appendChallengeComparison(record, evalsDir);
-    await safelyReleasePairSelectionHealth(input.repoDir, input.pairId, pairState);
+    await safelyReleasePairSelectionHealth(input.repoDir, input.pairId, pairState, 'forfeit');
     if (challenger) {
       await markChallengerSupersededForPrimaryMerge(input.repoDir, challenger, primaryPr, input.now);
     }
@@ -289,9 +344,10 @@ async function safelyReleasePairSelectionHealth(
   repoDir: string,
   pairId: string,
   pairState: PairTaskState,
+  terminalOutcome?: 'forfeit' | 'double-forfeit' | 'invalid_challenge',
 ): Promise<void> {
   try {
-    await releasePairSelectionHealth(repoDir, pairId, pairState);
+    await releasePairSelectionHealth(repoDir, pairId, pairState, terminalOutcome);
   } catch (error) {
     console.warn(`[challenge-pair-resolver] Failed to release selection health for ${pairId}: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -301,6 +357,7 @@ async function releasePairSelectionHealth(
   repoDir: string,
   pairId: string,
   pairState: PairTaskState,
+  terminalOutcome?: 'forfeit' | 'double-forfeit' | 'invalid_challenge',
 ): Promise<void> {
   const owner = { issueId: pairId, pairId };
   const tasks = [pairState.primary, pairState.challenger].filter((task): task is TaskEvalState => Boolean(task));
@@ -317,6 +374,21 @@ async function releasePairSelectionHealth(
         model,
         stage,
         success: true,
+      });
+      return;
+    }
+    // A challenger resolved without a completed eval consumed its selection
+    // slot without producing coverage: record one truthful forfeit/invalid
+    // attempt so attempt-aware ranking rotates exploration (HOK-3066). The
+    // primary arm was never chosen by the exploration selector, so its
+    // reservation is simply released.
+    if (terminalOutcome && task === pairState.challenger) {
+      await recordSelectionOutcome({
+        repoDir,
+        owner,
+        model,
+        stage,
+        terminalStatus: terminalOutcome === 'invalid_challenge' ? 'invalid' : 'forfeit',
       });
       return;
     }
@@ -360,17 +432,20 @@ function forkDescriptorForPair(
   sharedPrefix?: boolean;
   primaryInheritedStages?: ChallengeStage[];
   challengerInheritedStages?: ChallengeStage[];
+  forkIdentity?: ForkIdentity;
 } {
   const intent = primary?.challengeExecutionIntent ?? challenger?.challengeExecutionIntent;
   if (!intent) return {};
   const forkStage = readIntentString(intent, 'forkStage');
   const forkCommit = readIntentString(intent, 'forkCommit');
+  const forkIdentity = readForkIdentity(intent.forkIdentity);
   return {
     forkStage: forkStage ? normalizeChallengeStage(forkStage) : null,
     forkCommit,
     sharedPrefix: intent.sharedPrefix === true,
     primaryInheritedStages: readInheritedStages(intent, 'primary'),
     challengerInheritedStages: readInheritedStages(intent, 'challenger'),
+    ...(forkIdentity ? { forkIdentity } : {}),
   };
 }
 
@@ -382,6 +457,7 @@ function detectUnresolvableReason(
   now: () => Date,
   retryMax: number,
   remoteBranchesInput?: string[],
+  getSiblingProgress?: SiblingProgressProbe,
 ): UnresolvableReason | null {
   const sharedReason = classifyPairUnresolvableState(pairState, retryMax);
   if (sharedReason) {
@@ -389,7 +465,22 @@ function detectUnresolvableReason(
   }
 
   if (pairState.primary && pairState.challenger) {
-    return null;
+    // HOK-3128: both arms tracked, one with a PR and one without. The no-PR
+    // arm holds the pair only while the progress primitive shows it working.
+    const stalledArm = findStalledNoPrArm(pairState);
+    if (!stalledArm) {
+      return null;
+    }
+    const { stalled } = evaluateSiblingLiveness({
+      repoDir,
+      hasSiblingBranch: true,
+      openPrNumbers: new Set(challengePairMap.keys()),
+      pairState,
+      side: stalledArm.role === 'primary' ? 'challenger' : 'primary',
+      nowMs: now().getTime(),
+      getSiblingProgress,
+    });
+    return stalled ? 'sibling-stalled' : null;
   }
 
   const representative = pairState.primary ?? pairState.challenger;
@@ -420,6 +511,44 @@ function detectUnresolvableReason(
   return 'orphan-sibling';
 }
 
+/**
+ * HOK-3128: the candidate arm for `sibling-stalled` — the only tracked,
+ * non-aborted arm without a PR while its sibling has one. Returns undefined
+ * when the shape does not match (both or neither have PRs).
+ */
+function findStalledNoPrArm(pairState: PairTaskState): TaskEvalState | undefined {
+  const { primary, challenger } = pairState;
+  if (!primary || !challenger) return undefined;
+  if (primary.prNumber === null && challenger.prNumber !== null && !primary.challengeAborted) return primary;
+  if (challenger.prNumber === null && primary.prNumber !== null && !challenger.challengeAborted) return challenger;
+  return undefined;
+}
+
+function describeStalledArm(task: TaskEvalState): string {
+  const phase = task.phase ? ` in phase ${task.phase}` : '';
+  return `The ${task.role} arm (${getTaskModel(task)}) showed no agent progress${phase} past the stall grace and never opened a PR; retired so its sibling is released.`;
+}
+
+/**
+ * Durably stamp a stalled arm so every other consumer (monitor, dashboard,
+ * gate) sees it as aborted. Never overwrites an existing abort stamp.
+ */
+async function stampStalledArm(repoDir: string, task: TaskEvalState, now?: () => Date): Promise<void> {
+  const statePath = join(repoDir, '.wavemill', 'workflow-state.json');
+  const timestamp = (now ?? (() => new Date()))().toISOString();
+  await mutateJsonState<WorkflowStateFile>(statePath, (current) => {
+    const entry = current.tasks?.[task.issueId];
+    if (!entry || (typeof entry.challengeAborted === 'string' && entry.challengeAborted)) {
+      return current;
+    }
+    entry.challengeAborted = SIBLING_STALLED_ABORT_REASON;
+    entry.challengeAbortedDetail = describeStalledArm(task);
+    entry.challengeAbortedStage = task.phase ?? task.challengeStage ?? null;
+    entry.updated = timestamp;
+    return current;
+  });
+}
+
 function isPastOrphanGrace(task: TaskEvalState, now: () => Date): boolean {
   if (task.updatedAt === null) {
     return true;
@@ -431,6 +560,58 @@ function isHardFailureExhausted(task: TaskEvalState | undefined, retryMax: numbe
   return Boolean(task?.evalFailed && task.evalHardFailureRetryCount >= retryMax);
 }
 
+/**
+ * HOK-2970: look up the aborted arm's latest persisted eval so the resolver
+ * can distinguish a "real" abort (arm ran, produced valid eval, then aborted
+ * for some non-eval reason) from an "invalid_challenge" abort where the
+ * eval itself was already invalid (root cause HOK-3006). Returns the newest
+ * `evals.jsonl` row matching the pairId + role, or `null` when none exists.
+ */
+function readLatestEvalForArm(
+  evalsDir: string,
+  pairId: string,
+  role: 'primary' | 'challenger',
+): EvalRecord | null {
+  try {
+    const records = readEvalRecords({ dir: evalsDir });
+    const matching = records.filter((record) =>
+      record.challengePairId === pairId
+      && record.challengeSide === role,
+    );
+    if (matching.length === 0) return null;
+    // evals.jsonl is append-only in eval order; last write wins.
+    return matching[matching.length - 1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+interface InvalidArmSnapshot {
+  side: 'primary' | 'challenger';
+  reason: InvalidChallengeReason;
+  details?: string;
+  evalId?: string;
+  evaluatedPrHeadSha?: string;
+}
+
+function invalidArmSnapshot(
+  evalsDir: string,
+  pairId: string,
+  role: 'primary' | 'challenger',
+): InvalidArmSnapshot | null {
+  const record = readLatestEvalForArm(evalsDir, pairId, role);
+  if (!record) return null;
+  if (record.invalidChallenge !== true) return null;
+  const reason: InvalidChallengeReason = record.challengeDivergenceReason ?? 'missing_challenge_intent';
+  return {
+    side: role,
+    reason,
+    ...(record.nonRewardReason?.message ? { details: record.nonRewardReason.message } : {}),
+    ...(record.id ? { evalId: record.id } : {}),
+    ...(record.evaluatedPrHeadSha ? { evaluatedPrHeadSha: record.evaluatedPrHeadSha } : {}),
+  };
+}
+
 function buildResolutionRecord(input: {
   pairId: string;
   pairState: PairTaskState;
@@ -438,7 +619,8 @@ function buildResolutionRecord(input: {
   reason: UnresolvableReason;
   timestamp: string;
   retryMax: number;
-}): { record: ChallengeComparison; outcome: 'forfeit' | 'double-forfeit' } | null {
+  evalsDir?: string;
+}): { record: ChallengeComparison; outcome: 'forfeit' | 'double-forfeit' | 'invalid_challenge' } | null {
   const primary = input.pairState.primary;
   const challenger = input.pairState.challenger;
   const forkDescriptor = forkDescriptorForPair(primary, challenger);
@@ -509,10 +691,51 @@ function buildResolutionRecord(input: {
   if (input.reason === 'sibling-challenge-aborted') {
     const aborted = primary?.challengeAborted ? primary : challenger?.challengeAborted ? challenger : undefined;
     const survivor = aborted?.role === 'primary' ? challenger : primary;
-    if (!aborted || !survivor?.evalCompleted) {
+    if (!aborted) {
+      return null;
+    }
+    // HOK-3147: an arm retired as `invalid_challenge:<kind>` (infrastructure/
+    // identity failure, e.g. Ready failed at route-stamp) never had a valid
+    // opponent. Resolve without a winner and without waiting on the
+    // survivor's eval — there is nothing for that eval to decide.
+    if (isInvalidChallengeAbort(aborted.challengeAborted)) {
+      return buildInfrastructureAbortResolution(input, aborted, forkDescriptor);
+    }
+    if (!survivor?.evalCompleted) {
       return null;
     }
     const armFailures = buildArmFailures(primary, challenger);
+    // HOK-2970: if the aborted arm's latest eval was already
+    // `invalidChallenge: true` (root cause HOK-3006 — missing challenge
+    // intent), the surviving arm cannot "win" this challenge because there
+    // never was a valid opponent. Emit `invalid_challenge` with no winner
+    // instead of a phantom forfeit that would let the merge lane treat this
+    // as decisive.
+    const invalidArm = input.evalsDir
+      ? invalidArmSnapshot(input.evalsDir, input.pairId, aborted.role)
+      : null;
+    if (invalidArm) {
+      return {
+        outcome: 'invalid_challenge',
+        record: buildInvalidChallengeArmComparison({
+          challengePairId: input.pairId,
+          primaryModel: getTaskModel(primary),
+          challengerModel: getTaskModel(challenger),
+          primaryPrUrl: getTaskPrUrl(primary),
+          challengerPrUrl: getTaskPrUrl(challenger),
+          primaryCompleted: primary?.evalCompleted === true,
+          challengerCompleted: challenger?.evalCompleted === true,
+          armFailures,
+          abortedSide: invalidArm.side,
+          terminalReason: invalidArm.side === 'primary' ? 'primary_challenge_aborted' : 'challenger_challenge_aborted',
+          invalidChallengeReason: invalidArm.reason,
+          ...(invalidArm.details ? { invalidChallengeDetails: invalidArm.details } : {}),
+          rationale: `${describeTaskFailure(aborted)} The ${aborted.role} arm's latest eval was marked invalid (${invalidArm.reason}); no reviewer-stage winner can be decided.`,
+          timestamp: input.timestamp,
+          ...forkDescriptor,
+        }),
+      };
+    }
     return {
       outcome: 'forfeit',
       record: buildForfeitComparison({
@@ -536,8 +759,44 @@ function buildResolutionRecord(input: {
   if (input.reason === 'both-challenge-aborted') {
     const armFailures = buildArmFailures(primary, challenger);
     const completed = [primary, challenger].filter((task): task is TaskEvalState => task?.evalCompleted === true);
+    // HOK-2970: when both arms carried an aborted stamp but one side has a
+    // valid eval, we normally hand the win to the surviving arm. If the
+    // aborted arm's eval was `invalidChallenge: true`, that phantom win must
+    // become `invalid_challenge` instead — same rule as the sibling branch.
     if (completed.length === 1) {
       const survivor = completed[0];
+      const abortedRole: 'primary' | 'challenger' = survivor.role === 'primary' ? 'challenger' : 'primary';
+      // HOK-3147: same rule as the sibling branch — an infrastructure-retired
+      // arm voids the pair instead of handing the survivor a phantom win.
+      const abortedArm = abortedRole === 'primary' ? primary : challenger;
+      if (abortedArm && isInvalidChallengeAbort(abortedArm.challengeAborted)) {
+        return buildInfrastructureAbortResolution(input, abortedArm, forkDescriptor);
+      }
+      const invalidArm = input.evalsDir
+        ? invalidArmSnapshot(input.evalsDir, input.pairId, abortedRole)
+        : null;
+      if (invalidArm) {
+        return {
+          outcome: 'invalid_challenge',
+          record: buildInvalidChallengeArmComparison({
+            challengePairId: input.pairId,
+            primaryModel: getTaskModel(primary),
+            challengerModel: getTaskModel(challenger),
+            primaryPrUrl: getTaskPrUrl(primary),
+            challengerPrUrl: getTaskPrUrl(challenger),
+            primaryCompleted: primary?.evalCompleted === true,
+            challengerCompleted: challenger?.evalCompleted === true,
+            armFailures,
+            abortedSide: invalidArm.side,
+            terminalReason: invalidArm.side === 'primary' ? 'primary_challenge_aborted' : 'challenger_challenge_aborted',
+            invalidChallengeReason: invalidArm.reason,
+            ...(invalidArm.details ? { invalidChallengeDetails: invalidArm.details } : {}),
+            rationale: `${armFailures.length > 0 ? armFailures.map(describeFailure).join(' ') : 'Both arms carried terminal quarantine marks.'} The ${abortedRole} arm's latest eval was marked invalid (${invalidArm.reason}); no reviewer-stage winner can be decided.`,
+            timestamp: input.timestamp,
+            ...forkDescriptor,
+          }),
+        };
+      }
       return {
         outcome: 'forfeit',
         record: buildForfeitComparison({
@@ -562,6 +821,36 @@ function buildResolutionRecord(input: {
     );
     if (completed.length === 0 && prBearingTasks.length === 1) {
       return null;
+    }
+    // HOK-2970: if either aborted arm's eval was invalid_challenge, emit
+    // invalid_challenge instead of double-forfeit so the row cannot flow
+    // into stage-attribution training as a decisive outcome.
+    const invalidPrimary = input.evalsDir ? invalidArmSnapshot(input.evalsDir, input.pairId, 'primary') : null;
+    const invalidChallenger = input.evalsDir ? invalidArmSnapshot(input.evalsDir, input.pairId, 'challenger') : null;
+    const invalidArm = invalidPrimary ?? invalidChallenger;
+    if (invalidArm) {
+      const abortedSide: 'primary' | 'challenger' | 'both' =
+        invalidPrimary && invalidChallenger ? 'both' : invalidArm.side;
+      return {
+        outcome: 'invalid_challenge',
+        record: buildInvalidChallengeArmComparison({
+          challengePairId: input.pairId,
+          primaryModel: getTaskModel(primary),
+          challengerModel: getTaskModel(challenger),
+          primaryPrUrl: getTaskPrUrl(primary),
+          challengerPrUrl: getTaskPrUrl(challenger),
+          primaryCompleted: primary?.evalCompleted === true,
+          challengerCompleted: challenger?.evalCompleted === true,
+          armFailures,
+          abortedSide,
+          terminalReason: 'both_challenge_aborted',
+          invalidChallengeReason: invalidArm.reason,
+          ...(invalidArm.details ? { invalidChallengeDetails: invalidArm.details } : {}),
+          rationale: `${armFailures.length > 0 ? armFailures.map(describeFailure).join(' ') : 'Both arms were quarantined.'} Aborted arm(s) had invalid eval (${invalidArm.reason}); no reviewer-stage winner can be decided.`,
+          timestamp: input.timestamp,
+          ...forkDescriptor,
+        }),
+      };
     }
     return {
       outcome: 'double-forfeit',
@@ -641,6 +930,48 @@ function buildResolutionRecord(input: {
         : 'Challenge pair became orphaned before a comparison could be launched; the surviving side wins by forfeit.',
       terminalReason: 'orphan_pair',
       noComparisonReason,
+      timestamp: input.timestamp,
+      ...forkDescriptor,
+    }),
+  };
+}
+
+/**
+ * HOK-3147: terminal record for a pair whose `aborted` arm was retired with an
+ * `invalid_challenge:<kind>` stamp (harness/infrastructure failure before it
+ * could be evaluated). Emits `invalid_challenge` with no winner; its
+ * `armFailures` carry the harness-fault classification, so no model forfeit is
+ * attributed. tend-challenge-gate releases the survivor once the retired
+ * arm's PR is closed (`challenge-void`).
+ */
+function buildInfrastructureAbortResolution(
+  input: { pairId: string; pairState: PairTaskState; timestamp: string; evalsDir?: string },
+  aborted: TaskEvalState,
+  forkDescriptor: ReturnType<typeof forkDescriptorForPair>,
+): { record: ChallengeComparison; outcome: 'invalid_challenge' } {
+  const { primary, challenger } = input.pairState;
+  // HOK-2970 precedent: when the retired arm's latest eval already carries a
+  // typed invalid-challenge reason, keep it rather than the generic one.
+  const invalidArm = input.evalsDir
+    ? invalidArmSnapshot(input.evalsDir, input.pairId, aborted.role)
+    : null;
+  const details = invalidArm?.details ?? aborted.challengeAbortedDetail;
+  return {
+    outcome: 'invalid_challenge',
+    record: buildInvalidChallengeArmComparison({
+      challengePairId: input.pairId,
+      primaryModel: getTaskModel(primary),
+      challengerModel: getTaskModel(challenger),
+      primaryPrUrl: getTaskPrUrl(primary),
+      challengerPrUrl: getTaskPrUrl(challenger),
+      primaryCompleted: primary?.evalCompleted === true,
+      challengerCompleted: challenger?.evalCompleted === true,
+      armFailures: buildArmFailures(primary, challenger),
+      abortedSide: aborted.role,
+      terminalReason: aborted.role === 'primary' ? 'primary_challenge_aborted' : 'challenger_challenge_aborted',
+      invalidChallengeReason: invalidArm?.reason ?? 'arm_infrastructure_failure',
+      ...(details ? { invalidChallengeDetails: details } : {}),
+      rationale: `${describeTaskFailure(aborted)} The ${aborted.role} arm was retired for an infrastructure failure before it could be evaluated; no winner can be decided.`,
       timestamp: input.timestamp,
       ...forkDescriptor,
     }),

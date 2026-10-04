@@ -86,6 +86,8 @@ check_eq "retained episode records fingerprint" \
   "$(jq -r '.tasks["HOK-2955"].lifecycle.cleanupEpisode.fingerprint' "$STATE_FILE")" "$fingerprint"
 check_eq "unchanged retained fingerprint skips" \
   "$(cleanup_episode_should_attempt "HOK-2955" "cleanup-episode" "" "")" "skip"
+check_eq "explicit inbox cleanup retries a retained episode" \
+  "$(WAVEMILL_TERMINAL_INBOX_CLEANUP=1 cleanup_episode_should_attempt "HOK-2955" "cleanup-episode" "" "")" "attempt"
 
 printf 'new head\n' >> "$REPO_DIR/file.txt"
 git -C "$REPO_DIR" commit -q -am "new head"

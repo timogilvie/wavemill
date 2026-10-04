@@ -13,6 +13,20 @@ export interface QueueRefreshTask {
   dependsOn?: string[];
 }
 
+/**
+ * Per-task description budget in the queue-analysis prompt (HOK-3130).
+ * Wavemill descriptions are full task packets; dependency cues live in the
+ * title and the top of the packet, and whole packets pushed the classifier
+ * past its per-attempt timeout.
+ */
+export const QUEUE_ANALYSIS_DESCRIPTION_MAX_CHARS = 1_500;
+const DESCRIPTION_TRUNCATION_SUFFIX = '…[truncated]';
+
+function truncateDescription(description: string): string {
+  if (description.length <= QUEUE_ANALYSIS_DESCRIPTION_MAX_CHARS) return description;
+  return `${description.slice(0, QUEUE_ANALYSIS_DESCRIPTION_MAX_CHARS).trimEnd()}${DESCRIPTION_TRUNCATION_SUFFIX}`;
+}
+
 interface AssembleNearbyContextInput {
   changedTaskIds: Iterable<string>;
   allBacklog: QueueRefreshTask[];
@@ -48,7 +62,7 @@ function normalizeStateName(state: QueueRefreshTask['state']): string {
 }
 
 function formatTask(task: QueueRefreshTask): string {
-  const description = typeof task.description === 'string' ? task.description.trim() : '';
+  const description = typeof task.description === 'string' ? truncateDescription(task.description.trim()) : '';
   const milestone = task.projectMilestone?.name
     ? `${task.projectMilestone.name}${task.projectMilestone.targetDate ? ` (${task.projectMilestone.targetDate})` : ''}`
     : 'null';
@@ -125,6 +139,32 @@ export function buildPartialRefreshPrompt({ changedTaskIds, contextTasks, templa
   });
 }
 
+const FENCE = '```';
+
+/**
+ * Tolerate exactly one outer ```json fence (HOK-3130).
+ *
+ * Claude Haiku answers the queue-analysis prompt as a fenced block, and
+ * `llm-cli` strips everything before the first `{`, which leaves only a
+ * trailing fence. Both shapes are unwrapped. Anything else that contains a
+ * fence (several blocks, prose around the block) is still rejected.
+ */
+function unwrapSingleJsonFence(text: string): string {
+  if (!text.includes(FENCE)) return text;
+
+  const full = text.match(/^```(?:json)?[ \t]*\n([\s\S]*?)\n?```$/i);
+  if (full && !full[1].includes(FENCE)) {
+    return full[1].trim();
+  }
+
+  if (!text.startsWith(FENCE) && text.endsWith(FENCE)) {
+    const body = text.slice(0, -FENCE.length);
+    if (!body.includes(FENCE)) return body.trim();
+  }
+
+  throw new Error('Queue analysis output contains markdown fence');
+}
+
 export function parseQueueAnalysisEdges(
   raw: string,
   changedTaskIds: Set<string>,
@@ -134,10 +174,7 @@ export function parseQueueAnalysisEdges(
     throw new Error('Queue analysis output contains UTF-8 BOM');
   }
 
-  const trimmed = raw.trim();
-  if (trimmed.startsWith('```')) {
-    throw new Error('Queue analysis output contains markdown fence');
-  }
+  const trimmed = unwrapSingleJsonFence(raw.trim());
 
   let parsed: unknown;
   try {

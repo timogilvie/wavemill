@@ -56,6 +56,16 @@ assert_contains() {
   fi
 }
 
+assert_not_contains() {
+  local label="$1" needle="$2" haystack="$3"
+  if [[ "$haystack" == *"$needle"* ]]; then
+    echo "FAIL: $label"
+    echo "  unexpected substring: $needle"
+    echo "  actual: $haystack"
+    exit 1
+  fi
+}
+
 assert_file_exists() {
   local label="$1" path="$2"
   [[ -f "$path" ]] || {
@@ -94,6 +104,7 @@ for fn in \
   write_stage_result_with_history \
   wavemill_run_tsx_tool \
   monitor_command_timestamp \
+  render_unknown_input_for_log \
   normalize_prompt_command_reply \
   review_result_has_final_evidence \
   review_result_missing_final_evidence \
@@ -166,7 +177,16 @@ marker_reason() {
 marker_clear() { rm -f "$1"; }
 read_phase_config() { printf "\n"; }
 resolve_phase_model() { printf "%s\n" "${2:-$3}"; }
-find_pr_for_branch() { printf "%s\n" "${FOUND_PR:-}"; }
+find_pr_for_branch() {
+  # HOK-3110: differentiate the accepted classification list so an advance
+  # command's open-PR mock is not mistaken for a merged-PR discovery.
+  local wanted="${2:-current-open}"
+  if [[ "$wanted" == "current-merged" ]]; then
+    printf "%s\n" "${FOUND_MERGED_PR:-}"
+  else
+    printf "%s\n" "${FOUND_PR:-}"
+  fi
+}
 pr_state() { printf "%s\n" "${PR_STATUS:-OPEN}"; }
 launch_review_calls=0
 launch_review_phase() {
@@ -314,6 +334,14 @@ AGENT_CMD="codex"
 BASE_BRANCH="main"
 PR_STATUS="OPEN"
 init_state "$STATE_FILE"
+
+# Unknown diagnostics must not replay terminal-control bytes into logs.
+run_advance $'unknown \033[B1'
+assert_eq "unknown control input invalid" "invalid" "$MONITOR_COMMAND_STATUS"
+assert_contains "unknown control input rendered visibly" "\\E" "${warn_lines[*]}"
+assert_not_contains "unknown control input omits raw ESC" $'\033' "${warn_lines[*]}"
+run_advance "unknown plain"
+assert_contains "printable unknown input remains readable" "Unknown input: plain" "${warn_lines[*]}"
 
 # Success
 WORKTREE_SUCCESS="$SCENARIO_DIR/worktree-success"

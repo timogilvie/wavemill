@@ -40,7 +40,8 @@ describe('model-validator', () => {
       const codexModels = byAgent.get('codex') || [];
       const claudeModels = byAgent.get('claude') || [];
 
-      assert.ok(codexModels.includes('gpt-5.5'), 'Codex should include gpt-5.5');
+      assert.ok(codexModels.includes('gpt-5.6-terra'), 'Codex should include gpt-5.6-terra');
+      assert.ok(!codexModels.includes('gpt-5.5'), 'Codex should not include retired gpt-5.5');
       assert.ok(claudeModels.includes('claude-opus-4-6'), 'Claude should include claude-opus-4-6');
       assert.ok(claudeModels.includes('claude-opus-4-8'), 'Claude should include claude-opus-4-8');
       assert.ok(claudeModels.includes('claude-opus-4-7'), 'Claude should include claude-opus-4-7');

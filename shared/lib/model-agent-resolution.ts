@@ -5,6 +5,8 @@ import {
   getStageContextWindowFloor,
   getModel,
   isCodexChatgptLaunchEligible,
+  resolveCodexChatgptSuccessor,
+  resolveModelSuccessor,
   type AgentType,
   type ModelRegistry,
   type NativeProviderName,
@@ -30,7 +32,43 @@ export type UnroutableReason =
 
 export type AgentResolution =
   | { ok: true; agent: AgentType }
-  | { ok: false; reason: UnroutableReason; diagnostic: string; certifyCommand?: string };
+  | {
+    ok: false;
+    reason: UnroutableReason;
+    diagnostic: string;
+    certifyCommand?: string;
+    /**
+     * Structured certification status behind the refusal (the same value the
+     * diagnostic prints as `certification=`), e.g. `missing_live_canary`.
+     * Exposed so callers (router guard, monitor reroute, observer) never have
+     * to parse the diagnostic string (HOK-3142).
+     */
+    certificationStatus?: string;
+  };
+
+export type LaunchPreflightFailureReason =
+  | 'retired-model-no-successor'
+  | 'successor-ineligible'
+  | UnroutableReason;
+
+export type LaunchPreflight =
+  | {
+    ok: true;
+    requestedModel: string;
+    resolvedModel: string;
+    agent: AgentType;
+    phase: AgentResolutionPhase;
+  }
+  | {
+    ok: false;
+    requestedModel: string;
+    resolvedModel: string | null;
+    phase: AgentResolutionPhase;
+    reason: LaunchPreflightFailureReason;
+    diagnostic: string;
+    remediation?: string;
+    certifyCommand?: string;
+  };
 
 interface ResolveModelAgentOptions {
   model: string;
@@ -68,8 +106,36 @@ function inferHostedAgent(vendor: string | undefined): Extract<AgentType, 'claud
   return undefined;
 }
 
-function certifyCommandFor(modelId: string, provider: NativeProviderName, phase: AgentResolutionPhase): string {
-  return `npx tsx tools/native-agent-certify.ts --provider ${provider} --model ${modelId} --phase ${certificationPhaseForAgentPhase(phase)}`;
+/**
+ * Gate reasons that only a provider-backed live coding canary can clear. A
+ * certify command for these must carry `--live-coding-canary`, otherwise the
+ * operator re-runs the deterministic suite and the gate still refuses
+ * (HOK-3142: the printed command did not fix the HOK-3138 stall).
+ */
+const LIVE_CANARY_GATE_REASONS: ReadonlySet<string> = new Set([
+  'missing_live_canary',
+  'stale_live_canary',
+  'failed_live_canary',
+  'inconclusive_live_canary',
+  'non_live_canary',
+  'live_canary_identity_mismatch',
+  // HOK-3143: a durable identity invalidation requires a fresh canary against
+  // the current alias target; the deterministic suite alone cannot clear it.
+  'identity_mismatch',
+]);
+
+export function isLiveCanaryCertificationStatus(status: string | undefined): boolean {
+  return status !== undefined && LIVE_CANARY_GATE_REASONS.has(status);
+}
+
+function certifyCommandFor(
+  modelId: string,
+  provider: NativeProviderName,
+  phase: AgentResolutionPhase,
+  certificationStatus?: string,
+): string {
+  const base = `npx tsx tools/native-agent-certify.ts --provider ${provider} --model ${modelId} --phase ${certificationPhaseForAgentPhase(phase)}`;
+  return isLiveCanaryCertificationStatus(certificationStatus) ? `${base} --live-coding-canary` : base;
 }
 
 function launchPriorityRoleEligibility(modelId: string, phase: AgentResolutionPhase): {
@@ -122,7 +188,7 @@ function resolveRegistryBackedNativeAgent(input: {
       certificationStatus: 'missing-native-capability',
       certifyCommand,
     });
-    return { ok: false, reason: 'no-native-capability', diagnostic, certifyCommand };
+    return { ok: false, reason: 'no-native-capability', diagnostic, certifyCommand, certificationStatus: 'missing-native-capability' };
   }
 
   if (provider !== expectedProvider) {
@@ -138,6 +204,7 @@ function resolveRegistryBackedNativeAgent(input: {
       ok: false,
       reason: 'no-native-capability',
       diagnostic,
+      certificationStatus: `provider-mismatch:${provider}->${expectedProvider}`,
       ...(provider ? { certifyCommand: certifyCommandFor(input.modelId, provider, input.phase) } : {}),
     };
   }
@@ -155,6 +222,7 @@ function resolveRegistryBackedNativeAgent(input: {
       ok: false,
       reason: 'native-unsupported',
       diagnostic,
+      certificationStatus: 'native-unsupported',
       certifyCommand: certifyCommandFor(input.modelId, provider, input.phase),
     };
   }
@@ -182,7 +250,7 @@ function resolveRegistryBackedNativeAgent(input: {
       reason,
       certificationStatus,
     });
-    return { ok: false, reason, diagnostic };
+    return { ok: false, reason, diagnostic, certificationStatus };
   }
 
   const roleEligibility = launchPriorityRoleEligibility(input.modelId, input.phase);
@@ -195,7 +263,7 @@ function resolveRegistryBackedNativeAgent(input: {
       reason: 'role-ineligible',
       certificationStatus: `eligible-roles:${eligibleRoles}`,
     });
-    return { ok: false, reason: 'role-ineligible', diagnostic };
+    return { ok: false, reason: 'role-ineligible', diagnostic, certificationStatus: `eligible-roles:${eligibleRoles}` };
   }
 
   const requiredPhase = certificationPhaseForAgentPhase(input.phase);
@@ -214,21 +282,18 @@ function resolveRegistryBackedNativeAgent(input: {
       certificationRoot: input.certificationRoot,
     });
     if (!gate.ok) {
-      const certifyCommand = certifyCommandFor(input.modelId, provider, input.phase);
+      const gateReason = gate.reason;
+      const reason = gateReason === 'unregistered_model' ? 'no-native-capability' : 'uncertified';
+      const certifyCommand = certifyCommandFor(input.modelId, provider, input.phase, gateReason);
       const diagnostic = buildDiagnostic({
         modelId: input.modelId,
         phase: input.phase,
         provider,
-        reason: gate.reason === 'unregistered_model' ? 'no-native-capability' : 'uncertified',
-        certificationStatus: gate.reason,
+        reason,
+        certificationStatus: gateReason,
         certifyCommand,
       });
-      return {
-        ok: false,
-        reason: gate.reason === 'unregistered_model' ? 'no-native-capability' : 'uncertified',
-        diagnostic,
-        certifyCommand,
-      };
+      return { ok: false, reason, diagnostic, certifyCommand, certificationStatus: gateReason };
     }
     return { ok: true, agent: input.nativeAgent };
   }
@@ -241,16 +306,17 @@ function resolveRegistryBackedNativeAgent(input: {
   });
 
   if (!eligibility.eligible) {
-    const certifyCommand = certifyCommandFor(input.modelId, provider, input.phase);
+    const eligibilityReason = eligibility.reason;
+    const certifyCommand = certifyCommandFor(input.modelId, provider, input.phase, eligibilityReason);
     const diagnostic = buildDiagnostic({
       modelId: input.modelId,
       phase: input.phase,
       provider,
       reason: 'uncertified',
-      certificationStatus: eligibility.reason,
+      certificationStatus: eligibilityReason,
       certifyCommand,
     });
-    return { ok: false, reason: 'uncertified', diagnostic, certifyCommand };
+    return { ok: false, reason: 'uncertified', diagnostic, certifyCommand, certificationStatus: eligibilityReason };
   }
 
   return { ok: true, agent: input.nativeAgent };
@@ -302,6 +368,14 @@ export function resolveModelAgent(opts: ResolveModelAgentOptions): AgentResoluti
   }
 
   if (resolvedAgent === 'codex' || resolvedAgent === 'claude') {
+    if (capabilities?.supportedModel?.launchEligible === false) {
+      const lifecycle = capabilities.supportedModel.lifecycle || 'unknown';
+      return {
+        ok: false,
+        reason: 'lifecycle-blocked',
+        diagnostic: `[agent-resolution] model=${modelId} phase=${opts.phase} provider=${capabilities?.vendor} reason=lifecycle-blocked certification=${lifecycle} detail="Model is not eligible for launch"`,
+      };
+    }
     if (resolvedAgent === 'codex' && !isCodexChatgptLaunchEligible(capabilities)) {
       const reason = capabilities?.codexChatgptCapability?.reason
         ?? 'No explicit ChatGPT/Codex launch capability is declared.';
@@ -347,5 +421,115 @@ export function resolveModelAgent(opts: ResolveModelAgentOptions): AgentResoluti
       reason: 'unknown-model',
       certificationStatus: 'unsupported-agent',
     }),
+  };
+}
+
+/**
+ * Resolves a model through successor chain before agent selection.
+ * If the requested model is retired/blocked/unsupported without a valid successor,
+ * returns a terminal failure. Preserves both requested and resolved identities.
+ * Used at every execution boundary before pane/process creation.
+ */
+export function resolveLaunchPreflight(opts: {
+  requestedModel: string;
+  phase: AgentResolutionPhase;
+  repoDir?: string;
+  registry?: ModelRegistry;
+  now?: Date;
+  certificationRoot?: string;
+}): LaunchPreflight {
+  const requestedModel = opts.requestedModel.trim();
+  const registry = opts.registry ?? DEFAULT_MODEL_REGISTRY;
+
+  // First, check if the requested model resolves
+  const requested = resolveModelAgent({
+    model: requestedModel,
+    phase: opts.phase,
+    repoDir: opts.repoDir,
+    registry,
+    now: opts.now,
+    certificationRoot: opts.certificationRoot,
+  });
+
+  if (requested.ok) {
+    // Requested model is valid, return it as both requested and resolved
+    return {
+      ok: true,
+      requestedModel,
+      resolvedModel: requestedModel,
+      agent: requested.agent,
+      phase: opts.phase,
+    };
+  }
+
+  // Requested model failed. Try to resolve a successor for Codex models
+  const capabilities = getModel(registry, requestedModel);
+  if (!capabilities) {
+    // Unknown model with no successor
+    return {
+      ok: false,
+      requestedModel,
+      resolvedModel: null,
+      phase: opts.phase,
+      reason: 'unknown-model',
+      diagnostic: `[launch-preflight] requested_model=${requestedModel} phase=${opts.phase} reason=unknown-model detail="Model not found in registry"`,
+    };
+  }
+
+  // Try registry-backed successor first (handles lifecycle: deprecated, unsupported, etc.)
+  const registrySuccessor = capabilities.agent === 'codex'
+    ? resolveCodexChatgptSuccessor(requestedModel, registry)
+    : resolveModelSuccessor(requestedModel, registry);
+
+  if (!registrySuccessor) {
+    // Requested model failed and has no valid successor
+    const reason = capabilities.supportedModel?.lifecycle === 'deprecated'
+      ? 'retired-model-no-successor'
+      : requested.reason;
+
+    return {
+      ok: false,
+      requestedModel,
+      resolvedModel: null,
+      phase: opts.phase,
+      reason,
+      diagnostic: `[launch-preflight] requested_model=${requestedModel} phase=${opts.phase} reason=${reason} detail="${requested.reason}:${requested.diagnostic}"`,
+      remediation: capabilities.supportedModel?.lifecycle === 'deprecated'
+        ? `Model ${requestedModel} is retired and has no available successor. Select a different model.`
+        : undefined,
+    };
+  }
+
+  // Try to resolve the successor
+  const successorResolution = resolveModelAgent({
+    model: registrySuccessor,
+    phase: opts.phase,
+    repoDir: opts.repoDir,
+    registry,
+    now: opts.now,
+    certificationRoot: opts.certificationRoot,
+  });
+
+  if (successorResolution.ok) {
+    // Successor is valid
+    return {
+      ok: true,
+      requestedModel,
+      resolvedModel: registrySuccessor,
+      agent: successorResolution.agent,
+      phase: opts.phase,
+    };
+  }
+
+  // Successor exists but is ineligible (e.g., phase-incompatible, uncertified)
+  return {
+    ok: false,
+    requestedModel,
+    resolvedModel: registrySuccessor,
+    phase: opts.phase,
+    reason: 'successor-ineligible',
+    diagnostic: `[launch-preflight] requested_model=${requestedModel} resolved_model=${registrySuccessor} phase=${opts.phase} reason=successor-ineligible detail="${successorResolution.reason}:${successorResolution.diagnostic}"`,
+    remediation: `Successor model ${registrySuccessor} for ${requestedModel} is not eligible for this phase.`,
+    certifyCommand: successorResolution.certifyCommand,
   };
 }

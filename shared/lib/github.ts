@@ -99,6 +99,8 @@ export interface PullRequest {
   author: string;
   /** Head branch name */
   headRefName: string;
+  /** Current head commit SHA */
+  headRefOid?: string;
   /** Base branch name */
   baseRefName: string;
   /** PR labels */
@@ -214,7 +216,7 @@ export const listPullRequests = (options: PullRequestListOptions = {}): PullRequ
     // Request JSON output with all needed fields
     args.push(
       '--json',
-      'number,title,state,author,headRefName,baseRefName,labels,url,createdAt,updatedAt,mergedAt,closedAt'
+      'number,title,state,author,headRefName,headRefOid,baseRefName,labels,url,createdAt,updatedAt,mergedAt,closedAt'
     );
 
     const output = execShellCommand(buildShellCommand(args), { encoding: 'utf-8' }).trim();
@@ -229,6 +231,7 @@ export const listPullRequests = (options: PullRequestListOptions = {}): PullRequ
       state: string;
       author?: { login?: string } | string;
       headRefName: string;
+      headRefOid?: string;
       baseRefName: string;
       labels?: Array<{ name: string }>;
       url: string;
@@ -247,6 +250,7 @@ export const listPullRequests = (options: PullRequestListOptions = {}): PullRequ
         ? pr.author.login
         : String(pr.author || ''),
       headRefName: pr.headRefName,
+      headRefOid: pr.headRefOid,
       baseRefName: pr.baseRefName,
       labels: pr.labels || [],
       url: pr.url,
@@ -297,7 +301,7 @@ export const getPullRequest = (prNumber: number | string, options: PullRequestVi
     // Request JSON output with all needed fields
     args.push(
       '--json',
-      'number,title,body,state,author,headRefName,baseRefName,labels,url,createdAt,updatedAt,mergedAt,closedAt'
+      'number,title,body,state,author,headRefName,headRefOid,baseRefName,labels,url,createdAt,updatedAt,mergedAt,closedAt'
     );
 
     const output = execShellCommand(buildShellCommand(args), { encoding: 'utf-8' }).trim();
@@ -308,6 +312,7 @@ export const getPullRequest = (prNumber: number | string, options: PullRequestVi
       state: string;
       author?: { login?: string } | string;
       headRefName: string;
+      headRefOid?: string;
       baseRefName: string;
       labels?: Array<{ name: string }>;
       url: string;
@@ -327,6 +332,7 @@ export const getPullRequest = (prNumber: number | string, options: PullRequestVi
         ? pr.author.login
         : String(pr.author || ''),
       headRefName: pr.headRefName,
+      headRefOid: pr.headRefOid,
       baseRefName: pr.baseRefName,
       labels: pr.labels || [],
       url: pr.url,

@@ -9,6 +9,7 @@ import {
   REVIEW_SCOPE_GUARD_NO_COMMIT_MESSAGE,
   REVIEW_SCOPE_GUARD_UNVERIFIED_MESSAGE,
   ensureReviewScopeBaseline,
+  readBaseline,
   validateReviewScope,
 } from './review-scope-guard.ts';
 
@@ -548,6 +549,137 @@ test('ensureReviewScopeBaseline creates the artifact from merge-base and never r
   }
 });
 
+test('ensureReviewScopeBaseline records launch-base provenance for an explicit launch base', () => {
+  const { repoDir, cleanup } = makeGitOnlyRepo();
+  try {
+    git(repoDir, 'checkout -b task/launch-base');
+    const launchBase = git(repoDir, 'rev-parse HEAD');
+    commitFile(repoDir, 'shared/lib/new-checker.ts', 'export const c = 1;\n', 'Add checker');
+    const featureDir = join(repoDir, 'features', 'launch-base');
+    mkdirSync(featureDir, { recursive: true });
+
+    const result = ensureReviewScopeBaseline({
+      repoDir,
+      featureDir,
+      sinceCommit: launchBase,
+      sinceCommitSource: 'launch-base',
+    });
+
+    assert.equal(result.baseline.sinceCommit, launchBase);
+    assert.equal(result.baseline.provenance, 'launch-base');
+    assert.equal(result.baseline.baseRef, launchBase);
+    assert.deepEqual(result.baseline.paths, ['shared/lib/new-checker.ts']);
+  } finally {
+    cleanup();
+  }
+});
+
+test('ensureReviewScopeBaseline fails closed when launch base does not resolve', () => {
+  const { repoDir, cleanup } = makeGitOnlyRepo();
+  try {
+    git(repoDir, 'checkout -b task/missing-launch-base');
+    commitFile(repoDir, 'shared/lib/new-checker.ts', 'export const c = 1;\n', 'Add checker');
+    const featureDir = join(repoDir, 'features', 'missing-launch-base');
+    mkdirSync(featureDir, { recursive: true });
+
+    assert.throws(
+      () => ensureReviewScopeBaseline({
+        repoDir,
+        featureDir,
+        sinceCommit: 'deadbee',
+        sinceCommitSource: 'launch-base',
+      }),
+      /recorded launch base deadbee could not be resolved.*refusing to widen scope/,
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test('ensureReviewScopeBaseline fails closed when launch base is not an ancestor of head', () => {
+  const { repoDir, cleanup } = makeGitOnlyRepo();
+  try {
+    git(repoDir, 'checkout -b unrelated-base');
+    const unrelatedBase = commitFile(repoDir, 'side.txt', 'side\n', 'side');
+    git(repoDir, 'checkout auto/integration');
+    git(repoDir, 'checkout -b task/non-ancestor-launch-base');
+    commitFile(repoDir, 'shared/lib/new-checker.ts', 'export const c = 1;\n', 'Add checker');
+    const featureDir = join(repoDir, 'features', 'non-ancestor-launch-base');
+    mkdirSync(featureDir, { recursive: true });
+
+    assert.throws(
+      () => ensureReviewScopeBaseline({
+        repoDir,
+        featureDir,
+        sinceCommit: unrelatedBase,
+        sinceCommitSource: 'launch-base',
+      }),
+      /recorded launch base [0-9a-f]+ is not an ancestor of HEAD.*refusing to widen scope/,
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test('ensureReviewScopeBaseline prefers origin integration when local integration is stale', () => {
+  const { repoDir, cleanup } = makeGitOnlyRepo();
+  try {
+    const staleLocalIntegration = git(repoDir, 'rev-parse auto/integration');
+    commitFile(repoDir, 'shared/lib/inherited.ts', 'inherited\n', 'integration work');
+    const launchBase = git(repoDir, 'rev-parse HEAD');
+    git(repoDir, `update-ref refs/remotes/origin/auto/integration ${launchBase}`);
+    git(repoDir, `checkout -b task/stale-local ${launchBase}`);
+    git(repoDir, `update-ref refs/heads/auto/integration ${staleLocalIntegration}`);
+    commitFile(repoDir, 'shared/lib/task-owned.ts', 'task\n', 'task work');
+    const featureDir = join(repoDir, 'features', 'stale-local');
+    mkdirSync(featureDir, { recursive: true });
+
+    const result = ensureReviewScopeBaseline({ repoDir, featureDir });
+
+    assert.equal(result.baseline.provenance, 'remote-merge-base');
+    assert.equal(result.baseline.baseRef, 'origin/auto/integration');
+    assert.equal(result.baseline.sinceCommit, launchBase);
+    assert.deepEqual(result.baseline.paths, ['shared/lib/task-owned.ts']);
+  } finally {
+    cleanup();
+  }
+});
+
+test('readBaseline accepts old and new artifact shapes', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'review-scope-baseline-shape-'));
+  try {
+    const oldPath = join(repoDir, 'old.json');
+    writeFileSync(oldPath, JSON.stringify({
+      version: 1,
+      createdAt: '',
+      source: 'legacy',
+      sinceCommit: 'abc1234',
+      headRef: 'HEAD',
+      paths: ['b.ts', 'a.ts'],
+    }));
+    const oldBaseline = readBaseline(oldPath);
+    assert.deepEqual(oldBaseline?.paths, ['a.ts', 'b.ts']);
+    assert.equal(oldBaseline?.provenance, undefined);
+
+    const newPath = join(repoDir, 'new.json');
+    writeFileSync(newPath, JSON.stringify({
+      version: 1,
+      createdAt: '',
+      source: 'new',
+      sinceCommit: 'def5678',
+      headRef: 'HEAD',
+      paths: ['a.ts'],
+      provenance: 'launch-base',
+      baseRef: 'def5678',
+    }));
+    const newBaseline = readBaseline(newPath);
+    assert.equal(newBaseline?.provenance, 'launch-base');
+    assert.equal(newBaseline?.baseRef, 'def5678');
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
 test('write-review-scope-baseline CLI materializes the artifact for the mill handoff', () => {
   const { repoDir, cleanup } = makeGitOnlyRepo();
   try {
@@ -557,8 +689,9 @@ test('write-review-scope-baseline CLI materializes the artifact for the mill han
     mkdirSync(featureDir, { recursive: true });
 
     const result = spawnSync(
-      join(process.cwd(), 'node_modules', '.bin', 'tsx'),
+      'npx',
       [
+        'tsx',
         join(process.cwd(), 'tools', 'write-review-scope-baseline.ts'),
         '--repo-dir', repoDir,
         '--feature-dir', featureDir,
@@ -568,6 +701,211 @@ test('write-review-scope-baseline CLI materializes the artifact for the mill han
 
     assert.equal(result.status, 0, `expected exit 0, got ${result.status}: ${result.stdout}\n${result.stderr}`);
     assert.ok(existsSync(join(featureDir, '.review-scope-baseline.json')));
+    assert.match(result.stdout, /Provenance: /);
+  } finally {
+    cleanup();
+  }
+});
+
+// ────────────────────────────────────────────────────────────────
+// HOK-3091 — base-tip normalization: a branch behind base must not fail
+// scope, deletion-budget, or committed-entry checks just because the caller
+// passed the base *tip* as baseRef.
+// ────────────────────────────────────────────────────────────────
+
+test('validateReviewScope does not flag base-added files when the branch is behind base and baseRef is the base tip', () => {
+  const { repoDir, cleanup } = makeGitOnlyRepo();
+  try {
+    // Task branch cut BEFORE the base advances.
+    git(repoDir, 'checkout -b task/behind-base auto/integration');
+    const branchPoint = git(repoDir, 'rev-parse HEAD');
+    // Base advances with a bunch of files that the branch will never touch.
+    git(repoDir, 'checkout auto/integration');
+    for (const name of ['a', 'b', 'c', 'd']) {
+      commitFile(repoDir, `docs/${name}.md`, `${name}\n`, `add doc ${name}`);
+    }
+    const baseTip = git(repoDir, 'rev-parse auto/integration');
+
+    // Branch adds a single in-scope file.
+    git(repoDir, `checkout task/behind-base`);
+    commitFile(repoDir, 'tools/one.ts', 'export const x = 1;\n', 'branch work');
+
+    const result = validateReviewScope({
+      repoDir,
+      baseRef: baseTip,
+      writeBaseline: false,
+    });
+
+    // Base-added docs/*.md must not appear in outOfScopePaths, deletion-budget
+    // findings, or committed-entry violations.
+    assert.equal(result.status, 'pass', JSON.stringify(result.findings));
+    assert.deepEqual(result.outOfScopePaths, []);
+    assert.equal(
+      result.findings.filter((f) => f.category === 'deletion-budget').length,
+      0,
+    );
+    assert.deepEqual(result.taskPaths, ['tools/one.ts']);
+    // Guard silences the raw baseRef through merge-base normalization, so the
+    // computed base is the branch point (baseSha at merge-base(baseTip, HEAD)).
+    assert.notEqual(baseTip, branchPoint);
+  } finally {
+    cleanup();
+  }
+});
+
+// ────────────────────────────────────────────────────────────────
+// HOK-3119 — a launch-base baseline must advance past a base merge, or every
+// file inherited with the merge blocks every later review-fix commit.
+// ────────────────────────────────────────────────────────────────
+
+/**
+ * Launch at A with a launch-base baseline; the base then advances to B with
+ * two unrelated files and the task branch merges B. `publishRemote: false`
+ * leaves no origin ref at all, so only the (local) integration branch knows B.
+ */
+function makeBaseMergedRepo(options: { publishRemote?: boolean } = {}): {
+  repoDir: string;
+  featureDir: string;
+  launchBase: string;
+  advancedBase: string;
+  cleanup: () => void;
+} {
+  const publishRemote = options.publishRemote ?? true;
+  const { repoDir, cleanup } = makeGitOnlyRepo();
+  const launchBase = git(repoDir, 'rev-parse HEAD');
+  if (publishRemote) {
+    git(repoDir, `update-ref refs/remotes/origin/auto/integration ${launchBase}`);
+  }
+  git(repoDir, 'checkout -b task/base-merged');
+  commitFile(repoDir, 'src/task.ts', 'export const task = 1;\n', 'task work');
+  const featureDir = join(repoDir, 'features', 'base-merged');
+  mkdirSync(featureDir, { recursive: true });
+  const handoff = ensureReviewScopeBaseline({
+    repoDir,
+    featureDir,
+    sinceCommit: launchBase,
+    sinceCommitSource: 'launch-base',
+  });
+  assert.equal(handoff.baseline.provenance, 'launch-base');
+  assert.deepEqual(handoff.baseline.paths, ['src/task.ts']);
+
+  git(repoDir, 'checkout auto/integration');
+  commitFile(repoDir, 'docs/inherited.md', 'inherited\n', 'other PR: docs');
+  const advancedBase = commitFile(repoDir, 'tools/other.ts', 'export const other = 1;\n', 'other PR: tool');
+  if (publishRemote) {
+    git(repoDir, `update-ref refs/remotes/origin/auto/integration ${advancedBase}`);
+  }
+  git(repoDir, 'checkout task/base-merged');
+  git(repoDir, 'merge --no-ff --no-edit auto/integration');
+  return { repoDir, featureDir, launchBase, advancedBase, cleanup };
+}
+
+test('validateReviewScope advances a launch-base baseline past a base merge (HOK-3119)', () => {
+  const { repoDir, featureDir, launchBase, advancedBase, cleanup } = makeBaseMergedRepo();
+  try {
+    commitFile(repoDir, 'src/task.ts', 'export const task = 2;\n', 'review fix');
+
+    const result = validateReviewScope({ repoDir, featureDir, writeBaseline: false });
+
+    assert.equal(result.status, 'pass', JSON.stringify(result.findings));
+    assert.deepEqual(result.outOfScopePaths, []);
+    assert.equal(
+      result.baselineSource,
+      `launch-base ${launchBase.slice(0, 8)} advanced to remote merge-base ${advancedBase.slice(0, 8)}`,
+    );
+    assert.deepEqual(result.baselinePaths, ['src/task.ts']);
+    // Read-side only: the recorded artifact is untouched.
+    assert.equal(readBaseline(join(featureDir, '.review-scope-baseline.json'))?.sinceCommit, launchBase);
+  } finally {
+    cleanup();
+  }
+});
+
+test('validateReviewScope never advances a launch-base baseline from a local integration ref', () => {
+  // HOK-3037: only the local branch knows the advanced base, so the recorded
+  // launch base stands and the inherited files remain out of scope.
+  const { repoDir, featureDir, cleanup } = makeBaseMergedRepo({ publishRemote: false });
+  try {
+    commitFile(repoDir, 'src/task.ts', 'export const task = 2;\n', 'review fix');
+
+    const result = validateReviewScope({ repoDir, featureDir, writeBaseline: false });
+
+    assert.equal(result.status, 'fail');
+    assert.doesNotMatch(result.baselineSource, /advanced/);
+    assert.deepEqual(result.outOfScopePaths, ['docs/inherited.md', 'tools/other.ts']);
+  } finally {
+    cleanup();
+  }
+});
+
+test('validateReviewScope still flags a task commit that reverts base content after advancing', () => {
+  const { repoDir, featureDir, cleanup } = makeBaseMergedRepo();
+  try {
+    git(repoDir, 'rm -q docs/inherited.md');
+    git(repoDir, `commit -m ${shellQuote('drop inherited doc')}`);
+
+    const result = validateReviewScope({ repoDir, featureDir, writeBaseline: false });
+
+    assert.match(result.baselineSource, /^launch-base [0-9a-f]+ advanced to remote merge-base [0-9a-f]+$/);
+    assert.equal(result.status, 'fail');
+    assert.deepEqual(result.outOfScopePaths, ['docs/inherited.md']);
+  } finally {
+    cleanup();
+  }
+});
+
+test('validateReviewScope never advances to a merge base that is not an ancestor of HEAD', () => {
+  const { repoDir, featureDir, launchBase, cleanup } = makeBaseMergedRepo();
+  try {
+    git(repoDir, `checkout -q -b side ${launchBase}`);
+    const nonAncestor = commitFile(repoDir, 'side.txt', 'side\n', 'side');
+    git(repoDir, 'checkout -q task/base-merged');
+
+    // Defensive path: a merge-base answer that descends from the launch base
+    // but is not an ancestor of HEAD must never become the effective base.
+    const shellRunner = (cmd: string, opts?: { cwd?: string }): string => {
+      if (cmd === `git merge-base 'origin/auto/integration' 'HEAD'`) {
+        return `${nonAncestor}\n`;
+      }
+      return execSync(cmd, { cwd: opts?.cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+    };
+    const result = validateReviewScope({ repoDir, featureDir, writeBaseline: false, shellRunner });
+
+    assert.doesNotMatch(result.baselineSource, /advanced/);
+    assert.equal(result.status, 'fail');
+    assert.ok(result.outOfScopePaths.includes('docs/inherited.md'));
+  } finally {
+    cleanup();
+  }
+});
+
+test('ensureReviewScopeBaseline refresh rewrites an advanced baseline and keeps history', () => {
+  const { repoDir, featureDir, launchBase, advancedBase, cleanup } = makeBaseMergedRepo();
+  try {
+    const kept = ensureReviewScopeBaseline({ repoDir, featureDir });
+    assert.equal(kept.refreshed, false);
+    assert.equal(kept.baseline.sinceCommit, launchBase);
+
+    const refreshed = ensureReviewScopeBaseline({ repoDir, featureDir, refresh: true });
+    assert.equal(refreshed.created, false);
+    assert.equal(refreshed.refreshed, true);
+    assert.equal(refreshed.baseline.sinceCommit, advancedBase);
+    assert.equal(refreshed.baseline.provenance, 'remote-merge-base');
+    assert.equal(refreshed.baseline.baseRef, 'origin/auto/integration');
+    assert.deepEqual(refreshed.baseline.paths, ['src/task.ts']);
+    assert.equal(readBaseline(refreshed.baselinePath)?.sinceCommit, advancedBase);
+
+    const history = readFileSync(join(featureDir, '.review-scope-baseline.history.jsonl'), 'utf-8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { baseline: { sinceCommit: string; provenance: string } });
+    assert.equal(history.length, 1);
+    assert.equal(history[0].baseline.sinceCommit, launchBase);
+    assert.equal(history[0].baseline.provenance, 'launch-base');
+
+    // Already at the live merge base: a second refresh is a no-op.
+    const again = ensureReviewScopeBaseline({ repoDir, featureDir, refresh: true });
+    assert.equal(again.refreshed, false);
   } finally {
     cleanup();
   }
@@ -577,11 +915,10 @@ test('write-review-scope-baseline CLI materializes the artifact for the mill han
 // CLI exit contract: 0 pass / 1 policy violation / 2 tool failure
 // ────────────────────────────────────────────────────────────────
 
-const TSX_BIN = join(process.cwd(), 'node_modules', '.bin', 'tsx');
 const CLI_TOOL = join(process.cwd(), 'tools', 'check-review-scope.ts');
 
 function runCli(repoDir: string): { status: number | null; stdout: string; stderr: string } {
-  const result = spawnSync(TSX_BIN, [CLI_TOOL, '--repo-dir', repoDir], { encoding: 'utf-8' });
+  const result = spawnSync('npx', ['tsx', CLI_TOOL, '--repo-dir', repoDir], { encoding: 'utf-8' });
   return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
 

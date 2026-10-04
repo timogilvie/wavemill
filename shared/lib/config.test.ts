@@ -33,6 +33,7 @@ import {
   getReviewMergeConfig,
   getIntegrationReadyPolicy,
   getMillConfig,
+  getQueuePlannerConfig,
   getExpansionHandshakeConfig,
   getMaxCostUsd,
   getUiConfig,
@@ -50,6 +51,9 @@ import {
   getNativeContextManagementConfig,
   getNativeExpansionConfig,
   getNativePatchCodingConfig,
+  getNativeBrowserConfig,
+  getNativeScreenshotConfig,
+  canonicalizeBrowserOrigin,
   getReadyConfig,
   getReadyFailureClassifierConfig,
   getReadyVerificationConfig,
@@ -65,7 +69,12 @@ import {
   getIncidentConfig,
   getPrePrVerificationConfig,
   getObserverLinearConfig,
+  resolveObserverLinearServiceMode,
+  resolveObserverLinearModeSource,
+  OBSERVER_LINEAR_ROLLOUT_DEFAULTS,
   getChallengeEvalHardFailureRetryMaxAttempts,
+  getNativeReviewTimeoutConfig,
+  resolveSessionCapabilities,
 } from './config.ts';
 
 // ────────────────────────────────────────────────────────────────
@@ -273,6 +282,48 @@ test('removed repo-local model fields are rejected with migration guidance', () 
     } finally {
       cleanUp(tmp);
     }
+  }
+});
+
+test('native review timeout defaults to five minutes with bounded escalation', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, '{}');
+    assert.deepEqual(getNativeReviewTimeoutConfig(tmp, 'kimi-k3', 0), {
+      timeoutMs: 300_000,
+      maxMs: 1_200_000,
+      multiplier: 2,
+      attempt: 0,
+      baseTimeoutMs: 300_000,
+      model: 'kimi-k3',
+    });
+    assert.equal(getNativeReviewTimeoutConfig(tmp, 'kimi-k3', 2).timeoutMs, 1_200_000);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('native review timeout honors global and per-model overrides', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      review: {
+        nativeTimeoutMs: 400_000,
+        nativeTimeoutMaxMs: 900_000,
+        nativeTimeoutMultiplier: 2,
+        nativeTimeoutModelOverrides: {
+          'moonshotai/kimi-k3': { timeoutMs: 600_000, maxMs: 1_500_000, multiplier: 3 },
+          'gpt-4o': 200_000,
+        },
+      },
+    }));
+    assert.equal(getNativeReviewTimeoutConfig(tmp, 'other-model', 1).timeoutMs, 800_000);
+    assert.equal(getNativeReviewTimeoutConfig(tmp, 'moonshotai/kimi-k3', 1).timeoutMs, 1_500_000);
+    assert.equal(getNativeReviewTimeoutConfig(tmp, 'native-openai/gpt-4o', 1).timeoutMs, 400_000);
+  } finally {
+    cleanUp(tmp);
   }
 });
 
@@ -1566,6 +1617,44 @@ test('getMillConfig returns mill section', () => {
   }
 });
 
+test('getQueuePlannerConfig defaults to legacy and honors grounded (HOK-3131)', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ mill: { maxParallel: 5 } }));
+    assert.deepEqual(getQueuePlannerConfig(tmp), { mode: 'legacy' });
+
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ queuePlanner: {} }));
+    assert.deepEqual(getQueuePlannerConfig(tmp), { mode: 'legacy' });
+
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ queuePlanner: { mode: 'legacy' } }));
+    assert.deepEqual(getQueuePlannerConfig(tmp), { mode: 'legacy' });
+
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ queuePlanner: { mode: 'grounded' } }));
+    assert.deepEqual(getQueuePlannerConfig(tmp), { mode: 'grounded' });
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('queuePlanner rejects unknown modes and keys', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ queuePlanner: { mode: 'fancy' } }));
+    assert.throws(() => loadWavemillConfig(tmp));
+
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ queuePlanner: { mode: 'grounded', extra: true } }));
+    assert.throws(() => loadWavemillConfig(tmp));
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
 test('getExpansionHandshakeConfig defaults to recover when section absent', () => {
   const tmp = makeTempRepo();
   try {
@@ -2424,15 +2513,75 @@ test('getIntegrationConfig returns a full valid integration block', () => {
     deleteBranchAfterMerge: false,
     haltOnRed: false,
     requiredChecks: ['ci'],
+    advisoryChecks: ['Custom Advisory'],
     highRiskPolicy: 'allow' as const,
     useMillSession: false,
     mergeLockTimeoutMinutes: 60,
+    worktreePrepTimeoutMinutes: 15,
   };
   try {
     clearConfigCache();
     writeConfig(tmp, JSON.stringify({ integration }));
 
     assert.deepEqual(getIntegrationConfig(tmp), integration);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('INTEGRATION_DEFAULTS includes OpenRouter Alias Audit in advisoryChecks (HOK-3009)', () => {
+  assert.deepEqual(INTEGRATION_DEFAULTS.advisoryChecks, ['OpenRouter Alias Audit']);
+});
+
+test('getIntegrationConfig returns default advisoryChecks when unset', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ integration: {} }));
+
+    assert.deepEqual(getIntegrationConfig(tmp).advisoryChecks, ['OpenRouter Alias Audit']);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('getIntegrationConfig advisoryChecks override replaces the default list', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      integration: { advisoryChecks: ['Some Other Check', 'Another'] },
+    }));
+
+    assert.deepEqual(getIntegrationConfig(tmp).advisoryChecks, ['Some Other Check', 'Another']);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('getIntegrationConfig accepts an empty advisoryChecks list (opt-out)', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      integration: { advisoryChecks: [] },
+    }));
+
+    assert.deepEqual(getIntegrationConfig(tmp).advisoryChecks, []);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('schema rejects non-string advisoryChecks entries', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      integration: { advisoryChecks: [123] },
+    }));
+
+    assert.throws(() => loadWavemillConfig(tmp), /advisoryChecks/);
   } finally {
     cleanUp(tmp);
   }
@@ -3173,6 +3322,252 @@ test('valid nativeAgent allowedPhases validate and are returned by the accessor'
   }
 });
 
+test('advanced tool config: absent block loads as undefined', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({}));
+    assert.equal(loadWavemillConfig(tmp).nativeAgent?.advanced, undefined);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('advanced tool config: accepts a well-formed browser block', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      nativeAgent: {
+        advanced: {
+          browser: {
+            enabled: true,
+            allowedPhases: ['coding'],
+            logicalIds: ['browser.navigate'],
+          },
+        },
+      },
+    }));
+    const advanced = loadWavemillConfig(tmp).nativeAgent?.advanced;
+    assert.deepEqual(advanced, {
+      browser: {
+        enabled: true,
+        allowedPhases: ['coding'],
+        logicalIds: ['browser.navigate'],
+      },
+    });
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('canonicalizeBrowserOrigin normalizes valid origins and rejects credentials/malformed URLs', () => {
+  assert.equal(canonicalizeBrowserOrigin('http://localhost:3000/some/path'), 'http://localhost:3000');
+  assert.equal(canonicalizeBrowserOrigin('https://app.example.com:8443/'), 'https://app.example.com:8443');
+  assert.equal(canonicalizeBrowserOrigin('http://user:pw@localhost/'), null);
+  assert.equal(canonicalizeBrowserOrigin('file:///etc/passwd'), null);
+  assert.equal(canonicalizeBrowserOrigin('not-a-url'), null);
+});
+
+test('getNativeBrowserConfig: defaults are fail-closed when the family is not enabled', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({}));
+    const resolved = getNativeBrowserConfig(tmp);
+    assert.equal(resolved.enabled, false);
+    assert.deepEqual([...resolved.allowedPhases], []);
+    assert.deepEqual(resolved.invalidReasons, []);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('getNativeBrowserConfig: enabling the family without an allowlist stays disabled and records why', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      nativeAgent: {
+        advanced: {
+          browser: {
+            enabled: true,
+            allowedPhases: ['review'],
+            session: { allowedOrigins: [] },
+          },
+        },
+      },
+    }));
+    const resolved = getNativeBrowserConfig(tmp);
+    assert.equal(resolved.enabled, false);
+    assert.ok(resolved.invalidReasons.includes('empty_allowed_origins'));
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('getNativeBrowserConfig: canonicalizes and dedupes allowlist entries', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      nativeAgent: {
+        advanced: {
+          browser: {
+            enabled: true,
+            allowedPhases: ['review'],
+            session: {
+              allowedOrigins: [
+                'http://localhost:3000/x',
+                'http://localhost:3000/y',
+                'https://app.example.com:8443/',
+              ],
+            },
+          },
+        },
+      },
+    }));
+    const resolved = getNativeBrowserConfig(tmp);
+    assert.equal(resolved.enabled, true);
+    assert.deepEqual(resolved.session.allowedOrigins, [
+      'http://localhost:3000',
+      'https://app.example.com:8443',
+    ]);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('getNativeScreenshotConfig: defaults are fail-closed when the family is not enabled', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({}));
+    const resolved = getNativeScreenshotConfig(tmp);
+    assert.equal(resolved.enabled, false);
+    assert.deepEqual([...resolved.allowedPhases], []);
+    assert.deepEqual(resolved.invalidReasons, []);
+    // Verify defaults are populated in limits
+    assert.equal(resolved.limits.maxImageBytes, 2 * 1024 * 1024);
+    assert.equal(resolved.limits.maxWidth, 4096);
+    assert.equal(resolved.limits.maxHeight, 4096);
+    assert.equal(resolved.limits.maxComparePixels, 16_777_216);
+    assert.equal(resolved.limits.oversizePolicy, 'reject');
+    assert.equal(resolved.limits.diffThreshold, 0.1);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('getNativeScreenshotConfig: full valid config with all limits', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      nativeAgent: {
+        advanced: {
+          screenshot: {
+            enabled: true,
+            allowedPhases: ['review'],
+            limits: {
+              maxImageBytes: 5_000_000,
+              maxWidth: 2048,
+              maxHeight: 2048,
+              oversizePolicy: 'downscale',
+              maxComparePixels: 8_000_000,
+              diffThreshold: 0.05,
+            },
+          },
+        },
+      },
+    }));
+    const resolved = getNativeScreenshotConfig(tmp);
+    assert.equal(resolved.enabled, true);
+    assert.deepEqual([...resolved.allowedPhases], ['review']);
+    assert.deepEqual(resolved.invalidReasons, []);
+    assert.equal(resolved.limits.maxImageBytes, 5_000_000);
+    assert.equal(resolved.limits.maxWidth, 2048);
+    assert.equal(resolved.limits.maxHeight, 2048);
+    assert.equal(resolved.limits.oversizePolicy, 'downscale');
+    assert.equal(resolved.limits.maxComparePixels, 8_000_000);
+    assert.equal(resolved.limits.diffThreshold, 0.05);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('getNativeScreenshotConfig: out-of-range limits fail schema validation', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      nativeAgent: {
+        advanced: {
+          screenshot: {
+            enabled: true,
+            allowedPhases: ['review'],
+            limits: {
+              maxImageBytes: 0, // Too small
+            },
+          },
+        },
+      },
+    }));
+    if (hasAjv) {
+      assert.throws(() => loadWavemillConfig(tmp), /validation failed/);
+    } else {
+      // Schema validation disabled; resolver should catch it
+      const resolved = getNativeScreenshotConfig(tmp);
+      assert.equal(resolved.enabled, false);
+      assert.ok(resolved.invalidReasons.includes('invalid_maxImageBytes'));
+    }
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('advanced tool config: rejects an unknown family via schema', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      nativeAgent: {
+        advanced: {
+          not_a_family: { enabled: true },
+        },
+      },
+    }));
+    if (hasAjv) {
+      assert.throws(() => loadWavemillConfig(tmp), /validation failed/);
+    } else {
+      assert.doesNotThrow(() => loadWavemillConfig(tmp));
+    }
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('advanced tool config: rejects an unknown allowed phase', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      nativeAgent: {
+        advanced: {
+          browser: { enabled: true, allowedPhases: ['not-a-phase'] },
+        },
+      },
+    }));
+    if (hasAjv) {
+      assert.throws(() => loadWavemillConfig(tmp), /validation failed/);
+    } else {
+      assert.doesNotThrow(() => loadWavemillConfig(tmp));
+    }
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
 test('native expansion config defaults to disabled and no fallback', () => {
   const tmp = makeTempRepo();
   try {
@@ -3243,6 +3638,7 @@ test('native patch coding config defaults to disabled when nativeAgent is missin
 
     assert.deepEqual(getNativePatchCodingConfig(tmp), {
       enabled: false,
+      allowFullSuiteTests: false,
     });
   } finally {
     cleanUp(tmp);
@@ -3261,6 +3657,7 @@ test('native patch coding config defaults to disabled when patchCoding is missin
 
     assert.deepEqual(getNativePatchCodingConfig(tmp), {
       enabled: false,
+      allowFullSuiteTests: false,
     });
   } finally {
     cleanUp(tmp);
@@ -3281,6 +3678,29 @@ test('native patch coding config returns enabled when explicitly set', () => {
 
     assert.deepEqual(getNativePatchCodingConfig(tmp), {
       enabled: true,
+      allowFullSuiteTests: false,
+    });
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('native patch coding config honours allowFullSuiteTests (HOK-3145)', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      nativeAgent: {
+        patchCoding: {
+          enabled: true,
+          allowFullSuiteTests: true,
+        },
+      },
+    }));
+
+    assert.deepEqual(getNativePatchCodingConfig(tmp), {
+      enabled: true,
+      allowFullSuiteTests: true,
     });
   } finally {
     cleanUp(tmp);
@@ -4015,6 +4435,471 @@ test('observer linear config normalizes partial policies and env project overrid
     else process.env.WAVEMILL_OBSERVER_LINEAR_PROJECT = previousProject;
     if (previousEnabled === undefined) delete process.env.WAVEMILL_OBSERVER_LINEAR_ENABLED;
     else process.env.WAVEMILL_OBSERVER_LINEAR_ENABLED = previousEnabled;
+    cleanUp(tmp);
+  }
+});
+
+test('observer linear config derives mode from legacy enabled/detectionOnly by default', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    // enabled=false → off
+    writeConfig(tmp, JSON.stringify({ observer: { linear: { enabled: false } } }));
+    let config = getObserverLinearConfig(tmp);
+    assert.equal(config.mode, 'off');
+
+    // enabled=true, detectionOnly=false → live
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ observer: { linear: { enabled: true } } }));
+    config = getObserverLinearConfig(tmp);
+    assert.equal(config.mode, 'live');
+
+    // enabled=true, detectionOnly=true → offline (legacy alias)
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ observer: { linear: { enabled: true, detectionOnly: true } } }));
+    config = getObserverLinearConfig(tmp);
+    assert.equal(config.mode, 'offline');
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('observer linear config explicit mode overrides legacy enabled/detectionOnly', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    // Explicit shadow works even when enabled=false and detectionOnly=false.
+    writeConfig(tmp, JSON.stringify({ observer: { linear: { mode: 'shadow' } } }));
+    const config = getObserverLinearConfig(tmp);
+    assert.equal(config.mode, 'shadow');
+    assert.equal(config.enabled, false);
+    assert.equal(config.detectionOnly, false);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('observer linear config surfaces default shadow retention', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    const config = getObserverLinearConfig(tmp);
+    assert.equal(config.shadow.auditPath, '.wavemill/observer/shadow-audit.jsonl');
+    assert.equal(config.shadow.countersPath, '.wavemill/observer/shadow-counters.json');
+    assert.equal(config.shadow.maxEntries, 500);
+    assert.equal(config.shadow.maxAgeDays, 14);
+    assert.equal(config.shadow.maxLookupsPerPass, 40);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('observer linear config rejects invalid mode', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ observer: { linear: { mode: 'writes-please' } } }));
+    assert.throws(() => getObserverLinearConfig(tmp), /observer\/linear\/mode|allowed values|mode must be/i);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+// ────────────────────────────────────────────────────────────────
+// Managed Observer service-mode resolver (HOK-3036)
+// ────────────────────────────────────────────────────────────────
+
+const LIVE_READY_LINEAR = {
+  mode: 'live' as const,
+  team: 'HOK',
+  project: 'Wavemill',
+  label: 'observer-incident',
+  rollout: {
+    gatesPassed: true,
+    shadowTrialCompleted: true,
+    rollbackRehearsed: true,
+    maxProposedPerPass: 5,
+  },
+};
+
+test('service mode: off and offline both resolve to off, never downgraded', () => {
+  for (const mode of ['off', 'offline'] as const) {
+    const res = resolveObserverLinearServiceMode(
+      { mode, rollout: OBSERVER_LINEAR_ROLLOUT_DEFAULTS },
+      { credentialReady: true },
+    );
+    assert.equal(res.mode, 'off');
+    assert.equal(res.downgraded, false);
+  }
+});
+
+test('service mode: shadow requires a credential and never mutates', () => {
+  const ready = resolveObserverLinearServiceMode(
+    { mode: 'shadow', rollout: OBSERVER_LINEAR_ROLLOUT_DEFAULTS },
+    { credentialReady: true },
+  );
+  assert.equal(ready.mode, 'shadow');
+  assert.equal(ready.downgraded, false);
+
+  const noCred = resolveObserverLinearServiceMode(
+    { mode: 'shadow', rollout: OBSERVER_LINEAR_ROLLOUT_DEFAULTS },
+    { credentialReady: false },
+  );
+  assert.equal(noCred.mode, 'off');
+  assert.equal(noCred.downgraded, true);
+  assert.match(noCred.reasons.join(' '), /credential/i);
+});
+
+test('service mode: live resolves only when every gate holds', () => {
+  const res = resolveObserverLinearServiceMode(LIVE_READY_LINEAR, { credentialReady: true }, 'explicit');
+  assert.equal(res.mode, 'live');
+  assert.equal(res.downgraded, false);
+  assert.equal(res.source, 'explicit');
+  assert.deepEqual(res.reasons, []);
+});
+
+test('service mode: live without a credential fails closed to off', () => {
+  const res = resolveObserverLinearServiceMode(LIVE_READY_LINEAR, { credentialReady: false });
+  assert.equal(res.mode, 'off');
+  assert.equal(res.downgraded, true);
+});
+
+test('service mode: live with unmet gates downgrades to shadow', () => {
+  const cases: Array<[string, typeof LIVE_READY_LINEAR]> = [
+    ['missing routing', { ...LIVE_READY_LINEAR, label: undefined as unknown as string }],
+    ['gates not passed', { ...LIVE_READY_LINEAR, rollout: { ...LIVE_READY_LINEAR.rollout, gatesPassed: false } }],
+    ['no shadow trial', { ...LIVE_READY_LINEAR, rollout: { ...LIVE_READY_LINEAR.rollout, shadowTrialCompleted: false } }],
+    ['no rollback rehearsal', { ...LIVE_READY_LINEAR, rollout: { ...LIVE_READY_LINEAR.rollout, rollbackRehearsed: false } }],
+    ['zero per-pass bound', { ...LIVE_READY_LINEAR, rollout: { ...LIVE_READY_LINEAR.rollout, maxProposedPerPass: 0 } }],
+  ];
+  for (const [label, config] of cases) {
+    const res = resolveObserverLinearServiceMode(config, { credentialReady: true });
+    assert.equal(res.mode, 'shadow', `${label} should downgrade live→shadow`);
+    assert.equal(res.downgraded, true, label);
+    assert.ok(res.reasons.length > 0, `${label} should record a reason`);
+  }
+});
+
+test('resolveObserverLinearModeSource distinguishes explicit, legacy, and default', () => {
+  assert.equal(resolveObserverLinearModeSource({ mode: 'shadow' }), 'explicit');
+  assert.equal(resolveObserverLinearModeSource({ enabled: true }), 'legacy');
+  assert.equal(resolveObserverLinearModeSource({ detectionOnly: true }), 'legacy');
+  assert.equal(resolveObserverLinearModeSource({}), 'default');
+  assert.equal(resolveObserverLinearModeSource(undefined), 'default');
+});
+
+test('observer linear config exposes conservative rollout defaults', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    const config = getObserverLinearConfig(tmp);
+    assert.equal(config.rollout.gatesPassed, false);
+    assert.equal(config.rollout.shadowTrialCompleted, false);
+    assert.equal(config.rollout.rollbackRehearsed, false);
+    assert.equal(config.rollout.maxProposedPerPass, 5);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+// ────────────────────────────────────────────────────────────────
+// resolveSessionCapabilities (HOK-3102)
+// ────────────────────────────────────────────────────────────────
+
+console.log('\n--- resolveSessionCapabilities Tests ---\n');
+
+type IntegrationTri = 'unset' | 'false' | 'true';
+
+function buildConfig(
+  integrationEnabled: IntegrationTri,
+  useMillSession: IntegrationTri,
+  mergeQueueEnabled: IntegrationTri,
+): string {
+  const integration: Record<string, unknown> = {};
+  if (integrationEnabled === 'true') integration.enabled = true;
+  else if (integrationEnabled === 'false') integration.enabled = false;
+  if (useMillSession === 'true') integration.useMillSession = true;
+  else if (useMillSession === 'false') integration.useMillSession = false;
+  const mergeQueue: Record<string, unknown> = {};
+  if (mergeQueueEnabled === 'true') mergeQueue.enabled = true;
+  else if (mergeQueueEnabled === 'false') mergeQueue.enabled = false;
+  const cfg: Record<string, unknown> = {};
+  if (Object.keys(integration).length) cfg.integration = integration;
+  if (Object.keys(mergeQueue).length) cfg.mergeQueue = mergeQueue;
+  return JSON.stringify(cfg);
+}
+
+const TRISTATES: IntegrationTri[] = ['unset', 'false', 'true'];
+
+for (const integ of TRISTATES) {
+  for (const ums of TRISTATES) {
+    for (const mq of TRISTATES) {
+      test(`27-case: integ=${integ} useMillSession=${ums} mergeQueue=${mq}`, () => {
+        const tmp = makeTempRepo();
+        try {
+          clearConfigCache();
+          writeConfig(tmp, buildConfig(integ, ums, mq));
+          const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
+          // backstage means integration.enabled=true AND useMillSession!=false
+          // useMillSession defaults to true (see INTEGRATION_DEFAULTS)
+          const backstage = integ === 'true' && ums !== 'false';
+          assert.equal(caps.tend, backstage, 'tend');
+          const expectedExecutor =
+            backstage ? 'tend' :
+            (integ === 'true' ? 'none' : 'operator');
+          assert.equal(caps.mergeExecutor, expectedExecutor, 'mergeExecutor');
+          // mergeQueue.enabled defaults to true; false only when explicitly set
+          const mqOn = mq !== 'false';
+          assert.equal(caps.mergeQueue, backstage && mqOn, 'mergeQueue');
+          // HOK-3094: observer is on by default whatever the integration setting
+          assert.equal(caps.observer, true, 'observer');
+        } finally {
+          cleanUp(tmp);
+        }
+      });
+    }
+  }
+}
+
+test('HOK-3094: integration off + observer.enabled=true → observer on, tend off, operator merges', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      integration: { enabled: false },
+      observer: { enabled: true },
+    }));
+    const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
+    assert.equal(caps.observer, true);
+    assert.equal(caps.tend, false);
+    assert.equal(caps.mergeExecutor, 'operator');
+    assert.equal(caps.reasons.observer, 'observer on (default; independent of integration)');
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('observer=true and backstage on → observer true', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      integration: { enabled: true, useMillSession: true },
+      observer: { enabled: true },
+    }));
+    const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
+    assert.equal(caps.observer, true);
+    assert.equal(caps.tend, true);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+for (const integrationEnabled of [true, false]) {
+  test(`HOK-3094: observer defaults on (integration.enabled=${integrationEnabled}, observer key unset)`, () => {
+    const tmp = makeTempRepo();
+    try {
+      clearConfigCache();
+      writeConfig(tmp, JSON.stringify({
+        integration: { enabled: integrationEnabled, useMillSession: true },
+      }));
+      const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
+      assert.equal(caps.observer, true);
+      assert.equal(caps.tend, integrationEnabled);
+    } finally {
+      cleanUp(tmp);
+    }
+  });
+}
+
+test('HOK-3094: observer.enabled=false opts out even with integration on', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      integration: { enabled: true, useMillSession: true },
+      observer: { enabled: false },
+    }));
+    const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
+    assert.equal(caps.observer, false);
+    assert.equal(caps.tend, true);
+    assert.equal(caps.reasons.observer, 'observer.enabled=false');
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('MERGE_QUEUE_ENABLED=false env override → mergeQueue false even with tend', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      integration: { enabled: true, useMillSession: true },
+      mergeQueue: { enabled: true },
+    }));
+    const caps = resolveSessionCapabilities(tmp, {
+      env: { MERGE_QUEUE_ENABLED: 'false' },
+      readHealth: false,
+    });
+    assert.equal(caps.mergeQueue, false);
+    assert.equal(caps.tend, true);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('MERGE_QUEUE_ENABLED=0 env override → mergeQueue false', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      integration: { enabled: true, useMillSession: true },
+    }));
+    const caps = resolveSessionCapabilities(tmp, {
+      env: { MERGE_QUEUE_ENABLED: '0' },
+      readHealth: false,
+    });
+    assert.equal(caps.mergeQueue, false);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('MERGE_QUEUE_ENABLED=true env override with config=false → true (env wins)', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      integration: { enabled: true, useMillSession: true },
+      mergeQueue: { enabled: false },
+    }));
+    const caps = resolveSessionCapabilities(tmp, {
+      env: { MERGE_QUEUE_ENABLED: 'true' },
+      readHealth: false,
+    });
+    assert.equal(caps.mergeQueue, true);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('local overlay flips integration on', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ integration: { enabled: false } }));
+    writeFileSync(
+      join(tmp, '.wavemill-config.local.json'),
+      JSON.stringify({ integration: { enabled: true, useMillSession: true } }),
+      'utf-8',
+    );
+    const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
+    assert.equal(caps.tend, true);
+    assert.equal(caps.mergeExecutor, 'tend');
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('health file missing → both null (advisory, not gating)', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ integration: { enabled: true, useMillSession: true } }));
+    const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: true });
+    assert.equal(caps.health.tend, null);
+    assert.equal(caps.health.observer, null);
+    // tend still true — health does NOT gate.
+    assert.equal(caps.tend, true);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('health file malformed → both null, tend stays true (D2 invariant)', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ integration: { enabled: true, useMillSession: true } }));
+    mkdirSync(join(tmp, '.wavemill'), { recursive: true });
+    writeFileSync(join(tmp, '.wavemill', 'backstage-health.json'), '{ not json', 'utf-8');
+    const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: true });
+    assert.equal(caps.health.tend, null);
+    assert.equal(caps.tend, true);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('health.tend.status reported through health, tend stays true (D2)', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      integration: { enabled: true, useMillSession: true },
+      observer: { enabled: true },
+    }));
+    mkdirSync(join(tmp, '.wavemill'), { recursive: true });
+    writeFileSync(join(tmp, '.wavemill', 'backstage-health.json'), JSON.stringify({
+      services: {
+        tend: { status: 'needs-user' },
+        observer: { status: 'healthy' },
+      },
+    }), 'utf-8');
+    const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: true });
+    assert.equal(caps.health.tend, 'needs-user');
+    assert.equal(caps.health.observer, 'healthy');
+    // Health is advisory only.
+    assert.equal(caps.tend, true);
+    assert.equal(caps.observer, true);
+    assert.equal(caps.mergeExecutor, 'tend');
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('readHealth=false skips file read', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ integration: { enabled: true, useMillSession: true } }));
+    mkdirSync(join(tmp, '.wavemill'), { recursive: true });
+    writeFileSync(join(tmp, '.wavemill', 'backstage-health.json'), JSON.stringify({
+      services: { tend: { status: 'unhealthy' } },
+    }), 'utf-8');
+    const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
+    assert.equal(caps.health.tend, null);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('integration on + useMillSession=false → mergeExecutor=none', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({
+      integration: { enabled: true, useMillSession: false },
+    }));
+    const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
+    assert.equal(caps.tend, false);
+    assert.equal(caps.mergeExecutor, 'none');
+    assert.equal(caps.mergeQueue, false);
+  } finally {
+    cleanUp(tmp);
+  }
+});
+
+test('integration off → mergeExecutor=operator', () => {
+  const tmp = makeTempRepo();
+  try {
+    clearConfigCache();
+    writeConfig(tmp, JSON.stringify({ integration: { enabled: false } }));
+    const caps = resolveSessionCapabilities(tmp, { env: {}, readHealth: false });
+    assert.equal(caps.mergeExecutor, 'operator');
+    assert.equal(caps.tend, false);
+    assert.equal(caps.mergeQueue, false);
+  } finally {
     cleanUp(tmp);
   }
 });

@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# HOK-2814: post-fork shape audit — exercises hard eval-failure end-to-end with
+# both arms already present with PRs. This is still the correct shape post-fork;
+# the fork itself is covered by challenge-deferred-arm.test.sh and
+# challenge-fork-*.test.sh.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -103,6 +107,14 @@ done
 if [[ ! -s "$FUNCTION_FILE" ]]; then
   echo "Could not extract hard-failure functions"
   exit 1
+fi
+
+maybe_eval_body="$(extract_function_occurrence "$MONITOR_SCRIPT_FILE" "maybe_run_challenge_eval" 1)"
+if grep -Fq 'review_result_has_final_evidence' <<<"$maybe_eval_body" \
+  && grep -Fq 'review produced no final evidence' <<<"$maybe_eval_body"; then
+  pass "challenge eval checks for final review evidence before launch"
+else
+  fail "challenge eval does not guard missing review evidence"
 fi
 
 cat > "$TEST_TMP/run-case.sh" <<'EOF'

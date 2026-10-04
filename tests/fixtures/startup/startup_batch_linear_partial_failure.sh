@@ -2,16 +2,11 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-RUNNER="$REPO_DIR/shared/lib/wavemill-startup-runner.sh"
-
-extract_linear_batch_set_state() {
-  awk '
-    /^linear_enqueue_retry\(\) \{/ { capture=1 }
-    /^linear_batch_set_state\(\) \{/ { capture=1; in_batch=1 }
-    capture { print }
-    in_batch && /^}/ { exit }
-  ' "$RUNNER"
-}
+# linear_batch_set_state and linear_enqueue_retry live in wavemill-common.sh
+# (HOK-3115). The startup runner has no log_warn, so warnings fall back to
+# the startup_log fake below.
+# shellcheck source=/dev/null
+source "$REPO_DIR/shared/lib/wavemill-common.sh"
 
 LOG_FILE="$(mktemp /tmp/wavemill-startup-linear-warn.XXXXXX)"
 NPX_LOG="$(mktemp /tmp/wavemill-startup-linear-npx.XXXXXX)"
@@ -46,9 +41,16 @@ EOF
 TOOLS_DIR="$REPO_DIR/tools"
 DRY_RUN="false"
 
-eval "$(extract_linear_batch_set_state)"
+STATE_FILE=""
 
-linear_batch_set_state "In Progress" "HOK-101" "HOK-102"
+# HOK-3115: task IDs go in as-is; the challenger arm is dropped before the call.
+linear_batch_set_state "In Progress" "HOK-101" "HOK-101_c" "HOK-102"
+
+if ! grep -q "set-issues-state.ts --state In Progress HOK-101 HOK-102$" "$NPX_LOG"; then
+  echo "batch call must carry only writer Linear IDs" >&2
+  cat "$NPX_LOG" >&2
+  exit 1
+fi
 
 if ! grep -q "WARN: Linear state update to 'In Progress' failed for HOK-102: Linear API request failed with HTTP 429: rate limited \[category=rate_limit, http=429, retryable=true\]" "$LOG_FILE"; then
   echo "missing per-issue startup warning" >&2

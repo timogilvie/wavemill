@@ -216,6 +216,11 @@ describe('issue-expander', () => {
     );
   });
 
+  it('parseIssueInput accepts a digit-bearing team key', () => {
+    assert.equal(parseIssueInput('ab2-1'), 'AB2-1');
+    assert.equal(parseIssueInput('https://linear.app/team/issue/ab2-1/slug'), 'AB2-1');
+  });
+
   for (const invalidInput of [
     'FOOBAR',
     'HOK-',

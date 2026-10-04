@@ -111,6 +111,30 @@
  *   `reviewExecutedIdentity` on EvalRecord and ChallengeComparison, plus
  *   the StageAttributionReasonCode enum. Additive; legacy records without
  *   these fields still validate.
+ * - **1.47.0**: Added optional `executionEconomics` — a versioned,
+ *   provider-independent execution-economics record normalized from Claude
+ *   Code and Codex session telemetry (per-turn model switches, subagent
+ *   lineage, trigger source, token/cache/reasoning usage, actual vs estimated
+ *   cost with provenance, and record/field-level coverage). Missing or
+ *   unpriced values are `null`, never `0`. Local-only: not projected to
+ *   Hokusai submissions. Additive; legacy records without this field still
+ *   validate. (HOK-2958)
+ * - **1.48.0**: Added the S1 Static feature group to
+ *   `StaticAnalysisOutcome` (HOK-2806): `type_errors`, `lint_errors`,
+ *   `build_ok`, `complexity_delta` plus provenance `build_evidence` and
+ *   `complexity_metric`. Snake_case is deliberate — names come verbatim from
+ *   the frozen `candidate_features/v1` contract (Arbiter S1). Null means the
+ *   documented evidence was unavailable; `0`/`false` are observed values, not
+ *   defaults. Legacy `lintDelta`/`typecheckPassed`/`securityFindingsDelta`
+ *   remain and are unrelated to the S1 fields (they were CI-name pattern
+ *   matches). Additive; legacy records still validate.
+ * - **1.49.0**: Added optional `task_scorer_result` shadow-mode prediction
+ *   metadata for HOK-2845. Additive; omitted or null when scoring fails.
+ * - **1.50.0**: Added optional shadow-only
+ *   `subagent_model_economics_policy` report metadata and
+ *   `subagent_model_economics_shadow` router measurement policy (HOK-2959).
+ *   Additive; evaluators may emit dry-run economics without mutating launch
+ *   configuration or route artifacts.
  * - **1.28.0**: Added optional `quarantine_reason` and write-time eval corpus
  *   validation for `taskDescriptor`, non-empty `models_available`, and
  *   canonical reviewer/stage model IDs (HOK-2072); expanded
@@ -170,6 +194,14 @@
  * - **1.41.0**: Added optional `harnessId` attribution to eval records and
  *   route artifacts (HOK-2843), computed from behavior-relevant manifest
  *   resources while excluding environment/tool version churn.
+ * - **1.51.0**: Added optional counterfactual/replay attribution fields for
+ *   HOK-2081 (gated deterministic replay and online tool-selection
+ *   exploration): `decision_source` (`'live' | 'counterfactual'`, absent ≡
+ *   live), `source_decision_id` linking a counterfactual row to its live
+ *   source, `replay_fidelity` in `[0, 1]`, `replay_non_fidelity_reasons`
+ *   (stable machine-readable codes), and `policy_source` (free-form
+ *   exploration-policy provenance tag). Additive; legacy rows without these
+ *   fields still validate.
  *
  * @module eval-schema
  */
@@ -194,7 +226,36 @@ import type { ChallengeStage } from './challenge-mode.ts';
  *
  * @since 1.44.0 added unknown_attribution intervention type (HOK-2894)
  */
-export const SCHEMA_VERSION = '1.46.0';
+export const SCHEMA_VERSION = '1.52.0';
+
+/**
+ * Machine-readable exploration source for an eval row.
+ *
+ * Absent field is equivalent to `'live'` for backwards compatibility with
+ * every EvalRecord produced before HOK-2081.
+ *
+ * @since 1.51.0
+ */
+export type EvalDecisionSource = 'live' | 'counterfactual';
+
+/**
+ * Stable machine-readable reasons a replay did not achieve fidelity 1.0.
+ *
+ * Additive over time: readers must tolerate unknown codes rather than fail.
+ * Weights live in `shared/lib/native-agent/deterministic-replay.ts` under the
+ * `FIDELITY_WEIGHTS` constant.
+ *
+ * @since 1.51.0
+ */
+export type ReplayNonFidelityReason =
+  | 'WORKING_TREE_MISMATCH'
+  | 'EVENT_STREAM_DIVERGENCE'
+  | 'TOOL_RESULT_HASH_MISMATCH'
+  | 'NONDETERMINISTIC_TIME_LEAK'
+  | 'ENV_MISMATCH'
+  | 'NETWORK_ATTEMPT'
+  | 'HERMETICITY_VIOLATION'
+  | 'CHECKPOINT_CORRUPT';
 
 export type RoutingRole = 'planner' | 'coder' | 'reviewer';
 
@@ -233,6 +294,15 @@ export interface ResolvedModelRoutingDecision {
 }
 
 export type EvalRouting = Partial<Record<RoutingRole, ResolvedModelRoutingDecision>>;
+
+export type TaskScorerDecision = 'run' | 'expand' | 'split' | 'return';
+
+export interface EvalTaskScorerResult {
+  decision: TaskScorerDecision;
+  confidence: number;
+  explanation: string;
+  model_version: string;
+}
 
 export interface EvalExecutedPlanning {
   agent?: string;
@@ -429,6 +499,147 @@ export interface WorkflowCostAttribution {
 }
 
 // ────────────────────────────────────────────────────────────────
+// Execution Economics (HOK-2958)
+// ────────────────────────────────────────────────────────────────
+
+/**
+ * Version of the normalized execution-economics block. Evolves independently
+ * of the eval schema; additive changes only.
+ *
+ * Kept in sync with `$defs.EvalExecutionEconomics` in eval-schema.json.
+ */
+export const EXECUTION_ECONOMICS_SCHEMA_VERSION = '1.0.0';
+
+/** External harness the record was normalized from. */
+export type ExecutionEconomicsHarness = 'claude-code' | 'codex';
+
+/**
+ * Availability of a single field or field class in the source telemetry.
+ * A literal zero is only ever represented as `known_zero`; a missing or
+ * unpriced value is `unavailable` (with the value itself `null`).
+ */
+export type FieldAvailability = 'available' | 'partial' | 'unavailable' | 'known_zero';
+
+/** Where a session's cost figure came from. */
+export type ExecutionEconomicsCostSource = 'provider_reported' | 'local_estimate' | 'none';
+
+/** Confidence tier for joining a session to Wavemill workflow evidence. */
+export type ExecutionJoinConfidence = 'branch_worktree' | 'timestamp_window' | 'unattributed';
+
+/** Token usage where every unavailable dimension is `null`, never `0`. */
+export interface ExecutionEconomicsTokenUsage {
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  /** thinking_tokens (Claude Code) / reasoning_output_tokens (Codex). */
+  reasoningTokens: number | null;
+}
+
+/**
+ * Requested / forced / resolved / executed model identity with per-field
+ * provenance. Disagreements between route intent and executed evidence are
+ * surfaced via `conflict` (shape mirrors `ExecutedIdentity.conflict` from
+ * challenge-execution-contract.ts), never coerced.
+ */
+export interface ExecutionEconomicsModelIdentity {
+  /** Requested selector from routing.jsonl, rendered as a string. */
+  requested: string | null;
+  /** Policy/pin-forced model when route artifacts carry that evidence. */
+  forced: string | null;
+  /** Resolved model from routing.jsonl. */
+  resolved: string | null;
+  /** Model actually observed in session telemetry (dominant when mixed). */
+  executed: string | null;
+  provenance: { requested?: string; forced?: string; resolved?: string; executed?: string };
+  conflict?: { otherSource: string; otherResolvedModel?: string; detail: string };
+}
+
+/** One observed harness turn. Fields the source lacks are `null`. */
+export interface ExecutionEconomicsTurn {
+  /** Claude Code `uuid` / Codex `turn_id`. */
+  turnId: string | null;
+  /** Claude Code `parentUuid` / Codex `root_turn_id`. */
+  parentId: string | null;
+  /** Claude Code `isSidechain`; `null` when the source lacks lineage. */
+  isSubagent: boolean | null;
+  model: string | null;
+  timestamp: string | null;
+  usage: ExecutionEconomicsTokenUsage;
+  usageCoverage: FieldAvailability;
+  actualCostUsd: number | null;
+}
+
+/** Trigger-source evidence with provenance and availability. */
+export interface ExecutionEconomicsTriggerSource {
+  value: string | null;
+  provenance: string;
+  availability: FieldAvailability;
+}
+
+/** Stage/subagent role join evidence with explicit confidence. */
+export interface ExecutionEconomicsStageRole {
+  value: 'planning' | 'coding' | 'review' | null;
+  confidence: ExecutionJoinConfidence;
+  evidence: string | null;
+}
+
+/** One normalized external harness session. */
+export interface ExecutionEconomicsSession {
+  /** Pseudonymous source session UUID (local join key only). */
+  sessionId: string;
+  rootSessionId: string | null;
+  /** Observed harness version (`version` entry field / `cli_version`). */
+  harnessVersion: string | null;
+  triggerSource: ExecutionEconomicsTriggerSource;
+  stageRole: ExecutionEconomicsStageRole;
+  models: ExecutionEconomicsModelIdentity;
+  /** Real turns observed in the source, before any cap. */
+  turnCount: number;
+  /** Bounded per-turn detail (see `turnsTruncated`). */
+  turns: ExecutionEconomicsTurn[];
+  turnsTruncated: boolean;
+  /** Consecutive same-model turn runs; survives turn truncation. */
+  modelSegments: Array<{ model: string; turnCount: number }>;
+  /** Session-level usage totals. */
+  usage: ExecutionEconomicsTokenUsage;
+  actualCostUsd: number | null;
+  estimatedCostUsd: number | null;
+  costSource: ExecutionEconomicsCostSource;
+  /** Pricing table provenance when `estimatedCostUsd` is present. */
+  pricingRevision: string | null;
+  pricingTimestamp: string | null;
+  /** Record-level coverage for this session. */
+  coverage: WorkflowCostAttributionCoverage;
+  /** Availability per field class (triggerSource, reasoningTokens, …). */
+  fieldAvailability: Record<string, FieldAvailability>;
+  /** Source-version / missing-field notes; never a parse failure. */
+  diagnostics: string[];
+}
+
+/**
+ * Versioned, provider-independent execution-economics record for one
+ * external harness, joined to Wavemill route/stage evidence. Local-only;
+ * excluded from Hokusai submissions by the allowlist projection.
+ */
+export interface EvalExecutionEconomics {
+  /** {@link EXECUTION_ECONOMICS_SCHEMA_VERSION} at write time. */
+  schemaVersion: string;
+  /** Parsing contract implemented, e.g. 'claude-code/1' | 'codex/1'. */
+  providerContractVersion: string;
+  harness: ExecutionEconomicsHarness;
+  /** Discovery-level join predicates that selected these sessions. */
+  joinEvidence: { issueId: string | null; branch: string | null };
+  sessions: ExecutionEconomicsSession[];
+  /** Actual session records (not per-model aggregates). */
+  sessionCount: number;
+  /** Actual turn records (not per-model aggregates). */
+  turnCount: number;
+  coverage: WorkflowCostAttributionCoverage;
+  collectedAt: string;
+}
+
+// ────────────────────────────────────────────────────────────────
 // Scoring Rubric
 // ────────────────────────────────────────────────────────────────
 
@@ -611,7 +822,13 @@ export type EligibilityErrorCode =
   | 'failed_feature_outcome'
   | 'missing_challenge_stage'
   | 'eval_fast_failed'
-  | 'provisional_model_identity';
+  | 'provisional_model_identity'
+  /**
+   * HOK-3143: the provider substituted a different concrete model than the
+   * one certified for a stage of this run. Attribution would mis-credit the
+   * certified identity, so the record is ineligible for training.
+   */
+  | 'provider_model_substitution';
 
 // ────────────────────────────────────────────────────────────────
 // Feature Outcome Diagnostics (HOK-2262)
@@ -1021,9 +1238,63 @@ export interface TestsOutcome {
 }
 
 /**
- * Static analysis outcome: lint, typecheck, and security findings.
+ * Provenance for a `build_ok` value: which rung of the collection ladder
+ * produced it. See `docs/arbiter/static-features.md` for the full ladder.
+ *
+ * - `local-build`: ran a configured build command inside the candidate checkout.
+ * - `ci-build-check`: read a build-named CI check from `gh pr checks`.
+ * - `ci-pipeline`: derived from the conjunction of terminal CI checks when no
+ *   single build-named check exists but CI compiles the tree end-to-end.
+ */
+export type StaticBuildEvidence = 'local-build' | 'ci-build-check' | 'ci-pipeline';
+
+/**
+ * Static analysis outcome.
+ *
+ * Two sets of fields coexist here:
+ *
+ * 1. **S1 Static group** (`type_errors`, `lint_errors`, `build_ok`,
+ *    `complexity_delta`, plus provenance `build_evidence` and
+ *    `complexity_metric`). Names and semantics are verbatim from the frozen
+ *    `candidate_features/v1` contract (Arbiter S1). Null means the documented
+ *    evidence was unavailable; `0` and `false` are observed values, never
+ *    defaults. Collected by `shared/lib/static-features.ts` per HOK-2806.
+ * 2. **Legacy CI-check-name matches** (`lintDelta`, `typecheckPassed`,
+ *    `securityFindingsDelta`). These were empty in 100% of records because
+ *    wavemill's CI check names don't match the pattern; retained for
+ *    backward compat but distinct from the S1 group above.
  */
 export interface StaticAnalysisOutcome {
+  // ── S1 Static group (HOK-2806) ──
+  /**
+   * Type-check errors reported for the candidate. `null` when no supported
+   * type checker completed successfully (missing binary, missing config,
+   * timeout, spawn failure, unparseable output).
+   */
+  type_errors?: number | null;
+  /**
+   * Lint errors reported for the candidate. `null` when no supported linter
+   * completed successfully.
+   */
+  lint_errors?: number | null;
+  /**
+   * Whether the configured build completed successfully. `null` when no
+   * build ran to a terminal result. Per the frozen S1 note: a CI
+   * `{ ran: false, passed: true }` conclusion maps to `null`, not `false`.
+   */
+  build_ok?: boolean | null;
+  /**
+   * Candidate-minus-base change in the configured code-complexity metric.
+   * `null` when the analyzer could not run on both revisions. See the
+   * `complexity_metric` provenance field for the metric id.
+   */
+  complexity_delta?: number | null;
+  /** Which rung of the build ladder produced `build_ok`. */
+  build_evidence?: StaticBuildEvidence | null;
+  /** Metric id used to compute `complexity_delta` (e.g. `wavemill-cyclomatic/v1`). */
+  complexity_metric?: string | null;
+
+  // ── Legacy CI-check-name matches ──
   /** Change in lint errors (negative = improvement, positive = regression) */
   lintDelta?: number;
   /** Whether typecheck passed */
@@ -1596,7 +1867,8 @@ export interface FallbackEventMetadata {
 
 export type WavemillRouterMeasurementPolicy =
   | 'replay_exact_match'
-  | 'challenge_prospective';
+  | 'challenge_prospective'
+  | 'subagent_model_economics_shadow';
 
 export interface WavemillRouterDiagnostics {
   scoreable_coverage: number;
@@ -1684,6 +1956,54 @@ export interface RouteCalibration {
   actualCostUsd?: number;
   interventionCount?: number;
   durationMs?: number;
+}
+
+export type SubagentModelEconomicsGate = 'proceed' | 'collect_more_data' | 'stop';
+export type SubagentModelEconomicsEvidenceKind = 'observational' | 'paired_replay';
+
+export interface EvalSubagentModelEconomicsPolicyReport {
+  schemaVersion: string;
+  policy: 'subagent_model_economics_shadow';
+  generatedAt?: string;
+  summary?: Record<string, unknown>;
+  workflows?: Array<Record<string, unknown>>;
+  evidenceKind?: SubagentModelEconomicsEvidenceKind;
+  recommendation?: {
+    gate: SubagentModelEconomicsGate;
+    reasons: string[];
+  };
+}
+
+// ────────────────────────────────────────────────────────────────
+// Stage Execution Identity (HOK-3143)
+// ────────────────────────────────────────────────────────────────
+
+/**
+ * Per-stage provider-identity attribution, derived from the matching
+ * stage result's `executionEvidence` block. Lets the eval record expose
+ * what the provider actually served vs. what the launcher requested, so
+ * attribution and challenge comparison can detect alias retargets and
+ * silent model substitutions.
+ *
+ * @since 1.52.0
+ */
+export interface StageExecutionIdentity {
+  /** Model requested by routing/launch for this stage. */
+  intendedModel: string | null;
+  /**
+   * Model proven to have served the stage. For alias runs this is the
+   * concrete target the provider reported. `null` when direct provider
+   * evidence was not captured (scripted/test transports).
+   */
+  executedModel: string | null;
+  executionEvidence?: {
+    status: 'direct' | 'missing' | 'contradicted' | 'inherited';
+    source?: string;
+    providerReportedModel?: string;
+    requestedWireId?: string;
+    certifiedTarget?: string;
+    identityVerdict?: 'match' | 'alias-resolved' | 'mismatch' | 'unverifiable' | 'absent';
+  };
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -1820,6 +2140,26 @@ export interface EvalRecord {
   /** Native workflow-cost attribution and coverage metadata. */
   workflowCostAttribution?: WorkflowCostAttribution;
 
+  /**
+   * Normalized external-harness execution-economics records, one entry per
+   * harness (Claude Code, Codex) that produced sessions for this workflow.
+   * Local-only diagnostic/economics evidence; not projected to Hokusai
+   * submissions. Readers must tolerate absence.
+   *
+   * @since 1.47.0
+   */
+  executionEconomics?: EvalExecutionEconomics[];
+
+  /**
+   * HOK-3143: per-stage provider-identity attribution assembled from stage
+   * results. When a stage's provider-reported model differed from the
+   * certified identity (`identityVerdict === 'mismatch'`), the record is
+   * flagged with `provider_model_substitution` and ineligible for training.
+   *
+   * @since 1.52.0
+   */
+  stageExecution?: Partial<Record<'planning' | 'coding' | 'review', StageExecutionIdentity>>;
+
   /** Whether the record includes the fields required for training export. */
   trainingEligible?: boolean;
 
@@ -1843,6 +2183,14 @@ export interface EvalRecord {
 
   /** Stable machine-readable eval failure reason for fast-fail records. */
   failureReason?: EvalFailureReason;
+
+  /**
+   * Shadow-mode task packet readiness prediction captured before dispatch.
+   * Optional and nullable so scorer failures never invalidate eval records.
+   *
+   * @since 1.49.0
+   */
+  task_scorer_result?: EvalTaskScorerResult | null;
 
   /** Byte-size diagnostic for the eval prompt submitted or rejected. */
   promptSizeDiagnostic?: PromptSizeDiagnostic;
@@ -2139,6 +2487,18 @@ export interface EvalRecord {
   wavemill_router_scoring?: WavemillRouterScoringMetadata;
 
   /**
+   * Shadow-only subagent model economics policy report.
+   *
+   * Captures proposed planner/coder/reviewer assignment, expected economics,
+   * actual executed route evidence, abstentions, and non-causal vs paired
+   * evidence distinctions. Evaluators may write this field, but routers and
+   * launchers must not consume it to force model selection.
+   *
+   * @since 1.50.0
+   */
+  subagent_model_economics_policy?: EvalSubagentModelEconomicsPolicyReport;
+
+  /**
    * Task trace correlation ID linking this eval record to the lifecycle
    * event stream in `features/<slug>/trace.jsonl` (HOK-2259).
    *
@@ -2157,6 +2517,51 @@ export interface EvalRecord {
    * @since 1.30.0
    */
   featureOutcomeDiagnostics?: FeatureOutcomeDiagnostics;
+
+  /**
+   * Exploration source for this row. Absent value is equivalent to `'live'`.
+   *
+   * Counterfactual rows are produced by
+   * `shared/lib/native-agent/counterfactual-runner.ts` from a replayed
+   * decision point and must not be consumed by live routing.
+   *
+   * @since 1.51.0
+   */
+  decision_source?: EvalDecisionSource;
+
+  /**
+   * When `decision_source === 'counterfactual'`, the `id` of the live baseline
+   * row this counterfactual branch was forked from.
+   *
+   * @since 1.51.0
+   */
+  source_decision_id?: string;
+
+  /**
+   * Deterministic replay fidelity score in `[0, 1]`. Values below `1.0`
+   * indicate one or more `replay_non_fidelity_reasons` fired during replay.
+   *
+   * @since 1.51.0
+   */
+  replay_fidelity?: number;
+
+  /**
+   * Stable machine-readable reasons the replay failed to reach fidelity `1.0`.
+   * Empty or absent when the replay was perfect. Additive: readers must
+   * tolerate unknown codes.
+   *
+   * @since 1.51.0
+   */
+  replay_non_fidelity_reasons?: ReplayNonFidelityReason[];
+
+  /**
+   * Free-form provenance tag naming the exploration policy that produced this
+   * counterfactual row (e.g. `'deterministic-baseline'`, `'enumerate-all'`,
+   * `'epsilon-greedy:eps=0.1'`).
+   *
+   * @since 1.51.0
+   */
+  policy_source?: string;
 
   /** Optional extensibility bag for additional metadata */
   metadata?: Record<string, unknown>;

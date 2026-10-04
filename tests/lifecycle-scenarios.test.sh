@@ -114,6 +114,13 @@ for fn in \
   check_stage_awaiting_user \
   phase_launch_head \
   phase_launch_gate \
+  coding_launch_refusal_limit \
+  coding_launch_refusal_is_transient \
+  log_coding_launch_refusal \
+  coding_launch_refusal_hold \
+  coding_launch_refusal_clear \
+  coding_launch_refusal_terminalize \
+  handle_coding_launch_refusal \
   _run_phase_launch \
   reap_completed_planning_pane \
   persist_challenge_execution_intent \
@@ -148,6 +155,9 @@ for fn in \
   reroute_expanded_packets_for_coding_handoff \
   handle_expanded_reroute_handoff_failure \
   recover_missing_expansion_artifact \
+  enforce_plan_packet_binding \
+  _plan_packet_relaunch_planning \
+  _plan_packet_needs_user \
   recover_misplaced_coding_complete_marker \
   seam_artifact_cli_path \
   seam_validate_artifact \
@@ -156,6 +166,14 @@ for fn in \
   write_coding_complete_marker \
   wavemill_run_tsx_tool \
   guard_coding_complete_handoff \
+  coding_recovery_instruction_path \
+  coding_dirty_handoff_grace_seconds \
+  coding_dirty_handoff_agent_exited \
+  coding_dirty_handoff_path_is_planned \
+  coding_dirty_handoff_quarantine_scratch \
+  coding_dirty_handoff_write_recovery_instruction \
+  coding_dirty_handoff_relaunch \
+  coding_dirty_handoff_terminalize \
   archive_stale_coding_artifacts \
   clear_coding_uncommitted_output_attention \
   coding_output_dirty_paths \
@@ -163,6 +181,7 @@ for fn in \
   wavemill_owned_dirty_path \
   blocked_completion_auto_allowed_dirty_path \
   coding_compare_commit_counts \
+  try_update_branch_from_base \
   coding_uncommitted_output_announce_marker \
   coding_uncommitted_output_should_announce \
   mark_coding_uncommitted_output_announced \
@@ -197,6 +216,9 @@ for fn in \
   cleanup_merged_primary_challenge_task \
   closed_pr_resource_policy \
   coding_stage_owner_lost \
+  coding_stage_mark_interrupted \
+  coding_interrupted_late_completion_reconcile \
+  blocked_completion_commit_matches_head \
   monitor_issue_state
 do
   extract_function "$MONITOR_SCRIPT_FILE" "$fn" >> "$MONITOR_FUNC_FILE"
@@ -429,7 +451,18 @@ run_lifecycle_scenario() {
       fi
       return 1
     }
-    find_pr_for_branch() { printf "%s\n" "${FOUND_PR:-$PR}"; }
+    # HOK-3110: the monitor now calls find_pr_for_branch with an accepted
+    # classification list. Only the "current-merged" lookup should hit the
+    # merged-PR path — otherwise the existing open-PR discovery tests would
+    # falsely bind their FOUND_PR as merged.
+    find_pr_for_branch() {
+      local wanted="${2:-current-open}"
+      if [[ "$wanted" == "current-merged" ]]; then
+        printf "%s\n" "${FOUND_MERGED_PR:-}"
+      else
+        printf "%s\n" "${FOUND_PR:-$PR}"
+      fi
+    }
     get_task_phase() { printf "%s\n" "$CURRENT_PHASE"; }
     pr_state() {
       if [[ -n "$CHALLENGE_SIBLING_PR" && "${1:-}" == "$CHALLENGE_SIBLING_PR" ]]; then
@@ -494,6 +527,9 @@ JSON
       esac
     }
     validate_coding_phase_output() { return 0; }
+    # HOK-3101 primitive: no evidence, which the HOK-3128 dirty-handoff guard
+    # treats as a live agent (legacy needs-user hold).
+    task_progress_json() { printf "{}\n"; }
     codex_capacity_idle_confirmed() { return 1; }
     auto_advance_blocked_completion() { return 1; }
     emit_pane_divergence_attention() { return 1; }

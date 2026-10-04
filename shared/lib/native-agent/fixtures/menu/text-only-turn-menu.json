@@ -1,0 +1,104 @@
+{
+  "phase": "planning",
+  "toolMenu": {
+    "digest": "3656814d945545715956be9c9da63e90b37504d3570c2a6ac438261f0713a94e",
+    "toolNames": [
+      "read_file",
+      "list_files"
+    ],
+    "canonical": [
+      {
+        "allowedPhases": [
+          "planning",
+          "coding",
+          "review"
+        ],
+        "certificationRequirement": "none",
+        "class": "read-only",
+        "exposure": "always",
+        "family": "core",
+        "logicalId": "core.read_file",
+        "name": "read_file",
+        "provenance": "repo-trusted"
+      },
+      {
+        "allowedPhases": [
+          "planning",
+          "coding",
+          "review"
+        ],
+        "certificationRequirement": "none",
+        "class": "read-only",
+        "exposure": "always",
+        "family": "core",
+        "logicalId": "core.list_files",
+        "name": "list_files",
+        "provenance": "repo-trusted"
+      }
+    ]
+  },
+  "providerTools": {
+    "digest": "32824340c62323c3d9c0f903053cd95333fc3c0d75b636d53b11fd08c32da495",
+    "toolCount": 2,
+    "toolNames": [
+      "read_file",
+      "list_files"
+    ],
+    "canonical": [
+      {
+        "description": "read_file description",
+        "executionMode": "parallel",
+        "label": "read_file",
+        "name": "read_file",
+        "parameters": {
+          "properties": {
+            "limit": {
+              "type": "number"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        }
+      },
+      {
+        "description": "list_files description",
+        "executionMode": "parallel",
+        "label": "list_files",
+        "name": "list_files",
+        "parameters": {
+          "properties": {
+            "limit": {
+              "type": "number"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        }
+      }
+    ]
+  },
+  "denials": [
+    {
+      "reason": "family_not_enabled",
+      "family": "browser",
+      "toolName": "browser_navigate",
+      "logicalId": "browser.navigate"
+    },
+    {
+      "reason": "family_not_enabled",
+      "family": "mcp",
+      "toolName": "mcp_call",
+      "logicalId": "mcp.call"
+    }
+  ]
+}

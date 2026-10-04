@@ -8,6 +8,9 @@ import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { mkdtempSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { logPromptUsage, loadAndRegisterTemplate, type PromptRegistryEntry } from './prompt-registry.ts';
 import { openManifest, getManifest } from './resource-manifest.ts';
 
@@ -246,5 +249,25 @@ describe('prompt-registry', () => {
         }
       }
     });
+  });
+
+  it('repoDir option logs to the main checkout evals dir, never the worktree root', () => {
+    const root = mkdtempSync(join(tmpdir(), 'prompt-registry-worktree-'));
+    try {
+      const main = join(root, 'main');
+      const wt = join(root, 'wt');
+      mkdirSync(main);
+      const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'ignore' });
+      git(main, 'init', '-q');
+      git(main, '-c', 'user.email=t@e.st', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'base');
+      git(main, 'worktree', 'add', '-q', '-b', 'task/x', wt);
+
+      logPromptUsage('tools/prompts/native-read-only-phase.md', 'phase prompt', { repoDir: wt });
+
+      assert.equal(existsSync(join(wt, 'prompt-registry.jsonl')), false, 'registry leaked into worktree root');
+      assert.equal(existsSync(join(main, '.wavemill', 'evals', 'prompt-registry.jsonl')), true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

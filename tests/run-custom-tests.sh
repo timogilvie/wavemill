@@ -61,18 +61,23 @@ CUSTOM_TS_TESTS=(
   shared/lib/router-exploration.test.ts
   shared/lib/rule-generator.test.ts
   shared/lib/stage-aware-router.test.ts
+  shared/lib/subagent-economics-policy.test.ts
   shared/lib/task-descriptor-backfill.test.ts
   shared/lib/task-context-analyzer.test.ts
   shared/lib/post-completion-hook.test.ts
   shared/lib/task-packet-validator.test.ts
   shared/lib/openrouter-generation-api.test.ts
-  shared/lib/workflow-router.test.ts
+  shared/lib/workflow-router-decision.test.ts
+  shared/lib/workflow-router-difficulty-budget.test.ts
+  shared/lib/workflow-router-heuristic.test.ts
+  shared/lib/workflow-router-hokusai.test.ts
+  shared/lib/workflow-router-native-certification.test.ts
+  shared/lib/workflow-router-quota-policy.test.ts
   shared/lib/workflow-cost.test.ts
   shared/lib/native-agent/certification/router-filter.test.ts
 )
 
 CUSTOM_SH_TESTS=(
-  tests/agent-resolve-from-model.test.sh
 )
 
 # Known-broken tests (pre-existing issues, tracked separately)
@@ -168,6 +173,13 @@ now_ms() {
   fi
 }
 
+# HOK-3157: snapshot the tracked-file state before running tests. The guard
+# below compares a post-run snapshot and fails if any tracked file was left
+# modified. Untracked artifacts are ignored.
+# shellcheck source=lib/tracked-tree-guard.sh
+source "$SCRIPT_DIR/lib/tracked-tree-guard.sh"
+TREE_BEFORE="$(tracked_tree_snapshot "$REPO_DIR")"
+
 PASS=0
 FAIL=0
 SKIP=0
@@ -247,6 +259,11 @@ fi
 echo ""
 echo "--- Results: $PASS passed, $FAIL failed, $SKIP skipped ---"
 
-if (( FAIL > 0 )); then
+GUARD_RC=0
+if ! tracked_tree_check "$REPO_DIR" "$TREE_BEFORE" run-custom-tests.sh; then
+  GUARD_RC=1
+fi
+
+if (( FAIL > 0 || GUARD_RC != 0 )); then
   exit 1
 fi

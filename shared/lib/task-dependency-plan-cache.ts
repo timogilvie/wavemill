@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { DependencyEdge } from './task-dependency-planner.ts';
 import { mutateJsonState, StateLockTimeoutError } from './state-mutex.ts';
+import { normalizeInferenceState, type QueueInferenceState } from './queue-inference-status.ts';
 
 export const CACHE_SCHEMA_VERSION = 1;
 const CACHE_WRITE_TIMEOUT_MS = 5000;
@@ -19,12 +20,50 @@ export interface CachedEdge {
   classifiedAt: string;
 }
 
+/** Grounded-planner pair verdict (HOK-3131). `must_precede`/`should_precede` mean `a` before `b`. */
+export type GroundedVerdictKind = 'must_precede' | 'should_precede' | 'conflict' | 'independent';
+
+export const GROUNDED_VERDICT_KINDS: readonly GroundedVerdictKind[] = ['must_precede', 'should_precede', 'conflict', 'independent'];
+
+/** Cached touch set for one task, valid while the task fingerprint matches. */
+export interface CachedTouchSet {
+  fingerprint: string;
+  computedAt: string;
+  entries: Array<{ path: string; source: 'explicit' | 'resolved' | 'predicted'; symbols?: string[] }>;
+}
+
+/** Cached LLM ordering verdict for one task pair, valid while both fingerprints match. */
+export interface CachedGroundedVerdict {
+  a: string;
+  b: string;
+  aFingerprint: string;
+  bFingerprint: string;
+  verdict: GroundedVerdictKind;
+  evidence?: string;
+  classifiedAt: string;
+}
+
+/** Touch sets older than this are recomputed even when the task is unchanged (the repo moved). */
+export const TOUCH_SET_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
 export interface CacheFile {
   schemaVersion: 1;
   projectSlug: string;
   updatedAt: string;
   fingerprints: Record<string, string>;
   edges: CachedEdge[];
+  /**
+   * Classifier bookkeeping (HOK-3130). Optional and additive: caches written
+   * before it existed load without it and derive to inference status `never`.
+   */
+  inference?: QueueInferenceState;
+  /**
+   * Grounded planner touch sets keyed by task ID (HOK-3131). Optional and
+   * additive; a malformed block is dropped on load without discarding edges.
+   */
+  touchSets?: Record<string, CachedTouchSet>;
+  /** Grounded planner pair verdicts (HOK-3131). Optional and additive. */
+  groundedVerdicts?: CachedGroundedVerdict[];
 }
 
 export interface FingerprintableTask {
@@ -140,6 +179,88 @@ function isCacheFile(value: unknown): value is CacheFile {
   return value.edges.every(isCachedEdge);
 }
 
+const TOUCH_SOURCES = new Set(['explicit', 'resolved', 'predicted']);
+
+function isCachedTouchSet(value: unknown): value is CachedTouchSet {
+  if (!isRecord(value)) return false;
+  if (typeof value.fingerprint !== 'string' || typeof value.computedAt !== 'string' || !Array.isArray(value.entries)) return false;
+  return value.entries.every(
+    (entry) =>
+      isRecord(entry) &&
+      typeof entry.path === 'string' &&
+      TOUCH_SOURCES.has(entry.source as string) &&
+      (entry.symbols === undefined || (Array.isArray(entry.symbols) && entry.symbols.every((symbol) => typeof symbol === 'string'))),
+  );
+}
+
+function isCachedGroundedVerdict(value: unknown): value is CachedGroundedVerdict {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.a === 'string' &&
+    typeof value.b === 'string' &&
+    typeof value.aFingerprint === 'string' &&
+    typeof value.bFingerprint === 'string' &&
+    typeof value.classifiedAt === 'string' &&
+    (GROUNDED_VERDICT_KINDS as readonly unknown[]).includes(value.verdict) &&
+    (value.evidence === undefined || typeof value.evidence === 'string')
+  );
+}
+
+/**
+ * Validate the optional `inference` block on its own: a malformed block is
+ * dropped (status falls back to `never`) instead of discarding the whole
+ * cache and its edges.
+ */
+function withNormalizedInference(cache: CacheFile): CacheFile {
+  const { inference: rawInference, ...rest } = cache as CacheFile & { inference?: unknown };
+  if (rawInference === undefined) return rest;
+  const inference = normalizeInferenceState(rawInference);
+  if (!inference) {
+    console.warn('[task-dep-cache] dropping malformed inference block');
+    return rest;
+  }
+  return { ...rest, inference };
+}
+
+/**
+ * Validate the optional grounded-planner blocks (HOK-3131) the same way:
+ * malformed entries are dropped individually, a malformed container is
+ * dropped whole, and the legacy cache is never discarded because of them.
+ */
+function withNormalizedGrounded(cache: CacheFile): CacheFile {
+  const { touchSets: rawTouchSets, groundedVerdicts: rawVerdicts, ...rest } = cache as CacheFile & {
+    touchSets?: unknown;
+    groundedVerdicts?: unknown;
+  };
+  const result: CacheFile = rest;
+
+  if (rawTouchSets !== undefined) {
+    if (!isRecord(rawTouchSets)) {
+      console.warn('[task-dep-cache] dropping malformed touchSets block');
+    } else {
+      const valid = Object.entries(rawTouchSets).filter(([, value]) => isCachedTouchSet(value)) as Array<[string, CachedTouchSet]>;
+      if (valid.length !== Object.keys(rawTouchSets).length) {
+        console.warn('[task-dep-cache] dropping malformed touchSets entries');
+      }
+      result.touchSets = Object.fromEntries(valid);
+    }
+  }
+
+  if (rawVerdicts !== undefined) {
+    if (!Array.isArray(rawVerdicts)) {
+      console.warn('[task-dep-cache] dropping malformed groundedVerdicts block');
+    } else {
+      const valid = rawVerdicts.filter(isCachedGroundedVerdict);
+      if (valid.length !== rawVerdicts.length) {
+        console.warn('[task-dep-cache] dropping malformed groundedVerdicts entries');
+      }
+      result.groundedVerdicts = valid;
+    }
+  }
+
+  return result;
+}
+
 function validateProjectSlug(projectSlug: string): void {
   if (projectSlug.includes('/') || projectSlug.includes('\\') || projectSlug.includes('..')) {
     throw new Error(`Invalid project slug for task dependency cache: ${projectSlug}`);
@@ -168,7 +289,7 @@ export function loadCache(rawRepoDir: string, projectSlug: string): CacheFile {
       console.warn(`[task-dep-cache] dropping unreadable cache: project slug mismatch in ${cachePath}`);
       return emptyCache(projectSlug);
     }
-    return raw;
+    return withNormalizedGrounded(withNormalizedInference(raw));
   } catch (error) {
     const errno = (error as NodeJS.ErrnoException).code;
     if (errno === 'ENOENT') return emptyCache(projectSlug);
@@ -193,7 +314,83 @@ export function pruneCache(cache: CacheFile, currentBacklog: FingerprintableTask
     updatedAt: cache.updatedAt,
     fingerprints,
     edges,
+    ...(cache.inference ? { inference: cache.inference } : {}),
+    ...(cache.touchSets ? { touchSets: pruneTouchSets(cache.touchSets, fingerprints) } : {}),
+    ...(cache.groundedVerdicts ? { groundedVerdicts: pruneGroundedVerdicts(cache.groundedVerdicts, fingerprints) } : {}),
   };
+}
+
+/** Keep touch sets whose task is still in the backlog with an unchanged fingerprint. */
+export function pruneTouchSets(
+  touchSets: Record<string, CachedTouchSet>,
+  fingerprints: Record<string, string>,
+): Record<string, CachedTouchSet> {
+  return Object.fromEntries(
+    Object.entries(touchSets).filter(([taskId, entry]) => fingerprints[taskId] === entry.fingerprint),
+  );
+}
+
+/** Keep verdicts whose two tasks are still in the backlog with unchanged fingerprints. */
+export function pruneGroundedVerdicts(
+  verdicts: CachedGroundedVerdict[],
+  fingerprints: Record<string, string>,
+): CachedGroundedVerdict[] {
+  return verdicts.filter(
+    (verdict) => fingerprints[verdict.a] === verdict.aFingerprint && fingerprints[verdict.b] === verdict.bFingerprint,
+  );
+}
+
+/**
+ * Cached touch set for a task, or undefined when missing, stale (fingerprint
+ * changed) or older than {@link TOUCH_SET_TTL_MS}.
+ */
+export function lookupTouchSet(
+  cache: Pick<CacheFile, 'touchSets'>,
+  taskId: string,
+  fingerprint: string,
+  nowMs: number,
+): CachedTouchSet | undefined {
+  const entry = cache.touchSets?.[taskId];
+  if (!entry || entry.fingerprint !== fingerprint) return undefined;
+  const computedMs = Date.parse(entry.computedAt);
+  if (!Number.isFinite(computedMs) || nowMs - computedMs > TOUCH_SET_TTL_MS) return undefined;
+  return entry;
+}
+
+/** Cached verdict for an unordered task pair whose fingerprints still match. */
+export function lookupGroundedVerdict(
+  cache: Pick<CacheFile, 'groundedVerdicts'>,
+  taskX: string,
+  taskY: string,
+  fingerprintX: string,
+  fingerprintY: string,
+): CachedGroundedVerdict | undefined {
+  return cache.groundedVerdicts?.find(
+    (verdict) =>
+      (verdict.a === taskX && verdict.b === taskY && verdict.aFingerprint === fingerprintX && verdict.bFingerprint === fingerprintY) ||
+      (verdict.a === taskY && verdict.b === taskX && verdict.aFingerprint === fingerprintY && verdict.bFingerprint === fingerprintX),
+  );
+}
+
+/**
+ * Previous fingerprints restricted to tasks still in the backlog.
+ *
+ * Used whenever tasks are pending but were not analyzed (classifier failure
+ * or cooldown): keeping the old fingerprint — or none, for a new task — keeps
+ * them in the next run's diff so they are retried instead of silently being
+ * marked analyzed (HOK-3130).
+ */
+export function retainPreviousFingerprints(
+  previous: Record<string, string>,
+  currentTaskIds: Iterable<string>,
+): Record<string, string> {
+  const retained: Record<string, string> = {};
+  for (const taskId of currentTaskIds) {
+    if (Object.prototype.hasOwnProperty.call(previous, taskId)) {
+      retained[taskId] = previous[taskId];
+    }
+  }
+  return retained;
 }
 
 export function getCacheStats(before: CacheFile, after: CacheFile): CacheStats {

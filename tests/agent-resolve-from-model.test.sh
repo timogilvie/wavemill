@@ -179,7 +179,7 @@ rm -rf "$stub_dir"
 stdout_file="$(mktemp)"
 stderr_file="$(mktemp)"
 if run_snippet "$stdout_file" "$stderr_file" '
-  agent_resolve_models_for_roles "claude-sonnet-5" "gpt-5.5" "gpt-5.6-sol"
+  agent_resolve_models_for_roles "claude-sonnet-5" "gpt-5.6-terra" "gpt-5.6-sol"
   rc=$?
   printf "planner=%s\n" "$(agent_resolve_batch_agent_for_role planner)"
   printf "coder=%s\n" "$(agent_resolve_batch_agent_for_role coder)"

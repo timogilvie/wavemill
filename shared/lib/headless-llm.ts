@@ -28,11 +28,10 @@ import {
 } from './llm-cli.ts';
 
 /**
- * Default model for headless utility calls. Codex/`gpt-5.5` per the migration
- * plan (docs/codex-migration-plan.md). Overridable via env for rollback; Phase 3
- * will source this from wavemill config.
+ * Default model for headless utility calls. Codex/`gpt-5.6-terra` (successor to
+ * retired `gpt-5.5`). Overridable via env; Phase 3 will source this from wavemill config.
  */
-export const HEADLESS_DEFAULT_MODEL = process.env.WAVEMILL_HEADLESS_MODEL || 'gpt-5.5';
+export const HEADLESS_DEFAULT_MODEL = process.env.WAVEMILL_HEADLESS_MODEL || 'gpt-5.6-terra';
 
 export interface HeadlessLLMOptions extends Omit<LLMCallOptions, 'provider' | 'cliCmd' | 'cliFlags'> {
   /**

@@ -16,6 +16,7 @@ import {
   deriveChallengerKey,
   filterDeepSeekChallengeModels,
   getChallengeModelPool,
+  insufficientStagePoolReason,
   pickChallengeWorkflowsWithContext,
   pickChallengeWorkflowsWithContextAndReason,
   pickChallengeModels,
@@ -38,6 +39,7 @@ import {
   resolveCertificationSubject,
 } from './native-agent/certification/index.ts';
 import { clearConfigCache } from './config.ts';
+import { writeOpenRouterCredits } from './quota-state.ts';
 import { listEffectiveModelsForStage } from './effective-models.ts';
 import { computeIdentityFingerprint, getEffectiveRegistry } from './model-registry.ts';
 import {
@@ -68,6 +70,7 @@ console.log('\n--- Challenge Mode Tests ---\n');
 
 test('challenge model pool ignores explicit repo-local challenge.models', () => {
   const pool = getChallengeModelPool(
+    'implementation',
     { models: ['claude-opus-4-6', 'gpt-5.6-terra', 'claude-opus-4-6'] },
     { models: ['claude-sonnet-4-5-20250929'] },
   );
@@ -78,6 +81,7 @@ test('challenge model pool ignores explicit repo-local challenge.models', () => 
 
 test('challenge model pool keeps global promoted OpenRouter aliases', () => {
   const pool = getChallengeModelPool(
+    'implementation',
     { models: ['glm-5.2', 'kimi-k2.7-code', 'glm-5.2'] },
     { models: ['claude-sonnet-4-5-20250929'] },
   );
@@ -87,6 +91,7 @@ test('challenge model pool keeps global promoted OpenRouter aliases', () => {
 
 test('challenge model pool ignores router models when challenge.models is null', () => {
   const pool = getChallengeModelPool(
+    'implementation',
     { models: null },
     { models: ['claude-sonnet-4-5-20250929', 'gpt-5.6-terra'] },
   );
@@ -96,6 +101,7 @@ test('challenge model pool ignores router models when challenge.models is null',
 
 test('challenge model pool excludes disabled models from the global pool', () => {
   const pool = getChallengeModelPool(
+    'implementation',
     { models: ['claude-opus-4-6', 'gpt-5.3-codex'] },
     { models: [] },
   );
@@ -106,6 +112,7 @@ test('challenge model pool excludes disabled models from the global pool', () =>
 
 test('challenge model pool excludes DeepSeek by default', () => {
   const pool = getChallengeModelPool(
+    'implementation',
     { models: ['deepseek-v4-flash', 'claude-opus-4-6', 'deepseek-v4-pro'] },
     { models: ['gpt-5.6-terra'] },
   );
@@ -115,11 +122,48 @@ test('challenge model pool excludes DeepSeek by default', () => {
 
 test('challenge model pool includes DeepSeek when allowDeepseek is enabled', () => {
   const pool = getChallengeModelPool(
+    'implementation',
     { allowDeepseek: true, models: ['deepseek-v4-flash', 'claude-opus-4-6', 'deepseek-v4-flash'] },
     { models: ['gpt-5.6-terra'] },
   );
   assert.ok(pool.includes('deepseek-v4-flash'));
   assert.ok(pool.includes('claude-opus-4-6'));
+});
+
+// HOK-3063: pool constructors must reflect the varied stage's projection.
+// Seeding every stage from 'coding' would silently drop planning- and
+// review-only identities before stage-specific filters can consider them.
+test('plan-stage pool includes planning-eligible models absent from coding projection', () => {
+  const planPool = getChallengeModelPool('plan', {}, {});
+  const codingPool = getChallengeModelPool('implementation', {}, {});
+  // kimi-k2 is planning + review eligible but not coding-eligible.
+  assert.ok(planPool.includes('kimi-k2'), 'plan pool should include planning-eligible kimi-k2');
+  assert.ok(!codingPool.includes('kimi-k2'), 'coding pool should exclude non-coding kimi-k2');
+});
+
+test('review-stage pool includes review-eligible models absent from coding projection', () => {
+  const reviewPool = getChallengeModelPool('review', {}, {});
+  const codingPool = getChallengeModelPool('implementation', {}, {});
+  assert.ok(reviewPool.includes('kimi-k2'), 'review pool should include review-eligible kimi-k2');
+  assert.ok(!codingPool.includes('kimi-k2'), 'coding pool should exclude non-coding kimi-k2');
+});
+
+test('implementation-stage pool excludes coding-ineligible models', () => {
+  const codingPool = getChallengeModelPool('implementation', {}, {});
+  // gpt-4.1 / mistral-medium-3 are coding-only in the registry; a plan-stage
+  // seed would silently drop them, but implementation must retain them.
+  assert.ok(codingPool.includes('mistral-medium-3'));
+  // devstral-medium is retired (blocked lifecycle) after its OpenRouter
+  // endpoint disappeared, so it must stay out of the selectable pool.
+  assert.ok(!codingPool.includes('devstral-medium'));
+  // And a planning-only model must not leak into implementation.
+  assert.ok(!codingPool.includes('kimi-k2'));
+});
+
+test('insufficientStagePoolReason emits stable per-stage tokens', () => {
+  assert.equal(insufficientStagePoolReason('plan'), 'insufficient_models_for_plan');
+  assert.equal(insufficientStagePoolReason('implementation'), 'insufficient_models_for_implementation');
+  assert.equal(insufficientStagePoolReason('review'), 'insufficient_models_for_review');
 });
 
 test('filterDeepSeekChallengeModels returns a clear rationale when it removes candidates', () => {
@@ -216,6 +260,7 @@ test('reason-aware model selection preserves generic selection failures', () => 
 
 test('repo-local all-DeepSeek pool does not remove global runnable models', () => {
   const pool = getChallengeModelPool(
+    'implementation',
     { models: ['deepseek-v4-flash', 'deepseek-v4-pro'] },
     { models: [] },
   );
@@ -3018,6 +3063,111 @@ test('buildChallengeExecutionIntent emits fork descriptor fields and per-side in
   assert.equal(intent.sharedPrefix, false);
   assert.deepEqual(intent.primary!.inheritedStages, []);
   assert.deepEqual(intent.challenger!.inheritedStages, []);
+});
+
+// ────────────────────────────────────────────────────────────────
+// HOK-3155: cached OpenRouter balance guards challenger selection
+// ────────────────────────────────────────────────────────────────
+
+test('pickChallengeModelsWithReason refuses OpenRouter challengers when balance is below minCreditsUsd', () => {
+  const previousApiKey = process.env.OPENROUTER_API_KEY;
+  process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+  const repoDir = writeNativeChallengeRepo({
+    model: 'qwen-3-coder',
+    provider: 'openrouter',
+    phase: 'patch',
+    enablePatchCoding: true,
+  });
+  const originalWarn = console.warn;
+  const warnings: string[] = [];
+  console.warn = (message?: unknown) => warnings.push(String(message));
+
+  try {
+    writeOpenRouterCredits(repoDir, {
+      totalCredits: 460,
+      totalUsage: 459.995,
+      balanceUsd: 0.005,
+      usageDaily: 42,
+      updatedAt: new Date().toISOString(),
+      lastFetchError: null,
+    });
+    clearConfigCache(repoDir);
+
+    const result = pickChallengeModelsWithReason(
+      ['qwen-3-coder'],
+      {
+        pairId: 'HOK-3155-LOW',
+        issueId: 'HOK-3155-LOW',
+        slug: 'drained-openrouter',
+        repoDir,
+        randomFn: () => 0,
+      },
+    );
+
+    assert.equal(result.pair, null);
+    assert.ok(result.openrouterCreditsLow, 'openrouterCreditsLow should be stamped');
+    assert.deepEqual(result.openrouterCreditsLow!.refusedModels, ['qwen-3-coder']);
+    assert.equal(result.openrouterCreditsLow!.balanceUsd, 0.005);
+    assert.ok(
+      warnings.some((line) => /challenge_not_formed reason=openrouter-credits-low/.test(line)),
+      `expected challenge_not_formed warning, got:\n${warnings.join('\n')}`,
+    );
+  } finally {
+    console.warn = originalWarn;
+    clearConfigCache(repoDir);
+    rmSync(repoDir, { recursive: true, force: true });
+    if (previousApiKey === undefined) {
+      delete process.env.OPENROUTER_API_KEY;
+    } else {
+      process.env.OPENROUTER_API_KEY = previousApiKey;
+    }
+  }
+});
+
+test('pickChallengeModelsWithReason keeps OpenRouter challengers when balance is healthy', () => {
+  const previousApiKey = process.env.OPENROUTER_API_KEY;
+  process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+  const repoDir = writeNativeChallengeRepo({
+    model: 'qwen-3-coder',
+    provider: 'openrouter',
+    phase: 'patch',
+    enablePatchCoding: true,
+  });
+
+  try {
+    writeOpenRouterCredits(repoDir, {
+      totalCredits: 500,
+      totalUsage: 100,
+      balanceUsd: 400,
+      usageDaily: 10,
+      updatedAt: new Date().toISOString(),
+      lastFetchError: null,
+    });
+    clearConfigCache(repoDir);
+
+    const result = pickChallengeModelsWithReason(
+      ['claude-opus-4-7', 'qwen-3-coder'],
+      {
+        pairId: 'HOK-3155-OK',
+        issueId: 'HOK-3155-OK',
+        slug: 'funded-openrouter',
+        primaryModel: 'claude-opus-4-7',
+        repoDir,
+        randomFn: () => 0,
+      },
+    );
+
+    assert.ok(result.pair, 'pair should form when balance is healthy');
+    assert.equal(result.openrouterCreditsLow, undefined);
+  } finally {
+    clearConfigCache(repoDir);
+    rmSync(repoDir, { recursive: true, force: true });
+    if (previousApiKey === undefined) {
+      delete process.env.OPENROUTER_API_KEY;
+    } else {
+      process.env.OPENROUTER_API_KEY = previousApiKey;
+    }
+  }
 });
 
 process.on('exit', () => {

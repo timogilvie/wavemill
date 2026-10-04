@@ -114,7 +114,7 @@ function loadNativePhasePrompt(repoDir: string) {
     console.warn(`[native-expansion] Failed to load native phase prompt: ${(error as Error).message}`);
   }
 
-  const promptRef = logPromptUsage(NATIVE_PHASE_PROMPT_PATH, content, { dir: repoDir });
+  const promptRef = logPromptUsage(NATIVE_PHASE_PROMPT_PATH, content, { repoDir });
   return { content, promptRef };
 }
 
@@ -237,7 +237,7 @@ function buildHeartbeatHandler(repoDir: string, env?: Record<string, string | un
   return (event: HeartbeatEvent): void => {
     try {
       execFileSync('bash', ['-lc', [
-        `source ${JSON.stringify(path.join(repoDir, 'shared/lib/wavemill-common.sh'))}`,
+        `source ${JSON.stringify(resolve(__dirname, 'wavemill-common.sh'))}`,
         `if declare -F wavemill_hook_write >/dev/null 2>&1; then`,
         `  wavemill_hook_write ${JSON.stringify(event.state)} ${JSON.stringify(event.event)} ${JSON.stringify(event.detail ?? '')} ${JSON.stringify(event.agent)} || true`,
         'fi',

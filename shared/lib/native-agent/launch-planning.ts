@@ -13,6 +13,12 @@ import { dirname, join, relative, resolve } from 'node:path';
 import type { AgentMessage, AgentTurn, Message } from './messages.ts';
 import type { AgentContext, WavemillLoopConfig } from './loop.ts';
 import { runWavemillLoop } from './loop.ts';
+import {
+  ProviderIdentityMismatchError,
+  ProviderIdentityTracker,
+  type ProviderIdentitySummary,
+} from './provider-identity.ts';
+import { invalidateCertificationIdentity } from './certification/identity-invalidation.ts';
 import { classifyProviderError } from './provider-error-classifier.ts';
 import { DEFAULT_MAX_OUTPUT_TOKENS } from './output-limits.ts';
 import {
@@ -26,14 +32,24 @@ import {
   type ReadyNativeProviderEntry,
 } from './providers.ts';
 import { TranscriptWriter } from './transcript.ts';
+import { isLinearWriter, parseTaskId } from '../task-identity.ts';
+import { resolveWavemillToolPath } from './install-paths.ts';
 import { SessionStreamWriter, resolveSessionEventStreamPath } from './session-stream.ts';
+import { captureToolDecisionsFromStream } from './tool-decision-capture.ts';
 import type { SessionStreamConfig } from './loop.ts';
 import { createReadOnlyTools, READ_ONLY_PATH_FIELDS } from './tools/read-only.ts';
 import { createGitTools, gitAfterToolCall } from './tools/git.ts';
 import { createArtifactTools } from './tools/artifacts.ts';
+import { CODE_SEARCH_PATH_FIELDS, createCodeSearchTools } from './tools/code-search.ts';
 import { createToolRegistry } from './tools/registry.ts';
-import { toPiAgentTool, type AgentTool } from './tools/pi-adapter.ts';
+import type { AgentTool } from './tools/pi-adapter.ts';
 import type { ToolDescriptor, ToolMetadata, WavemillToolResult } from './tools/types.ts';
+import {
+  createLaunchMenuProvider,
+  formatMenuDenials,
+} from './tools/menu-resolver.ts';
+import { inferCertificationSnapshotForPhase } from './tools/certification-snapshot.ts';
+import { getNativeCodeSearchConfig, loadWavemillConfig } from '../config.ts';
 import { loadNativePhasePrompt, registerAndRecordNativeProvenance } from './prompts.ts';
 import { isTaskPacketContent } from '../task-packet-utils.ts';
 import { createCleanupTracker, runCleanup, type CleanupReason } from './cleanup.ts';
@@ -44,6 +60,7 @@ import {
 } from '../openrouter-catalog.ts';
 import { getNativeAgentConfig, getNativeContextManagementConfig } from '../config.ts';
 import {
+  isRepairablePlanValidationReason,
   resolveNativePlanningLimits,
   toLoopBudget,
   validateFinalPlanningArtifact,
@@ -227,12 +244,15 @@ function ensureTaskPacket(
   }
 
   runTsxCommand([
-    'tools/expand-issue.ts',
+    resolveWavemillToolPath('expand-issue.ts'),
     expandIssue,
     '--output',
     taskPacketPath,
     '--repo-path',
     repoDir,
+    // expand-issue.ts updates the Linear description by default; challengers
+    // never write Linear (HOK-3115).
+    ...(isLinearWriter(issue) ? [] : ['--no-update']),
   ]);
 }
 
@@ -270,16 +290,7 @@ function normalizeLinearIssueIdentifier(issue: string | undefined): string | nul
   if (!trimmed) {
     return null;
   }
-  const direct = trimmed.match(/^[A-Z][A-Z0-9]*-[0-9]+$/);
-  if (direct) {
-    return trimmed;
-  }
-  const challenger = trimmed.match(/^([A-Z][A-Z0-9]*-[0-9]+)_c$/);
-  if (challenger?.[1]) {
-    return challenger[1];
-  }
-  const url = trimmed.match(/^https?:\/\/linear\.app\/[^/]+\/issue\/([A-Z][A-Z0-9]*-[0-9]+)(?:[/?#].*)?$/);
-  return url?.[1] ?? null;
+  return parseTaskId(trimmed)?.linearId ?? null;
 }
 
 function routeTaskPacket(
@@ -289,7 +300,7 @@ function routeTaskPacket(
   runTsxCommand: (args: string[]) => string,
 ): void {
   runTsxCommand([
-    'tools/route-task.ts',
+    resolveWavemillToolPath('route-task.ts'),
     '--json',
     '--file',
     taskPacketPath,
@@ -398,10 +409,6 @@ function clearRejectedPlanningArtifacts(planPath: string, approvalMarkerPath: st
 
 function defaultHookPath(session: string, issue: string): string {
   return `/tmp/wavemill-${session}-${issue}.hook`;
-}
-
-function toPiTools(descriptors: readonly ToolDescriptor[]): AgentTool<unknown, unknown>[] {
-  return descriptors.map((descriptor) => toPiAgentTool(descriptor) as AgentTool<unknown, unknown>);
 }
 
 function canonicalNativeModelIds(modelId: string | undefined): Set<string> {
@@ -526,6 +533,36 @@ function buildPlanningOutcomeArtifacts(input: {
   };
 }
 
+// HOK-3129: structural guidance for a bounded repair turn. Each entry is a
+// one-sentence instruction that quotes the validator reason verbatim; nothing
+// here steers plan *content* — only the surface shape the validator rejected.
+const PLAN_REPAIR_INSTRUCTIONS: Record<string, string> = {
+  missing_title:
+    'Re-emit the full plan, unchanged in content, with exactly one top-level `# <title>` heading on the first non-empty line.',
+  missing_release_readiness:
+    'Re-emit the full plan, unchanged in content, with a `## Release Readiness` section that lists `**database_change_risk**`, `**env_changes**`, `**config_changes**`, and `**manual_steps**` as bulleted items.',
+  missing_release_readiness_database_change_risk:
+    'Re-emit the full plan, unchanged in content, and add a `- **database_change_risk**: <value>` bullet under the `## Release Readiness` section.',
+  missing_release_readiness_env_changes:
+    'Re-emit the full plan, unchanged in content, and add a `- **env_changes**: <value>` bullet under the `## Release Readiness` section.',
+  missing_release_readiness_config_changes:
+    'Re-emit the full plan, unchanged in content, and add a `- **config_changes**: <value>` bullet under the `## Release Readiness` section.',
+  missing_release_readiness_manual_steps:
+    'Re-emit the full plan, unchanged in content, and add a `- **manual_steps**: <value>` bullet under the `## Release Readiness` section.',
+  missing_actionable_structure:
+    'Re-emit the full plan, unchanged in content, with at least one `## Phase` / `## Plan` / `## Steps` section and at least one bulleted list item under it.',
+};
+
+function buildRepairPrompt(reason: string): string {
+  const guidance = PLAN_REPAIR_INSTRUCTIONS[reason]
+    ?? 'Re-emit the full plan, unchanged in content, with the structural requirement above satisfied.';
+  return [
+    `Your previous plan was rejected by the planning-artifact validator for the reason: "${reason}".`,
+    guidance,
+    'Return only the corrected plan text. Do not include any apology, commentary, or control tokens.',
+  ].join('\n');
+}
+
 function makeTranscriptPath(repoDir: string, session: string, issue: string): string {
   const safeIssue = issue.replace(/[^A-Za-z0-9._-]+/g, '-');
   const baseDir = process.env.WAVEMILL_RUN_DIR
@@ -568,10 +605,25 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
     routeTaskPacket(taskPacketPath, routeOutputPath, options.repoDir, runTsxCommand);
     maybeWriteMigrationMarker(taskPacketPath, migrationMarkerPath);
 
+    const readOnlyDescriptors = createReadOnlyTools(options.wtDir);
+    const searchTextDescriptor = readOnlyDescriptors.find(
+      (d) => d.metadata.name === 'search_text',
+    );
+    const codeSearchConfig = getNativeCodeSearchConfig(options.repoDir);
+    const codeSearchDescriptors = codeSearchConfig.enabled
+      ? createCodeSearchTools({
+          config: codeSearchConfig,
+          worktreePath: options.wtDir,
+          ...(searchTextDescriptor
+            ? { searchTextExecutor: searchTextDescriptor.execute as Parameters<typeof createCodeSearchTools>[0]['searchTextExecutor'] }
+            : {}),
+        })
+      : [];
     const descriptors = [
-      ...createReadOnlyTools(options.wtDir),
+      ...readOnlyDescriptors,
       ...createGitTools(options.wtDir),
       ...createArtifactTools(options.wtDir),
+      ...codeSearchDescriptors,
       ...(options.extraDescriptors ?? []),
     ];
     const registry = createToolRegistry(descriptors);
@@ -612,6 +664,31 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
     };
     const modelName = model.name ?? model.id;
     const requestedModelName = options.resolvedModel?.trim() || modelName;
+    // HOK-3143: shared across the main planning run and the one bounded repair
+    // continuation, so distinctReportedModels covers both.
+    const providerIdentityTracker = new ProviderIdentityTracker();
+    const providerIdentityExpectation = options.loopModelOverride
+      ? undefined
+      : readyProvider?.certifiedIdentity;
+    const providerIdentityConfig = providerIdentityExpectation
+      ? {
+        expectation: providerIdentityExpectation,
+        tracker: providerIdentityTracker,
+        onMismatch: async (error: ProviderIdentityMismatchError) => {
+          if (!providerIdentityExpectation.certificationPath) return;
+          invalidateCertificationIdentity({
+            artifactPath: providerIdentityExpectation.certificationPath,
+            expectedModel: error.expectedModel,
+            observedModel: error.reportedModel ?? '(absent)',
+            requestedWireId: error.requestedWireId,
+            source: 'runtime',
+            phase: 'planning',
+            session: options.session,
+            issue: options.issue,
+          });
+        },
+      }
+      : undefined;
     const transcriptPath = makeTranscriptPath(options.repoDir, options.session, options.issue);
     const transcriptWriter = new TranscriptWriter({
       sessionId: `${options.session}-planning-${options.issue}`,
@@ -650,6 +727,22 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
 
     const cleanupTracker = createCleanupTracker();
     const planningLimits = resolveNativePlanningLimits(getNativeAgentConfig(options.repoDir).planning);
+    const menuLaunchProvider = createLaunchMenuProvider({
+      phase: 'planning',
+      config: loadWavemillConfig(options.repoDir),
+      certification: inferCertificationSnapshotForPhase({
+        phase: 'planning',
+        readyProviderPresent: Boolean(readyProvider),
+        loopModelOverridePresent: Boolean(options.loopModelOverride),
+      }),
+      descriptors,
+    });
+    if (menuLaunchProvider.initialMenu.denials.length > 0) {
+      const formatted = formatMenuDenials(menuLaunchProvider.initialMenu.denials);
+      if (formatted) {
+        console.warn(`[native-planning] menu denials:\n${formatted}`);
+      }
+    }
     const context: AgentContext = {
       systemPrompt,
       messages: [{
@@ -667,7 +760,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
         }),
         timestamp: 0,
       }],
-      tools: toPiTools(descriptors),
+      tools: menuLaunchProvider.providerToolsForContext as AgentTool<unknown, unknown>[],
     };
     const pricing = normalizedPricingFromModel(model);
     const effectiveMaxTokens = model.provider === 'openrouter' && !options.loopModelOverride
@@ -686,6 +779,18 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
       });
     }
 
+    const planningToolPolicy = {
+      phase: 'planning' as const,
+      worktreePath: options.wtDir,
+      registry: registryMetadata,
+      config: {
+        pathFieldsByTool: {
+          ...READ_ONLY_PATH_FIELDS,
+          ...(codeSearchConfig.enabled ? CODE_SEARCH_PATH_FIELDS : {}),
+        },
+      },
+    };
+
     const result = await runWavemillLoop({
       model,
       context,
@@ -700,19 +805,14 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
         session: options.session,
         issue: options.issue,
       } : undefined,
-      toolPolicy: {
-        phase: 'planning',
-        worktreePath: options.wtDir,
-        registry: registryMetadata,
-        config: {
-          pathFieldsByTool: READ_ONLY_PATH_FIELDS,
-        },
-      },
+      toolPolicy: planningToolPolicy,
       onEvent: (event) => {
         transcriptWriter.handleEvent(event);
       },
       sessionStreamConfig,
+      menuProvider: menuLaunchProvider.menuProvider,
       budget: toLoopBudget(planningLimits),
+      ...(providerIdentityConfig ? { providerIdentity: providerIdentityConfig } : {}),
     });
     const planningOutcomeArtifacts = buildPlanningOutcomeArtifacts({
       repoDir: options.repoDir,
@@ -721,6 +821,11 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
       result,
       promptRef,
     });
+    // HOK-3129: a plan written in one assistant turn with zero tool calls is a
+    // quality signal — the model never read the repo. Observed on HOK-3125_c
+    // (Gemini returned 8.6 KB in one turn and only lacked an H1). Carry this
+    // on both success and failure artifacts so eval attribution can see it.
+    const zeroToolCallPlan = result.turnsCompleted <= 1 && result.toolCallsExecuted === 0;
 
     const cleanupReason = cleanupReasonForStopReason(result.stopReason);
     let cleanupPatch: Record<string, unknown> = {};
@@ -768,6 +873,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
           ...planningOutcomeArtifacts,
           planArtifactValid: false,
           approvalReady: false,
+          zeroToolCallPlan,
         },
         failureReason: providerFailureReason || stopFailureReason,
         ...cleanupPatch,
@@ -806,6 +912,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
           ...planningOutcomeArtifacts,
           planArtifactValid: false,
           approvalReady: false,
+          zeroToolCallPlan,
         },
         failureReason: providerError ? 'error' : 'empty_final_plan',
       });
@@ -813,7 +920,63 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
         ? `Native planning failed: ${providerErrorPrefix(result, providerError)}: ${providerError}`
         : `Native planning completed without a final plan (stopReason=${result.stopReason})`);
     }
-    const validation = validateFinalPlanningArtifact(rawFinalText);
+    let validation = validateFinalPlanningArtifact(rawFinalText);
+    let finalText = rawFinalText;
+    let repairAttempted = false;
+
+    // HOK-3129: format-only validator rejections get exactly one bounded
+    // repair turn that quotes the validator reason verbatim. HOK-3125_c lost
+    // its plan comparison because an 8.6 KB Gemini plan opened with `##`
+    // instead of `#`; a mechanical repair prompt would have rescued it.
+    if (!validation.valid && isRepairablePlanValidationReason(validation.reason)) {
+      repairAttempted = true;
+      writeHookStatus(hookPath, 'working', 'repair_native_plan', validation.reason ?? 'invalid', 'native');
+      // Thread one bounded repair user turn onto the existing context. The
+      // prompt quotes the model's previous output verbatim so the model has
+      // the content to re-emit without re-running the loop's full history
+      // or forging an AgentTurn envelope the loop would reject.
+      const repairPrompt = [
+        buildRepairPrompt(validation.reason!),
+        '',
+        'Previous plan (to re-emit with the structural requirement satisfied):',
+        '```',
+        rawFinalText,
+        '```',
+      ].join('\n');
+      const repairMessages = [
+        ...context.messages,
+        { role: 'user' as const, content: repairPrompt, timestamp: 0 },
+      ];
+      const repairContext: AgentContext = { ...context, messages: repairMessages };
+      const repairResult = await runWavemillLoop({
+        model,
+        context: repairContext,
+        maxTokens: effectiveMaxTokens,
+        contextManagement: getNativeContextManagementConfig(options.repoDir),
+        convertToLlm: (messages) => messages as unknown as Message[],
+        afterToolCall: gitAfterToolCall,
+        signal: options.signal,
+        toolPolicy: planningToolPolicy,
+        onEvent: (event) => {
+          transcriptWriter.handleEvent(event);
+        },
+        sessionStreamConfig,
+        menuProvider: menuLaunchProvider.menuProvider,
+        // Reuses the configured planning budget. Wall-clock already consumed by
+        // the initial run leaves repair headroom under the same ceiling.
+        budget: toLoopBudget(planningLimits),
+        ...(providerIdentityConfig ? { providerIdentity: providerIdentityConfig } : {}),
+      });
+      const repairText = findFinalAssistantText(repairResult.messages);
+      if (repairText.trim() !== '') {
+        const repairValidation = validateFinalPlanningArtifact(repairText);
+        validation = repairValidation;
+        if (repairValidation.valid) {
+          finalText = repairText;
+        }
+      }
+    }
+
     if (!validation.valid) {
       clearRejectedPlanningArtifacts(planPath, approvalMarkerPath);
       await updateStageResult(featureDir, 'planning', {
@@ -840,27 +1003,57 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
           ...planningOutcomeArtifacts,
           planArtifactValid: false,
           approvalReady: false,
+          repairAttempted,
+          zeroToolCallPlan,
         },
         failureReason: 'invalid_final_plan',
       });
       throw new Error(`Native planning final artifact rejected: ${validation.reason ?? 'invalid'}`);
     }
-    const finalText = rawFinalText;
 
     clearApprovalMarkerCreatedDuringPlanning(approvalMarkerPath);
     atomicWriteText(planPath, finalText);
+    // HOK-3143: record the provider-reported model when it is verified, so
+    // planning stage attribution does not blindly trust the requested id.
+    const planningIdentitySummary: ProviderIdentitySummary | undefined =
+      providerIdentityConfig ? providerIdentityTracker.summary() : undefined;
+    const planningExecutedModel = planningIdentitySummary
+      && (planningIdentitySummary.identityVerdict === 'match'
+        || planningIdentitySummary.identityVerdict === 'alias-resolved')
+      ? planningIdentitySummary.executedModel ?? modelName
+      : modelName;
+    const planningExecutionEvidence = planningIdentitySummary
+      && (planningIdentitySummary.identityVerdict === 'match'
+        || planningIdentitySummary.identityVerdict === 'alias-resolved')
+      ? {
+        status: 'direct' as const,
+        source: 'provider-response',
+        detail: `verified ${planningIdentitySummary.identityVerdict} after ${planningIdentitySummary.turnsVerified} turn(s)`,
+        recordedAt: new Date().toISOString(),
+        ...(planningIdentitySummary.providerReportedModel
+          ? { providerReportedModel: planningIdentitySummary.providerReportedModel }
+          : {}),
+        requestedWireId: providerIdentityExpectation!.requestedWireId,
+        certifiedTarget: providerIdentityExpectation!.expectedModel,
+        identityVerdict: planningIdentitySummary.identityVerdict,
+        transportProvider: 'openrouter',
+        ...(planningIdentitySummary.lastResponseId
+          ? { responseId: planningIdentitySummary.lastResponseId }
+          : {}),
+      }
+      : {
+        status: 'direct' as const,
+        source: 'native-runtime',
+        recordedAt: new Date().toISOString(),
+      };
     await updateStageResult(featureDir, 'planning', {
       status: 'awaiting_user',
       finishedAt: null,
       agent: 'native',
       model: modelName,
       intendedModel: requestedModelName,
-      executedModel: modelName,
-      executionEvidence: {
-        status: 'direct',
-        source: 'native-runtime',
-        recordedAt: new Date().toISOString(),
-      },
+      executedModel: planningExecutedModel,
+      executionEvidence: planningExecutionEvidence,
       modelAttributionEligible: false,
       modelAttributionIneligibleReason: 'stage_not_completed',
       notes: 'Native planning ready for approval',
@@ -871,12 +1064,29 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
         ...planningOutcomeArtifacts,
         planArtifactValid: true,
         approvalReady: true,
+        repairAttempted,
+        zeroToolCallPlan,
       },
       failureReason: null,
     });
     await options.onAwaitingUserStagePublished?.();
     writeHookStatus(hookPath, 'idle', 'process_exit', 'planning_awaiting_user', 'native');
     writeTextStatus(options.session, options.issue, 'awaiting plan approval');
+
+    // Project the canonical event stream into the tool-decision corpus (HOK-2076).
+    // Best-effort; capture failures never alter agent behavior.
+    try {
+      const capture = captureToolDecisionsFromStream({
+        eventStreamPath,
+        repoDir: options.repoDir,
+        provider: model.provider,
+      });
+      if (!capture.ok) {
+        console.warn(`tool-decision capture skipped: ${capture.reason ?? 'unknown'}`);
+      }
+    } catch (error) {
+      console.warn(`tool-decision capture failed: ${(error as Error).message}`);
+    }
 
     return {
       planPath,
@@ -888,6 +1098,41 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
       transcriptPath,
     };
   } catch (err) {
+    if (err instanceof ProviderIdentityMismatchError) {
+      // HOK-3143: record provider_substitution so eval attribution and the
+      // monitor can route the next launch around the invalidated certificate.
+      try {
+        await updateStageResult(featureDir, 'planning', {
+          status: 'failed',
+          finishedAt: new Date().toISOString(),
+          agent: 'native',
+          model: options.loopModelOverride?.name ?? options.resolvedModel ?? '',
+          intendedModel: options.resolvedModel ?? options.loopModelOverride?.name ?? null,
+          executedModel: err.reportedModel,
+          executionEvidence: {
+            status: 'contradicted',
+            source: 'provider-response',
+            detail: `${err.reason}: expected=${err.expectedModel} reported=${err.reportedModel ?? '(none)'} turn=${err.turnIndex}`,
+            recordedAt: new Date().toISOString(),
+            ...(err.reportedModel ? { providerReportedModel: err.reportedModel } : {}),
+            requestedWireId: err.requestedWireId,
+            certifiedTarget: err.expectedModel,
+            identityVerdict: 'mismatch',
+            transportProvider: 'openrouter',
+            ...(err.responseId ? { responseId: err.responseId } : {}),
+          },
+          modelAttributionEligible: false,
+          modelAttributionIneligibleReason: 'provider_substitution',
+          notes: `Native planning failed: ${err.message}`,
+          failureReason: err.reason,
+        });
+      } catch (updateError) {
+        console.warn(`Failed to update planning stage result on identity mismatch: ${(updateError as Error).message}`);
+      }
+      writeHookStatus(hookPath, 'error', 'process_exit', err.message, 'native');
+      writeTextStatus(options.session, options.issue, 'native planning identity_mismatch');
+      throw err;
+    }
     writeHookStatus(hookPath, 'error', 'process_exit', (err as Error).message, 'native');
     writeTextStatus(options.session, options.issue, 'planning error');
     throw err;

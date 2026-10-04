@@ -122,6 +122,64 @@ type SquashReconciliationPlan =
 export interface BranchBaseUpdateResult {
   status: 'success' | 'conflict' | 'push-failed' | 'fetch-failed' | 'dirty-worktree' | 'unknown-failed';
   detail: string;
+  /**
+   * On `conflict`, the unmerged file paths reported by `git diff --name-only
+   * --diff-filter=U` immediately before `git merge --abort` (HOK-3092). Empty
+   * when parsing failed. Absent for every non-conflict status.
+   */
+  conflictingFiles?: string[];
+}
+
+/** Commit-count distance between a branch and its base (HOK-3092 / HOK-3096). */
+export interface BranchBaseDistance {
+  /** Commits on `baseRef` not on `branch`; undefined when the count could not be determined. */
+  behindBase?: number;
+  /** Commits on `branch` not on `baseRef`; undefined when the count could not be determined. */
+  aheadOfBase?: number;
+  /** The ref the counts were computed against, when known. */
+  baseRef?: string;
+}
+
+/**
+ * Measure how far `branch` has diverged from `baseBranch`, reusing the same
+ * `git rev-list --count` predicate `coding_compare_commit_counts` uses in
+ * `wavemill-monitor.sh` (HOK-3092). Prefers `origin/<baseBranch>` and falls
+ * back to the local `<baseBranch>` ref when no remote-tracking ref exists,
+ * mirroring `inspectTaskBranchResidue` in `tools/observer.ts`.
+ *
+ * Never fetches: this reads whatever ref is already known locally, which
+ * keeps it fast and deterministic for callers like the HOK-3096 observer
+ * detectors that run across many tasks per cycle. Callers that need a fresh
+ * remote view should fetch first (see `updateBranchWithBase`). Every git
+ * failure degrades to `undefined` fields rather than throwing.
+ */
+export function measureBranchBaseDistance(
+  branch: string,
+  baseBranch: string,
+  repoDir: string,
+  shellRunner: ShellRunner = (cmd, opts) => String(execShellCommand(cmd, opts)),
+): BranchBaseDistance {
+  const countRevList = (range: string): number | undefined => {
+    try {
+      const raw = String(shellRunner(
+        `git rev-list --count ${range}`,
+        { encoding: 'utf-8', cwd: repoDir },
+      )).trim();
+      const count = Number.parseInt(raw, 10);
+      return Number.isFinite(count) && count >= 0 ? count : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const tryRef = (ref: string): BranchBaseDistance | undefined => {
+    const behindBase = countRevList(`${escapeShellArg(branch)}..${escapeShellArg(ref)}`);
+    const aheadOfBase = countRevList(`${escapeShellArg(ref)}..${escapeShellArg(branch)}`);
+    if (behindBase === undefined || aheadOfBase === undefined) return undefined;
+    return { behindBase, aheadOfBase, baseRef: ref };
+  };
+
+  return tryRef(`origin/${baseBranch}`) ?? tryRef(baseBranch) ?? {};
 }
 
 const PROMOTION_SECTION_BEGIN = '<!-- wavemill-promote:begin -->';
@@ -989,6 +1047,39 @@ export function updateBranchWithBase(
       `git switch ${escapeShellArg(branch)}`,
       { encoding: 'utf-8', cwd: repoDir },
     );
+  } catch (error) {
+    return {
+      status: 'unknown-failed',
+      detail: errorMessage(error),
+    };
+  }
+
+  // Sync the local branch with its remote tip before merging base into it. A
+  // stale local branch would otherwise produce a merge built on an old tip
+  // (which then fails as non-fast-forward on push) or, worse, silently
+  // publish an out-of-date state. When local and origin have diverged, we
+  // stop and let the operator resolve it rather than force any move.
+  try {
+    shellRunner(
+      `git rev-parse --verify --quiet ${escapeShellArg(`${remoteBranchRef(branch)}^{commit}`)}`,
+      { encoding: 'utf-8', cwd: repoDir },
+    );
+    try {
+      shellRunner(
+        `git merge --ff-only ${escapeShellArg(remoteBranchRef(branch))}`,
+        { encoding: 'utf-8', cwd: repoDir },
+      );
+    } catch (ffError) {
+      return {
+        status: 'unknown-failed',
+        detail: `local ${branch} has diverged from ${remoteBranchRef(branch)} and cannot be fast-forwarded: ${errorMessage(ffError)}`,
+      };
+    }
+  } catch {
+    // No remote counterpart yet — proceed without syncing.
+  }
+
+  try {
     shellRunner(
       `git merge-tree --write-tree ${escapeShellArg(branch)} ${escapeShellArg(remoteBranchRef(baseBranch))}`,
       { encoding: 'utf-8', cwd: repoDir },
@@ -999,14 +1090,39 @@ export function updateBranchWithBase(
     );
   } catch (error) {
     const detail = errorMessage(error);
+    // HOK-3092: capture the unmerged file list before aborting so callers can
+    // surface it in the operator-facing attention file. Best-effort — a
+    // failing enumerate never masks the original merge failure.
+    let conflictingFiles: string[] = [];
+    if (/conflict/i.test(detail)) {
+      try {
+        const raw = String(shellRunner(
+          'git diff --name-only --diff-filter=U',
+          { encoding: 'utf-8', cwd: repoDir },
+        ));
+        conflictingFiles = raw
+          .split('\n')
+          .map((line) => line.trim())
+          .filter((line) => line.length > 0);
+      } catch {
+        // Best-effort: leave the list empty and rely on `detail`.
+      }
+    }
     try {
       shellRunner('git merge --abort', { encoding: 'utf-8', cwd: repoDir });
     } catch {
       // Best-effort cleanup if merge started.
     }
 
+    if (/conflict/i.test(detail)) {
+      return {
+        status: 'conflict',
+        detail,
+        conflictingFiles,
+      };
+    }
     return {
-      status: /conflict/i.test(detail) ? 'conflict' : 'unknown-failed',
+      status: 'unknown-failed',
       detail,
     };
   }

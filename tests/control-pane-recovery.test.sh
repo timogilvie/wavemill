@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-MILL_SCRIPT="$REPO_DIR/shared/lib/wavemill-mill.sh"
+MONITOR_SCRIPT_SRC="$REPO_DIR/shared/lib/wavemill-monitor.sh"
 COMMON_SCRIPT="$REPO_DIR/shared/lib/wavemill-common.sh"
 
 TMP_DIR="$(mktemp -d)"
@@ -74,7 +74,7 @@ for fn in \
   check_mill_pane_health \
   handle_monitor_quit_command
 do
-  extracted="$(extract_function "$MILL_SCRIPT" "$fn")"
+  extracted="$(extract_function "$MONITOR_SCRIPT_SRC" "$fn")"
   if [[ -z "$extracted" ]]; then
     echo "FAIL: missing extracted function $fn"
     exit 1
@@ -99,11 +99,46 @@ LAST_QUIT_MESSAGE=""
 LOG_OUTPUT=""
 WARN_OUTPUT=""
 TMUX_LOG="$TMP_DIR/tmux.log"
-TMUX_PANE_COUNT_OUTPUT=$'0\n1\n2\n'
+# Because pane_count=$(tmux ...) runs the mocked tmux inside a subshell, any
+# in-memory queue we mutate there is lost. Persist the queue as a file so
+# successive list-panes calls (before/after the reconstruction splits) can
+# return different values from the same check_mill_pane_health() invocation.
+TMUX_PANE_COUNT_QUEUE_FILE="$TMP_DIR/pane-count-queue"
 TMUX_DEAD_PANES_OUTPUT=$'0 0\n1 0\n2 0\n'
 TMUX_DISPLAY_MESSAGE_OUTPUT=""
 TMUX_DISPLAY_MESSAGE_RC=0
 TMUX_RESPAWN_RC=0
+
+# Reset the queue with one integer per list-panes call. Each argument is the
+# pane count that list-panes -F '#{pane_index}' should report on that call
+# (the mock synthesizes one index per line). When the queue empties the last
+# value is repeated so late probes keep observing a stable three-pane layout.
+set_pane_count_queue() {
+  : > "$TMUX_PANE_COUNT_QUEUE_FILE"
+  local entry
+  for entry in "$@"; do
+    printf '%s\n' "$entry" >> "$TMUX_PANE_COUNT_QUEUE_FILE"
+  done
+}
+
+# Pop the next queued pane count and print list-panes output that produces
+# exactly that many lines under `wc -l`. Rewrites the file without the head
+# entry, keeping the tail entry if it would otherwise be the last remaining
+# value.
+pop_pane_count() {
+  [[ -s "$TMUX_PANE_COUNT_QUEUE_FILE" ]] || return 0
+  local head count remaining
+  head="$(head -n 1 "$TMUX_PANE_COUNT_QUEUE_FILE")"
+  count="$(wc -l < "$TMUX_PANE_COUNT_QUEUE_FILE" | tr -d ' ')"
+  if (( count > 1 )); then
+    remaining="$(tail -n +2 "$TMUX_PANE_COUNT_QUEUE_FILE")"
+    printf '%s\n' "$remaining" > "$TMUX_PANE_COUNT_QUEUE_FILE"
+  fi
+  local i
+  for (( i = 0; i < head; i++ )); do
+    printf '%d\n' "$i"
+  done
+}
 
 log() {
   local level="info"
@@ -129,8 +164,10 @@ tmux() {
     list-panes)
       if [[ "$*" == *"#{pane_index} #{pane_dead}"* ]]; then
         printf '%s' "$TMUX_DEAD_PANES_OUTPUT"
+      elif [[ "$*" == *"#{pane_pid}"* ]]; then
+        printf '%s' ""
       else
-        printf '%s' "$TMUX_PANE_COUNT_OUTPUT"
+        pop_pane_count
       fi
       ;;
     display-message)
@@ -140,7 +177,7 @@ tmux() {
     respawn-pane)
       return "$TMUX_RESPAWN_RC"
       ;;
-    split-window|set-environment)
+    split-window|set-environment|select-pane|kill-pane)
       return 0
       ;;
     *)
@@ -167,9 +204,56 @@ assert_contains "startup wrapper resets the offset file" "$startup_cmd" "command
 assert_not_contains "recovery wrapper preserves the command file" "$recovery_cmd" ":\\ \\>\\ /tmp/wavemill-${SESSION}-commands"
 assert_not_contains "recovery wrapper preserves the offset file" "$recovery_cmd" "printf\\ \'0"
 
+# ---- one-pane recovery: preserve the live monitor as pane 0 ----------------
 : > "$TMUX_LOG"
 WARN_OUTPUT=""
 LOG_OUTPUT=""
+LAST_DASHBOARD_HEALTH_CHECK=0
+LAST_CONTROL_PANE_HEALTH_STATUS=""
+# First list-panes call returns one pane; after the two split-window calls the
+# re-count sees three panes.
+set_pane_count_queue 1 3
+TMUX_DEAD_PANES_OUTPUT=$'0 0\n1 0\n2 0\n'
+TMUX_DISPLAY_MESSAGE_OUTPUT="$healthy_probe"
+TMUX_DISPLAY_MESSAGE_RC=0
+TMUX_RESPAWN_RC=0
+check_mill_pane_health
+tmux_output="$(cat "$TMUX_LOG")"
+
+split_lines="$(grep 'split-window' "$TMUX_LOG" || true)"
+split_count="$(printf '%s\n' "$split_lines" | grep -c 'split-window' || true)"
+assert_eq "one-pane recovery issues exactly two split-window calls" "2" "$split_count"
+
+first_split="$(printf '%s\n' "$split_lines" | sed -n '1p')"
+second_split="$(printf '%s\n' "$split_lines" | sed -n '2p')"
+
+assert_contains "first split targets pane 0 with -v -p 65 (startup order)" "$first_split" "split-window -t ${SESSION}:${WAVEMILL_WINDOW_MILL}.0 -v -p 65"
+assert_not_contains "first split does not use -b (would renumber monitor)" "$first_split" "-b"
+assert_not_contains "first split does not use -hb (regression guard)" "$first_split" "-hb"
+
+assert_contains "second split targets pane 0 with -h -f -p 50 (startup order)" "$second_split" "split-window -t ${SESSION}:${WAVEMILL_WINDOW_MILL}.0 -h -f -p 50"
+assert_not_contains "second split does not use -b" "$second_split" "-b"
+assert_not_contains "second split does not use -hb (regression guard)" "$second_split" "-hb"
+
+# The surviving monitor (pane 0) must NOT be respawned during the one-pane
+# reconstruction branch. Only panes 1 and 2 (dashboard + log) may be respawned.
+reconstruction_output="$(sed -n '/split-window/,$p' "$TMUX_LOG")"
+respawn_zero="$(printf '%s\n' "$reconstruction_output" | grep -E "respawn-pane .* -t ${SESSION}:${WAVEMILL_WINDOW_MILL}\\.0( |\$)" || true)"
+assert_eq "one-pane recovery never respawns pane 0" "" "$respawn_zero"
+
+assert_contains "one-pane recovery respawns pane 1 as dashboard" "$tmux_output" "respawn-pane -k -t ${SESSION}:${WAVEMILL_WINDOW_MILL}.1"
+assert_contains "one-pane recovery respawns pane 2 as log" "$tmux_output" "respawn-pane -k -t ${SESSION}:${WAVEMILL_WINDOW_MILL}.2"
+
+assert_contains "one-pane recovery warns about rebuild" "$WARN_OUTPUT" "Control window has 1 pane"
+assert_contains "one-pane recovery logs successful rebuild" "$LOG_OUTPUT" "Control panes rebuilt successfully"
+
+# ---- drift recovery: healthy 3-pane layout, direct-monitor drift on pane 0 --
+: > "$TMUX_LOG"
+WARN_OUTPUT=""
+LOG_OUTPUT=""
+LAST_DASHBOARD_HEALTH_CHECK=0
+LAST_CONTROL_PANE_HEALTH_STATUS=""
+set_pane_count_queue 3
 TMUX_DISPLAY_MESSAGE_OUTPUT="$drift_probe"
 TMUX_DISPLAY_MESSAGE_RC=0
 TMUX_RESPAWN_RC=0
@@ -183,6 +267,9 @@ assert_not_contains "recovery respawn does not reset offset to zero" "$respawn_l
 
 : > "$TMUX_LOG"
 WARN_OUTPUT=""
+LAST_DASHBOARD_HEALTH_CHECK=0
+LAST_CONTROL_PANE_HEALTH_STATUS=""
+set_pane_count_queue 3
 TMUX_DISPLAY_MESSAGE_OUTPUT="$healthy_probe"
 check_mill_pane_health
 tmux_output="$(cat "$TMUX_LOG")"
@@ -191,6 +278,9 @@ assert_eq "healthy pane emits no warning" "" "$WARN_OUTPUT"
 
 : > "$TMUX_LOG"
 WARN_OUTPUT=""
+LAST_DASHBOARD_HEALTH_CHECK=0
+LAST_CONTROL_PANE_HEALTH_STATUS=""
+set_pane_count_queue 3
 TMUX_DISPLAY_MESSAGE_OUTPUT="$drift_probe"
 TMUX_RESPAWN_RC=1
 check_mill_pane_health

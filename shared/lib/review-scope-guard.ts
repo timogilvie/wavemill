@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { buildTaskContract, type TaskContractField } from './task-contract.ts';
 import { escapeShellArg, execShellCommand } from './shell-utils.ts';
@@ -8,6 +8,7 @@ import {
   parseRevertAcknowledgements,
   type CrossPrRevertFinding,
 } from './cross-pr-revert-detector.ts';
+import { resolveBranchDiffBase } from './git-branch-changes.ts';
 import {
   INTEGRATION_DEFAULTS,
   getIntegrationConfig,
@@ -154,6 +155,7 @@ export interface ReviewScopeGuardOptions {
   repoDir: string;
   featureDir?: string;
   sinceCommit?: string;
+  sinceCommitSource?: 'launch-base' | 'explicit';
   baseRef?: string;
   headRef?: string;
   /** Explicit integration ref override for merge-base derivation. */
@@ -183,9 +185,18 @@ export interface ReviewScopeBaseline {
   sinceCommit: string;
   headRef: string;
   paths: string[];
+  provenance?: ReviewScopeBaselineProvenance;
+  baseRef?: string;
 }
 
+export type ReviewScopeBaselineProvenance =
+  | 'launch-base'
+  | 'remote-merge-base'
+  | 'local-merge-base-fallback'
+  | 'explicit-since-commit';
+
 const BASELINE_FILE = '.review-scope-baseline.json';
+const BASELINE_HISTORY_FILE = '.review-scope-baseline.history.jsonl';
 const DEFAULT_DELETION_RATIO = 3;
 const DEFAULT_DELETION_FLOOR = 50;
 
@@ -259,10 +270,13 @@ export function validateReviewScope(options: ReviewScopeGuardOptions): ReviewSco
     // Best-effort when other scope signals exist; a failure here is only
     // fatal (status 'error') when no baseline/declared scope can stand in.
     let mergeBase: string | null = null;
+    let integrationKind: 'remote' | 'local' | null = null;
     let taskPaths: string[] = [];
     let gitScopeFailure: ReviewScopeGuardToolFailure | null = null;
     try {
-      integrationRef = resolveIntegrationRef(repoDir, options.integrationRef);
+      const resolvedIntegration = resolveIntegrationBaseRef(repoDir, options.integrationRef, shellRunner);
+      integrationRef = resolvedIntegration.ref;
+      integrationKind = resolvedIntegration.kind;
       mergeBase = runGitChecked(
         shellRunner,
         repoDir,
@@ -291,6 +305,7 @@ export function validateReviewScope(options: ReviewScopeGuardOptions): ReviewSco
       }
       gitScopeFailure = error;
       mergeBase = null;
+      integrationKind = null;
       taskPaths = [];
     }
 
@@ -302,12 +317,26 @@ export function validateReviewScope(options: ReviewScopeGuardOptions): ReviewSco
         repoDir,
         featureDir,
         sinceCommit: options.sinceCommit,
+        sinceCommitSource: options.sinceCommitSource,
         headRef,
         writeBaseline: options.writeBaseline ?? true,
         shellRunner,
       })
       : null;
-    const baselinePaths = baseline?.paths ?? [];
+    // A launch-base baseline goes stale once the branch merges its base
+    // (HOK-3119): advance it to the live remote merge-base when that is
+    // strictly newer. The on-disk artifact is left untouched.
+    const advancedBaseline = baseline
+      ? advanceLaunchBaseBaseline({
+        repoDir,
+        baseline,
+        mergeBase,
+        integrationKind,
+        headRef,
+        shellRunner,
+      })
+      : null;
+    const baselinePaths = advancedBaseline?.paths ?? baseline?.paths ?? [];
 
     if (gitScopeFailure) {
       // No fallback signal at all: scope is genuinely unverifiable.
@@ -325,8 +354,36 @@ export function validateReviewScope(options: ReviewScopeGuardOptions): ReviewSco
       });
     }
 
-    const baseRef = options.baseRef ?? options.sinceCommit ?? baseline?.sinceCommit ?? mergeBase ?? null;
-    const baselineSource = baseline?.source
+    const rawBaseRef = options.baseRef
+      ?? options.sinceCommit
+      ?? advancedBaseline?.sinceCommit
+      ?? baseline?.sinceCommit
+      ?? mergeBase
+      ?? null;
+    // Normalize the base to `merge-base(base, head)` so every downstream diff
+    // reflects the branch's own commits, not files the base has gained since
+    // the branch point. Healthy case (sinceCommit/launch-base SHAs that are
+    // ancestors of head): `merge-base(sha, head) === sha`, so this is a no-op.
+    // (HOK-3091 — detector self-normalizes too, but the scope-guard's
+    // committed-diff and deletion-budget checks share the same base and must
+    // stay consistent with it.)
+    let baseRef: string | null = rawBaseRef;
+    if (rawBaseRef) {
+      try {
+        baseRef = resolveBranchDiffBase({
+          repoDir,
+          baseRef: rawBaseRef,
+          headRef,
+          shellRunner,
+        }).mergeBaseSha;
+      } catch {
+        // Fall back to the raw ref; individual git callers below have their own
+        // ReviewScopeGuardToolFailure handling for a genuinely bad ref.
+        baseRef = rawBaseRef;
+      }
+    }
+    const baselineSource = advancedBaseline?.source
+      ?? baseline?.source
       ?? (mergeBase ? `git merge-base ${integrationRef} (${mergeBase})` : 'unresolved');
 
     const taskPathSet = new Set(taskPaths);
@@ -650,6 +707,215 @@ function resolveIntegrationRef(repoDir: string, explicitIntegrationRef: string |
   return integrationConfig.integrationBranch;
 }
 
+interface ResolvedBaselineBase {
+  sinceCommit: string;
+  provenance: ReviewScopeBaselineProvenance;
+  baseRef?: string;
+}
+
+function validateSinceCommit(input: {
+  repoDir: string;
+  sinceCommit: string;
+  headRef: string;
+  source: 'launch-base' | 'explicit';
+  shellRunner: ShellRunner;
+}): ResolvedBaselineBase {
+  const label = input.source === 'launch-base' ? 'recorded launch base' : 'explicit since commit';
+  const sinceCommit = input.sinceCommit.trim();
+  if (!commitExists(input.repoDir, sinceCommit, input.shellRunner)) {
+    throw new Error(
+      `review-scope baseline: ${label} ${sinceCommit} could not be resolved as a commit; refusing to widen scope`,
+    );
+  }
+  if (!isAncestor(input.repoDir, sinceCommit, input.headRef, input.shellRunner)) {
+    throw new Error(
+      `review-scope baseline: ${label} ${sinceCommit} is not an ancestor of ${input.headRef}; refusing to widen scope`,
+    );
+  }
+  return {
+    sinceCommit,
+    provenance: input.source === 'launch-base' ? 'launch-base' : 'explicit-since-commit',
+    baseRef: sinceCommit,
+  };
+}
+
+function resolveBaselineBase(input: {
+  repoDir: string;
+  sinceCommit?: string;
+  sinceCommitSource?: 'launch-base' | 'explicit';
+  headRef: string;
+  integrationRef?: string;
+  shellRunner: ShellRunner;
+}): ResolvedBaselineBase {
+  const sinceCommit = input.sinceCommit?.trim();
+  if (sinceCommit) {
+    return validateSinceCommit({
+      repoDir: input.repoDir,
+      sinceCommit,
+      headRef: input.headRef,
+      source: input.sinceCommitSource ?? 'explicit',
+      shellRunner: input.shellRunner,
+    });
+  }
+
+  const resolvedRef = resolveIntegrationBaseRef(input.repoDir, input.integrationRef, input.shellRunner);
+  const mergeBase = runGitChecked(
+    input.shellRunner,
+    input.repoDir,
+    `git merge-base ${escapeShellArg(resolvedRef.ref)} ${escapeShellArg(input.headRef)}`,
+    'git-merge-base',
+  ).trim();
+  if (!mergeBase) {
+    throw new Error(`git merge-base returned an empty base for ${resolvedRef.ref} and ${input.headRef}`);
+  }
+  return {
+    sinceCommit: mergeBase,
+    provenance: resolvedRef.kind === 'remote' ? 'remote-merge-base' : 'local-merge-base-fallback',
+    baseRef: resolvedRef.ref,
+  };
+}
+
+function resolveIntegrationBaseRef(
+  repoDir: string,
+  explicitIntegrationRef: string | undefined,
+  shellRunner: ShellRunner,
+): { ref: string; kind: 'remote' | 'local' } {
+  const integrationRef = resolveIntegrationRef(repoDir, explicitIntegrationRef);
+  if (isRemoteIntegrationRef(integrationRef)) {
+    return { ref: integrationRef, kind: 'remote' };
+  }
+
+  const remoteRef = `origin/${stripLocalBranchPrefix(integrationRef)}`;
+  bestEffortFetch(repoDir, stripLocalBranchPrefix(integrationRef), shellRunner);
+  if (commitExists(repoDir, remoteRef, shellRunner)) {
+    return { ref: remoteRef, kind: 'remote' };
+  }
+
+  return { ref: integrationRef, kind: 'local' };
+}
+
+/**
+ * Baseline provenances whose base is "where the branch left the integration
+ * line" and therefore goes stale when the branch merges its base. An explicit
+ * since-commit (and a legacy artifact without provenance) is an operator
+ * choice and is never advanced.
+ */
+const ADVANCEABLE_PROVENANCES: ReadonlySet<ReviewScopeBaselineProvenance> = new Set([
+  'launch-base',
+  'remote-merge-base',
+  'local-merge-base-fallback',
+]);
+
+interface AdvancedLaunchBase {
+  sinceCommit: string;
+  paths: string[];
+  source: string;
+}
+
+/**
+ * Advance a merge-base-derived baseline (typically `launch-base`) past a base
+ * merge (HOK-3119).
+ *
+ * A launch SHA stays an ancestor of HEAD after the branch merges its base, so
+ * `merge-base(sinceCommit, HEAD)` cannot move it and every file inherited with
+ * the base merge would read as out of scope. When the live merge-base against
+ * the *remote* integration ref is a strict descendant of the recorded launch
+ * base (and an ancestor of HEAD), it becomes the effective base.
+ *
+ * HOK-3037 protections hold: a local integration ref never advances the base,
+ * the base never moves backwards, and the recorded path set is only narrowed
+ * to what still differs from the advanced base — review-fix commits cannot
+ * widen it.
+ *
+ * @returns The advanced base, or null when the recorded baseline stands.
+ */
+function advanceLaunchBaseBaseline(input: {
+  repoDir: string;
+  baseline: ReviewScopeBaseline;
+  mergeBase: string | null;
+  integrationKind: 'remote' | 'local' | null;
+  headRef: string;
+  shellRunner: ShellRunner;
+}): AdvancedLaunchBase | null {
+  const { repoDir, baseline, mergeBase, headRef, shellRunner } = input;
+  if (
+    !baseline.provenance
+    || !ADVANCEABLE_PROVENANCES.has(baseline.provenance)
+    || input.integrationKind !== 'remote'
+    || !mergeBase
+  ) {
+    return null;
+  }
+  const launchSha = resolveCommitSha(repoDir, baseline.sinceCommit, shellRunner);
+  const mergeBaseSha = resolveCommitSha(repoDir, mergeBase, shellRunner);
+  if (!launchSha || !mergeBaseSha || launchSha === mergeBaseSha) {
+    return null;
+  }
+  if (
+    !isAncestor(repoDir, launchSha, mergeBaseSha, shellRunner)
+    || !isAncestor(repoDir, mergeBaseSha, headRef, shellRunner)
+  ) {
+    return null;
+  }
+  const livePaths = new Set(collectNameOnly(repoDir, mergeBaseSha, headRef, shellRunner));
+  return {
+    sinceCommit: mergeBaseSha,
+    paths: baseline.paths.filter((path) => livePaths.has(path)),
+    source: `${baseline.provenance} ${launchSha.slice(0, 8)} advanced to remote merge-base ${mergeBaseSha.slice(0, 8)}`,
+  };
+}
+
+function isRemoteIntegrationRef(ref: string): boolean {
+  return ref.startsWith('origin/') || ref.startsWith('refs/remotes/origin/');
+}
+
+function stripLocalBranchPrefix(ref: string): string {
+  return ref.replace(/^refs\/heads\//, '').replace(/^origin\//, '').replace(/^refs\/remotes\/origin\//, '');
+}
+
+function commitExists(repoDir: string, ref: string, shellRunner: ShellRunner): boolean {
+  try {
+    runGit(shellRunner, repoDir, `git rev-parse --verify --quiet ${escapeShellArg(`${ref}^{commit}`)}`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveCommitSha(repoDir: string, ref: string, shellRunner: ShellRunner): string | null {
+  try {
+    return runGit(shellRunner, repoDir, `git rev-parse --verify --quiet ${escapeShellArg(`${ref}^{commit}`)}`).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function isAncestor(repoDir: string, ancestor: string, descendant: string, shellRunner: ShellRunner): boolean {
+  try {
+    runGit(shellRunner, repoDir, `git merge-base --is-ancestor ${escapeShellArg(ancestor)} ${escapeShellArg(descendant)}`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function bestEffortFetch(repoDir: string, branch: string, shellRunner: ShellRunner): boolean {
+  const trimmedBranch = branch.trim();
+  if (!trimmedBranch || trimmedBranch.includes('..') || trimmedBranch.startsWith('-')) {
+    return false;
+  }
+  try {
+    runGit(
+      shellRunner,
+      repoDir,
+      `if command -v timeout >/dev/null 2>&1; then timeout 10s git fetch --quiet origin ${escapeShellArg(trimmedBranch)} 2>/dev/null; else false; fi`,
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 
 /**
  * Resolve the feature directory owning the current task.
@@ -811,6 +1077,9 @@ function loadOrCreateBaseline(input: {
   repoDir: string;
   featureDir: string;
   sinceCommit?: string;
+  sinceCommitSource?: 'launch-base' | 'explicit';
+  provenance?: ReviewScopeBaselineProvenance;
+  baseRef?: string;
   headRef: string;
   writeBaseline: boolean;
   shellRunner: ShellRunner;
@@ -825,14 +1094,29 @@ function loadOrCreateBaseline(input: {
     return null;
   }
 
-  const paths = collectNameOnly(input.repoDir, input.sinceCommit, input.headRef, input.shellRunner);
+  const resolvedBase = input.provenance
+    ? {
+      sinceCommit: input.sinceCommit,
+      provenance: input.provenance,
+      baseRef: input.baseRef,
+    }
+    : validateSinceCommit({
+      repoDir: input.repoDir,
+      sinceCommit: input.sinceCommit,
+      headRef: input.headRef,
+      source: input.sinceCommitSource ?? 'explicit',
+      shellRunner: input.shellRunner,
+    });
+  const paths = collectNameOnly(input.repoDir, resolvedBase.sinceCommit, input.headRef, input.shellRunner);
   const baseline: ReviewScopeBaseline = {
     version: 1,
     createdAt: new Date().toISOString(),
-    source: `git diff --name-only ${input.sinceCommit} ${input.headRef}`,
-    sinceCommit: input.sinceCommit,
+    source: `git diff --name-only ${resolvedBase.sinceCommit} ${input.headRef}`,
+    sinceCommit: resolvedBase.sinceCommit,
     headRef: input.headRef,
     paths,
+    provenance: resolvedBase.provenance,
+    baseRef: resolvedBase.baseRef,
   };
 
   if (input.writeBaseline) {
@@ -846,6 +1130,11 @@ function loadOrCreateBaseline(input: {
 export interface EnsureReviewScopeBaselineResult {
   /** False when a valid baseline artifact already existed and was kept as-is. */
   created: boolean;
+  /**
+   * True when `refresh` advanced an existing baseline past a base
+   * merge; the replaced artifact was appended to the history file.
+   */
+  refreshed: boolean;
   baselinePath: string;
   baseline: ReviewScopeBaseline;
 }
@@ -860,6 +1149,11 @@ export interface EnsureReviewScopeBaselineResult {
  * merge base against the integration ref — at handoff time the branch diff is
  * exactly the committed coding deliverable.
  *
+ * With `refresh` (HOK-3119), an existing merge-base-derived baseline is rewritten
+ * with the same advancement rule the guard applies on read — for callers that
+ * have just merged the base into the task branch. The replaced artifact is
+ * appended to `.review-scope-baseline.history.jsonl`.
+ *
  * @throws Error when the base SHA cannot be derived or the artifact cannot be
  * written; callers degrade to the guard's merge-base fallback with a warning.
  */
@@ -867,8 +1161,10 @@ export function ensureReviewScopeBaseline(options: {
   repoDir: string;
   featureDir: string;
   sinceCommit?: string;
+  sinceCommitSource?: 'launch-base' | 'explicit';
   headRef?: string;
   integrationRef?: string;
+  refresh?: boolean;
   shellRunner?: ShellRunner;
 }): EnsureReviewScopeBaselineResult {
   const repoDir = resolve(options.repoDir);
@@ -879,27 +1175,36 @@ export function ensureReviewScopeBaseline(options: {
 
   const existing = readBaseline(baselinePath);
   if (existing) {
-    return { created: false, baselinePath, baseline: existing };
+    const refreshed = options.refresh
+      ? refreshLaunchBaseBaseline({
+        repoDir,
+        baselinePath,
+        existing,
+        headRef,
+        integrationRef: options.integrationRef,
+        shellRunner,
+      })
+      : null;
+    return refreshed
+      ? { created: false, refreshed: true, baselinePath, baseline: refreshed }
+      : { created: false, refreshed: false, baselinePath, baseline: existing };
   }
 
-  let sinceCommit = options.sinceCommit?.trim() || '';
-  if (!sinceCommit) {
-    const integrationRef = resolveIntegrationRef(repoDir, options.integrationRef);
-    sinceCommit = runGitChecked(
-      shellRunner,
-      repoDir,
-      `git merge-base ${escapeShellArg(integrationRef)} ${escapeShellArg(headRef)}`,
-      'git-merge-base',
-    ).trim();
-    if (!sinceCommit) {
-      throw new Error(`git merge-base returned an empty base for ${integrationRef} and ${headRef}`);
-    }
-  }
+  const resolvedBase = resolveBaselineBase({
+    repoDir,
+    sinceCommit: options.sinceCommit,
+    sinceCommitSource: options.sinceCommitSource,
+    headRef,
+    integrationRef: options.integrationRef,
+    shellRunner,
+  });
 
   const baseline = loadOrCreateBaseline({
     repoDir,
     featureDir,
-    sinceCommit,
+    sinceCommit: resolvedBase.sinceCommit,
+    provenance: resolvedBase.provenance,
+    baseRef: resolvedBase.baseRef,
     headRef,
     writeBaseline: true,
     shellRunner,
@@ -907,10 +1212,60 @@ export function ensureReviewScopeBaseline(options: {
   if (!baseline) {
     throw new Error(`failed to materialize review-scope baseline at ${baselinePath}`);
   }
-  return { created: true, baselinePath, baseline };
+  return { created: true, refreshed: false, baselinePath, baseline };
 }
 
-function readBaseline(path: string): ReviewScopeBaseline | null {
+function refreshLaunchBaseBaseline(input: {
+  repoDir: string;
+  baselinePath: string;
+  existing: ReviewScopeBaseline;
+  headRef: string;
+  integrationRef?: string;
+  shellRunner: ShellRunner;
+}): ReviewScopeBaseline | null {
+  const { repoDir, existing, headRef, shellRunner } = input;
+  if (!existing.provenance || !ADVANCEABLE_PROVENANCES.has(existing.provenance)) {
+    return null;
+  }
+  const resolvedRef = resolveIntegrationBaseRef(repoDir, input.integrationRef, shellRunner);
+  const mergeBase = runGitChecked(
+    shellRunner,
+    repoDir,
+    `git merge-base ${escapeShellArg(resolvedRef.ref)} ${escapeShellArg(headRef)}`,
+    'git-merge-base',
+  ).trim();
+  const advanced = advanceLaunchBaseBaseline({
+    repoDir,
+    baseline: existing,
+    mergeBase: mergeBase || null,
+    integrationKind: resolvedRef.kind,
+    headRef,
+    shellRunner,
+  });
+  if (!advanced) {
+    return null;
+  }
+
+  const baseline: ReviewScopeBaseline = {
+    version: 1,
+    createdAt: new Date().toISOString(),
+    source: advanced.source,
+    sinceCommit: advanced.sinceCommit,
+    headRef,
+    paths: advanced.paths,
+    provenance: 'remote-merge-base',
+    baseRef: resolvedRef.ref,
+  };
+  appendFileSync(
+    join(dirname(input.baselinePath), BASELINE_HISTORY_FILE),
+    `${JSON.stringify({ replacedAt: baseline.createdAt, baseline: existing })}\n`,
+    'utf-8',
+  );
+  writeFileSync(input.baselinePath, `${JSON.stringify(baseline, null, 2)}\n`, 'utf-8');
+  return baseline;
+}
+
+export function readBaseline(path: string): ReviewScopeBaseline | null {
   try {
     if (!existsSync(path)) {
       return null;
@@ -926,10 +1281,19 @@ function readBaseline(path: string): ReviewScopeBaseline | null {
       sinceCommit: parsed.sinceCommit,
       headRef: typeof parsed.headRef === 'string' ? parsed.headRef : 'HEAD',
       paths: [...new Set(parsed.paths.map(normalizeRepoPath).filter(Boolean))].sort(),
+      provenance: isReviewScopeBaselineProvenance(parsed.provenance) ? parsed.provenance : undefined,
+      baseRef: typeof parsed.baseRef === 'string' ? parsed.baseRef : undefined,
     };
   } catch {
     return null;
   }
+}
+
+function isReviewScopeBaselineProvenance(value: unknown): value is ReviewScopeBaselineProvenance {
+  return value === 'launch-base'
+    || value === 'remote-merge-base'
+    || value === 'local-merge-base-fallback'
+    || value === 'explicit-since-commit';
 }
 
 function collectNameOnly(
@@ -1079,7 +1443,7 @@ function collectCrossPrReverts(input: {
   }
 
   try {
-    const reverts = reviewScopeGuardDeps.detectCrossPrReverts({
+    const { findings: reverts } = reviewScopeGuardDeps.detectCrossPrReverts({
       repoDir: input.repoDir,
       baseRef: input.baseRef,
       headRef: input.headRef,

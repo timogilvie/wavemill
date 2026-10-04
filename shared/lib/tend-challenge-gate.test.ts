@@ -9,17 +9,46 @@ import {
   classifyPairUnresolvableState,
   getSiblingBranch,
   isUnresolvableReason,
+  evaluateSiblingLiveness,
+  isNoPrSiblingStalled,
   isSiblingLive,
   loadWorkflowStateChallengeData,
   pairHasPendingChallengeArm,
   parseRemoteBranchOutput,
+  probeSiblingProgress,
+  SIBLING_PROGRESS_GRACE_MS,
   taskHasPendingChallengeArm,
   UNRESOLVABLE_REASONS,
   type ChallengeBlockedCandidate,
   type ChallengeEligibleWorkItem,
   type ChallengeGateOptions,
   type PairTaskState,
+  type SiblingProgressProbe,
+  type TaskEvalState,
 } from './tend-challenge-gate.ts';
+import type { TaskProgress } from './task-progress.ts';
+
+/** Minimal TaskProgress fixture for the HOK-3128 sibling-liveness tests. */
+function progressFixture(overrides: Partial<TaskProgress> = {}): TaskProgress {
+  return {
+    issue: 'HOK-1_c',
+    computedAt: '2026-07-01T01:00:00.000Z',
+    lastProgressAt: null,
+    progressAgeMinutes: null,
+    sources: [],
+    agentState: null,
+    agentRecord: null,
+    controllerState: null,
+    agentIdle: false,
+    terminal: false,
+    terminalIdle: false,
+    agentProcessLive: null,
+    stalled: false,
+    stallMinutes: 30,
+    blockingPrompt: null,
+    ...overrides,
+  };
+}
 
 describe('unresolvable reason helpers', () => {
   it('recognizes every supported unresolvable reason', () => {
@@ -29,8 +58,10 @@ describe('unresolvable reason helpers', () => {
       'both-eval-hard-failed',
       'sibling-challenge-aborted',
       'both-challenge-aborted',
+      'sibling-stalled',
     ]);
     assert.equal(isUnresolvableReason('both-challenge-aborted'), true);
+    assert.equal(isUnresolvableReason('sibling-stalled'), true);
     assert.equal(isUnresolvableReason('foo'), false);
   });
 
@@ -253,7 +284,8 @@ describe('isSiblingLive', () => {
     }), false);
   });
 
-  it('treats tracked siblings without a PR as live', () => {
+  it('treats tracked siblings without a PR as live when progress was not probed', () => {
+    // Legacy contract: no progress evidence supplied means "in flight".
     assert.equal(isSiblingLive({
       hasSiblingBranch: true,
       openPrNumbers: new Set(),
@@ -278,6 +310,203 @@ describe('isSiblingLive', () => {
       pairState,
       side: 'primary',
     }), false);
+  });
+
+  // HOK-3128: a no-PR sibling is live only while the progress primitive shows
+  // agent evidence; pane/window existence never enters the decision.
+  describe('no-PR sibling progress (HOK-3128)', () => {
+    const nowMs = Date.parse('2026-07-01T02:00:00Z');
+    const noPrPair = (updatedAt: number | null): PairTaskState => ({
+      ...pairState,
+      challenger: { ...pairState.challenger!, prNumber: null, updatedAt },
+    });
+    const liveFor = (progress: TaskProgress | null, updatedAt: number | null = Date.parse('2026-07-01T00:00:00Z')) =>
+      isSiblingLive({
+        hasSiblingBranch: true,
+        openPrNumbers: new Set(),
+        pairState: noPrPair(updatedAt),
+        side: 'primary',
+        siblingProgress: progress,
+        nowMs,
+      });
+
+    it('is live with fresh agent progress', () => {
+      assert.equal(liveFor(progressFixture({ lastProgressAt: '2026-07-01T01:55:00Z' })), true);
+    });
+
+    it('is not live when the agent is terminal/idle and last progress is older than the grace', () => {
+      assert.equal(liveFor(progressFixture({
+        lastProgressAt: '2026-07-01T00:30:00Z',
+        agentIdle: true,
+        agentState: null,
+      })), false);
+      assert.equal(liveFor(progressFixture({
+        lastProgressAt: '2026-07-01T00:30:00Z',
+        terminal: true,
+      })), false);
+    });
+
+    it('is live while the agent reports a fresh working or human-owned state', () => {
+      for (const agentState of ['working', 'waiting', 'approval-needed', 'blocked', 'policy-denied'] as const) {
+        assert.equal(
+          liveFor(progressFixture({ lastProgressAt: '2026-07-01T00:00:00Z', agentState })),
+          true,
+          `agentState=${agentState}`,
+        );
+      }
+    });
+
+    it('is live while a blocking prompt is waiting on a human', () => {
+      assert.equal(liveFor(progressFixture({
+        lastProgressAt: '2026-07-01T00:00:00Z',
+        blockingPrompt: { id: 'trust', agent: 'claude', detail: 'approve' },
+      })), true);
+    });
+
+    it('falls back to updatedAt age when the probe failed', () => {
+      assert.equal(liveFor(null, Date.parse('2026-07-01T00:00:00Z')), false);
+      assert.equal(liveFor(null, Date.parse('2026-07-01T01:50:00Z')), true);
+    });
+
+    it('never forfeits a freshly relaunched arm inside the orphan grace', () => {
+      // No progress evidence at all, but the task entry was just touched.
+      assert.equal(liveFor(progressFixture({ lastProgressAt: null }), nowMs - 10_000), true);
+    });
+  });
+});
+
+describe('isNoPrSiblingStalled', () => {
+  const sibling: TaskEvalState = {
+    issueId: 'HOK-1_c',
+    prNumber: null,
+    role: 'challenger',
+    branch: 'task/pair-primary-challenger',
+    challengeStage: null,
+    model: null,
+    updatedAt: Date.parse('2026-07-01T00:00:00Z'),
+    evalFailed: false,
+    evalCompleted: false,
+    evalHardFailureRetryCount: 0,
+    comparisonState: null,
+    challengeAborted: null,
+    challengeAbortedDetail: null,
+    challengeAbortedNextAction: null,
+    challengeAbortedStage: null,
+  };
+
+  it('treats an unprobed sibling as not stalled', () => {
+    assert.equal(isNoPrSiblingStalled({ sibling, progress: undefined, nowMs: Date.parse('2026-07-02T00:00:00Z') }), false);
+  });
+
+  it('honours the progress grace boundary', () => {
+    const lastProgressAt = '2026-07-01T00:00:00Z';
+    const base = Date.parse(lastProgressAt);
+    assert.equal(isNoPrSiblingStalled({
+      sibling,
+      progress: progressFixture({ lastProgressAt }),
+      nowMs: base + SIBLING_PROGRESS_GRACE_MS - 1,
+    }), false);
+    assert.equal(isNoPrSiblingStalled({
+      sibling,
+      progress: progressFixture({ lastProgressAt }),
+      nowMs: base + SIBLING_PROGRESS_GRACE_MS,
+    }), true);
+  });
+
+  it('counts a newer task.updated transition as progress', () => {
+    assert.equal(isNoPrSiblingStalled({
+      sibling: { ...sibling, updatedAt: Date.parse('2026-07-01T01:50:00Z') },
+      progress: progressFixture({ lastProgressAt: '2026-07-01T00:00:00Z' }),
+      nowMs: Date.parse('2026-07-01T02:00:00Z'),
+    }), false);
+  });
+
+  it('treats no evidence at all as stale once past the orphan grace', () => {
+    assert.equal(isNoPrSiblingStalled({
+      sibling: { ...sibling, updatedAt: null },
+      progress: null,
+      nowMs: Date.parse('2026-07-01T02:00:00Z'),
+    }), true);
+  });
+});
+
+describe('evaluateSiblingLiveness', () => {
+  const tracked = (challenger: Partial<TaskEvalState>): PairTaskState => ({
+    primary: {
+      issueId: 'HOK-1', prNumber: 101, role: 'primary', branch: 'task/pair', challengeStage: null, model: null,
+      updatedAt: 0, evalFailed: false, evalCompleted: true, evalHardFailureRetryCount: 0, comparisonState: null,
+      challengeAborted: null, challengeAbortedDetail: null, challengeAbortedNextAction: null, challengeAbortedStage: null,
+    },
+    challenger: {
+      issueId: 'HOK-1_c', prNumber: null, role: 'challenger', branch: 'task/pair-challenger', challengeStage: null,
+      model: null, updatedAt: Date.parse('2026-07-01T00:00:00Z'), evalFailed: false, evalCompleted: false,
+      evalHardFailureRetryCount: 0, comparisonState: null, challengeAborted: null, challengeAbortedDetail: null,
+      challengeAbortedNextAction: null, challengeAbortedStage: null,
+      ...challenger,
+    },
+  });
+
+  it('probes only a tracked, no-PR, non-aborted sibling', () => {
+    const calls: string[] = [];
+    const probe: SiblingProgressProbe = (_repo, sibling) => {
+      calls.push(sibling.issueId);
+      return progressFixture({ lastProgressAt: '2026-07-01T00:00:00Z', agentIdle: true });
+    };
+    const nowMs = Date.parse('2026-07-01T02:00:00Z');
+    const base = { repoDir: '/nonexistent', hasSiblingBranch: true, openPrNumbers: new Set<number>(), side: 'primary' as const, nowMs, getSiblingProgress: probe };
+
+    const stalled = evaluateSiblingLiveness({ ...base, pairState: tracked({}) });
+    assert.deepEqual({ live: stalled.live, stalled: stalled.stalled }, { live: false, stalled: true });
+    assert.equal(stalled.sibling?.issueId, 'HOK-1_c');
+
+    assert.equal(evaluateSiblingLiveness({ ...base, pairState: tracked({ prNumber: 102 }) }).stalled, false);
+    assert.equal(evaluateSiblingLiveness({ ...base, pairState: tracked({ challengeAborted: 'terminal_stage_failure:x' }) }).stalled, false);
+    assert.deepEqual(calls, ['HOK-1_c']);
+  });
+
+  it('reports a sibling with fresh progress as live and not stalled', () => {
+    const result = evaluateSiblingLiveness({
+      repoDir: '/nonexistent',
+      hasSiblingBranch: true,
+      openPrNumbers: new Set(),
+      pairState: tracked({}),
+      side: 'primary',
+      nowMs: Date.parse('2026-07-01T02:00:00Z'),
+      getSiblingProgress: () => progressFixture({ lastProgressAt: '2026-07-01T01:59:00Z' }),
+    });
+    assert.deepEqual({ live: result.live, stalled: result.stalled }, { live: true, stalled: false });
+  });
+});
+
+describe('probeSiblingProgress', () => {
+  it('passes the sibling identity, phase and lifecycle to the primitive and swallows errors', () => {
+    const repoDir = mkdtempSync(join(tmpdir(), 'tend-probe-'));
+    try {
+      mkdirSync(join(repoDir, 'worktrees', 'pair-slug-challenger'), { recursive: true });
+      const sibling: TaskEvalState = {
+        issueId: 'HOK-1_c', prNumber: null, role: 'challenger', branch: 'task/pair-slug-challenger',
+        challengeStage: null, model: null, updatedAt: Date.parse('2026-07-01T00:00:00Z'), evalFailed: false,
+        evalCompleted: false, evalHardFailureRetryCount: 0, comparisonState: null, challengeAborted: null,
+        challengeAbortedDetail: null, challengeAbortedNextAction: null, challengeAbortedStage: null,
+        phase: 'coding', slug: 'pair-slug-challenger', lifecycle: { workflowOutcome: 'aborted' },
+      };
+      let seen: Record<string, unknown> | undefined;
+      const now = new Date('2026-07-01T02:00:00Z');
+      const result = probeSiblingProgress(repoDir, sibling, now, ((opts: Record<string, unknown>) => {
+        seen = opts;
+        return progressFixture();
+      }) as never);
+      assert.ok(result);
+      assert.equal(seen?.issue, 'HOK-1_c');
+      assert.equal(seen?.phase, 'coding');
+      assert.equal(seen?.worktree, join(repoDir, 'worktrees', 'pair-slug-challenger'));
+      assert.deepEqual((seen?.task as { lifecycle?: unknown }).lifecycle, { workflowOutcome: 'aborted' });
+      assert.equal((seen?.task as { updated?: string }).updated, '2026-07-01T00:00:00.000Z');
+
+      assert.equal(probeSiblingProgress(repoDir, sibling, now, (() => { throw new Error('boom'); }) as never), null);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -402,6 +631,42 @@ describe('branch sibling detection in applyChallengePairGates', () => {
       const result = await applyChallengePairGates(items, [], repoDir, options);
       assert.equal(result.eligible.length, 1);
       assert.equal(result.eligible[0].pr.number, 101);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('does not close a challenger from a voided forfeit', async () => {
+    const { repoDir, cleanup } = setupRepoDir({ challenge: { autoMergeWinner: true } });
+    try {
+      writeWorkflowState(repoDir, {
+        HOK_1: { pr: 101, branch: 'task/foo', challengePairId: 'pair-1', challengeRole: 'primary' },
+        HOK_1_c: { pr: 102, branch: 'task/foo-challenger', challengePairId: 'pair-1', challengeRole: 'challenger' },
+      });
+      writeFileSync(join(repoDir, '.wavemill', 'evals', 'challenge-records.jsonl'), `${JSON.stringify({
+        challengePairId: 'pair-1',
+        primaryPrUrl: 'https://github.com/org/repo/pull/101',
+        challengerPrUrl: 'https://github.com/org/repo/pull/102',
+        winner: 'primary',
+        comparisonOutcome: 'forfeit',
+        timestamp: '2026-04-28T12:00:00Z',
+      })}\n`);
+      writeFileSync(join(repoDir, '.wavemill', 'evals', 'challenge-record-voids.jsonl'), `${JSON.stringify({
+        challengePairId: 'pair-1',
+        recordTimestamp: '2026-04-28T12:00:00Z',
+        voidedAt: '2026-04-28T12:05:00Z',
+        reason: 'review completed after premature timeout',
+      })}\n`);
+
+      const result = await applyChallengePairGates([
+        makeWorkItem({ number: 101, headRefName: 'task/foo', challengePairId: 'pair-1', challenge: true }),
+        makeWorkItem({ number: 102, headRefName: 'task/foo-challenger', challengePairId: 'pair-1', challenge: true }),
+      ], [], repoDir, {
+        remoteBranches: ['task/foo', 'task/foo-challenger'],
+        coolOffSeconds: 0,
+      });
+      assert.deepEqual(result.losers, []);
+      assert.equal(result.blocked.length, 2);
     } finally {
       cleanup();
     }
@@ -1204,10 +1469,103 @@ describe('unresolvable pair states in applyChallengePairGates', () => {
         remoteBranches: ['task/pair-primary', 'task/pair-primary-challenger'],
         coolOffSeconds: 0,
         nowMs: () => Date.parse('2026-07-01T01:00:00Z'),
+        // The sibling's agent is actively working (HOK-3128 progress probe).
+        getSiblingProgress: () => progressFixture({ lastProgressAt: '2026-07-01T00:59:00Z', agentState: 'working' }),
       });
 
-      // Not orphan-sibling: the in-flight primary is still a live arm.
-      assert.notEqual(result.blocked[0].reason, 'challenge:pair-unresolvable:orphan-sibling');
+      // Neither orphan-sibling nor sibling-stalled: the in-flight primary is
+      // still a live arm, so the survivor keeps waiting for a comparison.
+      assert.equal(result.blocked[0].reason, 'challenge:pair-unresolved:no-comparison');
+    } finally {
+      cleanup();
+    }
+  });
+
+  // HOK-3128: a challenger parked on a dirty-tree coding handoff after its
+  // agent exited is tracked, has no PR, and shows no progress. It must not
+  // hold the green primary at `no-comparison` forever.
+  it('classifies a stalled no-PR challenger as sibling-stalled, not no-comparison', async () => {
+    const { repoDir, cleanup } = setupRepoDir({});
+    try {
+      const items = [makeWorkItem({
+        number: 101,
+        headRefName: 'task/pair-primary',
+        challengePairId: 'pair-1',
+        challenge: true,
+      })];
+      writeWorkflowState(repoDir, {
+        HOK_1: {
+          pr: 101,
+          branch: 'task/pair-primary',
+          challengePairId: 'pair-1',
+          challengeRole: 'primary',
+          evalCompleted: true,
+          updated: '2026-07-01T00:00:00Z',
+        },
+        HOK_1_c: {
+          branch: 'task/pair-primary-challenger',
+          challengePairId: 'pair-1',
+          challengeRole: 'challenger',
+          phase: 'coding',
+          slug: 'pair-primary-challenger',
+          updated: '2026-07-01T00:00:00Z',
+        },
+      });
+      const probed: TaskEvalState[] = [];
+      const result = await applyChallengePairGates(items, [], repoDir, {
+        remoteBranches: ['task/pair-primary', 'task/pair-primary-challenger'],
+        coolOffSeconds: 0,
+        nowMs: () => Date.parse('2026-07-01T03:00:00Z'),
+        getSiblingProgress: (_repo, sibling) => {
+          probed.push(sibling);
+          return progressFixture({ lastProgressAt: '2026-07-01T00:22:00Z', agentIdle: true });
+        },
+      });
+
+      assert.equal(result.blocked[0].reason, 'challenge:pair-unresolvable:sibling-stalled');
+      assert.equal(probed.length, 1);
+      assert.equal(probed[0].issueId, 'HOK_1_c');
+      assert.equal(probed[0].phase, 'coding');
+      assert.equal(probed[0].slug, 'pair-primary-challenger');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('keeps a live no-PR challenger at no-comparison', async () => {
+    const { repoDir, cleanup } = setupRepoDir({});
+    try {
+      const items = [makeWorkItem({
+        number: 101,
+        headRefName: 'task/pair-primary',
+        challengePairId: 'pair-1',
+        challenge: true,
+      })];
+      writeWorkflowState(repoDir, {
+        HOK_1: {
+          pr: 101,
+          branch: 'task/pair-primary',
+          challengePairId: 'pair-1',
+          challengeRole: 'primary',
+          evalCompleted: true,
+          updated: '2026-07-01T00:00:00Z',
+        },
+        HOK_1_c: {
+          branch: 'task/pair-primary-challenger',
+          challengePairId: 'pair-1',
+          challengeRole: 'challenger',
+          phase: 'coding',
+          updated: '2026-07-01T00:00:00Z',
+        },
+      });
+      const result = await applyChallengePairGates(items, [], repoDir, {
+        remoteBranches: ['task/pair-primary', 'task/pair-primary-challenger'],
+        coolOffSeconds: 0,
+        nowMs: () => Date.parse('2026-07-01T03:00:00Z'),
+        getSiblingProgress: () => progressFixture({ lastProgressAt: '2026-07-01T02:58:00Z' }),
+      });
+
+      assert.equal(result.blocked[0].reason, 'challenge:pair-unresolved:no-comparison');
     } finally {
       cleanup();
     }
@@ -1632,5 +1990,176 @@ describe('pending deferred challenger arms (HOK-2813)', () => {
     }), false);
     assert.equal(taskHasPendingChallengeArm({}), false);
     assert.equal(taskHasPendingChallengeArm({ challengeArms: 'junk' }), false);
+  });
+});
+
+describe('classifyChallengeState siblingStalled (HOK-3128)', () => {
+  const pairState: PairTaskState = {
+    primary: {
+      issueId: 'HOK-1', prNumber: 101, role: 'primary', branch: 'task/pair', challengeStage: null, model: null,
+      updatedAt: 0, evalFailed: false, evalCompleted: true, evalHardFailureRetryCount: 0, comparisonState: null,
+      challengeAborted: null, challengeAbortedDetail: null, challengeAbortedNextAction: null, challengeAbortedStage: null,
+    },
+    challenger: {
+      issueId: 'HOK-1_c', prNumber: null, role: 'challenger', branch: 'task/pair-challenger', challengeStage: null,
+      model: null, updatedAt: 0, evalFailed: false, evalCompleted: false, evalHardFailureRetryCount: 0,
+      comparisonState: null, challengeAborted: null, challengeAbortedDetail: null, challengeAbortedNextAction: null,
+      challengeAbortedStage: null,
+    },
+  };
+  const classify = (siblingStalled: boolean, overrides: Partial<PairTaskState> = {}) => classifyChallengeState(
+    101,
+    { challenge: true, challengePairId: 'pair-1' },
+    new Map(),
+    [],
+    false,
+    new Set([101]),
+    { taskStateByPair: new Map([['pair-1', { ...pairState, ...overrides }]]), siblingStalled },
+  );
+
+  it('returns pair-unresolvable:sibling-stalled when the sibling is stalled', () => {
+    assert.deepEqual(classify(true), { kind: 'pair-unresolvable', pairId: 'pair-1', otherPr: null, reason: 'sibling-stalled' });
+  });
+
+  it('keeps no-comparison when the sibling is not stalled', () => {
+    assert.equal((classify(false) as { reason: string }).reason, 'pair-unresolved:no-comparison');
+  });
+
+  it('prefers the aborted classification once the monitor stamped the arm', () => {
+    const gate = classify(true, {
+      challenger: { ...pairState.challenger!, challengeAborted: 'terminal_stage_failure:coding-dirty-handoff' },
+    });
+    assert.equal((gate as { reason: string }).reason, 'sibling-challenge-aborted');
+  });
+});
+
+describe('challenge-void: a sibling retired as an invalid challenge (HOK-3147)', () => {
+  const voidRecord = (overrides: Record<string, unknown> = {}) => ({
+    challengePairId: 'pair-1',
+    primaryPrUrl: 'https://github.com/org/repo/pull/101',
+    challengerPrUrl: 'https://github.com/org/repo/pull/102',
+    comparisonOutcome: 'invalid_challenge',
+    invalidChallenge: true,
+    invalidChallengeReason: 'arm_infrastructure_failure',
+    terminalReason: 'challenger_challenge_aborted',
+    timestamp: '2026-10-01T21:40:00Z',
+    ...overrides,
+  });
+
+  async function gate(
+    record: Record<string, unknown>,
+    openPrs: number[],
+    config: Record<string, unknown> = {},
+  ) {
+    const { repoDir, cleanup } = setupRepoDir(config);
+    try {
+      writeWorkflowState(repoDir, {
+        HOK_1: { pr: 101, challengePairId: 'pair-1', challengeRole: 'primary', evalCompleted: true },
+        HOK_1_c: {
+          pr: 102,
+          challengePairId: 'pair-1',
+          challengeRole: 'challenger',
+          challengeAborted: 'invalid_challenge:ready-transition-failed',
+        },
+      });
+      writeFileSync(join(repoDir, '.wavemill', 'evals', 'challenge-records.jsonl'), `${JSON.stringify(record)}\n`);
+      const items = openPrs.map((number) => makeWorkItem({ number, challengePairId: 'pair-1', challenge: true }));
+      return await applyChallengePairGates(items, [], repoDir, { remoteBranches: [], coolOffSeconds: 0 });
+    } finally {
+      cleanup();
+    }
+  }
+
+  it('releases the primary once the retired challenger PR is closed', async () => {
+    const result = await gate(voidRecord(), [101]);
+    assert.deepEqual(result.eligible.map((item) => item.pr.number), [101]);
+    assert.equal(result.blocked.length, 0);
+    assert.deepEqual(result.losers, []);
+    assert.equal(result.loserCleanupCandidates.length, 0);
+  });
+
+  it('releases the survivor even when autoMergeWinner is off (no winner to hold)', async () => {
+    const result = await gate(voidRecord(), [101], { challenge: { autoMergeWinner: false } });
+    assert.deepEqual(result.eligible.map((item) => item.pr.number), [101]);
+  });
+
+  it('keeps the HOK-2970 hold while the retired challenger PR is still open', async () => {
+    const result = await gate(voidRecord(), [101, 102]);
+    assert.equal(result.eligible.length, 0);
+    const reasons = Object.fromEntries(result.blocked.map((entry) => [entry.number, entry.reason]));
+    assert.equal(reasons[101], 'challenge:pair-unresolved:invalid-challenge:arm_infrastructure_failure');
+    assert.equal(reasons[102], 'challenge:pair-unresolved:invalid-challenge:arm_infrastructure_failure');
+    assert.deepEqual(result.losers, []);
+  });
+
+  it('never releases the retired arm itself', async () => {
+    const result = await gate(voidRecord(), [102]);
+    assert.equal(result.eligible.length, 0);
+    assert.equal(result.blocked[0]?.reason, 'challenge:pair-unresolved:invalid-challenge:arm_infrastructure_failure');
+  });
+
+  it('keeps holding a both_challenge_aborted invalid record', async () => {
+    const result = await gate(voidRecord({ terminalReason: 'both_challenge_aborted' }), [101]);
+    assert.equal(result.eligible.length, 0);
+    assert.equal(result.blocked[0]?.reason, 'challenge:pair-unresolved:invalid-challenge:arm_infrastructure_failure');
+  });
+
+  it('releases the challenger symmetrically when the primary was retired', async () => {
+    const result = await gate(voidRecord({ terminalReason: 'primary_challenge_aborted' }), [102]);
+    assert.deepEqual(result.eligible.map((item) => item.pr.number), [102]);
+  });
+
+  it('releases the primary once a review-identity-mismatch retired challenger PR is closed (HOK-3154)', async () => {
+    const { repoDir, cleanup } = setupRepoDir({ challenge: { autoMergeWinner: true } });
+    try {
+      writeWorkflowState(repoDir, {
+        HOK_1: { pr: 101, challengePairId: 'pair-1', challengeRole: 'primary', evalCompleted: true },
+        HOK_1_c: {
+          pr: 102,
+          challengePairId: 'pair-1',
+          challengeRole: 'challenger',
+          challengeAborted: 'invalid_challenge:review-identity-mismatch',
+          challengeAbortedStage: 'review',
+        },
+      });
+      writeFileSync(
+        join(repoDir, '.wavemill', 'evals', 'challenge-records.jsonl'),
+        `${JSON.stringify({
+          challengePairId: 'pair-1',
+          primaryPrUrl: 'https://github.com/org/repo/pull/101',
+          challengerPrUrl: 'https://github.com/org/repo/pull/102',
+          comparisonOutcome: 'invalid_challenge',
+          invalidChallenge: true,
+          invalidChallengeReason: 'arm_infrastructure_failure',
+          terminalReason: 'challenger_challenge_aborted',
+          timestamp: '2026-10-02T12:00:00Z',
+          armFailures: [{ side: 'challenger', model: 'kimi-k2', stage: 'review', failureKind: 'review-identity-mismatch', faultClass: 'harness-fault' }],
+        })}\n`,
+      );
+      // Only the primary PR is still open (the monitor closed the retired challenger).
+      const items = [101].map((number) =>
+        makeWorkItem({ number, challengePairId: 'pair-1', challenge: true }),
+      );
+      const result = await applyChallengePairGates(items, [], repoDir, { remoteBranches: [], coolOffSeconds: 0 });
+      assert.deepEqual(result.eligible.map((item) => item.pr.number), [101]);
+      assert.equal(result.blocked.length, 0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('a ready-exhausted forfeit makes the primary the winner and the open challenger a loser', async () => {
+    const result = await gate(voidRecord({
+      comparisonOutcome: 'forfeit',
+      invalidChallenge: undefined,
+      invalidChallengeReason: undefined,
+      winner: 'primary',
+      primaryCompleted: true,
+      challengerCompleted: false,
+      armFailures: [{ side: 'challenger', model: 'm', stage: 'ready', failureKind: 'ready-exhausted', faultClass: 'model-fault' }],
+    }), [101, 102], { challenge: { autoMergeWinner: true } });
+    assert.deepEqual(result.eligible.map((item) => item.pr.number), [101]);
+    assert.deepEqual(result.losers, [102]);
+    assert.equal(result.loserCleanupCandidates[0]?.loserPr, 102);
   });
 });

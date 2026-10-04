@@ -46,6 +46,61 @@
       }
     },
     {
+      "id": "claude-opus-5-5",
+      "capabilities": {
+        "vendor": "anthropic",
+        "class": "frontier",
+        "strengths": [
+          "long-horizon reasoning",
+          "code review",
+          "architecture",
+          "agentic coding"
+        ],
+        "weaknesses": [
+          "higher cost",
+          "slower"
+        ],
+        "releasedAt": "2026-09-15",
+        "qualityScores": {
+          "routing": 62,
+          "planning": 97,
+          "coding": 88,
+          "review": 96,
+          "classify": 62
+        },
+        "pricing": {
+          "inputCostPerMTok": 4,
+          "outputCostPerMTok": 20,
+          "cacheWriteCostPerMTok": 5,
+          "cacheReadCostPerMTok": 0.2
+        },
+        "contextWindowTokens": 1000000,
+        "toolSupport": "full",
+        "multimodal": {
+          "text": true,
+          "image": true
+        },
+        "latencyTier": "slow",
+        "reasoningTier": "advanced",
+        "costPerMillionInputTokensUsd": 4,
+        "costPerMillionOutputTokensUsd": 20,
+        "agent": "claude",
+        "identity": {
+          "status": "verified",
+          "revision": 1,
+          "fingerprint": "19b3b8d3e1d9a8cead667f5b252116bbf7f3efcde20f10de83aec89c3fc903e6",
+          "displayName": "claude-opus-5-5",
+          "family": "claude",
+          "evidencePolicy": "eligible",
+          "lineage": {
+            "predecessors": [
+              "claude-opus-4-8"
+            ]
+          }
+        }
+      }
+    },
+    {
       "id": "claude-opus-4-8",
       "capabilities": {
         "vendor": "anthropic",
@@ -418,8 +473,14 @@
             "predecessors": [
               "gpt-5",
               "gpt-5-mini"
-            ]
+            ],
+            "successor": "gpt-5.6-terra"
           }
+        },
+        "supportedModel": {
+          "lifecycle": "deprecated",
+          "launchEligible": false,
+          "routingEligible": false
         }
       }
     },
@@ -475,6 +536,62 @@
             "successor": "gpt-5.6-terra",
             "disclosedAt": "2026-08-23",
             "disclosureSource": "HOK-2862"
+          }
+        }
+      }
+    },
+    {
+      "id": "gpt-6-sol",
+      "capabilities": {
+        "vendor": "openai",
+        "class": "frontier",
+        "strengths": [
+          "frontier professional reasoning",
+          "complex coding",
+          "tool use"
+        ],
+        "weaknesses": [
+          "new routing candidate; evaluation evidence is still accumulating"
+        ],
+        "releasedAt": "2026-09-15",
+        "qualityScores": {
+          "routing": 62,
+          "planning": 94,
+          "coding": 91,
+          "review": 93,
+          "classify": 66
+        },
+        "pricing": {
+          "inputCostPerMTok": 2,
+          "outputCostPerMTok": 10,
+          "cacheWriteCostPerMTok": 2.5,
+          "cacheReadCostPerMTok": 0.2
+        },
+        "contextWindowTokens": 1050000,
+        "toolSupport": "full",
+        "multimodal": {
+          "text": true,
+          "image": true
+        },
+        "latencyTier": "slow",
+        "reasoningTier": "advanced",
+        "costPerMillionInputTokensUsd": 2,
+        "costPerMillionOutputTokensUsd": 10,
+        "agent": "codex",
+        "codexChatgptCapability": {
+          "supported": true
+        },
+        "identity": {
+          "status": "verified",
+          "revision": 1,
+          "fingerprint": "4f2580c0735ce06e04186569833394e6457f69323c01f053b7fc98e1dfb90a3f",
+          "displayName": "gpt-6-sol",
+          "family": "gpt",
+          "evidencePolicy": "eligible",
+          "lineage": {
+            "predecessors": [
+              "gpt-5.6-sol"
+            ]
           }
         }
       }
@@ -574,6 +691,62 @@
           "lineage": {
             "predecessors": [
               "gpt-5.4"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "gpt-6-luna",
+      "capabilities": {
+        "vendor": "openai",
+        "class": "fast_economy",
+        "strengths": [
+          "cost-sensitive high-volume workloads",
+          "tool use",
+          "long context"
+        ],
+        "weaknesses": [
+          "new routing candidate; evaluation evidence is still accumulating"
+        ],
+        "releasedAt": "2026-09-15",
+        "qualityScores": {
+          "routing": 70,
+          "planning": 58,
+          "coding": 65,
+          "review": 60,
+          "classify": 80
+        },
+        "pricing": {
+          "inputCostPerMTok": 0.1,
+          "outputCostPerMTok": 0.5,
+          "cacheWriteCostPerMTok": 0.125,
+          "cacheReadCostPerMTok": 0.01
+        },
+        "contextWindowTokens": 1050000,
+        "toolSupport": "full",
+        "multimodal": {
+          "text": true,
+          "image": true
+        },
+        "latencyTier": "fast",
+        "reasoningTier": "advanced",
+        "costPerMillionInputTokensUsd": 0.1,
+        "costPerMillionOutputTokensUsd": 0.5,
+        "agent": "codex",
+        "codexChatgptCapability": {
+          "supported": true
+        },
+        "identity": {
+          "status": "verified",
+          "revision": 1,
+          "fingerprint": "20d6879015c153103fba0e5e810246598771478f4543554763510a30f009d377",
+          "displayName": "gpt-6-luna",
+          "family": "gpt",
+          "evidencePolicy": "eligible",
+          "lineage": {
+            "predecessors": [
+              "gpt-5.6-luna"
             ]
           }
         }
@@ -712,7 +885,7 @@
           "family": "gpt",
           "evidencePolicy": "eligible",
           "lineage": {
-            "successor": "gpt-5.5",
+            "successor": "gpt-5.6-terra",
             "disclosedAt": "2026-08-23",
             "disclosureSource": "HOK-2862"
           }
@@ -767,7 +940,7 @@
           "family": "gpt",
           "evidencePolicy": "eligible",
           "lineage": {
-            "successor": "gpt-5.5",
+            "successor": "gpt-5.6-terra",
             "disclosedAt": "2026-08-23",
             "disclosureSource": "HOK-2862"
           }
@@ -890,6 +1063,200 @@
             "provider": "google",
             "model": "gemini-2.5-pro",
             "suiteVersion": "v2"
+          },
+          "lifecycle": "blocked",
+          "compatibilityFlags": {
+            "thinkingFormat": "openrouter"
+          },
+          "launchEligible": false,
+          "routingEligible": false
+        },
+        "identity": {
+          "status": "verified",
+          "revision": 1,
+          "fingerprint": "c509f2f3f561948bf37c7c9e38ec8864324cf2584bee813d05a8d1addc520431",
+          "displayName": "gemini-2.5-pro",
+          "family": "gemini",
+          "evidencePolicy": "eligible",
+          "lineage": {
+            "successor": "gemini-3.1-pro-preview"
+          }
+        }
+      }
+    },
+    {
+      "id": "gemini-3.1-pro-preview",
+      "capabilities": {
+        "vendor": "google",
+        "class": "frontier",
+        "strengths": [
+          "planning",
+          "coding",
+          "code review",
+          "long context"
+        ],
+        "weaknesses": [
+          "preview model",
+          "OpenRouter dependency"
+        ],
+        "qualityScores": {
+          "routing": 50,
+          "planning": 70,
+          "coding": 70,
+          "review": 70,
+          "classify": 50
+        },
+        "pricing": {
+          "inputCostPerMTok": 2,
+          "outputCostPerMTok": 12,
+          "cacheReadCostPerMTok": 0.2,
+          "cacheWriteCostPerMTok": 0.375
+        },
+        "defaultLadderEligible": false,
+        "contextWindowTokens": 1048576,
+        "toolSupport": "full",
+        "multimodal": {
+          "text": true,
+          "image": true,
+          "audio": true,
+          "video": true
+        },
+        "latencyTier": "standard",
+        "reasoningTier": "advanced",
+        "costPerMillionInputTokensUsd": 2,
+        "costPerMillionOutputTokensUsd": 12,
+        "agent": "native-openrouter",
+        "nativeCapability": {
+          "nativeProvider": "openrouter",
+          "piTransportKind": "openai-completions",
+          "readOnlyNative": "certified",
+          "compatFlags": {
+            "thinkingFormat": "openrouter"
+          },
+          "certification": {
+            "maxCertifiedPhase": "workflow",
+            "certifiedAt": "2026-10-01T19:09:55.912Z",
+            "certificationSuiteVersion": "v3"
+          }
+        },
+        "supportedModel": {
+          "wavemillAlias": "gemini-3.1-pro-preview",
+          "providerNativeId": "google/gemini-3.1-pro-preview",
+          "provider": "openrouter",
+          "transport": "openai-completions",
+          "stages": [
+            "planning",
+            "coding",
+            "review"
+          ],
+          "requiredCertificationPhaseByStage": {
+            "planning": "workflow",
+            "coding": "patch",
+            "review": "read-only"
+          },
+          "certificationSuiteVersion": "v3",
+          "certificationFreshnessDays": 60,
+          "canonicalArtifactIdentity": {
+            "provider": "google",
+            "model": "gemini-3.1-pro-preview",
+            "suiteVersion": "v3"
+          },
+          "lifecycle": "supported",
+          "compatibilityFlags": {
+            "thinkingFormat": "openrouter"
+          },
+          "launchEligible": true,
+          "routingEligible": true
+        },
+        "identity": {
+          "status": "verified",
+          "revision": 1,
+          "fingerprint": "f77d30fe1ede221917fe00384a9d688477e113f7ae3a9d0ad581e4ce1af80df9",
+          "displayName": "gemini-3.1-pro-preview",
+          "family": "gemini",
+          "evidencePolicy": "eligible",
+          "lineage": {
+            "predecessors": ["gemini-2.5-pro"]
+          }
+        }
+      }
+    },
+    {
+      "id": "gemini-3.1-pro-preview-customtools",
+      "capabilities": {
+        "vendor": "google",
+        "class": "frontier",
+        "strengths": [
+          "coding",
+          "tool selection",
+          "long context"
+        ],
+        "weaknesses": [
+          "preview model",
+          "OpenRouter dependency",
+          "variant tuned for custom tools"
+        ],
+        "qualityScores": {
+          "routing": 68,
+          "planning": 90,
+          "coding": 88,
+          "review": 89,
+          "classify": 66
+        },
+        "pricing": {
+          "inputCostPerMTok": 2,
+          "outputCostPerMTok": 12,
+          "cacheReadCostPerMTok": 0.2,
+          "cacheWriteCostPerMTok": 0.375
+        },
+        "defaultLadderEligible": false,
+        "contextWindowTokens": 1048576,
+        "toolSupport": "full",
+        "multimodal": {
+          "text": true,
+          "image": true,
+          "audio": true,
+          "video": true
+        },
+        "latencyTier": "standard",
+        "reasoningTier": "advanced",
+        "costPerMillionInputTokensUsd": 2,
+        "costPerMillionOutputTokensUsd": 12,
+        "agent": "native-openrouter",
+        "nativeCapability": {
+          "nativeProvider": "openrouter",
+          "piTransportKind": "openai-completions",
+          "readOnlyNative": "certified",
+          "compatFlags": {
+            "thinkingFormat": "openrouter"
+          },
+          "certification": {
+            "maxCertifiedPhase": "workflow",
+            "certifiedAt": "2026-10-01T19:10:37.261Z",
+            "certificationSuiteVersion": "v3"
+          }
+        },
+        "supportedModel": {
+          "wavemillAlias": "gemini-3.1-pro-preview-customtools",
+          "providerNativeId": "google/gemini-3.1-pro-preview-customtools",
+          "provider": "openrouter",
+          "transport": "openai-completions",
+          "stages": [
+            "planning",
+            "coding",
+            "review"
+          ],
+          "requiredCertificationPhaseByStage": {
+            "planning": "workflow",
+            "coding": "patch",
+            "review": "read-only"
+          },
+          "certificationSuiteVersion": "v3",
+          "certificationFreshnessDays": 60,
+          "canonicalArtifactIdentity": {
+            "provider": "google",
+            "model": "gemini-3.1-pro-preview-customtools",
+            "suiteVersion": "v3"
           },
           "lifecycle": "supported",
           "compatibilityFlags": {
@@ -1218,12 +1585,12 @@
             "model": "mistral-large-2512",
             "suiteVersion": "v3"
           },
-          "lifecycle": "supported",
+          "lifecycle": "blocked",
           "compatibilityFlags": {
             "thinkingFormat": "openrouter"
           },
-          "launchEligible": true,
-          "routingEligible": true
+          "launchEligible": false,
+          "routingEligible": false
         }
       }
     },
@@ -1329,7 +1696,7 @@
         },
         "pricing": {
           "inputCostPerMTok": 0.39999999999999997,
-          "outputCostPerMTok": 2.0,
+          "outputCostPerMTok": 2,
           "cacheReadCostPerMTok": 0.04
         },
         "defaultLadderEligible": false,
@@ -1342,7 +1709,7 @@
         "latencyTier": "standard",
         "reasoningTier": "advanced",
         "costPerMillionInputTokensUsd": 0.39999999999999997,
-        "costPerMillionOutputTokensUsd": 2.0,
+        "costPerMillionOutputTokensUsd": 2,
         "agent": "native-openrouter",
         "nativeCapability": {
           "nativeProvider": "openrouter",
@@ -1377,12 +1744,12 @@
             "model": "devstral-2512",
             "suiteVersion": "v3"
           },
-          "lifecycle": "supported",
+          "lifecycle": "blocked",
           "compatibilityFlags": {
             "thinkingFormat": "openrouter"
           },
-          "launchEligible": true,
-          "routingEligible": true
+          "launchEligible": false,
+          "routingEligible": false
         }
       }
     },
@@ -1490,7 +1857,7 @@
         },
         "pricing": {
           "inputCostPerMTok": 0.3,
-          "outputCostPerMTok": 1.0,
+          "outputCostPerMTok": 1,
           "cacheReadCostPerMTok": 0.09999999999999999
         },
         "defaultLadderEligible": false,
@@ -1503,7 +1870,7 @@
         "latencyTier": "standard",
         "reasoningTier": "standard",
         "costPerMillionInputTokensUsd": 0.3,
-        "costPerMillionOutputTokensUsd": 1.0,
+        "costPerMillionOutputTokensUsd": 1,
         "agent": "native-openrouter",
         "nativeCapability": {
           "nativeProvider": "openrouter",
@@ -1734,9 +2101,9 @@
           "classify": 56
         },
         "pricing": {
-          "inputCostPerMTok": 0.966,
-          "outputCostPerMTok": 3.036,
-          "cacheReadCostPerMTok": 0.1932
+          "inputCostPerMTok": 1.45,
+          "outputCostPerMTok": 4.55,
+          "cacheReadCostPerMTok": 0.26
         },
         "defaultLadderEligible": false,
         "contextWindowTokens": 1048576,
@@ -1747,8 +2114,8 @@
         },
         "latencyTier": "standard",
         "reasoningTier": "advanced",
-        "costPerMillionInputTokensUsd": 0.966,
-        "costPerMillionOutputTokensUsd": 3.036,
+        "costPerMillionInputTokensUsd": 1.45,
+        "costPerMillionOutputTokensUsd": 4.55,
         "agent": "native-openrouter",
         "nativeCapability": {
           "nativeProvider": "openrouter",
@@ -1900,7 +2267,7 @@
         "pricing": {
           "inputCostPerMTok": 0.71,
           "outputCostPerMTok": 3.5,
-          "cacheReadCostPerMTok": 0.15
+          "cacheReadCostPerMTok": 0.18
         },
         "defaultLadderEligible": false,
         "contextWindowTokens": 262144,
@@ -2062,9 +2429,9 @@
           "classify": 60
         },
         "pricing": {
-          "inputCostPerMTok": 3.0,
-          "outputCostPerMTok": 15.0,
-          "cacheReadCostPerMTok": 0.31
+          "inputCostPerMTok": 3,
+          "outputCostPerMTok": 15,
+          "cacheReadCostPerMTok": 0.71
         },
         "defaultLadderEligible": false,
         "contextWindowTokens": 1048576,
@@ -2075,8 +2442,8 @@
         },
         "latencyTier": "standard",
         "reasoningTier": "advanced",
-        "costPerMillionInputTokensUsd": 3.0,
-        "costPerMillionOutputTokensUsd": 15.0,
+        "costPerMillionInputTokensUsd": 3,
+        "costPerMillionOutputTokensUsd": 15,
         "agent": "native-openrouter",
         "nativeCapability": {
           "nativeProvider": "openrouter",
@@ -2579,11 +2946,11 @@
         "pricing": {
           "inputCostPerMTok": 0.15,
           "outputCostPerMTok": 0.5,
-          "cacheReadCostPerMTok": 0.03,
+          "cacheReadCostPerMTok": 0.05,
           "cacheWriteCostPerMTok": 0
         },
         "defaultLadderEligible": true,
-        "contextWindowTokens": 1310720,
+        "contextWindowTokens": 1048576,
         "toolSupport": "basic",
         "multimodal": {
           "text": true,
@@ -2668,7 +3035,6 @@
       "claude-haiku-4-5-20251001",
       "deepseek-v4-flash",
       "claude-sonnet-5",
-      "gpt-5.5",
       "gpt-5.6-terra",
       "deepseek-v4-pro",
       "claude-fable-5",
@@ -2676,8 +3042,9 @@
       "claude-opus-4-7"
     ],
     "planning": [
+      "claude-opus-5-5",
+      "gpt-6-sol",
       "claude-fable-5",
-      "gpt-5.5",
       "claude-opus-4-8",
       "claude-opus-4-7",
       "gpt-5.6-terra",
@@ -2687,20 +3054,23 @@
       "claude-haiku-4-5-20251001"
     ],
     "coding": [
+      "claude-opus-5-5",
+      "gpt-6-sol",
       "claude-fable-5",
-      "gpt-5.5",
       "gpt-5.6-terra",
       "deepseek-v4-pro",
       "claude-sonnet-5",
       "claude-opus-4-8",
       "claude-opus-4-7",
+      "gpt-6-luna",
       "deepseek-chat",
       "deepseek-v4-flash",
       "claude-haiku-4-5-20251001"
     ],
     "review": [
-      "gpt-5.5",
       "claude-fable-5",
+      "claude-opus-5-5",
+      "gpt-6-sol",
       "claude-opus-4-8",
       "claude-opus-4-7",
       "gpt-5.6-terra",
@@ -2713,12 +3083,23 @@
       "claude-haiku-4-5-20251001",
       "deepseek-v4-flash",
       "claude-sonnet-5",
-      "gpt-5.5",
       "gpt-5.6-terra",
       "claude-fable-5"
     ]
   },
   "openrouterMappings": [
+    {
+      "wavemillAlias": "claude-opus-5-5",
+      "openrouterId": "anthropic/claude-opus-5.5",
+      "family": "claude",
+      "status": "active",
+      "priorityTier": 1,
+      "roleEligibility": [
+        "planning",
+        "coding",
+        "review"
+      ]
+    },
     {
       "wavemillAlias": "claude-opus-4-8",
       "openrouterId": "anthropic/claude-opus-4.8",
@@ -2774,6 +3155,30 @@
       "status": "active",
       "priorityTier": 2,
       "roleEligibility": [
+        "coding",
+        "review"
+      ]
+    },
+    {
+      "wavemillAlias": "gpt-6-sol",
+      "openrouterId": "openai/gpt-6-sol",
+      "family": "gpt",
+      "status": "active",
+      "priorityTier": 1,
+      "roleEligibility": [
+        "planning",
+        "coding",
+        "review"
+      ]
+    },
+    {
+      "wavemillAlias": "gpt-6-luna",
+      "openrouterId": "openai/gpt-6-luna",
+      "family": "gpt",
+      "status": "active",
+      "priorityTier": 1,
+      "roleEligibility": [
+        "planning",
         "coding",
         "review"
       ]
@@ -2922,6 +3327,30 @@
       "wavemillAlias": "gemini-2.5-pro",
       "openrouterId": "google/gemini-2.5-pro",
       "family": "gemini",
+      "status": "deprecated",
+      "priorityTier": 1,
+      "roleEligibility": [
+        "planning",
+        "coding",
+        "review"
+      ]
+    },
+    {
+      "wavemillAlias": "gemini-3.1-pro-preview",
+      "openrouterId": "google/gemini-3.1-pro-preview",
+      "family": "gemini",
+      "status": "active",
+      "priorityTier": 1,
+      "roleEligibility": [
+        "planning",
+        "coding",
+        "review"
+      ]
+    },
+    {
+      "wavemillAlias": "gemini-3.1-pro-preview-customtools",
+      "openrouterId": "google/gemini-3.1-pro-preview-customtools",
+      "family": "gemini",
       "status": "active",
       "priorityTier": 1,
       "roleEligibility": [
@@ -2956,7 +3385,7 @@
       "wavemillAlias": "mistral-large-2",
       "openrouterId": "mistralai/mistral-large-2512",
       "family": "mistral",
-      "status": "active",
+      "status": "deprecated",
       "priorityTier": 2,
       "roleEligibility": [
         "planning",
@@ -2978,7 +3407,7 @@
       "wavemillAlias": "devstral-medium",
       "openrouterId": "mistralai/devstral-2512",
       "family": "mistral",
-      "status": "watchlist",
+      "status": "deprecated",
       "priorityTier": 2,
       "roleEligibility": [
         "coding"

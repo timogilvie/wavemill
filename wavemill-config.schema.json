@@ -315,12 +315,12 @@
         },
         "observer": {
             "type": "object",
-            "description": "Controls the dedicated Backstage Wavemill Observer service. The service is default-disabled and only runs when integration mill-session monitoring is active.",
+            "description": "Controls the dedicated Backstage Wavemill Observer service. Runs in every mill session unless `enabled` is false; independent of integration mode.",
             "properties": {
                 "enabled": {
                     "type": "boolean",
-                    "default": false,
-                    "description": "When true, eligible mill sessions launch a dedicated Backstage pane running wavemill observer --loop in detection-only mode."
+                    "default": true,
+                    "description": "When true (the default), every mill session launches a dedicated Backstage pane running wavemill observer --loop. Detection-only unless observer.autoFix is opted in."
                 },
                 "intervalSeconds": {
                     "type": "integer",
@@ -364,7 +364,119 @@
                         "detectionOnly": {
                             "type": "boolean",
                             "default": false,
-                            "description": "When true, compute planned sync actions but do not write to Linear."
+                            "description": "When true, compute planned sync actions but do not write to Linear. Legacy alias for mode=offline."
+                        },
+                        "mode": {
+                            "type": "string",
+                            "enum": ["off", "offline", "shadow", "live"],
+                            "description": "Explicit mode for observer.linear. When present, overrides enabled/detectionOnly. off=disabled; offline=no network, dry-run only; shadow=bounded reads for correlation but zero mutations, produces auditable proposals; live=mutating."
+                        },
+                        "shadow": {
+                            "type": "object",
+                            "description": "Bounded shadow-mode audit persistence and lookup budget.",
+                            "properties": {
+                                "auditPath": {
+                                    "type": "string",
+                                    "default": ".wavemill/observer/shadow-audit.jsonl",
+                                    "description": "JSONL audit path for shadow-mode proposals."
+                                },
+                                "countersPath": {
+                                    "type": "string",
+                                    "default": ".wavemill/observer/shadow-counters.json",
+                                    "description": "Aggregate counter JSON path for restart-continuous shadow reporting."
+                                },
+                                "maxEntries": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "default": 500,
+                                    "description": "Bounded upper limit for retained shadow audit records."
+                                },
+                                "maxAgeDays": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "default": 14,
+                                    "description": "Shadow audit records older than this are trimmed on next append."
+                                },
+                                "maxLookupsPerPass": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "default": 40,
+                                    "description": "Ceiling for bounded Linear reads (searches + getIssue calls) per shadow pass across all incidents."
+                                }
+                            },
+                            "additionalProperties": false
+                        },
+                        "lifecycle": {
+                            "type": "object",
+                            "description": "Conservative lifecycle transition policy for linked incident issues (HOK-3035). Defaults are comment-only; state mutation is opt-in.",
+                            "properties": {
+                                "enabled": {
+                                    "type": "boolean",
+                                    "default": false,
+                                    "description": "Master switch for lifecycle resolution/archival/recurrence comments and state changes."
+                                },
+                                "commentOnly": {
+                                    "type": "boolean",
+                                    "default": true,
+                                    "description": "When true, lifecycle sync only comments and never mutates Linear state."
+                                },
+                                "closeOnOperatorResolved": {
+                                    "type": "boolean",
+                                    "default": false,
+                                    "description": "Move an explicitly operator-resolved issue to resolvedStateName. Requires commentOnly=false."
+                                },
+                                "resolvedStateName": {
+                                    "type": "string",
+                                    "description": "Linear workflow state to move an operator-resolved issue into when closing is enabled."
+                                },
+                                "closeOnOperatorArchived": {
+                                    "type": "boolean",
+                                    "default": false,
+                                    "description": "Move an operator-archived issue to archivedStateName. Requires commentOnly=false."
+                                },
+                                "archivedStateName": {
+                                    "type": "string",
+                                    "description": "Linear workflow state to move an operator-archived issue into when closing is enabled."
+                                },
+                                "reopenOnRecurrence": {
+                                    "type": "boolean",
+                                    "default": true,
+                                    "description": "Reopen an issue on recurrence — but only one the Observer itself previously auto-closed."
+                                },
+                                "reopenStateName": {
+                                    "type": "string",
+                                    "description": "Linear workflow state to move an Observer-auto-closed issue back into on recurrence."
+                                }
+                            },
+                            "additionalProperties": false
+                        },
+                        "rollout": {
+                            "type": "object",
+                            "description": "Promotion-gate evidence for managed incident-to-Linear filing (HOK-3036). Every field defaults to the safe value; live filing cannot start until an operator explicitly attests each gate. Generic --dry-run is NOT a safety control for incident filing.",
+                            "properties": {
+                                "gatesPassed": {
+                                    "type": "boolean",
+                                    "default": false,
+                                    "description": "Operator attestation that HOK-3031..HOK-3035 completion and go/no-go review passed."
+                                },
+                                "shadowTrialCompleted": {
+                                    "type": "boolean",
+                                    "default": false,
+                                    "description": "Operator attestation that the configured shadow trial completed with zero mutations, leakage, or cross-task attribution."
+                                },
+                                "rollbackRehearsed": {
+                                    "type": "boolean",
+                                    "default": false,
+                                    "description": "Operator attestation that live→shadow/off rollback was exercised."
+                                },
+                                "maxProposedPerPass": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "default": 5,
+                                    "description": "Hard ceiling on proposed create/update actions per pass during the canary."
+                                }
+                            },
+                            "additionalProperties": false
                         },
                         "project": {
                             "type": "string",
@@ -436,6 +548,94 @@
                                 "truncateTranscripts": { "type": "boolean", "default": true },
                                 "truncateLength": { "type": "integer", "minimum": 40, "default": 200 },
                                 "markFormat": { "type": "string", "default": "[REDACTED: {type}]" }
+                            },
+                            "additionalProperties": false
+                        }
+                    },
+                    "additionalProperties": false
+                },
+                "autoFix": {
+                    "type": "object",
+                    "description": "Opt-in observer self-repair actions (HOK-3097). Disabled by default; each fix is independently gated. Every fix is bounded by shared bounded-retry buckets, skipped when the worktree is dirty or the agent is working, and logged as a greppable action record under the incident store directory.",
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Master switch for every observer auto-fix. When false (the default), observer behaviour is byte-identical to detection-only."
+                        },
+                        "quietMinutes": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "default": 10,
+                            "description": "Minimum age (minutes) of the blocked state before a fix runs; avoids racing the monitor's own update-from-base path."
+                        },
+                        "updateBranchFromBase": {
+                            "type": "object",
+                            "description": "Merge origin/<base> into a task's worktree branch and push (reuses HOK-3092's updateBranchWithBase). Also fast-forwards a worktree whose origin/<branch> has moved ahead.",
+                            "properties": {
+                                "enabled": { "type": "boolean", "default": false },
+                                "maxAttempts": { "type": "integer", "minimum": 1, "default": 2 }
+                            },
+                            "additionalProperties": false
+                        },
+                        "resetReadyRecheckBudget": {
+                            "type": "object",
+                            "description": "Clear an exhausted failed-ready-recheck/pending-ready-recheck bucket once the head or base SHA has changed since the budget ran out.",
+                            "properties": {
+                                "enabled": { "type": "boolean", "default": false }
+                            },
+                            "additionalProperties": false
+                        },
+                        "forfeitStuckChallengeArm": {
+                            "type": "object",
+                            "description": "Abort a terminally stuck challenge arm whose sibling has evalCompleted. Closes the arm's PR; never forfeits when both sides are stuck.",
+                            "properties": {
+                                "enabled": { "type": "boolean", "default": false },
+                                "stuckHours": { "type": "integer", "minimum": 1, "default": 2 }
+                            },
+                            "additionalProperties": false
+                        }
+                    },
+                    "additionalProperties": false
+                },
+                "alerts": {
+                    "type": "object",
+                    "description": "Opt-in desktop/push alerts for urgent/high findings that persist past persistMinutes (HOK-3097). Disabled by default.",
+                    "properties": {
+                        "enabled": { "type": "boolean", "default": false },
+                        "minSeverity": {
+                            "type": "string",
+                            "enum": ["urgent", "high"],
+                            "default": "high",
+                            "description": "Floor severity for alerts; medium/low findings never notify."
+                        },
+                        "persistMinutes": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "default": 15,
+                            "description": "Finding must persist for this many minutes before the first alert."
+                        },
+                        "repeatMinutes": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "default": 240,
+                            "description": "Minimum interval between repeat alerts for the same persistent finding."
+                        },
+                        "desktop": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "When true, attempts a desktop notification (osascript/notify-send). No-op on unsupported platforms."
+                        },
+                        "push": {
+                            "type": "object",
+                            "description": "Optional push webhook. URL may also be supplied via WAVEMILL_OBSERVER_PUSH_URL.",
+                            "properties": {
+                                "url": { "type": "string" },
+                                "format": {
+                                    "type": "string",
+                                    "enum": ["ntfy", "json"],
+                                    "default": "ntfy"
+                                }
                             },
                             "additionalProperties": false
                         }
@@ -525,10 +725,15 @@
             "type": "object",
             "description": "Controls default task selection behavior in wavemill mill.",
             "properties": {
+                "enterAction": {
+                    "type": "string",
+                    "enum": ["none", "wave", "top-scored"],
+                    "default": "none",
+                    "description": "What a bare Enter does at the startup and monitor task pickers. 'none' (default) never launches work: tasks start only when selected by number. 'wave' launches the planner's first dependency-safe parallel wave; 'top-scored' launches the top scored tasks (startup picker only). Takes precedence over enterLaunchesWave."
+                },
                 "enterLaunchesWave": {
                     "type": "boolean",
-                    "default": true,
-                    "description": "When true, pressing Enter launches the planner's first dependency-safe parallel wave instead of the top scored tasks."
+                    "description": "Deprecated: use enterAction. Used only when enterAction is unset: true maps to 'wave', false to 'top-scored'. When neither key is set, Enter launches nothing."
                 }
             },
             "additionalProperties": false
@@ -1127,6 +1332,30 @@
                                 }
                             },
                             "additionalProperties": false
+                        },
+                        "attemptRanking": {
+                            "type": "object",
+                            "description": "Attempt-aware challenger ranking (HOK-3066). Terminal attempts are always recorded; this switch only controls whether ranking and cooldowns consume them. Set enabled=false as the rollback switch to restore the pure coverage/priority selector.",
+                            "properties": {
+                                "enabled": {
+                                    "type": "boolean",
+                                    "default": true,
+                                    "description": "Whether challenger ranking should prefer fewer recent terminal attempts and apply failed-attempt cooldowns."
+                                },
+                                "lookbackSeconds": {
+                                    "type": "integer",
+                                    "minimum": 60,
+                                    "default": 21600,
+                                    "description": "Rolling window of terminal attempts considered by ranking. Older attempt records are pruned deterministically."
+                                },
+                                "failedAttemptCooldownSeconds": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "default": 1800,
+                                    "description": "Seconds a failed terminal attempt keeps the same provider/model/stage out of selection while a non-cooled healthy candidate exists. Set to 0 to disable cooldowns."
+                                }
+                            },
+                            "additionalProperties": false
                         }
                     },
                     "additionalProperties": false
@@ -1393,6 +1622,11 @@
                         "enabled": {
                             "type": "boolean",
                             "default": false
+                        },
+                        "allowFullSuiteTests": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "HOK-3145: when true, native coding agents may run full-suite test commands (npm test, pnpm test, yarn test, unsharded tests/run-*.sh). Defaults to false so a coding agent cannot loop on a multi-minute composite chain; CI runs the full suite anyway."
                         }
                     },
                     "additionalProperties": false
@@ -1410,6 +1644,42 @@
                             "minimum": 0,
                             "maximum": 30,
                             "default": 7
+                        },
+                        "canaryCohort": {
+                            "type": "array",
+                            "description": "Bounded, reviewed cohort of native coding candidates whose live coding canaries are kept fresh. Canonical registry identities only.",
+                            "maxItems": 8,
+                            "items": {
+                                "type": "object",
+                                "required": ["provider", "model"],
+                                "properties": {
+                                    "provider": {
+                                        "type": "string",
+                                        "enum": ["openai", "openrouter"]
+                                    },
+                                    "model": {
+                                        "type": "string",
+                                        "minLength": 1
+                                    }
+                                },
+                                "additionalProperties": false
+                            }
+                        },
+                        "minCodingReady": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 8,
+                            "default": 2
+                        },
+                        "canaryRenewalWindowDays": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 13,
+                            "default": 3
+                        },
+                        "canaryAutoRefresh": {
+                            "type": "boolean",
+                            "default": true
                         }
                     },
                     "additionalProperties": false
@@ -1515,6 +1785,19 @@
                             },
                             "additionalProperties": false
                         }
+                    },
+                    "additionalProperties": false
+                },
+                "advanced": {
+                    "type": "object",
+                    "description": "Advanced-tool family opt-ins (Epic 10). Every family defaults off; a family becomes eligible only when explicitly enabled for the target phase. See shared/lib/native-agent/tools/exposure.ts.",
+                    "properties": {
+                        "browser": { "$ref": "#/definitions/nativeAgentAdvancedBrowserFamily" },
+                        "screenshot": { "$ref": "#/definitions/nativeAgentAdvancedScreenshotFamily" },
+                        "mcp": { "$ref": "#/definitions/nativeAgentMcpFamily" },
+                        "code_search": { "$ref": "#/definitions/nativeAgentAdvancedCodeSearchFamily" },
+                        "ast": { "$ref": "#/definitions/nativeAgentAdvancedAstFamily" },
+                        "eval": { "$ref": "#/definitions/nativeAgentAdvancedFamily" }
                     },
                     "additionalProperties": false
                 }
@@ -1644,6 +1927,23 @@
                     "additionalProperties": {
                         "type": "string"
                     }
+                },
+                "routeStamp": {
+                    "type": "object",
+                    "description": "PR route provenance stamping before wm:ready. Stamping is enabled by default; requireComplete stays false until all stage producers emit durable executedModel evidence.",
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "Stamp evidence-backed route metadata into wavemill-meta before restoring wm:ready."
+                        },
+                        "requireComplete": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Block wm:ready unless planner, coder, and reviewer route metadata is complete."
+                        }
+                    },
+                    "additionalProperties": false
                 },
                 "remediation": {
                     "type": "object",
@@ -1782,6 +2082,19 @@
                     "default": 60,
                     "minimum": 0,
                     "description": "Cooldown before a skipped candidate is eligible for immediate re-promotion."
+                }
+            },
+            "additionalProperties": false
+        },
+        "queuePlanner": {
+            "type": "object",
+            "description": "Wave planning strategy for tools/plan-queue.ts (HOK-3131). Default is 'legacy' (the LLM classifies every dependency edge).",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["legacy", "grounded"],
+                    "default": "legacy",
+                    "description": "'grounded' predicts each task's touch set, scores pair conflicts deterministically, and only asks the LLM to judge ordering for overlapping pairs."
                 }
             },
             "additionalProperties": false
@@ -2621,6 +2934,54 @@
                     "default": true,
                     "description": "Enable the self-review loop in workflow commands. When false, workflow proceeds directly from implementation to validation."
                 },
+                "nativeTimeoutMs": {
+                    "type": "integer",
+                    "default": 300000,
+                    "minimum": 1,
+                    "description": "Base wall-clock budget in milliseconds for native-agent review runs. Defaults to 300000 (5 minutes)."
+                },
+                "nativeTimeoutMaxMs": {
+                    "type": "integer",
+                    "default": 1200000,
+                    "minimum": 1,
+                    "description": "Maximum wall-clock budget in milliseconds for escalated native-agent review retries."
+                },
+                "nativeTimeoutMultiplier": {
+                    "type": "integer",
+                    "default": 2,
+                    "minimum": 1,
+                    "description": "Multiplier applied to nativeTimeoutMs for each bounded infra recovery retry."
+                },
+                "nativeTimeoutModelOverrides": {
+                    "type": "object",
+                    "description": "Per-reviewer native review timeout overrides keyed by model id.",
+                    "additionalProperties": {
+                        "oneOf": [
+                            {
+                                "type": "integer",
+                                "minimum": 1
+                            },
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "timeoutMs": {
+                                        "type": "integer",
+                                        "minimum": 1
+                                    },
+                                    "maxMs": {
+                                        "type": "integer",
+                                        "minimum": 1
+                                    },
+                                    "multiplier": {
+                                        "type": "integer",
+                                        "minimum": 1
+                                    }
+                                },
+                                "additionalProperties": false
+                            }
+                        ]
+                    }
+                },
                 "metricsLog": {
                     "type": "string",
                     "default": ".wavemill/review-log.json",
@@ -2723,6 +3084,17 @@
                         "minLength": 1
                     }
                 },
+                "advisoryChecks": {
+                    "type": "array",
+                    "default": [
+                        "OpenRouter Alias Audit"
+                    ],
+                    "description": "Check-run names on the integration tip whose failure is recorded (surfaced in tend status and .wavemill/backstage-health.json) but never makes integration unhealthy. Applies only to the merge-lane tip health gate, never to the PR-level ready gate. Exact-match names; a renamed CI job must update this list.",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                },
                 "highRiskPolicy": {
                     "type": "string",
                     "enum": [
@@ -2743,6 +3115,12 @@
                     "minimum": 0,
                     "default": 45,
                     "description": "Minutes after which another tend process may reclaim a wm:merging merge-lane lock as stale (measured from the label's most recent application on GitHub). 0 disables expiry. Must exceed the worst-case legitimate merge duration (rebase + 30 min check wait + 5 min merge retry window, roughly 40 minutes)."
+                },
+                "worktreePrepTimeoutMinutes": {
+                    "type": "number",
+                    "minimum": 1,
+                    "default": 10,
+                    "description": "End-to-end deadline (minutes) for the scratch-worktree preparation phase (reap + fetch + worktree add). On expiry the whole process group is terminated (SIGTERM then SIGKILL after a short grace) to defeat leaked git descendants (ssh, git-remote-https, hooks). Kept above the individual git command timeouts (~5m) but well below mergeLockTimeoutMinutes so preparation stalls surface long before the generic stale-lock reclaim."
                 },
                 "readyPolicy": {
                     "type": "object",
@@ -2768,6 +3146,39 @@
                             "type": "boolean",
                             "default": true
                         }
+                    },
+                    "additionalProperties": false
+                }
+            },
+            "additionalProperties": false
+        },
+        "staticAnalysis": {
+            "type": "object",
+            "description": "HOK-2806: overrides for the S1 Static feature group collector. All fields optional; auto-detection is used when absent. The collector reads only the committed .wavemill-config.json (never the .local overlay) so bare-checkout parity is preserved.",
+            "properties": {
+                "typecheckCommand": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Shell command that runs a type checker in the checkout. Its stdout/stderr are scanned for tsc-style 'error TSNNNN' lines to count type_errors. Non-tsc checkers work as long as they emit that marker."
+                },
+                "lintCommand": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Shell command that runs a linter and emits eslint --format json on stdout. lint_errors is summed from errorCount across the JSON entries (warnings excluded)."
+                },
+                "buildCommand": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Shell command whose exit code determines build_ok (0 ⇒ true). Absent ⇒ auto-detect npm run build, else fall back to CI evidence."
+                },
+                "timeoutSeconds": {
+                    "type": "object",
+                    "description": "Per-signal timeouts in seconds. Explicit collector options.timeouts take precedence over these; these take precedence over the built-in defaults.",
+                    "properties": {
+                        "typecheck": { "type": "number", "minimum": 1 },
+                        "lint": { "type": "number", "minimum": 1 },
+                        "build": { "type": "number", "minimum": 1 },
+                        "complexity": { "type": "number", "minimum": 1 }
                     },
                     "additionalProperties": false
                 }
@@ -3138,6 +3549,436 @@
         }
     },
     "definitions": {
+        "nativeAgentAdvancedFamily": {
+            "type": "object",
+            "description": "Per-family opt-in for an Epic 10 advanced tool family. Every field is optional and defaults to off/empty.",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Master toggle for this advanced family."
+                },
+                "allowedPhases": {
+                    "type": "array",
+                    "description": "Phases for which this family is eligible when enabled. Empty or omitted keeps the family hidden even when enabled.",
+                    "items": {
+                        "type": "string",
+                        "enum": ["task-expansion", "planning", "coding", "review"]
+                    },
+                    "default": []
+                },
+                "logicalIds": {
+                    "type": "array",
+                    "description": "Optional narrow allowlist of family-scoped logical ids. When present, only listed logical ids become eligible.",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                }
+            },
+            "additionalProperties": false
+        },
+        "nativeAgentMcpFamily": {
+            "type": "object",
+            "description": "Per-family opt-in for the MCP advanced tool family. Extends nativeAgentAdvancedFamily with explicit server and per-server tool declarations.",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Master toggle for the MCP family."
+                },
+                "allowedPhases": {
+                    "type": "array",
+                    "description": "Phases for which MCP is eligible when enabled. Empty or omitted keeps the family hidden even when enabled.",
+                    "items": {
+                        "type": "string",
+                        "enum": ["task-expansion", "planning", "coding", "review"]
+                    },
+                    "default": []
+                },
+                "logicalIds": {
+                    "type": "array",
+                    "description": "Optional narrow allowlist of family-scoped logical ids. When present, only listed logical ids become eligible.",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                },
+                "defaults": {
+                    "type": "object",
+                    "description": "Family-wide defaults for timeouts and output caps. Server-level values override these.",
+                    "properties": {
+                        "startupTimeoutMs": { "type": "integer", "minimum": 1 },
+                        "callTimeoutMs": { "type": "integer", "minimum": 1 },
+                        "shutdownTimeoutMs": { "type": "integer", "minimum": 1 },
+                        "maxOutputBytes": { "type": "integer", "minimum": 4096 },
+                        "failureThreshold": { "type": "integer", "minimum": 0 }
+                    },
+                    "additionalProperties": false
+                },
+                "servers": {
+                    "type": "object",
+                    "description": "Map of logical server name → server declaration. Wildcards are forbidden.",
+                    "additionalProperties": { "$ref": "#/definitions/nativeAgentMcpServer" }
+                }
+            },
+            "additionalProperties": false
+        },
+        "nativeAgentMcpServer": {
+            "type": "object",
+            "description": "Declaration of an MCP server plus the allowlisted tools it exposes.",
+            "required": ["providerProxy", "command", "args", "envAllowlist", "tools"],
+            "properties": {
+                "providerProxy": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Wavemill-side provider proxy identifier."
+                },
+                "command": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Executable to spawn for the server process."
+                },
+                "args": {
+                    "type": "array",
+                    "description": "Argument vector passed to the server process. May be empty.",
+                    "items": { "type": "string" }
+                },
+                "envAllowlist": {
+                    "type": "array",
+                    "description": "Process-env variable names whose values survive the spawn allowlist. Empty is legal.",
+                    "items": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                    }
+                },
+                "tools": {
+                    "type": "array",
+                    "description": "Non-empty list of logical tool names exported by this server. Wildcards forbidden.",
+                    "minItems": 1,
+                    "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "^[A-Za-z0-9_.-]+$"
+                    }
+                },
+                "class": {
+                    "type": "string",
+                    "enum": ["read-only", "mutation"],
+                    "default": "read-only"
+                },
+                "startupTimeoutMs": { "type": "integer", "minimum": 1 },
+                "callTimeoutMs": { "type": "integer", "minimum": 1 },
+                "shutdownTimeoutMs": { "type": "integer", "minimum": 1 },
+                "maxOutputBytes": { "type": "integer", "minimum": 4096 },
+                "failureThreshold": { "type": "integer", "minimum": 0 }
+            },
+            "additionalProperties": false
+        },
+        "nativeAgentAdvancedCodeSearchFamily": {
+            "type": "object",
+            "description": "code_search family opt-in (HOK-3059). Extends the generic advanced-family shape with optional per-worktree index budgets. When `enabled` is true but any listed field is non-positive or non-numeric, the family stays hidden (fail-closed).",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Master toggle for the code_search family."
+                },
+                "allowedPhases": {
+                    "type": "array",
+                    "description": "Phases for which the family is eligible when enabled. Empty or omitted keeps the family hidden.",
+                    "items": {
+                        "type": "string",
+                        "enum": ["task-expansion", "planning", "coding", "review"]
+                    },
+                    "default": []
+                },
+                "logicalIds": {
+                    "type": "array",
+                    "description": "Optional narrow allowlist of family-scoped logical ids. When present, only listed logical ids become eligible.",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                },
+                "limits": {
+                    "type": "object",
+                    "description": "Per-worktree index bounds. Every field is optional; absent fields fall back to defaults.",
+                    "properties": {
+                        "maxFiles": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100000,
+                            "default": 2000,
+                            "description": "Maximum number of source files indexed per build."
+                        },
+                        "maxBytes": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 536870912,
+                            "default": 33554432,
+                            "description": "Maximum total bytes read across all indexed files per build."
+                        },
+                        "maxSymbols": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 1000000,
+                            "default": 20000,
+                            "description": "Maximum number of symbol records the index will hold before aborting the build."
+                        },
+                        "maxResults": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 200,
+                            "default": 200,
+                            "description": "Hard cap on the number of results a single query may return."
+                        }
+                    },
+                    "additionalProperties": false
+                }
+            },
+            "additionalProperties": false
+        },
+        "nativeAgentAdvancedAstFamily": {
+            "type": "object",
+            "description": "ast family opt-in (HOK-3060). Policy-bound, previewable structured source transforms applied only through the atomic NativePatch runtime. Coding-only; every mutation requires a prior digest-sealed preview. When `enabled` is true but any listed limit is non-positive or non-numeric, the family stays hidden (fail-closed).",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Master toggle for the ast transform family."
+                },
+                "allowedPhases": {
+                    "type": "array",
+                    "description": "Phases for which the family is eligible when enabled. Only coding is meaningful; other phases keep the family hidden even when listed.",
+                    "items": {
+                        "type": "string",
+                        "enum": ["task-expansion", "planning", "coding", "review"]
+                    },
+                    "default": []
+                },
+                "logicalIds": {
+                    "type": "array",
+                    "description": "Optional narrow allowlist of family-scoped logical ids (ast.transform_preview, ast.transform_apply). When present, only listed logical ids become eligible.",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                },
+                "limits": {
+                    "type": "object",
+                    "description": "Per-worktree transform bounds. Every field is optional; absent fields fall back to defaults.",
+                    "properties": {
+                        "maxFiles": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100000,
+                            "default": 2000,
+                            "description": "Maximum number of source files indexed per transform build."
+                        },
+                        "maxBytes": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 536870912,
+                            "default": 33554432,
+                            "description": "Maximum total bytes read across all indexed files per transform build."
+                        },
+                        "maxSymbols": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 1000000,
+                            "default": 20000,
+                            "description": "Maximum number of symbol records the index will hold before aborting the build."
+                        },
+                        "maxMatches": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 5000,
+                            "default": 500,
+                            "description": "Hard cap on the number of match records recorded in a preview (the full set still drives the patch)."
+                        },
+                        "maxSummaryBytes": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 65536,
+                            "default": 4096,
+                            "description": "Byte cap on the human-readable preview summary."
+                        }
+                    },
+                    "additionalProperties": false
+                }
+            },
+            "additionalProperties": false
+        },
+        "nativeAgentAdvancedBrowserFamily": {
+            "type": "object",
+            "description": "Browser family opt-in (HOK-3057). Extends the generic advanced-family shape with an explicit read-only browser session boundary. When `enabled` is true but any `session` field is missing/invalid, the family stays hidden (fail-closed).",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Master toggle for the browser family."
+                },
+                "allowedPhases": {
+                    "type": "array",
+                    "description": "Phases for which the browser family is eligible when enabled. Empty or omitted keeps the family hidden.",
+                    "items": {
+                        "type": "string",
+                        "enum": ["task-expansion", "planning", "coding", "review"]
+                    },
+                    "default": []
+                },
+                "logicalIds": {
+                    "type": "array",
+                    "description": "Optional narrow allowlist of family-scoped logical ids. When present, only listed logical ids become eligible.",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                },
+                "session": {
+                    "type": "object",
+                    "description": "Browser session boundary. Every field is required when the family is enabled; a missing field disables the family.",
+                    "properties": {
+                        "allowedOrigins": {
+                            "type": "array",
+                            "description": "Canonical origin allowlist (scheme+host+port, no path). Any navigation whose canonical origin is not in this list is denied before a request is sent.",
+                            "items": { "type": "string", "minLength": 1 },
+                            "default": []
+                        },
+                        "maxSessionLifetimeMs": {
+                            "type": "integer",
+                            "minimum": 1000,
+                            "maximum": 600000,
+                            "default": 120000,
+                            "description": "Hard wall-clock ceiling on a single browser session. When exceeded, the session is closed and subsequent calls fail."
+                        },
+                        "maxCallsPerSession": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 500,
+                            "default": 40,
+                            "description": "Hard cap on tool calls a single session may consume."
+                        },
+                        "navigateTimeoutMs": {
+                            "type": "integer",
+                            "minimum": 500,
+                            "maximum": 60000,
+                            "default": 15000,
+                            "description": "Per-navigation timeout. Reached timeouts close the session and surface a deterministic error."
+                        },
+                        "maxDomBytes": {
+                            "type": "integer",
+                            "minimum": 1024,
+                            "maximum": 524288,
+                            "default": 65536,
+                            "description": "Cap on the serialized DOM snapshot returned to the model."
+                        },
+                        "maxAxNodes": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 5000,
+                            "default": 500,
+                            "description": "Cap on accessibility snapshot node count."
+                        },
+                        "maxConsoleMessages": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 5000,
+                            "default": 200,
+                            "description": "Cap on console messages returned per drain."
+                        },
+                        "maxRequestSummaries": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 5000,
+                            "default": 200,
+                            "description": "Cap on request summaries returned per drain."
+                        }
+                    },
+                    "required": ["allowedOrigins"],
+                    "additionalProperties": false
+                }
+            },
+            "additionalProperties": false
+        },
+        "nativeAgentAdvancedScreenshotFamily": {
+            "type": "object",
+            "description": "Screenshot family opt-in (HOK-3058). Extends the generic advanced-family shape with screenshot-specific capture and comparison limits.",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Master toggle for the screenshot family."
+                },
+                "allowedPhases": {
+                    "type": "array",
+                    "description": "Phases for which the screenshot family is eligible when enabled. Empty or omitted keeps the family hidden.",
+                    "items": {
+                        "type": "string",
+                        "enum": ["task-expansion", "planning", "coding", "review"]
+                    },
+                    "default": []
+                },
+                "logicalIds": {
+                    "type": "array",
+                    "description": "Optional narrow allowlist of family-scoped logical ids. When present, only listed logical ids become eligible.",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                },
+                "limits": {
+                    "type": "object",
+                    "description": "Screenshot capture and comparison limits. All fields have defaults when absent.",
+                    "properties": {
+                        "maxImageBytes": {
+                            "type": "integer",
+                            "minimum": 1024,
+                            "maximum": 16777216,
+                            "default": 2097152,
+                            "description": "Maximum byte size of a screenshot. Oversized captures are rejected or downscaled per oversizePolicy."
+                        },
+                        "maxWidth": {
+                            "type": "integer",
+                            "minimum": 16,
+                            "maximum": 16384,
+                            "default": 4096,
+                            "description": "Maximum width in pixels."
+                        },
+                        "maxHeight": {
+                            "type": "integer",
+                            "minimum": 16,
+                            "maximum": 16384,
+                            "default": 4096,
+                            "description": "Maximum height in pixels."
+                        },
+                        "oversizePolicy": {
+                            "type": "string",
+                            "enum": ["reject", "downscale"],
+                            "default": "reject",
+                            "description": "Action when an image exceeds byte or dimension limits: reject (fail with error) or downscale (deterministically subsample)."
+                        },
+                        "maxComparePixels": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 268435456,
+                            "default": 16777216,
+                            "description": "Maximum total pixels allowed in a visual comparison (both images combined dimensions). Larger comparisons are rejected."
+                        },
+                        "diffThreshold": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 1,
+                            "default": 0.1,
+                            "description": "Pixel-diff threshold (0-1) for pixelmatch. Diffs below this ratio are considered insignificant."
+                        }
+                    },
+                    "additionalProperties": false
+                }
+            },
+            "additionalProperties": false
+        },
         "observerLinearPolicy": {
             "type": "object",
             "properties": {

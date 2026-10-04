@@ -45,7 +45,13 @@ export type ModelAttributionIneligibleReason =
   | 'stage_not_completed'
   | 'missing_execution_evidence'
   | 'execution_contradicted'
-  | 'runtime_fallback';
+  | 'runtime_fallback'
+  /**
+   * HOK-3143: the provider substituted a different concrete model than the
+   * one certified for this run (either an alias target drift or a non-alias
+   * substitution). Attribution would mis-credit the certified identity.
+   */
+  | 'provider_substitution';
 
 /** Durable execution-truth evidence for stage result model attribution. */
 export interface StageExecutionEvidence {
@@ -57,6 +63,28 @@ export interface StageExecutionEvidence {
   detail?: string;
   /** Timestamp at which the evidence stamp was produced. */
   recordedAt?: string;
+  /**
+   * Provider-reported model id (HOK-3143), when the run captured one from a
+   * live provider response. Absent for scripted/test runs or when the provider
+   * returned no `response.model`.
+   */
+  providerReportedModel?: string;
+  /** The wire id originally sent to the provider (useful when it is an alias). */
+  requestedWireId?: string;
+  /** Pinned certified target that the reported model was compared against. */
+  certifiedTarget?: string;
+  /** Verdict from the runtime provider-identity check. */
+  identityVerdict?: 'match' | 'alias-resolved' | 'mismatch' | 'unverifiable' | 'absent';
+  /** Transport provider name (e.g. `openrouter`). */
+  transportProvider?: string;
+  /**
+   * Upstream provider name from the provider's response (e.g. "Google AI Studio").
+   * Not yet populated — Pi 0.79.8 drops this field (plan D4); follow-up to
+   * capture it when the SDK exposes it.
+   */
+  upstreamProvider?: string;
+  /** Provider response id corroborating the reported model. */
+  responseId?: string;
 }
 
 /** Valid stage names for runtime validation. */
@@ -107,6 +135,19 @@ export interface PlanningArtifacts {
   approvalReady?: boolean;
   /** Prompt registry/provenance reference for the planning prompt. */
   promptRef?: PlanningPromptRef;
+  /**
+   * HOK-3129: true when launchNativePlanning executed exactly one bounded
+   * repair turn after a format-only validation reason (missing_title,
+   * missing_release_readiness, etc). Absent on legacy artifacts and on
+   * runs that short-circuited before the validator.
+   */
+  repairAttempted?: boolean;
+  /**
+   * HOK-3129: true when the initial plan was emitted in a single assistant
+   * turn with zero tool calls — a quality signal (the plan was written
+   * without reading the repo). Absent on legacy artifacts.
+   */
+  zeroToolCallPlan?: boolean;
 }
 
 /** Artifacts produced during the review stage. */
@@ -130,12 +171,14 @@ export const NATIVE_CONTEXT_WINDOW_EXCEEDED_CATEGORY = 'native-context-window-ex
  * (HOK-2964 REQ-F5) — never collapsed into generic `native-review-failed`.
  */
 export const PROVIDER_CREDIT_EXHAUSTED_CATEGORY = 'provider-credit-exhausted';
+export const NATIVE_REVIEW_TIMEOUT_CATEGORY = 'native-review-timeout';
 export const INFRA_REVIEW_FAILURE_CATEGORIES = [
   'native-runtime-unavailable',
   'native-review-prompt-missing',
   REVIEW_SCOPE_UNVERIFIABLE_FAILURE_CATEGORY,
   NATIVE_CONTEXT_WINDOW_EXCEEDED_CATEGORY,
   PROVIDER_CREDIT_EXHAUSTED_CATEGORY,
+  NATIVE_REVIEW_TIMEOUT_CATEGORY,
 ] as const;
 export type InfrastructureReviewFailureCategory = typeof INFRA_REVIEW_FAILURE_CATEGORIES[number];
 
@@ -401,6 +444,120 @@ export interface StageResultMap {
   coding?: StageResult;
   review?: StageResult;
   ready?: StageResult;
+}
+
+export interface ExecutionTruthFieldsInput {
+  status: StageStatus;
+  flags: Record<string, string>;
+  existing: StageResult | null;
+  now: string;
+}
+
+export type ExecutionTruthFields = Pick<
+  StageResult,
+  'intendedModel' | 'executedModel' | 'executionEvidence' | 'modelAttributionEligible' | 'modelAttributionIneligibleReason'
+>;
+
+function nullableModel(value: string | undefined): string | null | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  if (trimmed === '' || trimmed === 'null') return null;
+  return trimmed;
+}
+
+function boolFlag(value: string | undefined): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  return undefined;
+}
+
+function validEvidenceStatus(value: string | undefined): value is StageExecutionEvidenceStatus {
+  return value === 'direct' || value === 'missing' || value === 'contradicted' || value === 'inherited';
+}
+
+/**
+ * Compute the execution-truth and attribution-eligibility block for a stage result.
+ *
+ * This function intentionally never infers `executedModel` from launch intent:
+ * callers must pass direct execution evidence, or the result remains
+ * attribution-ineligible with `missing_execution_evidence`.
+ */
+export function executionTruthFields(input: ExecutionTruthFieldsInput): ExecutionTruthFields {
+  const flagModel = nullableModel(input.flags.model);
+  const intendedModel = nullableModel(input.flags['intended-model'])
+    ?? flagModel
+    ?? input.existing?.intendedModel
+    ?? (input.flags.model === undefined ? input.existing?.model : undefined)
+    ?? null;
+
+  const explicitExecuted = nullableModel(input.flags['executed-model']);
+  const mayPreserveExisting =
+    explicitExecuted === undefined
+    && input.existing?.status === 'running'
+    && (
+      input.flags.model === undefined
+      || input.existing.model === input.flags.model
+      || input.existing.executedModel === input.flags.model
+    );
+  const executedModel = explicitExecuted !== undefined
+    ? explicitExecuted
+    : mayPreserveExisting
+      ? input.existing?.executedModel ?? null
+      : null;
+
+  const explicitEvidenceStatus = input.flags['execution-evidence-status'];
+  if (explicitEvidenceStatus !== undefined && !validEvidenceStatus(explicitEvidenceStatus)) {
+    throw new Error(`invalid --execution-evidence-status '${explicitEvidenceStatus}'`);
+  }
+  const evidenceStatus = explicitEvidenceStatus
+    ?? (executedModel ? (mayPreserveExisting ? input.existing?.executionEvidence?.status ?? 'direct' : 'direct') : 'missing');
+  const evidenceSource = input.flags['execution-evidence-source']
+    ?? (mayPreserveExisting ? input.existing?.executionEvidence?.source : undefined)
+    ?? (executedModel ? 'stage-result-cli' : 'unknown');
+  const executionEvidence: StageExecutionEvidence = {
+    status: evidenceStatus,
+    source: evidenceSource,
+    ...(input.flags['execution-evidence-detail'] !== undefined
+      ? { detail: input.flags['execution-evidence-detail'] }
+      : input.existing?.executionEvidence?.detail && mayPreserveExisting
+        ? { detail: input.existing.executionEvidence.detail }
+        : {}),
+    recordedAt: input.now,
+  };
+
+  let modelAttributionEligible = boolFlag(input.flags['model-attribution-eligible']);
+  let modelAttributionIneligibleReason = input.existing?.modelAttributionIneligibleReason;
+  if (modelAttributionEligible === undefined) {
+    if (input.status !== 'completed') {
+      modelAttributionEligible = false;
+      modelAttributionIneligibleReason = 'stage_not_completed';
+    } else if (!executedModel) {
+      modelAttributionEligible = false;
+      modelAttributionIneligibleReason = 'missing_execution_evidence';
+    } else if (evidenceStatus === 'contradicted') {
+      modelAttributionEligible = false;
+      modelAttributionIneligibleReason = 'execution_contradicted';
+    } else if (intendedModel && intendedModel !== executedModel) {
+      modelAttributionEligible = false;
+      modelAttributionIneligibleReason = 'runtime_fallback';
+    } else {
+      modelAttributionEligible = true;
+      modelAttributionIneligibleReason = undefined;
+    }
+  } else if (modelAttributionEligible) {
+    modelAttributionIneligibleReason = undefined;
+  } else {
+    modelAttributionIneligibleReason ??= !executedModel ? 'missing_execution_evidence' : 'execution_contradicted';
+  }
+
+  return {
+    intendedModel,
+    executedModel,
+    executionEvidence,
+    modelAttributionEligible,
+    ...(modelAttributionIneligibleReason ? { modelAttributionIneligibleReason } : {}),
+  };
 }
 
 // ────────────────────────────────────────────────────────────────

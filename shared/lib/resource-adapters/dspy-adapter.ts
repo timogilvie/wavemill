@@ -2,6 +2,7 @@ import { basename, resolve } from 'node:path';
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { registerResource, toResourceRef, type ResourceRef } from '../resource-registry.ts';
 import type { SelectorArtifact } from '../llm-router.ts';
+import { resolveWavemillAssetPath } from '../native-agent/install-paths.ts';
 
 function getArtifactName(artifactPath: string): string {
   return basename(artifactPath).replace(/\.json$/, '');
@@ -38,7 +39,7 @@ export function registerDspyArtifact(
 }
 
 export function scanAndRegisterAll(repoDir?: string): ResourceRef[] {
-  const artifactsDir = resolve(repoDir || process.cwd(), 'dspy/artifacts');
+  const artifactsDir = resolveWavemillAssetPath('dspy/artifacts');
   if (!existsSync(artifactsDir)) {
     return [];
   }

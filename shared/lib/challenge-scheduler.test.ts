@@ -10,6 +10,7 @@ import {
   buildEvalSummary,
   clearChallengeSchedulerCache,
   evaluateChallenge,
+  modelStageCount,
   type EvalSummary,
 } from './challenge-scheduler.ts';
 import { clearConfigCache } from './config.ts';
@@ -171,7 +172,7 @@ test('recommends challenge when confidence is below threshold', () => {
 
     assert.equal(result.shouldChallenge, true);
     assert.equal(result.reason, 'new-model');
-    assert.equal(result.defaultModel, 'claude-fable-5');
+    assert.equal(result.defaultModel, 'claude-opus-5-5');
     assert.ok(result.challengerModel);
     assert.notEqual(result.challengerModel, result.defaultModel);
   } finally {
@@ -271,8 +272,8 @@ test('recommends new model challenge when a model has fewer records than thresho
 
     assert.equal(result.shouldChallenge, true);
     assert.equal(result.reason, 'new-model');
-    assert.equal(result.defaultModel, 'claude-fable-5');
-    assert.equal(result.challengerModel, 'claude-haiku-4-5');
+    assert.equal(result.defaultModel, 'claude-opus-5-5');
+    assert.equal(result.challengerModel, 'claude-fable-5');
   } finally {
     cleanup();
   }
@@ -641,23 +642,24 @@ test('exploration recommendations skip stages a model cannot serve', () => {
   try {
     const result = evaluateChallenge({
       routingDecision: makeDecision({ confidence: 0.95 }),
-      // devstral-medium is role-ineligible as a planner, so its uncovered plan
+      // mistral-medium-3 is role-ineligible as a planner, so its uncovered plan
       // cell must not be recommended even though it sorts first on count.
       // This model must stay active and coding-only: qwen-3-coder was used here
-      // until it gained planning eligibility, and qwen-2.5-coder-32b until it
-      // was retired, each of which silently broke this assertion.
-      challengeModels: ['devstral-medium'],
+      // until it gained planning eligibility, qwen-2.5-coder-32b until it was
+      // retired, and devstral-medium until it was retired, each of which
+      // silently broke this assertion.
+      challengeModels: ['mistral-medium-3'],
       evalSummary: {
         totalRecords: 20,
-        recordsByModel: { 'devstral-medium': 0 },
+        recordsByModel: { 'mistral-medium-3': 0 },
         recordsByStage: { plan: 20, implementation: 20, review: 20 },
-        recordsByModelStage: { 'devstral-medium': {} },
+        recordsByModelStage: { 'mistral-medium-3': {} },
       },
       config: { enabled: true, confidenceThreshold: 0.5, newModelChallengeCount: 5, minEvalRecordsPerStage: 1 },
       repoDir,
     });
 
-    assert.equal(result.challengerModel, 'devstral-medium');
+    assert.equal(result.challengerModel, 'mistral-medium-3');
     assert.notEqual(result.stage, 'plan');
   } finally {
     cleanup();
@@ -691,6 +693,35 @@ test('buildEvalSummary excludes held records before coverage counters', () => {
     assert.deepEqual(summary.exclusionReasonCounts, { provisional_model_identity: 1 });
     assert.equal(summary.recordsByModel['gpt-5.4'], 1);
     assert.equal(summary.recordsByModel['ox-alpha'], undefined);
+  } finally {
+    cleanup();
+  }
+});
+
+
+test('buildEvalSummary never credits inherited stages as successful coverage (HOK-3066)', () => {
+  const { repoDir, cleanup } = makeRepo();
+  try {
+    writeFileSync(
+      join(repoDir, '.wavemill', 'evals', 'evals.jsonl'),
+      `${JSON.stringify(makeEvalRecord('forked', 'gpt-5.4', {
+        challengeSide: 'challenger',
+        challengeIntent: {
+          pairId: 'HOK-3066',
+          challenger: { inheritedStages: ['plan', 'implementation'] },
+        },
+      } as Partial<EvalRecord>))}\n`,
+      'utf-8',
+    );
+    clearChallengeSchedulerCache(repoDir);
+
+    const summary = buildEvalSummary(repoDir);
+
+    // The varied review stage counts; the shared pre-fork prefix does not, so
+    // attempt-aware selection can trust modelStageCount as success-only.
+    assert.equal(modelStageCount(summary, 'gpt-5.4', 'plan'), 0);
+    assert.equal(modelStageCount(summary, 'gpt-5.4', 'implementation'), 0);
+    assert.equal(modelStageCount(summary, 'gpt-5.4', 'review'), 1);
   } finally {
     cleanup();
   }

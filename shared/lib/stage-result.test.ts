@@ -250,6 +250,36 @@ describe('writeStageResult and readStageResult', () => {
     assert.equal(nativeCompleted?.executedModel, 'glm-5.3');
     assert.equal(nativeCompleted?.executionEvidence?.source, 'native-runtime');
     assert.equal(nativeCompleted?.modelAttributionEligible, true);
+
+    execFileSync('npx', [
+      'tsx',
+      'tools/stage-result-cli.ts',
+      'write',
+      testDir,
+      'coding',
+      'completed',
+      '--agent',
+      'claude',
+      '--model',
+      'claude-haiku-4-5',
+      '--intended-model',
+      'claude-haiku-4-5',
+      '--executed-model',
+      'claude-sonnet-5',
+      '--execution-evidence-status',
+      'direct',
+      '--execution-evidence-source',
+      'claude-session',
+    ], {
+      cwd: process.cwd(),
+      encoding: 'utf-8',
+    });
+
+    const fallback = await readStageResult(testDir, 'coding');
+    assert.equal(fallback?.executedModel, 'claude-sonnet-5');
+    assert.equal(fallback?.executionEvidence?.source, 'claude-session');
+    assert.equal(fallback?.modelAttributionEligible, false);
+    assert.equal(fallback?.modelAttributionIneligibleReason, 'runtime_fallback');
   });
 });
 

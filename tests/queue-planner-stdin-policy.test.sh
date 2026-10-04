@@ -83,6 +83,8 @@ FUNCTIONS_FILE="$TEST_TMP/queue-planner-policy-funcs.sh"
   extract_function "$MONITOR_BODY" "get_queue_failure_reason"
   echo
   extract_function "$MONITOR_BODY" "run_queue_planner_with_policy"
+  echo
+  extract_function "$MONITOR_BODY" "build_queue_plan_once"
 } > "$FUNCTIONS_FILE"
 
 # shellcheck source=../shared/lib/wavemill-common.sh
@@ -181,6 +183,48 @@ check_contains "external diagnostics include 143" "$(cat "$FETCH_QUEUE_PLAN_DIAG
 check_eq "external 143 classifies as external cancellation" "external_cancellation" "$(get_queue_failure_reason "$FETCH_QUEUE_PLAN_DIAGNOSTICS_FILE")"
 check_eq "queue health records external cancellation" "external_cancellation" "$(jq -r '.degradationReason' "$STATE_DIR/queue-health.json")"
 assert_no_temp_files
+
+echo ""
+echo "=== HOK-3130: inference report degrades a successful plan ==="
+
+report_planner="$TEST_TMP/planner-inference-failed.sh"
+cat > "$report_planner" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+report_file=""
+while (( $# > 0 )); do
+  if [[ "$1" == "--inference-report-file" ]]; then report_file="$2"; shift; fi
+  shift
+done
+[[ -n "$report_file" ]] && printf '%s\n' '{"schemaVersion":1,"inferenceStatus":"failed","inferredEdgeCount":0,"attempted":true,"refreshKind":"full","skipReason":null,"model":null,"lastAttemptAt":"2026-09-30T12:00:00.000Z","lastSuccessAt":null,"consecutiveFailures":1,"error":"classifier timeout"}' > "$report_file"
+printf '{"availableNow":["HOK-1"],"queuedAfterDependencies":[],"avoidRunningTogether":[],"needsTriage":[]}\n'
+EOF
+chmod +x "$report_planner"
+
+report_path="$TEST_TMP/inference-report.json"
+result="$(printf '%s' "$plan_input" | run_queue_planner_with_policy "\"$report_planner\" --inference-report-file \"$report_path\"" 5 "$input_snapshot" "$report_path")"
+check_eq "inference failure still returns the plan" "HOK-1" "$(printf '%s' "$result" | jq -r '.availableNow[0]')"
+check_eq "inference failure degrades queue health" "degraded" "$(jq -r '.status' "$STATE_DIR/queue-health.json")"
+check_eq "inference failure reason" "inference_unavailable" "$(jq -r '.degradationReason' "$STATE_DIR/queue-health.json")"
+check_eq "inference failure next action" "use_explicit_edges_only" "$(jq -r '.nextAction' "$STATE_DIR/queue-health.json")"
+check_eq "inference failure sets no planner backoff" "null" "$(jq -r '.nextRetryAt' "$STATE_DIR/queue-health.json")"
+assert_no_temp_files
+
+# build_queue_plan_once owns the report tmpfile: it must pass it to the
+# planner and remove it afterwards. `npx` is stubbed so the real planner
+# command line is exercised without spawning tsx.
+npx() {
+  shift 2  # tsx <plan-queue.ts>
+  "$report_planner" "$@"
+}
+export -f npx 2>/dev/null || true
+printf '{}\n' > "$STATE_DIR/queue-health.json"
+backlog_json='[{"identifier":"HOK-1","title":"Ready task","labels":{"nodes":[]},"state":{"name":"Todo"}}]'
+built_plan="$(PROJECT_NAME="stdin-policy-test" TOOLS_DIR="$TEST_TMP/tools" build_queue_plan_once "$backlog_json")"
+unset -f npx
+check_eq "build_queue_plan_once returns the plan" "HOK-1" "$(printf '%s' "$built_plan" | jq -r '.availableNow[0]')"
+check_eq "build_queue_plan_once records inference_unavailable" "inference_unavailable" "$(jq -r '.degradationReason' "$STATE_DIR/queue-health.json")"
+check_eq "inference report tmpfile removed" "" "$(find "$TMPDIR" -maxdepth 1 -name 'wavemill-queue-inference.*' -print)"
 
 echo ""
 echo "--- Results: $PASS passed, $FAIL failed ---"

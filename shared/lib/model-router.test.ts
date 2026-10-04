@@ -88,6 +88,9 @@ describe('model-router resolveAgent', () => {
   it('resolves hosted claude and gpt models from registry-backed metadata', () => {
     assert.equal(resolveAgent('claude-sonnet-4-6', {}, 'codex'), 'claude');
     assert.equal(resolveAgent('gpt-5.6-terra', {}, 'claude'), 'codex');
+    assert.equal(resolveAgent('claude-opus-5-5', {}, 'codex'), 'claude');
+    assert.equal(resolveAgent('gpt-6-sol', {}, 'claude', undefined, 'planning'), 'codex');
+    assert.equal(resolveAgent('gpt-6-luna', {}, 'claude', undefined, 'coding'), 'codex');
   });
 
   it('fails closed when an OpenAI model is not eligible for the ChatGPT Codex surface', () => {

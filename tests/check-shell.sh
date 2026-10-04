@@ -83,6 +83,9 @@ echo "=== Syntax Check (bash -n) ==="
 for f in \
   "$LIB_DIR"/wavemill-*.sh \
   "$LIB_DIR"/bounded-retry.sh \
+  "$LIB_DIR"/plan-packet-binding.sh \
+  "$LIB_DIR"/task-progress.sh \
+  "$LIB_DIR"/task-identity.sh \
   "$LIB_DIR"/challenge-arms.sh \
   "$LIB_DIR"/transient-marker.sh \
   "$LIB_DIR"/terminal-reconciler.sh \
@@ -91,6 +94,9 @@ for f in \
   "$LIB_DIR"/agent-adapters.sh \
   "$REPO_DIR"/shared/hooks/*.sh \
   "$REPO_DIR"/shared/agent-bin/tmux \
+  "$REPO_DIR"/tests/check-install-paths.test.sh \
+  "$REPO_DIR"/tests/check-common-guards.test.sh \
+  "$REPO_DIR"/tests/control-pane-recovery.test.sh \
   "$REPO_DIR"/tests/dashboard-refresh.test.sh \
   "$REPO_DIR"/tests/state-mutex.test.sh \
   "$REPO_DIR"/tests/task-id-log-prefix.test.sh \
@@ -98,9 +104,12 @@ for f in \
   "$REPO_DIR"/tests/project-context-suggestion.test.sh \
   "$REPO_DIR"/tests/wavemill-usage-tips.test.sh \
   "$REPO_DIR"/tests/wavemill-dependent-launch.test.sh \
+  "$REPO_DIR"/tests/wavemill-monitor-executed-model.test.sh \
   "$REPO_DIR"/tests/wavemill-guards.test.sh \
   "$REPO_DIR"/tests/dashboard-incidents-section.test.sh \
   "$REPO_DIR"/tests/review-scope-baseline-handoff.test.sh \
+  "$REPO_DIR"/tests/ready-failure-blocks-pr-label.test.sh \
+  "$REPO_DIR"/tests/base-ref-stale-local.test.sh \
   "$REPO_DIR"/tests/wavemill-mill-advance.test.sh \
   "$REPO_DIR"/tests/wavemill-backlog-budget.test.sh \
   "$REPO_DIR"/tests/wavemill-dependency-queue-filter.test.sh \
@@ -110,12 +119,14 @@ for f in \
   "$REPO_DIR"/tests/wavemill-mill-router-fallback.test.sh \
   "$REPO_DIR"/tests/backstage-tend-watchdog.test.sh \
   "$REPO_DIR"/tests/backstage-observer-watchdog.test.sh \
+  "$REPO_DIR"/tests/observer-managed-filing.test.sh \
   "$REPO_DIR"/tests/backstage-observer-pane-promotion.test.sh \
   "$REPO_DIR"/tests/model-inheritance-chain.test.sh \
   "$REPO_DIR"/tests/wavemill-background-jobs-cleanup.test.sh \
   "$REPO_DIR"/tests/global-model-parity.test.sh \
   "$REPO_DIR"/tests/queue-health.test.sh \
   "$REPO_DIR"/tests/merge-queue-live-ci.test.sh \
+  "$REPO_DIR"/tests/merge-queue-blocked-label.test.sh \
   "$REPO_DIR"/tests/merge-lane-progress-artifacts.test.sh \
   "$REPO_DIR"/tests/notification-waiting.test.sh \
   "$REPO_DIR"/tests/hook-osc-emit.test.sh \
@@ -126,12 +137,17 @@ for f in \
   "$REPO_DIR"/tests/startup-terminal-preflight.test.sh \
   "$REPO_DIR"/tests/fresh-launch-terminal-preflight.test.sh \
   "$REPO_DIR"/tests/startup-cleanup-integration.test.sh \
+  "$REPO_DIR"/tests/startup-terminal-ownership.test.sh \
   "$REPO_DIR"/tests/challenge-intent-roundtrip.test.sh \
   "$REPO_DIR"/tests/challenge-varied-model-abort.test.sh \
   "$REPO_DIR"/tests/challenge-record-decisive.test.sh \
   "$REPO_DIR"/tests/native-terminal-failure.test.sh \
   "$REPO_DIR"/tests/native-failure-classification.test.sh \
   "$REPO_DIR"/tests/challenger-transient-retry.test.sh \
+  "$REPO_DIR"/tests/coding-dirty-handoff.test.sh \
+  "$REPO_DIR"/tests/ready-exhausted-challenge.test.sh \
+  "$REPO_DIR"/tests/review-gate-refused-challenge.test.sh \
+  "$REPO_DIR"/tests/monitor-late-completion.test.sh \
   "$REPO_DIR"/tests/challenge-deferred-arm.test.sh \
   "$REPO_DIR"/tests/parent-monitor-function-drift.test.sh \
   "$REPO_DIR"/tests/linear-state-canonicalization.test.sh \
@@ -150,11 +166,33 @@ for f in \
   "$REPO_DIR"/tests/hokusai-test-registration.test.sh \
   "$REPO_DIR"/tests/monitor-script-byte-identical.test.sh \
   "$REPO_DIR"/tests/bounded-retry.test.sh \
+  "$REPO_DIR"/tests/ready-update-from-base.test.sh \
+  "$REPO_DIR"/tests/plan-packet-binding.test.sh \
+  "$REPO_DIR"/tests/task-progress.test.sh \
+  "$REPO_DIR"/tests/task-identity.test.sh \
   "$REPO_DIR"/tests/handle-phase-launch-result.test.sh \
+  "$REPO_DIR"/tests/coding-launch-refusal.test.sh \
+  "$REPO_DIR"/tests/review-capacity-detection.test.sh \
+  "$REPO_DIR"/tests/review-missing-window-relaunch.test.sh \
+  "$REPO_DIR"/tests/re-review-no-pr.test.sh \
   "$REPO_DIR"/tests/launch-pane-liveness.test.sh \
   "$REPO_DIR"/tests/launch-failure-log-capture.test.sh \
   "$REPO_DIR"/tests/challenge-eval-soft-retry.test.sh \
+  "$REPO_DIR"/tests/eval-stub-slot-accounting.test.sh \
+  "$REPO_DIR"/tests/challenge-eval-invalid-challenge.test.sh \
   "$REPO_DIR"/tests/challenge-eval-timeout.test.sh \
+  "$REPO_DIR"/tests/challenge-provenance.test.sh \
+  "$REPO_DIR"/tests/quarantine-legacy-reviewer-forfeits.test.sh \
+  "$REPO_DIR"/tests/reviewer-stage-hok2939-shaped.test.sh \
+  "$REPO_DIR"/tests/reviewer-stage-hok2954-shaped.test.sh \
+  "$REPO_DIR"/tests/challenge-fork-materialisation.test.sh \
+  "$REPO_DIR"/tests/challenge-fork-restart.test.sh \
+  "$REPO_DIR"/tests/challenge-fork-pre-fork-collapse.test.sh \
+  "$REPO_DIR"/tests/challenge-fork-inherited-provenance.test.sh \
+  "$REPO_DIR"/tests/challenge-fork-non-forked-regression.test.sh \
+  "$REPO_DIR"/tests/challenge-fork-review-launch-refusal.test.sh \
+  "$REPO_DIR"/tests/fixtures/lifecycle/deferred_challenger_materialises_after_coding.sh \
+  "$REPO_DIR"/tests/fixtures/lifecycle/deferred_implementation_challenger_forks_at_plan_handoff.sh \
   "$REPO_DIR"/tests/run-shell-suite.sh \
   "$REPO_DIR"/tests/run-unit-tests.sh \
   "$REPO_DIR"/tests/run-custom-tests.sh \
@@ -174,10 +212,13 @@ for f in \
   "$REPO_DIR"/tests/fixtures/lifecycle/closed_primary_sibling_merged_single_status.sh \
   "$REPO_DIR"/tests/fixtures/lifecycle/closed_sibling_merged_restart_silence.sh \
   "$REPO_DIR"/tests/fixtures/lifecycle/coding_agent_exit_interrupted.sh \
+  "$REPO_DIR"/tests/fixtures/lifecycle/integration_window_observer_only.sh \
   "$REPO_DIR"/tests/incident-fixtures-terminal-panes.test.sh \
   "$REPO_DIR"/tests/incident-fixtures-safety-controls.test.sh \
   "$REPO_DIR"/tests/lib/incident-fixture-harness.sh \
   "$REPO_DIR"/tests/lib/terminal-lifecycle-cert-harness.sh \
+  "$REPO_DIR"/tests/lib/tracked-tree-guard.sh \
+  "$REPO_DIR"/tests/tracked-tree-guard.test.sh \
   "$REPO_DIR"/tests/terminal-lifecycle-cert-matrix.test.sh \
   "$REPO_DIR"/tests/terminal-lifecycle-cert-restart.test.sh \
   "$REPO_DIR"/tests/terminal-lifecycle-cert-budgets.test.sh \
@@ -190,6 +231,7 @@ for f in \
   "$REPO_DIR"/tests/fixtures/incidents/hok2595_closed_non_challenge.sh \
   "$REPO_DIR"/tests/fixtures/incidents/hok2913c_superseded_challenger.sh \
   "$REPO_DIR"/tests/fixtures/incidents/squash_delivery_deleted_remote_head.sh \
+  "$REPO_DIR"/tests/fixtures/incidents/hok3056_terminal_dirty_worktree.sh \
   "$REPO_DIR"/tests/fixtures/incidents/control_dirty_worktree.sh \
   "$REPO_DIR"/tests/fixtures/incidents/control_local_head_changed.sh \
   "$REPO_DIR"/tests/fixtures/incidents/control_divergent_local_ahead.sh \
@@ -272,9 +314,24 @@ fi
 
 observer_helper="$(awk '/^wavemill_build_observer_loop_command\(\) \{/{capture=1} capture{print} capture && /^}/{exit}' "$LIB_DIR/wavemill-common.sh")"
 if [[ "$observer_helper" == *'--dry-run'* && "$observer_helper" != *'--file-linear'* ]]; then
-  pass "observer service launch is detection-only"
+  pass "observer service launch never files legacy Linear findings"
 else
-  fail "observer service launch is not detection-only"
+  fail "observer service launch files legacy Linear findings"
+fi
+
+# HOK-3036: incident filing must be selected by an explicit --incidents-mode, so
+# neither a bare --file-incidents nor --dry-run can silently select live.
+if [[ "$observer_helper" == *'--incidents-mode=shadow'* && "$observer_helper" == *'--incidents-mode=live'* ]]; then
+  pass "observer service launch selects incident mode explicitly (off/shadow/live)"
+else
+  fail "observer service launch does not select incident mode explicitly"
+fi
+
+if grep -q 'wavemill_observer_linear_service_mode' "$LIB_DIR/wavemill-common.sh" \
+  && grep -q 'wavemill_observer_linear_credential_ready' "$LIB_DIR/wavemill-common.sh"; then
+  pass "observer managed-filing resolver and credential guard exist"
+else
+  fail "observer managed-filing resolver or credential guard is missing"
 fi
 
 health_writer="$(awk '/^wavemill_write_backstage_service_health\(\) \{/{capture=1} capture{print} capture && /^}/{exit}' "$LIB_DIR/wavemill-common.sh")"
@@ -496,6 +553,15 @@ else
     # Extract function definitions from bounded-retry.sh (sourced by wavemill-common.sh)
     BOUNDED_RETRY_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/bounded-retry.sh" | sed 's/()//' | sort -u)
 
+    # Extract function definitions from plan-packet-binding.sh (sourced by monitor, HOK-3099)
+    PLAN_PACKET_BINDING_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/plan-packet-binding.sh" | sed 's/()//' | sort -u)
+
+    # Extract function definitions from task-progress.sh (sourced by wavemill-common.sh, HOK-3101)
+    TASK_PROGRESS_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/task-progress.sh" | sed 's/()//' | sort -u)
+
+    # Extract function definitions from task-identity.sh (sourced by wavemill-common.sh, HOK-3114)
+    TASK_IDENTITY_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/task-identity.sh" | sed 's/()//' | sort -u)
+
     # Extract function definitions from challenge-arms.sh (also sourced by wavemill-common.sh, HOK-2811)
     CHALLENGE_ARMS_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/challenge-arms.sh" | sed 's/()//' | sort -u)
 
@@ -515,7 +581,7 @@ else
     WORKTREE_DEPS_FUNCS=$(grep -oE '^[a-z_][a-z0-9_]*\(\)' "$LIB_DIR/wavemill-worktree-deps.sh" | sed 's/()//' | sort -u)
 
     # Combine all available function definitions
-    ALL_DEFINED=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' "$HEREDOC_FUNCS" "$ADAPTER_FUNCS" "$COMMON_FUNCS" "$BOUNDED_RETRY_FUNCS" "$CHALLENGE_ARMS_FUNCS" "$HOOK_FUNCS" "$QUEUE_HEALTH_FUNCS" "$MARKER_FUNCS" "$RECONCILER_FUNCS" "$WORKTREE_DEPS_FUNCS" | sort -u)
+    ALL_DEFINED=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' "$HEREDOC_FUNCS" "$ADAPTER_FUNCS" "$COMMON_FUNCS" "$BOUNDED_RETRY_FUNCS" "$PLAN_PACKET_BINDING_FUNCS" "$TASK_PROGRESS_FUNCS" "$TASK_IDENTITY_FUNCS" "$CHALLENGE_ARMS_FUNCS" "$HOOK_FUNCS" "$QUEUE_HEALTH_FUNCS" "$MARKER_FUNCS" "$RECONCILER_FUNCS" "$WORKTREE_DEPS_FUNCS" | sort -u)
 
     # Known external commands and bash builtins that are NOT custom functions
     # This list covers standard utilities, coreutils, and tools used by wavemill
@@ -547,8 +613,10 @@ else
       | grep -vE '^(bad|internal|keeping|marking|monitor|rate|reduce|service|skipping|staying|timed|too|using|wavemill|waiting)$' \
       | grep -vE '^(advance|review)$' \
       | grep -vE '^(not_eligible|routing_error|invalid_challenge)$' \
+      | grep -vE '^(legacy_stale|stale)$' \
       | grep -vE '^(a|aborted|already|available|blocked_by_count|break|coding|cp|debug|elapsed|empty_queue|execute|file|fresh|gtimeout|heartbeat_epoch|i|id|launch|length|main|mapfile|missing|next|not|overloaded|plan|ready|required|reservation|slots|staleness|streak|the|they|timeout|todate|todateiso8601|tonumber|tracked|user)$' \
-      | grep -vE '^(capabilities|const|import|throw)$')
+      | grep -vE '^(capabilities|const|import|throw)$' \
+      | grep -vE '^(ascii_upcase|first|it|num|retrying|sibling)$')
 
     # Check which called names look like they could be custom functions
     # and verify they're defined
@@ -750,7 +818,7 @@ else
   # With `set -euo pipefail`, this makes the pipeline fail even though the pattern matched.
 
   if grep -qF 'wavemill_resolve_pr_attempt "$issue" "$branch"' <<< "$HEREDOC_CONTENT" \
-    && grep -qF 'classification" == "current-open"' <<< "$HEREDOC_CONTENT"; then
+    && grep -qF 'accept_classifications=(current-open)' <<< "$HEREDOC_CONTENT"; then
     pass "monitor find_pr_for_branch uses attempt resolver"
   else
     fail "monitor find_pr_for_branch is not routed through attempt resolver"
@@ -765,13 +833,14 @@ else
     fail "monitor still risks cleanup when agent exits without PR"
   fi
 
-  if grep -q 'linear_set_state .*"In Review"' <<< "$HEREDOC_CONTENT" && grep -q 'get_linear_issue_id' <<< "$HEREDOC_CONTENT"; then
+  # HOK-3115: writes pass the task ID; linear_set_state resolves and gates it.
+  if grep -qF 'linear_set_state "$ISSUE" "In Review"' <<< "$HEREDOC_CONTENT"; then
     pass "monitor sets Linear issue to In Review when PR is detected"
   else
     fail "monitor does not set Linear issue to In Review on PR detection"
   fi
 
-  if grep -q 'linear_set_state .*"Done"' <<< "$HEREDOC_CONTENT" && grep -q 'get_linear_issue_id' <<< "$HEREDOC_CONTENT"; then
+  if grep -qF 'linear_set_state "$ISSUE" "Done"' <<< "$HEREDOC_CONTENT"; then
     pass "monitor sets Linear issue to Done when work is completed"
   else
     fail "monitor does not set Linear issue to Done on completion"
@@ -1183,12 +1252,14 @@ else
   fail "agent adapters are missing static prompt fallback warning"
 fi
 
-if grep -q 'agent_runtime_resource_repo_dir' "$LIB_DIR/agent-adapters.sh" \
-  && grep -q -- '--repo-dir "$resource_repo_dir"' "$LIB_DIR/agent-adapters.sh" \
-  && ! grep -q -- '--repo-dir "$wt_dir" --json' "$LIB_DIR/agent-adapters.sh"; then
-  pass "runtime prompt resolver uses Wavemill resource root instead of task worktree"
+if grep -qF 'agent_runtime_resource_repo_dir' "$LIB_DIR/agent-adapters.sh" \
+  && grep -qF -- '--repo-dir "$resource_repo_dir"' "$LIB_DIR/agent-adapters.sh" \
+  && grep -qF 'agent_runtime_resource_repo_dir "$wt_dir"' "$LIB_DIR/agent-adapters.sh" \
+  && grep -qF 'REPO_DIR:-$wt_dir' "$LIB_DIR/agent-adapters.sh" \
+  && ! grep -qF -- '--repo-dir "$wt_dir" --json' "$LIB_DIR/agent-adapters.sh"; then
+  pass "runtime prompt resolver uses the milled repo (REPO_DIR), not the install root or the task worktree"
 else
-  fail "runtime prompt resolver should not resolve prompt resources from task worktrees"
+  fail "runtime prompt resolver should resolve runtime resources from the milled repo (REPO_DIR) and keep prompt templates install-relative"
 fi
 
 # ============================================================================
@@ -1386,7 +1457,7 @@ else
 fi
 
 if [[ -f "$LIB_DIR/wavemill-startup-runner.sh" ]] \
-  && grep -Fq '^[A-Z]+-[0-9]+(_c)?$|^[a-z0-9-]+$' "$LIB_DIR/wavemill-startup-runner.sh"; then
+  && grep -Fq '^${TASK_IDENTITY_TASK_ID_RE}$|^[a-z0-9-]+$' "$LIB_DIR/wavemill-startup-runner.sh"; then
   pass "startup runner accepts challenge task identifiers"
 else
   fail "startup runner rejects challenge task identifiers"
@@ -1918,7 +1989,7 @@ agent_verify_launch() {
 
 CODEX_PROMPT_FILE="$PROMPT_RENDER_DIR/interactive-codex-prompt.txt"
 printf 'planning prompt\n' > "$CODEX_PROMPT_FILE"
-agent_launch_interactive "wavemill-test" "planning" "$CODEX_PROMPT_FILE" "codex" "gpt-5.6-terra"
+WAVEMILL_CODEX_NO_DAEMON=1 agent_launch_interactive "wavemill-test" "planning" "$CODEX_PROMPT_FILE" "codex" "gpt-5.6-terra"
 
 CODEX_LAUNCHER_PATH=""
 for captured in "${TMUX_CAPTURE[@]}"; do
@@ -1930,10 +2001,19 @@ for captured in "${TMUX_CAPTURE[@]}"; do
 done
 
 if [[ -f "$CODEX_LAUNCHER_PATH" ]] \
-  && grep -q 'codex --model gpt-5\.6-terra --dangerously-bypass-approvals-and-sandbox --no-alt-screen "\$(cat ' "$CODEX_LAUNCHER_PATH"; then
-  pass "interactive Codex launcher uses interactive codex with bypass flag"
+  && grep -q 'codex --model gpt-5\.6-terra --dangerously-bypass-approvals-and-sandbox --no-daemon --no-alt-screen "\$(cat ' "$CODEX_LAUNCHER_PATH"; then
+  pass "interactive Codex launcher uses interactive codex with bypass and no-daemon flags"
 else
   fail "interactive Codex launcher is missing interactive codex flags"
+fi
+
+# --no-daemon is only passed when the installed codex advertises it; the
+# override pins the probe so this check is independent of the host CLI.
+if (WAVEMILL_CODEX_NO_DAEMON=1 agent_codex_supports_no_daemon) \
+  && ! (WAVEMILL_CODEX_NO_DAEMON=0 agent_codex_supports_no_daemon); then
+  pass "codex --no-daemon support honours WAVEMILL_CODEX_NO_DAEMON"
+else
+  fail "codex --no-daemon support ignores WAVEMILL_CODEX_NO_DAEMON"
 fi
 
 if [[ -f "$CODEX_LAUNCHER_PATH" ]] \
@@ -2362,7 +2442,7 @@ if [[ ! -f "$MILL_SCRIPT" ]]; then
   fail "wavemill-mill.sh not found for drift refresh checks"
 else
   if grep -q 'check_subsystem_drift() {' "$MILL_SCRIPT" \
-    && grep -q 'npx tsx tools/check-drift.ts "\$REPO_DIR"' "$MILL_SCRIPT"; then
+    && grep -qE 'npx tsx "\$TOOLS_DIR/check-drift\.ts" "\$REPO_DIR"' "$MILL_SCRIPT"; then
     pass "mill script defines subsystem drift wrapper"
   else
     fail "mill script is missing subsystem drift wrapper"
@@ -2382,7 +2462,7 @@ else
     fail "mill script is missing docs refresh hotkey support"
   fi
 
-  if grep -q 'npx tsx tools/init-project-context.ts --refresh "\$REPO_DIR"' "$MILL_SCRIPT" \
+  if grep -qE 'npx tsx "\$TOOLS_DIR/init-project-context\.ts" --refresh "\$REPO_DIR"' "$MILL_SCRIPT" \
     && grep -q 'Subsystem docs are up to date' "$MILL_SCRIPT"; then
     pass "mill script refreshes docs and handles clean state"
   else
@@ -3255,6 +3335,7 @@ echo "=== Integration Window Lifecycle Fixtures ==="
 for fixture in \
   "$REPO_DIR/tests/fixtures/lifecycle/integration_window_created.sh" \
   "$REPO_DIR/tests/fixtures/lifecycle/integration_window_observer_enabled.sh" \
+  "$REPO_DIR/tests/fixtures/lifecycle/integration_window_observer_only.sh" \
   "$REPO_DIR/tests/fixtures/lifecycle/integration_window_clean_shutdown.sh" \
   "$REPO_DIR/tests/fixtures/lifecycle/integration_window_disabled.sh" \
   "$REPO_DIR/tests/fixtures/lifecycle/integration_window_recovers_missing_tend.sh" \
@@ -3293,7 +3374,9 @@ run_fixtures_parallel \
   "$REPO_DIR/tests/fixtures/lifecycle/tend_merges_one_at_a_time.sh" \
   "$REPO_DIR/tests/fixtures/lifecycle/tend_surfaces_rebase_conflict.sh" \
   "$REPO_DIR/tests/fixtures/lifecycle/tend_challenge_winner_merges_loser_cleanup.sh" \
-  "$REPO_DIR/tests/fixtures/lifecycle/tend_status_line_not_repeated.sh"
+  "$REPO_DIR/tests/fixtures/lifecycle/tend_status_line_not_repeated.sh" \
+  "$REPO_DIR/tests/fixtures/lifecycle/deferred_challenger_materialises_after_coding.sh" \
+  "$REPO_DIR/tests/fixtures/lifecycle/deferred_implementation_challenger_forks_at_plan_handoff.sh"
 
 # ============================================================================
 # TEST 15: Startup lifecycle fixtures

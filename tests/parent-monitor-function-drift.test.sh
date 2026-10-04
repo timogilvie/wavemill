@@ -31,6 +31,12 @@ MONITOR_SCRIPT_FILE="$REPO_DIR/shared/lib/wavemill-monitor.sh"
 # HOK-2923: set_window_attention_state and clear_window_attention_state remain
 # intentionally duplicated while both parent and monitor scopes are migrated
 # to the shared transient-marker lifecycle contract.
+# HOK-3007: write_invalid_challenge_artifact is duplicated with the manual
+# comparison artifact helper so monitor and parent operator artifacts stay in sync.
+# HOK-3065: release_challenge_selection_health_plan is gone from both local
+# scopes — challenge selection is now sealed at t=0 and materialized against the
+# expanded route, so the release-plan health helper is no longer needed in either
+# scope. This drops the duplicated/identical pair count from 37 to 36.
 EXPECTED_DIVERGENT=""
 
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/wavemill-parent-monitor-drift.XXXXXX")"

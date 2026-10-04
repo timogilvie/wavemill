@@ -282,7 +282,7 @@ Run focused tests first:
 ```bash
 node --test shared/lib/openrouter-catalog.test.ts shared/lib/openrouter-provider.test.ts shared/lib/openrouter-launcher.test.ts
 node --test shared/lib/config.test.ts shared/lib/model-registry.test.ts shared/lib/routing-policy.test.ts
-npx tsx shared/lib/workflow-router.test.ts
+npx tsx shared/lib/workflow-router-native-certification.test.ts
 bash tests/check-shell.sh
 bash tests/wavemill-mill-model-flags.test.sh
 npx tsx tools/check-routing.ts --json --prompt "Implement a small routing feature with tests"

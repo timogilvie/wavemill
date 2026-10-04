@@ -49,9 +49,16 @@ cat > "$REPO_DIR/.wavemill-config.json" <<'EOF'
   "integration": {
     "enabled": false,
     "useMillSession": true
+  },
+  "observer": {
+    "enabled": false
   }
 }
 EOF
+
+# The fake npx cannot run the real resolver; pin the capabilities this
+# config resolves to (HOK-3102 test override).
+export WAVEMILL_SESSION_CAPABILITIES_JSON='{"tend":false,"observer":false,"mergeExecutor":"operator","mergeQueue":false}'
 
 startup_log() {
   printf '%s\n' "$*" >> "$STATUS_LOG_FILE"

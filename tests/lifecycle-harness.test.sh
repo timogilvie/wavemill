@@ -157,6 +157,9 @@ harness_extract_real_functions() {
     merge_retry_marker_until \
     lane_progress_patch_json \
     refresh_ready_merge_queue_tick \
+    pr_live_labels_json \
+    merge_queue_transition_report \
+    merge_queue_exclusion_report \
     wavemill_run_tsx_tool \
     get_main_head_sha \
     ready_stage_allows_merge \
@@ -219,7 +222,17 @@ harness_extract_real_functions() {
     mark_coding_uncommitted_output_announced \
     clear_coding_uncommitted_output_attention \
     coding_compare_commit_counts \
+    try_update_branch_from_base \
     write_coding_uncommitted_output_artifact \
+    coding_recovery_instruction_path \
+    coding_dirty_handoff_grace_seconds \
+    coding_dirty_handoff_agent_exited \
+    coding_dirty_handoff_path_is_planned \
+    coding_dirty_handoff_quarantine_scratch \
+    coding_dirty_handoff_write_recovery_instruction \
+    coding_dirty_handoff_relaunch \
+    coding_dirty_handoff_terminalize \
+    _challenge_side_for_issue \
     guard_coding_complete_handoff \
     blocked_completion_validate_for_advance \
     archive_stale_coding_artifacts \
@@ -242,6 +255,7 @@ harness_extract_real_functions() {
     challenge_stage_for_launch_env \
     challenge_abort_for_unresolvable_varied_model \
     challenge_guard_varied_model_resolvable \
+    challenge_maybe_materialize_deferred_arms \
     coding_missing_blocked_completion_announce_marker \
     _coding_terminal_blocked_completion_detected \
     emit_terminal_blocked_completion_attention \
@@ -280,6 +294,13 @@ harness_extract_real_functions() {
     check_stage_aborted \
     phase_launch_head \
     phase_launch_gate \
+    coding_launch_refusal_limit \
+    coding_launch_refusal_is_transient \
+    log_coding_launch_refusal \
+    coding_launch_refusal_hold \
+    coding_launch_refusal_clear \
+    coding_launch_refusal_terminalize \
+    handle_coding_launch_refusal \
     _run_phase_launch \
     reap_completed_planning_pane \
     persist_challenge_execution_intent \
@@ -288,9 +309,11 @@ harness_extract_real_functions() {
     stage_result_is_in_progress \
     ready_conflict_launch_head \
     _persist_phase \
-    expansion_recovery_resolve_issue_id \
     recover_missing_expansion_artifact \
-    handle_expanded_reroute_handoff_failure
+    handle_expanded_reroute_handoff_failure \
+    enforce_plan_packet_binding \
+    _plan_packet_relaunch_planning \
+    _plan_packet_needs_user
   do
     local extracted source_file
     # trim_outer_whitespace is defined only in the parent mill script; every
@@ -604,6 +627,11 @@ harness_run_tick() {
     _restore_inflight_task_window_if_missing() { _RESTORE_STATE="none"; return 0; }
     check_routing_complete() { return 1; }
     merge_queue_enabled() { return 1; }
+    # HOK-3102: default session-capability stubs (tend); scenarios override.
+    wavemill_session_merge_executor() { printf "tend\n"; }
+    wavemill_session_has() { case "${1:-}" in tend|observer|mergeQueue) return 0 ;; *) return 1 ;; esac; }
+    wavemill_session_capabilities_json() { printf '{"tend":true,"observer":false,"mergeExecutor":"tend","mergeQueue":true}'; }
+    surface_merge_needed() { :; }
     ready_queue_state() { printf "\n"; }
     ready_queue_field() { printf "\n"; }
     ready_live_ci_json() { printf "%s\n" "{\"conclusion\":\"pass\",\"headSha\":\"head\",\"mergeStateStatus\":\"CLEAN\",\"observed\":1,\"requiredContexts\":[],\"checks\":[]}"; }
@@ -625,6 +653,9 @@ harness_run_tick() {
     transient_error_recovery_pending() { return 1; }
     codex_has_pending_approval() { return 1; }
     launch_background_post_merge_eval() { :; }
+    # HOK-3101 primitive: no evidence by default, which the dirty-handoff guard
+    # (HOK-3128) treats as a live agent. Scenarios override.
+    task_progress_json() { printf "{}\n"; }
 
     # Scenario-specific function overrides must run after default stubs and
     # extracted real functions are loaded.
@@ -1059,23 +1090,6 @@ EOF
   check_not_contains "challenger recover url id: does not pass Linear URL" "$npx_args" "expand-issue.ts https://linear.app/wavemill/issue/HOK-2265"
 }
 
-test_expansion_recovery_resolve_issue_id_normalizes_linear_issue_url() {
-  local resolved
-  resolved="$(
-    source "$REAL_FUNC_FILE"
-    get_task_meta() {
-      local issue_key="$1" field="$2"
-      case "$issue_key.$field" in
-        HOK-2265_c.linearIssueId) printf '%s\n' 'https://linear.app/hokusai/issue/HOK-2265/native-runtime' ;;
-        *) printf '\n' ;;
-      esac
-    }
-    expansion_recovery_resolve_issue_id HOK-2265_c
-  )"
-
-  check_eq "challenger recover url: resolves Linear issue URL to issue id" "HOK-2265" "$resolved"
-}
-
 test_challenger_missing_expansion_recovery_skips_without_linear_issue_id() {
   local slug="challenger-missing-expansion-recovery-skip"
   local issue="HOK-2265_c"
@@ -1094,12 +1108,16 @@ test_challenger_missing_expansion_recovery_skips_without_linear_issue_id() {
     get_task_meta() {
       local issue_key=\"\$1\" field=\"\$2\"
       case \"\$issue_key.\$field\" in
-        HOK-2265_c.linearIssueId) printf '%s\\n' ' HOK-2265_c ' ;;
         HOK-2265_c.challenge) printf '%s\\n' 'true' ;;
         HOK-2265_c.challengeRole) printf '%s\\n' 'challenger' ;;
         *) printf '\\n' ;;
       esac
     }
+    # HOK-3115: a recorded linearIssueId that conflicts with the task ID is
+    # unresolvable under the task-identity contract, so recovery is skipped.
+    mkdir -p \"\$(dirname \"\$STATE_FILE\")\"
+    [[ -f \"\$STATE_FILE\" ]] || printf '{\"tasks\":{}}\\n' > \"\$STATE_FILE\"
+    state_mutate \"\$STATE_FILE\" '.tasks[\$i].linearIssueId = \"HOK-9999\"' --arg i \"\$ISSUE\" >/dev/null
     npx() {
       printf '%s\\n' \"\$*\" >> \"\$REPO_UNDER_TEST/.wavemill/npx-args.log\"
       return 0
@@ -1110,7 +1128,7 @@ test_challenger_missing_expansion_recovery_skips_without_linear_issue_id() {
   check_eq "challenger recover skip: coding launches" "true" "$(kv_value "$tick" coding_launched)"
   check_eq "challenger recover skip: coding stays bootstrap" "bootstrap-coder" "$(kv_value "$tick" coding_model)"
   check_eq "challenger recover skip: recovery state skipped" "skipped" "$(jq -r '.status' "$repo/features/$slug/.expansion-recovery-state.json")"
-  check_eq "challenger recover skip: skipped detail stable" "synthetic-challenger-linear-issue-id-missing-or-invalid" "$(jq -r '.detail' "$repo/features/$slug/.expansion-recovery-state.json")"
+  check_eq "challenger recover skip: skipped detail stable" "task-identity-linear-issue-id-unresolvable" "$(jq -r '.detail' "$repo/features/$slug/.expansion-recovery-state.json")"
   check_not_contains "challenger recover skip: expand tool not invoked" "$(cat "$repo/.wavemill/npx-args.log")" "expand-issue.ts"
   check_contains "challenger recover skip: warning includes skipped" "$(kv_value "$tick" warn_output)" "RECOVERY_SKIPPED"
   check_contains "challenger recover skip: warning includes bootstrap fallback" "$(kv_value "$tick" warn_output)" "RECOVERY_FALLBACK_BOOTSTRAP"
@@ -1721,6 +1739,7 @@ EOF
     get_task_phase() { printf "%s\n" "ready"; }
     get_main_head_sha() { printf "%s\n" "sha-current"; }
     merge_queue_enabled() { return 0; }
+    pr_live_labels_json() { printf "[]\n"; }
     ready_queue_state() {
       local state_dir="$1"
       jq -r ".artifacts.queueState // empty" "$state_dir/.ready-result.json" 2>/dev/null || printf "\n"
@@ -1840,6 +1859,7 @@ EOF
     get_task_phase() { printf "%s\n" "ready"; }
     get_main_head_sha() { printf "%s\n" "sha-current"; }
     merge_queue_enabled() { return 0; }
+    pr_live_labels_json() { printf "[]\n"; }
     pr_state() {
       if [[ "${1:-}" == "838" ]]; then
         printf "%s\n" "CLOSED"
@@ -2354,6 +2374,43 @@ test_coding_complete_dirty_worktree_without_commits_needs_attention() {
   check_contains "uncommitted output: actionable log emitted" "$(kv_value "$tick" log_output)" "branch has no commits beyond main and worktree still contains uncommitted coding output"
   check_file_exists "uncommitted output: artifact written" "$feature_dir/.coding-uncommitted-output.json"
   check_file_exists "uncommitted output: dedupe marker written" "$feature_dir/.coding-uncommitted-output-announced"
+}
+
+# HOK-3128: once the coding agent has exited, a dirty-tree handoff is relaunched
+# once (bounded-retry bucket coding-dirty-handoff) and then terminalized; a
+# primary stays needs-user with a recorded sentinel.
+test_coding_complete_dirty_tree_agent_exited_relaunches_then_terminalizes() {
+  local slug="coding-complete-dirty-agent-exited"
+  local issue="HOK-3128-EXITED"
+  local repo tick1 tick2 feature_dir setup
+  repo="$(harness_init_repo "$slug")"
+  harness_setup_runtime_artifacts "$repo"
+  harness_setup_coding_state "$repo" "$slug" "running"
+  feature_dir="$repo/features/$slug"
+
+  printf '{"stage":"coding","confidence":"high"}\n' > "$feature_dir/.coding-complete"
+  printf 'uncommitted edit\n' >> "$repo/README.md"
+
+  setup='CURRENT_PHASE="coding"
+task_progress_json() { printf "%s\n" "{\"agentIdle\":true,\"agentState\":null,\"blockingPrompt\":null,\"agentRecord\":{\"state\":\"idle\",\"event\":\"process_exit\",\"timestamp\":1},\"progressAgeMinutes\":90}"; }
+agent_validate_phase_launch() { return 0; }
+_prepare_recovery_phase_launch() { return 0; }'
+
+  tick1="$(harness_run_tick "$repo" "$slug" "$issue" "$setup")"
+  check_eq "agent exited: tick 1 relaunches coding" "true" "$(kv_value "$tick1" coding_launched)"
+  check_eq "agent exited: tick 1 keeps the task active" "1" "$(kv_value "$tick1" active_count)"
+  check_eq "agent exited: tick 1 clears attention" "clear" "$(kv_value "$tick1" attention)"
+  check_contains "agent exited: tick 1 logs the relaunch" "$(kv_value "$tick1" log_output)" "coding-dirty-handoff relaunch"
+  check_file_exists "agent exited: recovery instruction written" "$feature_dir/.coding-recovery-instruction.md"
+  check_not_contains "agent exited: review does not launch" "$(kv_value "$tick1" log_output)" "Launching review phase"
+
+  printf '{"stage":"coding","confidence":"high"}\n' > "$feature_dir/.coding-complete"
+  tick2="$(harness_run_tick "$repo" "$slug" "$issue" "$setup")"
+  check_eq "agent exited: tick 2 does not relaunch again" "false" "$(kv_value "$tick2" coding_launched)"
+  check_eq "agent exited: primary stays needs-user" "needs-user" "$(kv_value "$tick2" attention)"
+  check_eq "agent exited: phase stays coding" "coding" "$(kv_value "$tick2" phase)"
+  check_file_exists "agent exited: exhaustion sentinel recorded" "$feature_dir/.retry-coding-dirty-handoff-exhausted"
+  check_contains "agent exited: sentinel names the reason" "$(cat "$feature_dir/.retry-coding-dirty-handoff-exhausted" 2>/dev/null)" "dirty-handoff relaunch exhausted after 1 attempt(s)"
 }
 
 test_coding_complete_uncommitted_output_dedupes_stable_condition() {
@@ -3988,7 +4045,6 @@ test_remote_probe_timeout_does_not_block_plan_approval
 test_coding_uses_expanded_route_over_bootstrap
 test_missing_expansion_recovery_success_launches_with_expanded_route
 test_challenger_missing_expansion_recovery_uses_linear_issue_id
-test_expansion_recovery_resolve_issue_id_normalizes_linear_issue_url
 test_challenger_missing_expansion_recovery_extracts_linear_issue_id_from_url
 test_challenger_missing_expansion_recovery_skips_without_linear_issue_id
 test_missing_expansion_recovery_non_challenger_uses_issue_key
@@ -4023,6 +4079,7 @@ test_coding_blocked_completion_dedupes_same_artifact
 test_coding_blocked_completion_reannounces_on_mtime_change
 test_coding_complete_wins_over_blocked_completion
 test_coding_complete_dirty_worktree_without_commits_needs_attention
+test_coding_complete_dirty_tree_agent_exited_relaunches_then_terminalizes
 test_coding_complete_uncommitted_output_dedupes_stable_condition
 test_coding_complete_uncommitted_output_reannounces_on_dirty_path_change
 test_coding_complete_uncommitted_output_reannounces_on_ahead_count_change

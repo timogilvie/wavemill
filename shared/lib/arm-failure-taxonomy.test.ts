@@ -4,6 +4,7 @@ import {
   classifyArmFault,
   isModelQualitySignal,
   parseAbortFailureKind,
+  isInvalidChallengeAbort,
 } from './arm-failure-taxonomy.ts';
 
 test('classifies the incident failure kinds into the intended fault classes', () => {
@@ -88,4 +89,129 @@ test('parses abort failure kinds and quality eligibility', () => {
   assert.equal(isModelQualitySignal('harness-fault'), false);
   assert.equal(isModelQualitySignal('selection-fault'), false);
   assert.equal(isModelQualitySignal('unknown-fault'), false);
+});
+
+test('classifies typed native stage-failure kinds (HOK-3064)', () => {
+  // A native stage timeout is recoverable provider/infrastructure failure
+  // (HOK-3019). Circuits open only for provider-fault (HOK-2942), so both the
+  // typed envelope kind and the review-stage category string must be eligible.
+  assert.equal(classifyArmFault({ failureKind: 'native-stage-timeout' }), 'provider-fault');
+  assert.equal(classifyArmFault({ failureKind: 'native-review-timeout' }), 'provider-fault');
+  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'native-stage-timeout' })), true);
+  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'native-review-timeout' })), true);
+
+  // Policy denials and explicit cancellations are our own choice — never model
+  // or provider quality evidence.
+  assert.equal(classifyArmFault({ failureKind: 'policy-denied' }), 'harness-fault');
+  assert.equal(classifyArmFault({ failureKind: 'cancelled' }), 'harness-fault');
+  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'policy-denied' })), false);
+  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'cancelled' })), false);
+});
+
+test('parses the typed and legacy review-timeout exhaustion reasons (HOK-3064)', () => {
+  assert.equal(parseAbortFailureKind('retry_exhausted:native-review-timeout'), 'native-review-timeout');
+  // Legacy literal recorded before the typed exhaustion reason existed.
+  assert.equal(parseAbortFailureKind('review_timeout_exhausted'), 'native-review-timeout');
+  assert.equal(
+    classifyArmFault({ failureKind: parseAbortFailureKind('retry_exhausted:native-review-timeout') }),
+    'provider-fault',
+  );
+  assert.equal(
+    classifyArmFault({ failureKind: parseAbortFailureKind('review_timeout_exhausted') }),
+    'provider-fault',
+  );
+});
+
+test('classifies the HOK-3129 recurring native arm-failure kinds', () => {
+  // All four shapes are model-attributable: the provider delivered output but
+  // the model failed to produce usable content. They used to default into
+  // native-unclassified before HOK-3129 made them typed.
+  assert.equal(classifyArmFault({ failureKind: 'planning-turn-limit' }), 'model-fault');
+  assert.equal(classifyArmFault({ failureKind: 'planning-artifact-invalid' }), 'model-fault');
+  assert.equal(classifyArmFault({ failureKind: 'review-no-output' }), 'model-fault');
+  assert.equal(classifyArmFault({ failureKind: 'coding-exited-without-result' }), 'model-fault');
+  for (const kind of [
+    'planning-turn-limit',
+    'planning-artifact-invalid',
+    'review-no-output',
+    'coding-exited-without-result',
+  ]) {
+    assert.equal(
+      isModelQualitySignal(classifyArmFault({ failureKind: kind })),
+      true,
+      `expected ${kind} to be a model quality signal`,
+    );
+  }
+
+  // The shell classifier emits a suffixed `planning-artifact-invalid:<reason>`
+  // string so selection-health can attribute the structural reason without
+  // enumerating every variant in the taxonomy.
+  assert.equal(classifyArmFault({ failureKind: 'planning-artifact-invalid:missing_title' }), 'model-fault');
+  assert.equal(classifyArmFault({ failureKind: 'planning-artifact-invalid:missing_release_readiness_env_changes' }), 'model-fault');
+
+  // Parsed from the typical terminal_stage_failure prefix (post-HOK-3064).
+  assert.equal(parseAbortFailureKind('terminal_stage_failure:planning-turn-limit'), 'planning-turn-limit');
+  assert.equal(parseAbortFailureKind('terminal_stage_failure:review-no-output'), 'review-no-output');
+  assert.equal(parseAbortFailureKind('terminal_stage_failure:planning-artifact-invalid:missing_title'), 'planning-artifact-invalid:missing_title');
+});
+
+test('classifies the HOK-3128 dirty-handoff and sibling-stalled kinds', () => {
+  // The model finished coding but left its own output uncommitted and did not
+  // repair it when relaunched: completion-protocol failure, model quality.
+  assert.equal(parseAbortFailureKind('terminal_stage_failure:coding-dirty-handoff'), 'coding-dirty-handoff');
+  assert.equal(classifyArmFault({ failureKind: 'coding-dirty-handoff' }), 'model-fault');
+  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'coding-dirty-handoff' })), true);
+
+  // The mill lost track of a no-PR arm; never proof of model quality.
+  assert.equal(parseAbortFailureKind('terminal_stage_failure:sibling-stalled'), 'sibling-stalled');
+  assert.equal(classifyArmFault({ failureKind: 'sibling-stalled' }), 'harness-fault');
+  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'sibling-stalled' })), false);
+});
+
+test('classifies the HOK-3154 review-gate refusal kinds and prefixes', () => {
+  // A malformed-response and genuine not_ready that cannot pass the readiness
+  // gate are model-attributable (the reviewer delivered output but the model
+  // failed to produce a usable verdict), parallel to review-no-output.
+  assert.equal(parseAbortFailureKind('terminal_stage_failure:review-malformed-response'), 'review-malformed-response');
+  assert.equal(parseAbortFailureKind('terminal_stage_failure:review-not-ready'), 'review-not-ready');
+  assert.equal(classifyArmFault({ failureKind: 'review-malformed-response' }), 'model-fault');
+  assert.equal(classifyArmFault({ failureKind: 'review-not-ready' }), 'model-fault');
+  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'review-malformed-response' })), true);
+  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'review-not-ready' })), true);
+  // These are terminal forfeits, not invalid-challenge voids.
+  assert.equal(isInvalidChallengeAbort('terminal_stage_failure:review-malformed-response'), false);
+
+  // Identity mismatch and missing attribution are harness/identity failures:
+  // retire as invalid_challenge, no winner, never model signal.
+  assert.equal(parseAbortFailureKind('invalid_challenge:review-identity-mismatch'), 'review-identity-mismatch');
+  assert.equal(parseAbortFailureKind('invalid_challenge:review-unattributed'), 'review-unattributed');
+  assert.equal(classifyArmFault({ failureKind: 'review-identity-mismatch' }), 'harness-fault');
+  assert.equal(classifyArmFault({ failureKind: 'review-unattributed' }), 'harness-fault');
+  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'review-identity-mismatch' })), false);
+  assert.equal(isInvalidChallengeAbort('invalid_challenge:review-identity-mismatch'), true);
+  assert.equal(isInvalidChallengeAbort(' invalid_challenge:review-unattributed '), true);
+});
+
+test('classifies the HOK-3147 ready-exhausted kinds and the invalid_challenge prefix', () => {
+  // Real checks stayed red after remediation: model-attributable forfeit.
+  assert.equal(parseAbortFailureKind('terminal_stage_failure:ready-exhausted'), 'ready-exhausted');
+  assert.equal(classifyArmFault({ failureKind: 'ready-exhausted' }), 'model-fault');
+  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'ready-exhausted' })), true);
+  assert.equal(isInvalidChallengeAbort('terminal_stage_failure:ready-exhausted'), false);
+
+  // Checks passed but a transition (route-stamp/identity) failed: invalid
+  // challenge, never model signal.
+  assert.equal(parseAbortFailureKind('invalid_challenge:ready-transition-failed'), 'ready-transition-failed');
+  assert.equal(classifyArmFault({ failureKind: 'ready-transition-failed' }), 'harness-fault');
+  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'ready-transition-failed' })), false);
+  assert.equal(isInvalidChallengeAbort('invalid_challenge:ready-transition-failed'), true);
+
+  // No typed cause (conflict / missing result): invalid challenge too.
+  assert.equal(parseAbortFailureKind('invalid_challenge:ready-unattributed'), 'ready-unattributed');
+  assert.equal(classifyArmFault({ failureKind: 'ready-unattributed' }), 'harness-fault');
+  assert.equal(isInvalidChallengeAbort('  invalid_challenge:ready-unattributed '), true);
+
+  assert.equal(isInvalidChallengeAbort(null), false);
+  assert.equal(isInvalidChallengeAbort(undefined), false);
+  assert.equal(isInvalidChallengeAbort('operator_abort'), false);
 });

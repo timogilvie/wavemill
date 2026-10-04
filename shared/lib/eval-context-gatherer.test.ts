@@ -842,6 +842,23 @@ describe('eval-context-gatherer', () => {
           planning: 120,
           total: 120,
         });
+        // HOK-2958: the directory holding stage results is exposed so the
+        // execution-economics collector can read windows via stage-result.ts.
+        expect(result.stageResultsDir).toBe(featureDir);
+      } finally {
+        fs.rmSync(repoDir, { recursive: true, force: true });
+      }
+    });
+
+    it('omits stageResultsDir when no stage result files exist (HOK-2958)', () => {
+      const repoDir = makeTmpDir();
+      const issueId = 'HOK-2958';
+      const branch = 'task/no-stage-results';
+      fs.mkdirSync(nodePath.join(repoDir, 'features', 'no-stage-results'), { recursive: true });
+
+      try {
+        const result = gatherStageArtifacts(repoDir, issueId, branch);
+        expect(result.stageResultsDir).toBeUndefined();
       } finally {
         fs.rmSync(repoDir, { recursive: true, force: true });
       }

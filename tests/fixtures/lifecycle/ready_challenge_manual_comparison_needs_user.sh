@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash disable=SC2034,SC2153,SC2154
+#
+# HOK-2814: this scenario assumes a materialised pair with both PRs ready and
+# drives the manual-comparison-needed transition. It is not on the pre-fork
+# path — by the time we reach the ready/manual-comparison branch, both arms
+# already exist. The fork itself is covered by the
+# deferred_challenger_materialises_after_coding lifecycle fixture.
 
 register_lifecycle_scenario ready_challenge_manual_comparison_needs_user
 

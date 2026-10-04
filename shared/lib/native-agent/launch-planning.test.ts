@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
-import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 import { registerScriptedPiProvider, type ScriptedProviderContext } from './provider.ts';
 import { describeNativePlanningHelperFailure, launchNativePlanning } from './launch-planning.ts';
@@ -15,9 +14,6 @@ import {
 } from './planning-approval.ts';
 import type { ToolDescriptor } from './tools/types.ts';
 import type { ReadyNativeProviderEntry } from './providers.ts';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_DIR = resolve(__dirname, '../../..');
 
 let apiSeq = 0;
 function uniqueApi(label: string): string {
@@ -114,12 +110,16 @@ function stubRunTsxCommand(): (args: string[]) => string {
   };
 }
 
-function stubRunTsxCommandWithExpansion(expandedIssues: string[]): (args: string[]) => string {
+function stubRunTsxCommandWithExpansion(
+  expandedIssues: string[],
+  expandArgs: string[][] = [],
+): (args: string[]) => string {
   return (args: string[]) => {
-    const command = args[0];
+    const command = basename(args[0] ?? '');
     const outputIndex = args.indexOf('--output');
-    if (command === 'tools/expand-issue.ts') {
+    if (command === 'expand-issue.ts') {
       expandedIssues.push(args[1] ?? '');
+      expandArgs.push(args);
       assert.ok(outputIndex >= 0, 'expand-issue must receive --output');
       writeFileSync(args[outputIndex + 1]!, [
         '# Task Packet',
@@ -130,7 +130,7 @@ function stubRunTsxCommandWithExpansion(expandedIssues: string[]): (args: string
       ].join('\n'));
       return '';
     }
-    if (command === 'tools/route-task.ts') {
+    if (command === 'route-task.ts') {
       assert.ok(outputIndex >= 0, 'route-task must receive --output');
       writeFileSync(args[outputIndex + 1]!, `${JSON.stringify({
         planner: 'gpt-5.4',
@@ -333,7 +333,7 @@ describe('launchNativePlanning', () => {
         issue: 'HOK-2313',
         slug: 'demo',
         wtDir,
-        repoDir: REPO_DIR,
+        repoDir: wtDir,
         title: 'Wire native planning',
         loopModelOverride: scriptedModel(api),
         runTsxCommand: stubRunTsxCommand(),
@@ -407,7 +407,7 @@ describe('launchNativePlanning', () => {
           issue: 'HOK-2772',
           slug: 'demo',
           wtDir,
-          repoDir: REPO_DIR,
+          repoDir: wtDir,
           title: 'Check context window',
           hookPath,
           loopModelOverride: {
@@ -453,7 +453,7 @@ describe('launchNativePlanning', () => {
         issue: 'HOK-2544',
         slug: 'demo',
         wtDir,
-        repoDir: REPO_DIR,
+        repoDir: wtDir,
         title: 'Keep native planning approval gated',
         loopModelOverride: scriptedModel(api),
         runTsxCommand: stubRunTsxCommand(),
@@ -549,7 +549,7 @@ describe('launchNativePlanning', () => {
         issue: 'HOK-2544',
         slug: 'demo',
         wtDir,
-        repoDir: REPO_DIR,
+        repoDir: wtDir,
         title: 'Do not delete explicit approvals',
         loopModelOverride: scriptedModel(api),
         runTsxCommand: stubRunTsxCommand(),
@@ -572,6 +572,7 @@ describe('launchNativePlanning', () => {
     const { wtDir, featureDir, packetPath } = setupWorktree();
     const api = uniqueApi('challenger-linear-issue');
     const expandedIssues: string[] = [];
+    const expandArgs: string[][] = [];
     writeFileSync(packetPath, 'raw challenger context without task packet sections\n');
 
     try {
@@ -592,13 +593,15 @@ describe('launchNativePlanning', () => {
         linearIssue: 'HOK-2464',
         slug: 'demo',
         wtDir,
-        repoDir: REPO_DIR,
+        repoDir: wtDir,
         title: 'Plan challenger',
         loopModelOverride: scriptedModel(api),
-        runTsxCommand: stubRunTsxCommandWithExpansion(expandedIssues),
+        runTsxCommand: stubRunTsxCommandWithExpansion(expandedIssues, expandArgs),
       });
 
       assert.deepEqual(expandedIssues, ['HOK-2464']);
+      // HOK-3115: a challenger expansion must never write the primary's Linear issue.
+      assert.ok(expandArgs[0]?.includes('--no-update'), 'challenger expansion must pass --no-update');
       assert.match(readFileSync(join(featureDir, 'plan.md'), 'utf-8'), /# Challenger Plan/);
     } finally {
       cleanup(wtDir);
@@ -628,7 +631,7 @@ describe('launchNativePlanning', () => {
         issue: 'HOK-2464_c',
         slug: 'demo',
         wtDir,
-        repoDir: REPO_DIR,
+        repoDir: wtDir,
         loopModelOverride: scriptedModel(api),
         runTsxCommand: stubRunTsxCommandWithExpansion(expandedIssues),
       });
@@ -674,14 +677,14 @@ describe('launchNativePlanning', () => {
         linearIssue: 'HOK-2464',
         slug: 'demo',
         wtDir,
-        repoDir: REPO_DIR,
+        repoDir: wtDir,
         loopModelOverride: scriptedModel(api),
         runTsxCommand: (args: string[]) => {
-          helperCommands.push(args[0] ?? '');
-          if (args[0] === 'tools/expand-issue.ts') {
+          helperCommands.push(basename(args[0] ?? ''));
+          if (basename(args[0] ?? '') === 'expand-issue.ts') {
             throw new Error('expand should not run when selected-task has structured task content');
           }
-          if (args[0] === 'tools/route-task.ts') {
+          if (basename(args[0] ?? '') === 'route-task.ts') {
             const outputIndex = args.indexOf('--output');
             assert.ok(outputIndex >= 0, 'route-task must receive --output');
             writeFileSync(args[outputIndex + 1]!, `${JSON.stringify({
@@ -696,7 +699,7 @@ describe('launchNativePlanning', () => {
         },
       });
 
-      assert.deepEqual(helperCommands, ['tools/route-task.ts']);
+      assert.deepEqual(helperCommands, ['route-task.ts']);
       assert.match(readFileSync(packetPath, 'utf-8'), /Quick Reference/);
       assert.match(readFileSync(join(featureDir, 'plan.md'), 'utf-8'), /# Selected Task Plan/);
     } finally {
@@ -709,14 +712,14 @@ describe('launchNativePlanning', () => {
     timeout.code = 'ETIMEDOUT';
 
     const error = describeNativePlanningHelperFailure(timeout, [
-      'tools/expand-issue.ts',
+      '/wavemill/install/tools/expand-issue.ts',
       'HOK-2464',
       '--output',
       '/tmp/task-packet.md',
     ], 720000);
 
     assert.match(error.message, /Native planning helper timed out after 720000ms/);
-    assert.match(error.message, /npx tsx tools\/expand-issue\.ts HOK-2464 --output \/tmp\/task-packet\.md/);
+    assert.match(error.message, /expand-issue\.ts HOK-2464 --output \/tmp\/task-packet\.md/);
     assert.doesNotMatch(error.message, /^spawnSync npx ETIMEDOUT$/);
   });
 
@@ -752,7 +755,7 @@ describe('launchNativePlanning', () => {
         issue: 'HOK-2464_c',
         slug: 'demo',
         wtDir,
-        repoDir: REPO_DIR,
+        repoDir: wtDir,
         resolvedModel: 'kimi-k2.7-code',
         providerEntries: [
           readyOpenRouterEntry('qwen/qwen3-coder', qwenApi),
@@ -798,7 +801,7 @@ describe('launchNativePlanning', () => {
         issue: 'HOK-2313',
         slug: 'demo',
         wtDir,
-        repoDir: REPO_DIR,
+        repoDir: wtDir,
         loopModelOverride: scriptedModel(api),
         extraDescriptors: [makeMutationTool(executed)],
         runTsxCommand: stubRunTsxCommand(),
@@ -844,7 +847,7 @@ describe('launchNativePlanning', () => {
         issue: 'HOK-2313',
         slug: 'demo',
         wtDir,
-        repoDir: REPO_DIR,
+        repoDir: wtDir,
         loopModelOverride: scriptedModel(api),
         runTsxCommand: stubRunTsxCommand(),
       });
@@ -872,7 +875,7 @@ describe('launchNativePlanning', () => {
           issue: 'HOK-2313',
           slug: 'demo',
           wtDir,
-          repoDir: REPO_DIR,
+          repoDir: wtDir,
           hookPath,
           loopModelOverride: scriptedModel(api),
           runTsxCommand: stubRunTsxCommand(),
@@ -1011,7 +1014,7 @@ describe('launchNativePlanning', () => {
           issue: 'HOK-2577',
           slug: 'demo',
           wtDir,
-          repoDir: REPO_DIR,
+          repoDir: wtDir,
           hookPath,
           loopModelOverride: scriptedModel(api),
           runTsxCommand: stubRunTsxCommand(),
@@ -1071,7 +1074,7 @@ describe('launchNativePlanning', () => {
           issue: 'HOK-2577',
           slug: 'demo',
           wtDir,
-          repoDir: REPO_DIR,
+          repoDir: wtDir,
           loopModelOverride: scriptedModel(api),
           runTsxCommand: stubRunTsxCommand(),
         }),
@@ -1107,7 +1110,7 @@ describe('launchNativePlanning', () => {
           issue: 'HOK-2313',
           slug: 'demo',
           wtDir,
-          repoDir: REPO_DIR,
+          repoDir: wtDir,
           hookPath,
           loopModelOverride: scriptedModel(api),
           runTsxCommand: stubRunTsxCommand(),
@@ -1144,7 +1147,7 @@ describe('launchNativePlanning', () => {
           issue: 'HOK-2313',
           slug: 'demo',
           wtDir,
-          repoDir: REPO_DIR,
+          repoDir: wtDir,
           phase: 'coding',
           loopModelOverride: scriptedModel(api),
         }),
@@ -1192,6 +1195,58 @@ describe('launchNativePlanning', () => {
       } else {
         process.env.OPENAI_API_KEY = originalOpenAiKey;
       }
+      cleanup(wtDir);
+    }
+  });
+
+  it('writes session events and tool decisions under the supplied repoDir only', async () => {
+    const { wtDir } = setupWorktree();
+    const api = uniqueApi('hermetic-repo-dir');
+
+    try {
+      registerScriptedPiProvider({
+        api,
+        turns: [{
+          content: [{
+            type: 'text',
+            text: validPlan('Hermetic Repo Dir Plan'),
+          }],
+          stopReason: 'stop',
+        }],
+      });
+
+      await launchNativePlanning({
+        session: 'hermetic-sess',
+        issue: 'HOK-3121',
+        slug: 'demo',
+        wtDir,
+        repoDir: wtDir,
+        loopModelOverride: scriptedModel(api),
+        runTsxCommand: stubRunTsxCommand(),
+      });
+
+      const sessionEventsDir = join(wtDir, '.wavemill', 'session-events');
+      assert.equal(existsSync(sessionEventsDir), true, 'session events dir should exist under the temp repo');
+      const streams = readdirSync(sessionEventsDir).filter((name) => name.endsWith('.jsonl'));
+      assert.ok(
+        streams.some((name) => name.includes('hermetic-sess') && name.includes('HOK-3121')),
+        `expected planning stream for hermetic-sess/HOK-3121 in ${streams.join(', ')}`,
+      );
+
+      const corpusPath = join(wtDir, '.wavemill', 'tool-decisions', 'corpus.jsonl');
+      if (existsSync(corpusPath)) {
+        const rows = readFileSync(corpusPath, 'utf-8')
+          .split('\n')
+          .filter((line) => line.trim() !== '');
+        for (const line of rows) {
+          const row = JSON.parse(line) as { model?: string; provider?: string };
+          assert.ok(
+            !(row.model?.startsWith('scripted:') || row.provider === 'scripted'),
+            `scripted row leaked into corpus: ${line.slice(0, 120)}`,
+          );
+        }
+      }
+    } finally {
       cleanup(wtDir);
     }
   });

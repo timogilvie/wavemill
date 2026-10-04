@@ -41,6 +41,7 @@ Use supporting commands when you need to prepare work, inspect outcomes, or inte
 - [Adding Models](model-additions.md) for the maintainer checklist when new models become available
 - [Native Launch Certification](native-launch-certification.md) for native model runability and launch certification status
 - [Terminal Lifecycle Certification](terminal-lifecycle-certification.md) for cleanup shadow rollout, soak gates, and rollback
+- [Harness Execution Economics](harness-execution-economics.md) for normalized Claude Code / Codex session telemetry, joins, and privacy exclusions
 - [`wavemill context`](cli-reference.md) for maintaining agent-readable project memory
 
 ## Quick Start

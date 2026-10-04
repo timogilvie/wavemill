@@ -5,6 +5,12 @@ import type { AgentMessage, Message } from './messages.ts';
 import type { AgentContext, LoopStopReason, WavemillLoopConfig } from './loop.ts';
 import { runWavemillLoop } from './loop.ts';
 import {
+  ProviderIdentityMismatchError,
+  ProviderIdentityTracker,
+  type ProviderIdentitySummary,
+} from './provider-identity.ts';
+import { invalidateCertificationIdentity } from './certification/identity-invalidation.ts';
+import {
   ContextExhaustedError,
   ContextWindowExceededError,
   ContextWindowUnverifiableError,
@@ -16,6 +22,8 @@ import {
   capOpenRouterMaxTokensForBalance,
 } from './openrouter-credits-guard.ts';
 import { TranscriptWriter, type TranscriptEvent, type TranscriptToolResult } from './transcript.ts';
+import { SessionStreamWriter, resolveSessionEventStreamPath } from './session-stream.ts';
+import { captureToolDecisionsFromStream } from './tool-decision-capture.ts';
 import {
   buildNativeProviderResolutionFailureMessage,
   getNativeProviderApiKey,
@@ -24,9 +32,27 @@ import {
 } from './providers.ts';
 import { createReadOnlyTools, READ_ONLY_PATH_FIELDS } from './tools/read-only.ts';
 import { createGitTools, gitAfterToolCall, gitToolPolicyConfig } from './tools/git.ts';
+import {
+  createBrowserTools,
+  BROWSER_PATH_FIELDS,
+  type BrowserToolsCleanupHandle,
+} from './tools/browser.ts';
+import { createReviewScoringTools } from './tools/review-scoring.ts';
+import { CODE_SEARCH_PATH_FIELDS, createCodeSearchTools } from './tools/code-search.ts';
+import { createScreenshotTools } from './tools/screenshot.ts';
 import { createToolRegistry } from './tools/registry.ts';
-import { toPiAgentTool } from './tools/pi-adapter.ts';
 import type { ToolDescriptor } from './tools/types.ts';
+import {
+  createLaunchMenuProvider,
+  formatMenuDenials,
+} from './tools/menu-resolver.ts';
+import { inferCertificationSnapshotForPhase } from './tools/certification-snapshot.ts';
+import {
+  getNativeBrowserConfig,
+  getNativeCodeSearchConfig,
+  loadWavemillConfig,
+  type WavemillConfig,
+} from '../config.ts';
 import { renderNativePhasePrompt, type NativePhasePromptOptions } from './prompts.ts';
 import type { ReviewContext } from '../review-context-gatherer.ts';
 import { logPromptUsage } from '../prompt-registry.ts';
@@ -40,11 +66,19 @@ import {
 import { loadPromptResourceSync } from '../resource-retrieval.ts';
 import { createCleanupTracker, runCleanup, type CleanupReason } from './cleanup.ts';
 import {
+  STAGE_FAILURE_ENVELOPE_SCHEMA_VERSION,
+  deleteStageFailureEnvelope,
+  writeStageFailureEnvelope,
+  type StageFailureCause,
+  type StageFailureEnvelope,
+} from './stage-failure-envelope.ts';
+import {
   NATIVE_CONTEXT_WINDOW_EXCEEDED_CATEGORY,
+  NATIVE_REVIEW_TIMEOUT_CATEGORY,
   PROVIDER_CREDIT_EXHAUSTED_CATEGORY,
   updateStageResult,
 } from '../stage-result.ts';
-import { getNativeContextManagementConfig } from '../config.ts';
+import { getNativeContextManagementConfig, getNativeReviewTimeoutConfig } from '../config.ts';
 import type { NormalizedPricing } from '../openrouter-catalog.ts';
 import {
   buildExecutedIdentity,
@@ -143,18 +177,88 @@ function nativeReviewFailure(
   };
 }
 
-function buildReviewToolRegistry(worktreePath: string) {
+function nativeReviewNoEvidenceFailure(
+  context: ReviewContext,
+  category: string,
+  description: string,
+  deniedTools: DeniedToolRecord[] = [],
+  substantiveAnalysisIdentity?: ExecutedIdentity,
+  metadata: Partial<NonNullable<ReviewResult['metadata']>> = {},
+): ReviewResult {
+  return {
+    verdict: 'error',
+    codeReviewFindings: [],
+    failureCategory: category,
+    reviewToolError: description,
+    ...(substantiveAnalysisIdentity ? { substantiveAnalysisIdentity } : {}),
+    metadata: {
+      branch: context.metadata.branch,
+      files: context.metadata.files,
+      hasUiChanges: context.metadata.hasUiChanges,
+      designContextAvailable: context.designContext !== null,
+      uiVerificationRun: false,
+      deniedTools,
+      ...metadata,
+    },
+  };
+}
+
+function buildReviewToolRegistry(
+  worktreePath: string,
+  config?: WavemillConfig,
+  options: {
+    browserConfig?: ReturnType<typeof getNativeBrowserConfig> | null;
+    browserAdapterFactory?: Parameters<typeof createBrowserTools>[0]['adapterFactory'];
+    repoDir?: string;
+  } = {},
+) {
+  const browserBundle = createBrowserTools({
+    config: options.browserConfig ?? null,
+    adapterFactory:
+      options.browserAdapterFactory ??
+      (() => {
+        throw new Error(
+          'browser_adapter_missing: no browser adapter factory was supplied to the review runtime',
+        );
+      }),
+  });
+  const readOnlyDescriptors = createReadOnlyTools(worktreePath);
+  const searchTextDescriptor = readOnlyDescriptors.find(
+    (d) => d.metadata.name === 'search_text',
+  );
+  const codeSearchConfig = getNativeCodeSearchConfig(options.repoDir);
+  const codeSearchDescriptors = codeSearchConfig.enabled
+    ? createCodeSearchTools({
+        config: codeSearchConfig,
+        worktreePath,
+        ...(searchTextDescriptor
+          ? { searchTextExecutor: searchTextDescriptor.execute as Parameters<typeof createCodeSearchTools>[0]['searchTextExecutor'] }
+          : {}),
+      })
+    : [];
   const descriptors: ToolDescriptor[] = [
-    ...createReadOnlyTools(worktreePath),
+    ...readOnlyDescriptors,
     ...createGitTools(worktreePath),
+    ...browserBundle.descriptors,
+    ...codeSearchDescriptors,
+    ...createScreenshotTools(browserBundle.getSession, worktreePath).descriptors,
   ];
+  // Conditional advanced-family inclusion (HOK-3061 trap #2): only advertise
+  // the eval-scoring descriptors in the prompt catalog when the operator has
+  // opted in via `nativeAgent.advanced.eval.enabled`. `computeEligibility`
+  // remains the authoritative second gate.
+  if (config?.nativeAgent?.advanced?.eval?.enabled === true) {
+    descriptors.push(...createReviewScoringTools(worktreePath));
+  }
   const registry = createToolRegistry(descriptors);
   const phase = 'review' as const;
   const phaseTools = registry.getTools({ phase });
   return {
     registry,
+    descriptors,
     phaseTools,
     phaseMetadata: registry.list({ phase }),
+    browserCleanup: browserBundle.cleanup as BrowserToolsCleanupHandle,
   };
 }
 
@@ -165,7 +269,7 @@ function loadNativeReviewPrompt(
   const template = readFileSync(NATIVE_REVIEW_PHASE_PROMPT_PATH, 'utf-8');
   // Log the unrendered template so the prompt hash tracks the template version
   // rather than the per-phase tool list rendered into it.
-  const promptRef = logPromptUsage(NATIVE_REVIEW_PHASE_PROMPT_PATH, template, { dir: repoDir });
+  const promptRef = logPromptUsage(NATIVE_REVIEW_PHASE_PROMPT_PATH, template, { repoDir });
   return { content: renderNativePhasePrompt(template, options), promptRef };
 }
 
@@ -363,6 +467,55 @@ function reviewFailureCategoryForProviderErrorKind(kind: ProviderErrorKind | und
   }
 }
 
+function reviewFailureCategoryForStopReason(stopReason: LoopStopReason): string {
+  switch (stopReason) {
+    case 'wall_clock_limit':
+    case 'turn_limit':
+    case 'tool_call_limit':
+    case 'token_limit':
+      return NATIVE_REVIEW_TIMEOUT_CATEGORY;
+    default:
+      return 'native-review-failed';
+  }
+}
+
+/**
+ * Map a terminal loop stop reason (plus any classified provider error kind) to
+ * the typed native stage-failure cause (HOK-3064). Budget exhaustion of any
+ * kind (wall-clock, turn, tool-call, token) is a `stage-timeout`; an explicit
+ * abort is `cancelled`; a provider error carries its classified sub-kind. An
+ * `error` stop with no classifiable provider kind stays `unknown` so it is
+ * excluded from quality signals while remaining visible via bounded evidence.
+ */
+function stageFailureCauseForStopReason(
+  stopReason: LoopStopReason,
+  providerErrorKind: ProviderErrorKind | undefined,
+): StageFailureCause {
+  switch (stopReason) {
+    case 'wall_clock_limit':
+    case 'turn_limit':
+    case 'tool_call_limit':
+    case 'token_limit':
+      return 'stage-timeout';
+    case 'aborted':
+      return 'cancelled';
+    default:
+      break;
+  }
+  switch (providerErrorKind) {
+    case 'provider-transient-error':
+      return 'provider-outage';
+    case 'provider-credit-exhausted':
+      return 'provider-credit-exhausted';
+    case 'provider-config-error':
+      return 'provider-config-error';
+    case 'context-window-exceeded':
+      return 'context-window-exceeded';
+    default:
+      return 'unknown';
+  }
+}
+
 function cleanupReasonForStopReason(stopReason: LoopStopReason): CleanupReason | null {
   if (stopReason === 'aborted') {
     return 'aborted';
@@ -373,7 +526,46 @@ function cleanupReasonForStopReason(stopReason: LoopStopReason): CleanupReason |
   return null;
 }
 
-const nativeReviewDeps = {
+function readRecoveryTimeout(featureDir?: string): { attempt?: number; timeoutMs?: number } {
+  if (!featureDir) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(join(featureDir, '.review-infra-recovery.json'), 'utf-8')) as {
+      nativeTimeoutAttempt?: unknown;
+      attempt?: unknown;
+      effectiveNativeTimeoutMs?: unknown;
+      timeoutMs?: unknown;
+    };
+    const raw = parsed.nativeTimeoutAttempt ?? parsed.attempt;
+    const timeout = parsed.effectiveNativeTimeoutMs ?? parsed.timeoutMs;
+    return {
+      ...(Number.isInteger(raw) && (raw as number) >= 0 ? { attempt: raw as number } : {}),
+      ...(Number.isInteger(timeout) && (timeout as number) > 0 ? { timeoutMs: timeout as number } : {}),
+    };
+  } catch {
+    return {};
+  }
+}
+
+function reviewInputMetadata(context: ReviewContext): Pick<NonNullable<ReviewResult['metadata']>,
+  'reviewInputDiffBytes' | 'reviewInputTaskPacketBytes' | 'reviewInputFileCount'
+> {
+  return {
+    reviewInputDiffBytes: Buffer.byteLength(context.diff ?? '', 'utf8'),
+    reviewInputTaskPacketBytes: Buffer.byteLength(context.taskPacket ?? '', 'utf8'),
+    reviewInputFileCount: context.metadata.files.length,
+  };
+}
+
+const nativeReviewDeps: {
+  extractDeniedTools: typeof extractDeniedTools;
+  extractFinalAssistantText: typeof extractFinalAssistantText;
+  getNativeProviderApiKey: typeof getNativeProviderApiKey;
+  loadNativeReviewPrompt: typeof loadNativeReviewPrompt;
+  registerNativeReviewRuntime: typeof registerNativeReviewRuntime;
+  runWavemillLoop: typeof runWavemillLoop;
+  selectReviewProvider: typeof selectReviewProvider;
+  browserAdapterFactory: Parameters<typeof createBrowserTools>[0]['adapterFactory'];
+} = {
   extractDeniedTools,
   extractFinalAssistantText,
   getNativeProviderApiKey,
@@ -381,6 +573,11 @@ const nativeReviewDeps = {
   registerNativeReviewRuntime,
   runWavemillLoop,
   selectReviewProvider,
+  browserAdapterFactory: () => {
+    throw new Error(
+      'browser_adapter_missing: no browser adapter factory was supplied to the review runtime',
+    );
+  },
 };
 
 export async function runNativeReview(
@@ -391,7 +588,11 @@ export async function runNativeReview(
   const requestedAnalysisModel = options.model?.trim() || undefined;
   const provider = nativeReviewDeps.selectReviewProvider(repoDir, process.env, requestedAnalysisModel);
   if (!provider.ok) {
-    return nativeReviewFailure(context, 'native-runtime-unavailable', provider.message);
+    // Provider resolution failed before any analysis ran (HOK-3106): route
+    // through the no-evidence result shape so this infra condition never
+    // masquerades as a substantive `not_ready` review verdict that would
+    // otherwise feed the ready gate and burn its retry budget.
+    return nativeReviewNoEvidenceFailure(context, 'native-runtime-unavailable', provider.message);
   }
 
   // `resolvedModel` must stay in the same bare-model-id namespace as
@@ -399,9 +600,36 @@ export async function runNativeReview(
   // the "provider/model" canonical form) — comparing against the canonical
   // form would report a mismatch on every exact match (HOK-2969).
   const resolvedModelId = provider.entry.modelId;
+  const recoveryTimeout = readRecoveryTimeout(options.featureDir);
+  const timeoutAttempt = options.nativeTimeoutAttempt ?? recoveryTimeout.attempt;
+  const timeoutConfig = getNativeReviewTimeoutConfig(
+    repoDir,
+    requestedAnalysisModel ?? resolvedModelId,
+    timeoutAttempt ?? 0,
+  );
+  const effectiveNativeTimeoutMs = options.timeout ?? recoveryTimeout.timeoutMs ?? timeoutConfig.timeoutMs;
+  // Canonical execution identity (HOK-3064): one OpenRouter review must not
+  // split between `native` and `native-openrouter` across intent, stage result,
+  // eval, abort marker, and health state. The stage result's top-level `agent`
+  // stays `native` for backward compatibility with recovery readers; the
+  // canonical identity travels on the artifacts + the failure envelope, which
+  // is what challenge selection-health consumes.
+  const canonicalProvider = provider.entry.providerName;
+  const canonicalModel = provider.entry.modelId;
+  const canonicalAgent = `native-${provider.entry.providerName}`;
+  const nativeReviewMetadata = {
+    effectiveNativeTimeoutMs,
+    nativeTimeoutAttempt: timeoutConfig.attempt,
+    nativeTimeoutBaseMs: timeoutConfig.baseTimeoutMs,
+    nativeTimeoutMaxMs: timeoutConfig.maxMs,
+    nativeTimeoutMultiplier: timeoutConfig.multiplier,
+    reviewProvider: canonicalProvider,
+    reviewAgent: canonicalAgent,
+    ...reviewInputMetadata(context),
+  };
   const substantiveAnalysisIdentity = buildExecutedIdentity({
     role: 'substantive_analysis',
-    requestedModel: provider.requestedModel ?? resolvedModelId,
+    requestedModel: provider.requestedModel,
     resolvedModel: resolvedModelId,
     agent: `native-${provider.entry.providerName}`,
     source: provider.requestedModel ? 'route' : 'derived',
@@ -425,7 +653,37 @@ export async function runNativeReview(
   }
 
   const userPrompt = fillReviewPromptTemplate(template, context, true);
-  const { phaseTools, phaseMetadata, registry } = buildReviewToolRegistry(repoDir);
+  const wavemillConfig = loadWavemillConfig(repoDir);
+  const browserConfig = getNativeBrowserConfig(repoDir);
+  const {
+    phaseMetadata,
+    registry,
+    descriptors: reviewDescriptors,
+    browserCleanup,
+  } = buildReviewToolRegistry(repoDir, wavemillConfig, {
+    browserConfig,
+    // The real browser driver is supplied by the review runtime host. When no
+    // driver is available, the descriptor factory returns an empty list, so
+    // the factory here is only invoked when browser tools were built.
+    browserAdapterFactory: nativeReviewDeps.browserAdapterFactory,
+    repoDir,
+  });
+  const menuLaunchProvider = createLaunchMenuProvider({
+    phase: 'review',
+    config: wavemillConfig,
+    certification: inferCertificationSnapshotForPhase({
+      phase: 'review',
+      readyProviderPresent: true,
+      loopModelOverridePresent: false,
+    }),
+    descriptors: reviewDescriptors,
+  });
+  if (menuLaunchProvider.initialMenu.denials.length > 0) {
+    const formatted = formatMenuDenials(menuLaunchProvider.initialMenu.denials);
+    if (formatted) {
+      console.warn(`[native-review] menu denials:\n${formatted}`);
+    }
+  }
   const { content: systemPrompt, promptRef } = nativeReviewDeps.loadNativeReviewPrompt(repoDir, {
     tools: phaseMetadata,
     phase: 'review',
@@ -439,7 +697,10 @@ export async function runNativeReview(
 
   const apiKey = nativeReviewDeps.getNativeProviderApiKey(provider.entry);
   if (!apiKey) {
-    return nativeReviewFailure(
+    // Absent-credential preflight failure (HOK-3106): same infra shape as the
+    // provider-resolution branch above — no analysis ran, so this must not
+    // ship as a `not_ready` verdict with a synthetic blocker.
+    return nativeReviewNoEvidenceFailure(
       context,
       'native-runtime-unavailable',
       `${provider.entry.apiKeyEnv} resolved to an empty value for native review.`,
@@ -460,6 +721,78 @@ export async function runNativeReview(
     path: transcriptPath,
   });
   const transcriptEvents: TranscriptEvent[] = [];
+
+  // Native review canonical session-event stream (HOK-2076). One JSONL per
+  // review session; feeds the tool-decision corpus after the loop finishes.
+  // Best-effort: any writer failure warns but never blocks review.
+  const reviewEventStreamPath = resolveSessionEventStreamPath(sessionId, repoDir);
+  let reviewSessionStreamWriter: SessionStreamWriter | undefined;
+  try {
+    reviewSessionStreamWriter = new SessionStreamWriter({
+      sessionId,
+      traceId: process.env.WAVEMILL_SESSION || sessionId,
+      phase: 'review',
+      path: reviewEventStreamPath,
+    }, repoDir);
+    reviewSessionStreamWriter.writeSessionStarted({
+      initialConfigDigest: `model:${provider.entry.providerName}:${provider.entry.modelId}`,
+    });
+  } catch (error) {
+    console.warn(`Failed to init review session stream: ${(error as Error).message}`);
+    reviewSessionStreamWriter = undefined;
+  }
+  const reviewSessionStreamConfig = reviewSessionStreamWriter
+    ? {
+        sessionId,
+        traceId: process.env.WAVEMILL_SESSION || sessionId,
+        phase: 'review' as const,
+        eventStreamPath: reviewEventStreamPath,
+        repoDir,
+        initialConfigDigest: `model:${provider.entry.providerName}:${provider.entry.modelId}`,
+        writerInstance: reviewSessionStreamWriter,
+      }
+    : undefined;
+
+  // Record the typed native stage-failure envelope for a terminal review
+  // attempt (HOK-3064) as soon as the cause is known and BEFORE cleanup can
+  // erase process/session context. Gated on `featureDir` (same gate as
+  // `updateStageResult`); best-effort so envelope recording never masks the
+  // underlying review failure. Identity comes from the already-selected
+  // provider entry so the failed model/provider is not left immediately
+  // reselectable under a split/unknown health key.
+  const recordReviewFailureEnvelope = (
+    cause: StageFailureCause,
+    detail: string,
+    extra: { stopReason?: string; providerErrorKind?: string } = {},
+  ): void => {
+    if (!options.featureDir) {
+      return;
+    }
+    const envelope: StageFailureEnvelope = {
+      schemaVersion: STAGE_FAILURE_ENVELOPE_SCHEMA_VERSION,
+      stage: 'review',
+      cause,
+      ...(extra.stopReason ? { stopReason: extra.stopReason } : {}),
+      ...(extra.providerErrorKind ? { providerErrorKind: extra.providerErrorKind } : {}),
+      ...(Number.isInteger(timeoutConfig.attempt) ? { retryAttempt: timeoutConfig.attempt } : {}),
+      ...(Number.isInteger(effectiveNativeTimeoutMs) ? { configuredTimeoutMs: effectiveNativeTimeoutMs } : {}),
+      provider: canonicalProvider,
+      model: canonicalModel,
+      ...(provider.requestedModel ? { requestedModel: provider.requestedModel } : {}),
+      agent: canonicalAgent,
+      evidence: {
+        source: 'native-runtime',
+        detail,
+        transcriptPath,
+      },
+      createdAt: new Date().toISOString(),
+    };
+    try {
+      writeStageFailureEnvelope(options.featureDir, envelope);
+    } catch {
+      // Never let envelope recording fail the review failure it describes.
+    }
+  };
 
   const modelConfig: WavemillLoopConfig['model'] = {
     id: provider.entry.model.id,
@@ -482,7 +815,7 @@ export async function runNativeReview(
       content: userPrompt,
       timestamp: 0,
     }],
-    tools: phaseTools.map((tool) => toPiAgentTool(tool)),
+    tools: menuLaunchProvider.providerToolsForContext as unknown as AgentContext['tools'],
   };
   const pricing = normalizedPricingFromModel(modelConfig);
   const effectiveMaxTokens = modelConfig.provider === 'openrouter'
@@ -506,6 +839,28 @@ export async function runNativeReview(
   // guaranteeing enough analysis turns for repository-scale reviews.
   const analysisTurnLimit = Math.max(REVIEW_ANALYSIS_TURN_LIMIT, (options.maxRetries ?? 1) + 1);
   const cleanupTracker = createCleanupTracker();
+  // HOK-3143: provider-identity verification for native review.
+  const reviewIdentityTracker = new ProviderIdentityTracker();
+  const reviewIdentityExpectation = provider.entry.certifiedIdentity;
+  const reviewIdentityConfig = reviewIdentityExpectation
+    ? {
+      expectation: reviewIdentityExpectation,
+      tracker: reviewIdentityTracker,
+      onMismatch: async (error: ProviderIdentityMismatchError) => {
+        if (!reviewIdentityExpectation.certificationPath) return;
+        invalidateCertificationIdentity({
+          artifactPath: reviewIdentityExpectation.certificationPath,
+          expectedModel: error.expectedModel,
+          observedModel: error.reportedModel ?? '(absent)',
+          requestedWireId: error.requestedWireId,
+          source: 'runtime',
+          phase: 'review',
+          session: options.session,
+          issue: options.issue,
+        });
+      },
+    }
+    : undefined;
   let loopResult;
   try {
     loopResult = await nativeReviewDeps.runWavemillLoop({
@@ -523,6 +878,7 @@ export async function runNativeReview(
       // exports diverged nominal types so a direct cast is required.
       convertToLlm: (messages) => messages as unknown as Message[],
       afterToolCall: gitAfterToolCall,
+      ...(reviewIdentityConfig ? { providerIdentity: reviewIdentityConfig } : {}),
       toolPolicy: {
         phase: 'review',
         worktreePath: repoDir,
@@ -531,6 +887,8 @@ export async function runNativeReview(
           pathFieldsByTool: {
             ...READ_ONLY_PATH_FIELDS,
             ...gitToolPolicyConfig.pathFieldsByTool,
+            ...BROWSER_PATH_FIELDS,
+            ...(getNativeCodeSearchConfig(options.repoDir).enabled ? CODE_SEARCH_PATH_FIELDS : {}),
           },
         },
       },
@@ -540,24 +898,105 @@ export async function runNativeReview(
           transcriptEvents.push(derived);
         }
       },
+      menuProvider: menuLaunchProvider.menuProvider,
       budget: {
         // One additional turn is reserved for tool-free terminal synthesis.
         maxTurns: analysisTurnLimit + 1,
         maxToolCalls: REVIEW_TOOL_CALL_LIMIT,
-        maxWallClockMs: options.timeout ?? 300_000,
+        maxWallClockMs: effectiveNativeTimeoutMs,
       },
       terminalSynthesis: {
         prompt: REVIEW_FINAL_SYNTHESIS_PROMPT,
       },
+      ...(reviewSessionStreamConfig ? { sessionStreamConfig: reviewSessionStreamConfig } : {}),
     });
   } catch (error) {
     if (error instanceof ContextExhaustedError) {
+      recordReviewFailureEnvelope('context-exhausted', error.message);
       return nativeReviewFailure(context, 'native-context-exhausted', error.message, [], substantiveAnalysisIdentity);
     }
     if (error instanceof ContextWindowExceededError || error instanceof ContextWindowUnverifiableError) {
+      recordReviewFailureEnvelope('context-window-exceeded', error.message);
       return nativeReviewFailure(context, 'native-context-window-exceeded', error.message, [], substantiveAnalysisIdentity);
     }
+    if (error instanceof ProviderIdentityMismatchError) {
+      recordReviewFailureEnvelope('provider-identity-mismatch', error.message);
+      return nativeReviewFailure(
+        context,
+        'native-provider-identity-mismatch',
+        error.message,
+        [],
+        substantiveAnalysisIdentity,
+      );
+    }
     throw error;
+  } finally {
+    // Close review session stream and project into corpus (HOK-2076). Best-effort.
+    try {
+      reviewSessionStreamWriter?.writeSessionEnded({
+        stopReason: loopResult?.stopReason ?? 'error',
+        totalTurns: loopResult?.turnsCompleted ?? 0,
+        totalToolCalls: loopResult?.toolCallsExecuted ?? 0,
+        ...(loopResult
+          ? { totalTokens: (loopResult.totalInputTokens ?? 0) + (loopResult.totalOutputTokens ?? 0) }
+          : {}),
+      });
+    } catch (error) {
+      console.warn(`Failed to write review session_ended event: ${(error as Error).message}`);
+    }
+    try {
+      const capture = captureToolDecisionsFromStream({
+        eventStreamPath: reviewEventStreamPath,
+        repoDir,
+        provider: provider.entry.providerName,
+      });
+      if (!capture.ok) {
+        console.warn(`tool-decision capture skipped (review): ${capture.reason ?? 'unknown'}`);
+      }
+    } catch (error) {
+      console.warn(`tool-decision capture failed (review): ${(error as Error).message}`);
+    }
+    // Close the browser session (if one was opened) once the review loop is
+    // done. Idempotent and best-effort so any adapter shutdown noise cannot
+    // mask the underlying review result.
+    try {
+      await browserCleanup.close();
+    } catch (error) {
+      console.warn(`Failed to close browser session: ${(error as Error).message}`);
+    }
+  }
+
+  const deniedTools = nativeReviewDeps.extractDeniedTools(transcriptEvents);
+
+  // Classify the terminal cause and record the typed failure envelope BEFORE
+  // cleanup runs — cleanup can erase process/session context, so the transcript
+  // path and loop state must be captured first (HOK-3064). Ordering:
+  // classify → write envelope → cleanup → stage result. The category/description
+  // computation is preserved exactly; only the envelope write is added ahead of
+  // the existing cleanup + stage-result path.
+  let terminalCategory = '';
+  let terminalDescription = '';
+  if (loopResult.stopReason !== 'stop') {
+    const providerErrorMessage = loopResult.stopReason === 'error'
+      ? extractFinalAssistantErrorMessage(loopResult.messages)
+      : '';
+    const providerErrorKind = loopResult.providerError?.kind
+      ?? (providerErrorMessage ? classifyProviderError(providerErrorMessage).kind : undefined);
+    const providerDescription = providerErrorMessage
+      ? `${providerErrorKind ?? 'provider-unknown-error'}: ${providerErrorMessage}`
+      : '';
+    terminalCategory = providerErrorKind
+      ? reviewFailureCategoryForProviderErrorKind(providerErrorKind)
+      : reviewFailureCategoryForStopReason(loopResult.stopReason);
+    terminalDescription = providerDescription || stopReasonDescription(loopResult.stopReason);
+    recordReviewFailureEnvelope(
+      stageFailureCauseForStopReason(loopResult.stopReason, providerErrorKind),
+      terminalDescription,
+      {
+        stopReason: loopResult.stopReason,
+        ...(providerErrorKind ? { providerErrorKind } : {}),
+      },
+    );
   }
 
   const cleanupReason = cleanupReasonForStopReason(loopResult.stopReason);
@@ -585,6 +1024,15 @@ export async function runNativeReview(
         modelAttributionIneligibleReason: 'execution_contradicted',
         notes: `Native review stopped with ${loopResult.stopReason}; cleanup decision ${cleanupReport.cleanupDecision}.`,
         failureReason: loopResult.stopReason,
+        artifacts: {
+          type: 'review',
+          failureCategory: reviewFailureCategoryForStopReason(loopResult.stopReason),
+          verdict: 'error',
+          reviewToolError: stopReasonDescription(loopResult.stopReason),
+          missingReviewEvidence: true,
+          evidence: 'missing-review-verdict',
+          ...nativeReviewMetadata,
+        },
         finalTreeState: cleanupReport.finalTreeState,
         cleanupDecision: cleanupReport.cleanupDecision,
         cleanupReport,
@@ -592,27 +1040,30 @@ export async function runNativeReview(
     }
   }
 
-  const deniedTools = nativeReviewDeps.extractDeniedTools(transcriptEvents);
   if (loopResult.stopReason !== 'stop') {
-    const providerErrorMessage = loopResult.stopReason === 'error'
-      ? extractFinalAssistantErrorMessage(loopResult.messages)
-      : '';
-    const providerErrorKind = loopResult.providerError?.kind
-      ?? (providerErrorMessage ? classifyProviderError(providerErrorMessage).kind : undefined);
-    const providerDescription = providerErrorMessage
-      ? `${providerErrorKind ?? 'provider-unknown-error'}: ${providerErrorMessage}`
-      : '';
-    return nativeReviewFailure(
-      context,
-      reviewFailureCategoryForProviderErrorKind(providerErrorKind),
-      providerDescription || stopReasonDescription(loopResult.stopReason),
-      deniedTools,
-      substantiveAnalysisIdentity,
-    );
+    if (terminalCategory === NATIVE_REVIEW_TIMEOUT_CATEGORY) {
+      return nativeReviewNoEvidenceFailure(
+        context,
+        terminalCategory,
+        terminalDescription,
+        deniedTools,
+        substantiveAnalysisIdentity,
+        {
+          ...nativeReviewMetadata,
+          nativeLoopStopReason: loopResult.stopReason,
+        },
+      );
+    }
+    return nativeReviewFailure(context, terminalCategory, terminalDescription, deniedTools, substantiveAnalysisIdentity);
   }
 
   const responseText = nativeReviewDeps.extractFinalAssistantText(loopResult.messages);
   if (responseText.trim() === '') {
+    recordReviewFailureEnvelope(
+      'model-protocol',
+      'Native review returned an empty final assistant message.',
+      { stopReason: loopResult.stopReason },
+    );
     return nativeReviewFailure(
       context,
       'native-review-malformed-response',
@@ -624,17 +1075,29 @@ export async function runNativeReview(
 
   try {
     const result = parseNativeReviewResponse(responseText, context, options.operatingMode ?? 'normal');
+    // A successful review supersedes any stale envelope from a prior terminal
+    // attempt so a later success is never misread as a failure (HOK-3064).
+    if (options.featureDir) {
+      try {
+        deleteStageFailureEnvelope(options.featureDir, 'review');
+      } catch {
+        // Best-effort cleanup; never fail a successful review on unlink.
+      }
+    }
     result.metadata = {
       ...result.metadata,
       deniedTools,
+      ...nativeReviewMetadata,
     };
     result.substantiveAnalysisIdentity = substantiveAnalysisIdentity;
     return result;
   } catch (error) {
+    const description = `Native review returned malformed response: ${(error as Error).message}`;
+    recordReviewFailureEnvelope('model-protocol', description, { stopReason: loopResult.stopReason });
     return nativeReviewFailure(
       context,
       'native-review-malformed-response',
-      `Native review returned malformed response: ${(error as Error).message}`,
+      description,
       deniedTools,
       substantiveAnalysisIdentity,
     );

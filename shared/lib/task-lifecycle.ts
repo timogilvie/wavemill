@@ -77,8 +77,26 @@ export interface RemoteBranchDeletionPolicy {
 export interface LaunchContract {
   baseBranch?: string;
   baseSha?: string;
+  /**
+   * Free-text label recording who will merge this task. Post-HOK-3102 values:
+   * `merge-queue` | `tend` | `operator-merge` | `no-merge-executor`.
+   * Legacy contracts may carry `direct-monitor`. Consumers should treat this
+   * as advisory metadata and derive live behavior from
+   * `resolveSessionCapabilities` at decision time, not from this field.
+   */
   integrationMode?: string;
+  /**
+   * HOK-3102: canonical executor for green PRs. `tend` | `operator` | `none`.
+   * Optional on legacy contracts; when present, takes precedence over
+   * `integrationMode` for classification decisions.
+   */
+  mergeExecutor?: 'tend' | 'operator' | 'none';
   mergeMethod?: string;
+  /**
+   * Controls window/pane retention after the task terminates. It does NOT
+   * gate merging — the merge executor (see `mergeExecutor` above) decides
+   * that. Preserved under this name for contract compatibility.
+   */
   requireConfirm?: boolean;
   remoteBranchDeletionPolicy: RemoteBranchDeletionPolicy;
   challengeRole?: string;
@@ -205,10 +223,17 @@ function normalizeLaunchContract(value: unknown): LaunchContract | undefined {
   const allowed = bool(policy.allowed);
   if (allowed === undefined) return undefined;
 
+  const mergeExecutorRaw = text(contract.mergeExecutor);
+  const mergeExecutor: 'tend' | 'operator' | 'none' | undefined =
+    mergeExecutorRaw === 'tend' || mergeExecutorRaw === 'operator' || mergeExecutorRaw === 'none'
+      ? mergeExecutorRaw
+      : undefined;
+
   return {
     ...(text(contract.baseBranch) ? { baseBranch: text(contract.baseBranch) } : {}),
     ...(text(contract.baseSha) ? { baseSha: text(contract.baseSha) } : {}),
     ...(text(contract.integrationMode) ? { integrationMode: text(contract.integrationMode) } : {}),
+    ...(mergeExecutor ? { mergeExecutor } : {}),
     ...(text(contract.mergeMethod) ? { mergeMethod: text(contract.mergeMethod) } : {}),
     ...(bool(contract.requireConfirm) !== undefined ? { requireConfirm: bool(contract.requireConfirm) } : {}),
     remoteBranchDeletionPolicy: {
@@ -256,6 +281,15 @@ export function validateTaskLifecycleState(lifecycleInput: unknown): string[] {
   return errors;
 }
 
+function isOrphanStub(task: Record<string, unknown>): boolean {
+  const phase = text(task.phase);
+  const status = text(task.status);
+  const slug = text(task.slug);
+  const lifecycle = task.lifecycle;
+  return phase === undefined && status === undefined && slug === undefined
+    && (lifecycle === undefined || lifecycle === null);
+}
+
 export function normalizeTaskLifecycle(taskInput: unknown): NormalizedTaskLifecycle {
   const task = record(taskInput);
   const existing = record(task.lifecycle);
@@ -266,6 +300,7 @@ export function normalizeTaskLifecycle(taskInput: unknown): NormalizedTaskLifecy
   const retention = record(existing.retention);
   const launchContract = normalizeLaunchContract(existing.launchContract);
   const reasons: string[] = [];
+  const orphanStub = !disposition && isOrphanStub(task);
 
   if (!disposition) {
     if ((task.executionOwner === 'queue' && task.paneState === 'released') || task.paneState === 'released') {
@@ -273,6 +308,12 @@ export function normalizeTaskLifecycle(taskInput: unknown): NormalizedTaskLifecy
     } else if (legacyIsTerminal(task)) {
       disposition = 'verification-required';
       reasons.push('legacy-terminal-resource-state');
+    } else if (orphanStub) {
+      // HOK-3125: a phase/status/slug/lifecycle-less row is a stub recreated by
+      // a raw post-reap write. Persist a valid disposition (released) but mark
+      // it non-slot-consuming so the TS counter agrees with the shell one.
+      disposition = 'released';
+      reasons.push('orphan-stub');
     } else {
       disposition = 'allocated';
     }

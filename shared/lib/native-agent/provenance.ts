@@ -7,6 +7,8 @@ export type ToolResultSourceKind =
   | 'command_output'
   | 'provider_payload'
   | 'wavemill_artifact'
+  | 'browser'
+  | 'mcp_result'
   | 'unknown';
 
 export type ToolResultTrustTier = 'trusted' | 'untrusted';
@@ -53,6 +55,8 @@ const TRUST_BY_SOURCE_KIND: Record<ToolResultSourceKind, ToolResultTrustTier> = 
   command_output: 'untrusted',
   provider_payload: 'untrusted',
   wavemill_artifact: 'trusted',
+  browser: 'untrusted',
+  mcp_result: 'untrusted',
   unknown: 'untrusted',
 };
 
@@ -94,6 +98,8 @@ function normalizeSourceKind(sourceKind: string | undefined): ToolResultSourceKi
     case 'command_output':
     case 'provider_payload':
     case 'wavemill_artifact':
+    case 'browser':
+    case 'mcp_result':
       return sourceKind;
     default:
       return 'unknown';

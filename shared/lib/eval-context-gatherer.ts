@@ -1013,6 +1013,32 @@ export function computePhaseDurations(
   return durations;
 }
 
+/**
+ * Locate the directory holding `.{stage}-result.json` files for a task
+ * (HOK-2958). Returns the first candidate (worktree first, then repo;
+ * features before bugs) containing at least one stage result file, so
+ * downstream consumers can read windows via the stage-result readers
+ * instead of re-deriving paths.
+ */
+function findStageResultsDir(
+  repoDir: string,
+  slug: string,
+  worktreePath?: string,
+): string | undefined {
+  const searchRoots = [worktreePath, repoDir].filter((root): root is string => Boolean(root));
+  for (const root of searchRoots) {
+    for (const dir of ['features', 'bugs']) {
+      const candidate = path.join(root, dir, slug);
+      const hasStageResult = ['planning', 'coding', 'review'].some((stage) =>
+        existsSync(path.join(candidate, `.${stage}-result.json`)));
+      if (hasStageResult) {
+        return candidate;
+      }
+    }
+  }
+  return undefined;
+}
+
 export function gatherStageArtifacts(
   repoDir: string,
   issueId: string,
@@ -1029,6 +1055,8 @@ export function gatherStageArtifacts(
   planningExecutionOutcome?: PlanningExecutionOutcome;
   phaseDurations?: EvalPhaseDurations;
   executionModel?: string;
+  /** Directory containing `.{stage}-result.json` files, when found (HOK-2958). */
+  stageResultsDir?: string;
 } {
   // Derive feature slug
   const slug = deriveFeatureSlug(branch, issueId, repoDir);
@@ -1045,6 +1073,7 @@ export function gatherStageArtifacts(
       planningExecutionOutcome: loadPlanningExecutionOutcomeFromArchive(repoDir, issueId),
       phaseDurations: undefined,
       executionModel: undefined,
+      stageResultsDir: undefined,
     };
   }
 
@@ -1073,6 +1102,7 @@ export function gatherStageArtifacts(
     planningExecutionOutcome: loadPlanningExecutionOutcome(repoDir, slug, issueId, worktreePath),
     phaseDurations: computePhaseDurations(repoDir, slug, worktreePath),
     executionModel: loadStageExecutionModel(repoDir, slug, worktreePath),
+    stageResultsDir: findStageResultsDir(repoDir, slug, worktreePath),
   };
 }
 

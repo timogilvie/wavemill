@@ -38,6 +38,10 @@ Challenge coverage and performance consumers enforce provisional evidence holds 
 - Skipped identical pairs deterministically declare the primary as winner and the challenger as the cleanup target. This keeps the merge lane moving and prevents watchdog retry spam.
 - `pair-unresolvable` is terminal once the resolver writes a forfeit or double-forfeit comparison record. Orphaned siblings can be resolved by the mill automatically or with `tools/resolve-orphan-challenge-pair.ts`.
 - Post-review cleanup deletes remote `task/*` refs only after GitHub reports the PR as `MERGED`; stale merged leftovers can be audited with `tools/cleanup-stale-branches.ts`.
+- A tracked sibling with no PR is live only while the HOK-3101 task-progress primitive shows agent progress (HOK-3128). Past `SIBLING_PROGRESS_GRACE_MS` (30m, plus `ORPHAN_PAIR_GRACE_MS` on `updated`) the gate reports `pair-unresolvable:sibling-stalled`; the resolver stamps the stalled arm `terminal_stage_failure:sibling-stalled` (harness-fault) and forfeits to the survivor. Pane/window existence never counts as liveness.
+- A coding arm whose agent exits after `.coding-complete` with a dirty tree is relaunched once per head (bounded-retry bucket `coding-dirty-handoff`); on exhaustion a challenger is aborted `terminal_stage_failure:coding-dirty-handoff` (model-fault, scope `single`) so the pair forfeits to the primary. A primary stays `needs-user` with `.retry-coding-dirty-handoff-exhausted`.
+- A challenge arm whose Ready is terminally exhausted (`failed-ready-recheck` / `ready-remediation` buckets, or an update-from-base conflict) never reaches the completed-Ready eval/compare block (HOK-3147). When its sibling's Ready is `completed`, the monitor's `ready_exhausted_challenge_terminalize` retires it (scope `single`) and closes its PR: red checks → `terminal_stage_failure:ready-exhausted` (model-fault, forfeit to the sibling); a passed-checks transition failure (route-stamp, identity, label, GitHub API) → `invalid_challenge:ready-transition-failed`; no typed cause → `invalid_challenge:ready-unattributed` (both harness-fault). If the sibling is not green, both arms keep the `needs-user` hold — never close both PRs.
+- A challenge arm whose Ready launch is refused by the review gate (`pending-ready-recheck` bucket terminalized on a review verdict that cannot pass readiness) is HOK-3147's third terminal path (HOK-3154). The monitor's `review_refused_challenge_terminalize` retires it under the same green-sibling precondition and closes its PR, stamped at stage `review` so selection health attributes the **reviewer actually used**, not the coder: `terminal_stage_failure:review-malformed-response|review-no-output|review-not-ready` (model-fault forfeit; only emitted when `.review-result.json` carries `executedModel` matching the arm's assignment, with `modelAttributionEligible=true` and consistent `executionEvidence.status`); `invalid_challenge:review-identity-mismatch` when any two non-empty of {assigned, recorded, executed} disagree or evidence is `contradicted` (survivor released through `challenge-void`); `invalid_challenge:review-unattributed` otherwise. An infra review failure (`native-review-timeout`, `native-runtime-unavailable`, etc.) never routes through this path — those are handled by HOK-3106's review-infra-recovery bucket.
 
 ## Stage-Specific Score Selection (HOK-2373)
 
@@ -125,7 +129,35 @@ Challenge skipped native model <id> for <stage> stage (phase=<phase>, reason=<re
 
 This mirrors the router's `reasoning` field so dashboard tooling has consistent parity between router-level and challenge-level native rejections.
 
+## Invalid-challenge auto-resolution (HOK-2970)
+
+When the challenge-pair resolver runs on `sibling-challenge-aborted` or `both-challenge-aborted`, it now cross-references the aborted arm(s)' latest eval record in `evals.jsonl`. If that record carries `invalidChallenge: true`, the pair is stamped as `comparisonOutcome: 'invalid_challenge'` (via `buildInvalidChallengeArmComparison`) with no `winner`/`winnerModel`, rather than a phantom `forfeit` handed to the surviving arm. `forkStage` and other retention fields are preserved.
+
+Rules of the road:
+
+- **New records use `invalid_challenge` directly.** Producers must never mint a `forfeit` row where the losing arm's eval was `invalidChallenge: true`.
+- **`isDecisiveChallengeComparison` is a belt-and-braces guard.** Any row carrying `invalidChallenge: true` OR a `quarantined` marker is non-decisive regardless of `comparisonOutcome`. Legacy pre-fix rows on disk therefore stop counting even before the quarantine sweep runs.
+- **Legacy rewrite tool:** `tools/quarantine-legacy-reviewer-forfeits.ts` sweeps historical `forfeit` rows whose aborted arm's latest eval was invalid and rewrites them to `invalid_challenge` with a `quarantined: {reason: 'aborted-arm-was-invalid', ticket: 'HOK-2970'}` marker. `--dry-run` prints the diff; `--apply` writes atomically after a `.bak.<ISO>` backup and is idempotent.
+- **Infrastructure-retired arms (HOK-3147):** an arm stamped `invalid_challenge:<kind>` resolves the pair as `invalid_challenge` with `invalidChallengeReason: 'arm_infrastructure_failure'`, no winner, and without waiting on the survivor's eval. tend's gate returns `challenge-void` for the survivor (eligible regardless of `autoMergeWinner`) only when exactly one arm was retired (`primary_/challenger_challenge_aborted`) and that arm's PR is no longer open; every other `invalid_challenge` record keeps the `pair-unresolved:invalid-challenge:*` hold.
+- **Reviewer-stage adjudicator:** `shared/lib/reviewer-stage-adjudicator.ts` is a thin façade over `foldAttestationsIntoStageAttribution` that fails closed to `insufficient_evidence` when the pair did not fork at `review` or lacks a shared implementation prefix. Delivery selection (`deliveryVerdict`) remains the generic arbiter's job; reviewer-stage adjudication is independent.
+
 ## Recent Changes
+
+### 2026-10-02T12:00:00.000Z - HOK-3154: Review-gate refusal retires the arm (HOK-3147 third path)
+
+The monitor's pending-ready-recheck branch (first refusal, `exhausted`, and `exhausted-quiet`) now calls `review_refused_challenge_terminalize` before the `needs-user` hold, closing the HOK-3147 gap for Ready launches refused by the review gate. New taxonomy kinds: `review-malformed-response` and `review-not-ready` (model-fault forfeits), `review-identity-mismatch` and `review-unattributed` (harness-fault invalid challenges); `review-no-output` already existed. Shared predicate `review_gate_refusal_is_terminal` and shared tail `_retired_challenge_arm_close_pr` (refactor; byte-identical ready-path comment). The arm is stamped at stage `review` so `record-arm-failure.ts` attributes the **reviewer actually used** (HOK-3064 bridge), not the coder as HOK-2891 would otherwise fall back to.
+
+### 2026-10-02T00:00:00.000Z - HOK-3147: Ready-exhausted arms no longer hold a green sibling
+
+The monitor's failed-Ready branch (`exhausted` / `exhausted-quiet` / `conflict:*`) calls `ready_exhausted_challenge_terminalize` before the `needs-user` hold. New taxonomy kinds `ready-exhausted` (model-fault), `ready-transition-failed` and `ready-unattributed` (harness-fault); `parseAbortFailureKind` accepts the `invalid_challenge:` prefix (`isInvalidChallengeAbort`). New `InvalidChallengeReason` `arm_infrastructure_failure`. Gate kind `challenge-void`. Running the eval for a red-check arm before retiring it (HOK-2778) is a follow-up.
+
+### 2026-09-30T00:00:00.000Z - HOK-3128: Dead no-PR arms no longer hold a green primary
+
+`guard_coding_complete_handoff` consults `task_progress_json`: after the agent exits it quarantines unplanned root scratch into `features/<slug>/.stale-artifacts/dirty-handoff-*`, relaunches the coder once with `.coding-recovery-instruction.md`, then terminalizes (challenger → `challengeAborted`, primary → sentinel). `isSiblingLive` / `evaluateSiblingLiveness` gate a no-PR sibling on the progress primitive and add the `sibling-stalled` unresolvable reason, shared by tend, ready-watchdog and the pair resolver.
+
+### 2026-09-18T00:00:00.000Z - HOK-2970: Reviewer-stage adjudication, delivery/stage split, legacy quarantine
+
+Added `buildInvalidChallengeArmComparison`; tightened `isDecisiveChallengeComparison` to exclude any row where `invalidChallenge === true` or `quarantined` is present; wired invalid-arm detection into `challenge-pair-resolver.ts` for both `sibling-challenge-aborted` and `both-challenge-aborted`; added `shared/lib/reviewer-stage-adjudicator.ts` and `tools/quarantine-legacy-reviewer-forfeits.ts`. Extended `ResolveOutcome` union with `invalid_challenge`. Regression fixtures `tests/reviewer-stage-hok2939-shaped.test.sh` and `tests/reviewer-stage-hok2954-shaped.test.sh` cover CI-shard and startup-rehydration abort shapes respectively.
 
 ### 2026-08-23T00:00:00.000Z - HOK-2859: Provisional evidence holds
 

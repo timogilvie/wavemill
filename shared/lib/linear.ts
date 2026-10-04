@@ -1,3 +1,4 @@
+import { ISSUE_ID_RE } from './task-identity.ts';
 /**
  * Shared Linear API client used by both Claude and Codex tooling.
  *
@@ -434,11 +435,11 @@ async function request(query: string, variables?: Record<string, unknown>): Prom
  * Parse "HOK-123" into { teamKey: "HOK", number: 123 }
  */
 function parseIdentifier(identifier: string): ParsedIdentifier {
-  const match = identifier.match(/^([A-Z]+)-(\d+)$/);
-  if (!match) {
+  if (!ISSUE_ID_RE.test(identifier)) {
     throw new Error(`Invalid issue identifier: ${identifier}. Expected format: HOK-123`);
   }
-  return { teamKey: match[1], number: parseInt(match[2], 10) };
+  const [teamKey, number] = identifier.split('-');
+  return { teamKey, number: parseInt(number, 10) };
 }
 
 /**
@@ -496,6 +497,18 @@ async function getTeamWorkflowStates(teamId: string): Promise<Map<string, string
   }
   teamStateCache.set(teamId, byName);
   return byName;
+}
+
+/**
+ * Public: resolve a team's workflow states as name→id pairs. Used by incident
+ * lifecycle sync to validate configured completed/open state names at startup,
+ * before any issue is mutated.
+ */
+export async function getTeamStates(teamId: string): Promise<Array<{ id: string; name: string }>> {
+  const byName = await getTeamWorkflowStates(teamId);
+  // Names are lowercased by getTeamWorkflowStates; that is exactly the key
+  // lifecycle sync compares configured state names against.
+  return [...byName.entries()].map(([name, id]) => ({ id, name }));
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -1552,4 +1565,133 @@ export async function updateComment(commentId: string, body: string): Promise<Li
     });
   }
   return result.comment;
+}
+
+// ---------------------------------------------------------------------------
+// Initiative document helpers (HOK-3123)
+// ---------------------------------------------------------------------------
+
+export interface LinearInitiativeDocument {
+  id: string;
+  title: string;
+  content?: string;
+  updatedAt?: string;
+  url?: string;
+}
+
+export interface LinearDocumentPayload {
+  id: string;
+  url?: string;
+}
+
+/**
+ * List all documents attached to a Linear initiative.
+ *
+ * @param initiativeId - Initiative UUID
+ * @returns Documents currently attached to the initiative
+ */
+export async function getInitiativeDocuments(
+  initiativeId: string,
+): Promise<LinearInitiativeDocument[]> {
+  const data = await request(
+    `
+      query($id: String!) {
+        initiative(id: $id) {
+          documents {
+            nodes {
+              id
+              title
+              content
+              updatedAt
+              url
+            }
+          }
+        }
+      }
+    `,
+    { id: initiativeId },
+  );
+  const initiative = data.initiative as
+    | { documents?: { nodes?: LinearInitiativeDocument[] } }
+    | undefined;
+  return initiative?.documents?.nodes ?? [];
+}
+
+/**
+ * Create a new document attached to a Linear initiative.
+ *
+ * @param initiativeId - Initiative UUID the document belongs to
+ * @param input - Title and markdown content for the new document
+ */
+export async function createInitiativeDocument(
+  initiativeId: string,
+  input: { title: string; content: string },
+): Promise<LinearDocumentPayload> {
+  const data = await request(
+    `
+      mutation($input: DocumentCreateInput!) {
+        documentCreate(input: $input) {
+          success
+          document {
+            id
+            url
+          }
+        }
+      }
+    `,
+    {
+      input: {
+        initiativeId,
+        title: input.title,
+        content: input.content,
+      },
+    },
+  );
+  const result = data.documentCreate as
+    | { success: boolean; document?: LinearDocumentPayload }
+    | undefined;
+  if (!result?.success || !result.document) {
+    throw new LinearApiError('Linear documentCreate returned no document', {
+      category: 'graphql',
+    });
+  }
+  return result.document;
+}
+
+/**
+ * Update an existing Linear document (title and/or content).
+ *
+ * @param documentId - Document UUID to update
+ * @param input - Fields to change; every field is optional
+ */
+export async function updateDocument(
+  documentId: string,
+  input: { title?: string; content?: string },
+): Promise<LinearDocumentPayload> {
+  const documentInput: Record<string, unknown> = {};
+  if (input.title !== undefined) documentInput.title = input.title;
+  if (input.content !== undefined) documentInput.content = input.content;
+  const data = await request(
+    `
+      mutation($id: String!, $input: DocumentUpdateInput!) {
+        documentUpdate(id: $id, input: $input) {
+          success
+          document {
+            id
+            url
+          }
+        }
+      }
+    `,
+    { id: documentId, input: documentInput },
+  );
+  const result = data.documentUpdate as
+    | { success: boolean; document?: LinearDocumentPayload }
+    | undefined;
+  if (!result?.success || !result.document) {
+    throw new LinearApiError('Linear documentUpdate returned no document', {
+      category: 'graphql',
+    });
+  }
+  return result.document;
 }

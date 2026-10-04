@@ -4,7 +4,16 @@ import type { AgentContext, AgentTool, AgentToolResult } from '@earendil-works/p
 import type { Message, TextContent } from '@earendil-works/pi-ai';
 import type { ModelRegistry } from '../model-registry.ts';
 import { registerScriptedPiProvider, type ScriptedProviderContext } from './provider.ts';
-import { runWavemillLoop, HEARTBEAT_AGENT, type HeartbeatEvent, type WavemillLoopConfig } from './loop.ts';
+import { runWavemillLoop, HEARTBEAT_AGENT, ProviderToolMenuDriftError, type HeartbeatEvent, type WavemillLoopConfig } from './loop.ts';
+import {
+  ProviderIdentityMismatchError,
+  type ProviderIdentityExpectation,
+} from './provider-identity.ts';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { parseSessionEventJsonl } from './session-stream.schema.ts';
+import { SessionStreamWriter, computeValueDigest } from './session-stream.ts';
 import {
   ContextExhaustedError,
   ContextWindowExceededError,
@@ -1665,5 +1674,667 @@ describe('loop — batch semantics', () => {
     assert.ok(skipBMsg, 'skip_b tool result must appear in final messages');
     assert.equal(skipAMsg.content?.[0]?.text, 'skipped_after_failure');
     assert.equal(skipBMsg.content?.[0]?.text, 'skipped_after_failure');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-turn tool exposure (HOK-3054)
+// ---------------------------------------------------------------------------
+
+function makeMenuTempDir(): string {
+  return mkdtempSync(join(tmpdir(), 'loop-menu-'));
+}
+
+function readEventStream(path: string) {
+  const raw = readFileSync(path, 'utf-8');
+  return parseSessionEventJsonl(raw);
+}
+
+function makePiTool(name: string): AgentTool<any, any> {
+  return {
+    name,
+    description: `Menu tool ${name}`,
+    parameters: { type: 'object', properties: {} } as any,
+    label: name,
+    executionMode: 'sequential',
+    async execute() {
+      return { content: [{ type: 'text' as const, text: `${name} ok` }], details: undefined };
+    },
+  } as unknown as AgentTool<any, any>;
+}
+
+describe('loop — per-turn menu provenance', () => {
+  it('emits tool_menu, provider_tools, and both digests on model_request', async () => {
+    const tempDir = makeMenuTempDir();
+    try {
+      const api = uniqueApi('menu-happy');
+      registerScriptedPiProvider({
+        api,
+        turns: [
+          { content: [{ type: 'text', text: 'done' }], stopReason: 'stop' },
+        ],
+      });
+
+      const tool = makePiTool('menu_read');
+      const menuCanonical = '[{"name":"menu_read"}]';
+      const providerCanonical = '[{"name":"menu_read","parameters":{}}]';
+      const menuDigest = computeValueDigest(JSON.parse(menuCanonical));
+      const providerDigest = computeValueDigest(JSON.parse(providerCanonical));
+
+      const sessionId = 'menu-happy-session';
+      const eventStreamPath = join(tempDir, `${sessionId}.jsonl`);
+      const writer = new SessionStreamWriter(
+        { sessionId, traceId: sessionId, phase: 'planning', path: eventStreamPath },
+        tempDir,
+      );
+      writer.writeSessionStarted({ initialConfigDigest: 'test' });
+
+      const menuCalls: Array<{ turnIndex: number; terminalSynthesis: boolean }> = [];
+
+      await runWavemillLoop({
+        ...baseConfig(api, [tool]),
+        sessionStreamConfig: {
+          sessionId,
+          traceId: sessionId,
+          phase: 'planning',
+          eventStreamPath,
+          repoDir: tempDir,
+          writerInstance: writer,
+          externalWriterManagesSessionBoundaries: true,
+        },
+        menuProvider: {
+          resolveForTurn(input) {
+            menuCalls.push(input);
+            return {
+              toolMenu: {
+                canonical: menuCanonical,
+                digest: menuDigest,
+                toolNames: ['menu_read'],
+                byteSize: menuCanonical.length,
+              },
+              providerTools: {
+                canonical: providerCanonical,
+                digest: providerDigest,
+                toolCount: 1,
+                toolNames: ['menu_read'],
+                byteSize: providerCanonical.length,
+              },
+            };
+          },
+        },
+      });
+
+      assert.equal(menuCalls.length, 1);
+      assert.equal(menuCalls[0].terminalSynthesis, false);
+
+      const events = readEventStream(eventStreamPath);
+      const toolMenuEvent = events.find((e) => e.type === 'tool_menu');
+      const providerToolsEvent = events.find((e) => e.type === 'provider_tools');
+      const modelRequestEvent = events.find((e) => e.type === 'model_request');
+      assert.ok(toolMenuEvent, 'tool_menu event missing');
+      assert.ok(providerToolsEvent, 'provider_tools event missing');
+      assert.ok(modelRequestEvent, 'model_request event missing');
+      assert.equal((toolMenuEvent as any).digest, menuDigest);
+      assert.equal((providerToolsEvent as any).digest, providerDigest);
+      assert.equal((modelRequestEvent as any).toolMenuDigest, menuDigest);
+      assert.equal((modelRequestEvent as any).providerToolsDigest, providerDigest);
+      // Ordering: menu events must precede the model_request event they describe.
+      const idxToolMenu = events.indexOf(toolMenuEvent);
+      const idxProviderTools = events.indexOf(providerToolsEvent);
+      const idxModelRequest = events.indexOf(modelRequestEvent);
+      assert.ok(idxToolMenu < idxModelRequest);
+      assert.ok(idxProviderTools < idxModelRequest);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('backward compat — with menuProvider omitted, model_request has no digest fields', async () => {
+    const tempDir = makeMenuTempDir();
+    try {
+      const api = uniqueApi('menu-optout');
+      registerScriptedPiProvider({
+        api,
+        turns: [{ content: [{ type: 'text', text: 'done' }], stopReason: 'stop' }],
+      });
+
+      const sessionId = 'menu-optout-session';
+      const eventStreamPath = join(tempDir, `${sessionId}.jsonl`);
+      const writer = new SessionStreamWriter(
+        { sessionId, traceId: sessionId, phase: 'planning', path: eventStreamPath },
+        tempDir,
+      );
+      writer.writeSessionStarted({ initialConfigDigest: 'test' });
+
+      await runWavemillLoop({
+        ...baseConfig(api),
+        sessionStreamConfig: {
+          sessionId,
+          traceId: sessionId,
+          phase: 'planning',
+          eventStreamPath,
+          repoDir: tempDir,
+          writerInstance: writer,
+          externalWriterManagesSessionBoundaries: true,
+        },
+      });
+
+      const events = readEventStream(eventStreamPath);
+      const menuEvents = events.filter((e) => e.type === 'tool_menu' || e.type === 'provider_tools');
+      assert.equal(menuEvents.length, 0);
+      const modelRequest = events.find((e) => e.type === 'model_request') as any;
+      assert.ok(modelRequest);
+      assert.equal(modelRequest.toolMenuDigest, undefined);
+      assert.equal(modelRequest.providerToolsDigest, undefined);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails the run when the resolved provider menu drifts from context.tools', async () => {
+    const tempDir = makeMenuTempDir();
+    try {
+      const api = uniqueApi('menu-drift');
+      registerScriptedPiProvider({
+        api,
+        turns: [{ content: [{ type: 'text', text: 'never' }], stopReason: 'stop' }],
+      });
+      const tool = makePiTool('menu_read');
+
+      await assert.rejects(
+        runWavemillLoop({
+          ...baseConfig(api, [tool]),
+          menuProvider: {
+            resolveForTurn: () => ({
+              toolMenu: {
+                canonical: '[]',
+                digest: 'x'.repeat(64),
+                toolNames: [],
+                byteSize: 2,
+              },
+              // Resolver claims a tool named "other_tool" is being sent, but
+              // context.tools only contains "menu_read" — this is exactly the
+              // silent-mismatch failure mode HOK-3054 must catch.
+              providerTools: {
+                canonical: '[{"name":"other_tool"}]',
+                digest: 'y'.repeat(64),
+                toolCount: 1,
+                toolNames: ['other_tool'],
+                byteSize: 25,
+              },
+            }),
+          },
+        }),
+        (err: unknown) => err instanceof ProviderToolMenuDriftError,
+      );
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('terminal synthesis re-resolves with terminalSynthesis: true and provider names must be empty', async () => {
+    const tempDir = makeMenuTempDir();
+    try {
+      const api = uniqueApi('menu-terminal');
+      let turn = 0;
+      registerScriptedPiProvider({
+        api,
+        turns: () => {
+          turn += 1;
+          return turn === 1
+            ? {
+                content: [{ type: 'tool_call', id: 'tc1', name: 'menu_read', arguments: {} }],
+                stopReason: 'tool_calls',
+              }
+            : { content: [{ type: 'text', text: '{"final":true}' }], stopReason: 'stop' };
+        },
+      });
+      const tool = makePiTool('menu_read');
+      const menuCalls: Array<{ turnIndex: number; terminalSynthesis: boolean }> = [];
+      const nonTerminalMenu = {
+        toolMenu: {
+          canonical: '[{"name":"menu_read"}]',
+          digest: 'a'.repeat(64),
+          toolNames: ['menu_read'],
+          byteSize: 24,
+        },
+        providerTools: {
+          canonical: '[{"name":"menu_read"}]',
+          digest: 'b'.repeat(64),
+          toolCount: 1,
+          toolNames: ['menu_read'],
+          byteSize: 24,
+        },
+      };
+      const terminalMenu = {
+        toolMenu: {
+          canonical: '[{"name":"menu_read"}]',
+          digest: 'a'.repeat(64),
+          toolNames: ['menu_read'],
+          byteSize: 24,
+        },
+        providerTools: {
+          canonical: '[]',
+          digest: 'c'.repeat(64),
+          toolCount: 0,
+          toolNames: [],
+          byteSize: 2,
+        },
+      };
+
+      const sessionId = 'menu-terminal-session';
+      const eventStreamPath = join(tempDir, `${sessionId}.jsonl`);
+      const writer = new SessionStreamWriter(
+        { sessionId, traceId: sessionId, phase: 'planning', path: eventStreamPath },
+        tempDir,
+      );
+      writer.writeSessionStarted({ initialConfigDigest: 'test' });
+
+      await runWavemillLoop({
+        ...baseConfig(api, [tool]),
+        budget: { maxTurns: 2, maxToolCalls: 10 },
+        terminalSynthesis: { prompt: 'Return final JSON.' },
+        sessionStreamConfig: {
+          sessionId,
+          traceId: sessionId,
+          phase: 'planning',
+          eventStreamPath,
+          repoDir: tempDir,
+          writerInstance: writer,
+          externalWriterManagesSessionBoundaries: true,
+        },
+        menuProvider: {
+          resolveForTurn(input) {
+            menuCalls.push(input);
+            return input.terminalSynthesis ? terminalMenu : nonTerminalMenu;
+          },
+        },
+      });
+
+      assert.equal(menuCalls.length, 2);
+      assert.equal(menuCalls[0].terminalSynthesis, false);
+      assert.equal(menuCalls[1].terminalSynthesis, true);
+
+      const events = readEventStream(eventStreamPath);
+      const modelRequests = events.filter((e) => e.type === 'model_request');
+      assert.equal(modelRequests.length, 2);
+      const firstDigest = (modelRequests[0] as any).providerToolsDigest;
+      const secondDigest = (modelRequests[1] as any).providerToolsDigest;
+      assert.equal(firstDigest, 'b'.repeat(64));
+      assert.equal(secondDigest, 'c'.repeat(64));
+      // Terminal request must always carry the empty-menu digest.
+      const providerToolsEvents = events.filter((e) => e.type === 'provider_tools');
+      assert.equal(providerToolsEvents.length, 2);
+      assert.equal((providerToolsEvents[1] as any).toolCount, 0);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tool-call event callId capture (HOK-3122)
+// ---------------------------------------------------------------------------
+
+describe('loop — tool_call event callId capture (HOK-3122)', () => {
+  async function runCaptureCase(opts: {
+    toolBehavior: 'success' | 'error';
+    toolClass: ToolMetadata['class'];
+    scriptedCallId: string;
+  }) {
+    const tempDir = makeMenuTempDir();
+    const api = uniqueApi(`capture-${opts.toolBehavior}-${opts.toolClass}`);
+    const tool = makeTool('read_notes', 'sequential', async () => 'contents');
+
+    registerScriptedPiProvider({
+      api,
+      turns: [
+        {
+          content: [{
+            type: 'tool_call',
+            id: opts.scriptedCallId,
+            name: 'read_notes',
+            arguments: {},
+          }],
+          stopReason: 'tool_calls',
+        },
+        { content: [{ type: 'text', text: 'done' }], stopReason: 'stop' },
+      ],
+    });
+
+    const sessionId = `capture-session-${opts.toolBehavior}-${opts.toolClass}`;
+    const eventStreamPath = join(tempDir, `${sessionId}.jsonl`);
+    const writer = new SessionStreamWriter(
+      { sessionId, traceId: sessionId, phase: 'planning', path: eventStreamPath },
+      tempDir,
+    );
+    writer.writeSessionStarted({ initialConfigDigest: 'test' });
+
+    try {
+      await runWavemillLoop({
+        ...baseConfig(api, [tool]),
+        budget: { maxTurns: 3 },
+        toolPolicy: {
+          phase: 'planning',
+          worktreePath: tempDir,
+          registry: [makeToolMetadata('read_notes', opts.toolClass)],
+          config: { readOnlyPhases: opts.toolClass === 'read-only' ? ['planning'] : [] },
+        },
+        // Force isError on the caller side so the stream writer records it;
+        // runWavemillLoop only propagates isError when the caller override
+        // provides one, which is the real production code path.
+        ...(opts.toolBehavior === 'error' ? {
+          afterToolCall: async () => ({ isError: true }),
+        } : {}),
+        sessionStreamConfig: {
+          sessionId,
+          traceId: sessionId,
+          phase: 'planning',
+          eventStreamPath,
+          repoDir: tempDir,
+          writerInstance: writer,
+          externalWriterManagesSessionBoundaries: true,
+        },
+      });
+      const events = readEventStream(eventStreamPath);
+      return { tempDir, events };
+    } catch (err) {
+      rmSync(tempDir, { recursive: true, force: true });
+      throw err;
+    }
+  }
+
+  it('writes tool_call with the SDK callId so policy_decision/call/result all join', async () => {
+    const { tempDir, events } = await runCaptureCase({
+      toolBehavior: 'success',
+      toolClass: 'read-only',
+      scriptedCallId: 'sdk-call-success-1',
+    });
+    try {
+      const policy = events.find((e) => e.type === 'tool_policy_decision') as any;
+      const call = events.find((e) => e.type === 'tool_call') as any;
+      const result = events.find((e) => e.type === 'tool_result') as any;
+      assert.ok(policy, 'tool_policy_decision missing');
+      assert.ok(call, 'tool_call missing');
+      assert.ok(result, 'tool_result missing');
+      assert.equal(call.callId, 'sdk-call-success-1');
+      assert.equal(policy.callId, 'sdk-call-success-1');
+      assert.equal(result.callId, 'sdk-call-success-1');
+      assert.equal(result.isError, false);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('shares the same SDK callId for an erroring tool call', async () => {
+    const { tempDir, events } = await runCaptureCase({
+      toolBehavior: 'error',
+      toolClass: 'read-only',
+      scriptedCallId: 'sdk-call-error-2',
+    });
+    try {
+      const policy = events.find((e) => e.type === 'tool_policy_decision') as any;
+      const call = events.find((e) => e.type === 'tool_call') as any;
+      const result = events.find((e) => e.type === 'tool_result') as any;
+      assert.equal(call.callId, 'sdk-call-error-2');
+      assert.equal(policy.callId, 'sdk-call-error-2');
+      assert.equal(result.callId, 'sdk-call-error-2');
+      assert.equal(result.isError, true);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('records policy_denied with the SDK callId when the tool is phase-denied', async () => {
+    const tempDir = makeMenuTempDir();
+    const api = uniqueApi('capture-denied');
+    const tool = makeTool('write_notes', 'sequential', async () => 'should-not-run');
+    registerScriptedPiProvider({
+      api,
+      turns: [
+        {
+          content: [{
+            type: 'tool_call',
+            id: 'sdk-call-denied-3',
+            name: 'write_notes',
+            arguments: {},
+          }],
+          stopReason: 'tool_calls',
+        },
+        { content: [{ type: 'text', text: 'done' }], stopReason: 'stop' },
+      ],
+    });
+
+    const sessionId = 'capture-session-denied';
+    const eventStreamPath = join(tempDir, `${sessionId}.jsonl`);
+    const writer = new SessionStreamWriter(
+      { sessionId, traceId: sessionId, phase: 'planning', path: eventStreamPath },
+      tempDir,
+    );
+    writer.writeSessionStarted({ initialConfigDigest: 'test' });
+
+    try {
+      await runWavemillLoop({
+        ...baseConfig(api, [tool]),
+        budget: { maxTurns: 3 },
+        toolPolicy: {
+          phase: 'planning',
+          worktreePath: tempDir,
+          // Classify write_notes as a mutation → read-only phase 'planning'
+          // denies it, which is the condition we want to exercise.
+          registry: [makeToolMetadata('write_notes', 'mutation')],
+          config: { readOnlyPhases: ['planning'] },
+        },
+        sessionStreamConfig: {
+          sessionId,
+          traceId: sessionId,
+          phase: 'planning',
+          eventStreamPath,
+          repoDir: tempDir,
+          writerInstance: writer,
+          externalWriterManagesSessionBoundaries: true,
+        },
+      });
+
+      const events = readEventStream(eventStreamPath);
+      const policy = events.find((e) => e.type === 'tool_policy_decision') as any;
+      assert.ok(policy, 'tool_policy_decision missing');
+      assert.equal(policy.decision, 'deny');
+      assert.equal(policy.callId, 'sdk-call-denied-3');
+      // A denied call does not execute, so no tool_result is expected, but a
+      // tool_call event is still written when Pi dispatches the invocation
+      // through the agent loop. When present, its callId must match too.
+      const call = events.find((e) => e.type === 'tool_call') as any;
+      if (call) {
+        assert.equal(call.callId, 'sdk-call-denied-3');
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Provider-identity verification (HOK-3143)
+// ---------------------------------------------------------------------------
+
+describe('loop — provider-identity verification', () => {
+  const aliasExpectation: ProviderIdentityExpectation = {
+    requestedWireId: '~google/gemini-pro-latest',
+    expectedModel: 'google/gemini-3.1-pro-preview',
+    isAlias: true,
+  };
+
+  const nonAliasExpectation: ProviderIdentityExpectation = {
+    requestedWireId: 'google/gemini-3.1-pro-preview',
+    expectedModel: 'google/gemini-3.1-pro-preview',
+    isAlias: false,
+  };
+
+  it('records executedModel from provider when all turns match', async () => {
+    const api = uniqueApi('identity-match');
+    registerScriptedPiProvider({
+      api,
+      turns: [
+        {
+          content: [{ type: 'text', text: 'done' }],
+          stopReason: 'stop',
+          responseModel: 'google/gemini-3.1-pro-preview',
+          responseId: 'gen-1',
+        },
+      ],
+    });
+
+    const result = await runWavemillLoop({
+      ...baseConfig(api),
+      providerIdentity: { expectation: aliasExpectation },
+    });
+
+    assert.equal(result.stopReason, 'stop');
+    assert.ok(result.providerIdentity);
+    assert.equal(result.providerIdentity.identityVerdict, 'alias-resolved');
+    assert.equal(result.providerIdentity.executedModel, 'google/gemini-3.1-pro-preview');
+    assert.equal(result.providerIdentity.providerReportedModel, 'google/gemini-3.1-pro-preview');
+    assert.equal(result.providerIdentity.turnsReported, 1);
+  });
+
+  it('throws ProviderIdentityMismatchError on turn-1 mismatch and blocks tool calls', async () => {
+    const api = uniqueApi('identity-mismatch-t1');
+    const toolRan: string[] = [];
+    const tool = makeTool('write', 'sequential', async (id) => {
+      toolRan.push(id);
+      return 'wrote';
+    });
+    registerScriptedPiProvider({
+      api,
+      turns: [
+        {
+          content: [
+            { type: 'tool_call', id: 'tc-1', name: 'write' },
+          ],
+          stopReason: 'tool_calls',
+          responseModel: 'google/gemini-3.2-pro-preview',
+          responseId: 'gen-m1',
+        },
+      ],
+    });
+
+    let onMismatchCalled = 0;
+    let seen: ProviderIdentityMismatchError | undefined;
+    await assert.rejects(
+      runWavemillLoop({
+        ...baseConfig(api, [tool]),
+        budget: { maxTurns: 5 },
+        providerIdentity: {
+          expectation: aliasExpectation,
+          onMismatch: async (err) => {
+            onMismatchCalled += 1;
+            seen = err;
+          },
+        },
+      }),
+      (err: unknown) => err instanceof ProviderIdentityMismatchError
+        && (err as ProviderIdentityMismatchError).reason === 'identity_mismatch'
+        && (err as ProviderIdentityMismatchError).turnIndex === 0,
+    );
+    assert.equal(onMismatchCalled, 1);
+    assert.ok(seen);
+    assert.equal(seen!.expectedModel, 'google/gemini-3.1-pro-preview');
+    assert.equal(seen!.reportedModel, 'google/gemini-3.2-pro-preview');
+    assert.deepEqual(toolRan, []);
+  });
+
+  it('throws on mid-session mismatch (turn 3)', async () => {
+    const api = uniqueApi('identity-mismatch-mid');
+    registerScriptedPiProvider({
+      api,
+      turns: [
+        {
+          content: [{ type: 'tool_call', id: 'tc-a', name: 'echo' }],
+          stopReason: 'tool_calls',
+          responseModel: 'google/gemini-3.1-pro-preview',
+          responseId: 'gen-1',
+        },
+        {
+          content: [{ type: 'tool_call', id: 'tc-b', name: 'echo' }],
+          stopReason: 'tool_calls',
+          responseModel: 'google/gemini-3.1-pro-preview',
+          responseId: 'gen-2',
+        },
+        {
+          content: [{ type: 'text', text: 'bail' }],
+          stopReason: 'stop',
+          responseModel: 'google/gemini-3.2-pro-preview',
+          responseId: 'gen-3',
+        },
+      ],
+    });
+
+    const tool = makeTool('echo', 'sequential', async () => 'ok');
+    await assert.rejects(
+      runWavemillLoop({
+        ...baseConfig(api, [tool]),
+        budget: { maxTurns: 10 },
+        providerIdentity: { expectation: aliasExpectation },
+      }),
+      (err: unknown) => err instanceof ProviderIdentityMismatchError
+        && (err as ProviderIdentityMismatchError).turnIndex === 2,
+    );
+  });
+
+  it('alias with echo-only evidence is unverifiable → identity_unverifiable', async () => {
+    const api = uniqueApi('identity-echo-alias');
+    registerScriptedPiProvider({
+      api,
+      turns: [
+        {
+          content: [{ type: 'text', text: 'done' }],
+          stopReason: 'stop',
+          // No responseModel — Pi only populates it when it differs from id.
+          responseId: 'gen-echo',
+        },
+      ],
+    });
+
+    await assert.rejects(
+      runWavemillLoop({
+        ...baseConfig(api),
+        providerIdentity: { expectation: aliasExpectation },
+      }),
+      (err: unknown) => err instanceof ProviderIdentityMismatchError
+        && (err as ProviderIdentityMismatchError).reason === 'identity_unverifiable',
+    );
+  });
+
+  it('non-alias absent evidence does not throw; executedModel null', async () => {
+    const api = uniqueApi('identity-absent-nonalias');
+    registerScriptedPiProvider({
+      api,
+      turns: [
+        {
+          content: [{ type: 'text', text: 'done' }],
+          stopReason: 'stop',
+          // No responseModel, no responseId → absent (test transport).
+        },
+      ],
+    });
+
+    const result = await runWavemillLoop({
+      ...baseConfig(api),
+      providerIdentity: { expectation: nonAliasExpectation },
+    });
+    assert.equal(result.stopReason, 'stop');
+    assert.equal(result.providerIdentity?.identityVerdict, 'unverifiable');
+    assert.equal(result.providerIdentity?.executedModel, null);
+  });
+
+  it('omitting providerIdentity leaves LoopResult shape unchanged', async () => {
+    const api = uniqueApi('identity-omitted');
+    registerScriptedPiProvider({
+      api,
+      turns: [{ content: [{ type: 'text', text: 'done' }], stopReason: 'stop' }],
+    });
+    const result = await runWavemillLoop(baseConfig(api));
+    assert.equal(result.providerIdentity, undefined);
   });
 });

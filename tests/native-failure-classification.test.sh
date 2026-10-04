@@ -281,6 +281,61 @@ else
   fail "malformed handoff fallback broken (reason='$handoff_reason')"
 fi
 
+# ── HOK-3129: four recurring native-unclassified signatures now typed ─────────
+turn_limit_detail="Native planning rejected before approval: turn_limit"
+if [[ "$(native_terminal_failure_kind "$turn_limit_detail")" == "planning-turn-limit" ]]; then
+  pass "planning turn_limit classified as planning-turn-limit"
+else
+  fail "planning turn_limit misclassified as $(native_terminal_failure_kind "$turn_limit_detail")"
+fi
+
+artifact_invalid_detail="Native planning final artifact rejected: missing_title"
+if [[ "$(native_terminal_failure_kind "$artifact_invalid_detail")" == "planning-artifact-invalid:missing_title" ]]; then
+  pass "planning artifact rejection preserves structural reason suffix"
+else
+  fail "planning artifact classification missing suffix: $(native_terminal_failure_kind "$artifact_invalid_detail")"
+fi
+
+readiness_invalid_detail="Native planning final artifact rejected: missing_release_readiness_env_changes"
+if [[ "$(native_terminal_failure_kind "$readiness_invalid_detail")" == "planning-artifact-invalid:missing_release_readiness_env_changes" ]]; then
+  pass "planning artifact rejection preserves multi-token release-readiness suffix"
+else
+  fail "release readiness suffix dropped: $(native_terminal_failure_kind "$readiness_invalid_detail")"
+fi
+
+review_no_output_detail="Native review flow failed after 0 findings"
+if [[ "$(native_terminal_failure_kind "$review_no_output_detail")" == "review-no-output" ]]; then
+  pass "review no-output classified as review-no-output"
+else
+  fail "review no-output misclassified as $(native_terminal_failure_kind "$review_no_output_detail")"
+fi
+
+coding_interrupted_detail="Interrupted: coding agent exited without recording a result - durable commits preserved at /tmp/foo"
+if [[ "$(native_terminal_failure_kind "$coding_interrupted_detail")" == "coding-exited-without-result" ]]; then
+  pass "coding interruption classified as coding-exited-without-result"
+else
+  fail "coding interruption misclassified as $(native_terminal_failure_kind "$coding_interrupted_detail")"
+fi
+
+# Provider arms outrank the model-fault arms so a stacked message like
+# "402 Payment Required: Native planning final artifact rejected: ..." stays a
+# provider fault.
+stacked_detail="402 Payment Required: Native planning final artifact rejected: missing_title"
+if [[ "$(native_terminal_failure_kind "$stacked_detail")" == "provider-credit-exhausted" ]]; then
+  pass "provider-fault arms outrank the HOK-3129 model-fault arms"
+else
+  fail "ordering regression: $(native_terminal_failure_kind "$stacked_detail")"
+fi
+
+# HOK-3155: OpenRouter's "exceed your available credits" wording must map to
+# provider-credit-exhausted so the circuit trips.
+exceed_credits_detail="Native coding failed: HTTP 402 This request would exceed your available credits given your current in-flight requests. Retry after in-flight requests settle, or add credits."
+if [[ "$(native_terminal_failure_kind "$exceed_credits_detail")" == "provider-credit-exhausted" ]]; then
+  pass "exceed-your-available-credits 402 classifies as provider-credit-exhausted"
+else
+  fail "exceed-your-available-credits 402 misclassified as $(native_terminal_failure_kind "$exceed_credits_detail")"
+fi
+
 # ── Next actions ──────────────────────────────────────────────────────────────
 if [[ "$(native_terminal_failure_next_action native-unclassified)" == *"extend the classifier"* ]]; then
   pass "native-unclassified surfaces a classify-and-extend action"
@@ -291,6 +346,31 @@ if [[ "$(native_terminal_failure_next_action some-unknown-kind)" == "inspect the
   pass "unknown kinds keep the existing default next action"
 else
   fail "default next action changed"
+fi
+if [[ "$(native_terminal_failure_next_action planning-turn-limit)" == *"stronger planner"* ]]; then
+  pass "planning-turn-limit next action points at planner/budget"
+else
+  fail "planning-turn-limit next action missing"
+fi
+if [[ "$(native_terminal_failure_next_action planning-artifact-invalid)" == *"structural validation"* ]]; then
+  pass "planning-artifact-invalid base variant next action set"
+else
+  fail "planning-artifact-invalid next action missing"
+fi
+if [[ "$(native_terminal_failure_next_action planning-artifact-invalid:missing_title)" == *"structural validation"* ]]; then
+  pass "planning-artifact-invalid suffixed variant next action set"
+else
+  fail "planning-artifact-invalid suffixed next action missing"
+fi
+if [[ "$(native_terminal_failure_next_action review-no-output)" == *"stronger reviewer"* ]]; then
+  pass "review-no-output next action points at reviewer"
+else
+  fail "review-no-output next action missing"
+fi
+if [[ "$(native_terminal_failure_next_action coding-exited-without-result)" == *"durable commits preserved"* ]]; then
+  pass "coding-exited-without-result next action points at durable commits"
+else
+  fail "coding-exited-without-result next action missing"
 fi
 
 # ── End-to-end: terminal record preserves the typed handoff evidence ──────────

@@ -19,6 +19,7 @@ import { BUDGET_MISSING } from './eval-validator.ts';
 import type {
   ChallengeStageEval,
   EvalChallengeRouteContext,
+  EvalDecisionSource,
   EvalExecutedPlanning,
   PlanningExecutionOutcome,
   EvalRouteArtifact,
@@ -28,6 +29,7 @@ import type {
   EvalRecord,
   EligibilityErrorCode,
   PlanCritique,
+  ReplayNonFidelityReason,
   RubricEval,
   TaskContext,
   RepoContext,
@@ -46,6 +48,8 @@ import type {
   VerificationTelemetry,
   VerificationTelemetryLocalExecution,
   RoutingRole,
+  EvalExecutionEconomics,
+  EvalTaskScorerResult,
 } from './eval-schema.ts';
 import {
   getEffectiveRegistry,
@@ -81,6 +85,7 @@ import {
   validateEvalRecord,
 } from './eval-validator.ts';
 import { redactText, redactVerificationTelemetry } from './text-redaction.ts';
+import { readForkIdentity } from './fork-identity.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Types
@@ -128,6 +133,10 @@ export interface EvalRecordMetadata {
   repoContext?: RepoContext | null;
   /** Workflow cost computation results */
   workflowCost?: WorkflowCostOutcome | null;
+  /** Normalized external-harness execution-economics blocks (HOK-2958). */
+  executionEconomics?: EvalExecutionEconomics[] | null;
+  /** Shadow-mode task packet readiness prediction. */
+  taskScorerResult?: EvalTaskScorerResult | null;
   /** Task descriptor for router training */
   taskDescriptor?: TaskDescriptor | null;
   /** Cross-model fallback telemetry */
@@ -230,6 +239,12 @@ export function attachChallengeExecutionMetadata(
     record.challengeSide = input.side;
   }
   if (input?.intent) {
+    // The persistence projection drops fork fields, so carry the fork
+    // identity onto the record directly for compare-prs attribution.
+    const forkIdentity = readForkIdentity(input.intent.forkIdentity);
+    if (forkIdentity) {
+      record.forkIdentity = forkIdentity;
+    }
     const challengeStage = stageFromExplicitChallengeIntent(input.intent, input.side);
     const persistedIntent = projectChallengeIntentForPersistence(input.intent);
     if (persistedIntent) {
@@ -301,6 +316,55 @@ function finiteNonNegative(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0
     ? value
     : 0;
+}
+
+/**
+ * HOK-2081: Attach counterfactual/replay lineage to an eval record.
+ *
+ * All inputs are optional; when a field is absent, undefined, or empty the
+ * corresponding record field is left untouched. This mirrors the null-safe
+ * pattern of every other `attach*` helper here so callers can pass a partial
+ * lineage without preflight checks.
+ *
+ * The record is mutated in place and returned as `void` for consistency with
+ * the rest of this module.
+ */
+export function attachCounterfactualLineage(
+  record: EvalRecord,
+  input?: {
+    decisionSource?: EvalDecisionSource | null;
+    sourceDecisionId?: string | null;
+    replayFidelity?: number | null;
+    replayNonFidelityReasons?: ReplayNonFidelityReason[] | null;
+    policySource?: string | null;
+  } | null,
+): void {
+  if (!input) return;
+
+  if (input.decisionSource === 'live' || input.decisionSource === 'counterfactual') {
+    record.decision_source = input.decisionSource;
+  }
+
+  if (typeof input.sourceDecisionId === 'string' && input.sourceDecisionId.trim()) {
+    record.source_decision_id = input.sourceDecisionId.trim();
+  }
+
+  if (
+    typeof input.replayFidelity === 'number'
+    && Number.isFinite(input.replayFidelity)
+    && input.replayFidelity >= 0
+    && input.replayFidelity <= 1
+  ) {
+    record.replay_fidelity = input.replayFidelity;
+  }
+
+  if (Array.isArray(input.replayNonFidelityReasons) && input.replayNonFidelityReasons.length > 0) {
+    record.replay_non_fidelity_reasons = [...input.replayNonFidelityReasons];
+  }
+
+  if (typeof input.policySource === 'string' && input.policySource.trim()) {
+    record.policy_source = input.policySource.trim();
+  }
 }
 
 export function attachPromptSizeDiagnostic(
@@ -812,6 +876,51 @@ export function attachWorkflowCostMetadata(
   }
 }
 
+/**
+ * Attach normalized execution-economics blocks to an eval record (HOK-2958).
+ *
+ * No-op when `blocks` is null, not an array, or empty — readers must
+ * tolerate absence, and an empty collection carries no evidence worth
+ * persisting. Does not merge with existing data; the collector owns the
+ * complete per-run view.
+ */
+export function attachExecutionEconomics(
+  record: EvalRecord,
+  blocks: EvalExecutionEconomics[] | null | undefined,
+): void {
+  if (!Array.isArray(blocks) || blocks.length === 0) {
+    return;
+  }
+  record.executionEconomics = blocks;
+}
+
+export function isEvalTaskScorerResult(value: unknown): value is EvalTaskScorerResult {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return (
+    ['run', 'expand', 'split', 'return'].includes(String(candidate.decision)) &&
+    typeof candidate.confidence === 'number' &&
+    Number.isFinite(candidate.confidence) &&
+    candidate.confidence >= 0 &&
+    candidate.confidence <= 1 &&
+    typeof candidate.explanation === 'string' &&
+    candidate.explanation.trim().length > 0 &&
+    typeof candidate.model_version === 'string' &&
+    candidate.model_version.trim().length > 0
+  );
+}
+
+export function attachTaskScorerResult(
+  record: EvalRecord,
+  result?: EvalTaskScorerResult | null,
+): void {
+  if (isEvalTaskScorerResult(result)) {
+    record.task_scorer_result = result;
+  }
+}
+
 export function attachRoutePrediction(
   record: EvalRecord,
   prediction: RoutePrediction | null | undefined,
@@ -994,6 +1103,9 @@ const TRAINING_ELIGIBILITY_CODES: readonly EligibilityErrorCode[] = [
   'missing_task_descriptor',
   'eval_fast_failed',
   'provisional_model_identity',
+  // HOK-3143: a stage with a provider substitution is attribution-ineligible,
+  // so the whole record is ineligible for training.
+  'provider_model_substitution',
 ];
 
 const BUDGET_EVAL_ELIGIBILITY_CODES: readonly EligibilityErrorCode[] = [
@@ -1003,6 +1115,9 @@ const BUDGET_EVAL_ELIGIBILITY_CODES: readonly EligibilityErrorCode[] = [
   'missing_routing',
   'eval_fast_failed',
   'provisional_model_identity',
+  // HOK-3143: the budget-eval export credits a certified model; drop records
+  // where the provider actually ran a different model.
+  'provider_model_substitution',
 ];
 
 function isNonEmptyString(value: unknown): value is string {
@@ -1466,7 +1581,7 @@ export function attachResourceSelections(record: EvalRecord): void {
           continue;
         }
 
-        if (resource.type === 'prompt' && resource.uri === 'tools/prompts/planning-phase.md') {
+        if (resource.type === 'prompt' && resource.uri === 'tools/prompts/planning-phase.md') { // install-paths: allow resource URI identifier
           manifestSelections.push({
             surface: 'planner',
             variant: 'baseline',
@@ -1475,7 +1590,7 @@ export function attachResourceSelections(record: EvalRecord): void {
             uri: resource.uri,
             fallbackApplied: false,
           });
-        } else if (resource.type === 'prompt' && resource.uri === 'tools/prompts/review-phase.md') {
+        } else if (resource.type === 'prompt' && resource.uri === 'tools/prompts/review-phase.md') { // install-paths: allow resource URI identifier
           manifestSelections.push({
             surface: 'reviewer',
             variant: 'baseline',
@@ -1634,6 +1749,8 @@ export function enrichEvalRecord(record: EvalRecord, metadata: EvalRecordMetadat
   attachRepoContextMetadata(record, metadata.repoContext || null);
   attachRoutingDecisions(record, metadata.routing);
   attachWorkflowCostMetadata(record, metadata.workflowCost || null);
+  attachExecutionEconomics(record, metadata.executionEconomics || null);
+  attachTaskScorerResult(record, metadata.taskScorerResult || null);
   attachRouteCalibration(record, computeRouteCalibration(record, record.routePrediction));
   attachTaskDescriptor(record, metadata.taskDescriptor || null);
   attachFallbackEvent(record, metadata.fallbackEvent || null);
@@ -1694,6 +1811,8 @@ export function enrichTrainingMetadata(
   attachRepoContextMetadata(record, metadata.repoContext || null);
   attachRoutingDecisions(record, metadata.routing);
   attachWorkflowCostMetadata(record, metadata.workflowCost || null);
+  attachExecutionEconomics(record, metadata.executionEconomics || null);
+  attachTaskScorerResult(record, metadata.taskScorerResult || null);
   attachRouteCalibration(record, computeRouteCalibration(record, record.routePrediction));
   attachTaskDescriptor(record, metadata.taskDescriptor || null);
   attachFallbackEvent(record, metadata.fallbackEvent || null);

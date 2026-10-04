@@ -1,0 +1,24 @@
+{
+  "sessionId": "fixture-session",
+  "decisionId": "fixture-decision",
+  "phase": "coding",
+  "events": [
+    { "id": "evt-1", "kind": "tool_call", "payload": { "name": "read_file", "args": { "path": "hello.ts" } }, "tool": "read_file" },
+    { "id": "evt-2", "kind": "tool_result", "payload": { "text": "export const HELLO = 'world';\n" }, "tool": "read_file" }
+  ],
+  "toolResults": [
+    { "callId": "evt-1", "tool": "read_file", "content": "export const HELLO = 'world';\n" }
+  ],
+  "workingFiles": [
+    { "path": "hello.ts", "content": "export const HELLO = 'world';\n" }
+  ],
+  "runtimeEnv": {
+    "whitelistEnv": { "WAVEMILL_MODE": "test" },
+    "network_access": false,
+    "modelId": "claude-opus-4-6"
+  },
+  "gitState": { "headSha": "0000000000000000000000000000000000000000", "dirty": false },
+  "entropy": { "mathRandomSeed": 42, "dateNowSeedMs": 1700000000000, "uuidSequence": ["fixture-uuid-1"] },
+  "toolMenu": { "toolNames": ["read_file", "write_file", "grep_files"], "chosenTool": "read_file" },
+  "taskLabels": []
+}
