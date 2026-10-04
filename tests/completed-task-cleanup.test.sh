@@ -380,7 +380,7 @@ EOF
           return 0
           ;;
         "rev-list --count")
-          if [[ "$TEST_CASE" == "preserved-local-work" || "$TEST_CASE" == "patch-equivalent-rebased" || "$TEST_CASE" == "closed-unmerged-retained" || "$TEST_CASE" == "closed-loser-abandoned" || "$TEST_CASE" == "aborted-pr-less-abandoned" || "$TEST_CASE" == "aborted-pr-less-archive-push-fails" || "$TEST_CASE" == "aborted-pr-less-dirty" ]]; then
+          if [[ "$TEST_CASE" == "preserved-local-work" || "$TEST_CASE" == "patch-equivalent-rebased" || "$TEST_CASE" == "closed-unmerged-retained" || "$TEST_CASE" == "closed-loser-abandoned" || "$TEST_CASE" == "aborted-pr-less-abandoned" || "$TEST_CASE" == "aborted-pr-less-archive-push-fails" || "$TEST_CASE" == "aborted-pr-less-dirty" || "$TEST_CASE" == "aborted-pr-less-no-abandon" ]]; then
             printf "1\n"
             return 0
           fi
