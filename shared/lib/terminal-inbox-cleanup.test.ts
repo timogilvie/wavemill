@@ -24,7 +24,7 @@ function deps(overrides: Partial<CleanupDeps> & { prs?: Record<string, string>; 
       if (key.includes('status --porcelain')) return '';
       if (key.startsWith('show-ref --verify')) return '';
       if (key.startsWith('rev-parse --verify task/')) return 'local-head\n';
-      if (key.startsWith('rev-parse --verify refs/remotes/origin/task/')) return 'local-head\n';
+      if (key.startsWith('rev-parse --verify refs/remotes/origin/task/')) throw new Error('remote branch missing');
       if (key.startsWith('rev-list --count')) return '1\n';
       if (key.startsWith('cherry ')) return overrides.cherry ?? '- abc\n';
       if (key.startsWith('merge-base --is-ancestor')) return '';
@@ -41,7 +41,7 @@ function state(task: Record<string, unknown>, sibling?: Record<string, unknown>)
       'HOK-TEST_c': {
         slug: 'test-task',
         branch: 'task/test-task',
-        worktree: '/tmp/test-task',
+        worktree: process.cwd(),
         status: 'aborted',
         phase: 'aborted',
         challenge: true,
@@ -110,7 +110,7 @@ test('PR-less aborted task with dirty worktree produces dirty_worktree refusal',
     deps({
       gh: () => { throw new Error('PR not found'); }, // gh fails for PR-less task
       git: (args) => {
-        if (args.includes('status --porcelain')) return ' M dirty-file.txt\n';
+        if (args.join(' ').includes('status --porcelain')) return ' M dirty-file.txt\n';
         if (args[0] === 'show-ref') return '';
         if (args[0] === 'rev-parse') return 'local-head';
         if (args[0] === 'rev-list') return '1';
