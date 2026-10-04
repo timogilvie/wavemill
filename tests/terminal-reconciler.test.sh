@@ -199,6 +199,58 @@ CHALLENGE_TASK=true CHALLENGE_SIBLING_PR=104 CHALLENGE_SIBLING_STATE=CLOSED wave
 check_eq "closed challenge updates Linear after sibling closes" "1" "$(wc -l < "$LINEAR_CALLS" | tr -d ' ')"
 check_eq "closed challenge records stable marker" "true" "$(jq -r '.tasks["HOK-2601_c"].terminalReconciliations["pr_closed_unmerged:103"].linearApplied' "$STATE_FILE")"
 
+# HOK-3004: open→merged sibling transition writes Linear exactly once, and the
+# linearApplied marker records the durable completion only after success.
+reset_case "HOK-3004_c" "closed-challenge-late-merge" "202"
+write_pr_state "202" "CLOSED"
+CHALLENGE_TASK=true CHALLENGE_SIBLING_PR=203 CHALLENGE_SIBLING_STATE=OPEN wavemill_reconcile_terminal "$SESSION" "HOK-3004_c" "pr_closed_unmerged" "202"
+check_eq "late-merge: linearApplied stays retryable while sibling open (HOK-3004)" "false" "$(jq -r '.tasks["HOK-3004_c"].terminalReconciliations["pr_closed_unmerged:202"].linearApplied' "$STATE_FILE")"
+late_merge_linear_count=0
+[[ -f "$LINEAR_CALLS" ]] && late_merge_linear_count="$(wc -l < "$LINEAR_CALLS" | tr -d ' ')"
+check_eq "late-merge: no Linear call before sibling merges" "0" "$late_merge_linear_count"
+CHALLENGE_TASK=true CHALLENGE_SIBLING_MERGED=true wavemill_reconcile_terminal "$SESSION" "HOK-3004_c" "pr_closed_unmerged" "202"
+check_eq "late-merge: single Linear Done call after sibling merges" "1" "$(wc -l < "$LINEAR_CALLS" | tr -d ' ')"
+check_eq "late-merge: linearApplied durably true after merge" "true" "$(jq -r '.tasks["HOK-3004_c"].terminalReconciliations["pr_closed_unmerged:202"].linearApplied' "$STATE_FILE")"
+# Repeat polls must be no-ops: marker already true, no additional Linear writes.
+CHALLENGE_TASK=true CHALLENGE_SIBLING_MERGED=true wavemill_reconcile_terminal "$SESSION" "HOK-3004_c" "pr_closed_unmerged" "202"
+CHALLENGE_TASK=true CHALLENGE_SIBLING_MERGED=true wavemill_reconcile_terminal "$SESSION" "HOK-3004_c" "pr_closed_unmerged" "202"
+check_eq "late-merge: repeat polls do not duplicate Linear Done" "1" "$(wc -l < "$LINEAR_CALLS" | tr -d ' ')"
+
+# HOK-3004: a failed linear_set_state leaves the marker retryable and no
+# durable "linearApplied=true" claim is made. The next successful call
+# converges to linearApplied=true with a single Linear write per success.
+reset_case "HOK-3004_f" "closed-challenge-linear-fail" "204"
+write_pr_state "204" "CLOSED"
+# Simulated transient failure: linear_set_state fails on the first invocation
+# then succeeds. Reconciler must leave linearApplied=false after the failure.
+_linear_fail_once_calls=0
+linear_set_state_fail_once() {
+  printf '%s|%s\n' "$1" "$2" >> "$LINEAR_CALLS"
+  _linear_fail_once_calls=$((_linear_fail_once_calls + 1))
+  if (( _linear_fail_once_calls == 1 )); then
+    return 42
+  fi
+  return 0
+}
+# Swap in failing stub (preserves the trailing-success behavior).
+unset -f linear_set_state
+linear_set_state() { linear_set_state_fail_once "$@"; }
+rc=0
+CHALLENGE_TASK=true CHALLENGE_SIBLING_MERGED=true wavemill_reconcile_terminal "$SESSION" "HOK-3004_f" "pr_closed_unmerged" "204" || rc=$?
+check_eq "linear-fail: reconciler surfaces the linear failure rc (HOK-3004)" "42" "$rc"
+check_eq "linear-fail: linearApplied stays retryable after failed write" "false" "$(jq -r '.tasks["HOK-3004_f"].terminalReconciliations["pr_closed_unmerged:204"].linearApplied' "$STATE_FILE")"
+# Retry: the next invocation succeeds and durably marks linearApplied=true.
+rc=0
+CHALLENGE_TASK=true CHALLENGE_SIBLING_MERGED=true wavemill_reconcile_terminal "$SESSION" "HOK-3004_f" "pr_closed_unmerged" "204" || rc=$?
+check_eq "linear-fail: retry succeeds (rc=0)" "0" "$rc"
+check_eq "linear-fail: retry marks linearApplied=true durably" "true" "$(jq -r '.tasks["HOK-3004_f"].terminalReconciliations["pr_closed_unmerged:204"].linearApplied' "$STATE_FILE")"
+check_eq "linear-fail: retry performed exactly one additional Linear call" "2" "$(wc -l < "$LINEAR_CALLS" | tr -d ' ')"
+# Restore the default stub for the remainder of the test suite.
+unset -f linear_set_state
+linear_set_state() {
+  printf '%s|%s\n' "$1" "$2" >> "$LINEAR_CALLS"
+}
+
 reset_case "HOK-2602" "supersede-hook" ""
 hook_file="/tmp/wavemill-${SESSION}-HOK-2602.hook"
 jq -cn '{state:"error",event:"native-error",detail:"transient native failure",agent:"native",timestamp:1}' > "$hook_file"

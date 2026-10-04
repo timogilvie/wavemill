@@ -170,6 +170,9 @@ for f in \
   "$REPO_DIR"/tests/fixtures/lifecycle/parent_branch_missing_fails_clearly.sh \
   "$REPO_DIR"/tests/fixtures/lifecycle/closed_primary_pr_cleanup.sh \
   "$REPO_DIR"/tests/fixtures/lifecycle/closed_primary_sibling_merged_marks_done.sh \
+  "$REPO_DIR"/tests/fixtures/lifecycle/closed_challenger_sibling_merged_single_status.sh \
+  "$REPO_DIR"/tests/fixtures/lifecycle/closed_primary_sibling_merged_single_status.sh \
+  "$REPO_DIR"/tests/fixtures/lifecycle/closed_sibling_merged_restart_silence.sh \
   "$REPO_DIR"/tests/fixtures/lifecycle/coding_agent_exit_interrupted.sh \
   "$REPO_DIR"/tests/incident-fixtures-terminal-panes.test.sh \
   "$REPO_DIR"/tests/incident-fixtures-safety-controls.test.sh \
@@ -1005,15 +1008,28 @@ else
     fail "closed PR path is missing the shared pane-resource policy dispatch"
   fi
 
+  # HOK-3004: the Done status line must be bound to the durable false→true
+  # transition of the pr_closed_unmerged marker's linearApplied field. The log
+  # emission must happen AFTER wavemill_reconcile_terminal runs so retained
+  # cleanup polls and monitor restarts stay silent at status level.
   if grep -Fq 'local linear_status="Backlog"' <<< "$CLOSED_BLOCK" \
     && grep -Fq 'if is_challenge_task "$ISSUE"; then' <<< "$CLOSED_BLOCK" \
     && grep -Fq 'check_challenge_sibling_merged "$ISSUE"' <<< "$CLOSED_BLOCK" \
     && grep -Fq 'linear_status="Done"' <<< "$CLOSED_BLOCK" \
+    && grep -Fq 'sibling_merged="true"' <<< "$CLOSED_BLOCK" \
+    && grep -Fq 'closed_pr_linear_before' <<< "$CLOSED_BLOCK" \
+    && grep -Fq 'closed_pr_linear_after' <<< "$CLOSED_BLOCK" \
+    && grep -Fq 'linearApplied' <<< "$CLOSED_BLOCK" \
     && grep -Fq 'Challenge sibling merged → marking Linear as Done' <<< "$CLOSED_BLOCK" \
-    && grep -Fq 'linear_set_state "$(get_linear_issue_id "$ISSUE")" "$linear_status"' <<< "$CLOSED_BLOCK"; then
-    pass "closed challenge PRs mark Linear Done when the sibling PR was merged"
+    && grep -Fq 'linear_set_state "$(get_linear_issue_id "$ISSUE")" "$linear_status"' <<< "$CLOSED_BLOCK" \
+    && [[ "$(awk '
+        /wavemill_reconcile_terminal "\$SESSION" "\$ISSUE" "pr_closed_unmerged"/ { reconcile=NR }
+        /Challenge sibling merged → marking Linear as Done/ { done_log=NR }
+        END { print (reconcile && done_log && reconcile < done_log) ? "ok" : "wrong-order" }
+      ' <<< "$CLOSED_BLOCK")" == "ok" ]]; then
+    pass "closed challenge PRs mark Linear Done on durable linearApplied transition (HOK-3004)"
   else
-    fail "closed challenge PRs do not promote Linear to Done when sibling merged"
+    fail "closed challenge PRs do not bind the Done log to the durable linearApplied transition"
   fi
 
   if grep -Fq 'linear_status=""' <<< "$CLOSED_BLOCK" \

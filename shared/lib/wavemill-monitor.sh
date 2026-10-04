@@ -16068,14 +16068,22 @@ monitor_issue_state() {
       monitor_deregister_terminal_task "$ISSUE"
       return 0
     fi
-    # Deduplicated transition logging (HOK-2972): the first observation is a
-    # status event; once the durable terminal transition is recorded, repeat
-    # polls (cleanup retries, restarts) log at debug instead of warning.
+    # Deduplicated transition logging (HOK-2972, HOK-3004): the first
+    # observation is a status event; once the durable terminal transition is
+    # recorded, repeat polls (cleanup retries, restarts) log at debug instead
+    # of warning. The Linear-Done completion log is bound to the durable
+    # false→true transition of linearApplied so retained-cleanup polls and
+    # monitor restarts emit nothing at status level for an already-recorded
+    # Linear completion.
     local closed_pr_recorded="false" closed_pr_key=""
+    local closed_pr_linear_before="false"
     if declare -F wavemill_terminal_marker_key >/dev/null 2>&1 && declare -F wavemill_terminal_marker_field >/dev/null 2>&1; then
       closed_pr_key="$(wavemill_terminal_marker_key "pr_closed_unmerged" "$PR" 2>/dev/null || true)"
       if [[ -n "$closed_pr_key" && "$(wavemill_terminal_marker_field "$ISSUE" "$closed_pr_key" "stateApplied")" == "true" ]]; then
         closed_pr_recorded="true"
+      fi
+      if [[ -n "$closed_pr_key" && "$(wavemill_terminal_marker_field "$ISSUE" "$closed_pr_key" "linearApplied")" == "true" ]]; then
+        closed_pr_linear_before="true"
       fi
     fi
     if [[ "$closed_pr_recorded" == "true" ]]; then
@@ -16083,7 +16091,11 @@ monitor_issue_state() {
     else
       log "status" "$ISSUE → PR #$PR closed without merge"
     fi
+    # Sibling outcome calculation is intentionally independent of status
+    # logging so a retained-cleanup repoll never re-announces an already
+    # durable Linear transition.
     local linear_status="Backlog"
+    local sibling_merged="false"
     if is_challenge_task "$ISSUE"; then
       local sibling_pr sibling_state
       sibling_pr=$(get_challenge_sibling_pr "$ISSUE")
@@ -16092,7 +16104,7 @@ monitor_issue_state() {
       # Challenge tasks should only move once the sibling outcome is definitive.
       if check_challenge_sibling_merged "$ISSUE"; then
         linear_status="Done"
-        log "status" "Challenge sibling merged → marking Linear as Done"
+        sibling_merged="true"
       fi
 
       if [[ "$linear_status" != "Done" && -n "$sibling_pr" ]]; then
@@ -16122,7 +16134,32 @@ monitor_issue_state() {
       # merges, Backlog only when both arms are closed, deferred while the
       # sibling is still open) so the shared issue never bounces to Backlog.
       wavemill_reconcile_terminal "$SESSION" "$ISSUE" "pr_closed_unmerged" "$PR" || true
+      # HOK-3004: emit "Challenge sibling merged → marking Linear as Done" only
+      # when THIS invocation durably moved linearApplied from false to true,
+      # using the reconciler's persisted marker as the sole source of truth.
+      # Retained-cleanup repolls and monitor restarts stay silent at status
+      # level because linearApplied is already true. A reconciliation that
+      # failed to persist (linear_set_state error, missing marker helpers)
+      # falls through to a debug log and leaves the retryable marker intact.
+      if [[ "$sibling_merged" == "true" ]]; then
+        local closed_pr_linear_after="false"
+        if [[ -n "$closed_pr_key" ]] \
+          && declare -F wavemill_terminal_marker_field >/dev/null 2>&1 \
+          && [[ "$(wavemill_terminal_marker_field "$ISSUE" "$closed_pr_key" "linearApplied")" == "true" ]]; then
+          closed_pr_linear_after="true"
+        fi
+        if [[ "$closed_pr_linear_before" != "true" && "$closed_pr_linear_after" == "true" ]]; then
+          log "status" "Challenge sibling merged → marking Linear as Done"
+        elif [[ "$closed_pr_linear_before" != "true" && "$closed_pr_linear_after" != "true" ]]; then
+          log "debug" "  ↳ Challenge sibling merged → Linear Done pending durable reconciliation"
+        else
+          log "debug" "  ↳ Challenge sibling merged → Linear Done already recorded"
+        fi
+      fi
     elif [[ -n "$linear_status" ]] && should_update_linear_state "$ISSUE"; then
+      # No reconciler available: perform the direct update but do not claim a
+      # durable transition at status level - there is no persisted field to
+      # verify it. The underlying linear_set_state retry behavior is unchanged.
       linear_set_state "$(get_linear_issue_id "$ISSUE")" "$linear_status"
     fi
     # HOK-2952: one ownership policy for every closed-PR role. The old
