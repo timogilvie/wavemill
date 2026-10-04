@@ -628,7 +628,6 @@ wavemill_terminal_linear_status() {
 # is safe to call from every scope (monitor, mill, startup preflight).
 wavemill_reconcile_terminal_linear() {
   local issue="$1" reason="$2" status=""
-  linear_write_target "$issue" >/dev/null 2>&1 || return 0
   status="$(wavemill_terminal_linear_status "$issue" "$reason" 2>/dev/null || true)"
   [[ -n "$status" ]] || return 3
   linear_set_state "$issue" "$status"
