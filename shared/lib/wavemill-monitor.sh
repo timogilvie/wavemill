@@ -14708,7 +14708,17 @@ cleanup_aborted_challenge_arm() {
   else
     CLEANUP_EPISODE_CURRENT_FINGERPRINT=""
   fi
-  safe_remove_task_worktree_and_branch "$wt_dir" "$task_branch" "$(effective_task_base_branch "$issue" 2>/dev/null || printf '%s\n' "${BASE_BRANCH:-main}")" "cleanup_aborted_challenge_arm" "$issue" "" || cleanup_rc=$?
+  # HOK-3089: a PR-less aborted arm whose sibling PR merged may be archived
+  # (refs/archive/wavemill/<issue>) and reaped, matching the operator's
+  # `wavemill cleanup <issue> --abandon`. The authority is scoped to this one
+  # call; without a verified merged sibling the unpublished head is retained.
+  local abandon_issue=""
+  if declare -F check_challenge_sibling_merged >/dev/null 2>&1 \
+    && check_challenge_sibling_merged "$issue"; then
+    abandon_issue="$issue"
+  fi
+  WAVEMILL_CLEANUP_ABANDON_ISSUE="$abandon_issue" \
+    safe_remove_task_worktree_and_branch "$wt_dir" "$task_branch" "$(effective_task_base_branch "$issue" 2>/dev/null || printf '%s\n' "${BASE_BRANCH:-main}")" "cleanup_aborted_challenge_arm" "$issue" "" || cleanup_rc=$?
   cleanup_outcome="${WAVEMILL_CLEANUP_OUTCOME:-}"
   CLEANUP_EPISODE_CURRENT_FINGERPRINT=""
   if [[ "$cleanup_rc" -eq 10 ]] || cleanup_outcome_is_retain "$cleanup_outcome"; then

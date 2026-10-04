@@ -933,6 +933,8 @@ _wavemill_write_preserved_branch_incident() {
 #   safe_patch_equivalent_pr merged PR/base contains the same patch IDs
 #   safe_content_equivalent_pr merging the branch into the delivered base leaves its tree unchanged
 #   safe_abandoned_closed_loser closed losing challenge arm explicitly abandoned
+#   safe_abandoned_pr_less_arm PR-less terminal arm explicitly abandoned after
+#                        its unpublished head was archived to refs/archive/wavemill/<issue>
 #   safe_noop            nothing deletable (protected/non-task/absent branch)
 #   shadow_would_delete  deletion authority exists, but branch deletion mode is shadow
 #   retain_dirty         worktree dirty or unreadable
@@ -943,7 +945,7 @@ _wavemill_write_preserved_branch_incident() {
 #   operation_failed     deletion was authorized but removal failed
 cleanup_outcome_is_safe() {
   case "${1:-${WAVEMILL_CLEANUP_OUTCOME:-}}" in
-    safe_ancestor|safe_exact_remote|safe_terminal_pr_head|safe_patch_equivalent_pr|safe_content_equivalent_pr|safe_abandoned_closed_loser|safe_noop|shadow_would_delete) return 0 ;;
+    safe_ancestor|safe_exact_remote|safe_terminal_pr_head|safe_patch_equivalent_pr|safe_content_equivalent_pr|safe_abandoned_closed_loser|safe_abandoned_pr_less_arm|safe_noop|shadow_would_delete) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -972,10 +974,12 @@ _wavemill_cleanup_operator_guidance() {
     retain_unpublished)
       if [[ "$detail" == "changed_after_pr_head" ]]; then
         printf 'Local head of %s moved past the recorded PR head; inspect the extra commits (git log %s) and open a follow-up PR if they matter before deleting.' "$branch" "$branch"
+      elif [[ "$detail" == archive_push_failed:* ]]; then
+        printf 'Archiving the head of PR-less arm %s to refs/archive/wavemill/<issue> failed (%s); retry once origin is reachable, or push the branch manually before abandoning.' "$branch" "$detail"
       elif [[ "$detail" == "unique_local_patch" ]]; then
         printf 'Local patches on %s are not patch-equivalent to the merged PR/base; inspect or publish the unique commits before retrying cleanup.' "$branch"
       else
-        printf 'Branch %s has commits not proven on the base, the remote, or a merged PR; push the branch or explicitly abandon it. Do not recreate deleted remote branches automatically.' "$branch"
+        printf 'Branch %s has commits not proven on the base, the remote, or a merged PR; push the branch or explicitly abandon it (wavemill cleanup <issue> --abandon --execute archives the head first). Do not recreate deleted remote branches automatically.' "$branch"
       fi
       ;;
     retain_closed_unmerged)
@@ -1883,6 +1887,36 @@ safe_remove_task_worktree_and_branch() {
       else
         classification="retain_unverifiable"
         verification_reason="unclassified"
+      fi
+    fi
+
+    # HOK-3089: archive-and-abandon for a PR-less terminal arm whose local
+    # head was never published. Authority comes only from an explicit
+    # WAVEMILL_CLEANUP_ABANDON_ISSUE (operator --abandon, or the monitor after
+    # the primary sibling merged). The dirty gate above has already passed and
+    # the TOCTOU re-check below still runs; the archive ref is pushed first so
+    # deletion never loses the only copy of the head.
+    if [[ -n "$issue" && "$abandon_issue" == "$issue" && -z "$pr" \
+      && "$orphan_cleanup_candidate" != "true" && -n "$local_head_sha" \
+      && "$remote_contains_head" != "true" \
+      && "$classification" == "retain_unpublished" \
+      && "$verification_reason" == "remote_missing_local_head" ]]; then
+      local archive_ref="refs/archive/wavemill/${issue}"
+      local archive_push_rc=0
+      if [[ "${WAVEMILL_CLASSIFY_ONLY:-0}" == "1" ]]; then
+        classification="safe_abandoned_pr_less_arm"
+        cleanup_authority="operator abandon of PR-less arm ${issue}; head ${local_head_sha} would be archived to ${archive_ref}"
+        verification_reason=""
+      else
+        wavemill_git_remote_with_timeout "$remote_timeout" -C "$REPO_DIR" push origin \
+          "${local_head_sha}:${archive_ref}" >/dev/null 2>&1 || archive_push_rc=$?
+        if (( archive_push_rc == 0 )); then
+          classification="safe_abandoned_pr_less_arm"
+          cleanup_authority="operator abandoned PR-less arm ${issue}; head ${local_head_sha} archived to ${archive_ref}"
+          verification_reason=""
+        else
+          verification_reason="archive_push_failed:${archive_push_rc}"
+        fi
       fi
     fi
 
