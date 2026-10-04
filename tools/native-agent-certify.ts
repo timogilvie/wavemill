@@ -30,6 +30,7 @@ import {
   type NativeCertificationArtifact,
   type ResolvedCertificationTarget,
 } from '../shared/lib/native-agent/certification/schema.ts';
+import { carryForwardLegacyCatalogHashCanary } from '../shared/lib/native-agent/certification/catalog-hash-migration.ts';
 import { runLiveCodingCanary } from '../shared/lib/native-agent/certification/live-coding-canary.ts';
 import { loadGlobalCertification } from '../shared/lib/native-agent/certification/loader.ts';
 import { isRevisionAwareArtifact } from '../shared/lib/native-agent/certification/schema.ts';
@@ -393,8 +394,9 @@ function summarizeCanary(canary: LiveCodingCanaryResult, carriedForward: boolean
 /**
  * Load the previously published artifact's canary when — and only when — it
  * still grants coding eligibility for the current subject and suite (fresh,
- * live, identity-matching pass). Anything else returns undefined so stale or
- * mismatched evidence is dropped rather than carried forward.
+ * live, identity-matching pass). The one exception is the HOK-3159 catalog-hash
+ * scheme migration, where only the hash scheme moved. Anything else returns
+ * undefined so stale or mismatched evidence is dropped rather than carried forward.
  */
 function loadPreviousEligibleCanary(input: {
   loadPreviousArtifactFn: CertifyOptions['loadPreviousArtifactFn'];
@@ -426,7 +428,19 @@ function loadPreviousEligibleCanary(input: {
     return undefined;
   }
   const eligibility = evaluateLiveCodingCanaryEligibility(previous, input.suiteVersion, input.now(), input.subject);
-  return eligibility.eligible ? eligibility.canary : undefined;
+  if (eligibility.eligible) return eligibility.canary;
+  // HOK-3159: a canary issued under the whole-file catalog hash survives the
+  // switch to per-model hashes when the model's own row is unchanged. It is
+  // re-stamped with the new hash and records `canaryCarriedForwardFrom`.
+  if (eligibility.reason === 'identity-mismatch') {
+    return carryForwardLegacyCatalogHashCanary({
+      previous,
+      subject: input.subject,
+      suiteVersion: input.suiteVersion,
+      now: input.now(),
+    });
+  }
+  return undefined;
 }
 
 function defaultLoadPreviousArtifact(

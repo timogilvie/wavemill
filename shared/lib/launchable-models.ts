@@ -8,8 +8,10 @@ import {
   type AgentResolution,
   type AgentResolutionPhase,
 } from './model-agent-resolution.ts';
+import { isDisabledModel } from './disabled-models.ts';
 import {
   DEFAULT_MODEL_REGISTRY,
+  explainModelSupportExclusion,
   getModel,
   isModelEnabled,
   type AgentType,
@@ -235,7 +237,9 @@ export interface CoderCanaryGap {
  *
  * Candidates: the registry's coder stage pool ∪ launch-priority catalog
  * entries eligible for coding, restricted to native models whose provider is
- * configured for the coder stage.
+ * configured for the coder stage. Models routing would never pick anyway —
+ * `DISABLED_MODEL_IDS` and registry support exclusions such as a blocked or
+ * retired lifecycle (HOK-3159) — are left out so the advisory is not noise.
  */
 export function listCoderCanaryGaps(options: BuildLaunchabilityMatrixOptions = {}): CoderCanaryGap[] {
   const repoDir = resolve(options.repoDir ?? process.cwd());
@@ -248,7 +252,10 @@ export function listCoderCanaryGaps(options: BuildLaunchabilityMatrixOptions = {
       .map((entry) => entry.wavemillAlias),
   ])].filter((modelId) => {
     const capabilities = getModel(registry, modelId);
-    return Boolean(capabilities?.nativeCapability?.nativeProvider) && isModelEnabled(capabilities);
+    return Boolean(capabilities?.nativeCapability?.nativeProvider)
+      && isModelEnabled(capabilities)
+      && !isDisabledModel(modelId)
+      && explainModelSupportExclusion(modelId, 'coding', registry) === undefined;
   });
   const providerAvailable = new Set(filterOpenRouterModels(candidates, repoDir, 'coder').models);
 

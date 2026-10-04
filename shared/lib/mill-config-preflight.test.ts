@@ -4,7 +4,14 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { clearConfigCache } from './config.ts';
-import { formatCanaryCohortReport, formatMillConfigPreflightReport, runMillConfigPreflight } from './mill-config-preflight.ts';
+import {
+  formatCanaryCohortReport,
+  formatCertificationRemediationReport,
+  formatMillConfigPreflightReport,
+  runMillConfigPreflight,
+  type MillConfigPreflightReport,
+} from './mill-config-preflight.ts';
+import type { IneligibleModel, SuiteCoverageResult } from './native-agent/certification/coverage.ts';
 import { REMOVED_MODEL_SETTING_PATHS } from './model-settings-migrator.ts';
 import { buildGlobalCertificationPath } from './native-agent/certification/loader.ts';
 import { resolveCertificationSubject } from './native-agent/certification/identity.ts';
@@ -282,6 +289,14 @@ test('runMillConfigPreflight auto-remediates identity drift before blocking star
       assert.equal(result.report.certificationCoverage?.status, 'ok');
       assert.equal(result.report.certificationRemediation?.mode, 'republish-matrix');
       assert.equal(result.report.certificationRemediation?.attempted, true);
+      // HOK-3159: the remediation report names why the model re-identified.
+      assert.deepEqual(result.report.certificationRemediation?.reidentified, [
+        { registryKey: 'gpt-4o', reason: 'identity-reidentified', cause: 'launch-priority-catalog' },
+      ]);
+      assert.match(
+        formatCertificationRemediationReport(result.report),
+        /1 model\(s\) re-identified before remediation:\n {2}Affected: gpt-4o \(launch-priority fixture row changed\)/,
+      );
     } finally {
       cleanup(repoDir);
     }
@@ -543,4 +558,65 @@ test('runMillConfigPreflight runs one bounded canary-cohort refresh and surfaces
       cleanup(repoDir);
     }
   });
+});
+
+// ─── HOK-3159: blast-radius grouping ────────────────────────────────────────
+
+function driftReport(ineligibleModels: IneligibleModel[]): MillConfigPreflightReport {
+  const coverage: SuiteCoverageResult = {
+    requiredSuiteVersion: 'v3',
+    nativeModelCount: ineligibleModels.length,
+    artifactCountForRequiredSuite: ineligibleModels.length,
+    artifactCountByOtherSuite: {},
+    status: 'identity-drift',
+    remediationCommand: 'wavemill native-agent certify --all --phase workflow',
+    root: '/tmp/certs',
+    ineligibleModels,
+    eligibleModelCount: 0,
+    identityDriftCount: ineligibleModels.length,
+    staleCount: 0,
+    staleModels: [],
+    renewalDueCount: 0,
+    modelsInRenewalWindow: [],
+    orphanArtifacts: [],
+  };
+  return {
+    repoDir: '/repo',
+    removedFields: [],
+    validationError: null,
+    migrationCommand: 'wavemill config migrate-model-settings',
+    certificationCoverage: coverage,
+  };
+}
+
+test('formatMillConfigPreflightReport groups multi-model identity drift by cause', () => {
+  const fixtureModels = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'].map((key): IneligibleModel => ({
+    registryKey: `model-${key}`,
+    reason: 'identity-reidentified',
+    cause: 'launch-priority-catalog',
+  }));
+  const formatted = formatMillConfigPreflightReport(driftReport([
+    ...fixtureModels,
+    { registryKey: 'gpt-4o', reason: 'identity-reidentified', cause: 'registry-identity' },
+    { registryKey: 'ox-alpha', reason: 'identity-invalidated', cause: 'identity-invalidated' },
+  ]));
+
+  assert.match(formatted, /Native certification identity drift/);
+  assert.match(formatted, /\n {2}Causes:\n/);
+  assert.match(
+    formatted,
+    / {4}- 8 model\(s\): launch-priority fixture row changed — model-a, model-b, model-c, model-d, model-e, model-f \(\+2 more\)/,
+  );
+  assert.match(formatted, / {4}- 1 model\(s\): registry identity changed — gpt-4o/);
+  assert.match(formatted, / {4}- 1 model\(s\): identity invalidated .* — ox-alpha/);
+  assert.doesNotMatch(formatted, /Affected:/);
+  assert.doesNotMatch(formatted, /invalidates every stored artifact/, 'the whole-file warning no longer applies');
+});
+
+test('formatMillConfigPreflightReport keeps a single Affected line for one drifted model', () => {
+  const formatted = formatMillConfigPreflightReport(driftReport([
+    { registryKey: 'gemini-2.5-pro', reason: 'identity-reidentified', cause: 'launch-priority-catalog' },
+  ]));
+  assert.match(formatted, /\n {2}Affected: gemini-2\.5-pro \(launch-priority fixture row changed\)\n/);
+  assert.doesNotMatch(formatted, /Causes:/);
 });
