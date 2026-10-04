@@ -1,5 +1,5 @@
 import {
-  hashLaunchPriorityFixture,
+  hashLaunchPriorityModelRow,
   resolveOpenRouterModelIdentity,
 } from '../../openrouter-catalog.ts';
 import {
@@ -130,7 +130,9 @@ export function resolveCertificationSubject(input: {
   }
 
   const catalogHash = identity.verification?.catalogHash
-    ?? (nativeProvider === 'openrouter' ? hashLaunchPriorityFixture(input.launchPriorityFixturePath) : 'registry');
+    ?? (nativeProvider === 'openrouter'
+      ? resolveOpenRouterCatalogHash(registryKey, providerNativeId, input.launchPriorityFixturePath)
+      : 'registry');
   const storageIdentity = resolveCertificationStorageIdentity(nativeProvider, providerNativeId);
 
   return {
@@ -146,6 +148,31 @@ export function resolveCertificationSubject(input: {
       catalogHash,
     },
   };
+}
+
+/**
+ * The OpenRouter subject's `catalogHash` is scoped to the model's own
+ * launch-priority row (HOK-3159), so adding, retiring or editing an unrelated
+ * row no longer re-identifies — and strips the live canary from — every
+ * OpenRouter model. Looks the row up by wire id first, then by registry key.
+ *
+ * Fails closed: a native OpenRouter model with no launch-priority row has no
+ * catalog corroboration for its identity.
+ */
+function resolveOpenRouterCatalogHash(
+  registryKey: string,
+  providerNativeId: string,
+  fixturePath: string | undefined,
+): string {
+  const hash = hashLaunchPriorityModelRow(providerNativeId, fixturePath)
+    ?? hashLaunchPriorityModelRow(registryKey, fixturePath);
+  if (!hash) {
+    throw new Error(
+      `No launch-priority catalog row for OpenRouter model "${registryKey}" (${providerNativeId}); `
+      + 'add it to shared/fixtures/model_30_launch_priority_models.v1.json before certifying.',
+    );
+  }
+  return hash;
 }
 
 export function subjectsEqual(a: CertificationSubject, b: CertificationSubject): boolean {

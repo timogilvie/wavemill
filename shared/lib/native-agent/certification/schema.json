@@ -270,6 +270,10 @@
           "type": "string",
           "minLength": 1
         },
+        "canaryCarriedForwardFrom": {
+          "type": "string",
+          "minLength": 1
+        },
         "suiteVersion": {
           "type": "string",
           "minLength": 1

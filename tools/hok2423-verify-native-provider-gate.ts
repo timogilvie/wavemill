@@ -78,7 +78,7 @@ const FIXTURE_CASES: readonly FixtureCase[] = [
   {
     caseId: 'openrouter-patch-ready',
     provider: 'openrouter',
-    modelId: 'openrouter-test-model',
+    modelId: 'qwen-3-coder',
     artifact: {
       phase: 'patch',
     },
@@ -99,7 +99,7 @@ const FIXTURE_CASES: readonly FixtureCase[] = [
   {
     caseId: 'wrong-suite-artifact',
     provider: 'openrouter',
-    modelId: 'wrong-suite-model',
+    modelId: 'kimi-k2',
     artifact: {
       suiteVersion: 'v0',
     },
