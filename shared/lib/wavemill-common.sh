@@ -943,7 +943,7 @@ _wavemill_write_preserved_branch_incident() {
 #   operation_failed     deletion was authorized but removal failed
 cleanup_outcome_is_safe() {
   case "${1:-${WAVEMILL_CLEANUP_OUTCOME:-}}" in
-    safe_ancestor|safe_exact_remote|safe_terminal_pr_head|safe_patch_equivalent_pr|safe_content_equivalent_pr|safe_abandoned_closed_loser|safe_noop|shadow_would_delete) return 0 ;;
+    safe_ancestor|safe_exact_remote|safe_terminal_pr_head|safe_patch_equivalent_pr|safe_content_equivalent_pr|safe_abandoned_closed_loser|safe_abandoned_pr_less_arm|safe_noop|shadow_would_delete) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -974,6 +974,8 @@ _wavemill_cleanup_operator_guidance() {
         printf 'Local head of %s moved past the recorded PR head; inspect the extra commits (git log %s) and open a follow-up PR if they matter before deleting.' "$branch" "$branch"
       elif [[ "$detail" == "unique_local_patch" ]]; then
         printf 'Local patches on %s are not patch-equivalent to the merged PR/base; inspect or publish the unique commits before retrying cleanup.' "$branch"
+      elif [[ "$detail" == "archive_push_failed:"* ]]; then
+        printf 'Branch %s has commits not proven on the base, the remote, or a merged PR; archival to refs/archive/wavemill/%s failed. Inspect the archival failure and retry.' "$branch" "$issue"
       else
         printf 'Branch %s has commits not proven on the base, the remote, or a merged PR; push the branch or explicitly abandon it. Do not recreate deleted remote branches automatically.' "$branch"
       fi
@@ -1893,6 +1895,35 @@ safe_remove_task_worktree_and_branch() {
         safe_ancestor|safe_terminal_pr_head|safe_patch_equivalent_pr|safe_content_equivalent_pr) ;;
         retain_*) ;;
         *) classification="retain_unverifiable"; verification_reason="orphan_delivery_unverified" ;;
+      esac
+    fi
+
+    # Archive-and-abandon recovery for PR-less terminal arms with unpushed work.
+    # Trigger: operator or monitor explicitly set WAVEMILL_CLEANUP_ABANDON_ISSUE
+    # for this issue AND the task has no PR AND classification is a retain-for-
+    # unpublished-work variant. Dirty-worktree is already handled above.
+    if [[ "$abandon_issue" == "$issue" && -z "$pr" && "$local_branch_exists" == "true" \
+          && -n "$local_head_sha" && "$remote_contains_head" != "true" ]]; then
+      case "$classification" in
+        retain_unpublished|retain_unverifiable)
+          case "$verification_reason" in
+            remote_missing_local_head|unique_local_patch|pr_cleanup_unclassified|unclassified)
+              local archive_ref="refs/archive/wavemill/${issue}"
+              local push_rc=0
+              wavemill_git_remote_with_timeout "$remote_timeout" -C "$REPO_DIR" \
+                push origin "${local_head_sha}:${archive_ref}" >/dev/null 2>&1 || push_rc=$?
+              if (( push_rc == 0 )); then
+                classification="safe_abandoned_pr_less_arm"
+                cleanup_authority="operator abandoned PR-less arm ${issue}; head ${local_head_sha} archived to ${archive_ref}"
+                verification_reason=""
+              else
+                # Fail closed: keep retain classification, surface a greppable reason.
+                verification_reason="archive_push_failed:${push_rc}"
+                # classification already a retain variant; no change.
+              fi
+              ;;
+          esac
+          ;;
       esac
     fi
 

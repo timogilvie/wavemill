@@ -76,6 +76,7 @@ export interface GitEvidence {
 export type TerminalInboxStatus =
   | 'would-reap'
   | 'would-abandon-loser'
+  | 'would-abandon-aborted'
   | 'refused'
   | 'already-reaped'
   | 'not-terminal'
@@ -559,7 +560,29 @@ export function decideTerminalTask(
     decision.refusalReason = git.worktreeDirty === 'unknown' ? 'worktree_status_unreadable' : 'dirty_worktree';
     return decision;
   }
+  // HOK-3089: Handle PR-less aborted tasks that can be abandoned
+  if (allowAbandon && !prNumber && (outcome === 'aborted' || outcome === 'error') &&
+      git.worktreeDirty === false && git.localBranchExists &&
+      (git.commitsAhead ?? 0) > 0 && !git.remoteContainsHead) {
+    decision.status = 'would-abandon-aborted';
+    decision.refusalReason = '';
+    decision.intendedActions = [
+      'archive-unpublished-head',
+      'archive-artifacts',
+      'release-pane',
+      'write-tombstone',
+      'remove-local-worktree',
+      'remove-local-branch',
+      'remove-active-task-row',
+    ];
+    return decision;
+  }
   if (!prNumber || pr.state === 'UNKNOWN') {
+    // Provide more specific refusal reason for aborted PR-less tasks when not in abandon mode
+    if (!allowAbandon && (outcome === 'aborted' || outcome === 'error') && !prNumber) {
+      decision.refusalReason = 'aborted_pr_less_requires_abandon';
+      return decision;
+    }
     decision.refusalReason = 'pr_state_unverifiable';
     return decision;
   }
@@ -636,7 +659,7 @@ export async function cleanupTerminalInbox(options: CleanupOptions): Promise<Ter
     if (options.execute || options.out) {
       writeDecisionArtifact(repoDir, decision, now, options.out && issues.length === 1 ? options.out : undefined);
     }
-    if (options.execute && (decision.status === 'would-reap' || decision.status === 'would-abandon-loser')) {
+    if (options.execute && (decision.status === 'would-reap' || decision.status === 'would-abandon-loser' || decision.status === 'would-abandon-aborted')) {
       const task = state.tasks?.[issue];
       if (!task) throw new Error(`task ${issue} disappeared before execution`);
       const tombstone = buildTerminalTaskTombstone(decision, task, 'cleanup-terminal-inbox', options.inbox ? 'cleanup inbox --execute' : `cleanup ${issue} --execute`, now);
@@ -659,7 +682,7 @@ export async function cleanupTerminalInbox(options: CleanupOptions): Promise<Ter
 export function formatTerminalInboxDecisions(decisions: TerminalInboxDecision[], execute: boolean): string {
   const lines = ['action\tissue\tpr\tbranch\treason'];
   for (const decision of decisions) {
-    const action = execute && (decision.status === 'would-reap' || decision.status === 'would-abandon-loser') ? 'execute' : decision.status;
+    const action = execute && (decision.status === 'would-reap' || decision.status === 'would-abandon-loser' || decision.status === 'would-abandon-aborted') ? 'execute' : decision.status;
     lines.push([
       action,
       decision.issue,

@@ -253,11 +253,16 @@ run_cleanup_case() {
     printf "%s\n" "{\"cleanup\":{\"branchDeletion\":{\"enabled\":true,\"mode\":\"enforce\"}}}" > "$REPO_DIR/.wavemill-config.json"
 
     state_pr_json=",\"pr\":4242"
-    if [[ "$TEST_CASE" == "no-pr" ]]; then
+    if [[ "$TEST_CASE" == "no-pr" || "$TEST_CASE" == "aborted-pr-less-abandoned" || "$TEST_CASE" == "aborted-pr-less-archive-push-fails" || "$TEST_CASE" == "aborted-pr-less-dirty" || "$TEST_CASE" == "aborted-pr-less-no-abandon" ]]; then
       state_pr_json=""
     fi
+    # Set workflow outcome based on test case
+    workflow_outcome="merged"
+    if [[ "$TEST_CASE" == "aborted-pr-less-abandoned" || "$TEST_CASE" == "aborted-pr-less-archive-push-fails" || "$TEST_CASE" == "aborted-pr-less-dirty" || "$TEST_CASE" == "aborted-pr-less-no-abandon" ]]; then
+      workflow_outcome="aborted"
+    fi
     cat > "$STATE_FILE" <<EOF
-{"tasks":{"$ISSUE":{"windowId":"@31"$state_pr_json,"lifecycle":{"schemaVersion":1,"workflowOutcome":"merged","resourceDisposition":"reaping","launchContract":{"remoteBranchDeletionPolicy":{"allowed":true,"mode":"merged-pr-task-branch","source":"test"}}}}}}
+{"tasks":{"$ISSUE":{"windowId":"@31"$state_pr_json,"status":"aborted","phase":"aborted","lifecycle":{"schemaVersion":1,"workflowOutcome":"$workflow_outcome","resourceDisposition":"reaping","launchContract":{"remoteBranchDeletionPolicy":{"allowed":true,"mode":"merged-pr-task-branch","source":"test"}}}}}}
 EOF
     : > "$MILL_LOG_FILE"
 
@@ -303,6 +308,10 @@ EOF
         closed-loser-abandoned)
           printf "%s\n" "{\"number\":4242,\"state\":\"CLOSED\",\"mergedAt\":null,\"headRefOid\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"headRefName\":\"task/task-slug\",\"baseRefName\":\"auto/integration\",\"mergeCommit\":null}"
           ;;
+        aborted-pr-less-abandoned|aborted-pr-less-archive-push-fails|aborted-pr-less-dirty|aborted-pr-less-no-abandon)
+          # For PR-less test cases, gh should fail
+          return 1
+          ;;
         *)
           return 1
           ;;
@@ -316,6 +325,11 @@ EOF
       GIT_CALLS+="$*;"
       case "${1:-} ${2:-}" in
         "status --porcelain")
+          # For dirty test cases, return a dirty status
+          if [[ "$TEST_CASE" == "aborted-pr-less-dirty" ]]; then
+            printf " M dirty-file.txt\n"
+            return 0
+          fi
           return 0
           ;;
         "worktree remove")
@@ -356,14 +370,14 @@ EOF
           return 0
           ;;
         "merge-base --is-ancestor")
-          [[ "$TEST_CASE" != "preserved-local-work" && "$TEST_CASE" != "patch-equivalent-rebased" && "$TEST_CASE" != "closed-unmerged-retained" && "$TEST_CASE" != "closed-loser-abandoned" ]]
+          [[ "$TEST_CASE" != "preserved-local-work" && "$TEST_CASE" != "patch-equivalent-rebased" && "$TEST_CASE" != "closed-unmerged-retained" && "$TEST_CASE" != "closed-loser-abandoned" && "$TEST_CASE" != "aborted-pr-less-abandoned" && "$TEST_CASE" != "aborted-pr-less-archive-push-fails" && "$TEST_CASE" != "aborted-pr-less-dirty" ]]
           return $?
           ;;
         "cat-file -e")
           return 0
           ;;
         "rev-list --count")
-          if [[ "$TEST_CASE" == "preserved-local-work" || "$TEST_CASE" == "patch-equivalent-rebased" || "$TEST_CASE" == "closed-unmerged-retained" || "$TEST_CASE" == "closed-loser-abandoned" ]]; then
+          if [[ "$TEST_CASE" == "preserved-local-work" || "$TEST_CASE" == "patch-equivalent-rebased" || "$TEST_CASE" == "closed-unmerged-retained" || "$TEST_CASE" == "closed-loser-abandoned" || "$TEST_CASE" == "aborted-pr-less-abandoned" || "$TEST_CASE" == "aborted-pr-less-archive-push-fails" || "$TEST_CASE" == "aborted-pr-less-dirty" ]]; then
             printf "1\n"
             return 0
           fi
@@ -371,7 +385,7 @@ EOF
           return 0
           ;;
         "rev-list "*)
-          if [[ "$TEST_CASE" == "preserved-local-work" || "$TEST_CASE" == "patch-equivalent-rebased" || "$TEST_CASE" == "closed-unmerged-retained" || "$TEST_CASE" == "closed-loser-abandoned" ]]; then
+          if [[ "$TEST_CASE" == "preserved-local-work" || "$TEST_CASE" == "patch-equivalent-rebased" || "$TEST_CASE" == "closed-unmerged-retained" || "$TEST_CASE" == "closed-loser-abandoned" || "$TEST_CASE" == "aborted-pr-less-abandoned" || "$TEST_CASE" == "aborted-pr-less-archive-push-fails" || "$TEST_CASE" == "aborted-pr-less-dirty" ]]; then
             printf "%s\n" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
           fi
           return 0
@@ -396,10 +410,17 @@ EOF
           [[ "$TEST_CASE" == "ls-remote-fails" ]] && return 128
           return 0
           ;;
-        "push origin")
-          ORDER+="push-delete;"
-          [[ "$TEST_CASE" != "push-fails" ]]
-          return $?
+        "push origin"*)
+          # Special handling for archive push vs regular push
+          if [[ "$3" == *"refs/archive/wavemill/"* ]]; then
+            ORDER+="archive-push;"
+            [[ "$TEST_CASE" == "aborted-pr-less-archive-push-fails" ]] && return 1
+            return 0
+          else
+            ORDER+="push-delete;"
+            [[ "$TEST_CASE" != "push-fails" ]]
+            return $?
+          fi
           ;;
       esac
       return 0
@@ -449,6 +470,12 @@ EOF
     }
 
     if [[ "$TEST_CASE" == "closed-loser-abandoned" ]]; then
+      WAVEMILL_CLEANUP_ABANDON_ISSUE="$ISSUE"
+      export WAVEMILL_CLEANUP_ABANDON_ISSUE
+      state_mutate "$STATE_FILE" ".tasks[\$issue].challenge = true | .tasks[\$issue].challengeRole = \"challenger\" | .tasks[\$issue].challengePairId = \"HOK-2348\"" --arg issue "$ISSUE" >/dev/null
+    fi
+
+    if [[ "$TEST_CASE" == "aborted-pr-less-abandoned" || "$TEST_CASE" == "aborted-pr-less-archive-push-fails" || "$TEST_CASE" == "aborted-pr-less-dirty" ]]; then
       WAVEMILL_CLEANUP_ABANDON_ISSUE="$ISSUE"
       export WAVEMILL_CLEANUP_ABANDON_ISSUE
       state_mutate "$STATE_FILE" ".tasks[\$issue].challenge = true | .tasks[\$issue].challengeRole = \"challenger\" | .tasks[\$issue].challengePairId = \"HOK-2348\"" --arg issue "$ISSUE" >/dev/null
@@ -673,6 +700,33 @@ check_contains "closed loser abandon classifies safe" "$output" "outcome=safe_ab
 check_contains "closed loser abandon removes state" "$output" "remove_state_calls=1"
 check_contains "closed loser abandon retains remote branch" "$output" "retaining remote branch task/task-slug (PR #4242 state=CLOSED"
 check_not_contains "closed loser abandon does not delete remote" "$output" "push origin --delete"
+
+output="$(run_cleanup_case aborted-pr-less-abandoned)"
+check_contains "aborted PR-less abandon returns zero" "$output" "rc=0"
+check_contains "aborted PR-less abandon classifies safe" "$output" "outcome=safe_abandoned_pr_less_arm"
+check_contains "aborted PR-less abandon removes state" "$output" "remove_state_calls=1"
+check_contains "aborted PR-less abandon pushes to archive ref" "$output" "push origin aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:refs/archive/wavemill/HOK-2348"
+check_contains "aborted PR-less abandon includes archive in order" "$output" "archive;tmux-kill;worktree-remove;branch-delete;push origin aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:refs/archive/wavemill/HOK-2348;ls-remote;push-delete;prune;reset;remove-state;"
+
+output="$(run_cleanup_case aborted-pr-less-archive-push-fails)"
+check_contains "aborted PR-less archive push failure returns non-zero" "$output" "rc=1"
+check_contains "aborted PR-less archive push failure classifies retain" "$output" "outcome=retain_unpublished"
+check_contains "aborted PR-less archive push failure preserves state" "$output" "remove_state_calls=0"
+check_contains "aborted PR-less archive push failure warns about archive" "$output" "archival to refs/archive/wavemill/HOK-2348 failed"
+check_contains "aborted PR-less archive push failure keeps attention" "$output" "attention=needs-user"
+
+output="$(run_cleanup_case aborted-pr-less-dirty)"
+check_contains "aborted PR-less dirty returns non-zero" "$output" "rc=1"
+check_contains "aborted PR-less dirty classifies retain" "$output" "outcome=retain_dirty"
+check_contains "aborted PR-less dirty preserves state" "$output" "remove_state_calls=0"
+check_contains "aborted PR-less dirty warns about dirty" "$output" "Worktree has uncommitted or unreadable changes"
+check_not_contains "aborted PR-less dirty does not attempt archive push" "$output" "push origin"
+
+output="$(run_cleanup_case aborted-pr-less-no-abandon)"
+check_contains "aborted PR-less no abandon returns non-zero" "$output" "rc=1"
+check_contains "aborted PR-less no abandon classifies retain" "$output" "outcome=retain_unpublished"
+check_contains "aborted PR-less no abandon preserves state" "$output" "remove_state_calls=0"
+check_not_contains "aborted PR-less no abandon does not attempt archive push" "$output" "push origin"
 
 output="$(run_cleanup_case archive-fails)"
 check_contains "archive failure returns non-zero" "$output" "rc=1"
