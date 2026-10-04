@@ -20,7 +20,11 @@ import {
   type NativeCertificationArtifact,
 } from './schema.ts';
 import { buildLegacyRepoCertificationPath } from './loader.ts';
-import { isValidCertificationPathSegment, resolveCertificationStorageIdentity } from './identity.ts';
+import {
+  isRollingProviderAlias,
+  isValidCertificationPathSegment,
+  resolveCertificationStorageIdentity,
+} from './identity.ts';
 import {
   buildCertificationPathFromRoot,
   resolveCertificationStorage,
@@ -218,6 +222,20 @@ export function writeCertification(repoDir: string, record: NativeCertificationA
   return finalPath;
 }
 
+/**
+ * Serialize the record deterministically and write atomically to the given
+ * absolute path. Used by the shared identity-invalidation module to rewrite
+ * a specific artifact in place (HOK-3143). Callers are responsible for
+ * supplying a valid storage path.
+ */
+export function writeCertificationToAbsolutePath(
+  finalPath: string,
+  record: NativeCertificationArtifact,
+): string {
+  validateCertificationForWrite(record, 'writeCertificationToAbsolutePath');
+  return writeCertificationToPath(finalPath, record);
+}
+
 function writeCertificationToPath(finalPath: string, record: NativeCertificationArtifact): string {
   mkdirSync(dirname(finalPath), { recursive: true });
 
@@ -341,6 +359,56 @@ export function validateCertificationForWrite(
 
   if (record.liveCanary) {
     validateLiveCanaryForWrite(record, label);
+  }
+
+  // HOK-3143: an alias subject must pin a concrete target before it may be
+  // written as a launch-eligible certificate. The write validator is the
+  // single gate against publishing an unpinned alias (dry-run cannot resolve
+  // one; identity-invalidation preserves the field for audit).
+  if (isRollingProviderAlias(record.subject.providerNativeId) && !record.resolvedTarget) {
+    throw new Error(
+      `${label}: rolling alias subject ${record.subject.providerNativeId} requires resolvedTarget to be launchable`,
+    );
+  }
+  if (record.resolvedTarget) {
+    validateResolvedTargetForWrite(record, label);
+  }
+  if (record.identityInvalidation) {
+    validateIdentityInvalidationForWrite(record, label);
+  }
+}
+
+function validateResolvedTargetForWrite(record: NativeCertificationArtifact, label: string): void {
+  const r = record.resolvedTarget!;
+  if (r.requestedWireId !== record.subject.providerNativeId) {
+    throw new Error(
+      `${label}: resolvedTarget.requestedWireId ${r.requestedWireId} must match subject.providerNativeId ${record.subject.providerNativeId}`,
+    );
+  }
+  const observedAtMs = Date.parse(r.observedAt);
+  if (!Number.isFinite(observedAtMs)) {
+    throw new Error(`${label}: resolvedTarget.observedAt must be a valid ISO timestamp`);
+  }
+  if (observedAtMs < MIN_CERTIFIED_AT || observedAtMs > Date.now() + MAX_FUTURE_SKEW_MS) {
+    throw new Error(`${label}: resolvedTarget.observedAt is outside the accepted publication window`);
+  }
+  if (isRollingProviderAlias(r.model)) {
+    throw new Error(
+      `${label}: resolvedTarget.model must be a concrete model id, not another rolling alias (${r.model})`,
+    );
+  }
+}
+
+function validateIdentityInvalidationForWrite(record: NativeCertificationArtifact, label: string): void {
+  const inv = record.identityInvalidation!;
+  if (inv.requestedWireId !== record.subject.providerNativeId) {
+    throw new Error(
+      `${label}: identityInvalidation.requestedWireId ${inv.requestedWireId} must match subject.providerNativeId ${record.subject.providerNativeId}`,
+    );
+  }
+  const atMs = Date.parse(inv.invalidatedAt);
+  if (!Number.isFinite(atMs)) {
+    throw new Error(`${label}: identityInvalidation.invalidatedAt must be a valid ISO timestamp`);
   }
 }
 

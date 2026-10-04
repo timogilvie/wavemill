@@ -1,7 +1,11 @@
-import { fileURLToPath } from 'node:url';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { loadWavemillConfig } from './config.ts';
 import { resolveFromMainRepo } from './git-utils.ts';
+import { resolveWavemillInstallDir } from './native-agent/install-paths.ts';
+
+// Re-export so existing callers of `evals-paths` keep working — HOK-3100
+// consolidates the implementation under native-agent/install-paths.ts.
+export { resolveWavemillInstallDir };
 
 const DEFAULT_EVALS_DIR = '.wavemill/evals';
 
@@ -61,20 +65,6 @@ export function resolveRouteArtifactArchiveDir(
     return undefined;
   }
   return resolve(resolveEvalsDir(undefined, repoDir).dir, 'artifacts', issueId);
-}
-
-/**
- * Resolve the wavemill installation directory by navigating up from this
- * file's location (shared/lib/ -> shared/ -> <wavemill-root>).
- *
- * `WAVEMILL_DIR` can override this location for tests.
- */
-export function resolveWavemillInstallDir(): string {
-  if (process.env.WAVEMILL_DIR) {
-    return process.env.WAVEMILL_DIR;
-  }
-  const thisFile = fileURLToPath(import.meta.url);
-  return resolve(dirname(thisFile), '../..');
 }
 
 /**

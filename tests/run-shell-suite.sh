@@ -48,6 +48,7 @@ TESTS=(
   challenger-transient-retry.test.sh
   coding-dirty-handoff.test.sh
   ready-exhausted-challenge.test.sh
+  review-gate-refused-challenge.test.sh
   monitor-late-completion.test.sh
   parent-monitor-function-drift.test.sh
   save-task-state-canonicalization.test.sh
@@ -68,10 +69,13 @@ TESTS=(
   ready-failure-blocks-pr-label.test.sh
   launch-ready-phase.test.sh
   bounded-retry.test.sh
+  check-install-paths.test.sh
+  check-common-guards.test.sh
   ready-update-from-base.test.sh
   plan-packet-binding.test.sh
   task-progress.test.sh
   task-identity.test.sh
+  tracked-tree-guard.test.sh
   handle-phase-launch-result.test.sh
   coding-launch-refusal.test.sh
   launch-pane-liveness.test.sh

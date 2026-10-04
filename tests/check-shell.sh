@@ -94,6 +94,8 @@ for f in \
   "$LIB_DIR"/agent-adapters.sh \
   "$REPO_DIR"/shared/hooks/*.sh \
   "$REPO_DIR"/shared/agent-bin/tmux \
+  "$REPO_DIR"/tests/check-install-paths.test.sh \
+  "$REPO_DIR"/tests/check-common-guards.test.sh \
   "$REPO_DIR"/tests/control-pane-recovery.test.sh \
   "$REPO_DIR"/tests/dashboard-refresh.test.sh \
   "$REPO_DIR"/tests/state-mutex.test.sh \
@@ -144,6 +146,7 @@ for f in \
   "$REPO_DIR"/tests/challenger-transient-retry.test.sh \
   "$REPO_DIR"/tests/coding-dirty-handoff.test.sh \
   "$REPO_DIR"/tests/ready-exhausted-challenge.test.sh \
+  "$REPO_DIR"/tests/review-gate-refused-challenge.test.sh \
   "$REPO_DIR"/tests/monitor-late-completion.test.sh \
   "$REPO_DIR"/tests/challenge-deferred-arm.test.sh \
   "$REPO_DIR"/tests/parent-monitor-function-drift.test.sh \
@@ -211,6 +214,8 @@ for f in \
   "$REPO_DIR"/tests/incident-fixtures-safety-controls.test.sh \
   "$REPO_DIR"/tests/lib/incident-fixture-harness.sh \
   "$REPO_DIR"/tests/lib/terminal-lifecycle-cert-harness.sh \
+  "$REPO_DIR"/tests/lib/tracked-tree-guard.sh \
+  "$REPO_DIR"/tests/tracked-tree-guard.test.sh \
   "$REPO_DIR"/tests/terminal-lifecycle-cert-matrix.test.sh \
   "$REPO_DIR"/tests/terminal-lifecycle-cert-restart.test.sh \
   "$REPO_DIR"/tests/terminal-lifecycle-cert-budgets.test.sh \
@@ -1231,12 +1236,14 @@ else
   fail "agent adapters are missing static prompt fallback warning"
 fi
 
-if grep -q 'agent_runtime_resource_repo_dir' "$LIB_DIR/agent-adapters.sh" \
-  && grep -q -- '--repo-dir "$resource_repo_dir"' "$LIB_DIR/agent-adapters.sh" \
-  && ! grep -q -- '--repo-dir "$wt_dir" --json' "$LIB_DIR/agent-adapters.sh"; then
-  pass "runtime prompt resolver uses Wavemill resource root instead of task worktree"
+if grep -qF 'agent_runtime_resource_repo_dir' "$LIB_DIR/agent-adapters.sh" \
+  && grep -qF -- '--repo-dir "$resource_repo_dir"' "$LIB_DIR/agent-adapters.sh" \
+  && grep -qF 'agent_runtime_resource_repo_dir "$wt_dir"' "$LIB_DIR/agent-adapters.sh" \
+  && grep -qF 'REPO_DIR:-$wt_dir' "$LIB_DIR/agent-adapters.sh" \
+  && ! grep -qF -- '--repo-dir "$wt_dir" --json' "$LIB_DIR/agent-adapters.sh"; then
+  pass "runtime prompt resolver uses the milled repo (REPO_DIR), not the install root or the task worktree"
 else
-  fail "runtime prompt resolver should not resolve prompt resources from task worktrees"
+  fail "runtime prompt resolver should resolve runtime resources from the milled repo (REPO_DIR) and keep prompt templates install-relative"
 fi
 
 # ============================================================================
@@ -2419,7 +2426,7 @@ if [[ ! -f "$MILL_SCRIPT" ]]; then
   fail "wavemill-mill.sh not found for drift refresh checks"
 else
   if grep -q 'check_subsystem_drift() {' "$MILL_SCRIPT" \
-    && grep -q 'npx tsx tools/check-drift.ts "\$REPO_DIR"' "$MILL_SCRIPT"; then
+    && grep -qE 'npx tsx "\$TOOLS_DIR/check-drift\.ts" "\$REPO_DIR"' "$MILL_SCRIPT"; then
     pass "mill script defines subsystem drift wrapper"
   else
     fail "mill script is missing subsystem drift wrapper"
@@ -2439,7 +2446,7 @@ else
     fail "mill script is missing docs refresh hotkey support"
   fi
 
-  if grep -q 'npx tsx tools/init-project-context.ts --refresh "\$REPO_DIR"' "$MILL_SCRIPT" \
+  if grep -qE 'npx tsx "\$TOOLS_DIR/init-project-context\.ts" --refresh "\$REPO_DIR"' "$MILL_SCRIPT" \
     && grep -q 'Subsystem docs are up to date' "$MILL_SCRIPT"; then
     pass "mill script refreshes docs and handles clean state"
   else

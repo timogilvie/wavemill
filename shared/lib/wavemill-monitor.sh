@@ -937,9 +937,11 @@ challenge_selection_health_varied_model() {
 challenge_selection_health_ack_launch() {
   local pair_id="${1:-}" stage="${2:-}" model="${3:-}"
   [[ -n "$pair_id" && -n "$stage" && -n "$model" && -n "${REPO_DIR:-}" ]] || return 0
-  [[ -f "$REPO_DIR/tools/challenge-selection-health.ts" ]] || return 0
+  local tool
+  tool="$(wavemill_tool_path challenge-selection-health.ts)"
+  [[ -f "$tool" ]] || return 0
   (
-    cd "$REPO_DIR" && npx tsx tools/challenge-selection-health.ts ack-launch \
+    cd "$REPO_DIR" && npx tsx "$tool" ack-launch \
       --repo-dir "$REPO_DIR" \
       --pair-id "$pair_id" \
       --stage "$(challenge_stage_for_launch_env "$stage")" \
@@ -950,9 +952,11 @@ challenge_selection_health_ack_launch() {
 challenge_selection_health_release() {
   local pair_id="${1:-}" stage="${2:-}" model="${3:-}"
   [[ -n "$pair_id" && -n "$stage" && -n "$model" && -n "${REPO_DIR:-}" ]] || return 0
-  [[ -f "$REPO_DIR/tools/challenge-selection-health.ts" ]] || return 0
+  local tool
+  tool="$(wavemill_tool_path challenge-selection-health.ts)"
+  [[ -f "$tool" ]] || return 0
   (
-    cd "$REPO_DIR" && npx tsx tools/challenge-selection-health.ts release \
+    cd "$REPO_DIR" && npx tsx "$tool" release \
       --repo-dir "$REPO_DIR" \
       --pair-id "$pair_id" \
       --stage "$(challenge_stage_for_launch_env "$stage")" \
@@ -970,9 +974,11 @@ challenge_selection_health_release() {
 challenge_selection_health_record_review_timeout() {
   local pair_id="${1:-}" model="${2:-}"
   [[ -n "$pair_id" && -n "$model" && -n "${REPO_DIR:-}" ]] || return 0
-  [[ -f "$REPO_DIR/tools/challenge-selection-health.ts" ]] || return 0
+  local tool
+  tool="$(wavemill_tool_path challenge-selection-health.ts)"
+  [[ -f "$tool" ]] || return 0
   (
-    cd "$REPO_DIR" && npx tsx tools/challenge-selection-health.ts record-outcome \
+    cd "$REPO_DIR" && npx tsx "$tool" record-outcome \
       --repo-dir "$REPO_DIR" \
       --pair-id "$pair_id" \
       --stage review \
@@ -1016,7 +1022,9 @@ record_openrouter_credits_challenge_abort() {
   printf '%s\n' "$count" > "$count_file" 2>/dev/null || true
   rm -rf "$lock_dir" 2>/dev/null || true
 
-  if [[ "$count" -ge 2 ]]; then
+  # HOK-3155: trip the warning cache on the first classified credit abort, not
+  # after a count. The count file is kept for diagnostic grep attribution.
+  if [[ "$count" -ge 1 ]]; then
     write_openrouter_warning_cache "OpenRouter credits exhausted - challenge coverage disabled, top up at https://openrouter.ai/credits"
   fi
 }
@@ -1124,24 +1132,33 @@ challenge_abort_pair() {
      + (if $nextAction == "" then {} else {nextAction:$nextAction} end)' \
     > "$tmp" 2>/dev/null && mv "$tmp" "$artifact" || rm -f "$tmp"
 
-  if [[ -n "${REPO_DIR:-}" && -f "$REPO_DIR/tools/record-arm-failure.ts" && ( "$role" == "primary" || "$role" == "challenger" ) ]]; then
-    (
-      cd "$REPO_DIR" && npx tsx tools/record-arm-failure.ts \
-        --repo-dir "${WAVEMILL_RELIABILITY_REPO_DIR:-$REPO_DIR}" \
-        --issue "$issue" \
-        --pair-id "${pair_id:-$issue}" \
-        --role "$role" \
-        --stage "$(challenge_stage_for_launch_env "$stage")" \
-        --model "${model:-unknown}" \
-        --abort-reason "$reason" \
-        --detail "$detail" \
-        --next-action "$next_action"
-    ) >/dev/null 2> >(while IFS= read -r line; do log_warn "$line"; done) || true
+  if [[ -n "${REPO_DIR:-}" && ( "$role" == "primary" || "$role" == "challenger" ) ]]; then
+    local tool
+    tool="$(wavemill_tool_path record-arm-failure.ts)"
+    if [[ -f "$tool" ]]; then
+      (
+        cd "$REPO_DIR" && npx tsx "$tool" \
+          --repo-dir "${WAVEMILL_RELIABILITY_REPO_DIR:-$REPO_DIR}" \
+          --issue "$issue" \
+          --pair-id "${pair_id:-$issue}" \
+          --role "$role" \
+          --stage "$(challenge_stage_for_launch_env "$stage")" \
+          --model "${model:-unknown}" \
+          --abort-reason "$reason" \
+          --detail "$detail" \
+          --next-action "$next_action"
+      ) >/dev/null 2> >(while IFS= read -r line; do log_warn "$line"; done) || true
+    fi
   fi
 
-  if [[ "$reason" == *"openrouter-credits-exhausted"* ]]; then
-    record_openrouter_credits_challenge_abort || true
-  fi
+  # HOK-3155: trip the credit circuit for both canonical reason spellings. The
+  # terminal_launch_failure prefix wraps `provider-credit-exhausted` today;
+  # `openrouter-credits-exhausted` is the legacy wording and still appears in
+  # some stage envelopes.
+  case "$reason" in
+    *"openrouter-credits-exhausted"*|*"provider-credit-exhausted"*)
+      record_openrouter_credits_challenge_abort || true ;;
+  esac
 
   set_window_attention_state "$win" "needs-user"
   return 0
@@ -3258,7 +3275,7 @@ Cause: eval evidence repeatedly refused as stale at the current PR head (relaunc
 Retry count: $retry_count/$retry_max
 
 Next action:
-1. Inspect \`npx tsx tools/challenge-eval-evidence.ts --pair-id $pair_id --side <side> --pr <pr> --repo-dir .\` and re-run the eval manually if the refusal is transient.
+1. Inspect \`npx tsx $TOOLS_DIR/challenge-eval-evidence.ts --pair-id $pair_id --side <side> --pr <pr> --repo-dir .\` and re-run the eval manually if the refusal is transient.
 2. If eval cannot be recovered quickly, compare PRs #${primary_pr:-?} and #${challenger_pr:-?} manually.
 3. Close the losing PR and proceed with the winner.
 EOF
@@ -3305,7 +3322,7 @@ The eval ran at the current PR head. Its record is invalid. Re-running evals wil
 
 Next action:
 1. Retire the invalid arm: close its PR, mark the arm aborted, then ship the surviving PR.
-2. Or assess/supersede the pair with \`npx tsx tools/challenge-pair-recovery.ts --pair $pair_id\`. Add \`--apply\` after reviewing the dry run.
+2. Or assess/supersede the pair with \`npx tsx $TOOLS_DIR/challenge-pair-recovery.ts --pair $pair_id\`. Add \`--apply\` after reviewing the dry run.
 EOF
   printf '%s\n' "$artifact_path"
 }
@@ -6927,7 +6944,7 @@ native_terminal_failure_kind() {
       printf 'provider-config-error\n'; return 0 ;;
     *"rate limit"*|*"429"*)
       printf 'provider-transient-error\n'; return 0 ;;
-    *"can only afford"*|*"requires more credits"*|*"http 402"*|*"402 payment required"*|*"openrouter-credits-exhausted"*)
+    *"can only afford"*|*"requires more credits"*|*"http 402"*|*"402 payment required"*|*"openrouter-credits-exhausted"*|*"exceed your available credits"*|*"402 this request would"*)
       printf 'provider-credit-exhausted\n'; return 0 ;;
     *"insufficient"*"credit"*|*"quota"*)
       printf 'provider-credit-exhausted\n'; return 0 ;;
@@ -6998,6 +7015,14 @@ native_terminal_failure_next_action() {
       printf "Ready's checks passed but a handoff transition (route-stamp, review identity, label, GitHub API) kept failing; the arm was retired as an invalid challenge (no model forfeit) so its green sibling proceeds. Inspect .ready-result.json transitionFailure\n" ;;
     ready-unattributed)
       printf 'Ready was exhausted without a typed red-check or transition cause (base conflict, missing ready result); the arm was retired as an invalid challenge so its green sibling proceeds. Inspect the ready attention file\n' ;;
+    review-malformed-response)
+      printf 'the reviewer emitted a malformed response and Ready kept refusing to launch; the arm was retired (forfeit) so its green sibling proceeds. Inspect the review-result.json failureCategory on the closed PR\n' ;;
+    review-not-ready)
+      printf 'the reviewer returned a genuine not_ready verdict with undismissed blockers and Ready kept refusing to launch; the arm was retired (forfeit) so its green sibling proceeds. Inspect the review-result.json blockers on the closed PR\n' ;;
+    review-identity-mismatch)
+      printf "the review artifact's reviewer identity disagreed with the arm's assignment (or execution evidence was contradicted); the arm was retired as an invalid challenge (no model forfeit) so its green sibling proceeds. Inspect the review-result.json intendedModel/executedModel on the closed PR\n" ;;
+    review-unattributed)
+      printf "Ready was refused by the review gate but the reviewer identity could not be proven; the arm was retired as an invalid challenge (no model forfeit) so its green sibling proceeds. Inspect the review-result.json executionEvidence on the closed PR\n" ;;
     coding-dirty-handoff)
       printf 'the coding agent exited after writing .coding-complete with uncommitted output and did not repair it when relaunched (completion-protocol failure); the challenger is forfeited so the primary proceeds\n' ;;
     planning-turn-limit)
@@ -10922,15 +10947,200 @@ ready_exhausted_challenge_terminalize() {
     log_warn "$issue → Ready exhausted: challenge ${role} arm retired (${cause}); sibling released"
   fi
 
-  if [[ -n "$pr" && "$(pr_state "$pr")" == "OPEN" ]]; then
-    if _with_timeout "${API_TIMEOUT:-30}" gh pr close "$pr" \
-        --comment "Closing: challenge ${role} arm retired after Ready was exhausted (${cause}). The sibling PR proceeds without a comparison (HOK-3147)." \
-        >/dev/null 2>&1; then
-      log "status" "Closed retired challenge arm PR #$pr ($issue)"
-    else
-      log_warn "$issue → could not close retired challenge arm PR #$pr; retrying next poll"
+  _retired_challenge_arm_close_pr "$issue" "$pr" "$role" "$cause" "Ready was exhausted"
+  return 0
+}
+
+# _retired_challenge_arm_close_pr <issue> <pr> <role> <cause> <why>
+# Shared tail used by `ready_exhausted_challenge_terminalize` (HOK-3147) and
+# `review_refused_challenge_terminalize` (HOK-3154). Closes the arm's PR with a
+# comment that names the retirement cause and why Ready did not proceed; a
+# transient `gh pr close` failure is logged so the next poll's idempotent-resume
+# path retries only the close.
+_retired_challenge_arm_close_pr() {
+  local issue="$1" pr="$2" role="$3" cause="$4" why="$5"
+  [[ -n "$pr" && "$(pr_state "$pr")" == "OPEN" ]] || return 0
+  if _with_timeout "${API_TIMEOUT:-30}" gh pr close "$pr" \
+      --comment "Closing: challenge ${role} arm retired after ${why} (${cause}). The sibling PR proceeds without a comparison (HOK-3147)." \
+      >/dev/null 2>&1; then
+    log "status" "Closed retired challenge arm PR #$pr ($issue)"
+  else
+    log_warn "$issue → could not close retired challenge arm PR #$pr; retrying next poll"
+  fi
+}
+
+# review_gate_refusal_is_terminal <state_dir>
+# True when a Ready launch refusal is terminal because the review artifact can
+# never pass the readiness gate. Shared by the first-refusal and later-tick
+# branches in the pending-ready-recheck path (HOK-3154).
+review_gate_refusal_is_terminal() {
+  local state_dir="$1"
+  ! review_result_passes_ready_gate "$state_dir" && ! review_result_infra_failure "$state_dir"
+}
+
+# review_refused_challenge_cause <state_dir> <issue>
+# Classify why the review gate refused Ready (HOK-3154). Prints
+# "<cause>\t<model>" where cause is one of:
+#   invalid_challenge:review-identity-mismatch        (harness-fault, no winner)
+#   invalid_challenge:review-unattributed             (harness-fault, no winner)
+# HOK-2891 has not yet made reviewer identity reliable enough to attribute a
+# review-gate refusal to a model. A contradiction is recorded distinctly;
+# every other refusal is unattributed, even if its execution evidence appears
+# internally consistent. Both paths void the challenge and release the sibling.
+review_refused_challenge_cause() {
+  local state_dir="$1" issue="$2"
+  local review_file="$state_dir/.review-result.json"
+  local kind="" assigned="" recorded="" executed="" evidence_status="" attribution_eligible=""
+  local cause="" model=""
+
+  if [[ -f "$review_file" ]]; then
+    # Review kind, read from the artifacts (same unwrapping as
+    # review_result_failure_category).
+    kind="$(jq -r '
+      def num: if type == "number" then . elif type == "string" then (tonumber? // null) else null end;
+      (.artifacts // {}) as $a
+      | (if ($a.type // "") == "review" then $a else ($a.review // {}) end) as $r
+      | ($r.failureCategory // "") as $cat
+      | ($r.verdict // "") as $v
+      | (($r.blockerCount // $r.blockingIssues // $r.blockingCount) | num) as $raw
+      | ($r.dismissedBlockers // []) as $d
+      | ($d | if type == "array" then
+          ([.[] | select((type == "object") and ((.justification? | type) == "string") and (.justification | test("\\S")))] | length)
+          else 0 end) as $dismissed
+      | if $cat == "native-review-malformed-response" then "review-malformed-response"
+        elif $cat == "review-no-output" then "review-no-output"
+        elif ($cat == "" and $v == "not_ready" and ($raw != null) and $raw >= 1 and $dismissed < $raw) then "review-not-ready"
+        else ""
+        end
+    ' "$review_file" 2>/dev/null || true)"
+    # Reviewer identity fields live at the top level of .review-result.json
+    # (written by write_stage_result's intendedModel/executedModel block).
+    recorded="$(jq -r '(.intendedModel // .model // "") | tostring' "$review_file" 2>/dev/null || true)"
+    executed="$(jq -r '(.executedModel // "") | tostring' "$review_file" 2>/dev/null || true)"
+    evidence_status="$(jq -r '(.executionEvidence.status // "") | tostring' "$review_file" 2>/dev/null || true)"
+    attribution_eligible="$(jq -r '(.modelAttributionEligible // false) | tostring' "$review_file" 2>/dev/null || true)"
+    [[ "$recorded" == "null" ]] && recorded=""
+    [[ "$executed" == "null" ]] && executed=""
+  fi
+
+  assigned="$(challenge_varied_stage_model "$issue" "review" 2>/dev/null || true)"
+  [[ -n "$assigned" ]] || assigned="$(get_task_meta "$issue" "reviewerModel" 2>/dev/null || true)"
+
+  # Identity drift: any two non-empty of {assigned, recorded, executed} disagree,
+  # or executionEvidence.status == "contradicted".
+  local mismatch=0 ids_total=0
+  if [[ "$evidence_status" == "contradicted" ]]; then
+    mismatch=1
+  else
+    local a1 a2 a3
+    a1="$assigned" a2="$recorded" a3="$executed"
+    [[ -n "$a1" ]] && ids_total=$((ids_total + 1))
+    [[ -n "$a2" ]] && ids_total=$((ids_total + 1))
+    [[ -n "$a3" ]] && ids_total=$((ids_total + 1))
+    if (( ids_total >= 2 )); then
+      if [[ -n "$a1" && -n "$a2" && "$a1" != "$a2" ]]; then mismatch=1; fi
+      if [[ -n "$a1" && -n "$a3" && "$a1" != "$a3" ]]; then mismatch=1; fi
+      if [[ -n "$a2" && -n "$a3" && "$a2" != "$a3" ]]; then mismatch=1; fi
     fi
   fi
+
+  if (( mismatch == 1 )); then
+    cause="invalid_challenge:review-identity-mismatch"
+    model="$executed"
+    [[ -n "$model" ]] || model="$recorded"
+    [[ -n "$model" ]] || model="$assigned"
+  else
+    cause="invalid_challenge:review-unattributed"
+    model="$executed"
+    [[ -n "$model" ]] || model="$recorded"
+    [[ -n "$model" ]] || model="$assigned"
+    [[ -n "$model" ]] || model="unknown"
+  fi
+
+  printf '%s\t%s\n' "$cause" "$model"
+}
+
+# review_refused_challenge_terminalize <issue> <pr> <state_dir> <win>
+# Retire a challenge arm whose Ready launch was refused by the review gate
+# (HOK-3154) while its sibling is green: stamp challengeAborted (scope single)
+# with the cause from review_refused_challenge_cause, then close the arm's PR.
+# Returns 0 when the arm is (now or already) retired, 1 to keep the legacy hold.
+# Idempotent: only this helper's own stamps resume, and only to retry a failed
+# PR close.
+review_refused_challenge_terminalize() {
+  local issue="$1" pr="$2" state_dir="$3" win="$4"
+  local review_file="$state_dir/.review-result.json"
+  local role existing existing_stage cause model kind
+  local exhausted_reason review_summary review_category detail next_action
+  local saved_review_json="" tmp
+  local cause_model
+
+  [[ "$(get_task_meta "$issue" "challenge" 2>/dev/null || true)" == "true" ]] || return 1
+  role="$(_challenge_side_for_issue "$issue" 2>/dev/null || true)"
+  [[ "$role" == "primary" || "$role" == "challenger" ]] || return 1
+
+  existing="$(get_task_meta "$issue" "challengeAborted" 2>/dev/null || true)"
+  if [[ -n "$existing" ]]; then
+    # Only a review-gate retirement this helper recorded is resumed. Any other
+    # stamp (ready-exhausted retirement, pair-scope quarantine mirrored from
+    # the sibling, etc.) keeps the hold so a healthy arm's PR is never closed.
+    existing_stage="$(get_task_meta "$issue" "challengeAbortedStage" 2>/dev/null || true)"
+    case "$existing" in
+      invalid_challenge:review-identity-mismatch\
+      |invalid_challenge:review-unattributed) ;;
+      *) return 1 ;;
+    esac
+    [[ "$existing_stage" == "review" ]] || return 1
+    cause="$existing"
+    _retired_challenge_arm_close_pr "$issue" "$pr" "$role" "$cause" "the review gate refused Ready"
+    return 0
+  fi
+
+  ready_exhausted_challenge_sibling_green "$issue" || return 1
+
+  cause_model="$(review_refused_challenge_cause "$state_dir" "$issue")"
+  cause="${cause_model%%$'\t'*}"
+  model="${cause_model##*$'\t'}"
+  [[ -n "$cause" ]] || return 1
+  kind="${cause#*:}"
+
+  exhausted_reason="$(bounded_retry_exhaustion_reason "$state_dir" "pending-ready-recheck")"
+  [[ -n "$exhausted_reason" ]] || exhausted_reason="Ready launch refused by the review gate for PR #$pr"
+  review_summary="$(review_result_summary "$state_dir" 2>/dev/null || true)"
+  review_category="$(review_result_failure_category "$state_dir" 2>/dev/null || true)"
+  detail="$exhausted_reason"
+  [[ -n "$review_summary" ]] && detail="${detail}; ${review_summary}"
+  [[ -n "$review_category" ]] && detail="${detail}; failureCategory=${review_category}"
+
+  if [[ -f "$review_file" ]]; then
+    saved_review_json="$(cat "$review_file" 2>/dev/null || true)"
+  fi
+
+  next_action="$(native_terminal_failure_next_action "$kind")"
+
+  challenge_abort_pair "$issue" "$state_dir" "$win" "review" "$model" "$cause" "$detail" "$next_action" "single" || return 1
+
+  # challenge_abort_pair rewrites .review-result.json without its artifacts;
+  # restore them (+ challengeArmRetired for the observer/watchdog), keep the
+  # identity fields auditable, and preserve failureReason.
+  if [[ -n "$saved_review_json" ]] && tmp="$(mktemp "$state_dir/.review-result.XXXXXX" 2>/dev/null)"; then
+    if jq -c --argjson saved "$saved_review_json" --arg cause "$cause" --arg detail "$detail" '
+        .artifacts = (($saved.artifacts // {}) + {challengeArmRetired: {cause: $cause, detail: $detail}})
+        | (if ($saved.failureReason // "") != "" then .failureReason = $saved.failureReason else . end)
+        | (if ($saved.intendedModel // "") != "" then .intendedModel = $saved.intendedModel else . end)
+        | (if ($saved.executedModel // "") != "" then .executedModel = $saved.executedModel else . end)
+        | (if ($saved.executionEvidence // null) != null then .executionEvidence = $saved.executionEvidence else . end)
+        | (if ($saved.modelAttributionEligible // null) != null then .modelAttributionEligible = $saved.modelAttributionEligible else . end)
+        | (if ($saved.modelAttributionIneligibleReason // "") != "" then .modelAttributionIneligibleReason = $saved.modelAttributionIneligibleReason else . end)
+      ' "$review_file" > "$tmp" 2>/dev/null; then
+      mv "$tmp" "$review_file"
+    fi
+    rm -f "$tmp"
+  fi
+
+  log_warn "$issue → Ready refused by review gate: challenge ${role} arm retired (${cause}); sibling released"
+
+  _retired_challenge_arm_close_pr "$issue" "$pr" "$role" "$cause" "the review gate refused Ready"
   return 0
 }
 # --- end Ready-exhausted challenge arm retirement ----------------------------
@@ -20284,10 +20494,28 @@ monitor_issue_state() {
               "Pending-ready re-checks exhausted for PR #$PR: $pending_recheck_reason. Waiting for a new commit or operator."
             log "status" "⛔ $ISSUE → Pending-ready re-checks exhausted for PR #$PR; waiting for a new commit or operator"
           fi
+          # HOK-3154: a challenge arm whose review-gate refusal is terminal is
+          # retired with a green sibling instead of held — same rule as the
+          # failed-ready-recheck branches above. A passing review that burned
+          # the generic budget never retires through this path.
+          if review_gate_refusal_is_terminal "$ready_state_dir_path" \
+              && review_refused_challenge_terminalize "$ISSUE" "$PR" "$ready_state_dir_path" "$WIN"; then
+            set_window_attention_state "$WIN" "clear"
+            active_count=$((active_count + 1))
+            return 0
+          fi
           set_window_attention_state "$WIN" "needs-user"
           return 0
           ;;
         exhausted-quiet)
+          # HOK-3154: re-evaluated every quiet tick — a sibling that turns green
+          # after the first refusal still retires the arm here.
+          if review_gate_refusal_is_terminal "$ready_state_dir_path" \
+              && review_refused_challenge_terminalize "$ISSUE" "$PR" "$ready_state_dir_path" "$WIN"; then
+            set_window_attention_state "$WIN" "clear"
+            active_count=$((active_count + 1))
+            return 0
+          fi
           set_window_attention_state "$WIN" "needs-user"
           return 0
           ;;
@@ -20339,11 +20567,19 @@ monitor_issue_state() {
         # gate can never accept cannot become passing by relaunching ready —
         # unless it is an infra failure, which launch_ready_phase recovers by
         # relaunching review. Abort on the first refusal instead of retrying.
-        if ! review_result_passes_ready_gate "$ready_state_dir_path" \
-            && ! review_result_infra_failure "$ready_state_dir_path"; then
+        if review_gate_refusal_is_terminal "$ready_state_dir_path"; then
           if bounded_retry_mark_exhausted "$ready_state_dir_path" "pending-ready-recheck" \
               "Ready launch refused for PR #$PR: review verdict does not pass the readiness gate (terminal until the review artifact changes)"; then
             log "status" "⛔ $ISSUE → Ready launch refused by review gate for PR #$PR; not retrying (terminal cause)"
+          fi
+          # HOK-3154: a challenge arm with a green sibling is retired instead
+          # of held, so the green sibling is not parked at no-comparison
+          # forever. Non-challenge tasks and arms without a green sibling fall
+          # through to the legacy needs-user hold.
+          if review_refused_challenge_terminalize "$ISSUE" "$PR" "$ready_state_dir_path" "$WIN"; then
+            set_window_attention_state "$WIN" "clear"
+            active_count=$((active_count + 1))
+            return 0
           fi
         fi
         log "status" "⚠ $ISSUE → Ready checks failed (PR #$PR)"
@@ -20985,7 +21221,7 @@ check_backstage_observer_health() {
     return 0
   fi
 
-  detail="Backstage window '$WAVEMILL_WINDOW_BACKSTAGE' observer service needs user attention. Restart 'npx tsx tools/observer.ts --loop --json --dry-run --repo-dir $REPO_DIR --session $SESSION' in tmux."
+  detail="Backstage window '$WAVEMILL_WINDOW_BACKSTAGE' observer service needs user attention. Restart 'npx tsx $TOOLS_DIR/observer.ts --loop --json --dry-run --repo-dir $REPO_DIR --session $SESSION' in tmux."
   [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "observer" "needs-user" "$detail" "$prior_attempt_count" "$prior_attempt_at" "$observer_pane_id" "$heartbeat_at" "$observer_count"
   if [[ "$LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS" != "needs-user" ]]; then
     log_warn "$detail"
@@ -21046,7 +21282,7 @@ check_backstage_health() {
     heartbeat_epoch="$(wavemill_iso8601_to_epoch "$heartbeat_at" 2>/dev/null || echo 0)"
     [[ "$heartbeat_epoch" =~ ^[0-9]+$ ]] || heartbeat_epoch=0
     if (( prior_attempt_epoch == 0 || heartbeat_epoch <= prior_attempt_epoch )); then
-      detail="Backstage tend restart attempt ${prior_attempt_count} is pending: pane ${executor_pane_id} is alive, awaiting first heartbeat (${elapsed}s elapsed). Restart 'npx tsx tools/tend.ts --loop --repo-dir $REPO_DIR' in tmux."
+      detail="Backstage tend restart attempt ${prior_attempt_count} is pending: pane ${executor_pane_id} is alive, awaiting first heartbeat (${elapsed}s elapsed). Restart 'npx tsx $TOOLS_DIR/tend.ts --loop --repo-dir $REPO_DIR' in tmux."
       [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "tend" "missing-tend-loop" "$detail" "$prior_attempt_count" "$prior_attempt_at" "$executor_pane_id" "$heartbeat_at" "$tend_count"
       LAST_BACKSTAGE_HEALTH_STATUS="missing-tend-loop"
       LAST_BACKSTAGE_TEND_ALIVE_IDENTITY=""
@@ -21151,9 +21387,9 @@ check_backstage_health() {
       status="$pane_status"
       [[ "$status" == "stalled" ]] || status="missing-tend-loop"
       if [[ "$pane_status" == "stalled" ]]; then
-        detail="Backstage tend loop is stalled (restart attempt ${prior_attempt_count} unconfirmed: $detail); next automatic restart in ${remaining}s. Restart 'npx tsx tools/tend.ts --loop --repo-dir $REPO_DIR' in tmux."
+        detail="Backstage tend loop is stalled (restart attempt ${prior_attempt_count} unconfirmed: $detail); next automatic restart in ${remaining}s. Restart 'npx tsx $TOOLS_DIR/tend.ts --loop --repo-dir $REPO_DIR' in tmux."
       else
-        detail="Backstage window '$WAVEMILL_WINDOW_BACKSTAGE' is missing the ${WAVEMILL_BACKSTAGE_TEND_PANE_TITLE} executor (restart attempt ${prior_attempt_count} unconfirmed: $detail); next automatic restart in ${remaining}s. Restart 'npx tsx tools/tend.ts --loop --repo-dir $REPO_DIR' in tmux."
+        detail="Backstage window '$WAVEMILL_WINDOW_BACKSTAGE' is missing the ${WAVEMILL_BACKSTAGE_TEND_PANE_TITLE} executor (restart attempt ${prior_attempt_count} unconfirmed: $detail); next automatic restart in ${remaining}s. Restart 'npx tsx $TOOLS_DIR/tend.ts --loop --repo-dir $REPO_DIR' in tmux."
       fi
       heartbeat_at="$(read_backstage_service_health_field "tend" '.heartbeatAt' || true)"
       [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "tend" "$status" "$detail" "$prior_attempt_count" "$prior_attempt_at" "$executor_pane_id" "$heartbeat_at" "$tend_count"
@@ -21167,7 +21403,7 @@ check_backstage_health() {
     exhausted|exhausted-quiet)
       status="needs-user"
       reason="tend-restart-exhausted evidence=${identity} attempts=${prior_attempt_count}"
-      detail="Backstage tend loop restart attempts are exhausted for ${identity} after ${prior_attempt_count}/${retry_limit} attempt(s). Restart 'npx tsx tools/tend.ts --loop --repo-dir $REPO_DIR' in tmux after fixing the underlying process evidence."
+      detail="Backstage tend loop restart attempts are exhausted for ${identity} after ${prior_attempt_count}/${retry_limit} attempt(s). Restart 'npx tsx $TOOLS_DIR/tend.ts --loop --repo-dir $REPO_DIR' in tmux after fixing the underlying process evidence."
       heartbeat_at="$(read_backstage_service_health_field "tend" '.heartbeatAt' || true)"
       [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "tend" "$status" "$detail" "$prior_attempt_count" "$prior_attempt_at" "$executor_pane_id" "$heartbeat_at" "$tend_count"
       marked_exhausted=1
@@ -21224,11 +21460,11 @@ check_backstage_health() {
     if bounded_retry_mark_exhausted "$STATE_DIR" "$bucket" "$reason" >/dev/null 2>&1; then
       log_warn "Backstage tend loop restart attempts are exhausted for ${identity} after ${next_attempt_count}/${retry_limit} attempt(s): ${restart_error}"
     fi
-    detail="Backstage tend loop restart attempts are exhausted for ${identity} after ${next_attempt_count}/${retry_limit} attempt(s). Last restart attempt did not produce a fresh heartbeat: $restart_error. Restart 'npx tsx tools/tend.ts --loop --repo-dir $REPO_DIR' in tmux after fixing the underlying process evidence."
+    detail="Backstage tend loop restart attempts are exhausted for ${identity} after ${next_attempt_count}/${retry_limit} attempt(s). Last restart attempt did not produce a fresh heartbeat: $restart_error. Restart 'npx tsx $TOOLS_DIR/tend.ts --loop --repo-dir $REPO_DIR' in tmux after fixing the underlying process evidence."
   elif [[ -n "$restart_pane_id" ]]; then
-    detail="Backstage tend restart attempt ${next_attempt_count} did not produce a fresh heartbeat within ${BACKSTAGE_TEND_RESTART_CONFIRM_SECONDS}s: $restart_error. Watching the new pane for ${BACKSTAGE_TEND_RESTART_GRACE_SECONDS}s and retrying no earlier than ${next_backoff}s after that. Restart 'npx tsx tools/tend.ts --loop --repo-dir $REPO_DIR' in tmux."
+    detail="Backstage tend restart attempt ${next_attempt_count} did not produce a fresh heartbeat within ${BACKSTAGE_TEND_RESTART_CONFIRM_SECONDS}s: $restart_error. Watching the new pane for ${BACKSTAGE_TEND_RESTART_GRACE_SECONDS}s and retrying no earlier than ${next_backoff}s after that. Restart 'npx tsx $TOOLS_DIR/tend.ts --loop --repo-dir $REPO_DIR' in tmux."
   else
-    detail="Backstage tend restart attempt ${next_attempt_count} could not split a backstage pane: $restart_error. Retrying no earlier than ${next_backoff}s. Restart 'npx tsx tools/tend.ts --loop --repo-dir $REPO_DIR' in tmux."
+    detail="Backstage tend restart attempt ${next_attempt_count} could not split a backstage pane: $restart_error. Retrying no earlier than ${next_backoff}s. Restart 'npx tsx $TOOLS_DIR/tend.ts --loop --repo-dir $REPO_DIR' in tmux."
   fi
   restart_instance_count="$tend_count"
   [[ -n "$restart_pane_id" ]] && restart_instance_count=1

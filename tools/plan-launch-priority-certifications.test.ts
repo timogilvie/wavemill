@@ -14,8 +14,8 @@ const catalog: LaunchPriorityModel[] = [
     roleEligibility: ['coding', 'review'],
   },
   {
-    wavemillAlias: 'gemini-2.5-pro',
-    openrouterId: 'google/gemini-2.5-pro',
+    wavemillAlias: 'gemini-3.1-pro-preview',
+    openrouterId: 'google/gemini-3.1-pro-preview',
     family: 'gemini',
     status: 'active',
     priorityTier: 1,
@@ -39,7 +39,7 @@ function makeAudit(): LaunchPriorityAudit {
     excludedRecords: 0,
     exclusionReasonCounts: {},
     zeroEvidence: ['qwen-3-coder'],
-    belowTarget: ['gemini-2.5-pro'],
+    belowTarget: ['gemini-3.1-pro-preview'],
     samplingPlan: [],
     summary: {
       totalLaunchPriority: 2,
@@ -81,8 +81,8 @@ function makeAudit(): LaunchPriorityAudit {
         status: 'below-target',
       },
       {
-        wavemillAlias: 'gemini-2.5-pro',
-        openrouterId: 'google/gemini-2.5-pro',
+        wavemillAlias: 'gemini-3.1-pro-preview',
+        openrouterId: 'google/gemini-3.1-pro-preview',
         family: 'gemini',
         launchPriorityStatus: 'active',
         priorityTier: 1,
