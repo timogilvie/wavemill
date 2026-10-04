@@ -10,9 +10,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoDir = resolve(__dirname, '..');
 const planQueueTool = resolve(__dirname, 'plan-queue.ts');
 const fixture = resolve(repoDir, 'fixtures/plan-queue/backlog-basic.json');
+// Resolve tsx from the repo, not the spawn cwd: `npx tsx` from a temp dir
+// falls back to the npm registry and flakes in CI.
+const tsxLoader = import.meta.resolve('tsx');
 
 function runPlanQueue(args: string[], input?: string, cwd = repoDir, env: NodeJS.ProcessEnv = {}) {
-  return spawnSync('npx', ['tsx', planQueueTool, ...args], {
+  return spawnSync(process.execPath, ['--import', tsxLoader, planQueueTool, ...args], {
     cwd,
     encoding: 'utf-8',
     env: { ...process.env, ...env },
