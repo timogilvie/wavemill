@@ -817,6 +817,31 @@ describe('live coding canary schema', () => {
     }
   });
 
+  it('accepts and round-trips canaryCarriedForwardFrom (HOK-3159)', () => {
+    const carried = makeValidArtifact({ liveCanary: makeCanary({ canaryCarriedForwardFrom: 'c'.repeat(64) }) });
+    assert.equal(validateCertificationSchema(carried), true, JSON.stringify(validateCertificationSchema.errors));
+
+    for (const bad of [42, '']) {
+      const invalid = makeValidArtifact({
+        liveCanary: { ...makeCanary(), canaryCarriedForwardFrom: bad } as unknown as LiveCodingCanaryResult,
+      });
+      assert.equal(validateCertificationSchema(invalid), false, `rejects ${JSON.stringify(bad)}`);
+    }
+
+    const repoDir = makeTempRepo();
+    try {
+      writeArtifact(repoDir, 'anthropic', 'carried', 'v1', makeValidArtifact({ model: 'carried', liveCanary: carried.liveCanary }));
+      const loaded = loadCertification(repoDir, 'anthropic', 'carried', 'v1');
+      assert.equal(loaded.ok, true);
+      assert.equal(
+        (loaded as { artifact: NativeCertificationArtifact }).artifact.liveCanary?.canaryCarriedForwardFrom,
+        'c'.repeat(64),
+      );
+    } finally {
+      cleanupRepo(repoDir);
+    }
+  });
+
   it('treats a present-but-invalid liveCanary as a malformed artifact (fail closed)', () => {
     const repoDir = makeTempRepo();
     try {
