@@ -639,7 +639,7 @@ wavemill_reconcile_terminal_linear() {
   # Check if this task is eligible to write Linear. Only proceed if status is
   # non-empty (sibling merged/closed) AND linear_write_target succeeds.
   linear_write_target "$issue" >/dev/null 2>&1 || return 0
-  linear_set_state "$issue" "$status"
+  linear_set_state "$issue" "$status" || return $?
 }
 
 wavemill_reconcile_terminal() {
