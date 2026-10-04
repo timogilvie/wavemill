@@ -1902,7 +1902,7 @@ safe_remove_task_worktree_and_branch() {
     # Trigger: operator or monitor explicitly set WAVEMILL_CLEANUP_ABANDON_ISSUE
     # for this issue AND the task has no PR AND classification is a retain-for-
     # unpublished-work variant. Dirty-worktree is already handled above.
-    if [[ "$abandon_issue" == "$issue" && -z "$pr" && "$local_branch_exists" == "true" \
+    if [[ -n "$issue" && "$abandon_issue" == "$issue" && -z "$pr" && "$local_branch_exists" == "true" \
           && -n "$local_head_sha" && "$remote_contains_head" != "true" ]]; then
       case "$classification" in
         retain_unpublished|retain_unverifiable)
