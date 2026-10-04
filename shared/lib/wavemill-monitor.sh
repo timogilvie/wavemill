@@ -14712,13 +14712,13 @@ cleanup_aborted_challenge_arm() {
   # can be safely archived and reaped. Scope the authority to this one call
   # so the archive-and-abandon path in safe_remove_task_worktree_and_branch
   # fires; without a merged sibling the arm remains preserved.
-  local _hok3089_abandon_env=""
   if [[ -z "$pr" ]] && declare -F check_challenge_sibling_merged >/dev/null 2>&1 \
      && check_challenge_sibling_merged "$issue"; then
-    _hok3089_abandon_env="WAVEMILL_CLEANUP_ABANDON_ISSUE=$issue"
+    WAVEMILL_CLEANUP_ABANDON_ISSUE="$issue" \
+      safe_remove_task_worktree_and_branch "$wt_dir" "$task_branch" "$(effective_task_base_branch "$issue" 2>/dev/null || printf '%s\n' "${BASE_BRANCH:-main}")" "cleanup_aborted_challenge_arm" "$issue" "" || cleanup_rc=$?
+  else
+    safe_remove_task_worktree_and_branch "$wt_dir" "$task_branch" "$(effective_task_base_branch "$issue" 2>/dev/null || printf '%s\n' "${BASE_BRANCH:-main}")" "cleanup_aborted_challenge_arm" "$issue" "" || cleanup_rc=$?
   fi
-  env ${_hok3089_abandon_env} \
-  safe_remove_task_worktree_and_branch "$wt_dir" "$task_branch" "$(effective_task_base_branch "$issue" 2>/dev/null || printf '%s\n' "${BASE_BRANCH:-main}")" "cleanup_aborted_challenge_arm" "$issue" "" || cleanup_rc=$?
   cleanup_outcome="${WAVEMILL_CLEANUP_OUTCOME:-}"
   CLEANUP_EPISODE_CURRENT_FINGERPRINT=""
   if [[ "$cleanup_rc" -eq 10 ]] || cleanup_outcome_is_retain "$cleanup_outcome"; then
