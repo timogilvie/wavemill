@@ -189,19 +189,43 @@ export function archiveTaskResidue(options: ArchiveTaskResidueOptions): ArchiveT
     // Try the configured base refs in order; the first that git can resolve
     // wins. Falls back to the local-only base when `origin/<base>` is not
     // present (fresh clone, test fixtures, or detached worktrees).
+    let resolvedBundleBase = '';
+    let bundleRequired = false;
+    let bundleFailure = '';
     for (const base of resolveBaseRefs(options)) {
       try {
         git(['-C', options.repoDir, 'rev-parse', '--verify', `${base}^{commit}`], options.repoDir);
       } catch {
         continue;
       }
+      resolvedBundleBase = base;
+      try {
+        const commitCount = Number(git(['-C', options.repoDir, 'rev-list', '--count', `${base}..${options.branch}`], options.repoDir).trim());
+        bundleRequired = Number.isFinite(commitCount) && commitCount > 0;
+      } catch (error) {
+        bundleFailure = `archive_bundle_range_failed:${(error as Error).message}`;
+        continue;
+      }
+      if (!bundleRequired) break;
       try {
         git(['-C', options.repoDir, 'bundle', 'create', bundlePath, `${base}..${options.branch}`], options.repoDir);
         bundleWritten = existsSync(bundlePath);
         if (bundleWritten) break;
-      } catch {
-        // Try the next base ref.
+        bundleFailure = 'archive_bundle_missing_after_create';
+      } catch (error) {
+        bundleFailure = `archive_bundle_create_failed:${(error as Error).message}`;
       }
+    }
+    // A PR-less arm with unpublished commits is only safe to reap after its
+    // bundle is actually on disk. Do not silently convert a failed bundle
+    // into an archive without the commits it was meant to preserve.
+    if (!resolvedBundleBase) {
+      result.failureReason = 'archive_bundle_base_missing';
+      return result;
+    }
+    if (bundleRequired && !bundleWritten) {
+      result.failureReason = bundleFailure || 'archive_bundle_create_failed';
+      return result;
     }
     if (bundleWritten) {
       result.bundlePath = bundlePath;

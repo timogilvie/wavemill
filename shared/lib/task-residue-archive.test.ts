@@ -83,6 +83,34 @@ test('archiveTaskResidue bundles unpublished commits for a PR-less arm', () => {
   }
 });
 
+test('archiveTaskResidue retains a PR-less arm when its required bundle fails', () => {
+  const root = mkdtempSync(join(tmpdir(), 'archive-residue-bundle-failure-'));
+  try {
+    initRepo(root);
+    execFileSync('git', ['-C', root, 'checkout', '-q', '-b', 'task/demo'], { stdio: 'ignore' });
+    writeFileSync(join(root, 'feature.txt'), 'local work\n');
+    execFileSync('git', ['-C', root, 'add', 'feature.txt'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', root, 'commit', '-q', '-m', 'feature'], { stdio: 'ignore' });
+
+    const result = archiveTaskResidue({
+      issue: 'HOK-3160_bundle_failure',
+      worktree: root,
+      repoDir: root,
+      branch: 'task/demo',
+      baseBranch: 'auto/integration',
+      now: () => '2026-10-05T12:45:00Z',
+      git(args, cwd) {
+        if (args.includes('bundle')) throw new Error('simulated bundle failure');
+        return execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+      },
+    });
+    assert.equal(result.success, false);
+    assert.match(result.failureReason ?? '', /^archive_bundle_create_failed:/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('archiveTaskResidue reports failure for an absent worktree', () => {
   const root = mkdtempSync(join(tmpdir(), 'archive-residue-absent-'));
   try {
