@@ -153,6 +153,7 @@ TESTS=(
   review-capacity-detection.test.sh
   review-missing-window-relaunch.test.sh
   re-review-no-pr.test.sh
+  monitor-command-routing.test.sh
 )
 
 SHARD_INDEX=1
