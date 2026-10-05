@@ -6,12 +6,16 @@ import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   auditOpenRouterAliases,
+  fetchEndpointsForAliases,
+  parseEndpointsFixture,
   type AliasAuditReport,
 } from '../shared/lib/openrouter-alias-audit.ts';
 import {
+  fetchOpenRouterModelEndpoints,
   fetchOpenRouterModels,
   loadLaunchPriorityList,
   type OpenRouterApiResponse,
+  type OpenRouterEndpoint,
   type OpenRouterModel,
 } from '../shared/lib/openrouter-catalog.ts';
 import { DEFAULT_MODEL_REGISTRY, type ModelRegistry } from '../shared/lib/model-registry.ts';
@@ -21,6 +25,7 @@ const DEFAULT_OUT_PATH = '.wavemill/audits/openrouter-alias-drift.json';
 
 const options = {
   'catalog-json': { type: 'string', description: 'Raw OpenRouter /api/v1/models JSON file' },
+  'endpoints-json': { type: 'string', description: 'Offline endpoints JSON keyed by model id (with --catalog-json/--fixture)' },
   fixture: { type: 'boolean', description: 'Use launch-priority fixture IDs as the catalog' },
   output: { type: 'string', description: 'Output JSON path' },
   'repo-dir': { type: 'string', description: 'Repository directory' },
@@ -32,12 +37,14 @@ type CliArgs = ParsedArgs<typeof options>;
 
 export interface OpenRouterAliasAuditToolDeps {
   fetchCatalog: () => Promise<Map<string, OpenRouterModel>>;
+  fetchEndpoints: (modelId: string) => Promise<OpenRouterEndpoint[]>;
   registry: ModelRegistry;
   now: () => Date;
 }
 
 const defaultDeps: OpenRouterAliasAuditToolDeps = {
   fetchCatalog: () => fetchOpenRouterModels(),
+  fetchEndpoints: (modelId) => fetchOpenRouterModelEndpoints(modelId),
   registry: DEFAULT_MODEL_REGISTRY,
   now: () => new Date(),
 };
@@ -84,6 +91,9 @@ function renderHumanSummary(report: AliasAuditReport): void {
   for (const finding of report.findings) {
     const suffix = finding.selectable ? '' : ' (retired - expected)';
     console.log(`  ${finding.alias}\t${finding.reason}\t${finding.wireModelId ?? 'unresolved'}${suffix}`);
+    if (finding.reason === 'pricing-drift') {
+      console.log(`    ${finding.detail}`);
+    }
   }
 }
 
@@ -95,6 +105,7 @@ export async function runOpenRouterAliasAuditCommand(
   const outPath = resolveOutPath(repoDir, args.output);
   let catalogSource: AliasAuditReport['catalogSource'] = 'live';
   let catalog: Map<string, OpenRouterModel>;
+  let endpoints: Map<string, readonly OpenRouterEndpoint[]> | undefined;
 
   try {
     if (args['catalog-json']) {
@@ -111,9 +122,21 @@ export async function runOpenRouterAliasAuditCommand(
     return 2;
   }
 
+  try {
+    if (catalogSource === 'live') {
+      endpoints = await fetchEndpointsForAliases(deps.registry, catalog, deps.fetchEndpoints);
+    } else if (args['endpoints-json']) {
+      endpoints = parseEndpointsFixture(JSON.parse(readFileSync(args['endpoints-json'], 'utf-8')));
+    }
+  } catch (error) {
+    console.error(`OpenRouter alias audit could not load endpoints: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+
   const report = auditOpenRouterAliases({
     registry: deps.registry,
     openRouterModels: catalog,
+    openRouterEndpoints: endpoints,
     now: deps.now(),
     catalogSource,
   });

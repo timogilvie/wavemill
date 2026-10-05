@@ -9,6 +9,8 @@ const defaultRepoRoot = join(dirname(__filename), '..');
 const REQUIRED_FILTER_PATHS = [
   'shared/fixtures/model-registry.v1.json',
   'shared/lib/disabled-models.ts',
+  'shared/lib/openrouter-alias-audit.ts', // install-paths: allow CI path filter
+  'shared/lib/openrouter-catalog.ts', // install-paths: allow CI path filter
   'tools/audit-openrouter-aliases.ts', // install-paths: allow CI path filter
   'tools/check-openrouter-alias-audit-ci.ts', // install-paths: allow CI path filter
   'tools/check-openrouter-alias-audit-ci.test.ts', // install-paths: allow CI path filter
