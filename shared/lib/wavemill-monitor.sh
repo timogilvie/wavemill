@@ -9335,7 +9335,10 @@ merge_queue_enrich_ready_artifacts() {
     if [[ "$mode" == "completed" ]]; then
       local executor
       executor="$(wavemill_session_merge_executor "$REPO_DIR")"
-      if [[ "$executor" != "tend" ]]; then
+      # A failed capability lookup is not evidence that a human owns the
+      # merge. Leave the completed Ready artifact untouched so the normal
+      # transition failure path can keep the result fail-safe.
+      if [[ "$executor" != "tend" && "$executor" != "unknown" ]]; then
         jq -cn --argjson base "$base_json" --arg executor "$executor" '$base + {queueState:"merge-needed", mergeExecutor:$executor}'
         return 0
       fi
