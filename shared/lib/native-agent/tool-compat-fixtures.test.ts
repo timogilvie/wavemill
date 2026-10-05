@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { streamSimpleOpenAICompletions } from '@earendil-works/pi-ai/openai-completions';
-import { streamSimpleOpenAIResponses } from '@earendil-works/pi-ai/openai-responses';
+// Pi 0.80 moved raw API implementations under `api/*`, each exporting
+// `streamSimple` (HOK-3161).
+import { streamSimple as streamSimpleOpenAICompletions } from '@earendil-works/pi-ai/api/openai-completions';
+import { streamSimple as streamSimpleOpenAIResponses } from '@earendil-works/pi-ai/api/openai-responses';
+import { normalizeContext } from '@earendil-works/pi-ai';
 import { createPiContext } from './messages.ts';
 import { buildOpenAiResponsesModel, buildOpenRouterModel } from './providers.ts';
 import { getToolCompatFixtures, type ToolCompatFixture } from './fixtures/compat/index.ts';
@@ -121,13 +124,15 @@ function buildModel(fixture: ToolCompatFixture) {
 }
 
 function buildContext(fixture: ToolCompatFixture) {
-  return createPiContext(
+  // Raw API modules take a normalized transcript context; a raw Context's
+  // systemPrompt and tools would be ignored (HOK-3161).
+  return normalizeContext(createPiContext(
     [
       { role: 'system', content: FIXTURE_SYSTEM_PROMPT },
       { role: 'user', content: FIXTURE_PROMPT },
     ],
     [fixture.toolDescriptor],
-  );
+  ));
 }
 
 function createSseResponse(events: unknown[]): Response {
