@@ -937,9 +937,11 @@ challenge_selection_health_varied_model() {
 challenge_selection_health_ack_launch() {
   local pair_id="${1:-}" stage="${2:-}" model="${3:-}"
   [[ -n "$pair_id" && -n "$stage" && -n "$model" && -n "${REPO_DIR:-}" ]] || return 0
-  [[ -f "$REPO_DIR/tools/challenge-selection-health.ts" ]] || return 0
+  local tool
+  tool="$(wavemill_tool_path challenge-selection-health.ts)"
+  [[ -f "$tool" ]] || return 0
   (
-    cd "$REPO_DIR" && npx tsx tools/challenge-selection-health.ts ack-launch \
+    cd "$REPO_DIR" && npx tsx "$tool" ack-launch \
       --repo-dir "$REPO_DIR" \
       --pair-id "$pair_id" \
       --stage "$(challenge_stage_for_launch_env "$stage")" \
@@ -950,9 +952,11 @@ challenge_selection_health_ack_launch() {
 challenge_selection_health_release() {
   local pair_id="${1:-}" stage="${2:-}" model="${3:-}"
   [[ -n "$pair_id" && -n "$stage" && -n "$model" && -n "${REPO_DIR:-}" ]] || return 0
-  [[ -f "$REPO_DIR/tools/challenge-selection-health.ts" ]] || return 0
+  local tool
+  tool="$(wavemill_tool_path challenge-selection-health.ts)"
+  [[ -f "$tool" ]] || return 0
   (
-    cd "$REPO_DIR" && npx tsx tools/challenge-selection-health.ts release \
+    cd "$REPO_DIR" && npx tsx "$tool" release \
       --repo-dir "$REPO_DIR" \
       --pair-id "$pair_id" \
       --stage "$(challenge_stage_for_launch_env "$stage")" \
@@ -970,9 +974,11 @@ challenge_selection_health_release() {
 challenge_selection_health_record_review_timeout() {
   local pair_id="${1:-}" model="${2:-}"
   [[ -n "$pair_id" && -n "$model" && -n "${REPO_DIR:-}" ]] || return 0
-  [[ -f "$REPO_DIR/tools/challenge-selection-health.ts" ]] || return 0
+  local tool
+  tool="$(wavemill_tool_path challenge-selection-health.ts)"
+  [[ -f "$tool" ]] || return 0
   (
-    cd "$REPO_DIR" && npx tsx tools/challenge-selection-health.ts record-outcome \
+    cd "$REPO_DIR" && npx tsx "$tool" record-outcome \
       --repo-dir "$REPO_DIR" \
       --pair-id "$pair_id" \
       --stage review \
@@ -1016,7 +1022,9 @@ record_openrouter_credits_challenge_abort() {
   printf '%s\n' "$count" > "$count_file" 2>/dev/null || true
   rm -rf "$lock_dir" 2>/dev/null || true
 
-  if [[ "$count" -ge 2 ]]; then
+  # HOK-3155: trip the warning cache on the first classified credit abort, not
+  # after a count. The count file is kept for diagnostic grep attribution.
+  if [[ "$count" -ge 1 ]]; then
     write_openrouter_warning_cache "OpenRouter credits exhausted - challenge coverage disabled, top up at https://openrouter.ai/credits"
   fi
 }
@@ -1124,24 +1132,33 @@ challenge_abort_pair() {
      + (if $nextAction == "" then {} else {nextAction:$nextAction} end)' \
     > "$tmp" 2>/dev/null && mv "$tmp" "$artifact" || rm -f "$tmp"
 
-  if [[ -n "${REPO_DIR:-}" && -f "$REPO_DIR/tools/record-arm-failure.ts" && ( "$role" == "primary" || "$role" == "challenger" ) ]]; then
-    (
-      cd "$REPO_DIR" && npx tsx tools/record-arm-failure.ts \
-        --repo-dir "${WAVEMILL_RELIABILITY_REPO_DIR:-$REPO_DIR}" \
-        --issue "$issue" \
-        --pair-id "${pair_id:-$issue}" \
-        --role "$role" \
-        --stage "$(challenge_stage_for_launch_env "$stage")" \
-        --model "${model:-unknown}" \
-        --abort-reason "$reason" \
-        --detail "$detail" \
-        --next-action "$next_action"
-    ) >/dev/null 2> >(while IFS= read -r line; do log_warn "$line"; done) || true
+  if [[ -n "${REPO_DIR:-}" && ( "$role" == "primary" || "$role" == "challenger" ) ]]; then
+    local tool
+    tool="$(wavemill_tool_path record-arm-failure.ts)"
+    if [[ -f "$tool" ]]; then
+      (
+        cd "$REPO_DIR" && npx tsx "$tool" \
+          --repo-dir "${WAVEMILL_RELIABILITY_REPO_DIR:-$REPO_DIR}" \
+          --issue "$issue" \
+          --pair-id "${pair_id:-$issue}" \
+          --role "$role" \
+          --stage "$(challenge_stage_for_launch_env "$stage")" \
+          --model "${model:-unknown}" \
+          --abort-reason "$reason" \
+          --detail "$detail" \
+          --next-action "$next_action"
+      ) >/dev/null 2> >(while IFS= read -r line; do log_warn "$line"; done) || true
+    fi
   fi
 
-  if [[ "$reason" == *"openrouter-credits-exhausted"* ]]; then
-    record_openrouter_credits_challenge_abort || true
-  fi
+  # HOK-3155: trip the credit circuit for both canonical reason spellings. The
+  # terminal_launch_failure prefix wraps `provider-credit-exhausted` today;
+  # `openrouter-credits-exhausted` is the legacy wording and still appears in
+  # some stage envelopes.
+  case "$reason" in
+    *"openrouter-credits-exhausted"*|*"provider-credit-exhausted"*)
+      record_openrouter_credits_challenge_abort || true ;;
+  esac
 
   set_window_attention_state "$win" "needs-user"
   return 0
@@ -3258,7 +3275,7 @@ Cause: eval evidence repeatedly refused as stale at the current PR head (relaunc
 Retry count: $retry_count/$retry_max
 
 Next action:
-1. Inspect \`npx tsx tools/challenge-eval-evidence.ts --pair-id $pair_id --side <side> --pr <pr> --repo-dir .\` and re-run the eval manually if the refusal is transient.
+1. Inspect \`npx tsx $TOOLS_DIR/challenge-eval-evidence.ts --pair-id $pair_id --side <side> --pr <pr> --repo-dir .\` and re-run the eval manually if the refusal is transient.
 2. If eval cannot be recovered quickly, compare PRs #${primary_pr:-?} and #${challenger_pr:-?} manually.
 3. Close the losing PR and proceed with the winner.
 EOF
@@ -3305,7 +3322,7 @@ The eval ran at the current PR head. Its record is invalid. Re-running evals wil
 
 Next action:
 1. Retire the invalid arm: close its PR, mark the arm aborted, then ship the surviving PR.
-2. Or assess/supersede the pair with \`npx tsx tools/challenge-pair-recovery.ts --pair $pair_id\`. Add \`--apply\` after reviewing the dry run.
+2. Or assess/supersede the pair with \`npx tsx $TOOLS_DIR/challenge-pair-recovery.ts --pair $pair_id\`. Add \`--apply\` after reviewing the dry run.
 EOF
   printf '%s\n' "$artifact_path"
 }
@@ -6927,7 +6944,7 @@ native_terminal_failure_kind() {
       printf 'provider-config-error\n'; return 0 ;;
     *"rate limit"*|*"429"*)
       printf 'provider-transient-error\n'; return 0 ;;
-    *"can only afford"*|*"requires more credits"*|*"http 402"*|*"402 payment required"*|*"openrouter-credits-exhausted"*)
+    *"can only afford"*|*"requires more credits"*|*"http 402"*|*"402 payment required"*|*"openrouter-credits-exhausted"*|*"exceed your available credits"*|*"402 this request would"*)
       printf 'provider-credit-exhausted\n'; return 0 ;;
     *"insufficient"*"credit"*|*"quota"*)
       printf 'provider-credit-exhausted\n'; return 0 ;;
@@ -11974,6 +11991,26 @@ review_recovery_coordinator_locked() {
   return 0
 }
 
+# review_infra_recovery_reset_if_new_head <state_dir> <current_head>
+# Re-arm the review-infra-recovery budget after a new commit. Its key is
+# `<head>:...` (see relaunch_review_after_infra_recovery), and the gate there
+# resets it, but the pending-ready halt checks the exhausted sentinel before
+# that gate is reached, so a terminalized arm stayed halted across new commits
+# (HOK-2924 reset-on-new-head). Also lifts the pending-ready-recheck halt that
+# was marked in lockstep with it.
+review_infra_recovery_reset_if_new_head() {
+  local state_dir="$1" current_head="$2" stored_key
+  [[ -n "$current_head" ]] || return 0
+  stored_key="$(bounded_retry_head "$state_dir" "review-infra-recovery")"
+  [[ -n "$stored_key" && "${stored_key%%:*}" != "$current_head" ]] || return 0
+  bounded_retry_clear "$state_dir" "review-infra-recovery"
+  case "$(bounded_retry_exhaustion_reason "$state_dir" "pending-ready-recheck")" in
+    "Review infrastructure recovery is exhausted"*)
+      bounded_retry_clear "$state_dir" "pending-ready-recheck"
+      ;;
+  esac
+}
+
 relaunch_review_after_infra_recovery() {
   local issue="$1" slug="$2" title="$3" wt_dir="$4" branch="$5" base_branch="$6" pr_number="$7" state_dir="$8"
   local category recorded_head current_head identity timeout_identity reviewer_identity
@@ -14691,7 +14728,17 @@ cleanup_aborted_challenge_arm() {
   else
     CLEANUP_EPISODE_CURRENT_FINGERPRINT=""
   fi
-  safe_remove_task_worktree_and_branch "$wt_dir" "$task_branch" "$(effective_task_base_branch "$issue" 2>/dev/null || printf '%s\n' "${BASE_BRANCH:-main}")" "cleanup_aborted_challenge_arm" "$issue" "" || cleanup_rc=$?
+  # HOK-3089: a PR-less aborted arm whose sibling PR merged may be archived
+  # (refs/archive/wavemill/<issue>) and reaped, matching the operator's
+  # `wavemill cleanup <issue> --abandon`. The authority is scoped to this one
+  # call; without a verified merged sibling the unpublished head is retained.
+  local abandon_issue=""
+  if declare -F check_challenge_sibling_merged >/dev/null 2>&1 \
+    && check_challenge_sibling_merged "$issue"; then
+    abandon_issue="$issue"
+  fi
+  WAVEMILL_CLEANUP_ABANDON_ISSUE="$abandon_issue" \
+    safe_remove_task_worktree_and_branch "$wt_dir" "$task_branch" "$(effective_task_base_branch "$issue" 2>/dev/null || printf '%s\n' "${BASE_BRANCH:-main}")" "cleanup_aborted_challenge_arm" "$issue" "" || cleanup_rc=$?
   cleanup_outcome="${WAVEMILL_CLEANUP_OUTCOME:-}"
   CLEANUP_EPISODE_CURRENT_FINGERPRINT=""
   if [[ "$cleanup_rc" -eq 10 ]] || cleanup_outcome_is_retain "$cleanup_outcome"; then
@@ -18152,6 +18199,18 @@ process_deferred_monitor_commands() {
   REMAINING_FREE_SLOTS="$free_slots"
 }
 
+# monitor_reply_is_task_command <reply>
+# Task commands typed at the backlog prompt that must go to
+# execute_or_defer_monitor_command rather than be parsed as a numeric
+# selection. `re-review` was missing here, so it was logged as
+# "Invalid selection: re-review" and never reached its handler.
+monitor_reply_is_task_command() {
+  case "$1" in
+    advance\ *|re-review\ *) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 normalize_prompt_command_reply() {
   local event="$1"
   case "$event" in
@@ -19726,14 +19785,22 @@ monitor_issue_state() {
       monitor_deregister_terminal_task "$ISSUE"
       return 0
     fi
-    # Deduplicated transition logging (HOK-2972): the first observation is a
-    # status event; once the durable terminal transition is recorded, repeat
-    # polls (cleanup retries, restarts) log at debug instead of warning.
+    # Deduplicated transition logging (HOK-2972, HOK-3004): the first
+    # observation is a status event; once the durable terminal transition is
+    # recorded, repeat polls (cleanup retries, restarts) log at debug instead
+    # of warning. The Linear-Done completion log is bound to the durable
+    # false→true transition of linearApplied so retained-cleanup polls and
+    # monitor restarts emit nothing at status level for an already-recorded
+    # Linear completion.
     local closed_pr_recorded="false" closed_pr_key=""
+    local closed_pr_linear_before="false"
     if declare -F wavemill_terminal_marker_key >/dev/null 2>&1 && declare -F wavemill_terminal_marker_field >/dev/null 2>&1; then
       closed_pr_key="$(wavemill_terminal_marker_key "pr_closed_unmerged" "$PR" 2>/dev/null || true)"
       if [[ -n "$closed_pr_key" && "$(wavemill_terminal_marker_field "$ISSUE" "$closed_pr_key" "stateApplied")" == "true" ]]; then
         closed_pr_recorded="true"
+      fi
+      if [[ -n "$closed_pr_key" && "$(wavemill_terminal_marker_field "$ISSUE" "$closed_pr_key" "linearApplied")" == "true" ]]; then
+        closed_pr_linear_before="true"
       fi
     fi
     if [[ "$closed_pr_recorded" == "true" ]]; then
@@ -19741,6 +19808,9 @@ monitor_issue_state() {
     else
       log "status" "$ISSUE → PR #$PR closed without merge"
     fi
+    # Sibling outcome calculation is intentionally independent of status
+    # logging so a retained-cleanup repoll never re-announces an already
+    # durable Linear transition.
     if is_challenge_task "$ISSUE"; then
       local closed_role closed_pair_id inferred_closed_role
       closed_role=$(get_task_meta "$ISSUE" "challengeRole")
@@ -19755,6 +19825,7 @@ monitor_issue_state() {
       fi
     fi
     local linear_status="Backlog"
+    local sibling_merged="false"
     if is_challenge_task "$ISSUE"; then
       local sibling_pr sibling_state
       sibling_pr=$(get_challenge_sibling_pr "$ISSUE")
@@ -19763,7 +19834,7 @@ monitor_issue_state() {
       # Challenge tasks should only move once the sibling outcome is definitive.
       if check_challenge_sibling_merged "$ISSUE"; then
         linear_status="Done"
-        log "status" "Challenge sibling merged → marking Linear as Done"
+        sibling_merged="true"
       fi
 
       if [[ "$linear_status" != "Done" && -n "$sibling_pr" ]]; then
@@ -19793,8 +19864,33 @@ monitor_issue_state() {
       # merges, Backlog only when both arms are closed, deferred while the
       # sibling is still open) so the shared issue never bounces to Backlog.
       wavemill_reconcile_terminal "$SESSION" "$ISSUE" "pr_closed_unmerged" "$PR" || true
-    elif [[ -n "$linear_status" ]]; then
-      linear_set_state "$ISSUE" "$linear_status"
+      # HOK-3004: emit "Challenge sibling merged → marking Linear as Done" only
+      # when THIS invocation durably moved linearApplied from false to true,
+      # using the reconciler's persisted marker as the sole source of truth.
+      # Retained-cleanup repolls and monitor restarts stay silent at status
+      # level because linearApplied is already true. A reconciliation that
+      # failed to persist (linear_set_state error, missing marker helpers)
+      # falls through to a debug log and leaves the retryable marker intact.
+      if [[ "$sibling_merged" == "true" ]]; then
+        local closed_pr_linear_after="false"
+        if [[ -n "$closed_pr_key" ]] \
+          && declare -F wavemill_terminal_marker_field >/dev/null 2>&1 \
+          && [[ "$(wavemill_terminal_marker_field "$ISSUE" "$closed_pr_key" "linearApplied")" == "true" ]]; then
+          closed_pr_linear_after="true"
+        fi
+        if [[ "$closed_pr_linear_before" != "true" && "$closed_pr_linear_after" == "true" ]]; then
+          log "status" "Challenge sibling merged → marking Linear as Done"
+        elif [[ "$closed_pr_linear_before" != "true" && "$closed_pr_linear_after" != "true" ]]; then
+          log "debug" "  ↳ Challenge sibling merged → Linear Done pending durable reconciliation"
+        else
+          log "debug" "  ↳ Challenge sibling merged → Linear Done already recorded"
+        fi
+      fi
+    elif [[ -n "$linear_status" ]] && should_update_linear_state "$ISSUE"; then
+      # No reconciler available: perform the direct update but do not claim a
+      # durable transition at status level - there is no persisted field to
+      # verify it. The underlying linear_set_state retry behavior is unchanged.
+      linear_set_state "$(get_linear_issue_id "$ISSUE")" "$linear_status"
     fi
     # HOK-2952: one ownership policy for every closed-PR role. The old
     # in-memory-only `CLEANED=1` branch (which left pane/worktree/state
@@ -20423,6 +20519,7 @@ monitor_issue_state() {
       if [[ -f "$ready_state_dir_path/.review-result.json" ]] \
           && ! review_result_missing_final_evidence "$ready_state_dir_path" \
           && review_result_infra_failure "$ready_state_dir_path"; then
+        review_infra_recovery_reset_if_new_head "$ready_state_dir_path" "$current_head"
         if bounded_retry_is_exhausted "$ready_state_dir_path" "review-infra-recovery"; then
           if bounded_retry_mark_exhausted "$ready_state_dir_path" "pending-ready-recheck" \
               "Review infrastructure recovery is exhausted for PR #$PR; pending-ready halted until the review artifact changes"; then
@@ -21204,7 +21301,7 @@ check_backstage_observer_health() {
     return 0
   fi
 
-  detail="Backstage window '$WAVEMILL_WINDOW_BACKSTAGE' observer service needs user attention. Restart 'npx tsx tools/observer.ts --loop --json --dry-run --repo-dir $REPO_DIR --session $SESSION' in tmux."
+  detail="Backstage window '$WAVEMILL_WINDOW_BACKSTAGE' observer service needs user attention. Restart 'npx tsx $TOOLS_DIR/observer.ts --loop --json --dry-run --repo-dir $REPO_DIR --session $SESSION' in tmux."
   [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "observer" "needs-user" "$detail" "$prior_attempt_count" "$prior_attempt_at" "$observer_pane_id" "$heartbeat_at" "$observer_count"
   if [[ "$LAST_BACKSTAGE_OBSERVER_HEALTH_STATUS" != "needs-user" ]]; then
     log_warn "$detail"
@@ -21265,7 +21362,7 @@ check_backstage_health() {
     heartbeat_epoch="$(wavemill_iso8601_to_epoch "$heartbeat_at" 2>/dev/null || echo 0)"
     [[ "$heartbeat_epoch" =~ ^[0-9]+$ ]] || heartbeat_epoch=0
     if (( prior_attempt_epoch == 0 || heartbeat_epoch <= prior_attempt_epoch )); then
-      detail="Backstage tend restart attempt ${prior_attempt_count} is pending: pane ${executor_pane_id} is alive, awaiting first heartbeat (${elapsed}s elapsed). Restart 'npx tsx tools/tend.ts --loop --repo-dir $REPO_DIR' in tmux."
+      detail="Backstage tend restart attempt ${prior_attempt_count} is pending: pane ${executor_pane_id} is alive, awaiting first heartbeat (${elapsed}s elapsed). Restart 'npx tsx $TOOLS_DIR/tend.ts --loop --repo-dir $REPO_DIR' in tmux."
       [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "tend" "missing-tend-loop" "$detail" "$prior_attempt_count" "$prior_attempt_at" "$executor_pane_id" "$heartbeat_at" "$tend_count"
       LAST_BACKSTAGE_HEALTH_STATUS="missing-tend-loop"
       LAST_BACKSTAGE_TEND_ALIVE_IDENTITY=""
@@ -21370,9 +21467,9 @@ check_backstage_health() {
       status="$pane_status"
       [[ "$status" == "stalled" ]] || status="missing-tend-loop"
       if [[ "$pane_status" == "stalled" ]]; then
-        detail="Backstage tend loop is stalled (restart attempt ${prior_attempt_count} unconfirmed: $detail); next automatic restart in ${remaining}s. Restart 'npx tsx tools/tend.ts --loop --repo-dir $REPO_DIR' in tmux."
+        detail="Backstage tend loop is stalled (restart attempt ${prior_attempt_count} unconfirmed: $detail); next automatic restart in ${remaining}s. Restart 'npx tsx $TOOLS_DIR/tend.ts --loop --repo-dir $REPO_DIR' in tmux."
       else
-        detail="Backstage window '$WAVEMILL_WINDOW_BACKSTAGE' is missing the ${WAVEMILL_BACKSTAGE_TEND_PANE_TITLE} executor (restart attempt ${prior_attempt_count} unconfirmed: $detail); next automatic restart in ${remaining}s. Restart 'npx tsx tools/tend.ts --loop --repo-dir $REPO_DIR' in tmux."
+        detail="Backstage window '$WAVEMILL_WINDOW_BACKSTAGE' is missing the ${WAVEMILL_BACKSTAGE_TEND_PANE_TITLE} executor (restart attempt ${prior_attempt_count} unconfirmed: $detail); next automatic restart in ${remaining}s. Restart 'npx tsx $TOOLS_DIR/tend.ts --loop --repo-dir $REPO_DIR' in tmux."
       fi
       heartbeat_at="$(read_backstage_service_health_field "tend" '.heartbeatAt' || true)"
       [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "tend" "$status" "$detail" "$prior_attempt_count" "$prior_attempt_at" "$executor_pane_id" "$heartbeat_at" "$tend_count"
@@ -21386,7 +21483,7 @@ check_backstage_health() {
     exhausted|exhausted-quiet)
       status="needs-user"
       reason="tend-restart-exhausted evidence=${identity} attempts=${prior_attempt_count}"
-      detail="Backstage tend loop restart attempts are exhausted for ${identity} after ${prior_attempt_count}/${retry_limit} attempt(s). Restart 'npx tsx tools/tend.ts --loop --repo-dir $REPO_DIR' in tmux after fixing the underlying process evidence."
+      detail="Backstage tend loop restart attempts are exhausted for ${identity} after ${prior_attempt_count}/${retry_limit} attempt(s). Restart 'npx tsx $TOOLS_DIR/tend.ts --loop --repo-dir $REPO_DIR' in tmux after fixing the underlying process evidence."
       heartbeat_at="$(read_backstage_service_health_field "tend" '.heartbeatAt' || true)"
       [[ -n "$health_file" ]] && wavemill_write_backstage_service_health "$health_file" "tend" "$status" "$detail" "$prior_attempt_count" "$prior_attempt_at" "$executor_pane_id" "$heartbeat_at" "$tend_count"
       marked_exhausted=1
@@ -21443,11 +21540,11 @@ check_backstage_health() {
     if bounded_retry_mark_exhausted "$STATE_DIR" "$bucket" "$reason" >/dev/null 2>&1; then
       log_warn "Backstage tend loop restart attempts are exhausted for ${identity} after ${next_attempt_count}/${retry_limit} attempt(s): ${restart_error}"
     fi
-    detail="Backstage tend loop restart attempts are exhausted for ${identity} after ${next_attempt_count}/${retry_limit} attempt(s). Last restart attempt did not produce a fresh heartbeat: $restart_error. Restart 'npx tsx tools/tend.ts --loop --repo-dir $REPO_DIR' in tmux after fixing the underlying process evidence."
+    detail="Backstage tend loop restart attempts are exhausted for ${identity} after ${next_attempt_count}/${retry_limit} attempt(s). Last restart attempt did not produce a fresh heartbeat: $restart_error. Restart 'npx tsx $TOOLS_DIR/tend.ts --loop --repo-dir $REPO_DIR' in tmux after fixing the underlying process evidence."
   elif [[ -n "$restart_pane_id" ]]; then
-    detail="Backstage tend restart attempt ${next_attempt_count} did not produce a fresh heartbeat within ${BACKSTAGE_TEND_RESTART_CONFIRM_SECONDS}s: $restart_error. Watching the new pane for ${BACKSTAGE_TEND_RESTART_GRACE_SECONDS}s and retrying no earlier than ${next_backoff}s after that. Restart 'npx tsx tools/tend.ts --loop --repo-dir $REPO_DIR' in tmux."
+    detail="Backstage tend restart attempt ${next_attempt_count} did not produce a fresh heartbeat within ${BACKSTAGE_TEND_RESTART_CONFIRM_SECONDS}s: $restart_error. Watching the new pane for ${BACKSTAGE_TEND_RESTART_GRACE_SECONDS}s and retrying no earlier than ${next_backoff}s after that. Restart 'npx tsx $TOOLS_DIR/tend.ts --loop --repo-dir $REPO_DIR' in tmux."
   else
-    detail="Backstage tend restart attempt ${next_attempt_count} could not split a backstage pane: $restart_error. Retrying no earlier than ${next_backoff}s. Restart 'npx tsx tools/tend.ts --loop --repo-dir $REPO_DIR' in tmux."
+    detail="Backstage tend restart attempt ${next_attempt_count} could not split a backstage pane: $restart_error. Retrying no earlier than ${next_backoff}s. Restart 'npx tsx $TOOLS_DIR/tend.ts --loop --repo-dir $REPO_DIR' in tmux."
   fi
   restart_instance_count="$tend_count"
   [[ -n "$restart_pane_id" ]] && restart_instance_count=1
@@ -21739,7 +21836,7 @@ while :; do
               '.depsExpanded = (if (.depsExpanded // false) then false else true end) | .updated = (now | todate)'
             LAST_DISPLAY=""
           fi
-        elif [[ "$REPLY" == advance\ * ]]; then
+        elif monitor_reply_is_task_command "$REPLY"; then
           execute_or_defer_monitor_command "new" "$REPLY" "$MONITOR_PHASE_C_REPLY_OFFSET" "$free_slots" "$queue_plan_json" "$avail_unblocked" "$avail_blocked" "$select_from"
           MONITOR_PHASE_C_REPLY_OFFSET=""
         elif [[ "$REPLY" =~ ^unknown\  ]]; then

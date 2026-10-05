@@ -191,10 +191,7 @@ describe('native-agent provider resolution', () => {
   it('builds a ready OpenRouter model with compat and header overrides', () => {
     const { repoDir, cleanup } = makeRepo();
     try {
-      writeArtifact(repoDir, 'openrouter', 'openrouter-test-model', 'v1', {
-        provider: 'openrouter',
-        model: 'openrouter-test-model',
-      });
+      writeArtifact(repoDir, 'openrouter', 'qwen-3-coder', 'v1');
 
       const [entry] = resolveNativeAgentProviders({
         providers: {
@@ -204,13 +201,13 @@ describe('native-agent provider resolution', () => {
               'HTTP-Referer': 'https://wavemill.test',
               'X-Title': 'Wavemill',
             },
-            models: ['openrouter-test-model'],
+            models: ['qwen-3-coder'],
           },
         },
       }, {
         repoDir,
         env: { OPENROUTER_API_KEY: 'sk-openrouter-test' },
-        registry: makeCertifiedRegistry('openrouter-test-model', 'openrouter'),
+        registry: makeCertifiedRegistry('qwen-3-coder', 'openrouter'),
         now: FIXED_NOW,
       });
 
@@ -219,15 +216,16 @@ describe('native-agent provider resolution', () => {
       assert.equal(entry.model.api, 'openai-completions');
       assert.equal(entry.model.provider, 'openrouter');
       assert.equal(entry.model.baseUrl, 'https://example.test/openrouter');
-      assert.equal(entry.model.id, 'openrouter:openrouter-test-model');
-      assert.equal(entry.model.name, 'openrouter-test-model');
-      assert.equal(toProviderRequestModelId(entry.model), 'openrouter-test-model');
+      assert.equal(entry.model.id, 'openrouter:qwen-3-coder');
+      assert.equal(entry.model.name, 'qwen/qwen3-coder');
+      assert.equal(toProviderRequestModelId(entry.model), 'qwen/qwen3-coder');
       assert.deepEqual(entry.model.headers, {
         'HTTP-Referer': 'https://wavemill.test',
         'X-Title': 'Wavemill',
       });
       assert.deepEqual(entry.model.compat, {
         thinkingFormat: 'openrouter',
+        supportsStrictMode: true,
       });
     } finally {
       cleanup();

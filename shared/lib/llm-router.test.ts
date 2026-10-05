@@ -67,8 +67,18 @@ function makeArtifact(overrides?: Partial<SelectorArtifact>): SelectorArtifact {
   };
 }
 
+// HOK-3100: tests exercise `loadArtifact` which now reads from the wavemill
+// install (never a milled repo). Point WAVEMILL_DIR at the per-test temp dir
+// so these fixtures continue to behave like a fake install.
 function makeTempDir(): string {
-  return mkdtempSync(join(tmpdir(), 'llm-router-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'llm-router-test-'));
+  process.env.WAVEMILL_DIR = dir;
+  return dir;
+}
+
+function cleanup(dir: string): void {
+  rmSync(dir, { recursive: true, force: true });
+  delete process.env.WAVEMILL_DIR;
 }
 
 function makeResponse(overrides?: Partial<LLMRoutingResponse>): LLMRoutingResponse {
@@ -90,8 +100,17 @@ function makeResponse(overrides?: Partial<LLMRoutingResponse>): LLMRoutingRespon
 console.log('\n── loadArtifact ──');
 
 test('returns null when file does not exist', () => {
-  const result = loadArtifact('/nonexistent/path');
-  assert.equal(result, null);
+  // HOK-3100: the install resolver reads from WAVEMILL_DIR; point it at a
+  // nonexistent dir so the artifact path cannot resolve.
+  const originalEnv = process.env.WAVEMILL_DIR;
+  process.env.WAVEMILL_DIR = '/nonexistent/path/' + Date.now();
+  try {
+    const result = loadArtifact('/nonexistent/path');
+    assert.equal(result, null);
+  } finally {
+    if (originalEnv === undefined) delete process.env.WAVEMILL_DIR;
+    else process.env.WAVEMILL_DIR = originalEnv;
+  }
 });
 
 test('returns null when directory has no artifact', () => {
@@ -100,7 +119,7 @@ test('returns null when directory has no artifact', () => {
     const result = loadArtifact(dir);
     assert.equal(result, null);
   } finally {
-    rmSync(dir, { recursive: true });
+    cleanup(dir);
   }
 });
 
@@ -118,7 +137,7 @@ test('parses valid artifact JSON', () => {
     assert.equal(result!.version, '1.0.0');
     assert.equal(result!.few_shot_examples.length, 1);
   } finally {
-    rmSync(dir, { recursive: true });
+    cleanup(dir);
   }
 });
 
@@ -131,7 +150,7 @@ test('returns null on malformed JSON', () => {
     const result = loadArtifact(dir);
     assert.equal(result, null);
   } finally {
-    rmSync(dir, { recursive: true });
+    cleanup(dir);
   }
 });
 
@@ -147,7 +166,7 @@ test('returns null when required fields are missing', () => {
     const result = loadArtifact(dir);
     assert.equal(result, null);
   } finally {
-    rmSync(dir, { recursive: true });
+    cleanup(dir);
   }
 });
 
@@ -164,7 +183,7 @@ test('loads artifact from custom path', () => {
     assert.notEqual(result, null);
     assert.equal(result!.version, '1.0.0');
   } finally {
-    rmSync(dir, { recursive: true });
+    cleanup(dir);
   }
 });
 
@@ -307,7 +326,7 @@ test('returns recommendation on successful LLM call', () => {
     assert.equal(result!.resourceSelections?.[0]?.variant, 'baseline');
     assert.ok(result!.reasoning.startsWith('[LLM Router]'));
   } finally {
-    rmSync(dir, { recursive: true });
+    cleanup(dir);
   }
 });
 
@@ -332,7 +351,7 @@ test('returns null when LLM call throws', () => {
 
     assert.equal(result, null);
   } finally {
-    rmSync(dir, { recursive: true });
+    cleanup(dir);
   }
 });
 
@@ -358,7 +377,7 @@ test('returns null when LLM returns invalid model', () => {
 
     assert.equal(result, null);
   } finally {
-    rmSync(dir, { recursive: true });
+    cleanup(dir);
   }
 });
 
@@ -383,7 +402,7 @@ test('returns null when LLM returns unparseable text', () => {
 
     assert.equal(result, null);
   } finally {
-    rmSync(dir, { recursive: true });
+    cleanup(dir);
   }
 });
 
@@ -415,7 +434,7 @@ test('uses models from options over artifact candidates', () => {
     assert.notEqual(result, null);
     assert.equal(result!.recommendedModel, 'claude-opus-4-6');
   } finally {
-    rmSync(dir, { recursive: true });
+    cleanup(dir);
   }
 });
 

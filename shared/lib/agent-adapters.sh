@@ -1151,8 +1151,13 @@ agent_rubric_snippet() {
 }
 
 agent_runtime_resource_repo_dir() {
-  local tools_dir="$1"
-  local root="${tools_dir%/tools}"
+  # HOK-3100: must return the MILLED repo, not the install. Runtime resource
+  # selection reads config from the repo being worked on and writes registry
+  # entries into its `.wavemill/`; keying off the install path hid the milled
+  # repo's own configuration. Mirrors `routing_repo_dir` in
+  # `build_planning_prompt` / `build_review_prompt`.
+  local wt_dir="$1"
+  local root="${REPO_DIR:-$wt_dir}"
 
   if [[ -d "$root" ]]; then
     (cd "$root" && pwd)
@@ -1446,7 +1451,7 @@ Scope the plan to the minimum viable change:
   local template_content
   local resolver_tool="$tools_dir/resolve-runtime-resource.ts"
   local resource_repo_dir
-  resource_repo_dir="$(agent_runtime_resource_repo_dir "$tools_dir")"
+  resource_repo_dir="$(agent_runtime_resource_repo_dir "$wt_dir")"
   if [[ -f "$resolver_tool" ]] && agent_runtime_resource_selection_enabled "$resource_repo_dir" "planner"; then
     local resolved_json
     if resolved_json="$(agent_run_tsx_tool "$resolver_tool" --surface planner --repo-dir "$resource_repo_dir" --json 2>/dev/null)" \
@@ -1891,7 +1896,7 @@ The reviewer is operating in degraded scoped-review mode.
   local template_content
   local resolver_tool="$tools_dir/resolve-runtime-resource.ts"
   local resource_repo_dir
-  resource_repo_dir="$(agent_runtime_resource_repo_dir "$tools_dir")"
+  resource_repo_dir="$(agent_runtime_resource_repo_dir "$wt_dir")"
   if [[ -f "$resolver_tool" ]] && agent_runtime_resource_selection_enabled "$resource_repo_dir" "reviewer"; then
     local resolved_json
     if resolved_json="$(agent_run_tsx_tool "$resolver_tool" --surface reviewer --repo-dir "$resource_repo_dir" --json 2>/dev/null)" \
@@ -2065,7 +2070,7 @@ export WAVEMILL_LINEAR_ISSUE='$linear_issue'
 export WAVEMILL_DASHBOARD_PID='$dashboard_pid'
 export WAVEMILL_PHASE='planning'
 export WAVEMILL_RESOLVED_MODEL='${native_model:-$model}'
-export WAVEMILL_REPO_DIR='$repo_dir'
+export WAVEMILL_MILLED_REPO_DIR='$repo_dir'
 export WAVEMILL_WT_DIR='$worktree_dir'
 export WAVEMILL_FEATURE_SLUG='$feature_slug'
 export WAVEMILL_SLUG='$feature_slug'
@@ -2098,7 +2103,7 @@ export WAVEMILL_LINEAR_ISSUE='$linear_issue'
 export WAVEMILL_DASHBOARD_PID='$dashboard_pid'
 export WAVEMILL_PHASE='review'
 export WAVEMILL_RESOLVED_MODEL='${native_model:-$model}'
-export WAVEMILL_REPO_DIR='$repo_dir'
+export WAVEMILL_MILLED_REPO_DIR='$repo_dir'
 export WAVEMILL_WT_DIR='$worktree_dir'
 export WAVEMILL_FEATURE_SLUG='$feature_slug'
 export WAVEMILL_SLUG='$feature_slug'
@@ -2129,7 +2134,7 @@ export WAVEMILL_LINEAR_ISSUE='$linear_issue'
 export WAVEMILL_DASHBOARD_PID='$dashboard_pid'
 export WAVEMILL_PHASE='coding'
 export WAVEMILL_RESOLVED_MODEL='${native_model:-$model}'
-export WAVEMILL_REPO_DIR='$repo_dir'
+export WAVEMILL_MILLED_REPO_DIR='$repo_dir'
 export WAVEMILL_WT_DIR='$worktree_dir'
 export WAVEMILL_FEATURE_SLUG='$feature_slug'
 export WAVEMILL_SLUG='$feature_slug'
@@ -2622,7 +2627,7 @@ export WAVEMILL_LINEAR_ISSUE='$linear_issue'
 export WAVEMILL_DASHBOARD_PID='$dashboard_pid'
 export WAVEMILL_PHASE='planning'
 export WAVEMILL_RESOLVED_MODEL='${native_model:-$model}'
-export WAVEMILL_REPO_DIR='$repo_dir'
+export WAVEMILL_MILLED_REPO_DIR='$repo_dir'
 export WAVEMILL_WT_DIR='$worktree_dir'
 export WAVEMILL_FEATURE_SLUG='$feature_slug'
 export WAVEMILL_SLUG='$feature_slug'
@@ -2655,7 +2660,7 @@ export WAVEMILL_LINEAR_ISSUE='$linear_issue'
 export WAVEMILL_DASHBOARD_PID='$dashboard_pid'
 export WAVEMILL_PHASE='review'
 export WAVEMILL_RESOLVED_MODEL='${native_model:-$model}'
-export WAVEMILL_REPO_DIR='$repo_dir'
+export WAVEMILL_MILLED_REPO_DIR='$repo_dir'
 export WAVEMILL_WT_DIR='$worktree_dir'
 export WAVEMILL_FEATURE_SLUG='$feature_slug'
 export WAVEMILL_SLUG='$feature_slug'
@@ -2686,7 +2691,7 @@ export WAVEMILL_LINEAR_ISSUE='$linear_issue'
 export WAVEMILL_DASHBOARD_PID='$dashboard_pid'
 export WAVEMILL_PHASE='coding'
 export WAVEMILL_RESOLVED_MODEL='${native_model:-$model}'
-export WAVEMILL_REPO_DIR='$repo_dir'
+export WAVEMILL_MILLED_REPO_DIR='$repo_dir'
 export WAVEMILL_WT_DIR='$worktree_dir'
 export WAVEMILL_FEATURE_SLUG='$feature_slug'
 export WAVEMILL_SLUG='$feature_slug'

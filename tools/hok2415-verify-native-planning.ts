@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { launchNativePlanning } from '../shared/lib/native-agent/launch-planning.ts';
 import { resolveNativeAgentProviders, type ReadyNativeProviderEntry } from '../shared/lib/native-agent/providers.ts';
 import { closeManifest, openManifest, resolveManifestPath } from '../shared/lib/resource-manifest.ts';
@@ -66,7 +66,7 @@ async function main(): Promise<void> {
         return '';
       }
       const outputPath = args[outputIndex + 1];
-      if (args[0] === 'tools/route-task.ts') {
+      if (basename(args[0]) === 'route-task.ts') {
         writeFileSync(outputPath, `${JSON.stringify({
           planner: modelId,
           coder: 'codex',

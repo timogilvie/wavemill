@@ -17,6 +17,7 @@ import { filterNativeModels, type RouterCertificationRejection } from '../shared
 import { routeWorkflow } from '../shared/lib/workflow-router.ts';
 import { listEffectiveNativeProviderModels } from '../shared/lib/effective-models.ts';
 import type { ModelRegistry } from '../shared/lib/model-registry.ts';
+import { resolveWavemillToolPath } from '../shared/lib/native-agent/install-paths.ts';
 
 const ISSUE_ID = 'HOK-2425';
 const EVIDENCE_PATH = 'features/verification-companion-for-native-workflow-certification-coverage/verification-evidence.md';
@@ -643,7 +644,7 @@ function verifyUnregisteredOpenRouterModel(): UnregisteredOpenRouterSummary {
 
 function verifyDryRun(repoDir: string, modelId: string): DryRunSummary {
   const capture = captureCommand(repoDir, [
-    'tools/native-agent-certify.ts',
+    resolveWavemillToolPath('native-agent-certify.ts'),
     '--provider', 'openrouter',
     '--model', modelId,
     '--phase', 'workflow',
@@ -676,7 +677,7 @@ function verifyLiveRun(
   }
 
   const capture = captureCommand(repoDir, [
-    'tools/native-agent-certify.ts',
+    resolveWavemillToolPath('native-agent-certify.ts'),
     '--provider', 'openrouter',
     '--model', modelId,
     '--phase', 'workflow',

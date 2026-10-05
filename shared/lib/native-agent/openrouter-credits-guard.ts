@@ -9,6 +9,7 @@ import { resolveEnvValue } from '../env-file.ts';
 import type { NormalizedPricing } from '../openrouter-catalog.ts';
 import { readOpenRouterCredits, type OpenRouterCreditsSnapshot } from '../quota-state.ts';
 import { OPENROUTER_DEFAULT_API_KEY_ENV } from './providers.ts';
+import { resolveWavemillToolPath } from './install-paths.ts';
 
 export const DEFAULT_OPENROUTER_MIN_CREDITS_USD = 0.02;
 export const DEFAULT_OPENROUTER_WARN_CREDITS_USD = 2.00;
@@ -237,7 +238,7 @@ function triggerBackgroundRefresh(repoDir: string | undefined, config: NativeAge
 
   const args = [
     'tsx',
-    'tools/refresh-openrouter-credits.ts',
+    resolveWavemillToolPath('refresh-openrouter-credits.ts'),
     '--repo-dir',
     resolve(repoDir ?? process.cwd()),
   ];

@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import {
   getRuntimeResourceSelectionConfig,
   type RuntimeResourceSurface,
@@ -17,6 +16,7 @@ import {
 } from './resource-registry.ts';
 import { registerPromptTemplate } from './resource-adapters/prompt-adapter.ts';
 import { registerDspyArtifact } from './resource-adapters/dspy-adapter.ts';
+import { resolveWavemillAssetPath } from './native-agent/install-paths.ts';
 
 export type ResourceSurface = RuntimeResourceSurface;
 export type ResourceVariantKind = RuntimeResourceVariantKind;
@@ -92,8 +92,8 @@ function makePromptFileCandidate(surface: Exclude<ResourceSurface, 'router'>, pa
     uri: path,
     name: surface === 'planner' ? 'planning-phase' : 'review-phase',
     expectedType: 'prompt',
-    loadContent(repoDir?: string): string {
-      return readFileSync(resolve(repoDir || '.', path), 'utf-8');
+    loadContent(_repoDir?: string): string {
+      return readFileSync(resolveWavemillAssetPath(path), 'utf-8');
     },
     register(repoDir?: string): ResourceRef | null {
       const content = this.loadContent(repoDir);
@@ -108,8 +108,8 @@ function makeRouterArtifactCandidate(path: string): SurfaceCandidate {
     uri: path,
     name: 'optimized-selector',
     expectedType: 'optimizer-artifact',
-    loadContent(repoDir?: string): string {
-      return readFileSync(resolve(repoDir || '.', path), 'utf-8');
+    loadContent(_repoDir?: string): string {
+      return readFileSync(resolveWavemillAssetPath(path), 'utf-8');
     },
     register(repoDir?: string): ResourceRef | null {
       const artifact = JSON.parse(this.loadContent(repoDir)) as Record<string, unknown>;
@@ -124,15 +124,15 @@ function makeDerivedPromptCandidate(surface: Exclude<ResourceSurface, 'router'>,
     uri: path,
     name: `${surface}-optimized`,
     expectedType: 'prompt',
-    loadContent(repoDir?: string): string {
-      const artifact = JSON.parse(readFileSync(resolve(repoDir || '.', path), 'utf-8')) as DspyStageArtifact;
+    loadContent(_repoDir?: string): string {
+      const artifact = JSON.parse(readFileSync(resolveWavemillAssetPath(path), 'utf-8')) as DspyStageArtifact;
       if (typeof artifact.optimized_instruction !== 'string' || !artifact.optimized_instruction.trim()) {
         throw new Error(`Missing optimized_instruction in ${path}`);
       }
       return artifact.optimized_instruction;
     },
     register(repoDir?: string): ResourceRef | null {
-      const artifactPath = resolve(repoDir || '.', path);
+      const artifactPath = resolveWavemillAssetPath(path);
       const artifact = JSON.parse(readFileSync(artifactPath, 'utf-8')) as DspyStageArtifact;
       const artifactRef = registerDspyArtifact(path, artifact as Record<string, unknown>, repoDir);
       const content = this.loadContent(repoDir);
@@ -244,7 +244,7 @@ function resolveSelectionInternal(
   let baselineRef: ResourceRef | null = null;
   if (baselineCandidate) {
     try {
-      const baselinePath = resolve(options.repoDir || '.', baselineCandidate.uri);
+      const baselinePath = resolveWavemillAssetPath(baselineCandidate.uri);
       if (existsSync(baselinePath)) {
         baselineRef = toResourceRef(baselineCandidate.register(options.repoDir));
       }
@@ -332,7 +332,7 @@ function resolveSelectionInternal(
     };
   }
 
-  const absPath = resolve(options.repoDir || '.', candidate.uri);
+  const absPath = resolveWavemillAssetPath(candidate.uri);
   if (!existsSync(absPath)) {
     if (!runtimeConfig.fallbackToBaseline) {
       return {

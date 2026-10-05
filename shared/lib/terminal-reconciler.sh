@@ -3,6 +3,12 @@
 
 WAVEMILL_TERMINAL_RECONCILER_LOADED=1
 
+should_update_linear_state() {
+  local issue="$1"
+  [[ -n "$issue" ]] || return 1
+  linear_write_target "$issue" >/dev/null 2>&1
+}
+
 wavemill_terminal_reason_valid() {
   case "${1:-}" in
     review_complete|ready_complete|pr_opened|pr_merged|pr_closed_unmerged|challenge_resolved_winner|challenge_invalid|challenge_no_comparison|operator_abort|recovery_failure) return 0 ;;
@@ -627,11 +633,13 @@ wavemill_terminal_linear_status() {
 # wavemill-common.sh makes linear_set_state a silent no-op for them, so this
 # is safe to call from every scope (monitor, mill, startup preflight).
 wavemill_reconcile_terminal_linear() {
-  local issue="$1" reason="$2" status=""
-  linear_write_target "$issue" >/dev/null 2>&1 || return 0
+  local issue="$1" reason="$2" status="" wt_rc=0
   status="$(wavemill_terminal_linear_status "$issue" "$reason" 2>/dev/null || true)"
   [[ -n "$status" ]] || return 3
-  linear_set_state "$issue" "$status"
+  # Check if this task is eligible to write Linear. Only proceed if status is
+  # non-empty (sibling merged/closed) AND linear_write_target succeeds.
+  linear_write_target "$issue" >/dev/null 2>&1 || return 0
+  linear_set_state "$issue" "$status" || return $?
 }
 
 wavemill_reconcile_terminal() {

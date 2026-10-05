@@ -5,6 +5,7 @@ import { isValidTaskPacket, writeTaskPacketArtifacts } from '../shared/lib/task-
 import { DEFAULT_VALIDATION_CONFIG, validateTaskPacket } from '../shared/lib/task-packet-validator.ts';
 import { loadPromptTemplate } from '../shared/lib/prompt-utils.ts';
 import { closeManifest, openManifest, resolveManifestPath } from '../shared/lib/resource-manifest.ts';
+import { resolveWavemillPromptPath } from '../shared/lib/native-agent/install-paths.ts';
 
 async function main(): Promise<void> {
   const repoDir = process.cwd();
@@ -13,7 +14,7 @@ async function main(): Promise<void> {
   const session = `hok-2417-fixture-native-expansion-${Date.now()}`;
   mkdirSync(outDir, { recursive: true });
 
-  const promptTemplate = await loadPromptTemplate(join(repoDir, 'tools/prompts/issue-writer.md'));
+  const promptTemplate = await loadPromptTemplate(resolveWavemillPromptPath('issue-writer.md'));
   const issueContext = [
     'Issue: HOK-2417-FIXTURE',
     'Title: Fixture-backed native task expansion verification',

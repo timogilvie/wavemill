@@ -634,6 +634,10 @@ function parseLiveCanary(raw: unknown): NativeCertificationArtifact['liveCanary'
   if (c.reason !== undefined && !(LIVE_CANARY_REASONS as readonly string[]).includes(c.reason as string)) return undefined;
   if (c.limitExceeded !== undefined && !(LIVE_CANARY_LIMIT_KINDS as readonly string[]).includes(c.limitExceeded as string)) return undefined;
   if (c.detail !== undefined && typeof c.detail !== 'string') return undefined;
+  if (
+    c.canaryCarriedForwardFrom !== undefined
+    && (typeof c.canaryCarriedForwardFrom !== 'string' || c.canaryCarriedForwardFrom.length === 0)
+  ) return undefined;
   if (c.attempts !== undefined && (typeof c.attempts !== 'number' || !Number.isInteger(c.attempts) || c.attempts < 1)) return undefined;
 
   const usage = parseLiveCanaryUsage(c.usage);
@@ -655,6 +659,7 @@ function parseLiveCanary(raw: unknown): NativeCertificationArtifact['liveCanary'
     providerNativeId: c.providerNativeId,
     identityFingerprint: c.identityFingerprint,
     catalogHash: c.catalogHash,
+    ...(typeof c.canaryCarriedForwardFrom === 'string' ? { canaryCarriedForwardFrom: c.canaryCarriedForwardFrom } : {}),
     suiteVersion: c.suiteVersion,
     ranAt: c.ranAt,
     ...(typeof c.expiresAt === 'string' ? { expiresAt: c.expiresAt } : {}),

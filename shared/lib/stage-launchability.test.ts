@@ -158,5 +158,29 @@ describe('listCoderCanaryGaps (mill preflight advisory)', () => {
       assert.ok(gaps.every((entry) => entry.certification.includes('canary')));
     });
   });
+
+  it('omits deliberately-off models: DISABLED_MODEL_IDS and blocked/retired lifecycle (HOK-3159)', () => {
+    withRepo((repoDir) => {
+      // Every model below is workflow-certified with no live canary — the
+      // exact shape that lands on the gap list when routing would use it.
+      const canaryless = { phase: 'workflow', liveCanary: undefined };
+      writeCertArtifact(repoDir, 'qwen', 'qwen3-coder', DEFAULT_CERTIFICATION_SUITE_VERSION, canaryless);
+      writeCertArtifact(repoDir, 'google', 'gemini-3.1-pro-preview', DEFAULT_CERTIFICATION_SUITE_VERSION, canaryless);
+      writeCertArtifact(repoDir, 'google', 'gemini-3.1-pro-preview-customtools', DEFAULT_CERTIFICATION_SUITE_VERSION, canaryless);
+      writeCertArtifact(repoDir, 'stealth', 'ox-alpha', DEFAULT_CERTIFICATION_SUITE_VERSION, canaryless);
+      writeCertArtifact(repoDir, 'x-ai', 'grok-code-fast-1', DEFAULT_CERTIFICATION_SUITE_VERSION, canaryless);
+
+      const gapIds = listCoderCanaryGaps({ repoDir }).map((entry) => entry.modelId);
+      assert.ok(gapIds.includes(NATIVE_MODEL), 'an enabled coder without a canary is still reported');
+      for (const off of [
+        'gemini-3.1-pro-preview', // DISABLED_MODEL_IDS
+        'gemini-3.1-pro-preview-customtools', // DISABLED_MODEL_IDS
+        'ox-alpha', // lifecycle=deprecated, routingEligible=false
+        'grok-code-fast', // lifecycle=blocked
+      ]) {
+        assert.equal(gapIds.includes(off), false, `${off} must not be reported`);
+      }
+    });
+  });
 });
 

@@ -39,6 +39,7 @@ import {
   resolveCertificationSubject,
 } from './native-agent/certification/index.ts';
 import { clearConfigCache } from './config.ts';
+import { writeOpenRouterCredits } from './quota-state.ts';
 import { listEffectiveModelsForStage } from './effective-models.ts';
 import { computeIdentityFingerprint, getEffectiveRegistry } from './model-registry.ts';
 import {
@@ -3062,6 +3063,111 @@ test('buildChallengeExecutionIntent emits fork descriptor fields and per-side in
   assert.equal(intent.sharedPrefix, false);
   assert.deepEqual(intent.primary!.inheritedStages, []);
   assert.deepEqual(intent.challenger!.inheritedStages, []);
+});
+
+// ────────────────────────────────────────────────────────────────
+// HOK-3155: cached OpenRouter balance guards challenger selection
+// ────────────────────────────────────────────────────────────────
+
+test('pickChallengeModelsWithReason refuses OpenRouter challengers when balance is below minCreditsUsd', () => {
+  const previousApiKey = process.env.OPENROUTER_API_KEY;
+  process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+  const repoDir = writeNativeChallengeRepo({
+    model: 'qwen-3-coder',
+    provider: 'openrouter',
+    phase: 'patch',
+    enablePatchCoding: true,
+  });
+  const originalWarn = console.warn;
+  const warnings: string[] = [];
+  console.warn = (message?: unknown) => warnings.push(String(message));
+
+  try {
+    writeOpenRouterCredits(repoDir, {
+      totalCredits: 460,
+      totalUsage: 459.995,
+      balanceUsd: 0.005,
+      usageDaily: 42,
+      updatedAt: new Date().toISOString(),
+      lastFetchError: null,
+    });
+    clearConfigCache(repoDir);
+
+    const result = pickChallengeModelsWithReason(
+      ['qwen-3-coder'],
+      {
+        pairId: 'HOK-3155-LOW',
+        issueId: 'HOK-3155-LOW',
+        slug: 'drained-openrouter',
+        repoDir,
+        randomFn: () => 0,
+      },
+    );
+
+    assert.equal(result.pair, null);
+    assert.ok(result.openrouterCreditsLow, 'openrouterCreditsLow should be stamped');
+    assert.deepEqual(result.openrouterCreditsLow!.refusedModels, ['qwen-3-coder']);
+    assert.equal(result.openrouterCreditsLow!.balanceUsd, 0.005);
+    assert.ok(
+      warnings.some((line) => /challenge_not_formed reason=openrouter-credits-low/.test(line)),
+      `expected challenge_not_formed warning, got:\n${warnings.join('\n')}`,
+    );
+  } finally {
+    console.warn = originalWarn;
+    clearConfigCache(repoDir);
+    rmSync(repoDir, { recursive: true, force: true });
+    if (previousApiKey === undefined) {
+      delete process.env.OPENROUTER_API_KEY;
+    } else {
+      process.env.OPENROUTER_API_KEY = previousApiKey;
+    }
+  }
+});
+
+test('pickChallengeModelsWithReason keeps OpenRouter challengers when balance is healthy', () => {
+  const previousApiKey = process.env.OPENROUTER_API_KEY;
+  process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+  const repoDir = writeNativeChallengeRepo({
+    model: 'qwen-3-coder',
+    provider: 'openrouter',
+    phase: 'patch',
+    enablePatchCoding: true,
+  });
+
+  try {
+    writeOpenRouterCredits(repoDir, {
+      totalCredits: 500,
+      totalUsage: 100,
+      balanceUsd: 400,
+      usageDaily: 10,
+      updatedAt: new Date().toISOString(),
+      lastFetchError: null,
+    });
+    clearConfigCache(repoDir);
+
+    const result = pickChallengeModelsWithReason(
+      ['claude-opus-4-7', 'qwen-3-coder'],
+      {
+        pairId: 'HOK-3155-OK',
+        issueId: 'HOK-3155-OK',
+        slug: 'funded-openrouter',
+        primaryModel: 'claude-opus-4-7',
+        repoDir,
+        randomFn: () => 0,
+      },
+    );
+
+    assert.ok(result.pair, 'pair should form when balance is healthy');
+    assert.equal(result.openrouterCreditsLow, undefined);
+  } finally {
+    clearConfigCache(repoDir);
+    rmSync(repoDir, { recursive: true, force: true });
+    if (previousApiKey === undefined) {
+      delete process.env.OPENROUTER_API_KEY;
+    } else {
+      process.env.OPENROUTER_API_KEY = previousApiKey;
+    }
+  }
 });
 
 process.on('exit', () => {

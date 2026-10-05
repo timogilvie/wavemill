@@ -65,7 +65,9 @@ PR_CACHE="/tmp/${SESSION}-pr-cache.json"
 OPENROUTER_WARNING_CACHE="/tmp/${SESSION}-openrouter-warning.txt"
 PR_TTL=15
 WAVEMILL_STATUS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WAVEMILL_REPO_DIR="$(cd "$WAVEMILL_STATUS_DIR/../.." && pwd)"
+# HOK-3100: this is the wavemill install, not the milled repo. Derived from
+# BASH_SOURCE so standalone invocations work without common pre-sourced.
+WAVEMILL_INSTALL_DIR="$(cd "$WAVEMILL_STATUS_DIR/../.." && pwd)"
 declare -Ag WAVEMILL_ROUTING_DISPLAY_CACHE=()
 declare -Ag WAVEMILL_ARTIFACT_STATUS_CACHE=()
 
@@ -595,7 +597,7 @@ render_plan_model_routing() {
     MODEL_RESOLUTION_DISPLAY_ROUTING_COMPLETE_PATH="$routing_complete_file" \
     MODEL_RESOLUTION_DISPLAY_PHASE_CONFIG_PATH="$phase_config_file" \
     MODEL_RESOLUTION_DISPLAY_ROUTING_JSONL_PATH="$routing_jsonl_file" \
-    MODEL_RESOLUTION_DISPLAY_MODULE="$WAVEMILL_REPO_DIR/shared/lib/model-resolution-display.ts" \
+    MODEL_RESOLUTION_DISPLAY_MODULE="$WAVEMILL_INSTALL_DIR/shared/lib/model-resolution-display.ts" \
     NO_UPDATE_NOTIFIER=1 \
     npm_config_update_notifier=false \
     node --import tsx -e '
@@ -1707,7 +1709,7 @@ render_inbox_section() {
 }
 
 # HOK-3094: incidents belong to the milled repo, whose state dir is the one
-# holding STATE_FILE — never the wavemill install dir (WAVEMILL_REPO_DIR).
+# holding STATE_FILE — never the wavemill install dir (WAVEMILL_INSTALL_DIR).
 wavemill_incident_index_path() {
   if [[ -n "${WAVEMILL_INCIDENT_INDEX_OVERRIDE:-}" ]]; then
     printf '%s\n' "$WAVEMILL_INCIDENT_INDEX_OVERRIDE"

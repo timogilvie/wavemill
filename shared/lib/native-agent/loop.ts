@@ -2,21 +2,33 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   runAgentLoopContinue,
   type AfterToolCallResult,
-  type AgentContext,
+  type AgentContext as PiAgentContext,
   type AgentEventSink,
   type AgentLoopConfig,
+  type AgentLoopTurnUpdate,
   type AgentMessage,
+  type AgentTurnContext,
   type AfterToolCallContext,
   type BeforeToolCallContext,
-  type ShouldStopAfterTurnContext,
 } from '@earendil-works/pi-agent-core';
 import type { AgentEvent } from '@earendil-works/pi-agent-core';
-import type { AssistantMessage, Model } from '@earendil-works/pi-ai';
+import { createInitialSystemMessage, type AssistantMessage, type Model } from '@earendil-works/pi-ai';
+import { streamSimple } from '@earendil-works/pi-ai/compat';
 import { SessionStreamWriter, type SessionStreamWriterOptions, storeArtifact } from './session-stream.ts';
 
-// Re-export the Pi agent context type through the loop seam so loop callers can
-// construct an AgentContext without importing Pi vendor packages directly.
-export type { AgentContext, AgentMessage } from '@earendil-works/pi-agent-core';
+/**
+ * Wavemill's loop context: Pi's context plus the run's system prompt.
+ *
+ * Pi 1.0 removed `AgentContext.systemPrompt`; the prompt now travels as a
+ * leading system message. The loop seam keeps it as a field so launchers,
+ * prompt estimation, and compaction share one representation, and
+ * `runWavemillLoop` installs it as that leading message on every request
+ * without writing it into the transcript (HOK-3161).
+ */
+export interface AgentContext extends PiAgentContext {
+  systemPrompt?: string;
+}
+export type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { computeModelCost, type ModelPricing } from '../workflow-cost.ts';
 import type { ModelRegistry } from '../model-registry.ts';
 import { appendPromptSizeSample, type PromptSizeSample } from './prompt-size-log.ts';
@@ -781,13 +793,36 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
     throw error;
   }
 
+  // Next-turn planning (dynamic max tokens, terminal synthesis). Pi 1.0 runs
+  // prepareNextTurn after finishTurn, so finishTurn computes the plan and
+  // prepareNextTurn hands it to Pi (HOK-3161).
+  let planNextTurn: ((turn: AgentTurnContext) => Promise<AgentLoopTurnUpdate | undefined>) | undefined;
+  let plannedNextTurn: AgentLoopTurnUpdate | undefined;
+
+  // Pi 1.0 reads the prompt from a leading system message. It is prepended per
+  // request rather than stored in context.messages, so the transcript, retry,
+  // and continuation paths see the same messages as before (HOK-3161).
+  const systemPromptMessage = createInitialSystemMessage(context.systemPrompt, undefined);
+
   const piConfig: AgentLoopConfig = {
     model: toPiModel(config.model, currentMaxTokens, contextWindowLimit?.limit),
-    convertToLlm,
+    convertToLlm: async (messages) => {
+      const llmMessages = await convertToLlm(messages);
+      return systemPromptMessage ? [systemPromptMessage, ...llmMessages] : llmMessages;
+    },
     temperature,
     maxTokens: currentMaxTokens,
 
-    shouldStopAfterTurn: async (ctx: ShouldStopAfterTurnContext) => {
+    finishTurn: async (ctx: AgentTurnContext) => {
+      // Pi 1.0 replaced shouldStopAfterTurn with finishTurn, which also runs
+      // for error/aborted turns and runs before prepareNextTurn. Keep the 0.79
+      // contract: hard exits skip both, and next-turn planning (which can arm
+      // terminal synthesis) happens before the budget checks below (HOK-3161).
+      if (ctx.message.stopReason === 'error' || ctx.message.stopReason === 'aborted') {
+        return undefined;
+      }
+      plannedNextTurn = await planNextTurn?.(ctx);
+
       const msg = ctx.message as AssistantMessage;
       const usage = msg.usage;
       if (usage) {
@@ -803,7 +838,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
             modelPricing,
           );
         }
-        
+      
         // Track peak input tokens (what must fit in context window)
         const totalTokens = input + cacheRead + cacheWrite;
         if (totalTokens > peakInputTokens) {
@@ -822,22 +857,22 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
         && turnsCompleted >= budget.maxTurns
       ) {
         budgetStopReason = 'turn_limit';
-        return true;
+        return { action: 'end' };
       }
       if (budget?.maxInputTokens !== undefined && totalInputTokens >= budget.maxInputTokens) {
         budgetStopReason = 'token_limit';
-        return true;
+        return { action: 'end' };
       }
       if (budget?.maxOutputTokens !== undefined && totalOutputTokens >= budget.maxOutputTokens) {
         budgetStopReason = 'token_limit';
-        return true;
+        return { action: 'end' };
       }
       if (
         budget?.maxTotalTokens !== undefined &&
         totalInputTokens + totalOutputTokens >= budget.maxTotalTokens
       ) {
         budgetStopReason = 'token_limit';
-        return true;
+        return { action: 'end' };
       }
       const terminalSynthesisCompleted = terminalSynthesisActive
         && !terminalSynthesisPromptPending
@@ -849,17 +884,17 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
         && toolCallsExecuted >= budget.maxToolCalls
       ) {
         budgetStopReason = 'tool_call_limit';
-        return true;
+        return { action: 'end' };
       }
       if (budget?.maxCostUsd !== undefined && totalCostUsd >= budget.maxCostUsd) {
         budgetStopReason = 'cost_limit';
-        return true;
+        return { action: 'end' };
       }
       // Gracefully exit if the abort signal fired during this turn (e.g. wall-clock or caller cancel).
       if (composed.signal.aborted) {
-        return true;
+        return { action: 'end' };
       }
-      return false;
+      return undefined;
     },
 
     beforeToolCall: async (ctx: BeforeToolCallContext, signal?: AbortSignal) => {
@@ -1068,7 +1103,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
   };
 
   if (contextWindowLimit || config.terminalSynthesis) {
-    piConfig.prepareNextTurn = async (ctx) => {
+    planNextTurn = async (ctx) => {
       let nextModel: Model<any> | undefined;
       if (contextWindowLimit) {
         const inputTokens = estimatePromptTokens({
@@ -1120,6 +1155,11 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
       return {
         model: nextModel,
       };
+    };
+    piConfig.prepareNextTurn = async () => {
+      const update = plannedNextTurn;
+      plannedNextTurn = undefined;
+      return update;
     };
   }
 
@@ -1351,7 +1391,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
           });
           identityFailureByMessage.set(message, true);
           // Mark this turn's tool batch as failed so Pi's own fail-fast kicks in
-          // and the loop's next shouldStopAfterTurn observes the abort.
+          // and the loop's next finishTurn observes the abort.
           batchFailed.set(message, true);
           composed.abort();
           // Best-effort session-stream warning. Does not advance any step.
@@ -1431,7 +1471,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
         handleAgentEvent(event, !(continuationRunIndex > 0 && event.type === 'agent_start'));
       };
 
-      const runMessages = await runAgentLoopContinue(loopContext, piConfig, emit, composed.signal);
+      const runMessages = await runAgentLoopContinue(loopContext, piConfig, emit, composed.signal, streamSimple);
       finalMessages = continuationRunIndex > 0
         ? [...loopContext.messages, ...runMessages]
         : runMessages;

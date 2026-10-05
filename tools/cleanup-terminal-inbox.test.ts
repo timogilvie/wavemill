@@ -161,6 +161,75 @@ test('closed loser requires explicit abandon and merged sibling', () => {
   assert.ok(withAbandon.intendedActions.includes('retain-remote-branch'));
 });
 
+function prLessGit(options: { published?: boolean; dirty?: boolean } = {}): CleanupDeps['git'] {
+  return (args) => {
+    const key = args.join(' ');
+    if (key.includes('status --porcelain')) return options.dirty ? ' M src/file.ts\n' : '';
+    if (key.startsWith('show-ref --verify')) return '';
+    if (key.startsWith('rev-parse --verify task/')) return 'local-head\n';
+    if (key.startsWith('rev-parse --verify refs/remotes/origin/task/')) {
+      if (options.published) return 'local-head\n';
+      throw new Error('remote branch missing');
+    }
+    if (key.startsWith('rev-list --count')) return '1\n';
+    if (key.startsWith('cherry ')) return '+ abc\n';
+    return '';
+  };
+}
+
+test('PR-less aborted arm with unpublished head requires abandon and archives first (HOK-3089)', () => {
+  const sibling = { slug: 'winner', branch: 'task/winner', worktree: '/tmp/winner', pr: '102', status: 'merged' };
+  const task = { pr: '', status: 'aborted', phase: 'aborted', challenge: true, challengeRole: 'primary', challengePairId: 'HOK-3005', lifecycle: { workflowOutcome: 'aborted', launchContract: { baseBranch: 'auto/integration' } } };
+  const withoutAbandon = decideTerminalTask(state(task, sibling), 'HOK-3005', process.cwd(), 'auto/integration', deps({ prs: { 102: mergedPr('102') }, git: prLessGit() }), false);
+  assert.equal(withoutAbandon.status, 'refused');
+  assert.equal(withoutAbandon.refusalReason, 'aborted_pr_less_requires_abandon');
+
+  const withAbandon = decideTerminalTask(state(task, sibling), 'HOK-3005', process.cwd(), 'auto/integration', deps({ prs: { 102: mergedPr('102') }, git: prLessGit() }), true);
+  assert.equal(withAbandon.status, 'would-abandon-aborted');
+  assert.equal(withAbandon.intendedActions[0], 'archive-unpublished-head');
+  assert.equal(withAbandon.siblingPrState, 'MERGED');
+});
+
+test('PR-less aborted arm whose head is published reaps without abandon (HOK-3089)', () => {
+  const task = { pr: '', status: 'aborted', phase: 'aborted', lifecycle: { workflowOutcome: 'aborted' } };
+  const decision = decideTerminalTask(state(task), 'HOK-3005', process.cwd(), 'auto/integration', deps({ git: prLessGit({ published: true }) }), false);
+  assert.equal(decision.status, 'would-reap');
+  assert.ok(!decision.intendedActions.includes('archive-unpublished-head'));
+});
+
+test('PR-less aborted arm with a dirty worktree is refused even with abandon (HOK-3089)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'cleanup-pr-less-dirty-'));
+  try {
+    const task = { pr: '', worktree: root, status: 'aborted', phase: 'aborted', lifecycle: { workflowOutcome: 'aborted' } };
+    const decision = decideTerminalTask(state(task), 'HOK-3005', process.cwd(), 'auto/integration', deps({ git: prLessGit({ dirty: true }) }), true);
+    assert.equal(decision.status, 'refused');
+    assert.equal(decision.refusalReason, 'dirty_worktree');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('execute dispatches an abandoned PR-less arm with abandon authority (HOK-3089)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cleanup-pr-less-execute-'));
+  try {
+    const stateFile = join(root, '.wavemill', 'workflow-state.json');
+    mkdirSync(join(root, '.wavemill'), { recursive: true });
+    writeFileSync(stateFile, JSON.stringify(state({ pr: '', status: 'aborted', phase: 'aborted', lifecycle: { workflowOutcome: 'aborted' } })));
+    const abandonFlags: boolean[] = [];
+    const decisions = await cleanupTerminalInbox({
+      repoDir: root,
+      issue: 'HOK-3005',
+      execute: true,
+      abandon: true,
+      deps: deps({ git: prLessGit(), cleanup: (_decision, context) => { abandonFlags.push(context.abandon); } }),
+    });
+    assert.equal(decisions[0].status, 'executed');
+    assert.deepEqual(abandonFlags, [true]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('bulk execute skips open and active tasks', async () => {
   const root = mkdtempSync(join(tmpdir(), 'cleanup-terminal-inbox-'));
   try {

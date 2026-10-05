@@ -33,6 +33,7 @@ import {
 } from './providers.ts';
 import { TranscriptWriter } from './transcript.ts';
 import { isLinearWriter, parseTaskId } from '../task-identity.ts';
+import { resolveWavemillToolPath } from './install-paths.ts';
 import { SessionStreamWriter, resolveSessionEventStreamPath } from './session-stream.ts';
 import { captureToolDecisionsFromStream } from './tool-decision-capture.ts';
 import type { SessionStreamConfig } from './loop.ts';
@@ -243,7 +244,7 @@ function ensureTaskPacket(
   }
 
   runTsxCommand([
-    'tools/expand-issue.ts',
+    resolveWavemillToolPath('expand-issue.ts'),
     expandIssue,
     '--output',
     taskPacketPath,
@@ -299,7 +300,7 @@ function routeTaskPacket(
   runTsxCommand: (args: string[]) => string,
 ): void {
   runTsxCommand([
-    'tools/route-task.ts',
+    resolveWavemillToolPath('route-task.ts'),
     '--json',
     '--file',
     taskPacketPath,

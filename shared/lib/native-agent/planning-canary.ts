@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { explainEffectiveModelAvailability } from '../effective-models.ts';
 import { getEffectiveRegistry } from '../model-registry.ts';
 import { resolveModelAgent } from '../model-agent-resolution.ts';
@@ -324,7 +324,7 @@ export async function runNativePlanningCanary(
       if (outputIndex < 0) return '';
       const outputPath = args[outputIndex + 1];
       if (!outputPath) return '';
-      if (args[0] === 'tools/route-task.ts') {
+      if (basename(args[0]) === 'route-task.ts') {
         writeFileSync(outputPath, `${JSON.stringify({
           planner: identity.alias,
           coder: 'codex',

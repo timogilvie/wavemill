@@ -69,10 +69,13 @@ TESTS=(
   ready-failure-blocks-pr-label.test.sh
   launch-ready-phase.test.sh
   bounded-retry.test.sh
+  check-install-paths.test.sh
+  check-common-guards.test.sh
   ready-update-from-base.test.sh
   plan-packet-binding.test.sh
   task-progress.test.sh
   task-identity.test.sh
+  tracked-tree-guard.test.sh
   handle-phase-launch-result.test.sh
   coding-launch-refusal.test.sh
   launch-pane-liveness.test.sh
@@ -150,6 +153,7 @@ TESTS=(
   review-capacity-detection.test.sh
   review-missing-window-relaunch.test.sh
   re-review-no-pr.test.sh
+  monitor-command-routing.test.sh
 )
 
 SHARD_INDEX=1

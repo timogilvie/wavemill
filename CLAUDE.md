@@ -15,7 +15,7 @@ This repository provides shared tooling for both Claude and Codex AI workflows:
 - **`.wavemill/manifests/`** - Per-session resource manifests
 
 ### Key Principles
-1. **Single Source of Truth**: This repo is canonical. `shared/lib/` contains all API logic; `tools/` contains all CLI tools. `wavemill` runs tools directly from the repo — never from `~/.claude/tools/`.
+1. **Single Source of Truth**: This repo is canonical. `shared/lib/` contains all API logic; `tools/` contains all CLI tools. `wavemill` runs tools directly from the repo — never from `~/.claude/tools/`. Install assets resolve via `shared/lib/native-agent/install-paths.ts` (TS) / `WAVEMILL_INSTALL_DIR` + `wavemill_tool_path` (shell); the milled repo is `WAVEMILL_MILLED_REPO_DIR`/`REPO_DIR`. Enforced by `tests/check-install-paths.test.sh` and `tests/check-common-guards.test.sh`.
 2. **Config Schema**: Both `claude/config.json` and `codex/config.json` follow `claude/config.schema.json`; wavemill runtime config follows `wavemill-config.schema.json`
 3. **Shared Templates**: `tools/prompts/` templates are consumed by both toolchains
 4. **State Separation**: Claude uses `features/`, `bugs/`, `epics/`; Codex uses `.codex/state/`
@@ -146,6 +146,10 @@ bash tests/run-custom-tests.sh --shard 2/3 # custom harness CI shard 2 of 3
 Shell shards are assigned round-robin. Unit and custom shards use **deterministic weighted partitioning**: `tools/partition-tests.ts` (LPT greedy over `shared/lib/test-partitioner.ts`) balances shards using measured per-test medians from the checked-in manifest `tests/ci-test-weights.json`. A newly added test has no manifest entry yet and receives the conservative `defaultMs` weight — adding it to the array is still all that is needed. `tools/check-shard-balance.ts` (preflight) enforces exactly-once assignment, manifest hygiene, and the 130%-of-median balance rule; refresh the manifest with `npx tsx tools/ci-test-timings.ts collect` from ≥3 CI timing artifacts (see `docs/ci-test-timings.md`).
 
 **CI job layout** (`.github/workflows/ci.yml`): `preflight`, `shell` (×3 shards), `unit` (×7 weighted shards), `custom` (×3 weighted shards), `smoke`, and `certification` run in parallel. The `shell-and-unit` job aggregates them into the single status check named **"Shell and Unit Tests"**, which is a required check on `main` — do not rename it without updating branch protection. The shell/unit/custom jobs all upload `timing-*` artifacts; unit/custom feed the weights manifest, shell timing is diagnostic (round-robin sharding).
+
+**Tests must not write tracked repo paths** (HOK-3157, extends [HOK-3121](https://linear.app/hokusai/issue/HOK-3121)): a killed test run (SIGKILL, `run_tests` timeout, suite-level kill) skips `finally` blocks and leaves tracked files modified, which parks the task's coding handoff on a dirty tree. Tests must write only to `mkdtemp` directories and inject the path (e.g. `templatePath`). Two guards enforce this:
+- Static preflight: `tools/check-test-tracked-writes.ts` (in `test:preflight`) scans tracked `*.test.{ts,tsx,js,jsx,mjs,cjs}` for literal fs mutator writes to tracked repo paths. Suppress with `// allow-tracked-write: <reason>`.
+- Runtime: `tests/lib/tracked-tree-guard.sh`, wired into `tests/run-unit-tests.sh` and `tests/run-custom-tests.sh`, snapshots tracked-file status before each run and fails if any tracked file was modified during the run (untracked artifacts and pre-existing dirt are ignored).
 
 ## Prompt Locations
 

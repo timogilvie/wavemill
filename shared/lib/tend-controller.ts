@@ -29,6 +29,7 @@ import { getIntegrationConfig, getIntegrationReadyPolicy, resolveSessionCapabili
 import { appendObserverFinding as sharedAppendObserverFinding } from './observer-findings.ts';
 import { readChallengeComparisons } from './challenge-comparison.ts';
 import { getPullRequest, removeLabelFromPullRequest } from './github.ts';
+import { resolveWavemillToolPath } from './native-agent/install-paths.ts';
 import { getIssueCompletionState } from './linear.ts';
 import { validatePrMetadata, type PrMetadata, type MetadataValidation } from './pr-metadata.ts';
 import { evaluateReady } from './ready-engine.ts';
@@ -3375,7 +3376,7 @@ async function defaultCrossPrGuardChecker(input: {
     'npx',
     [
       'tsx',
-      'tools/check-cross-pr-reverts.ts',
+      resolveWavemillToolPath('check-cross-pr-reverts.ts'),
       '--repo-dir',
       input.repoDir,
       '--head-ref',
