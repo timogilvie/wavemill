@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -7,6 +8,7 @@ import {
   cleanupTerminalInbox,
   defaultCleanupDeps,
   decideTerminalTask,
+  formatTerminalInboxDecisions,
   type CleanupDeps,
   type TerminalInboxDecision,
   type WorkflowState,
@@ -256,6 +258,132 @@ test('bulk execute skips open and active tasks', async () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// HOK-3160: --archive-and-reap on a delivered task with a dirty worktree
+// archives before any destructive step, then reaps. The dirty refusal is
+// bypassed for delivered arms only; an unverifiable status still fails closed.
+function dirtyGit(): CleanupDeps['git'] {
+  return (args) => {
+    const key = args.join(' ');
+    if (key.includes('status --porcelain')) return ' M src/file.ts\n?? scratch.txt\n';
+    if (key.startsWith('show-ref --verify')) return '';
+    if (key.startsWith('rev-parse --verify task/')) return 'local-head\n';
+    if (key.startsWith('rev-parse --verify refs/remotes/origin/task/')) return 'local-head\n';
+    if (key.startsWith('rev-list --count')) return '1\n';
+    if (key.startsWith('cherry ')) return '- abc\n';
+    return '';
+  };
+}
+
+test('archive-and-reap on a delivered dirty worktree marks would-archive-and-reap', () => {
+  const root = mkdtempSync(join(tmpdir(), 'archive-and-reap-dirty-'));
+  try {
+    const decision = decideTerminalTask(
+      state({ worktree: root }),
+      'HOK-3005',
+      process.cwd(),
+      'auto/integration',
+      deps({ prs: { 101: mergedPr('101') }, git: dirtyGit() }),
+      false,
+      true,
+    );
+    assert.equal(decision.status, 'would-archive-and-reap');
+    assert.ok(decision.intendedActions[0] === 'archive-residue');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('archive-and-reap stays refused on an undelivered dirty worktree', () => {
+  const root = mkdtempSync(join(tmpdir(), 'archive-and-reap-undelivered-'));
+  try {
+    const openPr = JSON.stringify({ number: 101, state: 'OPEN', mergedAt: null, headRefOid: 'x', baseRefName: 'auto/integration', mergeCommit: null });
+    const decision = decideTerminalTask(
+      state({ worktree: root, status: 'active', phase: 'coding', lifecycle: { workflowOutcome: 'active' } }),
+      'HOK-3005',
+      process.cwd(),
+      'auto/integration',
+      deps({ prs: { 101: openPr }, git: dirtyGit() }),
+      false,
+      true,
+    );
+    assert.notEqual(decision.status, 'would-archive-and-reap');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('archive-and-reap execution writes residue archive and clears the task', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'archive-and-reap-execute-'));
+  try {
+    const stateFile = join(root, '.wavemill', 'workflow-state.json');
+    mkdirSync(join(root, '.wavemill'), { recursive: true });
+    const worktree = join(root, 'wt');
+    mkdirSync(worktree, { recursive: true });
+    // Make the worktree a real git repo so the archive helper's `git diff`
+    // and `ls-files --others` succeed.
+    execFileSync('git', ['init', '-q', '-b', 'auto/integration', worktree], { stdio: 'ignore' });
+    execFileSync('git', ['-C', worktree, 'config', 'user.email', 't@e.com'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', worktree, 'config', 'user.name', 't'], { stdio: 'ignore' });
+    writeFileSync(join(worktree, 'README.md'), 'seed\n');
+    execFileSync('git', ['-C', worktree, 'add', 'README.md'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', worktree, 'commit', '-q', '-m', 'seed'], { stdio: 'ignore' });
+    writeFileSync(join(worktree, 'scratch.txt'), 'residue\n');
+    const taskState = state({ worktree });
+    writeFileSync(stateFile, JSON.stringify(taskState));
+    const cleanupCalls: string[] = [];
+    const decisions = await cleanupTerminalInbox({
+      repoDir: root,
+      stateFile,
+      issue: 'HOK-3005',
+      execute: true,
+      archiveAndReap: true,
+      deps: deps({ prs: { 101: mergedPr('101') }, git: dirtyGit(), cleanupCalls }),
+    });
+    assert.equal(decisions.length, 1);
+    assert.equal(decisions[0].status, 'executed');
+    assert.ok(decisions[0].archive, 'archive metadata must be attached to the decision');
+    assert.ok(existsSync(decisions[0].archive!.diffPath));
+    assert.deepEqual(cleanupCalls, ['HOK-3005']);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('formatter aggregates delivered-and-archived tasks and collapses merged-awaiting-confirm (HOK-3160 F6/F7)', () => {
+  const base: TerminalInboxDecision = {
+    issue: '', slug: '', branch: '', worktree: '', prNumber: '',
+    status: 'refused', refusalReason: '', workflowOutcome: 'merged', resourceDisposition: 'retained',
+    challengeRole: '', challengePairId: '', siblingPrNumber: '', siblingPrState: '',
+    pr: { number: '', state: 'UNKNOWN', mergedAt: '', headRefOid: '', headRefName: '', baseRefName: '', mergeCommitOid: '' },
+    git: { worktreeExists: false, worktreeDirty: false, dirtyStatus: '', localBranchExists: false, localHeadSha: '', remoteHeadSha: '', remoteContainsHead: false, commitsAhead: 0, patchEquivalent: false, patchUniqueCount: 0, patchEquivalentCount: 0 },
+    pane: { windowId: '', paneState: '', paneReleased: false, intendedAction: 'none' },
+    intendedActions: [],
+  };
+  const archived: TerminalInboxDecision = {
+    ...base, issue: 'HOK-9001', status: 'already-reaped', resourceDisposition: 'reaped',
+  };
+  const archived2: TerminalInboxDecision = {
+    ...base, issue: 'HOK-9002', status: 'already-reaped', resourceDisposition: 'reaped',
+  };
+  const awaitingConfirm: TerminalInboxDecision = {
+    ...base, issue: 'HOK-9003', prNumber: '555', status: 'refused', resourceDisposition: 'verification-required',
+    pr: { ...base.pr, state: 'MERGED', mergedAt: '2026-10-05T06:00:00Z', number: '555' },
+    refusalReason: 'verification_required',
+  };
+  const ceiling: TerminalInboxDecision = {
+    ...base, issue: 'HOK-9004', prNumber: '556', status: 'refused', resourceDisposition: 'retained',
+    pr: { ...base.pr, state: 'MERGED', mergedAt: '2026-10-04T06:00:00Z', number: '556' },
+    refusalReason: 'retain_unpublished',
+  };
+  const now = Date.parse('2026-10-05T12:00:00Z');
+  const out = formatTerminalInboxDecisions([archived, archived2, awaitingConfirm, ceiling], false, { nowMs: () => now });
+  assert.match(out, /2 tasks delivered and archived/);
+  assert.match(out, /merged-awaiting-confirm\tHOK-9003/);
+  assert.match(out, /needs-decision\tHOK-9004.*archive-and-reap/);
+  // Already-reaped rows must not appear per-item.
+  assert.doesNotMatch(out, /already-reaped\tHOK-9001/);
 });
 
 test('cleanup accepts a digit-bearing team key', async () => {
