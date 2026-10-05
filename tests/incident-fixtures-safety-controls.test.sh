@@ -2,12 +2,12 @@
 # HOK-2950: safety-control regression fixtures.
 #
 # Counter-fixtures to tests/incident-fixtures-terminal-panes.test.sh: they
-# prove the existing cleanup guards in safe_remove_task_worktree_and_branch
-# (shared/lib/wavemill-common.sh) still preserve dirty, racy, divergent,
-# unreachable-remote, and never-pushed work when driven through the SAME
+# prove cleanup still preserves dirty, racy, divergent, unreachable-remote,
+# and never-pushed work when driven through the SAME
 # real monitor_issue_state -> cleanup_merged_primary_challenge_task ->
-# cleanup_completed_task -> safe_remove_task_worktree_and_branch call path
-# the incident fixtures exercise. If these regress, a "fix" for the terminal-
+# cleanup_completed_task path (and, after preflight,
+# safe_remove_task_worktree_and_branch) the incident fixtures exercise. If
+# these regress, a "fix" for the terminal-
 # pane leak has gone too far and started deleting real work.
 #
 # See tests/fixtures/incidents/README.md for local/CI invocation and how to
@@ -65,13 +65,14 @@ branch_exists() {
   git -C "$REPO_DIR" show-ref --verify --quiet "refs/heads/$1"
 }
 
-# assert_control_preserved <issue> <slug> <branch> <expected-reason> <expected-verification-reason-or-empty> [expected-episode-disposition]
+# assert_control_preserved <issue> <slug> <branch> <expected-reason> <expected-verification-reason-or-empty> [expected-episode-disposition] [expected-preflight-outcome]
 #
 # Drives ten ticks and asserts unchanged evidence produces one cleanup attempt
 # and one durable episode instead of a repeated cleanup hot loop.
 assert_control_preserved() {
   local issue="$1" slug="$2" branch="$3" expected_reason="$4" expected_verification_reason="$5"
   local expected_episode_disposition="${6:-retained}"
+  local expected_preflight_outcome="${7:-}"
   local wt_dir="$WORKTREE_ROOT/$slug"
   local marker_path
   marker_path="$(marker_path_for_branch "$REPO_DIR" "$branch")"
@@ -86,7 +87,12 @@ assert_control_preserved() {
     *) report_pass "$issue tick1: remote_call_delta recorded ($tick1_remote)" ;;
   esac
 
-  if [[ -f "$marker_path" ]]; then
+  if [[ -n "$expected_preflight_outcome" ]]; then
+    expect_true "$issue tick1: preflight did not reach branch deletion" \
+      bash -c "[[ ! -e '$marker_path' ]]"
+    expect_eq "$(jq -r --arg i "$issue" '.tasks[$i].lifecycle.cleanupEpisode.lastOutcome // ""' "$STATE_FILE")" "$expected_preflight_outcome" \
+      "$issue tick1: cleanup preflight outcome"
+  elif [[ -f "$marker_path" ]]; then
     report_pass "$issue tick1: preservation marker written at $marker_path"
     local actual_reason actual_verification
     actual_reason="$(jq -r '.reason // ""' "$marker_path")"
@@ -123,6 +129,10 @@ assert_control_preserved() {
     expect_eq "$(jq -r --arg i "$issue" '.tasks[$i].lifecycle.resourceDisposition // ""' "$STATE_FILE")" "retained" \
       "$issue tick1: retained terminal work consumes no active slot"
   fi
+  if [[ -n "$expected_preflight_outcome" ]]; then
+    expect_eq "$(jq -r --arg i "$issue" '.tasks[$i].lifecycle.resourceDisposition // ""' "$STATE_FILE")" "verification-required" \
+      "$issue tick1: unverified completion requires verification"
+  fi
 
   local tick tick_cleanup tick_remote total_cleanup=1 total_remote="$tick1_remote"
   [[ "$total_remote" =~ ^[0-9]+$ ]] || total_remote=0
@@ -140,8 +150,10 @@ assert_control_preserved() {
   expect_eq "$total_cleanup" "1" "$issue ten ticks: cleanup attempted once for unchanged evidence"
   expect_eq "$(jq -r --arg i "$issue" '.tasks[$i].lifecycle.cleanupEpisode.attemptCount // 0' "$STATE_FILE")" "1" \
     "$issue ten ticks: cleanup episode attempt count remains one"
-  expect_eq "$(find "$(dirname "$marker_path")" -type f -name '*.json' 2>/dev/null | wc -l | tr -d ' ')" "1" \
-    "$issue ten ticks: preservation marker deduplicated"
+  local expected_marker_count=1
+  [[ -n "$expected_preflight_outcome" ]] && expected_marker_count=0
+  expect_eq "$(find "$(dirname "$marker_path")" -type f -name '*.json' 2>/dev/null | wc -l | tr -d ' ')" "$expected_marker_count" \
+    "$issue ten ticks: preservation marker count"
   expect_true "$issue tick10: worktree directory still present" \
     bash -c "[[ -d '$wt_dir' ]]"
   expect_true "$issue tick10: local branch still exists" branch_exists "$branch"
@@ -156,7 +168,7 @@ echo ""
 echo "=== Control 4: control_dirty_worktree_retained ==="
 incident_scenario_new "dirty"
 incident_setup_control_dirty_worktree
-assert_control_preserved "$CONTROL_ISSUE" "$CONTROL_SLUG" "task/$CONTROL_SLUG" "dirty_worktree" ""
+assert_control_preserved "$CONTROL_ISSUE" "$CONTROL_SLUG" "task/$CONTROL_SLUG" "dirty_worktree" "" "transient" "linear-completion-unverified"
 
 # ============================================================================
 # Control 5: local head changed mid-verification (race)
