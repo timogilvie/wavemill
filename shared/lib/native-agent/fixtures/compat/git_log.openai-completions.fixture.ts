@@ -32,6 +32,8 @@ export default {
       stream: true,
       stream_options: { include_usage: true },
       store: false,
+      // Pi 1.0 defaults the ceiling to the model's maxTokens when none is passed (HOK-3161).
+      max_completion_tokens: 16_384,
       tools: [
         {
           type: 'function',

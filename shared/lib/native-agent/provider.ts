@@ -1,18 +1,22 @@
 import {
   createAssistantMessageEventStream,
-  registerApiProvider,
-  streamSimple,
+  getCurrentSystemPrompt,
+  getCurrentTools,
   type Api,
   type AssistantMessage,
   type AssistantMessageEvent,
-  type Context,
+  type JsonObject,
   type Model,
   type SimpleStreamOptions,
   type StopReason,
   type StreamFunction,
   type Tool,
+  type TranscriptContext,
   type Usage,
 } from '@earendil-works/pi-ai';
+// Pi 1.0 moved the global API-provider registry and `streamSimple` to the
+// temporary `compat` entrypoint (HOK-3161).
+import { registerApiProvider, streamSimple } from '@earendil-works/pi-ai/compat';
 import type { SessionModelUsage } from '../session-adapters.ts';
 import {
   createPiContext,
@@ -330,7 +334,7 @@ function toPiAssistantMessage(
         type: 'toolCall',
         id: content.id,
         name: content.name,
-        arguments: content.arguments ?? {},
+        arguments: (content.arguments ?? {}) as JsonObject,
       };
     }),
     api: model.api,
@@ -369,11 +373,16 @@ function createPiUsage(usage: Partial<Usage> | undefined): Usage {
 }
 
 function toScriptedProviderContext(
-  context: Context,
+  context: TranscriptContext,
   options?: SimpleStreamOptions,
 ): ScriptedProviderContext {
+  // Pi 1.0 hands providers a transcript whose system messages carry the prompt
+  // and tool declarations. Scripted turns keep seeing the conversation without
+  // them, and `rawContext` keeps the pre-1.0 { systemPrompt, messages, tools }
+  // shape rebuilt from the transcript (HOK-3161).
+  const conversation = context.messages.filter((message) => message.role !== 'system');
   return {
-    messages: context.messages.map((message): NativeAgentMessage => {
+    messages: conversation.map((message): NativeAgentMessage => {
       if (message.role === 'user') {
         return { role: 'user', content: typeof message.content === 'string' ? message.content : message.content };
       }
@@ -393,8 +402,12 @@ function toScriptedProviderContext(
       }
       return toNativeAssistantMessage(message);
     }),
-    sawToolResults: context.messages.some((message) => message.role === 'toolResult'),
-    rawContext: context,
+    sawToolResults: conversation.some((message) => message.role === 'toolResult'),
+    rawContext: {
+      systemPrompt: getCurrentSystemPrompt(context.messages),
+      messages: conversation,
+      tools: getCurrentTools(context.messages),
+    },
     ...(options !== undefined ? { options } : {}),
   };
 }

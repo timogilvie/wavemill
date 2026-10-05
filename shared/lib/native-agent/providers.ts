@@ -330,6 +330,12 @@ export function buildOpenAiResponsesModel({
     provider: OPENAI_NATIVE_PROVIDER,
     baseUrl,
     headers,
+    // Pi 1.0 omits `strict` from tool definitions unless the model declares
+    // strict-mode support; declaring it keeps the explicit `strict: false`
+    // these transports have always received (HOK-3161).
+    compat: {
+      supportsStrictMode: true,
+    },
   });
 }
 
@@ -372,6 +378,7 @@ export function buildOpenRouterModel({
     headers,
     compat: {
       thinkingFormat: 'openrouter',
+      supportsStrictMode: true,
     },
   });
 }

@@ -225,6 +225,7 @@ describe('native-agent provider resolution', () => {
       });
       assert.deepEqual(entry.model.compat, {
         thinkingFormat: 'openrouter',
+        supportsStrictMode: true,
       });
     } finally {
       cleanup();
