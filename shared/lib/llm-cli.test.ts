@@ -7,7 +7,14 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import { clearConfigCache } from './config.ts';
 import { readEvalRecords } from './eval-persistence.ts';
 import { SCHEMA_VERSION } from './eval-schema.ts';
-import { callLLM, claudeCliServableVendor, LLMQuotaError, parseJsonFromLLM } from './llm-cli.ts';
+import {
+  callLLM,
+  claudeCliServableVendor,
+  DEFAULT_CLI_PREFLIGHT_TIMEOUT_MS,
+  LLMQuotaError,
+  parseJsonFromLLM,
+  resolveCliPreflightTimeoutMs,
+} from './llm-cli.ts';
 import { DEEPSEEK_BASE_URL } from './deepseek-provider.ts';
 import { markExhausted, readQuotaSnapshot } from './quota-state.ts';
 
@@ -1133,5 +1140,26 @@ describe('codex provider', () => {
     });
 
     assert.equal(result.text, 'real answer');
+  });
+});
+
+describe('resolveCliPreflightTimeoutMs', () => {
+  it('defaults above the 30s ceiling that failed loaded hosts', () => {
+    assert.equal(resolveCliPreflightTimeoutMs({}), DEFAULT_CLI_PREFLIGHT_TIMEOUT_MS);
+    assert.ok(DEFAULT_CLI_PREFLIGHT_TIMEOUT_MS > 30_000);
+  });
+
+  it('honours a positive integer override', () => {
+    assert.equal(resolveCliPreflightTimeoutMs({ WAVEMILL_CLI_PREFLIGHT_TIMEOUT_MS: '120000' }), 120_000);
+  });
+
+  it('ignores invalid overrides', () => {
+    for (const value of ['', '0', '-5', 'abc', '1.5']) {
+      assert.equal(
+        resolveCliPreflightTimeoutMs({ WAVEMILL_CLI_PREFLIGHT_TIMEOUT_MS: value }),
+        DEFAULT_CLI_PREFLIGHT_TIMEOUT_MS,
+        `override ${JSON.stringify(value)}`,
+      );
+    }
   });
 });
