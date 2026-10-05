@@ -37,8 +37,11 @@ import {
   type QueuePlan,
 } from '../shared/lib/plan-queue-utils.ts';
 import { toKebabCase } from '../shared/lib/string-utils.ts';
+import { getQueuePlannerConfig } from '../shared/lib/config.ts';
+import type { GroundedPlanResult } from '../shared/lib/grounded-planner.ts';
 import {
   buildInferenceReport,
+  isInCooldown,
   planInferenceRefresh,
   recordInferenceFailure,
   recordInferenceSuccess,
@@ -64,6 +67,24 @@ function renderPreview(queuePlan: QueuePlan, records: BacklogRecord[]): string {
     section('Avoid Running Together', queuePlan.avoidRunningTogether, (group) => `- ${group.join(', ')}`),
     section('Needs Triage', queuePlan.needsTriage, (record) => `- ${record.edge.to} (${record.reason}: ${record.detail ?? `${record.edge.from}->${record.edge.to}`})`),
   ].join('\n\n');
+}
+
+function renderGroundedPreview(grounded: GroundedPlanResult): string {
+  const { waves, stats } = grounded;
+  const reason = (r: GroundedPlanResult['waves']['deferrals'][number]['reasons'][number]) =>
+    `${r.kind === 'after' ? 'after' : 'conflicts with'} ${r.taskId}${r.verdict && r.verdict !== 'conflict' ? ` [${r.verdict}]` : ''}${r.evidence ? `: ${r.evidence}` : ''}`;
+  return [
+    'Grounded Waves',
+    ...(waves.waves.length === 0 ? ['(none)'] : waves.waves.map((wave) => `- wave ${wave.index}: ${wave.taskIds.join(', ')}`)),
+    '',
+    'Grounded Deferrals',
+    ...(waves.deferrals.length === 0
+      ? ['(none)']
+      : waves.deferrals.map((deferral) => `- ${deferral.taskId} → wave ${deferral.wave} (${deferral.reasons.map(reason).join('; ')})`)),
+    '',
+    `grounded: tasks=${stats.tasks} touchSetCacheHits=${stats.touchSetCacheHits} pairsScored=${stats.pairsScored} ` +
+      `pairsSentToLlm=${stats.pairsSentToLlm} verdictCacheHits=${stats.verdictCacheHits} llmMs=${stats.llmCallMs} totalMs=${stats.totalMs}`,
+  ].join('\n');
 }
 
 async function loadBacklogFromLinear(projectName?: string): Promise<BacklogRecord[]> {
@@ -279,7 +300,69 @@ runTool({
       cacheToSave = { ...cacheAfterPrune, fingerprints: retainPreviousFingerprints(previousFingerprints, recordIds) };
     }
 
-    if (inferencePlan.kind !== 'none' && cacheAfterPrune && backlogDiff) {
+    const plannerMode = getQueuePlannerConfig(process.cwd()).mode;
+    let grounded: GroundedPlanResult | undefined;
+    let reportPlan: InferenceRefreshPlan = inferencePlan;
+
+    if (plannerMode === 'grounded') {
+      // HOK-3131: grounded mode replaces legacy whole-backlog classification.
+      // Legacy fingerprints are not advanced, so switching back to legacy
+      // still sees every task as pending.
+      const { createGroundedLlm, runGroundedPlanning } = await import('../shared/lib/grounded-planner.ts');
+      const coolingDown = isInCooldown(cacheBeforePrune?.inference, nowMs);
+      grounded = await runGroundedPlanning(
+        records.map((record, index) => ({
+          ...record,
+          priority: typeof record.priority === 'number' ? record.priority : null,
+          fingerprint: computeTaskFingerprint(fingerprintTasks[index]),
+        })),
+        {
+          repoDir: process.cwd(),
+          cache: cacheAfterPrune ?? {},
+          explicitEdges,
+          ...(coolingDown
+            ? {}
+            : {
+              llm: createGroundedLlm({
+                repoDir: process.cwd(),
+                ...(queueClassifierDeadlineMs === undefined
+                  ? {}
+                  : {
+                    deadlineMs: queueClassifierDeadlineMs,
+                    perAttemptTimeoutMs: QUEUE_CLASSIFIER_PER_ATTEMPT_TIMEOUT_MS,
+                    deadlineGraceMs: QUEUE_CLASSIFIER_DEADLINE_GRACE_MS,
+                  }),
+              }),
+            }),
+          warn: (message) => process.stderr.write(`plan-queue: ${message}\n`),
+        },
+      );
+      inferredEdges = grounded.edges;
+      const nowIso = new Date().toISOString();
+      if (coolingDown) {
+        reportPlan = { kind: 'none', skipReason: 'cooldown' };
+      } else if (!grounded.llm.orderingOk) {
+        inferenceState = recordInferenceFailure(inferenceState, { error: new Error(grounded.llm.error ?? 'grounded ordering failed'), nowIso });
+        reportPlan = { kind: 'full', skipReason: null };
+      } else {
+        inferenceState = recordInferenceSuccess({ model: grounded.llm.model ?? inferenceState?.lastModel ?? null, nowIso });
+        reportPlan = grounded.llm.orderingAttempted ? { kind: 'full', skipReason: null } : { kind: 'none', skipReason: 'no_changes' };
+      }
+      if (cacheAfterPrune) {
+        cacheToSave = {
+          ...cacheAfterPrune,
+          fingerprints: retainPreviousFingerprints(previousFingerprints, recordIds),
+          touchSets: grounded.cache.touchSets,
+          groundedVerdicts: grounded.cache.groundedVerdicts,
+          ...(inferenceState ? { inference: inferenceState } : {}),
+        };
+      }
+      const { stats } = grounded;
+      process.stderr.write(
+        `plan-queue: grounded planner: tasks=${stats.tasks} pairsScored=${stats.pairsScored} ` +
+          `pairsSentToLlm=${stats.pairsSentToLlm} edges=${grounded.edges.length} waves=${grounded.waves.waves.length}\n`,
+      );
+    } else if (inferencePlan.kind !== 'none' && cacheAfterPrune && backlogDiff) {
       const isFullRefresh = inferencePlan.kind === 'full';
       const changedTaskIds = isFullRefresh
         ? new Set(recordIds)
@@ -356,6 +439,9 @@ runTool({
     if (emitJson) process.stdout.write(`${JSON.stringify(queuePlan, null, 2)}\n`);
     if (args.preview) {
       (emitJson ? process.stderr : process.stdout).write(`${renderPreview(queuePlan, records)}\n`);
+      if (grounded) {
+        (emitJson ? process.stderr : process.stdout).write(`\n${renderGroundedPreview(grounded)}\n`);
+      }
       if (cacheBeforePrune && cacheAfterPrune) {
         const cacheStats = getCacheStats(cacheBeforePrune, cacheAfterPrune);
         process.stderr.write(`cache: hits=0 misses=0 pruned=${cacheStats.totalEdges - cacheStats.retainedEdges}\n`);
@@ -368,7 +454,7 @@ runTool({
       writeInferenceReport(args['inference-report-file'], buildInferenceReport({
         state: inferenceState,
         inferredEdgeCount: edges.filter((edge) => edge.source === 'inferred').length,
-        plan: inferencePlan,
+        plan: reportPlan,
         nowMs: Date.now(),
       }));
     }

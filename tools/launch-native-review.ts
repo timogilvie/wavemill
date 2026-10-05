@@ -190,7 +190,7 @@ async function main(): Promise<void> {
   const issue = firstNonEmpty(readOption('issue'), process.env.WAVEMILL_ISSUE) ?? '';
   const slug = firstNonEmpty(readOption('slug'), process.env.WAVEMILL_FEATURE_SLUG, process.env.WAVEMILL_SLUG) ?? '';
   const wtDir = resolve(firstNonEmpty(readOption('wt-dir'), process.env.WAVEMILL_WT_DIR) ?? process.cwd());
-  const repoDir = resolve(firstNonEmpty(readOption('repo-dir'), process.env.WAVEMILL_REPO_DIR) ?? process.cwd());
+  const repoDir = resolve(firstNonEmpty(readOption('repo-dir'), process.env.WAVEMILL_MILLED_REPO_DIR) ?? process.cwd());
   const featureDir = resolve(firstNonEmpty(readOption('feature-dir')) ?? join(wtDir, 'features', slug));
   const title = firstNonEmpty(readOption('title'), process.env.WAVEMILL_TITLE) ?? issue;
   const baseBranch = resolveBaseBranch(readOption('base-branch'), process.env.WAVEMILL_BASE_BRANCH, repoDir);

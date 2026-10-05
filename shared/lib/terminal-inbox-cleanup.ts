@@ -76,6 +76,7 @@ export interface GitEvidence {
 export type TerminalInboxStatus =
   | 'would-reap'
   | 'would-abandon-loser'
+  | 'would-abandon-aborted'
   | 'refused'
   | 'already-reaped'
   | 'not-terminal'
@@ -559,6 +560,9 @@ export function decideTerminalTask(
     decision.refusalReason = git.worktreeDirty === 'unknown' ? 'worktree_status_unreadable' : 'dirty_worktree';
     return decision;
   }
+  if (!prNumber && (outcome === 'aborted' || outcome === 'error')) {
+    return decidePrLessAbortedArm(decision, git, allowAbandon);
+  }
   if (!prNumber || pr.state === 'UNKNOWN') {
     decision.refusalReason = 'pr_state_unverifiable';
     return decision;
@@ -600,6 +604,35 @@ export function decideTerminalTask(
   return decision;
 }
 
+/**
+ * HOK-3089: a PR-less aborted/errored arm. Work that is already delivered or
+ * published (no local branch, nothing ahead of base, or the remote carries the
+ * head) is reaped like any delivered task. An unpublished head needs explicit
+ * operator `--abandon`; the shell cleanup then archives the head to
+ * `refs/archive/wavemill/<issue>` before deleting anything (it fails closed if
+ * that push fails), which is the same path the monitor takes once the arm's
+ * sibling PR has merged. The caller has already refused dirty worktrees.
+ */
+function decidePrLessAbortedArm(decision: TerminalInboxDecision, git: GitEvidence, allowAbandon: boolean): TerminalInboxDecision {
+  const reapActions = ['archive-artifacts', 'release-pane', 'write-tombstone', 'remove-local-worktree', 'remove-local-branch', 'remove-active-task-row'];
+  if (!git.localBranchExists || git.commitsAhead === 0 || git.remoteContainsHead) {
+    decision.status = 'would-reap';
+    decision.intendedActions = reapActions;
+    return decision;
+  }
+  if (!allowAbandon) {
+    decision.refusalReason = 'aborted_pr_less_requires_abandon';
+    return decision;
+  }
+  decision.status = 'would-abandon-aborted';
+  decision.intendedActions = ['archive-unpublished-head', ...reapActions];
+  return decision;
+}
+
+function isExecutable(status: TerminalInboxStatus): boolean {
+  return status === 'would-reap' || status === 'would-abandon-loser' || status === 'would-abandon-aborted';
+}
+
 export function discoverTerminalInboxIssues(state: WorkflowState): string[] {
   return Object.entries(state.tasks ?? {})
     .filter(([, task]) => isTerminalTask(task) && resourceDisposition(task) !== 'reaped')
@@ -636,7 +669,7 @@ export async function cleanupTerminalInbox(options: CleanupOptions): Promise<Ter
     if (options.execute || options.out) {
       writeDecisionArtifact(repoDir, decision, now, options.out && issues.length === 1 ? options.out : undefined);
     }
-    if (options.execute && (decision.status === 'would-reap' || decision.status === 'would-abandon-loser')) {
+    if (options.execute && isExecutable(decision.status)) {
       const task = state.tasks?.[issue];
       if (!task) throw new Error(`task ${issue} disappeared before execution`);
       const tombstone = buildTerminalTaskTombstone(decision, task, 'cleanup-terminal-inbox', options.inbox ? 'cleanup inbox --execute' : `cleanup ${issue} --execute`, now);
@@ -659,7 +692,7 @@ export async function cleanupTerminalInbox(options: CleanupOptions): Promise<Ter
 export function formatTerminalInboxDecisions(decisions: TerminalInboxDecision[], execute: boolean): string {
   const lines = ['action\tissue\tpr\tbranch\treason'];
   for (const decision of decisions) {
-    const action = execute && (decision.status === 'would-reap' || decision.status === 'would-abandon-loser') ? 'execute' : decision.status;
+    const action = execute && isExecutable(decision.status) ? 'execute' : decision.status;
     lines.push([
       action,
       decision.issue,

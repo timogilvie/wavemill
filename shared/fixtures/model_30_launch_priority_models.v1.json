@@ -241,6 +241,30 @@
       "wavemillAlias": "gemini-2.5-pro",
       "openrouterId": "google/gemini-2.5-pro",
       "family": "gemini",
+      "status": "deprecated",
+      "priorityTier": 1,
+      "roleEligibility": [
+        "planning",
+        "coding",
+        "review"
+      ]
+    },
+    {
+      "wavemillAlias": "gemini-3.1-pro-preview",
+      "openrouterId": "google/gemini-3.1-pro-preview",
+      "family": "gemini",
+      "status": "active",
+      "priorityTier": 1,
+      "roleEligibility": [
+        "planning",
+        "coding",
+        "review"
+      ]
+    },
+    {
+      "wavemillAlias": "gemini-3.1-pro-preview-customtools",
+      "openrouterId": "google/gemini-3.1-pro-preview-customtools",
+      "family": "gemini",
       "status": "active",
       "priorityTier": 1,
       "roleEligibility": [

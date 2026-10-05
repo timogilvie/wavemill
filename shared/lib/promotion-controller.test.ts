@@ -4,7 +4,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { runPromotion, updateBranchWithBase } from './promotion-controller.ts';
+import { measureBranchBaseDistance, runPromotion, updateBranchWithBase } from './promotion-controller.ts';
 
 function makeRepo(config: Record<string, unknown> = {}): { repoDir: string; cleanup: () => void } {
   const repoDir = mkdtempSync(join(tmpdir(), 'wavemill-promote-'));
@@ -1393,5 +1393,70 @@ describe('runPromotion', () => {
   it('does not contain auto-merge logic', () => {
     const source = readFileSync(new URL('./promotion-controller.ts', import.meta.url), 'utf-8');
     assert(!source.includes('gh pr merge'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HOK-3096: measureBranchBaseDistance (the HOK-3092 behind-base predicate,
+// reused by the observer's stale-base detector)
+// ---------------------------------------------------------------------------
+
+type CountingShellRunner = (cmd: string, opts?: { encoding?: string; cwd?: string }) => string;
+
+function countingShellRunner(counts: {
+  originBehind?: string;
+  originAhead?: string;
+  localBehind?: string;
+  localAhead?: string;
+}): CountingShellRunner {
+  return (cmd: string) => {
+    if (cmd === "git rev-list --count 'task/foo'..'origin/main'") {
+      if (counts.originBehind === undefined) throw new Error("fatal: ambiguous argument 'origin/main': unknown revision");
+      return counts.originBehind;
+    }
+    if (cmd === "git rev-list --count 'origin/main'..'task/foo'") {
+      if (counts.originAhead === undefined) throw new Error("fatal: ambiguous argument 'origin/main': unknown revision");
+      return counts.originAhead;
+    }
+    if (cmd === "git rev-list --count 'task/foo'..'main'") {
+      if (counts.localBehind === undefined) throw new Error("fatal: ambiguous argument 'main': unknown revision");
+      return counts.localBehind;
+    }
+    if (cmd === "git rev-list --count 'main'..'task/foo'") {
+      if (counts.localAhead === undefined) throw new Error("fatal: ambiguous argument 'main': unknown revision");
+      return counts.localAhead;
+    }
+    throw new Error(`Unhandled command: ${cmd}`);
+  };
+}
+
+describe('measureBranchBaseDistance', () => {
+  it('reports counts against origin/<base> when the remote-tracking ref resolves', () => {
+    const shellRunner = countingShellRunner({ originBehind: '7\n', originAhead: '2\n' });
+    const distance = measureBranchBaseDistance('task/foo', 'main', '/repo', shellRunner);
+    assert.deepEqual(distance, { behindBase: 7, aheadOfBase: 2, baseRef: 'origin/main' });
+  });
+
+  it('falls back to the local base ref when origin/<base> cannot be resolved', () => {
+    const shellRunner = countingShellRunner({ localBehind: '3\n', localAhead: '0\n' });
+    const distance = measureBranchBaseDistance('task/foo', 'main', '/repo', shellRunner);
+    assert.deepEqual(distance, { behindBase: 3, aheadOfBase: 0, baseRef: 'main' });
+  });
+
+  it('degrades to an empty result when neither ref resolves, never throwing', () => {
+    const shellRunner = countingShellRunner({});
+    assert.doesNotThrow(() => {
+      const distance = measureBranchBaseDistance('task/foo', 'main', '/repo', shellRunner);
+      assert.deepEqual(distance, {});
+    });
+  });
+
+  it('never fetches', () => {
+    const source = readFileSync(new URL('./promotion-controller.ts', import.meta.url), 'utf-8');
+    const start = source.indexOf('export function measureBranchBaseDistance');
+    const end = source.indexOf('\nconst PROMOTION_SECTION_BEGIN', start);
+    assert(start >= 0 && end > start, 'could not locate measureBranchBaseDistance body');
+    const fnSource = source.slice(start, end);
+    assert(!fnSource.includes('git fetch'));
   });
 });

@@ -47,7 +47,7 @@ export interface BlindComparisonResult {
   criterionRationales: BlindComparisonCriterionRationales;
 }
 
-export const ARBITER_JUDGE_PROMPT_TEMPLATE_PATH = 'tools/prompts/arbiter-judge.md';
+export const ARBITER_JUDGE_PROMPT_TEMPLATE_PATH = 'tools/prompts/arbiter-judge.md'; // install-paths: allow install-relative identifier resolved below via import.meta.url
 
 /**
  * Absolute path to the judge template inside the wavemill installation.

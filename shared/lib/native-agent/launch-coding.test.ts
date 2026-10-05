@@ -163,6 +163,42 @@ describe('launchNativeCoding', () => {
     assert.match(prompt, /"version": 1/);
   });
 
+  it('contains focused-test guidance and no longer promises .coding-complete on full verification (HOK-3145)', () => {
+    const prompt = renderCodingSystemPrompt({
+      template: 'Implement {{SLUG}}.',
+      codeDepth: 'medium',
+      operatingMode: 'normal',
+      featureDir: '/repo/features/demo',
+      planPath: '/repo/features/demo/plan.md',
+      slug: 'demo',
+      blockedCompletionPath: 'features/demo/.coding-blocked-completion.json',
+    });
+
+    assert.match(prompt, /node --test <files>/);
+    assert.match(prompt, /npx tsx --test <files>/);
+    assert.match(prompt, /unsharded `tests\/run-\*\.sh`/);
+    assert.match(prompt, /focused verification of the changed code passes/);
+    assert.doesNotMatch(prompt, /full verification passes/);
+  });
+
+  it('appends a Recovery Mode section when recoveryMode is set (HOK-3145)', () => {
+    const prompt = renderCodingSystemPrompt({
+      template: 'Implement {{SLUG}}.',
+      codeDepth: 'medium',
+      operatingMode: 'normal',
+      featureDir: '/repo/features/demo',
+      planPath: '/repo/features/demo/plan.md',
+      slug: 'demo',
+      blockedCompletionPath: 'features/demo/.coding-blocked-completion.json',
+      recoveryMode: { dirtyPaths: ['src/a.ts', 'scratch.txt'] },
+    });
+
+    assert.match(prompt, /Recovery Mode Tool Restrictions/);
+    assert.match(prompt, /src\/a\.ts/);
+    assert.match(prompt, /scratch\.txt/);
+    assert.match(prompt, /recovery_mode_denied/);
+  });
+
   it('runs a scripted native coding loop, commits a scoped patch, and records completion', async () => {
     const { repoDir, featureDir, slug } = makeRepo();
     const model = scriptedModel([
@@ -745,6 +781,47 @@ describe('launchNativeCoding', () => {
     const stageResult = await readStageResult(featureDir, 'coding');
     assert.equal(stageResult?.status, 'failed');
     assert.match(stageResult?.failureReason ?? '', /last tool error \(apply_patch\/invalid_patch\)/);
+  });
+
+  it('denies apply_patch during dirty-handoff recovery and allows git_commit (HOK-3145)', async () => {
+    const { repoDir, featureDir, slug } = makeRepo();
+    writeFileSync(
+      join(featureDir, CODING_RECOVERY_INSTRUCTION_FILE),
+      'Your previous coding run wrote `.coding-complete` but left these paths uncommitted:\n\n- `src/app.ts`\n',
+      'utf-8',
+    );
+
+    const beforeContent = readFileSync(join(repoDir, 'src', 'app.ts'), 'utf-8');
+    const model = scriptedModel([
+      toolTurn('patch-1', 'apply_patch', {
+        patch: {
+          version: 1,
+          atomic: true,
+          operations: [{
+            op: 'edit',
+            path: 'src/app.ts',
+            oldText: beforeContent,
+            newText: "export const message = 'patched-during-recovery';\n",
+          }],
+        },
+      }),
+      finalTurn('Stopped without re-writing .coding-complete.'),
+    ], 'recovery-apply-patch-denied');
+
+    await assert.rejects(
+      () => launchNativeCoding({
+        session: 'sess',
+        issue: 'HOK-3128-recovery-denies',
+        slug,
+        wtDir: repoDir,
+        repoDir,
+        loopModelOverride: model,
+      }),
+      /without \.coding-complete or \.coding-blocked-completion\.json/,
+    );
+
+    const afterContent = readFileSync(join(repoDir, 'src', 'app.ts'), 'utf-8');
+    assert.equal(afterContent, beforeContent, 'apply_patch must not mutate the file during recovery');
   });
 
   it('surfaces the dirty-handoff recovery instruction and never archives it (HOK-3128)', async () => {

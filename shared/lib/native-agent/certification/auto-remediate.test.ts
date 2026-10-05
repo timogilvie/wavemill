@@ -305,6 +305,41 @@ describe('runCertificationAutoRemediation', () => {
     }
   });
 
+  it('re-certifies only the models that re-identified below the fleet drift threshold (HOK-3159)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-cert-auto-reidentify-'));
+    const base = registry();
+    const multi: ModelRegistry = {
+      ...base,
+      models: { ...base.models, 'glm-5.3': base.models['qwen-3-coder']!, 'kimi-k2': base.models['qwen-3-coder']! },
+    };
+    try {
+      let observedTargets: string[] = [];
+      const result = await runCertificationAutoRemediation({
+        registry: multi,
+        repoDir: process.cwd(),
+        coverage: coverage({
+          // One row edit re-identifies one model: far below the threshold that
+          // flips status to identity-drift, but still uncertified until renewed.
+          status: 'ok',
+          ineligibleModels: [{ registryKey: 'qwen-3-coder', reason: 'identity-reidentified', cause: 'launch-priority-catalog' }],
+          eligibleModelCount: 2,
+          identityDriftCount: 1,
+          renewalDueCount: 1,
+          modelsInRenewalWindow: [{ registryKey: 'kimi-k2', expiresAt: '2026-09-01T00:00:00.000Z' }],
+        }),
+        attemptCachePath: join(dir, 'attempts.json'),
+        certifyFn: async (opts: CertifySelectedOptions) => {
+          observedTargets = opts.targets.map((target) => target.model);
+          return makeCertifyResult({ targets: opts.targets });
+        },
+      });
+      assert.equal(result.mode, 'reidentify');
+      assert.deepEqual(observedTargets, ['kimi-k2', 'qwen-3-coder'], 'drifted model plus renewals, not the fleet');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('noops when the registry has no native targets', async () => {
     const result = await runCertificationAutoRemediation({
       registry: { models: {}, ladders: {} },

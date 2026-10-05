@@ -1,5 +1,6 @@
 import { callLLM } from './llm-cli.ts';
 import { fillPromptTemplate, loadPromptTemplate } from './prompt-utils.ts';
+import { resolveWavemillPromptPath } from './native-agent/install-paths.ts';
 
 export interface IssueContext {
   id: string;
@@ -239,7 +240,7 @@ export async function classifyDependencies(
     throw new Error('No models available for dependency classification');
   }
 
-  const templatePath = options.templatePath ?? 'tools/prompts/dependency-classifier.md';
+  const templatePath = options.templatePath ?? resolveWavemillPromptPath('dependency-classifier.md');
   const template = await loadPromptTemplate(templatePath);
   const renderedPrompt = fillPromptTemplate(template, {
     ISSUES: JSON.stringify(input.issues),

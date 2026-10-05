@@ -320,7 +320,7 @@
                 "enabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "When true (the default), every mill session launches a dedicated Backstage pane running wavemill observer --loop in detection-only mode, whatever the integration setting. Set false to opt out."
+                    "description": "When true (the default), every mill session launches a dedicated Backstage pane running wavemill observer --loop. Detection-only unless observer.autoFix is opted in."
                 },
                 "intervalSeconds": {
                     "type": "integer",
@@ -553,6 +553,94 @@
                         }
                     },
                     "additionalProperties": false
+                },
+                "autoFix": {
+                    "type": "object",
+                    "description": "Opt-in observer self-repair actions (HOK-3097). Disabled by default; each fix is independently gated. Every fix is bounded by shared bounded-retry buckets, skipped when the worktree is dirty or the agent is working, and logged as a greppable action record under the incident store directory.",
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Master switch for every observer auto-fix. When false (the default), observer behaviour is byte-identical to detection-only."
+                        },
+                        "quietMinutes": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "default": 10,
+                            "description": "Minimum age (minutes) of the blocked state before a fix runs; avoids racing the monitor's own update-from-base path."
+                        },
+                        "updateBranchFromBase": {
+                            "type": "object",
+                            "description": "Merge origin/<base> into a task's worktree branch and push (reuses HOK-3092's updateBranchWithBase). Also fast-forwards a worktree whose origin/<branch> has moved ahead.",
+                            "properties": {
+                                "enabled": { "type": "boolean", "default": false },
+                                "maxAttempts": { "type": "integer", "minimum": 1, "default": 2 }
+                            },
+                            "additionalProperties": false
+                        },
+                        "resetReadyRecheckBudget": {
+                            "type": "object",
+                            "description": "Clear an exhausted failed-ready-recheck/pending-ready-recheck bucket once the head or base SHA has changed since the budget ran out.",
+                            "properties": {
+                                "enabled": { "type": "boolean", "default": false }
+                            },
+                            "additionalProperties": false
+                        },
+                        "forfeitStuckChallengeArm": {
+                            "type": "object",
+                            "description": "Abort a terminally stuck challenge arm whose sibling has evalCompleted. Closes the arm's PR; never forfeits when both sides are stuck.",
+                            "properties": {
+                                "enabled": { "type": "boolean", "default": false },
+                                "stuckHours": { "type": "integer", "minimum": 1, "default": 2 }
+                            },
+                            "additionalProperties": false
+                        }
+                    },
+                    "additionalProperties": false
+                },
+                "alerts": {
+                    "type": "object",
+                    "description": "Opt-in desktop/push alerts for urgent/high findings that persist past persistMinutes (HOK-3097). Disabled by default.",
+                    "properties": {
+                        "enabled": { "type": "boolean", "default": false },
+                        "minSeverity": {
+                            "type": "string",
+                            "enum": ["urgent", "high"],
+                            "default": "high",
+                            "description": "Floor severity for alerts; medium/low findings never notify."
+                        },
+                        "persistMinutes": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "default": 15,
+                            "description": "Finding must persist for this many minutes before the first alert."
+                        },
+                        "repeatMinutes": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "default": 240,
+                            "description": "Minimum interval between repeat alerts for the same persistent finding."
+                        },
+                        "desktop": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "When true, attempts a desktop notification (osascript/notify-send). No-op on unsupported platforms."
+                        },
+                        "push": {
+                            "type": "object",
+                            "description": "Optional push webhook. URL may also be supplied via WAVEMILL_OBSERVER_PUSH_URL.",
+                            "properties": {
+                                "url": { "type": "string" },
+                                "format": {
+                                    "type": "string",
+                                    "enum": ["ntfy", "json"],
+                                    "default": "ntfy"
+                                }
+                            },
+                            "additionalProperties": false
+                        }
+                    },
+                    "additionalProperties": false
                 }
             },
             "additionalProperties": false
@@ -637,10 +725,15 @@
             "type": "object",
             "description": "Controls default task selection behavior in wavemill mill.",
             "properties": {
+                "enterAction": {
+                    "type": "string",
+                    "enum": ["none", "wave", "top-scored"],
+                    "default": "none",
+                    "description": "What a bare Enter does at the startup and monitor task pickers. 'none' (default) never launches work: tasks start only when selected by number. 'wave' launches the planner's first dependency-safe parallel wave; 'top-scored' launches the top scored tasks (startup picker only). Takes precedence over enterLaunchesWave."
+                },
                 "enterLaunchesWave": {
                     "type": "boolean",
-                    "default": true,
-                    "description": "When true, pressing Enter launches the planner's first dependency-safe parallel wave instead of the top scored tasks."
+                    "description": "Deprecated: use enterAction. Used only when enterAction is unset: true maps to 'wave', false to 'top-scored'. When neither key is set, Enter launches nothing."
                 }
             },
             "additionalProperties": false
@@ -1529,6 +1622,11 @@
                         "enabled": {
                             "type": "boolean",
                             "default": false
+                        },
+                        "allowFullSuiteTests": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "HOK-3145: when true, native coding agents may run full-suite test commands (npm test, pnpm test, yarn test, unsharded tests/run-*.sh). Defaults to false so a coding agent cannot loop on a multi-minute composite chain; CI runs the full suite anyway."
                         }
                     },
                     "additionalProperties": false
@@ -1984,6 +2082,19 @@
                     "default": 60,
                     "minimum": 0,
                     "description": "Cooldown before a skipped candidate is eligible for immediate re-promotion."
+                }
+            },
+            "additionalProperties": false
+        },
+        "queuePlanner": {
+            "type": "object",
+            "description": "Wave planning strategy for tools/plan-queue.ts (HOK-3131). Default is 'legacy' (the LLM classifies every dependency edge).",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["legacy", "grounded"],
+                    "default": "legacy",
+                    "description": "'grounded' predicts each task's touch set, scores pair conflicts deterministically, and only asks the LLM to judge ordering for overlapping pairs."
                 }
             },
             "additionalProperties": false

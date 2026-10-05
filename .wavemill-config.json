@@ -136,10 +136,16 @@
         "outputCostPerMTok": 3.5,
         "cacheReadCostPerMTok": 0.18
       },
-      "gemini-2.5-pro": {
-        "inputCostPerMTok": 1.25,
-        "outputCostPerMTok": 10,
-        "cacheReadCostPerMTok": 0.125,
+      "gemini-3.1-pro-preview": {
+        "inputCostPerMTok": 2,
+        "outputCostPerMTok": 12,
+        "cacheReadCostPerMTok": 0.2,
+        "cacheWriteCostPerMTok": 0.375
+      },
+      "gemini-3.1-pro-preview-customtools": {
+        "inputCostPerMTok": 2,
+        "outputCostPerMTok": 12,
+        "cacheReadCostPerMTok": 0.2,
         "cacheWriteCostPerMTok": 0.375
       },
       "gemini-2.5-flash": {

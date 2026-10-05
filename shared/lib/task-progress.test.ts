@@ -32,8 +32,11 @@ import {
   selectAgentRecord,
   INTERACTIVE_PROMPT_SIGNATURES,
   normalizeInteractivePromptText,
+  parsePsSnapshot,
+  deriveAgentBackgroundWork,
   type HookFile,
   type TaskProgressInputs,
+  type PaneProcess,
 } from './task-progress.ts';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -54,6 +57,7 @@ function emptyInputs(overrides: Partial<TaskProgressInputs> = {}): TaskProgressI
     transitionSources: [],
     terminal: { prState: null, prNumber: null, lifecycleOutcome: null, at: null },
     agentProcessLive: null,
+    backgroundWork: null,
     blockingPrompt: null,
     ...overrides,
   };
@@ -505,6 +509,220 @@ test('getTaskProgress on a missing hook + no worktree returns an empty-progress 
   assert.equal(p.agentIdle, false);
   assert.equal(p.terminal, false);
   assert.equal(p.stalled, false);
+});
+
+// ── HOK-3137: background-work detection (ps snapshot parsing) ───────────────
+
+test('parsePsSnapshot parses pid/ppid/etime shapes and commands with spaces', () => {
+  const psOutput = [
+    '  100     1 01:02:03 /bin/bash -c sleep 30',
+    '  200   100       45 node /app/agent.js --flag value',
+    '  300   200 3-04:05:06 npm test -- --watch',
+    '  400   200    12:34 sleep 600',
+    '',
+  ].join('\n');
+  const processes = parsePsSnapshot(psOutput);
+  assert.equal(processes.length, 4);
+  assert.deepEqual(processes[0], { pid: 100, ppid: 1, etimeSeconds: 3600 + 120 + 3, command: '/bin/bash -c sleep 30' });
+  assert.deepEqual(processes[1], { pid: 200, ppid: 100, etimeSeconds: 45, command: 'node /app/agent.js --flag value' });
+  assert.deepEqual(processes[2].etimeSeconds, ((3 * 24 + 4) * 60 + 5) * 60 + 6);
+  assert.equal(processes[2].command, 'npm test -- --watch');
+  assert.deepEqual(processes[3], { pid: 400, ppid: 200, etimeSeconds: 12 * 60 + 34, command: 'sleep 600' });
+});
+
+test('parsePsSnapshot skips unparsable rows without throwing', () => {
+  const processes = parsePsSnapshot('garbage line\n  100     1 00:01 ok-process\n');
+  assert.equal(processes.length, 1);
+  assert.equal(processes[0].pid, 100);
+});
+
+// ── HOK-3137: deriveAgentBackgroundWork (D2 process-tree heuristic) ─────────
+
+function proc(pid: number, ppid: number, etimeSeconds: number, command: string): PaneProcess {
+  return { pid, ppid, etimeSeconds, command };
+}
+
+test('bg-work: idle REPL regression — shell -> claude only is NOT live (HOK-3101(a))', () => {
+  const processes = [
+    proc(1, 0, 600, '-bash'),
+    proc(2, 1, 100, 'claude'),
+  ];
+  const result = deriveAgentBackgroundWork(processes, 1, { minChildLagSeconds: 30 });
+  assert.equal(result.live, false);
+  assert.deepEqual(result.processes, []);
+});
+
+test('bg-work: shell -> claude -> sleep 30 with sufficient lag is live', () => {
+  const processes = [
+    proc(1, 0, 600, '-bash'),
+    proc(2, 1, 100, 'claude'),
+    proc(3, 2, 20, 'sleep 30'),
+  ];
+  const result = deriveAgentBackgroundWork(processes, 1, { minChildLagSeconds: 30 });
+  assert.equal(result.live, true);
+  assert.deepEqual(result.processes, [{ pid: 3, command: 'sleep 30' }]);
+});
+
+test('bg-work: shell -> claude -> mcp-server with lag under threshold is NOT live (session-service exclusion)', () => {
+  const processes = [
+    proc(1, 0, 600, '-bash'),
+    proc(2, 1, 100, 'claude'),
+    proc(3, 2, 95, 'mcp-server --stdio'), // started 5s after claude, under the 30s lag floor
+  ];
+  const result = deriveAgentBackgroundWork(processes, 1, { minChildLagSeconds: 30 });
+  assert.equal(result.live, false);
+});
+
+test('bg-work: shell -> claude -> bash -c -> npm test is live (neutral shells transparent)', () => {
+  const processes = [
+    proc(1, 0, 600, '-bash'),
+    proc(2, 1, 200, 'claude'),
+    proc(3, 2, 50, 'bash -c "npm test"'),
+    proc(4, 3, 50, 'npm test -- --watch'),
+  ];
+  const result = deriveAgentBackgroundWork(processes, 1, { minChildLagSeconds: 30 });
+  assert.equal(result.live, true);
+  assert.deepEqual(result.processes.map((p) => p.pid), [4]);
+});
+
+test('bg-work: controller child under claude is NOT live (invariant 2 — never agent evidence)', () => {
+  const processes = [
+    proc(1, 0, 600, '-bash'),
+    proc(2, 1, 200, 'claude'),
+    proc(3, 2, 50, 'npx tsx tools/foo.ts'),
+  ];
+  const result = deriveAgentBackgroundWork(processes, 1, { minChildLagSeconds: 30 });
+  assert.equal(result.live, false);
+});
+
+test('bg-work: pane root is the agent itself (claude -> sleep, no wrapping shell) is live', () => {
+  const processes = [
+    proc(2, 1, 200, 'claude'),
+    proc(3, 2, 50, 'sleep 600'),
+  ];
+  const result = deriveAgentBackgroundWork(processes, 2, { minChildLagSeconds: 30 });
+  assert.equal(result.live, true);
+  assert.deepEqual(result.processes, [{ pid: 3, command: 'sleep 600' }]);
+});
+
+test('bg-work: multiple background tasks — still live, evidence capped', () => {
+  const processes = [
+    proc(1, 0, 600, '-bash'),
+    proc(2, 1, 200, 'claude'),
+    proc(3, 2, 50, 'sleep 600'),
+    proc(4, 2, 40, 'npm test'),
+  ];
+  const result = deriveAgentBackgroundWork(processes, 1, { minChildLagSeconds: 30 });
+  assert.equal(result.live, true);
+  assert.equal(result.processes.length, 2);
+});
+
+test('bg-work: a short-lived child that has already exited is simply absent from the snapshot — not live', () => {
+  // The 1s child from REQ-F1's edge case is gone by the time ps runs; the
+  // snapshot never contains it, so the subtree looks like the idle-REPL case.
+  const processes = [
+    proc(1, 0, 600, '-bash'),
+    proc(2, 1, 100, 'claude'),
+  ];
+  const result = deriveAgentBackgroundWork(processes, 1, { minChildLagSeconds: 30 });
+  assert.equal(result.live, false);
+});
+
+test('bg-work: an orphaned descendant outside the pane subtree does not protect a dead agent', () => {
+  // The agent (pid 2) is gone; its former child (pid 3) reparented to pid 1
+  // directly (simulating init/subreaper adoption) and is outside pane pid 2's
+  // subtree entirely when probed with the agent's own pid as panePid.
+  const processes = [
+    proc(1, 0, 600, '-bash'),
+    proc(3, 1, 50, 'sleep 600'),
+  ];
+  const result = deriveAgentBackgroundWork(processes, 2, { minChildLagSeconds: 30 });
+  assert.equal(result.live, false);
+  assert.deepEqual(result.processes, []);
+});
+
+// ── HOK-3137: deriveTaskProgress stall suppression ──────────────────────────
+
+// NOTE: an idle hook record is never itself a progress `source` (it is the
+// agent's settled state, not progress), so `progressAgeMinutes` would be
+// `null` — and `overThreshold` false — without an independent stale
+// transition source. Each fixture below supplies one (`task.updated` 60
+// minutes ago) purely to make `overThreshold` true, isolating what we're
+// actually testing: whether background-work suppression fires.
+const STALE_TRANSITION_SOURCE = { kind: 'transition' as const, at: '2026-09-28T15:00:00Z', detail: 'task.updated' };
+
+test('deriveTaskProgress: idle agent + live background work suppresses stalled, never touches lastProgressAt/sources', () => {
+  const now = new Date('2026-09-28T16:00:00Z');
+  const stopTs = ts('2026-09-28T15:00:00Z'); // 60 minutes ago — over the 30m default threshold
+  const inputs = emptyInputs({
+    hookFile: makeHookFile({
+      top: { state: 'idle', event: 'Stop', agent: 'claude', timestamp: stopTs },
+      agentRecord: { state: 'idle', event: 'Stop', agent: 'claude', timestamp: stopTs },
+      writer: 'agent',
+      topTimestamp: stopTs,
+    }),
+    transitionSources: [STALE_TRANSITION_SOURCE],
+    backgroundWork: { live: true, processes: [{ pid: 999, command: 'sleep 600' }] },
+  });
+  const p = deriveTaskProgress(inputs, { now });
+  assert.equal(p.agentIdle, true);
+  assert.equal(p.agentBackgroundLive, true);
+  assert.equal(p.backgroundProcesses.length, 1);
+  assert.equal(p.stalled, false);
+  // Invariant 1 pinned: background work never becomes progress — the only
+  // source present is the caller-supplied transition, not the idle hook or
+  // the background-work probe.
+  assert.equal(p.sources.length, 1);
+  assert.equal(p.sources[0].kind, 'transition');
+});
+
+test('deriveTaskProgress: idle agent + no background work still stalls (existing behavior preserved)', () => {
+  const now = new Date('2026-09-28T16:00:00Z');
+  const stopTs = ts('2026-09-28T15:00:00Z');
+  const inputs = emptyInputs({
+    hookFile: makeHookFile({
+      top: { state: 'idle', event: 'Stop', agent: 'claude', timestamp: stopTs },
+      agentRecord: { state: 'idle', event: 'Stop', agent: 'claude', timestamp: stopTs },
+      writer: 'agent',
+      topTimestamp: stopTs,
+    }),
+    transitionSources: [STALE_TRANSITION_SOURCE],
+    backgroundWork: { live: false, processes: [] },
+  });
+  const p = deriveTaskProgress(inputs, { now });
+  assert.equal(p.agentIdle, true);
+  assert.equal(p.agentBackgroundLive, false);
+  assert.equal(p.stalled, true);
+});
+
+test('deriveTaskProgress: not probed (backgroundWork null) behaves like today (agentBackgroundLive null, stall unaffected)', () => {
+  const now = new Date('2026-09-28T16:00:00Z');
+  const stopTs = ts('2026-09-28T15:00:00Z');
+  const inputs = emptyInputs({
+    hookFile: makeHookFile({
+      top: { state: 'idle', event: 'Stop', agent: 'claude', timestamp: stopTs },
+      agentRecord: { state: 'idle', event: 'Stop', agent: 'claude', timestamp: stopTs },
+      writer: 'agent',
+      topTimestamp: stopTs,
+    }),
+    transitionSources: [STALE_TRANSITION_SOURCE],
+  });
+  const p = deriveTaskProgress(inputs, { now });
+  assert.equal(p.agentBackgroundLive, null);
+  assert.equal(p.stalled, true);
+});
+
+test('deriveTaskProgress: non-idle agent + live background work does NOT suppress stall (suppression is idle-scoped)', () => {
+  const now = new Date('2026-09-28T16:00:00Z');
+  const inputs = emptyInputs({
+    hookFile: null,
+    transitionSources: [{ kind: 'transition', at: '2026-09-28T15:00:00Z', detail: 'task.updated' }],
+    backgroundWork: { live: true, processes: [{ pid: 999, command: 'sleep 600' }] },
+  });
+  const p = deriveTaskProgress(inputs, { now });
+  assert.equal(p.agentIdle, false);
+  assert.equal(p.agentBackgroundLive, true);
+  assert.equal(p.stalled, true);
 });
 
 // ── Ensure existsSync helper is imported by the test (avoid unused var) ─────

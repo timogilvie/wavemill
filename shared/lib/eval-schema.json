@@ -453,7 +453,8 @@
         "failed_feature_outcome",
         "missing_challenge_stage",
         "eval_fast_failed",
-        "provisional_model_identity"
+        "provisional_model_identity",
+        "provider_model_substitution"
       ],
       "description": "Primary stable reason why the record is ineligible for budget-eval export."
     },
@@ -474,10 +475,21 @@
           "failed_feature_outcome",
           "missing_challenge_stage",
           "eval_fast_failed",
-          "provisional_model_identity"
+          "provisional_model_identity",
+          "provider_model_substitution"
         ]
       },
       "description": "Stable machine-readable reasons why the record is ineligible for exports."
+    },
+    "stageExecution": {
+      "type": "object",
+      "description": "HOK-3143: per-stage provider-identity attribution.",
+      "additionalProperties": false,
+      "properties": {
+        "planning": { "$ref": "#/$defs/stageExecutionIdentity" },
+        "coding": { "$ref": "#/$defs/stageExecutionIdentity" },
+        "review": { "$ref": "#/$defs/stageExecutionIdentity" }
+      }
     },
     "nonRewardReason": {
       "type": "object",
@@ -2881,6 +2893,34 @@
     }
   },
   "$defs": {
+    "stageExecutionIdentity": {
+      "type": "object",
+      "description": "HOK-3143: provider-identity attribution for one stage.",
+      "additionalProperties": false,
+      "required": ["intendedModel", "executedModel"],
+      "properties": {
+        "intendedModel": { "type": ["string", "null"] },
+        "executedModel": { "type": ["string", "null"] },
+        "executionEvidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": ["direct", "missing", "contradicted", "inherited"]
+            },
+            "source": { "type": "string" },
+            "providerReportedModel": { "type": "string" },
+            "requestedWireId": { "type": "string" },
+            "certifiedTarget": { "type": "string" },
+            "identityVerdict": {
+              "type": "string",
+              "enum": ["match", "alias-resolved", "mismatch", "unverifiable", "absent"]
+            }
+          }
+        }
+      }
+    },
     "ExecutionEconomicsFieldAvailability": {
       "type": "string",
       "enum": [
@@ -3544,7 +3584,8 @@
         "state_vs_derived_side_mismatch",
         "operator_reroute",
         "missing_challenge_intent",
-        "multiple-varied-roles"
+        "multiple-varied-roles",
+        "arm_infrastructure_failure"
       ]
     },
     "ChallengeRoutingMeta": {
@@ -4629,6 +4670,7 @@
         "operator_reroute",
         "state_vs_derived_side_mismatch",
         "missing_challenge_intent",
+        "arm_infrastructure_failure",
         "identical_routing_dimensions",
         "provenance_invalid",
         "provenance_inconclusive",
@@ -4718,6 +4760,7 @@
         "operator_reroute",
         "missing_challenge_intent",
         "multiple-varied-roles",
+        "arm_infrastructure_failure",
         "divergent_pre_stage_inputs",
         "unverified_fork_commit",
         "missing_fork_identity",
@@ -4733,7 +4776,8 @@
         "inherited_stage_evidence_only",
         "presentation_order_bias_unresolved",
         "insufficient_review_iterations",
-        "insufficient_evidence_other"
+        "insufficient_evidence_other",
+        "provider_model_substitution"
       ]
     },
     "StageAttribution": {

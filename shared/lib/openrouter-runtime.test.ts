@@ -403,8 +403,8 @@ describe('dispatchOpenRouterRequest', () => {
       },
       {
         family: 'gemini',
-        alias: 'gemini-2.5-pro',
-        openrouterId: 'google/gemini-2.5-pro',
+        alias: 'gemini-3.1-pro-preview',
+        openrouterId: 'google/gemini-3.1-pro-preview',
         fixture: 'success/gemini.json',
       },
       {

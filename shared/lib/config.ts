@@ -81,6 +81,9 @@ export interface DashboardConfig {
 }
 
 export interface TaskSelectionConfig {
+  /** What a bare Enter does at the task pickers; defaults to 'none'. */
+  enterAction?: 'none' | 'wave' | 'top-scored';
+  /** @deprecated Use enterAction. true maps to 'wave', false to 'top-scored'. */
   enterLaunchesWave?: boolean;
 }
 
@@ -448,6 +451,13 @@ export interface NativeAgentProvidersConfig {
 
 export interface NativePatchCodingConfig {
   enabled?: boolean;
+  /**
+   * HOK-3145: when true, native coding agents may run full-suite test commands
+   * (`npm test`, `pnpm test`, `yarn test`, unsharded `tests/run-*.sh`). Defaults
+   * to false so a coding agent cannot loop on a multi-minute composite chain —
+   * CI runs the full suite anyway.
+   */
+  allowFullSuiteTests?: boolean;
 }
 
 export interface CanaryCohortMemberConfig {
@@ -685,6 +695,7 @@ export interface NativeExpansionConfig {
 
 export interface ResolvedNativePatchCodingConfig {
   enabled: boolean;
+  allowFullSuiteTests: boolean;
 }
 
 export interface IntegrationConfig {
@@ -729,6 +740,41 @@ export interface ObserverConfig {
     maxSnapshots: number;
   };
   linear?: Partial<ObserverLinearConfig>;
+  autoFix?: Partial<ObserverAutoFixConfig>;
+  alerts?: Partial<ObserverAlertsConfig>;
+}
+
+/** HOK-3097: opt-in observer self-repair actions. */
+export interface ObserverAutoFixConfig {
+  enabled: boolean;
+  quietMinutes: number;
+  updateBranchFromBase: {
+    enabled: boolean;
+    maxAttempts: number;
+  };
+  resetReadyRecheckBudget: {
+    enabled: boolean;
+  };
+  forfeitStuckChallengeArm: {
+    enabled: boolean;
+    stuckHours: number;
+  };
+}
+
+export type ObserverAlertMinSeverity = 'urgent' | 'high';
+export type ObserverAlertPushFormat = 'ntfy' | 'json';
+
+/** HOK-3097: opt-in desktop/push alerts for persistent urgent/high findings. */
+export interface ObserverAlertsConfig {
+  enabled: boolean;
+  minSeverity: ObserverAlertMinSeverity;
+  persistMinutes: number;
+  repeatMinutes: number;
+  desktop: boolean;
+  push: {
+    url?: string;
+    format: ObserverAlertPushFormat;
+  };
 }
 
 export type ObserverLinearPolicyStrategy = 'create' | 'no_create' | 'threshold' | 'create_if_persistent';
@@ -985,6 +1031,13 @@ export interface MergeQueueConfig {
   skipCooldownSeconds?: number;
 }
 
+/** Wave planning strategy for tools/plan-queue.ts (HOK-3131). */
+export type QueuePlannerMode = 'legacy' | 'grounded';
+
+export interface QueuePlannerConfig {
+  mode?: QueuePlannerMode;
+}
+
 export interface MonitorConfig {
   readyWatchdog?: ReadyWatchdogConfig;
 }
@@ -1148,6 +1201,7 @@ export interface WavemillConfig {
   ready?: ReadyConfig;
   mergeQueue?: MergeQueueConfig;
   monitor?: MonitorConfig;
+  queuePlanner?: QueuePlannerConfig;
   permissions?: PermissionsConfig;
   quota?: QuotaConfig;
   verification?: VerificationConfig;
@@ -1179,6 +1233,33 @@ export const OBSERVER_DEFAULTS: ObserverConfig = {
   maxLogLines: 240,
   retention: {
     maxSnapshots: 50,
+  },
+};
+
+export const OBSERVER_AUTO_FIX_DEFAULTS: ObserverAutoFixConfig = {
+  enabled: false,
+  quietMinutes: 10,
+  updateBranchFromBase: {
+    enabled: false,
+    maxAttempts: 2,
+  },
+  resetReadyRecheckBudget: {
+    enabled: false,
+  },
+  forfeitStuckChallengeArm: {
+    enabled: false,
+    stuckHours: 2,
+  },
+};
+
+export const OBSERVER_ALERTS_DEFAULTS: ObserverAlertsConfig = {
+  enabled: false,
+  minSeverity: 'high',
+  persistMinutes: 15,
+  repeatMinutes: 240,
+  desktop: true,
+  push: {
+    format: 'ntfy',
   },
 };
 
@@ -2366,6 +2447,15 @@ export function getMaxCostUsd(repoDir?: string): number | undefined {
 }
 
 /**
+ * Get the queue planner config section (HOK-3131).
+ * `mode` resolves to 'legacy' unless explicitly set to 'grounded'.
+ */
+export function getQueuePlannerConfig(repoDir?: string): Required<QueuePlannerConfig> {
+  const mode = loadWavemillConfig(repoDir).queuePlanner?.mode;
+  return { mode: mode === 'grounded' ? 'grounded' : 'legacy' };
+}
+
+/**
  * Get the UI config section.
  * Returns empty object if not configured.
  */
@@ -2410,6 +2500,59 @@ export function getObserverConfig(repoDir?: string): ObserverConfig {
       ...OBSERVER_DEFAULTS.retention,
       ...(observer.retention ?? {}),
     },
+  };
+}
+
+/**
+ * HOK-3097: resolved observer auto-fix config with env overrides.
+ *
+ * `WAVEMILL_OBSERVER_AUTOFIX=0` forces the master switch off; the per-fix
+ * flags still default to false, so an explicit `0` only overrides an on-disk
+ * opt-in. Any other value leaves the switch alone.
+ */
+export function getObserverAutoFixConfig(repoDir?: string): ObserverAutoFixConfig {
+  const observer = loadWavemillConfig(repoDir).observer ?? {};
+  const autoFix = observer.autoFix ?? {};
+  const envKill = process.env.WAVEMILL_OBSERVER_AUTOFIX;
+  const envDisabled = envKill === '0';
+  return {
+    enabled: envDisabled ? false : (autoFix.enabled ?? OBSERVER_AUTO_FIX_DEFAULTS.enabled),
+    quietMinutes: autoFix.quietMinutes ?? OBSERVER_AUTO_FIX_DEFAULTS.quietMinutes,
+    updateBranchFromBase: {
+      ...OBSERVER_AUTO_FIX_DEFAULTS.updateBranchFromBase,
+      ...(autoFix.updateBranchFromBase ?? {}),
+    },
+    resetReadyRecheckBudget: {
+      ...OBSERVER_AUTO_FIX_DEFAULTS.resetReadyRecheckBudget,
+      ...(autoFix.resetReadyRecheckBudget ?? {}),
+    },
+    forfeitStuckChallengeArm: {
+      ...OBSERVER_AUTO_FIX_DEFAULTS.forfeitStuckChallengeArm,
+      ...(autoFix.forfeitStuckChallengeArm ?? {}),
+    },
+  };
+}
+
+/**
+ * HOK-3097: resolved observer alerts config. `WAVEMILL_OBSERVER_PUSH_URL`
+ * overrides `push.url` so secrets can live outside the repo config.
+ */
+export function getObserverAlertsConfig(repoDir?: string): ObserverAlertsConfig {
+  const observer = loadWavemillConfig(repoDir).observer ?? {};
+  const alerts = observer.alerts ?? {};
+  const envPush = process.env.WAVEMILL_OBSERVER_PUSH_URL;
+  const push = {
+    ...OBSERVER_ALERTS_DEFAULTS.push,
+    ...(alerts.push ?? {}),
+  };
+  if (envPush && envPush.length > 0) push.url = envPush;
+  return {
+    enabled: alerts.enabled ?? OBSERVER_ALERTS_DEFAULTS.enabled,
+    minSeverity: alerts.minSeverity ?? OBSERVER_ALERTS_DEFAULTS.minSeverity,
+    persistMinutes: alerts.persistMinutes ?? OBSERVER_ALERTS_DEFAULTS.persistMinutes,
+    repeatMinutes: alerts.repeatMinutes ?? OBSERVER_ALERTS_DEFAULTS.repeatMinutes,
+    desktop: alerts.desktop ?? OBSERVER_ALERTS_DEFAULTS.desktop,
+    push,
   };
 }
 
@@ -2658,6 +2801,7 @@ export function getNativePatchCodingConfig(repoDir?: string): ResolvedNativePatc
   const config = getNativeAgentConfig(repoDir);
   return {
     enabled: config.patchCoding?.enabled === true,
+    allowFullSuiteTests: config.patchCoding?.allowFullSuiteTests === true,
   };
 }
 

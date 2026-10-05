@@ -46,6 +46,11 @@ runTool({
       type: 'string',
       description: 'Feature directory whose routing.jsonl records the route decision (default: inferred when --file lives under features/<slug>/)',
     },
+    'exclude-model': {
+      type: 'string',
+      multiple: true,
+      description: 'Model id to exclude from every stage (repeatable), e.g. a coder the launch gate refused',
+    },
   },
   positional: {
     name: 'prompt',
@@ -64,6 +69,9 @@ runTool({
     '',
     '# Record the route decision in a specific feature directory',
     'npx tsx tools/route-task.ts --json --file /tmp/packet.md --feature-dir features/my-feature',
+    '',
+    '# Re-route without a model the launch gate refused',
+    'npx tsx tools/route-task.ts --json --file features/my-feature/task-packet.md --exclude-model gemini-2.5-pro',
   ],
   async run({ args, positional }) {
     let prompt = '';
@@ -93,6 +101,7 @@ runTool({
       }
     }
     const featureDir = args['feature-dir'] || inferFeatureDirFromTaskFile(file);
+    const excludeModels = (args['exclude-model'] ?? []).map((model) => model.trim()).filter(Boolean);
     const [result] = await routeBatch([
       { prompt, file, source: args.source, inputKind: args['input-kind'], ...(featureDir ? { featureDir } : {}) },
     ], {
@@ -100,6 +109,7 @@ runTool({
       mode: mode as 'auto' | 'stage-aware' | 'heuristic' | 'hokusai',
       maxCostUsd,
       additionalEvalsPaths: getWavemillAdditionalEvalPaths(repoDir),
+      ...(excludeModels.length > 0 ? { excludeModels } : {}),
     });
     const decision = result?.decision;
     if (!decision) {

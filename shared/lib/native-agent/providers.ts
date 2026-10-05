@@ -18,10 +18,12 @@ import { resolveOpenRouterModelId } from '../openrouter-provider.ts';
 import {
   evaluateNativeProviderGate,
   evaluateSuiteCoverage,
+  isRollingProviderAlias,
   type CertificationPhase,
   type NativeGateMode,
   type NativeGateRejectReason,
 } from './certification/index.ts';
+import type { ProviderIdentityExpectation } from './provider-identity.ts';
 import {
   buildPiModel,
   getRegisteredPiProviderForModel,
@@ -56,6 +58,12 @@ export interface ReadyNativeProviderEntry extends NativeProviderEntryBase {
   status: 'ready';
   model: PiModel;
   certificationOnly?: boolean;
+  /**
+   * Expectation for runtime provider-identity verification (HOK-3143).
+   * Populated for `task` mode when the gate decision carries a certification
+   * artifact; omitted in `certification` mode (nothing to pin against yet).
+   */
+  certifiedIdentity?: ProviderIdentityExpectation;
 }
 
 export interface UnavailableNativeProviderEntry extends NativeProviderEntryBase {
@@ -214,6 +222,7 @@ export function resolveNativeAgentProviders(
         continue;
       }
 
+      const certifiedIdentity = buildCertifiedIdentityExpectation(decision);
       const readyEntry: ReadyNativeProviderEntry = {
         providerName,
         modelId,
@@ -225,6 +234,7 @@ export function resolveNativeAgentProviders(
           ? buildOpenAiResponsesModel({ modelId, baseUrl, headers })
           : buildOpenRouterModel({ modelId, baseUrl, headers }),
         certificationOnly: false,
+        ...(certifiedIdentity ? { certifiedIdentity } : {}),
       };
       attachApiKey(readyEntry, apiKey);
       resolved.push(readyEntry);
@@ -232,6 +242,40 @@ export function resolveNativeAgentProviders(
   }
 
   return resolved;
+}
+
+/**
+ * Build the runtime identity expectation from a passing certification gate
+ * decision (HOK-3143). Returns undefined when the artifact lacks a subject
+ * (legacy v2) — the runtime then skips verification rather than failing closed.
+ */
+function buildCertifiedIdentityExpectation(
+  decision: Extract<ReturnType<typeof evaluateNativeProviderGate>, { ok: true }>,
+): ProviderIdentityExpectation | undefined {
+  const artifact = decision.artifact;
+  if (!artifact || !('subject' in artifact) || !artifact.subject) {
+    return undefined;
+  }
+  const requestedWireId = artifact.subject.providerNativeId;
+  const isAlias = isRollingProviderAlias(requestedWireId);
+  const expectedModel = isAlias
+    ? artifact.resolvedTarget?.model
+    : requestedWireId;
+  if (!expectedModel) {
+    // Alias without a resolvedTarget is already rejected by evaluateEligibility;
+    // defensive guard in case the decision carried a legacy artifact.
+    return undefined;
+  }
+  return {
+    requestedWireId,
+    expectedModel,
+    isAlias,
+    registryKey: artifact.subject.registryKey,
+    ...(decision.storagePath ? { certificationPath: decision.storagePath } : {}),
+    certificationProvider: artifact.subject.providerId,
+    certificationModel: artifact.subject.providerModelId,
+    suiteVersion: artifact.suiteVersion,
+  };
 }
 
 export function getNativeProviderApiKey(entry: ReadyNativeProviderEntry): string | undefined {

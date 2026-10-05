@@ -32,7 +32,19 @@ export type UnroutableReason =
 
 export type AgentResolution =
   | { ok: true; agent: AgentType }
-  | { ok: false; reason: UnroutableReason; diagnostic: string; certifyCommand?: string };
+  | {
+    ok: false;
+    reason: UnroutableReason;
+    diagnostic: string;
+    certifyCommand?: string;
+    /**
+     * Structured certification status behind the refusal (the same value the
+     * diagnostic prints as `certification=`), e.g. `missing_live_canary`.
+     * Exposed so callers (router guard, monitor reroute, observer) never have
+     * to parse the diagnostic string (HOK-3142).
+     */
+    certificationStatus?: string;
+  };
 
 export type LaunchPreflightFailureReason =
   | 'retired-model-no-successor'
@@ -94,8 +106,36 @@ function inferHostedAgent(vendor: string | undefined): Extract<AgentType, 'claud
   return undefined;
 }
 
-function certifyCommandFor(modelId: string, provider: NativeProviderName, phase: AgentResolutionPhase): string {
-  return `npx tsx tools/native-agent-certify.ts --provider ${provider} --model ${modelId} --phase ${certificationPhaseForAgentPhase(phase)}`;
+/**
+ * Gate reasons that only a provider-backed live coding canary can clear. A
+ * certify command for these must carry `--live-coding-canary`, otherwise the
+ * operator re-runs the deterministic suite and the gate still refuses
+ * (HOK-3142: the printed command did not fix the HOK-3138 stall).
+ */
+const LIVE_CANARY_GATE_REASONS: ReadonlySet<string> = new Set([
+  'missing_live_canary',
+  'stale_live_canary',
+  'failed_live_canary',
+  'inconclusive_live_canary',
+  'non_live_canary',
+  'live_canary_identity_mismatch',
+  // HOK-3143: a durable identity invalidation requires a fresh canary against
+  // the current alias target; the deterministic suite alone cannot clear it.
+  'identity_mismatch',
+]);
+
+export function isLiveCanaryCertificationStatus(status: string | undefined): boolean {
+  return status !== undefined && LIVE_CANARY_GATE_REASONS.has(status);
+}
+
+function certifyCommandFor(
+  modelId: string,
+  provider: NativeProviderName,
+  phase: AgentResolutionPhase,
+  certificationStatus?: string,
+): string {
+  const base = `npx tsx tools/native-agent-certify.ts --provider ${provider} --model ${modelId} --phase ${certificationPhaseForAgentPhase(phase)}`;
+  return isLiveCanaryCertificationStatus(certificationStatus) ? `${base} --live-coding-canary` : base;
 }
 
 function launchPriorityRoleEligibility(modelId: string, phase: AgentResolutionPhase): {
@@ -148,7 +188,7 @@ function resolveRegistryBackedNativeAgent(input: {
       certificationStatus: 'missing-native-capability',
       certifyCommand,
     });
-    return { ok: false, reason: 'no-native-capability', diagnostic, certifyCommand };
+    return { ok: false, reason: 'no-native-capability', diagnostic, certifyCommand, certificationStatus: 'missing-native-capability' };
   }
 
   if (provider !== expectedProvider) {
@@ -164,6 +204,7 @@ function resolveRegistryBackedNativeAgent(input: {
       ok: false,
       reason: 'no-native-capability',
       diagnostic,
+      certificationStatus: `provider-mismatch:${provider}->${expectedProvider}`,
       ...(provider ? { certifyCommand: certifyCommandFor(input.modelId, provider, input.phase) } : {}),
     };
   }
@@ -181,6 +222,7 @@ function resolveRegistryBackedNativeAgent(input: {
       ok: false,
       reason: 'native-unsupported',
       diagnostic,
+      certificationStatus: 'native-unsupported',
       certifyCommand: certifyCommandFor(input.modelId, provider, input.phase),
     };
   }
@@ -208,7 +250,7 @@ function resolveRegistryBackedNativeAgent(input: {
       reason,
       certificationStatus,
     });
-    return { ok: false, reason, diagnostic };
+    return { ok: false, reason, diagnostic, certificationStatus };
   }
 
   const roleEligibility = launchPriorityRoleEligibility(input.modelId, input.phase);
@@ -221,7 +263,7 @@ function resolveRegistryBackedNativeAgent(input: {
       reason: 'role-ineligible',
       certificationStatus: `eligible-roles:${eligibleRoles}`,
     });
-    return { ok: false, reason: 'role-ineligible', diagnostic };
+    return { ok: false, reason: 'role-ineligible', diagnostic, certificationStatus: `eligible-roles:${eligibleRoles}` };
   }
 
   const requiredPhase = certificationPhaseForAgentPhase(input.phase);
@@ -240,21 +282,18 @@ function resolveRegistryBackedNativeAgent(input: {
       certificationRoot: input.certificationRoot,
     });
     if (!gate.ok) {
-      const certifyCommand = certifyCommandFor(input.modelId, provider, input.phase);
+      const gateReason = gate.reason;
+      const reason = gateReason === 'unregistered_model' ? 'no-native-capability' : 'uncertified';
+      const certifyCommand = certifyCommandFor(input.modelId, provider, input.phase, gateReason);
       const diagnostic = buildDiagnostic({
         modelId: input.modelId,
         phase: input.phase,
         provider,
-        reason: gate.reason === 'unregistered_model' ? 'no-native-capability' : 'uncertified',
-        certificationStatus: gate.reason,
+        reason,
+        certificationStatus: gateReason,
         certifyCommand,
       });
-      return {
-        ok: false,
-        reason: gate.reason === 'unregistered_model' ? 'no-native-capability' : 'uncertified',
-        diagnostic,
-        certifyCommand,
-      };
+      return { ok: false, reason, diagnostic, certifyCommand, certificationStatus: gateReason };
     }
     return { ok: true, agent: input.nativeAgent };
   }
@@ -267,16 +306,17 @@ function resolveRegistryBackedNativeAgent(input: {
   });
 
   if (!eligibility.eligible) {
-    const certifyCommand = certifyCommandFor(input.modelId, provider, input.phase);
+    const eligibilityReason = eligibility.reason;
+    const certifyCommand = certifyCommandFor(input.modelId, provider, input.phase, eligibilityReason);
     const diagnostic = buildDiagnostic({
       modelId: input.modelId,
       phase: input.phase,
       provider,
       reason: 'uncertified',
-      certificationStatus: eligibility.reason,
+      certificationStatus: eligibilityReason,
       certifyCommand,
     });
-    return { ok: false, reason: 'uncertified', diagnostic, certifyCommand };
+    return { ok: false, reason: 'uncertified', diagnostic, certifyCommand, certificationStatus: eligibilityReason };
   }
 
   return { ok: true, agent: input.nativeAgent };

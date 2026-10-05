@@ -22,7 +22,7 @@ async function main(): Promise<void> {
   const issue = firstNonEmpty(readOption('issue'), process.env.WAVEMILL_ISSUE) ?? '';
   const slug = firstNonEmpty(readOption('slug'), process.env.WAVEMILL_FEATURE_SLUG, process.env.WAVEMILL_SLUG) ?? '';
   const wtDir = resolve(firstNonEmpty(readOption('wt-dir'), process.env.WAVEMILL_WT_DIR) ?? process.cwd());
-  const repoDir = resolve(firstNonEmpty(readOption('repo-dir'), process.env.WAVEMILL_REPO_DIR) ?? process.cwd());
+  const repoDir = resolve(firstNonEmpty(readOption('repo-dir'), process.env.WAVEMILL_MILLED_REPO_DIR) ?? process.cwd());
 
   if (!session || !issue || !slug) {
     throw new Error('session, issue, and slug are required');

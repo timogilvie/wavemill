@@ -1,9 +1,17 @@
 import { resolve } from 'node:path';
 import { getOpenRouterProviderConfig } from './config.ts';
 import { resolveEnvValue } from './env-file.ts';
-import { resolveModelAgent, type AgentResolution, type AgentResolutionPhase } from './model-agent-resolution.ts';
+import { listEffectiveModelsForStage } from './effective-models.ts';
+import {
+  isLiveCanaryCertificationStatus,
+  resolveModelAgent,
+  type AgentResolution,
+  type AgentResolutionPhase,
+} from './model-agent-resolution.ts';
+import { isDisabledModel } from './disabled-models.ts';
 import {
   DEFAULT_MODEL_REGISTRY,
+  explainModelSupportExclusion,
   getModel,
   isModelEnabled,
   type AgentType,
@@ -211,4 +219,66 @@ export function buildLaunchabilityMatrix(options: BuildLaunchabilityMatrixOption
     advertisedModels,
     blockers,
   };
+}
+
+export interface CoderCanaryGap {
+  modelId: string;
+  /** Canary gate reason, e.g. `missing_live_canary` or `stale_live_canary`. */
+  certification: string;
+  certifyCommand?: string;
+}
+
+/**
+ * Router-eligible native coders the coding launch gate refuses for a live
+ * canary reason (HOK-3142). The router's launchability guard already keeps
+ * these out of routes; this advisory tells the operator which models are
+ * silently unavailable as coders and how to certify them. HOK-3062's cohort
+ * refresh only covers the configured cohort, so models outside it surface here.
+ *
+ * Candidates: the registry's coder stage pool ∪ launch-priority catalog
+ * entries eligible for coding, restricted to native models whose provider is
+ * configured for the coder stage. Models routing would never pick anyway —
+ * `DISABLED_MODEL_IDS` and registry support exclusions such as a blocked or
+ * retired lifecycle (HOK-3159) — are left out so the advisory is not noise.
+ */
+export function listCoderCanaryGaps(options: BuildLaunchabilityMatrixOptions = {}): CoderCanaryGap[] {
+  const repoDir = resolve(options.repoDir ?? process.cwd());
+  const registry = options.registry ?? DEFAULT_MODEL_REGISTRY;
+  const catalog = options.catalog ?? loadLaunchPriorityList();
+  const candidates = [...new Set([
+    ...listEffectiveModelsForStage('coder', { repoDir, registry }).models,
+    ...catalog
+      .filter((entry) => entry.roleEligibility.includes('coding'))
+      .map((entry) => entry.wavemillAlias),
+  ])].filter((modelId) => {
+    const capabilities = getModel(registry, modelId);
+    return Boolean(capabilities?.nativeCapability?.nativeProvider)
+      && isModelEnabled(capabilities)
+      && !isDisabledModel(modelId)
+      && explainModelSupportExclusion(modelId, 'coding', registry) === undefined;
+  });
+  const providerAvailable = new Set(filterOpenRouterModels(candidates, repoDir, 'coder').models);
+
+  const gaps: CoderCanaryGap[] = [];
+  for (const modelId of candidates) {
+    const nativeProvider = getModel(registry, modelId)?.nativeCapability?.nativeProvider;
+    if (nativeProvider === 'openrouter' && !providerAvailable.has(modelId)) continue;
+    const resolution = resolveModelAgent({
+      model: modelId,
+      phase: 'coding',
+      registry,
+      repoDir,
+      now: options.now,
+      certificationRoot: options.certificationRoot,
+    });
+    if (resolution.ok !== false) continue;
+    const refusal = resolution as Extract<AgentResolution, { ok: false }>;
+    if (!isLiveCanaryCertificationStatus(refusal.certificationStatus)) continue;
+    gaps.push({
+      modelId,
+      certification: refusal.certificationStatus as string,
+      ...(refusal.certifyCommand ? { certifyCommand: refusal.certifyCommand } : {}),
+    });
+  }
+  return gaps.sort((a, b) => a.modelId.localeCompare(b.modelId));
 }

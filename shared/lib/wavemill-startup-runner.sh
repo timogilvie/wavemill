@@ -58,7 +58,8 @@ else
 fi
 PROJECT_NAME="$(jq -r '.monitorConfig.projectName // empty' "$PLAN_FILE")"
 AUTO_EVAL="$(jq -r '.monitorConfig.autoEval // true' "$PLAN_FILE")"
-ENTER_LAUNCHES_WAVE="$(jq -r '.monitorConfig.enterLaunchesWave // true' "$PLAN_FILE")"
+ENTER_ACTION="$(jq -r '.monitorConfig.enterAction // (if .monitorConfig.enterLaunchesWave == true then "wave" elif .monitorConfig.enterLaunchesWave == false then "top-scored" else "none" end)' "$PLAN_FILE")"
+if [[ "$ENTER_ACTION" == "wave" ]]; then ENTER_LAUNCHES_WAVE="true"; else ENTER_LAUNCHES_WAVE="false"; fi
 DASHBOARD_VERBOSITY="$(jq -r '.monitorConfig.dashboardVerbosity // "info"' "$PLAN_FILE")"
 DASHBOARD_LOG_TO_FILE="$(jq -r '.monitorConfig.dashboardLogToFile // true' "$PLAN_FILE")"
 # Parsed but intentionally unused; behavior change ships in follow-up.
@@ -72,7 +73,7 @@ export SESSION REPO_DIR BASE_BRANCH RESOLVED_BASE_REF WORKTREE_ROOT PLANNING_MOD
 export WAVEMILL_RUN_EPOCH
 export WAVEMILL_BASE_BRANCH_SOURCE WAVEMILL_REQUIRE_CONFIRM_SOURCE WAVEMILL_MERGE_METHOD_SOURCE
 export FORCE_MODEL ROUTER_ENABLED MAX_PARALLEL STATE_DIR STATE_FILE TOOLS_DIR LIB_DIR
-export POLL_SECONDS REQUIRE_CONFIRM INTEGRATION_MERGE_METHOD DRY_RUN PROJECT_NAME AUTO_EVAL ENTER_LAUNCHES_WAVE DASHBOARD_VERBOSITY
+export POLL_SECONDS REQUIRE_CONFIRM INTEGRATION_MERGE_METHOD DRY_RUN PROJECT_NAME AUTO_EVAL ENTER_ACTION ENTER_LAUNCHES_WAVE DASHBOARD_VERBOSITY
 export DASHBOARD_LOG_TO_FILE MILL_LOG_FILE
 
 source "$LIB_DIR/wavemill-common.sh"
@@ -202,6 +203,36 @@ startup_openrouter_credit_warning() {
   return 1
 }
 
+# HOK-3155: clear the credit circuit when a balance refresh confirms the
+# account is above min_credits. Two sentinels must go together: the warning
+# cache (dashboard WARN band) and the abort-count file written by
+# record_openrouter_credits_challenge_abort. The abort-count path mirrors the
+# writer's resolution: WAVEMILL_STATE_DIR → dirname(STATE_FILE) → /tmp.
+startup_clear_openrouter_credit_circuit() {
+  [[ -n "${REPO_DIR:-}" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+
+  local quota_file="$REPO_DIR/.wavemill/quota-state.json"
+  [[ -f "$quota_file" ]] || return 0
+
+  local balance min_credits
+  balance="$(jq -r '.providers.openrouter.balanceUsd // empty' "$quota_file" 2>/dev/null || true)"
+  [[ -n "$balance" ]] || return 0
+  min_credits="$(jq -r '.nativeAgent.providers.openrouter.minCreditsUsd // 0.02' "$REPO_DIR/.wavemill-config.json" 2>/dev/null || echo "0.02")"
+  [[ -n "$min_credits" ]] || min_credits="0.02"
+
+  awk -v balance="$balance" -v min="$min_credits" 'BEGIN { exit !(balance >= min) }' || return 0
+
+  write_openrouter_warning_cache ""
+  local state_dir
+  state_dir="${WAVEMILL_STATE_DIR:-}"
+  if [[ -z "$state_dir" && -n "${STATE_FILE:-}" ]]; then
+    state_dir="$(dirname "$STATE_FILE")"
+  fi
+  [[ -n "$state_dir" ]] || state_dir="/tmp"
+  rm -f "$state_dir/openrouter-credits-abort-count" 2>/dev/null || true
+}
+
 startup_warn_openrouter_status() {
   [[ -n "${REPO_DIR:-}" && -n "${TOOLS_DIR:-}" ]] || return 0
   command -v jq >/dev/null 2>&1 || return 0
@@ -213,6 +244,11 @@ startup_warn_openrouter_status() {
     startup_log "WARN: $credit_warning"
     return 0
   fi
+
+  # HOK-3155: no credit warning means the balance refresh succeeded and
+  # cleared the drained condition. Clear both the warning cache and the
+  # abort-count sentinel so a later credit abort trips cleanly on the first hit.
+  startup_clear_openrouter_credit_circuit
 
   local doctor_json doctor_rc warning_text status_line line
   doctor_json="$(npx tsx "$TOOLS_DIR/openrouter-doctor.ts" --json --repo-dir "$REPO_DIR" --lookback 20 2>/dev/null)" || doctor_rc=$?
@@ -590,6 +626,7 @@ write_monitor_env() {
     write_shell_assignment "ROUTER_ENABLED" "$ROUTER_ENABLED"
     write_shell_assignment "MAX_PARALLEL" "$MAX_PARALLEL"
     write_shell_assignment "AUTO_EVAL" "$AUTO_EVAL"
+    write_shell_assignment "ENTER_ACTION" "$ENTER_ACTION"
     write_shell_assignment "ENTER_LAUNCHES_WAVE" "$ENTER_LAUNCHES_WAVE"
     write_shell_assignment "DASHBOARD_VERBOSITY" "$DASHBOARD_VERBOSITY"
     write_shell_assignment "DASHBOARD_LOG_TO_FILE" "$DASHBOARD_LOG_TO_FILE"
@@ -771,7 +808,7 @@ spawn_integration_window() {
   fi
 
   local first_pane="${tend_pane:-${observer_pane:-$SESSION:$WAVEMILL_WINDOW_BACKSTAGE.0}}"
-  status_script="${LIB_DIR:-$REPO_DIR/shared/lib}/wavemill-status.sh"
+  status_script="${LIB_DIR:-$WAVEMILL_INSTALL_DIR/shared/lib}/wavemill-status.sh"
   printf -v jobs_cmd "'%s' --pane=jobs '%s' '%s' '%s'" "$status_script" "$SESSION" "$WORKTREE_ROOT" "$STATE_FILE"
   printf -v queue_cmd "'%s' --pane=queued-pending '%s' '%s' '%s'" "$status_script" "$SESSION" "$WORKTREE_ROOT" "$STATE_FILE"
 
@@ -991,9 +1028,11 @@ challenge_selection_health_varied_model() {
 challenge_selection_health_ack_launch() {
   local pair_id="${1:-}" stage="${2:-}" model="${3:-}"
   [[ -n "$pair_id" && -n "$stage" && -n "$model" && -n "${REPO_DIR:-}" ]] || return 0
-  [[ -f "$REPO_DIR/tools/challenge-selection-health.ts" ]] || return 0
+  local tool
+  tool="$(wavemill_tool_path challenge-selection-health.ts)"
+  [[ -f "$tool" ]] || return 0
   (
-    cd "$REPO_DIR" && npx tsx tools/challenge-selection-health.ts ack-launch \
+    cd "$REPO_DIR" && npx tsx "$tool" ack-launch \
       --repo-dir "$REPO_DIR" \
       --pair-id "$pair_id" \
       --stage "$(challenge_selection_health_stage "$stage")" \
@@ -1004,9 +1043,11 @@ challenge_selection_health_ack_launch() {
 challenge_selection_health_release() {
   local pair_id="${1:-}" stage="${2:-}" model="${3:-}"
   [[ -n "$pair_id" && -n "$stage" && -n "$model" && -n "${REPO_DIR:-}" ]] || return 0
-  [[ -f "$REPO_DIR/tools/challenge-selection-health.ts" ]] || return 0
+  local tool
+  tool="$(wavemill_tool_path challenge-selection-health.ts)"
+  [[ -f "$tool" ]] || return 0
   (
-    cd "$REPO_DIR" && npx tsx tools/challenge-selection-health.ts release \
+    cd "$REPO_DIR" && npx tsx "$tool" release \
       --repo-dir "$REPO_DIR" \
       --pair-id "$pair_id" \
       --stage "$(challenge_selection_health_stage "$stage")" \

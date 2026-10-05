@@ -28,6 +28,54 @@ fi
 # shellcheck source=challenge-arms.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/challenge-arms.sh"
 
+# HOK-3100: install root resolved from BASH_SOURCE, never inherited. The
+# monitor runs from `main` while worker launchers run from worktrees, so
+# inheriting from the environment would mix versions; each process must use
+# its own install copy. The milled repo (the repo wavemill is operating on)
+# is the separate `WAVEMILL_MILLED_REPO_DIR` / `REPO_DIR`.
+WAVEMILL_INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+export WAVEMILL_INSTALL_DIR
+
+# Resolve an install-relative tool path. Honours a caller-set TOOLS_DIR so
+# test harnesses can inject fakes without disturbing the install.
+wavemill_tool_path() {
+  local tool="${1:?wavemill_tool_path requires a tool name}"
+  printf '%s/%s\n' "${TOOLS_DIR:-$WAVEMILL_INSTALL_DIR/tools}" "$tool"
+}
+
+# HOK-3100: fallback logger stubs so standalone CLI tools (such as
+# `wavemill cleanup`) that source wavemill-common.sh without the mill or
+# monitor environment don't error with `command not found`. mill.sh defines
+# the real `log*` *after* sourcing, overriding these stubs. monitor.sh defines
+# them *before* sourcing, so the `declare -F ||` keeps the real functions.
+# The startup runner defines `startup_log` *after* sourcing; the stubs resolve
+# that at call time so startup warnings keep their `WARN:` prefix in the
+# shared status log (callers like `_linear_write_warn` dispatched to
+# `startup_log` before HOK-3100 only because `log_warn` was not defined at
+# all). Stubs write to stderr to match existing inline fallbacks.
+declare -F log       >/dev/null 2>&1 || log()       {
+  local level="${1:-info}"; shift || true
+  if declare -F startup_log >/dev/null 2>&1; then
+    startup_log "${level^^}: $*"
+  else
+    printf '[%s] %s\n' "$level" "$*" >&2
+  fi
+}
+declare -F log_warn  >/dev/null 2>&1 || log_warn()  {
+  if declare -F startup_log >/dev/null 2>&1; then
+    startup_log "WARN: $*"
+  else
+    printf '[warn] %s\n' "$*" >&2
+  fi
+}
+declare -F log_error >/dev/null 2>&1 || log_error() {
+  if declare -F startup_log >/dev/null 2>&1; then
+    startup_log "ERROR: $*"
+  else
+    printf '[error] %s\n' "$*" >&2
+  fi
+}
+
 # Default tmux window names for mill mode surfaces.
 WAVEMILL_WINDOW_MILL="${WAVEMILL_WINDOW_MILL:-mill}"
 WAVEMILL_WINDOW_BACKSTAGE="${WAVEMILL_WINDOW_BACKSTAGE:-backstage}"
@@ -885,6 +933,8 @@ _wavemill_write_preserved_branch_incident() {
 #   safe_patch_equivalent_pr merged PR/base contains the same patch IDs
 #   safe_content_equivalent_pr merging the branch into the delivered base leaves its tree unchanged
 #   safe_abandoned_closed_loser closed losing challenge arm explicitly abandoned
+#   safe_abandoned_pr_less_arm PR-less terminal arm explicitly abandoned after
+#                        its unpublished head was archived to refs/archive/wavemill/<issue>
 #   safe_noop            nothing deletable (protected/non-task/absent branch)
 #   shadow_would_delete  deletion authority exists, but branch deletion mode is shadow
 #   retain_dirty         worktree dirty or unreadable
@@ -895,7 +945,7 @@ _wavemill_write_preserved_branch_incident() {
 #   operation_failed     deletion was authorized but removal failed
 cleanup_outcome_is_safe() {
   case "${1:-${WAVEMILL_CLEANUP_OUTCOME:-}}" in
-    safe_ancestor|safe_exact_remote|safe_terminal_pr_head|safe_patch_equivalent_pr|safe_content_equivalent_pr|safe_abandoned_closed_loser|safe_noop|shadow_would_delete) return 0 ;;
+    safe_ancestor|safe_exact_remote|safe_terminal_pr_head|safe_patch_equivalent_pr|safe_content_equivalent_pr|safe_abandoned_closed_loser|safe_abandoned_pr_less_arm|safe_noop|shadow_would_delete) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -924,10 +974,12 @@ _wavemill_cleanup_operator_guidance() {
     retain_unpublished)
       if [[ "$detail" == "changed_after_pr_head" ]]; then
         printf 'Local head of %s moved past the recorded PR head; inspect the extra commits (git log %s) and open a follow-up PR if they matter before deleting.' "$branch" "$branch"
+      elif [[ "$detail" == archive_push_failed:* ]]; then
+        printf 'Archiving the head of PR-less arm %s to refs/archive/wavemill/<issue> failed (%s); retry once origin is reachable, or push the branch manually before abandoning.' "$branch" "$detail"
       elif [[ "$detail" == "unique_local_patch" ]]; then
         printf 'Local patches on %s are not patch-equivalent to the merged PR/base; inspect or publish the unique commits before retrying cleanup.' "$branch"
       else
-        printf 'Branch %s has commits not proven on the base, the remote, or a merged PR; push the branch or explicitly abandon it. Do not recreate deleted remote branches automatically.' "$branch"
+        printf 'Branch %s has commits not proven on the base, the remote, or a merged PR; push the branch or explicitly abandon it (wavemill cleanup <issue> --abandon --execute archives the head first). Do not recreate deleted remote branches automatically.' "$branch"
       fi
       ;;
     retain_closed_unmerged)
@@ -1838,6 +1890,36 @@ safe_remove_task_worktree_and_branch() {
       fi
     fi
 
+    # HOK-3089: archive-and-abandon for a PR-less terminal arm whose local
+    # head was never published. Authority comes only from an explicit
+    # WAVEMILL_CLEANUP_ABANDON_ISSUE (operator --abandon, or the monitor after
+    # the primary sibling merged). The dirty gate above has already passed and
+    # the TOCTOU re-check below still runs; the archive ref is pushed first so
+    # deletion never loses the only copy of the head.
+    if [[ -n "$issue" && "$abandon_issue" == "$issue" && -z "$pr" \
+      && "$orphan_cleanup_candidate" != "true" && -n "$local_head_sha" \
+      && "$remote_contains_head" != "true" \
+      && "$classification" == "retain_unpublished" \
+      && "$verification_reason" == "remote_missing_local_head" ]]; then
+      local archive_ref="refs/archive/wavemill/${issue}"
+      local archive_push_rc=0
+      if [[ "${WAVEMILL_CLASSIFY_ONLY:-0}" == "1" ]]; then
+        classification="safe_abandoned_pr_less_arm"
+        cleanup_authority="operator abandon of PR-less arm ${issue}; head ${local_head_sha} would be archived to ${archive_ref}"
+        verification_reason=""
+      else
+        wavemill_git_remote_with_timeout "$remote_timeout" -C "$REPO_DIR" push origin \
+          "${local_head_sha}:${archive_ref}" >/dev/null 2>&1 || archive_push_rc=$?
+        if (( archive_push_rc == 0 )); then
+          classification="safe_abandoned_pr_less_arm"
+          cleanup_authority="operator abandoned PR-less arm ${issue}; head ${local_head_sha} archived to ${archive_ref}"
+          verification_reason=""
+        else
+          verification_reason="archive_push_failed:${archive_push_rc}"
+        fi
+      fi
+    fi
+
     # An orphan directory cannot supply its own Git dirt check. Only a
     # delivered branch proof can authorize removing its generated markers.
     if [[ "$orphan_cleanup_candidate" == "true" ]]; then
@@ -2093,7 +2175,9 @@ cleanup_completed_task() {
       cleanup_episode_record_outcome "$issue" "transient" "operational" "$release_reason" "$cleanup_candidate_json" "" 2>/dev/null || true
     fi
     set_task_lifecycle_disposition "$issue" "" "retained" "$release_reason" "cleanup_completed_task" 2>/dev/null || true
-    set_window_attention_state "$win" "needs-user"
+    # HOK-3100: set_window_attention_state lives in terminal-reconciler.sh; it
+    # may not be sourced for standalone CLI tools like `wavemill cleanup`.
+    declare -F set_window_attention_state >/dev/null 2>&1 && set_window_attention_state "$win" "needs-user"
     log_warn "  $issue cleanup could not close tmux window; keeping task state"
     return 1
   fi
@@ -2145,7 +2229,8 @@ cleanup_completed_task() {
       cleanup_episode_record_outcome "$issue" "$episode_disposition" "$episode_failure_class" "$episode_outcome" "$cleanup_candidate_json" "" 2>/dev/null || true
     fi
     set_task_lifecycle_disposition "$issue" "" "$lifecycle_resource_disposition" "${cleanup_outcome:-local-work-preserved}" "cleanup_completed_task" 2>/dev/null || true
-    set_window_attention_state "$win" "needs-user"
+    # HOK-3100: see note above re: set_window_attention_state availability.
+    declare -F set_window_attention_state >/dev/null 2>&1 && set_window_attention_state "$win" "needs-user"
     log_warn "  $issue cleanup preserved local work (${cleanup_outcome:-unclassified}); keeping task state"
     return 1
   fi
@@ -2230,6 +2315,21 @@ resolve_challenge_pair_hard_failure() {
   local winner winner_model rationale timestamp record_json
 
   [[ -n "$pair_id" ]] || return 1
+
+  # HOK-3100: this function depends on functions defined in the mill/monitor
+  # context (read_state_value, challenge_pair_record_exists,
+  # mark_challenge_compared, challenge_pair_hard_failure_reason,
+  # challenge_pr_url_from_number). A standalone CLI tool that sources common
+  # without the monitor can't resolve pairs anyway; fail soft so loggers and
+  # unrelated flows keep working.
+  local _fn
+  for _fn in read_state_value challenge_pair_record_exists mark_challenge_compared \
+             challenge_pair_hard_failure_reason challenge_pr_url_from_number; do
+    if ! declare -F "$_fn" >/dev/null 2>&1; then
+      log_warn "resolve_challenge_pair_hard_failure: $_fn is undefined; skipping"
+      return 0
+    fi
+  done
 
   if challenge_pair_record_exists "$pair_id"; then
     mark_challenge_compared "$pair_id" "record"
@@ -2736,7 +2836,7 @@ load_config() {
       "_CFG_PLAN_MODEL=\($c.plan.model // "claude-opus-4-8" | @sh)",
       "_CFG_DASHBOARD_VERBOSITY=\($c.dashboard.verbosity // "info" | @sh)",
       "_CFG_DASHBOARD_LOG_TO_FILE=\(if ($c.dashboard | has("logToFile")) then $c.dashboard.logToFile else true end)",
-      "_CFG_ENTER_LAUNCHES_WAVE=\(if ($c.taskSelection | has("enterLaunchesWave")) then $c.taskSelection.enterLaunchesWave else true end)",
+      "_CFG_ENTER_ACTION=\((($c.taskSelection // {}) as $ts | if ($ts.enterAction // null) != null then $ts.enterAction elif ($ts | has("enterLaunchesWave")) then (if $ts.enterLaunchesWave then "wave" else "top-scored" end) else "none" end) | @sh)",
       "_CFG_CHALLENGE_ENABLED=\($c.challenge.enabled // false)",
       "_CFG_CHALLENGE_RATE=\($c.challenge.rate // 0.10)",
       "_CFG_CHALLENGE_AUTO_MERGE=\($c.challenge.autoMergeWinner // false)",
@@ -2806,7 +2906,12 @@ load_config() {
   PLAN_MODEL="${PLAN_MODEL:-$_CFG_PLAN_MODEL}"
   DASHBOARD_VERBOSITY="${DASHBOARD_VERBOSITY:-$_CFG_DASHBOARD_VERBOSITY}"
   DASHBOARD_LOG_TO_FILE="${DASHBOARD_LOG_TO_FILE:-$_CFG_DASHBOARD_LOG_TO_FILE}"
-  ENTER_LAUNCHES_WAVE="${ENTER_LAUNCHES_WAVE:-$_CFG_ENTER_LAUNCHES_WAVE}"
+  # What a bare Enter does at the task picker: none (default), wave, or
+  # top-scored. The legacy taskSelection.enterLaunchesWave maps true -> wave,
+  # false -> top-scored; ENTER_LAUNCHES_WAVE is kept as a derived alias.
+  ENTER_ACTION="${ENTER_ACTION:-$_CFG_ENTER_ACTION}"
+  case "$ENTER_ACTION" in none|wave|top-scored) ;; *) ENTER_ACTION="none" ;; esac
+  if [[ "$ENTER_ACTION" == "wave" ]]; then ENTER_LAUNCHES_WAVE="true"; else ENTER_LAUNCHES_WAVE="false"; fi
   CHALLENGE_ENABLED="${CHALLENGE_ENABLED:-$_CFG_CHALLENGE_ENABLED}"
   CHALLENGE_RATE="${CHALLENGE_RATE:-$_CFG_CHALLENGE_RATE}"
   CHALLENGE_MODELS_JSON="${CHALLENGE_MODELS_JSON:-null}"
@@ -2845,7 +2950,7 @@ load_config() {
   export PROJECT_NAME MAX_SELECT MAX_DISPLAY PLAN_MAX_DISPLAY PLAN_RESEARCH PLAN_MODEL
   export PROJECT_CONTEXT_COMPACTION_THRESHOLD_KB PROJECT_CONTEXT_RECENT_WORK_KEEP
   export DASHBOARD_VERBOSITY DASHBOARD_LOG_TO_FILE
-  export ENTER_LAUNCHES_WAVE
+  export ENTER_ACTION ENTER_LAUNCHES_WAVE
   export CHALLENGE_ENABLED CHALLENGE_RATE CHALLENGE_MODELS_JSON
   export CHALLENGE_COMPARISON_MODEL CHALLENGE_AUTO_MERGE
   export INTEGRATION_MERGE_METHOD INTEGRATION_DELETE_BRANCH_AFTER_MERGE
@@ -2860,7 +2965,7 @@ load_config() {
   unset _CFG_PLANNING_MODE _CFG_MAX_RETRIES _CFG_RETRY_DELAY _CFG_MAX_SELECT _CFG_MAX_DISPLAY
   unset _CFG_PLAN_MAX_DISPLAY _CFG_PLAN_RESEARCH _CFG_PLAN_MODEL
   unset _CFG_PROJECT_CONTEXT_COMPACTION_THRESHOLD_KB _CFG_PROJECT_CONTEXT_RECENT_WORK_KEEP
-  unset _CFG_DASHBOARD_VERBOSITY _CFG_DASHBOARD_LOG_TO_FILE _CFG_ENTER_LAUNCHES_WAVE
+  unset _CFG_DASHBOARD_VERBOSITY _CFG_DASHBOARD_LOG_TO_FILE _CFG_ENTER_ACTION
   unset _CFG_CHALLENGE_ENABLED _CFG_CHALLENGE_RATE _CFG_CHALLENGE_AUTO_MERGE
   unset _CFG_INTEGRATION_MERGE_METHOD _CFG_INTEGRATION_DELETE_BRANCH_AFTER_MERGE
   unset _CFG_MERGE_QUEUE_ENABLED _CFG_MERGE_QUEUE_MAX_CONCURRENT
@@ -4969,7 +5074,12 @@ apply_expanded_route_if_present() {
 
   ensure_phase_config_state_file "$feature_dir"
 
-  if declare -F agent_resolve_models_for_roles >/dev/null 2>&1; then
+  # HOK-3100: `agent_resolve_batch_agent_for_role` lives in agent-adapters.sh
+  # alongside `agent_resolve_models_for_roles`, but the two are independent
+  # functions. Guard both explicitly so a build that defines only one does
+  # not silently call the undefined sibling.
+  if declare -F agent_resolve_models_for_roles >/dev/null 2>&1 \
+     && declare -F agent_resolve_batch_agent_for_role >/dev/null 2>&1; then
     if agent_resolve_models_for_roles "$planner_model" "$coder_model" "$reviewer_model"; then
       :
     fi

@@ -123,6 +123,14 @@ export interface ScriptedPiProviderTurn {
   usage?: Partial<Usage>;
   stopReason?: ProviderFinishReason | 'toolUse';
   errorMessage?: string;
+  /**
+   * Simulate the provider's `response.model` for this turn (HOK-3143).
+   * Pi sets `AssistantMessage.responseModel` only when it differs from the
+   * requested id — omit to simulate an echo.
+   */
+  responseModel?: string;
+  /** Simulate the provider's `response.id` for this turn (HOK-3143). */
+  responseId?: string;
 }
 
 export interface ScriptedPiProviderDefinition {
@@ -331,6 +339,8 @@ function toPiAssistantMessage(
     usage: createPiUsage(turn.usage),
     stopReason,
     ...(turn.errorMessage ? { errorMessage: turn.errorMessage } : {}),
+    ...(turn.responseModel !== undefined ? { responseModel: turn.responseModel } : {}),
+    ...(turn.responseId !== undefined ? { responseId: turn.responseId } : {}),
     timestamp: Date.now(),
   };
 }

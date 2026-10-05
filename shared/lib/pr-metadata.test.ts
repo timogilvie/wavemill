@@ -53,7 +53,7 @@ const EXECUTED_ROUTE_FIXTURE: ExecutedPrRoute = {
     },
     substantiveAnalysis: {
       requested_selector: 'gemini',
-      resolved_model: 'google/gemini-2.5-pro',
+      resolved_model: 'google/gemini-3.1-pro-preview',
       adapter: 'openrouter',
       source: 'derived',
       pinned: false,

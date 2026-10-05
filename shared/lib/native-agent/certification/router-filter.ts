@@ -75,6 +75,7 @@ export type RouterCertificationRejectionReason =
   | 'stale'
   | 'insufficient-phase'
   | 'identity-reidentified'
+  | 'identity-mismatch'
   | 'role-ineligible'
   | 'phase-not-allowed'
   | 'missing-live-canary'
@@ -140,6 +141,8 @@ function mapGateReason(reason: NativeGateRejectReason): RouterCertificationRejec
       return 'wrong-suite';
     case 'identity_reidentified':
       return 'identity-reidentified';
+    case 'identity_mismatch':
+      return 'identity-mismatch';
     case 'stale_artifact':
       return 'stale';
     case 'insufficient_phase':
