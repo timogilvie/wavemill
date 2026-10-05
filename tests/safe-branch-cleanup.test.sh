@@ -83,6 +83,8 @@ helper_file="$tmp/safe-cleanup-helper.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_discard_prompt_registry_artifact"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_discard_hok3160_generated_artifacts"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_fetch_pr_terminal_evidence"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_record_pr_delivery_evidence"
@@ -1018,5 +1020,191 @@ case_post_pr_unique_commit_retained
 case_squash_content_equivalent_with_different_patch_id_deleted
 case_orphan_generated_markers_with_merged_pr_deleted
 case_classifier_parity_read_only_matches_destructive
+
+# HOK-3160 Class A: a tend-rebase scenario in which the merged PR head is
+# still reachable (the local reflog carries it) and every local commit is
+# patch-equivalent to a commit reachable from the PR head. The whole-branch
+# cherry against origin/base finds nothing (squash merge collapsed the
+# patches into one), but the direct cherry against pr_head_oid should find
+# every commit as `-` and classify the branch safe_patch_equivalent_pr.
+case_tend_rebased_delivered_pr_head_cherry() {
+  local repo branch wt out decision origin
+  local original_head rebased_head fixture squash_tree squash_commit origin_base_after_unrelated
+  repo="$(setup_repo tend-rebased)"
+  branch="task/tend-rebased"
+  wt="$tmp/tend-rebased/wt"
+  origin="$tmp/tend-rebased/origin.git"
+  add_task_worktree "$repo" "$branch" "$wt"
+  commit_in_worktree "$wt" "featureA.txt" "featureA"
+  commit_in_worktree "$wt" "featureB.txt" "featureB"
+  commit_in_worktree "$wt" "featureC.txt" "featureC"
+  git -C "$wt" push -u origin "$branch" >/dev/null 2>&1
+  original_head="$(git -C "$wt" rev-parse HEAD)"
+
+  # Move origin/auto/integration forward with unrelated content BEFORE the
+  # squash lands. Rebasing onto this new tip produces fresh commit SHAs
+  # whose patches are still patch-equivalent to the pre-rebase A, B, C.
+  printf 'unrelated\n' > "$repo/unrelated.txt"
+  git -C "$repo" add unrelated.txt
+  git -C "$repo" commit -m "unrelated base work" >/dev/null
+  git -C "$repo" push origin auto/integration >/dev/null 2>&1
+  git -C "$wt" fetch origin auto/integration >/dev/null 2>&1
+
+  # Keep the original PR head reachable locally; without a ref it would be
+  # garbage-collected before cleanup runs.
+  git -C "$wt" update-ref "refs/pr-heads/${branch}" "$original_head"
+
+  # Rebase: the three commits replay cleanly on top of unrelated.txt with
+  # new SHAs. Each patch (add featureA, add featureB, add featureC) is still
+  # the same relative diff.
+  git -C "$wt" rebase origin/auto/integration >/dev/null 2>&1
+  rebased_head="$(git -C "$wt" rev-parse HEAD)"
+  [[ "$original_head" != "$rebased_head" ]] || fail "tend-rebase fixture did not change the head"
+
+  # Now land the squash merge: origin/auto/integration gets a single commit
+  # with the full A+B+C tree. Base-vs-branch cherry can no longer prove
+  # delivery because the squash's patch ID is distinct from each rebased
+  # commit's patch ID. The PR-head cherry (HOK-3160) is the only proof.
+  origin_base_after_unrelated="$(git -C "$repo" rev-parse auto/integration)"
+  squash_tree="$(git -C "$wt" rev-parse "${rebased_head}^{tree}")"
+  squash_commit="$(git -C "$repo" commit-tree "$squash_tree" -p "$origin_base_after_unrelated" -m "feature (squash)")"
+  git -C "$repo" push origin "$squash_commit:refs/heads/auto/integration" >/dev/null 2>&1
+  git -C "$origin" update-ref -d "refs/heads/$branch"
+  git -C "$wt" fetch origin >/dev/null 2>&1
+
+  fixture="$tmp/tend-rebased/pr.json"
+  jq -cn --arg headOid "$original_head" --arg mergeSha "$squash_commit" \
+    '{number: 4242, state: "MERGED", mergedAt: "2026-10-04T12:00:00Z",
+      headRefOid: $headOid, headRefName: "task/tend-rebased",
+      baseRefName: "auto/integration", mergeCommit: {oid: $mergeSha}}' > "$fixture"
+
+  out="$(run_helper "$repo" "$wt" "$branch" auto/integration test HOK-3160 4242 "$fixture")"
+  decision="$(decision_path "$repo" "$branch")"
+  assert_contains "$out" "rc=0" "tend-rebased return"
+  # Either the content-equivalence check or the HOK-3160 PR-head cherry
+  # proves delivery; both are correct outcomes for a tend-rebased merged PR.
+  # retain_unpublished / retain_unverifiable must never appear here.
+  [[ "$out" == *"outcome=safe_patch_equivalent_pr"* \
+    || "$out" == *"outcome=safe_content_equivalent_pr"* ]] \
+    || fail "tend-rebased must classify safe (patch-equivalent or content-equivalent); got: $out"
+  [[ "$out" != *"outcome=retain_unpublished"* ]] \
+    || fail "tend-rebased must not retain as retain_unpublished: $out"
+  branch_exists "$repo" "$branch" && fail "tend-rebased branch was retained despite delivery proof"
+  assert_absent "$wt"
+  assert_exists "$decision"
+  local tend_class
+  tend_class="$(jq -r '.classification' "$decision")"
+  [[ "$tend_class" == "safe_patch_equivalent_pr" || "$tend_class" == "safe_content_equivalent_pr" ]] \
+    || fail "tend-rebased decision classification must be safe, got: $tend_class"
+}
+
+# HOK-3160 Class A fallback: a tend-rebased case where content-equivalence
+# does NOT apply (the squash-merged content differs from the current base
+# tree because of unrelated work landed afterwards), but the local commits
+# are still patch-equivalent to the PR head.  The PR-head cherry is the
+# only remaining proof of delivery.
+case_tend_rebased_pr_head_cherry_only() {
+  local repo branch wt out decision
+  local original_head rebased_head fixture squash_tree squash_commit origin_base
+  repo="$(setup_repo tend-rebased-cherry-only)"
+  branch="task/tend-rebased-cherry-only"
+  wt="$tmp/tend-rebased-cherry-only/wt"
+  add_task_worktree "$repo" "$branch" "$wt"
+  commit_in_worktree "$wt" "featureA.txt" "featureA"
+  commit_in_worktree "$wt" "featureB.txt" "featureB"
+  commit_in_worktree "$wt" "featureC.txt" "featureC"
+  git -C "$wt" push -u origin "$branch" >/dev/null 2>&1
+  original_head="$(git -C "$wt" rev-parse HEAD)"
+
+  # Base moves forward with unrelated work before the squash.
+  printf 'unrelated\n' > "$repo/unrelated.txt"
+  git -C "$repo" add unrelated.txt
+  git -C "$repo" commit -m "unrelated base work" >/dev/null
+  git -C "$repo" push origin auto/integration >/dev/null 2>&1
+  git -C "$wt" fetch origin auto/integration >/dev/null 2>&1
+
+  # Keep the original PR head reachable locally.
+  git -C "$wt" update-ref "refs/pr-heads/${branch}" "$original_head"
+
+  # Rebase: new SHAs with the same per-commit patches.
+  git -C "$wt" rebase origin/auto/integration >/dev/null 2>&1
+  rebased_head="$(git -C "$wt" rev-parse HEAD)"
+  [[ "$original_head" != "$rebased_head" ]] || fail "tend-rebase fixture did not change the head"
+
+  # Squash the delivered content onto base AND land additional unrelated
+  # work on top so merge-tree(base, task) differs from base's own tree.
+  origin_base="$(git -C "$repo" rev-parse auto/integration)"
+  squash_tree="$(git -C "$wt" rev-parse "${rebased_head}^{tree}")"
+  squash_commit="$(git -C "$repo" commit-tree "$squash_tree" -p "$origin_base" -m "feature (squash)")"
+  git -C "$repo" push origin "$squash_commit:refs/heads/auto/integration" >/dev/null 2>&1
+  # Land another unrelated commit on top of the squash so base's tree
+  # includes a file the task branch does not.
+  printf 'base-only\n' > "$repo/base-only.txt"
+  git -C "$repo" fetch origin auto/integration >/dev/null 2>&1
+  git -C "$repo" checkout -q auto/integration
+  git -C "$repo" reset --hard origin/auto/integration >/dev/null 2>&1
+  git -C "$repo" add base-only.txt
+  git -C "$repo" commit -m "base-only follow-up" >/dev/null
+  git -C "$repo" push origin auto/integration >/dev/null 2>&1
+  git -C "$wt" fetch origin auto/integration >/dev/null 2>&1
+
+  fixture="$tmp/tend-rebased-cherry-only/pr.json"
+  jq -cn --arg headOid "$original_head" --arg mergeSha "$squash_commit" \
+    '{number: 4242, state: "MERGED", mergedAt: "2026-10-04T12:00:00Z",
+      headRefOid: $headOid, headRefName: "task/tend-rebased-cherry-only",
+      baseRefName: "auto/integration", mergeCommit: {oid: $mergeSha}}' > "$fixture"
+
+  out="$(run_helper "$repo" "$wt" "$branch" auto/integration test HOK-3160 4242 "$fixture")"
+  decision="$(decision_path "$repo" "$branch")"
+  assert_contains "$out" "rc=0" "tend-rebased-cherry-only return"
+  # Content-equivalent must fail here (merging task branch into base leaves
+  # base-only.txt but drops nothing, so merge-tree != base-tree). The
+  # PR-head cherry proves delivery instead.
+  assert_contains "$out" "outcome=safe_patch_equivalent_pr" "tend-rebased-cherry-only uses PR-head cherry proof"
+  branch_exists "$repo" "$branch" && fail "tend-rebased-cherry-only branch was retained"
+  assert_absent "$wt"
+}
+
+# HOK-3160 Class B: a worktree whose only dirt is a tool-written audit JSON
+# must not retain. The filter must drop `?? .wavemill/audits/*.json` lines
+# before the dirty check runs.
+case_wavemill_audit_only_cleaned() {
+  local repo branch wt out
+  repo="$(setup_repo wavemill-audit)"
+  branch="task/wavemill-audit"
+  wt="$tmp/wavemill-audit/wt"
+  add_task_worktree "$repo" "$branch" "$wt"
+  mkdir -p "$wt/.wavemill/audits"
+  printf '{"drift":true}\n' > "$wt/.wavemill/audits/openrouter-alias-drift.json"
+  printf '{"ok":true}\n' > "$wt/.wavemill/audits/launch-priority-coverage.json"
+
+  out="$(run_helper "$repo" "$wt" "$branch")"
+  assert_contains "$out" "rc=0" "wavemill-audit return"
+  branch_exists "$repo" "$branch" && fail "wavemill-audit branch was retained despite tool-only dirt"
+  assert_absent "$wt"
+}
+
+# HOK-3160 Class B: the audit allowlist is narrow. A real user file alongside
+# the audit JSONs still retains.
+case_wavemill_audit_plus_user_file_retained() {
+  local repo branch wt out
+  repo="$(setup_repo wavemill-audit-dirty)"
+  branch="task/wavemill-audit-dirty"
+  wt="$tmp/wavemill-audit-dirty/wt"
+  add_task_worktree "$repo" "$branch" "$wt"
+  mkdir -p "$wt/.wavemill/audits"
+  printf '{"drift":true}\n' > "$wt/.wavemill/audits/openrouter-alias-drift.json"
+  printf 'user notes\n' > "$wt/notes.md"
+
+  out="$(run_helper "$repo" "$wt" "$branch")"
+  assert_contains "$out" "rc=10" "wavemill-audit-dirty return"
+  assert_contains "$out" "outcome=retain_dirty" "wavemill-audit-dirty outcome"
+  assert_exists "$wt/notes.md"
+}
+
+case_tend_rebased_delivered_pr_head_cherry
+case_tend_rebased_pr_head_cherry_only
+case_wavemill_audit_only_cleaned
+case_wavemill_audit_plus_user_file_retained
 
 echo "safe-branch-cleanup test passed"

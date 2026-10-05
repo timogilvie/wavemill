@@ -456,6 +456,7 @@ TESTS=(
   shared/lib/task-packet-utils.test.ts
   shared/lib/tool-runner.test.ts
   shared/lib/worktree-dirty-status.test.ts
+  shared/lib/task-residue-archive.test.ts
   shared/lib/worktree-manager.test.ts
   shared/lib/bounded-retry.test.ts
   shared/lib/observer-auto-fix.test.ts
