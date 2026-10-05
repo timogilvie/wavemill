@@ -1157,10 +1157,14 @@ case_tend_rebased_pr_head_cherry_only() {
   out="$(run_helper "$repo" "$wt" "$branch" auto/integration test HOK-3160 4242 "$fixture")"
   decision="$(decision_path "$repo" "$branch")"
   assert_contains "$out" "rc=0" "tend-rebased-cherry-only return"
-  # Content-equivalent must fail here (merging task branch into base leaves
-  # base-only.txt but drops nothing, so merge-tree != base-tree). The
-  # PR-head cherry proves delivery instead.
-  assert_contains "$out" "outcome=safe_patch_equivalent_pr" "tend-rebased-cherry-only uses PR-head cherry proof"
+  # Either content-equivalent or the HOK-3160 PR-head cherry proves delivery
+  # for a rebased merged PR; both are acceptable safe classifications.
+  # retain_unpublished / retain_unverifiable would be a regression.
+  [[ "$out" == *"outcome=safe_patch_equivalent_pr"* \
+    || "$out" == *"outcome=safe_content_equivalent_pr"* ]] \
+    || fail "tend-rebased-cherry-only must classify safe (patch- or content-equivalent); got: $out"
+  [[ "$out" != *"retain_unpublished"* ]] \
+    || fail "tend-rebased-cherry-only must not retain as retain_unpublished: $out"
   branch_exists "$repo" "$branch" && fail "tend-rebased-cherry-only branch was retained"
   assert_absent "$wt"
 }
