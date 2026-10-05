@@ -499,6 +499,36 @@ JSON
 {"stage":"ready","status":"completed","artifacts":{"verdict":"pass","readyBaseSha":"old-sha","queueState":"merge-candidate"}}
 JSON
         ;;
+      # HOK-3093: with no tend to merge, a merge-needed Ready result holds the
+      # arm at needs-user indefinitely; no base-staleness churn, no re-run, no
+      # merge-lane wait log.
+      ready_merge_needed_operator_parks)
+        CURRENT_PHASE="ready"
+        READY_STATUS="completed"
+        MAIN_SHA_RETURN="new-main-sha"
+        MERGE_QUEUE_ON="false"
+        QUEUE_STATE="merge-needed"
+        SESSION_EXECUTOR_OVERRIDE="operator"
+        cat > "$READY_DIR/.ready-result.json" <<JSON
+{"stage":"ready","status":"completed","artifacts":{"verdict":"pass","readyBaseSha":"old-main-sha","queueState":"merge-needed","mergeExecutor":"operator","readyTendHandoff":"merge-needed"}}
+JSON
+        ;;
+      # HOK-3093: when capabilities later resolve to tend (integration gets
+      # turned on mid-session), a merge-needed arm must call mark_ready_stale
+      # and emit the "merge executor is now tend" status so the normal flow
+      # can publish the handoff on a subsequent tick.
+      ready_merge_needed_tend_arrives_marks_stale)
+        CURRENT_PHASE="ready"
+        READY_STATUS="completed"
+        MAIN_SHA_RETURN="current-main-sha"
+        MERGE_QUEUE_ON="true"
+        QUEUE_STATE="merge-needed"
+        SESSION_EXECUTOR_OVERRIDE="tend"
+        READY_LAUNCH_RC=0
+        cat > "$READY_DIR/.ready-result.json" <<JSON
+{"stage":"ready","status":"completed","artifacts":{"verdict":"pass","readyBaseSha":"current-main-sha","queueState":"merge-needed","mergeExecutor":"operator"}}
+JSON
+        ;;
       # HOK-3110: primary whose merged PR was landed by tend before monitor
       # discovered it must bind the PR via lineage and cleanup, even if its
       # challenger was aborted. This exercises the early merged-PR discovery
@@ -621,9 +651,18 @@ JSON
     try_update_branch_from_base() { printf "not-behind\n"; return 0; }
     merge_queue_enabled() { [[ "$MERGE_QUEUE_ON" == "true" ]]; }
     # HOK-3102: default the session-capability resolvers to tend for the pre-3102
-    # semantics the existing scenarios rely on.
-    wavemill_session_merge_executor() { printf "tend\n"; }
-    wavemill_session_has() { case "${1:-}" in tend|observer|mergeQueue) return 0 ;; *) return 1 ;; esac; }
+    # semantics the existing scenarios rely on. HOK-3093: SESSION_EXECUTOR_OVERRIDE
+    # lets a scenario flip to operator/none to exercise the merge-needed path.
+    wavemill_session_merge_executor() {
+      printf "%s\n" "${SESSION_EXECUTOR_OVERRIDE:-tend}"
+    }
+    wavemill_session_has() {
+      case "${1:-}" in
+        tend|observer) return 0 ;;
+        mergeQueue) [[ "${MERGE_QUEUE_ON:-false}" == "true" ]] ;;
+        *) return 1 ;;
+      esac
+    }
     wavemill_session_capabilities_json() { printf '{"tend":true,"observer":false,"mergeExecutor":"tend","mergeQueue":true}'; }
     surface_merge_needed() { :; }
     ready_queue_state() { printf "%s\n" "$QUEUE_STATE"; }
@@ -898,6 +937,21 @@ ready_merge_candidate_main_advanced_not_selected_output="$(run_monitor_case read
 check_contains "merge-candidate main-advanced not-selected does not re-run ready" "$ready_merge_candidate_main_advanced_not_selected_output" "ready_launches=0"
 check_contains "merge-candidate main-advanced not-selected keeps task active" "$ready_merge_candidate_main_advanced_not_selected_output" "active_count=1"
 check_contains "merge-candidate main-advanced not-selected clears attention" "$ready_merge_candidate_main_advanced_not_selected_output" "attention=clear"
+
+# HOK-3093: a merge-needed arm with no tend consumer stays parked at needs-user
+# even when the base has moved on. No ready re-runs, no merge-lane log, and
+# the controller still counts it as active work.
+ready_merge_needed_operator_parks_output="$(run_monitor_case ready_merge_needed_operator_parks)"
+check_contains "merge-needed operator does not re-run ready" "$ready_merge_needed_operator_parks_output" "ready_launches=0"
+check_contains "merge-needed operator keeps the arm needs-user" "$ready_merge_needed_operator_parks_output" "attention=needs-user"
+check_not_contains "merge-needed operator never logs waiting in merge lane" "$ready_merge_needed_operator_parks_output" "waiting in merge lane"
+
+# HOK-3093: when integration gets turned on mid-session, a merge-needed arm
+# must mark the ready result stale and emit the "merge executor is now tend"
+# status so the normal flow can republish the handoff on a subsequent tick.
+ready_merge_needed_tend_arrives_output="$(run_monitor_case ready_merge_needed_tend_arrives_marks_stale)"
+check_contains "merge-needed tend arrival logs the handoff transition" "$ready_merge_needed_tend_arrives_output" "merge executor is now tend"
+check_contains "merge-needed tend arrival keeps the arm active" "$ready_merge_needed_tend_arrives_output" "active_count=1"
 
 echo ""
 echo "=== HOK-3110 merged-PR lineage discovery ==="

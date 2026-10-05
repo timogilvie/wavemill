@@ -368,7 +368,7 @@ describe('loop — budget stops', () => {
 
   it('stops when maxInputTokens is exceeded', async () => {
     // First (and only) turn uses 600 input tokens; budget is 500.
-    // shouldStopAfterTurn fires after the turn and detects the excess.
+    // finishTurn fires after the turn and detects the excess.
     const api = uniqueApi('budget-input-tokens');
     registerScriptedPiProvider({
       api,

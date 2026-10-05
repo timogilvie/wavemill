@@ -11991,6 +11991,26 @@ review_recovery_coordinator_locked() {
   return 0
 }
 
+# review_infra_recovery_reset_if_new_head <state_dir> <current_head>
+# Re-arm the review-infra-recovery budget after a new commit. Its key is
+# `<head>:...` (see relaunch_review_after_infra_recovery), and the gate there
+# resets it, but the pending-ready halt checks the exhausted sentinel before
+# that gate is reached, so a terminalized arm stayed halted across new commits
+# (HOK-2924 reset-on-new-head). Also lifts the pending-ready-recheck halt that
+# was marked in lockstep with it.
+review_infra_recovery_reset_if_new_head() {
+  local state_dir="$1" current_head="$2" stored_key
+  [[ -n "$current_head" ]] || return 0
+  stored_key="$(bounded_retry_head "$state_dir" "review-infra-recovery")"
+  [[ -n "$stored_key" && "${stored_key%%:*}" != "$current_head" ]] || return 0
+  bounded_retry_clear "$state_dir" "review-infra-recovery"
+  case "$(bounded_retry_exhaustion_reason "$state_dir" "pending-ready-recheck")" in
+    "Review infrastructure recovery is exhausted"*)
+      bounded_retry_clear "$state_dir" "pending-ready-recheck"
+      ;;
+  esac
+}
+
 relaunch_review_after_infra_recovery() {
   local issue="$1" slug="$2" title="$3" wt_dir="$4" branch="$5" base_branch="$6" pr_number="$7" state_dir="$8"
   local category recorded_head current_head identity timeout_identity reviewer_identity
@@ -18199,6 +18219,18 @@ process_deferred_monitor_commands() {
   REMAINING_FREE_SLOTS="$free_slots"
 }
 
+# monitor_reply_is_task_command <reply>
+# Task commands typed at the backlog prompt that must go to
+# execute_or_defer_monitor_command rather than be parsed as a numeric
+# selection. `re-review` was missing here, so it was logged as
+# "Invalid selection: re-review" and never reached its handler.
+monitor_reply_is_task_command() {
+  case "$1" in
+    advance\ *|re-review\ *) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 normalize_prompt_command_reply() {
   local event="$1"
   case "$event" in
@@ -20507,6 +20539,7 @@ monitor_issue_state() {
       if [[ -f "$ready_state_dir_path/.review-result.json" ]] \
           && ! review_result_missing_final_evidence "$ready_state_dir_path" \
           && review_result_infra_failure "$ready_state_dir_path"; then
+        review_infra_recovery_reset_if_new_head "$ready_state_dir_path" "$current_head"
         if bounded_retry_is_exhausted "$ready_state_dir_path" "review-infra-recovery"; then
           if bounded_retry_mark_exhausted "$ready_state_dir_path" "pending-ready-recheck" \
               "Review infrastructure recovery is exhausted for PR #$PR; pending-ready halted until the review artifact changes"; then
@@ -21823,7 +21856,7 @@ while :; do
               '.depsExpanded = (if (.depsExpanded // false) then false else true end) | .updated = (now | todate)'
             LAST_DISPLAY=""
           fi
-        elif [[ "$REPLY" == advance\ * ]]; then
+        elif monitor_reply_is_task_command "$REPLY"; then
           execute_or_defer_monitor_command "new" "$REPLY" "$MONITOR_PHASE_C_REPLY_OFFSET" "$free_slots" "$queue_plan_json" "$avail_unblocked" "$avail_blocked" "$select_from"
           MONITOR_PHASE_C_REPLY_OFFSET=""
         elif [[ "$REPLY" =~ ^unknown\  ]]; then
