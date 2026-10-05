@@ -78,6 +78,7 @@ helper_file="$tmp/safe-cleanup-helper.sh"
   extract_function "$COMMON_SCRIPT" "wavemill_remove_orphan_task_dir"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_worktree_dirty_status"
+  extract_function "$COMMON_SCRIPT" "wavemill_terminal_residue_matches_archive"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_migrate_controller_observer_artifact"
   printf '\n'
@@ -401,6 +402,21 @@ case_observer_artifact_plus_user_file_retained() {
   assert_exists "$wt/.wavemill/observer-findings.jsonl"
 }
 
+case_generated_audit_only_cleaned() {
+  local repo branch wt out
+  repo="$(setup_repo generated-audit)"
+  branch="task/generated-audit"
+  wt="$tmp/generated-audit/wt"
+  add_task_worktree "$repo" "$branch" "$wt"
+  mkdir -p "$wt/features/generated-audit"
+  printf '{}\n' > "$wt/features/generated-audit/.review-result.json"
+  printf '{}\n' > "$wt/features/generated-audit/.trace-context.json"
+  printf '{}\n' > "$wt/features/generated-audit/.coding-uncommitted-output.resolved.jsonl"
+  out="$(run_helper "$repo" "$wt" "$branch")"
+  assert_contains "$out" "rc=0" "generated audit is not task dirt"
+  assert_absent "$wt"
+}
+
 # The root prompt-registry log written by native-agent runs is telemetry, not
 # task work: an untracked copy never retains a terminal worktree.
 case_prompt_registry_untracked_cleaned() {
@@ -672,7 +688,7 @@ case_all_sites_refactored() {
   assert_contains "$helper_matches" "worktree remove" "helper worktree cleanup"
   assert_contains "$helper_matches" "branch \"\$branch_delete_flag\"" "helper branch cleanup"
   assert_contains "$helper_matches" "branch_delete_flag=\"-D\"" "helper force cleanup only after guard"
-  [[ "$helper_matches" != *"--force"* ]] || fail "helper still force-removes worktrees"
+  assert_contains "$helper_matches" 'wavemill_terminal_residue_matches_archive' "forced removal checks archive"
 }
 
 # Assertion 1 (HOK-3042/HOK-3033 shape): an orphan task directory (no task-local
@@ -842,6 +858,28 @@ case_post_pr_patch_equivalent_deleted() {
     || fail "post-pr-equiv patchEquivalence.equivalentCount should be 1, got: $(jq -r '.patchEquivalence.equivalentCount' "$decision")"
 }
 
+case_rebased_pr_patch_identity_deleted() {
+  local repo branch wt head fixture out base
+  repo="$(setup_repo rebased-pr-patch)"
+  branch="task/rebased-pr-patch"
+  wt="$tmp/rebased-pr-patch/wt"
+  add_task_worktree "$repo" "$branch" "$wt"
+  base="$(git -C "$wt" rev-parse HEAD)"
+  commit_in_worktree "$wt" "delivered.txt" "delivered"
+  head="$(git -C "$wt" rev-parse HEAD)"
+  git -C "$wt" reset --hard "$base" >/dev/null
+  printf 'delivered\n' > "$wt/delivered.txt"
+  git -C "$wt" add delivered.txt
+  git -C "$wt" -c user.name='Different Author' commit -m 'rebased delivery' >/dev/null
+  fixture="$tmp/rebased-pr-patch/pr.json"
+  jq -cn --arg head "$head" '{number:4242,state:"MERGED",mergedAt:"2026-09-04T12:00:00Z",
+    headRefOid:$head,headRefName:"task/fixture",baseRefName:"auto/integration",
+    mergeCommit:{oid:$head}}' > "$fixture"
+  out="$(run_helper "$repo" "$wt" "$branch" auto/integration test HOK-3160 4242 "$fixture")"
+  assert_contains "$out" "outcome=safe_patch_equivalent_pr" "rebased PR patch identity is delivered"
+  assert_absent "$wt"
+}
+
 # Assertion 3: a merged-PR task with a genuinely unique post-PR commit must
 # be retained with the SHA visible.
 case_post_pr_unique_commit_retained() {
@@ -995,6 +1033,7 @@ case_no_new_commits_deleted
 case_dirty_worktree_retained
 case_observer_artifact_only_cleaned
 case_observer_artifact_plus_user_file_retained
+case_generated_audit_only_cleaned
 case_prompt_registry_untracked_cleaned
 case_prompt_registry_tracked_modified_cleaned
 case_prompt_registry_plus_user_file_retained
@@ -1014,6 +1053,7 @@ case_orphan_dir_with_user_file_retained
 case_orphan_dir_wavemill_artifacts_removable
 case_orphan_removal_refuses_outside_bounded_root
 case_post_pr_patch_equivalent_deleted
+case_rebased_pr_patch_identity_deleted
 case_post_pr_unique_commit_retained
 case_squash_content_equivalent_with_different_patch_id_deleted
 case_orphan_generated_markers_with_merged_pr_deleted

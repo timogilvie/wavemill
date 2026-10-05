@@ -11,6 +11,7 @@ const options = {
   execute: { type: 'boolean', description: 'Perform eligible cleanup mutations. Defaults to dry-run.' },
   'dry-run': { type: 'boolean', description: 'Inspect and print decisions without mutating state or resources.' },
   abandon: { type: 'boolean', description: 'Explicitly abandon one aborted or closed-losing challenge arm locally; an unpublished PR-less head is archived to refs/archive/wavemill/<issue> first. Not accepted for bulk inbox mode.' },
+  'archive-and-reap': { type: 'boolean', description: 'Archive residue and reap one delivered, Linear-complete terminal task.' },
   'repo-dir': { type: 'string', description: 'Repository directory that owns the workflow state' },
   'state-file': { type: 'string', description: 'Workflow state file path' },
   'base-branch': { type: 'string', description: 'Fallback base branch when task lifecycle lacks one' },
@@ -25,11 +26,12 @@ export async function runCleanupTerminalInboxCommand(args: CliArgs, positional: 
   if (positional.length > 1) {
     throw new Error(`unexpected positional arguments: ${positional.slice(1).join(' ')}`);
   }
-  if (args.execute && args['dry-run']) {
+  const execute = args.execute === true || args['archive-and-reap'] === true;
+  if (execute && args['dry-run']) {
     throw new Error('--execute and --dry-run cannot be combined');
   }
   const inbox = target === 'inbox';
-  if (inbox && args.abandon) {
+  if (inbox && (args.abandon || args['archive-and-reap'])) {
     throw new Error('--abandon is only allowed for a single issue id, not bulk inbox cleanup');
   }
 
@@ -40,16 +42,17 @@ export async function runCleanupTerminalInboxCommand(args: CliArgs, positional: 
     baseBranch: args['base-branch'],
     inbox,
     issue: inbox ? undefined : target,
-    execute: args.execute === true,
-    abandon: args.abandon === true,
+    execute,
+    abandon: args.abandon === true || args['archive-and-reap'] === true,
+    archiveAndReap: args['archive-and-reap'] === true,
     json: args.json === true,
     out: args.out,
   });
 
   if (args.json) {
-    console.log(JSON.stringify({ execute: args.execute === true, target, decisions }, null, 2));
+    console.log(JSON.stringify({ execute, target, decisions }, null, 2));
   } else {
-    console.log(formatTerminalInboxDecisions(decisions, args.execute === true));
+    console.log(formatTerminalInboxDecisions(decisions, execute));
   }
   return decisions;
 }

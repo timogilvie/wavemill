@@ -114,6 +114,8 @@ CLEANUP_FILE="$TEST_TMP/cleanup_completed_task.sh"
   printf '\n'
   printf '%s\n' 'WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT=".wavemill/observer-findings.jsonl"'
   extract_function "$COMMON_SCRIPT" "wavemill_worktree_dirty_status"
+  extract_function "$COMMON_SCRIPT" "wavemill_archive_terminal_residue"
+  extract_function "$COMMON_SCRIPT" "wavemill_terminal_residue_matches_archive"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_migrate_controller_observer_artifact"
   printf '\n'
@@ -788,6 +790,63 @@ check_not_contains "live agent block never touches git work" "$output" "worktree
 check_contains "live agent block skips terminal record" "$output" "record=absent"
 check_contains "live agent block records truthful reason" "$output" "retained:live-agent-process;"
 check_contains "live agent block requests attention" "$output" "attention=needs-user"
+
+# Real Git coverage for durable diff, untracked, and unpublished-commit archive.
+archive_case="$TEST_TMP/retired-residue"
+mkdir -p "$archive_case"
+git init --bare "$archive_case/origin.git" >/dev/null 2>&1
+git clone "$archive_case/origin.git" "$archive_case/repo" >/dev/null 2>&1
+git -C "$archive_case/repo" config user.email test@example.com
+git -C "$archive_case/repo" config user.name Test
+git -C "$archive_case/repo" checkout -b auto/integration >/dev/null 2>&1
+printf 'base\n' > "$archive_case/repo/README.md"
+git -C "$archive_case/repo" add README.md
+git -C "$archive_case/repo" commit -m base >/dev/null
+git -C "$archive_case/repo" push origin auto/integration >/dev/null 2>&1
+git -C "$archive_case/repo" worktree add -b task/retired "$archive_case/wt" >/dev/null 2>&1
+printf 'commit\n' > "$archive_case/wt/feature.txt"
+git -C "$archive_case/wt" add feature.txt
+git -C "$archive_case/wt" commit -m feature >/dev/null
+printf 'modified\n' >> "$archive_case/wt/feature.txt"
+printf 'local note\n' > "$archive_case/wt/notes.txt"
+archive_proof='{"classification":"safe_abandoned_pr_less_arm","cleanupAuthority":"sibling merged"}'
+archive_output="$(CASE_DIR="$archive_case" CLEANUP_FILE="$CLEANUP_FILE" PROOF_JSON="$archive_proof" bash -lc '
+  set -euo pipefail
+  source "$CLEANUP_FILE"
+  REPO_DIR="$CASE_DIR/repo"
+  STATE_FILE="$CASE_DIR/state.json"
+  effective_task_base_branch() { printf auto/integration; }
+  proof="$PROOF_JSON"
+  evidence="$(wavemill_archive_terminal_residue HOK-3160_c "$CASE_DIR/wt" task/retired "$proof")"
+  jq -n --argjson archive "$evidence" "{\"tasks\":{\"HOK-3160_c\":{\"lifecycle\":{\"cleanupArchive\":\$archive}}}}" > "$STATE_FILE"
+  test -s "$(jq -r .diff <<<"$evidence")"
+  test -s "$(jq -r .bundle <<<"$evidence")"
+  test "$(cat "$(jq -r .untracked <<<"$evidence")/notes.txt")" = "local note"
+  wavemill_terminal_residue_matches_archive HOK-3160_c "$CASE_DIR/wt"
+  printf changed >> "$CASE_DIR/wt/notes.txt"
+  if wavemill_terminal_residue_matches_archive HOK-3160_c "$CASE_DIR/wt"; then exit 1; fi
+  printf archive-ok
+')"
+check_contains "retired residue archive captures diff, untracked files, and bundle" "$archive_output" "archive-ok"
+mkdir -p "$archive_case/repo/.wavemill/evals/artifacts/HOK-archive-failure"
+: > "$archive_case/repo/.wavemill/evals/artifacts/HOK-archive-failure/retired-arm-residue"
+archive_failure="$(CASE_DIR="$archive_case" CLEANUP_FILE="$CLEANUP_FILE" PROOF_JSON="$archive_proof" bash -lc '
+  source "$CLEANUP_FILE"
+  REPO_DIR="$CASE_DIR/repo"
+  effective_task_base_branch() { printf auto/integration; }
+  if wavemill_archive_terminal_residue HOK-archive-failure "$CASE_DIR/wt" task/retired "$PROOF_JSON" >/dev/null 2>&1; then
+    printf unexpected-success
+  else
+    printf archive-failed
+  fi
+')"
+check_contains "archive failure retains work" "$archive_failure" "archive-failed"
+if git -C "$archive_case/repo" show-ref --verify --quiet refs/heads/task/retired \
+  && [[ -f "$archive_case/wt/notes.txt" ]]; then
+  pass "archive failure preserves branch and worktree"
+else
+  fail "archive failure lost local work"
+fi
 
 echo
 if [[ "$FAIL" -eq 0 ]]; then

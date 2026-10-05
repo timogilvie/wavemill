@@ -150,6 +150,7 @@ export interface CleanupOptions {
   inbox?: boolean;
   execute?: boolean;
   abandon?: boolean;
+  archiveAndReap?: boolean;
   json?: boolean;
   out?: string;
   baseBranch?: string;
@@ -665,6 +666,11 @@ export async function cleanupTerminalInbox(options: CleanupOptions): Promise<Ter
     if (!issue) continue;
     const state = readWorkflowState(stateFile);
     const decision = decideTerminalTask(state, issue, repoDir, baseBranch, deps, options.abandon === true && !options.inbox);
+    if (options.archiveAndReap && !options.inbox && ['uncommitted_changes', 'dirty_worktree'].includes(decision.refusalReason)
+      && (decision.pr.state === 'MERGED' || decision.siblingPrState === 'MERGED')) {
+      decision.status = 'would-reap';
+      decision.refusalReason = '';
+    }
     const now = deps.now();
     if (options.execute || options.out) {
       writeDecisionArtifact(repoDir, decision, now, options.out && issues.length === 1 ? options.out : undefined);
@@ -673,7 +679,7 @@ export async function cleanupTerminalInbox(options: CleanupOptions): Promise<Ter
       const task = state.tasks?.[issue];
       if (!task) throw new Error(`task ${issue} disappeared before execution`);
       const tombstone = buildTerminalTaskTombstone(decision, task, 'cleanup-terminal-inbox', options.inbox ? 'cleanup inbox --execute' : `cleanup ${issue} --execute`, now);
-      await writeTerminalTaskTombstone(stateFile, tombstone);
+      if (!options.archiveAndReap) await writeTerminalTaskTombstone(stateFile, tombstone);
       deps.cleanup(decision, {
         repoDir,
         stateFile,

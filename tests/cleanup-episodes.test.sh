@@ -124,6 +124,24 @@ state_mutate "$STATE_FILE" '.tasks["HOK-2955"].lifecycle.cleanupEpisode = {"disp
 check_eq "malformed cleanup episode fails closed to attempt" \
   "$(cleanup_episode_should_attempt "HOK-2955" "cleanup-episode" "" "")" "attempt"
 
+linear_is_completed() { return 0; }
+WAVEMILL_TEST_NOW_EPOCH=1000 cleanup_episode_record_outcome "HOK-2955" "retained" "expected-preservation" "local-work-preserved" "$candidate"
+check_eq "24-hour delivered ceiling stops retries" \
+  "$(WAVEMILL_TEST_NOW_EPOCH=87401 cleanup_episode_should_attempt "HOK-2955" "cleanup-episode" "" "")" "skip"
+check_eq "24-hour ceiling records one decision action" \
+  "$(jq -r '.tasks["HOK-2955"].lifecycle.cleanupEpisode.requiredOperatorAction' "$STATE_FILE")" \
+  "Delivery remains retained after 24 hours. Run wavemill cleanup HOK-2955 --archive-and-reap."
+check_eq "24-hour decision remains stable" \
+  "$(WAVEMILL_TEST_NOW_EPOCH=99999 cleanup_episode_should_attempt "HOK-2955" "cleanup-episode" "" "")" "skip"
+
+state_mutate "$STATE_FILE" '.tasks["HOK-2955"].lifecycle.cleanupArchive = {path:"/archive/HOK-2955",bundle:"/archive/HOK-2955/unpublished.bundle"}' >/dev/null
+WAVEMILL_TEST_NOW_EPOCH=100000 cleanup_episode_record_outcome "HOK-2955" "reaped" "none" "cleanup-complete" "$candidate"
+check_eq "cleanup episode persists archive evidence" \
+  "$(jq -r '.tasks["HOK-2955"].lifecycle.cleanupEpisode.archive.path' "$STATE_FILE")" "/archive/HOK-2955"
+write_terminal_task_tombstone "HOK-2955" "test" "cleanup" "reaped" "" >/dev/null
+check_eq "terminal tombstone preserves archive evidence" \
+  "$(jq -r '.terminalTaskHistory.tasks["HOK-2955"].task.lifecycle.cleanupArchive.bundle' "$STATE_FILE")" "/archive/HOK-2955/unpublished.bundle"
+
 echo
 if [[ "$FAIL" -eq 0 ]]; then
   echo "All $PASS assertions passed."

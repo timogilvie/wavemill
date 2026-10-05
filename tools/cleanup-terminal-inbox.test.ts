@@ -230,6 +230,31 @@ test('execute dispatches an abandoned PR-less arm with abandon authority (HOK-30
   }
 });
 
+test('archive-and-reap sends a delivered dirty arm to shell without an early tombstone', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cleanup-archive-reap-'));
+  try {
+    const stateFile = join(root, '.wavemill', 'workflow-state.json');
+    mkdirSync(join(root, '.wavemill'), { recursive: true });
+    writeFileSync(stateFile, JSON.stringify(state({})));
+    let invoked = false;
+    const decisions = await cleanupTerminalInbox({
+      repoDir: root, issue: 'HOK-3005', execute: true, abandon: true, archiveAndReap: true,
+      deps: deps({
+        prs: { 101: mergedPr('101') },
+        classify: () => ({ classification: 'retain_dirty', verificationReason: 'uncommitted_changes',
+          worktreeIdentity: 'valid', verifiedTopLevel: '/tmp/demo', cleanupAuthority: '', patchEquivalenceScope: '' }),
+        cleanup: () => { invoked = true; },
+      }),
+    });
+    assert.equal(decisions[0].status, 'executed');
+    assert.equal(invoked, true);
+    const written = JSON.parse(readFileSync(stateFile, 'utf-8'));
+    assert.equal(written.terminalTaskTombstones, undefined);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('bulk execute skips open and active tasks', async () => {
   const root = mkdtempSync(join(tmpdir(), 'cleanup-terminal-inbox-'));
   try {

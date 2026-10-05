@@ -14631,6 +14631,19 @@ cleanup_aborted_challenge_arm() {
     return 1
   }
 
+  # Once the sibling is merged and the shared Linear issue is complete, this
+  # retired arm is a delivered terminal task. The completed-task path archives
+  # its residue before releasing its pane or removing its worktree.
+  if declare -F check_challenge_sibling_merged >/dev/null 2>&1 \
+    && check_challenge_sibling_merged "$issue" \
+    && declare -F linear_is_completed >/dev/null 2>&1 \
+    && linear_is_completed "$(get_linear_issue_id "$issue")"; then
+    local WAVEMILL_CLEANUP_ABANDON_ISSUE="$issue"
+    local WAVEMILL_TERMINAL_INBOX_CLEANUP=1
+    cleanup_completed_task "$issue" "$slug" "retired challenge arm"
+    return $?
+  fi
+
   # HOK-2811/HOK-2813: if this primary has any pending (awaiting_fork)
   # challenger arms, the primary is failing terminally before the fork could
   # fire. Collapse the challenge to a single run under the typed
@@ -14789,6 +14802,13 @@ cleanup_pair_aborted_no_pr_arms() {
 monitor_cleanup_episode_skip() {
   local issue="$1" slug="$2" pr="${3:-}"
   local decision
+  if [[ "$(jq -r --arg i "$issue" '.tasks[$i].lifecycle.cleanupEpisode.disposition // empty' "$STATE_FILE" 2>/dev/null)" != "needs-user" ]] \
+    && declare -F check_challenge_sibling_merged >/dev/null 2>&1 \
+    && check_challenge_sibling_merged "$issue" \
+    && declare -F linear_is_completed >/dev/null 2>&1 \
+    && linear_is_completed "$(get_linear_issue_id "$issue")"; then
+    return 1
+  fi
   if ! declare -F cleanup_episode_should_attempt >/dev/null 2>&1; then
     return 1
   fi

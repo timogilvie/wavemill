@@ -6,8 +6,8 @@
  * uncommitted or untracked work. Mirrors the shell helper
  * `wavemill_worktree_dirty_status` in `wavemill-common.sh`: reads porcelain
  * status with all untracked files and filters only the exact
- * controller-owned artifacts (the observer findings log and the root
- * prompt-registry log). Every other tracked or untracked change - including
+ * controller-owned artifacts (observer findings, prompt registry, and exact
+ * stage audit/trace files). Every other tracked or untracked change - including
  * anything else under .wavemill/ - remains a cleanup blocker.
  *
  * An unreadable git status is reported explicitly so callers can fail closed
@@ -24,6 +24,10 @@ export const WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT = '.wavemill/observer-finding
 
 /** Prompt-registry log older native-agent runs wrote at the worktree root. */
 export const WAVEMILL_PROMPT_REGISTRY_ARTIFACT = 'prompt-registry.jsonl';
+const GENERATED_UNTRACKED = new Set([
+  WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT,
+  WAVEMILL_PROMPT_REGISTRY_ARTIFACT,
+]);
 
 export type WorktreeDirtyState = 'clean' | 'dirty' | 'unreadable' | 'absent';
 
@@ -38,18 +42,21 @@ export interface WorktreeDirtyStatus {
 
 /**
  * Filter raw `git status --porcelain --untracked-files=all` output the same
- * way the shell helper does: drop only the untracked observer-findings
- * artifact and either an untracked or unstaged-modification of the root
- * prompt-registry log. Any leading/trailing empty lines are stripped.
+ * way the shell helper does: drop exact untracked generated paths and the
+ * unstaged root prompt-registry log. Any empty lines are stripped.
  */
 export function filterWorktreeDirtyStatus(rawPorcelain: string): string[] {
-  const observerLine = `?? ${WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT}`;
-  const registryUntracked = `?? ${WAVEMILL_PROMPT_REGISTRY_ARTIFACT}`;
   const registryModified = ` M ${WAVEMILL_PROMPT_REGISTRY_ARTIFACT}`;
   return rawPorcelain
     .split('\n')
     .filter((line) => line.length > 0)
-    .filter((line) => line !== observerLine && line !== registryUntracked && line !== registryModified);
+    .filter((line) => {
+      if (line === registryModified) return false;
+      if (!line.startsWith('?? ')) return true;
+      const path = line.slice(3);
+      return !GENERATED_UNTRACKED.has(path)
+        && !/^features\/[^/]+\/(?:\.coding-uncommitted-output\.resolved\.jsonl|\.trace-context\.json|trace\.jsonl|\.review-result\.json)$/.test(path);
+    });
 }
 
 type GitRunner = (args: string[], cwd: string) => string | undefined;

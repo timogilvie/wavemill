@@ -684,6 +684,33 @@ else
   fail "Backstage retained cleanup episode detail is missing"
 fi
 
+STATE_FILE_ARCHIVED="$TMP_DIR/state-archived.json"
+jq '.terminalTaskHistory.tasks["HOK-3160_c"] = {
+  issue:"HOK-3160_c",resourceDisposition:"reaped",
+  task:{lifecycle:{cleanupArchive:{path:"/archive/HOK-3160_c"}}}
+}' "$STATE_FILE_CLEANUP_EPISODE" > "$STATE_FILE_ARCHIVED"
+OUTPUT_ARCHIVED="$TMP_DIR/output-archived.txt"
+run_render "$STATE_FILE_ARCHIVED" "$WORKTREES_DIR" "$BEHAVIOR_SKIPPED" "$OUTPUT_ARCHIVED"
+if grep -q '1 delivered and archived; resources freed' "$OUTPUT_ARCHIVED" \
+  && ! grep -q 'HOK-3160_c.*retained' "$OUTPUT_ARCHIVED"; then
+  pass "Backstage counts archived delivery without a recovery row"
+else
+  fail "Backstage archived delivery aggregate is missing"
+fi
+
+STATE_FILE_CONFIRM="$TMP_DIR/state-confirm-pending.json"
+jq 'del(.tasks["HOK-2955"].lifecycle.cleanupEpisode)
+  | .tasks["HOK-2955"].lifecycle.launchContract.requireConfirm = true' \
+  "$STATE_FILE_CLEANUP_EPISODE" > "$STATE_FILE_CONFIRM"
+OUTPUT_CONFIRM="$TMP_DIR/output-confirm-pending.txt"
+run_render "$STATE_FILE_CONFIRM" "$WORKTREES_DIR" "$BEHAVIOR_SKIPPED" "$OUTPUT_CONFIRM"
+if grep -q '1 close to finish; awaiting confirmation' "$OUTPUT_CONFIRM" \
+  && ! grep -q 'HOK-2955.*retained' "$OUTPUT_CONFIRM"; then
+  pass "confirmation pending merged work stays compact"
+else
+  fail "confirmation pending merged work is not compact"
+fi
+
 # HOK-3068: superseded challengers and aborted tasks are terminal by canonical
 # lifecycle outcome. They must leave Active/Inbox and the active-slot count for
 # Backstage, while a genuinely active task alongside them stays in Active.

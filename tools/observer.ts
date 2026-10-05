@@ -712,6 +712,7 @@ function cleanupEpisodeFinding(repo: RepoSnapshot, task: TaskState): Finding | u
     ? 'waiting for cleanup retry'
     : `cleanup ${episode.disposition}`;
   const severity: Severity = episode.disposition === 'transient' ? 'medium' : 'high';
+  const archive = (task.lifecycle as { cleanupArchive?: { path?: string } } | undefined)?.cleanupArchive?.path;
 
   return {
     id: `cleanup-episode-${repo.session}-${task.issue}-${fingerprint.slice(0, 12)}`,
@@ -728,6 +729,7 @@ function cleanupEpisodeFinding(repo: RepoSnapshot, task: TaskState): Finding | u
       `lastOutcome=${episode.lastOutcome ?? 'unknown'}`,
       `attempts=${episode.attemptCount}`,
       `fingerprint=${fingerprint}`,
+      ...(archive ? [`archive=${archive}`] : []),
       nextRetry,
       `branch=${task.branch ?? episode.fingerprintInputs?.branch ?? 'unknown'}`,
       `worktree=${task.worktree ?? episode.fingerprintInputs?.worktree ?? 'unknown'}`,
@@ -781,6 +783,10 @@ function deliveryEvidenceProvesMerged(task: TaskState): boolean {
 const DIRTY_WORKTREE_PATH_LIMIT = 8;
 
 function renderDirtyWorktreeRecommendation(task: TaskState, worktreeDirty: WorktreeDirtyStatus): string {
+  const archive = (task.lifecycle as { cleanupArchive?: { path?: string } } | undefined)?.cleanupArchive?.path;
+  if (archive) {
+    return `Terminal residue is archived at ${archive}. Inspect the cleanup episode, then retry wavemill cleanup ${task.issue} --archive-and-reap when delivery and Linear completion are verified.`;
+  }
   if (worktreeDirty.state === 'unreadable') {
     return `Observer could not read ${task.worktree ?? 'the task worktree'}'s git status. Inspect the worktree by hand before terminalizing cleanup; do not abort or reap while the risk state is unknown.`;
   }

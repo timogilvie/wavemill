@@ -566,7 +566,7 @@ cleanup_episode_collect_inputs() {
     worktree_exists="true"
     worktree_identity="$(wavemill_task_worktree_identity "$wt_dir" "$REPO_DIR")"
     if [[ "$worktree_identity" == "valid" ]]; then
-      dirty_status="$(git -C "$wt_dir" status --porcelain --untracked-files=all 2>/dev/null || printf '__wavemill_status_failed__')"
+      dirty_status="$(wavemill_worktree_dirty_status "$wt_dir" 2>/dev/null || printf '__wavemill_status_failed__')"
     else
       dirty_status="orphan:${worktree_identity}:$(wavemill_orphan_dir_scan "$wt_dir" 2>/dev/null || printf '__wavemill_orphan_scan_failed__')"
     fi
@@ -785,6 +785,7 @@ cleanup_episode_record_outcome() {
           nextRetryAt: (if $nextRetryAt == "" then null else $nextRetryAt end),
           requiredOperatorAction: $requiredAction,
           lastOutcome: $lastOutcome,
+          archive: ($l.cleanupArchive // null),
           updatedAt: $nowIso
         }
       })
@@ -820,6 +821,42 @@ cleanup_episode_should_attempt() {
   stored_json="$(cleanup_episode_get "$issue" || true)"
   [[ -n "$stored_json" ]] || { printf 'attempt\n'; return 0; }
   cleanup_episode_ack_present "$issue" && { printf 'attempt\n'; return 0; }
+
+  # One stable operator decision replaces indefinite retention after a day.
+  if [[ "$(jq -r '.lastOutcome // empty' <<<"$stored_json")" == "delivery-ceiling" ]]; then
+    printf 'skip\n'
+    return 0
+  fi
+  case "$(jq -r '.lastOutcome // empty' <<<"$stored_json")" in
+    linear-completion-unverified)
+      if declare -F linear_is_completed >/dev/null 2>&1 \
+        && linear_is_completed "$(task_identity_linear_id "$issue" 2>/dev/null || printf '%s' "${issue%_c}")"; then
+        printf 'attempt\n'
+        return 0
+      fi
+      ;;
+    sibling-delivery-unverified)
+      if declare -F check_challenge_sibling_merged >/dev/null 2>&1 \
+        && check_challenge_sibling_merged "$issue"; then
+        printf 'attempt\n'
+        return 0
+      fi
+      ;;
+  esac
+  local first_at first_epoch
+  first_at="$(jq -r --arg issue "$issue" '.tasks[$issue].lifecycle.deliveryEvidence.prMergedAt // .tasks[$issue].lifecycle.cleanupEpisode.firstAttemptAt // empty' "$STATE_FILE" 2>/dev/null || true)"
+  [[ -n "$first_at" ]] || first_at="$(jq -r '.firstAttemptAt // empty' <<<"$stored_json")"
+  first_epoch="$(jq -nr --arg t "$first_at" '$t | fromdateiso8601? // 0' 2>/dev/null || printf 0)"
+  if [[ "$first_epoch" =~ ^[0-9]+$ ]] && (( first_epoch > 0 )) \
+    && (( $(cleanup_episode_now_epoch) - first_epoch >= 86400 )) \
+    && { jq -e --arg issue "$issue" '.tasks[$issue].lifecycle.deliveryEvidence.prState == "MERGED" or .tasks[$issue].status == "merged"' "$STATE_FILE" >/dev/null 2>&1 \
+      || { declare -F check_challenge_sibling_merged >/dev/null 2>&1 && check_challenge_sibling_merged "$issue"; }; }; then
+    candidate_json="$(cleanup_episode_candidate_json "$issue" "$slug" "$reason" "$pr")"
+    cleanup_episode_record_outcome "$issue" "needs-user" "expected-preservation" "delivery-ceiling" "$candidate_json" \
+      "Delivery remains retained after 24 hours. Run wavemill cleanup ${issue} --archive-and-reap." >/dev/null 2>&1 || true
+    printf 'skip\n'
+    return 0
+  fi
 
   candidate_json="$(cleanup_episode_candidate_json "$issue" "$slug" "$reason" "$pr")"
   fingerprint="$(printf '%s' "$candidate_json" | jq -r '.fingerprint')"
@@ -1146,18 +1183,32 @@ WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT=".wavemill/observer-findings.jsonl"
 # terminal worktree. Exact root path and exact porcelain codes only.
 WAVEMILL_PROMPT_REGISTRY_ARTIFACT="prompt-registry.jsonl"
 
-# Porcelain status of a worktree with controller-owned artifacts (observer
-# findings, root prompt-registry log) excluded. Prints the filtered status;
+# Porcelain status of a worktree with only exact controller-owned telemetry
+# and stage audit/trace artifacts excluded. Prints the filtered status;
 # propagates git's failure (non-zero, no output) so callers can keep treating
 # an unreadable status as dirty.
 wavemill_worktree_dirty_status() {
   local wt_dir="${1:-}" raw_status="" registry="${WAVEMILL_PROMPT_REGISTRY_ARTIFACT:-prompt-registry.jsonl}"
   raw_status="$(git -C "$wt_dir" status --porcelain --untracked-files=all 2>/dev/null)" || return 1
-  printf '%s\n' "$raw_status" \
-    | grep -v -x -F "?? ${WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT}" \
-    | grep -v -x -F "?? ${registry}" \
-    | grep -v -x -F " M ${registry}" \
-    | grep -v -x '' || true
+  local line path code stage_rel stage_name
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    code="${line:0:2}"
+    path="${line:3}"
+    case "$code:$path" in
+      "??:${WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT}"|"??:${registry}"|" M:${registry}") continue ;;
+      "??:features/"*)
+        stage_rel="${path#features/}"
+        stage_name="${stage_rel#*/}"
+        if [[ "$stage_rel" != "$stage_name" && "$stage_name" != */* ]]; then
+          case "$stage_name" in
+            .coding-uncommitted-output.resolved.jsonl|.trace-context.json|trace.jsonl|.review-result.json) continue ;;
+          esac
+        fi
+        ;;
+    esac
+    printf '%s\n' "$line"
+  done <<< "$raw_status"
 }
 
 # Discard the root prompt-registry log from a task worktree before it is
@@ -1654,7 +1705,8 @@ safe_remove_task_worktree_and_branch() {
         _wavemill_build_cleanup_evidence_json
         return 10
       fi
-      if [[ -n "$dirty_status" ]]; then
+      if [[ -n "$dirty_status" && ( -z "$issue" || "${WAVEMILL_CLEANUP_ARCHIVED_ISSUE:-}" != "$issue" ) \
+        && ( "${WAVEMILL_CLASSIFY_ONLY:-0}" != "1" || "${WAVEMILL_CLEANUP_CLASSIFY_DIRTY:-0}" != "1" ) ]]; then
         classification="retain_dirty"
         verification_reason="uncommitted_changes"
         SAFE_CLEANUP_PRESERVATION_REASON="dirty_worktree"
@@ -1800,37 +1852,57 @@ safe_remove_task_worktree_and_branch() {
                   classification="retain_unverifiable"
                   verification_reason="patch_equivalence_failed"
                 fi
-              elif patch_cherry_output="$(git -C "$REPO_DIR" cherry "$base_ref" "$task_branch" 2>/dev/null)"; then
-                patch_unique_count="$(printf '%s\n' "$patch_cherry_output" | awk '/^\+/ { count++ } END { print count + 0 }')"
-                patch_equivalent_count="$(printf '%s\n' "$patch_cherry_output" | awk '/^-/ { count++ } END { print count + 0 }')"
-                patch_total_count="$(printf '%s\n' "$patch_cherry_output" | awk '/^[+-]/ { count++ } END { print count + 0 }')"
-                patch_equivalence_scope="whole_branch"
-                if [[ "$patch_unique_count" == "0" ]]; then
-                  patch_cherry_status="equivalent"
-                  if [[ -n "$pr_merge_sha" ]]; then
-                    classification="safe_patch_equivalent_pr"
-                    cleanup_authority="PR #${pr} merged into ${base_branch}; git cherry found no unique local patch IDs on ${task_branch}"
-                    patch_equivalent_shas="$(printf '%s\n' "$patch_cherry_output" | awk '/^-/ { print $2 }' | tr '\n' ' ')"
+              else
+                local cherry_base="$base_ref"
+                if git -C "$REPO_DIR" cat-file -e "${pr_head_oid}^{commit}" 2>/dev/null; then
+                  cherry_base="$pr_head_oid"
+                fi
+                if patch_cherry_output="$(git -C "$REPO_DIR" cherry "$cherry_base" "$task_branch" 2>/dev/null)"; then
+                  patch_unique_count="$(printf '%s\n' "$patch_cherry_output" | awk '/^\+/ { count++ } END { print count + 0 }')"
+                  if [[ "$patch_unique_count" != "0" && "$cherry_base" == "$pr_head_oid" ]]; then
+                    local base_cherry_output=""
+                    if base_cherry_output="$(git -C "$REPO_DIR" cherry "$base_ref" "$task_branch" 2>/dev/null)" \
+                      && [[ "$(printf '%s\n' "$base_cherry_output" | awk '/^\+/ { count++ } END { print count + 0 }')" == "0" ]]; then
+                      patch_cherry_output="$base_cherry_output"
+                      patch_unique_count="0"
+                      cherry_base="$base_ref"
+                    fi
+                  fi
+                  patch_equivalent_count="$(printf '%s\n' "$patch_cherry_output" | awk '/^-/ { count++ } END { print count + 0 }')"
+                  patch_total_count="$(printf '%s\n' "$patch_cherry_output" | awk '/^[+-]/ { count++ } END { print count + 0 }')"
+                  patch_equivalence_scope="$([[ "$cherry_base" == "$pr_head_oid" ]] && printf pr_head || printf whole_branch)"
+                  if [[ "$patch_unique_count" == "0" ]]; then
+                    patch_cherry_status="equivalent"
+                    if [[ -n "$pr_merge_sha" ]]; then
+                      classification="safe_patch_equivalent_pr"
+                      cleanup_authority="PR #${pr} merged into ${base_branch}; git cherry found no unique local patch IDs on ${task_branch}"
+                      patch_equivalent_shas="$(printf '%s\n' "$patch_cherry_output" | awk '/^-/ { print $2 }' | tr '\n' ' ')"
+                    else
+                      classification="retain_unpublished"
+                      verification_reason="changed_after_pr_head"
+                    fi
                   else
+                    patch_cherry_status="unique"
                     classification="retain_unpublished"
-                    verification_reason="changed_after_pr_head"
+                    verification_reason="unique_local_patch"
+                    patch_unique_shas="$(printf '%s\n' "$patch_cherry_output" | awk '/^\+/ { print $2 }' | tr '\n' ' ')"
                   fi
                 else
-                  patch_cherry_status="unique"
-                  classification="retain_unpublished"
-                  verification_reason="unique_local_patch"
-                  patch_unique_shas="$(printf '%s\n' "$patch_cherry_output" | awk '/^\+/ { print $2 }' | tr '\n' ' ')"
+                  patch_cherry_status="failed"
+                  classification="retain_unverifiable"
+                  verification_reason="patch_equivalence_failed"
                 fi
-              else
-                patch_cherry_status="failed"
-                classification="retain_unverifiable"
-                verification_reason="patch_equivalence_failed"
               fi
             elif [[ "$pr_state_evidence" == "CLOSED" && -z "$pr_merged_at" ]]; then
               if [[ "$abandon_issue" == "$issue" ]] \
-                && [[ "$remote_contains_head" == "true" || "$pr_head_oid" == "$local_head_sha" ]]; then
+                && [[ "$remote_contains_head" == "true" || "$pr_head_oid" == "$local_head_sha" \
+                  || "${WAVEMILL_CLEANUP_RETIRED_ISSUE:-}" == "$issue" ]]; then
                 classification="safe_abandoned_closed_loser"
-                cleanup_authority="operator abandoned closed PR #${pr}; head is recoverably published"
+                if [[ "${WAVEMILL_CLEANUP_RETIRED_ISSUE:-}" == "$issue" && "$remote_contains_head" != "true" && "$pr_head_oid" != "$local_head_sha" ]]; then
+                  cleanup_authority="closed PR #${pr} retired after sibling delivery and Linear completion; unpublished head requires bundle archive"
+                else
+                  cleanup_authority="operator abandoned closed PR #${pr}; head is recoverably published"
+                fi
               else
                 classification="retain_closed_unmerged"
                 if [[ "$abandon_issue" != "$issue" ]]; then
@@ -1987,7 +2059,9 @@ safe_remove_task_worktree_and_branch() {
       fi
 
       if [[ "$orphan_cleanup_candidate" != "true" ]] \
-        && { ! final_dirty="$(wavemill_worktree_dirty_status "$wt_dir")" || [[ -n "$final_dirty" ]]; }; then
+        && { ! final_dirty="$(wavemill_worktree_dirty_status "$wt_dir")" || [[ -n "$final_dirty" ]]; } \
+        && { [[ -z "$issue" || "${WAVEMILL_CLEANUP_ARCHIVED_ISSUE:-}" != "$issue" ]] \
+          || ! wavemill_terminal_residue_matches_archive "$issue" "$wt_dir"; }; then
         final_check_passed="false"
         if ! _wavemill_record_cleanup_decision "retain_dirty" "dirty_worktree" "worktree_dirty_before_deletion" "false"; then
           log_warn "  Failed to write preserved-branch incident marker for $task_branch"
@@ -2050,9 +2124,25 @@ safe_remove_task_worktree_and_branch() {
         return 20
       fi
     else
+      local remove_flag=""
+      local removal_status=""
+      if ! removal_status="$(wavemill_worktree_dirty_status "$wt_dir")"; then
+        WAVEMILL_CLEANUP_OUTCOME="retain_dirty"
+        return 10
+      fi
+      if [[ -n "$removal_status" ]]; then
+        if [[ -z "$issue" || "${WAVEMILL_CLEANUP_ARCHIVED_ISSUE:-}" != "$issue" ]] \
+          || ! wavemill_terminal_residue_matches_archive "$issue" "$wt_dir"; then
+          WAVEMILL_CLEANUP_OUTCOME="retain_dirty"
+          return 10
+        fi
+      fi
       wavemill_migrate_controller_observer_artifact "$wt_dir"
       wavemill_discard_prompt_registry_artifact "$wt_dir"
-      if wavemill_cleanup_run git -C "$REPO_DIR" worktree remove "$wt_dir" >>"${MILL_LOG_FILE:-/dev/null}" 2>/dev/null; then
+      if [[ -n "$(git -C "$wt_dir" status --porcelain --untracked-files=all 2>/dev/null)" ]]; then
+        remove_flag="--force"
+      fi
+      if wavemill_cleanup_run git -C "$REPO_DIR" worktree remove ${remove_flag:+$remove_flag} "$wt_dir" >>"${MILL_LOG_FILE:-/dev/null}" 2>/dev/null; then
         log "debug" "Removed worktree: $wt_dir"
       else
         log_warn "  Worktree cleanup failed: $wt_dir"
@@ -2109,6 +2199,68 @@ monitor_deregister_terminal_task() {
   return 0
 }
 
+# Archive a terminal worktree without changing it. A unique, complete directory
+# is installed only after diff, untracked files, and any unpublished commits
+# have been copied successfully. The caller persists this evidence before reap.
+wavemill_archive_terminal_residue() {
+  local issue="$1" wt_dir="$2" branch="$3" proof="$4"
+  local root="${REPO_DIR}/.wavemill/evals/artifacts/${issue}/retired-arm-residue"
+  local tmp="" dest="" before="" after="" path="" base_ref="" ahead="0" bundle=""
+  [[ -d "$wt_dir" && -n "$issue" ]] || return 1
+  [[ "$(wavemill_task_worktree_identity "$wt_dir" "$REPO_DIR")" == "valid" ]] || return 1
+  before="$(git -C "$wt_dir" status --porcelain --untracked-files=all)" || return 1
+  mkdir -p "$root" || return 1
+  tmp="$(mktemp -d "$root/.staging.XXXXXXXX")" || return 1
+  git -C "$wt_dir" diff --binary HEAD > "$tmp/worktree.diff" || { rm -rf "$tmp"; return 1; }
+  mkdir -p "$tmp/untracked" || { rm -rf "$tmp"; return 1; }
+  git -C "$wt_dir" ls-files -o --exclude-standard -z > "$tmp/untracked.list" || { rm -rf "$tmp"; return 1; }
+  while IFS= read -r -d '' path; do
+    mkdir -p "$tmp/untracked/$(dirname "$path")" || { rm -rf "$tmp"; return 1; }
+    cp -P "$wt_dir/$path" "$tmp/untracked/$path" || { rm -rf "$tmp"; return 1; }
+  done < "$tmp/untracked.list"
+  # The bundle protects unpublished PR-less commits independently of the
+  # existing remote archive ref, so the local archive is self-contained.
+  if [[ "$(jq -r '.classification' <<<"$proof")" == "safe_abandoned_pr_less_arm" \
+    || "$(jq -r '.classification' <<<"$proof")" == "safe_abandoned_closed_loser" ]]; then
+    base_ref="refs/remotes/origin/$(effective_task_base_branch "$issue" 2>/dev/null || printf '%s' "${BASE_BRANCH:-main}")"
+    ahead="$(git -C "$REPO_DIR" rev-list --count "${base_ref}..${branch}")" || { rm -rf "$tmp"; return 1; }
+    if (( ahead > 0 )); then
+      git -C "$REPO_DIR" bundle create "$tmp/unpublished.bundle" "$branch" "^$base_ref" >/dev/null 2>&1 || { rm -rf "$tmp"; return 1; }
+      git -C "$REPO_DIR" bundle verify "$tmp/unpublished.bundle" >/dev/null 2>&1 || { rm -rf "$tmp"; return 1; }
+      bundle="unpublished.bundle"
+    fi
+  fi
+  after="$(git -C "$wt_dir" status --porcelain --untracked-files=all)" || { rm -rf "$tmp"; return 1; }
+  [[ "$before" == "$after" ]] || { rm -rf "$tmp"; return 1; }
+  jq -n --arg issue "$issue" --arg branch "$branch" --arg status "$before" \
+    --argjson proof "$proof" --arg bundle "$bundle" \
+    '{issue:$issue, branch:$branch, status:$status, deliveryProof:$proof,
+      diff:"worktree.diff", untracked:"untracked", bundle:(if $bundle == "" then null else $bundle end)}' > "$tmp/index.json" || { rm -rf "$tmp"; return 1; }
+  dest="$root/$(date -u +%Y%m%dT%H%M%S)-$$-$RANDOM"
+  mv "$tmp" "$dest" || { rm -rf "$tmp"; return 1; }
+  jq -cn --arg path "$dest" --arg bundle "$bundle" --argjson proof "$proof" \
+    '{path:$path,index:($path+"/index.json"),diff:($path+"/worktree.diff"),
+      untracked:($path+"/untracked"),bundle:(if $bundle == "" then null else $path+"/"+$bundle end),
+      deliveryProof:$proof}'
+}
+
+wavemill_terminal_residue_matches_archive() {
+  local issue="$1" wt_dir="$2" archive="" expected="" current="" path="" list_file=""
+  archive="$(jq -r --arg issue "$issue" '.tasks[$issue].lifecycle.cleanupArchive.path // empty' "$STATE_FILE" 2>/dev/null)"
+  [[ -n "$archive" && -f "$archive/index.json" && -f "$archive/worktree.diff" ]] || return 1
+  expected="$(jq -r '.status' "$archive/index.json")" || return 1
+  current="$(git -C "$wt_dir" status --porcelain --untracked-files=all)" || return 1
+  [[ "$expected" == "$current" ]] || return 1
+  git -C "$wt_dir" diff --binary HEAD | cmp -s - "$archive/worktree.diff" || return 1
+  list_file="$(mktemp)" || return 1
+  git -C "$wt_dir" ls-files -o --exclude-standard -z > "$list_file" || { rm -f "$list_file"; return 1; }
+  while IFS= read -r -d '' path; do
+    [[ -e "$archive/untracked/$path" || -L "$archive/untracked/$path" ]] || { rm -f "$list_file"; return 1; }
+    cmp -s "$wt_dir/$path" "$archive/untracked/$path" || { rm -f "$list_file"; return 1; }
+  done < "$list_file"
+  rm -f "$list_file"
+}
+
 # Canonical completed-task cleanup order:
 # 1. archive artifacts, 2. close pane/window, 3. remove worktree,
 # 4. remove local branch, 5. remove eligible remote branch,
@@ -2123,6 +2275,12 @@ cleanup_completed_task() {
   local pr=""
   local cleanup_candidate_json=""
   local cleanup_decision=""
+  local wt_dir="${WORKTREE_ROOT}/${slug}"
+  local task_branch="task/${slug}"
+  local residue_status="" delivery_proof="" archive_json="" linear_id="" archive_unpublished="false"
+  local WAVEMILL_CLEANUP_ARCHIVED_ISSUE=""
+  local WAVEMILL_CLEANUP_RETIRED_ISSUE=""
+  local WAVEMILL_CLEANUP_ABANDON_ISSUE="${WAVEMILL_CLEANUP_ABANDON_ISSUE:-}"
 
   pr=$(jq -r --arg i "$issue" '.tasks[$i].pr // empty' "$STATE_FILE" 2>/dev/null || true)
   if [[ -z "$pr" ]] && declare -p PR_BY_ISSUE >/dev/null 2>&1; then
@@ -2138,8 +2296,6 @@ cleanup_completed_task() {
     cleanup_candidate_json="$(cleanup_episode_candidate_json "$issue" "$slug" "" "$pr" 2>/dev/null || true)"
   fi
 
-  set_task_lifecycle_disposition "$issue" "" "reaping" "" "cleanup_completed_task" 2>/dev/null || true
-
   if ! archive_stage_artifacts "$issue" "$slug"; then
     if [[ -n "$cleanup_candidate_json" ]]; then
       cleanup_episode_record_outcome "$issue" "transient" "operational" "archive-stage-artifacts-failed" "$cleanup_candidate_json" "" 2>/dev/null || true
@@ -2148,6 +2304,66 @@ cleanup_completed_task() {
     log_warn "  $issue cleanup could not archive stage artifacts; keeping task state"
     return 1
   fi
+
+  # A completed delivery may contain local residue. Prove delivery and Linear
+  # completion before archiving; every failure leaves the pane and Git intact.
+  if [[ -d "$wt_dir" ]]; then
+    if ! residue_status="$(wavemill_worktree_dirty_status "$wt_dir")"; then
+      return 1
+    fi
+    if [[ -z "$pr" ]] && declare -F check_challenge_sibling_merged >/dev/null 2>&1 \
+      && check_challenge_sibling_merged "$issue"; then
+      archive_unpublished="true"
+    fi
+    if [[ -n "$residue_status" || "$archive_unpublished" == "true" ]]; then
+      linear_id="$(jq -r --arg i "$issue" '.tasks[$i].linearIssueId // .tasks[$i].linearId // empty' "$STATE_FILE" 2>/dev/null || true)"
+      [[ -n "$linear_id" ]] || linear_id="$(task_identity_linear_id "$issue" 2>/dev/null || printf '%s' "${issue%_c}")"
+      if ! declare -F linear_is_completed >/dev/null 2>&1 || ! linear_is_completed "$linear_id"; then
+        WAVEMILL_CLEANUP_OUTCOME="retain_dirty"
+        [[ -n "$cleanup_candidate_json" ]] && cleanup_episode_record_outcome "$issue" "transient" "transient" "linear-completion-unverified" "$cleanup_candidate_json" "" 2>/dev/null || true
+        log_warn "  $issue residue retained: Linear completion is unverified"
+        return 1
+      fi
+      if [[ -z "$pr" ]]; then
+        if ! declare -F check_challenge_sibling_merged >/dev/null 2>&1 || ! check_challenge_sibling_merged "$issue"; then
+          WAVEMILL_CLEANUP_OUTCOME="retain_dirty"
+          [[ -n "$cleanup_candidate_json" ]] && cleanup_episode_record_outcome "$issue" "transient" "transient" "sibling-delivery-unverified" "$cleanup_candidate_json" "" 2>/dev/null || true
+          return 1
+        fi
+        WAVEMILL_CLEANUP_ABANDON_ISSUE="$issue"
+      fi
+      if [[ -n "$pr" ]] && declare -F check_challenge_sibling_merged >/dev/null 2>&1 \
+        && check_challenge_sibling_merged "$issue"; then
+        WAVEMILL_CLEANUP_RETIRED_ISSUE="$issue"
+        WAVEMILL_CLEANUP_ABANDON_ISSUE="$issue"
+      fi
+      delivery_proof="$(WAVEMILL_CLEANUP_CLASSIFY_DIRTY=1 wavemill_classify_task_cleanup "$wt_dir" "$task_branch" "$(effective_task_base_branch "$issue" 2>/dev/null || printf '%s' "${BASE_BRANCH:-main}")" "cleanup_completed_task" "$issue" "$pr")" || return 1
+      case "$(jq -r '.classification // empty' <<<"$delivery_proof")" in
+        safe_ancestor|safe_terminal_pr_head|safe_patch_equivalent_pr|safe_content_equivalent_pr|safe_abandoned_pr_less_arm|safe_abandoned_closed_loser) ;;
+        *)
+          [[ -n "$cleanup_candidate_json" ]] && cleanup_episode_record_outcome "$issue" "transient" "transient" "delivery-unverified" "$cleanup_candidate_json" "" 2>/dev/null || true
+          log_warn "  $issue residue retained: delivery is unverified"
+          return 1 ;;
+      esac
+      if [[ "$(jq -r '.classification' <<<"$delivery_proof")" == "safe_abandoned_closed_loser" ]]; then
+        declare -F check_challenge_sibling_merged >/dev/null 2>&1 && check_challenge_sibling_merged "$issue" || return 1
+      fi
+      archive_json="$(wavemill_archive_terminal_residue "$issue" "$wt_dir" "$task_branch" "$delivery_proof")" || {
+        [[ -n "$cleanup_candidate_json" ]] && cleanup_episode_record_outcome "$issue" "transient" "operational" "residue-archive-failed" "$cleanup_candidate_json" "" 2>/dev/null || true
+        log_warn "  $issue residue archive failed; keeping task state"
+        return 1
+      }
+      if ! state_mutate "$STATE_FILE" '.tasks[$issue].lifecycle.cleanupArchive = $archive' \
+          --arg issue "$issue" --argjson archive "$archive_json"; then
+        [[ -n "$cleanup_candidate_json" ]] && cleanup_episode_record_outcome "$issue" "transient" "operational" "residue-evidence-failed" "$cleanup_candidate_json" "" 2>/dev/null || true
+        log_warn "  $issue archive evidence could not be persisted; keeping task state"
+        return 1
+      fi
+      WAVEMILL_CLEANUP_ARCHIVED_ISSUE="$issue"
+    fi
+  fi
+
+  set_task_lifecycle_disposition "$issue" "" "reaping" "" "cleanup_completed_task" 2>/dev/null || true
 
   # HOK-2952: pane release is a shared primitive (archive -> durable record
   # -> verified kill -> truthful state) and is decoupled from the git steps
@@ -2184,8 +2400,6 @@ cleanup_completed_task() {
 
   log "debug" "Closed window: $win"
 
-  local wt_dir="${WORKTREE_ROOT}/${slug}"
-  local task_branch="task/${slug}"
   local cleanup_rc=0
   local cleanup_outcome=""
   local cleanup_remote_status=0
@@ -7557,7 +7771,7 @@ linear_batch_set_state() {
 linear_is_completed() {
   local issue="$1"
   local state
-  state=$(_with_timeout "$API_TIMEOUT" npx tsx "$TOOLS_DIR/get-issue-state.ts" "$issue" 2>/dev/null || echo "active")
+  state=$(_with_timeout "${API_TIMEOUT:-30}" npx tsx "$(wavemill_tool_path get-issue-state.ts)" "$issue" 2>/dev/null || echo "active")
   [[ "$state" == "completed" ]] && return 0
   return 1
 }

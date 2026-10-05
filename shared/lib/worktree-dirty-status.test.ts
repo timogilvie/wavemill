@@ -63,6 +63,23 @@ test('filter keeps every non-controller change under .wavemill/', () => {
   ]);
 });
 
+test('filter ignores only exact generated stage audit and trace files', () => {
+  const raw = [
+    '?? features/task/.coding-uncommitted-output.resolved.jsonl',
+    '?? features/task/.trace-context.json',
+    '?? features/task/trace.jsonl',
+    '?? features/task/.review-result.json',
+    '?? features/task/notes.md',
+    '?? features/task/subdir/.review-result.json',
+    ' M features/task/.review-result.json',
+  ].join('\n');
+  assert.deepEqual(filterWorktreeDirtyStatus(raw), [
+    '?? features/task/notes.md',
+    '?? features/task/subdir/.review-result.json',
+    ' M features/task/.review-result.json',
+  ]);
+});
+
 function makeGitRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), 'worktree-dirty-status-'));
   execFileSync('git', ['init', '-q', '-b', 'main', dir], { stdio: 'ignore' });

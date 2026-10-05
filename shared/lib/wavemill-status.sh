@@ -1419,7 +1419,11 @@ render_task_row() {
   [[ -n "$worktree" && -n "$slug" ]] && launch_failure_detail=$(native_launch_failure_detail "$worktree" "$slug")
 
   if [[ "$task_status" == "merged" ]]; then
-    st_str="${G}✓ merged${N}"
+    if [[ "$effective_require_confirm" == "true" && "$resource_disposition" != "reaped" ]]; then
+      st_str="${G}✓ close to finish${N}"
+    else
+      st_str="${G}✓ merged${N}"
+    fi
   elif [[ "$resource_disposition" == "verification-required" ]]; then
     st_str="${R}verify${N}"
   elif [[ "$resource_disposition" == "retained" ]]; then
@@ -1849,11 +1853,20 @@ format_backstage_age() {
 # stored — never a per-task warning stream and never full completed-task rows.
 render_backstage_retained_section() {
   local count="${#backstage_terminal_rows[@]}"
-  (( count == 0 )) && return 0
+  local archived_count=0
+  archived_count="$(jq -r '[.terminalTaskHistory.tasks // {} | .[] | select((.task.lifecycle.cleanupArchive.path // "") != "" and .resourceDisposition == "reaped")] | length' "$STATE_FILE" 2>/dev/null || printf 0)"
+  local confirmation_count="${backstage_confirmation_count:-0}"
+  (( count == 0 && archived_count == 0 && confirmation_count == 0 )) && return 0
 
   local row issue slug branch worktree outcome detail disp reason when action age
   printf "${EL}\n${B}%s${N} ${D}(%s)${N}${EL}\n" "🗄️  BACKSTAGE (retained)" "$count" >> "$FRAME"
   printf "${D}%s${N}${EL}\n" "terminal resources retained for recovery — not active" >> "$FRAME"
+  if (( archived_count > 0 )); then
+    printf "${G}%s delivered and archived; resources freed${N}${EL}\n" "$archived_count" >> "$FRAME"
+  fi
+  if (( confirmation_count > 0 )); then
+    printf "${G}%s close to finish; awaiting confirmation${N}${EL}\n" "$confirmation_count" >> "$FRAME"
+  fi
   for row in "${backstage_terminal_rows[@]}"; do
     IFS='|' read -r issue slug branch worktree outcome <<<"$row"
     detail="$(backstage_retained_detail "$issue")"
@@ -2275,6 +2288,7 @@ render_dashboard() {
   declare -ga active_tasks=()
   # HOK-3068: terminal work with retained resources is surfaced only here.
   declare -ga backstage_terminal_rows=()
+  backstage_confirmation_count=0
 
   # Build entire frame into a temp file (avoids $() stripping newlines)
   : > "$FRAME"
@@ -2327,6 +2341,11 @@ render_dashboard() {
       # without making completed work look active or consuming an active slot.
       workflow_outcome="$(task_workflow_outcome "$issue")"
       if task_outcome_is_terminal "$workflow_outcome"; then
+        if [[ "$task_status" == "merged" ]] \
+          && jq -e --arg issue "$issue" '.tasks[$issue].lifecycle.launchContract.requireConfirm == true and .tasks[$issue].lifecycle.cleanupEpisode.disposition == null' "$STATE_FILE" >/dev/null 2>&1; then
+          backstage_confirmation_count=$((backstage_confirmation_count + 1))
+          continue
+        fi
         backstage_terminal_rows+=("$issue|$slug|$branch|$worktree|$workflow_outcome")
         continue
       fi

@@ -172,9 +172,11 @@ ${GREEN}Commands:${NC}
                ${CYAN}wavemill cleanup inbox --dry-run${NC}
                ${CYAN}wavemill cleanup inbox --execute${NC}
                ${CYAN}wavemill cleanup HOK-3002_c --abandon --execute${NC}
+               ${CYAN}wavemill cleanup HOK-3002_c --archive-and-reap${NC}
              Options:
                ${CYAN}--execute${NC}                  Perform eligible cleanup
                ${CYAN}--abandon${NC}                  Explicit single-issue loser abandonment
+               ${CYAN}--archive-and-reap${NC}         Archive terminal residue and reap one delivered, completed task
                ${CYAN}--repo-dir${NC} <path>          Repository directory to inspect
                ${CYAN}--state-file${NC} <path>        Workflow state file override
 
