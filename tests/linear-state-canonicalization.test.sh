@@ -129,7 +129,7 @@ check_not_contains "canonical writer never returns 1 (would exit callers under s
 check_contains "canonical writer surfaces the exit code" \
   "$SET_STATE_BODY" '(exit $rc)'
 check_contains "canonical probe uses get-issue-state.ts" \
-  "$IS_COMPLETED_BODY" '_with_timeout "$API_TIMEOUT" npx tsx "$TOOLS_DIR/get-issue-state.ts"'
+  "$IS_COMPLETED_BODY" '_with_timeout "${API_TIMEOUT:-30}" npx tsx "$(wavemill_tool_path get-issue-state.ts)"'
 check_not_contains "canonical probe no longer matches display state names" \
   "$IS_COMPLETED_BODY" 'state.name'
 check_contains "API_TIMEOUT default is provided by wavemill-common.sh" \
