@@ -29,8 +29,8 @@ extract_function "$STATUS_LIB" render_incidents_section >> "$FUNCS_FILE"
 source "$FUNCS_FILE"
 
 FRAME="$TMP_DIR/frame.txt"
-WAVEMILL_REPO_DIR="$TMP_DIR/repo"
-mkdir -p "$WAVEMILL_REPO_DIR"
+WAVEMILL_MILLED_REPO_DIR="$TMP_DIR/repo"
+mkdir -p "$WAVEMILL_MILLED_REPO_DIR"
 EL=""
 B=""
 N=""
@@ -163,10 +163,10 @@ fi
 
 # HOK-3094: without an override, the index comes from the milled repo's state
 # dir (the one holding STATE_FILE), never the wavemill install dir.
-WAVEMILL_REPO_DIR="$TMP_DIR/install"
+WAVEMILL_INSTALL_DIR="$TMP_DIR/install"
 MILL_STATE_DIR="$TMP_DIR/milled-repo/.wavemill"
-mkdir -p "$WAVEMILL_REPO_DIR/.wavemill/incidents" "$MILL_STATE_DIR/incidents"
-cp "$FIXTURE_DIR/no_task_id.json" "$WAVEMILL_REPO_DIR/.wavemill/incidents/index.json"
+mkdir -p "$WAVEMILL_INSTALL_DIR/.wavemill/incidents" "$MILL_STATE_DIR/incidents"
+cp "$FIXTURE_DIR/no_task_id.json" "$WAVEMILL_INSTALL_DIR/.wavemill/incidents/index.json"
 cp "$FIXTURE_DIR/active_only.json" "$MILL_STATE_DIR/incidents/index.json"
 unset WAVEMILL_INCIDENT_INDEX_OVERRIDE
 

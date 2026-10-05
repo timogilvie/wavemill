@@ -15,6 +15,11 @@ SCRIPT_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
 LIB_DIR="$SCRIPT_DIR/shared/lib"
 DEFAULT_TOOLS_DIR="$SCRIPT_DIR/tools"
 export TOOLS_DIR="$DEFAULT_TOOLS_DIR"
+# HOK-3100: canonical install root. The milled repo is `WAVEMILL_MILLED_REPO_DIR`
+# / `REPO_DIR`. `WAVEMILL_INSTALL_DIR` is always derived from the running
+# script, never inherited, so monitor-from-main and worker-from-worktree
+# processes each use their own install copy.
+export WAVEMILL_INSTALL_DIR="$SCRIPT_DIR"
 CONFIG_VERSION="$(
   sed -n "s/.*CURRENT_CONFIG_VERSION = '\([^']*\)'.*/\1/p" "$LIB_DIR/config.ts" 2>/dev/null | head -n 1
 )"
@@ -456,7 +461,7 @@ check_config_version() {
       return 1
     fi
   else
-    echo -e "${CYAN}Skipped.${NC} Upgrade later with: ${CYAN}npx tsx tools/sync-config.ts${NC}"
+    echo -e "${CYAN}Skipped.${NC} Upgrade later with: ${CYAN}npx tsx $SCRIPT_DIR/tools/sync-config.ts${NC}"
     echo -e "  Or run with: ${CYAN}SKIP_CONFIG_CHECK=true wavemill mill${NC} to skip this prompt"
     echo ""
   fi
@@ -492,7 +497,7 @@ check_project_context() {
       return 1
     fi
   else
-    echo -e "${CYAN}Skipped.${NC} Initialize later with: ${CYAN}npx tsx tools/init-project-context.ts${NC}"
+    echo -e "${CYAN}Skipped.${NC} Initialize later with: ${CYAN}npx tsx $SCRIPT_DIR/tools/init-project-context.ts${NC}"
     echo -e "  Or run with: ${CYAN}SKIP_CONTEXT_CHECK=true wavemill mill${NC} to skip this prompt"
     echo ""
   fi
@@ -1075,11 +1080,11 @@ INIT_EOF
         npx tsx "$init_tool"
       else
         echo -e "${YELLOW}Warning:${NC} Could not find init-project-context.ts"
-        echo -e "  You can initialize later with: ${CYAN}npx tsx tools/init-project-context.ts${NC}"
+        echo -e "  You can initialize later with: ${CYAN}npx tsx $SCRIPT_DIR/tools/init-project-context.ts${NC}"
       fi
     else
       echo -e "${CYAN}Skipped.${NC} You can initialize later with:"
-      echo -e "  ${CYAN}npx tsx tools/init-project-context.ts${NC}"
+      echo -e "  ${CYAN}npx tsx $SCRIPT_DIR/tools/init-project-context.ts${NC}"
     fi
   fi
 

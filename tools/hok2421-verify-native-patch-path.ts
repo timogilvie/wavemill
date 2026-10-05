@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { certifyNativeAgent } from './native-agent-certify.ts';
 import { clearConfigCache } from '../shared/lib/config.ts';
+import { resolveWavemillToolPath } from '../shared/lib/native-agent/install-paths.ts';
 import { filterNativeModels, type RouterRole } from '../shared/lib/native-agent/certification/router-filter.ts';
 import { CERTIFICATION_SCHEMA_VERSION, type CertificationPhase, type NativeCertificationArtifact } from '../shared/lib/native-agent/certification/schema.ts';
 import { DEFAULT_CERTIFICATION_SUITE_VERSION } from '../shared/lib/native-agent/certification/scenarios.ts';
@@ -207,8 +208,9 @@ function capturePlanningEligibility(repoDir: string, env: Record<string, string 
   stdout: string;
   stderr: string;
 } {
-  const command = `npx tsx tools/check-native-eligibility.ts ${repoDir} planning`;
-  const result = spawnSync('npx', ['tsx', 'tools/check-native-eligibility.ts', repoDir, 'planning'], {
+  const checkTool = resolveWavemillToolPath('check-native-eligibility.ts');
+  const command = `npx tsx ${checkTool} ${repoDir} planning`;
+  const result = spawnSync('npx', ['tsx', checkTool, repoDir, 'planning'], {
     cwd: process.cwd(),
     env: {
       ...process.env,

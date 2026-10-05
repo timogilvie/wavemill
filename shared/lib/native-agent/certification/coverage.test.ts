@@ -9,6 +9,7 @@ import { resolveCertificationSubject } from './identity.ts';
 import { CERTIFICATION_SCHEMA_VERSION, type NativeCertificationArtifact } from './schema.ts';
 import { evaluateSuiteCoverage } from './coverage.ts';
 import type { ModelRegistry } from '../../model-registry.ts';
+import { hashLaunchPriorityFixture } from '../../openrouter-catalog.ts';
 
 const NOW = new Date('2026-08-24T12:00:00.000Z');
 
@@ -150,6 +151,70 @@ describe('evaluateSuiteCoverage', () => {
       // Re-certifying restores eligibility.
       writeArtifact(root, makeArtifact('vNEW', registry));
       assert.equal(evaluateSuiteCoverage({ registry, root }).status, 'ok');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('classifies the cause of each re-identified model (HOK-3159)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'suite-coverage-causes-'));
+    const base = withAdditionalNativeModels(makeRegistry('vNEW'), ['gpt-4o-b', 'gpt-4o-c', 'gpt-4o-d']);
+    const gpt4o = base.models['gpt-4o']!;
+    const registry: ModelRegistry = {
+      ...base,
+      models: {
+        ...base.models,
+        'qwen-3-coder': {
+          ...gpt4o,
+          nativeCapability: { ...gpt4o.nativeCapability!, nativeProvider: 'openrouter', piTransportKind: 'openai-completions' },
+        },
+      },
+    };
+    const artifactFor = (provider: 'openai' | 'openrouter', model: string): NativeCertificationArtifact => {
+      const subject = resolveCertificationSubject({ provider, model, registry });
+      return {
+        ...makeArtifact('vNEW', registry),
+        subject: subject.subject,
+        provider: subject.storageIdentity.provider,
+        model: subject.storageIdentity.model,
+      };
+    };
+    try {
+      const catalog = artifactFor('openai', 'gpt-4o');
+      catalog.subject = { ...catalog.subject!, catalogHash: 'hash-from-a-previous-fixture' };
+      writeArtifact(root, catalog);
+
+      const fingerprint = artifactFor('openai', 'gpt-4o-b');
+      fingerprint.subject = { ...fingerprint.subject!, identityFingerprint: 'old-fingerprint' };
+      writeArtifact(root, fingerprint);
+
+      const invalidated = artifactFor('openai', 'gpt-4o-c');
+      invalidated.identityInvalidation = {
+        invalidatedAt: NOW.toISOString(),
+        reason: 'identity_mismatch',
+        expectedModel: 'gpt-4o-c',
+        observedModel: 'someone-else',
+        requestedWireId: 'gpt-4o-c',
+        source: 'runtime',
+      };
+      writeArtifact(root, invalidated);
+
+      writeArtifact(root, artifactFor('openai', 'gpt-4o-d'));
+
+      // A pre-HOK-3159 OpenRouter artifact: stamped with the whole-file hash.
+      const legacy = artifactFor('openrouter', 'qwen-3-coder');
+      legacy.subject = { ...legacy.subject!, catalogHash: hashLaunchPriorityFixture() };
+      writeArtifact(root, legacy);
+
+      const coverage = evaluateSuiteCoverage({ registry, root });
+      const causes = Object.fromEntries(coverage.ineligibleModels.map((m) => [m.registryKey, m.cause]));
+      assert.deepEqual(causes, {
+        'gpt-4o': 'launch-priority-catalog',
+        'gpt-4o-b': 'registry-identity',
+        'gpt-4o-c': 'identity-invalidated',
+        'qwen-3-coder': 'catalog-hash-migration',
+      });
+      assert.equal(coverage.eligibleModelCount, 1);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

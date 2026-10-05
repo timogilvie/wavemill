@@ -20,6 +20,8 @@ STARTUP_FUNCS="$(
   echo
   extract_function "$RUNNER" startup_openrouter_credit_warning
   echo
+  extract_function "$RUNNER" startup_clear_openrouter_credit_circuit
+  echo
   extract_function "$RUNNER" startup_warn_openrouter_status
 )"
 
@@ -115,6 +117,30 @@ render_dashboard
 if ! grep -q 'WARN: OpenRouter credits exhausted - challenge coverage disabled' "$FRAME"; then
   echo "dashboard did not render cached OpenRouter warning" >&2
   cat "$FRAME" >&2
+  exit 1
+fi
+
+# HOK-3155: on a confirmed top-up (balance >= min_credits) startup clears the
+# warning cache AND the abort-count sentinel so a later credit abort trips
+# cleanly on the first hit rather than being treated as "still exhausted".
+WAVEMILL_STATE_DIR="$TMP_DIR/wavemill-state"
+mkdir -p "$WAVEMILL_STATE_DIR"
+export WAVEMILL_STATE_DIR
+printf '7\n' > "$WAVEMILL_STATE_DIR/openrouter-credits-abort-count"
+printf 'OpenRouter credits exhausted - challenge coverage disabled, top up at https://openrouter.ai/credits\n' > "$OPENROUTER_WARNING_CACHE"
+cat > "$REPO_DIR_TEST/.wavemill/quota-state.json" <<'EOF'
+{"version":2,"updatedAt":"2026-10-03T12:00:00.000Z","models":{},"providers":{"openrouter":{"totalCredits":500,"totalUsage":100,"balanceUsd":400,"usageDaily":10,"updatedAt":"2026-10-03T12:00:00.000Z","lastFetchError":null}}}
+EOF
+# Re-shadow npx so the doctor path is a no-op (no zero-traffic alert).
+npx() { return 0; }
+startup_warn_openrouter_status
+if [[ -f "$OPENROUTER_WARNING_CACHE" ]]; then
+  echo "balance top-up did not clear the warning cache" >&2
+  cat "$OPENROUTER_WARNING_CACHE" >&2
+  exit 1
+fi
+if [[ -f "$WAVEMILL_STATE_DIR/openrouter-credits-abort-count" ]]; then
+  echo "balance top-up did not clear the abort-count file" >&2
   exit 1
 fi
 

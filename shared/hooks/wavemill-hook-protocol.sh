@@ -47,7 +47,7 @@ _wavemill_hook_osc_allowed_context() {
 }
 
 _wavemill_hook_config_file() {
-  local repo_dir="${WAVEMILL_REPO_DIR:-}"
+  local repo_dir="${WAVEMILL_MILLED_REPO_DIR:-}"
   local config_file=""
   local git_root=""
 

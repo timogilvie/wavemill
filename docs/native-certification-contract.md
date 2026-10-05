@@ -124,6 +124,7 @@ Compact, content-minimized evidence only — hashes, counts, repo-relative paths
 | `reason`/`limitExceeded` | Stable failure reason and, for `budget_exceeded`, which limit fired |
 | `evidence` | Structured mutation tool-call counts/names, expected/actual sentinel hashes, changed paths, completion artifact presence/hash |
 | `lastInconclusiveAttempt` | Non-authoritative record of the most recent transient attempt that was not allowed to overwrite a valid pass |
+| `canaryCarriedForwardFrom` | Audit only: the previous `catalogHash` when a pass was carried across the HOK-3159 hash-scheme migration |
 
 Schema parsing is backward compatible: artifacts without `liveCanary` still parse (and keep granting non-coding phases), but coding eligibility fails closed with `missing_live_canary`. A present-but-invalid `liveCanary` makes the whole artifact malformed.
 
@@ -144,6 +145,12 @@ Schema parsing is backward compatible: artifacts without `liveCanary` still pars
 - An inconclusive attempt **never overwrites** a previous fresh identity-matching pass — the pass is preserved and the attempt is recorded as `lastInconclusiveAttempt`.
 - A definitive failure (`protocol_failure`, `wrong_mutation`, `extra_repository_change`, `missing_completion_artifact`, non-wall-clock `budget_exceeded`) **revokes** the previous pass for that identity.
 - Deterministic-only re-certification carries a still-valid previous pass forward so routine renewal does not silently revoke coding eligibility; stale/non-live/failed/mismatched previous evidence is dropped.
+
+### Catalog Hash Scope (HOK-3159)
+
+For OpenRouter subjects, `catalogHash` is the SHA-256 of **that model's own** launch-priority row (`hashLaunchPriorityModelRow`): `wavemillAlias`, `openrouterId`, `family`, and sorted `roleEligibility`. Other models' rows, the fixture `description`, `priorityTier`, and `status` are excluded, so adding, retiring, or editing one row in `shared/fixtures/model_30_launch_priority_models.v1.json` re-identifies only that model. A native OpenRouter model with no fixture row fails subject resolution (fail closed).
+
+Artifacts issued under the earlier whole-file hash migrate on the next deterministic re-certification: when the stored subject differs **only** in `catalogHash`, and that stored hash equals the current whole-file fixture hash (proving the model's row is unchanged), a fresh live pass is re-stamped with the per-model hash and records the old hash in `liveCanary.canaryCarriedForwardFrom`. A legacy hash from an older fixture state, any registry identity change, or an invalidated artifact is never migrated — those models need a fresh canary.
 
 ### Write-Side Guards
 
@@ -195,6 +202,8 @@ Artifacts that are still fresh but will expire inside the renewal window are ren
 ```
 
 Automatic remediation runs only the deterministic certification harness. Provisional models that require `OPENROUTER_LIVE_SMOKE=1` are excluded from automatic target selection, and the remediation call strips `OPENROUTER_LIVE_SMOKE` from its scoped environment.
+
+A model re-identified individually (for example after its own launch-priority row changed) is below the fleet-wide `identity-drift` threshold, so remediation runs in `reidentify` mode: it re-certifies only the re-identified models plus any renewals. Preflight reports re-identified models grouped by cause (`launch-priority fixture row changed`, `registry identity changed`, `identity invalidated`, or the one-time hash-scheme migration) instead of listing N separate re-certifications.
 
 The remediation loop guard records one attempt per current catalog hash, required suite version, target set, and process under the global certification root. A second preflight for the same failing identity in that process blocks with the manual certification command instead of repeatedly re-running the matrix. A later process may try again, so an old failure cannot permanently suppress TTL renewal or recovery after artifacts are replaced.
 

@@ -167,6 +167,13 @@ export interface LiveCodingCanaryResult {
   identityFingerprint: string;
   /** Catalog hash corroborating the provider-native identity at canary time. */
   catalogHash: string;
+  /**
+   * Audit trail for a pass carried across a catalog-hash scheme change
+   * (HOK-3159): the canary's previous `catalogHash`, recorded when the pass was
+   * re-stamped with the model's per-row hash because the model's own identity
+   * was unchanged. Absent for canaries that ran under their current hash.
+   */
+  canaryCarriedForwardFrom?: string;
   /** Certification suite version this canary belongs to. */
   suiteVersion: string;
   /** ISO 8601 datetime the canary run completed. */

@@ -11,6 +11,7 @@ import { callClaude } from './llm-cli.ts';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { getConceptsDir } from './context-tool.ts';
+import { resolveWavemillPromptPath } from './native-agent/install-paths.ts';
 
 export interface ConceptGenerationOptions {
   /** Concept ID (kebab-case) */
@@ -56,7 +57,7 @@ export async function generateConceptPage(
   mkdirSync(conceptsDir, { recursive: true });
 
   // Load prompt template
-  const template = await loadPromptTemplate('tools/prompts/concept-page-template.md');
+  const template = await loadPromptTemplate(resolveWavemillPromptPath('concept-page-template.md'));
 
   // Gather context
   let subsystemContext = '';

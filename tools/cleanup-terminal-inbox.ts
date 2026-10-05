@@ -10,7 +10,7 @@ import { runTool, resolveRepoDir, type ParsedArgs } from '../shared/lib/tool-run
 const options = {
   execute: { type: 'boolean', description: 'Perform eligible cleanup mutations. Defaults to dry-run.' },
   'dry-run': { type: 'boolean', description: 'Inspect and print decisions without mutating state or resources.' },
-  abandon: { type: 'boolean', description: 'Explicitly abandon one closed losing challenge arm locally; not accepted for bulk inbox mode.' },
+  abandon: { type: 'boolean', description: 'Explicitly abandon one aborted or closed-losing challenge arm locally; an unpublished PR-less head is archived to refs/archive/wavemill/<issue> first. Not accepted for bulk inbox mode.' },
   'repo-dir': { type: 'string', description: 'Repository directory that owns the workflow state' },
   'state-file': { type: 'string', description: 'Workflow state file path' },
   'base-branch': { type: 'string', description: 'Fallback base branch when task lifecycle lacks one' },
@@ -67,6 +67,7 @@ export async function runCleanupTerminalInboxCli(argv: string[] = process.argv.s
       'wavemill cleanup inbox --dry-run',
       'wavemill cleanup inbox --execute',
       'wavemill cleanup HOK-3002_c --abandon --execute',
+      'wavemill cleanup HOK-2815_c --abandon --execute',
     ],
     run: ({ args, positional }) => runCleanupTerminalInboxCommand(args, positional),
   }, argv);
