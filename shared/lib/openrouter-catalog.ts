@@ -386,6 +386,47 @@ export function hashLaunchPriorityFixture(fixturePath?: string): string {
   return createHash('sha256').update(canonical, 'utf-8').digest('hex');
 }
 
+/**
+ * Hash one model's identity-bearing launch-priority row for certification
+ * identity (`CertificationSubject.catalogHash`, HOK-3159).
+ *
+ * The whole-file `hashLaunchPriorityFixture` moved for every OpenRouter model
+ * whenever *any* row changed, which re-identified the whole fleet and wiped
+ * every live coding canary at the next mill start. This hash covers only the
+ * model's own row, and only the fields that define what the model *is*:
+ *
+ * - `wavemillAlias`, `openrouterId` — registry key and wire id
+ * - `family` — the OpenRouter capability family
+ * - `roleEligibility` — which stages it may serve (sorted; order is not identity)
+ *
+ * Deliberately excluded: other models' rows, the fixture `description`,
+ * `priorityTier` (routing order) and `status` (lifecycle, gated elsewhere).
+ *
+ * Looks the row up by wavemill alias or OpenRouter id, like
+ * `resolveOpenRouterModelIdentity`. Returns null when no row matches.
+ */
+export function hashLaunchPriorityModelRow(
+  modelIdOrAlias: string | null | undefined,
+  fixturePath?: string,
+): string | null {
+  if (typeof modelIdOrAlias !== 'string' || modelIdOrAlias.trim().length === 0) {
+    return null;
+  }
+  const input = modelIdOrAlias.trim();
+  const row = loadLaunchPriorityList(fixturePath)
+    .find((entry) => entry.wavemillAlias === input || entry.openrouterId === input);
+  if (!row) {
+    return null;
+  }
+  const identityFields = {
+    wavemillAlias: row.wavemillAlias,
+    openrouterId: row.openrouterId,
+    family: row.family,
+    roleEligibility: [...new Set(row.roleEligibility)].sort(),
+  };
+  return createHash('sha256').update(canonicalJson(identityFields), 'utf-8').digest('hex');
+}
+
 // ── OpenRouter HTTP fetcher ──────────────────────────────────────────────────
 
 export interface OpenRouterApiResponse {

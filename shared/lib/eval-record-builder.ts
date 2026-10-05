@@ -1103,6 +1103,9 @@ const TRAINING_ELIGIBILITY_CODES: readonly EligibilityErrorCode[] = [
   'missing_task_descriptor',
   'eval_fast_failed',
   'provisional_model_identity',
+  // HOK-3143: a stage with a provider substitution is attribution-ineligible,
+  // so the whole record is ineligible for training.
+  'provider_model_substitution',
 ];
 
 const BUDGET_EVAL_ELIGIBILITY_CODES: readonly EligibilityErrorCode[] = [
@@ -1112,6 +1115,9 @@ const BUDGET_EVAL_ELIGIBILITY_CODES: readonly EligibilityErrorCode[] = [
   'missing_routing',
   'eval_fast_failed',
   'provisional_model_identity',
+  // HOK-3143: the budget-eval export credits a certified model; drop records
+  // where the provider actually ran a different model.
+  'provider_model_substitution',
 ];
 
 function isNonEmptyString(value: unknown): value is string {
@@ -1575,7 +1581,7 @@ export function attachResourceSelections(record: EvalRecord): void {
           continue;
         }
 
-        if (resource.type === 'prompt' && resource.uri === 'tools/prompts/planning-phase.md') {
+        if (resource.type === 'prompt' && resource.uri === 'tools/prompts/planning-phase.md') { // install-paths: allow resource URI identifier
           manifestSelections.push({
             surface: 'planner',
             variant: 'baseline',
@@ -1584,7 +1590,7 @@ export function attachResourceSelections(record: EvalRecord): void {
             uri: resource.uri,
             fallbackApplied: false,
           });
-        } else if (resource.type === 'prompt' && resource.uri === 'tools/prompts/review-phase.md') {
+        } else if (resource.type === 'prompt' && resource.uri === 'tools/prompts/review-phase.md') { // install-paths: allow resource URI identifier
           manifestSelections.push({
             surface: 'reviewer',
             variant: 'baseline',

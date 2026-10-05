@@ -48,6 +48,8 @@ export const STAGE_FAILURE_CAUSES = [
   'policy-denied',
   // Explicit abort.
   'cancelled',
+  // HOK-3143: provider served a different model than the certified identity.
+  'provider-identity-mismatch',
   'unknown',
 ] as const;
 export type StageFailureCause = (typeof STAGE_FAILURE_CAUSES)[number];
@@ -249,6 +251,11 @@ export function terminalFailureKindForCause(cause: StageFailureCause): TerminalF
       return 'policy-denied';
     case 'cancelled':
       return 'cancelled';
+    case 'provider-identity-mismatch':
+      // HOK-3143: a provider-identity mismatch is a provider-config problem —
+      // the launcher's reroute (HOK-3142) handles rerouting around the
+      // invalidated certificate the same way a config error would.
+      return 'provider-config-error';
     case 'unknown':
       return 'native-unclassified';
   }

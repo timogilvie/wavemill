@@ -4,9 +4,9 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, '..');
-const contractPath = join(repoRoot, 'shared/lib/challenge-execution-contract.ts');
-const schemaPath = join(repoRoot, 'shared/lib/eval-schema.json');
-const builderPath = join(repoRoot, 'shared/lib/eval-record-builder.ts');
+const contractPath = join(repoRoot, 'shared/lib/challenge-execution-contract.ts'); // install-paths: allow repoRoot is install-dir derived
+const schemaPath = join(repoRoot, 'shared/lib/eval-schema.json'); // install-paths: allow repoRoot is install-dir derived
+const builderPath = join(repoRoot, 'shared/lib/eval-record-builder.ts'); // install-paths: allow repoRoot is install-dir derived
 
 function exportedInterfaceBody(source: string, name: string): string {
   // Anchored on a non-identifier character after the name: a plain indexOf on
@@ -105,7 +105,7 @@ if (/record\.challengeIntent\s*=\s*input\.intent\b/.test(builderSource)) {
 // discard the selected challenge arm. Both objects were persisted under the
 // name `challengeIntent`, so which one a consumer received was incidental.
 
-const challengeModePath = join(repoRoot, 'shared/lib/challenge-mode.ts');
+const challengeModePath = join(repoRoot, 'shared/lib/challenge-mode.ts'); // install-paths: allow repoRoot is install-dir derived
 const challengeModeSource = readFileSync(challengeModePath, 'utf-8');
 
 const modeSideProperties = propertyNamesFromInterface(challengeModeSource, 'ChallengeExecutionIntentSide');
@@ -146,7 +146,7 @@ if (!challengeModeSource.includes('projectEntryToSideIntent')) {
 // wavemill-common.sh dereferences these keys off the persisted intent. If a
 // builder stops emitting one, the merge degrades to a no-op — which is how
 // this failed silently for a week.
-const commonShPath = join(repoRoot, 'shared/lib/wavemill-common.sh');
+const commonShPath = join(repoRoot, 'shared/lib/wavemill-common.sh'); // install-paths: allow repoRoot is install-dir derived
 const commonShSource = readFileSync(commonShPath, 'utf-8');
 for (const dereferenced of ['expectedRoute', 'selectedStage', 'challengeStage']) {
   if (!commonShSource.includes(dereferenced)) {

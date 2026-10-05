@@ -45,7 +45,13 @@ export type ModelAttributionIneligibleReason =
   | 'stage_not_completed'
   | 'missing_execution_evidence'
   | 'execution_contradicted'
-  | 'runtime_fallback';
+  | 'runtime_fallback'
+  /**
+   * HOK-3143: the provider substituted a different concrete model than the
+   * one certified for this run (either an alias target drift or a non-alias
+   * substitution). Attribution would mis-credit the certified identity.
+   */
+  | 'provider_substitution';
 
 /** Durable execution-truth evidence for stage result model attribution. */
 export interface StageExecutionEvidence {
@@ -57,6 +63,28 @@ export interface StageExecutionEvidence {
   detail?: string;
   /** Timestamp at which the evidence stamp was produced. */
   recordedAt?: string;
+  /**
+   * Provider-reported model id (HOK-3143), when the run captured one from a
+   * live provider response. Absent for scripted/test runs or when the provider
+   * returned no `response.model`.
+   */
+  providerReportedModel?: string;
+  /** The wire id originally sent to the provider (useful when it is an alias). */
+  requestedWireId?: string;
+  /** Pinned certified target that the reported model was compared against. */
+  certifiedTarget?: string;
+  /** Verdict from the runtime provider-identity check. */
+  identityVerdict?: 'match' | 'alias-resolved' | 'mismatch' | 'unverifiable' | 'absent';
+  /** Transport provider name (e.g. `openrouter`). */
+  transportProvider?: string;
+  /**
+   * Upstream provider name from the provider's response (e.g. "Google AI Studio").
+   * Not yet populated — Pi 0.79.8 drops this field (plan D4); follow-up to
+   * capture it when the SDK exposes it.
+   */
+  upstreamProvider?: string;
+  /** Provider response id corroborating the reported model. */
+  responseId?: string;
 }
 
 /** Valid stage names for runtime validation. */

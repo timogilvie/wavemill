@@ -786,7 +786,7 @@ function validPromptSizeDiagnostic() {
 }
 
 test('SCHEMA_VERSION is bumped for eval schema updates', () => {
-  assert.equal(SCHEMA_VERSION, '1.51.0');
+  assert.equal(SCHEMA_VERSION, '1.52.0');
 });
 
 function validReviewIdentitySet() {
@@ -2037,6 +2037,7 @@ test('Eligibility fields validate and schema stays in parity', () => {
     'missing_challenge_stage',
     'eval_fast_failed',
     'provisional_model_identity',
+    'provider_model_substitution',
   ]);
   assert.equal(properties.enrichmentDiagnostics?.type, 'array');
   assert.equal(properties.enrichmentDiagnostics?.items?.type, 'string');
@@ -2471,8 +2472,8 @@ test('Wavemill router fields validate and schema stays in parity', () => {
   assert.equal(properties.wavemill_router_scoring?.$ref, '#/$defs/WavemillRouterScoringMetadata');
 });
 
-test('Schema version constant is 1.51.0', () => {
-  assert.equal(SCHEMA_VERSION, '1.51.0');
+test('Schema version constant is 1.52.0', () => {
+  assert.equal(SCHEMA_VERSION, '1.52.0');
 });
 
 test('Record with an unknown_attribution intervention validates (HOK-2894)', () => {
@@ -3022,8 +3023,8 @@ test('Malformed subagent_model_economics_policy is rejected', () => {
 // HOK-2081: Counterfactual/replay lineage fields
 // ────────────────────────────────────────────────────────────────
 
-test('SCHEMA_VERSION bumped to 1.51.0 for HOK-2081 additive fields', () => {
-  assert.equal(SCHEMA_VERSION, '1.51.0');
+test('SCHEMA_VERSION bumped to 1.52.0 for HOK-3143 stageExecution', () => {
+  assert.equal(SCHEMA_VERSION, '1.52.0');
 });
 
 test('Legacy record without HOK-2081 fields still validates', () => {

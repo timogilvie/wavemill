@@ -6,6 +6,8 @@ import {
   parseCertificationArtifactPath,
 } from './store.ts';
 import { resolveCertificationSubject } from './identity.ts';
+import { classifyReidentificationCause, type ReidentificationCause } from './catalog-hash-migration.ts';
+import { hashLaunchPriorityFixture } from '../../openrouter-catalog.ts';
 import { checkGlobalCertificationEligibility, type IneligibilityReason } from './loader.ts';
 import { CERTIFICATION_TTL_DAYS } from './schema.ts';
 
@@ -20,6 +22,12 @@ export type SuiteCoverageStatus =
 export interface IneligibleModel {
   registryKey: string;
   reason: IneligibilityReason;
+  /**
+   * Why the stored subject no longer matches (HOK-3159). Present only for
+   * `identity-reidentified` / `identity-invalidated`, so preflight can name a
+   * shared cause instead of listing N separate re-certifications.
+   */
+  cause?: ReidentificationCause;
 }
 
 export interface SuiteCoverageResult {
@@ -32,8 +40,8 @@ export interface SuiteCoverageResult {
   root: string;
   /**
    * Native models whose artifact is present at the required suite version but
-   * still fails `evaluateEligibility` — overwhelmingly `identity-reidentified`
-   * after the launch-priority fixture changed. Counting artifacts alone cannot
+   * still fails `evaluateEligibility` — e.g. `identity-reidentified` after a
+   * model's launch-priority row changed. Counting artifacts alone cannot
    * see this: the count and suite version are unchanged, only the subjects are
    * stale, so the guard reported `ok` through a total reviewer outage.
    */
@@ -96,8 +104,13 @@ export function evaluateSuiteCoverage(options: SuiteCoverageOptions = {}): Suite
     renewalWindowDays,
   );
 
+  // HOK-3143: a durable identity invalidation counts as drift so the mill's
+  // preflight auto-remediation re-certifies and re-pins the alias target.
   const identityDriftCount = ineligibleModels
-    .filter((entry) => entry.reason === 'identity-reidentified').length;
+    .filter((entry) => (
+      entry.reason === 'identity-reidentified'
+      || entry.reason === 'identity-invalidated'
+    )).length;
   const staleModels = ineligibleModels
     .filter((entry) => entry.reason === 'stale')
     .map(({ registryKey }) => ({ registryKey }));
@@ -160,6 +173,19 @@ function evaluateIdentityCoverage(
   const ineligibleModels: IneligibleModel[] = [];
   const modelsInRenewalWindow: Array<{ registryKey: string; expiresAt: string }> = [];
   let eligibleModelCount = 0;
+  // Computed lazily, once: the pre-HOK-3159 whole-file hash identifies
+  // artifacts that are drifting only because of the hash-scheme change.
+  let legacyCatalogHash: string | null | undefined;
+  const resolveLegacyCatalogHash = (): string | undefined => {
+    if (legacyCatalogHash === undefined) {
+      try {
+        legacyCatalogHash = hashLaunchPriorityFixture();
+      } catch {
+        legacyCatalogHash = null;
+      }
+    }
+    return legacyCatalogHash ?? undefined;
+  };
 
   for (const [registryKey, model] of Object.entries(registry.models)) {
     const suiteVersion = model.nativeCapability?.certification?.certificationSuiteVersion?.trim();
@@ -200,6 +226,15 @@ function evaluateIdentityCoverage(
       ) {
         modelsInRenewalWindow.push({ registryKey, expiresAt: expiresAt.toISOString() });
       }
+    } else if (eligibility.reason === 'identity-reidentified' || eligibility.reason === 'identity-invalidated') {
+      const legacy = subject.subject.nativeProvider === 'openrouter' ? resolveLegacyCatalogHash() : undefined;
+      ineligibleModels.push({
+        registryKey,
+        reason: eligibility.reason,
+        cause: classifyReidentificationCause(eligibility.artifact, subject.subject, {
+          ...(legacy ? { legacyCatalogHash: legacy } : {}),
+        }),
+      });
     } else {
       ineligibleModels.push({ registryKey, reason: eligibility.reason });
     }

@@ -327,6 +327,15 @@ else
   fail "ordering regression: $(native_terminal_failure_kind "$stacked_detail")"
 fi
 
+# HOK-3155: OpenRouter's "exceed your available credits" wording must map to
+# provider-credit-exhausted so the circuit trips.
+exceed_credits_detail="Native coding failed: HTTP 402 This request would exceed your available credits given your current in-flight requests. Retry after in-flight requests settle, or add credits."
+if [[ "$(native_terminal_failure_kind "$exceed_credits_detail")" == "provider-credit-exhausted" ]]; then
+  pass "exceed-your-available-credits 402 classifies as provider-credit-exhausted"
+else
+  fail "exceed-your-available-credits 402 misclassified as $(native_terminal_failure_kind "$exceed_credits_detail")"
+fi
+
 # ── Next actions ──────────────────────────────────────────────────────────────
 if [[ "$(native_terminal_failure_next_action native-unclassified)" == *"extend the classifier"* ]]; then
   pass "native-unclassified surfaces a classify-and-extend action"

@@ -7,6 +7,7 @@ import { buildLiveCodingCanaryFixture } from '../shared/lib/native-agent/certifi
 import { resolveCertificationSubject } from '../shared/lib/native-agent/certification/identity.ts';
 import { DEFAULT_CERTIFICATION_SUITE_VERSION } from '../shared/lib/native-agent/certification/scenarios.ts';
 import { computeIdentityFingerprint, type ModelRegistry } from '../shared/lib/model-registry.ts';
+import { hashLaunchPriorityFixture, hashLaunchPriorityModelRow } from '../shared/lib/openrouter-catalog.ts';
 
 const OPENROUTER_STORAGE_CASES = [
   {
@@ -1043,6 +1044,155 @@ describe('certifyNativeAgent skipped canary preservation', () => {
     assert.equal(written!.liveCanary?.ranAt, CANARY_RAN_AT);
     assert.equal(result.codingEligible, true);
     assert.equal(result.liveCanary?.carriedForward, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HOK-3159: whole-file → per-model catalogHash migration carries canaries forward
+// ---------------------------------------------------------------------------
+
+describe('certifyNativeAgent catalog-hash scheme migration (HOK-3159)', () => {
+  const FIXED_NOW = new Date('2026-09-01T12:00:00.000Z');
+  const CANARY_RAN_AT = new Date(FIXED_NOW.getTime() - 60 * 60 * 1000).toISOString();
+  const SUBJECT = resolveCertificationSubject({
+    provider: 'openrouter',
+    model: 'qwen-3-coder',
+    registry: STUB_REGISTRY,
+  }).subject;
+  const LEGACY_HASH = hashLaunchPriorityFixture();
+  const LEGACY_SUBJECT = { ...SUBJECT, catalogHash: LEGACY_HASH };
+
+  const WORKFLOW_REPORT: HarnessReport = {
+    ...PASSING_REPORT,
+    provider: 'openrouter',
+    model: 'qwen-3-coder',
+    transport: 'openai-completions',
+    results: [{
+      scenarioId: 'wf1',
+      category: 'phase',
+      classification: 'deterministic',
+      phase: 'workflow',
+      status: 'pass',
+      durationMs: 1,
+    } as HarnessScenarioResult],
+    countsByCategory: { tool: 0, usage: 0, transcript: 0, phase: 1 },
+  };
+
+  /** A pre-HOK-3159 artifact: subject and canary stamped with the whole-file hash. */
+  function legacyArtifact(
+    subjectOverrides: Record<string, unknown> = {},
+    canaryOverrides: Record<string, unknown> = {},
+    artifactOverrides: Partial<NativeCertificationArtifact> = {},
+  ): NativeCertificationArtifact {
+    const subject = { ...LEGACY_SUBJECT, ...subjectOverrides };
+    return {
+      schemaVersion: CERTIFICATION_SCHEMA_VERSION,
+      subject,
+      provider: subject.providerId,
+      model: subject.providerModelId,
+      phase: 'workflow',
+      suiteVersion: DEFAULT_CERTIFICATION_SUITE_VERSION,
+      certifiedAt: new Date(FIXED_NOW.getTime() - 24 * 60 * 60 * 1000).toISOString(),
+      scenarios: [{ scenarioId: 'wf1', passed: true }],
+      liveCanary: buildLiveCodingCanaryFixture(subject, DEFAULT_CERTIFICATION_SUITE_VERSION, {
+        ranAt: CANARY_RAN_AT,
+        ...canaryOverrides,
+      }),
+      ...artifactOverrides,
+    };
+  }
+
+  async function recertify(previous: NativeCertificationArtifact | undefined) {
+    let written: NativeCertificationArtifact | undefined;
+    const result = await certifyNativeAgent({
+      provider: 'openrouter',
+      model: 'qwen-3-coder',
+      phase: 'workflow',
+      repoDir: '/repo',
+      registry: STUB_REGISTRY,
+      runScenariosFn: async () => WORKFLOW_REPORT,
+      loadPreviousArtifactFn: () => previous,
+      writeCertificationFn: (_repoDir: string, artifact: NativeCertificationArtifact) => {
+        written = artifact;
+        return '/repo/cert.json';
+      },
+      now: () => FIXED_NOW,
+      env: {},
+    });
+    return { result, written };
+  }
+
+  it('subjects now carry the per-model row hash, not the whole-file hash', () => {
+    assert.equal(SUBJECT.catalogHash, hashLaunchPriorityModelRow('qwen-3-coder'));
+    assert.notEqual(SUBJECT.catalogHash, LEGACY_HASH);
+  });
+
+  it('[REQ-F4] carries a legacy whole-file-hash canary forward under the per-model hash', async () => {
+    const { result, written } = await recertify(legacyArtifact());
+
+    assert.ok(written, 'artifact must be written');
+    assert.equal(written!.subject.catalogHash, SUBJECT.catalogHash, 'artifact is re-issued under the new subject');
+    assert.equal(written!.liveCanary?.status, 'pass');
+    assert.equal(written!.liveCanary?.catalogHash, SUBJECT.catalogHash);
+    assert.equal(written!.liveCanary?.canaryCarriedForwardFrom, LEGACY_HASH);
+    assert.equal(written!.liveCanary?.ranAt, CANARY_RAN_AT, 'original canary timestamp is preserved');
+    assert.equal(result.codingEligible, true);
+    assert.equal(result.liveCanary?.carriedForward, true);
+  });
+
+  it('does not set canaryCarriedForwardFrom on a routine renewal under the same hash', async () => {
+    const { written } = await recertify(legacyArtifact({ catalogHash: SUBJECT.catalogHash }));
+    assert.equal(written!.liveCanary?.status, 'pass');
+    assert.equal(written!.liveCanary?.canaryCarriedForwardFrom, undefined);
+  });
+
+  it('refuses to migrate a stale, failed or non-live legacy canary', async () => {
+    for (const canaryOverrides of [
+      { ranAt: new Date(FIXED_NOW.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString() },
+      { status: 'fail' as const, reason: 'protocol_failure' as const },
+      { isLive: false },
+    ]) {
+      const { result, written } = await recertify(legacyArtifact({}, canaryOverrides));
+      assert.equal(written!.liveCanary, undefined, JSON.stringify(canaryOverrides));
+      assert.equal(result.codingEligible, false);
+    }
+  });
+
+  it('refuses when the model\'s own registry identity also moved', async () => {
+    const { result, written } = await recertify(legacyArtifact({ identityFingerprint: 'old-fingerprint' }));
+    assert.equal(written!.liveCanary, undefined);
+    assert.equal(result.codingEligible, false);
+  });
+
+  it('refuses a legacy hash from an older fixture state (the row may have changed since)', async () => {
+    const { result, written } = await recertify(legacyArtifact({ catalogHash: 'f'.repeat(64) }));
+    assert.equal(written!.liveCanary, undefined);
+    assert.equal(result.codingEligible, false);
+  });
+
+  it('refuses when the canary was recorded under a different hash than its artifact', async () => {
+    const { written } = await recertify(legacyArtifact({}, { catalogHash: 'e'.repeat(64) }));
+    assert.equal(written!.liveCanary, undefined);
+  });
+
+  it('never migrates from an invalidated artifact', async () => {
+    const { written } = await recertify(legacyArtifact({}, {}, {
+      identityInvalidation: {
+        invalidatedAt: FIXED_NOW.toISOString(),
+        reason: 'identity_mismatch',
+        source: 'runtime',
+        requestedWireId: SUBJECT.providerNativeId,
+        expectedModel: SUBJECT.providerNativeId,
+        observedModel: 'someone/else',
+      },
+    }));
+    assert.equal(written!.liveCanary, undefined);
+  });
+
+  it('leaves behavior unchanged when no previous artifact exists', async () => {
+    const { result, written } = await recertify(undefined);
+    assert.equal(written!.liveCanary, undefined);
+    assert.equal(result.codingEligible, false);
   });
 });
 

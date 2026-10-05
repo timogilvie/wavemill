@@ -5,6 +5,10 @@ import type { Message, TextContent } from '@earendil-works/pi-ai';
 import type { ModelRegistry } from '../model-registry.ts';
 import { registerScriptedPiProvider, type ScriptedProviderContext } from './provider.ts';
 import { runWavemillLoop, HEARTBEAT_AGENT, ProviderToolMenuDriftError, type HeartbeatEvent, type WavemillLoopConfig } from './loop.ts';
+import {
+  ProviderIdentityMismatchError,
+  type ProviderIdentityExpectation,
+} from './provider-identity.ts';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -364,7 +368,7 @@ describe('loop — budget stops', () => {
 
   it('stops when maxInputTokens is exceeded', async () => {
     // First (and only) turn uses 600 input tokens; budget is 500.
-    // shouldStopAfterTurn fires after the turn and detects the excess.
+    // finishTurn fires after the turn and detects the excess.
     const api = uniqueApi('budget-input-tokens');
     registerScriptedPiProvider({
       api,
@@ -2147,5 +2151,190 @@ describe('loop — tool_call event callId capture (HOK-3122)', () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Provider-identity verification (HOK-3143)
+// ---------------------------------------------------------------------------
+
+describe('loop — provider-identity verification', () => {
+  const aliasExpectation: ProviderIdentityExpectation = {
+    requestedWireId: '~google/gemini-pro-latest',
+    expectedModel: 'google/gemini-3.1-pro-preview',
+    isAlias: true,
+  };
+
+  const nonAliasExpectation: ProviderIdentityExpectation = {
+    requestedWireId: 'google/gemini-3.1-pro-preview',
+    expectedModel: 'google/gemini-3.1-pro-preview',
+    isAlias: false,
+  };
+
+  it('records executedModel from provider when all turns match', async () => {
+    const api = uniqueApi('identity-match');
+    registerScriptedPiProvider({
+      api,
+      turns: [
+        {
+          content: [{ type: 'text', text: 'done' }],
+          stopReason: 'stop',
+          responseModel: 'google/gemini-3.1-pro-preview',
+          responseId: 'gen-1',
+        },
+      ],
+    });
+
+    const result = await runWavemillLoop({
+      ...baseConfig(api),
+      providerIdentity: { expectation: aliasExpectation },
+    });
+
+    assert.equal(result.stopReason, 'stop');
+    assert.ok(result.providerIdentity);
+    assert.equal(result.providerIdentity.identityVerdict, 'alias-resolved');
+    assert.equal(result.providerIdentity.executedModel, 'google/gemini-3.1-pro-preview');
+    assert.equal(result.providerIdentity.providerReportedModel, 'google/gemini-3.1-pro-preview');
+    assert.equal(result.providerIdentity.turnsReported, 1);
+  });
+
+  it('throws ProviderIdentityMismatchError on turn-1 mismatch and blocks tool calls', async () => {
+    const api = uniqueApi('identity-mismatch-t1');
+    const toolRan: string[] = [];
+    const tool = makeTool('write', 'sequential', async (id) => {
+      toolRan.push(id);
+      return 'wrote';
+    });
+    registerScriptedPiProvider({
+      api,
+      turns: [
+        {
+          content: [
+            { type: 'tool_call', id: 'tc-1', name: 'write' },
+          ],
+          stopReason: 'tool_calls',
+          responseModel: 'google/gemini-3.2-pro-preview',
+          responseId: 'gen-m1',
+        },
+      ],
+    });
+
+    let onMismatchCalled = 0;
+    let seen: ProviderIdentityMismatchError | undefined;
+    await assert.rejects(
+      runWavemillLoop({
+        ...baseConfig(api, [tool]),
+        budget: { maxTurns: 5 },
+        providerIdentity: {
+          expectation: aliasExpectation,
+          onMismatch: async (err) => {
+            onMismatchCalled += 1;
+            seen = err;
+          },
+        },
+      }),
+      (err: unknown) => err instanceof ProviderIdentityMismatchError
+        && (err as ProviderIdentityMismatchError).reason === 'identity_mismatch'
+        && (err as ProviderIdentityMismatchError).turnIndex === 0,
+    );
+    assert.equal(onMismatchCalled, 1);
+    assert.ok(seen);
+    assert.equal(seen!.expectedModel, 'google/gemini-3.1-pro-preview');
+    assert.equal(seen!.reportedModel, 'google/gemini-3.2-pro-preview');
+    assert.deepEqual(toolRan, []);
+  });
+
+  it('throws on mid-session mismatch (turn 3)', async () => {
+    const api = uniqueApi('identity-mismatch-mid');
+    registerScriptedPiProvider({
+      api,
+      turns: [
+        {
+          content: [{ type: 'tool_call', id: 'tc-a', name: 'echo' }],
+          stopReason: 'tool_calls',
+          responseModel: 'google/gemini-3.1-pro-preview',
+          responseId: 'gen-1',
+        },
+        {
+          content: [{ type: 'tool_call', id: 'tc-b', name: 'echo' }],
+          stopReason: 'tool_calls',
+          responseModel: 'google/gemini-3.1-pro-preview',
+          responseId: 'gen-2',
+        },
+        {
+          content: [{ type: 'text', text: 'bail' }],
+          stopReason: 'stop',
+          responseModel: 'google/gemini-3.2-pro-preview',
+          responseId: 'gen-3',
+        },
+      ],
+    });
+
+    const tool = makeTool('echo', 'sequential', async () => 'ok');
+    await assert.rejects(
+      runWavemillLoop({
+        ...baseConfig(api, [tool]),
+        budget: { maxTurns: 10 },
+        providerIdentity: { expectation: aliasExpectation },
+      }),
+      (err: unknown) => err instanceof ProviderIdentityMismatchError
+        && (err as ProviderIdentityMismatchError).turnIndex === 2,
+    );
+  });
+
+  it('alias with echo-only evidence is unverifiable → identity_unverifiable', async () => {
+    const api = uniqueApi('identity-echo-alias');
+    registerScriptedPiProvider({
+      api,
+      turns: [
+        {
+          content: [{ type: 'text', text: 'done' }],
+          stopReason: 'stop',
+          // No responseModel — Pi only populates it when it differs from id.
+          responseId: 'gen-echo',
+        },
+      ],
+    });
+
+    await assert.rejects(
+      runWavemillLoop({
+        ...baseConfig(api),
+        providerIdentity: { expectation: aliasExpectation },
+      }),
+      (err: unknown) => err instanceof ProviderIdentityMismatchError
+        && (err as ProviderIdentityMismatchError).reason === 'identity_unverifiable',
+    );
+  });
+
+  it('non-alias absent evidence does not throw; executedModel null', async () => {
+    const api = uniqueApi('identity-absent-nonalias');
+    registerScriptedPiProvider({
+      api,
+      turns: [
+        {
+          content: [{ type: 'text', text: 'done' }],
+          stopReason: 'stop',
+          // No responseModel, no responseId → absent (test transport).
+        },
+      ],
+    });
+
+    const result = await runWavemillLoop({
+      ...baseConfig(api),
+      providerIdentity: { expectation: nonAliasExpectation },
+    });
+    assert.equal(result.stopReason, 'stop');
+    assert.equal(result.providerIdentity?.identityVerdict, 'unverifiable');
+    assert.equal(result.providerIdentity?.executedModel, null);
+  });
+
+  it('omitting providerIdentity leaves LoopResult shape unchanged', async () => {
+    const api = uniqueApi('identity-omitted');
+    registerScriptedPiProvider({
+      api,
+      turns: [{ content: [{ type: 'text', text: 'done' }], stopReason: 'stop' }],
+    });
+    const result = await runWavemillLoop(baseConfig(api));
+    assert.equal(result.providerIdentity, undefined);
   });
 });

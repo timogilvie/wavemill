@@ -3,12 +3,14 @@
 // Callers can import toPiAgentTool directly from this file; registry.ts itself
 // does not re-export it, keeping Pi imports out of the registry seam.
 // ---------------------------------------------------------------------------
+// Pi 1.0 moved the global API-provider registry to the temporary `compat`
+// entrypoint (HOK-3161).
 import {
   getApiProvider,
   registerBuiltInApiProviders,
   type Api,
   type Model,
-} from '@earendil-works/pi-ai';
+} from '@earendil-works/pi-ai/compat';
 import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { TSchema } from 'typebox';
 import { DEFAULT_MAX_OUTPUT_TOKENS } from '../output-limits.ts';

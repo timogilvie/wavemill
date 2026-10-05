@@ -81,7 +81,7 @@ describe('runOpenRouterSmoke', () => {
   });
 
   it('caps smoke requests to a small max output budget', async () => {
-    const entries = [makeEntry('gemini-2.5-pro', 'gemini', 'google/gemini-2.5-pro')];
+    const entries = [makeEntry('gemini-3.1-pro-preview', 'gemini', 'google/gemini-3.1-pro-preview')];
     const seenMaxTokens: unknown[] = [];
     const transport: OpenRouterTransport = async (_url, init) => {
       const payload = JSON.parse(String(init.body)) as { max_tokens?: unknown };

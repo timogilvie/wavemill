@@ -1,6 +1,8 @@
 import type {
   AssistantMessage,
   Context,
+  JsonObject,
+  JsonValue,
   Message,
   TextContent,
   ThinkingContent,
@@ -13,7 +15,7 @@ import type { SessionModelUsage } from '../session-adapters.ts';
 
 // Re-export raw Pi message content types through the messages seam so callers
 // can reference them without importing Pi vendor packages directly.
-export type { Message, TextContent } from '@earendil-works/pi-ai';
+export type { AssistantMessage, Message, TextContent } from '@earendil-works/pi-ai';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -243,6 +245,11 @@ export function fromPiMessage(message: Message): AgentMessage {
       return fromPiAssistantMessage(message);
     case 'toolResult':
       return fromPiToolResultMessage(message);
+    case 'system':
+      // Pi 1.0 carries the prompt and tool declarations as transcript system
+      // messages; Wavemill keeps the prompt in AgentContext.systemPrompt, so
+      // there is no canonical AgentMessage for them (HOK-3161).
+      throw new Error('fromPiMessage: Pi system messages have no Wavemill AgentMessage representation');
     default:
       return assertNever(message);
   }
@@ -299,7 +306,7 @@ function fromPiAssistantMessage(message: AssistantMessage): AgentTurn {
             type: 'tool_call',
             id: c.id,
             name: c.name,
-            arguments: c.arguments as Record<string, unknown>,
+            arguments: c.arguments as JsonObject,
           };
           if (c.thoughtSignature !== undefined) block.thoughtSignature = c.thoughtSignature;
           return [block];
@@ -370,7 +377,7 @@ function toPiAssistantMessage(message: AgentTurn): AssistantMessage {
             type: 'toolCall',
             id: c.id,
             name: c.name,
-            arguments: c.arguments as Record<string, unknown>,
+            arguments: c.arguments as JsonObject,
           };
           if (c.thoughtSignature !== undefined) block.thoughtSignature = c.thoughtSignature;
           return [block];
@@ -400,7 +407,7 @@ function toPiToolResultMessage(message: NativeToolResultMessage): ToolResultMess
     isError: message.isError,
     timestamp: message.timestamp ?? DEFAULT_PI_TIMESTAMP,
   };
-  if (message.details !== undefined) piMsg.details = message.details;
+  if (message.details !== undefined) piMsg.details = message.details as JsonValue;
   return piMsg;
 }
 
@@ -479,7 +486,7 @@ function nativeAgentAssistantToPi(message: NativeAgentMessage): AssistantMessage
         return [{ type: 'thinking', thinking: item.thinking, thinkingSignature: item.thinkingSignature, redacted: item.redacted }];
       }
       if (item.type === 'tool_call') {
-        return [{ type: 'toolCall', id: item.id, name: item.name, arguments: item.arguments as Record<string, unknown> }];
+        return [{ type: 'toolCall', id: item.id, name: item.name, arguments: item.arguments as JsonObject }];
       }
       return [];
     }),

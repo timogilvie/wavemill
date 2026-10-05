@@ -9,7 +9,7 @@
  * Environment variables:
  * - WAVEMILL_CODER_MODEL: Model ID used for coding (required)
  * - WAVEMILL_AVAILABLE_REVIEWERS: Comma-separated list of reviewer model IDs
- * - WAVEMILL_REPO_DIR: Repository directory (default: cwd)
+ * - WAVEMILL_MILLED_REPO_DIR: Milled repository directory (default: cwd)
  * - SKIP_VERIFICATION: Set to "true" to skip all verification (emergency escape hatch)
  *
  * Exit codes:
@@ -21,8 +21,9 @@ import { determineVerificationRequirements } from './verification-engine.ts';
 import { getBaseBranch, validatePatchSize } from './patch-size-validator.ts';
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { join } from 'node:path';
 import { errorMessage } from './error-utils.ts';
+import { resolveWavemillInstallDir } from './native-agent/install-paths.ts';
 
 interface CheckCommands {
   typecheck?: string;
@@ -121,7 +122,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const repoDir = process.env.WAVEMILL_REPO_DIR || process.cwd();
+  const repoDir = process.env.WAVEMILL_MILLED_REPO_DIR || process.cwd();
 
   // Determine verification requirements
   const requirements = determineVerificationRequirements(
@@ -157,8 +158,8 @@ async function main(): Promise<void> {
 /**
  * Load check commands from claude/config.json
  */
-function loadCheckCommands(repoDir: string): CheckCommands {
-  const configPath = resolve(repoDir, 'claude/config.json');
+function loadCheckCommands(_repoDir: string): CheckCommands {
+  const configPath = join(resolveWavemillInstallDir(), 'claude', 'config.json');
   try {
     const content = readFileSync(configPath, 'utf-8');
     const config = JSON.parse(content);

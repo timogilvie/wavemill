@@ -94,6 +94,8 @@ for f in \
   "$LIB_DIR"/agent-adapters.sh \
   "$REPO_DIR"/shared/hooks/*.sh \
   "$REPO_DIR"/shared/agent-bin/tmux \
+  "$REPO_DIR"/tests/check-install-paths.test.sh \
+  "$REPO_DIR"/tests/check-common-guards.test.sh \
   "$REPO_DIR"/tests/control-pane-recovery.test.sh \
   "$REPO_DIR"/tests/dashboard-refresh.test.sh \
   "$REPO_DIR"/tests/state-mutex.test.sh \
@@ -143,6 +145,8 @@ for f in \
   "$REPO_DIR"/tests/native-failure-classification.test.sh \
   "$REPO_DIR"/tests/challenger-transient-retry.test.sh \
   "$REPO_DIR"/tests/coding-dirty-handoff.test.sh \
+  "$REPO_DIR"/tests/ready-exhausted-challenge.test.sh \
+  "$REPO_DIR"/tests/review-gate-refused-challenge.test.sh \
   "$REPO_DIR"/tests/monitor-late-completion.test.sh \
   "$REPO_DIR"/tests/challenge-deferred-arm.test.sh \
   "$REPO_DIR"/tests/parent-monitor-function-drift.test.sh \
@@ -168,6 +172,9 @@ for f in \
   "$REPO_DIR"/tests/task-identity.test.sh \
   "$REPO_DIR"/tests/handle-phase-launch-result.test.sh \
   "$REPO_DIR"/tests/coding-launch-refusal.test.sh \
+  "$REPO_DIR"/tests/review-capacity-detection.test.sh \
+  "$REPO_DIR"/tests/review-missing-window-relaunch.test.sh \
+  "$REPO_DIR"/tests/re-review-no-pr.test.sh \
   "$REPO_DIR"/tests/launch-pane-liveness.test.sh \
   "$REPO_DIR"/tests/launch-failure-log-capture.test.sh \
   "$REPO_DIR"/tests/challenge-eval-soft-retry.test.sh \
@@ -201,12 +208,17 @@ for f in \
   "$REPO_DIR"/tests/fixtures/lifecycle/parent_branch_missing_fails_clearly.sh \
   "$REPO_DIR"/tests/fixtures/lifecycle/closed_primary_pr_cleanup.sh \
   "$REPO_DIR"/tests/fixtures/lifecycle/closed_primary_sibling_merged_marks_done.sh \
+  "$REPO_DIR"/tests/fixtures/lifecycle/closed_challenger_sibling_merged_single_status.sh \
+  "$REPO_DIR"/tests/fixtures/lifecycle/closed_primary_sibling_merged_single_status.sh \
+  "$REPO_DIR"/tests/fixtures/lifecycle/closed_sibling_merged_restart_silence.sh \
   "$REPO_DIR"/tests/fixtures/lifecycle/coding_agent_exit_interrupted.sh \
   "$REPO_DIR"/tests/fixtures/lifecycle/integration_window_observer_only.sh \
   "$REPO_DIR"/tests/incident-fixtures-terminal-panes.test.sh \
   "$REPO_DIR"/tests/incident-fixtures-safety-controls.test.sh \
   "$REPO_DIR"/tests/lib/incident-fixture-harness.sh \
   "$REPO_DIR"/tests/lib/terminal-lifecycle-cert-harness.sh \
+  "$REPO_DIR"/tests/lib/tracked-tree-guard.sh \
+  "$REPO_DIR"/tests/tracked-tree-guard.test.sh \
   "$REPO_DIR"/tests/terminal-lifecycle-cert-matrix.test.sh \
   "$REPO_DIR"/tests/terminal-lifecycle-cert-restart.test.sh \
   "$REPO_DIR"/tests/terminal-lifecycle-cert-budgets.test.sh \
@@ -603,7 +615,8 @@ else
       | grep -vE '^(not_eligible|routing_error|invalid_challenge)$' \
       | grep -vE '^(legacy_stale|stale)$' \
       | grep -vE '^(a|aborted|already|available|blocked_by_count|break|coding|cp|debug|elapsed|empty_queue|execute|file|fresh|gtimeout|heartbeat_epoch|i|id|launch|length|main|mapfile|missing|next|not|overloaded|plan|ready|required|reservation|slots|staleness|streak|the|they|timeout|todate|todateiso8601|tonumber|tracked|user)$' \
-      | grep -vE '^(capabilities|const|import|throw)$')
+      | grep -vE '^(capabilities|const|import|throw)$' \
+      | grep -vE '^(ascii_upcase|first|it|num|retrying|sibling)$')
 
     # Check which called names look like they could be custom functions
     # and verify they're defined
@@ -1064,15 +1077,28 @@ else
     fail "closed PR path is missing the shared pane-resource policy dispatch"
   fi
 
+  # HOK-3004: the Done status line must be bound to the durable false→true
+  # transition of the pr_closed_unmerged marker's linearApplied field. The log
+  # emission must happen AFTER wavemill_reconcile_terminal runs so retained
+  # cleanup polls and monitor restarts stay silent at status level.
   if grep -Fq 'local linear_status="Backlog"' <<< "$CLOSED_BLOCK" \
     && grep -Fq 'if is_challenge_task "$ISSUE"; then' <<< "$CLOSED_BLOCK" \
     && grep -Fq 'check_challenge_sibling_merged "$ISSUE"' <<< "$CLOSED_BLOCK" \
     && grep -Fq 'linear_status="Done"' <<< "$CLOSED_BLOCK" \
+    && grep -Fq 'sibling_merged="true"' <<< "$CLOSED_BLOCK" \
+    && grep -Fq 'closed_pr_linear_before' <<< "$CLOSED_BLOCK" \
+    && grep -Fq 'closed_pr_linear_after' <<< "$CLOSED_BLOCK" \
+    && grep -Fq 'linearApplied' <<< "$CLOSED_BLOCK" \
     && grep -Fq 'Challenge sibling merged → marking Linear as Done' <<< "$CLOSED_BLOCK" \
-    && grep -Fq 'linear_set_state "$ISSUE" "$linear_status"' <<< "$CLOSED_BLOCK"; then
-    pass "closed challenge PRs mark Linear Done when the sibling PR was merged"
+    && grep -Fq 'linear_set_state "$(get_linear_issue_id "$ISSUE")" "$linear_status"' <<< "$CLOSED_BLOCK" \
+    && [[ "$(awk '
+        /wavemill_reconcile_terminal "\$SESSION" "\$ISSUE" "pr_closed_unmerged"/ { reconcile=NR }
+        /Challenge sibling merged → marking Linear as Done/ { done_log=NR }
+        END { print (reconcile && done_log && reconcile < done_log) ? "ok" : "wrong-order" }
+      ' <<< "$CLOSED_BLOCK")" == "ok" ]]; then
+    pass "closed challenge PRs mark Linear Done on durable linearApplied transition (HOK-3004)"
   else
-    fail "closed challenge PRs do not promote Linear to Done when sibling merged"
+    fail "closed challenge PRs do not bind the Done log to the durable linearApplied transition"
   fi
 
   if grep -Fq 'linear_status=""' <<< "$CLOSED_BLOCK" \
@@ -1226,12 +1252,14 @@ else
   fail "agent adapters are missing static prompt fallback warning"
 fi
 
-if grep -q 'agent_runtime_resource_repo_dir' "$LIB_DIR/agent-adapters.sh" \
-  && grep -q -- '--repo-dir "$resource_repo_dir"' "$LIB_DIR/agent-adapters.sh" \
-  && ! grep -q -- '--repo-dir "$wt_dir" --json' "$LIB_DIR/agent-adapters.sh"; then
-  pass "runtime prompt resolver uses Wavemill resource root instead of task worktree"
+if grep -qF 'agent_runtime_resource_repo_dir' "$LIB_DIR/agent-adapters.sh" \
+  && grep -qF -- '--repo-dir "$resource_repo_dir"' "$LIB_DIR/agent-adapters.sh" \
+  && grep -qF 'agent_runtime_resource_repo_dir "$wt_dir"' "$LIB_DIR/agent-adapters.sh" \
+  && grep -qF 'REPO_DIR:-$wt_dir' "$LIB_DIR/agent-adapters.sh" \
+  && ! grep -qF -- '--repo-dir "$wt_dir" --json' "$LIB_DIR/agent-adapters.sh"; then
+  pass "runtime prompt resolver uses the milled repo (REPO_DIR), not the install root or the task worktree"
 else
-  fail "runtime prompt resolver should not resolve prompt resources from task worktrees"
+  fail "runtime prompt resolver should resolve runtime resources from the milled repo (REPO_DIR) and keep prompt templates install-relative"
 fi
 
 # ============================================================================
@@ -2414,7 +2442,7 @@ if [[ ! -f "$MILL_SCRIPT" ]]; then
   fail "wavemill-mill.sh not found for drift refresh checks"
 else
   if grep -q 'check_subsystem_drift() {' "$MILL_SCRIPT" \
-    && grep -q 'npx tsx tools/check-drift.ts "\$REPO_DIR"' "$MILL_SCRIPT"; then
+    && grep -qE 'npx tsx "\$TOOLS_DIR/check-drift\.ts" "\$REPO_DIR"' "$MILL_SCRIPT"; then
     pass "mill script defines subsystem drift wrapper"
   else
     fail "mill script is missing subsystem drift wrapper"
@@ -2434,7 +2462,7 @@ else
     fail "mill script is missing docs refresh hotkey support"
   fi
 
-  if grep -q 'npx tsx tools/init-project-context.ts --refresh "\$REPO_DIR"' "$MILL_SCRIPT" \
+  if grep -qE 'npx tsx "\$TOOLS_DIR/init-project-context\.ts" --refresh "\$REPO_DIR"' "$MILL_SCRIPT" \
     && grep -q 'Subsystem docs are up to date' "$MILL_SCRIPT"; then
     pass "mill script refreshes docs and handles clean state"
   else

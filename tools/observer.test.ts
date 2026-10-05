@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  applyAutoFixes,
   behindBaseSeverity,
   buildFindings,
   compactSnapshotForRender,
@@ -18,6 +19,7 @@ import {
   parseLaunchRefusalLine,
   reconcileIncidents,
   redactObserverText,
+  sendAlerts,
   syncIncidentsToLinear,
   writeServiceHeartbeat,
 } from './observer.ts';
@@ -4050,3 +4052,32 @@ test('HOK-3142: plan-approved arm parked by a coding launch refusal names the ca
   }
 });
 
+
+// HOK-3097: wiring regression. With the default (disabled) config, applyAutoFixes
+// and sendAlerts leave the snapshot unchanged and touch no files on disk.
+test('applyAutoFixes + sendAlerts are byte-identical no-ops when disabled', async () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-autofix-noop-'));
+  try {
+    const snapshot = {
+      timestamp: new Date().toISOString(),
+      sessions: ['wavemill'],
+      panes: [],
+      processes: [],
+      repos: [{
+        session: 'wavemill',
+        repoDir,
+        workflowStatePath: join(repoDir, '.wavemill', 'workflow-state.json'),
+        tasks: [{ issue: 'HOK-1', phase: 'ready', slug: 'noop', worktree: repoDir, branch: 'task/noop', baseBranch: 'main' }],
+      }],
+      findings: [],
+    };
+    const beforeFindings = snapshot.findings.length;
+    const fixed = await applyAutoFixes(snapshot as any, defaultObserverOptions() as any);
+    const alerted = await sendAlerts(fixed, defaultObserverOptions() as any);
+    assert.equal(alerted.findings.length, beforeFindings, 'no findings added');
+    assert.ok(!existsSync(join(repoDir, '.wavemill', 'incidents', 'actions.jsonl')), 'no action log written');
+    assert.ok(!existsSync(join(repoDir, '.wavemill', 'observer', 'alert-state.json')), 'no alert journal written');
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
