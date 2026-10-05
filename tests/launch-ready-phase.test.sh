@@ -383,6 +383,11 @@ EOF
 {"stage":"review","status":"completed","agent":"codex","model":"claude-opus-4-7","artifacts":{"type":"review","prNumber":304,"exitCode":1,"verdict":"not_ready","iterations":2,"blockerCount":1,"warningCount":0,"dismissedBlockers":[{"location":"scope-guard","description":"Diff includes files from already-merged PRs","justification":"   "}],"terminalReason":"review_complete"}}
 EOF
         ;;
+      pass_operator_merge_needed)
+        # HOK-3093: non-tend sessions must surface merge-needed, not publish
+        # the tend handoff. TEST_EXECUTOR drives the session capability stubs.
+        TEST_EXECUTOR="operator"
+        ;;
     esac
 
     WRITE_STAGE_CALLS=""
@@ -549,12 +554,21 @@ EOF
     get_main_head_sha() { printf "%s\n" "main456"; }
     merge_queue_enabled() { return 1; }
     merge_queue_enrich_ready_artifacts() { printf "%s\n" "$2"; }
-    # HOK-3102: default the session-capability resolvers to tend so extracted
-    # set_ready_pass_labels sees the pre-3102 semantics (handoff is published).
-    wavemill_session_merge_executor() { printf "tend\n"; }
-    wavemill_session_has() { case "${1:-}" in tend|observer|mergeQueue) return 0 ;; *) return 1 ;; esac; }
-    wavemill_session_capabilities_json() { printf '{"tend":true,"observer":false,"mergeExecutor":"tend","mergeQueue":true}'; }
-    surface_merge_needed() { :; }
+    # HOK-3102/HOK-3093: TEST_EXECUTOR env (default tend) picks the session
+    # merge executor so a scenario can flip to operator/none for merge-needed.
+    wavemill_session_merge_executor() { printf "%s\n" "${TEST_EXECUTOR:-tend}"; }
+    wavemill_session_has() {
+      [[ "${TEST_EXECUTOR:-tend}" == "tend" ]] || return 1
+      case "${1:-}" in tend|observer|mergeQueue) return 0 ;; *) return 1 ;; esac
+    }
+    wavemill_session_capabilities_json() { printf "%s\n" "${TEST_SESSION_CAPS_JSON:-{\"tend\":true,\"observer\":false,\"mergeExecutor\":\"tend\",\"mergeQueue\":true}}"; }
+    SURFACE_MERGE_NEEDED_CALLS=0
+    SURFACE_MERGE_NEEDED_LOG=""
+    surface_merge_needed() {
+      SURFACE_MERGE_NEEDED_CALLS=$((SURFACE_MERGE_NEEDED_CALLS + 1))
+      SURFACE_MERGE_NEEDED_LOG+="${1}|${2}|${3}|${5:-}"
+      SURFACE_MERGE_NEEDED_LOG+=";"
+    }
     write_stage_result() {
       printf -v WRITE_STAGE_CALLS "%s%s|%s|%s|%s|%s|%s|%s\n" \
         "$WRITE_STAGE_CALLS" "${1-}" "${2-}" "${3-}" "${4-}" "${5-}" "${6-}" "${7-}"
@@ -685,7 +699,7 @@ EOF
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"pass\",\"checks\":[{\"name\":\"ready-policy\",\"status\":\"pass\",\"message\":\"Ready policy satisfied\",\"details\":{}}],\"timestamp\":\"2026-09-29T12:26:42.000Z\",\"summary\":\"All checks passed\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"attempts\":1}}"
           return 0
           ;;
-        pass_after_remediation|pass_clears_recheck|dismissed_blockers_pass|route_stamp_failure|tend_claims_during_ready_label)
+        pass_after_remediation|pass_clears_recheck|dismissed_blockers_pass|route_stamp_failure|tend_claims_during_ready_label|pass_operator_merge_needed|pass_operator_merge_needed_second_tick)
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"pass\",\"checks\":[{\"name\":\"ci-status\",\"status\":\"pass\",\"message\":\"All CI checks passing\",\"details\":{\"totalChecks\":3}}],\"timestamp\":\"2026-04-16T14:12:00.431Z\",\"summary\":\"All checks passed\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"attempts\":1}}"
           return 0
           ;;
@@ -782,6 +796,8 @@ EOF
       "$rc" "$stage_summary" "$attention_summary" "$attention_count" "$LAUNCH_AGENT_CALLS" "$REVIEW_LAUNCH_CALLS" "${REVIEW_LAUNCH_MODEL:-}" "$PREPARE_RECOVERY_CALLS" "$AGENT_VALIDATE_CALLS" "$READY_PROMPT_CALLS" "$error_count" "$LOG_OUTPUT" "$LOG_WARN_OUTPUT" "$LOG_ERROR_OUTPUT" "$DEBUG_FILE" "$debug_line_count" "$debug_payload" "$conflict_attention_head" "$conflict_attention_reported" "$conflict_detected" "$needs_attention" "$transient_attention" "$transient_count" "$infra_retry_count" "$ready_result_payload"
     printf "ready_label_calls=%s\n" "$ready_label_calls"
     printf "handoff_claims=%s\n" "$handoff_claims"
+    printf "surface_merge_needed_calls=%s\n" "$SURFACE_MERGE_NEEDED_CALLS"
+    printf "surface_merge_needed_log=%s\n" "$(printf "%s" "$SURFACE_MERGE_NEEDED_LOG" | tr "\n" ";")"
     printf "challenge_orch_calls=%s\n" "$CHALLENGE_ORCH_CALLS"
     printf "prompt_summary=%s\n" "$READY_PROMPT_SUMMARY"
     handoff_heads=""
@@ -1396,6 +1412,21 @@ check_contains "pass after remediation clears needs attention" "$output" "needs_
 check_contains "pass after remediation demotes label canonicalization to debug" "$output" "debug   HOK-1300: Canonicalized ready labels for PR #304"
 check_contains "pass after remediation demotes ready completion to debug" "$output" "debug   HOK-1300: Ready checks completed (verdict: pass)"
 check_not_contains "pass after remediation no longer emits label canonicalization at status" "$output" "status   HOK-1300: Canonicalized ready labels for PR #304"
+
+# HOK-3093: with no tend to merge, a passing Ready records merge-needed metadata
+# and surfaces the operator notification instead of publishing the tend handoff.
+output="$(run_launch_case pass_operator_merge_needed)"
+check_contains "operator merge-needed: Ready passes" "$output" "rc=0"
+check_contains "operator merge-needed: writes completed stage" "$output" "|ready|completed|"
+check_contains "operator merge-needed: no ready label canonicalization" "$output" "ready_label_calls=0"
+check_contains "operator merge-needed: no tend handoff claim" "$output" "handoff_claims=0"
+check_contains "operator merge-needed: nothing is published to GitHub" "$output" "handoff_heads=[]"
+check_contains "operator merge-needed: surfaces one operator notification" "$output" "surface_merge_needed_calls=1"
+check_contains "operator merge-needed: notification carries the operator executor" "$output" "HOK-1300|304|operator|"
+check_contains "operator merge-needed: records readyLabelsUpdated false" "$output" "\"readyLabelsUpdated\":false"
+check_contains "operator merge-needed: records merge-needed handoff state" "$output" "\"readyTendHandoff\":\"merge-needed\""
+check_contains "operator merge-needed: records operator executor" "$output" "\"mergeExecutor\":\"operator\""
+check_contains "operator merge-needed: logs the status line" "$output" "ready, merge needed (operator)"
 
 output="$(run_launch_case review_tool_error_gate)"
 check_contains "review tool error gate retries review" "$output" "rc=6"

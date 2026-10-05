@@ -1451,6 +1451,63 @@ EOF
   check_eq "merge queue disabled: task remains active" "1" "$(kv_value "$tick" active_count)"
 }
 
+# HOK-3093: with no tend consumer and a passing PR, the controller holds the
+# arm at needs-user indefinitely — no re-run, no merge-candidate lifecycle,
+# and the "waiting in merge lane" log must never fire.
+test_merge_queue_disabled_merge_needed_parks_needs_user() {
+  local slug="merge-queue-disabled-merge-needed"
+  local issue="HOK-3093-OPERATOR"
+  local repo tick
+  repo="$(harness_init_repo "$slug")"
+  mkdir -p "$repo/features/$slug/ready"
+  cat > "$repo/features/$slug/ready/.ready-result.json" <<'EOF'
+{
+  "stage": "ready",
+  "status": "completed",
+  "artifacts": {
+    "type": "ready",
+    "verdict": "pass",
+    "readyBaseSha": "sha-current",
+    "queueState": "merge-needed",
+    "mergeExecutor": "operator",
+    "readyTendHandoff": "merge-needed"
+  }
+}
+EOF
+
+  tick="$(harness_run_tick "$repo" "$slug" "$issue" '
+    CURRENT_PHASE="ready"
+    PR_BY_ISSUE["$ISSUE"]="503"
+    get_main_head_sha() { printf "%s\n" "sha-current"; }
+    merge_queue_enabled() { return 1; }
+    wavemill_session_merge_executor() { printf "operator\n"; }
+    wavemill_session_has() { return 1; }
+    ready_queue_state() { printf "%s\n" "merge-needed"; }
+    ready_base_sha() { printf "%s\n" "sha-current"; }
+    mark_ready_stale() { printf "%s\n" "stale" > "$REPO_UNDER_TEST/.wavemill/stale"; }
+    promote_merge_candidate() { printf "%s\n" "promoted" > "$REPO_UNDER_TEST/.wavemill/promoted"; }
+    demote_merge_candidate() { printf "%s\n" "demoted" > "$REPO_UNDER_TEST/.wavemill/demoted"; }
+    launch_ready_phase() { printf "%s\n" "launched" > "$REPO_UNDER_TEST/.wavemill/launched"; return 0; }
+  ')"
+
+  check_file_absent "merge-needed disabled queue: no promote" "$repo/.wavemill/promoted"
+  check_file_absent "merge-needed disabled queue: no demote" "$repo/.wavemill/demoted"
+  check_file_absent "merge-needed disabled queue: no stale mark" "$repo/.wavemill/stale"
+  check_file_absent "merge-needed disabled queue: no ready rerun" "$repo/.wavemill/launched"
+  check_eq "merge-needed disabled queue: task stays needs-user" "needs-user" "$(kv_value "$tick" attention)"
+  check_eq "merge-needed disabled queue: task remains active" "1" "$(kv_value "$tick" active_count)"
+  local log_output
+  log_output="$(kv_value "$tick" log_output)"
+  if [[ "$log_output" == *"waiting in merge lane"* ]]; then
+    FAIL=$((FAIL + 1))
+    echo "  FAIL  merge-needed disabled queue: no 'waiting in merge lane' log"
+    echo "        unexpected log: $log_output"
+  else
+    PASS=$((PASS + 1))
+    echo "  PASS  merge-needed disabled queue: no 'waiting in merge lane' log"
+  fi
+}
+
 harness_setup_pane_release_candidate() {
   local repo="$1" slug="$2" issue="$3" owner="${4:-task}" pane_state="${5:-active}"
   local ready_dir="$repo/features/$slug/ready" head
@@ -4048,6 +4105,7 @@ test_already_expanded_packet_skips_mandatory_expansion
 test_resume_uses_expanded_phase_config_over_stale_state
 test_merge_queue_marks_non_candidate_stale_without_rerun
 test_merge_queue_disabled_keeps_legacy_rerun
+test_merge_queue_disabled_merge_needed_parks_needs_user
 test_queue_owned_pane_release_happy_path
 test_queue_owned_pane_release_blocks_on_dirty_worktree
 test_queue_owned_pane_release_blocks_on_missing_capsule
