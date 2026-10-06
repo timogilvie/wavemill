@@ -17,8 +17,7 @@ import { dirname, join } from 'node:path';
 import type { Message } from './messages.ts';
 import type { AgentContext } from './loop.ts';
 import { runWavemillLoop, type WavemillLoopConfig } from './loop.ts';
-import { createNativeModelsCollection } from './models.ts';
-import type { Models } from '@earendil-works/pi-ai';
+import { createNativeModelsCollection, type Models } from './models.ts';
 import { TranscriptWriter, type TranscriptSessionStarted, type TranscriptSessionEnded } from './transcript.ts';
 import {
   resolveNativeAgentProviders,

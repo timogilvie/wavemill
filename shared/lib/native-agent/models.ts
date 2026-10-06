@@ -24,6 +24,10 @@ import {
 import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter';
 
+// Re-exported so callers outside the Pi seam (e.g. smoke.ts) can type a
+// Models collection without importing Pi directly (HOK-2289 seam guard).
+export type { Models } from '@earendil-works/pi-ai';
+
 export interface CreateNativeModelsCollectionOptions {
   /**
    * Environment variables the Models' AuthContext may read from, keyed by
