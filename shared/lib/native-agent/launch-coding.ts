@@ -588,6 +588,8 @@ function buildProviderErrorSuggestedAction(kind: string): string {
       return 'Fix native provider authentication/model configuration, then rerun native coding.';
     case 'context-window-exceeded':
       return 'Rerun with compressed context or a larger-context model.';
+    case 'provider-response-incomplete':
+      return 'The provider blocked the response (e.g. content filter). Inspect the prompt and rerun with revised input; retries will not change this outcome.';
     case 'provider-transient-error':
     case 'provider-unknown-error':
       return 'Rerun native coding; the transcript and completed tool-call counts are preserved in this handoff.';
