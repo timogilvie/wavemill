@@ -15,6 +15,7 @@ import type { AgentEvent } from '@earendil-works/pi-agent-core';
 import { createInitialSystemMessage, type AssistantMessage, type Model } from '@earendil-works/pi-ai';
 import { streamSimple } from '@earendil-works/pi-ai/compat';
 import { SessionStreamWriter, type SessionStreamWriterOptions, storeArtifact } from './session-stream.ts';
+import { resolvePiRuntimeVersions } from './pi-runtime-version.ts';
 
 /**
  * Wavemill's loop context: Pi's context plus the run's system prompt.
@@ -647,6 +648,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
         sessionStreamWriter.writeSessionStarted({
           initialConfigDigest: streamConfig.initialConfigDigest ?? computeArgsFingerprint(config.model),
           manifestId: streamConfig.manifestId,
+          piRuntimeVersions: resolvePiRuntimeVersions(),
         });
       } else {
         skipSessionBoundaryEvents = true;

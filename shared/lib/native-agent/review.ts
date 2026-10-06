@@ -23,6 +23,7 @@ import {
 } from './openrouter-credits-guard.ts';
 import { TranscriptWriter, type TranscriptEvent, type TranscriptToolResult } from './transcript.ts';
 import { SessionStreamWriter, resolveSessionEventStreamPath } from './session-stream.ts';
+import { piRuntimeVersionsField, resolvePiRuntimeVersions } from './pi-runtime-version.ts';
 import { captureToolDecisionsFromStream } from './tool-decision-capture.ts';
 import {
   buildNativeProviderResolutionFailureMessage,
@@ -736,6 +737,7 @@ export async function runNativeReview(
     }, repoDir);
     reviewSessionStreamWriter.writeSessionStarted({
       initialConfigDigest: `model:${provider.entry.providerName}:${provider.entry.modelId}`,
+      piRuntimeVersions: resolvePiRuntimeVersions(),
     });
   } catch (error) {
     console.warn(`Failed to init review session stream: ${(error as Error).message}`);
@@ -1017,6 +1019,7 @@ export async function runNativeReview(
         executionEvidence: {
           status: 'contradicted',
           source: 'native-runtime',
+          ...piRuntimeVersionsField(),
           detail: loopResult.stopReason,
           recordedAt: new Date().toISOString(),
         },

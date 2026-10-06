@@ -402,6 +402,7 @@ TESTS=(
   shared/lib/native-agent/launch-coding.test.ts
   shared/lib/native-agent/review.test.ts
   shared/lib/native-agent/session-stream.test.ts
+  shared/lib/native-agent/pi-runtime-version.test.ts
   shared/lib/native-agent/smoke.test.ts
   shared/lib/native-agent/tool-decision-schema.test.ts
   shared/lib/native-agent/tool-decision-projector.test.ts

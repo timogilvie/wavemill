@@ -27,6 +27,7 @@ import {
 } from './providers.ts';
 import { TranscriptWriter } from './transcript.ts';
 import { SessionStreamWriter, resolveSessionEventStreamPath } from './session-stream.ts';
+import { piRuntimeVersionsField, resolvePiRuntimeVersions } from './pi-runtime-version.ts';
 import { captureToolDecisionsFromStream } from './tool-decision-capture.ts';
 import type { SessionStreamConfig } from './loop.ts';
 import { createReadOnlyTools, READ_ONLY_PATH_FIELDS } from './tools/read-only.ts';
@@ -721,6 +722,7 @@ function buildCompletionAttribution(input: {
     const evidence: NonNullable<Parameters<typeof updateStageResult>[2]['executionEvidence']> = {
       status: 'direct',
       source: 'provider-response',
+      ...piRuntimeVersionsField(),
       detail: `verified ${summary.identityVerdict} after ${summary.turnsVerified} turn(s)`,
       recordedAt: nowIso,
       ...(summary.providerReportedModel ? { providerReportedModel: summary.providerReportedModel } : {}),
@@ -747,6 +749,7 @@ function buildCompletionAttribution(input: {
     executionEvidence: {
       status: 'direct',
       source: 'native-runtime',
+      ...piRuntimeVersionsField(),
       recordedAt: nowIso,
     },
     modelAttributionEligible: attributionEligible,
@@ -1044,6 +1047,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       }, options.repoDir);
       persistentSessionStreamWriter.writeSessionStarted({
         initialConfigDigest: `model:${model.provider}:${modelName}`,
+        piRuntimeVersions: resolvePiRuntimeVersions(),
       });
     } catch (error) {
       console.warn(`Failed to create persistent session stream writer: ${(error as Error).message}`);
@@ -1086,6 +1090,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       executionEvidence: {
         status: 'missing',
         source: providerIdentityExpectation ? 'provider-response' : 'native-runtime',
+        ...piRuntimeVersionsField(),
         detail: 'awaiting first provider turn',
         recordedAt: new Date().toISOString(),
       },
@@ -1547,6 +1552,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
         executionEvidence: {
           status: 'contradicted',
           source: 'provider-response',
+          ...piRuntimeVersionsField(),
           detail: `${error.reason}: expected=${error.expectedModel} reported=${error.reportedModel ?? '(none)'} turn=${error.turnIndex}`,
           recordedAt: new Date().toISOString(),
           ...(error.reportedModel ? { providerReportedModel: error.reportedModel } : {}),
@@ -1586,6 +1592,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       executionEvidence: {
         status: 'contradicted',
         source: 'native-runtime',
+        ...piRuntimeVersionsField(),
         detail: message,
         recordedAt: new Date().toISOString(),
       },

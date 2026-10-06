@@ -21,6 +21,7 @@ import type { CodingArtifacts } from './native-agent/coding-artifacts.ts';
 export type { CodingArtifacts } from './native-agent/coding-artifacts.ts';
 import { validateSeamArtifactValue } from './seam-artifacts.ts';
 import type { CleanupDecision, CleanupReport, TreeState } from './native-agent/cleanup.ts';
+import type { PiRuntimeVersions } from './native-agent/pi-runtime-version.ts';
 export type { CleanupDecision, CleanupReport, TreeState } from './native-agent/cleanup.ts';
 import type { ReadyRemediationDecision } from './native-agent/workflow-tools/ready-remediation.ts';
 export type { ReadyRemediationDecision } from './native-agent/workflow-tools/ready-remediation.ts';
@@ -85,6 +86,12 @@ export interface StageExecutionEvidence {
   upstreamProvider?: string;
   /** Provider response id corroborating the reported model. */
   responseId?: string;
+  /**
+   * Installed Pi runtime versions that ran this stage (HOK-3164). Native token
+   * and cost profiles shift across Pi upgrades, so analysis keys on this
+   * rather than run dates. Absent for non-native agents and pre-HOK-3164 rows.
+   */
+  piRuntimeVersions?: PiRuntimeVersions;
 }
 
 /** Valid stage names for runtime validation. */
@@ -523,6 +530,11 @@ export function executionTruthFields(input: ExecutionTruthFieldsInput): Executio
       : input.existing?.executionEvidence?.detail && mayPreserveExisting
         ? { detail: input.existing.executionEvidence.detail }
         : {}),
+    // HOK-3164: the CLI cannot observe the runtime, so it only carries the
+    // native launcher's Pi stamp forward for the same still-running stage.
+    ...(mayPreserveExisting && input.existing?.executionEvidence?.piRuntimeVersions
+      ? { piRuntimeVersions: input.existing.executionEvidence.piRuntimeVersions }
+      : {}),
     recordedAt: input.now,
   };
 
