@@ -35,6 +35,7 @@ import { TranscriptWriter } from './transcript.ts';
 import { isLinearWriter, parseTaskId } from '../task-identity.ts';
 import { resolveWavemillToolPath } from './install-paths.ts';
 import { SessionStreamWriter, resolveSessionEventStreamPath } from './session-stream.ts';
+import { piRuntimeVersionsField } from './pi-runtime-version.ts';
 import { captureToolDecisionsFromStream } from './tool-decision-capture.ts';
 import type { SessionStreamConfig } from './loop.ts';
 import { createReadOnlyTools, READ_ONLY_PATH_FIELDS } from './tools/read-only.ts';
@@ -860,6 +861,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
         executionEvidence: {
           status: 'contradicted',
           source: 'native-runtime',
+          ...piRuntimeVersionsField(),
           detail: providerFailureReason || stopFailureReason,
           recordedAt: new Date().toISOString(),
         },
@@ -897,6 +899,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
         executionEvidence: {
           status: 'contradicted',
           source: 'native-runtime',
+          ...piRuntimeVersionsField(),
           detail: providerError || 'empty_final_plan',
           recordedAt: new Date().toISOString(),
         },
@@ -989,6 +992,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
         executionEvidence: {
           status: 'contradicted',
           source: 'native-runtime',
+          ...piRuntimeVersionsField(),
           detail: validation.reason ?? 'invalid',
           recordedAt: new Date().toISOString(),
         },
@@ -1028,6 +1032,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
       ? {
         status: 'direct' as const,
         source: 'provider-response',
+        ...piRuntimeVersionsField(),
         detail: `verified ${planningIdentitySummary.identityVerdict} after ${planningIdentitySummary.turnsVerified} turn(s)`,
         recordedAt: new Date().toISOString(),
         ...(planningIdentitySummary.providerReportedModel
@@ -1044,6 +1049,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
       : {
         status: 'direct' as const,
         source: 'native-runtime',
+        ...piRuntimeVersionsField(),
         recordedAt: new Date().toISOString(),
       };
     await updateStageResult(featureDir, 'planning', {
@@ -1112,6 +1118,7 @@ export async function launchNativePlanning(options: LaunchNativePlanningOptions)
           executionEvidence: {
             status: 'contradicted',
             source: 'provider-response',
+            ...piRuntimeVersionsField(),
             detail: `${err.reason}: expected=${err.expectedModel} reported=${err.reportedModel ?? '(none)'} turn=${err.turnIndex}`,
             recordedAt: new Date().toISOString(),
             ...(err.reportedModel ? { providerReportedModel: err.reportedModel } : {}),

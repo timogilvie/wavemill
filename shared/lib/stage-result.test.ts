@@ -21,6 +21,7 @@ import {
   readStageResult,
   readAllStageResults,
   updateStageResult,
+  executionTruthFields,
   extractReviewOutcome,
   getResultFilePath,
   isInfrastructureReviewFailure,
@@ -1112,5 +1113,74 @@ describe('appendReviewIteration', () => {
       makeIteration({ iteration: 1 }),
     );
     assert.deepEqual(result.map((entry) => entry.iteration), [1, 3]);
+  });
+});
+
+describe('executionEvidence.piRuntimeVersions (HOK-3164)', () => {
+  beforeEach(async () => { testDir = await createTestDir(); });
+  afterEach(async () => { await fs.rm(testDir, { recursive: true, force: true }); });
+
+  const versions = { 'pi-agent-core': '1.0.2', 'pi-ai': '1.0.2' };
+
+  it('round-trips through updateStageResult for provider-response evidence', async () => {
+    await updateStageResult(testDir, 'coding', {
+      status: 'completed',
+      agent: 'native',
+      model: 'm',
+      executedModel: 'm',
+      executionEvidence: {
+        status: 'direct',
+        source: 'provider-response',
+        identityVerdict: 'match',
+        piRuntimeVersions: versions,
+      },
+    });
+
+    const read = await readStageResult(testDir, 'coding');
+    assert.deepEqual(read?.executionEvidence?.piRuntimeVersions, versions);
+  });
+
+  it('round-trips through updateStageResult for native-runtime fallback evidence', async () => {
+    await updateStageResult(testDir, 'planning', {
+      status: 'awaiting_user',
+      agent: 'native',
+      model: 'm',
+      executedModel: 'm',
+      executionEvidence: { status: 'direct', source: 'native-runtime', piRuntimeVersions: versions },
+    });
+
+    const read = await readStageResult(testDir, 'planning');
+    assert.deepEqual(read?.executionEvidence?.piRuntimeVersions, versions);
+  });
+
+  it('stage-result CLI truth fields preserve the native Pi stamp for a still-running stage', () => {
+    const existing = makeResult({
+      stage: 'coding',
+      status: 'running',
+      model: 'm',
+      executedModel: 'm',
+      executionEvidence: { status: 'direct', source: 'native-runtime', piRuntimeVersions: versions },
+    });
+
+    const fields = executionTruthFields({ status: 'completed', flags: {}, existing, now: '2026-10-06T00:00:00Z' });
+    assert.deepEqual(fields.executionEvidence?.piRuntimeVersions, versions);
+  });
+
+  it('stage-result CLI truth fields drop the Pi stamp when an explicit executed model replaces it', () => {
+    const existing = makeResult({
+      stage: 'coding',
+      status: 'running',
+      model: 'm',
+      executedModel: 'm',
+      executionEvidence: { status: 'direct', source: 'native-runtime', piRuntimeVersions: versions },
+    });
+
+    const fields = executionTruthFields({
+      status: 'completed',
+      flags: { 'executed-model': 'claude-opus-4-7' },
+      existing,
+      now: '2026-10-06T00:00:00Z',
+    });
+    assert.equal(fields.executionEvidence?.piRuntimeVersions, undefined);
   });
 });
