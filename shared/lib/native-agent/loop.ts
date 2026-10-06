@@ -12,8 +12,10 @@ import {
   type BeforeToolCallContext,
 } from '@earendil-works/pi-agent-core';
 import type { AgentEvent } from '@earendil-works/pi-agent-core';
-import { createInitialSystemMessage, type AssistantMessage, type Model } from '@earendil-works/pi-ai';
-import { streamSimple } from '@earendil-works/pi-ai/compat';
+import { createInitialSystemMessage, type AssistantMessage, type Model, type Models } from '@earendil-works/pi-ai';
+import type { StreamFn } from '@earendil-works/pi-agent-core';
+import { getActiveNativeModels } from './models.ts';
+import { getScriptedPiStreamFn } from './provider.ts';
 import { SessionStreamWriter, type SessionStreamWriterOptions, storeArtifact } from './session-stream.ts';
 import { resolvePiRuntimeVersions } from './pi-runtime-version.ts';
 
@@ -182,6 +184,23 @@ export interface WavemillLoopConfig {
   model: ProviderModelConfig;
   /** Pi agent context (systemPrompt, messages, tools) for this run. */
   context: AgentContext;
+  /**
+   * Models collection whose `streamSimple` dispatches each turn through the
+   * provider that owns `model`. Launchers build one per run with the resolved
+   * api key injected into the collection's AuthContext (HOK-3162).
+   *
+   * When omitted, the loop first falls back to a caller-supplied `streamFn`,
+   * then to the module-local active collection registered by scripted-provider
+   * tests (`setActiveNativeModels`). Neither available → the loop throws before
+   * the first turn so production launches cannot silently proceed without auth.
+   */
+  models?: Models;
+  /**
+   * Low-level stream override. Takes precedence over `models` and the active
+   * collection fallback. Useful for tests that want to bypass Models entirely
+   * and for recovery paths that already thread their own dispatch.
+   */
+  streamFn?: StreamFn;
   /**
    * Converts Pi AgentMessage[] to LLM-compatible Message[] before each turn.
    * Must not throw; return a safe fallback on errors.
@@ -526,6 +545,39 @@ export function resolveMaxOutputTokens(config: Pick<WavemillLoopConfig, 'maxToke
   return config.maxTokens ?? config.model.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
 }
 
+/**
+ * Resolve the StreamFn that drives this loop (HOK-3162). Precedence:
+ *   1. an explicit `streamFn` override (low-level tests, recovery paths),
+ *   2. the per-run `models` collection's `streamSimple`,
+ *   3. the module-local scripted-provider stream (api-indexed, test-only;
+ *      stands in for the removed compat registry),
+ *   4. the module-local active `Models` collection pointer, if any set.
+ * Nothing available → throw before the first turn so production launches
+ * cannot silently proceed without auth.
+ */
+function resolveStreamFn(config: Pick<WavemillLoopConfig, 'streamFn' | 'models'>): StreamFn {
+  if (config.streamFn) {
+    return config.streamFn;
+  }
+  if (config.models) {
+    const models = config.models;
+    return (model, context, options) => models.streamSimple(model, context, options);
+  }
+  const scripted = getScriptedPiStreamFn();
+  if (scripted) {
+    return scripted;
+  }
+  const active = getActiveNativeModels();
+  if (active) {
+    return (model, context, options) => active.streamSimple(model, context, options);
+  }
+  throw new Error(
+    'runWavemillLoop: no models collection or streamFn provided and no active '
+    + 'native models have been registered. Pass `models` from the launcher '
+    + '(createNativeModelsCollection) or inject a `streamFn` for tests.',
+  );
+}
+
 function toPiModel(config: ProviderModelConfig, maxTokens: number, contextWindow?: number): Model<string> {
   const requestModelId = toProviderRequestModelId(config);
   return {
@@ -610,6 +662,7 @@ function composeAbortSignal(
  */
 export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopResult> {
   const { context, convertToLlm, budget, signal: callerSignal, onHeartbeat, modelPricing, temperature } = config;
+  const streamFn = resolveStreamFn(config);
   const phaseMaxTokens = resolveMaxOutputTokens(config);
   let currentMaxTokens = phaseMaxTokens;
   const contextManagement = resolveContextManagementConfig(config.contextManagement);
@@ -1473,7 +1526,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
         handleAgentEvent(event, !(continuationRunIndex > 0 && event.type === 'agent_start'));
       };
 
-      const runMessages = await runAgentLoopContinue(loopContext, piConfig, emit, composed.signal, streamSimple);
+      const runMessages = await runAgentLoopContinue(loopContext, piConfig, emit, composed.signal, streamFn);
       finalMessages = continuationRunIndex > 0
         ? [...loopContext.messages, ...runMessages]
         : runMessages;

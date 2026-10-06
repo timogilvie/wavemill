@@ -3553,6 +3553,8 @@ PI_ALLOWED_FILES=(
   "shared/lib/native-agent/loop.test.ts"
   "shared/lib/native-agent/loop.ts"
   "shared/lib/native-agent/messages.ts"
+  "shared/lib/native-agent/models.test.ts"
+  "shared/lib/native-agent/models.ts"
   "shared/lib/native-agent/provider.ts"
   "shared/lib/native-agent/tool-compat-fixtures.test.ts"
   "shared/lib/native-agent/transcript.ts"

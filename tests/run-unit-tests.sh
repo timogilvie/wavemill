@@ -43,6 +43,7 @@ TESTS=(
   shared/lib/linear-write-gate.test.ts
   shared/lib/session-adapters.test.ts
   shared/lib/executed-model-resolver.test.ts
+  shared/lib/native-agent/models.test.ts
   shared/lib/native-agent/provider.test.ts
   shared/lib/native-agent/provider-error-classifier.test.ts
   shared/lib/native-agent/provider-identity.test.ts
