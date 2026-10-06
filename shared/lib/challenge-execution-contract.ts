@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { ChallengeStage } from './challenge-mode.ts';
+import { challengeModelIdsEquivalent } from './challenge-comparison.ts';
 import type { ChallengeRoutingMeta, NoComparisonReason } from './challenge-comparison.ts';
 import type { EvalRecord, EvalRouting } from './eval-schema.ts';
 import { resolveEffectiveChallengeRole } from './challenge-role-utils.ts';
@@ -1394,7 +1395,13 @@ export interface SealedChallengeDecision {
 export type ExpandedRouteCollapseReason =
   | 'sealed_intent_incomplete'
   | 'expanded_route_missing'
-  | 'sealed_challenger_ineligible';
+  | 'sealed_challenger_ineligible'
+  /**
+   * HOK-3156: enrichment would leave the two arms differing in a non-varied
+   * role or depth. The pair must collapse before materialisation rather than
+   * reach comparison as `multiple-varied-roles`.
+   */
+  | 'route-drift';
 
 export interface ExpandedRouteMaterializeResult {
   status: 'materialize';
@@ -1504,6 +1511,14 @@ export function resolveSealedDecisionAgainstExpandedRoute(input: {
   expandedRoute: ChallengeRoutingMeta | null | undefined;
   /** Current eligibility for the varied stage; when supplied the sealed challenger must be a member. */
   eligibleVariedModels?: Iterable<string>;
+  /**
+   * HOK-3156: stages that have already executed on the primary. Their recorded
+   * models are history, not routing input: both sides keep the sealed model so
+   * the enriched intent never names a model that did not run.
+   */
+  executedStages?: Iterable<ChallengeStage>;
+  /** Repo whose model registry resolves alias equivalence in the self-check. */
+  repoDir?: string;
 }): ExpandedRouteResolution {
   const sealedDecision = sealChallengeDecision(input.sealed);
   const intent = input.sealed;
@@ -1539,10 +1554,14 @@ export function resolveSealedDecisionAgainstExpandedRoute(input: {
 
   const primarySealed = intent.primary;
   const challengerSealed = intent.challenger;
-  const enrichStage = (s: ChallengeStage, sealedSide: typeof primarySealed): { model: string; agent: string } => ({
-    model: routeModel(s),
-    agent: readSideStageRoute(sealedSide, s).agent,
-  });
+  const executed = new Set<ChallengeStage>(input.executedStages ?? []);
+  const enrichStage = (s: ChallengeStage, sealedSide: typeof primarySealed): { model: string; agent: string } => {
+    const sealedRoute = readSideStageRoute(sealedSide, s);
+    // An executed stage keeps the sealed model (what actually ran); only a
+    // sealed side with no model for it falls back to the expanded route.
+    if (executed.has(s) && sealedRoute.model) return sealedRoute;
+    return { model: routeModel(s), agent: sealedRoute.agent };
+  };
 
   const primary: ChallengeRuntimeSideIntent = {
     ...(sideKey(primarySealed) ? { key: sideKey(primarySealed) } : {}),
@@ -1593,10 +1612,167 @@ export function resolveSealedDecisionAgainstExpandedRoute(input: {
     };
   }
 
+  // HOK-3156 self-check: the enriched arms must differ in exactly the varied
+  // stage. Executed-stage preservation can surface a sealed pair whose sides
+  // already disagreed on a non-varied role; that pair collapses here instead
+  // of materialising into a `multiple-varied-roles` comparison.
+  const invariant = assessChallengeRouteInvariant({
+    variedStage: stage,
+    primary: sealedSideRoute(enriched, 'primary'),
+    challenger: sealedSideRoute(enriched, 'challenger'),
+    intentionallyIdentical: intent.intentionallyIdentical === true,
+    repoDir: input.repoDir,
+  });
+  if (invariant.driftedFields.length > 0) {
+    return {
+      status: 'collapse',
+      reason: 'route-drift',
+      detail: `dimensions=${invariant.driftedFields.join(',')}`,
+    };
+  }
+
   return {
     status: 'materialize',
     variedStage: stage,
     challengerVariedModel: sealedDecision.challengerVariedModel,
     intent: enriched,
+  };
+}
+
+// ────────────────────────────────────────────────────────────────
+// HOK-3156 — the one-variable route invariant.
+//
+// A challenge pair measures one thing: the varied stage. Every writer that can
+// change an arm's route after sealing (post-expansion re-routing, fork
+// materialisation, the pre-review preflight) must prove the two arms still
+// differ in exactly that stage. This is the single check they all run, so the
+// bootstrap assertion, the enrichment self-check, the materialisers and the
+// comparison can never disagree about what "one variable" means.
+// ────────────────────────────────────────────────────────────────
+
+/** Route fields the invariant compares, in reporting order. */
+export const CHALLENGE_ROUTE_FIELDS = [
+  'planner',
+  'coder',
+  'reviewer',
+  'planDepth',
+  'codeDepth',
+  'reviewMode',
+] as const;
+export type ChallengeRouteField = typeof CHALLENGE_ROUTE_FIELDS[number];
+
+const CHALLENGE_ROUTE_MODEL_FIELDS: ReadonlySet<ChallengeRouteField> = new Set(['planner', 'coder', 'reviewer']);
+
+export interface ChallengeRouteInvariantResult {
+  /** True when the arms differ only at the varied stage (and do differ there). */
+  ok: boolean;
+  variedStage: ChallengeStage;
+  /** Non-varied fields whose values differ between the arms. */
+  driftedFields: ChallengeRouteField[];
+  /** True when the arms do not differ at the varied stage (and the pair is not intentionallyIdentical). */
+  identicalAtVariedStage: boolean;
+}
+
+/**
+ * The route fields a stage is allowed to vary. The role is the experiment;
+ * its depth/mode travels with it because the arm's own router chose it for
+ * that model. Everything else must match across arms.
+ */
+export function variedFieldsForStage(stage: ChallengeStage): ChallengeRouteField[] {
+  if (stage === 'plan') return ['planner', 'planDepth'];
+  if (stage === 'review') return ['reviewer', 'reviewMode'];
+  return ['coder', 'codeDepth'];
+}
+
+function routeFieldsEqual(
+  field: ChallengeRouteField,
+  a: string | undefined,
+  b: string | undefined,
+  repoDir?: string,
+): boolean {
+  const left = clean(a);
+  const right = clean(b);
+  // Unset on both sides is not drift; set on one side only is.
+  if (!left && !right) return true;
+  if (!left || !right) return false;
+  if (left === right) return true;
+  return CHALLENGE_ROUTE_MODEL_FIELDS.has(field)
+    ? challengeModelIdsEquivalent(left, right, repoDir)
+    : left.toLowerCase() === right.toLowerCase();
+}
+
+/**
+ * Assert the one-variable invariant over two arm routes.
+ *
+ * Models are compared alias-aware (`challengeModelIdsEquivalent`), so a
+ * registry alias and its provider-native id never count as drift. A field
+ * empty on both sides is not drift; a field set on only one side is.
+ */
+export function assessChallengeRouteInvariant(input: {
+  variedStage: ChallengeStage;
+  primary: Partial<ChallengeRoutingMeta> | undefined;
+  challenger: Partial<ChallengeRoutingMeta> | undefined;
+  intentionallyIdentical?: boolean;
+  repoDir?: string;
+}): ChallengeRouteInvariantResult {
+  const primary = input.primary ?? {};
+  const challenger = input.challenger ?? {};
+  const varied = new Set(variedFieldsForStage(input.variedStage));
+  const driftedFields = CHALLENGE_ROUTE_FIELDS.filter((field) => (
+    !varied.has(field)
+    && !routeFieldsEqual(field, primary[field], challenger[field], input.repoDir)
+  ));
+  const roleField = STAGE_TO_ROUTE_KEY[input.variedStage] as ChallengeRouteField;
+  const identicalAtVariedStage = !input.intentionallyIdentical
+    && routeFieldsEqual(roleField, primary[roleField], challenger[roleField], input.repoDir);
+  return {
+    ok: driftedFields.length === 0 && !identicalAtVariedStage,
+    variedStage: input.variedStage,
+    driftedFields,
+    identicalAtVariedStage,
+  };
+}
+
+/**
+ * The route one side of a sealed intent commits to. Models come from either
+ * persisted schema (runtime envelope or projection); depths and mode come from
+ * the projection's `expectedRoute` when present and are empty otherwise.
+ */
+export function sealedSideRoute(
+  intent: ChallengeExecutionIntent | null | undefined,
+  side: ChallengeSide,
+): Partial<ChallengeRoutingMeta> {
+  const sideIntent = intent?.[side];
+  if (!sideIntent) return {};
+  const expected = (sideIntent as Partial<ChallengeSideIntent>).expectedRoute;
+  return {
+    planner: readSideStageRoute(sideIntent, 'plan').model,
+    coder: readSideStageRoute(sideIntent, 'implementation').model,
+    reviewer: readSideStageRoute(sideIntent, 'review').model,
+    planDepth: clean(expected?.planDepth),
+    codeDepth: clean(expected?.codeDepth),
+    reviewMode: clean(expected?.reviewMode),
+  };
+}
+
+/** The varied stage a persisted intent declares (projection or envelope schema). */
+export function challengeStageOfIntent(intent: ChallengeExecutionIntent): ChallengeStage {
+  return stageFromIntent(intent);
+}
+
+/**
+ * The route an arm will actually launch, read from its `.phase-config.json`
+ * (`planning.model/depth`, `coding.model/depth`, `review.model/mode`).
+ */
+export function routeFromPhaseConfig(raw: unknown): Partial<ChallengeRoutingMeta> {
+  const config = raw as Record<string, Record<string, unknown> | undefined> | null | undefined;
+  if (!config || typeof config !== 'object') return {};
+  return {
+    planner: clean(config.planning?.model),
+    coder: clean(config.coding?.model),
+    reviewer: clean(config.review?.model),
+    planDepth: clean(config.planning?.depth),
+    codeDepth: clean(config.coding?.depth),
+    reviewMode: clean(config.review?.mode),
   };
 }
