@@ -4978,6 +4978,70 @@ sync_challenger_shared_route_from_primary() {
   return 0
 }
 
+# HOK-3156: true when a stage result file records a stage that has executed
+# (or is executing). A stage that ran keeps the route it ran with; re-routing
+# must never rewrite its recorded model.
+executed_stage_result_present() {
+  local result_file="$1"
+  [[ -n "$result_file" && -f "$result_file" ]] || return 1
+  jq -e '(.status // "") as $s | ["running","awaiting_user","completed","failed"] | index($s) != null' \
+    "$result_file" >/dev/null 2>&1
+}
+
+# Map an agent id to the phase-config provider label.
+phase_config_provider_for_agent() {
+  case "${1:-}" in
+    native-openrouter) printf '%s\n' "native-openrouter" ;;
+    native-openai) printf '%s\n' "native-openai" ;;
+    claude) printf '%s\n' "anthropic" ;;
+    codex) printf '%s\n' "openai" ;;
+    *) printf '\n' ;;
+  esac
+}
+
+# HOK-3156 fail-closed check: after a challenge arm's route is written, assert
+# it still differs from its sibling in exactly the varied stage. The sibling is
+# read from its own .routing-complete when that arm exists on disk, otherwise
+# from its sealed side of the intent. Prints the drifted dimensions (comma
+# separated) and returns 3 on drift; returns 0 when the pair is one-variable or
+# the check cannot run (missing tooling/inputs never invent a drift).
+#
+# Usage: challenge_route_drift_check <routing_file> <issue> <side> <intent_file> [state_file]
+challenge_route_drift_check() {
+  local routing_file="$1" issue="$2" side="$3" intent_file="$4" state_file="${5:-}"
+  [[ -n "$side" && -n "$intent_file" && -f "$intent_file" && -f "$routing_file" ]] || return 0
+  [[ -n "${TOOLS_DIR:-}" && -f "$TOOLS_DIR/check-challenge-route.ts" ]] || return 0
+
+  local sibling_side sibling_issue="" sibling_routing=""
+  if [[ "$side" == "primary" ]]; then
+    sibling_side="challenger"
+    sibling_issue="${issue}_c"
+  else
+    sibling_side="primary"
+    sibling_issue="${issue%_c}"
+  fi
+  if [[ -n "$state_file" && -f "$state_file" ]]; then
+    local sibling_dir
+    sibling_dir="$(jq -r --arg i "$sibling_issue" '
+      (.tasks[$i] // {}) as $t
+      | if (($t.worktree // "") != "" and ($t.slug // "") != "")
+        then "\($t.worktree)/features/\($t.slug)" else "" end' "$state_file" 2>/dev/null || true)"
+    if [[ -n "$sibling_dir" && -f "$sibling_dir/.routing-complete" ]]; then
+      sibling_routing="$sibling_dir/.routing-complete"
+    fi
+  fi
+
+  local -a args=(--intent "$intent_file" "--${side}-routing" "$routing_file" --repo-dir "${REPO_DIR:-$PWD}")
+  [[ -n "$sibling_routing" ]] && args+=("--${sibling_side}-routing" "$sibling_routing")
+  local out rc=0
+  out="$(npx tsx "$TOOLS_DIR/check-challenge-route.ts" "${args[@]}" 2>/dev/null)" || rc=$?
+  if [[ "$rc" -eq 3 ]]; then
+    jq -r '(.driftedFields // []) | join(",")' <<<"$out" 2>/dev/null || true
+    return 3
+  fi
+  return 0
+}
+
 apply_expanded_route_if_present() {
   local feature_dir="$1" issue="$2" slug="$3" worktree_dir="$4" state_file="${5:-${STATE_FILE:-}}"
   local route_file routing_file phase_config_file planner_model plan_depth coder_model code_depth reviewer_model review_mode
@@ -5040,6 +5104,20 @@ apply_expanded_route_if_present() {
     ' "$challenge_intent_file" 2>/dev/null || true)"
   fi
 
+  # HOK-3156 fix #2: a stage that already executed keeps the route it ran
+  # with. Planning has normally completed by the plan→code handoff, so the
+  # router may still move coder/reviewer for a solo task but never rewrites
+  # the planner after the fact.
+  local planning_result_file="" coding_result_file="" executed_stages=""
+  if executed_stage_result_present "$feature_dir/.planning-result.json"; then
+    planning_result_file="$feature_dir/.planning-result.json"
+    executed_stages="plan"
+  fi
+  if executed_stage_result_present "$feature_dir/.coding-result.json"; then
+    coding_result_file="$feature_dir/.coding-result.json"
+    executed_stages="${executed_stages:+$executed_stages,}implementation"
+  fi
+
   if ! state_mutate "$routing_file" \
     '# nz: first argument unless it is null/empty string, else the fallback.
      # jq "//" only rejects null and false, so "" would otherwise win.
@@ -5057,6 +5135,10 @@ apply_expanded_route_if_present() {
          elif $raw == "review" or $raw == "reviewer" then "review"
          elif $raw == "implementation" or $raw == "coding" or $raw == "coder" then "implementation"
          else "" end;
+     # A route field as recorded, with the legacy reviewRecommended alias.
+     def route_field($obj; $f):
+       if $f == "reviewMode" then nz($obj.reviewMode; ($obj.reviewRecommended // ""))
+       else ($obj[$f] // "") end;
      def expected_of($sideObj):
        nz($sideObj.expectedRoute;
           { planner:  ($sideObj.planner.model  // ""),
@@ -5084,31 +5166,45 @@ apply_expanded_route_if_present() {
               # check.
               $rawEffective
             else
-              $rawEffective
-              | if $stage == "plan" then
-                  .planner = $variedModel
-                  | .planDepth = nz($expected.planDepth; .planDepth)
-                elif $stage == "review" then
-                  .reviewer = $variedModel
-                  | .reviewMode = nz($expected.reviewMode; nz(.reviewMode; .reviewRecommended))
-                  | .reviewRecommended = .reviewMode
-                else
-                  .coder = $variedModel
-                  | .codeDepth = nz($expected.codeDepth; .codeDepth)
-                end
+              # HOK-3156 fix #1: freeze every route field at its sealed value.
+              # Restoring only the varied stage let the expanded route move the
+              # primary'"'"'s non-varied roles and depths after sealing while the
+              # challenger kept the seal, so completed pairs differed in more
+              # than one variable.  Precedence per field: sealed side → the
+              # pre-expansion route → the expanded route.  The varied stage is
+              # the special case where the sealed value is the experiment.
+              reduce $fields[] as $f ($rawEffective;
+                .[$f] = nz($expected[$f]; nz(route_field($base; $f); route_field($route; $f))))
+              | .reviewRecommended = .reviewMode
               | .challengeIntentApplied = true
               | .intendedStage = $stage
+              | .challengeRouteFrozen = true
               | .rawExpandedRoute = $route
+              | . as $frozen
+              | .frozenFields = [$fields[] | select(route_field($route; .) != "" and ($frozen[.] // "") != route_field($route; .))]
             end
         end)
      | .reviewMode = (
-         if (.challengeIntentApplied == true and .intendedStage == "review") then
-           (.reviewMode // $route.reviewMode // $route.reviewRecommended // $base.reviewMode // $base.reviewRecommended // "")
+         if (.challengeRouteFrozen == true) then
+           (.reviewMode // "")
          else
            ($route.reviewMode // $route.reviewRecommended // .reviewMode // $base.reviewMode // $base.reviewRecommended // "")
          end
        )
      | .reviewRecommended = .reviewMode
+     # HOK-3156 fix #2: executed stages keep the model and depth they ran with
+     # (the pre-expansion route), whatever the expanded route or seal says.
+     | ($planResult[0]? // null) as $planRes
+     | ($codeResult[0]? // null) as $codeRes
+     | (if $planRes != null then
+          .planner = nz(route_field($base; "planner"); nz($planRes.intendedModel; ($planRes.model // .planner)))
+          | .planDepth = nz(route_field($base; "planDepth"); .planDepth)
+        else . end)
+     | (if $codeRes != null then
+          .coder = nz(route_field($base; "coder"); nz($codeRes.intendedModel; ($codeRes.model // .coder)))
+          | .codeDepth = nz(route_field($base; "codeDepth"); .codeDepth)
+        else . end)
+     | (if $executedStages != "" then .executedStagesPinned = ($executedStages | split(",")) else del(.executedStagesPinned) end)
      | .provenance = (($base.provenance // {}) + ($route.provenance // {}) + {
          source: "expanded",
          appliedFrom: $routeFile,
@@ -5125,7 +5221,11 @@ apply_expanded_route_if_present() {
        })' \
     --arg routeFile "$route_file" \
     --arg side "$challenge_side" \
+    --arg executedStages "$executed_stages" \
+    --argjson fields '["planner","coder","reviewer","planDepth","codeDepth","reviewMode"]' \
     --slurpfile intent "${challenge_intent_file:-/dev/null}" \
+    --slurpfile planResult "${planning_result_file:-/dev/null}" \
+    --slurpfile codeResult "${coding_result_file:-/dev/null}" \
     --slurpfile route "$route_file"; then
     log "warn" "expanded route invalid: $route_file (failed to update .routing-complete)"
     active_route="$(route_lifecycle_route_id "$feature_dir/.routing-complete" 2>/dev/null || true)"
@@ -5139,6 +5239,12 @@ apply_expanded_route_if_present() {
   # disarmed preservation for every later phase of the same task.
   if [[ -n "$challenge_intent_file" && ! -f "$feature_dir/challenge-intent.json" ]]; then
     cp "$challenge_intent_file" "$feature_dir/challenge-intent.json" 2>/dev/null || true
+  fi
+
+  local frozen_fields
+  frozen_fields="$(jq -r '(.frozenFields // []) | join(",")' "$routing_file" 2>/dev/null || true)"
+  if [[ -n "$frozen_fields" ]]; then
+    log_route_lifecycle "challenge_route_frozen" "issue=$issue" "side=$challenge_side" "fields=$frozen_fields"
   fi
 
   if ! sync_challenger_shared_route_from_primary "$routing_file" "$issue" "$state_file" "$challenge_intent_file" "$challenge_side"; then
@@ -5178,38 +5284,30 @@ apply_expanded_route_if_present() {
     [[ -n "$reviewer_model" ]] && reviewer_agent="$(agent_resolve_from_model "$reviewer_model" "review" || true)"
   fi
 
-  case "$planner_agent" in
-    native-openrouter) planner_provider="native-openrouter" ;;
-    native-openai) planner_provider="native-openai" ;;
-    claude) planner_provider="anthropic" ;;
-    codex) planner_provider="openai" ;;
-  esac
-  case "$coder_agent" in
-    native-openrouter) coder_provider="native-openrouter" ;;
-    native-openai) coder_provider="native-openai" ;;
-    claude) coder_provider="anthropic" ;;
-    codex) coder_provider="openai" ;;
-  esac
-  case "$reviewer_agent" in
-    native-openrouter) reviewer_provider="native-openrouter" ;;
-    native-openai) reviewer_provider="native-openai" ;;
-    claude) reviewer_provider="anthropic" ;;
-    codex) reviewer_provider="openai" ;;
-  esac
+  planner_provider="$(phase_config_provider_for_agent "$planner_agent")"
+  coder_provider="$(phase_config_provider_for_agent "$coder_agent")"
+  reviewer_provider="$(phase_config_provider_for_agent "$reviewer_agent")"
 
+  # Executed stages keep their phase-config entry (launchRoute, selectedAt,
+  # agent) exactly as launched (HOK-3156 fix #2).
   if ! state_mutate "$phase_config_file" \
-    '.planning.model = $plannerModel
-     | .planning.agent = $plannerAgent
-     | .planning.provider = $plannerProvider
-     | .planning.stageRole = "planning"
-     | .planning.selectedAt = (.planning.selectedAt // .resolvedAt // (now | todateiso8601))
-     | .planning.depth = $planDepth
-     | .coding.model = $coderModel
-     | .coding.agent = $coderAgent
-     | .coding.provider = $coderProvider
-     | .coding.stageRole = "coding"
-     | .coding.selectedAt = (.coding.selectedAt // .resolvedAt // (now | todateiso8601))
-     | .coding.depth = $codeDepth
+    '($executedStages | split(",")) as $executed
+     | (if ($executed | index("plan")) != null then . else
+         .planning.model = $plannerModel
+         | .planning.agent = $plannerAgent
+         | .planning.provider = $plannerProvider
+         | .planning.stageRole = "planning"
+         | .planning.selectedAt = (.planning.selectedAt // .resolvedAt // (now | todateiso8601))
+         | .planning.depth = $planDepth
+       end)
+     | (if ($executed | index("implementation")) != null then . else
+         .coding.model = $coderModel
+         | .coding.agent = $coderAgent
+         | .coding.provider = $coderProvider
+         | .coding.stageRole = "coding"
+         | .coding.selectedAt = (.coding.selectedAt // .resolvedAt // (now | todateiso8601))
+         | .coding.depth = $codeDepth
+       end)
      | .review.model = $reviewerModel
      | .review.agent = $reviewerAgent
      | .review.provider = $reviewerProvider
@@ -5229,6 +5327,7 @@ apply_expanded_route_if_present() {
     --arg reviewerModel "$reviewer_model" \
     --arg reviewerAgent "$reviewer_agent" \
     --arg reviewerProvider "$reviewer_provider" \
+    --arg executedStages "$executed_stages" \
     --arg reviewMode "$review_mode"; then
     log "warn" "expanded route invalid: $route_file (failed to update .phase-config.json)"
     active_route="$(route_lifecycle_route_id "$routing_file" 2>/dev/null || true)"
@@ -5295,6 +5394,24 @@ apply_expanded_route_if_present() {
   fi
 
   log_router_route_summary "$issue" "$routing_file"
+
+  # HOK-3156 fail-closed fallback: the freeze cannot guarantee a one-variable
+  # pair when the sealed side is incomplete (e.g. an envelope intent without
+  # depths whose pre-expansion routes already differed). Report the drift with
+  # a distinct rc so the caller collapses the pair instead of letting one arm
+  # drift; the route written above stays valid for a solo run.
+  APPLY_EXPANDED_ROUTE_DRIFT_DETAIL=""
+  if [[ -n "$challenge_side" && -f "$feature_dir/challenge-intent.json" ]]; then
+    local drifted="" drift_rc=0
+    drifted="$(challenge_route_drift_check "$routing_file" "$issue" "$challenge_side" \
+      "$feature_dir/challenge-intent.json" "$state_file")" || drift_rc=$?
+    if [[ "$drift_rc" -eq 3 ]]; then
+      APPLY_EXPANDED_ROUTE_DRIFT_DETAIL="dimensions=${drifted:-unknown}"
+      log "warn" "challenge route drift after expanded route for $issue ($APPLY_EXPANDED_ROUTE_DRIFT_DETAIL)"
+      log_route_lifecycle "challenge_route_drift" "issue=$issue" "side=$challenge_side" "$APPLY_EXPANDED_ROUTE_DRIFT_DETAIL"
+      return 3
+    fi
+  fi
 
   return 0
 }

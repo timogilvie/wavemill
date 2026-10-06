@@ -762,6 +762,167 @@ EOF
   rm -rf "$root"
 }
 
+# ── HOK-3156: post-expansion re-routing never drifts one arm ────────────────
+
+# Seed one arm's feature dir with the sealed route it launched with and a
+# completed planning result on the sealed planner.
+seed_sealed_arm() {
+  local feature_dir="$1" reviewer="$2"
+  mkdir -p "$feature_dir"
+  jq -n --arg reviewer "$reviewer" '{
+    planner: "claude-opus-5-5", coder: "claude-opus-4-7", reviewer: $reviewer,
+    planDepth: "deep", codeDepth: "deep", reviewMode: "llm", reviewRecommended: "llm",
+    provenance: {source: "bootstrap"}
+  }' > "$feature_dir/.routing-complete"
+  jq -n --arg reviewer "$reviewer" '{
+    planning: {model: "claude-opus-5-5", agent: "claude", depth: "deep",
+               launchRoute: {planner: "claude-opus-5-5", planDepth: "deep"}, selectedAt: "2026-10-03T01:05:00Z"},
+    coding: {model: "claude-opus-4-7", agent: "claude", depth: "deep"},
+    review: {model: $reviewer, agent: "codex", mode: "llm"},
+    resolvedAt: "2026-10-03T01:05:00Z", forceModel: null
+  }' > "$feature_dir/.phase-config.json"
+  jq -n '{stage: "planning", status: "completed", agent: "claude",
+          model: "claude-opus-5-5", intendedModel: "claude-opus-5-5"}' > "$feature_dir/.planning-result.json"
+  # The router re-routes after sealing: a new planner, reviewer and depths.
+  jq -n '{planner: "claude-opus-4-7", coder: "claude-opus-4-7", reviewer: "claude-haiku-4-5",
+          planDepth: "medium", codeDepth: "medium", reviewMode: "static"}' > "$feature_dir/.post-expansion-route.json"
+}
+
+{
+  root="$(mktemp -d "${TMPDIR:-/tmp}/expanded-route-hok3156.XXXXXX")"
+  primary_wt="$root/primary"
+  challenger_wt="$root/challenger"
+  primary_dir="$primary_wt/features/test-slug"
+  challenger_dir="$challenger_wt/features/test-slug"
+  state_file="$root/workflow-state.json"
+  seed_sealed_arm "$primary_dir" "gpt-5.6-terra"
+  seed_sealed_arm "$challenger_dir" "kimi-k2"
+  real_challenge_intent --stage review \
+    --primary-planner claude-opus-5-5 --challenger-planner claude-opus-5-5 \
+    --primary-coder claude-opus-4-7 --challenger-coder claude-opus-4-7 \
+    --primary-reviewer gpt-5.6-terra --primary-reviewer-agent codex \
+    --challenger-reviewer kimi-k2 --challenger-reviewer-agent native-openrouter \
+    --plan-depth deep --code-depth deep --review-mode llm \
+    > "$primary_dir/challenge-intent.json"
+  cp "$primary_dir/challenge-intent.json" "$challenger_dir/challenge-intent.json"
+  jq -n --arg pw "$primary_wt" --arg cw "$challenger_wt" '{tasks: {
+    "HOK-1512":   {slug: "test-slug", worktree: $pw, challengePairId: "HOK-1512", challengeRole: "primary",
+                   plannerModel: "claude-opus-5-5", coderModel: "claude-opus-4-7", reviewerModel: "gpt-5.6-terra",
+                   planDepth: "deep", codeDepth: "deep", reviewMode: "llm"},
+    "HOK-1512_c": {slug: "test-slug", worktree: $cw, challengePairId: "HOK-1512", challengeRole: "challenger",
+                   plannerModel: "claude-opus-5-5", coderModel: "claude-opus-4-7", reviewerModel: "kimi-k2",
+                   planDepth: "deep", codeDepth: "deep", reviewMode: "llm"}
+  }}' > "$state_file"
+
+  set +e
+  primary_out="$(TOOLS_DIR="$REPO_DIR/tools" apply_expanded_route_if_present "$primary_dir" "HOK-1512" "test-slug" "$primary_wt" "$state_file" 2>&1)"
+  primary_rc=$?
+  challenger_out="$(TOOLS_DIR="$REPO_DIR/tools" apply_expanded_route_if_present "$challenger_dir" "HOK-1512_c" "test-slug" "$challenger_wt" "$state_file" 2>&1)"
+  challenger_rc=$?
+  npx tsx "$REPO_DIR/tools/check-challenge-route.ts" --stage review \
+    --primary-feature-dir "$primary_dir" --challenger-feature-dir "$challenger_dir" >"$root/check.json" 2>/dev/null
+  check_rc=$?
+  set -e
+
+  if [[ "$primary_rc" -eq 0 && "$challenger_rc" -eq 0 ]] \
+    && [[ "$(jq -r '.planner' "$primary_dir/.routing-complete")" == "claude-opus-5-5" ]] \
+    && [[ "$(jq -r '.planDepth' "$primary_dir/.routing-complete")" == "deep" ]] \
+    && [[ "$(jq -r '.codeDepth' "$primary_dir/.routing-complete")" == "deep" ]] \
+    && [[ "$(jq -r '.reviewer' "$primary_dir/.routing-complete")" == "gpt-5.6-terra" ]] \
+    && [[ "$(jq -r '.challengeRouteFrozen' "$primary_dir/.routing-complete")" == "true" ]] \
+    && [[ "$(jq -r '.rawExpandedRoute.planner' "$primary_dir/.routing-complete")" == "claude-opus-4-7" ]] \
+    && [[ "$(jq -r '.planning.model' "$primary_dir/.phase-config.json")" == "claude-opus-5-5" ]] \
+    && [[ "$(jq -r '.planning.selectedAt' "$primary_dir/.phase-config.json")" == "2026-10-03T01:05:00Z" ]] \
+    && [[ "$(jq -r '.coding.depth' "$primary_dir/.phase-config.json")" == "deep" ]] \
+    && [[ "$(jq -r '.tasks["HOK-1512"].plannerModel' "$state_file")" == "claude-opus-5-5" ]] \
+    && [[ "$(jq -r '.tasks["HOK-1512"].codeDepth' "$state_file")" == "deep" ]] \
+    && grep -q 'event=challenge_route_frozen issue=HOK-1512 side=primary fields=planner,reviewer,planDepth,codeDepth,reviewMode' <<<"$primary_out"; then
+    pass "HOK-3156: post-expansion re-route cannot move the primary's sealed planner, depths or reviewer"
+  else
+    fail "HOK-3156: primary drifted after sealing: rc=$primary_rc $(jq -c . "$primary_dir/.routing-complete") out=$primary_out"
+  fi
+
+  if [[ "$check_rc" -eq 0 ]] \
+    && [[ "$(jq -r '.driftedFields | length' "$root/check.json")" == "0" ]] \
+    && [[ "$(jq -r '.review.model' "$challenger_dir/.phase-config.json")" == "kimi-k2" ]]; then
+    pass "HOK-3156: both arms converge on the sealed route and differ only at review"
+  else
+    fail "HOK-3156: arms differ beyond the varied stage: rc=$check_rc $(cat "$root/check.json") out=$challenger_out"
+  fi
+  rm -rf "$root"
+}
+
+{
+  # Envelope intent (no expectedRoute depths): the freeze falls back to each
+  # arm's pre-expansion route. When those already differ, the pair is reported
+  # as route-drift rather than being allowed to reach comparison.
+  root="$(mktemp -d "${TMPDIR:-/tmp}/expanded-route-hok3156-drift.XXXXXX")"
+  primary_wt="$root/primary"
+  challenger_wt="$root/challenger"
+  primary_dir="$primary_wt/features/test-slug"
+  challenger_dir="$challenger_wt/features/test-slug"
+  state_file="$root/workflow-state.json"
+  seed_sealed_arm "$primary_dir" "gpt-5.6-terra"
+  seed_sealed_arm "$challenger_dir" "kimi-k2"
+  jq '.planDepth = "light"' "$primary_dir/.routing-complete" > "$root/rc.tmp" && mv "$root/rc.tmp" "$primary_dir/.routing-complete"
+  real_challenge_intent --stage review \
+    --primary-planner claude-opus-5-5 --challenger-planner claude-opus-5-5 \
+    --primary-coder claude-opus-4-7 --challenger-coder claude-opus-4-7 \
+    --primary-reviewer gpt-5.6-terra --challenger-reviewer kimi-k2 \
+    | jq 'del(.primary.expectedRoute, .challenger.expectedRoute)' > "$primary_dir/challenge-intent.json"
+  jq -n --arg pw "$primary_wt" --arg cw "$challenger_wt" '{tasks: {
+    "HOK-1512":   {slug: "test-slug", worktree: $pw, challengePairId: "HOK-1512", challengeRole: "primary"},
+    "HOK-1512_c": {slug: "test-slug", worktree: $cw, challengePairId: "HOK-1512", challengeRole: "challenger"}
+  }}' > "$state_file"
+
+  APPLY_EXPANDED_ROUTE_DRIFT_DETAIL=""
+  set +e
+  TOOLS_DIR="$REPO_DIR/tools" apply_expanded_route_if_present "$primary_dir" "HOK-1512" "test-slug" "$primary_wt" "$state_file" >"$root/out.log" 2>&1
+  rc=$?
+  set -e
+  if [[ "$rc" -eq 3 ]] \
+    && [[ "$APPLY_EXPANDED_ROUTE_DRIFT_DETAIL" == "dimensions=planDepth" ]] \
+    && grep -q 'event=challenge_route_drift issue=HOK-1512 side=primary dimensions=planDepth' "$root/out.log"; then
+    pass "HOK-3156: diverged pre-expansion depths on an envelope intent report route-drift (rc=3)"
+  else
+    fail "HOK-3156: route drift was not reported: rc=$rc detail=$APPLY_EXPANDED_ROUTE_DRIFT_DETAIL $(cat "$root/out.log")"
+  fi
+  rm -rf "$root"
+}
+
+{
+  # A solo task: the planner already ran, so it is pinned, but the router may
+  # still move the coder and reviewer for the stages that have not run.
+  mapfile -t fixture < <(new_fixture "expanded-route-executed-planner")
+  root="${fixture[0]}"
+  wt_dir="${fixture[1]}"
+  state_file="${fixture[2]}"
+  feature_dir="$wt_dir/features/test-slug"
+  jq '.planning.selectedAt = "2026-05-01T00:00:00Z"' "$feature_dir/.phase-config.json" > "$root/pc.tmp" \
+    && mv "$root/pc.tmp" "$feature_dir/.phase-config.json"
+  jq -n '{stage: "planning", status: "completed", model: "bootstrap-planner", intendedModel: "bootstrap-planner"}' \
+    > "$feature_dir/.planning-result.json"
+  jq -n '{planner: "expanded-planner", coder: "gpt-5.4", reviewer: "claude-sonnet-5",
+          planDepth: "deep", codeDepth: "deep", reviewMode: "llm"}' > "$feature_dir/.post-expansion-route.json"
+
+  if run_apply "$feature_dir" "$state_file" >/dev/null \
+    && [[ "$(jq -r '.planner' "$feature_dir/.routing-complete")" == "bootstrap-planner" ]] \
+    && [[ "$(jq -r '.planDepth' "$feature_dir/.routing-complete")" == "light" ]] \
+    && [[ "$(jq -c '.executedStagesPinned' "$feature_dir/.routing-complete")" == '["plan"]' ]] \
+    && [[ "$(jq -r '.coder' "$feature_dir/.routing-complete")" == "gpt-5.4" ]] \
+    && [[ "$(jq -r '.reviewer' "$feature_dir/.routing-complete")" == "claude-sonnet-5" ]] \
+    && [[ "$(jq -r '.planning.model' "$feature_dir/.phase-config.json")" == "bootstrap-planner" ]] \
+    && [[ "$(jq -r '.planning.depth' "$feature_dir/.phase-config.json")" == "light" ]] \
+    && [[ "$(jq -r '.coding.model' "$feature_dir/.phase-config.json")" == "gpt-5.4" ]] \
+    && [[ "$(jq -r '.tasks["HOK-1512"].plannerModel' "$state_file")" == "bootstrap-planner" ]] \
+    && [[ "$(jq -r '.tasks["HOK-1512"].coderModel' "$state_file")" == "gpt-5.4" ]]; then
+    pass "HOK-3156: an executed planning stage keeps its planner; unexecuted stages still re-route"
+  else
+    fail "HOK-3156: executed planner was rewritten: $(jq -c . "$feature_dir/.routing-complete")"
+  fi
+  rm -rf "$root"
+}
+
 echo ""
 echo "--- Results: $PASS passed, $FAIL failed ---"
 

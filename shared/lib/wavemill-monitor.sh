@@ -1657,6 +1657,145 @@ challenge_cancel_challenger_arm() {
   return 0
 }
 
+# HOK-3156 — collapse a pair whose arms no longer differ in exactly the varied
+# stage (`route-drift`). Whichever arm detected the drift, the pair is dissolved
+# as a unit: a pending (unmaterialised) challenger arm is cancelled, a live
+# challenger is torn down, and the primary continues as a solo task. Never
+# leaves one arm drifted and the other running.
+#
+# Usage: challenge_collapse_route_drift <issue> <feature_dir> <detail>
+# Returns 0 when the pair was collapsed; 1 when cleanup had to preserve work.
+CHALLENGE_ROUTE_DRIFT_COLLAPSED_SELF=""
+challenge_collapse_route_drift() {
+  local issue="$1" feature_dir="${2:-}" detail="${3:-}"
+  [[ -n "$issue" ]] || return 1
+  CHALLENGE_ROUTE_DRIFT_COLLAPSED_SELF=""
+
+  local role primary_issue challenger_key=""
+  role="$(get_task_meta "$issue" "challengeRole" 2>/dev/null || true)"
+  if [[ "$role" == "challenger" ]]; then
+    primary_issue="$(get_task_meta "$issue" "challengePairId" 2>/dev/null || true)"
+    [[ -n "$primary_issue" && "$primary_issue" != "$issue" ]] || primary_issue="${issue%_c}"
+    challenger_key="$issue"
+  else
+    primary_issue="$issue"
+    if [[ -n "$(read_state_value "" --arg i "${issue}_c" '.tasks[$i].slug // ""' 2>/dev/null || true)" ]]; then
+      challenger_key="${issue}_c"
+    fi
+  fi
+
+  local primary_slug stage varied_model
+  primary_slug="$(read_state_value "" --arg i "$primary_issue" '.tasks[$i].slug // ""' 2>/dev/null || true)"
+  stage="$(get_task_meta "$primary_issue" "challengeStage" 2>/dev/null || true)"
+  varied_model="$(get_task_meta "$primary_issue" "challengeVariedModel" 2>/dev/null || true)"
+
+  log_warn "  $primary_issue: challenge arms drifted beyond stage=${stage:-unknown} (${detail:-route-drift}) — collapsing to a solo run"
+  challenge_arms_cancel_pending "$primary_issue" "route-drift" "$detail" || true
+  if [[ -n "$challenger_key" ]]; then
+    challenge_cancel_challenger_arm "$primary_issue" "$primary_slug" "$challenger_key" \
+      "$feature_dir" "$stage" "$varied_model" "route-drift" "$detail" || return 1
+    [[ "$challenger_key" == "$issue" ]] && CHALLENGE_ROUTE_DRIFT_COLLAPSED_SELF="true"
+    return 0
+  fi
+  log_route_lifecycle "challenge_collapsed" \
+    "issue=$primary_issue" \
+    "slug=$primary_slug" \
+    "stage=$stage" \
+    "model=\"$varied_model\"" \
+    "reason=route-drift" \
+    "detail=\"$detail\""
+  return 0
+}
+
+# HOK-3156 — record the varied stage's model on a challenge arm's state, so
+# challenge_varied_stage_model / resolve_stage_result_model restore the arm's
+# own model on every launch and stage-result write.
+challenge_set_varied_model() {
+  local issue="$1" model="$2" agent="${3:-}"
+  [[ -n "$issue" && -n "$model" && -n "${STATE_FILE:-}" && -f "${STATE_FILE}" ]] || return 0
+  state_mutate "$STATE_FILE" \
+    'if .tasks[$issue] != null then
+       .tasks[$issue].challengeVariedModel = $model
+       | .tasks[$issue].challengeVariedAgent = $agent
+     else . end' \
+    --arg issue "$issue" --arg model "$model" --arg agent "$agent" >/dev/null 2>&1 || true
+}
+
+# HOK-3156 — one-variable preflight of a candidate challenger route against the
+# primary's launch route (its .phase-config.json). Prints the drifted
+# dimensions and returns 3 on drift. Returns 0 when the arms differ only at the
+# varied stage, or when the check cannot run (it never invents a drift).
+#
+# Usage: challenge_preflight_route_against_primary <primary_feature_dir> <stage> <challenger_route_json>
+challenge_preflight_route_against_primary() {
+  local primary_feature_dir="$1" stage="$2" challenger_route_json="$3"
+  [[ -n "${TOOLS_DIR:-}" && -f "$TOOLS_DIR/check-challenge-route.ts" ]] || return 0
+  [[ -f "$primary_feature_dir/.phase-config.json" ]] || return 0
+  local route_file out rc=0
+  route_file="$(mktemp "${TMPDIR:-/tmp}/wavemill-challenger-route.XXXXXX")" || return 0
+  printf '%s\n' "$challenger_route_json" > "$route_file"
+  out="$(npx tsx "$TOOLS_DIR/check-challenge-route.ts" --stage "$stage" \
+    --primary-feature-dir "$primary_feature_dir" --challenger-routing "$route_file" \
+    --repo-dir "$REPO_DIR" 2>/dev/null)" || rc=$?
+  rm -f "$route_file"
+  if [[ "$rc" -eq 3 ]]; then
+    jq -r '(.driftedFields // []) | join(",")' <<<"$out" 2>/dev/null || true
+    return 3
+  fi
+  return 0
+}
+
+# HOK-3156 — bring the primary's route to the enriched (re-sealed) primary side
+# of a plan-stage intent, for every stage that has not executed yet. Writes
+# .routing-complete, .phase-config.json and state together so all three agree.
+#
+# Usage: challenge_reseal_primary_route <primary_issue> <primary_feature_dir> <enriched_intent_json> <executed_stages_csv>
+challenge_reseal_primary_route() {
+  local primary_issue="$1" feature_dir="$2" intent_json="$3" executed="${4:-}"
+  [[ -n "$primary_issue" && -d "$feature_dir" ]] || return 1
+
+  local role stage phase state_key model agent provider changed=""
+  for role in planner coder reviewer; do
+    case "$role" in
+      planner) stage="plan"; phase="planning"; state_key="plannerModel" ;;
+      coder) stage="implementation"; phase="coding"; state_key="coderModel" ;;
+      reviewer) stage="review"; phase="review"; state_key="reviewerModel" ;;
+    esac
+    [[ ",$executed," == *",$stage,"* ]] && continue
+    model="$(jq -r --arg r "$role" '.primary[$r].model // ""' <<<"$intent_json" 2>/dev/null || true)"
+    [[ -n "$model" ]] || continue
+    [[ "$(read_phase_config "$feature_dir" "$phase" "model")" == "$model" ]] && continue
+
+    agent="$(jq -r --arg r "$role" '.primary[$r].agent // ""' <<<"$intent_json" 2>/dev/null || true)"
+    if [[ -z "$agent" ]] && declare -F agent_resolve_from_model >/dev/null 2>&1; then
+      agent="$(agent_resolve_from_model "$model" "$phase" 2>/dev/null || true)"
+    fi
+    provider="$(phase_config_provider_for_agent "$agent")"
+
+    if [[ -f "$feature_dir/.routing-complete" ]]; then
+      state_mutate "$feature_dir/.routing-complete" '.[$role] = $model' \
+        --arg role "$role" --arg model "$model" >/dev/null 2>&1 || return 1
+    fi
+    ensure_phase_config_state_file "$feature_dir"
+    state_mutate "$feature_dir/.phase-config.json" \
+      '.[$phase] = ((.[$phase] // {}) + {model: $model, stageRole: $phase}
+         + (if $agent != "" then {agent: $agent} else {} end)
+         + (if $provider != "" then {provider: $provider} else {} end))' \
+      --arg phase "$phase" --arg model "$model" --arg agent "$agent" --arg provider "$provider" >/dev/null 2>&1 || return 1
+    if [[ -n "${STATE_FILE:-}" && -f "${STATE_FILE}" ]]; then
+      state_mutate "$STATE_FILE" \
+        'if .tasks[$issue] != null then .tasks[$issue][$key] = $model else . end' \
+        --arg issue "$primary_issue" --arg key "$state_key" --arg model "$model" >/dev/null 2>&1 || true
+    fi
+    changed="${changed:+$changed,}$role"
+  done
+
+  if [[ -n "$changed" ]]; then
+    log_route_lifecycle "challenge_primary_resealed" "issue=$primary_issue" "fields=$changed"
+  fi
+  return 0
+}
+
 # A pair whose two sides run the same model at the varied stage measures
 # nothing.  The comparison stage already rejects these, but only after both arms
 # have run; surfacing it at selection time makes the waste visible immediately.
@@ -2615,6 +2754,7 @@ challenge_materialize_expanded_route_arm() {
   local base_branch="${6:-${BASE_BRANCH:-main}}"
 
   CHALLENGE_EXPANDED_ROUTE_COLLAPSE_REASON=""
+  CHALLENGE_EXPANDED_ROUTE_COLLAPSE_DETAIL=""
 
   local arm_key arm_slug arm_branch varied_stage
   arm_key=$(challenge_arm_read_field "$arm_json" '.key')
@@ -2644,9 +2784,17 @@ challenge_materialize_expanded_route_arm() {
     return 2
   fi
 
+  # HOK-3156: stages the primary already executed keep their sealed models in
+  # the enriched intent; the router never rewrites history.
+  local executed_stages=""
+  executed_stage_result_present "$primary_feature_dir/.planning-result.json" && executed_stages="plan"
+  if executed_stage_result_present "$primary_feature_dir/.coding-result.json"; then
+    executed_stages="${executed_stages:+$executed_stages,}implementation"
+  fi
+
   local resolution status
   resolution=$(_with_timeout "$API_TIMEOUT" npx tsx "$TOOLS_DIR/resolve-challenge-task.ts" \
-    --resolve-sealed --sealed-intent "$sealed_intent" \
+    --resolve-sealed --sealed-intent "$sealed_intent" --executed-stages "$executed_stages" \
     --feature-dir "$primary_feature_dir" --repo-dir "$REPO_DIR" 2>/dev/null || echo "")
   status="$(echo "$resolution" | jq -r '.status // "collapse"' 2>/dev/null || echo "collapse")"
   if [[ "$status" != "materialize" ]]; then
@@ -2685,6 +2833,27 @@ challenge_materialize_expanded_route_arm() {
   [[ -n "$plan_depth" ]] || plan_depth="light"
   [[ -n "$code_depth" ]] || code_depth="medium"
   [[ -n "$review_mode" ]] || review_mode="static"
+
+  # HOK-3156: re-seal both arms together. The enrichment fills the non-varied
+  # roles from the expanded route on both sides, but the primary's own
+  # post-expansion apply froze it to its bootstrap seal; bring the primary to
+  # the enriched side (stages that already ran stay as they ran) so the two
+  # arms launch with identical non-varied routes.
+  challenge_reseal_primary_route "$primary_issue" "$primary_feature_dir" "$enriched_intent" "$executed_stages" || \
+    log_warn "  $arm_key: re-sealing the primary route to the enriched intent reported failure"
+
+  # One-variable preflight before anything is created on disk: the challenger
+  # route is the primary's launch route with only the planner replaced.
+  local drifted=""
+  if ! drifted="$(challenge_preflight_route_against_primary "$primary_feature_dir" "$varied_stage" \
+      "$(jq -cn --arg p "$challenger_planner" --arg c "$shared_coder" --arg r "$shared_reviewer" \
+        --arg pd "$plan_depth" --arg cd "$code_depth" --arg rm "$review_mode" \
+        '{planner: $p, coder: $c, reviewer: $r, planDepth: $pd, codeDepth: $cd, reviewMode: $rm}')")"; then
+    CHALLENGE_EXPANDED_ROUTE_COLLAPSE_REASON="route-drift"
+    CHALLENGE_EXPANDED_ROUTE_COLLAPSE_DETAIL="dimensions=${drifted:-unknown}"
+    log "status" "  $arm_key: plan-stage arms would differ beyond the planner (${drifted}) — collapsing"
+    return 2
+  fi
 
   local challenger_wt_dir="${WORKTREE_ROOT}/${arm_slug}"
   local challenger_feature_dir="${challenger_wt_dir}/features/${arm_slug}"
@@ -2767,12 +2936,14 @@ challenge_materialize_expanded_route_arm() {
   local planner_agent="$challenger_planner_agent"
   [[ -n "$planner_agent" ]] || planner_agent="$(challenge_arm_read_field "$arm_json" '.agents.planner')"
   [[ -n "$planner_agent" ]] || planner_agent="${AGENT_CMD:-claude}"
+  # challengeModel names the varied stage's model (HOK-3156): the planner here.
   save_task_state "$arm_key" "$arm_slug" "$arm_branch" "$challenger_wt_dir" \
     "" "" "$planner_agent" "$linear_issue" \
-    "true" "$primary_issue" "challenger" "$shared_coder" \
+    "true" "$primary_issue" "challenger" "$challenger_planner" \
     "$challenger_planner" "$shared_coder" "$shared_reviewer" \
     "$plan_depth" "$code_depth" "$review_mode" \
     "$varied_stage"
+  challenge_set_varied_model "$arm_key" "$challenger_planner" "$challenger_planner_agent"
 
   BRANCH_BY_ISSUE["$arm_key"]="$arm_branch"
   SLUG_BY_ISSUE["$arm_key"]="$arm_slug"
@@ -2919,6 +3090,7 @@ challenge_maybe_materialize_expanded_route_arms() {
 
     local materialise_rc=0
     CHALLENGE_EXPANDED_ROUTE_COLLAPSE_REASON=""
+    CHALLENGE_EXPANDED_ROUTE_COLLAPSE_DETAIL=""
     challenge_materialize_expanded_route_arm \
       "$primary_issue" "$primary_slug" "$arm_json" \
       "$primary_wt_dir" "$primary_feature_dir" "$base_branch" || materialise_rc=$?
@@ -2940,7 +3112,7 @@ challenge_maybe_materialize_expanded_route_arms() {
       challenge_cancel_challenger_arm "$primary_issue" "$primary_slug" "$arm_key" \
         "$primary_feature_dir" "$(challenge_arm_read_field "$arm_json" '.variedStage')" \
         "$(challenge_arm_read_field "$arm_json" '.models.planner')" \
-        "$reason" "Sealed plan-stage challenger could not materialise against the expanded route" 2>/dev/null || true
+        "$reason" "${CHALLENGE_EXPANDED_ROUTE_COLLAPSE_DETAIL:-Sealed plan-stage challenger could not materialise against the expanded route}" 2>/dev/null || true
       log_route_lifecycle "challenge_arm_invalid_intent" \
         "issue=$primary_issue" \
         "arm=$arm_key" \
@@ -18741,7 +18913,17 @@ monitor_issue_state() {
             if ! reroute_expanded_packets_for_coding_handoff "$ISSUE" "$SLUG" "$FEATURE_DIR"; then
               handle_expanded_reroute_handoff_failure "$ISSUE" "$FEATURE_DIR"
             fi
-            if ! apply_expanded_route_if_present "$FEATURE_DIR" "$ISSUE" "$SLUG" "$WT_DIR" "$STATE_FILE"; then
+            local apply_route_rc=0
+            apply_expanded_route_if_present "$FEATURE_DIR" "$ISSUE" "$SLUG" "$WT_DIR" "$STATE_FILE" || apply_route_rc=$?
+            if (( apply_route_rc == 3 )); then
+              # HOK-3156: the arms would differ in more than the varied stage.
+              # Collapse the pair before coding instead of discovering it at
+              # comparison; the route just written stays valid for a solo run.
+              challenge_collapse_route_drift "$ISSUE" "$FEATURE_DIR" "${APPLY_EXPANDED_ROUTE_DRIFT_DETAIL:-}" || true
+              if [[ "$CHALLENGE_ROUTE_DRIFT_COLLAPSED_SELF" == "true" ]]; then
+                return 0
+              fi
+            elif (( apply_route_rc != 0 )); then
               log_warn "$ISSUE → expanded route invalid; using bootstrap execution route for coding"
             fi
             emit_execution_active_route "$FEATURE_DIR" "$ISSUE"
@@ -18752,7 +18934,14 @@ monitor_issue_state() {
 
             if [[ "$handshake_reason" == "missing" && "$handshake_policy" == "recover" ]]; then
               if recover_missing_expansion_artifact "$ISSUE" "$SLUG" "$FEATURE_DIR"; then
-                if ! apply_expanded_route_if_present "$FEATURE_DIR" "$ISSUE" "$SLUG" "$WT_DIR" "$STATE_FILE"; then
+                apply_route_rc=0
+                apply_expanded_route_if_present "$FEATURE_DIR" "$ISSUE" "$SLUG" "$WT_DIR" "$STATE_FILE" || apply_route_rc=$?
+                if (( apply_route_rc == 3 )); then
+                  challenge_collapse_route_drift "$ISSUE" "$FEATURE_DIR" "${APPLY_EXPANDED_ROUTE_DRIFT_DETAIL:-}" || true
+                  [[ "$CHALLENGE_ROUTE_DRIFT_COLLAPSED_SELF" == "true" ]] && return 0
+                  apply_route_rc=0
+                fi
+                if (( apply_route_rc != 0 )); then
                   expansion_recovery_mark_result "$FEATURE_DIR" "$ISSUE" "failed" "expanded-route-promotion-failed" "1" || true
                   log_warn "$ISSUE → recovered expanded route was invalid during promotion; using bootstrap execution route for coding"
                   handshake_reason="recovery-fallback-bootstrap"

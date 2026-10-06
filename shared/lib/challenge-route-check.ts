@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import type { ChallengeStage } from './challenge-mode.ts';
 import type { ChallengeRoutingMeta } from './challenge-comparison.ts';
 import {
+  CHALLENGE_ROUTE_FIELDS,
   assessChallengeRouteInvariant,
   challengeStageOfIntent,
   routeFromPhaseConfig,
@@ -117,7 +118,7 @@ function resolveSide(
  * Resolve both arm routes from whichever artifacts the caller supplied and
  * assess the one-variable invariant. Per side the precedence is feature dir
  * (`.phase-config.json`, what actually launches) → routing file → the sealed
- * intent's side.
+ * intent's side. A field the sealed intent left empty is unconstrained.
  */
 export function checkChallengeRoute(input: ChallengeRouteCheckInput): ChallengeRouteCheckOutcome {
   const intent = loadIntent(input);
@@ -137,10 +138,15 @@ export function checkChallengeRoute(input: ChallengeRouteCheckInput): ChallengeR
     return { status: 'unreadable', detail: `route unreadable for side(s): ${missing}` };
   }
 
+  // A sealed intent that never committed to a field (the envelope schema has
+  // no depths) does not constrain it: compare only what both sides recorded.
+  // Artifact-sourced sides (phase-config, routing) are compared as written.
+  const primaryRoute = fillUncommitted(primary, challenger);
+  const challengerRoute = fillUncommitted(challenger, primary);
   const result = assessChallengeRouteInvariant({
     variedStage: stage,
-    primary: primary.route,
-    challenger: challenger.route,
+    primary: primaryRoute,
+    challenger: challengerRoute,
     intentionallyIdentical: intent?.intentionallyIdentical === true,
     repoDir: input.repoDir,
   });
@@ -148,7 +154,19 @@ export function checkChallengeRoute(input: ChallengeRouteCheckInput): ChallengeR
     status: result.driftedFields.length > 0 ? 'drift' : 'ok',
     result,
     sources: { primary: primary.source, challenger: challenger.source },
-    primary: primary.route,
-    challenger: challenger.route,
+    primary: primaryRoute,
+    challenger: challengerRoute,
   };
+}
+
+function fillUncommitted(
+  side: { route: Partial<ChallengeRoutingMeta>; source: ChallengeRouteSideSource },
+  other: { route: Partial<ChallengeRoutingMeta> },
+): Partial<ChallengeRoutingMeta> {
+  if (side.source !== 'intent') return side.route;
+  const filled: Partial<ChallengeRoutingMeta> = { ...side.route };
+  for (const field of CHALLENGE_ROUTE_FIELDS) {
+    if (!filled[field]?.trim() && other.route[field]) filled[field] = other.route[field];
+  }
+  return filled;
 }
