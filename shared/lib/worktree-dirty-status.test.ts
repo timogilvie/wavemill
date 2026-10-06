@@ -151,3 +151,60 @@ test('readWorktreeDirtyStatus reports dirty when the observer artifact sits next
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// HOK-3160 Class B: generated-artifact allowlist expansion. The dashboard
+// kept delivered tasks indefinitely when the only "dirt" was a tool-written
+// audit, review-result, or trace-metadata file. These must not retain.
+
+test('filter drops .wavemill/audits/* untracked files (HOK-3160 Class B)', () => {
+  const raw = [
+    '?? .wavemill/audits/openrouter-alias-drift.json',
+    '?? .wavemill/audits/launch-priority-coverage.json',
+    '?? .wavemill/audits/certifications/some-report.json',
+    '?? src/real-change.ts',
+  ].join('\n');
+  assert.deepEqual(filterWorktreeDirtyStatus(raw), ['?? src/real-change.ts']);
+});
+
+test('filter drops features/<slug>/.review-result.json and trace-metadata siblings (HOK-3160 Class B)', () => {
+  const raw = [
+    '?? features/some-slug/.review-result.json',
+    ' M features/some-slug/.review-result.json',
+    '?? features/some-slug/.needs-attention',
+    '?? features/some-slug/.terminal-history.jsonl',
+    ' M features/some-slug/.terminal-history.jsonl',
+    '?? features/some-slug/.ready-bypass-warned',
+    '?? features/some-slug/.coding-complete',
+    '?? features/some-slug/.workflow-aborted',
+    '?? features/some-slug/.coding-blocked-completion.json',
+    '?? features/some-slug/user-notes.md',
+  ].join('\n');
+  assert.deepEqual(filterWorktreeDirtyStatus(raw), ['?? features/some-slug/user-notes.md']);
+});
+
+test('filter does NOT drop arbitrary files under .wavemill/ outside the audits allowlist', () => {
+  const raw = [
+    '?? .wavemill/notes.md',
+    '?? .wavemill/registry/session.jsonl',
+    '?? .wavemill/evals/artifacts/HOK-3056/user-notes.md',
+  ].join('\n');
+  assert.deepEqual(filterWorktreeDirtyStatus(raw), [
+    '?? .wavemill/notes.md',
+    '?? .wavemill/registry/session.jsonl',
+    '?? .wavemill/evals/artifacts/HOK-3056/user-notes.md',
+  ]);
+});
+
+test('filter does NOT drop audits paths with a tracked porcelain code', () => {
+  // A tracked and modified audit file is a declared change in the branch;
+  // keep it as dirt. Only untracked audits are tool output.
+  const raw = [
+    ' M .wavemill/audits/openrouter-alias-drift.json',
+    'MM .wavemill/audits/openrouter-alias-drift.json',
+    '?? .wavemill/audits/openrouter-alias-drift.json',
+  ].join('\n');
+  assert.deepEqual(filterWorktreeDirtyStatus(raw), [
+    ' M .wavemill/audits/openrouter-alias-drift.json',
+    'MM .wavemill/audits/openrouter-alias-drift.json',
+  ]);
+});

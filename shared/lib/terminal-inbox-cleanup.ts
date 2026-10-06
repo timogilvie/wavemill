@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mutateJsonState } from './state-mutex.ts';
+import { archiveTaskResidue, type ArchiveTaskResidueResult } from './task-residue-archive.ts';
 import { filterWorktreeDirtyStatus } from './worktree-dirty-status.ts';
 
 /**
@@ -77,6 +78,7 @@ export type TerminalInboxStatus =
   | 'would-reap'
   | 'would-abandon-loser'
   | 'would-abandon-aborted'
+  | 'would-archive-and-reap'
   | 'refused'
   | 'already-reaped'
   | 'not-terminal'
@@ -105,6 +107,13 @@ export interface TerminalInboxDecision {
     intendedAction: 'release' | 'none';
   };
   intendedActions: string[];
+  /** HOK-3160: when archive-and-reap executes, the resulting archive path. */
+  archive?: {
+    path: string;
+    diffPath: string;
+    bundlePath?: string;
+    untrackedCount: number;
+  };
 }
 
 export interface ClassifyRequest {
@@ -139,6 +148,8 @@ export interface CleanupExecuteContext {
   baseBranch: string;
   session: string;
   abandon: boolean;
+  /** HOK-3160: cleanup entered via `--archive-and-reap`; the worktree residue has already been archived. */
+  archiveAndReap?: boolean;
   /** Directory holding wavemill-common.sh / terminal-reconciler.sh. Defaults to the wavemill install; tests inject stubs. */
   wavemillLibDir?: string;
 }
@@ -150,6 +161,8 @@ export interface CleanupOptions {
   inbox?: boolean;
   execute?: boolean;
   abandon?: boolean;
+  /** HOK-3160: archive the worktree's residue to `.wavemill/evals/artifacts/<ID>/retired-arm-residue/` before reaping. Requires a delivered task (merged PR, or retired arm with a merged/closed sibling, or a PR-less aborted arm). */
+  archiveAndReap?: boolean;
   json?: boolean;
   out?: string;
   baseBranch?: string;
@@ -197,6 +210,20 @@ export const defaultCleanupDeps: CleanupDeps = {
     }
   },
   cleanup(decision, context) {
+    // HOK-3160: when archive-and-reap executes, reset the worktree so the
+    // shell cleanup's dirty-worktree refusal sees a clean tree. The residue
+    // was already archived under .wavemill/evals/artifacts/<ID>/ in the
+    // previous step; nothing is lost by resetting here. A PR-less arm also
+    // needs abandon authority to delete the unpushed head.
+    if (context.archiveAndReap && decision.worktree && existsSync(decision.worktree)) {
+      try {
+        execFileSync('git', ['-C', decision.worktree, 'reset', '--hard', 'HEAD'], { stdio: 'ignore' });
+        execFileSync('git', ['-C', decision.worktree, 'clean', '-fdx'], { stdio: 'ignore' });
+      } catch {
+        // Fall through: the shell cleanup will refuse and retain. The archive
+        // directory on disk still carries the inspectable residue.
+      }
+    }
     const script = [
       'set -euo pipefail',
       'log() { if [[ "$#" -gt 0 && "$1" == "debug" ]]; then shift; fi; printf "%s\\n" "$*" >&2; }',
@@ -205,6 +232,7 @@ export const defaultCleanupDeps: CleanupDeps = {
       `source "${(context.wavemillLibDir ? join(context.wavemillLibDir, 'terminal-reconciler.sh') : TERMINAL_RECONCILER_SCRIPT).replace(/"/g, '\\"')}"`,
       `cleanup_completed_task "${decision.issue.replace(/"/g, '\\"')}" "${decision.slug.replace(/"/g, '\\"')}" "operator terminal inbox cleanup"`,
     ].join('\n');
+    const abandon = context.abandon || (context.archiveAndReap === true && !decision.prNumber);
     const env = {
       ...process.env,
       REPO_DIR: context.repoDir,
@@ -212,7 +240,7 @@ export const defaultCleanupDeps: CleanupDeps = {
       SESSION: context.session,
       BASE_BRANCH: context.baseBranch,
       WORKTREE_ROOT: dirname(decision.worktree || context.repoDir),
-      WAVEMILL_CLEANUP_ABANDON_ISSUE: context.abandon ? decision.issue : '',
+      WAVEMILL_CLEANUP_ABANDON_ISSUE: abandon ? decision.issue : '',
       WAVEMILL_TERMINAL_INBOX_CLEANUP: '1',
     };
     execFileSync('bash', ['-lc', script], { cwd: context.repoDir, env, stdio: 'inherit' });
@@ -468,6 +496,19 @@ export async function writeTerminalTaskTombstone(
   });
 }
 
+/**
+ * HOK-3160: an arm is "delivered" when the PR merged, when a retired sibling
+ * carries a merged/closed PR, or when the arm is PR-less and
+ * explicitly abandoned. Only delivered arms are archive-and-reap eligible.
+ */
+function isDelivered(pr: PrEvidence, siblingPrState: string, challengeRole: string, allowAbandon: boolean): boolean {
+  if (pr.state === 'MERGED') return true;
+  if (pr.state === 'CLOSED' && !pr.mergedAt && challengeRole && (siblingPrState === 'MERGED' || siblingPrState === 'CLOSED')) return true;
+  // PR-less abandon is only delivered when the operator asked for it.
+  if (!pr.number && allowAbandon) return true;
+  return false;
+}
+
 export function decideTerminalTask(
   state: WorkflowState,
   issue: string,
@@ -475,6 +516,7 @@ export function decideTerminalTask(
   baseBranch: string,
   deps: CleanupDeps = defaultCleanupDeps,
   allowAbandon = false,
+  archiveAndReap = false,
 ): TerminalInboxDecision {
   const task = state.tasks?.[issue];
   if (!task) {
@@ -557,6 +599,16 @@ export function decideTerminalTask(
     return decision;
   }
   if (git.worktreeDirty === true || git.worktreeDirty === 'unknown') {
+    // HOK-3160: with --archive-and-reap, a delivered arm with real dirt still
+    // reaps — the dirt gets archived to .wavemill/evals/artifacts/<ID>/
+    // retired-arm-residue/ before any destructive step. Unreadable status
+    // stays fail-closed: we cannot archive what we cannot inspect.
+    if (archiveAndReap && git.worktreeDirty === true && isDelivered(pr, sibEvidence.state, challengeRole, allowAbandon)) {
+      decision.status = 'would-archive-and-reap';
+      decision.refusalReason = '';
+      decision.intendedActions = ['archive-residue', 'archive-artifacts', 'release-pane', 'write-tombstone', 'remove-local-worktree', 'remove-local-branch', 'remove-active-task-row'];
+      return decision;
+    }
     decision.refusalReason = git.worktreeDirty === 'unknown' ? 'worktree_status_unreadable' : 'dirty_worktree';
     return decision;
   }
@@ -630,7 +682,28 @@ function decidePrLessAbortedArm(decision: TerminalInboxDecision, git: GitEvidenc
 }
 
 function isExecutable(status: TerminalInboxStatus): boolean {
-  return status === 'would-reap' || status === 'would-abandon-loser' || status === 'would-abandon-aborted';
+  return (
+    status === 'would-reap'
+    || status === 'would-abandon-loser'
+    || status === 'would-abandon-aborted'
+    || status === 'would-archive-and-reap'
+  );
+}
+
+/**
+ * HOK-3160: when the decision calls for archive-and-reap, archive the
+ * worktree residue BEFORE the destructive shell cleanup. Returns the
+ * archive result; the caller must retain the task if `success` is false.
+ */
+function runArchiveResidueStep(decision: TerminalInboxDecision, context: CleanupExecuteContext): ArchiveTaskResidueResult {
+  return archiveTaskResidue({
+    issue: decision.issue,
+    worktree: decision.worktree,
+    repoDir: context.repoDir,
+    branch: decision.branch,
+    baseBranch: context.baseBranch,
+    prNumber: decision.prNumber,
+  });
 }
 
 export function discoverTerminalInboxIssues(state: WorkflowState): string[] {
@@ -664,7 +737,12 @@ export async function cleanupTerminalInbox(options: CleanupOptions): Promise<Ter
   for (const issue of issues) {
     if (!issue) continue;
     const state = readWorkflowState(stateFile);
-    const decision = decideTerminalTask(state, issue, repoDir, baseBranch, deps, options.abandon === true && !options.inbox);
+    const archiveAndReap = options.archiveAndReap === true && !options.inbox;
+    // HOK-3160: --archive-and-reap implies the abandon authority a PR-less
+    // arm needs; the residue archive includes a bundle of its unpublished
+    // commits so the HOK-3089 "no silent discard" rule still holds.
+    const abandon = (options.abandon === true || archiveAndReap) && !options.inbox;
+    const decision = decideTerminalTask(state, issue, repoDir, baseBranch, deps, abandon, archiveAndReap);
     const now = deps.now();
     if (options.execute || options.out) {
       writeDecisionArtifact(repoDir, decision, now, options.out && issues.length === 1 ? options.out : undefined);
@@ -672,15 +750,32 @@ export async function cleanupTerminalInbox(options: CleanupOptions): Promise<Ter
     if (options.execute && isExecutable(decision.status)) {
       const task = state.tasks?.[issue];
       if (!task) throw new Error(`task ${issue} disappeared before execution`);
-      const tombstone = buildTerminalTaskTombstone(decision, task, 'cleanup-terminal-inbox', options.inbox ? 'cleanup inbox --execute' : `cleanup ${issue} --execute`, now);
-      await writeTerminalTaskTombstone(stateFile, tombstone);
-      deps.cleanup(decision, {
+      const context: CleanupExecuteContext = {
         repoDir,
         stateFile,
         baseBranch,
         session: initial.session ?? process.env.SESSION ?? 'wavemill',
-        abandon: options.abandon === true && !options.inbox,
-      });
+        abandon,
+        archiveAndReap,
+      };
+      // HOK-3160: run the archive step FIRST. A failure retains the task:
+      // the destructive cleanup and the tombstone are skipped.
+      if (decision.status === 'would-archive-and-reap') {
+        const archiveResult = runArchiveResidueStep(decision, context);
+        if (!archiveResult.success) {
+          decisions.push({ ...decision, status: 'refused', refusalReason: archiveResult.failureReason || 'archive_failed' });
+          continue;
+        }
+        decision.archive = {
+          path: archiveResult.archivePath,
+          diffPath: archiveResult.diffPath,
+          bundlePath: archiveResult.bundlePath,
+          untrackedCount: archiveResult.untrackedCount,
+        };
+      }
+      const tombstone = buildTerminalTaskTombstone(decision, task, 'cleanup-terminal-inbox', options.inbox ? 'cleanup inbox --execute' : `cleanup ${issue} --execute`, now);
+      await writeTerminalTaskTombstone(stateFile, tombstone);
+      deps.cleanup(decision, context);
       decisions.push({ ...decision, status: 'executed' });
     } else {
       decisions.push(decision);
@@ -689,9 +784,80 @@ export async function cleanupTerminalInbox(options: CleanupOptions): Promise<Ter
   return decisions;
 }
 
-export function formatTerminalInboxDecisions(decisions: TerminalInboxDecision[], execute: boolean): string {
+/**
+ * HOK-3160: the stable 24h hard-ceiling fingerprint. Any terminal task that
+ * remained retained for more than 24h after delivery is collapsed into a
+ * single `needs decision` cleanup row suggesting `--archive-and-reap`.
+ */
+export const CLEANUP_CEILING_HOURS = 24;
+
+function deliveryTimestamp(decision: TerminalInboxDecision): number | undefined {
+  if (decision.pr.state === 'MERGED' && decision.pr.mergedAt) {
+    const parsed = Date.parse(decision.pr.mergedAt);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+export interface FormatterContext {
+  /** `now` injection for deterministic tests. Defaults to `Date.now`. */
+  nowMs?(): number;
+}
+
+function isDeliveredAndArchived(decision: TerminalInboxDecision): boolean {
+  if (decision.status !== 'already-reaped' && decision.status !== 'executed') return false;
+  return decision.resourceDisposition === 'reaped';
+}
+
+function isAwaitingConfirm(decision: TerminalInboxDecision): boolean {
+  return decision.status === 'refused' && decision.resourceDisposition === 'verification-required' && decision.pr.state === 'MERGED';
+}
+
+function retainedBeyondCeiling(decision: TerminalInboxDecision, nowMs: number): boolean {
+  if (decision.status !== 'refused') return false;
+  const delivered = deliveryTimestamp(decision);
+  if (delivered === undefined) return false;
+  const hoursSinceDelivery = (nowMs - delivered) / (1000 * 60 * 60);
+  return hoursSinceDelivery > CLEANUP_CEILING_HOURS;
+}
+
+export function formatTerminalInboxDecisions(
+  decisions: TerminalInboxDecision[],
+  execute: boolean,
+  context: FormatterContext = {},
+): string {
+  const nowMs = (context.nowMs ?? (() => Date.now()))();
   const lines = ['action\tissue\tpr\tbranch\treason'];
+  let archivedCount = 0;
+  let awaitingConfirmCount = 0;
+  let ceilingCount = 0;
   for (const decision of decisions) {
+    if (isDeliveredAndArchived(decision)) {
+      archivedCount += 1;
+      continue;
+    }
+    if (isAwaitingConfirm(decision)) {
+      awaitingConfirmCount += 1;
+      lines.push([
+        'merged-awaiting-confirm',
+        decision.issue,
+        decision.prNumber ? `#${decision.prNumber}` : '-',
+        decision.branch || '-',
+        'close-to-finish',
+      ].join('\t'));
+      continue;
+    }
+    if (retainedBeyondCeiling(decision, nowMs)) {
+      ceilingCount += 1;
+      lines.push([
+        'needs-decision',
+        decision.issue,
+        decision.prNumber ? `#${decision.prNumber}` : '-',
+        decision.branch || '-',
+        `wavemill cleanup ${decision.issue} --archive-and-reap --execute`,
+      ].join('\t'));
+      continue;
+    }
     const action = execute && isExecutable(decision.status) ? 'execute' : decision.status;
     lines.push([
       action,
@@ -701,10 +867,15 @@ export function formatTerminalInboxDecisions(decisions: TerminalInboxDecision[],
       decision.refusalReason || '-',
     ].join('\t'));
   }
+  if (archivedCount > 0) {
+    lines.push(`aggregate\t${archivedCount} task${archivedCount === 1 ? '' : 's'} delivered and archived`);
+  }
   const counts = decisions.reduce<Record<string, number>>((acc, decision) => {
     acc[decision.status] = (acc[decision.status] ?? 0) + 1;
     return acc;
   }, {});
+  if (awaitingConfirmCount > 0) counts['merged-awaiting-confirm'] = awaitingConfirmCount;
+  if (ceilingCount > 0) counts['needs-decision'] = ceilingCount;
   lines.push(`summary\t${Object.entries(counts).map(([status, count]) => `${status}=${count}`).join(',') || 'none'}`);
   return lines.join('\n');
 }

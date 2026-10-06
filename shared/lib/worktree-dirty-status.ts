@@ -25,6 +25,40 @@ export const WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT = '.wavemill/observer-finding
 /** Prompt-registry log older native-agent runs wrote at the worktree root. */
 export const WAVEMILL_PROMPT_REGISTRY_ARTIFACT = 'prompt-registry.jsonl';
 
+/**
+ * HOK-3160 generated-artifact allowlist (Class B). Tool-written outputs that
+ * never represent real task work and so must not retain a terminal worktree:
+ *   - any file under `.wavemill/audits/` (tool coverage/drift reports)
+ *   - any `features/<slug>/.review-result.json` (stage result the review phase
+ *     writes next to the task packet)
+ *   - trace metadata siblings the harness writes next to the task packet
+ *     (`.needs-attention`, `.terminal-history.jsonl`, `.ready-bypass-warned`,
+ *     `.coding-complete`, `.workflow-aborted`, `.coding-blocked-completion.json`)
+ *
+ * The filter is deliberately narrow: only exact path shapes with the
+ * untracked (`??`) or unstaged-modify (` M`) porcelain codes are dropped.
+ * Everything else - including arbitrary files under `.wavemill/` not listed
+ * here - remains dirty for cleanup.
+ */
+const GENERATED_ARTIFACT_PATTERNS: RegExp[] = [
+  // Observer and prompt-registry artifacts (HOK-2972 / #1507). Already handled
+  // by exact-match filtering below, but kept here so the test matrix matches.
+  /^\?\? \.wavemill\/observer-findings\.jsonl$/,
+  /^\?\? prompt-registry\.jsonl$/,
+  /^ M prompt-registry\.jsonl$/,
+  // HOK-3160: audits, review results, and trace metadata.
+  /^\?\? \.wavemill\/audits\/.+$/,
+  /^\?\? features\/[^/]+\/\.review-result\.json$/,
+  /^ M features\/[^/]+\/\.review-result\.json$/,
+  /^\?\? features\/[^/]+\/\.needs-attention$/,
+  /^\?\? features\/[^/]+\/\.terminal-history\.jsonl$/,
+  /^ M features\/[^/]+\/\.terminal-history\.jsonl$/,
+  /^\?\? features\/[^/]+\/\.ready-bypass-warned$/,
+  /^\?\? features\/[^/]+\/\.coding-complete$/,
+  /^\?\? features\/[^/]+\/\.workflow-aborted$/,
+  /^\?\? features\/[^/]+\/\.coding-blocked-completion\.json$/,
+];
+
 export type WorktreeDirtyState = 'clean' | 'dirty' | 'unreadable' | 'absent';
 
 export interface WorktreeDirtyStatus {
@@ -43,13 +77,10 @@ export interface WorktreeDirtyStatus {
  * prompt-registry log. Any leading/trailing empty lines are stripped.
  */
 export function filterWorktreeDirtyStatus(rawPorcelain: string): string[] {
-  const observerLine = `?? ${WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT}`;
-  const registryUntracked = `?? ${WAVEMILL_PROMPT_REGISTRY_ARTIFACT}`;
-  const registryModified = ` M ${WAVEMILL_PROMPT_REGISTRY_ARTIFACT}`;
   return rawPorcelain
     .split('\n')
     .filter((line) => line.length > 0)
-    .filter((line) => line !== observerLine && line !== registryUntracked && line !== registryModified);
+    .filter((line) => !GENERATED_ARTIFACT_PATTERNS.some((pattern) => pattern.test(line)));
 }
 
 type GitRunner = (args: string[], cwd: string) => string | undefined;
