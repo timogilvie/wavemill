@@ -118,7 +118,8 @@ function resolveSide(
  * Resolve both arm routes from whichever artifacts the caller supplied and
  * assess the one-variable invariant. Per side the precedence is feature dir
  * (`.phase-config.json`, what actually launches) → routing file → the sealed
- * intent's side. A field the sealed intent left empty is unconstrained.
+ * intent's side. Against a sealed intent, a field either side left empty is
+ * unconstrained.
  */
 export function checkChallengeRoute(input: ChallengeRouteCheckInput): ChallengeRouteCheckOutcome {
   const intent = loadIntent(input);
@@ -138,11 +139,13 @@ export function checkChallengeRoute(input: ChallengeRouteCheckInput): ChallengeR
     return { status: 'unreadable', detail: `route unreadable for side(s): ${missing}` };
   }
 
-  // A sealed intent that never committed to a field (the envelope schema has
-  // no depths) does not constrain it: compare only what both sides recorded.
-  // Artifact-sourced sides (phase-config, routing) are compared as written.
-  const primaryRoute = fillUncommitted(primary, challenger);
-  const challengerRoute = fillUncommitted(challenger, primary);
+  // When either side is a sealed intent, a field one side left empty is
+  // unconstrained: the envelope schema records no depths, and an arm that
+  // forks copies the artifact entry it lacks a value for. Two artifact
+  // sides (both arms' launch routes) are compared exactly as written.
+  const lenient = primary.source === 'intent' || challenger.source === 'intent';
+  const primaryRoute = lenient ? fillUnset(primary.route, challenger.route) : primary.route;
+  const challengerRoute = lenient ? fillUnset(challenger.route, primary.route) : challenger.route;
   const result = assessChallengeRouteInvariant({
     variedStage: stage,
     primary: primaryRoute,
@@ -159,14 +162,13 @@ export function checkChallengeRoute(input: ChallengeRouteCheckInput): ChallengeR
   };
 }
 
-function fillUncommitted(
-  side: { route: Partial<ChallengeRoutingMeta>; source: ChallengeRouteSideSource },
-  other: { route: Partial<ChallengeRoutingMeta> },
+function fillUnset(
+  route: Partial<ChallengeRoutingMeta>,
+  other: Partial<ChallengeRoutingMeta>,
 ): Partial<ChallengeRoutingMeta> {
-  if (side.source !== 'intent') return side.route;
-  const filled: Partial<ChallengeRoutingMeta> = { ...side.route };
+  const filled: Partial<ChallengeRoutingMeta> = { ...route };
   for (const field of CHALLENGE_ROUTE_FIELDS) {
-    if (!filled[field]?.trim() && other.route[field]) filled[field] = other.route[field];
+    if (!filled[field]?.trim() && other[field]) filled[field] = other[field];
   }
   return filled;
 }

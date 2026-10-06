@@ -1320,6 +1320,21 @@ test('checkChallengeRoute compares arm phase-configs and reports drift', () => {
     assert.equal(ok.sources.challenger, 'intent');
     assert.equal(ok.result.variedStage, 'review');
 
+    // Against a sealed intent, a field the launch route left unset is not
+    // drift (the fork copies that entry); a field set to another value is.
+    writeFileSync(join(primaryDir, '.phase-config.json'), JSON.stringify({
+      planning: { model: 'claude-opus-5-5' },
+      coding: { model: 'claude-opus-4-7', depth: 'deep' },
+      review: { model: 'gpt-5.6-terra', mode: 'llm' },
+    }));
+    const unsetDepth = checkChallengeRoute({ intentPath, primaryFeatureDir: primaryDir });
+    assert.equal(unsetDepth.status, 'ok');
+    writeFileSync(join(primaryDir, '.phase-config.json'), config('claude-opus-5-5', 'gpt-5.6-terra', 'medium'));
+    const changedDepth = checkChallengeRoute({ intentPath, primaryFeatureDir: primaryDir });
+    assert.equal(changedDepth.status, 'drift');
+    if (changedDepth.status === 'unreadable') return;
+    assert.deepEqual(changedDepth.result.driftedFields, ['planDepth', 'codeDepth']);
+
     const unreadable = checkChallengeRoute({ stage: 'review', primaryFeatureDir: join(root, 'missing') });
     assert.equal(unreadable.status, 'unreadable');
   } finally {

@@ -5401,7 +5401,12 @@ apply_expanded_route_if_present() {
   # a distinct rc so the caller collapses the pair instead of letting one arm
   # drift; the route written above stays valid for a solo run.
   APPLY_EXPANDED_ROUTE_DRIFT_DETAIL=""
-  if [[ -n "$challenge_side" && -f "$feature_dir/challenge-intent.json" ]]; then
+  local pair_collapsed="false"
+  if [[ -n "$state_file" && -f "$state_file" ]] \
+    && jq -e --arg i "$issue" '.tasks[$i].challenge == false' "$state_file" >/dev/null 2>&1; then
+    pair_collapsed="true"
+  fi
+  if [[ -n "$challenge_side" && "$pair_collapsed" != "true" && -f "$feature_dir/challenge-intent.json" ]]; then
     local drifted="" drift_rc=0
     drifted="$(challenge_route_drift_check "$routing_file" "$issue" "$challenge_side" \
       "$feature_dir/challenge-intent.json" "$state_file")" || drift_rc=$?

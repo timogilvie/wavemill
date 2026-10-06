@@ -19257,6 +19257,10 @@ monitor_issue_state() {
               FINALIZED_CHALLENGE_CODER=""
               FINALIZED_CHALLENGE_STAGE=""
               finalize_challenge_execution_intent_before_coding "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR" "$FEATURE_DIR" "$coder_model" "$challenge_role_meta" "$challenge_stage_meta"
+              # HOK-3156: materialising a plan-stage arm re-seals the primary's
+              # non-varied route, so re-read the coder it settled on.
+              coder_model=$(read_phase_config "$FEATURE_DIR" "coding" "model")
+              [[ -z "$coder_model" ]] && coder_model=$(get_task_meta "$ISSUE" "coderModel")
               if [[ -n "$FINALIZED_CHALLENGE_CODER" ]]; then
                 challenge_coder="$FINALIZED_CHALLENGE_CODER"
                 challenge_stage_meta="$FINALIZED_CHALLENGE_STAGE"
