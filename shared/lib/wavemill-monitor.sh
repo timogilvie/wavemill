@@ -244,6 +244,11 @@ source "$LIB_DIR/wavemill-common.sh"
 if [[ -f "$LIB_DIR/terminal-reconciler.sh" ]]; then
 source "$LIB_DIR/terminal-reconciler.sh"
 fi
+# Condition reconciler (HOK-3172). Sourced after wavemill-common.sh and transient-marker.sh
+# so marker_write and bounded_retry helpers are available.
+if [[ -f "$LIB_DIR/condition-reconciler.sh" ]]; then
+source "$LIB_DIR/condition-reconciler.sh"
+fi
 # Plan<->packet binding gate (HOK-3099). Sourced after wavemill-common.sh so
 # the mtime fallback can reuse standard helpers.
 if [[ -f "$LIB_DIR/plan-packet-binding.sh" ]]; then
@@ -633,6 +638,9 @@ terminalize_transient_retry_failure() {
       | .tasks[$issue].updated = (now | todateiso8601)
     end
   ' --arg issue "$issue" --arg reason "$terminal_reason" --arg detail "$error_detail" >/dev/null 2>&1 || true
+
+  # Record condition for reconciler (HOK-3172)
+  task_status_error_condition_record "$issue" "$feature_dir" "$terminal_reason" 2>/dev/null || true
 
   is_challenge="$(get_task_meta "$issue" "challenge" 2>/dev/null || true)"
   pr=$(read_state_value "" --arg i "$issue" '.tasks[$i].pr // empty')
@@ -2977,6 +2985,30 @@ set_task_phase() {
       | if $phase == "aborted" then .tasks[$issue].status = "aborted" else . end' \
      --arg issue "$issue" --arg phase "$phase"; then
     log_warn "set_task_phase: failed to update $issue"
+  fi
+}
+
+# task_status_error_condition_record <issue> <state_dir> <reason>
+# Records condition for status=error (HOK-3172).
+# Stores .tasks[$i].statusCondition with operator-event trigger.
+task_status_error_condition_record() {
+  local issue="$1"
+  local state_dir="$2"
+  local reason="$3"
+
+  local head
+  head=$(git -C "$state_dir" rev-parse HEAD 2>/dev/null || echo "")
+
+  local condition_json
+  condition_json=$(marker_condition_json --head "$head" --state-dir "$state_dir" --expires-on "operator-event" 2>/dev/null || echo "{}")
+
+  # Add reason to condition
+  condition_json=$(jq --arg r "$reason" '. + {reason: $r}' <<< "$condition_json" 2>/dev/null || echo "{}")
+
+  # Store via task_state_mutate_existing to avoid recreating reaped tasks
+  if declare -F task_state_mutate_existing >/dev/null 2>&1; then
+    task_state_mutate_existing "$issue" "$state_dir" \
+      "$(jq -n --argjson cond "$condition_json" '{statusCondition: $cond}')" 2>/dev/null || true
   fi
 }
 
@@ -10277,11 +10309,13 @@ READY_TRANSIENT_MAX_ATTEMPTS=6
 
 write_ready_attention_file() {
   local state_dir="$1" message="$2"
+  shift 2
+  local -a condition_flags=("$@")
   local repo_dir
   repo_dir=$(git -C "$state_dir" rev-parse --show-toplevel 2>/dev/null) || return 0
   local head_sha
   head_sha=$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null) || return 0
-  marker_write "$state_dir/.needs-attention" --kind ready-attention --head "$head_sha" --reason "$message"
+  marker_write "$state_dir/.needs-attention" --kind ready-attention --head "$head_sha" --reason "$message" "${condition_flags[@]}"
 }
 
 _write_cross_pr_diagnostic() {
@@ -10522,12 +10556,14 @@ clear_transient_mergeability_state() {
 
 write_transient_ready_attention_file() {
   local state_dir="$1" message="$2"
-  write_ready_attention_file "$state_dir" "$message"
+  shift 2
+  local -a condition_flags=("$@")
+  write_ready_attention_file "$state_dir" "$message" "${condition_flags[@]}"
   local repo_dir
   repo_dir=$(git -C "$state_dir" rev-parse --show-toplevel 2>/dev/null) || return 0
   local head_sha
   head_sha=$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null) || return 0
-  marker_write "$state_dir/.needs-attention-transient" --kind ready-attention-transient --head "$head_sha" --reason "$message"
+  marker_write "$state_dir/.needs-attention-transient" --kind ready-attention-transient --head "$head_sha" --reason "$message" "${condition_flags[@]}"
 }
 
 clear_ready_attention() {
@@ -11846,8 +11882,10 @@ review_recovery_coordinator_locked() {
       local _repeat_head
       _repeat_head="$(review_result_review_head_sha "$feature_dir")"
       failure_reason="Review infrastructure recovery exhausted: native-review-timeout repeated at head ${_repeat_head:-unknown} for PR #$pr_number; $(review_infra_recovery_next_action "$category")"
-      bounded_retry_mark_exhausted "$feature_dir" "review-infra-recovery" "$failure_reason" || true
-      write_ready_attention_file "$feature_dir" "Review failed on infrastructure (native-review-timeout) for PR #$pr_number, $(review_infra_recovery_next_action "$category")."
+      bounded_retry_mark_exhausted "$feature_dir" "review-infra-recovery" "$failure_reason" \
+        --head "${retry_identity:-$_repeat_head}" --expires-on "head,operator-event,review-artifact-substantive" --review-artifact || true
+      write_ready_attention_file "$feature_dir" "Review failed on infrastructure (native-review-timeout) for PR #$pr_number, $(review_infra_recovery_next_action "$category")." \
+        --head "${retry_identity:-$_repeat_head}" --expires-on "head,operator-event,review-artifact" --review-artifact
       if [[ -n "$(_challenge_side_for_issue "$issue" 2>/dev/null || true)" ]]; then
         local _repeat_side
         _repeat_side="$(_challenge_side_for_issue "$issue" 2>/dev/null || true)"
@@ -11874,8 +11912,10 @@ review_recovery_coordinator_locked() {
         ;;
       exhausted)
         failure_reason="Review infrastructure recovery exhausted after $(bounded_retry_count "$feature_dir" "review-infra-recovery") attempt(s) for PR #$pr_number (category=${category}); $(review_infra_recovery_next_action "$category")"
-        bounded_retry_mark_exhausted "$feature_dir" "review-infra-recovery" "$failure_reason" || true
-        write_ready_attention_file "$feature_dir" "Review failed on infrastructure (${category}) for PR #$pr_number, $(review_infra_recovery_next_action "$category")."
+        bounded_retry_mark_exhausted "$feature_dir" "review-infra-recovery" "$failure_reason" \
+          --head "$retry_identity" --expires-on "head,operator-event,review-artifact-substantive" --review-artifact || true
+        write_ready_attention_file "$feature_dir" "Review failed on infrastructure (${category}) for PR #$pr_number, $(review_infra_recovery_next_action "$category")." \
+          --head "$retry_identity" --expires-on "head,operator-event,review-artifact" --review-artifact
         if [[ "$category" == "native-review-timeout" ]]; then
           local review_timeout_side
           review_timeout_side="$(_challenge_side_for_issue "$issue" 2>/dev/null || true)"
@@ -11914,8 +11954,10 @@ review_recovery_coordinator_locked() {
   if [[ "$allow_context_reroute" == "true" ]]; then
     if ! rerouted_model="$(select_context_window_recovery_reviewer "$reviewer_model" "$wt_dir")"; then
       failure_reason="Review context-window recovery cannot find a certified larger-context reviewer for PR #$pr_number (category=${category}); $(review_infra_recovery_next_action "$category")"
-      bounded_retry_mark_exhausted "$feature_dir" "review-infra-recovery" "$failure_reason" || true
-      write_ready_attention_file "$feature_dir" "Review failed on infrastructure (${category}) for PR #$pr_number, $(review_infra_recovery_next_action "$category"). ${REVIEW_CONTEXT_REROUTE_LAST_ERROR:-No larger-context reviewer available.}"
+      bounded_retry_mark_exhausted "$feature_dir" "review-infra-recovery" "$failure_reason" \
+        --head "$retry_identity" --expires-on "head,operator-event,review-artifact-substantive" --review-artifact || true
+      write_ready_attention_file "$feature_dir" "Review failed on infrastructure (${category}) for PR #$pr_number, $(review_infra_recovery_next_action "$category"). ${REVIEW_CONTEXT_REROUTE_LAST_ERROR:-No larger-context reviewer available.}" \
+        --head "$retry_identity" --expires-on "head,operator-event,review-artifact" --review-artifact
       review_recovery_restore_terminal_result "$feature_dir" "$reviewer_agent" "$reviewer_model" "$failure_reason" "$source" "$prior_json"
       return 1
     fi
@@ -11998,19 +12040,6 @@ review_recovery_coordinator_locked() {
 # that gate is reached, so a terminalized arm stayed halted across new commits
 # (HOK-2924 reset-on-new-head). Also lifts the pending-ready-recheck halt that
 # was marked in lockstep with it.
-review_infra_recovery_reset_if_new_head() {
-  local state_dir="$1" current_head="$2" stored_key
-  [[ -n "$current_head" ]] || return 0
-  stored_key="$(bounded_retry_head "$state_dir" "review-infra-recovery")"
-  [[ -n "$stored_key" && "${stored_key%%:*}" != "$current_head" ]] || return 0
-  bounded_retry_clear "$state_dir" "review-infra-recovery"
-  case "$(bounded_retry_exhaustion_reason "$state_dir" "pending-ready-recheck")" in
-    "Review infrastructure recovery is exhausted"*)
-      bounded_retry_clear "$state_dir" "pending-ready-recheck"
-      ;;
-  esac
-}
-
 relaunch_review_after_infra_recovery() {
   local issue="$1" slug="$2" title="$3" wt_dir="$4" branch="$5" base_branch="$6" pr_number="$7" state_dir="$8"
   local category recorded_head current_head identity timeout_identity reviewer_identity
@@ -12348,11 +12377,19 @@ ready_current_github_head() {
 #                       reset, or the refusal reason (rc 1/2)
 # rc 0: already matching or synced; rc 1: GitHub head unavailable;
 # rc 2: refused (diverged, wrong branch, fetch/reset failure).
+# ready_sync_worktree_to_github_head
+# Syncs worktree to PR head. Return codes:
+#   0: synced or already at PR head
+#   1: transient failure (defer)
+#   2: refusal (terminal for this head)
+#   3: GitHub PR head lag (waiting on PR cache to catch up) - HOK-3171
+# Sets READY_SYNC_HEAD, READY_SYNC_DETAIL, and (for rc 3) READY_SYNC_OBSERVED_PR_HEAD
 ready_sync_worktree_to_github_head() {
   local wt_dir="$1" branch="$2" pr_number="$3" state_dir="$4"
   local gh_head local_head pre_fetch_origin current_branch tend_marker tend_pushed tend_previous sync_reason
   READY_SYNC_HEAD=""
   READY_SYNC_DETAIL=""
+  READY_SYNC_OBSERVED_PR_HEAD=""
 
   gh_head=$(ready_current_github_head "$wt_dir" "$pr_number")
   if [[ -z "$gh_head" ]]; then
@@ -12394,6 +12431,29 @@ ready_sync_worktree_to_github_head() {
       && git -C "$wt_dir" merge-base --is-ancestor "$local_head" "$pre_fetch_origin" >/dev/null 2>&1; then
       sync_reason="remote rewrite"
     else
+      # HOK-3171: check git ls-remote before refusing — may be GitHub lag
+      local remote_branch_head ls_remote_rc
+      if declare -F _with_timeout >/dev/null 2>&1; then
+        remote_branch_head=$(_with_timeout "${API_TIMEOUT:-30}" git -C "$wt_dir" ls-remote origin "refs/heads/$branch" 2>/dev/null | awk '{print $1}' || true)
+        ls_remote_rc=$?
+      else
+        remote_branch_head=$(git -C "$wt_dir" ls-remote origin "refs/heads/$branch" 2>/dev/null | awk '{print $1}' || true)
+        ls_remote_rc=$?
+      fi
+
+      if [[ $ls_remote_rc -ne 0 || -z "$remote_branch_head" ]]; then
+        READY_SYNC_DETAIL="remote branch head for $branch is unavailable (git ls-remote failed)"
+        return 1
+      fi
+
+      if [[ "$remote_branch_head" == "$local_head" ]]; then
+        # GitHub PR head lags pushed branch head
+        READY_SYNC_OBSERVED_PR_HEAD="$gh_head"
+        READY_SYNC_DETAIL="PR #$pr_number head ${gh_head:0:7} lags pushed branch head ${local_head:0:7} (GitHub head lag)"
+        return 3
+      fi
+
+      # Genuinely unpushed local work
       READY_SYNC_DETAIL="task worktree HEAD ${local_head:0:7} has commits that are not on PR head ${gh_head:0:7} (unpushed local work)"
       return 2
     fi
@@ -12724,7 +12784,10 @@ launch_ready_phase() {
       return $?
     fi
     strip_ready_label_if_review_not_passed "$wt_dir" "$pr_number" "$state_dir" || true
-    write_ready_attention_file "$state_dir" "Review verdict does not pass readiness gate for PR #$pr_number ($review_summary)."
+    local _ready_gate_head
+    _ready_gate_head=$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || echo "")
+    write_ready_attention_file "$state_dir" "Review verdict does not pass readiness gate for PR #$pr_number ($review_summary)." \
+      --head "$_ready_gate_head" --expires-on "head,operator-event,review-artifact" --review-artifact
     log_error "  $issue: refusing ready phase for PR #$pr_number; $review_summary"
     return 1
   fi
@@ -12759,6 +12822,53 @@ launch_ready_phase() {
         "$(jq -cn --argjson pr "$pr_number" '{type:"ready",verdict:"pending",prNumber:$pr,pendingReason:"head-unverified"}')"
       log "info" "  $issue: $READY_SYNC_DETAIL - deferring Ready (PR #$pr_number)"
       return 4
+      ;;
+    3)
+      # HOK-3171: GitHub PR head lags pushed branch head - bounded wait
+      bounded_retry_reset_if_new_head "$state_dir" "ready-pr-head-lag" "$local_head"
+      local lag_count
+      lag_count=$(bounded_retry_increment "$state_dir" "ready-pr-head-lag" "$local_head")
+      local lag_max="${WAVEMILL_READY_PR_HEAD_LAG_MAX_ATTEMPTS:-10}"
+
+      if [[ $lag_count -gt $lag_max ]]; then
+        # Exhausted - refuse with terminal marker
+        if bounded_retry_mark_exhausted "$state_dir" "ready-pr-head-lag" \
+            "GitHub PR head has not caught up with pushed head after $lag_count checks" \
+            --head "$local_head" --observed "prHeadRefOid=$READY_SYNC_OBSERVED_PR_HEAD" --expires-on "head,operator-event,remote"; then
+          write_ready_attention_file "$state_dir" \
+            "GitHub PR head has not caught up with pushed head after $lag_count checks. Refusing Ready for PR #$pr_number." \
+            --head "$local_head" --observed "prHeadRefOid=$READY_SYNC_OBSERVED_PR_HEAD" --expires-on "head,operator-event,remote"
+        fi
+        log_error "  $issue: refusing ready phase for PR #$pr_number; GitHub head lag exhausted after $lag_count checks"
+        return 1
+      else
+        # Write waiting-on marker
+        local backoff_seconds
+        backoff_seconds=$(bounded_retry_backoff_seconds "$lag_count" 15 120)
+        marker_write "$state_dir/.ready-waiting-on.json" \
+          --kind waiting-on \
+          --head "$local_head" \
+          --waiting-on "pr-head=$local_head@$pr_number" \
+          --observed "prHeadRefOid=$READY_SYNC_OBSERVED_PR_HEAD" \
+          --expires-on "head,waiting-on,deadline,operator-event" \
+          --recheck-after-seconds "$backoff_seconds" \
+          --reason "Waiting for PR #$pr_number head to catch up with pushed branch head"
+
+        # Write pending ready result
+        write_stage_result "$state_dir" "ready" "running" "$current_agent" "$current_model" \
+          "PR #$pr_number head lags pushed branch head (GitHub lag); Ready deferred" \
+          "$(jq -cn --argjson pr "$pr_number" '{type:"ready",verdict:"pending",prNumber:$pr,pendingReason:"pr-head-lag"}')"
+
+        log "info" "  $issue: $READY_SYNC_DETAIL - holding for GitHub to catch up (check $lag_count/$lag_max)"
+        return 4
+      fi
+      ;;
+    2)
+      # Clear lag bucket on successful sync or genuine unpushed work
+      bounded_retry_clear "$state_dir" "ready-pr-head-lag"
+      write_ready_attention_file "$state_dir" "Task worktree does not match PR #$pr_number head and cannot be synced: $READY_SYNC_DETAIL. Refusing Ready."
+      log_error "  $issue: refusing ready phase for PR #$pr_number; $READY_SYNC_DETAIL"
+      return 1
       ;;
     *)
       write_ready_attention_file "$state_dir" "Task worktree does not match PR #$pr_number head and cannot be synced: $READY_SYNC_DETAIL. Refusing Ready."
@@ -17946,6 +18056,7 @@ handle_advance_command() {
     return 0
   fi
 
+  operator_event_record "$feature_dir" "advance" "$issue" "manual override" 2>/dev/null || true
   log "status" "$issue -> advance recorded; review will launch on the next monitor tick"
   MONITOR_COMMAND_STATUS="handled"
 }
@@ -18071,6 +18182,7 @@ handle_re_review_command() {
       if _run_phase_launch review launch_review_phase "$issue" "$slug" "$title" "$worktree" "$branch" "$base_branch" \
           "$reviewer_model" "$reviewer_agent" "$review_mode"; then
         log "status" "$issue -> re-review launched (will open PR)"
+        operator_event_record "$feature_dir" "re-review" "$issue" "no-PR branch" 2>/dev/null || true
         MONITOR_COMMAND_STATUS="handled"
         return 0
       fi
@@ -18105,6 +18217,7 @@ handle_re_review_command() {
     "manual re-review via mill input" "manual" "manual-rereview" "" 0 "false" || rc=$?
   if [[ "$rc" -eq 0 ]]; then
     log "status" "$issue -> re-review launched for PR #$pr"
+    operator_event_record "$feature_dir" "re-review" "$issue" "PR #$pr" 2>/dev/null || true
     MONITOR_COMMAND_STATUS="handled"
     return 0
   fi
@@ -19690,6 +19803,9 @@ monitor_issue_state() {
       save_task_state "$ISSUE" "$SLUG" "$BRANCH" "$WT_DIR" "" "error" "$current_agent"
       set_task_phase "$ISSUE" "error"
 
+      # Record condition for reconciler (HOK-3172)
+      task_status_error_condition_record "$ISSUE" "$FEATURE_DIR" "Agent exited without creating PR on branch $BRANCH" 2>/dev/null || true
+
       local hook_protocol="$LIB_DIR/../hooks/wavemill-hook-protocol.sh"
       if [[ -f "$hook_protocol" ]]; then
         # Surface the controller-detected lifecycle error through the same
@@ -20519,12 +20635,13 @@ monitor_issue_state() {
       if [[ -f "$ready_state_dir_path/.review-result.json" ]] \
           && ! review_result_missing_final_evidence "$ready_state_dir_path" \
           && review_result_infra_failure "$ready_state_dir_path"; then
-        review_infra_recovery_reset_if_new_head "$ready_state_dir_path" "$current_head"
         if bounded_retry_is_exhausted "$ready_state_dir_path" "review-infra-recovery"; then
           if bounded_retry_mark_exhausted "$ready_state_dir_path" "pending-ready-recheck" \
-              "Review infrastructure recovery is exhausted for PR #$PR; pending-ready halted until the review artifact changes"; then
+              "Review infrastructure recovery is exhausted for PR #$PR; pending-ready halted until the review artifact changes" \
+              --head "$current_head" --expires-on "head,operator-event,review-artifact-substantive" --review-artifact; then
             write_ready_attention_file "$ready_state_dir_path" \
-              "Review infrastructure recovery is exhausted for PR #$PR. Waiting for operator or a new commit."
+              "Review infrastructure recovery is exhausted for PR #$PR. Waiting for operator or a new commit." \
+              --head "$current_head" --expires-on "head,operator-event,review-artifact-substantive" --review-artifact
             log "status" "⛔ $ISSUE → Pending-ready halted for PR #$PR because review infrastructure recovery is exhausted"
           fi
           set_window_attention_state "$WIN" "needs-user"
@@ -20649,7 +20766,8 @@ monitor_issue_state() {
         # relaunching review. Abort on the first refusal instead of retrying.
         if review_gate_refusal_is_terminal "$ready_state_dir_path"; then
           if bounded_retry_mark_exhausted "$ready_state_dir_path" "pending-ready-recheck" \
-              "Ready launch refused for PR #$PR: review verdict does not pass the readiness gate (terminal until the review artifact changes)"; then
+              "Ready launch refused for PR #$PR: review verdict does not pass the readiness gate (terminal until the review artifact changes)" \
+              --head "$current_head" --expires-on "head,operator-event,review-artifact" --review-artifact; then
             log "status" "⛔ $ISSUE → Ready launch refused by review gate for PR #$PR; not retrying (terminal cause)"
           fi
           # HOK-3154: a challenge arm with a green sibling is retired instead
@@ -21573,6 +21691,10 @@ while :; do
         ;;
     esac
   done
+  # HOK-3172: reconcile condition markers before any gate reads them
+  if declare -F reconcile_condition_markers_tick >/dev/null 2>&1; then
+    reconcile_condition_markers_tick || true
+  fi
   poll_challenge_jobs
   check_backstage_health
   check_backstage_observer_health || true
