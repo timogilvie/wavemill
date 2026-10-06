@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import type { AgentMessage, Message } from './messages.ts';
 import type { AgentContext, LoopStopReason, WavemillLoopConfig } from './loop.ts';
 import { runWavemillLoop } from './loop.ts';
+import { createNativeModelsCollection } from './models.ts';
 import {
   ProviderIdentityMismatchError,
   ProviderIdentityTracker,
@@ -796,19 +797,29 @@ export async function runNativeReview(
     }
   };
 
+  // HOK-3162: Models owns auth injection; no Authorization: Bearer here.
   const modelConfig: WavemillLoopConfig['model'] = {
     id: provider.entry.model.id,
     name: provider.entry.model.name,
     api: String(provider.entry.model.api),
     provider: String(provider.entry.model.provider),
     baseUrl: provider.entry.model.baseUrl,
-    headers: {
-      ...(provider.entry.model.headers ?? {}),
-      Authorization: `Bearer ${apiKey}`,
-    },
+    headers: { ...(provider.entry.model.headers ?? {}) },
     // model.compat is provider-specific opaque config; runtime treats it as unknown.
     compat: provider.entry.model.compat as unknown,
   };
+  const nativeModels = createNativeModelsCollection({
+    env: {
+      [provider.entry.apiKeyEnv]: apiKey,
+      OPENAI_API_KEY: provider.entry.providerName === 'openai'
+        ? apiKey
+        : process.env.OPENAI_API_KEY,
+      OPENROUTER_API_KEY: provider.entry.providerName === 'openrouter'
+        ? apiKey
+        : process.env.OPENROUTER_API_KEY,
+    },
+    repoDir,
+  });
 
   const loopContext: AgentContext = {
     systemPrompt,
@@ -867,6 +878,7 @@ export async function runNativeReview(
   try {
     loopResult = await nativeReviewDeps.runWavemillLoop({
       model: modelConfig,
+      models: nativeModels,
       context: loopContext,
       maxTokens: effectiveMaxTokens,
       contextManagement: getNativeContextManagementConfig(options.repoDir),
