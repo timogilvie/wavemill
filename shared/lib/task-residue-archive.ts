@@ -83,16 +83,18 @@ function listUntrackedFiles(worktree: string, git: NonNullable<ArchiveTaskResidu
   return out.split('\0').filter((entry) => entry.length > 0);
 }
 
-function copyUntrackedFile(worktree: string, archiveDir: string, relPath: string): boolean {
+function copyUntrackedFile(worktree: string, archiveDir: string, relPath: string): void {
   const source = resolve(worktree, relPath);
   const destDir = resolve(archiveDir, 'untracked', dirname(relPath));
   const dest = resolve(archiveDir, 'untracked', relPath);
-  if (!existsSync(source)) return false;
+  if (!existsSync(source)) throw new Error(`file does not exist: ${relPath}`);
   const stats = statSync(source);
-  if (!stats.isFile() || stats.size > MAX_UNTRACKED_BYTES_PER_FILE) return false;
+  if (!stats.isFile()) throw new Error(`not a regular file (symlink, directory, etc.): ${relPath}`);
+  if (stats.size > MAX_UNTRACKED_BYTES_PER_FILE) {
+    throw new Error(`file exceeds size limit (${stats.size} > ${MAX_UNTRACKED_BYTES_PER_FILE}): ${relPath}`);
+  }
   mkdirSync(destDir, { recursive: true });
   copyFileSync(source, dest);
-  return true;
 }
 
 function resolveBaseRefs(options: ArchiveTaskResidueOptions): string[] {
@@ -135,18 +137,20 @@ export function archiveTaskResidue(options: ArchiveTaskResidueOptions): ArchiveT
   // The archive lives under `.wavemill/evals/artifacts/<ID>/` which may be
   // inside the worktree; listing untracked after mkdir would otherwise count
   // archive-created directories as fresh untracked entries.
-  let diffBody = '';
+  let diffBody: string;
   try {
     diffBody = git(['-C', options.worktree, 'diff', 'HEAD'], options.worktree);
-  } catch {
-    diffBody = '';
+  } catch (error) {
+    result.failureReason = `archive_diff_failed:${(error as Error).message}`;
+    return result;
   }
 
-  let untracked: string[] = [];
+  let untracked: string[];
   try {
     untracked = listUntrackedFiles(options.worktree, git);
-  } catch {
-    untracked = [];
+  } catch (error) {
+    result.failureReason = `archive_untracked_list_failed:${(error as Error).message}`;
+    return result;
   }
   if (untracked.length > MAX_UNTRACKED_FILES) {
     result.failureReason = 'archive_untracked_overflow';
@@ -171,9 +175,8 @@ export function archiveTaskResidue(options: ArchiveTaskResidueOptions): ArchiveT
   // Step 2: copy the pre-captured untracked file list.
   for (const rel of untracked) {
     try {
-      if (copyUntrackedFile(options.worktree, archivePath, rel)) {
-        result.untrackedCount += 1;
-      }
+      copyUntrackedFile(options.worktree, archivePath, rel);
+      result.untrackedCount += 1;
     } catch (error) {
       result.failureReason = `archive_untracked_copy_failed:${rel}:${(error as Error).message}`;
       return result;
