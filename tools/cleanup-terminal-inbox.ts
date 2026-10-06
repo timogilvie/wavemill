@@ -11,6 +11,7 @@ const options = {
   execute: { type: 'boolean', description: 'Perform eligible cleanup mutations. Defaults to dry-run.' },
   'dry-run': { type: 'boolean', description: 'Inspect and print decisions without mutating state or resources.' },
   abandon: { type: 'boolean', description: 'Explicitly abandon one aborted or closed-losing challenge arm locally; an unpublished PR-less head is archived to refs/archive/wavemill/<issue> first. Not accepted for bulk inbox mode.' },
+  'archive-and-reap': { type: 'boolean', description: 'HOK-3160: archive a delivered arm\'s residue (uncommitted edits, untracked files, PR-less unpublished commits) under .wavemill/evals/artifacts/<id>/retired-arm-residue/ and then reap. Only accepted for a single issue, and only when the task is delivered (merged PR, retired arm with merged sibling, or an abandoned PR-less arm).' },
   'repo-dir': { type: 'string', description: 'Repository directory that owns the workflow state' },
   'state-file': { type: 'string', description: 'Workflow state file path' },
   'base-branch': { type: 'string', description: 'Fallback base branch when task lifecycle lacks one' },
@@ -32,6 +33,9 @@ export async function runCleanupTerminalInboxCommand(args: CliArgs, positional: 
   if (inbox && args.abandon) {
     throw new Error('--abandon is only allowed for a single issue id, not bulk inbox cleanup');
   }
+  if (inbox && args['archive-and-reap']) {
+    throw new Error('--archive-and-reap is only allowed for a single issue id, not bulk inbox cleanup');
+  }
 
   const repoDir = resolveRepoDir(args['repo-dir']);
   const decisions = await cleanupTerminalInbox({
@@ -42,6 +46,7 @@ export async function runCleanupTerminalInboxCommand(args: CliArgs, positional: 
     issue: inbox ? undefined : target,
     execute: args.execute === true,
     abandon: args.abandon === true,
+    archiveAndReap: args['archive-and-reap'] === true,
     json: args.json === true,
     out: args.out,
   });
@@ -68,6 +73,7 @@ export async function runCleanupTerminalInboxCli(argv: string[] = process.argv.s
       'wavemill cleanup inbox --execute',
       'wavemill cleanup HOK-3002_c --abandon --execute',
       'wavemill cleanup HOK-2815_c --abandon --execute',
+      'wavemill cleanup HOK-3160_c --archive-and-reap --execute',
     ],
     run: ({ args, positional }) => runCleanupTerminalInboxCommand(args, positional),
   }, argv);

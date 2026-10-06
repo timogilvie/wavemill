@@ -103,6 +103,19 @@
         },
         "responseId": {
           "type": "string"
+        },
+        "piRuntimeVersions": {
+          "description": "HOK-3164: installed Pi runtime package versions that ran this stage.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "pi-agent-core": {
+              "type": "string"
+            },
+            "pi-ai": {
+              "type": "string"
+            }
+          }
         }
       }
     },

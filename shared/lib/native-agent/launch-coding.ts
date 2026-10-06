@@ -11,6 +11,7 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AgentContext, LoopResult, WavemillLoopConfig } from './loop.ts';
 import { runWavemillLoop } from './loop.ts';
+import { createNativeModelsCollection } from './models.ts';
 import {
   ProviderIdentityMismatchError,
   ProviderIdentityTracker,
@@ -27,6 +28,7 @@ import {
 } from './providers.ts';
 import { TranscriptWriter } from './transcript.ts';
 import { SessionStreamWriter, resolveSessionEventStreamPath } from './session-stream.ts';
+import { piRuntimeVersionsField, resolvePiRuntimeVersions } from './pi-runtime-version.ts';
 import { captureToolDecisionsFromStream } from './tool-decision-capture.ts';
 import type { SessionStreamConfig } from './loop.ts';
 import { createReadOnlyTools, READ_ONLY_PATH_FIELDS } from './tools/read-only.ts';
@@ -587,6 +589,8 @@ function buildProviderErrorSuggestedAction(kind: string): string {
       return 'Fix native provider authentication/model configuration, then rerun native coding.';
     case 'context-window-exceeded':
       return 'Rerun with compressed context or a larger-context model.';
+    case 'provider-response-incomplete':
+      return 'The provider blocked the response (e.g. content filter). Inspect the prompt and rerun with revised input; retries will not change this outcome.';
     case 'provider-transient-error':
     case 'provider-unknown-error':
       return 'Rerun native coding; the transcript and completed tool-call counts are preserved in this handoff.';
@@ -721,6 +725,7 @@ function buildCompletionAttribution(input: {
     const evidence: NonNullable<Parameters<typeof updateStageResult>[2]['executionEvidence']> = {
       status: 'direct',
       source: 'provider-response',
+      ...piRuntimeVersionsField(),
       detail: `verified ${summary.identityVerdict} after ${summary.turnsVerified} turn(s)`,
       recordedAt: nowIso,
       ...(summary.providerReportedModel ? { providerReportedModel: summary.providerReportedModel } : {}),
@@ -747,6 +752,7 @@ function buildCompletionAttribution(input: {
     executionEvidence: {
       status: 'direct',
       source: 'native-runtime',
+      ...piRuntimeVersionsField(),
       recordedAt: nowIso,
     },
     modelAttributionEligible: attributionEligible,
@@ -1001,13 +1007,32 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
     }
 
     const apiKey = readyProvider ? getNativeProviderApiKey(readyProvider) : undefined;
+    // HOK-3162: Models owns auth injection via the collection's AuthContext,
+    // so model.headers no longer carries an Authorization: Bearer header.
     const model = options.loopModelOverride ?? {
       ...readyProvider!.model,
-      headers: {
-        ...(readyProvider!.model.headers ?? {}),
-        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-      },
+      headers: { ...(readyProvider!.model.headers ?? {}) },
     };
+    // When launching through the ready-provider gate (no operator override),
+    // build a Models collection whose AuthContext exposes the resolved api
+    // key under the canonical variable each built-in factory reads.
+    // Operator overrides keep the active-models fallback so scripted tests
+    // and recovery paths that pre-register their own stream dispatch keep
+    // working unchanged (HOK-3162).
+    const nativeModels = !options.loopModelOverride && readyProvider && apiKey
+      ? createNativeModelsCollection({
+        env: {
+          [readyProvider.apiKeyEnv]: apiKey,
+          OPENAI_API_KEY: readyProvider.providerName === 'openai'
+            ? apiKey
+            : process.env.OPENAI_API_KEY,
+          OPENROUTER_API_KEY: readyProvider.providerName === 'openrouter'
+            ? apiKey
+            : process.env.OPENROUTER_API_KEY,
+        },
+        repoDir: options.repoDir,
+      })
+      : undefined;
     const modelName = model.name ?? model.id;
     const requestedModelName = options.resolvedModel?.trim() || modelName;
     // HOK-3143: build a provider-identity expectation from the certified
@@ -1044,6 +1069,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       }, options.repoDir);
       persistentSessionStreamWriter.writeSessionStarted({
         initialConfigDigest: `model:${model.provider}:${modelName}`,
+        piRuntimeVersions: resolvePiRuntimeVersions(),
       });
     } catch (error) {
       console.warn(`Failed to create persistent session stream writer: ${(error as Error).message}`);
@@ -1086,6 +1112,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       executionEvidence: {
         status: 'missing',
         source: providerIdentityExpectation ? 'provider-response' : 'native-runtime',
+        ...piRuntimeVersionsField(),
         detail: 'awaiting first provider turn',
         recordedAt: new Date().toISOString(),
       },
@@ -1162,6 +1189,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
 
     const runCodingLoop = () => runWavemillLoop({
       model,
+      ...(nativeModels ? { models: nativeModels } : {}),
       context,
       maxTokens: effectiveMaxTokens,
       contextManagement: getNativeContextManagementConfig(options.repoDir),
@@ -1547,6 +1575,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
         executionEvidence: {
           status: 'contradicted',
           source: 'provider-response',
+          ...piRuntimeVersionsField(),
           detail: `${error.reason}: expected=${error.expectedModel} reported=${error.reportedModel ?? '(none)'} turn=${error.turnIndex}`,
           recordedAt: new Date().toISOString(),
           ...(error.reportedModel ? { providerReportedModel: error.reportedModel } : {}),
@@ -1586,6 +1615,7 @@ export async function launchNativeCoding(options: LaunchNativeCodingOptions): Pr
       executionEvidence: {
         status: 'contradicted',
         source: 'native-runtime',
+        ...piRuntimeVersionsField(),
         detail: message,
         recordedAt: new Date().toISOString(),
       },
