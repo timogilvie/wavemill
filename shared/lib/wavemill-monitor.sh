@@ -902,6 +902,24 @@ challenge_varied_stage_model() {
   printf '%s' "$selected_model"
 }
 
+# HOK-3156 — the coder of a challenge arm. challengeModel names the varied
+# stage's model, so it only doubles as the coder for implementation-stage pairs
+# (and legacy state that predates challengeStage). Everything that needs the
+# coder must read it through here, never straight from challengeModel.
+challenge_coder_model_for_task() {
+  local issue="$1" coder stage
+  [[ -n "$issue" ]] || return 0
+  coder="$(get_task_meta "$issue" "coderModel" 2>/dev/null || true)"
+  if [[ -n "$coder" ]]; then
+    printf '%s\n' "$coder"
+    return 0
+  fi
+  stage="$(get_task_meta "$issue" "challengeStage" 2>/dev/null || true)"
+  if [[ -z "$stage" || "$stage" == "implementation" ]]; then
+    get_task_meta "$issue" "challengeModel" 2>/dev/null || true
+  fi
+}
+
 challenge_result_stage_for_launch() {
   case "${1:-}" in
     plan) printf '%s\n' "planning" ;;
@@ -1796,6 +1814,103 @@ challenge_reseal_primary_route() {
   return 0
 }
 
+# HOK-3156 fix #5 — one-variable preflight before a challenge arm's review.
+#
+# Non-deferred pairs launch both arms at bootstrap and reach review on their
+# own, so neither materialiser sees them. Before either arm's review launches,
+# compare both arms' launch routes (.phase-config.json); when they differ in
+# more than the varied stage the pair is dissolved now with a typed reason
+# instead of surfacing as multiple-varied-roles after both arms ran. Cached per
+# head SHA in .challenge-route-preflight.json so it runs once per head.
+#
+# Returns 0 to continue the review launch; 1 when this arm was itself torn
+# down by the collapse (the caller must stop processing it).
+#
+# Usage: challenge_pre_review_route_preflight <issue> <feature_dir> <wt_dir>
+challenge_pre_review_route_preflight() {
+  local issue="$1" feature_dir="$2" wt_dir="${3:-}"
+  [[ -n "$issue" && -d "$feature_dir" ]] || return 0
+  [[ -n "${TOOLS_DIR:-}" && -f "$TOOLS_DIR/check-challenge-route.ts" ]] || return 0
+
+  local role stage pair sibling primary_key challenger_key
+  role="$(get_task_meta "$issue" "challengeRole" 2>/dev/null || true)"
+  stage="$(get_task_meta "$issue" "challengeStage" 2>/dev/null || true)"
+  [[ "$role" == "primary" || "$role" == "challenger" ]] || return 0
+  [[ -n "$stage" ]] || return 0
+  if [[ "$role" == "challenger" ]]; then
+    pair="$(get_task_meta "$issue" "challengePairId" 2>/dev/null || true)"
+    [[ -n "$pair" && "$pair" != "$issue" ]] || pair="${issue%_c}"
+    primary_key="$pair"
+    challenger_key="$issue"
+    sibling="$pair"
+  else
+    primary_key="$issue"
+    challenger_key="${issue}_c"
+    sibling="$challenger_key"
+  fi
+
+  local sibling_slug sibling_wt sibling_dir
+  sibling_slug="$(read_state_value "" --arg i "$sibling" '.tasks[$i].slug // ""' 2>/dev/null || true)"
+  # No live sibling (deferred arm not yet materialised, or already collapsed):
+  # the fork-time preflight in the materialiser owns that case.
+  [[ -n "$sibling_slug" ]] || return 0
+  sibling_wt="$(read_state_value "" --arg i "$sibling" '.tasks[$i].worktree // ""' 2>/dev/null || true)"
+  [[ -n "$sibling_wt" ]] || sibling_wt="${WORKTREE_ROOT}/${sibling_slug}"
+  sibling_dir="$sibling_wt/features/$sibling_slug"
+  [[ -f "$sibling_dir/.phase-config.json" && -f "$feature_dir/.phase-config.json" ]] || return 0
+
+  local head cache="$feature_dir/.challenge-route-preflight.json"
+  head="$(git -C "${wt_dir:-$feature_dir}" rev-parse HEAD 2>/dev/null || echo "")"
+  if [[ -n "$head" && "$(jq -r '.head // ""' "$cache" 2>/dev/null || true)" == "$head" ]]; then
+    return 0
+  fi
+
+  local primary_dir challenger_dir out rc=0
+  if [[ "$role" == "primary" ]]; then
+    primary_dir="$feature_dir"; challenger_dir="$sibling_dir"
+  else
+    primary_dir="$sibling_dir"; challenger_dir="$feature_dir"
+  fi
+  out="$(npx tsx "$TOOLS_DIR/check-challenge-route.ts" --stage "$stage" \
+    --primary-feature-dir "$primary_dir" --challenger-feature-dir "$challenger_dir" \
+    --repo-dir "$REPO_DIR" 2>/dev/null)" || rc=$?
+  if (( rc != 0 && rc != 3 )); then
+    return 0
+  fi
+  jq -n --arg head "$head" --argjson rc "$rc" --arg out "$out" \
+    '{head: $head, checkedAt: (now | todate), status: (if $rc == 3 then "drift" else "ok" end),
+      result: ($out | fromjson? // null)}' > "$cache" 2>/dev/null || true
+  (( rc == 3 )) || return 0
+
+  local detail
+  detail="dimensions=$(jq -r '(.driftedFields // []) | join(",")' <<<"$out" 2>/dev/null || true)"
+  log_route_lifecycle "challenge_route_drift" "issue=$issue" "side=$role" "stage=$stage" "$detail"
+
+  local primary_pr challenger_pr
+  primary_pr="$(read_state_value "" --arg i "$primary_key" '.tasks[$i].pr // ""' 2>/dev/null || true)"
+  challenger_pr="$(read_state_value "" --arg i "$challenger_key" '.tasks[$i].pr // ""' 2>/dev/null || true)"
+  if [[ -n "$primary_pr" || -n "$challenger_pr" ]]; then
+    # An arm already has a PR: there is no clean pre-run collapse. Record the
+    # typed reason on both arms so the comparison and attribution read the same
+    # invalid cause; the pair voids at comparison rather than being judged.
+    log_warn "  $issue: challenge arms drifted beyond stage=$stage after a PR opened ($detail) — recording invalid_challenge:route-drift"
+    local key
+    for key in "$primary_key" "$challenger_key"; do
+      state_mutate "$STATE_FILE" \
+        'if .tasks[$k] != null then
+           .tasks[$k].challengeDivergenceReason = "route-drift"
+           | .tasks[$k].challengeRouteDriftDetail = $detail
+         else . end' \
+        --arg k "$key" --arg detail "$detail" >/dev/null 2>&1 || true
+    done
+    return 0
+  fi
+
+  challenge_collapse_route_drift "$issue" "$feature_dir" "$detail" || return 0
+  [[ "$CHALLENGE_ROUTE_DRIFT_COLLAPSED_SELF" == "true" ]] && return 1
+  return 0
+}
+
 # A pair whose two sides run the same model at the varied stage measures
 # nothing.  The comparison stage already rejects these, but only after both arms
 # have run; surfacing it at selection time makes the waste visible immediately.
@@ -1957,6 +2072,45 @@ challenge_intent_files_valid() {
   challenge_intent_file_json "$dir" >/dev/null 2>&1
 }
 
+# HOK-3156 — point a review-stage challenger's own route artifacts at its
+# sealed reviewer. Planning/coding entries are left as inherited.
+#
+# Usage: challenge_write_review_arm_route <challenger_feature_dir> <reviewer_model> <reviewer_agent> <review_mode>
+challenge_write_review_arm_route() {
+  local feature_dir="$1" reviewer_model="$2" reviewer_agent="${3:-}" review_mode="${4:-}"
+  [[ -n "$feature_dir" && -n "$reviewer_model" ]] || return 1
+  if [[ -z "$reviewer_agent" ]] && declare -F agent_resolve_from_model >/dev/null 2>&1; then
+    reviewer_agent="$(agent_resolve_from_model "$reviewer_model" "review" 2>/dev/null || true)"
+  fi
+  local provider
+  provider="$(phase_config_provider_for_agent "$reviewer_agent")"
+
+  ensure_phase_config_state_file "$feature_dir"
+  state_mutate "$feature_dir/.phase-config.json" \
+    '.review = {
+       model: $model,
+       stageRole: "review",
+       challengeSide: "challenger",
+       selectedAt: (now | todateiso8601),
+       mode: (if $mode != "" then $mode else (.review.mode // "") end)
+     }
+     + (if $agent != "" then {agent: $agent} else {} end)
+     + (if $provider != "" then {provider: $provider} else {} end)' \
+    --arg model "$reviewer_model" --arg agent "$reviewer_agent" \
+    --arg provider "$provider" --arg mode "$review_mode" || return 1
+
+  if [[ -f "$feature_dir/.routing-complete" ]]; then
+    state_mutate "$feature_dir/.routing-complete" \
+      '.reviewer = $model
+       | .reviewMode = (if $mode != "" then $mode else (.reviewMode // .reviewRecommended // "") end)
+       | .reviewRecommended = .reviewMode
+       | .challengeIntentApplied = true
+       | .intendedStage = "review"' \
+      --arg model "$reviewer_model" --arg mode "$review_mode" || return 1
+  fi
+  return 0
+}
+
 # HOK-2811 (Arbiter P2.4a) — mirror of challenge_cancel_challenger_arm.
 #
 # Materialise a deferred (awaiting_fork) challenger arm at the primary's
@@ -2010,6 +2164,39 @@ challenge_materialize_challenger_arm() {
     return 1
   fi
 
+  # HOK-3156: the sealed intent, not the bootstrap arm record, is the source of
+  # truth for the challenger's route. Its challenger side names the reviewer
+  # that will actually run; the arm record is only a fallback.
+  local sealed_intent=""
+  sealed_intent="$(echo "$arm_json" | jq -c '.executionIntent // empty' 2>/dev/null || true)"
+  if ! challenge_intent_json_is_canonical "$sealed_intent" && [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]]; then
+    sealed_intent="$(jq -c --arg issue "$primary_issue" '.tasks[$issue].challengeExecutionIntent // empty' "$STATE_FILE" 2>/dev/null || true)"
+  fi
+  if ! challenge_intent_json_is_canonical "$sealed_intent"; then
+    sealed_intent="$(challenge_intent_file_json "$primary_feature_dir" 2>/dev/null || true)"
+  fi
+  if challenge_intent_json_is_canonical "$sealed_intent"; then
+    local sealed_value
+    sealed_value="$(jq -r '(.challenger // {}) as $c
+      | ($c.reviewer.model // "") as $runtime
+      | if $runtime != "" then $runtime
+        elif (($c.challengeStage // .challengeStage // .selectedStage // "") == "review") and (($c.expectedStageModel // "") != "")
+          then $c.expectedStageModel
+        else ($c.expectedRoute.reviewer // "") end' <<<"$sealed_intent" 2>/dev/null || true)"
+    if [[ -n "$sealed_value" && "$sealed_value" != "$reviewer_model" ]]; then
+      [[ -n "$reviewer_model" ]] && \
+        log_warn "  $arm_key: arm record reviewer ($reviewer_model) differs from the sealed intent ($sealed_value) — using the sealed reviewer"
+      reviewer_model="$sealed_value"
+      reviewer_agent="$(jq -r '.challenger.reviewer.agent // .challenger.expectedStageAgent // ""' <<<"$sealed_intent" 2>/dev/null || true)"
+    fi
+    sealed_value="$(jq -r '.challenger.expectedRoute.reviewMode // ""' <<<"$sealed_intent" 2>/dev/null || true)"
+    [[ -n "$sealed_value" ]] && review_mode="$sealed_value"
+  fi
+  if [[ -z "$reviewer_model" ]]; then
+    log_error "  $arm_key: no challenger reviewer in the sealed intent or arm record"
+    return 1
+  fi
+
   local challenger_wt_dir="${WORKTREE_ROOT}/${arm_slug}"
   local challenger_feature_dir="${challenger_wt_dir}/features/${arm_slug}"
 
@@ -2022,10 +2209,34 @@ challenge_materialize_challenger_arm() {
   fi
 
   # Guard: challenger's review must not already have run in this or a prior
-  # attempt (would indicate materialisation somehow already produced a review).
-  if [[ -f "$challenger_feature_dir/.review-result.json" ]]; then
-    log_warn "  $arm_key: refusing to materialise — .review-result.json already exists"
+  # attempt. A `running` result left by a failed launch below is retryable.
+  local prior_review_status=""
+  prior_review_status="$(jq -r '.status // empty' "$challenger_feature_dir/.review-result.json" 2>/dev/null || true)"
+  if [[ -n "$prior_review_status" && "$prior_review_status" != "running" ]]; then
+    log_warn "  $arm_key: refusing to materialise — challenger review already $prior_review_status"
     return 1
+  fi
+
+  # HOK-3156 one-variable preflight (fix #5), before anything is created: the
+  # planner and coder the challenger inherits are what the primary ran (its
+  # .phase-config.json); they must equal the challenger's sealed route. A
+  # primary that drifted after sealing collapses the pair here, with a typed
+  # reason, instead of producing a multiple-varied-roles comparison.
+  if challenge_intent_json_is_canonical "$sealed_intent" \
+    && [[ -n "${TOOLS_DIR:-}" && -f "$TOOLS_DIR/check-challenge-route.ts" && -f "$primary_feature_dir/.phase-config.json" ]]; then
+    local preflight_out preflight_rc=0
+    preflight_out="$(npx tsx "$TOOLS_DIR/check-challenge-route.ts" --stage "${varied_stage:-review}" \
+      --intent-json "$sealed_intent" --primary-feature-dir "$primary_feature_dir" \
+      --repo-dir "$REPO_DIR" 2>/dev/null)" || preflight_rc=$?
+    if (( preflight_rc == 3 )); then
+      CHALLENGE_MATERIALIZE_DRIFT_DETAIL="dimensions=$(jq -r '(.driftedFields // []) | join(",")' <<<"$preflight_out" 2>/dev/null || true)"
+      log_warn "  $arm_key: arms differ beyond stage=${varied_stage:-review} (${CHALLENGE_MATERIALIZE_DRIFT_DETAIL}) — not materialising"
+      return 4
+    fi
+    if [[ "$(jq -r '.identicalAtVariedStage // false' <<<"$preflight_out" 2>/dev/null || true)" == "true" ]]; then
+      challenge_assert_arms_diverge "$primary_issue" "${varied_stage:-review}" \
+        "$(read_phase_config "$primary_feature_dir" "review" "model")" "$reviewer_model" "$sealed_intent"
+    fi
   fi
 
   # Step 2: branch + worktree. Tolerate a partial prior attempt where the
@@ -2125,6 +2336,19 @@ challenge_materialize_challenger_arm() {
     fi
   fi
 
+  # HOK-3156 fix #3: the copied .phase-config.json / .routing-complete carry
+  # the primary's reviewer. Rewrite the varied stage to the challenger's own
+  # sealed reviewer so every relaunch, stage-result write and route stamp sees
+  # the reviewer that actually runs. Planning and coding stay inherited: the
+  # preflight above proved they match the challenger's sealed route.
+  challenge_write_review_arm_route "$challenger_feature_dir" "$reviewer_model" "$reviewer_agent" "$review_mode" || {
+    log_error "  $arm_key: failed to write the challenger's own review route"
+    return 1
+  }
+  # The varied stage's result is never inherited; drop any stale result or
+  # marker left by a prior partial attempt before the review launches.
+  rm -f "$challenger_feature_dir/.review-result.json" "$challenger_feature_dir/.review-complete" 2>/dev/null || true
+
   # Step 4: stamp inherited stage results. The files are jq-additive rewrites
   # so schema validation (source: inherited allowed by
   # shared/schemas/stage-result.schema.json) still passes.
@@ -2168,12 +2392,15 @@ challenge_materialize_challenger_arm() {
   # Step 7: save the challenger's task-state entry at phase=review.
   local linear_issue
   linear_issue="$(get_linear_issue_id "$primary_issue" 2>/dev/null || echo "$primary_issue")"
+  # challengeModel names the varied stage's model (HOK-3156 fix #4): for a
+  # review-stage pair that is the reviewer, not the shared coder.
   save_task_state "$arm_key" "$arm_slug" "$arm_branch" "$challenger_wt_dir" \
     "" "" "${planner_agent:-$coder_agent}" "$linear_issue" \
-    "true" "$primary_issue" "challenger" "$coder_model" \
+    "true" "$primary_issue" "challenger" "$reviewer_model" \
     "$planner_model" "$coder_model" "$reviewer_model" \
     "$plan_depth" "$code_depth" "$review_mode" \
     "$varied_stage" "review"
+  challenge_set_varied_model "$arm_key" "$reviewer_model" "$reviewer_agent"
 
   # Register in monitor arrays so subsequent monitor_issue_state ticks find
   # the arm through the same lookup as any other task.
@@ -2501,6 +2728,7 @@ challenge_materialize_implementation_arm() {
     "$planner_model" "$coder_model" "$reviewer_model" \
     "$plan_depth" "$code_depth" "$review_mode" \
     "implementation" "coding"
+  challenge_set_varied_model "$arm_key" "$coder_model" "$coder_agent"
   BRANCH_BY_ISSUE["$arm_key"]="$arm_branch"
   SLUG_BY_ISSUE["$arm_key"]="$arm_slug"
   state_mutate "$STATE_FILE" \
@@ -2676,6 +2904,7 @@ challenge_maybe_materialize_deferred_arms() {
     bounded_retry_increment "$primary_feature_dir" "$bucket" "$head" >/dev/null 2>&1 || true
 
     local materialise_rc=0
+    CHALLENGE_MATERIALIZE_DRIFT_DETAIL=""
     if [[ "$arm_stage" == "implementation" ]]; then
       challenge_materialize_implementation_arm \
         "$primary_issue" "$primary_slug" "$arm_json" \
@@ -2709,6 +2938,19 @@ challenge_maybe_materialize_deferred_arms() {
         "issue=$primary_issue" \
         "arm=$arm_key" \
         "reason=missing_challenge_intent"
+    elif (( materialise_rc == 4 )); then
+      # HOK-3156: the arms would differ beyond the varied stage. Collapse the
+      # pair before the challenger exists; the primary continues solo.
+      local drift_detail="${CHALLENGE_MATERIALIZE_DRIFT_DETAIL:-route-drift}"
+      bounded_retry_mark_exhausted "$primary_feature_dir" "$bucket" "route-drift: $drift_detail" >/dev/null 2>&1 || true
+      challenge_arms_set_state "$primary_issue" "$arm_key" "materializing" "awaiting_fork" 2>/dev/null || true
+      challenge_arms_cancel_pending "$primary_issue" "route-drift" "$drift_detail" || true
+      log_route_lifecycle "challenge_collapsed" \
+        "issue=$primary_issue" \
+        "slug=$primary_slug" \
+        "stage=$arm_stage" \
+        "reason=route-drift" \
+        "detail=\"$drift_detail\""
     elif (( materialise_rc == 3 )); then
       # HOK-3086: the plan-time fork point is gone or unusable and cannot be
       # rebuilt once the primary's coder has run — terminal, never re-forked
@@ -14306,7 +14548,9 @@ maybe_run_challenge_eval() {
       return 0
     fi
   fi
-  solution_model=$(get_task_meta "$issue" "challengeModel")
+  # The eval's solution model has always been the coder; keep that meaning now
+  # that challengeModel names the varied stage's model (HOK-3156).
+  solution_model="$(challenge_coder_model_for_task "$issue")"
   linear_issue=$(get_linear_issue_id "$issue")
   eval_agent=$(read_state_value "" --arg i "$issue" '.tasks[$i].agent // ""')
   [[ -z "$eval_agent" ]] && eval_agent="$AGENT_CMD"
@@ -14616,6 +14860,12 @@ maybe_run_challenge_comparison() {
   challenger_plan_depth=$(get_task_meta "$challenger_key" "planDepth")
   challenger_code_depth=$(get_task_meta "$challenger_key" "codeDepth")
   challenger_review_mode=$(get_task_meta "$challenger_key" "reviewMode")
+  # HOK-3156: primary_model/challenger_model are the varied stage's models; the
+  # routing coder is passed separately so a review- or plan-stage pair does not
+  # look like a coder variation as well.
+  local primary_coder challenger_coder
+  primary_coder="$(challenge_coder_model_for_task "$primary_key")"
+  challenger_coder="$(challenge_coder_model_for_task "$challenger_key")"
 
   log "status" "  ⚖ [mill] comparison running: pair=$pair_id primary_pr=#$primary_pr challenger_pr=#$challenger_pr"
   job_dir=$(challenge_job_dir)
@@ -14636,6 +14886,7 @@ maybe_run_challenge_comparison() {
     --issue "$linear_issue" --pair-id "$pair_id" \
     --primary-pr "$primary_pr" --challenger-pr "$challenger_pr" \
     --primary-model "$primary_model" --challenger-model "$challenger_model" \
+    --primary-coder "${primary_coder:-$primary_model}" --challenger-coder "${challenger_coder:-$challenger_model}" \
     --primary-planner "$primary_planner" --primary-reviewer "$primary_reviewer" \
     --primary-plan-depth "$primary_plan_depth" --primary-code-depth "$primary_code_depth" --primary-review-mode "$primary_review_mode" \
     --challenger-planner "$challenger_planner" --challenger-reviewer "$challenger_reviewer" \
@@ -16369,7 +16620,11 @@ launch_task() {
   LAST_LAUNCHED_SLOTS=1
 
   linear_issue=$(get_linear_issue_id "$issue")
+  # A preset challenge arm (challengeModel set) relaunches with its stored
+  # coder. challengeModel itself names the varied stage's model (HOK-3156), so
+  # the coder is read through challenge_coder_model_for_task.
   challenge_model=$(get_task_meta "$issue" "challengeModel")
+  [[ -n "$challenge_model" ]] && challenge_model="$(challenge_coder_model_for_task "$issue")"
 
   log "status" "$issue: Launching - $title"
 
@@ -17108,7 +17363,16 @@ EOF
   if [[ "$effective_challenge" != "true" && -n "$challenge_role" ]]; then
     effective_challenge="true"
   fi
-  save_task_state "$issue" "$slug" "$branch" "$wt_dir" "" "" "${planner_agent:-$task_agent_cmd}" "$linear_issue" "$effective_challenge" "$challenge_pair" "${challenge_role:-}" "$task_model" "$planner_model" "$task_model" "$reviewer_model" "$plan_depth" "$code_depth" "$review_mode" "${challenge_stage:-}"
+  # challengeModel names the varied stage's model (HOK-3156); coderModel keeps
+  # the coder.
+  # A preset arm relaunching keeps its stored stage.
+  local primary_challenge_model="$task_model" varied_stage_for_state="${challenge_stage:-}"
+  [[ -n "$varied_stage_for_state" ]] || varied_stage_for_state="$(get_task_meta "$issue" "challengeStage" 2>/dev/null || true)"
+  if [[ "$effective_challenge" == "true" && -n "$varied_stage_for_state" ]]; then
+    primary_challenge_model="$(challenge_selection_health_varied_model "$varied_stage_for_state" "$planner_model" "$task_model" "$reviewer_model")"
+    [[ -n "$primary_challenge_model" ]] || primary_challenge_model="$task_model"
+  fi
+  save_task_state "$issue" "$slug" "$branch" "$wt_dir" "" "" "${planner_agent:-$task_agent_cmd}" "$linear_issue" "$effective_challenge" "$challenge_pair" "${challenge_role:-}" "$primary_challenge_model" "$planner_model" "$task_model" "$reviewer_model" "$plan_depth" "$code_depth" "$review_mode" "${challenge_stage:-}"
   if [[ "$challenge_enabled_for_launch" == "true" ]]; then
     if [[ "${defer_challenger:-false}" == "true" ]]; then
       # HOK-2811: Review-stage — record the challenger as a pending arm on the
@@ -17136,7 +17400,7 @@ EOF
         "${WORKTREE_ROOT}/${slug}/features/${slug}" \
         "$challenge_execution_intent"
     else
-      save_task_state "$challenger_key" "$challenger_slug" "task/${challenger_slug}" "${WORKTREE_ROOT}/${challenger_slug}" "" "" "${challenger_planner_agent:-$challenger_agent}" "$linear_issue" "true" "$challenge_pair" "challenger" "$challenger_model" "$challenger_planner" "$challenger_model" "$challenger_reviewer" "$challenger_plan_depth" "$challenger_code_depth" "$challenger_review_mode" "$challenge_stage"
+      save_task_state "$challenger_key" "$challenger_slug" "task/${challenger_slug}" "${WORKTREE_ROOT}/${challenger_slug}" "" "" "${challenger_planner_agent:-$challenger_agent}" "$linear_issue" "true" "$challenge_pair" "challenger" "$(challenge_selection_health_varied_model "$challenge_stage" "$challenger_planner" "$challenger_model" "$challenger_reviewer")" "$challenger_planner" "$challenger_model" "$challenger_reviewer" "$challenger_plan_depth" "$challenger_code_depth" "$challenger_review_mode" "$challenge_stage"
       state_mutate "$STATE_FILE" '.tasks[$issue].challengeStage = $stage' --arg issue "$challenger_key" --arg stage "$challenge_stage" || true
       state_mutate "$STATE_FILE" \
         '.tasks[$issue].challengerLaunched = true
@@ -19272,6 +19536,12 @@ monitor_issue_state() {
             # terminalize once the phase-launch budget is spent.
             if ! phase_launch_gate "$ISSUE" "$FEATURE_DIR" "review" "$WIN"; then
               active_count=$((active_count + 1))
+              return 0
+            fi
+
+            # HOK-3156: a pair whose arms differ beyond the varied stage is
+            # collapsed before review spend, never discovered at comparison.
+            if ! challenge_pre_review_route_preflight "$ISSUE" "$FEATURE_DIR" "${WORKTREE_ROOT}/${SLUG}"; then
               return 0
             fi
 

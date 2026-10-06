@@ -3585,7 +3585,8 @@
         "operator_reroute",
         "missing_challenge_intent",
         "multiple-varied-roles",
-        "arm_infrastructure_failure"
+        "arm_infrastructure_failure",
+        "route-drift"
       ]
     },
     "ChallengeRoutingMeta": {
@@ -4671,6 +4672,7 @@
         "state_vs_derived_side_mismatch",
         "missing_challenge_intent",
         "arm_infrastructure_failure",
+        "route-drift",
         "identical_routing_dimensions",
         "provenance_invalid",
         "provenance_inconclusive",
@@ -4761,6 +4763,7 @@
         "missing_challenge_intent",
         "multiple-varied-roles",
         "arm_infrastructure_failure",
+        "route-drift",
         "divergent_pre_stage_inputs",
         "unverified_fork_commit",
         "missing_fork_identity",

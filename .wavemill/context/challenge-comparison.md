@@ -129,6 +129,22 @@ Challenge skipped native model <id> for <stage> stage (phase=<phase>, reason=<re
 
 This mirrors the router's `reasoning` field so dashboard tooling has consistent parity between router-level and challenge-level native rejections.
 
+## One-Variable Route Invariant (HOK-3156)
+
+A pair is only comparable when its arms differ in exactly the varied stage. `assessChallengeRouteInvariant()` in `shared/lib/challenge-execution-contract.ts` is the single check (CLI: `tools/check-challenge-route.ts`, exit 3 = drift); every writer that can move an arm's route after sealing asserts through it.
+
+| Writer | Rule |
+|---|---|
+| `apply_expanded_route_if_present` (post-expansion re-route) | A challenge arm freezes **every** route field to its sealed side (sealed → pre-expansion route → expanded route). The expanded route is kept as `rawExpandedRoute`; overridden fields are listed in `frozenFields` and logged as `challenge_route_frozen`. If the arms would still differ beyond the varied stage (e.g. an envelope intent without depths), it returns rc=3 and the monitor collapses the pair (`challenge_collapsed reason=route-drift`). |
+| Executed stages (all tasks) | A stage whose result shows it ran (`running/awaiting_user/completed/failed`) keeps its route: `.routing-complete` pins it (`executedStagesPinned`) and `.phase-config.json` leaves that stage untouched. The router never rewrites the planner after planning. |
+| Plan-stage materialiser (HOK-3065) | Passes executed stages to `resolve-challenge-task.ts --resolve-sealed --executed-stages`, re-seals the primary to the enriched intent (`challenge_primary_resealed`), and preflights before creating the challenger. Enrichment that would vary a second field collapses as `route-drift`. |
+| Review-stage materialiser | Takes the challenger's reviewer from the sealed intent, preflights the primary's `.phase-config.json` against the challenger's sealed route (drift → rc 4 → arm cancelled `route-drift`), writes the challenger's own `review` phase-config entry and `.routing-complete` reviewer, and never inherits `.review-result.json`. |
+| Pre-review preflight (`challenge_pre_review_route_preflight`) | Non-deferred pairs are checked once per head before either arm's review. No PR yet → collapse; a PR already open → both arms record `challengeDivergenceReason: route-drift`, which eval records carry so the comparison voids instead of judging. |
+
+`challengeModel` names the **varied stage's** model on every arm (the reviewer for review pairs, the planner for plan pairs); `challengeVariedModel` mirrors it so `resolve_stage_result_model` restores the arm's own model. Readers that need the coder use `coderModel` via `challenge_coder_model_for_task` (falling back to `challengeModel` only for implementation/legacy state); compare-prs receives it as `--primary-coder` / `--challenger-coder`.
+
+`route-drift` is an `InvalidChallengeReason` and a harness-fault arm-failure kind: no winner, no model forfeit. `multiple-varied-roles` remains the comparison-time backstop for pairs that predate the fix.
+
 ## Invalid-challenge auto-resolution (HOK-2970)
 
 When the challenge-pair resolver runs on `sibling-challenge-aborted` or `both-challenge-aborted`, it now cross-references the aborted arm(s)' latest eval record in `evals.jsonl`. If that record carries `invalidChallenge: true`, the pair is stamped as `comparisonOutcome: 'invalid_challenge'` (via `buildInvalidChallengeArmComparison`) with no `winner`/`winnerModel`, rather than a phantom `forfeit` handed to the surviving arm. `forkStage` and other retention fields are preserved.
@@ -142,6 +158,10 @@ Rules of the road:
 - **Reviewer-stage adjudicator:** `shared/lib/reviewer-stage-adjudicator.ts` is a thin façade over `foldAttestationsIntoStageAttribution` that fails closed to `insufficient_evidence` when the pair did not fork at `review` or lacks a shared implementation prefix. Delivery selection (`deliveryVerdict`) remains the generic arbiter's job; reviewer-stage adjudication is independent.
 
 ## Recent Changes
+
+### 2026-10-06T00:00:00.000Z - HOK-3156: Challenge pair routes no longer drift after sealing
+
+Post-expansion re-routing freezes challenge arms to their sealed routes and never rewrites an executed stage; review-stage forks write their own phase-config/routing and stage results; `challengeModel` is the varied stage's model; a one-variable preflight (fork time and pre-review) collapses drifted pairs as `route-drift` before comparison. See "One-Variable Route Invariant" above.
 
 ### 2026-10-02T12:00:00.000Z - HOK-3154: Review-gate refusal retires the arm (HOK-3147 third path)
 

@@ -215,3 +215,12 @@ test('classifies the HOK-3147 ready-exhausted kinds and the invalid_challenge pr
   assert.equal(isInvalidChallengeAbort(undefined), false);
   assert.equal(isInvalidChallengeAbort('operator_abort'), false);
 });
+
+test('classifies the HOK-3156 route-drift kind as a harness fault', () => {
+  // Route drift is produced by re-routing after sealing, never by the model:
+  // the pair voids as an invalid challenge with no winner and no forfeit.
+  assert.equal(parseAbortFailureKind('invalid_challenge:route-drift'), 'route-drift');
+  assert.equal(classifyArmFault({ failureKind: 'route-drift' }), 'harness-fault');
+  assert.equal(isModelQualitySignal(classifyArmFault({ failureKind: 'route-drift' })), false);
+  assert.equal(isInvalidChallengeAbort('invalid_challenge:route-drift'), true);
+});

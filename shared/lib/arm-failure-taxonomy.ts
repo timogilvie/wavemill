@@ -47,6 +47,10 @@ export type TerminalFailureKind =
   | 'review-not-ready'
   | 'review-identity-mismatch'
   | 'review-unattributed'
+  // HOK-3156: the arms' routes drifted after sealing (a non-varied role or
+  // depth differs) and the one-variable preflight retired the pair before
+  // comparison. The harness produced the drift, so no model is forfeited.
+  | 'route-drift'
   // HOK-3129: four recurring native arm-failure signatures the classifier
   // used to default into `native-unclassified`. All four are model-attributable
   // (the provider delivered output; the model failed to produce usable
@@ -171,6 +175,9 @@ export function classifyArmFault(input: { failureKind?: string | null; detail?: 
       return 'model-fault';
     case 'review-identity-mismatch':
     case 'review-unattributed':
+      return 'harness-fault';
+    // HOK-3156: route drift is produced by re-routing, never by the model.
+    case 'route-drift':
       return 'harness-fault';
     // HOK-3129: the planner exhausted its turn budget without emitting a final
     // plan; the reviewer finished without findings or a terminal verdict; the

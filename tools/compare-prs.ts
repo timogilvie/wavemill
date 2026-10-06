@@ -15,6 +15,7 @@ import {
   buildSkippedIdenticalComparison,
   buildUnscoredEvalComparison,
   detectJudgeDisagreement,
+  buildComparisonRoutingMeta,
   detectVariedDimensions,
   hasAnyVariedDimension,
   classifyChallengeType,
@@ -199,6 +200,14 @@ runTool({
     'challenger-pr': { type: 'string', description: 'Challenger PR number or URL' },
     'primary-model': { type: 'string', description: 'Primary solution model' },
     'challenger-model': { type: 'string', description: 'Challenger solution model' },
+    'primary-coder': {
+      type: 'string',
+      description: 'Primary coder model (HOK-3156; defaults to --primary-model for legacy implementation pairs)',
+    },
+    'challenger-coder': {
+      type: 'string',
+      description: 'Challenger coder model (HOK-3156; defaults to --challenger-model for legacy implementation pairs)',
+    },
     'primary-planner': { type: 'string', description: 'Primary planner model' },
     'primary-reviewer': { type: 'string', description: 'Primary reviewer model' },
     'primary-plan-depth': { type: 'string', description: 'Primary plan depth' },
@@ -342,23 +351,24 @@ runTool({
       });
 
     // Build routing metadata if provided
-      const primaryRouting: ChallengeRoutingMeta | undefined = args['primary-planner'] ? {
-        planner: (args['primary-planner'] as string) || '',
-        coder: primaryModel,
-        reviewer: (args['primary-reviewer'] as string) || '',
-        planDepth: (args['primary-plan-depth'] as string) || '',
-        codeDepth: (args['primary-code-depth'] as string) || '',
-        reviewMode: (args['primary-review-mode'] as string) || '',
-      } : undefined;
-
-      const challengerRouting: ChallengeRoutingMeta | undefined = args['challenger-planner'] ? {
-        planner: (args['challenger-planner'] as string) || '',
-        coder: challengerModel,
-        reviewer: (args['challenger-reviewer'] as string) || '',
-        planDepth: (args['challenger-plan-depth'] as string) || '',
-        codeDepth: (args['challenger-code-depth'] as string) || '',
-        reviewMode: (args['challenger-review-mode'] as string) || '',
-      } : undefined;
+      // --<side>-model is the varied stage's model (HOK-3156); the coder comes
+      // from --<side>-coder so a review-stage pair's routing does not read its
+      // reviewer as the coder.
+      const sideRouting = (side: 'primary' | 'challenger', variedModel: string): ChallengeRoutingMeta | undefined => (
+        args[`${side}-planner`]
+          ? buildComparisonRoutingMeta({
+            planner: args[`${side}-planner`] as string | undefined,
+            coder: args[`${side}-coder`] as string | undefined,
+            reviewer: args[`${side}-reviewer`] as string | undefined,
+            planDepth: args[`${side}-plan-depth`] as string | undefined,
+            codeDepth: args[`${side}-code-depth`] as string | undefined,
+            reviewMode: args[`${side}-review-mode`] as string | undefined,
+            variedModelFallback: variedModel,
+          })
+          : undefined
+      );
+      const primaryRouting = sideRouting('primary', primaryModel);
+      const challengerRouting = sideRouting('challenger', challengerModel);
 
       const variedDimensions = detectVariedDimensions(primaryRouting, challengerRouting);
       const primaryAttestation = primaryEval.challengeExecutionEvidence;

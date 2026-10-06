@@ -16,6 +16,7 @@ export const INVALID_CHALLENGE_REASONS = [
   'missing_challenge_intent',
   'multiple-varied-roles',
   'arm_infrastructure_failure',
+  'route-drift',
 ] as const;
 export type InvalidChallengeReason =
   | 'stage_override_lost'
@@ -41,7 +42,14 @@ export type InvalidChallengeReason =
    * Ready passed its checks but failed at route-stamp) before it could be
    * evaluated. There is no valid opponent, so no winner and no model forfeit.
    */
-  | 'arm_infrastructure_failure';
+  | 'arm_infrastructure_failure'
+  /**
+   * HOK-3156: the arms' routes drifted after sealing so they differ in more
+   * than the varied stage, detected by the one-variable preflight
+   * (`assessChallengeRouteInvariant`) before the comparison ran. A harness
+   * fault: no winner, no model forfeit.
+   */
+  | 'route-drift';
 
 export type DeliveryVerdictOutcome = 'primary' | 'challenger' | 'tie' | null;
 
@@ -388,6 +396,7 @@ type WorkflowChallengeTaskState = {
   challengeExecutionIntent?: ChallengeExecutionIntent;
   challengeIntent?: ChallengeExecutionIntent;
   challengeArms?: WorkflowChallengeArmState[];
+  challengeDivergenceReason?: unknown;
 };
 
 type WorkflowChallengeArmState = {
@@ -478,6 +487,28 @@ export function loadChallengeRoleFromState(
       ?? resolveEffectiveChallengeRole(key, challengePairId, task.challengeRole)
       ?? undefined;
     if (role) return role;
+  }
+  return undefined;
+}
+
+/**
+ * HOK-3156: an invalid-challenge cause the mill recorded on the pair's task
+ * state (e.g. `route-drift` from the pre-review preflight when an arm already
+ * had a PR). Both arms carry the stamp, so eval records on either side read
+ * the same cause and the comparison voids instead of judging a drifted pair.
+ */
+export function loadChallengeDivergenceFromState(
+  repoDir: string,
+  issueId: string | undefined,
+  challengePairId?: string,
+): InvalidChallengeReason | undefined {
+  if (!challengePairId) return undefined;
+  const state = loadWorkflowChallengeState(repoDir);
+  for (const key of stateTaskKeys(issueId, challengePairId)) {
+    const reason = clean(state?.tasks?.[key]?.challengeDivergenceReason);
+    if ((INVALID_CHALLENGE_REASONS as readonly string[]).includes(reason)) {
+      return reason as InvalidChallengeReason;
+    }
   }
   return undefined;
 }

@@ -21,6 +21,7 @@ import {
   isChallengeArmPendingState,
   sealChallengeDecision,
   assessChallengeRouteInvariant,
+  loadChallengeDivergenceFromState,
   sealedSideRoute,
   routeFromPhaseConfig,
   variedFieldsForStage,
@@ -709,6 +710,7 @@ test('every TypeScript divergence reason is accepted by the eval JSON schema', (
     'missing_challenge_intent',
     'multiple-varied-roles',
     'arm_infrastructure_failure',
+    'route-drift',
   ];
   for (const reason of reasons) {
     assert.equal(validateReason(reason), true, `schema rejects divergence reason ${reason}`);
@@ -1322,5 +1324,27 @@ test('checkChallengeRoute compares arm phase-configs and reports drift', () => {
     assert.equal(unreadable.status, 'unreadable');
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('loadChallengeDivergenceFromState reads a recorded route-drift cause for either arm', () => {
+  const repoDir = mkdtempSync(join(tmpdir(), 'challenge-divergence-'));
+  try {
+    mkdirSync(join(repoDir, '.wavemill'), { recursive: true });
+    writeFileSync(join(repoDir, '.wavemill', 'workflow-state.json'), JSON.stringify({
+      tasks: {
+        'HOK-3156': { challengeRole: 'primary', challengeDivergenceReason: 'route-drift' },
+        'HOK-3156_c': { challengeRole: 'challenger', challengeDivergenceReason: 'route-drift' },
+        'HOK-1': { challengeRole: 'primary', challengeDivergenceReason: 'not-a-reason' },
+      },
+    }));
+    assert.equal(loadChallengeDivergenceFromState(repoDir, 'HOK-3156', 'HOK-3156'), 'route-drift');
+    assert.equal(loadChallengeDivergenceFromState(repoDir, 'HOK-3156_c', 'HOK-3156'), 'route-drift');
+    // Unknown strings never become an invalid-challenge cause.
+    assert.equal(loadChallengeDivergenceFromState(repoDir, 'HOK-1', 'HOK-1'), undefined);
+    assert.equal(loadChallengeDivergenceFromState(repoDir, 'HOK-2', undefined), undefined);
+    assert.ok(INVALID_CHALLENGE_REASONS.includes('route-drift'));
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
   }
 });
