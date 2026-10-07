@@ -183,6 +183,7 @@ TESTS=(
   shared/lib/cross-pr-revert-detector.test.ts
   shared/lib/git-branch-changes.test.ts
   shared/lib/git-base-resolver.test.ts
+  shared/lib/review-diff-base.test.ts
   shared/lib/llm-cli.test.ts
   shared/lib/headless-llm.test.ts
   shared/lib/router-log.test.ts

@@ -31,12 +31,19 @@ import {
   type ReviewScopeGuardFinding,
   type ReviewScopeGuardToolError,
 } from './review-scope-guard.ts';
-import { REVIEW_SCOPE_UNVERIFIABLE_FAILURE_CATEGORY } from './stage-result.ts';
+import {
+  REVIEW_SCOPE_MISMATCH_FAILURE_CATEGORY,
+  REVIEW_SCOPE_UNVERIFIABLE_FAILURE_CATEGORY,
+} from './stage-result.ts';
 import {
   buildExecutedIdentity,
   resolveReviewStageChallengePin,
 } from './challenge-execution-contract.ts';
-import { resolveOriginFirstRef } from './git-base-resolver.ts';
+import {
+  resolveOriginFirstRef,
+  resolveReviewDiffBase,
+  type ReviewDiffBase,
+} from './git-base-resolver.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Types
@@ -78,6 +85,57 @@ export interface ReviewOptions {
 // Re-export types from review-engine for backward compatibility
 export type { ReviewFinding, ReviewResult, ReviewerPersona } from './review-engine.ts';
 
+/**
+ * The open PR for the current branch, as GitHub reports it. Used only by the
+ * best-effort review-scope-mismatch guard (HOK-3166).
+ */
+export type PrChangedFilesLookup =
+  | { status: 'ok'; number: number; headRefOid: string; files: string[] }
+  | { status: 'skipped'; reason: string };
+
+/** `gh pr view --json files` caps the list at this many entries. */
+export const GH_PR_FILES_LIMIT = 100;
+
+/**
+ * Look up the current branch's PR file list via `gh`. Any failure — no PR
+ * yet (coding-phase self-review), gh missing/unauthenticated, unparseable
+ * output — is a skip, never an error: the guard is defense in depth.
+ */
+export function lookupPrChangedFiles(repoDir: string): PrChangedFilesLookup {
+  let raw: string;
+  try {
+    raw = String(execShellCommand('gh pr view --json number,headRefOid,files', {
+      cwd: repoDir,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+      timeout: 15_000,
+    }));
+  } catch {
+    return { status: 'skipped', reason: 'no-pr' };
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as {
+      number?: unknown;
+      headRefOid?: unknown;
+      files?: Array<{ path?: unknown }>;
+    };
+    if (
+      typeof parsed.number !== 'number'
+      || typeof parsed.headRefOid !== 'string'
+      || !Array.isArray(parsed.files)
+    ) {
+      return { status: 'skipped', reason: 'unparseable' };
+    }
+    const files = parsed.files
+      .map((file) => file?.path)
+      .filter((path): path is string => typeof path === 'string' && path !== '');
+    return { status: 'ok', number: parsed.number, headRefOid: parsed.headRefOid, files };
+  } catch {
+    return { status: 'skipped', reason: 'unparseable' };
+  }
+}
+
 export const reviewRunnerDeps = {
   assertReviewableDiff,
   detectCrossPrReverts,
@@ -86,6 +144,8 @@ export const reviewRunnerDeps = {
   gatherReviewContextAsync,
   getCurrentBranch,
   getGitDiff,
+  lookupPrChangedFiles,
+  resolveReviewDiffBase,
   resolveReviewStageChallengePin,
   runReview,
   validateReviewScope,
@@ -117,19 +177,51 @@ export async function reviewChanges(
     message: `Checking git diff against ${targetBranch}`,
   });
 
+  // Fetch once and pin the whole run to one resolved base (HOK-3166): a bare
+  // local base branch in a task worktree is stale, and diffing it pulls other
+  // PRs' merged work into this review. An explicit sinceCommit is the
+  // operator's own scope choice and is used as given.
+  const diffBase = options.sinceCommit
+    ? undefined
+    : reviewRunnerDeps.resolveReviewDiffBase(repoDir, targetBranch);
+  const diffRef = diffBase?.ref ?? targetBranch;
+
   const branch = reviewRunnerDeps.getCurrentBranch(repoDir);
-  const diff = reviewRunnerDeps.getGitDiff(targetBranch, repoDir, options.sinceCommit);
+  const diff = reviewRunnerDeps.getGitDiff(diffRef, repoDir, options.sinceCommit);
   reviewRunnerDeps.assertReviewableDiff(
     diff,
     branch,
-    options.sinceCommit ? `commit ${options.sinceCommit.slice(0, 8)}` : targetBranch,
+    options.sinceCommit ? `commit ${options.sinceCommit.slice(0, 8)}` : diffRef,
   );
 
   await reporter?.emit({
     event: 'preflight_ok',
-    message: `Found committed changes against ${targetBranch}`,
-    details: { branch },
+    message: diffBase
+      ? `Found committed changes against ${describeDiffBase(diffBase)}`
+      : `Found committed changes against ${targetBranch}`,
+    details: {
+      branch,
+      ...(diffBase ? {
+        requestedBase: diffBase.requestedRef,
+        resolvedBase: diffBase.ref,
+        baseKind: diffBase.kind,
+        baseFetch: diffBase.fetch,
+        baseSha: diffBase.baseSha,
+        mergeBaseSha: diffBase.mergeBaseSha,
+      } : {}),
+    },
   });
+
+  if (diffBase?.kind === 'local') {
+    await reporter?.emit({
+      event: 'base_unresolved',
+      level: 'warn',
+      message:
+        `Diffing against local '${diffBase.ref}': no origin/${diffBase.ref} ref — ` +
+        'review scope may include already-merged work',
+      details: { requestedBase: diffBase.requestedRef, baseFetch: diffBase.fetch },
+    });
+  }
 
   if (!process.env.SKIP_PREFLIGHT_CHECK) {
     await reviewRunnerDeps.ensureClaudeAvailable({
@@ -144,7 +236,7 @@ export async function reviewChanges(
   });
 
   // Gather review context (skip design standards if explicitly requested)
-  const context = await reviewRunnerDeps.gatherReviewContextAsync(targetBranch, repoDir, {
+  const context = await reviewRunnerDeps.gatherReviewContextAsync(diffRef, repoDir, {
     designStandards: !options.skipUi,
     sinceCommit: options.sinceCommit,
   });
@@ -173,14 +265,65 @@ export async function reviewChanges(
     }
     : reviewContextWithDeterministicFindings;
 
+  const headSha = diffBase ? resolveHeadSha(repoDir) : null;
+  const scopeMatch = diffBase
+    ? checkReviewScopeMatch(context.metadata.files, headSha, reviewRunnerDeps.lookupPrChangedFiles(repoDir))
+    : undefined;
+  const withDiffBase = (result: ReviewResult): ReviewResult =>
+    withDiffBaseMetadata(result, diffBase, headSha, context.metadata.files.length);
+
   await reporter?.emit({
     event: 'context_loaded',
-    message: `Loaded review context for ${context.metadata.files.length} changed files`,
+    message: diffBase
+      ? `Loaded review context for ${context.metadata.files.length} changed files (base ${describeDiffBase(diffBase)})`
+      : `Loaded review context for ${context.metadata.files.length} changed files`,
     details: {
       hasUiChanges: context.metadata.hasUiChanges,
       fileCount: context.metadata.files.length,
+      ...(scopeMatch ? {
+        prFileCount: scopeMatch.prFileCount,
+        scopeCheck: scopeMatch.scopeCheck,
+      } : {}),
     },
   });
+
+  if (diffBase && scopeMatch?.scopeCheck === 'mismatch') {
+    // The diff covers files the PR does not: reviewing it would produce
+    // findings on other PRs' merged code. Refuse before the LLM runs and
+    // surface it as a retryable infrastructure condition (a retry re-fetches),
+    // never as a code defect (HOK-3166, HOK-2889).
+    await reporter?.emit({
+      event: 'scope_mismatch',
+      level: 'warn',
+      message:
+        `Review diff has ${context.metadata.files.length} files but PR #${scopeMatch.prNumber} has ` +
+        `${scopeMatch.prFileCount}; refusing to review files outside the PR`,
+      details: { extraFiles: scopeMatch.extraFiles.slice(0, MAX_LISTED_EXTRA_FILES) },
+    });
+    const mismatchDetail = describeScopeMismatch(diffBase, context.metadata.files.length, scopeMatch);
+    const mismatchResult: ReviewResult = {
+      verdict: 'error',
+      failureCategory: REVIEW_SCOPE_MISMATCH_FAILURE_CATEGORY,
+      reviewToolError: mismatchDetail,
+      codeReviewFindings: [{
+        severity: 'warning',
+        location: 'review-scope',
+        category: REVIEW_SCOPE_MISMATCH_FAILURE_CATEGORY,
+        description:
+          `${mismatchDetail} ` +
+          'This is a review-infrastructure condition, not a code defect; the review was not run ' +
+          `and is surfaced as failureCategory "${REVIEW_SCOPE_MISMATCH_FAILURE_CATEGORY}" so the orchestrator can retry it.`,
+      }],
+      metadata: {
+        branch,
+        files: context.metadata.files,
+        hasUiChanges: context.metadata.hasUiChanges,
+        designContextAvailable: context.designContext !== null,
+        uiVerificationRun: false,
+      },
+    };
+    return withDiffBase(mergeDeterministicFindings(mismatchResult, deterministic));
+  }
 
   // Pin the analysis model to the challenged reviewer when this run is part
   // of a reviewer-stage challenge pair, unless the caller already gave an
@@ -218,7 +361,7 @@ export async function reviewChanges(
           uiVerificationRun: false,
         },
       };
-      return mergeDeterministicFindings(failedResult, deterministic);
+      return withDiffBase(mergeDeterministicFindings(failedResult, deterministic));
     }
     requestedModel = challengePin?.model;
   }
@@ -236,7 +379,122 @@ export async function reviewChanges(
     ...(requestedModel ? { model: requestedModel } : {}),
   });
 
-  return mergeDeterministicFindings(result, deterministic);
+  return withDiffBase(mergeDeterministicFindings(result, deterministic));
+}
+
+// ────────────────────────────────────────────────────────────────
+// Diff base reporting & scope-mismatch guard (HOK-3166)
+// ────────────────────────────────────────────────────────────────
+
+/** Extra paths named in a scope-mismatch error before truncating. */
+const MAX_LISTED_EXTRA_FILES = 20;
+
+function shortSha(sha: string | null): string {
+  return sha ? sha.slice(0, 8) : 'unresolved';
+}
+
+/** e.g. `origin/auto/integration @ abc12345 (merge-base def67890)`. */
+function describeDiffBase(diffBase: ReviewDiffBase): string {
+  return `${diffBase.ref} @ ${shortSha(diffBase.baseSha)} (merge-base ${shortSha(diffBase.mergeBaseSha)})`;
+}
+
+function resolveHeadSha(repoDir: string): string | null {
+  try {
+    const sha = String(reviewRunnerDeps.execShellCommand('git rev-parse HEAD', {
+      cwd: repoDir,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    })).trim();
+    return sha || null;
+  } catch {
+    return null;
+  }
+}
+
+interface ReviewScopeMatch {
+  /** `match`, `mismatch`, or `skipped:<reason>` — logged in context_loaded details. */
+  scopeCheck: string;
+  prNumber?: number;
+  prFileCount?: number;
+  extraFiles: string[];
+}
+
+/**
+ * Compare the review's changed-file set with the PR's. Only a strict superset
+ * at the PR's own head is a mismatch: local unpushed review-fix commits
+ * legitimately differ from the PR (head mismatch → skipped), and a subset or
+ * disjoint set is not evidence the base is stale.
+ */
+export function checkReviewScopeMatch(
+  reviewFiles: string[],
+  headSha: string | null,
+  pr: PrChangedFilesLookup,
+): ReviewScopeMatch {
+  if (pr.status !== 'ok') {
+    return { scopeCheck: `skipped:${pr.reason}`, extraFiles: [] };
+  }
+  const base = { prNumber: pr.number, prFileCount: pr.files.length };
+  if (pr.files.length >= GH_PR_FILES_LIMIT) {
+    return { ...base, scopeCheck: 'skipped:pr-file-list-truncated', extraFiles: [] };
+  }
+  if (!headSha || headSha !== pr.headRefOid) {
+    return { ...base, scopeCheck: 'skipped:head-mismatch', extraFiles: [] };
+  }
+
+  const prFiles = new Set(pr.files);
+  const reviewSet = new Set(reviewFiles);
+  const isSuperset = [...prFiles].every((file) => reviewSet.has(file));
+  const extraFiles = [...reviewSet].filter((file) => !prFiles.has(file)).sort();
+  if (isSuperset && extraFiles.length > 0) {
+    return { ...base, scopeCheck: 'mismatch', extraFiles };
+  }
+  return { ...base, scopeCheck: 'match', extraFiles: [] };
+}
+
+function describeScopeMismatch(
+  diffBase: ReviewDiffBase,
+  reviewFileCount: number,
+  scopeMatch: ReviewScopeMatch,
+): string {
+  const listed = scopeMatch.extraFiles.slice(0, MAX_LISTED_EXTRA_FILES);
+  const more = scopeMatch.extraFiles.length - listed.length;
+  return (
+    `review-scope-mismatch: the diff against ${describeDiffBase(diffBase)} covers ${reviewFileCount} files, ` +
+    `a strict superset of PR #${scopeMatch.prNumber}'s ${scopeMatch.prFileCount}. ` +
+    `Files outside the PR: ${listed.join(', ')}${more > 0 ? ` (+${more} more)` : ''}.`
+  );
+}
+
+/**
+ * Record the base the review was computed against on the result so the
+ * `--json` output and stage-result artifact show it. The `reviewed*` names
+ * match the review-scope incident fields read by artifact diagnostics.
+ */
+function withDiffBaseMetadata(
+  result: ReviewResult,
+  diffBase: ReviewDiffBase | undefined,
+  headSha: string | null,
+  reviewedFileCount: number,
+): ReviewResult {
+  if (!diffBase || !result.metadata) {
+    return result;
+  }
+  return {
+    ...result,
+    metadata: {
+      ...result.metadata,
+      diffBase: {
+        requestedRef: diffBase.requestedRef,
+        ref: diffBase.ref,
+        kind: diffBase.kind,
+        fetch: diffBase.fetch,
+        reviewedBase: diffBase.baseSha,
+        mergeBaseSha: diffBase.mergeBaseSha,
+        reviewedHead: headSha,
+        reviewedFileCount,
+      },
+    },
+  };
 }
 
 interface DeterministicReviewFindings {
