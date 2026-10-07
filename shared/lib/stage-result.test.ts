@@ -861,6 +861,23 @@ describe('review outcome helpers', () => {
     assert.equal(isInfrastructureReviewFailure(nested), true);
   });
 
+  it('classifies review-scope-mismatch as retryable infrastructure (HOK-3166)', () => {
+    assert.equal(isInfrastructureReviewFailure({ verdict: 'error', failureCategory: 'review-scope-mismatch' }), true);
+    const flat = makeResult({
+      stage: 'review',
+      status: 'completed',
+      artifacts: {
+        type: 'review',
+        exitCode: 1,
+        verdict: 'error',
+        iterations: 1,
+        blockerCount: 0,
+        failureCategory: 'review-scope-mismatch',
+      },
+    });
+    assert.equal(isInfrastructureReviewFailure(flat), true);
+  });
+
   it('classifies native-context-window-exceeded as retryable infrastructure regardless of verdict (HOK-2964 REQ-F1)', () => {
     const flat = makeResult({
       stage: 'review',

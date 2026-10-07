@@ -165,6 +165,13 @@ export type ReviewOutcomeVerdict = 'ready' | 'not_ready' | 'error';
  */
 export const REVIEW_SCOPE_UNVERIFIABLE_FAILURE_CATEGORY = 'review-scope-unverifiable';
 /**
+ * The review's changed-file set is a strict superset of the PR's own file
+ * list at the same head — the diff base is stale, so reviewing would flag
+ * other PRs' merged code (HOK-3166). Infrastructure, never a code defect: a
+ * retry re-fetches `origin/<base>`, which is the remedy.
+ */
+export const REVIEW_SCOPE_MISMATCH_FAILURE_CATEGORY = 'review-scope-mismatch';
+/**
  * The reviewed diff (at the current head/base) exceeds the reviewer's context
  * window. Bounded infrastructure recovery (HOK-2964): a stale-base rebuild or
  * a larger-context reroute may still resolve it, so it must never be treated
@@ -183,6 +190,7 @@ export const INFRA_REVIEW_FAILURE_CATEGORIES = [
   'native-runtime-unavailable',
   'native-review-prompt-missing',
   REVIEW_SCOPE_UNVERIFIABLE_FAILURE_CATEGORY,
+  REVIEW_SCOPE_MISMATCH_FAILURE_CATEGORY,
   NATIVE_CONTEXT_WINDOW_EXCEEDED_CATEGORY,
   PROVIDER_CREDIT_EXHAUSTED_CATEGORY,
   NATIVE_REVIEW_TIMEOUT_CATEGORY,
