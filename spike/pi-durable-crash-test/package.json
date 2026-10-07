@@ -1,0 +1,20 @@
+{
+  "name": "pi-durable-crash-test",
+  "version": "1.0.0",
+  "description": "Spike to test pi-durable 1.0 with crash resilience",
+  "main": "src/coding-arm.ts",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "1.0.4",
+    "@earendil-works/pi-durable": "1.0.4",
+    "@earendil-works/chord": "1.0.4",
+    "@sinclair/typebox": "0.32.35",
+    "tsx": "^4.7.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.24"
+  }
+}
