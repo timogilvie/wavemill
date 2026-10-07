@@ -12,6 +12,7 @@ import { access, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { parsePackageJson } from './package-json-parser.ts';
 import { escapeShellArg, execShellCommand } from './shell-utils.ts';
+import { resolveOriginFirstRef } from './git-base-resolver.ts';
 
 // ────────────────────────────────────────────────────────────────
 // Types
@@ -109,6 +110,15 @@ export function getCurrentBranch(repoDir: string): string {
  * This prevents false positives in code review where unrelated files
  * from previous PRs are flagged.
  *
+ * Origin-first base (HOK-3166): a bare `targetBranch` such as
+ * `auto/integration` is diffed as `origin/auto/integration` whenever that
+ * remote-tracking ref exists. The local branch of the same name is never
+ * updated in a task worktree; once the branch merges a newer `origin/<b>`,
+ * diffing the stale local tip pulls every integration commit since then into
+ * "the PR". Explicit refs (`origin/…`, `refs/…`, 40-hex SHAs) are used as
+ * given. This is a cheap `rev-parse` with no network; `reviewChanges`
+ * fetches `origin <b>` beforehand so the remote-tracking ref is current.
+ *
  * When `sinceCommit` is provided, uses two-dot syntax (`sinceCommit..HEAD`)
  * to scope the diff to only changes made after that specific commit. This
  * is useful when a branch contains pre-existing changes unrelated to the
@@ -123,9 +133,13 @@ export function getGitDiff(targetBranch: string, repoDir?: string, sinceCommit?:
   // When sinceCommit is provided, diff from that commit to HEAD.
   // This scopes the review to only changes after the task started,
   // filtering out pre-existing branch changes.
+  const baseRef = sinceCommit ? null : resolveOriginFirstRef(cwd, targetBranch).ref;
   const diffSpec = sinceCommit
     ? `${sinceCommit}..HEAD`
-    : `${targetBranch}...HEAD`;
+    : `${baseRef}...HEAD`;
+  const baseLabel = baseRef && baseRef !== targetBranch
+    ? `'${targetBranch}' (resolved to '${baseRef}')`
+    : `'${targetBranch}'`;
 
   try {
     // Without sinceCommit: three-dot syntax diffs merge-base to HEAD
@@ -140,8 +154,8 @@ export function getGitDiff(targetBranch: string, repoDir?: string, sinceCommit?:
       `Failed to get git diff against '${diffSpec}' in ${cwd}\n` +
       `  Error: ${(error as Error).message}\n` +
       `  Possible causes:\n` +
-      `    - ${sinceCommit ? `Commit '${sinceCommit}' does not exist` : `Branch '${targetBranch}' does not exist`}\n` +
-      `    - ${sinceCommit ? `Commit is not an ancestor of HEAD` : `No common ancestor between current branch and '${targetBranch}'`}\n` +
+      `    - ${sinceCommit ? `Commit '${sinceCommit}' does not exist` : `Branch ${baseLabel} does not exist`}\n` +
+      `    - ${sinceCommit ? `Commit is not an ancestor of HEAD` : `No common ancestor between current branch and ${baseLabel}`}\n` +
       `    - Diff is larger than 50MB (exceeds buffer limit)\n` +
       `    - Git is not installed or not in PATH\n` +
       `    - Repository is corrupted\n` +
