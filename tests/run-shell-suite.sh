@@ -71,6 +71,7 @@ TESTS=(
   bounded-retry.test.sh
   check-install-paths.test.sh
   check-common-guards.test.sh
+  check-marker-clear-sites.test.sh
   ready-update-from-base.test.sh
   plan-packet-binding.test.sh
   task-progress.test.sh
@@ -154,6 +155,7 @@ TESTS=(
   review-missing-window-relaunch.test.sh
   re-review-no-pr.test.sh
   monitor-command-routing.test.sh
+  condition-reconciler.test.sh
 )
 
 SHARD_INDEX=1

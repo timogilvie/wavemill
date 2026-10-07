@@ -181,6 +181,38 @@ The review tool automatically discovers context from the repository:
 
 The slug is extracted from branch names matching `task/`, `feature/`, `bugfix/`, or `bug/` prefixes.
 
+### Diff base (HOK-3166)
+
+The review diffs `origin/<base>...HEAD`, never the bare local branch. A task
+worktree's local `auto/integration` (or `main`) is never updated, so once the
+branch merges a newer `origin/<base>`, a diff against the local tip pulls every
+integration commit since then into the review, and the reviewer flags other
+PRs' merged code.
+
+- `review-changes.ts` runs one best-effort `git fetch origin <base>` (15 s
+  timeout, no credential prompts), then resolves the base origin-first
+  (`resolveReviewDiffBase` in `shared/lib/git-base-resolver.ts`). If the fetch
+  fails, the existing `origin/<base>` is used. Explicit refs (`origin/…`,
+  `refs/…`, 40-hex SHAs) are used as given. `--since-commit` reviews are unchanged.
+- The resolved base, its tip SHA, the merge-base, and the changed-file count
+  appear in the progress log (`preflight_ok`, `context_loaded`), on the
+  `Base:` line of the text output, and as `metadata.diffBase` in `--json`
+  output. Compare `reviewedBase` with the PR's `baseRefOid` and the file
+  count with the PR's file count.
+- If no `origin/<base>` exists, the review falls back to the local branch and
+  logs a `warn` event (`may include already-merged work`).
+- `WAVEMILL_REVIEW_SKIP_FETCH=1` skips the fetch (offline runs, sandboxes).
+
+**`review-scope-mismatch`**: when the branch has an open PR whose head matches
+local `HEAD`, and the review's changed files are a strict superset of the PR's
+files (`gh pr view --json files`), the LLM review is not run. The result is
+`verdict: error` with `failureCategory: review-scope-mismatch` and a warning
+finding that lists the extra files. It is classified as retryable
+infrastructure (`INFRA_REVIEW_FAILURE_CATEGORIES`), not a code defect, and a
+retry re-fetches the base. The check is skipped when there is no PR, gh fails,
+the PR head differs from local `HEAD` (unpushed review fixes), or the PR lists
+100 or more files.
+
 ## Configuration
 
 Review settings live in `.wavemill-config.json`:
