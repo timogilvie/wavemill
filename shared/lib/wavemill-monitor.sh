@@ -11453,6 +11453,7 @@ review_result_infra_failure() {
       (($review.failureCategory // "") == "native-runtime-unavailable") or
       (($review.failureCategory // "") == "native-review-prompt-missing") or
       (($review.failureCategory // "") == "review-scope-unverifiable") or
+      (($review.failureCategory // "") == "review-scope-mismatch") or
       (($review.failureCategory // "") == "native-context-window-exceeded") or
       (($review.failureCategory // "") == "provider-credit-exhausted") or
       (($review.failureCategory // "") == "native-review-timeout") or
