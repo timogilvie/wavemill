@@ -4,6 +4,10 @@
 # Enforces the invariant that gates never clear markers — only the reconciler
 # and the helper functions themselves. Sites are tracked in a ratcheting
 # allowlist so the count shrinks over time as sites migrate to the reconciler.
+#
+# The check runs once against the real repo and once per self-test fixture,
+# so the unlisted, over-count, and under-count (ratchet) failures are each
+# exercised rather than assumed.
 
 set -euo pipefail
 
@@ -25,122 +29,126 @@ EXEMPT_FILES=(
   "shared/lib/condition-reconciler.sh"
 )
 
-# Build grep exclude patterns
-EXCLUDE_PATTERN=""
-for exempt in "${EXEMPT_FILES[@]}"; do
-  EXCLUDE_PATTERN+=" --exclude=$(basename "$exempt")"
-done
+# check_clear_sites <root> <allowlist>
+# Prints violations to stderr; returns 1 if any, 0 otherwise.
+check_clear_sites() {
+  local root="$1" allowlist="$2"
+  local -a scan_dirs=()
+  local dir exempt file line max_count actual allowed skip raw_matches
+  local -A actual_counts=() allowed_counts=()
+  local failed=false
 
-# Scan for marker_clear / bounded_retry_clear / clearMarker usage
-# Exclude test files, comment lines, and function definition lines
-cd "$REPO_ROOT"
-RAW_MATCHES=$(grep -rn 'marker_clear\|bounded_retry_clear\|clearMarker(' \
-  shared/ tools/ \
-  --include='*.sh' --include='*.ts' \
-  $EXCLUDE_PATTERN \
-  | grep -v '\.test\.' \
-  | grep -v '^\s*#' \
-  | grep -v '^\s*//' \
-  | grep -v '^[^:]*:[^:]*\(marker_clear\|bounded_retry_clear\|clearMarker\)\s*(' \
-  || true)
+  for dir in shared tools; do
+    [[ -d "$root/$dir" ]] && scan_dirs+=("$dir")
+  done
+  if (( ${#scan_dirs[@]} > 0 )); then
+    raw_matches=$(cd "$root" && grep -rn 'marker_clear\|bounded_retry_clear\|clearMarker(' \
+      "${scan_dirs[@]}" \
+      --include='*.sh' --include='*.ts' \
+      | grep -v '\.test\.' \
+      | grep -v '^[^:]*:[^:]*:\s*#' \
+      | grep -v '^[^:]*:[^:]*:\s*//' \
+      | grep -v '^[^:]*:[^:]*\(marker_clear\|bounded_retry_clear\|clearMarker\)\s*(' \
+      || true)
+  else
+    raw_matches=""
+  fi
 
-# Count per file
-declare -A ACTUAL_COUNTS
-while IFS=: read -r file _rest; do
-  # Skip exempt files in case exclude didn't catch them
-  skip=false
-  for exempt in "${EXEMPT_FILES[@]}"; do
-    if [[ "$file" == "$exempt" ]]; then
-      skip=true
-      break
+  while IFS=: read -r file _rest; do
+    [[ -z "$file" ]] && continue
+    skip=false
+    for exempt in "${EXEMPT_FILES[@]}"; do
+      if [[ "$file" == "$exempt" ]]; then
+        skip=true
+        break
+      fi
+    done
+    [[ "$skip" == "true" ]] && continue
+    actual_counts[$file]=$(( ${actual_counts[$file]:-0} + 1 ))
+  done <<< "$raw_matches"
+
+  while IFS= read -r line; do
+    [[ "$line" =~ ^# ]] && continue
+    [[ -z "$line" ]] && continue
+    read -r file max_count <<< "$line"
+    allowed_counts[$file]=$max_count
+  done < "$allowlist"
+
+  for file in "${!actual_counts[@]}"; do
+    actual="${actual_counts[$file]}"
+    if [[ -z "${allowed_counts[$file]:-}" ]]; then
+      echo "FAIL: $file has $actual marker_clear/bounded_retry_clear/clearMarker calls but is not in allowlist" >&2
+      echo "      Route clears through the reconciler, or add to allowlist if justified" >&2
+      failed=true
+      continue
+    fi
+    allowed="${allowed_counts[$file]}"
+    if (( actual > allowed )); then
+      echo "FAIL: $file has $actual marker_clear/bounded_retry_clear/clearMarker calls, allowed $allowed" >&2
+      echo "      Route new clears through the reconciler (shared/lib/condition-reconciler.sh)" >&2
+      failed=true
+    elif (( actual < allowed )); then
+      echo "FAIL: $file has $actual calls, but allowlist says $allowed" >&2
+      echo "      Lower the allowance to $actual in $allowlist (ratchet)" >&2
+      failed=true
     fi
   done
-  [[ "$skip" == "true" ]] && continue
 
-  ACTUAL_COUNTS[$file]=$((${ACTUAL_COUNTS[$file]:-0} + 1))
-done <<< "$RAW_MATCHES"
+  # An allowlisted file whose clears are all gone must also be ratcheted out.
+  for file in "${!allowed_counts[@]}"; do
+    if [[ -z "${actual_counts[$file]:-}" && "${allowed_counts[$file]}" -gt 0 ]]; then
+      echo "FAIL: $file has 0 calls, but allowlist says ${allowed_counts[$file]}" >&2
+      echo "      Remove it from $allowlist (ratchet)" >&2
+      failed=true
+    fi
+  done
 
-# Load allowlist
-declare -A ALLOWED_COUNTS
-while IFS= read -r line; do
-  [[ "$line" =~ ^# ]] && continue
-  [[ -z "$line" ]] && continue
-  read -r file max_count <<< "$line"
-  ALLOWED_COUNTS[$file]=$max_count
-done < "$ALLOWLIST"
+  [[ "$failed" == "false" ]]
+}
 
-# Check each file with actual usage
-FAIL=false
-for file in "${!ACTUAL_COUNTS[@]}"; do
-  actual="${ACTUAL_COUNTS[$file]}"
-  allowed="${ALLOWED_COUNTS[$file]:-0}"
-
-  if (( actual > allowed )); then
-    echo "FAIL: $file has $actual marker_clear/bounded_retry_clear/clearMarker calls, allowed $allowed" >&2
-    echo "      Route new clears through the reconciler (shared/lib/condition-reconciler.sh)" >&2
-    FAIL=true
-  elif (( actual < allowed )); then
-    echo "FAIL: $file has $actual calls, but allowlist says $allowed" >&2
-    echo "      Lower the allowance to $actual in $ALLOWLIST (ratchet)" >&2
-    FAIL=true
-  fi
-done
-
-# Check for unlisted files
-for file in "${!ACTUAL_COUNTS[@]}"; do
-  if [[ -z "${ALLOWED_COUNTS[$file]:-}" ]]; then
-    echo "FAIL: $file has ${ACTUAL_COUNTS[$file]} marker_clear/bounded_retry_clear/clearMarker calls but is not in allowlist" >&2
-    echo "      Route clears through the reconciler, or add to allowlist if justified" >&2
-    FAIL=true
-  fi
-done
-
-if [[ "$FAIL" == "true" ]]; then
+# ── Real repo ─────────────────────────────────────────────────────────────
+if ! check_clear_sites "$REPO_ROOT" "$ALLOWLIST"; then
   exit 1
 fi
 
-# Self-tests in a mktemp fixture
+# ── Self-tests against fixtures ───────────────────────────────────────────
 FIXTURE=$(mktemp -d)
 trap 'rm -rf "$FIXTURE"' EXIT
 
-# Must-fail: unlisted file with marker_clear
-mkdir -p "$FIXTURE/shared"
-cat > "$FIXTURE/shared/test.sh" <<'EOF'
-#!/bin/bash
-marker_clear "x"
-EOF
-cd "$FIXTURE"
-if grep -rn 'marker_clear' shared/ 2>/dev/null | grep -v '\.test\.' >/dev/null; then
-  # Would fail in real run (unlisted file)
-  :
-else
-  echo "FAIL: self-test fixture did not detect unlisted marker_clear" >&2
-  exit 1
-fi
-
-# Must-fail: over-count (simulate by checking against allowance 0)
-cd "$REPO_ROOT"
-if [[ ${ACTUAL_COUNTS[shared/lib/wavemill-monitor.sh]:-0} -gt 0 ]]; then
-  # Real count is > 0, would fail if allowance was 0
-  :
-else
-  echo "FAIL: self-test did not detect over-count scenario" >&2
-  exit 1
-fi
-
-# Must-fail: under-count (ratchet)
-# Simulate: if allowlist says N but actual is N-1, that should fail
-cd "$REPO_ROOT"
-SYNTHETIC_UNDER=false
-for file in "${!ALLOWED_COUNTS[@]}"; do
-  allowed="${ALLOWED_COUNTS[$file]}"
-  actual="${ACTUAL_COUNTS[$file]:-0}"
-  if (( actual < allowed )); then
-    SYNTHETIC_UNDER=true
-    break
+make_fixture() {
+  local name="$1" clears="$2" allowance="$3"
+  local root="$FIXTURE/$name"
+  local i
+  mkdir -p "$root/shared/lib"
+  {
+    echo '#!/bin/bash'
+    for (( i = 0; i < clears; i++ )); do
+      echo "marker_clear \"\$dir/.marker-$i\""
+    done
+  } > "$root/shared/lib/gate.sh"
+  if [[ -n "$allowance" ]]; then
+    printf '# fixture allowlist\nshared/lib/gate.sh %s\n' "$allowance" > "$root/allowlist.txt"
+  else
+    printf '# fixture allowlist\n' > "$root/allowlist.txt"
   fi
-done
-# The test itself enforces this, so if we have no natural under-count, the logic is sound
+  echo "$root"
+}
 
-echo "PASS: marker_clear sites match allowlist"
+expect_check() {
+  local label="$1" expected="$2" root="$3"
+  local got
+  if check_clear_sites "$root" "$root/allowlist.txt" 2>/dev/null; then got=pass; else got=fail; fi
+  if [[ "$got" != "$expected" ]]; then
+    echo "FAIL: self-test '$label' expected $expected, got $got" >&2
+    exit 1
+  fi
+}
+
+expect_check "unlisted file"            fail "$(make_fixture unlisted 1 '')"
+expect_check "over-count"               fail "$(make_fixture over 3 2)"
+expect_check "under-count (ratchet)"    fail "$(make_fixture under 1 2)"
+expect_check "allowlisted file cleared" fail "$(make_fixture gone 0 2)"
+expect_check "exact allowance"          pass "$(make_fixture exact 2 2)"
+
+echo "PASS: marker_clear sites match allowlist (5 self-tests exercised)"
 exit 0

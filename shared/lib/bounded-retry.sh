@@ -289,7 +289,8 @@ bounded_retry_due() {
 # bridge's bash -c), behaves exactly as before (plain-text sentinel only).
 bounded_retry_mark_exhausted() {
   local state_dir="$1" bucket="$2" reason="${3:-}"
-  shift 3
+  # Callers may omit the reason; a bare `shift 3` would fail under set -e.
+  shift "$(( $# < 3 ? $# : 3 ))"
   local -a condition_flags=("$@")
   local sentinel
   sentinel="$(_bounded_retry_file "$state_dir" "$bucket" "exhausted")"
@@ -305,18 +306,24 @@ bounded_retry_mark_exhausted() {
     local companion
     companion="$state_dir/$(_bounded_retry_prefix "$bucket")exhausted-condition.json"
 
-    # Build condition flags: use explicit flags if given, else derive from key
+    # Build condition flags: use explicit flags if given, else derive from key.
+    # A head trigger is only recorded when the key holds a real SHA. Without
+    # one (terminal short-circuits, the pending-ready lockstep halt) the
+    # sentinel must hold until an operator acts; a placeholder head would never
+    # match HEAD and the reconciler would clear the terminal state next tick.
+    local stored_head=""
     if [[ ${#condition_flags[@]} -eq 0 ]]; then
-      # Default: extract head from key file if SHA-shaped
-      local head_file stored_head
+      local head_file
       head_file="$(_bounded_retry_file "$state_dir" "$bucket" "head")"
       if [[ -f "$head_file" ]]; then
         stored_head=$(head -n 1 "$head_file" 2>/dev/null | cut -d: -f1 || true)
-        if [[ "$stored_head" =~ ^[0-9a-f]{40}$ ]]; then
-          condition_flags+=(--head "$stored_head")
-        fi
       fi
-      condition_flags+=(--expires-on "head,operator-event")
+      if [[ "$stored_head" =~ ^[0-9a-f]{40}$ ]]; then
+        condition_flags+=(--expires-on "head,operator-event")
+      else
+        stored_head=""
+        condition_flags+=(--expires-on "operator-event")
+      fi
     fi
 
     # Auto-add state-dir if not present
@@ -332,7 +339,9 @@ bounded_retry_mark_exhausted() {
     fi
 
     # Write companion marker
-    marker_write "$companion" --kind retry-exhausted --head "${stored_head:-unknown}" --reason "$reason" "${condition_flags[@]}" 2>/dev/null || true
+    local -a head_args=()
+    [[ -n "$stored_head" ]] && head_args=(--head "$stored_head")
+    marker_write "$companion" --kind retry-exhausted "${head_args[@]}" --reason "$reason" "${condition_flags[@]}" 2>/dev/null || true
   fi
 
   return 0

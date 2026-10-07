@@ -155,6 +155,7 @@ TESTS=(
   review-missing-window-relaunch.test.sh
   re-review-no-pr.test.sh
   monitor-command-routing.test.sh
+  condition-reconciler.test.sh
 )
 
 SHARD_INDEX=1

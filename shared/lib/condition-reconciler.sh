@@ -25,6 +25,33 @@ set -euo pipefail
 
 WAVEMILL_CONDITION_RECONCILER_LOADED=1
 
+# _condition_iso_to_epoch <iso-utc>
+# Epoch seconds for an ISO-8601 UTC timestamp (fractional seconds allowed), or
+# empty when it cannot be parsed. BSD date (macOS, the mill host) needs -u, or
+# it reads the trailing Z as a literal and the time as local, which skews every
+# comparison by the UTC offset. Callers must treat empty as "unknown" and not
+# expire on it.
+_condition_iso_to_epoch() {
+  local iso="${1%%.*}" epoch=""
+  [[ -n "$iso" ]] || return 0
+  [[ "$iso" == *Z ]] || iso="${iso}Z"
+  epoch=$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$iso" +%s 2>/dev/null) || \
+    epoch=$(date -u -d "$iso" +%s 2>/dev/null) || epoch=""
+  printf '%s' "$epoch"
+}
+
+# _condition_pr_head_oid <pr-number>
+# headRefOid for a PR from the monitor's PR cache, which is the raw
+# `gh pr list --json number,headRefOid,...` array (not an object keyed by PR).
+_condition_pr_head_oid() {
+  local pr="$1"
+  local cache="${MONITOR_PR_CACHE:-/tmp/${SESSION:-wavemill}-pr-cache.json}"
+  [[ -n "$pr" && -f "$cache" ]] || return 0
+  jq -r --arg pr "$pr" \
+    '(if type == "array" then . else [] end)[] | select((.number | tostring) == $pr) | .headRefOid // empty' \
+    "$cache" 2>/dev/null | head -n 1
+}
+
 # condition_reconcile_task <issue> <wt_dir> <state_dir>
 # Evaluates every marker's condition and clears expired ones.
 # Always returns 0 (set -e safety).
@@ -96,14 +123,12 @@ condition_reconcile_task() {
     echo "$ready_identity"
   }
 
-  # Helper to get PR head OID from cache (lazy)
+  # Helper to get the task's PR head OID from the PR cache (lazy). The task's
+  # PR number lives in `.pr` (`.prNumber` is accepted for older entries).
   _get_pr_head_oid() {
     if [[ -z "$pr_head_oid" && -z "$pr_number" ]]; then
-      # Get PR number from state
-      pr_number=$(jq -r --arg i "$issue" '.tasks[$i].prNumber // empty' "$STATE_FILE" 2>/dev/null || echo "")
-      if [[ -n "$pr_number" && -f "${MONITOR_PR_CACHE:-/tmp/${SESSION}-pr-cache.json}" ]]; then
-        pr_head_oid=$(jq -r --arg pr "$pr_number" '.[$pr].headRefOid // empty' "${MONITOR_PR_CACHE:-/tmp/${SESSION}-pr-cache.json}" 2>/dev/null || echo "")
-      fi
+      pr_number=$(jq -r --arg i "$issue" '.tasks[$i].pr // .tasks[$i].prNumber // empty | tostring' "$STATE_FILE" 2>/dev/null || echo "")
+      pr_head_oid=$(_condition_pr_head_oid "$pr_number")
     fi
     echo "$pr_head_oid"
   }
@@ -129,8 +154,11 @@ condition_reconcile_task() {
         head)
           local cond_head
           cond_head=$(jq -r '.head // empty' <<< "$condition" 2>/dev/null || echo "")
+          # Only a real SHA is a head condition; a placeholder never matches
+          # HEAD and would clear the marker on every tick.
+          [[ "$cond_head" =~ ^[0-9a-f]{7,40}$ ]] || cond_head=""
           if [[ -n "$cond_head" && -n "$(_get_current_head)" && "$cond_head" != "$(_get_current_head)" ]]; then
-            echo "head:$cond_head→$(_get_current_head)"
+            echo "head:${cond_head}→$(_get_current_head)"
             return 0
           fi
           ;;
@@ -141,7 +169,7 @@ condition_reconcile_task() {
             local latest_event
             latest_event=$(operator_event_latest_since "$state_dir" "$cond_seq")
             if [[ -n "$latest_event" ]]; then
-              echo "operator-event:seq $cond_seq→$(_get_operator_seq)"
+              echo "operator-event:seq ${cond_seq}→$(_get_operator_seq)"
               return 0
             fi
           fi
@@ -219,9 +247,15 @@ condition_reconcile_task() {
           waiting_kind=$(jq -r '.waitingOn.kind // empty' <<< "$condition" 2>/dev/null || echo "")
           waiting_value=$(jq -r '.waitingOn.value // empty' <<< "$condition" 2>/dev/null || echo "")
           if [[ "$waiting_kind" == "pr-head" && -n "$waiting_value" ]]; then
-            local current_pr_head
-            current_pr_head=$(_get_pr_head_oid)
-            if [[ "$current_pr_head" == "$waiting_value" ]]; then
+            local current_pr_head waiting_pr
+            # Prefer the PR recorded with the wait; fall back to the task's PR.
+            waiting_pr=$(jq -r '.waitingOn.prNumber // empty | tostring' <<< "$condition" 2>/dev/null || echo "")
+            if [[ -n "$waiting_pr" ]]; then
+              current_pr_head=$(_condition_pr_head_oid "$waiting_pr")
+            else
+              current_pr_head=$(_get_pr_head_oid)
+            fi
+            if [[ -n "$current_pr_head" && "$current_pr_head" == "$waiting_value" ]]; then
               echo "waiting-on:PR head caught up"
               return 0
             fi
@@ -231,11 +265,11 @@ condition_reconcile_task() {
           local recheck_after
           recheck_after=$(jq -r '.recheckAfter // empty' <<< "$condition" 2>/dev/null || echo "")
           if [[ -n "$recheck_after" ]]; then
-            local now deadline_epoch now_epoch
-            now=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-            deadline_epoch=$(date -d "$recheck_after" +%s 2>/dev/null || date -j -f '%Y-%m-%dT%H:%M:%SZ' "$recheck_after" +%s 2>/dev/null || echo "0")
+            local deadline_epoch now_epoch
+            deadline_epoch=$(_condition_iso_to_epoch "$recheck_after")
             now_epoch=$(date +%s)
-            if [[ "$now_epoch" -ge "$deadline_epoch" ]]; then
+            # An unparseable deadline never fires (fail closed).
+            if [[ -n "$deadline_epoch" && "$now_epoch" -ge "$deadline_epoch" ]]; then
               echo "deadline:recheck time elapsed"
               return 0
             fi
@@ -257,7 +291,7 @@ condition_reconcile_task() {
       local marker_sha written_at
       marker_sha=$(marker_head "$marker_path")
       if [[ -n "$marker_sha" && -n "$(_get_current_head)" && "$marker_sha" != "$(_get_current_head)" ]]; then
-        echo "legacy-head:$marker_sha→$(_get_current_head)"
+        echo "legacy-head:${marker_sha}→$(_get_current_head)"
         return 0
       fi
 
@@ -359,9 +393,12 @@ condition_reconcile_task() {
         if [[ "$bucket" == "review-infra-recovery" ]]; then
           # Extract head from key file
           local stored_head
+          # The bucket key is `<head>:<category>`; compare only the SHA, or
+          # the sentinel is cleared every tick even at the same head.
           stored_head=$(bounded_retry_head "$state_dir" "$bucket")
+          stored_head="${stored_head%%:*}"
           if [[ -n "$stored_head" && -n "$(_get_current_head)" && "$stored_head" != "$(_get_current_head)" ]]; then
-            _log_clear "$basename" "legacy-head" "$stored_head→$(_get_current_head)"
+            _log_clear "$basename" "legacy-head" "${stored_head}→$(_get_current_head)"
             bounded_retry_clear "$state_dir" "$bucket"
           fi
         fi
@@ -388,7 +425,7 @@ condition_reconcile_task() {
         local stored_head sentinel_mtime
         stored_head=$(bounded_retry_head "$state_dir" "pending-ready-recheck")
         if [[ -n "$stored_head" && -n "$(_get_current_head)" && "$stored_head" != "$(_get_current_head)" ]]; then
-          _log_clear ".failed-ready-recheck-exhausted" "legacy-head" "$stored_head→$(_get_current_head)"
+          _log_clear ".failed-ready-recheck-exhausted" "legacy-head" "${stored_head}→$(_get_current_head)"
           rm -f "$state_dir/.failed-ready-recheck-"* 2>/dev/null || true
         else
           # Check review-artifact-substantive trigger
@@ -400,9 +437,8 @@ condition_reconcile_task() {
             local review_finished review_finished_epoch
             review_finished=$(jq -r '.finishedAt // empty' <<< "$review_identity" 2>/dev/null || echo "")
             if [[ -n "$review_finished" ]]; then
-              review_finished_epoch=$(date -d "$review_finished" +%s 2>/dev/null || \
-                                     date -j -f '%Y-%m-%dT%H:%M:%SZ' "$review_finished" +%s 2>/dev/null || echo "0")
-              if [[ "$review_finished_epoch" -gt "$sentinel_mtime" ]]; then
+              review_finished_epoch=$(_condition_iso_to_epoch "$review_finished")
+              if [[ -n "$review_finished_epoch" && "$review_finished_epoch" -gt "$sentinel_mtime" ]]; then
                 # Check if substantive
                 if declare -F review_result_infra_failure >/dev/null 2>&1; then
                   if ! review_result_infra_failure "$state_dir/.review-result.json" 2>/dev/null; then
@@ -441,17 +477,14 @@ condition_reconcile_task() {
       event_seq=$(jq -r '.seq // 0' <<< "$latest_event" 2>/dev/null || echo "0")
       event_at=$(jq -r '.at // empty' <<< "$latest_event" 2>/dev/null || echo "")
 
-      # Clear status=error
-      _log_clear "status=error" "operator-event" "$event_cmd (seq $event_seq)"
-
-      # Update state via task_state_mutate_existing
-      if declare -F task_state_mutate_existing >/dev/null 2>&1; then
-        task_state_mutate_existing "$issue" "$state_dir" \
-          "$(jq -n \
-            --arg cmd "$event_cmd" \
-            --argjson seq "$event_seq" \
-            --arg at "$event_at" \
-            '{status: "active", statusClearedBy: {command: $cmd, seq: $seq, at: $at}} | del(.statusCondition)')"
+      # Clear status=error. task_state_mutate_existing takes <issue> <filter>
+      # [jq args]; log only once the write has landed, so the audit trail never
+      # records a clear that did not happen.
+      if declare -F task_state_mutate_existing >/dev/null 2>&1 && \
+         task_state_mutate_existing "$issue" \
+           '.status = "active" | .statusClearedBy = {command: $cmd, seq: ($seq | tonumber), at: $at} | del(.statusCondition)' \
+           --arg cmd "$event_cmd" --arg seq "$event_seq" --arg at "$event_at" >/dev/null 2>&1; then
+        _log_clear "status=error" "operator-event" "$event_cmd (seq $event_seq)"
       fi
     fi
   fi

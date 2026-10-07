@@ -177,6 +177,7 @@ for f in \
   "$REPO_DIR"/tests/review-missing-window-relaunch.test.sh \
   "$REPO_DIR"/tests/re-review-no-pr.test.sh \
   "$REPO_DIR"/tests/monitor-command-routing.test.sh \
+  "$REPO_DIR"/tests/condition-reconciler.test.sh \
   "$REPO_DIR"/tests/launch-pane-liveness.test.sh \
   "$REPO_DIR"/tests/launch-failure-log-capture.test.sh \
   "$REPO_DIR"/tests/challenge-eval-soft-retry.test.sh \

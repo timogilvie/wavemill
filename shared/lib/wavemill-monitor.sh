@@ -12034,13 +12034,6 @@ review_recovery_coordinator_locked() {
   return 0
 }
 
-# review_infra_recovery_reset_if_new_head <state_dir> <current_head>
-# Re-arm the review-infra-recovery budget after a new commit. Its key is
-# `<head>:...` (see relaunch_review_after_infra_recovery), and the gate there
-# resets it, but the pending-ready halt checks the exhausted sentinel before
-# that gate is reached, so a terminalized arm stayed halted across new commits
-# (HOK-2924 reset-on-new-head). Also lifts the pending-ready-recheck halt that
-# was marked in lockstep with it.
 relaunch_review_after_infra_recovery() {
   local issue="$1" slug="$2" title="$3" wt_dir="$4" branch="$5" base_branch="$6" pr_number="$7" state_dir="$8"
   local category recorded_head current_head identity timeout_identity reviewer_identity

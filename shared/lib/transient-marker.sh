@@ -53,7 +53,11 @@ marker_write() {
     esac
   done
 
-  if [[ -z "$kind" || -z "$head" ]]; then
+  # --head is required unless the marker carries an explicit condition: a
+  # head-less condition (e.g. a terminal retry sentinel that only an operator
+  # event may clear) must not be forced to record a placeholder head, which
+  # the reconciler would read as "head moved" and clear on the next tick.
+  if [[ -z "$kind" ]] || { [[ -z "$head" ]] && (( ${#condition_flags[@]} == 0 )); }; then
     echo "marker_write: --kind and --head are required" >&2
     return 1
   fi
@@ -362,14 +366,16 @@ operator_event_record() {
   # Get current max seq (line count)
   local current_seq=0
   if [[ -f "$events_file" ]]; then
-    current_seq=$(wc -l < "$events_file" 2>/dev/null || echo 0)
+    current_seq=$(wc -l < "$events_file" 2>/dev/null | tr -d ' ' || echo 0)
   fi
   local seq=$((current_seq + 1))
 
   local now_iso=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
   local head=$(git rev-parse HEAD 2>/dev/null || echo "")
 
-  local event=$(jq -n \
+  # One compact object per line: operator_event_seq counts lines and
+  # operator_event_latest_since parses line by line.
+  local event=$(jq -cn \
     --argjson seq "$seq" \
     --arg command "$command" \
     --arg issue "$issue" \
@@ -394,7 +400,9 @@ operator_event_seq() {
     return 0
   fi
 
-  wc -l < "$events_file" 2>/dev/null || echo 0
+  local count
+  count=$(wc -l < "$events_file" 2>/dev/null | tr -d ' ' || true)
+  echo "${count:-0}"
 }
 
 # operator_event_latest_since <state_dir> <seq> [commands-csv]

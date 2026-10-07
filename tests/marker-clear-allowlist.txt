@@ -5,8 +5,7 @@
 # This allowlist shrinks over time as sites are migrated to the reconciler.
 # New sites should route clears through the reconciler, not add to this list.
 
-shared/lib/wavemill-monitor.sh 44
+shared/lib/wavemill-monitor.sh 43
 shared/lib/ready-watchdog.ts 3
 shared/lib/tend-controller.ts 1
 shared/lib/pr-state-labels.ts 1
-shared/lib/bounded-retry.ts 1
