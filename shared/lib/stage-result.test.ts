@@ -963,11 +963,23 @@ describe('review outcome helpers', () => {
       verdict: 'not_ready',
       blockerCount: 1,
     }), false);
+    // HOK-3169: a malformed native-review response is now an infra failure.
+    // The ready gate routes it through the bounded `review-infra-recovery`
+    // bucket instead of refusing Ready terminally.
     assert.equal(isInfrastructureReviewFailure({
       type: 'review',
-      verdict: 'not_ready',
+      verdict: 'error',
       failureCategory: 'native-review-malformed-response',
-    }), false);
+      reviewToolError: 'Native review returned malformed response: expected JSON',
+    }), true);
+    // HOK-3169: an empty review input is a typed infra failure, not a code
+    // defect, and must flow through the same recovery path.
+    assert.equal(isInfrastructureReviewFailure({
+      type: 'review',
+      verdict: 'error',
+      failureCategory: 'review-scope-empty',
+      reviewToolError: 'Native review input diff is empty; refusing to invoke the model.',
+    }), true);
   });
 });
 
