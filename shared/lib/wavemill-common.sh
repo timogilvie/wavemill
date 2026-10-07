@@ -1171,6 +1171,11 @@ wavemill_worktree_dirty_status() {
     | grep -v -E '^\?\? features/[^/]+/\.coding-complete$' \
     | grep -v -E '^\?\? features/[^/]+/\.workflow-aborted$' \
     | grep -v -E '^\?\? features/[^/]+/\.coding-blocked-completion\.json$' \
+    | grep -v -E '^\?\? features/[^/]+/\.operator-events\.jsonl$' \
+    | grep -v -E '^\?\? features/[^/]+/\.condition-reconcile\.jsonl$' \
+    | grep -v -E '^\?\? features/[^/]+/\.ready-waiting-on\.json$' \
+    | grep -v -E '^ M features/[^/]+/\.operator-events\.jsonl$' \
+    | grep -v -E '^ M features/[^/]+/\.condition-reconcile\.jsonl$' \
     | grep -v -x '' || true
 }
 
@@ -1218,7 +1223,10 @@ wavemill_discard_hok3160_generated_artifacts() {
     "$wt_dir"/features/*/.ready-bypass-warned \
     "$wt_dir"/features/*/.coding-complete \
     "$wt_dir"/features/*/.workflow-aborted \
-    "$wt_dir"/features/*/.coding-blocked-completion.json; do
+    "$wt_dir"/features/*/.coding-blocked-completion.json \
+    "$wt_dir"/features/*/.operator-events.jsonl \
+    "$wt_dir"/features/*/.condition-reconcile.jsonl \
+    "$wt_dir"/features/*/.ready-waiting-on.json; do
     [[ -f "$file" ]] || continue
     rel="${file#${wt_dir}/}"
     if git -C "$wt_dir" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
@@ -1351,7 +1359,7 @@ wavemill_orphan_dir_scan() {
         esac
       elif [[ -f "$file" ]]; then
         case "$rel_path" in
-          features/*/.needs-attention|features/*/.terminal-history.jsonl|features/*/.ready-bypass-warned|.wavemill/observer-findings.jsonl) continue ;;
+          features/*/.needs-attention|features/*/.terminal-history.jsonl|features/*/.ready-bypass-warned|features/*/.operator-events.jsonl|features/*/.condition-reconcile.jsonl|features/*/.ready-waiting-on.json|.wavemill/observer-findings.jsonl) continue ;;
         esac
       fi
     fi
@@ -4120,7 +4128,7 @@ wavemill_pr_cache_refresh() {
   # shared "${cache_file}.tmp" leads to a race where one writer's mv consumes
   # the file before the other's mv runs.
   tmp_file="$(mktemp "${cache_file}.tmp.XXXXXX" 2>/dev/null)" || return 0
-  if gh pr list --json number,headRefName,state,statusCheckRollup --limit 50 \
+  if gh pr list --json number,headRefName,headRefOid,state,statusCheckRollup --limit 50 \
        < /dev/null 2>/dev/null > "$tmp_file"; then
     if [[ -s "$tmp_file" ]]; then
       mv "$tmp_file" "$cache_file" 2>/dev/null || rm -f "$tmp_file"

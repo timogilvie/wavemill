@@ -12,12 +12,14 @@
 # removes every file under the bucket's prefix.
 #
 # Storage per bucket, under $state_dir:
-#   .retry-<bucket>-count      attempt counter (positive integer)
-#   .retry-<bucket>-head       head SHA the counter is keyed to; a two-line
-#                              file (head\nbase) when a base SHA is provided,
-#                              a single line otherwise (HOK-3092)
-#   .retry-<bucket>-last-at    epoch seconds of the last increment
-#   .retry-<bucket>-exhausted  terminal sentinel; contents = terminal reason
+#   .retry-<bucket>-count               attempt counter (positive integer)
+#   .retry-<bucket>-head                head SHA the counter is keyed to; a two-line
+#                                       file (head\nbase) when a base SHA is provided,
+#                                       a single line otherwise (HOK-3092)
+#   .retry-<bucket>-last-at             epoch seconds of the last increment
+#   .retry-<bucket>-exhausted           terminal sentinel; contents = terminal reason
+#   .retry-<bucket>-exhausted-condition.json  condition companion (HOK-3172); JSON marker
+#                                       with expiry triggers for the reconciler
 #
 # The failed-ready-recheck bucket keeps its pre-HOK-2924 file names
 # (.failed-ready-recheck-*) so an in-flight session upgrading to this code
@@ -280,8 +282,16 @@ bounded_retry_due() {
 # the count at 0 (REQ-F4). Returns 0 on the first-time transition (caller
 # emits the status line / attention file) and 1 when the sentinel already
 # exists. Call behind `if`.
+#
+# HOK-3172: on first-time transition, also writes a condition companion via
+# marker_write. Extra flags (--head, --expires-on, etc.) are forwarded. When
+# marker_write is unavailable (declare -F guard fails, such as in the TS
+# bridge's bash -c), behaves exactly as before (plain-text sentinel only).
 bounded_retry_mark_exhausted() {
   local state_dir="$1" bucket="$2" reason="${3:-}"
+  # Callers may omit the reason; a bare `shift 3` would fail under set -e.
+  shift "$(( $# < 3 ? $# : 3 ))"
+  local -a condition_flags=("$@")
   local sentinel
   sentinel="$(_bounded_retry_file "$state_dir" "$bucket" "exhausted")"
 
@@ -290,6 +300,50 @@ bounded_retry_mark_exhausted() {
   fi
   mkdir -p "$state_dir"
   printf '%s\n' "$reason" > "$sentinel"
+
+  # Write condition companion if marker_write is available
+  if declare -F marker_write >/dev/null 2>&1; then
+    local companion
+    companion="$state_dir/$(_bounded_retry_prefix "$bucket")exhausted-condition.json"
+
+    # Build condition flags: use explicit flags if given, else derive from key.
+    # A head trigger is only recorded when the key holds a real SHA. Without
+    # one (terminal short-circuits, the pending-ready lockstep halt) the
+    # sentinel must hold until an operator acts; a placeholder head would never
+    # match HEAD and the reconciler would clear the terminal state next tick.
+    local stored_head=""
+    if [[ ${#condition_flags[@]} -eq 0 ]]; then
+      local head_file
+      head_file="$(_bounded_retry_file "$state_dir" "$bucket" "head")"
+      if [[ -f "$head_file" ]]; then
+        stored_head=$(head -n 1 "$head_file" 2>/dev/null | cut -d: -f1 || true)
+      fi
+      if [[ "$stored_head" =~ ^[0-9a-f]{40}$ ]]; then
+        condition_flags+=(--expires-on "head,operator-event")
+      else
+        stored_head=""
+        condition_flags+=(--expires-on "operator-event")
+      fi
+    fi
+
+    # Auto-add state-dir if not present
+    local has_state_dir=false
+    for flag in "${condition_flags[@]}"; do
+      if [[ "$flag" == "--state-dir" ]]; then
+        has_state_dir=true
+        break
+      fi
+    done
+    if [[ "$has_state_dir" == "false" ]]; then
+      condition_flags+=(--state-dir "$state_dir")
+    fi
+
+    # Write companion marker
+    local -a head_args=()
+    [[ -n "$stored_head" ]] && head_args=(--head "$stored_head")
+    marker_write "$companion" --kind retry-exhausted "${head_args[@]}" --reason "$reason" "${condition_flags[@]}" 2>/dev/null || true
+  fi
+
   return 0
 }
 
@@ -307,6 +361,13 @@ bounded_retry_exhaustion_reason() {
   [[ -f "$sentinel" ]] || { echo ""; return 0; }
   cat "$sentinel" 2>/dev/null || echo ""
   return 0
+}
+
+# Path to the condition companion for an exhausted sentinel (HOK-3172).
+# Returns the path whether or not the file exists; caller checks existence.
+bounded_retry_condition_path() {
+  local state_dir="$1" bucket="$2"
+  printf '%s/%sexhausted-condition.json' "$state_dir" "$(_bounded_retry_prefix "$bucket")"
 }
 
 # The composed relaunch decision. Echoes exactly one of:
