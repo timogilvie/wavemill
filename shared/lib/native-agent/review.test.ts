@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
-import { runNativeReview, nativeReviewTestUtils } from './review.ts';
+import { runNativeReview, nativeReviewTestUtils, readyReviewEntries } from './review.ts';
 import { ContextExhaustedError, ContextWindowExceededError } from './context-window-guard.ts';
 import type { ReviewContext } from '../review-context-gatherer.ts';
 import { parseTranscriptJsonl } from './transcript.ts';
@@ -1053,3 +1053,15 @@ function loadTranscript(repoDir: string) {
   const transcriptPath = join(nativeSessionsDir, transcriptFile);
   return parseTranscriptJsonl(readFileSync(transcriptPath, 'utf-8'));
 }
+
+describe('readyReviewEntries', () => {
+  it('skips models held by the DISABLED_MODEL_IDS kill-switch and non-ready entries', () => {
+    const entry = (modelId: string, status = 'ready') => ({ providerName: 'openrouter', modelId, status }) as unknown as ReadyNativeProviderEntry;
+    const picked = readyReviewEntries([
+      entry('gemini-3.1-pro-preview'),
+      entry('kimi-k2', 'missing-key'),
+      entry('glm-5.2'),
+    ] as never);
+    assert.deepEqual(picked.map((e) => e.modelId), ['glm-5.2']);
+  });
+});
