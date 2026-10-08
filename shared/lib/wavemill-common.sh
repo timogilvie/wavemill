@@ -1146,17 +1146,36 @@ WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT=".wavemill/observer-findings.jsonl"
 # terminal worktree. Exact root path and exact porcelain codes only.
 WAVEMILL_PROMPT_REGISTRY_ARTIFACT="prompt-registry.jsonl"
 
-# Porcelain status of a worktree with controller-owned artifacts (observer
-# findings, root prompt-registry log) excluded. Prints the filtered status;
-# propagates git's failure (non-zero, no output) so callers can keep treating
-# an unreadable status as dirty.
+# Porcelain status of a worktree with the HOK-3160 generated-artifact
+# allowlist excluded. Prints the filtered status; propagates git's failure
+# (non-zero, no output) so callers can keep treating an unreadable status as
+# dirty. Matches the TypeScript filter in shared/lib/worktree-dirty-status.ts
+# exactly: anything that gets past this filter must get past that one too.
 wavemill_worktree_dirty_status() {
   local wt_dir="${1:-}" raw_status="" registry="${WAVEMILL_PROMPT_REGISTRY_ARTIFACT:-prompt-registry.jsonl}"
   raw_status="$(git -C "$wt_dir" status --porcelain --untracked-files=all 2>/dev/null)" || return 1
+  # Each pattern is an extended-regex anchored at both ends; the leading two
+  # characters are the exact porcelain status code (two chars + one space).
+  # Any file whose porcelain line matches is tool-written cruft, not task work.
   printf '%s\n' "$raw_status" \
-    | grep -v -x -F "?? ${WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT}" \
-    | grep -v -x -F "?? ${registry}" \
-    | grep -v -x -F " M ${registry}" \
+    | grep -v -E "^\\?\\? ${WAVEMILL_CONTROLLER_OBSERVER_ARTIFACT//./\\.}$" \
+    | grep -v -E "^\\?\\? ${registry//./\\.}$" \
+    | grep -v -E "^ M ${registry//./\\.}$" \
+    | grep -v -E '^\?\? \.wavemill/audits/.+$' \
+    | grep -v -E '^\?\? features/[^/]+/\.review-result\.json$' \
+    | grep -v -E '^ M features/[^/]+/\.review-result\.json$' \
+    | grep -v -E '^\?\? features/[^/]+/\.needs-attention$' \
+    | grep -v -E '^\?\? features/[^/]+/\.terminal-history\.jsonl$' \
+    | grep -v -E '^ M features/[^/]+/\.terminal-history\.jsonl$' \
+    | grep -v -E '^\?\? features/[^/]+/\.ready-bypass-warned$' \
+    | grep -v -E '^\?\? features/[^/]+/\.coding-complete$' \
+    | grep -v -E '^\?\? features/[^/]+/\.workflow-aborted$' \
+    | grep -v -E '^\?\? features/[^/]+/\.coding-blocked-completion\.json$' \
+    | grep -v -E '^\?\? features/[^/]+/\.operator-events\.jsonl$' \
+    | grep -v -E '^\?\? features/[^/]+/\.condition-reconcile\.jsonl$' \
+    | grep -v -E '^\?\? features/[^/]+/\.ready-waiting-on\.json$' \
+    | grep -v -E '^ M features/[^/]+/\.operator-events\.jsonl$' \
+    | grep -v -E '^ M features/[^/]+/\.condition-reconcile\.jsonl$' \
     | grep -v -x '' || true
 }
 
@@ -1171,6 +1190,51 @@ wavemill_discard_prompt_registry_artifact() {
   else
     rm -f "$wt_dir/$registry" 2>/dev/null || true
   fi
+}
+
+# HOK-3160: discard the generated-artifact allowlist entries from a task
+# worktree before it is removed. These paths are the exact set that the
+# dirty-status filter drops; without this helper `git worktree remove` would
+# refuse because the files are untracked. Only untracked files at the exact
+# allowlisted paths are touched; a tracked file keeps the normal cleanup
+# behaviour (`git worktree remove` restores it).
+wavemill_discard_hok3160_generated_artifacts() {
+  local wt_dir="${1:-}"
+  [[ -n "$wt_dir" && -d "$wt_dir" ]] || return 0
+
+  # `.wavemill/audits/**` — any untracked audit JSON or subdirectory.
+  if [[ -d "$wt_dir/.wavemill/audits" ]]; then
+    find "$wt_dir/.wavemill/audits" -mindepth 1 -not -type d 2>/dev/null | while IFS= read -r f; do
+      [[ -z "$f" ]] && continue
+      local rel="${f#${wt_dir}/}"
+      if ! git -C "$wt_dir" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
+        rm -f "$f" 2>/dev/null || true
+      fi
+    done
+    find "$wt_dir/.wavemill/audits" -mindepth 1 -type d -empty -delete 2>/dev/null || true
+  fi
+
+  # Trace-metadata siblings under features/<slug>/.
+  local file rel
+  for file in \
+    "$wt_dir"/features/*/.review-result.json \
+    "$wt_dir"/features/*/.needs-attention \
+    "$wt_dir"/features/*/.terminal-history.jsonl \
+    "$wt_dir"/features/*/.ready-bypass-warned \
+    "$wt_dir"/features/*/.coding-complete \
+    "$wt_dir"/features/*/.workflow-aborted \
+    "$wt_dir"/features/*/.coding-blocked-completion.json \
+    "$wt_dir"/features/*/.operator-events.jsonl \
+    "$wt_dir"/features/*/.condition-reconcile.jsonl \
+    "$wt_dir"/features/*/.ready-waiting-on.json; do
+    [[ -f "$file" ]] || continue
+    rel="${file#${wt_dir}/}"
+    if git -C "$wt_dir" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
+      git -C "$wt_dir" checkout -- "$rel" 2>/dev/null || true
+    else
+      rm -f "$file" 2>/dev/null || true
+    fi
+  done
 }
 
 # Migrate (or drop) the controller-owned observer artifact out of a task
@@ -1295,7 +1359,7 @@ wavemill_orphan_dir_scan() {
         esac
       elif [[ -f "$file" ]]; then
         case "$rel_path" in
-          features/*/.needs-attention|features/*/.terminal-history.jsonl|features/*/.ready-bypass-warned|.wavemill/observer-findings.jsonl) continue ;;
+          features/*/.needs-attention|features/*/.terminal-history.jsonl|features/*/.ready-bypass-warned|features/*/.operator-events.jsonl|features/*/.condition-reconcile.jsonl|features/*/.ready-waiting-on.json|.wavemill/observer-findings.jsonl) continue ;;
         esac
       fi
     fi
@@ -1872,6 +1936,35 @@ safe_remove_task_worktree_and_branch() {
       verification_reason=""
     fi
 
+    # HOK-3160 Class A: tend rebases a merged PR's local branch (HOK-3112), so
+    # the checkout keeps SHAs the PR head no longer references but with patches
+    # the PR head still contains. The base-vs-branch cherry above cannot see
+    # that: a squash merge collapses N commits into one and the per-commit
+    # patch IDs no longer appear on origin/base. A direct cherry against the
+    # PR head answers the real question: are the local commits delivered? If
+    # pr_head_oid is locally reachable (git keeps it in the object DB after a
+    # terminal fetch) and every local commit is patch-equivalent (`-`), the
+    # branch is delivered.
+    if [[ "$pr_state_evidence" == "MERGED" && "$classification" == "retain_unpublished" \
+      && "$verification_reason" == "unique_local_patch" \
+      && -n "$pr_head_oid" ]] \
+      && git -C "$REPO_DIR" cat-file -e "${pr_head_oid}^{commit}" 2>/dev/null; then
+      local rebased_cherry_output="" rebased_unique="" rebased_equivalent=""
+      if rebased_cherry_output="$(git -C "$REPO_DIR" cherry "$pr_head_oid" "$task_branch" 2>/dev/null)" \
+          && [[ -n "$rebased_cherry_output" ]]; then
+        rebased_unique="$(printf '%s\n' "$rebased_cherry_output" | awk '/^\+/ { count++ } END { print count + 0 }')"
+        rebased_equivalent="$(printf '%s\n' "$rebased_cherry_output" | awk '/^-/ { count++ } END { print count + 0 }')"
+        if [[ "$rebased_unique" == "0" && "$rebased_equivalent" != "0" ]]; then
+          classification="safe_patch_equivalent_pr"
+          cleanup_authority="PR #${pr} merged into ${base_branch}; local commits are patch-equivalent to the merged PR head ${pr_head_oid} (tend-rebase)"
+          verification_reason=""
+          patch_equivalence_scope="pr_head_rebased"
+          patch_equivalent_shas="$(printf '%s\n' "$rebased_cherry_output" | awk '/^-/ { print $2 }' | tr '\n' ' ')"
+          patch_unique_shas=""
+        fi
+      fi
+    fi
+
     if [[ -z "$classification" ]]; then
       if [[ -n "$verification_reason" ]]; then
         case "$verification_reason" in
@@ -2052,6 +2145,7 @@ safe_remove_task_worktree_and_branch() {
     else
       wavemill_migrate_controller_observer_artifact "$wt_dir"
       wavemill_discard_prompt_registry_artifact "$wt_dir"
+      wavemill_discard_hok3160_generated_artifacts "$wt_dir"
       if wavemill_cleanup_run git -C "$REPO_DIR" worktree remove "$wt_dir" >>"${MILL_LOG_FILE:-/dev/null}" 2>/dev/null; then
         log "debug" "Removed worktree: $wt_dir"
       else
@@ -4034,7 +4128,7 @@ wavemill_pr_cache_refresh() {
   # shared "${cache_file}.tmp" leads to a race where one writer's mv consumes
   # the file before the other's mv runs.
   tmp_file="$(mktemp "${cache_file}.tmp.XXXXXX" 2>/dev/null)" || return 0
-  if gh pr list --json number,headRefName,state,statusCheckRollup --limit 50 \
+  if gh pr list --json number,headRefName,headRefOid,state,statusCheckRollup --limit 50 \
        < /dev/null 2>/dev/null > "$tmp_file"; then
     if [[ -s "$tmp_file" ]]; then
       mv "$tmp_file" "$cache_file" 2>/dev/null || rm -f "$tmp_file"

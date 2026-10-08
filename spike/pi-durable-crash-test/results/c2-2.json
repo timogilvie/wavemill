@@ -1,0 +1,26 @@
+{
+  "point": "C2",
+  "trial": 2,
+  "pass": true,
+  "resumed": true,
+  "reachedCompletionArtifact": true,
+  "transcript": {
+    "exactlyOneResultPerCall": true,
+    "hasInterruptedForUnsafe": true
+  },
+  "worktreeState": "partial",
+  "executesPerCallId": {
+    "t0-list_files": 1,
+    "t1-read_file": 1,
+    "t2-apply_patch": 1,
+    "t3-write_artifact": 1
+  },
+  "timings": {
+    "preCrashMs": 824,
+    "resumeMs": 831
+  },
+  "notes": [
+    "worktree-after-crash: partial",
+    "resume-stdout: {\"settled\":\"done\",\"mode\":\"resume\",\"pid\":81213,\"crashPoint\":\"none\"}"
+  ]
+}

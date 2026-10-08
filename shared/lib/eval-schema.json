@@ -2916,6 +2916,15 @@
             "identityVerdict": {
               "type": "string",
               "enum": ["match", "alias-resolved", "mismatch", "unverifiable", "absent"]
+            },
+            "piRuntimeVersions": {
+              "type": "object",
+              "description": "HOK-3164: installed Pi runtime package versions that ran this stage.",
+              "additionalProperties": false,
+              "properties": {
+                "pi-agent-core": { "type": "string" },
+                "pi-ai": { "type": "string" }
+              }
             }
           }
         }

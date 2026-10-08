@@ -43,6 +43,7 @@ TESTS=(
   shared/lib/linear-write-gate.test.ts
   shared/lib/session-adapters.test.ts
   shared/lib/executed-model-resolver.test.ts
+  shared/lib/native-agent/models.test.ts
   shared/lib/native-agent/provider.test.ts
   shared/lib/native-agent/provider-error-classifier.test.ts
   shared/lib/native-agent/provider-identity.test.ts
@@ -182,6 +183,7 @@ TESTS=(
   shared/lib/cross-pr-revert-detector.test.ts
   shared/lib/git-branch-changes.test.ts
   shared/lib/git-base-resolver.test.ts
+  shared/lib/review-diff-base.test.ts
   shared/lib/llm-cli.test.ts
   shared/lib/headless-llm.test.ts
   shared/lib/router-log.test.ts
@@ -402,6 +404,7 @@ TESTS=(
   shared/lib/native-agent/launch-coding.test.ts
   shared/lib/native-agent/review.test.ts
   shared/lib/native-agent/session-stream.test.ts
+  shared/lib/native-agent/pi-runtime-version.test.ts
   shared/lib/native-agent/smoke.test.ts
   shared/lib/native-agent/tool-decision-schema.test.ts
   shared/lib/native-agent/tool-decision-projector.test.ts
@@ -456,6 +459,7 @@ TESTS=(
   shared/lib/task-packet-utils.test.ts
   shared/lib/tool-runner.test.ts
   shared/lib/worktree-dirty-status.test.ts
+  shared/lib/task-residue-archive.test.ts
   shared/lib/worktree-manager.test.ts
   shared/lib/bounded-retry.test.ts
   shared/lib/observer-auto-fix.test.ts

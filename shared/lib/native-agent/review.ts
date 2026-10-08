@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import type { AgentMessage, Message } from './messages.ts';
 import type { AgentContext, LoopStopReason, WavemillLoopConfig } from './loop.ts';
 import { runWavemillLoop } from './loop.ts';
+import { createNativeModelsCollection } from './models.ts';
 import {
   ProviderIdentityMismatchError,
   ProviderIdentityTracker,
@@ -23,6 +24,7 @@ import {
 } from './openrouter-credits-guard.ts';
 import { TranscriptWriter, type TranscriptEvent, type TranscriptToolResult } from './transcript.ts';
 import { SessionStreamWriter, resolveSessionEventStreamPath } from './session-stream.ts';
+import { piRuntimeVersionsField, resolvePiRuntimeVersions } from './pi-runtime-version.ts';
 import { captureToolDecisionsFromStream } from './tool-decision-capture.ts';
 import {
   buildNativeProviderResolutionFailureMessage,
@@ -636,6 +638,23 @@ export async function runNativeReview(
     fallbackReason: provider.fallbackReason,
   });
 
+  // HOK-3169: short-circuit an empty review diff before invoking the model.
+  // Running the reviewer on a zero-byte diff invites it to improvise a
+  // non-verdict (which later surfaces as `native-review-malformed-response`
+  // and parks the task). Checking the raw byte count — not a trimmed string
+  // — keeps diffs that only contain whitespace-looking content (e.g. file
+  // renames) going to the model.
+  if (Buffer.byteLength(context.diff ?? '', 'utf8') === 0) {
+    return nativeReviewNoEvidenceFailure(
+      context,
+      'review-scope-empty',
+      'Native review input diff is empty; refusing to invoke the model.',
+      [],
+      substantiveAnalysisIdentity,
+      nativeReviewMetadata,
+    );
+  }
+
   const template = loadPromptResourceSync({
     kind: 'prompt',
     role: 'reviewer',
@@ -736,6 +755,7 @@ export async function runNativeReview(
     }, repoDir);
     reviewSessionStreamWriter.writeSessionStarted({
       initialConfigDigest: `model:${provider.entry.providerName}:${provider.entry.modelId}`,
+      piRuntimeVersions: resolvePiRuntimeVersions(),
     });
   } catch (error) {
     console.warn(`Failed to init review session stream: ${(error as Error).message}`);
@@ -794,19 +814,29 @@ export async function runNativeReview(
     }
   };
 
+  // HOK-3162: Models owns auth injection; no Authorization: Bearer here.
   const modelConfig: WavemillLoopConfig['model'] = {
     id: provider.entry.model.id,
     name: provider.entry.model.name,
     api: String(provider.entry.model.api),
     provider: String(provider.entry.model.provider),
     baseUrl: provider.entry.model.baseUrl,
-    headers: {
-      ...(provider.entry.model.headers ?? {}),
-      Authorization: `Bearer ${apiKey}`,
-    },
+    headers: { ...(provider.entry.model.headers ?? {}) },
     // model.compat is provider-specific opaque config; runtime treats it as unknown.
     compat: provider.entry.model.compat as unknown,
   };
+  const nativeModels = createNativeModelsCollection({
+    env: {
+      [provider.entry.apiKeyEnv]: apiKey,
+      OPENAI_API_KEY: provider.entry.providerName === 'openai'
+        ? apiKey
+        : process.env.OPENAI_API_KEY,
+      OPENROUTER_API_KEY: provider.entry.providerName === 'openrouter'
+        ? apiKey
+        : process.env.OPENROUTER_API_KEY,
+    },
+    repoDir,
+  });
 
   const loopContext: AgentContext = {
     systemPrompt,
@@ -865,6 +895,7 @@ export async function runNativeReview(
   try {
     loopResult = await nativeReviewDeps.runWavemillLoop({
       model: modelConfig,
+      models: nativeModels,
       context: loopContext,
       maxTokens: effectiveMaxTokens,
       contextManagement: getNativeContextManagementConfig(options.repoDir),
@@ -1017,6 +1048,7 @@ export async function runNativeReview(
         executionEvidence: {
           status: 'contradicted',
           source: 'native-runtime',
+          ...piRuntimeVersionsField(),
           detail: loopResult.stopReason,
           recordedAt: new Date().toISOString(),
         },
@@ -1064,12 +1096,20 @@ export async function runNativeReview(
       'Native review returned an empty final assistant message.',
       { stopReason: loopResult.stopReason },
     );
-    return nativeReviewFailure(
+    // HOK-3169: a malformed/empty final response is a model-protocol failure,
+    // not a substantive verdict. Route through the no-evidence shape so the
+    // ready gate recognizes it as infra and consumes the bounded
+    // `review-infra-recovery` bucket instead of terminalizing the task.
+    return nativeReviewNoEvidenceFailure(
       context,
       'native-review-malformed-response',
       'Native review returned an empty final assistant message.',
       deniedTools,
       substantiveAnalysisIdentity,
+      {
+        ...nativeReviewMetadata,
+        nativeLoopStopReason: loopResult.stopReason,
+      },
     );
   }
 
@@ -1094,12 +1134,19 @@ export async function runNativeReview(
   } catch (error) {
     const description = `Native review returned malformed response: ${(error as Error).message}`;
     recordReviewFailureEnvelope('model-protocol', description, { stopReason: loopResult.stopReason });
-    return nativeReviewFailure(
+    // HOK-3169: see the empty-response branch above — a parse failure is a
+    // protocol failure, not a substantive verdict, so the artifact must be
+    // the no-evidence shape that the ready gate's infra bucket recognizes.
+    return nativeReviewNoEvidenceFailure(
       context,
       'native-review-malformed-response',
       description,
       deniedTools,
       substantiveAnalysisIdentity,
+      {
+        ...nativeReviewMetadata,
+        nativeLoopStopReason: loopResult.stopReason,
+      },
     );
   }
 }

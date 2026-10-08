@@ -1532,9 +1532,15 @@ test('resolver voids the pair symmetrically when the primary was retired (HOK-31
 // pending-ready-recheck path. The resolver treats the resulting stamp exactly
 // like HOK-3147's ready-exhausted shapes (prefix-driven), so a dedicated
 // resolver test ensures the new causes flow through the right outcome.
-const REVIEW_MALFORMED_FORFEIT = {
-  challengeAborted: 'terminal_stage_failure:review-malformed-response',
-  challengeAbortedDetail: 'Ready launch refused: review verdict does not pass; failureCategory=native-review-malformed-response',
+//
+// HOK-3169: `review-malformed-response` is now an infra category and never
+// reaches a `terminal_stage_failure:*` stamp through the review-gate path.
+// The resolver's model-forfeit branch still has to handle a terminal review
+// stamp — `review-no-output` is the current representative (same `model-fault`
+// classification per arm-failure-taxonomy.ts).
+const REVIEW_NO_OUTPUT_FORFEIT = {
+  challengeAborted: 'terminal_stage_failure:review-no-output',
+  challengeAbortedDetail: 'Ready launch refused: review verdict does not pass; failureCategory=review-no-output',
   challengeAbortedStage: 'review',
 };
 
@@ -1565,17 +1571,17 @@ test('resolver voids the pair when the challenger was retired for review-identit
   }
 });
 
-test('resolver forfeits to the primary when the challenger was retired for a proven review-malformed-response (HOK-3154)', async () => {
+test('resolver forfeits to the primary when the challenger was retired for a proven terminal review failure (HOK-3154, HOK-3169)', async () => {
   const { repoDir, cleanup } = setupRepoDir();
   try {
-    writeWorkflowState(repoDir, readyExhaustedPairTasks(REVIEW_MALFORMED_FORFEIT));
+    writeWorkflowState(repoDir, readyExhaustedPairTasks(REVIEW_NO_OUTPUT_FORFEIT));
     const result = await resolveUnresolvablePair({ pairId: 'HOK-3145', repoDir });
 
     assert.equal(result.status, 'resolved');
     assert.equal(result.outcome, 'forfeit');
     assert.equal(result.record.winner, 'primary');
     assert.equal(result.record.terminalReason, 'challenger_challenge_aborted');
-    assert.equal(result.record.armFailures?.[0].failureKind, 'review-malformed-response');
+    assert.equal(result.record.armFailures?.[0].failureKind, 'review-no-output');
     assert.equal(result.record.armFailures?.[0].faultClass, 'model-fault');
     assert.equal(result.record.armFailures?.[0].stage, 'review');
   } finally {
