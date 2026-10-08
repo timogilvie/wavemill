@@ -300,6 +300,84 @@ describe('challenge recovery assessment', () => {
   });
 });
 
+describe('challenger intent resolution', () => {
+  const INTENT_AT = '2026-08-14T21:19:26.862Z';
+
+  // Real challenger task entries never carry challengeExecutionIntent; the
+  // pair intent lives on the primary and in each arm's feature dir.
+  function challengerWithoutStateIntent(): FixtureSpec {
+    const spec = provenFixture();
+    delete spec.challenger!.intentCreatedAt;
+    return spec;
+  }
+
+  function editState(repoDir: string, edit: (tasks: Record<string, Record<string, unknown>>) => void): void {
+    const path = join(repoDir, '.wavemill', 'workflow-state.json');
+    const state = JSON.parse(readFileSync(path, 'utf8')) as { tasks: Record<string, Record<string, unknown>> };
+    edit(state.tasks);
+    writeFileSync(path, JSON.stringify(state));
+  }
+
+  function writeArmIntent(repoDir: string, slug: string, intent: Record<string, unknown>): void {
+    writeFileSync(join(repoDir, 'worktrees', slug, 'features', slug, 'challenge-intent.json'), JSON.stringify(intent));
+  }
+
+  it('proves the challenger from the primary challengeArms entry', () => {
+    const repoDir = makeRepo(challengerWithoutStateIntent());
+    try {
+      editState(repoDir, (tasks) => {
+        tasks['PAIR-1'].challengeArms = [{
+          key: 'PAIR-1_c',
+          executionIntent: { pairId: 'PAIR-1', createdAt: INTENT_AT, selectedStage: 'review' },
+        }];
+      });
+      const assessment = assess(repoDir, 'PAIR-1');
+      assert.equal(assessment.verdict, 'supersedable');
+      assert.equal(assessment.intentProven, true);
+      assert.equal(assessment.arms[0].intentSource, 'task-state');
+      assert.equal(assessment.arms[1].intentSource, 'primary-challenge-arm');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('proves the challenger from its feature-dir challenge-intent.json', () => {
+    const repoDir = makeRepo(challengerWithoutStateIntent());
+    try {
+      writeArmIntent(repoDir, 'c', { pairId: 'PAIR-1', createdAt: INTENT_AT, selectedStage: 'review' });
+      const assessment = assess(repoDir, 'PAIR-1');
+      assert.equal(assessment.verdict, 'supersedable');
+      assert.equal(assessment.arms[1].intentSource, 'feature-dir');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores a fallback intent that names a different pair', () => {
+    const repoDir = makeRepo(challengerWithoutStateIntent());
+    try {
+      writeArmIntent(repoDir, 'c', { pairId: 'OTHER-9', createdAt: INTENT_AT, selectedStage: 'review' });
+      const assessment = assess(repoDir, 'PAIR-1');
+      assert.equal(assessment.verdict, 'quarantine-upheld');
+      assert.ok(assessment.blockers.some((b) => b.includes('intent is missing')));
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('still refuses when a fallback intent disagrees with the primary', () => {
+    const repoDir = makeRepo(challengerWithoutStateIntent());
+    try {
+      writeArmIntent(repoDir, 'c', { pairId: 'PAIR-1', createdAt: '2026-08-15T09:00:00.000Z', selectedStage: 'review' });
+      const assessment = assess(repoDir, 'PAIR-1');
+      assert.equal(assessment.verdict, 'quarantine-upheld');
+      assert.ok(assessment.blockers.some((b) => b.includes('disagree on intent createdAt')));
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('challenge recovery application', () => {
   it('has no recover-all mode', () => {
     const repoDir = makeRepo(provenFixture());

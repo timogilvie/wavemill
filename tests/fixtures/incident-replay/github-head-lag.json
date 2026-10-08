@@ -1,0 +1,27 @@
+{
+  "chain": "tend-rebind-race-wm-blocked",
+  "incidents": [],
+  "initialState": {
+    "task": {
+      "issue": "HOK-REPLAY-002",
+      "slug": "replay-github-head-lag",
+      "phase": "ready",
+      "status": "working"
+    },
+    "hook": {
+      "state": "working",
+      "event": "PreToolUse",
+      "writer": "agent",
+      "timestamp": 1759900000
+    }
+  },
+  "fault": "github_head_lag",
+  "faultParams": {
+    "lagSeconds": 180
+  },
+  "convergence": {
+    "mustMerge": true,
+    "maxTickCount": 15,
+    "tickIntervalSeconds": 30
+  }
+}
