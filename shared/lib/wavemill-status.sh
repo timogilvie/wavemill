@@ -2273,37 +2273,30 @@ reliability_dashboard_line() {
   return 0
 }
 
-# HOK-3177: trigger a background refresh of the reliability cache when it is
-# older than WAVEMILL_RELIABILITY_REFRESH_SECONDS (default 300). The refresher
-# flock-guards concurrent runs and only writes atomic tmp+rename, never into
-# the task's hook file.
+# HOK-3177: trigger a background refresh of the reliability cache at most
+# once per WAVEMILL_RELIABILITY_REFRESH_SECONDS (default 300). Throttled on the
+# shell's own SECONDS counter rather than `date`/`stat`, so a render never
+# consumes clock reads that other dashboard timers (tip refresh) depend on. The
+# refresher flock-guards concurrent runs and writes atomically.
+_RELIABILITY_LAST_REFRESH_AT=""
 reliability_schedule_refresh() {
   [[ "${WAVEMILL_SKIP_RELIABILITY_METRIC:-0}" != "1" ]] || return 0
-  local cache_file="/tmp/wavemill-${SESSION:-}-reliability.json"
   local refresh_script="${WAVEMILL_INSTALL_DIR:-}/shared/lib/wavemill-reliability-refresh.sh"
-  [[ -x "$refresh_script" || -f "$refresh_script" ]] || return 0
+  [[ -f "$refresh_script" ]] || return 0
   local max_age="${WAVEMILL_RELIABILITY_REFRESH_SECONDS:-300}"
   [[ "$max_age" =~ ^[0-9]+$ ]] || max_age=300
 
-  local now mtime age=0
-  now="$(date +%s 2>/dev/null || echo 0)"
-  if [[ -f "$cache_file" ]]; then
-    if ! mtime="$(stat -f %m "$cache_file" 2>/dev/null)"; then
-      mtime="$(stat -c %Y "$cache_file" 2>/dev/null || echo 0)"
-    fi
-    age=$(( now - mtime ))
-  else
-    age=$(( max_age + 1 ))
+  if [[ -n "$_RELIABILITY_LAST_REFRESH_AT" ]] \
+    && (( SECONDS - _RELIABILITY_LAST_REFRESH_AT < max_age )); then
+    return 0
   fi
-
-  if (( age >= max_age )); then
-    (
-      WAVEMILL_SESSION="${SESSION:-}" \
-        WAVEMILL_INSTALL_DIR="${WAVEMILL_INSTALL_DIR:-}" \
-        WAVEMILL_MILLED_REPO_DIR="${WAVEMILL_MILLED_REPO_DIR:-${REPO_DIR:-$PWD}}" \
-        bash "$refresh_script" >/dev/null 2>&1 &
-    ) >/dev/null 2>&1 &
-  fi
+  _RELIABILITY_LAST_REFRESH_AT=$SECONDS
+  (
+    WAVEMILL_SESSION="${SESSION:-}" \
+      WAVEMILL_INSTALL_DIR="${WAVEMILL_INSTALL_DIR:-}" \
+      WAVEMILL_MILLED_REPO_DIR="${WAVEMILL_MILLED_REPO_DIR:-${REPO_DIR:-$PWD}}" \
+      bash "$refresh_script" >/dev/null 2>&1 &
+  ) >/dev/null 2>&1 &
 }
 
 # HOK-3123: surface the tool-choice-gate progress line beneath the backstage
@@ -2374,7 +2367,9 @@ render_dashboard() {
     printf "${D}├─ %s${N}${EL}\n" "$tool_choice_gate_line" >> "$FRAME"
   fi
   # HOK-3177: unattended-rate / time-stuck line + off-render refresh.
-  reliability_schedule_refresh
+  if declare -F reliability_schedule_refresh >/dev/null; then
+    reliability_schedule_refresh
+  fi
   if reliability_line="$(reliability_dashboard_line 2>/dev/null)"; then
     printf "${D}├─ %s${N}${EL}\n" "$reliability_line" >> "$FRAME"
   elif [[ "${WAVEMILL_SKIP_RELIABILITY_METRIC:-0}" != "1" ]]; then
