@@ -212,7 +212,15 @@ close_count() {
 }
 
 # Review artifacts commonly reused across tests.
+#
+# HOK-3169: `native-review-malformed-response` is now an infra-recovery
+# failure (reviewer protocol defect, not a substantive verdict), so it never
+# reaches `review_refused_challenge_terminalize` in production. The resolver
+# itself still has to handle the shape if it ever receives one (e.g. a
+# future terminal-cause change), so the acceptance tests still seed it. The
+# new infra classification is covered by the predicate test below.
 MALFORMED_ARTIFACTS='{"type":"review","exitCode":1,"verdict":"not_ready","iterations":1,"blockerCount":1,"failureCategory":"native-review-malformed-response"}'
+MALFORMED_INFRA_ARTIFACTS='{"type":"review","exitCode":1,"verdict":"error","iterations":1,"blockerCount":1,"failureCategory":"native-review-malformed-response","reviewToolError":"Native review returned malformed response"}'
 NOT_READY_ARTIFACTS='{"type":"review","exitCode":1,"verdict":"not_ready","iterations":2,"blockerCount":2,"dismissedBlockers":[]}'
 PASSING_ARTIFACTS='{"type":"review","exitCode":0,"verdict":"ready","iterations":1,"blockerCount":0,"dismissedBlockers":[]}'
 INFRA_TIMEOUT_ARTIFACTS='{"type":"review","exitCode":1,"verdict":"error","iterations":1,"blockerCount":1,"failureCategory":"native-review-timeout","reviewToolError":"timeout"}'
@@ -461,6 +469,11 @@ else
 fi
 
 # ── 12. review_gate_refusal_is_terminal predicate ──────────────────────────
+# HOK-3169: `native-review-malformed-response` is now an infra category, so
+# the predicate must return false for both the legacy `not_ready` shape (any
+# surviving artifact from before the switch) and the new no-evidence shape
+# (verdict:error + reviewToolError). The genuine `not_ready` terminal case
+# is covered by the acceptance tests above.
 pred_ok=true
 seed "HOK-3097_c" "completed"
 dir="$(state_dir_for HOK-3097_c)"
@@ -469,9 +482,13 @@ if review_gate_refusal_is_terminal "$dir"; then pred_ok=false; echo "    expecte
 write_review_result "$dir" "$INFRA_TIMEOUT_ARTIFACTS"
 if review_gate_refusal_is_terminal "$dir"; then pred_ok=false; echo "    expected false for infra timeout" >&2; fi
 write_review_result "$dir" "$MALFORMED_ARTIFACTS"
-if ! review_gate_refusal_is_terminal "$dir"; then pred_ok=false; echo "    expected true for malformed-response" >&2; fi
+if review_gate_refusal_is_terminal "$dir"; then pred_ok=false; echo "    expected false for malformed-response (HOK-3169 infra)" >&2; fi
+write_review_result "$dir" "$MALFORMED_INFRA_ARTIFACTS"
+if review_gate_refusal_is_terminal "$dir"; then pred_ok=false; echo "    expected false for malformed-response no-evidence shape (HOK-3169 infra)" >&2; fi
+write_review_result "$dir" "$NOT_READY_ARTIFACTS"
+if ! review_gate_refusal_is_terminal "$dir"; then pred_ok=false; echo "    expected true for genuine not_ready" >&2; fi
 if [[ "$pred_ok" == "true" ]]; then
-  pass "review_gate_refusal_is_terminal is false for passing / infra and true for malformed-response"
+  pass "review_gate_refusal_is_terminal is false for passing / infra (including malformed-response per HOK-3169) and true for genuine not_ready"
 else
   fail "review_gate_refusal_is_terminal predicate wrong"
 fi

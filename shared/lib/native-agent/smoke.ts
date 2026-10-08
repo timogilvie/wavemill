@@ -17,6 +17,7 @@ import { dirname, join } from 'node:path';
 import type { Message } from './messages.ts';
 import type { AgentContext } from './loop.ts';
 import { runWavemillLoop, type WavemillLoopConfig } from './loop.ts';
+import { createNativeModelsCollection, type Models } from './models.ts';
 import { TranscriptWriter, type TranscriptSessionStarted, type TranscriptSessionEnded } from './transcript.ts';
 import {
   resolveNativeAgentProviders,
@@ -123,6 +124,14 @@ export interface RunNativeSmokeOptions {
    * real network access. Do not use in production code paths.
    */
   _modelOverride?: WavemillLoopConfig['model'];
+  /**
+   * Test-only: override the Models collection used in the live loop.
+   *
+   * When set, uses this collection instead of the default active-models fallback.
+   * Allows tests to inject a custom Models collection alongside _modelOverride if needed.
+   * Do not use in production code paths.
+   */
+  _modelsOverride?: Models;
   /**
    * Test-only: registry override used during provider entry resolution.
    *
@@ -518,7 +527,7 @@ export async function runNativeAgentLive(
     repoDir,
   });
 
-  // Build model config with Authorization header so Pi can authenticate.
+  // HOK-3162: Models owns auth injection; model.headers is user-supplied only.
   // _modelOverride lets tests inject a scripted Pi provider without network access.
   const modelConfig: WavemillLoopConfig['model'] = options._modelOverride ?? {
     id: readyEntry.model.id,
@@ -526,12 +535,25 @@ export async function runNativeAgentLive(
     api,
     provider: String(readyEntry.model.provider),
     baseUrl: readyEntry.model.baseUrl,
-    headers: {
-      ...(readyEntry.model.headers ?? {}),
-      Authorization: `Bearer ${apiKey}`,
-    },
+    headers: { ...(readyEntry.model.headers ?? {}) },
     compat: readyEntry.model.compat as unknown,
   };
+  // Launch a Models collection: either explicit _modelsOverride (test override),
+  // or the real live collection. The scripted _modelOverride path keeps the
+  // active-models fallback so tests can inject scripted providers through
+  // registerScriptedPiProvider without passing an explicit collection.
+  const nativeModels = options._modelsOverride
+    ? options._modelsOverride
+    : (options._modelOverride
+      ? undefined
+      : createNativeModelsCollection({
+        env: {
+          [readyEntry.apiKeyEnv]: apiKey,
+          OPENAI_API_KEY: provider === OPENAI_NATIVE_PROVIDER ? apiKey : process.env.OPENAI_API_KEY,
+          OPENROUTER_API_KEY: provider === OPENROUTER_NATIVE_PROVIDER ? apiKey : process.env.OPENROUTER_API_KEY,
+        },
+        repoDir,
+      }));
 
   const context: AgentContext = {
     systemPrompt: systemPromptContent,
@@ -545,6 +567,7 @@ export async function runNativeAgentLive(
 
   const loopConfig: WavemillLoopConfig = {
     model: modelConfig,
+    ...(nativeModels ? { models: nativeModels } : {}),
     context,
     convertToLlm: (messages) => messages as unknown as Message[],
     afterToolCall,

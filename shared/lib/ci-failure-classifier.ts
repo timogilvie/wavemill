@@ -25,18 +25,17 @@ export interface CiFailureClassifierOptions {
 const DEFAULT_LOG_MAX_BYTES = 20_000;
 
 const TRANSIENT_PATTERNS = [
+  /\bnot acquired by Runner\b/i,
   /hosted runner encountered an error/i,
   /runner (?:lost|has lost|was lost|disconnected)/i,
+  /^The (?:job|run|workflow|operation) was cancelled\b/im,
+  /^\s*CANCELLED\s*$/im,
+  /setup timed out/i,
   /workflow timed out/i,
-  /\btimed out\b/i,
+  /\bECONNRESET\b/,
+  /\bETIMEDOUT\b/,
+  /\bEAI_AGAIN\b/,
   /connection (?:reset|refused|closed)/i,
-  /\bECONNRESET\b/i,
-  /\bETIMEDOUT\b/i,
-  /\bEAI_AGAIN\b/i,
-  /\b5\d\d\b/,
-  /service unavailable/i,
-  /provider error/i,
-  /rate limit/i,
 ];
 
 const GITHUB_ONLY_PATTERNS = [
@@ -55,6 +54,11 @@ const GITHUB_ONLY_PATTERNS = [
 const DETERMINISTIC_PATTERNS = [
   /\bconfig validation failed\b/i,
   /\bERR_TEST_FAILURE\b/,
+  /\bdrift found\b/i,
+  /^FAIL(?:\s|$)/m,
+  /\b\d+\s*passed,\s*[1-9]\d*\s*failed\b/i,
+  /^not ok \d+/m,
+  /\btest(?:s)?\s+timed out\b/i,
   /assert(?:ion)? failed/i,
   /\bexpected\b.*\bactual\b/i,
   /\btest(?:s)? failed\b/i,
@@ -77,6 +81,26 @@ export function classifyCiFailure(
   const logExcerpt = tailBytes(haystack, normalizeLogMaxBytes(options.logMaxBytes));
   const localCommand = lookupLocalCommand(failingJob, options.localCommandMap ?? {});
 
+  const deterministicMatch = firstMatch(haystack, DETERMINISTIC_PATTERNS);
+  if (deterministicMatch) {
+    if (localCommand) {
+      return {
+        category: 'deterministic-local',
+        failingJob,
+        localCommand,
+        logExcerpt,
+        reason: `Classified ${failingJob} as locally replayable (${deterministicMatch}); recipe: ${localCommand}.`,
+      };
+    }
+    return {
+      category: 'unknown',
+      failingJob,
+      localCommand,
+      logExcerpt,
+      reason: `Check ${failingJob} shows a code-failure signature (${deterministicMatch}) but no configured local recipe.`,
+    };
+  }
+
   const transientMatch = firstMatch(haystack, TRANSIENT_PATTERNS);
   if (transientMatch) {
     return {
@@ -96,17 +120,6 @@ export function classifyCiFailure(
       localCommand,
       logExcerpt,
       reason: `Classified ${failingJob} as GitHub-only or approval/security gated (${githubOnlyMatch}).`,
-    };
-  }
-
-  const deterministicMatch = firstMatch(haystack, DETERMINISTIC_PATTERNS);
-  if (localCommand && deterministicMatch) {
-    return {
-      category: 'deterministic-local',
-      failingJob,
-      localCommand,
-      logExcerpt,
-      reason: `Classified ${failingJob} as locally replayable (${deterministicMatch}); recipe: ${localCommand}.`,
     };
   }
 

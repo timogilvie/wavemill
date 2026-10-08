@@ -21,6 +21,7 @@ import type { CodingArtifacts } from './native-agent/coding-artifacts.ts';
 export type { CodingArtifacts } from './native-agent/coding-artifacts.ts';
 import { validateSeamArtifactValue } from './seam-artifacts.ts';
 import type { CleanupDecision, CleanupReport, TreeState } from './native-agent/cleanup.ts';
+import type { PiRuntimeVersions } from './native-agent/pi-runtime-version.ts';
 export type { CleanupDecision, CleanupReport, TreeState } from './native-agent/cleanup.ts';
 import type { ReadyRemediationDecision } from './native-agent/workflow-tools/ready-remediation.ts';
 export type { ReadyRemediationDecision } from './native-agent/workflow-tools/ready-remediation.ts';
@@ -85,6 +86,12 @@ export interface StageExecutionEvidence {
   upstreamProvider?: string;
   /** Provider response id corroborating the reported model. */
   responseId?: string;
+  /**
+   * Installed Pi runtime versions that ran this stage (HOK-3164). Native token
+   * and cost profiles shift across Pi upgrades, so analysis keys on this
+   * rather than run dates. Absent for non-native agents and pre-HOK-3164 rows.
+   */
+  piRuntimeVersions?: PiRuntimeVersions;
 }
 
 /** Valid stage names for runtime validation. */
@@ -158,6 +165,13 @@ export type ReviewOutcomeVerdict = 'ready' | 'not_ready' | 'error';
  */
 export const REVIEW_SCOPE_UNVERIFIABLE_FAILURE_CATEGORY = 'review-scope-unverifiable';
 /**
+ * The review's changed-file set is a strict superset of the PR's own file
+ * list at the same head — the diff base is stale, so reviewing would flag
+ * other PRs' merged code (HOK-3166). Infrastructure, never a code defect: a
+ * retry re-fetches `origin/<base>`, which is the remedy.
+ */
+export const REVIEW_SCOPE_MISMATCH_FAILURE_CATEGORY = 'review-scope-mismatch';
+/**
  * The reviewed diff (at the current head/base) exceeds the reviewer's context
  * window. Bounded infrastructure recovery (HOK-2964): a stale-base rebuild or
  * a larger-context reroute may still resolve it, so it must never be treated
@@ -172,13 +186,33 @@ export const NATIVE_CONTEXT_WINDOW_EXCEEDED_CATEGORY = 'native-context-window-ex
  */
 export const PROVIDER_CREDIT_EXHAUSTED_CATEGORY = 'provider-credit-exhausted';
 export const NATIVE_REVIEW_TIMEOUT_CATEGORY = 'native-review-timeout';
+/**
+ * The native reviewer delivered an unparseable or empty final message
+ * (HOK-3169). This is a model-protocol / infra failure, not a substantive
+ * verdict — the reviewer never produced a usable `ready` / `not_ready`
+ * decision — so it must route through the bounded `review-infra-recovery`
+ * bucket rather than terminalizing the Ready gate.
+ */
+export const NATIVE_REVIEW_MALFORMED_RESPONSE_CATEGORY = 'native-review-malformed-response';
+/**
+ * The native reviewer's input diff was empty (zero bytes) at review time
+ * (HOK-3169). Running the model on an empty diff invites it to improvise a
+ * non-verdict (surfacing later as `native-review-malformed-response`); the
+ * short-circuit returns this typed infra failure before the model is called
+ * so the bounded recovery path can retry once the diff is populated (e.g.
+ * after a stale-base rebuild).
+ */
+export const REVIEW_SCOPE_EMPTY_FAILURE_CATEGORY = 'review-scope-empty';
 export const INFRA_REVIEW_FAILURE_CATEGORIES = [
   'native-runtime-unavailable',
   'native-review-prompt-missing',
   REVIEW_SCOPE_UNVERIFIABLE_FAILURE_CATEGORY,
+  REVIEW_SCOPE_MISMATCH_FAILURE_CATEGORY,
+  REVIEW_SCOPE_EMPTY_FAILURE_CATEGORY,
   NATIVE_CONTEXT_WINDOW_EXCEEDED_CATEGORY,
   PROVIDER_CREDIT_EXHAUSTED_CATEGORY,
   NATIVE_REVIEW_TIMEOUT_CATEGORY,
+  NATIVE_REVIEW_MALFORMED_RESPONSE_CATEGORY,
 ] as const;
 export type InfrastructureReviewFailureCategory = typeof INFRA_REVIEW_FAILURE_CATEGORIES[number];
 
@@ -523,6 +557,11 @@ export function executionTruthFields(input: ExecutionTruthFieldsInput): Executio
       : input.existing?.executionEvidence?.detail && mayPreserveExisting
         ? { detail: input.existing.executionEvidence.detail }
         : {}),
+    // HOK-3164: the CLI cannot observe the runtime, so it only carries the
+    // native launcher's Pi stamp forward for the same still-running stage.
+    ...(mayPreserveExisting && input.existing?.executionEvidence?.piRuntimeVersions
+      ? { piRuntimeVersions: input.existing.executionEvidence.piRuntimeVersions }
+      : {}),
     recordedAt: input.now,
   };
 

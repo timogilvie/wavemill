@@ -1,0 +1,25 @@
+{
+  "name": "pi-durable-crash-test",
+  "private": true,
+  "version": "0.1.0",
+  "description": "HOK-3150 spike: run a native coding arm on @earendil-works/pi-durable 1.0 (SQLite) and test crash resume. Throwaway; not registered in CI.",
+  "type": "module",
+  "scripts": {
+    "arm:faux": "tsx scripts/run-arm.ts --faux",
+    "arm:real": "tsx scripts/run-arm.ts",
+    "crash:faux": "tsx scripts/crash-harness.ts --faux",
+    "policy-parity": "tsx scripts/policy-parity.ts",
+    "provider-matrix": "tsx scripts/provider-matrix.ts",
+    "baseline": "tsx scripts/baseline-relaunch.ts --faux",
+    "smoke": "tsx scripts/smoke.ts"
+  },
+  "dependencies": {
+    "@earendil-works/chord": "1.0.4",
+    "@earendil-works/pi-ai": "1.0.4",
+    "@earendil-works/pi-durable": "1.0.4",
+    "typebox": "1.3.27"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.15"
+  }
+}

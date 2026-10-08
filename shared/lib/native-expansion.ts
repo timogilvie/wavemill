@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import type { Message } from './native-agent/messages.ts';
 import type { AgentContext, HeartbeatEvent, WavemillLoopConfig } from './native-agent/loop.ts';
 import { runWavemillLoop } from './native-agent/loop.ts';
+import { createNativeModelsCollection } from './native-agent/models.ts';
 import { TranscriptWriter, parseTranscriptJsonl } from './native-agent/transcript.ts';
 import {
   buildNativeProviderResolutionFailureMessage,
@@ -287,13 +288,21 @@ export async function runNativeExpansion(options: NativeExpansionOptions): Promi
   const sessionId = buildSessionId(options);
   const transcriptPath = makeTranscriptPath(options.repoDir, sessionId);
   const apiKey = getNativeProviderApiKey(provider);
+  // HOK-3162: Models owns auth injection; model.headers is user-only.
   const model = options.modelOverride ?? {
     ...provider.model,
-    headers: {
-      ...(provider.model.headers ?? {}),
-      Authorization: `Bearer ${apiKey}`,
-    },
+    headers: { ...(provider.model.headers ?? {}) },
   };
+  const nativeModels = !options.modelOverride && apiKey
+    ? createNativeModelsCollection({
+      env: {
+        [provider.apiKeyEnv]: apiKey,
+        OPENAI_API_KEY: provider.providerName === 'openai' ? apiKey : process.env.OPENAI_API_KEY,
+        OPENROUTER_API_KEY: provider.providerName === 'openrouter' ? apiKey : process.env.OPENROUTER_API_KEY,
+      },
+      repoDir: options.repoDir,
+    })
+    : undefined;
 
   const systemPrompt = fillPromptTemplate(options.promptTemplate, {
     ISSUE_CONTEXT: options.issueContext,
@@ -333,6 +342,7 @@ export async function runNativeExpansion(options: NativeExpansionOptions): Promi
 
   const loopResult = await runWavemillLoop({
     model,
+    ...(nativeModels ? { models: nativeModels } : {}),
     context,
     contextManagement: getNativeContextManagementConfig(options.repoDir),
     convertToLlm: (messages) => messages as unknown as Message[],

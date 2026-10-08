@@ -58,7 +58,32 @@ FUNCS_FILE="$TMP_DIR/create-tmux-session.sh"
 extract_function "$MILL_SCRIPT" dotenv_value > "$FUNCS_FILE"
 extract_function "$MILL_SCRIPT" hydrate_provider_env_from_dotenv >> "$FUNCS_FILE"
 extract_function "$MILL_SCRIPT" create_tmux_session >> "$FUNCS_FILE"
+extract_function "$MILL_SCRIPT" hold_session_sleep_assertion >> "$FUNCS_FILE"
+extract_function "$MILL_SCRIPT" mill_sleep_preflight_warning >> "$FUNCS_FILE"
 source "$FUNCS_FILE"
+
+# Host platform stubs (HOK-3174). Default to a non-macOS host so the
+# pre-existing session cases never spawn a real caffeinate.
+UNAME_S="Linux"
+uname() { printf '%s\n' "$UNAME_S"; }
+MILL_LOG="$TMP_DIR/mill.log"
+: > "$MILL_LOG"
+log() { shift; printf 'INFO %s\n' "$*" >> "$MILL_LOG"; }
+log_warn() { printf 'WARN %s\n' "$*" >> "$MILL_LOG"; }
+CAFFEINATE_LOG="$TMP_DIR/caffeinate.log"
+: > "$CAFFEINATE_LOG"
+caffeinate() { printf 'caffeinate %s\n' "$*" >> "$CAFFEINATE_LOG"; }
+nohup() { "$@"; }
+PMSET_BATT="Now drawing from 'AC Power'"
+PMSET_SETTINGS=" sleep                0 (sleep prevented by powerd)"
+pmset() {
+  if [[ "${2:-}" == "batt" ]]; then
+    printf '%s\n' "$PMSET_BATT"
+  else
+    printf 'System-wide power settings:\nCurrently in use:\n%s\n displaysleep 10\n' "$PMSET_SETTINGS"
+  fi
+}
+TMUX_SERVER_PID=4242
 
 SCRIPT_DIR="$REPO_DIR/shared/lib"
 WAVEMILL_WINDOW_MILL="mill"
@@ -90,6 +115,9 @@ tmux() {
       ;;
     new-session|set-option|set-environment|bind-key|send-keys)
       return 0
+      ;;
+    display-message)
+      printf '%s\n' "$TMUX_SERVER_PID"
       ;;
     *)
       echo "FAIL: unexpected tmux invocation: $*" >&2
@@ -150,3 +178,63 @@ assert_contains \
   "set-environment -t collide OPENROUTER_API_KEY sk-openrouter-from-dotenv"
 
 echo "PASS: create_tmux_session rejects foreign sessions and hydrates provider env"
+
+# ── HOK-3174: session sleep assertion ────────────────────────────────────
+assert_not_contains "non-macOS host never runs caffeinate" "$(cat "$CAFFEINATE_LOG")" "caffeinate"
+assert_not_contains "non-macOS host logs no assertion" "$(cat "$MILL_LOG")" "sleep assertion"
+
+UNAME_S="Darwin"
+: > "$TMUX_LOG"; : > "$MILL_LOG"; : > "$CAFFEINATE_LOG"
+create_tmux_session >/dev/null
+wait 2>/dev/null || true
+assert_contains "macOS binds caffeinate to the tmux server pid" "$(cat "$CAFFEINATE_LOG")" "caffeinate -i -s -w 4242"
+assert_contains "server pid resolved from the session" "$(cat "$TMUX_LOG")" "display-message -p -t collide #{pid}"
+held_lines="$(grep -c 'Holding sleep assertion' "$MILL_LOG" || true)"
+if [[ "$held_lines" != "1" ]]; then
+  echo "FAIL: expected exactly one held-assertion log line, got $held_lines"
+  exit 1
+fi
+
+: > "$MILL_LOG"; : > "$CAFFEINATE_LOG"
+WAVEMILL_NO_CAFFEINATE=1 create_tmux_session >/dev/null
+wait 2>/dev/null || true
+assert_not_contains "WAVEMILL_NO_CAFFEINATE=1 opts out" "$(cat "$CAFFEINATE_LOG")" "caffeinate"
+assert_not_contains "opt-out logs no assertion" "$(cat "$MILL_LOG")" "sleep assertion"
+
+: > "$MILL_LOG"; : > "$CAFFEINATE_LOG"
+TMUX_SERVER_PID=""
+create_tmux_session >/dev/null
+assert_not_contains "unresolvable server pid holds nothing" "$(cat "$CAFFEINATE_LOG")" "caffeinate"
+assert_contains "unresolvable server pid warns" "$(cat "$MILL_LOG")" "Could not resolve the tmux server pid"
+TMUX_SERVER_PID=4242
+
+echo "PASS: create_tmux_session holds a caffeinate assertion bound to the tmux server on macOS"
+
+# ── HOK-3174: startup sleep preflight ────────────────────────────────────
+: > "$MILL_LOG"
+mill_sleep_preflight_warning
+assert_not_contains "AC with sleep 0 does not warn" "$(cat "$MILL_LOG")" "WARN"
+
+PMSET_SETTINGS=" sleep                10"
+: > "$MILL_LOG"
+mill_sleep_preflight_warning
+assert_contains "AC sleep warns" "$(cat "$MILL_LOG")" "sleep after 10m on AC"
+assert_contains "warning gives the fix" "$(cat "$MILL_LOG")" "sudo pmset -c sleep 0"
+assert_contains "warning mentions the lid" "$(cat "$MILL_LOG")" "external display"
+if [[ "$(grep -c WARN "$MILL_LOG")" != "1" ]]; then
+  echo "FAIL: expected a single preflight warning"
+  exit 1
+fi
+
+PMSET_SETTINGS=" sleep                0"
+PMSET_BATT="Now drawing from 'Battery Power'"
+: > "$MILL_LOG"
+mill_sleep_preflight_warning
+assert_contains "battery warns" "$(cat "$MILL_LOG")" "on battery"
+
+UNAME_S="Linux"
+: > "$MILL_LOG"
+mill_sleep_preflight_warning
+assert_not_contains "non-macOS preflight is silent" "$(cat "$MILL_LOG")" "WARN"
+
+echo "PASS: mill_sleep_preflight_warning warns on AC sleep and battery only on macOS"
