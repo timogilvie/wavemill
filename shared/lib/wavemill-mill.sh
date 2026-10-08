@@ -432,6 +432,53 @@ hydrate_provider_env_from_dotenv() {
   done
 }
 
+# HOK-3174: warn once at startup when this macOS host can still sleep under
+# the mill. `caffeinate -s` only holds off system sleep on AC power, and
+# closing the lid sleeps the Mac regardless unless an external display is
+# attached. Missing or unparseable platform utilities are never fatal.
+mill_sleep_preflight_warning() {
+  [[ "${WAVEMILL_NO_CAFFEINATE:-}" == "1" ]] && return 0
+  [[ "$(uname -s 2>/dev/null || true)" == "Darwin" ]] || return 0
+  command -v pmset >/dev/null 2>&1 || return 0
+
+  local batt settings ac_sleep="" reasons=""
+  batt="$(pmset -g batt 2>/dev/null || true)"
+  if [[ "$batt" == *"'Battery Power'"* ]]; then
+    reasons="host is on battery (caffeinate -s only prevents system sleep on AC)"
+  else
+    settings="$(pmset -g 2>/dev/null || true)"
+    ac_sleep="$(printf '%s\n' "$settings" | awk '$1 == "sleep" && $2 ~ /^[0-9]+$/ { print $2; exit }')"
+    if [[ "$ac_sleep" =~ ^[0-9]+$ ]] && (( ac_sleep > 0 )); then
+      reasons="host is set to sleep after ${ac_sleep}m on AC"
+    fi
+  fi
+  [[ -n "$reasons" ]] || return 0
+
+  log_warn "Host sleep risk: $reasons. Fix: keep the Mac on AC power and run 'sudo pmset -c sleep 0'. Closing the lid still sleeps the Mac unless an external display is attached."
+}
+
+# HOK-3174: hold a no-sleep assertion for the life of the tmux session.
+# `caffeinate -w` is bound to the tmux server pid, so the assertion is
+# released without explicit cleanup when the server exits. No-op off macOS or
+# with WAVEMILL_NO_CAFFEINATE=1.
+hold_session_sleep_assertion() {
+  [[ "${WAVEMILL_NO_CAFFEINATE:-}" == "1" ]] && return 0
+  [[ "$(uname -s 2>/dev/null || true)" == "Darwin" ]] || return 0
+  command -v caffeinate >/dev/null 2>&1 || return 0
+
+  local server_pid
+  server_pid="$(tmux display-message -p -t "$SESSION" '#{pid}' 2>/dev/null || true)"
+  if [[ ! "$server_pid" =~ ^[0-9]+$ ]]; then
+    log_warn "Could not resolve the tmux server pid; no sleep assertion held for '$SESSION'"
+    return 0
+  fi
+
+  # nohup: survive the launching terminal closing while the session lives on.
+  nohup caffeinate -i -s -w "$server_pid" >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+  log "info" "Holding sleep assertion (caffeinate -i -s -w $server_pid) for session '$SESSION'"
+}
+
 create_tmux_session() {
   local tmux_conf
   local next_done_script
@@ -460,6 +507,7 @@ create_tmux_session() {
   # Prevent mill panes from being destroyed if their process crashes.
   # Without this, a dashboard crash collapses the entire control layout.
   tmux set-option -t "$SESSION:$WAVEMILL_WINDOW_MILL" remain-on-exit on 2>/dev/null || true
+  hold_session_sleep_assertion
   tmux set-environment -t "$SESSION" REPO_DIR "$REPO_DIR"
   tmux set-environment -t "$SESSION" WAVEMILL_MILL_ACTIVE "$REPO_DIR"
   hydrate_provider_env_from_dotenv "$REPO_DIR" "$SESSION"
@@ -2785,6 +2833,7 @@ if [[ ! -f "$STARTUP_RUNNER" ]]; then
   exit 1
 fi
 
+mill_sleep_preflight_warning
 log "status" "Creating tmux session..."
 create_tmux_session
 
