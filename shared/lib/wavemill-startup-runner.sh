@@ -631,6 +631,7 @@ write_monitor_env() {
     write_shell_assignment "DASHBOARD_VERBOSITY" "$DASHBOARD_VERBOSITY"
     write_shell_assignment "DASHBOARD_LOG_TO_FILE" "$DASHBOARD_LOG_TO_FILE"
     write_shell_assignment "WAVEMILL_GIT_REMOTE_TIMEOUT_SECONDS" "${WAVEMILL_GIT_REMOTE_TIMEOUT_SECONDS:-}"
+    write_shell_assignment "WAVEMILL_WAKE_GAP_SECONDS" "${WAVEMILL_WAKE_GAP_SECONDS:-}"
     write_shell_assignment "WAVEMILL_DASHBOARD_PID" "${WAVEMILL_DASHBOARD_PID:-}"
     write_shell_assignment "WAVEMILL_STATE_FILE" "$STATE_FILE"
     write_shell_assignment "MILL_LOG_FILE" "$MILL_LOG_FILE"
