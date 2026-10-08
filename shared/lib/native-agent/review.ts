@@ -638,6 +638,23 @@ export async function runNativeReview(
     fallbackReason: provider.fallbackReason,
   });
 
+  // HOK-3169: short-circuit an empty review diff before invoking the model.
+  // Running the reviewer on a zero-byte diff invites it to improvise a
+  // non-verdict (which later surfaces as `native-review-malformed-response`
+  // and parks the task). Checking the raw byte count — not a trimmed string
+  // — keeps diffs that only contain whitespace-looking content (e.g. file
+  // renames) going to the model.
+  if (Buffer.byteLength(context.diff ?? '', 'utf8') === 0) {
+    return nativeReviewNoEvidenceFailure(
+      context,
+      'review-scope-empty',
+      'Native review input diff is empty; refusing to invoke the model.',
+      [],
+      substantiveAnalysisIdentity,
+      nativeReviewMetadata,
+    );
+  }
+
   const template = loadPromptResourceSync({
     kind: 'prompt',
     role: 'reviewer',
@@ -1079,12 +1096,20 @@ export async function runNativeReview(
       'Native review returned an empty final assistant message.',
       { stopReason: loopResult.stopReason },
     );
-    return nativeReviewFailure(
+    // HOK-3169: a malformed/empty final response is a model-protocol failure,
+    // not a substantive verdict. Route through the no-evidence shape so the
+    // ready gate recognizes it as infra and consumes the bounded
+    // `review-infra-recovery` bucket instead of terminalizing the task.
+    return nativeReviewNoEvidenceFailure(
       context,
       'native-review-malformed-response',
       'Native review returned an empty final assistant message.',
       deniedTools,
       substantiveAnalysisIdentity,
+      {
+        ...nativeReviewMetadata,
+        nativeLoopStopReason: loopResult.stopReason,
+      },
     );
   }
 
@@ -1109,12 +1134,19 @@ export async function runNativeReview(
   } catch (error) {
     const description = `Native review returned malformed response: ${(error as Error).message}`;
     recordReviewFailureEnvelope('model-protocol', description, { stopReason: loopResult.stopReason });
-    return nativeReviewFailure(
+    // HOK-3169: see the empty-response branch above — a parse failure is a
+    // protocol failure, not a substantive verdict, so the artifact must be
+    // the no-evidence shape that the ready gate's infra bucket recognizes.
+    return nativeReviewNoEvidenceFailure(
       context,
       'native-review-malformed-response',
       description,
       deniedTools,
       substantiveAnalysisIdentity,
+      {
+        ...nativeReviewMetadata,
+        nativeLoopStopReason: loopResult.stopReason,
+      },
     );
   }
 }

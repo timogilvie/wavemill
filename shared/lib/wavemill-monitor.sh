@@ -11454,9 +11454,11 @@ review_result_infra_failure() {
       (($review.failureCategory // "") == "native-review-prompt-missing") or
       (($review.failureCategory // "") == "review-scope-unverifiable") or
       (($review.failureCategory // "") == "review-scope-mismatch") or
+      (($review.failureCategory // "") == "review-scope-empty") or
       (($review.failureCategory // "") == "native-context-window-exceeded") or
       (($review.failureCategory // "") == "provider-credit-exhausted") or
       (($review.failureCategory // "") == "native-review-timeout") or
+      (($review.failureCategory // "") == "native-review-malformed-response") or
       ((($review.verdict // "") == "error") and ((($review.reviewToolError // "") | tostring | length) > 0))
     )
   ' "$review_file" >/dev/null 2>&1
