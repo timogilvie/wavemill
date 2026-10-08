@@ -4480,12 +4480,8 @@ wake_resume_interrupted_agent() {
     --feature-dir "$feature_dir" 2>/dev/null || printf '{}')"
   # Idle at the prompt (Stop) or cut off mid-response (StopFailure → error),
   # with nothing else explaining the silence.
-  printf '%s' "$progress" | jq -e '
-    (.terminal != true)
-    and (.blockingPrompt == null)
-    and (.agentBackgroundLive != true)
-    and ((.agentIdle == true) or (.agentRecord.state == "error"))
-  ' >/dev/null 2>&1 || return 1
+  local resumable_filter='(.terminal != true) and (.blockingPrompt == null) and (.agentBackgroundLive != true) and ((.agentIdle == true) or (.agentRecord.state == "error"))'
+  printf '%s' "$progress" | jq -e "$resumable_filter" >/dev/null 2>&1 || return 1
 
   # The idle/error record must belong to this stage's agent, not a previous
   # stage's agent that stopped before this stage launched.
