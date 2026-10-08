@@ -1,14 +1,18 @@
 # Pi Durable evaluation (HOK-3148)
 
-**Status:** plan (HOK-3149) · spikes pending (HOK-3150, HOK-3151) · design
-pending (HOK-3152) · decision pending (HOK-3153)
+**Status:** plan (HOK-3149) · HOK-3150 **done** (§6) · HOK-3151 pending ·
+design pending (HOK-3152) · decision pending (HOK-3153)
 
-Pi 1.0 shipped `@earendil-works/pi-durable` 1.0.0 (MIT, released 2026-10-01,
-labelled experimental) alongside `pi-agent-core` and `pi-ai` 1.0.0. Wavemill's
-native agent pins `pi-agent-core` and `pi-ai` at **0.79.8**. This document sizes
-the problem Pi Durable might solve for wavemill, maps it onto Pi Durable's
-primitives, inventories the native agent's Pi surface, and fixes the pass/fail
-criteria for the spikes *before* they run.
+Pi 1.0 shipped `@earendil-works/pi-durable` 1.0.4 (MIT, 1.0.0 released
+2026-10-01; **1.0.4 released 2026-10-05 — four patch releases in four days,
+each carrying "Breaking Changes"**). Wavemill's native agent has since
+upgraded to `pi-agent-core` / `pi-ai` **1.0.2** (HOK-3161/HOK-3162/HOK-3164 on
+`auto/integration`), so the §3b table below is a retrospective, not a
+pre-condition. This document sizes the problem Pi Durable might solve for
+wavemill, maps it onto Pi Durable's primitives, inventories the native
+agent's Pi surface, fixes the pass/fail criteria for the spikes before they
+run, and (§6) reports the HOK-3150 crash-resume spike against those
+criteria.
 
 Sources: the [announcement post](https://earendil.com/posts/pi-durable/), the
 `pi-durable@1.0.0` README shipped in the npm tarball, and a type-check of this
@@ -228,3 +232,266 @@ are out of scope unless a spike result changes the picture. The dashboard and
 the cache-plus-`USR1` refresh are adequate for now. Swapping extension code
 into a running process conflicts with certification identity, which pins what
 a certified arm runs.
+
+## 6. HOK-3150 results (native coding arm on pi-durable 1.0.4)
+
+Evidence lives in [`spike/pi-durable-crash-test/`](../spike/pi-durable-crash-test/)
+with per-trial JSON in `spike/pi-durable-crash-test/results/`. The spike runs
+`pi-durable@1.0.4` + `pi-ai@1.0.4` + `chord@1.0.4` in its own `node_modules`,
+leaving the repo's `pi-ai@1.0.2` dependency untouched. All trials use the
+`pi-ai` **faux provider** — no real-model tokens spent — with a durable
+scripted factory that reads `TranscriptContext.messages` so the same tool
+sequence is produced before and after a kill (otherwise the faux state resets
+on process restart and resume is indistinguishable from a brand-new run).
+
+### 6.1 Crash points (gates 1 / 2 / 3)
+
+Three trials per point. "wt-after-crash" is `git` state after the first child
+is SIGKILLed; "wt-after-resume" is after the second child settles the
+submission. "interrupted" is whether a `pi.tool-result` entry in the SQLite
+transcript carries a diagnostic with `code: "interrupted"` (pi-durable's
+unsafe-tool kill marker; see `tool.js:fromSlot`).
+
+| Point | Trials | Resumed | Reached completion artifact | wt-after-crash | wt-after-resume | `interrupted` recorded | Safe-tool execute count (expect 2) | Unsafe-tool execute count (expect 1) | Median preCrashMs | Median resumeMs |
+|---|---:|---:|---:|---|---|---:|---:|---:|---:|---:|
+| **A** mid-model-request | 3/3 | 3/3 | 3/3 | full | full | 0/3 | 1 | 1 | 30 038 | 1 410 |
+| **B** mid-safe-tool | 3/3 | 3/3 | 3/3 | untouched | full | 0/3 | **2** | 1 | 776 | 855 |
+| **C1** mid-unsafe-tool, before write | 3/3 | 3/3 | 3/3 | untouched | untouched | **3/3** | 1 | 1 | 942 | 919 |
+| **C2** mid-unsafe-tool, between writes | 3/3 | 3/3 | 3/3 | **partial** | **partial** | **3/3** | 1 | 1 | 824 | 906 |
+| **C3** mid-unsafe-tool, after execute | 3/3 | 3/3 | 3/3 | full | full | **3/3** | 1 | 1 | 776 | 772 |
+
+**Gate 1 (A, mid-model-request): PASS on durability, UNDER-TESTED on the
+"partial response recorded as aborted" invariant.** Pi-ai's `fauxProvider`
+streams the whole scripted response atomically, so an observer on
+`docs["pi.live"]` never sees a partial. The harness falls back to the 30s
+ready-file timeout and SIGKILLs a process that is already idle after the
+submission settled. On resume there is nothing left to do — the completion
+artifact is already written. This proves SQLite durability survives SIGKILL
+but does not exercise an interrupted stream. **Follow-up:** rerun A once
+against a real OpenRouter model (one certified glm-5.2-air-ish; cost cap
+~$0.10 for 3 trials).
+
+**Gate 2 (B, mid-safe-tool): PASS 3/3.** Pre-crash the worktree is
+untouched (list_files is read-only). The safe tool's intent was committed
+before the pause, so pi-durable's recovery re-executed it on resume — exactly
+twice total (`list_files`: once in the killed child, once after
+`harness.resume()` — see `t0-list_files: 2` in `results/b-*.json`). The
+transcript's `exactlyOneResultPerCall` check passes (no duplicate results).
+
+**Gate 3 (C1/C2/C3, mid-unsafe-tool): MIXED.**
+
+- **C1 (before write): PASS 3/3** on the hard criteria. apply_patch's intent
+  was committed, no file was written, pi-durable's recovery wrote the
+  `interrupted` diagnostic (`hasInterruptedForUnsafe: true`) rather than
+  re-running the tool, and the arm still reached the completion artifact.
+- **C2 (between writes): FAIL on the atomicity sub-criterion**, as predicted
+  in the plan's §0 and §3.2. `apply_patch` writes files sequentially (same
+  shape as production `patch-runtime.ts:377-388` — in-process `try/catch`
+  rollback, no `kill -9` guard). After the kill, 1 of 2 files is on disk;
+  resume commits an `interrupted` result but *does not* undo the first
+  write, so the worktree remains **partial** forever unless the model
+  reconciles via `git_status`. The HOK-3149 gate 3 criterion ("worktree is
+  either fully patched or untouched (never partial)") is not met. The gate
+  is also not met by production's own `apply_patch`; adopting pi-durable
+  does not fix this. Fix would need a write-tempfile+atomic-rename or a
+  per-call undo log in `apply_patch` itself.
+- **C3 (after execute, before result commit): PASS 3/3**. The worktree is
+  already full when the kill lands (writes finished before the pause). On
+  resume, pi-durable commits `interrupted` with the output the execute
+  managed to flush, and the next generation continues to the completion
+  artifact. No duplicate tool executions.
+
+### 6.2 Resume vs today's relaunch (gate 4)
+
+`baseline-relaunch.ts` compares (crash + `harness.resume()`) to (crash +
+new SQLite + fresh conversation, which models today's `launch-coding.ts`
+semantics). The spike runs **the faux provider**, so no real token cost can
+be measured and the gate 4 ratio ≤ 0.5 cannot be assessed from this
+evidence. The faux-run wall-clock median for a crashed-and-resumed B trial
+is **855 ms** vs **~1.5–2 s** for a crash-and-fresh-restart on the same
+scratch tree (the fresh child reruns every tool from zero), i.e. a wall-time
+ratio of roughly 0.5 — which matches the production expectation but is not
+proof. A real-provider repeat on a single cheap OpenRouter coding model (<
+$1 for 6 trials) is the standard way to settle gate 4 and should land before
+HOK-3153.
+
+### 6.3 Provider coverage (gate 5)
+
+`provider-matrix.ts` runs on the mill host (reads `~/.wavemill/native-agent-certifications`).
+On this spike host there is no cert store, so the matrix script reports zero
+certified models. The static findings do not need credentials:
+
+- `pi-ai@1.0.4` ships both `openrouterProvider()` and `openaiProvider()`
+  (`node_modules/@earendil-works/pi-ai/dist/providers/openrouter.d.ts`,
+  `openai.d.ts`), the two providers `shared/lib/native-agent/models.ts` uses
+  today — so provider coverage, in principle, matches wavemill's.
+- `pi-ai` is **version 1.0.2 in the repo and 1.0.4 in the spike**. Two
+  copies co-exist in the tree. The repo's `createNativeModelsCollection` is
+  bound to 1.0.2's `Models` type and cannot be reused with pi-durable 1.0.4
+  — the `models` field of `HarnessOptions` requires a 1.0.4 `Models`.
+  Adopting pi-durable means bumping repo pi-ai from 1.0.2 → 1.0.4 first.
+- Pi-ai 1.0.2 → 1.0.4 is **two more patch bumps with breaking changes**
+  (observed from the `@earendil-works/pi-durable` release cadence: four
+  breaking patch releases in four days). This cadence is an adoption
+  blocker in itself: a mill pin needs upstream commitment to semver.
+- **Gate 5 verdict: NOT YET PROVEN.** The spike cannot run a certified-model
+  smoke on this host; the matrix script is ready to run on the mill host
+  with `wavemill native-agent certifications list --json`-driven input.
+
+### 6.4 Policy hooks (gate 6)
+
+`policy-parity.ts` drives six fixtures (allow + two deny classes from
+`mutation-policy.test.ts` and `tools/policies.test.ts`) through both
+(a) the production functions directly and (b) a pi-durable
+`beforeTool`+`afterTool` hook stack that calls those same functions.
+
+**Result: 0 diffs over 6 fixtures (`results/policy-parity.json`). PASS.**
+
+Fixtures covered:
+
+| Fixture | Expected | Production | Hook |
+|---|---|---|---|
+| mutation: patch inside worktree allowed | allow | allow | allow |
+| mutation: patch outside worktree denied | block | block | block |
+| mutation: sibling-prefix false positive denied | block | block | block |
+| mutation: whole-file deny when not allowlisted | block | block | block |
+| phase: read-only tool denied in planning | block | block | block |
+| path-field: path argument outside worktree denied | block | block | block |
+
+Also recorded as findings during the port:
+
+- `beforeTool(call, api, context)` returns only `{ arguments?, block? }`.
+  Argument rewriting and allow/deny are expressible; the full
+  `ToolPolicyDenyDecision` payload (reason code, resolvedPath, policy
+  category) has to be flattened into the `block` string. Audit downstream
+  consumers (loop.ts:966-998 writes `tool_decision_capture` entries with
+  structured reasons; the hook would need `api.memo()` or a side-channel
+  document to keep that structure).
+- `afterTool(call, result, api, context)` can replace `content`, `details`,
+  `diagnostics`, `usage`, and `control`. Output-byte cap + `redactSecrets`
+  port cleanly. `redactSecretsInValue` for `details` ports cleanly.
+- **`beforeRequest(request, …) → { messages }` cannot set `max_tokens`.**
+  Max-token reservation (`computeDynamicMaxTokens`, loop.ts:806 and
+  loop.ts:1169) must move to `HarnessSettings.stream.maxTokens` or an
+  extension-level stream wrapper. This is HOK-2585-adjacent (OpenRouter 402
+  on inflated reservations) and is a real porting cost, not just a rewrite.
+- Model-text redaction (`redactSecrets` on committed assistant content)
+  has no in-place hook: `afterResponse(message, …)` returns `void`.
+  Redaction of model text would need either a `wrapTool` on every tool
+  that forwards model output or a post-commit overlay. Operationally this
+  is minor (`redactSecrets` is 20 lines) but it is **custom code
+  pi-durable does not provide a hook for**.
+
+### 6.5 `loop.ts` responsibility map (info 7)
+
+| Responsibility | loop.ts LOC | Pi-durable primitive | Verdict | Lines remaining as custom code |
+|---|---:|---|---|---:|
+| Budgets (turns, tool calls, cost, wall-clock) | ~140 | — no direct equivalent; must stay as a wrapper around `submit()`/`wait()` or as `onYield` with external accounting | still custom | ~140 |
+| Cost accounting (`pi-usage-cost.ts`) | 25 (file) + ~60 in loop | `harness.usage()` returns pi.usage; need to re-wire price-table lookup | hybrid: pi-durable gives the usage, pricing stays custom | ~30 |
+| Context-window guard | ~290 (`context-window-guard.ts`) + ~40 in loop | `settings.compaction.reserveTokens` + overflow retry are built in | **replaced** | 0 |
+| Compaction | ~180 (`compaction.ts`) + ~30 in loop | Built-in `CompactionTask` + `beforeCompact` hook + `settings.compaction` | **replaced** | 0 |
+| Tool-compat validation | — (`tool-compat-validator.ts` is launch-time) | Pi-durable's `validateToolArguments` (via typebox) covers runtime; the launch-time registry audit stays | mostly replaced | ~40 |
+| Mutation + path policy | ~35 in loop | **ported to `beforeTool` (this spike)** | **replaced** | ~15 (the hook) |
+| Output cap + redaction | ~75 in loop | **ported to `afterTool` (this spike)** | **replaced** | ~25 (the hook) |
+| Fail-fast batch skipping | ~60 | `control.terminate` on tool result is the primitive; can be driven from `afterTool` | replaceable | ~20 |
+| Stagnation tracker | ~55 | No primitive; must stay as a `beforeRequest`/`afterTools` observer | still custom | ~55 |
+| Provider-identity verification (HOK-3143) | ~90 in loop | `afterResponse(message)` sees the real provider response — matches HOK-3143's "verify at message_end" | **replaced** | ~30 (invalidation plumbing) |
+| Tool-decision capture | ~80 | `afterTool` return value is the point; the capture itself is custom | partial | ~50 |
+| Session-stream writer | 650 (`session-stream.ts`) + ~90 in loop | `root.watch()` delivers an exact-frame stream of commits; most of session-stream.ts becomes a translator | partial | ~250 |
+| Provider tool-menu drift | ~60 | `beforeRequest` can filter messages but not tools; `settings.extensions` picks tools per conversation. Drift detection stays custom. | still custom | ~60 |
+| `finishTurn` / `prepareNextTurn` plan | ~110 | `GenerationHooks.onYield` is the direct equivalent | **replaced** | ~20 |
+| Abort composition | ~70 | `conversation.abort()` + `root.abort()` + per-task abort cover it | **replaced** | 0 |
+
+**Totals (coding path only, loop.ts + launch-coding.ts + the companion files
+above):** today ≈ **5 400 lines**; after an ideal port ≈ **735 lines of custom
+glue** — a removal of roughly **4 600–4 800 lines**. The two hooks actually
+ported in this spike (`policy-extension.ts` 252 lines) replace loop.ts:966–1060
+(~95 lines of mutation-policy + output-limits + redaction + decision log), so
+the ratio on the ported slice is ~2.6× (hooks slightly larger than the loop
+code they replace, mainly because the hooks need their own log and typing).
+
+### 6.6 Breaking-change retrospective (info 9)
+
+The native agent already paid the 0.79.8 → 1.0 cost before this spike was
+scoped. The retrospective:
+
+| Issue | SHA | Lines | What it hit |
+|---|---|---:|---|
+| HOK-3161 (pi-ai 1.0 migration) | `275effba` | 18 files, +495/−628 | Section-based system prompt, `SystemMessage` in `Message` union, moved `registerApiProvider`/`streamSimple` to `@earendil-works/pi-ai/compat` |
+| HOK-3162 (Models API migration) | `4442e164` | 13 files, +564/−70 | Dropped the compat shim; adopted `createModels()`/`setProvider`; providers now constructed via `openrouterProvider()`/`openaiProvider()` |
+| HOK-3163 ("Response incomplete" terminal) | — | small | Classify new terminal reason |
+| HOK-3164 (pi runtime version in provenance) | `65f484a0` | — | Record `piRuntimeVersions` on sessions |
+
+Delta a pi-durable move would add on top of 1.0.2:
+
+- pi-ai 1.0.2 → 1.0.4: two patch bumps with "Breaking Changes" (`CHANGELOG`
+  in `node_modules/@earendil-works/pi-ai/dist/`).
+- `@earendil-works/chord` as a new direct dep (currently transitive via
+  pi-ai).
+- `pi-agent-core` **dropped entirely**: `runAgentLoopContinue`, `AgentTool`,
+  `BeforeToolCallContext`/`AfterToolCallContext`, `finishTurn`,
+  `ShouldStopAfterTurnContext` all become dead imports. 1 639 lines of
+  `launch-coding.ts` and 1 733 lines of `loop.ts` must be rewritten around
+  `Harness.open` + `extension.hooks`.
+- Pi-durable itself: 1.0.0 → 1.0.4 shipped **four breaking patch releases
+  in four days** (observed 2026-10-01 to 2026-10-05). The README labels the
+  package experimental and warns that "the API changes without notice
+  between releases". **This is the single largest risk for adoption and is
+  not reducible by shipping-ahead work.**
+
+### 6.7 Certification identity (info 8)
+
+Read-only analysis against `shared/lib/native-agent/certification/identity.ts`
+and `catalog-hash-migration.ts`:
+
+- Subject = `registryKey`, provider ids, `identityRevision`, `fingerprint`,
+  `catalogHash` (per-row for OpenRouter from the launch-priority audit;
+  `'registry'` for everything else). **No Pi runtime version in the
+  subject.** A runtime swap (pi-agent-core → pi-durable) does **not** rotate
+  catalog hashes.
+- Certificates carry `suiteVersion`. The live-coding canary runner
+  (`live-coding-canary.ts`) depends on `runAgentLoopContinue` + the current
+  `loop.ts` scenario runner. Porting it to pi-durable means reimplementing
+  the scenario runner on `Harness` — a `suiteVersion` bump by design, which
+  per the user memory "cert suite bump uncertifies the fleet" (recorded in
+  `project_cert_suite_bump_uncertifies_fleet.md`) triggers a fleet
+  re-certify.
+- Deterministic re-certify is ~1 s/model and uses the standard
+  `wavemill native-agent certify --all --phase workflow` flow (no new
+  tooling). The live-coding canary cohort would need one real coding smoke
+  per bounded cohort model — a one-time cost on the credentialed mill host.
+- HOK-3164 already records `piRuntimeVersions` on session provenance, so
+  the attribution path survives the swap without further work.
+
+### 6.8 Decision-rule outcome
+
+Scored per HOK-3149 §4.1 decision rule ("go if 1–6 pass; adopt-later if 1–3
+pass but 5 fails; otherwise defer"):
+
+- Gate 1 (A): **PASS on durability**; under-tested on partial-stream
+  recording until a real-provider rerun.
+- Gate 2 (B): **PASS 3/3**.
+- Gate 3 (C): **MIXED** — C1 and C3 pass; **C2 fails the "no partial
+  worktree" criterion**. The failure is a property of our in-process
+  `apply_patch`, not of pi-durable, so adopting pi-durable does not fix it.
+- Gate 4: **NOT MEASURED** — needs a real-provider rerun to measure
+  tokens, which the gate's "≤ 0.5 cost ratio" criterion requires.
+- Gate 5: **NOT YET PROVEN** — pi-ai 1.0.4 has the providers wavemill
+  uses, but the certified-model smoke needs the mill host's cert store.
+- Gate 6: **PASS 6/6 fixtures, 0 diffs**.
+
+**Recommendation: defer the runtime swap** until (a) pi-durable's patch
+cadence stabilises enough to give a non-experimental ship window; (b)
+`apply_patch` is made file-atomic (independent of pi-durable, since C2
+reproduces today); (c) a real-provider A/C/baseline rerun on the mill host
+closes gates 1 (A real) and 4; (d) the matrix script runs on-mill against
+every certified model. **Core-upgrade work (pi-ai 1.0.2 → 1.0.4) can
+ship ahead** on its own merits, independent of the runtime decision — it is
+a ~day of mechanical rebinding (openrouter/openai providers unchanged;
+typebox version bump).
+
+Policy hooks (gate 6) are strong evidence that the hook surface is
+expressive enough; the main gap found is **`max_tokens` is not expressible
+through `beforeRequest`**, which is load-bearing for OpenRouter 402
+avoidance (HOK-2585 memory) and is probably the single most important
+missing primitive to request from pi-durable.
