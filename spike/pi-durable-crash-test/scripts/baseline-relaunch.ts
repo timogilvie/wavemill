@@ -10,11 +10,12 @@
 
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rm, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { createFixtureTask } from '../src/fixture-task.ts';
+import os from 'node:os';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -99,7 +100,13 @@ async function runWithPolicy(
     if (existsSync(readyFile)) { try { c1.kill('SIGKILL'); } catch {} ; break; }
     await delay(50);
   }
-  await new Promise<void>((resolve) => c1.once('exit', () => resolve()));
+  await new Promise<void>((resolve) => {
+    if (c1.exitCode !== null || c1.signalCode !== null) {
+      resolve();
+    } else {
+      c1.once('exit', () => resolve());
+    }
+  });
 
   // Launch 2 — resume vs relaunch differ only here.
   const dbForLaunch2 = mode.mode === 'resume' ? dbPath : path.join(fixture.scratch, 'relaunch.sqlite');
@@ -134,6 +141,60 @@ async function runWithPolicy(
 
 function delay(ms: number): Promise<void> { return new Promise((r) => setTimeout(r, ms)); }
 
+async function readHistoricalRelaunchData(): Promise<{ avgRelaunchMs: number | null; count: number; notes: string[] }> {
+  const notes: string[] = [];
+  try {
+    const wavemillDir = path.join(os.homedir(), '.wavemill', 'native-sessions');
+    if (!existsSync(wavemillDir)) {
+      notes.push('No .wavemill/native-sessions directory found');
+      return { avgRelaunchMs: null, count: 0, notes };
+    }
+
+    // Read all .json files in the sessions dir looking for relaunch entries
+    const files = await readdir(wavemillDir);
+    const relaunchDurations: number[] = [];
+
+    for (const file of files) {
+      if (!file.endsWith('.json')) continue;
+      try {
+        const sessionPath = path.join(wavemillDir, file);
+        const data = JSON.parse(await readFile(sessionPath, 'utf8'));
+
+        // Look for session records with relaunch timing info
+        // Format varies, but typically has createdAt, relaunches[], or similar
+        if (data.relaunches && Array.isArray(data.relaunches)) {
+          for (const relaunch of data.relaunches) {
+            if (relaunch.durationMs) {
+              relaunchDurations.push(relaunch.durationMs);
+            }
+          }
+        }
+        // Also check for top-level timestamps indicating relaunch scenarios
+        if (data.createdAt && data.relaunched && data.durationMs) {
+          relaunchDurations.push(data.durationMs);
+        }
+      } catch (e) {
+        // Skip malformed files
+      }
+    }
+
+    if (relaunchDurations.length === 0) {
+      notes.push('No historical relaunch data found in .wavemill/native-sessions');
+      return { avgRelaunchMs: null, count: 0, notes };
+    }
+
+    const avgRelaunchMs = Math.round(
+      relaunchDurations.reduce((a, b) => a + b, 0) / relaunchDurations.length
+    );
+    notes.push(`Found ${relaunchDurations.length} historical relaunch(es), avg ${avgRelaunchMs}ms`);
+
+    return { avgRelaunchMs, count: relaunchDurations.length, notes };
+  } catch (e) {
+    notes.push(`Error reading historical data: ${(e as Error).message}`);
+    return { avgRelaunchMs: null, count: 0, notes };
+  }
+}
+
 async function main() {
   const points: Point[] = ['A', 'C1'];
   const trials = 3;
@@ -166,9 +227,18 @@ async function main() {
     };
   }
 
+  // Read historical relaunch data for sanity check
+  const historicalData = await readHistoricalRelaunchData();
+
+  const output = {
+    summary,
+    trials: all,
+    historicalBaseline: historicalData,
+  };
+
   await writeFile(
     path.join(outDir, 'baseline-summary.json'),
-    JSON.stringify({ summary, trials: all }, null, 2) + '\n',
+    JSON.stringify(output, null, 2) + '\n',
     'utf8',
   );
   console.log(JSON.stringify(summary, null, 2));
