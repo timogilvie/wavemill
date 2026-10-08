@@ -1196,7 +1196,7 @@
             "properties": {
                 "enabled": {
                     "type": "boolean",
-                    "default": true,
+                    "default": false,
                     "description": "Master toggle for challenge mode."
                 },
                 "rate": {
