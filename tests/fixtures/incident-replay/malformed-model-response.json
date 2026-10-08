@@ -1,0 +1,27 @@
+{
+  "chain": "review-malformed-model-response",
+  "incidents": [],
+  "initialState": {
+    "task": {
+      "issue": "HOK-REPLAY-004",
+      "slug": "replay-malformed-response",
+      "phase": "review",
+      "status": "working"
+    },
+    "hook": {
+      "state": "working",
+      "event": "PreToolUse",
+      "writer": "agent",
+      "timestamp": 1759900000
+    }
+  },
+  "fault": "malformed_model_response",
+  "faultParams": {
+    "responseKind": "non-json"
+  },
+  "convergence": {
+    "mustEscalate": true,
+    "maxTickCount": 10,
+    "tickIntervalSeconds": 30
+  }
+}

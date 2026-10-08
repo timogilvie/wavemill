@@ -37,6 +37,7 @@ TESTS=(
   shared/lib/json-repair.test.ts
   shared/lib/operator-intervention.test.ts
   shared/lib/intervention-detector.test.ts
+  shared/lib/reliability-metrics.test.ts
   shared/lib/stage-result.test.ts
   shared/lib/task-progress.test.ts
   shared/lib/task-identity.test.ts
