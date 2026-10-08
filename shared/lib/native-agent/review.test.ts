@@ -150,8 +150,13 @@ describe('native review', () => {
 
     try {
       const result = await runNativeReview(makeReviewContext(), repoDir, { model: 'gpt-4o' });
-      assert.equal(result.verdict, 'not_ready');
-      assert.equal(result.codeReviewFindings[0].category, 'native-review-malformed-response');
+      // HOK-3169: a malformed response is now a no-evidence infra failure
+      // (verdict:error + reviewToolError + failureCategory), so the ready
+      // gate routes it to review-infra-recovery instead of terminalizing.
+      assert.equal(result.verdict, 'error');
+      assert.equal(result.failureCategory, 'native-review-malformed-response');
+      assert.equal(result.codeReviewFindings.length, 0);
+      assert.ok((result.reviewToolError ?? '').length > 0);
       assert.equal(result.substantiveAnalysisIdentity?.pinned, true);
       assert.equal(result.substantiveAnalysisIdentity?.resolvedModel, 'gpt-4o');
     } finally {
@@ -272,8 +277,12 @@ describe('native review', () => {
 
     try {
       const result = await runNativeReview(makeReviewContext(), repoDir, {});
-      assert.equal(result.verdict, 'not_ready');
-      assert.equal(result.codeReviewFindings[0].category, 'native-review-malformed-response');
+      // HOK-3169: malformed response → no-evidence infra shape so the ready
+      // gate's infra bucket (not the terminal path) consumes the attempt.
+      assert.equal(result.verdict, 'error');
+      assert.equal(result.failureCategory, 'native-review-malformed-response');
+      assert.equal(result.codeReviewFindings.length, 0);
+      assert.ok((result.reviewToolError ?? '').length > 0);
       assert.deepEqual(result.metadata?.deniedTools, []);
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
@@ -618,12 +627,43 @@ describe('native review', () => {
 
     try {
       const result = await runNativeReview(makeReviewContext(), repoDir, { featureDir });
+      // HOK-3169: the empty-final-response producer now emits the no-evidence
+      // infra shape (verdict:error + reviewToolError), while the recorded
+      // model-protocol envelope is unchanged.
+      assert.equal(result.verdict, 'error');
       assert.equal(result.failureCategory, 'native-review-malformed-response');
+      assert.ok((result.reviewToolError ?? '').length > 0);
       const envelope = await readEnvelope(featureDir);
       assert.equal(envelope.cause, 'model-protocol');
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
       rmSync(featureDir, { recursive: true, force: true });
+    }
+  });
+
+  it('short-circuits an empty review diff to a review-scope-empty infra failure (HOK-3169)', async () => {
+    const repoDir = makeTempRepo();
+    setReadyProvider();
+    let loopInvoked = false;
+    nativeReviewTestUtils.setRunWavemillLoop(async () => {
+      loopInvoked = true;
+      throw new Error('loop must not run on an empty review diff');
+    });
+
+    try {
+      const emptyContext: ReviewContext = {
+        ...makeReviewContext(),
+        diff: '',
+      };
+      const result = await runNativeReview(emptyContext, repoDir, {});
+      assert.equal(loopInvoked, false, 'the model must not be invoked on an empty diff');
+      assert.equal(result.verdict, 'error');
+      assert.equal(result.failureCategory, 'review-scope-empty');
+      assert.equal(result.codeReviewFindings.length, 0);
+      assert.ok((result.reviewToolError ?? '').includes('empty'));
+      assert.equal(result.substantiveAnalysisIdentity?.role, 'substantive_analysis');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
     }
   });
 
