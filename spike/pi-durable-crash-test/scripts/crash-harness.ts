@@ -30,6 +30,7 @@ const DEFAULT_POINTS: Point[] = ['A', 'B', 'C1', 'C2', 'C3'];
 const PATCH_FILES = [
   {
     path: 'src/a.ts',
+    // allow-template-curly: literal fixture source code written as a file by the harness
     text: 'export function greet(name: string): string {\n  return `Hello, ${name}!`;\n}\n',
   },
   {

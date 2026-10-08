@@ -22,6 +22,7 @@ const __dirname = path.dirname(__filename);
 const SPIKE_ROOT = path.resolve(__dirname, '..');
 
 const PATCH_FILES = [
+  // allow-template-curly: literal fixture source code written as a file by the harness
   { path: 'src/a.ts', text: 'export function greet(n:string){return `Hello, ${n}!`;}\n' },
   { path: 'src/index.ts', text: "export const SEED=true;\nexport { greet } from './a.ts';\n" },
 ];
