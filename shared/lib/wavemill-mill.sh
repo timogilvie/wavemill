@@ -437,6 +437,7 @@ hydrate_provider_env_from_dotenv() {
 # closing the lid sleeps the Mac regardless unless an external display is
 # attached. Missing or unparseable platform utilities are never fatal.
 mill_sleep_preflight_warning() {
+  [[ "${WAVEMILL_NO_CAFFEINATE:-}" == "1" ]] && return 0
   [[ "$(uname -s 2>/dev/null || true)" == "Darwin" ]] || return 0
   command -v pmset >/dev/null 2>&1 || return 0
 
