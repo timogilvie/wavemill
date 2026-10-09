@@ -46,6 +46,7 @@ describe('checkSourceText — each pattern class fires', () => {
     assert.equal(findings[0].pattern, 'c-anchor-regex');
   });
 
+  // allow-template-curly: literal description of the forbidden shape, not interpolation.
   it('flags a hand-built ${expr}_c template literal', () => {
     const findings = checkSourceText('fixture.ts', `const k = ${challengerTemplate};\n`);
     assert.equal(findings.length, 1);
@@ -64,6 +65,7 @@ describe('checkSourceText — each pattern class fires', () => {
     assert.equal(findings[0].pattern, 'issue-id-regex');
   });
 
+  // allow-template-curly: literal description of the forbidden shape, not interpolation.
   it('flags shell ${var%_c} parameter expansion', () => {
     const findings = checkSourceText('fixture.sh', `num="${shellParam}"\n`);
     assert.equal(findings.length, 1);
@@ -76,6 +78,7 @@ describe('checkSourceText — each pattern class fires', () => {
     assert.equal(findings[0].pattern, 'sh-glob-c');
   });
 
+  // allow-template-curly: literal description of the forbidden shape, not interpolation.
   it('flags a hand-built shell ${var}_c challenger ID', () => {
     const findings = checkSourceText('fixture.sh', `key=${shellBuild}\n`);
     assert.equal(findings.length, 1);
@@ -120,17 +123,20 @@ describe('checkSourceText — clean source stays clean', () => {
     assert.deepEqual(checkSourceText('fixture.ts', source), []);
   });
 
+  // allow-template-curly: literal description of the forbidden shape, not interpolation.
   it('ignores a template literal whose _c is not right after ${…}', () => {
     const source = 'const s = `' + dollarOpen + "id} suffix_c`;\n"; // `${id} suffix_c`
     assert.deepEqual(checkSourceText('fixture.ts', source), []);
   });
 
+  // allow-template-curly: literal description of the forbidden shape, not interpolation.
   it('ignores shell comments naming a ${var}_c task', () => {
     const source = '# the ' + shellParam.replace('%', '') + ' task may not exist\n';
     assert.deepEqual(checkSourceText('fixture.sh', source), []);
   });
 
   it('ignores unrelated shell suffixes like _cfg / _count', () => {
+    // allow-template-curly: shell fixture text, not JavaScript interpolation.
     const source = 'val="${config}_cfg"\ntotal="${items}_count"\n';
     assert.deepEqual(checkSourceText('fixture.sh', source), []);
   });
