@@ -30,7 +30,7 @@ if [[ -z "$INSTALL_DIR" ]]; then
     SOURCE="$(readlink "$SOURCE")"
     [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
   done
-  INSTALL_DIR="$(cd "$(dirname "$SOURCE")/.." && pwd)"
+  INSTALL_DIR="$(cd "$(dirname "$SOURCE")/../.." && pwd)"
 fi
 
 REPO_DIR="${WAVEMILL_MILLED_REPO_DIR:-${REPO_DIR:-$PWD}}"
