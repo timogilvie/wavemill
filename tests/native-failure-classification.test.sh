@@ -40,6 +40,15 @@ eval "$(extract_function native_terminal_failure_next_action)"
 eval "$(extract_function native_hook_terminal_failure_detail)"
 eval "$(extract_function agent_or_model_is_native_for_recovery)"
 eval "$(extract_function emit_native_terminal_failure_attention)"
+eval "$(extract_function stage_failure_decision)"
+eval "$(extract_function native_stage_failure_envelope_json)"
+# HOK-3176: classification is the TS failure policy, reached through the
+# wavemill-common.sh bridge helpers.
+for fn in failure_policy_decide failure_policy_next_action _failure_policy_cli; do
+  eval "$(awk -v name="$fn" '$0 ~ "^" name "\\(\\) \\{" { capture=1 } capture { print } /^}/ && capture { exit }' \
+    "$REPO_DIR/shared/lib/wavemill-common.sh")"
+done
+wavemill_tool_path() { printf '%s/%s\n' "$TOOLS_DIR" "$1"; }
 
 TMP_ROOT="$(mktemp -d)"
 SESSION="classifysess"
@@ -337,8 +346,10 @@ else
 fi
 
 # ── Next actions ──────────────────────────────────────────────────────────────
-if [[ "$(native_terminal_failure_next_action native-unclassified)" == *"extend the classifier"* ]]; then
-  pass "native-unclassified surfaces a classify-and-extend action"
+# HOK-3176: an unrecognised failure retries by default instead of asking the
+# operator to extend the classifier.
+if [[ "$(native_terminal_failure_next_action native-unclassified)" == *"retries it with backoff"* ]]; then
+  pass "native-unclassified surfaces the retry-by-default action"
 else
   fail "native-unclassified next action missing"
 fi
