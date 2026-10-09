@@ -5,6 +5,7 @@ import {
   deriveInferenceStatus,
   emptyInferenceState,
   INFERENCE_ERROR_MAX_CHARS,
+  isInferredEdgeStale,
   normalizeInferenceState,
   planInferenceRefresh,
   QUEUE_INFERENCE_FAILURE_COOLDOWN_MS,
@@ -148,6 +149,27 @@ describe('normalizeInferenceState', () => {
     assert.equal(normalizeInferenceState('nope'), undefined);
     assert.equal(normalizeInferenceState(null), undefined);
     assert.deepEqual(normalizeInferenceState({ lastOutcome: 'maybe', consecutiveFailures: -3, lastModel: 7 }), emptyInferenceState());
+  });
+});
+
+describe('isInferredEdgeStale (HOK-3179)', () => {
+  it('flags edges classified before the last successful refresh', () => {
+    const state = recordInferenceSuccess({ model: 'claude-haiku-4-5-20251001', nowIso: iso(0) });
+    assert.equal(isInferredEdgeStale(iso(-HOUR), state), true);
+    assert.equal(isInferredEdgeStale(iso(+MINUTE), state), false);
+    assert.equal(isInferredEdgeStale(iso(0), state), false);
+  });
+
+  it('returns false when there is no recorded success to compare against', () => {
+    assert.equal(isInferredEdgeStale(iso(-HOUR), undefined), false);
+    assert.equal(isInferredEdgeStale(iso(-HOUR), emptyInferenceState()), false);
+  });
+
+  it('returns false for an unparseable timestamp', () => {
+    const state = recordInferenceSuccess({ model: 'claude-haiku-4-5-20251001', nowIso: iso(0) });
+    assert.equal(isInferredEdgeStale('not-a-date', state), false);
+    assert.equal(isInferredEdgeStale(null, state), false);
+    assert.equal(isInferredEdgeStale(undefined, state), false);
   });
 });
 

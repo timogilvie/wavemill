@@ -60,6 +60,7 @@ wavemill_window_issue_display() {
   local issue="${1:-}" num
   if [[ "$issue" =~ ^${TASK_IDENTITY_TASK_ID_RE}$ ]]; then
     num="${issue##*-}"
+    # allow-task-identity: display-only — strips the challenger suffix from an already-validated task ID to show the bare issue number; not identity derivation.
     num="${num%_c}"
     printf '%s\n' "$num"
   else

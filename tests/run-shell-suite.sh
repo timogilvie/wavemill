@@ -125,6 +125,7 @@ TESTS=(
   wavemill-input-reader.test.sh
   merge-retry-marker.test.sh
   queue-health.test.sh
+  queue-inference-degraded-banner.test.sh
   merge-queue-live-ci.test.sh
   merge-queue-blocked-label.test.sh
   merge-lane-progress-artifacts.test.sh
