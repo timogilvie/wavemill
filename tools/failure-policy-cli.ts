@@ -1,4 +1,4 @@
-#!/usr/bin/env -S npx tsx
+#!/usr/bin/env tsx
 /**
  * failure-policy-cli — shell bridge to the HOK-3176 failure policy.
  *

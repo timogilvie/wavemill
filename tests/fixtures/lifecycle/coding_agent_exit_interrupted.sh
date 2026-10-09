@@ -5,10 +5,11 @@
 # completion marker, leaving the pane alive at a bare shell and the stage
 # result stuck at "running". The monitor must reconcile phase state with
 # process ownership within one iteration: persist a typed interrupted
-# outcome that preserves the durable commits, and never duplicate work. Under
-# HOK-3176 the next iteration relaunches the stage through the bounded
-# stage-failure-coding retry (phase reverted to planning) instead of parking
-# the task at needs-user.
+# outcome that preserves the durable commits. Under HOK-3176 the next
+# iteration relaunches the stage through the bounded stage-failure-coding
+# retry (phase reverted to planning) instead of parking the task at needs-user.
+# The retry preserves durable work while relaunching to recover from the
+# interruption.
 register_lifecycle_scenario coding_agent_exit_interrupted
 
 setup_coding_agent_exit_interrupted() {
