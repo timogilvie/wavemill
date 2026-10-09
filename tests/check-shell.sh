@@ -146,7 +146,7 @@ for f in \
   "$REPO_DIR"/tests/challenge-record-decisive.test.sh \
   "$REPO_DIR"/tests/native-terminal-failure.test.sh \
   "$REPO_DIR"/tests/native-failure-classification.test.sh \
-  "$REPO_DIR"/tests/stage-failure-retry.test.sh \  # Intentionally reverts #1610 challenger-transient-retry.test.sh; HOK-3176 consolidates retry policy
+  "$REPO_DIR"/tests/stage-failure-retry.test.sh \
   "$REPO_DIR"/tests/coding-dirty-handoff.test.sh \
   "$REPO_DIR"/tests/ready-exhausted-challenge.test.sh \
   "$REPO_DIR"/tests/review-gate-refused-challenge.test.sh \
