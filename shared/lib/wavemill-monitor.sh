@@ -16081,9 +16081,9 @@ build_queue_plan_once() {
     planner_cmd="npx tsx \"$TOOLS_DIR/plan-queue.ts\" --stdin --json"
   fi
 
-  # Initialize queue-health file before attempting planner (background refresh
-  # populates its real fields; this just guarantees the file exists).
-  queue_health_init 2>/dev/null || true
+  # Initialize queue-health file only for background refresh (when inference is enabled).
+  # Picker-synchronous --no-infer runs never touch queue-health.
+  [[ -n "$inference_report_file" ]] && queue_health_init 2>/dev/null || true
 
   # Run planner with policy wrapper (handles timeout, process group, diagnostics)
   rm -f "$tmp_stderr"

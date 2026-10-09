@@ -481,7 +481,9 @@ runTool({
       // mutate the cache; the inference-enabled background refresh owns writes.
       await saveCache(process.cwd(), cacheKey, cacheToSave);
     }
-    if (typeof args['inference-report-file'] === 'string' && args['inference-report-file'].length > 0) {
+    // HOK-3179: --no-infer runs never write inference reports. Background
+    // refresh runs own report writes.
+    if (!noInfer && typeof args['inference-report-file'] === 'string' && args['inference-report-file'].length > 0) {
       writeInferenceReport(args['inference-report-file'], buildInferenceReport({
         state: inferenceState,
         inferredEdgeCount: edges.filter((edge) => edge.source === 'inferred').length,

@@ -141,15 +141,15 @@ export function buildPartialRefreshPrompt({ changedTaskIds, contextTasks, templa
   if (Buffer.byteLength(prompt, 'utf8') > QUEUE_ANALYSIS_PROMPT_MAX_BYTES) {
     // Defense in depth (HOK-3179): if any input (new fields, many tasks) blows
     // past the budget, trim descriptions further rather than send a prompt we
-    // know will time out. Shrink in halving steps until it fits or we hit zero.
-    let descriptionCap = Math.max(0, Math.floor(QUEUE_ANALYSIS_DESCRIPTION_MAX_CHARS / 2));
-    while (Buffer.byteLength(prompt, 'utf8') > QUEUE_ANALYSIS_PROMPT_MAX_BYTES && descriptionCap >= 0) {
+    // know will time out. Shrink in halving steps until it fits or we hit a minimum.
+    let descriptionCap = Math.max(1, Math.floor(QUEUE_ANALYSIS_DESCRIPTION_MAX_CHARS / 2));
+    while (Buffer.byteLength(prompt, 'utf8') > QUEUE_ANALYSIS_PROMPT_MAX_BYTES && descriptionCap >= 1) {
       prompt = fillTemplate(template, {
         CHANGED_TASK_IDS: changedIdsJson,
         CONTEXT_TASKS: sortedContext.map((task) => formatTask(task, descriptionCap)).join('\n'),
       });
-      if (descriptionCap === 0) break;
-      descriptionCap = Math.floor(descriptionCap / 2);
+      if (descriptionCap === 1) break;
+      descriptionCap = Math.max(1, Math.floor(descriptionCap / 2));
     }
   }
 
