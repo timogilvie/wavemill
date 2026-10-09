@@ -17,6 +17,7 @@ import {
   ContextWindowUnverifiableError,
 } from './context-window-guard.ts';
 import { REVIEW_MAX_OUTPUT_TOKENS } from './output-limits.ts';
+import { isDisabledModel } from '../disabled-models.ts';
 import { classifyProviderError, type ProviderErrorKind } from './provider-error-classifier.ts';
 import {
   assertOpenRouterBalanceSufficient,
@@ -334,6 +335,22 @@ function normalizedPricingFromModel(model: WavemillLoopConfig['model']): Normali
 }
 
 /**
+ * Ready review providers, minus any model held by the `DISABLED_MODEL_IDS`
+ * kill-switch. Coding and challenge launches already honour that list; review
+ * did not, so a disabled model that sorts first (gemini-3.1-pro-preview, held
+ * for HOK-3158) kept reviewing every PR and returned verdict-less JSON, which
+ * exhausted review-infra recovery on each retry (HOK-3177 / #1603).
+ */
+export function readyReviewEntries(
+  providers: ReturnType<typeof resolveNativeAgentProviders>,
+): ReadyNativeProviderEntry[] {
+  return providers.filter(
+    (entry): entry is ReadyNativeProviderEntry =>
+      entry.status === 'ready' && !isDisabledModel(entry.modelId),
+  );
+}
+
+/**
  * Select the native provider entry that performs substantive review
  * analysis.
  *
@@ -351,9 +368,7 @@ function selectReviewProvider(
   requestedModel?: string,
 ): SelectedProvider {
   const providers = resolveNativeAgentProviders(repoDir, { env, phase: 'review' });
-  const readyEntries = providers.filter(
-    (entry): entry is ReadyNativeProviderEntry => entry.status === 'ready',
-  );
+  const readyEntries = readyReviewEntries(providers);
 
   if (requestedModel) {
     const parsed = parseRequestedNativeModel(requestedModel);
