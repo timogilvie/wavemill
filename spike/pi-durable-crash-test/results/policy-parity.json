@@ -1,0 +1,61 @@
+{
+  "summary": {
+    "fixtures": 6,
+    "diffs": 0,
+    "pass": true
+  },
+  "results": [
+    {
+      "label": "mutation: patch inside worktree allowed",
+      "pass": true,
+      "expected": "allow",
+      "truth": "allow",
+      "hook": "allow"
+    },
+    {
+      "label": "mutation: patch outside worktree denied",
+      "pass": true,
+      "expected": "block",
+      "truth": "block",
+      "hook": "block",
+      "truthMessage": "path_denied: '../other/file.ts' resolves outside the active worktree",
+      "hookMessage": "path_denied: '../other/file.ts' resolves outside the active worktree"
+    },
+    {
+      "label": "mutation: sibling-prefix false positive denied",
+      "pass": true,
+      "expected": "block",
+      "truth": "block",
+      "hook": "block",
+      "truthMessage": "path_denied: '/repo/wtx/src/file.ts' resolves outside the active worktree",
+      "hookMessage": "path_denied: '/repo/wtx/src/file.ts' resolves outside the active worktree"
+    },
+    {
+      "label": "mutation: whole-file deny when not allowlisted",
+      "pass": true,
+      "expected": "block",
+      "truth": "block",
+      "hook": "block",
+      "truthMessage": "whole_file_source_write_denied: 'src/not-generated.json' is not generated or Wavemill-owned",
+      "hookMessage": "whole_file_source_write_denied: 'src/not-generated.json' is not generated or Wavemill-owned"
+    },
+    {
+      "label": "phase: read-only tool denied in planning (whole-file write)",
+      "pass": true,
+      "expected": "block",
+      "truth": "block",
+      "hook": "block",
+      "truthMessage": "phase_denied: tool \"apply_patch\" is not allowed in planning",
+      "hookMessage": "phase_denied: tool \"apply_patch\" is not allowed in planning"
+    },
+    {
+      "label": "path-field: path argument outside worktree denied",
+      "pass": true,
+      "expected": "block",
+      "truth": "block",
+      "hook": "block",
+      "truthMessage": "path_denied: '/etc/passwd' resolves outside the worktree",
+      "hookMessage": "path_denied: '/etc/passwd' resolves outside the worktree"
+    }
+  ]
+}

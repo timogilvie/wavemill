@@ -1,0 +1,24 @@
+{
+  "chain": "control-happy-path",
+  "incidents": [],
+  "initialState": {
+    "task": {
+      "issue": "HOK-REPLAY-CTRL",
+      "slug": "replay-control",
+      "phase": "coding",
+      "status": "working"
+    },
+    "hook": {
+      "state": "working",
+      "event": "PreToolUse",
+      "writer": "agent",
+      "timestamp": 1759900000
+    }
+  },
+  "fault": "control_no_fault",
+  "convergence": {
+    "mustMerge": true,
+    "maxTickCount": 5,
+    "tickIntervalSeconds": 30
+  }
+}

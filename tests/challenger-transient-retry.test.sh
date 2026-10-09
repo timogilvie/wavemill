@@ -14,6 +14,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MONITOR_SCRIPT_FILE="$REPO_DIR/shared/lib/wavemill-monitor.sh"
+# challenge_abort_pair derives the challenger key via the task identity module.
+# shellcheck source=../shared/lib/task-identity.sh
+source "$REPO_DIR/shared/lib/task-identity.sh"
 
 PASS=0
 FAIL=0

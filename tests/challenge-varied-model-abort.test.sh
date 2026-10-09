@@ -35,6 +35,9 @@ eval "$HELPERS"
 # bounded-retry helpers (HOK-2924).
 # shellcheck source=../shared/lib/bounded-retry.sh
 source "$REPO_DIR/shared/lib/bounded-retry.sh"
+# challenge_abort_pair derives the challenger key via the task identity module.
+# shellcheck source=../shared/lib/task-identity.sh
+source "$REPO_DIR/shared/lib/task-identity.sh"
 eval "$(extract_function phase_launch_head)"
 eval "$(extract_function resolve_phase_model)"
 eval "$(extract_function resolve_stage_result_model)"

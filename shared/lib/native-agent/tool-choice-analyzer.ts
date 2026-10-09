@@ -25,6 +25,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 
 import { fitLogisticRegression, wilsonInterval } from '../stats-utils.ts';
+import { parseTaskId } from '../task-identity.ts';
 import {
   TOOL_DECISION_SCHEMA_VERSION,
   validateToolDecisionRow,
@@ -393,19 +394,17 @@ export function loadEvalOutcomes(path: string): EvalOutcomeIndex {
     if (record.challengeSide === 'primary' || record.challengeSide === 'challenger') {
       side = record.challengeSide;
     }
+    // Challenger evals may carry the `<issue>_c` task ID; join on the base ID.
+    const parsedIssue = parseTaskId(issueId);
     let normalizedIssue = issueId;
     let sideFromSuffix = false;
-    if (/_c$/.test(issueId)) {
-      normalizedIssue = issueId.replace(/_c$/, '');
+    if (parsedIssue?.role === 'challenger') {
+      normalizedIssue = parsedIssue.linearId;
       index.literalSuffixNormalizations += 1;
       if (!side) {
         side = 'challenger';
         sideFromSuffix = true;
       }
-    }
-    if (normalizedIssue === '') {
-      index.withoutIssueId += 1;
-      continue;
     }
     const timestamp = typeof record.timestamp === 'string' ? record.timestamp : undefined;
     const outcome: EvalOutcomeRecord = {
@@ -479,11 +478,10 @@ export function parseDecisionSessionId(sessionId: string): SessionIdParse {
   if (phase === 'review') {
     return { ok: true, phase, reason: 'review_session_branch_keyed' };
   }
-  const challenger = tail.endsWith('_c') || sessionPrefix.endsWith('_c');
-  const issue = tail.endsWith('_c') ? tail.slice(0, -2) : tail;
-  if (issue === '') {
-    return { ok: false, reason: 'empty_issue_slot' };
-  }
+  const parsedTail = parseTaskId(tail);
+  // The prefix check reads a historical session slug, not a task ID.
+  const challenger = parsedTail?.role === 'challenger' || sessionPrefix.endsWith('_c');
+  const issue = parsedTail?.linearId ?? tail;
   return {
     ok: true,
     phase,

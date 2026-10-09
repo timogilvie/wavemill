@@ -155,6 +155,16 @@ printf 'legacy sentinel\n' > "$STATE_DIR/.retry-review-infra-recovery-exhausted"
 reconcile
 assert_eq "legacy sentinel, same head (<sha>:<category> key): kept" "yes" "$(exists "$STATE_DIR/.retry-review-infra-recovery-exhausted")"
 
+echo "=== HOK-3177: composite retry-identity head expires on a new head ==="
+new_fixture
+bounded_retry_mark_exhausted "$STATE_DIR" "review-infra-recovery" "exhausted after 2 attempt(s)" \
+  --head "${HEAD_SHA}::native-review-timeout:/:::::::" --expires-on "head,operator-event,review-artifact-substantive"
+reconcile
+assert_eq "composite key, same head: exhaustion kept" "yes" "$(exists "$STATE_DIR/.retry-review-infra-recovery-exhausted")"
+git -C "$WT" -c user.email=t@t -c user.name=t commit -q --allow-empty -m three
+reconcile
+assert_eq "composite key, new head: exhaustion cleared" "no" "$(exists "$STATE_DIR/.retry-review-infra-recovery-exhausted")"
+
 echo "=== terminal short-circuit without a SHA head ==="
 new_fixture
 bounded_retry_mark_exhausted "$STATE_DIR" "coding-launch-refused" "terminal: no launchable coder"

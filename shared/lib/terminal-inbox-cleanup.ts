@@ -1,4 +1,4 @@
-import { TASK_ID_RE } from './task-identity.ts';
+import { TASK_ID_RE, challengerTaskKey } from './task-identity.ts';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
@@ -413,7 +413,7 @@ function collectGitEvidence(repoDir: string, task: JsonRecord | undefined, branc
 
 function siblingKey(issue: string, role: string, pairId: string): string {
   if (!pairId || !role) return '';
-  return role === 'primary' ? `${pairId}_c` : pairId;
+  return role === 'primary' ? challengerTaskKey(pairId) : pairId;
 }
 
 function findHistoricalTask(state: WorkflowState, issue: string): JsonRecord | undefined {

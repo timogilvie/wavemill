@@ -186,14 +186,33 @@ export const NATIVE_CONTEXT_WINDOW_EXCEEDED_CATEGORY = 'native-context-window-ex
  */
 export const PROVIDER_CREDIT_EXHAUSTED_CATEGORY = 'provider-credit-exhausted';
 export const NATIVE_REVIEW_TIMEOUT_CATEGORY = 'native-review-timeout';
+/**
+ * The native reviewer delivered an unparseable or empty final message
+ * (HOK-3169). This is a model-protocol / infra failure, not a substantive
+ * verdict — the reviewer never produced a usable `ready` / `not_ready`
+ * decision — so it must route through the bounded `review-infra-recovery`
+ * bucket rather than terminalizing the Ready gate.
+ */
+export const NATIVE_REVIEW_MALFORMED_RESPONSE_CATEGORY = 'native-review-malformed-response';
+/**
+ * The native reviewer's input diff was empty (zero bytes) at review time
+ * (HOK-3169). Running the model on an empty diff invites it to improvise a
+ * non-verdict (surfacing later as `native-review-malformed-response`); the
+ * short-circuit returns this typed infra failure before the model is called
+ * so the bounded recovery path can retry once the diff is populated (e.g.
+ * after a stale-base rebuild).
+ */
+export const REVIEW_SCOPE_EMPTY_FAILURE_CATEGORY = 'review-scope-empty';
 export const INFRA_REVIEW_FAILURE_CATEGORIES = [
   'native-runtime-unavailable',
   'native-review-prompt-missing',
   REVIEW_SCOPE_UNVERIFIABLE_FAILURE_CATEGORY,
   REVIEW_SCOPE_MISMATCH_FAILURE_CATEGORY,
+  REVIEW_SCOPE_EMPTY_FAILURE_CATEGORY,
   NATIVE_CONTEXT_WINDOW_EXCEEDED_CATEGORY,
   PROVIDER_CREDIT_EXHAUSTED_CATEGORY,
   NATIVE_REVIEW_TIMEOUT_CATEGORY,
+  NATIVE_REVIEW_MALFORMED_RESPONSE_CATEGORY,
 ] as const;
 export type InfrastructureReviewFailureCategory = typeof INFRA_REVIEW_FAILURE_CATEGORIES[number];
 

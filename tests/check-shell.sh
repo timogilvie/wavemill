@@ -85,6 +85,7 @@ for f in \
   "$LIB_DIR"/bounded-retry.sh \
   "$LIB_DIR"/plan-packet-binding.sh \
   "$LIB_DIR"/task-progress.sh \
+  "$LIB_DIR"/wavemill-reliability-refresh.sh \
   "$LIB_DIR"/task-identity.sh \
   "$LIB_DIR"/challenge-arms.sh \
   "$LIB_DIR"/transient-marker.sh \
@@ -149,6 +150,7 @@ for f in \
   "$REPO_DIR"/tests/ready-exhausted-challenge.test.sh \
   "$REPO_DIR"/tests/review-gate-refused-challenge.test.sh \
   "$REPO_DIR"/tests/monitor-late-completion.test.sh \
+  "$REPO_DIR"/tests/monitor-wake-resume.test.sh \
   "$REPO_DIR"/tests/challenge-deferred-arm.test.sh \
   "$REPO_DIR"/tests/parent-monitor-function-drift.test.sh \
   "$REPO_DIR"/tests/linear-state-canonicalization.test.sh \

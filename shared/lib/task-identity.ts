@@ -126,6 +126,22 @@ export function challengerTaskId(taskId: string): string {
 }
 
 /**
+ * Build the challenger state key for a recorded challenge pair ID.
+ *
+ * Pair IDs are base task IDs, so for every valid pair ID this equals
+ * `challengerTaskId(pairId)`. Unlike `challengerTaskId` it never throws and
+ * never collapses: read paths (state lookups, artifact paths, eval matching)
+ * receive whatever pair ID was recorded, so an opaque ID (legacy state, test
+ * fixtures) or a drifted `<ID>_c` pair ID gets the suffix appended verbatim.
+ * The resulting key then matches no real task rather than throwing mid-read
+ * or resolving an arm to itself as its own sibling. Use `challengerTaskId`
+ * when the input must be a valid task ID.
+ */
+export function challengerTaskKey(pairId: string): string {
+  return `${pairId}${CHALLENGER_SUFFIX}`;
+}
+
+/**
  * Resolve the Linear issue ID a task should read from / write to.
  *
  * Precedence: the task ID must parse (fail closed even when metadata is
