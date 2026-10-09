@@ -4947,7 +4947,12 @@ describe('executeMerge handoff-rebind lag (HOK-3105)', () => {
         const result = await executeMerge(next, { repoDir: claimOptions.merge.repoDir, deps: claimOptions.deps });
         // Past the ownership claim (later merge phases are out of scope here).
         assert.notEqual(result.phase, 'handoff', `claim rejected: ${result.failureExcerpt}`);
-        assert.notEqual(result.status, 'skipped');
+        // A later-phase retry deferral (HOK-3176, e.g. `checks-retry-deferred`)
+        // is still past the claim; only a claim-level skip would fail here.
+        assert.ok(
+          result.status !== 'skipped' || /-retry-deferred$/.test(result.phase ?? ''),
+          `unexpected skip at ${result.phase}: ${result.failureExcerpt}`,
+        );
         assert.ok(hasCall(claimOptions.merge.calls, /gh pr view/));
         const claimed = readReadyTendHandoff(featureDir);
         assert.equal(claimed?.headSha, 'head-current');
