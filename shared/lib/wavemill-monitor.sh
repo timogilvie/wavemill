@@ -16036,17 +16036,11 @@ build_queue_plan_once() {
       description: .description,
       labels: ((.labels.nodes // []) | map(.name) | sort),
       priority: (.priority // null),
-      priorityLabel: (.priorityLabel // null),
-      estimate: (.estimate // null),
-      state: (.state.name // null),
-      dueDate: (.dueDate // null),
-      projectMilestone: (.projectMilestone // null),
       blocks: (
         (.relations.nodes // [])
         | map(select(.type == "blocks" and .relatedIssue.identifier != null and .relatedIssue.completedAt == null and .relatedIssue.canceledAt == null) | .relatedIssue.identifier)
         | sort
       ),
-      sharedSurface: ((.sharedSurface // []) | sort),
       dependsOn: (
         (.inverseRelations.nodes // [])
         | map(select(.type == "blocks" and .issue.identifier != null and .issue.completedAt == null and .issue.canceledAt == null) | .issue.identifier)
@@ -16155,17 +16149,11 @@ maybe_launch_queue_inference_refresh() {
       description: .description,
       labels: ((.labels.nodes // []) | map(.name) | sort),
       priority: (.priority // null),
-      priorityLabel: (.priorityLabel // null),
-      estimate: (.estimate // null),
-      state: (.state.name // null),
-      dueDate: (.dueDate // null),
-      projectMilestone: (.projectMilestone // null),
       blocks: (
         (.relations.nodes // [])
         | map(select(.type == "blocks" and .relatedIssue.identifier != null and .relatedIssue.completedAt == null and .relatedIssue.canceledAt == null) | .relatedIssue.identifier)
         | sort
       ),
-      sharedSurface: ((.sharedSurface // []) | sort),
       dependsOn: (
         (.inverseRelations.nodes // [])
         | map(select(.type == "blocks" and .issue.identifier != null and .issue.completedAt == null and .issue.canceledAt == null) | .issue.identifier)
