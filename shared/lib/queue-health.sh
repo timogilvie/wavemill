@@ -469,6 +469,30 @@ queue_health_should_skip_attempt() {
   (( current_epoch < next_retry_epoch ))
 }
 
+# HOK-3179: one-line banner for the picker body when queue inference is
+# degraded. Prints the inference-unavailable notice with a since-timestamp
+# (lastSuccessAt or episodeStartedAt). Empty output means do not render a
+# banner.
+queue_inference_degraded_banner() {
+  local health reason since
+  health="$(queue_health_read 2>/dev/null || echo '{}')"
+  reason="$(printf '%s' "$health" | jq -r '.degradationReason // ""' 2>/dev/null || echo '')"
+  [[ "$reason" == "inference_unavailable" ]] || return 0
+
+  since="$(printf '%s' "$health" | jq -r '
+    .inference.lastSuccessAt
+    // .episodeStartedAt
+    // .lastFailureAt
+    // ""
+  ' 2>/dev/null || echo '')"
+
+  if [[ -n "$since" && "$since" != "null" ]]; then
+    printf 'dependency inference degraded since %s — showing explicit + cached edges' "$since"
+  else
+    printf 'dependency inference degraded — showing explicit + cached edges'
+  fi
+}
+
 # Get a human-readable degradation status. Useful for logging/UI.
 # Output: one-line string describing current status, e.g.:
 #   "healthy" / "degraded (timeout); backoff 14s" / "degraded (external_cancellation); retry available"
