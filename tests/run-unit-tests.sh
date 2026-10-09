@@ -37,6 +37,7 @@ TESTS=(
   shared/lib/json-repair.test.ts
   shared/lib/operator-intervention.test.ts
   shared/lib/intervention-detector.test.ts
+  shared/lib/reliability-metrics.test.ts
   shared/lib/stage-result.test.ts
   shared/lib/task-progress.test.ts
   shared/lib/task-identity.test.ts
@@ -171,6 +172,7 @@ TESTS=(
   shared/lib/reviewer-stage-adjudicator.test.ts
   tools/quarantine-legacy-reviewer-forfeits.test.ts
   shared/lib/arm-failure-taxonomy.test.ts
+  shared/lib/eval-skip-guard.test.ts
   shared/lib/arm-reliability.test.ts
   shared/lib/stale-task-branches.test.ts
   shared/lib/tend-controller.test.ts
