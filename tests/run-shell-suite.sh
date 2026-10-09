@@ -158,6 +158,7 @@ TESTS=(
   re-review-no-pr.test.sh
   monitor-command-routing.test.sh
   condition-reconciler.test.sh
+  config-false-booleans.test.sh
 )
 
 SHARD_INDEX=1

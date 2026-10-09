@@ -31,7 +31,7 @@ fi
 AGENT_CMD="$(jq -r '.agentCmd' "$PLAN_FILE")"
 AGENT_CMD_EXPLICIT="$(jq -r '.agentCmdExplicit // false' "$PLAN_FILE")"
 FORCE_MODEL="$(jq -r '.forceModel // empty' "$PLAN_FILE")"
-ROUTER_ENABLED="$(jq -r '.routerEnabled // true' "$PLAN_FILE")"
+ROUTER_ENABLED="$(jq -r '.routerEnabled | if . == null then true else . end' "$PLAN_FILE")"
 MAX_PARALLEL="$(jq -r '.maxParallel // 0' "$PLAN_FILE")"
 STATE_DIR="$(jq -r '.stateDir' "$PLAN_FILE")"
 STATE_FILE="$(jq -r '.stateFile' "$PLAN_FILE")"
@@ -44,7 +44,7 @@ MONITOR_SCRIPT="$(jq -r '.startupConfig.monitorScript' "$PLAN_FILE")"
 LAUNCHED_ISSUES_FILE="$(jq -r '.startupConfig.launchedIssuesFile' "$PLAN_FILE")"
 MILL_LOG_FILE="$(jq -r '.startupConfig.millLogFile // empty' "$PLAN_FILE")"
 POLL_SECONDS="$(jq -r '.monitorConfig.pollSeconds // 10' "$PLAN_FILE")"
-REQUIRE_CONFIRM="$(jq -r '.monitorConfig.requireConfirm // true' "$PLAN_FILE")"
+REQUIRE_CONFIRM="$(jq -r '.monitorConfig.requireConfirm | if . == null then true else . end' "$PLAN_FILE")"
 WAVEMILL_REQUIRE_CONFIRM_SOURCE="$(jq -r '.monitorConfig.requireConfirmSource // "runtime-env"' "$PLAN_FILE")"
 INTEGRATION_MERGE_METHOD="$(jq -r '.monitorConfig.mergeMethod // "squash"' "$PLAN_FILE")"
 WAVEMILL_MERGE_METHOD_SOURCE="$(jq -r '.monitorConfig.mergeMethodSource // "repo-config"' "$PLAN_FILE")"
@@ -57,11 +57,11 @@ else
   command -v tmux >/dev/null || { echo "Error: tmux is required but not installed" >&2; exit 1; }
 fi
 PROJECT_NAME="$(jq -r '.monitorConfig.projectName // empty' "$PLAN_FILE")"
-AUTO_EVAL="$(jq -r '.monitorConfig.autoEval // true' "$PLAN_FILE")"
+AUTO_EVAL="$(jq -r '.monitorConfig.autoEval | if . == null then true else . end' "$PLAN_FILE")"
 ENTER_ACTION="$(jq -r '.monitorConfig.enterAction // (if .monitorConfig.enterLaunchesWave == true then "wave" elif .monitorConfig.enterLaunchesWave == false then "top-scored" else "none" end)' "$PLAN_FILE")"
 if [[ "$ENTER_ACTION" == "wave" ]]; then ENTER_LAUNCHES_WAVE="true"; else ENTER_LAUNCHES_WAVE="false"; fi
 DASHBOARD_VERBOSITY="$(jq -r '.monitorConfig.dashboardVerbosity // "info"' "$PLAN_FILE")"
-DASHBOARD_LOG_TO_FILE="$(jq -r '.monitorConfig.dashboardLogToFile // true' "$PLAN_FILE")"
+DASHBOARD_LOG_TO_FILE="$(jq -r '.monitorConfig.dashboardLogToFile | if . == null then true else . end' "$PLAN_FILE")"
 # Parsed but intentionally unused; behavior change ships in follow-up.
 QUEUE_PLAN="$(jq -c '.queuePlan // []' "$PLAN_FILE")"
 DASHBOARD_PID=""
