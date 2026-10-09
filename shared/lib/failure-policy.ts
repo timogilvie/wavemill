@@ -284,7 +284,8 @@ export function detectFailureKind(detail: string | null | undefined, handoffReas
   if (handoffReason && COMPLETION_PROTOCOL_HANDOFF_REASONS.has(handoffReason)) {
     return 'native-completion-protocol';
   }
-  const text = detail ?? '';
+  // Commit SHAs ("preserved at 0c564d2") must not read as HTTP 5xx digits.
+  const text = (detail ?? '').replace(/\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b/gi, '<sha>');
   const lower = text.toLowerCase();
 
   for (const [pattern, kind] of NATIVE_PRE_PROVIDER_SIGNATURES) {

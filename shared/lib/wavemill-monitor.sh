@@ -7189,7 +7189,7 @@ emit_native_terminal_failure_attention() {
 
   if [[ "$failure_class" != "terminal" ]]; then
     write_stage_result "$feature_dir" "$stage" "failed" "$agent" "$model" "$notes" "$artifacts_json"
-    log_warn "$issue → Native ${stage} failed (${failure_kind}, ${failure_class}); retrying under stage-failure-${stage}. ${next_action}"
+    log_warn "$issue → Native ${stage} failed (${failure_kind}, ${failure_class}), retrying under stage-failure-${stage}. ${next_action}"
     active_count=$((active_count + 1))
     return 0
   fi
@@ -7343,7 +7343,7 @@ maybe_retry_failed_stage() {
       attempts="$(bounded_retry_count "$feature_dir" "$bucket")"
       if bounded_retry_mark_exhausted "$feature_dir" "$bucket" \
         "unknown-failure-after-retries:${stage}:${failure_kind} after ${attempts} relaunch(es) at head ${head:-unknown}: ${detail}"; then
-        log_warn "⛔ $issue → ${stage} still failing (${failure_kind}) after ${attempts} relaunch(es); escalating to needs-user. ${next_action}"
+        log_warn "⛔ $issue → ${stage} still failing (${failure_kind}) after ${attempts} relaunch(es), escalating to needs-user. ${next_action}"
       fi
       return 1
       ;;
@@ -7366,7 +7366,7 @@ maybe_retry_failed_stage() {
   clear_stage_result "$feature_dir" "$stage"
   set_task_phase "$issue" "$retry_phase"
   set_window_attention_state "$win" "clear"
-  log "status" "♻ $issue → ${stage} failed (${failure_kind}, ${failure_class}); relaunch ${attempts}/${limit}${fresh} via ${retry_phase}"
+  log "status" "♻ $issue → ${stage} failed (${failure_kind}, ${failure_class}), relaunch ${attempts}/${limit}${fresh} via ${retry_phase}"
   return 0
 }
 

@@ -253,6 +253,7 @@ harness_extract_real_functions() {
     stage_failure_decision \
     stage_failure_owned_by_bucket \
     maybe_retry_failed_stage \
+    clear_stage_result \
     emit_native_terminal_failure_attention \
     challenge_varied_stage_model \
     challenge_result_stage_for_launch \

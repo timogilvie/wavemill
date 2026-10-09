@@ -1,5 +1,5 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mergeLaneStateDir, recordLaneProgress, type LaneProgressEvent } from './merge-queue.ts';
 import {
@@ -1204,7 +1204,9 @@ async function withScratchWorktree<T>(
     cwd: repoDir,
     timeout: GIT_COMMAND_TIMEOUT_MS,
   })).trim();
-  const tendWorktreeDir = join(commonGitDir, 'wavemill-tend');
+  // `--git-common-dir` may be relative to repoDir (e.g. `.git`); resolve it
+  // so the scratch path never depends on the process cwd.
+  const tendWorktreeDir = join(resolve(repoDir, commonGitDir), 'wavemill-tend');
   const worktreePath = join(tendWorktreeDir, String(prNumber));
 
   const markerBase = {
@@ -2972,7 +2974,9 @@ async function cleanScratchWorktreeBestEffort(
   } catch (error) {
     return { removed: false, retained: `git-common-dir failed: ${errorMessage(error)}` };
   }
-  const tendWorktreeDir = join(commonGitDir, 'wavemill-tend');
+  // `--git-common-dir` may be relative to repoDir (e.g. `.git`); resolve it
+  // so the scratch path never depends on the process cwd.
+  const tendWorktreeDir = join(resolve(repoDir, commonGitDir), 'wavemill-tend');
   const worktreePath = join(tendWorktreeDir, String(prNumber));
 
   let registrationOk = true;

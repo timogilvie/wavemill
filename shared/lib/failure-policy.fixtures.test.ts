@@ -112,6 +112,12 @@ const HISTORICAL_FIXTURES: Fixture[] = [
     expectedKind: 'coding-exited-without-result',
   },
   {
+    name: 'coding interruption whose SHA contains 5xx-looking digits',
+    evidence: { stage: 'coding', detail: 'Interrupted: coding agent exited without recording a result - durable commits preserved at 0c564d2' },
+    expectedClass: 'retryable',
+    expectedKind: 'coding-exited-without-result',
+  },
+  {
     name: 'HOK-3129: review produced no findings',
     evidence: { stage: 'review', detail: 'Native review flow failed after 0 findings' },
     expectedClass: 'retryable',

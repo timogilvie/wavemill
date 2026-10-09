@@ -5,8 +5,10 @@
 # completion marker, leaving the pane alive at a bare shell and the stage
 # result stuck at "running". The monitor must reconcile phase state with
 # process ownership within one iteration: persist a typed interrupted
-# outcome that preserves the durable commits, surface needs-user, and never
-# relaunch or duplicate work on later iterations.
+# outcome that preserves the durable commits, and never duplicate work. Under
+# HOK-3176 the next iteration relaunches the stage through the bounded
+# stage-failure-coding retry (phase reverted to planning) instead of parking
+# the task at needs-user.
 register_lifecycle_scenario coding_agent_exit_interrupted
 
 setup_coding_agent_exit_interrupted() {
@@ -28,9 +30,7 @@ setup_coding_agent_exit_interrupted() {
   # the recorded owner is affirmatively gone (an idle shell only).
   fresh_hook_state_for_issue() { printf '\n'; }
   mill_pane_has_live_blocking_process() { return 1; }
-  # Second-iteration failed-stage handlers: no bounded retry available and
-  # no quarantine side effects; the arm must simply stay parked for the user.
-  maybe_retry_challenger_transient_phase() { return 1; }
+  # Second iteration: no quarantine side effects; the real default retry runs.
   emit_challenge_stage_failure_quarantine() { return 0; }
 }
 
@@ -42,7 +42,9 @@ assert_coding_agent_exit_interrupted() {
   check_contains "durable head recorded for recovery" "$output" '"lastDurableCommit":'
   check_contains "validation recorded as unknown, not failed" "$output" '"validationState":"unknown"'
   check_contains "interruption names the recovery action" "$output" "Relaunch the coding phase"
-  check_contains "operator surfaced" "$output" "attention=needs-user"
+  check_contains "interruption classified for retry" "$output" "coding failed (coding-exited-without-result, retryable)"
+  check_contains "relaunched through the bounded retry" "$output" "relaunch 1/3 via planning"
+  check_contains "phase reverted so the normal launch path relaunches" "$output" "HOK-1294|planning"
   check_contains "second iteration launches no coding agent" "$output" "coding_launches=0"
   check_contains "second iteration launches no review" "$output" "review_launches=0"
 }

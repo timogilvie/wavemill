@@ -201,6 +201,7 @@ for fn in \
   stage_failure_decision \
   stage_failure_owned_by_bucket \
   maybe_retry_failed_stage \
+  clear_stage_result \
   emit_native_terminal_failure_attention \
   _coding_terminal_blocked_completion_detected \
   emit_terminal_blocked_completion_attention \
