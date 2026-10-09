@@ -127,6 +127,7 @@ const HISTORICAL_FIXTURES: Fixture[] = [
     name: 'HOK-3129: review no output with typed credit cause',
     evidence: { stage: 'review', detail: 'Native review flow failed after 0 findings [typed envelope cause: provider-credit-exhausted]' },
     expectedClass: 'retryable',
+    expectedKind: 'review-no-output',
   },
   {
     name: 'HOK-3129: planning turn limit',
@@ -151,6 +152,7 @@ const HISTORICAL_FIXTURES: Fixture[] = [
     name: 'HOK-3169: malformed native review (typed category)',
     evidence: { stage: 'review', failureKind: 'native-review-malformed-response', detail: 'Native review returned a malformed final response: Unexpected token < in JSON at position 0' },
     expectedClass: 'retryable',
+    expectedKind: 'native-review-malformed-response',
   },
   {
     name: 'HOK-3169: Ready refused on malformed review (non-challenge)',
