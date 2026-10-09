@@ -102,6 +102,12 @@ mkdir -p "$WORKTREE_ROOT" "$REPO_DIR" "$TOOLS_DIR"
 wavemill_tool_path() {
   printf '%s/%s\n' "${TOOLS_DIR:-$TMP_ROOT/install-tools}" "$1"
 }
+# HOK-3176: next actions come from the failure policy; resolve it from the
+# checkout, not the sandboxed TOOLS_DIR.
+failure_policy_next_action() {
+  node --experimental-strip-types --no-warnings "$SCRIPT_DIR/../tools/failure-policy-cli.ts" \
+    --next-action-only "--failure-kind=${1:-}" 2>/dev/null
+}
 
 # Stub record-arm-failure.ts so the HOK-3064 bridge argv is captured.
 cat > "$TOOLS_DIR/record-arm-failure.ts" <<'EOT'

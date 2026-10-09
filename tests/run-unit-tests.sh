@@ -172,6 +172,9 @@ TESTS=(
   shared/lib/reviewer-stage-adjudicator.test.ts
   tools/quarantine-legacy-reviewer-forfeits.test.ts
   shared/lib/arm-failure-taxonomy.test.ts
+  shared/lib/failure-policy.test.ts
+  shared/lib/failure-policy.fixtures.test.ts
+  shared/lib/failure-policy.random.test.ts
   shared/lib/eval-skip-guard.test.ts
   shared/lib/arm-reliability.test.ts
   shared/lib/stale-task-branches.test.ts
