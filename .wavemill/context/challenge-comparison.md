@@ -4,6 +4,8 @@ Challenge pairs now persist an explicit comparison state on both tasks in the pa
 
 Launch invariant: non-control challenge pairs must differ on at least one routing dimension before any challenger work starts. Comparable routing dimensions are `planner`, `coder`, `reviewer`, `planDepth`, `codeDepth`, and `reviewMode`.
 
+Task-identity invariant (HOK-3113..HOK-3118): every surface that derives a Linear issue ID from a task ID, decides challenger vs. primary, or constructs a `<ID>_c` task ID must route through `shared/lib/task-identity.{ts,sh}` (`parseTaskId` / `isChallengerTaskId` / `challengerTaskId` / `challengerTaskKey` / `resolveLinearIssueId` and the bash twins). Inline `_c` suffix handling and inline issue-ID regex literals are blocked by the `tools/check-task-identity.ts` preflight guard (in `test:preflight`); justified exceptions live in `tools/task-identity-allowlist.txt` or a one-line `// allow-task-identity: <reason>` (`#` in shell) suppression. The `_c` suffix always means challenger regardless of recorded metadata, and `challengerTaskKey` is the read-safe (never-throws) key builder for recorded pair IDs.
+
 Challenge coverage and performance consumers enforce provisional evidence holds through `shared/lib/model-evidence-policy.ts` before ranking, coverage counting, or win-rate aggregation. Held executed-model rows do not contribute coverage cells, challenge performance, stage-quality, variant, or cost statistics. The raw eval and comparison records remain observable, and summaries expose excluded counts plus stable reason counts so coverage gaps can be audited without mutating JSONL.
 
 ## States

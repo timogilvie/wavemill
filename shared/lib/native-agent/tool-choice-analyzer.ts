@@ -480,6 +480,7 @@ export function parseDecisionSessionId(sessionId: string): SessionIdParse {
   }
   const parsedTail = parseTaskId(tail);
   // The prefix check reads a historical session slug, not a task ID.
+  // allow-task-identity: sessionPrefix is a session slug, not a task ID — the real task ID goes through parseTaskId above.
   const challenger = parsedTail?.role === 'challenger' || sessionPrefix.endsWith('_c');
   const issue = parsedTail?.linearId ?? tail;
   return {
