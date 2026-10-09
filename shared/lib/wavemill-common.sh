@@ -96,6 +96,15 @@ wavemill_run_tool() {
   else
     cli="$(wavemill_tool_path "$tool_name")"
   fi
+  # HOK-3190: test fixtures that intercept tool spawns through a shell
+  # function named `npx` (see tests/*.sh) rely on the `npx tsx <path>`
+  # shape. When `npx` is a shell function (not just a command on PATH),
+  # route through it so mocks keep working. Real `npx` executables are
+  # external, so this never triggers in production.
+  if declare -F npx >/dev/null 2>&1; then
+    npx tsx "$cli" "$@"
+    return $?
+  fi
   if [[ -z "${WAVEMILL_NODE_STRIP_SUPPORTED:-}" ]]; then
     if [[ "${WAVEMILL_SKIP_FAST_STRIP:-0}" == "1" ]]; then
       WAVEMILL_NODE_STRIP_SUPPORTED=0
@@ -118,11 +127,57 @@ _failure_policy_cli() {
   wavemill_run_tool failure-policy-cli.ts "$@" 2>/dev/null
 }
 
+# HOK-3190: minimal fallback for pass_task_field so standalone callers
+# (test harnesses that source just wavemill-common.sh, cleanup CLIs, etc.)
+# that end up invoking a monitor function with a `pass_task_field` call
+# don't `command not found`. The monitor's own definition (which uses the
+# cached pass snapshot) OVERRIDES this one when the monitor is sourced.
+#
+# The filter is interpolated with the literal field name so existing
+# read_state_value test stubs that match on `.tasks[$i].<field>` keep working.
+pass_task_field() {
+  local issue="$1" field="$2" default="${3:-}"
+  if ! declare -F read_state_value >/dev/null 2>&1; then
+    printf '%s\n' "$default"
+    return 0
+  fi
+  local filter v
+  filter=".tasks[\$i].${field} // empty"
+  v="$(read_state_value "$default" --arg i "$issue" "$filter" 2>/dev/null)"
+  if [[ -z "$v" ]]; then
+    printf '%s\n' "$default"
+  else
+    printf '%s\n' "$v"
+  fi
+}
+
+# Same shape for pass_state_root (the loop's rarer caller surface).
+pass_state_root() {
+  local field="$1" default="${2:-}"
+  if ! declare -F read_state_value >/dev/null 2>&1; then
+    printf '%s\n' "$default"
+    return 0
+  fi
+  local filter v
+  filter=".${field} // empty"
+  v="$(read_state_value "$default" "$filter" 2>/dev/null)"
+  if [[ -z "$v" ]]; then
+    printf '%s\n' "$default"
+  else
+    printf '%s\n' "$v"
+  fi
+}
+
 # HOK-3190: emit the invoker prefix (`node --experimental-strip-types …` or
 # `npx tsx`) for callers that build a command string for `eval` instead of
 # invoking tools directly through `wavemill_run_tool`. Honours the same
 # capability probe + WAVEMILL_SKIP_FAST_STRIP override.
 _wavemill_tsx_invoker() {
+  # Test fixtures override `npx` to intercept tool spawns; preserve that path.
+  if declare -F npx >/dev/null 2>&1; then
+    printf 'npx tsx'
+    return 0
+  fi
   if [[ -z "${WAVEMILL_NODE_STRIP_SUPPORTED:-}" ]]; then
     if [[ "${WAVEMILL_SKIP_FAST_STRIP:-0}" == "1" ]]; then
       WAVEMILL_NODE_STRIP_SUPPORTED=0

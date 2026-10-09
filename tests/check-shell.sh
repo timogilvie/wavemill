@@ -181,6 +181,10 @@ for f in \
   "$REPO_DIR"/tests/re-review-no-pr.test.sh \
   "$REPO_DIR"/tests/monitor-command-routing.test.sh \
   "$REPO_DIR"/tests/condition-reconciler.test.sh \
+  "$REPO_DIR"/tests/check-no-npx-in-monitor.sh \
+  "$REPO_DIR"/tests/monitor-pass-snapshot.test.sh \
+  "$REPO_DIR"/tests/monitor-state-size.test.sh \
+  "$REPO_DIR"/tests/monitor-usr2-wakeup.test.sh \
   "$REPO_DIR"/tests/launch-pane-liveness.test.sh \
   "$REPO_DIR"/tests/launch-failure-log-capture.test.sh \
   "$REPO_DIR"/tests/challenge-eval-soft-retry.test.sh \

@@ -3235,11 +3235,12 @@ pass_task_field() {
   fi
   # Snapshot not active (e.g. called during startup or from a test harness
   # that sources the monitor without running the loop body) — fall through to
-  # a one-shot read_state_value so callers that migrated to pass_task_field
-  # keep returning the correct value in those contexts.
-  local v
-  v="$(read_state_value "$default" --arg i "$issue" --arg f "$field" \
-    '.tasks[$i][$f] // empty' 2>/dev/null)"
+  # a one-shot read_state_value. The filter is interpolated with the literal
+  # field name so existing test harnesses that stub read_state_value by
+  # matching on `.tasks[$i].<field>` keep matching.
+  local filter v
+  filter=".tasks[\$i].${field} // empty"
+  v="$(read_state_value "$default" --arg i "$issue" "$filter" 2>/dev/null)"
   if [[ -z "$v" ]]; then
     printf '%s\n' "$default"
   else
