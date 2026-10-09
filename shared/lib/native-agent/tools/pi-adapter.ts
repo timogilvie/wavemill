@@ -4,14 +4,18 @@
 // does not re-export it, keeping Pi imports out of the registry seam.
 // ---------------------------------------------------------------------------
 import {
-  getApiProvider,
-  registerBuiltInApiProviders,
   type Api,
   type Model,
+  type Models,
+  type Provider,
 } from '@earendil-works/pi-ai';
 import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { TSchema } from 'typebox';
 import { DEFAULT_MAX_OUTPUT_TOKENS } from '../output-limits.ts';
+import {
+  createNativeModelsCollection,
+  getActiveNativeModels,
+} from '../models.ts';
 import type { ToolDescriptor } from './types.ts';
 
 // Re-export Pi tool types through the adapter seam so callers (e.g. smoke
@@ -19,7 +23,12 @@ import type { ToolDescriptor } from './types.ts';
 export type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core';
 export type PiModel = Model<Api>;
 
-let builtInProvidersRegistered = false;
+/**
+ * Lazy read-only collection used when neither an explicit collection nor an
+ * active-models pointer is available. The AuthContext has no credentials, so
+ * callers can only use it to look up providers by id — never to stream.
+ */
+let fallbackBuiltInModels: Models | undefined;
 
 /**
  * Convert a Wavemill ToolDescriptor into a Pi AgentTool.
@@ -85,31 +94,46 @@ export function buildPiModel({
   } as PiModel;
 }
 
+/**
+ * Resolve a Pi `Provider` whose model list covers `model.api` (HOK-3162).
+ * Returns the first match from the active native models (if any), then the
+ * launcher-supplied collection, then a shared read-only fallback that holds
+ * the built-in openai/openrouter factories.
+ *
+ * The lookup is advisory — it only tells callers that an api is known. The
+ * returned Provider's auth may be unresolved, so callers must not drive
+ * streams through it unless they also brought a configured collection.
+ */
 export function getRegisteredPiProviderForModel(
   model: Pick<PiModel, 'api'>,
-): ReturnType<typeof getApiProvider> | undefined {
-  ensureBuiltInApiProvidersRegistered();
-
-  try {
-    return getApiProvider(model.api);
-  } catch {
-    return undefined;
-  }
-}
-
-function ensureBuiltInApiProvidersRegistered(): void {
-  if (builtInProvidersRegistered) {
-    return;
-  }
-
-  try {
-    registerBuiltInApiProviders();
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!/already registered|duplicate/i.test(message)) {
-      throw error;
+  models?: Models,
+): Provider | undefined {
+  const sources = [models, getActiveNativeModels(), getFallbackBuiltInModels()];
+  for (const source of sources) {
+    if (!source) continue;
+    const match = findProviderWithApi(source, model.api);
+    if (match) {
+      return match;
     }
   }
+  return undefined;
+}
 
-  builtInProvidersRegistered = true;
+function findProviderWithApi(models: Models, api: Api): Provider | undefined {
+  for (const provider of models.getProviders()) {
+    const chatModels = provider.getModels();
+    for (const chatModel of chatModels) {
+      if (chatModel.api === api) {
+        return provider;
+      }
+    }
+  }
+  return undefined;
+}
+
+function getFallbackBuiltInModels(): Models {
+  if (!fallbackBuiltInModels) {
+    fallbackBuiltInModels = createNativeModelsCollection({ env: {} });
+  }
+  return fallbackBuiltInModels;
 }

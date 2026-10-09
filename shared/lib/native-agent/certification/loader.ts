@@ -13,6 +13,7 @@ import {
   type NativeCertificationArtifact,
 } from './schema.ts';
 import {
+  isRollingProviderAlias,
   isValidCertificationPathSegment,
   resolveCertificationStorageIdentity,
   subjectsEqual,
@@ -33,6 +34,7 @@ export type IneligibilityReason =
   | 'missing'
   | 'malformed'
   | 'identity-reidentified'
+  | 'identity-invalidated'
   | 'wrong-version'
   | 'stale'
   | 'phase-insufficient'
@@ -276,6 +278,22 @@ export function evaluateEligibility(
     return { eligible: false, reason: 'wrong-version', artifact };
   }
 
+  // HOK-3143: a durable identity-invalidation record fails the gate until a
+  // fresh certification writes a new artifact. Also fail-closed on an alias
+  // subject that has no pinned resolvedTarget (an unpinned alias is never
+  // launchable).
+  if (artifactHasSubject(artifact)) {
+    if (artifact.identityInvalidation) {
+      return { eligible: false, reason: 'identity-invalidated', artifact };
+    }
+    if (
+      isRollingProviderAlias(artifact.subject.providerNativeId)
+      && !artifact.resolvedTarget
+    ) {
+      return { eligible: false, reason: 'identity-invalidated', artifact };
+    }
+  }
+
   if (artifact.suiteVersion !== requiredSuiteVersion) {
     return { eligible: false, reason: 'wrong-version', artifact };
   }
@@ -453,9 +471,75 @@ function parseArtifact(input: unknown): AnyNativeCertificationArtifact | undefin
     const liveCanary = parseLiveCanary(c.liveCanary);
     if (c.liveCanary !== undefined && !liveCanary) return undefined;
     if (liveCanary) artifact.liveCanary = liveCanary;
+
+    // HOK-3143: pinned alias target and durable identity invalidation.
+    // Both are additive and optional; a present-yet-invalid field fails closed.
+    const resolvedTarget = parseResolvedTarget(c.resolvedTarget);
+    if (c.resolvedTarget !== undefined && !resolvedTarget) return undefined;
+    if (resolvedTarget) artifact.resolvedTarget = resolvedTarget;
+
+    const identityInvalidation = parseIdentityInvalidation(c.identityInvalidation);
+    if (c.identityInvalidation !== undefined && !identityInvalidation) return undefined;
+    if (identityInvalidation) artifact.identityInvalidation = identityInvalidation;
   }
 
   return artifact;
+}
+
+function parseResolvedTarget(
+  raw: unknown,
+): NativeCertificationArtifact['resolvedTarget'] | undefined {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const r = raw as Record<string, unknown>;
+  if (
+    typeof r.requestedWireId !== 'string'
+    || typeof r.model !== 'string'
+    || typeof r.observedAt !== 'string'
+    || r.source !== 'provider-response'
+  ) {
+    return undefined;
+  }
+  if (r.responseId !== undefined && typeof r.responseId !== 'string') return undefined;
+  return {
+    requestedWireId: r.requestedWireId,
+    model: r.model,
+    observedAt: r.observedAt,
+    source: 'provider-response',
+    ...(typeof r.responseId === 'string' ? { responseId: r.responseId } : {}),
+  };
+}
+
+function parseIdentityInvalidation(
+  raw: unknown,
+): NativeCertificationArtifact['identityInvalidation'] | undefined {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const r = raw as Record<string, unknown>;
+  if (
+    typeof r.invalidatedAt !== 'string'
+    || r.reason !== 'identity_mismatch'
+    || typeof r.expectedModel !== 'string'
+    || typeof r.observedModel !== 'string'
+    || typeof r.requestedWireId !== 'string'
+    || (r.source !== 'runtime' && r.source !== 'certification')
+  ) {
+    return undefined;
+  }
+  if (r.phase !== undefined && typeof r.phase !== 'string') return undefined;
+  if (r.session !== undefined && typeof r.session !== 'string') return undefined;
+  if (r.issue !== undefined && typeof r.issue !== 'string') return undefined;
+  return {
+    invalidatedAt: r.invalidatedAt,
+    reason: 'identity_mismatch',
+    expectedModel: r.expectedModel,
+    observedModel: r.observedModel,
+    requestedWireId: r.requestedWireId,
+    source: r.source as 'runtime' | 'certification',
+    ...(typeof r.phase === 'string' ? { phase: r.phase } : {}),
+    ...(typeof r.session === 'string' ? { session: r.session } : {}),
+    ...(typeof r.issue === 'string' ? { issue: r.issue } : {}),
+  };
 }
 
 function parseSubject(raw: unknown): NativeCertificationArtifact['subject'] | undefined {
@@ -550,6 +634,10 @@ function parseLiveCanary(raw: unknown): NativeCertificationArtifact['liveCanary'
   if (c.reason !== undefined && !(LIVE_CANARY_REASONS as readonly string[]).includes(c.reason as string)) return undefined;
   if (c.limitExceeded !== undefined && !(LIVE_CANARY_LIMIT_KINDS as readonly string[]).includes(c.limitExceeded as string)) return undefined;
   if (c.detail !== undefined && typeof c.detail !== 'string') return undefined;
+  if (
+    c.canaryCarriedForwardFrom !== undefined
+    && (typeof c.canaryCarriedForwardFrom !== 'string' || c.canaryCarriedForwardFrom.length === 0)
+  ) return undefined;
   if (c.attempts !== undefined && (typeof c.attempts !== 'number' || !Number.isInteger(c.attempts) || c.attempts < 1)) return undefined;
 
   const usage = parseLiveCanaryUsage(c.usage);
@@ -571,6 +659,7 @@ function parseLiveCanary(raw: unknown): NativeCertificationArtifact['liveCanary'
     providerNativeId: c.providerNativeId,
     identityFingerprint: c.identityFingerprint,
     catalogHash: c.catalogHash,
+    ...(typeof c.canaryCarriedForwardFrom === 'string' ? { canaryCarriedForwardFrom: c.canaryCarriedForwardFrom } : {}),
     suiteVersion: c.suiteVersion,
     ranAt: c.ranAt,
     ...(typeof c.expiresAt === 'string' ? { expiresAt: c.expiresAt } : {}),

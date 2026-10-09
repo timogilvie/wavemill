@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { describe, it } from 'node:test';
 import { registerScriptedPiProvider, type ScriptedProviderContext } from './provider.ts';
 import { describeNativePlanningHelperFailure, launchNativePlanning } from './launch-planning.ts';
+import { resolvePiRuntimeVersions } from './pi-runtime-version.ts';
+import { resolveSessionEventsDir } from './session-stream.ts';
 import {
   parseNativePlanningApprovalCommand,
   resolveNativePlanningApprovalMode,
@@ -115,9 +117,9 @@ function stubRunTsxCommandWithExpansion(
   expandArgs: string[][] = [],
 ): (args: string[]) => string {
   return (args: string[]) => {
-    const command = args[0];
+    const command = basename(args[0] ?? '');
     const outputIndex = args.indexOf('--output');
-    if (command === 'tools/expand-issue.ts') {
+    if (command === 'expand-issue.ts') {
       expandedIssues.push(args[1] ?? '');
       expandArgs.push(args);
       assert.ok(outputIndex >= 0, 'expand-issue must receive --output');
@@ -130,7 +132,7 @@ function stubRunTsxCommandWithExpansion(
       ].join('\n'));
       return '';
     }
-    if (command === 'tools/route-task.ts') {
+    if (command === 'route-task.ts') {
       assert.ok(outputIndex >= 0, 'route-task must receive --output');
       writeFileSync(args[outputIndex + 1]!, `${JSON.stringify({
         planner: 'gpt-5.4',
@@ -355,6 +357,18 @@ describe('launchNativePlanning', () => {
       assert.equal(stageResult.agent, 'native');
       assert.equal(stageResult.model, `scripted:${api}`);
       assert.equal(stageResult.notes, 'Native planning ready for approval');
+      // HOK-3164: native evidence carries the Pi runtime that ran the stage.
+      assert.deepEqual(
+        (stageResult.executionEvidence as Record<string, unknown>).piRuntimeVersions,
+        { ...resolvePiRuntimeVersions() },
+      );
+      const sessionStarted = readdirSync(resolveSessionEventsDir(wtDir))
+        .filter((name) => name.endsWith('.jsonl'))
+        .flatMap((name) => readFileSync(join(resolveSessionEventsDir(wtDir), name), 'utf-8').trim().split('\n'))
+        .map((line) => JSON.parse(line) as Record<string, unknown>)
+        .filter((event) => event.type === 'session_started');
+      assert.equal(sessionStarted.length, 1);
+      assert.deepEqual(sessionStarted[0].piRuntimeVersions, { ...resolvePiRuntimeVersions() });
       const artifacts = stageResult.artifacts as Record<string, any>;
       assert.equal(artifacts.type, 'planning');
       assert.equal(artifacts.planFile, 'features/demo/plan.md');
@@ -680,11 +694,11 @@ describe('launchNativePlanning', () => {
         repoDir: wtDir,
         loopModelOverride: scriptedModel(api),
         runTsxCommand: (args: string[]) => {
-          helperCommands.push(args[0] ?? '');
-          if (args[0] === 'tools/expand-issue.ts') {
+          helperCommands.push(basename(args[0] ?? ''));
+          if (basename(args[0] ?? '') === 'expand-issue.ts') {
             throw new Error('expand should not run when selected-task has structured task content');
           }
-          if (args[0] === 'tools/route-task.ts') {
+          if (basename(args[0] ?? '') === 'route-task.ts') {
             const outputIndex = args.indexOf('--output');
             assert.ok(outputIndex >= 0, 'route-task must receive --output');
             writeFileSync(args[outputIndex + 1]!, `${JSON.stringify({
@@ -699,7 +713,7 @@ describe('launchNativePlanning', () => {
         },
       });
 
-      assert.deepEqual(helperCommands, ['tools/route-task.ts']);
+      assert.deepEqual(helperCommands, ['route-task.ts']);
       assert.match(readFileSync(packetPath, 'utf-8'), /Quick Reference/);
       assert.match(readFileSync(join(featureDir, 'plan.md'), 'utf-8'), /# Selected Task Plan/);
     } finally {
@@ -712,14 +726,14 @@ describe('launchNativePlanning', () => {
     timeout.code = 'ETIMEDOUT';
 
     const error = describeNativePlanningHelperFailure(timeout, [
-      'tools/expand-issue.ts',
+      '/wavemill/install/tools/expand-issue.ts',
       'HOK-2464',
       '--output',
       '/tmp/task-packet.md',
     ], 720000);
 
     assert.match(error.message, /Native planning helper timed out after 720000ms/);
-    assert.match(error.message, /npx tsx tools\/expand-issue\.ts HOK-2464 --output \/tmp\/task-packet\.md/);
+    assert.match(error.message, /expand-issue\.ts HOK-2464 --output \/tmp\/task-packet\.md/);
     assert.doesNotMatch(error.message, /^spawnSync npx ETIMEDOUT$/);
   });
 

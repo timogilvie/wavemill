@@ -9,7 +9,7 @@ import {
 } from '../../model-registry.ts';
 import { hashLaunchPriorityFixture } from '../../openrouter-catalog.ts';
 import { resolveCertificationStorage } from './storage.ts';
-import type { SuiteCoverageResult, SuiteCoverageStatus } from './coverage.ts';
+import type { SuiteCoverageResult } from './coverage.ts';
 import {
   certifySelectedNativeAgents,
   type CertifyAllEntry,
@@ -33,7 +33,7 @@ export interface AutoRemediationOptions {
 
 export interface AutoRemediationResult {
   attempted: boolean;
-  mode: 'republish-matrix' | 'renewal' | 'noop' | 'blocked-by-loop-guard';
+  mode: 'republish-matrix' | 'reidentify' | 'renewal' | 'noop' | 'blocked-by-loop-guard';
   targets: string[];
   published: string[];
   failed: Array<{ provider: string; model: string; reason: string }>;
@@ -172,10 +172,22 @@ function remediationMode(coverage: SuiteCoverageResult): AutoRemediationResult['
     || coverage.status === 'empty-store') {
     return 'republish-matrix';
   }
+  // HOK-3159: catalog hashes are per-model, so a launch-priority row edit now
+  // re-identifies only that model — below the fleet-wide `identity-drift`
+  // threshold. Re-certify just the drifted models (plus any renewals).
+  if (reidentifiedModelKeys(coverage).length > 0) {
+    return 'reidentify';
+  }
   if (coverage.modelsInRenewalWindow.length > 0) {
     return 'renewal';
   }
   return 'noop';
+}
+
+function reidentifiedModelKeys(coverage: SuiteCoverageResult): string[] {
+  return coverage.ineligibleModels
+    .filter((entry) => entry.reason === 'identity-reidentified' || entry.reason === 'identity-invalidated')
+    .map((entry) => entry.registryKey);
 }
 
 function selectTargets(
@@ -183,9 +195,12 @@ function selectTargets(
   coverage: SuiteCoverageResult,
   mode: AutoRemediationResult['mode'],
 ): CertifySelectedTarget[] {
+  const renewals = coverage.modelsInRenewalWindow.map((model) => model.registryKey);
   const requested = mode === 'renewal'
-    ? new Set(coverage.modelsInRenewalWindow.map((model) => model.registryKey))
-    : null;
+    ? new Set(renewals)
+    : mode === 'reidentify'
+      ? new Set([...reidentifiedModelKeys(coverage), ...renewals])
+      : null;
   const targets: CertifySelectedTarget[] = [];
 
   for (const [registryKey, model] of Object.entries(registry.models)) {
@@ -300,9 +315,11 @@ function formatEntryKey(entry: CertifyAllEntry): string {
   return `${entry.provider}/${entry.model}`;
 }
 
-export function isCertificationAutoRemediationTrigger(status: SuiteCoverageStatus): boolean {
-  return status === 'identity-drift'
-    || status === 'stale'
-    || status === 'bump-without-publish'
-    || status === 'empty-store';
+/**
+ * True when the coverage result has work for auto-remediation: a fleet-wide
+ * trigger status, models in the renewal window, or (HOK-3159) individually
+ * re-identified models below the fleet-wide drift threshold.
+ */
+export function hasCertificationAutoRemediationWork(coverage: SuiteCoverageResult): boolean {
+  return remediationMode(coverage) !== 'noop';
 }

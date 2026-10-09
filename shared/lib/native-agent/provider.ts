@@ -1,18 +1,22 @@
 import {
   createAssistantMessageEventStream,
-  registerApiProvider,
-  streamSimple,
+  getCurrentSystemPrompt,
+  getCurrentTools,
   type Api,
   type AssistantMessage,
   type AssistantMessageEvent,
-  type Context,
+  type JsonObject,
   type Model,
+  type Models,
   type SimpleStreamOptions,
   type StopReason,
   type StreamFunction,
   type Tool,
+  type TranscriptContext,
   type Usage,
 } from '@earendil-works/pi-ai';
+import type { StreamFn } from '@earendil-works/pi-agent-core';
+import { getActiveNativeModels } from './models.ts';
 import type { SessionModelUsage } from '../session-adapters.ts';
 import {
   createPiContext,
@@ -52,6 +56,14 @@ export interface ToolCallingProviderInput {
   state: ProviderConversationState;
   tools?: NativeToolSchema[];
   options?: ProviderTurnOptions;
+  /**
+   * Explicit Models collection whose `streamSimple` dispatches the request
+   * (HOK-3162). Takes precedence over the active-models fallback. Low-level
+   * tests can skip this and use `streamFn` directly.
+   */
+  models?: Models;
+  /** Low-level stream override. Takes precedence over `models`. */
+  streamFn?: StreamFn;
 }
 
 export interface ProviderTurnOptions {
@@ -123,6 +135,14 @@ export interface ScriptedPiProviderTurn {
   usage?: Partial<Usage>;
   stopReason?: ProviderFinishReason | 'toolUse';
   errorMessage?: string;
+  /**
+   * Simulate the provider's `response.model` for this turn (HOK-3143).
+   * Pi sets `AssistantMessage.responseModel` only when it differs from the
+   * requested id — omit to simulate an echo.
+   */
+  responseModel?: string;
+  /** Simulate the provider's `response.id` for this turn (HOK-3143). */
+  responseId?: string;
 }
 
 export interface ScriptedPiProviderDefinition {
@@ -144,9 +164,57 @@ export function createPiToolCallingProvider(): ToolCallingProvider {
   return new PiToolCallingProvider();
 }
 
+// ---------------------------------------------------------------------------
+// Scripted-provider registry (HOK-3162).
+//
+// Pre-HOK-3162 scripted tests pushed providers into the global compat
+// registry, which dispatched by `model.api` and ignored `model.provider`.
+// Pi 1.0's `Models` dispatches by `model.provider` instead, which would
+// require every test to pre-wire a matching provider id. To preserve the
+// loose "api is enough" contract these tests rely on, scripted providers
+// live in a module-local api-indexed map and we expose their combined
+// stream dispatch as a `StreamFn` the loop uses when no explicit `models`
+// is passed. The function is a thin stand-in for the removed compat
+// registry; production launches never hit it.
+// ---------------------------------------------------------------------------
+
+type ScriptedPiStream = StreamFunction<Api, SimpleStreamOptions>;
+
+const scriptedPiStreams = new Map<string, ScriptedPiStream>();
+
+/**
+ * Drop every scripted provider from the module-local registry. Tests that
+ * need isolation call this between runs; without it, scripted providers leak
+ * across the next test's expectations.
+ */
+export function clearScriptedPiProviders(): void {
+  scriptedPiStreams.clear();
+}
+
+/**
+ * Return the current api-indexed scripted stream, or undefined when no
+ * scripted provider has been registered. The loop uses this as a fallback
+ * when the caller passes neither `models` nor `streamFn`.
+ */
+export function getScriptedPiStreamFn(): StreamFn | undefined {
+  if (scriptedPiStreams.size === 0) {
+    return undefined;
+  }
+  return (model, context, options) => {
+    const stream = scriptedPiStreams.get(model.api);
+    if (!stream) {
+      throw new Error(
+        `No scripted provider registered for api '${model.api}'. Call `
+        + 'registerScriptedPiProvider or pass an explicit models/streamFn.',
+      );
+    }
+    return stream(model as Model<Api>, context, options);
+  };
+}
+
 export function registerScriptedPiProvider(definition: ScriptedPiProviderDefinition): void {
   let turnIndex = 0;
-  const stream: StreamFunction<Api, SimpleStreamOptions> = (model, context, options) => {
+  const stream: ScriptedPiStream = (model, context, options) => {
     const scriptContext = toScriptedProviderContext(context, options);
     const turn = typeof definition.turns === 'function'
       ? definition.turns(scriptContext)
@@ -169,19 +237,21 @@ export function registerScriptedPiProvider(definition: ScriptedPiProviderDefinit
     return eventStream;
   };
 
-  registerApiProvider({ api: definition.api, stream, streamSimple: stream }, `wavemill-native-agent:${definition.api}`);
+  scriptedPiStreams.set(definition.api, stream);
 }
 
 class PiToolCallingProvider implements ToolCallingProvider {
   async createTurn(input: ToolCallingProviderInput): Promise<ProviderTurnResult> {
     const context = createPiContext(input.state.messages, input.tools?.map(toPiTool));
     const model = toPiModel(input.model);
-    // An undefined ceiling makes Pi drop `max_tokens` from the payload, which
-    // inflates the provider-side credit reservation. See ./output-limits.ts.
-    const stream = streamSimple(model, context, {
+    const options: SimpleStreamOptions = {
       ...input.options,
+      // An undefined ceiling makes Pi drop `max_tokens` from the payload,
+      // which inflates the provider-side credit reservation. See
+      // ./output-limits.ts.
       maxTokens: input.options?.maxTokens ?? model.maxTokens,
-    });
+    };
+    const stream = await resolveToolCallingStream(input, model, context, options);
     const events: ProviderTurnEvent[] = [];
     let finalMessage: AssistantMessage | undefined;
     let finishReason: ProviderFinishReason = 'unknown';
@@ -322,7 +392,7 @@ function toPiAssistantMessage(
         type: 'toolCall',
         id: content.id,
         name: content.name,
-        arguments: content.arguments ?? {},
+        arguments: (content.arguments ?? {}) as JsonObject,
       };
     }),
     api: model.api,
@@ -331,6 +401,8 @@ function toPiAssistantMessage(
     usage: createPiUsage(turn.usage),
     stopReason,
     ...(turn.errorMessage ? { errorMessage: turn.errorMessage } : {}),
+    ...(turn.responseModel !== undefined ? { responseModel: turn.responseModel } : {}),
+    ...(turn.responseId !== undefined ? { responseId: turn.responseId } : {}),
     timestamp: Date.now(),
   };
 }
@@ -358,12 +430,51 @@ function createPiUsage(usage: Partial<Usage> | undefined): Usage {
   };
 }
 
+/**
+ * Resolve the per-turn stream for `PiToolCallingProvider`. Precedence
+ * mirrors the loop's: explicit `streamFn` → explicit `models` →
+ * scripted-provider registry (api-indexed, test-only) → module-local active
+ * `Models` collection. Nothing available is a misuse.
+ */
+async function resolveToolCallingStream(
+  input: ToolCallingProviderInput,
+  model: Model<Api>,
+  context: ReturnType<typeof createPiContext>,
+  options: SimpleStreamOptions,
+): Promise<ReturnType<StreamFn>> {
+  if (input.streamFn) {
+    return input.streamFn(model, context as unknown as TranscriptContext, options);
+  }
+  if (input.models) {
+    return input.models.streamSimple(model, context, options);
+  }
+  const scripted = getScriptedPiStreamFn();
+  if (scripted) {
+    return scripted(model, context as unknown as TranscriptContext, options);
+  }
+  const active = getActiveNativeModels();
+  if (active) {
+    return active.streamSimple(model, context, options);
+  }
+  throw new Error(
+    'PiToolCallingProvider.createTurn: no models collection or streamFn '
+    + 'provided and no active native models have been registered. Register a '
+    + 'scripted provider (registerScriptedPiProvider) or pass `models`/'
+    + '`streamFn` explicitly.',
+  );
+}
+
 function toScriptedProviderContext(
-  context: Context,
+  context: TranscriptContext,
   options?: SimpleStreamOptions,
 ): ScriptedProviderContext {
+  // Pi 1.0 hands providers a transcript whose system messages carry the prompt
+  // and tool declarations. Scripted turns keep seeing the conversation without
+  // them, and `rawContext` keeps the pre-1.0 { systemPrompt, messages, tools }
+  // shape rebuilt from the transcript (HOK-3161).
+  const conversation = context.messages.filter((message) => message.role !== 'system');
   return {
-    messages: context.messages.map((message): NativeAgentMessage => {
+    messages: conversation.map((message): NativeAgentMessage => {
       if (message.role === 'user') {
         return { role: 'user', content: typeof message.content === 'string' ? message.content : message.content };
       }
@@ -383,8 +494,12 @@ function toScriptedProviderContext(
       }
       return toNativeAssistantMessage(message);
     }),
-    sawToolResults: context.messages.some((message) => message.role === 'toolResult'),
-    rawContext: context,
+    sawToolResults: conversation.some((message) => message.role === 'toolResult'),
+    rawContext: {
+      systemPrompt: getCurrentSystemPrompt(context.messages),
+      messages: conversation,
+      tools: getCurrentTools(context.messages),
+    },
     ...(options !== undefined ? { options } : {}),
   };
 }

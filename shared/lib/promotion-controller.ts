@@ -130,6 +130,58 @@ export interface BranchBaseUpdateResult {
   conflictingFiles?: string[];
 }
 
+/** Commit-count distance between a branch and its base (HOK-3092 / HOK-3096). */
+export interface BranchBaseDistance {
+  /** Commits on `baseRef` not on `branch`; undefined when the count could not be determined. */
+  behindBase?: number;
+  /** Commits on `branch` not on `baseRef`; undefined when the count could not be determined. */
+  aheadOfBase?: number;
+  /** The ref the counts were computed against, when known. */
+  baseRef?: string;
+}
+
+/**
+ * Measure how far `branch` has diverged from `baseBranch`, reusing the same
+ * `git rev-list --count` predicate `coding_compare_commit_counts` uses in
+ * `wavemill-monitor.sh` (HOK-3092). Prefers `origin/<baseBranch>` and falls
+ * back to the local `<baseBranch>` ref when no remote-tracking ref exists,
+ * mirroring `inspectTaskBranchResidue` in `tools/observer.ts`.
+ *
+ * Never fetches: this reads whatever ref is already known locally, which
+ * keeps it fast and deterministic for callers like the HOK-3096 observer
+ * detectors that run across many tasks per cycle. Callers that need a fresh
+ * remote view should fetch first (see `updateBranchWithBase`). Every git
+ * failure degrades to `undefined` fields rather than throwing.
+ */
+export function measureBranchBaseDistance(
+  branch: string,
+  baseBranch: string,
+  repoDir: string,
+  shellRunner: ShellRunner = (cmd, opts) => String(execShellCommand(cmd, opts)),
+): BranchBaseDistance {
+  const countRevList = (range: string): number | undefined => {
+    try {
+      const raw = String(shellRunner(
+        `git rev-list --count ${range}`,
+        { encoding: 'utf-8', cwd: repoDir },
+      )).trim();
+      const count = Number.parseInt(raw, 10);
+      return Number.isFinite(count) && count >= 0 ? count : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const tryRef = (ref: string): BranchBaseDistance | undefined => {
+    const behindBase = countRevList(`${escapeShellArg(branch)}..${escapeShellArg(ref)}`);
+    const aheadOfBase = countRevList(`${escapeShellArg(ref)}..${escapeShellArg(branch)}`);
+    if (behindBase === undefined || aheadOfBase === undefined) return undefined;
+    return { behindBase, aheadOfBase, baseRef: ref };
+  };
+
+  return tryRef(`origin/${baseBranch}`) ?? tryRef(baseBranch) ?? {};
+}
+
 const PROMOTION_SECTION_BEGIN = '<!-- wavemill-promote:begin -->';
 const PROMOTION_SECTION_END = '<!-- wavemill-promote:end -->';
 const RECENT_PR_LIMIT = 10;

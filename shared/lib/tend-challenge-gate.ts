@@ -243,6 +243,12 @@ export type ChallengeGate =
   | { kind: 'pair-unresolvable'; pairId: string; otherPr: number | null; reason: UnresolvableReason }
   | { kind: 'cool-off'; reason: string }
   | { kind: 'winner'; pairId: string; loserPr: number | null; autoMerge: boolean }
+  /**
+   * HOK-3147: the pair was voided (`invalid_challenge`) because the *other*
+   * arm was retired for an infrastructure failure and its PR is closed. There
+   * is no winner; this PR merges as an unchallenged PR would.
+   */
+  | { kind: 'challenge-void'; pairId: string }
   | {
       kind: 'loser';
       pairId: string;
@@ -570,6 +576,9 @@ export function classifyChallengeState(
   }
 
   const latestComparison = relevantComparisons[0];
+  if (isVoidedBySiblingRetirement(prNumber, pairId, latestComparison, workflowStatePair?.role, challengePairMap, allPrNumbers)) {
+    return { kind: 'challenge-void', pairId };
+  }
   if (
     latestComparison.comparisonOutcome === 'invalid' ||
     latestComparison.comparisonOutcome === 'inconclusive' ||
@@ -790,6 +799,13 @@ export async function applyChallengePairGates<T extends ChallengeEligibleWorkIte
       continue;
     }
 
+    if (state.kind === 'challenge-void') {
+      // No winner exists to hold for review (autoMergeWinner does not apply):
+      // the retired sibling's PR is closed, so this PR proceeds unchallenged.
+      nextEligible.push(item);
+      continue;
+    }
+
     if (state.kind === 'winner') {
       if (state.autoMerge) {
         nextEligible.push(item);
@@ -861,6 +877,43 @@ function findOtherOpenPr(
   }
 
   return null;
+}
+
+/**
+ * HOK-3147: true when `comparison` voided the pair because exactly one arm —
+ * not this PR's — was retired as an invalid challenge, and that arm's PR is
+ * no longer open. Every other `invalid_challenge` record (both arms aborted,
+ * this PR is the aborted arm, or the aborted PR is still open) keeps the
+ * HOK-2970 hold so an operator decides.
+ */
+function isVoidedBySiblingRetirement(
+  prNumber: number,
+  pairId: string,
+  comparison: StoredChallengeComparison,
+  workflowRole: ChallengeRole | undefined,
+  challengePairMap: Map<number, ChallengePairInfo>,
+  allPrNumbers: Set<number>,
+): boolean {
+  if (comparison.comparisonOutcome !== 'invalid_challenge' && !comparison.invalidChallenge) {
+    return false;
+  }
+  const abortedRole: ChallengeRole | null = comparison.terminalReason === 'primary_challenge_aborted'
+    ? 'primary'
+    : comparison.terminalReason === 'challenger_challenge_aborted'
+      ? 'challenger'
+      : null;
+  if (!abortedRole) {
+    return false;
+  }
+  const role = resolvePrRole(prNumber, comparison, workflowRole);
+  if (!role || role === abortedRole) {
+    return false;
+  }
+  const abortedPr = parsePrNumberFromUrl(abortedRole === 'primary' ? comparison.primaryPrUrl : comparison.challengerPrUrl);
+  if (abortedPr !== null && allPrNumbers.has(abortedPr)) {
+    return false;
+  }
+  return findOtherOpenPr(pairId, prNumber, challengePairMap, allPrNumbers) === null;
 }
 
 function resolvePrRole(

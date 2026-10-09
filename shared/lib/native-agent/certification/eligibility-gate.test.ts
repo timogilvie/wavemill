@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { computeIdentityFingerprint, type ModelRegistry } from '../../model-registry.ts';
-import { hashLaunchPriorityFixture, resolveOpenRouterModelIdentity } from '../../openrouter-catalog.ts';
+import { hashLaunchPriorityModelRow, resolveOpenRouterModelIdentity } from '../../openrouter-catalog.ts';
 import {
   buildGlobalCertificationPath,
   CERTIFICATION_SCHEMA_VERSION,
@@ -116,7 +116,7 @@ function makeSubject(provider: 'openai' | 'openrouter', modelId: string): Certif
       provider,
       revision: 1,
     }),
-    catalogHash: provider === 'openrouter' ? hashLaunchPriorityFixture() : 'registry',
+    catalogHash: provider === 'openrouter' ? hashLaunchPriorityModelRow(modelId) ?? 'missing-row' : 'registry',
   };
 }
 

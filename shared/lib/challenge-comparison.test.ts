@@ -1062,6 +1062,62 @@ test('missing executed model and contradictory evidence fail closed', () => {
   }
 });
 
+test('alias-resolved identity verdict is not an executed-model mismatch', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'challenge-alias-resolved-test-'));
+  try {
+    const primaryDir = join(tmp, 'features', 'primary');
+    const challengerDir = join(tmp, 'features', 'challenger');
+    mkdirSync(primaryDir, { recursive: true });
+    mkdirSync(challengerDir, { recursive: true });
+    // Primary ran against an unregistered rolling alias (`~google/gemini-pro-latest`)
+    // whose certified target is a concrete model id OpenRouter actually served.
+    // The provider-identity gate stamps `identityVerdict: 'alias-resolved'` on the
+    // stage evidence; comparison must trust that verdict rather than re-comparing
+    // the executed concrete to the alias via the registry.
+    writeFileSync(
+      join(primaryDir, '.coding-result.json'),
+      JSON.stringify({
+        stage: 'coding',
+        status: 'completed',
+        agent: 'native-openrouter',
+        model: 'google/gemini-3.1-pro-preview',
+        intendedModel: '~google/gemini-pro-latest',
+        executedModel: 'google/gemini-3.1-pro-preview',
+        executionEvidence: {
+          status: 'direct',
+          source: 'provider-response',
+          identityVerdict: 'alias-resolved',
+          providerReportedModel: 'google/gemini-3.1-pro-preview',
+          requestedWireId: '~google/gemini-pro-latest',
+          certifiedTarget: 'google/gemini-3.1-pro-preview',
+        },
+        modelAttributionEligible: true,
+        notes: '',
+      }),
+    );
+    writeStage(challengerDir, 'coding', 'claude', 'claude-haiku-4-5');
+
+    const primaryRouting = makeRouting({ coder: '~google/gemini-pro-latest' });
+    const challengerRouting = makeRouting({ coder: 'claude-haiku-4-5' });
+    const variedDimensions = detectVariedDimensions(primaryRouting, challengerRouting);
+    const validation = validateChallengeExecutionProvenance({
+      primaryExecution: resolveChallengeSideExecutionProvenance({ featureDir: primaryDir }),
+      challengerExecution: resolveChallengeSideExecutionProvenance({ featureDir: challengerDir }),
+      primaryRouting,
+      challengerRouting,
+      primaryModel: primaryRouting.coder,
+      challengerModel: challengerRouting.coder,
+      variedDimensions,
+    });
+
+    assert.equal(validation.valid, true);
+    assert.equal(validation.modelAttributionEligible, true);
+    assert.deepEqual(validation.issues, []);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test('same intended routing with different execution is inconclusive', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'challenge-provenance-test-'));
   try {
@@ -1600,4 +1656,39 @@ process.on('exit', () => {
   console.log(`\nPassed: ${passed}`);
   console.log(`Failed: ${failed}`);
   if (failed > 0) process.exitCode = 1;
+});
+
+test('stage provenance carries Pi runtime versions from executionEvidence (HOK-3164)', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'challenge-pi-version-test-'));
+  try {
+    const featureDir = join(tmp, 'features', 'primary');
+    mkdirSync(featureDir, { recursive: true });
+    writeFileSync(
+      join(featureDir, '.coding-result.json'),
+      JSON.stringify({
+        stage: 'coding',
+        status: 'completed',
+        agent: 'native-openrouter',
+        model: 'moonshotai/kimi-k2.7-code',
+        intendedModel: 'moonshotai/kimi-k2.7-code',
+        executedModel: 'moonshotai/kimi-k2.7-code',
+        executionEvidence: {
+          status: 'direct',
+          source: 'provider-response',
+          identityVerdict: 'match',
+          piRuntimeVersions: { 'pi-agent-core': '1.0.2', 'pi-ai': '1.0.2', junk: 'x' },
+        },
+        modelAttributionEligible: true,
+        notes: '',
+      }),
+    );
+    writeStage(featureDir, 'planning', 'claude', 'claude-opus-4-7');
+
+    const provenance = resolveChallengeSideExecutionProvenance({ featureDir });
+    assert.deepEqual(provenance.coding.piRuntimeVersions, { 'pi-agent-core': '1.0.2', 'pi-ai': '1.0.2' });
+    // Non-native / pre-HOK-3164 stages carry no stamp rather than an empty object.
+    assert.equal('piRuntimeVersions' in provenance.planning, false);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });

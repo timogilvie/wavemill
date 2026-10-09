@@ -1,8 +1,9 @@
 #!/usr/bin/env tsx
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import { compareParentMonitorFiles, formatDriftReport } from '../shared/lib/parent-monitor-drift.ts';
+import { resolveWavemillInstallDir } from '../shared/lib/native-agent/install-paths.ts';
 
 interface CliOptions {
   parent: string;
@@ -26,9 +27,10 @@ function usage(): string {
 }
 
 function parseArgs(argv: readonly string[]): CliOptions {
+  const installDir = resolveWavemillInstallDir();
   const options: CliOptions = {
-    parent: resolve(process.cwd(), 'shared/lib/wavemill-mill.sh'),
-    monitor: resolve(process.cwd(), 'shared/lib/wavemill-monitor.sh'),
+    parent: join(installDir, 'shared/lib/wavemill-mill.sh'),
+    monitor: join(installDir, 'shared/lib/wavemill-monitor.sh'),
     json: false,
   };
 

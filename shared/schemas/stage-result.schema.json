@@ -76,6 +76,46 @@
         },
         "recordedAt": {
           "type": "string"
+        },
+        "providerReportedModel": {
+          "type": "string"
+        },
+        "requestedWireId": {
+          "type": "string"
+        },
+        "certifiedTarget": {
+          "type": "string"
+        },
+        "identityVerdict": {
+          "enum": [
+            "match",
+            "alias-resolved",
+            "mismatch",
+            "unverifiable",
+            "absent"
+          ]
+        },
+        "transportProvider": {
+          "type": "string"
+        },
+        "upstreamProvider": {
+          "type": "string"
+        },
+        "responseId": {
+          "type": "string"
+        },
+        "piRuntimeVersions": {
+          "description": "HOK-3164: installed Pi runtime package versions that ran this stage.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "pi-agent-core": {
+              "type": "string"
+            },
+            "pi-ai": {
+              "type": "string"
+            }
+          }
         }
       }
     },
@@ -88,7 +128,8 @@
         "stage_not_completed",
         "missing_execution_evidence",
         "execution_contradicted",
-        "runtime_fallback"
+        "runtime_fallback",
+        "provider_substitution"
       ]
     },
     "notes": {

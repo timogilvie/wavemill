@@ -235,6 +235,9 @@ fi
 _log_level_num() {
   case "$1" in
     error) echo 0 ;;
+    # warn shares status's visibility so warnings always reach the dashboard
+    # at the default verbosity (HOK-3142).
+    warn) echo 1 ;;
     status) echo 1 ;;
     info) echo 2 ;;
     debug) echo 3 ;;
@@ -256,8 +259,11 @@ append_status_log() {
 log() {
   local level="info"
   local msg
+  # `warn` must be a recognised level: before HOK-3142 `log "warn" "…"` fell
+  # through, was written as `[info] warn …`, and was invisible to the
+  # observer's warn/error scan.
   case "${1:-}" in
-    error|status|info|debug)
+    error|warn|status|info|debug)
       level="$1"
       shift
       ;;
@@ -426,6 +432,53 @@ hydrate_provider_env_from_dotenv() {
   done
 }
 
+# HOK-3174: warn once at startup when this macOS host can still sleep under
+# the mill. `caffeinate -s` only holds off system sleep on AC power, and
+# closing the lid sleeps the Mac regardless unless an external display is
+# attached. Missing or unparseable platform utilities are never fatal.
+mill_sleep_preflight_warning() {
+  [[ "${WAVEMILL_NO_CAFFEINATE:-}" == "1" ]] && return 0
+  [[ "$(uname -s 2>/dev/null || true)" == "Darwin" ]] || return 0
+  command -v pmset >/dev/null 2>&1 || return 0
+
+  local batt settings ac_sleep="" reasons=""
+  batt="$(pmset -g batt 2>/dev/null || true)"
+  if [[ "$batt" == *"'Battery Power'"* ]]; then
+    reasons="host is on battery (caffeinate -s only prevents system sleep on AC)"
+  else
+    settings="$(pmset -g 2>/dev/null || true)"
+    ac_sleep="$(printf '%s\n' "$settings" | awk '$1 == "sleep" && $2 ~ /^[0-9]+$/ { print $2; exit }')"
+    if [[ "$ac_sleep" =~ ^[0-9]+$ ]] && (( ac_sleep > 0 )); then
+      reasons="host is set to sleep after ${ac_sleep}m on AC"
+    fi
+  fi
+  [[ -n "$reasons" ]] || return 0
+
+  log_warn "Host sleep risk: $reasons. Fix: keep the Mac on AC power and run 'sudo pmset -c sleep 0'. Closing the lid still sleeps the Mac unless an external display is attached."
+}
+
+# HOK-3174: hold a no-sleep assertion for the life of the tmux session.
+# `caffeinate -w` is bound to the tmux server pid, so the assertion is
+# released without explicit cleanup when the server exits. No-op off macOS or
+# with WAVEMILL_NO_CAFFEINATE=1.
+hold_session_sleep_assertion() {
+  [[ "${WAVEMILL_NO_CAFFEINATE:-}" == "1" ]] && return 0
+  [[ "$(uname -s 2>/dev/null || true)" == "Darwin" ]] || return 0
+  command -v caffeinate >/dev/null 2>&1 || return 0
+
+  local server_pid
+  server_pid="$(tmux display-message -p -t "$SESSION" '#{pid}' 2>/dev/null || true)"
+  if [[ ! "$server_pid" =~ ^[0-9]+$ ]]; then
+    log_warn "Could not resolve the tmux server pid; no sleep assertion held for '$SESSION'"
+    return 0
+  fi
+
+  # nohup: survive the launching terminal closing while the session lives on.
+  nohup caffeinate -i -s -w "$server_pid" >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+  log "info" "Holding sleep assertion (caffeinate -i -s -w $server_pid) for session '$SESSION'"
+}
+
 create_tmux_session() {
   local tmux_conf
   local next_done_script
@@ -454,6 +507,7 @@ create_tmux_session() {
   # Prevent mill panes from being destroyed if their process crashes.
   # Without this, a dashboard crash collapses the entire control layout.
   tmux set-option -t "$SESSION:$WAVEMILL_WINDOW_MILL" remain-on-exit on 2>/dev/null || true
+  hold_session_sleep_assertion
   tmux set-environment -t "$SESSION" REPO_DIR "$REPO_DIR"
   tmux set-environment -t "$SESSION" WAVEMILL_MILL_ACTIVE "$REPO_DIR"
   hydrate_provider_env_from_dotenv "$REPO_DIR" "$SESSION"
@@ -660,6 +714,7 @@ write_launch_plan() {
     --arg projectName "$PROJECT_NAME" \
     --arg autoEval "$AUTO_EVAL" \
     --arg enterLaunchesWave "${ENTER_LAUNCHES_WAVE:-true}" \
+    --arg enterAction "${ENTER_ACTION:-none}" \
     --arg dashboardVerbosity "$DASHBOARD_VERBOSITY" \
     --arg dashboardLogToFile "$DASHBOARD_LOG_TO_FILE" \
     --arg millLogFile "$MILL_LOG_FILE" \
@@ -702,6 +757,7 @@ write_launch_plan() {
         projectName: $projectName,
         autoEval: ($autoEval == "true"),
         enterLaunchesWave: ($enterLaunchesWave == "true"),
+        enterAction: $enterAction,
         dashboardVerbosity: $dashboardVerbosity,
         dashboardLogToFile: ($dashboardLogToFile == "true")
       }
@@ -1004,7 +1060,7 @@ Cause: eval evidence repeatedly refused as stale at the current PR head (relaunc
 Retry count: $retry_count/$retry_max
 
 Next action:
-1. Inspect \`npx tsx tools/challenge-eval-evidence.ts --pair-id $pair_id --side <side> --pr <pr> --repo-dir .\` and re-run the eval manually if the refusal is transient.
+1. Inspect \`npx tsx $TOOLS_DIR/challenge-eval-evidence.ts --pair-id $pair_id --side <side> --pr <pr> --repo-dir .\` and re-run the eval manually if the refusal is transient.
 2. If eval cannot be recovered quickly, compare PRs #${primary_pr:-?} and #${challenger_pr:-?} manually.
 3. Close the losing PR and proceed with the winner.
 EOF
@@ -1051,7 +1107,7 @@ The eval ran at the current PR head. Its record is invalid. Re-running evals wil
 
 Next action:
 1. Retire the invalid arm: close its PR, mark the arm aborted, then ship the surviving PR.
-2. Or assess/supersede the pair with \`npx tsx tools/challenge-pair-recovery.ts --pair $pair_id\`. Add \`--apply\` after reviewing the dry run.
+2. Or assess/supersede the pair with \`npx tsx $TOOLS_DIR/challenge-pair-recovery.ts --pair $pair_id\`. Add \`--apply\` after reviewing the dry run.
 EOF
   printf '%s\n' "$artifact_path"
 }
@@ -1811,7 +1867,7 @@ fi
 
 check_subsystem_drift() {
   local drift_output
-  drift_output="$(npx tsx tools/check-drift.ts "$REPO_DIR" 2>/dev/null)" || return 1
+  drift_output="$(npx tsx "$TOOLS_DIR/check-drift.ts" "$REPO_DIR" 2>/dev/null)" || return 1
   printf '%s\n' "$drift_output"
 }
 
@@ -1905,36 +1961,42 @@ if [[ "$SKIP_BACKLOG_SELECTION" != "true" ]]; then
     if (( STARTUP_SLOT_LIMIT < MAX_PARALLEL )); then
       log "info" "Startup launch capacity: $STARTUP_SLOT_LIMIT new task(s) (max parallel $MAX_PARALLEL, accounting for resumed work)"
     fi
+    case "${ENTER_ACTION:-none}" in
+      wave) ENTER_PROMPT_SUFFIX=", or Enter to launch recommended wave:" ;;
+      top-scored) ENTER_PROMPT_SUFFIX=", or Enter to launch the top-scored tasks:" ;;
+      *) ENTER_PROMPT_SUFFIX=":" ;;
+    esac
     if [[ -n "$DRIFT_SUBSYSTEMS" ]]; then
       if (( BLOCKED_COUNT > 0 )) && [[ "$SHOW_BLOCKED_TASKS" != "true" ]]; then
         if [[ -n "${PROJECT_CONTEXT_OVERSIZED:-}" ]]; then
-          echo "Enter numbers to run (e.g. 1 3 5), d to refresh docs, m for more, c to compact context, q to quit, or Enter to launch recommended wave:"
+          echo "Enter numbers to run (e.g. 1 3 5), d to refresh docs, m for more, c to compact context, q to quit${ENTER_PROMPT_SUFFIX}"
         else
-          echo "Enter numbers to run (e.g. 1 3 5), d to refresh docs, m for more, q to quit, or Enter to launch recommended wave:"
+          echo "Enter numbers to run (e.g. 1 3 5), d to refresh docs, m for more, q to quit${ENTER_PROMPT_SUFFIX}"
         fi
       else
         if [[ -n "${PROJECT_CONTEXT_OVERSIZED:-}" ]]; then
-          echo "Enter numbers to run (e.g. 1 3 5), d to refresh docs, c to compact context, q to quit, or Enter to launch recommended wave:"
+          echo "Enter numbers to run (e.g. 1 3 5), d to refresh docs, c to compact context, q to quit${ENTER_PROMPT_SUFFIX}"
         else
-          echo "Enter numbers to run (e.g. 1 3 5), d to refresh docs, q to quit, or Enter to launch recommended wave:"
+          echo "Enter numbers to run (e.g. 1 3 5), d to refresh docs, q to quit${ENTER_PROMPT_SUFFIX}"
         fi
       fi
     else
       if (( BLOCKED_COUNT > 0 )) && [[ "$SHOW_BLOCKED_TASKS" != "true" ]]; then
         if [[ -n "${PROJECT_CONTEXT_OVERSIZED:-}" ]]; then
-          echo "Enter numbers to run (e.g. 1 3 5), m for more, c to compact context, q to quit, or Enter to launch recommended wave:"
+          echo "Enter numbers to run (e.g. 1 3 5), m for more, c to compact context, q to quit${ENTER_PROMPT_SUFFIX}"
         else
-          echo "Enter numbers to run (e.g. 1 3 5), m for more, q to quit, or Enter to launch recommended wave:"
+          echo "Enter numbers to run (e.g. 1 3 5), m for more, q to quit${ENTER_PROMPT_SUFFIX}"
         fi
       else
         if [[ -n "${PROJECT_CONTEXT_OVERSIZED:-}" ]]; then
-          echo "Enter numbers to run (e.g. 1 3 5), c to compact context, q to quit, or Enter to launch recommended wave:"
+          echo "Enter numbers to run (e.g. 1 3 5), c to compact context, q to quit${ENTER_PROMPT_SUFFIX}"
         else
-          echo "Enter numbers to run (e.g. 1 3 5), q to quit, or Enter to launch recommended wave:"
+          echo "Enter numbers to run (e.g. 1 3 5), q to quit${ENTER_PROMPT_SUFFIX}"
         fi
       fi
     fi
-    read -r SELECTED
+    SELECTED_EOF=false
+    read -r SELECTED || SELECTED_EOF=true
 
     if [[ "$SELECTED" =~ ^[cC](ompact)?$ ]] && [[ -n "${PROJECT_CONTEXT_OVERSIZED:-}" ]]; then
       echo ""
@@ -1952,7 +2014,7 @@ if [[ "$SKIP_BACKLOG_SELECTION" != "true" ]]; then
       echo ""
       if [[ -n "$DRIFT_SUBSYSTEMS" ]]; then
         log "info" "Refreshing subsystem docs..."
-        npx tsx tools/init-project-context.ts --refresh "$REPO_DIR"
+        npx tsx "$TOOLS_DIR/init-project-context.ts" --refresh "$REPO_DIR"
         echo ""
         log "info" "Refresh complete. Re-displaying task list..."
       else
@@ -1972,8 +2034,21 @@ if [[ "$SKIP_BACKLOG_SELECTION" != "true" ]]; then
       exit 0
     fi
 
+    if [[ -z "$SELECTED" && "${ENTER_ACTION:-none}" == "none" ]]; then
+      # taskSelection.enterAction=none: a bare Enter never launches work.
+      # Closed stdin (non-interactive restart) launches nothing and lets the
+      # monitor resume in-flight tasks; an interactive Enter re-prompts.
+      if [[ "$SELECTED_EOF" == "true" ]]; then
+        log "info" "No selection on stdin; launching no new tasks (taskSelection.enterAction=none)."
+        CANDIDATES=""
+        break
+      fi
+      log "info" "Enter does not launch tasks (taskSelection.enterAction=none). Type task numbers, or q to quit."
+      continue
+    fi
+
     if [[ -z "$SELECTED" ]]; then
-      if [[ "${ENTER_LAUNCHES_WAVE:-true}" == "true" ]]; then
+      if [[ "${ENTER_ACTION:-none}" == "wave" ]]; then
         WAVE_LAUNCH_USED=true
         startup_queue_plan=$(build_queue_plan_once "$BACKLOG" 2>/dev/null) || startup_queue_plan=""
         LAUNCH_QUEUE_PLAN="$startup_queue_plan"
@@ -2758,6 +2833,7 @@ if [[ ! -f "$STARTUP_RUNNER" ]]; then
   exit 1
 fi
 
+mill_sleep_preflight_warning
 log "status" "Creating tmux session..."
 create_tmux_session
 

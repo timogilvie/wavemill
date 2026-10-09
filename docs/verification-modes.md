@@ -297,7 +297,7 @@ To run verification manually:
 # Set up routing metadata
 export WAVEMILL_CODER_MODEL=claude-haiku-4-5-20251001
 export WAVEMILL_AVAILABLE_REVIEWERS=claude-opus-4-8,claude-sonnet-5
-export WAVEMILL_REPO_DIR=/path/to/repo
+export WAVEMILL_MILLED_REPO_DIR=/path/to/repo
 
 # Run verification
 npx tsx shared/lib/run-verification.ts

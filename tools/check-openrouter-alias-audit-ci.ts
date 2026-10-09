@@ -5,12 +5,15 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const defaultRepoRoot = join(dirname(__filename), '..');
 
+// install-paths: allow CI path-filter identifiers, not install asset paths.
 const REQUIRED_FILTER_PATHS = [
   'shared/fixtures/model-registry.v1.json',
   'shared/lib/disabled-models.ts',
-  'tools/audit-openrouter-aliases.ts',
-  'tools/check-openrouter-alias-audit-ci.ts',
-  'tools/check-openrouter-alias-audit-ci.test.ts',
+  'shared/lib/openrouter-alias-audit.ts', // install-paths: allow CI path filter
+  'shared/lib/openrouter-catalog.ts', // install-paths: allow CI path filter
+  'tools/audit-openrouter-aliases.ts', // install-paths: allow CI path filter
+  'tools/check-openrouter-alias-audit-ci.ts', // install-paths: allow CI path filter
+  'tools/check-openrouter-alias-audit-ci.test.ts', // install-paths: allow CI path filter
   '.github/workflows/ci.yml',
 ];
 

@@ -28,7 +28,9 @@ import {
   type LiveCodingCanaryStatus,
   type LiveSmokeEvidence,
   type NativeCertificationArtifact,
+  type ResolvedCertificationTarget,
 } from '../shared/lib/native-agent/certification/schema.ts';
+import { carryForwardLegacyCatalogHashCanary } from '../shared/lib/native-agent/certification/catalog-hash-migration.ts';
 import { runLiveCodingCanary } from '../shared/lib/native-agent/certification/live-coding-canary.ts';
 import { loadGlobalCertification } from '../shared/lib/native-agent/certification/loader.ts';
 import { isRevisionAwareArtifact } from '../shared/lib/native-agent/certification/schema.ts';
@@ -41,7 +43,11 @@ import {
   toArtifactScenario,
   type RunScenariosOptions,
 } from '../shared/lib/native-agent/certification/scenario-runner.ts';
-import { resolveCertificationSubject } from '../shared/lib/native-agent/certification/identity.ts';
+import {
+  isRollingProviderAlias,
+  resolveAliasTargetFromSmoke,
+  resolveCertificationSubject,
+} from '../shared/lib/native-agent/certification/identity.ts';
 import { writeGlobalCertification } from '../shared/lib/native-agent/certification/store.ts';
 import {
   refreshCanaryCohort,
@@ -233,8 +239,14 @@ export async function certifyNativeAgent(opts: CertifyOptions): Promise<CertifyR
   // coding (`patch` or `workflow`). It never runs during dry-run.
   const canaryApplicable = phaseSatisfies(opts.phase, 'patch');
 
+  let resolvedTarget: ResolvedCertificationTarget | undefined;
+  const subjectIsAlias = isRollingProviderAlias(resolvedSubject.subject.providerNativeId);
+
   if (liveCertifiable && !dryRun) {
-    if (opts.provider === 'openrouter' && modelEntry?.identity?.status === 'provisional') {
+    const needsLiveSmokeForAlias = opts.provider === 'openrouter' && subjectIsAlias;
+    const needsLiveSmokeForProvisional = opts.provider === 'openrouter'
+      && modelEntry?.identity?.status === 'provisional';
+    if (needsLiveSmokeForAlias || needsLiveSmokeForProvisional) {
       liveSmokeEvidence = await requireFreshOpenRouterSmokeEvidence({
         subject: resolvedSubject.subject,
         registryKey: registryModelId,
@@ -243,6 +255,24 @@ export async function certifyNativeAgent(opts: CertifyOptions): Promise<CertifyR
         now,
         runOpenRouterSmokeFn,
       });
+      if (needsLiveSmokeForAlias) {
+        resolvedTarget = resolveAliasTargetFromSmoke({
+          requestedWireId: resolvedSubject.subject.providerNativeId,
+          evidence: liveSmokeEvidence,
+          now,
+        });
+      }
+    }
+    // Fail closed: an alias certification without a pinned concrete target is
+    // not launchable. This mirrors the write-side validator (store.ts).
+    if (subjectIsAlias && !resolvedTarget) {
+      throw Object.assign(
+        new Error(
+          `OpenRouter alias ${resolvedSubject.subject.providerNativeId} cannot be certified without a pinned resolvedTarget. `
+          + `A fresh live smoke must return response.model as a concrete model id (not another "~" alias).`,
+        ),
+        { exitCode: 1 },
+      );
     }
 
     if (canaryApplicable) {
@@ -253,6 +283,7 @@ export async function certifyNativeAgent(opts: CertifyOptions): Promise<CertifyR
         suiteVersion,
         subject: resolvedSubject.subject,
         now,
+        ...(resolvedTarget ? { resolvedTarget } : {}),
       });
 
       if (opts.liveCodingCanary) {
@@ -314,6 +345,7 @@ export async function certifyNativeAgent(opts: CertifyOptions): Promise<CertifyR
       ...(knownLimitations.length > 0 ? { knownLimitations } : {}),
       ...(liveSmokeEvidence ? { liveSmokeEvidence } : {}),
       ...(liveCanary ? { liveCanary } : {}),
+      ...(resolvedTarget ? { resolvedTarget } : {}),
     };
     artifactPath = writeCertificationFn.length >= 2
       ? (writeCertificationFn as (repoDir: string, record: NativeCertificationArtifact) => string)(opts.repoDir, artifact)
@@ -362,8 +394,9 @@ function summarizeCanary(canary: LiveCodingCanaryResult, carriedForward: boolean
 /**
  * Load the previously published artifact's canary when — and only when — it
  * still grants coding eligibility for the current subject and suite (fresh,
- * live, identity-matching pass). Anything else returns undefined so stale or
- * mismatched evidence is dropped rather than carried forward.
+ * live, identity-matching pass). The one exception is the HOK-3159 catalog-hash
+ * scheme migration, where only the hash scheme moved. Anything else returns
+ * undefined so stale or mismatched evidence is dropped rather than carried forward.
  */
 function loadPreviousEligibleCanary(input: {
   loadPreviousArtifactFn: CertifyOptions['loadPreviousArtifactFn'];
@@ -372,6 +405,7 @@ function loadPreviousEligibleCanary(input: {
   suiteVersion: string;
   subject: CertificationSubject;
   now: () => Date;
+  resolvedTarget?: ResolvedCertificationTarget;
 }): LiveCodingCanaryResult | undefined {
   const load = input.loadPreviousArtifactFn ?? defaultLoadPreviousArtifact;
   let previous: NativeCertificationArtifact | undefined;
@@ -381,8 +415,32 @@ function loadPreviousEligibleCanary(input: {
     return undefined;
   }
   if (!previous) return undefined;
+  // HOK-3143: never carry forward from an invalidated artifact; the canary
+  // ran against the old target and the identity on disk is in a failure state.
+  if (previous.identityInvalidation) return undefined;
+  // HOK-3143: an alias retarget invalidates all prior canaries — the canary
+  // ran against the previous target even though the suite version matches.
+  if (
+    input.resolvedTarget
+    && previous.resolvedTarget
+    && previous.resolvedTarget.model !== input.resolvedTarget.model
+  ) {
+    return undefined;
+  }
   const eligibility = evaluateLiveCodingCanaryEligibility(previous, input.suiteVersion, input.now(), input.subject);
-  return eligibility.eligible ? eligibility.canary : undefined;
+  if (eligibility.eligible) return eligibility.canary;
+  // HOK-3159: a canary issued under the whole-file catalog hash survives the
+  // switch to per-model hashes when the model's own row is unchanged. It is
+  // re-stamped with the new hash and records `canaryCarriedForwardFrom`.
+  if (eligibility.reason === 'identity-mismatch') {
+    return carryForwardLegacyCatalogHashCanary({
+      previous,
+      subject: input.subject,
+      suiteVersion: input.suiteVersion,
+      now: input.now(),
+    });
+  }
+  return undefined;
 }
 
 function defaultLoadPreviousArtifact(

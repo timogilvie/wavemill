@@ -273,6 +273,8 @@ describe('model-registry', () => {
       'devstral-medium',
       'gemini-2.5-flash',
       'gemini-2.5-pro',
+      'gemini-3.1-pro-preview',
+      'gemini-3.1-pro-preview-customtools',
       'gemini-3.8-flash',
       'glm-5.2',
       'glm-5.3',
@@ -2704,7 +2706,7 @@ describe('canonical supported-model helpers', () => {
       routing: 58, planning: 82, coding: 83, review: 80, classify: 56,
     });
     assert.equal(model.defaultLadderEligible, true);
-    assert.equal(model.contextWindowTokens, 1_310_720);
+    assert.equal(model.contextWindowTokens, 1_048_576);
     assert.equal(model.pricing?.inputCostPerMTok, 0.15);
     assert.equal(model.pricing?.outputCostPerMTok, 0.5);
     // Live OpenRouter catalog raised cache-read to 0.05 per MTok; the registry
@@ -2793,6 +2795,8 @@ describe('canonical supported-model helpers', () => {
       'llama-4-maverick': 1_048_576,
       'qwen-3-coder': 262_144,
       'gemini-2.5-pro': 1_048_576,
+      'gemini-3.1-pro-preview': 1_048_576,
+      'gemini-3.1-pro-preview-customtools': 1_048_576,
       'gemini-2.5-flash': 1_048_576,
       'gemini-3.8-flash': 1_048_576,
       'glm-5.3': 1_310_720,

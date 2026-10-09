@@ -37,14 +37,17 @@ TESTS=(
   shared/lib/json-repair.test.ts
   shared/lib/operator-intervention.test.ts
   shared/lib/intervention-detector.test.ts
+  shared/lib/reliability-metrics.test.ts
   shared/lib/stage-result.test.ts
   shared/lib/task-progress.test.ts
   shared/lib/task-identity.test.ts
   shared/lib/linear-write-gate.test.ts
   shared/lib/session-adapters.test.ts
   shared/lib/executed-model-resolver.test.ts
+  shared/lib/native-agent/models.test.ts
   shared/lib/native-agent/provider.test.ts
   shared/lib/native-agent/provider-error-classifier.test.ts
+  shared/lib/native-agent/provider-identity.test.ts
   shared/lib/native-agent/providers.test.ts
   shared/lib/native-agent/messages.test.ts
   shared/lib/native-agent/compaction.test.ts
@@ -77,6 +80,8 @@ TESTS=(
   shared/lib/native-agent/command-transcript.test.ts
   shared/lib/native-agent/command-argv.test.ts
   shared/lib/native-agent/command-substrate.test.ts
+  shared/lib/native-agent/test-command-scope.test.ts
+  shared/lib/native-agent/coding-recovery-guard.test.ts
   shared/lib/native-agent/hok2081-gate.test.ts
   shared/lib/native-agent/session-checkpoint.test.ts
   shared/lib/native-agent/deterministic-replay.test.ts
@@ -167,6 +172,7 @@ TESTS=(
   shared/lib/reviewer-stage-adjudicator.test.ts
   tools/quarantine-legacy-reviewer-forfeits.test.ts
   shared/lib/arm-failure-taxonomy.test.ts
+  shared/lib/eval-skip-guard.test.ts
   shared/lib/arm-reliability.test.ts
   shared/lib/stale-task-branches.test.ts
   shared/lib/tend-controller.test.ts
@@ -179,6 +185,7 @@ TESTS=(
   shared/lib/cross-pr-revert-detector.test.ts
   shared/lib/git-branch-changes.test.ts
   shared/lib/git-base-resolver.test.ts
+  shared/lib/review-diff-base.test.ts
   shared/lib/llm-cli.test.ts
   shared/lib/headless-llm.test.ts
   shared/lib/router-log.test.ts
@@ -212,6 +219,8 @@ TESTS=(
   shared/lib/disabled-models.test.ts
   shared/lib/effective-models.test.ts
   shared/lib/model-agent-resolution.test.ts
+  shared/lib/stage-launchability.test.ts
+  shared/lib/coder-launch-reroute.test.ts
   shared/lib/model-resolution.test.ts
   shared/lib/model-resolution-display.test.ts
   shared/lib/mill-config-preflight.test.ts
@@ -242,6 +251,7 @@ TESTS=(
   shared/lib/harness-diff.test.ts
   shared/lib/quota-state.test.ts
   shared/lib/template-curly-checker.test.ts
+  shared/lib/test-tracked-write-checker.test.ts
   shared/lib/transient-marker.test.ts
   shared/lib/wavemill-incident-artifact-diagnostics.test.ts
   shared/lib/wavemill-incident-detector.test.ts
@@ -276,6 +286,10 @@ TESTS=(
   shared/lib/queue-inference-status.test.ts
   shared/lib/task-dependency-planner.test.ts
   shared/lib/plan-queue-utils.test.ts
+  shared/lib/touch-set-predictor.test.ts
+  shared/lib/conflict-scorer.test.ts
+  shared/lib/grounded-planner.test.ts
+  shared/lib/planner-backtest.test.ts
   shared/lib/scaffold-migrate-dryrun.test.ts
   shared/lib/deepseek-smoke.test.ts
   shared/lib/seam-artifacts.test.ts
@@ -291,6 +305,7 @@ TESTS=(
   shared/lib/openrouter-alias-audit.test.ts
   shared/lib/openrouter-doctor.test.ts
   shared/lib/native-agent/openrouter-credits-guard.test.ts
+  shared/lib/native-agent/openrouter-balance-filter.test.ts
   shared/lib/launchable-models.test.ts
   shared/lib/openrouter-zero-traffic.test.ts
   shared/lib/parity-report.test.ts
@@ -340,10 +355,12 @@ TESTS=(
   tests/ready-stage-transient-mergeability.test.ts
   tools/sync-config.test.ts
   shared/lib/native-agent/certification/identity.test.ts
+  shared/lib/native-agent/certification/identity-invalidation.test.ts
   shared/lib/native-agent/certification/schema.test.ts
   shared/lib/native-agent/certification/store.test.ts
   shared/lib/native-agent/certification/coverage.test.ts
   shared/lib/native-agent/certification/auto-remediate.test.ts
+  shared/lib/native-agent/certification/catalog-hash-migration.test.ts
   shared/lib/native-agent/certification/canary-cohort.test.ts
   shared/lib/native-agent/certification/validator.test.ts
   shared/lib/native-agent/certification/scenarios.test.ts
@@ -390,6 +407,7 @@ TESTS=(
   shared/lib/native-agent/launch-coding.test.ts
   shared/lib/native-agent/review.test.ts
   shared/lib/native-agent/session-stream.test.ts
+  shared/lib/native-agent/pi-runtime-version.test.ts
   shared/lib/native-agent/smoke.test.ts
   shared/lib/native-agent/tool-decision-schema.test.ts
   shared/lib/native-agent/tool-decision-projector.test.ts
@@ -444,7 +462,11 @@ TESTS=(
   shared/lib/task-packet-utils.test.ts
   shared/lib/tool-runner.test.ts
   shared/lib/worktree-dirty-status.test.ts
+  shared/lib/task-residue-archive.test.ts
   shared/lib/worktree-manager.test.ts
+  shared/lib/bounded-retry.test.ts
+  shared/lib/observer-auto-fix.test.ts
+  shared/lib/observer-alerts.test.ts
   tools/backfill-stage-scores.test.ts
   tools/certify-launch-priority-model.test.ts
   tools/check-native-agent-launch.test.ts
@@ -565,6 +587,16 @@ fi
 
 cd "$REPO_DIR"
 
+# HOK-3157: snapshot the tracked-file state before running tests. The guard
+# below compares a post-run snapshot and fails if any tracked file was left
+# modified. Untracked artifacts (CI timing JSON, etc.) are ignored. We drop
+# `exec` so node --test runs as a child and this script can run the check
+# after it exits.
+# shellcheck source=lib/tracked-tree-guard.sh
+source "$SCRIPT_DIR/lib/tracked-tree-guard.sh"
+TREE_BEFORE="$(tracked_tree_snapshot "$REPO_DIR")"
+
+status=0
 if [[ -n "$TIMING_OUT" ]]; then
   # Second reporter writes the bounded per-file timing JSON to $TIMING_OUT
   # while the spec reporter keeps human-readable output on stdout. The shard
@@ -578,11 +610,21 @@ if [[ -n "$TIMING_OUT" ]]; then
   # tend-scratch-prep child kept a stdio pipe alive; --test-force-exit hid
   # that at the cost of racing subprocess-spawning shards to exit, which
   # then stalled shard 3 for its full 20m — see HOK-3039.
-  exec node --test --test-timeout=300000 \
+  node --test --test-timeout=300000 \
     --test-reporter spec --test-reporter-destination stdout \
     --test-reporter "$REPO_DIR/tests/lib/unit-timing-reporter.mjs" \
     --test-reporter-destination "$TIMING_OUT" \
-    "${SELECTED[@]}"
+    "${SELECTED[@]}" || status=$?
+else
+  node --test --test-timeout=300000 "${SELECTED[@]}" || status=$?
 fi
 
-exec node --test --test-timeout=300000 "${SELECTED[@]}"
+# Only promote a passing status to failure on guard failure; preserve a
+# non-zero node --test exit code either way.
+if ! tracked_tree_check "$REPO_DIR" "$TREE_BEFORE" run-unit-tests.sh; then
+  if (( status == 0 )); then
+    status=1
+  fi
+fi
+
+exit "$status"

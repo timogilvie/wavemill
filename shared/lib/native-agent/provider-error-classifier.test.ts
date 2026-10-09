@@ -15,6 +15,9 @@ test('classifies observed provider error signatures', () => {
     ['openrouter/qwen is not a valid model ID', 'provider-config-error', false],
     ['404 No endpoints found that support tool use', 'provider-config-error', false],
     ['400 maximum context length is 131072 tokens', 'context-window-exceeded', false],
+    ['Response incomplete: content_filter', 'provider-response-incomplete', false],
+    ['Response incomplete: max_tool_calls', 'provider-response-incomplete', false],
+    ['Response incomplete without a provider reason', 'provider-unknown-error', true],
     ['Provider returned error: strange opaque failure', 'provider-unknown-error', true],
   ] as const;
 

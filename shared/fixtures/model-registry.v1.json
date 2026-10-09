@@ -1064,6 +1064,200 @@
             "model": "gemini-2.5-pro",
             "suiteVersion": "v2"
           },
+          "lifecycle": "blocked",
+          "compatibilityFlags": {
+            "thinkingFormat": "openrouter"
+          },
+          "launchEligible": false,
+          "routingEligible": false
+        },
+        "identity": {
+          "status": "verified",
+          "revision": 1,
+          "fingerprint": "c509f2f3f561948bf37c7c9e38ec8864324cf2584bee813d05a8d1addc520431",
+          "displayName": "gemini-2.5-pro",
+          "family": "gemini",
+          "evidencePolicy": "eligible",
+          "lineage": {
+            "successor": "gemini-3.1-pro-preview"
+          }
+        }
+      }
+    },
+    {
+      "id": "gemini-3.1-pro-preview",
+      "capabilities": {
+        "vendor": "google",
+        "class": "frontier",
+        "strengths": [
+          "planning",
+          "coding",
+          "code review",
+          "long context"
+        ],
+        "weaknesses": [
+          "preview model",
+          "OpenRouter dependency"
+        ],
+        "qualityScores": {
+          "routing": 50,
+          "planning": 70,
+          "coding": 70,
+          "review": 70,
+          "classify": 50
+        },
+        "pricing": {
+          "inputCostPerMTok": 2,
+          "outputCostPerMTok": 12,
+          "cacheReadCostPerMTok": 0.2,
+          "cacheWriteCostPerMTok": 0.375
+        },
+        "defaultLadderEligible": false,
+        "contextWindowTokens": 1048576,
+        "toolSupport": "full",
+        "multimodal": {
+          "text": true,
+          "image": true,
+          "audio": true,
+          "video": true
+        },
+        "latencyTier": "standard",
+        "reasoningTier": "advanced",
+        "costPerMillionInputTokensUsd": 2,
+        "costPerMillionOutputTokensUsd": 12,
+        "agent": "native-openrouter",
+        "nativeCapability": {
+          "nativeProvider": "openrouter",
+          "piTransportKind": "openai-completions",
+          "readOnlyNative": "certified",
+          "compatFlags": {
+            "thinkingFormat": "openrouter"
+          },
+          "certification": {
+            "maxCertifiedPhase": "workflow",
+            "certifiedAt": "2026-10-01T19:09:55.912Z",
+            "certificationSuiteVersion": "v3"
+          }
+        },
+        "supportedModel": {
+          "wavemillAlias": "gemini-3.1-pro-preview",
+          "providerNativeId": "google/gemini-3.1-pro-preview",
+          "provider": "openrouter",
+          "transport": "openai-completions",
+          "stages": [
+            "planning",
+            "coding",
+            "review"
+          ],
+          "requiredCertificationPhaseByStage": {
+            "planning": "workflow",
+            "coding": "patch",
+            "review": "read-only"
+          },
+          "certificationSuiteVersion": "v3",
+          "certificationFreshnessDays": 60,
+          "canonicalArtifactIdentity": {
+            "provider": "google",
+            "model": "gemini-3.1-pro-preview",
+            "suiteVersion": "v3"
+          },
+          "lifecycle": "supported",
+          "compatibilityFlags": {
+            "thinkingFormat": "openrouter"
+          },
+          "launchEligible": true,
+          "routingEligible": true
+        },
+        "identity": {
+          "status": "verified",
+          "revision": 1,
+          "fingerprint": "f77d30fe1ede221917fe00384a9d688477e113f7ae3a9d0ad581e4ce1af80df9",
+          "displayName": "gemini-3.1-pro-preview",
+          "family": "gemini",
+          "evidencePolicy": "eligible",
+          "lineage": {
+            "predecessors": ["gemini-2.5-pro"]
+          }
+        }
+      }
+    },
+    {
+      "id": "gemini-3.1-pro-preview-customtools",
+      "capabilities": {
+        "vendor": "google",
+        "class": "frontier",
+        "strengths": [
+          "coding",
+          "tool selection",
+          "long context"
+        ],
+        "weaknesses": [
+          "preview model",
+          "OpenRouter dependency",
+          "variant tuned for custom tools"
+        ],
+        "qualityScores": {
+          "routing": 68,
+          "planning": 90,
+          "coding": 88,
+          "review": 89,
+          "classify": 66
+        },
+        "pricing": {
+          "inputCostPerMTok": 2,
+          "outputCostPerMTok": 12,
+          "cacheReadCostPerMTok": 0.2,
+          "cacheWriteCostPerMTok": 0.375
+        },
+        "defaultLadderEligible": false,
+        "contextWindowTokens": 1048576,
+        "toolSupport": "full",
+        "multimodal": {
+          "text": true,
+          "image": true,
+          "audio": true,
+          "video": true
+        },
+        "latencyTier": "standard",
+        "reasoningTier": "advanced",
+        "costPerMillionInputTokensUsd": 2,
+        "costPerMillionOutputTokensUsd": 12,
+        "agent": "native-openrouter",
+        "nativeCapability": {
+          "nativeProvider": "openrouter",
+          "piTransportKind": "openai-completions",
+          "readOnlyNative": "certified",
+          "compatFlags": {
+            "thinkingFormat": "openrouter"
+          },
+          "certification": {
+            "maxCertifiedPhase": "workflow",
+            "certifiedAt": "2026-10-01T19:10:37.261Z",
+            "certificationSuiteVersion": "v3"
+          }
+        },
+        "supportedModel": {
+          "wavemillAlias": "gemini-3.1-pro-preview-customtools",
+          "providerNativeId": "google/gemini-3.1-pro-preview-customtools",
+          "provider": "openrouter",
+          "transport": "openai-completions",
+          "stages": [
+            "planning",
+            "coding",
+            "review"
+          ],
+          "requiredCertificationPhaseByStage": {
+            "planning": "workflow",
+            "coding": "patch",
+            "review": "read-only"
+          },
+          "certificationSuiteVersion": "v3",
+          "certificationFreshnessDays": 60,
+          "canonicalArtifactIdentity": {
+            "provider": "google",
+            "model": "gemini-3.1-pro-preview-customtools",
+            "suiteVersion": "v3"
+          },
           "lifecycle": "supported",
           "compatibilityFlags": {
             "thinkingFormat": "openrouter"
@@ -1260,8 +1454,8 @@
           "classify": 54
         },
         "pricing": {
-          "inputCostPerMTok": 0.19999999999999998,
-          "outputCostPerMTok": 0.696
+          "inputCostPerMTok": 0.27,
+          "outputCostPerMTok": 0.85
         },
         "defaultLadderEligible": false,
         "contextWindowTokens": 1048576,
@@ -1272,8 +1466,8 @@
         },
         "latencyTier": "standard",
         "reasoningTier": "standard",
-        "costPerMillionInputTokensUsd": 0.19999999999999998,
-        "costPerMillionOutputTokensUsd": 0.696,
+        "costPerMillionInputTokensUsd": 0.27,
+        "costPerMillionOutputTokensUsd": 0.85,
         "agent": "native-openrouter",
         "nativeCapability": {
           "nativeProvider": "openrouter",
@@ -1662,8 +1856,8 @@
           "classify": 58
         },
         "pricing": {
-          "inputCostPerMTok": 0.3,
-          "outputCostPerMTok": 1,
+          "inputCostPerMTok": 0.975,
+          "outputCostPerMTok": 4.875,
           "cacheReadCostPerMTok": 0.09999999999999999
         },
         "defaultLadderEligible": false,
@@ -1675,8 +1869,8 @@
         },
         "latencyTier": "standard",
         "reasoningTier": "standard",
-        "costPerMillionInputTokensUsd": 0.3,
-        "costPerMillionOutputTokensUsd": 1,
+        "costPerMillionInputTokensUsd": 0.975,
+        "costPerMillionOutputTokensUsd": 4.875,
         "agent": "native-openrouter",
         "nativeCapability": {
           "nativeProvider": "openrouter",
@@ -1909,7 +2103,7 @@
         "pricing": {
           "inputCostPerMTok": 1.45,
           "outputCostPerMTok": 4.55,
-          "cacheReadCostPerMTok": 0.1932
+          "cacheReadCostPerMTok": 0.26
         },
         "defaultLadderEligible": false,
         "contextWindowTokens": 1048576,
@@ -2071,9 +2265,9 @@
           "classify": 58
         },
         "pricing": {
-          "inputCostPerMTok": 0.71,
-          "outputCostPerMTok": 3.5,
-          "cacheReadCostPerMTok": 0.18
+          "inputCostPerMTok": 0.95,
+          "outputCostPerMTok": 4,
+          "cacheReadCostPerMTok": 0.19
         },
         "defaultLadderEligible": false,
         "contextWindowTokens": 262144,
@@ -2084,8 +2278,8 @@
         },
         "latencyTier": "standard",
         "reasoningTier": "advanced",
-        "costPerMillionInputTokensUsd": 0.71,
-        "costPerMillionOutputTokensUsd": 3.5,
+        "costPerMillionInputTokensUsd": 0.95,
+        "costPerMillionOutputTokensUsd": 4,
         "agent": "native-openrouter",
         "nativeCapability": {
           "nativeProvider": "openrouter",
@@ -2237,7 +2431,7 @@
         "pricing": {
           "inputCostPerMTok": 3,
           "outputCostPerMTok": 15,
-          "cacheReadCostPerMTok": 0.31
+          "cacheReadCostPerMTok": 0.71
         },
         "defaultLadderEligible": false,
         "contextWindowTokens": 1048576,
@@ -2756,7 +2950,7 @@
           "cacheWriteCostPerMTok": 0
         },
         "defaultLadderEligible": true,
-        "contextWindowTokens": 1310720,
+        "contextWindowTokens": 1048576,
         "toolSupport": "basic",
         "multimodal": {
           "text": true,
@@ -3132,6 +3326,30 @@
     {
       "wavemillAlias": "gemini-2.5-pro",
       "openrouterId": "google/gemini-2.5-pro",
+      "family": "gemini",
+      "status": "deprecated",
+      "priorityTier": 1,
+      "roleEligibility": [
+        "planning",
+        "coding",
+        "review"
+      ]
+    },
+    {
+      "wavemillAlias": "gemini-3.1-pro-preview",
+      "openrouterId": "google/gemini-3.1-pro-preview",
+      "family": "gemini",
+      "status": "active",
+      "priorityTier": 1,
+      "roleEligibility": [
+        "planning",
+        "coding",
+        "review"
+      ]
+    },
+    {
+      "wavemillAlias": "gemini-3.1-pro-preview-customtools",
+      "openrouterId": "google/gemini-3.1-pro-preview-customtools",
       "family": "gemini",
       "status": "active",
       "priorityTier": 1,

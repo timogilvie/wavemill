@@ -52,6 +52,7 @@ for fn in \
   review_result_native_timeout_identity \
   review_recovery_timeout_state_path \
   review_recovery_write_timeout_state \
+  review_recovery_native_timeout_repeat \
   review_recovery_clear_ready_handoff_state \
   review_recovery_publish_running \
   native_terminal_failure_kind \
@@ -249,6 +250,33 @@ if [[ "$identity" == *"9000"* && "$identity" == *"kimi-k3"* ]]; then
   pass "timeout retry identity includes input size and reviewer"
 else
   fail "timeout retry identity omits input size or reviewer"
+fi
+
+# HOK-3169: a malformed native-review response is also an infra failure that
+# must flow through the review-infra-recovery bucket, parallel to
+# native-review-timeout above. The artifact is the no-evidence shape that the
+# runtime now emits (verdict:error + reviewToolError + failureCategory).
+setup_case "malformed-response-classification"
+cat > "$FEATURE_DIR/.review-result.json" <<'EOF'
+{"stage":"review","status":"failed","agent":"native","model":"gemini-3.1-pro-preview","artifacts":{"type":"review","failureCategory":"native-review-malformed-response","verdict":"error","reviewToolError":"Native review returned malformed response: expected JSON","codeReviewFindings":[]}}
+EOF
+if review_result_infra_failure "$FEATURE_DIR"; then
+  pass "native-review-malformed-response is an infra review failure (HOK-3169)"
+else
+  fail "native-review-malformed-response is not an infra review failure"
+fi
+
+# HOK-3169: an empty review input diff is a typed infra failure, routed
+# through the same bucket as the other review-infra categories so the model
+# is never invoked on a zero-byte diff.
+setup_case "scope-empty-classification"
+cat > "$FEATURE_DIR/.review-result.json" <<'EOF'
+{"stage":"review","status":"failed","agent":"native","model":"gemini-3.1-pro-preview","artifacts":{"type":"review","failureCategory":"review-scope-empty","verdict":"error","reviewToolError":"Native review input diff is empty; refusing to invoke the model.","codeReviewFindings":[]}}
+EOF
+if review_result_infra_failure "$FEATURE_DIR"; then
+  pass "review-scope-empty is an infra review failure (HOK-3169)"
+else
+  fail "review-scope-empty is not an infra review failure"
 fi
 
 setup_case "timeout-exhaustion"

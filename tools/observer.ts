@@ -5,15 +5,40 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { mutateJsonState } from '../shared/lib/state-mutex.ts';
+import { mutateJsonState, mutateJsonStateSync } from '../shared/lib/state-mutex.ts';
 import {
   getIncidentConfig,
   getMillConfig,
+  getObserverAlertsConfig,
+  getObserverAutoFixConfig,
   getObserverLinearConfig,
   loadWavemillConfig,
   resolveObserverLinearModeSource,
+  resolveSessionCapabilities,
+  type ObserverAlertsConfig,
+  type ObserverAutoFixConfig,
   type ObserverLinearConfig,
+  type SessionCapabilities,
 } from '../shared/lib/config.ts';
+import { measureBranchBaseDistance, updateBranchWithBase } from '../shared/lib/promotion-controller.ts';
+import {
+  appendAutoFixActionRecords,
+  runObserverAutoFixes,
+  type AutoFixCandidateFinding,
+  type AutoFixDeps,
+  type AutoFixRepoContext,
+  type AutoFixTask,
+} from '../shared/lib/observer-auto-fix.ts';
+import {
+  detectDesktopPlatform,
+  runObserverAlerts,
+  sendDesktopNotification,
+  sendPushNotification,
+  type AlertFinding,
+  type AlertJournal,
+} from '../shared/lib/observer-alerts.ts';
+import { abortTaskInState } from '../shared/lib/task-abort.ts';
+import { getResultFilePath, type ReadyArtifacts, type StageResult } from '../shared/lib/stage-result.ts';
 import { detectIncidentsForRepo, detectIncidentsForTask, type TendCandidateDiagnostic } from '../shared/lib/wavemill-incident-detector.ts';
 import { IncidentStore } from '../shared/lib/wavemill-incident-store.ts';
 import { createIncidentDraft, type IncidentRecord, type IncidentRootCauseClass } from '../shared/lib/wavemill-incident-model.ts';
@@ -62,6 +87,19 @@ const RESIDUE_COMMIT_SUBJECT_LIMIT = 5;
 // task has demonstrably stalled; below this age it is normal in-flight coding.
 const STALLED_ACTIVE_UNPUBLISHED_MINUTES = 120;
 const PR_CREATE_FAILED_PATTERN = /pull request create failed:?\s*(.*)/i;
+
+// HOK-3096: state-based detector thresholds. These read git/filesystem/config
+// state directly rather than mill log lines, so they catch stalls that never
+// produce an error/warn log message.
+/** A merge-candidate older than this with no active merge consumer is stuck. */
+const CANDIDATE_STUCK_MINUTES = 15;
+/** Promotions to merge-candidate on the same head within the window below this many times is churn. */
+const CANDIDATE_CHURN_THRESHOLD = 3;
+const CANDIDATE_CHURN_WINDOW_MINUTES = 30;
+/** An exhausted retry sentinel quiet for this long with no newer commit/progress is abandoned. */
+const EXHAUSTED_RETRY_QUIET_MINUTES = 10;
+/** An active branch more than this many commits behind its base has drifted. */
+const BEHIND_BASE_THRESHOLD_COMMITS = 5;
 
 // HOK-3045: closed catalog of interactive agent lifecycle prompts that block
 // a task pane. HOK-3101 moved the catalog into shared/lib/task-progress.ts so
@@ -133,6 +171,8 @@ interface TaskState {
   agent?: string;
   challengeRole?: string;
   challengePairId?: string;
+  challengeAborted?: string;
+  evalCompleted?: boolean;
   executionOwner?: string;
   paneState?: string;
   lifecycle?: TaskLifecycleState | Record<string, unknown>;
@@ -188,6 +228,25 @@ interface ModelDowngradeLogEntry {
   stage: string;
   model: string;
   fallback: string;
+}
+
+/**
+ * A typed coding launch refusal (HOK-3142). `action` is what the monitor did:
+ * `rerouted` (coder substituted), `needs-user` (terminalized with the certify
+ * command), `retry` (transient resolver failure), or `retry-loop` for the
+ * pre-HOK-3142 `Coding launch blocked: [agent-resolution] …` form, which the
+ * monitor relaunched on every tick.
+ */
+interface LaunchRefusalLogEntry {
+  line: string;
+  issue: string;
+  model: string;
+  provider: string;
+  reason: string;
+  certification: string;
+  action: string;
+  substitute?: string;
+  certify?: string;
 }
 
 interface RepoSnapshot {
@@ -611,6 +670,8 @@ function readWorkflowTasks(stateFile: string): TaskState[] {
         agent: stringValue(task.agent),
         challengeRole: stringValue(task.challengeRole),
         challengePairId: stringValue(task.challengePairId),
+        challengeAborted: stringValue(task.challengeAborted),
+        evalCompleted: task.evalCompleted === true,
         executionOwner: stringValue(task.executionOwner),
         paneState: stringValue(task.paneState),
         lifecycle: task.lifecycle && typeof task.lifecycle === 'object' && !Array.isArray(task.lifecycle)
@@ -1110,7 +1171,30 @@ function detectParkedArmIncidents(
         if (!marker || marker.ageMs / 60000 <= options.staleMinutes) continue;
 
         const uncommitted = stage.phase === 'coding' ? readCodingUncommittedOutput(featureDir) : null;
-        if (uncommitted) {
+        const launchRefusal = stage.phase === 'planning' ? readCodingLaunchRefusalSentinel(featureDir) : null;
+        if (launchRefusal) {
+          // HOK-3142: the monitor terminalized a refused coding launch; the
+          // recorded reason names the model and the certify command.
+          incidents.push(createIncidentDraft({
+            taskId: task.issue,
+            session: repo.session,
+            category: 'stale_orphaned_state',
+            severity: 'high',
+            confidence: 'high',
+            lifecycle: 'observed',
+            rootCauseClass: 'coding_launch_refused',
+            summary: `${task.issue} is parked at ${stage.markerName}: ${truncate(launchRefusal.reason, 240)}`,
+            operatorAction: launchRefusal.reason,
+            evidence: [{
+              type: 'workflow_state',
+              source: launchRefusal.path,
+              timestamp,
+              redactedData: `bucket=${launchRefusal.bucket} marker=${stage.markerName} markerAgeMinutes=${Math.round(marker.ageMs / 60000)}`,
+              key: `coding-launch-refused:${task.issue}:${launchRefusal.bucket}`,
+            }],
+            metadata: { markerPath, markerMtime: marker.mtimeIso, stage: stage.phase, bucket: launchRefusal.bucket },
+          }));
+        } else if (uncommitted) {
           // The mill parked this arm on purpose (dirty tree); the missing piece
           // is an operator commit, not a monitor repair.
           incidents.push(createIncidentDraft({
@@ -1604,6 +1688,20 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
       findings.push(configIntegrityFinding(issue, repo.session, repo.repoDir));
     }
 
+    // HOK-3096: state-based detectors. Each is independently best-effort —
+    // one throwing (e.g. a git/gh call blowing up in an unexpected way) must
+    // never drop findings from the other detectors or the rest of the pass.
+    try {
+      const sessionCapabilities = resolveSessionCapabilities(repo.repoDir);
+      findings.push(...detectStuckMergeCandidates(repo, now, sessionCapabilities));
+    } catch { /* best-effort: advisory detector, never blocks the pass */ }
+    try {
+      findings.push(...detectExhaustedRetries(repo, now, progressLookup));
+    } catch { /* best-effort: advisory detector, never blocks the pass */ }
+    try {
+      findings.push(...detectBranchBehindBase(repo, now));
+    } catch { /* best-effort: advisory detector, never blocks the pass */ }
+
     const rejectedEvalCount = countRejectedEvalRecords(repo.repoDir);
     if (rejectedEvalCount > 0) {
       const [newestRejectedEval] = listRejectedEvalRecords(repo.repoDir, { limit: 1 });
@@ -2072,6 +2170,21 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
       });
     }
 
+    const launchRefusalLines = new Set<string>();
+    const launchRefusalGroups = new Map<string, LaunchRefusalLogEntry[]>();
+    for (const line of logLines) {
+      const entry = parseLaunchRefusalLine(line);
+      if (!entry) continue;
+      const key = `${entry.issue}\0${entry.model}`;
+      const group = launchRefusalGroups.get(key) ?? [];
+      group.push(entry);
+      launchRefusalGroups.set(key, group);
+    }
+    for (const group of launchRefusalGroups.values()) {
+      for (const entry of group) launchRefusalLines.add(entry.line);
+      findings.push(launchRefusalFinding(repo, group));
+    }
+
     const modelDowngradeGroups = new Map<string, ModelDowngradeLogEntry[]>();
     for (const line of logLines) {
       const entry = parseModelDowngradeLine(line);
@@ -2165,6 +2278,7 @@ export function buildFindings(snapshot: Omit<ObserverSnapshot, 'findings'>, opti
       const parsed = parseMillLogLine(line);
       if (!parsed) continue;
       if (prCreateFailedLines.has(line)) continue;
+      if (launchRefusalLines.has(line)) continue;
       if (isAgentBoxOutputMessage(parsed.message)) continue;
       if (parsed.level !== 'error' && parsed.level !== 'warn') continue;
       if (parsed.level === 'warn') {
@@ -2382,6 +2496,119 @@ function parseReadyRecheckLine(line: string): ReadyRecheckLogEntry | null {
     line,
     issue: match[1],
     pr: match[2],
+  };
+}
+
+const CODING_LAUNCH_REFUSAL_BUCKETS = ['coding-launch-refused', 'coding-launch-resolver'] as const;
+
+/** First terminalized coding-launch refusal sentinel in a feature dir (HOK-3142). */
+function readCodingLaunchRefusalSentinel(featureDir: string): { bucket: string; path: string; reason: string } | null {
+  for (const bucket of CODING_LAUNCH_REFUSAL_BUCKETS) {
+    const path = join(featureDir, `.retry-${bucket}-exhausted`);
+    if (!existsSync(path)) continue;
+    try {
+      const reason = readFileSync(path, 'utf-8').trim();
+      return { bucket, path, reason: reason || `coding launch refused (${bucket})` };
+    } catch {
+      return { bucket, path, reason: `coding launch refused (${bucket})` };
+    }
+  }
+  return null;
+}
+
+const LAUNCH_REFUSAL_TAG = '[launch-refusal]';
+const LEGACY_LAUNCH_REFUSAL_RE = /(\S+)\s+\u2192\s+Coding launch blocked:\s+\[agent-resolution\]/;
+
+function launchRefusalField(message: string, key: string): string | undefined {
+  if (key === 'certify') {
+    const quoted = message.match(/\bcertify="([^"]*)"/);
+    const value = quoted?.[1]?.trim();
+    return value && value !== 'unavailable' ? value : undefined;
+  }
+  const match = message.match(new RegExp(`(?:^|\\s)${key}=(\\S+)`));
+  return match?.[1];
+}
+
+/**
+ * Parse a coding launch refusal from the mill log: the structured
+ * `[launch-refusal] issue=… model=… reason=… certification=… action=… certify="…"`
+ * line (HOK-3142, logged at warn), or the legacy
+ * `<issue> → Coding launch blocked: [agent-resolution] model=… certify="…"`
+ * line, which pre-HOK-3142 monitors wrote at `[info]` on every retry tick.
+ */
+export function parseLaunchRefusalLine(line: string): LaunchRefusalLogEntry | null {
+  const parsed = parseMillLogLine(line);
+  const message = parsed?.message ?? line;
+  let issue: string | undefined;
+  let action: string | undefined;
+  if (message.includes(LAUNCH_REFUSAL_TAG)) {
+    issue = launchRefusalField(message, 'issue');
+    action = launchRefusalField(message, 'action');
+  } else {
+    const legacy = message.match(LEGACY_LAUNCH_REFUSAL_RE);
+    if (!legacy) return null;
+    issue = legacy[1];
+    action = 'retry-loop';
+  }
+  const model = launchRefusalField(message, 'model');
+  if (!issue || !model) return null;
+  const substitute = launchRefusalField(message, 'substitute');
+  const certify = launchRefusalField(message, 'certify');
+  return {
+    line,
+    issue,
+    model,
+    provider: launchRefusalField(message, 'provider') ?? 'unknown',
+    reason: launchRefusalField(message, 'reason') ?? 'unknown',
+    certification: launchRefusalField(message, 'certification') ?? 'unknown',
+    action: action ?? 'unknown',
+    ...(substitute ? { substitute } : {}),
+    ...(certify ? { certify } : {}),
+  };
+}
+
+function launchRefusalFinding(repo: RepoSnapshot, group: LaunchRefusalLogEntry[]): Finding {
+  const latest = group[group.length - 1];
+  const certify = [...group].reverse().find((entry) => entry.certify)?.certify;
+  const terminal = group.some((entry) => entry.action === 'needs-user');
+  const looping = group.some((entry) => entry.action === 'retry-loop' || entry.action === 'retry');
+  const allRerouted = group.every((entry) => entry.action === 'rerouted');
+  const severity: Finding['severity'] = terminal
+    ? 'urgent'
+    : allRerouted
+      ? 'low'
+      : looping && group.length >= MODEL_DOWNGRADE_THRESHOLD ? 'urgent' : 'high';
+  const cause = `${latest.reason}${latest.certification !== 'unknown' ? `:${latest.certification}` : ''}`;
+  const title = allRerouted
+    ? `${latest.issue} coder ${latest.model} was refused at launch (${cause}) and re-routed to ${latest.substitute ?? 'a substitute'}`
+    : `${latest.issue} coding launch refused: ${latest.model} is not launchable for coding (${cause})`;
+  const recommendation = allRerouted
+    ? `Informational: the router guard or launch-refusal reroute substituted the coder. Certify ${latest.model} for coding if it should stay routable${certify ? `: ${certify}` : '.'}`
+    : certify
+      ? `Run: ${certify}. Then clear the refusal sentinel (rm <feature_dir>/.retry-coding-launch-refused-*) so the task relaunches coding. A refusal for this reason never clears on retry.`
+      : `The launch gate refuses ${latest.model} for coding (${cause}) and no certify command was recorded. Re-route the coder or fix the model's registry entry, then clear the refusal sentinel.`;
+  return {
+    id: `launch-refused-${repo.session}-${latest.issue}-${latest.model.replace(/[^A-Za-z0-9._-]/g, '_')}`,
+    severity,
+    category: 'stuck',
+    confidence: 'high',
+    session: repo.session,
+    repoDir: repo.repoDir,
+    issue: latest.issue,
+    title,
+    evidence: [
+      `occurrences=${group.length}`,
+      `model=${latest.model}`,
+      `provider=${latest.provider}`,
+      `reason=${latest.reason}`,
+      `certification=${latest.certification}`,
+      `action=${latest.action}`,
+      ...(latest.substitute ? [`substitute=${latest.substitute}`] : []),
+      `certify=${certify ?? 'unavailable'}`,
+      ...group.slice(-4).map((entry) => entry.line),
+    ],
+    recommendation,
+    occurrenceCount: group.length,
   };
 }
 
@@ -2742,6 +2969,414 @@ function taskPrEvidence(repoDir: string, task: TaskState): string {
   } catch {
     return `pr=#${task.pr} state=unknown`;
   }
+}
+
+// ---------------------------------------------------------------------------
+// HOK-3096: state-based detectors — stuck merge candidates, abandoned
+// exhausted retries, and branches that have drifted far behind their base.
+// Every input here is git/filesystem/config state, never a log line, so
+// these catch stalls the log-based detectors above cannot see.
+// ---------------------------------------------------------------------------
+
+function gitRevParse(repoDir: string, ref: string): string | undefined {
+  const result = run('git', ['-C', repoDir, 'rev-parse', ref], 8_000);
+  return result.ok ? result.stdout.trim() : undefined;
+}
+
+/**
+ * Resolve a task's ready-stage state directory, mirroring `ready_state_dir`
+ * in `wavemill-monitor.sh`: prefer an existing `features/<slug>` or
+ * `bugs/<slug>` directory under the task's worktree, then under the repo
+ * checkout (tests often run with `worktree === repoDir`), falling back to
+ * `features/<slug>` under the worktree when neither exists yet.
+ */
+function resolveTaskStateDir(repoDir: string, task: TaskState): string | undefined {
+  if (!task.slug) return undefined;
+  const bases = [task.worktree, repoDir].filter((base): base is string => Boolean(base));
+  for (const base of bases) {
+    for (const kind of ['features', 'bugs'] as const) {
+      const candidate = join(base, kind, task.slug);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  const fallbackBase = task.worktree ?? repoDir;
+  return join(fallbackBase, 'features', task.slug);
+}
+
+/** Best-effort sync read of `.ready-result.json`'s artifacts. Never throws. */
+function readReadyArtifacts(stateDir: string): { artifacts: ReadyArtifacts; mtimeMs: number } | undefined {
+  const resultPath = getResultFilePath(stateDir, 'ready');
+  try {
+    const stat = statSync(resultPath);
+    const parsed = JSON.parse(readFileSync(resultPath, 'utf8')) as Partial<StageResult> | null;
+    if (!parsed || typeof parsed !== 'object' || parsed.stage !== 'ready') return undefined;
+    const artifacts = parsed.artifacts as ReadyArtifacts | undefined;
+    if (!artifacts || typeof artifacts !== 'object' || artifacts.type !== 'ready') return undefined;
+    return { artifacts, mtimeMs: stat.mtimeMs };
+  } catch {
+    return undefined;
+  }
+}
+
+interface CandidateChurnEntry {
+  at: string;
+}
+
+interface CandidateChurnRecord {
+  headSha: string;
+  entries: CandidateChurnEntry[];
+}
+
+type CandidateChurnJournal = Record<string, CandidateChurnRecord>;
+
+function candidateChurnJournalPath(repoDir: string): string {
+  return join(repoDir, '.wavemill', 'observer-candidate-churn.json');
+}
+
+/**
+ * Record a merge-candidate promotion event and return the number of distinct
+ * promotions recorded for `issue` on `headSha` within the churn window.
+ *
+ * `demote_merge_candidate` nulls out `candidatePromotedAt` in
+ * `.ready-result.json`, so a fresh non-null value appearing while
+ * `queueState` is `merge-candidate` means the lane promoted this issue again
+ * — i.e. it was demoted and re-promoted since the last distinct value was
+ * seen. Counting distinct `candidatePromotedAt` values on the same head is
+ * therefore a direct measure of promote/demote churn (REQ-F2).
+ *
+ * Entries older than the churn window, and the whole record when the head
+ * SHA changed (new work superseded the churn), are pruned. The journal is
+ * observer-private bookkeeping: a write failure is swallowed and simply
+ * costs this cycle's churn count, never the rest of the pass (D4).
+ */
+function recordCandidateChurnPromotion(
+  repoDir: string,
+  issue: string,
+  headSha: string,
+  promotedAt: string,
+  now: number,
+): number {
+  try {
+    const path = candidateChurnJournalPath(repoDir);
+    const cutoffMs = now - CANDIDATE_CHURN_WINDOW_MINUTES * 60_000;
+    const next = mutateJsonStateSync<CandidateChurnJournal>(
+      path,
+      (current) => {
+        const journal: CandidateChurnJournal = current && typeof current === 'object' ? current : {};
+        const existing = journal[issue];
+        const record: CandidateChurnRecord = existing && existing.headSha === headSha
+          ? { headSha, entries: [...existing.entries] }
+          : { headSha, entries: [] };
+        if (!record.entries.some((entry) => entry.at === promotedAt)) {
+          record.entries.push({ at: promotedAt });
+        }
+        record.entries = record.entries.filter((entry) => {
+          const ms = Date.parse(entry.at);
+          return Number.isFinite(ms) && ms >= cutoffMs;
+        });
+        return { ...journal, [issue]: record };
+      },
+      { createIfMissing: true, initial: {} },
+    );
+    return next[issue]?.entries.length ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Detector 1 (REQ-F1, REQ-F2): a task sitting in `queueState:
+ * 'merge-candidate'` with no active merge consumer, or one that keeps
+ * churning promote/demote on the same head without ever landing.
+ */
+export function detectStuckMergeCandidates(
+  repo: RepoSnapshot,
+  now: number,
+  caps: SessionCapabilities,
+): Finding[] {
+  const findings: Finding[] = [];
+  for (const task of repo.tasks) {
+    if (taskWorkflowIsTerminal(task)) continue;
+    const stateDir = resolveTaskStateDir(repo.repoDir, task);
+    if (!stateDir) continue;
+    const ready = readReadyArtifacts(stateDir);
+    if (!ready || ready.artifacts.queueState !== 'merge-candidate') continue;
+    const artifacts = ready.artifacts;
+    const headSha = artifacts.readyHeadSha ?? artifacts.launchHead ?? 'unknown';
+
+    if (artifacts.candidatePromotedAt) {
+      const promotions = recordCandidateChurnPromotion(repo.repoDir, task.issue, headSha, artifacts.candidatePromotedAt, now);
+      if (promotions >= CANDIDATE_CHURN_THRESHOLD) {
+        findings.push({
+          id: `merge-candidate-churn-${repo.session}-${task.issue}`,
+          severity: 'high',
+          category: 'stuck',
+          confidence: 'high',
+          session: repo.session,
+          repoDir: repo.repoDir,
+          issue: task.issue,
+          title: `${task.issue} merge candidate has been promoted ${promotions} times on the same head in ${CANDIDATE_CHURN_WINDOW_MINUTES} minutes`,
+          evidence: [
+            `promotions=${promotions}`,
+            `windowMinutes=${CANDIDATE_CHURN_WINDOW_MINUTES}`,
+            `headSha=${headSha}`,
+            `candidatePromotedAt=${artifacts.candidatePromotedAt}`,
+            `lastSkipReason=${artifacts.candidateSkipReason ?? 'unknown'}`,
+            taskPrEvidence(repo.repoDir, task),
+          ],
+          recommendation: 'The merge lane keeps promoting and demoting this candidate on the same head without it ever landing. Inspect why it keeps getting demoted (flaky CI, base churn, a stuck health check) instead of letting the lane spin indefinitely.',
+        });
+      }
+    }
+
+    const candidateSinceIso = artifacts.candidateLastProgressAt ?? artifacts.candidatePromotedAt;
+    const candidateSinceMs = candidateSinceIso ? Date.parse(candidateSinceIso) : NaN;
+    const ageMinutes = Number.isFinite(candidateSinceMs)
+      ? (now - candidateSinceMs) / 60_000
+      : (now - ready.mtimeMs) / 60_000;
+    // D2: mergeExecutor/mergeQueue gate the finding; health is advisory
+    // evidence only, never gating (HOK-3102).
+    const hasConsumer = caps.mergeExecutor === 'tend' && caps.mergeQueue;
+    if (ageMinutes > CANDIDATE_STUCK_MINUTES && !hasConsumer) {
+      findings.push({
+        id: `stuck-merge-candidate-${repo.session}-${task.issue}`,
+        severity: 'high',
+        category: 'stuck',
+        confidence: 'high',
+        session: repo.session,
+        repoDir: repo.repoDir,
+        issue: task.issue,
+        title: `${task.issue} is stuck in merge-candidate with no active merge consumer`,
+        evidence: [
+          `queueState=${artifacts.queueState}`,
+          `candidatePromotedAt=${artifacts.candidatePromotedAt ?? 'unknown'}`,
+          `ageMinutes=${Math.round(ageMinutes)}`,
+          `mergeExecutor=${caps.mergeExecutor} (${caps.reasons.mergeExecutor})`,
+          `mergeQueue=${caps.mergeQueue}`,
+          `tendHealth=${caps.health.tend ?? 'unknown'} (advisory)`,
+          `headSha=${headSha}`,
+          `targetBaseSha=${artifacts.targetBaseSha ?? 'unknown'}`,
+          taskPrEvidence(repo.repoDir, task),
+        ],
+        recommendation: task.pr
+          ? `Task is stuck in merge-candidate with no active merge consumer. Consider enabling integration (integration.enabled + useMillSession) or merging PR #${task.pr} manually.`
+          : 'Task is stuck in merge-candidate with no active merge consumer. Consider enabling integration (integration.enabled + useMillSession) or merging manually.',
+      });
+    }
+  }
+  return findings;
+}
+
+interface RetryExhaustionSentinel {
+  bucket: string;
+  path: string;
+  mtimeMs: number;
+  reason: string;
+}
+
+/** Scan a task state directory for `.retry-<bucket>-exhausted` sentinels (HOK-2924). Never throws. */
+function listExhaustedRetrySentinels(stateDir: string): RetryExhaustionSentinel[] {
+  let entries: string[];
+  try {
+    entries = readdirSync(stateDir);
+  } catch {
+    return [];
+  }
+  const sentinels: RetryExhaustionSentinel[] = [];
+  for (const name of entries) {
+    const match = /^\.retry-(.+)-exhausted$/.exec(name);
+    if (!match) continue;
+    const path = join(stateDir, name);
+    try {
+      const stat = statSync(path);
+      const reason = readFileSync(path, 'utf8').trim();
+      sentinels.push({ bucket: match[1], path, mtimeMs: stat.mtimeMs, reason });
+    } catch {
+      // Unreadable sentinel: skip rather than report on data we cannot verify.
+    }
+  }
+  return sentinels;
+}
+
+/**
+ * True when the bucket's retry budget is still keyed to the branch's current
+ * tip — i.e. the exhaustion sentinel is still relevant. `bounded-retry.sh`
+ * resets the whole bucket (including the exhausted sentinel) on a new head
+ * SHA, so a mismatched key means the budget is already about to clear itself
+ * and firing here would be a false positive. Absent key file or an
+ * unresolvable tip is treated as "still relevant" — the detector never
+ * suppresses on information it cannot verify.
+ */
+function exhaustedRetryStillKeyed(stateDir: string, bucket: string, repoDir: string, branch: string | undefined): boolean {
+  const headFile = join(stateDir, `.retry-${bucket}-head`);
+  if (!existsSync(headFile)) return true;
+  let storedHead: string | undefined;
+  try {
+    storedHead = readFileSync(headFile, 'utf8').split('\n')[0]?.trim();
+  } catch {
+    return true;
+  }
+  if (!storedHead || !branch) return true;
+  const tip = gitRevParse(repoDir, branch);
+  if (!tip) return true;
+  return storedHead === tip;
+}
+
+function lastCommitEpochMs(repoDir: string, branch: string): number | undefined {
+  const result = run('git', ['-C', repoDir, 'log', '-1', '--format=%ct', branch], 8_000);
+  if (!result.ok) return undefined;
+  const seconds = Number.parseInt(result.stdout.trim(), 10);
+  return Number.isFinite(seconds) ? seconds * 1000 : undefined;
+}
+
+/**
+ * Detector 2 (REQ-F3): a bounded-retry bucket (HOK-2924) has terminalized
+ * with an `.retry-<bucket>-exhausted` sentinel, and nothing — a new commit,
+ * or agent/operator progress per the HOK-3101 primitive — has happened since.
+ */
+export function detectExhaustedRetries(
+  repo: RepoSnapshot,
+  now: number,
+  progressLookup: (task: TaskState) => TaskProgress | undefined,
+): Finding[] {
+  const findings: Finding[] = [];
+  for (const task of repo.tasks) {
+    if (taskWorkflowIsTerminal(task)) continue;
+    const stateDir = resolveTaskStateDir(repo.repoDir, task);
+    if (!stateDir) continue;
+    const sentinels = listExhaustedRetrySentinels(stateDir);
+    if (sentinels.length === 0) continue;
+
+    const branch = taskBranch(task);
+    const progress = progressLookup(task);
+    const lastProgressMs = progress?.lastProgressAt ? Date.parse(progress.lastProgressAt) : NaN;
+    const lastCommitMs = branch ? lastCommitEpochMs(repo.repoDir, branch) : undefined;
+
+    for (const sentinel of sentinels) {
+      const ageMinutes = (now - sentinel.mtimeMs) / 60_000;
+      if (ageMinutes < EXHAUSTED_RETRY_QUIET_MINUTES) continue;
+      if (!exhaustedRetryStillKeyed(stateDir, sentinel.bucket, repo.repoDir, branch)) continue;
+      if (lastCommitMs !== undefined && lastCommitMs > sentinel.mtimeMs) continue;
+      if (Number.isFinite(lastProgressMs) && lastProgressMs > sentinel.mtimeMs) continue;
+
+      findings.push({
+        id: `exhausted-retry-abandoned-${repo.session}-${task.issue}-${sentinel.bucket}`,
+        severity: 'high',
+        category: 'stuck',
+        confidence: 'high',
+        session: repo.session,
+        repoDir: repo.repoDir,
+        issue: task.issue,
+        title: `${task.issue} abandoned: Exhausted retries: ${truncate(sentinel.reason, 160)}`,
+        evidence: [
+          `bucket=${sentinel.bucket}`,
+          `sentinel=${sentinel.path}`,
+          `sentinelReason=${sentinel.reason}`,
+          `sentinelAgeMinutes=${Math.round(ageMinutes)}`,
+          `lastCommitAt=${lastCommitMs !== undefined ? new Date(lastCommitMs).toISOString() : 'unknown'}`,
+          `lastProgressAt=${progress?.lastProgressAt ?? 'never'}`,
+          branch ? `branch=${branch}` : 'branch=unknown',
+          taskPrEvidence(repo.repoDir, task),
+        ],
+        recommendation: `Fix the recorded cause (${truncate(sentinel.reason, 160)}), then push a new commit to ${branch ?? 'the task branch'} to reset the ${sentinel.bucket} retry budget, or abort the task. Never just delete the sentinel — the underlying cause is still unresolved. observer.autoFix.resetReadyRecheckBudget (HOK-3097) can reset the budget once the head or base SHA has changed.`,
+      });
+    }
+  }
+  return findings;
+}
+
+/**
+ * Pure severity rule for Detector 3 (REQ-F5, D6): `medium` by default, raised
+ * to `high` when the PR is ready to merge. Labels win when known; when they
+ * are unknown (no PR, or the `gh` call failed), the ready-stage `queueState`
+ * is a state-based fallback with the same meaning — `ready`, `ready-stale`,
+ * and `merge-candidate` all mean the PR has cleared the ready gate.
+ */
+export function behindBaseSeverity(context: { hasReadyLabel?: boolean; queueState?: string }): Severity {
+  const elevated = context.hasReadyLabel === true
+    || (context.hasReadyLabel === undefined
+      && (context.queueState === 'ready' || context.queueState === 'ready-stale' || context.queueState === 'merge-candidate'));
+  return elevated ? 'high' : 'medium';
+}
+
+/** Best-effort PR label read; a failed/missing gh call reports unknown (undefined), never throws. */
+function defaultReadPrLabels(repoDir: string, pr: string): string[] | undefined {
+  const result = run('gh', ['pr', 'view', pr, '--json', 'labels'], 8_000, repoDir);
+  if (!result.ok) return undefined;
+  try {
+    const parsed = JSON.parse(result.stdout) as { labels?: Array<{ name?: unknown }> };
+    if (!Array.isArray(parsed.labels)) return undefined;
+    return parsed.labels
+      .map((label) => (typeof label?.name === 'string' ? label.name : undefined))
+      .filter((name): name is string => Boolean(name));
+  } catch {
+    return undefined;
+  }
+}
+
+interface BranchBehindBaseDeps {
+  readPrLabels?: (repoDir: string, pr: string) => string[] | undefined;
+}
+
+/**
+ * Detector 3 (REQ-F4, REQ-F5): an active task branch has drifted more than
+ * `BEHIND_BASE_THRESHOLD_COMMITS` commits behind its effective base branch.
+ * Reuses the HOK-3092 behind-base predicate (`measureBranchBaseDistance`);
+ * never fetches (D5), so this reads whatever `origin/<base>` the mill's own
+ * fetch cadence has already made current.
+ */
+export function detectBranchBehindBase(
+  repo: RepoSnapshot,
+  now: number,
+  deps: BranchBehindBaseDeps = {},
+): Finding[] {
+  const readPrLabels = deps.readPrLabels ?? defaultReadPrLabels;
+  const findings: Finding[] = [];
+  for (const task of repo.tasks) {
+    if (taskWorkflowIsTerminal(task)) continue;
+    const watchedPhase = task.phase === 'coding' || task.phase === 'review' || task.phase === 'ready';
+    if (!watchedPhase) continue;
+    const branch = taskBranch(task);
+    if (!branch || !gitRefExists(repo.repoDir, `refs/heads/${branch}`)) continue;
+
+    const effectiveConfig = resolveObserverTaskConfig(repo, task.issue, task);
+    const baseBranch = effectiveConfig.baseBranch.value;
+    const distance = measureBranchBaseDistance(branch, baseBranch, repo.repoDir);
+    if (distance.behindBase === undefined || distance.behindBase <= BEHIND_BASE_THRESHOLD_COMMITS) continue;
+
+    const stateDir = resolveTaskStateDir(repo.repoDir, task);
+    const ready = stateDir ? readReadyArtifacts(stateDir) : undefined;
+    const queueState = ready?.artifacts.queueState;
+
+    let hasReadyLabel: boolean | undefined;
+    if (task.pr) {
+      const labels = readPrLabels(repo.repoDir, task.pr);
+      if (labels) hasReadyLabel = labels.includes('wm:ready');
+    }
+
+    const severity = behindBaseSeverity({ hasReadyLabel, queueState });
+    findings.push({
+      id: `branch-behind-base-${repo.session}-${task.issue}`,
+      severity,
+      category: 'operational',
+      confidence: 'high',
+      session: repo.session,
+      repoDir: repo.repoDir,
+      issue: task.issue,
+      title: `${task.issue} branch ${branch} is ${distance.behindBase} commits behind ${baseBranch}`,
+      evidence: [
+        `behindBase=${distance.behindBase}`,
+        `aheadOfBase=${distance.aheadOfBase ?? 'unknown'}`,
+        `baseRef=${distance.baseRef ?? 'unknown'}`,
+        `threshold=${BEHIND_BASE_THRESHOLD_COMMITS}`,
+        `queueState=${queueState ?? 'unknown'}`,
+        `wmReadyLabel=${hasReadyLabel === undefined ? 'unknown' : hasReadyLabel}`,
+        taskPrEvidence(repo.repoDir, task),
+      ],
+      recommendation: `Update ${branch} from ${baseBranch} (\`npx tsx tools/update-branch-with-base.ts --worktree ${task.worktree ?? '<worktree>'} --branch ${branch} --base ${baseBranch}\`) before it drifts further; merge conflicts only get worse with distance. observer.autoFix.updateBranchFromBase (HOK-3097) can apply this fix automatically.`,
+    });
+  }
+  return findings;
 }
 
 function terminalParkedSeverity(ageMinutes: number, staleMinutes: number, residue: BranchResidue | undefined, worktreeDirty?: WorktreeDirtyStatus): Severity {
@@ -3739,6 +4374,214 @@ function maxObserverLinearMode(a: IncidentSyncSnapshot['mode'], b: IncidentSyncS
   return order[Math.max(ai, bi)];
 }
 
+/**
+ * HOK-3097: apply opt-in observer self-repair actions. Returns the snapshot
+ * unchanged when the master switch is off (byte-identical no-op). Appends
+ * action records to `<incidentStoreDir>/actions.jsonl` and `low`/`medium`
+ * findings to the snapshot for the dashboard.
+ */
+export async function applyAutoFixes(
+  snapshot: ObserverSnapshot,
+  options: ObserverOptions,
+): Promise<ObserverSnapshot> {
+  const now = new Date(snapshot.timestamp);
+  for (const repo of snapshot.repos) {
+    let config: ObserverAutoFixConfig;
+    try {
+      config = getObserverAutoFixConfig(repo.repoDir);
+    } catch (error) {
+      addConfigDegradedFindingIfMissing(snapshot.findings, repo, error, 'observer auto-fix');
+      continue;
+    }
+    if (!config.enabled) continue;
+
+    let incidentStoreDir: string;
+    try {
+      const incidentConfig = getIncidentConfig(repo.repoDir);
+      const storeDir = incidentConfig.store?.directory ?? '.wavemill/incidents';
+      incidentStoreDir = isAbsolute(storeDir) ? storeDir : join(repo.repoDir, storeDir);
+    } catch {
+      incidentStoreDir = join(repo.repoDir, '.wavemill', 'incidents');
+    }
+
+    const progressByIssue = new Map<string, TaskProgress>();
+    const progressLookup = makeProgressLookup(repo, now.getTime());
+    for (const task of repo.tasks) {
+      const progress = progressLookup(task);
+      if (progress) progressByIssue.set(task.issue, progress);
+    }
+
+    const context: AutoFixRepoContext = {
+      repoDir: repo.repoDir,
+      session: repo.session,
+      workflowStatePath: repo.workflowStatePath,
+      effectiveBaseBranch: (task) => observerBaseBranchForIssue(repo, task.issue),
+      resolveTaskStateDir: (task) => resolveTaskStateDir(repo.repoDir, task as TaskState),
+      incidentStoreDir,
+    };
+
+    const deps: AutoFixDeps = {
+      git: (args, cwd) => {
+        const result = execFileSync('git', args, { cwd, encoding: 'utf-8', timeout: 15_000, stdio: ['ignore', 'pipe', 'pipe'] });
+        return typeof result === 'string' ? result : String(result);
+      },
+      gh: (args, cwd) => {
+        const result = run('gh', args, 20_000, cwd);
+        return result;
+      },
+      updateBranchWithBase: (branch, baseBranch, worktree) => updateBranchWithBase(branch, baseBranch, worktree),
+      readWorktreeDirtyStatus: (worktree) => readWorktreeDirtyStatus({ worktree }),
+      getProgress: (task) => progressByIssue.get(task.issue),
+      abortTaskInState: (stateFile, issue, reason) => abortTaskInState(stateFile, issue, reason).then(() => undefined),
+    };
+
+    const candidateFindings: AutoFixCandidateFinding[] = snapshot.findings
+      .filter((f) => f.repoDir === repo.repoDir)
+      .map((f) => ({ id: f.id, issue: f.issue, severity: f.severity }));
+
+    const tasks = repo.tasks.map((task): AutoFixTask => ({
+      issue: task.issue,
+      slug: task.slug,
+      phase: task.phase,
+      status: task.status,
+      pr: task.pr,
+      worktree: task.worktree,
+      branch: task.branch,
+      baseBranch: task.baseBranch,
+      challengeRole: task.challengeRole,
+      challengePairId: task.challengePairId,
+      challengeAborted: task.challengeAborted,
+      evalCompleted: task.evalCompleted,
+    }));
+
+    try {
+      const { records, findings } = await runObserverAutoFixes({
+        repo: context,
+        tasks,
+        findings: candidateFindings,
+        config,
+        deps,
+        now,
+        dryRun: options.dryRun,
+      });
+      if (records.length > 0 && !options.dryRun) {
+        appendAutoFixActionRecords(incidentStoreDir, records);
+      } else if (records.length > 0) {
+        // Still log planned records in dry-run mode so operators can preview.
+        appendAutoFixActionRecords(incidentStoreDir, records);
+      }
+      snapshot.findings.push(...findings);
+    } catch (error) {
+      snapshot.findings.push({
+        id: `observer-auto-fix-error-${repo.session}-${hashText(repo.repoDir)}`,
+        severity: 'medium',
+        category: 'operational',
+        confidence: 'high',
+        session: repo.session,
+        repoDir: repo.repoDir,
+        title: 'Observer auto-fix pass failed',
+        evidence: [`error=${error instanceof Error ? error.message : String(error)}`],
+        recommendation: 'Inspect the observer log; auto-fix is off until the error clears.',
+      });
+    }
+  }
+  return snapshot;
+}
+
+/**
+ * HOK-3097: send desktop/push notifications for urgent/high findings that
+ * persist past the configured threshold. Journal persisted at
+ * `.wavemill/observer/alert-state.json`.
+ */
+export async function sendAlerts(
+  snapshot: ObserverSnapshot,
+  _options: ObserverOptions,
+): Promise<ObserverSnapshot> {
+  const now = new Date(snapshot.timestamp);
+  for (const repo of snapshot.repos) {
+    let config: ObserverAlertsConfig;
+    try {
+      config = getObserverAlertsConfig(repo.repoDir);
+    } catch (error) {
+      addConfigDegradedFindingIfMissing(snapshot.findings, repo, error, 'observer alerts');
+      continue;
+    }
+    if (!config.enabled) continue;
+
+    const journalPath = join(repo.repoDir, '.wavemill', 'observer', 'alert-state.json');
+    const findings: AlertFinding[] = snapshot.findings
+      .filter((f) => f.repoDir === repo.repoDir)
+      .map((f) => ({
+        id: f.id,
+        severity: f.severity,
+        title: f.title,
+        recommendation: f.recommendation,
+        issue: f.issue,
+        repoDir: f.repoDir,
+        session: f.session,
+      }));
+
+    try {
+      const result = await runObserverAlerts({
+        findings,
+        config,
+        now,
+        deps: {
+          loadJournal: () => {
+            if (!existsSync(journalPath)) return { findings: {} };
+            try {
+              const parsed = JSON.parse(readFileSync(journalPath, 'utf8')) as AlertJournal;
+              return parsed && typeof parsed === 'object' ? parsed : { findings: {} };
+            } catch {
+              return { findings: {} };
+            }
+          },
+          writeJournal: (next) => {
+            try {
+              mutateJsonStateSync<AlertJournal>(
+                journalPath,
+                () => next,
+                { createIfMissing: true, initial: { findings: {} } },
+              );
+            } catch {
+              // non-fatal
+            }
+          },
+          sendDesktop: (title, body) => sendDesktopNotification(title, body, detectDesktopPlatform(process.platform)),
+          sendPush: (url, format, payload) => sendPushNotification(url, format, payload),
+          redact: (text) => redactObserverText(text),
+        },
+      });
+      for (const failure of result.sendFailures) {
+        snapshot.findings.push({
+          id: `observer-alert-send-failed-${repo.session}-${hashText(failure.findingId + failure.detail)}`,
+          severity: 'low',
+          category: 'operational',
+          confidence: 'high',
+          session: repo.session,
+          repoDir: repo.repoDir,
+          title: `Observer alert send failed for ${failure.findingId}`,
+          evidence: [`findingId=${failure.findingId}`, `detail=${failure.detail}`],
+          recommendation: 'Verify the push URL and desktop notification tooling; alerts are best-effort.',
+        });
+      }
+    } catch (error) {
+      snapshot.findings.push({
+        id: `observer-alert-error-${repo.session}-${hashText(repo.repoDir)}`,
+        severity: 'low',
+        category: 'operational',
+        confidence: 'high',
+        session: repo.session,
+        repoDir: repo.repoDir,
+        title: 'Observer alerts pass failed',
+        evidence: [`error=${error instanceof Error ? error.message : String(error)}`],
+        recommendation: 'Inspect the observer log; alerts are off until the error clears.',
+      });
+    }
+  }
+  return snapshot;
+}
+
 function addConfigDegradedFindingIfMissing(findings: Finding[], repo: RepoSnapshot, error: unknown, operation: string): void {
   if (findings.some((finding) => finding.repoDir === repo.repoDir && finding.id.startsWith('config-integrity-'))) {
     return;
@@ -4096,6 +4939,8 @@ Act conservatively:
 - Otherwise create a Linear issue with the evidence from the observer output.
 - Never kill a whole tmux session, reset worktrees, or modify active task work unless explicitly instructed.
 
+Detection-only unless observer.autoFix is enabled; the observer's own fixes are logged in .wavemill/incidents/actions.jsonl.
+
 Report after each loop: sessions inspected, active tasks, findings by severity, action taken, and next check time.
 `;
 }
@@ -4128,7 +4973,10 @@ async function main(): Promise<void> {
 
   try {
     do {
-      const observed = await syncIncidentsToLinear(await reconcileIncidents(observe(options), options), options);
+      const reconciled = await reconcileIncidents(observe(options), options);
+      const fixed = await applyAutoFixes(reconciled, options);
+      const alerted = await sendAlerts(fixed, options);
+      const observed = await syncIncidentsToLinear(alerted, options);
       const snapshot = options.serviceMode ? redactSnapshot(observed) : observed;
       await writeServiceHeartbeat(snapshot, options);
       await fileLinearIssues(snapshot, options);

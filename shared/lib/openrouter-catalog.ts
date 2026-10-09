@@ -95,6 +95,28 @@ export interface OpenRouterModel {
   };
 }
 
+/**
+ * Raw per-endpoint record from `/api/v1/models/<id>/endpoints` (subset of
+ * fields we consume). One model is typically served by many endpoints with
+ * independent pricing; the top-level catalog `pricing` block mirrors only
+ * whichever endpoint OpenRouter currently ranks first.
+ */
+export interface OpenRouterEndpoint {
+  name?: string;
+  provider_name?: string;
+  /** `<provider-slug>[/<variant>]`, e.g. `z-ai/fp8`, `google-ai-studio/flex`. */
+  tag?: string;
+  context_length?: number;
+  pricing?: {
+    prompt?: string | number;
+    completion?: string | number;
+    input_cache_read?: string | number;
+    input_cache_write?: string | number;
+  };
+  status?: number | string;
+  quantization?: string | null;
+}
+
 export interface NormalizedPricing {
   inputPerMTok: number | null;
   outputPerMTok: number | null;
@@ -364,6 +386,47 @@ export function hashLaunchPriorityFixture(fixturePath?: string): string {
   return createHash('sha256').update(canonical, 'utf-8').digest('hex');
 }
 
+/**
+ * Hash one model's identity-bearing launch-priority row for certification
+ * identity (`CertificationSubject.catalogHash`, HOK-3159).
+ *
+ * The whole-file `hashLaunchPriorityFixture` moved for every OpenRouter model
+ * whenever *any* row changed, which re-identified the whole fleet and wiped
+ * every live coding canary at the next mill start. This hash covers only the
+ * model's own row, and only the fields that define what the model *is*:
+ *
+ * - `wavemillAlias`, `openrouterId` — registry key and wire id
+ * - `family` — the OpenRouter capability family
+ * - `roleEligibility` — which stages it may serve (sorted; order is not identity)
+ *
+ * Deliberately excluded: other models' rows, the fixture `description`,
+ * `priorityTier` (routing order) and `status` (lifecycle, gated elsewhere).
+ *
+ * Looks the row up by wavemill alias or OpenRouter id, like
+ * `resolveOpenRouterModelIdentity`. Returns null when no row matches.
+ */
+export function hashLaunchPriorityModelRow(
+  modelIdOrAlias: string | null | undefined,
+  fixturePath?: string,
+): string | null {
+  if (typeof modelIdOrAlias !== 'string' || modelIdOrAlias.trim().length === 0) {
+    return null;
+  }
+  const input = modelIdOrAlias.trim();
+  const row = loadLaunchPriorityList(fixturePath)
+    .find((entry) => entry.wavemillAlias === input || entry.openrouterId === input);
+  if (!row) {
+    return null;
+  }
+  const identityFields = {
+    wavemillAlias: row.wavemillAlias,
+    openrouterId: row.openrouterId,
+    family: row.family,
+    roleEligibility: [...new Set(row.roleEligibility)].sort(),
+  };
+  return createHash('sha256').update(canonicalJson(identityFields), 'utf-8').digest('hex');
+}
+
 // ── OpenRouter HTTP fetcher ──────────────────────────────────────────────────
 
 export interface OpenRouterApiResponse {
@@ -403,6 +466,45 @@ export async function fetchOpenRouterModels(
     }
   }
   return map;
+}
+
+/** URL of the per-endpoint listing for one model. The model id contains a `/`
+ * which the endpoint path takes literally (e.g. `…/models/z-ai/glm-5.2/endpoints`). */
+export function openRouterEndpointsUrl(modelId: string): string {
+  return `${OPENROUTER_MODELS_URL}/${modelId}/endpoints`;
+}
+
+export interface OpenRouterEndpointsApiResponse {
+  data?: {
+    endpoints?: OpenRouterEndpoint[];
+  };
+}
+
+/**
+ * Fetch the per-endpoint listing for one OpenRouter model.
+ *
+ * Accepts an injectable `fetchFn` so unit tests can supply canned responses
+ * without making network calls. Throws on non-OK HTTP or a malformed body,
+ * matching `fetchOpenRouterModels` semantics.
+ */
+export async function fetchOpenRouterModelEndpoints(
+  modelId: string,
+  fetchFn: FetchLike = fetch,
+): Promise<OpenRouterEndpoint[]> {
+  const response = await fetchFn(openRouterEndpointsUrl(modelId), {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+  });
+  if (!response.ok) {
+    throw new Error(
+      `OpenRouter endpoints fetch for ${modelId} failed: HTTP ${response.status} ${response.statusText}`,
+    );
+  }
+  const body = (await response.json()) as OpenRouterEndpointsApiResponse;
+  if (!body || typeof body !== 'object' || !body.data || !Array.isArray(body.data.endpoints)) {
+    throw new Error(`OpenRouter endpoints response for ${modelId} missing "data.endpoints" array`);
+  }
+  return body.data.endpoints;
 }
 
 // ── Normalization ────────────────────────────────────────────────────────────

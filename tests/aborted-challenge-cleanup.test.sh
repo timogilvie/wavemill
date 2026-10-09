@@ -146,6 +146,7 @@ EOF
     log_warn() { WARN_OUTPUT+="$*\n"; }
     set_window_attention_state() { ATTENTION="$2"; }
     reset_retry_count() { :; }
+    check_challenge_sibling_merged() { [[ "$TEST_CASE" == "sibling-merged-unpublished" ]]; }
     archive_stage_artifacts() {
       ORDER+="archive;"
       mkdir -p "$REPO_DIR/.wavemill/evals/artifacts/$1"
@@ -203,11 +204,11 @@ EOF
           return 0
           ;;
         "merge-base --is-ancestor")
-          [[ "$TEST_CASE" != "preserved-local-work" ]]
+          [[ "$TEST_CASE" != "preserved-local-work" && "$TEST_CASE" != "sibling-merged-unpublished" ]]
           return $?
           ;;
         "rev-list --count")
-          if [[ "$TEST_CASE" == "preserved-local-work" ]]; then
+          if [[ "$TEST_CASE" == "preserved-local-work" || "$TEST_CASE" == "sibling-merged-unpublished" ]]; then
             printf "1\n"
           else
             printf "0\n"
@@ -215,12 +216,13 @@ EOF
           return 0
           ;;
         "rev-list "*)
-          if [[ "$TEST_CASE" == "preserved-local-work" ]]; then
+          if [[ "$TEST_CASE" == "preserved-local-work" || "$TEST_CASE" == "sibling-merged-unpublished" ]]; then
             printf "%s\n" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
           fi
           return 0
           ;;
         "ls-remote --heads") return 0 ;;
+        "push origin") ORDER+="push:${3:-};" ; return 0 ;;
         "branch -D"|"branch -d") ORDER+="git-branch;" ; return 0 ;;
         "worktree prune") return 0 ;;
       esac
@@ -261,5 +263,11 @@ output="$(run_cleanup_case preserved-local-work)"
 [[ "$output" == *"phase=aborted"* ]] || { echo "$output"; echo "preserved local work phase not terminal" >&2; exit 1; }
 [[ "$output" == *"attention=needs-user"* ]] || { echo "$output"; echo "preserved local work did not request attention" >&2; exit 1; }
 [[ "$output" != *"cleaned=1"* ]] || { echo "$output"; echo "preserved local work should not be marked cleaned" >&2; exit 1; }
+[[ "$output" != *"push:"* ]] || { echo "$output"; echo "unmerged sibling must not archive-and-abandon" >&2; exit 1; }
+
+# HOK-3089: a PR-less aborted arm whose sibling merged is archived, then reaped.
+output="$(run_cleanup_case sibling-merged-unpublished)"
+[[ "$output" == *"push:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:refs/archive/wavemill/HOK-2839_c;git-worktree;git-branch;"* ]] || { echo "$output"; echo "sibling-merged arm was not archived before removal" >&2; exit 1; }
+[[ "$output" == *"present=false"* ]] || { echo "$output"; echo "sibling-merged arm state was not removed" >&2; exit 1; }
 
 echo "aborted-challenge-cleanup test passed"

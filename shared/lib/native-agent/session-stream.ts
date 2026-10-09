@@ -20,6 +20,7 @@ import type {
 } from './session-stream.schema.ts';
 import { SESSION_STREAM_SCHEMA_VERSION as SCHEMA_VERSION } from './session-stream.schema.ts';
 import { canonicalJsonStringify } from '../resource-registry.ts';
+import type { PiRuntimeVersions } from './pi-runtime-version.ts';
 
 // ---------------------------------------------------------------------------
 // Path resolution
@@ -275,6 +276,12 @@ export class SessionStreamWriter {
     parentSessionId?: string;
     initialConfigDigest: string;
     manifestId?: string;
+    /**
+     * Pi runtime versions (HOK-3164). Callers resolve them; the writer stays
+     * a pass-through so its output is deterministic under test. Omitted from
+     * the event when absent or empty.
+     */
+    piRuntimeVersions?: PiRuntimeVersions;
   }): SessionEvent {
     const event = this.createEvent({
       type: 'session_started',
@@ -282,6 +289,9 @@ export class SessionStreamWriter {
       parentSessionId: opts.parentSessionId,
       initialConfigDigest: opts.initialConfigDigest,
       manifestId: opts.manifestId,
+      ...(opts.piRuntimeVersions && Object.keys(opts.piRuntimeVersions).length > 0
+        ? { piRuntimeVersions: { ...opts.piRuntimeVersions } }
+        : {}),
     });
     this.append(event);
     return event;

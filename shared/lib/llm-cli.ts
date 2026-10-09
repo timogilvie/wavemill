@@ -1278,6 +1278,20 @@ const CLI_AVAILABILITY_SPECS: Record<LLMProvider, CliAvailabilitySpec> = {
 };
 
 /**
+ * Ceiling for the availability probe's live test call. A trivial `claude -p`
+ * takes 20–40s on a loaded host (API latency plus project hooks in a task
+ * worktree), so a fixed 30s ceiling failed every review there as
+ * `review-tool-error` even though the CLI worked. Override with
+ * `WAVEMILL_CLI_PREFLIGHT_TIMEOUT_MS`.
+ */
+export const DEFAULT_CLI_PREFLIGHT_TIMEOUT_MS = 90_000;
+
+export function resolveCliPreflightTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const configured = Number(env.WAVEMILL_CLI_PREFLIGHT_TIMEOUT_MS);
+  return Number.isInteger(configured) && configured > 0 ? configured : DEFAULT_CLI_PREFLIGHT_TIMEOUT_MS;
+}
+
+/**
  * Generic CLI availability probe: PATH → version → trivial round-trip.
  * Provider-agnostic; see {@link checkClaudeAvailability} / {@link checkCodexAvailability}.
  */
@@ -1358,7 +1372,7 @@ async function checkCliAvailability(
 
       execShellCommand(buildTestCommand(cliCmd, tmpFile), {
         encoding: 'utf-8',
-        timeout: 30000,
+        timeout: resolveCliPreflightTimeoutMs(),
         maxBuffer: 1024 * 1024,
         env: buildProviderEnv(getProviderConfig(provider)),
       });

@@ -6,6 +6,7 @@ import { getEffectiveRegistry, resolveModelRegistryKey } from './model-registry.
 import { resolveWavemillAliasFromOpenRouterId } from './openrouter-catalog.ts';
 import type { StageExecutionEvidenceStatus, StageName, StageResult, StageStatus } from './stage-result.ts';
 import type { ChallengeArmFailure } from './arm-failure-taxonomy.ts';
+import { parsePiRuntimeVersions, piRuntimeVersionsField, type PiRuntimeVersions } from './native-agent/pi-runtime-version.ts';
 import type { ChallengeStage } from './challenge-mode.ts';
 import type {
   DeliveryVerdict,
@@ -120,6 +121,7 @@ export type NoComparisonReason =
   | 'state_vs_derived_side_mismatch'
   | 'missing_challenge_intent'
   | 'multiple-varied-roles'
+  | 'arm_infrastructure_failure'
   // legacy skip reason
   | 'identical_routing_dimensions'
   // provenance validation outcomes
@@ -151,6 +153,7 @@ export const NO_COMPARISON_REASONS = [
   'state_vs_derived_side_mismatch',
   'missing_challenge_intent',
   'multiple-varied-roles',
+  'arm_infrastructure_failure',
   'identical_routing_dimensions',
   'provenance_invalid',
   'provenance_inconclusive',
@@ -195,6 +198,17 @@ export interface ChallengeExecutedStageProvenance {
   executionEvidenceStatus?: StageExecutionEvidenceStatus;
   modelAttributionEligible?: boolean;
   modelAttributionIneligibleReason?: StageResult['modelAttributionIneligibleReason'];
+  /**
+   * HOK-3143: provider-identity verdict carried from the stage result's
+   * executionEvidence. `alias-resolved` means the provider served a concrete
+   * target of a certified rolling alias, which is not an executed-model mismatch.
+   */
+  identityVerdict?: 'match' | 'alias-resolved' | 'mismatch' | 'unverifiable' | 'absent';
+  /**
+   * HOK-3164: Pi runtime versions carried from the stage result's
+   * executionEvidence, so comparisons can separate pre/post Pi-upgrade arms.
+   */
+  piRuntimeVersions?: PiRuntimeVersions;
 }
 
 export interface ChallengeSideExecutionProvenance {
@@ -817,6 +831,12 @@ function parseStageArtifact(
     executionEvidenceStatus: parsed.executionEvidence?.status ?? (reviewIdentity ? 'direct' : 'missing'),
     modelAttributionEligible: parsed.modelAttributionEligible ?? (reviewIdentity ? parsed.status === 'completed' : false),
     modelAttributionIneligibleReason: parsed.modelAttributionIneligibleReason,
+    // HOK-3143: carry the provider-identity verdict so attribution can tell
+    // an alias-resolved stage apart from an executed-model mismatch.
+    ...(typeof parsed.executionEvidence?.identityVerdict === 'string'
+      ? { identityVerdict: parsed.executionEvidence.identityVerdict as ChallengeExecutedStageProvenance['identityVerdict'] }
+      : {}),
+    ...piRuntimeVersionsField(parsePiRuntimeVersions(parsed.executionEvidence?.piRuntimeVersions)),
   };
 }
 
@@ -1064,8 +1084,21 @@ function validateStageForSide(input: {
   if (
     stageProvenance.executionEvidenceStatus === 'contradicted'
     || stageProvenance.modelAttributionIneligibleReason === 'execution_contradicted'
+    // HOK-3143: a provider substitution reaches the same comparison outcome
+    // as an execution contradiction — the attributed model did not run.
+    || stageProvenance.modelAttributionIneligibleReason === 'provider_substitution'
+    || stageProvenance.identityVerdict === 'mismatch'
   ) {
     addStageValidationIssue(input.issues, input.side, stageProvenance, 'execution-evidence-contradicted', intendedModel);
+    return;
+  }
+  // HOK-3143: a correctly resolved alias is not an executed-model mismatch.
+  // The provider-identity gate has already verified the executed concrete
+  // matches the certificate's pinned `resolvedTarget.model`, so the executed
+  // id is expected to differ from the intended alias — don't re-compare them
+  // via the registry (which would fail for an alias whose target is not a
+  // registry key, e.g. `~google/gemini-pro-latest` → `google/gemini-3.1-pro-preview`).
+  if (stageProvenance.identityVerdict === 'alias-resolved') {
     return;
   }
   if (

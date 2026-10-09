@@ -7,8 +7,10 @@ import {
   buildCatalogSnapshot,
   CATALOG_SCHEMA_VERSION,
   defaultLaunchPriorityFixturePath,
+  fetchOpenRouterModelEndpoints,
   fetchOpenRouterModels,
   hashLaunchPriorityFixture,
+  hashLaunchPriorityModelRow,
   hasTier1ActiveBlockers,
   loadLaunchPriorityFixture,
   loadLaunchPriorityList,
@@ -152,6 +154,138 @@ describe('loadLaunchPriorityFixture', () => {
   });
 });
 
+describe('hashLaunchPriorityModelRow (HOK-3159)', () => {
+  type MutableFixture = { description?: string; models: Array<Record<string, unknown>> };
+
+  // Every test mutates a temp copy of the real fixture; the tracked file is
+  // never written (HOK-3157).
+  function withFixtureVariants(
+    run: (write: (name: string, mutate: (fixture: MutableFixture) => void) => string, basePath: string) => void,
+  ): void {
+    const dir = mkdtempSync(join(tmpdir(), 'fixture-row-hash-'));
+    try {
+      const parsed = loadLaunchPriorityFixture() as unknown as MutableFixture;
+      const basePath = join(dir, 'base.json');
+      writeFileSync(basePath, JSON.stringify(parsed, null, 2));
+      const write = (name: string, mutate: (fixture: MutableFixture) => void): string => {
+        const copy = JSON.parse(JSON.stringify(parsed)) as MutableFixture;
+        mutate(copy);
+        const path = join(dir, name);
+        writeFileSync(path, JSON.stringify(copy, null, 2));
+        return path;
+      };
+      run(write, basePath);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  const row = (fixture: MutableFixture, alias: string): Record<string, unknown> => {
+    const found = fixture.models.find((model) => model.wavemillAlias === alias);
+    assert.ok(found, `fixture must contain ${alias}`);
+    return found;
+  };
+
+  it('returns a sha256 for a known row, by alias or by OpenRouter id', () => {
+    const byAlias = hashLaunchPriorityModelRow('gemini-2.5-pro');
+    assert.match(byAlias ?? '', /^[0-9a-f]{64}$/);
+    assert.equal(hashLaunchPriorityModelRow('google/gemini-2.5-pro'), byAlias);
+    assert.notEqual(byAlias, hashLaunchPriorityFixture(), 'row hash is not the whole-file hash');
+  });
+
+  it('returns null for an unknown or empty model id', () => {
+    assert.equal(hashLaunchPriorityModelRow('no-such-model'), null);
+    assert.equal(hashLaunchPriorityModelRow(''), null);
+    assert.equal(hashLaunchPriorityModelRow(undefined), null);
+  });
+
+  it('distinguishes models from each other', () => {
+    assert.notEqual(hashLaunchPriorityModelRow('gemini-2.5-pro'), hashLaunchPriorityModelRow('qwen-3-coder'));
+  });
+
+  it('[REQ-F1] does not move when another row is added, removed or edited', () => {
+    withFixtureVariants((write, basePath) => {
+      const baseline = hashLaunchPriorityModelRow('gemini-2.5-pro', basePath);
+      assert.ok(baseline);
+
+      const removed = write('removed.json', (fixture) => {
+        fixture.models = fixture.models.filter((model) => model.wavemillAlias !== 'qwen-3-coder');
+      });
+      const added = write('added.json', (fixture) => {
+        fixture.models.push({
+          wavemillAlias: 'brand-new-model',
+          openrouterId: 'acme/brand-new-model',
+          family: 'unknown',
+          status: 'provisional',
+          priorityTier: 3,
+          roleEligibility: ['coding'],
+        });
+      });
+      const edited = write('edited.json', (fixture) => {
+        row(fixture, 'qwen-3-coder').openrouterId = 'qwen/qwen3-coder-next';
+        row(fixture, 'qwen-3-coder').status = 'deprecated';
+      });
+
+      for (const path of [removed, added, edited]) {
+        assert.equal(hashLaunchPriorityModelRow('gemini-2.5-pro', path), baseline, path);
+        assert.notEqual(hashLaunchPriorityFixture(path), hashLaunchPriorityFixture(basePath), 'whole-file hash does move');
+      }
+    });
+  });
+
+  it('[REQ-F2] moves when the model\'s own identity-bearing fields change', () => {
+    withFixtureVariants((write, basePath) => {
+      const baseline = hashLaunchPriorityModelRow('gemini-2.5-pro', basePath);
+      const openrouterId = write('openrouter-id.json', (fixture) => {
+        row(fixture, 'gemini-2.5-pro').openrouterId = 'google/gemini-2.5-pro-0909';
+      });
+      const family = write('family.json', (fixture) => {
+        row(fixture, 'gemini-2.5-pro').family = 'unknown';
+      });
+      const roles = write('roles.json', (fixture) => {
+        row(fixture, 'gemini-2.5-pro').roleEligibility = ['review'];
+      });
+
+      for (const path of [openrouterId, family, roles]) {
+        assert.notEqual(hashLaunchPriorityModelRow('gemini-2.5-pro', path), baseline, path);
+        // Only the edited model re-identifies.
+        assert.equal(
+          hashLaunchPriorityModelRow('qwen-3-coder', path),
+          hashLaunchPriorityModelRow('qwen-3-coder', basePath),
+        );
+      }
+    });
+  });
+
+  it('[REQ-F3] ignores the fixture description, priorityTier, status and roleEligibility order', () => {
+    withFixtureVariants((write, basePath) => {
+      const baseline = hashLaunchPriorityModelRow('gemini-2.5-pro', basePath);
+      const variants = [
+        write('description.json', (fixture) => {
+          fixture.description = 'rewritten prose';
+        }),
+        write('tier.json', (fixture) => {
+          row(fixture, 'gemini-2.5-pro').priorityTier = 9;
+        }),
+        write('status.json', (fixture) => {
+          const target = row(fixture, 'gemini-2.5-pro');
+          target.status = target.status === 'active' ? 'deprecated' : 'active';
+        }),
+        write('role-order.json', (fixture) => {
+          const target = row(fixture, 'gemini-2.5-pro');
+          target.roleEligibility = [...(target.roleEligibility as string[])].reverse();
+        }),
+        write('row-order.json', (fixture) => {
+          fixture.models.reverse();
+        }),
+      ];
+      for (const path of variants) {
+        assert.equal(hashLaunchPriorityModelRow('gemini-2.5-pro', path), baseline, path);
+      }
+    });
+  });
+});
+
 describe('fetchOpenRouterModels', () => {
   it('returns a Map keyed by model id with injected fetchFn', async () => {
     const fakeFetch = (async (url: string) => {
@@ -193,6 +327,57 @@ describe('fetchOpenRouterModels', () => {
       json: async () => ({ wrong: 'shape' }),
     })) as unknown as typeof fetch;
     await assert.rejects(() => fetchOpenRouterModels(fakeFetch), /missing "data" array/);
+  });
+});
+
+describe('fetchOpenRouterModelEndpoints', () => {
+  it('fetches the per-model endpoints URL and returns the endpoint list', async () => {
+    const fakeFetch = (async (url: string) => {
+      assert.equal(url, `${OPENROUTER_MODELS_URL}/z-ai/glm-5.2/endpoints`);
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: async () => ({
+          data: {
+            endpoints: [
+              { provider_name: 'Z.AI', tag: 'z-ai/fp8', pricing: { prompt: '0.0000014' } },
+              { provider_name: 'Wafer', tag: 'wafer', pricing: { prompt: '0.00000041' } },
+            ],
+          },
+        }),
+      } as unknown as Response;
+    }) as typeof fetch;
+
+    const endpoints = await fetchOpenRouterModelEndpoints('z-ai/glm-5.2', fakeFetch);
+    assert.equal(endpoints.length, 2);
+    assert.equal(endpoints[0]?.tag, 'z-ai/fp8');
+  });
+
+  it('throws on non-OK HTTP response', async () => {
+    const fakeFetch = (async () => ({
+      ok: false,
+      status: 503,
+      statusText: 'Service Unavailable',
+      json: async () => ({}),
+    })) as unknown as typeof fetch;
+    await assert.rejects(
+      () => fetchOpenRouterModelEndpoints('z-ai/glm-5.2', fakeFetch),
+      /z-ai\/glm-5\.2 failed: HTTP 503/,
+    );
+  });
+
+  it('throws when the response body has no endpoints array', async () => {
+    const fakeFetch = (async () => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => ({ data: {} }),
+    })) as unknown as typeof fetch;
+    await assert.rejects(
+      () => fetchOpenRouterModelEndpoints('z-ai/glm-5.2', fakeFetch),
+      /missing "data\.endpoints" array/,
+    );
   });
 });
 

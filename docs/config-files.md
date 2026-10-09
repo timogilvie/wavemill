@@ -258,6 +258,28 @@ comparison identifies a winner.
 - `true`: tend lets the winning PR enter the merge path automatically and
   closes or cleans up the loser.
 
+### Challenge Mode Default
+
+`challenge.enabled` controls whether a new mill task may launch a challenge
+pair at all. The default is **`false`** (HOK-3175).
+
+- With `enabled: false` — the shipped default — the launcher short-circuits
+  before any pair state is minted: `tools/resolve-challenge-task.ts` returns
+  `mode: 'single'` with `reason: 'challenge_disabled'`, no `_c` arm is
+  created, no `challengePairId` is written to `.wavemill/workflow-state.json`,
+  and tend never engages the pair gate.
+- With `enabled: true`, selection proceeds under the configured `rate`,
+  `recommendationRate`, and `stageWeights`.
+- In-flight pairs resolve normally after flipping the switch: pair membership
+  is persisted on each task's state entry and is never re-derived from current
+  config.
+
+**Re-enable criteria.** Keep this off until
+[HOK-3173](https://linear.app/hokusai/issue/HOK-3173)'s unattended exit
+criterion is met on single-arm runs. Prefer re-enabling once durable task
+records support challengers forked from one record at the plan-to-code handoff
+([HOK-3151](https://linear.app/hokusai/issue/HOK-3151)).
+
 ### Cleanup Episodes
 
 Terminal cleanup episodes are enabled by default. They persist cleanup evidence
@@ -343,6 +365,14 @@ Do not configure provider model allowlists in repo config.
 Keep native provider secrets such as `OPENAI_API_KEY` and `OPENROUTER_API_KEY` in environment variables only.
 
 `nativeAgent.patchCoding.enabled` is fail-closed and defaults to `false`. Setting it to `true` does not enable native patch coding by itself; Wavemill also requires a current certification artifact at `.wavemill/native-agent/patch-coding-certification.json`.
+
+`nativeAgent.patchCoding.allowFullSuiteTests` (HOK-3145) also defaults to
+`false`. When `false`, the native `run_tests` tool refuses full-suite commands
+(`npm test`, `pnpm test`, `yarn test`, and unsharded `tests/run-*.sh`) and
+instructs the coding agent to use focused commands (`node --test <files>`,
+`bash tests/run-unit-tests.sh --shard i/n`). CI runs the full suite anyway;
+set this to `true` only in environments where the mill is expected to run
+composite test chains.
 
 Coder routing has a third gate after repo opt-in and the smoke artifact: the
 chosen provider/model pair must also have a current global phase certification
@@ -473,6 +503,19 @@ selection behavior. Inspect current temporary state with
 `npx tsx tools/challenge-selection-health.ts status --repo-dir . --json`; clear a
 demonstrably stale entry with `clear --provider openrouter --model MODEL` or
 clear all temporary health state with `clear --all`.
+
+## Queue Planner Mode
+
+`queuePlanner.mode` selects how `tools/plan-queue.ts` discovers task relationships (HOK-3131):
+
+- `legacy` (default) — the LLM classifies the whole backlog into `depends_on` / `shared_surface` edges.
+- `grounded` — predict each task's touch set, score pair conflicts deterministically, and ask the LLM only to judge ordering for scored pairs (evidence required). See [Task Dependency Queue Plan](task-dependency-queue-plan.md#stage-9-grounded-wave-planning-opt-in-hok-3131).
+
+```json
+{ "queuePlanner": { "mode": "grounded" } }
+```
+
+Team-wide placement: `.wavemill-config.json`. Remove the block (or set `legacy`) to roll back immediately.
 
 ## Local Paths Guidance
 

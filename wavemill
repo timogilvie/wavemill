@@ -15,6 +15,11 @@ SCRIPT_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
 LIB_DIR="$SCRIPT_DIR/shared/lib"
 DEFAULT_TOOLS_DIR="$SCRIPT_DIR/tools"
 export TOOLS_DIR="$DEFAULT_TOOLS_DIR"
+# HOK-3100: canonical install root. The milled repo is `WAVEMILL_MILLED_REPO_DIR`
+# / `REPO_DIR`. `WAVEMILL_INSTALL_DIR` is always derived from the running
+# script, never inherited, so monitor-from-main and worker-from-worktree
+# processes each use their own install copy.
+export WAVEMILL_INSTALL_DIR="$SCRIPT_DIR"
 CONFIG_VERSION="$(
   sed -n "s/.*CURRENT_CONFIG_VERSION = '\([^']*\)'.*/\1/p" "$LIB_DIR/config.ts" 2>/dev/null | head -n 1
 )"
@@ -111,6 +116,13 @@ ${GREEN}Commands:${NC}
              Usage:
                ${CYAN}wavemill intervention record <target> --severity major --trigger <tag> --summary <text>${NC}
                ${CYAN}wavemill intervention show <target> --json${NC}
+
+  ${CYAN}report${NC}    Reliability + ad-hoc reports
+             Subcommands:
+               ${CYAN}wavemill report reliability${NC}
+                          Unattended-rate and time-stuck summary over a window.
+                          Options: --since 14d|7d|30d, --bucket daily|rolling7d,
+                                   --json, --include-tasks, --repo-dir <dir>
 
   ${CYAN}review${NC}    Review a pull request with LLM analysis
              - Lists PRs for interactive selection with optional filtering
@@ -456,7 +468,7 @@ check_config_version() {
       return 1
     fi
   else
-    echo -e "${CYAN}Skipped.${NC} Upgrade later with: ${CYAN}npx tsx tools/sync-config.ts${NC}"
+    echo -e "${CYAN}Skipped.${NC} Upgrade later with: ${CYAN}npx tsx $SCRIPT_DIR/tools/sync-config.ts${NC}"
     echo -e "  Or run with: ${CYAN}SKIP_CONFIG_CHECK=true wavemill mill${NC} to skip this prompt"
     echo ""
   fi
@@ -492,7 +504,7 @@ check_project_context() {
       return 1
     fi
   else
-    echo -e "${CYAN}Skipped.${NC} Initialize later with: ${CYAN}npx tsx tools/init-project-context.ts${NC}"
+    echo -e "${CYAN}Skipped.${NC} Initialize later with: ${CYAN}npx tsx $SCRIPT_DIR/tools/init-project-context.ts${NC}"
     echo -e "  Or run with: ${CYAN}SKIP_CONTEXT_CHECK=true wavemill mill${NC} to skip this prompt"
     echo ""
   fi
@@ -1075,11 +1087,11 @@ INIT_EOF
         npx tsx "$init_tool"
       else
         echo -e "${YELLOW}Warning:${NC} Could not find init-project-context.ts"
-        echo -e "  You can initialize later with: ${CYAN}npx tsx tools/init-project-context.ts${NC}"
+        echo -e "  You can initialize later with: ${CYAN}npx tsx $SCRIPT_DIR/tools/init-project-context.ts${NC}"
       fi
     else
       echo -e "${CYAN}Skipped.${NC} You can initialize later with:"
-      echo -e "  ${CYAN}npx tsx tools/init-project-context.ts${NC}"
+      echo -e "  ${CYAN}npx tsx $SCRIPT_DIR/tools/init-project-context.ts${NC}"
     fi
   fi
 
@@ -1144,6 +1156,43 @@ run_intervention() {
   fi
 
   exec npx tsx "$intervention_tool" "$@"
+}
+
+# HOK-3177: `wavemill report <subcommand>` dispatcher.
+# Currently supports `reliability` — the unattended-rate / time-stuck summary
+# used by the dashboard and ad-hoc audits. New report types should be added
+# here as additional case branches, each delegating to its own tools/ script.
+run_report() {
+  local subcommand="${1:-}"
+  if [[ -z "$subcommand" || "$subcommand" == "--help" || "$subcommand" == "-h" ]]; then
+    cat <<EOF
+${CYAN}wavemill report${NC} — reliability + ad-hoc report commands
+
+${GREEN}Usage:${NC}
+  wavemill report <subcommand> [options]
+
+${GREEN}Subcommands:${NC}
+  ${CYAN}reliability${NC}   Unattended-rate and time-stuck summary over a window.
+                 Options: --since 14d|7d|30d, --bucket daily|rolling7d,
+                          --json, --include-tasks, --repo-dir <dir>
+EOF
+    return 0
+  fi
+  shift
+  case "$subcommand" in
+    reliability)
+      local tool="$TOOLS_DIR/report-reliability.ts"
+      if [[ ! -f "$tool" ]]; then
+        echo -e "${RED}Error:${NC} Reliability report tool not found at: $tool" >&2
+        exit 1
+      fi
+      exec npx tsx "$tool" "$@"
+      ;;
+    *)
+      echo -e "${RED}Error:${NC} Unknown report subcommand: $subcommand" >&2
+      exit 1
+      ;;
+  esac
 }
 
 run_eval_report() {
@@ -1701,6 +1750,10 @@ case "${1:-}" in
   intervention)
     shift
     run_intervention "$@"
+    ;;
+  report)
+    shift
+    run_report "$@"
     ;;
   route)
     shift

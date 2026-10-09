@@ -5,6 +5,9 @@ import path from 'node:path';
 import { after, describe, it } from 'node:test';
 
 import {
+  CommandRunHistory,
+  MAX_FORMAT_TIMEOUT_MS,
+  MAX_TEST_TIMEOUT_MS,
   commandToolsAfterToolCall,
   createCommandTools,
   createRunFormatTool,
@@ -70,7 +73,11 @@ describe('native-agent command tool registry and substrate facade', () => {
           command: `node -e "setTimeout(function(){},90000)"`,
           worktreePath: repo,
           defaultTimeoutMs: 60_000,
+          maxTimeoutMs: MAX_FORMAT_TIMEOUT_MS,
           timeoutMs: 200,
+          allowFullSuite: false,
+          history: new CommandRunHistory(),
+          fingerprintFn: () => '',
         }),
         new Promise<never>((_, reject) => {
           setTimeout(() => reject(new Error('override timeout test hung')), 10_000);
@@ -145,8 +152,12 @@ describe('native-agent command tool registry and substrate facade', () => {
       kind: 'tests',
       worktreePath: repo,
       defaultTimeoutMs: 300_000,
+      maxTimeoutMs: MAX_TEST_TIMEOUT_MS,
       command: `node -e process.stdout.write('ok')`,
       maxOutputBytes: 0,
+      allowFullSuite: false,
+      history: new CommandRunHistory(),
+      fingerprintFn: () => '',
     });
 
     const toolDetails = viaTool.details as RunCommandDetails;

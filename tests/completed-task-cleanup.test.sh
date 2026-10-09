@@ -119,6 +119,8 @@ CLEANUP_FILE="$TEST_TMP/cleanup_completed_task.sh"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "wavemill_discard_prompt_registry_artifact"
   printf '\n'
+  extract_function "$COMMON_SCRIPT" "wavemill_discard_hok3160_generated_artifacts"
+  printf '\n'
   extract_function "$COMMON_SCRIPT" "write_terminal_task_history_record"
   printf '\n'
   extract_function "$COMMON_SCRIPT" "write_terminal_task_tombstone"
@@ -253,11 +255,16 @@ run_cleanup_case() {
     printf "%s\n" "{\"cleanup\":{\"branchDeletion\":{\"enabled\":true,\"mode\":\"enforce\"}}}" > "$REPO_DIR/.wavemill-config.json"
 
     state_pr_json=",\"pr\":4242"
+    workflow_outcome="merged"
     if [[ "$TEST_CASE" == "no-pr" ]]; then
       state_pr_json=""
     fi
+    if [[ "$TEST_CASE" == aborted-pr-less-* ]]; then
+      state_pr_json=""
+      workflow_outcome="aborted"
+    fi
     cat > "$STATE_FILE" <<EOF
-{"tasks":{"$ISSUE":{"windowId":"@31"$state_pr_json,"lifecycle":{"schemaVersion":1,"workflowOutcome":"merged","resourceDisposition":"reaping","launchContract":{"remoteBranchDeletionPolicy":{"allowed":true,"mode":"merged-pr-task-branch","source":"test"}}}}}}
+{"tasks":{"$ISSUE":{"windowId":"@31"$state_pr_json,"lifecycle":{"schemaVersion":1,"workflowOutcome":"$workflow_outcome","resourceDisposition":"reaping","launchContract":{"remoteBranchDeletionPolicy":{"allowed":true,"mode":"merged-pr-task-branch","source":"test"}}}}}}
 EOF
     : > "$MILL_LOG_FILE"
 
@@ -316,6 +323,7 @@ EOF
       GIT_CALLS+="$*;"
       case "${1:-} ${2:-}" in
         "status --porcelain")
+          [[ "$TEST_CASE" == "aborted-pr-less-dirty" ]] && printf "%s\n" " M src/file.ts"
           return 0
           ;;
         "worktree remove")
@@ -356,14 +364,14 @@ EOF
           return 0
           ;;
         "merge-base --is-ancestor")
-          [[ "$TEST_CASE" != "preserved-local-work" && "$TEST_CASE" != "patch-equivalent-rebased" && "$TEST_CASE" != "closed-unmerged-retained" && "$TEST_CASE" != "closed-loser-abandoned" ]]
+          [[ "$TEST_CASE" != "preserved-local-work" && "$TEST_CASE" != "patch-equivalent-rebased" && "$TEST_CASE" != "closed-unmerged-retained" && "$TEST_CASE" != "closed-loser-abandoned" && "$TEST_CASE" != aborted-pr-less-* ]]
           return $?
           ;;
         "cat-file -e")
           return 0
           ;;
         "rev-list --count")
-          if [[ "$TEST_CASE" == "preserved-local-work" || "$TEST_CASE" == "patch-equivalent-rebased" || "$TEST_CASE" == "closed-unmerged-retained" || "$TEST_CASE" == "closed-loser-abandoned" ]]; then
+          if [[ "$TEST_CASE" == "preserved-local-work" || "$TEST_CASE" == "patch-equivalent-rebased" || "$TEST_CASE" == "closed-unmerged-retained" || "$TEST_CASE" == "closed-loser-abandoned" || "$TEST_CASE" == aborted-pr-less-* ]]; then
             printf "1\n"
             return 0
           fi
@@ -371,7 +379,7 @@ EOF
           return 0
           ;;
         "rev-list "*)
-          if [[ "$TEST_CASE" == "preserved-local-work" || "$TEST_CASE" == "patch-equivalent-rebased" || "$TEST_CASE" == "closed-unmerged-retained" || "$TEST_CASE" == "closed-loser-abandoned" ]]; then
+          if [[ "$TEST_CASE" == "preserved-local-work" || "$TEST_CASE" == "patch-equivalent-rebased" || "$TEST_CASE" == "closed-unmerged-retained" || "$TEST_CASE" == "closed-loser-abandoned" || "$TEST_CASE" == aborted-pr-less-* ]]; then
             printf "%s\n" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
           fi
           return 0
@@ -397,6 +405,11 @@ EOF
           return 0
           ;;
         "push origin")
+          if [[ "${3:-}" == *:refs/archive/wavemill/* ]]; then
+            ORDER+="archive-push;"
+            [[ "$TEST_CASE" != "aborted-pr-less-archive-push-fails" ]]
+            return $?
+          fi
           ORDER+="push-delete;"
           [[ "$TEST_CASE" != "push-fails" ]]
           return $?
@@ -453,6 +466,13 @@ EOF
       export WAVEMILL_CLEANUP_ABANDON_ISSUE
       state_mutate "$STATE_FILE" ".tasks[\$issue].challenge = true | .tasks[\$issue].challengeRole = \"challenger\" | .tasks[\$issue].challengePairId = \"HOK-2348\"" --arg issue "$ISSUE" >/dev/null
     fi
+
+    case "$TEST_CASE" in
+      aborted-pr-less-abandoned|aborted-pr-less-archive-push-fails|aborted-pr-less-dirty)
+        WAVEMILL_CLEANUP_ABANDON_ISSUE="$ISSUE"
+        export WAVEMILL_CLEANUP_ABANDON_ISSUE
+        ;;
+    esac
 
     set +e
     cleanup_completed_task "$ISSUE" "$SLUG" "test cleanup"
@@ -673,6 +693,36 @@ check_contains "closed loser abandon classifies safe" "$output" "outcome=safe_ab
 check_contains "closed loser abandon removes state" "$output" "remove_state_calls=1"
 check_contains "closed loser abandon retains remote branch" "$output" "retaining remote branch task/task-slug (PR #4242 state=CLOSED"
 check_not_contains "closed loser abandon does not delete remote" "$output" "push origin --delete"
+
+# HOK-3089: PR-less aborted arm with an unpublished head.
+output="$(run_cleanup_case aborted-pr-less-abandoned)"
+check_contains "PR-less abandon returns zero" "$output" "rc=0"
+check_contains "PR-less abandon classifies safe" "$output" "outcome=safe_abandoned_pr_less_arm"
+check_contains "PR-less abandon archives head before removal" "$output" "archive-push;worktree-remove;"
+check_contains "PR-less abandon pushes to archive ref" "$output" "push origin aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:refs/archive/wavemill/HOK-2348"
+check_contains "PR-less abandon removes state" "$output" "remove_state_calls=1"
+check_contains "PR-less abandon writes tombstone" "$output" "tombstone=present"
+check_not_contains "PR-less abandon does not delete remote" "$output" "push origin --delete"
+
+output="$(run_cleanup_case aborted-pr-less-archive-push-fails)"
+check_contains "PR-less archive failure returns non-zero" "$output" "rc=1"
+check_contains "PR-less archive failure retains unpublished" "$output" "outcome=retain_unpublished"
+check_contains "PR-less archive failure names reason" "$output" "archive_push_failed:1"
+check_contains "PR-less archive failure keeps state" "$output" "remove_state_calls=0"
+check_not_contains "PR-less archive failure skips worktree removal" "$output" "worktree-remove;"
+check_not_contains "PR-less archive failure skips branch deletion" "$output" "branch-delete;"
+
+output="$(run_cleanup_case aborted-pr-less-dirty)"
+check_contains "PR-less dirty abandon returns non-zero" "$output" "rc=1"
+check_contains "PR-less dirty abandon retains dirty" "$output" "outcome=retain_dirty"
+check_not_contains "PR-less dirty abandon never archives" "$output" "archive-push;"
+check_contains "PR-less dirty abandon keeps state" "$output" "remove_state_calls=0"
+
+output="$(run_cleanup_case aborted-pr-less-no-abandon)"
+check_contains "PR-less without abandon returns non-zero" "$output" "rc=1"
+check_contains "PR-less without abandon retains unpublished" "$output" "outcome=retain_unpublished"
+check_not_contains "PR-less without abandon never archives" "$output" "archive-push;"
+check_contains "PR-less without abandon guidance names --abandon" "$output" "--abandon --execute"
 
 output="$(run_cleanup_case archive-fails)"
 check_contains "archive failure returns non-zero" "$output" "rc=1"

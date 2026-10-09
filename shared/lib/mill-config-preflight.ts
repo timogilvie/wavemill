@@ -1,19 +1,25 @@
 import { resolve } from 'node:path';
 import { loadWavemillConfig } from './config.ts';
+import { listCoderCanaryGaps, type CoderCanaryGap } from './launchable-models.ts';
 import type { ModelRegistry } from './model-registry.ts';
 import {
   type RemovedModelSettingInventoryItem,
   scanForbiddenModelSettings,
 } from './model-settings-migrator.ts';
 import {
-  isCertificationAutoRemediationTrigger,
+  hasCertificationAutoRemediationWork,
   runCertificationAutoRemediation,
   type AutoRemediationResult,
 } from './native-agent/certification/auto-remediate.ts';
 import {
   evaluateSuiteCoverage,
+  type IneligibleModel,
   type SuiteCoverageResult,
 } from './native-agent/certification/coverage.ts';
+import {
+  REIDENTIFICATION_CAUSE_LABELS,
+  type ReidentificationCause,
+} from './native-agent/certification/catalog-hash-migration.ts';
 import {
   evaluateCanaryCohortHealth,
   refreshCanaryCohort,
@@ -37,6 +43,11 @@ export interface MillConfigPreflightReport {
     'attempted' | 'mode' | 'targets' | 'published' | 'failed' | 'skipped'
   > & {
     remediationLog: string[];
+    /**
+     * Models re-identified before remediation ran, with their cause
+     * (HOK-3159), so the report names one cause instead of N re-certifications.
+     */
+    reidentified?: IneligibleModel[];
   };
   /** Live-coding canary cohort health (HOK-3062). Present when a cohort is configured. */
   canaryCohortHealth?: CanaryCohortHealth;
@@ -45,6 +56,11 @@ export interface MillConfigPreflightReport {
     outcomes: CohortRefreshMemberOutcome[];
     refreshLog: string[];
   };
+  /**
+   * Advisory only (HOK-3142): router-eligible native coders the coding launch
+   * gate refuses for a live-canary reason. Never affects `ok`.
+   */
+  coderCanaryGaps?: CoderCanaryGap[];
 }
 
 export interface MillConfigPreflightResult {
@@ -116,10 +132,7 @@ export async function runMillConfigPreflight(
   if (
     certificationCoverage
     && autoRemediationEnabled
-    && (
-      isCertificationAutoRemediationTrigger(certificationCoverage.status)
-      || certificationCoverage.modelsInRenewalWindow.length > 0
-    )
+    && hasCertificationAutoRemediationWork(certificationCoverage)
   ) {
     const remediationLog: string[] = [];
     const remediation = await runCertificationAutoRemediation({
@@ -134,6 +147,7 @@ export async function runMillConfigPreflight(
       certifyFn: options.certifyFn,
       attemptCachePath: options.attemptCachePath,
     });
+    const reidentified = reidentifiedModels(certificationCoverage.ineligibleModels);
     certificationRemediation = {
       attempted: remediation.attempted,
       mode: remediation.mode,
@@ -142,6 +156,7 @@ export async function runMillConfigPreflight(
       failed: remediation.failed,
       skipped: remediation.skipped,
       remediationLog,
+      ...(reidentified.length > 0 ? { reidentified } : {}),
     };
     certificationCoverage = evaluateSuiteCoverage({
       repoDir: absRepoDir,
@@ -203,6 +218,21 @@ export async function runMillConfigPreflight(
     }
   }
 
+  // Advisory: never gating, and a failure to compute it never blocks startup.
+  let coderCanaryGaps: CoderCanaryGap[] = [];
+  if (validationError === null && env.WAVEMILL_SKIP_CERTIFICATION_COVERAGE_GUARD !== '1') {
+    try {
+      coderCanaryGaps = listCoderCanaryGaps({
+        repoDir: absRepoDir,
+        registry: options.registry,
+        certificationRoot: options.certificationRoot,
+        now: options.now?.(),
+      });
+    } catch {
+      coderCanaryGaps = [];
+    }
+  }
+
   const certificationCoverageBlocked = certificationCoverage?.status === 'bump-without-publish'
     || certificationCoverage?.status === 'identity-drift';
   const certificationStaleBlocked = certificationCoverage?.status === 'stale';
@@ -218,6 +248,7 @@ export async function runMillConfigPreflight(
     ...(certificationRemediation ? { certificationRemediation } : {}),
     ...(canaryCohortHealth ? { canaryCohortHealth } : {}),
     ...(canaryCohortRefresh ? { canaryCohortRefresh } : {}),
+    ...(coderCanaryGaps.length > 0 ? { coderCanaryGaps } : {}),
   };
 
   return {
@@ -267,19 +298,14 @@ export function formatMillConfigPreflightReport(report: MillConfigPreflightRepor
 
   if (report.certificationCoverage?.status === 'identity-drift') {
     const coverage = report.certificationCoverage;
-    const sample = coverage.ineligibleModels.slice(0, 6).map((m) => m.registryKey).join(', ');
-    const more = coverage.ineligibleModels.length > 6
-      ? ` (+${coverage.ineligibleModels.length - 6} more)`
-      : '';
+    const drifted = reidentifiedModels(coverage.ineligibleModels);
     lines.push(
       '',
       'Native certification identity drift:',
       `  ERROR: ${coverage.artifactCountForRequiredSuite} artifact(s) are present at suite '${coverage.requiredSuiteVersion}',`,
       `  but ${coverage.identityDriftCount} model(s) no longer match their certified subject and only`,
       `  ${coverage.eligibleModelCount} remain launchable. Store: ${coverage.root}`,
-      `  Affected: ${sample}${more}`,
-      "  This is what a change to shared/fixtures/model_30_launch_priority_models.v1.json does:",
-      '  it moves catalogHash, which invalidates every stored artifact on this machine at once.',
+      ...formatReidentificationCauses(drifted.length > 0 ? drifted : coverage.ineligibleModels),
       `  Run: ${coverage.remediationCommand}`,
       '  Auto-remediation can be disabled with WAVEMILL_SKIP_CERTIFICATION_AUTO_REMEDIATE=1.',
       '  To skip only this guard, set WAVEMILL_SKIP_CERTIFICATION_COVERAGE_GUARD=1.',
@@ -324,6 +350,10 @@ export function formatMillConfigPreflightReport(report: MillConfigPreflightRepor
     lines.push('', formatCanaryCohortReport(report));
   }
 
+  if (report.coderCanaryGaps?.length) {
+    lines.push('', formatCoderCanaryGapReport(report));
+  }
+
   if (report.removedFields.length > 0 || report.validationError) {
     lines.push(
       '',
@@ -348,6 +378,12 @@ export function formatCertificationRemediationReport(report: MillConfigPreflight
     `  mode=${remediation.mode} attempted=${remediation.attempted ? 'yes' : 'no'} targets=${remediation.targets.length}`,
     `  published=${remediation.published.length} failed=${remediation.failed.length} skipped=${remediation.skipped.length}`,
   ];
+  if (remediation.reidentified?.length) {
+    lines.push(
+      `  ${remediation.reidentified.length} model(s) re-identified before remediation:`,
+      ...formatReidentificationCauses(remediation.reidentified),
+    );
+  }
   for (const line of remediation.remediationLog) {
     lines.push(`  ${line}`);
   }
@@ -387,6 +423,62 @@ export function formatCanaryCohortReport(report: MillConfigPreflightReport): str
     }
   }
   return lines.join('\n');
+}
+
+/**
+ * Format the router-eligible coders that lack a passing live coding canary
+ * (HOK-3142). Empty string when there are none.
+ */
+export function formatCoderCanaryGapReport(report: MillConfigPreflightReport): string {
+  const gaps = report.coderCanaryGaps ?? [];
+  if (gaps.length === 0) {
+    return '';
+  }
+  return [
+    `Coder live-canary gaps (advisory): ${gaps.length} router-eligible coder(s) cannot launch for coding and are skipped by routing:`,
+    ...gaps.map((gap) => `  ${gap.modelId}: ${gap.certification}${gap.certifyCommand ? ` — run: ${gap.certifyCommand}` : ''}`),
+  ].join('\n');
+}
+
+function reidentifiedModels(models: IneligibleModel[]): IneligibleModel[] {
+  return models.filter((model) => (
+    model.reason === 'identity-reidentified' || model.reason === 'identity-invalidated'
+  ));
+}
+
+const SAMPLE_SIZE = 6;
+
+function formatModelSample(keys: string[]): string {
+  const more = keys.length > SAMPLE_SIZE ? ` (+${keys.length - SAMPLE_SIZE} more)` : '';
+  return `${keys.slice(0, SAMPLE_SIZE).join(', ')}${more}`;
+}
+
+/**
+ * Blast-radius summary for re-identified models (HOK-3159). One model keeps
+ * the single `Affected:` line, annotated with its cause; several models are
+ * grouped by cause so one shared root cause (e.g. a launch-priority fixture
+ * edit) reads as one line rather than N separate re-certifications.
+ */
+export function formatReidentificationCauses(models: IneligibleModel[]): string[] {
+  if (models.length === 0) return [];
+  if (models.length === 1) {
+    const [model] = models;
+    const cause = model!.cause ? ` (${REIDENTIFICATION_CAUSE_LABELS[model!.cause]})` : '';
+    return [`  Affected: ${model!.registryKey}${cause}`];
+  }
+  const byCause = new Map<ReidentificationCause, string[]>();
+  for (const model of models) {
+    const cause = model.cause ?? 'unknown';
+    byCause.set(cause, [...(byCause.get(cause) ?? []), model.registryKey]);
+  }
+  const groups = [...byCause.entries()]
+    .sort(([a, aKeys], [b, bKeys]) => bKeys.length - aKeys.length || a.localeCompare(b));
+  return [
+    '  Causes:',
+    ...groups.map(([cause, keys]) => (
+      `    - ${keys.length} model(s): ${REIDENTIFICATION_CAUSE_LABELS[cause]} — ${formatModelSample(keys)}`
+    )),
+  ];
 }
 
 function normalizeRenewalWindowDays(value: number | undefined): number {

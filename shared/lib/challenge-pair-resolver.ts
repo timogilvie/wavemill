@@ -32,6 +32,7 @@ import {
 import {
   classifyArmFault,
   describeArmFailure,
+  isInvalidChallengeAbort,
   parseAbortFailureKind,
   type ChallengeArmFailure,
 } from './arm-failure-taxonomy.ts';
@@ -691,7 +692,17 @@ function buildResolutionRecord(input: {
   if (input.reason === 'sibling-challenge-aborted') {
     const aborted = primary?.challengeAborted ? primary : challenger?.challengeAborted ? challenger : undefined;
     const survivor = aborted?.role === 'primary' ? challenger : primary;
-    if (!aborted || !survivor?.evalCompleted) {
+    if (!aborted) {
+      return null;
+    }
+    // HOK-3147: an arm retired as `invalid_challenge:<kind>` (infrastructure/
+    // identity failure, e.g. Ready failed at route-stamp) never had a valid
+    // opponent. Resolve without a winner and without waiting on the
+    // survivor's eval — there is nothing for that eval to decide.
+    if (isInvalidChallengeAbort(aborted.challengeAborted)) {
+      return buildInfrastructureAbortResolution(input, aborted, forkDescriptor);
+    }
+    if (!survivor?.evalCompleted) {
       return null;
     }
     const armFailures = buildArmFailures(primary, challenger);
@@ -756,6 +767,12 @@ function buildResolutionRecord(input: {
     if (completed.length === 1) {
       const survivor = completed[0];
       const abortedRole: 'primary' | 'challenger' = survivor.role === 'primary' ? 'challenger' : 'primary';
+      // HOK-3147: same rule as the sibling branch — an infrastructure-retired
+      // arm voids the pair instead of handing the survivor a phantom win.
+      const abortedArm = abortedRole === 'primary' ? primary : challenger;
+      if (abortedArm && isInvalidChallengeAbort(abortedArm.challengeAborted)) {
+        return buildInfrastructureAbortResolution(input, abortedArm, forkDescriptor);
+      }
       const invalidArm = input.evalsDir
         ? invalidArmSnapshot(input.evalsDir, input.pairId, abortedRole)
         : null;
@@ -914,6 +931,48 @@ function buildResolutionRecord(input: {
         : 'Challenge pair became orphaned before a comparison could be launched; the surviving side wins by forfeit.',
       terminalReason: 'orphan_pair',
       noComparisonReason,
+      timestamp: input.timestamp,
+      ...forkDescriptor,
+    }),
+  };
+}
+
+/**
+ * HOK-3147: terminal record for a pair whose `aborted` arm was retired with an
+ * `invalid_challenge:<kind>` stamp (harness/infrastructure failure before it
+ * could be evaluated). Emits `invalid_challenge` with no winner; its
+ * `armFailures` carry the harness-fault classification, so no model forfeit is
+ * attributed. tend-challenge-gate releases the survivor once the retired
+ * arm's PR is closed (`challenge-void`).
+ */
+function buildInfrastructureAbortResolution(
+  input: { pairId: string; pairState: PairTaskState; timestamp: string; evalsDir?: string },
+  aborted: TaskEvalState,
+  forkDescriptor: ReturnType<typeof forkDescriptorForPair>,
+): { record: ChallengeComparison; outcome: 'invalid_challenge' } {
+  const { primary, challenger } = input.pairState;
+  // HOK-2970 precedent: when the retired arm's latest eval already carries a
+  // typed invalid-challenge reason, keep it rather than the generic one.
+  const invalidArm = input.evalsDir
+    ? invalidArmSnapshot(input.evalsDir, input.pairId, aborted.role)
+    : null;
+  const details = invalidArm?.details ?? aborted.challengeAbortedDetail;
+  return {
+    outcome: 'invalid_challenge',
+    record: buildInvalidChallengeArmComparison({
+      challengePairId: input.pairId,
+      primaryModel: getTaskModel(primary),
+      challengerModel: getTaskModel(challenger),
+      primaryPrUrl: getTaskPrUrl(primary),
+      challengerPrUrl: getTaskPrUrl(challenger),
+      primaryCompleted: primary?.evalCompleted === true,
+      challengerCompleted: challenger?.evalCompleted === true,
+      armFailures: buildArmFailures(primary, challenger),
+      abortedSide: aborted.role,
+      terminalReason: aborted.role === 'primary' ? 'primary_challenge_aborted' : 'challenger_challenge_aborted',
+      invalidChallengeReason: invalidArm?.reason ?? 'arm_infrastructure_failure',
+      ...(details ? { invalidChallengeDetails: details } : {}),
+      rationale: `${describeTaskFailure(aborted)} The ${aborted.role} arm was retired for an infrastructure failure before it could be evaluated; no winner can be decided.`,
       timestamp: input.timestamp,
       ...forkDescriptor,
     }),

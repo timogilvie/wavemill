@@ -2,7 +2,7 @@ import type {
   ModelFamily,
   NormalizedCatalogEntry,
 } from './openrouter-catalog.ts';
-import { hashLaunchPriorityFixture } from './openrouter-catalog.ts';
+import { hashLaunchPriorityFixture, hashLaunchPriorityModelRow } from './openrouter-catalog.ts';
 import {
   dispatchOpenRouterRequest,
   type BlockerCategory,
@@ -36,7 +36,14 @@ export async function runOpenRouterSmoke(opts: {
   }
 
   const now = opts.now ?? (() => new Date());
-  const catalogHash = opts.catalogHash ?? hashLaunchPriorityFixture();
+  // Per-model catalog hash (HOK-3159), matching `CertificationSubject.catalogHash`
+  // for the same row. A caller-supplied hash wins; an entry without a fixture
+  // row falls back to the whole-file hash so the report is never hash-less.
+  let wholeFileHash: string | undefined;
+  const catalogHashFor = (entry: NormalizedCatalogEntry): string => opts.catalogHash
+    ?? hashLaunchPriorityModelRow(entry.wavemillAlias)
+    ?? hashLaunchPriorityModelRow(entry.openrouterId)
+    ?? (wholeFileHash ??= hashLaunchPriorityFixture());
 
   if (!opts.transport && (!opts.apiKey || opts.apiKey.trim().length === 0)) {
     return opts.entries.map((entry) => ({
@@ -44,7 +51,7 @@ export async function runOpenRouterSmoke(opts: {
       family: entry.family,
       status: 'blocker',
       requestedWireId: entry.openrouterId,
-      catalogHash,
+      catalogHash: catalogHashFor(entry),
       checkedAt: now().toISOString(),
       category: 'provider_unavailable',
       detail: 'OpenRouter API key is required for live smoke runs.',
@@ -78,7 +85,7 @@ export async function runOpenRouterSmoke(opts: {
           status: 'ok',
           requestedWireId: entry.openrouterId,
           providerReturnedModel: extractReturnedModel(result.raw),
-          catalogHash,
+          catalogHash: catalogHashFor(entry),
           checkedAt: now().toISOString(),
           costUsd: result.costUsd,
         });
@@ -90,7 +97,7 @@ export async function runOpenRouterSmoke(opts: {
         family: entry.family,
         status: 'blocker',
         requestedWireId: entry.openrouterId,
-        catalogHash,
+        catalogHash: catalogHashFor(entry),
         checkedAt: now().toISOString(),
         category: result.category,
         detail: result.detail,
@@ -101,7 +108,7 @@ export async function runOpenRouterSmoke(opts: {
         family: entry.family,
         status: 'blocker',
         requestedWireId: entry.openrouterId,
-        catalogHash,
+        catalogHash: catalogHashFor(entry),
         checkedAt: now().toISOString(),
         category: 'provider_unavailable',
         detail: error instanceof Error ? error.message : String(error),

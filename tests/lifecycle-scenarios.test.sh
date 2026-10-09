@@ -114,6 +114,13 @@ for fn in \
   check_stage_awaiting_user \
   phase_launch_head \
   phase_launch_gate \
+  coding_launch_refusal_limit \
+  coding_launch_refusal_is_transient \
+  log_coding_launch_refusal \
+  coding_launch_refusal_hold \
+  coding_launch_refusal_clear \
+  coding_launch_refusal_terminalize \
+  handle_coding_launch_refusal \
   _run_phase_launch \
   reap_completed_planning_pane \
   persist_challenge_execution_intent \
@@ -209,6 +216,9 @@ for fn in \
   cleanup_merged_primary_challenge_task \
   closed_pr_resource_policy \
   coding_stage_owner_lost \
+  coding_stage_mark_interrupted \
+  coding_interrupted_late_completion_reconcile \
+  blocked_completion_commit_matches_head \
   monitor_issue_state
 do
   extract_function "$MONITOR_SCRIPT_FILE" "$fn" >> "$MONITOR_FUNC_FILE"
@@ -240,6 +250,28 @@ run_lifecycle_scenario() {
       # shellcheck source=/dev/null
       source "$scenario_file"
     done
+
+    # HOK-3004: scenarios that want the real terminal reconciler to evolve
+    # persisted markers across monitor iterations opt in via this helper from
+    # their setup_<scenario> function (default is the no-reconciler path so
+    # existing fixtures keep their stubbed behavior).
+    load_terminal_reconciler_for_scenario() {
+      # shellcheck source=/dev/null
+      source "$SOURCE_REPO_DIR/shared/lib/terminal-reconciler.sh"
+      # The real reconciler reads PR state via gh; the harness has no live gh,
+      # so synthesize a PR JSON from scenario fields that mirrors
+      # wavemill_pr_live_state output.
+      wavemill_pr_live_state() {
+        local pr="${1:-}" state="${PR_STATUS:-OPEN}" terminal="" merged_at="null"
+        case "$state" in
+          MERGED) terminal="MERGED"; merged_at="\"2026-01-01T00:00:00Z\"" ;;
+          CLOSED) terminal="CLOSED" ;;
+          *) terminal="$state" ;;
+        esac
+        printf "{\"number\":%s,\"state\":\"%s\",\"mergedAt\":%s,\"terminalState\":\"%s\"}\n" \
+          "$pr" "$state" "$merged_at" "$terminal"
+      }
+    }
 
     lifecycle_default_state() {
       declare -gAg BRANCH_BY_ISSUE=()

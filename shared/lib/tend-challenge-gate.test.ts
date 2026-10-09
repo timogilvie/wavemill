@@ -2032,3 +2032,134 @@ describe('classifyChallengeState siblingStalled (HOK-3128)', () => {
     assert.equal((gate as { reason: string }).reason, 'sibling-challenge-aborted');
   });
 });
+
+describe('challenge-void: a sibling retired as an invalid challenge (HOK-3147)', () => {
+  const voidRecord = (overrides: Record<string, unknown> = {}) => ({
+    challengePairId: 'pair-1',
+    primaryPrUrl: 'https://github.com/org/repo/pull/101',
+    challengerPrUrl: 'https://github.com/org/repo/pull/102',
+    comparisonOutcome: 'invalid_challenge',
+    invalidChallenge: true,
+    invalidChallengeReason: 'arm_infrastructure_failure',
+    terminalReason: 'challenger_challenge_aborted',
+    timestamp: '2026-10-01T21:40:00Z',
+    ...overrides,
+  });
+
+  async function gate(
+    record: Record<string, unknown>,
+    openPrs: number[],
+    config: Record<string, unknown> = {},
+  ) {
+    const { repoDir, cleanup } = setupRepoDir(config);
+    try {
+      writeWorkflowState(repoDir, {
+        HOK_1: { pr: 101, challengePairId: 'pair-1', challengeRole: 'primary', evalCompleted: true },
+        HOK_1_c: {
+          pr: 102,
+          challengePairId: 'pair-1',
+          challengeRole: 'challenger',
+          challengeAborted: 'invalid_challenge:ready-transition-failed',
+        },
+      });
+      writeFileSync(join(repoDir, '.wavemill', 'evals', 'challenge-records.jsonl'), `${JSON.stringify(record)}\n`);
+      const items = openPrs.map((number) => makeWorkItem({ number, challengePairId: 'pair-1', challenge: true }));
+      return await applyChallengePairGates(items, [], repoDir, { remoteBranches: [], coolOffSeconds: 0 });
+    } finally {
+      cleanup();
+    }
+  }
+
+  it('releases the primary once the retired challenger PR is closed', async () => {
+    const result = await gate(voidRecord(), [101]);
+    assert.deepEqual(result.eligible.map((item) => item.pr.number), [101]);
+    assert.equal(result.blocked.length, 0);
+    assert.deepEqual(result.losers, []);
+    assert.equal(result.loserCleanupCandidates.length, 0);
+  });
+
+  it('releases the survivor even when autoMergeWinner is off (no winner to hold)', async () => {
+    const result = await gate(voidRecord(), [101], { challenge: { autoMergeWinner: false } });
+    assert.deepEqual(result.eligible.map((item) => item.pr.number), [101]);
+  });
+
+  it('keeps the HOK-2970 hold while the retired challenger PR is still open', async () => {
+    const result = await gate(voidRecord(), [101, 102]);
+    assert.equal(result.eligible.length, 0);
+    const reasons = Object.fromEntries(result.blocked.map((entry) => [entry.number, entry.reason]));
+    assert.equal(reasons[101], 'challenge:pair-unresolved:invalid-challenge:arm_infrastructure_failure');
+    assert.equal(reasons[102], 'challenge:pair-unresolved:invalid-challenge:arm_infrastructure_failure');
+    assert.deepEqual(result.losers, []);
+  });
+
+  it('never releases the retired arm itself', async () => {
+    const result = await gate(voidRecord(), [102]);
+    assert.equal(result.eligible.length, 0);
+    assert.equal(result.blocked[0]?.reason, 'challenge:pair-unresolved:invalid-challenge:arm_infrastructure_failure');
+  });
+
+  it('keeps holding a both_challenge_aborted invalid record', async () => {
+    const result = await gate(voidRecord({ terminalReason: 'both_challenge_aborted' }), [101]);
+    assert.equal(result.eligible.length, 0);
+    assert.equal(result.blocked[0]?.reason, 'challenge:pair-unresolved:invalid-challenge:arm_infrastructure_failure');
+  });
+
+  it('releases the challenger symmetrically when the primary was retired', async () => {
+    const result = await gate(voidRecord({ terminalReason: 'primary_challenge_aborted' }), [102]);
+    assert.deepEqual(result.eligible.map((item) => item.pr.number), [102]);
+  });
+
+  it('releases the primary once a review-identity-mismatch retired challenger PR is closed (HOK-3154)', async () => {
+    const { repoDir, cleanup } = setupRepoDir({ challenge: { autoMergeWinner: true } });
+    try {
+      writeWorkflowState(repoDir, {
+        HOK_1: { pr: 101, challengePairId: 'pair-1', challengeRole: 'primary', evalCompleted: true },
+        HOK_1_c: {
+          pr: 102,
+          challengePairId: 'pair-1',
+          challengeRole: 'challenger',
+          challengeAborted: 'invalid_challenge:review-identity-mismatch',
+          challengeAbortedStage: 'review',
+        },
+      });
+      writeFileSync(
+        join(repoDir, '.wavemill', 'evals', 'challenge-records.jsonl'),
+        `${JSON.stringify({
+          challengePairId: 'pair-1',
+          primaryPrUrl: 'https://github.com/org/repo/pull/101',
+          challengerPrUrl: 'https://github.com/org/repo/pull/102',
+          comparisonOutcome: 'invalid_challenge',
+          invalidChallenge: true,
+          invalidChallengeReason: 'arm_infrastructure_failure',
+          terminalReason: 'challenger_challenge_aborted',
+          timestamp: '2026-10-02T12:00:00Z',
+          armFailures: [{ side: 'challenger', model: 'kimi-k2', stage: 'review', failureKind: 'review-identity-mismatch', faultClass: 'harness-fault' }],
+        })}\n`,
+      );
+      // Only the primary PR is still open (the monitor closed the retired challenger).
+      const items = [101].map((number) =>
+        makeWorkItem({ number, challengePairId: 'pair-1', challenge: true }),
+      );
+      const result = await applyChallengePairGates(items, [], repoDir, { remoteBranches: [], coolOffSeconds: 0 });
+      assert.deepEqual(result.eligible.map((item) => item.pr.number), [101]);
+      assert.equal(result.blocked.length, 0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('a ready-exhausted forfeit makes the primary the winner and the open challenger a loser', async () => {
+    const result = await gate(voidRecord({
+      comparisonOutcome: 'forfeit',
+      invalidChallenge: undefined,
+      invalidChallengeReason: undefined,
+      winner: 'primary',
+      primaryCompleted: true,
+      challengerCompleted: false,
+      armFailures: [{ side: 'challenger', model: 'm', stage: 'ready', failureKind: 'ready-exhausted', faultClass: 'model-fault' }],
+    }), [101, 102], { challenge: { autoMergeWinner: true } });
+    assert.deepEqual(result.eligible.map((item) => item.pr.number), [101]);
+    assert.deepEqual(result.losers, [102]);
+    assert.equal(result.loserCleanupCandidates[0]?.loserPr, 102);
+  });
+});

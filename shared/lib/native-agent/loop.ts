@@ -2,21 +2,36 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   runAgentLoopContinue,
   type AfterToolCallResult,
-  type AgentContext,
+  type AgentContext as PiAgentContext,
   type AgentEventSink,
   type AgentLoopConfig,
+  type AgentLoopTurnUpdate,
   type AgentMessage,
+  type AgentTurnContext,
   type AfterToolCallContext,
   type BeforeToolCallContext,
-  type ShouldStopAfterTurnContext,
 } from '@earendil-works/pi-agent-core';
 import type { AgentEvent } from '@earendil-works/pi-agent-core';
-import type { AssistantMessage, Model } from '@earendil-works/pi-ai';
+import { createInitialSystemMessage, type AssistantMessage, type Model, type Models } from '@earendil-works/pi-ai';
+import type { StreamFn } from '@earendil-works/pi-agent-core';
+import { getActiveNativeModels } from './models.ts';
+import { getScriptedPiStreamFn } from './provider.ts';
 import { SessionStreamWriter, type SessionStreamWriterOptions, storeArtifact } from './session-stream.ts';
+import { resolvePiRuntimeVersions } from './pi-runtime-version.ts';
 
-// Re-export the Pi agent context type through the loop seam so loop callers can
-// construct an AgentContext without importing Pi vendor packages directly.
-export type { AgentContext, AgentMessage } from '@earendil-works/pi-agent-core';
+/**
+ * Wavemill's loop context: Pi's context plus the run's system prompt.
+ *
+ * Pi 1.0 removed `AgentContext.systemPrompt`; the prompt now travels as a
+ * leading system message. The loop seam keeps it as a field so launchers,
+ * prompt estimation, and compaction share one representation, and
+ * `runWavemillLoop` installs it as that leading message on every request
+ * without writing it into the transcript (HOK-3161).
+ */
+export interface AgentContext extends PiAgentContext {
+  systemPrompt?: string;
+}
+export type { AgentMessage } from '@earendil-works/pi-agent-core';
 import { computeModelCost, type ModelPricing } from '../workflow-cost.ts';
 import type { ModelRegistry } from '../model-registry.ts';
 import { appendPromptSizeSample, type PromptSizeSample } from './prompt-size-log.ts';
@@ -47,6 +62,14 @@ import {
 import { evaluateBeforeToolCallPolicy, type ToolPolicyConfig } from './tools/policies.ts';
 import { redactSecrets, redactSecretsInValue } from './tools/redaction.ts';
 import { ToolStagnationTracker, type ToolStagnationPolicy } from './planning-guards.ts';
+import {
+  extractProviderReportedIdentity,
+  ProviderIdentityMismatchError,
+  ProviderIdentityTracker,
+  verifyProviderIdentity,
+  type ProviderIdentityExpectation,
+  type ProviderIdentitySummary,
+} from './provider-identity.ts';
 import type {
   OutputCapPolicy,
   ToolMetadata,
@@ -162,6 +185,23 @@ export interface WavemillLoopConfig {
   /** Pi agent context (systemPrompt, messages, tools) for this run. */
   context: AgentContext;
   /**
+   * Models collection whose `streamSimple` dispatches each turn through the
+   * provider that owns `model`. Launchers build one per run with the resolved
+   * api key injected into the collection's AuthContext (HOK-3162).
+   *
+   * When omitted, the loop first falls back to a caller-supplied `streamFn`,
+   * then to the module-local active collection registered by scripted-provider
+   * tests (`setActiveNativeModels`). Neither available → the loop throws before
+   * the first turn so production launches cannot silently proceed without auth.
+   */
+  models?: Models;
+  /**
+   * Low-level stream override. Takes precedence over `models` and the active
+   * collection fallback. Useful for tests that want to bypass Models entirely
+   * and for recovery paths that already thread their own dispatch.
+   */
+  streamFn?: StreamFn;
+  /**
    * Converts Pi AgentMessage[] to LLM-compatible Message[] before each turn.
    * Must not throw; return a safe fallback on errors.
    */
@@ -267,6 +307,30 @@ export interface WavemillLoopConfig {
    * canonical content to the artifact store. Defaults to 8 KiB.
    */
   menuInlineMaxBytes?: number;
+  /**
+   * Per-turn provider identity verification (HOK-3143). When provided, the
+   * loop extracts `responseModel`/`responseId` from each assistant turn and
+   * verifies against the certified pinned identity. On `mismatch` or an
+   * `unverifiable` alias turn, the loop:
+   *   1. latches an identity failure (no tool from that turn is allowed to run),
+   *   2. awaits `onMismatch` (so the launcher can rewrite the certificate),
+   *   3. throws `ProviderIdentityMismatchError`.
+   *
+   * When omitted, behaviour is unchanged — this keeps scripted and test
+   * runs untouched.
+   */
+  providerIdentity?: {
+    expectation: ProviderIdentityExpectation;
+    /**
+     * Invoked exactly once per loop run on a hard identity failure. Awaited
+     * inside the loop's finally block before the error is thrown so the
+     * launcher's invalidation write completes before the stage result is
+     * assembled.
+     */
+    onMismatch?: (error: ProviderIdentityMismatchError) => Promise<void> | void;
+    /** Caller-owned tracker; the loop creates one when omitted. */
+    tracker?: ProviderIdentityTracker;
+  };
 }
 
 export interface NativeContextManagementConfig {
@@ -299,6 +363,12 @@ export interface LoopResult {
     errorMessage: string;
     turnsAtFailure: number;
   };
+  /**
+   * Provider-reported identity summary (HOK-3143). Present when
+   * `providerIdentity` was configured. Launchers persist this on the stage
+   * result so `executedModel` reflects what the provider actually served.
+   */
+  providerIdentity?: ProviderIdentitySummary;
 }
 
 // ---------------------------------------------------------------------------
@@ -475,6 +545,39 @@ export function resolveMaxOutputTokens(config: Pick<WavemillLoopConfig, 'maxToke
   return config.maxTokens ?? config.model.maxTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
 }
 
+/**
+ * Resolve the StreamFn that drives this loop (HOK-3162). Precedence:
+ *   1. an explicit `streamFn` override (low-level tests, recovery paths),
+ *   2. the per-run `models` collection's `streamSimple`,
+ *   3. the module-local scripted-provider stream (api-indexed, test-only;
+ *      stands in for the removed compat registry),
+ *   4. the module-local active `Models` collection pointer, if any set.
+ * Nothing available → throw before the first turn so production launches
+ * cannot silently proceed without auth.
+ */
+function resolveStreamFn(config: Pick<WavemillLoopConfig, 'streamFn' | 'models'>): StreamFn {
+  if (config.streamFn) {
+    return config.streamFn;
+  }
+  if (config.models) {
+    const models = config.models;
+    return (model, context, options) => models.streamSimple(model, context, options);
+  }
+  const scripted = getScriptedPiStreamFn();
+  if (scripted) {
+    return scripted;
+  }
+  const active = getActiveNativeModels();
+  if (active) {
+    return (model, context, options) => active.streamSimple(model, context, options);
+  }
+  throw new Error(
+    'runWavemillLoop: no models collection or streamFn provided and no active '
+    + 'native models have been registered. Pass `models` from the launcher '
+    + '(createNativeModelsCollection) or inject a `streamFn` for tests.',
+  );
+}
+
 function toPiModel(config: ProviderModelConfig, maxTokens: number, contextWindow?: number): Model<string> {
   const requestModelId = toProviderRequestModelId(config);
   return {
@@ -508,6 +611,8 @@ interface ComposedSignal {
   signal: AbortSignal;
   cleanup: () => void;
   isWallClockExpiry: () => boolean;
+  /** Abort the composed signal (not treated as a wall-clock expiry). */
+  abort: () => void;
 }
 
 function composeAbortSignal(
@@ -544,7 +649,7 @@ function composeAbortSignal(
     }, maxWallClockMs);
   }
 
-  return { signal: controller.signal, cleanup, isWallClockExpiry: () => wallClockExpired };
+  return { signal: controller.signal, cleanup, isWallClockExpiry: () => wallClockExpired, abort };
 }
 
 // ---------------------------------------------------------------------------
@@ -557,6 +662,7 @@ function composeAbortSignal(
  */
 export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopResult> {
   const { context, convertToLlm, budget, signal: callerSignal, onHeartbeat, modelPricing, temperature } = config;
+  const streamFn = resolveStreamFn(config);
   const phaseMaxTokens = resolveMaxOutputTokens(config);
   let currentMaxTokens = phaseMaxTokens;
   const contextManagement = resolveContextManagementConfig(config.contextManagement);
@@ -595,6 +701,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
         sessionStreamWriter.writeSessionStarted({
           initialConfigDigest: streamConfig.initialConfigDigest ?? computeArgsFingerprint(config.model),
           manifestId: streamConfig.manifestId,
+          piRuntimeVersions: resolvePiRuntimeVersions(),
         });
       } else {
         skipSessionBoundaryEvents = true;
@@ -645,6 +752,13 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
   const batchFailed = new WeakMap<AssistantMessage, boolean>();
   // Tool call ids that were skipped by beforeToolCall (not real failures).
   const skippedCallIds = new Set<string>();
+  // Provider-identity state (HOK-3143).
+  const identityTracker = config.providerIdentity?.tracker ?? new ProviderIdentityTracker();
+  // Latched when a turn fails identity verification. All subsequent
+  // beforeToolCall calls on that turn's AssistantMessage are blocked, and the
+  // loop throws ProviderIdentityMismatchError once the current turn drains.
+  const identityFailureByMessage = new WeakMap<AssistantMessage, true>();
+  let identityFailureError: ProviderIdentityMismatchError | undefined;
   // Track current turn's model request event ID and callId for linking response
   let currentTurnRequestEventId: string | undefined;
   let currentTurnRequestCallId: string | undefined;
@@ -734,13 +848,36 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
     throw error;
   }
 
+  // Next-turn planning (dynamic max tokens, terminal synthesis). Pi 1.0 runs
+  // prepareNextTurn after finishTurn, so finishTurn computes the plan and
+  // prepareNextTurn hands it to Pi (HOK-3161).
+  let planNextTurn: ((turn: AgentTurnContext) => Promise<AgentLoopTurnUpdate | undefined>) | undefined;
+  let plannedNextTurn: AgentLoopTurnUpdate | undefined;
+
+  // Pi 1.0 reads the prompt from a leading system message. It is prepended per
+  // request rather than stored in context.messages, so the transcript, retry,
+  // and continuation paths see the same messages as before (HOK-3161).
+  const systemPromptMessage = createInitialSystemMessage(context.systemPrompt, undefined);
+
   const piConfig: AgentLoopConfig = {
     model: toPiModel(config.model, currentMaxTokens, contextWindowLimit?.limit),
-    convertToLlm,
+    convertToLlm: async (messages) => {
+      const llmMessages = await convertToLlm(messages);
+      return systemPromptMessage ? [systemPromptMessage, ...llmMessages] : llmMessages;
+    },
     temperature,
     maxTokens: currentMaxTokens,
 
-    shouldStopAfterTurn: async (ctx: ShouldStopAfterTurnContext) => {
+    finishTurn: async (ctx: AgentTurnContext) => {
+      // Pi 1.0 replaced shouldStopAfterTurn with finishTurn, which also runs
+      // for error/aborted turns and runs before prepareNextTurn. Keep the 0.79
+      // contract: hard exits skip both, and next-turn planning (which can arm
+      // terminal synthesis) happens before the budget checks below (HOK-3161).
+      if (ctx.message.stopReason === 'error' || ctx.message.stopReason === 'aborted') {
+        return undefined;
+      }
+      plannedNextTurn = await planNextTurn?.(ctx);
+
       const msg = ctx.message as AssistantMessage;
       const usage = msg.usage;
       if (usage) {
@@ -756,7 +893,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
             modelPricing,
           );
         }
-        
+      
         // Track peak input tokens (what must fit in context window)
         const totalTokens = input + cacheRead + cacheWrite;
         if (totalTokens > peakInputTokens) {
@@ -775,22 +912,22 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
         && turnsCompleted >= budget.maxTurns
       ) {
         budgetStopReason = 'turn_limit';
-        return true;
+        return { action: 'end' };
       }
       if (budget?.maxInputTokens !== undefined && totalInputTokens >= budget.maxInputTokens) {
         budgetStopReason = 'token_limit';
-        return true;
+        return { action: 'end' };
       }
       if (budget?.maxOutputTokens !== undefined && totalOutputTokens >= budget.maxOutputTokens) {
         budgetStopReason = 'token_limit';
-        return true;
+        return { action: 'end' };
       }
       if (
         budget?.maxTotalTokens !== undefined &&
         totalInputTokens + totalOutputTokens >= budget.maxTotalTokens
       ) {
         budgetStopReason = 'token_limit';
-        return true;
+        return { action: 'end' };
       }
       const terminalSynthesisCompleted = terminalSynthesisActive
         && !terminalSynthesisPromptPending
@@ -802,20 +939,26 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
         && toolCallsExecuted >= budget.maxToolCalls
       ) {
         budgetStopReason = 'tool_call_limit';
-        return true;
+        return { action: 'end' };
       }
       if (budget?.maxCostUsd !== undefined && totalCostUsd >= budget.maxCostUsd) {
         budgetStopReason = 'cost_limit';
-        return true;
+        return { action: 'end' };
       }
       // Gracefully exit if the abort signal fired during this turn (e.g. wall-clock or caller cancel).
       if (composed.signal.aborted) {
-        return true;
+        return { action: 'end' };
       }
-      return false;
+      return undefined;
     },
 
     beforeToolCall: async (ctx: BeforeToolCallContext, signal?: AbortSignal) => {
+      // Identity gate: once a turn fails provider-identity verification, none
+      // of its tool calls are permitted to run. HOK-3143.
+      if (identityFailureByMessage.get(ctx.assistantMessage)) {
+        skippedCallIds.add(ctx.toolCall.id);
+        return { block: true, reason: 'provider_identity_mismatch' };
+      }
       // Fail-fast: skip subsequent calls once the batch has a failure.
       if (batchFailed.get(ctx.assistantMessage)) {
         skippedCallIds.add(ctx.toolCall.id);
@@ -1015,7 +1158,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
   };
 
   if (contextWindowLimit || config.terminalSynthesis) {
-    piConfig.prepareNextTurn = async (ctx) => {
+    planNextTurn = async (ctx) => {
       let nextModel: Model<any> | undefined;
       if (contextWindowLimit) {
         const inputTokens = estimatePromptTokens({
@@ -1067,6 +1210,11 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
       return {
         model: nextModel,
       };
+    };
+    piConfig.prepareNextTurn = async () => {
+      const update = plannedNextTurn;
+      plannedNextTurn = undefined;
+      return update;
     };
   }
 
@@ -1266,6 +1414,55 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
       case 'message_update':
         onHeartbeat?.({ state: 'working', event: 'message_update', agent: HEARTBEAT_AGENT });
         break;
+      case 'message_end': {
+        // Provider-identity verification (HOK-3143). We check every assistant
+        // turn whose stopReason is non-error, before any of its tools run.
+        // User and tool-result messages reach this branch too (pi-agent-core
+        // emits message_end for them; see agent-loop.js:52,98,508), so we
+        // narrow on role === 'assistant' and skip provider-error turns.
+        if (!config.providerIdentity) break;
+        const message = event.message as AssistantMessage;
+        if (!message || message.role !== 'assistant') break;
+        if (message.stopReason === 'error' || message.stopReason === 'aborted') break;
+        // Already-latched failure on this message: nothing to record.
+        if (identityFailureByMessage.get(message)) break;
+        const expectation = config.providerIdentity.expectation;
+        const reported = extractProviderReportedIdentity(message, expectation.requestedWireId);
+        const decision = verifyProviderIdentity(expectation, reported);
+        identityTracker.record({ turnIndex: turnsCompleted, decision, reported });
+        if (decision.verdict === 'mismatch'
+          || (decision.verdict === 'unverifiable' && expectation.isAlias)) {
+          const reason = decision.verdict === 'mismatch'
+            ? 'identity_mismatch'
+            : 'identity_unverifiable';
+          identityFailureError = new ProviderIdentityMismatchError({
+            reason,
+            expectedModel: expectation.expectedModel,
+            reportedModel: reported.reportedModel,
+            requestedWireId: expectation.requestedWireId,
+            turnIndex: turnsCompleted,
+            isAlias: expectation.isAlias,
+            responseId: reported.responseId,
+          });
+          identityFailureByMessage.set(message, true);
+          // Mark this turn's tool batch as failed so Pi's own fail-fast kicks in
+          // and the loop's next finishTurn observes the abort.
+          batchFailed.set(message, true);
+          composed.abort();
+          // Best-effort session-stream warning. Does not advance any step.
+          try {
+            sessionStreamWriter?.writeToolPolicyDecision({
+              callId: `provider-identity-${turnsCompleted}`,
+              toolName: '__provider_identity__',
+              decision: 'deny',
+              denialReason: `${reason}: expected=${expectation.expectedModel} reported=${reported.reportedModel ?? '(none)'} requested=${expectation.requestedWireId}`,
+            });
+          } catch (error) {
+            console.warn(`Failed to log provider-identity denial: ${(error as Error).message}`);
+          }
+        }
+        break;
+      }
       case 'tool_execution_start':
         onHeartbeat?.({
           state: 'working',
@@ -1329,7 +1526,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
         handleAgentEvent(event, !(continuationRunIndex > 0 && event.type === 'agent_start'));
       };
 
-      const runMessages = await runAgentLoopContinue(loopContext, piConfig, emit, composed.signal);
+      const runMessages = await runAgentLoopContinue(loopContext, piConfig, emit, composed.signal, streamFn);
       finalMessages = continuationRunIndex > 0
         ? [...loopContext.messages, ...runMessages]
         : runMessages;
@@ -1491,6 +1688,23 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
     throw loopError;
   }
 
+  // Build the provider-identity summary once per run (HOK-3143).
+  const providerIdentitySummary = config.providerIdentity ? identityTracker.summary() : undefined;
+
+  // On a hard identity failure, run the caller's onMismatch (certificate
+  // invalidation) BEFORE throwing, so the invalidation is durable before
+  // the launcher's catch block assembles the failure stage result.
+  if (identityFailureError) {
+    if (config.providerIdentity?.onMismatch) {
+      try {
+        await config.providerIdentity.onMismatch(identityFailureError);
+      } catch (error) {
+        console.warn(`providerIdentity.onMismatch failed: ${(error as Error).message}`);
+      }
+    }
+    throw identityFailureError;
+  }
+
   return {
     messages: finalMessages,
     stopReason,
@@ -1501,6 +1715,7 @@ export async function runWavemillLoop(config: WavemillLoopConfig): Promise<LoopR
     totalCostUsd,
     wallClockMs,
     ...(finalProviderError ? { providerError: finalProviderError } : {}),
+    ...(providerIdentitySummary ? { providerIdentity: providerIdentitySummary } : {}),
   };
 }
 

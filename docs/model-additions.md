@@ -118,11 +118,21 @@ and the removal of `mistralai/devstral-2512`).
 
 2. **Classify each finding before touching the registry.** `pricing-drift`
    means the alias still exists upstream but a registry price is missing or
-   below the provider's — the audit deliberately flags only the unsafe
-   direction (understating cost) — so correct the `capabilities.pricing`
-   fields in `shared/fixtures/model-registry.v1.json` and keep the mirrored
-   `costPerMillionInputTokensUsd` / `costPerMillionOutputTokensUsd` scalars
-   consistent. `not-found-in-openrouter` means the OpenRouter ID vanished;
+   below the stable pricing reference — the audit deliberately flags only the
+   unsafe direction (understating cost). The reference is the model author's
+   first-party endpoint when one exists (the lower-median tier when the
+   author runs several, e.g. Google flex/standard/priority), otherwise the
+   per-endpoint median across all endpoints; every dimension comes from that
+   one provider, and the finding detail names it alongside both prices. A
+   registry price above a cheap third-party host is expected and is not a
+   finding, and the registry may sit up to 1% below the reference before
+   drift is reported. Correct the `capabilities.pricing` fields in
+   `shared/fixtures/model-registry.v1.json` to the reference values the
+   finding reports and keep the mirrored `costPerMillionInputTokensUsd` /
+   `costPerMillionOutputTokensUsd` scalars consistent. The context window is
+   checked against the max context across endpoints (falling back to the
+   top-level catalog value when endpoint data is unavailable).
+   `not-found-in-openrouter` means the OpenRouter ID vanished;
    confirm the removal against the live catalog before retiring the alias with
    the blocked/deprecated shape above. Treat `unresolved-openrouter-id`,
    `provider-native-id-mismatch`, `context-window-overstated`,

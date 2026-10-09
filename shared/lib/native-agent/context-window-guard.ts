@@ -85,7 +85,7 @@ interface PromptContext {
 export function estimatePromptTokens(input: PromptContext): PromptTokenEstimate {
   const systemPromptTokens = tokensForString(input.systemPrompt ?? '');
   const messageTokens = input.messages.reduce(
-    (total, message) => total + MESSAGE_OVERHEAD_TOKENS + tokensForValue(message),
+    (total, message) => total + MESSAGE_OVERHEAD_TOKENS + tokensForValue(withoutToolDeclarations(message)),
     0,
   );
   const toolTokens = (input.tools ?? []).reduce((total, tool) => {
@@ -101,6 +101,19 @@ export function estimatePromptTokens(input: PromptContext): PromptTokenEstimate 
     toolTokens,
     inputTokens: systemPromptTokens + messageTokens + toolTokens,
   };
+}
+
+/**
+ * Pi 1.0 records tool declarations as `toolsAdded`/`toolsRemoved` on transcript
+ * system messages. The current tool set is already counted from `tools`, so
+ * those fields are excluded to avoid counting every schema twice (HOK-3161).
+ */
+function withoutToolDeclarations(message: unknown): unknown {
+  if (!message || typeof message !== 'object' || (message as { role?: unknown }).role !== 'system') {
+    return message;
+  }
+  const { toolsAdded: _added, toolsRemoved: _removed, ...rest } = message as Record<string, unknown>;
+  return rest;
 }
 
 export function resolveContextWindowLimit(
