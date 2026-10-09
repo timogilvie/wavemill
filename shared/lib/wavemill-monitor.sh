@@ -530,9 +530,9 @@ handle_agent_error_recovery() {
 
   # Native agents are single processes that exit on failure — there is no live
   # TUI to send-keys a resume into, so this path would type into a dead pane,
-  # burn the retry counter, and race the challenger phase-relaunch machinery
-  # (maybe_retry_challenger_transient_phase). Native failures are handled by
-  # phase relaunch instead.
+  # burn the retry counter, and race the failed-stage relaunch machinery
+  # (maybe_retry_failed_stage). Native failures are handled by phase relaunch
+  # instead.
   hook_agent=$(jq -r '.agent // empty' "$hook_file" 2>/dev/null || echo "")
   [[ "$hook_agent" != "native" ]] || return 0
 
@@ -1040,15 +1040,16 @@ record_openrouter_credits_challenge_abort() {
 # Decide the challenge_abort_pair scope for a terminal arm failure.
 #
 # A challenger arm dying on a transient provider fault (mid-stream upstream
-# stall, 5xx, rate limit) must not drag the healthy primary down with it —
-# abort only the failing side so the pair can still resolve by forfeit.
-# Non-transient challenger failures and primary-side failures keep today's
-# pair-wide quarantine; broader isolation is an explicit non-goal of HOK-2885.
+# stall, 5xx, rate limit), or on any failure that already exhausted its
+# stage-failure retry budget (HOK-3176, pass "retried" as the third arg), must
+# not drag the healthy primary down with it — abort only the failing side so
+# the pair can still resolve by forfeit. Other challenger failures and
+# primary-side failures keep the pair-wide quarantine.
 challenge_abort_scope_for_failure() {
-  local issue="$1" failure_kind="$2"
+  local issue="$1" failure_kind="$2" retried="${3:-}"
   local role
   role="$(_challenge_side_for_issue "$issue" 2>/dev/null || true)"
-  if [[ "$role" == "challenger" && "$failure_kind" == "provider-transient-error" ]]; then
+  if [[ "$role" == "challenger" && ( "$failure_kind" == "provider-transient-error" || "$retried" == "retried" ) ]]; then
     printf 'single\n'
   else
     printf 'pair\n'
@@ -5797,7 +5798,7 @@ coding_dirty_handoff_write_recovery_instruction() {
 
 # coding_dirty_handoff_relaunch <issue> <feature_dir> <worktree> <win> <dirty_paths>
 # Relaunch the coding agent once with the recovery instruction. Launch identity
-# follows the challenger transient-retry recipe for a challenger (provider-aware
+# follows the challenger launch-intent recipe for a challenger (provider-aware
 # adapter from immutable intent) and the plan→coding launch resolution for a
 # primary. Returns 0 when launched, 1 when the identity cannot be resolved or
 # the launch failed (the caller then terminalizes).
@@ -7064,145 +7065,83 @@ native_stage_failure_envelope_json() {
   npx tsx "$TOOLS_DIR/read-stage-failure-envelope.ts" "$envelope_file" 2>/dev/null
 }
 
-# Classify a terminal native failure (HOK-2933). Precedence contract:
-#   1. Typed handoff reason (optional 2nd arg, from .coding-failure-handoff.json):
-#      no_completion_artifact / invalid_completion_artifact →
-#      native-completion-protocol. The model violated the coding
-#      completion/tool protocol — never a provider fault, so substring
-#      matching is skipped entirely.
-#   2. Substring matching on the failure detail. A typed provider_error also
-#      runs this so it can refine into transient/credit/config sub-kinds.
-#   3. Default: native-provider-error only when the handoff typed
-#      provider_error; native-unclassified otherwise — never blame the
-#      provider without evidence.
+# Failure kind and operator hint for a native stage failure. Both delegate to
+# the single failure policy (shared/lib/failure-policy.ts, HOK-3176), which
+# owns the detection ladder that used to live here: typed completion-protocol
+# handoff first, then native/provider signatures, then the HOK-3129 model
+# output shapes, defaulting to native-unclassified — which now retries.
 native_terminal_failure_kind() {
   local detail="${1:-}" handoff_reason="${2:-}"
-  local lower
-
-  case "$handoff_reason" in
-    no_completion_artifact)
-      printf 'native-completion-protocol\n'; return 0 ;;
-    invalid_completion_artifact)
-      printf 'native-completion-protocol\n'; return 0 ;;
-  esac
-
-  lower="$(printf '%s' "$detail" | tr '[:upper:]' '[:lower:]')"
-
-  case "$lower" in
-    *"context-exhausted"*|*"contextexhaustederror"*)
-      printf 'context-exhausted\n'; return 0 ;;
-    *"maximum context length"*|*"context length is"*|*"reduce the length"*|*"context_length_exceeded"*|*"context window"*|*"context-window"*)
-      printf 'context-window-exceeded\n'; return 0 ;;
-    *"no endpoints found"*"tool use"*|*"support tool use"*|*"supports tool use"*|*"tool use"*"not supported"*)
-      printf 'tool-use-unsupported\n'; return 0 ;;
-    *"401"*|*"unauthorized"*|*"unauthorised"*|*"invalid api key"*|*"authentication"*|*"forbidden"*)
-      printf 'provider-config-error\n'; return 0 ;;
-    *"is not a valid model id"*|*"invalid model"*|*"unknown model"*|*"model_not_found"*|*"invalid parameter"*|*"invalid param"*)
-      printf 'provider-config-error\n'; return 0 ;;
-    *"rate limit"*|*"429"*)
-      printf 'provider-transient-error\n'; return 0 ;;
-    *"can only afford"*|*"requires more credits"*|*"http 402"*|*"402 payment required"*|*"openrouter-credits-exhausted"*|*"exceed your available credits"*|*"402 this request would"*)
-      printf 'provider-credit-exhausted\n'; return 0 ;;
-    *"insufficient"*"credit"*|*"quota"*)
-      printf 'provider-credit-exhausted\n'; return 0 ;;
-    *"empty-model-turn"*|*"reasoning-only"*"turn"*|*"internal reasoning only"*)
-      printf 'empty-model-turn\n'; return 0 ;;
-    *"finish_reason: error"*|*"finish reason"*"error"*|*"idle timeout"*|*"stream ended without"*|*"without finish_reason"*|*"truncated stream"*|*"server error"*|*"bad gateway"*|*"service unavailable"*|*"gateway timeout"*|*"overloaded"*|*"upstream"*)
-      printf 'provider-transient-error\n'; return 0 ;;
-    # HOK-3129: four recurring native arm-failure signatures that used to fall
-    # through to native-unclassified. Each is model-attributable (the provider
-    # delivered output; the model failed to produce usable content). These sit
-    # AFTER the provider-config/credit/rate-limit arms so a stacked message
-    # like "Native planning final artifact rejected: ... (402 Payment Required)"
-    # still classifies as the provider fault, not the model fault.
-    *"interrupted: coding agent exited without recording a result"*)
-      printf 'coding-exited-without-result\n'; return 0 ;;
-    *"native review flow failed after"*"findings"*)
-      printf 'review-no-output\n'; return 0 ;;
-    *"native planning rejected before approval: turn_limit"*)
-      printf 'planning-turn-limit\n'; return 0 ;;
-    *"native planning final artifact rejected:"*)
-      # Preserve the structural reason suffix for selection-health attribution.
-      local reason
-      reason="$(printf '%s' "$detail" \
-        | sed -nE 's/.*[Nn]ative planning final artifact rejected:[[:space:]]*([A-Za-z0-9_:-]+).*/\1/p')"
-      if [[ -n "$reason" ]]; then
-        printf 'planning-artifact-invalid:%s\n' "$reason"
-      else
-        printf 'planning-artifact-invalid\n'
-      fi
-      return 0 ;;
-  esac
-  if [[ "$handoff_reason" == "provider_error" ]]; then
-    printf 'native-provider-error\n'
-  else
-    printf 'native-unclassified\n'
-  fi
+  failure_policy_decide "coding" "" "$detail" "$handoff_reason" | jq -r '.failureKind // "native-unclassified"'
 }
 
 native_terminal_failure_next_action() {
-  case "${1:-}" in
-    context-exhausted)
-      printf 'session compacted to the floor and still overflowed; re-launch on a larger-context model or split the task\n' ;;
-    context-window-exceeded)
-      printf 'relaunch with compressed context or a larger-context model; the prompt exceeded the model context window\n' ;;
-    invalid-model-id|provider-config-error)
-      printf 'check provider auth/model configuration, then rerun. The provider rejected the request\n' ;;
-    provider-rate-limited)
-      printf 'relaunch after the rate limit window\n' ;;
-    provider-credit-exhausted|openrouter-credits-exhausted|provider-quota-exhausted)
-      printf 'top up OpenRouter credits at https://openrouter.ai/credits\n' ;;
-    provider-transient-error)
-      printf 'transient upstream failure. Start the phase again\n' ;;
-    native-stage-timeout)
-      printf 'the native stage exhausted its wall-clock/turn/tool-call budget (recoverable infrastructure). Relaunch the same pinned reviewer with an escalated timeout\n' ;;
-    policy-denied)
-      printf 'a mutation/network policy rejected the run (harness fault, not a model/provider signal). Review the policy decision before relaunching\n' ;;
-    cancelled)
-      printf 'the run was cancelled by an operator or the orchestrator (not a model/provider signal). Relaunch the phase when ready\n' ;;
-    empty-model-turn)
-      printf 'relaunch native coding; the runtime exhausted bounded continuation after empty model turns\n' ;;
-    tool-use-unsupported)
-      printf 'inspect the native provider error, then relaunch the phase\n' ;;
-    native-completion-protocol)
-      printf "model ended the phase without a valid completion artifact (protocol violation, not a provider fault) - check the model's structured tool-call compatibility before relaunching\n" ;;
-    ready-exhausted)
-      printf 'the arm stayed red after Ready remediation and re-checks were exhausted; it was retired (forfeit) so its green sibling proceeds. Inspect the failed checks on the closed PR\n' ;;
-    ready-transition-failed)
-      printf "Ready's checks passed but a handoff transition (route-stamp, review identity, label, GitHub API) kept failing; the arm was retired as an invalid challenge (no model forfeit) so its green sibling proceeds. Inspect .ready-result.json transitionFailure\n" ;;
-    ready-unattributed)
-      printf 'Ready was exhausted without a typed red-check or transition cause (base conflict, missing ready result); the arm was retired as an invalid challenge so its green sibling proceeds. Inspect the ready attention file\n' ;;
-    review-malformed-response)
-      printf 'the reviewer emitted a malformed response and Ready kept refusing to launch; the arm was retired (forfeit) so its green sibling proceeds. Inspect the review-result.json failureCategory on the closed PR\n' ;;
-    review-not-ready)
-      printf 'the reviewer returned a genuine not_ready verdict with undismissed blockers and Ready kept refusing to launch; the arm was retired (forfeit) so its green sibling proceeds. Inspect the review-result.json blockers on the closed PR\n' ;;
-    review-identity-mismatch)
-      printf "the review artifact's reviewer identity disagreed with the arm's assignment (or execution evidence was contradicted); the arm was retired as an invalid challenge (no model forfeit) so its green sibling proceeds. Inspect the review-result.json intendedModel/executedModel on the closed PR\n" ;;
-    review-unattributed)
-      printf "Ready was refused by the review gate but the reviewer identity could not be proven; the arm was retired as an invalid challenge (no model forfeit) so its green sibling proceeds. Inspect the review-result.json executionEvidence on the closed PR\n" ;;
-    coding-dirty-handoff)
-      printf 'the coding agent exited after writing .coding-complete with uncommitted output and did not repair it when relaunched (completion-protocol failure); the challenger is forfeited so the primary proceeds\n' ;;
-    planning-turn-limit)
-      printf 'the model exhausted its planning turn budget without emitting a final plan. Relaunch the phase on a stronger planner or increase maxTurns\n' ;;
-    planning-artifact-invalid|planning-artifact-invalid:*)
-      printf 'the plan artifact failed structural validation after one repair turn. Inspect the recorded validationError and relaunch on a stronger planner\n' ;;
-    review-no-output)
-      printf 'the review model finished without emitting findings or a terminal verdict. Relaunch the review phase on a stronger reviewer\n' ;;
-    coding-exited-without-result)
-      printf 'the coding agent exited without recording a terminal result (durable commits preserved). Relaunch coding to resume from the last durable commit\n' ;;
-    native-unclassified)
-      printf 'inspect the terminal failure detail and classify it manually - unrecognized failure signature, extend the classifier when this shape recurs\n' ;;
-    *)
-      printf 'inspect the native provider error, then relaunch the phase\n' ;;
-  esac
+  failure_policy_next_action "${1:-}"
 }
 
-# Turn a terminal hook error into a failed stage plus, for challenge arms, a
-# quarantined pair. Returns 0 when it handled the issue (caller should stop).
+# Resolve and classify a native stage failure once (HOK-3176). Evidence
+# precedence: the agent's terminal hook detail, else the stage notes; a typed
+# stage-failure envelope (HOK-3064) supplies the kind and canonical model; the
+# coding-only typed handoff feeds the policy's detection ladder otherwise.
+#
+# Prints the failure-policy decision JSON extended with
+#   {detail, handoffReason, envelopeCause, envelopeModel, fingerprint}.
+# The decision is cached in .<stage>-failure-decision.json keyed by an
+# evidence fingerprint, so a failed stage held across backoff ticks does not
+# respawn the policy bridge every tick.
+stage_failure_decision() {
+  local issue="$1" feature_dir="$2" stage="$3"
+  local detail envelope_json="" failure_kind="" envelope_cause="" envelope_model="" handoff_reason=""
+  local is_challenge cache fingerprint cached decision
+
+  detail="$(native_hook_terminal_failure_detail "$issue" 2>/dev/null || true)"
+  [[ -n "$detail" ]] || detail="$(stage_result_field "$feature_dir" "$stage" "notes")"
+  [[ -n "$detail" ]] || detail="${stage} stage reported failed without detail"
+  is_challenge="$(get_task_meta "$issue" "challenge" 2>/dev/null || true)"
+  [[ "$is_challenge" == "true" ]] || is_challenge="false"
+
+  cache="$feature_dir/.${stage}-failure-decision.json"
+  fingerprint="$(printf '%s|%s|%s|%s' "$detail" "$is_challenge" \
+    "$(cat "$feature_dir/.${stage}-failure-envelope.json" 2>/dev/null || true)" \
+    "$(cat "$feature_dir/.coding-failure-handoff.json" 2>/dev/null || true)" | cksum | awk '{print $1}')"
+  if cached="$(jq -ce --arg f "$fingerprint" 'select(.fingerprint == $f)' "$cache" 2>/dev/null)"; then
+    printf '%s\n' "$cached"
+    return 0
+  fi
+
+  envelope_json="$(native_stage_failure_envelope_json "$feature_dir" "$stage" 2>/dev/null || true)"
+  if [[ -n "$envelope_json" ]]; then
+    failure_kind="$(jq -r '.failureKind // empty' <<<"$envelope_json" 2>/dev/null || true)"
+    envelope_cause="$(jq -r '.cause // empty' <<<"$envelope_json" 2>/dev/null || true)"
+    envelope_model="$(jq -r '.model // empty' <<<"$envelope_json" 2>/dev/null || true)"
+  fi
+  if [[ -z "$failure_kind" && "$stage" == "coding" ]]; then
+    handoff_reason="$(native_coding_failure_handoff_reason "$feature_dir" 2>/dev/null || true)"
+  fi
+
+  decision="$(failure_policy_decide "$stage" "$failure_kind" "$detail" "$handoff_reason" "$is_challenge" \
+    | jq -c --arg detail "$detail" --arg handoffReason "$handoff_reason" --arg envelopeCause "$envelope_cause" \
+        --arg envelopeModel "$envelope_model" --arg fingerprint "$fingerprint" \
+        '. + {detail:$detail, handoffReason:$handoffReason, envelopeCause:$envelopeCause,
+              envelopeModel:$envelopeModel, fingerprint:$fingerprint}')"
+  if [[ -d "$feature_dir" ]]; then
+    printf '%s\n' "$decision" > "$cache.tmp.$$" 2>/dev/null && mv "$cache.tmp.$$" "$cache" 2>/dev/null \
+      || rm -f "$cache.tmp.$$"
+  fi
+  printf '%s\n' "$decision"
+}
+
+# Turn a terminal hook error into a failed stage. Only a failure the policy
+# allowlists as terminal (HOK-3176) parks the task here — quarantining a
+# challenge pair and raising needs-user. Every other failure, including an
+# unrecognised one, is recorded as a failed stage and left for the stage's
+# failed branch, where maybe_retry_failed_stage relaunches it under the
+# stage-failure-<stage> bounded-retry budget. Returns 0 when it handled the
+# issue (caller should stop).
 emit_native_terminal_failure_attention() {
   local issue="$1" feature_dir="$2" stage="$3" win="$4" win_target="$5" fallback_agent="${6:-}" fallback_model="${7:-}"
-  local stage_status detail handoff_reason failure_kind next_action agent model notes artifacts_json is_challenge
-  local envelope_json="" envelope_cause="" envelope_model=""
+  local stage_status detail handoff_reason failure_kind failure_class next_action agent model notes artifacts_json
+  local decision envelope_cause envelope_model is_challenge
 
   stage_status="$(read_stage_status "$feature_dir" "$stage")"
   [[ "$stage_status" == "running" ]] || return 1
@@ -7216,32 +7155,18 @@ emit_native_terminal_failure_attention() {
   [[ -n "$model" ]] || model="$fallback_model"
   agent_or_model_is_native_for_recovery "$agent" "$model" "" || return 1
 
-  detail="$(native_hook_terminal_failure_detail "$issue")" || return 1
-  # Envelope-first precedence (HOK-3064): a typed stage-failure envelope (any
-  # stage) supplies the failure kind and canonical provider/model directly, and
-  # substring matching is skipped entirely — exactly the rule the coding handoff
-  # already enjoys. The coding-only handoff, then the substring/default path,
-  # remain the fallback when no valid envelope exists.
-  handoff_reason=""
-  failure_kind=""
-  envelope_json="$(native_stage_failure_envelope_json "$feature_dir" "$stage" 2>/dev/null || true)"
-  if [[ -n "$envelope_json" ]]; then
-    failure_kind="$(jq -r '.failureKind // empty' <<<"$envelope_json" 2>/dev/null || true)"
-    envelope_cause="$(jq -r '.cause // empty' <<<"$envelope_json" 2>/dev/null || true)"
-    envelope_model="$(jq -r '.model // empty' <<<"$envelope_json" 2>/dev/null || true)"
-    # Prefer the envelope's canonical model over the (possibly empty or derived)
-    # stage-result model when stamping identity onto the abort/stage result.
-    [[ -z "$envelope_model" ]] || model="$envelope_model"
-  fi
-  if [[ -z "$failure_kind" ]]; then
-    # Only the coding stage produces a typed failure handoff; other stages use
-    # the substring/default classification path unchanged.
-    if [[ "$stage" == "coding" ]]; then
-      handoff_reason="$(native_coding_failure_handoff_reason "$feature_dir" 2>/dev/null || true)"
-    fi
-    failure_kind="$(native_terminal_failure_kind "$detail" "$handoff_reason")"
-  fi
-  next_action="$(native_terminal_failure_next_action "$failure_kind")"
+  native_hook_terminal_failure_detail "$issue" >/dev/null || return 1
+  decision="$(stage_failure_decision "$issue" "$feature_dir" "$stage")"
+  detail="$(jq -r '.detail' <<<"$decision")"
+  failure_kind="$(jq -r '.failureKind' <<<"$decision")"
+  failure_class="$(jq -r '.class' <<<"$decision")"
+  next_action="$(jq -r '.nextAction' <<<"$decision")"
+  handoff_reason="$(jq -r '.handoffReason // empty' <<<"$decision")"
+  envelope_cause="$(jq -r '.envelopeCause // empty' <<<"$decision")"
+  envelope_model="$(jq -r '.envelopeModel // empty' <<<"$decision")"
+  # Prefer the envelope's canonical model over the (possibly empty or derived)
+  # stage-result model when stamping identity onto the abort/stage result.
+  [[ -z "$envelope_model" ]] || model="$envelope_model"
   if [[ "$failure_kind" == "provider-credit-exhausted" ]]; then
     write_openrouter_warning_cache "OpenRouter credits exhausted: $next_action"
   fi
@@ -7253,12 +7178,21 @@ emit_native_terminal_failure_attention() {
   artifacts_json="$(jq -cn \
     --arg paneTarget "$win_target" \
     --arg failureKind "$failure_kind" \
+    --arg failureClass "$failure_class" \
     --arg detail "$detail" \
     --arg nextAction "$next_action" \
     --arg handoffReason "$handoff_reason" \
-    '{type:"nativeTerminalFailure", paneTarget:$paneTarget, failureKind:$failureKind, detail:$detail, nextAction:$nextAction,
+    '{type:"nativeTerminalFailure", paneTarget:$paneTarget, failureKind:$failureKind, failureClass:$failureClass,
+      detail:$detail, nextAction:$nextAction,
       handoffReason:(if $handoffReason == "" then null else $handoffReason end)}' \
     2>/dev/null || printf '{}')"
+
+  if [[ "$failure_class" != "terminal" ]]; then
+    write_stage_result "$feature_dir" "$stage" "failed" "$agent" "$model" "$notes" "$artifacts_json"
+    log_warn "$issue → Native ${stage} failed (${failure_kind}, ${failure_class}); retrying under stage-failure-${stage}. ${next_action}"
+    active_count=$((active_count + 1))
+    return 0
+  fi
 
   # Quarantine first: challenge_abort_pair also writes a stage result, so the
   # richer artifact-bearing write below must land last and win.
@@ -7286,21 +7220,19 @@ emit_native_terminal_failure_attention() {
   return 0
 }
 
-# Quarantine a challenge arm whose stage the launcher already marked `failed`.
+# Quarantine a challenge arm whose stage is `failed` and will not be retried.
 #
-# emit_native_terminal_failure_attention() only fires while the stage is still
-# `running` — the case where the agent died without recording anything. When the
-# native launcher writes its own `failed` stage result (as it does for a provider
-# 404), that handler never runs, and nothing else quarantines the pair. The
-# comparison it was supposed to supply will never arrive, so the merge gate sits
-# at `pair-unresolved:no-comparison` and holds the sibling's green PR forever.
+# Callers run this after maybe_retry_failed_stage declined (terminal cause) or
+# exhausted the stage-failure budget, so the arm is retired instead of holding
+# its sibling at `pair-unresolved:no-comparison` forever. An exhausted budget is
+# recorded as `retry_exhausted:<kind>`; an allowlisted cause as
+# `terminal_stage_failure:<kind>`.
 #
 # Idempotent: an already-quarantined arm is left alone so this does not rewrite
 # state on every monitor cycle.
 emit_challenge_stage_failure_quarantine() {
   local issue="$1" feature_dir="$2" stage="$3" win="$4"
-  local is_challenge existing detail handoff_reason failure_kind next_action model
-  local envelope_json="" envelope_cause="" envelope_model=""
+  local is_challenge existing decision detail handoff_reason envelope_cause envelope_model failure_kind next_action model prefix retried
 
   is_challenge="$(get_task_meta "$issue" "challenge" 2>/dev/null || true)"
   [[ "$is_challenge" == "true" ]] || return 1
@@ -7308,77 +7240,143 @@ emit_challenge_stage_failure_quarantine() {
   existing="$(get_task_meta "$issue" "challengeAborted" 2>/dev/null || true)"
   [[ -z "$existing" ]] || return 1
 
-  # Prefer the agent's own terminal hook detail; fall back to the stage notes.
-  detail="$(native_hook_terminal_failure_detail "$issue" 2>/dev/null || true)"
-  [[ -n "$detail" ]] || detail="$(stage_result_field "$feature_dir" "$stage" "notes")"
-  [[ -n "$detail" ]] || detail="${stage} stage reported failed without detail"
-
   model="$(stage_result_field "$feature_dir" "$stage" "model")"
-  # Envelope-first precedence (HOK-3064): a typed stage-failure envelope (any
-  # stage) supplies the failure kind and canonical provider/model, and substring
-  # matching is skipped entirely. The coding-only handoff and the substring
-  # heuristics remain the fallback when no valid envelope exists.
-  handoff_reason=""
-  failure_kind=""
-  envelope_json="$(native_stage_failure_envelope_json "$feature_dir" "$stage" 2>/dev/null || true)"
-  if [[ -n "$envelope_json" ]]; then
-    failure_kind="$(jq -r '.failureKind // empty' <<<"$envelope_json" 2>/dev/null || true)"
-    envelope_cause="$(jq -r '.cause // empty' <<<"$envelope_json" 2>/dev/null || true)"
-    envelope_model="$(jq -r '.model // empty' <<<"$envelope_json" 2>/dev/null || true)"
-    [[ -z "$envelope_model" ]] || model="$envelope_model"
-  fi
-  if [[ -z "$failure_kind" ]]; then
-    # Typed handoff evidence (coding stage only) takes precedence over the
-    # substring heuristics; other stages never produce one.
-    if [[ "$stage" == "coding" ]]; then
-      handoff_reason="$(native_coding_failure_handoff_reason "$feature_dir" 2>/dev/null || true)"
-    fi
-    failure_kind="$(native_terminal_failure_kind "$detail" "$handoff_reason")"
-  fi
-  next_action="$(native_terminal_failure_next_action "$failure_kind")"
+  decision="$(stage_failure_decision "$issue" "$feature_dir" "$stage")"
+  detail="$(jq -r '.detail' <<<"$decision")"
+  failure_kind="$(jq -r '.failureKind' <<<"$decision")"
+  next_action="$(jq -r '.nextAction' <<<"$decision")"
+  handoff_reason="$(jq -r '.handoffReason // empty' <<<"$decision")"
+  envelope_cause="$(jq -r '.envelopeCause // empty' <<<"$decision")"
+  envelope_model="$(jq -r '.envelopeModel // empty' <<<"$decision")"
+  [[ -z "$envelope_model" ]] || model="$envelope_model"
   # Preserve the typed reason in the abort record. Appended only after
-  # classification so the token never perturbs substring matching.
+  # classification so the token never perturbs detection.
   [[ -z "$handoff_reason" ]] || detail+=" [typed handoff reason: ${handoff_reason}]"
   [[ -z "$envelope_cause" ]] || detail+=" [typed envelope cause: ${envelope_cause}]"
 
+  prefix="terminal_stage_failure"
+  retried=""
+  if bounded_retry_is_exhausted "$feature_dir" "stage-failure-${stage}"; then
+    prefix="retry_exhausted"
+    retried="retried"
+  fi
+
   challenge_abort_pair "$issue" "$feature_dir" "$win" "$stage" "$model" \
-    "terminal_stage_failure:${failure_kind}" "$detail" "$next_action" \
-    "$(challenge_abort_scope_for_failure "$issue" "$failure_kind")" || return 1
+    "${prefix}:${failure_kind}" "$detail" "$next_action" \
+    "$(challenge_abort_scope_for_failure "$issue" "$failure_kind" "$retried")" || return 1
 
   log_warn "$issue → challenge arm failed at ${stage} (${failure_kind}). Pair quarantined. ${next_action}"
-  cleanup_quarantined_no_pr_challenge_arm "$issue" "$feature_dir" "$stage" "terminal stage failure:${failure_kind}" || true
+  cleanup_quarantined_no_pr_challenge_arm "$issue" "$feature_dir" "$stage" "${prefix//_/ }:${failure_kind}" || true
   return 0
 }
 
-# ── Challenger transient-failure phase relaunch (HOK-2885) ────────────────────
+# Monitor-owned stage terminalizations that already ran their own bounded
+# retry: the failed stage result is that bucket's verdict, not a fresh failure
+# for the default retry path to retry again.
+stage_failure_owned_by_bucket() {
+  local feature_dir="$1" stage="$2" bucket
+  local -a buckets=("phase-launch-$stage")
+  case "$stage" in
+    coding) buckets+=(coding-dirty-handoff coding-launch-refused coding-launch-resolver) ;;
+    review) buckets+=(review-infra-recovery) ;;
+  esac
+  for bucket in "${buckets[@]}"; do
+    bounded_retry_is_exhausted "$feature_dir" "$bucket" && return 0
+  done
+  return 1
+}
+
+# The default retry for a failed stage (HOK-3176). Anything the failure policy
+# does not allowlist as terminal — including an unrecognised failure — is
+# relaunched under the stage-failure-<stage> bounded-retry bucket, keyed on
+# (worktree head, merge-base) per HOK-3103:
+#   attempts 1..N-1  retry after exponential backoff;
+#   attempt N        one fresh relaunch: the failed run's envelope/handoff are
+#                    archived so the new run is classified on its own evidence;
+#   exhausted        escalate — the caller quarantines a challenge arm and
+#                    raises needs-user with the recorded evidence.
+# The exhaustion sentinel carries a HOK-3172 condition companion, so a new
+# head or an operator event expires it: escalation never latches.
 #
-# `provider-transient-error` on a native challenger arm is a mid-stream upstream
-# stall (OpenRouter tearing down its own idle connection), observed on ~59% of
-# challenger launches. The in-process retry inside the native loop (3 attempts,
-# ~21s span) cannot ride out a stall measured in minutes, so the mill relaunches
-# the whole phase instead: fresh session, minutes-scale spacing, bounded budget.
+# The relaunch reverts the task to the phase before <stage> and clears the
+# failed result, the same proven path handle_phase_launch_result uses, so the
+# normal launch path (routing, challenge intent, phase_launch_gate) re-derives
+# the launch.
 #
-# The counter lives in the feature dir (not workflow state) so the retry
-# budget dies with the worktree instead of leaking across relaunches of the
-# same issue.
+# Returns 0 relaunched, 2 holding (backoff), 1 not applicable / terminal /
+# exhausted (caller escalates).
+maybe_retry_failed_stage() {
+  local issue="$1" feature_dir="$2" stage="$3" win="$4"
+  local bucket="stage-failure-$stage" decision failure_class failure_kind detail next_action
+  local head base limit disposition attempts retry_phase fresh="" artifact
 
-challenger_transient_retry_file() {
-  printf '%s\n' "$1/.challenger-transient-retries.json"
+  case "$stage" in
+    planning) retry_phase="routing" ;;
+    coding) retry_phase="planning" ;;
+    review) retry_phase="coding" ;;
+    *) return 1 ;;
+  esac
+  [[ -z "$(get_task_meta "$issue" "challengeAborted" 2>/dev/null || true)" ]] || return 1
+  # A failed result without an agent is a monitor terminalization (exhausted
+  # launch or refusal budget), never an agent run that could be retried.
+  [[ -n "$(stage_result_field "$feature_dir" "$stage" "agent")" ]] || return 1
+  ! stage_failure_owned_by_bucket "$feature_dir" "$stage" || return 1
+
+  decision="$(stage_failure_decision "$issue" "$feature_dir" "$stage")"
+  failure_class="$(jq -r '.class' <<<"$decision")"
+  [[ "$failure_class" != "terminal" ]] || return 1
+  failure_kind="$(jq -r '.failureKind' <<<"$decision")"
+  detail="$(jq -r '.detail' <<<"$decision")"
+  next_action="$(jq -r '.nextAction' <<<"$decision")"
+
+  head="$(phase_launch_head "$feature_dir")"
+  base="$(phase_launch_base "$feature_dir")"
+  limit="${WAVEMILL_STAGE_FAILURE_MAX_ATTEMPTS:-3}"
+  [[ "$limit" =~ ^[0-9]+$ ]] || limit=3
+  disposition="$(bounded_retry_gate "$feature_dir" "$bucket" "$head" "$limit" "" "" "$base")"
+  case "$disposition" in
+    backoff)
+      log "debug" "  $issue: holding ${stage} relaunch after ${failure_kind} (backoff)"
+      return 2
+      ;;
+    exhausted)
+      attempts="$(bounded_retry_count "$feature_dir" "$bucket")"
+      if bounded_retry_mark_exhausted "$feature_dir" "$bucket" \
+        "unknown-failure-after-retries:${stage}:${failure_kind} after ${attempts} relaunch(es) at head ${head:-unknown}: ${detail}"; then
+        log_warn "⛔ $issue → ${stage} still failing (${failure_kind}) after ${attempts} relaunch(es); escalating to needs-user. ${next_action}"
+      fi
+      return 1
+      ;;
+    exhausted-quiet)
+      return 1
+      ;;
+  esac
+
+  attempts="$(bounded_retry_increment "$feature_dir" "$bucket" "$head" "$base")"
+  if (( attempts >= limit )); then
+    fresh=" (fresh relaunch)"
+    for artifact in ".${stage}-failure-envelope.json" ".coding-failure-handoff.json" ".${stage}-failure-decision.json"; do
+      [[ -f "$feature_dir/$artifact" ]] || continue
+      mv "$feature_dir/$artifact" "$feature_dir/${artifact%.json}.attempt-${attempts}.json" 2>/dev/null || true
+    done
+  fi
+  # A stale terminal-error hook would re-trigger emit_native_terminal_failure_attention
+  # on the relaunched run before its first hook write (see HOK-2885 relaunch).
+  rm -f "/tmp/wavemill-${SESSION}-${issue}.hook" 2>/dev/null || true
+  clear_stage_result "$feature_dir" "$stage"
+  set_task_phase "$issue" "$retry_phase"
+  set_window_attention_state "$win" "clear"
+  log "status" "♻ $issue → ${stage} failed (${failure_kind}, ${failure_class}); relaunch ${attempts}/${limit}${fresh} via ${retry_phase}"
+  return 0
 }
 
-challenger_transient_retry_max() {
-  local max="${WAVEMILL_CHALLENGER_TRANSIENT_RETRY_MAX:-3}"
-  [[ "$max" =~ ^[0-9]+$ ]] || max=3
-  printf '%s\n' "$max"
-}
-
-clear_challenger_transient_retry_state() {
-  rm -f "$1/.challenger-transient-retries.json" 2>/dev/null || true
-}
-
-challenger_transient_retry_diagnostic_file() {
-  printf '%s\n' "$1/.challenger-transient-retry-diagnostic.json"
-}
+# ── Challenger relaunch launch identity (HOK-2885) ────────────────────────────
+#
+# A challenger's failed stage result may record agent=native for audit
+# history; a direct relaunch (coding_dirty_handoff_relaunch) must recover the
+# provider-aware adapter, such as native-openrouter, from the immutable
+# challenge execution intent instead. The bounded relaunch of a failed stage
+# itself now goes through maybe_retry_failed_stage (HOK-3176).
 
 challenger_transient_retry_result_head() {
   local feature_dir="$1" stage="$2"
@@ -7475,266 +7473,6 @@ resolve_challenger_transient_retry_launch_intent() {
       end
       | . + {resultHead:$resultHead, currentHead:$currentHead}
     ' <<< "$intent_json" 2>/dev/null || jq -cn --arg reason "invalid_challenge_intent_schema" '{ok:false,reason:$reason}'
-}
-
-record_challenger_transient_retry_contract_failure() {
-  local issue="$1" feature_dir="$2" win="$3" stage="$4" reason="$5" detail="$6"
-  local result_agent="${7:-}" launch_agent="${8:-}" model="${9:-}"
-  local terminal_reason next_action diag_file tmp now terminal_class
-
-  case "$reason" in
-    stale_head)
-      terminal_class="retry_intent_mismatch"
-      ;;
-    stage_mismatch)
-      terminal_class="retry_intent_mismatch"
-      ;;
-    pair_mismatch)
-      terminal_class="retry_intent_mismatch"
-      ;;
-    challenger_key_mismatch)
-      terminal_class="retry_intent_mismatch"
-      ;;
-    challenger_side_mismatch)
-      terminal_class="retry_intent_mismatch"
-      ;;
-    *)
-      terminal_class="retry_contract_invalid"
-      ;;
-  esac
-  terminal_reason="${terminal_class}:${reason}"
-  next_action="Fix the persisted challenge execution intent before retrying this challenger."
-  now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-
-  mkdir -p "$feature_dir" 2>/dev/null || true
-  diag_file="$(challenger_transient_retry_diagnostic_file "$feature_dir")"
-  tmp="$diag_file.tmp.$$"
-  jq -n -S \
-    --arg issue "$issue" \
-    --arg stage "$(challenge_stage_for_launch_env "$stage")" \
-    --arg reason "$terminal_reason" \
-    --arg detail "$detail" \
-    --arg resultAgent "$result_agent" \
-    --arg launchAgent "$launch_agent" \
-    --arg model "$model" \
-    --arg recordedAt "$now" \
-    '{issue:$issue, stage:$stage, reason:$reason, detail:$detail, recordedAt:$recordedAt}
-     + (if $resultAgent == "" then {} else {resultAgent:$resultAgent} end)
-     + (if $launchAgent == "" then {} else {launchAdapter:$launchAgent} end)
-     + (if $model == "" then {} else {model:$model} end)' \
-    > "$tmp" 2>/dev/null && mv "$tmp" "$diag_file" || rm -f "$tmp"
-
-  challenge_abort_pair "$issue" "$feature_dir" "$win" "$stage" "$model" \
-    "$terminal_reason" "$detail" "$next_action" "single" || true
-  cleanup_quarantined_no_pr_challenge_arm "$issue" "$feature_dir" "$stage" "$terminal_reason" || true
-  log_warn "$issue → challenger transient retry blocked at ${stage} (${terminal_reason}), no relaunch attempted."
-}
-
-# Relaunch a challenger arm's failed phase after a transient provider error.
-#
-# Called from the three stage-failed branches of monitor_issue_state, before
-# the quarantine fall-through. Returns:
-#   0 — phase relaunched; caller keeps the arm active, no quarantine
-#   2 — waiting out backoff; caller keeps the arm active, no quarantine
-#   1 — not applicable (not a transient challenger failure), or the retry
-#       budget is exhausted / the relaunch is not possible. On exhaustion this
-#       function has already applied the single-side quarantine
-#       (retry_exhausted:provider-transient-error); the caller's
-#       emit_challenge_stage_failure_quarantine call is then an idempotent no-op.
-maybe_retry_challenger_transient_phase() {
-  local issue="$1" feature_dir="$2" stage="$3" win="$4"
-  local is_challenge role existing detail handoff_reason failure_kind retry_file retry_state
-  local stored_stage stored_head count last_at now max backoff agent model result_agent
-  local slug wt_dir branch title issue_json contract_payload depth review_mode rc=0
-  local current_head launch_identity launch_ok launch_reason launch_detail lock_dir lock_acquired=0
-
-  # 1. Applicability: challenger arm of a live challenge, transient failure kind.
-  is_challenge="$(get_task_meta "$issue" "challenge" 2>/dev/null || true)"
-  [[ "$is_challenge" == "true" ]] || return 1
-  role="$(_challenge_side_for_issue "$issue" 2>/dev/null || true)"
-  [[ "$role" == "challenger" ]] || return 1
-  existing="$(get_task_meta "$issue" "challengeAborted" 2>/dev/null || true)"
-  [[ -z "$existing" ]] || return 1
-
-  # Failure detail resolution mirrors emit_challenge_stage_failure_quarantine:
-  # prefer the agent's terminal hook detail, fall back to the stage notes.
-  detail="$(native_hook_terminal_failure_detail "$issue" 2>/dev/null || true)"
-  [[ -n "$detail" ]] || detail="$(stage_result_field "$feature_dir" "$stage" "notes")"
-  [[ -n "$detail" ]] || return 1
-  # A typed completion-protocol handoff must never be relaunched as a
-  # transient provider stall, even when the detail contains a transient-looking
-  # word — the typed evidence wins over the substring heuristics.
-  handoff_reason=""
-  if [[ "$stage" == "coding" ]]; then
-    handoff_reason="$(native_coding_failure_handoff_reason "$feature_dir" 2>/dev/null || true)"
-  fi
-  failure_kind="$(native_terminal_failure_kind "$detail" "$handoff_reason")"
-  [[ "$failure_kind" == "provider-transient-error" ]] || return 1
-
-  slug="$(read_state_value "" --arg i "$issue" '.tasks[$i].slug // empty')"
-  [[ -n "$slug" ]] || return 1
-  wt_dir="$(read_state_value "" --arg i "$issue" '.tasks[$i].worktree // empty')"
-  [[ -n "$wt_dir" ]] || wt_dir="${WORKTREE_ROOT}/${slug}"
-  [[ -d "$wt_dir" ]] || return 1
-  current_head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
-
-  # Result provenance and launch adapter identity are different contracts. The
-  # failed stage may record agent=native for audit history; relaunch must recover
-  # the provider-aware adapter, such as native-openrouter, from immutable intent.
-  result_agent="$(stage_result_field "$feature_dir" "$stage" "agent")"
-  launch_identity="$(resolve_challenger_transient_retry_launch_intent "$issue" "$feature_dir" "$stage" "$current_head")"
-  launch_ok="$(printf '%s' "$launch_identity" | jq -r 'if .ok == true then "true" else "false" end' 2>/dev/null || echo false)"
-  agent="$(printf '%s' "$launch_identity" | jq -r '.agent // ""' 2>/dev/null || echo "")"
-  model="$(printf '%s' "$launch_identity" | jq -r '.model // ""' 2>/dev/null || echo "")"
-  if [[ "$launch_ok" != "true" ]]; then
-    launch_reason="$(printf '%s' "$launch_identity" | jq -r '.reason // "invalid_challenge_intent_schema"' 2>/dev/null || echo "invalid_challenge_intent_schema")"
-    launch_detail="Challenger ${stage} transient retry could not reconstruct launch identity from challenge execution intent: ${launch_reason}"
-    record_challenger_transient_retry_contract_failure "$issue" "$feature_dir" "$win" "$stage" "$launch_reason" "$launch_detail" "$result_agent" "$agent" "${model:-$(stage_result_field "$feature_dir" "$stage" "model")}"
-    return 1
-  fi
-  if ! agent_validate_phase_launch "$agent" "$stage" "$model" "$REPO_DIR"; then
-    launch_reason="unsupported_launch_identity"
-    launch_detail="Challenger ${stage} transient retry intent is not launchable (adapter=${agent:-?} model=${model:-?})"
-    record_challenger_transient_retry_contract_failure "$issue" "$feature_dir" "$win" "$stage" "$launch_reason" "$launch_detail" "$result_agent" "$agent" "$model"
-    return 1
-  fi
-
-  # 2. Read the counter; a different stored stage means a new phase gets a
-  # fresh budget. A recorded head keeps the budget scoped to the worktree head
-  # that produced the transient failure while old headless files stay readable.
-  retry_file="$(challenger_transient_retry_file "$feature_dir")"
-  count=0
-  last_at=0
-  if [[ -f "$retry_file" ]]; then
-    retry_state="$(cat "$retry_file" 2>/dev/null || printf '{}')"
-    stored_stage="$(printf '%s' "$retry_state" | jq -r '.stage // empty' 2>/dev/null || true)"
-    stored_head="$(printf '%s' "$retry_state" | jq -r '.head // empty' 2>/dev/null || true)"
-    if [[ "$stored_stage" == "$stage" && ( -z "$stored_head" || -z "$current_head" || "$stored_head" == "$current_head" ) ]]; then
-      count="$(printf '%s' "$retry_state" | jq -r '.count // 0' 2>/dev/null || echo 0)"
-      last_at="$(printf '%s' "$retry_state" | jq -r '.lastAt // 0' 2>/dev/null || echo 0)"
-    fi
-  fi
-  [[ "$count" =~ ^[0-9]+$ ]] || count=0
-  [[ "$last_at" =~ ^[0-9]+$ ]] || last_at=0
-  now="$(date +%s)"
-  max="$(challenger_transient_retry_max)"
-
-  # 3. Budget exhausted: terminalize with a single-side quarantine so the
-  # healthy primary keeps its eval and the pair resolves by forfeit.
-  if (( count >= max )); then
-    model="$(stage_result_field "$feature_dir" "$stage" "model")"
-    local exhausted_notes exhausted_next
-    exhausted_next="$(native_terminal_failure_next_action "provider-transient-error")"
-    exhausted_notes="Challenger ${stage} phase failed on a transient provider error after ${count}/${max} relaunches (attempts=${count}): ${detail}"
-    challenge_abort_pair "$issue" "$feature_dir" "$win" "$stage" "$model" \
-      "retry_exhausted:provider-transient-error" "$exhausted_notes" "$exhausted_next" "single" || true
-    log_warn "$issue → challenger transient retries exhausted at ${stage} (${count}/${max}). Challenger quarantined, primary unaffected."
-    cleanup_quarantined_no_pr_challenge_arm "$issue" "$feature_dir" "$stage" "retry_exhausted:provider-transient-error" || true
-    return 1
-  fi
-
-  # 4. First observation of this failure: start the backoff clock instead of
-  # relaunching immediately — the upstream stall needs time to clear.
-  if (( last_at == 0 )); then
-    if jq -n --arg stage "$stage" --arg head "$current_head" --argjson count "$count" --argjson lastAt "$now" \
-      '{stage:$stage,head:$head,count:$count,lastAt:$lastAt}' > "$retry_file.tmp.$$" 2>/dev/null; then
-      mv "$retry_file.tmp.$$" "$retry_file" 2>/dev/null || rm -f "$retry_file.tmp.$$"
-    else
-      rm -f "$retry_file.tmp.$$"
-    fi
-    log "status" "$issue → transient challenger failure at ${stage}, retrying in $(get_backoff_delay $((count + 1)))s (attempt $((count + 1))/${max})"
-    return 2
-  fi
-  backoff="$(get_backoff_delay $((count + 1)))"
-  if (( now - last_at < backoff )); then
-    return 2
-  fi
-
-  lock_dir="${retry_file}.lock"
-  if ! mkdir "$lock_dir" 2>/dev/null; then
-    return 2
-  fi
-  lock_acquired=1
-
-  branch="$(read_state_value "" --arg i "$issue" '.tasks[$i].branch // empty')"
-  [[ -n "$branch" ]] || branch="task/${slug}"
-  title="$(read_state_value "" --arg i "$issue" '.tasks[$i].title // ""')"
-  if [[ -z "$title" ]]; then
-    issue_json="$(cat "/tmp/${SESSION}-${issue}-issue.json" 2>/dev/null || echo "{}")"
-    title="$(printf '%s' "$issue_json" | jq -r '.title // "Task"' 2>/dev/null || echo "Task")"
-  fi
-
-  # 6. Increment the counter first (crash-safe), then re-arm and relaunch.
-  count=$((count + 1))
-  if jq -n --arg stage "$stage" --arg head "$current_head" --argjson count "$count" --argjson lastAt "$now" \
-    '{stage:$stage,head:$head,count:$count,lastAt:$lastAt}' > "$retry_file.tmp.$$" 2>/dev/null; then
-    mv "$retry_file.tmp.$$" "$retry_file" 2>/dev/null || rm -f "$retry_file.tmp.$$"
-  else
-    rm -f "$retry_file.tmp.$$"
-  fi
-
-  contract_payload="$(jq -cn --arg stageRole "$stage" --arg agent "$agent" --arg model "$model" --arg resultAgent "$result_agent" \
-    '{stageRole:$stageRole,agent:$agent,model:$model,resultAgent:$resultAgent}' 2>/dev/null || printf '{}')"
-
-  # Clear the stale terminal-error hook before relaunching. Launch paths never
-  # reset it, and _prepare_recovery_phase_launch's hook write is a no-op in the
-  # monitor (no WAVEMILL_ISSUE in env) — leaving the old {"state":"error"} in
-  # place would let emit_native_terminal_failure_attention re-quarantine the
-  # relaunched arm on the next tick, before the new process writes its first hook.
-  rm -f "/tmp/wavemill-${SESSION}-${issue}.hook" 2>/dev/null || true
-
-  case "$stage" in
-    planning)
-      depth="$(read_phase_config "$feature_dir" "planning" "depth")"
-      [[ -n "$depth" ]] || depth="$(get_task_meta "$issue" "planDepth")"
-      [[ -n "$depth" ]] || depth="light"
-      _prepare_recovery_phase_launch "$issue" "$slug" "planning" "$feature_dir" "$wt_dir" "$agent" "$model" "$contract_payload" || {
-        rm -rf "$lock_dir" 2>/dev/null || true
-        return 1
-      }
-      launch_planning_phase "$issue" "$slug" "$title" "$wt_dir" "$branch" "$BASE_BRANCH" \
-        "$model" "$agent" "$depth" || rc=$?
-      ;;
-    coding)
-      depth="$(read_phase_config "$feature_dir" "coding" "depth")"
-      [[ -n "$depth" ]] || depth="$(get_task_meta "$issue" "codeDepth")"
-      [[ -n "$depth" ]] || depth="medium"
-      _prepare_recovery_phase_launch "$issue" "$slug" "coding" "$feature_dir" "$wt_dir" "$agent" "$model" "$contract_payload" || {
-        rm -rf "$lock_dir" 2>/dev/null || true
-        return 1
-      }
-      launch_coding_phase "$issue" "$slug" "$title" "$wt_dir" "$branch" "$BASE_BRANCH" \
-        "$model" "$agent" "$depth" || rc=$?
-      ;;
-    review)
-      review_mode="$(read_phase_config "$feature_dir" "review" "mode")"
-      [[ -n "$review_mode" ]] || review_mode="$(get_task_meta "$issue" "reviewMode")"
-      [[ -n "$review_mode" ]] || review_mode="static"
-      _prepare_recovery_phase_launch "$issue" "$slug" "review" "$feature_dir" "$wt_dir" "$agent" "$model" "$contract_payload" "review" || {
-        rm -rf "$lock_dir" 2>/dev/null || true
-        return 1
-      }
-      launch_review_phase "$issue" "$slug" "$title" "$wt_dir" "$branch" "$BASE_BRANCH" \
-        "$model" "$agent" "$review_mode" || rc=$?
-      ;;
-    *)
-      rm -rf "$lock_dir" 2>/dev/null || true
-      return 1
-      ;;
-  esac
-
-  if [[ "$rc" -ne 0 ]]; then
-    log_warn "$issue → challenger transient relaunch of ${stage} failed (rc=$rc); falling through to quarantine"
-    rm -rf "$lock_dir" 2>/dev/null || true
-    return 1
-  fi
-
-  set_window_attention_state "$win" "clear"
-  log "status" "♻ $issue → challenger_transient_retry attempt=${count}/${max}: relaunched ${stage} after transient provider error (result_agent=${result_agent:-?} launch_adapter=${agent})"
-  if [[ "$lock_acquired" -eq 1 ]]; then
-    rm -rf "$lock_dir" 2>/dev/null || true
-  fi
-  return 0
 }
 
 coding_missing_blocked_completion_announce_marker() {
@@ -7888,6 +7626,19 @@ phase_launch_head() {
   git -C "$wt_dir" rev-parse HEAD 2>/dev/null || echo ""
 }
 
+# The base half of the (head, base) retry key (HOK-3103): the merge-base of
+# the worktree HEAD with its base branch. It moves when the branch is rebased
+# or merged onto a new base — a new merge parent, so the last outcome no
+# longer predicts the next — but not every time the base branch advances, so
+# a busy base cannot refill a budget indefinitely. Empty when git fails, which
+# bounded_retry_gate treats as "no base component".
+phase_launch_base() {
+  local feature_dir="$1"
+  local wt_dir="${feature_dir%/features/*}"
+  [[ -n "$wt_dir" && "$wt_dir" != "$feature_dir" && -n "${BASE_BRANCH:-}" ]] || { echo ""; return 0; }
+  git -C "$wt_dir" merge-base HEAD "origin/${BASE_BRANCH}" 2>/dev/null || echo ""
+}
+
 # Pre-launch admission for phase relaunches (HOK-2924). The revert-for-retry
 # in handle_phase_launch_result restores exactly the state that re-derives the
 # same launch on the next poll tick, so without this gate a failing launch
@@ -7900,12 +7651,13 @@ phase_launch_head() {
 phase_launch_gate() {
   local issue="$1" feature_dir="$2" phase="$3" win="$4"
   local bucket="phase-launch-$phase"
-  local limit head disposition attempts reason
+  local limit head base disposition attempts reason
 
   limit="${WAVEMILL_PHASE_LAUNCH_MAX_ATTEMPTS:-4}"
   [[ "$limit" =~ ^[0-9]+$ ]] || limit=4
   head="$(phase_launch_head "$feature_dir")"
-  disposition=$(bounded_retry_gate "$feature_dir" "$bucket" "$head" "$limit")
+  base="$(phase_launch_base "$feature_dir")"
+  disposition=$(bounded_retry_gate "$feature_dir" "$bucket" "$head" "$limit" "" "" "$base")
 
   case "$disposition" in
     proceed)
@@ -7977,7 +7729,8 @@ handle_phase_launch_result() {
         "${launched_phase^} launch aborted: varied model cannot pass native preflight${model:+ ($model)}" || true
       return 1
     fi
-    launch_attempts=$(bounded_retry_increment "$feature_dir" "phase-launch-$launched_phase" "$(phase_launch_head "$feature_dir")")
+    launch_attempts=$(bounded_retry_increment "$feature_dir" "phase-launch-$launched_phase" \
+      "$(phase_launch_head "$feature_dir")" "$(phase_launch_base "$feature_dir")")
     clear_stage_result "$feature_dir" "$launched_phase"
     set_task_phase "$issue" "$retry_phase"
     set_window_attention_state "$win" "needs-user"
@@ -8056,10 +7809,11 @@ log_coding_launch_refusal() {
 # Usage: coding_launch_refusal_hold <issue> <feature_dir> <win>
 coding_launch_refusal_hold() {
   local issue="$1" feature_dir="$2" win="$3"
-  local head bucket
+  local head base bucket
   head="$(phase_launch_head "$feature_dir")"
+  base="$(phase_launch_base "$feature_dir")"
   for bucket in coding-launch-refused coding-launch-resolver; do
-    bounded_retry_reset_if_new_key "$feature_dir" "$bucket" "$head"
+    bounded_retry_reset_if_new_key "$feature_dir" "$bucket" "$head" "$base"
     if bounded_retry_is_exhausted "$feature_dir" "$bucket"; then
       set_window_attention_state "$win" "needs-user"
       return 0
@@ -8121,17 +7875,18 @@ handle_coding_launch_refusal() {
   local reason="${AGENT_RESOLVE_LAST_REASON:-}" certification="${AGENT_RESOLVE_LAST_CERTIFICATION:-}"
   local certify="${AGENT_RESOLVE_LAST_CERTIFY:-}"
   local diagnostic="${AGENT_RESOLVE_LAST_DIAGNOSTIC:-[agent-resolution] model=$launch_model phase=coding reason=${reason:-unknown}}"
-  local provider="" head limit attempts varied role reroute_json reroute_status substitute reroute_stderr
+  local provider="" head base limit attempts varied role reroute_json reroute_status substitute reroute_stderr
   local provider_re='(^|[[:space:]])provider=([^[:space:]]+)'
 
   [[ "$diagnostic" =~ $provider_re ]] && provider="${BASH_REMATCH[2]}"
   head="$(phase_launch_head "$feature_dir")"
+  base="$(phase_launch_base "$feature_dir")"
   limit="$(coding_launch_refusal_limit)"
   write_stage_result "$feature_dir" "coding" "failed" "" "$launch_model" "$diagnostic"
   set_task_phase "$issue" "planning"
 
   if coding_launch_refusal_is_transient "$reason" "$certification"; then
-    attempts="$(bounded_retry_increment "$feature_dir" coding-launch-resolver "$head")"
+    attempts="$(bounded_retry_increment "$feature_dir" coding-launch-resolver "$head" "$base")"
     if (( attempts > limit )); then
       coding_launch_refusal_terminalize "$issue" "$feature_dir" "$win" coding-launch-resolver \
         "$launch_model" "$provider" "$reason" "$certification" "$certify" \
@@ -8166,7 +7921,7 @@ handle_coding_launch_refusal() {
     return 0
   fi
 
-  attempts="$(bounded_retry_increment "$feature_dir" coding-launch-refused "$head")"
+  attempts="$(bounded_retry_increment "$feature_dir" coding-launch-refused "$head" "$base")"
   if (( attempts > limit )); then
     coding_launch_refusal_terminalize "$issue" "$feature_dir" "$win" coding-launch-refused \
       "$launch_model" "$provider" "$reason" "$certification" "$certify" \
@@ -12918,7 +12673,6 @@ launch_ready_phase() {
   fi
 
   bounded_retry_clear "$state_dir" "review-infra-recovery"
-  clear_challenger_transient_retry_state "$state_dir"
   marker_clear "$state_dir/.needs-attention"
   log "$pending_log_level" "  $issue: Launching ready phase (PR #$pr_number)"
 
@@ -19244,9 +18998,9 @@ monitor_issue_state() {
           fi
 
           if [[ "$planning_status" == "failed" ]]; then
-            local planning_transient_rc=0
-            maybe_retry_challenger_transient_phase "$ISSUE" "$FEATURE_DIR" "planning" "$WIN" || planning_transient_rc=$?
-            if [[ "$planning_transient_rc" -eq 0 || "$planning_transient_rc" -eq 2 ]]; then
+            local planning_retry_rc=0
+            maybe_retry_failed_stage "$ISSUE" "$FEATURE_DIR" "planning" "$WIN" || planning_retry_rc=$?
+            if [[ "$planning_retry_rc" -eq 0 || "$planning_retry_rc" -eq 2 ]]; then
               active_count=$((active_count + 1))
               return 0
             fi
@@ -19478,9 +19232,9 @@ monitor_issue_state() {
               active_count=$((active_count + 1))
               return 0
             fi
-            local coding_transient_rc=0
-            maybe_retry_challenger_transient_phase "$ISSUE" "$FEATURE_DIR" "coding" "$WIN" || coding_transient_rc=$?
-            if [[ "$coding_transient_rc" -eq 0 || "$coding_transient_rc" -eq 2 ]]; then
+            local coding_retry_rc=0
+            maybe_retry_failed_stage "$ISSUE" "$FEATURE_DIR" "coding" "$WIN" || coding_retry_rc=$?
+            if [[ "$coding_retry_rc" -eq 0 || "$coding_retry_rc" -eq 2 ]]; then
               active_count=$((active_count + 1))
               return 0
             fi
@@ -19586,9 +19340,9 @@ monitor_issue_state() {
           fi
 
           if [[ "$review_status" == "failed" ]]; then
-            local review_transient_rc=0
-            maybe_retry_challenger_transient_phase "$ISSUE" "$FEATURE_DIR" "review" "$WIN" || review_transient_rc=$?
-            if [[ "$review_transient_rc" -eq 0 || "$review_transient_rc" -eq 2 ]]; then
+            local review_retry_rc=0
+            maybe_retry_failed_stage "$ISSUE" "$FEATURE_DIR" "review" "$WIN" || review_retry_rc=$?
+            if [[ "$review_retry_rc" -eq 0 || "$review_retry_rc" -eq 2 ]]; then
               active_count=$((active_count + 1))
               return 0
             fi

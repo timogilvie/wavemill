@@ -32,7 +32,7 @@ test('terminal-count-shrinks: fewer distinct terminal codes than before HOK-3176
     `allowlist grew to ${TERMINAL_ALLOWLIST.length} (was ${TERMINAL_CODES_BEFORE_HOK_3176})`,
   );
   const allStage = TERMINAL_ALLOWLIST.filter((cause) => !cause.challengeOnly);
-  assert.equal(allStage.length, 7, 'all-stage terminals changed — update this pin deliberately');
+  assert.equal(allStage.length, 8, 'all-stage terminals changed — update this pin deliberately');
 });
 
 test('allowlist fault classes agree with classifyArmFault attribution', () => {
@@ -52,6 +52,7 @@ for (const code of [
   'context-window-exceeded',
   'tool-use-unsupported',
   'varied_model_unresolvable',
+  'operator-gate',
   'coding-dirty-handoff',
 ]) {
   test(`terminal:${code}`, () => {

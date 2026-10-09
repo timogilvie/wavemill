@@ -15,6 +15,7 @@ import {
 } from './config.ts';
 import { classifyCiFailure, type CiFailureCategory } from './ci-failure-classifier.ts';
 import { enrichFailingChecks as enrichFailingChecksDefault } from './ci-log-fetcher.ts';
+import { classifyFailure } from './failure-policy.ts';
 import { errorMessage } from './error-utils.ts';
 import { appendObserverFinding } from './observer-findings.ts';
 import { resolveSessionCapabilities } from './config.ts';
@@ -1208,15 +1209,27 @@ export function classifyReadyTask(
       && ciClassifications.every((classification) => classification.category === 'deterministic-local');
     const allTransient = ciClassifications.length > 0
       && ciClassifications.every((classification) => classification.category === 'transient-infra');
-    const hasOperatorOnly = ciClassifications.some((classification) =>
-      classification.category === 'github-only' || classification.category === 'unknown',
-    );
+    // HOK-3176: only an allowlisted cause parks at once — a GitHub-only gate
+    // (approval, branch protection) is `operator-gate`. An unrecognised failure
+    // is retried: CI is re-polled here and the monitor's failed-ready-recheck
+    // bucket re-runs Ready; it escalates only once the same failure has held
+    // for stableFailureEscalateAfterPolls polls.
+    const policyDecisions = ciClassifications.map((classification) => classifyFailure({
+      stage: 'ready',
+      failureKind: classification.category === 'github-only' ? 'operator-gate' : undefined,
+      ciCategory: classification.category,
+      detail: classification.reason,
+    }));
+    const operatorGated = policyDecisions.some((decision) => decision.class === 'terminal');
+    const unrecognisedStable = ciClassifications.some((classification) => classification.category === 'unknown')
+      && consecutiveFailurePolls >= normalizedConfig.stableFailureEscalateAfterPolls;
 
-    if (hasOperatorOnly) {
+    if (operatorGated || unrecognisedStable) {
       const reasons = ciClassifications.map((classification) => classification.reason).join(' ');
+      const held = operatorGated ? '' : ` Unrecognised failure held for ${consecutiveFailurePolls} polls.`;
       return {
         kind: 'needs-user',
-        detail: `Failing checks require operator attention: ${checkSummary.failures.join(', ')}. ${reasons}`,
+        detail: `Failing checks require operator attention: ${checkSummary.failures.join(', ')}. ${reasons}${held}`,
         consecutiveFailurePolls,
         ciFailureCategory: primaryClassification?.category,
         failingJob: primaryClassification?.failingJob,

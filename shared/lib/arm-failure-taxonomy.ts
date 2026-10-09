@@ -115,6 +115,8 @@ export function classifyArmFault(input: { failureKind?: string | null; detail?: 
     // orchestrator cancelled it — never model or provider quality evidence.
     case 'policy-denied':
     case 'cancelled':
+    // A GitHub approval/branch-protection gate is repository policy (HOK-3176).
+    case 'operator-gate':
       return 'harness-fault';
     case 'tool-use-unsupported':
     case 'varied_model_unresolvable':

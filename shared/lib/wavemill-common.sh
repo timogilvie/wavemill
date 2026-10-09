@@ -43,6 +43,48 @@ wavemill_tool_path() {
   printf '%s/%s\n' "${TOOLS_DIR:-$WAVEMILL_INSTALL_DIR/tools}" "$tool"
 }
 
+# The single failure policy (HOK-3176), via shared/lib/failure-policy.ts.
+#
+# Usage: failure_policy_decide <stage> <failure_kind> <detail> [handoff_reason] [challenge_arm]
+# Prints one JSON line: {class, failureKind, terminalCode, retryBucket,
+# nextAction, rationale}. class is terminal | code-failure | retryable. Always
+# returns 0: when the bridge cannot run, the decision is the policy default
+# (retryable / native-unclassified) — an unavailable classifier must never
+# park a task.
+failure_policy_decide() {
+  local stage="$1" failure_kind="${2:-}" detail="${3:-}" handoff_reason="${4:-}" challenge_arm="${5:-false}"
+  local -a args=(--stage "$stage" "--detail=$detail")
+  [[ -z "$failure_kind" ]] || args+=("--failure-kind=$failure_kind")
+  [[ -z "$handoff_reason" ]] || args+=("--handoff-reason=$handoff_reason")
+  [[ "$challenge_arm" != "true" ]] || args+=(--challenge-arm)
+  local out=""
+  out="$(_failure_policy_cli "${args[@]}")" || out=""
+  if [[ -n "$out" ]] && jq -e '.class' <<<"$out" >/dev/null 2>&1; then
+    printf '%s\n' "$out"
+    return 0
+  fi
+  jq -cn --arg stage "$stage" --arg kind "${failure_kind:-native-unclassified}" \
+    '{class:"retryable", failureKind:$kind, terminalCode:null, retryBucket:("stage-failure-" + $stage),
+      nextAction:"failure policy unavailable; retrying by default. Inspect the recorded detail if it escalates",
+      rationale:"failure-policy bridge unavailable: retry by default (HOK-3176)"}'
+}
+
+# Operator hint for a failure kind, from the same policy table.
+failure_policy_next_action() {
+  _failure_policy_cli --next-action-only "--failure-kind=${1:-}" \
+    || printf 'inspect the native provider error, then relaunch the phase\n'
+}
+
+# Run tools/failure-policy-cli.ts. Node's type stripping starts it in ~0.3s
+# (the monitor calls it on failure paths, HOK-3190); npx tsx is the fallback
+# for a Node without --experimental-strip-types.
+_failure_policy_cli() {
+  local cli
+  cli="$(wavemill_tool_path failure-policy-cli.ts)"
+  node --experimental-strip-types --no-warnings "$cli" "$@" 2>/dev/null \
+    || npx tsx "$cli" "$@" 2>/dev/null
+}
+
 # HOK-3100: fallback logger stubs so standalone CLI tools (such as
 # `wavemill cleanup`) that source wavemill-common.sh without the mill or
 # monitor environment don't error with `command not found`. mill.sh defines

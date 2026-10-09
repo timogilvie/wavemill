@@ -43,6 +43,7 @@ import {
   type ChallengeLoserCleanupCandidate,
 } from './tend-challenge-gate.ts';
 import { isTransientErrorText, retryTransient, TransientError } from './transient-retry.ts';
+import { classifyFailure, DEFAULT_RETRY_ATTEMPTS, retryBucketFor, type FailureEvidence } from './failure-policy.ts';
 import { normalizeTaskLifecycle } from './task-lifecycle.ts';
 import { resolveEffectiveTaskConfig } from './effective-task-config.ts';
 import {
@@ -142,8 +143,12 @@ export type StrictBaseRetryDecision = 'proceed' | 'backoff' | 'exhausted' | 'exh
  * bucket, rejected head SHA)`; tests may inject fakes.
  */
 export interface StrictBaseRetryOps {
-  gate: (prNumber: number, headSha: string, repoDir: string) => StrictBaseRetryDecision;
-  increment: (prNumber: number, headSha: string, repoDir: string) => void;
+  /**
+   * `baseSha` (optional, HOK-3103) completes the (head, base) retry key: a new
+   * base wipes the budget just like a new head.
+   */
+  gate: (prNumber: number, headSha: string, repoDir: string, baseSha?: string) => StrictBaseRetryDecision;
+  increment: (prNumber: number, headSha: string, repoDir: string, baseSha?: string) => void;
   markExhausted: (prNumber: number, reason: string, repoDir: string) => void;
   clear: (prNumber: number, repoDir: string) => void;
 }
@@ -195,6 +200,14 @@ export interface MergeExecutionDeps {
    * exponential waits).
    */
   handoffClaimRetry: StrictBaseRetryOps;
+  /**
+   * Default-retry ops for in-lane failures the HOK-3176 failure policy does
+   * not allowlist as terminal or recognise as a code failure (dropped
+   * connection during push, a checks wait that timed out, a ready checker that
+   * threw). Keyed on (PR head, integration tip): while the budget lasts the PR
+   * returns to wm:ready instead of being labelled wm:blocked.
+   */
+  transientRetry: StrictBaseRetryOps;
   /**
    * Factory for the process-group prep runner used by `withScratchWorktree`.
    * Called once per merge attempt; each attempt gets a fresh shared deadline.
@@ -776,6 +789,32 @@ export async function executeMerge(
     return { status: 'blocked', prNumber: candidate.number, phase, failureExcerpt, haltLoop: false };
   };
 
+  // HOK-3176: label wm:blocked only for a failure the policy allowlists as
+  // terminal or recognises as a code failure. Anything else — a dropped
+  // connection, an unrecognised error — retries under the bounded
+  // tend-transient-recovery budget first.
+  const blockUnlessRetryable = async (
+    worktreePath: string,
+    phase: string,
+    output: string,
+    evidence: Partial<FailureEvidence> = {},
+  ): Promise<MergeExecutionResult> => {
+    const decision = classifyFailure({ ...evidence, stage: 'tend', detail: output });
+    if (decision.class !== 'retryable') {
+      return block(phase, output);
+    }
+    return deferRetryableTendFailure({
+      candidate,
+      repoDir: options.repoDir,
+      phase,
+      output,
+      rationale: decision.rationale,
+      baseSha: readRemoteBranchShaBestEffort(worktreePath, integrationBranch, deps.shellRunner),
+      deps,
+      block,
+    });
+  };
+
   // Ready → Tend handoff is required before merge. In production, selection
   // always attaches `headSha` from GitHub's live headRefOid; when it is present
   // but `featureDir` is missing (PR #1513 shape) the PR carries an agent-applied
@@ -954,7 +993,7 @@ export async function executeMerge(
             await recordLaneProgressSafe(deps, candidate.number, 'ci-restart', options.repoDir);
           }
         } catch (error) {
-          return block('rebase', outputFromError(error));
+          return blockUnlessRetryable(worktreePath, 'rebase', outputFromError(error));
         }
 
         const checks = await waitForChecks(
@@ -968,16 +1007,22 @@ export async function executeMerge(
           },
         );
         if (checks.outcome !== 'pass') {
-          return block('checks', checks.summary);
+          // A red check is a recognised code failure (blocked for
+          // remediation) unless its output is runner/network noise; a wait
+          // that timed out or lost the head is retried.
+          return blockUnlessRetryable(worktreePath, 'checks', checks.summary, {
+            failureKind: checks.outcome === 'fail' ? 'checks-failed' : `checks-${checks.outcome}`,
+          });
         }
 
         try {
           const ready = await deps.readyChecker(candidate.number, options.repoDir);
           if (!ready.ready) {
+            // A typed not-ready verdict is the ready gate doing its job.
             return block('ready', ready.reason || 'ready check failed');
           }
         } catch (error) {
-          return block('ready', outputFromError(error));
+          return blockUnlessRetryable(worktreePath, 'ready', outputFromError(error));
         }
 
         try {
@@ -1026,6 +1071,11 @@ export async function executeMerge(
           deps.handoffRebindRetry.clear(candidate.number, options.repoDir);
         } catch (error) {
           console.warn(`tend: failed to clear handoff-rebind retry budget for PR #${candidate.number}: ${errorMessage(error)}`);
+        }
+        try {
+          deps.transientRetry.clear(candidate.number, options.repoDir);
+        } catch (error) {
+          console.warn(`tend: failed to clear ${TEND_TRANSIENT_RECOVERY_BUCKET} budget for PR #${candidate.number}: ${errorMessage(error)}`);
         }
         clearTendHandoffBlockSentinel(options.repoDir, candidate.number);
         clearTendHandoffContradictionObserved(options.repoDir, candidate.number);
@@ -2384,6 +2434,9 @@ const HANDOFF_REBIND_MAX_ATTEMPTS = 3;
 // - handoff-claim  vs strict-base-refresh, scratch-prep-recovery (no relationship)
 const HANDOFF_CLAIM_BUCKET = 'handoff-claim';
 const HANDOFF_CLAIM_MAX_ATTEMPTS = 3;
+// HOK-3176 default retry for in-lane failures. No prefix relationship with
+// any bucket above.
+const TEND_TRANSIENT_RECOVERY_BUCKET = retryBucketFor('tend');
 const SCRATCH_PREP_PROGRESS_HEARTBEAT_MS = 30_000;
 const BOUNDED_RETRY_HELPER_TIMEOUT_MS = 30_000;
 const BOUNDED_RETRY_HELPER_PATH = join(dirname(fileURLToPath(import.meta.url)), 'bounded-retry.sh');
@@ -2462,33 +2515,43 @@ export const defaultHandoffClaimRetryOps: StrictBaseRetryOps = createBoundedRetr
   { baseSeconds: 0 },
 );
 
+/**
+ * Default HOK-3176 wiring for the tend-transient-recovery bucket: the
+ * failure policy's default retry for in-lane failures it does not allowlist.
+ * Keyed on (PR head, integration tip) so a fresh push or a new base refills
+ * the budget; exhaustion takes the terminal block path with the evidence.
+ */
+export const defaultTransientRetryOps: StrictBaseRetryOps = createBoundedRetryOps(
+  TEND_TRANSIENT_RECOVERY_BUCKET,
+  DEFAULT_RETRY_ATTEMPTS,
+);
+
 function createBoundedRetryOps(
   bucket: string,
   maxAttempts: number,
   backoff?: { baseSeconds?: number; capSeconds?: number },
 ): StrictBaseRetryOps {
-  const backoffSuffix = backoff !== undefined
-    ? ` ${escapeShellArg(String(backoff.baseSeconds ?? ''))} ${escapeShellArg(String(backoff.capSeconds ?? ''))}`
-    : '';
+  const backoffArgs = `${escapeShellArg(String(backoff?.baseSeconds ?? ''))} ${escapeShellArg(String(backoff?.capSeconds ?? ''))}`;
   return {
-    gate: (prNumber, headSha, repoDir) => {
+    gate: (prNumber, headSha, repoDir, baseSha = '') => {
       const stateDir = mergeLaneStateDir(prNumber, repoDir);
       const decision = runBoundedRetryHelper(
         repoDir,
         `bounded_retry_gate ${escapeShellArg(stateDir)} ${escapeShellArg(bucket)} `
-        + `${escapeShellArg(sanitizeHeadShaForRetryKey(headSha))} ${maxAttempts}${backoffSuffix}`,
+        + `${escapeShellArg(sanitizeHeadShaForRetryKey(headSha))} ${maxAttempts} ${backoffArgs} `
+        + `${escapeShellArg(sanitizeHeadShaForRetryKey(baseSha))}`,
       );
       if (!STRICT_BASE_RETRY_DECISIONS.has(decision as StrictBaseRetryDecision)) {
         throw new Error(`bounded_retry_gate returned unexpected decision: ${truncateReason(decision || '(empty)', 100)}`);
       }
       return decision as StrictBaseRetryDecision;
     },
-    increment: (prNumber, headSha, repoDir) => {
+    increment: (prNumber, headSha, repoDir, baseSha = '') => {
       const stateDir = mergeLaneStateDir(prNumber, repoDir);
       runBoundedRetryHelper(
         repoDir,
         `bounded_retry_increment ${escapeShellArg(stateDir)} ${escapeShellArg(bucket)} `
-        + `${escapeShellArg(sanitizeHeadShaForRetryKey(headSha))}`,
+        + `${escapeShellArg(sanitizeHeadShaForRetryKey(headSha))} ${escapeShellArg(sanitizeHeadShaForRetryKey(baseSha))}`,
       );
     },
     markExhausted: (prNumber, reason, repoDir) => {
@@ -2852,6 +2915,96 @@ function currentHandoffClaimCount(
     return /^[0-9]+$/.test(raw) ? Number(raw) : 0;
   } catch {
     return 0;
+  }
+}
+
+/**
+ * Defer a retryable in-lane failure (HOK-3176) instead of labelling
+ * wm:blocked. Consults the tend-transient-recovery budget keyed on (PR head,
+ * integration tip): while it has room the PR returns to wm:ready without a
+ * failure comment, so the next tend cycle retries; once exhausted, tend takes
+ * the terminal block path with the failure evidence and the recorded reason.
+ * A gate that cannot run fails closed to the block path, matching the other
+ * tend budgets.
+ */
+async function deferRetryableTendFailure(args: {
+  candidate: TendCandidate;
+  repoDir: string;
+  phase: string;
+  output: string;
+  rationale: string;
+  baseSha: string;
+  deps: MergeExecutionDeps;
+  block: (phase: string, output: string) => Promise<MergeExecutionResult>;
+}): Promise<MergeExecutionResult> {
+  const { candidate, repoDir, phase, output, rationale, baseSha, deps, block } = args;
+  const headSha = candidate.headSha ?? '';
+
+  let decision: StrictBaseRetryDecision;
+  try {
+    decision = deps.transientRetry.gate(candidate.number, headSha, repoDir, baseSha);
+  } catch (gateError) {
+    console.warn(`tend: ${TEND_TRANSIENT_RECOVERY_BUCKET} gate failed for PR #${candidate.number}: ${errorMessage(gateError)}`);
+    return block(phase, `${output}\n\n${TEND_TRANSIENT_RECOVERY_BUCKET} gate failed (fail-closed): ${errorMessage(gateError)}`);
+  }
+
+  if (decision === 'exhausted' || decision === 'exhausted-quiet') {
+    const summary = `${phase} failure kept recurring after ${DEFAULT_RETRY_ATTEMPTS} deferred retries `
+      + `at head ${headSha || '(unknown)'} / base ${baseSha || '(unknown)'} (${rationale})`;
+    if (decision === 'exhausted') {
+      try {
+        deps.transientRetry.markExhausted(candidate.number, `${summary}: ${truncateReason(output, 400)}`, repoDir);
+      } catch (markError) {
+        console.warn(`tend: failed to record ${TEND_TRANSIENT_RECOVERY_BUCKET} exhaustion for PR #${candidate.number}: ${errorMessage(markError)}`);
+      }
+    }
+    return block(phase, `${output}\n\n${summary}`);
+  }
+
+  if (decision === 'proceed') {
+    try {
+      deps.transientRetry.increment(candidate.number, headSha, repoDir, baseSha);
+    } catch (incError) {
+      console.warn(`tend: failed to record ${TEND_TRANSIENT_RECOVERY_BUCKET} attempt for PR #${candidate.number}: ${errorMessage(incError)}`);
+    }
+  }
+  // decision === 'backoff' also defers, without spending budget.
+
+  try {
+    await retryTransient(() => deps.restoreReady(candidate.number), {
+      label: `restore ready label after retryable ${phase} failure`,
+      sleep: deps.retrySleep,
+    });
+  } catch (error) {
+    console.warn(
+      `tend: failed to restore wm:ready on PR #${candidate.number} after retryable ${phase} failure; `
+      + `wm:merging may be leaked until the stale-lock timeout reclaims it: ${errorMessage(error)}`,
+    );
+  }
+  console.warn(`tend: retryable ${phase} failure on PR #${candidate.number} (${rationale}) — returned to wm:ready, no wm:blocked`);
+  return {
+    status: 'skipped',
+    prNumber: candidate.number,
+    phase: `${phase}-retry-deferred`,
+    failureExcerpt: truncateOutput(`${output}\n${rationale}; deferred by ${TEND_TRANSIENT_RECOVERY_BUCKET}, PR returned to wm:ready`),
+    haltLoop: false,
+  };
+}
+
+/** `origin/<branch>` SHA in a scratch worktree, or '' — never throws. */
+function readRemoteBranchShaBestEffort(
+  worktreePath: string,
+  branch: string,
+  shellRunner: MergeExecutionDeps['shellRunner'],
+): string {
+  try {
+    return String(shellRunner(`git rev-parse ${escapeShellArg(`origin/${branch}`)}`, {
+      encoding: 'utf-8',
+      cwd: worktreePath,
+      timeout: GIT_COMMAND_TIMEOUT_MS,
+    })).trim();
+  } catch {
+    return '';
   }
 }
 
@@ -3244,6 +3397,7 @@ function mergeExecutionDeps(deps: Partial<MergeExecutionDeps> | undefined, marke
     scratchPrepRetry: defaultScratchPrepRetryOps,
     handoffRebindRetry: defaultHandoffRebindRetryOps,
     handoffClaimRetry: defaultHandoffClaimRetryOps,
+    transientRetry: defaultTransientRetryOps,
     prepRunnerFactory: (_repoDir, factoryOptions) => createProcessGroupPrepRunner({
       deadlineMs: getIntegrationConfig(_repoDir).worktreePrepTimeoutMinutes * 60_000,
       heartbeatIntervalMs: SCRATCH_PREP_PROGRESS_HEARTBEAT_MS,

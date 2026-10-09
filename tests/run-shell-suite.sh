@@ -45,7 +45,7 @@ TESTS=(
   challenge-record-decisive.test.sh
   native-terminal-failure.test.sh
   native-failure-classification.test.sh
-  challenger-transient-retry.test.sh
+  stage-failure-retry.test.sh
   coding-dirty-handoff.test.sh
   ready-exhausted-challenge.test.sh
   review-gate-refused-challenge.test.sh

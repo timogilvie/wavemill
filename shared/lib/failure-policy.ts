@@ -134,6 +134,12 @@ export const TERMINAL_ALLOWLIST: readonly TerminalCause[] = Object.freeze([
     testRef: 'failure-policy.test.ts:terminal:varied_model_unresolvable',
   },
   {
+    code: 'operator-gate',
+    reason: 'GitHub requires an approval, security, or branch-protection gate that only an operator can satisfy',
+    faultClass: 'harness-fault',
+    testRef: 'failure-policy.test.ts:terminal:operator-gate',
+  },
+  {
     code: 'coding-dirty-handoff',
     reason: 'the HOK-3128 dirty-handoff relaunch budget is already spent; the agent will not commit its own output',
     faultClass: 'model-fault',

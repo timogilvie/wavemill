@@ -162,6 +162,7 @@ function buildMergeTestOptions(overrides: {
   prepRunnerFactory?: MergeExecutionDeps['prepRunnerFactory'];
   scratchPrepRetry?: MergeExecutionDeps['scratchPrepRetry'];
   handoffClaimRetry?: MergeExecutionDeps['handoffClaimRetry'];
+  transientRetry?: MergeExecutionDeps['transientRetry'];
   rebaseHeadSha?: string;
 } = {}): {
   repoDir: string;
@@ -235,10 +236,15 @@ function buildMergeTestOptions(overrides: {
       // HOK-3108: keep every existing test's handoff path stable. A test that
       // wants to exercise the handoff-claim budget passes its own fake here.
       handoffClaimRetry: overrides.handoffClaimRetry ?? noopStrictBaseRetry,
+      transientRetry: overrides.transientRetry ?? noopStrictBaseRetry,
     },
     cleanup: () => rmSync(repoDir, { recursive: true, force: true }),
   };
 }
+
+/** What `git rebase` prints on a real conflict — a recognised code failure (HOK-3176). */
+const GIT_REBASE_CONFLICT_OUTPUT = 'Auto-merging file.ts\nCONFLICT (content): Merge conflict in file.ts\n'
+  + 'error: could not apply 1a2b3c4... change\nhint: Resolve all conflicts manually';
 
 function hasCall(calls: string[], pattern: RegExp): boolean {
   return calls.some((call) => pattern.test(call));
@@ -2474,7 +2480,7 @@ describe('executeMerge', () => {
       options.calls.push(cmd);
       const defaultRunner = options.deps.shellRunner as MergeExecutionDeps['shellRunner'];
       if (cmd.includes('git rebase')) {
-        throw new Error('rebase conflict\nfile.ts');
+        throw new Error(GIT_REBASE_CONFLICT_OUTPUT);
       }
       return defaultRunner(cmd, opts);
     };
@@ -2494,6 +2500,152 @@ describe('executeMerge', () => {
     } finally {
       options.cleanup();
     }
+  });
+
+  describe('HOK-3176: retryable in-lane failures never latch wm:blocked', () => {
+    const DROPPED_PUSH = "error: RPC failed; curl 56 Recv failure: Connection reset by peer\n"
+      + "fatal: unable to access 'https://github.com/timogilvie/wavemill.git/': Recv failure: Connection reset by peer";
+
+    /** In-memory stand-in for the bounded-retry.sh bucket semantics. */
+    function countingRetry(limit: number) {
+      const state = { count: 0, exhaustedReason: '', gates: [] as Array<{ head: string; base?: string }> };
+      const ops: StrictBaseRetryOps = {
+        gate: (_pr, head, _repoDir, base) => {
+          state.gates.push({ head, base });
+          if (state.exhaustedReason) return 'exhausted-quiet';
+          return state.count >= limit ? 'exhausted' : 'proceed';
+        },
+        increment: () => { state.count += 1; },
+        markExhausted: (_pr, reason) => { state.exhaustedReason = reason; },
+        clear: () => { state.count = 0; },
+      };
+      return { state, ops };
+    }
+
+    function pushFailingRunner(options: ReturnType<typeof buildMergeTestOptions>, failures: { remaining: number }) {
+      const defaultRunner = options.deps.shellRunner as MergeExecutionDeps['shellRunner'];
+      return ((cmd, opts) => {
+        options.calls.push(cmd);
+        if (cmd.includes('git push --force-with-lease') && failures.remaining > 0) {
+          failures.remaining -= 1;
+          throw new Error(DROPPED_PUSH);
+        }
+        return defaultRunner(cmd, opts);
+      }) as MergeExecutionDeps['shellRunner'];
+    }
+
+    it('returns a dropped-connection push to wm:ready instead of blocking', async () => {
+      const retry = countingRetry(3);
+      const options = buildMergeTestOptions({ transientRetry: retry.ops });
+      try {
+        const result = await executeMerge(candidate(), {
+          repoDir: options.repoDir,
+          deps: { ...options.deps, shellRunner: pushFailingRunner(options, { remaining: 1 }) },
+        });
+
+        assert.equal(result.status, 'skipped');
+        assert.equal(result.phase, 'rebase-retry-deferred');
+        assert.deepEqual(options.labels, ['merging:42', 'ready:42']);
+        assert.ok(!hasCall(options.calls, /gh pr comment 42/), 'a deferred retry posts no failure comment');
+        assert.equal(retry.state.count, 1);
+        assert.equal(retry.state.gates[0]?.base, 'abc123def456', 'retry key carries the integration tip (HOK-3103)');
+      } finally {
+        options.cleanup();
+      }
+    });
+
+    it('dropped-connection-push replay fixture converges to merged with no wm:blocked', async () => {
+      const fixture = JSON.parse(readFileSync(
+        join(import.meta.dirname, '..', '..', 'tests', 'fixtures', 'incident-replay', 'dropped-connection-push.json'),
+        'utf-8',
+      )) as { fault: string; faultParams: { throwCount: number }; convergence: { mustMerge: boolean; maxTickCount: number } };
+      assert.equal(fixture.fault, 'dropped_connection_push_rebase');
+
+      const retry = countingRetry(3);
+      const options = buildMergeTestOptions({ transientRetry: retry.ops });
+      const failures = { remaining: fixture.faultParams.throwCount };
+      try {
+        let result: Awaited<ReturnType<typeof executeMerge>> | undefined;
+        for (let tick = 0; tick < fixture.convergence.maxTickCount; tick += 1) {
+          result = await executeMerge(candidate(), {
+            repoDir: options.repoDir,
+            deps: { ...options.deps, shellRunner: pushFailingRunner(options, failures) },
+          });
+          if (result.status === 'merged') break;
+        }
+
+        assert.equal(fixture.convergence.mustMerge, true);
+        assert.equal(result?.status, 'merged');
+        assert.ok(!options.labels.some((label) => label.startsWith('blocked:')), `labels: ${options.labels.join(', ')}`);
+        assert.equal(retry.state.exhaustedReason, '');
+      } finally {
+        options.cleanup();
+      }
+    });
+
+    it('blocks with the evidence once the transient budget is exhausted', async () => {
+      const retry = countingRetry(3);
+      const options = buildMergeTestOptions({ transientRetry: retry.ops });
+      try {
+        let result: Awaited<ReturnType<typeof executeMerge>> | undefined;
+        for (let tick = 0; tick < 4; tick += 1) {
+          result = await executeMerge(candidate(), {
+            repoDir: options.repoDir,
+            deps: { ...options.deps, shellRunner: pushFailingRunner(options, { remaining: 1 }) },
+          });
+        }
+
+        assert.equal(result?.status, 'blocked');
+        assert.equal(result?.phase, 'rebase');
+        assert.match(result?.failureExcerpt ?? '', /Connection reset by peer/);
+        assert.match(result?.failureExcerpt ?? '', /deferred retries/);
+        assert.match(retry.state.exhaustedReason, /rebase failure kept recurring after 3 deferred retries/);
+        assert.equal(options.labels.filter((label) => label === 'blocked:42').length, 1);
+      } finally {
+        options.cleanup();
+      }
+    });
+
+    it('still blocks a real rebase conflict immediately (recognised code failure)', async () => {
+      const retry = countingRetry(3);
+      const options = buildMergeTestOptions({ transientRetry: retry.ops });
+      const defaultRunner = options.deps.shellRunner as MergeExecutionDeps['shellRunner'];
+      try {
+        const result = await executeMerge(candidate(), {
+          repoDir: options.repoDir,
+          deps: {
+            ...options.deps,
+            shellRunner: (cmd, opts) => {
+              options.calls.push(cmd);
+              if (cmd.includes('git rebase')) throw new Error(GIT_REBASE_CONFLICT_OUTPUT);
+              return defaultRunner(cmd, opts);
+            },
+          },
+        });
+
+        assert.equal(result.status, 'blocked');
+        assert.equal(retry.state.gates.length, 0, 'a code failure never consults the retry budget');
+      } finally {
+        options.cleanup();
+      }
+    });
+
+    it('retries a ready checker that threw instead of blocking', async () => {
+      const retry = countingRetry(3);
+      const options = buildMergeTestOptions({
+        transientRetry: retry.ops,
+        readyChecker: async () => { throw new Error('socket hang up'); },
+      });
+      try {
+        const result = await executeMerge(candidate(), { repoDir: options.repoDir, deps: options.deps });
+
+        assert.equal(result.status, 'skipped');
+        assert.equal(result.phase, 'ready-retry-deferred');
+        assert.ok(!options.labels.includes('blocked:42'));
+      } finally {
+        options.cleanup();
+      }
+    });
   });
 
   it('blocks when PR checks fail and does not merge', async () => {
@@ -3061,7 +3213,7 @@ describe('executeMerge', () => {
     const shellRunner: MergeExecutionDeps['shellRunner'] = (cmd, opts) => {
       options.calls.push(cmd);
       if (cmd.includes('git rebase')) {
-        throw new Error('rebase conflict');
+        throw new Error(GIT_REBASE_CONFLICT_OUTPUT);
       }
       const defaultRunner = options.deps.shellRunner as MergeExecutionDeps['shellRunner'];
       return defaultRunner(cmd, opts);
@@ -3101,7 +3253,7 @@ describe('executeMerge', () => {
     const shellRunner: MergeExecutionDeps['shellRunner'] = (cmd, opts) => {
       options.calls.push(cmd);
       if (cmd.includes('git rebase')) {
-        throw new Error('rebase conflict');
+        throw new Error(GIT_REBASE_CONFLICT_OUTPUT);
       }
       const defaultRunner = options.deps.shellRunner as MergeExecutionDeps['shellRunner'];
       return defaultRunner(cmd, opts);
