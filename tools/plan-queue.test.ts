@@ -627,6 +627,112 @@ describe('plan-queue CLI', () => {
     }
   });
 
+  it('--no-infer renders quickly from cache without calling the classifier (HOK-3179)', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'plan-queue-no-infer-test-'));
+    try {
+      const { computeTaskFingerprint } = await import('../shared/lib/task-dependency-plan-cache.ts');
+      const backlog = [
+        { id: 'HOK-1', title: 'Add queue API', state: 'Todo', labels: ['queue'], blocks: [] },
+        { id: 'HOK-2', title: 'Consume queue API', state: 'Todo', labels: ['queue'], blocks: [] },
+      ];
+      const backlogPath = join(tempDir, 'backlog.json');
+      writeFileSync(backlogPath, `${JSON.stringify(backlog, null, 2)}\n`, 'utf8');
+
+      const cacheDir = join(tempDir, '.wavemill', 'cache', 'task-dependency-plans');
+      mkdirSync(cacheDir, { recursive: true });
+      const fingerprints = Object.fromEntries(backlog.map((task) => [task.id, computeTaskFingerprint(task)]));
+      writeFileSync(join(cacheDir, 'no-infer.json'), `${JSON.stringify({
+        schemaVersion: 1,
+        projectSlug: 'no-infer',
+        updatedAt: '2026-10-01T00:00:00.000Z',
+        fingerprints,
+        edges: [{
+          from: 'HOK-1',
+          to: 'HOK-2',
+          fromFingerprint: fingerprints['HOK-1'],
+          toFingerprint: fingerprints['HOK-2'],
+          kind: 'inferred',
+          type: 'depends_on',
+          classifiedAt: '2026-10-01T00:00:00.000Z',
+        }],
+      })}\n`, 'utf8');
+
+      // Classifier would hang for 60s if invoked, but --no-infer must never
+      // call it. Picker-synchronous path should return in <2s.
+      const { cliPath, logPath } = writeMockClassifier(tempDir, { default: { sleepMs: 60_000 } });
+      const startedAt = Date.now();
+      const result = runPlanQueue(
+        ['--backlog-file', backlogPath, '--cache-key', 'no-infer', '--no-infer', '--json'],
+        undefined,
+        tempDir,
+        { ...MILL_ENV, CLAUDE_CMD: cliPath },
+      );
+      const elapsedMs = Date.now() - startedAt;
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(parseJson(result.stdout), {
+        availableNow: ['HOK-1'],
+        queuedAfterDependencies: [{ taskId: 'HOK-2', ancestors: ['HOK-1'] }],
+        avoidRunningTogether: [],
+        needsTriage: [],
+      });
+      assert.deepEqual(readInvokedModels(logPath), [], 'classifier must not be invoked');
+      assert.ok(elapsedMs < 10_000, `expected <10s under --no-infer, took ${elapsedMs}ms`);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('drops a cached inferred edge contradicted by a reversed explicit relation (HOK-3179)', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'plan-queue-reverse-explicit-test-'));
+    try {
+      const { computeTaskFingerprint } = await import('../shared/lib/task-dependency-plan-cache.ts');
+      // Current explicit: HOK-1 depends on HOK-2 (HOK-2 blocks HOK-1).
+      const backlog = [
+        { id: 'HOK-1', title: 'Depends on 2', state: 'Todo', labels: [], blocks: [], dependsOn: ['HOK-2'] },
+        { id: 'HOK-2', title: 'Blocks 1', state: 'Todo', labels: [], blocks: ['HOK-1'] },
+      ];
+      const backlogPath = join(tempDir, 'backlog.json');
+      writeFileSync(backlogPath, `${JSON.stringify(backlog, null, 2)}\n`, 'utf8');
+
+      const cacheDir = join(tempDir, '.wavemill', 'cache', 'task-dependency-plans');
+      mkdirSync(cacheDir, { recursive: true });
+      const fingerprints = Object.fromEntries(backlog.map((task) => [task.id, computeTaskFingerprint(task)]));
+      // Stale cached inference: HOK-2 depends on HOK-1 (reversed direction).
+      writeFileSync(join(cacheDir, 'reverse-explicit.json'), `${JSON.stringify({
+        schemaVersion: 1,
+        projectSlug: 'reverse-explicit',
+        updatedAt: '2026-10-01T00:00:00.000Z',
+        fingerprints,
+        edges: [{
+          from: 'HOK-2',
+          to: 'HOK-1',
+          fromFingerprint: fingerprints['HOK-2'],
+          toFingerprint: fingerprints['HOK-1'],
+          kind: 'inferred',
+          type: 'depends_on',
+          classifiedAt: '2026-10-01T00:00:00.000Z',
+        }],
+      })}\n`, 'utf8');
+
+      const result = runPlanQueue(
+        ['--backlog-file', backlogPath, '--cache-key', 'reverse-explicit', '--no-infer', '--json'],
+        undefined,
+        tempDir,
+      );
+
+      assert.equal(result.status, 0, result.stderr);
+      // Explicit direction wins; cached reverse must not create a cycle or
+      // push HOK-1 into needsTriage.
+      const plan = parseJson(result.stdout);
+      assert.deepEqual(plan.availableNow, ['HOK-2']);
+      assert.deepEqual(plan.queuedAfterDependencies, [{ taskId: 'HOK-1', ancestors: ['HOK-2'] }]);
+      assert.deepEqual(plan.needsTriage, []);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('merges retained cached edges into planning when backlog fingerprints are unchanged', async () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'plan-queue-cache-edges-test-'));
     try {

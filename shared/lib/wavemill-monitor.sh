@@ -15651,6 +15651,16 @@ LAST_BACKLOG_FETCH=0
 LAST_QUEUE_PLAN_FETCH=0
 BACKLOG_CACHE_TTL=60  # seconds between backlog refreshes
 
+# HOK-3179: background queue inference refresh. The picker-synchronous call
+# runs with --no-infer and 5s; a detached refresh runs the classifier in the
+# background and updates the on-disk cache + queue-health. One refresh in
+# flight at a time; the next picker pass picks the fresh cache up on its own.
+LAST_QUEUE_INFERENCE_REFRESH=0
+QUEUE_INFERENCE_REFRESH_PID=""
+QUEUE_INFERENCE_REFRESH_TTL=180  # seconds between background refresh launches
+# Picker-synchronous timeout: never block the picker on an LLM call (HOK-3179).
+QUEUE_PICKER_TIMEOUT_SECS=5
+
 refresh_backlog_cache() {
   local now
   now=$(date +%s)
@@ -15924,6 +15934,10 @@ fetch_queue_plan() {
     record_fetch_queue_plan_failure "cache_empty" ""
     return 1
   }
+  # HOK-3179: kick off a background refresh (one in flight, TTL-gated) that
+  # updates the on-disk cache + queue-health. The picker call below reads
+  # from the cache via --no-infer and never waits on it.
+  maybe_launch_queue_inference_refresh "$BACKLOG_JSON_CACHE" || true
   queue_plan=$(build_queue_plan_once "$BACKLOG_JSON_CACHE") || return 1
 
   QUEUE_PLAN_CACHE="$queue_plan"
@@ -16060,35 +16074,27 @@ build_queue_plan_once() {
     --arg cacheKey "$cache_key" \
     '{"taskCount": $taskCount, "explicitDependencyCount": $explicitDependencyCount, "cacheKey": $cacheKey}' 2>/dev/null)
 
-  # Determine timeout and build planner command
+  # HOK-3179: the picker-synchronous call never blocks on the LLM. It uses
+  # --no-infer and a tight timeout so it renders from the on-disk cache plus
+  # current explicit relations in <2s. A background refresh (fired on a
+  # separate cadence by maybe_launch_queue_inference_refresh) owns the
+  # inference call and the cache + queue-health writes.
   if [[ -n "${PROJECT_NAME:-}" ]]; then
-    timeout_secs=60
-    local now_ms classifier_deadline_ms classifier_grace_secs=8
-    now_ms="$(date +%s%3N 2>/dev/null || true)"
-    [[ "$now_ms" =~ ^[0-9]+$ ]] || now_ms="$(date +%s)000"
-    classifier_deadline_ms=$(( now_ms + ((timeout_secs - classifier_grace_secs) * 1000) ))
-    planner_cmd="npx tsx \"$TOOLS_DIR/plan-queue.ts\" --stdin --json --cache-key \"$cache_key\" --refresh-missing-cache --queue-classifier-deadline-ms \"$classifier_deadline_ms\""
-    # HOK-3130: exiting 0 does not prove inference ran; the planner reports
-    # the inference outcome here so queue health can degrade on it.
-    inference_report_file="$(mktemp -t wavemill-queue-inference.XXXXXX 2>/dev/null || true)"
-    if [[ -n "$inference_report_file" ]]; then
-      planner_cmd+=" --inference-report-file \"$inference_report_file\""
-    fi
+    timeout_secs="${QUEUE_PICKER_TIMEOUT_SECS:-5}"
+    planner_cmd="npx tsx \"$TOOLS_DIR/plan-queue.ts\" --stdin --json --cache-key \"$cache_key\" --no-infer"
   else
-    timeout_secs=15
+    timeout_secs="${QUEUE_PICKER_TIMEOUT_SECS:-5}"
     planner_cmd="npx tsx \"$TOOLS_DIR/plan-queue.ts\" --stdin --json"
   fi
 
-  # Initialize queue-health file before attempting planner
+  # Initialize queue-health file before attempting planner (background refresh
+  # populates its real fields; this just guarantees the file exists).
   queue_health_init 2>/dev/null || true
 
   # Run planner with policy wrapper (handles timeout, process group, diagnostics)
   rm -f "$tmp_stderr"
   local planner_status=0
   queue_plan=$(printf '%s' "$plan_input" | run_queue_planner_with_policy "$planner_cmd" "$timeout_secs" "$input_snapshot" "$inference_report_file") || planner_status=$?
-  if [[ -n "$inference_report_file" ]]; then
-    rm -f "$inference_report_file"
-  fi
   (( planner_status == 0 )) || {
     # The planner records the specific step/stderr/exit itself. Only fill in a
     # generic record when it left nothing behind, so we never overwrite the
@@ -16109,6 +16115,102 @@ build_queue_plan_once() {
   fi
 
   echo "$queue_plan"
+}
+
+# HOK-3179: fire-and-forget background refresh of the queue-inference cache.
+# One refresh in flight at a time; TTL-gated to avoid stacking. Writes the
+# cache + queue-health; the next picker pass picks the fresh cache up on its
+# own via --no-infer.
+maybe_launch_queue_inference_refresh() {
+  local backlog_json="$1"
+  [[ -n "$backlog_json" ]] || return 0
+  [[ -n "${PROJECT_NAME:-}" ]] || return 0
+  [[ -n "${TOOLS_DIR:-}" ]] || return 0
+  command -v npx >/dev/null 2>&1 || return 0
+
+  local now
+  now=$(date +%s)
+
+  # If a prior refresh is still live, skip. kill -0 returns 0 iff the pid
+  # exists and is signalable; stale pids clear naturally.
+  if [[ -n "$QUEUE_INFERENCE_REFRESH_PID" ]]; then
+    if kill -0 "$QUEUE_INFERENCE_REFRESH_PID" 2>/dev/null; then
+      return 0
+    fi
+    QUEUE_INFERENCE_REFRESH_PID=""
+  fi
+
+  if (( now - LAST_QUEUE_INFERENCE_REFRESH < QUEUE_INFERENCE_REFRESH_TTL )); then
+    return 0
+  fi
+
+  local plan_input cache_key timeout_secs
+  cache_key="${PROJECT_NAME:-default}"
+  timeout_secs=60
+
+  plan_input=$(jq -c '
+    map({
+      id: .identifier,
+      title: .title,
+      description: .description,
+      labels: ((.labels.nodes // []) | map(.name) | sort),
+      priority: (.priority // null),
+      priorityLabel: (.priorityLabel // null),
+      estimate: (.estimate // null),
+      state: (.state.name // null),
+      dueDate: (.dueDate // null),
+      projectMilestone: (.projectMilestone // null),
+      blocks: (
+        (.relations.nodes // [])
+        | map(select(.type == "blocks" and .relatedIssue.identifier != null and .relatedIssue.completedAt == null and .relatedIssue.canceledAt == null) | .relatedIssue.identifier)
+        | sort
+      ),
+      sharedSurface: ((.sharedSurface // []) | sort),
+      dependsOn: (
+        (.inverseRelations.nodes // [])
+        | map(select(.type == "blocks" and .issue.identifier != null and .issue.completedAt == null and .issue.canceledAt == null) | .issue.identifier)
+        | sort
+      )
+    })
+  ' <<<"$backlog_json" 2>/dev/null) || return 0
+
+  local task_count explicit_dep_count input_snapshot
+  task_count=$(printf '%s' "$plan_input" | jq 'length // 0' 2>/dev/null || echo '0')
+  explicit_dep_count=$(printf '%s' "$plan_input" | jq 'map(.blocks | length) | add // 0' 2>/dev/null || echo '0')
+  input_snapshot=$(jq -n \
+    --argjson taskCount "$task_count" \
+    --argjson explicitDependencyCount "$explicit_dep_count" \
+    --arg cacheKey "$cache_key" \
+    '{"taskCount": $taskCount, "explicitDependencyCount": $explicitDependencyCount, "cacheKey": $cacheKey}' 2>/dev/null) || return 0
+
+  local now_ms classifier_deadline_ms classifier_grace_secs=8
+  now_ms="$(date +%s%3N 2>/dev/null || true)"
+  [[ "$now_ms" =~ ^[0-9]+$ ]] || now_ms="$(date +%s)000"
+  classifier_deadline_ms=$(( now_ms + ((timeout_secs - classifier_grace_secs) * 1000) ))
+
+  local inference_report_file
+  inference_report_file="$(mktemp -t wavemill-queue-inference.XXXXXX 2>/dev/null || true)"
+  [[ -n "$inference_report_file" ]] || return 0
+
+  local planner_cmd
+  planner_cmd="npx tsx \"$TOOLS_DIR/plan-queue.ts\" --stdin --json --cache-key \"$cache_key\" --refresh-missing-cache --queue-classifier-deadline-ms \"$classifier_deadline_ms\" --inference-report-file \"$inference_report_file\""
+
+  queue_health_init 2>/dev/null || true
+
+  # Detached subshell: run the full policy wrapper so queue-health is updated
+  # on both success and failure. stdout/stderr are discarded; the picker never
+  # waits on it. The temp inference-report file is cleaned up by the child.
+  (
+    printf '%s' "$plan_input" | run_queue_planner_with_policy \
+      "$planner_cmd" "$timeout_secs" "$input_snapshot" "$inference_report_file" \
+      >/dev/null 2>&1 || true
+    rm -f "$inference_report_file" 2>/dev/null || true
+  ) &
+  QUEUE_INFERENCE_REFRESH_PID=$!
+  LAST_QUEUE_INFERENCE_REFRESH=$now
+  # Reap the detached child promptly if it is already done so pid tracking stays accurate.
+  disown "$QUEUE_INFERENCE_REFRESH_PID" 2>/dev/null || true
+  return 0
 }
 
 invoke_first_wave_helper() {
@@ -16148,6 +16250,15 @@ render_grouped_task_list() {
   declare -A on_deck_set=()
 
   jq -e . >/dev/null 2>&1 <<<"$queue_plan" || return 1
+
+  # HOK-3179: when queue-health reports inference_unavailable, surface it in
+  # the picker body so operators see that waves are being drawn from cached
+  # (plus explicit) edges — not from a fresh classifier pass.
+  local _qh_banner
+  _qh_banner="$(queue_inference_degraded_banner 2>/dev/null || true)"
+  if [[ -n "$_qh_banner" ]]; then
+    output+="${_qh_banner}"$'\n\n'
+  fi
 
   if [[ -n "${REPO_DIR:-}" ]] && declare -F wavemill_load_config >/dev/null 2>&1; then
     backlog_cap="$(wavemill_load_config "$REPO_DIR" | jq -r '.backlog.defaultAvailableNowCap // 12' 2>/dev/null || printf '12')"

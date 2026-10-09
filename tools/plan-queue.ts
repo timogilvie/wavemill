@@ -50,10 +50,16 @@ import {
 } from '../shared/lib/queue-inference-status.ts';
 
 const queueAnalysisPromptPath = fileURLToPath(new URL('./prompts/queue-analysis.md', import.meta.url));
-// One attempt must fit a Claude CLI cold start plus a whole-backlog prompt;
-// the absolute deadline (monitor watchdog minus grace) still bounds the ladder.
-const QUEUE_CLASSIFIER_PER_ATTEMPT_TIMEOUT_MS = 25_000;
+// HOK-3179: no fixed per-attempt timeout any more. The absolute classifier
+// deadline (monitor watchdog minus grace) is the only cap; the first capable
+// candidate gets the whole remaining budget. Fixed 25s caps starved every
+// candidate when a cold Haiku start plus the (then 46 KB) prompt took ~50s.
 const QUEUE_CLASSIFIER_DEADLINE_GRACE_MS = 1_500;
+// Bounded output (HOK-3179): a well-formed "edges only" reply fits well under
+// 1 KB in practice. The 4.4 k-token runs observed on 2026-10-08 were reasoning
+// slop; this cap keeps a model that over-produces from blowing the budget on
+// its own output.
+const QUEUE_CLASSIFIER_MAX_OUTPUT_TOKENS = 1_024;
 
 function renderPreview(queuePlan: QueuePlan, records: BacklogRecord[]): string {
   const titleById = new Map(records.map((record) => [record.id, record.title ?? '']));
@@ -192,6 +198,24 @@ function dedupeDependencyEdges(edges: DependencyEdge[]): DependencyEdge[] {
     }
   }
 
+  // HOK-3179: when an explicit `depends_on` relation reverses a cached inferred
+  // one (explicit A→B, cached B→A), the explicit relation is current ground
+  // truth. Drop the stale inferred reversal so it does not create a false cycle
+  // or push the task into needsTriage.
+  const explicitDirected = new Set<string>();
+  for (const edge of deduped.values()) {
+    if (edge.source === 'explicit' && edge.type === 'depends_on') {
+      explicitDirected.add(`${edge.from}\u0000${edge.to}`);
+    }
+  }
+  for (const [key, edge] of deduped) {
+    if (edge.source !== 'inferred' || edge.type !== 'depends_on') continue;
+    const reverseKey = `${edge.to}\u0000${edge.from}`;
+    if (explicitDirected.has(reverseKey)) {
+      deduped.delete(key);
+    }
+  }
+
   return [...deduped.values()].sort((a, b) => {
     const typeCompare = a.type.localeCompare(b.type);
     if (typeCompare !== 0) return typeCompare;
@@ -236,6 +260,7 @@ runTool({
     'cache-key': { type: 'string', description: 'Cache key slug for file/stdin backlog modes' },
     'no-cache': { type: 'boolean', description: 'Disable task dependency cache reads and writes' },
     'refresh-missing-cache': { type: 'boolean', description: 'Run queue analysis when the cache has no fingerprints yet' },
+    'no-infer': { type: 'boolean', description: 'Plan from cache + explicit relations only; never call the classifier or write the cache (HOK-3179)' },
     'queue-classifier-deadline-ms': { type: 'string', description: 'Internal: absolute classifier deadline in epoch milliseconds' },
     'inference-report-file': { type: 'string', description: 'Internal: write a queue inference status JSON report to this path' },
     json: { type: 'boolean', description: 'Emit queuePlan JSON' },
@@ -256,6 +281,7 @@ runTool({
       ? toKebabCase(args['cache-key'])
       : args['cache-key'];
     const shouldUseCache = !args['no-cache'] && typeof cacheKey === 'string' && cacheKey.length > 0;
+    const noInfer = args['no-infer'] === true;
     const queueClassifierDeadlineMs = parseQueueClassifierDeadline(args['queue-classifier-deadline-ms']);
     const records = args['backlog-file']
       ? readBacklogFile(args['backlog-file'])
@@ -278,7 +304,9 @@ runTool({
     const nowMs = Date.now();
     const previousFingerprints = cacheBeforePrune?.fingerprints ?? {};
     const pendingCount = backlogDiff ? backlogDiff.added.length + backlogDiff.changed.length : 0;
-    const inferencePlan: InferenceRefreshPlan = cacheBeforePrune
+    const inferencePlan: InferenceRefreshPlan = noInfer
+      ? { kind: 'none', skipReason: 'no_changes' }
+      : cacheBeforePrune
       ? planInferenceRefresh({
         state: cacheBeforePrune.inference,
         previousFingerprintCount: Object.keys(previousFingerprints).length,
@@ -309,7 +337,9 @@ runTool({
       // Legacy fingerprints are not advanced, so switching back to legacy
       // still sees every task as pending.
       const { createGroundedLlm, runGroundedPlanning } = await import('../shared/lib/grounded-planner.ts');
-      const coolingDown = isInCooldown(cacheBeforePrune?.inference, nowMs);
+      // HOK-3179: --no-infer must never hit the LLM. Treat it like a cooldown so
+      // runGroundedPlanning plans from cached touch-sets/verdicts only.
+      const coolingDown = noInfer || isInCooldown(cacheBeforePrune?.inference, nowMs);
       grounded = await runGroundedPlanning(
         records.map((record, index) => ({
           ...record,
@@ -329,7 +359,6 @@ runTool({
                   ? {}
                   : {
                     deadlineMs: queueClassifierDeadlineMs,
-                    perAttemptTimeoutMs: QUEUE_CLASSIFIER_PER_ATTEMPT_TIMEOUT_MS,
                     deadlineGraceMs: QUEUE_CLASSIFIER_DEADLINE_GRACE_MS,
                   }),
               }),
@@ -391,11 +420,11 @@ runTool({
         const llmResult = await callLLM(prompt, {
           taskType: 'classify',
           repoDir: process.cwd(),
+          maxOutputTokens: QUEUE_CLASSIFIER_MAX_OUTPUT_TOKENS,
           ...(queueClassifierDeadlineMs === undefined
             ? {}
             : {
               fallbackDeadlineMs: queueClassifierDeadlineMs,
-              fallbackPerAttemptTimeoutMs: QUEUE_CLASSIFIER_PER_ATTEMPT_TIMEOUT_MS,
               fallbackDeadlineGraceMs: QUEUE_CLASSIFIER_DEADLINE_GRACE_MS,
             }),
         });
@@ -447,7 +476,9 @@ runTool({
         process.stderr.write(`cache: hits=0 misses=0 pruned=${cacheStats.totalEdges - cacheStats.retainedEdges}\n`);
       }
     }
-    if (cacheToSave && cacheKey) {
+    if (cacheToSave && cacheKey && !noInfer) {
+      // HOK-3179: --no-infer runs are picker-synchronous reads. They never
+      // mutate the cache; the inference-enabled background refresh owns writes.
       await saveCache(process.cwd(), cacheKey, cacheToSave);
     }
     if (typeof args['inference-report-file'] === 'string' && args['inference-report-file'].length > 0) {

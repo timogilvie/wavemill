@@ -14,17 +14,25 @@ export interface QueueRefreshTask {
 }
 
 /**
- * Per-task description budget in the queue-analysis prompt (HOK-3130).
- * Wavemill descriptions are full task packets; dependency cues live in the
- * title and the top of the packet, and whole packets pushed the classifier
- * past its per-attempt timeout.
+ * Per-task description budget in the queue-analysis prompt (HOK-3130, lowered
+ * HOK-3179). Wavemill descriptions are full task packets; dependency cues live
+ * in the title and the first paragraph. The old 1 500-char cap bloated the
+ * prompt to ~46 KB and pushed every classifier candidate past its budget.
  */
-export const QUEUE_ANALYSIS_DESCRIPTION_MAX_CHARS = 1_500;
+export const QUEUE_ANALYSIS_DESCRIPTION_MAX_CHARS = 400;
+
+/**
+ * Hard upper bound on the full queue-analysis prompt (HOK-3179). Guards the
+ * budget against regressions in description length, number of context tasks,
+ * or future field additions. Enforced in {@link buildPartialRefreshPrompt}.
+ */
+export const QUEUE_ANALYSIS_PROMPT_MAX_BYTES = 32_000;
+
 const DESCRIPTION_TRUNCATION_SUFFIX = '…[truncated]';
 
-function truncateDescription(description: string): string {
-  if (description.length <= QUEUE_ANALYSIS_DESCRIPTION_MAX_CHARS) return description;
-  return `${description.slice(0, QUEUE_ANALYSIS_DESCRIPTION_MAX_CHARS).trimEnd()}${DESCRIPTION_TRUNCATION_SUFFIX}`;
+function truncateDescription(description: string, maxChars: number = QUEUE_ANALYSIS_DESCRIPTION_MAX_CHARS): string {
+  if (description.length <= maxChars) return description;
+  return `${description.slice(0, maxChars).trimEnd()}${DESCRIPTION_TRUNCATION_SUFFIX}`;
 }
 
 interface AssembleNearbyContextInput {
@@ -61,18 +69,12 @@ function normalizeStateName(state: QueueRefreshTask['state']): string {
   return '';
 }
 
-function formatTask(task: QueueRefreshTask): string {
-  const description = typeof task.description === 'string' ? truncateDescription(task.description.trim()) : '';
-  const milestone = task.projectMilestone?.name
-    ? `${task.projectMilestone.name}${task.projectMilestone.targetDate ? ` (${task.projectMilestone.targetDate})` : ''}`
-    : 'null';
+function formatTask(task: QueueRefreshTask, descriptionMaxChars: number = QUEUE_ANALYSIS_DESCRIPTION_MAX_CHARS): string {
+  const description = typeof task.description === 'string' ? truncateDescription(task.description.trim(), descriptionMaxChars) : '';
   return [
     `- id: ${task.id}`,
     `  title: ${task.title ?? ''}`,
-    `  state: ${normalizeStateName(task.state)}`,
     `  priority: ${task.priority ?? 'null'}`,
-    `  dueDate: ${task.dueDate ?? 'null'}`,
-    `  projectMilestone: ${milestone}`,
     `  labels: ${JSON.stringify((task.labels ?? []).slice().sort((a, b) => a.localeCompare(b)))}`,
     `  dependsOn: ${JSON.stringify((task.dependsOn ?? []).slice().sort(compareTaskIds))}`,
     `  blocks: ${JSON.stringify((task.blocks ?? []).slice().sort(compareTaskIds))}`,
@@ -129,14 +131,32 @@ export function assembleNearbyContext({ changedTaskIds, allBacklog, topN = 10 }:
 }
 
 export function buildPartialRefreshPrompt({ changedTaskIds, contextTasks, template }: BuildPartialRefreshPromptInput): string {
-  return fillTemplate(template, {
-    CHANGED_TASK_IDS: JSON.stringify([...changedTaskIds].sort(compareTaskIds)),
-    CONTEXT_TASKS: contextTasks
-      .slice()
-      .sort((a, b) => compareTaskIds(a.id, b.id))
-      .map(formatTask)
-      .join('\n'),
+  const sortedContext = contextTasks
+    .slice()
+    .sort((a, b) => compareTaskIds(a.id, b.id));
+  const changedIdsJson = JSON.stringify([...changedTaskIds].sort(compareTaskIds));
+
+  let prompt = fillTemplate(template, {
+    CHANGED_TASK_IDS: changedIdsJson,
+    CONTEXT_TASKS: sortedContext.map((task) => formatTask(task)).join('\n'),
   });
+
+  if (Buffer.byteLength(prompt, 'utf8') > QUEUE_ANALYSIS_PROMPT_MAX_BYTES) {
+    // Defense in depth (HOK-3179): if any input (new fields, many tasks) blows
+    // past the budget, trim descriptions further rather than send a prompt we
+    // know will time out. Shrink in halving steps until it fits or we hit zero.
+    let descriptionCap = Math.max(0, Math.floor(QUEUE_ANALYSIS_DESCRIPTION_MAX_CHARS / 2));
+    while (Buffer.byteLength(prompt, 'utf8') > QUEUE_ANALYSIS_PROMPT_MAX_BYTES && descriptionCap >= 0) {
+      prompt = fillTemplate(template, {
+        CHANGED_TASK_IDS: changedIdsJson,
+        CONTEXT_TASKS: sortedContext.map((task) => formatTask(task, descriptionCap)).join('\n'),
+      });
+      if (descriptionCap === 0) break;
+      descriptionCap = Math.floor(descriptionCap / 2);
+    }
+  }
+
+  return prompt;
 }
 
 const FENCE = '```';
