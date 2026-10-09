@@ -17,6 +17,7 @@ import {
   ContextWindowUnverifiableError,
 } from './context-window-guard.ts';
 import { REVIEW_MAX_OUTPUT_TOKENS } from './output-limits.ts';
+import { isDisabledModel } from '../disabled-models.ts';
 import { classifyProviderError, type ProviderErrorKind } from './provider-error-classifier.ts';
 import {
   assertOpenRouterBalanceSufficient,
@@ -334,6 +335,22 @@ function normalizedPricingFromModel(model: WavemillLoopConfig['model']): Normali
 }
 
 /**
+ * Ready review providers, minus any model held by the `DISABLED_MODEL_IDS`
+ * kill-switch. Coding and challenge launches already honour that list; review
+ * did not, so a disabled model that sorts first (gemini-3.1-pro-preview, held
+ * for HOK-3158) kept reviewing every PR and returned verdict-less JSON, which
+ * exhausted review-infra recovery on each retry (HOK-3177 / #1603).
+ */
+export function readyReviewEntries(
+  providers: ReturnType<typeof resolveNativeAgentProviders>,
+): ReadyNativeProviderEntry[] {
+  return providers.filter(
+    (entry): entry is ReadyNativeProviderEntry =>
+      entry.status === 'ready' && !isDisabledModel(entry.modelId),
+  );
+}
+
+/**
  * Select the native provider entry that performs substantive review
  * analysis.
  *
@@ -351,9 +368,7 @@ function selectReviewProvider(
   requestedModel?: string,
 ): SelectedProvider {
   const providers = resolveNativeAgentProviders(repoDir, { env, phase: 'review' });
-  const readyEntries = providers.filter(
-    (entry): entry is ReadyNativeProviderEntry => entry.status === 'ready',
-  );
+  const readyEntries = readyReviewEntries(providers);
 
   if (requestedModel) {
     const parsed = parseRequestedNativeModel(requestedModel);
@@ -637,6 +652,23 @@ export async function runNativeReview(
     source: provider.requestedModel ? 'route' : 'derived',
     fallbackReason: provider.fallbackReason,
   });
+
+  // HOK-3169: short-circuit an empty review diff before invoking the model.
+  // Running the reviewer on a zero-byte diff invites it to improvise a
+  // non-verdict (which later surfaces as `native-review-malformed-response`
+  // and parks the task). Checking the raw byte count — not a trimmed string
+  // — keeps diffs that only contain whitespace-looking content (e.g. file
+  // renames) going to the model.
+  if (Buffer.byteLength(context.diff ?? '', 'utf8') === 0) {
+    return nativeReviewNoEvidenceFailure(
+      context,
+      'review-scope-empty',
+      'Native review input diff is empty; refusing to invoke the model.',
+      [],
+      substantiveAnalysisIdentity,
+      nativeReviewMetadata,
+    );
+  }
 
   const template = loadPromptResourceSync({
     kind: 'prompt',
@@ -1079,12 +1111,20 @@ export async function runNativeReview(
       'Native review returned an empty final assistant message.',
       { stopReason: loopResult.stopReason },
     );
-    return nativeReviewFailure(
+    // HOK-3169: a malformed/empty final response is a model-protocol failure,
+    // not a substantive verdict. Route through the no-evidence shape so the
+    // ready gate recognizes it as infra and consumes the bounded
+    // `review-infra-recovery` bucket instead of terminalizing the task.
+    return nativeReviewNoEvidenceFailure(
       context,
       'native-review-malformed-response',
       'Native review returned an empty final assistant message.',
       deniedTools,
       substantiveAnalysisIdentity,
+      {
+        ...nativeReviewMetadata,
+        nativeLoopStopReason: loopResult.stopReason,
+      },
     );
   }
 
@@ -1109,12 +1149,19 @@ export async function runNativeReview(
   } catch (error) {
     const description = `Native review returned malformed response: ${(error as Error).message}`;
     recordReviewFailureEnvelope('model-protocol', description, { stopReason: loopResult.stopReason });
-    return nativeReviewFailure(
+    // HOK-3169: see the empty-response branch above — a parse failure is a
+    // protocol failure, not a substantive verdict, so the artifact must be
+    // the no-evidence shape that the ready gate's infra bucket recognizes.
+    return nativeReviewNoEvidenceFailure(
       context,
       'native-review-malformed-response',
       description,
       deniedTools,
       substantiveAnalysisIdentity,
+      {
+        ...nativeReviewMetadata,
+        nativeLoopStopReason: loopResult.stopReason,
+      },
     );
   }
 }

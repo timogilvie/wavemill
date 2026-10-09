@@ -15,6 +15,7 @@ import { readEvalRecords } from './eval-persistence.ts';
 import type { EvalRecord } from './eval-schema.ts';
 import type { ForkIdentity, InvalidChallengeReason } from './challenge-execution-contract.ts';
 import { readForkIdentity } from './fork-identity.ts';
+import { challengerTaskKey } from './task-identity.ts';
 import {
   getSiblingBranch,
   classifyPairUnresolvableState,
@@ -234,7 +235,7 @@ function hydrateCleanedAbortedArm(
 
   const missingRole = pairState.primary ? 'challenger' : 'primary';
   const taskKeys = missingRole === 'challenger'
-    ? [`${pairId}_c`, `${pairId}-challenger`]
+    ? [challengerTaskKey(pairId), `${pairId}-challenger`]
     : [pairId];
 
   for (const taskKey of taskKeys) {

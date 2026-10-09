@@ -31,6 +31,7 @@ import {
 } from './current-challenge-eval-selector.ts';
 import { resolvePrIdentityMetadata } from './pr-comparison.ts';
 import { taskHasPendingChallengeArm } from './tend-challenge-gate.ts';
+import { challengerTaskKey, parseTaskId } from './task-identity.ts';
 
 export type ChallengeRecoveryVerdict = 'supersedable' | 'quarantine-upheld' | 'pair-not-found';
 
@@ -60,6 +61,8 @@ export interface ChallengeArmEvidence {
   selectorDiagnostics?: CurrentChallengeEvalDiagnostics;
   intentCreatedAt?: string;
   intentStage?: string;
+  /** Where the arm's intent was found (see resolveArmIntent). */
+  intentSource?: ArmIntentSource;
   proven: boolean;
   gaps: string[];
 }
@@ -94,6 +97,15 @@ export interface ChallengeRecoveryResult {
   supersedingRecordsWritten: number;
 }
 
+interface ExecutionIntent {
+  pairId?: string;
+  createdAt?: string;
+  selectedStage?: string;
+  challengeStage?: string;
+}
+
+export type ArmIntentSource = 'task-state' | 'primary-challenge-arm' | 'feature-dir';
+
 interface TaskState {
   slug?: string;
   linearIssueId?: string;
@@ -101,11 +113,7 @@ interface TaskState {
   challengeRole?: string;
   pr?: string;
   prUrl?: string;
-  challengeExecutionIntent?: {
-    createdAt?: string;
-    selectedStage?: string;
-    challengeStage?: string;
-  } | null;
+  challengeExecutionIntent?: ExecutionIntent | null;
   challengeArms?: unknown;
 }
 
@@ -137,6 +145,50 @@ function readJsonl<T>(path: string): T[] {
   return out;
 }
 
+/**
+ * Resolve an arm's immutable execution intent.
+ *
+ * Challenger task entries never carry `challengeExecutionIntent`: the pair's
+ * intent is persisted on the primary (top level and per arm under
+ * `challengeArms[].executionIntent`) and in each arm's feature dir as
+ * `challenge-intent.json`. Reading only the arm's own task entry left every
+ * challenger "unproven", so no pair could ever be recovered. Fallbacks must
+ * name this pair; the shared-createdAt gate still requires both arms to agree.
+ */
+function resolveArmIntent(
+  repoDir: string,
+  issueId: string,
+  pairId: string,
+  task: TaskState | undefined,
+  primaryTask: TaskState | undefined,
+): { intent?: ExecutionIntent; source?: ArmIntentSource } {
+  const belongsToPair = (intent: ExecutionIntent | null | undefined): intent is ExecutionIntent =>
+    Boolean(intent?.createdAt) && (intent?.pairId === undefined || intent.pairId === pairId);
+
+  if (task?.challengeExecutionIntent?.createdAt) {
+    return { intent: task.challengeExecutionIntent, source: 'task-state' };
+  }
+  if (primaryTask && primaryTask !== task && Array.isArray(primaryTask.challengeArms)) {
+    const arm = primaryTask.challengeArms.find(
+      (entry): entry is { key?: string; executionIntent?: ExecutionIntent } =>
+        Boolean(entry) && typeof entry === 'object' && (entry as { key?: unknown }).key === issueId,
+    );
+    if (belongsToPair(arm?.executionIntent)) {
+      return { intent: arm!.executionIntent, source: 'primary-challenge-arm' };
+    }
+  }
+  const featureDir = armFeatureDir(repoDir, task);
+  if (featureDir) {
+    for (const name of ['challenge-intent.json', '.challenge-intent.json']) {
+      const intent = readJson<ExecutionIntent>(join(featureDir, name));
+      if (belongsToPair(intent)) {
+        return { intent, source: 'feature-dir' };
+      }
+    }
+  }
+  return {};
+}
+
 /** Resolve the feature directory an arm executed in, if its worktree survives. */
 function armFeatureDir(repoDir: string, task: TaskState | undefined): string | undefined {
   const slug = task?.slug;
@@ -154,22 +206,24 @@ function collectArmEvidence(
   record: Record<string, unknown> | undefined,
   evals: EvalRecord[],
   resolvePrIdentity: (pr: string, repoDir: string) => { url: string; headSha: string },
+  resolvedIntent: { intent?: ExecutionIntent; source?: ArmIntentSource },
 ): ChallengeArmEvidence {
   const gaps: string[] = [];
   const evidence: ChallengeArmEvidence = { side, issueId, proven: false, gaps };
-  const pairId = task?.challengePairId ?? issueId.replace(/_c$/, '');
+  const pairId = task?.challengePairId ?? parseTaskId(issueId)?.linearId ?? issueId;
 
   if (!task) {
     gaps.push(`no task state for ${issueId}`);
     return evidence;
   }
 
-  const intent = task.challengeExecutionIntent ?? undefined;
+  const intent = resolvedIntent.intent;
   if (!intent?.createdAt) {
     gaps.push('no immutable challenge execution intent');
   } else {
     evidence.intentCreatedAt = intent.createdAt;
     evidence.intentStage = intent.selectedStage ?? intent.challengeStage;
+    evidence.intentSource = resolvedIntent.source;
   }
 
   const stageFile = challengeStage ? STAGE_RESULT_FILE[challengeStage] : undefined;
@@ -273,7 +327,7 @@ export function assessChallengePair(
   const pairRecords = records.filter((r) => r.challengePairId === pairId);
   const record = pairRecords[pairRecords.length - 1];
   const primaryTask = tasks[pairId];
-  const challengerTask = tasks[`${pairId}_c`];
+  const challengerTask = tasks[challengerTaskKey(pairId)];
 
   if (!record && !primaryTask) {
     assessment.blockers.push(`no challenge record or task state for ${pairId}`);
@@ -295,16 +349,18 @@ export function assessChallengePair(
     assessment.existingInvalidReason = record.invalidChallengeReason as string | undefined;
   }
 
-  const primaryIntent = primaryTask?.challengeExecutionIntent ?? undefined;
-  const challengerIntent = challengerTask?.challengeExecutionIntent ?? undefined;
+  const primaryResolved = resolveArmIntent(repoDir, pairId, pairId, primaryTask, primaryTask);
+  const challengerResolved = resolveArmIntent(repoDir, `${pairId}_c`, pairId, challengerTask, primaryTask);
+  const primaryIntent = primaryResolved.intent;
+  const challengerIntent = challengerResolved.intent;
   const challengeStage = primaryIntent?.selectedStage
     ?? challengerIntent?.selectedStage
     ?? (record?.challengeStage as string | undefined);
   assessment.challengeStage = challengeStage;
 
   assessment.arms = [
-    collectArmEvidence(repoDir, 'primary', pairId, primaryTask, challengeStage, record, evals, resolvePrIdentity),
-    collectArmEvidence(repoDir, 'challenger', `${pairId}_c`, challengerTask, challengeStage, record, evals, resolvePrIdentity),
+    collectArmEvidence(repoDir, 'primary', pairId, primaryTask, challengeStage, record, evals, resolvePrIdentity, primaryResolved),
+    collectArmEvidence(repoDir, 'challenger', challengerTaskKey(pairId), challengerTask, challengeStage, record, evals, resolvePrIdentity, challengerResolved),
   ];
 
   // ── Gate 1: an immutable intent shared by both arms ────────────────

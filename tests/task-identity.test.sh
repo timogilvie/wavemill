@@ -55,6 +55,12 @@ for ((i = 0; i < count; i++)); do
   esac
   check "$name: linear_id" "$expected_linear" "$actual_linear"
 
+  # challenger task ID construction
+  expected_challenger_id="$(jq -r '.expected.challengerId // "FAIL"' <<< "$row")"
+  actual_challenger_id="$(task_identity_challenger_id "$task_id")" || actual_challenger_id="FAIL"
+  check "$name: challenger_id" "$expected_challenger_id" "$actual_challenger_id"
+  check "$name: challenger_key" "$(jq -r '.expected.challengerKey' <<< "$row")" "$(task_identity_challenger_key "$task_id")"
+
   # predicates
   expected_challenger="$(jq -r '.expected.isChallenger' <<< "$row")"
   actual_challenger=false
@@ -72,6 +78,13 @@ printf '{"tasks":{"HOK-1":{"linearIssueId":"HOK-2"}}}' > "$tmpdir/default.json"
 rc=0
 STATE_FILE="$tmpdir/default.json" task_identity_linear_id "HOK-1" >/dev/null 2>&1 || rc=$?
 check "STATE_FILE default: mismatch detected" "2" "$rc"
+
+# challenger_key is lenient: opaque pair IDs (legacy state, fixtures) keep the
+# verbatim suffix instead of failing like challenger_id.
+check 'challenger_key: opaque pair ID' 'pair-1_c' "$(task_identity_challenger_key 'pair-1')"
+rc=0
+task_identity_challenger_id 'pair-1' >/dev/null || rc=$?
+check 'challenger_id: opaque pair ID fails closed' '1' "$rc"
 
 matched=false
 [[ 'AB2-1_c' =~ ^${TASK_IDENTITY_TASK_ID_RE}$ ]] && matched=true

@@ -14,7 +14,9 @@
         "linearId": "HOK-3114",
         "error": null,
         "isChallenger": false,
-        "isLinearWriter": true
+        "isLinearWriter": true,
+        "challengerId": "HOK-3114_c",
+        "challengerKey": "HOK-3114_c"
       }
     },
     {
@@ -30,7 +32,9 @@
         "linearId": "HOK-3114",
         "error": null,
         "isChallenger": true,
-        "isLinearWriter": false
+        "isLinearWriter": false,
+        "challengerId": "HOK-3114_c",
+        "challengerKey": "HOK-3114_c_c"
       }
     },
     {
@@ -48,7 +52,9 @@
         "linearId": "HOK-3114",
         "error": null,
         "isChallenger": true,
-        "isLinearWriter": false
+        "isLinearWriter": false,
+        "challengerId": "HOK-3114_c",
+        "challengerKey": "HOK-3114_c_c"
       }
     },
     {
@@ -66,7 +72,9 @@
         "linearId": "HOK-3114",
         "error": null,
         "isChallenger": true,
-        "isLinearWriter": false
+        "isLinearWriter": false,
+        "challengerId": "HOK-3114_c",
+        "challengerKey": "HOK-3114_c_c"
       }
     },
     {
@@ -82,7 +90,9 @@
         "linearId": "HOK-3113",
         "error": null,
         "isChallenger": false,
-        "isLinearWriter": true
+        "isLinearWriter": true,
+        "challengerId": "HOK-3113_c",
+        "challengerKey": "https://linear.app/hokusai/issue/HOK-3113/task-identity-invariant_c"
       }
     },
     {
@@ -98,7 +108,9 @@
         "linearId": "HOK-3113",
         "error": null,
         "isChallenger": false,
-        "isLinearWriter": true
+        "isLinearWriter": true,
+        "challengerId": "HOK-3113_c",
+        "challengerKey": "http://linear.app/hokusai/issue/HOK-3113?foo=bar_c"
       }
     },
     {
@@ -110,7 +122,9 @@
         "linearId": null,
         "error": "invalid_task_id",
         "isChallenger": false,
-        "isLinearWriter": false
+        "isLinearWriter": false,
+        "challengerId": null,
+        "challengerKey": "not-an-issue_c"
       }
     },
     {
@@ -122,7 +136,9 @@
         "linearId": null,
         "error": "invalid_task_id",
         "isChallenger": false,
-        "isLinearWriter": false
+        "isLinearWriter": false,
+        "challengerId": null,
+        "challengerKey": "_c"
       }
     },
     {
@@ -134,7 +150,9 @@
         "linearId": null,
         "error": "invalid_task_id",
         "isChallenger": false,
-        "isLinearWriter": false
+        "isLinearWriter": false,
+        "challengerId": null,
+        "challengerKey": " HOK-3114_c"
       }
     },
     {
@@ -146,7 +164,9 @@
         "linearId": null,
         "error": "invalid_task_id",
         "isChallenger": false,
-        "isLinearWriter": false
+        "isLinearWriter": false,
+        "challengerId": null,
+        "challengerKey": "hok-3114_c"
       }
     },
     {
@@ -158,7 +178,9 @@
         "linearId": null,
         "error": "invalid_task_id",
         "isChallenger": false,
-        "isLinearWriter": false
+        "isLinearWriter": false,
+        "challengerId": null,
+        "challengerKey": "hok-3114_c_c"
       }
     },
     {
@@ -170,7 +192,9 @@
         "linearId": null,
         "error": "invalid_task_id",
         "isChallenger": false,
-        "isLinearWriter": false
+        "isLinearWriter": false,
+        "challengerId": null,
+        "challengerKey": "HOK-3114_C_c"
       }
     },
     {
@@ -182,7 +206,9 @@
         "linearId": null,
         "error": "invalid_task_id",
         "isChallenger": false,
-        "isLinearWriter": false
+        "isLinearWriter": false,
+        "challengerId": null,
+        "challengerKey": "HOK-3114_c_c_c"
       }
     },
     {
@@ -194,7 +220,9 @@
         "linearId": null,
         "error": "invalid_task_id",
         "isChallenger": false,
-        "isLinearWriter": false
+        "isLinearWriter": false,
+        "challengerId": null,
+        "challengerKey": "https://example.com/hokusai/issue/HOK-3114_c"
       }
     },
     {
@@ -208,7 +236,9 @@
         "linearId": null,
         "error": "invalid_task_id",
         "isChallenger": false,
-        "isLinearWriter": false
+        "isLinearWriter": false,
+        "challengerId": null,
+        "challengerKey": "not-an-issue_c"
       }
     },
     {
@@ -224,7 +254,9 @@
         "linearId": "AB2-1",
         "error": null,
         "isChallenger": false,
-        "isLinearWriter": true
+        "isLinearWriter": true,
+        "challengerId": "AB2-1_c",
+        "challengerKey": "AB2-1_c"
       }
     },
     {
@@ -240,7 +272,9 @@
         "linearId": "H2O-42",
         "error": null,
         "isChallenger": false,
-        "isLinearWriter": true
+        "isLinearWriter": true,
+        "challengerId": "H2O-42_c",
+        "challengerKey": "H2O-42_c"
       }
     },
     {
@@ -256,7 +290,9 @@
         "linearId": "H2O-42",
         "error": null,
         "isChallenger": true,
-        "isLinearWriter": false
+        "isLinearWriter": false,
+        "challengerId": "H2O-42_c",
+        "challengerKey": "H2O-42_c_c"
       }
     },
     {
@@ -275,7 +311,9 @@
         "linearId": "HOK-3114",
         "error": null,
         "isChallenger": false,
-        "isLinearWriter": true
+        "isLinearWriter": true,
+        "challengerId": "HOK-3114_c",
+        "challengerKey": "HOK-3114_c"
       }
     },
     {
@@ -293,7 +331,9 @@
         "linearId": "HOK-3114",
         "error": null,
         "isChallenger": false,
-        "isLinearWriter": true
+        "isLinearWriter": true,
+        "challengerId": "HOK-3114_c",
+        "challengerKey": "HOK-3114_c"
       }
     },
     {
@@ -311,7 +351,9 @@
         "linearId": "HOK-3114",
         "error": null,
         "isChallenger": false,
-        "isLinearWriter": true
+        "isLinearWriter": true,
+        "challengerId": "HOK-3114_c",
+        "challengerKey": "HOK-3114_c"
       }
     },
     {
@@ -329,7 +371,9 @@
         "linearId": "HOK-3114",
         "error": null,
         "isChallenger": false,
-        "isLinearWriter": true
+        "isLinearWriter": true,
+        "challengerId": "HOK-3114_c",
+        "challengerKey": "HOK-3114_c"
       }
     },
     {
@@ -347,7 +391,9 @@
         "linearId": null,
         "error": "linear_id_mismatch",
         "isChallenger": false,
-        "isLinearWriter": false
+        "isLinearWriter": false,
+        "challengerId": "HOK-3114_c",
+        "challengerKey": "HOK-3114_c"
       }
     },
     {
@@ -365,7 +411,9 @@
         "linearId": null,
         "error": "linear_id_mismatch",
         "isChallenger": true,
-        "isLinearWriter": false
+        "isLinearWriter": false,
+        "challengerId": "HOK-3114_c",
+        "challengerKey": "HOK-3114_c_c"
       }
     },
     {
@@ -383,7 +431,9 @@
         "linearId": "HOK-3114",
         "error": null,
         "isChallenger": false,
-        "isLinearWriter": false
+        "isLinearWriter": false,
+        "challengerId": "HOK-3114_c",
+        "challengerKey": "HOK-3114_c"
       }
     }
   ]

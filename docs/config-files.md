@@ -258,6 +258,28 @@ comparison identifies a winner.
 - `true`: tend lets the winning PR enter the merge path automatically and
   closes or cleans up the loser.
 
+### Challenge Mode Default
+
+`challenge.enabled` controls whether a new mill task may launch a challenge
+pair at all. The default is **`false`** (HOK-3175).
+
+- With `enabled: false` — the shipped default — the launcher short-circuits
+  before any pair state is minted: `tools/resolve-challenge-task.ts` returns
+  `mode: 'single'` with `reason: 'challenge_disabled'`, no `_c` arm is
+  created, no `challengePairId` is written to `.wavemill/workflow-state.json`,
+  and tend never engages the pair gate.
+- With `enabled: true`, selection proceeds under the configured `rate`,
+  `recommendationRate`, and `stageWeights`.
+- In-flight pairs resolve normally after flipping the switch: pair membership
+  is persisted on each task's state entry and is never re-derived from current
+  config.
+
+**Re-enable criteria.** Keep this off until
+[HOK-3173](https://linear.app/hokusai/issue/HOK-3173)'s unattended exit
+criterion is met on single-arm runs. Prefer re-enabling once durable task
+records support challengers forked from one record at the plan-to-code handoff
+([HOK-3151](https://linear.app/hokusai/issue/HOK-3151)).
+
 ### Cleanup Episodes
 
 Terminal cleanup episodes are enabled by default. They persist cleanup evidence

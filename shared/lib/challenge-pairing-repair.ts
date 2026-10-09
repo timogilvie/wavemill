@@ -4,6 +4,7 @@ import { mutateJsonState } from './state-mutex.ts';
 import { resolveEvalsDir } from './evals-paths.ts';
 import { challengeTaskKeyVariants, type EffectiveChallengeRole } from './challenge-role-utils.ts';
 import { taskHasPendingChallengeArm } from './tend-challenge-gate.ts';
+import { challengerTaskKey } from './task-identity.ts';
 
 /**
  * Self-healing repair for drifted challenge pairing metadata.
@@ -117,7 +118,7 @@ async function repairPairTasks(
  */
 function relabelEvalRecords(evalsFile: string, pairId: string): number {
   if (!existsSync(evalsFile)) return 0;
-  const drifted = `${pairId}_c`;
+  const drifted = challengerTaskKey(pairId);
   const lines = readFileSync(evalsFile, 'utf-8').split('\n');
   let relabeled = 0;
   const next = lines.map((line) => {
@@ -145,7 +146,7 @@ export async function repairChallengePairing(
   opts: RepairChallengePairingOptions,
 ): Promise<RepairChallengePairingResult> {
   const { pairId } = opts;
-  const challengerKey = `${pairId}_c`;
+  const challengerKey = challengerTaskKey(pairId);
   const taskRepaired = await repairPairTasks(
     resolveStatePath(opts),
     pairId,
@@ -158,7 +159,7 @@ export async function repairChallengePairingSync(
   opts: RepairChallengePairingOptions,
 ): Promise<RepairChallengePairingResult> {
   const { pairId } = opts;
-  const challengerKey = `${pairId}_c`;
+  const challengerKey = challengerTaskKey(pairId);
   const statePath = resolveStatePath(opts);
   let taskRepaired = false;
   if (existsSync(statePath)) {

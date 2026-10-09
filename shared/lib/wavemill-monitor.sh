@@ -1083,7 +1083,7 @@ challenge_abort_pair() {
     if [[ "$role" == "challenger" ]]; then
       peer="$pair_id"
     else
-      peer="${pair_id}_c"
+      peer="$(task_identity_challenger_key "$pair_id")"
     fi
   fi
   now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
@@ -4395,6 +4395,131 @@ coding_stage_stalled() {
         wavemill_hook_write "waiting" "coding_stalled" "$detail" "wavemill" "$next_action" "monitor" || true
     fi
   fi
+  return 0
+}
+
+# ── HOK-3174: host sleep/wake recovery ────────────────────────────────────
+# A sleeping host freezes the monitor loop, and an agent whose API response
+# was cut off mid-stream (StopFailure → hook `error`, or a plain `idle`) sits
+# at its prompt forever. The monitor records the wall-clock time at the end
+# of each tick; a much larger gap before the next tick means the host slept.
+# That wake episode triggers one re-check of every running stage through the
+# HOK-3101 progress primitive, and a bounded (agent-resume-after-wake, one
+# attempt per wake episode per head) resume message to interrupted agents.
+WAKE_RESUME_MESSAGE="Your last response was interrupted; continue and complete the task per your original instructions."
+MONITOR_LAST_TICK_EPOCH=""
+
+# Minimum gap that counts as a host sleep: WAVEMILL_WAKE_GAP_SECONDS (default
+# 300), and never less than ten poll intervals so a slow tick is not a wake.
+wake_gap_threshold_seconds() {
+  local threshold="${WAVEMILL_WAKE_GAP_SECONDS:-300}" poll="${POLL_SECONDS:-10}"
+  [[ "$threshold" =~ ^[0-9]+$ ]] && (( threshold > 0 )) || threshold=300
+  [[ "$poll" =~ ^[0-9]+$ ]] || poll=10
+  (( poll * 10 > threshold )) && threshold=$((poll * 10))
+  printf '%s\n' "$threshold"
+}
+
+# Usage: monitor_detect_host_wake [now_epoch]
+# Compares now against the previous tick's recorded time. On a wake, logs
+# `host slept ~Nm` once and prints the wake episode id (the wake epoch);
+# prints nothing otherwise. Call monitor_record_tick_epoch at tick end.
+monitor_detect_host_wake() {
+  local now="${1:-$(date +%s)}" previous="$MONITOR_LAST_TICK_EPOCH" gap threshold
+  [[ "$now" =~ ^[0-9]+$ && "$previous" =~ ^[0-9]+$ ]] || return 0
+  gap=$((now - previous))
+  threshold="$(wake_gap_threshold_seconds)"
+  (( gap >= threshold )) || return 0
+  log "warn" "host slept ~$(( (gap + 30) / 60 ))m (monitor tick gap ${gap}s); re-checking running stages" >&2
+  printf '%s\n' "$now"
+}
+
+monitor_record_tick_epoch() {
+  MONITOR_LAST_TICK_EPOCH="${1:-$(date +%s)}"
+}
+
+# Usage: wake_resume_interrupted_agent <issue> <wake_episode>
+# Returns 0 only when a resume message was sent. Never writes terminal
+# markers or causes: a skipped or failed resume falls through to the normal
+# stage checks, which still own stall/owner-lost handling.
+wake_resume_interrupted_agent() {
+  local issue="$1" episode="$2"
+  local slug wt_dir win_target feature_dir phase result_file agent started_at started_epoch
+  local progress agent_ts pane_cmd head key disposition
+
+  slug="${SLUG_BY_ISSUE[$issue]:-}"
+  [[ -n "$slug" && -n "$episode" ]] || return 1
+  wt_dir="$(read_state_value "" --arg i "$issue" '.tasks[$i].worktree // ""')"
+  [[ -z "$wt_dir" ]] && wt_dir="${WORKTREE_ROOT}/${slug}"
+  feature_dir="${wt_dir}/features/${slug}"
+
+  phase="$(get_task_phase "$issue")"
+  case "$phase" in
+    planning|coding|review) ;;
+    *) return 1 ;;
+  esac
+  [[ "$(read_stage_status "$feature_dir" "$phase")" == "running" ]] || return 1
+  # Completion signal already present: the stage checks advance it.
+  [[ -e "$feature_dir/.${phase}-complete" || -e "$feature_dir/.${phase}-blocked-completion.json" ]] && return 1
+
+  # Native stages run headless; there is no prompt to type into.
+  result_file="$feature_dir/.${phase}-result.json"
+  agent="$(jq -r '.agent // empty' "$result_file" 2>/dev/null || true)"
+  [[ -n "$agent" ]] || agent="$(read_state_value "" --arg i "$issue" '.tasks[$i].agent // ""')"
+  if declare -F agent_is_native_cmd >/dev/null 2>&1 && agent_is_native_cmd "$agent"; then
+    return 1
+  fi
+
+  win_target="$(_tmux_task_window_target "$SESSION" "$issue" "$slug" "${STATE_FILE:-}" "$wt_dir" 2>/dev/null || true)"
+  [[ -n "$win_target" ]] || win_target="$(_tmux_target_join "$SESSION" "$issue-$slug" 2>/dev/null || printf '%s:%s\n' "$SESSION" "$issue-$slug")"
+
+  declare -F task_progress_json >/dev/null 2>&1 || return 1
+  progress="$(task_progress_json "$issue" \
+    --phase "$phase" \
+    --pane-target "$win_target" \
+    --worktree "$wt_dir" \
+    --feature-dir "$feature_dir" 2>/dev/null || printf '{}')"
+  # Idle at the prompt (Stop) or cut off mid-response (StopFailure → error),
+  # with nothing else explaining the silence.
+  local resumable_filter='(.terminal != true) and (.blockingPrompt == null) and (.agentBackgroundLive != true) and ((.agentIdle == true) or (.agentRecord.state == "error"))'
+  printf '%s' "$progress" | jq -e "$resumable_filter" >/dev/null 2>&1 || return 1
+
+  # The idle/error record must belong to this stage's agent, not a previous
+  # stage's agent that stopped before this stage launched.
+  started_at="$(jq -r '.startedAt // empty' "$result_file" 2>/dev/null || true)"
+  started_epoch="$(wavemill_iso8601_to_epoch "$started_at" 2>/dev/null || true)"
+  agent_ts="$(printf '%s' "$progress" | jq -r '.agentRecord.timestamp // 0 | floor' 2>/dev/null || echo 0)"
+  if [[ "$started_epoch" =~ ^[0-9]+$ && "$agent_ts" =~ ^[0-9]+$ ]] && (( agent_ts < started_epoch )); then
+    return 1
+  fi
+
+  # An exited agent leaves a shell behind; never type the message into it.
+  pane_cmd="$(tmux display-message -p -t "$win_target" '#{pane_current_command}' 2>/dev/null || true)"
+  case "$pane_cmd" in
+    ""|bash|zsh|sh|fish|dash|-bash|-zsh) return 1 ;;
+  esac
+
+  head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
+  key="${head:-none}:wake-${episode}"
+  disposition="$(bounded_retry_gate "$feature_dir" agent-resume-after-wake "$key" 1)"
+  [[ "$disposition" == "proceed" ]] || return 1
+  bounded_retry_increment "$feature_dir" agent-resume-after-wake "$key" >/dev/null
+
+  if wavemill_pane_send_message "$win_target" "$WAKE_RESUME_MESSAGE" "$issue" "$SESSION"; then
+    log "status" "$issue → resumed interrupted $phase agent after host wake (${WAVEMILL_PANE_MESSAGE_LAST_SIGNAL:-none})"
+    return 0
+  fi
+  log "warn" "$issue → wake resume for $phase agent not confirmed: ${WAVEMILL_PANE_MESSAGE_LAST_STATUS:-unknown} ${WAVEMILL_PANE_MESSAGE_LAST_DETAIL:-}"
+  return 1
+}
+
+# Usage: monitor_resume_agents_after_wake <wake_episode>
+monitor_resume_agents_after_wake() {
+  local episode="$1" issue
+  [[ -n "$episode" ]] || return 0
+  for issue in "${!BRANCH_BY_ISSUE[@]}"; do
+    [[ -n "${CLEANED[$issue]:-}" ]] && continue
+    wake_resume_interrupted_agent "$issue" "$episode" || true
+  done
   return 0
 }
 
@@ -8753,7 +8878,7 @@ _challenge_side_for_issue() {
     printf '%s\n' "$role"
     return 0
   fi
-  if [[ "$issue" == *_c ]]; then
+  if task_identity_is_challenger "$issue"; then
     printf '%s\n' "challenger"
     return 0
   fi
@@ -11454,9 +11579,11 @@ review_result_infra_failure() {
       (($review.failureCategory // "") == "native-review-prompt-missing") or
       (($review.failureCategory // "") == "review-scope-unverifiable") or
       (($review.failureCategory // "") == "review-scope-mismatch") or
+      (($review.failureCategory // "") == "review-scope-empty") or
       (($review.failureCategory // "") == "native-context-window-exceeded") or
       (($review.failureCategory // "") == "provider-credit-exhausted") or
       (($review.failureCategory // "") == "native-review-timeout") or
+      (($review.failureCategory // "") == "native-review-malformed-response") or
       ((($review.verdict // "") == "error") and ((($review.reviewToolError // "") | tostring | length) > 0))
     )
   ' "$review_file" >/dev/null 2>&1
@@ -13812,7 +13939,7 @@ poll_challenge_jobs() {
       primary_pr=$(echo "$job_json" | jq -r '.prNumbers[0] // empty')
       challenger_pr=$(echo "$job_json" | jq -r '.prNumbers[1] // empty')
       primary_key="$pair_id"
-      challenger_key="${pair_id}_c"
+      challenger_key="$(task_identity_challenger_key "$pair_id")"
       handle_comparison_job_success "$pair_id" "$primary_key" "$challenger_key" "$primary_pr" "$challenger_pr" "$result_path"
       settle_tracked_job "$job_id"
       continue
@@ -13839,7 +13966,7 @@ poll_challenge_jobs() {
       local retry_max retry_count timed_out_sides_csv timeout_reason primary_key challenger_key artifact_path
       local issue_pr issue_branch issue_slug soft_retry_state_dir soft_retry_head
       primary_key="$pair_id"
-      challenger_key="${pair_id}_c"
+      challenger_key="$(task_identity_challenger_key "$pair_id")"
       settle_tracked_job "$job_id"
       retry_max=$(challenge_eval_retry_max_attempts)
       issue_pr=$(read_state_value "" --arg i "$issue_id" '.tasks[$i].pr // empty')
@@ -14019,7 +14146,7 @@ challenge_eval_stale_relaunch_allowed() {
           "Challenge eval stale-evidence relaunches exhausted for $issue (pair ${pair_id:-unknown}) after $(bounded_retry_count "$state_dir" "challenge-eval-stale")/${limit} attempt(s) - manual comparison needed"; then
         if [[ -n "$pair_id" ]]; then
           primary_key="$pair_id"
-          challenger_key="${pair_id}_c"
+          challenger_key="$(task_identity_challenger_key "$pair_id")"
           artifact_path=$(write_manual_challenge_comparison_artifact "$pair_id" "$primary_key" "$challenger_key" "" \
             "$(bounded_retry_count "$state_dir" "challenge-eval-stale")" "$limit" "stale_eval_evidence" || true)
           write_challenge_pair_state "$pair_id" "manual_comparison_needed" "stale_eval_evidence" \
@@ -14042,7 +14169,7 @@ challenge_eval_invalid_terminalize() {
   pair_id=$(get_task_meta "$issue" "challengePairId")
   [[ -n "$pair_id" ]] || return 0
   primary_key="$pair_id"
-  challenger_key="${pair_id}_c"
+  challenger_key="$(task_identity_challenger_key "$pair_id")"
   divergence=$(jq -r '
     (.currentHeadSha // "") as $head
     | [(.candidates // [])[] | select((.evaluatedPrHeadSha // "") == $head)] as $currentHeadCandidates
@@ -14457,7 +14584,7 @@ maybe_run_challenge_comparison() {
   pair_id=$(get_task_meta "$issue" "challengePairId")
   [[ -z "$pair_id" ]] && return 0
   primary_key="$pair_id"
-  challenger_key="${pair_id}_c"
+  challenger_key="$(task_identity_challenger_key "$pair_id")"
   compared=$(read_state_value "false" --arg i "$primary_key" '.tasks[$i].challengeCompared // false')
   [[ "$compared" == "true" ]] && return 0
   if [[ "$(read_state_value "" --arg i "$primary_key" '.tasks[$i].comparisonState // empty')" == "manual_comparison_needed" ]]; then
@@ -14899,7 +15026,7 @@ cleanup_aborted_challenge_arm() {
 cleanup_pair_aborted_no_pr_arms() {
   local pair_id="$1" reason="${2:-challenge pair resolved}"
   local key slug pr challenge_aborted
-  for key in "$pair_id" "${pair_id}_c"; do
+  for key in "$pair_id" "$(task_identity_challenger_key "$pair_id")"; do
     challenge_aborted=$(read_state_value "" --arg i "$key" '.tasks[$i].challengeAborted // empty')
     [[ -n "$challenge_aborted" ]] || continue
     pr=$(read_state_value "" --arg i "$key" '.tasks[$i].pr // empty')
@@ -21668,6 +21795,7 @@ check_backstage_health() {
 
 while :; do
   monitor_iteration_start_ms="$(wavemill_monitor_now_ms 2>/dev/null || printf '0')"
+  monitor_wake_episode="$(monitor_detect_host_wake)"
   cleanup_skipped_count=0
   remote_call_avoided_count=0
   # ── Phase A: Monitor existing tasks ──────────────────────────────────
@@ -21688,6 +21816,10 @@ while :; do
   # HOK-3172: reconcile condition markers before any gate reads them
   if declare -F reconcile_condition_markers_tick >/dev/null 2>&1; then
     reconcile_condition_markers_tick || true
+  fi
+  # HOK-3174: after a host wake, re-check running stages before normal gates.
+  if [[ -n "$monitor_wake_episode" ]]; then
+    monitor_resume_agents_after_wake "$monitor_wake_episode"
   fi
   poll_challenge_jobs
   check_backstage_health
@@ -21740,6 +21872,7 @@ while :; do
   _active_count_prev=$active_count
   monitor_iteration_end_ms="$(wavemill_monitor_now_ms 2>/dev/null || printf '0')"
   wavemill_record_monitor_iteration_timing "$monitor_iteration_start_ms" "$monitor_iteration_end_ms" "$POLL_SECONDS" 2>/dev/null || true
+  monitor_record_tick_epoch
 
   # ── Phase B: Check for stop signal ──────────────────────────────────
   if [[ -f "$STATE_DIR/.stop-loop" ]]; then

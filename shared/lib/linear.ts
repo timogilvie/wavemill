@@ -1,4 +1,4 @@
-import { ISSUE_ID_RE } from './task-identity.ts';
+import { ISSUE_ID_RE, challengerTaskId } from './task-identity.ts';
 /**
  * Shared Linear API client used by both Claude and Codex tooling.
  *
@@ -1096,7 +1096,7 @@ export async function getIssueCompletionState(identifier: string): Promise<Pick<
 export async function listOpenIssuesByIdentifierPrefix(prefix: string): Promise<LinearIssueSummary[]> {
   const root = parseIdentifier(prefix);
   const identifier = `${root.teamKey}-${root.number}`;
-  const identifiers = new Set([identifier, deriveChallengerIdentifier(identifier)]);
+  const identifiers = new Set([identifier, challengerTaskId(identifier)]);
   const data = await request(
     `
       query($term: String!, $teamKey: String!) {
@@ -1201,10 +1201,6 @@ export async function getIssueForLabeling(identifier: string): Promise<LinearIss
     team { id }
     labels { nodes { id name } }
   `);
-}
-
-function deriveChallengerIdentifier(identifier: string): string {
-  return `${identifier}_c`;
 }
 
 /**

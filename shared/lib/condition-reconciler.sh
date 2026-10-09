@@ -154,6 +154,9 @@ condition_reconcile_task() {
         head)
           local cond_head
           cond_head=$(jq -r '.head // empty' <<< "$condition" 2>/dev/null || echo "")
+          # Bounded-retry callers record their composite retry identity
+          # (`<sha>::<category>:...`) as the head; the SHA is the prefix.
+          cond_head="${cond_head%%:*}"
           # Only a real SHA is a head condition; a placeholder never matches
           # HEAD and would clear the marker on every tick.
           [[ "$cond_head" =~ ^[0-9a-f]{7,40}$ ]] || cond_head=""
