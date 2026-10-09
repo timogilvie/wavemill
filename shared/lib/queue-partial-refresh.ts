@@ -6,9 +6,6 @@ export interface QueueRefreshTask {
   description?: string | null;
   labels?: string[];
   priority?: number | null;
-  state?: string | { name?: string | null } | null;
-  dueDate?: string | null;
-  projectMilestone?: { name?: string | null; targetDate?: string | null } | null;
   blocks?: string[];
   dependsOn?: string[];
 }
