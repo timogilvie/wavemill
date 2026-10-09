@@ -1,0 +1,10 @@
+# task-identity-allowlist.txt — justified exceptions to the HOK-3118 guard.
+#
+# One repo-relative path per line. A listed file is skipped entirely by
+# tools/check-task-identity.ts. Keep this list thin: every entry needs a
+# `# reason` comment (same line or the line above). The invariant source
+# (shared/lib/task-identity.{ts,sh}) and the guard itself are excluded
+# automatically and must NOT be listed here.
+#
+# Prefer a one-line `// allow-task-identity: <reason>` suppression over a
+# whole-file entry whenever only a line or two is involved.

@@ -510,6 +510,7 @@ function deriveChallengeSideFromBranch(
   if (
     issueId === challengerTaskKey(challengePairId)
     || issueId === `${challengePairId}-challenger`
+    // allow-task-identity: cleanSlug is a worktree branch slug, not a task ID — slug-shaped challenger heuristic, no task-identity primitive applies.
     || cleanSlug.endsWith('_c')
     || cleanSlug.endsWith('-challenger')
   ) {
