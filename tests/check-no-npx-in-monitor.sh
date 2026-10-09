@@ -30,6 +30,7 @@ ALLOW_SUBSTRINGS=(
   # Documentation / comments inside wavemill_run_tool itself and nearby.
   '# start) instead of `npx tsx`'
   '# WAVEMILL_SKIP_FAST_STRIP=1 forces the npx tsx path'
+  "function named \`npx\` (see tests/*.sh) rely on the \`npx tsx <path>"
   # The fallback branch inside wavemill_run_tool.
   'npx tsx "$cli" "$@"'
   # Fallback inside trim_terminal_task_overflow_if_needed / startup migration.
