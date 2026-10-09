@@ -1061,7 +1061,7 @@ challenge_abort_pair() {
     if [[ "$role" == "challenger" ]]; then
       peer="$pair_id"
     else
-      peer="${pair_id}_c"
+      peer="$(task_identity_challenger_key "$pair_id")"
     fi
   fi
   now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
@@ -8161,7 +8161,7 @@ _challenge_side_for_issue() {
     printf '%s\n' "$role"
     return 0
   fi
-  if [[ "$issue" == *_c ]]; then
+  if task_identity_is_challenger "$issue"; then
     printf '%s\n' "challenger"
     return 0
   fi
@@ -12735,7 +12735,7 @@ poll_challenge_jobs() {
       primary_pr=$(echo "$job_json" | jq -r '.prNumbers[0] // empty')
       challenger_pr=$(echo "$job_json" | jq -r '.prNumbers[1] // empty')
       primary_key="$pair_id"
-      challenger_key="${pair_id}_c"
+      challenger_key="$(task_identity_challenger_key "$pair_id")"
       handle_comparison_job_success "$pair_id" "$primary_key" "$challenger_key" "$primary_pr" "$challenger_pr" "$result_path"
       settle_tracked_job "$job_id"
       continue
@@ -12762,7 +12762,7 @@ poll_challenge_jobs() {
       local retry_max retry_count timed_out_sides_csv timeout_reason primary_key challenger_key artifact_path
       local issue_pr issue_branch issue_slug soft_retry_state_dir soft_retry_head
       primary_key="$pair_id"
-      challenger_key="${pair_id}_c"
+      challenger_key="$(task_identity_challenger_key "$pair_id")"
       settle_tracked_job "$job_id"
       retry_max=$(challenge_eval_retry_max_attempts)
       issue_pr=$(read_state_value "" --arg i "$issue_id" '.tasks[$i].pr // empty')
@@ -12942,7 +12942,7 @@ challenge_eval_stale_relaunch_allowed() {
           "Challenge eval stale-evidence relaunches exhausted for $issue (pair ${pair_id:-unknown}) after $(bounded_retry_count "$state_dir" "challenge-eval-stale")/${limit} attempt(s) - manual comparison needed"; then
         if [[ -n "$pair_id" ]]; then
           primary_key="$pair_id"
-          challenger_key="${pair_id}_c"
+          challenger_key="$(task_identity_challenger_key "$pair_id")"
           artifact_path=$(write_manual_challenge_comparison_artifact "$pair_id" "$primary_key" "$challenger_key" "" \
             "$(bounded_retry_count "$state_dir" "challenge-eval-stale")" "$limit" "stale_eval_evidence" || true)
           write_challenge_pair_state "$pair_id" "manual_comparison_needed" "stale_eval_evidence" \
@@ -12965,7 +12965,7 @@ challenge_eval_invalid_terminalize() {
   pair_id=$(get_task_meta "$issue" "challengePairId")
   [[ -n "$pair_id" ]] || return 0
   primary_key="$pair_id"
-  challenger_key="${pair_id}_c"
+  challenger_key="$(task_identity_challenger_key "$pair_id")"
   divergence=$(jq -r '
     (.currentHeadSha // "") as $head
     | [(.candidates // [])[] | select((.evaluatedPrHeadSha // "") == $head)] as $currentHeadCandidates
@@ -13380,7 +13380,7 @@ maybe_run_challenge_comparison() {
   pair_id=$(get_task_meta "$issue" "challengePairId")
   [[ -z "$pair_id" ]] && return 0
   primary_key="$pair_id"
-  challenger_key="${pair_id}_c"
+  challenger_key="$(task_identity_challenger_key "$pair_id")"
   compared=$(read_state_value "false" --arg i "$primary_key" '.tasks[$i].challengeCompared // false')
   [[ "$compared" == "true" ]] && return 0
   if [[ "$(read_state_value "" --arg i "$primary_key" '.tasks[$i].comparisonState // empty')" == "manual_comparison_needed" ]]; then
@@ -13812,7 +13812,7 @@ cleanup_aborted_challenge_arm() {
 cleanup_pair_aborted_no_pr_arms() {
   local pair_id="$1" reason="${2:-challenge pair resolved}"
   local key slug pr challenge_aborted
-  for key in "$pair_id" "${pair_id}_c"; do
+  for key in "$pair_id" "$(task_identity_challenger_key "$pair_id")"; do
     challenge_aborted=$(read_state_value "" --arg i "$key" '.tasks[$i].challengeAborted // empty')
     [[ -n "$challenge_aborted" ]] || continue
     pr=$(read_state_value "" --arg i "$key" '.tasks[$i].pr // empty')

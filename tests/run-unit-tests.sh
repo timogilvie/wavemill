@@ -319,6 +319,7 @@ TESTS=(
   tools/measure-repo-attribution.test.ts
   tools/observer.test.ts
   tools/parity-report.test.ts
+  tools/quarantine-challenge.test.ts
   tools/resolve-challenge-task.test.ts
   tools/route-tasks.test.ts
   tools/seam-artifact-cli.test.ts

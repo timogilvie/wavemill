@@ -31,6 +31,7 @@ import {
 } from './current-challenge-eval-selector.ts';
 import { resolvePrIdentityMetadata } from './pr-comparison.ts';
 import { taskHasPendingChallengeArm } from './tend-challenge-gate.ts';
+import { challengerTaskKey, parseTaskId } from './task-identity.ts';
 
 export type ChallengeRecoveryVerdict = 'supersedable' | 'quarantine-upheld' | 'pair-not-found';
 
@@ -157,7 +158,7 @@ function collectArmEvidence(
 ): ChallengeArmEvidence {
   const gaps: string[] = [];
   const evidence: ChallengeArmEvidence = { side, issueId, proven: false, gaps };
-  const pairId = task?.challengePairId ?? issueId.replace(/_c$/, '');
+  const pairId = task?.challengePairId ?? parseTaskId(issueId)?.linearId ?? issueId;
 
   if (!task) {
     gaps.push(`no task state for ${issueId}`);
@@ -273,7 +274,7 @@ export function assessChallengePair(
   const pairRecords = records.filter((r) => r.challengePairId === pairId);
   const record = pairRecords[pairRecords.length - 1];
   const primaryTask = tasks[pairId];
-  const challengerTask = tasks[`${pairId}_c`];
+  const challengerTask = tasks[challengerTaskKey(pairId)];
 
   if (!record && !primaryTask) {
     assessment.blockers.push(`no challenge record or task state for ${pairId}`);
@@ -304,7 +305,7 @@ export function assessChallengePair(
 
   assessment.arms = [
     collectArmEvidence(repoDir, 'primary', pairId, primaryTask, challengeStage, record, evals, resolvePrIdentity),
-    collectArmEvidence(repoDir, 'challenger', `${pairId}_c`, challengerTask, challengeStage, record, evals, resolvePrIdentity),
+    collectArmEvidence(repoDir, 'challenger', challengerTaskKey(pairId), challengerTask, challengeStage, record, evals, resolvePrIdentity),
   ];
 
   // ── Gate 1: an immutable intent shared by both arms ────────────────

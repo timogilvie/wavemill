@@ -522,6 +522,50 @@ describe('soft-gates', () => {
       const gate = warnings.find(w => w.gate === 'eval_export_inconsistency');
       assert.equal(gate, undefined, 'should not emit when featureOutcomeDiagnostics is valid and used');
     });
+
+    // HOK-3116: challenger evals record the base issue ID as challengePairId
+    // (and usually as issueId); the gate used to look for `<id>_c` and missed them.
+    it('matches a challenger arm eval through the base pair ID', () => {
+      const tmpRepo = makeTempRepo();
+      cleanupDirs.push(tmpRepo);
+      const slug = 'eval-challenger-feature-challenger';
+      const featureDir = makeFeatureDir(tmpRepo, slug);
+      writeSelectedTask(featureDir, 'HOK-5004_c', slug);
+      writeFeatureState(featureDir, { issueId: 'HOK-5004_c', slug });
+
+      writeEvalRecord(tmpRepo, {
+        issueId: 'HOK-5004',
+        challengePairId: 'HOK-5004',
+        challengeSide: 'challenger',
+        trainingEligible: true,
+        eligibilityErrors: ['missing_feature_outcome'],
+      });
+
+      const warnings = evaluateSoftGates({ repoDir: tmpRepo, slug });
+      const gate = warnings.find(w => w.gate === 'eval_export_inconsistency');
+      assert.ok(gate, 'challenger arm eval should match via its base pair ID');
+    });
+
+    it('does not attribute the primary arm eval to the challenger task', () => {
+      const tmpRepo = makeTempRepo();
+      cleanupDirs.push(tmpRepo);
+      const slug = 'eval-primary-only-feature-challenger';
+      const featureDir = makeFeatureDir(tmpRepo, slug);
+      writeSelectedTask(featureDir, 'HOK-5005_c', slug);
+      writeFeatureState(featureDir, { issueId: 'HOK-5005_c', slug });
+
+      writeEvalRecord(tmpRepo, {
+        issueId: 'HOK-5005',
+        challengePairId: 'HOK-5005',
+        challengeSide: 'primary',
+        trainingEligible: true,
+        eligibilityErrors: ['missing_feature_outcome'],
+      });
+
+      const warnings = evaluateSoftGates({ repoDir: tmpRepo, slug });
+      const gate = warnings.find(w => w.gate === 'eval_export_inconsistency');
+      assert.equal(gate, undefined, 'pair-mate eval must not match the challenger task');
+    });
   });
 
   describe('dedup / emission', () => {

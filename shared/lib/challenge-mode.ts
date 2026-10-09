@@ -20,6 +20,7 @@ import { projectEntryToSideIntent, type ChallengeSelectionEvidence } from './cha
 export { routeChangedMaterially } from './route-artifact.ts';
 import { routeChangedMaterially, type RouteArtifactSnapshot } from './route-artifact.ts';
 import { routeWorkflow, type WorkflowRouteDecision } from './workflow-router.ts';
+import { challengerTaskKey } from './task-identity.ts';
 import { filterNativeModels, type RouterCertificationRejection, type RouterRole } from './native-agent/certification/router-filter.ts';
 import { isPatchCodingEnabled } from './native-agent/coding-gate.ts';
 import { applyModelExclusions, type ModelExclusionDiagnostic } from './model-exclusions.ts';
@@ -649,10 +650,6 @@ export function canRunChallenge(pool: string[]): boolean {
   return uniqueNonEmpty(pool).length >= 2;
 }
 
-export function deriveChallengerKey(issueId: string): string {
-  return `${issueId}_c`;
-}
-
 export function deriveChallengeSlug(baseSlug: string, role: ChallengeRole): string {
   return role === 'challenger' ? `${baseSlug}-challenger` : baseSlug;
 }
@@ -1083,7 +1080,7 @@ function buildChallengeEntries(
       reviewMode: '',
     },
     challenger: {
-      key: deriveChallengerKey(opts.issueId),
+      key: challengerTaskKey(opts.issueId),
       issueId: opts.issueId,
       slug: challengerSlug,
       branch: deriveChallengeBranch(opts.slug, 'challenger'),
@@ -1429,7 +1426,7 @@ export function pickChallengeWorkflowsWithReason(
         reviewMode: routing.reviewRecommended,
       },
       challenger: {
-        key: deriveChallengerKey(opts.issueId),
+        key: challengerTaskKey(opts.issueId),
         issueId: opts.issueId,
         slug: challengerSlug,
         branch: deriveChallengeBranch(opts.slug, 'challenger'),

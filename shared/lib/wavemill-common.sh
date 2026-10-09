@@ -2222,7 +2222,8 @@ challenge_eval_hard_failure_max_retries() {
 # only concrete terminal evidence and never perform loser cleanup from this path.
 resolve_challenge_pair_hard_failure() {
   local pair_id="$1"
-  local primary_key="$pair_id" challenger_key="${pair_id}_c"
+  local primary_key="$pair_id" challenger_key
+  challenger_key="$(task_identity_challenger_key "$pair_id")"
   local primary_exists challenger_exists resolve_output resolve_status resolve_reason
   local retry_max primary_failed challenger_failed primary_completed challenger_completed
   local primary_retry_count challenger_retry_count failed_sides_csv terminal_reason outcome
@@ -4022,7 +4023,10 @@ wavemill_pr_candidates_for_branch() {
 
 wavemill_resolve_pr_attempt() {
   local issue="${1:-}" branch="${2:-}" base_branch="${3:-}" head_sha="${4:-}" attempt_id="${5:-}" linear_state="${6:-}" challenge_pair="${7:-}" challenge_role="${8:-}"
-  local candidates rc=0
+  local candidates rc=0 root_issue
+  # A challenger task ID (<ID>_c) also matches PRs that name its base issue.
+  root_issue="$(task_identity_parse "$issue" | cut -f2 || true)"
+  [[ -n "$root_issue" ]] || root_issue="$issue"
   candidates="$(wavemill_pr_candidates_for_branch "$branch")" || rc=$?
   if [[ "$rc" -ne 0 || -z "$candidates" ]] || ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$candidates"; then
     jq -cn \
@@ -4053,14 +4057,14 @@ wavemill_resolve_pr_attempt() {
     --arg linearState "$linear_state" \
     --arg challengePair "$challenge_pair" \
     --arg challengeRole "$challenge_role" \
+    --arg rootIssue "$root_issue" \
     '
     def down: ascii_downcase;
     def contains_ci($needle):
       (($needle // "") != "") and ((. // "" | down) | contains($needle | down));
     def normalized_state:
       if (.mergedAt // null) != null then "MERGED" else (.state // "") end;
-    ($issue | sub("_c$"; "")) as $rootIssue
-    | ($linearState | down) as $linearStateNorm
+    ($linearState | down) as $linearStateNorm
     | ($candidates
       | map(. + {
           normalizedState: normalized_state,
@@ -4656,7 +4660,7 @@ sync_challenger_shared_route_from_primary() {
   [[ -n "$routing_file" && -f "$routing_file" && -n "$state_file" && -f "$state_file" ]] || return 0
   [[ -n "$challenge_intent_file" && -f "$challenge_intent_file" ]] || return 0
 
-  local selected_stage primary_issue
+  local selected_stage primary_issue root_issue
   selected_stage="$(jq -r --arg side "$challenge_side" '
     def nz(a; b): if ((a // "") == "") then b else a end;
     (.[$side] // {}) as $sideObj
@@ -4671,10 +4675,12 @@ sync_challenger_shared_route_from_primary() {
     *) return 0 ;;
   esac
 
-  primary_issue="$(jq -r --arg issue "$issue" '
+  # Fallback when the pair ID is unrecorded: the base issue of a challenger task ID.
+  root_issue="$(task_identity_parse "$issue" | cut -f2 || true)"
+  primary_issue="$(jq -r --arg issue "$issue" --arg root "${root_issue:-$issue}" '
     (.tasks[$issue].challengePairId // "") as $pair
     | if ($pair != "" and $pair != $issue and (.tasks[$pair]? != null)) then $pair
-      elif ($issue | endswith("_c")) and (.tasks[($issue | sub("_c$"; ""))]? != null) then ($issue | sub("_c$"; ""))
+      elif ($root != $issue) and (.tasks[$root]? != null) then $root
       else "" end
   ' "$state_file" 2>/dev/null || true)"
   if [[ -z "$primary_issue" || "$primary_issue" == "null" ]]; then
@@ -4842,8 +4848,10 @@ apply_expanded_route_if_present() {
     fi
   fi
   if [[ -n "$challenge_intent_file" ]]; then
-    challenge_side="$(jq -r --arg issue "$issue" '
-      if ($issue | endswith("_c")) then "challenger"
+    local issue_is_challenger=false
+    task_identity_is_challenger "$issue" && issue_is_challenger=true
+    challenge_side="$(jq -r --argjson isChallenger "$issue_is_challenger" '
+      if $isChallenger then "challenger"
       elif (.primary.pairId // .pairId // "") != "" then "primary"
       else empty end
     ' "$challenge_intent_file" 2>/dev/null || true)"
@@ -6730,7 +6738,7 @@ get_challenge_sibling_pr() {
   [[ -z "$pair_id" || -z "$role" ]] && return 1
 
   if [[ "$role" == "primary" ]]; then
-    sibling_key="${pair_id}_c"
+    sibling_key="$(task_identity_challenger_key "$pair_id")"
   elif [[ "$role" == "challenger" ]]; then
     sibling_key="$pair_id"
   else

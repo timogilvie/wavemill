@@ -1,4 +1,4 @@
-import { TASK_ID_RE } from './task-identity.ts';
+import { parseTaskId } from './task-identity.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readActiveChallengeComparisons, type StoredChallengeComparison } from './challenge-comparison.ts';
@@ -46,7 +46,6 @@ export interface ChallengeLoserCleanupCandidate {
 }
 
 const BRANCH_NAME_PATTERN = /^[a-zA-Z0-9._/-]+$/;
-const TASK_IDENTIFIER_PATTERN = TASK_ID_RE;
 const ORPHAN_PAIR_GRACE_MS = 60_000;
 /**
  * HOK-3128: how long a tracked, no-PR sibling may go without agent progress
@@ -1278,11 +1277,7 @@ async function getBranchExistence(
 }
 
 function normalizeChallengeIdentifierRoot(identifier: string | undefined): string | null {
-  if (!identifier || !TASK_IDENTIFIER_PATTERN.test(identifier)) {
-    return null;
-  }
-
-  return identifier.endsWith('_c') ? identifier.slice(0, -2) : identifier;
+  return parseTaskId(identifier)?.linearId ?? null;
 }
 
 function deriveTwinBranch(headBranch: string): string | null {
