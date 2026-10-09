@@ -60,11 +60,6 @@ function fillTemplate(template: string, vars: Record<string, string>): string {
   return result;
 }
 
-function normalizeStateName(state: QueueRefreshTask['state']): string {
-  if (typeof state === 'string') return state;
-  if (state && typeof state.name === 'string') return state.name;
-  return '';
-}
 
 function formatTask(task: QueueRefreshTask, descriptionMaxChars: number = QUEUE_ANALYSIS_DESCRIPTION_MAX_CHARS): string {
   const description = typeof task.description === 'string' ? truncateDescription(task.description.trim(), descriptionMaxChars) : '';
@@ -116,13 +111,6 @@ export function assembleNearbyContext({ changedTaskIds, allBacklog, topN = 10 }:
     })
     .slice(0, Math.max(0, topN));
   for (const task of topBacklog) selected.add(task.id);
-
-  for (const task of allBacklog) {
-    const stateName = normalizeStateName(task.state).toLowerCase();
-    if (stateName.includes('progress') || stateName.includes('review') || stateName.includes('started')) {
-      selected.add(task.id);
-    }
-  }
 
   return [...selected].sort(compareTaskIds);
 }
