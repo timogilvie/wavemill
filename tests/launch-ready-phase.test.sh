@@ -644,7 +644,10 @@ EOF
 
       if [[ "${2:-}" == "$TOOLS_DIR/ready-tend-handoff.ts" ]]; then
         case "$TEST_CASE" in
-          ready_label_failure) return 1 ;;
+          ready_label_failure)
+            [[ "${3:-}" == "publish" ]] && return 1
+            return 0
+            ;;
           tend_claims_during_ready_label)
             printf "%s\n" "{\"outcome\":\"tend-owned\",\"record\":{\"state\":\"ready-published\",\"token\":\"test-token\"}}"
             printf "1\n" >> "$HANDOFF_CLAIM_COUNT_FILE"
