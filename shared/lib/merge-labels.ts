@@ -9,7 +9,11 @@
  */
 
 import { readStageResult } from './stage-result.ts';
-import { readReadyTendHandoff, classifyClaim } from './ready-tend-handoff.ts';
+import {
+  readReadyTendHandoff,
+  classifyClaim,
+  rebindTendHandoff,
+} from './ready-tend-handoff.ts';
 import { probePrLiveState, type PrLiveState } from './pr-live-state.ts';
 import {
   setWavemillReady,
@@ -396,6 +400,53 @@ export function createDefaultReconcilerDeps(
 }
 
 /**
+ * Reconcile handoff for a single PR. If the handoff is at a different head
+ * than the PR, and Ready passed at the current head, rebind the handoff to
+ * the current head.
+ */
+export async function reconcileHandoffForPr(
+  pr: { number: number; headSha: string },
+  featureDir: string | undefined,
+  readyAtHead: MergeLabelLiveState['readyAtHead'] | undefined,
+  logger: { info(msg: string, meta?: unknown): void; warn(msg: string, meta?: unknown): void },
+): Promise<void> {
+  if (!featureDir || !readyAtHead || readyAtHead.verdict !== 'ready') {
+    // No handoff to reconcile or Ready hasn't passed
+    return;
+  }
+
+  try {
+    const handoffRecord = readReadyTendHandoff(featureDir);
+    if (!handoffRecord) {
+      // No handoff exists yet
+      return;
+    }
+
+    const classification = classifyClaim(handoffRecord);
+
+    // Only rebind if handoff is at a different head and in a transient state
+    if (
+      handoffRecord.headSha !== pr.headSha &&
+      (classification.state === 'checked' || classification.state === 'ready-published')
+    ) {
+      logger.info('Rebinding handoff to current head', {
+        pr: pr.number,
+        oldHead: handoffRecord.headSha,
+        newHead: pr.headSha,
+      });
+      // Rebind handoff to current head
+      rebindTendHandoff(featureDir, {
+        prNumber: pr.number,
+        newHeadSha: pr.headSha,
+        newToken: handoffRecord.claimToken, // Preserve existing token
+      });
+    }
+  } catch (error) {
+    logger.warn(`Failed to reconcile handoff for PR ${pr.number}`, { error: String(error) });
+  }
+}
+
+/**
  * Reconcile labels for all wavemill PRs. Called once per tend tick.
  * Updates the PR objects in-place with reconciled labels.
  */
@@ -410,6 +461,13 @@ export async function reconcileMergeLabels(
       const result = await reconcileMergeLabelsForPr(pr, deps);
       // Update PR labels in-place so downstream code sees reconciled truth
       pr.labels = result.updatedLabels;
+
+      // Also reconcile handoff if needed
+      const task = await buildTaskView(pr.number, repoDir);
+      if (task) {
+        const liveState = await buildMergeLabelLiveState(pr.number, pr.headSha, task.featureDir, repoDir);
+        await reconcileHandoffForPr(pr, task.featureDir, liveState?.readyAtHead, deps.logger);
+      }
     } catch (error) {
       deps.logger.warn(`Failed to reconcile labels for PR ${pr.number}`, { error: String(error) });
     }
