@@ -190,6 +190,7 @@ for f in \
   "$REPO_DIR"/tests/check-no-npx-in-monitor.sh \
   "$REPO_DIR"/tests/monitor-pass-snapshot.test.sh \
   "$REPO_DIR"/tests/monitor-state-size.test.sh \
+  "$REPO_DIR"/tests/hot-state-byte-cap.test.sh \
   "$REPO_DIR"/tests/monitor-usr2-wakeup.test.sh \
   "$REPO_DIR"/tests/launch-pane-liveness.test.sh \
   "$REPO_DIR"/tests/launch-failure-log-capture.test.sh \

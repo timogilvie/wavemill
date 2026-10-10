@@ -6896,9 +6896,54 @@ trim_terminal_task_overflow_if_needed() {
     || true
 }
 
+# HOK-3203: enforce hot state byte cap by iteratively compacting and trimming
+enforce_hot_state_byte_cap_if_needed() {
+  [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 0
+  local byte_cap="${WAVEMILL_HOT_STATE_BYTE_CAP:-500000}"
+  local file_size
+  file_size="$(wc -c < "$STATE_FILE" 2>/dev/null || echo 0)"
+  [[ "$file_size" =~ ^[0-9]+$ ]] || file_size=0
+  if (( file_size <= byte_cap )); then
+    return 0
+  fi
+  local tool
+  tool="$(_state_archive_trim_tool_path)"
+  [[ -f "$tool" ]] || return 0
+  local -a args=(--state-file "$STATE_FILE" --quiet --byte-cap "$byte_cap" --compact-kept --keep-floor 10)
+  [[ -n "${WAVEMILL_STATE_ARCHIVE_MAX_AGE_DAYS:-}" ]] \
+    && args+=(--max-age-days "$WAVEMILL_STATE_ARCHIVE_MAX_AGE_DAYS")
+  node --experimental-strip-types --no-warnings "$tool" "${args[@]}" 2>/dev/null \
+    || npx tsx "$tool" "${args[@]}" 2>/dev/null \
+    || true
+}
+
 write_terminal_task_history_record() {
   local issue="$1" record_json="$2"
   [[ -n "$issue" && -n "$record_json" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
+
+  # HOK-3203: compact the record before writing to hot state
+  local record_hot
+  record_hot="$(jq -c '{
+    archived: true,
+    schemaVersion,
+    issue,
+    slug,
+    branch,
+    worktree,
+    prNumber,
+    workflowOutcome,
+    resourceDisposition,
+    challengePairId,
+    challengeRole,
+    runEpoch,
+    attempt,
+    actor,
+    command,
+    createdAt,
+    decisionStatus,
+    decisionReason
+  } + (if has("postReapEval") then {postReapEval} else {} end)' <<<"$record_json")" || return 1
+
   local rc
   state_mutate "$STATE_FILE" '
     .terminalTaskHistory.tasks[$issue] = $record
@@ -6908,19 +6953,21 @@ write_terminal_task_history_record() {
       end
     | .updated = (now | todateiso8601)' \
     --arg issue "$issue" \
-    --argjson record "$record_json"
+    --argjson record "$record_hot"
   rc=$?
-  # HOK-3190: shed overflow to the archive if the hot sub-tree is above the cap.
-  trim_terminal_task_overflow_if_needed || true
+  # HOK-3203: enforce byte cap
+  enforce_hot_state_byte_cap_if_needed || true
   return "$rc"
 }
 
 write_terminal_task_tombstone() {
   local issue="$1" actor="${2:-wavemill}" command="${3:-cleanup_completed_task}" decision_status="${4:-reaped}" decision_reason="${5:-}"
-  local task_json tombstone key
+  local task_json tombstone key tombstone_hot archive_file
   [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
   task_json="$(jq -c --arg issue "$issue" '.tasks[$issue] // empty' "$STATE_FILE" 2>/dev/null)" || return 1
   [[ -n "$task_json" ]] || return 1
+
+  # Build full tombstone (HOK-3203: full form for archive)
   tombstone="$(jq -cn \
     --arg issue "$issue" \
     --arg actor "$actor" \
@@ -6955,6 +7002,35 @@ write_terminal_task_tombstone() {
         task: $task
       }')" || return 1
   key="$(jq -r '[.issue, (if .prNumber != "" then .prNumber else .branch end), (if .runEpoch != "" then .runEpoch else "no-epoch" end), (if .attempt != "" then .attempt else "no-attempt" end)] | join("|")' <<<"$tombstone" 2>/dev/null)" || return 1
+
+  # 1. Append full tombstone to archive (HOK-3203)
+  archive_file="$(dirname "$(dirname "$STATE_FILE")")/.wavemill/state-archive/tombstones.jsonl"
+  mkdir -p "$(dirname "$archive_file")" 2>/dev/null || true
+  printf '%s\n' "$tombstone" >> "$archive_file" || true
+
+  # 2. Create compact tombstone for hot state (HOK-3203)
+  tombstone_hot="$(jq -c '{
+    archived: true,
+    schemaVersion,
+    issue,
+    slug,
+    branch,
+    worktree,
+    prNumber,
+    workflowOutcome,
+    resourceDisposition,
+    challengePairId,
+    challengeRole,
+    runEpoch,
+    attempt,
+    actor,
+    command,
+    createdAt,
+    decisionStatus,
+    decisionReason
+  } + (if has("postReapEval") then {postReapEval} else {} end)' <<<"$tombstone")" || return 1
+
+  # 3. Write compact form to hot state (HOK-3203)
   local rc
   state_mutate "$STATE_FILE" '
     .terminalTaskTombstones[$key] = $tombstone
@@ -6966,10 +7042,11 @@ write_terminal_task_tombstone() {
     | .updated = (now | todateiso8601)' \
     --arg key "$key" \
     --arg issue "$issue" \
-    --argjson tombstone "$tombstone"
+    --argjson tombstone "$tombstone_hot"
   rc=$?
-  # HOK-3190: shed overflow to the archive if the hot sub-tree is above the cap.
-  trim_terminal_task_overflow_if_needed || true
+
+  # 4. Enforce byte cap (HOK-3203)
+  enforce_hot_state_byte_cap_if_needed || true
   return "$rc"
 }
 
