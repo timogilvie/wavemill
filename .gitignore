@@ -81,3 +81,5 @@ test-reg-*/
 
 # Python
 __pycache__/
+
+.wavemill/ledger.sqlite*

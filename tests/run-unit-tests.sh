@@ -30,6 +30,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 TESTS=(
+  tests/ledger.test.ts
   shared/lib/session.test.js
   shared/lib/session-timer.test.js
   shared/lib/eval-prompt-size.test.ts
