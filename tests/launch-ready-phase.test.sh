@@ -643,8 +643,15 @@ EOF
 
 
       if [[ "${2:-}" == "$TOOLS_DIR/ready-tend-handoff.ts" ]]; then
-        printf "%s\n" "{\"outcome\":\"published\",\"record\":{\"state\":\"ready-published\",\"token\":\"test-token\"}}"
-        return 0
+        case "$TEST_CASE" in
+          ready_label_failure) return 1 ;;
+          tend_claims_during_ready_label)
+            printf "%s\n" "{\"outcome\":\"tend-owned\",\"record\":{\"state\":\"ready-published\",\"token\":\"test-token\"}}"
+            printf "1\n" >> "$HANDOFF_CLAIM_COUNT_FILE"
+            return 0
+            ;;
+          *) printf "%s\n" "{\"outcome\":\"published\",\"record\":{\"state\":\"ready-published\",\"token\":\"test-token\"}}"; return 0 ;;
+        esac
       fi
 
       if [[ "${2:-}" == "$TOOLS_DIR/stamp-pr-route.ts" ]]; then
