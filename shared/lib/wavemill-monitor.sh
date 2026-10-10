@@ -4090,7 +4090,7 @@ ready_watchdog_config_json() {
 run_ready_watchdog_tick() {
   local watchdog_json watchdog_enabled watchdog_timeout watchdog_stderr watchdog_error now
   watchdog_json=$(ready_watchdog_config_json "$REPO_DIR")
-  watchdog_enabled=$(printf '%s' "$watchdog_json" | jq -r '.enabled // true' 2>/dev/null || echo "true")
+  watchdog_enabled=$(printf '%s' "$watchdog_json" | jq -r '.enabled | if . == null then true else . end' 2>/dev/null || echo "true")
   [[ "$watchdog_enabled" == "true" ]] || return 0
 
   watchdog_timeout=$(printf '%s' "$watchdog_json" | jq -r '.timeoutSeconds // 30' 2>/dev/null || echo "30")
@@ -4160,7 +4160,7 @@ ready_remediation_enabled() {
   local wt_dir="$1"
   local remediation_json
   remediation_json=$(ready_remediation_config_json "$wt_dir")
-  jq -r '.enabled // true' <<< "$remediation_json" 2>/dev/null || echo "true"
+  jq -r '.enabled | if . == null then true else . end' <<< "$remediation_json" 2>/dev/null || echo "true"
 }
 
 ready_remediation_max_attempts() {
@@ -14841,7 +14841,7 @@ cleanup_merged_primary_challenge_task() {
         challengePairId: ($task.challengePairId // $pair_id),
         challengeRole: ($task.challengeRole // "primary"),
         challengeModel: $task.challengeModel,
-        evalCompleted: ($task.evalCompleted // true),
+        evalCompleted: ($task.evalCompleted | if . == null then true else . end),
         status: "merged",
         phase: "merged"
       }

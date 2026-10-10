@@ -181,6 +181,7 @@ for f in \
   "$REPO_DIR"/tests/re-review-no-pr.test.sh \
   "$REPO_DIR"/tests/monitor-command-routing.test.sh \
   "$REPO_DIR"/tests/condition-reconciler.test.sh \
+  "$REPO_DIR"/tests/config-false-booleans.test.sh \
   "$REPO_DIR"/tests/check-no-npx-in-monitor.sh \
   "$REPO_DIR"/tests/monitor-pass-snapshot.test.sh \
   "$REPO_DIR"/tests/monitor-state-size.test.sh \
