@@ -147,3 +147,28 @@ describe('removeLabelFromPullRequest', () => {
     }
   });
 });
+
+describe('mill label-write ledger hook (HOK-3182)', () => {
+  const pr = {
+    number: 7, title: 't', body: '', state: 'OPEN', author: 'octocat', headRefName: 'task/x', baseRefName: 'main',
+    labels: [], url: 'https://github.com/acme/widgets/pull/7', createdAt: '', updatedAt: '', mergedAt: null, closedAt: null,
+  };
+
+  it('records successful adds and removes, but not failed writes', () => {
+    mock.method(github.githubDeps, 'resolveOwnerRepo', () => 'acme/widgets');
+    mock.method(github.githubDeps, 'getPullRequest', () => pr);
+    const record = mock.method(github.githubDeps, 'recordLabelWrite', () => undefined);
+    const exec = mock.method(github.githubDeps, 'execShellCommand', () => '');
+
+    github.addLabelsToPullRequest(7, ['wm:ready']);
+    github.removeLabelFromPullRequest(7, 'wm:blocked');
+    assert.deepEqual(record.mock.calls.map((c) => c.arguments), [
+      [7, ['wm:ready'], 'labeled'],
+      [7, ['wm:blocked'], 'unlabeled'],
+    ]);
+
+    exec.mock.mockImplementation(() => { throw new Error('HTTP 500'); });
+    assert.throws(() => github.addLabelsToPullRequest(7, ['wm:ready']));
+    assert.equal(record.mock.callCount(), 2);
+  });
+});

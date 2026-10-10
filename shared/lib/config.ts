@@ -1196,6 +1196,7 @@ export interface WavemillConfig {
   nativeAgent?: NativeAgentConfig;
   integration?: Partial<IntegrationConfig>;
   observer?: Partial<ObserverConfig>;
+  reliability?: ReliabilityConfig;
   incident?: IncidentConfig;
   promotion?: Partial<PromotionConfig>;
   ready?: ReadyConfig;
@@ -1969,6 +1970,30 @@ export function getChallengeEvalHardFailureRetryMaxAttempts(repoDir?: string): n
  */
 export function getChallengeSchedulerConfig(repoDir?: string): ChallengeSchedulerConfig {
   return loadWavemillConfig(repoDir).challengeScheduler || {};
+}
+
+/** HOK-3182: `reliability` section (reliability report tunables). */
+export interface ReliabilityConfig {
+  millActorLogins?: string[];
+  stallMinutes?: number;
+  github?: boolean;
+}
+
+/**
+ * Get the reliability report config with defaults applied.
+ * `WAVEMILL_RELIABILITY_MILL_ACTOR_LOGINS` (comma-separated) overrides
+ * `millActorLogins`.
+ */
+export function getReliabilityConfig(repoDir?: string, env: NodeJS.ProcessEnv = process.env): Required<ReliabilityConfig> {
+  const config = loadWavemillConfig(repoDir).reliability ?? {};
+  const envLogins = env.WAVEMILL_RELIABILITY_MILL_ACTOR_LOGINS;
+  return {
+    millActorLogins: envLogins !== undefined
+      ? envLogins.split(',').map((login) => login.trim()).filter(Boolean)
+      : config.millActorLogins ?? [],
+    stallMinutes: config.stallMinutes ?? 30,
+    github: config.github ?? true,
+  };
 }
 
 /**

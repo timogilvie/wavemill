@@ -511,6 +511,9 @@ archive_stage_artifacts() {
     _wavemill_archive_copy "$feature_dir/routing.jsonl" "$archive_dir/routing.jsonl" || status=1
     _wavemill_archive_copy "$feature_dir/.coding-uncommitted-output.resolved.jsonl" "$archive_dir/coding-uncommitted-output.resolved.jsonl" || status=1
     _wavemill_archive_json_copy "$feature_dir/.operator-intervention.json" "$archive_dir/operator-intervention.json" "operator intervention" || status=1
+    # HOK-3182: reliability-report evidence (time-stuck replay, operator touches).
+    _wavemill_archive_copy "$feature_dir/.terminal-history.jsonl" "$archive_dir/terminal-history.jsonl" || status=1
+    _wavemill_archive_copy "$feature_dir/.operator-events.jsonl" "$archive_dir/operator-events.jsonl" || status=1
 
     local stage result_file sidecar sidecar_name
     for stage in planning coding review; do
@@ -6730,7 +6733,55 @@ state_mutate() {
     return 1
   fi
 
+  # HOK-3182: a workflow-state edit typed into an interactive shell is an
+  # operator touch. The monitor and every tool it spawns run non-interactive.
+  if (( mutate_status == 0 )) && [[ $- == *i* && "$(basename "$state_path")" == "workflow-state.json" ]]; then
+    local touch_issue="" arg_prev="" arg
+    for arg in "$@"; do
+      if [[ "$arg_prev" == "--arg-issue" ]]; then touch_issue="$arg"; break; fi
+      if [[ "$arg_prev" == "--arg" && "$arg" == "issue" ]]; then arg_prev="--arg-issue"; continue; fi
+      arg_prev="$arg"
+    done
+    operator_touch_record "$(dirname "$state_path")" "state-edit" "$touch_issue" "state_mutate $(basename "$state_path")" || true
+  fi
+
   return "$mutate_status"
+}
+
+# operator_touch_record <wavemill_dir> <kind> [issue] [detail]
+# Append one touch to <wavemill_dir>/operator-touches.jsonl (HOK-3182). Same
+# shape as `appendOperatorTouch` in shared/lib/operator-intervention.ts;
+# the reader classifies entries that carry no `class`. Best-effort, lock-free.
+operator_touch_record() {
+  local wavemill_dir="$1" kind="$2" issue="${3:-}" detail="${4:-}"
+  [[ -n "$wavemill_dir" && -n "$kind" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  mkdir -p "$wavemill_dir" 2>/dev/null || return 0
+  jq -cn \
+    --arg at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" --arg kind "$kind" \
+    --arg issue "$issue" --arg actor "${USER:-}" --arg detail "$detail" \
+    '{at: $at, kind: $kind}
+      + (if $issue == "" then {} else {issue: $issue} end)
+      + (if $actor == "" then {} else {actor: $actor} end)
+      + (if $detail == "" then {} else {detail: $detail} end)' \
+    >> "$wavemill_dir/operator-touches.jsonl" 2>/dev/null || true
+}
+
+# mill_label_write_record <pr_number> <label> <labeled|unlabeled>
+# Shell twin of `recordMillLabelWrite` (shared/lib/label-write-ledger.ts):
+# record a label write made by a mill process so the reliability report does
+# not count it as a human label edit. No-op outside a mill session.
+mill_label_write_record() {
+  local pr_number="$1" label="$2" action="$3"
+  [[ -n "${WAVEMILL_SESSION:-${SESSION:-}}" && -n "${REPO_DIR:-}" && -n "$pr_number" && -n "$label" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  local wavemill_dir="${REPO_DIR}/.wavemill"
+  mkdir -p "$wavemill_dir" 2>/dev/null || return 0
+  jq -cn \
+    --arg at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" --argjson pr "$pr_number" \
+    --arg label "$label" --arg action "$action" --arg session "${WAVEMILL_SESSION:-${SESSION:-}}" \
+    '{at: $at, prNumber: $pr, label: $label, action: $action, writer: "mill", session: $session}' \
+    >> "$wavemill_dir/label-writes.jsonl" 2>/dev/null || true
 }
 
 terminal_task_tombstone_matches() {

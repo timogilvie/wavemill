@@ -93,6 +93,8 @@ TESTS=(
   lifecycle-scenarios.test.sh
   lifecycle-harness.test.sh
   archive-stage-artifacts.test.sh
+  operator-touch-record.test.sh
+  report-reliability-cli.test.sh
   cleanup-branch.test.sh
   cleanup-episodes.test.sh
   completed-task-cleanup.test.sh
