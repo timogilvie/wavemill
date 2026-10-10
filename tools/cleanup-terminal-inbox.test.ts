@@ -9,6 +9,8 @@ import {
   defaultCleanupDeps,
   decideTerminalTask,
   formatTerminalInboxDecisions,
+  setTerminalTaskKeepHold,
+  INBOX_AUTO_ARCHIVE_REFUSALS,
   type CleanupDeps,
   type TerminalInboxDecision,
   type WorkflowState,
@@ -402,4 +404,235 @@ test('cleanup accepts a digit-bearing team key', async () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// ─── HOK-3201: unattended monitor cleanup tick ─────────────────────────────
+
+test('merged arm with extra unpushed commit auto-converts to archive-and-reap in inbox-execute (HOK-3201)', () => {
+  // HOK-3177-style: PR merged, but local branch carries an extra self-review
+  // commit that is not patch-equivalent. decideTerminalTask with archiveAndReap
+  // returns would-archive-and-reap instead of the former `unique_local_patch`.
+  const decision = decideTerminalTask(
+    state({}),
+    'HOK-3005',
+    process.cwd(),
+    'auto/integration',
+    deps({ prs: { 101: mergedPr('101') }, cherry: '- abc\n+ residue\n' }),
+    false,
+    true,
+  );
+  assert.equal(decision.status, 'would-archive-and-reap');
+  assert.ok(decision.intendedActions.includes('archive-residue'));
+});
+
+test('closed loser with unpushed head auto-archives when sibling merged (HOK-3201)', () => {
+  const sibling = { slug: 'winner', branch: 'task/winner', worktree: '/tmp/winner', pr: '102', status: 'merged' };
+  const task = {
+    status: 'closed',
+    phase: 'closed',
+    challenge: true,
+    challengeRole: 'challenger',
+    challengePairId: 'HOK-3005_c',
+  };
+  // Closed loser PR, local head NOT published (remote branch missing),
+  // sibling PR MERGED. Without archiveAndReap this refuses with
+  // `closed_loser_head_unpublished`.
+  const closedUnpublishedGit: CleanupDeps['git'] = (args) => {
+    const key = args.join(' ');
+    if (key.includes('status --porcelain')) return '';
+    if (key.startsWith('show-ref --verify')) return '';
+    if (key.startsWith('rev-parse --verify task/')) return 'local-head\n';
+    if (key.startsWith('rev-parse --verify refs/remotes/origin/task/')) {
+      throw new Error('remote branch missing');
+    }
+    if (key.startsWith('rev-list --count')) return '1\n';
+    if (key.startsWith('cherry ')) return '+ abc\n';
+    return '';
+  };
+  const refused = decideTerminalTask(
+    state(task, sibling),
+    'HOK-3005',
+    process.cwd(),
+    'auto/integration',
+    deps({ prs: { 101: closedPr('101', 'remote-head'), 102: mergedPr('102') }, git: closedUnpublishedGit }),
+    false,
+    false,
+  );
+  assert.equal(refused.status, 'refused');
+  assert.equal(refused.refusalReason, 'closed_loser_head_unpublished');
+
+  const archived = decideTerminalTask(
+    state(task, sibling),
+    'HOK-3005',
+    process.cwd(),
+    'auto/integration',
+    deps({ prs: { 101: closedPr('101', 'remote-head'), 102: mergedPr('102') }, git: closedUnpublishedGit }),
+    true,
+    true,
+  );
+  assert.equal(archived.status, 'would-archive-and-reap');
+  assert.ok(archived.intendedActions.includes('archive-residue'));
+});
+
+test('PR-less aborted arm with unpushed head auto-archives in inbox-execute (HOK-3201)', () => {
+  const task = { pr: '', status: 'aborted', phase: 'aborted', lifecycle: { workflowOutcome: 'aborted' } };
+  // allowAbandon=false, archiveAndReap=true models the inbox-execute retry path.
+  const decision = decideTerminalTask(
+    state(task),
+    'HOK-3005',
+    process.cwd(),
+    'auto/integration',
+    deps({ git: prLessGit() }),
+    false,
+    true,
+  );
+  assert.equal(decision.status, 'would-archive-and-reap');
+  assert.ok(decision.intendedActions.includes('archive-residue'));
+  assert.ok(decision.intendedActions.includes('archive-unpublished-head'));
+});
+
+test('inbox-execute auto-promotes a unique_local_patch refusal to archive-and-reap (HOK-3201)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cleanup-inbox-auto-promote-'));
+  try {
+    const stateFile = join(root, '.wavemill', 'workflow-state.json');
+    mkdirSync(join(root, '.wavemill'), { recursive: true });
+    // Make the worktree a real git repo so archiveTaskResidue can diff/ls-files.
+    const worktree = join(root, 'wt');
+    mkdirSync(worktree, { recursive: true });
+    execFileSync('git', ['init', '-q', '-b', 'auto/integration', worktree], { stdio: 'ignore' });
+    execFileSync('git', ['-C', worktree, 'config', 'user.email', 't@e.com'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', worktree, 'config', 'user.name', 't'], { stdio: 'ignore' });
+    writeFileSync(join(worktree, 'README.md'), 'seed\n');
+    execFileSync('git', ['-C', worktree, 'add', 'README.md'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', worktree, 'commit', '-q', '-m', 'seed'], { stdio: 'ignore' });
+    writeFileSync(stateFile, JSON.stringify(state({ worktree })));
+    const cleanupCalls: string[] = [];
+    const decisions = await cleanupTerminalInbox({
+      repoDir: root,
+      stateFile,
+      inbox: true,
+      execute: true,
+      // Cherry output names a non-equivalent extra local commit: the refusal
+      // path returns `unique_local_patch`, which the inbox retry promotes.
+      deps: deps({ prs: { 101: mergedPr('101') }, cherry: '+ residue\n', cleanupCalls }),
+    });
+    assert.equal(decisions.length, 1);
+    assert.equal(decisions[0].status, 'executed');
+    assert.ok(decisions[0].archive, 'archive metadata expected on auto-promoted decision');
+    assert.deepEqual(cleanupCalls, ['HOK-3005']);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('INBOX_AUTO_ARCHIVE_REFUSALS covers the three dead-arm reasons (HOK-3201)', () => {
+  assert.ok(INBOX_AUTO_ARCHIVE_REFUSALS.has('unique_local_patch'));
+  assert.ok(INBOX_AUTO_ARCHIVE_REFUSALS.has('closed_loser_head_unpublished'));
+  assert.ok(INBOX_AUTO_ARCHIVE_REFUSALS.has('aborted_pr_less_requires_abandon'));
+  // Non-safe refusals (unverifiable, OPEN PRs, mismatched base, etc.) must not
+  // auto-promote; they stay in the operator inbox.
+  assert.ok(!INBOX_AUTO_ARCHIVE_REFUSALS.has('merged_delivery_unverified'));
+  assert.ok(!INBOX_AUTO_ARCHIVE_REFUSALS.has('pr_open'));
+  assert.ok(!INBOX_AUTO_ARCHIVE_REFUSALS.has('pr_base_mismatch'));
+});
+
+test('a kept hold short-circuits every decision with no gh/git calls (HOK-3201)', () => {
+  let ghCalls = 0;
+  let gitCalls = 0;
+  const kept = state({ lifecycle: { workflowOutcome: 'merged', resourceDisposition: 'retained', retention: { hold: 'keep', setBy: 'operator', reason: 'retained for analysis' } } });
+  const decision = decideTerminalTask(
+    kept,
+    'HOK-3005',
+    process.cwd(),
+    'auto/integration',
+    deps({
+      gh: () => { ghCalls += 1; throw new Error('no gh fetch for kept tasks'); },
+      git: () => { gitCalls += 1; return ''; },
+    }),
+  );
+  assert.equal(decision.status, 'kept');
+  assert.equal(decision.cleanupHold, 'keep');
+  assert.equal(decision.refusalReason, 'kept_by_operator');
+  assert.equal(ghCalls, 0, 'kept tasks must not fetch the PR');
+  assert.equal(gitCalls, 0, 'kept tasks must not touch git');
+});
+
+test('inbox executor skips a kept task (HOK-3201)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cleanup-inbox-kept-'));
+  try {
+    const stateFile = join(root, '.wavemill', 'workflow-state.json');
+    mkdirSync(join(root, '.wavemill'), { recursive: true });
+    writeFileSync(stateFile, JSON.stringify(state({ lifecycle: { workflowOutcome: 'merged', resourceDisposition: 'retained', retention: { hold: 'keep' } } })));
+    const cleanupCalls: string[] = [];
+    const decisions = await cleanupTerminalInbox({
+      repoDir: root,
+      stateFile,
+      inbox: true,
+      execute: true,
+      deps: deps({ cleanupCalls }),
+    });
+    assert.equal(decisions.length, 1);
+    assert.equal(decisions[0].status, 'kept');
+    assert.deepEqual(cleanupCalls, [], 'kept tasks must never run the destructive cleanup');
+    // The task state file must still reference HOK-3005 — nothing was reaped.
+    const written = JSON.parse(readFileSync(stateFile, 'utf-8'));
+    assert.ok(written.tasks && written.tasks['HOK-3005'], 'kept task must remain in state');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('setTerminalTaskKeepHold round-trips the keep hold (HOK-3201)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cleanup-keep-hold-'));
+  try {
+    const stateFile = join(root, '.wavemill', 'workflow-state.json');
+    mkdirSync(join(root, '.wavemill'), { recursive: true });
+    writeFileSync(stateFile, JSON.stringify(state({})));
+    const setResult = await setTerminalTaskKeepHold({
+      issue: 'HOK-3005',
+      repoDir: root,
+      stateFile,
+      hold: 'keep',
+      reason: 'retained for analysis',
+      actor: 'test-operator',
+      now: () => '2026-10-10T00:00:00.000Z',
+    });
+    assert.equal(setResult.hold, 'keep');
+    assert.equal(setResult.reason, 'retained for analysis');
+    const afterSet = JSON.parse(readFileSync(stateFile, 'utf-8'));
+    assert.equal(afterSet.tasks['HOK-3005'].lifecycle.retention.hold, 'keep');
+    assert.equal(afterSet.tasks['HOK-3005'].lifecycle.retention.setBy, 'test-operator');
+    assert.equal(afterSet.tasks['HOK-3005'].lifecycle.retention.setAt, '2026-10-10T00:00:00.000Z');
+    assert.equal(afterSet.tasks['HOK-3005'].lifecycle.retention.reason, 'retained for analysis');
+
+    const unsetResult = await setTerminalTaskKeepHold({
+      issue: 'HOK-3005',
+      repoDir: root,
+      stateFile,
+      hold: null,
+    });
+    assert.equal(unsetResult.hold, '');
+    const afterUnset = JSON.parse(readFileSync(stateFile, 'utf-8'));
+    // retention block is removed when nothing else sits in it
+    assert.equal(afterUnset.tasks['HOK-3005'].lifecycle.retention, undefined);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('formatter surfaces the kept status in the summary counts (HOK-3201)', () => {
+  const base: TerminalInboxDecision = {
+    issue: 'HOK-3005', slug: 'demo', branch: 'task/demo', worktree: '/tmp/demo', prNumber: '101',
+    status: 'kept', refusalReason: 'kept_by_operator', workflowOutcome: 'merged', resourceDisposition: 'retained',
+    challengeRole: '', challengePairId: '', siblingPrNumber: '', siblingPrState: '',
+    pr: { number: '101', state: 'UNKNOWN', mergedAt: '', headRefOid: '', headRefName: '', baseRefName: '', mergeCommitOid: '' },
+    git: { worktreeExists: false, worktreeDirty: 'unknown', dirtyStatus: '', localBranchExists: false, localHeadSha: '', remoteHeadSha: '', remoteContainsHead: false, commitsAhead: null, patchEquivalent: 'unknown', patchUniqueCount: null, patchEquivalentCount: null },
+    pane: { windowId: '', paneState: 'active', paneReleased: false, intendedAction: 'none' },
+    intendedActions: [],
+    cleanupHold: 'keep',
+  };
+  const out = formatTerminalInboxDecisions([base], true);
+  assert.match(out, /kept=1/);
+  // kept tasks are not executable — the row never says "execute"
+  assert.doesNotMatch(out, /^execute\tHOK-3005/m);
 });
