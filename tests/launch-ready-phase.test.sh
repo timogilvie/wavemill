@@ -1595,7 +1595,7 @@ check_contains "GitHub head unavailable at preflight: nothing published" "$outpu
 output="$(run_launch_case head_sync_publish_head_unavailable)"
 check_contains "GitHub head unavailable at publish: Ready ran" "$output" "ready_checked_head=$(field "$output" sha_old)"
 check_contains "GitHub head unavailable at publish: fails closed" "$output" "rc=1"
-check_contains "GitHub head unavailable at publish: typed ownership-changed" "$output" "\"stage\":\"ownership-changed\""
+check_contains "GitHub head unavailable at publish: typed ready-label" "$output" "\"stage\":\"ready-label\""
 check_contains "GitHub head unavailable at publish: no checkout fallback" "$output" "handoff_heads=[]"
 
 output="$(run_launch_case head_sync_unpushed_commits)"
