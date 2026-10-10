@@ -62,8 +62,8 @@ function failingRollupCheckNames(rollup: Array<Record<string, unknown>>): string
   return rollup
     .filter((entry) => {
       const conclusion = (stringField(entry, 'conclusion') ?? '').toLowerCase();
-      const state = (stringField(entry, 'state') ?? '').toLowerCase();
-      return FAILING_CHECK_CONCLUSIONS.has(conclusion) || FAILING_CHECK_CONCLUSIONS.has(state);
+      const status = (stringField(entry, 'status') ?? '').toLowerCase();
+      return FAILING_CHECK_CONCLUSIONS.has(conclusion) || FAILING_CHECK_CONCLUSIONS.has(status);
     })
     .map((entry) => stringField(entry, 'name') ?? stringField(entry, 'context') ?? 'check');
 }
@@ -72,11 +72,11 @@ function pendingRollupCheckNames(rollup: Array<Record<string, unknown>>): string
   return rollup
     .filter((entry) => {
       const conclusion = (stringField(entry, 'conclusion') ?? '').toLowerCase();
-      const state = (stringField(entry, 'state') ?? '').toLowerCase();
-      if (FAILING_CHECK_CONCLUSIONS.has(conclusion) || FAILING_CHECK_CONCLUSIONS.has(state)) {
+      const status = (stringField(entry, 'status') ?? '').toLowerCase();
+      if (FAILING_CHECK_CONCLUSIONS.has(conclusion) || FAILING_CHECK_CONCLUSIONS.has(status)) {
         return false;
       }
-      if (PASSING_CHECK_CONCLUSIONS.has(conclusion) || PASSING_CHECK_CONCLUSIONS.has(state)) {
+      if (PASSING_CHECK_CONCLUSIONS.has(conclusion) || PASSING_CHECK_CONCLUSIONS.has(status)) {
         return false;
       }
       return true;
