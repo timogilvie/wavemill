@@ -16479,17 +16479,17 @@ maybe_launch_queue_inference_refresh() {
     --arg cacheKey "$cache_key" \
     '{"taskCount": $taskCount, "explicitDependencyCount": $explicitDependencyCount, "cacheKey": $cacheKey}' 2>/dev/null) || return 0
 
-  local now_ms classifier_deadline_ms classifier_grace_secs=8
-  now_ms="$(date +%s%3N 2>/dev/null || true)"
-  [[ "$now_ms" =~ ^[0-9]+$ ]] || now_ms="$(date +%s)000"
-  classifier_deadline_ms=$(( now_ms + ((timeout_secs - classifier_grace_secs) * 1000) ))
+  # HOK-3202: pass relative budget instead of pre-computed deadline so node/tsx
+  # startup is not charged against the classifier's time.
+  local classifier_grace_secs=8
+  local classifier_budget_ms=$(( (timeout_secs - classifier_grace_secs) * 1000 ))
 
   local inference_report_file
   inference_report_file="$(mktemp -t wavemill-queue-inference.XXXXXX 2>/dev/null || true)"
   [[ -n "$inference_report_file" ]] || return 0
 
   local planner_cmd
-  planner_cmd="$(_wavemill_tsx_invoker) \"$TOOLS_DIR/plan-queue.ts\" --stdin --json --cache-key \"$cache_key\" --refresh-missing-cache --queue-classifier-deadline-ms \"$classifier_deadline_ms\" --inference-report-file \"$inference_report_file\""
+  planner_cmd="$(_wavemill_tsx_invoker) \"$TOOLS_DIR/plan-queue.ts\" --stdin --json --cache-key \"$cache_key\" --refresh-missing-cache --queue-classifier-budget-ms \"$classifier_budget_ms\" --inference-report-file \"$inference_report_file\""
 
   queue_health_init 2>/dev/null || true
 

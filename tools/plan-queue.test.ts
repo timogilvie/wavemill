@@ -113,12 +113,12 @@ const obviousPairBacklog = [
 
 const MILL_ENV = { ANTHROPIC_API_KEY: '', ANTHROPIC_BASE_URL: '' };
 
-function millPlanArgs(backlogPath: string, cacheKey: string, reportPath: string, deadlineOffsetMs = 30_000): string[] {
+function millPlanArgs(backlogPath: string, cacheKey: string, reportPath: string, budgetMs = 30_000): string[] {
   return [
     '--backlog-file', backlogPath,
     '--cache-key', cacheKey,
     '--refresh-missing-cache',
-    '--queue-classifier-deadline-ms', String(Date.now() + deadlineOffsetMs),
+    '--queue-classifier-budget-ms', String(budgetMs),
     '--inference-report-file', reportPath,
     '--json',
   ];

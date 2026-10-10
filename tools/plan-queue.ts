@@ -58,8 +58,9 @@ const QUEUE_CLASSIFIER_DEADLINE_GRACE_MS = 1_500;
 // Bounded output (HOK-3179): a well-formed "edges only" reply fits well under
 // 1 KB in practice. The 4.4 k-token runs observed on 2026-10-08 were reasoning
 // slop; this cap keeps a model that over-produces from blowing the budget on
-// its own output.
-const QUEUE_CLASSIFIER_MAX_OUTPUT_TOKENS = 1_024;
+// its own output. Raised from 1024 to 4096 in HOK-3202 to accommodate thinking
+// tokens when isolation is disabled.
+const QUEUE_CLASSIFIER_MAX_OUTPUT_TOKENS = 4_096;
 
 function renderPreview(queuePlan: QueuePlan, records: BacklogRecord[]): string {
   const titleById = new Map(records.map((record) => [record.id, record.title ?? '']));
@@ -261,7 +262,8 @@ runTool({
     'no-cache': { type: 'boolean', description: 'Disable task dependency cache reads and writes' },
     'refresh-missing-cache': { type: 'boolean', description: 'Run queue analysis when the cache has no fingerprints yet' },
     'no-infer': { type: 'boolean', description: 'Plan from cache + explicit relations only; never call the classifier or write the cache (HOK-3179)' },
-    'queue-classifier-deadline-ms': { type: 'string', description: 'Internal: absolute classifier deadline in epoch milliseconds' },
+    'queue-classifier-deadline-ms': { type: 'string', description: 'Internal: absolute classifier deadline in epoch milliseconds (deprecated, use --queue-classifier-budget-ms)' },
+    'queue-classifier-budget-ms': { type: 'string', description: 'Internal: relative classifier budget in milliseconds from now (HOK-3202)' },
     'inference-report-file': { type: 'string', description: 'Internal: write a queue inference status JSON report to this path' },
     json: { type: 'boolean', description: 'Emit queuePlan JSON' },
     preview: { type: 'boolean', description: 'Emit human-readable preview' },
@@ -282,7 +284,20 @@ runTool({
       : args['cache-key'];
     const shouldUseCache = !args['no-cache'] && typeof cacheKey === 'string' && cacheKey.length > 0;
     const noInfer = args['no-infer'] === true;
-    const queueClassifierDeadlineMs = parseQueueClassifierDeadline(args['queue-classifier-deadline-ms']);
+    // Compute classifier deadline from budget (preferred) or absolute deadline (backward compat)
+    const budgetMs = args['queue-classifier-budget-ms'];
+    const queueClassifierDeadlineMs = budgetMs !== undefined
+      ? (() => {
+          if (!/^[0-9]+$/.test(budgetMs)) {
+            throw new Error('--queue-classifier-budget-ms must be a millisecond integer');
+          }
+          const budget = Number.parseInt(budgetMs, 10);
+          if (!Number.isSafeInteger(budget) || budget <= 0) {
+            throw new Error('--queue-classifier-budget-ms must be a positive safe integer');
+          }
+          return Date.now() + budget;
+        })()
+      : parseQueueClassifierDeadline(args['queue-classifier-deadline-ms']);
     const records = args['backlog-file']
       ? readBacklogFile(args['backlog-file'])
       : args.stdin

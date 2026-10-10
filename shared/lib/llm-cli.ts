@@ -16,7 +16,7 @@
  */
 
 import { spawn, type SpawnOptions } from 'node:child_process';
-import { writeFileSync, unlinkSync, existsSync, readFileSync } from 'node:fs';
+import { writeFileSync, unlinkSync, existsSync, readFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -697,6 +697,8 @@ interface JsonEnvelope {
     cache_read_input_tokens?: number;
   };
   total_cost_usd?: number;
+  is_error?: boolean;
+  error?: string;
 }
 
 /**
@@ -714,36 +716,43 @@ function unwrapJsonEnvelope(raw: string): {
   usage?: LLMCallResult['usage'];
   costUsd?: number;
 } {
+  let data: JsonEnvelope;
   try {
-    const data: JsonEnvelope = JSON.parse(raw);
-
-    // Extract text from data.result if present
-    const text = (data.result || raw).trim();
-
-    // Extract usage if present
-    let usage: LLMCallResult['usage'] | undefined;
-    if (data.usage) {
-      const u = data.usage;
-      const inputTokens =
-        (u.input_tokens || 0) +
-        (u.cache_creation_input_tokens || 0) +
-        (u.cache_read_input_tokens || 0);
-      const outputTokens = u.output_tokens || 0;
-      usage = {
-        inputTokens,
-        outputTokens,
-        totalTokens: inputTokens + outputTokens,
-      };
-    }
-
-    // Extract cost if present
-    const costUsd = data.total_cost_usd;
-
-    return { text, usage, costUsd };
+    data = JSON.parse(raw);
   } catch {
     // If JSON parse fails, treat the entire output as text (fallback)
     return { text: raw.trim() };
   }
+
+  // Check for is_error envelope and throw (outside try-catch so it propagates)
+  if (data.is_error === true) {
+    const errorMsg = data.error || 'Unknown error';
+    throw new Error(`claude CLI returned is_error: ${errorMsg}`);
+  }
+
+  // Extract text from data.result if present
+  const text = (data.result || raw).trim();
+
+  // Extract usage if present
+  let usage: LLMCallResult['usage'] | undefined;
+  if (data.usage) {
+    const u = data.usage;
+    const inputTokens =
+      (u.input_tokens || 0) +
+      (u.cache_creation_input_tokens || 0) +
+      (u.cache_read_input_tokens || 0);
+    const outputTokens = u.output_tokens || 0;
+    usage = {
+      inputTokens,
+      outputTokens,
+      totalTokens: inputTokens + outputTokens,
+    };
+  }
+
+  // Extract cost if present
+  const costUsd = data.total_cost_usd;
+
+  return { text, usage, costUsd };
 }
 
 /**
@@ -825,6 +834,14 @@ interface ProviderConfig {
   defaultArgs: string[];
 }
 
+/**
+ * Check if a classifier spawn should be isolated from the interactive agent harness.
+ * Isolated spawns disable extended thinking, MCP tools, memory, and CLAUDE.md.
+ */
+function shouldIsolateClassifierSpawn(provider: LLMProvider, taskType?: RegistryTaskType): boolean {
+  return provider === 'claude' && taskType === 'classify';
+}
+
 /** Build an env object from process.env with provider-specific overrides */
 function buildProviderEnv(config: ProviderConfig, options: LLMCallOptions = {}): NodeJS.ProcessEnv {
   const env = { ...process.env };
@@ -837,6 +854,10 @@ function buildProviderEnv(config: ProviderConfig, options: LLMCallOptions = {}):
     // The Claude Code CLI reads this env knob; other providers currently
     // ignore it (setting it is harmless there).
     env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(Math.floor(options.maxOutputTokens));
+  }
+  // Disable extended thinking for isolated classifier spawns (HOK-3202)
+  if (shouldIsolateClassifierSpawn(options.provider || 'claude', options.taskType)) {
+    env.MAX_THINKING_TOKENS = '0';
   }
   return env;
 }
@@ -904,11 +925,12 @@ function executeSync(
   tmpFile: string,
   cliArgs: string[],
   options: LLMCallOptions,
-  provider: LLMProvider
+  provider: LLMProvider,
+  isolatedCwd?: string
 ): string {
   const timeout = options.timeout ?? DEFAULT_TIMEOUT;
   const maxBuffer = options.maxBuffer ?? DEFAULT_MAX_BUFFER;
-  const cwd = options.cwd || process.cwd();
+  const cwd = isolatedCwd || options.cwd || process.cwd();
 
   const cliCmd = getCliCommand(provider, options);
   const command = `${escapeShellArg(cliCmd)} ${cliArgs.join(' ')} < ${escapeShellArg(tmpFile)}`;
@@ -1028,12 +1050,13 @@ async function executeStream(
   options: LLMCallOptions,
   provider: LLMProvider,
   attempt: number,
-  maxAttempts: number
+  maxAttempts: number,
+  isolatedCwd?: string
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
     const timeout = options.timeout ?? DEFAULT_TIMEOUT;
-    const cwd = options.cwd || process.cwd();
+    const cwd = isolatedCwd || options.cwd || process.cwd();
     const cliCmd = getCliCommand(provider, options);
 
     if (options.signal?.aborted) {
@@ -1665,12 +1688,25 @@ async function callLLMOnce(
   // Create temp file for prompt
   const tmpFile = join(tmpdir(), `wavemill-${provider}-${Date.now()}-${randomUUID()}.txt`);
 
+  // Create temp cwd for isolated classifier spawns (HOK-3202)
+  let isolatedCwd: string | undefined;
+  const needsIsolation = shouldIsolateClassifierSpawn(provider, options.taskType);
+  if (needsIsolation && !options.cwd) {
+    isolatedCwd = mkdtempSync(join(tmpdir(), 'wavemill-llm-cli-'));
+  }
+
   try {
     writeFileSync(tmpFile, prompt, 'utf-8');
 
     // Build CLI arguments
     const config = getProviderConfig(provider);
     const cliArgs = [...config.defaultArgs];
+
+    // Add isolation flags for classifier spawns (HOK-3202)
+    // These are inserted before user-supplied cliFlags so callers can override if needed
+    if (needsIsolation) {
+      cliArgs.push('--tools', '', '--strict-mcp-config', '--no-session-persistence', '--disable-slash-commands');
+    }
 
     // Add model if specified
     if (options.model) {
@@ -1692,7 +1728,7 @@ async function callLLMOnce(
         maxAttempts,
         elapsedMs: 0,
       });
-      rawOutput = executeSync(tmpFile, cliArgs, options, provider);
+      rawOutput = executeSync(tmpFile, cliArgs, options, provider, isolatedCwd);
       await options.observer?.onAttemptComplete?.({
         provider,
         model: options.model,
@@ -1701,7 +1737,7 @@ async function callLLMOnce(
         elapsedMs: Date.now() - startedAt,
       });
     } else {
-      rawOutput = await executeStream(tmpFile, cliArgs, options, provider, attempt, maxAttempts);
+      rawOutput = await executeStream(tmpFile, cliArgs, options, provider, attempt, maxAttempts, isolatedCwd);
     }
 
     // Unwrap provider output: Claude/OpenAI emit a single JSON envelope; Codex
@@ -1727,6 +1763,14 @@ async function callLLMOnce(
     if (existsSync(tmpFile)) {
       try {
         unlinkSync(tmpFile);
+      } catch {
+        // Best effort cleanup
+      }
+    }
+    // Clean up isolated cwd (HOK-3202)
+    if (isolatedCwd) {
+      try {
+        rmSync(isolatedCwd, { recursive: true, force: true });
       } catch {
         // Best effort cleanup
       }

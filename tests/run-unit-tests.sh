@@ -44,6 +44,7 @@ TESTS=(
   shared/lib/stage-result.test.ts
   shared/lib/task-progress.test.ts
   shared/lib/task-identity.test.ts
+  tests/llm-cli.test.ts
   shared/lib/linear-write-gate.test.ts
   shared/lib/session-adapters.test.ts
   shared/lib/executed-model-resolver.test.ts
