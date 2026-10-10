@@ -8,7 +8,7 @@ scan() {
     file="${hit%%:*}"
     line="${hit#*:}"
     case "${file#"$root"/}" in
-      shared/lib/ledger.ts|shared/lib/ledger-sqlite.ts|tests/ledger.test.ts|tests/check-direct-ledger-access.test.sh) continue ;;
+      shared/lib/ledger.ts|shared/lib/ledger-sqlite.ts|codex/shared/lib/ledger.ts|codex/shared/lib/ledger-sqlite.ts|tests/ledger.test.ts|tests/check-direct-ledger-access.test.sh) continue ;;
     esac
     if [[ "$line" != *'ledger-access: allow '* ]]; then
       printf '%s\n' "$hit" >&2
