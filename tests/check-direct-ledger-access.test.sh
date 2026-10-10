@@ -14,7 +14,7 @@ scan() {
       printf '%s\n' "$hit" >&2
       failed=1
     fi
-  done < <(rg -n --no-heading -e "$PATTERN" --glob '*.ts' --glob '*.tsx' --glob '*.js' --glob '*.sh' --glob '!node_modules/**' "$root/shared" "$root/tools" "$root/commands" "$root/tests" "$root/codex" "$root/claude" 2>/dev/null || true)
+  done < <(grep -REn --include='*.ts' --include='*.tsx' --include='*.js' --include='*.sh' --exclude-dir=node_modules -e "$PATTERN" "$root/shared" "$root/tools" "$root/commands" "$root/tests" "$root/codex" "$root/claude" 2>/dev/null || true)
   return "$failed"
 }
 fixture="$(mktemp -d)"
