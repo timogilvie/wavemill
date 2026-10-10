@@ -437,6 +437,10 @@ const WORKFLOW_AUTOMATION_PATTERNS: RegExp[] = [
   /^<command-name>\/?exit<\/command-name>/,
   // User-prompt-submit-hook outputs
   /^<user-prompt-submit-hook>/,
+  // Claude Code background-task completion notices (HOK-3182)
+  /^<task-notification>/,
+  // Task-packet review prompt injected during expansion (HOK-3182)
+  /^#\s+Task Packet Reviewer/,
 ];
 
 /**
@@ -999,7 +1003,7 @@ export function detectManualEdits(opts: DetectOptions): ManualEditsResult {
   const unknownAttribution: InterventionEvent = { type: 'unknown_attribution', count: 0, details: [], timestamps: [], severities: [] };
 
   const managed = isWavemillManagedBranch(branchName, opts.repoDir);
-  const useAttribution = managed || agentCommitsAsUser(opts.agentType);
+  const useAttribution = Boolean(opts.attributeByWindows) || managed || agentCommitsAsUser(opts.agentType);
 
   let windows: AgentActivityWindow[] = [];
   let intervals: OperatorHandoffInterval[] = [];
@@ -1076,6 +1080,13 @@ export interface DetectOptions {
   issueId?: string;
   /** Pre-fetched PR commits, to avoid a duplicate API call (used by detectManualEdits). */
   prCommits?: PrCommit[];
+  /**
+   * Always attribute commits by recorded agent windows (HOK-3182). A reaped
+   * task's branch no longer looks wavemill-managed, so the reliability report
+   * opts in rather than fall back to marker-only detection, which flags every
+   * commit of an agent that commits as the user.
+   */
+  attributeByWindows?: boolean;
 }
 
 /**

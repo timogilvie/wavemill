@@ -1,5 +1,5 @@
 /**
- * HOK-3177 — unit tests for reliability-metrics.
+ * HOK-3177 / HOK-3182 — unit tests for reliability-metrics.
  *
  * All IO happens under `mkdtemp` per HOK-3157; no tracked files are written.
  */
@@ -12,19 +12,29 @@ import { join } from 'node:path';
 
 import {
   aggregateReliability,
+  buildEvalsIndex,
   collectOperatorTouches,
+  computeReliability,
   computeTimeStuck,
   dedupeTouches,
   deriveStallIntervals,
   parseWindow,
   percentile,
+  readExternalMergeTouches,
+  readLabelEditTouches,
+  readManualPushTouches,
   renderReliabilityDashboardLine,
   renderReliabilitySummary,
+  replayStallIntervals,
   sumStallMs,
   type MergedTaskRef,
+  type ProgressEvidence,
+  type ReliabilityContext,
   type TaskReliability,
   type TouchEvent,
 } from './reliability-metrics.ts';
+import { indexMillLabelWrites } from './label-write-ledger.ts';
+import type { PrTimelineEvent } from './pr-timeline.ts';
 import type { TaskProgressInputs } from './task-progress.ts';
 
 function makeTmpDir(): string {
@@ -182,6 +192,7 @@ describe('reliability-metrics', () => {
       touchCount: number;
       stuckMs: number;
       coverage?: 'full' | 'partial' | 'none';
+      classes?: Array<'O' | 'L' | 'S' | 'R'>;
     }): TaskReliability {
       const task: MergedTaskRef = {
         issue: opts.issue,
@@ -189,13 +200,17 @@ describe('reliability-metrics', () => {
         mergedAt: opts.mergedAt,
       };
       const touches: TouchEvent[] = [];
+      const classes = opts.classes ?? [];
       for (let i = 0; i < opts.touchCount; i++) {
-        touches.push({ kind: 'operator-event', at: opts.mergedAt, bucket: `${i}` });
+        touches.push({ kind: 'operator-event', at: opts.mergedAt, class: classes[i] ?? 'R', bucket: `${i}` });
       }
+      const touchClasses = { O: 0, L: 0, S: 0, R: 0 };
+      for (const t of touches) touchClasses[t.class] += 1;
       return {
         task,
         touches,
         touchCount: opts.touchCount,
+        touchClasses,
         stuckMs: opts.stuckMs,
         stuckCoverage: opts.coverage ?? 'full',
         stallIntervals: [],
@@ -434,11 +449,320 @@ describe('reliability-metrics', () => {
           featureDir,
         };
         const result = computeTimeStuck({ task, stallMinutes: 30 });
-        // With just 2 snapshots and both agent-working (fresh at each tick),
-        // the pure derivation sees fresh hook each frame → neither is stalled.
-        // coverage is still 'full' because we had 2+ snapshots.
+        // The 5-minute replay sees no progress from t=0 until the t=40 record:
+        // stalled from the first tick past 30 min (t=35) to t=40. The 20 min
+        // before the merge stay under the threshold.
         assert.equal(result.coverage, 'full');
-        assert.equal(result.stuckMs, 0);
+        assert.equal(result.stuckMs, 5 * 60_000);
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('parseWindow absolute start (HOK-3182)', () => {
+    it('accepts a date or ISO timestamp through now', () => {
+      const now = new Date('2026-10-10T12:00:00Z');
+      assert.deepEqual(parseWindow('2026-09-25', now), { since: '2026-09-25T00:00:00.000Z', until: now.toISOString() });
+      assert.equal(parseWindow('2026-09-25T06:00:00Z', now).since, '2026-09-25T06:00:00.000Z');
+      assert.throws(() => parseWindow('2026-11-01', now));
+    });
+  });
+
+  describe('replayStallIntervals (HOK-3182)', () => {
+    const base = Date.parse('2026-10-08T10:00:00Z');
+    const minute = 60_000;
+    const hook = (atMs: number, writer: 'agent' | 'monitor', state: 'working' | 'idle' = 'working'): ProgressEvidence => ({
+      atMs,
+      kind: 'hook',
+      hook: { state, event: writer === 'agent' ? 'PreToolUse' : 'pr_opened', writer, agent: 'claude', timestamp: Math.floor(atMs / 1000) },
+    });
+
+    it('counts time past the threshold until the merge closes the interval', () => {
+      const intervals = replayStallIntervals([hook(base, 'agent')], { endMs: base + 90 * minute, stallMinutes: 30 });
+      assert.equal(intervals.length, 1);
+      assert.equal(intervals[0].from, new Date(base + 35 * minute).toISOString());
+      assert.equal(intervals[0].durationMs, 55 * minute);
+    });
+
+    it('a monitor write is never progress and never erases the agent record', () => {
+      const intervals = replayStallIntervals(
+        [hook(base, 'agent'), hook(base + 60 * minute, 'monitor')],
+        { endMs: base + 90 * minute, stallMinutes: 30 },
+      );
+      assert.equal(sumStallMs(intervals), 55 * minute);
+    });
+
+    it('commits and stage transitions are progress', () => {
+      const evidence: ProgressEvidence[] = [
+        hook(base, 'agent'),
+        { atMs: base + 25 * minute, kind: 'commit' },
+        { atMs: base + 50 * minute, kind: 'transition', detail: 'review:started' },
+      ];
+      assert.equal(sumStallMs(replayStallIntervals(evidence, { endMs: base + 70 * minute, stallMinutes: 30 })), 0);
+    });
+
+    it('returns no intervals without evidence', () => {
+      assert.deepEqual(replayStallIntervals([], { endMs: base }), []);
+    });
+  });
+
+  describe('archive fallback (HOK-3182)', () => {
+    function archivedTask(tmp: string): MergedTaskRef {
+      const archiveDir = join(tmp, '.wavemill', 'evals', 'artifacts', 'HOK-ARC');
+      mkdirSync(archiveDir, { recursive: true });
+      return { issue: 'HOK-ARC', title: 'HOK-ARC: x (#9)', prNumber: '9', mergedAt: '2026-10-08T12:00:00Z', archiveDir };
+    }
+
+    it('reads operator events and hook history from the reap archive when the feature dir is gone', () => {
+      const tmp = makeTmpDir();
+      try {
+        const task = archivedTask(tmp);
+        writeFixture(join(task.archiveDir!, 'operator-events.jsonl'), [
+          { seq: 1, command: 'advance', issue: 'HOK-ARC', at: '2026-10-08T10:30:00Z' },
+          { seq: 2, command: 'challenge-void', issue: 'HOK-ARC', at: '2026-10-08T11:30:00Z' },
+        ]);
+        const base = Math.floor(Date.parse('2026-10-08T10:00:00Z') / 1000);
+        writeFixture(join(task.archiveDir!, 'terminal-history.jsonl'), [
+          { payload: { state: 'working', event: 'PreToolUse', writer: 'agent', agent: 'claude', timestamp: base } },
+          { payload: { state: 'idle', event: 'Stop', writer: 'agent', agent: 'claude', timestamp: base + 600 } },
+        ]);
+
+        const touches = collectOperatorTouches({ repoDir: tmp, task, evalsPath: join(tmp, 'none.jsonl') });
+        assert.deepEqual(touches.map((t) => [t.kind, t.class]), [['operator-event', 'R'], ['operator-event', 'O']]);
+
+        const stuck = computeTimeStuck({ task, stallMinutes: 30 });
+        assert.equal(stuck.coverage, 'full');
+        // Last progress 10:00 → stalled from 10:35 (first tick past 30m) to the 12:00 merge.
+        assert.equal(stuck.stuckMs, 85 * 60_000);
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it('reconstructs a partial timeline from archived stage results', () => {
+      const tmp = makeTmpDir();
+      try {
+        const task = archivedTask(tmp);
+        writeFileSync(join(task.archiveDir!, 'coding-result.json'), JSON.stringify({
+          stage: 'coding', status: 'completed', startedAt: '2026-10-08T09:00:00Z', finishedAt: '2026-10-08T09:20:00Z',
+        }));
+        writeFileSync(join(task.archiveDir!, 'review-result.json'), JSON.stringify({
+          stage: 'review', status: 'completed', startedAt: '2026-10-08T11:00:00Z', finishedAt: '2026-10-08T11:50:00Z',
+        }));
+        const stuck = computeTimeStuck({ task, stallMinutes: 30 });
+        assert.equal(stuck.coverage, 'partial');
+        // 09:20 → 11:00 gap: stalled from 09:55 (first tick past 30m on the
+        // 09:00 grid) to 11:00 = 65m. The 50-minute review has no in-stage
+        // evidence (no session activity archived): stalled 11:35 → 11:50 = 15m.
+        assert.equal(stuck.stuckMs, 80 * 60_000);
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('eval and touch-log sources (HOK-3182)', () => {
+    it('drops automation noise and agent-side detectors, matches rows by PR, and classifies the rest', () => {
+      const tmp = makeTmpDir();
+      try {
+        const evalsPath = join(tmp, 'evals.jsonl');
+        writeFixture(evalsPath, [{
+          issueId: 'HOK-OTHER',
+          prUrl: 'https://github.com/acme/widgets/pull/1603',
+          timestamp: '2026-10-08T13:00:00Z',
+          interventionCount: 5,
+          interventions: [
+            { timestamp: '2026-10-08T10:00:00Z', type: 'scope_change', note: '[session_redirect] <task-notification>\n<task-id>b1</task-id>' },
+            { timestamp: '2026-10-08T10:10:00Z', type: 'scope_change', note: '[session_redirect] please rebase onto main' },
+            { timestamp: '2026-10-08T10:20:00Z', type: 'bugfix', note: '[prior_failed_attempt] coding attempt 1 failed' },
+            { timestamp: '2026-10-08T10:30:00Z', type: 'bugfix', note: '[review_comment] tim: nit' },
+            { timestamp: '2026-10-08T10:40:00Z', type: 'bugfix', note: '[operator_recovery] severity=major' },
+          ],
+        }]);
+        const task: MergedTaskRef = { title: 'Merge pull request #1603 from acme/task/x', prNumber: '1603', mergedAt: '2026-10-08T13:00:00Z' };
+        const touches = collectOperatorTouches({ repoDir: tmp, task, evalsPath });
+        assert.deepEqual(touches.map((t) => [t.kind, t.class]), [
+          ['session-redirect', 'L'],
+          ['eval-intervention', 'S'],
+          ['operator-intervention', 'R'],
+        ]);
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it('folds interactive state edits from the repo touch log into the task', () => {
+      const tmp = makeTmpDir();
+      try {
+        writeFixture(join(tmp, '.wavemill', 'operator-touches.jsonl'), [
+          { at: '2026-10-08T10:00:00Z', kind: 'state-edit', issue: 'HOK-LOG', actor: 'tim', detail: 'state_mutate workflow-state.json' },
+          { at: '2026-10-08T10:00:00Z', kind: 'state-edit', issue: 'HOK-ELSE' },
+        ]);
+        const task: MergedTaskRef = { issue: 'HOK-LOG', title: 'HOK-LOG: x (#5)', prNumber: '5', mergedAt: '2026-10-08T13:00:00Z' };
+        const touches = collectOperatorTouches({ repoDir: tmp, task, evalsPath: join(tmp, 'none.jsonl') });
+        assert.deepEqual(touches.map((t) => [t.kind, t.class, t.actor]), [['state-edit', 'R', 'tim']]);
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it('indexes eval rows with interventions by issue and PR only', () => {
+      const tmp = makeTmpDir();
+      try {
+        const evalsPath = join(tmp, 'evals.jsonl');
+        writeFixture(evalsPath, [
+          { issueId: 'HOK-1', prUrl: 'https://github.com/a/b/pull/11', interventionCount: 1 },
+          { issueId: 'HOK-2', interventionCount: 0 },
+        ]);
+        const index = buildEvalsIndex(evalsPath);
+        assert.equal(index.byIssue.has('HOK-1'), true);
+        assert.equal(index.byPr.has('11'), true);
+        assert.equal(index.byIssue.has('HOK-2'), false);
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('GitHub timeline sources (HOK-3182)', () => {
+    const task: MergedTaskRef = { issue: 'HOK-9', title: 'HOK-9: x (#77)', prNumber: '77', branch: 'task/x', mergedAt: '2026-10-08T16:22:51Z' };
+    const timeline: PrTimelineEvent[] = [
+      { event: 'labeled', at: '2026-10-08T09:00:00Z', actor: 'tim', label: 'wm:ready' },
+      { event: 'labeled', at: '2026-10-08T15:17:53Z', actor: 'tim', label: 'wm:blocked' },
+      { event: 'unlabeled', at: '2026-10-08T15:21:25Z', actor: 'tim', label: 'wm:blocked' },
+      { event: 'labeled', at: '2026-10-08T15:21:28Z', actor: 'tim', label: 'wm:ready' },
+      { event: 'labeled', at: '2026-10-08T15:30:00Z', actor: 'tim', label: 'wavemill' },
+      { event: 'labeled', at: '2026-10-08T15:40:00Z', actor: 'github-actions[bot]', label: 'wm:superseded' },
+      { event: 'merged', at: '2026-10-08T16:22:51Z', actor: 'tim' },
+    ];
+    const ledger = indexMillLabelWrites([
+      { at: '2026-10-08T12:00:00Z', prNumber: 1, label: 'wm:ready', action: 'labeled', writer: 'mill' },
+      { at: '2026-10-08T15:17:52Z', prNumber: 77, label: 'wm:blocked', action: 'labeled', writer: 'mill' },
+    ]);
+
+    it('shared login: counts only wm:* edits after the ledger start with no matching mill write', () => {
+      const ctx: ReliabilityContext = { repoDir: '/nonexistent', labelWrites: ledger, millActorLogins: new Set() };
+      const touches = readLabelEditTouches(task, timeline, ctx);
+      assert.deepEqual(touches.map((t) => t.detail), ['unlabeled:wm:blocked', 'labeled:wm:ready']);
+      assert.equal(touches[0].actor, 'tim');
+    });
+
+    it('dedicated mill login: any other human actor is a touch even without the ledger', () => {
+      const ctx: ReliabilityContext = { repoDir: '/nonexistent', millActorLogins: new Set(['wavemill-bot']) };
+      const mixed: PrTimelineEvent[] = [
+        { event: 'labeled', at: '2026-10-08T09:00:00Z', actor: 'wavemill-bot', label: 'wm:ready' },
+        { event: 'unlabeled', at: '2026-10-08T09:05:00Z', actor: 'tim', label: 'wm:blocked' },
+      ];
+      assert.deepEqual(readLabelEditTouches(task, mixed, ctx).map((t) => t.detail), ['unlabeled:wm:blocked']);
+    });
+
+    it('external merge: tend receipt clears it, a missing receipt is a touch, pre-lane merges are not judged', () => {
+      const tmp = makeTmpDir();
+      try {
+        const ctx: ReliabilityContext = { repoDir: tmp, mergeLaneSinceMs: Date.parse('2026-10-01T00:00:00Z') };
+        const touches = readExternalMergeTouches(task, timeline, ctx);
+        assert.equal(touches.length, 1);
+        assert.equal(touches[0].kind, 'external-merge');
+        assert.equal(touches[0].at, '2026-10-08T16:22:51Z');
+
+        writeFixture(join(tmp, '.wavemill', 'merge-lane', '77', 'progress.json'), [
+          { prNumber: 77, enteredLaneAt: '2026-10-08T16:22:44Z', lastEvent: 'merged' },
+        ]);
+        assert.deepEqual(readExternalMergeTouches(task, timeline, ctx), []);
+
+        const early = { ...task, prNumber: '78' };
+        assert.deepEqual(readExternalMergeTouches(early, null, { repoDir: tmp, mergeLaneSinceMs: Date.parse('2026-10-09T00:00:00Z') }), []);
+        assert.deepEqual(readExternalMergeTouches({ ...early, merged: false }, null, ctx), []);
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it('manual push: commits outside the recorded agent windows are touches', () => {
+      const tmp = makeTmpDir();
+      try {
+        const archiveDir = join(tmp, '.wavemill', 'evals', 'artifacts', 'HOK-9');
+        mkdirSync(archiveDir, { recursive: true });
+        writeFileSync(join(archiveDir, 'coding-result.json'), JSON.stringify({
+          stage: 'coding', status: 'completed', startedAt: '2026-10-08T10:00:00Z', finishedAt: '2026-10-08T11:00:00Z',
+        }));
+        const commits: PrTimelineEvent[] = [
+          { event: 'committed', at: '2026-10-08T10:30:00Z', sha: 'aaaaaaa1', message: 'feat: agent work', author: 'tim' },
+          { event: 'committed', at: '2026-10-08T14:53:26Z', sha: 'bbbbbbb2', message: 'Operator review + fixes', author: 'tim' },
+        ];
+        const touches = readManualPushTouches({ ...task, archiveDir }, commits, { repoDir: tmp });
+        assert.equal(touches.length, 1);
+        assert.equal(touches[0].kind, 'manual-push');
+        assert.match(touches[0].detail!, /^bbbbbbb: Operator review/);
+        assert.equal(touches[0].at, '2026-10-08T14:53:26Z');
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('per-class aggregation and rendering (HOK-3182)', () => {
+    it('sums class counts and touched tasks per class', () => {
+      const mk = (issue: string, classes: Array<'O' | 'L' | 'S' | 'R'>): TaskReliability => {
+        const touches: TouchEvent[] = classes.map((cls, i) => ({ kind: 'operator-event', at: '2026-10-05T00:00:00Z', class: cls, bucket: `${i}` }));
+        const touchClasses = { O: 0, L: 0, S: 0, R: 0 };
+        for (const t of touches) touchClasses[t.class] += 1;
+        return {
+          task: { issue, title: issue, mergedAt: '2026-10-05T00:00:00Z' },
+          touches, touchCount: touches.length, touchClasses, stuckMs: 0, stuckCoverage: 'none', stallIntervals: [],
+        };
+      };
+      const summary = aggregateReliability(
+        [mk('HOK-1', ['O', 'S', 'S']), mk('HOK-2', ['L', 'R']), mk('HOK-3', [])],
+        { sinceIso: '2026-10-01T00:00:00Z', untilIso: '2026-10-08T00:00:00Z', bucket: 'rolling7d' },
+      );
+      assert.deepEqual(summary.overall.touchClasses, { O: 1, L: 1, S: 2, R: 1 });
+      assert.deepEqual(summary.overall.touchedTasksByClass, { O: 1, L: 1, S: 1, R: 1 });
+      assert.deepEqual(summary.buckets[0].touchClasses, { O: 1, L: 1, S: 2, R: 1 });
+
+      const text = renderReliabilitySummary(summary, { includeTaskTable: true, includeClasses: true });
+      assert.match(text, /Touches by class:\s+O=1  L=1  S=2  R=1/);
+      assert.match(text, /Tasks touched by class:\s+O=1  L=1  S=1  R=1/);
+      assert.match(text, /HOK-1\s+touches=3  O=1  L=0  S=2  R=0/);
+    });
+
+    it('dedupe classifies touches that arrive without a class', () => {
+      const touches = dedupeTouches([{ kind: 'label-edit', at: '2026-10-08T10:00:00Z', detail: 'labeled:wm:superseded' }]);
+      assert.equal(touches[0].class, 'O');
+    });
+
+    it('spot-checks a closed-unmerged PR through the injected timeline', () => {
+      const tmp = makeTmpDir();
+      try {
+        const gh = () => [
+          { event: 'unlabeled', at: '2026-10-07T18:00:00Z', actor: 'tim', label: 'wm:blocked' },
+          { event: 'closed', at: '2026-10-07T19:00:00Z', actor: 'tim' },
+        ].map((e) => JSON.stringify(e)).join('\n');
+        const context: ReliabilityContext = {
+          repoDir: tmp,
+          github: { enabled: true, gh, nwo: 'acme/widgets', cacheDir: null },
+          labelWrites: indexMillLabelWrites([{ at: '2026-10-01T00:00:00Z', prNumber: 1, label: 'wm:ready', action: 'labeled', writer: 'mill' }]),
+          millActorLogins: new Set(),
+          mergeLaneSinceMs: Date.parse('2026-10-01T00:00:00Z'),
+          stats: { githubTimelines: 0, githubUnavailable: 0 },
+        };
+        const summary = computeReliability({
+          repoDir: tmp,
+          sinceIso: '2026-10-01T00:00:00Z',
+          untilIso: '2026-10-08T00:00:00Z',
+          bucket: 'rolling7d',
+          spotCheckPrs: ['1598'],
+          context,
+        });
+        assert.equal(summary.overall.merged, 0);
+        assert.equal(summary.spotChecks?.length, 1);
+        const spot = summary.spotChecks![0];
+        assert.equal(spot.task.merged, false);
+        // label edit only — a closed PR is never an external merge
+        assert.deepEqual(spot.touches.map((t) => [t.kind, t.class]), [['label-edit', 'S']]);
+        assert.match(renderReliabilitySummary(summary), /#1598\s+touched/);
+        assert.equal(summary.sources?.githubTimelines, 1);
       } finally {
         rmSync(tmp, { recursive: true, force: true });
       }

@@ -12401,7 +12401,9 @@ strip_ready_label_if_review_not_passed() {
   local wt_dir="$1" pr_number="$2" feature_dir="$3"
   review_result_passes_ready_gate "$feature_dir" && return 0
 
-  (cd "$wt_dir" && gh pr edit "$pr_number" --remove-label "wm:ready") >/dev/null 2>&1 || true
+  if (cd "$wt_dir" && gh pr edit "$pr_number" --remove-label "wm:ready") >/dev/null 2>&1; then
+    mill_label_write_record "$pr_number" "wm:ready" "unlabeled" || true
+  fi
   return 1
 }
 

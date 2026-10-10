@@ -10,6 +10,7 @@
 import { ensureCleanTree } from './git.ts';
 import { runBuildCheck, type BuildCheckConfig } from './checks.ts';
 import { escapeShellArg, execShellCommand } from './shell-utils.ts';
+import { recordMillLabelWrite } from './label-write-ledger.ts';
 
 /**
  * Options for listing pull requests.
@@ -153,6 +154,8 @@ const buildShellCommand = (args: Array<string | number>): string => {
 export const githubDeps = {
   execShellCommand,
   resolveOwnerRepo,
+  /** HOK-3182: mill label-write audit trail (no-op outside a mill process). */
+  recordLabelWrite: recordMillLabelWrite,
   getPullRequest: (prNumber: number | string, options: PullRequestViewOptions = {}) =>
     getPullRequest(prNumber, options),
   createPullRequest: (options: PullRequestCreateOptions) =>
@@ -643,6 +646,7 @@ export const addLabelsToPullRequest = (
       `printf '%s' ${escapeShellArg(payload)} | ${buildShellCommand(args)}`,
       { encoding: 'utf-8' },
     );
+    githubDeps.recordLabelWrite(prNumber, normalizedLabels, 'labeled');
 
     return githubDeps.getPullRequest(prNumber, { repo: ownerRepo });
   } catch (error) {
@@ -690,6 +694,7 @@ export const removeLabelFromPullRequest = (
     ];
 
     githubDeps.execShellCommand(buildShellCommand(args), { encoding: 'utf-8' });
+    githubDeps.recordLabelWrite(prNumber, [normalizedLabel], 'unlabeled');
   } catch (error) {
     const err = error as Error;
     if (!isMissingPullRequestLabelError(err.message)) {

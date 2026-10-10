@@ -512,6 +512,16 @@ wavemill_release_terminal_pane() {
         wavemill_hook_archive_current "$session" "$issue" "pane-release-${reason_slug}" || true
     fi
   fi
+  # HOK-3182: the hook history and operator events are the reliability
+  # report's time-stuck replay and touch evidence; they live in the feature
+  # dir, which reaping deletes. Archive them beside the transcript.
+  [[ -n "$feature_dir" ]] || feature_dir="$(wavemill_terminal_feature_dir "$issue" 2>/dev/null || true)"
+  if [[ -n "$feature_dir" && -d "$archive_dir" ]]; then
+    [[ -f "$feature_dir/.terminal-history.jsonl" ]] \
+      && { cp -f "$feature_dir/.terminal-history.jsonl" "$archive_dir/terminal-history.jsonl" 2>/dev/null || true; }
+    [[ -f "$feature_dir/.operator-events.jsonl" ]] \
+      && { cp -f "$feature_dir/.operator-events.jsonl" "$archive_dir/operator-events.jsonl" 2>/dev/null || true; }
+  fi
 
   # 3. Durable terminal record, written atomically BEFORE the kill: the
   # recovery pointer for retained git work once the pane is gone. Unchanged

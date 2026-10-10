@@ -313,6 +313,30 @@
             },
             "additionalProperties": false
         },
+        "reliability": {
+            "type": "object",
+            "description": "Reliability report (`wavemill report reliability`, HOK-3177/HOK-3182) tunables.",
+            "properties": {
+                "millActorLogins": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "default": [],
+                    "description": "GitHub logins used exclusively by the mill or tend (e.g. a dedicated bot account). PR label edits and merges by these actors are never counted as operator touches. Leave empty when the mill shares the operator's login; the mill label-write ledger disambiguates instead. Overridden by WAVEMILL_RELIABILITY_MILL_ACTOR_LOGINS (comma-separated)."
+                },
+                "stallMinutes": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 30,
+                    "description": "No-progress threshold (minutes) above which the time-stuck replay counts a task as stalled."
+                },
+                "github": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "When false, skip the GitHub PR-timeline touch sources (label edits, manual pushes) and report only local evidence."
+                }
+            },
+            "additionalProperties": false
+        },
         "observer": {
             "type": "object",
             "description": "Controls the dedicated Backstage Wavemill Observer service. Runs in every mill session unless `enabled` is false; independent of integration mode.",
