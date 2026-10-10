@@ -540,6 +540,20 @@ describe('reliability-metrics', () => {
       }
     });
 
+    it('counts a resolved dirty-tree handoff as one R touch at resolution', () => {
+      const tmp = makeTmpDir();
+      try {
+        const task = archivedTask(tmp);
+        writeFixture(join(task.archiveDir!, 'coding-uncommitted-output.resolved.jsonl'), [
+          { reason: 'coding_output_dirty_tree', detectedAt: '2026-10-08T09:47:09Z', resolvedAt: '2026-10-08T09:53:58Z', dirtyPaths: ['a.ts'] },
+        ]);
+        const touches = collectOperatorTouches({ repoDir: tmp, task, evalsPath: join(tmp, 'none.jsonl') });
+        assert.deepEqual(touches.map((t) => [t.kind, t.class, t.at]), [['operator-intervention', 'R', '2026-10-08T09:53:58.000Z']]);
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
     it('reconstructs a partial timeline from archived stage results', () => {
       const tmp = makeTmpDir();
       try {
@@ -562,6 +576,29 @@ describe('reliability-metrics', () => {
     });
   });
 
+  describe('time-stuck window (HOK-3182)', () => {
+    it('ignores evidence before the first stage launch (expansion, queue wait)', () => {
+      const tmp = makeTmpDir();
+      try {
+        const archiveDir = join(tmp, '.wavemill', 'evals', 'artifacts', 'HOK-Q');
+        mkdirSync(join(archiveDir, 'native-sessions'), { recursive: true });
+        // Expansion session two days before launch.
+        writeFixture(join(archiveDir, 'native-sessions', 'expansion.jsonl'), [
+          { timestamp: Date.parse('2026-10-06T10:00:00Z'), type: 'session_started' },
+        ]);
+        writeFileSync(join(archiveDir, 'coding-result.json'), JSON.stringify({
+          stage: 'coding', status: 'completed', startedAt: '2026-10-08T10:00:00Z', finishedAt: '2026-10-08T10:20:00Z',
+        }));
+        const task: MergedTaskRef = { issue: 'HOK-Q', title: 'HOK-Q (#3)', prNumber: '3', mergedAt: '2026-10-08T10:30:00Z', archiveDir };
+        const stuck = computeTimeStuck({ task, stallMinutes: 30 });
+        assert.equal(stuck.coverage, 'partial');
+        assert.equal(stuck.stuckMs, 0);
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('eval and touch-log sources (HOK-3182)', () => {
     it('drops automation noise and agent-side detectors, matches rows by PR, and classifies the rest', () => {
       const tmp = makeTmpDir();
@@ -574,6 +611,9 @@ describe('reliability-metrics', () => {
           interventionCount: 5,
           interventions: [
             { timestamp: '2026-10-08T10:00:00Z', type: 'scope_change', note: '[session_redirect] <task-notification>\n<task-id>b1</task-id>' },
+            { timestamp: '2026-10-08T10:01:00Z', type: 'scope_change', note: '[session_redirect] # Issue Writer - Task Packet Template' },
+            { timestamp: '2026-10-08T10:02:00Z', type: 'scope_change', note: '[session_redirect] You are remediating a ready-check failure for open PR #1.' },
+            { timestamp: '2026-10-08T10:03:00Z', type: 'scope_change', note: '[session_redirect] Your last response was cut off by an API error (the' },
             { timestamp: '2026-10-08T10:10:00Z', type: 'scope_change', note: '[session_redirect] please rebase onto main' },
             { timestamp: '2026-10-08T10:20:00Z', type: 'bugfix', note: '[prior_failed_attempt] coding attempt 1 failed' },
             { timestamp: '2026-10-08T10:30:00Z', type: 'bugfix', note: '[review_comment] tim: nit' },

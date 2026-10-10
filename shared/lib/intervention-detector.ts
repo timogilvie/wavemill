@@ -441,6 +441,12 @@ const WORKFLOW_AUTOMATION_PATTERNS: RegExp[] = [
   /^<task-notification>/,
   // Task-packet review prompt injected during expansion (HOK-3182)
   /^#\s+Task Packet Reviewer/,
+  // Issue-writer expansion prompt (tools/prompts/issue-writer.md) (HOK-3182)
+  /^#\s+Issue Writer\b/,
+  // Ready-check remediation prompt (agent-adapters.sh) (HOK-3182)
+  /^You are remediating a ready-check failure/,
+  // Claude Code's own auto-continue after a truncated response (HOK-3182)
+  /^Your last response was cut off by an API error/,
 ];
 
 /**

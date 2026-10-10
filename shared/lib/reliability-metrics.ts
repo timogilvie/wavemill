@@ -63,6 +63,7 @@ import {
 import {
   deriveAgentActivityWindows,
   detectManualEdits,
+  readOperatorHandoffIntervals,
   detectSessionRedirects,
   isWorkflowAutomationMessage,
   type PrCommit,
@@ -782,6 +783,7 @@ export function collectOperatorTouches(opts: CollectTouchesOptions): TouchEvent[
 
   raw.push(...readOperatorEvents(resolveTaskSource(task, 'operator-events.jsonl')));
   raw.push(...readOperatorInterventionArtifacts(resolveTaskSource(task, 'operator-intervention.json')));
+  raw.push(...readOperatorHandoffTouches(task));
   raw.push(...readPaneMessageTouches(resolveTaskSource(task, 'terminal-history.jsonl')));
   raw.push(...readEvalInterventions(ctx.evals, task));
   raw.push(...readTouchLog(ctx.touchLog, task));
@@ -837,6 +839,27 @@ function readOperatorInterventionArtifacts(path: string | undefined): RawTouch[]
     });
   }
   return touches;
+}
+
+/**
+ * Resolved dirty-tree handoffs (`.coding-uncommitted-output.resolved.jsonl`):
+ * the coding agent exited with uncommitted output, the arm parked, and it
+ * was recovered. The eval pipeline treats the interval as an operator
+ * handoff; the touch is counted once, at resolution.
+ */
+function readOperatorHandoffTouches(task: MergedTaskRef): RawTouch[] {
+  const dirs = {
+    featureDirs: task.featureDir && existsSync(task.featureDir) ? [task.featureDir] : [],
+    ...(task.archiveDir ? { archiveDir: task.archiveDir } : {}),
+  };
+  const now = Date.now();
+  return readOperatorHandoffIntervals(dirs)
+    .filter((interval) => interval.resolvedAt < now - 1000)
+    .map((interval) => ({
+      kind: 'operator-intervention' as const,
+      at: iso(interval.resolvedAt),
+      detail: 'dirty-tree handoff recovery',
+    }));
 }
 
 /**
@@ -1095,7 +1118,10 @@ export interface ComputeTimeStuckResult {
  * - `partial`: no usable hook archive, but the timeline was reconstructed
  *   from stage results, agent session activity, commits and tend's lane
  *   receipt — every task reaped before the archive existed.
- * - `none`: no evidence at all; excluded from p50/p90.
+ * - `none`: no hook history and no stage launch (no evidence, or a
+ *   hand-authored PR); excluded from p50/p90.
+ *
+ * The replay window runs from the first stage launch to the merge.
  */
 export function computeTimeStuck(opts: ComputeTimeStuckOptions): ComputeTimeStuckResult {
   const { task } = opts;
@@ -1120,7 +1146,18 @@ export function computeTimeStuck(opts: ComputeTimeStuckOptions): ComputeTimeStuc
     return { stuckMs: 0, coverage: 'none', stallIntervals: [] };
   }
 
-  const stallIntervals = replayStallIntervals(evidence, { endMs, stallMinutes: opts.stallMinutes });
+  // The task is live from its first stage launch. Expansion sessions and
+  // queue wait before it are not "stuck" — the primitive only judges tasks
+  // that hold a slot.
+  const launches = evidence.filter((e) => e.kind === 'transition' && e.detail?.endsWith(':started')).map((e) => e.atMs);
+  // Without a stage launch or hook history this is not a mill-run task (a
+  // hand-authored PR): commit spacing is not time stuck.
+  if (launches.length === 0 && historyRecords === 0) {
+    return { stuckMs: 0, coverage: 'none', stallIntervals: [] };
+  }
+  const startMs = launches.length > 0 ? Math.min(...launches) : -Infinity;
+  const live = evidence.filter((e) => e.atMs >= startMs);
+  const stallIntervals = replayStallIntervals(live, { endMs, stallMinutes: opts.stallMinutes });
   const coverage: MetricCoverage = historyRecords >= 2 ? 'full' : 'partial';
   return { stuckMs: sumStallMs(stallIntervals), coverage, stallIntervals };
 }
