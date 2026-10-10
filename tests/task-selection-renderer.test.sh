@@ -92,6 +92,12 @@ FUNCTIONS_FILE="$TEST_TMP/task-selection-renderer-funcs.sh"
   # exercises the real implementation rather than a stub.
   extract_function "$COMMON_SCRIPT" "filter_parent_issues"
   echo
+  extract_function "$COMMON_SCRIPT" "_wavemill_tsx_invoker"
+  echo
+  extract_function "$COMMON_SCRIPT" "wavemill_tool_path"
+  echo
+  extract_function "$COMMON_SCRIPT" "wavemill_run_tool"
+  echo
   extract_function "$MONITOR_BODY" "refresh_backlog_cache"
   echo
   extract_function "$MONITOR_BODY" "print_cached_candidates"
@@ -113,6 +119,8 @@ FUNCTIONS_FILE="$TEST_TMP/task-selection-renderer-funcs.sh"
   extract_function "$MONITOR_BODY" "invoke_first_wave_helper"
   echo
   extract_function "$MONITOR_BODY" "fetch_queue_plan"
+  echo
+  extract_function "$MONITOR_BODY" "maybe_launch_queue_inference_refresh"
   echo
   extract_function "$MONITOR_BODY" "render_grouped_task_list"
 } > "$FUNCTIONS_FILE"
@@ -237,12 +245,15 @@ EOF
     }
     _with_timeout() {
       shift
-      if [[ "${1-}" == "npx" && "${2-}" == "tsx" && "${3-}" == *"list-backlog-json.ts" ]]; then
+      if [[ "${1-}" == "wavemill_run_tool" && "${2-}" == *"list-backlog-json.ts" ]]; then
+        printf "%s\n" "$LINEAR_BACKLOG_JSON"
+      elif [[ "${1-}" == "npx" && "${2-}" == "tsx" && "${3-}" == *"list-backlog-json.ts" ]]; then
         printf "%s\n" "$LINEAR_BACKLOG_JSON"
       else
         "$@"
       fi
     }
+    maybe_launch_queue_inference_refresh() { return 0; }
 
     candidates_subshell="$(fetch_candidates)"
     if [[ -n "${BACKLOG_JSON_CACHE:-}" ]]; then
@@ -740,6 +751,10 @@ EOF
   FUNCTIONS_FILE="$FUNCTIONS_FILE" RENDER_PROMPT_FILE="$RENDER_PROMPT_FILE" CANDIDATES="$CANDIDATES" BACKLOG_FOR_CASE="$backlog_json" STUB_BIN_DIR="$bin_dir" TMPDIR="$case_tmp/tmp" DASHBOARD_VERBOSITY="$verbosity" bash -c '
     set -euo pipefail
     export PATH="$STUB_BIN_DIR:$PATH"
+    # HOK-3190: _wavemill_tsx_invoker now prefers node --experimental-strip-types,
+    # which would bypass the PATH npx stub this harness uses to drive the planner
+    # failure cases. Pin the npx tsx shape so the stub keeps intercepting.
+    export WAVEMILL_SKIP_FAST_STRIP=1
     # shellcheck source=/dev/null
     source "$FUNCTIONS_FILE"
     # shellcheck source=/dev/null
