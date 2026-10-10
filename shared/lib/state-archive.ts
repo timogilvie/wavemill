@@ -40,11 +40,38 @@ import { dirname, join } from 'node:path';
 
 export const DEFAULT_KEEP = 50;
 export const DEFAULT_MAX_AGE_DAYS = 14;
+export const DEFAULT_BYTE_CAP = 500_000;
+
+/**
+ * Fields kept in hot state for compact terminal task records (HOK-3203).
+ * All other fields (especially the large `task` snapshot) are preserved only
+ * in the archive.
+ */
+export const COMPACT_HOT_FIELDS = [
+  'schemaVersion',
+  'issue',
+  'slug',
+  'branch',
+  'worktree',
+  'prNumber',
+  'workflowOutcome',
+  'resourceDisposition',
+  'challengePairId',
+  'challengeRole',
+  'runEpoch',
+  'attempt',
+  'actor',
+  'command',
+  'createdAt',
+  'decisionStatus',
+  'decisionReason',
+] as const;
 
 export interface ArchiveOptions {
   stateDir: string;
   keep?: number;
   maxAgeDays?: number;
+  compactKept?: boolean;
 }
 
 export interface MigrationResult {
@@ -59,6 +86,25 @@ export interface MigrationResult {
 }
 
 type JsonValue = unknown;
+
+/**
+ * Compact a terminal task record for hot state (HOK-3203).
+ * Returns a shallow copy with only allowlisted fields plus `archived: true`
+ * and any preserved `postReapEval` extension slot.
+ */
+export function compactHotRecord(record: Record<string, unknown>): Record<string, unknown> {
+  const compact: Record<string, unknown> = { archived: true };
+  for (const field of COMPACT_HOT_FIELDS) {
+    if (field in record) {
+      compact[field] = record[field];
+    }
+  }
+  // Preserve postReapEval extension slot if present
+  if ('postReapEval' in record) {
+    compact.postReapEval = record.postReapEval;
+  }
+  return compact;
+}
 
 interface StateShape {
   terminalTaskHistory?: {
@@ -295,6 +341,24 @@ export function archiveFromHotState(
     appendFileSync(paths.pairs, pairAppend.join(''), 'utf-8');
   }
 
+  // --- compact kept records if requested (HOK-3203) ---
+  if (options.compactKept) {
+    for (const key of Object.keys(historyMap)) {
+      historyMap[key] = compactHotRecord(historyMap[key] as Record<string, unknown>);
+    }
+    for (const key of Object.keys(tombMap)) {
+      tombMap[key] = compactHotRecord(tombMap[key] as Record<string, unknown>);
+    }
+    for (const pairId of Object.keys(pairsMap)) {
+      const roleMap = pairsMap[pairId];
+      if (roleMap) {
+        for (const role of Object.keys(roleMap)) {
+          roleMap[role] = compactHotRecord(roleMap[role] as Record<string, unknown>);
+        }
+      }
+    }
+  }
+
   // --- rewrite hot state branches with the pruned maps ---
   state.terminalTaskHistory = {
     ...(state.terminalTaskHistory ?? {}),
@@ -405,4 +469,129 @@ export function writeHotStateCompact(statePath: string, state: StateShape): void
     closeSync(fd);
   }
   renameSync(tmp, statePath);
+}
+
+/**
+ * Append a single tombstone to the archive (HOK-3203).
+ * Used by per-write callers to archive without running the full migration.
+ */
+export function appendTombstoneToArchive(
+  stateDir: string,
+  tombstone: Record<string, unknown>,
+): void {
+  const paths = archivePaths(stateDir);
+  mkdirSync(paths.dir, { recursive: true });
+  const index = loadIndex(paths.index);
+  const fp = historyFingerprint(tombstone, String(tombstone.issue ?? ''));
+  if (!index.tombstones[fp]) {
+    appendFileSync(paths.tombstones, `${JSON.stringify(tombstone)}\n`, 'utf-8');
+    index.tombstones[fp] = true;
+    saveIndex(paths.index, index);
+  }
+}
+
+/**
+ * Append a single history record to the archive (HOK-3203).
+ */
+export function appendHistoryRecordToArchive(
+  stateDir: string,
+  record: Record<string, unknown>,
+): void {
+  const paths = archivePaths(stateDir);
+  mkdirSync(paths.dir, { recursive: true });
+  const index = loadIndex(paths.index);
+  const fp = historyFingerprint(record, String(record.issue ?? ''));
+  if (!index.history[fp]) {
+    appendFileSync(paths.history, `${JSON.stringify(record)}\n`, 'utf-8');
+    index.history[fp] = true;
+    saveIndex(paths.index, index);
+  }
+}
+
+/**
+ * Append a challenge pair arm to the archive (HOK-3203).
+ */
+export function appendPairToArchive(
+  stateDir: string,
+  pairId: string,
+  role: string,
+  record: Record<string, unknown>,
+): void {
+  const paths = archivePaths(stateDir);
+  mkdirSync(paths.dir, { recursive: true });
+  const index = loadIndex(paths.index);
+  const fp = pairFingerprint(pairId, role, record);
+  if (!index.pairs[fp]) {
+    appendFileSync(
+      paths.pairs,
+      `${JSON.stringify({ __pair: pairId, __role: role, ...record })}\n`,
+      'utf-8',
+    );
+    index.pairs[fp] = true;
+    saveIndex(paths.index, index);
+  }
+}
+
+export interface ByteCapResult {
+  bytesBefore: number;
+  bytesAfter: number;
+  iterations: number;
+  hitFloor: boolean;
+  warning?: string;
+}
+
+/**
+ * Enforce hot state byte cap by iteratively compacting and trimming (HOK-3203).
+ * If the hot state file exceeds byteCap, repeatedly re-run archiveFromHotState
+ * with halved keep counts down to keepFloor.
+ */
+export function enforceHotStateByteCap(options: {
+  stateFile: string;
+  byteCap: number;
+  keepFloor?: number;
+}): ByteCapResult {
+  const keepFloor = options.keepFloor ?? 10;
+  const stateDir = dirname(dirname(options.stateFile));
+
+  const beforeStat = statSync(options.stateFile);
+  const bytesBefore = beforeStat.size;
+
+  if (bytesBefore <= options.byteCap) {
+    return { bytesBefore, bytesAfter: bytesBefore, iterations: 0, hitFloor: false };
+  }
+
+  let iterations = 0;
+  let keep = DEFAULT_KEEP;
+  let state = JSON.parse(readFileSync(options.stateFile, 'utf-8')) as StateShape;
+
+  while (true) {
+    iterations++;
+    const result = archiveFromHotState(state, {
+      stateDir,
+      keep,
+      maxAgeDays: DEFAULT_MAX_AGE_DAYS,
+      compactKept: true,
+    });
+
+    writeHotStateCompact(options.stateFile, state);
+    const afterStat = statSync(options.stateFile);
+
+    if (afterStat.size <= options.byteCap || keep <= keepFloor) {
+      const hitFloor = keep <= keepFloor && afterStat.size > options.byteCap;
+      const warning = hitFloor
+        ? `[hot-state-cap] still ${Math.ceil(afterStat.size / 1024)} KB after trim to floor (${keepFloor})`
+        : undefined;
+      return {
+        bytesBefore,
+        bytesAfter: afterStat.size,
+        iterations,
+        hitFloor,
+        warning,
+      };
+    }
+
+    keep = Math.ceil(keep / 2);
+    if (keep < keepFloor) keep = keepFloor;
+    state = JSON.parse(readFileSync(options.stateFile, 'utf-8')) as StateShape;
+  }
 }

@@ -6,6 +6,12 @@ import { fileURLToPath } from 'node:url';
 import { mutateJsonState } from './state-mutex.ts';
 import { archiveTaskResidue, type ArchiveTaskResidueResult } from './task-residue-archive.ts';
 import { filterWorktreeDirtyStatus } from './worktree-dirty-status.ts';
+import {
+  appendTombstoneToArchive,
+  compactHotRecord,
+  enforceHotStateByteCap,
+  DEFAULT_BYTE_CAP,
+} from './state-archive.ts';
 
 /**
  * Wavemill's own shell libraries. These ship with the wavemill install, so
@@ -500,27 +506,41 @@ export async function writeTerminalTaskTombstone(
   stateFile: string,
   tombstone: TerminalTaskTombstone,
 ): Promise<void> {
+  // 1. Append full tombstone to archive (HOK-3203)
+  const stateDir = dirname(dirname(stateFile));
+  appendTombstoneToArchive(stateDir, tombstone as unknown as Record<string, unknown>);
+
+  // 2. Write compact form to hot state (HOK-3203)
+  const compactTombstone = compactHotRecord(tombstone as unknown as Record<string, unknown>) as TerminalTaskTombstone;
+
   await mutateJsonState<WorkflowState>(stateFile, (state) => {
     const next = state ?? {};
     const key = tombstoneKey(tombstone);
-    next.terminalTaskTombstones = { ...(next.terminalTaskTombstones ?? {}), [key]: tombstone };
+    next.terminalTaskTombstones = { ...(next.terminalTaskTombstones ?? {}), [key]: compactTombstone };
     const history = next.terminalTaskHistory && typeof next.terminalTaskHistory === 'object' && !Array.isArray(next.terminalTaskHistory)
       ? { ...next.terminalTaskHistory }
       : {};
     const tasks = history.tasks && typeof history.tasks === 'object' && !Array.isArray(history.tasks) ? { ...history.tasks as JsonRecord } : {};
-    tasks[tombstone.issue] = tombstone;
+    tasks[tombstone.issue] = compactTombstone;
     history.tasks = tasks;
     if (tombstone.challengePairId) {
       const pairs = history.challengePairs && typeof history.challengePairs === 'object' && !Array.isArray(history.challengePairs) ? { ...history.challengePairs as JsonRecord } : {};
       const priorPair = pairs[tombstone.challengePairId];
       const pair = priorPair && typeof priorPair === 'object' && !Array.isArray(priorPair) ? { ...priorPair as JsonRecord } : {};
-      pair[tombstone.challengeRole || tombstone.issue] = tombstone;
+      pair[tombstone.challengeRole || tombstone.issue] = compactTombstone;
       pairs[tombstone.challengePairId] = pair;
       history.challengePairs = pairs;
     }
     next.terminalTaskHistory = history;
     return next;
   });
+
+  // 3. Enforce byte cap (HOK-3203)
+  const byteCap = parseInt(process.env.WAVEMILL_HOT_STATE_BYTE_CAP ?? '', 10) || DEFAULT_BYTE_CAP;
+  const result = enforceHotStateByteCap({ stateFile, byteCap, keepFloor: 10 });
+  if (result.warning) {
+    console.warn(result.warning);
+  }
 }
 
 /**
