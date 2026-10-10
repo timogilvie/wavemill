@@ -84,6 +84,16 @@ run_helper() {
   bash -lc '
     set -euo pipefail
     source "$HELPERS_FILE"
+    # HOK-3190: the extracted helper now spawns the TS tool through
+    # wavemill_run_tool. The helper used to call `npx tsx <tool>` directly,
+    # so this harness overrode `npx` to log every argument. Keep the same
+    # observable shape by routing wavemill_run_tool back through npx.
+    wavemill_run_tool() {
+      local tool="${1:?wavemill_run_tool requires a tool basename}"
+      shift
+      npx tsx "$TOOLS_DIR/$tool" "$@"
+    }
+    export -f wavemill_run_tool
     # Mock npx so we observe what the wrapper would send to tsx without
     # actually launching Node. The arguments are preserved one per line for
     # easy grep in assertions.

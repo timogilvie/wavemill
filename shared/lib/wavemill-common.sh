@@ -105,10 +105,18 @@ wavemill_run_tool() {
     npx tsx "$cli" "$@"
     return $?
   fi
+  # HOK-3190: honour WAVEMILL_SKIP_FAST_STRIP even when a previous call
+  # already cached a positive probe result in WAVEMILL_NODE_STRIP_SUPPORTED.
+  # A shell suite that runs many tests back to back exports the cached value
+  # the first time wavemill_run_tool fires, so later tests that need the
+  # fallback path (to let a fake npx on PATH intercept the call) would
+  # otherwise be stuck on the strip path.
+  if [[ "${WAVEMILL_SKIP_FAST_STRIP:-0}" == "1" ]]; then
+    npx tsx "$cli" "$@"
+    return $?
+  fi
   if [[ -z "${WAVEMILL_NODE_STRIP_SUPPORTED:-}" ]]; then
-    if [[ "${WAVEMILL_SKIP_FAST_STRIP:-0}" == "1" ]]; then
-      WAVEMILL_NODE_STRIP_SUPPORTED=0
-    elif node --experimental-strip-types --no-warnings -e ';' >/dev/null 2>&1; then
+    if node --experimental-strip-types --no-warnings -e ';' >/dev/null 2>&1; then
       WAVEMILL_NODE_STRIP_SUPPORTED=1
     else
       WAVEMILL_NODE_STRIP_SUPPORTED=0
@@ -178,10 +186,15 @@ _wavemill_tsx_invoker() {
     printf 'npx tsx'
     return 0
   fi
+  # HOK-3190: honour SKIP ahead of the cached probe (see wavemill_run_tool
+  # for the same reason — exported WAVEMILL_NODE_STRIP_SUPPORTED must not
+  # outweigh an explicit SKIP from a test).
+  if [[ "${WAVEMILL_SKIP_FAST_STRIP:-0}" == "1" ]]; then
+    printf 'npx tsx' # legacy path for tests
+    return 0
+  fi
   if [[ -z "${WAVEMILL_NODE_STRIP_SUPPORTED:-}" ]]; then
-    if [[ "${WAVEMILL_SKIP_FAST_STRIP:-0}" == "1" ]]; then
-      WAVEMILL_NODE_STRIP_SUPPORTED=0
-    elif node --experimental-strip-types --no-warnings -e ';' >/dev/null 2>&1; then
+    if node --experimental-strip-types --no-warnings -e ';' >/dev/null 2>&1; then
       WAVEMILL_NODE_STRIP_SUPPORTED=1
     else
       WAVEMILL_NODE_STRIP_SUPPORTED=0
