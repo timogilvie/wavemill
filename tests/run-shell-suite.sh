@@ -158,6 +158,10 @@ TESTS=(
   re-review-no-pr.test.sh
   monitor-command-routing.test.sh
   condition-reconciler.test.sh
+  check-no-npx-in-monitor.sh
+  monitor-pass-snapshot.test.sh
+  monitor-state-size.test.sh
+  monitor-usr2-wakeup.test.sh
 )
 
 SHARD_INDEX=1

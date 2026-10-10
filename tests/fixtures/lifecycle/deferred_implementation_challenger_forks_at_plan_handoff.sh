@@ -74,6 +74,27 @@ for fn in \
   eval "$(extract_function "$fn")"
 done
 
+# HOK-3190: the extracted monitor functions now read state through
+# pass_task_field (a per-pass cache) and run tool CLIs through
+# wavemill_run_tool. Stub both to the lightest form the test needs: the
+# read falls through to the test's read_state_value stub, and the tool
+# runner shells out via `npx tsx` so compute-fork-identity.ts runs for real.
+pass_task_field() {
+  local issue="$1" field="$2" default="${3:-}"
+  local v
+  v=$(read_state_value "$default" --arg i "$issue" ".tasks[\$i].${field} // empty" 2>/dev/null)
+  if [[ -z "$v" ]]; then
+    printf '%s\n' "$default"
+  else
+    printf '%s\n' "$v"
+  fi
+}
+wavemill_run_tool() {
+  local tool="${1:?wavemill_run_tool requires a tool basename}"
+  shift
+  npx tsx "$TOOLS_DIR/$tool" "$@"
+}
+
 LOG_FILE="$TMP_DIR/log.txt"
 log() { echo "log: $*" >> "$LOG_FILE"; }
 log_warn() { echo "warn: $*" >> "$LOG_FILE"; }

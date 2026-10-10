@@ -153,7 +153,7 @@ trim_outer_whitespace() {
 }
 
 _global_operating_mode() {
-  npx tsx "$TOOLS_DIR/get-operating-mode.ts" global --repo-dir "$REPO_DIR" 2>/dev/null || echo "normal"
+  wavemill_run_tool "get-operating-mode.ts" global --repo-dir "$REPO_DIR" 2>/dev/null || echo "normal"
 }
 
 _update_effective_max_parallel() {
@@ -1033,8 +1033,8 @@ challenge_pair_record_exists() {
 challenge_pair_manual_artifact_path() {
   local primary_key="$1"
   local slug worktree
-  slug=$(read_state_value "" --arg i "$primary_key" '.tasks[$i].slug // empty')
-  worktree=$(read_state_value "" --arg i "$primary_key" '.tasks[$i].worktree // empty')
+  slug=$(pass_task_field "$primary_key" slug)
+  worktree=$(pass_task_field "$primary_key" worktree)
   [[ -z "$worktree" && -n "$slug" ]] && worktree="${WORKTREE_ROOT}/${slug}"
   [[ -n "$slug" && -n "$worktree" ]] || return 1
   printf '%s/features/%s/ready/challenge-comparison-needed.md\n' "$worktree" "$slug"
@@ -1044,8 +1044,8 @@ write_manual_challenge_comparison_artifact() {
   local pair_id="$1" primary_key="$2" challenger_key="$3" timed_out_sides_csv="$4" retry_count="$5" retry_max="$6" cause="${7:-eval_timeout}"
   local artifact_path primary_pr challenger_pr
   artifact_path=$(challenge_pair_manual_artifact_path "$primary_key") || return 1
-  primary_pr=$(read_state_value "" --arg i "$primary_key" '.tasks[$i].pr // empty')
-  challenger_pr=$(read_state_value "" --arg i "$challenger_key" '.tasks[$i].pr // empty')
+  primary_pr=$(pass_task_field "$primary_key" pr)
+  challenger_pr=$(pass_task_field "$challenger_key" pr)
   mkdir -p "$(dirname "$artifact_path")"
   if [[ "$cause" == "stale_eval_evidence" ]]; then
     cat > "$artifact_path" <<EOF
@@ -1089,8 +1089,8 @@ write_invalid_challenge_artifact() {
   local pair_id="$1" primary_key="$2" challenger_key="$3" divergence_reason="$4" eval_ids_csv="$5"
   local artifact_path primary_pr challenger_pr
   artifact_path=$(challenge_pair_manual_artifact_path "$primary_key") || return 1
-  primary_pr=$(read_state_value "" --arg i "$primary_key" '.tasks[$i].pr // empty')
-  challenger_pr=$(read_state_value "" --arg i "$challenger_key" '.tasks[$i].pr // empty')
+  primary_pr=$(pass_task_field "$primary_key" pr)
+  challenger_pr=$(pass_task_field "$challenger_key" pr)
   mkdir -p "$(dirname "$artifact_path")"
   cat > "$artifact_path" <<EOF
 # Challenge Pair Invalid - Manual Action

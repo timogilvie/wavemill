@@ -51,6 +51,11 @@ extract_function() {
 # Real bounded-retry helpers (the exhausted-reason sentinel readers).
 # shellcheck source=../shared/lib/bounded-retry.sh
 source "$REPO_DIR_ROOT/shared/lib/bounded-retry.sh"
+# HOK-3113: the extracted `challenge_abort_pair` resolves its peer key via
+# `task_identity_challenger_key`; the task-identity invariant forbids an
+# inline `_c` shim, so source the canonical bash twin.
+# shellcheck source=../shared/lib/task-identity.sh
+source "$REPO_DIR_ROOT/shared/lib/task-identity.sh"
 
 for fn in \
   review_gate_refusal_is_terminal \
@@ -101,6 +106,14 @@ mkdir -p "$WORKTREE_ROOT" "$REPO_DIR" "$TOOLS_DIR"
 # wavemill-common.sh, so provide the helper locally.
 wavemill_tool_path() {
   printf '%s/%s\n' "${TOOLS_DIR:-$TMP_ROOT/install-tools}" "$1"
+}
+# HOK-3190: the extracted monitor function calls `wavemill_run_tool` to invoke
+# record-arm-failure.ts. The stub TS file this test writes has
+# `#!/usr/bin/env node` + a single TS non-null assertion, so route through
+# `node --experimental-strip-types` like `failure_policy_next_action` below.
+wavemill_run_tool() {
+  local tool="$1"; shift
+  node --experimental-strip-types --no-warnings "$tool" "$@"
 }
 # HOK-3176: next actions come from the failure policy; resolve it from the
 # checkout, not the sandboxed TOOLS_DIR.

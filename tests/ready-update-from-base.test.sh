@@ -84,6 +84,14 @@ cat >> "$FUNC_FILE" <<'STUB'
 wavemill_base_compare_ref() {
   printf 'origin/%s\n' "$1"
 }
+# HOK-3190: monitor rewrote `npx tsx <tool>` to `wavemill_run_tool <tool>`;
+# this test extracts try_update_branch_from_base standalone, so forward the
+# shim to the test's `npx` stub.
+wavemill_run_tool() {
+  local tool="$1"; shift
+  npx tsx "$tool" "$@"
+}
+export -f wavemill_run_tool 2>/dev/null || true
 STUB
 
 # shellcheck disable=SC1090
