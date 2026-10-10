@@ -215,6 +215,7 @@ TESTS=(
   shared/lib/launch-validation.test.ts
   shared/lib/manual-edit-attribution-audit.test.ts
   shared/lib/merge-queue.test.ts
+  shared/lib/merge-labels.test.ts
   shared/lib/model-registry.test.ts
   shared/lib/model-registry-gpt55-inventory.test.ts
   shared/lib/model-promotion.test.ts
