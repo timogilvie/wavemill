@@ -386,7 +386,7 @@ export function buildReadyPrUnmergedFinding(options: {
     body: `${describeBlockedCandidate(options.candidate)} has carried wm:ready for ~${waitedMinutes} minutes without `
       + 'merging. Its ready verdict implies green CI, so the named gate is what holds it.',
     severity: options.waitedMs >= 2 * TEND_READY_UNMERGED_WARN_MS ? 'urgent' : 'high',
-    recommendation: 'Resolve the named gate or canonicalize labels with tools/set-pr-ready-label.ts if the gate is stale.',
+    recommendation: 'Resolve the named gate. The merge label reconciler (HOK-3181) automatically reconciles labels with PR state.',
     context: {
       markerPath: `merge-lane/ready-unmerged/#${options.candidate.number}`,
       markerKind: 'merge-lane-ready-unmerged',

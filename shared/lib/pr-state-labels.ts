@@ -1,3 +1,16 @@
+/**
+ * PR state label writers (HOK-3181)
+ *
+ * Mechanical label mutation helpers. For wm:ready / wm:blocked writes, callers
+ * MUST go through the reconciler in shared/lib/merge-labels.ts (see CLAUDE.md
+ * for the merge label reconciler invariant). Direct writes of wm:ready /
+ * wm:blocked are forbidden outside the reconciler.
+ *
+ * Lane progression labels (wm:merging, wm:merged, wm:superseded) are OUT OF
+ * SCOPE for the reconciler — they are synchronous tend lifecycle transitions,
+ * not latched blockers.
+ */
+
 import { type PullRequest, addLabelsToPullRequest, getPullRequest, removeLabelFromPullRequest, resolveOwnerRepo } from './github.ts';
 import { escapeShellArg, execShellCommand } from './shell-utils.ts';
 import { writeMarker, clearMarker, validateMarker, type MarkerHandle, type MarkerValidation, type MarkerPayload } from './transient-marker.ts';

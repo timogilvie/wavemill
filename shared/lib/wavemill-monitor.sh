@@ -10932,14 +10932,13 @@ ensure_ready_failure_blocks_pr() {
     return 0
   fi
 
+  # HOK-3181: Label reconciler now owns wm:blocked writes. This function only
+  # updates the marker; the label is set by the reconciler on the next tend tick.
   reason=$(ready_failure_reason "$state_dir")
   [[ -n "$reason" ]] || reason="Ready checks failed for PR #$pr_number"
 
-  if (cd "$wt_dir" && wavemill_run_tool "set-pr-blocked-label.ts" "$pr_number" \
-      --reason "$reason" --head "$head_sha" --marker-root "$REPO_DIR"); then
-    mkdir -p "$state_dir"
-    printf '%s' "$head_sha" > "$marker"
-  fi
+  mkdir -p "$state_dir"
+  printf '%s' "$head_sha" > "$marker"
   return 0
 }
 
@@ -12401,9 +12400,8 @@ strip_ready_label_if_review_not_passed() {
   local wt_dir="$1" pr_number="$2" feature_dir="$3"
   review_result_passes_ready_gate "$feature_dir" && return 0
 
-  if (cd "$wt_dir" && gh pr edit "$pr_number" --remove-label "wm:ready") >/dev/null 2>&1; then
-    mill_label_write_record "$pr_number" "wm:ready" "unlabeled" || true
-  fi
+  # HOK-3181: Label reconciler now owns wm:ready/wm:blocked writes.
+  # The label is cleared by the reconciler on the next tend tick.
   return 1
 }
 
@@ -12446,7 +12444,7 @@ set_ready_pass_labels() {
   local github_head worktree_head
   github_head=$(ready_current_github_head "$wt_dir" "$pr_number")
   if [[ -z "$github_head" ]]; then
-    printf '%s\n' '{"transitionFailure":{"stage":"ownership-changed","detail":"current GitHub head is unavailable"}}' >&2
+    printf '%s\n' '{"transitionFailure":{"stage":"ready-label","detail":"current GitHub head is unavailable"}}' >&2
     return 1
   fi
   # Ready checked the checkout, so the checkout (and Ready's head, if reported)
@@ -12479,13 +12477,9 @@ set_ready_pass_labels() {
     printf '%s\n' '{"transitionFailure":{"stage":"ownership-changed"}}' >&2
     return 1
   fi
-  # Publish before exposing wm:ready. Tend can claim this exact PR/head while
-  # this label operation is in flight, and the label helper preserves the claim.
+  # Publish handoff. HOK-3181: The label reconciler sets wm:ready on the next
+  # tend tick once it sees the handoff at this head.
   if ! (cd "$wt_dir" && wavemill_run_tool "ready-tend-handoff.ts" publish "$pr_number" --feature-dir "$feature_dir" --head "$head_sha"); then
-    printf '%s\n' '{"transitionFailure":{"stage":"ownership-changed"}}' >&2
-    return 1
-  fi
-  if ! (cd "$wt_dir" && wavemill_run_tool "set-pr-ready-label.ts" "$pr_number" --marker-root "$REPO_DIR" --feature-dir "$feature_dir" --head "$head_sha"); then
     printf '%s\n' '{"transitionFailure":{"stage":"ready-label"}}' >&2
     return 1
   fi
@@ -13230,7 +13224,7 @@ launch_ready_phase() {
       local moved_github_head
       moved_github_head=$(printf '%s\n' "$label_output" \
         | jq -Rr 'fromjson? | select(.transitionFailure.detail? == "head-moved") | .transitionFailure.githubHead // empty' 2>/dev/null | tail -n 1)
-      if [[ "$transition_stage" == "ownership-changed" && -n "$moved_github_head" ]]; then
+      if [[ -n "$moved_github_head" ]]; then
         bounded_retry_reset_if_new_head "$state_dir" "ready-remediation" "$moved_github_head"
         bounded_retry_reset_if_new_head "$state_dir" "pending-ready-recheck" "$moved_github_head"
         write_stage_result "$state_dir" "ready" "running" "$current_agent" "$current_model" \
@@ -13245,6 +13239,7 @@ launch_ready_phase() {
       transition_failure_json=$(jq -cn --arg stage "$transition_stage" --arg stderr "$transition_output" \
         '{stage:$stage,stderr:$stderr,redacted:($stderr | test("REDACTED")),truncated:($stderr | length >= 2000)}')
       label_failed_artifacts_json=$(jq -cn \
+        --arg stage "$transition_stage" \
         --arg verdict "${verdict:-unknown}" \
         --arg merge_status "${merge_status:-UNKNOWN}" \
         --argjson checks_run "${checks_run:-0}" \
@@ -13257,6 +13252,7 @@ launch_ready_phase() {
         --argjson required_contexts "$required_contexts_json" \
         --argjson transition_failure "$transition_failure_json" '
           {
+            stage:$stage,
             type:"ready",
             verdict:$verdict,
             checksRun:$checks_run,
