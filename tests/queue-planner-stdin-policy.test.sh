@@ -210,8 +210,11 @@ check_eq "inference failure next action" "use_explicit_edges_only" "$(jq -r '.ne
 check_eq "inference failure sets no planner backoff" "null" "$(jq -r '.nextRetryAt' "$STATE_DIR/queue-health.json")"
 assert_no_temp_files
 
-# build_queue_plan_once owns the report tmpfile: it must pass it to the
-# planner and remove it afterwards. `npx` is stubbed so the real planner
+# HOK-3179: build_queue_plan_once is the picker-synchronous call. It runs
+# with --no-infer, never requests an inference report, and never touches
+# queue-health based on inference. The background refresh owns inference-
+# driven queue-health updates (see tests above exercising the policy wrapper
+# with an --inference-report-file). `npx` is stubbed so the real planner
 # command line is exercised without spawning tsx.
 npx() {
   shift 2  # tsx <plan-queue.ts>
@@ -223,8 +226,8 @@ backlog_json='[{"identifier":"HOK-1","title":"Ready task","labels":{"nodes":[]},
 built_plan="$(PROJECT_NAME="stdin-policy-test" TOOLS_DIR="$TEST_TMP/tools" build_queue_plan_once "$backlog_json")"
 unset -f npx
 check_eq "build_queue_plan_once returns the plan" "HOK-1" "$(printf '%s' "$built_plan" | jq -r '.availableNow[0]')"
-check_eq "build_queue_plan_once records inference_unavailable" "inference_unavailable" "$(jq -r '.degradationReason' "$STATE_DIR/queue-health.json")"
-check_eq "inference report tmpfile removed" "" "$(find "$TMPDIR" -maxdepth 1 -name 'wavemill-queue-inference.*' -print)"
+check_eq "build_queue_plan_once does not degrade queue-health from inference" "null" "$(jq -r '.degradationReason' "$STATE_DIR/queue-health.json")"
+check_eq "no stray wavemill-queue-inference tmpfiles after picker call" "" "$(find "$TMPDIR" -maxdepth 1 -name 'wavemill-queue-inference.*' -print 2>/dev/null)"
 
 echo ""
 echo "--- Results: $PASS passed, $FAIL failed ---"

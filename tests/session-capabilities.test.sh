@@ -24,9 +24,16 @@ awk '
 
 # The stat helper depends on the mtime helper, which is inside the block, so it
 # is present. Add stubs for missing dependencies.
+#
+# wavemill_run_tool (HOK-3190) now wraps the resolver spawn in wavemill-common.sh,
+# but it is defined outside the awk-extracted session-capabilities block, so
+# shim it here to invoke the tool through `npx tsx` the same way the pre-3190
+# code did. The test passes an absolute tool path, so wavemill_tool_path is
+# never consulted.
 {
   printf '%s\n' '# Test harness stubs'
   printf '%s\n' 'startup_log() { :; }'
+  printf '%s\n' 'wavemill_run_tool() { local cli="$1"; shift; npx tsx "$cli" "$@"; }'
   cat "$helper_file"
 } > "$tmp/lib.sh"
 

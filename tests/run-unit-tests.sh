@@ -172,6 +172,9 @@ TESTS=(
   shared/lib/reviewer-stage-adjudicator.test.ts
   tools/quarantine-legacy-reviewer-forfeits.test.ts
   shared/lib/arm-failure-taxonomy.test.ts
+  shared/lib/failure-policy.test.ts
+  shared/lib/failure-policy.fixtures.test.ts
+  shared/lib/failure-policy.random.test.ts
   shared/lib/eval-skip-guard.test.ts
   shared/lib/arm-reliability.test.ts
   shared/lib/stale-task-branches.test.ts
@@ -252,6 +255,7 @@ TESTS=(
   shared/lib/quota-state.test.ts
   shared/lib/template-curly-checker.test.ts
   shared/lib/test-tracked-write-checker.test.ts
+  shared/lib/task-identity-checker.test.ts
   shared/lib/transient-marker.test.ts
   shared/lib/wavemill-incident-artifact-diagnostics.test.ts
   shared/lib/wavemill-incident-detector.test.ts
@@ -491,6 +495,7 @@ TESTS=(
   shared/lib/cost-parity.test.ts
   shared/lib/observer-findings.test.ts
   shared/lib/pr-comparison-actions.test.ts
+  tests/state-archive-roundtrip.test.ts
 )
 
 SHARD_INDEX=1

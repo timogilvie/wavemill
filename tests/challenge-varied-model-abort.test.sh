@@ -39,6 +39,7 @@ source "$REPO_DIR/shared/lib/bounded-retry.sh"
 # shellcheck source=../shared/lib/task-identity.sh
 source "$REPO_DIR/shared/lib/task-identity.sh"
 eval "$(extract_function phase_launch_head)"
+eval "$(extract_function phase_launch_base)"
 eval "$(extract_function resolve_phase_model)"
 eval "$(extract_function resolve_stage_result_model)"
 eval "$(extract_function challenge_cancel_challenger_arm)"

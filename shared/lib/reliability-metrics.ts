@@ -136,6 +136,7 @@ export const DEFAULT_STALL_MINUTES = 30;
 const MERGE_SUBJECT_PR_RE = /\(#(\d+)\)\s*$/;
 const MERGE_PR_PREFIX_RE = /^Merge pull request #(\d+) from /;
 const PROMOTION_BRANCH_RE = /\bauto\/(?:promotion|integration)\b/;
+// allow-task-identity: detect-only heuristic over a git commit subject — the bounded 2–6 team-key length and capture group are intentional for merge-subject scanning, not task-ID parsing.
 const ISSUE_IN_SUBJECT_RE = /\b([A-Z]{2,6}-\d+)\b/;
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────

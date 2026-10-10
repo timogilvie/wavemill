@@ -7,6 +7,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { challengerTaskKey, isChallengerTaskId } from './task-identity.ts';
 
 /**
  * Challenge arms share the Linear issue id, but the challenger's state entry is
@@ -15,7 +16,7 @@ import { join, resolve } from 'node:path';
  * eval (HOK-3172_c was refused `task_aborted` three times for this reason).
  */
 export function evalTaskStateKey(issue: string, challengeSide: string | undefined): string {
-  return challengeSide === 'challenger' && !issue.endsWith('_c') ? `${issue}_c` : issue;
+  return challengeSide === 'challenger' && !isChallengerTaskId(issue) ? challengerTaskKey(issue) : issue;
 }
 
 /**

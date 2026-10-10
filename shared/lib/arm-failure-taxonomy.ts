@@ -1,4 +1,10 @@
-export type TerminalFailureKind =
+/**
+ * Attribution vocabulary for failed arms: which kinds the mill can name, so
+ * reliability metrics can assign a fault class. Being in this union does NOT
+ * make a kind terminal — whether a failure parks or retries is decided only by
+ * `TERMINAL_ALLOWLIST` in `failure-policy.ts` (HOK-3176).
+ */
+export type ArmFailureKind =
   | 'context-exhausted'
   | 'context-window-exceeded'
   | 'invalid-model-id'
@@ -109,6 +115,8 @@ export function classifyArmFault(input: { failureKind?: string | null; detail?: 
     // orchestrator cancelled it — never model or provider quality evidence.
     case 'policy-denied':
     case 'cancelled':
+    // A GitHub approval/branch-protection gate is repository policy (HOK-3176).
+    case 'operator-gate':
       return 'harness-fault';
     case 'tool-use-unsupported':
     case 'varied_model_unresolvable':

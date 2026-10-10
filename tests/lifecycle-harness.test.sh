@@ -249,6 +249,11 @@ harness_extract_real_functions() {
     native_coding_failure_handoff_reason \
     native_terminal_failure_kind \
     native_terminal_failure_next_action \
+    native_stage_failure_envelope_json \
+    stage_failure_decision \
+    stage_failure_owned_by_bucket \
+    maybe_retry_failed_stage \
+    clear_stage_result \
     emit_native_terminal_failure_attention \
     challenge_varied_stage_model \
     challenge_result_stage_for_launch \
@@ -293,6 +298,7 @@ harness_extract_real_functions() {
     check_stage_awaiting_user \
     check_stage_aborted \
     phase_launch_head \
+    phase_launch_base \
     phase_launch_gate \
     coding_launch_refusal_limit \
     coding_launch_refusal_is_transient \

@@ -317,7 +317,10 @@ else
   fail "task window creation does not distinguish expected coding-pane replacement from recovery"
 fi
 
-if [[ "$RESTORE_WINDOW_BLOCK" == *'read_state_value "" --arg i "$issue" '\''.tasks[$i].worktree // ""'\'''* ]] \
+# HOK-3190: the restore helper reads worktree via pass_task_field now
+# (cached per pass); accept either shape so the HOK-2843 contract still holds.
+if { [[ "$RESTORE_WINDOW_BLOCK" == *'wt_dir=$(pass_task_field "$issue" worktree)'* ]] \
+    || [[ "$RESTORE_WINDOW_BLOCK" == *'read_state_value "" --arg i "$issue" '\''.tasks[$i].worktree // ""'\'''* ]]; } \
   && [[ "$RESTORE_WINDOW_BLOCK" == *'[[ -z "$wt_dir" ]] && wt_dir="${WORKTREE_ROOT}/${slug}"'* ]]; then
   pass "resume restore prefers persisted task worktree over WORKTREE_ROOT fallback"
 else
@@ -516,6 +519,11 @@ make_mock_bin "$MOCK_BIN"
 
 export HOME="$TMP_ROOT/home"
 export PATH="$MOCK_BIN:$PATH"
+# HOK-3190: force wavemill_run_tool through `npx tsx <tool>` so the fake
+# npx above actually intercepts Linear state writes. Without this, the
+# fast-strip path shells out to `node --experimental-strip-types` and
+# never reaches the mock linear log.
+export WAVEMILL_SKIP_FAST_STRIP=1
 export MOCK_TMUX_LOG="$TMP_ROOT/tmux.log"
 export MOCK_GIT_LOG="$TMP_ROOT/git.log"
 export MOCK_GH_LOG="$TMP_ROOT/gh.log"
