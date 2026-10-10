@@ -2888,6 +2888,30 @@
                         }
                     },
                     "additionalProperties": false
+                },
+                "terminalInbox": {
+                    "type": "object",
+                    "description": "HOK-3201: unattended terminal inbox cleanup. The monitor runs `wavemill cleanup inbox --execute` on a slow cadence so delivered/dead arms get auto-reaped without an operator action.",
+                    "properties": {
+                        "unattended": {
+                            "type": "object",
+                            "properties": {
+                                "enabled": {
+                                    "type": "boolean",
+                                    "default": true,
+                                    "description": "Enable the monitor-driven cleanup tick. Rollback by setting to false (or exporting WAVEMILL_UNATTENDED_CLEANUP_ENABLED=0)."
+                                },
+                                "intervalSeconds": {
+                                    "type": "integer",
+                                    "default": 600,
+                                    "minimum": 60,
+                                    "description": "Minimum seconds between unattended cleanup ticks. Env override: WAVEMILL_TERMINAL_CLEANUP_INTERVAL_SECONDS."
+                                }
+                            },
+                            "additionalProperties": false
+                        }
+                    },
+                    "additionalProperties": false
                 }
             },
             "additionalProperties": false

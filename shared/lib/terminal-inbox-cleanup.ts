@@ -82,7 +82,19 @@ export type TerminalInboxStatus =
   | 'refused'
   | 'already-reaped'
   | 'not-terminal'
+  | 'kept'
   | 'executed';
+
+/**
+ * HOK-3201: refusals that live on terminal, delivered arms and are safe to
+ * convert into archive-and-reap. The unattended inbox executor retries each
+ * such refusal with `archiveAndReap: true` so no human has to run the command.
+ */
+export const INBOX_AUTO_ARCHIVE_REFUSALS: ReadonlySet<string> = new Set([
+  'unique_local_patch',
+  'closed_loser_head_unpublished',
+  'aborted_pr_less_requires_abandon',
+]);
 
 export interface TerminalInboxDecision {
   issue: string;
@@ -107,6 +119,8 @@ export interface TerminalInboxDecision {
     intendedAction: 'release' | 'none';
   };
   intendedActions: string[];
+  /** HOK-3201: operator-set hold (`keep` short-circuits auto-reap). Empty when no hold is set. */
+  cleanupHold?: string;
   /** HOK-3160: when archive-and-reap executes, the resulting archive path. */
   archive?: {
     path: string;
@@ -272,6 +286,19 @@ function taskBoolean(task: JsonRecord | undefined, key: string): boolean {
 function lifecycle(task: JsonRecord | undefined): JsonRecord {
   const value = task?.lifecycle;
   return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonRecord : {};
+}
+
+/**
+ * HOK-3201: operator-set hold on a terminal task. When
+ * `lifecycle.retention.hold === 'keep'` the inbox never auto-reaps the task,
+ * independent of whether its residue is unpublished. Returns `''` when no
+ * hold is set.
+ */
+function retentionHold(task: JsonRecord | undefined): string {
+  const retention = lifecycle(task).retention;
+  if (!retention || typeof retention !== 'object' || Array.isArray(retention)) return '';
+  const hold = (retention as JsonRecord).hold;
+  return typeof hold === 'string' ? hold : '';
 }
 
 function launchContract(task: JsonRecord | undefined): JsonRecord {
@@ -528,6 +555,31 @@ export function decideTerminalTask(
   const prNumber = taskString(task, 'pr') || taskString(deliveryEvidence(task), 'prNumber');
   const outcome = workflowOutcome(task);
   const disposition = resourceDisposition(task);
+  const hold = retentionHold(task);
+  // HOK-3201: a `keep` hold short-circuits every remote fetch so the dashboard
+  // can render the kept list without any gh/git cost.
+  if (hold === 'keep') {
+    return {
+      issue,
+      slug,
+      branch,
+      worktree,
+      prNumber,
+      status: 'kept',
+      refusalReason: 'kept_by_operator',
+      workflowOutcome: outcome,
+      resourceDisposition: disposition,
+      challengeRole: taskString(task, 'challengeRole'),
+      challengePairId: taskString(task, 'challengePairId'),
+      siblingPrNumber: '',
+      siblingPrState: '',
+      pr: unknownPr(prNumber),
+      git: { worktreeExists: false, worktreeDirty: 'unknown', dirtyStatus: '', localBranchExists: false, localHeadSha: '', remoteHeadSha: '', remoteContainsHead: false, commitsAhead: null, patchEquivalent: 'unknown', patchUniqueCount: null, patchEquivalentCount: null },
+      pane: { windowId: taskString(task, 'windowId'), paneState: taskString(task, 'paneState') || 'active', paneReleased: taskBoolean(task, 'paneReleased') || taskString(task, 'paneState') === 'released', intendedAction: 'none' },
+      intendedActions: [],
+      cleanupHold: hold,
+    };
+  }
   const pr = fetchPr(repoDir, prNumber, task, deps);
   const effectiveBase = taskString(launchContract(task), 'baseBranch') || baseBranch;
   let classified: ClassifyEvidence | undefined;
@@ -573,6 +625,7 @@ export function decideTerminalTask(
       intendedAction: paneReleased ? 'none' : 'release',
     },
     intendedActions: [],
+    cleanupHold: hold,
   };
 
   if (disposition === 'reaped') {
@@ -613,7 +666,7 @@ export function decideTerminalTask(
     return decision;
   }
   if (!prNumber && (outcome === 'aborted' || outcome === 'error')) {
-    return decidePrLessAbortedArm(decision, git, allowAbandon);
+    return decidePrLessAbortedArm(decision, git, allowAbandon, archiveAndReap);
   }
   if (!prNumber || pr.state === 'UNKNOWN') {
     decision.refusalReason = 'pr_state_unverifiable';
@@ -630,6 +683,16 @@ export function decideTerminalTask(
       decision.intendedActions = ['archive-artifacts', 'release-pane', 'write-tombstone', 'remove-local-worktree', 'remove-local-branch', 'remove-active-task-row'];
       return decision;
     }
+    // HOK-3201: a merged arm whose local branch carries a non-equivalent extra
+    // commit (self-review residue, HOK-3177 shape) is delivered: with
+    // archiveAndReap we snapshot the unpublished patch to the residue archive
+    // and reap. Without the flag, surface the refusal for operator review.
+    if (archiveAndReap && git.patchEquivalent === false && isDelivered(pr, sibEvidence.state, challengeRole, allowAbandon)) {
+      decision.status = 'would-archive-and-reap';
+      decision.refusalReason = '';
+      decision.intendedActions = ['archive-residue', 'archive-artifacts', 'release-pane', 'write-tombstone', 'remove-local-worktree', 'remove-local-branch', 'remove-active-task-row'];
+      return decision;
+    }
     decision.refusalReason = git.patchEquivalent === false ? 'unique_local_patch' : 'merged_delivery_unverified';
     return decision;
   }
@@ -639,6 +702,15 @@ export function decideTerminalTask(
       return decision;
     }
     if (!git.remoteContainsHead && (!pr.headRefOid || pr.headRefOid !== git.localHeadSha)) {
+      // HOK-3201: a losing challenger with an unpushed head is delivered via
+      // its MERGED sibling. With archiveAndReap we snapshot the discarded
+      // branch tip to the residue archive instead of waiting on an operator.
+      if (archiveAndReap && isDelivered(pr, sibEvidence.state, challengeRole, allowAbandon)) {
+        decision.status = 'would-archive-and-reap';
+        decision.refusalReason = '';
+        decision.intendedActions = ['archive-residue', 'archive-artifacts', 'release-pane', 'write-tombstone', 'remove-local-worktree', 'remove-local-branch', 'retain-remote-branch', 'remove-active-task-row'];
+        return decision;
+      }
       decision.refusalReason = 'closed_loser_head_unpublished';
       return decision;
     }
@@ -665,7 +737,7 @@ export function decideTerminalTask(
  * that push fails), which is the same path the monitor takes once the arm's
  * sibling PR has merged. The caller has already refused dirty worktrees.
  */
-function decidePrLessAbortedArm(decision: TerminalInboxDecision, git: GitEvidence, allowAbandon: boolean): TerminalInboxDecision {
+function decidePrLessAbortedArm(decision: TerminalInboxDecision, git: GitEvidence, allowAbandon: boolean, archiveAndReap: boolean): TerminalInboxDecision {
   const reapActions = ['archive-artifacts', 'release-pane', 'write-tombstone', 'remove-local-worktree', 'remove-local-branch', 'remove-active-task-row'];
   if (!git.localBranchExists || git.commitsAhead === 0 || git.remoteContainsHead) {
     decision.status = 'would-reap';
@@ -673,6 +745,15 @@ function decidePrLessAbortedArm(decision: TerminalInboxDecision, git: GitEvidenc
     return decision;
   }
   if (!allowAbandon) {
+    // HOK-3201: a PR-less aborted arm with unpublished commits is delivered —
+    // its work was discarded by abort, nothing is lost by archiving to disk.
+    // archiveAndReap implies abandon authority inside cleanupTerminalInbox,
+    // which satisfies HOK-3089's "no silent discard" rule via the archive.
+    if (archiveAndReap) {
+      decision.status = 'would-archive-and-reap';
+      decision.intendedActions = ['archive-residue', 'archive-unpublished-head', ...reapActions];
+      return decision;
+    }
     decision.refusalReason = 'aborted_pr_less_requires_abandon';
     return decision;
   }
@@ -706,6 +787,96 @@ function runArchiveResidueStep(decision: TerminalInboxDecision, context: Cleanup
   });
 }
 
+/**
+ * HOK-3201: set or clear the operator-driven `keep` hold on a terminal task.
+ * A `keep` hold short-circuits every decision in `decideTerminalTask`, so the
+ * unattended cleanup never auto-reaps the task even once its only residue is
+ * dirt or an unpushed commit.
+ *
+ * `hold: 'keep'` sets `lifecycle.retention.hold = 'keep'` and records who/why.
+ * `hold: null` clears the hold (and the retention metadata when the retention
+ * block has no other content).
+ *
+ * The write is atomic through `mutateJsonState`; callers must emit the
+ * operator event (`keep` / `unkeep`) separately so the HOK-3172 reconciler
+ * and the monitor cadence throttle wake up on the next tick.
+ */
+export interface SetKeepHoldOptions {
+  issue: string;
+  repoDir: string;
+  stateFile?: string;
+  hold: 'keep' | null;
+  reason?: string;
+  actor?: string;
+  now?(): string;
+}
+
+export interface SetKeepHoldResult {
+  issue: string;
+  hold: 'keep' | '';
+  reason: string;
+}
+
+export async function setTerminalTaskKeepHold(options: SetKeepHoldOptions): Promise<SetKeepHoldResult> {
+  const repoDir = resolve(options.repoDir);
+  const stateFile = statePath(repoDir, options.stateFile);
+  if (!existsSync(stateFile)) {
+    throw new Error(`workflow state file not found: ${stateFile}`);
+  }
+  const now = (options.now ?? (() => new Date().toISOString()))();
+  const actor = options.actor ?? 'operator';
+  const reason = options.reason ?? '';
+  await mutateJsonState<WorkflowState>(stateFile, (state) => {
+    const next = state ?? {};
+    const tasks = next.tasks ?? {};
+    if (!tasks[options.issue]) {
+      throw new Error(`task ${options.issue} is not present in workflow state`);
+    }
+    const task = { ...(tasks[options.issue] as JsonRecord) };
+    const lifecycleObj = (task.lifecycle && typeof task.lifecycle === 'object' && !Array.isArray(task.lifecycle))
+      ? { ...(task.lifecycle as JsonRecord) }
+      : {};
+    const retention = (lifecycleObj.retention && typeof lifecycleObj.retention === 'object' && !Array.isArray(lifecycleObj.retention))
+      ? { ...(lifecycleObj.retention as JsonRecord) }
+      : {};
+    if (options.hold === 'keep') {
+      retention.hold = 'keep';
+      retention.setBy = actor;
+      retention.setAt = now;
+      if (reason) retention.reason = reason;
+      lifecycleObj.retention = retention;
+    } else {
+      // Clear every field this helper writes on `keep`. A pre-existing
+      // retention.reason set by another code path (e.g.
+      // set_task_lifecycle_disposition) survives only when the previous
+      // state had no `setBy` — i.e. the reason was not written by us.
+      const operatorOwned = typeof retention.setBy === 'string' && retention.setBy.length > 0;
+      delete retention.hold;
+      delete retention.setBy;
+      delete retention.setAt;
+      if (operatorOwned) {
+        delete retention.reason;
+      }
+      if (Object.keys(retention).length === 0) {
+        delete lifecycleObj.retention;
+      } else {
+        lifecycleObj.retention = retention;
+      }
+    }
+    task.lifecycle = lifecycleObj;
+    task.updated = now;
+    tasks[options.issue] = task;
+    next.tasks = tasks;
+    return next;
+  });
+  return {
+    issue: options.issue,
+    hold: options.hold === 'keep' ? 'keep' : '',
+    reason: options.hold === 'keep' ? reason : '',
+  };
+}
+
+
 export function discoverTerminalInboxIssues(state: WorkflowState): string[] {
   return Object.entries(state.tasks ?? {})
     .filter(([, task]) => isTerminalTask(task) && resourceDisposition(task) !== 'reaped')
@@ -734,6 +905,11 @@ export async function cleanupTerminalInbox(options: CleanupOptions): Promise<Ter
   }
 
   const decisions: TerminalInboxDecision[] = [];
+  // HOK-3201: when the unattended monitor calls the inbox executor it wants
+  // every refusal that lives on a terminal, delivered arm to auto-promote to
+  // archive-and-reap. The dry-run surface (no --execute) keeps the original
+  // refusal reasons so operators can still inspect them.
+  const inboxExecute = options.inbox === true && options.execute === true;
   for (const issue of issues) {
     if (!issue) continue;
     const state = readWorkflowState(stateFile);
@@ -742,7 +918,17 @@ export async function cleanupTerminalInbox(options: CleanupOptions): Promise<Ter
     // arm needs; the residue archive includes a bundle of its unpublished
     // commits so the HOK-3089 "no silent discard" rule still holds.
     const abandon = (options.abandon === true || archiveAndReap) && !options.inbox;
-    const decision = decideTerminalTask(state, issue, repoDir, baseBranch, deps, abandon, archiveAndReap);
+    let decision = decideTerminalTask(state, issue, repoDir, baseBranch, deps, abandon, archiveAndReap);
+    // HOK-3201: convert a safe refusal into archive-and-reap for the
+    // unattended inbox path. Grant abandon authority here too, so the
+    // archive step owns the unpublished-head rescue the same way
+    // `--abandon` does for an operator.
+    if (inboxExecute && decision.status === 'refused' && INBOX_AUTO_ARCHIVE_REFUSALS.has(decision.refusalReason)) {
+      const retry = decideTerminalTask(state, issue, repoDir, baseBranch, deps, true, true);
+      if (retry.status === 'would-archive-and-reap') {
+        decision = retry;
+      }
+    }
     const now = deps.now();
     if (options.execute || options.out) {
       writeDecisionArtifact(repoDir, decision, now, options.out && issues.length === 1 ? options.out : undefined);
@@ -750,13 +936,18 @@ export async function cleanupTerminalInbox(options: CleanupOptions): Promise<Ter
     if (options.execute && isExecutable(decision.status)) {
       const task = state.tasks?.[issue];
       if (!task) throw new Error(`task ${issue} disappeared before execution`);
+      // HOK-3201: an inbox-execute that promoted a refusal to
+      // would-archive-and-reap also needs the executor context to carry the
+      // archive flag so the destructive cleanup resets the dirty tree first
+      // and takes abandon authority for a PR-less head.
+      const decisionArchives = decision.status === 'would-archive-and-reap';
       const context: CleanupExecuteContext = {
         repoDir,
         stateFile,
         baseBranch,
         session: initial.session ?? process.env.SESSION ?? 'wavemill',
-        abandon,
-        archiveAndReap,
+        abandon: abandon || decisionArchives,
+        archiveAndReap: archiveAndReap || decisionArchives,
       };
       // HOK-3160: run the archive step FIRST. A failure retains the task:
       // the destructive cleanup and the tombstone are skipped.

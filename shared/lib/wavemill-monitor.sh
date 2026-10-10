@@ -15166,6 +15166,123 @@ wavemill_monitor_now_ms() {
   printf '%s000\n' "$(date +%s)"
 }
 
+# ─── HOK-3201: Unattended terminal inbox cleanup tick ──────────────────────
+#
+# The monitor invokes `wavemill cleanup inbox --execute` on a slow cadence
+# (default 10 minutes) so delivered, dead, and PR-less aborted arms get
+# auto-reaped without an operator action. Three cadence files sit under
+# $STATE_DIR:
+#   * .terminal-cleanup-last-at  — epoch of the last tick start
+#   * .terminal-cleanup-next-at  — epoch of the next scheduled tick
+#   * .terminal-cleanup-running  — PID of a running background tick (lock)
+#
+# Config: cleanup.terminalInbox.unattended.enabled (default true),
+# cleanup.terminalInbox.unattended.intervalSeconds (default 600).
+# Env overrides: WAVEMILL_UNATTENDED_CLEANUP_ENABLED,
+# WAVEMILL_TERMINAL_CLEANUP_INTERVAL_SECONDS.
+_WAVEMILL_UNATTENDED_CLEANUP_DEFAULT_INTERVAL=600
+
+monitor_terminal_cleanup_enabled() {
+  if [[ -n "${WAVEMILL_UNATTENDED_CLEANUP_ENABLED+x}" ]]; then
+    case "$WAVEMILL_UNATTENDED_CLEANUP_ENABLED" in
+      0|false|False|FALSE|no|NO) return 1 ;;
+      *) return 0 ;;
+    esac
+  fi
+  local enabled
+  if declare -F cleanup_episode_config_value >/dev/null 2>&1; then
+    enabled="$(cleanup_episode_config_value '.cleanup.terminalInbox.unattended.enabled' 'true')"
+  else
+    enabled="true"
+  fi
+  [[ "$enabled" != "false" && "$enabled" != "0" ]]
+}
+
+monitor_terminal_cleanup_interval() {
+  local value="${WAVEMILL_TERMINAL_CLEANUP_INTERVAL_SECONDS:-}"
+  if [[ -z "$value" ]] && declare -F cleanup_episode_config_value >/dev/null 2>&1; then
+    value="$(cleanup_episode_config_value '.cleanup.terminalInbox.unattended.intervalSeconds' "$_WAVEMILL_UNATTENDED_CLEANUP_DEFAULT_INTERVAL")"
+  fi
+  [[ "$value" =~ ^[0-9]+$ && "$value" -gt 0 ]] || value="$_WAVEMILL_UNATTENDED_CLEANUP_DEFAULT_INTERVAL"
+  printf '%s\n' "$value"
+}
+
+_monitor_terminal_cleanup_write() {
+  local file="$1" value="$2" tmp
+  tmp="${file}.tmp.$$"
+  printf '%s\n' "$value" > "$tmp" 2>/dev/null && mv "$tmp" "$file" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+}
+
+# Clear the cadence timestamp so the next monitor tick runs immediately.
+# Called from operator-event dispatch (keep, unkeep, re-cleanup) so an
+# operator never has to wait on the slow cadence window.
+monitor_terminal_cleanup_clear_cadence() {
+  [[ -n "${STATE_DIR:-}" ]] || return 0
+  rm -f "$STATE_DIR/.terminal-cleanup-last-at" 2>/dev/null || true
+  rm -f "$STATE_DIR/.terminal-cleanup-next-at" 2>/dev/null || true
+}
+
+# Returns 0 (true) if a stale lock file was cleared or no lock exists.
+# Returns 1 (false) if a live background tick is still running.
+_monitor_terminal_cleanup_lock_available() {
+  local lock_file="$1" interval="$2" pid lock_mtime now max_age
+  [[ -f "$lock_file" ]] || return 0
+  pid="$(cat "$lock_file" 2>/dev/null || echo "")"
+  if [[ -n "$pid" && "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+    # Stale lock protection: a hung child older than 2× interval is replaced.
+    lock_mtime=$(stat -f %m "$lock_file" 2>/dev/null || stat -c %Y "$lock_file" 2>/dev/null || echo 0)
+    now=$(date +%s)
+    max_age=$(( interval * 2 ))
+    if (( now - lock_mtime > max_age )); then
+      rm -f "$lock_file" 2>/dev/null || true
+      return 0
+    fi
+    return 1
+  fi
+  rm -f "$lock_file" 2>/dev/null || true
+  return 0
+}
+
+monitor_terminal_cleanup_tick() {
+  [[ "${DRY_RUN:-false}" == "true" ]] && return 0
+  [[ -n "${STATE_DIR:-}" ]] || return 0
+  [[ -n "${REPO_DIR:-}" ]] || return 0
+  monitor_terminal_cleanup_enabled || return 0
+
+  local interval last_at now
+  interval="$(monitor_terminal_cleanup_interval)"
+  now="$(date +%s)"
+  if [[ -f "$STATE_DIR/.terminal-cleanup-last-at" ]]; then
+    last_at="$(cat "$STATE_DIR/.terminal-cleanup-last-at" 2>/dev/null || echo 0)"
+    [[ "$last_at" =~ ^[0-9]+$ ]] || last_at=0
+    (( now - last_at < interval )) && return 0
+  fi
+
+  local lock_file="$STATE_DIR/.terminal-cleanup-running"
+  if ! _monitor_terminal_cleanup_lock_available "$lock_file" "$interval"; then
+    return 0
+  fi
+
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 0
+  _monitor_terminal_cleanup_write "$STATE_DIR/.terminal-cleanup-last-at" "$now"
+  _monitor_terminal_cleanup_write "$STATE_DIR/.terminal-cleanup-next-at" "$(( now + interval ))"
+
+  local out_file="$STATE_DIR/terminal-inbox-last.json"
+  local log_file="${MILL_LOG_FILE:-/dev/null}"
+  # Launch the inbox executor in the background so the monitor loop never
+  # waits on a potentially slow gh/git fan-out. The child writes its PID to
+  # the lock file (checked above) and cleans up when done.
+  (
+    echo "$BASHPID" > "$lock_file" 2>/dev/null || true
+    trap 'rm -f "$lock_file" 2>/dev/null || true' EXIT
+    wavemill_run_tool cleanup-terminal-inbox.ts inbox --execute --json \
+      --repo-dir "$REPO_DIR" \
+      > "$out_file" 2>>"$log_file" || true
+  ) >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+  return 0
+}
+
 # ─── Per-step pass timing (HOK-3190) ────────────────────────────────────────
 #
 # `monitor_step_begin NAME` and `monitor_step_end NAME` sandwich a measured
@@ -22137,6 +22254,11 @@ while :; do
   monitor_step_begin backstageHealth
   check_backstage_health
   monitor_step_end backstageHealth
+  # HOK-3201: slow-cadence unattended terminal inbox cleanup. Runs the inbox
+  # executor in the background so the monitor loop never stalls on gh/git.
+  monitor_step_begin terminalInboxCleanup
+  monitor_terminal_cleanup_tick || true
+  monitor_step_end terminalInboxCleanup
   monitor_step_begin observerHealth
   check_backstage_observer_health || true
   monitor_step_end observerHealth

@@ -51,6 +51,7 @@ TESTS=(
   ready-exhausted-challenge.test.sh
   review-gate-refused-challenge.test.sh
   monitor-late-completion.test.sh
+  monitor-terminal-cleanup-tick.test.sh
   monitor-wake-resume.test.sh
   parent-monitor-function-drift.test.sh
   save-task-state-canonicalization.test.sh
