@@ -3221,7 +3221,7 @@ _unescape_json_string() {
 # should pass it as $3.
 pass_task_field() {
   local issue="$1" field="$2" default="${3:-}"
-  if (( MONITOR_PASS_SNAPSHOT_ACTIVE == 1 )); then
+  if (( ${MONITOR_PASS_SNAPSHOT_ACTIVE:-0} == 1 )); then
     local key="$issue:$field"
     if [[ -n "${TASK_FIELD[$key]+x}" ]]; then
       # Preserve the stored value verbatim, including explicit `false` or `0`.
@@ -3253,7 +3253,7 @@ pass_task_field() {
 # key is unknown.
 pass_state_root() {
   local field="$1" default="${2:-}"
-  if (( MONITOR_PASS_SNAPSHOT_ACTIVE != 1 )); then
+  if (( ${MONITOR_PASS_SNAPSHOT_ACTIVE:-0} != 1 )); then
     printf '%s\n' "$default"
     return 0
   fi
