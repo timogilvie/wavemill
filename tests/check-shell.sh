@@ -97,6 +97,7 @@ for f in \
   "$REPO_DIR"/shared/agent-bin/tmux \
   "$REPO_DIR"/tests/check-install-paths.test.sh \
   "$REPO_DIR"/tests/check-common-guards.test.sh \
+  "$REPO_DIR"/tests/check-direct-ledger-access.test.sh \
   "$REPO_DIR"/tests/check-marker-clear-sites.test.sh \
   "$REPO_DIR"/tests/control-pane-recovery.test.sh \
   "$REPO_DIR"/tests/dashboard-refresh.test.sh \
