@@ -106,6 +106,19 @@ read_state_value() {
   jq -r "$@" "$STATE_FILE" 2>/dev/null || printf '%s\n' "$default"
 }
 
+# HOK-3190: the extracted recovery helpers call pass_task_field for per-pass
+# cached reads; route the test shim through the existing read_state_value stub.
+pass_task_field() {
+  local issue="$1" field="$2" default="${3:-}"
+  local v
+  v=$(read_state_value "$default" --arg i "$issue" ".tasks[\$i].${field} // empty" 2>/dev/null)
+  if [[ -z "$v" ]]; then
+    printf '%s\n' "$default"
+  else
+    printf '%s\n' "$v"
+  fi
+}
+
 state_mutate() {
   local file="$1" filter="$2"
   shift 2

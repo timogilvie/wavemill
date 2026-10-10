@@ -75,14 +75,137 @@ failure_policy_next_action() {
     || printf 'inspect the native provider error, then relaunch the phase\n'
 }
 
-# Run tools/failure-policy-cli.ts. Node's type stripping starts it in ~0.3s
-# (the monitor calls it on failure paths, HOK-3190); npx tsx is the fallback
-# for a Node without --experimental-strip-types.
-_failure_policy_cli() {
+# HOK-3190: run a tools/<tool>.ts CLI with Node's type stripping (~0.3s cold
+# start) instead of `npx tsx` (4–7s). Falls back to `npx tsx` when the Node
+# binary does not support --experimental-strip-types.
+#
+# The one-shot capability probe caches its result in
+# WAVEMILL_NODE_STRIP_SUPPORTED so subsequent calls skip the stat.
+# WAVEMILL_SKIP_FAST_STRIP=1 forces the npx tsx path (used by tests).
+#
+# Pass the tool basename (not an absolute path) so wavemill_tool_path can
+# honour the test harness's TOOLS_DIR override.
+#
+# Usage: wavemill_run_tool <tool-basename.ts> [args...]
+wavemill_run_tool() {
+  local tool_name="${1:?wavemill_run_tool requires a tool basename}"
+  shift
   local cli
-  cli="$(wavemill_tool_path failure-policy-cli.ts)"
-  node --experimental-strip-types --no-warnings "$cli" "$@" 2>/dev/null \
-    || npx tsx "$cli" "$@" 2>/dev/null
+  if [[ "$tool_name" == /* ]]; then
+    cli="$tool_name"
+  else
+    cli="$(wavemill_tool_path "$tool_name")"
+  fi
+  # HOK-3190: test fixtures that intercept tool spawns through a shell
+  # function named `npx` (see tests/*.sh) rely on the `npx tsx <path>`
+  # shape. When `npx` is a shell function (not just a command on PATH),
+  # route through it so mocks keep working. Real `npx` executables are
+  # external, so this never triggers in production.
+  if declare -F npx >/dev/null 2>&1; then
+    npx tsx "$cli" "$@"
+    return $?
+  fi
+  # HOK-3190: honour WAVEMILL_SKIP_FAST_STRIP even when a previous call
+  # already cached a positive probe result in WAVEMILL_NODE_STRIP_SUPPORTED.
+  # A shell suite that runs many tests back to back exports the cached value
+  # the first time wavemill_run_tool fires, so later tests that need the
+  # fallback path (to let a fake npx on PATH intercept the call) would
+  # otherwise be stuck on the strip path.
+  if [[ "${WAVEMILL_SKIP_FAST_STRIP:-0}" == "1" ]]; then
+    npx tsx "$cli" "$@"
+    return $?
+  fi
+  if [[ -z "${WAVEMILL_NODE_STRIP_SUPPORTED:-}" ]]; then
+    if node --experimental-strip-types --no-warnings -e ';' >/dev/null 2>&1; then
+      WAVEMILL_NODE_STRIP_SUPPORTED=1
+    else
+      WAVEMILL_NODE_STRIP_SUPPORTED=0
+    fi
+    export WAVEMILL_NODE_STRIP_SUPPORTED
+  fi
+  if [[ "${WAVEMILL_NODE_STRIP_SUPPORTED:-0}" == "1" ]]; then
+    node --experimental-strip-types --no-warnings "$cli" "$@"
+  else
+    npx tsx "$cli" "$@"
+  fi
+}
+
+# Run tools/failure-policy-cli.ts via the shared fast-strip path.
+_failure_policy_cli() {
+  wavemill_run_tool failure-policy-cli.ts "$@" 2>/dev/null
+}
+
+# HOK-3190: minimal fallback for pass_task_field so standalone callers
+# (test harnesses that source just wavemill-common.sh, cleanup CLIs, etc.)
+# that end up invoking a monitor function with a `pass_task_field` call
+# don't `command not found`. The monitor's own definition (which uses the
+# cached pass snapshot) OVERRIDES this one when the monitor is sourced.
+#
+# The filter is interpolated with the literal field name so existing
+# read_state_value test stubs that match on `.tasks[$i].<field>` keep working.
+pass_task_field() {
+  local issue="$1" field="$2" default="${3:-}"
+  if ! declare -F read_state_value >/dev/null 2>&1; then
+    printf '%s\n' "$default"
+    return 0
+  fi
+  local filter v
+  filter=".tasks[\$i].${field} // empty"
+  v="$(read_state_value "$default" --arg i "$issue" "$filter" 2>/dev/null)"
+  if [[ -z "$v" ]]; then
+    printf '%s\n' "$default"
+  else
+    printf '%s\n' "$v"
+  fi
+}
+
+# Same shape for pass_state_root (the loop's rarer caller surface).
+pass_state_root() {
+  local field="$1" default="${2:-}"
+  if ! declare -F read_state_value >/dev/null 2>&1; then
+    printf '%s\n' "$default"
+    return 0
+  fi
+  local filter v
+  filter=".${field} // empty"
+  v="$(read_state_value "$default" "$filter" 2>/dev/null)"
+  if [[ -z "$v" ]]; then
+    printf '%s\n' "$default"
+  else
+    printf '%s\n' "$v"
+  fi
+}
+
+# HOK-3190: emit the invoker prefix (`node --experimental-strip-types …` or
+# `npx tsx`) for callers that build a command string for `eval` instead of
+# invoking tools directly through `wavemill_run_tool`. Honours the same
+# capability probe + WAVEMILL_SKIP_FAST_STRIP override.
+_wavemill_tsx_invoker() {
+  # Test fixtures override `npx` to intercept tool spawns; preserve that path.
+  if declare -F npx >/dev/null 2>&1; then
+    printf 'npx tsx'
+    return 0
+  fi
+  # HOK-3190: honour SKIP ahead of the cached probe (see wavemill_run_tool
+  # for the same reason — exported WAVEMILL_NODE_STRIP_SUPPORTED must not
+  # outweigh an explicit SKIP from a test).
+  if [[ "${WAVEMILL_SKIP_FAST_STRIP:-0}" == "1" ]]; then
+    printf 'npx tsx' # legacy path for tests
+    return 0
+  fi
+  if [[ -z "${WAVEMILL_NODE_STRIP_SUPPORTED:-}" ]]; then
+    if node --experimental-strip-types --no-warnings -e ';' >/dev/null 2>&1; then
+      WAVEMILL_NODE_STRIP_SUPPORTED=1
+    else
+      WAVEMILL_NODE_STRIP_SUPPORTED=0
+    fi
+    export WAVEMILL_NODE_STRIP_SUPPORTED
+  fi
+  if [[ "${WAVEMILL_NODE_STRIP_SUPPORTED:-0}" == "1" ]]; then
+    printf 'node --experimental-strip-types --no-warnings'
+  else
+    printf 'npx tsx'
+  fi
 }
 
 # HOK-3100: fallback logger stubs so standalone CLI tools (such as
@@ -2484,7 +2607,7 @@ resolve_challenge_pair_hard_failure() {
   challenger_retry_count=$(read_state_value "0" --arg i "$challenger_key" '.tasks[$i].evalHardFailureRetryCount // 0')
 
   if [[ "$primary_exists" != "true" || "$challenger_exists" != "true" ]]; then
-    resolve_output=$(npx tsx "$TOOLS_DIR/resolve-orphan-challenge-pair.ts" \
+    resolve_output=$(wavemill_run_tool "resolve-orphan-challenge-pair.ts" \
       --pair-id "$pair_id" \
       --reason orphan-sibling \
       --repo-dir "$REPO_DIR" 2>/dev/null || true)
@@ -4022,13 +4145,21 @@ _with_timeout() {
   shift || return 1
   (( $# > 0 )) || return 1
 
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$secs" "$@"
-    return $?
-  fi
-  if command -v gtimeout >/dev/null 2>&1; then
-    gtimeout "$secs" "$@"
-    return $?
+  # HOK-3190: GNU timeout fork+execs its argument, so it cannot invoke a
+  # bash function (`timeout: failed to run command '<fn>': No such file or
+  # directory`). When the first positional is a shell function (e.g.
+  # `wavemill_run_tool`), skip the external timeout commands and fall
+  # through to the manual watchdog, which uses bash job control and can
+  # call functions. External commands keep the fast exec path.
+  if ! declare -F "$1" >/dev/null 2>&1; then
+    if command -v timeout >/dev/null 2>&1; then
+      timeout "$secs" "$@"
+      return $?
+    fi
+    if command -v gtimeout >/dev/null 2>&1; then
+      gtimeout "$secs" "$@"
+      return $?
+    fi
   fi
 
   local marker_dir timeout_marker cmd_pid watchdog_pid rc=0
@@ -4142,7 +4273,7 @@ get_model_operating_mode() {
   local repo_dir="${2:-${REPO_DIR:-$PWD}}"
   local tools_dir="${TOOLS_DIR:-${repo_dir%/}/tools}"
 
-  npx tsx "$tools_dir/get-operating-mode.ts" model "$model_id" --repo-dir "$repo_dir" 2>/dev/null || echo "normal"
+  wavemill_run_tool "get-operating-mode.ts" model "$model_id" --repo-dir "$repo_dir" 2>/dev/null || echo "normal"
 }
 
 # Returns exit code 0 if any model is healthy, 1 if all are degraded/exhausted.
@@ -4151,7 +4282,7 @@ has_any_healthy_model() {
   local repo_dir="${1:-${REPO_DIR:-$PWD}}"
   local tools_dir="${TOOLS_DIR:-${repo_dir%/}/tools}"
 
-  npx tsx "$tools_dir/get-operating-mode.ts" any-healthy --repo-dir "$repo_dir" 2>/dev/null
+  wavemill_run_tool "get-operating-mode.ts" any-healthy --repo-dir "$repo_dir" 2>/dev/null
   local exit_code=$?
   if [[ $exit_code -gt 1 ]]; then
     return 0  # Unexpected error, assume models are healthy
@@ -5629,7 +5760,7 @@ wavemill_session_capabilities_json() {
   fi
 
   local output rc
-  output="$(npx tsx "$tool" --repo-dir "$repo_dir" 2>/dev/null)"
+  output="$(wavemill_run_tool "$tool" --repo-dir "$repo_dir" 2>/dev/null)"
   rc=$?
   if [[ $rc -ne 0 || -z "$output" ]]; then
     local i
@@ -6140,7 +6271,7 @@ write_task_packet() {
   local tools_dir="${TOOLS_DIR:?TOOLS_DIR must be set}"
 
   # Fetch current description (strip dotenv stdout noise before parsing JSON)
-  local issue_json=$(npx tsx "$tools_dir/get-issue.ts" "$issue_id" --json 2>/dev/null | sed '/^\[dotenv/d' || echo "{}")
+  local issue_json=$(wavemill_run_tool "get-issue.ts" "$issue_id" --json 2>/dev/null | sed '/^\[dotenv/d' || echo "{}")
   local current_desc=$(echo "$issue_json" | jq -r '.description // ""')
 
   # Check if already a task packet
@@ -6583,7 +6714,10 @@ state_mutate() {
   done
 
   local mutate_status=0
-  if jq "$@" "$jq_filter" "$state_path" > "$tmp_file" 2>"$err_file"; then
+  # HOK-3190: compact output. The 15 MB pretty-printed state file re-parses in
+  # ~0.8 s; compact JSON gives ~40 % size + proportional parse-time back on
+  # every state_mutate.
+  if jq -c "$@" "$jq_filter" "$state_path" > "$tmp_file" 2>"$err_file"; then
     mv "$tmp_file" "$state_path" || mutate_status=$?
   else
     mutate_status=$?
@@ -6602,7 +6736,7 @@ state_mutate() {
 terminal_task_tombstone_matches() {
   local issue="${1:-}" pr="${2:-}" branch="${3:-}" worktree="${4:-}" run_epoch="${5:-}"
   [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
-  jq -e \
+  if jq -e \
     --arg issue "$issue" \
     --arg pr "$pr" \
     --arg branch "$branch" \
@@ -6619,12 +6753,97 @@ terminal_task_tombstone_matches() {
           )
           and (((.value.runEpoch // "") == "") or ($runEpoch == "") or ((.value.runEpoch // "") == $runEpoch))
         ))
-      | length) > 0)' "$STATE_FILE" >/dev/null 2>&1
+      | length) > 0)' "$STATE_FILE" >/dev/null 2>&1; then
+    return 0
+  fi
+  # HOK-3190: archived tombstones live in .wavemill/state-archive/tombstones.jsonl.
+  # Fallback is off the hot path (cleanup/discovery branches only).
+  _terminal_task_tombstone_matches_archive "$issue" "$pr" "$branch" "$worktree" "$run_epoch"
+}
+
+_terminal_task_tombstone_matches_archive() {
+  local issue="$1" pr="$2" branch="$3" worktree="$4" run_epoch="$5"
+  local archive_file
+  archive_file="$(dirname "${STATE_FILE:-}")/.wavemill/state-archive/tombstones.jsonl"
+  [[ -f "$archive_file" ]] || return 1
+  jq --slurp -e \
+    --arg issue "$issue" \
+    --arg pr "$pr" \
+    --arg branch "$branch" \
+    --arg worktree "$worktree" \
+    --arg runEpoch "$run_epoch" \
+    '
+      . as $rows
+      | ($rows | map(select(
+          (.issue // "") == $issue
+          and (
+            ($pr != "" and ((.prNumber // "") | tostring) == $pr)
+            or ($branch != "" and (.branch // "") == $branch)
+            or ($worktree != "" and (.worktree // "") == $worktree)
+          )
+          and (((.runEpoch // "") == "") or ($runEpoch == "") or ((.runEpoch // "") == $runEpoch))
+        )) | length) > 0
+    ' <(awk 'NF' "$archive_file" | jq -s '.') >/dev/null 2>&1
+}
+
+# HOK-3190: for lookups that previously did
+# `(.terminalTaskHistory.tasks // {})[$key]` or
+# `(.terminalTaskHistory.challengePairs // {})[$pair][$role]`,
+# fall back to the archive when the hot file misses. Both run off the hot path.
+terminal_task_history_lookup() {
+  local issue="$1"
+  [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || { printf '\n'; return 0; }
+  local hot
+  hot="$(jq -c --arg i "$issue" '.terminalTaskHistory.tasks[$i] // empty' "$STATE_FILE" 2>/dev/null)"
+  if [[ -n "$hot" ]]; then
+    printf '%s\n' "$hot"
+    return 0
+  fi
+  local archive_file
+  archive_file="$(dirname "${STATE_FILE:-}")/.wavemill/state-archive/history.jsonl"
+  [[ -f "$archive_file" ]] || { printf '\n'; return 0; }
+  jq -c --arg i "$issue" --slurp \
+    'map(select(.issue == $i or .__key == $i)) | if length == 0 then null else .[-1] end' \
+    "$archive_file" 2>/dev/null || printf '\n'
+}
+
+# HOK-3190: trim hot terminalTaskHistory / terminalTaskTombstones in place
+# after a terminal-task write. Keeps at most WAVEMILL_STATE_ARCHIVE_KEEP
+# records (default 50); older ones are shed to the JSONL archive. The call is
+# a no-op when the hot sub-tree is already under the cap, so the common case
+# costs one `jq length`.
+_state_archive_trim_tool_path() {
+  local base="${WAVEMILL_INSTALL_DIR:-}"
+  [[ -z "$base" ]] && base="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  printf '%s/tools/migrate-state-archive.ts\n' "$base"
+}
+
+trim_terminal_task_overflow_if_needed() {
+  [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 0
+  local keep="${WAVEMILL_STATE_ARCHIVE_KEEP:-50}"
+  local h_count t_count
+  h_count="$(jq -r '(.terminalTaskHistory.tasks // {}) | length' "$STATE_FILE" 2>/dev/null || echo 0)"
+  t_count="$(jq -r '(.terminalTaskTombstones // {}) | length' "$STATE_FILE" 2>/dev/null || echo 0)"
+  [[ "$h_count" =~ ^[0-9]+$ ]] || h_count=0
+  [[ "$t_count" =~ ^[0-9]+$ ]] || t_count=0
+  if (( h_count <= keep && t_count <= keep )); then
+    return 0
+  fi
+  local tool
+  tool="$(_state_archive_trim_tool_path)"
+  [[ -f "$tool" ]] || return 0
+  local -a args=(--state-file "$STATE_FILE" --quiet --keep "$keep")
+  [[ -n "${WAVEMILL_STATE_ARCHIVE_MAX_AGE_DAYS:-}" ]] \
+    && args+=(--max-age-days "$WAVEMILL_STATE_ARCHIVE_MAX_AGE_DAYS")
+  node --experimental-strip-types --no-warnings "$tool" "${args[@]}" 2>/dev/null \
+    || npx tsx "$tool" "${args[@]}" 2>/dev/null \
+    || true
 }
 
 write_terminal_task_history_record() {
   local issue="$1" record_json="$2"
   [[ -n "$issue" && -n "$record_json" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
+  local rc
   state_mutate "$STATE_FILE" '
     .terminalTaskHistory.tasks[$issue] = $record
     | if (($record.challengePairId // "") != "" and ($record.challengeRole // "") != "") then
@@ -6634,6 +6853,10 @@ write_terminal_task_history_record() {
     | .updated = (now | todateiso8601)' \
     --arg issue "$issue" \
     --argjson record "$record_json"
+  rc=$?
+  # HOK-3190: shed overflow to the archive if the hot sub-tree is above the cap.
+  trim_terminal_task_overflow_if_needed || true
+  return "$rc"
 }
 
 write_terminal_task_tombstone() {
@@ -6676,6 +6899,7 @@ write_terminal_task_tombstone() {
         task: $task
       }')" || return 1
   key="$(jq -r '[.issue, (if .prNumber != "" then .prNumber else .branch end), (if .runEpoch != "" then .runEpoch else "no-epoch" end), (if .attempt != "" then .attempt else "no-attempt" end)] | join("|")' <<<"$tombstone" 2>/dev/null)" || return 1
+  local rc
   state_mutate "$STATE_FILE" '
     .terminalTaskTombstones[$key] = $tombstone
     | .terminalTaskHistory.tasks[$issue] = $tombstone
@@ -6687,6 +6911,10 @@ write_terminal_task_tombstone() {
     --arg key "$key" \
     --arg issue "$issue" \
     --argjson tombstone "$tombstone"
+  rc=$?
+  # HOK-3190: shed overflow to the archive if the hot sub-tree is above the cap.
+  trim_terminal_task_overflow_if_needed || true
+  return "$rc"
 }
 
 # ============================================================================
@@ -6887,9 +7115,18 @@ task_state_mutate_existing() {
   local issue="$1" filter="$2"
   shift 2
   [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
+  local rc
   state_mutate "$STATE_FILE" \
     "if .tasks[\$issue] then .tasks[\$issue] |= ($filter) else . end" \
     --arg issue "$issue" "$@"
+  rc=$?
+  # HOK-3190: evict the pass snapshot entries for this task so reads later in
+  # the pass see the fresh value. No-op when the monitor's pass snapshot is
+  # not active (standalone CLI, test harness).
+  if declare -F invalidate_task_snapshot >/dev/null 2>&1; then
+    invalidate_task_snapshot "$issue" 2>/dev/null || true
+  fi
+  return "$rc"
 }
 
 # record_post_reap_eval_outcome <issue> <completed|failed>
@@ -7599,7 +7836,7 @@ linear_set_state() {
     return 0
   }
 
-  _with_timeout "$API_TIMEOUT" npx tsx "$TOOLS_DIR/set-issue-state.ts" "$issue" "$state" >/dev/null 2>"$stderr_file" || rc=$?
+  _with_timeout "$API_TIMEOUT" wavemill_run_tool "set-issue-state.ts" "$issue" "$state" >/dev/null 2>"$stderr_file" || rc=$?
   if (( rc == 0 )); then
     rm -f "$stderr_file"
     return 0
@@ -7645,7 +7882,7 @@ linear_enqueue_retry() {
   mapfile -t linear_ids < <(_linear_write_targets "${task_ids[@]}")
   [[ "${#linear_ids[@]}" -eq 0 ]] && return 0
   issues_csv="$(IFS=','; printf '%s' "${linear_ids[*]}")"
-  npx tsx "$TOOLS_DIR/linear-retry-drain.ts" enqueue \
+  wavemill_run_tool "linear-retry-drain.ts" enqueue \
     --state "$state" \
     --issues "$issues_csv" \
     --category "$category" \
@@ -7666,7 +7903,7 @@ linear_batch_set_state() {
   [[ "${#issues[@]}" -eq 0 ]] && return 0
 
   stderr_tmp="$(mktemp -t wavemill-linear-batch-stderr.XXXXXX)"
-  output="$(npx tsx "$TOOLS_DIR/set-issues-state.ts" --state "$state" "${issues[@]}" 2>"$stderr_tmp")" || exit_code=$?
+  output="$(wavemill_run_tool "set-issues-state.ts" --state "$state" "${issues[@]}" 2>"$stderr_tmp")" || exit_code=$?
   stderr_output="$(cat "$stderr_tmp" 2>/dev/null || true)"
 
   if jq -e '.failed | length > 0' >/dev/null 2>&1 <<<"$output"; then
@@ -7701,7 +7938,7 @@ linear_batch_set_state() {
 linear_is_completed() {
   local issue="$1"
   local state
-  state=$(_with_timeout "$API_TIMEOUT" npx tsx "$TOOLS_DIR/get-issue-state.ts" "$issue" 2>/dev/null || echo "active")
+  state=$(_with_timeout "$API_TIMEOUT" wavemill_run_tool "get-issue-state.ts" "$issue" 2>/dev/null || echo "active")
   [[ "$state" == "completed" ]] && return 0
   return 1
 }

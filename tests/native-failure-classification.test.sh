@@ -44,7 +44,7 @@ eval "$(extract_function stage_failure_decision)"
 eval "$(extract_function native_stage_failure_envelope_json)"
 # HOK-3176: classification is the TS failure policy, reached through the
 # wavemill-common.sh bridge helpers.
-for fn in failure_policy_decide failure_policy_next_action _failure_policy_cli; do
+for fn in failure_policy_decide failure_policy_next_action _failure_policy_cli wavemill_run_tool; do
   eval "$(awk -v name="$fn" '$0 ~ "^" name "\\(\\) \\{" { capture=1 } capture { print } /^}/ && capture { exit }' \
     "$REPO_DIR/shared/lib/wavemill-common.sh")"
 done

@@ -55,6 +55,9 @@ extract_common_function() {
 eval "$(extract_common_function failure_policy_decide)"
 eval "$(extract_common_function failure_policy_next_action)"
 eval "$(extract_common_function _failure_policy_cli)"
+# HOK-3190: _failure_policy_cli now delegates to wavemill_run_tool
+# (fast-strip wrapper). Extract that too so the extracted bridge works.
+eval "$(extract_common_function wavemill_run_tool)"
 # shellcheck source=../shared/lib/bounded-retry.sh
 source "$REPO_DIR/shared/lib/bounded-retry.sh"
 TOOLS_DIR="$REPO_DIR/tools"

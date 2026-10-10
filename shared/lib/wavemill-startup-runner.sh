@@ -370,6 +370,30 @@ ensure_state_file() {
     printf '{"session":"%s","started":"%s","tasks":{}}\n' \
       "$SESSION" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATE_FILE"
   fi
+  run_state_archive_migration || true
+}
+
+# HOK-3190: archive terminalTaskHistory / terminalTaskTombstones overflow
+# out of the hot workflow-state.json into .wavemill/state-archive/*.jsonl.
+# Idempotent, lock-aware, preserves history losslessly. Env overrides:
+#   WAVEMILL_STATE_ARCHIVE_KEEP        (default 50)
+#   WAVEMILL_STATE_ARCHIVE_MAX_AGE_DAYS(default 14)
+#   WAVEMILL_SKIP_STATE_ARCHIVE=1      disables migration
+run_state_archive_migration() {
+  [[ "${WAVEMILL_SKIP_STATE_ARCHIVE:-0}" == "1" ]] && return 0
+  [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 0
+  local tool
+  tool="$(wavemill_tool_path migrate-state-archive.ts)"
+  [[ -f "$tool" ]] || return 0
+  local -a args=(--state-file "$STATE_FILE" --quiet)
+  [[ -n "${WAVEMILL_STATE_ARCHIVE_KEEP:-}" ]] && args+=(--keep "$WAVEMILL_STATE_ARCHIVE_KEEP")
+  [[ -n "${WAVEMILL_STATE_ARCHIVE_MAX_AGE_DAYS:-}" ]] \
+    && args+=(--max-age-days "$WAVEMILL_STATE_ARCHIVE_MAX_AGE_DAYS")
+  # Use the fast-strip path when available; fall back to npx tsx so
+  # startup still works on Node versions without --experimental-strip-types.
+  node --experimental-strip-types --no-warnings "$tool" "${args[@]}" 2>/dev/null \
+    || npx tsx "$tool" "${args[@]}" 2>/dev/null \
+    || true
 }
 
 startup_issue_state_from_task() {
@@ -392,7 +416,8 @@ startup_stamp_fresh_plan_summary() {
   local tmp
   tmp="$(mktemp "${PLAN_FILE}.fresh-preflight.XXXXXX" 2>/dev/null || true)"
   [[ -n "$tmp" ]] || return 0
-  if jq \
+  # HOK-3190: compact JSON output
+  if jq -c \
     --argjson original "$original_count" \
     --argjson launchable "$launchable_count" \
     --argjson skipped "$skipped_count" \
@@ -633,6 +658,10 @@ write_monitor_env() {
     write_shell_assignment "WAVEMILL_GIT_REMOTE_TIMEOUT_SECONDS" "${WAVEMILL_GIT_REMOTE_TIMEOUT_SECONDS:-}"
     write_shell_assignment "WAVEMILL_WAKE_GAP_SECONDS" "${WAVEMILL_WAKE_GAP_SECONDS:-}"
     write_shell_assignment "WAVEMILL_DASHBOARD_PID" "${WAVEMILL_DASHBOARD_PID:-}"
+    # HOK-3190: WAVEMILL_MONITOR_PID is published by the monitor itself at
+    # startup, but exporting an empty assignment here avoids `set -u` panics
+    # in child panes that reference it before the monitor exports.
+    write_shell_assignment "WAVEMILL_MONITOR_PID" "${WAVEMILL_MONITOR_PID:-}"
     write_shell_assignment "WAVEMILL_STATE_FILE" "$STATE_FILE"
     write_shell_assignment "MILL_LOG_FILE" "$MILL_LOG_FILE"
     write_shell_assignment "STATUS_LOG_FILE" "$STATUS_LOG_FILE"

@@ -495,6 +495,7 @@ TESTS=(
   shared/lib/cost-parity.test.ts
   shared/lib/observer-findings.test.ts
   shared/lib/pr-comparison-actions.test.ts
+  tests/state-archive-roundtrip.test.ts
 )
 
 SHARD_INDEX=1

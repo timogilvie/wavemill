@@ -157,6 +157,13 @@ npx() {
   fi
   return 1
 }
+# HOK-3190: the monitor now routes tool spawns through `wavemill_run_tool`
+# (fast-strip wrapper). This test extracts handle_coding_launch_refusal
+# standalone, so provide a minimal shim that forwards to the `npx` stub.
+wavemill_run_tool() {
+  local tool="$1"; shift
+  npx tsx "$tool" "$@"
+}
 reroute_calls() { grep -c . "$REROUTE_LOG" || true; }
 reroute_args() { tail -n 1 "$REROUTE_LOG"; }
 

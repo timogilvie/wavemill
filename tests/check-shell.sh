@@ -182,6 +182,10 @@ for f in \
   "$REPO_DIR"/tests/monitor-command-routing.test.sh \
   "$REPO_DIR"/tests/condition-reconciler.test.sh \
   "$REPO_DIR"/tests/config-false-booleans.test.sh \
+  "$REPO_DIR"/tests/check-no-npx-in-monitor.sh \
+  "$REPO_DIR"/tests/monitor-pass-snapshot.test.sh \
+  "$REPO_DIR"/tests/monitor-state-size.test.sh \
+  "$REPO_DIR"/tests/monitor-usr2-wakeup.test.sh \
   "$REPO_DIR"/tests/launch-pane-liveness.test.sh \
   "$REPO_DIR"/tests/launch-failure-log-capture.test.sh \
   "$REPO_DIR"/tests/challenge-eval-soft-retry.test.sh \
@@ -619,7 +623,7 @@ else
       | grep -vE '^(pipefail|euo|noglob|errexit|nounset)$' \
       | grep -vE '^(env|stdin|stdout|stderr|json|txt|csv|pid|utf)$' \
       | grep -vE '^(true|false|yes|string|number|empty|null|undefined)$' \
-      | grep -vE '^(try|catch|def|fromjson|add|rollout_path|thread_id|thread_row|updated_at|exits|setting|falling|select|strings|tostring|valid_dismissal_count)$' \
+      | grep -vE '^(try|catch|def|fromjson|add|rollout_path|thread_id|thread_row|updated_at|exits|setting|falling|select|strings|tostring|valid_dismissal_count|tojson|obj|title)$' \
       | grep -vE '^(bad|internal|keeping|marking|monitor|rate|reduce|service|skipping|staying|timed|too|using|wavemill|waiting)$' \
       | grep -vE '^(advance|review)$' \
       | grep -vE '^(not_eligible|routing_error|invalid_challenge)$' \
@@ -1146,8 +1150,12 @@ else
     fail "canonical get_task_phase is missing the inlined state-read guard"
   fi
 
-  if grep -Fq 'current_agent=$(read_state_value ""' <<< "$MONITOR_ISSUE_BLOCK" \
-    && grep -Fq 'task_status=$(read_state_value ""' <<< "$MONITOR_ISSUE_BLOCK"; then
+  # HOK-3190: monitor_issue_state now reads via pass_task_field (cached per
+  # pass); fall back to read_state_value accepts the pre-HOK-3190 shape.
+  if { grep -Fq 'current_agent=$(pass_task_field "$ISSUE" agent)' <<< "$MONITOR_ISSUE_BLOCK" \
+      || grep -Fq 'current_agent=$(read_state_value ""' <<< "$MONITOR_ISSUE_BLOCK"; } \
+    && { grep -Fq 'task_status=$(pass_task_field "$ISSUE" status)' <<< "$MONITOR_ISSUE_BLOCK" \
+      || grep -Fq 'task_status=$(read_state_value ""' <<< "$MONITOR_ISSUE_BLOCK"; }; then
     pass "monitor_issue_state guards agent and status reads from STATE_FILE"
   else
     fail "monitor_issue_state is missing guarded state-file reads"
@@ -1294,7 +1302,9 @@ else
 fi
 
 SECOND_FORCE_GUARD_LINE=$(grep -n 'if \[\[ -n "\${FORCE_MODEL:-}" \]\]; then' "$MONITOR_FILE" | sed -n '1p' | cut -d: -f1 || true)
-SECOND_RESOLVE_LINE=$(grep -nF 'challenge_plan=$(_with_timeout "$API_TIMEOUT" npx tsx "$TOOLS_DIR/resolve-challenge-task.ts"' "$MONITOR_FILE" | sed -n '1p' | cut -d: -f1 || true)
+# HOK-3190: monitor runtime launch path now routes through wavemill_run_tool
+# instead of a literal `npx tsx "$TOOLS_DIR/..."` invocation; accept either.
+SECOND_RESOLVE_LINE=$(grep -nE 'challenge_plan=\$\(_with_timeout "\$API_TIMEOUT" (npx tsx "\$TOOLS_DIR/resolve-challenge-task\.ts"|wavemill_run_tool "resolve-challenge-task\.ts")' "$MONITOR_FILE" | sed -n '1p' | cut -d: -f1 || true)
 if [[ -n "$SECOND_FORCE_GUARD_LINE" && -n "$SECOND_RESOLVE_LINE" ]] && (( SECOND_FORCE_GUARD_LINE < SECOND_RESOLVE_LINE )); then
   pass "runtime launch path bypasses resolve-challenge-task.ts when FORCE_MODEL is set"
 else
@@ -1395,8 +1405,11 @@ POST_MERGE_EVAL_BLOCK=$(awk '
   in_block { print }
   in_block && /^}/ { exit }
 ' "$LIB_DIR/wavemill-monitor.sh")
-if grep -q '_with_timeout "\$eval_timeout" npx tsx "\$TOOLS_DIR/run-eval-hook.ts"' <<< "$POST_MERGE_EVAL_BLOCK" \
-  && ! grep -q '_with_timeout 120 npx tsx "\$TOOLS_DIR/run-eval-hook.ts"' <<< "$POST_MERGE_EVAL_BLOCK"; then
+# HOK-3190: run-eval-hook.ts is invoked via wavemill_run_tool now; accept both.
+if { grep -q '_with_timeout "\$eval_timeout" npx tsx "\$TOOLS_DIR/run-eval-hook.ts"' <<< "$POST_MERGE_EVAL_BLOCK" \
+    || grep -q '_with_timeout "\$eval_timeout" wavemill_run_tool "run-eval-hook.ts"' <<< "$POST_MERGE_EVAL_BLOCK"; } \
+  && ! grep -q '_with_timeout 120 npx tsx "\$TOOLS_DIR/run-eval-hook.ts"' <<< "$POST_MERGE_EVAL_BLOCK" \
+  && ! grep -q '_with_timeout 120 wavemill_run_tool "run-eval-hook.ts"' <<< "$POST_MERGE_EVAL_BLOCK"; then
   pass "detached post-merge eval uses configurable timeout"
 else
   fail "detached post-merge eval does not use configurable timeout"
@@ -2755,6 +2768,10 @@ EOF
       log_warn() { :; }
       get_linear_issue_id() { echo "HOK-1226"; }
       read_state_value() { printf "%s\n" "$1"; }
+      # HOK-3190: restore_review_task_window now reads state via
+      # pass_task_field and spawns tools through wavemill_run_tool.
+      pass_task_field() { printf "%s\n" "${3:-}"; }
+      wavemill_run_tool() { printf "%s\n" "{}"; }
       _with_timeout() { printf "%s\n" "{}"; }
       _pane_is_dead_or_idle() { return 0; }
       tmux() {
@@ -3076,8 +3093,10 @@ echo "=== Sourced Library Verification ==="
 for script in "$LIB_DIR"/wavemill-*.sh; do
   [[ -f "$script" ]] || continue
   while IFS= read -r line; do
-    # Extract the sourced file path (handle both $SCRIPT_DIR and $LIB_DIR variables)
-    sourced=$(echo "$line" | sed -E 's/^source "//;s/"$//' \
+    # Extract the sourced file path (handle both $SCRIPT_DIR and $LIB_DIR variables).
+    # HOK-3190: strip any leading whitespace too — wavemill-input-reader.sh
+    # now has a guarded `  source "..."` inside an `if [[ -r ... ]]` block.
+    sourced=$(echo "$line" | sed -E 's/^[[:space:]]*source "//;s/"$//' \
       | sed "s|\\\$SCRIPT_DIR|$LIB_DIR|g" \
       | sed "s|\\\$LIB_DIR|$LIB_DIR|g" \
       | sed "s|\\\${BASH_SOURCE\[0\]}|$script|g")
