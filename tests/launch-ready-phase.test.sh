@@ -632,7 +632,7 @@ EOF
         esac
       fi
 
-      if [[ "${2:-}" == "$TOOLS_DIR/set-pr-ready-label.ts" || "${2:-}" == "$TOOLS_DIR/ready-tend-handoff.ts" ]]; then
+      if [[ "${2:-}" == "$TOOLS_DIR/ready-tend-handoff.ts" ]]; then
         local arg prev_arg="" head_arg=""
         for arg in "$@"; do
           [[ "$prev_arg" == "--head" ]] && head_arg="$arg"
@@ -1583,7 +1583,6 @@ check_contains "stale worktree: worktree synced to PR head before Ready" "$outpu
 check_contains "stale worktree: worktree left at PR head" "$output" "worktree_head_after=$sha_new"
 check_contains "stale worktree: handoff checked at PR head" "$output" "ready-tend-handoff-checked:$sha_new"
 check_contains "stale worktree: handoff published at PR head" "$output" "ready-tend-handoff-publish:$sha_new"
-check_contains "stale worktree: ready label bound to PR head" "$output" "set-pr-ready-label-304:$sha_new"
 check_not_contains "stale worktree: never publishes at stale checkout HEAD" "$output" ":$sha_old"
 check_contains "stale worktree: records the published head" "$output" "\"readyHeadSha\":\"$sha_new\""
 check_contains "stale worktree: sync is logged" "$output" "(tend push) before Ready"

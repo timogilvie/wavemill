@@ -4307,8 +4307,8 @@ function emitBlockedLabelContradictionFinding(
     subsystem: 'merge-lane',
     title: `wm:blocked on PR #${pr.number} contradicted by live state`,
     body: `PR #${pr.number} carries wm:blocked with a marker valid at head ${currentHeadSha}, but GitHub reports `
-      + 'MERGEABLE/CLEAN with green required checks. If no wavemill-internal gate applies, canonicalize with '
-      + `\`npx tsx tools/set-pr-ready-label.ts ${pr.number}\`.`,
+      + 'MERGEABLE/CLEAN with green required checks. If no wavemill-internal gate applies, the merge label reconciler '
+      + 'should correct this automatically on the next monitor tick (HOK-3181).',
     severity: 'warning',
     context: {
       markerPath: `merge-lane/${pr.number}/blocked-label-contradiction`,
