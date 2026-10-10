@@ -4145,13 +4145,21 @@ _with_timeout() {
   shift || return 1
   (( $# > 0 )) || return 1
 
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$secs" "$@"
-    return $?
-  fi
-  if command -v gtimeout >/dev/null 2>&1; then
-    gtimeout "$secs" "$@"
-    return $?
+  # HOK-3190: GNU timeout fork+execs its argument, so it cannot invoke a
+  # bash function (`timeout: failed to run command '<fn>': No such file or
+  # directory`). When the first positional is a shell function (e.g.
+  # `wavemill_run_tool`), skip the external timeout commands and fall
+  # through to the manual watchdog, which uses bash job control and can
+  # call functions. External commands keep the fast exec path.
+  if ! declare -F "$1" >/dev/null 2>&1; then
+    if command -v timeout >/dev/null 2>&1; then
+      timeout "$secs" "$@"
+      return $?
+    fi
+    if command -v gtimeout >/dev/null 2>&1; then
+      gtimeout "$secs" "$@"
+      return $?
+    fi
   fi
 
   local marker_dir timeout_marker cmd_pid watchdog_pid rc=0
