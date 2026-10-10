@@ -12444,7 +12444,7 @@ set_ready_pass_labels() {
   local github_head worktree_head
   github_head=$(ready_current_github_head "$wt_dir" "$pr_number")
   if [[ -z "$github_head" ]]; then
-    printf '%s\n' '{"transitionFailure":{"stage":"ownership-changed","detail":"current GitHub head is unavailable"}}' >&2
+    printf '%s\n' '{"transitionFailure":{"stage":"ready-label","detail":"current GitHub head is unavailable"}}' >&2
     return 1
   fi
   # Ready checked the checkout, so the checkout (and Ready's head, if reported)
@@ -13224,7 +13224,7 @@ launch_ready_phase() {
       local moved_github_head
       moved_github_head=$(printf '%s\n' "$label_output" \
         | jq -Rr 'fromjson? | select(.transitionFailure.detail? == "head-moved") | .transitionFailure.githubHead // empty' 2>/dev/null | tail -n 1)
-      if [[ "$transition_stage" == "ownership-changed" && -n "$moved_github_head" ]]; then
+      if [[ -n "$moved_github_head" ]]; then
         bounded_retry_reset_if_new_head "$state_dir" "ready-remediation" "$moved_github_head"
         bounded_retry_reset_if_new_head "$state_dir" "pending-ready-recheck" "$moved_github_head"
         write_stage_result "$state_dir" "ready" "running" "$current_agent" "$current_model" \
@@ -13239,6 +13239,7 @@ launch_ready_phase() {
       transition_failure_json=$(jq -cn --arg stage "$transition_stage" --arg stderr "$transition_output" \
         '{stage:$stage,stderr:$stderr,redacted:($stderr | test("REDACTED")),truncated:($stderr | length >= 2000)}')
       label_failed_artifacts_json=$(jq -cn \
+        --arg stage "$transition_stage" \
         --arg verdict "${verdict:-unknown}" \
         --arg merge_status "${merge_status:-UNKNOWN}" \
         --argjson checks_run "${checks_run:-0}" \
@@ -13251,6 +13252,7 @@ launch_ready_phase() {
         --argjson required_contexts "$required_contexts_json" \
         --argjson transition_failure "$transition_failure_json" '
           {
+            stage:$stage,
             type:"ready",
             verdict:$verdict,
             checksRun:$checks_run,
