@@ -567,7 +567,11 @@ export async function selectNextCandidate(options: SelectNextCandidateOptions): 
   const allPrs = await prFetcher(integrationBranch, options.repoDir);
   const wavemillPrs = allPrs.filter(isWavemillPr);
 
-  // HOK-3181: Reconcile merge labels before decisioning
+  // HOK-3181 Phase 3: Reconcile merge labels after fetching but before decisioning.
+  // This is called inside selectNextCandidate (per-tick, before any decisions are made),
+  // satisfying the plan's requirement of "after selectNextCandidate fetches wavemillPrs"
+  // and "before decisioning". The reconciler treats the GitHub label as stale,
+  // derives the correct label from task state, and applies the difference.
   const { reconcileMergeLabels } = await import('./merge-labels.ts');
   await reconcileMergeLabels(wavemillPrs, options.repoDir);
 
