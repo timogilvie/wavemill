@@ -253,6 +253,38 @@ export async function reconcileMergeLabelsForPr(
  * Build task view from workflow state for a given PR number.
  * Returns null if the PR is not tracked in workflow state.
  */
+function findTaskInState(
+  prNumber: number,
+  state: { tasks?: Record<string, unknown> },
+): MergeLabelTaskView | null {
+  const tasks = state.tasks ?? {};
+  for (const [_issueId, taskData] of Object.entries(tasks)) {
+    if (typeof taskData !== 'object' || taskData === null) {
+      continue;
+    }
+    const task = taskData as Record<string, unknown>;
+    if (task.prNumber === prNumber) {
+      const headSha = typeof task.headSha === 'string' ? task.headSha : undefined;
+      const featureDir = typeof task.featureDir === 'string' ? task.featureDir : undefined;
+      // Return null if critical fields are missing (data corruption)
+      if (!headSha || !featureDir) {
+        return null;
+      }
+      return {
+        prNumber,
+        headSha,
+        phase: typeof task.phase === 'string' ? task.phase : 'unknown',
+        challengeRole: task.challengeRole === 'primary' || task.challengeRole === 'challenger'
+          ? task.challengeRole
+          : undefined,
+        linearIssueId: typeof task.linearIssueId === 'string' ? task.linearIssueId : undefined,
+        featureDir,
+      };
+    }
+  }
+  return null;
+}
+
 export async function buildTaskView(
   prNumber: number,
   repoDir: string,
@@ -261,28 +293,7 @@ export async function buildTaskView(
     const stateFile = join(repoDir, '.wavemill', 'workflow-state.json');
     const stateContent = readFileSync(stateFile, 'utf-8');
     const state = JSON.parse(stateContent) as { tasks?: Record<string, unknown> };
-
-    // Find task by PR number in the state
-    const tasks = state.tasks ?? {};
-    for (const [_issueId, taskData] of Object.entries(tasks)) {
-      if (typeof taskData !== 'object' || taskData === null) {
-        continue;
-      }
-      const task = taskData as Record<string, unknown>;
-      if (task.prNumber === prNumber) {
-        return {
-          prNumber,
-          headSha: typeof task.headSha === 'string' ? task.headSha : '',
-          phase: typeof task.phase === 'string' ? task.phase : 'unknown',
-          challengeRole: task.challengeRole === 'primary' || task.challengeRole === 'challenger'
-            ? task.challengeRole
-            : undefined,
-          linearIssueId: typeof task.linearIssueId === 'string' ? task.linearIssueId : undefined,
-          featureDir: typeof task.featureDir === 'string' ? task.featureDir : '',
-        };
-      }
-    }
-    return null;
+    return findTaskInState(prNumber, state);
   } catch {
     return null;
   }
@@ -359,15 +370,16 @@ export async function buildMergeLabelLiveState(
 export function createDefaultReconcilerDeps(
   repoDir: string,
   prHeadShaByNumber: Map<number, string>,
+  workflowState: { tasks?: Record<string, unknown> },
 ): ReconcileMergeLabelsDeps {
   return {
-    readTaskView: async (prNumber) => buildTaskView(prNumber, repoDir),
+    readTaskView: async (prNumber) => findTaskInState(prNumber, workflowState),
     probeLiveState: async (prNumber) => {
-      const task = await buildTaskView(prNumber, repoDir);
-      const prHeadSha = prHeadShaByNumber.get(prNumber) ?? '';
-      if (!task) {
+      const task = findTaskInState(prNumber, workflowState);
+      const prHeadSha = prHeadShaByNumber.get(prNumber);
+      if (!task || !prHeadSha) {
         return {
-          prHeadSha,
+          prHeadSha: prHeadSha ?? '',
           mergeable: 'UNKNOWN',
           mergeStateStatus: 'UNKNOWN',
           statusCheckRollup: [],
@@ -418,7 +430,7 @@ export async function reconcileHandoffForPr(
   try {
     const handoffRecord = readReadyTendHandoff(featureDir);
     if (!handoffRecord) {
-      // No handoff exists yet
+      // No handoff exists yet - this is not an error, just no action needed
       return;
     }
 
@@ -442,7 +454,14 @@ export async function reconcileHandoffForPr(
       });
     }
   } catch (error) {
-    logger.warn(`Failed to reconcile handoff for PR ${pr.number}`, { error: String(error) });
+    // Log specific error context for handoff reconciliation failure
+    // This is logged but not fatal - labels have already been reconciled
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    logger.warn(
+      `Handoff reconciliation failed for PR ${pr.number}: ${errorMsg}. ` +
+      `Labels have been reconciled, but handoff may not be at current head.`,
+      { featureDir, prHeadSha: pr.headSha, error: errorMsg },
+    );
   }
 }
 
@@ -455,7 +474,18 @@ export async function reconcileMergeLabels(
   repoDir: string,
 ): Promise<void> {
   const prHeadShaByNumber = new Map(prs.map(pr => [pr.number, pr.headSha]));
-  const deps = createDefaultReconcilerDeps(repoDir, prHeadShaByNumber);
+
+  // Read workflow state once for all PRs
+  let workflowState: { tasks?: Record<string, unknown> } = {};
+  try {
+    const stateFile = join(repoDir, '.wavemill', 'workflow-state.json');
+    const stateContent = readFileSync(stateFile, 'utf-8');
+    workflowState = JSON.parse(stateContent) as { tasks?: Record<string, unknown> };
+  } catch (error) {
+    console.warn('Failed to read workflow state', { error: String(error) });
+  }
+
+  const deps = createDefaultReconcilerDeps(repoDir, prHeadShaByNumber, workflowState);
   for (const pr of prs) {
     try {
       const result = await reconcileMergeLabelsForPr(pr, deps);
@@ -463,7 +493,7 @@ export async function reconcileMergeLabels(
       pr.labels = result.updatedLabels;
 
       // Also reconcile handoff if needed
-      const task = await buildTaskView(pr.number, repoDir);
+      const task = findTaskInState(pr.number, workflowState);
       if (task) {
         const liveState = await buildMergeLabelLiveState(pr.number, pr.headSha, task.featureDir, repoDir);
         await reconcileHandoffForPr(pr, task.featureDir, liveState?.readyAtHead, deps.logger);
