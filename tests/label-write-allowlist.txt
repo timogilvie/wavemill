@@ -1,0 +1,13 @@
+# HOK-3181: Ratcheting allowlist for wm:ready / wm:blocked label writes
+#
+# Format: <file> <max-count>
+# Only lane progression writes (wm:merging, wm:merged, wm:superseded) remain.
+# These are OUT OF SCOPE for the reconciler (tend lifecycle, not latched blockers).
+#
+# Suppression comment on specific finding line:
+#   # allow-label-write: <reason>  (shell)
+#   // allow-label-write: <reason> (TypeScript)
+
+# Lane progression writes (tend lifecycle) + imports/comments
+# Count includes import lines and in-comment mentions due to grep pattern
+shared/lib/tend-controller.ts 7

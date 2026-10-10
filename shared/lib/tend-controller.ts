@@ -3283,6 +3283,9 @@ function mergeExecutionDeps(deps: Partial<MergeExecutionDeps> | undefined, marke
     })),
     readyChecker: defaultRunReadyCheck,
     healthChecker: defaultHealthChecker,
+    // HOK-3181: Lane progression labels (wm:merging, wm:merged, wm:superseded) are
+    // OUT OF SCOPE for the merge label reconciler. They are synchronous tend
+    // lifecycle transitions, not latched blockers.
     acquireMerging: (prNumber) => {
       setWavemillMerging(prNumber, { markerRoot });
     },
@@ -3392,6 +3395,7 @@ function defaultLoserCleanup(candidate: ChallengeLoserCleanupCandidate, repoDir:
   }
 
   try {
+    // HOK-3181: wm:superseded is a lane progression label (OUT OF SCOPE for reconciler)
     setWavemillSuperseded(candidate.loserPr);
   } catch (error) {
     console.warn(
