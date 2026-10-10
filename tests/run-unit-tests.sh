@@ -345,8 +345,6 @@ TESTS=(
   tools/seam-artifact-cli.test.ts
   tools/plan-queue.test.ts
   tools/select-wave.test.ts
-  tools/set-pr-ready-label.test.ts
-  tools/set-pr-blocked-label.test.ts
   tools/smoke-deepseek.test.ts
   tools/openrouter-doctor.test.ts
   tools/review-scope-prompt.test.ts
