@@ -216,6 +216,7 @@ TESTS=(
   shared/lib/launch-validation.test.ts
   shared/lib/manual-edit-attribution-audit.test.ts
   shared/lib/merge-queue.test.ts
+  shared/lib/merge-labels.test.ts
   shared/lib/model-registry.test.ts
   shared/lib/model-registry-gpt55-inventory.test.ts
   shared/lib/model-promotion.test.ts
@@ -345,8 +346,6 @@ TESTS=(
   tools/seam-artifact-cli.test.ts
   tools/plan-queue.test.ts
   tools/select-wave.test.ts
-  tools/set-pr-ready-label.test.ts
-  tools/set-pr-blocked-label.test.ts
   tools/smoke-deepseek.test.ts
   tools/openrouter-doctor.test.ts
   tools/review-scope-prompt.test.ts

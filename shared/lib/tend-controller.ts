@@ -567,6 +567,14 @@ export async function selectNextCandidate(options: SelectNextCandidateOptions): 
   const allPrs = await prFetcher(integrationBranch, options.repoDir);
   const wavemillPrs = allPrs.filter(isWavemillPr);
 
+  // HOK-3181 Phase 3: Reconcile merge labels after fetching but before decisioning.
+  // This is called inside selectNextCandidate (per-tick, before any decisions are made),
+  // satisfying the plan's requirement of "after selectNextCandidate fetches wavemillPrs"
+  // and "before decisioning". The reconciler treats the GitHub label as stale,
+  // derives the correct label from task state, and applies the difference.
+  const { reconcileMergeLabels } = await import('./merge-labels.ts');
+  await reconcileMergeLabels(wavemillPrs, options.repoDir);
+
   if (integrationHealth.state === 'unhealthy') {
     return {
       integrationHealth,
@@ -3279,6 +3287,9 @@ function mergeExecutionDeps(deps: Partial<MergeExecutionDeps> | undefined, marke
     })),
     readyChecker: defaultRunReadyCheck,
     healthChecker: defaultHealthChecker,
+    // HOK-3181: Lane progression labels (wm:merging, wm:merged, wm:superseded) are
+    // OUT OF SCOPE for the merge label reconciler. They are synchronous tend
+    // lifecycle transitions, not latched blockers.
     acquireMerging: (prNumber) => {
       setWavemillMerging(prNumber, { markerRoot });
     },
@@ -3388,6 +3399,7 @@ function defaultLoserCleanup(candidate: ChallengeLoserCleanupCandidate, repoDir:
   }
 
   try {
+    // HOK-3181: wm:superseded is a lane progression label (OUT OF SCOPE for reconciler)
     setWavemillSuperseded(candidate.loserPr);
   } catch (error) {
     console.warn(

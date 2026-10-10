@@ -10932,14 +10932,13 @@ ensure_ready_failure_blocks_pr() {
     return 0
   fi
 
+  # HOK-3181: Label reconciler now owns wm:blocked writes. This function only
+  # updates the marker; the label is set by the reconciler on the next tend tick.
   reason=$(ready_failure_reason "$state_dir")
   [[ -n "$reason" ]] || reason="Ready checks failed for PR #$pr_number"
 
-  if (cd "$wt_dir" && wavemill_run_tool "set-pr-blocked-label.ts" "$pr_number" \
-      --reason "$reason" --head "$head_sha" --marker-root "$REPO_DIR"); then
-    mkdir -p "$state_dir"
-    printf '%s' "$head_sha" > "$marker"
-  fi
+  mkdir -p "$state_dir"
+  printf '%s' "$head_sha" > "$marker"
   return 0
 }
 
@@ -12401,7 +12400,8 @@ strip_ready_label_if_review_not_passed() {
   local wt_dir="$1" pr_number="$2" feature_dir="$3"
   review_result_passes_ready_gate "$feature_dir" && return 0
 
-  (cd "$wt_dir" && gh pr edit "$pr_number" --remove-label "wm:ready") >/dev/null 2>&1 || true
+  # HOK-3181: Label reconciler now owns wm:ready/wm:blocked writes.
+  # The label is cleared by the reconciler on the next tend tick.
   return 1
 }
 
@@ -12477,14 +12477,10 @@ set_ready_pass_labels() {
     printf '%s\n' '{"transitionFailure":{"stage":"ownership-changed"}}' >&2
     return 1
   fi
-  # Publish before exposing wm:ready. Tend can claim this exact PR/head while
-  # this label operation is in flight, and the label helper preserves the claim.
+  # Publish handoff. HOK-3181: The label reconciler sets wm:ready on the next
+  # tend tick once it sees the handoff at this head.
   if ! (cd "$wt_dir" && wavemill_run_tool "ready-tend-handoff.ts" publish "$pr_number" --feature-dir "$feature_dir" --head "$head_sha"); then
     printf '%s\n' '{"transitionFailure":{"stage":"ownership-changed"}}' >&2
-    return 1
-  fi
-  if ! (cd "$wt_dir" && wavemill_run_tool "set-pr-ready-label.ts" "$pr_number" --marker-root "$REPO_DIR" --feature-dir "$feature_dir" --head "$head_sha"); then
-    printf '%s\n' '{"transitionFailure":{"stage":"ready-label"}}' >&2
     return 1
   fi
 }

@@ -546,7 +546,6 @@
       "tools/route-tasks.test.ts": 103943,
       "tools/seam-artifact-cli.test.ts": 1695,
       "tools/select-wave.test.ts": 1469,
-      "tools/set-pr-ready-label.test.ts": 190,
       "tools/smoke-deepseek.test.ts": 6786,
       "tools/stamp-pr-route.test.ts": 241,
       "tools/sync-config.test.ts": 7076

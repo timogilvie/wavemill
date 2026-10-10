@@ -99,6 +99,7 @@ for f in \
   "$REPO_DIR"/tests/check-common-guards.test.sh \
   "$REPO_DIR"/tests/check-direct-ledger-access.test.sh \
   "$REPO_DIR"/tests/check-marker-clear-sites.test.sh \
+  "$REPO_DIR"/tests/check-label-write-sites.test.sh \
   "$REPO_DIR"/tests/control-pane-recovery.test.sh \
   "$REPO_DIR"/tests/dashboard-refresh.test.sh \
   "$REPO_DIR"/tests/state-mutex.test.sh \
