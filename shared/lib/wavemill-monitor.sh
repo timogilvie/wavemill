@@ -12480,7 +12480,7 @@ set_ready_pass_labels() {
   # Publish handoff. HOK-3181: The label reconciler sets wm:ready on the next
   # tend tick once it sees the handoff at this head.
   if ! (cd "$wt_dir" && wavemill_run_tool "ready-tend-handoff.ts" publish "$pr_number" --feature-dir "$feature_dir" --head "$head_sha"); then
-    printf '%s\n' '{"transitionFailure":{"stage":"ownership-changed"}}' >&2
+    printf '%s\n' '{"transitionFailure":{"stage":"ready-label"}}' >&2
     return 1
   fi
 }
