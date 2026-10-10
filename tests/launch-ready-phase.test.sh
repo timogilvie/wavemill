@@ -402,8 +402,6 @@ EOF
     READY_PROMPT_CALLS=0
     READY_PROMPT_SUMMARY=""
     CHALLENGE_ORCH_CALLS=0
-    READY_LABEL_COUNT_FILE="$CASE_DIR/ready-label-calls"
-    printf "%s\n" "0" > "$READY_LABEL_COUNT_FILE"
 
     _ensure_window_exists() { :; }
     handle_challenge_pending_ready() {
@@ -643,18 +641,6 @@ EOF
         printf "%s:%s\n" "$(basename "$2" .ts)${3:+-$3}" "$head_arg" >> "$HANDOFF_HEADS_FILE"
       fi
 
-      if [[ "${2:-}" == "$TOOLS_DIR/set-pr-ready-label.ts" ]]; then
-        printf "%s\n" "$(( $(cat "$READY_LABEL_COUNT_FILE") + 1 ))" > "$READY_LABEL_COUNT_FILE"
-        case "$TEST_CASE" in
-          ready_label_failure) return 1 ;;
-          tend_claims_during_ready_label)
-            printf "%s\n" "1" > "$HANDOFF_CLAIM_COUNT_FILE"
-            printf "%s\n" "{\"outcome\":\"tend-owned\",\"prNumber\":304}"
-            return 0
-            ;;
-          *) printf "Canonicalized ready labels for PR #%s\n" "${3:-304}"; return 0 ;;
-        esac
-      fi
 
       if [[ "${2:-}" == "$TOOLS_DIR/ready-tend-handoff.ts" ]]; then
         printf "%s\n" "{\"outcome\":\"published\",\"record\":{\"state\":\"ready-published\",\"token\":\"test-token\"}}"
@@ -782,7 +768,6 @@ EOF
     [[ -f "$STATE_DIR/.needs-attention-transient" ]] && transient_attention="present"
     transient_count="$(cat "$STATE_DIR/.transient-mergeability-count" 2>/dev/null || echo "")"
     infra_retry_count="$(cat "$STATE_DIR/.retry-review-infra-recovery-count" 2>/dev/null || echo "")"
-    ready_label_calls="$(cat "$READY_LABEL_COUNT_FILE" 2>/dev/null || echo "0")"
     handoff_claims="$(cat "$HANDOFF_CLAIM_COUNT_FILE" 2>/dev/null || echo "0")"
     ready_result_payload=""
     [[ -f "$STATE_DIR/.ready-result.json" ]] && ready_result_payload=$(cat "$STATE_DIR/.ready-result.json")
@@ -794,7 +779,6 @@ EOF
 
     printf "rc=%s\nstage_calls=%s\nattention_calls=%s\nattention_count=%s\nlaunch_calls=%s\nreview_launch_calls=%s\nreview_launch_model=%s\nprepare_recovery_calls=%s\nagent_validate_calls=%s\nprompt_calls=%s\nerror_count=%s\nlogs=%s\nwarn_logs=%s\nerror_payload=%s\ndebug_file=%s\ndebug_lines=%s\ndebug_payload=%s\nconflict_attention_head=%s\nconflict_attention_reported=%s\nconflict_detected=%s\nneeds_attention=%s\ntransient_attention=%s\ntransient_count=%s\ninfra_retry_count=%s\nready_result_payload=%s\n" \
       "$rc" "$stage_summary" "$attention_summary" "$attention_count" "$LAUNCH_AGENT_CALLS" "$REVIEW_LAUNCH_CALLS" "${REVIEW_LAUNCH_MODEL:-}" "$PREPARE_RECOVERY_CALLS" "$AGENT_VALIDATE_CALLS" "$READY_PROMPT_CALLS" "$error_count" "$LOG_OUTPUT" "$LOG_WARN_OUTPUT" "$LOG_ERROR_OUTPUT" "$DEBUG_FILE" "$debug_line_count" "$debug_payload" "$conflict_attention_head" "$conflict_attention_reported" "$conflict_detected" "$needs_attention" "$transient_attention" "$transient_count" "$infra_retry_count" "$ready_result_payload"
-    printf "ready_label_calls=%s\n" "$ready_label_calls"
     printf "handoff_claims=%s\n" "$handoff_claims"
     printf "surface_merge_needed_calls=%s\n" "$SURFACE_MERGE_NEEDED_CALLS"
     printf "surface_merge_needed_log=%s\n" "$(printf "%s" "$SURFACE_MERGE_NEEDED_LOG" | tr "\n" ";")"
@@ -1402,7 +1386,6 @@ check_contains "persistent conflict logs one terse error" "$output" "Merge confl
 output="$(run_launch_case pass_after_remediation)"
 check_contains "pass after remediation returns success" "$output" "rc=0"
 check_contains "pass after remediation writes completed stage" "$output" "|ready|completed|"
-check_contains "pass after remediation canonicalizes ready labels once" "$output" "ready_label_calls=1"
 check_contains "pass after remediation records ready label update" "$output" "\"readyLabelsUpdated\":true"
 check_not_contains "pass after remediation clears remediation artifacts" "$output" "\"remediationAttempts\":"
 check_contains "pass after remediation clears conflict marker" "$output" "conflict_detected=absent"
@@ -1418,7 +1401,6 @@ check_not_contains "pass after remediation no longer emits label canonicalizatio
 output="$(run_launch_case pass_operator_merge_needed)"
 check_contains "operator merge-needed: Ready passes" "$output" "rc=0"
 check_contains "operator merge-needed: writes completed stage" "$output" "|ready|completed|"
-check_contains "operator merge-needed: no ready label canonicalization" "$output" "ready_label_calls=0"
 check_contains "operator merge-needed: no tend handoff claim" "$output" "handoff_claims=0"
 check_contains "operator merge-needed: nothing is published to GitHub" "$output" "handoff_heads=[]"
 check_contains "operator merge-needed: surfaces one operator notification" "$output" "surface_merge_needed_calls=1"
@@ -1543,7 +1525,6 @@ check_contains "plain not_ready marks failed verdict" "$output" "verdictState=fa
 output="$(run_launch_case dismissed_blockers_pass)"
 check_contains "dismissed blockers pass returns success" "$output" "rc=0"
 check_contains "dismissed blockers pass writes completed stage" "$output" "|ready|completed|"
-check_contains "dismissed blockers pass canonicalizes ready labels" "$output" "ready_label_calls=1"
 check_not_contains "dismissed blockers pass emits no readiness refusal" "$output" "Review verdict does not pass readiness gate"
 check_not_contains "dismissed blockers pass does not relaunch review" "$output" "review_launch_calls=1"
 
@@ -1558,7 +1539,6 @@ check_contains "invalid dismissal marks failed verdict" "$output" "verdictState=
 output="$(run_launch_case ready_label_failure)"
 check_contains "ready label failure returns failure" "$output" "rc=1"
 check_contains "ready label failure writes failed stage" "$output" "|ready|failed|"
-check_contains "ready label failure attempts label restore once" "$output" "ready_label_calls=1"
 check_contains "ready label failure keeps attention" "$output" "needs_attention=present"
 check_contains "ready label failure records label update failure" "$output" "\"readyLabelsUpdated\":false"
 check_contains "ready label failure records typed stage" "$output" "\"stage\":\"ready-label\""
