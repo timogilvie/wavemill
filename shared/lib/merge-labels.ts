@@ -263,24 +263,26 @@ function findTaskInState(
       continue;
     }
     const task = taskData as Record<string, unknown>;
-    if (task.prNumber === prNumber) {
-      const headSha = typeof task.headSha === 'string' ? task.headSha : undefined;
-      const featureDir = typeof task.featureDir === 'string' ? task.featureDir : undefined;
-      // Return null if critical fields are missing (data corruption)
-      if (!headSha || !featureDir) {
-        return null;
-      }
-      return {
-        prNumber,
-        headSha,
-        phase: typeof task.phase === 'string' ? task.phase : 'unknown',
-        challengeRole: task.challengeRole === 'primary' || task.challengeRole === 'challenger'
-          ? task.challengeRole
-          : undefined,
-        linearIssueId: typeof task.linearIssueId === 'string' ? task.linearIssueId : undefined,
-        featureDir,
-      };
+    // Type-check prNumber: must be a number, even in JSON-parsed data
+    if (typeof task.prNumber !== 'number' || task.prNumber !== prNumber) {
+      continue;
     }
+    const headSha = typeof task.headSha === 'string' ? task.headSha : undefined;
+    const featureDir = typeof task.featureDir === 'string' ? task.featureDir : undefined;
+    // Return null if critical fields are missing (data corruption)
+    if (!headSha || !featureDir) {
+      return null;
+    }
+    return {
+      prNumber,
+      headSha,
+      phase: typeof task.phase === 'string' ? task.phase : 'unknown',
+      challengeRole: task.challengeRole === 'primary' || task.challengeRole === 'challenger'
+        ? task.challengeRole
+        : undefined,
+      linearIssueId: typeof task.linearIssueId === 'string' ? task.linearIssueId : undefined,
+      featureDir,
+    };
   }
   return null;
 }
