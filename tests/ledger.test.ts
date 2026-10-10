@@ -65,3 +65,23 @@ test('killed writer rolls back transaction', async () => {
   assert.equal(reopened.listChildren(root.id).length, 0);
   reopened.close();
 });
+test('superseded step uses a distinct input hash and retains settled history', () => {
+  const ledger = Ledger.open({ dbPath });
+  const parent = ledger.transaction(tx => tx.insertTask({ kind: 'issue', slug: 'HOK-4' }));
+  const old = ledger.transaction(tx => tx.insertTask({ parentId: parent.id, kind: 'step', slug: 'review', inputsHash: 'old' }));
+  ledger.transaction(tx => { tx.settleTask(old.id, 'done'); tx.recordOperatorEvent({ taskId: parent.id, kind: 're-review' }); });
+  const next = ledger.transaction(tx => tx.insertTask({ parentId: parent.id, kind: 'step', slug: 'review', inputsHash: 'new' }));
+  assert.equal(ledger.getTask(old.id)?.settled_as, 'done');
+  assert.equal(ledger.getTask(next.id)?.settled_as, null);
+  ledger.close();
+});
+test('parent settlement retries after child settlement', () => {
+  const ledger = Ledger.open({ dbPath });
+  const parent = ledger.transaction(tx => tx.insertTask({ kind: 'issue', slug: 'HOK-5' }));
+  const child = ledger.transaction(tx => tx.insertTask({ parentId: parent.id, kind: 'step', slug: 'work' }));
+  assert.throws(() => ledger.transaction(tx => tx.settleTask(parent.id, 'aborted')), ParentHasOpenChildrenError);
+  ledger.transaction(tx => tx.settleTask(child.id, 'aborted'));
+  ledger.transaction(tx => tx.settleTask(parent.id, 'aborted'));
+  assert.equal(ledger.getTask(parent.id)?.settled_as, 'aborted');
+  ledger.close();
+});
