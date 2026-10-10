@@ -45,7 +45,7 @@ TESTS=(
   challenge-record-decisive.test.sh
   native-terminal-failure.test.sh
   native-failure-classification.test.sh
-  challenger-transient-retry.test.sh
+  stage-failure-retry.test.sh
   coding-dirty-handoff.test.sh
   ready-exhausted-challenge.test.sh
   review-gate-refused-challenge.test.sh
@@ -125,6 +125,7 @@ TESTS=(
   wavemill-input-reader.test.sh
   merge-retry-marker.test.sh
   queue-health.test.sh
+  queue-inference-degraded-banner.test.sh
   merge-queue-live-ci.test.sh
   merge-queue-blocked-label.test.sh
   merge-lane-progress-artifacts.test.sh
@@ -157,6 +158,11 @@ TESTS=(
   re-review-no-pr.test.sh
   monitor-command-routing.test.sh
   condition-reconciler.test.sh
+  config-false-booleans.test.sh
+  check-no-npx-in-monitor.sh
+  monitor-pass-snapshot.test.sh
+  monitor-state-size.test.sh
+  monitor-usr2-wakeup.test.sh
 )
 
 SHARD_INDEX=1

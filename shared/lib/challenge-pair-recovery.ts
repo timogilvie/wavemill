@@ -350,7 +350,7 @@ export function assessChallengePair(
   }
 
   const primaryResolved = resolveArmIntent(repoDir, pairId, pairId, primaryTask, primaryTask);
-  const challengerResolved = resolveArmIntent(repoDir, `${pairId}_c`, pairId, challengerTask, primaryTask);
+  const challengerResolved = resolveArmIntent(repoDir, challengerTaskKey(pairId), pairId, challengerTask, primaryTask);
   const primaryIntent = primaryResolved.intent;
   const challengerIntent = challengerResolved.intent;
   const challengeStage = primaryIntent?.selectedStage

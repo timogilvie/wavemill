@@ -53,6 +53,13 @@ export interface LLMCallOptions {
   /** Timeout in milliseconds (default: 120000 = 2 minutes) */
   timeout?: number;
   /**
+   * Cap on the model's output tokens (HOK-3179). Passed to the Claude Code CLI
+   * via `CLAUDE_CODE_MAX_OUTPUT_TOKENS` (the documented env knob); other
+   * providers currently ignore it. Best-effort — the hard budget is still
+   * timeout/deadline.
+   */
+  maxOutputTokens?: number;
+  /**
    * Activity-based timeout in milliseconds.
    * When set, the timeout resets whenever stdout/stderr receives data.
    * The `timeout` option becomes a hard wall-clock cap.
@@ -819,12 +826,17 @@ interface ProviderConfig {
 }
 
 /** Build an env object from process.env with provider-specific overrides */
-function buildProviderEnv(config: ProviderConfig): NodeJS.ProcessEnv {
+function buildProviderEnv(config: ProviderConfig, options: LLMCallOptions = {}): NodeJS.ProcessEnv {
   const env = { ...process.env };
   if (config.envVarValue === undefined) {
     delete env[config.envVarName];
   } else {
     env[config.envVarName] = config.envVarValue;
+  }
+  if (typeof options.maxOutputTokens === 'number' && Number.isFinite(options.maxOutputTokens) && options.maxOutputTokens > 0) {
+    // The Claude Code CLI reads this env knob; other providers currently
+    // ignore it (setting it is harmless there).
+    env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(Math.floor(options.maxOutputTokens));
   }
   return env;
 }
@@ -902,7 +914,7 @@ function executeSync(
   const command = `${escapeShellArg(cliCmd)} ${cliArgs.join(' ')} < ${escapeShellArg(tmpFile)}`;
 
   const config = getProviderConfig(provider);
-  const env = buildProviderEnv(config);
+  const env = buildProviderEnv(config, options);
 
   try {
     const raw = execShellCommand(command, {
@@ -1030,7 +1042,7 @@ async function executeStream(
     }
 
     const config = getProviderConfig(provider);
-    const env = buildProviderEnv(config);
+    const env = buildProviderEnv(config, options);
 
     const spawnOptions: SpawnOptions = {
       stdio: ['pipe', 'pipe', 'pipe'],

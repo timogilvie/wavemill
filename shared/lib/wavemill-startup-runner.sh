@@ -31,7 +31,7 @@ fi
 AGENT_CMD="$(jq -r '.agentCmd' "$PLAN_FILE")"
 AGENT_CMD_EXPLICIT="$(jq -r '.agentCmdExplicit // false' "$PLAN_FILE")"
 FORCE_MODEL="$(jq -r '.forceModel // empty' "$PLAN_FILE")"
-ROUTER_ENABLED="$(jq -r '.routerEnabled // true' "$PLAN_FILE")"
+ROUTER_ENABLED="$(jq -r '.routerEnabled | if . == null then true else . end' "$PLAN_FILE")"
 MAX_PARALLEL="$(jq -r '.maxParallel // 0' "$PLAN_FILE")"
 STATE_DIR="$(jq -r '.stateDir' "$PLAN_FILE")"
 STATE_FILE="$(jq -r '.stateFile' "$PLAN_FILE")"
@@ -44,7 +44,7 @@ MONITOR_SCRIPT="$(jq -r '.startupConfig.monitorScript' "$PLAN_FILE")"
 LAUNCHED_ISSUES_FILE="$(jq -r '.startupConfig.launchedIssuesFile' "$PLAN_FILE")"
 MILL_LOG_FILE="$(jq -r '.startupConfig.millLogFile // empty' "$PLAN_FILE")"
 POLL_SECONDS="$(jq -r '.monitorConfig.pollSeconds // 10' "$PLAN_FILE")"
-REQUIRE_CONFIRM="$(jq -r '.monitorConfig.requireConfirm // true' "$PLAN_FILE")"
+REQUIRE_CONFIRM="$(jq -r '.monitorConfig.requireConfirm | if . == null then true else . end' "$PLAN_FILE")"
 WAVEMILL_REQUIRE_CONFIRM_SOURCE="$(jq -r '.monitorConfig.requireConfirmSource // "runtime-env"' "$PLAN_FILE")"
 INTEGRATION_MERGE_METHOD="$(jq -r '.monitorConfig.mergeMethod // "squash"' "$PLAN_FILE")"
 WAVEMILL_MERGE_METHOD_SOURCE="$(jq -r '.monitorConfig.mergeMethodSource // "repo-config"' "$PLAN_FILE")"
@@ -57,11 +57,11 @@ else
   command -v tmux >/dev/null || { echo "Error: tmux is required but not installed" >&2; exit 1; }
 fi
 PROJECT_NAME="$(jq -r '.monitorConfig.projectName // empty' "$PLAN_FILE")"
-AUTO_EVAL="$(jq -r '.monitorConfig.autoEval // true' "$PLAN_FILE")"
+AUTO_EVAL="$(jq -r '.monitorConfig.autoEval | if . == null then true else . end' "$PLAN_FILE")"
 ENTER_ACTION="$(jq -r '.monitorConfig.enterAction // (if .monitorConfig.enterLaunchesWave == true then "wave" elif .monitorConfig.enterLaunchesWave == false then "top-scored" else "none" end)' "$PLAN_FILE")"
 if [[ "$ENTER_ACTION" == "wave" ]]; then ENTER_LAUNCHES_WAVE="true"; else ENTER_LAUNCHES_WAVE="false"; fi
 DASHBOARD_VERBOSITY="$(jq -r '.monitorConfig.dashboardVerbosity // "info"' "$PLAN_FILE")"
-DASHBOARD_LOG_TO_FILE="$(jq -r '.monitorConfig.dashboardLogToFile // true' "$PLAN_FILE")"
+DASHBOARD_LOG_TO_FILE="$(jq -r '.monitorConfig.dashboardLogToFile | if . == null then true else . end' "$PLAN_FILE")"
 # Parsed but intentionally unused; behavior change ships in follow-up.
 QUEUE_PLAN="$(jq -c '.queuePlan // []' "$PLAN_FILE")"
 DASHBOARD_PID=""
@@ -370,6 +370,30 @@ ensure_state_file() {
     printf '{"session":"%s","started":"%s","tasks":{}}\n' \
       "$SESSION" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATE_FILE"
   fi
+  run_state_archive_migration || true
+}
+
+# HOK-3190: archive terminalTaskHistory / terminalTaskTombstones overflow
+# out of the hot workflow-state.json into .wavemill/state-archive/*.jsonl.
+# Idempotent, lock-aware, preserves history losslessly. Env overrides:
+#   WAVEMILL_STATE_ARCHIVE_KEEP        (default 50)
+#   WAVEMILL_STATE_ARCHIVE_MAX_AGE_DAYS(default 14)
+#   WAVEMILL_SKIP_STATE_ARCHIVE=1      disables migration
+run_state_archive_migration() {
+  [[ "${WAVEMILL_SKIP_STATE_ARCHIVE:-0}" == "1" ]] && return 0
+  [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 0
+  local tool
+  tool="$(wavemill_tool_path migrate-state-archive.ts)"
+  [[ -f "$tool" ]] || return 0
+  local -a args=(--state-file "$STATE_FILE" --quiet)
+  [[ -n "${WAVEMILL_STATE_ARCHIVE_KEEP:-}" ]] && args+=(--keep "$WAVEMILL_STATE_ARCHIVE_KEEP")
+  [[ -n "${WAVEMILL_STATE_ARCHIVE_MAX_AGE_DAYS:-}" ]] \
+    && args+=(--max-age-days "$WAVEMILL_STATE_ARCHIVE_MAX_AGE_DAYS")
+  # Use the fast-strip path when available; fall back to npx tsx so
+  # startup still works on Node versions without --experimental-strip-types.
+  node --experimental-strip-types --no-warnings "$tool" "${args[@]}" 2>/dev/null \
+    || npx tsx "$tool" "${args[@]}" 2>/dev/null \
+    || true
 }
 
 startup_issue_state_from_task() {
@@ -392,7 +416,8 @@ startup_stamp_fresh_plan_summary() {
   local tmp
   tmp="$(mktemp "${PLAN_FILE}.fresh-preflight.XXXXXX" 2>/dev/null || true)"
   [[ -n "$tmp" ]] || return 0
-  if jq \
+  # HOK-3190: compact JSON output
+  if jq -c \
     --argjson original "$original_count" \
     --argjson launchable "$launchable_count" \
     --argjson skipped "$skipped_count" \
@@ -633,6 +658,10 @@ write_monitor_env() {
     write_shell_assignment "WAVEMILL_GIT_REMOTE_TIMEOUT_SECONDS" "${WAVEMILL_GIT_REMOTE_TIMEOUT_SECONDS:-}"
     write_shell_assignment "WAVEMILL_WAKE_GAP_SECONDS" "${WAVEMILL_WAKE_GAP_SECONDS:-}"
     write_shell_assignment "WAVEMILL_DASHBOARD_PID" "${WAVEMILL_DASHBOARD_PID:-}"
+    # HOK-3190: WAVEMILL_MONITOR_PID is published by the monitor itself at
+    # startup, but exporting an empty assignment here avoids `set -u` panics
+    # in child panes that reference it before the monitor exports.
+    write_shell_assignment "WAVEMILL_MONITOR_PID" "${WAVEMILL_MONITOR_PID:-}"
     write_shell_assignment "WAVEMILL_STATE_FILE" "$STATE_FILE"
     write_shell_assignment "MILL_LOG_FILE" "$MILL_LOG_FILE"
     write_shell_assignment "STATUS_LOG_FILE" "$STATUS_LOG_FILE"

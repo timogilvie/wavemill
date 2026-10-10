@@ -106,7 +106,9 @@ export async function mutateJsonState<T>(
     const next = transform(current);
 
     mkdirSync(dirname(statePath), { recursive: true });
-    writeFileSync(tmpPath, `${JSON.stringify(next, null, 2)}\n`, 'utf-8');
+    // HOK-3190: compact JSON output. Pretty-printing a 15 MB state file costs
+    // ~0.8 s to parse per read; compact gives ~40 % size back on every write.
+    writeFileSync(tmpPath, `${JSON.stringify(next)}\n`, 'utf-8');
     renameSync(tmpPath, statePath);
 
     return next;
@@ -173,7 +175,8 @@ export function mutateJsonStateSync<T>(
     const next = transform(current);
 
     mkdirSync(dirname(statePath), { recursive: true });
-    writeFileSync(tmpPath, `${JSON.stringify(next, null, 2)}\n`, 'utf-8');
+    // HOK-3190: compact JSON output. See mutateJsonState for rationale.
+    writeFileSync(tmpPath, `${JSON.stringify(next)}\n`, 'utf-8');
     renameSync(tmpPath, statePath);
 
     return next;

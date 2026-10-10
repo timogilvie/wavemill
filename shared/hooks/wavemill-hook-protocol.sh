@@ -12,6 +12,59 @@ wavemill_hook_check() {
   command -v jq >/dev/null 2>&1 || exit 0
 }
 
+# HOK-3190: Send USR2 to the monitor process to interrupt poll_sleep and
+# make it re-enter its loop body immediately. Marker writers (plan-approved,
+# coding-complete, ready-complete, re-review commands) call this so operator
+# actions aren't gated on the next POLL_SECONDS boundary.
+#
+# Mirrors the shape of wavemill_hook_notify (which signals the dashboard
+# with USR1). Best-effort: a stale/missing PID is a no-op and never fails.
+#
+# The monitor PID lives on the tmux session environment as
+# WAVEMILL_MONITOR_PID; agent panes export it via write_monitor_env, and
+# marker writers that are not in a wavemill-launched pane fall back to
+# tmux show-environment (resolved by the caller).
+wavemill_monitor_notify() {
+  local monitor_pid="${WAVEMILL_MONITOR_PID:-}"
+  [[ -n "$monitor_pid" ]] || return 0
+  [[ "$monitor_pid" =~ ^[0-9]+$ ]] || return 0
+  [[ "$monitor_pid" -eq 0 ]] && return 0
+  kill -0 "$monitor_pid" 2>/dev/null || return 0
+  kill -USR2 "$monitor_pid" 2>/dev/null || true
+  return 0
+}
+
+# HOK-3190: touch a lifecycle marker (`.plan-approved`, `.coding-complete`,
+# `.review-complete`, `.ready-complete`) AND wake the monitor so the next
+# phase launch doesn't wait on the poll tick. Call this from any site that
+# would otherwise do `touch "$feature_dir/.X"` or `printf '…' > "$feature_dir/.X"`.
+#
+# Usage: wavemill_touch_marker <path> [--content <string>]
+# A missing --content writes an empty file (touch semantics). The write is
+# atomic (tmp + rename) when --content is supplied.
+wavemill_touch_marker() {
+  local marker_path="${1:-}"
+  shift || true
+  [[ -n "$marker_path" ]] || return 1
+  local content=""
+  local have_content=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --content) content="${2:-}"; have_content=1; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  mkdir -p "$(dirname "$marker_path")" 2>/dev/null || true
+  if (( have_content )); then
+    local tmp="${marker_path}.tmp.$$"
+    printf '%s' "$content" > "$tmp" && mv "$tmp" "$marker_path"
+  else
+    : > "$marker_path"
+  fi
+  wavemill_monitor_notify
+  return 0
+}
+
 # Send USR1 to dashboard process to trigger an immediate refresh.
 # Best-effort only: never fail, even when PID is stale or invalid.
 wavemill_hook_notify() {

@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { StateLockTimeoutError, StateParseError, mutateJsonState } from './state-mutex.ts';
 import { resolveProviderNativeModelId } from './model-registry.ts';
-import type { ArmFaultClass, TerminalFailureKind } from './arm-failure-taxonomy.ts';
+import type { ArmFaultClass, ArmFailureKind } from './arm-failure-taxonomy.ts';
 import type { ChallengeStage } from './challenge-scheduler.ts';
 import type { ChallengeConfig } from './config.ts';
 
@@ -488,7 +488,7 @@ export async function recordSelectionOutcome(input: SelectionHealthOptions & {
   success?: boolean;
   /** Explicit terminal status; defaults to `success`/`failure` from `success`. */
   terminalStatus?: SelectionAttemptStatus;
-  failureKind?: TerminalFailureKind | string | null;
+  failureKind?: ArmFailureKind | string | null;
   faultClass?: ArmFaultClass | null;
 }): Promise<void> {
   const statePath = resolveSelectionHealthPath(input);

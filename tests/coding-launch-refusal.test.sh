@@ -77,7 +77,7 @@ extract_function() {
 
 FUNC_FILE="$TEST_TMP/coding_launch_refusal.sh"
 cat "$REPO_DIR/shared/lib/bounded-retry.sh" > "$FUNC_FILE"
-for fn in phase_launch_head coding_launch_refusal_limit coding_launch_refusal_is_transient \
+for fn in phase_launch_head phase_launch_base coding_launch_refusal_limit coding_launch_refusal_is_transient \
   log_coding_launch_refusal coding_launch_refusal_hold coding_launch_refusal_clear \
   coding_launch_refusal_terminalize handle_coding_launch_refusal; do
   extract_function "$MONITOR_SCRIPT_FILE" "$fn" >> "$FUNC_FILE"
@@ -156,6 +156,13 @@ npx() {
     return 0
   fi
   return 1
+}
+# HOK-3190: the monitor now routes tool spawns through `wavemill_run_tool`
+# (fast-strip wrapper). This test extracts handle_coding_launch_refusal
+# standalone, so provide a minimal shim that forwards to the `npx` stub.
+wavemill_run_tool() {
+  local tool="$1"; shift
+  npx tsx "$tool" "$@"
 }
 reroute_calls() { grep -c . "$REROUTE_LOG" || true; }
 reroute_args() { tail -n 1 "$REROUTE_LOG"; }
