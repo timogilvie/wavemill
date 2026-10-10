@@ -425,13 +425,14 @@ describe('reconcileMergeLabelsForPr', () => {
     };
   }
 
-  it('returns null when task view is not available', async () => {
+  it('returns null decision when task view is not available', async () => {
     const deps = createMockDeps({
       readTaskView: async () => null,
     });
     const pr = { number: 123, labels: [], headSha: 'abc123' };
     const result = await reconcileMergeLabelsForPr(pr, deps);
-    assert.equal(result, null);
+    assert.equal(result.decision, null);
+    assert.deepEqual(result.updatedLabels, []);
   });
 
   it('no-op when wm:ready label matches derived decision', async () => {
@@ -445,7 +446,8 @@ describe('reconcileMergeLabelsForPr', () => {
     });
     const pr = { number: 123, labels: ['wm:ready'], headSha: 'abc123' };
     const result = await reconcileMergeLabelsForPr(pr, deps);
-    assert.deepEqual(result, { label: 'wm:ready' });
+    assert.deepEqual(result.decision, { label: 'wm:ready' });
+    assert.deepEqual(result.updatedLabels, ['wm:ready']);
     assert.equal(setReadyCalled, false, 'setReady should not be called');
   });
 
@@ -460,7 +462,8 @@ describe('reconcileMergeLabelsForPr', () => {
     });
     const pr = { number: 123, labels: ['wm:blocked'], headSha: 'abc123' };
     const result = await reconcileMergeLabelsForPr(pr, deps);
-    assert.deepEqual(result, { label: 'wm:ready' });
+    assert.deepEqual(result.decision, { label: 'wm:ready' });
+    assert.deepEqual(result.updatedLabels, ['wm:ready']);
     assert.equal(setReadyCalled, true, 'setReady should be called');
   });
 
@@ -485,7 +488,8 @@ describe('reconcileMergeLabelsForPr', () => {
     });
     const pr = { number: 123, labels: ['wm:ready'], headSha: 'abc123' };
     const result = await reconcileMergeLabelsForPr(pr, deps);
-    assert.deepEqual(result, { label: 'wm:blocked', reason: 'ci-failing' });
+    assert.deepEqual(result.decision, { label: 'wm:blocked', reason: 'ci-failing' });
+    assert.deepEqual(result.updatedLabels, ['wm:blocked']);
     assert.equal(setBlockedCalled, true, 'setBlocked should be called');
     assert.equal(blockedReason, 'ci-failing');
   });
@@ -505,7 +509,8 @@ describe('reconcileMergeLabelsForPr', () => {
     });
     const pr = { number: 123, labels: ['wm:blocked'], headSha: 'abc123' };
     const result = await reconcileMergeLabelsForPr(pr, deps);
-    assert.deepEqual(result, { label: null, reason: 'ready-pending' });
+    assert.deepEqual(result.decision, { label: null, reason: 'ready-pending' });
+    assert.deepEqual(result.updatedLabels, []);
     assert.equal(clearCalled, true, 'clear should be called');
   });
 
@@ -524,7 +529,8 @@ describe('reconcileMergeLabelsForPr', () => {
     });
     const pr = { number: 123, labels: [], headSha: 'abc123' };
     const result = await reconcileMergeLabelsForPr(pr, deps);
-    assert.deepEqual(result, { label: null, reason: 'ready-pending' });
+    assert.deepEqual(result.decision, { label: null, reason: 'ready-pending' });
+    assert.deepEqual(result.updatedLabels, []);
     assert.equal(clearCalled, false, 'clear should not be called when no labels present');
   });
 

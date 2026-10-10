@@ -8,6 +8,17 @@
  * See CLAUDE.md for the full invariant.
  */
 
+import { readStageResult } from './stage-result.ts';
+import { readReadyTendHandoff, classifyClaim } from './ready-tend-handoff.ts';
+import { probePrLiveState, type PrLiveState } from './pr-live-state.ts';
+import {
+  setWavemillReady,
+  setWavemillBlocked,
+  clearWavemillState,
+} from './pr-state-labels.ts';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 export interface MergeLabelTaskView {
   prNumber: number;
   headSha: string;
@@ -156,16 +167,16 @@ export interface ReconcileMergeLabelsDeps {
  * Reconciles the merge label for a single PR. Derives the correct label from
  * task state, compares with current labels, and applies the difference.
  *
- * Returns the decision, or null if task view could not be read.
+ * Returns an object with the decision and the updated label set.
  */
 export async function reconcileMergeLabelsForPr(
   pr: { number: number; labels: readonly string[]; headSha: string },
   deps: ReconcileMergeLabelsDeps,
-): Promise<MergeLabelDecision | null> {
+): Promise<{ decision: MergeLabelDecision | null; updatedLabels: string[] }> {
   const task = await deps.readTaskView(pr.number);
   if (!task) {
     // PR is not a wavemill PR or task view not available
-    return null;
+    return { decision: null, updatedLabels: [...pr.labels] };
   }
 
   const liveState = await deps.probeLiveState(pr.number);
@@ -175,11 +186,14 @@ export async function reconcileMergeLabelsForPr(
   const hasReady = currentLabels.has('wm:ready');
   const hasBlocked = currentLabels.has('wm:blocked');
 
+  // Compute updated labels after reconciliation
+  let updatedLabels = [...pr.labels];
+
   // Determine what needs to change
   if (decision.label === 'wm:ready') {
     if (hasReady && !hasBlocked) {
       // Already correct, no-op
-      return decision;
+      return { decision, updatedLabels };
     }
     deps.logger.info('Reconciling merge label to wm:ready', {
       pr: pr.number,
@@ -187,13 +201,18 @@ export async function reconcileMergeLabelsForPr(
       after: 'wm:ready',
     });
     await deps.applyLabel.setReady(pr.number);
-    return decision;
+    // Update in-memory labels
+    updatedLabels = updatedLabels.filter(l => l !== 'wm:blocked');
+    if (!hasReady) {
+      updatedLabels.push('wm:ready');
+    }
+    return { decision, updatedLabels };
   }
 
   if (decision.label === 'wm:blocked') {
     if (hasBlocked && !hasReady) {
       // Already correct, no-op
-      return decision;
+      return { decision, updatedLabels };
     }
     deps.logger.info('Reconciling merge label to wm:blocked', {
       pr: pr.number,
@@ -202,7 +221,12 @@ export async function reconcileMergeLabelsForPr(
       reason: decision.reason,
     });
     await deps.applyLabel.setBlocked(pr.number, decision.reason);
-    return decision;
+    // Update in-memory labels
+    updatedLabels = updatedLabels.filter(l => l !== 'wm:ready');
+    if (!hasBlocked) {
+      updatedLabels.push('wm:blocked');
+    }
+    return { decision, updatedLabels };
   }
 
   // decision.label === null
@@ -214,7 +238,180 @@ export async function reconcileMergeLabelsForPr(
       reason: decision.reason,
     });
     await deps.applyLabel.clear(pr.number);
+    // Update in-memory labels
+    updatedLabels = updatedLabels.filter(l => l !== 'wm:ready' && l !== 'wm:blocked');
   }
 
-  return decision;
+  return { decision, updatedLabels };
+}
+
+/**
+ * Build task view from workflow state for a given PR number.
+ * Returns null if the PR is not tracked in workflow state.
+ */
+export async function buildTaskView(
+  prNumber: number,
+  repoDir: string,
+): Promise<MergeLabelTaskView | null> {
+  try {
+    const stateFile = join(repoDir, '.wavemill', 'workflow-state.json');
+    const stateContent = readFileSync(stateFile, 'utf-8');
+    const state = JSON.parse(stateContent) as { tasks?: Record<string, unknown> };
+
+    // Find task by PR number in the state
+    const tasks = state.tasks ?? {};
+    for (const [_issueId, taskData] of Object.entries(tasks)) {
+      if (typeof taskData !== 'object' || taskData === null) {
+        continue;
+      }
+      const task = taskData as Record<string, unknown>;
+      if (task.prNumber === prNumber) {
+        return {
+          prNumber,
+          headSha: typeof task.headSha === 'string' ? task.headSha : '',
+          phase: typeof task.phase === 'string' ? task.phase : 'unknown',
+          challengeRole: task.challengeRole === 'primary' || task.challengeRole === 'challenger'
+            ? task.challengeRole
+            : undefined,
+          linearIssueId: typeof task.linearIssueId === 'string' ? task.linearIssueId : undefined,
+          featureDir: typeof task.featureDir === 'string' ? task.featureDir : '',
+        };
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build complete live state for a PR, including GitHub state, Ready result, and handoff.
+ * The prHeadSha comes from the PR object passed by the caller.
+ */
+export async function buildMergeLabelLiveState(
+  prNumber: number,
+  prHeadSha: string,
+  featureDir: string | undefined,
+  repoDir: string,
+): Promise<MergeLabelLiveState | null> {
+  const prLiveState = await probePrLiveState(prNumber, repoDir);
+  if (!prLiveState.available) {
+    return null;
+  }
+
+  let readyAtHead: MergeLabelLiveState['readyAtHead'] | undefined;
+  let handoffAtHead: MergeLabelLiveState['handoffAtHead'] | undefined;
+
+  if (featureDir) {
+    // Read Ready result
+    try {
+      const readyResult = await readStageResult('ready', featureDir);
+      if (readyResult) {
+        const verdict =
+          readyResult.status === 'completed' ? 'ready' :
+          readyResult.status === 'running' ? 'running' :
+          readyResult.status === 'failed' ? 'not-ready' :
+          'errored';
+        readyAtHead = {
+          verdict,
+          sha: readyResult.sha ?? '',
+        };
+      }
+    } catch {
+      // Ready result not available
+    }
+
+    // Read handoff
+    try {
+      const handoffRecord = readReadyTendHandoff(featureDir);
+      if (handoffRecord) {
+        const classification = classifyClaim(handoffRecord);
+        handoffAtHead = {
+          state: classification.state as 'checked' | 'ready-published' | 'tend-claimed' | 'terminal',
+          headSha: handoffRecord.headSha,
+          prNumber: handoffRecord.prNumber,
+        };
+      }
+    } catch {
+      // Handoff not available
+    }
+  }
+
+  return {
+    prHeadSha,
+    mergeable: (prLiveState.mergeable?.toUpperCase() as 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN') ?? 'UNKNOWN',
+    mergeStateStatus: prLiveState.mergeStateStatus ?? 'UNKNOWN',
+    statusCheckRollup: prLiveState.statusCheckRollup ?? [],
+    readyAtHead,
+    handoffAtHead,
+  };
+}
+
+/**
+ * Create default dependencies for the reconciler using real implementations.
+ * The prHeadShaByNumber map is passed from the caller (tend-controller) since
+ * we need the live GitHub head, not just what's in workflow state.
+ */
+export function createDefaultReconcilerDeps(
+  repoDir: string,
+  prHeadShaByNumber: Map<number, string>,
+): ReconcileMergeLabelsDeps {
+  return {
+    readTaskView: async (prNumber) => buildTaskView(prNumber, repoDir),
+    probeLiveState: async (prNumber) => {
+      const task = await buildTaskView(prNumber, repoDir);
+      const prHeadSha = prHeadShaByNumber.get(prNumber) ?? '';
+      if (!task) {
+        return {
+          prHeadSha,
+          mergeable: 'UNKNOWN',
+          mergeStateStatus: 'UNKNOWN',
+          statusCheckRollup: [],
+        };
+      }
+      const liveState = await buildMergeLabelLiveState(prNumber, prHeadSha, task.featureDir, repoDir);
+      return liveState ?? {
+        prHeadSha,
+        mergeable: 'UNKNOWN',
+        mergeStateStatus: 'UNKNOWN',
+        statusCheckRollup: [],
+      };
+    },
+    applyLabel: {
+      setReady: async (prNumber) => {
+        setWavemillReady(prNumber, repoDir);
+      },
+      setBlocked: async (prNumber, reason) => {
+        setWavemillBlocked(prNumber, reason, repoDir);
+      },
+      clear: async (prNumber) => {
+        clearWavemillState(prNumber, repoDir);
+      },
+    },
+    logger: {
+      info: (msg, meta) => console.log(msg, meta ? JSON.stringify(meta) : ''),
+      warn: (msg, meta) => console.warn(msg, meta ? JSON.stringify(meta) : ''),
+    },
+  };
+}
+
+/**
+ * Reconcile labels for all wavemill PRs. Called once per tend tick.
+ * Updates the PR objects in-place with reconciled labels.
+ */
+export async function reconcileMergeLabels(
+  prs: Array<{ number: number; labels: string[]; headSha: string }>,
+  repoDir: string,
+): Promise<void> {
+  const prHeadShaByNumber = new Map(prs.map(pr => [pr.number, pr.headSha]));
+  const deps = createDefaultReconcilerDeps(repoDir, prHeadShaByNumber);
+  for (const pr of prs) {
+    try {
+      const result = await reconcileMergeLabelsForPr(pr, deps);
+      // Update PR labels in-place so downstream code sees reconciled truth
+      pr.labels = result.updatedLabels;
+    } catch (error) {
+      deps.logger.warn(`Failed to reconcile labels for PR ${pr.number}`, { error: String(error) });
+    }
+  }
 }

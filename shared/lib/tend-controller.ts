@@ -567,6 +567,10 @@ export async function selectNextCandidate(options: SelectNextCandidateOptions): 
   const allPrs = await prFetcher(integrationBranch, options.repoDir);
   const wavemillPrs = allPrs.filter(isWavemillPr);
 
+  // HOK-3181: Reconcile merge labels before decisioning
+  const { reconcileMergeLabels } = await import('./merge-labels.ts');
+  await reconcileMergeLabels(wavemillPrs, options.repoDir);
+
   if (integrationHealth.state === 'unhealthy') {
     return {
       integrationHealth,
