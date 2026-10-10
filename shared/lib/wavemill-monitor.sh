@@ -9438,6 +9438,26 @@ $issue_desc
     "$issue_context" "$status_file" "$TOOLS_DIR" "$slug" "$reviewer_model" "$review_mode" "$reviewer_agent" "$operating_mode" > "$prompt_file"
 
   log_task "status" "$issue" "Launching review phase for $issue (model: $reviewer_model, mode: $review_mode, operating mode: $operating_mode)"
+
+  # HOK-3184: mirror the review launch as a shadow step row. The step row's
+  # identity is {head, base, prompt_identity}; its retry bucket is the shared
+  # review-infra-recovery bucket. The call is best-effort — a shadow failure
+  # never affects the agent launch.
+  if declare -F wavemill_ledger_step_upsert >/dev/null 2>&1; then
+    local _review_head _review_base _review_prompt_hash _review_state_dir
+    _review_head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
+    _review_base="$(git -C "$wt_dir" merge-base HEAD "origin/$base_branch" 2>/dev/null || true)"
+    _review_prompt_hash=""
+    if [[ -r "$prompt_file" ]]; then
+      _review_prompt_hash="$(shasum -a 256 "$prompt_file" 2>/dev/null | awk '{print $1}' || true)"
+    fi
+    _review_state_dir="$wt_dir/features/$slug"
+    wavemill_ledger_step_upsert "$issue" review "$_review_state_dir" "review-infra-recovery" \
+      --head "$_review_head" --base "$_review_base" \
+      --prompt "${_review_prompt_hash:-$(printf 'review@%s' "$reviewer_model")}" \
+      --owner "$reviewer_agent" --next-action "awaiting review verdict" >/dev/null 2>&1 || true
+  fi
+
   _launch_agent_in_pane "$win" "$reviewer_agent" "$reviewer_model" "$prompt_file" "$slug" "$issue"
   return $?
 }
@@ -12954,6 +12974,19 @@ launch_ready_phase() {
   marker_clear "$state_dir/.needs-attention"
   log "$pending_log_level" "  $issue: Launching ready phase (PR #$pr_number)"
 
+  # HOK-3184: mirror the Ready launch as a shadow step row. The identity is
+  # {head, base, pr, prompt_identity}; the retry bucket is the shared
+  # ready-remediation bucket. The call is best-effort.
+  if declare -F wavemill_ledger_step_upsert >/dev/null 2>&1; then
+    local _ready_head _ready_base
+    _ready_head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
+    _ready_base="$(git -C "$wt_dir" merge-base HEAD "origin/$base_branch" 2>/dev/null || true)"
+    wavemill_ledger_step_upsert "$issue" ready "$state_dir" "ready-remediation" \
+      --head "$_ready_head" --base "$_ready_base" --pr "$pr_number" \
+      --prompt "ready@${current_agent:-mill}" \
+      --owner "$current_agent" --next-action "awaiting Ready verdict" >/dev/null 2>&1 || true
+  fi
+
   # HOK-3112: Ready checks the checkout and publishes the Tend handoff at the
   # head it checked, so the checkout must be the PR's GitHub head first. Tend
   # rebases in its own scratch worktree and never updates this one; running
@@ -14443,6 +14476,19 @@ maybe_run_challenge_eval() {
   if ! mark_challenge_eval_running "$issue" "$side" "$pr" "eval" >/dev/null; then
     log_warn "challenge eval launch skipped for $issue: failed to persist running state"
     return 1
+  fi
+
+  # HOK-3184: mirror the eval launch as a shadow step row. The bucket name
+  # mirrors the pair/side so the retry sentinel is attributed to this arm.
+  if declare -F wavemill_ledger_step_upsert >/dev/null 2>&1; then
+    local _eval_head _eval_state_dir _eval_bucket
+    _eval_head="$(git -C "${WORKTREE_ROOT}/${slug}" rev-parse HEAD 2>/dev/null || true)"
+    _eval_state_dir="${WORKTREE_ROOT}/${slug}/features/${slug}"
+    _eval_bucket="challenge-eval-soft-${pair_id}-${side}"
+    wavemill_ledger_step_upsert "$issue" eval "$_eval_state_dir" "$_eval_bucket" \
+      --head "$_eval_head" --pr "$pr" --pair "$pair_id" --side "$side" \
+      --prompt "run-eval-hook@${challenge_stage:-eval}" \
+      --owner "$eval_agent" --next-action "awaiting eval verdict" >/dev/null 2>&1 || true
   fi
 
   wavemill_run_tool "run-eval-hook.ts" \

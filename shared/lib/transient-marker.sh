@@ -119,13 +119,105 @@ marker_write() {
   local tmp_path="${path}.tmp.$$.$RANDOM"
   jq '.' <<< "$payload" > "$tmp_path"
   mv "$tmp_path" "$path"
+
+  # HOK-3184: mirror the marker as a waiting_on row (best-effort shadow).
+  _marker_shadow_waiting_on_write "$path" "$payload" 2>/dev/null || true
 }
 
 # marker_clear <path>
 # Removes the marker file
 marker_clear() {
   local path="$1"
+  local payload=""
+  if [[ -f "$path" ]]; then
+    payload="$(cat "$path" 2>/dev/null || true)"
+  fi
   rm -f "$path"
+
+  # HOK-3184: mirror the clear onto the shadow waiting_on row (best-effort).
+  if [[ -n "$payload" ]]; then
+    _marker_shadow_waiting_on_clear "$path" "$payload" 2>/dev/null || true
+  fi
+}
+
+# HOK-3184 shadow mirror helpers for marker lifecycle. Writes a waiting_on
+# row via `tools/ledger.ts waiting-on-set` when a marker is written, and a
+# matching clear when the marker is removed. All invocations are best-effort
+# and swallow errors.
+_marker_shadow_waiting_on_write() {
+  local path="$1"
+  local payload="$2"
+  [[ "${WAVEMILL_LEDGER_SHADOW_DISABLED:-0}" == "1" ]] && return 0
+  [[ -n "${WAVEMILL_ISSUE:-}" ]] || return 0
+  declare -F wavemill_run_tool >/dev/null 2>&1 || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  local trigger
+  trigger="$(jq -r '.condition.expiresOn[0] // empty' <<< "$payload" 2>/dev/null || echo "")"
+  [[ -n "$trigger" ]] || return 0
+  local step_id
+  step_id="$(_marker_shadow_resolve_target "$path")" || step_id=""
+  [[ -n "$step_id" ]] || return 0
+  local condition_json
+  condition_json="$(jq -c '.condition // {}' <<< "$payload" 2>/dev/null || echo '{}')"
+  wavemill_run_tool ledger.ts waiting-on-set --id "$step_id" --trigger "$trigger" --condition "$condition_json" >/dev/null 2>&1 || true
+  return 0
+}
+
+_marker_shadow_waiting_on_clear() {
+  local path="$1"
+  local payload="$2"
+  [[ "${WAVEMILL_LEDGER_SHADOW_DISABLED:-0}" == "1" ]] && return 0
+  [[ -n "${WAVEMILL_ISSUE:-}" ]] || return 0
+  declare -F wavemill_run_tool >/dev/null 2>&1 || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  local trigger
+  trigger="$(jq -r '.condition.expiresOn[0] // empty' <<< "$payload" 2>/dev/null || echo "")"
+  [[ -n "$trigger" ]] || return 0
+  local step_id
+  step_id="$(_marker_shadow_resolve_target "$path")" || step_id=""
+  [[ -n "$step_id" ]] || return 0
+  wavemill_run_tool ledger.ts waiting-on-clear --id "$step_id" --trigger "$trigger" >/dev/null 2>&1 || true
+  return 0
+}
+
+# Resolve the shadow target id for a marker file: prefer the step bound to
+# the enclosing bucket (bounded-retry mirror), fall back to the newest
+# active step row for the issue, fall back to the issue root. The resolver
+# is intentionally conservative — any failure returns empty so the caller
+# skips the shadow write.
+_marker_shadow_resolve_target() {
+  local marker_path="$1"
+  local state_dir
+  state_dir="$(dirname "$marker_path")"
+  local base
+  base="$(basename "$marker_path")"
+  # Match .retry-<bucket>-exhausted-condition.json or legacy forms.
+  local bucket=""
+  if [[ "$base" =~ ^\.retry-(.+)-exhausted-condition\.json$ ]]; then
+    bucket="${BASH_REMATCH[1]}"
+  elif [[ "$base" =~ ^\.failed-ready-recheck-exhausted-condition\.json$ ]]; then
+    bucket="failed-ready-recheck"
+  fi
+  if [[ -n "$bucket" ]]; then
+    local shadow_file="$state_dir/$(_bounded_retry_prefix "$bucket" 2>/dev/null)step-id"
+    if [[ -f "$shadow_file" ]]; then
+      cat "$shadow_file" 2>/dev/null | head -n 1 | tr -d '\n'
+      return 0
+    fi
+  fi
+  # Fallback: ask the CLI for the newest active step on this issue.
+  if ! declare -F wavemill_run_tool >/dev/null 2>&1; then
+    return 1
+  fi
+  local raw id
+  raw="$(wavemill_run_tool ledger.ts list --kind step --state running --json 2>/dev/null || echo '[]')"
+  [[ -n "$raw" ]] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  id="$(printf '%s' "$raw" | jq -r --arg issue "${WAVEMILL_ISSUE:-}" '
+    sort_by(.created_at) | reverse | .[0].id // empty
+  ' 2>/dev/null || echo "")"
+  printf '%s' "$id"
+  return 0
 }
 
 # marker_read <path>

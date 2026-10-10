@@ -98,6 +98,9 @@ for f in \
   "$REPO_DIR"/tests/check-install-paths.test.sh \
   "$REPO_DIR"/tests/check-common-guards.test.sh \
   "$REPO_DIR"/tests/check-direct-ledger-access.test.sh \
+  "$REPO_DIR"/tests/ledger-cli-shadow.test.sh \
+  "$REPO_DIR"/tests/ledger-hook-shadow.test.sh \
+  "$REPO_DIR"/tests/check-ledger-shadow-swallow.test.sh \
   "$REPO_DIR"/tests/check-marker-clear-sites.test.sh \
   "$REPO_DIR"/tests/check-label-write-sites.test.sh \
   "$REPO_DIR"/tests/control-pane-recovery.test.sh \
