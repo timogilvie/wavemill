@@ -170,6 +170,7 @@ TESTS=(
   check-no-npx-in-monitor.sh
   monitor-pass-snapshot.test.sh
   monitor-state-size.test.sh
+  hot-state-byte-cap.test.sh
   monitor-usr2-wakeup.test.sh
 )
 
