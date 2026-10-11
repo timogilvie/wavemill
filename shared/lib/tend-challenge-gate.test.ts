@@ -2017,8 +2017,8 @@ describe('classifyChallengeState siblingStalled (HOK-3128)', () => {
     { taskStateByPair: new Map([['pair-1', { ...pairState, ...overrides }]]), siblingStalled },
   );
 
-  it('returns pair-unresolvable:sibling-stalled when the sibling is stalled', () => {
-    assert.deepEqual(classify(true), { kind: 'pair-unresolvable', pairId: 'pair-1', otherPr: null, reason: 'sibling-stalled' });
+  it('returns pair-unresolved:sibling-stalled when the sibling is stalled', () => {
+    assert.deepEqual(classify(true), { kind: 'pair-unresolved', pairId: 'pair-1', otherPr: null, reason: 'pair-unresolved:sibling-stalled' });
   });
 
   it('keeps no-comparison when the sibling is not stalled', () => {
@@ -2029,7 +2029,7 @@ describe('classifyChallengeState siblingStalled (HOK-3128)', () => {
     const gate = classify(true, {
       challenger: { ...pairState.challenger!, challengeAborted: 'terminal_stage_failure:coding-dirty-handoff' },
     });
-    assert.equal((gate as { reason: string }).reason, 'sibling-challenge-aborted');
+    assert.equal((gate as { reason: string }).reason, 'pair-unresolved:sibling-challenge-aborted');
   });
 });
 
