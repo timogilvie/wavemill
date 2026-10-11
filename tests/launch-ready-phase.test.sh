@@ -797,7 +797,7 @@ EOF
     handoff_heads=""
     [[ -f "$HANDOFF_HEADS_FILE" ]] && handoff_heads=$(tr "\n" " " < "$HANDOFF_HEADS_FILE")
     printf "handoff_heads=[%s]\n" "$handoff_heads"
-    printf "ready_checked_head=%s\n" "$(cat "$CASE_DIR/ready-checked-head" 2>/dev/null || echo none)"
+    printf "ready_checked_head=%s\n" "$(cat "$STATE_DIR/ready-checked-head" 2>/dev/null || echo none)"
     if [[ "$TEST_CASE" == head_sync_* ]]; then
       printf "sha_old=%s\nsha_new=%s\nsha_local=%s\n" "$SHA_OLD" "$SHA_NEW" "$SHA_LOCAL"
       printf "worktree_head_after=%s\n" "$(command git -C "$WT_DIR" rev-parse HEAD)"
