@@ -37,6 +37,10 @@ import {
   type ChallengeArmFailure,
 } from './arm-failure-taxonomy.ts';
 import { repairChallengePairingSync } from './challenge-pairing-repair.ts';
+import { Ledger } from './ledger.ts';
+import { withShadowSuppressing } from './ledger-shadow.ts';
+import { settleArmAbort } from './ledger-shadow.ts';
+import { attemptPairAbortWalk } from './ledger-pair-abort.ts';
 import {
   recordSelectionOutcome,
   releaseReservation,
@@ -194,6 +198,31 @@ export async function resolveUnresolvablePair(input: UnresolvablePairInput): Pro
   if (!input.dryRun) {
     if (stalledArm) {
       await stampStalledArm(input.repoDir, stalledArm, input.now);
+
+      // Shadow write: settle the stalled arm and attempt pair abort walk
+      withShadowSuppressing(() => {
+        const ledger = Ledger.open({ repoDir: input.repoDir });
+        try {
+          const armIssueKey = stalledArm.issueId;
+          const settleReason = resolvedReason === 'sibling-stalled'
+            ? SIBLING_STALLED_ABORT_REASON
+            : resolvedReason;
+
+          // Find the arm row by slug (issue key) to get its ID
+          const roots = ledger.listTasks({ kind: 'pair' });
+          const pairRow = roots.find((row) => row.slug === input.pairId && row.parent_id === null);
+          if (pairRow) {
+            const arms = ledger.listChildren(pairRow.id).filter((row) => row.kind === 'arm');
+            const armRow = arms.find((row) => row.slug === armIssueKey);
+            if (armRow) {
+              settleArmAbort(ledger, armRow.id, settleReason);
+              attemptPairAbortWalk(ledger, input.pairId);
+            }
+          }
+        } finally {
+          ledger.close();
+        }
+      });
     }
     appendChallengeComparison(resolution.record, evalsDir);
     await safelyReleasePairSelectionHealth(input.repoDir, input.pairId, pairState, resolution.outcome);

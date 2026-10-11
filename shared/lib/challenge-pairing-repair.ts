@@ -5,6 +5,8 @@ import { resolveEvalsDir } from './evals-paths.ts';
 import { challengeTaskKeyVariants, type EffectiveChallengeRole } from './challenge-role-utils.ts';
 import { taskHasPendingChallengeArm } from './tend-challenge-gate.ts';
 import { challengerTaskKey } from './task-identity.ts';
+import { Ledger } from './ledger.ts';
+import { ensurePair, ensureArm, withShadowSuppressing } from './ledger-shadow.ts';
 
 /**
  * Self-healing repair for drifted challenge pairing metadata.
@@ -142,23 +144,60 @@ function relabelEvalRecords(evalsFile: string, pairId: string): number {
   return relabeled;
 }
 
+/**
+ * Shadow write for a repaired or created challenge pair. Reads the execution
+ * intent from workflow-state.json and mirrors the pair/arm structure into the
+ * ledger.
+ */
+function shadowWritePairStructure(repoDir: string, pairId: string, statePath: string): void {
+  withShadowSuppressing(() => {
+    const ledger = Ledger.open({ repoDir });
+    try {
+      // Read intent from the primary task's challengeExecutionIntent
+      let intent: unknown = null;
+      if (existsSync(statePath)) {
+        try {
+          const state = JSON.parse(readFileSync(statePath, 'utf-8'));
+          const primaryTask = state?.tasks?.[pairId];
+          if (primaryTask && typeof primaryTask === 'object') {
+            intent = (primaryTask as any).challengeExecutionIntent ?? null;
+          }
+        } catch {
+          // State read failed — continue without intent
+        }
+      }
+
+      const challengerKey = challengerTaskKey(pairId);
+      ensurePair(ledger, pairId, intent);
+      ensureArm(ledger, pairId, pairId, 'primary', intent);
+      ensureArm(ledger, pairId, challengerKey, 'challenger', intent);
+    } finally {
+      ledger.close();
+    }
+  });
+}
+
 export async function repairChallengePairing(
   opts: RepairChallengePairingOptions,
 ): Promise<RepairChallengePairingResult> {
-  const { pairId } = opts;
+  const { pairId, repoDir } = opts;
   const challengerKey = challengerTaskKey(pairId);
-  const taskRepaired = await repairPairTasks(
-    resolveStatePath(opts),
-    pairId,
-  );
+  const statePath = resolveStatePath(opts);
+  const taskRepaired = await repairPairTasks(statePath, pairId);
   const recordsRelabeled = relabelEvalRecords(resolveEvalsFilePath(opts), pairId);
+
+  // Shadow write: mirror pair/arm structure after repair
+  if (taskRepaired || recordsRelabeled > 0) {
+    shadowWritePairStructure(repoDir, pairId, statePath);
+  }
+
   return { pairId, challengerKey, taskRepaired, recordsRelabeled };
 }
 
 export async function repairChallengePairingSync(
   opts: RepairChallengePairingOptions,
 ): Promise<RepairChallengePairingResult> {
-  const { pairId } = opts;
+  const { pairId, repoDir } = opts;
   const challengerKey = challengerTaskKey(pairId);
   const statePath = resolveStatePath(opts);
   let taskRepaired = false;
@@ -177,5 +216,11 @@ export async function repairChallengePairingSync(
     }
   }
   const recordsRelabeled = relabelEvalRecords(resolveEvalsFilePath(opts), pairId);
+
+  // Shadow write: mirror pair/arm structure after repair
+  if (taskRepaired || recordsRelabeled > 0) {
+    shadowWritePairStructure(repoDir, pairId, statePath);
+  }
+
   return { pairId, challengerKey, taskRepaired, recordsRelabeled };
 }
