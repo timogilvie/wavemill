@@ -45,6 +45,25 @@ test('background children and side effect idempotency', () => {
   ledger.transaction(tx => tx.settleTask(root.id, 'done'));
   ledger.close();
 });
+test('side effect attempt counter and lookups (HOK-3183)', () => {
+  const ledger = Ledger.open({ dbPath });
+  const root = ledger.transaction(tx => tx.insertTask({ kind: 'issue', slug: 'HOK-3183' }));
+  const row = ledger.transaction(tx => tx.recordSideEffect({ stepId: root.id, kind: 'pr-label', idempotencyKey: '42|wm:ready|labeled|h1' })).row;
+  ledger.transaction(tx => tx.recordSideEffect({ stepId: root.id, kind: 'pr-label', idempotencyKey: '42|wm:ready|labeled|h2' }));
+  ledger.transaction(tx => tx.recordSideEffect({ stepId: root.id, kind: 'pr-label', idempotencyKey: '420|wm:ready|labeled|h1' }));
+  assert.equal(ledger.transaction(tx => tx.incrementSideEffectAttempt(row.id)).attempt, 1);
+  assert.equal(ledger.transaction(tx => tx.incrementSideEffectAttempt(row.id)).attempt, 2);
+  assert.throws(() => ledger.transaction(tx => tx.incrementSideEffectAttempt('missing')), /side effect not found/);
+  assert.equal(ledger.findSideEffect('pr-label', '42|wm:ready|labeled|h1')?.attempt, 2);
+  assert.equal(ledger.findSideEffect('git-push', '42|wm:ready|labeled|h1'), null);
+  assert.equal(ledger.listSideEffectsByKind('pr-label', { keyPrefix: '42|wm:ready|labeled|' }).length, 2);
+  assert.deepEqual(ledger.listSideEffectsByKind('pr-label', { minAttempt: 1 }).map(r => r.id), [row.id]);
+  ledger.transaction(tx => tx.recordEvidence(root.id, 'controller', 'side-effect-duplicate-attempt', 'pr-label|k'));
+  assert.equal(ledger.listEvidenceByEvent('side-effect-duplicate-attempt').length, 1);
+  assert.equal(ledger.listEvidenceByEvent('side-effect-duplicate-attempt', '2999-01-01T00:00:00.000Z').length, 0);
+  ledger.close();
+});
+
 test('parallel writers deduplicate effects and task identity', async () => {
   const ledger = Ledger.open({ dbPath });
   const root = ledger.transaction(tx => tx.insertTask({ kind: 'issue', slug: 'HOK-2' }));

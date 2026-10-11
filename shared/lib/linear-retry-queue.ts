@@ -227,7 +227,10 @@ export async function drain(opts: DrainRetryQueueOptions = {}): Promise<DrainRet
     let failures: LinearBatchFailure[] = [];
 
     try {
-      const response = await setIssuesStateImpl(record.issueIds, record.targetState);
+      // HOK-3183: the queue record is the trigger event every replay shares.
+      const response = await setIssuesStateImpl(record.issueIds, record.targetState, {
+        triggerEventId: `linear-retry:${record.id}`,
+      });
       if (response.failed.length === 0) {
         appendRecord(repoDir, {
           schemaVersion: SCHEMA_VERSION,

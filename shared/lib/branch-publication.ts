@@ -13,6 +13,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { gitPushKey, shadowRecordSideEffect } from './side-effect-ledger.ts';
 
 export interface BranchPublicationRequest {
   /** Task worktree containing the reviewed branch. */
@@ -177,6 +178,15 @@ export function publishReviewedBranch(request: BranchPublicationRequest): Branch
   }
 
   if (remoteSha === reviewedSha) {
+    // HOK-3183 shadow: the publication is already in place — an observation,
+    // never a duplicate push.
+    shadowRecordSideEffect({
+      kind: 'git-push',
+      idempotencyKey: gitPushKey(remote, branch, reviewedSha),
+      result: { outcome: 'reused', source: 'branch-publication' },
+      observation: true,
+      cwd: request.worktreeDir,
+    });
     return { ok: true, outcome: 'reused', remote, branch, localSha, remoteSha };
   }
   if (remoteSha) {
@@ -193,6 +203,12 @@ export function publishReviewedBranch(request: BranchPublicationRequest): Branch
   } catch (error) {
     return fail('push-failed', `push of ${branch} to ${remote} failed: ${errorMessage(error)}`, { localSha });
   }
+  shadowRecordSideEffect({
+    kind: 'git-push',
+    idempotencyKey: gitPushKey(remote, branch, reviewedSha),
+    result: { outcome: 'pushed', source: 'branch-publication' },
+    cwd: request.worktreeDir,
+  });
 
   // Upstream tracking is a convenience, never a correctness requirement.
   try {
