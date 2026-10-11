@@ -38,6 +38,9 @@ import {
   type ScratchPrepRunner,
 } from './tend-scratch-prep.ts';
 import { clearConfigCache } from './config.ts';
+import { Ledger } from './ledger.ts';
+import { detectDuplicates } from './side-effect-duplicate-detector.ts';
+import { gitPushKey, prMergeKey, setSideEffectLedgerForTesting } from './side-effect-ledger.ts';
 import {
   claimReadyHandoff,
   publishReadyHandoff,
@@ -2579,6 +2582,44 @@ describe('executeMerge', () => {
         assert.ok(!options.labels.some((label) => label.startsWith('blocked:')), `labels: ${options.labels.join(', ')}`);
         assert.equal(retry.state.exhaustedReason, '');
       } finally {
+        options.cleanup();
+      }
+    });
+
+    it('dropped-connection-push replay leaves one push row and one merge row, no duplicates (HOK-3183)', async () => {
+      const fixture = JSON.parse(readFileSync(
+        join(import.meta.dirname, '..', '..', 'tests', 'fixtures', 'incident-replay', 'dropped-connection-push.json'),
+        'utf-8',
+      )) as { faultParams: { throwCount: number }; convergence: { maxTickCount: number } };
+      const retry = countingRetry(3);
+      const options = buildMergeTestOptions({ transientRetry: retry.ops, rebaseHeadSha: 'rebased-head-sha' });
+      const featureDir = join(options.repoDir, 'features', 'dropped-push-ledger');
+      const ledger = Ledger.open({ dbPath: join(options.repoDir, 'ledger.sqlite') });
+      setSideEffectLedgerForTesting(ledger);
+      const failures = { remaining: fixture.faultParams.throwCount };
+      try {
+        await publishReadyHandoff(featureDir, 42, 'head-sha');
+        let result: Awaited<ReturnType<typeof executeMerge>> | undefined;
+        for (let tick = 0; tick < fixture.convergence.maxTickCount; tick += 1) {
+          result = await executeMerge(candidate({ headSha: 'head-sha', featureDir }), {
+            repoDir: options.repoDir,
+            deps: { ...options.deps, shellRunner: pushFailingRunner(options, failures) },
+          });
+          if (result.status === 'merged') break;
+        }
+
+        assert.equal(result?.status, 'merged');
+        const pushes = ledger.listSideEffectsByKind('git-push');
+        assert.deepEqual(pushes.map((row) => [row.idempotency_key, row.attempt]), [
+          [gitPushKey('origin', 'task/merge-me', 'rebased-head-sha'), 0],
+        ], 'dropped pushes never land a row; the successful one lands exactly one');
+        const merges = ledger.listSideEffectsByKind('pr-merge');
+        assert.deepEqual(merges.map((row) => [row.idempotency_key, row.attempt]), [[prMergeKey(42, 'rebased-head-sha'), 0]]);
+        assert.ok(merges[0].applied_at);
+        assert.equal(detectDuplicates(ledger, { labelWrites: [] }).duplicates, 0);
+      } finally {
+        setSideEffectLedgerForTesting(null);
+        ledger.close();
         options.cleanup();
       }
     });

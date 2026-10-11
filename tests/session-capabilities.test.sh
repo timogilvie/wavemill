@@ -160,4 +160,40 @@ printf '%s\n' '{"integration":{"enabled":false}}' > "$repo7/.wavemill-config.jso
   fi
 ) || exit 1
 
-printf 'session-capabilities.test.sh: all 7 checks passed\n'
+# ─── Test 8: HOK-3204 — primed cache is inherited by $() subshells ───────────
+# Call wavemill_session_capabilities_json once in the parent, then run two
+# `wavemill_session_has` lookups through $(...) subshells. The subshells
+# inherit the populated bash arrays on fork and must not re-spawn the tool.
+repo8="$tmp/repo8"
+mkdir -p "$repo8/tools"
+cat > "$repo8/.wavemill-config.json" <<'JSON'
+{"integration":{"enabled":true,"useMillSession":true}}
+JSON
+
+counter8="$tmp/counter8"
+: > "$counter8"
+cat > "$repo8/tools/session-capabilities.ts" <<EOF
+#!/usr/bin/env -S npx tsx
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+const p = '$counter8';
+const n = existsSync(p) ? parseInt(readFileSync(p, 'utf-8').trim() || '0', 10) : 0;
+writeFileSync(p, String(n + 1));
+process.stdout.write('{"tend":true,"observer":false,"mergeExecutor":"tend","mergeQueue":true}\n');
+EOF
+chmod +x "$repo8/tools/session-capabilities.ts"
+
+(
+  # shellcheck disable=SC1090
+  source "$tmp/lib.sh"
+  unset WAVEMILL_SESSION_CAPABILITIES_JSON
+  wavemill_session_cache_reset
+  TOOLS_DIR="$repo8/tools" wavemill_session_capabilities_json "$repo8" >/dev/null
+  # Both lookups happen in $() subshells; the primed parent-shell cache must
+  # propagate on fork so neither spawns the tool a second time.
+  _=$(TOOLS_DIR="$repo8/tools" wavemill_session_has tend "$repo8" && printf true || printf false)
+  _=$(TOOLS_DIR="$repo8/tools" wavemill_session_has mergeQueue "$repo8" && printf true || printf false)
+  count="$(cat "$counter8")"
+  [[ "$count" == "1" ]] || fail "primed subshell cache: expected 1 spawn, got $count"
+) || exit 1
+
+printf 'session-capabilities.test.sh: all 8 checks passed\n'

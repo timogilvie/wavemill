@@ -30,6 +30,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 TESTS=(
+  tests/ledger.test.ts
+  shared/lib/ledger-shadow.test.ts
+  shared/lib/ledger-consistency.test.ts
+  shared/lib/ledger-replay-contract.test.ts
+  shared/lib/ledger-pair-abort.test.ts
+  shared/lib/side-effect-ledger.test.ts
+  shared/lib/side-effect-duplicate-detector.test.ts
+  shared/lib/side-effect-replay-contract.test.ts
   shared/lib/session.test.js
   shared/lib/session-timer.test.js
   shared/lib/eval-prompt-size.test.ts
@@ -38,9 +46,12 @@ TESTS=(
   shared/lib/operator-intervention.test.ts
   shared/lib/intervention-detector.test.ts
   shared/lib/reliability-metrics.test.ts
+  shared/lib/label-write-ledger.test.ts
+  shared/lib/pr-timeline.test.ts
   shared/lib/stage-result.test.ts
   shared/lib/task-progress.test.ts
   shared/lib/task-identity.test.ts
+  tests/llm-cli.test.ts
   shared/lib/linear-write-gate.test.ts
   shared/lib/session-adapters.test.ts
   shared/lib/executed-model-resolver.test.ts
@@ -215,8 +226,11 @@ TESTS=(
   shared/lib/launch-validation.test.ts
   shared/lib/manual-edit-attribution-audit.test.ts
   shared/lib/merge-queue.test.ts
+  shared/lib/merge-labels.test.ts
   shared/lib/model-registry.test.ts
   shared/lib/model-registry-gpt55-inventory.test.ts
+  shared/lib/model-registry-loader.test.ts
+  shared/lib/schema-validators.test.ts
   shared/lib/model-promotion.test.ts
   shared/lib/model-evidence-policy.test.ts
   shared/lib/disabled-models.test.ts
@@ -344,8 +358,6 @@ TESTS=(
   tools/seam-artifact-cli.test.ts
   tools/plan-queue.test.ts
   tools/select-wave.test.ts
-  tools/set-pr-ready-label.test.ts
-  tools/set-pr-blocked-label.test.ts
   tools/smoke-deepseek.test.ts
   tools/openrouter-doctor.test.ts
   tools/review-scope-prompt.test.ts

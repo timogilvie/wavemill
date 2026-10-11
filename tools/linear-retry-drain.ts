@@ -65,7 +65,7 @@ runTool({
         maxEntries: Number.parseInt(args['max-entries'] || '10', 10),
         // Entries queued before HOK-3115 may hold challenger or invalid IDs;
         // re-gate every drain attempt.
-        setIssuesStateImpl: (issueIds, stateName) => setTaskIssuesState(issueIds, stateName),
+        setIssuesStateImpl: (issueIds, stateName, transition) => setTaskIssuesState(issueIds, stateName, { transition }),
       });
       console.log(JSON.stringify(summary, null, 2));
       return;

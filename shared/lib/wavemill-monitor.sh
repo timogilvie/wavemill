@@ -3062,6 +3062,16 @@ MONITOR_PASS_SNAPSHOT_FIELDS=(
 )
 
 monitor_build_pass_snapshot() {
+  # HOK-3204: start each monitor pass with a fresh model-validation/resolution
+  # memo and primed session capabilities so the common hot-loop case never
+  # re-spawns tsx tools for the same inputs within one pass.
+  if declare -F agent_model_cache_reset >/dev/null 2>&1; then
+    agent_model_cache_reset
+  fi
+  if declare -F monitor_prime_session_capabilities >/dev/null 2>&1; then
+    monitor_prime_session_capabilities "${REPO_DIR:-$PWD}"
+  fi
+
   [[ -r "$STATE_FILE" && -s "$STATE_FILE" ]] || return 0
 
   # Reset per-pass state.
@@ -5232,6 +5242,51 @@ resolve_stage_result_model() {
   local feature_dir="$1" stage="$2" fallback="${3:-}"
   local model="" launch_model=""
   local challenge_varied_model
+
+  # HOK-3204: hot-loop short-circuit. `write_stage_result ... "running"`
+  # rewrites the same stage result every pass with the same model. If the
+  # stored .${stage}-result.json already names a model and nothing that would
+  # change the resolution has changed, return the stored value without
+  # entering the (now memoized but still non-zero) resolver chain.
+  local stage_file config_model meta_role meta_model stored_model stored_launch
+  local challenge_varied
+  case "$stage" in
+    coding|review)
+      stage_file="$feature_dir/.${stage}-result.json"
+      if [[ -s "$stage_file" ]]; then
+        stored_model="$(jq -r '.model // empty' "$stage_file" 2>/dev/null || echo "")"
+        stored_launch="$(jq -r '.launchModel // empty' "$stage_file" 2>/dev/null || echo "")"
+        if [[ -n "$stored_model" ]]; then
+          config_model="$(read_phase_config "$feature_dir" "$stage" "model")"
+          if [[ "$stage" == "coding" ]]; then
+            meta_role="coderModel"
+          else
+            meta_role="reviewerModel"
+          fi
+          meta_model="$(get_task_meta "$ISSUE" "$meta_role" 2>/dev/null || echo "")"
+          challenge_varied="$(challenge_varied_stage_model "$ISSUE" "$stage" 2>/dev/null || true)"
+          # No field changed when: a challenge-varied model is still named AND
+          # matches the stored model, OR no challenge-varied model is in play
+          # AND the stored model matches whichever of config/meta sources
+          # resolve_phase_model would have picked for the live inputs.
+          local picked=""
+          if [[ -n "$challenge_varied" ]]; then
+            picked="$challenge_varied"
+          elif [[ -n "$config_model" ]]; then
+            picked="$config_model"
+          elif [[ -n "$meta_model" ]]; then
+            picked="$meta_model"
+          else
+            picked="$stored_model"
+          fi
+          if [[ "$picked" == "$stored_model" ]]; then
+            printf '%s\n' "${stored_launch:-$stored_model}"
+            return 0
+          fi
+        fi
+      fi
+      ;;
+  esac
 
   case "$stage" in
     coding)
@@ -9438,6 +9493,27 @@ $issue_desc
     "$issue_context" "$status_file" "$TOOLS_DIR" "$slug" "$reviewer_model" "$review_mode" "$reviewer_agent" "$operating_mode" > "$prompt_file"
 
   log_task "status" "$issue" "Launching review phase for $issue (model: $reviewer_model, mode: $review_mode, operating mode: $operating_mode)"
+
+  # HOK-3184: mirror the review launch as a shadow step row. The step row's
+  # identity is {head, base, prompt_identity}; its retry bucket is the shared
+  # review-infra-recovery bucket. The call is best-effort — a shadow failure
+  # never affects the agent launch.
+  if declare -F wavemill_ledger_step_upsert >/dev/null 2>&1; then
+    local _review_head _review_base _review_prompt_hash _review_state_dir
+    _review_head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
+    _review_base="$(git -C "$wt_dir" merge-base HEAD "origin/$base_branch" 2>/dev/null || true)"
+    _review_prompt_hash=""
+    if [[ -r "$prompt_file" ]]; then
+      _review_prompt_hash="$(shasum -a 256 "$prompt_file" 2>/dev/null | awk '{print $1}' || true)"
+    fi
+    _review_state_dir="$wt_dir/features/$slug"
+    wavemill_ledger_step_upsert "$issue" review "$_review_state_dir" "review-infra-recovery" \
+      --head "$_review_head" --base "$_review_base" \
+      --prompt "${_review_prompt_hash:-$(printf 'review@%s' "$reviewer_model")}" \
+      --owner "$reviewer_agent" --next-action "awaiting review verdict" \
+      --max-attempts 2 >/dev/null 2>&1 || true
+  fi
+
   _launch_agent_in_pane "$win" "$reviewer_agent" "$reviewer_model" "$prompt_file" "$slug" "$issue"
   return $?
 }
@@ -10932,14 +11008,13 @@ ensure_ready_failure_blocks_pr() {
     return 0
   fi
 
+  # HOK-3181: Label reconciler now owns wm:blocked writes. This function only
+  # updates the marker; the label is set by the reconciler on the next tend tick.
   reason=$(ready_failure_reason "$state_dir")
   [[ -n "$reason" ]] || reason="Ready checks failed for PR #$pr_number"
 
-  if (cd "$wt_dir" && wavemill_run_tool "set-pr-blocked-label.ts" "$pr_number" \
-      --reason "$reason" --head "$head_sha" --marker-root "$REPO_DIR"); then
-    mkdir -p "$state_dir"
-    printf '%s' "$head_sha" > "$marker"
-  fi
+  mkdir -p "$state_dir"
+  printf '%s' "$head_sha" > "$marker"
   return 0
 }
 
@@ -12401,7 +12476,8 @@ strip_ready_label_if_review_not_passed() {
   local wt_dir="$1" pr_number="$2" feature_dir="$3"
   review_result_passes_ready_gate "$feature_dir" && return 0
 
-  (cd "$wt_dir" && gh pr edit "$pr_number" --remove-label "wm:ready") >/dev/null 2>&1 || true
+  # HOK-3181: Label reconciler now owns wm:ready/wm:blocked writes.
+  # The label is cleared by the reconciler on the next tend tick.
   return 1
 }
 
@@ -12444,7 +12520,7 @@ set_ready_pass_labels() {
   local github_head worktree_head
   github_head=$(ready_current_github_head "$wt_dir" "$pr_number")
   if [[ -z "$github_head" ]]; then
-    printf '%s\n' '{"transitionFailure":{"stage":"ownership-changed","detail":"current GitHub head is unavailable"}}' >&2
+    printf '%s\n' '{"transitionFailure":{"stage":"ready-label","detail":"current GitHub head is unavailable"}}' >&2
     return 1
   fi
   # Ready checked the checkout, so the checkout (and Ready's head, if reported)
@@ -12477,13 +12553,9 @@ set_ready_pass_labels() {
     printf '%s\n' '{"transitionFailure":{"stage":"ownership-changed"}}' >&2
     return 1
   fi
-  # Publish before exposing wm:ready. Tend can claim this exact PR/head while
-  # this label operation is in flight, and the label helper preserves the claim.
+  # Publish handoff. HOK-3181: The label reconciler sets wm:ready on the next
+  # tend tick once it sees the handoff at this head.
   if ! (cd "$wt_dir" && wavemill_run_tool "ready-tend-handoff.ts" publish "$pr_number" --feature-dir "$feature_dir" --head "$head_sha"); then
-    printf '%s\n' '{"transitionFailure":{"stage":"ownership-changed"}}' >&2
-    return 1
-  fi
-  if ! (cd "$wt_dir" && wavemill_run_tool "set-pr-ready-label.ts" "$pr_number" --marker-root "$REPO_DIR" --feature-dir "$feature_dir" --head "$head_sha"); then
     printf '%s\n' '{"transitionFailure":{"stage":"ready-label"}}' >&2
     return 1
   fi
@@ -12958,6 +13030,21 @@ launch_ready_phase() {
   marker_clear "$state_dir/.needs-attention"
   log "$pending_log_level" "  $issue: Launching ready phase (PR #$pr_number)"
 
+  # HOK-3184: mirror the Ready launch as a shadow step row. The identity is
+  # {head, base, pr, prompt_identity}; the retry bucket is the shared
+  # ready-remediation bucket. The call is best-effort.
+  if declare -F wavemill_ledger_step_upsert >/dev/null 2>&1; then
+    local _ready_head _ready_base _ready_max_attempts
+    _ready_head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
+    _ready_base="$(git -C "$wt_dir" merge-base HEAD "origin/$base_branch" 2>/dev/null || true)"
+    _ready_max_attempts=3
+    wavemill_ledger_step_upsert "$issue" ready "$state_dir" "ready-remediation" \
+      --head "$_ready_head" --base "$_ready_base" --pr "$pr_number" \
+      --prompt "ready@${current_agent:-mill}" \
+      --owner "$current_agent" --next-action "awaiting Ready verdict" \
+      --max-attempts "$_ready_max_attempts" >/dev/null 2>&1 || true
+  fi
+
   # HOK-3112: Ready checks the checkout and publishes the Tend handoff at the
   # head it checked, so the checkout must be the PR's GitHub head first. Tend
   # rebases in its own scratch worktree and never updates this one; running
@@ -12970,6 +13057,7 @@ launch_ready_phase() {
       if [[ -n "$READY_SYNC_DETAIL" ]]; then
         log "status" "  ↻ $issue: task worktree $READY_SYNC_DETAIL before Ready (PR #$pr_number)"
       fi
+      [[ -n "$state_dir" ]] && printf "%s\n" "$READY_SYNC_HEAD" > "$state_dir/ready-checked-head" 2>/dev/null || true
       ;;
     1)
       # A GitHub read blip is transient; hold as pending rather than parking
@@ -13228,7 +13316,7 @@ launch_ready_phase() {
       local moved_github_head
       moved_github_head=$(printf '%s\n' "$label_output" \
         | jq -Rr 'fromjson? | select(.transitionFailure.detail? == "head-moved") | .transitionFailure.githubHead // empty' 2>/dev/null | tail -n 1)
-      if [[ "$transition_stage" == "ownership-changed" && -n "$moved_github_head" ]]; then
+      if [[ -n "$moved_github_head" ]]; then
         bounded_retry_reset_if_new_head "$state_dir" "ready-remediation" "$moved_github_head"
         bounded_retry_reset_if_new_head "$state_dir" "pending-ready-recheck" "$moved_github_head"
         write_stage_result "$state_dir" "ready" "running" "$current_agent" "$current_model" \
@@ -13243,6 +13331,7 @@ launch_ready_phase() {
       transition_failure_json=$(jq -cn --arg stage "$transition_stage" --arg stderr "$transition_output" \
         '{stage:$stage,stderr:$stderr,redacted:($stderr | test("REDACTED")),truncated:($stderr | length >= 2000)}')
       label_failed_artifacts_json=$(jq -cn \
+        --arg stage "$transition_stage" \
         --arg verdict "${verdict:-unknown}" \
         --arg merge_status "${merge_status:-UNKNOWN}" \
         --argjson checks_run "${checks_run:-0}" \
@@ -13255,6 +13344,7 @@ launch_ready_phase() {
         --argjson required_contexts "$required_contexts_json" \
         --argjson transition_failure "$transition_failure_json" '
           {
+            stage:$stage,
             type:"ready",
             verdict:$verdict,
             checksRun:$checks_run,
@@ -14447,6 +14537,21 @@ maybe_run_challenge_eval() {
     return 1
   fi
 
+  # HOK-3184: mirror the eval launch as a shadow step row. The bucket name
+  # mirrors the pair/side so the retry sentinel is attributed to this arm.
+  if declare -F wavemill_ledger_step_upsert >/dev/null 2>&1; then
+    local _eval_head _eval_state_dir _eval_bucket _eval_max_attempts
+    _eval_head="$(git -C "${WORKTREE_ROOT}/${slug}" rev-parse HEAD 2>/dev/null || true)"
+    _eval_state_dir="${WORKTREE_ROOT}/${slug}/features/${slug}"
+    _eval_bucket="challenge-eval-soft-${pair_id}-${side}"
+    _eval_max_attempts=$(challenge_eval_retry_max_attempts)
+    wavemill_ledger_step_upsert "$issue" eval "$_eval_state_dir" "$_eval_bucket" \
+      --head "$_eval_head" --pr "$pr" --pair "$pair_id" --side "$side" \
+      --prompt "run-eval-hook@${challenge_stage:-eval}" \
+      --owner "$eval_agent" --next-action "awaiting eval verdict" \
+      --max-attempts "$_eval_max_attempts" >/dev/null 2>&1 || true
+  fi
+
   wavemill_run_tool "run-eval-hook.ts" \
     --issue "$linear_issue" --pr "$pr" --branch "$branch" \
     --worktree "${WORKTREE_ROOT}/${slug}" \
@@ -15164,6 +15269,166 @@ wavemill_monitor_now_ms() {
     return 0
   fi
   printf '%s000\n' "$(date +%s)"
+}
+
+# ─── HOK-3201: Unattended terminal inbox cleanup tick ──────────────────────
+#
+# The monitor invokes `wavemill cleanup inbox --execute` on a slow cadence
+# (default 10 minutes) so delivered, dead, and PR-less aborted arms get
+# auto-reaped without an operator action. Three cadence files sit under
+# $STATE_DIR:
+#   * .terminal-cleanup-last-at  — epoch of the last tick start
+#   * .terminal-cleanup-next-at  — epoch of the next scheduled tick
+#   * .terminal-cleanup-running  — PID of a running background tick (lock)
+#
+# Config: cleanup.terminalInbox.unattended.enabled (default true),
+# cleanup.terminalInbox.unattended.intervalSeconds (default 600).
+# Env overrides: WAVEMILL_UNATTENDED_CLEANUP_ENABLED,
+# WAVEMILL_TERMINAL_CLEANUP_INTERVAL_SECONDS.
+_WAVEMILL_UNATTENDED_CLEANUP_DEFAULT_INTERVAL=600
+
+monitor_terminal_cleanup_enabled() {
+  if [[ -n "${WAVEMILL_UNATTENDED_CLEANUP_ENABLED+x}" ]]; then
+    case "$WAVEMILL_UNATTENDED_CLEANUP_ENABLED" in
+      0|false|False|FALSE|no|NO) return 1 ;;
+      *) return 0 ;;
+    esac
+  fi
+  local enabled
+  if declare -F cleanup_episode_config_value >/dev/null 2>&1; then
+    enabled="$(cleanup_episode_config_value '.cleanup.terminalInbox.unattended.enabled' 'true')"
+  else
+    enabled="true"
+  fi
+  [[ "$enabled" != "false" && "$enabled" != "0" ]]
+}
+
+monitor_terminal_cleanup_interval() {
+  local value="${WAVEMILL_TERMINAL_CLEANUP_INTERVAL_SECONDS:-}"
+  if [[ -z "$value" ]] && declare -F cleanup_episode_config_value >/dev/null 2>&1; then
+    value="$(cleanup_episode_config_value '.cleanup.terminalInbox.unattended.intervalSeconds' "$_WAVEMILL_UNATTENDED_CLEANUP_DEFAULT_INTERVAL")"
+  fi
+  [[ "$value" =~ ^[0-9]+$ && "$value" -gt 0 ]] || value="$_WAVEMILL_UNATTENDED_CLEANUP_DEFAULT_INTERVAL"
+  printf '%s\n' "$value"
+}
+
+_monitor_terminal_cleanup_write() {
+  local file="$1" value="$2" tmp
+  tmp="${file}.tmp.$$"
+  printf '%s\n' "$value" > "$tmp" 2>/dev/null && mv "$tmp" "$file" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+}
+
+# Clear the cadence timestamp so the next monitor tick runs immediately.
+# Called from operator-event dispatch (keep, unkeep, re-cleanup) so an
+# operator never has to wait on the slow cadence window.
+monitor_terminal_cleanup_clear_cadence() {
+  [[ -n "${STATE_DIR:-}" ]] || return 0
+  rm -f "$STATE_DIR/.terminal-cleanup-last-at" 2>/dev/null || true
+  rm -f "$STATE_DIR/.terminal-cleanup-next-at" 2>/dev/null || true
+}
+
+# Returns 0 (true) if a stale lock file was cleared or no lock exists.
+# Returns 1 (false) if a live background tick is still running.
+_monitor_terminal_cleanup_lock_available() {
+  local lock_file="$1" interval="$2" pid lock_mtime now max_age
+  [[ -f "$lock_file" ]] || return 0
+  pid="$(cat "$lock_file" 2>/dev/null || echo "")"
+  if [[ -n "$pid" && "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+    # Stale lock protection: a hung child older than 2× interval is replaced.
+    lock_mtime=$(stat -f %m "$lock_file" 2>/dev/null || stat -c %Y "$lock_file" 2>/dev/null || echo 0)
+    now=$(date +%s)
+    max_age=$(( interval * 2 ))
+    if (( now - lock_mtime > max_age )); then
+      rm -f "$lock_file" 2>/dev/null || true
+      return 0
+    fi
+    return 1
+  fi
+  rm -f "$lock_file" 2>/dev/null || true
+  return 0
+}
+
+monitor_terminal_cleanup_tick() {
+  [[ "${DRY_RUN:-false}" == "true" ]] && return 0
+  [[ -n "${STATE_DIR:-}" ]] || return 0
+  [[ -n "${REPO_DIR:-}" ]] || return 0
+  monitor_terminal_cleanup_enabled || return 0
+
+  local interval last_at now
+  interval="$(monitor_terminal_cleanup_interval)"
+  now="$(date +%s)"
+  if [[ -f "$STATE_DIR/.terminal-cleanup-last-at" ]]; then
+    last_at="$(cat "$STATE_DIR/.terminal-cleanup-last-at" 2>/dev/null || echo 0)"
+    [[ "$last_at" =~ ^[0-9]+$ ]] || last_at=0
+    (( now - last_at < interval )) && return 0
+  fi
+
+  local lock_file="$STATE_DIR/.terminal-cleanup-running"
+  if ! _monitor_terminal_cleanup_lock_available "$lock_file" "$interval"; then
+    return 0
+  fi
+
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 0
+  _monitor_terminal_cleanup_write "$STATE_DIR/.terminal-cleanup-last-at" "$now"
+  _monitor_terminal_cleanup_write "$STATE_DIR/.terminal-cleanup-next-at" "$(( now + interval ))"
+
+  local out_file="$STATE_DIR/terminal-inbox-last.json"
+  local log_file="${MILL_LOG_FILE:-/dev/null}"
+  # Launch the inbox executor in the background so the monitor loop never
+  # waits on a potentially slow gh/git fan-out. The child writes its PID to
+  # the lock file (checked above) and cleans up when done.
+  (
+    echo "$BASHPID" > "$lock_file" 2>/dev/null || true
+    trap 'rm -f "$lock_file" 2>/dev/null || true' EXIT
+    wavemill_run_tool cleanup-terminal-inbox.ts inbox --execute --json \
+      --repo-dir "$REPO_DIR" \
+      > "$out_file" 2>>"$log_file" || true
+  ) >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+  return 0
+}
+
+# ─── Side-effect duplicate detector (HOK-3183) ─────────────────────────────
+#
+# Ledger D Phase 1: every push / PR label / Linear transition / PR merge
+# shadow-writes a side_effect row. On a slow cadence the monitor runs
+# `tools/ledger-detect-duplicates.ts`, which logs each key applied twice and
+# each mill label write with no row as a `[side-effect-duplicate]` warn line
+# in the mill log. Detection only — it never changes a decision.
+# Kill switch: WAVEMILL_SIDE_EFFECT_DETECTOR_DISABLED=1 (or the ledger-wide
+# WAVEMILL_LEDGER_SHADOW_DISABLED=1).
+monitor_side_effect_detector_interval() {
+  local value="${SIDE_EFFECT_DETECTOR_INTERVAL_SECONDS:-300}"
+  [[ "$value" =~ ^[0-9]+$ && "$value" -gt 0 ]] || value=300
+  printf '%s\n' "$value"
+}
+
+monitor_side_effect_detector_tick() {
+  [[ "${DRY_RUN:-false}" == "true" ]] && return 0
+  [[ "${WAVEMILL_SIDE_EFFECT_DETECTOR_DISABLED:-0}" == "1" ]] && return 0
+  [[ "${WAVEMILL_LEDGER_SHADOW_DISABLED:-0}" == "1" ]] && return 0
+  [[ -n "${STATE_DIR:-}" && -n "${REPO_DIR:-}" ]] || return 0
+  declare -F wavemill_run_tool >/dev/null 2>&1 || return 0
+
+  local interval last_at now stamp_file="$STATE_DIR/.side-effect-detector-last-at"
+  interval="$(monitor_side_effect_detector_interval)"
+  now="$(date +%s)"
+  if [[ -f "$stamp_file" ]]; then
+    last_at="$(cat "$stamp_file" 2>/dev/null || echo 0)"
+    [[ "$last_at" =~ ^[0-9]+$ ]] || last_at=0
+    (( now - last_at < interval )) && return 0
+  fi
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 0
+  _monitor_terminal_cleanup_write "$stamp_file" "$now"
+
+  local log_file="${MILL_LOG_FILE:-/dev/null}"
+  # Background so a slow ledger open never stalls the monitor pass.
+  (
+    wavemill_run_tool ledger-detect-duplicates.ts --repo-dir "$REPO_DIR" --since 30m \
+      >>"$log_file" 2>&1 || true
+  ) >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+  return 0
 }
 
 # ─── Per-step pass timing (HOK-3190) ────────────────────────────────────────
@@ -16360,17 +16625,17 @@ maybe_launch_queue_inference_refresh() {
     --arg cacheKey "$cache_key" \
     '{"taskCount": $taskCount, "explicitDependencyCount": $explicitDependencyCount, "cacheKey": $cacheKey}' 2>/dev/null) || return 0
 
-  local now_ms classifier_deadline_ms classifier_grace_secs=8
-  now_ms="$(date +%s%3N 2>/dev/null || true)"
-  [[ "$now_ms" =~ ^[0-9]+$ ]] || now_ms="$(date +%s)000"
-  classifier_deadline_ms=$(( now_ms + ((timeout_secs - classifier_grace_secs) * 1000) ))
+  # HOK-3202: pass relative budget instead of pre-computed deadline so node/tsx
+  # startup is not charged against the classifier's time.
+  local classifier_grace_secs=8
+  local classifier_budget_ms=$(( (timeout_secs - classifier_grace_secs) * 1000 ))
 
   local inference_report_file
   inference_report_file="$(mktemp -t wavemill-queue-inference.XXXXXX 2>/dev/null || true)"
   [[ -n "$inference_report_file" ]] || return 0
 
   local planner_cmd
-  planner_cmd="$(_wavemill_tsx_invoker) \"$TOOLS_DIR/plan-queue.ts\" --stdin --json --cache-key \"$cache_key\" --refresh-missing-cache --queue-classifier-deadline-ms \"$classifier_deadline_ms\" --inference-report-file \"$inference_report_file\""
+  planner_cmd="$(_wavemill_tsx_invoker) \"$TOOLS_DIR/plan-queue.ts\" --stdin --json --cache-key \"$cache_key\" --refresh-missing-cache --queue-classifier-budget-ms \"$classifier_budget_ms\" --inference-report-file \"$inference_report_file\""
 
   queue_health_init 2>/dev/null || true
 
@@ -22127,6 +22392,10 @@ while :; do
     reconcile_condition_markers_tick || true
   fi
   monitor_step_end conditionReconcile
+  # HOK-3183: report duplicate / unrecorded side effects (detection only).
+  monitor_step_begin sideEffectDuplicateDetector
+  monitor_side_effect_detector_tick || true
+  monitor_step_end sideEffectDuplicateDetector
   # HOK-3174: after a host wake, re-check running stages before normal gates.
   if [[ -n "$monitor_wake_episode" ]]; then
     monitor_resume_agents_after_wake "$monitor_wake_episode"
@@ -22137,6 +22406,11 @@ while :; do
   monitor_step_begin backstageHealth
   check_backstage_health
   monitor_step_end backstageHealth
+  # HOK-3201: slow-cadence unattended terminal inbox cleanup. Runs the inbox
+  # executor in the background so the monitor loop never stalls on gh/git.
+  monitor_step_begin terminalInboxCleanup
+  monitor_terminal_cleanup_tick || true
+  monitor_step_end terminalInboxCleanup
   monitor_step_begin observerHealth
   check_backstage_observer_health || true
   monitor_step_end observerHealth

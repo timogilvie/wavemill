@@ -240,7 +240,6 @@ export interface ChallengeClassificationOptions {
 export type ChallengeGate =
   | { kind: 'not-in-challenge' }
   | { kind: 'pair-unresolved'; pairId: string; otherPr: number | null; reason: string }
-  | { kind: 'pair-unresolvable'; pairId: string; otherPr: number | null; reason: UnresolvableReason }
   | { kind: 'cool-off'; reason: string }
   | { kind: 'winner'; pairId: string; loserPr: number | null; autoMerge: boolean }
   /**
@@ -529,10 +528,10 @@ export function classifyChallengeState(
     const hardFailureState = classifyPairUnresolvableState(pairState, options.evalHardFailureRetryMax ?? DEFAULT_HARD_FAILURE_RETRY_MAX);
     if (hardFailureState) {
       return {
-        kind: 'pair-unresolvable',
+        kind: 'pair-unresolved',
         pairId,
         otherPr,
-        reason: hardFailureState,
+        reason: `pair-unresolved:${hardFailureState}`,
       };
     }
 
@@ -551,19 +550,19 @@ export function classifyChallengeState(
       // challenger parked on a dirty-tree coding handoff after its agent
       // exited) holds a green primary at `no-comparison` forever.
       return {
-        kind: 'pair-unresolvable',
+        kind: 'pair-unresolved',
         pairId,
         otherPr,
-        reason: 'sibling-stalled',
+        reason: 'pair-unresolved:sibling-stalled',
       };
     }
 
     if (isOrphanedPair(pairState, otherPr, options.siblingLive ?? false, options.nowMs, options.orphanGraceMs)) {
       return {
-        kind: 'pair-unresolvable',
+        kind: 'pair-unresolved',
         pairId,
         otherPr,
-        reason: 'orphan-sibling',
+        reason: 'pair-unresolved:orphan-sibling',
       };
     }
 
@@ -791,11 +790,6 @@ export async function applyChallengePairGates<T extends ChallengeEligibleWorkIte
 
     if (state.kind === 'pair-unresolved') {
       nextBlocked.push(toBlockedCandidate(item, `challenge:${state.reason}`));
-      continue;
-    }
-
-    if (state.kind === 'pair-unresolvable') {
-      nextBlocked.push(toBlockedCandidate(item, `challenge:pair-unresolvable:${state.reason}`));
       continue;
     }
 

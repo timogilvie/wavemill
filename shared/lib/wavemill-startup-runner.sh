@@ -389,6 +389,9 @@ run_state_archive_migration() {
   [[ -n "${WAVEMILL_STATE_ARCHIVE_KEEP:-}" ]] && args+=(--keep "$WAVEMILL_STATE_ARCHIVE_KEEP")
   [[ -n "${WAVEMILL_STATE_ARCHIVE_MAX_AGE_DAYS:-}" ]] \
     && args+=(--max-age-days "$WAVEMILL_STATE_ARCHIVE_MAX_AGE_DAYS")
+  # HOK-3203: byte cap and compact-kept defaults
+  args+=(--byte-cap "${WAVEMILL_HOT_STATE_BYTE_CAP:-500000}")
+  args+=(--compact-kept)
   # Use the fast-strip path when available; fall back to npx tsx so
   # startup still works on Node versions without --experimental-strip-types.
   node --experimental-strip-types --no-warnings "$tool" "${args[@]}" 2>/dev/null \

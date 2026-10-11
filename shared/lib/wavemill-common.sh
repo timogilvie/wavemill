@@ -511,6 +511,9 @@ archive_stage_artifacts() {
     _wavemill_archive_copy "$feature_dir/routing.jsonl" "$archive_dir/routing.jsonl" || status=1
     _wavemill_archive_copy "$feature_dir/.coding-uncommitted-output.resolved.jsonl" "$archive_dir/coding-uncommitted-output.resolved.jsonl" || status=1
     _wavemill_archive_json_copy "$feature_dir/.operator-intervention.json" "$archive_dir/operator-intervention.json" "operator intervention" || status=1
+    # HOK-3182: reliability-report evidence (time-stuck replay, operator touches).
+    _wavemill_archive_copy "$feature_dir/.terminal-history.jsonl" "$archive_dir/terminal-history.jsonl" || status=1
+    _wavemill_archive_copy "$feature_dir/.operator-events.jsonl" "$archive_dir/operator-events.jsonl" || status=1
 
     local stage result_file sidecar sidecar_name
     for stage in planning coding review; do
@@ -5822,6 +5825,14 @@ wavemill_session_cache_reset() {
   _WAVEMILL_SESSION_CAP_WARNED=""
 }
 
+# HOK-3204: prime the shell-side session-capability cache from the parent
+# monitor process so subshell `$(wavemill_session_has ...)` captures inherit
+# the populated arrays on fork and skip the ~1s session-capabilities.ts spawn.
+# Idempotent and cheap (hits the HOK-3102 mtime-keyed cache once a pass).
+monitor_prime_session_capabilities() {
+  wavemill_session_capabilities_json "${1:-${REPO_DIR:-$PWD}}" >/dev/null 2>&1 || true
+}
+
 # HOK-3102 (D7): with the observer off, remove the stale findings backlog that
 # nothing will ever read. Idempotent; safe to call from startup.
 _cleanup_stale_observer_findings() {
@@ -6189,23 +6200,28 @@ filter_parent_issues() {
     ' 2>/dev/null
   )
 
-  while IFS='|' read -r parent_id child_ids; do
-    [[ -n "$parent_id" ]] || continue
-    printf 'WARN: Skipping parent issue %s (has Linear children: %s)\n' "$parent_id" "$child_ids" >&"$log_dest"
-  done < <(
+  local has_active_parent
+  has_active_parent="$(
     printf '%s\n' "$backlog_json" | jq -r '
       def child_is_terminal:
         ((.state.type // "") == "completed")
         or ((.state.type // "") == "canceled")
         or (.completedAt != null)
         or (.canceledAt != null);
-      .[]
-      | (.children.nodes // []) as $children
-      | select(($children | length) > 0)
-      | select($children | any(child_is_terminal | not))
-      | "\(.identifier)|\(($children | map(.identifier // .id // "<unknown>") | join(",")))"
+      [
+        .[]
+        | (.children.nodes // []) as $children
+        | select(($children | length) > 0)
+        | select($children | any(child_is_terminal | not))
+      ]
+      | length > 0
     ' 2>/dev/null
-  )
+  )"
+  if [[ "$has_active_parent" == "true" && -z "${WAVEMILL_ACTIVE_PARENT_ANNOUNCED:-}" ]]; then
+    printf 'INFO: Excluding parent issues with active Linear children from backlog\n' >&"$log_dest"
+    WAVEMILL_ACTIVE_PARENT_ANNOUNCED=1
+    export WAVEMILL_ACTIVE_PARENT_ANNOUNCED
+  fi
 
   printf '%s\n' "$backlog_json" | jq '
     def child_is_terminal:
@@ -6730,7 +6746,55 @@ state_mutate() {
     return 1
   fi
 
+  # HOK-3182: a workflow-state edit typed into an interactive shell is an
+  # operator touch. The monitor and every tool it spawns run non-interactive.
+  if (( mutate_status == 0 )) && [[ $- == *i* && "$(basename "$state_path")" == "workflow-state.json" ]]; then
+    local touch_issue="" arg_prev="" arg
+    for arg in "$@"; do
+      if [[ "$arg_prev" == "--arg-issue" ]]; then touch_issue="$arg"; break; fi
+      if [[ "$arg_prev" == "--arg" && "$arg" == "issue" ]]; then arg_prev="--arg-issue"; continue; fi
+      arg_prev="$arg"
+    done
+    operator_touch_record "$(dirname "$state_path")" "state-edit" "$touch_issue" "state_mutate $(basename "$state_path")" || true
+  fi
+
   return "$mutate_status"
+}
+
+# operator_touch_record <wavemill_dir> <kind> [issue] [detail]
+# Append one touch to <wavemill_dir>/operator-touches.jsonl (HOK-3182). Same
+# shape as `appendOperatorTouch` in shared/lib/operator-intervention.ts;
+# the reader classifies entries that carry no `class`. Best-effort, lock-free.
+operator_touch_record() {
+  local wavemill_dir="$1" kind="$2" issue="${3:-}" detail="${4:-}"
+  [[ -n "$wavemill_dir" && -n "$kind" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  mkdir -p "$wavemill_dir" 2>/dev/null || return 0
+  jq -cn \
+    --arg at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" --arg kind "$kind" \
+    --arg issue "$issue" --arg actor "${USER:-}" --arg detail "$detail" \
+    '{at: $at, kind: $kind}
+      + (if $issue == "" then {} else {issue: $issue} end)
+      + (if $actor == "" then {} else {actor: $actor} end)
+      + (if $detail == "" then {} else {detail: $detail} end)' \
+    >> "$wavemill_dir/operator-touches.jsonl" 2>/dev/null || true
+}
+
+# mill_label_write_record <pr_number> <label> <labeled|unlabeled>
+# Shell twin of `recordMillLabelWrite` (shared/lib/label-write-ledger.ts):
+# record a label write made by a mill process so the reliability report does
+# not count it as a human label edit. No-op outside a mill session.
+mill_label_write_record() {
+  local pr_number="$1" label="$2" action="$3"
+  [[ -n "${WAVEMILL_SESSION:-${SESSION:-}}" && -n "${REPO_DIR:-}" && -n "$pr_number" && -n "$label" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  local wavemill_dir="${REPO_DIR}/.wavemill"
+  mkdir -p "$wavemill_dir" 2>/dev/null || return 0
+  jq -cn \
+    --arg at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" --argjson pr "$pr_number" \
+    --arg label "$label" --arg action "$action" --arg session "${WAVEMILL_SESSION:-${SESSION:-}}" \
+    '{at: $at, prNumber: $pr, label: $label, action: $action, writer: "mill", session: $session}' \
+    >> "$wavemill_dir/label-writes.jsonl" 2>/dev/null || true
 }
 
 terminal_task_tombstone_matches() {
@@ -6840,9 +6904,54 @@ trim_terminal_task_overflow_if_needed() {
     || true
 }
 
+# HOK-3203: enforce hot state byte cap by iteratively compacting and trimming
+enforce_hot_state_byte_cap_if_needed() {
+  [[ -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 0
+  local byte_cap="${WAVEMILL_HOT_STATE_BYTE_CAP:-500000}"
+  local file_size
+  file_size="$(wc -c < "$STATE_FILE" 2>/dev/null || echo 0)"
+  [[ "$file_size" =~ ^[0-9]+$ ]] || file_size=0
+  if (( file_size <= byte_cap )); then
+    return 0
+  fi
+  local tool
+  tool="$(_state_archive_trim_tool_path)"
+  [[ -f "$tool" ]] || return 0
+  local -a args=(--state-file "$STATE_FILE" --quiet --byte-cap "$byte_cap" --compact-kept --keep-floor 10)
+  [[ -n "${WAVEMILL_STATE_ARCHIVE_MAX_AGE_DAYS:-}" ]] \
+    && args+=(--max-age-days "$WAVEMILL_STATE_ARCHIVE_MAX_AGE_DAYS")
+  node --experimental-strip-types --no-warnings "$tool" "${args[@]}" 2>/dev/null \
+    || npx tsx "$tool" "${args[@]}" 2>/dev/null \
+    || true
+}
+
 write_terminal_task_history_record() {
   local issue="$1" record_json="$2"
   [[ -n "$issue" && -n "$record_json" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
+
+  # HOK-3203: compact the record before writing to hot state
+  local record_hot
+  record_hot="$(jq -c '{
+    archived: true,
+    schemaVersion,
+    issue,
+    slug,
+    branch,
+    worktree,
+    prNumber,
+    workflowOutcome,
+    resourceDisposition,
+    challengePairId,
+    challengeRole,
+    runEpoch,
+    attempt,
+    actor,
+    command,
+    createdAt,
+    decisionStatus,
+    decisionReason
+  } + (if has("postReapEval") then {postReapEval} else {} end)' <<<"$record_json")" || return 1
+
   local rc
   state_mutate "$STATE_FILE" '
     .terminalTaskHistory.tasks[$issue] = $record
@@ -6852,19 +6961,21 @@ write_terminal_task_history_record() {
       end
     | .updated = (now | todateiso8601)' \
     --arg issue "$issue" \
-    --argjson record "$record_json"
+    --argjson record "$record_hot"
   rc=$?
-  # HOK-3190: shed overflow to the archive if the hot sub-tree is above the cap.
-  trim_terminal_task_overflow_if_needed || true
+  # HOK-3203: enforce byte cap
+  enforce_hot_state_byte_cap_if_needed || true
   return "$rc"
 }
 
 write_terminal_task_tombstone() {
   local issue="$1" actor="${2:-wavemill}" command="${3:-cleanup_completed_task}" decision_status="${4:-reaped}" decision_reason="${5:-}"
-  local task_json tombstone key
+  local task_json tombstone key tombstone_hot archive_file
   [[ -n "$issue" && -n "${STATE_FILE:-}" && -f "$STATE_FILE" ]] || return 1
   task_json="$(jq -c --arg issue "$issue" '.tasks[$issue] // empty' "$STATE_FILE" 2>/dev/null)" || return 1
   [[ -n "$task_json" ]] || return 1
+
+  # Build full tombstone (HOK-3203: full form for archive)
   tombstone="$(jq -cn \
     --arg issue "$issue" \
     --arg actor "$actor" \
@@ -6899,6 +7010,35 @@ write_terminal_task_tombstone() {
         task: $task
       }')" || return 1
   key="$(jq -r '[.issue, (if .prNumber != "" then .prNumber else .branch end), (if .runEpoch != "" then .runEpoch else "no-epoch" end), (if .attempt != "" then .attempt else "no-attempt" end)] | join("|")' <<<"$tombstone" 2>/dev/null)" || return 1
+
+  # 1. Append full tombstone to archive (HOK-3203)
+  archive_file="$(dirname "$(dirname "$STATE_FILE")")/.wavemill/state-archive/tombstones.jsonl"
+  mkdir -p "$(dirname "$archive_file")" 2>/dev/null || true
+  printf '%s\n' "$tombstone" >> "$archive_file" || true
+
+  # 2. Create compact tombstone for hot state (HOK-3203)
+  tombstone_hot="$(jq -c '{
+    archived: true,
+    schemaVersion,
+    issue,
+    slug,
+    branch,
+    worktree,
+    prNumber,
+    workflowOutcome,
+    resourceDisposition,
+    challengePairId,
+    challengeRole,
+    runEpoch,
+    attempt,
+    actor,
+    command,
+    createdAt,
+    decisionStatus,
+    decisionReason
+  } + (if has("postReapEval") then {postReapEval} else {} end)' <<<"$tombstone")" || return 1
+
+  # 3. Write compact form to hot state (HOK-3203)
   local rc
   state_mutate "$STATE_FILE" '
     .terminalTaskTombstones[$key] = $tombstone
@@ -6910,10 +7050,11 @@ write_terminal_task_tombstone() {
     | .updated = (now | todateiso8601)' \
     --arg key "$key" \
     --arg issue "$issue" \
-    --argjson tombstone "$tombstone"
+    --argjson tombstone "$tombstone_hot"
   rc=$?
-  # HOK-3190: shed overflow to the archive if the hot sub-tree is above the cap.
-  trim_terminal_task_overflow_if_needed || true
+
+  # 4. Enforce byte cap (HOK-3203)
+  enforce_hot_state_byte_cap_if_needed || true
   return "$rc"
 }
 
@@ -7155,6 +7296,16 @@ record_post_reap_eval_outcome() {
         else . end
     else . end
   ' --arg issue "$issue" --arg outcome "$outcome" >/dev/null 2>&1 || true
+
+  # Shadow write: attempt to settle the eval step in the ledger. The step
+  # should already be settled (the task was reaped), so this will throw
+  # TaskSettledError. The audit value is the evidence row the ledger logs
+  # on the attempt (HOK-3186 S9). The CLI's shadow wrapper swallows errors.
+  # Note: this requires finding the active eval step for the issue, which is
+  # non-trivial for a reaped task. The acceptance proof is the S7 #4 fixture
+  # (post-reap-eval-write.json) which directly tests the settled-write rejection.
+  # Full implementation deferred until step lookup by issue is needed elsewhere.
+
   return 0
 }
 

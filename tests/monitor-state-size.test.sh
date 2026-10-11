@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# HOK-3190: hot workflow-state.json stays under 500 KB after migration even
-# with 500 synthetic terminal history / tombstone records. The migration
-# tool sheds the overflow into .wavemill/state-archive/*.jsonl and rewrites
-# the hot file in compact JSON.
+# HOK-3190 + HOK-3203: hot workflow-state.json stays under 500 KB after migration
+# even with 500 synthetic terminal history / tombstone records. The migration
+# tool sheds the overflow into .wavemill/state-archive/*.jsonl, compacts kept
+# records to strip large fields (task, cleanupDecision, deliveryEvidence), and
+# rewrites the hot file in compact JSON.
 
 set -euo pipefail
 
@@ -21,18 +22,28 @@ echo "=== Hot state size under 500 KB after migration (HOK-3190) ==="
 STATE_FILE="$TMP/workflow-state.json"
 
 # Build a 500-record terminal history + 500-record tombstones state file.
+# HOK-3203: include large task field (~48 KB) to test compaction.
 node --experimental-strip-types --no-warnings -e "
   import { writeFileSync } from 'node:fs';
   const state = { session: 'test', tasks: {}, terminalTaskHistory: { tasks: {}, challengePairs: {} }, terminalTaskTombstones: {} };
   for (let i = 0; i < 500; i++) {
     const issue = 'HOK-' + (1000 + i);
     const record = {
+      schemaVersion: 1,
       issue, prNumber: String(2000 + i), branch: 'feat/' + i.toString(36),
       worktree: '/tmp/wt/' + i, runEpoch: 'ep-' + i, attempt: 'a' + i,
       createdAt: new Date(Date.now() - i * 86400000).toISOString(),
-      slug: 'slug-' + i, deliveryEvidence: { prNumber: String(2000 + i), workflowOutcome: 'merged' },
-      // Pad to realistic size (~2KB per record).
-      padding: 'x'.repeat(1500),
+      slug: 'slug-' + i,
+      workflowOutcome: 'merged',
+      resourceDisposition: 'reaped',
+      actor: 'test',
+      command: 'cleanup',
+      decisionStatus: 'reaped',
+      decisionReason: '',
+      // Large fields that should be stripped in compact form (HOK-3203)
+      task: { issue, slug: 'slug-' + i, phase: 'done', padding: 'x'.repeat(45000) },
+      cleanupDecision: { status: 'reaped', reason: 'merged', padding: 'y'.repeat(1000) },
+      deliveryEvidence: { prNumber: String(2000 + i), workflowOutcome: 'merged', padding: 'z'.repeat(1000) },
     };
     state.terminalTaskHistory.tasks[issue] = record;
     state.terminalTaskTombstones[issue + '|' + (2000 + i) + '|ep-' + i + '|a' + i] = record;
@@ -44,15 +55,35 @@ initial_size=$(wc -c < "$STATE_FILE" | tr -d ' ')
 echo "  initial state file: $((initial_size / 1024)) KB"
 
 node --experimental-strip-types --no-warnings "$REPO_DIR/tools/migrate-state-archive.ts" \
-  --state-file "$STATE_FILE" --keep 50 --max-age-days 14 --quiet
+  --state-file "$STATE_FILE" --keep 50 --max-age-days 14 --byte-cap 512000 --compact-kept --quiet
 
 final_size=$(wc -c < "$STATE_FILE" | tr -d ' ')
 echo "  trimmed state file: $((final_size / 1024)) KB"
 
-if (( final_size < 500 * 1024 )); then
+if (( final_size <= 500 * 1024 )); then
   pass "hot workflow-state.json is under 500 KB after migration"
 else
-  fail "hot workflow-state.json is $((final_size / 1024)) KB (expected < 500 KB)"
+  fail "hot workflow-state.json is $((final_size / 1024)) KB (expected <= 500 KB)"
+fi
+
+# HOK-3203: kept records should be compact (missing task, cleanupDecision, deliveryEvidence).
+has_task_field=$(jq '[(.terminalTaskHistory.tasks // {} | .[] | has("task"))] | any' "$STATE_FILE")
+has_cleanup_field=$(jq '[(.terminalTaskTombstones // {} | .[] | has("cleanupDecision"))] | any' "$STATE_FILE")
+has_delivery_field=$(jq '[(.terminalTaskHistory.tasks // {} | .[] | has("deliveryEvidence"))] | any' "$STATE_FILE")
+if [[ "$has_task_field" == "false" ]]; then
+  pass "kept hot records are missing .task (compacted)"
+else
+  fail "kept hot records still contain .task field"
+fi
+if [[ "$has_cleanup_field" == "false" ]]; then
+  pass "kept hot tombstones are missing .cleanupDecision (compacted)"
+else
+  fail "kept hot tombstones still contain .cleanupDecision field"
+fi
+if [[ "$has_delivery_field" == "false" ]]; then
+  pass "kept hot records are missing .deliveryEvidence (compacted)"
+else
+  fail "kept hot records still contain .deliveryEvidence field"
 fi
 
 # Hot history / tombstones are capped at the keep budget.

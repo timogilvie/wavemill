@@ -28,6 +28,7 @@ import {
   archiveFromHotState,
   DEFAULT_KEEP,
   DEFAULT_MAX_AGE_DAYS,
+  DEFAULT_BYTE_CAP,
 } from '../shared/lib/state-archive.ts';
 
 function acquireLockDir(statePath: string, timeoutMs: number): string {
@@ -75,6 +76,18 @@ runTool({
       type: 'string',
       description: `Also drop records older than this many days (default ${DEFAULT_MAX_AGE_DAYS})`,
     },
+    'byte-cap': {
+      type: 'string',
+      description: `Enforce hot state file size cap in bytes (default ${DEFAULT_BYTE_CAP})`,
+    },
+    'compact-kept': {
+      type: 'boolean',
+      description: 'Compact kept records to strip large fields (task, cleanupDecision, deliveryEvidence)',
+    },
+    'keep-floor': {
+      type: 'string',
+      description: 'Minimum keep count during iterative byte-cap enforcement (default 10)',
+    },
     quiet: {
       type: 'boolean',
       description: 'Suppress informational output',
@@ -101,8 +114,12 @@ runTool({
       return;
     }
 
-    const keep = args.keep ? Number.parseInt(args.keep, 10) : DEFAULT_KEEP;
+    let keep = args.keep ? Number.parseInt(args.keep, 10) : DEFAULT_KEEP;
     const maxAgeDays = args['max-age-days'] ? Number.parseInt(args['max-age-days'], 10) : DEFAULT_MAX_AGE_DAYS;
+    const byteCap = args['byte-cap'] ? Number.parseInt(args['byte-cap'], 10) : DEFAULT_BYTE_CAP;
+    const compactKept = args['compact-kept'] !== false; // default true
+    const keepFloor = args['keep-floor'] ? Number.parseInt(args['keep-floor'], 10) : 10;
+
     if (!Number.isFinite(keep) || keep < 0) {
       console.error(`Error: invalid --keep ${args.keep}`);
       process.exit(1);
@@ -111,11 +128,20 @@ runTool({
       console.error(`Error: invalid --max-age-days ${args['max-age-days']}`);
       process.exit(1);
     }
+    if (!Number.isFinite(byteCap) || byteCap < 0) {
+      console.error(`Error: invalid --byte-cap ${args['byte-cap']}`);
+      process.exit(1);
+    }
+    if (!Number.isFinite(keepFloor) || keepFloor < 0) {
+      console.error(`Error: invalid --keep-floor ${args['keep-floor']}`);
+      process.exit(1);
+    }
 
     const stateDir = dirname(absState);
     const lock = acquireLockDir(absState, 15_000);
     try {
       const raw = readFileSync(absState, 'utf-8');
+      const bytesBefore = Buffer.byteLength(raw);
       let state: Record<string, unknown>;
       try {
         state = JSON.parse(raw);
@@ -124,12 +150,49 @@ runTool({
         process.exit(1);
       }
 
-      const summary = archiveFromHotState(state, { stateDir, keep, maxAgeDays });
+      let iterations = 0;
+      let totalArchivedHistory = 0;
+      let totalArchivedTombstones = 0;
+      let totalArchivedPairs = 0;
+      let totalStripped = 0;
+      let hitFloor = false;
+
+      // Iterative byte-cap enforcement (HOK-3203)
+      while (true) {
+        iterations++;
+        const summary = archiveFromHotState(state, { stateDir, keep, maxAgeDays, compactKept });
+        totalArchivedHistory += summary.archivedHistory;
+        totalArchivedTombstones += summary.archivedTombstones;
+        totalArchivedPairs += summary.archivedPairs;
+        if (compactKept) {
+          totalStripped += (summary.before.history - summary.archivedHistory) +
+                          (summary.before.tombstones - summary.archivedTombstones) +
+                          (summary.before.pairs - summary.archivedPairs);
+        }
+
+        const currentBytes = Buffer.byteLength(JSON.stringify(state));
+        if (currentBytes <= byteCap || keep <= keepFloor) {
+          hitFloor = keep <= keepFloor && currentBytes > byteCap;
+          break;
+        }
+
+        keep = Math.ceil(keep / 2);
+        if (keep < keepFloor) keep = keepFloor;
+      }
 
       if (args['dry-run']) {
         if (!args.quiet) {
           console.log('[migrate-state-archive] dry-run — not writing state file');
-          console.log(JSON.stringify(summary, null, 2));
+          console.log(JSON.stringify({
+            iterations,
+            totalArchivedHistory,
+            totalArchivedTombstones,
+            totalArchivedPairs,
+            totalStripped,
+            hitFloor,
+            bytesBefore,
+            bytesAfter: Buffer.byteLength(JSON.stringify(state))
+          }, null, 2));
         }
         return;
       }
@@ -144,17 +207,16 @@ runTool({
       renameSync(tmp, absState);
 
       if (!args.quiet) {
-        const before = summary.before;
-        const after = summary.after;
         const kb = (n: number) => `${Math.round(n / 1024)} KB`;
+        const bytesAfter = Buffer.byteLength(readFileSync(absState, 'utf-8'));
         console.log(
-          `[migrate-state-archive] ${kb(before.bytes)} → ${kb(after.bytes)}` +
-            ` | history ${before.history}→${after.history}` +
-            ` tombstones ${before.tombstones}→${after.tombstones}` +
-            ` pairs ${before.pairs}→${after.pairs}` +
-            ` | archived h=${summary.archivedHistory} t=${summary.archivedTombstones} p=${summary.archivedPairs}` +
-            ` skipped-dup=${summary.skippedAlreadyArchived}`,
+          `[migrate-state-archive] archived h+t+p+stripped=${totalArchivedHistory + totalArchivedTombstones + totalArchivedPairs + totalStripped}` +
+            ` | bytes ${kb(bytesBefore)}→${kb(bytesAfter)}` +
+            ` | iterations=${iterations}${hitFloor ? ' (hit floor)' : ''}`,
         );
+        if (hitFloor) {
+          console.warn(`[hot-state-cap] still ${kb(bytesAfter)} after trim to floor (${keepFloor})`);
+        }
       }
     } finally {
       releaseLock(lock);

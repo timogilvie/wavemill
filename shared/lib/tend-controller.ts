@@ -29,6 +29,7 @@ import { getIntegrationConfig, getIntegrationReadyPolicy, resolveSessionCapabili
 import { appendObserverFinding as sharedAppendObserverFinding } from './observer-findings.ts';
 import { readChallengeComparisons } from './challenge-comparison.ts';
 import { getPullRequest, removeLabelFromPullRequest } from './github.ts';
+import { gitPushKey, prMergeKey, shadowRecordSideEffect } from './side-effect-ledger.ts';
 import { resolveWavemillToolPath } from './native-agent/install-paths.ts';
 import { getIssueCompletionState } from './linear.ts';
 import { validatePrMetadata, type PrMetadata, type MetadataValidation } from './pr-metadata.ts';
@@ -567,6 +568,14 @@ export async function selectNextCandidate(options: SelectNextCandidateOptions): 
   const allPrs = await prFetcher(integrationBranch, options.repoDir);
   const wavemillPrs = allPrs.filter(isWavemillPr);
 
+  // HOK-3181 Phase 3: Reconcile merge labels after fetching but before decisioning.
+  // This is called inside selectNextCandidate (per-tick, before any decisions are made),
+  // satisfying the plan's requirement of "after selectNextCandidate fetches wavemillPrs"
+  // and "before decisioning". The reconciler treats the GitHub label as stale,
+  // derives the correct label from task state, and applies the difference.
+  const { reconcileMergeLabels } = await import('./merge-labels.ts');
+  await reconcileMergeLabels(wavemillPrs, options.repoDir);
+
   if (integrationHealth.state === 'unhealthy') {
     return {
       integrationHealth,
@@ -1034,13 +1043,22 @@ export async function executeMerge(
             phase: 'merge',
             worktreePath,
           });
-          await mergeWithTransientRetry(
+          const mergeOutcome = await mergeWithTransientRetry(
             candidate.number,
             integrationConfig.mergeMethod,
             integrationConfig.requiredChecks,
             options.repoDir,
             deps,
           );
+          // HOK-3183 shadow: one pr-merge row per (PR, merged head). An
+          // already-merged exit is an observation, not a second merge.
+          shadowRecordSideEffect({
+            kind: 'pr-merge',
+            idempotencyKey: prMergeKey(candidate.number, pushedHeadSha ?? candidate.headSha ?? ''),
+            result: { outcome: mergeOutcome, source: 'tend-merge' },
+            observation: mergeOutcome === 'already-merged',
+            repoDir: options.repoDir,
+          });
         } catch (error) {
           const recovery = await attemptStrictBaseRecovery({
             candidate,
@@ -2008,6 +2026,13 @@ async function rebaseAndPush(
     `git push --force-with-lease=${escapeShellArg(prBranch)}:${escapeShellArg(prBranchSha)} origin HEAD:${escapeShellArg(prBranch)} 2>&1`,
     { encoding: 'utf-8', cwd: worktreePath, timeout: GIT_MUTATION_TIMEOUT_MS },
   )));
+  // HOK-3183 shadow: one git-push row per (remote, ref, oid).
+  shadowRecordSideEffect({
+    kind: 'git-push',
+    idempotencyKey: gitPushKey('origin', prBranch, rebasedHeadSha),
+    result: { outcome: 'pushed', source: 'tend-rebase' },
+    cwd: worktreePath,
+  });
 
   if (hooks.onAfterPush) {
     try {
@@ -2286,7 +2311,7 @@ async function mergeWithTransientRetry(
   requiredChecks: string[],
   repoDir: string,
   deps: MergeExecutionDeps,
-): Promise<void> {
+): Promise<'merged' | 'already-merged'> {
   const mergeFlag = `--${mergeMethod}`;
   const command = `gh pr merge ${prNumber} ${mergeFlag}`;
   const deadlineMs = deps.currentTimeMs() + MERGE_RETRY_WINDOW_MS;
@@ -2298,11 +2323,11 @@ async function mergeWithTransientRetry(
     for (let attempt = 1; attempt <= MERGE_RETRY_MAX_ATTEMPTS; attempt += 1) {
       try {
         deps.shellRunner(command, { encoding: 'utf-8', cwd: repoDir, timeout: MERGE_COMMAND_TIMEOUT_MS });
-        return;
+        return 'merged';
       } catch (error) {
         const output = outputFromError(error);
         if (isAlreadyMergedOutput(output)) {
-          return;
+          return 'already-merged';
         }
         if (!isRequiredChecksExpectedMergeError(output) && !isTransientErrorText(output)) {
           throw error;
@@ -3279,6 +3304,9 @@ function mergeExecutionDeps(deps: Partial<MergeExecutionDeps> | undefined, marke
     })),
     readyChecker: defaultRunReadyCheck,
     healthChecker: defaultHealthChecker,
+    // HOK-3181: Lane progression labels (wm:merging, wm:merged, wm:superseded) are
+    // OUT OF SCOPE for the merge label reconciler. They are synchronous tend
+    // lifecycle transitions, not latched blockers.
     acquireMerging: (prNumber) => {
       setWavemillMerging(prNumber, { markerRoot });
     },
@@ -3388,6 +3416,7 @@ function defaultLoserCleanup(candidate: ChallengeLoserCleanupCandidate, repoDir:
   }
 
   try {
+    // HOK-3181: wm:superseded is a lane progression label (OUT OF SCOPE for reconciler)
     setWavemillSuperseded(candidate.loserPr);
   } catch (error) {
     console.warn(
@@ -4295,8 +4324,8 @@ function emitBlockedLabelContradictionFinding(
     subsystem: 'merge-lane',
     title: `wm:blocked on PR #${pr.number} contradicted by live state`,
     body: `PR #${pr.number} carries wm:blocked with a marker valid at head ${currentHeadSha}, but GitHub reports `
-      + 'MERGEABLE/CLEAN with green required checks. If no wavemill-internal gate applies, canonicalize with '
-      + `\`npx tsx tools/set-pr-ready-label.ts ${pr.number}\`.`,
+      + 'MERGEABLE/CLEAN with green required checks. If no wavemill-internal gate applies, the merge label reconciler '
+      + 'should correct this automatically on the next monitor tick (HOK-3181).',
     severity: 'warning',
     context: {
       markerPath: `merge-lane/${pr.number}/blocked-label-contradiction`,

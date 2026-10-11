@@ -1,0 +1,56 @@
+{
+  "description": "Issue and step both settled; a late step-settle on the eval step attempts to run. HOK-3125 shape.",
+  "tasks": [
+    {
+      "id": "issue-hok3125",
+      "parent_id": null,
+      "kind": "issue",
+      "slug": "HOK-3125",
+      "inputs_hash": null,
+      "state": "done",
+      "owner": null,
+      "next_action": null,
+      "deadline": null,
+      "background": 0,
+      "replay": "unsafe",
+      "attempt": 0,
+      "max_attempts": null,
+      "created_at": "2026-10-01T09:00:00.000Z",
+      "settled_at": "2026-10-01T14:00:00.000Z",
+      "settled_as": "done",
+      "settled_reason": null
+    },
+    {
+      "id": "step-hok3125-eval",
+      "parent_id": "issue-hok3125",
+      "kind": "step",
+      "slug": "eval",
+      "inputs_hash": "abc123def456",
+      "state": "done",
+      "owner": null,
+      "next_action": null,
+      "deadline": null,
+      "background": 0,
+      "replay": "unsafe",
+      "attempt": 0,
+      "max_attempts": null,
+      "created_at": "2026-10-01T11:00:00.000Z",
+      "settled_at": "2026-10-01T13:30:00.000Z",
+      "settled_as": "done",
+      "settled_reason": null
+    }
+  ],
+  "actions": [
+    {
+      "attemptSettleStep": {
+        "stepId": "step-hok3125-eval",
+        "as": "done",
+        "expectError": "task_already_settled"
+      }
+    }
+  ],
+  "expected": {
+    "stepStillSettled": true,
+    "noNewRows": true
+  }
+}
