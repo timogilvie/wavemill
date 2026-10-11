@@ -149,6 +149,18 @@ export class Ledger {
   listWaitingOn(stepId: string): WaitingOnRow[] { return many(this.db, 'SELECT * FROM waiting_on WHERE step_id=? ORDER BY trigger', stepId); }
   listEvidence(stepId: string): EvidenceRow[] { return many(this.db, 'SELECT * FROM evidence WHERE step_id=? ORDER BY recorded_at,id', stepId); }
   listSideEffects(stepId: string): SideEffectRow[] { return many(this.db, 'SELECT * FROM side_effect WHERE step_id=? ORDER BY requested_at,id', stepId); }
+  findSideEffect(kind: SideEffectKind, idempotencyKey: string): SideEffectRow | null { return one(this.db, 'SELECT * FROM side_effect WHERE kind=? AND idempotency_key=?', kind, idempotencyKey); }
+  listSideEffectsByKind(kind: SideEffectKind, filter: { keyPrefix?: string; minAttempt?: number } = {}): SideEffectRow[] {
+    const clauses = ['kind=?']; const args: (string | number)[] = [kind];
+    if (filter.keyPrefix !== undefined) { clauses.push('substr(idempotency_key,1,?)=?'); args.push(filter.keyPrefix.length, filter.keyPrefix); }
+    if (filter.minAttempt !== undefined) { clauses.push('attempt>=?'); args.push(filter.minAttempt); }
+    return many(this.db, `SELECT * FROM side_effect WHERE ${clauses.join(' AND ')} ORDER BY requested_at,id`, ...args);
+  }
+  listEvidenceByEvent(event: string, since?: string): EvidenceRow[] {
+    return since === undefined
+      ? many(this.db, 'SELECT * FROM evidence WHERE event=? ORDER BY recorded_at,id', event)
+      : many(this.db, 'SELECT * FROM evidence WHERE event=? AND recorded_at>=? ORDER BY recorded_at,id', event, since);
+  }
   listOperatorEvents(taskId: string): OperatorEventRow[] { return many(this.db, 'SELECT * FROM operator_event WHERE task_id=? ORDER BY seq', taskId); }
 }
 export class LedgerTx {
@@ -206,6 +218,11 @@ export class LedgerTx {
   }
   applySideEffect(id: string, result: unknown): SideEffectRow {
     this.db.prepare('UPDATE side_effect SET applied_at=COALESCE(applied_at,?), result=COALESCE(result,?),error=NULL WHERE id=? AND applied_at IS NULL').run(now(),JSON.stringify(result),id);
+    return one(this.db,'SELECT * FROM side_effect WHERE id=?',id) ?? (() => { throw new Error(`side effect not found: ${id}`); })();
+  }
+  /** Bump `attempt` on an existing row: a redundant request for an already-recorded key (HOK-3183 duplicate signal). */
+  incrementSideEffectAttempt(id: string): SideEffectRow {
+    this.db.prepare('UPDATE side_effect SET attempt=attempt+1 WHERE id=?').run(id);
     return one(this.db,'SELECT * FROM side_effect WHERE id=?',id) ?? (() => { throw new Error(`side effect not found: ${id}`); })();
   }
   failSideEffect(id: string, error: string): SideEffectRow {

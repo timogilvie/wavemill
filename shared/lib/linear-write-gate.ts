@@ -23,7 +23,7 @@ import {
   type TaskIdentityErrorCode,
   type TaskIdentityMeta,
 } from './task-identity.ts';
-import { setIssuesState, type LinearBatchFailure } from './linear.ts';
+import { setIssuesState, type LinearBatchFailure, type LinearTransitionOptions } from './linear.ts';
 
 export type LinearWriteDecision =
   | { action: 'write'; taskId: string; linearId: string }
@@ -159,6 +159,8 @@ export async function setTaskIssuesState(
   opts: Omit<LinearWriteGateOptions, 'meta'> & {
     setIssuesStateImpl?: typeof setIssuesState;
     log?: Pick<Console, 'error'>;
+    /** Trigger attribution forwarded to the side-effect ledger (HOK-3183). */
+    transition?: LinearTransitionOptions;
   } = {},
 ): Promise<GatedBatchResult> {
   const log = opts.log ?? console;
@@ -167,7 +169,7 @@ export async function setTaskIssuesState(
     log.error(`↷ skipped Linear write: ${decision.message}`);
   }
   const response = linearIds.length > 0
-    ? await (opts.setIssuesStateImpl ?? setIssuesState)(linearIds, stateName)
+    ? await (opts.setIssuesStateImpl ?? setIssuesState)(linearIds, stateName, opts.transition)
     : { updated: [], failed: [] };
   return {
     updated: response.updated,

@@ -11,6 +11,7 @@ import { ensureCleanTree } from './git.ts';
 import { runBuildCheck, type BuildCheckConfig } from './checks.ts';
 import { escapeShellArg, execShellCommand } from './shell-utils.ts';
 import { recordMillLabelWrite } from './label-write-ledger.ts';
+import { prLabelKey, shadowRecordSideEffect, type PrLabelAction } from './side-effect-ledger.ts';
 
 /**
  * Options for listing pull requests.
@@ -156,6 +157,16 @@ export const githubDeps = {
   resolveOwnerRepo,
   /** HOK-3182: mill label-write audit trail (no-op outside a mill process). */
   recordLabelWrite: recordMillLabelWrite,
+  /** HOK-3183: side-effect ledger shadow row per label write (no-op outside a mill process). */
+  recordLabelSideEffect: (prNumber: number | string, labels: string[], action: PrLabelAction, headOid: string | undefined) => {
+    for (const label of labels) {
+      shadowRecordSideEffect({
+        kind: 'pr-label',
+        idempotencyKey: prLabelKey(prNumber, label, action, headOid),
+        result: { source: 'github.ts' },
+      });
+    }
+  },
   getPullRequest: (prNumber: number | string, options: PullRequestViewOptions = {}) =>
     getPullRequest(prNumber, options),
   createPullRequest: (options: PullRequestCreateOptions) =>
@@ -648,7 +659,9 @@ export const addLabelsToPullRequest = (
     );
     githubDeps.recordLabelWrite(prNumber, normalizedLabels, 'labeled');
 
-    return githubDeps.getPullRequest(prNumber, { repo: ownerRepo });
+    const updated = githubDeps.getPullRequest(prNumber, { repo: ownerRepo });
+    githubDeps.recordLabelSideEffect(prNumber, normalizedLabels, 'labeled', updated?.headRefOid);
+    return updated;
   } catch (error) {
     throw wrapPullRequestLabelError(error, prNumber, 'add');
   }
@@ -683,6 +696,7 @@ export const removeLabelFromPullRequest = (
     throw new Error('Unable to determine GitHub repository. Pass --repo owner/name or run from a GitHub checkout.');
   }
 
+  let removed = false;
   try {
     const encodedLabel = encodeURIComponent(normalizedLabel);
     const args: Array<string> = [
@@ -695,6 +709,7 @@ export const removeLabelFromPullRequest = (
 
     githubDeps.execShellCommand(buildShellCommand(args), { encoding: 'utf-8' });
     githubDeps.recordLabelWrite(prNumber, [normalizedLabel], 'unlabeled');
+    removed = true;
   } catch (error) {
     const err = error as Error;
     if (!isMissingPullRequestLabelError(err.message)) {
@@ -702,7 +717,11 @@ export const removeLabelFromPullRequest = (
     }
   }
 
-  return githubDeps.getPullRequest(prNumber, { repo: ownerRepo });
+  const updated = githubDeps.getPullRequest(prNumber, { repo: ownerRepo });
+  if (removed) {
+    githubDeps.recordLabelSideEffect(prNumber, [normalizedLabel], 'unlabeled', updated?.headRefOid);
+  }
+  return updated;
 };
 
 /**

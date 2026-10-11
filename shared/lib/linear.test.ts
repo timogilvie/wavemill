@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
+import { Ledger } from './ledger.ts';
+import { linearTransitionKey, setSideEffectLedgerForTesting } from './side-effect-ledger.ts';
 import {
   createComment,
   createInitiativeDocument,
@@ -600,5 +605,46 @@ test('updateDocument throws LinearApiError when API returns success:false', asyn
     );
   } finally {
     restore();
+  }
+});
+
+test('setIssueState and setIssuesState shadow-record linear-transition side effects (HOK-3183)', async () => {
+  process.env.LINEAR_API_KEY = 'test';
+  const dir = mkdtempSync(join(tmpdir(), 'wavemill-linear-side-effect-'));
+  const ledger = Ledger.open({ dbPath: join(dir, 'ledger.sqlite') });
+  setSideEffectLedgerForTesting(ledger);
+
+  const restore = installFetchMock((payload) => {
+    if (payload.query.includes('issues(filter: { number: { eq:')) {
+      return { issues: { nodes: [{ id: 'issue-501', identifier: 'HOK-501', state: { name: 'In Review' }, team: { id: 'team-se' } }] } };
+    }
+    if (payload.query.includes('issues(') && payload.query.includes('number: { in: [')) {
+      return { issues: { nodes: [{ id: 'issue-502', identifier: 'HOK-502', state: { name: 'Todo' }, team: { id: 'team-se' } }] } };
+    }
+    if (payload.query.includes('query($teamId: String!)')) {
+      return { team: { states: { nodes: [{ id: 'state-done', name: 'Done' }] } } };
+    }
+    if (payload.query.includes('mutation($issueId: String!, $input: IssueUpdateInput!)')) {
+      return { issueUpdate: { success: true, issue: { id: 'x', identifier: 'x', url: 'u' } } };
+    }
+    throw new Error(`Unhandled query: ${payload.query}`);
+  });
+
+  try {
+    await setIssueState('HOK-501', 'Done', { triggerEventId: 'evt-1' });
+    await setIssueState('HOK-501', 'Done', { triggerEventId: 'evt-1' });
+    const single = ledger.findSideEffect('linear-transition', linearTransitionKey('HOK-501', 'In Review', 'Done', 'evt-1'));
+    assert.ok(single?.applied_at);
+    assert.equal(single?.attempt, 1, 'the same trigger event applied twice is a duplicate');
+    assert.deepEqual(JSON.parse(single?.result ?? '{}'), { stateId: 'state-done', outcome: 'applied' });
+
+    await setIssuesState(['HOK-502'], 'Done', { triggerEventId: 'linear-retry:q1' });
+    const batch = ledger.findSideEffect('linear-transition', linearTransitionKey('HOK-502', 'Todo', 'Done', 'linear-retry:q1'));
+    assert.equal(batch?.attempt, 0);
+  } finally {
+    restore();
+    setSideEffectLedgerForTesting(null);
+    ledger.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
