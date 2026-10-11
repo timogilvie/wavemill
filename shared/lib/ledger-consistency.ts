@@ -24,7 +24,8 @@ export type DisagreementCategory =
   | 'extra-evidence'
   | 'attempt-mismatch'
   | 'settled-reason-mismatch'
-  | 'inputs-hash-mismatch';
+  | 'inputs-hash-mismatch'
+  | 'pair-intent-mismatch';
 
 export type Severity = 'info' | 'warn' | 'error';
 
