@@ -1322,7 +1322,7 @@ export function classifyReadyTask(
       // Before reporting a merge-lane wait, check if the tend challenge gate would block
       // this PR. A PR blocked by a missing challenge comparison will never be selected by
       // the merge controller, so reporting waiting-on-merge-lane is misleading.
-      if (challengeGate?.kind === 'pair-unresolved' || challengeGate?.kind === 'pair-unresolvable') {
+      if (challengeGate?.kind === 'pair-unresolved') {
         return classifyMergeLaneChallengeBlocker(snapshot, challengeGate, config);
       }
 
@@ -1384,62 +1384,66 @@ export function classifyReadyTask(
 
 function classifyMergeLaneChallengeBlocker(
   snapshot: ReadyTaskSnapshot,
-  challengeGate: Extract<ChallengeGate, { kind: 'pair-unresolved' | 'pair-unresolvable' }>,
+  challengeGate: Extract<ChallengeGate, { kind: 'pair-unresolved' }>,
 ): ReadyWatchdogClassification {
   const pairLabel = challengeGate.otherPr ? ` (pair PR #${challengeGate.otherPr})` : '';
-  if (challengeGate.kind === 'pair-unresolved') {
-    if (challengeGate.reason === 'pair-unresolved:comparison-in-progress') {
-      return {
-        kind: 'waiting-on-eval-comparison',
-        detail: `PR #${snapshot.prNumber} is waiting for the challenge comparison job for pair ${challengeGate.pairId}${pairLabel} to finish.`,
-      };
-    }
+
+  if (challengeGate.reason === 'pair-unresolved:comparison-in-progress') {
     return {
       kind: 'waiting-on-eval-comparison',
-      detail: `PR #${snapshot.prNumber} is blocked from merging: challenge pair ${challengeGate.pairId}${pairLabel} has no comparison record (${challengeGate.reason}). The merge controller will not select this PR until the challenge comparison exists or challenge metadata is cleared.`,
+      detail: `PR #${snapshot.prNumber} is waiting for the challenge comparison job for pair ${challengeGate.pairId}${pairLabel} to finish.`,
     };
   }
 
-  const recoveryCommand = buildChallengePairRecoveryCommand(snapshot, challengeGate.pairId, challengeGate.reason);
-  if (challengeGate.reason === 'orphan-sibling') {
+  // Extract the unresolvable reason from the prefixed format
+  const reasonMatch = challengeGate.reason.match(/^pair-unresolved:(.+)$/);
+  const baseReason = reasonMatch ? reasonMatch[1] : challengeGate.reason;
+
+  if (baseReason === 'orphan-sibling') {
+    const recoveryCommand = buildChallengePairRecoveryCommand(snapshot, challengeGate.pairId, baseReason);
     return {
       kind: 'needs-user',
       detail: `PR #${snapshot.prNumber} is blocked from merging: challenge pair ${challengeGate.pairId}${pairLabel} has no discoverable sibling task/PR/branch, so no comparison can be produced.`,
       recoveryCommand,
     };
   }
-  if (challengeGate.reason === 'sibling-eval-hard-failed') {
+  if (baseReason === 'sibling-eval-hard-failed') {
+    const recoveryCommand = buildChallengePairRecoveryCommand(snapshot, challengeGate.pairId, baseReason);
     return {
       kind: 'needs-user',
       detail: `PR #${snapshot.prNumber} is blocked from merging: challenge pair ${challengeGate.pairId}${pairLabel} cannot produce a comparison because one side exhausted challenge eval hard-failure retries.`,
       recoveryCommand,
     };
   }
-  if (challengeGate.reason === 'sibling-challenge-aborted') {
+  if (baseReason === 'sibling-challenge-aborted') {
+    const recoveryCommand = buildChallengePairRecoveryCommand(snapshot, challengeGate.pairId, baseReason);
     return {
       kind: 'needs-user',
       detail: `PR #${snapshot.prNumber} is blocked from merging: challenge pair ${challengeGate.pairId}${pairLabel} cannot produce a comparison because one arm hit a terminal launch failure and was quarantined.`,
       recoveryCommand,
     };
   }
-  if (challengeGate.reason === 'sibling-stalled') {
+  if (baseReason === 'sibling-stalled') {
+    const recoveryCommand = buildChallengePairRecoveryCommand(snapshot, challengeGate.pairId, baseReason);
     return {
       kind: 'needs-user',
       detail: `PR #${snapshot.prNumber} is blocked from merging: challenge pair ${challengeGate.pairId}${pairLabel} cannot produce a comparison because one arm has shown no agent progress for ≥30m without opening a PR (agent exited or stalled).`,
       recoveryCommand,
     };
   }
-  if (challengeGate.reason === 'both-challenge-aborted') {
+  if (baseReason === 'both-challenge-aborted') {
+    const recoveryCommand = buildChallengePairRecoveryCommand(snapshot, challengeGate.pairId, baseReason);
     return {
       kind: 'needs-user',
       detail: `PR #${snapshot.prNumber} is blocked from merging: challenge pair ${challengeGate.pairId}${pairLabel} cannot produce a comparison because both arms were quarantined after a terminal launch failure.`,
       recoveryCommand,
     };
   }
+
+  // Default case for all other pair-unresolved reasons
   return {
-    kind: 'needs-user',
-    detail: `PR #${snapshot.prNumber} is blocked from merging: challenge pair ${challengeGate.pairId}${pairLabel} cannot produce a comparison because both sides exhausted challenge eval hard-failure retries.`,
-    recoveryCommand,
+    kind: 'waiting-on-eval-comparison',
+    detail: `PR #${snapshot.prNumber} is blocked from merging: challenge pair ${challengeGate.pairId}${pairLabel} has no comparison record (${challengeGate.reason}). The merge controller will not select this PR until the challenge comparison exists or challenge metadata is cleared.`,
   };
 }
 

@@ -1144,7 +1144,7 @@ describe('unresolvable pair states in applyChallengePairGates', () => {
 
       assert.equal(result.eligible.length, 0);
       assert.equal(result.blocked.length, 1);
-      assert.equal(result.blocked[0].reason, 'challenge:pair-unresolvable:orphan-sibling');
+      assert.equal(result.blocked[0].reason, 'challenge:pair-unresolved:orphan-sibling');
     } finally {
       cleanup();
     }
@@ -1187,7 +1187,7 @@ describe('unresolvable pair states in applyChallengePairGates', () => {
         coolOffSeconds: 0,
       });
 
-      assert.equal(result.blocked[0].reason, 'challenge:pair-unresolvable:sibling-eval-hard-failed');
+      assert.equal(result.blocked[0].reason, 'challenge:pair-unresolved:sibling-eval-hard-failed');
     } finally {
       cleanup();
     }
@@ -1230,7 +1230,7 @@ describe('unresolvable pair states in applyChallengePairGates', () => {
         coolOffSeconds: 0,
       });
 
-      assert.equal(result.blocked[0].reason, 'challenge:pair-unresolvable:sibling-eval-hard-failed');
+      assert.equal(result.blocked[0].reason, 'challenge:pair-unresolved:sibling-eval-hard-failed');
     } finally {
       cleanup();
     }
@@ -1298,7 +1298,7 @@ describe('unresolvable pair states in applyChallengePairGates', () => {
         remoteBranches: ['task/pair-primary', 'task/pair-primary-challenger'],
         coolOffSeconds: 0,
       });
-      assert.equal(exhausted.blocked[0].reason, 'challenge:pair-unresolvable:sibling-eval-hard-failed');
+      assert.equal(exhausted.blocked[0].reason, 'challenge:pair-unresolved:sibling-eval-hard-failed');
     } finally {
       cleanup();
     }
@@ -1343,7 +1343,7 @@ describe('unresolvable pair states in applyChallengePairGates', () => {
         coolOffSeconds: 0,
       });
 
-      assert.equal(result.blocked[0].reason, 'challenge:pair-unresolvable:sibling-eval-hard-failed');
+      assert.equal(result.blocked[0].reason, 'challenge:pair-unresolved:sibling-eval-hard-failed');
     } finally {
       if (previous === undefined) {
         delete process.env.WAVEMILL_EVAL_HARD_FAILURE_MAX_RETRIES;
@@ -1393,7 +1393,7 @@ describe('unresolvable pair states in applyChallengePairGates', () => {
         coolOffSeconds: 0,
       });
 
-      assert.equal(result.blocked[0].reason, 'challenge:pair-unresolvable:sibling-challenge-aborted');
+      assert.equal(result.blocked[0].reason, 'challenge:pair-unresolved:sibling-challenge-aborted');
     } finally {
       cleanup();
     }
@@ -1431,7 +1431,7 @@ describe('unresolvable pair states in applyChallengePairGates', () => {
         nowMs: () => Date.parse('2026-07-01T01:00:00Z'),
       });
 
-      assert.equal(result.blocked[0].reason, 'challenge:pair-unresolvable:orphan-sibling');
+      assert.equal(result.blocked[0].reason, 'challenge:pair-unresolved:orphan-sibling');
     } finally {
       cleanup();
     }
@@ -1522,7 +1522,7 @@ describe('unresolvable pair states in applyChallengePairGates', () => {
         },
       });
 
-      assert.equal(result.blocked[0].reason, 'challenge:pair-unresolvable:sibling-stalled');
+      assert.equal(result.blocked[0].reason, 'challenge:pair-unresolved:sibling-stalled');
       assert.equal(probed.length, 1);
       assert.equal(probed[0].issueId, 'HOK_1_c');
       assert.equal(probed[0].phase, 'coding');
@@ -1609,7 +1609,7 @@ describe('unresolvable pair states in applyChallengePairGates', () => {
         coolOffSeconds: 0,
       });
 
-      assert.equal(result.blocked[0].reason, 'challenge:pair-unresolvable:both-eval-hard-failed');
+      assert.equal(result.blocked[0].reason, 'challenge:pair-unresolved:both-eval-hard-failed');
     } finally {
       cleanup();
     }

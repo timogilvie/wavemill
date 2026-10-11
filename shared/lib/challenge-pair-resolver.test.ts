@@ -980,7 +980,7 @@ test('resolver and gate agree on aborted pair reason and unblock after resolutio
       { remoteBranches: ['task/primary'], coolOffSeconds: 0 },
     );
     assert.equal(blocked.eligible.length, 0);
-    assert.equal(blocked.blocked[0]?.reason, 'challenge:pair-unresolvable:both-challenge-aborted');
+    assert.equal(blocked.blocked[0]?.reason, 'challenge:pair-unresolved:both-challenge-aborted');
 
     const resolution = await resolveUnresolvablePair({ pairId: 'pair-abort', repoDir });
     assert.equal(resolution.status, 'resolved');
@@ -1356,7 +1356,7 @@ test('dirty-handoff abort resolves the pair and releases the primary PR (HOK-312
     };
 
     const before = await applyChallengePairGates(items, [], repoDir, gateOptions);
-    assert.equal(before.blocked[0]?.reason, 'challenge:pair-unresolvable:sibling-challenge-aborted');
+    assert.equal(before.blocked[0]?.reason, 'challenge:pair-unresolved:sibling-challenge-aborted');
 
     const resolution = await resolveUnresolvablePair({ pairId: 'HOK-3121', repoDir, remoteBranches: [] });
     assert.equal(resolution.status, 'resolved');
@@ -1383,7 +1383,7 @@ test('tend backstop: a stalled challenger with no abort stamp still releases the
     };
 
     const before = await applyChallengePairGates(items, [], repoDir, gateOptions);
-    assert.equal(before.blocked[0]?.reason, 'challenge:pair-unresolvable:sibling-stalled');
+    assert.equal(before.blocked[0]?.reason, 'challenge:pair-unresolved:sibling-stalled');
 
     const resolution = await resolveUnresolvablePair({
       pairId: 'HOK-3121',
@@ -1619,7 +1619,7 @@ for (const [label, abort, expectedOutcome] of [
       // Before the resolver runs, the stamp alone makes the pair unresolvable
       // rather than `no-comparison`.
       const before = await applyChallengePairGates([primaryItem], [], repoDir, gateOptions);
-      assert.equal(before.blocked[0]?.reason, 'challenge:pair-unresolvable:sibling-challenge-aborted');
+      assert.equal(before.blocked[0]?.reason, 'challenge:pair-unresolved:sibling-challenge-aborted');
 
       const resolution = await resolveUnresolvablePair({ pairId: 'HOK-3145', repoDir });
       assert.equal(resolution.status, 'resolved');
