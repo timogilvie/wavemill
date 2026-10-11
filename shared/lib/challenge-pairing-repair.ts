@@ -187,9 +187,9 @@ export async function repairChallengePairing(
   const recordsRelabeled = relabelEvalRecords(resolveEvalsFilePath(opts), pairId);
 
   // Shadow write: mirror pair/arm structure after repair
-  if (taskRepaired || recordsRelabeled > 0) {
-    shadowWritePairStructure(repoDir, pairId, statePath);
-  }
+  // Always shadow-write to ensure the ledger has the current pair/arm structure,
+  // even if no changes were detected in this run.
+  shadowWritePairStructure(repoDir, pairId, statePath);
 
   return { pairId, challengerKey, taskRepaired, recordsRelabeled };
 }
@@ -218,9 +218,9 @@ export async function repairChallengePairingSync(
   const recordsRelabeled = relabelEvalRecords(resolveEvalsFilePath(opts), pairId);
 
   // Shadow write: mirror pair/arm structure after repair
-  if (taskRepaired || recordsRelabeled > 0) {
-    shadowWritePairStructure(repoDir, pairId, statePath);
-  }
+  // Always shadow-write to ensure the ledger has the current pair/arm structure,
+  // even if no changes were detected in this run.
+  shadowWritePairStructure(repoDir, pairId, statePath);
 
   return { pairId, challengerKey, taskRepaired, recordsRelabeled };
 }
