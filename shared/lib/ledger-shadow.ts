@@ -290,4 +290,4 @@ export function canonicalConditionJson(input: unknown): string {
 }
 
 /** Re-exported for convenience so bash callers see one surface. */
-export { Ledger, type LedgerTx };
+export { type Ledger, type LedgerTx };
