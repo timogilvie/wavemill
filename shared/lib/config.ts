@@ -14,6 +14,7 @@ import { readFileSync, existsSync, statSync } from 'node:fs';
 import { resolve, join as joinPath } from 'node:path';
 import { createRequire } from 'node:module';
 import { errorMessage } from './error-utils.ts';
+import { loadPrecompiledValidator, WAVEMILL_CONFIG_AJV_OPTIONS } from './schema-validators.ts';
 import { parseModelSelector } from './model-registry.ts';
 import type { AgentType, RegistryTaskType } from './model-registry.ts';
 
@@ -1489,7 +1490,25 @@ function getValidator(repoDir?: string): ValidatorFunction | null {
     );
   }
 
-  const schema = JSON.parse(readFileSync(schemaPath, 'utf-8'));
+  const schemaText = readFileSync(schemaPath, 'utf-8');
+  // The committed standalone validator (HOK-3205) is served whenever it was
+  // generated from these exact schema bytes, so canonical and worktree-local
+  // schemas that match skip the compile entirely; a diverged schema falls
+  // through to a runtime compile below.
+  const precompiled = loadPrecompiledValidator('wavemill-config', schemaText, WAVEMILL_CONFIG_AJV_OPTIONS);
+  if (precompiled) {
+    const validator = precompiled as ValidatorFunction;
+    if (fingerprint) {
+      compiledValidators.set(schemaPath, {
+        validator,
+        mtimeMs: fingerprint.mtimeMs,
+        size: fingerprint.size,
+      });
+    }
+    return validator;
+  }
+
+  const schema = JSON.parse(schemaText);
   const require = createRequire(import.meta.url);
   let AjvCtor: {
     new (options: { allErrors: boolean; strict: boolean }): { compile(schema: unknown): ValidatorFunction };
@@ -1514,10 +1533,8 @@ function getValidator(repoDir?: string): ValidatorFunction | null {
     throw err;
   }
 
-  const ajv = new AjvCtor({
-    allErrors: true,
-    strict: false, // Allow unknown keywords in schema
-  });
+  // strict: false allows unknown keywords in the schema.
+  const ajv = new AjvCtor(WAVEMILL_CONFIG_AJV_OPTIONS as { allErrors: boolean; strict: boolean });
 
   const validator = ajv.compile(schema);
   // Store the fingerprint taken *before* the read, deliberately. If the file
