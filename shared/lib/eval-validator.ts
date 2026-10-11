@@ -1,4 +1,4 @@
-import { createReadStream, existsSync } from 'node:fs';
+import { createReadStream, existsSync, readFileSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
@@ -11,17 +11,32 @@ import {
   EVAL_ERROR_SEVERITY_ORDER,
   type EvalErrorCode,
 } from './eval-error-codes.ts';
+import {
+  compileSchemaValidator,
+  EVAL_RECORD_AJV_OPTIONS,
+  loadPrecompiledValidator,
+  type SchemaValidatorFunction,
+} from './schema-validators.ts';
 
 const require = createRequire(import.meta.url);
-const Ajv2020 =
-  require('ajv/dist/2020').default || require('ajv/dist/2020');
-const evalSchema = require('./eval-schema.json');
-const ajv = new Ajv2020({
-  allErrors: true,
-  strict: false,
-  validateFormats: false,
-});
-const validateSchema = ajv.compile(evalSchema) as (value: unknown) => boolean;
+
+let evalSchemaValidator: SchemaValidatorFunction | null = null;
+
+/**
+ * Eval record schema validator, resolved on first use (HOK-3205): the
+ * committed standalone artifact when it matches eval-schema.json, otherwise a
+ * runtime compile. Importing this module no longer pays the ~375 ms compile.
+ */
+function getEvalSchemaValidator(): SchemaValidatorFunction {
+  if (!evalSchemaValidator) {
+    const schemaPath = require.resolve('./eval-schema.json');
+    const schemaText = readFileSync(schemaPath, 'utf-8');
+    evalSchemaValidator =
+      loadPrecompiledValidator('eval-record', schemaText, EVAL_RECORD_AJV_OPTIONS, 'ajv/dist/2020') ??
+      compileSchemaValidator(JSON.parse(schemaText), EVAL_RECORD_AJV_OPTIONS, 'ajv/dist/2020');
+  }
+  return evalSchemaValidator;
+}
 
 export { BUDGET_MISSING };
 
@@ -282,6 +297,7 @@ export function validateEvalRecord(
     }
   }
 
+  const validateSchema = getEvalSchemaValidator();
   if (!validateSchema(record)) {
     for (const error of validateSchema.errors || []) {
       if (error.keyword === 'required') {
