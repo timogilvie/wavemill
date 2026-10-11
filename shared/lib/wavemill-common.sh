@@ -5825,6 +5825,14 @@ wavemill_session_cache_reset() {
   _WAVEMILL_SESSION_CAP_WARNED=""
 }
 
+# HOK-3204: prime the shell-side session-capability cache from the parent
+# monitor process so subshell `$(wavemill_session_has ...)` captures inherit
+# the populated arrays on fork and skip the ~1s session-capabilities.ts spawn.
+# Idempotent and cheap (hits the HOK-3102 mtime-keyed cache once a pass).
+monitor_prime_session_capabilities() {
+  wavemill_session_capabilities_json "${1:-${REPO_DIR:-$PWD}}" >/dev/null 2>&1 || true
+}
+
 # HOK-3102 (D7): with the observer off, remove the stale findings backlog that
 # nothing will ever read. Idempotent; safe to call from startup.
 _cleanup_stale_observer_findings() {
