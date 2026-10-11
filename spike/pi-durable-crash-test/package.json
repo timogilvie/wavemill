@@ -11,7 +11,12 @@
     "policy-parity": "tsx scripts/policy-parity.ts",
     "provider-matrix": "tsx scripts/provider-matrix.ts",
     "baseline": "tsx scripts/baseline-relaunch.ts --faux",
-    "smoke": "tsx scripts/smoke.ts"
+    "smoke": "tsx scripts/smoke.ts",
+    "fork:faux": "tsx scripts/test-forking.ts",
+    "fork:real": "tsx scripts/test-forking.ts --real",
+    "fork:crash": "tsx scripts/fork-crash-harness.ts --point=F1,F2,F3 --trials=5",
+    "fork:counterfactual": "tsx scripts/test-counterfactual-fork.ts",
+    "fork:baseline-history": "tsx scripts/challenger-baseline-history.ts"
   },
   "dependencies": {
     "@earendil-works/chord": "1.0.4",
