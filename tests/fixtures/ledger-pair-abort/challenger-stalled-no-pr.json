@@ -1,0 +1,76 @@
+{
+  "description": "Challenger tracked but no PR; settleArmAbort(challenger, 'sibling-stalled') + walk. HOK-3128 shape.",
+  "tasks": [
+    {
+      "id": "pair-hok3128",
+      "parent_id": null,
+      "kind": "pair",
+      "slug": "HOK-3128",
+      "inputs_hash": null,
+      "state": "running",
+      "owner": null,
+      "next_action": null,
+      "deadline": null,
+      "background": 0,
+      "replay": "unsafe",
+      "attempt": 0,
+      "max_attempts": null,
+      "created_at": "2026-10-01T10:00:00.000Z",
+      "settled_at": null,
+      "settled_as": null,
+      "settled_reason": null
+    },
+    {
+      "id": "arm-hok3128-primary",
+      "parent_id": "pair-hok3128",
+      "kind": "arm",
+      "slug": "HOK-3128",
+      "inputs_hash": null,
+      "state": "done",
+      "owner": "primary",
+      "next_action": null,
+      "deadline": null,
+      "background": 0,
+      "replay": "unsafe",
+      "attempt": 0,
+      "max_attempts": null,
+      "created_at": "2026-10-01T10:01:00.000Z",
+      "settled_at": "2026-10-01T12:00:00.000Z",
+      "settled_as": "done",
+      "settled_reason": null
+    },
+    {
+      "id": "arm-hok3128-challenger",
+      "parent_id": "pair-hok3128",
+      "kind": "arm",
+      "slug": "HOK-3128_c",
+      "inputs_hash": null,
+      "state": "running",
+      "owner": "challenger",
+      "next_action": null,
+      "deadline": null,
+      "background": 0,
+      "replay": "unsafe",
+      "attempt": 0,
+      "max_attempts": null,
+      "created_at": "2026-10-01T10:01:00.000Z",
+      "settled_at": null,
+      "settled_as": null,
+      "settled_reason": null
+    }
+  ],
+  "actions": [
+    {
+      "settleArm": {
+        "armSlug": "HOK-3128_c",
+        "reason": "sibling-stalled"
+      }
+    }
+  ],
+  "expected": {
+    "settled": true,
+    "survivorRole": "primary",
+    "pairSettledAs": "aborted",
+    "pairSettledReason": "pair-settled:done-aborted"
+  }
+}
