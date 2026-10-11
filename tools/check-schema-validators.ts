@@ -21,7 +21,7 @@ const __filename = fileURLToPath(import.meta.url);
 
 if (process.argv[1] === __filename) {
   const repoRoot = process.argv[2] ?? DEFAULT_REPO_ROOT;
-  const validatorsDir = process.argv[3] ?? join(repoRoot, 'shared', 'validators');
+  const validatorsDir = process.argv[3] ?? join(repoRoot, 'shared', 'validators'); // install-paths: allow repoRoot is install-dir derived
   const problems = checkPrecompiledValidators(repoRoot, validatorsDir);
 
   for (const spec of PRECOMPILED_SCHEMAS) {
