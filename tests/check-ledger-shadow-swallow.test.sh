@@ -31,7 +31,8 @@ while IFS= read -r hit; do
   esac
   # Accept any line that contains `|| true`, `|| echo`, `|| return`, `_ignore_errors`,
   # or redirects stderr while being inside a $(...) command substitution.
-  if printf '%s' "$line" | grep -qE '\|\|[[:space:]]*(true|echo|return)|_ignore_errors|2>/dev/null[[:space:]]*(\)|\|)|>/dev/null[[:space:]]+2>&1'; then
+  # The `2>/dev/null` pattern must be preceded by $( to ensure it's in a command substitution.
+  if printf '%s' "$line" | grep -qE '\|\|[[:space:]]*(true|echo|return)|_ignore_errors|\$\([^)]*2>/dev/null|>/dev/null[[:space:]]+2>&1'; then
     continue
   fi
   echo "VIOLATION ${file}:${rest%%:*}: $line" >&2

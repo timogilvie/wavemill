@@ -157,9 +157,14 @@ _marker_shadow_waiting_on_write() {
   local step_id
   step_id="$(_marker_shadow_resolve_target "$path")" || step_id=""
   [[ -n "$step_id" ]] || return 0
-  local condition_json
+  local condition_json recheck_after
   condition_json="$(jq -c '.condition // {}' <<< "$payload" 2>/dev/null || echo '{}')"
-  wavemill_run_tool ledger.ts waiting-on-set --id "$step_id" --trigger "$trigger" --condition "$condition_json" >/dev/null 2>&1 || true
+  recheck_after="$(jq -r '.condition.recheckAfter // empty' <<< "$payload" 2>/dev/null || echo "")"
+  if [[ -n "$recheck_after" ]]; then
+    wavemill_run_tool ledger.ts waiting-on-set --id "$step_id" --trigger "$trigger" --condition "$condition_json" --recheck-after "$recheck_after" >/dev/null 2>&1 || true
+  else
+    wavemill_run_tool ledger.ts waiting-on-set --id "$step_id" --trigger "$trigger" --condition "$condition_json" >/dev/null 2>&1 || true
+  fi
   return 0
 }
 
@@ -199,6 +204,8 @@ _marker_shadow_resolve_target() {
     bucket="failed-ready-recheck"
   fi
   if [[ -n "$bucket" ]]; then
+    # Source bounded-retry for _bounded_retry_prefix helper
+    source "${SHARED_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}/bounded-retry.sh" 2>/dev/null || true
     local shadow_file="$state_dir/$(_bounded_retry_prefix "$bucket" 2>/dev/null)step-id"
     if [[ -f "$shadow_file" ]]; then
       cat "$shadow_file" 2>/dev/null | head -n 1 | tr -d '\n'
@@ -214,7 +221,7 @@ _marker_shadow_resolve_target() {
   [[ -n "$raw" ]] || return 1
   command -v jq >/dev/null 2>&1 || return 1
   id="$(printf '%s' "$raw" | jq -r --arg issue "${WAVEMILL_ISSUE:-}" '
-    sort_by(.created_at) | reverse | .[0].id // empty
+    map(select(.parent_id == $issue)) | sort_by(.created_at | strtotime? // 0) | reverse | .[0].id // empty
   ' 2>/dev/null || echo "")"
   printf '%s' "$id"
   return 0

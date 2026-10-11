@@ -42,15 +42,15 @@ wavemill_hook_shadow_evidence() {
   )
   [[ -n "$detail" ]] && cli_args+=(--detail "$detail")
 
-  # Best-effort invocation: swallow stderr, cap at 2 seconds via a soft
-  # fallback (bash timeout is not portable here), always return 0.
+  # Best-effort invocation: swallow stderr, always return 0.
+  # Spawn in background and let it settle asynchronously (max 10s); don't block the hook caller.
   (
     wavemill_run_tool ledger.ts "${cli_args[@]}" >/dev/null 2>&1 || true
   ) &
   local pid=$!
   # Reap in background without waiting: the ledger write is small, but we
   # must not block the hook caller. The pid is intentionally orphaned on
-  # process-exit paths.
+  # process-exit paths. Suppress job status notifications.
   disown "$pid" 2>/dev/null || true
   return 0
 }

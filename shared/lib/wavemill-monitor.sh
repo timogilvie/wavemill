@@ -9455,7 +9455,8 @@ $issue_desc
     wavemill_ledger_step_upsert "$issue" review "$_review_state_dir" "review-infra-recovery" \
       --head "$_review_head" --base "$_review_base" \
       --prompt "${_review_prompt_hash:-$(printf 'review@%s' "$reviewer_model")}" \
-      --owner "$reviewer_agent" --next-action "awaiting review verdict" >/dev/null 2>&1 || true
+      --owner "$reviewer_agent" --next-action "awaiting review verdict" \
+      --max-attempts 2 >/dev/null 2>&1 || true
   fi
 
   _launch_agent_in_pane "$win" "$reviewer_agent" "$reviewer_model" "$prompt_file" "$slug" "$issue"
@@ -12978,13 +12979,16 @@ launch_ready_phase() {
   # {head, base, pr, prompt_identity}; the retry bucket is the shared
   # ready-remediation bucket. The call is best-effort.
   if declare -F wavemill_ledger_step_upsert >/dev/null 2>&1; then
-    local _ready_head _ready_base
+    local _ready_head _ready_base _ready_max_attempts
     _ready_head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
     _ready_base="$(git -C "$wt_dir" merge-base HEAD "origin/$base_branch" 2>/dev/null || true)"
+    _ready_max_attempts=$(wavemill_load_config "$REPO_DIR" 2>/dev/null | jq -r '.ready.remediation.maxAttempts // 3' 2>/dev/null || echo "3")
+    [[ "$_ready_max_attempts" =~ ^[0-9]+$ ]] || _ready_max_attempts=3
     wavemill_ledger_step_upsert "$issue" ready "$state_dir" "ready-remediation" \
       --head "$_ready_head" --base "$_ready_base" --pr "$pr_number" \
       --prompt "ready@${current_agent:-mill}" \
-      --owner "$current_agent" --next-action "awaiting Ready verdict" >/dev/null 2>&1 || true
+      --owner "$current_agent" --next-action "awaiting Ready verdict" \
+      --max-attempts "$_ready_max_attempts" >/dev/null 2>&1 || true
   fi
 
   # HOK-3112: Ready checks the checkout and publishes the Tend handoff at the
@@ -14481,14 +14485,16 @@ maybe_run_challenge_eval() {
   # HOK-3184: mirror the eval launch as a shadow step row. The bucket name
   # mirrors the pair/side so the retry sentinel is attributed to this arm.
   if declare -F wavemill_ledger_step_upsert >/dev/null 2>&1; then
-    local _eval_head _eval_state_dir _eval_bucket
+    local _eval_head _eval_state_dir _eval_bucket _eval_max_attempts
     _eval_head="$(git -C "${WORKTREE_ROOT}/${slug}" rev-parse HEAD 2>/dev/null || true)"
     _eval_state_dir="${WORKTREE_ROOT}/${slug}/features/${slug}"
     _eval_bucket="challenge-eval-soft-${pair_id}-${side}"
+    _eval_max_attempts=$(challenge_eval_retry_max_attempts)
     wavemill_ledger_step_upsert "$issue" eval "$_eval_state_dir" "$_eval_bucket" \
       --head "$_eval_head" --pr "$pr" --pair "$pair_id" --side "$side" \
       --prompt "run-eval-hook@${challenge_stage:-eval}" \
-      --owner "$eval_agent" --next-action "awaiting eval verdict" >/dev/null 2>&1 || true
+      --owner "$eval_agent" --next-action "awaiting eval verdict" \
+      --max-attempts "$_eval_max_attempts" >/dev/null 2>&1 || true
   fi
 
   wavemill_run_tool "run-eval-hook.ts" \
