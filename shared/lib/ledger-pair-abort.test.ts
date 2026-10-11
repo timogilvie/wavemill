@@ -4,13 +4,17 @@
 
 import { test } from 'node:test';
 import { mkdtempSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { readFileSync } from 'node:fs';
 import { strict as assert } from 'node:assert';
+import { fileURLToPath } from 'node:url';
 import { Ledger, TaskSettledError, type TaskRow } from './ledger.ts';
 import { attemptPairAbortWalk } from './ledger-pair-abort.ts';
 import { settleArmAbort, settleStep } from './ledger-shadow.ts';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 interface FixtureTask {
   id: string;
@@ -63,10 +67,18 @@ function loadFixture(name: string): Fixture {
 }
 
 function seedLedger(ledger: Ledger, tasks: FixtureTask[]): void {
-  for (const task of tasks) {
-    ledger.transaction((tx) => {
-      // Direct SQL insert to bypass schema validation for settled rows
-      const db = (tx as any).db;
+  // We need to disable the triggers temporarily to seed settled rows
+  ledger.transaction((tx) => {
+    const db = (tx as any).db;
+
+    // Disable triggers for seeding
+    db.exec('DROP TRIGGER IF EXISTS trg_task_settled_frozen');
+    db.exec('DROP TRIGGER IF EXISTS trg_task_parent_consistent');
+    db.exec('DROP TRIGGER IF EXISTS trg_task_parent_insert');
+    db.exec('DROP TRIGGER IF EXISTS trg_task_child_after_settle');
+
+    // Insert all tasks
+    for (const task of tasks) {
       db.prepare(`
         INSERT INTO task (
           id, parent_id, kind, slug, inputs_hash, state, owner, next_action,
@@ -92,8 +104,29 @@ function seedLedger(ledger: Ledger, tasks: FixtureTask[]): void {
         task.settled_as,
         task.settled_reason,
       );
-    });
-  }
+    }
+
+    // Re-enable triggers after seeding
+    db.exec(`
+      CREATE TRIGGER trg_task_settled_frozen BEFORE UPDATE ON task WHEN OLD.settled_as IS NOT NULL
+       BEGIN SELECT RAISE(ABORT,'task_already_settled'); END
+    `);
+    db.exec(`
+      CREATE TRIGGER trg_task_parent_consistent BEFORE UPDATE OF settled_as ON task
+       WHEN NEW.settled_as IS NOT NULL AND EXISTS(SELECT 1 FROM task c WHERE c.parent_id=NEW.id AND c.background=0 AND c.settled_as IS NULL)
+       BEGIN SELECT RAISE(ABORT,'parent_has_open_children'); END
+    `);
+    db.exec(`
+      CREATE TRIGGER trg_task_parent_insert BEFORE INSERT ON task
+       WHEN NEW.settled_as IS NOT NULL AND EXISTS(SELECT 1 FROM task c WHERE c.parent_id=NEW.id AND c.background=0 AND c.settled_as IS NULL)
+       BEGIN SELECT RAISE(ABORT,'parent_has_open_children'); END
+    `);
+    db.exec(`
+      CREATE TRIGGER trg_task_child_after_settle BEFORE INSERT ON task
+       WHEN NEW.parent_id IS NOT NULL AND NEW.background=0 AND EXISTS(SELECT 1 FROM task p WHERE p.id=NEW.parent_id AND p.settled_as IS NOT NULL)
+       BEGIN SELECT RAISE(ABORT,'task_already_settled'); END
+    `);
+  });
 }
 
 function findArmBySlug(ledger: Ledger, pairId: string, armSlug: string): string {
