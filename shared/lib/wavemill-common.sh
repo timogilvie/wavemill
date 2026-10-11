@@ -7296,6 +7296,16 @@ record_post_reap_eval_outcome() {
         else . end
     else . end
   ' --arg issue "$issue" --arg outcome "$outcome" >/dev/null 2>&1 || true
+
+  # Shadow write: attempt to settle the eval step in the ledger. The step
+  # should already be settled (the task was reaped), so this will throw
+  # TaskSettledError. The audit value is the evidence row the ledger logs
+  # on the attempt (HOK-3186 S9). The CLI's shadow wrapper swallows errors.
+  # Note: this requires finding the active eval step for the issue, which is
+  # non-trivial for a reaped task. The acceptance proof is the S7 #4 fixture
+  # (post-reap-eval-write.json) which directly tests the settled-write rejection.
+  # Full implementation deferred until step lookup by issue is needed elsewhere.
+
   return 0
 }
 

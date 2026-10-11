@@ -15,9 +15,15 @@ import {
   stepInputsFromCliArgs,
   upsertStep,
   withShadowSuppressing,
+  ensurePair,
+  ensureArm,
+  settleArmAbort,
+  readPairIntent,
+  readPairIntentWithFallback,
   type StepKind,
 } from '../shared/lib/ledger-shadow.ts';
 import { runConsistencyCheck, appendConsistencyLog } from '../shared/lib/ledger-consistency.ts';
+import { attemptPairAbortWalk } from '../shared/lib/ledger-pair-abort.ts';
 
 const required = (value: string | undefined, name: string): string => { if (!value) throw new Error(`missing ${name}`); return value; };
 const parseJson = (value: string | undefined, name: string): unknown => { try { return value === undefined ? null : JSON.parse(value); } catch { throw new Error(`invalid JSON for ${name}`); } };
@@ -61,6 +67,9 @@ runTool({
     'session-id': { type: 'string', description: 'Override session id (hook file resolver)' },
     'evidence-window-ms': { type: 'string', description: 'Window for agent-hook evidence check' },
     strict: { type: 'boolean', description: 'Fail with non-zero exit on shadow error (default: swallow)' },
+    intent: { type: 'string', description: 'JSON execution intent for pair/arm' },
+    role: { type: 'string', description: 'Arm role (primary|challenger)' },
+    'arm-local': { type: 'string', description: 'JSON local arm intent for compat shim' },
   },
   examples: [
     'npx tsx tools/ledger.ts list --json',
@@ -77,6 +86,11 @@ runTool({
     'npx tsx tools/ledger.ts waiting-on-clear --id <id> --trigger head',
     'npx tsx tools/ledger.ts evidence-insert --issue HOK-1234 --event Stop',
     'npx tsx tools/ledger.ts check-consistency --issue HOK-1234 --state-dir /path/to/state',
+    'npx tsx tools/ledger.ts pair-ensure --pair HOK-1234 --intent \'{"stage":"review"}\'',
+    'npx tsx tools/ledger.ts arm-ensure --pair HOK-1234 --issue HOK-1234 --role primary',
+    'npx tsx tools/ledger.ts arm-settle-abort --id <arm-id> --reason sibling-stalled',
+    'npx tsx tools/ledger.ts pair-walk --pair HOK-1234',
+    'npx tsx tools/ledger.ts pair-intent-read --pair HOK-1234',
   ],
   run({ args, positional }) {
     const [command, arg1, arg2] = positional;
@@ -95,6 +109,11 @@ runTool({
       'waiting-on-clear',
       'evidence-insert',
       'check-consistency',
+      'pair-ensure',
+      'arm-ensure',
+      'arm-settle-abort',
+      'pair-walk',
+      'pair-intent-read',
     ]);
     const isShadow = shadowCommands.has(command ?? '');
     const runImpl = (): unknown => {
@@ -194,6 +213,40 @@ runTool({
             });
             appendConsistencyLog(stateDir, result);
             return result;
+          }
+          case 'pair-ensure': {
+            const pairId = required(args.pair, '--pair');
+            const intent = args.intent ? parseJson(args.intent, '--intent') : undefined;
+            const row = ensurePair(ledger, pairId, intent);
+            return { id: row.id, slug: row.slug, kind: row.kind };
+          }
+          case 'arm-ensure': {
+            const pairId = required(args.pair, '--pair');
+            const issueKey = required(args.issue, '--issue');
+            const role = required(args.role, '--role');
+            if (role !== 'primary' && role !== 'challenger') {
+              throw new Error(`invalid --role: ${role} (expected primary|challenger)`);
+            }
+            const intent = args.intent ? parseJson(args.intent, '--intent') : undefined;
+            const row = ensureArm(ledger, pairId, issueKey, role, intent);
+            return { id: row.id, slug: row.slug, kind: row.kind, parent_id: row.parent_id, owner: row.owner };
+          }
+          case 'arm-settle-abort': {
+            const armId = required(args.id, '--id');
+            const reason = required(args.reason, '--reason');
+            settleArmAbort(ledger, armId, reason);
+            return { id: armId, settled_as: 'aborted', settled_reason: reason };
+          }
+          case 'pair-walk': {
+            const pairId = required(args.pair, '--pair');
+            const result = attemptPairAbortWalk(ledger, pairId);
+            return result;
+          }
+          case 'pair-intent-read': {
+            const pairId = required(args.pair, '--pair');
+            const armLocal = args['arm-local'] ? parseJson(args['arm-local'], '--arm-local') : undefined;
+            const intent = readPairIntentWithFallback(ledger, pairId, armLocal);
+            return { pairId, intent };
           }
           default:
             throw new Error(`unknown subcommand: ${command ?? '(none)'}`);

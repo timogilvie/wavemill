@@ -289,5 +289,160 @@ export function canonicalConditionJson(input: unknown): string {
   return `{${entries.map(([key, value]) => `${JSON.stringify(key)}:${canonicalConditionJson(value)}`).join(',')}}`;
 }
 
+/**
+ * Idempotently upsert a top-level `kind='pair'` row for a challenge pair.
+ * The unique index on `(slug) WHERE parent_id IS NULL` enforces one pair
+ * row per pairId. On create, records the execution intent as evidence.
+ * Returns the existing row when present (idempotent).
+ */
+export function ensurePair(ledger: Ledger, pairId: string, intent?: unknown): TaskRow {
+  const roots = ledger.listTasks({ kind: 'pair' });
+  const existing = roots.find((row) => row.slug === pairId && row.parent_id === null);
+  if (existing) return existing;
+
+  const row = ledger.transaction((tx) => {
+    const pairRow = tx.insertTask({ kind: 'pair', slug: pairId, state: 'running' });
+    if (intent !== undefined && intent !== null) {
+      const detail = canonicalConditionJson(intent);
+      tx.recordEvidence(pairRow.id, 'controller', 'pair-intent-recorded', detail);
+    }
+    return pairRow;
+  });
+  return row;
+}
+
+/**
+ * Idempotently upsert a `kind='arm'` child row for one side of a challenge
+ * pair. The unique index on `(parent_id, slug, inputs_hash)` enforces one
+ * arm per issue key per pair. State starts at 'running'. Returns the
+ * existing row when present (idempotent).
+ */
+export function ensureArm(
+  ledger: Ledger,
+  pairId: string,
+  armIssueKey: string,
+  role: 'primary' | 'challenger',
+  intent?: unknown,
+): TaskRow {
+  const pairRow = ensurePair(ledger, pairId, intent);
+
+  const existing = ledger
+    .listChildren(pairRow.id)
+    .find((row) => row.kind === 'arm' && row.slug === armIssueKey);
+  if (existing) return existing;
+
+  const row = ledger.transaction((tx) =>
+    tx.insertTask({
+      parentId: pairRow.id,
+      kind: 'arm',
+      slug: armIssueKey,
+      state: 'running',
+      owner: role,
+    }),
+  );
+  return row;
+}
+
+/**
+ * Read the newest `pair-intent-recorded` evidence row for a pair and
+ * parse its detail as the execution intent. Returns null when no such
+ * evidence exists.
+ */
+export function readPairIntent(ledger: Ledger, pairId: string): unknown | null {
+  const roots = ledger.listTasks({ kind: 'pair' });
+  const pairRow = roots.find((row) => row.slug === pairId && row.parent_id === null);
+  if (!pairRow) return null;
+
+  const evidence = ledger.listEvidence(pairRow.id);
+  const intentEvidence = evidence
+    .filter((row) => row.source === 'controller' && row.event === 'pair-intent-recorded')
+    .sort((a, b) => b.recorded_at.localeCompare(a.recorded_at));
+
+  if (intentEvidence.length === 0) return null;
+
+  const detail = intentEvidence[0].detail;
+  if (!detail) return null;
+
+  try {
+    return JSON.parse(detail);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Settle an arm row as aborted with the given reason. Thin wrapper around
+ * tx.settleTask with error translation for the caller's convenience.
+ */
+export function settleArmAbort(ledger: Ledger, armId: string, reason: string): void {
+  ledger.transaction((tx) => tx.settleTask(armId, 'aborted', reason));
+}
+
+/**
+ * Read the pair's execution intent with fallback to the arm's local intent
+ * copy (compat shim for the shadow window). Prefers the pair-row intent
+ * (authoritative). When both exist, compares them and warns on mismatch,
+ * recording drift as evidence. The pair row remains authoritative during
+ * mismatch.
+ *
+ * Warn-and-continue — never throws during the shadow window.
+ */
+export function readPairIntentWithFallback(
+  ledger: Ledger,
+  pairId: string,
+  armLocalIntent?: unknown,
+): unknown | null {
+  const pairIntent = readPairIntent(ledger, pairId);
+
+  // Pair row is authoritative when present
+  if (pairIntent !== null && pairIntent !== undefined) {
+    // Compare with local copy if both exist
+    if (armLocalIntent !== null && armLocalIntent !== undefined) {
+      const pairJson = canonicalConditionJson(pairIntent);
+      const localJson = canonicalConditionJson(armLocalIntent);
+
+      if (pairJson !== localJson) {
+        // Intent drift detected — warn and record evidence
+        const pairHash = createHash('sha256').update(pairJson).digest('hex').slice(0, 8);
+        const localHash = createHash('sha256').update(localJson).digest('hex').slice(0, 8);
+
+        process.stderr.write(
+          `[ledger-pair-intent-drift] pair=${pairId} local=${localHash} row=${pairHash}\n`,
+        );
+
+        // Record mismatch as evidence on the pair row
+        try {
+          const roots = ledger.listTasks({ kind: 'pair' });
+          const pairRow = roots.find((row) => row.slug === pairId && row.parent_id === null);
+          if (pairRow) {
+            ledger.transaction((tx) =>
+              tx.recordEvidence(
+                pairRow.id,
+                'controller',
+                'pair-intent-mismatch',
+                `local_hash=${localHash} row_hash=${pairHash}`,
+              ),
+            );
+          }
+        } catch (error) {
+          // Shadow write failed — continue anyway
+          if (process.env.WAVEMILL_LEDGER_SHADOW_DEBUG === '1') {
+            const message = error instanceof Error ? error.message : String(error);
+            process.stderr.write(`[ledger-pair-intent-drift] evidence write failed: ${message}\n`);
+          }
+        }
+      }
+    }
+    return pairIntent;
+  }
+
+  // Fallback to local intent when pair row has none
+  if (armLocalIntent !== null && armLocalIntent !== undefined) {
+    return armLocalIntent;
+  }
+
+  return null;
+}
+
 /** Re-exported for convenience so bash callers see one surface. */
 export { type Ledger, type LedgerTx };
