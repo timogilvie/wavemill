@@ -290,6 +290,120 @@ agent_binary_for_cmd() {
 # MODEL VALIDATION
 # ============================================================================
 
+# HOK-3204: per-pass memo for agent_validate_model and agent_resolve_model.
+# Each resolver spawn is ~3.1 s of tsx startup; the same (model, repo)
+# question is asked once per review/coding-stage task per monitor pass. We
+# cache the answer against a cheap fingerprint of the inputs that can
+# legitimately change the answer (config files + model-registry + cert store
+# mtimes), and clear the cache at the start of each pass. Within a pass the
+# fingerprint is constant and we never spawn twice for the same model.
+#
+# Bash 3 compatible parallel arrays (two per memo).
+if ! declare -p _WAVEMILL_MODEL_VALID_KEYS >/dev/null 2>&1; then
+  # shellcheck disable=SC2034
+  _WAVEMILL_MODEL_VALID_KEYS=()
+  # shellcheck disable=SC2034
+  _WAVEMILL_MODEL_VALID_VALUES=()
+fi
+if ! declare -p _WAVEMILL_MODEL_RESOLVE_KEYS >/dev/null 2>&1; then
+  # shellcheck disable=SC2034
+  _WAVEMILL_MODEL_RESOLVE_KEYS=()
+  # shellcheck disable=SC2034
+  _WAVEMILL_MODEL_RESOLVE_VALUES=()
+fi
+
+_agent_file_mtime() {
+  local file="$1"
+  [[ -e "$file" ]] || { printf '0'; return; }
+  local out
+  # BSD/macOS stat first (format differs from GNU).
+  out="$(stat -f '%m' "$file" 2>/dev/null)"
+  if [[ "$out" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$out"
+    return
+  fi
+  out="$(stat -c '%Y' "$file" 2>/dev/null)"
+  if [[ "$out" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$out"
+    return
+  fi
+  printf '0'
+}
+
+# Cheap fingerprint of inputs that can change a model validation/resolution
+# answer. Config edits and re-certifications bump the mtime; the next pass's
+# fingerprint changes and the memo invalidates on lookup.
+_agent_model_cache_fingerprint() {
+  local repo_dir="$1"
+  local tools_dir lib_dir registry_path cert_root
+  tools_dir="${TOOLS_DIR:-$(agent_wavemill_tools_dir)}"
+  lib_dir="${tools_dir%/tools}/shared/lib"
+  registry_path="${lib_dir%/shared/lib}/shared/fixtures/model-registry.v1.json"
+  cert_root="${WAVEMILL_NATIVE_CERTIFICATION_ROOT:-$HOME/.wavemill/native-agent-certifications}"
+  printf '%s|%s|%s|%s' \
+    "$(_agent_file_mtime "$registry_path")" \
+    "$(_agent_file_mtime "$repo_dir/.wavemill-config.json")" \
+    "$(_agent_file_mtime "$repo_dir/.wavemill-config.local.json")" \
+    "$(_agent_file_mtime "$cert_root")"
+}
+
+_agent_model_cache_lookup() {
+  local map="$1" key="$2"
+  local i
+  if [[ "$map" == valid ]]; then
+    for ((i = 0; i < ${#_WAVEMILL_MODEL_VALID_KEYS[@]}; i++)); do
+      if [[ "${_WAVEMILL_MODEL_VALID_KEYS[$i]}" == "$key" ]]; then
+        printf '%s' "${_WAVEMILL_MODEL_VALID_VALUES[$i]}"
+        return 0
+      fi
+    done
+    return 1
+  fi
+  for ((i = 0; i < ${#_WAVEMILL_MODEL_RESOLVE_KEYS[@]}; i++)); do
+    if [[ "${_WAVEMILL_MODEL_RESOLVE_KEYS[$i]}" == "$key" ]]; then
+      printf '%s' "${_WAVEMILL_MODEL_RESOLVE_VALUES[$i]}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+_agent_model_cache_store() {
+  local map="$1" key="$2" value="$3"
+  local i
+  if [[ "$map" == valid ]]; then
+    for ((i = 0; i < ${#_WAVEMILL_MODEL_VALID_KEYS[@]}; i++)); do
+      if [[ "${_WAVEMILL_MODEL_VALID_KEYS[$i]}" == "$key" ]]; then
+        _WAVEMILL_MODEL_VALID_VALUES[$i]="$value"
+        return 0
+      fi
+    done
+    _WAVEMILL_MODEL_VALID_KEYS+=("$key")
+    _WAVEMILL_MODEL_VALID_VALUES+=("$value")
+    return 0
+  fi
+  for ((i = 0; i < ${#_WAVEMILL_MODEL_RESOLVE_KEYS[@]}; i++)); do
+    if [[ "${_WAVEMILL_MODEL_RESOLVE_KEYS[$i]}" == "$key" ]]; then
+      _WAVEMILL_MODEL_RESOLVE_VALUES[$i]="$value"
+      return 0
+    fi
+  done
+  _WAVEMILL_MODEL_RESOLVE_KEYS+=("$key")
+  _WAVEMILL_MODEL_RESOLVE_VALUES+=("$value")
+}
+
+# Testing / pass-boundary hook: clear both memos.
+agent_model_cache_reset() {
+  # shellcheck disable=SC2034
+  _WAVEMILL_MODEL_VALID_KEYS=()
+  # shellcheck disable=SC2034
+  _WAVEMILL_MODEL_VALID_VALUES=()
+  # shellcheck disable=SC2034
+  _WAVEMILL_MODEL_RESOLVE_KEYS=()
+  # shellcheck disable=SC2034
+  _WAVEMILL_MODEL_RESOLVE_VALUES=()
+}
+
 # Validate a model selector token accepted by the shared resolver.
 # Args: $1 = selector token, $2 = repo directory (optional)
 # Returns: 0 if valid, 1 if invalid (prints error to stderr)
@@ -310,6 +424,16 @@ agent_validate_model() {
   local validator="model-validator.ts"
   local validation_stderr
 
+  # HOK-3204: cache hit short-circuits the ~3.1 s tsx spawn. The key includes
+  # the fingerprint so a config/cert change invalidates by key mismatch; the
+  # per-pass reset is for the common hot-loop case.
+  local fp key cached
+  fp="$(_agent_model_cache_fingerprint "$repo_dir")"
+  key="${model}|${fp}"
+  if cached="$(_agent_model_cache_lookup valid "$key")"; then
+    return "$cached"
+  fi
+
   if ! agent_model_helper_available; then
     echo "error: model validation requires tsx or npx -- install Node.js tooling to use model selectors" >&2
     return 1
@@ -322,13 +446,17 @@ agent_validate_model() {
     if grep -Eqi 'tsx: not available|tsx not found|npx: tsx not found' "$validation_stderr"; then
       cat "$validation_stderr" >&2
       rm -f "$validation_stderr"
+      # Do not cache this failure: it reflects a missing tooling layer, not a
+      # model-level truth, and will go away as soon as tsx is installed.
       return 1
     fi
     rm -f "$validation_stderr"
+    _agent_model_cache_store valid "$key" 0
     return 0
   else
     cat "$validation_stderr" >&2
     rm -f "$validation_stderr"
+    _agent_model_cache_store valid "$key" 1
     return 1
   fi
 }
@@ -345,16 +473,33 @@ agent_resolve_model() {
   local lib_dir="${tools_dir%/tools}/shared/lib"
   local validator="model-validator.ts"
 
+  # HOK-3204: cache hit short-circuits the tsx spawn. The stored entry is
+  # "<rc>\t<resolved_model>" so we can round-trip both success and failure.
+  local fp key cached entry_rc entry_val
+  fp="$(_agent_model_cache_fingerprint "$repo_dir")"
+  key="${role}|${model}|${fp}"
+  if cached="$(_agent_model_cache_lookup resolve "$key")"; then
+    entry_rc="${cached%%$'\t'*}"
+    entry_val="${cached#*$'\t'}"
+    if [[ "$entry_rc" == "0" ]]; then
+      printf '%s\n' "$entry_val"
+      return 0
+    fi
+    return 1
+  fi
+
   if ! agent_model_helper_available; then
     echo "error: model resolution requires tsx or npx -- install Node.js tooling to use model selectors" >&2
     return 1
   fi
 
   if resolved_model="$(cd "$lib_dir" 2>/dev/null && agent_run_tsx_tool "$validator" --resolve-selector-token "$model" --role "$role" "$repo_dir" 2>/dev/null)"; then
+    _agent_model_cache_store resolve "$key" "0"$'\t'"$resolved_model"
     printf '%s\n' "$resolved_model"
     return 0
   fi
 
+  _agent_model_cache_store resolve "$key" "1"$'\t'""
   return 1
 }
 
@@ -449,11 +594,58 @@ agent_runtime_resource_selection_enabled() {
   return 0
 }
 
+# HOK-3204: Probe `node --import tsx` once per (process, CWD) and cache the
+# result. `node --import tsx` performs ESM package resolution from the current
+# working directory, so the probe's answer is CWD-sensitive — a positive
+# probe from the wavemill install dir does not imply success from a consumer
+# repo that lacks a local `tsx` dependency. The cache is a (pwd → 0|1) map;
+# in practice there are 2–3 unique CWDs across a monitor pass (lib_dir,
+# repo_dir, worktree dirs). WAVEMILL_SKIP_FAST_STRIP=1 forces the npx tsx
+# fallback (used by tests that intercept via a shell function named `npx`).
+if ! declare -p _WAVEMILL_TSX_PROBE_KEYS >/dev/null 2>&1; then
+  # shellcheck disable=SC2034
+  _WAVEMILL_TSX_PROBE_KEYS=()
+  # shellcheck disable=SC2034
+  _WAVEMILL_TSX_PROBE_VALUES=()
+fi
+
+# Returns 0 when `node --import tsx` works from the current CWD; 1 otherwise.
+# Caches the answer keyed by PWD so a second call from the same CWD is free.
+_agent_tsx_probe() {
+  if [[ "${WAVEMILL_SKIP_FAST_STRIP:-0}" == "1" ]]; then
+    return 1
+  fi
+  local cwd="$PWD"
+  local i
+  for ((i = 0; i < ${#_WAVEMILL_TSX_PROBE_KEYS[@]}; i++)); do
+    if [[ "${_WAVEMILL_TSX_PROBE_KEYS[$i]}" == "$cwd" ]]; then
+      [[ "${_WAVEMILL_TSX_PROBE_VALUES[$i]}" == "1" ]]
+      return $?
+    fi
+  done
+  local result=0
+  if node --import tsx -e "" >/dev/null 2>&1; then
+    result=1
+  fi
+  _WAVEMILL_TSX_PROBE_KEYS+=("$cwd")
+  _WAVEMILL_TSX_PROBE_VALUES+=("$result")
+  # Mirror the strip-type probe's semantics: a single process-wide hint that
+  # at least one CWD has `node --import tsx` available. Consumers reading
+  # WAVEMILL_NODE_IMPORT_TSX_SUPPORTED get a positive signal once any CWD has
+  # proven it works, which matches how WAVEMILL_NODE_STRIP_SUPPORTED behaves.
+  if [[ "$result" == "1" ]]; then
+    WAVEMILL_NODE_IMPORT_TSX_SUPPORTED=1
+    export WAVEMILL_NODE_IMPORT_TSX_SUPPORTED
+    return 0
+  fi
+  return 1
+}
+
 agent_run_tsx_tool() {
   local tool="$1"
   shift
 
-  if node --import tsx -e "" >/dev/null 2>&1; then
+  if _agent_tsx_probe; then
     node --import tsx "$tool" "$@"
   elif command -v tsx >/dev/null 2>&1; then
     tsx "$tool" "$@"
@@ -463,7 +655,12 @@ agent_run_tsx_tool() {
 }
 
 agent_model_helper_available() {
-  node --import tsx -e "" >/dev/null 2>&1 && return 0
+  # HOK-3204: reuse the cached probe instead of spawning `node --import tsx`
+  # on every hot-path call. The probe is CWD-keyed, so a repeat call from the
+  # same lib/repo dir is O(1).
+  if _agent_tsx_probe; then
+    return 0
+  fi
   if command -v tsx >/dev/null 2>&1; then
     tsx --version >/dev/null 2>&1
     return $?

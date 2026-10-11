@@ -3062,6 +3062,16 @@ MONITOR_PASS_SNAPSHOT_FIELDS=(
 )
 
 monitor_build_pass_snapshot() {
+  # HOK-3204: start each monitor pass with a fresh model-validation/resolution
+  # memo and primed session capabilities so the common hot-loop case never
+  # re-spawns tsx tools for the same inputs within one pass.
+  if declare -F agent_model_cache_reset >/dev/null 2>&1; then
+    agent_model_cache_reset
+  fi
+  if declare -F monitor_prime_session_capabilities >/dev/null 2>&1; then
+    monitor_prime_session_capabilities "${REPO_DIR:-$PWD}"
+  fi
+
   [[ -r "$STATE_FILE" && -s "$STATE_FILE" ]] || return 0
 
   # Reset per-pass state.
@@ -5232,6 +5242,51 @@ resolve_stage_result_model() {
   local feature_dir="$1" stage="$2" fallback="${3:-}"
   local model="" launch_model=""
   local challenge_varied_model
+
+  # HOK-3204: hot-loop short-circuit. `write_stage_result ... "running"`
+  # rewrites the same stage result every pass with the same model. If the
+  # stored .${stage}-result.json already names a model and nothing that would
+  # change the resolution has changed, return the stored value without
+  # entering the (now memoized but still non-zero) resolver chain.
+  local stage_file config_model meta_role meta_model stored_model stored_launch
+  local challenge_varied
+  case "$stage" in
+    coding|review)
+      stage_file="$feature_dir/.${stage}-result.json"
+      if [[ -s "$stage_file" ]]; then
+        stored_model="$(jq -r '.model // empty' "$stage_file" 2>/dev/null || echo "")"
+        stored_launch="$(jq -r '.launchModel // empty' "$stage_file" 2>/dev/null || echo "")"
+        if [[ -n "$stored_model" ]]; then
+          config_model="$(read_phase_config "$feature_dir" "$stage" "model")"
+          if [[ "$stage" == "coding" ]]; then
+            meta_role="coderModel"
+          else
+            meta_role="reviewerModel"
+          fi
+          meta_model="$(get_task_meta "$ISSUE" "$meta_role" 2>/dev/null || echo "")"
+          challenge_varied="$(challenge_varied_stage_model "$ISSUE" "$stage" 2>/dev/null || true)"
+          # No field changed when: a challenge-varied model is still named AND
+          # matches the stored model, OR no challenge-varied model is in play
+          # AND the stored model matches whichever of config/meta sources
+          # resolve_phase_model would have picked for the live inputs.
+          local picked=""
+          if [[ -n "$challenge_varied" ]]; then
+            picked="$challenge_varied"
+          elif [[ -n "$config_model" ]]; then
+            picked="$config_model"
+          elif [[ -n "$meta_model" ]]; then
+            picked="$meta_model"
+          else
+            picked="$stored_model"
+          fi
+          if [[ "$picked" == "$stored_model" ]]; then
+            printf '%s\n' "${stored_launch:-$stored_model}"
+            return 0
+          fi
+        fi
+      fi
+      ;;
+  esac
 
   case "$stage" in
     coding)
