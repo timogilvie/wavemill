@@ -13002,6 +13002,7 @@ launch_ready_phase() {
       if [[ -n "$READY_SYNC_DETAIL" ]]; then
         log "status" "  ↻ $issue: task worktree $READY_SYNC_DETAIL before Ready (PR #$pr_number)"
       fi
+      [[ -n "$state_dir" ]] && printf "%s\n" "$READY_SYNC_HEAD" > "$state_dir/ready-checked-head" 2>/dev/null || true
       ;;
     1)
       # A GitHub read blip is transient; hold as pending rather than parking
