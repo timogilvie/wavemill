@@ -18,7 +18,6 @@ import path from 'node:path';
 
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import { createModels } from '@earendil-works/pi-ai/models';
-import { fauxAssistantMessage, fauxProvider, fauxToolCall, fauxText } from '@earendil-works/pi-ai/providers/faux';
 import { createRegistry, Harness } from '@earendil-works/pi-durable';
 import { NodeExecutionEnv } from '@earendil-works/pi-durable/env/node';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
@@ -27,14 +26,7 @@ import { buildCodingExtension, SPIKE_TOOL_NAMES } from '../src/coding-arm.ts';
 import { assertReplayLabelsCover } from '../src/replay-labels.ts';
 import { readCrashPoint } from '../src/crash-points.ts';
 import { createPolicyExtension } from '../src/policy-extension.ts';
-
-interface FauxStep {
-  readonly kind: 'tool' | 'text' | 'partial';
-  readonly name?: string;
-  readonly args?: Record<string, unknown>;
-  readonly text?: string;
-  readonly delayMs?: number;
-}
+import { installDurableFaux, type FauxStep } from '../src/faux-script.ts';
 
 async function main() {
   const dbPath = required('HOK3150_DB_PATH');
@@ -51,34 +43,9 @@ async function main() {
   assertReplayLabelsCover(SPIKE_TOOL_NAMES);
 
   const script = JSON.parse(await readFile(scriptFile, 'utf8')) as FauxStep[];
-  const faux = fauxProvider({ provider: 'faux', models: [{ id: 'spike' }] });
   const models = createModels();
-  models.setProvider(faux.provider);
-
-  // Durable scripted provider: a single factory inspects the message history
-  // (which pi-durable rebuilds from the SQLite transcript on every restart)
-  // and chooses the response matching the number of pi.tool-result messages
-  // already committed. This makes the "faux" model deterministic across
-  // crashes, which is the only way to compare resume vs relaunch.
-  const script2: FauxStep[] = script;
-  const responses: any[] = [];
-  for (let k = 0; k < script2.length * 3 + 2; k += 1) {
-    responses.push((context: any) => {
-      const results = (context?.messages ?? []).filter(
-        (m: any) => m?.role === 'toolResult',
-      ).length;
-      const idx = Math.min(results, script2.length - 1);
-      const step = script2[idx];
-      if (step.kind === 'tool') {
-        return fauxAssistantMessage(
-          fauxToolCall(step.name!, step.args as any, { id: `t${idx}-${step.name}` }),
-          { stopReason: 'toolUse' },
-        );
-      }
-      return fauxAssistantMessage([fauxText(step.text ?? 'done')], { stopReason: 'stop' });
-    });
-  }
-  faux.setResponses(responses);
+  // Use the factored durable faux provider
+  installDurableFaux(models, script, 'spike');
 
   const codingExt = buildCodingExtension({
     worktree,

@@ -8,6 +8,7 @@
  */
 
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -283,4 +284,235 @@ export function formatOperatorInterventionDetail(record: OperatorInterventionRec
     record.scoringNote ? `scoringNote=${record.scoringNote}` : '',
   ].filter(Boolean);
   return truncate(parts.join('; '), 500);
+}
+
+// ── HOK-3182: operator touch taxonomy ────────────────────────────────────────
+
+/**
+ * Design §8f intervention classes. Each ledger phase flips its reads only
+ * after its class's touches fall ≥70% against a pre-phase baseline, so every
+ * counted touch carries exactly one class.
+ *
+ * - `O` ownership: pairing, orphans, "who owns this task" moves
+ * - `L` liveness: unsticking a quiet agent (pane messages, approvals)
+ * - `S` side effects: labels, pushes, Linear writes, merges
+ * - `R` retry or recovery: re-running or repairing a stage
+ */
+export type InterventionClass = 'O' | 'L' | 'S' | 'R';
+
+export const INTERVENTION_CLASSES: readonly InterventionClass[] = ['O', 'L', 'S', 'R'];
+
+/** Every evidence source an operator touch can be counted from. */
+export type OperatorTouchKind =
+  /** `operator_event_record` command (`.operator-events.jsonl`). */
+  | 'operator-event'
+  /** `.operator-intervention.json` recovery artifact. */
+  | 'operator-intervention'
+  /** Intervention recorded on the task's eval row (`evals.jsonl`). */
+  | 'eval-intervention'
+  /** Hook archive entry written by a human (`writer=user`). */
+  | 'pane-message'
+  /** Human prompt typed into the agent session after the launch prompt. */
+  | 'session-redirect'
+  /** `wm:*` (or other) PR label edit not performed by the mill or tend. */
+  | 'label-edit'
+  /** PR merged without tend's merge-lane receipt. */
+  | 'external-merge'
+  /** Commit on the task branch outside every recorded agent window. */
+  | 'manual-push'
+  /** `workflow-state.json` mutation from an interactive shell. */
+  | 'state-edit';
+
+/** Operator commands (`operator_event_record`) → class. Unknown → `R`. */
+export const OPERATOR_COMMAND_CLASS: Readonly<Record<string, InterventionClass>> = {
+  advance: 'R',
+  're-review': 'R',
+  reroute: 'R',
+  'reroute-task': 'R',
+  retry: 'R',
+  cleanup: 'R',
+  abort: 'O',
+  adopt: 'O',
+  release: 'O',
+  reassign: 'O',
+  'challenge-void': 'O',
+  'challenge-forfeit': 'O',
+  'void-challenge': 'O',
+  approve: 'L',
+  resolve: 'L',
+  nudge: 'L',
+  message: 'L',
+  'send-message': 'L',
+  wake: 'L',
+};
+
+/**
+ * Operator-intervention `trigger` keywords → class, matched as substrings in
+ * order. Recovery artifacts default to `R`; these carve out the ownership and
+ * liveness shapes operators already record.
+ */
+export const OPERATOR_TRIGGER_CLASS: ReadonlyArray<readonly [string, InterventionClass]> = [
+  ['orphan', 'O'],
+  ['pair', 'O'],
+  ['owner', 'O'],
+  ['challenge', 'O'],
+  ['stall', 'L'],
+  ['stuck', 'L'],
+  ['liveness', 'L'],
+  ['idle', 'L'],
+  ['label', 'S'],
+  ['merge', 'S'],
+  ['push', 'S'],
+  ['linear', 'S'],
+];
+
+/** PR labels → class. Unknown labels are side effects (`S`). */
+export const LABEL_CLASS: Readonly<Record<string, InterventionClass>> = {
+  'wm:ready': 'S',
+  'wm:blocked': 'S',
+  'wm:merging': 'S',
+  'wm:merged': 'S',
+  'wm:superseded': 'O',
+  'wm:owner': 'O',
+  'wm:pair-primary': 'O',
+  'wm:pair-challenger': 'O',
+};
+
+/**
+ * Eval intervention detector names (the `[detector]` prefix on an eval
+ * intervention's note, or its legacy `type`) → class. Unknown → `S`.
+ */
+export const EVAL_DETECTOR_CLASS: Readonly<Record<string, InterventionClass>> = {
+  session_redirect: 'L',
+  operator_recovery: 'R',
+  prior_failed_attempt: 'R',
+  test_fix: 'R',
+  review_comment: 'S',
+  post_pr_commit: 'S',
+  manual_edit: 'S',
+  self_review_blocker: 'S',
+  self_review_warning: 'S',
+  unknown_attribution: 'S',
+};
+
+export interface ClassifiableTouch {
+  kind: OperatorTouchKind;
+  detail?: string;
+}
+
+/** First whitespace/colon-delimited token of a detail string, lower-cased. */
+function leadingToken(detail: string | undefined): string {
+  return (detail ?? '').trim().split(/[\s:]/, 1)[0].toLowerCase();
+}
+
+/** Extract `session_redirect` from `[session_redirect] …` (or a bare type). */
+export function evalDetectorName(detail: string | undefined): string {
+  const match = /^\[([a-z_]+)\]/.exec((detail ?? '').trim());
+  return match ? match[1] : leadingToken(detail);
+}
+
+/**
+ * Classify one operator touch into its design §8f class. Pure and table
+ * driven: `kind` picks the table, `detail` picks the row, and each kind has a
+ * fixed fallback so an unrecognised command or label still gets a class.
+ *
+ * Detail conventions per kind:
+ * - `operator-event`: `<command>[: <detail>]`
+ * - `operator-intervention`: the record's `trigger` (or summary)
+ * - `eval-intervention`: `[<detector>] <note>` or a bare detector name
+ * - `label-edit`: `<labeled|unlabeled>:<label>`
+ * - `manual-push`: the commit attribution detail
+ */
+export function classifyOperatorTouch(touch: ClassifiableTouch): InterventionClass {
+  switch (touch.kind) {
+    case 'operator-event':
+      return OPERATOR_COMMAND_CLASS[leadingToken(touch.detail)] ?? 'R';
+    case 'operator-intervention': {
+      const trigger = (touch.detail ?? '').toLowerCase();
+      for (const [needle, cls] of OPERATOR_TRIGGER_CLASS) {
+        if (trigger.includes(needle)) return cls;
+      }
+      return 'R';
+    }
+    case 'eval-intervention':
+      return EVAL_DETECTOR_CLASS[evalDetectorName(touch.detail)] ?? 'S';
+    case 'pane-message':
+    case 'session-redirect':
+      return 'L';
+    case 'label-edit': {
+      const label = (touch.detail ?? '').replace(/^(?:un)?labeled:/, '');
+      return LABEL_CLASS[label] ?? 'S';
+    }
+    case 'manual-push':
+      return /operator handoff/i.test(touch.detail ?? '') ? 'R' : 'S';
+    case 'external-merge':
+      return 'S';
+    case 'state-edit':
+      return 'R';
+    default:
+      return 'R';
+  }
+}
+
+/** Zeroed per-class counter. */
+export function emptyClassCounts(): Record<InterventionClass, number> {
+  return { O: 0, L: 0, S: 0, R: 0 };
+}
+
+// ── HOK-3182: durable operator touch log ─────────────────────────────────────
+
+/**
+ * Repo-level append-only log of touches recorded at the moment they happen
+ * (today: interactive `state_mutate` calls). Lives beside
+ * `workflow-state.json` in `.wavemill/`, so it survives worktree reaping.
+ * Written lock-free like every other JSONL log; the shell writer in
+ * `wavemill-common.sh` (`operator_touch_record`) emits the same shape.
+ */
+export const OPERATOR_TOUCH_LOG_FILENAME = 'operator-touches.jsonl';
+
+export interface OperatorTouchLogEntry {
+  at: string;
+  kind: OperatorTouchKind;
+  issue?: string;
+  class?: InterventionClass;
+  actor?: string;
+  detail?: string;
+}
+
+/** Path of the repo-level operator touch log. */
+export function operatorTouchLogPath(repoDir: string): string {
+  return join(resolve(repoDir), '.wavemill', OPERATOR_TOUCH_LOG_FILENAME);
+}
+
+/** Append one touch to the repo-level log, stamping its class. */
+export function appendOperatorTouch(repoDir: string, entry: OperatorTouchLogEntry): string {
+  const path = operatorTouchLogPath(repoDir);
+  mkdirSync(dirname(path), { recursive: true });
+  const record: OperatorTouchLogEntry = {
+    ...entry,
+    class: entry.class ?? classifyOperatorTouch(entry),
+  };
+  appendFileSync(path, `${JSON.stringify(record)}\n`);
+  return path;
+}
+
+/** Read the repo-level touch log; malformed lines are skipped. */
+export function readOperatorTouchLog(repoDir: string): OperatorTouchLogEntry[] {
+  const path = operatorTouchLogPath(repoDir);
+  if (!existsSync(path)) return [];
+  const entries: OperatorTouchLogEntry[] = [];
+  try {
+    for (const line of readFileSync(path, 'utf-8').split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const parsed = JSON.parse(line) as OperatorTouchLogEntry;
+        if (parsed && typeof parsed.at === 'string' && typeof parsed.kind === 'string') entries.push(parsed);
+      } catch {
+        continue;
+      }
+    }
+  } catch (err) {
+    warn(`Failed to read ${path}: ${errorMessage(err)}`);
+  }
+  return entries;
 }

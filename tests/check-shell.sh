@@ -97,7 +97,13 @@ for f in \
   "$REPO_DIR"/shared/agent-bin/tmux \
   "$REPO_DIR"/tests/check-install-paths.test.sh \
   "$REPO_DIR"/tests/check-common-guards.test.sh \
+  "$REPO_DIR"/tests/check-direct-ledger-access.test.sh \
+  "$REPO_DIR"/tests/ledger-cli-shadow.test.sh \
+  "$REPO_DIR"/tests/ledger-hook-shadow.test.sh \
+  "$REPO_DIR"/tests/check-ledger-shadow-swallow.test.sh \
+  "$REPO_DIR"/tests/monitor-side-effect-detector-tick.test.sh \
   "$REPO_DIR"/tests/check-marker-clear-sites.test.sh \
+  "$REPO_DIR"/tests/check-label-write-sites.test.sh \
   "$REPO_DIR"/tests/control-pane-recovery.test.sh \
   "$REPO_DIR"/tests/dashboard-refresh.test.sh \
   "$REPO_DIR"/tests/state-mutex.test.sh \
@@ -151,6 +157,7 @@ for f in \
   "$REPO_DIR"/tests/ready-exhausted-challenge.test.sh \
   "$REPO_DIR"/tests/review-gate-refused-challenge.test.sh \
   "$REPO_DIR"/tests/monitor-late-completion.test.sh \
+  "$REPO_DIR"/tests/monitor-terminal-cleanup-tick.test.sh \
   "$REPO_DIR"/tests/monitor-wake-resume.test.sh \
   "$REPO_DIR"/tests/challenge-deferred-arm.test.sh \
   "$REPO_DIR"/tests/parent-monitor-function-drift.test.sh \
@@ -165,6 +172,8 @@ for f in \
   "$REPO_DIR"/tests/transient-marker.test.sh \
   "$REPO_DIR"/tests/startup-terminal-prune.test.sh \
   "$REPO_DIR"/tests/archive-stage-artifacts.test.sh \
+  "$REPO_DIR"/tests/operator-touch-record.test.sh \
+  "$REPO_DIR"/tests/report-reliability-cli.test.sh \
   "$REPO_DIR"/tests/completed-task-cleanup.test.sh \
   "$REPO_DIR"/tests/native-agent-shell-operators.test.sh \
   "$REPO_DIR"/tests/hokusai-test-registration.test.sh \
@@ -184,7 +193,9 @@ for f in \
   "$REPO_DIR"/tests/config-false-booleans.test.sh \
   "$REPO_DIR"/tests/check-no-npx-in-monitor.sh \
   "$REPO_DIR"/tests/monitor-pass-snapshot.test.sh \
+  "$REPO_DIR"/tests/agent-model-memo.test.sh \
   "$REPO_DIR"/tests/monitor-state-size.test.sh \
+  "$REPO_DIR"/tests/hot-state-byte-cap.test.sh \
   "$REPO_DIR"/tests/monitor-usr2-wakeup.test.sh \
   "$REPO_DIR"/tests/launch-pane-liveness.test.sh \
   "$REPO_DIR"/tests/launch-failure-log-capture.test.sh \
@@ -599,7 +610,7 @@ else
 
     # Known external commands and bash builtins that are NOT custom functions
     # This list covers standard utilities, coreutils, and tools used by wavemill
-    KNOWN_EXTERNALS="bash|cat|cd|chmod|cksum|column|command|continue|cut|date|declare|diff|dirname|disown|echo|eval|exec|exit|export|false|find|fold|git|grep|gh|head|jq|kill|local|ls|mkdir|mktemp|mv|node|npx|printf|ps|pwd|read|readlink|return|rm|sed|set|shift|sleep|sort|source|sqlite3|stat|tail|tee|test|tmux|touch|tr|trap|true|tput|tsx|type|to_entries|uniq|unset|wait|wc|xargs|basename|awk|seq|ascii_downcase"
+    KNOWN_EXTERNALS="bash|cat|cd|chmod|cksum|column|command|continue|cut|date|declare|diff|dirname|disown|echo|eval|exec|exit|export|false|find|fold|git|grep|gh|head|jq|kill|local|ls|mkdir|mktemp|mv|node|npx|printf|ps|pwd|read|readlink|return|rm|sed|set|shift|sleep|sort|source|sqlite3|stat|tail|tee|test|tmux|touch|tr|trap|true|tput|tsx|type|to_entries|uniq|unset|wait|wc|xargs|basename|awk|seq|ascii_downcase|sha256sum|shasum"
 
     # Extract function calls from the heredoc.
     # Restrict matches to actual command positions instead of every bare word;

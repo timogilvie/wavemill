@@ -1809,8 +1809,9 @@ render_incidents_section() {
 }
 
 # HOK-3068: extract compact Backstage fields for one terminal retained task.
-# Emits a tab-separated "disposition\treason\twhen\taction" record, degrading
-# gracefully on missing metadata. Used only by the Backstage recovery section.
+# HOK-3201: adds `hold` so KEPT items can be split into their own section.
+# Emits a tab-separated "disposition\treason\twhen\taction\thold" record,
+# degrading gracefully on missing metadata.
 backstage_retained_detail() {
   local issue="$1"
   [[ -n "$STATE_FILE" && -f "$STATE_FILE" ]] || return 0
@@ -1822,8 +1823,36 @@ backstage_retained_detail() {
     | (($l.retention.reason // $ep.lastOutcome // $ep.failureClass // "")) as $reason
     | (($ep.lastAttemptAt // $ep.updatedAt // $t.updated // "")) as $when
     | (($ep.requiredOperatorAction // $l.retention.requiredAction // "")) as $action
-    | [$disp, $reason, $when, $action] | @tsv
+    | (($l.retention.hold // "")) as $hold
+    | [$disp, $reason, $when, $action, $hold] | @tsv
   ' "$STATE_FILE" 2>/dev/null || true
+}
+
+# HOK-3201: age ("Nm" / "Nh" / "Nd") until the next unattended cleanup tick,
+# or "-" when no cadence file exists. Read from $STATE_DIR/.terminal-cleanup-next-at.
+format_backstage_next_action() {
+  local state_dir="${STATE_DIR:-}"
+  [[ -n "$state_dir" ]] || { printf '-'; return 0; }
+  local file="$state_dir/.terminal-cleanup-next-at"
+  [[ -f "$file" ]] || { printf '-'; return 0; }
+  local next now delta
+  next="$(cat "$file" 2>/dev/null || echo "")"
+  [[ "$next" =~ ^[0-9]+$ ]] || { printf '-'; return 0; }
+  now="$(date +%s)"
+  if (( next <= now )); then
+    printf 'now'
+    return 0
+  fi
+  delta=$(( next - now ))
+  if (( delta < 60 )); then
+    printf '%ds' "$delta"
+  elif (( delta < 3600 )); then
+    printf '%dm' $(( delta / 60 ))
+  elif (( delta < 86400 )); then
+    printf '%dh' $(( delta / 3600 ))
+  else
+    printf '%dd' $(( delta / 86400 ))
+  fi
 }
 
 # Format an ISO-8601 timestamp as a compact "Nm"/"Nh"/"Nd" age, or "-".
@@ -1845,29 +1874,91 @@ format_backstage_age() {
 }
 
 # HOK-3068: compact Backstage recovery section for terminal retained resources.
+# HOK-3201: splits KEPT (operator-held) items into their own section and shows
+# the next unattended auto-action ETA on auto-reap-eligible rows.
 # Shows issue, disposition/reason, age, and one explicit operator action when
 # stored — never a per-task warning stream and never full completed-task rows.
 render_backstage_retained_section() {
   local count="${#backstage_terminal_rows[@]}"
   (( count == 0 )) && return 0
 
-  local row issue slug branch worktree outcome detail disp reason when action age
-  printf "${EL}\n${B}%s${N} ${D}(%s)${N}${EL}\n" "🗄️  BACKSTAGE (retained)" "$count" >> "$FRAME"
-  printf "${D}%s${N}${EL}\n" "terminal resources retained for recovery — not active" >> "$FRAME"
+  local row issue slug branch worktree outcome detail disp reason when action hold age
+  local -a retained_rows=() kept_rows=()
   for row in "${backstage_terminal_rows[@]}"; do
     IFS='|' read -r issue slug branch worktree outcome <<<"$row"
     detail="$(backstage_retained_detail "$issue")"
-    IFS=$'\t' read -r disp reason when action <<<"$detail"
+    IFS=$'\t' read -r disp reason when action hold <<<"$detail"
+    if [[ "$hold" == "keep" ]]; then
+      kept_rows+=("$issue|$slug|$branch|$worktree|$outcome|$disp|$reason|$when|$action")
+    else
+      retained_rows+=("$issue|$slug|$branch|$worktree|$outcome|$disp|$reason|$when|$action")
+    fi
+  done
+
+  local next_eta
+  next_eta="$(format_backstage_next_action)"
+
+  local retained_count="${#retained_rows[@]}"
+  if (( retained_count > 0 )); then
+    printf "${EL}\n${B}%s${N} ${D}(%s)${N}${EL}\n" "🗄️  BACKSTAGE (retained)" "$retained_count" >> "$FRAME"
+    printf "${D}%s${N}${EL}\n" "terminal resources retained for recovery — not active" >> "$FRAME"
+    for row in "${retained_rows[@]}"; do
+      IFS='|' read -r issue slug branch worktree outcome disp reason when action <<<"$row"
+      [[ -n "$disp" ]] || disp="retained"
+      age="$(format_backstage_age "$when")"
+      if [[ -n "$reason" ]]; then
+        printf "${D}%-10s  %s  %s (%s)${N}${EL}\n" "$issue" "$outcome" "$disp" "$reason" >> "$FRAME"
+      else
+        printf "${D}%-10s  %s  %s${N}${EL}\n" "$issue" "$outcome" "$disp" >> "$FRAME"
+      fi
+      printf "${D}%10s  └─ age %s${N}${EL}\n" "" "$age" >> "$FRAME"
+      if [[ -n "$action" ]]; then
+        printf "${Y}%10s  └─ %s${N}${EL}\n" "" "$(truncate_detail "$action")" >> "$FRAME"
+      fi
+      # HOK-3201: ETA until the next unattended cleanup tick. Hidden when the
+      # cadence file is absent (cleanup off, or monitor hasn't ticked yet).
+      if [[ "$next_eta" != "-" ]]; then
+        printf "${D}%10s  └─ next auto-action in %s${N}${EL}\n" "" "$next_eta" >> "$FRAME"
+      fi
+    done
+  fi
+
+  render_backstage_kept_section "${kept_rows[@]}"
+}
+
+# HOK-3201: KEPT items are operator-held via `wavemill cleanup <id> --keep`.
+# They are never auto-reaped. Rendered separately from retained so an operator
+# can see at a glance which items are intentionally parked.
+render_backstage_kept_section() {
+  local count="$#"
+  (( count == 0 )) && return 0
+
+  local row issue slug branch worktree outcome disp reason when action age set_by set_at reason_text
+  printf "${EL}\n${B}%s${N} ${D}(%s)${N}${EL}\n" "📌 BACKSTAGE (kept)" "$count" >> "$FRAME"
+  printf "${D}%s${N}${EL}\n" "operator-held — the unattended cleanup never auto-reaps these" >> "$FRAME"
+  for row in "$@"; do
+    IFS='|' read -r issue slug branch worktree outcome disp reason when action <<<"$row"
     [[ -n "$disp" ]] || disp="retained"
     age="$(format_backstage_age "$when")"
-    if [[ -n "$reason" ]]; then
-      printf "${D}%-10s  %s  %s (%s)${N}${EL}\n" "$issue" "$outcome" "$disp" "$reason" >> "$FRAME"
-    else
-      printf "${D}%-10s  %s  %s${N}${EL}\n" "$issue" "$outcome" "$disp" >> "$FRAME"
+    # Read keep metadata directly from the state file for the detail line.
+    set_by=""
+    set_at=""
+    reason_text=""
+    if [[ -r "$STATE_FILE" && -s "$STATE_FILE" ]]; then
+      IFS=$'\t' read -r set_by set_at reason_text < <(
+        jq -r --arg issue "$issue" '
+          (.tasks[$issue].lifecycle.retention // {}) as $r
+          | [($r.setBy // ""), ($r.setAt // ""), ($r.reason // "")] | @tsv
+        ' "$STATE_FILE" 2>/dev/null || printf '\t\t\n'
+      )
     fi
+    printf "${D}%-10s  %s  %s${N}${EL}\n" "$issue" "$outcome" "kept" >> "$FRAME"
     printf "${D}%10s  └─ age %s${N}${EL}\n" "" "$age" >> "$FRAME"
-    if [[ -n "$action" ]]; then
-      printf "${Y}%10s  └─ %s${N}${EL}\n" "" "$(truncate_detail "$action")" >> "$FRAME"
+    if [[ -n "$reason_text" ]]; then
+      printf "${D}%10s  └─ %s${N}${EL}\n" "" "$(truncate_detail "$reason_text")" >> "$FRAME"
+    fi
+    if [[ -n "$set_by" ]]; then
+      printf "${D}%10s  └─ held by %s${N}${EL}\n" "" "$set_by" >> "$FRAME"
     fi
   done
 }

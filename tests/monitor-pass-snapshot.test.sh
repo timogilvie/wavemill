@@ -211,6 +211,25 @@ IFS='|' read -r fb_slug fb_active <<<"$FALLBACK"
 assert_eq "$fb_active" "0" "snapshot inactive by default"
 assert_eq "$fb_slug" "primary-slug" "pass_task_field falls through to read_state_value when snapshot inactive"
 
+# ── 6: monitor_build_pass_snapshot clears the model memo (HOK-3204) ────────
+# Seed the model memo with a sentinel entry; the next monitor pass must
+# reset it so stale (role, model) entries never cross pass boundaries.
+MEMO_RESET=$(bash -c '
+  set -Eeuo pipefail
+  source '"$REPO_DIR"'/shared/lib/wavemill-monitor.sh '"$TMP"'/env.sh
+  _WAVEMILL_MODEL_VALID_KEYS=("sentinel")
+  _WAVEMILL_MODEL_VALID_VALUES=("0")
+  _WAVEMILL_MODEL_RESOLVE_KEYS=("sentinel-resolve")
+  _WAVEMILL_MODEL_RESOLVE_VALUES=("0\tfoo")
+  monitor_build_pass_snapshot
+  printf "%s|%s" \
+    "${#_WAVEMILL_MODEL_VALID_KEYS[@]}" \
+    "${#_WAVEMILL_MODEL_RESOLVE_KEYS[@]}"
+')
+IFS='|' read -r reset_valid reset_resolve <<<"$MEMO_RESET"
+assert_eq "$reset_valid" "0" "monitor_build_pass_snapshot clears validate memo"
+assert_eq "$reset_resolve" "0" "monitor_build_pass_snapshot clears resolve memo"
+
 echo ""
 echo "--- Results: $PASS passed, $FAIL failed ---"
 exit $(( FAIL > 0 ? 1 : 0 ))

@@ -25,6 +25,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Note: tests/check-shell.sh is deliberately absent. It is a lint/syntax pass
 # over every shell script, not a per-shard test, and runs once via `npm run lint`.
 TESTS=(
+  check-direct-ledger-access.test.sh
+  ledger-cli-shadow.test.sh
+  ledger-hook-shadow.test.sh
+  check-ledger-shadow-swallow.test.sh
+  monitor-side-effect-detector-tick.test.sh
   aborted-challenge-cleanup.test.sh
   safe-branch-cleanup.test.sh
   challenge-primary-merge-cleanup.test.sh
@@ -50,6 +55,7 @@ TESTS=(
   ready-exhausted-challenge.test.sh
   review-gate-refused-challenge.test.sh
   monitor-late-completion.test.sh
+  monitor-terminal-cleanup-tick.test.sh
   monitor-wake-resume.test.sh
   parent-monitor-function-drift.test.sh
   save-task-state-canonicalization.test.sh
@@ -73,6 +79,7 @@ TESTS=(
   check-install-paths.test.sh
   check-common-guards.test.sh
   check-marker-clear-sites.test.sh
+  check-label-write-sites.test.sh
   ready-update-from-base.test.sh
   plan-packet-binding.test.sh
   task-progress.test.sh
@@ -91,6 +98,8 @@ TESTS=(
   lifecycle-scenarios.test.sh
   lifecycle-harness.test.sh
   archive-stage-artifacts.test.sh
+  operator-touch-record.test.sh
+  report-reliability-cli.test.sh
   cleanup-branch.test.sh
   cleanup-episodes.test.sh
   completed-task-cleanup.test.sh
@@ -161,7 +170,9 @@ TESTS=(
   config-false-booleans.test.sh
   check-no-npx-in-monitor.sh
   monitor-pass-snapshot.test.sh
+  agent-model-memo.test.sh
   monitor-state-size.test.sh
+  hot-state-byte-cap.test.sh
   monitor-usr2-wakeup.test.sh
 )
 

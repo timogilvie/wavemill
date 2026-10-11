@@ -5,8 +5,15 @@ import { join } from 'node:path';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import {
+  LABEL_CLASS,
+  OPERATOR_COMMAND_CLASS,
   OPERATOR_INTERVENTION_FILENAME,
+  appendOperatorTouch,
   buildOperatorInterventionRecord,
+  classifyOperatorTouch,
+  evalDetectorName,
+  operatorTouchLogPath,
+  readOperatorTouchLog,
   formatOperatorInterventionDetail,
   parseOperatorInterventions,
   readOperatorInterventions,
@@ -111,5 +118,76 @@ describe('operator-intervention', () => {
       scoringNote: 'Do not score clean first pass.',
     }));
     assert.match(detail, /scoringNote=Do not score clean first pass/);
+  });
+});
+
+describe('classifyOperatorTouch (HOK-3182)', () => {
+  it('maps every operator command in the table to its class', () => {
+    for (const [command, cls] of Object.entries(OPERATOR_COMMAND_CLASS)) {
+      assert.equal(classifyOperatorTouch({ kind: 'operator-event', detail: `${command}: detail` }), cls, command);
+      assert.equal(classifyOperatorTouch({ kind: 'operator-event', detail: command }), cls, command);
+    }
+  });
+
+  it('defaults unknown operator commands to R', () => {
+    assert.equal(classifyOperatorTouch({ kind: 'operator-event', detail: 'frobnicate' }), 'R');
+    assert.equal(classifyOperatorTouch({ kind: 'operator-event' }), 'R');
+  });
+
+  it('classifies operator-intervention triggers, defaulting to R', () => {
+    assert.equal(classifyOperatorTouch({ kind: 'operator-intervention', detail: 'orphaned-challenger' }), 'O');
+    assert.equal(classifyOperatorTouch({ kind: 'operator-intervention', detail: 'stalled coding agent' }), 'L');
+    assert.equal(classifyOperatorTouch({ kind: 'operator-intervention', detail: 'stale wm:blocked label' }), 'S');
+    assert.equal(classifyOperatorTouch({ kind: 'operator-intervention', detail: 'invalid_artifact' }), 'R');
+  });
+
+  it('maps every label in the table and defaults unknown labels to S', () => {
+    for (const [label, cls] of Object.entries(LABEL_CLASS)) {
+      assert.equal(classifyOperatorTouch({ kind: 'label-edit', detail: `labeled:${label}` }), cls, label);
+      assert.equal(classifyOperatorTouch({ kind: 'label-edit', detail: `unlabeled:${label}` }), cls, label);
+    }
+    assert.equal(classifyOperatorTouch({ kind: 'label-edit', detail: 'labeled:wm:something-new' }), 'S');
+  });
+
+  it('classifies eval interventions by detector prefix or legacy type', () => {
+    assert.equal(classifyOperatorTouch({ kind: 'eval-intervention', detail: '[session_redirect] please fix' }), 'L');
+    assert.equal(classifyOperatorTouch({ kind: 'eval-intervention', detail: '[operator_recovery] severity=major' }), 'R');
+    assert.equal(classifyOperatorTouch({ kind: 'eval-intervention', detail: '[review_comment] nit' }), 'S');
+    assert.equal(classifyOperatorTouch({ kind: 'eval-intervention', detail: 'operator_recovery' }), 'R');
+    assert.equal(classifyOperatorTouch({ kind: 'eval-intervention', detail: 'bugfix' }), 'S');
+    assert.equal(classifyOperatorTouch({ kind: 'eval-intervention' }), 'S');
+  });
+
+  it('pins the fixed class of every remaining kind', () => {
+    assert.equal(classifyOperatorTouch({ kind: 'pane-message' }), 'L');
+    assert.equal(classifyOperatorTouch({ kind: 'session-redirect', detail: 'keep going' }), 'L');
+    assert.equal(classifyOperatorTouch({ kind: 'external-merge' }), 'S');
+    assert.equal(classifyOperatorTouch({ kind: 'manual-push', detail: 'abc1234: fix — commit outside all recorded agent activity windows' }), 'S');
+    assert.equal(classifyOperatorTouch({ kind: 'manual-push', detail: 'abc1234: wip — operator handoff commit completing uncommitted agent output' }), 'R');
+    assert.equal(classifyOperatorTouch({ kind: 'state-edit' }), 'R');
+  });
+
+  it('extracts the eval detector name', () => {
+    assert.equal(evalDetectorName('[manual_edit] abc: x'), 'manual_edit');
+    assert.equal(evalDetectorName('review_comment'), 'review_comment');
+    assert.equal(evalDetectorName(undefined), '');
+  });
+});
+
+describe('operator touch log (HOK-3182)', () => {
+  it('appends classified entries and reads them back, skipping malformed lines', () => {
+    const repo = tempDir();
+    appendOperatorTouch(repo, { at: '2026-10-08T10:00:00Z', kind: 'state-edit', issue: 'HOK-1', actor: 'tim' });
+    writeFileSync(operatorTouchLogPath(repo), `${readFileSync(operatorTouchLogPath(repo), 'utf-8')}not json\n{"kind":"state-edit"}\n`);
+    appendOperatorTouch(repo, { at: '2026-10-08T10:05:00Z', kind: 'label-edit', detail: 'labeled:wm:superseded' });
+
+    const entries = readOperatorTouchLog(repo);
+    assert.equal(entries.length, 2);
+    assert.deepEqual(entries[0], { at: '2026-10-08T10:00:00Z', kind: 'state-edit', issue: 'HOK-1', actor: 'tim', class: 'R' });
+    assert.equal(entries[1].class, 'O');
+  });
+
+  it('reads a missing log as empty', () => {
+    assert.deepEqual(readOperatorTouchLog(tempDir()), []);
   });
 });
