@@ -12982,8 +12982,7 @@ launch_ready_phase() {
     local _ready_head _ready_base _ready_max_attempts
     _ready_head="$(git -C "$wt_dir" rev-parse HEAD 2>/dev/null || true)"
     _ready_base="$(git -C "$wt_dir" merge-base HEAD "origin/$base_branch" 2>/dev/null || true)"
-    _ready_max_attempts=$(wavemill_load_config "$REPO_DIR" 2>/dev/null | jq -r '.ready.remediation.maxAttempts // 3' 2>/dev/null || echo "3")
-    [[ "$_ready_max_attempts" =~ ^[0-9]+$ ]] || _ready_max_attempts=3
+    _ready_max_attempts=3
     wavemill_ledger_step_upsert "$issue" ready "$state_dir" "ready-remediation" \
       --head "$_ready_head" --base "$_ready_base" --pr "$pr_number" \
       --prompt "ready@${current_agent:-mill}" \
