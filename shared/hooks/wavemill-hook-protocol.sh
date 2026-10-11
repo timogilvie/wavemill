@@ -4,6 +4,15 @@
 # This library provides reusable functions for agent hooks to report status
 # in a standardized format. Hooks are no-ops outside wavemill contexts.
 
+# HOK-3184: optional ledger shadow helper. The helper is sourced defensively
+# so standalone/bare agents without a wavemill install silently skip the
+# shadow path. The helper itself is a no-op outside wavemill contexts.
+_wavemill_hook_proto_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null || true)"
+if [[ -n "${_wavemill_hook_proto_dir:-}" && -f "${_wavemill_hook_proto_dir}/wavemill-hook-ledger-shadow.sh" ]]; then
+  # shellcheck source=wavemill-hook-ledger-shadow.sh
+  source "${_wavemill_hook_proto_dir}/wavemill-hook-ledger-shadow.sh" 2>/dev/null || true
+fi
+
 # Verify we are running inside a wavemill-launched agent context.
 # Hooks must be no-ops outside wavemill to avoid disrupting standalone use.
 wavemill_hook_check() {
@@ -366,6 +375,11 @@ wavemill_hook_write() {
     if mv "$tmp_file" "$hook_file" 2>/dev/null; then
       wavemill_hook_notify
       _wavemill_hook_emit_osc "$state" "$event" "$detail" "$agent" || true
+      # HOK-3184: mirror the agent record as an evidence row. Monitor writes
+      # return immediately inside the helper (writer-field enforcement).
+      if declare -F wavemill_hook_shadow_evidence >/dev/null 2>&1; then
+        wavemill_hook_shadow_evidence "$state" "$event" "$detail" "$writer" "$agent" || true
+      fi
     else
       rm -f "$tmp_file"
     fi

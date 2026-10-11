@@ -98,6 +98,9 @@ for f in \
   "$REPO_DIR"/tests/check-install-paths.test.sh \
   "$REPO_DIR"/tests/check-common-guards.test.sh \
   "$REPO_DIR"/tests/check-direct-ledger-access.test.sh \
+  "$REPO_DIR"/tests/ledger-cli-shadow.test.sh \
+  "$REPO_DIR"/tests/ledger-hook-shadow.test.sh \
+  "$REPO_DIR"/tests/check-ledger-shadow-swallow.test.sh \
   "$REPO_DIR"/tests/check-marker-clear-sites.test.sh \
   "$REPO_DIR"/tests/check-label-write-sites.test.sh \
   "$REPO_DIR"/tests/control-pane-recovery.test.sh \
@@ -605,7 +608,7 @@ else
 
     # Known external commands and bash builtins that are NOT custom functions
     # This list covers standard utilities, coreutils, and tools used by wavemill
-    KNOWN_EXTERNALS="bash|cat|cd|chmod|cksum|column|command|continue|cut|date|declare|diff|dirname|disown|echo|eval|exec|exit|export|false|find|fold|git|grep|gh|head|jq|kill|local|ls|mkdir|mktemp|mv|node|npx|printf|ps|pwd|read|readlink|return|rm|sed|set|shift|sleep|sort|source|sqlite3|stat|tail|tee|test|tmux|touch|tr|trap|true|tput|tsx|type|to_entries|uniq|unset|wait|wc|xargs|basename|awk|seq|ascii_downcase"
+    KNOWN_EXTERNALS="bash|cat|cd|chmod|cksum|column|command|continue|cut|date|declare|diff|dirname|disown|echo|eval|exec|exit|export|false|find|fold|git|grep|gh|head|jq|kill|local|ls|mkdir|mktemp|mv|node|npx|printf|ps|pwd|read|readlink|return|rm|sed|set|shift|sleep|sort|source|sqlite3|stat|tail|tee|test|tmux|touch|tr|trap|true|tput|tsx|type|to_entries|uniq|unset|wait|wc|xargs|basename|awk|seq|ascii_downcase|sha256sum|shasum"
 
     # Extract function calls from the heredoc.
     # Restrict matches to actual command positions instead of every bare word;

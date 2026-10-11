@@ -26,6 +26,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # over every shell script, not a per-shard test, and runs once via `npm run lint`.
 TESTS=(
   check-direct-ledger-access.test.sh
+  ledger-cli-shadow.test.sh
+  ledger-hook-shadow.test.sh
+  check-ledger-shadow-swallow.test.sh
   aborted-challenge-cleanup.test.sh
   safe-branch-cleanup.test.sh
   challenge-primary-merge-cleanup.test.sh
