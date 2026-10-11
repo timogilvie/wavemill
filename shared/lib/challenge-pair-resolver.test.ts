@@ -6,6 +6,9 @@ import test from 'node:test';
 import { readChallengeComparisons } from './challenge-comparison.ts';
 import { resolvePrimaryMergedPair, resolveUnresolvablePair } from './challenge-pair-resolver.ts';
 import { applyChallengePairGates, type ChallengeEligibleWorkItem } from './tend-challenge-gate.ts';
+import { Ledger } from './ledger.ts';
+import { ensureArm } from './ledger-shadow.ts';
+import { challengerTaskKey } from './task-identity.ts';
 
 function setupRepoDir(config: Record<string, unknown> = {}): { repoDir: string; cleanup: () => void } {
   const repoDir = mkdtempSync(join(tmpdir(), 'wavemill-resolver-'));
@@ -734,6 +737,59 @@ test('resolver auto-detects both aborted arms and forfeits to completed survivor
     assert.match(result.record.rationale, /qwen-2\.5-coder-32b/);
     assert.match(result.record.rationale, /tool-use-unsupported/);
     assert.doesNotMatch(result.record.rationale, /orphaned/);
+  } finally {
+    cleanup();
+  }
+});
+
+test('resolver shadow write settles both ledger arms when both arms aborted', async () => {
+  const { repoDir, cleanup } = setupRepoDir();
+  try {
+    const seed = Ledger.open({ repoDir });
+    try {
+      ensureArm(seed, 'pair-both', 'pair-both', 'primary');
+      ensureArm(seed, 'pair-both', challengerTaskKey('pair-both'), 'challenger');
+    } finally {
+      seed.close();
+    }
+    writeWorkflowState(repoDir, {
+      HOK_1: {
+        pr: 101,
+        branch: 'task/primary',
+        updated: '2026-07-01T00:00:00Z',
+        challengePairId: 'pair-both',
+        challengeRole: 'primary',
+        challengeModel: 'gpt-5.5',
+        evalCompleted: true,
+        challengeAborted: 'terminal_stage_failure:tool-use-unsupported',
+        challengeAbortedStage: 'coding',
+      },
+      HOK_1_c: {
+        branch: 'task/primary-challenger',
+        updated: '2026-07-01T00:00:00Z',
+        challengePairId: 'pair-both',
+        challengeRole: 'challenger',
+        challengeModel: 'qwen-2.5-coder-32b',
+        challengeAborted: 'terminal_stage_failure:tool-use-unsupported',
+        challengeAbortedStage: 'coding',
+      },
+    });
+
+    const result = await resolveUnresolvablePair({ pairId: 'pair-both', repoDir });
+    assert.equal(result.status, 'resolved');
+
+    const ledger = Ledger.open({ repoDir });
+    try {
+      const pairRow = ledger.listTasks({ kind: 'pair' }).find((row) => row.slug === 'pair-both');
+      assert.ok(pairRow);
+      const arms = ledger.listChildren(pairRow.id).filter((row) => row.kind === 'arm');
+      assert.equal(arms.length, 2);
+      for (const arm of arms) {
+        assert.equal(arm.settled_as, 'aborted', `arm ${arm.slug} should be settled`);
+      }
+    } finally {
+      ledger.close();
+    }
   } finally {
     cleanup();
   }

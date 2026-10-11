@@ -211,21 +211,24 @@ export async function resolveUnresolvablePair(input: UnresolvablePairInput): Pro
         if (pairRow) {
           const arms = ledger.listChildren(pairRow.id).filter((row) => row.kind === 'arm');
 
-          // Settle any arms marked as challengeAborted in the resolution
-          const settledAnyArm = [
+          // Settle every arm marked as challengeAborted in the resolution.
+          // Not `.some()`: it short-circuits and would leave the second
+          // aborted arm unsettled when both arms aborted.
+          let settledAnyArm = false;
+          for (const { arm, key } of [
             { arm: resolutionPairState.primary, key: input.pairId },
             { arm: resolutionPairState.challenger, key: challengerTaskKey(input.pairId) },
-          ].some(({ arm, key }) => {
-            if (!arm?.challengeAborted) return false;
+          ]) {
+            if (!arm?.challengeAborted) continue;
             const armRow = arms.find((row) => row.slug === key);
-            if (!armRow) return false;
+            if (!armRow) continue;
 
             const settleReason = stalledArm && arm === stalledArm
               ? SIBLING_STALLED_ABORT_REASON
               : arm.challengeAborted;
             settleArmAbort(ledger, armRow.id, settleReason);
-            return true;
-          });
+            settledAnyArm = true;
+          }
 
           // If any arm was settled, attempt pair abort walk
           if (settledAnyArm) {
