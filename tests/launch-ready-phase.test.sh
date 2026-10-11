@@ -690,7 +690,11 @@ EOF
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"pending\",\"pendingReason\":\"challenge-comparison-pending\",\"pendingReasons\":[\"challenge-comparison-pending\"],\"implementationReady\":true,\"headSha\":\"abc123\",\"ciConclusion\":\"pass\",\"challenge\":{\"pairId\":\"HOK-1300\",\"side\":\"primary\",\"outcome\":\"comparison-pending\",\"primaryEval\":{\"ok\":true,\"evalId\":\"eval-1\"},\"challengerEval\":{\"ok\":true,\"evalId\":\"eval-2\"},\"staleComparisons\":0},\"checks\":[{\"name\":\"ci-status\",\"status\":\"pass\",\"message\":\"All CI checks passing\",\"details\":{\"totalChecks\":3}},{\"name\":\"ready-policy\",\"status\":\"pending\",\"message\":\"Challenge pair HOK-1300 has current-head evals but no comparison yet.\",\"details\":{\"pendingReason\":\"challenge-comparison-pending\",\"implementationReady\":true}}],\"timestamp\":\"2026-04-16T14:12:00.431Z\",\"summary\":\"Challenge pair HOK-1300 has current-head evals but no comparison yet.\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"BLOCKED\",\"attempts\":1}}"
           return 2
           ;;
-        head_sync_*)
+        head_sync_github_unavailable|head_sync_unpushed_commits)
+          printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"fail\",\"checks\":[{\"name\":\"sync\",\"status\":\"fail\",\"message\":\"Sync failed\",\"details\":{}}],\"timestamp\":\"2026-09-29T12:26:42.000Z\",\"summary\":\"Sync failed\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"attempts\":1}}"
+          return 1
+          ;;
+        head_sync_stale_worktree|head_sync_publish_head_unavailable|head_sync_head_moved_during_ready)
           command git -C "$WT_DIR" rev-parse HEAD > "$CASE_DIR/ready-checked-head"
           printf "%s\n" "{\"prNumber\":304,\"branch\":\"task/fix-failing-ci-tests\",\"verdict\":\"pass\",\"checks\":[{\"name\":\"ready-policy\",\"status\":\"pass\",\"message\":\"Ready policy satisfied\",\"details\":{}}],\"timestamp\":\"2026-09-29T12:26:42.000Z\",\"summary\":\"All checks passed\",\"mergeConflict\":{\"status\":\"CLEAN\",\"message\":\"No merge conflicts detected\",\"mergeable\":\"MERGEABLE\",\"mergeStateStatus\":\"CLEAN\",\"attempts\":1}}"
           return 0
