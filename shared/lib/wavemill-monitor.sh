@@ -19710,7 +19710,7 @@ monitor_issue_state() {
             expanded_reroute_gate "$ISSUE" "$SLUG" "$FEATURE_DIR" || reroute_rc=$?
             if (( reroute_rc == 4 )); then
               set_window_attention_state "$WIN" "clear"
-              log "debug" "$ISSUE → expanded reroute running; holding plan→code handoff"
+              log "debug" "$ISSUE → expanded reroute running, plan→code handoff held"
               active_count=$((active_count + 1))
               return 0
             fi

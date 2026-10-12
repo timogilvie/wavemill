@@ -4364,11 +4364,17 @@ wavemill_pr_cache_refresh() {
   fi
 
   if [[ -s "$tmp_file" ]] && mv "$tmp_file" "$cache_file" 2>/dev/null; then
-    jq -cn --argjson branches "$covered_json" --argjson complete "$complete" \
-      --argjson writtenAt "$(date +%s)" \
-      '{schemaVersion: 1, branches: $branches, complete: $complete, writtenAt: $writtenAt}' \
-      > "${meta_file}.tmp.$$" 2>/dev/null && mv "${meta_file}.tmp.$$" "$meta_file" 2>/dev/null
-    rm -f "${meta_file}.tmp.$$" 2>/dev/null || true
+    # Per-writer meta tmp too: concurrent refreshes in subshells share $$.
+    local meta_tmp
+    if meta_tmp="$(mktemp "${meta_file}.tmp.XXXXXX" 2>/dev/null)"; then
+      if jq -cn --argjson branches "$covered_json" --argjson complete "$complete" \
+           --argjson writtenAt "$(date +%s)" \
+           '{schemaVersion: 1, branches: $branches, complete: $complete, writtenAt: $writtenAt}' \
+           > "$meta_tmp" 2>/dev/null; then
+        mv "$meta_tmp" "$meta_file" 2>/dev/null || true
+      fi
+      rm -f "$meta_tmp" 2>/dev/null || true
+    fi
   else
     rm -f "$tmp_file"
   fi
@@ -4525,8 +4531,12 @@ wavemill_session_repo_cache_refresh() {
   done
 
   current="$(jq -c --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '.updatedAt = $at' <<<"$current")"
-  printf '%s\n' "$current" > "${cache_file}.tmp.$$" && mv "${cache_file}.tmp.$$" "$cache_file"
-  rm -f "${cache_file}.tmp.$$" 2>/dev/null || true
+  local cache_tmp
+  cache_tmp="$(mktemp "${cache_file}.tmp.XXXXXX" 2>/dev/null)" || return 0
+  if printf '%s\n' "$current" > "$cache_tmp"; then
+    mv "$cache_tmp" "$cache_file" 2>/dev/null || true
+  fi
+  rm -f "$cache_tmp" 2>/dev/null || true
   return 0
 }
 
