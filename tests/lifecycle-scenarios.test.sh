@@ -97,6 +97,9 @@ trap 'rm -rf "$TEST_TMP"' EXIT
 
 MONITOR_FUNC_FILE="$TEST_TMP/lifecycle-controller-functions.sh"
 cat "$REPO_DIR/shared/lib/transient-marker.sh" > "$MONITOR_FUNC_FILE"
+# HOK-3206: pin the inline Ready/routing contract (async lib in sync mode).
+cat "$REPO_DIR/shared/lib/monitor-async-jobs.sh" >> "$MONITOR_FUNC_FILE"
+export WAVEMILL_SYNC_READY_CHECKS=1 WAVEMILL_SYNC_ROUTING=1
 for fn in \
   approve_plan \
   capture_planning_baseline \
