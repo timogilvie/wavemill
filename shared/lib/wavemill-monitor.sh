@@ -9000,6 +9000,9 @@ declare -A REAP_LOGGED=()
 monitor_drop_reaped_issue() {
   local issue="$1" reason="${2:-reaped out of band}"
   [[ -n "$issue" ]] || return 0
+  # Callers that load only this file's functions (the incident harness) skip
+  # the top-level declare; an undeclared array would index "$issue" as math.
+  declare -p REAP_LOGGED >/dev/null 2>&1 || declare -gA REAP_LOGGED=()
   if [[ -z "${REAP_LOGGED[$issue]:-}" ]]; then
     log "status" "⚠ $issue → reaped out of band ($reason), dropping from monitor tracking"
     REAP_LOGGED["$issue"]=1
