@@ -16,6 +16,7 @@ import {
 } from './session-gh-cache.ts';
 import { fetchPrCiStatus, resolveRequiredContexts } from './pr-ci-status.ts';
 import { probePrLiveState } from './pr-live-state.ts';
+import { discoverGitHubRequiredChecks } from './github-ci-discovery.ts';
 
 const HEAD = 'a'.repeat(40);
 
@@ -226,6 +227,27 @@ test('probePrLiveState serves the cached row only for the checkout HEAD', async 
     }]));
     const miss = await probePrLiveState(11, repo);
     assert.equal(miss.available, false, 'a row for another head falls back to gh, never serves stale truth');
+  } finally {
+    process.env = saved;
+    cleanup();
+  }
+});
+
+test('discoverGitHubRequiredChecks takes protection contexts from the session cache for the same repo', async () => {
+  const { dir, env, cleanup } = fixture();
+  const saved = { ...process.env };
+  try {
+    // gh fails for everything: protection must come from the cache, and the
+    // live rulesets read degrades without discarding cached contexts.
+    const bin = join(dir, 'bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'gh'), '#!/bin/sh\necho "gh: Not Found (HTTP 404)" >&2\nexit 1\n');
+    chmodSync(join(bin, 'gh'), 0o755);
+    Object.assign(process.env, env, { PATH: `${bin}:${process.env.PATH ?? ''}` });
+    const result = await discoverGitHubRequiredChecks('acme/widgets', 'main');
+    assert.deepEqual(result.checks, ['CI']);
+    assert.equal(result.source, 'protection');
+    await assert.rejects(discoverGitHubRequiredChecks('other/repo', 'main'), 'another repo never uses the cache');
   } finally {
     process.env = saved;
     cleanup();
