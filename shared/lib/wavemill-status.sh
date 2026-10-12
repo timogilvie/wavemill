@@ -126,7 +126,7 @@ refresh_pr_cache() {
   local now
   now=$(date +%s)
   local mtime=0
-  [[ -f "$PR_CACHE" ]] && mtime=$(stat -f %m "$PR_CACHE" 2>/dev/null || echo 0)
+  [[ -f "$PR_CACHE" ]] && mtime=$(stat -c %Y "$PR_CACHE" 2>/dev/null || stat -f %m "$PR_CACHE" 2>/dev/null || echo 0)
   if (( now - mtime >= PR_TTL )); then
     # HOK-3206: while the monitor keeps the batched cache fresh (its meta
     # sidecar is recent), the dashboard reads it instead of overwriting it
