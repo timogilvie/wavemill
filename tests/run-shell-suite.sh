@@ -167,6 +167,12 @@ TESTS=(
   re-review-no-pr.test.sh
   monitor-command-routing.test.sh
   condition-reconciler.test.sh
+  wavemill-pr-cache.test.sh
+  cross-pr-revert-job.test.sh
+  pr-ci-status-job.test.sh
+  ready-watchdog-job.test.sh
+  route-task-job.test.sh
+  monitor-perf-smoke.test.sh
   config-false-booleans.test.sh
   check-no-npx-in-monitor.sh
   monitor-pass-snapshot.test.sh

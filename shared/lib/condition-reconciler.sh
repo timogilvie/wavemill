@@ -65,6 +65,9 @@ condition_reconcile_task() {
   if [[ -f "$state_dir/.needs-attention" ]] || \
      [[ -f "$state_dir/.needs-attention-transient" ]] || \
      [[ -f "$state_dir/.ready-waiting-on.json" ]] || \
+     [[ -f "$state_dir/.cross-pr-guard-result.json" ]] || \
+     [[ -f "$state_dir/.pr-ci-status-result.json" ]] || \
+     [[ -f "$state_dir/.expanded-reroute-result.json" ]] || \
      compgen -G "$state_dir/.retry-*-exhausted" >/dev/null 2>&1 || \
      compgen -G "$state_dir/.failed-ready-recheck-exhausted" >/dev/null 2>&1; then
     needs_reconcile=true
@@ -369,6 +372,21 @@ condition_reconcile_task() {
       marker_clear "$state_dir/.ready-waiting-on.json"
     fi
   fi
+
+  # Reconcile async check results (HOK-3206). Readers already refuse a result
+  # for another head; expiring it here keeps the marker from outliving its
+  # condition (cross-PR guard: head; CI status: remote PR head; expanded
+  # reroute: operator event).
+  local async_marker
+  for async_marker in .cross-pr-guard-result.json .pr-ci-status-result.json .expanded-reroute-result.json; do
+    if [[ -f "$state_dir/$async_marker" ]]; then
+      local reason
+      if reason=$(_should_expire "$state_dir/$async_marker"); then
+        _log_clear "$async_marker" "${reason%%:*}" "${reason#*:}"
+        marker_clear "$state_dir/$async_marker"
+      fi
+    fi
+  done
 
   # Reconcile .retry-*-exhausted sentinels
   local exhausted_files

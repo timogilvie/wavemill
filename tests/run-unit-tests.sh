@@ -277,6 +277,7 @@ TESTS=(
   shared/lib/wavemill-incident-store.test.ts
   shared/lib/state-mutex.test.ts
   shared/lib/job-tracker.test.ts
+  shared/lib/session-gh-cache.test.ts
   shared/lib/operating-mode.test.ts
   shared/lib/plan-prompt-selector.test.ts
   shared/lib/cli-prompt.test.ts
