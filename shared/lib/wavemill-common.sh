@@ -7148,7 +7148,38 @@ state_mutate() {
     operator_touch_record "$(dirname "$state_path")" "state-edit" "$touch_issue" "state_mutate $(basename "$state_path")" || true
   fi
 
+  # HOK-3187: when the ledger authority flip is live, state_mutate stops being
+  # the primary writer and workflow-state.json is re-rendered from the ledger
+  # (`tools/ledger.ts view workflow-state`). The kill-switch
+  # WAVEMILL_LEDGER_SURFACES_SHIM=1 reverts to legacy-only writes. During the
+  # migration window the renderer is opt-in via WAVEMILL_LEDGER_RENDER_WORKFLOW_STATE=1
+  # so writers can migrate one at a time without the shim.
+  if (( mutate_status == 0 )) \
+      && [[ "${WAVEMILL_LEDGER_SURFACES_SHIM:-}" != "1" ]] \
+      && [[ "${WAVEMILL_LEDGER_RENDER_WORKFLOW_STATE:-}" == "1" ]] \
+      && [[ "$(basename "$state_path")" == "workflow-state.json" ]]; then
+    _wavemill_render_workflow_state_from_ledger "$state_path" || true
+  fi
+
   return "$mutate_status"
+}
+
+# HOK-3187: resolve the ledger CLI path and re-render workflow-state.json from
+# the ledger over the one at `$state_path`. Best-effort, swallows errors so a
+# render fault never trumps the primary write. Routes through
+# `wavemill_run_tool` (HOK-3190) so the render path uses the fast strip
+# invoker on the monitor hot path.
+_wavemill_render_workflow_state_from_ledger() {
+  local state_path="$1"
+  local repo_dir
+  repo_dir="$(dirname "$(dirname "$state_path")")"
+  local tool_dir="${WAVEMILL_INSTALL_DIR:-}"
+  if [[ -z "$tool_dir" ]]; then
+    tool_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)" || return 0
+  fi
+  local tool="$tool_dir/tools/ledger.ts"
+  [[ -f "$tool" ]] || return 0
+  wavemill_run_tool "$tool" view workflow-state --repo-dir "$repo_dir" --out "$state_path" >/dev/null 2>&1 || return 0
 }
 
 # operator_touch_record <wavemill_dir> <kind> [issue] [detail]

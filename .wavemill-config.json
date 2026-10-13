@@ -256,8 +256,8 @@
     }
   },
   "challenge": {
-    "enabled": false,
-    "rate": 0.75,
+    "enabled": true,
+    "rate": 0.25,
     "recommendationRate": 1,
     "stageWeights": {
       "plan": 0.25,

@@ -9,7 +9,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname } from 'node:path';
+import { basename, dirname } from 'node:path';
 import { errorMessage } from './error-utils.ts';
 
 function blockingSleep(ms: number): void {
@@ -87,6 +87,40 @@ function readJsonState<T>(
 }
 
 /**
+ * HOK-3187: when the ledger authority flip is live, workflow-state.json is a
+ * render view generated from the ledger. This helper is best-effort: it fires
+ * only when the opt-in env flag `WAVEMILL_LEDGER_RENDER_WORKFLOW_STATE=1` is
+ * set and the kill-switch `WAVEMILL_LEDGER_SURFACES_SHIM=1` is not. All errors
+ * are swallowed so a render fault never trumps the primary write.
+ */
+function maybeRenderWorkflowStateFromLedger(statePath: string): void {
+  if (process.env.WAVEMILL_LEDGER_SURFACES_SHIM === '1') return;
+  if (process.env.WAVEMILL_LEDGER_RENDER_WORKFLOW_STATE !== '1') return;
+  if (basename(statePath) !== 'workflow-state.json') return;
+  try {
+    // Lazy require to keep the hot path dependency-free when the flag is off.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
+    const repoDir = dirname(dirname(statePath));
+    const tool = `${repoDir}/tools/ledger.ts`;
+    const args = [tool, 'view', 'workflow-state', '--repo-dir', repoDir, '--out', statePath];
+    // HOK-3190 fast strip: prefer `node --experimental-strip-types` (~0.3s)
+    // over `npx tsx` (4-7s cold). The shell helper does the same probe.
+    if (process.env.WAVEMILL_SKIP_FAST_STRIP !== '1') {
+      try {
+        execFileSync('node', ['--experimental-strip-types', '--no-warnings', ...args], { stdio: 'ignore' });
+        return;
+      } catch {
+        // fall through to npx tsx fallback (older Node)
+      }
+    }
+    execFileSync('npx', ['tsx', ...args], { stdio: 'ignore' });
+  } catch {
+    // Best-effort: never surface renderer errors over the primary write.
+  }
+}
+
+/**
  * Run a JSON state read-modify-write cycle under an atomic file lock.
  */
 export async function mutateJsonState<T>(
@@ -110,6 +144,7 @@ export async function mutateJsonState<T>(
     // ~0.8 s to parse per read; compact gives ~40 % size back on every write.
     writeFileSync(tmpPath, `${JSON.stringify(next)}\n`, 'utf-8');
     renameSync(tmpPath, statePath);
+    maybeRenderWorkflowStateFromLedger(statePath);
 
     return next;
   } finally {
@@ -178,6 +213,7 @@ export function mutateJsonStateSync<T>(
     // HOK-3190: compact JSON output. See mutateJsonState for rationale.
     writeFileSync(tmpPath, `${JSON.stringify(next)}\n`, 'utf-8');
     renameSync(tmpPath, statePath);
+    maybeRenderWorkflowStateFromLedger(statePath);
 
     return next;
   } finally {
