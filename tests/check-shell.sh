@@ -159,6 +159,7 @@ for f in \
   "$REPO_DIR"/tests/ready-exhausted-challenge.test.sh \
   "$REPO_DIR"/tests/review-gate-refused-challenge.test.sh \
   "$REPO_DIR"/tests/monitor-late-completion.test.sh \
+  "$REPO_DIR"/tests/plan-reapproval-late-coding-complete.test.sh \
   "$REPO_DIR"/tests/monitor-terminal-cleanup-tick.test.sh \
   "$REPO_DIR"/tests/monitor-reaped-task-no-window-recreation.test.sh \
   "$REPO_DIR"/tests/monitor-window-recreate-bounded.test.sh \
@@ -656,7 +657,7 @@ else
       | grep -vE '^(advance|review)$' \
       | grep -vE '^(not_eligible|routing_error|invalid_challenge)$' \
       | grep -vE '^(legacy_stale|stale)$' \
-      | grep -vE '^(a|aborted|already|available|blocked_by_count|break|coding|cp|debug|elapsed|empty_queue|execute|file|fresh|gtimeout|heartbeat_epoch|i|id|launch|length|main|mapfile|missing|next|not|overloaded|plan|ready|required|reservation|slots|staleness|streak|the|they|timeout|todate|todateiso8601|tonumber|tracked|user)$' \
+      | grep -vE '^(a|aborted|already|available|blocked_by_count|break|coding|completed|cp|debug|elapsed|empty_queue|execute|file|fresh|gtimeout|heartbeat_epoch|i|id|launch|length|main|mapfile|missing|next|not|overloaded|plan|ready|required|reservation|slots|staleness|streak|the|they|timeout|todate|todateiso8601|tonumber|tracked|user)$' \
       | grep -vE '^(capabilities|const|import|throw)$' \
       | grep -vE '^(ascii_upcase|first|it|num|retrying|sibling)$')
 
