@@ -276,6 +276,9 @@ TESTS=(
   shared/lib/wavemill-incident-artifact-diagnostics.test.ts
   shared/lib/wavemill-incident-detector.test.ts
   shared/lib/wavemill-incident-model.test.ts
+  shared/lib/wavemill-incident-tend-candidates.test.ts
+  shared/lib/wavemill-incident-recovery.test.ts
+  shared/lib/wavemill-incident-projection.test.ts
   shared/lib/wavemill-incident-store.test.ts
   shared/lib/state-mutex.test.ts
   shared/lib/job-tracker.test.ts
