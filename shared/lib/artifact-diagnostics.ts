@@ -11,13 +11,14 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { resolveEvalsDir, resolveRouteArtifactArchiveDir } from './evals-paths.ts';
 import type { TaskContract } from './task-contract.ts';
 import type { FeatureState } from './feature-state.ts';
 import type { TraceEvent } from './trace-event.ts';
 import type { EvalRecord } from './eval-schema.ts';
 import { parseTaskId } from './task-identity.ts';
+import { getStageFailureEnvelopePath, validateStageFailureEnvelope } from './native-agent/stage-failure-envelope.ts';
 
 // ── Public Types ──────────────────────────────────────────────────────────────
 
@@ -119,12 +120,61 @@ export interface PrIdentityDiagnostic {
 }
 
 export interface ReviewResultDiagnostic {
+  /** Review outcome verdict (`ready|not_ready|error`); never the stage status. */
   verdict?: string;
+  /** Stage-result status (`completed|failed|running|…`), kept separate from the verdict. */
+  stageStatus?: string;
   failureCategory?: string;
   reviewedHead?: string;
   reviewedBase?: string;
+  /** Merge-base the review diff was computed from, when the writer recorded it. */
+  reviewedMergeBase?: string;
+  /** Ref the review diffed against (e.g. `origin/auto/integration` or a local `main`). */
+  diffBaseRef?: string;
+  /** `remote` / `local` — a local base is a strong stale-scope signal. */
+  diffBaseKind?: string;
+  /** Fetch outcome for the diff base; `failed` means the base may be stale. */
+  diffBaseFetch?: string;
   reviewedFileCount?: number;
   reviewedAtIso?: string;
+  /** Stage `finishedAt`; changes when a new review attempt completes. */
+  finishedAt?: string;
+  prNumber?: number;
+  /** Identity string of the reviewer that executed (model id only, bounded). */
+  executedReviewer?: string;
+  source: string;
+}
+
+/**
+ * Projection of `.review-failure-envelope.json` (HOK-3064). Only bounded
+ * identity/cause fields; the transcript path is reduced to its basename and
+ * `evidence.detail` is never read.
+ */
+export interface ReviewFailureEnvelopeDiagnostic {
+  cause?: string;
+  providerErrorKind?: string;
+  stopReason?: string;
+  provider?: string;
+  model?: string;
+  agent?: string;
+  createdAt?: string;
+  transcriptBasename?: string;
+  /** Set when the file exists but fails validation; the other fields are then absent. */
+  error?: string;
+  source: string;
+}
+
+/** Projection of `.ready-result.json` for incident correlation. */
+export interface ReadyResultDiagnostic {
+  stageStatus?: string;
+  verdict?: string;
+  readyHeadSha?: string;
+  readyBaseSha?: string;
+  staleBaseSha?: string;
+  targetBaseSha?: string;
+  queueState?: string;
+  failureReason?: string;
+  finishedAt?: string;
   source: string;
 }
 
@@ -145,6 +195,12 @@ export interface QuotaSnapshotDiagnostic {
   exhaustedProviders: string[];
   exhaustedModels: string[];
   lastLimitErrorAtIso?: string;
+  /** Last fetched OpenRouter account balance; null/undefined when unknown. */
+  openrouterBalanceUsd?: number;
+  /** When provider (account) state was last refreshed successfully. */
+  providersUpdatedAt?: string;
+  /** Per-model status/lastSuccessAt, bounded, for structural "recovered" checks. */
+  modelHealth: Record<string, { status?: string; lastSuccessAt?: string; lastLimitErrorAt?: string }>;
   source: string;
 }
 
@@ -261,7 +317,7 @@ export function readPrIdentity(prNumber: number, repoDir: string): PrIdentityDia
       'view',
       String(prNumber),
       '--json',
-      'number,headRefOid,baseRefOid,headRefName,baseRefName,files,labels,mergeStateStatus,statusCheckRollup',
+      'number,headRefOid,baseRefOid,headRefName,baseRefName,changedFiles,files,labels,mergeStateStatus,statusCheckRollup',
     ], {
       cwd: repoDir,
       encoding: 'utf-8',
@@ -275,50 +331,145 @@ export function readPrIdentity(prNumber: number, repoDir: string): PrIdentityDia
   return projectPrIdentity(prNumber, parseJsonObject(stdout), `gh:pr:${prNumber}`);
 }
 
+/** Verdict vocabulary; a legacy top-level `status` is only a verdict when it is one of these. */
+const REVIEW_VERDICT_VALUES = new Set(['ready', 'not_ready', 'error', 'pass', 'fail', 'needs_stronger_reviewer']);
+
+/**
+ * Read `.review-result.json` into bounded correlation fields.
+ *
+ * The real writer (`review-flow.ts` `buildStageArtifacts` +
+ * `review-runner.ts` `withDiffBaseMetadata`) is a StageResult that nests the
+ * review under `artifacts`: `artifacts.verdict`, `artifacts.failureCategory`,
+ * `artifacts.reviewHeadSha`, and the diff scope at
+ * `artifacts.diagnostics.metadata.diffBase`. Those are read first; the legacy
+ * flat keys (`reviewedHead`, `scope.*`, …) remain fallbacks for older
+ * artifacts and fixtures. The stage `status` is returned as `stageStatus`
+ * and is never used as the verdict.
+ */
 export function readReviewResultDiagnostic(taskDir: string): ReviewResultDiagnostic | null {
   const source = join(taskDir, '.review-result.json');
   const result = readJsonTolerant<Record<string, unknown>>(source);
   if (result.status !== 'ok') return null;
   const value = result.value;
   const artifacts = objectField(value.artifacts);
-  const review = objectField(value.review) ?? objectField(value.result) ?? objectField(value.outcome);
+  const nestedReview = objectField(artifacts?.review);
+  const legacyReview = objectField(value.review) ?? objectField(value.result) ?? objectField(value.outcome);
+  const diagnosticsMetadata = objectField(objectField(artifacts?.diagnostics)?.metadata)
+    ?? objectField(objectField(nestedReview?.diagnostics)?.metadata);
+  const diffBase = objectField(diagnosticsMetadata?.diffBase);
+  const iterations = arrayField(artifacts?.reviewIterations) ?? [];
+  const lastIteration = objectField(iterations[iterations.length - 1]);
+  const lastIterationDelta = objectField(lastIteration?.reviewerDelta);
   const scope = objectField(value.scope)
     ?? objectField(artifacts?.scope)
-    ?? objectField(review?.scope)
+    ?? objectField(legacyReview?.scope)
     ?? objectField(artifacts?.reviewScope);
-  const files = arrayField(scope?.files)
+  const metadataFiles = arrayField(diagnosticsMetadata?.files);
+  const legacyFiles = arrayField(scope?.files)
     ?? arrayField(value.files)
     ?? arrayField(artifacts?.files)
-    ?? arrayField(review?.files);
+    ?? arrayField(legacyReview?.files);
+  const stageStatus = stringField(value.status);
+  const legacyStatusVerdict = stageStatus && REVIEW_VERDICT_VALUES.has(stageStatus) ? stageStatus : undefined;
+  const executedIdentity = objectField(artifacts?.reviewExecutedIdentity);
+  const executedReviewer = stringField(value.executedModel)
+    ?? stringField(objectField(executedIdentity?.substantiveAnalysis)?.resolvedModel)
+    ?? stringField(objectField(executedIdentity?.orchestrator)?.resolvedModel);
+  const iterationFiles = arrayField(lastIterationDelta?.filesChanged);
   return {
-    verdict: stringField(value.verdict)
-      ?? stringField(value.status)
-      ?? stringField(review?.verdict)
-      ?? stringField(artifacts?.verdict),
-    failureCategory: stringField(value.failureCategory)
-      ?? stringField(artifacts?.failureCategory)
-      ?? stringField(review?.failureCategory),
-    reviewedHead: stringField(value.reviewedHead)
+    verdict: stringField(artifacts?.verdict)
+      ?? stringField(nestedReview?.verdict)
+      ?? stringField(value.verdict)
+      ?? stringField(legacyReview?.verdict)
+      ?? legacyStatusVerdict,
+    stageStatus,
+    failureCategory: stringField(artifacts?.failureCategory)
+      ?? stringField(nestedReview?.failureCategory)
+      ?? stringField(value.failureCategory)
+      ?? stringField(legacyReview?.failureCategory),
+    reviewedHead: stringField(artifacts?.reviewHeadSha)
+      ?? stringField(diffBase?.reviewedHead)
+      ?? stringField(lastIteration?.headSha)
+      ?? stringField(value.reviewedHead)
       ?? stringField(value.reviewedHeadSha)
       ?? stringField(value.headSha)
       ?? stringField(scope?.headSha)
       ?? stringField(artifacts?.reviewedHead)
       ?? stringField(artifacts?.headSha),
-    reviewedBase: stringField(value.reviewedBase)
+    reviewedBase: stringField(diffBase?.reviewedBase)
+      ?? stringField(diffBase?.mergeBaseSha)
+      ?? stringField(value.reviewedBase)
       ?? stringField(value.reviewedBaseSha)
       ?? stringField(value.baseSha)
       ?? stringField(scope?.baseSha)
       ?? stringField(artifacts?.reviewedBase)
       ?? stringField(artifacts?.baseSha),
-    reviewedFileCount: numberField(value.reviewedFileCount)
+    reviewedMergeBase: stringField(diffBase?.mergeBaseSha),
+    diffBaseRef: boundedString(diffBase?.ref, 200),
+    diffBaseKind: boundedString(diffBase?.kind, 40),
+    diffBaseFetch: boundedString(diffBase?.fetch, 40),
+    reviewedFileCount: numberField(diffBase?.reviewedFileCount)
+      ?? (metadataFiles ? metadataFiles.length : undefined)
+      ?? (iterationFiles ? iterationFiles.length : undefined)
+      ?? numberField(value.reviewedFileCount)
       ?? numberField(scope?.changedFileCount)
       ?? numberField(scope?.fileCount)
       ?? numberField(artifacts?.reviewedFileCount)
-      ?? (files ? files.length : undefined),
+      ?? (legacyFiles ? legacyFiles.length : undefined),
     reviewedAtIso: stringField(value.reviewedAt)
       ?? stringField(value.completedAt)
       ?? stringField(value.finishedAt)
       ?? stringField(artifacts?.reviewedAt),
+    finishedAt: stringField(value.finishedAt),
+    prNumber: numberField(artifacts?.prNumber),
+    executedReviewer: executedReviewer ? clampText(executedReviewer, 120) : undefined,
+    source,
+  };
+}
+
+/**
+ * Read `.review-failure-envelope.json` through the canonical envelope
+ * validator. Malformed or invalid files degrade to `{ error }` rather than
+ * throwing; a missing file is `null`.
+ */
+export function readReviewFailureEnvelope(taskDir: string): ReviewFailureEnvelopeDiagnostic | null {
+  const source = getStageFailureEnvelopePath(taskDir, 'review');
+  const result = readJsonTolerant<Record<string, unknown>>(source);
+  if (result.status === 'missing') return null;
+  if (result.status === 'malformed') return { error: clampText(result.reason, 200), source };
+  const validated = validateStageFailureEnvelope(result.value);
+  if (!validated.ok) return { error: clampText(validated.message, 200), source };
+  const envelope = validated.value;
+  return {
+    cause: envelope.cause,
+    providerErrorKind: boundedString(envelope.providerErrorKind, 80),
+    stopReason: boundedString(envelope.stopReason, 80),
+    provider: boundedString(envelope.provider, 80),
+    model: boundedString(envelope.model, 120),
+    agent: boundedString(envelope.agent, 80),
+    createdAt: boundedString(envelope.createdAt, 40),
+    transcriptBasename: envelope.evidence.transcriptPath ? basename(envelope.evidence.transcriptPath) : undefined,
+    source,
+  };
+}
+
+/** Read `.ready-result.json` into bounded correlation fields; null when missing/malformed. */
+export function readReadyResultDiagnostic(taskDir: string): ReadyResultDiagnostic | null {
+  const source = join(taskDir, '.ready-result.json');
+  const result = readJsonTolerant<Record<string, unknown>>(source);
+  if (result.status !== 'ok') return null;
+  const value = result.value;
+  const artifacts = objectField(value.artifacts);
+  return {
+    stageStatus: stringField(value.status),
+    verdict: boundedString(artifacts?.verdict, 40),
+    readyHeadSha: stringField(artifacts?.readyHeadSha) ?? stringField(artifacts?.launchHead),
+    readyBaseSha: stringField(artifacts?.readyBaseSha),
+    staleBaseSha: stringField(artifacts?.staleBaseSha),
+    targetBaseSha: stringField(artifacts?.targetBaseSha),
+    queueState: boundedString(artifacts?.queueState, 40),
+    failureReason: boundedString(value.failureReason, 200),
+    finishedAt: stringField(value.finishedAt),
     source,
   };
 }
@@ -370,10 +521,23 @@ export function readQuotaSnapshotDiagnostic(repoDir: string): QuotaSnapshotDiagn
       if (at && (!lastLimitErrorAtIso || at > lastLimitErrorAtIso)) lastLimitErrorAtIso = at;
     }
   }
+  const modelHealth: QuotaSnapshotDiagnostic['modelHealth'] = {};
+  for (const [model, raw] of Object.entries(models ?? {}).slice(0, 100)) {
+    const entry = objectField(raw);
+    if (!entry) continue;
+    modelHealth[clampText(model, 120)] = {
+      status: boundedString(entry.status, 40),
+      lastSuccessAt: stringField(entry.lastSuccessAt),
+      lastLimitErrorAt: stringField(entry.lastLimitErrorAt),
+    };
+  }
   return {
     exhaustedProviders: [...exhaustedProviders].slice(0, 20),
     exhaustedModels: exhaustedModels.slice(0, 50),
     lastLimitErrorAtIso,
+    openrouterBalanceUsd: numberField(openrouter?.balanceUsd),
+    providersUpdatedAt: stringField(openrouter?.updatedAt),
+    modelHealth,
     source,
   };
 }
@@ -481,6 +645,11 @@ function firstObjectEntry(value: Record<string, unknown> | undefined): Record<st
   return undefined;
 }
 
+function boundedString(value: unknown, maxLength: number): string | undefined {
+  const text = stringField(value);
+  return text ? clampText(text.replace(/[\r\n]+/g, ' '), maxLength) : undefined;
+}
+
 function clampText(value: string, maxLength: number): string {
   return value.length > maxLength ? value.slice(0, maxLength) : value;
 }
@@ -510,7 +679,11 @@ function projectPrIdentity(prNumber: number, value: Record<string, unknown> | nu
     .filter((check): check is string => Boolean(check))
     .map((check) => clampText(check, 120))
     .slice(0, 100);
-  const changedFileCount = numberField(value.changedFileCount) ?? files.length;
+  // `changedFiles` is GitHub's authoritative count; `files` is capped at 100
+  // entries by `gh pr view`, so it is only a fallback.
+  const changedFileCount = numberField(value.changedFiles)
+    ?? numberField(value.changedFileCount)
+    ?? (value.files !== undefined ? files.length : undefined);
   const additions = numberField(value.additions)
     ?? sumNumberFields(files, 'additions');
   const deletions = numberField(value.deletions)
