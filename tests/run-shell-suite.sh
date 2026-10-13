@@ -85,6 +85,7 @@ TESTS=(
   check-common-guards.test.sh
   check-marker-clear-sites.test.sh
   check-label-write-sites.test.sh
+  merge-labels-real-state.test.sh
   ready-update-from-base.test.sh
   plan-packet-binding.test.sh
   task-progress.test.sh
