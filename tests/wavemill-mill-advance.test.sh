@@ -135,6 +135,7 @@ for fn in \
   write_coding_complete_marker \
   blocked_completion_validate_for_advance \
   archive_stale_coding_artifacts \
+  coding_complete_marker_condition_valid \
   coding_pane_replacement_intent_path \
   record_coding_pane_replacement_intent \
   quarantine_completed_coding_pane \

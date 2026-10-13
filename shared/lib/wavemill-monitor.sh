@@ -5040,6 +5040,112 @@ coding_interrupted_late_completion_reconcile() {
   return 0
 }
 
+# HOK-3211: a task can sit in `planning / awaiting_user` while its coding
+# agent has already finished the work in the planning pane — committed the
+# diff, written a valid `.coding-complete` whose `commit` equals HEAD on a
+# clean tree. The monitor's planning branch only reacts to `.plan-approved`,
+# so it never notices the finished work and the task looks stuck. When the
+# operator eventually touches `.plan-approved`, the plan→coding handoff calls
+# `archive_stale_coding_artifacts` and moves the valid marker aside, then
+# launches a fresh coder on top of already-committed work.
+#
+# Reconcile wherever the monitor sits in a planning state: on a condition-
+# valid late marker, approve the plan and record coding as completed in-
+# place, so the next pass transitions to review from the state machine's
+# existing completed-coding handler. The validity checks mirror HOK-3137's
+# `coding_interrupted_late_completion_reconcile`, plus a HEAD-ahead-of-base
+# check so a marker whose commit equals the base commit (no durable work)
+# still falls through to the normal launch path.
+#
+# Returns 0 when reconciled (caller: `active_count++; return 0`), 1 to fall
+# through.
+planning_late_coding_complete_reconcile() {
+  local issue="$1" feature_dir="$2" worktree="$3" win="$4" current_agent="${5:-}"
+  local slug planning_status marker_commit head base
+  local dirty_paths verdict_cache cached_mtime marker_epoch seam_rc
+  local coding_model
+
+  slug="$(basename "$feature_dir")"
+  recover_misplaced_coding_complete_marker "$issue" "$worktree" "$feature_dir" "$slug" || true
+  [[ -f "$feature_dir/.coding-complete" ]] || return 1
+
+  # Only reconcile from a planning state. HOK-3137 reconciler already covers
+  # the coding-stage interrupted/failed path; these two guards are mutually
+  # exclusive.
+  planning_status="$(read_stage_status "$feature_dir" "planning")"
+  case "$planning_status" in
+    awaiting_user|completed) ;;
+    *) return 1 ;;
+  esac
+
+  # Tree must be clean — a dirty tree falls through to the HOK-3128 dirty
+  # handoff machinery, not a silent reconcile.
+  dirty_paths="$(coding_output_dirty_paths "$worktree" "$slug")"
+  [[ -z "$dirty_paths" ]] || return 1
+
+  head="$(git -C "$worktree" rev-parse HEAD 2>/dev/null || true)"
+  [[ -n "$head" ]] || return 1
+  marker_commit="$(jq -r '.commit // empty' "$feature_dir/.coding-complete" 2>/dev/null || true)"
+  if [[ -n "$marker_commit" ]]; then
+    blocked_completion_commit_matches_head "$marker_commit" "$head" || return 1
+  fi
+
+  # HEAD must be ahead of base: a .coding-complete at the base commit (no
+  # durable work) still falls through to the normal launch path. Empty base
+  # (git failure, no BASE_BRANCH) is treated as "cannot confirm ahead" and
+  # falls through so a reconcile cannot be based on a missing merge-base.
+  base="$(phase_launch_base "$feature_dir")"
+  [[ -n "$base" ]] || return 1
+  [[ "$base" != "$head" ]] || return 1
+
+  marker_epoch="$(portable_file_mtime_epoch "$feature_dir/.coding-complete" 2>/dev/null || true)"
+  [[ "$marker_epoch" =~ ^[0-9]+$ ]] || return 1
+
+  # Seam validation spawns tsx; cache the verdict keyed by marker mtime so a
+  # permanently-invalid marker does not re-spawn the validator every tick.
+  verdict_cache="$feature_dir/.late-planning-reconcile.json"
+  cached_mtime=""
+  if [[ -f "$verdict_cache" ]]; then
+    cached_mtime="$(jq -r '.markerMtime // empty' "$verdict_cache" 2>/dev/null || true)"
+    if [[ "$cached_mtime" == "$marker_epoch" ]]; then
+      [[ "$(jq -r '.valid // false' "$verdict_cache" 2>/dev/null || echo false)" == "true" ]] || return 1
+    else
+      cached_mtime=""
+    fi
+  fi
+  if [[ -z "$cached_mtime" ]]; then
+    seam_rc=0
+    seam_validate_artifact coding-complete "$feature_dir/.coding-complete" --canonicalize || seam_rc=$?
+    local verdict_tmp
+    verdict_tmp="$(mktemp "$verdict_cache.tmp.XXXXXX" 2>/dev/null)" && {
+      jq -cn --arg mtime "$marker_epoch" --argjson valid "$([[ "$seam_rc" -eq 0 ]] && echo true || echo false)" \
+        '{markerMtime: $mtime, valid: $valid}' > "$verdict_tmp" 2>/dev/null \
+        && mv "$verdict_tmp" "$verdict_cache" 2>/dev/null || rm -f "$verdict_tmp"
+    }
+    [[ "$seam_rc" -eq 0 ]] || return 1
+  fi
+
+  # Write planning=completed via approve_plan + clear any pending marker, so
+  # the next pass does not re-enter the approve branch and re-archive. Then
+  # write coding=completed so the state machine advances to review.
+  approve_plan "$feature_dir" "$current_agent" ""
+  rm -f "$feature_dir/.plan-approved" 2>/dev/null || true
+
+  coding_model="$(resolve_stage_result_model "$feature_dir" "coding" "claude-opus-4-7")"
+  write_stage_result "$feature_dir" "coding" "completed" "$current_agent" "$coding_model" \
+    "Reconciled: valid .coding-complete found during planning wait (commit=${marker_commit:-${head:0:9}})"
+
+  log "status" "$issue → late_completion_reconciled: planning cleared and coding completed from in-planning marker (commit=${marker_commit:-${head:0:9}} HEAD=${head:0:9} tree clean)"
+  if declare -F wavemill_hook_write >/dev/null 2>&1; then
+    WAVEMILL_SESSION="$SESSION" WAVEMILL_ISSUE="$issue" \
+      wavemill_hook_write "working" "late_completion_reconciled" "late .coding-complete accepted during planning wait" "wavemill" "" "monitor" || true
+  fi
+  set_window_attention_state "$win" "clear"
+  quarantine_completed_coding_pane "$issue" "$feature_dir" "$worktree" || true
+  reap_completed_planning_pane "$issue" "$feature_dir" "$worktree" || true
+  return 0
+}
+
 # HOK-3101 / HOK-3069: a coding task with no hook, no commits, no worktree
 # changes, and only the launcher's `working` status write (which the
 # primitive discounts during the launch grace) is stalled. This detector
@@ -7033,7 +7139,7 @@ archive_stale_coding_artifacts() {
     ".coding-uncommitted-output-announced"
     ".coding-failure-handoff.json"
   )
-  local present=() name archive_dir archived_names=()
+  local present=() name archive_dir archived_names=() preserved=0
 
   for name in "${candidates[@]}"; do
     [[ -e "$feature_dir/$name" ]] && present+=("$name")
@@ -7047,6 +7153,18 @@ archive_stale_coding_artifacts() {
   fi
 
   for name in "${present[@]}"; do
+    # HOK-3211: do not move a .coding-complete whose HOK-3172 condition
+    # still holds (commit matches HEAD, tree clean, HEAD ahead of base).
+    # The archive is a cleanup helper, not a semantic action; the
+    # dirty-handoff relaunch (6202) and plan-approved launch (20170) both
+    # benefit from this defense-in-depth. In practice the dirty-handoff
+    # callsite only runs when the tree is dirty, so the preservation
+    # branch cannot fire there.
+    if [[ "$name" == ".coding-complete" ]] \
+      && coding_complete_marker_condition_valid "$feature_dir"; then
+      preserved=1
+      continue
+    fi
     if mv "$feature_dir/$name" "$archive_dir/$name" 2>/dev/null; then
       archived_names+=("$name")
     fi
@@ -7056,6 +7174,93 @@ archive_stale_coding_artifacts() {
     local IFS=', '
     log "status" "$issue → archived stale coding artifacts from a previous attempt: ${archived_names[*]}"
   fi
+  if (( preserved == 1 )); then
+    log "status" "$issue → preserved condition-valid .coding-complete at launch gate"
+  fi
+  return 0
+}
+
+# HOK-3211: shared predicate used by the planning late-completion reconciler
+# and by archive_stale_coding_artifacts to recognise a .coding-complete whose
+# HOK-3172 condition still holds: the worktree is on the marker's commit (or
+# unspecified) and the tree is clean. Callers that also need "HEAD ahead of
+# base" check that separately.
+#
+# Returns 0 when the marker is condition-valid, 1 otherwise. Empty worktree,
+# missing marker, or a git failure returns 1 — a validity assertion must be
+# positively confirmed.
+coding_complete_marker_condition_valid() {
+  local feature_dir="$1"
+  local marker="$feature_dir/.coding-complete"
+  local worktree slug head marker_commit dirty_paths
+
+  [[ -f "$marker" ]] || return 1
+  worktree="${feature_dir%/features/*}"
+  [[ -n "$worktree" && "$worktree" != "$feature_dir" && -d "$worktree" ]] || return 1
+  slug="$(basename "$feature_dir")"
+
+  head="$(git -C "$worktree" rev-parse HEAD 2>/dev/null || true)"
+  [[ -n "$head" ]] || return 1
+  marker_commit="$(jq -r '.commit // empty' "$marker" 2>/dev/null || true)"
+  if [[ -n "$marker_commit" ]]; then
+    blocked_completion_commit_matches_head "$marker_commit" "$head" || return 1
+  fi
+
+  dirty_paths="$(coding_output_dirty_paths "$worktree" "$slug")"
+  [[ -z "$dirty_paths" ]] || return 1
+
+  return 0
+}
+
+# HOK-3211 diagnostic: when the planning branch is in awaiting_user but the
+# coder has already finished work (or at least committed something ahead of
+# base) and the reconciler did not fire this pass, log once per task so an
+# operator can see the task is not actually waiting on a plan. Guard variable
+# fires once per task-run (same mechanism as _approval_wait_logged_*).
+# Does nothing when the reconciler has already fired.
+maybe_log_planning_wait_coding_present() {
+  local issue="$1" feature_dir="$2" worktree="$3"
+  local guard_var="_coding_present_wait_logged_${issue//[^a-zA-Z0-9]/_}"
+  local marker="$feature_dir/.coding-complete"
+  local head base marker_commit dirty_paths seam_rc slug
+  local marker_present="false" ahead_of_base="false" seam_valid="false"
+
+  [[ "${!guard_var:-}" == "true" ]] && return 0
+
+  if [[ -f "$marker" ]]; then
+    marker_present="true"
+  fi
+
+  head="$(git -C "$worktree" rev-parse HEAD 2>/dev/null || true)"
+  base="$(phase_launch_base "$feature_dir")"
+  if [[ -n "$head" && -n "$base" && "$head" != "$base" ]]; then
+    ahead_of_base="true"
+  fi
+
+  # Log only when the operator should notice (marker present, or at least
+  # commits ahead of base). An awaiting_user with no coding output at all is
+  # a plain plan wait, not an in-progress coding handoff.
+  if [[ "$marker_present" != "true" && "$ahead_of_base" != "true" ]]; then
+    return 0
+  fi
+
+  slug="$(basename "$feature_dir")"
+  dirty_paths="$(coding_output_dirty_paths "$worktree" "$slug")"
+  local dirty_count=0
+  if [[ -n "$dirty_paths" ]]; then
+    dirty_count="$(printf '%s\n' "$dirty_paths" | grep -c . || true)"
+  fi
+
+  marker_commit=""
+  if [[ "$marker_present" == "true" ]]; then
+    marker_commit="$(jq -r '.commit // empty' "$marker" 2>/dev/null || true)"
+    seam_rc=0
+    seam_validate_artifact coding-complete "$marker" --canonicalize >/dev/null 2>&1 || seam_rc=$?
+    [[ "$seam_rc" -eq 0 ]] && seam_valid="true"
+  fi
+
+  log "status" "⚠ $issue → coder finished work during planning wait but marker not condition-valid — marker=${marker_present} marker_commit=${marker_commit:-none} head=${head:0:9} ahead_of_base=${ahead_of_base} dirty_paths=${dirty_count} seam_valid=${seam_valid}"
+  printf -v "$guard_var" '%s' "true"
   return 0
 }
 
@@ -8077,7 +8282,12 @@ maybe_retry_failed_stage() {
 
   case "$stage" in
     planning) retry_phase="routing" ;;
-    coding) retry_phase="planning" ;;
+    # HOK-3211: a coding retry relaunches coding directly, not planning. The
+    # old `retry_phase=planning` routed the retry through
+    # validate_planning_phase_output, which treated the coder's in-flight
+    # edits as planning overreach and stashed them. `.coding-failure-
+    # decision.json`'s own `nextAction` already says "coding".
+    coding) retry_phase="coding" ;;
     review) retry_phase="coding" ;;
     *) return 1 ;;
   esac
@@ -8129,9 +8339,100 @@ maybe_retry_failed_stage() {
   # on the relaunched run before its first hook write (see HOK-2885 relaunch).
   rm -f "/tmp/wavemill-${SESSION}-${issue}.hook" 2>/dev/null || true
   clear_stage_result "$feature_dir" "$stage"
+
+  # HOK-3211: for stage=coding, relaunch coding directly instead of
+  # transitioning back to planning. Mirrors coding_dirty_handoff_relaunch:
+  # resolve the launch identity (challenger from immutable intent; primary
+  # from phase-config → task-meta → default), prepare recovery surfaces,
+  # and launch_coding_phase. On success, set the task phase to coding and
+  # return 0; on failure, fall back to the generic retry_phase path so the
+  # task doesn't park silently.
+  if [[ "$stage" == "coding" ]]; then
+    if _stage_failure_coding_relaunch "$issue" "$feature_dir" "$win" "$failure_kind" "$failure_class" "$attempts" "$limit" "$fresh"; then
+      return 0
+    fi
+    log_warn "$issue → coding stage-failure direct relaunch failed; falling back to generic phase revert"
+    retry_phase="planning"
+  fi
+
   set_task_phase "$issue" "$retry_phase"
   set_window_attention_state "$win" "clear"
   log "status" "♻ $issue → ${stage} failed (${failure_kind}, ${failure_class}), relaunch ${attempts}/${limit}${fresh} via ${retry_phase}"
+  return 0
+}
+
+# HOK-3211: direct coding relaunch for a retryable coding stage failure.
+# Mirrors coding_dirty_handoff_relaunch's launch identity resolution (which
+# is itself the challenger-aware launcher pattern) so the planning overreach
+# guard never runs on a coding retry. Returns 0 on successful launch, 1
+# otherwise (caller falls back to generic retry_phase handling).
+_stage_failure_coding_relaunch() {
+  local issue="$1" feature_dir="$2" win="$3" failure_kind="$4" failure_class="$5"
+  local attempts="$6" limit="$7" fresh="$8"
+  local slug worktree branch title issue_json role is_challenge
+  local launch_identity agent="" model="" depth contract_payload rc=0
+
+  slug="$(basename "$feature_dir")"
+  worktree="$(pass_task_field "$issue" worktree 2>/dev/null || true)"
+  [[ -n "$worktree" ]] || worktree="${WORKTREE_ROOT:-}/${slug}"
+  [[ -d "$worktree" ]] || return 1
+
+  declare -F agent_resolve_from_model >/dev/null 2>&1 || return 1
+  declare -F agent_validate_phase_launch >/dev/null 2>&1 || return 1
+  declare -F _prepare_recovery_phase_launch >/dev/null 2>&1 || return 1
+  declare -F launch_coding_phase >/dev/null 2>&1 || return 1
+
+  role="$(_challenge_side_for_issue "$issue" 2>/dev/null || true)"
+  is_challenge="$(get_task_meta "$issue" "challenge" 2>/dev/null || true)"
+
+  if [[ "$is_challenge" == "true" && "$role" == "challenger" ]]; then
+    launch_identity="$(resolve_challenger_transient_retry_launch_intent "$issue" "$feature_dir" "coding" "")"
+    if ! printf '%s' "$launch_identity" | jq -e '.ok == true' >/dev/null 2>&1; then
+      log_warn "$issue → coding stage-failure relaunch: challenger launch identity unavailable ($(printf '%s' "$launch_identity" | jq -r '.reason // "unknown"' 2>/dev/null || echo unknown))"
+      return 1
+    fi
+    agent="$(printf '%s' "$launch_identity" | jq -r '.agent // ""' 2>/dev/null || echo "")"
+    model="$(printf '%s' "$launch_identity" | jq -r '.model // ""' 2>/dev/null || echo "")"
+  else
+    model="$(read_phase_config "$feature_dir" "coding" "model")"
+    [[ -n "$model" ]] || model="$(get_task_meta "$issue" "coderModel" 2>/dev/null || true)"
+    model="$(resolve_phase_model "coding" "$model" "claude-opus-4-7")"
+    if ! agent="$(agent_resolve_from_model "$model" "coding")"; then
+      log_warn "$issue → coding stage-failure relaunch: ${AGENT_RESOLVE_LAST_DIAGNOSTIC:-agent resolution failed for $model}"
+      return 1
+    fi
+  fi
+  if [[ -z "$agent" || -z "$model" ]] || ! agent_validate_phase_launch "$agent" "coding" "$model" "$REPO_DIR"; then
+    log_warn "$issue → coding stage-failure relaunch: launch identity not launchable (adapter=${agent:-?} model=${model:-?})"
+    return 1
+  fi
+
+  branch="$(pass_task_field "$issue" branch)"
+  [[ -n "$branch" ]] || branch="task/${slug}"
+  title="$(pass_task_field "$issue" title)"
+  if [[ -z "$title" ]]; then
+    issue_json="$(cat "/tmp/${SESSION}-${issue}-issue.json" 2>/dev/null || echo "{}")"
+    title="$(printf '%s' "$issue_json" | jq -r '.title // "Task"' 2>/dev/null || echo "Task")"
+  fi
+  depth="$(read_phase_config "$feature_dir" "coding" "depth")"
+  [[ -n "$depth" ]] || depth="$(get_task_meta "$issue" "codeDepth" 2>/dev/null || true)"
+  [[ -n "$depth" ]] || depth="medium"
+
+  contract_payload="$(jq -cn --arg agent "$agent" --arg model "$model" \
+    '{stageRole:"coding",agent:$agent,model:$model,recovery:"stage-failure-coding"}' 2>/dev/null || printf '{}')"
+  if ! _prepare_recovery_phase_launch "$issue" "$slug" "coding" "$feature_dir" "$worktree" "$agent" "$model" "$contract_payload"; then
+    return 1
+  fi
+  launch_coding_phase "$issue" "$slug" "$title" "$worktree" "$branch" "$BASE_BRANCH" \
+    "$model" "$agent" "$depth" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    log_warn "$issue → coding stage-failure relaunch: launch failed (rc=$rc)"
+    return 1
+  fi
+
+  set_task_phase "$issue" "coding"
+  set_window_attention_state "$win" "clear"
+  log "status" "♻ $issue → coding failed (${failure_kind}, ${failure_class}), relaunch ${attempts}/${limit}${fresh} directly via coding (planning guard bypassed)"
   return 0
 }
 
@@ -20318,6 +20619,14 @@ monitor_issue_state() {
 
           if [[ "$resolved_phase" == "coding" ]]; then
             unset "$approval_wait_var" 2>/dev/null || true
+            # HOK-3211: if coding already finished in-planning (valid marker,
+            # commit=HEAD, tree clean, HEAD ahead of base), reconcile in-place
+            # instead of letting the planning overreach guard stash the work
+            # and the stale-artifact archive move the valid marker aside.
+            if planning_late_coding_complete_reconcile "$ISSUE" "$FEATURE_DIR" "$WT_DIR" "$WIN" "$current_agent"; then
+              active_count=$((active_count + 1))
+              return 0
+            fi
             # Before launching coding, validate planning did not overreach.
             if ! validate_planning_phase_output "$WT_DIR"; then
               handle_planning_overreach_rejection "$ISSUE" "$FEATURE_DIR" "$WIN" "$current_agent"
@@ -20569,6 +20878,14 @@ monitor_issue_state() {
           fi
 
           if [[ "$planning_status" == "awaiting_user" ]]; then
+            # HOK-3211: fire the reconciler on any pass that enters this
+            # branch, including the pass that *created* awaiting_user — a
+            # late .coding-complete written while the operator was deciding
+            # must be accepted instead of silently waiting on the plan gate.
+            if planning_late_coding_complete_reconcile "$ISSUE" "$FEATURE_DIR" "$WT_DIR" "$WIN" "$current_agent"; then
+              active_count=$((active_count + 1))
+              return 0
+            fi
             if [[ -f "$FEATURE_DIR/.plan-approved" ]]; then
               unset "$approval_wait_var" 2>/dev/null || true
               if ! validate_planning_phase_output "$WT_DIR"; then
@@ -20596,6 +20913,15 @@ monitor_issue_state() {
 
           # Check if plan exists but not yet approved (awaiting_user)
           if [[ "$resolved_phase" == "awaiting_user" ]]; then
+            # HOK-3211: a late .coding-complete arrives here too (the task
+            # transitioned to awaiting_user while the operator was deciding
+            # and the coder has since finished and committed). Accept it in
+            # place of waiting on an approval that would archive the valid
+            # marker.
+            if planning_late_coding_complete_reconcile "$ISSUE" "$FEATURE_DIR" "$WT_DIR" "$WIN" "$current_agent"; then
+              active_count=$((active_count + 1))
+              return 0
+            fi
             # Check if user signaled approval by creating .plan-approved marker
             if [[ -f "$FEATURE_DIR/.plan-approved" ]]; then
               unset "$approval_wait_var" 2>/dev/null || true
@@ -20623,6 +20949,11 @@ monitor_issue_state() {
                 printf -v "$approval_wait_var" '%s' "true"
               fi
             fi
+
+            # HOK-3211 diagnostic: when the reconciler did not fire but a
+            # .coding-complete exists or HEAD is ahead of base, log once per
+            # task so the operator can see the coder actually finished work.
+            maybe_log_planning_wait_coding_present "$ISSUE" "$FEATURE_DIR" "$WT_DIR" || true
 
             set_window_attention_state "$WIN" "needs-user"
             active_count=$((active_count + 1))
@@ -23445,7 +23776,8 @@ while :; do
               _warn_cache_file="${STATE_DIR}/.queue-warn-episode"
               _prev_episode="$(cat "$_warn_cache_file" 2>/dev/null || echo '')"
               if [[ -z "$_prev_episode" || "$_prev_episode" != "$_episode_started" ]]; then
-                log_warn "queue analysis unavailable (reason: ${_queue_reason:-unknown}), falling back to flat list"
+                _queue_step="$(printf '%s' "$_health_status" | jq -r '.failureStep // ""' 2>/dev/null || echo '')"
+                log_warn "queue analysis unavailable (reason: ${_queue_reason:-unknown}${_queue_step:+, step=${_queue_step}}), falling back to flat list"
                 [[ -n "$_episode_started" ]] && printf '%s' "$_episode_started" > "$_warn_cache_file" 2>/dev/null || true
               fi
               [[ -n "$queue_plan_diag_file" ]] && log_fetch_queue_plan_failure "$queue_plan_diag_file"

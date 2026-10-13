@@ -179,6 +179,8 @@ for fn in \
   coding_dirty_handoff_relaunch \
   coding_dirty_handoff_terminalize \
   archive_stale_coding_artifacts \
+  coding_complete_marker_condition_valid \
+  blocked_completion_commit_matches_head \
   clear_coding_uncommitted_output_attention \
   coding_output_dirty_paths \
   wavemill_owned_feature_artifact_path \
@@ -204,6 +206,7 @@ for fn in \
   stage_failure_decision \
   stage_failure_owned_by_bucket \
   maybe_retry_failed_stage \
+  _stage_failure_coding_relaunch \
   clear_stage_result \
   emit_native_terminal_failure_attention \
   _coding_terminal_blocked_completion_detected \

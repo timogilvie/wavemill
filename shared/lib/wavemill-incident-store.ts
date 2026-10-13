@@ -155,6 +155,7 @@ export class IncidentStore {
         const previousRecurrence = existing.metadata?.recurrence;
         const metadata = {
           ...(existing.metadata ?? {}),
+          ...liveCorrelationMetadata(canonicalIncident.metadata),
           thresholdTriggered: occurrenceCount >= this.escalationThreshold,
           seenEventKeys: [...seenEventKeys, eventKey].slice(-MAX_SEEN_EVENT_KEYS),
           lastEventAt: observedAt,
@@ -218,6 +219,16 @@ export class IncidentStore {
    */
   async resolve(fingerprint: string, options: { reason?: string } = {}): Promise<IncidentRecord | null> {
     return this.applyLifecycleAction(fingerprint, 'resolved', 'operator_resolved', options.reason);
+  }
+
+  /**
+   * Controller-side resolution from evidence (e.g. a satisfied recovery
+   * predicate, HOK-2595). Recorded as `auto_resolved` so Linear lifecycle sync
+   * applies the conservative absence/auto policy rather than the opt-in
+   * operator-close policy. Only observed/active records transition.
+   */
+  async autoResolve(fingerprint: string, options: { reason?: string } = {}): Promise<IncidentRecord | null> {
+    return this.applyLifecycleAction(fingerprint, 'resolved', 'auto_resolved', options.reason, { onlyOpen: true });
   }
 
   async archive(fingerprint: string, options: { reason?: string } = {}): Promise<IncidentRecord | null> {
@@ -286,6 +297,7 @@ export class IncidentStore {
     lifecycle: 'resolved' | 'archived',
     action: IncidentResolutionAction,
     reason?: string,
+    guard: { onlyOpen?: boolean } = {},
   ): Promise<IncidentRecord | null> {
     const indexPath = join(this.incidentsDir, 'index.json');
     if (!existsSync(indexPath)) return null;
@@ -294,6 +306,8 @@ export class IncidentStore {
     await this.mutateIndex(indexPath, (index) => {
       const existing = index[fingerprint];
       if (!existing) return index;
+      // Checked under the index lock so a concurrent transition is not overwritten.
+      if (guard.onlyOpen && existing.lifecycle !== 'observed' && existing.lifecycle !== 'active') return index;
       updated = {
         ...existing,
         lifecycle,
@@ -722,6 +736,30 @@ export class IncidentStore {
     const order: IncidentLifecycle[] = ['observed', 'active', 'resolved', 'archived'];
     return order.indexOf(b) > order.indexOf(a) ? b : a;
   }
+}
+
+/**
+ * Detector metadata that describes the *current* correlation (HOK-2595) and
+ * must follow each distinct event, unlike job lineage fields (`jobId`,
+ * `authoritativeFailureAt`, …) which stay pinned to the first observation.
+ * Without this a challenge pair that moves from provider-blocked to
+ * ready-for-re-review would keep publishing the stale state and proposal.
+ */
+const LIVE_CORRELATION_METADATA_KEYS = [
+  'proposal',
+  'causalChain',
+  'pairState',
+  'earliestActionableCause',
+  'missingEvidence',
+  'tendGate',
+  'tendLabels',
+] as const;
+
+function liveCorrelationMetadata(metadata: IncidentRecord['metadata'] | undefined): Partial<IncidentRecord['metadata']> {
+  if (!metadata) return {};
+  return Object.fromEntries(LIVE_CORRELATION_METADATA_KEYS
+    .filter((key) => metadata[key] !== undefined)
+    .map((key) => [key, metadata[key]]));
 }
 
 function earlierIso(a: unknown, b: unknown): string {

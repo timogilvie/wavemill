@@ -57,6 +57,7 @@ TESTS=(
   ready-exhausted-challenge.test.sh
   review-gate-refused-challenge.test.sh
   monitor-late-completion.test.sh
+  plan-reapproval-late-coding-complete.test.sh
   monitor-terminal-cleanup-tick.test.sh
   monitor-reaped-task-no-window-recreation.test.sh
   monitor-window-recreate-bounded.test.sh
@@ -85,6 +86,7 @@ TESTS=(
   check-common-guards.test.sh
   check-marker-clear-sites.test.sh
   check-label-write-sites.test.sh
+  merge-labels-real-state.test.sh
   ready-update-from-base.test.sh
   plan-packet-binding.test.sh
   task-progress.test.sh

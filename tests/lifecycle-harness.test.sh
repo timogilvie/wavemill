@@ -240,6 +240,7 @@ harness_extract_real_functions() {
     guard_coding_complete_handoff \
     blocked_completion_validate_for_advance \
     archive_stale_coding_artifacts \
+    coding_complete_marker_condition_valid \
     complete_coding_advance \
     auto_advance_blocked_completion \
     emit_blocked_completion_attention \
@@ -257,6 +258,7 @@ harness_extract_real_functions() {
     stage_failure_decision \
     stage_failure_owned_by_bucket \
     maybe_retry_failed_stage \
+    _stage_failure_coding_relaunch \
     clear_stage_result \
     emit_native_terminal_failure_attention \
     challenge_varied_stage_model \

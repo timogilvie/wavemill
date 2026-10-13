@@ -1,3 +1,11 @@
+// Crash-atomic patch application (HOK-3213).
+// flushStagedFiles uses per-file atomicity (temp + rename) and an undo journal
+// in the gitdir to survive SIGKILL / OOM / host sleep mid-flush. Recovery runs
+// on every apply_patch call and at native-coding launch, so a half-applied
+// multi-file patch is rolled back to the pre-patch state (never left partial).
+// Do not revert to in-process-only rollback without gating it behind a feature
+// flag or completing a new crash-atomicity design.
+
 import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 
@@ -11,6 +19,13 @@ import type {
 } from './patch-contract.ts';
 import { resolveInsideWorktree } from './tools/read-only.ts';
 import type { ToolPhase } from './tools/types.ts';
+import {
+  commitPatchJournal,
+  recoverPatchJournal,
+  cleanupPatchJournal,
+  atomicWriteFile,
+  type PatchRecoveryLogger,
+} from './patch-journal.ts';
 
 export interface AppliedFileChange {
   path: string;
@@ -78,7 +93,7 @@ type ApplyDiffResult = ApplyDiffSuccess | ApplyDiffFailure;
 export async function applyNativePatch(
   worktreeAbsolute: string,
   patch: NativePatch,
-  options: { phase?: ToolPhase } = {},
+  options: { phase?: ToolPhase; logger?: PatchRecoveryLogger } = {},
 ): Promise<ApplyNativePatchResult> {
   const phase = options.phase ?? 'coding';
   if (phase !== 'coding') {
@@ -86,6 +101,9 @@ export async function applyNativePatch(
       hint: `Retry this patch during the coding phase instead of ${phase}.`,
     });
   }
+
+  // Recover any stale patch journal from a prior crash
+  await recoverPatchJournal(worktreeAbsolute, options.logger);
 
   const stagedFiles = new Map<string, StagedFile>();
 
@@ -118,7 +136,7 @@ export async function applyNativePatch(
     .filter((file) => file.currentDiskText !== file.originalDiskText)
     .sort((left, right) => left.relativePath.localeCompare(right.relativePath));
 
-  await flushStagedFiles(changedFiles);
+  await flushStagedFiles(worktreeAbsolute, changedFiles, options.logger);
 
   const fileChanges = changedFiles.map((file) => {
     const counts = countLineChanges(file.normalizedOriginalText, file.normalizedCurrentText);
@@ -369,23 +387,59 @@ function parseUnifiedDiff(diff: string): ParsedHunk[] {
   return hunks;
 }
 
-async function flushStagedFiles(changedFiles: StagedFile[]): Promise<void> {
-  const writtenFiles: Array<{ absolutePath: string; originalDiskText: string }> = [];
-
-  try {
-    for (const file of changedFiles) {
-      await fsPromises.writeFile(file.absolutePath, file.currentDiskText, 'utf8');
-      writtenFiles.push({
-        absolutePath: file.absolutePath,
-        originalDiskText: file.originalDiskText,
-      });
-    }
-  } catch (error) {
-    await Promise.allSettled(
-      writtenFiles.map((file) => fsPromises.writeFile(file.absolutePath, file.originalDiskText, 'utf8')),
-    );
-    throw error;
+async function flushStagedFiles(
+  worktreeAbsolute: string,
+  changedFiles: StagedFile[],
+  logger?: PatchRecoveryLogger,
+): Promise<void> {
+  if (changedFiles.length === 0) {
+    return;
   }
+
+  // Commit journal with intent and backups
+  const committedJournal = await commitPatchJournal(
+    worktreeAbsolute,
+    changedFiles.map((file) => ({
+      relativePath: file.relativePath,
+      originalDiskText: file.originalDiskText,
+      currentDiskText: file.currentDiskText,
+      absolutePath: file.absolutePath,
+    })),
+    logger,
+  );
+
+  // Crash hook for testing (HOK-3213)
+  if (process.env.WAVEMILL_PATCH_CRASH_AFTER_N_RENAMES !== undefined) {
+    const crashAfterN = parseInt(process.env.WAVEMILL_PATCH_CRASH_AFTER_N_RENAMES, 10);
+    let renamedCount = 0;
+
+    try {
+      for (const file of changedFiles) {
+        await atomicWriteFile(file.absolutePath, file.currentDiskText);
+        renamedCount += 1;
+        if (renamedCount >= crashAfterN) {
+          // Simulate crash before cleanup
+          process.exit(137);
+        }
+      }
+    } catch (error) {
+      await cleanupPatchJournal(committedJournal);
+      throw error;
+    }
+  } else {
+    // Normal path: write all files atomically
+    try {
+      for (const file of changedFiles) {
+        await atomicWriteFile(file.absolutePath, file.currentDiskText);
+      }
+    } catch (error) {
+      await cleanupPatchJournal(committedJournal);
+      throw error;
+    }
+  }
+
+  // All renames succeeded; cleanup the journal
+  await cleanupPatchJournal(committedJournal);
 }
 
 function rejectOperation(
