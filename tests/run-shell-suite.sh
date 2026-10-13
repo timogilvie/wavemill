@@ -30,8 +30,10 @@ TESTS=(
   ledger-hook-shadow.test.sh
   check-ledger-shadow-swallow.test.sh
   monitor-side-effect-detector-tick.test.sh
+  ledger-recovery-tick.test.sh
   aborted-challenge-cleanup.test.sh
   safe-branch-cleanup.test.sh
+  preserved-branch-record-long-slug.test.sh
   challenge-primary-merge-cleanup.test.sh
   operator-abort-cleanup.test.sh
   agent-resolve-from-model.test.sh

@@ -15554,6 +15554,57 @@ monitor_side_effect_detector_tick() {
   return 0
 }
 
+# ─── Ledger F recovery loop (HOK-3185) ──────────────────────────────────────
+#
+# One recovery rule over ledger step rows: a step past its deadline with no
+# HOK-3101 progress gets the HOK-3176 failure policy (terminal → settle,
+# code-failure → remediation, retryable → bounded retry → fresh relaunch →
+# one waiting_on operator escalation). Shadow by default: decisions land in
+# .wavemill/ledger-recovery.jsonl and nothing else changes.
+# Live: WAVEMILL_LEDGER_RECOVERY_LIVE=1. Kill switch:
+# WAVEMILL_LEDGER_RECOVERY_DISABLED=1 (or the ledger-wide
+# WAVEMILL_LEDGER_SHADOW_DISABLED=1).
+ledger_recovery_tick_enabled() {
+  [[ "${DRY_RUN:-false}" == "true" ]] && return 1
+  [[ "${WAVEMILL_LEDGER_RECOVERY_DISABLED:-0}" == "1" ]] && return 1
+  [[ "${WAVEMILL_LEDGER_SHADOW_DISABLED:-0}" == "1" ]] && return 1
+  [[ -n "${STATE_DIR:-}" && -n "${REPO_DIR:-}" ]] || return 1
+  declare -F wavemill_run_tool >/dev/null 2>&1 || return 1
+  return 0
+}
+
+monitor_ledger_recovery_interval() {
+  local value="${LEDGER_RECOVERY_INTERVAL_SECONDS:-120}"
+  [[ "$value" =~ ^[0-9]+$ && "$value" -gt 0 ]] || value=120
+  printf '%s\n' "$value"
+}
+
+monitor_ledger_recovery_tick() {
+  ledger_recovery_tick_enabled || return 0
+
+  local interval last_at now stamp_file="$STATE_DIR/.ledger-recovery-last-at"
+  interval="$(monitor_ledger_recovery_interval)"
+  now="$(date +%s)"
+  if [[ -f "$stamp_file" ]]; then
+    last_at="$(cat "$stamp_file" 2>/dev/null || echo 0)"
+    [[ "$last_at" =~ ^[0-9]+$ ]] || last_at=0
+    (( now - last_at < interval )) && return 0
+  fi
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 0
+  _monitor_terminal_cleanup_write "$stamp_file" "$now"
+
+  local -a cli=(ledger-recovery-tick.ts --repo-dir "$REPO_DIR")
+  [[ -n "${STATE_FILE:-}" ]] && cli+=(--state-file "$STATE_FILE")
+  [[ -n "${WORKTREE_ROOT:-}" ]] && cli+=(--worktree-root "$WORKTREE_ROOT")
+  local log_file="${MILL_LOG_FILE:-/dev/null}"
+  # Background so a slow ledger open never stalls the monitor pass.
+  (
+    wavemill_run_tool "${cli[@]}" >>"$log_file" 2>&1 || true
+  ) >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+  return 0
+}
+
 # ─── Per-step pass timing (HOK-3190) ────────────────────────────────────────
 #
 # `monitor_step_begin NAME` and `monitor_step_end NAME` sandwich a measured
@@ -22519,6 +22570,10 @@ while :; do
   monitor_step_begin sideEffectDuplicateDetector
   monitor_side_effect_detector_tick || true
   monitor_step_end sideEffectDuplicateDetector
+  # HOK-3185: the one recovery loop over ledger step rows (shadow by default).
+  monitor_step_begin ledgerRecovery
+  monitor_ledger_recovery_tick || true
+  monitor_step_end ledgerRecovery
   # HOK-3174: after a host wake, re-check running stages before normal gates.
   if [[ -n "$monitor_wake_episode" ]]; then
     monitor_resume_agents_after_wake "$monitor_wake_episode"

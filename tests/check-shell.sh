@@ -102,6 +102,7 @@ for f in \
   "$REPO_DIR"/tests/ledger-hook-shadow.test.sh \
   "$REPO_DIR"/tests/check-ledger-shadow-swallow.test.sh \
   "$REPO_DIR"/tests/monitor-side-effect-detector-tick.test.sh \
+  "$REPO_DIR"/tests/ledger-recovery-tick.test.sh \
   "$REPO_DIR"/tests/check-marker-clear-sites.test.sh \
   "$REPO_DIR"/tests/check-label-write-sites.test.sh \
   "$REPO_DIR"/tests/control-pane-recovery.test.sh \
@@ -170,6 +171,7 @@ for f in \
   "$REPO_DIR"/tests/with-timeout.test.sh \
   "$REPO_DIR"/tests/aborted-challenge-cleanup.test.sh \
   "$REPO_DIR"/tests/safe-branch-cleanup.test.sh \
+  "$REPO_DIR"/tests/preserved-branch-record-long-slug.test.sh \
   "$REPO_DIR"/tests/challenge-primary-merge-cleanup.test.sh \
   "$REPO_DIR"/tests/operator-abort-cleanup.test.sh \
   "$REPO_DIR"/tests/transient-marker.test.sh \

@@ -5,7 +5,9 @@
  * any fixture that does not converge within its tick budget.
  *
  * Uses the custom harness `process.exit(1)` style; each fixture is a
- * table-driven subtest.
+ * table-driven subtest. Every fixture runs in both harness modes (HOK-3185):
+ * `recovery-loop` (the Ledger F loop decides) and `legacy` (the original
+ * simulator). `--mode=recovery-loop|legacy` restricts the run to one.
  */
 
 import { readdirSync, statSync } from 'node:fs';
@@ -15,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import {
   INCIDENT_REPLAY_FAULTS,
   runFixture,
+  type HarnessMode,
   type IncidentReplayFault,
 } from './incident-replay-harness.ts';
 
@@ -50,17 +53,28 @@ function main(): void {
   const failures: SubtestFailure[] = [];
   let passed = 0;
 
-  for (const fixturePath of fixtures) {
-    const label = basename(fixturePath);
+  const modeArg = process.argv.find((arg) => arg.startsWith('--mode='))?.slice('--mode='.length);
+  const modes: HarnessMode[] = modeArg === 'legacy' || modeArg === 'recovery-loop' ? [modeArg] : ['recovery-loop', 'legacy'];
+  let runs = 0;
+
+  for (const mode of modes) for (const fixturePath of fixtures) {
+    const label = `${mode}:${basename(fixturePath)}`;
+    runs += 1;
     try {
-      const { fixture, run, assertion } = runFixture(fixturePath);
+      const { fixture, run, assertion } = runFixture(fixturePath, { mode });
       faultsCovered.add(fixture.fault);
-      if (!assertion.ok) {
-        failures.push({ fixture: label, reason: assertion.reason ?? 'assertion failed' });
-        console.error(`  FAIL  ${label} — ${assertion.reason ?? 'assertion failed'} (ticks=${run.ticks})`);
+      // The no-fault control must never trigger recovery.
+      const controlReason = mode === 'recovery-loop' && fixture.fault === 'control_no_fault' && run.actions?.some((a) => a !== 'skip')
+        ? `control fixture triggered recovery: ${run.actions?.join(',')}`
+        : undefined;
+      if (!assertion.ok || controlReason) {
+        const reason = controlReason ?? assertion.reason ?? 'assertion failed';
+        failures.push({ fixture: label, reason });
+        console.error(`  FAIL  ${label} — ${reason} (ticks=${run.ticks})`);
       } else {
         passed += 1;
-        console.log(`  PASS  ${label} — outcome=${run.outcome} ticks=${run.ticks}`);
+        const actions = run.actions ? ` actions=${run.actions.join(',')}` : '';
+        console.log(`  PASS  ${label} — outcome=${run.outcome} ticks=${run.ticks}${actions}`);
       }
     } catch (err: unknown) {
       failures.push({ fixture: label, reason: err instanceof Error ? err.message : String(err) });
@@ -77,7 +91,7 @@ function main(): void {
   }
 
   console.log('');
-  console.log(`[incident-replay-harness] ${passed}/${fixtures.length} fixtures passed`);
+  console.log(`[incident-replay-harness] ${passed}/${runs} fixture runs passed`);
   if (failures.length > 0) {
     console.error(`[incident-replay-harness] ${failures.length} failure(s):`);
     for (const f of failures) console.error(`  - ${f.fixture}: ${f.reason}`);
