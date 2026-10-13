@@ -15655,7 +15655,8 @@ wavemill_record_monitor_iteration_timing() {
   projected_p50="$(jq --argjson d "$duration_ms" '
       (.samples // []) as $s
       | (($s + [$d]) | .[-100:]) as $n
-      | ($n | sort | if length == 0 then 0 else .[((length / 2) | tostring | split(".")[0] | tonumber)] end)
+      | ($n | sort) as $sorted
+      | (if $sorted | length == 0 then 0 else $sorted[((($sorted | length) - 1) / 2 | floor)] end)
     ' "$timing_file" 2>/dev/null || echo 0)"
   [[ "$projected_p50" =~ ^-?[0-9]+$ ]] || projected_p50=0
 
