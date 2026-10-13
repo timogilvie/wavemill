@@ -12,7 +12,9 @@ import {
   compactSnapshotForRender,
   detectBranchBehindBase,
   detectExhaustedRetries,
+  detectQueueInferenceStuck,
   detectStuckMergeCandidates,
+  detectSustainedSlowPasses,
   matchInteractivePromptSignature,
   normalizeInteractivePromptText,
   parseArgs,
@@ -4077,6 +4079,216 @@ test('applyAutoFixes + sendAlerts are byte-identical no-ops when disabled', asyn
     assert.equal(alerted.findings.length, beforeFindings, 'no findings added');
     assert.ok(!existsSync(join(repoDir, '.wavemill', 'incidents', 'actions.jsonl')), 'no action log written');
     assert.ok(!existsSync(join(repoDir, '.wavemill', 'observer', 'alert-state.json')), 'no alert journal written');
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// HOK-3207: sustained slow-pass detector + stuck queue-inference detector
+// ---------------------------------------------------------------------------
+
+function slowPassRepo(timing: Record<string, unknown> | undefined, overrides: Record<string, unknown> = {}) {
+  return {
+    session: 'wavemill',
+    repoDir: '/fake/repo',
+    tasks: [],
+    monitorTimingPath: timing ? '/fake/repo/.wavemill/monitor-timing.json' : undefined,
+    monitorTiming: timing,
+    ...overrides,
+  };
+}
+
+test('HOK-3207 detectSustainedSlowPasses: no timing file produces no finding', () => {
+  const findings = detectSustainedSlowPasses(slowPassRepo(undefined) as never, Date.now());
+  assert.deepEqual(findings, []);
+});
+
+test('HOK-3207 detectSustainedSlowPasses: slowSinceAt null produces no finding', () => {
+  const findings = detectSustainedSlowPasses(
+    slowPassRepo({ slowSinceAt: null, p50Ms: 20_000, warnMs: 15_000 }) as never,
+    Date.now(),
+  );
+  assert.deepEqual(findings, []);
+});
+
+test('HOK-3207 detectSustainedSlowPasses: slowSinceAt 30 min ago is below threshold', () => {
+  const now = Date.now();
+  const slowSinceAt = new Date(now - 30 * 60 * 1000).toISOString();
+  const findings = detectSustainedSlowPasses(
+    slowPassRepo({ slowSinceAt, p50Ms: 20_000, warnMs: 15_000 }) as never,
+    now,
+  );
+  assert.deepEqual(findings, []);
+});
+
+test('HOK-3207 detectSustainedSlowPasses: slowSinceAt 61 min ago AND p50 > warnMs raises one high finding', () => {
+  const now = Date.now();
+  const slowSinceAt = new Date(now - 61 * 60 * 1000).toISOString();
+  const findings = detectSustainedSlowPasses(
+    slowPassRepo({
+      slowSinceAt,
+      p50Ms: 44_000,
+      warnMs: 15_000,
+      slowestSteps: [
+        { name: 'issueMonitorLoop', ms: 22_000 },
+        { name: 'readyMergeQueue', ms: 11_000 },
+        { name: 'readyWatchdog', ms: 5_000 },
+      ],
+    }) as never,
+    now,
+  );
+  assert.equal(findings.length, 1);
+  const [finding] = findings;
+  assert.equal(finding.id, 'monitor-sustained-slow-pass-wavemill');
+  assert.equal(finding.severity, 'high');
+  assert.equal(finding.category, 'operational');
+  assert.match(finding.title, /p50 44000ms over warnMs 15000ms for 61 min/);
+  assert.ok(finding.evidence.includes('p50Ms=44000'));
+  assert.ok(finding.evidence.includes('warnMs=15000'));
+  assert.ok(finding.evidence.includes('sustainedMinutes=61'));
+  assert.ok(finding.evidence.some((e) => e.startsWith('topSteps=') && e.includes('issueMonitorLoop:22000ms')));
+});
+
+test('HOK-3207 detectSustainedSlowPasses: p50 recovered to warnMs clears the finding even if slowSinceAt is still set', () => {
+  const now = Date.now();
+  const slowSinceAt = new Date(now - 90 * 60 * 1000).toISOString();
+  const findings = detectSustainedSlowPasses(
+    slowPassRepo({
+      slowSinceAt,
+      p50Ms: 10_000,   // below warnMs
+      warnMs: 15_000,
+      slowestSteps: [],
+    }) as never,
+    now,
+  );
+  assert.deepEqual(findings, [], 'recovery path (p50 ≤ warnMs) must retract the finding');
+});
+
+test('HOK-3207 detectSustainedSlowPasses: finding id is stable across repeat calls so selectAlertsToSend dedupes', () => {
+  const now = Date.now();
+  const slowSinceAt = new Date(now - 90 * 60 * 1000).toISOString();
+  const first = detectSustainedSlowPasses(
+    slowPassRepo({ slowSinceAt, p50Ms: 44_000, warnMs: 15_000 }) as never,
+    now,
+  );
+  const second = detectSustainedSlowPasses(
+    slowPassRepo({ slowSinceAt, p50Ms: 44_000, warnMs: 15_000 }) as never,
+    now + 60_000,
+  );
+  assert.equal(first[0]?.id, second[0]?.id);
+});
+
+test('HOK-3207 detectSustainedSlowPasses: unparseable slowSinceAt produces no finding', () => {
+  const findings = detectSustainedSlowPasses(
+    slowPassRepo({ slowSinceAt: 'not-a-timestamp', p50Ms: 44_000, warnMs: 15_000 }) as never,
+    Date.now(),
+  );
+  assert.deepEqual(findings, []);
+});
+
+function stuckQueueRepo(inference: Record<string, unknown> | undefined, overrides: Record<string, unknown> = {}) {
+  return {
+    session: 'wavemill',
+    repoDir: '/fake/repo',
+    tasks: [],
+    queueHealthPath: inference ? '/fake/repo/.wavemill/queue-health.json' : undefined,
+    queueHealth: inference ? { inference } : undefined,
+    ...overrides,
+  };
+}
+
+test('HOK-3207 detectQueueInferenceStuck: no queueHealth produces no finding', () => {
+  const findings = detectQueueInferenceStuck(stuckQueueRepo(undefined) as never, Date.now());
+  assert.deepEqual(findings, []);
+});
+
+test('HOK-3207 detectQueueInferenceStuck: consecutiveFailures=4 is below threshold', () => {
+  const findings = detectQueueInferenceStuck(
+    stuckQueueRepo({ consecutiveFailures: 4, lastError: 'classifier timeout' }) as never,
+    Date.now(),
+  );
+  assert.deepEqual(findings, []);
+});
+
+test('HOK-3207 detectQueueInferenceStuck: consecutiveFailures=5 raises one high finding', () => {
+  const findings = detectQueueInferenceStuck(
+    stuckQueueRepo({
+      consecutiveFailures: 5,
+      lastError: 'classifier timeout after 5s',
+      lastAttemptAt: '2026-10-13T10:00:00Z',
+      lastSuccessAt: '2026-10-12T09:00:00Z',
+    }) as never,
+    Date.now(),
+  );
+  assert.equal(findings.length, 1);
+  const [finding] = findings;
+  assert.equal(finding.id, 'monitor-queue-inference-stuck-wavemill');
+  assert.equal(finding.severity, 'high');
+  assert.match(finding.title, /5 consecutive failures/);
+  assert.ok(finding.evidence.includes('consecutiveFailures=5'));
+  assert.ok(finding.evidence.includes('lastError=classifier timeout after 5s'));
+  assert.ok(finding.evidence.includes('lastSuccessAt=2026-10-12T09:00:00Z'));
+});
+
+test('HOK-3207 detectQueueInferenceStuck: consecutiveFailures=40 shares the same stable id as =5', () => {
+  const atFive = detectQueueInferenceStuck(
+    stuckQueueRepo({ consecutiveFailures: 5 }) as never, Date.now(),
+  );
+  const atForty = detectQueueInferenceStuck(
+    stuckQueueRepo({ consecutiveFailures: 40 }) as never, Date.now(),
+  );
+  assert.equal(atFive[0]?.id, atForty[0]?.id);
+});
+
+test('HOK-3207 buildFindings integration: both HOK-3207 detectors fire and dedupe across calls', () => {
+  const now = Date.now();
+  const slowSinceAt = new Date(now - 90 * 60 * 1000).toISOString();
+  const repoDir = mkdtempSync(join(tmpdir(), 'observer-hok3207-integration-'));
+  try {
+    writePermissiveSchema(repoDir);
+    const snapshot = {
+      timestamp: new Date(now).toISOString(),
+      sessions: ['wavemill'],
+      panes: [],
+      processes: [],
+      repos: [{
+        session: 'wavemill',
+        repoDir,
+        tasks: [],
+        monitorTimingPath: '/fake/path/monitor-timing.json',
+        monitorTiming: {
+          slowSinceAt,
+          p50Ms: 44_000,
+          warnMs: 15_000,
+          slowestSteps: [{ name: 'issueMonitorLoop', ms: 22_000 }],
+        },
+        queueHealthPath: '/fake/path/queue-health.json',
+        queueHealth: {
+          inference: {
+            consecutiveFailures: 7,
+            lastError: 'classifier timeout',
+          },
+        },
+      }],
+    };
+    const firstFindings = buildFindings(snapshot as never, defaultObserverOptions() as never);
+    const slowFinding = firstFindings.find((f) => f.id === 'monitor-sustained-slow-pass-wavemill');
+    const queueFinding = firstFindings.find((f) => f.id === 'monitor-queue-inference-stuck-wavemill');
+    assert.ok(slowFinding, 'sustained slow-pass finding must be surfaced through buildFindings');
+    assert.ok(queueFinding, 'queue inference stuck finding must be surfaced through buildFindings');
+    // Dedup: a second call with the same state produces the same stable ids.
+    const secondFindings = buildFindings(snapshot as never, defaultObserverOptions() as never);
+    assert.equal(
+      secondFindings.filter((f) => f.id === 'monitor-sustained-slow-pass-wavemill').length,
+      1,
+      'repeated buildFindings must not duplicate the slow-pass finding id',
+    );
+    assert.equal(
+      secondFindings.filter((f) => f.id === 'monitor-queue-inference-stuck-wavemill').length,
+      1,
+      'repeated buildFindings must not duplicate the queue-stuck finding id',
+    );
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
   }

@@ -195,6 +195,7 @@ for f in \
   "$REPO_DIR"/tests/config-false-booleans.test.sh \
   "$REPO_DIR"/tests/check-no-npx-in-monitor.sh \
   "$REPO_DIR"/tests/monitor-pass-snapshot.test.sh \
+  "$REPO_DIR"/tests/monitor-pass-budget.test.sh \
   "$REPO_DIR"/tests/agent-model-memo.test.sh \
   "$REPO_DIR"/tests/monitor-state-size.test.sh \
   "$REPO_DIR"/tests/hot-state-byte-cap.test.sh \
